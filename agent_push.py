@@ -24,6 +24,7 @@ import argparse
 import contextlib
 import getpass
 import hashlib
+import io
 import json
 import math
 import os
@@ -43,7 +44,7 @@ import uuid
 from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from datetime import datetime, timedelta, timezone
-from threading import BoundedSemaphore, Event, Lock, RLock
+from threading import BoundedSemaphore, Event, Lock, RLock, Thread
 from urllib.parse import quote, urlencode, urlparse
 
 
@@ -216,6 +217,8 @@ def _as_text(v) -> str:
 # 타임아웃 오류 prefix. 이 뒤엔 '순수 CLI 출력'(우리 args 아님)만 담아, _extract_created_id 가 args 에 박힌
 # 레퍼런스 업로드 UUID 가 아니라 진짜 잡 id 만 되찾게 한다. 파싱실패와 함께 '모호한 결말'로 취급한다.
 _TIMEOUT_PREFIX = "CLI 타임아웃(부분출력): "
+# 제출은 로컬 파일을 CLI 안에서 올린다 — 느린 회선의 큰 파일도 끝나게 둔다(200MB 를 약 0.9Mbps 로 올리는 시간). 넘기면 제출 확인으로 간다.
+_SUBMIT_TIMEOUT_SECONDS = 1800
 
 
 def _cli_diagnostic_body(error: str | None) -> str:
@@ -540,47 +543,77 @@ def _sanitize_diagnostic(text: str | bytes | None) -> str:
     return _DIAGNOSTIC_AUTH_RE.sub(lambda m: f"{m.group(1)} <자격값 숨김>", text)
 
 
+def _read_pipe(pipe, sink: list) -> None:
+    with contextlib.suppress(OSError, ValueError):
+        while chunk := pipe.read1(65536):
+            sink.append(chunk)
+
+
+def _cli_text(sink: list) -> str:
+    # subprocess 의 text=True 와 같은 인코딩·줄바꿈. 끊긴 출력은 글자 중간에서 잘릴 수 있다.
+    return io.TextIOWrapper(io.BytesIO(b"".join(sink)), errors="replace").read()
+
+
+def _end_cli_tree(proc: subprocess.Popen) -> None:
+    left = False
+    if os.name == "nt":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            killer = subprocess.Popen(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            try:
+                killer.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                left = True  # 코어가 꽉 차면 1분 걸린다(실측). 끊거나 부모(node)를 먼저 끝내면 실제 CLI(hf.exe)를 못 찾는다
+    if not left:
+        proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=5)
+
+
 def _run_with_tree_kill(argv: list, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
     """subprocess.run(capture_output=True, text=True, timeout=…) 과 같되, 시간 초과면 프로세스 트리째 끝내고
-    제한 시간 안에 돌아온다(cli_bridge._terminate_cli_process 와 같은 꼴). 셰임(Node)만 죽이면 출력 파이프를
-    물려받은 자식 CLI 가 남아 회수가 끝나지 않고 다음 재시도로 못 갔다(81회차 F-C-04 리뷰 P1).
-    코어가 꽉 차 taskkill 이 늦으면 끊지 않고 맡긴 채 돌아온다 — taskkill 은 이 프로세스가 끝나도 이어진다."""
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    제한 시간 안에 돌아온다(cli_bridge._terminate_cli_process 와 같은 꼴). subprocess.run 은 셰임(Node)만 죽인 뒤
+    자식 CLI 가 끝날 때까지 제한 없이 기다려, hf.exe 가 멈추면 호출이 돌아오지 않았다(81회차 F-C-04 리뷰 P1).
+    코어가 꽉 차 taskkill 이 늦으면 끊지 않고 맡긴 채 돌아온다 — taskkill 은 이 프로세스가 끝나도 이어진다.
+    출력은 나오는 대로 모은다 — Windows 의 communicate 는 파이프가 닫혀야 내줘, 끊긴 호출의 job id 를 잃는다."""
+    deadline = time.monotonic() + timeout
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    out: list = []
+    err: list = []
+    readers = [Thread(target=_read_pipe, args=pair, daemon=True) for pair in ((proc.stdout, out), (proc.stderr, err))]
     try:
-        out, err = proc.communicate(timeout=timeout)
+        for reader in readers:
+            reader.start()
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        left = False
-        if os.name == "nt":
-            with contextlib.suppress(OSError, subprocess.SubprocessError):
-                killer = subprocess.Popen(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                try:
-                    killer.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    left = True  # 코어가 꽉 차면 1분 걸린다(실측). 끊거나 부모(node)를 먼저 끝내면 실제 CLI(hf.exe)를 못 찾는다
-        if not left:
-            proc.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):  # 트리 밖으로 빠진 자식이 파이프를 쥐면 더 기다리지 않는다
-            exc.stdout, exc.stderr = proc.communicate(timeout=5)
+        _end_cli_tree(proc)
+        for reader in readers:
+            reader.join(timeout=5)  # 읽은 출력이 모일 때까지 — 트리가 안 끝났으면 여기까지 나온 것만 쓴다
+        exc.stdout, exc.stderr = _cli_text(out), _cli_text(err)
         raise
-    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+    except BaseException:
+        _end_cli_tree(proc)
+        raise
+    until = max(deadline, time.monotonic() + 5)  # 부모가 제한 시간 직전에 끝나도 출력이 모일 시간을 둔다
+    for reader in readers:
+        reader.join(timeout=max(until - time.monotonic(), 0))
+    # 부모가 먼저 끝났는데 자손이 출력을 쥐었다 — 덜 모은 결과를 성공으로 내지 않는다.
+    # shortcut: 부모가 없으면 taskkill /T 가 자손을 못 찾아 그 자손은 세션 Job 이 닫힐 때까지 남는다, 끝내야 하면 호출마다 Job 으로 묶는다.
+    if any(reader.is_alive() for reader in readers):
+        raise subprocess.TimeoutExpired(argv, timeout, output=_cli_text(out), stderr=_cli_text(err))
+    return subprocess.CompletedProcess(argv, proc.returncode, _cli_text(out), _cli_text(err))
 
 
-def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None, kill_tree: bool = False):
+def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환.
 
     env 를 주면 **이 자식 프로세스에만** 적용한다(부모 os.environ 은 건드리지 않는다 — 동시에 도는
-    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다.
-    kill_tree 면 시간 초과 때 CLI 프로세스 트리째 끝내고 회수한다(기동 점검의 제한 재시도용)."""
+    다른 요청의 환경을 오염시키면 그게 곧 엉뚱한 공간 과금이다). 안 주면 종전대로 부모 환경을 상속한다."""
     try:
-        argv = [*_cli_argv(cli), *args, "--json"]
-        if kill_tree:
-            out = _run_with_tree_kill(argv, timeout, env)
-        else:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+        out = _run_with_tree_kill([*_cli_argv(cli), *args, "--json"], timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
@@ -622,12 +655,7 @@ def _cli_json(cli: str, *args: str, timeout: int = 120):
 def _run_cli_command(cli: str, *args: str, timeout: int = 120) -> str | None:
     """JSON 출력이 필요 없는 CLI 명령을 실행한다. 성공은 None, 실패는 표시용 사유를 반환한다."""
     try:
-        out = subprocess.run(
-            [*_cli_argv(cli), *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        out = _run_with_tree_kill([*_cli_argv(cli), *args], timeout=timeout)
     except subprocess.TimeoutExpired:
         return f"CLI 시간 초과: {' '.join(args)}"
     if out.returncode != 0:
@@ -854,7 +882,7 @@ def _cli_version(cli: str) -> str | None:
     """CLI 빌드 버전 문자열(예: '0.2.3'). `higgsfield version` 은 JSON 이 아니라 평문이라 직접 파싱.
     실패해도 None — 버전 보고는 부가정보(없어도 push 진행)."""
     try:
-        out = subprocess.run([*_cli_argv(cli), "version"], capture_output=True, text=True, timeout=30)
+        out = _run_with_tree_kill([*_cli_argv(cli), "version"], timeout=30)
         txt = (out.stdout or out.stderr or "").strip()
     except Exception:  # noqa: BLE001
         return None
@@ -3128,7 +3156,7 @@ def _submit_one_attempt(
         #  2026-09-11 실측: 전역=뻘뻘뻘 / env=R&D 로 생성했더니 **R&D 에서만** 1크레딧이 빠졌다.
         #  실패해도 env 를 빼고 재시도하지 않는다 — create 는 이미 과금됐을 수 있다(중복 생성 금지).
         create_env = {**os.environ, "HIGGSFIELD_WORKSPACE_ID": workspace_id}
-        created, cli_error = _run_cli_json(cli, *args, timeout=300, env=create_env)
+        created, cli_error = _run_cli_json(cli, *args, timeout=_SUBMIT_TIMEOUT_SECONDS, env=create_env)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
         # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
@@ -3699,13 +3727,13 @@ def _startup_account_status(cli: str, attempts: int = 3) -> tuple[str, dict | li
     for attempt in range(attempts):
         if attempt:
             time.sleep(attempt)
-        acct, err = _run_cli_json(cli, "account", "status", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+        acct, err = _run_cli_json(cli, "account", "status", timeout=_STARTUP_CHECK_TIMEOUT)
         if isinstance(acct, dict) and acct.get("email"):
             return "ok", acct
         detail = err or "account status 응답에 email 이 없습니다"
         if _classify_cli_error(err) == "auth":
             return "auth", detail
-        workspaces, ws_err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+        workspaces, ws_err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT)
         if _classify_cli_error(ws_err) == "auth":
             return "auth", ws_err
         if isinstance(workspaces, list) and not any(isinstance(w, dict) and w.get("is_selected") for w in workspaces):
@@ -3722,7 +3750,7 @@ def _startup_autoselect(cli: str) -> None:
     """기동 때 워크스페이스 자동 선택(MV_agent.bat) — 아무것도 선택돼 있지 않을 때만, 공유 공간이 하나면 그것,
     공간이 하나뿐이면 그것(기존 규칙 그대로). 목록 조회 실패·시간 초과면 조용히 건너뛴다. 선택 쓰기는 한 번만 —
     다시 시도하지 않는다. 둘 다 제한 시간 + 트리 회수라 CLI 가 멈춰도 뒤의 계정 점검으로 넘어간다(81회차 리뷰 P1)."""
-    workspaces, _err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT, kill_tree=True)
+    workspaces, _err = _run_cli_json(cli, "workspace", "list", timeout=_STARTUP_CHECK_TIMEOUT)
     if not isinstance(workspaces, list) or not all(isinstance(w, dict) for w in workspaces):
         return
     if any(w.get("is_selected") for w in workspaces):

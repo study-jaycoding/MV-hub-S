@@ -93,6 +93,15 @@ it("옛 서버의 null id 표식과 새 서버의 null 표식 모두 보관함�
   expect(host.querySelectorAll(".ws-mark-box")).toHaveLength(0);
 });
 
+it("프로젝트 없는 보관본도 표식이 있으면 카드와 읽기 창에 마크를 보이고, 왼쪽 프로젝트 없음 줄에는 안 붙인다", async () => {
+  vi.spyOn(sceneKeepApi, "list").mockResolvedValue([{ ...row("marked", ""), description: "글" }, { ...row("plain", ""), workspace: null }]);
+  await act(async () => root.render(<SceneKeepWindow scope={scope} projects={[]} onOpen={vi.fn()} onClose={vi.fn()} />));
+  expect(host.querySelectorAll(".scene-keep-item-title .ws-mark-box")).toHaveLength(1);
+  expect(host.querySelectorAll(".admin-tabs .ws-mark-box")).toHaveLength(0);
+  await click(host.querySelector<HTMLElement>(".scene-keep-item-desc")!);
+  expect(host.querySelectorAll(".scene-keep-desc-head .ws-mark-box")).toHaveLength(1);
+});
+
 it.each(["save", "list", "open"])("연결 실패는 한국어로 표시한다: %s", async operation => {
   const failure = new TypeError("Failed to fetch");
   const close = vi.fn();
@@ -273,7 +282,7 @@ it.each(["save", "list", "open"])("HTTP409 오류에서 숫자 접두사 대신 
 const described = (description: string, name = "사본", projectId = "p"): SceneKeepRow => ({ ...row("a", projectId), name, description });
 const captureInput = (name: string, selected: Project | null) => ({ ...payload, name: name.normalize("NFC").trim(), project_id: selected?.id ?? "" });
 
-it("설명은 같은 프로젝트와 NFC·trim 이름에만 자동으로 채우고 빈 이름은 허용한다", async () => {
+it("설명은 같은 프로젝트와 NFC·trim 이름을 먼저 찾고 빈 이름은 허용한다", async () => {
   vi.mocked(sceneKeepApi.list).mockResolvedValue([
     described("다른 프로젝트", "Café", "other"), described("내 설명", "Café"), described("다른 이름", "다른 씬"),
   ]);
@@ -282,10 +291,63 @@ it("설명은 같은 프로젝트와 NFC·trim 이름에만 자동으로 채우�
   await change(host.querySelector<HTMLSelectElement>("select")!, "other");
   expect(textarea().value).toBe("다른 프로젝트");
   await change(host.querySelector<HTMLInputElement>("input")!, " ");
-  expect(textarea().value).toBe("");
+  expect(textarea().value).toBe("내 설명"); // 바꾼 대상이 없으면 쓰던 보관본의 설명이 따라온다
   await change(host.querySelector<HTMLInputElement>("input")!, "Café");
   expect(textarea().value).toBe("다른 프로젝트");
   expect(sceneKeepApi.list).toHaveBeenCalledTimes(1);
+});
+
+it("이름을 바꿔 새로 보관하면 쓰던 보관본의 설명이 따라오고, 바꾼 이름의 보관본이 있으면 그 설명이 먼저다", async () => {
+  vi.mocked(sceneKeepApi.list).mockResolvedValue([described("쓰던 설명", "사본"), described("다른 씬 설명", "다른 씬")]);
+  const save = vi.spyOn(sceneKeepApi, "save").mockResolvedValue({ status: "saved", id: "b", revision: 1, missing_count: 0 });
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  await change(host.querySelector<HTMLInputElement>("input")!, "다른 씬");
+  expect(textarea().value).toBe("다른 씬 설명");
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  expect(textarea().value).toBe("쓰던 설명");
+  await click(button("보관"));
+  expect(save.mock.calls[0][1]).toEqual(expect.objectContaining({ name: "새 이름", description: "쓰던 설명" }));
+});
+
+it("이름과 프로젝트를 모두 바꾸면 새 프로젝트의 같은 이름이 아니라 쓰던 보관본의 설명이 따라온다", async () => {
+  vi.mocked(sceneKeepApi.list).mockResolvedValue([described("쓰던 설명", "사본"), described("관계없는 설명", "사본", "other")]);
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project, { ...project, id: "other" }]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  await change(host.querySelector<HTMLSelectElement>("select")!, "other");
+  expect(textarea().value).toBe("쓰던 설명");
+});
+
+it("쓰던 보관본이 없으면 바꾼 프로젝트에 처음 이름의 보관본이 있어도 빈 칸이다", async () => {
+  vi.mocked(sceneKeepApi.list).mockResolvedValue([described("관계없는 설명", "사본", "other")]);
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project, { ...project, id: "other" }]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  await change(host.querySelector<HTMLSelectElement>("select")!, "other");
+  expect(textarea().value).toBe("");
+});
+
+it("워크스페이스 조회가 기본 프로젝트를 바꿔도 그 프로젝트의 보관본 설명이 따라온다", async () => {
+  const mine = { ...project, id: "r", name: "R 프로젝트", workspace_id: "R" };
+  vi.mocked(sceneKeepApi.list).mockResolvedValue([described("쓰던 설명", "사본", "r")]);
+  vi.spyOn(api, "projects").mockResolvedValue({ projects: [mine], unassigned: 0 });
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="" projects={[]} workspace={{ id: "R", name: "R" }} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  expect(host.querySelector<HTMLSelectElement>("select")?.value).toBe("r");
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  expect(textarea().value).toBe("쓰던 설명");
+});
+
+it("프로젝트를 바꿔 새로 보관해도 쓰던 설명이 따라오고, 손댄 설명이 이기며, 쓰던 보관본이 없으면 빈 칸이다", async () => {
+  vi.mocked(sceneKeepApi.list).mockResolvedValue([described("쓰던 설명", "사본")]);
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project, { ...project, id: "other" }]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  await change(host.querySelector<HTMLSelectElement>("select")!, "other");
+  expect(textarea().value).toBe("쓰던 설명");
+  await change(textarea(), "내가 쓴 글");
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  expect(textarea().value).toBe("내가 쓴 글");
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="처음" projectId="p" projects={[project]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  expect(textarea().value).toBe("");
 });
 
 it.each(["내가 쓴 설명", ""])("늦은 목록은 사용자가 입력한 설명 %j을 덮지 않는다", async text => {
@@ -545,7 +607,7 @@ it("설명은 글자로 줄바꿈 그대로 읽고 선택을 바꾸지 않으며
   await act(async () => root.render(<SceneKeepWindow scope={scope} projects={[]} onOpen={open} onClose={close} />));
   const cards = host.querySelectorAll<HTMLElement>(".scene-keep-item");
   expect(cards[1].querySelector(".scene-keep-item-desc")).toBeNull();
-  expect(cards[2].querySelector(".ws-mark-box")).toBeNull();
+  expect(cards[2].querySelector(".ws-mark-box")).not.toBeNull(); // 프로젝트가 없어도 탭의 워크스페이스 소속이다(Jay 11-03)
   await click(cards[1]);
   const description = cards[0].querySelector<HTMLButtonElement>(".scene-keep-item-desc")!;
   expect(description.closest("button")?.querySelector("button")).toBeNull();

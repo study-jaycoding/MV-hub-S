@@ -136,7 +136,7 @@ def test_dialogue_script_never_appears_in_error_or_log(failure, capsys):
     args = ("generate", "create", "elevenlabs_v4", "--dialogue", json.dumps([{"text": script, **voice()}]))
     side_effect = subprocess.TimeoutExpired("cli", 1, output=output) if failure == "timeout" else None
     result = subprocess.CompletedProcess([], 1 if failure == "exit" else 0, output, "")
-    with patch.object(agent.subprocess, "run", return_value=result, side_effect=side_effect):
+    with patch.object(agent, "_run_with_tree_kill", return_value=result, side_effect=side_effect):
         _, error = agent._run_cli_json("fake", *args)
     assert script not in error
     assert script not in capsys.readouterr().out

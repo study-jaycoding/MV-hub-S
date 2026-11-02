@@ -17,7 +17,7 @@ function Preview({ row }: { row: SceneKeepRow }) {
 
 function KeepTitle({ row }: { row: SceneKeepRow }) {
   return <span className="scene-keep-item-title">
-    {row.project_id && row.workspace?.id && <WorkspaceMark id={row.workspace.id} label={row.workspace.name ?? "?"} className="sm" />}
+    {row.workspace?.id && <WorkspaceMark id={row.workspace.id} label={row.workspace.name ?? "?"} className="sm" />}
     <span className="scene-keep-item-name">{row.name}</span>
   </span>;
 }

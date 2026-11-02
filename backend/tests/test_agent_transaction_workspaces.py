@@ -80,7 +80,7 @@ class CollectionTests(unittest.TestCase):
                 return type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
             return _FakeCompleted(json.dumps(page))
 
-        with patch.object(self.agent.subprocess, "run", side_effect=fake_run):
+        with patch.object(self.agent, "_run_with_tree_kill", side_effect=fake_run):
             collected, state = self.agent._collect_workspace_transactions(
                 "hf", WORKSPACES, marks or {}, reinspect=reinspect
             )
@@ -109,7 +109,7 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(os.environ.get("HIGGSFIELD_WORKSPACE_ID"), before)
 
     def test_workspaces_without_an_id_are_skipped(self):
-        with patch.object(self.agent.subprocess, "run", side_effect=AssertionError("불려선 안 됨")):
+        with patch.object(self.agent, "_run_with_tree_kill", side_effect=AssertionError("불려선 안 됨")):
             out, state = self.agent._collect_workspace_transactions("hf", [{"name": "이름만"}], {})
         self.assertEqual((out, state), ([], {}))
 

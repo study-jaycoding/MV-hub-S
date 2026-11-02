@@ -13,6 +13,7 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
 }) {
   const [name, setName] = useState(initialName);
   const [projectId, setProjectId] = useState(initialProjectId);
+  const [openedProjectId, setOpenedProjectId] = useState(initialProjectId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [overwrite, setOverwrite] = useState<{ payload: SceneKeepPayload; id: string; revision: number } | null>(null);
@@ -20,7 +21,10 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
   const [typed, setTyped] = useState<string | null>(null);
   const [descriptions, setDescriptions] = useState<Pick<SceneKeepRow, "project_id" | "name" | "description">[]>([]);
   const normalizedName = name.normalize("NFC").trim();
-  const description = typed ?? descriptions.find(row => row.project_id === projectId && row.name === normalizedName)?.description ?? "";
+  const initialKeepName = initialName.normalize("NFC").trim();
+  const describe = (project: string, keepName: string) => descriptions.find(row => row.project_id === project && row.name === keepName)?.description;
+  // 바꾼 대상의 보관본이 있으면 그 설명이 먼저다(덮어쓰기). 없으면 쓰던 보관본(창이 처음 보인 프로젝트)의 설명이 따라온다.
+  const description = typed ?? describe(projectId, normalizedName) ?? describe(openedProjectId, initialKeepName) ?? "";
   useEffect(() => {
     let active = true;
     setDescriptions([]);
@@ -54,7 +58,9 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
         assertSceneKeepScope(scope);
         const items = result.projects.filter(project => !project.archived && project.workspace_id === workspace.id);
         setLoadedProjects({ source: projectSource, items, failed: false });
-        setProjectId(defaultSceneKeepProject({ workspace }, items, selectedProjectId)?.id ?? "");
+        const opened = defaultSceneKeepProject({ workspace }, items, selectedProjectId)?.id ?? "";
+        setProjectId(opened);
+        setOpenedProjectId(opened);
       } catch {
         if (active) setLoadedProjects({ source: projectSource, items: [], failed: true });
       }

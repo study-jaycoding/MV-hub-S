@@ -439,7 +439,7 @@ def test_run_cli_sanitizes_existing_error_paths_before_truncation():
                 [], int(mode == "failure"), stdout=stdout, stderr=stderr,
             )}
             prefix = agent._PARSE_FAIL_PREFIX if mode == "parse" else "CLI 실패: "
-        with patch.object(agent.subprocess, "run", **options):
+        with patch.object(agent, "_run_with_tree_kill", **options):
             data, error = agent._run_cli_json("hf", "generate", "create")
         assert data is None and error.startswith(prefix)
         assert "PRIVATE" not in error and "FAKE" not in error
@@ -482,7 +482,7 @@ def test_run_cli_failure_keeps_both_streams_without_duplicates_or_blank_lines():
         (None, None, ""),
     ):
         result = subprocess.CompletedProcess([], 1, stdout=stdout, stderr=stderr)
-        with patch.object(agent.subprocess, "run", return_value=result):
+        with patch.object(agent, "_run_with_tree_kill", return_value=result):
             data, error = agent._run_cli_json("hf", "generate", "get", "job-1")
         assert data is None
         assert error == f"CLI 실패: {expected} — cmd: generate get job-1"
@@ -493,7 +493,7 @@ def test_run_cli_failure_masks_combined_output_before_the_600_character_cut():
     stdout = '{"prompt":"' + "private prompt " * 100 + '","error":"quota exceeded"}'
     stderr = '{"negative_prompt":"private negative","display_prompt":"private display"}'
     result = subprocess.CompletedProcess([], 1, stdout=stdout, stderr=stderr)
-    with patch.object(agent.subprocess, "run", return_value=result):
+    with patch.object(agent, "_run_with_tree_kill", return_value=result):
         data, error = agent._run_cli_json("hf", "generate", "create", "--prompt", "private argument")
     assert data is None
     assert "private" not in error
@@ -503,7 +503,7 @@ def test_run_cli_failure_masks_combined_output_before_the_600_character_cut():
 
     # 긴 출력도 기존 본문 600자 상한과 오류 우선·명령 후순위를 유지한다.
     result = subprocess.CompletedProcess([], 1, stdout="x" * 900, stderr="root cause")
-    with patch.object(agent.subprocess, "run", return_value=result):
+    with patch.object(agent, "_run_with_tree_kill", return_value=result):
         _, error = agent._run_cli_json("hf", "generate", "get", "job-1")
     assert error == "CLI 실패: root cause\n" + "x" * 589 + " — cmd: generate get job-1"
 
@@ -512,7 +512,7 @@ def test_run_cli_failure_output_uuid_is_not_recovered_as_a_created_job():
     agent = _load_agent()
     reference_id = "11111111-2222-4333-8444-555555555555"
     result = subprocess.CompletedProcess([], 1, stdout=f"reference: {reference_id}", stderr="warning")
-    with patch.object(agent.subprocess, "run", return_value=result):
+    with patch.object(agent, "_run_with_tree_kill", return_value=result):
         data, error = agent._run_cli_json("hf", "generate", "create")
     assert reference_id in error
     assert agent._extract_created_id(data, error) is None
@@ -526,7 +526,7 @@ def test_timeout_and_parse_failure_keep_stdout_job_recovery_priority():
     stdout = f"Created job: {job_id}"
     stderr = f"reference: {reference_id}"
     with patch.object(
-        agent.subprocess, "run",
+        agent, "_run_with_tree_kill",
         side_effect=subprocess.TimeoutExpired("hf", 120, output=stdout.encode(), stderr=stderr.encode()),
     ):
         data, error = agent._run_cli_json("hf", "generate", "create")
@@ -535,7 +535,7 @@ def test_timeout_and_parse_failure_keep_stdout_job_recovery_priority():
     assert agent._extract_created_id(data, error) == job_id
 
     result = subprocess.CompletedProcess([], 0, stdout=stdout, stderr=stderr)
-    with patch.object(agent.subprocess, "run", return_value=result):
+    with patch.object(agent, "_run_with_tree_kill", return_value=result):
         data, error = agent._run_cli_json("hf", "generate", "create")
     assert error.startswith(agent._PARSE_FAIL_PREFIX)
     assert reference_id not in error
@@ -2637,7 +2637,7 @@ def test_poll_cli_failure_logs_a_bounded_detail_without_reporting_or_finishing(c
         stdout='{"prompt":"private prompt","error":"quota exceeded"}\n' + "x" * 600,
         stderr="warning\n",
     )
-    with patch.object(agent.subprocess, "run", return_value=result), patch.object(
+    with patch.object(agent, "_run_with_tree_kill", return_value=result), patch.object(
         agent, "_http"
     ) as http, patch.object(agent, "_fail") as fail, patch.object(
         agent.time, "monotonic", return_value=100.0
@@ -3080,7 +3080,7 @@ def test_k2_submit_recovery_http_body_masks_url_once_through_real_product_path()
     response.read.return_value = b'{"ok":true,"applied":true}'
     # Only external process/HTTP IO is replaced: submission, CLI parsing, recovery and
     # HTTP request serialization all run their real implementations.
-    with patch.object(agent.subprocess, "run", side_effect=run_cli) as run, patch.object(
+    with patch.object(agent, "_run_with_tree_kill", side_effect=run_cli) as run, patch.object(
         agent.urllib.request, "urlopen", return_value=response
     ) as urlopen:
         result = agent._submit_one(

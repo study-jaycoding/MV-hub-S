@@ -57,7 +57,7 @@ class _FakeCompleted:
 
 
 def _submit_capturing_child_env(agent, request, workspaces, *, on_begin=None):
-    """실제 `_submit_one` → 실제 `_run_cli_json` → 가짜 `subprocess.run` 까지 태우고,
+    """실제 `_submit_one` → 실제 `_run_cli_json` → 가짜 `_run_with_tree_kill` 까지 태우고,
     **생성 자식에게 실제로 넘어간 env** 를 돌려준다.
 
     ★여기가 핵심이다. 시험이 직접 env 를 조립해 가짜 래퍼에 넘기면, 제품 코드에서 env 전달을
@@ -81,7 +81,7 @@ def _submit_capturing_child_env(agent, request, workspaces, *, on_begin=None):
     ), patch.object(agent, "_run_cli_command", return_value=None), patch.object(
         agent, "_outbox_add"
     ), patch.object(agent, "_anchor_with_retry", return_value=True), patch.object(
-        agent.subprocess, "run", side_effect=fake_subprocess_run
+        agent, "_run_with_tree_kill", side_effect=fake_subprocess_run
     ):
         result = agent._submit_one(
             "http://hub", "token-1", "hf", "user@example.com", request,
@@ -193,7 +193,7 @@ class RunnerEnvIsolationTests(unittest.TestCase):
             seen.update(kwargs)
             return _FakeCompleted("[]")
 
-        with patch.object(agent.subprocess, "run", side_effect=fake_run):
+        with patch.object(agent, "_run_with_tree_kill", side_effect=fake_run):
             agent._run_cli_json("hf", "workspace", "list")
 
         self.assertIsNone(seen["env"])  # None = 부모 환경 상속(종전 동작)

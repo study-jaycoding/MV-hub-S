@@ -9,10 +9,13 @@ MV_agent.bat 은 시작 때 `account status` 한 번의 실패(일시 통신 오
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -62,22 +65,21 @@ def _fake_cli(monkeypatch, agent, script: dict) -> tuple[list, list]:
     return calls, sleeps
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill")
-@pytest.mark.parametrize("taskkill, parent_ended", [("ended", True), ("slow", False), ("missing", True)])
-def test_tree_kill_leaves_a_slow_taskkill_and_its_parent_alone(monkeypatch, taskkill, parent_ended):
-    agent = _load_agent()
-    events: list[str] = []
-
+def _hung_parent(events: list, taskkill: str, *, stop=None):
     class Parent:
         pid = 4321
         returncode = None
         asked = 0
+        stdout = io.BytesIO(b'["job"]')
+        stderr = io.BytesIO(b"")
 
-        def communicate(self, timeout=None):
+        def wait(self, timeout=None):
             self.asked += 1
+            if stop is not None:
+                raise stop
             if self.asked == 1 or taskkill == "slow":
                 raise subprocess.TimeoutExpired("hf", timeout)
-            return "", ""
+            return 1
 
         def kill(self):
             events.append("parent killed")
@@ -94,17 +96,189 @@ def test_tree_kill_leaves_a_slow_taskkill_and_its_parent_alone(monkeypatch, task
     def popen(argv, **_kwargs):
         if argv[0] != "taskkill":
             return Parent()
+        events.append("taskkill started")
         if taskkill == "missing":
             raise OSError("no taskkill")
         return Killer()
 
-    monkeypatch.setattr(agent.subprocess, "Popen", popen)
-    with pytest.raises(subprocess.TimeoutExpired):
+    return popen
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill")
+@pytest.mark.parametrize("taskkill, parent_ended", [("ended", True), ("slow", False), ("missing", True)])
+def test_tree_kill_leaves_a_slow_taskkill_and_its_parent_alone(monkeypatch, taskkill, parent_ended):
+    agent = _load_agent()
+    events: list[str] = []
+    monkeypatch.setattr(agent.subprocess, "Popen", _hung_parent(events, taskkill))
+    with pytest.raises(subprocess.TimeoutExpired) as timed_out:
         agent._run_with_tree_kill(["hf", "version"], 1)
     assert ("parent killed" in events) is parent_ended
     assert "taskkill killed" not in events
     assert ("waited 5" in events) is (taskkill != "missing")
+    assert timed_out.value.stdout == '["job"]'
 
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill")
+def test_any_other_interruption_ends_the_tree_like_subprocess_run(monkeypatch):
+    agent = _load_agent()
+    events: list[str] = []
+    monkeypatch.setattr(agent.subprocess, "Popen", _hung_parent(events, "ended", stop=KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        agent._run_with_tree_kill(["hf", "version"], 1)
+    assert ["taskkill started", "waited 5", "parent killed"] == events
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill")
+def test_a_reader_that_cannot_start_leaves_no_process(monkeypatch):
+    agent = _load_agent()
+    events: list[str] = []
+    monkeypatch.setattr(agent.subprocess, "Popen", _hung_parent(events, "ended"))
+
+    class NoThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(agent, "Thread", NoThread)
+    with pytest.raises(RuntimeError):
+        agent._run_with_tree_kill(["hf", "version"], 1)
+    assert "parent killed" in events
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill")
+def test_output_still_being_read_when_the_call_times_out_is_collected(monkeypatch):
+    agent = _load_agent()
+    released = threading.Event()
+    popen = _hung_parent([], "ended")
+
+    class SlowPipe:
+        sent = False
+
+        def read1(self, _size):
+            released.wait(5)
+            if self.sent:
+                return b""
+            self.sent = True
+            return b'["late"]'
+
+    def started(argv, **kwargs):
+        made = popen(argv, **kwargs)
+        if argv[0] == "taskkill":
+            released.set()
+        else:
+            made.stdout = SlowPipe()
+        return made
+
+    monkeypatch.setattr(agent.subprocess, "Popen", started)
+    with pytest.raises(subprocess.TimeoutExpired) as timed_out:
+        agent._run_with_tree_kill(["hf", "version"], 0)
+    assert timed_out.value.stdout == '["late"]'
+
+
+def _cli_script(agent, monkeypatch, tmp_path, body: str) -> None:
+    script = tmp_path / "fake_cli.py"
+    script.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(agent, "_cli_argv", lambda _cli: [sys.executable, str(script)])
+
+
+GRANDCHILD = "import subprocess, sys\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+
+
+def _stop(pids: list) -> None:
+    for pid in pids:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_stuck_cli_returns_with_the_job_id_it_already_printed(tmp_path, monkeypatch):
+    agent = _load_agent()
+    job = "11111111-2222-3333-4444-555555555555"
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, GRANDCHILD + f"""
+import os, time
+print('["{job}"]', flush=True)
+open({str(pids)!r}, "w").write(f"{{os.getpid()}} {{child.pid}}")
+time.sleep(60)
+""")
+    started = time.monotonic()
+    created, error = agent._run_cli_json("hf", "generate", "create", timeout=8)
+    took = time.monotonic() - started
+    pid_list = [int(value) for value in pids.read_text().split()]
+    try:
+        assert created is None and error.startswith(agent._TIMEOUT_PREFIX)
+        assert agent._extract_created_id(created, error) == job
+        assert took < 30  # subprocess.run 은 손자가 끝나는 60초까지 돌아오지 않았다
+        assert not any(_alive(pid) for pid in pid_list)
+    finally:
+        _stop(pid_list)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_finished_parent_with_an_open_pipe_is_not_reported_as_success(tmp_path, monkeypatch):
+    agent = _load_agent()
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, GRANDCHILD + f"""
+print("partial", flush=True)
+open({str(pids)!r}, "w").write(str(child.pid))
+""")
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as timed_out:
+            agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=6)
+        assert 5 < time.monotonic() - started < 25  # 호출의 제한 시간까지 기다린다
+        assert "partial" in timed_out.value.stdout
+        assert _alive(int(pids.read_text()))  # 알려진 한계 — 부모가 없으면 taskkill /T 가 못 찾는다(계약 결정 3, 세션 Job 이 끝낸다)
+    finally:
+        _stop([int(pids.read_text())])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_output_closing_after_the_limit_is_still_a_timeout(tmp_path, monkeypatch):
+    agent = _load_agent()
+    _cli_script(agent, monkeypatch, tmp_path, GRANDCHILD.replace("time.sleep(60)", "time.sleep(9)"))
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=6)
+    assert time.monotonic() - started < 8.5  # 손자는 9초에 파이프를 닫는다 — 그 전에 시간 초과로 돌아온다
+
+
+def test_normal_output_arrives_whole_and_the_same_as_text_mode(tmp_path, monkeypatch):
+    agent = _load_agent()
+    _cli_script(agent, monkeypatch, tmp_path, """
+import sys
+sys.stdout.buffer.write(b"line\\r\\n" + b"x" * 2_000_000 + b"\\n")
+sys.stderr.write("warn\\n")
+sys.exit(3)
+""")
+    argv = agent._cli_argv("hf")
+    done = agent._run_with_tree_kill(argv, timeout=60)
+    same = subprocess.run(argv, capture_output=True, text=True)
+    assert (done.returncode, done.stdout, done.stderr) == (same.returncode, same.stdout, same.stderr) == (3, "line\n" + "x" * 2_000_000 + "\n", "warn\n")
+
+
+def test_every_cli_call_goes_through_the_bounded_path(monkeypatch):
+    agent = _load_agent()
+    seen: list = []
+
+    def run(argv, timeout, env=None):
+        seen.append(argv[-1])
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+    monkeypatch.setattr(agent, "_run_with_tree_kill", run)
+    monkeypatch.setattr(agent, "_cli_argv", lambda _cli: ["hf"])
+    monkeypatch.setattr(agent.subprocess, "run", lambda *a, **k: pytest.fail("subprocess.run 은 시간 초과 뒤 제한 없이 기다린다"))
+    agent._run_cli_json("hf", "workspace", "list")
+    agent._run_cli_command("hf", "workspace", "set", "w")
+    agent._cli_version("hf")
+    assert seen == ["--json", "w", "version"]
+
+
+def test_a_paid_submit_gets_the_long_limit():
+    agent = _load_agent()
+    assert agent._SUBMIT_TIMEOUT_SECONDS == 1800
+    assert "_run_cli_json(cli, *args, timeout=_SUBMIT_TIMEOUT_SECONDS, env=create_env)" in AGENT_PATH.read_text(encoding="utf-8")
 
 @pytest.mark.parametrize(
     "script, state, calls, sleeps",
