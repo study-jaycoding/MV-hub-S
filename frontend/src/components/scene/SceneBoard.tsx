@@ -2773,14 +2773,14 @@ export function SceneBoard({
   }, [visibleEdges, cardsById, resolvedEdges]);
   // 연결 끝점(선 끝·점)을 카드 밖으로 이만큼 띄운다. 포트마다 점 하나 — 선이 여럿이어도 같은 점에서 끝나고,
   //  카드를 고르거나 올리면 보이는 연결점 고리도 이 자리다(styles/scene.css .scene-port, Jay 2026-10-29).
+  //  ★끝점 좌표는 정수로 반올림한다 — 고리는 CSS 상자라 화면에서 정수 칸에 붙고 점(SVG)은 소수 자리에 남아, 높이가 홀수인
+  //   카드(레퍼런스 115px)에서 고리가 0.5px 아래로 어긋나 확대할수록 보였다(Jay 2026-11-02).
+  //   shortcut: 자동 높이 카드의 측정값(offsetHeight)은 이미 정수라 실제 높이가 소수면 1px 안쪽으로 어긋날 수 있다, 눈에 띄면 측정 높이를 소수로 받는다.
   const PORT_GAP = 24;
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
   const edgeRoles = useMemo(
     () => resolveEdgeRoles(edges, cardsById, refParents),
     [edges, cardsById, refParents],
-  //  ★끝점 좌표는 정수로 반올림한다 — 고리는 CSS 상자라 화면에서 정수 칸에 붙고 점(SVG)은 소수 자리에 남아, 높이가 홀수인
-  //   카드(레퍼런스 115px)에서 고리가 0.5px 아래로 어긋나 확대할수록 보였다(Jay 2026-11-02).
-  //   shortcut: 자동 높이 카드의 측정값(offsetHeight)은 이미 정수라 실제 높이가 소수면 1px 안쪽으로 어긋날 수 있다, 눈에 띄면 측정 높이를 소수로 받는다.
   );
   // 물리 레인 — model/text/set 은 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
   // 겹치지 않는다). 위=모델·중간=ref/계보·아래=텍스트·맨아래=세트(Set 노드 전용 입력, Jay 2026-09-09).
