@@ -27,6 +27,10 @@ it("줄 규칙 — 제목 · 상태(색 있을 때) · 해결 · 덧말 · 조�
   expect(parseNodeTip("“RULE ZERO — THREE: x”\n클릭 = 선택 · D = 비활성")).toMatchObject({
     head: "“RULE ZERO — THREE: x”", detail: [], keys: [["클릭", "선택"], ["D", "비활성"]],
   });
+  // 씬 탭 — 사람이 지은 이름은 규칙으로 나누지 않고, 그 다음 줄부터 상태·표 줄·키로 읽는다
+  expect(parseNodeTip("A: B — 편집\n다른 워크스페이스 — 누르면 이 공간으로 바뀝니다\n워크스페이스: 뻘뻘뻘\n휠 클릭 = 찾기 · 우클릭 = 이름", "warn", "A: B — 편집")).toEqual({
+    head: "A: B — 편집", status: "다른 워크스페이스", detail: ["누르면 이 공간으로 바뀝니다"], notes: [], rows: [["워크스페이스", "뻘뻘뻘"]], keys: [["휠 클릭", "찾기"], ["우클릭", "이름"]],
+  });
 });
 
 let host: HTMLDivElement;
@@ -89,4 +93,55 @@ it("상태 색 · 누르면 닫힘 · 노드 밖 요소는 손대지 않는다",
   await act(async () => { over(outside); vi.advanceTimersByTime(450); });
   expect(tip()).toBeNull();
   expect(outside.getAttribute("title")).toBe("노드 밖");
+});
+
+function Tabs() {
+  const ref = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={ref} className="scene-bar">
+      <button
+        id="tab"
+        className="scene-tab"
+        title={"A: B\n찾을 수 없는 워크스페이스 — 지금 계정에 이 공간이 없습니다\n워크스페이스: 뻘뻘뻘\n휠 클릭 = 찾기 · 우클릭 = 이름"}
+        data-tip-head="A: B"
+        data-tip-tone="bad"
+        data-tip-ws-id="ws1"
+        data-tip-ws-label="뻘뻘뻘"
+        data-tip-ws-missing=""
+      />
+      <button id="plain" className="scene-tab" title={"그냥 탭\n휠 클릭 = 찾기"} data-tip-head="그냥 탭" />
+      <NodeTip rootRef={ref} within=".scene-tab" className="tab" />
+    </div>
+  );
+}
+
+it("씬 탭 — 이름 옆에 표식·공간 이름, '워크스페이스:' 줄 없이 상태와 조작 · 지정 안 한 탭은 표식 없음(Jay 2026-11-02)", async () => {
+  await act(async () => { root.render(<Tabs />); });
+  const tabEl = document.getElementById("tab")!;
+  await act(async () => { over(tabEl); vi.advanceTimersByTime(450); });
+  expect(tip()?.classList.contains("tab")).toBe(true);
+  expect(tip()?.querySelector(".node-tip-headline .node-tip-head")?.textContent).toBe("A: B");
+  expect(tip()?.querySelector(".node-tip-ws .ws-mark-box")?.textContent).toBe("뻘");
+  expect(tip()?.querySelector(".node-tip-ws")?.lastChild?.textContent).toBe("뻘뻘뻘");
+  expect(tip()?.querySelector(".node-tip-ws")?.classList.contains("missing")).toBe(true);
+  expect(tip()?.querySelector(".node-tip-ws .ws-mark-box")?.classList.contains("missing")).toBe(true);
+  expect(tip()?.querySelector(".node-tip-status")?.textContent).toBe("찾을 수 없는 워크스페이스");
+  expect(tip()?.querySelector(".node-tip-rows")).toBeNull();
+  expect([...tip()!.querySelectorAll(".node-tip-keys kbd")].map((k) => k.textContent)).toEqual(["휠 클릭", "우클릭"]);
+  await act(async () => { out(tabEl); });
+  const plain = document.getElementById("plain")!;
+  await act(async () => { over(plain); vi.advanceTimersByTime(450); });
+  expect(tip()?.querySelector(".node-tip-head")?.textContent).toBe("그냥 탭");
+  expect(tip()?.querySelector(".node-tip-ws")).toBeNull();
+});
+
+it("버튼을 누른 채 지나가면 창을 띄우지 않고 title 도 그대로 둔다 — 탭을 끄는 중", async () => {
+  await act(async () => { root.render(<Tabs />); });
+  const tabEl = document.getElementById("tab")!;
+  await act(async () => {
+    tabEl.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, buttons: 1 }));
+    vi.advanceTimersByTime(450);
+  });
+  expect(tip()).toBeNull();
+  expect(tabEl.hasAttribute("title")).toBe(true);
 });

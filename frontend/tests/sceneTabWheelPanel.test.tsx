@@ -51,7 +51,7 @@ it("마우스를 올리는 것만으로는 아무 일도 없다", () => {
 
 it("탭마다 패널이 자리를 찾을 표식이 있고 설명 글에 휠 클릭 안내가 있다", () => {
   expect([...host.querySelectorAll<HTMLElement>("[data-scene-tab]")].map((element) => element.dataset.sceneTab)).toEqual(["s1", "s2"]);
-  expect(sceneTabTitle(scene("s1"), personal, null, false)).toContain("휠 클릭=Import·Export·레퍼런스 찾기");
+  expect(sceneTabTitle(scene("s1"), personal, null, false)).toContain("휠 클릭 = Import·Export·레퍼런스 찾기");
 });
 
 it("패널 자리 — 탭 왼쪽에 맞추고, 넘치면 탭 오른쪽 끝에 맞추며, 보드 왼쪽 밖으로 나가지 않는다", () => {

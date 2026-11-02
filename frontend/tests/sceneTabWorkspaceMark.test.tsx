@@ -89,6 +89,17 @@ describe("씬 탭의 워크스페이스 표식", () => {
     expect(apart("ws-1", "ws-3")).toBeGreaterThan(25);
   });
 
+  it("탭 설명 창이 읽을 표시 — 이름 · 공간 · 상태 색(Jay 2026-11-02)", () => {
+    const [plain, here] = render([scene("s1"), scene("s2", { id: "ws-1", name: "뻘뻘뻘" })]);
+    expect(plain.dataset.tipHead).toBe("s1");
+    expect(plain.dataset.tipWsId).toBeUndefined();
+    expect(plain.dataset.tipTone).toBeUndefined();
+    expect(here.dataset.tipWsId).toBe("ws-1");
+    expect(here.dataset.tipWsLabel).toBe("뻘뻘뻘");
+    expect(here.dataset.tipTone).toBe("warn"); // 지금 개인 공간이라 다른 워크스페이스다
+    expect(here.dataset.tipWsMissing).toBeUndefined();
+  });
+
   it("탭이 작아지도록 한 치수 작은 변형을 쓴다", () => {
     // 18px 표식을 그대로 쓰면 탭 줄이 두꺼워져 씬 바 전체가 내려앉는다.
     const [tab] = render([scene("s1", { id: "ws-1", name: "뻘뻘뻘" })]);

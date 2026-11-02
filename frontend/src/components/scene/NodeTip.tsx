@@ -2,8 +2,10 @@
 //  설명 글이 곧 구조다: 첫 줄 = 제목(" — " 뒤는 설명, “ 로 시작하면 나누지 않음) · 상태 색(data-tip-tone)이 있으면 그 줄이 상태 ·
 //  "해결: …" = 해결 딱지 · "키 = 뜻 · 키 = 뜻" = 조작 키 · "라벨: 값" = 표 줄 · 나머지 = 흐린 덧말. 같은 글은 기본 말풍선에서도 줄로 읽힌다.
 //  title 은 올려 둔 동안만 떼어(기본 말풍선이 겹치지 않게) 벗어나면 되돌린다 — 화면 읽기·시험은 같은 글을 본다.
+//  씬 탭도 같은 창을 쓴다(Jay 2026-11-02, SceneBar) — within 으로 범위를 바꾸고, data-tip-head(이름)·data-tip-ws-*(워크스페이스 표식)를 읽는다.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { WorkspaceMark } from "../common/WorkspaceMark";
 
 export type NodeTipTone = "bad" | "warn";
 export interface NodeTipView {
@@ -19,10 +21,15 @@ export interface NodeTipView {
 const KEY = /^(.+?) = (.+)$/;
 const ROW = /^([^:]{1,24}): (.+)$/;
 
-export function parseNodeTip(text: string, tone?: string): NodeTipView {
+// head = 첫 줄이 사람이 지은 이름이라 규칙으로 나누면 안 될 때(씬 탭 'A: B') — 첫 줄 대신 그대로 제목으로 쓴다
+export function parseNodeTip(text: string, tone?: string, head?: string): NodeTipView {
   const v: NodeTipView = { detail: [], notes: [], rows: [], keys: [] };
   const lines = text.split("\n").map((s) => s.trim()).filter(Boolean);
   lines.forEach((line, i) => {
+    if (i === 0 && head !== undefined) {
+      v.head = head;
+      return;
+    }
     const segs = line.split(" · ");
     if (segs.every((s) => KEY.test(s))) {
       for (const s of segs) {
@@ -60,11 +67,12 @@ export function parseNodeTip(text: string, tone?: string): NodeTipView {
 interface Shown {
   view: NodeTipView;
   tone?: string;
+  ws?: { id: string; label: string; missing: boolean };
   x: number;
   y: number;
 }
 
-function TipBox({ view, tone, x, y }: Shown) {
+function TipBox({ view, tone, ws, x, y, className }: Shown & { className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x + 14, top: y + 18 });
   // 화면 끝에 걸리면 포인터 반대편으로 — 그린 뒤 크기를 재서 정한다
@@ -78,8 +86,18 @@ function TipBox({ view, tone, x, y }: Shown) {
     setPos({ left, top });
   }, [x, y]);
   return (
-    <div ref={ref} className={"node-tip" + (tone ? " tone-" + tone : "")} role="tooltip" style={pos}>
-      {view.head && <div className="node-tip-head">{view.head}</div>}
+    <div ref={ref} className={"node-tip" + (className ? " " + className : "") + (tone ? " tone-" + tone : "")} role="tooltip" style={pos}>
+      {ws ? (
+        <div className="node-tip-headline">
+          <div className="node-tip-head">{view.head}</div>
+          <span className={"node-tip-ws" + (ws.missing ? " missing" : "")}>
+            <WorkspaceMark label={ws.label} id={ws.id} className={"sm" + (ws.missing ? " missing" : "")} />
+            {ws.label}
+          </span>
+        </div>
+      ) : (
+        view.head && <div className="node-tip-head">{view.head}</div>
+      )}
       {view.status && (
         <div className="node-tip-status">
           <i />
@@ -126,7 +144,15 @@ function TipBox({ view, tone, x, y }: Shown) {
   );
 }
 
-export function NodeTip({ rootRef }: { rootRef: RefObject<HTMLElement | null> }) {
+export function NodeTip({
+  rootRef,
+  within = ".scene-card",
+  className,
+}: {
+  rootRef: RefObject<HTMLElement | null>;
+  within?: string; // 이 요소 안의 title 만 창으로 그린다
+  className?: string;
+}) {
   const [shown, setShown] = useState<Shown | null>(null);
   useEffect(() => {
     const root = rootRef.current;
@@ -144,9 +170,9 @@ export function NodeTip({ rootRef }: { rootRef: RefObject<HTMLElement | null> })
     };
     const over = (e: MouseEvent) => {
       const target = e.target as Element | null;
-      if (!target || (host && host.contains(target))) return; // 같은 요소 안에서 움직임
+      if (!target || e.buttons || (host && host.contains(target))) return; // 같은 요소 안에서 움직임 · 끄는 중에는 띄우지 않는다
       const el = target.closest?.<HTMLElement>("[title]");
-      if (!el || !root.contains(el) || !el.closest(".scene-card")) return;
+      if (!el || !root.contains(el) || !el.closest(within)) return;
       close();
       const t = el.getAttribute("title") || "";
       if (!t.trim()) return;
@@ -154,8 +180,13 @@ export function NodeTip({ rootRef }: { rootRef: RefObject<HTMLElement | null> })
       text = t;
       el.removeAttribute("title"); // 기본 말풍선이 같이 뜨지 않게
       at = { x: e.clientX, y: e.clientY };
-      const tone = el.dataset.tipTone;
-      timer = window.setTimeout(() => setShown({ view: parseNodeTip(t, tone), tone, x: at.x, y: at.y }), 400);
+      const { tipTone: tone, tipHead, tipWsId, tipWsLabel, tipWsMissing } = el.dataset;
+      const ws = tipWsId ? { id: tipWsId, label: tipWsLabel || tipWsId, missing: tipWsMissing !== undefined } : undefined;
+      timer = window.setTimeout(() => {
+        const view = parseNodeTip(t, tone, tipHead);
+        if (ws) view.rows = []; // 표식이 '워크스페이스: 이름' 줄을 대신한다
+        setShown({ view, tone, ws, x: at.x, y: at.y });
+      }, 400);
     };
     const move = (e: MouseEvent) => {
       if (host) at = { x: e.clientX, y: e.clientY };
@@ -178,6 +209,6 @@ export function NodeTip({ rootRef }: { rootRef: RefObject<HTMLElement | null> })
       window.removeEventListener("keydown", close, true);
       close();
     };
-  }, [rootRef]);
-  return shown ? createPortal(<TipBox {...shown} />, document.body) : null;
+  }, [rootRef, within]);
+  return shown ? createPortal(<TipBox {...shown} className={className} />, document.body) : null;
 }

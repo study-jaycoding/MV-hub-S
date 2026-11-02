@@ -22,6 +22,7 @@ import {
 import { cachedWorkspaceOptions } from "../../lib/workspaceOptionsCache";
 import { HostConfirm } from "../common/HostConfirm";
 import { WorkspaceMark } from "../common/WorkspaceMark";
+import { NodeTip } from "./NodeTip";
 import { SceneWorkspaceMenu, type SceneMenuTarget } from "./SceneWorkspaceMenu";
 import type { WorkspaceContext } from "../../types";
 
@@ -108,6 +109,7 @@ export function SceneBar({
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null); // 삭제 확인창의 씬
   const deleting = deleteId ? scenes.find((scene) => scene.id === deleteId) : undefined; // 그사이 다른 창이 지웠으면 닫는다
+  const barRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLElement>());
   const suppressClickRef = useRef(false); // 드래그 직후의 합성 클릭 한 번을 삼킨다
   const suppressTimerRef = useRef<number | undefined>(undefined); // 그 억제를 푸는 예약(releaseSuppression) — 새 누름이 거둔다
@@ -232,7 +234,8 @@ export function SceneBar({
   };
 
   return (
-    <div className="scene-bar">
+    <div className="scene-bar" ref={barRef}>
+      <NodeTip rootRef={barRef} within=".scene-tab" className="tab" />
       {scenes.map((scene) => {
         const assigned = normalizeSceneWorkspace(scene.workspace);
         const label = sceneWorkspaceLabel(scene, options ?? []);
@@ -290,9 +293,14 @@ export function SceneBar({
                   y: event.clientY,
                 });
               }}
-              // 탭은 190px 에서 이름을 … 로 줄인다(scene.css) — 전체 이름은 여기 첫 줄로 본다.
+              // 탭은 190px 에서 이름을 … 로 줄인다(scene.css) — 전체 이름은 여기 첫 줄로 본다. 앱 설명 창은 위 NodeTip(Jay 2026-11-02).
               title={`${scene.name}
 ${sceneTabTitle(scene, workspaceContext, label, missing)}`}
+              data-tip-head={scene.name}
+              data-tip-tone={missing ? "bad" : dimmed ? "warn" : undefined}
+              data-tip-ws-id={assigned?.id}
+              data-tip-ws-label={assigned ? label || assigned.name || assigned.id : undefined}
+              data-tip-ws-missing={missing ? "" : undefined}
             >
               {/* 어느 공간인지 **점이 아니라 표식으로** 보여 준다(Jay 2026-09-14) — 라임 점은
                   '지정됨' 만 말할 뿐 어느 공간인지는 못 알려 줬다. 메뉴·툴바와 같은 표식이다. */}
