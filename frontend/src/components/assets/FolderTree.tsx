@@ -6,6 +6,19 @@ import { flattenFiles, orderAssetFolders } from "./treeUtils";
 
 type TypeFilter = "image" | "video" | "audio" | null;
 
+/** 트리 안 파일 수 — 소스 필터가 켜지면 소스만, 아니면 고른 종류의 미디어만. 폴더 줄 숫자와 맨 윗줄 개수가 같이 쓴다. */
+export function assetFileCount(
+  nodes: AssetNode[],
+  typeFilter: TypeFilter,
+  meta: Record<string, AssetMeta>,
+  sourceOnly: boolean,
+): number {
+  const files = flattenFiles(nodes);
+  return sourceOnly
+    ? files.filter((f) => meta[f.path]?.is_source).length
+    : files.filter((f) => !typeFilter || f.type === typeFilter).length;
+}
+
 function toFolderItem(
   node: AssetNode,
   typeFilter: TypeFilter,
@@ -14,15 +27,10 @@ function toFolderItem(
   project?: string,
 ): FolderTreeItem {
   const children = node.children || [];
-  const files = flattenFiles(children);
-  // 소스 필터가 켜지면 배지 숫자를 '그 폴더(하위 포함) 안 소스 개수'로, 아니면 미디어 파일 수로.
-  const count = sourceOnly
-    ? files.filter((f) => meta[f.path]?.is_source).length
-    : files.filter((f) => !typeFilter || f.type === typeFilter).length;
   return {
     name: node.name,
     path: node.path,
-    count,
+    count: assetFileCount(children, typeFilter, meta, sourceOnly),
     children: orderAssetFolders(children.filter((child) => child.type === "dir"), project)
       .map((child) => toFolderItem(child, typeFilter, meta, sourceOnly, project)),
   };

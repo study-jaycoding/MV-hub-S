@@ -147,6 +147,9 @@
 .folder-tree-row.state.fs15 .folder-tree-name { font-size: 16px; }
 .folder-tree-row.state.fs13 .folder-tree-name { font-size: 14px; }
 .folder-tree-row.state.fs11 .folder-tree-name { font-size: 12px; }
+/* 어셋 탭은 실제 폴더가 3단계 이하라 맨 밑도 메인의 컷 줄과 같은 13 — 깊이는 들여쓰기와 막대로 구분한다(Jay 2026-11-02 B안) */
+.assets-tree .folder-tree-row.fs11 { height: 26px; font-size: 13px; --bar: 15px; margin-bottom: 0; }
+.assets-tree .folder-tree-row.state.fs11 .folder-tree-name { font-size: 14px; }
 /* 고른 줄 연결 — 뒤의 라임 선은 그 자리만 가려 가로선 아래로 세로선이 없고, 선 전체는 한 덩어리로 70% (RowLink) */
 .folder-tree-row.state > .folder-tree-mask,
 .folder-tree-row.state > .folder-tree-link { position: absolute; pointer-events: none; }
@@ -219,14 +222,13 @@
 .side-mark.see { color: #60a5fa; }
 .side-mark.dv { color: #ff304f; }
 
-.assets-root-row {
-  margin-bottom: 4px;
-  /* 프로젝트 줄과 같은 크기 — 아래 폴더 15·13·11 의 윗 단계다 */
-  height: 36px; color: var(--text); font-size: 17px; font-weight: 700;
-  /* 트리 폴더 행(맨 위 단계 왼쪽 8px)과 같은 들여쓰기 — 프로젝트 루트는 이름만(Jay)이라 이름이 아래 막대의 왼쪽 선에 선다. */
-  padding: 0 8px;
-}
-.assets-root-row.selected { color: #60a5fa; }
+/* 어셋 탭 맨 윗줄 — 메인 프로젝트 줄과 같은 .proj-row 모양이고, 내려도 맨 위에 남는다(Jay 2026-11-02). 불투명해야 내린 폴더를 가리고,
+   body 의 옅은 빛 위에서는 띠로 보여서 사이드바 전체를 같은 단색으로 깐다. top 은 사이드바 위 여백 8px 만큼 올려야 틈으로 폴더가 비치지 않는다. */
+.assets-tree { background: var(--bg); }
+.assets-root-row { position: sticky; top: -8px; z-index: 3; margin-bottom: 4px; background: var(--bg); }
+.assets-root-row:hover { background: linear-gradient(rgba(255,255,255,0.06) 0 0), var(--bg); }
+.assets-root-row.state { background: linear-gradient(rgba(var(--st),0.13) 0 0), var(--bg); }
+.assets-root-row.state:hover { background: linear-gradient(rgba(var(--st),0.2) 0 0), var(--bg); }
 .side-folder-note {
   padding: 4px 8px 5px 22px;
   color: var(--muted); font-size: 11px; line-height: 1.35;

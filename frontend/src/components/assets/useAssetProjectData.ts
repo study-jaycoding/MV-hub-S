@@ -38,6 +38,8 @@ export function useAssetProjectData({
   const [projects, setProjects] = useState<string[]>([]);
   // PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운에서 라임색으로 구분 표시.
   const [linkedProjects, setLinkedProjects] = useState<Set<string>>(new Set());
+  // 폴더 이름 → PM 프로젝트 id — 맨 윗줄 마크 색이 메인과 같아지게. 자동 연결 폴더 이름은 프로젝트 이름과 같다.
+  const [projectIds, setProjectIds] = useState<Record<string, string>>({});
   const [project, setProject] = useState("");
   const [tree, setTree] = useState<AssetNode[]>([]);
   const [meta, setMeta] = useState<Record<string, AssetMeta>>({});
@@ -140,6 +142,15 @@ export function useAssetProjectData({
       .catch((err) => {
         if (seq === projectsSeqRef.current) setProjectsError(String(err));
       });
+    // 마크 색만을 위한 조회 — 못 받아도 이름으로 색을 정할 뿐이라 알리지 않는다.
+    api
+      .projects("my", false, workspaceId)
+      .then((info) => {
+        if (seq !== projectsSeqRef.current) return;
+        const ids = Object.fromEntries(info.projects.map((item) => [item.name, item.id]));
+        setProjectIds((prev) => reconcileRecordState(prev, ids));
+      })
+      .catch(() => {});
   }, [workspaceId]);
 
   // 화면의 tree/meta 가 바뀔 때마다(reload·드롭임포트·메타편집 등 어떤 경로든) 현재 프로젝트 캐시에 미러링
@@ -289,6 +300,7 @@ export function useAssetProjectData({
     metaReady: !!project && metaFor === project,
     project,
     projects,
+    projectIds,
     linkedProjects,
     refreshProjectData,
     reloadMeta,

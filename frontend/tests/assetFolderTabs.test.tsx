@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url"; // jsdom 이 전역 URL 을 바꿔 둔다 — 파일 주소는 node 의 URL 로
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AssetNode } from "../src/types";
 
-const mocks = vi.hoisted(() => ({ assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), revealAsset: vi.fn() }));
+const mocks = vi.hoisted(() => ({ assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), revealAsset: vi.fn(), projects: vi.fn() }));
 vi.mock("../src/api", () => ({ api: new Proxy({
   ...mocks,
   assetFileUrl: (_project: string, path: string) => `/files/${path}`,
@@ -23,6 +25,7 @@ import { assetFolderGroups } from "../src/components/assets/assetFolderGroups";
 import { assetFolderLabel, flattenFiles } from "../src/components/assets/treeUtils";
 import { closeLayer, openLayer } from "../src/lib/keyGate";
 import { useAssetFolderTabs, type AssetFolderViewState } from "../src/components/assets/useAssetFolderTabs";
+import { workspaceMarkHue } from "../src/components/common/WorkspaceMark";
 
 const file = (path: string): AssetNode => ({ name: path.split("/").pop()!, path, type: "image" });
 const folder = (path: string, children: AssetNode[]): AssetNode => ({ name: path.split("/").pop()!, path, type: "dir", children });
@@ -43,6 +46,7 @@ beforeEach(() => {
   mocks.assetTree.mockResolvedValue({ children: tree });
   mocks.assetMeta.mockResolvedValue({});
   mocks.revealAsset.mockReset().mockResolvedValue({ ok: true });
+  mocks.projects.mockResolvedValue({ projects: [{ id: "pm-1", name: "P" }], unassigned: 0 });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -891,6 +895,36 @@ it("기억한 폴더 없이 열면 맨 위의 assets 폴더를 연다 — 프로
   expect(card("assets")).toBeTruthy(); // 맨 위 = assets·assets2 카드
   await click(sourceButton());
   expect(dirNow()).toBe(""); // 일부러 간 맨 위도 S 에 흔들리지 않는다
+});
+
+it("맨 윗줄은 메인 프로젝트 줄과 같다 — 마크·이름·개수, 마크 색은 프로젝트 id 로, 맨 위를 볼 때만 보기 파랑(Jay 2026-11-02)", async () => {
+  localStorage.removeItem("ch.assets.dir");
+  await mount();
+  const head = host.querySelector<HTMLElement>(".assets-root-row")!;
+  const mark = head.querySelector<HTMLElement>(".ws-mark-box")!;
+  expect(mark.style.getPropertyValue("--ws-h")).toBe(String(workspaceMarkHue("pm-1")));
+  expect(head.querySelector(".proj-name")?.textContent).toBe("P");
+  expect(head.querySelector(".proj-count")?.textContent).toBe("5"); // 트리의 파일 전부
+  expect(head.classList.contains("state")).toBe(false);
+  expect(head.querySelector(".side-mark")).toBeNull();
+  await click(head);
+  expect(head.className).toContain("state st-see");
+  expect(head.querySelector(".side-mark.see")).not.toBeNull();
+});
+
+it("프로젝트 목록에 없는 폴더는 이름으로 마크 색을 정한다 — 목록을 못 받아도 맨 윗줄은 그대로다", async () => {
+  mocks.projects.mockRejectedValue(new Error("offline"));
+  await mount();
+  const mark = host.querySelector<HTMLElement>(".assets-root-row .ws-mark-box")!;
+  expect(mark.style.getPropertyValue("--ws-h")).toBe(String(workspaceMarkHue("P")));
+  expect(mark.textContent).toBe("P");
+});
+
+it("어셋 탭은 맨 밑 단계도 13px·줄 26 이고 고르면 14px 다 — 다른 트리의 11px 규칙은 그대로다(Jay 2026-11-02 B안)", () => {
+  const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toContain(".assets-tree .folder-tree-row.fs11 { height: 26px; font-size: 13px; --bar: 15px; margin-bottom: 0; }");
+  expect(css).toContain(".assets-tree .folder-tree-row.state.fs11 .folder-tree-name { font-size: 14px; }");
+  expect(css).toContain(".folder-tree-row.fs11 { height: 23px; font-size: 11px; --bar: 13px; margin-bottom: 1px; }");
 });
 
 it("프로젝트를 바꾸면 그 프로젝트의 assets 폴더를 연다(맨 위가 아니라)", async () => {

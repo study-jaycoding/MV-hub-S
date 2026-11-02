@@ -117,6 +117,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     metaReady,
     project,
     projects,
+    projectIds,
     linkedProjects,
     refreshProjectData,
     reloadMeta,
@@ -1091,6 +1092,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       <div className="assets-body">
         {treeOpen && <AssetsSidebar
           project={project}
+          projectId={projectIds[project]}
           typeFilter={typeFilter}
           dir={dir}
           meta={meta}
