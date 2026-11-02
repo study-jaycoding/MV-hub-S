@@ -552,6 +552,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `scene/sceneColors.ts`(10줄) | `CARD_W/CARD_H`·`GROUP_COLORS` 상수(순환 import 회피용 분리) | 상수 3개 |
 | `scene/NodeTip.tsx` | 캔버스 노드·씬 탭 설명 창 — 요소의 title 을 기본 말풍선 대신 앱 모양 창으로(제목·상태·해결·라벨값·조작 키, 글의 줄 규칙으로 나눔). 올려 둔 동안만 title 을 떼어 둔다. `actions` 를 주면 요소 밑에 붙어 누를 수 있다(씬 탭) | `NodeTip`, `parseNodeTip()` · 모양은 `scene.css` `.node-tip` |
 | `scene/SceneIoButtons.tsx` | 씬 단추 묶음(보관·불러오기 \| Import·Export \| 레퍼런스 찾기) — 탭 휠 클릭 패널과 탭 설명 창이 같이 쓴다. 동작은 `SceneBoard.runIoAction` | `SceneIoButtons`, `SceneIoAction` |
+| `scene/SceneNameInput.tsx` | 씬 이름 글칸 — 탭·탭 설명 창의 이름을 더블클릭하면 그 자리에 뜬다. Enter·바깥 누르기 저장, Esc 취소 | `SceneNameInput`, `SceneTipName` |
 | `scene/LastViewedBadge.tsx`(26줄) | "Last viewed" 어두운 칩(라임 글자+눈) 1개 — 생성·공유·캔버스·결과 모아보기·어셋 탭이 모두 이것(모양은 `scene.css`, 어셋 칸 호버·작은 칸 눈만은 `assets.css`) | `LastViewedBadge()` |
 
 #### 카드 본문(`scene/cards/`, 12파일 — 셸은 SceneBoard 소유)
