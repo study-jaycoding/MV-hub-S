@@ -43,10 +43,9 @@ function levelsBelow(node: FolderTreeItem): number {
   return (node.children || []).reduce((most, child) => Math.max(most, levelsBelow(child) + 1), 0);
 }
 
-/** 글자 크기 — 깊이별 15·13, 트리의 맨 밑 단계는 늘 11(Jay 2026-10-31). 트리 전체 단계로 정해 접고 펴도 크기가 안 바뀐다. */
+/** 글자 크기 — 맨 위 단계 15, 그 아래는 모두 13(Jay 2026-11-03). 폴더가 한 단계뿐이면 13. 트리 전체 단계로 정해 접고 펴도 크기가 안 바뀐다. */
 function rowSize(depth: number, treeLevels: number) {
-  if (depth > 1 || depth === treeLevels - 1) return 11;
-  return depth === 0 ? 15 : 13;
+  return depth === 0 && treeLevels > 1 ? 15 : 13;
 }
 
 /** 고른 줄 연결 — 앞쪽 세로선들이 내려와 가로선에 닿고 색 바탕까지 이어진다. 가로선 아래로는 세로선이 없어 뒤의 라임 선을 가린다(Jay 2026-10-31). */

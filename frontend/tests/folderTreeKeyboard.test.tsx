@@ -109,17 +109,17 @@ it("펼친 폴더 옆 가로줄 — 막대 수를 칸에 넘기고, 펼친 줄�
   expect(css).not.toMatch(/\.folder-tree-row:not\(\.open\) \.folder-tree-bars::after/);
 });
 
-it("글자 크기 = 깊이별 15·13, 맨 밑은 늘 11 — 트리 전체 단계로 정해 접어도 안 바뀐다", () => {
+it("글자 크기 = 맨 위 15, 그 아래는 모두 13 — 트리 전체 단계로 정해 접어도 안 바뀐다", () => {
   const draw = (tree: FolderTreeItem, expanded = everyPath(tree)) =>
     act(() => root.render(<FolderTreeView nodes={[tree]} expanded={new Set(expanded)} onToggle={() => {}} onSelect={() => {}} />));
   draw(chain(3));
-  expect(sizes()).toEqual(["fs15", "fs13", "fs11", "fs11"]);
+  expect(sizes()).toEqual(["fs15", "fs13", "fs13", "fs13"]);
   draw(chain(3), ["l0"]);
   expect(sizes()).toEqual(["fs15", "fs13"]);
   draw(chain(1));
-  expect(sizes()).toEqual(["fs15", "fs11"]); // 폴더가 2단계면 15·11
+  expect(sizes()).toEqual(["fs15", "fs13"]); // 폴더가 2단계면 15·13
   draw(chain(0));
-  expect(sizes()).toEqual(["fs11"]);
+  expect(sizes()).toEqual(["fs13"]);
 });
 
 it("디스크에 없는 폴더는 이름 뒤에 '폴더 없음' 표가 붙고 숫자는 그대로다 — 고른 뒤에도 남는다", () => {

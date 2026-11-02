@@ -924,11 +924,12 @@ it("프로젝트 목록을 못 받으면 이름으로 마크 색을 정한다 �
   expect(mark.textContent).toBe("P");
 });
 
-it("어셋 탭은 맨 밑 단계도 13px·줄 26 이고 고르면 14px 다 — 다른 트리의 11px 규칙은 그대로다(Jay 2026-11-02 B안)", () => {
+it("모든 폴더 트리의 맨 밑 단계가 13px·줄 26 이고 고르면 14px 다 — 11px 규칙도 어셋 전용 크기도 없다(Jay 2026-11-03)", () => {
   const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toContain(".assets-tree .folder-tree-row.fs11 { height: 26px; font-size: 13px; --bar: 15px; margin-bottom: 0; }");
-  expect(css).toContain(".assets-tree .folder-tree-row.state.fs11 .folder-tree-name { font-size: 14px; }");
-  expect(css).toContain(".folder-tree-row.fs11 { height: 23px; font-size: 11px; --bar: 13px; margin-bottom: 1px; }");
+  expect(css).toContain(".folder-tree-row.fs13 { height: 26px; font-size: 13px; --bar: 15px; }");
+  expect(css).toContain(".folder-tree-row.state.fs13 .folder-tree-name { font-size: 14px; }");
+  expect(css).not.toContain("fs11");
+  expect(css).not.toMatch(/\.assets-tree \.folder-tree-row/);
 });
 
 it("폴더 색 규칙 — 프로젝트 라임, 직접 등록 파랑, 찾을 수 없으면 빨강이 먼저, 합본 회색이 머리줄·드롭다운·맨 윗줄에 같이 적용된다(Jay 2026-11-02)", async () => {
