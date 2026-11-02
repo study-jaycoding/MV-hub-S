@@ -12,9 +12,9 @@ import type { AssetComment, AssetNode } from "../src/types";
 
 const mocks = vi.hoisted(() => ({
   assetComments: vi.fn(), markCommentsRead: vi.fn(), assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), assetMounts: vi.fn(),
-  addAssetMount: vi.fn(), delAssetMount: vi.fn(), addAssetComment: vi.fn(),
+  addAssetMount: vi.fn(), delAssetMount: vi.fn(), addAssetComment: vi.fn(), projects: vi.fn(),
 }));
-vi.mock("../src/api", () => ({ api: { ...mocks, projects: async () => ({ projects: [], unassigned: 0 }) } }));
+vi.mock("../src/api", () => ({ api: mocks }));
 
 import { MountManager } from "../src/components/assets/MountManager";
 import { useAssetCommentActions } from "../src/components/assets/useAssetCommentActions";
@@ -28,6 +28,7 @@ beforeEach(() => {
   for (const mock of Object.values(mocks)) mock.mockReset();
   mocks.markCommentsRead.mockResolvedValue(undefined);
   mocks.assetMeta.mockResolvedValue({});
+  mocks.projects.mockResolvedValue({ projects: [], unassigned: 0 });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -105,6 +106,26 @@ function mountProjectData() {
   const show = (workspaceId: string) => act(() => root.render(<Host workspaceId={workspaceId} />));
   return { show, data: () => data };
 }
+
+it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지 않고, 공간을 바꾸거나 등록이 바뀔 때만 받는다", async () => {
+  mocks.assetProjects.mockResolvedValue(projectList(["a-folder"]));
+  mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
+  const view = mountProjectData();
+  view.show("team-a");
+  await settle();
+  expect(mocks.projects).toHaveBeenCalledTimes(1);
+  act(() => view.data().reloadProjects(true)); // 어셋 변경 알림이 부르는 길
+  await settle();
+  expect(mocks.assetProjects).toHaveBeenCalledTimes(2);
+  expect(mocks.projects).toHaveBeenCalledTimes(1);
+  act(() => view.data().reloadFolderInfo()); // 폴더 등록 창의 변경
+  await settle();
+  expect(mocks.projects).toHaveBeenCalledTimes(2);
+  view.show("team-b");
+  await settle();
+  expect(mocks.projects).toHaveBeenCalledTimes(3);
+  expect(mocks.projects).toHaveBeenLastCalledWith("my", false, "team-b");
+});
 
 it("Assets 폴더 목록 — 팀을 잇달아 바꾸면 가장 나중에 물은 팀의 목록만 받는다(늦게 온 앞 팀의 목록이 선택까지 옮기지 않는다)", async () => {
   const lists = held<ReturnType<typeof projectList>>();

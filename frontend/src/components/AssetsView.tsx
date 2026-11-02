@@ -120,6 +120,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     projectIds,
     linkedProjects,
     refreshProjectData,
+    reloadFolderInfo,
     reloadMeta,
     reloadProjects,
     reloadTree,
@@ -1084,7 +1085,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       {mountOpen && (
         <MountManager
           onClose={() => setMountOpen(false)}
-          onChanged={() => reloadProjects(true)}
+          onChanged={() => { reloadProjects(true); reloadFolderInfo(); }}
           workspaceId={workspaceId}
         />
       )}

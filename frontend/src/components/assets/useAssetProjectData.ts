@@ -142,11 +142,17 @@ export function useAssetProjectData({
       .catch((err) => {
         if (seq === projectsSeqRef.current) setProjectsError(String(err));
       });
-    // 마크 색만을 위한 조회 — 못 받아도 이름으로 색을 정할 뿐이라 알리지 않는다.
+  }, [workspaceId]);
+
+  // 표시 색만을 위한 조회 — 어셋 변경 알림마다 도는 위 목록 조회와 나눈다. 들어올 때·공간을 바꿀 때·등록이 바뀔 때만 받는다.
+  const folderInfoSeqRef = useRef(0);
+  const reloadFolderInfo = useCallback(() => {
+    const seq = ++folderInfoSeqRef.current;
+    // 마크 색 — 못 받아도 이름으로 색을 정할 뿐이라 알리지 않는다.
     api
       .projects("my", false, workspaceId)
       .then((info) => {
-        if (seq !== projectsSeqRef.current) return;
+        if (seq !== folderInfoSeqRef.current) return;
         const ids = Object.fromEntries(info.projects.map((item) => [item.name, item.id]));
         setProjectIds((prev) => reconcileRecordState(prev, ids));
       })
@@ -264,6 +270,10 @@ export function useAssetProjectData({
   }, [reloadProjects]);
 
   useEffect(() => {
+    reloadFolderInfo();
+  }, [reloadFolderInfo]);
+
+  useEffect(() => {
     if (project) STORE.set("project", project);
   }, [project]);
 
@@ -303,6 +313,7 @@ export function useAssetProjectData({
     projectIds,
     linkedProjects,
     refreshProjectData,
+    reloadFolderInfo,
     reloadMeta,
     reloadProjects,
     reloadTree,
