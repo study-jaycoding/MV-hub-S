@@ -62,6 +62,21 @@ describe("자료 전송 줄", () => {
     }
   });
 
+  it("재검사 중 조회가 한 번 실패해도 다시 물어 끝난 수를 받는다", async () => {
+    vi.useFakeTimers();
+    try {
+      await show({ waiting: 0, failed: 0, needs_check: 0, unsendable: 2, rescanning: true });
+      status.mockRejectedValueOnce(new Error("잠깐 끊김"));
+      status.mockResolvedValueOnce({ items: [], summary: { waiting: 0, failed: 0, needs_check: 0, unsendable: 0, rescanning: false } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(host.textContent).toContain("파일 없음 2");
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(host.textContent).not.toContain("파일 없음");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("창을 닫으면 재검사 중이어도 묻기를 멈춘다", async () => {
     vi.useFakeTimers();
     try {

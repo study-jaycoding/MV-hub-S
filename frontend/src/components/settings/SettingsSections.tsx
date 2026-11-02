@@ -32,7 +32,9 @@ export function AssetTransferLine() {
   const load = useCallback(() => {
     api.assetSyncStatus().then((status) => {
       if (aliveRef.current) setSummary(status.summary ?? null);
-    }).catch(() => undefined); // 옛 허브·허브 없음 — 줄을 그리지 않는다
+    }).catch(() => { // 옛 허브·허브 없음 — 줄을 그리지 않는다. 재검사 중이면 한 번 실패해도 다음 조회를 건다
+      if (aliveRef.current) setSummary((last) => (last?.rescanning ? { ...last } : last));
+    });
   }, []);
   useEffect(() => {
     aliveRef.current = true;
