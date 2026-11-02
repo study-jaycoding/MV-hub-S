@@ -378,6 +378,23 @@ it("연결점 — 켜진 선끼리 색이 섞인 점은 흰 점, 한 색이면 �
   expect(dotAt(d("e2"), false)).toBe("scene-dot text");
 });
 
+it("연결점 — 높이가 홀수이거나 자리가 소수인 카드도 점은 고리가 붙는 정수 칸에 선다(Jay 2026-11-02)", async () => {
+  setGens({});
+  const scene = {
+    id: "S", name: "S", created_at: 0, groups: [],
+    cards: [
+      { id: "t1", kind: "text", x: 10.3, y: 20.3, w: 151, h: 115, text: "글" },
+      { id: "l1", kind: "list", x: 330.4, y: 200, h: 115 },
+    ],
+    edges: [{ id: "e1", from: "t1", to: "l1" }],
+  };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={noop} />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  const dots = [...host.querySelectorAll(".scene-edge-dots circle")].map((c) => `${c.getAttribute("cx")},${c.getAttribute("cy")}`);
+  expect(dots.sort()).toEqual(["185,78", "306,258"]); // 반올림 전 = 185.3,77.8 · 306.4,257.5
+  expect(host.querySelector('path[data-edge="e1"]')!.getAttribute("d")).toMatch(/^M 185 78 C .* 306 258$/); // 선 끝도 점과 같은 자리
+});
+
 it("아직 생성물이 없는 생성 카드는 'New' 글자 대신 흐린 로고 그림(Jay 2026-10-30)", async () => {
   setGens({});
   const scene = { id: "S", name: "S", created_at: 0, groups: [], edges: [], cards: [{ id: "g1", kind: "generation", x: 0, y: 0 }] };
