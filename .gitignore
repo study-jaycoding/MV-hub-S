@@ -5,6 +5,8 @@ backend/data-rehearsal/
 backend/data_backup_*/
 # 로컬 실시간 개발용 별도 데이터 폴더 — 운영 데이터와 격리, 추적 안 함
 backend/data_test/
+# 로컬 허브 화면 개발(test_dev_hub.bat) 데이터 — 공유 서버 토큰이 들어 있다
+backend/data_hub_dev/
 # 테스트 데이터 이동/스냅샷 산출물(계정 DB·미디어 포함) — 로컬 전용, 절대 추적 금지
 backend/.data_test-incoming-*/
 backend/_pm_test_data_snapshots/
