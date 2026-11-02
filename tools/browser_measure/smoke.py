@@ -44,9 +44,19 @@ async def run(base: str, work: Path, debug_port: int, shots: bool, verbose: bool
             return "열었음" if await pg.eval("!!document.querySelector('.proj-trash')") else False
         await w.step("사이드바", "열린 상태 보장", ensure_sidebar)
 
-        # 보기
-        await w.step("라이브러리 보기", "리스트", w.click(by_title("리스트")))
-        await w.step("라이브러리 보기", "그리드", w.click(by_title("그리드")), expect=has_cards)
+        # 보기 — 2026-10-30 뒤로는 보기 단추 창 안의 줄이다. 옛 버전과 섞어 재는 일이 있어 옛 단추 둘도 그대로 누른다
+        def layout(old_title: str, item: str):
+            async def act():
+                if await pg.eval(f"!!{by_title(old_title)}"):
+                    return await pg.click(by_title(old_title))
+                await pg.click("document.querySelector('.lib-tools .vp-wrap button, .vp-wrap button')")
+                await asyncio.sleep(0.3)
+                done = await pg.click(f"[...document.querySelectorAll('.vp-pop .vp-item')].find(b => b.innerText.trim() === {json.dumps(item)})")
+                await pg.key("Escape", "Escape", vk=27)
+                return done
+            return act
+        await w.step("라이브러리 보기", "리스트", layout("리스트", "List"))
+        await w.step("라이브러리 보기", "그리드", layout("그리드", "Square"), expect=has_cards)
         for kind in ("이미지", "영상", "전체"):
             await w.step("타입 눈금", kind, w.click(f"[...document.querySelectorAll('.lib-hist-tick')].find(b => b.title === {json.dumps(kind)})"), settle=2)
 
