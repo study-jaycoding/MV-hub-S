@@ -111,6 +111,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 스포트라이트 프롬프트 도크(@/# 피커) | `components/SpotlightPrompt.tsx`, `components/spotlight/SpotlightMentionPicker.tsx`, `lib/libraryPromptDraft.ts`(라이브러리 프롬프트 초안 자동 저장, Jay 결정 5B) | — | |
 | 씬 캔버스에 카드 종류 추가 | `lib/sceneNodeCatalog.ts`, `components/scene/cards/` | — | |
 | 씬 저장·undo/redo | `lib/scenes.ts`, `lib/sceneStore.ts`, `lib/useSceneInputCommit.ts`, `lib/useSceneHistory.ts` | `repo/scenes_backup.py`, `routers/scenes.py` | 계약: `docs/CANVAS_SCENE_STORAGE.md` |
+| 누른 씬의 서버 보관·새 탭 열기 | `lib/sceneKeep.ts`, `components/scene/SceneKeepDialog.tsx`, `components/scene/SceneKeepWindow.tsx`, `App.tsx` | `routers/scene_keeps.py`, `repo/scene_keeps.py` | 자동 저장과 별개. 내 보관본만 조회·삭제하며 같은 프로젝트·이름의 덮어쓰기는 id와 revision을 함께 확인. [보관 설계](status/캔버스_보관_설계_2026-11-02.md) |
 | 공유 서버 주소 이전(서버 이사) | — | `services/server_relocation.py` | 스크립트: `server_move_export.bat`/`server_move_import.bat`/`tools/server_move.py` |
 | 서버 자동시작·워치독·복구 | — | — | `MV_watchdog.bat`, `tools/server_watchdog.py`, `tools/server_supervisor.py`, `restart_server_task.ps1`(⚠ 진입 bat 는 실행금지 — §4) |
 | Higgsfield CLI 버전 핀 교체 | — | — | `hf_cli_version.txt`, `update_cli.bat`, `tools/hf_cli_check_update.py` |
@@ -216,6 +217,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `release_update.py`(약 190줄) | `GET /api/release-update/status`·`/latest-metadata`·`POST /start`·`/promote` (4) | 작업자 PC 앱 업데이트 상태·시작(로컬 요청만). 관리자: 후보·공개 상태(`release_overview`), 알림 확인을 마친 후보를 표지로(promote — 후보의 `배포` 또는 `배포 반영` 경로, 공유 서버 단건 확인 뒤, 동기 def) | 0곳 |
 | `console.py`(142줄) | `GET /api/console/summary`·`POST /close-app` (2) | cmd 창 정보(버전·CLI·로그 tail)·앱 종료 | 0곳 |
 | `scenes.py`(86줄) | `GET·PUT /api/scenes/{backup\|cards}` (4) | 브라우저 씬(원본 IndexedDB)과 카드링크의 DB 미러 동기화([씬 저장 계약](CANVAS_SCENE_STORAGE.md)) | 0곳 |
+| `scene_keeps.py` | `POST·GET /api/scene-keeps`·`GET·DELETE /{id}`·`GET /{id}/envelope`·`POST /restore` (6) | 수동 보관본은 서버 권위. envelope는 서버에서만, restore는 로컬 허브에서만 처리. 계정·연결을 고정하고 생성 기록을 묶거나 복원 | 핸들러 중계 |
 
 **DB 이전·백업**
 
@@ -314,6 +316,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `scene_cards.py` | 140 | 캔버스 카드 ↔ 생성물 소속 사실 | `repo.list_scene_card_links` |
 | `comfy_canvas_runs.py` | 206 | 캔버스 Comfy 실행(attempt) 접수·출력 연결(생성물과 같은 트랜잭션)·완료 판정(`isRunFullySaved`)·resolve/ACK 영수증(docs/status/캔버스_한계_A_Comfy마무리_2026-10-30.md) | `repo.comfy_canvas_runs.claim`·`settle`·`acknowledge`·`resolution` |
 | `scenes_backup.py` | 130 | 캔버스 씬(브라우저 IndexedDB)의 DB 미러 | `repo.list_scene_backups` |
+| `scene_keeps.py` | — | 서버 보관본 저장·조회·삭제·할당량·봉투 검증, 생성 기록 복원 판정. 표 `scene_keep`는 baseline 이름표 없이 추가 | `save_keep`, `list_keeps`, `get_keep`, `delete_keep`, `restore_keep` |
 | `edit_docs.py` | 160 | 개인 타임라인 백업 최신본 버전 비교·충돌 사본·복원 직전 원문 트랜잭션 보존 | `repo.get_edit_backup`·`save_edit_backup`·`restore_edit_backup` |
 
 **프로젝트·워크스페이스(repo 부분)**
@@ -540,6 +543,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 |---|---|---|
 | `scene/SceneBoard.tsx` | 카드·엣지·그룹의 화면 투영, 드래그/마퀴/가위/줌·실측, 선택·실행 훅 배선 | 문서 변환·저장 시점·Undo·gesture 원본은 `useCanvasSession.ts` 내부 소유. UI가 전체 문서 사본이나 저장 모드를 명령으로 넘기지 않음 |
 | `scene/SceneRecoveryPanel.tsx` | 카드 생성물 복구 후보·페이지·선택 표시 | 조회·연결은 `useSceneCardRecovery.ts` |
+| `scene/SceneKeepDialog.tsx` | 워크스페이스 보관 창 — 이름·프로젝트, 같은 이름 덮어쓰기 확인, 성공 뒤 탭 이름 변경 | 사본·요청은 `sceneKeep.ts` |
+| `scene/SceneKeepWindow.tsx` | 보관함 — 프로젝트 목록·개수·탭 표식, 이미지/리스트 전환, 새 탭 열기·선택 항목 삭제 | 보기 선택은 `storageKeys.ts`, 열기는 `sceneKeep.ts` |
 | `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
 | `scene/SceneBar.tsx`(286줄) | 씬 탭 바 — 전환·추가·이름변경·삭제·드래그 순서변경·우클릭 메뉴 | `SceneBar` |
 | `scene/SceneMinimap.tsx`(184줄) | 우상단 네비게이터 — 카드 축소도·뷰포트 박스, 클릭/드래그 이동 · 칸이 10px 이상이면 칸 안에 종류 아이콘 | `SceneMinimap` |
@@ -900,7 +905,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `bulkGenerationActions.ts` | 순수 | 일괄 실행기(`runGenerationBulk` — 주입받은 비동기 작업을 돌려 실패 수 집계, `runGenerationTrash` — 휴지통 전용: 공유 중 409 를 '건너뜀'으로 따로 센다) + 결과·확인 문구 |
 | `shareMirrorPending.ts` | 순수 | 공유 미러 대기 안내 래핑 |
 
-**9. 씬·캔버스 — 데이터·저장·복구(15)**
+**9. 씬·캔버스 — 데이터·저장·복구(16)**
 
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
@@ -912,6 +917,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `sceneArchive.ts` | 저장 | 캔버스 전체 내보내기/가져오기(`mvhub-scenes-full`) — 덮지 않고 합친다 |
 | `sceneAssetRelink.ts` | api+store | 옛 로컬 에셋 참조를 프로젝트 원본으로 재연결하고 씬 저장 갱신 · 서버 판정 기억(계정별 localStorage — 판정 받은 참조는 다음 실행에 NAS 를 다시 안 훑음) · '레퍼런스 찾기' 단추(이 씬만·render 포함)와 자동 복구를 한 줄로 · 판정 보류의 이유(held)·판정 못 끝냄(세션만)·판정 전 구별(카드 빨간 테두리 표시, ASSET_REGISTRY §5) · 탭 공간이 없으면 선택 워크스페이스로 묻기 |
 | `sceneBackup.ts` | api+store | 씬 확정본 → DB 단방향 미러·복구 · 서버 상한(5MiB)을 넘는 씬만 전송에서 제외 |
+| `sceneKeep.ts` | api+store | 사용자가 누른 씬의 서버 보관. 제출 이름·카메라 사본, `savedAt=0`, 실행 표식 제거, preview, 고정 계정 요청, parse→restore→id 교체→확정된 새 탭. 자동 저장과 별도 |
 | `sceneCardLinks.ts` | api+store | 카드 소속(담긴 생성물) 로컬 DB 기록·서버 병합 |
 | `sceneUndoStore.ts` | store | 씬별 undo/redo 히스토리(언마운트 생존) · 받은 기록 채택 규칙(부팅 복원·창 인계, `adoptSceneHistory`) |
 | `sceneUndoPersistence.ts` | 저장 | 되돌리기 기록을 새로 고쳐도 남게 — 별도 IndexedDB(`mvhub-undo`)의 페이지별 슬롯·탭별 포인터(sessionStorage)·삭제 세대·7일 보존·용량 상한(docs/status/캔버스_한계_B_되돌리기보존_2026-10-30.md) |
@@ -1403,6 +1409,8 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 - **"파이썬 실행파일 찾기"가 스크립트마다 3가지 변종(4단계/3단계/2단계)으로 8개 이상 파일에 흩어져 있다**(`run_py.bat`·`MV_agent.bat`·`MV_watchdog.bat`·`MV_server.bat`·`test_push-db.bat`·`test_pull-db.bat`·`tools/update_git_worker.bat` 등). 새 후보 경로를 넣으려면 이 파일들을 다 찾아 고쳐야 한다.
 - **새 DB 이름표를 `schema_migrations` 에 기록하는 일은 배포 계약이다.** 서버 `update_git` 은 서버 루트의 옛 검사기로 후보가 만든 DB 를 검사하고(`qualify_release_artifact._compatibility` → `load_inspector(ROOT)`), 되돌릴 때는 옛 판이 DB 를 연다. 옛 검사기는 모르는 표·칸은 허용하지만 모르는 migration 은 `unknown_migration` 으로 거부한다. 게이트와 시험은 새 검사기로 돌아 이걸 못 잡는다(2026-10-31 배포 검토 실측). 그래서 `content_comfy_canvas_runs` 는 표만 만들고 `validate_baseline` 으로 구조만 확인한다. 서버 루트 검사 도구를 갱신하는 길이 생기기 전에는 새 이름을 기록하지 않는다 — `test_baseline_names_stay_within_public_release` 가 고정 목록으로 막는다.
 - **캔버스 선택을 읽는 길이 둘이다 — React 상태(`selected`·`selectedRef`)와 화면의 `.scene-card.sel`·그룹 `.selected`.** 범위 선택을 끄는 동안에는 `SceneBoard.paintMarqueePreview` 가 화면 표시만 직접 바꾸고 상태는 손을 뗄 때 바뀌므로 둘이 다르다(2026-09-30). 선택이 필요한 코드는 상태를 읽고, 화면의 `.sel` 로 판단하지 않는다.
+- **수동 보관 `scene_keep`와 자동 미러 `scene_backup`은 다른 권위다.** `/api/scene-keeps`는 로컬 예외이지만 핸들러가 서버로 중계한다. `scene_keep_v1`은 AUTH off에서만 추가하고 기존 기능 표식은 유지한다. 일반 목록·상세에는 봉투의 작성자 정보가 없고, envelope 경로는 로컬 허브 화면에 열지 않는다.
+- **보관본의 생성물 id와 batch 응답 본문 id가 다를 수 있다.** 봉투의 `scene_ids`가 원래 참조를 보존한다. restore는 삭제 확인→job의 유일한 완료 행→같은 id의 완료 행→남의 서버 결과 제외→원래 id 삽입 순서다. 반환한 `rejected`는 새 탭 카드의 id를 지우는 신호이며, `id_map`에 없는 정상 원격 id를 지우는 신호가 아니다. `attach_trash`는 쓰기 트랜잭션 전에, 서버 요청은 DB 연결 밖에서 한다.
 
 ---
 
