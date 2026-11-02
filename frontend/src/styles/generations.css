@@ -1165,7 +1165,7 @@
 .cut-card.cut-out:hover, .cut-card.cut-out:focus-visible { border-color: var(--accent); color: var(--accent); }
 .cut-out-count { font-size: 13px; font-weight: 800; }
 .cut-out-hint { font-size: 11.5px; }
-/* 도구 줄의 [컷별 | 전체] 전환 — 도구 줄이 두 줄로 밀리지 않게 좁게 */
+/* 도구 줄의 [모음 | 전체] 전환 — 도구 줄이 두 줄로 밀리지 않게 좁게 */
 .lib-cut-seg { display: inline-flex; flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
 .lib-cut-seg > button {
   padding: 2px 7px; border: 0; border-radius: 0; background: transparent;

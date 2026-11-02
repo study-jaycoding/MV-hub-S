@@ -91,7 +91,7 @@ it("폴더와 전체 보기의 레이아웃·맞춤을 따로 기억한다", asy
   await click(whole);
   expect(await readView(() => viewItem("Square").getAttribute("aria-checked"))).toBe("true");
   expect(await contained()).toBe(false);
-  await click([...host.querySelectorAll('.lib-cut-seg button')].find((el) => el.textContent === "폴더")!);
+  await click([...host.querySelectorAll('.lib-cut-seg button')].find((el) => el.textContent === "모음")!);
   expect(host.querySelector('.assets-folder-grid.list')).not.toBeNull();
   expect(await contained()).toBe(true);
 });
@@ -283,7 +283,7 @@ it("폴더 화면의 [정렬] 창은 이름·날짜뿐이고 카드 순서를 �
   await click(sortItem("오름차순"));
   expect(localStorage.getItem("ch.assets.sortDir")).toBe("asc");
   expect(localStorage.getItem("ch.assets.folderSortDir")).toBe("desc");
-  await click([...host.querySelectorAll(".lib-cut-seg button")].find((el) => el.textContent === "폴더")!);
+  await click([...host.querySelectorAll(".lib-cut-seg button")].find((el) => el.textContent === "모음")!);
   expect(chosen()).toEqual(["이름", "내림차순"]);
   expect(order()).toEqual(["assets/CH", "assets/BG"]);
 });
@@ -338,7 +338,7 @@ it("직접 파일이 있어도 폴더·전체 전환과 직접 파일 미리보�
   expect(host.querySelectorAll(".asset-cell")).toHaveLength(4);
   await click(host.querySelector('.lib-cut-seg button')!);
   expect(host.querySelectorAll(".assets-folder-card[data-folder-path]")).toHaveLength(2);
-  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
+  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("모음");
   await click(host.querySelector('[data-file-path="assets/CH/direct.png"] button')!);
   expect(preview).toHaveBeenCalledOnce();
   expect(host.querySelector('[data-file-path="assets/CH/direct.png"] .last-viewed-badge')?.textContent).toBe("Last viewed");
@@ -365,11 +365,11 @@ it("직접 파일이 있어도 폴더·전체 전환과 직접 파일 미리보�
   await doubleClick(card("assets/CH/미아"));
   expect(host.querySelectorAll(".asset-cell")).toHaveLength(2);
   await backspace();
-  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
+  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("모음");
   act(() => root.unmount()); root = createRoot(host);
   await mount();
   expect(host.querySelectorAll(".assets-folder-card[data-folder-path]")).toHaveLength(2);
-  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
+  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("모음");
 });
 
 it("폴더 카드는 클릭으로 선택하고 더블클릭·Enter로 열며 미들클릭은 배경 탭을 추가한다", async () => {
@@ -713,13 +713,13 @@ it("미들클릭은 새 탭만 추가하며 현재 검색·보기·스크롤과 
   await click(tab("CH"));
   expect(host.querySelector<HTMLInputElement>('[placeholder="Search · Tag"]')!.value).toBe("a.png");
   expect(host.querySelector<HTMLDivElement>(".assets-folder-grid")!.scrollTop).toBe(155);
-  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
+  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("모음");
   const existing = Array.from(host.querySelectorAll(".folder-tree-row")).find((el) => el.getAttribute("title")?.startsWith("assets/BG"))!;
   await middle(existing);
   expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
   expect(tab("CH").getAttribute("aria-selected")).toBe("true");
   expect(tab("BG").getAttribute("aria-selected")).toBe("false");
-  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("폴더");
+  expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("모음");
   await click(tab("BG"));
   expect(host.querySelector('.lib-cut-seg button.on')?.textContent).toBe("전체");
   await click(host.querySelector('[aria-label="BG 탭 닫기"]')!);

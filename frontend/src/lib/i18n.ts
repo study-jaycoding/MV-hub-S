@@ -834,6 +834,7 @@ const EN: Record<string, string> = {
   "가져오기": "Received",
   "휴지통": "Trash",
   "전체": "All",
+  "모음": "Grouped", // 묶음 보기 전환([모음 | 전체])
   "숨김": "Hidden",
   "라이브러리": "Library",
   "휴지통 보기": "Deleted",

@@ -2314,7 +2314,7 @@ export default function App() {
     ) : librarySelectionBar;
 
   // 라이브러리 툴바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다(창에서도 워크스페이스처럼 조작).
-  // 도구 줄의 [컷별 | 전체] 전환 — 묶어 보일 수 있을 때만. 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 — 사라졌다 다시
+  // 도구 줄의 [모음 | 전체] 전환 — 묶어 보일 수 있을 때만. 켜 둔 채로는 실제로 묶어 보이는 동안(응답을 기다리는 동안 포함 — 사라졌다 다시
   //  나타나지 않게, ③)에만 보인다 — 하위 폴더가 없는 폴더에서는 바꿀 것이 없다.
   const cutToggle =
     cutScope && !folderCardsUnsupported && (cutMode || !cutView || cutPending)

@@ -36,7 +36,7 @@ interface Props {
   onToggleFilters: () => void;
   count: number;
   countMore?: boolean; // 로드된 수 뒤에 '+'(다음 페이지 더 있음)
-  // 폴더 묶음 보기(공유 & 리뷰 탭에서 폴더를 골랐고, 묶어 보일 수 있는 조회일 때만 준다) — [컷별 | 전체] 전환.
+  // 폴더 묶음 보기(공유 & 리뷰 탭에서 폴더를 골랐고, 묶어 보일 수 있는 조회일 때만 준다) — [모음 | 전체] 전환.
   //  summary 는 지금 묶어 보이는 중일 때만: 건수 자리가 '컷 N · M건' 으로 바뀐다(M = 고른 폴더 아래 전부).
   folderCards?: {
     on: boolean;
@@ -294,7 +294,7 @@ export function LibraryToolbar({
             title={t("바로 아래 폴더(컷)마다 카드 한 장으로 묶어 보기")}
             onClick={() => folderCards.onChange(true)}
           >
-            {t("컷별")}
+            {t("모음")}
           </button>
           <button
             type="button"

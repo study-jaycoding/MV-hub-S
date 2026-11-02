@@ -231,7 +231,7 @@ it("폴더 표 전환은 파일 전체 모드의 날짜 구분과 레이아웃�
   await pressList();
   expect(await listGrouped()).toBe(true);
   expect(localStorage.getItem("ch.assets.groupByDate")).toBe("1");
-  await click(folderModeButton("폴더"));
+  await click(folderModeButton("모음"));
   expect(host.querySelector(".assets-folder-table")).not.toBeNull();
   await pressList();
   expect(localStorage.getItem("ch.assets.groupByDate")).toBe("1");
@@ -247,12 +247,12 @@ it("혼합 폴더의 명시 보기와 크기는 경로 이동·Backspace·기존
   mocks.assetTree.mockResolvedValue({ children: mixed });
   await mount();
   expect(folderModeButton("전체").classList.contains("on")).toBe(true);
-  await click(folderModeButton("폴더"));
+  await click(folderModeButton("모음"));
   await pressList(); await pressList(); await setSize("0.8");
   await pressFit();
   await fire(host.querySelector('[data-folder-path="assets/CH"]')!, new MouseEvent("dblclick", { bubbles: true }));
   expect(folderModeButton("전체").classList.contains("on")).toBe(true);
-  await click(folderModeButton("폴더"));
+  await click(folderModeButton("모음"));
   await pressGrid(); await setSize("1.4");
   await pressFit();
   await fire(document.body, new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
