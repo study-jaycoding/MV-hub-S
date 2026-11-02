@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import active_account, config, db, db_migrations
-from app.repo import scene_keeps as keeps
+from app.repo import scene_keeps as keeps, trash
 from app.routers import scene_keeps as routes
 
 OWNER = "keeper@example.test"
@@ -307,7 +307,10 @@ def test_trash_tombstone_wins_over_matching_live_result(isolated_db, by_job):
         conn.commit()
         keeps.detach_trash(conn)
     data = envelope(generation(job_id="job-g1" if by_job else None))
-    assert keeps.restore_keep(data, {AUTHOR})["rejected"] == ["g1"]
+    result = keeps.restore_keep(data, {AUTHOR})
+    assert result['rejected'] == ([] if by_job else ['g1'])
+    if by_job:
+        assert result['id_map'] == {'g1': 'live'}
 
 
 def test_delete_transfer_marker_prevents_no_job_result_resurrection(isolated_db, monkeypatch):
@@ -791,3 +794,337 @@ def test_scale_real_limits_build_and_repeat_restore(isolated_db, builder, monkey
                       "restore_seconds": round(restored_once - checked, 4),
                       "repeat_restore_seconds": round(finished - restored_once, 4),
                       "total_seconds": round(finished - started, 4), "tracemalloc_peak_bytes": peak}))
+
+
+@pytest.fixture
+def trash_keep_client(isolated_db, route_client, monkeypatch):
+    monkeypatch.setattr(config, 'AUTH_ENABLED', False)
+    monkeypatch.setattr(config, 'MANAGE_ENABLED', False)
+    data = [envelope(generation())]
+
+    @contextmanager
+    def relay(request, *, write):
+        with active_account.pinned_account_scope((OWNER, AUTHOR)):
+            yield OWNER
+
+    monkeypatch.setattr(routes, '_relay', relay)
+    monkeypatch.setattr(routes, 'require_agent_account', lambda request: {'email': OWNER})
+    monkeypatch.setattr(routes, 'account_author_uids', lambda account: {AUTHOR})
+    monkeypatch.setattr(routes._proxy, 'proxy_json', lambda *a, **kw: data[0])
+    return route_client, data
+
+
+def move_result_to_trash(gid='g1', job='job-g1', status='done', creator=AUTHOR, asset=True):
+    insert_existing(gid, job=job, status=status, asset=asset)
+    with db.get_connection() as conn:
+        conn.execute('UPDATE generation SET creator_uid=? WHERE id=?', (creator, gid))
+    assert trash.move_to_trash(gid)
+
+
+def trash_contents():
+    with db.get_connection() as conn:
+        trash.attach_trash(conn)
+        try:
+            return {r['id']: json.loads(r['payload']) for r in conn.execute('SELECT id,payload FROM trash.trashed')}
+        finally:
+            trash.detach_trash(conn)
+
+
+def load_keep(client):
+    return client.post('/api/scene-keeps/restore', json={'id': 'a' * 32, 'revision': 1})
+
+
+@pytest.mark.parametrize('job', ['job-g1', None])
+def test_keep_restores_real_trash_children_and_reopens(trash_keep_client, job):
+    client, data = trash_keep_client
+    data[0] = envelope(generation(job_id=job))
+    insert_existing('g1', job=job)
+    with db.get_connection() as conn:
+        conn.execute('UPDATE generation SET creator_uid=? WHERE id=?', (AUTHOR, 'g1'))
+        conn.execute("INSERT INTO tag(id,name) VALUES('tag','kept tag')")
+        conn.execute("INSERT INTO gen_tag VALUES('g1','tag')")
+        conn.execute("INSERT INTO generation_comment(id,gen_id,author,text) VALUES('comment','g1',?,'kept comment')", (AUTHOR,))
+        conn.execute("INSERT INTO reference(id,type,file_path) VALUES('ref','image','https://example.test/ref.png')")
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id,role) VALUES('g1','ref','@Image1')")
+        conn.execute("INSERT INTO share(id,generation_id,shared_by) VALUES('share','g1',?)", (config.DEFAULT_WORKER_ID,))
+    assert trash.move_to_trash('g1')
+    for _ in range(2):
+        response = load_keep(client)
+        assert response.status_code == 200, response.text
+        assert response.json() == {'id_map': {'g1': 'g1'}, 'rejected': [], 'restored': 0}
+        assert trash_contents() == {}
+        with db.get_connection() as conn:
+            assert conn.execute("SELECT prompt FROM generation WHERE id='g1'").fetchone()[0] == 'existing'
+            assert conn.execute("SELECT t.name FROM tag t JOIN gen_tag gt ON gt.tag_id=t.id WHERE gt.generation_id='g1'").fetchone()[0] == 'kept tag'
+            assert conn.execute("SELECT text FROM generation_comment WHERE id='comment'").fetchone()[0] == 'kept comment'
+            assert conn.execute("SELECT reference_id FROM gen_reference WHERE generation_id='g1'").fetchone()[0] == 'ref'
+            assert conn.execute("SELECT id FROM share WHERE generation_id='g1'").fetchone()[0] == 'share'
+        # The same batch read used by a mounted canvas sees the restored original.
+        items, _ = routes.repo.get_generations_with_materials(['g1'])
+        assert items['g1']['assets'][0]['id'] == 'asset-g1'
+
+
+def test_keep_restored_live_job_ignores_remaining_failed_trash(trash_keep_client):
+    client, data = trash_keep_client
+    move_result_to_trash('canonical')
+    move_result_to_trash('failed', status='failed')
+    for _ in range(2):
+        response = load_keep(client)
+        assert response.status_code == 200, response.text
+        assert response.json() == {'id_map': {'g1': 'canonical'}, 'rejected': [], 'restored': 0}
+        assert set(trash_contents()) == {'failed'}
+
+
+@pytest.mark.parametrize('case', ['wrong-job', 'foreign', 'failed-id', 'no-asset', 'terminal-failure', 'broken', 'unknown', 'pending'])
+def test_keep_does_not_extract_ineligible_trash(trash_keep_client, case):
+    client, _ = trash_keep_client
+    move_result_to_trash(job='other' if case == 'wrong-job' else 'job-g1',
+                         status='failed' if case == 'failed-id' else 'pending' if case == 'pending' else 'done',
+                         creator=OTHER if case == 'foreign' else AUTHOR, asset=case != 'no-asset')
+    if case in ('terminal-failure', 'broken', 'unknown'):
+        payload = trash_contents()['g1']
+        if case == 'terminal-failure':
+            payload['provider_terminal'] = {'kind': 'failure'}
+        elif case == 'unknown':
+            payload['generation']['status'] = 'unknown'
+        else:
+            payload = {}
+        with db.get_connection() as conn:
+            trash.attach_trash(conn)
+            conn.execute('UPDATE trash.trashed SET payload=? WHERE id=?', (json.dumps(payload), 'g1'))
+            conn.commit()
+            trash.detach_trash(conn)
+    response = load_keep(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id_map': {}, 'rejected': ['g1'], 'restored': 0}
+    assert set(trash_contents()) == {'g1'}
+
+
+@pytest.mark.parametrize('trash_id', ['g1', 'canonical'])
+def test_keep_never_replaces_main_id_with_trash(trash_keep_client, trash_id):
+    client, _ = trash_keep_client
+    move_result_to_trash(trash_id)
+    insert_existing(trash_id, job='different-job')
+    response = load_keep(client)
+    assert response.json()['rejected'] == ['g1']
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT job_id FROM generation WHERE id=?', (trash_id,)).fetchone()[0] == 'different-job'
+    assert set(trash_contents()) == {trash_id}
+
+
+@pytest.mark.parametrize('exact', [False, True])
+def test_keep_selects_only_unambiguous_trash_job(trash_keep_client, exact):
+    client, data = trash_keep_client
+    move_result_to_trash('A')
+    move_result_to_trash('B')
+    data[0] = envelope(generation('A' if exact else 'alias', job_id='job-g1'))
+    response = load_keep(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == ({'id_map': {'A': 'A'}, 'rejected': [], 'restored': 0} if exact
+                              else {'id_map': {}, 'rejected': ['alias'], 'restored': 0})
+    assert set(trash_contents()) == ({'B'} if exact else {'A', 'B'})
+
+
+def test_keep_two_envelope_entries_must_not_extract_two_rows_of_one_job(trash_keep_client):
+    client, data = trash_keep_client
+    move_result_to_trash('A')
+    move_result_to_trash('B')
+    data[0] = envelope(generation('A', job_id='job-g1'), generation('B', job_id='job-g1'))
+    assert load_keep(client).json() == {'id_map': {}, 'rejected': ['A', 'B'], 'restored': 0}
+    assert set(trash_contents()) == {'A', 'B'}
+
+
+@pytest.mark.parametrize('status', ['failed', 'pending', 'unknown'])
+def test_keep_envelope_insert_requires_all_other_trash_rows_failed(trash_keep_client, status):
+    client, _ = trash_keep_client
+    move_result_to_trash()
+    assert trash.purge_trashed_item('g1')
+    move_result_to_trash('old', status=status)
+    result = load_keep(client).json()
+    assert result == ({'id_map': {'g1': 'g1'}, 'rejected': [], 'restored': 1} if status == 'failed'
+                      else {'id_map': {}, 'rejected': ['g1'], 'restored': 0})
+    assert set(trash_contents()) == {'old'}
+
+
+def test_keep_rechecks_two_stale_plans_before_extracting_same_job(trash_keep_client, monkeypatch):
+    _, data = trash_keep_client
+    move_result_to_trash('A')
+    move_result_to_trash('B')
+    barrier = threading.Barrier(2)
+    local = threading.local()
+    original = keeps.plan_trash_restores
+
+    def plan(items, authors):
+        result = original(items, authors)
+        if not getattr(local, 'planned', False):
+            local.planned = True
+            barrier.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(keeps, 'plan_trash_restores', plan)
+    monkeypatch.setattr(routes._proxy, 'proxy_json', lambda *a, **kw: local.data)
+
+    def run(gid):
+        local.data = envelope(generation(gid, job_id='job-g1'))
+        return routes.restore_scene_keep(routes.RestoreIn(id='a' * 32, revision=1), None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, gid) for gid in ('A', 'B')]
+        results = [future.result(timeout=20) for future in futures]
+    targets = {target for result in results for target in result['id_map'].values()}
+    assert len(targets) == 1 and all(not r['rejected'] for r in results)
+    assert len(trash_contents()) == 1
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM generation WHERE job_id='job-g1'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('stop', ['epoch', 'deadline'])
+def test_keep_stops_before_next_trash_item(trash_keep_client, monkeypatch, stop):
+    client, data = trash_keep_client
+    move_result_to_trash()
+    move_result_to_trash('g2', job='job-g2')
+    data[0] = envelope(generation(), generation('g2'))
+    epoch = [1]
+    monkeypatch.setattr(active_account, 'account_epoch', lambda: epoch[0])
+
+    def clock():
+        with db.get_connection() as conn:
+            restored = conn.execute("SELECT 1 FROM generation WHERE id='g1'").fetchone() is not None
+        if restored and epoch[0] == 1 and stop == 'epoch':
+            epoch[0] += 1
+        return 61 if restored and stop == 'deadline' else 0
+
+    monkeypatch.setattr(routes, 'time', SimpleNamespace(monotonic=clock))
+    response = load_keep(client)
+    assert response.status_code == (409 if stop == 'epoch' else 200), response.text
+    if stop == 'deadline':
+        assert response.json() == {'id_map': {'g1': 'g1'}, 'rejected': ['g2'], 'restored': 0}
+    assert set(trash_contents()) == {'g2'}
+
+
+def test_keep_one_real_restore_failure_does_not_stop_other_items(trash_keep_client):
+    client, data = trash_keep_client
+    move_result_to_trash()
+    move_result_to_trash('g2', job='job-g2')
+    data[0] = envelope(generation(), generation('g2'))
+    with db.get_connection() as conn:
+        conn.execute("CREATE TRIGGER fail_restore BEFORE INSERT ON asset WHEN NEW.generation_id='g1' "
+                     "BEGIN SELECT RAISE(ABORT, 'restore failure'); END")
+    response = load_keep(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id_map': {'g2': 'g2'}, 'rejected': ['g1'], 'restored': 0}
+    assert set(trash_contents()) == {'g1'}
+
+
+def test_keep_releases_transition_lock_between_items(trash_keep_client, monkeypatch):
+    client, data = trash_keep_client
+    move_result_to_trash()
+    move_result_to_trash('g2', job='job-g2')
+    data[0] = envelope(generation(), generation('g2'))
+    original, observed = keeps.plan_trash_restores, []
+    real_lock = active_account.transition_lock
+
+    def plan(items, authors):
+        # The initial whole-envelope plan runs outside the transition lock.
+        if len(items) == 1:
+            assert real_lock._is_owned()
+        return original(items, authors)
+
+    class ObservedLock:
+        def __enter__(self):
+            real_lock.acquire()
+        def __exit__(self, *args):
+            real_lock.release()
+            if not real_lock._is_owned():
+                def probe():
+                    acquired = real_lock.acquire(blocking=False)
+                    if acquired:
+                        real_lock.release()
+                    return acquired
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    acquired = pool.submit(probe).result(timeout=5)
+                observed.append((set(trash_contents()), acquired))
+
+    monkeypatch.setattr(active_account, 'transition_lock', ObservedLock())
+    monkeypatch.setattr(keeps, 'plan_trash_restores', plan)
+    assert load_keep(client).status_code == 200
+    assert ({'g2'}, True) in observed
+
+
+def test_keep_old_revision_cannot_extract_real_trash(trash_keep_client, monkeypatch):
+    client, _ = trash_keep_client
+    move_result_to_trash()
+
+    def changed(*args, **kwargs):
+        raise HTTPException(409, '보관본이 바뀌었습니다')
+
+    monkeypatch.setattr(routes._proxy, 'proxy_json', changed)
+    assert load_keep(client).status_code == 409
+    assert set(trash_contents()) == {'g1'}
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM generation').fetchone()[0] == 0
+
+
+def test_keep_missing_local_asset_is_not_eligible_even_with_remote_source(trash_keep_client):
+    client, _ = trash_keep_client
+    insert_existing('g1', job='job-g1')
+    with db.get_connection() as conn:
+        conn.execute("UPDATE asset SET file_path='/media/missing-keep-file.png', source_url='https://example.test/a.png'")
+    assert trash.move_to_trash('g1')
+    assert load_keep(client).json() == {'id_map': {}, 'rejected': ['g1'], 'restored': 0}
+    assert set(trash_contents()) == {'g1'}
+
+
+@pytest.mark.parametrize('payload', ['{bad json', '{}'])
+def test_keep_broken_other_job_payload_blocks_envelope_insertion(trash_keep_client, payload):
+    client, _ = trash_keep_client
+    move_result_to_trash('old')
+    with db.get_connection() as conn:
+        trash.attach_trash(conn)
+        conn.execute("UPDATE trash.trashed SET payload=? WHERE id='old'", (payload,))
+        conn.commit()
+        trash.detach_trash(conn)
+    response = load_keep(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id_map': {}, 'rejected': ['g1'], 'restored': 0}
+
+
+def test_keep_does_not_extract_payload_with_deleted_at(trash_keep_client):
+    client, _ = trash_keep_client
+    move_result_to_trash()
+    payload = trash_contents()['g1']
+    payload['generation']['deleted_at'] = '2026-11-02T00:00:00Z'
+    with db.get_connection() as conn:
+        trash.attach_trash(conn)
+        conn.execute("UPDATE trash.trashed SET payload=? WHERE id='g1'", (json.dumps(payload),))
+        conn.commit()
+        trash.detach_trash(conn)
+    response = load_keep(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id_map': {}, 'rejected': ['g1'], 'restored': 0}
+    assert set(trash_contents()) == {'g1'}
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM generation').fetchone()[0] == 0
+
+
+def test_keep_restore_deadline_starts_after_envelope_validation(trash_keep_client, monkeypatch):
+    client, data = trash_keep_client
+    move_result_to_trash()
+    now = [0]
+    validate = keeps.validate_keep_envelope
+
+    def download(*args, **kwargs):
+        now[0] += 61
+        return data[0]
+
+    def validate_with_delay(envelope_data):
+        validate(envelope_data)
+        now[0] += 61
+
+    monkeypatch.setattr(routes._proxy, 'proxy_json', download)
+    monkeypatch.setattr(keeps, 'validate_keep_envelope', validate_with_delay)
+    monkeypatch.setattr(routes, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    response = load_keep(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id_map': {'g1': 'g1'}, 'rejected': [], 'restored': 0}
+    assert trash_contents() == {}

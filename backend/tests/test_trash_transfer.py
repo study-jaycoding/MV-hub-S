@@ -1,5 +1,6 @@
 """B1 is activated only on synthetic temporary databases in these tests."""
-from contextlib import closing
+from contextlib import closing, contextmanager
+import json
 import sqlite3
 import subprocess
 import sys
@@ -325,3 +326,163 @@ def test_reconcile_preserves_existing_orphan_request_cleanup(enabled_db):
     trash.reconcile_with_main()
     with db.get_connection() as conn:
         assert conn.execute("SELECT status FROM gen_request WHERE id='orphan'").fetchone()[0] == 'canceled'
+
+
+@pytest.fixture
+def scene_keep_restore_client(enabled_db, monkeypatch):
+    """Real B1 moves and route; only the remote envelope and account are synthetic."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.routers import scene_keeps
+
+    owner = 'scene-keep@example.invalid'
+    with db.get_connection() as conn:
+        # The standard fixture uses a deliberately nonexistent local media file.
+        # This flow needs a usable result according to the real trash predicate.
+        conn.execute("UPDATE asset SET file_path='https://example.invalid/original-g1.png' WHERE id='a1'")
+        conn.execute("INSERT INTO generation(id,worker_id,prompt,status,created_at,job_id) "
+                     "VALUES('g2','me','second original','done','2026-10-18','job2')")
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path) "
+                     "VALUES('a2','g2','image','https://example.invalid/original-g2.png')")
+    assert trash.move_to_trash('g1')
+    assert trash.move_to_trash('g2')
+
+    items = [
+        {'id': gid, 'scene_ids': [gid], 'job_id': f'job{index}', 'source': 'local',
+         'status': 'done', 'prompt': f'snapshot-{gid}', 'created_at': '2026-10-18T00:00:00Z',
+         'creator_uid': None, 'assets': [{'type': 'image', 'file_path': f'https://example.invalid/snapshot-{gid}.png'}]}
+        for index, gid in enumerate(('g1', 'g2', 'g3'), 1)
+    ]
+    envelope = {'v': 1, 'scene_text': json.dumps({
+        'format': 'mv-scene', 'version': 1, 'savedAt': 0,
+        'scene': {'name': 'B1 scene', 'cards': [{'id': 'card', 'genIds': ['g1', 'g2', 'g3']}],
+                  'edges': [], 'groups': [], 'camera': {'x': 0, 'y': 0, 'zoom': 1}},
+    }), 'generations': items}
+
+    @contextmanager
+    def relay(request, *, write):
+        assert write
+        yield owner
+
+    fetches = []
+
+    def fetch(method, path, *, params):
+        assert method == 'GET'
+        assert path == '/api/scene-keeps/' + 'a' * 32 + '/envelope'
+        assert params == {'revision': 1}
+        fetches.append(path)
+        return envelope
+
+    monkeypatch.setattr(config, 'AUTH_ENABLED', False)
+    monkeypatch.setattr(scene_keeps, '_relay', relay)
+    monkeypatch.setattr(scene_keeps, 'require_agent_account', lambda request: {'email': owner})
+    monkeypatch.setattr(scene_keeps._proxy, 'proxy_json', fetch)
+    app = FastAPI()
+    app.include_router(scene_keeps.router)
+    with TestClient(app) as client:
+        yield client, fetches
+
+
+def _scene_keep_b1_state():
+    with db.get_connection() as conn:
+        main = dict(conn.execute("SELECT id,prompt FROM generation WHERE id IN ('g1','g2','g3')"))
+        assets = dict(conn.execute("SELECT generation_id,id FROM asset WHERE generation_id IN ('g1','g2','g3')"))
+        pending = conn.execute('SELECT COUNT(*) FROM generation_transfer').fetchone()[0]
+    with closing(sqlite3.connect(db.get_db_path().parent / 'content_hub_trash.db')) as conn:
+        trashed = {row[0] for row in conn.execute("SELECT id FROM trashed WHERE id IN ('g1','g2','g3')")}
+        prepared = conn.execute("SELECT COUNT(*) FROM move_operation WHERE phase='prepared'").fetchone()[0]
+        g2_restore_operations = conn.execute("SELECT COUNT(*) FROM move_operation "
+                                             "WHERE generation_id='g2' AND direction='restore'").fetchone()[0]
+    return main, assets, trashed, pending, prepared, g2_restore_operations
+
+
+@pytest.mark.parametrize('phase', ['R0', 'R1', 'R2'])
+def test_scene_keep_b1_interruption_reconciles_before_next_item_and_retry(scene_keep_restore_client, monkeypatch, phase):
+    client, fetches = scene_keep_restore_client
+    interrupted = []
+
+    def interrupt_once(where):
+        if where == phase and not interrupted:
+            interrupted.append(where)
+            raise sqlite3.OperationalError('synthetic scene-keep interruption')
+
+    monkeypatch.setattr(transfer, 'checkpoint', interrupt_once)
+    response = client.post('/api/scene-keeps/restore', json={'id': 'a' * 32, 'revision': 1})
+    assert response.status_code == 200, response.text
+    assert interrupted == [phase]
+    result = response.json()
+    assert result['restored'] == 1  # Only g3 is inserted from the envelope.
+    assert result['id_map']['g2'] == 'g2' and result['id_map']['g3'] == 'g3'
+    main, assets, trashed, pending, prepared, g2_operations = _scene_keep_b1_state()
+    assert main['g2'] == 'second original' and assets['g2'] == 'a2'
+    assert pending == prepared == 0 and g2_operations == 1
+    if phase == 'R0':
+        # No main commit: reconciliation cancels the prepared restore and keeps g1.
+        assert result['rejected'] == ['g1'] and 'g1' not in result['id_map']
+        assert 'g1' not in main and trashed == {'g1'}
+    else:
+        assert result['rejected'] == [] and result['id_map']['g1'] == 'g1'
+        assert main['g1'] == 'kept' and assets['g1'] == 'a1' and trashed == set()
+
+    # The same failure hook remains installed; it fires only once. A new load must
+    # resume g1 after R0 and be idempotent after the committed R1/R2 failures.
+    again = client.post('/api/scene-keeps/restore', json={'id': 'a' * 32, 'revision': 1})
+    assert again.status_code == 200, again.text
+    assert again.json() == {'id_map': {'g1': 'g1', 'g2': 'g2', 'g3': 'g3'}, 'rejected': [], 'restored': 0}
+    main, assets, trashed, pending, prepared, g2_operations = _scene_keep_b1_state()
+    assert main == {'g1': 'kept', 'g2': 'second original', 'g3': 'snapshot-g3'}
+    assert assets['g1'] == 'a1' and assets['g2'] == 'a2'
+    assert len(assets) == 3 and trashed == set() and pending == prepared == 0
+    assert g2_operations == 1 and len(fetches) == 2
+
+
+def test_scene_keep_b1_reconcile_failure_stops_writes_with_409_then_resumes(scene_keep_restore_client, monkeypatch):
+    client, fetches = scene_keep_restore_client
+    interrupted = []
+
+    def interrupt_restore_then_reconcile(where):
+        if where == 'R1' and not interrupted:
+            interrupted.append('restore')
+            raise sqlite3.OperationalError('synthetic restore interruption')
+        if where == 'R2' and interrupted == ['restore']:
+            interrupted.append('reconcile')
+            raise sqlite3.OperationalError('synthetic reconcile interruption')
+
+    monkeypatch.setattr(transfer, 'checkpoint', interrupt_restore_then_reconcile)
+    response = client.post('/api/scene-keeps/restore', json={'id': 'a' * 32, 'revision': 1})
+    assert response.status_code == 409, response.text
+    assert response.json()['detail'] == '잠시 뒤 다시 열어 주세요'
+    assert interrupted == ['restore', 'reconcile']
+    main, assets, trashed, pending, prepared, g2_operations = _scene_keep_b1_state()
+    assert main == {'g1': 'kept'} and assets == {'g1': 'a1'}
+    assert trashed == {'g2'} and pending == 1 and prepared == 0
+    # Nothing after the unclean g1 operation may start, including envelope g3.
+    assert g2_operations == 0
+
+    again = client.post('/api/scene-keeps/restore', json={'id': 'a' * 32, 'revision': 1})
+    assert again.status_code == 200, again.text
+    assert again.json() == {'id_map': {'g1': 'g1', 'g2': 'g2', 'g3': 'g3'}, 'rejected': [], 'restored': 1}
+    main, assets, trashed, pending, prepared, g2_operations = _scene_keep_b1_state()
+    assert main == {'g1': 'kept', 'g2': 'second original', 'g3': 'snapshot-g3'}
+    assert assets['g1'] == 'a1' and assets['g2'] == 'a2' and len(assets) == 3
+    assert trashed == set() and pending == prepared == 0
+    assert g2_operations == 1 and len(fetches) == 2
+
+
+def test_scene_keep_b1_pending_delete_is_not_admitted_after_reconciliation(scene_keep_restore_client, monkeypatch):
+    client, _ = scene_keep_restore_client
+    assert trash.restore_from_trash('g1')
+
+    def interrupt_delete(phase):
+        if phase == 'D2':
+            raise sqlite3.OperationalError('unfinished delete')
+
+    monkeypatch.setattr(transfer, 'checkpoint', interrupt_delete)
+    with pytest.raises(sqlite3.OperationalError, match='unfinished delete'):
+        trash.move_to_trash('g1')
+    monkeypatch.setattr(transfer, 'checkpoint', lambda phase: None)
+    response = client.post('/api/scene-keeps/restore', json={'id': 'a' * 32, 'revision': 1})
+    assert response.status_code == 200, response.text
+    assert response.json() == {'id_map': {'g2': 'g2', 'g3': 'g3'}, 'rejected': ['g1'], 'restored': 1}
+    main, _, trashed, pending, prepared, _ = _scene_keep_b1_state()
+    assert 'g1' not in main and trashed == {'g1'} and pending == prepared == 0

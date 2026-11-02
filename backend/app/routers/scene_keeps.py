@@ -8,10 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import _proxy
 from .edit_shares import ACCOUNT_CHANGED, _relay, _viewer
 from .. import active_account, config, repo
+from ..db import open_transfer_connections
 from ..deps import (account_author_uids, batch_view_member_projects,
                     can_view_generation_with_member_projects, require_agent_account)
 from ..emailnorm import norm_email
 from ..repo import scene_keeps as keeps
+from ..services import trash_transfer
 
 router = APIRouter(prefix='/api/scene-keeps', tags=['scene-keeps'])
 KEY_PATTERN = r'^[0-9a-f]{32}$'
@@ -159,7 +161,7 @@ def restore_scene_keep(body: RestoreIn, request: Request):
         epoch = active_account.account_epoch()
         data = _proxy.proxy_json('GET', f'/api/scene-keeps/{body.id}/envelope', params={'revision': body.revision})
         keeps.validate_keep_envelope(data)
-        # Exclude a pointer transition between the final check and the local write.
+        deadline = time.monotonic() + 60
         with active_account.transition_lock:
             if epoch != active_account.account_epoch():
                 raise HTTPException(409, ACCOUNT_CHANGED)
@@ -169,7 +171,47 @@ def restore_scene_keep(body: RestoreIn, request: Request):
             pinned_uid = active_account.active_uid()
             if pinned_uid:
                 author_uids.add(pinned_uid)
+        planned = keeps.plan_trash_restores(data['generations'], author_uids)
+        for item, candidate in zip(data['generations'], planned):
+            if time.monotonic() >= deadline:
+                break
+            if candidate is None:
+                continue
+            # The pin selects the DB; the lock and epoch prevent writing after a switch.
+            # Recheck each candidate because another keep may have restored its job.
+            with active_account.transition_lock:
+                if epoch != active_account.account_epoch():
+                    raise HTTPException(409, ACCOUNT_CHANGED)
+                if time.monotonic() >= deadline:
+                    break
+                # Finish a previous request before retrying an admitted item.
+                # Select first so an in-progress delete is not newly admitted.
+                _settle_trash_transfer()
+                try:
+                    current = keeps.plan_trash_restores([item], author_uids)[0]
+                    if current is not None:
+                        if time.monotonic() >= deadline:
+                            break
+                        repo.restore_from_trash(current, account_uid=None)
+                except Exception:
+                    # Even an ordinary SQLite error can follow a durable B1 commit.
+                    # Do not continue writing until both journals are quiescent.
+                    _settle_trash_transfer()
+        with active_account.transition_lock:
+            if epoch != active_account.account_epoch():
+                raise HTTPException(409, ACCOUNT_CHANGED)
+            _settle_trash_transfer()
             return keeps.restore_keep(data, author_uids)
+
+
+def _settle_trash_transfer():
+    try:
+        if keeps.has_pending_transfer():
+            trash_transfer.reconcile(open_transfer_connections)
+            if keeps.has_pending_transfer():
+                raise RuntimeError('unfinished trash transfer')
+    except Exception as exc:
+        raise HTTPException(409, '잠시 뒤 다시 열어 주세요') from exc
 
 
 @router.get('/{id}/envelope')

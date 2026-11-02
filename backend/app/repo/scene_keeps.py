@@ -1,4 +1,4 @@
-"""Explicit, private server scene keeps; local restoration never revives deleted results."""
+"""Private scene keeps; opening restores eligible trash results before linking cards."""
 from __future__ import annotations
 
 import hashlib
@@ -10,10 +10,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .. import config
-from ..db import get_connection
+from ..db import get_connection, open_transfer_connections
 from ..emailnorm import norm_email
 from ..services import trash_transfer
-from .trash import attach_trash, detach_trash, tombstoned_among
+from .trash import attach_trash, detach_trash, _payload_has_usable_asset
 
 DATA_MAX = 8 * 1024 * 1024
 SCENE_MAX = 5 * 1024 * 1024
@@ -263,6 +263,152 @@ def delete_keep(owner, kid, revision):
     return {'ok': True}
 
 
+def _trash_payload(row):
+    try:
+        payload = json.loads(row['payload'])
+        gen = payload['generation']
+        if not isinstance(gen, dict) or gen.get('id') != row['id']:
+            return None
+        return payload
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _failed_payload(payload):
+    if payload is None:
+        return False
+    terminal = payload.get('provider_terminal')
+    return (payload['generation'].get('status') == 'failed'
+            or isinstance(terminal, dict) and terminal.get('kind') == 'failure')
+
+
+def _restore_state(conn, generations):
+    """One snapshot, shared by trash admission and the final write transaction."""
+    ids = list(dict.fromkeys(a for g in generations for a in [g['id'], *g.get('scene_ids', [])]))
+    jobs = list(dict.fromkeys(g['job_id'] for g in generations if g.get('job_id')))
+    rows, trashed, live_jobs, trash_jobs = {}, {}, {}, {}
+    deleting_ids, deleting_jobs = set(), set()
+    for column, values in (('id', ids), ('job_id', jobs)):
+        for batch in chunks(values):
+            ph = ','.join('?' for _ in batch)
+            for row in conn.execute(f"SELECT g.*, EXISTS(SELECT 1 FROM asset a WHERE a.generation_id=g.id AND a.file_path<>'') AS has_asset FROM generation g WHERE g.{column} IN ({ph})", batch):
+                rows[row['id']] = dict(row)
+    ids = list(dict.fromkeys([*ids, *rows]))
+    transferring = trash_transfer.enabled(conn)
+    for column, values in (('id', ids), ('job_id', jobs)):
+        for batch in chunks(values):
+            ph = ','.join('?' for _ in batch)
+            for row in conn.execute(f'SELECT id,job_id,creator_uid,payload FROM trash.trashed WHERE {column} IN ({ph})', batch):
+                trashed[row['id']] = dict(row)
+            if transferring:
+                transfer_column = 'generation_id' if column == 'id' else column
+                for row in conn.execute(f"SELECT generation_id,job_id FROM generation_transfer WHERE direction='delete' AND {transfer_column} IN ({ph})", batch):
+                    deleting_ids.add(row['generation_id'])
+                    if row['job_id']:
+                        deleting_jobs.add(row['job_id'])
+    # A job-matched trash ID may already exist in main under a DIFFERENT job.
+    # Check the actual candidate IDs too, before the legacy restore can replace them.
+    for batch in chunks(list(trashed.keys() - rows.keys())):
+        ph = ','.join('?' for _ in batch)
+        for row in conn.execute(f"SELECT g.*, EXISTS(SELECT 1 FROM asset a WHERE a.generation_id=g.id AND a.file_path<>'') AS has_asset FROM generation g WHERE g.id IN ({ph})", batch):
+            rows[row['id']] = dict(row)
+        if transferring:
+            deleting_ids.update(row[0] for row in conn.execute(
+                f"SELECT generation_id FROM generation_transfer WHERE direction='delete' AND generation_id IN ({ph})", batch))
+    for row in trashed.values():
+        row['parsed'] = _trash_payload(row)
+        if row['job_id']:
+            trash_jobs.setdefault(row['job_id'], []).append(row)
+            if row['id'] in deleting_ids:
+                deleting_jobs.add(row['job_id'])
+    for row in rows.values():
+        if (row['status'] == 'done' and row['has_asset'] and not row.get('deleted_at')
+                and row['id'] not in trashed and row['id'] not in deleting_ids and row.get('job_id')):
+            live_jobs.setdefault(row['job_id'], []).append(row['id'])
+    return rows, trashed, live_jobs, trash_jobs, deleting_ids, deleting_jobs
+
+
+def _live_target(g, state):
+    rows, trashed, live_jobs, _, deleting_ids, deleting_jobs = state
+    job = g.get('job_id') or None
+    ids = [g['id'], *g.get('scene_ids', [])]
+    if deleting_ids.intersection(ids) or job in deleting_jobs:
+        return None, True
+    candidates = live_jobs.get(job, []) if job else []
+    if candidates:
+        if len(candidates) == 1:
+            return candidates[0], False
+        return (g['id'], False) if g['id'] in candidates else (None, True)
+    row = rows.get(g['id'])
+    if row:
+        if (row['status'] == 'done' and row['has_asset'] and not row.get('deleted_at')
+                and row['id'] not in trashed and (row.get('job_id') or None) == job):
+            return row['id'], False
+        return None, True
+    return None, False
+
+
+def plan_trash_restores(generations, author_uids):
+    """Return candidate IDs only; release the snapshot before calling trash restore."""
+    with get_connection() as conn:
+        attach_trash(conn)
+        try:
+            conn.execute('BEGIN')
+            state = _restore_state(conn, generations)
+            rows, trashed, _, trash_jobs, _, _ = state
+            planned = []
+            for g in generations:
+                target, blocked = _live_target(g, state)
+                if target or blocked:
+                    planned.append(None)
+                    continue
+                job = g.get('job_id') or None
+                matches = {row['id']: row for row in trash_jobs.get(job, [])} if job else {}
+                if g['id'] in trashed:
+                    matches[g['id']] = trashed[g['id']]
+                eligible = []
+                for row in matches.values():
+                    payload = row['parsed']
+                    if (payload is None or _failed_payload(payload) or row['id'] in rows
+                            or row['creator_uid'] is not None and row['creator_uid'] not in author_uids):
+                        continue
+                    gen = payload['generation']
+                    if (gen.get('status') != 'done' or gen.get('deleted_at')
+                            or (gen.get('job_id') or None) != job):
+                        continue
+                    try:
+                        usable = _payload_has_usable_asset(payload)
+                    except (TypeError, AttributeError):
+                        usable = False
+                    if usable:
+                        eligible.append(row['id'])
+                planned.append(g['id'] if g['id'] in eligible else eligible[0] if len(eligible) == 1 else None)
+            # Two envelope entries must not independently revive two rows of one job.
+            per_job = {}
+            for g, candidate in zip(generations, planned):
+                if candidate and g.get('job_id'):
+                    per_job.setdefault(g['job_id'], set()).add(candidate)
+            return [None if len(per_job.get(g.get('job_id'), ())) > 1 else candidate
+                    for g, candidate in zip(generations, planned)]
+        finally:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            detach_trash(conn)
+
+
+def has_pending_transfer():
+    with get_connection() as conn:
+        if not trash_transfer.enabled(conn):
+            return False
+    # Reuse the protocol's check for both the main receipt and prepared trash work.
+    with open_transfer_connections() as (main, other, _, _):
+        try:
+            trash_transfer._assert_pair_quiescent(main, other)
+        except trash_transfer.TransferRecoveryRequired:
+            return True
+    return False
+
+
 def restore_keep(data, author_uids):
     validate_keep_envelope(data)
     generations = data['generations']
@@ -271,55 +417,20 @@ def restore_keep(data, author_uids):
         attach_trash(conn)
         try:
             conn.execute('BEGIN IMMEDIATE')
-            ids = list(dict.fromkeys(a for g in generations for a in [g['id'], *g.get('scene_ids', [])]))
-            jobs = list(dict.fromkeys(g['job_id'] for g in generations if g.get('job_id')))
-            dead_ids, dead_jobs, rows = set(), set(), {}
-            for batch in chunks(ids):
-                ph = ','.join('?' for _ in batch)
-                dead_ids.update(r[0] for r in conn.execute(f'SELECT id FROM trash.trashed WHERE id IN ({ph})', batch))
-                if trash_transfer.enabled(conn):
-                    dead_ids.update(r[0] for r in conn.execute(f"SELECT generation_id FROM generation_transfer WHERE direction='delete' AND generation_id IN ({ph})", batch))
-            for batch in chunks(jobs):
-                dead_jobs.update(tombstoned_among(conn, batch))
-            for column, values in (('id', ids), ('job_id', jobs)):
-                for batch in chunks(values):
-                    ph = ','.join('?' for _ in batch)
-                    for r in conn.execute(f'SELECT g.*, EXISTS(SELECT 1 FROM asset a WHERE a.generation_id=g.id AND a.file_path<>\'\') AS has_asset FROM generation g WHERE g.{column} IN ({ph})', batch):
-                        rows[r['id']] = dict(r)
-            # A job match can have a different local id. Its id tombstone still
-            # wins even when an older trash payload has no job_id.
-            for batch in chunks(list(rows)):
-                ph = ','.join('?' for _ in batch)
-                dead_ids.update(r[0] for r in conn.execute(f'SELECT id FROM trash.trashed WHERE id IN ({ph})', batch))
-                if trash_transfer.enabled(conn):
-                    dead_ids.update(r[0] for r in conn.execute(f"SELECT generation_id FROM generation_transfer WHERE direction='delete' AND generation_id IN ({ph})", batch))
-            by_job = {}
-            for r in rows.values():
-                if r.get('deleted_at') or r['id'] in dead_ids:
-                    dead_ids.add(r['id'])
-                    if r.get('job_id'):
-                        dead_jobs.add(r['job_id'])
-                elif r['status'] == 'done' and r['has_asset'] and r.get('job_id'):
-                    by_job.setdefault(r['job_id'], []).append(r['id'])
+            state = _restore_state(conn, generations)
+            rows, trashed, by_job, trash_jobs, _, _ = state
             for g in generations:
                 aliases = g.get('scene_ids', [g['id']])
                 job = g.get('job_id') or None
-                if dead_ids.intersection([g['id'], *aliases]) or job in dead_jobs:
+                target, blocked = _live_target(g, state)
+                if blocked:
                     rejected.extend(aliases)
                     continue
-                candidates = by_job.get(job, []) if job else []
-                if len(candidates) > 1:
-                    rejected.extend(aliases)
-                    continue
-                target = candidates[0] if candidates else None
-                row = rows.get(g['id'])
-                if target is None and row:
-                    if row['status'] == 'done' and row['has_asset'] and not row.get('deleted_at') and (row.get('job_id') or None) == job:
-                        target = g['id']
-                    else:
+                if target is None:
+                    if (any(key in trashed for key in [g['id'], *aliases])
+                            or any(not _failed_payload(row['parsed']) for row in trash_jobs.get(job, []))):
                         rejected.extend(aliases)
                         continue
-                if target is None:
                     if g['source'] == 'server' and g.get('creator_uid') not in author_uids:
                         continue
                     stamp = generation_timestamp(g)
