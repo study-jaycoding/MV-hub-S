@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy
-from ._delivery import require_hub_delivery
+from ._delivery import delivery_notice, require_hub_delivery
 from .. import active_account, rbac, repo
 from ..repo.asset_sync import UndeliverableMove
 from ..deps import (
@@ -474,8 +474,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             except Exception:  # noqa: BLE001
                 pass
         _require_assign_target(request, body.project_id)
-        if tab != "team":
-            require_hub_delivery(body.generation_ids, body.project_id)
+        verified = require_hub_delivery(body.generation_ids, body.project_id) if tab != "team" else True
         # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮길 것 가운데 이미 공유된 것은 **서버 먼저** 옮긴다(Jay 결정 3A·C11) — 최종본 이동은
         #  서버가 양쪽 검수자를 보고 403 으로 거절할 수 있고, 로컬의 최종 표식은 늦거나 틀릴 수 있다. 403 이면 로컬도 바꾸지 않는다.
         #  서버 미연결·그 밖의 실패는 지금처럼 로컬만 반영한다(team_synced=False — 추후 재동기).
@@ -553,7 +552,8 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
                 drain_isolated_telemetry()
             except Exception:  # noqa: BLE001
                 pass
-        return {"ok": True, "updated": n, "team_synced": team_synced}
+        notice = delivery_notice(body.generation_ids, body.project_id, verified) if tab != "team" else {}
+        return {"ok": True, "updated": n, "team_synced": team_synced, **notice}
 
 
 # ── 프로젝트 멤버·역할 (v02 RBAC PART 1) ───────────────────────────────────

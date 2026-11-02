@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from .. import active_account, config, db, rbac
 from ..deps import account_author_uids, actor_id, require_project_role
 from ..repo import asset_sync as ledger
-from ..services import asset_io, asset_sync as sync, asset_sync_cache
+from ..services import asset_backfill, asset_io, asset_sync as sync, asset_sync_cache
 from ..services import shared_connection
 from ..services.async_tools import to_thread_non_abandon
 from ..services.media_types import asset_content_type
@@ -321,10 +321,12 @@ def location_info(location_id: str,request: Request):
 def local_status(request: Request,project_id: str | None=None):
     from ..services import asset_destination
     owner=_local_owner(request)
+    account_key=active_account.account_key() or ''
     with db.get_connection() as conn:
         return {'items':ledger.status_rows(conn,owner,project_id),
                 'destinations': asset_destination.status(conn, owner),
-                'summary': ledger.transfer_summary(conn,owner,active_account.account_key() or '',_proxy.base_url())}
+                'summary': {**ledger.transfer_summary(conn,owner,account_key,_proxy.base_url()),
+                            'unsendable': asset_backfill.skipped_count(owner,account_key,_proxy.base_url())}}
 
 
 @local_router.post('/resolve')
@@ -475,4 +477,5 @@ async def _local_ingest(request,file,original_file_path,target_project_id,target
 def retry(request: Request):
     with db.get_connection() as conn:
         ledger.retry_failed(conn,_local_owner(request),active_account.account_key() or '',_proxy.base_url())
+    asset_backfill.request_rescan()
     return local_status(request)

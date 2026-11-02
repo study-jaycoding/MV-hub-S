@@ -143,6 +143,8 @@
 }
 .thumb-broken-ic { font-size: 26px; line-height: 1; }
 .thumb-broken-label { letter-spacing: 0.3px; }
+.thumb-waiting { color: var(--muted); } /* 경고가 아니다 — 올라오면 저절로 보인다 */
+svg.thumb-broken-ic { width: 24px; height: 24px; }
 .color-marker {
   position: absolute; top: 8px; left: 8px;
   width: 14px; height: 14px; border-radius: 50%;

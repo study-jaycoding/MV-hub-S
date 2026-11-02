@@ -35,7 +35,8 @@ export function AssetTransferLine() {
       alive = false;
     };
   }, []);
-  if (!summary || !(summary.waiting || summary.failed || summary.needs_check)) return null;
+  const unsendable = summary?.unsendable ?? 0;
+  if (!summary || !(summary.waiting || summary.failed || summary.needs_check || unsendable)) return null;
   const retry = async () => {
     setBusy(true);
     try {
@@ -50,13 +51,17 @@ export function AssetTransferLine() {
     summary.waiting ? t("대기 {n}").replace("{n}", String(summary.waiting)) : "",
     summary.failed ? t("실패 {n}").replace("{n}", String(summary.failed)) : "",
     summary.needs_check ? t("확인 필요 {n}").replace("{n}", String(summary.needs_check)) : "",
+    unsendable ? t("파일 없음 {n}").replace("{n}", String(unsendable)) : "",
   ].filter(Boolean);
   return (
     <div className="settings-row" aria-live="polite">
-      <span title={summary.needs_check ? t("프로젝트 역할이나 저장 위치가 없어 보내지 못한 파일입니다. 구성원과 프로젝트 저장 위치를 확인해 주세요.") : undefined}>
+      <span title={[
+        summary.needs_check ? t("프로젝트 역할이나 저장 위치가 없어 보내지 못한 파일입니다. 구성원과 프로젝트 저장 위치를 확인해 주세요.") : "",
+        unsendable ? t("이 PC 에서 찾지 못해 보내지 못한 파일입니다. 파일을 되살리면 다시 시도로 보낼 수 있습니다.") : "",
+      ].filter(Boolean).join(" ") || undefined}>
         {t("자료 전송")} · {parts.join(" · ")}
       </span>
-      {summary.failed > 0 && (
+      {(summary.failed > 0 || unsendable > 0) && (
         <button className="settings-action ghost" onClick={retry} disabled={busy}>
           {t("다시 시도")}
         </button>

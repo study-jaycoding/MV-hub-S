@@ -430,7 +430,19 @@ function GenerationCardImpl({
           </div>
         }
       />
-      {broken && gen.status === "done" && (
+      {broken && gen.status === "done" && tab === "team" && asset?.file_path && !/^(https?:|asset-sync:)/.test(asset.file_path) ? (
+        // 공유 탭의 로컬 주소 = 작성자 PC 에 있는 파일 — 서버로 올라오면 목록이 새 주소를 받아 저절로 보인다
+        <div
+          className="thumb-broken thumb-waiting"
+          title={t("작성자 PC 에서 파일을 보내는 중입니다. 올라오면 저절로 보입니다. 오래 안 보이면 작성자에게 알려 주세요.")}
+        >
+          <svg className="thumb-broken-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M7 18a4.5 4.5 0 0 1-.6-8.96A5.5 5.5 0 0 1 17 8.5a4 4 0 0 1 0 9.5" />
+            <path d="M12 12v8M9 15l3-3 3 3" />
+          </svg>
+          <span className="thumb-broken-label">{t("전송 대기")}</span>
+        </div>
+      ) : broken && gen.status === "done" && (
         <div
           className="thumb-broken"
           title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 'HF 삭제물 체크'로 정리하세요."

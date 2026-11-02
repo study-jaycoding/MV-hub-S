@@ -1165,8 +1165,12 @@ export async function mergeSceneStoreDump(
 // localStorage 는 다른 창에 `storage` 이벤트를 보내 줬지만 **IndexedDB 는 아무 신호도 안 보낸다**.
 // 확정된 뒤 알리고, 받은 창은 저장소에서 다시 읽어 confirmed 를 맞추고 working 을 다시 계산한다.
 const CHANNEL_NAME = "mvhub-scenes";
+// 이 판의 통지 글자 — 옛 판은 내용을 안 읽어 그대로 받고, 옛 판의 "saved" 는 쓰는 탭 규칙을 모르는 탭이 쓰고 있다는 뜻이다.
+const SAVED_SIGNAL = "saved-writer";
+const OLD_TAB_SIGNAL = "saved";
 let channel: BroadcastChannel | null = null;
 const externalSubs = new Set<() => void>();
+const oldTabSubs = new Set<() => void>();
 
 /** 이 창이 한 편집이 아닌 이유로 씬이 바뀌었다(다른 창의 저장·옛 창 흡수·충돌 정리) — 목록을 다시 읽어야 한다. */
 export function subscribeSceneStoreExternal(fn: () => void): () => void {
@@ -1175,17 +1179,48 @@ export function subscribeSceneStoreExternal(fn: () => void): () => void {
   return () => externalSubs.delete(fn);
 }
 
+const OLD_TAB_WARN_MS = 10 * 60 * 1000;
+
+/** 업데이트 전에 열어 둔 탭이 쓰면 알린다 — 내용이 바뀌었든 아니든. 같은 창의 두 탭이면 옛 탭을 쓰는 동안 이 탭은 가려져 있으니 보일 때 띄운다.
+ *  quiet — 지금 씬을 쓰지 않는 창(쉬는 탭·떠 있는 창을 둔 메인 창)은 알리지 않는다. */
+export function watchOldTabWrites(warn: () => void, quiet: () => boolean): () => void {
+  let held = false;
+  let shownAt = -OLD_TAB_WARN_MS;
+  const onWrite = () => {
+    if (quiet()) return;
+    if (document.visibilityState !== "visible") {
+      held = true;
+      return;
+    }
+    held = false;
+    if (Date.now() - shownAt < OLD_TAB_WARN_MS) return;
+    shownAt = Date.now();
+    warn();
+  };
+  const onVisible = () => {
+    if (held) onWrite();
+  };
+  oldTabSubs.add(onWrite);
+  document.addEventListener("visibilitychange", onVisible);
+  openChannel();
+  return () => {
+    oldTabSubs.delete(onWrite);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
+}
+
 function openChannel(): void {
   if (channel || typeof BroadcastChannel === "undefined") return;
   channel = new BroadcastChannel(CHANNEL_NAME);
-  channel.onmessage = () => {
+  channel.onmessage = (event: MessageEvent) => {
+    if (event.data === OLD_TAB_SIGNAL) oldTabSubs.forEach((fn) => fn());
     void refreshFromStore();
   };
 }
 
 function announceWrite(): void {
   openChannel();
-  channel?.postMessage("saved");
+  channel?.postMessage(SAVED_SIGNAL);
 }
 
 /** 다른 창이 썼다 — 저장소를 다시 읽는다. 내 pending 이 있으면 그 김에 같이 확정한다. */

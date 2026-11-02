@@ -14,6 +14,14 @@ function normalizeAssignResult(value: unknown): { updated: number; teamSyncFaile
   return { updated, teamSyncFailed: result.team_synced === false };
 }
 
+/** 옮겼지만 파일이 다른 PC 로 간다고 확인하지 못한 것 — 이동은 막지 않고 성공 문구에 붙여 한 번에 알린다. */
+export function deliveryNotices(result: { delivery_unverified?: boolean; missing_files?: number } | null | undefined): string[] {
+  const notices: string[] = [];
+  if (result?.delivery_unverified) notices.push(t("서버에 연결되지 않아 파일 전달을 확인하지 못했습니다 — 연결되면 설정의 자료 전송을 확인해 주세요."));
+  if (result?.missing_files) notices.push(t("이 PC 에 없는 파일 {count}개는 보내지 못합니다 — 다른 PC 에서 열리지 않을 수 있습니다.").replace("{count}", String(result.missing_files)));
+  return notices;
+}
+
 function assignFailureMessage(error: unknown): string {
   let message = "옮기지 못했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.";
   if (error instanceof HttpError) {
@@ -89,6 +97,7 @@ export function useGenerationProjectActions({
       ? message.replace("{count}", String(confirmed.updated))
       : t("이동 결과를 확인할 수 없습니다. 다시 이동하기 전에 목록을 확인해 주세요.")];
     if (confirmed?.teamSyncFailed) notices.push(t("⚠ 팀 공유 반영 실패(서버 미연결) — 재동기 필요"));
+    notices.push(...deliveryNotices(result));
     if (reloadFailed) notices.push(t(confirmed
       ? "이동은 완료했지만 화면을 새로고침하지 못했습니다. 다시 불러와 주세요."
       : "화면을 새로고침하지 못했습니다. 다시 불러와 주세요."));

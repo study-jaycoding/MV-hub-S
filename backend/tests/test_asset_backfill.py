@@ -1,5 +1,6 @@
 """옛 결과·서버에서 옮겨진 공유물의 전송 줄을 일꾼이 잇는다."""
 import hashlib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -27,8 +28,11 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'ASSETS_ROOT', tmp_path / 'assets')
     (tmp_path / 'media' / 'comfy').mkdir(parents=True)
     asset_backfill.reset()
+    asset_backfill.clear_stop()
+    asset_backfill._rescan.clear()
     yield tmp_path
     asset_backfill.reset()
+    asset_backfill.clear_stop()
     db.flush_pool()
 
 
@@ -82,9 +86,10 @@ def test_the_snapshot_keeps_the_bytes_when_the_original_goes_away(world):
     (world / 'media' / 'comfy' / 'snap.png').unlink()
     with db.get_connection() as conn:
         row = conn.execute("SELECT path FROM asset_location WHERE kind='local' AND asset_content_id=?", (_content(gid),)).fetchone()
-    assert 'imports' in row['path']
+    assert asset_backfill.SNAPSHOT_FOLDER in row['path']
     from pathlib import Path
     assert Path(row['path']).is_file()
+    assert not (world / 'assets' / 'imports').exists()  # 어셋 탭에 같은 그림이 늘면 안 된다
 
 
 def test_an_id_without_a_local_copy_is_registered_when_the_bytes_match(world):
@@ -122,12 +127,12 @@ def test_an_unreadable_file_is_skipped_too(world):
     project = _project()
     _result(world, 'broken', project=project)
     after = _result(world, 'behind', project=project)
-    real = asset_backfill._snapshot
-    def snapshot(path):
+    real = asset_backfill._read
+    def read(path, copy):
         if path.name == 'broken.png':
             raise OSError('locked')
-        return real(path)
-    with patch.object(asset_backfill, '_snapshot', side_effect=snapshot):
+        return real(path, copy=copy)
+    with patch.object(asset_backfill, '_read', side_effect=read):
         _tick()
     assert _content(after)
 
@@ -339,12 +344,12 @@ def test_a_server_switch_during_a_remote_copy_does_not_carry_the_old_project(wor
 def test_a_server_switch_during_the_snapshot_registers_nothing(world):
     project = _project()
     gid = _result(world, 'mid-copy', project=project)
-    real = asset_backfill._snapshot
-    def switch(path):
-        taken = real(path)
+    real = asset_backfill._read
+    def switch(path, copy):
+        taken = real(path, copy=copy)
         repo.set_setting(K_URL, 'http://other')
         return taken
-    with patch.object(asset_backfill, '_snapshot', side_effect=switch):
+    with patch.object(asset_backfill, '_read', side_effect=switch):
         _tick()
     assert _content(gid) is None
     with db.get_connection() as conn:
@@ -393,3 +398,314 @@ def test_no_token_means_no_work(world, monkeypatch):
         asset_backfill.tick(100.0)
     call.assert_not_called()
     assert _content(gid) is None
+
+
+# ── 옛 입력 ──
+def _input(gid, name, address=None, *, write=True, source_url=None, share_url=None, sha=None, size=None, role='@Image1', position=None, data=b'\x89PNG\r\n\x1a\ninput'):
+    """옛 입력 행 — 내용 ID 가 없다. 기본 주소는 /media/comfy."""
+    world = Path(str(config.MEDIA_DIR)).parent
+    address = address or f'/media/comfy/{name}.png'
+    if write and address.startswith('/media/'):
+        (world / 'media' / address[len('/media/'):]).write_bytes(data)
+    with db.get_connection() as conn:
+        conn.execute('INSERT INTO reference(id,type,file_path,source_url,share_url,content_sha,content_bytes) VALUES(?,?,?,?,?,?,?)',
+                     ('r-' + name, 'image', address, source_url, share_url, sha, size))
+        conn.execute('INSERT INTO gen_reference(generation_id,reference_id,role,position) VALUES(?,?,?,?)', (gid, 'r-' + name, role, position))
+    return 'r-' + name
+
+
+def _reference(gid):
+    with db.get_connection() as conn:
+        return [dict(row) for row in conn.execute(
+            'SELECT r.id,r.asset_content_id,gr.role,gr.position FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id '
+            'WHERE gr.generation_id=? ORDER BY COALESCE(gr.position,gr.rowid),gr.rowid', (gid,))]
+
+
+def _remote_result(world, name, project):
+    gid = 'g-' + name
+    repo.create_local_generation({'model': 'x', 'prompt': 'p'}, 'me', generation_id=gid)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status='done', creator_uid='user_a', project_id=? WHERE id=?", (project, gid))
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path) VALUES(?,?,'image','https://cdn.example/x.png')", ('a-' + name, gid))
+    return gid
+
+
+def test_an_old_input_gets_an_id_and_a_line_and_keeps_its_place(world):
+    project = _project()
+    gid = _remote_result(world, 'remote-out', project)
+    _input(gid, 'in1', role='@Image2', position=7)
+    _tick()
+    _tick()
+    row = _reference(gid)[0]
+    assert row['asset_content_id'].startswith('sha256:') and (row['role'], row['position']) == ('@Image2', 7)
+    assert [line['asset_content_id'] for line in _lines(project)] == [row['asset_content_id']]
+
+
+@pytest.mark.parametrize('address, make', [
+    ('/api/comfy/inputs/' + 'a' * 16 + '/' + 'b' * 64 + '.png', lambda w: w / 'comfy-inputs' / ('a' * 16) / ('b' * 64 + '.png')),
+    ('asset:captures|shot.png', lambda w: w / 'assets' / 'captures' / 'shot.png'),
+    ('asset:imports|drop.png', lambda w: w / 'assets' / 'imports' / 'drop.png'),
+    ('asset:imp/cap|imports/mix.png', lambda w: w / 'assets' / 'imports' / 'mix.png'),
+])
+def test_every_local_input_address_is_read(world, address, make):
+    project = _project()
+    gid = _remote_result(world, 'addr', project)
+    path = make(world)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'\x89PNG\r\n\x1a\naddress')
+    _input(gid, 'addr', address, write=False)
+    _tick()
+    _tick()
+    assert _reference(gid)[0]['asset_content_id']
+    assert len(_lines(project)) == 1
+
+
+def test_an_input_already_in_a_managed_folder_is_not_copied(world):
+    project = _project()
+    gid = _remote_result(world, 'managed', project)
+    folder = world / 'assets' / 'captures'
+    folder.mkdir(parents=True)
+    (folder / 'shot.png').write_bytes(b'\x89PNG\r\n\x1a\nmanaged')
+    _input(gid, 'managed', 'asset:captures|shot.png', write=False)
+    _tick()
+    _tick()
+    assert [path.name for path in folder.iterdir()] == ['shot.png']
+    assert not (world / asset_backfill.SNAPSHOT_FOLDER).exists()
+    with db.get_connection() as conn:
+        assert Path(conn.execute("SELECT path FROM asset_location WHERE kind='local'").fetchone()[0]).name == 'shot.png'
+
+
+@pytest.mark.parametrize('address', ['asset:my-nas|x.png', 'asset:Project|deep/x.png', r'\\nas\share\x.png', 'Z:/x.png'])
+def test_registered_folders_and_network_paths_are_left_alone(world, address):
+    project = _project()
+    gid = _remote_result(world, 'other', project)
+    _input(gid, 'other', address, write=False)
+    _tick()
+    _tick()
+    assert _reference(gid)[0]['asset_content_id'] is None
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 0
+
+
+@pytest.mark.parametrize('kwargs', [{'sha': 'e' * 64}, {'size': 3}])
+def test_a_recorded_fingerprint_that_disagrees_changes_nothing(world, kwargs):
+    project = _project()
+    gid = _remote_result(world, 'fp', project)
+    _input(gid, 'fp', **kwargs)
+    _tick()
+    _tick()
+    assert _reference(gid)[0]['asset_content_id'] is None
+    assert _lines(project) == []
+    assert not list((world / asset_backfill.SNAPSHOT_FOLDER).glob('*'))  # 거절된 파일이 폴더에 남지 않는다
+
+
+def test_an_input_someone_else_uses_is_copied_for_this_generation(world):
+    project = _project()
+    mine = _remote_result(world, 'mine', project)
+    rid = _input(mine, 'both', position=None)
+    theirs = _remote_result(world, 'theirs', None)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET creator_uid='user_b' WHERE id=?", (theirs,))
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id,role) VALUES(?,?,'@Image1')", (theirs, rid))
+    _tick()
+    _tick()
+    assert _reference(theirs) == [{'id': rid, 'asset_content_id': None, 'role': '@Image1', 'position': None}]
+    copied = _reference(mine)[0]
+    assert copied['id'] != rid and copied['asset_content_id'] and copied['role'] == '@Image1'
+    asset_backfill._rescan.set()
+    _tick(10000.0)
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT count(*) FROM reference WHERE file_path=?', ('/media/comfy/both.png',)).fetchone()[0] == 2
+
+
+@pytest.mark.parametrize('case', ['deleted', 'someone_else', 'remote'])
+def test_inputs_that_are_not_ours_to_touch(world, case):
+    project = _project()
+    gid = _remote_result(world, case, project)
+    _input(gid, case, source_url='https://cdn.example/in.png' if case == 'remote' else None)
+    with db.get_connection() as conn:
+        if case == 'deleted':
+            conn.execute("UPDATE generation SET deleted_at='2026-01-01' WHERE id=?", (gid,))
+        if case == 'someone_else':
+            conn.execute("UPDATE generation SET creator_uid='user_b' WHERE id=?", (gid,))
+    _tick()
+    _tick()
+    assert _reference(gid)[0]['asset_content_id'] is None
+
+
+def test_a_project_change_during_the_copy_is_not_applied(world):
+    project, other = _project(), _project('R')
+    gid = _remote_result(world, 'moving', project)
+    _input(gid, 'moving')
+    real = asset_backfill._read
+    def move(path, copy):
+        taken = real(path, copy=copy)
+        with db.get_connection() as conn:
+            conn.execute('UPDATE generation SET project_id=? WHERE id=?', (other, gid))
+        return taken
+    with patch.object(asset_backfill, '_read', side_effect=move):
+        _tick()
+        _tick()
+    assert _reference(gid)[0]['asset_content_id'] is None
+
+
+def test_an_input_of_a_result_moved_on_the_server_is_brought_up(world):
+    project = _project()
+    gid = _result(world, 'srv')
+    _shared(gid)
+    _input(gid, 'srv-in')
+    with patch.object(asset_backfill, '_post', return_value={'items': {gid: {'project_id': project}}}):
+        asset_backfill.tick(100.0)
+    assert _reference(gid)[0]['asset_content_id']
+    assert len(_lines(project)) == 2
+    assert repo.get_generation(gid)['project_id'] is None
+
+
+# ── 첫 보충의 부담 ──
+def test_stopping_ends_a_copy_without_leaving_anything_and_is_not_a_skip(world):
+    project = _project()
+    gid = _result(world, 'big', project=project, bytes_=b'x' * (3 * 1024 * 1024))
+    calls = {'n': 0}
+    real_open = Path.open
+    def stop_midway(path, *args, **kwargs):
+        stream = real_open(path, *args, **kwargs)
+        if path.name == 'big.png':
+            read = stream.read
+            class Reader:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *exc):
+                    stream.close()
+                def read(self, size):
+                    calls['n'] += 1
+                    if calls['n'] == 2:
+                        asset_backfill.request_stop()
+                    return read(size)
+            return Reader()
+        return stream
+    with patch.object(Path, 'open', stop_midway):
+        _tick()
+    assert calls['n'] == 2  # 다음 조각을 읽고 멈췄다 — 파일 끝까지 안 갔다
+    assert _content(gid) is None
+    assert not list((world / asset_backfill.SNAPSHOT_FOLDER).glob('*'))
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 0
+    asset_backfill.clear_stop()
+    _tick()
+    assert _content(gid)
+
+
+def test_the_stop_signal_is_the_first_thing_shutdown_does():
+    import inspect
+    from app import main
+    from app.services import asset_sync as sync
+    source = inspect.getsource(main._application_lifespan)
+    assert source.index('signal_stop') < source.index('shutdown_model_refreshes')
+    assert inspect.getsource(sync.stop).index('signal_stop') < inspect.getsource(sync.stop).index('await')
+
+
+def test_a_full_disk_stops_the_pass_until_the_next_round(world):
+    project = _project()
+    gid = _result(world, 'room', project=project)
+    full = type('Usage', (), {'free': 10})
+    with patch.object(asset_backfill.shutil, 'disk_usage', return_value=full):
+        _tick(1000.0)
+    assert _content(gid) is None
+    assert not list((world / asset_backfill.SNAPSHOT_FOLDER).glob('*'))
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 0
+    _tick(1100.0)
+    assert _content(gid) is None  # 다음 바퀴까지 다시 안 본다
+    _tick(1000.0 + asset_backfill.LOCAL_EVERY_S)
+    assert _content(gid)
+
+
+def test_the_same_bytes_are_kept_once_and_the_folder_is_not_searched(world):
+    project = _project()
+    first = _result(world, 'twin', project=project, bytes_=b'same')
+    (world / 'media' / 'comfy' / 'twin2.png').write_bytes((world / 'media' / 'comfy' / 'twin.png').read_bytes())
+    second = 'g-twin2'
+    repo.create_local_generation({'model': 'comfy', 'prompt': 'p'}, 'me', generation_id=second)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status='done', creator_uid='user_a', project_id=? WHERE id=?", (project, second))
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path) VALUES('a-twin2',?,'image','/media/comfy/twin2.png')", (second,))
+    with patch('app.services.asset_io.find_same_media', side_effect=AssertionError('폴더를 훑으면 안 된다')):
+        _tick()
+    assert _content(first) == _content(second)
+    assert len(list((world / asset_backfill.SNAPSHOT_FOLDER).glob('*.png'))) == 1
+
+
+# ── 다시 보기 ──
+def test_a_skipped_file_is_counted_and_comes_back_after_the_hour(world):
+    project = _project()
+    gid = _result(world, 'gone', project=project, write=False)
+    _tick(1000.0)
+    _tick(1001.0)
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 1
+    assert asset_backfill.skipped_count('user_b', 'acct', SERVER) == 0
+    (world / 'media' / 'comfy' / 'gone.png').write_bytes(b'\x89PNG\r\n\x1a\nback')
+    _tick(1002.0)
+    assert _content(gid) is None
+    _tick(1001.0 + asset_backfill.LOCAL_EVERY_S)
+    assert _content(gid)
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 0
+
+
+def test_retry_asks_for_the_next_turn_without_touching_the_running_one(world):
+    project = _project()
+    gid = _result(world, 'again', project=project, write=False)
+    _tick(1000.0)
+    _tick(1001.0)
+    scan = asset_backfill._scan
+    asset_backfill.request_rescan()
+    assert asset_backfill._scan is scan and scan.local_done  # 표식만 — 도는 차례를 건드리지 않는다
+    (world / 'media' / 'comfy' / 'again.png').write_bytes(b'\x89PNG\r\n\x1a\nagain')
+    _tick(1002.0)
+    assert _content(gid)
+
+
+def test_a_kept_copy_that_vanished_is_made_again_from_the_original(world):
+    project = _project()
+    gid = _result(world, 'lost', project=project)
+    _tick(1000.0)
+    with db.get_connection() as conn:
+        kept = Path(conn.execute("SELECT path FROM asset_location WHERE kind='local'").fetchone()[0])
+    kept.unlink()
+    asset_backfill.request_rescan()
+    _tick(1001.0)
+    assert kept.is_file()
+    assert _content(gid)
+
+
+def test_an_account_switched_away_and_back_during_a_copy_applies_nothing(world):
+    project = _project()
+    gid = _result(world, 'aba', project=project)
+    real = asset_backfill._read
+    def switch(path, copy):
+        taken = real(path, copy=copy)
+        active_account.bump_account_epoch()
+        active_account.bump_account_epoch()
+        return taken
+    with patch.object(asset_backfill, '_read', side_effect=switch):
+        _tick()
+    assert _content(gid) is None
+    assert _lines(project) == []
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM asset_location WHERE kind='local'").fetchone()[0] == 0
+
+
+# ── 이동 알림의 수 ──
+def test_missing_files_counts_only_what_this_pc_cannot_send(world):
+    project = _project()
+    fine = _result(world, 'fine', project=project)
+    absent = _result(world, 'absent2', project=project, write=False)
+    _input(fine, 'present')
+    _input(absent, 'lost-in', write=False)
+    _input(absent, 'nas', 'asset:my-nas|x.png', write=False)
+    assert asset_backfill.missing_files([fine], project) == 0
+    assert asset_backfill.missing_files([fine, absent], project) == 2  # 결과와 입력 — 등록 폴더는 세지 않는다
+
+
+def test_missing_files_does_not_count_a_kept_copy(world):
+    project = _project()
+    gid = _result(world, 'kept', project=project)
+    _tick()
+    (world / 'media' / 'comfy' / 'kept.png').unlink()
+    assert asset_backfill.missing_files([gid], project) == 0

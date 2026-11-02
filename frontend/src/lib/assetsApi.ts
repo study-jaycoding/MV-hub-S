@@ -24,6 +24,7 @@ export interface AssetTransferSummary {
   waiting: number;
   failed: number;
   needs_check: number;
+  unsendable?: number; // 보충이 파일을 못 찾아 건너뛴 수 — 옛 허브에는 없다
 }
 export interface AssetSyncStatus {
   items: AssetSyncReceipt[];

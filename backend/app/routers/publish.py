@@ -34,7 +34,7 @@ from ._telemetry import touch_generation_telemetry
 from ..deps import account_author_uids, actor_id, current_account, final_move_actor, require_edit_generation
 from ..emailnorm import norm_email
 from ..repo import identity
-from ..repo.share import SHARE_PROJECT_REQUIRED, ShareProjectRequired
+from ..repo.share import SHARE_PROJECT_REQUIRED, ShareProjectRequired, project_less_anchors
 from ..services import agent_signals, net_guard, server_relocation
 from ..services.request_guards import require_loopback_browser_request
 from ..services.event_journal import journal_audit_event
@@ -1017,6 +1017,18 @@ def _transition_publish_ref(
     )
 
 
+def _blocked_summary(out: dict[str, Any], blocked: int) -> dict[str, Any]:
+    if blocked:
+        out["blocked"] = blocked
+        out["message"] = (
+            # 막는 까닭 — 원 작성자만 발행 · 최종본의 프로젝트 변경은 양쪽 검수자만(3A, 80회차 섞임 실측) · 파일을 못 받는 공유
+            f"{blocked}건은 서버가 반영하지 않았습니다(프로젝트가 없는 로컬 결과, 작성자가 구성원이 아닌 프로젝트의 로컬 결과, "
+            "작성자가 다른 항목의 재공유, 또는 검수자만 옮길 수 있는 최종본의 프로젝트 변경) — "
+            "공유 표시를 남기지 않았습니다."
+        )
+    return out
+
+
 @contextlib.contextmanager
 def _pinned_account_scope():
     """계정/UID와 DB 세대를 함께 고정하며 중첩 발행은 원래 문맥을 이어받는다."""
@@ -1109,6 +1121,15 @@ def publish_bundle_to_server(
         targets = [target for target in targets if target["anchor"] in bundle_anchors]
         if not targets:
             raise HTTPException(status_code=400, detail="발행할 유효한 생성물이 없습니다")
+        # 옛 서버는 프로젝트 없는 로컬 결과를 막지 못한다 — 실제로 나갈 번들을 보고 뺀다(검사 뒤 프로젝트가 풀려도 번들 값이 진실이다).
+        refused = project_less_anchors(bundle, {target["anchor"] for target in targets if not target["generation"].get("shared")})
+        if refused:
+            bundle["generations"] = [item for item in bundle["generations"] if str(item["generation"]["id"]) not in refused]
+            targets = [target for target in targets if target["anchor"] not in refused]
+        if not targets:
+            if operation_kind == "composite_finalize":
+                raise HTTPException(status_code=409, detail=SHARE_PROJECT_REQUIRED)
+            return PublishBundleResult(_blocked_summary({"published": 0, "remote": {}}, len(refused)), {}, False)
 
         try:
             refs = repo.prepare_share_state_intents(
@@ -1324,15 +1345,7 @@ def publish_bundle_to_server(
         }
         if mirror_pending:
             out["mirror_pending"] = True
-        if blocked:
-            out["blocked"] = blocked
-            out["message"] = (
-                # 막는 까닭 — 원 작성자만 발행 · 최종본의 프로젝트 변경은 양쪽 검수자만(3A, 80회차 섞임 실측) · 파일을 못 받는 공유
-                f"{blocked}건은 서버가 반영하지 않았습니다(프로젝트가 없는 로컬 결과, 작성자가 구성원이 아닌 프로젝트의 로컬 결과, "
-                "작성자가 다른 항목의 재공유, 또는 검수자만 옮길 수 있는 최종본의 프로젝트 변경) — "
-                "공유 표시를 남기지 않았습니다."
-            )
-        return PublishBundleResult(out, refs_by_anchor, remote_accepted)
+        return PublishBundleResult(_blocked_summary(out, blocked + len(refused)), refs_by_anchor, remote_accepted)
 
 
 @router.post("/publish-to-shared")

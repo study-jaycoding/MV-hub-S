@@ -32,6 +32,16 @@ class ShareProjectRequired(Exception):
         super().__init__(SHARE_PROJECT_REQUIRED)
 
 
+def project_less_anchors(bundle: dict[str, Any], unshared: set[str]) -> set[str]:
+    """실제로 나갈 번들에서 프로젝트 없는 로컬 결과의 앵커 — 허브가 옛 서버에도 보내지 않게 한다. 이미 공유된 행의 재공유는 막지 않는다."""
+    return {
+        str(item["generation"]["id"])
+        for item in bundle.get("generations") or []
+        if str(item["generation"]["id"]) in unshared and not item["generation"].get("project_id")
+        and local_only_url((item.get("asset") or {}).get("file_path"), None)
+    }
+
+
 def _require_share_project(conn, gen_id: str) -> None:
     """공유 서버에서 새로 공유되는 순간의 판정 — 프로젝트가 없으면 파일을 올릴 곳이 없어 받는 쪽이 못 연다.
     이미 공유된 행의 갱신은 막지 않는다. 단독 모드는 파일이 같은 PC 라 막지 않는다. Caller owns the transaction."""

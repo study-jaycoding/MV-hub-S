@@ -173,38 +173,56 @@ def undeliverable_generations(conn, generation_ids, project_id, uploader_uids=No
             if not _has_upload_role(conn, project_id, _uploader_uids(conn, creator) if uploader_uids is None else set(uploader_uids))]
 
 
+def own_reference(conn, generation_id, reference_id, author_uids):
+    """입력 행은 여러 생성물이 함께 쓴다 — 남의 생성물이 쓰면 원래 행은 두고 이 생성물 몫을 복제해 돌린다. 연결 행은 reference_id 만 바꿔 역할·순서(NULL position 의 rowid 순서까지)가 그대로다.
+    Caller owns the transaction."""
+    placeholders = ','.join('?' for _ in author_uids)
+    if not conn.execute(f"SELECT 1 FROM gen_reference gr JOIN generation g ON g.id=gr.generation_id "
+                        f"WHERE gr.reference_id=? AND COALESCE(g.creator_uid,'') NOT IN ({placeholders}) LIMIT 1",
+                        (reference_id, *author_uids)).fetchone():
+        return reference_id
+    columns = 'type,file_path,thumbnail_path,source,source_url,share_url,content_sha,content_bytes,registry_asset_id,version_verified,asset_content_id'
+    copy = uuid.uuid4().hex
+    conn.execute(f'INSERT INTO reference(id,{columns}) SELECT ?,{columns} FROM reference WHERE id=?', (copy, reference_id))
+    conn.execute('UPDATE gen_reference SET reference_id=? WHERE generation_id=? AND reference_id=?', (copy, generation_id, reference_id))
+    return copy
+
+
 def link_output(conn, anchor, content_id, file_path, author_uids):
     """옛 공유 행의 결과·입력에 비어 있는 내용 ID 를 채운다(서버). ready 위치는 '내가 올린 바이트'의 근거일 뿐 옛 결과와 같다는 독립 증명은 아니라
-    작성자 본인 행의 빈 칸에만 쓴다. Caller owns the transaction."""
+    작성자 본인 행의 빈 칸에만 쓴다. 같은 경로의 입력 행이 둘이면 기록한 지문·크기가 내용과 어긋나지 않는 빈 행만 채운다. Caller owns the transaction."""
     gen = conn.execute('SELECT id,creator_uid,project_id,deleted_at FROM generation WHERE id=? OR job_id=? LIMIT 1', (anchor, anchor)).fetchone()
     if gen is None or gen['deleted_at']:
         raise LookupError('generation_missing')
     if gen['creator_uid'] not in author_uids:
         raise PermissionError('asset_link_not_author')
-    row = conn.execute(
-        "SELECT r.id,r.file_path,r.asset_content_id FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id "
-        "WHERE gr.generation_id=? AND r.file_path=? LIMIT 1", (gen['id'], file_path)).fetchone()
+    rows = conn.execute(
+        "SELECT r.id,r.file_path,r.asset_content_id,r.content_sha,r.content_bytes FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id "
+        "WHERE gr.generation_id=? AND r.file_path=? ORDER BY gr.rowid", (gen['id'], file_path)).fetchall()
     table = 'reference'
-    if row is None:
-        row = conn.execute('SELECT id,file_path,asset_content_id FROM asset WHERE generation_id=? AND file_path=? LIMIT 1',
-                           (gen['id'], file_path)).fetchone()
+    if not rows:
+        rows = conn.execute('SELECT id,file_path,asset_content_id FROM asset WHERE generation_id=? AND file_path=? LIMIT 1',
+                            (gen['id'], file_path)).fetchall()
         table = 'asset'
-    if row is None or file_path.startswith('http'):
+    if not rows or file_path.startswith('http'):
         raise LookupError('asset_link_target_missing')
-    if row['asset_content_id'] == content_id:
-        return {'linked': False, 'asset_content_id': content_id}
-    if row['asset_content_id']:
+    blanks = [row for row in rows if not row['asset_content_id']]
+    if not blanks:
+        if any(row['asset_content_id'] == content_id for row in rows):
+            return {'linked': False, 'asset_content_id': content_id}
         raise ValueError('asset_link_conflict')
-    if table == 'reference':  # 입력 행은 여러 생성물이 함께 쓴다 — 남의 생성물까지 바꾸지 않는다
-        placeholders = ','.join('?' for _ in author_uids)
-        if conn.execute(f"SELECT 1 FROM gen_reference gr JOIN generation g ON g.id=gr.generation_id "
-                        f"WHERE gr.reference_id=? AND COALESCE(g.creator_uid,'') NOT IN ({placeholders}) LIMIT 1",
-                        (row['id'], *author_uids)).fetchone():
-            raise ValueError('asset_link_shared_input')
     if not conn.execute("SELECT 1 FROM asset_location WHERE kind='server' AND state='ready' AND owner_uid=? AND project_id=? AND asset_content_id=? LIMIT 1",
                         (gen['creator_uid'], gen['project_id'], content_id)).fetchone():
         raise ValueError('asset_location_missing')
-    conn.execute(f'UPDATE {table} SET asset_content_id=? WHERE id=? AND asset_content_id IS NULL', (content_id, row['id']))
+    if table == 'reference':
+        blob = conn.execute('SELECT sha256,bytes FROM asset_blob WHERE asset_content_id=?', (content_id,)).fetchone()
+        blanks = [row for row in blanks if blob and (not row['content_sha'] or row['content_sha'] == blob['sha256'])
+                  and (not row['content_bytes'] or row['content_bytes'] == blob['bytes'])]
+        if not blanks:
+            raise ValueError('asset_link_conflict')
+    for row in blanks:
+        target = own_reference(conn, gen['id'], row['id'], author_uids) if table == 'reference' else row['id']
+        conn.execute(f'UPDATE {table} SET asset_content_id=? WHERE id=? AND asset_content_id IS NULL', (content_id, target))
     return {'linked': True, 'asset_content_id': content_id}
 
 

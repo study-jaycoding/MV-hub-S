@@ -172,6 +172,79 @@ def test_the_hub_message_names_the_reason():
     assert '프로젝트가 없는 로컬 결과' in Path(publish_router.__file__).read_text(encoding='utf-8')
 
 
+# ── 허브가 옛 서버에도 보내지 않는다 ──
+@pytest.fixture
+def hub(content, monkeypatch):
+    sent = []
+    def post(method, url, token=None, body=None, **kwargs):
+        if method == 'GET':
+            return 404, {}  # 옛 서버 — 능력 조회가 없다
+        sent.append(body)
+        anchors = [str(item['generation']['id']) for item in body['bundle']['generations']]
+        return 200, {'inserted': len(anchors), 'updated': 0, 'unchanged': 0, 'skipped': 0, 'blocked': 0}
+    monkeypatch.setattr(publish_router, '_http_json', post)
+    monkeypatch.setattr(publish_router, '_effective_url', lambda: 'http://old-server')
+    with patch.object(repo, 'get_setting', side_effect=lambda key, default=None: 'tok' if key == publish_router._K_TOKEN else default):
+        yield sent
+
+
+def _bundle_ids(sent):
+    return [item['generation']['id'] for body in sent for item in body['bundle']['generations']]
+
+
+def test_a_project_less_local_result_does_not_leave_the_hub(hub):
+    gid = _result('h1')
+    out = publish_router.publish_bundle_to_server([gid])
+    assert hub == [] and out['blocked'] == 1 and '프로젝트' in out['message'] and out['published'] == 0
+    assert not _shared(gid)
+
+
+def test_only_the_blocked_item_stays_behind(hub):
+    project = projects.create_project('P', created_by='user_a')['id']
+    blocked, passed = _result('h2'), _result('h3', project=project)
+    out = publish_router.publish_bundle_to_server([blocked, passed])
+    assert _bundle_ids(hub) == [passed] and out['blocked'] == 1 and out['published'] == 1
+    assert _shared(passed) and not _shared(blocked)
+
+
+def test_a_project_lost_after_the_check_is_seen_in_the_bundle(hub):
+    project = projects.create_project('P', created_by='user_a')['id']
+    gid = _result('h4', project=project)
+    real = repo.export_bundle
+    def unassign_first(*args, **kwargs):
+        with db.get_connection() as conn:
+            conn.execute('UPDATE generation SET project_id=NULL WHERE id=?', (gid,))
+        return real(*args, **kwargs)
+    with patch.object(repo, 'export_bundle', side_effect=unassign_first):
+        out = publish_router.publish_bundle_to_server([gid])
+    assert hub == [] and out['blocked'] == 1
+
+
+@pytest.mark.parametrize('kwargs', [{'source_url': 'https://cdn.example/x.png'}, {'file_path': 'https://cdn.example/y.png'}])
+def test_a_remote_result_passes_the_hub(hub, kwargs):
+    gid = _result('h5', **kwargs)
+    assert publish_router.publish_bundle_to_server([gid])['published'] == 1
+    assert len(hub) == 1
+
+
+def test_sharing_again_a_row_marked_shared_passes_the_hub(hub):
+    gid = _result('h6')
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO share(id,generation_id,shared_by,visibility) VALUES('s6',?,'user_a','team')", (gid,))
+    publish_router.publish_bundle_to_server([gid])
+    assert len(hub) == 1
+
+
+def test_a_composite_final_answers_with_the_reason_and_no_ledger(hub):
+    from fastapi import HTTPException
+    gid = _result('h7')
+    with pytest.raises(HTTPException) as caught:
+        publish_router.publish_bundle_to_server([gid], operation_kind='composite_finalize', desired_final=True, settle_intents=False)
+    assert caught.value.status_code == 409 and '프로젝트' in caught.value.detail
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT count(*) FROM share_state_intent').fetchone()[0] == 0
+
+
 def test_the_non_proxy_entry_skips_only_that_item(content, server, monkeypatch):
     project = projects.create_project('P', created_by='user_a')['id']
     blocked, passed = _result('b1'), _result('b2', project=project)

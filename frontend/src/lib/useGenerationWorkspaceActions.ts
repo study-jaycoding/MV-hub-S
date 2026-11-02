@@ -4,6 +4,7 @@ import type { Generation } from "../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "./workspaceCommand";
 import { matchesWorkspaceFilter } from "./libraryWorkspaceScope";
 import { postLibraryChanged } from "./libraryBroadcast";
+import { deliveryNotices } from "./useGenerationProjectActions";
 
 interface UseGenerationWorkspaceActionsArgs {
   activeWorkspaceIds?: string[];
@@ -127,11 +128,14 @@ export function useGenerationWorkspaceActions({
             : ""
           : " — 프로젝트 소속도 해제";
       flash(
-        result.changed.length
-          ? `워크스페이스 ${result.workspace.name} ${verb}: ${result.changed.length}개${projectNote}`
-          : operation === "assign"
-            ? `이미 ${result.workspace.name} 워크스페이스로 지정된 카드입니다 — 변경 없음`
-            : `${result.workspace.name} 소속 카드가 아니라서 제거(#-)할 것이 없습니다`,
+        [
+          result.changed.length
+            ? `워크스페이스 ${result.workspace.name} ${verb}: ${result.changed.length}개${projectNote}`
+            : operation === "assign"
+              ? `이미 ${result.workspace.name} 워크스페이스로 지정된 카드입니다 — 변경 없음`
+              : `${result.workspace.name} 소속 카드가 아니라서 제거(#-)할 것이 없습니다`,
+          ...deliveryNotices(result),
+        ].join(" · "),
       );
       // 재클릭 가드는 명령 확정(위 flash) 시점에 푼다 — 프록시 모드에선 아래 전체 reload 가
       // 수 초라, 그동안 클릭이 전부 무시되면 '여러 번 눌러야 되는' 것처럼 보인다(팀원 실측).

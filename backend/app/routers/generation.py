@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy, _telemetry
-from ._delivery import require_hub_delivery
+from ._delivery import delivery_notice, require_hub_delivery
 from ..services.async_tools import to_thread_non_abandon
 from .. import active_account, rbac, repo
 from ..repo.asset_sync import UndeliverableMove
@@ -634,11 +634,8 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
 
         # 서버를 먼저 바꾸므로 여기서 본다 — 로컬에서 막히면 서버만 옮겨진 채 남는다.
         assigned_project = preview.get("assigned_project")
-        if assigned_project:
-            require_hub_delivery(
-                [str(row["id"]) for row in preview["changed"] if row.get("project_action") == "set"],
-                assigned_project["id"],
-            )
+        project_moved = [str(row["id"]) for row in preview["changed"] if row.get("project_action") == "set"]
+        verified = require_hub_delivery(project_moved, assigned_project["id"]) if assigned_project else True
         # 공유된 내 카드는 팀 탭의 서버 복사본도 같은 값이어야 한다. 변경 여부와 관계없이 선택된
         # 공유본 전부를 보내 재시도만으로 불일치가 수렴하게 한다(서버 연산은 멱등).
         shared_server_ids: list[str] = []
@@ -741,6 +738,7 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
             # #+ 가 함께 배정한 프로젝트(대상 워크스페이스의 유일 프로젝트) — 없으면 null.
             "project": result.get("assigned_project"),
             "updates": updates,
+            **delivery_notice(project_moved, (assigned_project or {}).get("id"), verified),
         }
 
 

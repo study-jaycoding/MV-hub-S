@@ -451,13 +451,22 @@ _backfill_task = None
 def start():
     global _task,_backfill_task
     if not config.READ_ONLY and os.getenv('CONTENT_HUB_NO_PROXY','0') != '1' and _task is None:
+        from . import asset_backfill
+        asset_backfill.clear_stop()
         _task = asyncio.create_task(run_worker(),name='asset-sync-worker')
         if not config.AUTH_ENABLED:
             _backfill_task = asyncio.create_task(run_backfill(),name='asset-sync-backfill')
 
 
+def signal_stop():
+    """종료 정리의 첫 동작 — 보충의 큰 파일 복사가 앞선 정리를 기다리는 동안 계속되지 않게 한다."""
+    from . import asset_backfill
+    asset_backfill.request_stop()
+
+
 async def stop():
     global _task,_backfill_task
+    signal_stop()
     tasks = [task for task in (_task,_backfill_task) if task]
     _task = _backfill_task = None
     for task in tasks:

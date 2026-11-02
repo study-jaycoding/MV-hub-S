@@ -220,6 +220,8 @@ export interface GenerationWorkspaceBatchResponse {
   // #+ 가 함께 배정한 프로젝트(대상 워크스페이스의 유일 프로젝트). 구서버 응답엔 없을 수 있음.
   project?: { id: string; name: string } | null;
   updates: { requested_id: string; generation: Generation }[];
+  delivery_unverified?: boolean; // 서버에 물어보지 못해 파일 전달을 확인하지 못했다
+  missing_files?: number; // 보내야 하는데 이 PC 에 없는 파일 수
 }
 
 const GENERATION_BATCH_LIMIT = 500; // 백엔드 /api/generations/batch 계약 상한

@@ -24,7 +24,7 @@ import {
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { bringCanvasForward, CANVAS_OTHER_TAB, canFloatCanvas, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasFollower, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating, useCanvasFollower } from "./lib/popupWindows";
-import { settleSceneWrites } from "./lib/sceneStore";
+import { settleSceneWrites, watchOldTabWrites } from "./lib/sceneStore";
 import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
@@ -168,7 +168,7 @@ import {
 import { configureModelPolicy } from "./lib/modelPolicy";
 import { normalizeSceneWorkspace, sceneMatchesWorkspace, type SceneMove, type SceneWorkspace } from "./lib/sceneWorkspace";
 import { STORAGE_KEYS } from "./lib/storageKeys";
-import { useT } from "./lib/i18n";
+import { t as tGlobal, useT } from "./lib/i18n";
 import { hasWorkspaceFilter, workspaceViewKey } from "./lib/libraryWorkspaceScope";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
@@ -254,6 +254,11 @@ export default function App() {
   //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
   const {
     scenes, activeSceneId, activeScene,
+  // 업데이트 전에 열어 둔 탭은 쓰는 탭 규칙을 모른다 — 함께 쓰면 나중 저장이 덮어쓰므로 새 탭이 알아채 알린다
+  useEffect(() => (isCanvasWindow() ? undefined : watchOldTabWrites(
+    () => flash(tGlobal("업데이트 전에 열어 둔 탭이 씬을 쓰고 있습니다 — 그 탭을 닫거나 새로 고쳐 주세요. 함께 쓰면 나중 저장이 덮어씁니다.")),
+    isCanvasFloating,
+  )), [flash]);
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
     removeSceneById,

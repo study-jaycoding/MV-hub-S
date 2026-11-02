@@ -32,6 +32,12 @@ afterEach(() => {
 });
 
 describe("자료 전송 줄", () => {
+  it("파일을 못 찾은 수를 보이고 다시 시도할 수 있다", async () => {
+    await show({ waiting: 0, failed: 0, needs_check: 0, unsendable: 2 });
+    expect(host.textContent).toContain("파일 없음 2");
+    expect(host.querySelector("button")).not.toBeNull();
+  });
+
   it("보낼 것이 없으면 그리지 않는다 · 옛 허브도 그렇다", async () => {
     await show({ waiting: 0, failed: 0, needs_check: 0 });
     expect(host.textContent).toBe("");

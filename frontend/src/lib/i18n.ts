@@ -521,6 +521,13 @@ const EN: Record<string, string> = {
   "대기 {n}": "{n} waiting",
   "실패 {n}": "{n} failed",
   "확인 필요 {n}": "{n} need attention",
+  "파일 없음 {n}": "{n} files missing",
+  "이 PC 에서 찾지 못해 보내지 못한 파일입니다. 파일을 되살리면 다시 시도로 보낼 수 있습니다.": "These files were not found on this PC. Restore them, then retry to send them.",
+  "서버에 연결되지 않아 파일 전달을 확인하지 못했습니다 — 연결되면 설정의 자료 전송을 확인해 주세요.": "Couldn't reach the server to confirm file delivery. Check File transfer in Settings once connected.",
+  "이 PC 에 없는 파일 {count}개는 보내지 못합니다 — 다른 PC 에서 열리지 않을 수 있습니다.": "{count} files aren't on this PC and can't be sent. They may not open on other PCs.",
+  "전송 대기": "Waiting for upload",
+  "작성자 PC 에서 파일을 보내는 중입니다. 올라오면 저절로 보입니다. 오래 안 보이면 작성자에게 알려 주세요.": "The author's PC is sending this file. It appears when it arrives. If it takes long, let the author know.",
+  "업데이트 전에 열어 둔 탭이 씬을 쓰고 있습니다 — 그 탭을 닫거나 새로 고쳐 주세요. 함께 쓰면 나중 저장이 덮어씁니다.": "A tab opened before the update is writing scenes. Close or refresh it, otherwise the later save overwrites the other.",
   "프로젝트 역할이나 저장 위치가 없어 보내지 못한 파일입니다. 구성원과 프로젝트 저장 위치를 확인해 주세요.": "These files could not be sent because of a missing project role or storage location. Check the members and the project storage location.",
   "이전 Comfy 실행이 접수됐는지 확인하지 못했습니다. 기록을 지우고 다시 실행할까요? 접수된 실행이면 두 번 실행될 수 있습니다.":
     "Could not confirm whether the earlier Comfy run was accepted. Clear the record and run again? If it was accepted, it may run twice.",

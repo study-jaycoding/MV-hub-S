@@ -1753,7 +1753,7 @@ function EditTabInner({
           </div>}
           {/* 뷰어와 타임라인 사이 손잡이 — 끌어 타임라인 칸 높이를 정한다(트랙 높이는 그 안에서 바뀐다, Jay 2026-10-23) */}
           <EditSplit rootRef={rootRef} height={tlHeight} onHeight={onTlHeight} />
-          <div className="ed-bar" onMouseDown={(event) => event.preventDefault()}>
+          <div className="ed-bar" onMouseDown={(event) => event.preventDefault()} onScroll={closeMenu /* 메뉴는 연 자리 좌표에 뜬다 — 막대가 밀리면 단추에서 떨어진다 */}>
             <span className="ed-seq">
               {target ? (
                 <>

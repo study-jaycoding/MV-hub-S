@@ -68,6 +68,84 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("옛 탭이 쓰면 알린다", () => {
+  class FakeChannel {
+    static open: FakeChannel[] = [];
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    sent: unknown[] = [];
+    constructor() { FakeChannel.open.push(this); }
+    postMessage(data: unknown) { this.sent.push(data); }
+    close() {}
+  }
+  let visible: DocumentVisibilityState;
+  const receive = (data: unknown) => FakeChannel.open.at(-1)!.onmessage!({ data });
+  const show = (state: DocumentVisibilityState) => {
+    visible = state;
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+
+  async function store() {
+    vi.resetModules();
+    return import("../src/lib/sceneStore");
+  }
+
+  beforeEach(() => {
+    FakeChannel.open = [];
+    visible = "visible";
+    vi.stubGlobal("BroadcastChannel", FakeChannel);
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visible);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("옛 판의 통지만 경고한다 — 새 판끼리는 조용하다", async () => {
+    const warn = vi.fn();
+    (await store()).watchOldTabWrites(warn, () => false);
+    receive("saved-writer");
+    expect(warn).not.toHaveBeenCalled();
+    receive("saved");
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("같은 경고는 10분에 한 번이다", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const warn = vi.fn();
+    (await store()).watchOldTabWrites(warn, () => false);
+    receive("saved");
+    receive("saved");
+    vi.setSystemTime(1_000_000 + 9 * 60_000);
+    receive("saved");
+    expect(warn).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(1_000_000 + 11 * 60_000);
+    receive("saved");
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("가려진 탭이 받은 통지는 보일 때 한 번 띄운다", async () => {
+    const warn = vi.fn();
+    (await store()).watchOldTabWrites(warn, () => false);
+    visible = "hidden";
+    receive("saved");
+    receive("saved");
+    expect(warn).not.toHaveBeenCalled();
+    show("visible");
+    expect(warn).toHaveBeenCalledTimes(1);
+    show("hidden");
+    show("visible");
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("쉬는 탭·떠 있는 창을 둔 메인 창은 경고하지 않는다", async () => {
+    const warn = vi.fn();
+    (await store()).watchOldTabWrites(warn, () => true);
+    receive("saved");
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
 describe("쓰는 탭 정하기", () => {
   it("잠금을 받으면 평소와 같고 잠금을 쥔 채 첫 화면이 열린다", async () => {
     const locks = fakeLocks();

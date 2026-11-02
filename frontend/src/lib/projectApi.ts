@@ -220,7 +220,7 @@ export const projectApi = {
     folderPath?: string | null, // 담을 때 함께 지정하는 폴더(렌더 루트 상대 경로)
     resumeWork = false, // 사용자 명시적 작업 재개에서만 opt-in
   ) =>
-    jsonFetch<{ ok: boolean; updated: number; team_synced?: boolean | null }>(`/api/projects/assign?tab=${tab}`, {
+    jsonFetch<{ ok: boolean; updated: number; team_synced?: boolean | null; delivery_unverified?: boolean; missing_files?: number }>(`/api/projects/assign?tab=${tab}`, {
       method: "POST",
       body: jsonBody({
         generation_ids: generationIds,

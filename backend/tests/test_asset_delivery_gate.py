@@ -243,14 +243,31 @@ def test_hub_passes_a_403_from_the_member_list_as_no_role(content, hub):
 def test_hub_lets_a_member_through(content, hub):
     gid = _output('hub-yes')
     with patch.object(_proxy, 'proxy_json', return_value=[{'uid': 'user_a', 'roles': ['creator']}]):
-        _delivery.require_hub_delivery([gid], 'p1')
+        assert _delivery.require_hub_delivery([gid], 'p1') is True
 
 
 @pytest.mark.parametrize('failure', [HTTPException(502, 'down'), HTTPException(404, 'old'), OSError('gone')])
 def test_hub_still_moves_when_the_server_cannot_say(content, hub, failure):
     gid = _output('hub-down')
     with patch.object(_proxy, 'proxy_json', side_effect=failure):
-        _delivery.require_hub_delivery([gid], 'p1')
+        assert _delivery.require_hub_delivery([gid], 'p1') is False
+
+
+def test_the_notice_is_silent_when_all_is_well(content, hub):
+    with patch.object(_delivery.asset_backfill, 'missing_files', return_value=0):
+        assert _delivery.delivery_notice(['g'], 'p1', True) == {}
+
+
+def test_the_notice_says_what_it_could_not_confirm(content, hub):
+    with patch.object(_delivery.asset_backfill, 'missing_files', return_value=2):
+        assert _delivery.delivery_notice(['g'], 'p1', False) == {'delivery_unverified': True, 'missing_files': 2}
+
+
+def test_the_notice_is_only_for_a_move_into_a_project_on_a_hub(content, monkeypatch):
+    with patch.object(_delivery.asset_backfill, 'missing_files', return_value=2):
+        assert _delivery.delivery_notice(['g'], None, False) == {}
+        monkeypatch.setattr(_proxy, 'proxying', lambda: False)
+        assert _delivery.delivery_notice(['g'], 'p1', False) == {}
 
 
 def test_hub_does_not_ask_when_nothing_needs_sending(content, hub):
@@ -355,19 +372,104 @@ def test_link_fills_an_input_and_keeps_its_place(content):
     assert tuple(row) == (cid, '이름', '@Image1', 3)
 
 
-def test_link_leaves_an_input_row_someone_else_also_uses(content):
-    project = _project()
+def _shared_input(project):
     mine = _output('link-mine', project=project)
     theirs = _output('link-theirs', creator='user_b')
     with db.get_connection() as conn:
-        conn.execute("INSERT INTO reference(id,type,file_path) VALUES('shared','image','/api/comfy/inputs/s/shared.png')")
-        conn.execute("INSERT INTO gen_reference(generation_id,reference_id) VALUES(?, 'shared'),(?, 'shared')", (mine, theirs))
-    cid = _located(project, 'shared-bytes')
-    with pytest.raises(HTTPException) as caught:
-        _link(mine, cid, '/api/comfy/inputs/s/shared.png')
-    assert caught.value.status_code == 409
+        conn.execute("INSERT INTO reference(id,type,file_path,source) VALUES('shared','image','/api/comfy/inputs/s/shared.png','이름')")
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id,role) VALUES(?, 'shared', '@Image1'),(?, 'shared', '@Image1')", (mine, theirs))
+    return mine, theirs
+
+
+def _refs_of(gid):
     with db.get_connection() as conn:
-        assert conn.execute("SELECT asset_content_id FROM reference WHERE id='shared'").fetchone()[0] is None
+        return [tuple(row) for row in conn.execute(
+            'SELECT r.id,r.asset_content_id,r.source,gr.role,gr.position FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id '
+            'WHERE gr.generation_id=? ORDER BY COALESCE(gr.position,gr.rowid),gr.rowid', (gid,))]
+
+
+def test_link_copies_an_input_row_someone_else_also_uses(content):
+    project = _project()
+    mine, theirs = _shared_input(project)
+    cid = _located(project, 'shared-bytes')
+    assert _link(mine, cid, '/api/comfy/inputs/s/shared.png')['linked'] is True
+    assert _refs_of(theirs) == [('shared', None, '이름', '@Image1', None)]
+    copied = _refs_of(mine)[0]
+    assert copied[0] != 'shared' and copied[1:] == (cid, '이름', '@Image1', None)
+
+
+def test_link_repeated_makes_no_second_copy(content):
+    project = _project()
+    mine, _ = _shared_input(project)
+    cid = _located(project, 'shared-again')
+    _link(mine, cid, '/api/comfy/inputs/s/shared.png')
+    assert _link(mine, cid, '/api/comfy/inputs/s/shared.png')['linked'] is False
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM reference WHERE file_path='/api/comfy/inputs/s/shared.png'").fetchone()[0] == 2
+
+
+def test_link_at_the_same_time_makes_no_second_copy(content):
+    import threading
+    project = _project()
+    mine, _ = _shared_input(project)
+    cid = _located(project, 'shared-race')
+    start = threading.Barrier(2)
+    results = []
+    def run():
+        start.wait()
+        results.append(_link(mine, cid, '/api/comfy/inputs/s/shared.png')['linked'])
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    [thread.start() for thread in threads]
+    [thread.join() for thread in threads]
+    assert sorted(results) == [False, True]
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM reference WHERE file_path='/api/comfy/inputs/s/shared.png'").fetchone()[0] == 2
+
+
+def test_link_keeps_the_order_of_rows_without_a_position(content):
+    project = _project()
+    mine, _ = _shared_input(project)
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO reference(id,type,file_path) VALUES('after','image','/api/comfy/inputs/s/after.png')")
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id,role) VALUES(?, 'after', '@Image2')", (mine,))
+    cid = _located(project, 'shared-order')
+    _link(mine, cid, '/api/comfy/inputs/s/shared.png')
+    assert [row[3] for row in _refs_of(mine)] == ['@Image1', '@Image2']
+
+
+def test_link_fills_every_blank_row_with_that_path(content):
+    project = _project()
+    gid = _output('link-two', project=project)
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO reference(id,type,file_path) VALUES('one','image','/media/comfy/same.png'),('two','image','/media/comfy/same.png')")
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id,role) VALUES(?, 'one', '@Image1'),(?, 'two', '@Image2')", (gid, gid))
+    cid = _located(project, 'same-path')
+    _link(gid, cid, '/media/comfy/same.png')
+    assert [row[1] for row in _refs_of(gid)] == [cid, cid]
+
+
+def test_link_skips_a_row_recorded_with_other_bytes(content):
+    project = _project()
+    gid = _output('link-diff', project=project)
+    cid = _located(project, 'diff-bytes')
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO reference(id,type,file_path,content_sha,content_bytes) VALUES('other','image','/media/comfy/d.png',?,9),('blank','image','/media/comfy/d.png',NULL,NULL)", ('f' * 64,))
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id,role) VALUES(?, 'other', '@Image1'),(?, 'blank', '@Image2')", (gid, gid))
+    _link(gid, cid, '/media/comfy/d.png')
+    assert [(row[0], row[1]) for row in _refs_of(gid)] == [('other', None), ('blank', cid)]
+
+
+def test_link_refuses_when_every_blank_row_has_other_bytes(content):
+    project = _project()
+    gid = _output('link-diff2', project=project)
+    cid = _located(project, 'diff-bytes2')
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO reference(id,type,file_path,content_sha) VALUES('only','image','/media/comfy/e.png',?)", ('f' * 64,))
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id) VALUES(?, 'only')", (gid,))
+    with pytest.raises(HTTPException) as caught:
+        _link(gid, cid, '/media/comfy/e.png')
+    assert caught.value.status_code == 409
+    assert _refs_of(gid)[0][1] is None
 
 
 def test_link_refuses_another_authors_row(content):
