@@ -20,7 +20,7 @@
 | `CLAUDE_CONFIG_DIR` | — | `tools/mcp_adapter/local_setup.py` | — |
 | `CODEX_HOME` | — | `tools/mcp_adapter/local_setup.py` | — |
 | `CONTENT_HUB_ACCESS_LOG` | `"0"` | `backend/serve.py` | — |
-| `CONTENT_HUB_ADMIN_EMAIL` | — | `backend/app/main.py` | — |
+| `CONTENT_HUB_ADMIN_EMAIL` | — | `backend/app/main.py` `backend/app/repo/account_cleanup.py` | — |
 | `CONTENT_HUB_ADMIN_PASSWORD` | — | `backend/app/main.py` | — |
 | `CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |

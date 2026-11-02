@@ -14,12 +14,12 @@
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
-| `account` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/accounts.py` `repo/identity.py` `routers/db_transfer.py` `services/db_scrub.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/accounts.py` `repo/asset_sync.py` `repo/identity.py` `repo/last_admin.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/trash.py` `routers/_share_authority.py` |
+| `account` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/identity.py` `routers/db_transfer.py` `services/db_scrub.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/asset_sync.py` `repo/identity.py` `repo/last_admin.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/trash.py` `routers/_share_authority.py` |
 | `account_report_delivery_state` | content DB | `repo/manage_schema.py` | `repo/manage_account_reports.py` | `repo/manage_account_reports.py` |
 | `account_report_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_account_reports.py` | `repo/manage_account_reports.py` |
 | `ai_generation_batch` | content DB | `backend/schema.sql` | `repo/mcp_plans.py` | `repo/mcp_plans.py` |
 | `anchor_outbox` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
-| `app_setting` | content DB | `backend/schema.sql` | `db.py` `repo/identity.py` `routers/db_transfer.py` `routers/publish.py` `services/asset_registry.py` `services/auth.py` `services/db_scrub.py` `services/update_activity.py` | `db_account_dbs.py` `db_migrations.py` `repo/accounts.py` `repo/asset_locations.py` `repo/identity.py` `repo/share_commands.py` `services/asset_registry.py` `services/auth.py` `services/update_activity.py` `services/worker_backup.py` |
+| `app_setting` | content DB | `backend/schema.sql` | `db.py` `repo/account_cleanup.py` `repo/identity.py` `routers/db_transfer.py` `routers/publish.py` `services/asset_registry.py` `services/auth.py` `services/db_scrub.py` `services/update_activity.py` | `db_account_dbs.py` `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/asset_locations.py` `repo/identity.py` `repo/share_commands.py` `services/asset_registry.py` `services/auth.py` `services/update_activity.py` `services/worker_backup.py` |
 | `asset` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/generation_sync.py` `repo/generations.py` `repo/result_fingerprint.py` `services/asset_backfill.py` | `repo/asset_sync.py` `repo/assets.py` `repo/folder_cover.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_task_previews.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/result_fingerprint.py` `repo/share.py` `repo/trash.py` `services/asset_backfill.py` `services/thumbs.py` `services/update_activity.py` |
 | `asset_blob` | content DB | `db_asset_sync.py` | `repo/asset_sync.py` | `repo/asset_locations.py` `repo/asset_sync.py` `routers/asset_sync.py` `services/asset_destination.py` `services/asset_sync.py` |
 | `asset_comment` | content DB | `backend/schema.sql` | `repo/assets.py` | `repo/assets.py` |
@@ -38,7 +38,7 @@
 | `auto_tag` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/tags.py` | `db_migrations.py` `repo/facets.py` `repo/generation_rows.py` `repo/generations.py` `repo/generations_query.py` `repo/id_resolve.py` `repo/identity.py` `repo/manage_tasks.py` `repo/share.py` `repo/tags.py` `repo/trash.py` |
 | `comfy_canvas_output` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/comfy_canvas_runs.py` | `repo/comfy_canvas_runs.py` |
 | `comfy_canvas_run` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/comfy_canvas_runs.py` | `repo/comfy_canvas_runs.py` |
-| `creator` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/accounts.py` `repo/identity.py` | `backend/cleanup_orphan_creators.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/share.py` `repo/trash.py` |
+| `creator` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/identity.py` | `backend/cleanup_orphan_creators.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/share.py` `repo/trash.py` |
 | `credit_txn` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_transactions.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_transactions.py` |
 | `credit_txn_alias_merged` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` | `repo/manage_schema.py` |
 | `edit_doc_copy` | content DB | `backend/schema.sql` | `repo/edit_docs.py` | `repo/edit_docs.py` |
@@ -49,7 +49,7 @@
 | `folder_cover` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/folder_cover.py` | `repo/folder_cover.py` |
 | `gen_auto_tag` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/identity.py` `repo/tags.py` | `repo/generation_rows.py` `repo/generations.py` `repo/generations_query.py` `repo/id_resolve.py` `repo/manage_tasks.py` `repo/share.py` `repo/trash.py` |
 | `gen_color_overlay` | content DB | `backend/schema.sql` `repo/id_resolve.py` | `repo/id_resolve.py` | `repo/id_resolve.py` |
-| `gen_reference` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/generation_references.py` | `repo/asset_registry.py` `repo/asset_sync.py` `repo/gen_requests.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/history.py` `repo/identity.py` `repo/share.py` `repo/trash.py` `services/asset_backfill.py` |
+| `gen_reference` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/asset_sync.py` `repo/generation_delete.py` `repo/generation_references.py` | `repo/asset_registry.py` `repo/asset_sync.py` `repo/gen_requests.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/history.py` `repo/identity.py` `repo/share.py` `repo/trash.py` `services/asset_backfill.py` |
 | `gen_request` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/gen_requests.py` `repo/generations.py` `repo/trash.py` | `repo/_common.py` `repo/gen_requests.py` `repo/generations.py` `repo/mcp_v2.py` `repo/trash.py` `services/operational_health.py` `services/update_activity.py` |
 | `gen_tag` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/tags.py` | `repo/facets.py` `repo/generation_rows.py` `repo/generations.py` `repo/generations_query.py` `repo/id_resolve.py` `repo/share.py` `repo/sources.py` `repo/tags.py` `repo/trash.py` |
 | `gen_tag_overlay` | content DB | `backend/schema.sql` `repo/id_resolve.py` | `repo/id_resolve.py` `repo/tags.py` | `repo/facets.py` `repo/id_resolve.py` |
@@ -72,7 +72,7 @@
 | `mcp_reference` | content DB | `backend/schema.sql` | `repo/mcp_v2.py` | `repo/mcp_v2.py` |
 | `media_preservation` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/media_preservation.py` `repo/share_state_intents.py` | `repo/generation_rows.py` `repo/media_preservation.py` |
 | `meta` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
-| `move_operation` | content / trash DB (B1 transfer) | `services/trash_transfer.py` | `services/trash_transfer.py` | `services/trash_transfer.py` |
+| `move_operation` | content / trash DB (B1 transfer) | `services/trash_transfer.py` | `services/trash_transfer.py` | `repo/account_cleanup.py` `services/trash_transfer.py` |
 | `nas_result_file` | content DB | `backend/schema.sql` | `repo/nas_results.py` | `repo/nas_results.py` |
 | `nas_result_scan` | content DB | `backend/schema.sql` | `repo/nas_results.py` | `repo/nas_results.py` |
 | `project` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/projects.py` | `db_migrations.py` `repo/asset_locations.py` `repo/console_guard.py` `repo/edit_shares.py` `repo/facets.py` `repo/final_moves.py` `repo/folder_cover.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/nas_results.py` `repo/project_membership.py` `repo/projects.py` `repo/trash.py` `repo/workspace_assignments.py` `repo/workspace_console.py` `services/asset_backfill.py` `services/asset_destination.py` `services/asset_registry.py` `services/asset_sync.py` |
@@ -81,7 +81,7 @@
 | `project_member_removed` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/project_membership.py` | `repo/identity.py` `repo/project_membership.py` |
 | `project_planning` | content DB | `repo/manage_schema.py` | `repo/manage.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_tasks.py` `repo/workspace_console.py` |
 | `project_task` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |
-| `reference` | content DB | `backend/schema.sql` | `repo/asset_registry.py` `repo/gen_requests.py` `repo/generation_references.py` `repo/generation_sync.py` `repo/generations.py` | `repo/asset_registry.py` `repo/asset_sync.py` `repo/gen_requests.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/history.py` `repo/identity.py` `repo/share.py` `repo/trash.py` `routers/assets.py` `services/asset_backfill.py` |
+| `reference` | content DB | `backend/schema.sql` | `repo/asset_registry.py` `repo/asset_sync.py` `repo/gen_requests.py` `repo/generation_references.py` `repo/generation_sync.py` `repo/generations.py` `services/asset_backfill.py` | `repo/asset_registry.py` `repo/asset_sync.py` `repo/gen_requests.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/history.py` `repo/identity.py` `repo/share.py` `repo/trash.py` `routers/assets.py` `services/asset_backfill.py` |
 | `release_update_notice` | content DB | `backend/schema.sql` | `repo/release_update_notices.py` | `repo/release_update_notices.py` |
 | `release_update_notice_seen` | content DB | `backend/schema.sql` | `repo/release_update_notices.py` | `repo/release_update_notices.py` |
 | `scene_backup` | content DB | `backend/schema.sql` | `repo/scenes_backup.py` | `repo/mcp_v2.py` `repo/scenes_backup.py` |
@@ -99,9 +99,9 @@
 | `telemetry_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_telemetry.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` |
 | `tracked_job` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
 | `transfer_protocol` | content / trash DB (B1 transfer) | `services/trash_transfer.py` | `services/trash_transfer.py` | `services/trash_transfer.py` |
-| `trashed` | trash DB (ATTACH) | `repo/trash.py` | `repo/trash.py` `services/trash_transfer.py` | `repo/trash.py` `services/trash_transfer.py` |
+| `trashed` | trash DB (ATTACH) | `repo/trash.py` | `repo/trash.py` `services/trash_transfer.py` | `repo/account_cleanup.py` `repo/trash.py` `services/trash_transfer.py` |
 | `txn_scan` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
-| `worker` | content DB | `backend/schema.sql` | `db_account_dbs.py` `repo/identity.py` | `repo/_common.py` `repo/assets.py` `repo/facets.py` `repo/share.py` `repo/sources.py` |
+| `worker` | content DB | `backend/schema.sql` | `db_account_dbs.py` `repo/account_cleanup.py` `repo/identity.py` | `repo/_common.py` `repo/assets.py` `repo/facets.py` `repo/share.py` `repo/sources.py` |
 | `worker_backup_delivery_state` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
 | `worker_backup_outbox` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
 | `worker_backup_source_state` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
