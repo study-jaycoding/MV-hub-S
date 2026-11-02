@@ -78,8 +78,8 @@
 | `backend/app/services/clean_feed_window.py` | `FeedWindows.start` | Thread | `self._run (name=clean-feed-window)` |
 | `backend/app/services/cli_bridge.py` | `_ensure_cost_writer` | create_task | `_cost_writer()` |
 | `backend/app/services/cli_bridge.py` | `_single_flight_task` | create_task | `factory()` |
+| `backend/app/services/cli_bridge.py` | `_stop_cli_tasks` | ensure_future | `drain()` |
 | `backend/app/services/cli_bridge.py` | `_terminate_cli_process` | ensure_future | `_finish_slow_tree_kill(killer, proc)` |
-| `backend/app/services/cli_bridge.py` | `shutdown_model_refreshes` | ensure_future | `_drain_model_shutdown(state, tasks)` |
 | `backend/app/services/history_autofill.py` | `_start_history_task` | create_task | `_run_history_import(key, dict(acc), account_scope=captured_scope)` |
 | `backend/app/services/history_autofill.py` | `schedule_history_auto_start._spawn` | create_task | `auto_start_history_import(account_email, reason="gap") (name=history-gap-auto-start)` |
 | `backend/app/services/media_preservation.py` | `PeriodicMediaPreservation.start` | create_task | `self._run() (name=media-preservation)` |
