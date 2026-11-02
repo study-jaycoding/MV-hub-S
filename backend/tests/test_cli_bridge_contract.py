@@ -561,6 +561,9 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
             def __init__(self):
                 self.kill = Mock()
 
+            async def wait(self):
+                return 0
+
         real_wait_for = asyncio.wait_for
         limits = []
 
@@ -592,8 +595,8 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
                 self.assertIsNotNone(held())  # 늦은 /F 가 재사용된 번호를 치지 않게 쥔다
                 killer.returncode = 0
                 killer.finished.set()
-                for _ in range(5):
-                    await asyncio.sleep(0)
+                await asyncio.wait(set(state.slow_kills), timeout=1)
+                await asyncio.sleep(0)
                 self.assertEqual(state.slow_kills, set())
                 gc.collect()
                 self.assertIsNone(held())
@@ -666,3 +669,101 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         from app.services import cli_bridge
 
         await asyncio.wait_for(cli_bridge.shutdown_model_refreshes(), 1)
+        await asyncio.wait_for(cli_bridge.shutdown_cli_calls(), 1)
+
+    async def test_slow_tree_kill_that_succeeds_still_collects_the_parent(self):
+        from app.services import cli_bridge
+
+        class Killer:
+            returncode = 0
+
+            async def wait(self):
+                return 0
+
+        class Parent:
+            pid = 4321
+            returncode = 1
+            waited = False
+
+            async def wait(self):
+                self.waited = True
+                return 1
+
+        parent = Parent()
+        with patch.object(cli_bridge, "log_event") as log:
+            await cli_bridge._finish_slow_tree_kill(Killer(), parent)
+        self.assertTrue(parent.waited)
+        log.assert_not_called()
+
+    async def test_wait_slow_kills_warns_when_the_limit_passes(self):
+        from app.services import cli_bridge
+
+        state = cli_bridge._model_refresh_state()
+        finished = asyncio.Event()
+        late = asyncio.ensure_future(finished.wait())
+        state.slow_kills.add(late)
+        late.add_done_callback(state.slow_kills.discard)
+        with patch.object(cli_bridge, "log_event") as log:
+            await cli_bridge.wait_slow_kills(timeout=0.01)
+        self.assertEqual(log.call_args.args[1], "cli_tree_kill_unfinished")
+        self.assertEqual(log.call_args.kwargs["count"], 1)
+        self.assertFalse(late.done())
+        finished.set()
+        await late
+
+    async def test_shutdown_cli_calls_stops_the_calls_the_model_shutdown_leaves(self):
+        from app.services import cli_bridge
+
+        ended = []
+
+        def call(name):
+            async def run():
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.01)  # 실제 회수처럼 취소 뒤에도 잠시 돈다
+                    ended.append(name)
+                    raise
+
+            return run
+
+        account = cli_bridge._single_flight_task("account_status", call("account"))
+        workspaces = cli_bridge._single_flight_task("workspaces", call("workspaces"))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(cli_bridge.shutdown_model_refreshes(), 1)
+        self.assertFalse(account.done() or workspaces.done())  # 모델 정리는 이 키를 안 건드린다
+        await asyncio.wait_for(cli_bridge.shutdown_cli_calls(), 1)
+        self.assertEqual(sorted(ended), ["account", "workspaces"])
+
+    async def test_shutdown_cli_calls_keeps_collecting_when_cancelled(self):
+        from app.services import cli_bridge
+
+        finished = asyncio.Event()
+
+        async def run():
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                await finished.wait()
+                raise
+
+        cli_bridge._single_flight_task("account_status", run)
+        await asyncio.sleep(0)
+        stopping = asyncio.create_task(cli_bridge.shutdown_cli_calls())
+        await asyncio.sleep(0.02)
+        for _ in range(2):  # 두 번째 취소도 회수를 끊지 않는다
+            stopping.cancel()
+            await asyncio.sleep(0.02)
+            self.assertFalse(stopping.done())
+        finished.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await stopping
+
+    def test_app_shutdown_collects_cli_calls_after_every_cli_user_stopped(self):
+        from app import main
+
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        collect = source.index("cli_bridge.shutdown_cli_calls")
+        for stopped in ("periodic_sync.stop", "_stop_history_imports)", "_cancel_background_task(thumbnail_repair_task)", "asset_watcher.stop"):
+            self.assertLess(source.index(stopped), collect, stopped)
+        self.assertLess(collect, source.index('"shutdown_complete"'))

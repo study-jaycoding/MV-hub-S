@@ -548,6 +548,107 @@ it.each<[string, Generation[], Partial<GenQuery>]>([
   }
 });
 
+// 2차 마감 대조 3: 올라올 길이 없는 행이 있어도 끝까지 받기를 매분 되풀이하지 않는다 — 간격은 대기 목록이 그대로인 시간이다.
+const fullFetch = async (intent: Parameters<typeof latest.request>[0] = "check", refresh?: Parameters<typeof latest.request>[1]) => {
+  const before = listGenerations.mock.calls.length;
+  await ask(intent, refresh);
+  return cursors(before).length > 1;
+};
+const THIRTY_MIN = 30 * 60_000;
+
+it("cut_waiting_upload — 대기 목록이 그대로이면 간격이 그 시간만큼 늘어 30분에서 멈추고, 바뀌면 1분으로 돌아온다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const srv = server([...rows(500, "a"), waitingRow("tail")]);
+    draw({});
+    await flush();
+    const fulls = [now];
+    for (let step = 0; step < 480; step += 1) { // 15초마다 check — 2시간
+      now += 15_000;
+      if (await fullFetch()) fulls.push(now);
+    }
+    const gaps = fulls.slice(1).map((at, index) => at - fulls[index]);
+    expect(gaps.slice(0, 4)).toEqual([60_000, 60_000, 120_000, 240_000]);
+    expect(gaps.every((gap, index) => index === 0 || gap >= gaps[index - 1])).toBe(true);
+    expect(gaps.at(-1)).toBe(THIRTY_MIN);
+    srv.table = [...srv.table.slice(0, 500), waitingRow("other")]; // 새 대기 행 — 다음 전체 조회가 보면 처음부터
+    now += THIRTY_MIN;
+    expect(await fullFetch()).toBe(true);
+    now += 59_000;
+    expect(await fullFetch()).toBe(false);
+    now += 1_000;
+    expect(await fullFetch()).toBe(true);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("cut_waiting_upload — 간격 재기는 시간이라 잦은 전체 조회가 앞당기지 않고, 서버 카드만 실패해도 시간은 쌓인다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    server([...rows(500, "a"), waitingRow("tail")]);
+    draw({});
+    await flush();
+    for (let step = 0; step < 5; step += 1) { // 첫 쪽이 바뀌어 온 전체 조회들 — 목록은 그대로
+      now += 2_000;
+      await ask("invalidate");
+    }
+    now += 49_000;
+    expect(await fullFetch()).toBe(false); // 마지막 전체 조회 뒤 49초 — 1분 안
+    now += 11_000;
+    const failedCards = () => Promise.resolve({ status: "failed", cards: null });
+    expect(await fullFetch("check", failedCards)).toBe(true); // 카드는 못 받아도 목록은 적용했다
+    now += 60_000;
+    expect(await fullFetch()).toBe(false);
+    now += 11_000;
+    expect(await fullFetch()).toBe(true); // 70초 그대로였다 — 간격이 70초로 늘었다
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("cut_waiting_upload — 목록을 못 받으면 다음 check 가 끝까지 받고 간격은 그대로다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    server([...rows(500, "a"), waitingRow("tail")]);
+    draw({});
+    await flush();
+    now += 61_000;
+    listGenerations.mockRejectedValueOnce(new Error("502"));
+    const before = listGenerations.mock.calls.length;
+    expect((await ask("check")).status).toBe("failed");
+    expect(cursors(before)).toEqual([null]);
+    expect(await fullFetch()).toBe(true);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("cut_waiting_upload — 조회가 바뀌면 같은 대기 행이 보여도 판정과 간격을 처음부터 시작한다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    server([...rows(500, "a"), waitingRow("tail")]);
+    draw({ query: query({ search: "one" }) });
+    await flush();
+    for (let step = 0; step < 300; step += 1) { // 앞 조회의 간격을 30분 가까이 늘린다
+      now += 15_000;
+      await ask("check");
+    }
+    draw({ query: query({ search: "two" }) });
+    await flush();
+    now += 59_000;
+    expect(await fullFetch()).toBe(false);
+    now += 1_000;
+    expect(await fullFetch()).toBe(true);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
 it("cut_waiting_upload — 조회가 바뀌면 앞 조회의 판정을 쓰지 않고, 받는 사이 바뀐 조회의 옛 응답은 버린다", async () => {
   let now = 1_000_000;
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);

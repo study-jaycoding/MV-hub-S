@@ -10,6 +10,7 @@ const TREE_CACHE_KEY = "treecache";
 const META_CACHE_KEY = "metacache";
 const CACHE_MAX_BYTES = 3_000_000; // localStorage 안전 상한(대략) — 넘으면 저장 생략(다음 세션은 다시 fetch)
 const FOLDER_INFO_GAP_MS = 60_000; // 창 복귀·어셋 변경 알림이 표시용 조회를 다시 부를 수 있는 간격
+const FOLDER_INFO_TICK_MS = 5 * 60_000; // 알림 없이 보이기만 하는 창이 표시용 조회를 다시 부르는 주기
 // 비울 때 넣는 고정 빈 값 — 매번 새 {}·[] 를 만들면 아래의 '다시 계산되는 갱신'과 같은 되먹임에 끼어든다(조작 규칙 54).
 const EMPTY_TREE: AssetNode[] = [];
 const EMPTY_META: Record<string, AssetMeta> = {};
@@ -293,17 +294,19 @@ export function useAssetProjectData({
   }, [reloadProjects]);
 
   // projects 는 내용이 같으면 참조를 유지해(reconcileArrayState) 어셋 변경 알림마다 돌지 않는다. 빈 목록을 건너뛰어 첫 입장의 [] → 목록에서 두 번 묻지 않는다.
-  // shortcut: 타이머가 없어 같은 이름으로 지웠다 다시 만든 프로젝트는 1분이 지난 뒤의 다음 복귀·알림 때 맞춰진다, 바로 맞춰야 하면 프로젝트 변경 통보를 만든다.
   useEffect(() => {
     if (projects.length) reloadFolderInfo();
   }, [reloadFolderInfo, projects]);
 
+  // 팀원이 같은 이름으로 다시 만든 프로젝트는 알림이 안 온다 — 보이는 창도 5분이면 맞춰지게 타이머를 둔다
   useEffect(() => {
     window.addEventListener("focus", refreshFolderInfo);
     document.addEventListener("visibilitychange", refreshFolderInfo);
+    const timer = window.setInterval(refreshFolderInfo, FOLDER_INFO_TICK_MS);
     return () => {
       window.removeEventListener("focus", refreshFolderInfo);
       document.removeEventListener("visibilitychange", refreshFolderInfo);
+      window.clearInterval(timer);
     };
   }, [refreshFolderInfo]);
 

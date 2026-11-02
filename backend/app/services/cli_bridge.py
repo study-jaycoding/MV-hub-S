@@ -130,7 +130,7 @@ async def _finish_slow_tree_kill(killer: asyncio.subprocess.Process, proc: async
     if killer.returncode != 0:
         log_event(logging.getLogger(__name__), "cli_tree_kill_failed", level=logging.WARNING,
                   pid=proc.pid, taskkill_rc=killer.returncode)
-        await _end_cli_parent(proc)
+    await _end_cli_parent(proc)
 
 
 async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
@@ -619,11 +619,40 @@ def start_model_refreshes() -> None:
     state.stopping = False
 
 
-async def _drain_model_shutdown(state: _ModelRefreshState, tasks: set[asyncio.Task[Any]]) -> None:
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    if state.slow_kills:
-        await asyncio.wait(set(state.slow_kills), timeout=60.0)
+async def wait_slow_kills(timeout: float = 60.0) -> None:
+    """맡겨 둔 taskkill 의 끝을 기다린다. loop 가 닫히면 taskkill 도 끝나므로 닫기 전에 부른다."""
+    kills = _model_refresh_state().slow_kills
+    if kills:
+        _, left = await asyncio.wait(set(kills), timeout=timeout)
+        if left:
+            log_event(logging.getLogger(__name__), "cli_tree_kill_unfinished", level=logging.WARNING, count=len(left))
+
+
+async def _stop_cli_tasks(tasks: set[asyncio.Task[Any]]) -> None:
+    async def drain() -> None:
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await wait_slow_kills()
+
+    # 자신이 몇 번을 취소돼도 CLI 회수를 중간에 끊지 않는다.
+    waiting = asyncio.ensure_future(drain())
+    cancelled = False
+    while not waiting.done():
+        try:
+            await asyncio.shield(waiting)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def shutdown_cli_calls() -> None:
+    """앱 종료의 끝 — 앞 단계가 남긴 호출(계정·워크스페이스 조회 등)을 취소하고 회수까지 기다린다. CLI 를 쓰는 작업이 모두 멈춘 뒤에 부른다."""
+    with _inflight_guard:
+        tasks = set(_inflight_calls.get(asyncio.get_running_loop(), {}).values())
+    for task in tasks:
+        task.cancel()
+    await _stop_cli_tasks(tasks)
 
 
 async def shutdown_model_refreshes() -> None:
@@ -641,13 +670,7 @@ async def shutdown_model_refreshes() -> None:
         for task in tasks:
             if not task.done():
                 task.cancel()
-    # shutdown 자체의 취소도 CLI 회수를 중간에 다시 취소하지 않도록 한다.
-    drain = asyncio.ensure_future(_drain_model_shutdown(state, tasks))
-    try:
-        await asyncio.shield(drain)
-    except asyncio.CancelledError:
-        await drain
-        raise
+    await _stop_cli_tasks(tasks)
 
 
 async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:

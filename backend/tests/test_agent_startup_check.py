@@ -62,6 +62,50 @@ def _fake_cli(monkeypatch, agent, script: dict) -> tuple[list, list]:
     return calls, sleeps
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill")
+@pytest.mark.parametrize("taskkill, parent_ended", [("ended", True), ("slow", False), ("missing", True)])
+def test_tree_kill_leaves_a_slow_taskkill_and_its_parent_alone(monkeypatch, taskkill, parent_ended):
+    agent = _load_agent()
+    events: list[str] = []
+
+    class Parent:
+        pid = 4321
+        returncode = None
+        asked = 0
+
+        def communicate(self, timeout=None):
+            self.asked += 1
+            if self.asked == 1 or taskkill == "slow":
+                raise subprocess.TimeoutExpired("hf", timeout)
+            return "", ""
+
+        def kill(self):
+            events.append("parent killed")
+
+    class Killer:
+        def wait(self, timeout=None):
+            events.append(f"waited {timeout}")
+            if taskkill == "slow":
+                raise subprocess.TimeoutExpired("taskkill", timeout)
+
+        def kill(self):
+            events.append("taskkill killed")
+
+    def popen(argv, **_kwargs):
+        if argv[0] != "taskkill":
+            return Parent()
+        if taskkill == "missing":
+            raise OSError("no taskkill")
+        return Killer()
+
+    monkeypatch.setattr(agent.subprocess, "Popen", popen)
+    with pytest.raises(subprocess.TimeoutExpired):
+        agent._run_with_tree_kill(["hf", "version"], 1)
+    assert ("parent killed" in events) is parent_ended
+    assert "taskkill killed" not in events
+    assert ("waited 5" in events) is (taskkill != "missing")
+
+
 @pytest.mark.parametrize(
     "script, state, calls, sleeps",
     [

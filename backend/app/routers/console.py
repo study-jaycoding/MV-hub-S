@@ -5,16 +5,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+from anyio import from_thread
 from fastapi import APIRouter, HTTPException, Request
 
 from ..config import BACKEND_DIR, PORT
@@ -51,7 +52,8 @@ def _actual_cli_version() -> str | None:
         version = None
         try:
             # sync 라우트의 worker 스레드에서 기존 숨김 실행·자식 회수 경로를 재사용한다.
-            output = asyncio.run(cli_bridge._run("version", timeout=5))
+            # 서버 loop 에서 돌린다 — 임시 loop 는 닫히며 맡겨 둔 taskkill 을 끊는다.
+            output = from_thread.run(partial(cli_bridge._run, "version", timeout=5))
             match = re.search(r"^higgsfield\s+(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?=\s|$)", output, re.MULTILINE)
             if match:
                 version = match[1]

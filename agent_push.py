@@ -542,20 +542,27 @@ def _sanitize_diagnostic(text: str | bytes | None) -> str:
 
 def _run_with_tree_kill(argv: list, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
     """subprocess.run(capture_output=True, text=True, timeout=…) 과 같되, 시간 초과면 프로세스 트리째 끝내고
-    제한 시간 안에 회수한다(cli_bridge._terminate_cli_process 와 같은 꼴). 셰임(Node)만 죽이면 출력 파이프를
-    물려받은 자식 CLI 가 남아 회수가 끝나지 않고 다음 재시도로 못 갔다(81회차 F-C-04 리뷰 P1)."""
+    제한 시간 안에 돌아온다(cli_bridge._terminate_cli_process 와 같은 꼴). 셰임(Node)만 죽이면 출력 파이프를
+    물려받은 자식 CLI 가 남아 회수가 끝나지 않고 다음 재시도로 못 갔다(81회차 F-C-04 리뷰 P1).
+    코어가 꽉 차 taskkill 이 늦으면 끊지 않고 맡긴 채 돌아온다 — taskkill 은 이 프로세스가 끝나도 이어진다."""
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        left = False
         if os.name == "nt":
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                subprocess.run(
+                killer = subprocess.Popen(
                     ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-        proc.kill()
+                try:
+                    killer.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    left = True  # 코어가 꽉 차면 1분 걸린다(실측). 끊거나 부모(node)를 먼저 끝내면 실제 CLI(hf.exe)를 못 찾는다
+        if not left:
+            proc.kill()
         with contextlib.suppress(subprocess.TimeoutExpired):  # 트리 밖으로 빠진 자식이 파이프를 쥐면 더 기다리지 않는다
             exc.stdout, exc.stderr = proc.communicate(timeout=5)
         raise

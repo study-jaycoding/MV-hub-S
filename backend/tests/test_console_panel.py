@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -167,17 +169,47 @@ def test_close_app_single_flight_rejects_concurrent_requests(monkeypatch: pytest
     assert console.console_close_app(_request()) == {"ok": True}
 
 
+def _actual_version() -> str | None:
+    """라우트처럼 AnyIO 워커에서 부른다 — 버전 조회는 서버 loop 로 돌아간다."""
+    return anyio.run(anyio.to_thread.run_sync, console._actual_cli_version)
+
+
+def test_actual_cli_version_leaves_a_slow_tree_kill_running_on_the_server_loop(tmp_path, monkeypatch):
+    native = tmp_path / "higgsfield.exe"
+    native.write_bytes(b"not executed")
+    monkeypatch.setattr(console.cli_bridge, "cli_argv", lambda: [str(native)])
+
+    async def scenario() -> None:
+        server_loop = asyncio.get_running_loop()
+        finished = asyncio.Event()
+        left: list[asyncio.Future] = []
+
+        async def timed_out(*_args, timeout):
+            assert asyncio.get_running_loop() is server_loop  # 임시 loop 를 만들지 않는다
+            left.append(asyncio.ensure_future(finished.wait()))
+            raise console.cli_bridge.CLIError("CLI timeout")
+
+        monkeypatch.setattr(console.cli_bridge, "_run", timed_out)
+        assert await anyio.to_thread.run_sync(console._actual_cli_version) is None
+        await asyncio.sleep(0.01)
+        assert not left[0].done()  # 응답 뒤에도 그 loop 에서 이어진다
+        finished.set()
+        await left[0]
+
+    anyio.run(scenario)
+
+
 def test_actual_cli_version_uses_argv_and_cache_tracks_file_changes(tmp_path, monkeypatch):
     native = tmp_path / "higgsfield.exe"
     native.write_bytes(b"not executed")
     monkeypatch.setattr(console.cli_bridge, "cli_argv", lambda: [str(native)])
     version = AsyncMock(return_value="higgsfield 1.2.3 (build) built today\n")
     monkeypatch.setattr(console.cli_bridge, "_run", version)
-    assert console._actual_cli_version() == "1.2.3"
-    assert console._actual_cli_version() == "1.2.3"
+    assert _actual_version() == "1.2.3"
+    assert _actual_version() == "1.2.3"
     version.assert_awaited_once_with("version", timeout=5)
     native.write_bytes(b"replacement with different size")
-    assert console._actual_cli_version() == "1.2.3"
+    assert _actual_version() == "1.2.3"
     assert version.await_count == 2
 
 
@@ -189,11 +221,11 @@ def test_actual_cli_version_failure_is_unknown_and_cached_briefly(tmp_path, monk
     monkeypatch.setattr(console.time, "monotonic", lambda: now[0])
     failing = AsyncMock(side_effect=console.cli_bridge.CLIError("CLI timeout"))
     monkeypatch.setattr(console.cli_bridge, "_run", failing)
-    assert console._actual_cli_version() is None
-    assert console._actual_cli_version() is None
+    assert _actual_version() is None
+    assert _actual_version() is None
     assert failing.await_count == 1
     now[0] += 6
-    assert console._actual_cli_version() is None
+    assert _actual_version() is None
     assert failing.await_count == 2
 
 
@@ -203,7 +235,7 @@ def test_actual_cli_version_does_not_guess_from_unrecognized_output(tmp_path, mo
     native.write_bytes(b"not executed")
     monkeypatch.setattr(console.cli_bridge, "cli_argv", lambda: [str(native)])
     monkeypatch.setattr(console.cli_bridge, "_run", AsyncMock(return_value=stdout))
-    assert console._actual_cli_version() is None
+    assert _actual_version() is None
 
 
 def test_shared_server_console_does_not_claim_local_worker_version(tmp_path, monkeypatch):

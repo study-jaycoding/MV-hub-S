@@ -140,6 +140,45 @@ it("Assets 색 조회 — 이름 그대로인 어셋 변경 알림은 1분이 �
   expect(mocks.projects).toHaveBeenCalledTimes(4);
 });
 
+it("Assets 색 조회 — 알림이 없어도 보이는 창은 5분마다 묻고, 가려진 창은 안 묻고, 화면을 떠나면 타이머가 사라진다", async () => {
+  vi.useFakeTimers();
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  const tick = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+  try {
+    mocks.projects.mockResolvedValue({ projects: [{ name: "a-folder", id: "old" }], unassigned: 0 });
+    mocks.assetProjects.mockResolvedValue(projectList(["a-folder"]));
+    mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
+    const view = mountProjectData();
+    view.show("team-a");
+    await tick(0);
+    expect([mocks.projects.mock.calls.length, mocks.assetMounts.mock.calls.length]).toEqual([1, 1]);
+    mocks.projects.mockResolvedValue({ projects: [{ name: "a-folder", id: "new" }], unassigned: 0 });
+    await tick(4 * 60_000 + 59_000);
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    await tick(1_000);
+    expect([mocks.projects.mock.calls.length, mocks.assetMounts.mock.calls.length]).toEqual([2, 2]);
+    expect(view.data().projectIds).toEqual({ "a-folder": "new" });
+    await tick(60_000); // 복귀와 겹쳐도 1분 간격이 지킨다 — 타이머가 돈 뒤 1분 안의 복귀는 안 묻는다
+    await tick(3 * 60_000 + 30_000);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    await tick(0);
+    expect(mocks.projects).toHaveBeenCalledTimes(3); // 복귀 한 번
+    await tick(30_000); // 타이머 차례지만 복귀에서 30초밖에 안 지났다
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    hidden.mockReturnValue(true);
+    await tick(10 * 60_000);
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    hidden.mockReturnValue(false);
+    act(() => root.unmount());
+    await tick(10 * 60_000);
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    root = createRoot(host);
+  } finally {
+    hidden.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
 it("Assets 색 조회 — 같은 이름으로 다시 만든 프로젝트는 1분이 지난 뒤의 복귀·알림 때 맞춰지고, 그 안에는 어느 길로도 더 묻지 않는다", async () => {
   let now = 1_000_000;
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);

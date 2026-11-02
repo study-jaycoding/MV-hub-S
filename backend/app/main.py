@@ -726,6 +726,8 @@ async def _application_lifespan(app: FastAPI):
             _attempt_sync_cleanup(lambda: agent_signals.unbind_loop(runtime_loop))
         if (startup_complete or asset_watcher_started) and runtime_loop is not None:
             _attempt_sync_cleanup(asset_watcher.stop)
+        # CLI 를 쓰는 작업이 모두 멈춘 뒤 — 남은 호출과 맡겨 둔 taskkill 을 loop 가 닫히기 전에 거둔다.
+        await _attempt_async_cleanup(cli_bridge.shutdown_cli_calls)
         if startup_complete and cleanup_error is None:
             _attempt_sync_cleanup(lambda: log_event(_runtime_log, "shutdown_complete"))
         if primary_error is None and cleanup_error is not None:
