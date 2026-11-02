@@ -700,14 +700,21 @@ export function SceneBoard({
   const [findRun, setFindRun] = useState<{ sceneId: string; count: number; ctrl: AbortController } | null>(null);
   const finding = findRun?.sceneId === scene.id ? findRun : null;
   const ioPanelVisible = ioPanelOpen || !!finding;
-  // 탭 자리는 그린 뒤에 잰다 — 다른 탭을 휠 클릭하면 그 탭이 켜지며 커져서 누른 순간의 자리와 달라진다.
+  // 탭 자리는 그린 뒤에 잰다 — 다른 탭을 휠 클릭하면 그 탭이 켜지며 커져서 누른 순간의 자리와 달라진다. 열린 동안 보드가 좁아지면 다시 잰다.
   useLayoutEffect(() => {
     if (!ioPanelOpen) return;
-    const board = scrollRef.current?.getBoundingClientRect();
-    const tabs = [...document.querySelectorAll<HTMLElement>("[data-scene-tab]")];
-    const tab = tabs.find((element) => element.dataset.sceneTab === scene.id)?.getBoundingClientRect();
-    if (!board || !tab) return;
-    setIoPanelLeft(sceneIoPanelLeft(tab.left - board.left, tab.right - board.left, board.width, ioPanelRef.current?.offsetWidth ?? 0));
+    const place = () => {
+      const board = scrollRef.current?.getBoundingClientRect();
+      const tabs = [...document.querySelectorAll<HTMLElement>("[data-scene-tab]")];
+      const tab = tabs.find((element) => element.dataset.sceneTab === scene.id)?.getBoundingClientRect();
+      if (!board || !tab) return;
+      setIoPanelLeft(sceneIoPanelLeft(tab.left - board.left, tab.right - board.left, board.width, ioPanelRef.current?.offsetWidth ?? 0));
+    };
+    place();
+    if (!scrollRef.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(place);
+    observer.observe(scrollRef.current);
+    return () => observer.disconnect();
   }, [ioPanelOpen, scene.id, finding?.count]);
   useEscapeClose(() => onCloseIoPanel?.(), ioPanelOpen, true, true);
   // 공용 바깥 누름 훅은 어느 단추인지 넘기지 않는다 — 탭 위 휠 누름에 닫으면 뒤이은 휠 클릭(App)이 같은 탭을 다시 연다.

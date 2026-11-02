@@ -321,6 +321,44 @@ it("씬 패널 — 연 씬에서만 보이고 Esc·바깥 누르기로 닫는다
   expect(onCloseIoPanel).toHaveBeenCalledTimes(3);
 });
 
+it("씬 패널 — 열린 동안 보드 크기가 바뀌면 자리를 다시 잡고, 닫으면 보지 않는다", async () => {
+  const watching: { target: Element; callback: () => void; self: object }[] = [];
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private callback: () => void) {}
+    observe(target: Element) { watching.push({ target, callback: this.callback, self: this }); }
+    unobserve() {}
+    disconnect() { for (let i = watching.length - 1; i >= 0; i--) if (watching[i].self === this) watching.splice(i, 1); }
+  });
+  const scene = refScene("resize-scene", "ws-g", [{ id: "r1", refs: [ref("asset:Q|c.png", "c.png")] }]);
+  const draw = (ioPanelScene: string | null) =>
+    act(async () => {
+      root.render(<SceneBoard scene={scene} onChange={noop} onFindRefs={vi.fn(async () => {})} ioPanelScene={ioPanelScene} />);
+    });
+  const tab = document.createElement("span");
+  tab.dataset.sceneTab = "resize-scene";
+  document.body.appendChild(tab);
+  const rect = (left: number, width: number) => ({ left, right: left + width, width } as DOMRect);
+  vi.spyOn(tab, "getBoundingClientRect").mockReturnValue(rect(700, 90));
+
+  await draw(null);
+  const closed = watching.length;
+  const panel = host.querySelector<HTMLElement>(".scene-io-panel")!;
+  Object.defineProperty(panel, "offsetWidth", { value: 170, configurable: true });
+  const board = host.querySelector<HTMLElement>(".scene-board")!;
+  const boardRect = vi.spyOn(board, "getBoundingClientRect").mockReturnValue(rect(0, 1000));
+  await draw("resize-scene");
+  expect(panel.style.left).toBe("700px");
+  expect(watching.length).toBe(closed + 1);
+
+  boardRect.mockReturnValue(rect(0, 600));
+  await act(async () => { watching.filter(item => item.target === board).forEach(item => item.callback()); });
+  expect(panel.style.left).toBe("422px");
+
+  await draw(null);
+  expect(watching.length).toBe(closed);
+  tab.remove();
+});
+
 it("씬 전환 첫 렌더에는 핸들이 아직 옛 씬을 말한다 — 새 씬 id 로 온 복구 답이 옛 카드를 새 씬에 쓰지 않게(Codex)", async () => {
   // 씬 A→B 로 바꾸는 첫 렌더에는 cards 가 아직 A 다(동기화는 useEffect). 그 커밋의 핸들이 B 를 말하면,
   // 활성 씬(B) 확인을 통과해 A 의 카드에 답을 입히고 B 로 저장한다. 같은 커밋의 레이아웃 효과로 들여다본다.

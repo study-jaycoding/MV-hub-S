@@ -33,10 +33,10 @@ export interface SceneViewRect {
   b: number;
 }
 
-/** 씬 패널의 왼쪽 자리(보드 px) — 탭 왼쪽에 맞추고, 오른쪽으로 넘치면 탭 오른쪽 끝에 맞춘다. 보드 왼쪽 밖으로는 나가지 않는다. */
+/** 씬 패널의 왼쪽 자리(보드 px) — 탭 왼쪽에 맞추고, 오른쪽으로 넘치면 탭 오른쪽 끝에 맞춘다. 탭이 보드 밖이어도 패널은 보드 안에 둔다(보드가 더 좁으면 왼쪽을 지킨다). */
 export function sceneIoPanelLeft(tabLeft: number, tabRight: number, boardWidth: number, panelWidth: number): number {
   const fits = tabLeft + panelWidth <= boardWidth - 8;
-  return Math.max(8, fits ? tabLeft : tabRight - panelWidth);
+  return Math.max(8, Math.min(fits ? tabLeft : tabRight - panelWidth, boardWidth - panelWidth - 8));
 }
 
 /** 미니맵의 '보는 영역' 상자(미니맵 px) — 지도 안으로 자르고 정수 px 로 반올림한다(2026-09-29). 25% 이하에서는 상자가

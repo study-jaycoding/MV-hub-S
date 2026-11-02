@@ -58,4 +58,5 @@ it("패널 자리 — 탭 왼쪽에 맞추고, 넘치면 탭 오른쪽 끝에 �
   expect(sceneIoPanelLeft(100, 200, 800, 170)).toBe(100);
   expect(sceneIoPanelLeft(700, 790, 800, 170)).toBe(620); // 오른쪽 끝 탭
   expect(sceneIoPanelLeft(100, 120, 200, 170)).toBe(8); // 보드가 패널보다 좁아도 왼쪽 안
+  expect(sceneIoPanelLeft(894, 1000, 800, 264)).toBe(528); // 창을 좁혀 탭이 보드 밖이어도 패널은 보드 안(재현값)
 });

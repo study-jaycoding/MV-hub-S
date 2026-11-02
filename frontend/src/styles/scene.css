@@ -167,6 +167,7 @@
 /* ── 씬 패널 — 탭을 휠 클릭하면 그 탭 밑에 뜬다(Jay 2026-11-02). left 는 SceneBoard 가 탭 자리에 맞춘다 ── */
 .scene-io-panel {
   position: absolute; top: 6px; left: 10px; z-index: 20;
+  width: max-content; /* 왼쪽 값이 보드 밖에 남아 있어도 폭이 줄어든 채로 재이지 않게 */
   display: flex; align-items: center; gap: 10px;
   padding: 7px 10px; border-radius: 8px;
   background: rgba(10, 14, 20, 0.82); border: 1px solid var(--border2);
