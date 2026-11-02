@@ -560,16 +560,18 @@ export function ProjectManagerPanel({
             )}
           </AdminPageHead>
           {actMsg && <div className="admin-note-sub">{actMsg}</div>}
-          {projects.length === 0 && <div className="admin-empty">없음</div>}
+          {projects.length === 0 && <div className="admin-empty">프로젝트가 없습니다.</div>}
           <table className="admin-table">
-            <thead>
-              <tr>
-                <th>프로젝트</th>
-                <th className="proj-col-roles">역할 인원</th>
-                <th className="admin-num proj-col-count">생성물</th>
-                <th aria-label="관리" />
-              </tr>
-            </thead>
+            {projects.length > 0 && (
+              <thead>
+                <tr>
+                  <th>프로젝트</th>
+                  <th className="proj-col-roles">역할 인원</th>
+                  <th className="admin-num proj-col-count">생성물</th>
+                  <th aria-label="관리" />
+                </tr>
+              </thead>
+            )}
             <tbody>
               {projects.map((p, idx) => (
                 <Fragment key={p.id}>

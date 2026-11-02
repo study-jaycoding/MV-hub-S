@@ -306,8 +306,14 @@ export function AdminWindow({
   return (
     <>
       <div className="admin-backdrop" onMouseDown={() => { if (!projectDialogOpen) onClose(); }} />
-      {/* 탭을 바꿔도 창 크기는 그대로다(Jay 2026-11-02 B안) — 메뉴가 없는 사람(탭 하나)은 본문만 */}
-      <div ref={windowRef} className={"admin-window" + (visibleTabs.length > 1 ? "" : " no-nav")} role="dialog" aria-label="관리자">
+      {/* 탭을 바꿔도 창 크기는 그대로다(Jay 2026-11-02 B안) — 메뉴가 없는 사람(탭 하나)은 본문만, 볼 메뉴가 없는 사람은 안내 한 줄뿐이라 작은 창으로.
+          불러오는 동안은 메뉴를 아직 몰라 큰 창 그대로 둔다 — 관리자 창이 열리자마자 작아졌다 커지지 않게. */}
+      <div
+        ref={windowRef}
+        className={"admin-window" + (visibleTabs.length > 1 ? "" : " no-nav") + (!loading && visibleTabs.length === 0 ? " no-access" : "")}
+        role="dialog"
+        aria-label="관리자"
+      >
         <header className="admin-head">
           <span className="admin-title">⬡ 관리자</span>
           {localOnlyServerControls && isPermanentAdmin && (
@@ -394,8 +400,7 @@ export function AdminWindow({
             <div className="admin-loading">불러오는 중…</div>
           ) : visibleTabs.length === 0 ? (
             <div className="admin-note">
-              ⓘ 관리 권한이 없습니다. 전역 역할(Admin·Product Manager)을 가진 사람만 관리 탭이
-              보입니다.
+              ⓘ 관리 권한이 없습니다. 전역 역할 Admin 을 가진 사람만 관리 메뉴가 보입니다.
             </div>
           ) : (
             <>

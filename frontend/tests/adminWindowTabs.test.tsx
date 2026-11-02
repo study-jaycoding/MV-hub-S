@@ -18,8 +18,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../src/api", () => ({ api: mocks }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: mocks }));
+const caps = vi.hoisted(() => ({ system: true }));
 vi.mock("../src/lib/useManageCaps", () => ({
-  useManageCaps: () => ({ loaded: true, authOff: false, system: true, createProject: true, grantRole: true, readAll: true }),
+  useManageCaps: () => ({ loaded: true, authOff: false, system: caps.system, createProject: true, grantRole: true, readAll: true }),
 }));
 vi.mock("../src/lib/updateNotices", () => ({
   // 표지·후보의 공지를 단건으로도 찾는다(목록 밖) — 여기서는 "아직 등록 안 됨"(404)
@@ -40,6 +41,7 @@ let host: HTMLDivElement, root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   Object.values(mocks).forEach((mock) => mock.mockReset());
+  caps.system = true;
   mocks.sharedServerStatus.mockResolvedValue({
     url: "http://server:8010", server_name: "MV", is_admin: true, elevated: false, elevated_as: null, super_admin_expires_at: null,
   });
@@ -122,6 +124,33 @@ it("탭이 하나뿐이면 왼쪽 메뉴 없이 본문만 보인다", async () =
   await mount();
   expect(host.querySelector(".admin-tabs")).toBeNull();
   expect(host.querySelector(".admin-window")!.classList.contains("no-nav")).toBe(true);
+});
+
+it("볼 메뉴가 없는 사람은 작은 창에서 안내만 보고, 불러오는 동안은 창이 먼저 작아지지 않는다", async () => {
+  caps.system = false;
+  mocks.sharedServerStatus.mockResolvedValue({ url: null, server_name: "", is_admin: false, elevated: false, elevated_as: null, super_admin_expires_at: null });
+  let finishMembers = (_: unknown[]) => {};
+  mocks.members.mockReturnValue(new Promise((resolve) => { finishMembers = resolve; }));
+  await mount();
+  const classes = () => host.querySelector(".admin-window")!.classList;
+  expect(classes().contains("no-access")).toBe(false); // 아직 불러오는 중 — 관리자일 수도 있다
+  await act(async () => { finishMembers([{ uid: "user_m", name: "M", email: "jay@mv.com", global_roles: ["member"] }]); });
+  await settle();
+  expect(classes().contains("no-access")).toBe(true);
+  expect(host.querySelector(".admin-note")!.textContent).toContain("Admin 을 가진 사람만");
+});
+
+it("메뉴가 있는 관리자의 창에는 작은 창 표시가 붙지 않는다", async () => {
+  await mount();
+  expect(host.querySelector(".admin-window")!.classList.contains("no-access")).toBe(false);
+});
+
+it("프로젝트가 0개면 표 머리 없이 빈 안내만 보인다", async () => {
+  mocks.projects.mockResolvedValue({ projects: [] });
+  await mount();
+  await clickTab("프로젝트");
+  expect(host.querySelector(".admin-empty")!.textContent).toBe("프로젝트가 없습니다.");
+  expect(host.querySelector(".admin-table thead")).toBeNull();
 });
 
 it("'업데이트' 탭은 열 때 읽고, 팀 배포 단추 없이 [이 PC에 먼저 설치]만 둔다(팀 배포는 서버 관리 창 [릴리스])", async () => {
