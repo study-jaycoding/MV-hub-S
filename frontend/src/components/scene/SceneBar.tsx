@@ -24,6 +24,7 @@ import { HostConfirm } from "../common/HostConfirm";
 import { WorkspaceMark } from "../common/WorkspaceMark";
 import { NodeTip } from "./NodeTip";
 import { SceneIoButtons, type SceneIoAction } from "./SceneIoButtons";
+import { SceneNameInput, SceneTipName } from "./SceneNameInput";
 import { SceneWorkspaceMenu, type SceneMenuTarget } from "./SceneWorkspaceMenu";
 import type { WorkspaceContext } from "../../types";
 
@@ -48,6 +49,10 @@ interface Props {
   onExportAll?: () => void; // 지금 상태 전체를 파일로 내려받는다
   backupSkippedIds?: ReadonlySet<string>; // DB 백업에서 빠진 씬(5MB 초과 — Jay 결정 7A)
 }
+
+// 탭 설명 창이 뜬 요소의 씬 — 탭 단추일 때만(탭 안 '백업 안 됨' 표식은 설명만)
+const tipSceneId = (element: HTMLElement) =>
+  element.classList.contains("scene-tab") ? element.closest<HTMLElement>("[data-scene-tab]")?.dataset.sceneTab : undefined;
 
 const BACKUP_SKIPPED_TITLE = "5MB 를 넘어 이 PC 의 DB 백업에서 빠졌습니다 — 카드를 줄이면 다시 백업됩니다. 설정의 [전체 내보내기]로 따로 받아 두세요.";
 
@@ -114,6 +119,7 @@ export function SceneBar({
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null); // 삭제 확인창의 씬
   const deleting = deleteId ? scenes.find((scene) => scene.id === deleteId) : undefined; // 그사이 다른 창이 지웠으면 닫는다
+  const [editingId, setEditingId] = useState<string | null>(null); // 더블클릭으로 이름을 고치는 탭
   const barRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLElement>());
   const suppressClickRef = useRef(false); // 드래그 직후의 합성 클릭 한 번을 삼킨다
@@ -244,9 +250,9 @@ export function SceneBar({
         rootRef={barRef}
         within=".scene-tab"
         className="tab"
-        actions={(element, close) => {
-          const sceneId = element.closest<HTMLElement>("[data-scene-tab]")?.dataset.sceneTab;
-          if (!sceneId || !tabActions?.length || !element.classList.contains("scene-tab")) return null; // 탭 안 '백업 안 됨' 표식은 설명만
+        actions={(element, { close }) => {
+          const sceneId = tipSceneId(element);
+          if (!sceneId || !tabActions?.length) return null;
           return (
             <SceneIoButtons
               actions={tabActions}
@@ -257,6 +263,11 @@ export function SceneBar({
             />
           );
         }}
+        head={(element, { close, pin }) => {
+          const sceneId = tipSceneId(element);
+          if (!sceneId) return null;
+          return <SceneTipName name={element.dataset.tipHead ?? ""} onRename={(next) => onRename(sceneId, next)} pin={pin} close={close} />;
+        }}
       />
       {scenes.map((scene) => {
         const assigned = normalizeSceneWorkspace(scene.workspace);
@@ -265,6 +276,15 @@ export function SceneBar({
         const dimmed = sceneDimmed(scene, workspaceContext);
         const dragging = drag?.active && drag.sceneId === scene.id;
         const showLine = drag?.active && drag.dropBeforeId === scene.id && drag.sceneId !== scene.id;
+        // 어느 공간인지 **점이 아니라 표식으로** 보여 준다(Jay 2026-09-14) — 라임 점은 '지정됨' 만 말할 뿐 어느 공간인지는 못 알려 줬다.
+        //  메뉴·툴바와 같은 표식이다.
+        const mark = assigned ? (
+          <WorkspaceMark
+            label={label || assigned.name || assigned.id}
+            id={assigned.id}
+            className={"sm" + (missing ? " missing" : "")}
+          />
+        ) : null;
         return (
           <Fragment key={scene.id}>
           {/* 삽입선은 탭 바깥에 그린다 — .scene-tab-wrap 은 overflow:hidden 이라 안에 그리면 잘린다(코덱스 P2). */}
@@ -282,9 +302,17 @@ export function SceneBar({
             }
             data-scene-tab={scene.id}
           >
+            {/* 고치는 동안은 단추가 아니다 — 끌기·클릭이 글칸 조작을 가로채지 않고, 단추 안에 입력칸을 두지 않는다 */}
+            {editingId === scene.id ? (
+              <span className="scene-tab editing">
+                {mark}
+                <SceneNameInput name={scene.name} onRename={(next) => onRename(scene.id, next)} onDone={() => setEditingId(null)} />
+              </span>
+            ) : (
             <button
               className="scene-tab"
               onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }} // 휠 클릭의 자동 스크롤 막기
+              onDoubleClick={() => setEditingId(scene.id)}
               onAuxClick={(event) => {
                 if (event.button !== 1) return;
                 event.preventDefault();
@@ -323,18 +351,11 @@ export function SceneBar({
               data-tip-ws-label={assigned ? label || assigned.name || assigned.id : undefined}
               data-tip-ws-missing={missing ? "" : undefined}
             >
-              {/* 어느 공간인지 **점이 아니라 표식으로** 보여 준다(Jay 2026-09-14) — 라임 점은
-                  '지정됨' 만 말할 뿐 어느 공간인지는 못 알려 줬다. 메뉴·툴바와 같은 표식이다. */}
-              {assigned ? (
-                <WorkspaceMark
-                  label={label || assigned.name || assigned.id}
-                  id={assigned.id}
-                  className={"sm" + (missing ? " missing" : "")}
-                />
-              ) : null}
+              {mark}
               <span className="scene-tab-name">{shortSceneName(scene.name)}</span>
               {backupSkippedIds?.has(scene.id) ? <BackupSkippedBadge name={scene.name} /> : null}
             </button>
+            )}
             <button className="scene-del" title="씬 삭제" onClick={() => setDeleteId(scene.id)}>
               ×
             </button>

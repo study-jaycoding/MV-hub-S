@@ -72,9 +72,16 @@ interface Shown {
   y: number;
   anchor?: DOMRect; // 누를 수 있는 창 — 포인터를 따라가면 못 누르므로 이 자리 밑에 붙는다
   extra?: ReactNode;
+  headNode?: ReactNode;
 }
 
-function TipBox({ view, tone, ws, x, y, anchor, extra, className, boxRef, onEnter, onLeave }: Shown & {
+// 창 안의 조작이 창을 다룬다 — close = 닫기, pin(true) = 글을 치는 동안 닫히지 않게 붙들기(끝낼 때 close)
+export interface NodeTipTools {
+  close: () => void;
+  pin: (on: boolean) => void;
+}
+
+function TipBox({ view, tone, ws, x, y, anchor, extra, headNode, className, boxRef, onEnter, onLeave }: Shown & {
   className?: string;
   boxRef: RefObject<HTMLDivElement>;
   onEnter: () => void;
@@ -95,6 +102,7 @@ function TipBox({ view, tone, ws, x, y, anchor, extra, className, boxRef, onEnte
     if (top + r.height > window.innerHeight - 8) top = Math.max(8, y - 12 - r.height);
     setPos({ left, top });
   }, [x, y, anchor, boxRef]);
+  const title = headNode ?? (view.head && <div className="node-tip-head">{view.head}</div>);
   return (
     <div
       ref={boxRef}
@@ -106,14 +114,14 @@ function TipBox({ view, tone, ws, x, y, anchor, extra, className, boxRef, onEnte
     >
       {ws ? (
         <div className="node-tip-headline">
-          <div className="node-tip-head">{view.head}</div>
+          {title}
           <span className={"node-tip-ws" + (ws.missing ? " missing" : "")}>
             <WorkspaceMark label={ws.label} id={ws.id} className={"sm" + (ws.missing ? " missing" : "")} />
             {ws.label}
           </span>
         </div>
       ) : (
-        view.head && <div className="node-tip-head">{view.head}</div>
+        title
       )}
       {view.status && (
         <div className="node-tip-status">
@@ -167,16 +175,20 @@ export function NodeTip({
   within = ".scene-card",
   className,
   actions,
+  head,
 }: {
   rootRef: RefObject<HTMLElement | null>;
   within?: string; // 이 요소 안의 title 만 창으로 그린다
   className?: string;
-  actions?: (el: HTMLElement, close: () => void) => ReactNode; // 있으면 창을 요소 밑에 붙이고 마우스가 창으로 옮겨 가도 닫지 않는다(씬 탭의 단추)
+  actions?: (el: HTMLElement, tools: NodeTipTools) => ReactNode; // 있으면 창을 요소 밑에 붙이고 마우스가 창으로 옮겨 가도 닫지 않는다(씬 탭의 단추)
+  head?: (el: HTMLElement, tools: NodeTipTools) => ReactNode; // 제목 자리를 대신 그린다(씬 탭의 이름 고치기)
 }) {
   const [shown, setShown] = useState<Shown | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
+  const headRef = useRef(head);
+  headRef.current = head;
   const hold = useRef({ stay: () => {}, leave: () => {} });
   useEffect(() => {
     const root = rootRef.current;
@@ -185,24 +197,34 @@ export function NodeTip({
     let text = "";
     let timer = 0;
     let leaving = 0;
+    let pinned = false;
     let at = { x: 0, y: 0 };
     const stay = () => window.clearTimeout(leaving);
     const close = () => {
       window.clearTimeout(timer);
       stay();
+      pinned = false;
       // 떼어 둔 글을 되돌린다 — 그 사이 화면이 새 글을 붙였으면 그것을 둔다
       if (host && !host.hasAttribute("title")) host.setAttribute("title", text);
       host = null;
       setShown(null);
     };
     const leave = () => {
+      if (pinned) return;
       stay();
       leaving = window.setTimeout(close, 180); // 요소와 창 사이의 틈을 건너는 동안은 닫지 않는다
+    };
+    const tools: NodeTipTools = {
+      close,
+      pin: (on) => {
+        pinned = on;
+        stay();
+      },
     };
     hold.current = { stay, leave };
     const over = (e: MouseEvent) => {
       const target = e.target as Element | null;
-      if (!target || e.buttons) return; // 끄는 중에는 띄우지 않는다
+      if (!target || e.buttons || pinned) return; // 끄는 중에는 띄우지 않는다
       if (host && host.contains(target)) return stay(); // 같은 요소 안에서 움직임
       const el = target.closest?.<HTMLElement>("[title]");
       if (!el || !root.contains(el) || !el.closest(within)) return;
@@ -218,8 +240,9 @@ export function NodeTip({
       timer = window.setTimeout(() => {
         const view = parseNodeTip(t, tone, tipHead);
         if (ws) view.rows = []; // 표식이 '워크스페이스: 이름' 줄을 대신한다
-        const extra = actionsRef.current?.(el, close);
-        setShown({ view, tone, ws, x: at.x, y: at.y, extra, anchor: actionsRef.current ? el.getBoundingClientRect() : undefined });
+        const extra = actionsRef.current?.(el, tools);
+        const headNode = headRef.current?.(el, tools);
+        setShown({ view, tone, ws, x: at.x, y: at.y, extra, headNode, anchor: actionsRef.current ? el.getBoundingClientRect() : undefined });
       }, 400);
     };
     const move = (e: MouseEvent) => {
@@ -231,21 +254,25 @@ export function NodeTip({
       else close();
     };
     const down = (e: MouseEvent) => {
+      if (pinned) return; // 바깥을 누르면 글칸이 초점을 잃어 스스로 끝낸다 — 여기서 닫으면 친 글이 저장되기 전에 사라진다
       if (!(e.target instanceof Node && boxRef.current?.contains(e.target))) close(); // 창 안의 단추는 누를 수 있어야 한다
+    };
+    const dismiss = () => {
+      if (!pinned) close();
     };
     root.addEventListener("mouseover", over);
     root.addEventListener("mousemove", move);
     root.addEventListener("mouseout", out);
     window.addEventListener("mousedown", down, true);
-    window.addEventListener("wheel", close, { capture: true, passive: true });
-    window.addEventListener("keydown", close, true);
+    window.addEventListener("wheel", dismiss, { capture: true, passive: true });
+    window.addEventListener("keydown", dismiss, true);
     return () => {
       root.removeEventListener("mouseover", over);
       root.removeEventListener("mousemove", move);
       root.removeEventListener("mouseout", out);
       window.removeEventListener("mousedown", down, true);
-      window.removeEventListener("wheel", close, true);
-      window.removeEventListener("keydown", close, true);
+      window.removeEventListener("wheel", dismiss, true);
+      window.removeEventListener("keydown", dismiss, true);
       close();
     };
   }, [rootRef, within]);
