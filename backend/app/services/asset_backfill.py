@@ -99,6 +99,12 @@ def skipped_count(owner: str, account_key: str, origin: str) -> int:
     return len(scan.skipped) if scan.context == (owner, account_key, origin) and scan.epoch == active_account.account_epoch() else 0
 
 
+def rescanning(owner: str, account_key: str, origin: str) -> bool:
+    """다시 보는 중이다 — 건너뛴 수가 아직 최종이 아니라 설정 줄이 끝날 때까지 다시 묻는다."""
+    scan = _scan
+    return _rescan.is_set() or (scan.context == (owner, account_key, origin) and scan.epoch == active_account.account_epoch() and not scan.local_done)
+
+
 def _context():
     owner = active_account.active_uid()
     token = shared_connection.token()
@@ -299,8 +305,18 @@ def _kept_path(conn, owner: str, content: str) -> Optional[Path]:
     return Path(row['path']) if row and Path(row['path']).is_file() else None
 
 
+def _queue(gid: str, project_id: str, owner: str, account_key: str, origin: str) -> bool:
+    """줄은 쓰기 잠금 안에서 문맥을 다시 본 뒤 만든다 — 잠금을 기다리는 사이 서버가 바뀔 수 있다."""
+    with db.get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not _still(owner, account_key, origin):
+            return False
+        ledger.queue_moved_outputs(conn, [gid], project_id, (account_key, origin))
+    return True
+
+
 def _bring_up(row, owner: str, account_key: str, origin: str) -> bool:
-    """고쳤으면 참 — 복사하는 동안 시간이 흘렀다는 뜻이기도 하다."""
+    """파일을 읽으러 갔으면 참(성공·실패 무관) — 그동안 시간이 흘렀다는 뜻이다. 이미 됐거나 건너뛴 행은 바로 거짓이다."""
     key = ('asset', row['asset_id'])
     if key in _scan.skipped:
         return False
@@ -313,7 +329,7 @@ def _bring_up(row, owner: str, account_key: str, origin: str) -> bool:
     except (OSError, ValueError):
         pass  # 이 파일만 건너뛴다 — 뒤 행을 계속 본다
     _scan.skipped.add(key)
-    return False
+    return True
 
 
 def _bring_up_input(row, owner: str, account_key: str, origin: str) -> bool:
@@ -329,7 +345,7 @@ def _bring_up_input(row, owner: str, account_key: str, origin: str) -> bool:
     except (OSError, ValueError):
         pass
     _scan.skipped.add(key)
-    return False
+    return True
 
 
 def scan_local(owner: str, account_key: str, origin: str) -> None:
@@ -342,22 +358,16 @@ def scan_local(owner: str, account_key: str, origin: str) -> None:
         return
     for row in rows:
         _bring_up(row, owner, account_key, origin)
-        if not _still(owner, account_key, origin):
+        if not _queue(row['gid'], row['project_id'], owner, account_key, origin):
             return
-        with db.get_connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            ledger.queue_moved_outputs(conn, [row['gid']], row['project_id'], (account_key, origin))
         _scan.local_after = row['seq']
     for generation in generations:
         with db.get_connection() as conn:
             inputs = _generation_inputs(conn, generation['gid'])
         for row in inputs:
             _bring_up_input(row, owner, account_key, origin)
-        if not _still(owner, account_key, origin):
+        if not _queue(generation['gid'], generation['project_id'], owner, account_key, origin):
             return
-        with db.get_connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            ledger.queue_moved_outputs(conn, [generation['gid']], generation['project_id'], (account_key, origin))
         _scan.input_after = generation['seq']
 
 
@@ -421,7 +431,7 @@ def scan_remote(owner: str, account_key: str, origin: str, token: str) -> None:
         return
     _scan.remote_after = rows[-1]['seq']  # 조회 결과와 상관없이 넘어간다 — 한 묶음이 실패해도 차례가 그 자리에 멈추지 않는다
     items = _remote_items(origin, token, [row['anchor'] for row in rows])
-    for row in rows:
+    for index, row in enumerate(rows):
         item = items.get(row['anchor'])
         project_id = item.get('project_id') if isinstance(item, dict) else None
         if not project_id or not _still(owner, account_key, origin):
@@ -430,17 +440,19 @@ def scan_remote(owner: str, account_key: str, origin: str, token: str) -> None:
             outputs = conn.execute("SELECT id asset_id,file_path,asset_content_id FROM asset WHERE generation_id=? AND file_path NOT LIKE 'http%'",
                                    (row['gid'],)).fetchall()
             inputs = _generation_inputs(conn, row['gid'])
-        copied = [_bring_up(output, owner, account_key, origin) for output in outputs]
-        copied += [_bring_up_input(reference, owner, account_key, origin) for reference in inputs]
+        worked = [_bring_up(output, owner, account_key, origin) for output in outputs]
+        worked += [_bring_up_input(reference, owner, account_key, origin) for reference in inputs]
         if not _still(owner, account_key, origin):
             return  # 복사 중 서버가 바뀌었다 — 옛 서버의 프로젝트를 새 서버 줄로 만들지 않는다
-        if any(copied):  # 복사가 긴 동안 서버에서 또 옮겼을 수 있다 — 쓰기 잠금 밖에서 다시 묻는다. 못 받으면 다음 바퀴에 본다
-            fresh = _remote_items(origin, token, [row['anchor']]).get(row['anchor'])
-            if not isinstance(fresh, dict) or fresh.get('project_id') != project_id:
+        if any(worked):  # 파일을 읽는 동안(실패해도) 서버에서 또 옮겼을 수 있고 남은 행의 답도 낡았다 — 쓰기 잠금 밖에서 한 번에 다시 묻는다. 못 받으면 다음 바퀴에 본다
+            items = _remote_items(origin, token, [later['anchor'] for later in rows[index:]])
+            item = items.get(row['anchor'])
+            if not _still(owner, account_key, origin):
+                return
+            if not isinstance(item, dict) or item.get('project_id') != project_id:
                 continue
-        with db.get_connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            ledger.queue_moved_outputs(conn, [row['gid']], project_id, (account_key, origin))
+        if not _queue(row['gid'], project_id, owner, account_key, origin):
+            return
         _link_blanks(item, row, project_id, owner, origin, token)
 
 
@@ -488,8 +500,8 @@ def tick(now: Optional[float] = None) -> None:
             _scan.context = context[:3]
             _scan.epoch = epoch
         if _rescan.is_set() or (_scan.local_done and now - _scan.local_done_at >= LOCAL_EVERY_S):
+            _rewind_local()  # 되감은 뒤에 표식을 내린다 — 그사이 상태를 물어도 다 끝난 것으로 안 보인다
             _rescan.clear()
-            _rewind_local()
         try:
             if not _scan.local_done:
                 scan_local(owner, account_key, origin)

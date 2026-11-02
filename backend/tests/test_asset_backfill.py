@@ -235,6 +235,16 @@ def _registered(world, name):
     return gid, cid
 
 
+def _settled(world, name):
+    """보관본이 실제로 있어 읽을 파일이 없는 공유물."""
+    gid, cid = _registered(world, name)
+    kept = world / (name + '.kept')
+    kept.write_bytes(b'kept')
+    with db.get_connection() as conn:
+        conn.execute('UPDATE asset_location SET path=? WHERE asset_content_id=?', (str(kept), cid))
+    return gid, cid
+
+
 def test_a_move_made_on_the_server_gets_a_line_and_the_local_row_stays(world):
     project = _project()
     gid, cid = _registered(world, 'moved')
@@ -585,6 +595,68 @@ def test_a_move_on_the_server_during_the_copy_is_not_queued_to_the_old_project(w
     assert _lines(project) == []
 
 
+def test_a_failed_read_also_asks_the_server_again(world):
+    project, other = _project(), _project('R')
+    gid = _result(world, 'failread', write=False)
+    _shared(gid)
+    answers = [{'items': {gid: {'project_id': project}}}, {'items': {gid: {'project_id': other}}}]
+    with patch.object(asset_backfill, '_post', side_effect=answers) as call:
+        asset_backfill.tick(100.0)
+    assert call.call_count == 2  # 파일을 못 읽어도 그동안 시간이 흘렀다
+    assert _lines(project) == []
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 1
+
+
+def test_a_server_switch_during_the_recheck_makes_no_line(world):
+    project = _project()
+    gid = _result(world, 'askswitch')
+    _shared(gid)
+    def answer(*_args):
+        if asset_backfill._post.call_count == 2:
+            repo.set_setting(K_URL, 'http://other')
+        return {'items': {gid: {'project_id': project}}}  # 옛 서버의 답은 그대로 온다
+    with patch.object(asset_backfill, '_post', side_effect=answer):
+        asset_backfill.tick(100.0)
+    assert _lines(project) == []
+
+
+def test_a_server_switch_while_waiting_for_the_write_lock_makes_no_line(world):
+    project = _project()
+    gid, _ = _settled(world, 'lockwait')
+    real = asset_backfill.ledger.queue_moved_outputs
+    answers = iter([True, True, False])  # 차례 첫머리·복사 뒤·잠금 안
+    with patch.object(asset_backfill, '_post', return_value={'items': {gid: {'project_id': project}}}), \
+            patch.object(asset_backfill, '_still', side_effect=lambda *_args: next(answers)), \
+            patch.object(asset_backfill.ledger, 'queue_moved_outputs', wraps=real) as queue:
+        asset_backfill.tick(100.0)
+    queue.assert_not_called()
+    assert _lines(project) == []
+
+
+def test_a_later_row_uses_the_answer_taken_after_a_long_copy(world):
+    project, other = _project(), _project('R')
+    slow = _result(world, 'slowfirst')
+    _shared(slow)
+    done, cid = _settled(world, 'nextrow')
+    answers = [{'items': {slow: {'project_id': project}, done: {'project_id': project}}},
+               {'items': {slow: {'project_id': project}, done: {'project_id': other}}}]
+    with patch.object(asset_backfill, '_post', side_effect=answers) as call:
+        asset_backfill.tick(100.0)
+    assert call.call_args_list[1].args[3] == {'gen_ids': [slow, done]}
+    assert call.call_count == 2  # 둘째 행은 읽을 파일이 없어 더 묻지 않고 방금 받은 답을 쓴다
+    assert cid not in [line['asset_content_id'] for line in _lines(project)]
+    assert [line['asset_content_id'] for line in _lines(other)] == [cid]
+
+
+def test_rows_with_nothing_to_read_do_not_ask_again(world):
+    project = _project()
+    gid, _ = _settled(world, 'settled')
+    with patch.object(asset_backfill, '_post', return_value={'items': {gid: {'project_id': project}}}) as call:
+        asset_backfill.tick(100.0)
+    assert call.call_count == 1  # 공유물마다 더 묻지 않는다 — 서버 부담은 묶음 하나로 그대로다
+    assert len(_lines(project)) == 1
+
+
 def test_a_recheck_that_gets_no_answer_waits_for_the_next_turn(world):
     project = _project()
     gid = _result(world, 'noans')
@@ -730,6 +802,32 @@ def test_retry_asks_for_the_next_turn_without_touching_the_running_one(world):
     (world / 'media' / 'comfy' / 'again.png').write_bytes(b'\x89PNG\r\n\x1a\nagain')
     _tick(1002.0)
     assert _content(gid)
+
+
+def test_rescanning_stays_on_until_the_turn_is_finished(world):
+    project = _project()
+    _result(world, 'scan1', project=project, write=False)
+    _result(world, 'scan2', project=project, write=False)
+    with patch.object(asset_backfill, 'SCAN_BATCH', 1):
+        for at in range(1000, 1004):
+            _tick(float(at))
+        assert not asset_backfill.rescanning('user_a', 'acct', SERVER)
+        asset_backfill.request_rescan()
+        assert asset_backfill.rescanning('user_a', 'acct', SERVER)
+        _tick(1004.0)  # 한 묶음만 봤다 — 아직 처음 표식은 내렸어도 끝난 것이 아니다
+        assert asset_backfill.rescanning('user_a', 'acct', SERVER)
+        for at in range(1005, 1008):
+            _tick(float(at))
+    assert not asset_backfill.rescanning('user_a', 'acct', SERVER)
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 2
+
+
+def test_rescanning_belongs_to_this_account_and_server(world):
+    asset_backfill._scan.context = ('user_a', 'acct', SERVER)
+    asset_backfill._scan.epoch = active_account.account_epoch()
+    assert asset_backfill.rescanning('user_a', 'acct', SERVER)
+    assert not asset_backfill.rescanning('user_b', 'acct', SERVER)
+    assert not asset_backfill.rescanning('user_a', 'acct', 'http://other')
 
 
 def test_a_kept_copy_that_vanished_is_made_again_from_the_original(world):

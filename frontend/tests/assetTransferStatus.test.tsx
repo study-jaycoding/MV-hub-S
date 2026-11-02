@@ -38,17 +38,38 @@ describe("자료 전송 줄", () => {
     expect(host.querySelector("button")).not.toBeNull();
   });
 
-  it("다시 시도 뒤 일꾼이 다시 본 수를 한 번 더 받는다", async () => {
+  it("재검사가 오래 걸려도 끝난 뒤의 수를 받고 그때 묻기를 멈춘다", async () => {
     vi.useFakeTimers();
     try {
       await show({ waiting: 0, failed: 0, needs_check: 0, unsendable: 2 });
-      retry.mockResolvedValue({ items: [], summary: { waiting: 0, failed: 0, needs_check: 0, unsendable: 2 } });
-      status.mockResolvedValue({ items: [], summary: { waiting: 1, failed: 0, needs_check: 0, unsendable: 0 } });
+      const scanning = { waiting: 0, failed: 0, needs_check: 0, unsendable: 2, rescanning: true };
+      retry.mockResolvedValue({ items: [], summary: scanning });
+      status.mockReset();
+      status.mockImplementation(async () => ({ items: [], summary: { ...scanning } })); // 응답은 매번 새 객체다
       await act(async () => { host.querySelector("button")!.click(); });
+      const pass = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+      for (let turn = 0; turn < 6; turn += 1) await pass(5000); // 30초 도는 재검사 — 그동안 수는 아직 최종이 아니다
+      expect(status).toHaveBeenCalledTimes(6);
       expect(host.textContent).toContain("파일 없음 2");
-      await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+      status.mockImplementation(async () => ({ items: [], summary: { waiting: 1, failed: 0, needs_check: 0, unsendable: 0, rescanning: false } }));
+      await pass(5000);
       expect(host.textContent).not.toContain("파일 없음");
       expect(host.textContent).toContain("대기 1");
+      for (let turn = 0; turn < 6; turn += 1) await pass(5000);
+      expect(status).toHaveBeenCalledTimes(7);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("창을 닫으면 재검사 중이어도 묻기를 멈춘다", async () => {
+    vi.useFakeTimers();
+    try {
+      await show({ waiting: 0, failed: 0, needs_check: 0, unsendable: 1, rescanning: true });
+      const asked = status.mock.calls.length;
+      act(() => root.render(<div />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+      expect(status).toHaveBeenCalledTimes(asked);
     } finally {
       vi.useRealTimers();
     }

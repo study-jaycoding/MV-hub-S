@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api";
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
@@ -21,7 +21,7 @@ import { SettingsDescription } from "./SettingsDescription";
 import { API_PAUSED_MESSAGE, getApiPause, subscribeApiPause } from "../../lib/http";
 import { flashMsg } from "../../lib/flash";
 
-const RESCAN_REFRESH_MS = 7000;
+const RESCAN_REFRESH_MS = 5000;
 
 // 공유 서버로 가지 못한 파일 — 다른 PC 에서만 깨져 보이므로 작성자가 알 곳이 여기뿐이다. 보낼 것이 없으면 줄이 없다.
 export function AssetTransferLine() {
@@ -29,25 +29,29 @@ export function AssetTransferLine() {
   const [summary, setSummary] = useState<AssetTransferSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const aliveRef = useRef(true);
-  useEffect(() => {
-    aliveRef.current = true;
+  const load = useCallback(() => {
     api.assetSyncStatus().then((status) => {
       if (aliveRef.current) setSummary(status.summary ?? null);
     }).catch(() => undefined); // 옛 허브·허브 없음 — 줄을 그리지 않는다
+  }, []);
+  useEffect(() => {
+    aliveRef.current = true;
+    load();
     return () => {
       aliveRef.current = false;
     };
-  }, []);
+  }, [load]);
+  useEffect(() => {
+    if (!summary?.rescanning) return undefined; // 보충이 다시 보는 동안만 다음 수를 받는다 — 끝나면 표식이 꺼져 멈춘다
+    const timer = window.setTimeout(load, RESCAN_REFRESH_MS);
+    return () => window.clearTimeout(timer);
+  }, [summary, load]);
   const unsendable = summary?.unsendable ?? 0;
   if (!summary || !(summary.waiting || summary.failed || summary.needs_check || unsendable)) return null;
   const retry = async () => {
     setBusy(true);
     try {
       setSummary((await api.retryAssetSync()).summary ?? null);
-      // 건너뛴 파일은 일꾼의 다음 차례가 다시 본다(5초 주기) — 그 뒤의 수를 한 번 더 받는다
-      window.setTimeout(() => {
-        if (aliveRef.current) void api.assetSyncStatus().then((status) => { if (aliveRef.current) setSummary(status.summary ?? null); }).catch(() => undefined);
-      }, RESCAN_REFRESH_MS);
     } catch {
       flashMsg(t("다시 시도하지 못했습니다."));
     } finally {

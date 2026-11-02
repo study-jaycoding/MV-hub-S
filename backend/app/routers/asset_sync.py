@@ -326,7 +326,8 @@ def local_status(request: Request,project_id: str | None=None):
         return {'items':ledger.status_rows(conn,owner,project_id),
                 'destinations': asset_destination.status(conn, owner),
                 'summary': {**ledger.transfer_summary(conn,owner,account_key,_proxy.base_url()),
-                            'unsendable': asset_backfill.skipped_count(owner,account_key,_proxy.base_url())}}
+                            'unsendable': asset_backfill.skipped_count(owner,account_key,_proxy.base_url()),
+                            'rescanning': asset_backfill.rescanning(owner,account_key,_proxy.base_url())}}
 
 
 @local_router.post('/resolve')
