@@ -137,18 +137,18 @@ export function MountManager({
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
-      <div ref={floatRef} className="manage-float mount-float" role="dialog" aria-label="폴더 등록">
+      <div ref={floatRef} className="manage-float mount-float" role="dialog" aria-label="어셋 폴더 등록">
         <header className="admin-head">
-          <span className="admin-title"><FolderIcon width={18} height={15} /> 폴더 등록</span>
+          <span className="admin-title"><FolderIcon width={18} height={15} /> 어셋 폴더 등록</span>
           <button className="assets-x" onClick={onClose} title="닫기">
             <CloseIcon />
           </button>
         </header>
 
         <div className="mount-tabs">
-          <span className="lib-cut-seg" role="group" aria-label="폴더 등록 보기">
+          <span className="lib-cut-seg" role="group" aria-label="어셋 폴더 등록 보기">
             <button type="button" className={tab === "folders" ? "on" : ""} aria-pressed={tab === "folders"} onClick={() => setTab("folders")}>
-              폴더 {mounts.length}
+              어셋 등록 {mounts.length}
             </button>
             <button type="button" className={tab === "sources" ? "on" : ""} aria-pressed={tab === "sources"} onClick={() => setTab("sources")}>
               깨진 소스

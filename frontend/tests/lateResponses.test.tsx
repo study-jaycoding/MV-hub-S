@@ -278,7 +278,8 @@ it("폴더 등록 창 — 탭을 옮겨도 쓰던 글이 남고, 깨진 소스 �
   vi.stubGlobal("confirm", vi.fn(() => true));
   await act(async () => { root.render(<MountManager onClose={() => {}} onChanged={() => {}} workspaceId="team-b" />); });
   const tab = (label: string) => [...document.querySelectorAll<HTMLButtonElement>(".mount-tabs button")].find((button) => button.textContent?.startsWith(label))!;
-  expect(tab("폴더").textContent).toBe("폴더 1");
+  expect(document.querySelector(".admin-title")?.textContent).toContain("어셋 폴더 등록");
+  expect(tab("어셋 등록").textContent).toBe("어셋 등록 1");
   const path = document.querySelector<HTMLInputElement>(".mount-input:not(.mount-name)")!;
   act(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(path, "C:/쓰던 글");
@@ -292,7 +293,7 @@ it("폴더 등록 창 — 탭을 옮겨도 쓰던 글이 남고, 깨진 소스 �
   expect(mocks.relinkBrokenSources).toHaveBeenCalledTimes(1);
   await act(async () => actions[1].click());
   expect(mocks.pruneBrokenSources).toHaveBeenCalledTimes(1);
-  act(() => tab("폴더").click());
+  act(() => tab("어셋 등록").click());
   expect(document.querySelector<HTMLInputElement>(".mount-input:not(.mount-name)")?.value).toBe("C:/쓰던 글");
 });
 

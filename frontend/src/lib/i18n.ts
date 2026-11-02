@@ -971,7 +971,7 @@ const EN: Record<string, string> = {
   "항목이 없습니다.": "Nothing here yet.",
   "+ 새 생성": "+ New",
   // Assets
-  "폴더 등록": "Folders",
+  "어셋 폴더 등록": "Asset folders",
   "파일 날짜별로 구분": "Group by date",
   "이 폴더에 미디어가 없습니다.": "No media in this folder.",
   // 생성 진행 상태 — 작업 공간 격자·캔버스 카드·생성 정보가 함께 쓴다.

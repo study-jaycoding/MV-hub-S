@@ -993,7 +993,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       <div className="assets-view-head">
         <button
           className="assets-title"
-          title={t("폴더 등록")}
+          title={t("어셋 폴더 등록")}
           onClick={() => setMountOpen(true)}
         >
           <FolderIcon width={20} height={16} tone={FOLDER_KIND_TONE[folderKind]} /> Assets
