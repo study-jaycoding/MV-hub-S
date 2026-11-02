@@ -37,7 +37,7 @@ interface Props {
   onDelete: (id: string) => void;
   onReorder: (move: SceneMove) => void;
   onAssignWorkspace: (sceneId: string, workspace: SceneWorkspace | null) => void;
-  onHoverChange?: (hover: boolean) => void; // 씬 패널(저장/불러오기) 호버 표시용
+  onWheelTab?: (sceneId: string) => void; // 탭 휠 클릭 → 그 탭 밑에 씬 패널(Import·Export·레퍼런스 찾기)
   backupOnly?: number; // DB 백업에만 있는 씬 수(0 이면 '가져오기'를 숨긴다)
   onImportBackup?: () => void;
   saveFailing?: boolean; // 캔버스가 저장소에 확정되지 못하고 있다 — 그동안 '저장 안 됨'을 계속 띄운다
@@ -97,7 +97,7 @@ export function SceneBar({
   onDelete,
   onReorder,
   onAssignWorkspace,
-  onHoverChange,
+  onWheelTab,
   backupOnly = 0,
   onImportBackup,
   saveFailing = false,
@@ -232,11 +232,7 @@ export function SceneBar({
   };
 
   return (
-    <div
-      className="scene-bar"
-      onMouseEnter={() => onHoverChange?.(true)}
-      onMouseLeave={() => onHoverChange?.(false)}
-    >
+    <div className="scene-bar">
       {scenes.map((scene) => {
         const assigned = normalizeSceneWorkspace(scene.workspace);
         const label = sceneWorkspaceLabel(scene, options ?? []);
@@ -259,9 +255,16 @@ export function SceneBar({
               (dimmed ? " off-ws" : "") +
               (dragging ? " dragging" : "")
             }
+            data-scene-tab={scene.id}
           >
             <button
               className="scene-tab"
+              onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }} // 휠 클릭의 자동 스크롤 막기
+              onAuxClick={(event) => {
+                if (event.button !== 1) return;
+                event.preventDefault();
+                onWheelTab?.(scene.id);
+              }}
               onPointerDown={(event) => onPointerDown(event, scene.id)}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}

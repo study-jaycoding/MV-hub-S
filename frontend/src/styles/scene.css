@@ -164,30 +164,28 @@
 /* 글자는 안 접는다 — 접히면 단추가 세로로 길어져 바가 부푼다. */
 .scene-topbar-overlay .select-bar button { white-space: nowrap; }
 
-/* ── 좌상단 씬 패널 — 씬 이름 + 저장/불러오기(이미지1 헤더 스타일) ── */
+/* ── 씬 패널 — 탭을 휠 클릭하면 그 탭 밑에 뜬다(Jay 2026-11-02). left 는 SceneBoard 가 탭 자리에 맞춘다 ── */
 .scene-io-panel {
-  position: absolute; top: 10px; left: 10px; z-index: 20;
+  position: absolute; top: 6px; left: 10px; z-index: 20;
   display: flex; align-items: center; gap: 10px;
   padding: 7px 10px; border-radius: 8px;
   background: rgba(10, 14, 20, 0.82); border: 1px solid var(--border2);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); backdrop-filter: blur(2px);
   transition: opacity 0.15s ease;
 }
-/* 평소 숨김 — 씬 탭 바(또는 패널 자체) 호버 시에만 표시. 캔버스 클릭을 막지 않게 이벤트도 차단. */
+/* 평소 숨김. 캔버스 클릭을 막지 않게 이벤트도 차단. */
 .scene-io-panel.io-hidden { opacity: 0; pointer-events: none; }
 /* 키보드 Tab 으로 안쪽 버튼에 포커스가 닿으면 다시 보인다 — 안 보이는 버튼을 모르고 누르는 일 방지(코덱스 P2). */
 .scene-io-panel.io-hidden:focus-within { opacity: 1; pointer-events: auto; }
-.scene-io-name {
-  max-width: 180px; font-size: 12px; font-weight: 800; color: var(--text);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.scene-io-btns { display: flex; gap: 6px; }
+.scene-io-btns { display: flex; }
+/* 칸 묶음 — 세로로 쌓고, 같은 칸의 단추는 폭이 같다(폭은 글자 길이로 정해진다, Jay 2026-11-02) */
+.scene-io-col { display: flex; flex-direction: column; gap: 5px; }
 .scene-io-btn {
   padding: 3px 10px; border-radius: 8px; font-size: 11px; font-weight: 800; cursor: pointer; /* 칩 모서리 8(Jay 2026-10-30) */
   border: 1px solid var(--border2); background: rgba(255, 255, 255, 0.06); color: var(--text);
 }
 .scene-io-btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-/* 파일 단추(저장·불러오기)와 레퍼런스 찾기 사이 — 조금 밝은 세로선 + 양옆 여백(Jay 2026-10-30 B) */
+/* 파일 단추(Import·Export)와 레퍼런스 찾기 사이 — 조금 밝은 세로선 + 양옆 여백(Jay 2026-10-30 B) */
 .scene-io-sep { flex: none; width: 1px; align-self: stretch; margin: 1px 6px; background: rgba(255, 255, 255, 0.22); }
 
 /* ── 미니맵(우측 상단 네비게이터) — 화면 밖 카드가 있을 때만 표시(JS 로 display 토글) ── */

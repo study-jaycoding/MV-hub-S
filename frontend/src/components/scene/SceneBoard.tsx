@@ -87,7 +87,6 @@ import {
   reconcileRefs,
 } from "../../lib/sceneDerive";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
-import { shortSceneName } from "../../lib/sceneWorkspace";
 import {
   SCENE_GRID as GRID,
   shouldStartListReorder,
@@ -180,7 +179,7 @@ import {
   type ResolveOpenPopup,
   type ResolveSceneSelectionTarget,
 } from "../../lib/resolveSelection";
-import { SCENE_CULL_MARGIN as CULL_MARGIN } from "../../lib/sceneViewport";
+import { SCENE_CULL_MARGIN as CULL_MARGIN, sceneIoPanelLeft } from "../../lib/sceneViewport";
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
@@ -327,7 +326,7 @@ interface Props {
   authKey?: string;
   authReady?: boolean;
   onChange: (snapshot: { cards: SceneCard[]; edges: SceneEdge[]; groups?: SceneGroup[] }) => CanvasWriteReceipt | void;
-  // 좌상단 패널 — 현재 씬을 텍스트 파일로 저장 / 파일에서 새 탭으로 불러오기.
+  // 씬 패널 — 현재 씬을 파일로 내보내기(Export) / 파일에서 새 탭으로 가져오기(Import).
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
   onLoadSceneFile?: (file: File) => void;
@@ -340,8 +339,9 @@ interface Props {
   // '레퍼런스 찾기' 단추(Jay 2026-09-29) — 이 씬의 참조를 저장된 판정과 무관하게 render 폴더까지 다시 찾는다.
   //  signal = '대기 중단'(기다리기만 멈춘다). 끝나면 부르는 쪽이 결과를 알린다.
   onFindRefs?: (sceneId: string, signal: AbortSignal) => Promise<void>;
-  // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
-  ioPanelHot?: boolean;
+  // 씬 패널을 연 씬 id — 탭 휠 클릭으로 정해진다(평소엔 숨김). 닫기는 onCloseIoPanel.
+  ioPanelScene?: string | null;
+  onCloseIoPanel?: () => void;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
   //  sceneId = 그 카드가 속한 씬(이 보드가 지금 **그리고 있는** 씬 — 씬을 바꾸는 틈에는 prop 의 씬과 다르다). 받는 쪽이 활성 씬과 견준다.
   onBindingChange?: (binding: { sceneId: string; cardId: string; refs: SceneRef[] } | null) => void;
@@ -480,7 +480,8 @@ export function SceneBoard({
   onDroppedGenerationFile,
   onLocalRefsAdded,
   onFindRefs,
-  ioPanelHot,
+  ioPanelScene,
+  onCloseIoPanel,
   onBindingChange,
   onCameraChange,
   resolveSelection,
@@ -690,23 +691,37 @@ export function SceneBoard({
   // 다빈치가 고른 결과로 창의 격자를 한 번 옮긴다(격자의 이동 장치). focus = 그 카드가 방향키·Shift 범위 선택의 기준이 된다.
   const [variantScroll, setVariantScroll] = useState<{ generationId: string; nonce: number; focus: true } | null>(null);
   const sceneFileRef = useRef<HTMLInputElement>(null); // 씬 불러오기 파일 인풋(숨김)
-  // 씬 패널(저장/불러오기) 표시 — 씬 탭 바 또는 패널 자체에 호버 중일 때만(평소 숨김, 캔버스 작업 방해 금지).
-  // 탭 바 → 패널로 마우스가 건너오는 동안 사라지지 않게 0.35초 유예. 숨김은 CSS(opacity)로 —
-  // 언마운트하면 '불러오기' 파일 선택창이 열린 사이 hidden input 이 사라져 선택이 무시된다.
-  const [ioPanelHover, setIoPanelHover] = useState(false);
-  const [ioPanelLinger, setIoPanelLinger] = useState(false);
-  useEffect(() => {
-    if (ioPanelHot) {
-      setIoPanelLinger(true);
-      return;
-    }
-    const t = setTimeout(() => setIoPanelLinger(false), 350);
-    return () => clearTimeout(t);
-  }, [ioPanelHot]);
+  // 씬 패널(Import·Export·레퍼런스 찾기) — 탭을 휠 클릭하면 그 탭 밑에 뜬다(Jay 2026-11-02, 전엔 탭 줄 호버). 숨김은 CSS(opacity)로 —
+  // 언마운트하면 'Import' 파일 선택창이 열린 사이 hidden input 이 사라져 선택이 무시된다.
+  const ioPanelOpen = ioPanelScene === scene.id;
+  const ioPanelRef = useRef<HTMLDivElement>(null);
+  const [ioPanelLeft, setIoPanelLeft] = useState<number | null>(null);
   // '레퍼런스 찾기' 도는 중 — 이 씬에서 누른 것만 표시한다(씬을 바꾸면 그 씬은 평소 단추). 도는 동안 패널을 숨기지 않는다.
   const [findRun, setFindRun] = useState<{ sceneId: string; count: number; ctrl: AbortController } | null>(null);
   const finding = findRun?.sceneId === scene.id ? findRun : null;
-  const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover || !!finding;
+  const ioPanelVisible = ioPanelOpen || !!finding;
+  // 탭 자리는 그린 뒤에 잰다 — 다른 탭을 휠 클릭하면 그 탭이 켜지며 커져서 누른 순간의 자리와 달라진다.
+  useLayoutEffect(() => {
+    if (!ioPanelOpen) return;
+    const board = scrollRef.current?.getBoundingClientRect();
+    const tabs = [...document.querySelectorAll<HTMLElement>("[data-scene-tab]")];
+    const tab = tabs.find((element) => element.dataset.sceneTab === scene.id)?.getBoundingClientRect();
+    if (!board || !tab) return;
+    setIoPanelLeft(sceneIoPanelLeft(tab.left - board.left, tab.right - board.left, board.width, ioPanelRef.current?.offsetWidth ?? 0));
+  }, [ioPanelOpen, scene.id, finding?.count]);
+  useEscapeClose(() => onCloseIoPanel?.(), ioPanelOpen, true, true);
+  // 공용 바깥 누름 훅은 어느 단추인지 넘기지 않는다 — 탭 위 휠 누름에 닫으면 뒤이은 휠 클릭(App)이 같은 탭을 다시 연다.
+  useEffect(() => {
+    if (!ioPanelOpen) return;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Element;
+      if (ioPanelRef.current?.contains(target)) return;
+      if (event.button === 1 && target.closest?.("[data-scene-tab]")) return;
+      onCloseIoPanel?.();
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [ioPanelOpen, onCloseIoPanel]);
   // 팝업이 '모달 레이어'인지·그 선택을 전역 keydown 에서 읽기 위한 ref(빈-deps 핸들러용).
   const cardMenuRef = useRef(cardMenu);
   cardMenuRef.current = cardMenu;
@@ -3731,48 +3746,53 @@ export function SceneBoard({
         );
       })()}
 
-      {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭)/레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
+      {/* 씬 패널 — 탭 휠 클릭으로 그 탭 밑에 뜬다. Import(새 탭)·Export(파일로)·레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
       {(onSaveScene || onLoadSceneFile || onFindRefs) && (
         <div
+          ref={ioPanelRef}
           className={"scene-io-panel" + (ioPanelVisible ? "" : " io-hidden")}
+          style={ioPanelLeft === null ? undefined : { left: ioPanelLeft }}
           onMouseDown={(e) => e.stopPropagation()}
-          onMouseEnter={() => setIoPanelHover(true)}
-          onMouseLeave={() => setIoPanelHover(false)}
         >
-          <div className="scene-io-name" title={scene.name}>{shortSceneName(scene.name)}</div>
           <div className="scene-io-btns">
-            {onSaveScene && (
-              <button
-                className="scene-io-btn"
-                title="이 씬을 파일로 저장"
-                onClick={() => onSaveScene(getCamera())}
-              >
-                저장
-              </button>
+            {(onLoadSceneFile || onSaveScene) && (
+              <div className="scene-io-col">
+                {onLoadSceneFile && (
+                  <button
+                    className="scene-io-btn"
+                    title="씬 파일을 새 탭으로 가져오기"
+                    onClick={() => sceneFileRef.current?.click()}
+                  >
+                    Import
+                  </button>
+                )}
+                {onSaveScene && (
+                  <button
+                    className="scene-io-btn"
+                    title="이 씬을 파일로 내보내기"
+                    onClick={() => onSaveScene(getCamera())}
+                  >
+                    Export
+                  </button>
+                )}
+              </div>
             )}
-            {onLoadSceneFile && (
-              <button
-                className="scene-io-btn"
-                title="씬 파일을 새 탭으로 불러오기"
-                onClick={() => sceneFileRef.current?.click()}
-              >
-                불러오기
-              </button>
-            )}
-            {/* 파일 단추(저장·불러오기)와 레퍼런스 찾기를 가르는 선(Jay 2026-10-30 B) */}
+            {/* 파일 단추(Import·Export)와 레퍼런스 찾기를 가르는 선(Jay 2026-10-30 B) */}
             {onFindRefs && (onSaveScene || onLoadSceneFile) && <span className="scene-io-sep" aria-hidden="true" />}
             {onFindRefs && (
-              <button
-                className="scene-io-btn"
-                title={
-                  finding
-                    ? "기다리기만 멈춥니다 — 서버는 하던 확인을 끝까지 합니다"
-                    : "이 씬의 레퍼런스를 NAS 에서 다시 찾아 원본으로 잇습니다(렌더 폴더 포함). NAS 에 나중에 올린 파일도 이걸로 찾습니다"
-                }
-                onClick={onFindClick}
-              >
-                {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중 · 대기 중단` : "레퍼런스 찾기"}
-              </button>
+              <div className="scene-io-col">
+                <button
+                  className="scene-io-btn"
+                  title={
+                    finding
+                      ? "기다리기만 멈춥니다 — 서버는 하던 확인을 끝까지 합니다"
+                      : "이 씬의 레퍼런스를 NAS 에서 다시 찾아 원본으로 잇습니다(렌더 폴더 포함). NAS 에 나중에 올린 파일도 이걸로 찾습니다"
+                  }
+                  onClick={onFindClick}
+                >
+                  {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중 · 대기 중단` : "레퍼런스 찾기"}
+                </button>
+              </div>
             )}
           </div>
           <input

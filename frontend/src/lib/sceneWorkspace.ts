@@ -81,7 +81,7 @@ export function sceneTabTitle(
   label: string | null,
   missing: boolean,
 ): string {
-  const base = "클릭=열기 · 끌어서 순서 바꾸기 · 우클릭=이름·워크스페이스";
+  const base = "클릭=열기 · 휠 클릭=Import·Export·레퍼런스 찾기 · 끌어서 순서 바꾸기 · 우클릭=이름·워크스페이스";
   const assigned = normalizeSceneWorkspace(scene.workspace);
   if (!assigned) return base;
   const name = label || "알 수 없는 공간";

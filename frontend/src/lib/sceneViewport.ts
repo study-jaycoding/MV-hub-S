@@ -33,6 +33,12 @@ export interface SceneViewRect {
   b: number;
 }
 
+/** 씬 패널의 왼쪽 자리(보드 px) — 탭 왼쪽에 맞추고, 오른쪽으로 넘치면 탭 오른쪽 끝에 맞춘다. 보드 왼쪽 밖으로는 나가지 않는다. */
+export function sceneIoPanelLeft(tabLeft: number, tabRight: number, boardWidth: number, panelWidth: number): number {
+  const fits = tabLeft + panelWidth <= boardWidth - 8;
+  return Math.max(8, fits ? tabLeft : tabRight - panelWidth);
+}
+
 /** 미니맵의 '보는 영역' 상자(미니맵 px) — 지도 안으로 자르고 정수 px 로 반올림한다(2026-09-29). 25% 이하에서는 상자가
  *  지도 가장자리에서 잘려 걸음마다 크기가 0.2px 씩 바뀌었고, 그때마다 미니맵을 다시 칠했다(60걸음 133ms → 상자만 숨기면
  *  12ms 실측). 조금이라도 보이면 최소 1px — 반올림으로 0 이 되어 테두리가 사라지지 않게(Codex).

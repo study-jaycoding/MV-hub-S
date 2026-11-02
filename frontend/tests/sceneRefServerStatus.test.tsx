@@ -270,13 +270,55 @@ it("'레퍼런스 찾기' 단추 — 이 씬으로 찾기를 부르고, 도는 �
   expect(button().textContent).toBe("레퍼런스 찾기");
 });
 
-it("씬 패널 — 저장·불러오기 다음, 레퍼런스 찾기 바로 앞에 가르는 선(Jay 2026-10-30)", async () => {
+it("씬 패널 — Import·Export 칸 다음, 레퍼런스 찾기 칸 앞에 가르는 선 · 씬 이름은 없다(Jay 2026-11-02)", async () => {
   const scene = refScene("sep-scene", "ws-f", [{ id: "r1", refs: [ref("asset:Q|b.png", "b.png")] }]);
   await act(async () => {
     root.render(<SceneBoard scene={scene} onChange={noop} onSaveScene={noop} onLoadSceneFile={noop} onFindRefs={vi.fn(async () => {})} />);
   });
-  const kids = [...host.querySelector(".scene-io-btns")!.children].map((el) => (el.classList.contains("scene-io-sep") ? "|" : el.textContent));
-  expect(kids).toEqual(["저장", "불러오기", "|", "레퍼런스 찾기"]);
+  const kids = [...host.querySelector(".scene-io-btns")!.children].map((el) =>
+    el.classList.contains("scene-io-sep") ? "|" : [...el.children].map((button) => button.textContent),
+  );
+  expect(kids).toEqual([["Import", "Export"], "|", ["레퍼런스 찾기"]]);
+  expect(host.querySelector(".scene-io-panel")!.textContent).not.toContain(scene.name);
+});
+
+it("씬 패널 — 연 씬에서만 보이고 Esc·바깥 누르기로 닫는다 · 패널 안 누름과 탭 위 휠 누름은 닫지 않는다(Jay 2026-11-02)", async () => {
+  const scene = refScene("open-scene", "ws-f", [{ id: "r1", refs: [ref("asset:Q|b.png", "b.png")] }]);
+  const onCloseIoPanel = vi.fn();
+  const draw = (ioPanelScene: string | null) =>
+    act(async () => {
+      root.render(<SceneBoard scene={scene} onChange={noop} onFindRefs={vi.fn(async () => {})} ioPanelScene={ioPanelScene} onCloseIoPanel={onCloseIoPanel} />);
+    });
+  const hidden = () => host.querySelector(".scene-io-panel")!.classList.contains("io-hidden");
+  const press = (target: Element, button: number) =>
+    act(async () => {
+      target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button }));
+    });
+
+  await draw(null);
+  expect(hidden()).toBe(true);
+  await draw("other-scene");
+  expect(hidden()).toBe(true); // 다른 씬을 연 값이면 이 보드에는 안 뜬다
+  await draw("open-scene");
+  expect(hidden()).toBe(false);
+
+  const tab = document.createElement("span");
+  tab.dataset.sceneTab = "open-scene";
+  document.body.appendChild(tab);
+  await press(host.querySelector(".scene-io-btn")!, 0);
+  await press(tab, 1); // 탭 위 휠 누름 — 뒤이은 휠 클릭이 닫는다
+  expect(onCloseIoPanel).not.toHaveBeenCalled();
+
+  await press(tab, 0); // 탭의 왼쪽 누름은 바깥 누름이다
+  expect(onCloseIoPanel).toHaveBeenCalledTimes(1);
+  await press(document.body, 1);
+  expect(onCloseIoPanel).toHaveBeenCalledTimes(2);
+  tab.remove();
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  });
+  expect(onCloseIoPanel).toHaveBeenCalledTimes(3);
 });
 
 it("씬 전환 첫 렌더에는 핸들이 아직 옛 씬을 말한다 — 새 씬 id 로 온 복구 답이 옛 카드를 새 씬에 쓰지 않게(Codex)", async () => {

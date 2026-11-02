@@ -369,8 +369,18 @@ export default function App() {
     activeScene && !sceneMatchesWorkspace(activeScene, workspaceContext)
       ? `이 캔버스는 '${activeSceneWorkspace?.name || "다른"}' 워크스페이스입니다. 탭을 다시 눌러 그 공간으로 바꾼 뒤 생성하세요.`
       : null;
-  // 씬 탭 바 호버 → SceneBoard 좌상단 씬 패널(저장/불러오기) 표시 트리거(평소 숨김).
-  const [sceneBarHover, setSceneBarHover] = useState(false);
+  // 씬 탭 휠 클릭 → SceneBoard 의 씬 패널을 그 탭 밑에 연다(Jay 2026-11-02, 전엔 탭 줄 호버). 같은 탭을 다시 누르면 닫는다.
+  //  단추는 보고 있는 씬에 작동하므로 다른 탭이면 그 씬부터 연다.
+  const [ioPanelScene, setIoPanelScene] = useState<string | null>(null);
+  const closeIoPanel = useCallback(() => setIoPanelScene(null), []);
+  const toggleIoPanel = (sceneId: string) => {
+    if (ioPanelScene === sceneId) {
+      closeIoPanel();
+      return;
+    }
+    if (sceneId !== activeSceneId) selectSceneWithWorkspace(sceneId);
+    setIoPanelScene(sceneId);
+  };
   // 공유&리뷰 '새로 들어옴' — 항목 단위 확인(ack) 모델. 여기선 기준선만 보장한다(최초 진입 시각).
   // 글로우 판정·확인 처리는 ThumbnailGrid/GenerationCard 가 teamSeen 스토어를 직접 구독.
   useEffect(() => {
@@ -1842,9 +1852,9 @@ export default function App() {
       importSceneSnapshot(snap);
       setSceneBinding(null);
       setSceneSelGens([]);
-      flash(`씬 "${snap.name}" 을(를) 새 탭으로 불러왔습니다.`);
+      flash(`씬 "${snap.name}" 을(를) 새 탭으로 가져왔습니다.`);
     } catch (e) {
-      flash(e instanceof Error ? e.message : "씬 불러오기에 실패했습니다.");
+      flash(e instanceof Error ? e.message : "씬 가져오기에 실패했습니다.");
     }
   };
   // 폴더 필터가 해제되거나(프로젝트/라이브러리/미분류 선택) 다른 프로젝트로 바뀌면 무장 폴더(armedFolder)도
@@ -2718,7 +2728,7 @@ export default function App() {
               onAdd={addScene}
               onRename={renameScene}
               onDelete={removeSceneById}
-              onHoverChange={setSceneBarHover}
+              onWheelTab={toggleIoPanel}
               backupOnly={backupOnly}
               onImportBackup={importBackupScenes}
               saveFailing={sceneSaveFailing}
@@ -2750,7 +2760,8 @@ export default function App() {
                 onDroppedGenerationFile={openRecipeFromFile}
                 onLocalRefsAdded={relinkSceneRefsNow}
                 onFindRefs={findSceneRefs}
-                ioPanelHot={sceneBarHover}
+                ioPanelScene={ioPanelScene}
+                onCloseIoPanel={closeIoPanel}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
                 onCameraChange={(camera) => canvasDocument.commit(canvasTarget(activeScene.id), { type: "recordCamera", camera })}
