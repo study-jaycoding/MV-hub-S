@@ -17,8 +17,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app import active_account, config, db, db_migrations
-from app.repo import scene_keeps as keeps, trash
+from app import active_account, config, db, db_migrations, manage_db, repo
+from app.repo import account_cleanup as cleanup, scene_keeps as keeps, trash
 from app.routers import scene_keeps as routes
 
 OWNER = "keeper@example.test"
@@ -604,6 +604,92 @@ def test_server_description_validation_and_roundtrip(isolated_db, route_client):
     assert client.get("/api/scene-keeps").json()[0]["description"] == "  é\n설명  \n"
     exists = client.post("/api/scene-keeps", json=body()).json()
     assert exists["status"] == "exists" and exists["description"] == "  é\n설명  \n"
+
+
+@pytest.fixture
+def account_client(monkeypatch):
+    """미들웨어가 채우는 계정을 넣는다 — route_client 는 계정이 None 이라 재확인을 건너뛴다."""
+    monkeypatch.setattr(config, "AUTH_ENABLED", True)
+    monkeypatch.setattr(routes, "_viewer", lambda request: (OWNER, "", AUTHOR, False))
+    session = {}
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def authenticated(request, call_next):
+        request.state.account = session["account"]
+        return await call_next(request)
+
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        yield client, session
+
+
+def approved_owner():
+    repo.register(OWNER, "secret123", "보관")
+    repo.set_account_status(OWNER, "approved")
+    return repo.get_account(OWNER)
+
+
+def keep_rows():
+    with db.get_connection() as conn:
+        return [tuple(row) for row in conn.execute("SELECT name,revision FROM scene_keep ORDER BY name")]
+
+
+@pytest.mark.parametrize("change", ["blocked", "deleted", "rejoined"])
+def test_save_refuses_an_account_that_changed_after_authentication(isolated_db, account_client, change):
+    client, session = account_client
+    session["account"] = approved_owner()
+    first = client.post("/api/scene-keeps", json=body()).json()
+    with db.get_connection() as conn:
+        if change == "blocked":
+            conn.execute("UPDATE account SET status='rejected' WHERE email=?", (OWNER,))
+        elif change == "deleted":
+            conn.execute("DELETE FROM account WHERE email=?", (OWNER,))
+        else:
+            conn.execute("UPDATE account SET password_changed_at='rejoined' WHERE email=?", (OWNER,))
+    assert client.post("/api/scene-keeps", json=body(name="After")).status_code == 401
+    overwrite = body(description="덮어쓰기", overwrite_id=first["id"], overwrite_revision=1)
+    assert client.post("/api/scene-keeps", json=overwrite).status_code == 401
+    assert keep_rows() == [("Scene", 1)]
+
+
+def test_save_keeps_working_for_valid_accounts_including_the_old_null_marker(isolated_db, account_client):
+    client, session = account_client
+    session["account"] = approved_owner()
+    first = client.post("/api/scene-keeps", json=body()).json()
+    assert first["status"] == "saved"
+    overwrite = body(description="다시 씀", overwrite_id=first["id"], overwrite_revision=1)
+    assert client.post("/api/scene-keeps", json=overwrite).json()["revision"] == 2
+    with db.get_connection() as conn:
+        conn.execute("UPDATE account SET password_changed_at=NULL WHERE email=?", (OWNER,))
+    session["account"] = repo.get_account(OWNER)
+    assert session["account"]["password_changed_at"] is None
+    assert client.post("/api/scene-keeps", json=body(name="Old marker")).json()["status"] == "saved"
+    assert keep_rows() == [("Old marker", 1), ("Scene", 2)]
+
+
+def test_keep_and_account_cleanup_leave_no_orphan_in_either_order(isolated_db, account_client, monkeypatch):
+    monkeypatch.setattr(manage_db, "MANAGE_DB_PATH", isolated_db / "manage_hub.db")
+    admin = "boss@example.test"
+    repo.register(admin, "secret123", "관리자")
+    client, session = account_client
+    session["account"] = approved_owner()
+
+    def delete_owner():
+        repo.set_account_status(OWNER, "rejected")
+        now = repo.get_account(OWNER)
+        return cleanup.delete_cleanup_account(OWNER, status="rejected", hidden=False, created_at=now["created_at"],
+                                              actor_email=admin, actor_uid="acct:" + admin)
+
+    assert client.post("/api/scene-keeps", json=body()).json()["status"] == "saved"
+    with pytest.raises(cleanup.CleanupRefused, match="캔버스"):
+        delete_owner()  # 저장이 먼저면 계정 정리가 이력으로 막는다
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM scene_keep")
+    delete_owner()
+    assert repo.get_account(OWNER) is None
+    assert client.post("/api/scene-keeps", json=body()).status_code == 401  # 삭제가 먼저면 진행 중이던 저장이 막힌다
+    assert keep_rows() == []
 
 
 def test_hub_envelope_is_not_exposed_and_restore_never_accepts_client_data(isolated_db, route_client, monkeypatch):

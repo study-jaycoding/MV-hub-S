@@ -10,7 +10,7 @@ from .edit_shares import ACCOUNT_CHANGED, _relay, _viewer
 from .. import active_account, config, repo
 from ..db import open_transfer_connections
 from ..deps import (account_author_uids, batch_view_member_projects,
-                    can_view_generation_with_member_projects, require_agent_account)
+                    can_view_generation_with_member_projects, current_account, require_agent_account)
 from ..emailnorm import norm_email
 from ..repo import scene_keeps as keeps
 from ..services import trash_transfer
@@ -46,6 +46,8 @@ class RestoreIn(BaseModel):
 def _answers():
     try:
         yield
+    except keeps.KeepAccountGone as exc:
+        raise HTTPException(401, '로그인이 필요합니다') from exc
     except keeps.KeepConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except LookupError as exc:
@@ -132,7 +134,7 @@ def save_scene_keep(body: KeepIn, request: Request):
             owner, *_ = _viewer(request)
             if not body.expect_account.strip() or norm_email(body.expect_account.removeprefix('acct:')) != owner:
                 raise HTTPException(409, ACCOUNT_CHANGED)
-            return keeps.save_keep(owner, body.model_dump())
+            return keeps.save_keep(owner, body.model_dump(), current_account(request))
         with _relay(request, write=True) as owner:
             epoch = active_account.account_epoch()
             # Ignore any browser-supplied envelope, count or account identity.

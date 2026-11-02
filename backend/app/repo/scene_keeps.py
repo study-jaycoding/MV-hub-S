@@ -27,6 +27,10 @@ class KeepConflict(ValueError):
     pass
 
 
+class KeepAccountGone(Exception):
+    """쓰기 잠금 안에서 본 계정이 요청을 인증한 계정이 아니다."""
+
+
 def encoded(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True)
 
@@ -186,7 +190,7 @@ def validate_metadata(body):
     return name, workspace, preview, missing, description
 
 
-def save_keep(owner, body):
+def save_keep(owner, body, account=None):
     owner = norm_email(owner)
     if not owner:
         raise ValueError('계정을 확인할 수 없습니다')
@@ -200,6 +204,12 @@ def save_keep(owner, body):
     oid, revision = body.get('overwrite_id'), body.get('overwrite_revision')
     with get_connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if account is not None:
+            # 계정 정리도 이 잠금 안에서 이 표를 센다 — 여기서 봐야 지워진 계정의 보관본이 새로 생기지 않는다.
+            fresh = conn.execute('SELECT status,password_changed_at FROM account WHERE email=?', (owner,)).fetchone()
+            if (not fresh or fresh['status'] != 'approved'
+                    or fresh['password_changed_at'] != account.get('password_changed_at')):
+                raise KeepAccountGone()
         row = conn.execute('SELECT id,revision,updated_at,data_hash,description FROM scene_keep WHERE owner=? AND project_id=? AND name=?',
                            (owner, body['project_id'], name)).fetchone()
         if oid is not None or revision is not None:
