@@ -459,6 +459,17 @@ def test_link_skips_a_row_recorded_with_other_bytes(content):
     assert [(row[0], row[1]) for row in _refs_of(gid)] == [('other', None), ('blank', cid)]
 
 
+def test_link_treats_a_recorded_size_of_zero_as_recorded(content):
+    project = _project()
+    gid = _output('link-zero', project=project)
+    cid = _located(project, 'zero-bytes')
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO reference(id,type,file_path,content_bytes) VALUES('zero','image','/media/comfy/z.png',0)")
+        conn.execute("INSERT INTO gen_reference(generation_id,reference_id) VALUES(?, 'zero')", (gid,))
+    with pytest.raises(HTTPException):
+        _link(gid, cid, '/media/comfy/z.png')
+
+
 def test_link_refuses_when_every_blank_row_has_other_bytes(content):
     project = _project()
     gid = _output('link-diff2', project=project)

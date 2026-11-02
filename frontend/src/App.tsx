@@ -250,15 +250,15 @@ export default function App() {
   // 캔버스 탭을 휠 클릭해 띄운 창이 떠 있다(Jay 2026-10-30) — 그동안 이 창의 캔버스 자리는 알림만 보이고 씬은 저장본을 따른다
   const canvasFloating = useCanvasFloating();
   const canvasOtherTab = useCanvasFollower(); // 그중 다른 메인 탭이 쓰는 경우 — 안내 글자만 다르다
-  // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
-  //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
-  const {
-    scenes, activeSceneId, activeScene,
   // 업데이트 전에 열어 둔 탭은 쓰는 탭 규칙을 모른다 — 함께 쓰면 나중 저장이 덮어쓰므로 새 탭이 알아채 알린다
   useEffect(() => (isCanvasWindow() ? undefined : watchOldTabWrites(
     () => flash(tGlobal("업데이트 전에 열어 둔 탭이 씬을 쓰고 있습니다 — 그 탭을 닫거나 새로 고쳐 주세요. 함께 쓰면 나중 저장이 덮어씁니다.")),
     isCanvasFloating,
   )), [flash]);
+  // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
+  //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
+  const {
+    scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
     removeSceneById,

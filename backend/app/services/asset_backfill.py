@@ -94,8 +94,9 @@ def request_rescan() -> None:
 
 
 def skipped_count(owner: str, account_key: str, origin: str) -> int:
-    """보충이 못 고친 수 — 지금 계정·서버의 차례일 때만."""
-    return len(_scan.skipped) if _scan.context == (owner, account_key, origin) else 0
+    """보충이 못 고친 수 — 지금 계정·서버의 차례일 때만. A→B→A 는 이름이 같아도 다른 차례다."""
+    scan = _scan
+    return len(scan.skipped) if scan.context == (owner, account_key, origin) and scan.epoch == active_account.account_epoch() else 0
 
 
 def _context():
@@ -176,8 +177,12 @@ def _read(path: Path, *, copy: bool) -> Optional[tuple[Optional[Path], str, int,
         raise
 
 
-def _settle(tmp: Path, digest: str, suffix: str, size: int) -> Path:
-    """검사를 지난 임시 파일을 지문 이름으로 둔다 — 같은 내용이 이미 있으면 그것을 쓴다(폴더를 훑지 않는다)."""
+def _settle(conn, tmp: Path, digest: str, suffix: str, size: int, owner: str) -> Path:
+    """검사를 지난 임시 파일을 지문 이름으로 둔다 — 같은 내용이 이미 있으면 그것을 쓴다(폴더를 훑지 않는다). 확장자가 달라도 원장으로 같은 내용을 찾는다."""
+    kept = _kept_path(conn, owner, 'sha256:' + digest)
+    if kept:
+        tmp.unlink(missing_ok=True)
+        return kept
     target = tmp.parent / (digest + suffix)
     if target.is_file() and target.stat().st_size == size:
         tmp.unlink(missing_ok=True)
@@ -209,7 +214,7 @@ def _adopt_output(row, owner: str, account_key: str, origin: str) -> bool:
             if (current is None or current['deleted_at'] or current['creator_uid'] != owner or current['file_path'] != row['file_path']
                     or current['asset_content_id'] != row['asset_content_id']):
                 return False
-            saved = _settle(tmp, digest, path.suffix.lower(), size)
+            saved = _settle(conn, tmp, digest, path.suffix.lower(), size, owner)
             ledger.register_local(conn, path=saved, file_path=row['file_path'], digest=digest, size=size, media_type=kind,
                                   owner_uid=owner, project_id='', server_origin=origin, original_name=path.name, account_key=account_key)
             conn.execute('UPDATE asset SET asset_content_id=? WHERE id=? AND asset_content_id IS NULL', (content, row['asset_id']))
@@ -232,20 +237,20 @@ def _adopt_input(row, owner: str, account_key: str, origin: str) -> bool:
     content = 'sha256:' + digest
     try:
         if ((row['asset_content_id'] and row['asset_content_id'] != content) or (row['content_sha'] and row['content_sha'] != digest)
-                or (row['content_bytes'] and row['content_bytes'] != size)):
+                or (row['content_bytes'] is not None and row['content_bytes'] != size)):
             return False  # 기록한 바이트와 다르다
         with db.get_connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             if not _still(owner, account_key, origin):
                 return True
             current = conn.execute(
-                'SELECT r.file_path,r.asset_content_id,g.creator_uid,g.deleted_at,g.project_id FROM gen_reference gr '
+                f'SELECT r.file_path,r.asset_content_id,r.content_sha,r.content_bytes,g.creator_uid,g.deleted_at,g.project_id,{_LOCAL_INPUT} local_only FROM gen_reference gr '
                 'JOIN reference r ON r.id=gr.reference_id JOIN generation g ON g.id=gr.generation_id WHERE gr.generation_id=? AND gr.reference_id=? LIMIT 1',
                 (row['gid'], row['reference_id'])).fetchone()
-            if (current is None or current['deleted_at'] or current['creator_uid'] != owner or current['file_path'] != row['file_path']
-                    or current['asset_content_id'] != row['asset_content_id'] or current['project_id'] != row['project_id']):
-                return False
-            saved = path if managed else _settle(tmp, digest, path.suffix.lower(), size)
+            if (current is None or current['deleted_at'] or current['creator_uid'] != owner or not current['local_only']
+                    or any(current[name] != row[name] for name in ('file_path', 'asset_content_id', 'content_sha', 'content_bytes', 'project_id'))):
+                return False  # 복사하는 사이 행이 바뀌었다 — 처음 읽은 값으로 판단한 결과를 쓰지 않는다
+            saved = path if managed else _settle(conn, tmp, digest, path.suffix.lower(), size, owner)
             ledger.register_local(conn, path=saved, file_path=row['file_path'], digest=digest, size=size, media_type=kind,
                                   owner_uid=owner, project_id='', server_origin=origin, original_name=path.name, account_key=account_key)
             if not row['asset_content_id']:
@@ -287,39 +292,44 @@ def _local_input_generations(conn, owner: str, after: int):
         "GROUP BY g.id ORDER BY seq LIMIT ?", (owner, after, SCAN_BATCH)).fetchall()
 
 
-def _kept(conn, owner: str, content: str) -> bool:
+def _kept_path(conn, owner: str, content: str) -> Optional[Path]:
     """보관본이 원장에 있고 파일도 있다 — 원장 ready 만 믿으면 지워진 보관본을 원본이 되살아나도 다시 못 만든다."""
     row = conn.execute("SELECT path FROM asset_location WHERE kind='local' AND state='ready' AND owner_uid=? AND asset_content_id=? LIMIT 1",
                        (owner, content)).fetchone()
-    return bool(row) and Path(row['path']).is_file()
+    return Path(row['path']) if row and Path(row['path']).is_file() else None
 
 
-def _bring_up(row, owner: str, account_key: str, origin: str) -> None:
+def _bring_up(row, owner: str, account_key: str, origin: str) -> bool:
+    """고쳤으면 참 — 복사하는 동안 시간이 흘렀다는 뜻이기도 하다."""
     key = ('asset', row['asset_id'])
     if key in _scan.skipped:
-        return
+        return False
     with db.get_connection() as conn:
-        adopt = not row['asset_content_id'] or not _kept(conn, owner, row['asset_content_id'])
-    if adopt:
-        try:
-            if not _adopt_output(row, owner, account_key, origin):
-                _scan.skipped.add(key)
-        except (OSError, ValueError):
-            _scan.skipped.add(key)  # 이 파일만 건너뛴다 — 뒤 행을 계속 본다
+        if row['asset_content_id'] and _kept_path(conn, owner, row['asset_content_id']):
+            return False
+    try:
+        if _adopt_output(row, owner, account_key, origin):
+            return True
+    except (OSError, ValueError):
+        pass  # 이 파일만 건너뛴다 — 뒤 행을 계속 본다
+    _scan.skipped.add(key)
+    return False
 
 
-def _bring_up_input(row, owner: str, account_key: str, origin: str) -> None:
+def _bring_up_input(row, owner: str, account_key: str, origin: str) -> bool:
     key = ('input', row['gid'], row['reference_id'])
     if key in _scan.skipped or _local_path(row['file_path']) is None:
-        return  # 등록 폴더·프로젝트 폴더의 입력은 이 일꾼의 몫이 아니다
+        return False  # 등록 폴더·프로젝트 폴더의 입력은 이 일꾼의 몫이 아니다
     with db.get_connection() as conn:
-        adopt = not row['asset_content_id'] or not _kept(conn, owner, row['asset_content_id'])
-    if adopt:
-        try:
-            if not _adopt_input(row, owner, account_key, origin):
-                _scan.skipped.add(key)
-        except (OSError, ValueError):
-            _scan.skipped.add(key)
+        if row['asset_content_id'] and _kept_path(conn, owner, row['asset_content_id']):
+            return False
+    try:
+        if _adopt_input(row, owner, account_key, origin):
+            return True
+    except (OSError, ValueError):
+        pass
+    _scan.skipped.add(key)
+    return False
 
 
 def scan_local(owner: str, account_key: str, origin: str) -> None:
@@ -420,12 +430,14 @@ def scan_remote(owner: str, account_key: str, origin: str, token: str) -> None:
             outputs = conn.execute("SELECT id asset_id,file_path,asset_content_id FROM asset WHERE generation_id=? AND file_path NOT LIKE 'http%'",
                                    (row['gid'],)).fetchall()
             inputs = _generation_inputs(conn, row['gid'])
-        for output in outputs:
-            _bring_up(output, owner, account_key, origin)
-        for reference in inputs:
-            _bring_up_input(reference, owner, account_key, origin)
+        copied = [_bring_up(output, owner, account_key, origin) for output in outputs]
+        copied += [_bring_up_input(reference, owner, account_key, origin) for reference in inputs]
         if not _still(owner, account_key, origin):
             return  # 복사 중 서버가 바뀌었다 — 옛 서버의 프로젝트를 새 서버 줄로 만들지 않는다
+        if any(copied):  # 복사가 긴 동안 서버에서 또 옮겼을 수 있다 — 쓰기 잠금 밖에서 다시 묻는다. 못 받으면 다음 바퀴에 본다
+            fresh = _remote_items(origin, token, [row['anchor']]).get(row['anchor'])
+            if not isinstance(fresh, dict) or fresh.get('project_id') != project_id:
+                continue
         with db.get_connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             ledger.queue_moved_outputs(conn, [row['gid']], project_id, (account_key, origin))
@@ -456,7 +468,7 @@ def missing_files(generation_ids: list[str], project_id: str) -> int:
             path = _local_path(row['file_path'])
             if path is None or path.is_file():
                 continue
-            if row['content'] and _kept(conn, row['owner'], row['content']):
+            if row['content'] and _kept_path(conn, row['owner'], row['content']):
                 continue
             missing += 1
     return missing

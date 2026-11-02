@@ -38,6 +38,22 @@ describe("자료 전송 줄", () => {
     expect(host.querySelector("button")).not.toBeNull();
   });
 
+  it("다시 시도 뒤 일꾼이 다시 본 수를 한 번 더 받는다", async () => {
+    vi.useFakeTimers();
+    try {
+      await show({ waiting: 0, failed: 0, needs_check: 0, unsendable: 2 });
+      retry.mockResolvedValue({ items: [], summary: { waiting: 0, failed: 0, needs_check: 0, unsendable: 2 } });
+      status.mockResolvedValue({ items: [], summary: { waiting: 1, failed: 0, needs_check: 0, unsendable: 0 } });
+      await act(async () => { host.querySelector("button")!.click(); });
+      expect(host.textContent).toContain("파일 없음 2");
+      await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+      expect(host.textContent).not.toContain("파일 없음");
+      expect(host.textContent).toContain("대기 1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("보낼 것이 없으면 그리지 않는다 · 옛 허브도 그렇다", async () => {
     await show({ waiting: 0, failed: 0, needs_check: 0 });
     expect(host.textContent).toBe("");

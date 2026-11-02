@@ -548,6 +548,53 @@ def test_a_project_change_during_the_copy_is_not_applied(world):
     assert _reference(gid)[0]['asset_content_id'] is None
 
 
+@pytest.mark.parametrize('change', ["content_sha='" + 'e' * 64 + "'", 'content_bytes=3', "source_url='https://cdn.example/late.png'", "share_url='https://cdn.example/late.png'"])
+def test_a_row_changed_during_the_copy_is_not_applied(world, change):
+    project = _project()
+    gid = _remote_result(world, 'late', project)
+    rid = _input(gid, 'late')
+    real = asset_backfill._read
+    def edit(path, copy):
+        taken = real(path, copy=copy)
+        with db.get_connection() as conn:
+            conn.execute(f'UPDATE reference SET {change} WHERE id=?', (rid,))
+        return taken
+    with patch.object(asset_backfill, '_read', side_effect=edit):
+        _tick()
+        _tick()
+    assert _reference(gid)[0]['asset_content_id'] is None
+
+
+def test_a_recorded_size_of_zero_is_a_recorded_size(world):
+    project = _project()
+    gid = _remote_result(world, 'zero', project)
+    _input(gid, 'zero', size=0)
+    _tick()
+    _tick()
+    assert _reference(gid)[0]['asset_content_id'] is None
+
+
+def test_a_move_on_the_server_during_the_copy_is_not_queued_to_the_old_project(world):
+    project, other = _project(), _project('R')
+    gid = _result(world, 'srvmove')
+    _shared(gid)
+    answers = [{'items': {gid: {'project_id': project}}}, {'items': {gid: {'project_id': other}}}]
+    with patch.object(asset_backfill, '_post', side_effect=answers) as call:
+        asset_backfill.tick(100.0)
+    assert call.call_count == 2
+    assert _lines(project) == []
+
+
+def test_a_recheck_that_gets_no_answer_waits_for_the_next_turn(world):
+    project = _project()
+    gid = _result(world, 'noans')
+    _shared(gid)
+    with patch.object(asset_backfill, '_post', side_effect=[{'items': {gid: {'project_id': project}}}, OSError('down')]):
+        asset_backfill.tick(100.0)
+    assert _lines(project) == []
+    assert _content(gid)  # 내용 ID 는 프로젝트와 상관없는 사실이라 남는다
+
+
 def test_an_input_of_a_result_moved_on_the_server_is_brought_up(world):
     project = _project()
     gid = _result(world, 'srv')
@@ -632,7 +679,31 @@ def test_the_same_bytes_are_kept_once_and_the_folder_is_not_searched(world):
     assert len(list((world / asset_backfill.SNAPSHOT_FOLDER).glob('*.png'))) == 1
 
 
+def test_the_same_bytes_under_another_extension_are_kept_once(world):
+    project = _project()
+    first = _result(world, 'ext', project=project, bytes_=b'same')
+    data = (world / 'media' / 'comfy' / 'ext.png').read_bytes()
+    (world / 'media' / 'comfy' / 'ext.jpg').write_bytes(data)
+    second = 'g-ext2'
+    repo.create_local_generation({'model': 'comfy', 'prompt': 'p'}, 'me', generation_id=second)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status='done', creator_uid='user_a', project_id=? WHERE id=?", (project, second))
+        conn.execute("INSERT INTO asset(id,generation_id,type,file_path) VALUES('a-ext2',?,'image','/media/comfy/ext.jpg')", (second,))
+    _tick()
+    assert _content(first) == _content(second)
+    assert len([path for path in (world / asset_backfill.SNAPSHOT_FOLDER).iterdir() if path.is_file()]) == 1
+
+
 # ── 다시 보기 ──
+def test_a_skipped_count_does_not_carry_over_an_account_switched_back(world):
+    _result(world, 'stale', project=_project(), write=False)
+    _tick(1000.0)
+    _tick(1001.0)
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 1
+    active_account.bump_account_epoch()
+    assert asset_backfill.skipped_count('user_a', 'acct', SERVER) == 0
+
+
 def test_a_skipped_file_is_counted_and_comes_back_after_the_hour(world):
     project = _project()
     gid = _result(world, 'gone', project=project, write=False)

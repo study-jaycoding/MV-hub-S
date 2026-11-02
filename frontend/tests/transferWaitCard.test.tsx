@@ -73,11 +73,21 @@ describe("전송 대기 카드", () => {
     expect(host.textContent).not.toContain("전송 대기");
   });
 
+  it("원격 원본이 있는 카드는 전송 대기가 아니다", () => {
+    const gen = generation("/media/comfy/a.png");
+    gen.assets[0].source_url = "https://cdn.example/a.png";
+    act(() => root.render(card(gen)));
+    failImage();
+    expect(host.textContent).toContain("원본 없음");
+    expect(host.textContent).not.toContain("전송 대기");
+  });
+
   it("주소가 바뀌면 표시가 풀려 새 주소를 다시 읽는다", () => {
     act(() => root.render(card(generation("/media/comfy/a.png"))));
     failImage();
     act(() => root.render(card(generation("asset-sync:" + "b".repeat(32)))));
-    expect(host.textContent).not.toContain("전송 대기");
+    expect(host.querySelector(".thumb-broken")).toBeNull(); // 대기도 원본 없음도 아니다 — 새 주소를 읽는 중이다
+    expect(host.querySelector("img")?.getAttribute("src")).toContain("/api/asset-sync/files/" + "b".repeat(32));
   });
 
   it("카드별 타이머를 두지 않는다", () => {

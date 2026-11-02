@@ -430,8 +430,9 @@ function GenerationCardImpl({
           </div>
         }
       />
-      {broken && gen.status === "done" && tab === "team" && asset?.file_path && !/^(https?:|asset-sync:)/.test(asset.file_path) ? (
-        // 공유 탭의 로컬 주소 = 작성자 PC 에 있는 파일 — 서버로 올라오면 목록이 새 주소를 받아 저절로 보인다
+      {broken && gen.status === "done" && tab === "team" && asset?.file_path
+        && !/^(https?:|asset-sync:)/.test(asset.file_path) && !/^https?:/.test(asset.source_url ?? "") ? (
+        // 공유 탭의 로컬 주소 = 작성자 PC 에 있는 파일 — 서버로 올라오면 목록이 새 주소를 받아 저절로 보인다. 원격 원본이 있는 카드는 대기가 아니다
         <div
           className="thumb-broken thumb-waiting"
           title={t("작성자 PC 에서 파일을 보내는 중입니다. 올라오면 저절로 보입니다. 오래 안 보이면 작성자에게 알려 주세요.")}

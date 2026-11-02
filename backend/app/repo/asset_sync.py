@@ -217,7 +217,7 @@ def link_output(conn, anchor, content_id, file_path, author_uids):
     if table == 'reference':
         blob = conn.execute('SELECT sha256,bytes FROM asset_blob WHERE asset_content_id=?', (content_id,)).fetchone()
         blanks = [row for row in blanks if blob and (not row['content_sha'] or row['content_sha'] == blob['sha256'])
-                  and (not row['content_bytes'] or row['content_bytes'] == blob['bytes'])]
+                  and (row['content_bytes'] is None or row['content_bytes'] == blob['bytes'])]
         if not blanks:
             raise ValueError('asset_link_conflict')
     for row in blanks:
