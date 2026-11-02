@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   assetComments: vi.fn(), markCommentsRead: vi.fn(), assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), assetMounts: vi.fn(),
   addAssetMount: vi.fn(), delAssetMount: vi.fn(), addAssetComment: vi.fn(),
 }));
-vi.mock("../src/api", () => ({ api: mocks }));
+vi.mock("../src/api", () => ({ api: { ...mocks, projects: async () => ({ projects: [], unassigned: 0 }) } }));
 
 import { MountManager } from "../src/components/assets/MountManager";
 import { useAssetCommentActions } from "../src/components/assets/useAssetCommentActions";

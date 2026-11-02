@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../src/api", () => ({ api: {
   assetComments: vi.fn(async () => []), markCommentsRead: vi.fn(async () => {}),
+  projects: async () => ({ projects: [], unassigned: 0 }),
 } }));
 
 import { CommentPanel } from "../src/components/common/CommentPanel";
