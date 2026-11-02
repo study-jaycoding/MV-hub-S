@@ -715,6 +715,21 @@ export function exportSceneText(scene: Scene): string {
   );
 }
 
+// 보관 전용 사본. 파일 Export·자동 저장의 시간과 실행 복구 표식은 그대로 둔다.
+export function exportSceneKeepText(scene: Scene, name: string, camera = scene.camera): string {
+  const copy = JSON.parse(exportSceneText({ ...scene, name, camera }));
+  copy.savedAt = 0;
+  for (const card of copy.scene.cards) {
+    delete card.pendingGenerationAttempts;
+    if (card.comfyCfg) {
+      delete card.comfyCfg.status;
+      delete card.comfyCfg.runId;
+      delete card.comfyCfg.error;
+    }
+  }
+  return JSON.stringify(copy);
+}
+
 const isFiniteNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 /** 씬 파일의 워크스페이스는 남이 만든 값이다 — 모양이 맞을 때만 받는다. */

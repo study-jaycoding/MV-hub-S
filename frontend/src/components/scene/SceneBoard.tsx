@@ -134,6 +134,7 @@ import {
 } from "../../lib/sceneAssetRelink";
 import { copyText, flashMsg } from "../../lib/flash";
 import { notifyPeekDropAdded } from "../../lib/peekDragOut";
+import { hubHasFeature } from "../../lib/hubFeatures";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
 import { comfyCardRuntime, projectComfyCard } from "../../lib/comfyRunState";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
@@ -330,6 +331,8 @@ interface Props {
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
   onLoadSceneFile?: (file: File) => void;
+  onKeepScene?: (getCamera: () => { z: number; x: number; y: number }) => void;
+  onOpenSceneKeeps?: () => void;
   // 각인된 생성물 파일을 캔버스에 떨어뜨렸을 때 — 레시피를 새 씬 탭으로 열었으면 true.
   //  false 면 평범한 미디어로 보고 레퍼런스 카드가 된다(기존 동작).
   onDroppedGenerationFile?: (file: File) => Promise<boolean>;
@@ -477,6 +480,8 @@ export function SceneBoard({
   topCenterOverlay,
   onSaveScene,
   onLoadSceneFile,
+  onKeepScene,
+  onOpenSceneKeeps,
   onDroppedGenerationFile,
   onLocalRefsAdded,
   onFindRefs,
@@ -3757,7 +3762,7 @@ export function SceneBoard({
       })()}
 
       {/* 씬 패널 — 탭 휠 클릭으로 그 탭 밑에 뜬다. Import(새 탭)·Export(파일로)·레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
-      {(onSaveScene || onLoadSceneFile || onFindRefs) && (
+      {(onSaveScene || onLoadSceneFile || onFindRefs || onKeepScene || onOpenSceneKeeps) && (
         <div
           ref={ioPanelRef}
           className={"scene-io-panel" + (ioPanelVisible ? "" : " io-hidden")}
@@ -3765,6 +3770,13 @@ export function SceneBoard({
           onMouseDown={(e) => e.stopPropagation()}
         >
           <div className="scene-io-btns">
+            {hubHasFeature("scene_keep_v1") && (onKeepScene || onOpenSceneKeeps) && <>
+              <div className="scene-io-col">
+                {onKeepScene && <button className="scene-io-btn" onClick={() => onKeepScene(getCamera)}>보관</button>}
+                {onOpenSceneKeeps && <button className="scene-io-btn" onClick={onOpenSceneKeeps}>불러오기</button>}
+              </div>
+              <span className="scene-io-sep" aria-hidden="true" />
+            </>}
             {(onLoadSceneFile || onSaveScene) && (
               <div className="scene-io-col">
                 {onLoadSceneFile && (

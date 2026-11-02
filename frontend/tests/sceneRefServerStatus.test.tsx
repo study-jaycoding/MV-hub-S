@@ -7,6 +7,7 @@ import { SceneBoard } from "../src/components/scene/SceneBoard";
 import { refJudged, relinkKey, relinkSceneAssetRefs, resetRelinkSessionForTest } from "../src/lib/sceneAssetRelink";
 import { saveScenes, type Scene, type SceneRef } from "../src/lib/scenes";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
+import { setHubFeatures } from "../src/lib/hubFeatures";
 
 // 바꾸는 것은 생성물 읽기와 자동 매칭 응답뿐 — SceneBoard·ReferenceCard·판정 가게는 실제 코드다.
 const fixture = vi.hoisted(() => ({
@@ -33,6 +34,7 @@ let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  setHubFeatures([]);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("BroadcastChannel", undefined);
@@ -52,6 +54,7 @@ beforeEach(() => {
   root = createRoot(host);
 });
 afterEach(() => {
+  setHubFeatures([]);
   act(() => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
@@ -268,6 +271,21 @@ it("'레퍼런스 찾기' 단추 — 이 씬으로 찾기를 부르고, 도는 �
 
   await act(async () => finish());
   expect(button().textContent).toBe("레퍼런스 찾기");
+});
+
+it("보관 기능 표식이 있을 때만 패널을 2·2·1 칸으로 그린다", async () => {
+  const scene = refScene("keeps", "ws-1", []);
+  const keep = vi.fn();
+  const render = () => root.render(<SceneBoard scene={scene} onChange={noop} onSaveScene={noop} onLoadSceneFile={noop} onKeepScene={keep} onOpenSceneKeeps={noop} onFindRefs={async () => {}} ioPanelScene={scene.id} />);
+  await act(async () => render());
+  expect([...host.querySelectorAll(".scene-io-btn")].map(el => el.textContent)).toEqual(["Import", "Export", "레퍼런스 찾기"]);
+  setHubFeatures(["scene_keep_v1"]);
+  await act(async () => render());
+  expect([...host.querySelectorAll(".scene-io-col")].map(el => el.querySelectorAll("button").length)).toEqual([2, 2, 1]);
+  expect([...host.querySelectorAll(".scene-io-btn")].map(el => el.textContent)).toEqual(["보관", "불러오기", "Import", "Export", "레퍼런스 찾기"]);
+  await act(async () => host.querySelector<HTMLButtonElement>(".scene-io-btn")!.click());
+  expect(keep).toHaveBeenCalledTimes(1);
+  expect(typeof keep.mock.calls[0][0]).toBe("function");
 });
 
 it("씬 패널 — Import·Export 칸 다음, 레퍼런스 찾기 칸 앞에 가르는 선 · 씬 이름은 없다(Jay 2026-11-02)", async () => {

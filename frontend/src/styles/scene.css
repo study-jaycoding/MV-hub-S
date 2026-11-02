@@ -1915,3 +1915,17 @@
 .scene-ws-item.on .scene-ws-item-name { color: var(--accent); font-weight: 700; }
 .scene-ws-empty { padding: 6px 9px; color: var(--muted); font-size: 11.5px; }
 .scene-ws-empty.warn { color: #f06a5a; }
+.scene-keep-dialog label { display: grid; gap: 6px; margin: 14px 0; }
+.scene-keep-dialog .settings-input { width: 100%; box-sizing: border-box; }
+.scene-keep-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.scene-keep-toolbar .admin-add { margin-left: auto; }
+.scene-keep-window .admin-tab > span:last-child { margin-left: auto; }
+.scene-keep-items { display: grid; gap: 12px; }
+.scene-keep-items.grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.scene-keep-item { display: grid; gap: 8px; padding: 12px; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); color: var(--text); text-align: left; }
+.scene-keep-item.on { border-color: var(--accent); }
+.scene-keep-item-name { font-weight: 600; overflow-wrap: anywhere; }
+.scene-keep-preview { display: block; position: relative; height: 110px; width: 100%; background: var(--panel); overflow: hidden; border-radius: 4px; }
+.scene-keep-items.list .scene-keep-item { grid-template-columns: 70px minmax(80px, 1fr) auto auto; align-items: center; }
+.scene-keep-items.list .scene-keep-preview { height: 44px; }
+@media (max-width: 650px) { .scene-keep-items.list .scene-keep-item { grid-template-columns: 55px 1fr; } }

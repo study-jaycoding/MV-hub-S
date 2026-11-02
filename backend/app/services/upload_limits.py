@@ -75,6 +75,8 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/asset-registry/helper/results": 32 * MIB,
     # 편집 공유 저장 — 스냅샷 256 KiB('ASCII 로 감싼 길이') + 덧붙는 칸 8 KiB. 허브·서버 모두 본문을 읽기 전에 413(repo/edit_shares).
     "/api/edit-shares/save": 264 * KIB,
+    "/api/scene-keeps": 8 * MIB + 64 * KIB,
+    "/api/scene-keeps/restore": 4 * KIB,
 }
 
 _log = logging.getLogger("mvhub.upload")

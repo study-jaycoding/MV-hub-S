@@ -189,6 +189,10 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/sync-status",  # 로컬 허브 자기 상태 — 서버 위임 금지
             "/api/scenes/backup",  # 개인 캔버스 — 팀 서버 전송 금지
             "/api/scenes/cards",   # 개인 캔버스 카드 소속 — 위와 같은 이유
+            "/api/scene-keeps",  # 계정 대조·묶음 후 핸들러가 직접 중계
+            "/api/scene-keeps/restore",  # 복원 쓰기는 이 PC의 계정 DB
+            "/api/scene-keeps/0123456789abcdef0123456789abcdef",
+            "/api/scene-keeps/0123456789abcdef0123456789abcdef/envelope",
             "/api/registry-helper/scan",  # 에셋 대장 도우미 — 이 PC 가 NAS 를 읽는다(서버로 보내면 서버가 훑으려 든다)
             "/api/registry-helper/status",
             "/api/share/intents/i1",  # 늦은 공유·최종 요청의 원장 — 이 허브에만 있다(Jay 결정 10A)

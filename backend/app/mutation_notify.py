@@ -97,6 +97,8 @@ def notification_domains(method: str, path: str, status_code: int) -> tuple[str,
     # helper should_notify_* 3종은 호출자가 없어 2026-08-27 제거했다.
     if not _is_successful_write(method, path, status_code):
         return ()
+    if path == "/api/scene-keeps" or path.startswith("/api/scene-keeps/"):
+        return (DOMAIN_LIBRARY,) if method == "POST" and path == "/api/scene-keeps/restore" else ()
     domains: list[str] = []
     if path in _MANAGE_ALSO_LIBRARY_PATHS or (
         path not in _NOTIFY_NO_LIBRARY_CHANGE_PATHS

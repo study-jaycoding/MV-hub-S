@@ -252,7 +252,7 @@ _GEN_SELECT_COLS = (
     # 이 컬럼셋은 단건 조회(_fetch_generation)·_fetch_gens 가 공유한다. job_id 는 목록 SQL
     # (generations_query)·GenerationOut(단건·목록 공용 모델)에도 노출된다 — 팀 카드(서버 UUID)↔로컬
     # 행을 잇는 앵커이고, 프론트 확인(ack)·개인메타 매칭이 job_id||id 키로 이 값을 쓴다.
-    "g.job_id, "
+    "g.job_id, g.generator, "
     "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
     f"{GEN_BASE_JOINS}"
 )

@@ -29,6 +29,9 @@ import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptR
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
+import { SceneKeepDialog } from "./components/scene/SceneKeepDialog";
+import { SceneKeepWindow } from "./components/scene/SceneKeepWindow";
+import { assertSceneKeepScope, captureSceneKeep, defaultSceneKeepProject, openSceneKeep } from "./lib/sceneKeep";
 import { SceneBoardBoundary } from "./components/scene/SceneBoardBoundary";
 const SceneBoard = lazy(() =>
   import("./components/scene/SceneBoard").then((m) => ({ default: m.SceneBoard })),
@@ -56,6 +59,7 @@ import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { reloadedIntoEdit, useAppNavigation } from "./lib/useAppNavigation";
 import {
   exportSceneText,
+  confirmSceneWrite,
   listScenes,
   parseSceneImport,
   SCENE_IMPORT_MAX_BYTES,
@@ -487,6 +491,9 @@ export default function App() {
     resetKey: selectionResetKey,
   });
   const libraryAuthKey = JSON.stringify([hubAccount?.email, account?.email, account?.creator_uid, sharedSrv?.url]);
+  const [keepDialog, setKeepDialog] = useState<{ scope: string; authKey: string; sceneId: string; name: string; projectId: string; workspace: SceneWorkspace | null; selectedProjectId?: string | null; camera: () => { z: number; x: number; y: number } } | null>(null);
+  const [keepWindow, setKeepWindow] = useState<{ scope: string; authKey: string } | null>(null);
+  useEffect(() => { setKeepDialog(null); setKeepWindow(null); }, [libraryAuthKey]);
   useLayoutEffect(() => {
     configureOperationContext({ key: libraryAuthKey, ready: authReady && !apiPause && (!hubAccount?.email || getAccountNamespace() === `acct:${hubAccount.email}`),
       serverOrigin: sharedSrv?.url || window.location.origin,
@@ -1862,6 +1869,28 @@ export default function App() {
       flash(e instanceof Error ? e.message : "씬 가져오기에 실패했습니다.");
     }
   };
+  const canWriteKeepScene = () => !isCanvasFloating() && !isCanvasFollower();
+  const handleOpenSceneKeep = async (id: string) => {
+    if (!keepWindow) return;
+    const scope = keepWindow.scope;
+    const result = await openSceneKeep({ id, scope, canWrite: canWriteKeepScene, importSnapshot: importSceneSnapshot,
+      restoreWorkspace: async (scene, workspace) => {
+        const mine = await api.workspaces();
+        assertSceneKeepScope(scope);
+        if (!canWriteKeepScene()) throw new Error("캔버스 창이 바뀌었습니다.");
+        const own = mine.find(item => item.id === workspace.id);
+        if (!own) return;
+        const write = confirmSceneWrite(() => setSceneWorkspace(scene.id, { id: own.id, name: own.name }));
+        if (!await write.confirmed) throw new Error("탭 표식 저장 실패");
+        assertSceneKeepScope(scope);
+        if (listScenes(null).find(item => item.id === scene.id)?.workspace?.id !== own.id) throw new Error("탭 표식 저장 실패");
+      },
+    });
+    assertSceneKeepScope(scope);
+    setSceneBinding(null); setSceneSelGens([]);
+    flash(`새 탭으로 열었습니다.${result.rejected ? ` 생성 결과 ${result.rejected}개는 연결하지 못했습니다.` : ""}${result.workspaceError ? ` ${result.workspaceError}` : ""}${result.saveWarning ? ` ${result.saveWarning}` : ""}`);
+    setKeepWindow(null);
+  };
   // 폴더 필터가 해제되거나(프로젝트/라이브러리/미분류 선택) 다른 프로젝트로 바뀌면 무장 폴더(armedFolder)도
   // 함께 해제한다 — 안 그러면 폴더 필터를 풀어도 새 생성이 예전 폴더로 저장되던 문제(라이브러리·캔버스 공통).
   useEffect(() => {
@@ -2762,6 +2791,12 @@ export default function App() {
                 topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
+                onKeepScene={hubHasFeature("scene_keep_v1") ? camera => {
+                  if (!activeScene || !canWriteKeepScene()) return;
+                  setKeepDialog({ scope: getAccountNamespace(), authKey: libraryAuthKey, sceneId: activeScene.id, name: activeScene.name,
+                    projectId: defaultSceneKeepProject(activeScene, projects, filters.project_id)?.id ?? "", workspace: activeScene.workspace ?? null, selectedProjectId: filters.project_id, camera });
+                } : undefined}
+                onOpenSceneKeeps={hubHasFeature("scene_keep_v1") ? () => setKeepWindow({ scope: getAccountNamespace(), authKey: libraryAuthKey }) : undefined}
                 onDroppedGenerationFile={openRecipeFromFile}
                 onLocalRefsAdded={relinkSceneRefsNow}
                 onFindRefs={findSceneRefs}
@@ -3092,6 +3127,26 @@ export default function App() {
           folderSel.path,
           () => setFolderPeek(false),
         )}
+      {keepDialog && keepDialog.authKey === libraryAuthKey && keepDialog.scope === getAccountNamespace() && <SceneKeepDialog
+        key={keepDialog.sceneId} scope={keepDialog.scope} name={keepDialog.name} projectId={keepDialog.projectId} projects={projects} workspace={keepDialog.workspace} selectedProjectId={keepDialog.selectedProjectId}
+        onClose={() => setKeepDialog(null)}
+        capture={(name, project) => {
+          assertSceneKeepScope(keepDialog.scope);
+          if (!canWriteKeepScene() || sceneActionRef.current?.sceneId !== keepDialog.sceneId) throw new Error("보관할 캔버스를 다시 열어 주세요.");
+          flushScenePending(keepDialog.sceneId);
+          const scene = listScenes(null).find(item => item.id === keepDialog.sceneId);
+          if (!scene) throw new Error("씬을 찾을 수 없습니다.");
+          return { ...captureSceneKeep(scene, name, keepDialog.camera()), project_id: project?.id ?? "", project_name: project?.name ?? null };
+        }}
+        onSaved={(name, missing) => {
+          assertSceneKeepScope(keepDialog.scope);
+          if (canWriteKeepScene() && listScenes(null).find(item => item.id === keepDialog.sceneId)?.name !== name) renameScene(keepDialog.sceneId, name);
+          flash(`보관했습니다.${missing ? ` 생성 결과 ${missing}개는 정보를 찾지 못했습니다.` : ""}`);
+        }}
+      />}
+      {keepWindow && keepWindow.authKey === libraryAuthKey && keepWindow.scope === getAccountNamespace() && <SceneKeepWindow
+        scope={keepWindow.scope} projects={projects} onClose={() => setKeepWindow(null)} onOpen={handleOpenSceneKeep}
+      />}
       <AppOverlays
         account={account}
         adminOpen={adminOpen}

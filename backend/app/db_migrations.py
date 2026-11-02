@@ -699,6 +699,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "PRIMARY KEY (project_id, seq, owner))"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_edit_share_key ON edit_share(project_id, seq, owner_key)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS scene_keep ("
+        "id TEXT PRIMARY KEY, owner TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '', project_name TEXT, "
+        "name TEXT NOT NULL, workspace_id TEXT, workspace_name TEXT, node_count INTEGER NOT NULL, "
+        "preview TEXT NOT NULL, missing_count INTEGER NOT NULL DEFAULT 0, "
+        "data_hash TEXT NOT NULL, data_bytes INTEGER NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0), "
+        "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
+        "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), data TEXT NOT NULL, UNIQUE(owner, project_id, name))"
+    )
     scene_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
     }

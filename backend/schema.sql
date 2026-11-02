@@ -608,6 +608,21 @@ CREATE INDEX IF NOT EXISTS idx_edit_doc_copy_order ON edit_doc_copy(owner,doc_ke
 
 -- 편집 공유 — 사람 × 시퀀스마다 '보이는 것 한 줄'(스냅샷 v1) 한 벌, 덮어쓰기(공유 서버 DB 가 권위 — repo/edit_shares).
 -- owner = 정규화 email(응답에 안 나간다) · owner_key = 처음 저장 때 만든 무작위 열쇠(응답용, 덮어써도 유지).
+-- 개인이 명시적으로 보관한 씬. 공유 서버만 쓰며 기존 baseline은 유지한다.
+CREATE TABLE IF NOT EXISTS scene_keep (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '', project_name TEXT,
+    name TEXT NOT NULL, workspace_id TEXT, workspace_name TEXT,
+    node_count INTEGER NOT NULL, preview TEXT NOT NULL,
+    missing_count INTEGER NOT NULL DEFAULT 0,
+    data_hash TEXT NOT NULL, data_bytes INTEGER NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    data TEXT NOT NULL,
+    UNIQUE(owner, project_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS edit_share (
     project_id TEXT NOT NULL,
     seq TEXT NOT NULL,

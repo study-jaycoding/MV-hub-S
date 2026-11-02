@@ -366,8 +366,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     if (s) selectScene(s.id);
   };
   // 파일에서 불러온 스냅샷을 새 씬 탭으로 만들고 그 탭으로 전환(현재 캔버스는 보존).
-  const importSceneSnapshot = (snap: SceneSnapshot): Scene => {
-    const s = importCanvasSnapshot(getAccountNamespace(), snap)!;
+  const importSceneSnapshot = (snap: SceneSnapshot, scope = getAccountNamespace()): Scene | null => {
+    const s = importCanvasSnapshot(scope, snap);
+    if (!s || scope !== getAccountNamespace()) return null;
     refreshScenes();
     selectScene(s.id);
     // 남이 준 씬 파일에 '그 사람 PC 안 사본'을 가리키는 그림이 있으면, 내 프로젝트 폴더의

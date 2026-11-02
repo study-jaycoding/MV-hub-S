@@ -101,6 +101,7 @@ from .routers import (
     scenes,
     edit_docs,
     edit_shares,
+    scene_keeps,
     share,
     sync,
     update_notices,
@@ -805,6 +806,7 @@ app.include_router(comfy.router)
 app.include_router(scenes.router)
 app.include_router(edit_docs.router)
 app.include_router(edit_shares.router)
+app.include_router(scene_keeps.router)
 app.include_router(clean_feed.router)  # 편집 탭 클린 피드 전용 창(로컬 허브 — 이 PC 만)
 app.include_router(app_windows.router)  # 별도 창(Assets·관리)을 앱 창 위로(로컬 허브 — 이 PC 만)
 app.include_router(mcp.router)

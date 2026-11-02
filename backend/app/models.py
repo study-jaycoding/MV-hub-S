@@ -308,6 +308,7 @@ class ReferenceOut(BaseModel):
 
 class GenerationOut(BaseModel):
     id: str
+    generator: Optional[str] = None  # 실제 생성 도구를 보관 봉투까지 전달(NULL은 기존 힉스필드).
     worker_id: str
     worker_name: Optional[str] = None
     prompt: str

@@ -270,7 +270,7 @@ def list_generations(
         "gr.last_checked_at, gr.next_check_at, COALESCE(gr.check_failures,0) AS check_failures, "
         "g.creator_uid, g.workspace_scope, g.workspace_id, g.workspace_name, "
         "g.project_id, g.folder_path, g.deleted_at, "
-        "g.is_final, g.is_held, g.final_by, g.job_id, "  # job_id: 팀 카드(서버 UUID)↔로컬 개인메타 매핑 앵커
+        "g.is_final, g.is_held, g.final_by, g.job_id, g.generator, "  # job_id: 팀 카드(서버 UUID)↔로컬 개인메타 매핑 앵커
         "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
         f"{GEN_BASE_JOINS}"
         # 정렬키: 힉스필드 created_at(sub-second) 보존 sort_ts. 동률은 id 로 안정화(키셋 total order).
