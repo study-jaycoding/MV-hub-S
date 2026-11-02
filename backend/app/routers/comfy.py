@@ -40,6 +40,7 @@ from ..config import (
 )
 from ..deps import (
     account_actor_uid,
+    assert_account_current,
     batch_view_member_projects,
     can_view_generation_with_member_projects,
     expected_account_differs,
@@ -167,6 +168,7 @@ def _comfy_request_scope(request: Request):
     pin = active_account.capture_account_pin()
     with active_account.pinned_account_scope(pin):
         account = require_agent_account(request)
+        assert_account_current(account)
         owner = norm_email(account.get("email")) if AUTH_ENABLED else (norm_email(pin[0]) or "local")
         if not owner:
             raise HTTPException(409, "계정 신원을 확인할 수 없습니다")

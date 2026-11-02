@@ -17,6 +17,9 @@ from ..services import auth
 from .last_admin import last_admin_guard
 
 _PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, password_changed_at, COALESCE(hidden,0) AS hidden"
+# 새 계정의 토큰 표식 — 지운 이메일로 다시 가입해도 옛 토큰이 되살아나지 않게 한다(계정 정리, 2026-11-02).
+# set_password 의 datetime('now') 와 글자 모양이 달라 같은 초에도 겹치지 않는다. 값은 글자로만 비교한다.
+_NEW_ACCOUNT_STAMP = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
 
 def _link_accounts_to_creators() -> None:
@@ -90,8 +93,8 @@ def register(email: str, password: str, name: Optional[str] = None) -> dict[str,
             # approved 인데 approved_at NULL 인 반쪽 상태를 남긴다(ensure_admin_account 와 패턴 통일).
             approved_at = "datetime('now')" if first else "NULL"
             conn.execute(
-                f"INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
-                f"VALUES(?,?,?,?,?,{approved_at})",
+                f"INSERT INTO account(email, name, password_hash, status, global_role, approved_at, password_changed_at) "
+                f"VALUES(?,?,?,?,?,{approved_at},{_NEW_ACCOUNT_STAMP})",
                 (email, (name or "").strip() or None, password_hash, status, global_role),
             )
             account = _row(conn, email)
@@ -121,8 +124,8 @@ def ensure_admin_account(email: str, password: str) -> bool:
                 conn.execute("COMMIT")
                 return False  # 이미 있음 — 보존
             conn.execute(
-                "INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
-                "VALUES(?,?,?,?,?,datetime('now'))",
+                "INSERT INTO account(email, name, password_hash, status, global_role, approved_at, password_changed_at) "
+                f"VALUES(?,?,?,?,?,datetime('now'),{_NEW_ACCOUNT_STAMP})",
                 (
                     email,
                     "admin",

@@ -36,6 +36,7 @@ from ..deps import (
     account_global_roles,
     account_scope_uid,
     actor_id,
+    assert_account_current,
     batch_view_member_projects,
     can_view_generation_with_member_projects,
     current_account,
@@ -454,7 +455,9 @@ def _telemetry_activity_summary(
 
 def _push_acc(request: Request) -> dict:
     """텔레메트리 push 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
-    return require_agent_account(request)
+    acc = require_agent_account(request)
+    assert_account_current(acc)  # 부르는 핸들러는 전부 def(작업 스레드)다
+    return acc
 
 
 @router.post("/telemetry/push")

@@ -207,7 +207,7 @@ def test_auth_off_import_uses_internal_local_account_and_pinned_connection(local
         (200, {**local[2], "creator_uid": "different-upstream-creator"}))
     context = api._capture(Request({"type": "http", "method": "POST", "path": URL, "headers": [], "state": {}}))
     secret = "s" * 43
-    store.create_client(api.mcp.digest(secret), context.hub, context.owner, local[2]["email"], None,
+    store.create_client(api.mcp.digest(secret), context.hub, context.owner, local[2]["email"], local[2]["password_changed_at"],
                         {"scope": "personal", "id": None, "name": None}, "codex", True)
     local[1]["codex"] = {"secret": secret}
     seen = []

@@ -25,6 +25,7 @@ from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
     actor_id,
+    assert_account_current,
     expected_account_differs,
     realtime_scope,
     require_admin,
@@ -261,6 +262,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             headers=dict(NOT_STARTED),
         )
     acc = _require_account(request)
+    await asyncio.to_thread(assert_account_current, acc)  # 본문을 받는 사이 차단된 계정 — DB 대기가 이벤트 루프를 막지 않게
     # 답을 잃고 다시 보내는 사이 다른 탭이 다른 계정으로 로그인했으면 그 계정 DB 엔 이 요청표가 없어 새로 만든다 — 보내지 않는다(Jay 결정 2A)
     if expected_account_differs(request, acc["email"]):
         raise HTTPException(status_code=409, detail="그사이 이 PC 의 계정이 바뀌어 보내지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요",

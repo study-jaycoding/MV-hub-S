@@ -70,6 +70,7 @@ from .static_files import ImmutableStaticFiles
 from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
+    account_cleanup,
     app_windows,
     asset_registry,
     asset_sync,
@@ -798,6 +799,7 @@ app.include_router(console.router)
 app.include_router(resolve_integration.router)
 app.include_router(auth.router)
 app.include_router(db_transfer.router)
+app.include_router(account_cleanup.router)
 app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(scenes.router)

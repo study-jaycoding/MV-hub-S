@@ -12,6 +12,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from ctypes import wintypes
 from dataclasses import dataclass, field
@@ -273,6 +274,35 @@ def read_presence(server: dict, token: str) -> dict:
     if not isinstance(value.get("people"), list):
         raise ServerError("지금 접속 중 응답 형식을 알 수 없습니다")
     return value
+
+
+# ---- 계정 정리(이력 없는 차단·숨김 계정 삭제 — 판정은 서버가 한다) ----
+
+CLEANUP_PATH = "/api/admin/account-cleanup"
+
+
+def read_cleanup(server: dict, token: str) -> list:
+    code, payload = call(server, "GET", CLEANUP_PATH, token)
+    if code == 404:
+        raise ServerError("서버가 옛 코드라 계정 정리를 못 씁니다 — 서버 Git 업데이트 뒤에 보입니다")
+    value = expect_ok(code, payload, "계정 목록")
+    if not isinstance(value.get("accounts"), list):
+        raise ServerError("계정 목록 응답 형식을 알 수 없습니다")
+    return value["accounts"]
+
+
+def delete_cleanup(server: dict, token: str, row: dict) -> dict:
+    """확인 창에서 본 값을 함께 보낸다 — 그사이 바뀌었으면 서버가 지우지 않고 409 로 이유를 준다."""
+    body = {key: row[key] for key in ("email", "status", "hidden", "created_at")}
+    code, payload = call(server, "POST", f"{CLEANUP_PATH}/delete", token, body)
+    if code == 409:
+        raise ServerError(detail(payload) or "지우지 않았습니다")
+    return expect_ok(code, payload, "계정 삭제")
+
+
+def block_account(server: dict, token: str, email: str) -> None:
+    quoted = urllib.parse.quote(email, safe="")
+    expect_ok(*call(server, "PATCH", f"/api/auth/accounts/{quoted}/status", token, {"status": "rejected"}), "계정 차단")
 
 
 # ---- 생성 접수(서버 DB app_setting['generation_deployment_paused'] — 실행 중인 서버가 자기 DB 에 쓴다) ----

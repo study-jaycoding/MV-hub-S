@@ -1048,7 +1048,7 @@ def test_auth_off_upstream_account_required_and_pinned(local, monkeypatch):
     ctx = api._capture(request)
     assert ctx.owner == config.DEFAULT_WORKER_ID
     assert calls == [("http://isolated.test/api/auth/me", "stored-test-token", (local[2]["email"], "local-uid"))]
-    cid = store.create_client(api.mcp.digest("s" * 43), ctx.hub, ctx.owner, local[2]["email"], None,
+    cid = store.create_client(api.mcp.digest("s" * 43), ctx.hub, ctx.owner, local[2]["email"], local[2]["password_changed_at"],
                               {"scope": "personal", "id": None, "name": None}, "codex", True)
     assert api._capture(request, "s" * 43).client["id"] == cid
     monkeypatch.setattr(active_account, "_cache", [True, {"email": "other@example.test", "uid": "other-uid"}])

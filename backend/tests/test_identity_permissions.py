@@ -36,6 +36,7 @@ def auth_on():
     stack.enter_context(mock.patch.object(manage_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(ingest_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(gen_requests_router, "AUTH_ENABLED", True))
+    stack.enter_context(mock.patch.object(gen_requests_router, "assert_account_current", lambda account: None))  # 시험 계정은 DB 에 없다
     return stack
 
 

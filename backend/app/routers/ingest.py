@@ -35,6 +35,7 @@ from ..config import (
 from ..emailnorm import norm_email
 from ..deps import (
     account_scope_uid,
+    assert_account_current,
     current_account,
     require_agent_account,
     resolve_agent_account,
@@ -94,6 +95,13 @@ def local_agent_pair_token(body: LocalAgentPairIn, request: Request):
 def _agent_acc(request: Request) -> dict:
     """에이전트·계정상태용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
+
+
+def _agent_write_acc(request: Request) -> dict:
+    """결과·상태를 저장하는 def 핸들러용 — 본문을 다 받은 뒤 계정을 다시 읽는다."""
+    acc = _agent_acc(request)
+    assert_account_current(acc)
+    return acc
 
 
 def _mcp_backfill_jobs(
@@ -290,7 +298,7 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
     로컬 우선: 생성물은 로컬에만 남고(공유는 선택 발행으로만), 팀 크레딧 집계를 위해
     account_status(잔액/플랜)·account_transactions(실제 차감액)를 서버로 전달한다
     (서버가 이메일 일치 검증 + 서버 PM DB 에 집계)."""
-    acc = _agent_acc(request)
+    acc = _agent_write_acc(request)
     out = _ingest_core(
         acc,
         body.jobs,
@@ -384,7 +392,7 @@ def ingest_account_report(body: AccountReportIn, request: Request, background_ta
     """
     if not MANAGE_ENABLED:
         raise HTTPException(status_code=503, detail="관리 텔레메트리가 비활성입니다")
-    acc = _agent_acc(request)
+    acc = _agent_write_acc(request)
     out = _ingest_core(
         acc,
         [],
@@ -421,7 +429,7 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     이 엔드포인트로 POST. mcp_item_to_cli 로 CLI 형태 변환 후 push 와 동일 코어로 처리."""
     jobs = _mcp_backfill_jobs(body.items, body.workspace.model_dump())
     out = _ingest_core(
-        _agent_acc(request),
+        _agent_write_acc(request),
         jobs,
         None,
         body.account_status,

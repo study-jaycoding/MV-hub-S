@@ -20,8 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import (actions, activity, backup, console_stage, install, jobs, logs, mcp_stage, moves, names, power, release,
-               server_api, status)
+from . import (account_rows, actions, activity, backup, console_stage, install, jobs, logs, mcp_stage, moves, names,
+               power, release, server_api, status)
 from . import main as main_boot
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
@@ -39,7 +39,7 @@ SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
-       ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"), ("address", "서버 주소"), ("move", "서버 이사"))
+       ("accounts", "계정 정리"), ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"), ("address", "서버 주소"), ("move", "서버 이사"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
     "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
@@ -176,6 +176,8 @@ class App:
         self.after_login = None  # 로그인 뒤 이어서 할 일(인증이 필요한 동작)
         self.intake_api: tuple[bool, float] | None = None  # 로그인 뒤 서버 API 로 읽은 값·시각 — DB 읽기(추정)보다 우선
         self.intake_busy = False
+        self.account_rows: list[dict] = []  # 계정 정리 — 서버가 준 줄(판정 포함), 표의 줄 번호가 이 목록의 위치다
+        self.accounts_busy = False
         # 화면별로 따라가는 작업(생성 접수·백업) — 업데이트 작업 보기와 따로(업데이트 중에도 접수는 바꿀 수 있게)
         self.side_jobs: dict[str, str] = {}
         self.backup_view: dict | None = None
@@ -263,7 +265,7 @@ class App:
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
         builders = {"status": self._build_status_page, "intake": self._build_intake_page,
                     "power": self._build_power_page, "backup": self._build_backup_page,
-                    "address": self._build_address_page, "update": self._build_update_page,
+                    "accounts": self._build_accounts_page, "address": self._build_address_page, "update": self._build_update_page,
                     "release": self._build_release_page, "mcp": self._build_mcp_page, "move": self._build_move_page}
         for key, label in NAV:
             if key not in builders:  # 아직 만들지 않은 화면은 이름만
@@ -299,6 +301,8 @@ class App:
         self.page = key
         if key == "backup":
             self.backup_due = True  # 열 때마다 새로 읽는다(작업 스레드)
+        if key == "accounts":
+            self._load_accounts()
         if key in ("release", "address"):
             self.release_due = True
         if key == "move":
@@ -708,6 +712,121 @@ class App:
     def _relogin_if_needed(self, reasons) -> None:
         if any(server_api.RELOGIN in str(r) for r in reasons):
             self.logout()
+
+    # ---------- 계정 정리(이력 없는 차단·숨김 계정 삭제 — docs/status/계정정리_서버관리창_2026-11-02.md) ----------
+    def _build_accounts_page(self, page: tk.Frame) -> None:
+        self._header(page, "계정 정리")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        tk.Label(body, text="차단했거나 숨긴 계정만 나옵니다. 이력이 없는 계정만 지울 수 있고, 승인 상태인 계정은 먼저 차단해야 합니다.",
+                 bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900).pack(anchor="w")
+        box = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        box.pack(fill="both", expand=True, pady=10)
+        self.accounts_tree = ttk.Treeview(box, columns=[c[0] for c in account_rows.COLUMNS], show="headings",
+                                          selectmode="browse", style="Console.Treeview")
+        for column, heading, width in account_rows.COLUMNS:
+            self.accounts_tree.heading(column, text=heading, anchor="w")
+            self.accounts_tree.column(column, width=width, minwidth=60, anchor="w", stretch=column == "history")
+        self.accounts_tree.tag_configure("block_first", foreground=AMBER)  # 줄 전체에 칠해진다 — 지울 수 있는 줄이 보통 글자색
+        self.accounts_tree.tag_configure("blocked", foreground=MUTED)
+        self.accounts_tree.bind("<<TreeviewSelect>>", lambda _e: self._show_account_selection())
+        self._scroll_content(box, self.accounts_tree)
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x")
+        self.accounts_delete = self._button(row, "삭제", self.request_account_delete, primary=True)
+        self.accounts_delete.pack(side="left", padx=(0, 8))
+        self.accounts_block = self._button(row, "차단", self.request_account_block)
+        self.accounts_block.pack(side="left", padx=(0, 8))
+        self._button(row, "새로 읽기", lambda: self.require_login(self._load_accounts)).pack(side="left")
+        self.accounts_note = tk.Label(body, text="관리자로 로그인하면 보입니다", bg=BG, fg=MUTED, font=FONT,
+                                      justify="left", wraplength=900)
+        self.accounts_note.pack(anchor="w", pady=(10, 0))
+        self._show_account_selection()
+
+    def _selected_account(self) -> dict | None:
+        chosen = self.accounts_tree.selection()
+        return self.account_rows[int(chosen[0])] if chosen else None
+
+    def _show_account_selection(self) -> None:
+        row = self._selected_account()
+        verdict = None if self.accounts_busy or row is None else row.get("verdict")
+        self.accounts_delete.configure(state="normal" if verdict == "deletable" else "disabled")
+        self.accounts_block.configure(state="normal" if verdict == "block_first" else "disabled")
+        if row is not None:
+            self.accounts_note.configure(text=account_rows.selection_text(row), fg=TEXT)
+
+    def _load_accounts(self) -> None:
+        if self.session is None:
+            self.accounts_note.configure(text="관리자로 로그인하면 보입니다", fg=MUTED)
+        elif not self.accounts_busy:
+            self._start_accounts(None, "목록을 읽는 중")
+
+    def _start_accounts(self, action, text: str) -> None:
+        self.accounts_busy = True
+        self._show_account_selection()
+        self.accounts_note.configure(text=text, fg=MUTED)
+        threading.Thread(target=self._accounts_worker, args=(self.session, action), daemon=True).start()
+
+    def request_account_delete(self) -> None:
+        row = self._selected_account()
+        if row is None or row.get("verdict") != "deletable" or self.accounts_busy:
+            return
+        backup_text = self.cards["backup"][1].cget("text")
+        if messagebox.askokcancel("계정 삭제", account_rows.delete_confirm_text(row, backup_text), icon="warning",
+                                  default="cancel"):
+            self._start_accounts(("delete", row), "지우는 중")
+
+    def request_account_block(self) -> None:
+        row = self._selected_account()
+        if row is None or row.get("verdict") != "block_first" or self.accounts_busy:
+            return
+        if messagebox.askokcancel("계정 차단", account_rows.block_confirm_text(row), icon="warning", default="cancel"):
+            self._start_accounts(("block", row), "차단하는 중")
+
+    def _accounts_worker(self, session: server_api.Session, action) -> None:
+        """하고 나서 늘 목록을 다시 읽는다 — 거절돼도, 응답을 잃어도 화면이 서버의 지금 상태를 보이게."""
+        done, problem, rows = "", "", None
+        try:
+            server = server_api.verify_server(self.inst, self.runner)  # 토큰을 보내기 전에 늘 다시 확인
+            if action is not None:
+                try:
+                    if jobs.move_active(self.inst):
+                        raise server_api.ServerError("서버 이사 중에는 계정을 바꾸지 않습니다")
+                    kind, row = action
+                    if kind == "delete":
+                        server_api.delete_cleanup(server, session.token, row)
+                        done = f"{row['email']} 계정을 지웠습니다"
+                    else:
+                        server_api.block_account(server, session.token, row["email"])
+                        done = f"{row['email']} 계정을 차단했습니다"
+                except server_api.AuthExpired:
+                    raise
+                except server_api.ServerError as exc:
+                    problem = str(exc)
+            rows = server_api.read_cleanup(server, session.token)
+        except server_api.ServerError as exc:
+            problem = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            problem = f"확인 중 오류: {type(exc).__name__}: {exc}"[:300]
+        self._put(("accounts", session, rows, done, problem))
+
+    def _on_accounts(self, session, rows, done: str, problem: str) -> None:
+        self.accounts_busy = False
+        if self.session is not session:  # 로그아웃·계정이 바뀐 뒤 온 응답은 버린다
+            self._show_account_selection()
+            return
+        if rows is not None:
+            self.account_rows = rows
+            self.accounts_tree.delete(*self.accounts_tree.get_children())
+            for index, row in enumerate(rows):
+                self.accounts_tree.insert("", "end", iid=str(index), values=account_rows.table_values(row),
+                                          tags=(str(row.get("verdict")),))
+        self._show_account_selection()
+        if problem:
+            self.accounts_note.configure(text=f"하지 못했습니다: {problem}", fg=AMBER)
+        else:
+            self.accounts_note.configure(text=done or f"{len(self.account_rows)}개", fg=LIME if done else MUTED2)
+        self._relogin_if_needed([problem])
 
     # ---------- 켜기·끄기(설계 B-1·B-3) ----------
     def _build_power_page(self, page: tk.Frame) -> None:
@@ -1865,6 +1984,10 @@ class App:
         self.release_due = True  # 로그인으로만 보이던 알림 상태·단추를 거둔다
         self.presence = None
         self._render_presence()
+        self.account_rows = []  # 이메일은 로그인한 동안만 보인다
+        self.accounts_tree.delete(*self.accounts_tree.get_children())
+        self._load_accounts()
+        self._show_account_selection()
 
     def require_login(self, then) -> None:
         """로그인돼 있으면 then() 을 바로, 아니면 로그인 창 → 성공한 뒤 then()."""
@@ -1936,6 +2059,8 @@ class App:
             then()
         else:
             self._refresh_intake()  # 로그인하면 생성 접수를 서버 값으로 다시 읽는다
+            if self.page == "accounts":
+                self._load_accounts()
 
     def _close_login(self, keep_pending: bool = False) -> None:
         if not keep_pending:
@@ -2235,6 +2360,8 @@ class App:
         elif kind == "move_view":
             self.move_view = item[1]
             self._show_move()
+        elif kind == "accounts":
+            self._on_accounts(item[1], item[2], item[3], item[4])
         elif kind == "presence":
             self.presence_inflight = False
             if self.session is not None and self.session is item[1]:  # 로그아웃·계정이 바뀐 뒤 온 응답은 버린다

@@ -56,6 +56,20 @@ def require_agent_account(request: Request) -> dict:
     return resolve_agent_account(getattr(request.state, "account", None))
 
 
+def assert_account_current(account: dict) -> None:
+    """쓰기 직전 계정을 다시 읽는다 — 미들웨어는 본문을 받기 전에 읽어, 본문이 늦게 도착한 사이 차단·삭제된 계정으로
+    쓸 수 있었다. 핸들러 안에서 부르면 본문을 다 받은 뒤다. DB 를 읽으니 async 핸들러는 asyncio.to_thread 로 부른다.
+    표식도 본다 — 그사이 지워졌다 같은 이메일로 다시 가입한 계정을 옛 요청이 자기 것처럼 쓰지 못하게."""
+    if not AUTH_ENABLED:
+        return
+    from . import repo  # 지역 import(순환 회피)
+
+    fresh = repo.get_account(account.get("email") or "")
+    if (not fresh or fresh.get("status") != "approved"
+            or fresh.get("password_changed_at") != account.get("password_changed_at")):
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+
+
 def resolve_agent_account(session_account: Optional[dict]) -> dict:
     """require_agent_account 의 **DB 의존부**만 떼어낸 같은 규칙(단일 출처 유지).
 

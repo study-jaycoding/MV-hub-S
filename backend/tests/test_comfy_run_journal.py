@@ -21,6 +21,7 @@ def h(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "AUTH_ENABLED", False)
     monkeypatch.setattr(deps, "AUTH_ENABLED", False)
     monkeypatch.setattr(comfy, "AUTH_ENABLED", False)
+    monkeypatch.setattr(comfy, "assert_account_current", lambda account: None)  # 이 시험의 계정은 DB 에 없다
     monkeypatch.setattr(active_account, "_POINTER", tmp_path / "active.json")
     monkeypatch.setattr(active_account, "_cache", [True, {"email": "a@example.invalid", "uid": None}])
     monkeypatch.setattr(comfy, "MEDIA_DIR", tmp_path / "media")
@@ -589,7 +590,8 @@ def test_authenticated_loopback_owner_boundary_and_http_decode_control(h, monkey
     for email in ("a@example.invalid", "b@example.invalid"):
         repo.register(email, "synthetic-password-only")
         repo.set_account_status(email, "approved")
-    tokens = {who: auth.make_token(who + "@example.invalid") for who in ("a", "b")}
+    tokens = {who: auth.make_token(who + "@example.invalid", pwd_stamp=repo.get_account(who + "@example.invalid")["password_changed_at"])
+              for who in ("a", "b")}
     app = FastAPI()
     app.middleware("http")(main.auth_enforcement)
     app.include_router(comfy.router)

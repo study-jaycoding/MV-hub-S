@@ -84,6 +84,7 @@ def test_only_changed_transactions_notify_the_same_account(monkeypatch, route, i
     monkeypatch.setattr(deps, "AUTH_ENABLED", True)
     monkeypatch.setattr(ingest, "MANAGE_ENABLED", True)
     monkeypatch.setattr(ingest, "_agent_acc", lambda request: account)
+    monkeypatch.setattr(ingest, "assert_account_current", lambda account: None)  # 이 시험의 계정은 DB 에 없다
     monkeypatch.setattr(ingest, "_ingest_core", lambda *args, **kwargs: IngestOut(linked_uid="user_artist"))
     monkeypatch.setattr(ingest._proxy, "proxying", lambda: False)
     monkeypatch.setattr(ingest, "schedule_telemetry_drain", lambda: None)
