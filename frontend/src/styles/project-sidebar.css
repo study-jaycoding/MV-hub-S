@@ -147,11 +147,11 @@
 .folder-tree-row.state.fs15 .folder-tree-name { font-size: 16px; }
 .folder-tree-row.state.fs13 .folder-tree-name { font-size: 14px; }
 .folder-tree-row.state.fs11 .folder-tree-name { font-size: 12px; }
-/* 고른 줄 연결 — 뒤의 라임 선은 그 자리만 가려 가로선 아래로 세로선이 없고, 선 전체는 한 덩어리로 60% (RowLink) */
+/* 고른 줄 연결 — 뒤의 라임 선은 그 자리만 가려 가로선 아래로 세로선이 없고, 선 전체는 한 덩어리로 70% (RowLink) */
 .folder-tree-row.state > .folder-tree-mask,
 .folder-tree-row.state > .folder-tree-link { position: absolute; pointer-events: none; }
 .folder-tree-row.state > .folder-tree-mask { width: 2px; bottom: -1px; background: var(--tree-mask); }
-.folder-tree-row.state > .folder-tree-link { inset: 0; opacity: 0.6; z-index: 2; }
+.folder-tree-row.state > .folder-tree-link { inset: 0; opacity: 0.7; z-index: 2; }
 .folder-tree-link .hline { position: absolute; left: 13.5px; top: 50%; height: 2px; transform: translateY(-50%); border-radius: 1px; background: rgb(var(--st)); }
 .folder-tree-link .vline { position: absolute; width: 2px; bottom: calc(50% - 1px); border-radius: 1px; background: rgb(var(--st)); }
 /* 카드를 드래그해 올렸을 때 드롭 타깃 폴더 강조 */
