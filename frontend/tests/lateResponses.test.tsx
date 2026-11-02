@@ -13,6 +13,7 @@ import type { AssetComment, AssetNode } from "../src/types";
 const mocks = vi.hoisted(() => ({
   assetComments: vi.fn(), markCommentsRead: vi.fn(), assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), assetMounts: vi.fn(),
   addAssetMount: vi.fn(), delAssetMount: vi.fn(), addAssetComment: vi.fn(), projects: vi.fn(),
+  relinkBrokenSources: vi.fn(), pruneBrokenSources: vi.fn(),
 }));
 vi.mock("../src/api", () => ({ api: mocks }));
 
@@ -29,6 +30,7 @@ beforeEach(() => {
   mocks.markCommentsRead.mockResolvedValue(undefined);
   mocks.assetMeta.mockResolvedValue({});
   mocks.projects.mockResolvedValue({ projects: [], unassigned: 0 });
+  mocks.assetMounts.mockResolvedValue({ mounts: [] });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -118,6 +120,7 @@ it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지
   await settle();
   expect(mocks.assetProjects).toHaveBeenCalledTimes(2);
   expect(mocks.projects).toHaveBeenCalledTimes(1);
+  expect(mocks.assetMounts).toHaveBeenCalledTimes(1); // 있음 여부도 같다 — 응답 없는 NAS 를 알림마다 묻지 않는다
   act(() => view.data().reloadFolderInfo()); // 폴더 등록 창의 변경
   await settle();
   expect(mocks.projects).toHaveBeenCalledTimes(2);
@@ -251,6 +254,48 @@ it("Assets — 폴더를 바꾸는 순간 화면은 그 폴더의 것이다: 처
     expect([view.data().loading, view.data().metaReady]).toEqual([false, true]); // 받아 둔 메타로도 고칠 수 있다
   });
 });
+it("폴더 등록 창 — 찾을 수 없는 폴더는 프로젝트든 직접 등록이든 빨강이고 이유를 글로 쓴다, 정상은 초록·파랑, 프로젝트 줄에는 해제 단추가 없다(Jay 2026-11-02)", async () => {
+  mocks.assetMounts.mockResolvedValue({ mounts: [
+    { name: "P", path: "Z:/p", exists: true, auto: true },
+    { name: "옛 프로젝트", path: "Z:/old", exists: false, auto: true },
+    { name: "mine", path: "D:/mine", exists: true },
+    { name: "옛 납품본", path: "E:/old", exists: false },
+  ] });
+  await act(async () => { root.render(<MountManager onClose={() => {}} onChanged={() => {}} workspaceId="team-b" />); });
+  const rows = [...document.querySelectorAll<HTMLElement>(".mount-item")];
+  expect(rows.map((row) => row.querySelector("svg path")?.getAttribute("fill"))).toEqual(["#4c9260", "#a8424a", "#3f73b5", "#a8424a"]);
+  expect(rows.map((row) => row.classList.contains("missing"))).toEqual([false, true, false, true]);
+  expect(rows.map((row) => row.querySelector(".mount-item-path")?.textContent)).toEqual(["Z:/p", "폴더를 찾을 수 없음 · Z:/old", "D:/mine", "폴더를 찾을 수 없음 · E:/old"]);
+  expect(rows.map((row) => !!row.querySelector(".mount-del"))).toEqual([false, false, true, true]);
+  expect(document.querySelector(".mount-float")?.textContent).not.toContain("모든 팀원"); // 직접 등록은 계정별 목록이다
+});
+
+it("폴더 등록 창 — 탭을 옮겨도 쓰던 글이 남고, 깨진 소스 탭에서 다시 연결·소스 해제를 부른다(Jay 2026-11-02 C안)", async () => {
+  mocks.assetMounts.mockResolvedValue({ mounts: [{ name: "mine", path: "D:/mine", exists: true }] });
+  mocks.relinkBrokenSources.mockResolvedValue({ relinked: 1 });
+  mocks.pruneBrokenSources.mockResolvedValue({ pruned: 2, relinked: 0 });
+  vi.stubGlobal("alert", vi.fn());
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  await act(async () => { root.render(<MountManager onClose={() => {}} onChanged={() => {}} workspaceId="team-b" />); });
+  const tab = (label: string) => [...document.querySelectorAll<HTMLButtonElement>(".mount-tabs button")].find((button) => button.textContent?.startsWith(label))!;
+  expect(tab("폴더").textContent).toBe("폴더 1");
+  const path = document.querySelector<HTMLInputElement>(".mount-input:not(.mount-name)")!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(path, "C:/쓰던 글");
+    path.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => tab("깨진 소스").click());
+  expect(document.querySelector(".mount-form")).toBeNull();
+  const actions = [...document.querySelectorAll<HTMLButtonElement>(".mount-act-btn")];
+  expect(actions.map((button) => button.textContent)).toEqual(["다시 연결", "소스 해제"]);
+  await act(async () => actions[0].click());
+  expect(mocks.relinkBrokenSources).toHaveBeenCalledTimes(1);
+  await act(async () => actions[1].click());
+  expect(mocks.pruneBrokenSources).toHaveBeenCalledTimes(1);
+  act(() => tab("폴더").click());
+  expect(document.querySelector<HTMLInputElement>(".mount-input:not(.mount-name)")?.value).toBe("C:/쓰던 글");
+});
+
 it("폴더 등록 창 — 팀을 잇달아 바꾸면 가장 나중에 물은 팀의 등록 목록만 받는다", async () => {
   const lists = held<{ mounts: Array<{ name: string; path: string; exists: boolean; auto: boolean }> }>();
   mocks.assetMounts.mockImplementation(() => lists.next());

@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({ upload: vi.fn(), status: vi.fn(), flash: vi.fn
   projects: vi.fn(), tree: vi.fn(), meta: vi.fn(), epoch: 0 }));
 vi.mock("../src/api", () => ({ api: { uploadAssets: mocks.upload, assetSyncStatus: mocks.status,
   assetProjects: mocks.projects, assetTree: mocks.tree, assetMeta: mocks.meta,
-  projects: async () => ({ projects: [], unassigned: 0 }),
+  projects: async () => ({ projects: [], unassigned: 0 }), assetMounts: async () => ({ mounts: [] }),
   assetFileUrl: (project: string, path: string) => `/api/assets/file?project=${project}&path=${encodeURIComponent(path)}`,
   assetThumbUrl: (project: string, path: string) => `/api/assets/thumb?project=${project}&path=${encodeURIComponent(path)}`,
 } }));

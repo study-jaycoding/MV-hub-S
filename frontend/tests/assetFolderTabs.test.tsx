@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AssetNode } from "../src/types";
 
-const mocks = vi.hoisted(() => ({ assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), revealAsset: vi.fn(), projects: vi.fn() }));
+const mocks = vi.hoisted(() => ({ assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), revealAsset: vi.fn(), projects: vi.fn(), assetMounts: vi.fn() }));
 vi.mock("../src/api", () => ({ api: new Proxy({
   ...mocks,
   assetFileUrl: (_project: string, path: string) => `/files/${path}`,
@@ -47,6 +47,7 @@ beforeEach(() => {
   mocks.assetMeta.mockResolvedValue({});
   mocks.revealAsset.mockReset().mockResolvedValue({ ok: true });
   mocks.projects.mockResolvedValue({ projects: [{ id: "pm-1", name: "P" }], unassigned: 0 });
+  mocks.assetMounts.mockResolvedValue({ mounts: [] });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -899,6 +900,7 @@ it("기억한 폴더 없이 열면 맨 위의 assets 폴더를 연다 — 프로
 
 it("맨 윗줄은 메인 프로젝트 줄과 같다 — 마크·이름·개수, 마크 색은 프로젝트 id 로, 맨 위를 볼 때만 보기 파랑(Jay 2026-11-02)", async () => {
   localStorage.removeItem("ch.assets.dir");
+  mocks.assetProjects.mockResolvedValue({ projects: ["P"], linked: ["P"], default: "P" });
   await mount();
   const head = host.querySelector<HTMLElement>(".assets-root-row")!;
   const mark = head.querySelector<HTMLElement>(".ws-mark-box")!;
@@ -912,8 +914,10 @@ it("맨 윗줄은 메인 프로젝트 줄과 같다 — 마크·이름·개수, 
   expect(head.querySelector(".side-mark.see")).not.toBeNull();
 });
 
-it("프로젝트 목록에 없는 폴더는 이름으로 마크 색을 정한다 — 목록을 못 받아도 맨 윗줄은 그대로다", async () => {
+it("프로젝트 목록을 못 받으면 이름으로 마크 색을 정한다 — 등록 목록을 못 받아도 맨 윗줄은 그대로다", async () => {
+  mocks.assetProjects.mockResolvedValue({ projects: ["P"], linked: ["P"], default: "P" });
   mocks.projects.mockRejectedValue(new Error("offline"));
+  mocks.assetMounts.mockRejectedValue(new Error("offline"));
   await mount();
   const mark = host.querySelector<HTMLElement>(".assets-root-row .ws-mark-box")!;
   expect(mark.style.getPropertyValue("--ws-h")).toBe(String(workspaceMarkHue("P")));
@@ -925,6 +929,48 @@ it("어셋 탭은 맨 밑 단계도 13px·줄 26 이고 고르면 14px 다 — �
   expect(css).toContain(".assets-tree .folder-tree-row.fs11 { height: 26px; font-size: 13px; --bar: 15px; margin-bottom: 0; }");
   expect(css).toContain(".assets-tree .folder-tree-row.state.fs11 .folder-tree-name { font-size: 14px; }");
   expect(css).toContain(".folder-tree-row.fs11 { height: 23px; font-size: 11px; --bar: 13px; margin-bottom: 1px; }");
+});
+
+it("폴더 색 규칙 — 프로젝트 라임, 직접 등록 파랑, 찾을 수 없으면 빨강이 먼저, 합본 회색이 머리줄·드롭다운·맨 윗줄에 같이 적용된다(Jay 2026-11-02)", async () => {
+  mocks.assetProjects.mockResolvedValue({ projects: ["P", "mine", "gone", "imp/cap"], linked: ["P"], default: "mine" });
+  mocks.assetMounts.mockResolvedValue({ mounts: [
+    { name: "P", path: "Z:/p", exists: true, auto: true },
+    { name: "mine", path: "D:/mine", exists: true },
+    { name: "gone", path: "E:/gone", exists: false },
+  ] });
+  await mount();
+  const select = host.querySelector<HTMLSelectElement>("select.assets-project")!;
+  const head = host.querySelector<HTMLElement>(".assets-root-row")!;
+  const crumb = host.querySelector<HTMLElement>(".assets-head-crumb")!;
+  const titleFill = () => host.querySelector(".assets-title svg path")?.getAttribute("fill");
+  const pick = async (name: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, name);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+  };
+  expect([...select.options].map((option) => option.className)).toEqual(["linked", "manual", "missing", "internal"]);
+  // 직접 등록 — 파랑, 글자 마크 대신 파란 폴더
+  expect(select.classList.contains("manual")).toBe(true);
+  expect(crumb.classList.contains("manual")).toBe(true);
+  expect(titleFill()).toBe("#3f73b5");
+  expect(head.querySelector(".ws-mark-box")).toBeNull();
+  expect(head.querySelector("svg path")?.getAttribute("fill")).toBe("#3f73b5");
+  // 찾을 수 없음 — 빨강, 개수·보기 파랑 없음
+  await pick("gone");
+  expect(select.classList.contains("missing")).toBe(true);
+  expect(crumb.classList.contains("missing")).toBe(true);
+  expect(titleFill()).toBe("#a8424a");
+  expect(head.classList.contains("missing")).toBe(true);
+  expect(head.classList.contains("state")).toBe(false);
+  expect(head.querySelector("svg path")?.getAttribute("fill")).toBe("#a8424a");
+  expect(head.querySelector(".proj-count")).toBeNull();
+  // 프로젝트 — 지금 그대로 초록 아이콘·글자 마크
+  await pick("P");
+  expect(select.classList.contains("linked")).toBe(true);
+  expect(titleFill()).toBe("#4c9260");
+  expect(head.querySelector(".ws-mark-box")).not.toBeNull();
 });
 
 it("프로젝트를 바꾸면 그 프로젝트의 assets 폴더를 연다(맨 위가 아니라)", async () => {

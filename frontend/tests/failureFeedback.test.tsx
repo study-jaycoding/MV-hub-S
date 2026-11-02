@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   addAssetComment: vi.fn(), editAssetComment: vi.fn(), assetComments: vi.fn(), markCommentsRead: vi.fn(),
   addGenComment: vi.fn(), editGenComment: vi.fn(), genComments: vi.fn(), genCommentsCached: vi.fn(),
   setAssetColorsBatch: vi.fn(), uploadReferenceFiles: vi.fn(), uploadCapture: vi.fn(),
-  assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), projects: vi.fn(),
+  assetProjects: vi.fn(), assetTree: vi.fn(), assetMeta: vi.fn(), projects: vi.fn(), assetMounts: vi.fn(),
 }));
 vi.mock("../src/api", () => ({ api: {
   ...mocks,
@@ -479,6 +479,7 @@ it("에셋 메타 — 이 폴더의 메타를 받기 전(ready=false)에는 고�
 it("에셋 메타 다시 받기(reloadMeta)는 '받았는가'를 돌려준다 — 위 안내가 이것을 본다", async () => {
   mocks.assetProjects.mockResolvedValue({ projects: ["P"], linked: [], default: "P" });
   mocks.projects.mockResolvedValue({ projects: [], unassigned: 0 });
+  mocks.assetMounts.mockResolvedValue({ mounts: [] });
   mocks.assetTree.mockResolvedValue({ children: [] });
   mocks.assetMeta.mockResolvedValue({});
   let data!: ReturnType<typeof useAssetProjectData>;

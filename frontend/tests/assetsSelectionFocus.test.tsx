@@ -24,7 +24,7 @@ vi.mock("../src/api", () => {
 });
 vi.mock("../src/components/assets/useAssetProjectData", () => ({
   useAssetProjectData: () => ({
-    error: "", loading: fixture.loading, meta: fixture.meta, metaReady: fixture.metaReady, project: fixture.project, projects: ["P", "Q"], projectIds: {}, linkedProjects: new Set<string>(), tree: fixture.tree,
+    error: "", loading: fixture.loading, meta: fixture.meta, metaReady: fixture.metaReady, project: fixture.project, projects: ["P", "Q"], projectIds: {}, linkedProjects: new Set<string>(), missingProjects: [], tree: fixture.tree,
     refreshProjectData: fixture.noop, reloadMeta: async () => true, reloadProjects: fixture.noop, reloadTree: fixture.noop, setMeta: (next: unknown) => fixture.setMeta(next), setProject: fixture.noop,
   }),
 }));

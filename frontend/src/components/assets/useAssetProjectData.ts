@@ -40,6 +40,8 @@ export function useAssetProjectData({
   const [linkedProjects, setLinkedProjects] = useState<Set<string>>(new Set());
   // 폴더 이름 → PM 프로젝트 id — 맨 윗줄 마크 색이 메인과 같아지게. 자동 연결 폴더 이름은 프로젝트 이름과 같다.
   const [projectIds, setProjectIds] = useState<Record<string, string>>({});
+  // 찾을 수 없는 폴더 이름 — 목록 조회는 디스크를 일부러 안 봐서, 있음 여부는 등록 목록에서 받는다.
+  const [missingProjects, setMissingProjects] = useState<string[]>([]);
   const [project, setProject] = useState("");
   const [tree, setTree] = useState<AssetNode[]>([]);
   const [meta, setMeta] = useState<Record<string, AssetMeta>>({});
@@ -155,6 +157,15 @@ export function useAssetProjectData({
         if (seq !== folderInfoSeqRef.current) return;
         const ids = Object.fromEntries(info.projects.map((item) => [item.name, item.id]));
         setProjectIds((prev) => reconcileRecordState(prev, ids));
+      })
+      .catch(() => {});
+    // 찾을 수 없음 — 못 받으면 빨강 없이 둔다. 응답 없는 NAS 는 늦을 수 있어 목록을 기다리게 하지 않는다.
+    api
+      .assetMounts(workspaceId)
+      .then((info) => {
+        if (seq !== folderInfoSeqRef.current) return;
+        const missing = info.mounts.filter((item) => item.exists === false).map((item) => item.name);
+        setMissingProjects((prev) => reconcileArrayState(prev, missing));
       })
       .catch(() => {});
   }, [workspaceId]);
@@ -312,6 +323,7 @@ export function useAssetProjectData({
     projects,
     projectIds,
     linkedProjects,
+    missingProjects,
     refreshProjectData,
     reloadFolderInfo,
     reloadMeta,

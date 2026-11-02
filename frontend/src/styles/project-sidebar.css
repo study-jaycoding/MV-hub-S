@@ -229,6 +229,8 @@
 .assets-root-row:hover { background: linear-gradient(rgba(255,255,255,0.06) 0 0), var(--bg); }
 .assets-root-row.state { background: linear-gradient(rgba(var(--st),0.13) 0 0), var(--bg); }
 .assets-root-row.state:hover { background: linear-gradient(rgba(var(--st),0.2) 0 0), var(--bg); }
+.assets-root-row.missing { color: #ff6b6b; }
+.assets-root-row > svg { flex: none; }
 .side-folder-note {
   padding: 4px 8px 5px 22px;
   color: var(--muted); font-size: 11px; line-height: 1.35;

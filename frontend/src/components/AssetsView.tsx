@@ -35,8 +35,9 @@ import { MountManager } from "./assets/MountManager";
 import { nativeDragBrowserSupported, setSingleFileDrag, startNativeAssetDrag } from "./assets/exportDrag";
 import {
   EMPTY_ASSET_META,
-  INTERNAL_COMBINED_PROJECT,
+  FOLDER_KIND_TONE,
   assetDragItemsForPath,
+  assetFolderKind,
   assetPreviewTarget,
   copyAssetFiles,
   toggleAssetDateSelection,
@@ -119,6 +120,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     projects,
     projectIds,
     linkedProjects,
+    missingProjects,
     refreshProjectData,
     reloadFolderInfo,
     reloadMeta,
@@ -129,6 +131,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     tree,
   } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId, canLeaveProject: () => canLeaveCommentRef.current() });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
+  const folderKind = assetFolderKind(project, linkedProjects, missingProjects);
   // 기본 자리 = 맨 위의 'assets' 폴더(Jay 2026-10-26 — 그 위 폴더들은 프로젝트 이름을 일부러 눌렀을 때만). 기억한 폴더가 없을 때
   //  (처음 열기 · 프로젝트를 바꿈 · 숨긴 폴더였음)만 켠다 — 사용자가 맨 위로 간 것(트리 머리·Backspace·탭)은 그대로 둔다.
   const wantDefaultDir = useRef(LS.get("dir", "") === "");
@@ -993,28 +996,15 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           title={t("폴더 등록")}
           onClick={() => setMountOpen(true)}
         >
-          <FolderIcon width={20} height={16} /> Assets
+          <FolderIcon width={20} height={16} tone={FOLDER_KIND_TONE[folderKind]} /> Assets
         </button>
         {/* 하단 crumb 바에서 올라온 경로 정보 — 타입 슬라이더와 자리 교환(Jay 요청).
             프로젝트 선택은 사이드바(폴더 트리 위)로, 건수는 하단 슬라이더 옆으로 이동.
-            색 규칙은 프로젝트 select 와 동일: PM 연결=라임 · 직접 등록=흰색 · 합본=회색. */}
-        <div
-          className={
-            "assets-head-crumb"
-            + (project === INTERNAL_COMBINED_PROJECT
-              ? " internal"
-              : linkedProjects.has(project)
-                ? " linked"
-                : "")
-          }
-        >
+            색 규칙은 프로젝트 select 와 동일: PM 연결=라임 · 직접 등록=파랑 · 찾을 수 없음=빨강 · 합본=회색. */}
+        <div className={"assets-head-crumb " + folderKind}>
           {/* 경로 첫 자리 = 프로젝트 선택 드롭다운(사이드바에서 이동, Jay 요청) */}
           <select
-            className={
-              "assets-project"
-              + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
-              + (linkedProjects.has(project) ? " linked" : "")
-            }
+            className={"assets-project " + folderKind}
             value={project}
             onChange={(e) => {
               if (!canLeaveComment()) return; // 머무르면 선택 상자는 지금 프로젝트로 돌아간다(제어되는 값)
@@ -1024,17 +1014,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             }}
           >
             {projects.map((p) => (
-              <option
-                key={p}
-                value={p}
-                className={
-                  p === INTERNAL_COMBINED_PROJECT
-                    ? "internal"
-                    : linkedProjects.has(p)
-                      ? "linked"
-                      : undefined
-                }
-              >
+              <option key={p} value={p} className={assetFolderKind(p, linkedProjects, missingProjects)}>
                 {p}
               </option>
             ))}
@@ -1094,6 +1074,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         {treeOpen && <AssetsSidebar
           project={project}
           projectId={projectIds[project]}
+          folderKind={folderKind}
           typeFilter={typeFilter}
           dir={dir}
           meta={meta}

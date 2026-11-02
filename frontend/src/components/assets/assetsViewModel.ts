@@ -1,5 +1,6 @@
 import { assetFileUrl } from "../../lib/assetUrls";
 import type { AssetMeta, AssetNode, PreviewTarget } from "../../types";
+import type { FolderTone } from "../FolderIcon";
 import { findFolder, flattenFiles } from "./treeUtils";
 
 export const EMPTY_ASSET_META: AssetMeta = {
@@ -18,6 +19,17 @@ export type AssetTypeFilter = "image" | "video" | "audio" | null;
 export const INTERNAL_COMBINED_PROJECT = "imp/cap";
 // 합본이 감싸는 실제 내장 폴더들 — 실시간 반영 신호(projects=["captures"]/["imports"])를 합본에 연결할 때 사용.
 export const INTERNAL_FOLDERS = ["captures", "imports"];
+
+// 폴더 종류 — 머리줄·드롭다운·사이드바가 같은 색을 쓰게 한곳에서 정한다(Jay 2026-11-02). 값은 그대로 CSS 클래스다.
+export type AssetFolderKind = "linked" | "manual" | "missing" | "internal";
+export const FOLDER_KIND_TONE: Record<AssetFolderKind, FolderTone> = { linked: "green", internal: "green", manual: "blue", missing: "red" };
+
+/** 찾을 수 없으면 프로젝트·직접 등록을 가리지 않고 빨강이 먼저다. 이름이 비면(목록을 받기 전) 파랑이 깜빡이지 않게 합본처럼 둔다. */
+export function assetFolderKind(name: string, linked: Set<string>, missing: string[]): AssetFolderKind {
+  if (missing.includes(name)) return "missing";
+  if (!name || name === INTERNAL_COMBINED_PROJECT) return "internal";
+  return linked.has(name) ? "linked" : "manual";
+}
 
 // 정렬 — 파일 정렬 기준(이름/날짜/유형)과 방향(오름/내림). 에셋 목록은 전부 로컬(클라이언트)이라
 // 여기서 바로 정렬한다(생성물과 달리 서버 정렬·페이지네이션 아님).
