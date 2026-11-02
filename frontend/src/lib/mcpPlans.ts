@@ -105,7 +105,8 @@ export function mcpPlanCards(plan: McpPlanBody, scene: Scene): { cards: SceneCar
     cards.push({ id: `${cardId}-label`, kind: "head", x, y: y - 70, text: item.label });
     cards.push({ id: `${cardId}-model`, kind: "model", x, y, modelCfg: { model: create.model, params: create.params as Record<string, string | number | boolean> } });
     edges.push({ id: `${cardId}-model-edge`, from: `${cardId}-model`, to: cardId, role: "model" });
-    cards.push({ id: `${cardId}-set`, kind: "set", x, y: y + 180, setCfg: { folder: { projectId: create.project_id!, path: create.folder_path! } } });
+    // h: 폴더가 든 SET 의 프로젝트 칩·폴더 칩 한 줄이 다 보이는 높이(끌어 놓을 때와 달리 잴 화면이 없다)
+    cards.push({ id: `${cardId}-set`, kind: "set", x, y: y + 180, h: 156, setCfg: { folder: { projectId: create.project_id!, path: create.folder_path! } } });
     edges.push({ id: `${cardId}-set-edge`, from: `${cardId}-set`, to: cardId, role: "set" });
     item.reference_snapshot.forEach((ref, refIndex) => {
       const id = `${cardId}-ref-${refIndex}`;

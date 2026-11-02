@@ -630,16 +630,25 @@
 .scene-setnode-pill.edit::placeholder { color: var(--muted); }
 /* 아이콘 자리 = 같은 폭 — 📁 가 # 보다 넓어 태그 칸 글이 9px 왼쪽에서 시작했다(Jay 2026-10-30) */
 .scene-setnode-icon { flex: none; width: 14px; display: inline-flex; justify-content: center; opacity: 0.85; }
-/* 넘치는 경로는 '…' 대신 끝을 흐리게(Jay — 화면 글 끝 말줄임표 금지) · 전체 경로는 설명창 */
-.scene-setnode-folder-text {
-  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap;
-  -webkit-mask-image: linear-gradient(90deg, #000 78%, transparent); mask-image: linear-gradient(90deg, #000 78%, transparent);
+/* 폴더 = 프로젝트 칩(자기 색 채움 · 크게) + 그 아래 폴더 단계마다 칩 하나(Jay 2026-11-02 C안 1안) — 넘치면 줄을 바꿔 글이 잘리지 않고,
+   폴더를 끌어 놓으면 SceneBoard 가 넘친 만큼 카드를 늘린다. 프로젝트 이름은 낱말 사이에서만 꺾는다 */
+.scene-setnode-project {
+  display: flex; align-items: flex-start; gap: 5px; box-sizing: border-box; min-height: 28px; padding: 5px 4px 5px 8px; border-radius: 8px;
+  border: 1px solid var(--pc); background: var(--pc); color: #06101f; font-size: 12.5px; font-weight: 800; line-height: 16px;
 }
+.scene-setnode-project .scene-setnode-icon { line-height: 16px; }
+.scene-setnode-project-name { flex: 1; min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
+.scene-setnode-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 5px; }
+.scene-setnode-step { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; }
+.scene-setnode-step .scene-setnode-tag { height: auto; min-height: 20px; padding: 2px 6px; line-height: 14px; white-space: normal; overflow-wrap: anywhere; }
+.scene-setnode-sep { color: var(--muted); font-size: 10px; font-weight: 700; }
 .scene-setnode-clear {
   flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 999px;
   background: transparent; color: #8f9582; cursor: pointer;
 }
 .scene-setnode-clear:hover { background: rgba(242, 119, 124, 0.18); color: #f2777c; }
+.scene-setnode-project .scene-setnode-clear { width: 16px; height: 16px; line-height: 16px; color: #4a3d10; } /* 금색 위라 어둡게 */
+.scene-setnode-project .scene-setnode-clear:hover { background: rgba(0, 0, 0, 0.14); color: #06101f; }
 /* 태그 = 한 개씩 칩, 넘치면 줄을 바꾼다. 누르면 한 줄 글칸(.scene-setnode-pill.edit)이 된다 */
 .scene-setnode-tagview { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; cursor: pointer; outline: 0; border-radius: 6px; }
 .scene-setnode-tagview:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 45%, transparent); }

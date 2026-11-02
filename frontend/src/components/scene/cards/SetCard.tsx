@@ -42,7 +42,9 @@ export const SetCard = memo(function SetCard({
     e.stopPropagation();
     setDragOver(false);
     const parsed = parseSceneFolderDrag(e.dataTransfer.getData(DRAG_TYPES.folder));
-    if (parsed) setFolder(card.id, parsed);
+    if (!parsed) return;
+    setFolder(card.id, parsed);
+    requestFit(card.id); // 프로젝트·폴더 칩이 모두 보이게
   };
   const endTagEdit = () => {
     flushPending();
@@ -67,24 +69,33 @@ export const SetCard = memo(function SetCard({
           >
             <span className="scene-setnode-label">폴더</span>
             {folder ? (
-              <div className="scene-setnode-pill" title={`${folder.projectName || folder.projectId} / ${folder.path}`}>
-                <span className="scene-setnode-icon">📁</span>
-                <span className="scene-setnode-folder-text">
-                  {folder.projectName || folder.projectId} › {folder.path}
-                </span>
-                <button
-                  type="button"
-                  className="scene-setnode-clear"
-                  title="폴더 설정 지우기"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setFolder(card.id, undefined);
-                  }}
-                >
-                  ×
-                </button>
-              </div>
+              // 프로젝트 칩 하나 + 폴더 단계마다 칩 하나 — 넘치면 줄을 바꿔 글이 잘리지 않는다(Jay 2026-11-02)
+              <>
+                <div className="scene-setnode-project" title={`${folder.projectName || folder.projectId} / ${folder.path}`}>
+                  <span className="scene-setnode-icon">📁</span>
+                  <span className="scene-setnode-project-name">{folder.projectName || folder.projectId}</span>
+                  <button
+                    type="button"
+                    className="scene-setnode-clear"
+                    title="폴더 설정 지우기"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFolder(card.id, undefined);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="scene-setnode-steps" title={folder.path}>
+                  {folder.path.split("/").map((step, i) => (
+                    <span key={i} className="scene-setnode-step">
+                      {i > 0 && <span className="scene-setnode-sep">›</span>}
+                      <span className="scene-setnode-tag">{step}</span>
+                    </span>
+                  ))}
+                </div>
+              </>
             ) : (
               <div className="scene-setnode-pill ph">
                 <span className="scene-setnode-icon">📁</span>
