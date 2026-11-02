@@ -52,6 +52,7 @@
 
 | 파일 | 함수 | 방식 | 대상 |
 | --- | --- | --- | --- |
+| `agent_push.py` | `_run_with_tree_kill` | Thread | `_read_pipe` |
 | `backend/app/main.py` | `_start_worker_backup_bootstrap` | create_task | `_worker_backup_bootstrap() (name=worker-backup-bootstrap)` |
 | `backend/app/repo/share_state_intents.py` | `async_share_state_action_locks` | create_task | `asyncio.to_thread(_hold_sync_gate) (name=share-state-identity-gate)` |
 | `backend/app/routers/_telemetry.py` | `_schedule_on_loop` | create_task | `_drain_soon() (name=telemetry-drain)` |
