@@ -2,6 +2,8 @@
 // 폴더 트리의 키보드(조작 규칙 51 — 24회차, Codex 전수 검토): 펼침 자리(지금은 링)는 span 이라 Tab 이 닿지 않아, 접힌 폴더의 하위 폴더에는 키보드만으로
 //  갈 길이 없었다(Enter 는 그 폴더를 고르기만 한다). 트리의 관례대로 → 가 펼치고 ← 가 접는다. 고르기와 d(비활성) 같은 줄의 키는 그대로다.
 //  아래쪽은 줄 모양(Jay 2026-10-31): 하위가 있으면 막대, 없으면 빈 앞 칸, 개수 0 은 칸 없음, 고른 줄은 색·아이콘·연결선.
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url"; // jsdom 이 전역 URL 을 바꿔 둔다 — 파일 주소는 node 의 URL 로
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -94,6 +96,17 @@ it("막대 수 = 아래 폴더 단계 수 — 5단계 이상도 4개", () => {
   act(() => root.render(<FolderTreeView nodes={[tree]} expanded={new Set(everyPath(tree))} onToggle={() => {}} onSelect={() => {}} />));
   expect(["l0", "l1", "l2", "l3", "l4"].map(barCount)).toEqual([4, 4, 3, 2, 1]);
   expect(bars("l5")).toBeNull();
+});
+
+it("펼친 폴더 옆 가로줄 — 막대 수를 칸에 넘기고, 펼친 줄에만 그려 끝을 18px 로 맞춘다(Jay 2026-11-02)", () => {
+  const tree = chain(5);
+  act(() => root.render(<FolderTreeView nodes={[tree]} expanded={new Set(everyPath(tree))} onToggle={() => {}} onSelect={() => {}} />));
+  expect(["l0", "l1", "l2", "l3", "l4"].map((name) => (bars(name) as HTMLElement).style.getPropertyValue("--bars"))).toEqual(["4", "4", "3", "2", "1"]);
+  const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = css.match(/\.folder-tree-row\.open \.folder-tree-bars::after \{([^}]*)\}/)?.[1] ?? "";
+  expect(rule).toContain("width: calc(18px - var(--line-start))");
+  expect(rule).toContain("background: rgb(var(--st))");
+  expect(css).not.toMatch(/\.folder-tree-row:not\(\.open\) \.folder-tree-bars::after/);
 });
 
 it("글자 크기 = 깊이별 15·13, 맨 밑은 늘 11 — 트리 전체 단계로 정해 접어도 안 바뀐다", () => {

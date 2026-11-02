@@ -171,6 +171,12 @@
 .folder-tree-bars[class*="st-"] i { background: rgb(var(--st)); }
 .folder-tree-row:not(.open) .folder-tree-bars { flex-direction: column; gap: 2px; }
 .folder-tree-row:not(.open) .folder-tree-bars i { width: 13px; height: 2px; }
+/* 펼친 폴더 옆 가로줄 — 맨 오른쪽 세로 막대에서 이름 쪽으로 뻗고, 끝은 단계와 상관없이 18px 라 이름까지 간격이 일정하다(Jay 2026-11-02). 펼친 줄의 칸은 늘 st- 가 있다. */
+.folder-tree-row.open .folder-tree-bars::after {
+  --line-start: calc(6px + (var(--bars) * 3.2px - 1.2px) / 2); /* 칸 가운데 7px - 선 절반 1px + 막대 묶음 폭의 절반(막대 2 + 간격 1.2) */
+  content: ""; position: absolute; top: calc(50% - 1px); left: var(--line-start); width: calc(18px - var(--line-start));
+  height: 2px; border-radius: 1px; background: rgb(var(--st));
+}
 .folder-tree-bars.toggle:hover::before {
   content: ""; position: absolute; inset: -4px; border-radius: 50%; background: rgba(255,255,255,0.12);
 }

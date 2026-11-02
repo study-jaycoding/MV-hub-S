@@ -198,6 +198,7 @@ function FolderTreeRow({
   // 접힌 폴더의 막대는 그 안의 고른 줄 색을 받는다. 없으면 펼침 라임·접힘 회색.
   const holds = (path?: string) => !open && !!path && (node.path === "" || path.startsWith(node.path + "/"));
   const barTone = tone ?? (holds(viewedPath) ? viewedTone : holds(selectedPath) ? selectedTone : holds(seePath) ? "see" : open ? "gen" : undefined);
+  const barCount = Math.min(levelsBelow(node), MAX_BARS);
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
   // 배지에는 생성물 수만 둔다(좁은 사이드바). 폴더의 실제 파일 수는 호버 설명에 덧붙여,
@@ -327,13 +328,14 @@ function FolderTreeRow({
         {hasChildren ? (
           <span
             className={"folder-tree-slot folder-tree-bars" + (canToggle ? " toggle" : "") + (barTone ? ` st-${barTone}` : "")}
+            style={{ "--bars": barCount } as CSSProperties}
             title={canToggle ? (open ? "접기" : "펴기") : undefined}
             onClick={(e) => {
               e.stopPropagation();
               if (onToggle) onToggle(node.path);
             }}
           >
-            {Array.from({ length: Math.min(levelsBelow(node), MAX_BARS) }, (_, i) => <i key={i} />)}
+            {Array.from({ length: barCount }, (_, i) => <i key={i} />)}
           </span>
         ) : (
           <span className="folder-tree-slot">{leadMark && <SideMark kind={leadMark} />}</span>
