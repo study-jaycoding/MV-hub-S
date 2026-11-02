@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { Project } from "../../types";
-import { assertSceneKeepScope, defaultSceneKeepProject, sceneKeepApi, sceneKeepErrorMessage, type SceneKeepPayload, type SceneKeepWorkspace } from "../../lib/sceneKeep";
+import { assertSceneKeepScope, defaultSceneKeepProject, sceneKeepApi, sceneKeepErrorMessage, type SceneKeepPayload, type SceneKeepRow, type SceneKeepWorkspace } from "../../lib/sceneKeep";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 
 export function SceneKeepDialog({ scope, name: initialName, projectId: initialProjectId, projects, workspace, selectedProjectId, capture, onSaved, onClose }: {
   scope: string; name: string; projectId: string; projects: Project[];
   workspace?: SceneKeepWorkspace | null; selectedProjectId?: string | null;
-  capture: (name: string, project: Project | null) => SceneKeepPayload;
+  capture: (name: string, project: Project | null) => Omit<SceneKeepPayload, "description">;
   onSaved: (name: string, missing: number) => void; onClose: () => void;
 }) {
   const [name, setName] = useState(initialName);
@@ -17,6 +17,26 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
   const [error, setError] = useState("");
   const [overwrite, setOverwrite] = useState<{ payload: SceneKeepPayload; id: string; revision: number } | null>(null);
   const [retryPayload, setRetryPayload] = useState<SceneKeepPayload | null>(null);
+  const [typed, setTyped] = useState<string | null>(null);
+  const [descriptions, setDescriptions] = useState<Pick<SceneKeepRow, "project_id" | "name" | "description">[]>([]);
+  const normalizedName = name.normalize("NFC").trim();
+  const description = typed ?? descriptions.find(row => row.project_id === projectId && row.name === normalizedName)?.description ?? "";
+  useEffect(() => {
+    let active = true;
+    setDescriptions([]);
+    void sceneKeepApi.list(scope).then(items => {
+      if (!active) return;
+      // An exists/conflict response may already be newer than this initial list.
+      setDescriptions(previous => [...previous, ...items.filter(item =>
+        !previous.some(row => row.project_id === item.project_id && row.name === item.name))]);
+    }, () => { /* A failed list must not block saving; exists supplies the current description. */ });
+    return () => { active = false; };
+  }, [scope]);
+  function rememberDescription(payload: SceneKeepPayload, value: string) {
+    setDescriptions(previous => [...previous.filter(row =>
+      row.project_id !== payload.project_id || row.name !== payload.name),
+    { project_id: payload.project_id, name: payload.name, description: value }]);
+  }
   const projectSource = `${scope}:${workspace?.id ?? ""}`;
   const [loadedProjects, setLoadedProjects] = useState<{ source: string; items: Project[]; failed: boolean } | null>(null);
   const projectsLoading = !!workspace?.id && loadedProjects?.source !== projectSource;
@@ -50,18 +70,27 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
     submitting.current = true; setBusy(true); setError("");
     try {
       assertSceneKeepScope(scope);
-      const payload = overwrite?.payload ?? retryPayload ?? capture(name, availableProjects.find(p => p.id === projectId) ?? null);
+      const payload = overwrite?.payload ?? retryPayload ?? {
+        ...capture(name, availableProjects.find(p => p.id === projectId) ?? null), description,
+      };
       const result = await sceneKeepApi.save(scope, overwrite ? { ...payload, overwrite_id: overwrite.id, overwrite_revision: overwrite.revision } : payload);
       assertSceneKeepScope(scope);
       if (result.status === "saved") { onSaved(payload.name, result.missing_count); onClose(); }
-      else if (result.status === "exists") setOverwrite({ payload, id: result.id, revision: result.revision });
+      else if (result.status === "exists") {
+        rememberDescription(payload, result.description);
+        const next = typed === null ? { ...payload, description: result.description } : payload;
+        setRetryPayload(previous => previous ? next : null);
+        setOverwrite({ payload: next, id: result.id, revision: result.revision });
+      }
       else {
         // 충돌 뒤에는 읽기만 한다. 새 보관본이 있으면 다시 덮어쓰기 확인을 받고,
         // 사라졌으면 다음 보관 클릭까지 같은 사본을 보존한다.
         const latest = (await sceneKeepApi.list(scope)).find(row => row.project_id === payload.project_id && row.name === payload.name);
         assertSceneKeepScope(scope);
-        setRetryPayload(payload);
-        setOverwrite(latest ? { payload, id: latest.id, revision: latest.revision } : null);
+        if (latest) rememberDescription(payload, latest.description);
+        const next = latest && typed === null ? { ...payload, description: latest.description } : payload;
+        setRetryPayload(next);
+        setOverwrite(latest ? { payload: next, id: latest.id, revision: latest.revision } : null);
         setError("보관본이 바뀌었습니다. 다시 확인해 주세요.");
       }
     } catch (e) { setError(sceneKeepErrorMessage(e, "보관하지 못했습니다.")); }
@@ -75,6 +104,7 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
         <label>프로젝트<select className="settings-input" value={projectId} disabled={busy || projectsLoading || projectsFailed} onChange={e => { setProjectId(e.target.value); setRetryPayload(null); }}>
           <option value="">프로젝트 없음</option>{availableProjects.filter(p => !p.archived).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select></label>
+        <label>설명<textarea className="settings-input" value={description} maxLength={2000} disabled={busy} onChange={e => { setTyped(e.target.value); setRetryPayload(null); }} /></label>
       </>}
       {(projectsFailed || error) && <p className="login-error" role="alert">{projectsFailed ? "프로젝트 목록을 불러오지 못했습니다." : error}</p>}
       <div className="admin-confirm-actions">

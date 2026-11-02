@@ -619,6 +619,7 @@ CREATE TABLE IF NOT EXISTS scene_keep (
     revision INTEGER NOT NULL CHECK(revision > 0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    description TEXT NOT NULL DEFAULT '',
     data TEXT NOT NULL,
     UNIQUE(owner, project_id, name)
 );

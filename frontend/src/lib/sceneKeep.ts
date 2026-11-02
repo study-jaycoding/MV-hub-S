@@ -12,6 +12,7 @@ export type SceneKeepWorkspace = { id: string; name: string | null };
 export interface SceneKeepRow {
   id: string;
   name: string;
+  description: string;
   project_id: string;
   project_name: string | null;
   workspace: SceneKeepWorkspace | null;
@@ -23,6 +24,7 @@ export interface SceneKeepRow {
 }
 export interface SceneKeepPayload {
   name: string;
+  description: string;
   project_id: string;
   project_name: string | null;
   workspace: SceneKeepWorkspace | null;
@@ -33,7 +35,7 @@ export interface SceneKeepPayload {
 }
 export type SceneKeepSaveResult =
   | { status: "saved"; id: string; revision: number; missing_count: number }
-  | { status: "exists"; id: string; revision: number; updated_at: string }
+  | { status: "exists"; id: string; revision: number; updated_at: string; description: string }
   | { status: "conflict"; id?: string; revision?: number; updated_at?: string };
 export interface SceneKeepDetail {
   scene_text: string;

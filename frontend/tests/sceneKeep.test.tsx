@@ -37,6 +37,16 @@ beforeEach(() => {
 });
 
 describe("보관 사본", () => {
+  it("설명은 캡처에 넣지 않고 Dialog에서 보완한 공백과 줄바꿈을 API로 그대로 보낸다", async () => {
+    const captured = captureSceneKeep(scene(), "사본");
+    expect(captured).not.toHaveProperty("description");
+    vi.mocked(jsonFetch).mockResolvedValueOnce({ status: "saved", id: "a", revision: 1, missing_count: 0 });
+    const description = "  Cafe\u0301\n둘째 줄  ";
+    await sceneKeepApi.save(scope, { ...captured, project_id: "p", project_name: "프로젝트", description });
+    const sent = JSON.parse(String(vi.mocked(jsonFetch).mock.calls[0][1]?.body));
+    expect(sent.description).toBe(description);
+    expect(sent.scene_text).toBe(captured.scene_text);
+  });
   it("Comfy 실행 상태만 빼고 설정·결과와 파일 Export는 보존한다", () => {
     const original = scene();
     const cfg = { name: "workflow", content: "{}", paramValues: { seed: 10 }, paramExposed: ["seed"],
@@ -133,7 +143,7 @@ describe("고정 계정의 열기", () => {
 
   it.each([[405, "Method Not Allowed"], [404, "Not Found"]] as const)("구서버 보관 오류 %i를 업데이트 안내로 바꾼다", async (status, message) => {
     vi.mocked(jsonFetch).mockRejectedValueOnce(new HttpError(status, message));
-    await expect(sceneKeepApi.save(scope, { ...captureSceneKeep(scene(), "사본"), project_id: "", project_name: null }))
+    await expect(sceneKeepApi.save(scope, { ...captureSceneKeep(scene(), "사본"), description: "", project_id: "", project_name: null }))
       .rejects.toThrow("공유 서버 업데이트가 필요합니다.");
     vi.mocked(jsonFetch).mockRejectedValueOnce(new HttpError(404, "보관본을 찾을 수 없습니다"));
     await expect(sceneKeepApi.detail(scope, "gone")).rejects.toThrow("보관본을 찾을 수 없습니다");

@@ -161,6 +161,12 @@ def validate_metadata(body):
     name = unicodedata.normalize('NFC', body.get('name', '').strip())
     if not _text(name, 120, empty=False):
         raise ValueError('이름은 1~120자로 입력해 주세요')
+    description = body.get('description', '')
+    if not _text(description, 2000):
+        raise ValueError('설명은 2,000자 이하로 입력해 주세요')
+    description = unicodedata.normalize('NFC', description)
+    if len(description) > 2000:
+        raise ValueError('설명은 2,000자 이하로 입력해 주세요')
     for key in ('project_id', 'project_name'):
         if not _text(body.get(key), 512, optional=key == 'project_name'):
             raise ValueError('프로젝트 정보가 올바르지 않습니다')
@@ -177,7 +183,7 @@ def validate_metadata(body):
     missing = body.get('missing_count', 0)
     if type(missing) is not int or missing < 0:
         raise ValueError('누락 수가 올바르지 않습니다')
-    return name, workspace, preview, missing
+    return name, workspace, preview, missing, description
 
 
 def save_keep(owner, body):
@@ -186,21 +192,21 @@ def save_keep(owner, body):
         raise ValueError('계정을 확인할 수 없습니다')
     data = body.get('data')
     validate_keep_envelope(data)
-    name, workspace, preview, missing = validate_metadata(body)
+    name, workspace, preview, missing, description = validate_metadata(body)
     raw = encoded(data)
     metadata = (body['project_id'], body.get('project_name'), name, workspace.get('id'), workspace.get('name'),
-                len(read_scene(data['scene_text'])['cards']), encoded(preview), missing)
+                len(read_scene(data['scene_text'])['cards']), encoded(preview), missing, description)
     digest = hashlib.sha256(encoded([data, metadata]).encode()).hexdigest()
     oid, revision = body.get('overwrite_id'), body.get('overwrite_revision')
     with get_connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT id,revision,updated_at,data_hash FROM scene_keep WHERE owner=? AND project_id=? AND name=?',
+        row = conn.execute('SELECT id,revision,updated_at,data_hash,description FROM scene_keep WHERE owner=? AND project_id=? AND name=?',
                            (owner, body['project_id'], name)).fetchone()
         if oid is not None or revision is not None:
             if not row or row['id'] != oid or row['revision'] != revision:
                 return {'status': 'conflict'}
         elif row:
-            return {'status': 'exists', **{k: row[k] for k in ('id', 'revision', 'updated_at')}}
+            return {'status': 'exists', **{k: row[k] for k in ('id', 'revision', 'updated_at', 'description')}}
         count, size = conn.execute('SELECT COUNT(*), COALESCE(SUM(data_bytes),0) FROM scene_keep WHERE owner=? AND id<>?',
                                    (owner, row['id'] if row else '')).fetchone()
         if count >= ROW_MAX or size + len(raw) > ACCOUNT_MAX:
@@ -208,13 +214,13 @@ def save_keep(owner, body):
         if not row:
             kid = secrets.token_hex(16)
             conn.execute('INSERT INTO scene_keep(id,owner,project_id,project_name,name,workspace_id,workspace_name,'
-                         'node_count,preview,missing_count,data,data_hash,data_bytes,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)',
+                         'node_count,preview,missing_count,description,data,data_hash,data_bytes,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)',
                          (kid, owner, *metadata, raw, digest, len(raw)))
         else:
             kid = row['id']
             if row['data_hash'] != digest:
                 conn.execute("UPDATE scene_keep SET project_id=?,project_name=?,name=?,workspace_id=?,workspace_name=?,"
-                             "node_count=?,preview=?,missing_count=?,data=?,data_hash=?,data_bytes=?,revision=revision+1,"
+                             "node_count=?,preview=?,missing_count=?,description=?,data=?,data_hash=?,data_bytes=?,revision=revision+1,"
                              "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
                              (*metadata, raw, digest, len(raw), kid))
         saved = conn.execute('SELECT revision FROM scene_keep WHERE id=?', (kid,)).fetchone()
@@ -224,7 +230,7 @@ def save_keep(owner, body):
 def list_keeps(owner):
     with get_connection() as conn:
         rows = conn.execute('SELECT id,name,project_id,project_name,workspace_id,workspace_name,node_count,preview,'
-                            'missing_count,revision,updated_at FROM scene_keep WHERE owner=? ORDER BY updated_at DESC,id',
+                            'missing_count,revision,updated_at,description FROM scene_keep WHERE owner=? ORDER BY updated_at DESC,id',
                             (norm_email(owner),)).fetchall()
     result = []
     for row in rows:

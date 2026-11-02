@@ -89,6 +89,7 @@ def test_schema_added_idempotently_without_a_new_baseline(tmp_path):
         conn.executescript(db.SCHEMA_PATH.read_text(encoding="utf-8"))
         original_columns = [r[1] for r in conn.execute("PRAGMA table_info(scene_keep)")]
         assert original_columns[-1] == "data"
+        assert original_columns[-2] == "description"
         conn.execute("INSERT INTO folder_cover(project_id,folder_path,generation_id) VALUES('p','f','g')")
         conn.execute("DROP TABLE scene_keep")
         db_migrations._migrate(conn)
@@ -121,6 +122,66 @@ def test_no_workspace_is_null_in_both_list_and_detail(isolated_db):
     saved = keeps.save_keep(OWNER, body(workspace=None))
     assert keeps.list_keeps(OWNER)[0]["workspace"] is None
     assert keeps.get_keep(OWNER, saved["id"])["workspace"] is None
+
+
+def test_description_migration_preserves_existing_rows_and_old_inserts(tmp_path):
+    schema = db.SCHEMA_PATH.read_text(encoding="utf-8")
+    description_column = "    description TEXT NOT NULL DEFAULT '',\n"
+    assert schema.count(description_column) == 1
+    conn = sqlite3.connect(tmp_path / "before-description.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(schema.replace(description_column, ""))
+        old_insert = ("INSERT INTO scene_keep(id,owner,name,node_count,preview,data_hash,data_bytes,revision,data) "
+                      "VALUES(?,?,?,0,'[]','old-hash',2,1,'{}')")
+        conn.execute(old_insert, ("before", OWNER, "Before"))
+        db_migrations._migrate(conn)
+        db_migrations._migrate(conn)
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(scene_keep)")]
+        assert columns[-2:] == ["data", "description"]
+        original = conn.execute("SELECT id,data,data_hash,revision,description FROM scene_keep").fetchone()
+        assert tuple(original) == ("before", "{}", "old-hash", 1, "")
+        conn.execute(old_insert, ("after", OWNER, "After"))
+        assert conn.execute("SELECT description FROM scene_keep WHERE id='after'").fetchone()[0] == ""
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='schema_migrations'").fetchall()
+    finally:
+        conn.close()
+
+
+def test_description_preserves_whitespace_normalizes_nfc_and_participates_in_revision(isolated_db):
+    source = "  e\u0301\n설명 끝  \n"
+    normalized = "  é\n설명 끝  \n"
+    first = keeps.save_keep(OWNER, body(description=source))
+    assert keeps.list_keeps(OWNER)[0]["description"] == normalized
+    same = keeps.save_keep(OWNER, body(description=normalized, overwrite_id=first["id"], overwrite_revision=1))
+    assert same["revision"] == 1
+    changed = keeps.save_keep(OWNER, body(description="수정한 설명", overwrite_id=first["id"], overwrite_revision=1))
+    assert changed["revision"] == 2
+    exists = keeps.save_keep(OWNER, body(description="낡은 설명"))
+    assert exists["status"] == "exists" and exists["revision"] == 2
+    assert exists["description"] == "수정한 설명"
+    assert keeps.save_keep(OWNER, body(description="낡은 설명", overwrite_id=first["id"], overwrite_revision=1)) == {"status": "conflict"}
+    assert keeps.save_keep(OWNER, body())["description"] == "수정한 설명"
+    cleared = keeps.save_keep(OWNER, body(description="", overwrite_id=first["id"], overwrite_revision=2))
+    assert cleared["revision"] == 3
+    assert keeps.list_keeps(OWNER)[0]["description"] == ""
+
+
+@pytest.mark.parametrize("description", [None, 42, "x" * 2001, "\u0344" * 1001])
+def test_invalid_description_is_rejected_before_writing(isolated_db, description):
+    with pytest.raises(ValueError, match="2,000"):
+        keeps.save_keep(OWNER, body(description=description))
+    assert keeps.list_keeps(OWNER) == []
+
+
+def test_description_default_boundary_and_project_isolation(isolated_db):
+    first = keeps.save_keep(OWNER, body())
+    assert keeps.list_keeps(OWNER)[0]["description"] == ""
+    assert keeps.save_keep(OWNER, body())["description"] == ""
+    keeps.save_keep(OWNER, body(description="가" * 2000, overwrite_id=first["id"], overwrite_revision=1))
+    keeps.save_keep(OWNER, body(project_id="other-project", description="다른 프로젝트"))
+    assert keeps.save_keep(OWNER, body())["description"] == "가" * 2000
+    assert keeps.save_keep(OWNER, body(project_id="other-project"))["description"] == "다른 프로젝트"
 
 
 def test_first_restore_uses_pinned_uid_in_empty_account_database(tmp_path, route_client, monkeypatch):
@@ -432,13 +493,15 @@ def test_save_and_delete_cross_real_relay_with_pinned_identity(isolated_db, rout
     monkeypatch.setattr(routes._proxy, "raw_request", remote)
     # TestClient propagates contextvars; replace the fixture's empty-account override.
     headers = {"Host": "127.0.0.1", "X-MVHub-Expect-Account": "acct:" + OWNER}
-    submitted = {"name": "Scene", "project_id": "", "scene_text": scene(), "preview": []}
+    submitted = {"name": "Scene", "project_id": "", "scene_text": scene(), "preview": [],
+                 "description": "  보내는 설명\n다음 줄  "}
     with active_account.pinned_account_scope((OWNER, AUTHOR)):
         result = route_client.post("/api/scene-keeps", headers=headers, json=submitted)
     assert result.status_code == 200, result.text
     assert result.json()["status"] == "saved"
     assert calls[0][2]["expect_account"] == OWNER
     assert calls[0][2]["data"]["scene_text"] == submitted["scene_text"]
+    assert calls[0][2]["description"] == submitted["description"]
     with active_account.pinned_account_scope((OWNER, AUTHOR)):
         deleted = route_client.delete("/api/scene-keeps/" + "a" * 32 + "?revision=1", headers=headers)
     assert deleted.status_code == 200 and deleted.json() == {"ok": True}
@@ -528,6 +591,19 @@ def test_server_routes_owner_revision_account_and_restore_boundaries(isolated_db
     assert client.get(path + "/envelope?revision=1").json()["generations"]
     assert OWNER not in client.get(path).text
     assert client.post("/api/scene-keeps/restore", json={"id": first["id"], "revision": 1}).status_code == 409
+
+
+def test_server_description_validation_and_roundtrip(isolated_db, route_client):
+    client = route_client
+    for invalid in (None, 42, "x" * 2001):
+        assert client.post("/api/scene-keeps", json=body(description=invalid)).status_code == 422
+    assert client.get("/api/scene-keeps").json() == []
+    description = "  e\u0301\n설명  \n"
+    response = client.post("/api/scene-keeps", json=body(description=description))
+    assert response.status_code == 200, response.text
+    assert client.get("/api/scene-keeps").json()[0]["description"] == "  é\n설명  \n"
+    exists = client.post("/api/scene-keeps", json=body()).json()
+    assert exists["status"] == "exists" and exists["description"] == "  é\n설명  \n"
 
 
 def test_hub_envelope_is_not_exposed_and_restore_never_accepts_client_data(isolated_db, route_client, monkeypatch):

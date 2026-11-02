@@ -22,6 +22,7 @@ KEY_PATTERN = r'^[0-9a-f]{32}$'
 class KeepIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default='', max_length=2000)
     project_id: str = Field(default='', max_length=512)
     project_name: str | None = Field(default=None, max_length=512)
     workspace: dict | None = None

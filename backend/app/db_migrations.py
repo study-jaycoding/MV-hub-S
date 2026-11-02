@@ -706,8 +706,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "preview TEXT NOT NULL, missing_count INTEGER NOT NULL DEFAULT 0, "
         "data_hash TEXT NOT NULL, data_bytes INTEGER NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0), "
         "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
-        "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), data TEXT NOT NULL, UNIQUE(owner, project_id, name))"
+        "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
+        "description TEXT NOT NULL DEFAULT '', data TEXT NOT NULL, UNIQUE(owner, project_id, name))"
     )
+    keep_cols = {row[1] for row in conn.execute("PRAGMA table_info(scene_keep)")}
+    if "description" not in keep_cols:
+        conn.execute("ALTER TABLE scene_keep ADD COLUMN description TEXT NOT NULL DEFAULT ''")
     scene_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
     }
