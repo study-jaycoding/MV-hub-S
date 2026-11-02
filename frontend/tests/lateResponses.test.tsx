@@ -109,7 +109,7 @@ function mountProjectData() {
   return { show, data: () => data };
 }
 
-it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지 않고, 공간을 바꾸거나 등록이 바뀔 때만 받는다", async () => {
+it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지 않고, 공간·등록·폴더 이름 목록이 바뀔 때만 받는다", async () => {
   mocks.assetProjects.mockResolvedValue(projectList(["a-folder"]));
   mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
   const view = mountProjectData();
@@ -128,6 +128,16 @@ it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지
   await settle();
   expect(mocks.projects).toHaveBeenCalledTimes(3);
   expect(mocks.projects).toHaveBeenLastCalledWith("my", false, "team-b");
+  // 다른 창·다른 사람이 프로젝트를 더했다 — 알림으로 받은 목록에 새 이름이 있으면 마크 색도 맞춘다(독립 리뷰 P2)
+  mocks.assetProjects.mockResolvedValue(projectList(["a-folder", "c-folder"]));
+  mocks.projects.mockResolvedValue({ projects: [{ name: "c-folder", id: "p-c" }], unassigned: 0 });
+  act(() => view.data().reloadProjects(true));
+  await settle();
+  expect(mocks.projects).toHaveBeenCalledTimes(4);
+  expect(view.data().projectIds).toEqual({ "c-folder": "p-c" });
+  act(() => view.data().reloadProjects(true)); // 그 목록을 다시 받으면 더 묻지 않는다
+  await settle();
+  expect(mocks.projects).toHaveBeenCalledTimes(4);
 });
 
 it("Assets 폴더 목록 — 팀을 잇달아 바꾸면 가장 나중에 물은 팀의 목록만 받는다(늦게 온 앞 팀의 목록이 선택까지 옮기지 않는다)", async () => {

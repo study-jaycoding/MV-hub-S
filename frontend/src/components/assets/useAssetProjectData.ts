@@ -146,7 +146,7 @@ export function useAssetProjectData({
       });
   }, [workspaceId]);
 
-  // 표시 색만을 위한 조회 — 어셋 변경 알림마다 도는 위 목록 조회와 나눈다. 들어올 때·공간을 바꿀 때·등록이 바뀔 때만 받는다.
+  // 표시 색만을 위한 조회 — 어셋 변경 알림마다 도는 위 목록 조회와 나눈다. 폴더 이름 목록이 바뀔 때(들어올 때 포함)·공간을 바꿀 때·등록이 바뀔 때만 받는다.
   const folderInfoSeqRef = useRef(0);
   const reloadFolderInfo = useCallback(() => {
     const seq = ++folderInfoSeqRef.current;
@@ -280,9 +280,11 @@ export function useAssetProjectData({
     reloadProjects();
   }, [reloadProjects]);
 
+  // projects 는 내용이 같으면 참조를 유지해(reconcileArrayState) 어셋 변경 알림마다 돌지 않는다. 빈 목록을 건너뛰어 첫 입장의 [] → 목록에서 두 번 묻지 않는다.
+  // shortcut: 같은 이름으로 지웠다 다시 만든 프로젝트는 이름 목록이 같아 못 잡는다(다음 입장 때 맞춰진다), 바로 맞춰야 하면 알림에 프로젝트 변경을 실어 준다.
   useEffect(() => {
-    reloadFolderInfo();
-  }, [reloadFolderInfo]);
+    if (projects.length) reloadFolderInfo();
+  }, [reloadFolderInfo, projects]);
 
   useEffect(() => {
     if (project) STORE.set("project", project);
