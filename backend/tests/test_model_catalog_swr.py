@@ -371,14 +371,14 @@ class ModelCatalogSWRTests(IsolatedAsyncioTestCase):
             pids_path = Path(temp_dir) / "pids.json"
             parent_code = (
                 "import json,os,subprocess,sys,time; "
-                "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(600)']); "
                 f"open({str(pids_path)!r},'w',encoding='utf-8').write("
-                "json.dumps([os.getpid(),child.pid])); time.sleep(30)"
+                "json.dumps([os.getpid(),child.pid])); time.sleep(600)"
             )
 
             async def python_cli(*args, **kwargs):
                 # cli_path remains real: its cached executable is the process boundary.
-                return await real_run("-c", parent_code, timeout=30)
+                return await real_run("-c", parent_code, timeout=600)
 
             saved_cli = self.bridge._CLI_PATH
             self.bridge._CLI_PATH = sys.executable
@@ -386,7 +386,7 @@ class ModelCatalogSWRTests(IsolatedAsyncioTestCase):
             try:
                 with patch.object(self.bridge, "_run", new=AsyncMock(side_effect=python_cli)):
                     waiter = self.task(self.bridge.list_models())
-                    for _ in range(200):
+                    for _ in range(3000):
                         if pids_path.exists():
                             try:
                                 pids = json.loads(pids_path.read_text(encoding="utf-8"))
@@ -399,11 +399,12 @@ class ModelCatalogSWRTests(IsolatedAsyncioTestCase):
                         handle = kernel32.OpenProcess(0x00100000, False, pid)
                         self.assertTrue(handle, "could not observe test process")
                         handles.append(handle)
-                    await asyncio.wait_for(self.bridge.shutdown_model_refreshes(), 12)
+                        self.assertEqual(kernel32.WaitForSingleObject(handle, 0), 0x102)
+                    await asyncio.wait_for(self.bridge.shutdown_model_refreshes(), 130)  # 종료의 두 60초 대기보다 길게
                     with self.assertRaises(asyncio.CancelledError):
                         await waiter
                     for handle in handles:
-                        self.assertEqual(kernel32.WaitForSingleObject(handle, 0), 0)
+                        self.assertEqual(kernel32.WaitForSingleObject(handle, 90_000), 0)
                     with self.assertRaises(self.bridge.CLIError):
                         await self.bridge.list_models()
             finally:

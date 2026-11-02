@@ -102,14 +102,14 @@ it("Assets 코멘트 — 프로젝트를 바꾼 바로 그 순간의 전송도 �
 
 const projectList = (projects: string[]) => ({ projects, linked: [], default: projects[0] ?? "" });
 const treeOf = (name: string) => ({ children: [{ name, path: name, type: "image" } as AssetNode] });
-function mountProjectData() {
+function mountProjectData(canLeaveProject?: () => boolean) {
   let data!: ReturnType<typeof useAssetProjectData>;
-  function Host({ workspaceId }: { workspaceId: string }) { data = useAssetProjectData({ workspaceId }); return null; }
+  function Host({ workspaceId }: { workspaceId: string }) { data = useAssetProjectData({ workspaceId, canLeaveProject }); return null; }
   const show = (workspaceId: string) => act(() => root.render(<Host workspaceId={workspaceId} />));
   return { show, data: () => data };
 }
 
-it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지 않고, 공간·등록·폴더 이름 목록이 바뀔 때만 받는다", async () => {
+it("Assets 색 조회 — 이름 그대로인 어셋 변경 알림은 1분이 지나기 전에는 묻지 않고, 공간·등록·폴더 이름 목록이 바뀌면 바로 받는다", async () => {
   mocks.assetProjects.mockResolvedValue(projectList(["a-folder"]));
   mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
   const view = mountProjectData();
@@ -138,6 +138,69 @@ it("Assets 색 조회 — 어셋 변경 알림의 목록 다시 받기에 끼지
   act(() => view.data().reloadProjects(true)); // 그 목록을 다시 받으면 더 묻지 않는다
   await settle();
   expect(mocks.projects).toHaveBeenCalledTimes(4);
+});
+
+it("Assets 색 조회 — 같은 이름으로 다시 만든 프로젝트는 1분이 지난 뒤의 복귀·알림 때 맞춰지고, 그 안에는 어느 길로도 더 묻지 않는다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  const answer = (id: string) => mocks.projects.mockResolvedValue({ projects: [{ name: "a-folder", id }], unassigned: 0 });
+  const back = async () => { act(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); }); await settle(); };
+  try {
+    answer("old");
+    mocks.assetProjects.mockResolvedValue(projectList(["a-folder"]));
+    mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
+    const view = mountProjectData();
+    view.show("team-a");
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(1); // 들어올 때 한 번
+    answer("new");
+    now += 59_000; // 1분 안 — 복귀도 알림도 안 묻는다
+    await back();
+    act(() => view.data().reloadProjects(true));
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    now += 2_000; // 가려진 창은 묻지 않는다
+    hidden.mockReturnValue(true);
+    await back();
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    hidden.mockReturnValue(false);
+    await back(); // focus·visibilitychange 가 같이 와도 한 번
+    expect([mocks.projects.mock.calls.length, mocks.assetMounts.mock.calls.length]).toEqual([2, 2]);
+    expect(view.data().projectIds).toEqual({ "a-folder": "new" });
+    answer("newer");
+    now += 61_000; // 알림의 길 — 이름이 그대로라 아래 effect 가 안 돌아도 묻는다
+    act(() => view.data().reloadProjects(true));
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    expect(view.data().projectIds).toEqual({ "a-folder": "newer" });
+    now += 61_000; // 알림이 아닌 길은 지금처럼 묻지 않는다
+    act(() => view.data().reloadProjects());
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    mocks.assetProjects.mockResolvedValue(projectList(["a-folder", "c-folder"])); // 이름이 바뀐 알림은 effect 가 한 번만 묻는다
+    act(() => view.data().reloadProjects(true));
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(4);
+  } finally {
+    clock.mockRestore();
+    hidden.mockRestore();
+  }
+});
+
+it("Assets 색 조회 — 코멘트를 쓰느라 프로젝트를 안 옮겨도 바뀐 이름 목록의 색을 받는다", async () => {
+  mocks.assetProjects.mockResolvedValue(projectList(["a-folder"]));
+  mocks.assetTree.mockImplementation(async (project: string) => treeOf(`${project}.png`));
+  const view = mountProjectData(() => false);
+  view.show("team-a");
+  await settle();
+  expect(view.data().project).toBe("a-folder");
+  expect(mocks.projects).toHaveBeenCalledTimes(1);
+  mocks.assetProjects.mockResolvedValue(projectList(["b-folder"]));
+  act(() => view.data().reloadProjects(true));
+  await settle();
+  expect(view.data().project).toBe("a-folder");
+  expect(mocks.projects).toHaveBeenCalledTimes(2);
 });
 
 it("Assets 폴더 목록 — 팀을 잇달아 바꾸면 가장 나중에 물은 팀의 목록만 받는다(늦게 온 앞 팀의 목록이 선택까지 옮기지 않는다)", async () => {

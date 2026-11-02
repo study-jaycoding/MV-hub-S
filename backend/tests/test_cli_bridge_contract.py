@@ -1,14 +1,17 @@
 """고정 Higgsfield CLI 출력·프로세스 수명주기 계약의 작은 회귀 테스트."""
 
 import asyncio
+import ctypes
+import gc
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import weakref
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase, skipUnless
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 class CliBridgeContractTests(IsolatedAsyncioTestCase):
@@ -432,43 +435,55 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
     async def test_cancelled_cli_call_kills_the_child_process_tree(self):
         from app.services import cli_bridge
 
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
-            root = Path(temp_dir)
-            pids_path = root / "pids.json"
-            leaked_marker = root / "grandchild-survived.txt"
-            grandchild_code = (
-                "import time; from pathlib import Path; "
-                "time.sleep(2); "
-                f"Path({str(leaked_marker)!r}).write_text('leaked', encoding='utf-8')"
-            )
+            pids_path = Path(temp_dir) / "pids.json"
             parent_code = (
                 "import json, os, subprocess, sys, time; "
-                f"child=subprocess.Popen([sys.executable, '-c', {grandchild_code!r}]); "
+                "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)']); "
                 f"open({str(pids_path)!r}, 'w', encoding='utf-8').write("
                 "json.dumps({'parent': os.getpid(), 'child': child.pid})); "
-                "time.sleep(30)"
+                "time.sleep(600)"
             )
             task = None
             pids: dict[str, int] = {}
+            handles = []
             try:
                 with patch.object(cli_bridge, "_CLI_PATH", sys.executable):
                     task = asyncio.create_task(
-                        cli_bridge._run("-c", parent_code, timeout=30)
+                        cli_bridge._run("-c", parent_code, timeout=600)
                     )
-                    for _ in range(100):
+                    for _ in range(1500):
                         if pids_path.exists():
-                            pids = json.loads(pids_path.read_text(encoding="utf-8"))
-                            break
+                            try:
+                                pids = json.loads(pids_path.read_text(encoding="utf-8"))
+                                break
+                            except json.JSONDecodeError:
+                                pass
                         await asyncio.sleep(0.02)
                     self.assertTrue(pids, "test CLI process did not start")
+                    # 취소 전에 쥔다 — 끝난 뒤에 열면 다시 쓰인 번호를 못 가린다
+                    for pid in pids.values():
+                        handle = kernel32.OpenProcess(0x00100000, False, pid)
+                        self.assertTrue(handle, "could not observe test process")
+                        handles.append(handle)
+                        self.assertEqual(kernel32.WaitForSingleObject(handle, 0), 0x102)
                     task.cancel()
                     with self.assertRaises(asyncio.CancelledError):
                         await task
-                await asyncio.sleep(2.3)
-                self.assertFalse(
-                    leaked_marker.exists(),
-                    "cancelled CLI left its grandchild process running",
-                )
+                for handle in handles:
+                    # 코어가 꽉 차면 taskkill 이 1분 가까이 걸린다(실측 52~57초) — 취소는 먼저 돌아와도 트리는 그 뒤에 끝난다
+                    self.assertEqual(
+                        kernel32.WaitForSingleObject(handle, 90_000),
+                        0,
+                        "cancelled CLI left a process of its tree running",
+                    )
             finally:
                 if task and not task.done():
                     task.cancel()
@@ -479,3 +494,175 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
                         stderr=subprocess.DEVNULL,
                         check=False,
                     )
+                for handle in handles:
+                    kernel32.CloseHandle(handle)
+
+    @skipUnless(os.name == "nt", "Windows taskkill process-tree contract")
+    async def test_tree_kill_failure_leaves_a_warning_and_still_ends_the_parent(self):
+        from app.services import cli_bridge
+
+        class Killer:
+            def __init__(self, rc):
+                self.returncode = rc
+
+            async def wait(self):
+                return self.returncode
+
+        class Parent:
+            pid = 4321
+
+            def __init__(self):
+                self.returncode = None
+
+            async def wait(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = 1
+
+        for name, spawn, expected in (
+            ("rc 0", AsyncMock(return_value=Killer(0)), "none"),
+            ("rc 1", AsyncMock(return_value=Killer(1)), 1),
+            ("rc 128", AsyncMock(return_value=Killer(128)), 128),
+            ("no taskkill", AsyncMock(side_effect=OSError("no")), None),
+        ):
+            with self.subTest(name), patch.object(
+                cli_bridge.asyncio, "create_subprocess_exec", spawn,
+            ), patch.object(cli_bridge, "log_event") as log:
+                parent = Parent()
+                await cli_bridge._terminate_cli_process(parent)
+                self.assertEqual(parent.returncode, 1)
+                if expected == "none":
+                    log.assert_not_called()
+                else:
+                    log.assert_called_once()
+                    self.assertEqual(log.call_args.args[1], "cli_tree_kill_failed")
+                    self.assertEqual(log.call_args.kwargs["pid"], 4321)
+                    self.assertEqual(log.call_args.kwargs["taskkill_rc"], expected)
+
+    @skipUnless(os.name == "nt", "Windows taskkill process-tree contract")
+    async def test_slow_tree_kill_is_left_running_with_the_parent_handle_held(self):
+        from app.services import cli_bridge
+
+        class Killer:
+            def __init__(self):
+                self.returncode = None
+                self.finished = asyncio.Event()
+                self.kill = Mock()
+
+            async def wait(self):
+                await self.finished.wait()
+                return self.returncode
+
+        class Parent:
+            pid = 4321
+            returncode = None
+
+            def __init__(self):
+                self.kill = Mock()
+
+        real_wait_for = asyncio.wait_for
+        limits = []
+
+        async def short(waiting, timeout):
+            limits.append(timeout)
+            return await real_wait_for(waiting, 0.01)
+
+        state = cli_bridge._model_refresh_state()
+        for stopping, limit in ((False, 5.0), (True, 60.0)):
+            with self.subTest(stopping=stopping):
+                state.stopping = stopping
+                limits.clear()
+                killer, parent = Killer(), Parent()
+                parent_kill = parent.kill
+                held = weakref.ref(parent)
+                with patch.object(
+                    cli_bridge.asyncio, "create_subprocess_exec", AsyncMock(return_value=killer),
+                ), patch.object(cli_bridge, "log_event") as log, patch.object(
+                    cli_bridge.asyncio, "wait_for", short,
+                ):
+                    await cli_bridge._terminate_cli_process(parent)
+                self.assertEqual(limits, [limit])
+                killer.kill.assert_not_called()
+                parent_kill.assert_not_called()  # 끊거나 부모를 먼저 끝내면 hf.exe 를 못 찾는다
+                self.assertIsNone(log.call_args.kwargs["taskkill_rc"])
+                self.assertEqual(len(state.slow_kills), 1)
+                del parent
+                gc.collect()
+                self.assertIsNotNone(held())  # 늦은 /F 가 재사용된 번호를 치지 않게 쥔다
+                killer.returncode = 0
+                killer.finished.set()
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                self.assertEqual(state.slow_kills, set())
+                gc.collect()
+                self.assertIsNone(held())
+
+    @skipUnless(os.name == "nt", "Windows taskkill process-tree contract")
+    async def test_slow_tree_kill_that_fails_late_warns_and_ends_the_parent(self):
+        from app.services import cli_bridge
+
+        class Killer:
+            returncode = None
+
+            def __init__(self):
+                self.finished = asyncio.Event()
+
+            async def wait(self):
+                await self.finished.wait()
+                return self.returncode
+
+        class Parent:
+            pid = 4321
+
+            def __init__(self):
+                self.returncode = None
+
+            async def wait(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = 1
+
+        real_wait_for = asyncio.wait_for
+
+        async def short(waiting, timeout):
+            return await real_wait_for(waiting, 0.01)
+
+        killer, parent = Killer(), Parent()
+        state = cli_bridge._model_refresh_state()
+        with patch.object(
+            cli_bridge.asyncio, "create_subprocess_exec", AsyncMock(return_value=killer),
+        ), patch.object(cli_bridge, "log_event") as log:
+            with patch.object(cli_bridge.asyncio, "wait_for", short):
+                await cli_bridge._terminate_cli_process(parent)
+            self.assertIsNone(parent.returncode)
+            killer.returncode = 1
+            killer.finished.set()
+            await asyncio.gather(*state.slow_kills)
+        self.assertEqual(parent.returncode, 1)
+        self.assertEqual([call.kwargs["taskkill_rc"] for call in log.call_args_list], [None, 1])
+
+    async def test_shutdown_waits_for_a_left_tree_kill_even_when_cancelled(self):
+        from app.services import cli_bridge
+
+        state = cli_bridge._model_refresh_state()
+        finished = asyncio.Event()
+        late = asyncio.ensure_future(finished.wait())
+        state.slow_kills.add(late)
+        late.add_done_callback(state.slow_kills.discard)
+        stopping = asyncio.create_task(cli_bridge.shutdown_model_refreshes())
+        await asyncio.sleep(0.02)
+        self.assertFalse(stopping.done())
+        stopping.cancel()
+        await asyncio.sleep(0.02)
+        self.assertFalse(stopping.done())  # 취소돼도 맡겨 둔 정리를 기다린다
+        finished.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await stopping
+        self.assertEqual(state.slow_kills, set())
+
+    async def test_shutdown_returns_when_there_is_nothing_to_wait_for(self):
+        from app.services import cli_bridge
+
+        await asyncio.wait_for(cli_bridge.shutdown_model_refreshes(), 1)

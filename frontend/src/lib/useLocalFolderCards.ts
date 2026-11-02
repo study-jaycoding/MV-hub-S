@@ -15,6 +15,7 @@
 //     뒷쪽을 그대로 둔다. 하나라도 다르면 받은 첫 쪽을 다시 쓰고 나머지를 받는다. 답이 없거나 직전이 실패면 처음부터 끝까지.
 //   · invalidate — 끝까지 다시 받는다. 받는 중이면 끝난 뒤 **한 번 더**(여럿이 와도 하나로) — 그 요구의 약속은 그 뒤 실행이 끝날 때 풀린다.
 //  15초 주기 조회마다 끝까지 다시 받지 않는다(목록 한 쪽이 MB 단위다). 첫 쪽 밖의 것만 바뀌고 서버 카드도 그대로면 모른다(다음 변화까지 낡는다).
+//  다만 공유 탭의 첫 쪽 밖에 아직 안 올라온 것으로 보이는 결과가 있으면 마지막 전체 조회에서 1분이 지난 check 는 끝까지 받는다 — 올라온 주소를 다시 열 때까지 모르면 안 된다.
 //  **한 번에 하나만 받는다** — 조건을 연달아 바꾸면 받던 것이 끝난 뒤 마지막 조회만 받는다(큰 요청이 쌓이지 않게, Codex 코드 리뷰). 조회가
 //  바뀌면 받던 실행은 다음 쪽을 보내지 않고 응답도 적용하지 않는다(A → B → A 로 돌아와도 옛 A 의 것은 버린다 — 조회의 회차로 가린다).
 //  공간 필터는 목록 훅처럼 받은 뒤 한 번 더 거른다. 폴더 경로는 묶는 쪽(lib/folderCardsLocal)이 글자 그대로 다시 본다.
@@ -61,6 +62,13 @@ interface Held { epoch: number; first: Generation[]; version: number }
 interface Flight { epoch: number; promise: Promise<LocalCardsOutcome> }
 interface Follow { epoch: number; cards?: RefreshFolderCards; promise: Promise<LocalCardsOutcome>; resolve: (outcome: LocalCardsOutcome) => void }
 
+const WAITING_REFRESH_MS = 60_000;
+// 공유 탭의 로컬 주소 — GenerationCard 의 전송 대기와 같은 주소 판정. /media/ 는 서버에 보존된 결과도 써서 저절로 안 풀리는 행이 있을 수 있다.
+const isWaitingUpload = (g: Generation) => {
+  const asset = g.assets?.[0];
+  return g.status === "done" && !!asset?.file_path && !/^(https?:|asset-sync:)/.test(asset.file_path) && !/^https?:/.test(asset.source_url ?? "");
+};
+
 const contextOf = (queryKey: string | null, epoch: number) => (queryKey === null ? null : JSON.stringify([queryKey, epoch]));
 const obsolete = (key: string | null): LocalCardsOutcome => ({ status: "obsolete", key });
 
@@ -96,6 +104,8 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
   const laneRef = useRef<Promise<unknown>>(Promise.resolve()); // 한 번에 하나 — 앞 실행이 끝난 뒤에 출발한다
   // 같은 조회에서 내용이 바뀌었다는 신호의 기준 — 그 조회에서 처음 본 값(null 이 아닌 첫 값). 실행이 같이 받은 서버 카드도 여기에 적는다.
   const seenRef = useRef<{ key: string; sig: string | null; base: object | null } | null>(null);
+  const waitingRef = useRef(false); // 쥔 답(heldRef)의 첫 쪽 밖에 대기 결과가 있는가 — 쥔 답과 함께 적으므로 have 가 참이면 지금 조회의 값이다
+  const fullAtRef = useRef(0);
 
   const run = useCallback(async (
     queryKey: string, epoch: number, kind: "full" | "check", version: number, refreshCards?: RefreshFolderCards,
@@ -142,6 +152,9 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
       const done = await fetchAllGenerations(asked, alive, { leanPrompt: true, firstPage });
       if (!done || !alive()) return obsolete(key);
       heldRef.current = { epoch, first: done.first, version };
+      // 첫 쪽의 대기 결과는 check 의 첫 쪽 비교가 잡는다 — 그 밖만 센다
+      waitingRef.current = asked.tab === "team" && done.gens.slice(done.first.length).some((g) => isWaitingUpload(g) && matchesWorkspaceFilter(g, asked));
+      fullAtRef.current = Date.now();
       failedRef.current = null;
       setResult({ placeKey: placeNow, queryKey, tagRevision, gens: done.gens.filter((g) => matchesWorkspaceFilter(g, asked)), truncated: done.truncated });
       setFailedKey(null);
@@ -203,7 +216,8 @@ export function useLocalFolderCards({ place, query, authKey, listSig, base, read
       // 진입 — 서버 카드는 제 훅이 자리마다 받는다(여기서 또 받지 않는다)
       return have ? Promise.resolve({ status: "reused", key: context }) : start(key, epoch, "full");
     }
-    return start(key, epoch, intent === "check" && have && failedRef.current !== key ? "check" : "full", refreshCards);
+    const waitingDue = waitingRef.current && Date.now() - fullAtRef.current >= WAITING_REFRESH_MS;
+    return start(key, epoch, intent === "check" && have && failedRef.current !== key && !waitingDue ? "check" : "full", refreshCards);
   }, [start]);
 
   // 지금 조회 회차 — 커밋 뒤(이 훅의 layout effect 가 회차를 올린 뒤)에 읽는다

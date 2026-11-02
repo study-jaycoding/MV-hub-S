@@ -36,7 +36,7 @@ import subprocess
 import threading
 import time
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -112,10 +112,32 @@ class CLIError(RuntimeError):
     """CLI 호출 실패(0이 아닌 종료코드 또는 미설치)."""
 
 
+async def _end_cli_parent(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except (OSError, asyncio.TimeoutError):
+        pass
+
+
+async def _finish_slow_tree_kill(killer: asyncio.subprocess.Process, proc: asyncio.subprocess.Process) -> None:
+    """맡겨 둔 taskkill 의 끝을 본다. 여기서 proc 을 쥐어 핸들이 열려 있으니 늦은 /F 가 재사용된 번호를 치지 않는다."""
+    await killer.wait()
+    if killer.returncode != 0:
+        log_event(logging.getLogger(__name__), "cli_tree_kill_failed", level=logging.WARNING,
+                  pid=proc.pid, taskkill_rc=killer.returncode)
+        await _end_cli_parent(proc)
+
+
 async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
-    """취소·타임아웃된 CLI의 부모와 자식 프로세스를 끝내고 반드시 회수한다."""
+    """취소·타임아웃된 CLI의 부모와 자식 프로세스를 끝내고 회수한다. 코어가 꽉 차 taskkill 이 늦으면 끝까지 맡기고 먼저 돌아온다."""
     if proc.returncode is None and os.name == "nt" and proc.pid:
         killer = None
+        tree_rc = None
         try:
             taskkill = shutil.which("taskkill.exe") or os.path.join(
                 os.environ.get("SystemRoot", r"C:\Windows"),
@@ -132,8 +154,18 @@ async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
                 stderr=asyncio.subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            await asyncio.wait_for(killer.wait(), timeout=5.0)
-        except (OSError, asyncio.TimeoutError):
+            state = _model_refresh_state()
+            await asyncio.wait_for(killer.wait(), timeout=60.0 if state.stopping else 5.0)
+            tree_rc = killer.returncode
+        except asyncio.TimeoutError:
+            # 코어가 꽉 차면 taskkill 이 수십 초 걸린다(실측). 끊거나 부모(node)를 먼저 끝내면 실제 CLI(hf.exe)를 못 찾는다 — 끝까지 맡긴다.
+            log_event(logging.getLogger(__name__), "cli_tree_kill_failed", level=logging.WARNING,
+                      pid=proc.pid, taskkill_rc=None)
+            late = asyncio.ensure_future(_finish_slow_tree_kill(killer, proc))
+            state.slow_kills.add(late)  # 앱 종료가 기다린다
+            late.add_done_callback(state.slow_kills.discard)
+            return
+        except OSError:
             if killer and killer.returncode is None:
                 try:
                     killer.kill()
@@ -143,15 +175,11 @@ async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
                     await killer.wait()
                 except OSError:
                     pass
-    if proc.returncode is None:
-        try:
-            proc.kill()
-        except OSError:
-            pass
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except (OSError, asyncio.TimeoutError):
-        pass
+        if tree_rc != 0:
+            # 아래 proc.kill 은 부모만 끝낸다 — 자식이 남을 수 있다. 부모가 먼저 끝나 트리를 못 찾은 경우(128)도 같다.
+            log_event(logging.getLogger(__name__), "cli_tree_kill_failed", level=logging.WARNING,
+                      pid=proc.pid, taskkill_rc=tree_rc)
+    await _end_cli_parent(proc)
 
 
 def cli_path() -> str:
@@ -561,6 +589,7 @@ class _ModelRefreshState:
     task: asyncio.Task[Any] | None = None
     retry_at: float = 0.0
     stopping: bool = False
+    slow_kills: set[asyncio.Future[Any]] = field(default_factory=set)
 
 
 _model_refresh_states: weakref.WeakKeyDictionary[
@@ -590,8 +619,15 @@ def start_model_refreshes() -> None:
     state.stopping = False
 
 
+async def _drain_model_shutdown(state: _ModelRefreshState, tasks: set[asyncio.Task[Any]]) -> None:
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    if state.slow_kills:
+        await asyncio.wait(set(state.slow_kills), timeout=60.0)
+
+
 async def shutdown_model_refreshes() -> None:
-    """새 예약을 먼저 막고 실제 leader 취소 후 _run의 자식 회수를 기다린다."""
+    """새 예약을 먼저 막고 실제 leader 취소 후 _run의 자식 회수를 기다린다. loop 가 닫히면 맡겨 둔 taskkill 도 끝나므로 그것도 기다린다."""
     state = _model_refresh_state()
     already_stopping = state.stopping
     state.stopping = True
@@ -601,18 +637,17 @@ async def shutdown_model_refreshes() -> None:
                  if key == "models" or key.startswith(("params:", "cost:", "voices:", "voice:"))}
     if state.task is not None:
         tasks.add(state.task)
-    if tasks:
-        if not already_stopping:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-        # shutdown 자체의 취소도 CLI 회수를 중간에 다시 취소하지 않도록 한다.
-        drain = asyncio.gather(*tasks, return_exceptions=True)
-        try:
-            await asyncio.shield(drain)
-        except asyncio.CancelledError:
-            await drain
-            raise
+    if not already_stopping:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+    # shutdown 자체의 취소도 CLI 회수를 중간에 다시 취소하지 않도록 한다.
+    drain = asyncio.ensure_future(_drain_model_shutdown(state, tasks))
+    try:
+        await asyncio.shield(drain)
+    except asyncio.CancelledError:
+        await drain
+        raise
 
 
 async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:

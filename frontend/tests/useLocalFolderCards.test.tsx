@@ -498,6 +498,91 @@ it("cut_first_page_uses_raw_rows_and_cursor — 공간 밖 행이 섞인 첫 쪽
   expect(ids()!.length).toBe(500);
 });
 
+// 마감 대조 3: 공유 탭 걸러 보는 컷 화면의 첫 쪽 밖 대기 결과 — 받는 사람이 다시 열 때까지 '전송 대기'로 남지 않게 1분이 지난 check 가 끝까지 받는다.
+const waitingRow = (id: string, extra: Partial<Generation> = {}) =>
+  gen(id, { status: "done", sort_ts: 1, assets: [{ type: "image", file_path: "/media/comfy/a.png" }] as Generation["assets"], ...extra });
+const uploaded = (id: string) => gen(id, { status: "done", sort_ts: 1, assets: [{ type: "image", file_path: `asset-sync:${"a".repeat(32)}` }] as Generation["assets"] });
+
+it("cut_waiting_upload — 첫 쪽 밖의 대기 결과는 1분이 지난 check 가 끝까지 받아 새 주소를 내놓고, 풀리면 다시 첫 쪽만 본다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const srv = server([...rows(500, "a"), waitingRow("tail")]);
+    draw({});
+    await flush();
+    expect(ids()!.length).toBe(501);
+    now += 59_000; // 1분 안 — 첫 쪽만
+    let before = listGenerations.mock.calls.length;
+    expect([(await ask("check")).status, cursors(before)]).toEqual(["applied", [null]]);
+    srv.table = [...srv.table.slice(0, 500), uploaded("tail")];
+    now += 2_000; // 첫 쪽은 같지만 끝까지 받는다
+    before = listGenerations.mock.calls.length;
+    expect([(await ask("check")).status, cursors(before)]).toEqual(["applied", [null, "a499"]]);
+    expect(latest.gens!.at(-1)!.assets[0].file_path).toMatch(/^asset-sync:/);
+    now += 120_000; // 더 없다 — 지금처럼 첫 쪽만
+    before = listGenerations.mock.calls.length;
+    expect([(await ask("check")).status, cursors(before)]).toEqual(["applied", [null]]);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it.each<[string, Generation[], Partial<GenQuery>]>([
+  ["첫 쪽 안의 행은 check 비교가 잡는다", [waitingRow("near", { sort_ts: 200_000 }), ...rows(500, "a")], {}],
+  ["내 작업 탭", [...rows(500, "a"), waitingRow("tail")], { tab: "my" }],
+  ["공간 필터 밖", [...rows(500, "a"), waitingRow("tail", { workspace_id: "w2" })], { workspace_ids: ["w1"] }],
+  ["원격 원본이 있는 결과", [...rows(500, "a"), waitingRow("tail", { assets: [{ type: "image", file_path: "/media/a.png", source_url: "https://cdn/a.png" }] as Generation["assets"] })], {}],
+  ["아직 완료가 아닌 결과", [...rows(500, "a"), waitingRow("tail", { status: "running" })], {}],
+])("cut_waiting_upload — %s 는 1분이 지나도 첫 쪽만 본다", async (_name, table, extra) => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    server(table);
+    draw({ query: query(extra) });
+    await flush();
+    now += 120_000;
+    const before = listGenerations.mock.calls.length;
+    expect([(await ask("check")).status, cursors(before)]).toEqual(["applied", [null]]);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("cut_waiting_upload — 조회가 바뀌면 앞 조회의 판정을 쓰지 않고, 받는 사이 바뀐 조회의 옛 응답은 버린다", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const srv = server([...rows(500, "a"), waitingRow("tail")]);
+    draw({ query: query({ search: "one" }) });
+    await flush();
+    srv.table = rows(501, "b"); // 다음 조회의 표 — 대기 없음
+    now += 120_000;
+    draw({ query: query({ search: "two" }) });
+    await flush();
+    let before = listGenerations.mock.calls.length;
+    expect([(await ask("check")).status, cursors(before)]).toEqual(["applied", [null]]);
+    srv.table = [...rows(500, "c"), waitingRow("tail")];
+    draw({ query: query({ search: "three" }) });
+    await flush();
+    now += 120_000;
+    srv.held = true;
+    before = listGenerations.mock.calls.length;
+    let outcome: Outcome | null = null;
+    act(() => { void latest.request("check").then((done) => { outcome = done; }); });
+    await flush();
+    srv.table = rows(3, "d");
+    draw({ query: query({ search: "four" }) });
+    await flush();
+    srv.held = false;
+    while (srv.waiting.length) await release(srv);
+    await flush();
+    expect(outcome!.status).toBe("obsolete");
+    expect(ids()).toEqual(["d0", "d1", "d2"]);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
 // Codex FE-08: 다섯 칸 서명(id·최종·보류·폴더·상태)은 묶음·표지가 읽는 칸을 덮지 못한다 — 원본 lean 행 전체를 견준다.
 it.each<[string, Partial<Generation>]>([
   ["assets", { assets: [{ type: "video", file_path: "/media/v.mp4" }] as Generation["assets"] }],

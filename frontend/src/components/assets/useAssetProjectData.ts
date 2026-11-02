@@ -9,6 +9,7 @@ const STORE = makeStore("ch.assets.");
 const TREE_CACHE_KEY = "treecache";
 const META_CACHE_KEY = "metacache";
 const CACHE_MAX_BYTES = 3_000_000; // localStorage 안전 상한(대략) — 넘으면 저장 생략(다음 세션은 다시 fetch)
+const FOLDER_INFO_GAP_MS = 60_000; // 창 복귀·어셋 변경 알림이 표시용 조회를 다시 부를 수 있는 간격
 // 비울 때 넣는 고정 빈 값 — 매번 새 {}·[] 를 만들면 아래의 '다시 계산되는 갱신'과 같은 되먹임에 끼어든다(조작 규칙 54).
 const EMPTY_TREE: AssetNode[] = [];
 const EMPTY_META: Record<string, AssetMeta> = {};
@@ -106,6 +107,10 @@ export function useAssetProjectData({
   projectRef.current = project;
   const canLeaveProjectRef = useRef(canLeaveProject); // 목록 조회는 워크스페이스가 바뀔 때만 새로 만든다 — 묻는 함수는 늘 지금 것으로
   canLeaveProjectRef.current = canLeaveProject;
+  const namesRef = useRef(projects);
+  namesRef.current = projects;
+  const folderInfoAtRef = useRef(Date.now()); // 들어올 때의 첫 조회는 아래 effect 가 맡는다 — 첫 응답 전에 온 알림이 한 번 더 묻지 않게
+  const refreshFolderInfoRef = useRef<() => void>(() => {});
   // 화면의 tree/meta 를 **함수형 갱신(prev => …) 없이** 바꾼다(조작 규칙 54 — 27회차 실측 M02, Assets 창이 React #185 로 깨짐): 같은 값이라
   //  버려진(밀린) 갱신이 큐에 남아 있으면 React 는 뒤의 함수형 갱신을 **렌더마다 그 위에서 다시 계산**한다 — reconcile 은 내용이 다르면 매번
   //  새 객체를 돌려주니 meta 참조가 커밋마다 바뀌고 → files 새 배열 → 선택 정리 레이아웃 효과 → 동기 재렌더 → 반복. 지금 상태(ref)로 한 번만
@@ -129,6 +134,8 @@ export function useAssetProjectData({
       .then((info) => {
         if (seq !== projectsSeqRef.current) return;
         setProjectsError(null);
+        // 이름이 그대로면 아래 effect 가 안 돈다 — 알림의 길은 여기서 묻는다(코멘트 때문에 프로젝트를 안 옮겨도). 이름이 바뀌면 effect 가 묻는다.
+        if (keepCurrent && reconcileArrayState(namesRef.current, info.projects) === namesRef.current) refreshFolderInfoRef.current();
         setProjects((prev) => reconcileArrayState(prev, info.projects));
         setLinkedProjects(new Set(info.linked || []));
         // 워크스페이스를 옮기면 이전 팀 폴더는 목록에서 빠진다 — 그때는 저장된 선택도
@@ -146,10 +153,11 @@ export function useAssetProjectData({
       });
   }, [workspaceId]);
 
-  // 표시 색만을 위한 조회 — 어셋 변경 알림마다 도는 위 목록 조회와 나눈다. 폴더 이름 목록이 바뀔 때(들어올 때 포함)·공간을 바꿀 때·등록이 바뀔 때만 받는다.
+  // 표시 색만을 위한 조회 — 어셋 변경 알림마다 도는 위 목록 조회와 나눈다. 폴더 이름 목록이 바뀔 때(들어올 때 포함)·공간을 바꿀 때·등록이 바뀔 때 받고, 그 밖에는 창 복귀·알림 때 간격을 두고 받는다(refreshFolderInfo).
   const folderInfoSeqRef = useRef(0);
   const reloadFolderInfo = useCallback(() => {
     const seq = ++folderInfoSeqRef.current;
+    folderInfoAtRef.current = Date.now();
     // 마크 색 — 못 받아도 이름으로 색을 정할 뿐이라 알리지 않는다.
     api
       .projects("my", false, workspaceId)
@@ -169,6 +177,10 @@ export function useAssetProjectData({
       })
       .catch(() => {});
   }, [workspaceId]);
+  const refreshFolderInfo = useCallback(() => {
+    if (!document.hidden && namesRef.current.length && Date.now() - folderInfoAtRef.current >= FOLDER_INFO_GAP_MS) reloadFolderInfo();
+  }, [reloadFolderInfo]);
+  refreshFolderInfoRef.current = refreshFolderInfo;
 
   // 화면의 tree/meta 가 바뀔 때마다(reload·드롭임포트·메타편집 등 어떤 경로든) 현재 프로젝트 캐시에 미러링
   //  → 직접 setter 로 편집해도 캐시가 어긋나지 않는다(다른 폴더 갔다 와도 최신 반영).
@@ -281,10 +293,19 @@ export function useAssetProjectData({
   }, [reloadProjects]);
 
   // projects 는 내용이 같으면 참조를 유지해(reconcileArrayState) 어셋 변경 알림마다 돌지 않는다. 빈 목록을 건너뛰어 첫 입장의 [] → 목록에서 두 번 묻지 않는다.
-  // shortcut: 같은 이름으로 지웠다 다시 만든 프로젝트는 이름 목록이 같아 못 잡는다(다음 입장 때 맞춰진다), 바로 맞춰야 하면 알림에 프로젝트 변경을 실어 준다.
+  // shortcut: 타이머가 없어 같은 이름으로 지웠다 다시 만든 프로젝트는 1분이 지난 뒤의 다음 복귀·알림 때 맞춰진다, 바로 맞춰야 하면 프로젝트 변경 통보를 만든다.
   useEffect(() => {
     if (projects.length) reloadFolderInfo();
   }, [reloadFolderInfo, projects]);
+
+  useEffect(() => {
+    window.addEventListener("focus", refreshFolderInfo);
+    document.addEventListener("visibilitychange", refreshFolderInfo);
+    return () => {
+      window.removeEventListener("focus", refreshFolderInfo);
+      document.removeEventListener("visibilitychange", refreshFolderInfo);
+    };
+  }, [refreshFolderInfo]);
 
   useEffect(() => {
     if (project) STORE.set("project", project);
