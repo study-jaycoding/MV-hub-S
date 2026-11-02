@@ -29,6 +29,7 @@ import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptR
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
 import { SceneBar } from "./components/scene/SceneBar";
+import type { SceneIoAction } from "./components/scene/SceneIoButtons";
 import { SceneKeepDialog } from "./components/scene/SceneKeepDialog";
 import { SceneKeepWindow } from "./components/scene/SceneKeepWindow";
 import { assertSceneKeepScope, captureSceneKeep, defaultSceneKeepProject, openSceneKeep } from "./lib/sceneKeep";
@@ -389,6 +390,13 @@ export default function App() {
     }
     if (sceneId !== activeSceneId) selectSceneWithWorkspace(sceneId);
     setIoPanelScene(sceneId);
+  };
+  // 탭 설명 창의 단추(Jay 2026-11-02) — 같은 이유로 다른 탭이면 그 씬부터 열고, SceneBoard 가 그 씬이 열린 뒤 실행한다.
+  const [ioRequest, setIoRequest] = useState<{ sceneId: string; action: SceneIoAction } | null>(null);
+  const clearIoRequest = useCallback(() => setIoRequest(null), []);
+  const runTabAction = (sceneId: string, action: SceneIoAction) => {
+    if (sceneId !== activeSceneId) selectSceneWithWorkspace(sceneId);
+    setIoRequest({ sceneId, action });
   };
   // 공유&리뷰 '새로 들어옴' — 항목 단위 확인(ack) 모델. 여기선 기준선만 보장한다(최초 진입 시각).
   // 글로우 판정·확인 처리는 ThumbnailGrid/GenerationCard 가 teamSeen 스토어를 직접 구독.
@@ -2763,6 +2771,8 @@ export default function App() {
               onRename={renameScene}
               onDelete={removeSceneById}
               onWheelTab={toggleIoPanel}
+              tabActions={hubHasFeature("scene_keep_v1") ? ["keep", "keeps", "import", "export", "find"] : ["import", "export", "find"]}
+              onTabAction={runTabAction}
               backupOnly={backupOnly}
               onImportBackup={importBackupScenes}
               saveFailing={sceneSaveFailing}
@@ -2801,6 +2811,8 @@ export default function App() {
                 onLocalRefsAdded={relinkSceneRefsNow}
                 onFindRefs={findSceneRefs}
                 ioPanelScene={ioPanelScene}
+                ioRequest={ioRequest}
+                onIoRequestDone={clearIoRequest}
                 onCloseIoPanel={closeIoPanel}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.

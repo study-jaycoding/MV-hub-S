@@ -111,6 +111,7 @@ import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
 import { NodeTip } from "./NodeTip";
+import { SceneIoButtons, type SceneIoAction } from "./SceneIoButtons";
 import { SceneVariantPopup, type VariantDraftControls, type VariantResolveControls } from "./SceneVariantPopup";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
@@ -344,6 +345,8 @@ interface Props {
   onFindRefs?: (sceneId: string, signal: AbortSignal) => Promise<void>;
   // 씬 패널을 연 씬 id — 탭 휠 클릭으로 정해진다(평소엔 숨김). 닫기는 onCloseIoPanel.
   ioPanelScene?: string | null;
+  ioRequest?: { sceneId: string; action: SceneIoAction } | null; // 탭 설명 창에서 누른 단추 — 그 씬이 열리면 한 번 실행한다
+  onIoRequestDone?: () => void;
   onCloseIoPanel?: () => void;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
   //  sceneId = 그 카드가 속한 씬(이 보드가 지금 **그리고 있는** 씬 — 씬을 바꾸는 틈에는 prop 의 씬과 다르다). 받는 쪽이 활성 씬과 견준다.
@@ -486,6 +489,8 @@ export function SceneBoard({
   onLocalRefsAdded,
   onFindRefs,
   ioPanelScene,
+  ioRequest,
+  onIoRequestDone,
   onCloseIoPanel,
   onBindingChange,
   onCameraChange,
@@ -707,7 +712,7 @@ export function SceneBoard({
   const ioPanelVisible = ioPanelOpen || !!finding;
   // 탭 자리는 그린 뒤에 잰다 — 다른 탭을 휠 클릭하면 그 탭이 켜지며 커져서 누른 순간의 자리와 달라진다. 열린 동안 보드가 좁아지면 다시 잰다.
   useLayoutEffect(() => {
-    if (!ioPanelOpen) return;
+    if (!ioPanelVisible) return; // 탭 설명 창에서 누른 '레퍼런스 찾기'도 패널이 탭 밑에 뜬다
     const place = () => {
       const board = scrollRef.current?.getBoundingClientRect();
       const tabs = [...document.querySelectorAll<HTMLElement>("[data-scene-tab]")];
@@ -720,7 +725,7 @@ export function SceneBoard({
     const observer = new ResizeObserver(place);
     observer.observe(scrollRef.current);
     return () => observer.disconnect();
-  }, [ioPanelOpen, scene.id, finding?.count]);
+  }, [ioPanelVisible, scene.id, finding?.count]);
   useEscapeClose(() => onCloseIoPanel?.(), ioPanelOpen, true, true);
   // 공용 바깥 누름 훅은 어느 단추인지 넘기지 않는다 — 탭 위 휠 누름에 닫으면 뒤이은 휠 클릭(App)이 같은 탭을 다시 연다.
   useEffect(() => {
@@ -1367,6 +1372,32 @@ export function SceneBoard({
       setFindRun((current) => (current === run ? null : current)),
     );
   };
+  // 씬 단추의 동작 — 휠 클릭 패널과 탭 설명 창이 같이 쓴다.
+  const ioHandlers: Record<SceneIoAction, unknown> = {
+    keep: hubHasFeature("scene_keep_v1") && onKeepScene,
+    keeps: hubHasFeature("scene_keep_v1") && onOpenSceneKeeps,
+    import: onLoadSceneFile,
+    export: onSaveScene,
+    find: onFindRefs,
+  };
+  const runIoAction = (action: SceneIoAction) => {
+    if (action === "keep") onKeepScene?.(getCamera);
+    else if (action === "keeps") onOpenSceneKeeps?.();
+    else if (action === "import") sceneFileRef.current?.click();
+    else if (action === "export") onSaveScene?.(getCamera());
+    else onFindClick();
+  };
+  // 탭 설명 창에서 누른 단추 — 다른 탭이면 씬을 바꾸는 틈(switchingRef)이 끝난 뒤 실행한다. 떠난 씬에 작동하면 안 된다.
+  //  찾는 중이면 그대로 둔다 — 그 단추는 '찾기'로 보이니 눌렀다고 중단되면 안 된다(중단은 패널의 '대기 중단'). 같은 요청은 한 번만(StrictMode 의 두 번 실행).
+  const ioRequestDoneRef = useRef<typeof ioRequest>(null);
+  useEffect(() => {
+    if (!ioRequest || ioRequestDoneRef.current === ioRequest) return;
+    if (ioRequest.sceneId !== scene.id || cardsSceneId !== scene.id) return;
+    ioRequestDoneRef.current = ioRequest;
+    onIoRequestDone?.();
+    if (ioRequest.action !== "find" || !finding) runIoAction(ioRequest.action);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ioRequest, scene.id, cardsSceneId]);
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
   // settleDrag — 보드 위의 새 누름은 남아 있는 끌기를 **먼저** 끝낸다. 새 조작이 시작 좌표·표시를 읽고 만들기 전에(그 뒤 새 조작은 평소대로
@@ -3769,54 +3800,11 @@ export function SceneBoard({
           style={ioPanelLeft === null ? undefined : { left: ioPanelLeft }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div className="scene-io-btns">
-            {hubHasFeature("scene_keep_v1") && (onKeepScene || onOpenSceneKeeps) && <>
-              <div className="scene-io-col">
-                {onKeepScene && <button className="scene-io-btn" onClick={() => onKeepScene(getCamera)}>보관</button>}
-                {onOpenSceneKeeps && <button className="scene-io-btn" onClick={onOpenSceneKeeps}>불러오기</button>}
-              </div>
-              <span className="scene-io-sep" aria-hidden="true" />
-            </>}
-            {(onLoadSceneFile || onSaveScene) && (
-              <div className="scene-io-col">
-                {onLoadSceneFile && (
-                  <button
-                    className="scene-io-btn"
-                    title="씬 파일을 새 탭으로 가져오기"
-                    onClick={() => sceneFileRef.current?.click()}
-                  >
-                    Import
-                  </button>
-                )}
-                {onSaveScene && (
-                  <button
-                    className="scene-io-btn"
-                    title="이 씬을 파일로 내보내기"
-                    onClick={() => onSaveScene(getCamera())}
-                  >
-                    Export
-                  </button>
-                )}
-              </div>
-            )}
-            {/* 파일 단추(Import·Export)와 레퍼런스 찾기를 가르는 선(Jay 2026-10-30 B) */}
-            {onFindRefs && (onSaveScene || onLoadSceneFile) && <span className="scene-io-sep" aria-hidden="true" />}
-            {onFindRefs && (
-              <div className="scene-io-col">
-                <button
-                  className="scene-io-btn"
-                  title={
-                    finding
-                      ? "기다리기만 멈춥니다 — 서버는 하던 확인을 끝까지 합니다"
-                      : "이 씬의 레퍼런스를 NAS 에서 다시 찾아 원본으로 잇습니다(렌더 폴더 포함). NAS 에 나중에 올린 파일도 이걸로 찾습니다"
-                  }
-                  onClick={onFindClick}
-                >
-                  {finding ? `◌ 레퍼런스 ${finding.count}개 찾는 중 · 대기 중단` : "레퍼런스 찾기"}
-                </button>
-              </div>
-            )}
-          </div>
+          <SceneIoButtons
+            actions={(Object.keys(ioHandlers) as SceneIoAction[]).filter((action) => ioHandlers[action])}
+            run={runIoAction}
+            finding={finding}
+          />
           <input
             ref={sceneFileRef}
             type="file"

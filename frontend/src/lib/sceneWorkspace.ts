@@ -74,21 +74,20 @@ export function shortSceneName(name: string): string {
   return chars.slice(0, SCENE_NAME_MAX_CHARS).join("") + "…";
 }
 
-/** 탭 설명 글(이름 다음 줄부터). 줄 규칙은 NodeTip — 상태 줄 · '워크스페이스: 이름' · 조작 키. 앱 창은 '워크스페이스:' 줄을 표식으로 그린다
- *  (표식은 화면 읽기에서 숨겨져 있어 글에는 이름을 남긴다). 상태 색은 SceneBar 의 data-tip-tone 과 짝이다. */
+/** 탭 설명 글(이름 다음 줄부터). 줄 규칙은 NodeTip — 상태 줄 · '워크스페이스: 이름'. 앱 창은 '워크스페이스:' 줄을 표식으로 그린다
+ *  (표식은 화면 읽기에서 숨겨져 있어 글에는 이름을 남긴다). 상태 색은 SceneBar 의 data-tip-tone 과 짝이다. 조작 안내는 없다 — 창의 단추가 대신한다(Jay 2026-11-02). */
 export function sceneTabTitle(
   scene: Pick<Scene, "workspace">,
   context: WorkspaceContext,
   label: string | null,
   missing: boolean,
 ): string {
-  const base = "휠 클릭 = Import·Export·레퍼런스 찾기 · 우클릭 = 이름·워크스페이스";
   const assigned = normalizeSceneWorkspace(scene.workspace);
-  if (!assigned) return base;
+  if (!assigned) return "";
   const line = `워크스페이스: ${label || "알 수 없는 공간"}`;
-  if (missing) return `찾을 수 없는 워크스페이스 — 지금 계정에 이 공간이 없습니다\n${line}\n${base}`;
-  if (sceneDimmed(scene, context)) return `다른 워크스페이스 — 누르면 이 공간으로 바뀝니다\n${line}\n${base}`;
-  return `${line}\n${base}`;
+  if (missing) return `찾을 수 없는 워크스페이스 — 지금 계정에 이 공간이 없습니다\n${line}`;
+  if (sceneDimmed(scene, context)) return `다른 워크스페이스 — 누르면 이 공간으로 바뀝니다\n${line}`;
+  return line;
 }
 
 // ── 탭 순서 바꾸기(드래그) ────────────────────────────────────────────────

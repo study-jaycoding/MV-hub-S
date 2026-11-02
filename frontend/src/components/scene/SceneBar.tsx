@@ -23,6 +23,7 @@ import { cachedWorkspaceOptions } from "../../lib/workspaceOptionsCache";
 import { HostConfirm } from "../common/HostConfirm";
 import { WorkspaceMark } from "../common/WorkspaceMark";
 import { NodeTip } from "./NodeTip";
+import { SceneIoButtons, type SceneIoAction } from "./SceneIoButtons";
 import { SceneWorkspaceMenu, type SceneMenuTarget } from "./SceneWorkspaceMenu";
 import type { WorkspaceContext } from "../../types";
 
@@ -39,6 +40,8 @@ interface Props {
   onReorder: (move: SceneMove) => void;
   onAssignWorkspace: (sceneId: string, workspace: SceneWorkspace | null) => void;
   onWheelTab?: (sceneId: string) => void; // 탭 휠 클릭 → 그 탭 밑에 씬 패널(Import·Export·레퍼런스 찾기)
+  tabActions?: SceneIoAction[]; // 탭 설명 창의 단추(Jay 2026-11-02)
+  onTabAction?: (sceneId: string, action: SceneIoAction) => void;
   backupOnly?: number; // DB 백업에만 있는 씬 수(0 이면 '가져오기'를 숨긴다)
   onImportBackup?: () => void;
   saveFailing?: boolean; // 캔버스가 저장소에 확정되지 못하고 있다 — 그동안 '저장 안 됨'을 계속 띄운다
@@ -99,6 +102,8 @@ export function SceneBar({
   onReorder,
   onAssignWorkspace,
   onWheelTab,
+  tabActions,
+  onTabAction,
   backupOnly = 0,
   onImportBackup,
   saveFailing = false,
@@ -235,7 +240,24 @@ export function SceneBar({
 
   return (
     <div className="scene-bar" ref={barRef}>
-      <NodeTip rootRef={barRef} within=".scene-tab" className="tab" />
+      <NodeTip
+        rootRef={barRef}
+        within=".scene-tab"
+        className="tab"
+        actions={(element, close) => {
+          const sceneId = element.closest<HTMLElement>("[data-scene-tab]")?.dataset.sceneTab;
+          if (!sceneId || !tabActions?.length || !element.classList.contains("scene-tab")) return null; // 탭 안 '백업 안 됨' 표식은 설명만
+          return (
+            <SceneIoButtons
+              actions={tabActions}
+              run={(action) => {
+                close();
+                onTabAction?.(sceneId, action);
+              }}
+            />
+          );
+        }}
+      />
       {scenes.map((scene) => {
         const assigned = normalizeSceneWorkspace(scene.workspace);
         const label = sceneWorkspaceLabel(scene, options ?? []);
@@ -294,8 +316,7 @@ export function SceneBar({
                 });
               }}
               // 탭은 190px 에서 이름을 … 로 줄인다(scene.css) — 전체 이름은 여기 첫 줄로 본다. 앱 설명 창은 위 NodeTip(Jay 2026-11-02).
-              title={`${scene.name}
-${sceneTabTitle(scene, workspaceContext, label, missing)}`}
+              title={[scene.name, sceneTabTitle(scene, workspaceContext, label, missing)].filter(Boolean).join("\n")}
               data-tip-head={scene.name}
               data-tip-tone={missing ? "bad" : dimmed ? "warn" : undefined}
               data-tip-ws-id={assigned?.id}

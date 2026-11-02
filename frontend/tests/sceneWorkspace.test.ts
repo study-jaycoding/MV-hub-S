@@ -68,12 +68,11 @@ describe("표시 이름 — 목록의 현재 이름이 우선", () => {
     expect(sceneWorkspaceMissing(assigned, [{ id: "wsB" }])).toBe(true);
     expect(sceneWorkspaceMissing(scene("s2"), [{ id: "wsB" }])).toBe(false);
   });
-  it("툴팁은 상태 줄 · 공간 이름 · 조작 두 줄(NodeTip 줄 규칙) — 클릭·끌기 안내는 뺀다(Jay 2026-11-02)", () => {
-    const keys = "휠 클릭 = Import·Export·레퍼런스 찾기 · 우클릭 = 이름·워크스페이스";
-    expect(sceneTabTitle(scene("s2"), team("wsA"), null, false)).toBe(keys);
-    expect(sceneTabTitle(assigned, team("wsB"), "산해학원", false)).toBe(`다른 워크스페이스 — 누르면 이 공간으로 바뀝니다\n워크스페이스: 산해학원\n${keys}`);
-    expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", false)).toBe(`워크스페이스: 뻘뻘뻘\n${keys}`);
-    expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", true)).toBe(`찾을 수 없는 워크스페이스 — 지금 계정에 이 공간이 없습니다\n워크스페이스: 뻘뻘뻘\n${keys}`);
+  it("툴팁은 상태 줄 · 공간 이름(NodeTip 줄 규칙) — 조작 안내는 창의 단추가 대신한다(Jay 2026-11-02)", () => {
+    expect(sceneTabTitle(scene("s2"), team("wsA"), null, false)).toBe("");
+    expect(sceneTabTitle(assigned, team("wsB"), "산해학원", false)).toBe("다른 워크스페이스 — 누르면 이 공간으로 바뀝니다\n워크스페이스: 산해학원");
+    expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", false)).toBe("워크스페이스: 뻘뻘뻘");
+    expect(sceneTabTitle(assigned, team("wsA"), "뻘뻘뻘", true)).toBe("찾을 수 없는 워크스페이스 — 지금 계정에 이 공간이 없습니다\n워크스페이스: 뻘뻘뻘");
   });
 });
 
