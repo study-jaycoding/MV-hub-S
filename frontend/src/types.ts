@@ -255,7 +255,7 @@ export interface Account {
   global_roles?: string[]; // v02 전역 역할(복수)
   creator_uid: string | null;
   is_house?: boolean; // 서버 힉스필드(my_creator_uid)에 연결된 계정 = 워크스페이스 전환 등 서버 CLI 주체
-  hidden?: boolean; // 관리자가 숨긴 계정(목록에서 가림, '숨긴 계정 보기'로 재표시)
+  hidden?: boolean; // 관리자가 숨긴 계정(목록에서 가림, '숨김 계정만 보기'로 따로 본다)
   created_at: string;
   approved_at: string | null;
 }

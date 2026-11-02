@@ -33,22 +33,24 @@ export function ApprovalTab({
             checked={showHidden}
             onChange={(e) => setShowHidden(e.target.checked)}
           />
-          숨긴 계정 보기
+          숨김 계정만 보기
         </label>
       </AdminPageHead>
       {actMsg && <div className="admin-act-msg">{actMsg}</div>}
-      {accounts.length === 0 && <div className="admin-empty">계정 없음</div>}
+      {accounts.length === 0 && <div className="admin-empty">{showHidden ? "숨긴 계정이 없습니다." : "계정 없음"}</div>}
       <table className="admin-table">
-        <thead>
-          <tr>
-            <th>계정</th>
-            <th className="th-center">상태</th>
-            <th className="th-right">관리</th>
-          </tr>
-        </thead>
+        {accounts.length > 0 && (
+          <thead>
+            <tr>
+              <th>계정</th>
+              <th className="th-center">상태</th>
+              <th className="th-right">관리</th>
+            </tr>
+          </thead>
+        )}
         <tbody>
           {accounts.map((account) => (
-            <tr key={account.email} className={account.hidden ? "admin-row-hidden" : ""}>
+            <tr key={account.email}>
               <td>
                 <AdminPerson name={account.name || account.email} sub={account.email} />
               </td>

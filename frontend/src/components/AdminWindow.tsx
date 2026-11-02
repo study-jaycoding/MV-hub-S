@@ -38,7 +38,7 @@ export function AdminWindow({
 }) {
   const [members, setMembers] = useState<Member[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [showHidden, setShowHidden] = useState(false); // '숨긴 계정 보기' 토글
+  const [showHidden, setShowHidden] = useState(false); // '숨김 계정만 보기' 토글
   const [confirm, setConfirm] = useState<AdminConfirmState>(null);
   const [actMsg, setActMsg] = useState("");
   const [memberQuery, setMemberQuery] = useState(""); // 멤버 탭 검색어
@@ -188,10 +188,10 @@ export function AdminWindow({
   const [tab, setTab] = useState<AdminTab>("approve");
   // 선택 탭이 권한 변화로 사라지면 첫 가용 탭으로 폴백(빈 화면 방지).
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0]?.key;
-  // 왼쪽 메뉴의 승인 대기 수 — 숨긴 계정은 세지 않는다('숨긴 계정 보기'를 켜도 같은 수).
+  // 왼쪽 메뉴의 승인 대기 수 — 숨긴 계정은 세지 않는다('숨김 계정만 보기'를 켜도 같은 수).
   const pendingCount = visibleAccounts.filter((a) => a.status === "pending" && !a.hidden).length;
 
-  // 가장 나중에 보낸 조회의 응답만 받는다(조작 규칙 40) — '숨긴 계정 보기'를 켰다 바로 끄면 두 조회가 나가고, 늦게 온 쪽이 이겨
+  // 가장 나중에 보낸 조회의 응답만 받는다(조작 규칙 40) — '숨김 계정만 보기'를 켰다 바로 끄면 두 조회가 나가고, 늦게 온 쪽이 이겨
   //  체크는 꺼졌는데 숨긴 계정이 보였다(반대도). 승인·숨김을 바꾼 뒤의 재조회는 **지금의** 체크로 묻는다(요청을 보낼 때의 체크가 아니라).
   const showHiddenRef = useRef(showHidden);
   showHiddenRef.current = showHidden;
@@ -210,7 +210,7 @@ export function AdminWindow({
     ]).finally(() => setLoading(false));
   }, []);
 
-  // '숨긴 계정 보기' 토글 시 목록 재조회. 첫 실행은 건너뛴다 — 마운트 이펙트가 이미 같은 목록을
+  // '숨김 계정만 보기' 토글 시 목록 재조회. 첫 실행은 건너뛴다 — 마운트 이펙트가 이미 같은 목록을
   //  받고 있어, 안 건너뛰면 창을 열 때마다 /api/accounts 가 2번 나간다.
   const showHiddenFirstRef = useRef(true);
   useEffect(() => {
@@ -406,7 +406,8 @@ export function AdminWindow({
             <>
               {activeTab === "approve" && (
                 <ApprovalTab
-                  accounts={visibleAccounts}
+                  // 켜면 숨긴 계정만, 끄면 그 반대(Jay 2026-11-02) — 조회가 도는 사이에도 체크와 다른 줄이 보이지 않는다
+                  accounts={visibleAccounts.filter((a) => !!a.hidden === showHidden)}
                   showHidden={showHidden}
                   setShowHidden={setShowHidden}
                   actMsg={actMsg}

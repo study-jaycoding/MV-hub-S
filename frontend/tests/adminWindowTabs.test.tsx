@@ -522,7 +522,38 @@ it("프로젝트 설정 창 — 늦게 온 앞 프로젝트의 조회가 그사�
   expect(host.textContent).not.toContain("프로젝트 설정을 불러오지 못했습니다");
 });
 
-it("승인 탭의 '숨긴 계정 보기' — 켰다 바로 꺼도 목록은 지금의 체크를 따른다(늦게 온 앞 조회가 덮지 않는다)", async () => {
+it("'숨김 계정만 보기' — 켜면 숨긴 계정만 보이고 끄면 돌아오며, 승인 대기 수는 그대로다", async () => {
+  const shown = { email: "shown@mv.com", name: "보임", status: "pending" };
+  const hidden = { email: "hidden@mv.com", name: "숨김", status: "pending", hidden: true };
+  mocks.listAccounts.mockImplementation((_status: unknown, includeHidden: boolean) => Promise.resolve(includeHidden ? [shown, hidden] : [shown]));
+  await mount();
+  const toggle = async () => {
+    await act(async () => { host.querySelector<HTMLInputElement>(".admin-hidden-toggle input")!.click(); });
+    await settle();
+  };
+  const names = () => [...host.querySelectorAll(".admin-table .admin-mname")].map((item) => item.textContent);
+  const pendingCount = () => host.querySelector<HTMLElement>(".admin-tab")!.dataset.count;
+  expect(host.querySelector(".admin-hidden-toggle")!.textContent).toBe("숨김 계정만 보기");
+  expect(names()).toEqual(["보임"]);
+  expect(pendingCount()).toBe("1");
+  await toggle();
+  expect(names()).toEqual(["숨김"]);
+  expect(pendingCount()).toBe("1");
+  expect(host.querySelector(".admin-acct-actions")!.textContent).toContain("숨김 해제");
+  await toggle();
+  expect(names()).toEqual(["보임"]);
+});
+
+it("숨긴 계정이 없으면 표 머리 없이 빈 안내만 보인다", async () => {
+  mocks.listAccounts.mockResolvedValue([{ email: "shown@mv.com", name: "보임", status: "approved" }]);
+  await mount();
+  await act(async () => { host.querySelector<HTMLInputElement>(".admin-hidden-toggle input")!.click(); });
+  await settle();
+  expect(host.querySelector(".admin-empty")!.textContent).toBe("숨긴 계정이 없습니다.");
+  expect(host.querySelector(".admin-table thead")).toBeNull();
+});
+
+it("승인 탭의 '숨김 계정만 보기' — 켰다 바로 꺼도 목록은 지금의 체크를 따른다(늦게 온 앞 조회가 덮지 않는다)", async () => {
   const visible = [{ email: "shown@mv.com", name: "보임", status: "approved" }];
   const withHidden = [...visible, { email: "hidden@mv.com", name: "숨김", status: "approved", hidden: true }];
   const pending: Array<{ hidden: boolean; resolve: (value: unknown) => void }> = [];
