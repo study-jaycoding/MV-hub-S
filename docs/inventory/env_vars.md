@@ -11,11 +11,11 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 150개.
+제품 환경변수 151개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
-| `BACKEND` | — | `frontend/vite.config.ts` | `test_dev.bat` |
+| `BACKEND` | — | `frontend/vite.config.ts` | `test_dev.bat` `tools/dev_hub.py` |
 | `CLAUDE_CODE_SESSION_ID` | `""` | `tools/mcp_adapter/server.py` | — |
 | `CLAUDE_CONFIG_DIR` | — | `tools/mcp_adapter/local_setup.py` | — |
 | `CODEX_HOME` | — | `tools/mcp_adapter/local_setup.py` | — |
@@ -87,7 +87,7 @@
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `"60"` | `backend/app/main.py` | — |
 | `CONTENT_HUB_METRICS_SAMPLE_MAX` | `"5000"` | `backend/app/services/runtime_metrics.py` | — |
 | `CONTENT_HUB_NO_PROXY` | `""` `'0'` | `backend/app/routers/_proxy.py` `backend/app/routers/auth.py` `backend/app/routers/backup_replica.py` `backend/app/services/asset_sync.py` `backend/app/services/operational_health.py` `backend/app/services/shared_connection.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
-| `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` |
+| `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` `test_dev_hub.bat` |
 | `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `str(50 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
 | `CONTENT_HUB_READ_ONLY` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_REMOTE_THUMB_CONCURRENCY` | `"4"` | `backend/app/services/thumbs.py` | — |
@@ -151,6 +151,7 @@
 | `MVHUB_EXECUTION_NONCE` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_LOCAL_URLS` | `"http://127.0.0.1:8010,http://127.0.0.1:8012"` | `backend/app/resources/resolve/MVHub_Importer.py` | — |
 | `MVHUB_NAMES_READONLY` | — | `backend/app/routers/library.py` | `test_dev.bat` `test_dev_server.bat` |
+| `MVHUB_NO_BROWSER` | — | `tools/dev_hub.py` | `update_release_worker.bat` |
 | `MVHUB_PROCESS_ROLE` | `"unknown"` | `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_SESSION_GUARDED` | `None` | `run_agent_session.py` `tools/workroom.py` | `run_agent_session.py` |
 | `MVHUB_SESSION_TOKEN` | `(표시 안 함)` | `agent_push.py` | — |

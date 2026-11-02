@@ -1249,6 +1249,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | `test_dev.bat`(117줄) | Vite+격리백엔드(8012) 원클릭 개발, 페어링 시크릿 발급 | → `MV_agent.bat`(후단), `tools/pick_dev_port.ps1`, `tools/replace_dev_session.ps1` |
+| `test_dev_hub.bat`, `tools/dev_hub.py`, `frontend/vite.hub.config.ts` | 로컬 허브 전용 화면을 핫 리로드로 보는 두 번째 세션 — AUTH-off 허브(8013)가 8012 를 공유 서버로 삼고 Vite(5273)가 그 허브를 본다. 생성 에이전트 없음. 허브 프로세스는 이 PC 밖 HTTP 를 죽은 프록시로 보내고 사설망 직접 연결을 끊는다(`dev_hub.py serve`) | → `run_agent_session.py`, `tools/browser_measure/servers.py`, `tools/pick_dev_port.ps1`; `backend/tests/test_dev_hub.py` |
 | `test_workroom.bat`, `tools/workroom.py` | 기능·통합 시험실 전용 실행, 포트 충돌 거부·브라우저/자식 프로세스 분리 | → `run_agent_session.py`, `tools/workroom_data.py`, `tools/workroom_backend.py`; [운영](WORKROOMS.md) |
 | `tools/workroom_data.py` | 최초 DB 사본·세션 비밀 제거·전용 환경·실제 LLM 설정 해시 | → `tools/browser_measure/servers.py`, `services/db_scrub.py` |
 | `tools/workroom_backend.py` | app import 전 개발 사고 방지: 외부 쓰기/연결/프로세스 차단·실제 생성 입구 제한 | → 기존 `serve.py`; OS 샌드박스 아님 |
