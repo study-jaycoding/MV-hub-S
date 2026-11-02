@@ -604,11 +604,11 @@ async def _application_lifespan(app: FastAPI):
         primary_error = exc
         raise
     finally:
-        # 모델 목록은 shield 안의 실제 CLI leader를 회수한다. 부분 부팅도 정리한다.
         # 보충의 파일 복사는 아래 어떤 정리보다 먼저 멈춘다 — 앞선 정리가 늦어도 큰 파일을 끝까지 붙잡지 않는다.
         if asset_sync_started:
             from .services import asset_sync as asset_sync_worker
             _attempt_sync_cleanup(asset_sync_worker.signal_stop)
+        # 모델 목록은 shield 안의 실제 CLI leader를 회수한다. 부분 부팅도 정리한다.
         # 다른 종료 작업이 await하는 동안에도 새 모델 갱신이 예약되지 않게 먼저 닫는다.
         await _attempt_async_cleanup(cli_bridge.shutdown_model_refreshes)
         # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
