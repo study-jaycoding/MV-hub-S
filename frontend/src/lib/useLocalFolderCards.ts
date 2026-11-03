@@ -64,7 +64,7 @@ interface Flight { epoch: number; promise: Promise<LocalCardsOutcome> }
 interface Follow { epoch: number; cards?: RefreshFolderCards; promise: Promise<LocalCardsOutcome>; resolve: (outcome: LocalCardsOutcome) => void }
 
 const WAITING_REFRESH_MS = 60_000;
-const WAITING_REFRESH_MAX_MS = 30 * 60_000;
+const WAITING_REFRESH_MAX_MS = 5 * 60_000; // 올라온 카드가 이만큼 늦게 보일 수 있다 — Jay 2026-11-03 최대 5분
 // 공유 탭의 로컬 주소 — GenerationCard 의 전송 대기와 같은 주소 판정. 서버 보존은 source_url 을 남겨 여기 안 든다. 작성자 PC 의 파일이 사라진 행은 저절로 안 풀린다.
 const isWaitingUpload = (g: Generation) => {
   const asset = g.assets?.[0];

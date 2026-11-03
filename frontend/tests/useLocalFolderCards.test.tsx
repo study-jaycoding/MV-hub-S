@@ -554,9 +554,9 @@ const fullFetch = async (intent: Parameters<typeof latest.request>[0] = "check",
   await ask(intent, refresh);
   return cursors(before).length > 1;
 };
-const THIRTY_MIN = 30 * 60_000;
+const FIVE_MIN = 5 * 60_000;
 
-it("cut_waiting_upload — 대기 목록이 그대로이면 간격이 그 시간만큼 늘어 30분에서 멈추고, 바뀌면 1분으로 돌아온다", async () => {
+it("cut_waiting_upload — 대기 목록이 그대로이면 간격이 그 시간만큼 늘어 5분에서 멈추고, 바뀌면 1분으로 돌아온다", async () => {
   let now = 1_000_000;
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   try {
@@ -571,9 +571,10 @@ it("cut_waiting_upload — 대기 목록이 그대로이면 간격이 그 시간
     const gaps = fulls.slice(1).map((at, index) => at - fulls[index]);
     expect(gaps.slice(0, 4)).toEqual([60_000, 60_000, 120_000, 240_000]);
     expect(gaps.every((gap, index) => index === 0 || gap >= gaps[index - 1])).toBe(true);
-    expect(gaps.at(-1)).toBe(THIRTY_MIN);
+    expect(gaps.at(-1)).toBe(FIVE_MIN);
+    expect(Math.max(...gaps)).toBe(FIVE_MIN);
     srv.table = [...srv.table.slice(0, 500), waitingRow("other")]; // 새 대기 행 — 다음 전체 조회가 보면 처음부터
-    now += THIRTY_MIN;
+    now += FIVE_MIN;
     expect(await fullFetch()).toBe(true);
     now += 59_000;
     expect(await fullFetch()).toBe(false);
@@ -634,7 +635,7 @@ it("cut_waiting_upload — 조회가 바뀌면 같은 대기 행이 보여도 �
     server([...rows(500, "a"), waitingRow("tail")]);
     draw({ query: query({ search: "one" }) });
     await flush();
-    for (let step = 0; step < 300; step += 1) { // 앞 조회의 간격을 30분 가까이 늘린다
+    for (let step = 0; step < 300; step += 1) { // 앞 조회의 간격을 상한까지 늘린다
       now += 15_000;
       await ask("check");
     }
