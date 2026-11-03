@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 
 import pytest
@@ -37,8 +38,27 @@ def test_selection_and_confirm_say_what_is_lost():
 
 
 def test_no_screen_text_ends_with_an_ellipsis():
-    texts = [account_rows.selection_text(ROW), account_rows.delete_confirm_text(ROW, ""), account_rows.block_confirm_text(ROW)]
+    texts = [account_rows.selection_text(ROW), account_rows.delete_confirm_text(ROW, ""), account_rows.block_confirm_text(ROW),
+             account_rows.page_text(True), account_rows.page_text(False), account_rows.selection_text(ROW, False)]
     assert not [t for t in texts if t.rstrip().endswith(("…", "..."))]
+
+
+def test_delete_off_hides_every_way_of_saying_it_can_be_deleted():
+    block_first = {**ROW, "verdict": "block_first", "status": "approved", "hidden": False}
+    off = [account_rows.page_text(False), account_rows.selection_text(ROW, False), account_rows.selection_text(block_first, False),
+           account_rows.verdict_text(ROW, False), account_rows.table_values(ROW, False)[4]]
+    assert not [t for t in off if "지울 수" in t or "삭제 가능" in t]
+    assert account_rows.verdict_text(ROW, False) == "삭제 꺼짐"
+    assert "이번 릴리스" in account_rows.selection_text(ROW, False) and "[차단]" in account_rows.selection_text(block_first, False)
+    assert account_rows.table_values(ROW, True)[4] == "삭제 가능" and "지울 수 있고" in account_rows.page_text(True)  # 켜져 있을 때는 그대로
+    assert account_rows.selection_text({**ROW, "verdict": "blocked"}, False) == account_rows.selection_text({**ROW, "verdict": "blocked"}, True)
+
+
+def test_read_cleanup_reports_whether_delete_is_on(monkeypatch):
+    answers(monkeypatch, (200, {"accounts": [ROW], "delete_enabled": False}), (200, {"accounts": []}), (200, {"accounts": [], "delete_enabled": True}))
+    assert server_api.read_cleanup(SERVER, "t") == ([ROW], False)
+    assert server_api.read_cleanup(SERVER, "t") == ([], False)  # 키가 없으면 꺼진 것으로 — 경합 있는 삭제를 모르고 켜지 않는다
+    assert server_api.read_cleanup(SERVER, "t") == ([], True)
 
 
 def answers(monkeypatch, *replies):
@@ -86,3 +106,54 @@ def test_block_quotes_the_email_in_the_path(monkeypatch):
 def test_console_has_the_menu_and_its_page():
     assert ("accounts", "계정 정리") in ui.NAV
     assert [key for key, _ in ui.NAV].index("accounts") == [key for key, _ in ui.NAV].index("backup") + 1
+
+
+class _Widget:
+    def __init__(self):
+        self.props: dict = {}
+
+    def configure(self, **props):
+        self.props.update(props)
+
+
+class _Tree(_Widget):
+    """Treeview 흉내 — 창을 띄우지 않고 App 의 계정 정리 메서드를 그대로 부른다."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows: list = []
+
+    def get_children(self):
+        return [str(i) for i in range(len(self.rows))]
+
+    def delete(self, *_ids):
+        self.rows = []
+
+    def insert(self, _parent, _where, iid, values, tags):
+        self.rows.append((iid, values, tags))
+
+    def selection(self):
+        return ("0",) if self.rows else ()
+
+
+def _console():
+    app = SimpleNamespace(accounts_busy=False, accounts_delete_enabled=False, account_rows=[], session=object(),
+                          accounts_tree=_Tree(), accounts_page_note=_Widget(), accounts_delete=_Widget(), accounts_block=_Widget(),
+                          accounts_note=_Widget(), _relogin_if_needed=lambda _problems: None)
+    app._selected_account = lambda: ui.App._selected_account(app)
+    app._show_account_selection = lambda: ui.App._show_account_selection(app)
+    return app
+
+
+@pytest.mark.parametrize("delete_enabled", [False, True])
+def test_the_delete_button_follows_the_server_flag_and_block_stays(delete_enabled):
+    app = _console()
+    ui.App._on_accounts(app, app.session, ([ROW], delete_enabled), "", "")  # 판정 '삭제 가능'인 줄
+    assert app.accounts_delete.props["state"] == ("normal" if delete_enabled else "disabled")
+    assert app.accounts_tree.rows[0][1][4] == ("삭제 가능" if delete_enabled else "삭제 꺼짐")
+    assert ("꺼져" in app.accounts_page_note.props["text"]) is not delete_enabled
+    app._show_account_selection()  # 줄을 눌렀을 때 — 목록 직후의 안내 칸은 "N개"다
+    assert ("이번 릴리스" in app.accounts_note.props["text"]) is not delete_enabled
+    block_first = {**ROW, "verdict": "block_first", "status": "approved", "hidden": False}
+    ui.App._on_accounts(app, app.session, ([block_first], delete_enabled), "", "")
+    assert app.accounts_block.props["state"] == "normal" and app.accounts_delete.props["state"] == "disabled"

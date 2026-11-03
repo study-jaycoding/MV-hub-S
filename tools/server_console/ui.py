@@ -177,6 +177,7 @@ class App:
         self.intake_api: tuple[bool, float] | None = None  # 로그인 뒤 서버 API 로 읽은 값·시각 — DB 읽기(추정)보다 우선
         self.intake_busy = False
         self.account_rows: list[dict] = []  # 계정 정리 — 서버가 준 줄(판정 포함), 표의 줄 번호가 이 목록의 위치다
+        self.accounts_delete_enabled = False  # 서버 GET 의 delete_enabled — 거짓이거나 없으면 삭제 단추를 끈다(판정과 상관없이)
         self.accounts_busy = False
         # 화면별로 따라가는 작업(생성 접수·백업) — 업데이트 작업 보기와 따로(업데이트 중에도 접수는 바꿀 수 있게)
         self.side_jobs: dict[str, str] = {}
@@ -718,8 +719,9 @@ class App:
         self._header(page, "계정 정리")
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=12)
-        tk.Label(body, text="차단했거나 숨긴 계정만 나옵니다. 이력이 없는 계정만 지울 수 있고, 승인 상태인 계정은 먼저 차단해야 합니다.",
-                 bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900).pack(anchor="w")
+        self.accounts_page_note = tk.Label(body, text=account_rows.page_text(self.accounts_delete_enabled),
+                                           bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900)
+        self.accounts_page_note.pack(anchor="w")
         box = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
         box.pack(fill="both", expand=True, pady=10)
         self.accounts_tree = ttk.Treeview(box, columns=[c[0] for c in account_rows.COLUMNS], show="headings",
@@ -750,10 +752,10 @@ class App:
     def _show_account_selection(self) -> None:
         row = self._selected_account()
         verdict = None if self.accounts_busy or row is None else row.get("verdict")
-        self.accounts_delete.configure(state="normal" if verdict == "deletable" else "disabled")
+        self.accounts_delete.configure(state="normal" if verdict == "deletable" and self.accounts_delete_enabled else "disabled")
         self.accounts_block.configure(state="normal" if verdict == "block_first" else "disabled")
         if row is not None:
-            self.accounts_note.configure(text=account_rows.selection_text(row), fg=TEXT)
+            self.accounts_note.configure(text=account_rows.selection_text(row, self.accounts_delete_enabled), fg=TEXT)
 
     def _load_accounts(self) -> None:
         if self.session is None:
@@ -803,7 +805,7 @@ class App:
                     raise
                 except server_api.ServerError as exc:
                     problem = str(exc)
-            rows = server_api.read_cleanup(server, session.token)
+            rows = server_api.read_cleanup(server, session.token)  # (목록, 삭제 켜짐)
         except server_api.ServerError as exc:
             problem = str(exc)
         except Exception as exc:  # noqa: BLE001
@@ -816,10 +818,11 @@ class App:
             self._show_account_selection()
             return
         if rows is not None:
-            self.account_rows = rows
+            self.account_rows, self.accounts_delete_enabled = rows
+            self.accounts_page_note.configure(text=account_rows.page_text(self.accounts_delete_enabled))
             self.accounts_tree.delete(*self.accounts_tree.get_children())
-            for index, row in enumerate(rows):
-                self.accounts_tree.insert("", "end", iid=str(index), values=account_rows.table_values(row),
+            for index, row in enumerate(self.account_rows):
+                self.accounts_tree.insert("", "end", iid=str(index), values=account_rows.table_values(row, self.accounts_delete_enabled),
                                           tags=(str(row.get("verdict")),))
         self._show_account_selection()
         if problem:

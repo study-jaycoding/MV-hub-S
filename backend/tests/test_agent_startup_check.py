@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -215,23 +216,218 @@ time.sleep(60)
         _stop(pid_list)
 
 
+PARENT_EXITS_FIRST = GRANDCHILD + """
+print("partial", flush=True)
+open({pids!r}, "w").write(str(child.pid))
+"""  # 부모는 손자를 띄우고 바로 끝난다 — 손자가 파이프를 쥔다(taskkill /T 는 부모가 없어 손자를 못 찾는다)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
-def test_a_finished_parent_with_an_open_pipe_is_not_reported_as_success(tmp_path, monkeypatch):
+def test_a_finished_parent_with_an_open_pipe_ends_its_grandchild(tmp_path, monkeypatch):
     agent = _load_agent()
     pids = tmp_path / "pids.txt"
-    _cli_script(agent, monkeypatch, tmp_path, GRANDCHILD + f"""
-print("partial", flush=True)
-open({str(pids)!r}, "w").write(str(child.pid))
-""")
+    _cli_script(agent, monkeypatch, tmp_path, PARENT_EXITS_FIRST.format(pids=str(pids)))
+    left: list = []
+    real_end = agent._end_cli_job
+
+    def end(job, proc):
+        ok = real_end(job, proc)
+        left.append(agent._job_active(job))  # 손잡이가 닫히기 전 — 커널이 세는 남은 수
+        return ok
+
+    monkeypatch.setattr(agent, "_end_cli_job", end)
     started = time.monotonic()
     try:
         with pytest.raises(subprocess.TimeoutExpired) as timed_out:
             agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=6)
         assert 5 < time.monotonic() - started < 25  # 호출의 제한 시간까지 기다린다
         assert "partial" in timed_out.value.stdout
-        assert _alive(int(pids.read_text()))  # 알려진 한계 — 부모가 없으면 taskkill /T 가 못 찾는다(계약 결정 3, 세션 Job 이 끝낸다)
+        assert left == [0]  # Job 이 손자까지 끝냈다 — 이중 과금 틈(늦게 접수하는 자손)이 없다
+        assert not _alive(int(pids.read_text()))
     finally:
         _stop([int(pids.read_text())])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_without_a_job_a_finished_parent_leaves_its_grandchild_as_before(tmp_path, monkeypatch):
+    agent = _load_agent()
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, PARENT_EXITS_FIRST.format(pids=str(pids)))
+    monkeypatch.setattr(agent, "_new_cli_job", lambda: None)
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=6)
+        assert time.monotonic() - started < 25
+        assert _alive(int(pids.read_text()))  # 옛 taskkill 길 — 부모가 없으면 자손을 못 찾는다(그래서 Job 을 쓴다)
+    finally:
+        _stop([int(pids.read_text())])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_the_child_joins_its_job_before_it_runs(tmp_path, monkeypatch):
+    agent = _load_agent()
+    _cli_script(agent, monkeypatch, tmp_path, "import os\nprint(os.getpid(), os.getppid(), flush=True)\n")
+    seen: dict = {}
+    real_join, real_resume = agent._join_cli_job, agent._resume_main_thread
+
+    def join(job, proc):
+        seen["job"], seen["pid"] = job, proc.pid
+        return real_join(job, proc)
+
+    def resume(proc):
+        seen["active_before_resume"] = agent._job_active(seen["job"])  # 깨우기 직전 — 멈춘 채 호출별 Job 에 들어 있다
+        seen["resumed"] = real_resume(proc)  # 1 → 0 으로 깨웠다 = 그때까지 멈춰 있었다(CREATE_SUSPENDED 를 빼면 0 이 돌아와 False)
+        return seen["resumed"]
+
+    monkeypatch.setattr(agent, "_join_cli_job", join)
+    monkeypatch.setattr(agent, "_resume_main_thread", resume)
+    done = agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=30)
+    assert done.returncode == 0
+    assert seen["active_before_resume"] == 1 and seen["resumed"] is True
+    # 출력은 넣은 바로 그 자식(venv 의 python.exe 셰임이면 그 자식)의 것 — 다시 띄운 자식이 아니다
+    assert seen["pid"] in [int(word) for word in done.stdout.split()]
+
+
+class _K32Proxy:
+    """실제 kernel32 를 감싸 호출 수를 세고 일부 함수를 바꿔 끼운다 — 손잡이 누수·종료 API 실패 시험용."""
+
+    def __init__(self, real, **overrides):
+        self._real, self._overrides, self.calls = real, overrides, Counter()
+
+    def __getattr__(self, name):
+        target = self._overrides.get(name) or getattr(self._real, name)
+
+        def call(*args):
+            self.calls[name] += 1
+            return target(*args)
+        return call
+
+
+def _proxy(agent, monkeypatch, **overrides) -> _K32Proxy:
+    proxy = _K32Proxy(agent._kernel32(), **overrides)
+    monkeypatch.setattr(agent, "_kernel32", lambda: proxy)
+    return proxy
+
+
+def _opened_equals_closed(proxy: _K32Proxy) -> bool:
+    opened = proxy.calls["CreateJobObjectW"] + proxy.calls["CreateToolhelp32Snapshot"] + proxy.calls["OpenThread"]
+    return opened > 0 and opened == proxy.calls["CloseHandle"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_normal_call_closes_every_handle_it_opened(tmp_path, monkeypatch):
+    agent = _load_agent()
+    _cli_script(agent, monkeypatch, tmp_path, "print('ok')\n")
+    proxy = _proxy(agent, monkeypatch)
+    done = agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=30)
+    assert done.returncode == 0 and done.stdout.strip() == "ok"
+    assert proxy.calls["CreateJobObjectW"] == 1 and _opened_equals_closed(proxy)  # Job·스냅샷·스레드 손잡이 전부
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_failed_job_setup_closes_the_job_it_created(monkeypatch):
+    agent = _load_agent()
+
+    def boom(*_args):
+        raise OSError("설정 실패")
+
+    proxy = _proxy(agent, monkeypatch, SetInformationJobObject=boom)
+    assert agent._new_cli_job() is None
+    assert proxy.calls["CreateJobObjectW"] == 1 and proxy.calls["CloseHandle"] == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_launch_that_fails_before_the_child_runs_leaves_nothing(tmp_path, monkeypatch):
+    """Popen 이 실패해도(없는 실행 파일) 만든 Job 은 닫힌다 · 깨우기 도중 KeyboardInterrupt 면 멈춘 자식을 끝내고 Job 을 닫는다."""
+    agent = _load_agent()
+    proxy = _proxy(agent, monkeypatch)
+    with pytest.raises(FileNotFoundError):
+        agent._run_with_tree_kill([str(tmp_path / "없는.exe")], timeout=5)
+    assert proxy.calls["CreateJobObjectW"] == 1 and _opened_equals_closed(proxy)
+
+    _cli_script(agent, monkeypatch, tmp_path, "import os\nprint(os.getpid(), os.getppid(), flush=True)\n")
+    seen: dict = {}
+    real_join = agent._join_cli_job
+
+    def join(job, proc):
+        seen["pid"] = proc.pid
+        return real_join(job, proc)
+
+    def interrupt(_proc):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent, "_join_cli_job", join)
+    monkeypatch.setattr(agent, "_resume_main_thread", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=5)
+    assert not _alive(seen["pid"])  # 멈춘 채 떠 있던 자식이 끝났다
+    assert _opened_equals_closed(proxy)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_when_the_child_cannot_be_woken_it_is_ended_and_relaunched_without_a_job(tmp_path, monkeypatch, capsys):
+    agent = _load_agent()
+    _cli_script(agent, monkeypatch, tmp_path, "import os\nprint(os.getpid(), os.getppid(), flush=True)\n")
+    seen: dict = {}
+    real_join = agent._join_cli_job
+
+    def join(job, proc):
+        seen["first"] = proc.pid
+        return real_join(job, proc)
+
+    monkeypatch.setattr(agent, "_join_cli_job", join)
+    monkeypatch.setattr(agent, "_resume_main_thread", lambda _proc: False)
+    done = agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=30)
+    assert done.returncode == 0
+    assert seen["first"] not in [int(word) for word in done.stdout.split()]  # 출력은 다시 띄운 자식의 것
+    assert not _alive(seen["first"])  # 멈춘 채 들어 있던 첫 자식은 끝났다
+    assert "묶지 못했다" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_when_terminate_job_fails_the_taskkill_path_still_ends_the_tree(tmp_path, monkeypatch, capsys):
+    agent = _load_agent()
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, GRANDCHILD + f"""
+import os, time
+open({str(pids)!r}, "w").write(f"{{os.getpid()}} {{child.pid}}")
+time.sleep(60)
+""")
+    proxy = _proxy(agent, monkeypatch, TerminateJobObject=lambda *_args: 0)  # 종료 API 가 실패값을 돌려준다
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=3)
+    pid_list = [int(value) for value in pids.read_text().split()]
+    try:
+        assert time.monotonic() - started < 30
+        assert "종료 실패" in capsys.readouterr().err
+        assert proxy.calls["TerminateJobObject"] == 1
+        assert not any(_alive(pid) for pid in pid_list)  # taskkill /T 가 멈춘 부모와 손자를 끝냈다
+    finally:
+        _stop(pid_list)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+@pytest.mark.parametrize("case", ["no_job", "cannot_join", "tree_left"])
+def test_job_warnings_go_to_stderr_and_leave_the_startup_version_one_word(tmp_path, monkeypatch, capsys, case):
+    agent = _load_agent()
+    if case == "tree_left":
+        _cli_script(agent, monkeypatch, tmp_path, "import time\nprint('hf 1.2.3', flush=True)\ntime.sleep(60)\n")
+        monkeypatch.setattr(agent, "_job_active", lambda _job: 1)  # 커널이 '남았다'고 답한다 → 경고 뒤 taskkill 길
+        monkeypatch.setattr(agent, "_STARTUP_CHECK_TIMEOUT", 2)
+        expected, warning = "?", "프로세스가 남았다"
+    else:
+        _cli_script(agent, monkeypatch, tmp_path, "print('hf 1.2.3')\n")
+        if case == "no_job":
+            monkeypatch.setattr(agent, "_new_cli_job", lambda: None)
+        else:
+            monkeypatch.setattr(agent, "_join_cli_job", lambda _job, _proc: False)
+        expected, warning = "1.2.3", "Job 으로 묶지 못했다"
+    assert agent._startup_version("hf") == expected
+    captured = capsys.readouterr()
+    assert captured.out == ""  # 값은 돌려줄 뿐 — main 이 찍는 한 단어가 stdout 의 전부다(MV_agent.bat 이 첫 줄을 판으로 읽는다)
+    assert warning in captured.err
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")

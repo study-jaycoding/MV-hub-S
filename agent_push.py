@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import getpass
 import hashlib
 import io
@@ -43,6 +44,7 @@ import webbrowser
 import uuid
 from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
+from ctypes import wintypes  # Windows 가 아니어도 import 은 된다 — 쓰는 곳은 os.name 으로 가린다
 from datetime import datetime, timedelta, timezone
 from threading import BoundedSemaphore, Event, Lock, RLock, Thread
 from urllib.parse import quote, urlencode, urlparse
@@ -556,7 +558,177 @@ def _cli_text(sink: list) -> str:
     return io.TextIOWrapper(io.BytesIO(b"".join(sink)), errors="replace").read()
 
 
-def _end_cli_tree(proc: subprocess.Popen) -> None:
+# ── CLI 호출 하나 = Windows Job 하나 ──────────────────────────────────────────
+# taskkill /T 는 부모 pid 로 트리를 찾아 부모(node)가 먼저 끝나면 자손(hf.exe)을 못 본다 — 그 자손이 뒤늦게 접수하면
+# '제출 확인 필요' 뒤 사람이 다시 실행할 때 이중 과금이 된다(docs/status/배포전_수용항목_재검토수정_2026-11-03.md).
+# Job 은 자손이 어디서 생겼든 커널이 묶어 두고 한 호출로 끝낸다. 자식은 멈춘 채 띄워 Job 에 넣은 뒤 깨워 그 사이에
+# 손자가 생길 틈을 없앤다. 표준 라이브러리(ctypes)뿐이다.
+_CREATE_SUSPENDED = 0x00000004
+_JOB_KILL_ON_CLOSE = 0x00002000
+_JOB_EXTENDED_LIMIT_CLASS = 9
+_JOB_BASIC_ACCOUNTING_CLASS = 1
+_THREAD_SUSPEND_RESUME = 0x0002
+_TH32CS_SNAPTHREAD = 0x00000004
+_INVALID_HANDLE = wintypes.HANDLE(-1).value
+
+
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                                                     "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+
+class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+
+class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION), ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64), ("ThisPeriodTotalUserTime", ctypes.c_int64),
+                ("ThisPeriodTotalKernelTime", ctypes.c_int64), ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+
+class _THREADENTRY32(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
+
+
+_K32 = None
+
+
+def _kernel32():
+    """따로 만든다 — ctypes.windll.kernel32 는 다른 곳과 공용이라 argtypes 를 건드리면 안 되고, use_last_error 로 오류 번호를 남긴다."""
+    global _K32
+    if _K32 is None:
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        h, d, b = wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL
+        for name, args, res in (
+            ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], h),
+            ("SetInformationJobObject", [h, ctypes.c_int, ctypes.c_void_p, d], b),
+            ("QueryInformationJobObject", [h, ctypes.c_int, ctypes.c_void_p, d, ctypes.POINTER(d)], b),
+            ("AssignProcessToJobObject", [h, h], b),
+            ("TerminateJobObject", [h, wintypes.UINT], b),
+            ("CreateToolhelp32Snapshot", [d, d], h),
+            ("Thread32First", [h, ctypes.POINTER(_THREADENTRY32)], b),
+            ("Thread32Next", [h, ctypes.POINTER(_THREADENTRY32)], b),
+            ("OpenThread", [d, b, d], h),
+            ("ResumeThread", [h], d),
+            ("CloseHandle", [h], b),
+        ):
+            fn = getattr(k, name)
+            fn.argtypes, fn.restype = args, res
+        _K32 = k
+    return _K32
+
+
+def _new_cli_job():
+    """호출 하나를 묶을 Job(KILL_ON_JOB_CLOSE — 손잡이가 닫히면 남은 프로세스가 끝난다). 못 만들면 None(taskkill 길)."""
+    if os.name != "nt":
+        return None
+    try:
+        k32 = _kernel32()
+        job = k32.CreateJobObjectW(None, None)
+    except (OSError, AttributeError, ValueError):
+        return None
+    if not job:
+        return None
+    try:  # 만든 직후부터 정리 범위 — 설정 단계가 어떻게 실패하든 손잡이를 닫는다
+        limits = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+        ok = k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT_CLASS, ctypes.byref(limits), ctypes.sizeof(limits))
+    except (OSError, ValueError):
+        ok = False
+    except BaseException:
+        k32.CloseHandle(job)
+        raise
+    if not ok:
+        k32.CloseHandle(job)
+        return None
+    return job
+
+
+def _join_cli_job(job, proc) -> bool:
+    """멈춘 채 뜬 자식을 Job 에 넣는다. 가짜 Popen(_handle 없음)이면 False — pid 로 열면 남의 프로세스를 잡을 수 있어 쓰지 않는다."""
+    handle = getattr(proc, "_handle", None)
+    if not handle:
+        return False
+    try:
+        return bool(_kernel32().AssignProcessToJobObject(job, int(handle)))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _resume_main_thread(proc) -> bool:
+    """CREATE_SUSPENDED 가 보장하는 것은 주 스레드의 정지뿐 — 그 pid 의 스레드가 정확히 하나일 때 깨우고,
+    ResumeThread 가 1(정지 1 → 0)을 돌려줄 때만 True(2 이상은 아직 멈춘 것, 0 은 애초에 돌고 있던 것)."""
+    k32 = _kernel32()
+    snap = k32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+    if not snap or snap == _INVALID_HANDLE:
+        return False
+    threads = []
+    try:
+        entry = _THREADENTRY32(dwSize=ctypes.sizeof(_THREADENTRY32))
+        found = k32.Thread32First(snap, ctypes.byref(entry))
+        while found:
+            if entry.th32OwnerProcessID == proc.pid:
+                threads.append(entry.th32ThreadID)
+            found = k32.Thread32Next(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    if len(threads) != 1:
+        return False
+    thread = k32.OpenThread(_THREAD_SUSPEND_RESUME, False, threads[0])
+    if not thread:
+        return False
+    try:
+        return k32.ResumeThread(thread) == 1
+    finally:
+        k32.CloseHandle(thread)
+
+
+def _wake_in_job(job, proc) -> bool:
+    return _join_cli_job(job, proc) and _resume_main_thread(proc)
+
+
+def _job_active(job):
+    """Job 에 살아 있는 프로세스 수. 조회 실패면 None — 0 으로 읽지 않는다."""
+    info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+    ok = _kernel32().QueryInformationJobObject(job, _JOB_BASIC_ACCOUNTING_CLASS, ctypes.byref(info), ctypes.sizeof(info), None)
+    return int(info.ActiveProcesses) if ok else None
+
+
+def _end_cli_job(job, proc) -> bool:
+    """Job 의 트리를 끝내고 남은 수가 0 이 될 때까지 최대 5초 본다. 못 끝냈으면 경고를 찍고 False(호출자가 taskkill 길도 탄다).
+    경고는 stderr 로 — stdout 은 `--startup-version` 이 한 단어로 약속한 자리다."""
+    k32 = _kernel32()
+    if not k32.TerminateJobObject(job, 1):
+        print(f"[경고] CLI 트리 종료 실패(TerminateJobObject 오류 {ctypes.get_last_error()}) — taskkill 로 다시 시도", file=sys.stderr)
+        return False
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if _job_active(job) == 0:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
+            return True
+        time.sleep(0.05)
+    print(f"[경고] CLI 트리에 프로세스가 남았다({_job_active(job)}) — taskkill 로 다시 시도", file=sys.stderr)
+    return False
+
+
+class _JobUnusable(Exception):
+    """띄운 자식을 Job 에 넣거나 깨우지 못했다 — Job 없이 다시 띄운다."""
+
+
+def _end_cli_tree(proc: subprocess.Popen, job=None) -> None:
+    if job and _end_cli_job(job, proc):
+        return
     left = False
     if os.name == "nt":
         with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -579,34 +751,68 @@ def _run_with_tree_kill(argv: list, timeout: float, env: dict | None = None) -> 
     """subprocess.run(capture_output=True, text=True, timeout=…) 과 같되, 시간 초과면 프로세스 트리째 끝내고
     제한 시간 안에 돌아온다(cli_bridge._terminate_cli_process 와 같은 꼴). subprocess.run 은 셰임(Node)만 죽인 뒤
     자식 CLI 가 끝날 때까지 제한 없이 기다려, hf.exe 가 멈추면 호출이 돌아오지 않았다(81회차 F-C-04 리뷰 P1).
-    코어가 꽉 차 taskkill 이 늦으면 끊지 않고 맡긴 채 돌아온다 — taskkill 은 이 프로세스가 끝나도 이어진다.
+    호출마다 Job 으로 묶어 부모가 먼저 끝나 자손이 출력을 쥐어도 그 자손까지 끝낸다(위 주석). Job 을 못 쓰면 taskkill 길 —
+    코어가 꽉 차 taskkill 이 늦으면 끊지 않고 맡긴 채 돌아온다(taskkill 은 이 프로세스가 끝나도 이어진다).
     출력은 나오는 대로 모은다 — Windows 의 communicate 는 파이프가 닫혀야 내줘, 끊긴 호출의 job id 를 잃는다."""
     deadline = time.monotonic() + timeout
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    out: list = []
-    err: list = []
-    readers = [Thread(target=_read_pipe, args=pair, daemon=True) for pair in ((proc.stdout, out), (proc.stderr, err))]
+    job = _new_cli_job()
+    if job is None and os.name == "nt":
+        print("[경고] CLI 호출을 Job 으로 묶지 못했다 — taskkill 길로 돈다(부모가 먼저 끝나면 자손이 남을 수 있다)", file=sys.stderr)
+    proc = None
     try:
-        for reader in readers:
-            reader.start()
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        _end_cli_tree(proc)
-        for reader in readers:
-            reader.join(timeout=5)  # 읽은 출력이 모일 때까지 — 트리가 안 끝났으면 여기까지 나온 것만 쓴다
-        exc.stdout, exc.stderr = _cli_text(out), _cli_text(err)
-        raise
-    except BaseException:
-        _end_cli_tree(proc)
-        raise
-    until = max(deadline, time.monotonic() + 5)  # 부모가 제한 시간 직전에 끝나도 출력이 모일 시간을 둔다
-    for reader in readers:
-        reader.join(timeout=max(until - time.monotonic(), 0))
-    # 부모가 먼저 끝났는데 자손이 출력을 쥐었다 — 덜 모은 결과를 성공으로 내지 않는다.
-    # shortcut: 부모가 없으면 taskkill /T 가 자손을 못 찾아 그 자손은 세션 Job 이 닫힐 때까지 남는다, 끝내야 하면 호출마다 Job 으로 묶는다.
-    if any(reader.is_alive() for reader in readers):
-        raise subprocess.TimeoutExpired(argv, timeout, output=_cli_text(out), stderr=_cli_text(err))
-    return subprocess.CompletedProcess(argv, proc.returncode, _cli_text(out), _cli_text(err))
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                                    creationflags=_CREATE_SUSPENDED if job else 0)
+            if job and not _wake_in_job(job, proc):
+                raise _JobUnusable()
+        except _JobUnusable:
+            # 넣거나 깨우지 못했다 — 멈춘 자식을 끝내고 Job 없이 다시 띄운다(가짜 Popen 은 _handle 이 없어 여기로 오되 끝내지 않는다)
+            print(f"[경고] CLI 호출을 Job 으로 묶지 못했다(오류 {ctypes.get_last_error()}) — taskkill 길로 돈다", file=sys.stderr)
+            if getattr(proc, "_handle", None):
+                with contextlib.suppress(OSError):
+                    proc.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
+                proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            _kernel32().CloseHandle(job)
+            job = None
+        except BaseException:
+            # 띄운 뒤 넣기·깨우기 도중 다른 예외(KeyboardInterrupt 포함) — Job 에 들었든 아니든 자식을 직접 끝내고 회수한다
+            if proc is not None and getattr(proc, "_handle", None):
+                with contextlib.suppress(OSError):
+                    proc.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
+            raise
+        out: list = []
+        err: list = []
+        readers = [Thread(target=_read_pipe, args=pair, daemon=True) for pair in ((proc.stdout, out), (proc.stderr, err))]
+        try:
+            for reader in readers:
+                reader.start()
+            proc.wait(timeout=timeout)
+            until = max(deadline, time.monotonic() + 5)  # 부모가 제한 시간 직전에 끝나도 출력이 모일 시간을 둔다
+            for reader in readers:
+                reader.join(timeout=max(until - time.monotonic(), 0))
+        except subprocess.TimeoutExpired as exc:
+            _end_cli_tree(proc, job)
+            for reader in readers:
+                reader.join(timeout=5)  # 읽은 출력이 모일 때까지 — 트리가 안 끝났으면 여기까지 나온 것만 쓴다
+            exc.stdout, exc.stderr = _cli_text(out), _cli_text(err)
+            raise
+        except BaseException:  # 대기 구간(reader.join 포함) 어디서 나가든 트리를 끝낸다
+            _end_cli_tree(proc, job)
+            raise
+        if any(reader.is_alive() for reader in readers):
+            # 부모가 먼저 끝났는데 자손이 출력을 쥐었다 — Job 으로 자손까지 끝내고 덜 모은 결과를 성공으로 내지 않는다.
+            _end_cli_tree(proc, job)
+            for reader in readers:
+                reader.join(timeout=5)
+            raise subprocess.TimeoutExpired(argv, timeout, output=_cli_text(out), stderr=_cli_text(err))
+        return subprocess.CompletedProcess(argv, proc.returncode, _cli_text(out), _cli_text(err))
+    finally:
+        if job:
+            _kernel32().CloseHandle(job)  # KILL_ON_JOB_CLOSE — 어떤 경로로 나가든 잔존이 여기서 끝난다
 
 
 def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = None):

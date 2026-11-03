@@ -15,6 +15,11 @@ from ..services.request_guards import require_local_machine_request
 
 router = APIRouter(prefix="/api/admin/account-cleanup", tags=["admin"])
 
+# 이번 릴리스에서는 영구 삭제를 끈다 — 삭제와 이미 권한 검사를 지난 진행 중 쓰기의 경합이 주인 없는 행을 남길 수 있다
+# (docs/status/배포전_수용항목_재검토수정_2026-11-03.md). 켜려면 쓰기 경로의 계정 재확인부터. 목록·판정·차단은 그대로다.
+DELETE_ENABLED = False
+DELETE_OFF_DETAIL = "이번 릴리스에서는 계정 삭제를 쓰지 않습니다 — 차단·숨김만 됩니다"
+
 
 class AccountCleanupDeleteIn(BaseModel):
     email: str  # 경로에 넣지 않는다 — 가입 검사가 `/`·`?` 를 다 막지 않는다
@@ -33,12 +38,14 @@ def _require_console(request: Request) -> str:
 
 @router.get("")
 def list_accounts(request: Request):
-    return {"accounts": account_cleanup.list_cleanup_accounts(_require_console(request))}
+    return {"accounts": account_cleanup.list_cleanup_accounts(_require_console(request)), "delete_enabled": DELETE_ENABLED}
 
 
 @router.post("/delete")
 def delete_account(body: AccountCleanupDeleteIn, request: Request):
-    actor_email = _require_console(request)
+    actor_email = _require_console(request)  # 먼저 — 꺼져 있어도 허브는 404, 관리자가 아니면 401·403 그대로
+    if not DELETE_ENABLED:
+        raise HTTPException(status_code=409, detail=DELETE_OFF_DETAIL)
     try:
         return account_cleanup.delete_cleanup_account(
             body.email, status=body.status, hidden=body.hidden, created_at=body.created_at,

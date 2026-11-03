@@ -281,14 +281,15 @@ def read_presence(server: dict, token: str) -> dict:
 CLEANUP_PATH = "/api/admin/account-cleanup"
 
 
-def read_cleanup(server: dict, token: str) -> list:
+def read_cleanup(server: dict, token: str) -> tuple[list, bool]:
+    """(계정 목록, 삭제 켜짐). delete_enabled 가 없으면 꺼진 것으로 본다 — 경합이 있는 삭제를 모르고 켜지 않게."""
     code, payload = call(server, "GET", CLEANUP_PATH, token)
     if code == 404:
         raise ServerError("서버가 옛 코드라 계정 정리를 못 씁니다 — 서버 Git 업데이트 뒤에 보입니다")
     value = expect_ok(code, payload, "계정 목록")
     if not isinstance(value.get("accounts"), list):
         raise ServerError("계정 목록 응답 형식을 알 수 없습니다")
-    return value["accounts"]
+    return value["accounts"], value.get("delete_enabled") is True
 
 
 def delete_cleanup(server: dict, token: str, row: dict) -> dict:

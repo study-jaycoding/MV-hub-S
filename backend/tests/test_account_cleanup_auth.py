@@ -162,11 +162,14 @@ def login(ip="127.0.0.1"):
     return web
 
 
-def test_api_lists_and_deletes_for_the_admin_on_the_server_pc(server):
+def test_api_lists_and_deletes_for_the_admin_on_the_server_pc(server, monkeypatch):
+    monkeypatch.setattr(cleanup_router, "DELETE_ENABLED", True)  # 켰을 때의 흐름 — 다음 릴리스에서 켤 때 다시 검증할 양을 줄인다
     repo.register(GHOST, PASSWORD, "유령")
     repo.set_account_status(GHOST, "rejected")
     web = login()
-    row = web.get("/api/admin/account-cleanup").json()["accounts"][0]
+    page = web.get("/api/admin/account-cleanup").json()
+    row = page["accounts"][0]
+    assert page["delete_enabled"] is True
     assert (row["email"], row["verdict"]) == (GHOST, "deletable")
     body = {"email": GHOST, "status": row["status"], "hidden": row["hidden"], "created_at": row["created_at"]}
     assert web.post("/api/admin/account-cleanup/delete", json=body).status_code == 200
@@ -174,7 +177,21 @@ def test_api_lists_and_deletes_for_the_admin_on_the_server_pc(server):
     assert web.post("/api/admin/account-cleanup/delete", json=body).status_code == 409
 
 
-def test_api_answers_409_with_the_reason(server):
+def test_delete_is_off_in_this_release(server):
+    repo.register(GHOST, PASSWORD, "유령")
+    repo.set_account_status(GHOST, "rejected")
+    web = login()
+    page = web.get("/api/admin/account-cleanup").json()
+    row = page["accounts"][0]
+    assert page["delete_enabled"] is False and row["verdict"] == "deletable"  # 판정은 그대로 — 창이 글자만 바꾼다
+    body = {"email": GHOST, "status": row["status"], "hidden": row["hidden"], "created_at": row["created_at"]}
+    answer = web.post("/api/admin/account-cleanup/delete", json=body)
+    assert answer.status_code == 409 and "이번 릴리스" in answer.json()["detail"]
+    assert repo.get_account(GHOST) is not None
+
+
+def test_api_answers_409_with_the_reason(server, monkeypatch):
+    monkeypatch.setattr(cleanup_router, "DELETE_ENABLED", True)
     signup_approved()
     repo.set_account_hidden(GHOST, True)
     web = login()
