@@ -202,6 +202,7 @@ def _parse_cli_json(stdout: str):
 # exit 0 인데 --json 출력이 파싱 안 될 때의 오류 prefix. 복구(_extract_created_id)는 이 케이스에만
 # 적용한다 — 진짜 CLI 실패 메시지("CLI 실패(...)") 안의 UUID 를 잘못 복구하지 않도록 게이트.
 _PARSE_FAIL_PREFIX = "CLI JSON 파싱 실패(비-JSON 출력): "
+_PARSE_FAIL_STDERR_PREFIX = "CLI JSON 파싱 실패(stderr): "  # stdout 이 비었다 — 진단용, 복구하지 않는다
 
 
 def _as_text(v) -> str:
@@ -217,6 +218,7 @@ def _as_text(v) -> str:
 # 타임아웃 오류 prefix. 이 뒤엔 '순수 CLI 출력'(우리 args 아님)만 담아, _extract_created_id 가 args 에 박힌
 # 레퍼런스 업로드 UUID 가 아니라 진짜 잡 id 만 되찾게 한다. 파싱실패와 함께 '모호한 결말'로 취급한다.
 _TIMEOUT_PREFIX = "CLI 타임아웃(부분출력): "
+_TIMEOUT_STDERR_PREFIX = "CLI 타임아웃(stderr): "  # stdout 이 비었다 — 진단용, 복구하지 않는다
 # 제출은 로컬 파일을 CLI 안에서 올린다 — 느린 회선의 큰 파일도 끝나게 둔다(200MB 를 약 0.9Mbps 로 올리는 시간). 넘기면 제출 확인으로 간다.
 _SUBMIT_TIMEOUT_SECONDS = 1800
 
@@ -617,10 +619,12 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = N
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
         # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
-        partial = _sanitize_diagnostic(_as_text(e.stdout) or _as_text(e.stderr))
-        partial = partial.strip()[:800]
+        partial = _sanitize_diagnostic(_as_text(e.stdout)).strip()[:800]
         print(f"[경고] CLI 타임아웃: {_args_for_log(args)[:160]}")
-        return None, f"{_TIMEOUT_PREFIX}{partial}"
+        if partial:
+            return None, f"{_TIMEOUT_PREFIX}{partial}"
+        # stderr 의 UUID 는 참조일 수 있다 — job id 로 되찾지 않는다. 제출이면 제출 확인으로 간다.
+        return None, f"{_TIMEOUT_STDERR_PREFIX}{_sanitize_diagnostic(_as_text(e.stderr)).strip()[:800]}"
     if out.returncode != 0:
         # stderr·stdout 을 **둘 다** 담는다(같으면 한 번, 빈 쪽은 건너뜀). 종전엔 `stderr or stdout`
         # 이라 stderr 에 경고 한 줄만 있어도 stdout 을 통째로 버렸다.
@@ -639,9 +643,12 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120, env: dict | None = N
         return parsed, None
     # exit 0 인데 파싱 불가 — 실제 출력을 담아 원인 규명이 되게 한다(예전엔 args 만 찍어 원인을 잃었다).
     # 제어문자 제거·800자 제한.
-    raw = _sanitize_diagnostic((out.stdout or "").strip() or (out.stderr or "").strip())
-    raw = raw[:800]
-    return None, f"{_PARSE_FAIL_PREFIX}{raw or _args_for_log(args)}"
+    raw = _sanitize_diagnostic((out.stdout or "").strip())[:800]
+    if raw:
+        return None, f"{_PARSE_FAIL_PREFIX}{raw}"
+    # stderr·명령 인자의 UUID 는 job id 가 아니다 — 복구 머리글을 쓰지 않는다.
+    stderr = _sanitize_diagnostic((out.stderr or "").strip())[:800]
+    return None, f"{_PARSE_FAIL_STDERR_PREFIX}{stderr or _args_for_log(args)}"
 
 
 def _cli_json(cli: str, *args: str, timeout: int = 120):

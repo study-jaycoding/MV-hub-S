@@ -424,7 +424,7 @@ def test_run_cli_sanitizes_existing_error_paths_before_truncation():
         "https://cdn.example.com/jobs?Signature=FAKE_SIGNATURE\n"
         '{"display_prompt":"' + private
     )
-    # stdout 우선/비어 있을 때 stderr: 기존 세 호출부의 실제 분기를 전부 고정한다.
+    # stdout 우선/비어 있을 때 stderr(진단만, job id 복구 안 함): 기존 세 호출부의 실제 분기를 전부 고정한다.
     for mode, use_stderr in (
         ("timeout", False), ("timeout", True), ("parse", False), ("parse", True), ("failure", False),
     ):
@@ -433,12 +433,14 @@ def test_run_cli_sanitizes_existing_error_paths_before_truncation():
             options = {"side_effect": subprocess.TimeoutExpired(
                 "hf", 120, output=stdout.encode(), stderr=stderr.encode(),
             )}
-            prefix = agent._TIMEOUT_PREFIX
+            prefix = agent._TIMEOUT_STDERR_PREFIX if use_stderr else agent._TIMEOUT_PREFIX
         else:
             options = {"return_value": subprocess.CompletedProcess(
                 [], int(mode == "failure"), stdout=stdout, stderr=stderr,
             )}
-            prefix = agent._PARSE_FAIL_PREFIX if mode == "parse" else "CLI 실패: "
+            prefix = "CLI 실패: "
+            if mode == "parse":
+                prefix = agent._PARSE_FAIL_STDERR_PREFIX if use_stderr else agent._PARSE_FAIL_PREFIX
         with patch.object(agent, "_run_with_tree_kill", **options):
             data, error = agent._run_cli_json("hf", "generate", "create")
         assert data is None and error.startswith(prefix)
@@ -447,7 +449,9 @@ def test_run_cli_sanitizes_existing_error_paths_before_truncation():
         assert "https://cdn.example.com/jobs?<URL 쿼리 숨김>" in error
         assert job_id in error
         if mode != "failure":
-            assert agent._extract_created_id(data, error) == job_id
+            assert agent._extract_created_id(data, error) == (None if use_stderr else job_id)
+        if mode == "timeout":
+            assert agent._classify_cli_error(error) == "network_timeout"
 
 
 def test_sanitize_diagnostic_accepts_unexpected_inputs_without_raising():
@@ -515,6 +519,16 @@ def test_run_cli_failure_output_uuid_is_not_recovered_as_a_created_job():
     with patch.object(agent, "_run_with_tree_kill", return_value=result):
         data, error = agent._run_cli_json("hf", "generate", "create")
     assert reference_id in error
+    assert agent._extract_created_id(data, error) is None
+
+
+def test_parse_failure_without_output_does_not_recover_a_uuid_from_the_arguments():
+    agent = _load_agent()
+    reference_id = "11111111-2222-4333-8444-555555555555"
+    result = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    with patch.object(agent, "_run_with_tree_kill", return_value=result):
+        data, error = agent._run_cli_json("hf", "generate", "create", "--input", reference_id)
+    assert error.startswith(agent._PARSE_FAIL_STDERR_PREFIX) and reference_id in error
     assert agent._extract_created_id(data, error) is None
 
 
@@ -1992,6 +2006,8 @@ def test_too_long_command_fails_before_submission_instead_of_recovery(prompt, bl
 @pytest.mark.parametrize("reported", [True, False])
 @pytest.mark.parametrize("cli_error", [
     None, "CLI 타임아웃",
+    "CLI 타임아웃(stderr): 11111111-2222-4333-8444-555555555555",
+    "CLI JSON 파싱 실패(stderr): 11111111-2222-4333-8444-555555555555",
     "CLI 실패: Invalid media UUID — cmd: --input https://cdn.example.com/a?token=FAKE_QUERY",
 ])
 def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried(reported, cli_error):

@@ -20,20 +20,23 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
   const [retryPayload, setRetryPayload] = useState<SceneKeepPayload | null>(null);
   const [typed, setTyped] = useState<string | null>(null);
   const [descriptions, setDescriptions] = useState<Pick<SceneKeepRow, "project_id" | "name" | "description">[]>([]);
+  const [descriptionsState, setDescriptionsState] = useState<"loading" | "ready" | "failed">("loading");
   const normalizedName = name.normalize("NFC").trim();
   const initialKeepName = initialName.normalize("NFC").trim();
   const describe = (project: string, keepName: string) => descriptions.find(row => row.project_id === project && row.name === keepName)?.description;
   // 바꾼 대상의 보관본이 있으면 그 설명이 먼저다(덮어쓰기). 없으면 쓰던 보관본(창이 처음 보인 프로젝트)의 설명이 따라온다.
   const description = typed ?? describe(projectId, normalizedName) ?? describe(openedProjectId, initialKeepName) ?? "";
+  // 설명을 안 썼으면 목록을 받은 뒤에 보관한다 — 새 이름은 서버 exists 도 없어 쓰던 설명을 잃는다.
+  const waitingDescriptions = typed === null && descriptionsState === "loading";
   useEffect(() => {
     let active = true;
     setDescriptions([]);
+    setDescriptionsState("loading");
     void sceneKeepApi.list(scope).then(items => {
       if (!active) return;
-      // An exists/conflict response may already be newer than this initial list.
-      setDescriptions(previous => [...previous, ...items.filter(item =>
-        !previous.some(row => row.project_id === item.project_id && row.name === item.name))]);
-    }, () => { /* A failed list must not block saving; exists supplies the current description. */ });
+      setDescriptions(items);
+      setDescriptionsState("ready");
+    }, () => { if (active) setDescriptionsState("failed"); }); // 목록 실패가 보관을 막지는 않는다. 같은 이름이면 exists 가 설명을 준다.
     return () => { active = false; };
   }, [scope]);
   function rememberDescription(payload: SceneKeepPayload, value: string) {
@@ -113,8 +116,9 @@ export function SceneKeepDialog({ scope, name: initialName, projectId: initialPr
         <label>설명<textarea className="settings-input" value={description} maxLength={2000} disabled={busy} onChange={e => { setTyped(e.target.value); setRetryPayload(null); }} /></label>
       </>}
       {(projectsFailed || error) && <p className="login-error" role="alert">{projectsFailed ? "프로젝트 목록을 불러오지 못했습니다." : error}</p>}
+      {descriptionsState === "failed" && typed === null && !overwrite && !description && <p className="login-error" role="alert">설명을 불러오지 못했습니다. 같은 이름의 보관본이 없으면 설명 없이 보관됩니다.</p>}
       <div className="admin-confirm-actions">
-        <button className="admin-confirm-yes" disabled={busy || projectsLoading || projectsFailed} onClick={() => void save()}>{overwrite ? "덮어쓰기" : "보관"}</button>
+        <button className="admin-confirm-yes" disabled={busy || projectsLoading || projectsFailed || waitingDescriptions} onClick={() => void save()}>{overwrite ? "덮어쓰기" : "보관"}</button>
         <button className="admin-confirm-no" disabled={busy} onClick={() => overwrite ? setOverwrite(null) : onClose()}>취소</button>
       </div>
     </div>

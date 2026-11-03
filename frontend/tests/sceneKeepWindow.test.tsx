@@ -357,10 +357,39 @@ it.each(["내가 쓴 설명", ""])("늦은 목록은 사용자가 입력한 설�
   await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
   await change(textarea(), "입력 시작");
   await change(textarea(), text);
+  await click(button("보관")); // 직접 쓴 글은 목록을 기다리지 않는다
+  expect(save).toHaveBeenLastCalledWith(scope, expect.objectContaining({ description: text }));
   await act(async () => listing.resolve([described("늦게 온 옛 설명")]));
   expect(textarea().value).toBe(text);
+});
+
+it("설명을 안 썼으면 목록을 받기 전에는 보관되지 않고, 받으면 이름을 바꿨어도 쓰던 설명이 실린다", async () => {
+  const listing = deferred<SceneKeepRow[]>();
+  vi.mocked(sceneKeepApi.list).mockReturnValue(listing.promise);
+  const save = vi.spyOn(sceneKeepApi, "save").mockResolvedValue({ status: "saved", id: "b", revision: 1, missing_count: 0 });
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  await change(host.querySelector<HTMLInputElement>("input")!, "새 이름");
+  expect(button("보관").disabled).toBe(true);
   await click(button("보관"));
-  expect(save).toHaveBeenLastCalledWith(scope, expect.objectContaining({ description: text }));
+  expect(save).not.toHaveBeenCalled();
+  await act(async () => listing.resolve([described("쓰던 설명", "사본")]));
+  expect(button("보관").disabled).toBe(false);
+  await click(button("보관"));
+  expect(save).toHaveBeenCalledWith(scope, expect.objectContaining({ name: "새 이름", description: "쓰던 설명" }));
+});
+
+it("목록을 못 받으면 안내가 보이고 보관은 막히지 않으며, exists 로 설명을 받으면 안내가 사라진다", async () => {
+  vi.mocked(sceneKeepApi.list).mockRejectedValue(new Error("목록 실패"));
+  const save = vi.spyOn(sceneKeepApi, "save").mockResolvedValue({ status: "exists", id: "a", revision: 3, updated_at: "now", description: "서버 설명" });
+  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
+  expect(host.textContent).toContain("설명을 불러오지 못했습니다");
+  expect(button("보관").disabled).toBe(false);
+  await click(button("보관"));
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(host.textContent).not.toContain("설명을 불러오지 못했습니다");
+  await click(button("취소"));
+  expect(textarea().value).toBe("서버 설명");
+  expect(host.textContent).not.toContain("설명을 불러오지 못했습니다");
 });
 
 it("exists 확인 취소 뒤에는 최신 설명을 유지하며 현재 씬을 새로 캡처한다", async () => {
@@ -396,17 +425,6 @@ it("conflict에서 보존한 재시도 사본은 exists에서도 유지하며 �
   await click(button("보관"));
   expect(capture).toHaveBeenCalledTimes(1);
   expect(save.mock.calls[3][1]).toEqual({ ...payload, description: "latest" });
-});
-
-it("exists 뒤 도착한 초기 목록은 서버가 방금 준 설명을 되돌리지 않는다", async () => {
-  const listing = deferred<SceneKeepRow[]>();
-  vi.mocked(sceneKeepApi.list).mockReturnValue(listing.promise);
-  vi.spyOn(sceneKeepApi, "save").mockResolvedValue({ status: "exists", id: "a", revision: 2, updated_at: "now", description: "최신" });
-  await act(async () => root.render(<SceneKeepDialog scope={scope} name="사본" projectId="p" projects={[project]} capture={captureInput} onSaved={vi.fn()} onClose={vi.fn()} />));
-  await click(button("보관"));
-  await act(async () => listing.resolve([described("옛 값")]));
-  await click(button("취소"));
-  expect(textarea().value).toBe("최신");
 });
 
 it("exists·conflict는 각각 서버 최신 설명을 덮어쓰기 사본과 취소 후 화면에 반영한다", async () => {
