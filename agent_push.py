@@ -567,8 +567,14 @@ _CREATE_SUSPENDED = 0x00000004
 _JOB_KILL_ON_CLOSE = 0x00002000
 _JOB_EXTENDED_LIMIT_CLASS = 9
 _JOB_BASIC_ACCOUNTING_CLASS = 1
+_JOB_PROCESS_ID_LIST_CLASS = 3
 _THREAD_SUSPEND_RESUME = 0x0002
 _TH32CS_SNAPTHREAD = 0x00000004
+_SYNCHRONIZE = 0x00100000
+_WAIT_OBJECT_0 = 0
+_ERROR_INVALID_PARAMETER = 87  # OpenProcess: 그 pid 의 프로세스가 이미 없다
+_ERROR_MORE_DATA = 234  # QueryInformationJobObject: 목록 버퍼가 모자라다
+_JOB_PID_LIST_START = 64  # 목록 버퍼의 처음 크기 — 모자라면 두 배씩 키운다
 _INVALID_HANDLE = wintypes.HANDLE(-1).value
 
 
@@ -600,6 +606,13 @@ class _THREADENTRY32(ctypes.Structure):
                 ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
 
 
+def _pid_list_type(capacity: int):
+    class _JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+        _fields_ = [("NumberOfAssignedProcesses", wintypes.DWORD), ("NumberOfProcessIdsInList", wintypes.DWORD),
+                    ("ProcessIdList", ctypes.c_size_t * capacity)]
+    return _JOBOBJECT_BASIC_PROCESS_ID_LIST
+
+
 _K32 = None
 
 
@@ -620,6 +633,8 @@ def _kernel32():
             ("Thread32Next", [h, ctypes.POINTER(_THREADENTRY32)], b),
             ("OpenThread", [d, b, d], h),
             ("ResumeThread", [h], d),
+            ("OpenProcess", [d, b, d], h),
+            ("WaitForSingleObject", [h, d], d),
             ("CloseHandle", [h], b),
         ):
             fn = getattr(k, name)
@@ -704,22 +719,103 @@ def _job_active(job):
     return int(info.ActiveProcesses) if ok else None
 
 
+def _job_pids(job):
+    """Job 에 든 프로세스 pid 들(지금 순간). 버퍼가 모자라면 키워 다시 읽는다. 조회 실패면 None — 빈 목록으로 읽지 않는다."""
+    capacity = _JOB_PID_LIST_START
+    while capacity <= 4096:
+        info = _pid_list_type(capacity)()
+        ok = _kernel32().QueryInformationJobObject(job, _JOB_PROCESS_ID_LIST_CLASS, ctypes.byref(info), ctypes.sizeof(info), None)
+        if ok and int(info.NumberOfAssignedProcesses) <= capacity:
+            return [int(info.ProcessIdList[i]) for i in range(min(int(info.NumberOfProcessIdsInList), capacity))]
+        if not ok and ctypes.get_last_error() != _ERROR_MORE_DATA:
+            return None
+        capacity *= 2  # 모자라면(ok 인데 할당 수가 더 크거나 ERROR_MORE_DATA) 키워 다시 읽는다
+    return None
+
+
+def _warn(text: str) -> None:
+    print(f"[경고] {text} — taskkill 로 다시 시도", file=sys.stderr)  # stderr 로 — stdout 은 `--startup-version` 이 한 단어로 약속한 자리다
+
+
 def _end_cli_job(job, proc) -> bool:
-    """Job 의 트리를 끝내고 남은 수가 0 이 될 때까지 최대 5초 본다. 못 끝냈으면 경고를 찍고 False(호출자가 taskkill 길도 탄다).
-    경고는 stderr 로 — stdout 은 `--startup-version` 이 한 단어로 약속한 자리다."""
+    """Job 의 트리를 끝내고 그 프로세스들이 실제로 끝날 때까지(손잡이 신호 + 남은 수 0) 최대 5초 본다. 남은 수가 0 이 된 뒤에도
+    종료 코드가 보이기까지 몇 ms 틈이 있어, 끝내기 전에 연 손잡이로 하나씩 기다린다. 목록은 두 번 연속 같을 때까지 다시 읽어
+    그 사이 생긴 자손의 손잡이도 모은다(종료 중인 프로세스는 목록에서 먼저 빠지므로 끝낸 뒤에 읽으면 늦다). 끝낸 뒤 목록을 한 번
+    더 읽어 남은 pid 가 있으면 마저 기다린다. 목록·손잡이·종료·신호 어느 하나라도 확인하지 못하면 경고를 찍고 False(호출자가
+    taskkill 길도 탄다). shortcut: 마지막 목록과 종료 사이에 생긴 자손은 Job 이 끝내지만 신호는 못 기다린다 — 종료는 됐고 종료 코드만
+    몇 ms 늦게 보일 수 있다, 그 틈이 실측되면 멈춘 채 띄우기를 자손까지 넓힌다."""
     k32 = _kernel32()
-    if not k32.TerminateJobObject(job, 1):
-        print(f"[경고] CLI 트리 종료 실패(TerminateJobObject 오류 {ctypes.get_last_error()}) — taskkill 로 다시 시도", file=sys.stderr)
+    handles: list = []
+    try:
+        seen: set = set()
+
+        def grab(pid, before_terminate: bool) -> bool:
+            handle = k32.OpenProcess(_SYNCHRONIZE, False, pid)
+            seen.add(pid)
+            if handle:
+                handles.append(handle)
+                return True
+            if not before_terminate and ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
+                return True  # 이미 사라졌다 — 기다릴 것이 없다
+            _warn(f"CLI 프로세스 손잡이를 열지 못했다(pid {pid}, 오류 {ctypes.get_last_error()})")
+            return False
+
+        def fresh_pids():
+            listed = _job_pids(job)
+            if listed is None:
+                _warn("CLI 트리의 프로세스 목록을 읽지 못했다")
+            return None if listed is None else [pid for pid in listed if pid not in seen]
+
+        stable = False
+        for _ in range(8):  # 목록이 두 번 연속 같을 때까지(트리가 몇 개뿐이라 보통 두 번)
+            fresh = fresh_pids()
+            if fresh is None:
+                return False
+            if not fresh:
+                stable = True
+                break
+            for pid in fresh:
+                if not grab(pid, True):
+                    return False
+        if not stable:
+            k32.TerminateJobObject(job, 1)  # 계속 늘어나는 트리 — 끝내기는 하되 '다 기다렸다'고 하지 않는다
+            _warn("CLI 트리의 프로세스 목록이 안정되지 않았다(8회)")
+            return False
+        if not k32.TerminateJobObject(job, 1):
+            _warn(f"CLI 트리 종료 실패(TerminateJobObject 오류 {ctypes.get_last_error()})")
+            return False
+        deadline = time.monotonic() + 5
+        waited = 0
+        while True:
+            for handle in handles[waited:]:
+                left_ms = max(int((deadline - time.monotonic()) * 1000), 0)
+                result = k32.WaitForSingleObject(handle, left_ms)
+                if result != _WAIT_OBJECT_0:
+                    _warn(f"CLI 프로세스의 종료 신호를 받지 못했다(WaitForSingleObject {result}, 오류 {ctypes.get_last_error()})")
+                    return False
+            waited = len(handles)
+            fresh = fresh_pids()  # 끝내기 직전에 생겨 아직 목록에 남은 자손
+            if fresh is None:
+                return False
+            if not fresh:
+                break
+            for pid in fresh:
+                if not grab(pid, False):
+                    return False
+        while time.monotonic() < deadline:
+            if _job_active(job) == 0:
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
+                return True
+            time.sleep(0.05)
+        _warn(f"CLI 트리에 프로세스가 남았다({_job_active(job)})")
         return False
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        if _job_active(job) == 0:
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=5)
-            return True
-        time.sleep(0.05)
-    print(f"[경고] CLI 트리에 프로세스가 남았다({_job_active(job)}) — taskkill 로 다시 시도", file=sys.stderr)
-    return False
+    except OSError as exc:
+        _warn(f"CLI 트리 종료 확인 중 오류({exc})")
+        return False
+    finally:
+        for handle in handles:
+            k32.CloseHandle(handle)
 
 
 class _JobUnusable(Exception):

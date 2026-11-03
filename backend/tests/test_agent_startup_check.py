@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from contextlib import suppress as contextlib_suppress
 from pathlib import Path
 
 import pytest
@@ -236,6 +237,7 @@ def test_a_finished_parent_with_an_open_pipe_ends_its_grandchild(tmp_path, monke
         return ok
 
     monkeypatch.setattr(agent, "_end_cli_job", end)
+    proxy = _proxy(agent, monkeypatch)
     started = time.monotonic()
     try:
         with pytest.raises(subprocess.TimeoutExpired) as timed_out:
@@ -243,7 +245,8 @@ def test_a_finished_parent_with_an_open_pipe_ends_its_grandchild(tmp_path, monke
         assert 5 < time.monotonic() - started < 25  # 호출의 제한 시간까지 기다린다
         assert "partial" in timed_out.value.stdout
         assert left == [0]  # Job 이 손자까지 끝냈다 — 이중 과금 틈(늦게 접수하는 자손)이 없다
-        assert not _alive(int(pids.read_text()))
+        assert not _alive(int(pids.read_text()))  # 돌아온 직후 — 손잡이로 기다렸으니 종료 코드까지 보인다
+        assert proxy.calls["OpenProcess"] >= 1 and _opened_equals_closed(proxy)
     finally:
         _stop([int(pids.read_text())])
 
@@ -289,18 +292,24 @@ def test_the_child_joins_its_job_before_it_runs(tmp_path, monkeypatch):
     assert seen["pid"] in [int(word) for word in done.stdout.split()]
 
 
+_OPENERS = ("CreateJobObjectW", "CreateToolhelp32Snapshot", "OpenThread", "OpenProcess")
+
+
 class _K32Proxy:
     """실제 kernel32 를 감싸 호출 수를 세고 일부 함수를 바꿔 끼운다 — 손잡이 누수·종료 API 실패 시험용."""
 
     def __init__(self, real, **overrides):
-        self._real, self._overrides, self.calls = real, overrides, Counter()
+        self._real, self._overrides, self.calls, self.opened = real, overrides, Counter(), 0
 
     def __getattr__(self, name):
         target = self._overrides.get(name) or getattr(self._real, name)
 
         def call(*args):
             self.calls[name] += 1
-            return target(*args)
+            result = target(*args)
+            if name in _OPENERS and result and result != 0xFFFFFFFFFFFFFFFF:
+                self.opened += 1  # 실제로 연 손잡이만 센다(실패한 OpenProcess 는 닫을 것이 없다)
+            return result
         return call
 
 
@@ -311,8 +320,148 @@ def _proxy(agent, monkeypatch, **overrides) -> _K32Proxy:
 
 
 def _opened_equals_closed(proxy: _K32Proxy) -> bool:
-    opened = proxy.calls["CreateJobObjectW"] + proxy.calls["CreateToolhelp32Snapshot"] + proxy.calls["OpenThread"]
-    return opened > 0 and opened == proxy.calls["CloseHandle"]
+    return proxy.opened > 0 and proxy.opened == proxy.calls["CloseHandle"]
+
+
+STUCK_PARENT = GRANDCHILD + """
+import os, time
+open({pids!r}, "w").write(f"{{os.getpid()}} {{child.pid}}")
+time.sleep(60)
+"""  # 부모도 손자도 멈춘다 — 시간 초과 때 트리 전체를 끝내야 한다
+
+
+def _ended_by_taskkill(agent, monkeypatch, tmp_path, capsys, warning: str, **overrides):
+    """Job 종료 확인이 실패하는 경우 — 경고를 stderr 에 찍고 taskkill 길이 멈춘 부모와 손자를 끝낸다."""
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, STUCK_PARENT.format(pids=str(pids)))
+    proxy = _proxy(agent, monkeypatch, **overrides)
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=3)
+    pid_list = [int(value) for value in pids.read_text().split()]
+    try:
+        assert time.monotonic() - started < 30
+        assert warning in capsys.readouterr().err
+        assert not any(_alive(pid) for pid in pid_list)
+        assert _opened_equals_closed(proxy)  # 확인에 실패해도 연 손잡이는 닫힌다
+    finally:
+        _stop(pid_list)
+    return proxy
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_wait_that_fails_is_not_taken_as_ended(tmp_path, monkeypatch, capsys):
+    _ended_by_taskkill(_load_agent(), monkeypatch, tmp_path, capsys, "종료 신호를 받지 못했다", WaitForSingleObject=lambda *_a: 0xFFFFFFFF)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_an_unreadable_pid_list_is_not_taken_as_ended(tmp_path, monkeypatch, capsys):
+    _ended_by_taskkill(_load_agent(), monkeypatch, tmp_path, capsys, "프로세스 목록을 읽지 못했다", QueryInformationJobObject=lambda *_a: 0)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_handle_that_cannot_be_opened_is_not_taken_as_ended(tmp_path, monkeypatch, capsys):
+    agent = _load_agent()
+    real_open = agent._kernel32().OpenProcess
+    calls = Counter()
+
+    def second_open_fails(*args):
+        calls["n"] += 1
+        return real_open(*args) if calls["n"] == 1 else 0  # 첫 손잡이는 열리고 둘째는 실패 — 첫 손잡이가 닫히는지도 본다
+
+    proxy = _ended_by_taskkill(agent, monkeypatch, tmp_path, capsys, "손잡이를 열지 못했다", OpenProcess=second_open_fails)
+    assert proxy.opened >= 2  # Job 하나 + 첫 손잡이
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_pid_list_that_outgrows_the_first_buffer_is_read_whole(tmp_path, monkeypatch):
+    agent = _load_agent()
+    monkeypatch.setattr(agent, "_JOB_PID_LIST_START", 1)  # 버퍼 하나로 시작 — 셰임·파이썬·손자가 있으니 키워야 다 읽는다
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, STUCK_PARENT.format(pids=str(pids)))
+    seen: dict = {}
+    real_end = agent._end_cli_job
+
+    def end(job, proc):
+        seen["pids"] = agent._job_pids(job)
+        return real_end(job, proc)
+
+    monkeypatch.setattr(agent, "_end_cli_job", end)
+    with pytest.raises(subprocess.TimeoutExpired):
+        agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=3)
+    pid_list = [int(value) for value in pids.read_text().split()]
+    try:
+        assert set(pid_list) <= set(seen["pids"]) and len(seen["pids"]) >= 3
+        assert not any(_alive(pid) for pid in pid_list)
+    finally:
+        _stop(pid_list)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_list_that_never_settles_is_not_taken_as_ended(tmp_path, monkeypatch, capsys):
+    """매번 새 pid 가 보이는 목록 — 8회 안에 안정되지 않으면 경고하고 taskkill 길로 간다. 손잡이는 닫힌다."""
+    agent = _load_agent()
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, STUCK_PARENT.format(pids=str(pids)))
+    helpers: list = []
+    try:
+        for _ in range(9):  # Job 밖 — 열 수는 있는 pid 들(venv 셰임이면 자식까지 트리라 끝낼 때 /T 로)
+            helpers.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]))
+        real_pids = agent._job_pids
+        calls = Counter()
+
+        def always_one_more(job):
+            calls["n"] += 1
+            listed = real_pids(job)
+            return None if listed is None else listed + [h.pid for h in helpers[:calls["n"]]]
+
+        monkeypatch.setattr(agent, "_job_pids", always_one_more)
+        proxy = _proxy(agent, monkeypatch)
+        with pytest.raises(subprocess.TimeoutExpired):
+            agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=3)
+        pid_list = [int(value) for value in pids.read_text().split()]
+        try:
+            assert calls["n"] == 8
+            assert "안정되지 않았다" in capsys.readouterr().err
+            assert not any(_alive(pid) for pid in pid_list)  # Job 종료 + taskkill 길이 트리를 끝냈다
+            assert all(h.poll() is None for h in helpers)  # Job 밖 프로세스는 건드리지 않는다
+            assert _opened_equals_closed(proxy)
+        finally:
+            _stop(pid_list)
+    finally:
+        _stop([h.pid for h in helpers])  # 트리째(셰임 + 파이썬)
+        for h in helpers:
+            with contextlib_suppress(subprocess.TimeoutExpired):
+                h.wait(timeout=10)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
+def test_a_descendant_born_after_the_snapshot_is_still_waited_for(tmp_path, monkeypatch):
+    """끝내기 직전에 생긴 자손 흉내 — 첫 목록에서 손자를 빼면, 끝낸 뒤 다시 읽은 목록으로 그 손자도 기다린다."""
+    agent = _load_agent()
+    pids = tmp_path / "pids.txt"
+    _cli_script(agent, monkeypatch, tmp_path, STUCK_PARENT.format(pids=str(pids)))
+    real_pids = agent._job_pids
+    calls = Counter()
+
+    def pids_without_the_grandchild_first(job):
+        calls["n"] += 1
+        listed = real_pids(job)
+        if calls["n"] == 1 and listed:
+            return listed[:1]  # 손자(와 셰임의 자식)는 아직 '없던' 것으로
+        return listed
+
+    monkeypatch.setattr(agent, "_job_pids", pids_without_the_grandchild_first)
+    proxy = _proxy(agent, monkeypatch)
+    with pytest.raises(subprocess.TimeoutExpired):
+        agent._run_with_tree_kill(agent._cli_argv("hf"), timeout=3)
+    pid_list = [int(value) for value in pids.read_text().split()]
+    try:
+        assert calls["n"] >= 2  # 끝낸 뒤 목록을 다시 읽었다
+        assert not any(_alive(pid) for pid in pid_list)  # 돌아온 직후 — 늦게 본 자손도 끝나 있다
+        assert _opened_equals_closed(proxy)
+    finally:
+        _stop(pid_list)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 프로세스 트리 전용")
@@ -404,6 +553,7 @@ time.sleep(60)
         assert "종료 실패" in capsys.readouterr().err
         assert proxy.calls["TerminateJobObject"] == 1
         assert not any(_alive(pid) for pid in pid_list)  # taskkill /T 가 멈춘 부모와 손자를 끝냈다
+        assert _opened_equals_closed(proxy)  # 끝내기 전에 연 손잡이도 닫혔다
     finally:
         _stop(pid_list)
 
