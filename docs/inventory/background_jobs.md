@@ -112,6 +112,7 @@
 
 | `while True` 를 가진 함수(상주 루프 후보) |
 | --- |
+| `_end_cli_job` |
 | `_file_fingerprint` |
 | `_masked_password_input` |
 | `_upload_for_media` |
