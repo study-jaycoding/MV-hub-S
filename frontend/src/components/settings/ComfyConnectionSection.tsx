@@ -39,6 +39,12 @@ export function personalKeyText(hasKey: boolean): string {
   return hasKey ? "지금 쓰는 키: 개인 키(이 PC 에 넣은 키)" : "개인 키 없음 — 아래 칸에 넣으세요. 키가 필요 없는 워크플로는 그대로 실행됩니다";
 }
 
+/** 키 출처 단추는 초안이다 — 저장된 값과 다르면 '지금 쓰는 키' 대신 이 줄(실행은 저장된 값으로 한다, 2026-11-04 Codex 리뷰). */
+export function pendingKeyText(source: "team" | "personal", hasKey: boolean): string {
+  if (source === "team") return "저장하면 팀 키로 바뀝니다";
+  return hasKey ? "저장하면 개인 키(이 PC 에 넣은 키)로 바뀝니다" : "저장하면 개인 키로 바뀝니다 — 아래 칸에 키를 넣으세요";
+}
+
 export function ComfyConnectionSection() {
   const [s, setS] = useState<ComfySettings | null>(null);
   const [saved, setSaved] = useState<ComfySettings | null>(null);
@@ -190,7 +196,11 @@ export function ComfyConnectionSection() {
               </button>
             </div>
           </div>
-          {keySourceOf(s) === "team" ? (
+          {saved && keySourceOf(s) !== keySourceOf(saved) ? (
+            <p className="settings-hint comfy-key-now" data-state="pending">
+              {pendingKeyText(keySourceOf(s), s.has_api_key || apiKeyEdit.length > 0)}
+            </p>
+          ) : keySourceOf(s) === "team" ? (
             <p className="settings-hint comfy-key-now" data-state={s.team_key?.state ?? "off"}>
               {teamKeyText(s.team_key?.state ?? "off", s.team_key?.updated_at)}
             </p>

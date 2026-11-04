@@ -262,3 +262,27 @@ it("설정 — 목록 밖을 누르면 고르지 않고 닫힌다", () => {
   expect(host.querySelector(".tree-theme-list")).toBeNull();
   expect(onTreeTheme).not.toHaveBeenCalled();
 });
+
+// 2026-11-04 Codex 리뷰 — 키보드로 고르면 초점이 목록과 함께 사라졌고 방향키·Esc 가 없었다
+it("설정 — 목록은 키보드로 쓴다: 열면 고른 항목에 초점, 위·아래로 옮기고(끝에서 돌아감), 고르거나 Esc 면 초점이 지금 값 단추로", () => {
+  const onTreeTheme = vi.fn();
+  act(() => root.render(<Settings onTreeTheme={onTreeTheme} />));
+  const button = host.querySelector<HTMLButtonElement>(".tree-theme-btn")!;
+  const focusedText = () => (document.activeElement as HTMLElement | null)?.textContent;
+  const key = (k: string) => act(() => {
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+  });
+  act(() => button.click());
+  expect(focusedText()).toBe("기본화살표 + 폴더 아이콘");
+  key("ArrowDown");
+  expect(focusedText()).toBe("v1막대·선");
+  key("ArrowDown");
+  expect(focusedText()).toBe("기본화살표 + 폴더 아이콘");
+  key("ArrowUp");
+  expect(focusedText()).toBe("v1막대·선");
+  act(() => (document.activeElement as HTMLButtonElement).click()); // 단추의 Enter = 누름
+  expect([onTreeTheme.mock.calls, host.querySelector(".tree-theme-list"), document.activeElement]).toEqual([[["v1"]], null, button]);
+  act(() => button.click());
+  key("Escape");
+  expect([onTreeTheme.mock.calls.length, host.querySelector(".tree-theme-list"), document.activeElement]).toEqual([1, null, button]);
+});

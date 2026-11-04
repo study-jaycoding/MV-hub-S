@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { api } from "../../api";
 import { ACCENT_PRESETS, FOLDER_TREE_THEMES, type FolderTreeTheme, type Lang } from "../../lib/theme";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { fsaSupported } from "../../lib/downloadDir";
 import { fmtBackupWhen } from "../../lib/format";
@@ -89,21 +90,38 @@ function FolderTreeThemePicker({ value, onChange }: { value: FolderTreeTheme; on
   const t = useT();
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   useOutsideMouseDown(boxRef, () => setOpen(false), open);
+  // 고르거나 Esc 로 닫으면 초점을 지금 값 단추로 돌려준다 — 목록과 함께 초점이 사라지면 다음 Tab 자리를 잃는다(2026-11-04 Codex 리뷰).
+  //  Esc 는 맨 위 겹만 닫는다(lib/useEscapeClose) — 설정 창까지 닫히지 않는다.
+  const close = () => { setOpen(false); btnRef.current?.focus(); };
+  useEscapeClose(close, open, true, true);
+  useEffect(() => {
+    if (open) listRef.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus();
+  }, [open]);
+  const onListKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const down = event.key === "ArrowDown";
+    items[at < 0 ? (down ? 0 : items.length - 1) : (at + (down ? 1 : items.length - 1)) % items.length]?.focus();
+  };
   const current = FOLDER_TREE_THEMES.find((item) => item.key === value) ?? FOLDER_TREE_THEMES[0];
   return (
     <div className="tree-theme-pick" ref={boxRef}>
-      <button type="button" className="tree-theme-btn" aria-haspopup="listbox" aria-expanded={open}
+      <button ref={btnRef} type="button" className="tree-theme-btn" aria-haspopup="listbox" aria-expanded={open}
         onClick={() => setOpen((was) => !was)}>
         <span>{t(current.label)}</span>
         <span className="tree-theme-caret" aria-hidden="true">⌄</span>
       </button>
       {open && (
-        <div className="sl-dropdown tree-theme-list" role="listbox" aria-label={t("필터 테마")}>
+        <div ref={listRef} className="sl-dropdown tree-theme-list" role="listbox" aria-label={t("필터 테마")} onKeyDown={onListKey}>
           {FOLDER_TREE_THEMES.map((item) => (
             <button key={item.key} type="button" role="option" aria-selected={item.key === value}
               className={"sl-dd-item" + (item.key === value ? " sel" : "")}
-              onClick={() => { onChange(item.key); setOpen(false); }}>
+              onClick={() => { onChange(item.key); close(); }}>
               <span>{t(item.label)}</span>
               <small>{t(item.hint)}</small>
             </button>

@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComfyConnectionSection, hasUnsavedComfySettings, keySourceOf, personalKeyText, teamKeyText } from "../src/components/settings/ComfyConnectionSection";
+import { ComfyConnectionSection, hasUnsavedComfySettings, keySourceOf, pendingKeyText, personalKeyText, teamKeyText } from "../src/components/settings/ComfyConnectionSection";
 import { comfyApi, type ComfySettings, type TeamKeyState } from "../src/lib/comfyApi";
 
 const saved: ComfySettings = {
@@ -60,6 +60,16 @@ describe("'지금 쓰는 키' 안내 줄", () => {
     expect(personalKeyText(false)).toContain("개인 키 없음");
     for (const text of [personalKeyText(true), personalKeyText(false)]) expect(text).not.toMatch(/(\.\.\.|…)\s*$/);
   });
+
+  it("저장 전 바뀐 출처 줄은 '저장하면' 으로 말하고 '지금 쓰는 키' 라고 하지 않는다", () => {
+    const texts = [pendingKeyText("team", false), pendingKeyText("personal", true), pendingKeyText("personal", false)];
+    for (const text of texts) {
+      expect(text.startsWith("저장하면")).toBe(true);
+      expect(text).not.toContain("지금 쓰는 키");
+      expect(text).not.toMatch(/(\.\.\.|…)\s*$/);
+    }
+    expect(pendingKeyText("personal", false)).toContain("아래 칸에 키를 넣으세요");
+  });
 });
 
 describe("설정 화면", () => {
@@ -104,13 +114,15 @@ describe("설정 화면", () => {
     await act(async () => { keyButton("개인 키").click(); });
     expect(keyInput().disabled).toBe(false);
     expect(picked()).toEqual(["개인 키"]);
-    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(personalKeyText(false)); // 이 PC 엔 저장된 키가 없다
+    // 아직 저장 전 — 실행은 저장된 팀 키로 하니 '지금 쓰는 키' 가 아니라 '저장하면' 줄(2026-11-04 Codex 리뷰). 이 PC 엔 저장된 키가 없다
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(pendingKeyText("personal", false));
     const save = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "저장")!;
     expect(save.disabled).toBe(false);
     await act(async () => { save.click(); });
     expect(put).toHaveBeenCalledTimes(1);
     expect(put.mock.calls[0][0]).toMatchObject({ comfy_key_source: "personal" });
     expect(put.mock.calls[0][0]).not.toHaveProperty("comfy_api_key"); // 비워 둔 칸은 기존 키 유지
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(personalKeyText(false)); // 저장 뒤에는 지금 쓰는 키 줄
   });
 
   it("상태마다 안내 줄이 바뀌고 옛 허브(출처 없음)에는 키 출처 칸이 없다", async () => {
@@ -125,13 +137,15 @@ describe("설정 화면", () => {
     expect(keyInput().disabled).toBe(false);
   });
 
-  it("개인 키에 저장된 키가 있으면 같은 자리에 '지금 쓰는 키: 개인 키' 줄, 팀 키를 누르면 팀 줄로 바뀐다", async () => {
+  it("개인 키에 저장된 키가 있으면 같은 자리에 '지금 쓰는 키: 개인 키' 줄, 팀 키를 누르면 '저장하면 팀 키' 줄, 되돌리면 원래 줄", async () => {
     await mount({ ...saved, comfy_key_source: "personal", team_key: null });
     expect(picked()).toEqual(["개인 키"]);
     expect(host.querySelector(".comfy-key-now")?.textContent).toBe(personalKeyText(true));
     await act(async () => { keyButton("팀 키").click(); });
     expect(picked()).toEqual(["팀 키"]);
     expect(keyInput().disabled).toBe(true);
-    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(teamKeyText("off", undefined));
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(pendingKeyText("team", true));
+    await act(async () => { keyButton("개인 키").click(); });
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(personalKeyText(true));
   });
 });
