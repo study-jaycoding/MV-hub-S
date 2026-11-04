@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import (account_rows, actions, activity, backup, console_stage, install, jobs, logs, mcp_stage, moves, names,
+from . import (account_rows, actions, activity, backup, comfy_key, console_stage, install, jobs, logs, mcp_stage, moves, names,
                power, release, server_api, status)
 from . import main as main_boot
 
@@ -39,7 +39,8 @@ SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
-       ("accounts", "계정 정리"), ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"), ("address", "서버 주소"), ("move", "서버 이사"))
+       ("accounts", "계정 정리"), ("comfykey", "Comfy 키"), ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"),
+       ("address", "서버 주소"), ("move", "서버 이사"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
     "generation": ("generations", "최근 생성 — 작업자 PC 가 보낸 정보(프롬프트는 안 보임)",
@@ -179,6 +180,8 @@ class App:
         self.account_rows: list[dict] = []  # 계정 정리 — 서버가 준 줄(판정 포함), 표의 줄 번호가 이 목록의 위치다
         self.accounts_delete_enabled = False  # 서버 GET 의 delete_enabled — 거짓이거나 없으면 삭제 단추를 끈다(판정과 상관없이)
         self.accounts_busy = False
+        self.comfy_key_meta: dict | None = None  # 서버 GET 의 메타(키 조각 없음) — 관리자 로그인 뒤 읽는다
+        self.comfy_key_busy = False
         # 화면별로 따라가는 작업(생성 접수·백업) — 업데이트 작업 보기와 따로(업데이트 중에도 접수는 바꿀 수 있게)
         self.side_jobs: dict[str, str] = {}
         self.backup_view: dict | None = None
@@ -266,7 +269,8 @@ class App:
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
         builders = {"status": self._build_status_page, "intake": self._build_intake_page,
                     "power": self._build_power_page, "backup": self._build_backup_page,
-                    "accounts": self._build_accounts_page, "address": self._build_address_page, "update": self._build_update_page,
+                    "accounts": self._build_accounts_page, "comfykey": self._build_comfy_key_page,
+                    "address": self._build_address_page, "update": self._build_update_page,
                     "release": self._build_release_page, "mcp": self._build_mcp_page, "move": self._build_move_page}
         for key, label in NAV:
             if key not in builders:  # 아직 만들지 않은 화면은 이름만
@@ -304,6 +308,8 @@ class App:
             self.backup_due = True  # 열 때마다 새로 읽는다(작업 스레드)
         if key == "accounts":
             self._load_accounts()
+        if key == "comfykey":
+            self._load_comfy_key()
         if key in ("release", "address"):
             self.release_due = True
         if key == "move":
@@ -829,6 +835,107 @@ class App:
             self.accounts_note.configure(text=f"하지 못했습니다: {problem}", fg=AMBER)
         else:
             self.accounts_note.configure(text=done or f"{len(self.account_rows)}개", fg=LIME if done else MUTED2)
+        self._relogin_if_needed([problem])
+
+    # ---------- Comfy 키(팀 comfy.org API 키 — docs/status/Comfy팀키_서버배포_2026-11-04.md) ----------
+    def _build_comfy_key_page(self, page: tk.Frame) -> None:
+        self._header(page, "팀 Comfy API 키")
+        body = tk.Frame(page, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        tk.Label(body, text=comfy_key.PAGE_TEXT, bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900).pack(anchor="w")
+        card = tk.Frame(body, bg=PANEL, highlightbackground="#26282d", highlightthickness=1)
+        card.pack(fill="x", pady=10)
+        tk.Label(card, text="등록된 키", bg=PANEL, fg=MUTED, font=("Malgun Gothic", 9)).pack(anchor="w", padx=12, pady=(10, 0))
+        self.comfy_key_status = tk.Label(card, text=comfy_key.LOGIN_FIRST, bg=PANEL, fg=TEXT, font=FONT, justify="left", wraplength=900)
+        self.comfy_key_status.pack(anchor="w", padx=12, pady=(0, 10))
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x")
+        tk.Label(row, text="새 키", bg=BG, fg=MUTED, font=FONT).pack(side="left", padx=(0, 8))
+        self.comfy_key_entry = tk.Entry(row, show="•", width=48, bg=PANEL2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT)
+        self.comfy_key_entry.pack(side="left", padx=(0, 8))
+        self.comfy_key_put = self._button(row, "등록 / 교체", self.request_comfy_key_put, primary=True)
+        self.comfy_key_put.pack(side="left", padx=(0, 8))
+        self.comfy_key_delete = self._button(row, "삭제", self.request_comfy_key_delete)
+        self.comfy_key_delete.pack(side="left", padx=(0, 8))
+        self._button(row, "새로 읽기", lambda: self.require_login(self._load_comfy_key)).pack(side="left")
+        tk.Label(body, text=comfy_key.AFTER_TEXT, bg=BG, fg=MUTED2, font=FONT, justify="left", wraplength=900).pack(anchor="w", pady=(10, 0))
+        self.comfy_key_note = tk.Label(body, text="", bg=BG, fg=MUTED, font=FONT, justify="left", wraplength=900)
+        self.comfy_key_note.pack(anchor="w", pady=(6, 0))
+        self._show_comfy_key()
+
+    def _show_comfy_key(self) -> None:
+        meta = self.comfy_key_meta
+        busy = self.comfy_key_busy or self.session is None
+        self.comfy_key_put.configure(state="disabled" if busy else "normal")
+        self.comfy_key_delete.configure(state="normal" if not busy and comfy_key.can_delete(meta) else "disabled")
+        self.comfy_key_status.configure(text=comfy_key.LOGIN_FIRST if self.session is None else comfy_key.status_text(meta),
+                                        fg=AMBER if meta and meta.get("state") == "undecryptable" else TEXT)
+
+    def _load_comfy_key(self) -> None:
+        if self.session is None:
+            self.comfy_key_meta = None
+            self._show_comfy_key()
+        elif not self.comfy_key_busy:
+            self._start_comfy_key(None, "읽는 중")
+
+    def _start_comfy_key(self, action, text: str) -> None:
+        self.comfy_key_busy = True
+        self._show_comfy_key()
+        self.comfy_key_note.configure(text=text, fg=MUTED)
+        threading.Thread(target=self._comfy_key_worker, args=(self.session, action), daemon=True).start()
+
+    def request_comfy_key_put(self) -> None:
+        if self.session is None or self.comfy_key_busy:
+            return
+        key = self.comfy_key_entry.get().strip()
+        if not key:
+            self.comfy_key_note.configure(text="새 키를 붙여 넣은 뒤 누르세요", fg=AMBER)
+            return
+        if messagebox.askokcancel("팀 Comfy 키 등록", comfy_key.put_confirm_text(self.comfy_key_meta), default="cancel"):
+            self.comfy_key_entry.delete(0, "end")  # 화면에 남기지 않는다
+            self._start_comfy_key(("put", key), "등록하는 중")
+
+    def request_comfy_key_delete(self) -> None:
+        if self.session is None or self.comfy_key_busy or not comfy_key.can_delete(self.comfy_key_meta):
+            return
+        if messagebox.askokcancel("팀 Comfy 키 삭제", comfy_key.delete_confirm_text(), icon="warning", default="cancel"):
+            self._start_comfy_key(("delete", None), "지우는 중")
+
+    def _comfy_key_worker(self, session: server_api.Session, action) -> None:
+        """하고 나서 늘 다시 읽는다 — 거절돼도, 응답을 잃어도 화면이 서버의 지금 상태를 보이게. 키는 요청 본문 말고 어디에도 안 남긴다."""
+        done, problem, meta = "", "", None
+        try:
+            server = server_api.verify_server(self.inst, self.runner)  # 토큰을 보내기 전에 늘 다시 확인
+            if action is not None:
+                try:
+                    kind, key = action
+                    if kind == "put":
+                        done = comfy_key.done_text("put", server_api.put_comfy_key(server, session.token, key))
+                    else:
+                        done = comfy_key.done_text("delete", server_api.delete_comfy_key(server, session.token))
+                except server_api.AuthExpired:
+                    raise
+                except server_api.ServerError as exc:
+                    problem = str(exc)
+            meta = server_api.read_comfy_key(server, session.token)
+        except server_api.ServerError as exc:
+            problem = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            problem = f"확인 중 오류: {type(exc).__name__}: {exc}"[:300]
+        self._put(("comfy_key", session, meta, done, problem))
+
+    def _on_comfy_key(self, session, meta, done: str, problem: str) -> None:
+        self.comfy_key_busy = False
+        if self.session is not session:  # 로그아웃·계정이 바뀐 뒤 온 응답은 버린다
+            self._show_comfy_key()
+            return
+        if meta is not None:
+            self.comfy_key_meta = meta
+        self._show_comfy_key()
+        if problem:
+            self.comfy_key_note.configure(text=f"하지 못했습니다: {problem}", fg=AMBER)
+        else:
+            self.comfy_key_note.configure(text=done or "", fg=LIME if done else MUTED2)
         self._relogin_if_needed([problem])
 
     # ---------- 켜기·끄기(설계 B-1·B-3) ----------
@@ -2064,6 +2171,8 @@ class App:
             self._refresh_intake()  # 로그인하면 생성 접수를 서버 값으로 다시 읽는다
             if self.page == "accounts":
                 self._load_accounts()
+            if self.page == "comfykey":
+                self._load_comfy_key()
 
     def _close_login(self, keep_pending: bool = False) -> None:
         if not keep_pending:
@@ -2365,6 +2474,8 @@ class App:
             self._show_move()
         elif kind == "accounts":
             self._on_accounts(item[1], item[2], item[3], item[4])
+        elif kind == "comfy_key":
+            self._on_comfy_key(item[1], item[2], item[3], item[4])
         elif kind == "presence":
             self.presence_inflight = False
             if self.session is not None and self.session is item[1]:  # 로그아웃·계정이 바뀐 뒤 온 응답은 버린다

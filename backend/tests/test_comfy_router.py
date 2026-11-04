@@ -433,7 +433,7 @@ class ComboChoiceTests(unittest.TestCase):
         """make_target/_raw_settings/get_object_info 를 임시 교체(DB·네트워크 없이 테스트)."""
         self._orig = (comfy._raw_settings, comfy.comfy_client.make_target,
                       comfy.comfy_client.get_object_info)
-        comfy._raw_settings = lambda: {}
+        comfy._raw_settings = lambda **_kw: {}  # fetch_team=False 로 불린다(파싱은 팀 키 캐시 값만)
         comfy.comfy_client.make_target = lambda s: {
             "cloud": False, "base": "http://x", "prefix": "", "headers": {}}
         comfy.comfy_client.get_object_info = get_object_info

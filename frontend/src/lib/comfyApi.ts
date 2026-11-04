@@ -28,13 +28,18 @@ export interface ComfyRunMedia extends AssetReferenceIdentity {
 
 // ComfyUI 통합 API — 연결 설정·파싱(노출 후보)·단독 실행. 항상 로컬 허브에서 처리(/api/comfy).
 
+// 팀 키 상태(허브 GET) — docs/status/Comfy팀키_서버배포_2026-11-04.md. off = 이 허브가 공유 서버에 묻지 않음(토큰 없음·NO_PROXY·401/403).
+export type TeamKeyState = "available" | "stale" | "none" | "unreachable" | "undecryptable" | "off";
+
 export interface ComfySettings {
   comfy_url: string;
   comfy_target: "local" | "cloud";
-  comfy_api_key: string; // GET 응답에선 "***"(저장됨) 또는 "" (없음)
+  comfy_api_key: string; // GET 응답에선 "***"(개인 키 저장됨) 또는 "" (없음)
   has_api_key: boolean;
   comfy_concurrency: number;
   comfy_input_dir: string;
+  comfy_key_source?: "team" | "personal"; // 옛 허브는 안 준다 → personal 로 본다
+  team_key?: { state: TeamKeyState; updated_at: string | null }; // 키 조각은 없다
 }
 
 export interface ComfyParamCandidate {
@@ -170,7 +175,7 @@ export const comfyApi = {
     return origin;
   },
   settings: () => jsonFetch<ComfySettings>("/api/comfy/settings"),
-  setSettings: (patch: Partial<Omit<ComfySettings, "has_api_key">>) =>
+  setSettings: (patch: Partial<Omit<ComfySettings, "has_api_key" | "team_key">>) =>
     jsonFetch<ComfySettings>("/api/comfy/settings", { method: "PUT", body: jsonBody(patch) }),
   health: () => jsonFetch<{ alive: boolean; target: string }>("/api/comfy/health"),
   parse: (content: string, exposed?: string[]) =>

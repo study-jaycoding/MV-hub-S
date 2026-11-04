@@ -47,7 +47,7 @@ from ..deps import (
     require_agent_account,
     require_project_role,
 )
-from ..services import comfy_asset_provenance as provenance, comfy_client, comfy_run_journal as run_journal, comfy_run_keys, comfy_workflow, shared_connection, upload_limits, video_convert, worker_backup
+from ..services import comfy_asset_provenance as provenance, comfy_client, comfy_run_journal as run_journal, comfy_run_keys, comfy_team_key, comfy_workflow, shared_connection, upload_limits, video_convert, worker_backup
 from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 from ..services.path_safety import safe_join
@@ -77,6 +77,8 @@ _K_TARGET = "comfy_target"          # "local" | "cloud"
 _K_API_KEY = "comfy_api_key"
 _K_CONCURRENCY = "comfy_concurrency"
 _K_INPUT_DIR = "comfy_input_dir"
+_K_SOURCE = "comfy_key_source"       # "team"(서버가 나눠 주는 팀 키) | "personal"(이 PC 의 comfy_api_key) — 없으면 개인 키 유무로
+_TEAM_KEY_USABLE = ("available", "stale")
 # 제출은 됐지만 아직 이 프로세스가 결과를 회수하지 못한 잡. app_setting 은 이 PC 로컬 DB라
 # 별도 파일 경로·권한 문제 없이 재시작 흔적을 남길 수 있다(키·워크플로우는 저장하지 않는다).
 _K_INFLIGHT_RUNS = "comfy_inflight_runs"
@@ -347,12 +349,30 @@ def ack_canvas_run(req: CanvasAckReq, request: Request):
         return canvas_runs.resolution(run)
 
 
-def _target_fingerprint(settings: dict) -> str:
+def _target_fingerprint_v1(settings: dict) -> str:
+    """옛 지문 — 키 해시 포함. Cloud 는 지금도 이것(계정 식별 근거가 키뿐), 로컬 옛 기록의 대조에만 더 쓴다."""
     target = comfy_client.make_target(settings)
     key = str(settings.get("comfy_api_key") or "")
     key_hash = hashlib.sha256(key.encode()).hexdigest()[:16] if key else "none"
     kind = "cloud" if target["cloud"] else "local"
     return hashlib.sha256(f"comfy-target-v1|{kind}|{target['base']}|{key_hash}".encode()).hexdigest()[:16]
+
+
+def _target_fingerprint(settings: dict) -> str:
+    """새 기록의 지문. 로컬 = 종류 + 전체 기준 주소(키 해시 없음 — 로컬 /history·/view 는 키와 무관하고, 팀 키 교체가
+    옛 실행의 회수를 막지 않게. docs/status/Comfy팀키_서버배포_2026-11-04.md). Cloud 는 v1 그대로."""
+    target = comfy_client.make_target(settings)
+    if target["cloud"]:
+        return _target_fingerprint_v1(settings)
+    return hashlib.sha256(f"comfy-target-v2|local|{target['base']}".encode()).hexdigest()[:16]
+
+
+def _same_target(row: dict, settings: dict) -> bool:
+    """기록이 지금 연결 대상의 것인가 — v2 가 같거나, 옛 로컬 v1 기록이 지금 키로 만든 v1 과 같을 때만(키 교체 전 v1 은 범위 밖)."""
+    fp = row.get("target_fp")
+    if fp == _target_fingerprint(settings):
+        return True
+    return not comfy_client.make_target(settings)["cloud"] and fp == _target_fingerprint_v1(settings)
 
 
 def _new_run_record(job_id: str, identity: _ComfyIdentity) -> dict:
@@ -364,7 +384,7 @@ def _new_run_record(job_id: str, identity: _ComfyIdentity) -> dict:
         "v": 1, "job_id": job_id, "owner": identity.owner, "account_key": identity.pin[0],
         "account_uid": identity.pin[1], "device_id": identity.device_id,
         "target_kind": "cloud" if target["cloud"] else "local", "base_host": host[:100],
-        "target_fp": _target_fingerprint(identity.settings), "phase": "submitting",
+        "target_base": str(target["base"])[:300], "target_fp": _target_fingerprint(identity.settings), "phase": "submitting",
         "prompt_id": None, "terminal_kind": None, "created_at": now, "updated_at": now,
         "cancel_attempted": False, "evidence_incomplete": False, "legacy_imported": False,
         "collect_job_id": job_id, "collect_seq": 0, "outputs_enumerated": False,
@@ -610,15 +630,33 @@ def _forget_inflight_run(job_id: str) -> None:
         log.warning("comfy 확정 종결 원장 정리 실패 job_id=%s", job_id)
 
 
-def _raw_settings() -> dict:
-    """내부용 — 실제 api_key 포함(실행에 사용)."""
-    return {
+def _key_source(local_key: str) -> str:
+    """설정값이 없으면 개인 키가 있는 PC 는 personal(기존 사용자가 조용히 바뀌지 않게), 없는 PC 는 team."""
+    source = repo.get_setting(_K_SOURCE)
+    if source in ("team", "personal"):
+        return source
+    return "personal" if local_key else "team"
+
+
+def _raw_settings(*, fetch_team: bool = True) -> dict:
+    """내부용 — 실제 api_key 포함(실행에 사용). 팀 키 모드면 서버에서 받은 키(fetch_team=False 는 캐시 값만 — 부팅 복구·파싱)."""
+    local_key = repo.get_setting(_K_API_KEY) or ""
+    source = _key_source(local_key)
+    settings = {
         "comfy_url": (repo.get_setting(_K_URL) or _DEFAULT_URL).rstrip("/"),
         "comfy_target": repo.get_setting(_K_TARGET) or "local",
-        "comfy_api_key": repo.get_setting(_K_API_KEY) or "",
+        "comfy_api_key": local_key,
         "comfy_concurrency": _to_int(repo.get_setting(_K_CONCURRENCY), 3),
         "comfy_input_dir": repo.get_setting(_K_INPUT_DIR) or "",
+        "comfy_key_source": source,
+        "has_personal_key": bool(local_key),
+        "team_key": None,
     }
+    if source == "team":
+        info = comfy_team_key.resolve(fetch=fetch_team)
+        settings["comfy_api_key"] = info["api_key"] or ""
+        settings["team_key"] = {"state": info["state"], "updated_at": info["updated_at"]}
+    return settings
 
 
 def _cancel_remote_run(target: dict, prompt_id: str, reason: str,
@@ -685,12 +723,11 @@ def recover_interrupted_run_jobs() -> None:
             # AUTH on boot에는 요청 세션 owner가 없다. 다른 사용자 원격 자원에 접근하지 않는다.
             if AUTH_ENABLED or not EXTERNAL_RECOVERY_ENABLED or not candidates:
                 return
-            settings = _raw_settings()
-            fingerprint = _target_fingerprint(settings)
+            settings = _raw_settings(fetch_team=False)  # 부팅은 서버를 기다리지 않는다 — 팀 키 캐시가 비면 Cloud 취소는 건너뛴다
             target = comfy_client.make_target(settings)
             for row in candidates:
                 if (row.get("owner") != owner or row.get("device_id") != device
-                        or row.get("target_fp") != fingerprint or row.get("evidence_incomplete")
+                        or not _same_target(row, settings) or row.get("evidence_incomplete")
                         or row.get("terminal_kind") or row.get("cancel_attempted") or not row.get("prompt_id")):
                     continue
                 with run_journal.edit(owner, AUTH_ENABLED) as runs:
@@ -710,16 +747,18 @@ def _to_int(v, default: int) -> int:
         return default
 
 
-def _public_settings() -> dict:
-    """GET 응답 — api_key 는 마스킹, 저장 여부만 노출."""
-    s = _raw_settings()
+def _public_settings(*, fetch_team: bool = True) -> dict:
+    """GET 응답 — api_key 는 마스킹, 저장 여부만 노출. 팀 키는 상태만(키 조각 없음). 갱신은 GET 에서만(PUT 은 캐시 값)."""
+    s = _raw_settings(fetch_team=fetch_team)
     return {
         "comfy_url": s["comfy_url"],
         "comfy_target": s["comfy_target"],
-        "comfy_api_key": _MASK if s["comfy_api_key"] else "",
-        "has_api_key": bool(s["comfy_api_key"]),
+        "comfy_api_key": _MASK if s["has_personal_key"] else "",
+        "has_api_key": s["has_personal_key"],
         "comfy_concurrency": s["comfy_concurrency"],
         "comfy_input_dir": s["comfy_input_dir"],
+        "comfy_key_source": s["comfy_key_source"],
+        "team_key": s["team_key"] or {"state": "off", "updated_at": None},
     }
 
 
@@ -729,6 +768,7 @@ class SettingsPatch(BaseModel):
     comfy_api_key: Optional[str] = None
     comfy_concurrency: Optional[int] = None
     comfy_input_dir: Optional[str] = None
+    comfy_key_source: Optional[str] = None
 
 
 @router.get("/settings")
@@ -756,7 +796,11 @@ def put_settings(patch: SettingsPatch):
         repo.set_setting(_K_CONCURRENCY, str(n))
     if patch.comfy_input_dir is not None:
         repo.set_setting(_K_INPUT_DIR, patch.comfy_input_dir.strip())
-    return _public_settings()
+    if patch.comfy_key_source is not None:
+        if patch.comfy_key_source not in ("team", "personal"):
+            raise HTTPException(400, "키 출처는 team 또는 personal 입니다")
+        repo.set_setting(_K_SOURCE, patch.comfy_key_source)
+    return _public_settings(fetch_team=False)
 
 
 @router.get("/health")
@@ -795,7 +839,7 @@ def _enrich_choices(candidates: list[dict]) -> None:
     if not need:
         return
     try:
-        target = comfy_client.make_target(_raw_settings())
+        target = comfy_client.make_target(_raw_settings(fetch_team=False))  # 파싱은 서버에 묻지 않는다 — 팀 키 캐시 값만
         full = comfy_client.get_object_info(target)  # 전체 1회(캐시) — cloud 는 개별 조회 불가
     except Exception:  # noqa: BLE001 — 서버 꺼짐·설정 미비 등: 선택지 없이(텍스트) 진행
         return
@@ -1646,6 +1690,9 @@ def run(
     with _comfy_request_scope(request) as identity:
         if expected_account_differs(request, identity.owner):
             raise HTTPException(409, "그사이 이 PC 의 계정이 바뀌어 실행하지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요")
+        team = identity.settings.get("team_key")
+        if identity.settings.get("comfy_key_source") == "team" and (not team or team.get("state") not in _TEAM_KEY_USABLE):
+            raise HTTPException(409, f"팀 키 없음(상태: {(team or {}).get('state') or 'off'}) — 관리자가 서버에 등록했는지, 로그인·접근 권한이 맞는지 확인하거나 설정에서 '개인 키'를 고르세요")
         pid = (project_id or "").strip() or None
         if pid and AUTH_ENABLED:
             require_project_role(request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER)
@@ -1819,11 +1866,10 @@ def list_unresolved_runs(request: Request):
                              "outputs_enumerated": run["outputs_enumerated"],
                              "outputs": [out["metadata"] for out in run["outputs"] if out["kind"] != "text"],
                              "created_at": run["created_at"], "updated_at": run["updated_at"]})
-        fingerprint = _target_fingerprint(identity.settings)
         public = []
         for row in rows:
             device_matches = row.get("device_id") == identity.device_id
-            target_matches = row.get("target_fp") == fingerprint
+            target_matches = _same_target(row, identity.settings)
             incomplete = bool(row.get("evidence_incomplete"))
             item = {key: row.get(key) for key in (
                 "job_id", "phase", "terminal_kind", "target_kind", "base_host", "created_at", "updated_at",
@@ -1920,7 +1966,7 @@ def collect_unresolved_run(job_id: str, request: Request):
             raise HTTPException(409, "이 기록은 자동으로 회수할 수 없습니다. 원격 기록을 직접 확인하세요")
         if row.get("device_id") != identity.device_id:
             raise HTTPException(403, "다른 PC에서 실행된 결과는 이 PC에서 회수할 수 없습니다")
-        if row.get("target_fp") != _target_fingerprint(identity.settings):
+        if not _same_target(row, identity.settings):
             raise HTTPException(403, "연결 대상 또는 자격정보가 바뀌어 결과를 회수할 수 없습니다")
         collect_id = _create_run_job()
         _update_run_job(collect_id, identity=identity, owner=identity.owner,

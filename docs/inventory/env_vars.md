@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 151개.
+제품 환경변수 152개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -40,6 +40,7 @@
 | `CONTENT_HUB_BACKUP_REPLICA_DIR` | `""` | `backend/app/services/operational_health.py` `tools/backup_replicate.py` `tools/server_console/backup.py` `tools/server_move_easy.py` | — |
 | `CONTENT_HUB_COMFY_POLL_ERROR_RETRIES` | `5` | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_COMFY_RUN_JOB_TTL_SEC` | `60 * 60` | `backend/app/routers/comfy.py` | — |
+| `CONTENT_HUB_COMFY_TEAM_KEY_TTL_SEC` | `(표시 안 함)` | `backend/app/services/comfy_team_key.py` | — |
 | `CONTENT_HUB_COMFY_TIMEOUT_SEC` | `60 * 30` | `backend/app/routers/comfy.py` | — |
 | `CONTENT_HUB_COMFY_UPLOAD_FILE_MAX_BYTES` | `256 * MIB` | `backend/app/services/upload_limits.py` | — |
 | `CONTENT_HUB_COMFY_UPLOAD_MAX_FILES` | `64` | `backend/app/services/upload_limits.py` | — |
@@ -86,7 +87,7 @@
 | `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `"10"` | `backend/app/services/media_preservation.py` | — |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `"60"` | `backend/app/main.py` | — |
 | `CONTENT_HUB_METRICS_SAMPLE_MAX` | `"5000"` | `backend/app/services/runtime_metrics.py` | — |
-| `CONTENT_HUB_NO_PROXY` | `""` `'0'` | `backend/app/routers/_proxy.py` `backend/app/routers/auth.py` `backend/app/routers/backup_replica.py` `backend/app/services/asset_sync.py` `backend/app/services/operational_health.py` `backend/app/services/shared_connection.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
+| `CONTENT_HUB_NO_PROXY` | `""` `'0'` | `backend/app/routers/_proxy.py` `backend/app/routers/auth.py` `backend/app/routers/backup_replica.py` `backend/app/services/asset_sync.py` `backend/app/services/comfy_team_key.py` `backend/app/services/operational_health.py` `backend/app/services/shared_connection.py` `backend/app/services/telemetry_drain.py` `tools/endurance_probe.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_PORT` | `"0"` `"8000"` `"8010"` | `backend/app/config.py` `run_agent_session.py` `tools/endurance_probe.py` `tools/server_watchdog.py` | `MV_agent.bat` `MV_server.bat` `test_dev_hub.bat` |
 | `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `str(50 * 1024 * 1024 * 1024)` | `backend/app/services/media_cache.py` | — |
 | `CONTENT_HUB_READ_ONLY` | `"0"` | `backend/app/config.py` | — |

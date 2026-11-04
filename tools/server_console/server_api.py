@@ -306,6 +306,39 @@ def block_account(server: dict, token: str, email: str) -> None:
     expect_ok(*call(server, "PATCH", f"/api/auth/accounts/{quoted}/status", token, {"status": "rejected"}), "계정 차단")
 
 
+# ---- 팀 Comfy 키(서버 DB app_setting['team_comfy_api_key'] — DPAPI 암호문, 응답에 키 조각 없음) ----
+
+COMFY_KEY_PATH = "/api/admin/comfy-team-key"
+COMFY_KEY_OLD_SERVER = "서버가 옛 코드라 팀 Comfy 키를 못 씁니다 — 서버 Git 업데이트 뒤에 보입니다"
+
+
+def _comfy_key_meta(code: int | None, payload, what: str) -> dict:
+    if code == 404:
+        raise ServerError(COMFY_KEY_OLD_SERVER)
+    if code == 409:
+        raise ServerError(detail(payload) or f"{what}: 서버가 거절했습니다")
+    value = expect_ok(code, payload, what)
+    if not isinstance(value.get("state"), str):
+        raise ServerError(f"{what} 응답 형식을 알 수 없습니다")
+    return value
+
+
+def read_comfy_key(server: dict, token: str) -> dict:
+    """{has_key, state, revision, updated_at, updated_by} — 키는 없다."""
+    return _comfy_key_meta(*call(server, "GET", COMFY_KEY_PATH, token), "팀 Comfy 키 읽기")
+
+
+def put_comfy_key(server: dict, token: str, api_key: str) -> dict:
+    key = (api_key or "").strip()
+    if not key:
+        raise ServerError("빈 키는 보내지 않습니다")
+    return _comfy_key_meta(*call(server, "PUT", COMFY_KEY_PATH, token, {"api_key": key}), "팀 Comfy 키 등록")
+
+
+def delete_comfy_key(server: dict, token: str) -> dict:
+    return _comfy_key_meta(*call(server, "DELETE", COMFY_KEY_PATH, token), "팀 Comfy 키 삭제")
+
+
 # ---- 생성 접수(서버 DB app_setting['generation_deployment_paused'] — 실행 중인 서버가 자기 DB 에 쓴다) ----
 
 INTAKE_PATH = "/api/gen-requests/deployment-pause"

@@ -79,6 +79,7 @@ from .routers import (
     auth,
     clean_feed,
     comfy,
+    comfy_team_key,
     console,
     db_backup,
     db_transfer,
@@ -805,6 +806,7 @@ app.include_router(db_transfer.router)
 app.include_router(account_cleanup.router)
 app.include_router(db_backup.router)
 app.include_router(comfy.router)
+app.include_router(comfy_team_key.router)
 app.include_router(scenes.router)
 app.include_router(edit_docs.router)
 app.include_router(edit_shares.router)
