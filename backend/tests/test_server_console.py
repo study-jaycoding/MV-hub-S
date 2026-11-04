@@ -760,6 +760,8 @@ def test_job_runner_drives_the_real_updater_script(updater, mode, code, expected
     (inst.logs).mkdir(exist_ok=True)
     plan = actions.Plan("git-update", str(updater.root), "server", "", ())
     job_id = jobs.new_job(inst, plan, fake_runner())
+    # 가짜 coordinator 는 이 파일에 단계 줄이 찍힌 뒤에야 다음 단계로 간다(바쁜 PC 에서 1단계를 건너뛰던 경합).
+    updater.env["MVHUB_FAKE_OUTPUT"] = str(jobs.job_dir(inst, job_id) / "output.log")
     exit_code = jobs.run_job(inst, job_id, lambda: plan, command=actions.command_for(plan, inst), env=updater.env)
     assert exit_code == int(code)
     lines, _ = jobs.read_output(inst, job_id)

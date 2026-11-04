@@ -216,14 +216,21 @@ class UpdaterFixture:
             "  put(logs/'server-prepare.json',{'run_id':run,'status':'up_to_date' if mode=='fast_up_to_date' else 'prepared'})\n"
             "  if mode=='fast_committed': put(logs/'server-install-journal.json',{'phase':'committed','target':{'build_id':run}})\n"
             "  raise SystemExit(int(os.environ.get('MVHUB_COORDINATOR_EXIT','0')))\n"
+            # The window prints only the step it sees each second. With its output file known, leave a step
+            # only after its line is there (bounded); otherwise keep the old fixed pause.
+            " out=os.environ.get('MVHUB_FAKE_OUTPUT','')\n"
+            " def shown(n):\n"
+            "  if not out: time.sleep(1.2); return\n"
+            "  end=time.time()+20\n"
+            "  while time.time()<end and b'[%d/6]'%n not in pathlib.Path(out).read_bytes(): time.sleep(.05)\n"
             " put(logs/('server-prepare-'+run+'.json'),{'run_id':run,'status':'running'})\n"
-            " put(logs/'server-prepare.json',{'run_id':run,'status':'running'}); time.sleep(1.2)\n"
-            " for step in ('.venv','runtime/higgsfield','frontend/node_modules'): (stage/step).mkdir(parents=True,exist_ok=True); time.sleep(1.2)\n"
-            " put(stage/'server-stage.json',{'source_commit':'e94bb89f3ebe724f6c285a0feeb947b2f7384c7b'}); time.sleep(1.2)\n"
+            " put(logs/'server-prepare.json',{'run_id':run,'status':'running'}); shown(1)\n"
+            " for n,step in enumerate(('.venv','runtime/higgsfield','frontend/node_modules'),2): (stage/step).mkdir(parents=True,exist_ok=True); shown(n)\n"
+            " put(stage/'server-stage.json',{'source_commit':'e94bb89f3ebe724f6c285a0feeb947b2f7384c7b'}); shown(5)\n"
             " if mode=='prepare_failed': put(logs/'server-prepare.json',{'run_id':run,'status':'failed'})\n"
             " else:\n"
             "  put(logs/'server-prepare.json',{'run_id':run,'status':'prepared'})\n"
-            "  put(logs/'server-install-journal.json',{'phase':'draining','target':{'build_id':run}}); time.sleep(1.2)\n"
+            "  put(logs/'server-install-journal.json',{'phase':'draining','target':{'build_id':run}}); shown(6)\n"
             "  put(logs/'server-install-journal.json',{'phase':mode,'target':{'build_id':run}})\n"
             "raise SystemExit(int(os.environ.get('MVHUB_COORDINATOR_EXIT','0')) if staged else 0)\n",
             encoding="utf-8",
