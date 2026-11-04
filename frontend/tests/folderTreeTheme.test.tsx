@@ -46,7 +46,7 @@ it("저장값이 없으면 기본 — 이상한 값도 기본, v1 만 v1 이다.
   expect(KEY.startsWith("ch.")).toBe(false); // personalSettings 는 계정을 바꿀 때 ch. 키를 지운다
 });
 
-it("기본 — 하위 있는 줄은 ▸/▾ 화살표 + 폴더 아이콘, 하위 없는 줄은 빈 화살표 칸 + 폴더 아이콘. 막대·앞 칸이 없고 들여쓰기 6+깊이×14", () => {
+it("기본 — 하위 있는 줄은 ▸/▾ 화살표 + 폴더 아이콘, 하위 없는 줄은 빈 화살표 칸 + 폴더 아이콘. 막대·앞 칸이 없고 들여쓰기 6+깊이×10(v1 과 같은 단계 폭, Jay ①)", () => {
   act(() => root.render(<FolderTreeView nodes={nodes} expanded={new Set(["ep001"])} onToggle={() => {}} onSelect={() => {}} />));
   expect(host.querySelector(".folder-tree")?.className).toContain("tree-base");
   expect(host.querySelector(".folder-tree-bars, .folder-tree-slot")).toBeNull();
@@ -56,7 +56,7 @@ it("기본 — 하위 있는 줄은 ▸/▾ 화살표 + 폴더 아이콘, 하위
   for (const path of ["ep001", "ep001/c0010", "ep002", "misc"]) {
     expect(row(path).querySelector(".folder-tree-caret + .folder-tree-icon + .folder-tree-name")).not.toBeNull();
   }
-  expect([row("ep001").style.paddingLeft, row("ep001/c0010").style.paddingLeft]).toEqual(["6px", "20px"]);
+  expect([row("ep001").style.paddingLeft, row("ep001/c0010").style.paddingLeft]).toEqual(["6px", "16px"]);
 });
 
 it("기본 — 열린 폴더 아이콘(A안)은 펼친 폴더에만: 접힌 폴더·하위 없는 줄·펼친 폴더 없음 줄은 닫힌 폴더 그대로, v1 엔 없다", () => {

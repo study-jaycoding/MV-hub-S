@@ -207,7 +207,8 @@ function FolderTreeRow({
   const holds = (path?: string) => !open && under(path);
   const barTone = tone ?? (holds(viewedPath) ? viewedTone : holds(selectedPath) ? selectedTone : holds(seePath) ? "see" : open ? "gen" : undefined);
   const barCount = Math.min(levelsBelow(node), MAX_BARS);
-  // 기본 테마 = 옛 기본 사이드바(df394b23)의 앞쪽: ▸/▾ 화살표 + 폴더 아이콘, 들여쓰기 6+깊이×14. 막대·연결선은 v1 에만(Jay 2026-11-04).
+  // 기본 테마 = 옛 기본 사이드바(df394b23)의 앞쪽: ▸/▾ 화살표 + 폴더 아이콘. 막대·연결선은 v1 에만(Jay 2026-11-04).
+  //  들여쓰기는 6+깊이×10 — 옛 값 ×14 는 처음 폭 200px 에서 깊은 줄 이름이 서너 글자로 잘려 v1 과 같은 단계 폭으로 줄였다(Jay ① 안).
   const base = theme === "base";
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
@@ -260,7 +261,7 @@ function FolderTreeRow({
           (dropOver ? " drop-over" : "")
         }
         // 들여쓰기는 인라인으로 — 줄이 button 이라 담기 메뉴 같은 곳의 'button' 규칙이 padding 을 덮어쓴다.
-        style={{ "--tree-depth": depth, paddingLeft: base ? 6 + depth * 14 : 8 + depth * 10 } as CSSProperties}
+        style={{ "--tree-depth": depth, paddingLeft: base ? 6 + depth * 10 : 8 + depth * 10 } as CSSProperties}
         data-resolve-viewed={viewed || undefined}
         title={
           (node.virtual

@@ -186,10 +186,10 @@
   font-size: 10px; font-weight: 700; line-height: 14px; color: #d3d6dc; background: #2c3036;
 }
 /* 필터 테마 '기본'(Jay 2026-11-04) — 앞쪽은 옛 기본 사이드바(dev df394b23) 값: ▸/▾ 화살표 14px 칸 + 폴더 아이콘 15×12, 줄 간격 6.
-   들여쓰기 6+깊이×14 는 인라인(FolderTreeView). 막대·열린 폴더 라임 세로선·고른 줄 연결선은 없고, 색 바탕은 화살표 칸부터. */
+   들여쓰기 6+깊이×10 은 인라인(FolderTreeView — 옛 ×14 는 200px 에서 깊은 줄 이름이 너무 잘려 줄였다, Jay ①). 막대·열린 폴더 라임 세로선·고른 줄 연결선은 없고, 색 바탕은 화살표 칸부터. */
 .folder-tree.tree-base .folder-tree-row { gap: 6px; }
 .folder-tree.tree-base .folder-tree-children::before { display: none; }
-.folder-tree.tree-base .folder-tree-row.state::before { left: calc(2px + var(--tree-depth) * 14px); }
+.folder-tree.tree-base .folder-tree-row.state::before { left: calc(2px + var(--tree-depth) * 10px); }
 .folder-tree-caret {
   position: relative; flex: none; width: 14px; text-align: center;
   font-size: 13px; color: var(--text); opacity: 0.7;
