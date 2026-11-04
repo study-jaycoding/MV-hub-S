@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -428,13 +429,67 @@ def test_boot_and_parse_use_the_cache_only(hub, memory_store, monkeypatch):
     assert seen == [{"fetch_team": False}]
 
 
-def test_run_refuses_without_a_usable_team_key(h, monkeypatch):  # noqa: F811
+def test_run_submits_without_a_team_key(h, monkeypatch):  # noqa: F811
+    """팀 키가 없어도 막지 않는다 — 키가 필요 없는 로컬 전용 워크플로는 관리자가 등록하기 전에도 돌아야 한다."""
     settings = {**h.settings, "comfy_key_source": "team", "comfy_api_key": "", "team_key": {"state": "none", "updated_at": None}}
     monkeypatch.setattr(comfy, "_raw_settings", lambda **_kw: dict(settings))
-    with pytest.raises(HTTPException) as refused:
-        h.start()
-    assert refused.value.status_code == 409 and "팀 키 없음" in refused.value.detail
-    h.mocks["submit"].assert_not_called()
+    h.successful()
+    job_id = h.start()
+    h.drain()
+    assert h.mocks["submit"].call_args.args[2] == ""
+    assert comfy._RUN_JOBS[job_id]["state"] == comfy._RUN_DONE
+
+
+@pytest.mark.parametrize("source,state,key,hinted", [
+    ("team", "none", "", True), ("team", "off", "", True), ("team", "unreachable", "", True), ("team", "undecryptable", "", True),
+    ("team", "stale", "team-k", False), ("personal", None, "personal-k", False),
+])
+def test_run_auth_failure_names_the_missing_team_key(h, monkeypatch, source, state, key, hinted):  # noqa: F811
+    """키 없이 제출한 실행이 인증 오류(402)로 끝날 때만 사유 앞에 '팀 키 없음(상태)' 안내 — 원래 사유는 뒤에 남고 개인 키·stale 엔 어떤 안내도 없다."""
+    settings = {**h.settings, "comfy_key_source": source, "comfy_api_key": key,
+                "team_key": {"state": state, "updated_at": None} if state else None}
+    monkeypatch.setattr(comfy, "_raw_settings", lambda **_kw: dict(settings))
+    h.successful()
+    h.mocks["submit"].side_effect = comfy_client.ComfyError("ComfyUI 오류 (HTTP 401): unauthorized, please log in",
+                                                            auth_error=True, status_code=401, cause_kind="http_4xx")
+    job_id = h.start()
+    h.drain()
+    job = comfy._RUN_JOBS[job_id]
+    with pytest.raises(HTTPException) as failed:
+        comfy.run_status(job_id, h.request())
+    assert job["code"] == 402 and failed.value.status_code == 402
+    for text in (job["error"], str(failed.value.detail)):
+        assert "HTTP 401" in text  # 원래 사유 보존
+        assert ("팀 키 없음" in text) is hinted  # 안내 자체의 유무 — 다른 상태명으로 잘못 붙어도 잡힌다(리뷰 4차 P2-1)
+        if hinted:
+            assert text.startswith(f"팀 키 없음(상태: {state}) — ")
+
+
+@pytest.mark.parametrize("path", ["http_exception", "comfy_error"])
+def test_run_auth_failure_hint_reaches_both_402_paths_and_the_canvas_message(h, monkeypatch, path):  # noqa: F811
+    """402 는 _run_comfy_job_impl 이 던지는 HTTPException 과 worker 가 잡는 ComfyError.auth_error 두 길로 들어온다 —
+    둘 다 _mark_run_failure 로 모여 잡 오류와 캔버스 failure_message 가 같은 안내·같은 원래 사유를 본다."""
+    settings = {**h.settings, "comfy_key_source": "team", "comfy_api_key": "", "team_key": {"state": "none", "updated_at": None}}
+    monkeypatch.setattr(comfy, "_raw_settings", lambda **_kw: dict(settings))
+    job_id = h.start()
+    h.starts.clear()  # 진짜 worker 대신 실패를 직접 넣는다
+    noted = Mock()
+    monkeypatch.setattr(comfy, "_note_canvas_context", noted)
+    monkeypatch.setattr(comfy, "_canvas_job", lambda jid: ({"attempt_id": "att-1", "outputs": [], "created_at": 0.0}, dict(comfy._RUN_JOBS[jid])))
+    monkeypatch.setattr(comfy.canvas_runs, "settle", lambda attempt_id, fallback: {"attempt_id": attempt_id, "state": fallback})
+    monkeypatch.setattr(comfy, "_ack_canvas_journal", Mock())
+
+    def fail():
+        if path == "http_exception":
+            raise HTTPException(402, "ComfyUI 오류 (HTTP 401): unauthorized")
+        raise comfy_client.ComfyError("ComfyUI 오류 (HTTP 401): unauthorized", auth_error=True, status_code=401, cause_kind="http_4xx")
+
+    comfy._execute_run_worker(job_id, dict(settings), fail, [])
+    expected = "팀 키 없음(상태: none) — "
+    job = comfy._RUN_JOBS[job_id]
+    assert job["code"] == 402 and job["error"].startswith(expected) and "HTTP 401" in job["error"]
+    message = noted.call_args.kwargs["failure_message"]
+    assert message.startswith(expected) and "HTTP 401" in message
 
 
 def test_run_submits_with_the_team_key(h, monkeypatch):  # noqa: F811

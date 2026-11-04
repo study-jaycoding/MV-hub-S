@@ -27,8 +27,8 @@ export function teamKeyText(state: TeamKeyState, updatedAt: string | null | unde
   switch (state) {
     case "available": return `지금 쓰는 키: 팀 키${when}`;
     case "stale": return `지금 쓰는 키: 팀 키${when} · 서버에 닿지 않아 마지막 받은 팀 키로 실행합니다`;
-    case "none": return "팀 키 없음 — 관리자에게 서버 등록을 요청하세요. API 노드를 안 쓰면 '개인 키'를 고르고 비워 두세요";
-    case "unreachable": return "서버에 닿지 않아 팀 키를 받지 못했습니다 — 실행은 받은 뒤에 됩니다";
+    case "none": return "팀 키 없음 — 관리자에게 서버 등록을 요청하세요. 키가 필요 없는 워크플로는 그대로 실행됩니다";
+    case "unreachable": return "서버에 닿지 않아 팀 키를 받지 못했습니다 — 키 없이 실행되니 API 노드는 실패합니다";
     case "undecryptable": return "서버의 팀 키를 풀 수 없습니다 — 관리자가 다시 등록해야 합니다";
     default: return "공유 서버에서 팀 키를 받지 않습니다 — 로그인과 접근 권한을 확인하거나 개인 키를 쓰세요";
   }

@@ -638,6 +638,15 @@ def _key_source(local_key: str) -> str:
     return "personal" if local_key else "team"
 
 
+def _team_key_hint(settings: dict) -> str:
+    """팀 키 모드인데 쓸 키 없이 제출한 실행이 인증 오류로 끝났을 때만 사유 앞에 붙는 안내(개인 키 모드엔 없음).
+    키가 없어도 실행은 막지 않는다 — 키가 필요 없는 로컬 전용 워크플로는 관리자가 등록하기 전에도 돌아야 한다."""
+    team = settings.get("team_key") or {}
+    if settings.get("comfy_key_source") != "team" or team.get("state") in _TEAM_KEY_USABLE:
+        return ""
+    return f"팀 키 없음(상태: {team.get('state') or 'off'}) — 관리자가 서버에 등록했는지, 로그인·접근 권한이 맞는지 확인하거나 설정에서 '개인 키'를 고르세요"
+
+
 def _raw_settings(*, fetch_team: bool = True) -> dict:
     """내부용 — 실제 api_key 포함(실행에 사용). 팀 키 모드면 서버에서 받은 키(fetch_team=False 는 캐시 값만 — 부팅 복구·파싱)."""
     local_key = repo.get_setting(_K_API_KEY) or ""
@@ -1605,7 +1614,13 @@ def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
 
 def _mark_run_failure(job_id: str, code: int, detail: Any) -> None:
     with _RUN_JOBS_LOCK:
-        record = copy.deepcopy((_RUN_JOBS.get(job_id) or {}).get("journal_record") or {})
+        job = _RUN_JOBS.get(job_id) or {}
+        record = copy.deepcopy(job.get("journal_record") or {})
+        identity = job.get("identity")
+    if code == 402 and identity is not None:
+        hint = _team_key_hint(identity.settings)
+        if hint:
+            detail = f"{hint} · {detail}"  # 402 의 두 길(HTTPException·ComfyError)이 모두 여기로 모인다
     if record and record.get("phase") not in ("unknown", "not_submitted", "failed"):
         phase = "orphaned"
         if record.get("terminal_kind") == "success":
@@ -1690,9 +1705,6 @@ def run(
     with _comfy_request_scope(request) as identity:
         if expected_account_differs(request, identity.owner):
             raise HTTPException(409, "그사이 이 PC 의 계정이 바뀌어 실행하지 않았습니다 — 화면을 새로 고친 뒤 다시 눌러 주세요")
-        team = identity.settings.get("team_key")
-        if identity.settings.get("comfy_key_source") == "team" and (not team or team.get("state") not in _TEAM_KEY_USABLE):
-            raise HTTPException(409, f"팀 키 없음(상태: {(team or {}).get('state') or 'off'}) — 관리자가 서버에 등록했는지, 로그인·접근 권한이 맞는지 확인하거나 설정에서 '개인 키'를 고르세요")
         pid = (project_id or "").strip() or None
         if pid and AUTH_ENABLED:
             require_project_role(request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER)
