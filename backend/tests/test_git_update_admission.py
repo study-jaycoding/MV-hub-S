@@ -724,14 +724,20 @@ def _failed(code: int) -> str:
 ])
 def test_server_update_window_shows_steps_and_one_result(updater, mode, code, expected):
     updater.holder()
-    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": code})
-    result = updater.run()
-    assert result.returncode == int(code), result.stdout + result.stderr
-    assert expected in result.stdout, result.stdout
-    assert (DONE in result.stdout) == (code == "0"), result.stdout
-    assert "[1/6]" in result.stdout and "[5/6]" in result.stdout, result.stdout
-    assert ("[6/6]" in result.stdout) == (mode != "prepare_failed"), result.stdout
-    assert result.stdout.count("=" * 60) == 2, result.stdout
+    # The window's output goes to a file the fake coordinator reads, so it leaves a step only after the
+    # window printed that step (a pipe would leave it on the fixed 1.2 s pause and a busy PC could skip [1/6]).
+    out = updater.folder / "window.out"
+    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": code, "MVHUB_FAKE_OUTPUT": str(out)})
+    with out.open("wb") as sink:
+        result = subprocess.run(updater.command(), cwd=updater.root, env=updater.env, stdin=subprocess.DEVNULL,
+                                stdout=sink, stderr=subprocess.PIPE, timeout=30)
+    stdout = out.read_text(encoding="utf-8", errors="replace")
+    assert result.returncode == int(code), stdout + result.stderr.decode("utf-8", "replace")
+    assert expected in stdout, stdout
+    assert (DONE in stdout) == (code == "0"), stdout
+    assert "[1/6]" in stdout and "[5/6]" in stdout, stdout
+    assert ("[6/6]" in stdout) == (mode != "prepare_failed"), stdout
+    assert stdout.count("=" * 60) == 2, stdout
 
 
 @pytest.mark.parametrize("code,expected", [("7", _failed(7)), ("0", DONE + "\n")])
