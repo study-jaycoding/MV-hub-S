@@ -16,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app import db, deps, main, manage_db, repo
+from app import db, deps, main, manage_db, rbac, repo
 from app.routers import _proxy, comfy, comfy_team_key as router
 from app.services import auth, comfy_client, comfy_team_key as svc, shared_connection
 from test_comfy_run_journal import h  # noqa: F401
@@ -218,12 +218,34 @@ def test_member_endpoint_requires_approved_account_and_never_caches(server, capl
     assert got.status_code == 200 and got.headers["cache-control"] == "no-store"
     assert got.json()["api_key"] == KEY and got.json()["revision"] == 1 and got.json()["updated_at"]
     assert MEMBER in caplog.text and KEY not in caplog.text
+    cookie_token = auth.make_token(MEMBER, pwd_stamp=repo.get_account(MEMBER)["password_changed_at"])
+    by_cookie = web.get(router.TEAM_PATH, headers={"Cookie": f"{deps.SESSION_COOKIE}={cookie_token}"})
+    assert by_cookie.status_code == 401 and KEY not in by_cookie.text  # 계약: Bearer 로만 — 세션 쿠키는 안 받는다(마감 대조 3차 ④)
     repo.set_account_status(MEMBER, "rejected")
     assert web.get(router.TEAM_PATH, headers=bearer(MEMBER)).status_code == 401
     repo.set_account_status(MEMBER, "approved")
     repo.set_setting(svc.SETTING_KEY, json.dumps({"v": 1, "enc": "dpapi-machine", "data": "QUFBQQ==", "revision": 2}))
     assert web.get(router.TEAM_PATH, headers=bearer(MEMBER)).status_code == 409
     assert client().get(router.ADMIN_PATH, headers=bearer(ADMIN)).json()["state"] == "undecryptable"
+
+
+@pytest.mark.parametrize("revoke", ["rejected", "demoted"])
+def test_admin_put_rechecks_the_account_after_the_body_arrives(server, monkeypatch, revoke):
+    """본문이 늦게 오는 사이 차단·관리자 해제가 있으면 저장하지 않는다 — 미들웨어의 계정 사본이 아니라 DB 로 다시 본다(마감 대조 3차 ②)."""
+    original = router._read_json
+
+    async def revoke_then_read(request):
+        repo.set_account_global_roles(MEMBER, [rbac.ADMIN])  # 마지막 관리자 보호를 넘기려 다른 관리자를 먼저
+        if revoke == "rejected":
+            repo.set_account_status(ADMIN, "rejected")
+        else:
+            repo.set_account_global_roles(ADMIN, [rbac.MEMBER])
+        return await original(request)
+
+    monkeypatch.setattr(router, "_read_json", revoke_then_read)
+    late = client().put(router.ADMIN_PATH, json={"api_key": KEY}, headers=bearer(ADMIN))
+    assert late.status_code == (401 if revoke == "rejected" else 403) and KEY not in late.text
+    assert svc.read_store()["state"] == "none"
 
 
 # ── hub-team-key(캐시) ──────────────────────────────────────────────────────────
@@ -413,6 +435,13 @@ def test_raw_settings_key_source_defaults_and_modes(hub, memory_store):
     with pytest.raises(HTTPException) as denied:
         comfy.put_settings(comfy.SettingsPatch(comfy_key_source="nope"))
     assert denied.value.status_code == 400
+    # 출처를 모르는 옛 화면(공개판)이 새 개인 키를 보내면 personal 로 — 저장된 team 이 남아 팀 키로 돌지 않게(마감 대조 3차 ①)
+    memory_store["comfy_key_source"] = "team"
+    assert comfy.put_settings(comfy.SettingsPatch(comfy_api_key="old-ui-key"))["comfy_key_source"] == "personal"
+    assert memory_store["comfy_api_key"] == "old-ui-key"
+    memory_store["comfy_key_source"] = "team"
+    assert comfy.put_settings(comfy.SettingsPatch(comfy_api_key=""))["comfy_key_source"] == "team"  # 비우기는 출처를 안 바꾼다
+    assert comfy.put_settings(comfy.SettingsPatch(comfy_api_key="***"))["comfy_key_source"] == "team"  # 마스크 에코도
     assert svc.SETTING_KEY not in memory_store  # 로컬 DB 에 팀 키를 쓰지 않는다
 
 

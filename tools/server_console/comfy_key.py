@@ -27,7 +27,7 @@ def status_text(meta: dict | None) -> str:
     if state == "undecryptable":
         return "등록된 키를 이 PC 에서 풀 수 없습니다 — 서버 PC 가 바뀌었거나 저장 형식이 다릅니다. 다시 등록하세요(기존 값은 지우지 않았습니다)"
     if state != "ok" or not meta.get("has_key"):
-        return "등록된 키 없음 — 팀원 PC 는 '팀 키 없음'으로 실행하지 못합니다"
+        return "등록된 키 없음 — 팀 키를 쓰는 PC 는 키 없이 실행합니다(키가 필요한 API 노드는 인증 실패, 키가 필요 없는 워크플로는 그대로)"
     who = str(meta.get("updated_by") or "").strip() or "모름"
     return f"등록됨 · {_when(meta)} · {who} · {int(meta.get('revision') or 0)}판"
 
@@ -43,7 +43,7 @@ def put_confirm_text(meta: dict | None) -> str:
 
 
 def delete_confirm_text() -> str:
-    return ("팀 키를 서버에서 지웁니다. 팀 키를 쓰던 PC 는 다음 실행부터 '팀 키 없음'으로 실행하지 못합니다.\n"
+    return ("팀 키를 서버에서 지웁니다. 팀 키를 쓰던 PC 는 다음 실행부터 키 없이 실행합니다 — 키가 필요한 API 노드는 인증에 실패하고, 키가 필요 없는 워크플로는 그대로 돕니다.\n"
             "키 자체의 회수는 platform.comfy.org 에서 폐기해야 끝납니다.")
 
 

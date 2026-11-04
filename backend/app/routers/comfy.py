@@ -800,6 +800,10 @@ def put_settings(patch: SettingsPatch):
     # api_key 는 마스킹 에코("***")면 저장하지 않는다(마스크를 실제 값으로 덮어쓰기 방지).
     if patch.comfy_api_key is not None and patch.comfy_api_key != _MASK:
         repo.set_setting(_K_API_KEY, patch.comfy_api_key.strip())
+        if patch.comfy_key_source is None and patch.comfy_api_key.strip():
+            # 출처를 모르는 옛 화면(공개판 설정 탭)이 새 개인 키를 보냈다 — 그 키를 쓰려는 뜻이니 personal 로.
+            # 안 바꾸면 새 화면에서 고른 team 이 남아 사용자는 개인 키로 바꿨다고 믿는데 팀 키로 돈다(마감 대조 3차 ①).
+            repo.set_setting(_K_SOURCE, "personal")
     if patch.comfy_concurrency is not None:
         n = max(1, min(comfy_client.CLOUD_MAX_CONCURRENCY, _to_int(patch.comfy_concurrency, 3)))
         repo.set_setting(_K_CONCURRENCY, str(n))

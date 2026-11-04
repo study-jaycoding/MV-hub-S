@@ -5,10 +5,13 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from .. import rbac, repo
 from ..config import AUTH_ENABLED
-from ..deps import assert_account_current, current_account, require_admin
+from ..deps import assert_account_current, bearer_token, current_account, require_admin
 from ..services import comfy_team_key as store
 from ..services.request_guards import require_local_machine_request
 
@@ -34,19 +37,34 @@ def admin_get(request: Request):
     return store.public_meta(store.read_store())
 
 
+async def _read_json(request: Request):
+    try:
+        return await request.json()
+    except ValueError:
+        return None
+
+
+def _require_console_fresh(request: Request) -> None:
+    """본문을 다 받은 뒤 — 미들웨어가 채운 계정 사본이 아니라 DB 의 지금 상태(승인·비밀번호 표식·관리자 역할)로 다시 본다.
+    본문이 늦게 오는 사이 차단·비밀번호 변경·관리자 해제가 있으면 팀 전체의 키를 바꾸지 못하게(마감 대조 3차 ②)."""
+    account = current_account(request) or {}
+    assert_account_current(account)  # 차단·삭제·비밀번호 변경 → 401
+    fresh = repo.get_account(account.get("email") or "") or {}
+    if not rbac.has_any_global_role(fresh.get("global_role"), rbac.ADMIN):
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다")
+
+
 @router.put(ADMIN_PATH)
 async def admin_put(request: Request):
     actor = _require_console(request)
     # 본문은 손으로 읽는다 — pydantic 의 422 기본 응답은 실패한 입력값(키)을 그대로 되돌려 준다
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
+    body = await _read_json(request)
     key = body.get("api_key") if isinstance(body, dict) else None
     if not isinstance(key, str) or not key.strip():
         raise HTTPException(status_code=400, detail="빈 키는 등록할 수 없습니다(api_key 문자열)")
     if len(key.strip()) > KEY_MAX:
         raise HTTPException(status_code=400, detail=f"키가 너무 깁니다({KEY_MAX}자 넘음)")
+    await asyncio.to_thread(_require_console_fresh, request)
     try:
         return store.save_store(key, actor)
     except store.ProtectError as error:
@@ -64,6 +82,9 @@ def team_get(request: Request, response: Response):
     """승인 계정의 Bearer 로만. 응답은 캐시 금지, 로그에는 계정·시각만."""
     if not AUTH_ENABLED:
         raise HTTPException(status_code=404, detail="Not Found")
+    if not bearer_token(request):
+        # 계약대로 Bearer 로만 — 미들웨어는 /media·/ws 때문에 세션 쿠키도 받지만 키 배포는 허브의 헤더 호출뿐(마감 대조 3차 ④)
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
     account = current_account(request)
     if not account:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다")

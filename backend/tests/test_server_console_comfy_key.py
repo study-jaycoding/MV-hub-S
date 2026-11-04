@@ -32,7 +32,8 @@ def answers(monkeypatch, *replies):
 def test_status_text_per_state_and_no_text_shows_a_key_or_ends_with_an_ellipsis():
     assert comfy_key.status_text(None) == "확인 중"
     assert comfy_key.status_text(META_OK) == "등록됨 · 2026-11-04 05:20:00 · admin@x.test · 3판"
-    assert "없음" in comfy_key.status_text(META_NONE)
+    assert "없음" in comfy_key.status_text(META_NONE) and "실행하지 못" not in comfy_key.status_text(META_NONE)  # 키 없어도 실행은 막지 않는다
+    assert "실행하지 못" not in comfy_key.delete_confirm_text()
     assert "풀 수 없" in comfy_key.status_text(META_BAD) and "지우지 않" in comfy_key.status_text(META_BAD)
     texts = [comfy_key.status_text(m) for m in (None, META_OK, META_NONE, META_BAD)] + [
         comfy_key.PAGE_TEXT, comfy_key.AFTER_TEXT, comfy_key.OLD_SERVER, comfy_key.LOGIN_FIRST,
