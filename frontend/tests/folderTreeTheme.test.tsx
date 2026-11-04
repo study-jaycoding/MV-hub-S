@@ -2,6 +2,8 @@
 // 필터 테마(Jay 2026-11-04) — 설정 → 기본 설정의 모션 아래 목록에서 '기본'(▸/▾ 화살표 + 폴더 아이콘, 처음 값)·'v1'(막대·선)을 고르면
 //  열린 모든 폴더 트리가 바로 바뀐다. 두 테마 공통: 생성물 0 인 폴더는 흐린 '-'. 더블클릭(A안) = 첫 누름은 고르기, 더블클릭은 펴고 접기.
 //  v1 의 줄 모양 자체는 tests/folderTreeKeyboard 가 본다.
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url"; // jsdom 이 전역 URL 을 바꿔 둔다 — 파일 주소는 node 의 URL 로
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -55,6 +57,24 @@ it("기본 — 하위 있는 줄은 ▸/▾ 화살표 + 폴더 아이콘, 하위
     expect(row(path).querySelector(".folder-tree-caret + .folder-tree-icon + .folder-tree-name")).not.toBeNull();
   }
   expect([row("ep001").style.paddingLeft, row("ep001/c0010").style.paddingLeft]).toEqual(["6px", "20px"]);
+});
+
+it("기본 — 열린 폴더 아이콘(A안)은 펼친 폴더에만: 접힌 폴더·하위 없는 줄·펼친 폴더 없음 줄은 닫힌 폴더 그대로, v1 엔 없다", () => {
+  const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8")
+    .replace(/\r\n/g, "\n").replace(/\/\*[\s\S]*?\*\//g, ""); // CRLF 로 받은 사본에서도 같게
+  const front = css.match(/([^{}]+)::after \{([^}]*skewX\(-22deg\)[^}]*)\}/);
+  const selector = front?.[1].trim() ?? "";
+  expect(selector).toBe(".folder-tree.tree-base .folder-tree-row.open:not(.virtual) > .folder-tree-icon");
+  expect(front?.[2]).toContain("background: var(--fd-front)");
+  expect(css).toContain(".folder-tree.tree-base .folder-tree-row.root {\n  --fd-back: linear-gradient(#34b4cf, #1a7a90); --fd-front: linear-gradient(#93f5ff, #41cbe4);");
+  expect(css).toContain(".folder-tree.tree-base .folder-tree-row {\n  --fd-back: linear-gradient(#a3d22a, #658f0e); --fd-front: linear-gradient(#ebff80, #a7dc24);");
+  const tree: FolderTreeItem[] = [...nodes, { name: "ghost", path: "ghost", count: 2, virtual: true,
+    children: [{ name: "c1", path: "ghost/c1", count: 2, virtual: true }] }];
+  const opened = () => [...host.querySelectorAll(selector)].map((icon) => (icon.parentElement!.getAttribute("title") || "").split("\n")[0]);
+  act(() => root.render(<FolderTreeView nodes={tree} expanded={new Set(["ep001", "ghost"])} onToggle={() => {}} onSelect={() => {}} />));
+  expect(opened()).toEqual(["ep001"]); // ep002 접힘·컷·misc·펼친 ghost(폴더 없음)는 아니다
+  act(() => saveFolderTreeTheme("v1"));
+  expect(opened()).toEqual([]);
 });
 
 it("기본 — 보기·생성·다빈치 아이콘은 이름 뒤(생성 다음 다빈치), 고른 줄 연결선이 없다", () => {

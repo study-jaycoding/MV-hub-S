@@ -210,7 +210,20 @@
 .folder-tree-row:not(.root) .folder-tree-icon {
   background: linear-gradient(#d8ff43, #8cca18); box-shadow: 0 0 8px rgba(var(--accent-rgb),0.18);
 }
-.folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); }
+/* 펼친 폴더 = 열린 폴더(Jay 2026-11-04 A안) — 뒤판(몸·탭)은 한 단계 어둡게, 앞판은 아래 8px 를 밝게 비스듬히 얹는다. 빛은 그대로.
+   접힌 폴더·하위 없는 줄은 닫힌 폴더 그대로. 폴더 없음은 펼쳐져도 아래 점선 빈 아이콘이 남게 뺀다(그냥 .open 이면 우선순위가 그 규칙을 이긴다). */
+.folder-tree.tree-base .folder-tree-row {
+  --fd-back: linear-gradient(#a3d22a, #658f0e); --fd-front: linear-gradient(#ebff80, #a7dc24);
+}
+.folder-tree.tree-base .folder-tree-row.root {
+  --fd-back: linear-gradient(#34b4cf, #1a7a90); --fd-front: linear-gradient(#93f5ff, #41cbe4);
+}
+.folder-tree.tree-base .folder-tree-row.open:not(.virtual) > .folder-tree-icon { background: var(--fd-back); }
+.folder-tree.tree-base .folder-tree-row.open:not(.virtual) > .folder-tree-icon::after {
+  content: ""; position: absolute; left: 1px; right: 0; bottom: 0; height: 8px; border-radius: 2px;
+  background: var(--fd-front); transform: skewX(-22deg); transform-origin: 0 100%;
+}
+.folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); } /* 열린 아이콘의 앞판(::after)까지 회색 */
 /* 폴더 없음(팀 자료에만 있는 폴더) — 점선 빈 아이콘. .folder-tree 를 앞에 붙여 위 아이콘 배경 규칙을 이긴다. */
 .folder-tree .folder-tree-row.virtual .folder-tree-icon { background: transparent; border: 1px dashed var(--muted2); box-shadow: none; }
 .folder-tree .folder-tree-row.virtual .folder-tree-icon::before { display: none; }
