@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-02
+updated: 2026-11-04
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -83,6 +83,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | PM 대시보드 숫자·크레딧 표기 | `components/manage/WorkspaceUsageDashboard.tsx`, `lib/formatCredits.ts` | `repo/manage_credit_plan.py`, `routers/manage.py` | 크레딧은 소수 보존(반올림 금지) |
 | 어셋/생성물 썸네일 | `components/MediaThumbnail.tsx` | `services/thumbs.py`, `routers/library.py`(media-thumb) | |
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py`, `services/comfy_run_keys.py`(실행 요청표 접수 장부 — 다시 보낸 같은 요청은 처음 작업을 돌려준다, Jay 결정 2A) | |
+| 팀 Comfy 키(관리자가 서버에 한 번 등록) | `components/settings/ComfyConnectionSection.tsx`(키 출처 라디오·'지금 쓰는 키' 줄) | `routers/comfy_team_key.py`, `services/comfy_team_key.py`, `routers/comfy.py _raw_settings`(team 이면 받은 키) · 관리 창 `tools/server_console/comfy_key.py`·`ui.py` 'Comfy 키' | 실행 지문 v2 = 로컬은 종류+전체 주소(키 해시 없음) — 키 교체가 옛 실행 회수를 막지 않게. Cloud 는 v1 그대로 |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | 편집 탭의 타임라인 보내기도 같은 줄·같은 관문을 지난다(위 '편집 탭' 줄) |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
 | 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — NAS 모든 판·이 PC에 먼저 설치), `tools/server_console/release.py`(팀 `배포`) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 릴리스는 후보(`candidate.json`)만, 서버 관리 창 [릴리스]의 `배포`가 알림과 팀 표지(`latest.json`) 교체를 수행한다. `공지`/`재공지`는 알림만 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
@@ -211,6 +212,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `asset_registry.py`(약 340줄) | `POST /api/asset-registry/{lookup\|scan\|mode\|schedule\|schedule/claim}`·`GET /status`·`/usage/{id}` + 도우미 `helper/{projects\|lease\|renew\|release\|result\|results}` (13 — `results` = 결과물 스냅샷, [NAS_RESULTS.md](NAS_RESULTS.md)) | 에셋 대장 — **공유 서버 권위**(로컬 전용 경로 아님, 데이터 프록시가 서버로 넘김). 조회는 가시 프로젝트만, 훑기·상태는 관리자. 레퍼런스 찾기가 쓰는 `lookup_for_request`(위임 모드면 서버, 아니면 자기 DB). 도우미 PC 결과는 엄격 검증 후 기존 `_apply` 로(§10). 훑는 곳(서버/로컬)은 `/mode` 로, 자동 훑기 시간은 `/schedule` 로 서버 DB 에(`app_setting`). 로컬 모드 회차는 관리자 PC 가 `/schedule/claim`(회차당 한 PC, §11). 설계 [ASSET_REGISTRY.md](ASSET_REGISTRY.md) | 1곳 |
 | `backup_replica.py`(약 390줄) | `GET\|PUT /api/admin/backup-replica`·`POST …/run` + 로컬 중계 `/api/shared-server/backup-replica[/run]` (6) | 서버 백업 복사 위치 — 공유 서버가 원천(`tools/backup_replica_target.txt`·예약 작업 `MVHub BackupCopy`). 저장은 매번 비밀번호·자식 프로세스 위치 확인(20초)·의도 감사 먼저, 지금 복사는 `schtasks /Run`. 복사기 코드는 공유 서버 런타임에서만 지연 로드(작업자 릴리스엔 tools 없음) | 0곳(서버 경로 2개는 위임, 로컬 중계는 `/api/shared-server/` 접두라 로컬) |
 | `account_cleanup.py`(약 50줄) | `GET /api/admin/account-cleanup`·`POST …/delete` (2) | 서버 관리 창 '계정 정리' — AUTH on + 서버 PC + 관리자만. 거절 이유는 409 로 준다 | 0곳(`_LOCAL_PREFIXES` 에 등록 — 허브는 중계하지 않는다) |
+| `comfy_team_key.py`(약 70줄) | `GET/PUT/DELETE /api/admin/comfy-team-key`·`GET /api/team/comfy-key` (4) | 팀 comfy.org 키 — 관리자 등록(계정 정리와 같은 게이트, GET 은 키 조각 없음)과 승인 계정의 받아 가기(no-store). 설계 `docs/status/Comfy팀키_서버배포_2026-11-04.md` | 0곳(둘 다 `_LOCAL_PREFIXES` — 허브 백엔드만 `services/comfy_team_key` 로 서버에 직접 묻는다) |
 | `comfy.py`(1654줄) | `POST /api/comfy/{run\|parse\|save-to-library}`·`GET /run_status\|/unresolved-runs` (11) | ComfyUI(로컬·Cloud) 연결·그래프 파싱·비동기 실행·미회수 결과 수거 | 0곳 |
 | `resolve_integration.py`(364줄) | `POST /api/resolve/transfers`·`GET /api/resolve/{status\|script\|locks}` (10) | DaVinci Resolve 스크립트 설치·연결 진단·전송 접수/재시도 | 1곳 |
 | `registry_helper.py`(약 100줄) | `POST /api/registry-helper/scan`·`GET /status` (2) + `schedule_loop`(main 이 워커 허브에서 띄움) | 에셋 대장 도우미 훑기 — **이 PC 전용**(`_LOCAL_PREFIXES`). 서버가 NAS 를 못 읽을 때 관리자 PC 가 대신 훑는다(ASSET_REGISTRY §10). 정한 시간이면 60초 틱으로 서버에 claim → 맡으면 자동 속도로 시작(§11) | 0곳 |
@@ -423,6 +425,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
 | `comfy_client.py`(658줄) | Comfy 로컬/Cloud HTTP(urllib) — 제출·폴링·/view 스트리밍 | `routers/comfy` |
+| `comfy_team_key.py` | 팀 comfy.org 키 — 서버 보관(`app_setting.team_comfy_api_key`, DPAPI machine scope, 복호 실패는 `undecryptable`·원본 보존)과 허브의 받아 쓰기(메모리 한 칸, (서버 주소, 토큰) 짝, 60초/15초/10분, 401·403 off·404 none·409 undecryptable, NO_PROXY·토큰 없음 = off). `routers/comfy._raw_settings` 가 `comfy_key_source=team` 이면 쓴다 | `routers/comfy`·`routers/comfy_team_key` |
 | `comfy_workflow.py` | API 포맷 워크플로 파싱(파라미터/미디어 슬롯 감지) | `routers/comfy` |
 | `comfy_run_journal.py` | 미회수 실행 원장 로컬 I/O(네트워크 미소유) | `routers/comfy` |
 
@@ -1329,6 +1332,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `tools/browser_measure/cdp.py` | 헤드리스 Chrome/Edge 를 DevTools 프로토콜로 모는 드라이버(venv 의 `websockets` 만). 콘솔·실패 응답·**모든 비-GET 요청**·네이티브 대화상자를 모은다(`confirm()` 을 처리하지 않으면 모든 명령이 멈춘다) |
 | `tools/browser_measure/walk.py` | 실측 단계 러너(동작→상태 조사→이벤트 회수, 단계별 JSON) + 로그인·선택자 도우미. 판정은 `ok`/`stale`(대상 없음 = 시나리오가 낡음)/`failed`(제품 확인). **기본 모드의 결과에는 자유 문장을 남기지 않는다**(수치·클래스·이벤트 종류와 **라우트 틀**·고정 어휘 `reason`만 — 실제 경로의 동적 조각에는 이름이 실리므로 `docs/inventory/endpoints.md` 의 틀로 바꾸고 틀에 없으면 `/api/{…}` 로 줄인다. 원문은 verbose, 이메일은 `%40` 꼴까지 가림). 생성 요청 수(`gen_requests`)는 가리기 전 원문에서 센다. → `cdp.py`, `docs/inventory/endpoints.md` |
 | `tools/server_console/account_rows.py` | 관리 창 '계정 정리'의 글자(표 칸·판정·확인 창) — 화면과 떼어 시험한다. 호출은 `server_api.py` 의 `read_cleanup`·`delete_cleanup`·`block_account`, 판정은 서버가 한다 |
+| `tools/server_console/comfy_key.py` | 관리 창 'Comfy 키'의 글자(상태·확인 창 — 키 조각 없음). 호출은 `server_api.py` 의 `read_comfy_key`·`put_comfy_key`·`delete_comfy_key`(404 = 옛 서버 안내, 409 = 서버 사유) |
 | `tools/browser_measure/smoke.py` | 핵심 화면 41단계 시나리오(보기·검색·카드 단축키·미리보기·다중 선택·탭·도크·**처음 연 창의 Esc 1회**·분리 창). 종료 코드 0 통과 · 1 제품 확인 필요(실패·`/api/gen-requests` 요청 발생) · 2 시나리오만 낡음. `--shots`·`--verbose` 는 선택. 유료·외부 실행 단추는 누르지 않는다. → `walk.py` |
 | `tools/credit_round_rules.py` | 옛 반올림 크레딧 **판정 규칙 한 곳**. 판별·보정·서버 집계가 모두 `scan()` 만 쓴다 — 따로 들고 있으면 "판별엔 안 나왔는데 보정이 건드리는" 행이 생긴다. `alive`(생성물 생존)·`has_local`(로컬 값 유무)까지 담는다 |
 | `tools/credit_round_repair.py` | 되살리기 실행. **기본은 예행연습**이고 `--apply` 로만 쓴다. 잠금(`BEGIN IMMEDIATE`) 뒤 재판정·CAS UPDATE·같은 트랜잭션에서 재전송 표시. 서버 팩트는 직접 안 고친다(`manage_db._UPSERT_SET` 의 COALESCE 때문에 되돌아온다) → `backend/tests/test_credit_round_repair.py` |
