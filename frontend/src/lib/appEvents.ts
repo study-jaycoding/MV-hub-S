@@ -13,6 +13,7 @@ export const APP_EVENTS = {
   finalizeRolesStale: "ch:finalize-roles-stale",
   flash: "ch:flash",
   focusPrompt: "ch:focus-prompt",
+  folderTreeThemeChanged: "ch:folder-tree-theme-changed", // 설정의 필터 테마(lib/theme)가 바뀌었다 — 열린 폴더 트리가 다시 그린다
   // 태그 저장 묶음이 끝났다(성공·실패 모두, 마지막 저장 뒤 한 번) — 생성물 사본을 따로 든 화면(캔버스)이 서버 값으로 다시 읽는다.
   // libraryChanged 와 따로 둔다: 태그는 폴더 집계·생성자 목록을 바꾸지 않아 그 구독자들까지 깨울 이유가 없다.
   generationTagsSettled: "ch:generation-tags-settled",

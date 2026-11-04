@@ -122,6 +122,7 @@
   background: transparent; color: #6f747e;
   cursor: pointer; text-align: left; font-variant-numeric: tabular-nums;
   font-family: inherit;
+  user-select: none; -webkit-user-select: none; /* 더블클릭(펴고 접기)이 이름 글자를 긁어 고르지 않게 */
   /* 전역 button 기본 padding(6px 12px)이 남아 개수 숫자가 프로젝트 행과 어긋나던 것 정리 —
      우 8px 로 프로젝트 행(.proj-row)과 같은 오른끝. 좌는 깊이 인라인 스타일이 정한다. */
   padding-top: 0; padding-bottom: 0; padding-right: 8px;
@@ -184,6 +185,35 @@
   flex: none; margin-left: -4px; padding: 0 4px; border-radius: 4px;
   font-size: 10px; font-weight: 700; line-height: 14px; color: #d3d6dc; background: #2c3036;
 }
+/* 필터 테마 '기본'(Jay 2026-11-04) — 앞쪽은 옛 기본 사이드바(dev df394b23) 값: ▸/▾ 화살표 14px 칸 + 폴더 아이콘 15×12, 줄 간격 6.
+   들여쓰기 6+깊이×14 는 인라인(FolderTreeView). 막대·열린 폴더 라임 세로선·고른 줄 연결선은 없고, 색 바탕은 화살표 칸부터. */
+.folder-tree.tree-base .folder-tree-row { gap: 6px; }
+.folder-tree.tree-base .folder-tree-children::before { display: none; }
+.folder-tree.tree-base .folder-tree-row.state::before { left: calc(2px + var(--tree-depth) * 14px); }
+.folder-tree-caret {
+  position: relative; flex: none; width: 14px; text-align: center;
+  font-size: 13px; color: var(--text); opacity: 0.7;
+}
+.folder-tree-caret.hidden { visibility: hidden; }
+.folder-tree-caret[class*="st-"] { color: rgb(var(--st)); opacity: 1; }
+.folder-tree-caret.toggle:hover::before {
+  content: ""; position: absolute; inset: -2px; border-radius: 50%; background: rgba(255,255,255,0.12);
+}
+.folder-tree-icon {
+  position: relative; flex: none; width: 15px; height: 12px; border-radius: 3px 3px 2px 2px;
+  background: linear-gradient(#61eaff, #279fba); box-shadow: 0 0 8px rgba(97,234,255,0.24);
+}
+.folder-tree-icon::before {
+  content: ""; position: absolute; left: 1px; top: -3px; width: 7px; height: 4px;
+  border-radius: 2px 2px 0 0; background: inherit;
+}
+.folder-tree-row:not(.root) .folder-tree-icon {
+  background: linear-gradient(#d8ff43, #8cca18); box-shadow: 0 0 8px rgba(var(--accent-rgb),0.18);
+}
+.folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); }
+/* 폴더 없음(팀 자료에만 있는 폴더) — 점선 빈 아이콘. .folder-tree 를 앞에 붙여 위 아이콘 배경 규칙을 이긴다. */
+.folder-tree .folder-tree-row.virtual .folder-tree-icon { background: transparent; border: 1px dashed var(--muted2); box-shadow: none; }
+.folder-tree .folder-tree-row.virtual .folder-tree-icon::before { display: none; }
 /* 이름 뒤에 아이콘·표가 붙고, 빈 칸이 개수를 오른끝으로 민다. 빈 칸 앞 간격은 하나만 둔다. */
 .folder-tree-name {
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -199,6 +229,8 @@
 .folder-review-held { color: #ef7d8c; }
 .folder-review-total { font-weight: 700; color: var(--muted); }
 .folder-tree-row.has .folder-review-total { color: #c9cdd4; }
+/* 생성물 0 인 폴더 — 흐린 '-'(두 테마 공통, Jay 2026-11-04). 위의 숫자 색 규칙보다 뒤에 둬야 이긴다. */
+.folder-tree-count.zero { color: var(--muted2); font-weight: 400; }
 /* 확인 전 신규 공유 개수(팀 탭) — 총 개수 왼쪽에 라임으로 '+N' (폴더 행/프로젝트·미분류 행 공용) */
 .folder-tree-newcount {
   flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 2px;

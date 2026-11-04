@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api";
-import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
+import { ACCENT_PRESETS, FOLDER_TREE_THEMES, type FolderTreeTheme, type Lang } from "../../lib/theme";
+import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { fsaSupported } from "../../lib/downloadDir";
 import { fmtBackupWhen } from "../../lib/format";
 import { useT } from "../../lib/i18n";
@@ -83,20 +84,54 @@ export function AssetTransferLine() {
   );
 }
 
+// 필터 테마 고르기 — 지금 값 단추를 누르면 아래로 목록이 펼쳐진다(흐름 안이라 설정 창에 잘리지 않는다). 고르면 바로 적용하고 닫는다.
+function FolderTreeThemePicker({ value, onChange }: { value: FolderTreeTheme; onChange: (theme: FolderTreeTheme) => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useOutsideMouseDown(boxRef, () => setOpen(false), open);
+  const current = FOLDER_TREE_THEMES.find((item) => item.key === value) ?? FOLDER_TREE_THEMES[0];
+  return (
+    <div className="tree-theme-pick" ref={boxRef}>
+      <button type="button" className="tree-theme-btn" aria-haspopup="listbox" aria-expanded={open}
+        onClick={() => setOpen((was) => !was)}>
+        <span>{t(current.label)}</span>
+        <span className="tree-theme-caret" aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <div className="sl-dropdown tree-theme-list" role="listbox" aria-label={t("필터 테마")}>
+          {FOLDER_TREE_THEMES.map((item) => (
+            <button key={item.key} type="button" role="option" aria-selected={item.key === value}
+              className={"sl-dd-item" + (item.key === value ? " sel" : "")}
+              onClick={() => { onChange(item.key); setOpen(false); }}>
+              <span>{t(item.label)}</span>
+              <small>{t(item.hint)}</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AppearanceSettingsSection({
   accent,
   lang,
   reduceMotion,
+  treeTheme,
   onAccent,
   onLang,
   onReduceMotion,
+  onTreeTheme,
 }: {
   accent: string;
   lang: Lang;
   reduceMotion: boolean;
+  treeTheme: FolderTreeTheme;
   onAccent: (hex: string) => void;
   onLang: (lang: Lang) => void;
   onReduceMotion: (value: boolean) => void;
+  onTreeTheme: (theme: FolderTreeTheme) => void;
 }) {
   const t = useT();
   const isCustom = !ACCENT_PRESETS.some((preset) => preset.hex.toLowerCase() === accent.toLowerCase());
@@ -156,6 +191,12 @@ export function AppearanceSettingsSection({
         <SettingsDescription summary={t("카드 장식 애니메이션을 켜거나 끕니다.")}>
           <p>{t("ON은 최종 카드에 마우스를 올릴 때 지나가는 빛과 '생성 중' 표시의 움직임을 재생하고, OFF는 이 움직임을 멈춥니다.")}</p>
         </SettingsDescription>
+      </section>
+
+      <section className="settings-section">
+        <h4>{t("필터 테마")}</h4>
+        <FolderTreeThemePicker value={treeTheme} onChange={onTreeTheme} />
+        <SettingsDescription summary={t("사이드바 폴더 트리 모양을 고릅니다.")} />
       </section>
     </>
   );

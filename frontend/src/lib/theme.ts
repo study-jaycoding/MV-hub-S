@@ -1,5 +1,7 @@
 // 강조색(테마) — CSS 변수 --accent 계열을 런타임에 교체. localStorage 영속.
 // 프리셋 hex 하나로 --accent / --accent-ink / --grad / --grad-soft / --glow 를 파생 생성한다.
+import { useSyncExternalStore } from "react";
+import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 
 export interface AccentPreset {
   key: string;
@@ -133,4 +135,54 @@ export function saveReduceMotion(on: boolean): void {
     /* noop */
   }
   applyReduceMotion(on);
+}
+
+// ── 필터 테마(폴더 트리 모양) ────────────────────────────────────────────
+// 기본 = 화살표 + 폴더 아이콘(옛 기본 사이드바 df394b23 의 앞쪽), v1 = 막대·선(2026-10-31 트리). 처음 값 기본(Jay 2026-11-04).
+// 이 PC 의 화면 설정이라 강조색·모션처럼 밑줄 키 — 계정 전환 정리(personalSettings)는 `ch.` 로 시작하는 키를 지운다.
+export type FolderTreeTheme = "base" | "v1";
+export const FOLDER_TREE_THEMES: { key: FolderTreeTheme; label: string; hint: string }[] = [
+  { key: "base", label: "기본", hint: "화살표 + 폴더 아이콘" },
+  { key: "v1", label: "v1", hint: "막대·선" },
+];
+const TREE_THEME_KEY = "ch_folder_tree_theme";
+let unsavedTreeTheme: FolderTreeTheme | undefined;
+
+export function loadFolderTreeTheme(): FolderTreeTheme {
+  if (unsavedTreeTheme) return unsavedTreeTheme;
+  try {
+    return localStorage.getItem(TREE_THEME_KEY) === "v1" ? "v1" : "base";
+  } catch {
+    return "base";
+  }
+}
+
+export function saveFolderTreeTheme(theme: FolderTreeTheme): void {
+  try {
+    localStorage.setItem(TREE_THEME_KEY, theme);
+    unsavedTreeTheme = undefined;
+  } catch {
+    unsavedTreeTheme = theme; // 저장이 막혀도 이 창에서는 바로 적용한다
+  }
+  dispatchAppEvent(APP_EVENTS.folderTreeThemeChanged);
+}
+
+function subscribeFolderTreeTheme(onChange: () => void): () => void {
+  // 다른 창(떠 있는 캔버스·어셋 창)에서 고른 값은 storage 알림으로 온다
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key === TREE_THEME_KEY) {
+      unsavedTreeTheme = undefined;
+      onChange();
+    }
+  };
+  window.addEventListener(APP_EVENTS.folderTreeThemeChanged, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(APP_EVENTS.folderTreeThemeChanged, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+export function useFolderTreeTheme(): FolderTreeTheme {
+  return useSyncExternalStore(subscribeFolderTreeTheme, loadFolderTreeTheme, (): FolderTreeTheme => "base");
 }

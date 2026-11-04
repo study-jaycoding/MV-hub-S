@@ -1,17 +1,24 @@
 // @vitest-environment jsdom
 // 폴더 트리의 키보드(조작 규칙 51 — 24회차, Codex 전수 검토): 펼침 자리(지금은 링)는 span 이라 Tab 이 닿지 않아, 접힌 폴더의 하위 폴더에는 키보드만으로
 //  갈 길이 없었다(Enter 는 그 폴더를 고르기만 한다). 트리의 관례대로 → 가 펼치고 ← 가 접는다. 고르기와 d(비활성) 같은 줄의 키는 그대로다.
-//  아래쪽은 줄 모양(Jay 2026-10-31): 하위가 있으면 막대, 없으면 빈 앞 칸, 개수 0 은 칸 없음, 고른 줄은 색·아이콘·연결선.
+//  아래쪽은 줄 모양(Jay 2026-10-31): 하위가 있으면 막대, 없으면 빈 앞 칸, 개수 0 은 흐린 '-'(11-04), 고른 줄은 색·아이콘·연결선.
+//  이 파일은 필터 테마 v1(막대·선) 모양을 본다 — 처음 값 '기본'(화살표 + 폴더)은 tests/folderTreeTheme 이 본다.
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url"; // jsdom 이 전역 URL 을 바꿔 둔다 — 파일 주소는 node 의 URL 로
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { FolderTreeView, type FolderTreeItem } from "../src/components/common/FolderTreeView";
+import { saveFolderTreeTheme } from "../src/lib/theme";
 
 let host: HTMLDivElement;
 let root: Root;
-beforeEach(() => { vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  localStorage.clear();
+  saveFolderTreeTheme("v1");
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+});
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
 const nodes = [{ name: "ep001", path: "ep001", children: [{ name: "c0010", path: "ep001/c0010" }] }, { name: "misc", path: "misc" }];
@@ -71,16 +78,17 @@ const chain = (levels: number, at = 0, parent = ""): FolderTreeItem => {
 const everyPath = (node: FolderTreeItem): string[] => [node.path, ...(node.children || []).flatMap(everyPath)];
 const sizes = () => [...host.querySelectorAll(".folder-tree-row")].map((el) => [...el.classList].find((name) => /^fs\d+$/.test(name)));
 
-it("하위가 있으면 막대, 없으면 빈 앞 칸 — 화살표·폴더 아이콘·점이 없고 개수 0 은 숫자 칸이 없다", () => {
+it("하위가 있으면 막대, 없으면 빈 앞 칸 — 화살표·폴더 아이콘·점이 없고 개수 0 은 흐린 '-'", () => {
   act(() => root.render(<FolderTreeView nodes={counted} expanded={new Set(["ep001"])} onToggle={() => {}} onSelect={() => {}} />));
   expect(bars("ep001")?.getAttribute("title")).toBe("접기");
   expect(bars("misc")).toBeNull();
   expect(row("misc").querySelector(".folder-tree-slot")?.childElementCount).toBe(0);
   expect(row("c0010").classList.contains("has")).toBe(true);
   expect(row("c0030").classList.contains("has")).toBe(false);
-  expect(host.textContent).not.toMatch(/[▸▾-]/);
+  expect(host.textContent).not.toMatch(/[▸▾]/);
   expect(host.querySelector(".folder-tree-icon, .folder-tree-caret")).toBeNull();
-  expect([...host.querySelectorAll(".folder-tree-count")].map((el) => el.textContent)).toEqual(["45", "42", "3"]);
+  expect([...host.querySelectorAll(".folder-tree-count")].map((el) => el.textContent)).toEqual(["45", "42", "3", "-", "-"]);
+  expect(row("c0030").querySelector(".folder-tree-count")?.classList.contains("zero")).toBe(true);
   expect(row("ep001").classList.contains("open")).toBe(true); // 펼침 = 세로 라임 막대
   expect(bars("ep001")?.classList.contains("st-gen")).toBe(true);
 

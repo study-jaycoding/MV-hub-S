@@ -3,6 +3,7 @@ import { useRef, useState, type CSSProperties, type DragEvent, type KeyboardEven
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useDragEndReset } from "../../lib/useDragEndReset";
 import { useT } from "../../lib/i18n";
+import { useFolderTreeTheme, type FolderTreeTheme } from "../../lib/theme";
 import type { FolderReviewCounts } from "../../types";
 import { FolderReviewCount } from "./FolderReviewCount";
 
@@ -115,15 +116,18 @@ export function FolderTreeView({
   scroll?: boolean;
   className?: string;
 }) {
+  // 설정의 필터 테마 — 기본(화살표 + 폴더) / v1(막대·선). 바꾸면 열린 트리가 바로 다시 그린다.
+  const theme = useFolderTreeTheme();
   if (!nodes.length) return null;
   const treeLevels = Math.max(...nodes.map(levelsBelow)) + 1;
   return (
-    <div className={"folder-tree" + (scroll ? " scroll-15" : "") + (className ? ` ${className}` : "")}>
+    <div className={`folder-tree tree-${theme}` + (scroll ? " scroll-15" : "") + (className ? ` ${className}` : "")}>
       {nodes.map((node) => (
         <FolderTreeRow
           key={node.path || node.name}
           node={node}
           depth={0}
+          theme={theme}
           treeLevels={treeLevels}
           selectedPath={selectedPath}
           viewedPath={viewedPath}
@@ -147,6 +151,7 @@ export function FolderTreeView({
 function FolderTreeRow({
   node,
   depth,
+  theme,
   treeLevels,
   selectedPath,
   viewedPath,
@@ -164,6 +169,7 @@ function FolderTreeRow({
 }: {
   node: FolderTreeItem;
   depth: number;
+  theme: FolderTreeTheme;
   treeLevels: number;
   selectedPath: string;
   viewedPath?: string;
@@ -198,6 +204,8 @@ function FolderTreeRow({
   const holds = (path?: string) => !open && !!path && (node.path === "" || path.startsWith(node.path + "/"));
   const barTone = tone ?? (holds(viewedPath) ? viewedTone : holds(selectedPath) ? selectedTone : holds(seePath) ? "see" : open ? "gen" : undefined);
   const barCount = Math.min(levelsBelow(node), MAX_BARS);
+  // 기본 테마 = 옛 기본 사이드바(df394b23)의 앞쪽: ▸/▾ 화살표 + 폴더 아이콘, 들여쓰기 6+깊이×14. 막대·연결선은 v1 에만(Jay 2026-11-04).
+  const base = theme === "base";
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
   // 배지에는 생성물 수만 둔다(좁은 사이드바). 폴더의 실제 파일 수는 호버 설명에 덧붙여,
@@ -248,7 +256,7 @@ function FolderTreeRow({
           (dropOver ? " drop-over" : "")
         }
         // 들여쓰기는 인라인으로 — 줄이 button 이라 담기 메뉴 같은 곳의 'button' 규칙이 padding 을 덮어쓴다.
-        style={{ "--tree-depth": depth, paddingLeft: 8 + depth * 10 } as CSSProperties}
+        style={{ "--tree-depth": depth, paddingLeft: base ? 6 + depth * 14 : 8 + depth * 10 } as CSSProperties}
         data-resolve-viewed={viewed || undefined}
         title={
           (node.virtual
@@ -266,6 +274,11 @@ function FolderTreeRow({
           }
           onSelect(node.path);
         }}
+        // 더블클릭 = 펴고 접기(Jay 2026-11-04 A안). 앞의 두 누름은 위 onClick 이 지금처럼 고른다 — 고르기를 늦추지 않는다.
+        onDoubleClick={canToggle ? (e) => {
+          e.stopPropagation();
+          onToggle?.(node.path);
+        } : undefined}
         // 새 누름이다 — 앞 끌기에 딸린 click 은 이미 지나갔다. 깃발을 타이머(아래 onDragEnd)로만 내리면, 끌어 놓은 직후 타이머가 돌기 전에
         //  누른 이 폴더가 안 골라진다(입력은 타이머보다 먼저 처리된다 — Codex 코드 리뷰). 끌기는 이 누름 뒤의 dragstart 가 다시 세운다.
         //  앞 끌기가 예약해 둔 해제도 거둔다 — 남겨 두면 곧바로 시작한 다음 끌기 도중에 그 타이머가 깃발을 내려, 끌기에 딸린 click 이 폴더를 고른다.
@@ -324,7 +337,23 @@ function FolderTreeRow({
         }
         {...dropProps}
       >
-        {hasChildren ? (
+        {base ? (
+          <>
+            {/* 화살표 색은 v1 막대와 같은 규칙(barTone) — 펼침 라임, 고른 줄을 품고 접히면 그 색. 펴고 접기가 없는 트리에서는 숨는다(옛 모양). */}
+            <span
+              className={"folder-tree-caret" + (canToggle ? " toggle" : " hidden") + (canToggle && barTone ? ` st-${barTone}` : "")}
+              title={canToggle ? (open ? "접기" : "펴기") : undefined}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (canToggle) onToggle?.(node.path);
+              }}
+              onDoubleClick={(e) => e.stopPropagation()} // 빠른 두 번 누름은 이미 두 번 토글했다 — 줄의 더블클릭까지 받으면 세 번이 된다
+            >
+              {canToggle ? (open ? "▾" : "▸") : ""}
+            </span>
+            <span className="folder-tree-icon" />
+          </>
+        ) : hasChildren ? (
           <span
             className={"folder-tree-slot folder-tree-bars" + (canToggle ? " toggle" : "") + (barTone ? ` st-${barTone}` : "")}
             style={{ "--bars": barCount } as CSSProperties}
@@ -333,6 +362,7 @@ function FolderTreeRow({
               e.stopPropagation();
               if (onToggle) onToggle(node.path);
             }}
+            onDoubleClick={(e) => e.stopPropagation()} // 빠른 두 번 누름은 이미 두 번 토글했다 — 줄의 더블클릭까지 받으면 세 번이 된다
           >
             {Array.from({ length: barCount }, (_, i) => <i key={i} />)}
           </span>
@@ -340,7 +370,7 @@ function FolderTreeRow({
           <span className="folder-tree-slot">{leadMark && <SideMark kind={leadMark} />}</span>
         )}
         <span className="folder-tree-name">{node.name}</span>
-        {hasChildren && leadMark && <SideMark kind={leadMark} />}
+        {(base || hasChildren) && leadMark && <SideMark kind={leadMark} />}
         {otherMark && <SideMark kind={otherMark} />}
         {node.virtual && <span className="folder-tree-nodisk">{t("폴더 없음")}</span>}
         <span className="folder-tree-fill" />
@@ -349,11 +379,12 @@ function FolderTreeRow({
             +{node.newCount}
           </span>
         )}
-        {count > 0 && (node.reviewCounts !== undefined ?
+        {/* 생성물 0 = 흐린 '-'(두 테마 공통, Jay 2026-11-04) — 조회 전(null)·숫자 없는 트리(undefined)는 칸이 없다 */}
+        {node.count === 0 ? <span className="folder-tree-count zero">-</span> : count > 0 && (node.reviewCounts !== undefined ?
           <FolderReviewCount counts={node.reviewCounts} total={count} /> :
           <span className="folder-tree-count">{count}</span>
         )}
-        {tone && depth > 0 && <RowLink depth={depth} branch={hasChildren} />}
+        {!base && tone && depth > 0 && <RowLink depth={depth} branch={hasChildren} />}
       </button>
       {hasChildren && open && (
         <div className="folder-tree-children" style={{ "--tree-depth": depth } as CSSProperties}>
@@ -362,6 +393,7 @@ function FolderTreeRow({
               key={child.path || child.name}
               node={child}
               depth={depth + 1}
+              theme={theme}
               treeLevels={treeLevels}
               selectedPath={selectedPath}
               viewedPath={viewedPath}

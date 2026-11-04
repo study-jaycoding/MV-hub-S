@@ -9,7 +9,9 @@ import {
   loadLang,
   loadReduceMotion,
   saveAccent,
+  saveFolderTreeTheme,
   saveReduceMotion,
+  useFolderTreeTheme,
   type Lang,
 } from "../lib/theme";
 import { fmtBackupWhen } from "../lib/format";
@@ -76,6 +78,7 @@ export function SettingsPanel({
   const [accent, setAccent] = useState(loadAccent());
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
+  const treeTheme = useFolderTreeTheme();
   const resolveSelectionFollow = useResolveSelectionFollow();
   const [historyImport, setHistoryImport] = useState<HistoryImportStatus | null>(null);
   const [scOpen, setScOpen] = useState(false);
@@ -574,9 +577,11 @@ export function SettingsPanel({
               accent={accent}
               lang={lang}
               reduceMotion={reduceMotion}
+              treeTheme={treeTheme}
               onAccent={pickAccent}
               onLang={pickLang}
               onReduceMotion={pickReduceMotion}
+              onTreeTheme={saveFolderTreeTheme}
             />
 
             <DownloadLocationSection

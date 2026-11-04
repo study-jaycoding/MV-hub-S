@@ -49,10 +49,12 @@ it.each([
   expect(badge.getAttribute("aria-label")).toBe(`최종 ${reviewCounts.final}개 · 보류 ${reviewCounts.held}개 · 전체 ${total}개 (하위 폴더 포함)`);
 });
 
-it("개수 0 이면 공유 & 리뷰 탭·상세 부재 모두 숫자 칸이 없다", () => {
+it("개수 0 이면 공유 & 리뷰 탭·상세 부재 모두 흐린 '-' 하나 — 상태별 숫자를 그리지 않는다(Jay 2026-11-04)", () => {
   act(() => root.render(<FolderTreeView nodes={[{ name: "a", path: "a", count: 0, reviewCounts: { final: 0, held: 0, shared: 0 } },
     { name: "b", path: "b", count: 0, reviewCounts: null }]} onSelect={noop} />));
-  expect(host.querySelector(".folder-tree-count")).toBeNull();
+  expect([...host.querySelectorAll(".folder-tree-count")].map((el) => [el.textContent, el.className])).toEqual([
+    ["-", "folder-tree-count zero"], ["-", "folder-tree-count zero"]]);
+  expect(host.querySelector(".folder-review-total")).toBeNull();
 });
 
 it("상세 부재는 Total로 명시하고 기존 용도의 숫자 배지는 그대로 둔다", () => {
