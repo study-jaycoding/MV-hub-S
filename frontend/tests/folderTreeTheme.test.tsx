@@ -81,16 +81,40 @@ it("기본 — 고르지 않은 줄의 아이콘은 회색 + 50%(③), 고른 �
   const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8")
     .replace(/\r\n/g, "\n").replace(/\/\*[\s\S]*?\*\//g, "");
   const selector = css.match(/([^{}]+)\{ filter: grayscale\(1\); opacity: 0\.5; \}/)?.[1].trim() ?? "";
-  expect(selector).toBe(".folder-tree.tree-base .folder-tree-row:not(.state) > .folder-tree-icon"); // 이름·숫자·화살표는 대상이 아니다
+  expect(selector).toBe(".folder-tree.tree-base .folder-tree-row:not(.state):not(.anc) > .folder-tree-icon"); // 이름·숫자·화살표는 대상이 아니다
+  expect(css).toContain(".folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); }"); // 생략 줄은 위 폴더여도 회색
   const tree: FolderTreeItem[] = [...nodes, { name: "ghost", path: "ghost", count: 2, virtual: true,
     children: [{ name: "c1", path: "ghost/c1", count: 2, virtual: true }] }];
   const grayed = () => [...host.querySelectorAll(selector)].map((icon) => (icon.parentElement!.getAttribute("title") || "").split(/\n| \(/)[0]);
   act(() => root.render(<FolderTreeView nodes={tree} selectedPath="ep001/c0010" seePath="ep001/c0020" viewedPath="misc" genRows
     expanded={new Set(["ep001", "ghost"])} isDisabled={(path) => path === "ep002"} onToggle={() => {}} onSelect={() => {}} />));
-  // 생성 위치를 품은 펼친 ep001 도 색 바탕이 아니라 회색, 생략 ep002·폴더 없음 ghost 도 회색
-  expect(grayed()).toEqual(["ep001", "ep001/c0030", "ep002", "ghost", "ghost/c1"]);
+  // 생성 위치를 품은 펼친 ep001 은 위 폴더라 색(B안), 생략 ep002·폴더 없음 ghost 는 회색
+  expect(grayed()).toEqual(["ep001/c0030", "ep002", "ghost", "ghost/c1"]);
   act(() => saveFolderTreeTheme("v1"));
   expect(grayed()).toEqual([]);
+});
+
+it("기본 — 고른 줄의 위로 이어진 폴더(B안)는 펼쳤든 접었든 아이콘 색 그대로, 형제·다른 폴더는 회색. 색 바탕은 고른 줄에만", () => {
+  const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8")
+    .replace(/\r\n/g, "\n").replace(/\/\*[\s\S]*?\*\//g, "");
+  const selector = css.match(/([^{}]+)\{ filter: grayscale\(1\); opacity: 0\.5; \}/)?.[1].trim() ?? "";
+  const deep: FolderTreeItem[] = [
+    { name: "e030", path: "e030", count: 2, children: [
+      { name: "s01", path: "e030/s01", count: 2, children: [{ name: "c0010", path: "e030/s01/c0010", count: 2 }, { name: "c0020", path: "e030/s01/c0020", count: 0 }] },
+      { name: "s02", path: "e030/s02", count: 0, children: [{ name: "c0010", path: "e030/s02/c0010", count: 0 }] },
+    ] },
+    { name: "e035", path: "e035", count: 0, children: [{ name: "c0010", path: "e035/c0010", count: 0 }] },
+  ];
+  const grayed = () => [...host.querySelectorAll(selector)].map((icon) => (icon.parentElement!.getAttribute("title") || "").split("\n")[0]);
+  const draw = (expanded: string[], selectedPath = "e030/s01/c0010") =>
+    act(() => root.render(<FolderTreeView nodes={deep} selectedPath={selectedPath} genRows expanded={new Set(expanded)} onToggle={() => {}} onSelect={() => {}} />));
+  draw(["e030", "e030/s01", "e030/s02"]); // 두 단계 아래를 고름 — s01·e030 둘 다 색
+  expect(grayed()).toEqual(["e030/s01/c0020", "e030/s02", "e030/s02/c0010", "e035"]);
+  expect(["e030", "e030/s01"].map((path) => [row(path).classList.contains("anc"), row(path).classList.contains("state")])).toEqual([[true, false], [true, false]]);
+  draw([]); // 접어도 고른 줄을 품은 e030 은 색
+  expect(grayed()).toEqual(["e035"]);
+  draw(["e030", "e030/s01"], ""); // 고른 줄이 없으면 위 폴더도 없다
+  expect(host.querySelector(".folder-tree-row.anc")).toBeNull();
 });
 
 it("기본 — 보기·생성·다빈치 아이콘은 이름 뒤(생성 다음 다빈치), 고른 줄 연결선이 없다", () => {

@@ -200,8 +200,11 @@ function FolderTreeRow({
   const tone = viewed ? viewedTone : selected ? selectedTone : seeing ? "see" : undefined;
   const leadMark = selected ? selectedTone : seeing ? "see" : tone;
   const otherMark = viewed && leadMark !== viewedTone ? viewedTone : undefined;
+  // 고른 줄의 위 폴더인가(펼침과 상관없이, 루트 ""는 모든 경로의 위) — 기본 테마는 그 아이콘을 회색으로 흐리지 않는다(Jay 2026-11-04 B안).
+  const under = (path?: string) => !!path && (node.path === "" || path.startsWith(node.path + "/"));
+  const anc = [selectedPath, viewedPath, seePath].some(under);
   // 접힌 폴더의 막대는 그 안의 고른 줄 색을 받는다. 없으면 펼침 라임·접힘 회색.
-  const holds = (path?: string) => !open && !!path && (node.path === "" || path.startsWith(node.path + "/"));
+  const holds = (path?: string) => !open && under(path);
   const barTone = tone ?? (holds(viewedPath) ? viewedTone : holds(selectedPath) ? selectedTone : holds(seePath) ? "see" : open ? "gen" : undefined);
   const barCount = Math.min(levelsBelow(node), MAX_BARS);
   // 기본 테마 = 옛 기본 사이드바(df394b23)의 앞쪽: ▸/▾ 화살표 + 폴더 아이콘, 들여쓰기 6+깊이×14. 막대·연결선은 v1 에만(Jay 2026-11-04).
@@ -251,6 +254,7 @@ function FolderTreeRow({
           (selected ? " selected" : "") +
           (viewed ? " viewed-resolve" : "") +
           (tone ? ` state st-${tone}` : "") +
+          (anc ? " anc" : "") +
           (disabled ? " disabled" : "") +
           (node.virtual ? " virtual" : "") +
           (dropOver ? " drop-over" : "")

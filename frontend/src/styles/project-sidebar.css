@@ -223,9 +223,9 @@
   content: ""; position: absolute; left: 1px; right: 0; bottom: 0; height: 8px; border-radius: 2px;
   background: var(--fd-front); transform: skewX(-22deg); transform-origin: 0 100%;
 }
-/* 고르지 않은 줄의 아이콘은 회색 + 50%(Jay 2026-11-04 ③) — 고른 줄(색 바탕: 생성·보기·다빈치)만 색 그대로. 이름·숫자·화살표는 그대로.
-   열린 폴더 앞판(::after)까지 같이 회색. 생략 줄은 줄 40% 위에 겹쳐 더 흐리게 남고, 폴더 없음 점선도 50%. */
-.folder-tree.tree-base .folder-tree-row:not(.state) > .folder-tree-icon { filter: grayscale(1); opacity: 0.5; }
+/* 고르지 않은 줄의 아이콘은 회색 + 50%(Jay 2026-11-04 ③) — 고른 줄(색 바탕: 생성·보기·다빈치)과 그 위로 이어진 폴더(.anc, 접혀도 — B안)만 색 그대로.
+   이름·숫자·화살표는 그대로. 열린 폴더 앞판(::after)까지 같이 회색. 생략 줄은 줄 40% 위에 겹쳐 더 흐리게 남고(위 폴더여도 아래 grayscale), 폴더 없음 점선도 50%. */
+.folder-tree.tree-base .folder-tree-row:not(.state):not(.anc) > .folder-tree-icon { filter: grayscale(1); opacity: 0.5; }
 .folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); } /* 열린 아이콘의 앞판(::after)까지 회색 */
 /* 폴더 없음(팀 자료에만 있는 폴더) — 점선 빈 아이콘. .folder-tree 를 앞에 붙여 위 아이콘 배경 규칙을 이긴다. */
 .folder-tree .folder-tree-row.virtual .folder-tree-icon { background: transparent; border: 1px dashed var(--muted2); box-shadow: none; }
