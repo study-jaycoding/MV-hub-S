@@ -15,7 +15,7 @@ export function ComfyUnresolvedRunsSection() {
     <section className="settings-section">
       <h4>{t("Comfy 미회수 실행")}</h4>
       <p className="settings-hint">{t("카드가 없어도 실행 기록은 여기에 남습니다. 목록 확인은 원격 서비스를 호출하지 않습니다.")}</p>
-      <button type="button" disabled={state.busy} onClick={() => void state.refresh()}>{t("다시 조회")}</button>
+      <button type="button" className="settings-action" disabled={state.busy} onClick={() => void state.refresh()}>{t("다시 조회")}</button>
       {state.error && <p role="alert" className="settings-hint">{state.error}</p>}
       {!!state.foreignCount && <p role="note" className="settings-hint">{t("원래 PC 에서 확인 필요")} · {state.foreignCount}</p>}
       {!state.runs.length && !state.error && <p className="settings-hint">{t("미회수 실행이 없습니다.")}</p>}

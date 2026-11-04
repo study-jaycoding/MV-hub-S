@@ -34,6 +34,11 @@ export function teamKeyText(state: TeamKeyState, updatedAt: string | null | unde
   }
 }
 
+/** 개인 키를 고른 때의 '지금 쓰는 키' 줄 — 팀 키 줄과 같은 자리. 저장된 키가 없으면 쓴다고 말하지 않는다. */
+export function personalKeyText(hasKey: boolean): string {
+  return hasKey ? "지금 쓰는 키: 개인 키(이 PC 에 넣은 키)" : "개인 키 없음 — 아래 칸에 넣으세요. 키가 필요 없는 워크플로는 그대로 실행됩니다";
+}
+
 export function ComfyConnectionSection() {
   const [s, setS] = useState<ComfySettings | null>(null);
   const [saved, setSaved] = useState<ComfySettings | null>(null);
@@ -169,23 +174,28 @@ export function ComfyConnectionSection() {
       {/* 키 출처 — 팀 키(관리자가 서버에 등록, 허브가 받아 씀) / 개인 키(이 PC). 옛 허브(comfy_key_source 없음)에는 보이지 않는다. */}
       {s.comfy_key_source && (
         <>
-          <div className="comfy-set-row comfy-key-source" role="radiogroup" aria-label="키 출처">
-            <label>키 출처</label>
-            <label className="comfy-key-choice">
-              <input type="radio" name="comfy-key-source" value="team" checked={keySourceOf(s) === "team"}
-                disabled={saving || checking} onChange={() => { patch({ comfy_key_source: "team" }); setApiKeyEdit(""); }} />
-              팀 키 (관리자 등록)
-            </label>
-            <label className="comfy-key-choice">
-              <input type="radio" name="comfy-key-source" value="personal" checked={keySourceOf(s) === "personal"}
-                disabled={saving || checking} onChange={() => patch({ comfy_key_source: "personal" })} />
-              개인 키
-            </label>
+          {/* 언어·모션과 같은 둘 고르기 단추(Jay 2026-11-04 '디자인 맞춰서'). 예전 라디오 label 은 줄 이름표의 78px 폭에 걸려 두 줄로 접혔다. */}
+          <div className="comfy-set-row comfy-key-source">
+            <label id="comfy-key-source-label">키 출처</label>
+            <div className="lang-toggle" role="group" aria-labelledby="comfy-key-source-label">
+              <button type="button" className={keySourceOf(s) === "team" ? "on" : ""} aria-pressed={keySourceOf(s) === "team"}
+                title="관리자가 서버에 등록한 팀 키를 받아 씁니다" disabled={saving || checking}
+                onClick={() => { patch({ comfy_key_source: "team" }); setApiKeyEdit(""); }}>
+                팀 키
+              </button>
+              <button type="button" className={keySourceOf(s) === "personal" ? "on" : ""} aria-pressed={keySourceOf(s) === "personal"}
+                title="이 PC 에 넣은 키를 씁니다" disabled={saving || checking}
+                onClick={() => patch({ comfy_key_source: "personal" })}>
+                개인 키
+              </button>
+            </div>
           </div>
-          {keySourceOf(s) === "team" && (
+          {keySourceOf(s) === "team" ? (
             <p className="settings-hint comfy-key-now" data-state={s.team_key?.state ?? "off"}>
               {teamKeyText(s.team_key?.state ?? "off", s.team_key?.updated_at)}
             </p>
+          ) : (
+            <p className="settings-hint comfy-key-now" data-state="personal">{personalKeyText(s.has_api_key)}</p>
           )}
         </>
       )}

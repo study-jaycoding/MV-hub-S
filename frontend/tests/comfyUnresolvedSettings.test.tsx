@@ -232,6 +232,18 @@ it("dismiss 409 still refreshes the latest row, releases busy and allows a fresh
   expect(fetch).not.toHaveBeenCalled();
 });
 
+// 2026-11-04 Jay '단추도 라임으로 디자인 맞춰서' — 다른 설정 단추와 같은 공용 단추다
+it("'다시 조회' 는 설정 공용 라임 단추(settings-action)이고 누르면 목록을 다시 읽는다", async () => {
+  act(() => setLang("ko"));
+  const listing = vi.spyOn(comfyApi, "unresolvedRuns").mockResolvedValue({ cap: 200, used: 0, runs: [] });
+  await render();
+  const again = button("다시 조회");
+  expect(again.classList.contains("settings-action")).toBe(true);
+  const before = listing.mock.calls.length;
+  await act(async () => again.click());
+  expect(listing).toHaveBeenCalledTimes(before + 1);
+});
+
 it("running phase uses English when the UI language is English", async () => {
   act(() => setLang("en"));
   vi.spyOn(comfyApi, "unresolvedRuns").mockResolvedValue({ cap: 200, used: 1, runs: [record({ phase: "running" })] });

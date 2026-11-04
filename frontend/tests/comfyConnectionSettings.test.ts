@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComfyConnectionSection, hasUnsavedComfySettings, keySourceOf, teamKeyText } from "../src/components/settings/ComfyConnectionSection";
+import { ComfyConnectionSection, hasUnsavedComfySettings, keySourceOf, personalKeyText, teamKeyText } from "../src/components/settings/ComfyConnectionSection";
 import { comfyApi, type ComfySettings, type TeamKeyState } from "../src/lib/comfyApi";
 
 const saved: ComfySettings = {
@@ -54,6 +54,12 @@ describe("'지금 쓰는 키' 안내 줄", () => {
     expect(teamKeyText("undecryptable", null)).toContain("다시 등록");
     expect(teamKeyText("off", null)).toContain("로그인과 접근 권한");
   });
+
+  it("개인 키 줄은 저장된 키가 있을 때만 '쓴다' 고 말하고 말줄임표로 끝나지 않는다", () => {
+    expect(personalKeyText(true)).toBe("지금 쓰는 키: 개인 키(이 PC 에 넣은 키)");
+    expect(personalKeyText(false)).toContain("개인 키 없음");
+    for (const text of [personalKeyText(true), personalKeyText(false)]) expect(text).not.toMatch(/(\.\.\.|…)\s*$/);
+  });
 });
 
 describe("설정 화면", () => {
@@ -76,22 +82,29 @@ describe("설정 화면", () => {
     await act(async () => { await Promise.resolve(); });
   }
   const keyInput = () => host.querySelector<HTMLInputElement>('input[type="password"]')!;
-  const radio = (value: string) => host.querySelector<HTMLInputElement>(`input[name="comfy-key-source"][value="${value}"]`)!;
+  // 키 출처 = 언어·모션과 같은 둘 고르기 단추 한 줄(Jay 2026-11-04) — 라디오·선택지 label 이 없다
+  const keyButton = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>(".comfy-key-source .lang-toggle button"))
+    .find((button) => button.textContent === label)!;
+  const picked = () => Array.from(host.querySelectorAll<HTMLButtonElement>(".comfy-key-source .lang-toggle button"))
+    .filter((button) => button.classList.contains("on") && button.getAttribute("aria-pressed") === "true").map((button) => button.textContent);
 
   it("팀 키 모드는 API 키 칸을 잠그고 지금 쓰는 키를 보인다", async () => {
     await mount(team);
     expect(keyInput().disabled).toBe(true);
     expect(keyInput().placeholder).toContain("팀 키 사용 중");
     expect(host.querySelector(".comfy-key-now")?.textContent).toBe(teamKeyText("available", "2026-11-04T05:20:00Z"));
-    expect(radio("team").checked).toBe(true);
+    expect(picked()).toEqual(["팀 키"]);
+    expect(host.querySelector(".comfy-key-source input, .comfy-key-choice")).toBeNull();
+    expect(host.querySelectorAll(".comfy-key-source .lang-toggle button")).toHaveLength(2);
   });
 
   it("개인 키로 바꾸면 칸이 풀리고 저장 본문에 키 출처가 실린다", async () => {
     await mount(team);
     const put = vi.spyOn(comfyApi, "setSettings").mockResolvedValue({ ...team, comfy_key_source: "personal" });
-    await act(async () => { radio("personal").click(); });
+    await act(async () => { keyButton("개인 키").click(); });
     expect(keyInput().disabled).toBe(false);
-    expect(host.querySelector(".comfy-key-now")).toBeNull();
+    expect(picked()).toEqual(["개인 키"]);
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(personalKeyText(false)); // 이 PC 엔 저장된 키가 없다
     const save = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "저장")!;
     expect(save.disabled).toBe(false);
     await act(async () => { save.click(); });
@@ -108,7 +121,17 @@ describe("설정 화면", () => {
       root = createRoot(host);
     }
     await mount(saved);
-    expect(host.querySelector('input[name="comfy-key-source"]')).toBeNull();
+    expect(host.querySelector(".comfy-key-source")).toBeNull();
     expect(keyInput().disabled).toBe(false);
+  });
+
+  it("개인 키에 저장된 키가 있으면 같은 자리에 '지금 쓰는 키: 개인 키' 줄, 팀 키를 누르면 팀 줄로 바뀐다", async () => {
+    await mount({ ...saved, comfy_key_source: "personal", team_key: null });
+    expect(picked()).toEqual(["개인 키"]);
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(personalKeyText(true));
+    await act(async () => { keyButton("팀 키").click(); });
+    expect(picked()).toEqual(["팀 키"]);
+    expect(keyInput().disabled).toBe(true);
+    expect(host.querySelector(".comfy-key-now")?.textContent).toBe(teamKeyText("off", undefined));
   });
 });

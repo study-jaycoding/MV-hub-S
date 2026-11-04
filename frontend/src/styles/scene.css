@@ -1156,6 +1156,8 @@
   border-radius: 6px; padding: 5px 8px; font-size: 12px;
 }
 .settings-actions-row { display: flex; gap: 8px; margin-top: 8px; }
+/* 키 출처 아래 '지금 쓰는 키' 줄 — 줄 이름표(78px) + 간격(10px) 만큼 들여 단추 밑에 선다 */
+.settings-hint.comfy-key-now { margin: 0 0 6px 88px; }
 
 /* View 텍스트 보기 모달 — 연결된 텍스트 블록들 */
 .scene-textview {
