@@ -77,6 +77,22 @@ it("기본 — 열린 폴더 아이콘(A안)은 펼친 폴더에만: 접힌 폴�
   expect(opened()).toEqual([]);
 });
 
+it("기본 — 고르지 않은 줄의 아이콘은 회색 + 50%(③), 고른 줄(생성·보기·다빈치 색 바탕) 아이콘은 색 그대로. v1 엔 아이콘이 없다", () => {
+  const css = readFileSync(new NodeURL("../src/styles/project-sidebar.css", import.meta.url), "utf8")
+    .replace(/\r\n/g, "\n").replace(/\/\*[\s\S]*?\*\//g, "");
+  const selector = css.match(/([^{}]+)\{ filter: grayscale\(1\); opacity: 0\.5; \}/)?.[1].trim() ?? "";
+  expect(selector).toBe(".folder-tree.tree-base .folder-tree-row:not(.state) > .folder-tree-icon"); // 이름·숫자·화살표는 대상이 아니다
+  const tree: FolderTreeItem[] = [...nodes, { name: "ghost", path: "ghost", count: 2, virtual: true,
+    children: [{ name: "c1", path: "ghost/c1", count: 2, virtual: true }] }];
+  const grayed = () => [...host.querySelectorAll(selector)].map((icon) => (icon.parentElement!.getAttribute("title") || "").split(/\n| \(/)[0]);
+  act(() => root.render(<FolderTreeView nodes={tree} selectedPath="ep001/c0010" seePath="ep001/c0020" viewedPath="misc" genRows
+    expanded={new Set(["ep001", "ghost"])} isDisabled={(path) => path === "ep002"} onToggle={() => {}} onSelect={() => {}} />));
+  // 생성 위치를 품은 펼친 ep001 도 색 바탕이 아니라 회색, 생략 ep002·폴더 없음 ghost 도 회색
+  expect(grayed()).toEqual(["ep001", "ep001/c0030", "ep002", "ghost", "ghost/c1"]);
+  act(() => saveFolderTreeTheme("v1"));
+  expect(grayed()).toEqual([]);
+});
+
 it("기본 — 보기·생성·다빈치 아이콘은 이름 뒤(생성 다음 다빈치), 고른 줄 연결선이 없다", () => {
   act(() => root.render(<FolderTreeView nodes={nodes} selectedPath="ep001/c0010" viewedPath="ep001/c0010" genRows
     expanded={new Set(["ep001"])} onToggle={() => {}} onSelect={() => {}} />));
