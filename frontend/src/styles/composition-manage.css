@@ -467,6 +467,12 @@ tr.work-row-archived td { opacity: .62; }
 }
 .work-calc { font-size: 12px; color: var(--text); opacity: .82; white-space: nowrap; }
 .work-calc small { font-size: 10px; color: var(--muted); margin-right: 5px; font-weight: 500; }
+/* 표 칸 정리(2026-11-05 Jay A안) — 미리보기 없는 컷 글('미공유 N개' 등)은 썸네일 줄 아래 작은 줄로 옮겨 생성물 칸을 줄인다
+   (빌드 CSS 측정: 설명 칸 72px → 146px). 생성기간 날짜는 달력 아이콘을 숨겨 아래 회색 기간과 오른쪽 끝을 맞춘다(누르면 달력).
+   설명 칸의 '설명' 안내 글씨는 투명하게 — placeholder 속성은 라벨 없는 칸의 보조 기술 이름이라 남긴다. */
+.work-cut-privates { display: flex; flex-wrap: wrap; gap: 0 8px; margin-top: 3px; }
+.work-table td:nth-child(10) .work-cell-in::-webkit-calendar-picker-indicator { display: none; }
+.work-desc .work-cell-in::placeholder { color: transparent; }
 
 /* 좁은 창에서는 핵심 열을 한 화면에 유지하고, 나머지 정보는 행 상세로 보존한다. */
 @media (max-width: 900px) {

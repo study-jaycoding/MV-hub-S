@@ -57,14 +57,34 @@ it("puts an empty grid row and a calc row under the table, only when rows exist"
   expect(host.querySelectorAll("tfoot .work-gap-row td")).toHaveLength(12);
   const cells = [...host.querySelectorAll("tfoot .work-calc-row td")].map((td) => td.textContent);
   expect(cells).toHaveLength(12);
-  expect(cells[4]).toBe("미공유1 · 합계2");
-  expect(cells[6]).toBe("보류1 · 공유1");
-  expect(cells[7]).toBe("합계1.62 cr");
+  expect(cells[4]).toBe("합계2미공유1"); // 합계 위 · 미공유 아래 줄
+  expect(host.querySelectorAll("tfoot .work-calc-row td")[4].querySelectorAll(".work-calc")).toHaveLength(2);
+  expect(cells[6]).toBe("보류1공유1"); // 상태는 한 줄에 하나
+  expect(host.querySelectorAll("tfoot .work-calc-row td")[6].querySelectorAll(".work-calc")).toHaveLength(2);
+  expect(cells[7]).toBe("합계1.62"); // 머리글이 크레딧 — cr 없이
   expect(cells[8]).toBe("합계1m30s");
   expect(cells[9]).toBe("범위9/17");
   expect(cells[11]).toBe("합계1");
   act(() => root.render(<TableView {...props} tasks={[]} />));
   expect(host.querySelector("tfoot")).toBeNull();
+});
+
+it("moves private-cut text under the thumbnail row in the table only, and opens the date picker on click", () => {
+  const withPrivate: Task = { ...task, cuts: [...task.cuts!,
+    { id: "private", status: "done", metadata_only: true, creator_uid: "other" }] };
+  act(() => root.render(<TableView {...props} tasks={[withPrivate]} />));
+  const cell = host.querySelector("td.work-cut-cell")!;
+  expect(cell.querySelector(".work-cut-thumbs .work-cut-private")).toBeNull();
+  expect(cell.querySelector(".work-cut-privates")?.textContent).toBe("미공유 1개");
+  const showPicker = vi.fn();
+  const date = host.querySelector<HTMLInputElement>("tbody input[type=date]")!;
+  Object.defineProperty(date, "showPicker", { value: showPicker });
+  act(() => date.click());
+  expect(showPicker).toHaveBeenCalledTimes(1);
+  // 보드 카드는 시안을 보지 않았다 — 지금처럼 썸네일 줄 안
+  act(() => root.render(<BoardView {...props} tasks={[withPrivate]} />));
+  expect(host.querySelector(".work-cut-thumbs .work-cut-private")?.textContent).toBe("미공유 1개");
+  expect(host.querySelector(".work-cut-privates")).toBeNull();
 });
 
 it("uses a red-S badge for valid held cuts without adding a held border class", () => {

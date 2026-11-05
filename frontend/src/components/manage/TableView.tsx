@@ -254,6 +254,7 @@ export function TableView(props: WorkViewProps) {
                     disabled={disabled}
                     readOnly={locked}
                     onUnlinkGen={onUnlinkGen}
+                    privateBelow
                   />
                 </td>
                 <td className="work-creators">
@@ -310,6 +311,14 @@ export function TableView(props: WorkViewProps) {
                     type="date"
                     value={t.due_date || t.derived_due || ""}
                     disabled={locked}
+                    // 달력 아이콘은 숨겼다(날짜·아래 기간 오른쪽 끝 맞춤) — 날짜를 누르면 달력을 연다
+                    onClick={(e) => {
+                      try {
+                        e.currentTarget.showPicker?.();
+                      } catch {
+                        // 사용자 동작이 아닌 호출 등으로 막히면 입력칸 그대로 쓴다
+                      }
+                    }}
                     onChange={(e) => onPatch(t.id, { due_date: e.target.value })}
                   />
                   {t.derived_start && t.derived_due && (
@@ -380,31 +389,26 @@ export function TableView(props: WorkViewProps) {
               <td><Calc label="고유">{count(totals.episodes)}</Calc></td>
               <td><Calc label="고유">{count(totals.sequences)}</Calc></td>
               <td>
-                <span className="work-calc">
-                  {totals.unshared > 0 && (
-                    <>
-                      <small>미공유</small>
-                      {count(totals.unshared)}
-                      {" · "}
-                    </>
-                  )}
-                  <small>합계</small>
-                  {count(totals.gens)}
-                </span>
+                {/* 행과 같은 모양 — 합계 위, 미공유 아래 줄(한 줄이면 이 글이 생성물 칸을 다시 넓힌다) */}
+                <Calc label="합계">{count(totals.gens)}</Calc>
+                {totals.unshared > 0 && (
+                  <div className="work-calc">
+                    <small>미공유</small>
+                    {count(totals.unshared)}
+                  </div>
+                )}
               </td>
               <td><Calc label="고유">{count(totals.creators)}</Calc></td>
               <td>
-                <span className="work-calc">
-                  {totals.statuses.map(([label, n], i) => (
-                    <Fragment key={label}>
-                      {i > 0 && " · "}
-                      <small>{label}</small>
-                      {count(n)}
-                    </Fragment>
-                  ))}
-                </span>
+                {/* 상태는 한 줄에 하나, 크레딧은 cr 없이 — 계산 줄 글이 칸을 넓혀 설명 칸을 누르지 않게(빌드 CSS 측정 48 → 92px) */}
+                {totals.statuses.map(([label, n]) => (
+                  <div key={label} className="work-calc">
+                    <small>{label}</small>
+                    {count(n)}
+                  </div>
+                ))}
               </td>
-              <td><Calc label="합계">{formatCredits(roundCredits(totals.credits))} cr</Calc></td>
+              <td><Calc label="합계">{formatCredits(roundCredits(totals.credits))}</Calc></td>
               <td><Calc label="합계">{fmtElapsed(totals.elapsed)}</Calc></td>
               <td>
                 {totals.start && totals.end && (
