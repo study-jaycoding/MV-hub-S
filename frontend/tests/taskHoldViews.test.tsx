@@ -48,6 +48,25 @@ it("shows the hold column between generation and sharing without hiding other ta
   expect(statusColor("hold")).toBe("#c9384a");
 });
 
+it("puts an empty grid row and a calc row under the table, only when rows exist", () => {
+  act(() => root.render(<TableView {...props} tasks={[
+    { ...task, credits: 0.12, elapsed: 60, comment_count: 1, creators: ["Me"], gen_count: 1 },
+    { ...task, id: "two", status: "publish", credits: 1.5, elapsed: 30, creators: ["Me"], gen_count: 1,
+      cuts: [{ ...task.cuts![0], id: "private", shared: false }] },
+  ]} />));
+  expect(host.querySelectorAll("tfoot .work-gap-row td")).toHaveLength(12);
+  const cells = [...host.querySelectorAll("tfoot .work-calc-row td")].map((td) => td.textContent);
+  expect(cells).toHaveLength(12);
+  expect(cells[4]).toBe("미공유1 · 합계2");
+  expect(cells[6]).toBe("보류1 · 공유1");
+  expect(cells[7]).toBe("합계1.62 cr");
+  expect(cells[8]).toBe("합계1m30s");
+  expect(cells[9]).toBe("범위9/17");
+  expect(cells[11]).toBe("합계1");
+  act(() => root.render(<TableView {...props} tasks={[]} />));
+  expect(host.querySelector("tfoot")).toBeNull();
+});
+
 it("uses a red-S badge for valid held cuts without adding a held border class", () => {
   const cuts = [task.cuts![0],
     { ...task.cuts![0], id: "final", is_final: true },

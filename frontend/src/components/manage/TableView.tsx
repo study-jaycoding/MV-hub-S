@@ -1,8 +1,9 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
 // 생성자는 실제 생성자(연결 컷 파생)만 — 수동 담당 배정 개념은 폐기됨(2026-08-21).
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { fmtElapsed } from "../../lib/format";
+import { formatCredits, roundCredits } from "../../lib/formatCredits";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
@@ -10,7 +11,9 @@ import { taskModelUsage } from "./personalWork";
 import { HoverMetric } from "./WorkspaceUsageDashboard";
 import {
   GEN_MIME,
+  STATUSES,
   statusColor,
+  statusDef,
   statusLabel,
   taskIsReadOnly,
   workActivityStatusLabel,
@@ -27,6 +30,60 @@ function fmtMD(d?: string | null): string {
   if (!d) return "";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
   return m ? `${+m[2]}/${+m[3]}` : d;
+}
+
+export interface WorkTableTotals {
+  projects: number;
+  episodes: number;
+  sequences: number;
+  gens: number;
+  unshared: number; // 팀에 공유 안 된 컷(로컬 미리보기가 있는 내 컷 포함)
+  creators: number;
+  statuses: [label: string, count: number][];
+  credits: number;
+  elapsed: number;
+  start: string | null;
+  end: string | null;
+  comments: number;
+}
+
+const distinct = (values: (string | null | undefined)[]) =>
+  new Set(values.filter((value): value is string => !!value)).size;
+
+// 표 아래 계산 줄(노션식, 2026-11-05 Jay) — 지금 표에 보이는 줄(필터·검색·내 작업만 적용 뒤)만 센다.
+export function workTableTotals(tasks: Task[]): WorkTableTotals {
+  const byStatus = new Map<string, number>();
+  for (const t of tasks) byStatus.set(t.status, (byStatus.get(t.status) || 0) + 1);
+  const order = [...STATUSES.map((s) => s.v), ...[...byStatus.keys()].filter((v) => !statusDef(v))];
+  const starts = tasks.map((t) => t.derived_start).filter((d): d is string => !!d).sort();
+  const ends = tasks.map((t) => t.derived_due).filter((d): d is string => !!d).sort();
+  return {
+    projects: distinct(tasks.map((t) => t.project_name)),
+    episodes: distinct(tasks.map((t) => t.name)),
+    sequences: distinct(tasks.map((t) => (t.folder_path ? t.sequence || t.name : t.sequence))),
+    gens: tasks.reduce((sum, t) => sum + (t.gen_count ?? (t.cuts?.length || 0)), 0),
+    unshared: tasks.reduce((sum, t) => sum + (t.cuts || []).filter((cut) => !cut.shared).length, 0),
+    creators: distinct(tasks.flatMap((t) => t.creators || [])),
+    statuses: order
+      .filter((v) => byStatus.has(v))
+      .map((v): [string, number] => [workActivityStatusLabel(v), byStatus.get(v)!]),
+    credits: tasks.reduce((sum, t) => sum + (t.credits || 0), 0),
+    elapsed: tasks.reduce((sum, t) => sum + (t.elapsed || 0), 0),
+    start: starts[0] ?? null,
+    end: ends[ends.length - 1] ?? null,
+    comments: tasks.reduce((sum, t) => sum + (t.comment_count || 0), 0),
+  };
+}
+
+const count = (value: number) => value.toLocaleString("en-US");
+
+function Calc({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="work-calc">
+      <small>{label}</small>
+      {children}
+    </span>
+  );
 }
 
 export function TableView(props: WorkViewProps) {
@@ -51,6 +108,7 @@ export function TableView(props: WorkViewProps) {
 
   const commitText = (t: Task, value: string, base?: string) => onPatch(t.id, { description: value }, base); // 보낼지 말지는 칸(DescCell)이 정한다
 
+  const totals = tasks.length ? workTableTotals(tasks) : null;
   const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
   const toggleDetails = (id: string) =>
@@ -311,6 +369,56 @@ export function TableView(props: WorkViewProps) {
             );
           })}
         </tbody>
+        {totals && (
+          <tfoot>
+            <tr className="work-gap-row" aria-hidden="true">
+              {Array.from({ length: 12 }, (_, i) => <td key={i} />)}
+            </tr>
+            <tr className="work-calc-row">
+              <td />
+              <td><Calc label="고유">{count(totals.projects)}</Calc></td>
+              <td><Calc label="고유">{count(totals.episodes)}</Calc></td>
+              <td><Calc label="고유">{count(totals.sequences)}</Calc></td>
+              <td>
+                <span className="work-calc">
+                  {totals.unshared > 0 && (
+                    <>
+                      <small>미공유</small>
+                      {count(totals.unshared)}
+                      {" · "}
+                    </>
+                  )}
+                  <small>합계</small>
+                  {count(totals.gens)}
+                </span>
+              </td>
+              <td><Calc label="고유">{count(totals.creators)}</Calc></td>
+              <td>
+                <span className="work-calc">
+                  {totals.statuses.map(([label, n], i) => (
+                    <Fragment key={label}>
+                      {i > 0 && " · "}
+                      <small>{label}</small>
+                      {count(n)}
+                    </Fragment>
+                  ))}
+                </span>
+              </td>
+              <td><Calc label="합계">{formatCredits(roundCredits(totals.credits))} cr</Calc></td>
+              <td><Calc label="합계">{fmtElapsed(totals.elapsed)}</Calc></td>
+              <td>
+                {totals.start && totals.end && (
+                  <Calc label="범위">
+                    {fmtMD(totals.start)}
+                    {totals.start !== totals.end ? ` ~ ${fmtMD(totals.end)}` : ""}
+                  </Calc>
+                )}
+              </td>
+              <td />
+              <td><Calc label="합계">{count(totals.comments)}</Calc></td>
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );

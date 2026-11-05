@@ -448,10 +448,31 @@ tr.work-row-archived td { opacity: .62; }
 .work-cut-cell .work-cut-thumbs,
 .work-cut-drop .work-cut-thumbs { flex-wrap: nowrap; }
 
+/* 표 아래 계산 줄(노션식, 2026-11-05 Jay) — 격자 빈 줄 하나 뒤에 테두리 없이 칸마다 오른쪽 정렬 '작은 회색 이름 + 값'.
+   테이블 보기일 때만 표 칸이 세로 스크롤을 맡는다(완료 탭 .export-root 와 같은 세로 flex) — 표 칸의 가로 스크롤(overflow-x)
+   때문에 창 스크롤 기준 sticky 는 걸리지 않는다. 표가 길면 계산 줄이 표 칸 아래에 붙고, 맨 아래에선 빈 줄 밑 제자리다. */
+.manage-window:has(> .work-root .work-table) { display: flex; flex-direction: column; }
+.manage-window:has(> .work-root .work-table) > * { flex: 0 0 auto; }
+.manage-window > .work-root:has(.work-table) {
+  flex: 1 1 auto; min-height: 0; width: 100%; box-sizing: border-box;
+  display: flex; flex-direction: column; padding-bottom: 14px;
+}
+.work-root:has(.work-table) > * { flex: 0 0 auto; }
+.work-root > .manage-table-wrap:has(> .work-table) { flex: 1 1 auto; min-height: 160px; overflow: auto; }
+.work-table > tfoot > .work-gap-row > td { height: 36px; }
+.manage-table.work-table > tfoot > .work-calc-row > td {
+  position: sticky; bottom: 0; z-index: 1; background: var(--bg);
+  border: none; box-shadow: inset 0 1px 0 var(--border);
+  padding: 12px 10px; text-align: right; opacity: 1;
+}
+.work-calc { font-size: 12px; color: var(--text); opacity: .82; white-space: nowrap; }
+.work-calc small { font-size: 10px; color: var(--muted); margin-right: 5px; font-weight: 500; }
+
 /* 좁은 창에서는 핵심 열을 한 화면에 유지하고, 나머지 정보는 행 상세로 보존한다. */
 @media (max-width: 900px) {
   .manage-table.work-table th:nth-child(n+9),
-  .manage-table.work-table > tbody > tr:not(.work-mobile-detail-row) > td:nth-child(n+9) {
+  .manage-table.work-table > tbody > tr:not(.work-mobile-detail-row) > td:nth-child(n+9),
+  .manage-table.work-table > tfoot > tr > td:nth-child(n+9) {
     display: none;
   }
   .work-mobile-detail-btn {
