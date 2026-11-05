@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./http', () => ({ getApiPause: vi.fn(() => null), getAuthToken: vi.fn(() => 'token'), jsonFetch: vi.fn() }));
+vi.mock('./http', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./http')>()),
+  getApiPause: vi.fn(() => null), getAuthToken: vi.fn(() => 'token'), jsonFetch: vi.fn(),
+}));
 vi.mock('./accountScope', () => ({ getAccountNamespace: vi.fn(() => 'acct:unit'), getConnectionKey: vi.fn(() => 'server') }));
 import { getAccountNamespace } from './accountScope';
 import { jsonFetch } from './http';
@@ -9,8 +12,68 @@ import { handleOpenGeneration } from './useOpenGeneration';
 import { takeCommentHighlight } from './commentHighlight';
 
 const detail = { generation_id: 'g', comment_id: 'c', open_id: 'request' };
-beforeEach(() => { vi.clearAllMocks(); vi.mocked(getAccountNamespace).mockReturnValue('acct:unit'); takeCommentHighlight(['c']); });
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(jsonFetch).mockReset(); vi.mocked(getAccountNamespace).mockReturnValue('acct:unit'); takeCommentHighlight(['c']); });
+afterEach(() => vi.useRealTimers());
 describe('Slack open navigation', () => {
+  it('rejects the overlapping request even when it would finish before the first acknowledgement', async () => {
+    document.title = 'Millionvolt Hub';
+    let complete!: (value: unknown) => void;
+    vi.mocked(jsonFetch).mockImplementation(async url => {
+      if (String(url).endsWith('/comments')) return [{ id: 'c' }];
+      if (url === '/api/open/ack') return new Promise(resolve => { complete = resolve; });
+      return { ok: true };
+    });
+    const opened = vi.fn();
+    const first = handleOpenGeneration(detail, 'window', opened);
+    await vi.waitFor(() => expect(complete).toBeTypeOf('function'));
+    const marker = document.title;
+    await handleOpenGeneration({ ...detail, open_id: 'second' }, 'window', opened);
+    expect(document.title).toBe(marker);
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(jsonFetch).mock.calls.filter(c => c[0] === '/api/open/claim')).toHaveLength(1);
+    complete({ ok: true });
+    await first;
+    expect(document.title).toBe('Millionvolt Hub');
+  });
+
+  it('restores title on ack timeout and a late response cannot overwrite the next owner', async () => {
+    vi.useFakeTimers();
+    document.title = 'Millionvolt Hub';
+    const complete: Array<(value: unknown) => void> = [];
+    vi.mocked(jsonFetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/comments')) return [{ id: 'c' }];
+      if (url === '/api/open/ack') return new Promise((resolve, reject) => {
+        complete.push(resolve);
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+      return { ok: true };
+    });
+    const first = handleOpenGeneration(detail, 'window', vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(complete).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    await first;
+    expect(document.title).toBe('Millionvolt Hub');
+    const second = handleOpenGeneration({ ...detail, open_id: 'second' }, 'window', vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    const secondTitle = document.title;
+    complete[0]({ ok: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(document.title).toBe(secondTitle);
+    complete[1]({ ok: true });
+    await second;
+    expect(document.title).toBe('Millionvolt Hub');
+  });
+
+  it('does not replace a title changed by another owner during acknowledgement', async () => {
+    vi.mocked(jsonFetch).mockImplementation(async url => {
+      if (String(url).endsWith('/comments')) return [{ id: 'c' }];
+      if (url === '/api/open/ack') document.title = 'New view';
+      return { ok: true };
+    });
+    await handleOpenGeneration(detail, 'window', vi.fn());
+    expect(document.title).toBe('New view');
+  });
   it('claims, validates membership, marks seen then opens the matching comment', async () => {
     vi.mocked(jsonFetch).mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce([{ id: 'c' }]).mockResolvedValue({ ok: true });
     const open = vi.fn(() => {

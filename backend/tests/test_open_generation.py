@@ -64,7 +64,8 @@ def test_localhost_window_can_claim_but_origin_must_match_host(client):
 
 def test_successful_ack_raises_the_marked_window_only(client, monkeypatch):
     raised = []
-    monkeypatch.setattr(opening.app_windows, 'raise_marked', lambda marker: raised.append(marker) or 1)
+    monkeypatch.setattr(opening.app_windows, 'find_marked', lambda marker: raised.append(marker) or [(42, False)])
+    monkeypatch.setattr(opening.app_windows, 'lift_marked', lambda hits, **kwargs: None)
     monkeypatch.setattr(opening.shared_connection, 'is_shared_team_server', lambda: False)
     monkeypatch.setattr(opening.os, 'name', 'nt')
     headers = {'origin': 'http://127.0.0.1:8010', 'sec-fetch-site': 'same-origin'}

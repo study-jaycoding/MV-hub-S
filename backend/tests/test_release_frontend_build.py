@@ -175,7 +175,7 @@ def _archive_probe(
     required = [
         "MV_agent.bat", "update_release.bat", "run_release_update.ps1", "update_release_worker.bat",
         "update_release_contract.ps1", "installer-capabilities.json",
-        "agent_push.py", "run_agent_session.py", "hf_cli_version.txt", "mvhub.ico",
+        "agent_push.py", "run_agent_session.py", "open_link.py", "hf_cli_version.txt", "mvhub.ico",
         "backend/serve.py", "backend/app/main.py", "backend/app/routers/release_update.py",
         "backend/app/services/release_update.py", "backend/requirements.txt", "frontend/dist/index.html",
         "tools/mcp_adapter/server.py", "tools/mcp_adapter/update.py", "tools/mcp_adapter/local_setup.py", "tools/mcp_adapter/requirements.txt",
@@ -183,7 +183,7 @@ def _archive_probe(
     ]
     if python:
         required += [
-            "runtime/python/python.exe", "runtime/python/python314.dll",
+            "runtime/python/python.exe", "runtime/python/pythonw.exe", "runtime/python/python314.dll",
             "runtime/python/Lib/site-packages/fastapi/__init__.py",
             "runtime/python/Lib/site-packages/pip/__init__.py", "backend/.deps_installed",
             "tools/mcp_adapter/site-packages/mcp/__init__.py",

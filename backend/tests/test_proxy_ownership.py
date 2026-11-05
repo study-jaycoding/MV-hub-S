@@ -189,6 +189,7 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/open/generation/g1",
             "/api/open/claim",
             "/api/open/ack",
+            "/api/open/native",
             "/api/generation-comments/c1",
             "/api/generation-comments/c1/seen",
             "/api/cache-all",

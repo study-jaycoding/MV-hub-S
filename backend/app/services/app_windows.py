@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
-SW_RESTORE = 9
+SW_SHOWNOACTIVATE = 4
 # NOSIZE · NOMOVE · NOACTIVATE · ASYNCWINDOWPOS(크롬 창 스레드가 바빠도 허브가 기다리지 않는다)
 SWP_LIFT = 0x0001 | 0x0002 | 0x0010 | 0x4000
 
@@ -48,7 +48,8 @@ class Win32:
         u.GetForegroundWindow.restype = W.HWND
         u.SetWindowPos.argtypes = [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.UINT]
         u.SetWindowPos.restype = W.BOOL
-        u.ShowWindow.argtypes = [W.HWND, ctypes.c_int]
+        u.ShowWindowAsync.argtypes = [W.HWND, ctypes.c_int]
+        u.ShowWindowAsync.restype = W.BOOL
 
     def windows(self) -> list[Window]:
         found: list[Window] = []
@@ -88,14 +89,46 @@ class Win32:
         return found
 
     def restore(self, hwnd: int) -> None:
-        self.user32.ShowWindow(hwnd, SW_RESTORE)
+        """Restore without activating or waiting for the browser's UI thread."""
+        self.user32.ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE)
 
 
 _api: Optional[Win32] = None
 
 
+def find_marked(marker: str, api: Any = None) -> list[tuple[int, bool]]:
+    """Lookup only: a late worker can never raise a window after its request ended."""
+    global _api
+    if api is None:
+        _api = _api or Win32()
+        api = _api
+    deadline = time.monotonic() + 0.6
+    while True:
+        hits = api.titled(marker)
+        if hits or time.monotonic() >= deadline:
+            return hits
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+
+
+def lift_marked(hits: list[tuple[int, bool]], api: Any = None, active=None) -> None:
+    global _api
+    if not hits:
+        return
+    if api is None:
+        _api = _api or Win32()
+        api = _api
+    for hwnd, iconic in hits:
+        if active is not None and not active():
+            return
+        if iconic:
+            api.restore(hwnd)
+        if active is not None and not active():
+            return
+        api.lift(hwnd)
+
+
 def raise_marked(marker: str, api: Any = None, tries: int = 6, wait: float = 0.1) -> int:
-    """Slack 알림 링크로 코멘트를 연 창을 맨 앞으로(초점 없이) — 그 창이 제목을 잠깐 marker 로 바꿔 둔다. 올린 창 수.
+    """Slack 창을 비동기·비활성 복원 후 올린다(초점은 전용 링크 처리기가 담당). 올린 창 수.
     크롬이 새 제목을 창에 반영하는 데 잠깐 걸려 몇 번 다시 본다. 보통 브라우저 탭이면 그 탭이 앞 탭이 아닌 한 창 제목이 아니라 못 찾는다(0)."""
     global _api
     if api is None:

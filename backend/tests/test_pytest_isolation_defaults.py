@@ -18,6 +18,7 @@ def test_pytest_is_isolated_from_real_data_and_shared_server():
 
     assert os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on")
     assert os.environ.get("CONTENT_HUB_SHARED_URL") != POISON_URL
+    assert 'MVHUB_OPEN_LINK' not in os.environ and 'MVHUB_REGISTER_LINK' not in os.environ
     real_data = BACKEND / "data"
     # samefile: 대소문자·8.3 단축 이름·junction 으로 같은 폴더를 가리키는 경우까지 잡는다(DATA_DIR 자신과 그 상위 전부).
     for candidate in (config.DATA_DIR, *config.DATA_DIR.parents):
@@ -37,6 +38,7 @@ def test_parent_env_is_dropped_before_app_import(tmp_path):
         "CONTENT_HUB_NO_PROXY": "0",
         "CONTENT_HUB_SHARED_URL": POISON_URL,
         "PYTHONIOENCODING": "utf-8",
+        "MVHUB_OPEN_LINK": "1", "MVHUB_REGISTER_LINK": "1",
     }
     node = "tests/test_pytest_isolation_defaults.py::test_pytest_is_isolated_from_real_data_and_shared_server"
     result = subprocess.run(

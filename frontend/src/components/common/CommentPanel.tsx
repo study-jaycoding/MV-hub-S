@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { holdUnload } from "../../lib/unloadGuard";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
-import { COMMENT_HIGHLIGHT_EVENT, takeCommentHighlight } from "../../lib/commentHighlight";
+import { COMMENT_HIGHLIGHT_EVENT, takeCommentHighlightRequest, type CommentHighlight } from "../../lib/commentHighlight";
 import { fmtWhen } from "../../lib/format";
 import { loadString } from "../../lib/storage";
 
@@ -119,22 +119,31 @@ export function CommentPanel<T extends CommentPanelItem>({
 
   // Slack 알림 링크로 열고 온 코멘트 — 그 코멘트로 스크롤하고 연두 배경이 3번 깜빡인 뒤 멈춘다(Jay 2026-11-05 시안 v4).
   //  열기 요청이 창보다 먼저 올 수 있어 코멘트를 그릴 때마다 가져갈 것이 있는지 본다(lib/commentHighlight).
-  const [flashId, setFlashId] = useState<string | null>(null);
+  const holdName = `comment:${useId()}`;
+  const [flash, setFlash] = useState<CommentHighlight | null>(null);
   useEffect(() => {
     const take = () => {
-      const id = takeCommentHighlight(visible.map((c) => c.id));
-      if (id) setFlashId(id);
+      const request = takeCommentHighlightRequest(visible.map((c) => c.id));
+      if (request) setFlash(request);
     };
     take();
     window.addEventListener(COMMENT_HIGHLIGHT_EVENT, take);
     return () => window.removeEventListener(COMMENT_HIGHLIGHT_EVENT, take);
   }, [visible]);
   useEffect(() => {
-    if (!flashId) return;
-    document.querySelector(`[data-comment-id="${CSS.escape(flashId)}"]`)?.scrollIntoView({ block: "center" });
-    const timer = window.setTimeout(() => setFlashId(null), 2000); // 깜빡임(0.6초 × 3) 뒤 강조를 걷는다
+    if (!flash) return;
+    const panel = document.querySelector(`[data-cmt-hold="${CSS.escape(holdName)}"]`);
+    const row = panel?.querySelector<HTMLElement>(`[data-comment-id="${CSS.escape(flash.id)}"]`);
+    if (row) {
+      // Restart even for the same comment, without remounting its unsaved input.
+      row.style.animation = 'none';
+      void row.offsetWidth;
+      row.style.removeProperty('animation');
+      row.scrollIntoView({ block: "center" });
+    }
+    const timer = window.setTimeout(() => setFlash(null), 2000); // 깜빡임(0.6초 × 3) 뒤 강조를 걷는다
     return () => window.clearTimeout(timer);
-  }, [flashId]);
+  }, [flash, holdName]);
 
   // 쓴 글은 **저장된 뒤에** 비운다(조작 규칙 41). 전엔 보내자마자 입력을 비우고 답글·수정 칸을 닫아, 서버가 실패하면 "전송 실패"만 뜨고
   //  쓴 글이 사라졌다 — 다시 시도하려면 다시 써야 했다. 보내는 동안은 그 칸을 읽기 전용으로 두고 다시 보내지 않는다(전엔 바로 비우는 것이
@@ -144,7 +153,6 @@ export function CommentPanel<T extends CommentPanelItem>({
   targetRef.current = targetKey;
   // 보내지 못한 글이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻는다(Jay 결정 6A, 10-15) — 새 글·답글은 비어 있지 않으면, 고치는 글은
   //  원문(data-original)과 달라졌으면. 입력칸이 글을 쥐고 있어(state 가 아니다) 칠 때·그린 뒤·보낸 뒤에 이 패널의 칸들을 다시 센다.
-  const holdName = `comment:${useId()}`;
   const syncUnsent = () => {
     const panel = document.querySelector(`[data-cmt-hold="${holdName}"]`);
     // 사라진 패널(늦게 끝난 전송)은 부모에게 알리지 않는다 — 그사이 다음 파일의 패널이 알린 '보내지 않은 글 있음'을 지웠다(Codex 5A 리뷰)
@@ -204,7 +212,7 @@ export function CommentPanel<T extends CommentPanelItem>({
           (isReply ? " reply" : "") +
           (c.unread ? " unread" : "") +
           (c.private ? " private" : "") +
-          (c.id === flashId ? " is-target" : "")
+          (c.id === flash?.id ? " is-target" : "")
         }
         title={
           c.private

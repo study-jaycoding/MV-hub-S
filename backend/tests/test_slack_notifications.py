@@ -188,7 +188,7 @@ def test_native_generation_url_uses_comment_generation_id(world):
         conn.execute("UPDATE generation SET job_id='different-job' WHERE id='g'")
     target = store.delivery_target(comment(world), 'owner@unit.test')
     _, blocks = worker.message(target, 'http://127.0.0.1:8010')
-    assert f"<http://127.0.0.1:8010/api/open/generation/g?c={target['id']}|MV hub에서 보기 →>" in blocks[0]['text']['text']
+    assert f"<mvhub://open/g?c={target['id']}|MV hub에서 보기 →>" in blocks[0]['text']['text']
     assert 'job_id' not in target
 
 

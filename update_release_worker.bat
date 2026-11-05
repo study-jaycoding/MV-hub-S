@@ -750,10 +750,21 @@ function Assert-BundledCli {
 function Assert-PythonRuntime {
     param(
         [string]$RuntimeDir,
-        [string]$Label = "runtime"
+        [string]$Label = "runtime",
+        [string]$PackageRoot = ""
     )
 
     $Exe = Join-Path $RuntimeDir "python.exe"
+    if (-not $PackageRoot) { $PackageRoot = Split-Path -Parent (Split-Path -Parent $RuntimeDir) }
+    # The incoming package decides capabilities, including while staging/rolling back.
+    if (Test-Path -LiteralPath (Join-Path $PackageRoot "open_link.py") -PathType Leaf) {
+        $Windowless = Join-Path $RuntimeDir "pythonw.exe"
+        if (-not (Test-Path -LiteralPath $Windowless -PathType Leaf)) {
+            throw "Bundled Python validation failed ($Label): pythonw.exe is missing."
+        }
+        $WindowlessResult = Invoke-CheckedProcess -FilePath $Windowless -ArgumentList @('-I', '-S', '-c', '"import ctypes,hashlib,hmac,json,urllib.request"') -Label $Label -TimeoutSeconds 15
+        if ($WindowlessResult.ExitCode -ne 0) { throw "Bundled Python windowless validation failed ($Label)." }
+    }
     if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
         throw "Bundled Python validation failed ($Label): python.exe is missing."
     }
@@ -1397,7 +1408,7 @@ function Install-Package {
     $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
     Assert-AppLayout -Root $ExtractDir -Label "package"
     Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
-    Assert-PythonRuntime -RuntimeDir (Join-Path $ExtractDir "runtime\python") -Label "package"
+    Assert-PythonRuntime -RuntimeDir (Join-Path $ExtractDir "runtime\python") -Label "package" -PackageRoot $ExtractDir
 
     $Components = Get-UpdateComponents -ExtractDir $ExtractDir
     Assert-InstalledReleasePayload -Root $ExtractDir -Candidate $Latest
@@ -1414,7 +1425,7 @@ function Install-Package {
     Write-Host "[update]  70%  Staging new files next to the install..."
     Write-UpdateState -State "installing" -Message "Staging verified files..." -Latest ([string]$Latest.version) -Percent 70
     New-StagedComponents -ExtractDir $ExtractDir -Components $Components
-    Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir ("runtime\python.next." + $SwapToken)) -Label "staged"
+    Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir ("runtime\python.next." + $SwapToken)) -Label "staged" -PackageRoot $ExtractDir
     Set-InstallPhase -Phase 'verified'
     if (-not $script:FreshInstallProof) {
     # Copy the installed inspector before replacing code; checkpointing never imports the new app.
@@ -1479,7 +1490,7 @@ function Install-Package {
         Write-Host "[update]  90%  Verifying installed files..."
         Write-UpdateState -State "installing" -Message "Verifying installed files..." -Latest ([string]$Latest.version) -Percent 90
         Assert-AppLayout -Root $TargetDir -Label "installed"
-        Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir "runtime\python") -Label "installed"
+        Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir "runtime\python") -Label "installed" -PackageRoot $ExtractDir
         Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
         # INSTALL_SOURCE.txt is deliberately NOT rewritten here: its value is what
         # this run was read from, and a non-atomic Set-Content outside the swap
@@ -1669,7 +1680,7 @@ try {
             Assert-AppLayout -Root $TargetDir -Label "installed"
             Assert-PythonRuntime `
                 -RuntimeDir (Join-Path $TargetDir "runtime\python") `
-                -Label "installed"
+                -Label "installed" -PackageRoot $TargetDir
             Assert-BundledCli `
                 -Root $TargetDir `
                 -ExpectedVersion ([string]$Latest.higgsfield_cli_version) `

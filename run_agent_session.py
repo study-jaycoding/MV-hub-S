@@ -15,6 +15,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -188,6 +189,13 @@ def _create_suspended_process(kernel32, script: Path) -> PROCESS_INFORMATION:
     comspec = os.environ.get("ComSpec", str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"))
     command = subprocess.list2cmdline([comspec, "/d", "/c", "call", str(script)])
     startup = STARTUPINFOW(cb=ctypes.sizeof(STARTUPINFOW))
+    child_env = os.environ.copy()
+    child_env.pop('MVHUB_OPEN_LINK', None)
+    child_env.pop('MVHUB_REGISTER_LINK', None)
+    if _native_link_eligible():
+        child_env['MVHUB_OPEN_LINK'] = '1'
+    environment = ctypes.create_unicode_buffer('\0'.join(f'{key}={value}' for key, value in
+                                                       sorted(child_env.items(), key=lambda pair: pair[0].upper())) + '\0\0')
 
     # Prefer leaving a possible parent job first. Some hosts disallow breakaway;
     # Windows 8+ nested jobs are then the safe fallback.
@@ -204,8 +212,8 @@ def _create_suspended_process(kernel32, script: Path) -> PROCESS_INFORMATION:
             None,
             None,
             False,
-            flags,
-            None,
+            flags | 0x00000400,  # CREATE_UNICODE_ENVIRONMENT: only the child gets native-link opt-in
+            environment,
             str(script.parent),
             ctypes.byref(startup),
             ctypes.byref(info),
@@ -288,6 +296,40 @@ def _install_id() -> str:
     """설치 루트별 고유 id — 여러 설치(릴리스/저장소)가 프로필·mutex 를 공유하지 않게."""
     root = str(_install_root()).casefold()
     return hashlib.sha1(root.encode("utf-8")).hexdigest()[:10]
+
+
+def _native_link_eligible() -> bool:
+    root = _install_root()
+    return (os.environ.get('CONTENT_HUB_AUTH', '0').strip().lower() not in {'1', 'true', 'yes', 'on'}
+            and not (root / '.git').exists() and (root / 'open_link.py').is_file()
+            and (root / 'runtime/python/pythonw.exe').is_file())
+
+
+def register_open_link(port: str, registry=None) -> bool:
+    """Normal launch only. Compare all HKCU values; failure must not block startup."""
+    if not _native_link_eligible() or not re.fullmatch(r'[0-9]{1,5}', port) or not 1 <= int(port) <= 65535:
+        return False
+    try:
+        if registry is None:
+            import winreg as registry
+        root = _install_root()
+        command = f'"{root / "runtime/python/pythonw.exe"}" -I -S "{root / "open_link.py"}" --port {int(port)} "%1"'
+        values = [(r'Software\Classes\mvhub', '', 'URL:MV Hub'),
+                  (r'Software\Classes\mvhub', 'URL Protocol', ''),
+                  (r'Software\Classes\mvhub\shell\open\command', '', command)]
+        for path, name, value in values:
+            try:
+                with registry.OpenKey(registry.HKEY_CURRENT_USER, path) as key:
+                    current = registry.QueryValueEx(key, name)
+            except FileNotFoundError:
+                current = None
+            if current != (value, registry.REG_SZ):
+                with registry.CreateKeyEx(registry.HKEY_CURRENT_USER, path, 0, registry.KEY_SET_VALUE) as key:
+                    registry.SetValueEx(key, name, 0, registry.REG_SZ, value)
+        return True
+    except OSError:
+        print('[info] Native link registration unavailable.')
+        return False
 
 
 def _find_app_browser() -> tuple[str, str] | None:
@@ -1249,6 +1291,7 @@ def main(argv: list[str] | None = None) -> int:
         # 단일 실행 — 같은 포트·설치의 런처가 이미 살아 있으면 허브 포트를 뺏지 않고
         # 기존 앱 창만 앞으로 올린 뒤 조용히 끝낸다(코덱스 검토: split-ownership 방지).
         port = os.environ.get("CONTENT_HUB_PORT", "8010")
+        register_open_link(port)
         if not acquire_launcher_mutex(port):
             if _focus_app_window():
                 # 창이 실제로 있음 = 진짜 중복 실행 — 그 창만 앞으로 올리고 끝.

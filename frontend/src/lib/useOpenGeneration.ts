@@ -1,26 +1,38 @@
 import { useEffect, useRef } from 'react';
 import { APP_EVENTS } from './appEvents';
 import { getAccountNamespace, getConnectionKey } from './accountScope';
-import { getApiPause, getAuthToken, jsonFetch } from './http';
+import { getApiPause, getAuthToken, jsonFetch, withRequestTimeout } from './http';
 import { EXPECT_ACCOUNT_HEADER } from './hubFeatures';
 import { requestCommentHighlight } from './commentHighlight';
 import type { GenComment } from '../types';
 
 export interface OpenGeneration { generation_id: string; comment_id: string; open_id: string }
 const scope = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken()}`;
+let openingOwner: symbol | null = null;
+const openFetch = <T,>(url: string, init?: RequestInit) => withRequestTimeout(
+  signal => jsonFetch<T>(url, { ...init, signal }), 3000, '열기 요청 시간이 지났습니다',
+);
 
 export async function handleOpenGeneration(detail: OpenGeneration, windowId: string, open: (id: string) => void) {
-  if (getApiPause()) return;
+  // Reject overlapping opens in this document; a queued claim could already be expired.
+  if (openingOwner || getApiPause()) return;
+  const owner = Symbol();
+  openingOwner = owner;
+  try { await openGeneration(detail, windowId, open, owner); }
+  finally { if (openingOwner === owner) openingOwner = null; }
+}
+
+async function openGeneration(detail: OpenGeneration, windowId: string, open: (id: string) => void, owner: symbol) {
   const before = scope();
   const headers = { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() };
   const body = { open_id: detail.open_id, window_id: windowId };
-  try { await jsonFetch('/api/open/claim', { method: 'POST', headers, body: JSON.stringify(body) }); }
+  try { await openFetch('/api/open/claim', { method: 'POST', headers, body: JSON.stringify(body) }); }
   catch { return; }
   let ok = false;
   try {
-    const comments = await jsonFetch<GenComment[]>(`/api/generations/${encodeURIComponent(detail.generation_id)}/comments`, { headers });
+    const comments = await openFetch<GenComment[]>(`/api/generations/${encodeURIComponent(detail.generation_id)}/comments`, { headers });
     if (before !== scope() || getApiPause() || !comments.some(c => c.id === detail.comment_id)) throw new Error('unavailable');
-    try { await jsonFetch(`/api/generation-comments/${encodeURIComponent(detail.comment_id)}/seen`, { method: 'POST', headers }); }
+    try { await openFetch(`/api/generation-comments/${encodeURIComponent(detail.comment_id)}/seen`, { method: 'POST', headers }); }
     catch { /* Read marking is best effort; acknowledgement reflects opening the panel. */ }
     if (before !== scope() || getApiPause()) throw new Error('changed');
     open(detail.generation_id);
@@ -32,9 +44,13 @@ export async function handleOpenGeneration(detail: OpenGeneration, windowId: str
   const title = document.title;
   const marker = ok ? `MVHubOpen-${crypto.randomUUID()}` : '';
   if (marker) document.title = marker;
-  try { await jsonFetch('/api/open/ack', { method: 'POST', headers, body: JSON.stringify({ ...body, ok, ...(marker ? { marker } : {}) }) }); }
+  try {
+    await withRequestTimeout(signal => jsonFetch('/api/open/ack', {
+      method: 'POST', headers, signal, body: JSON.stringify({ ...body, ok, ...(marker ? { marker } : {}) }),
+    }), 1500, '열기 확인 시간이 지났습니다');
+  }
   catch { /* expired request or changed account: never retry opening */ }
-  finally { if (marker && document.title === marker) document.title = title; }
+  finally { if (openingOwner === owner && marker && document.title === marker) document.title = title; }
 }
 
 export function useOpenGeneration(open: (id: string) => void) {

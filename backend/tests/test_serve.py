@@ -11,6 +11,29 @@ import serve
 
 
 class ServeConfigTests(unittest.TestCase):
+    def test_native_publication_is_after_listen_and_shutdown_keeps_file(self):
+        from app.services import open_link
+        order = []
+        sock = mock.Mock()
+        def make(*args):
+            order.append('listen')
+            return sock
+        def publish():
+            order.append('publish')
+            open_link.session = object()
+        def run(*args):
+            order.append('run')
+            self.assertIsNotNone(open_link.session)
+        with (mock.patch.object(serve, '_make_socket', make),
+              mock.patch.object(serve, '_run_server', run),
+              mock.patch.object(serve.uvicorn, 'Config'),
+              mock.patch.object(serve.uvicorn, 'Server', return_value=mock.Mock(started=True)),
+              mock.patch.object(open_link, 'publish', publish)):
+            serve.main()
+        self.assertEqual(order, ['listen', 'listen', 'publish', 'run'])
+        self.assertIsNone(open_link.session)
+        self.assertEqual(sock.close.call_count, 2)
+
     def test_help_exits_before_server_starts(self):
         output = StringIO()
         with (
@@ -25,7 +48,7 @@ class ServeConfigTests(unittest.TestCase):
         main.assert_not_called()
 
     def test_protocol_ping_is_disabled_because_browser_sends_app_ping(self):
-        fake_socket = mock.sentinel.socket
+        fake_socket = mock.Mock()
         fake_config = mock.sentinel.config
         fake_server = mock.Mock()
 
@@ -61,7 +84,7 @@ class ServeConfigTests(unittest.TestCase):
         self.assertIs(signal.getsignal(signal.SIGBREAK), original)
 
     def test_lifespan_startup_failure_returns_nonzero_exit(self):
-        fake_socket = mock.sentinel.socket
+        fake_socket = mock.Mock()
         fake_server = mock.Mock(started=False)
 
         with (

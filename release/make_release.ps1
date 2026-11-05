@@ -92,6 +92,14 @@ function Assert-PythonRuntimeTree {
     if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
         throw "Bundled Python validation failed ($Label): python.exe is missing."
     }
+    $Windowless = Join-Path $RuntimeDir "pythonw.exe"
+    if (-not (Test-Path -LiteralPath $Windowless -PathType Leaf)) {
+        throw "Bundled Python validation failed ($Label): pythonw.exe is missing."
+    }
+    $WindowlessProbe = Start-Process -FilePath $Windowless -ArgumentList @('-I', '-S', '-c', '"import ctypes,hashlib,hmac,json,urllib.request"') -WindowStyle Hidden -Wait -PassThru
+    if ($WindowlessProbe.ExitCode -ne 0) {
+        throw "Bundled Python windowless validation failed ($Label)."
+    }
 
     # A successful `python --version` is not enough. A stale Lib tree from another
     # version can still start and then fail on the first real import (the 3.14
@@ -217,6 +225,7 @@ function Assert-ReleaseArchive {
             "installer-capabilities.json",
             "agent_push.py",
             "run_agent_session.py",
+            "open_link.py",
             "hf_cli_version.txt",
             "mvhub.ico",
             "backend/serve.py",
@@ -232,6 +241,7 @@ function Assert-ReleaseArchive {
             "tools/mcp_adapter/requirements.lock.txt",
             "tools/mcp_adapter/site-packages/mcp/__init__.py",
             "runtime/python/python.exe",
+            "runtime/python/pythonw.exe",
             "runtime/python/Lib/site-packages/fastapi/__init__.py",
             "runtime/python/Lib/site-packages/pip/__init__.py",
             "backend/.deps_installed",
@@ -283,6 +293,7 @@ function Assert-ReleaseArchive {
             "installer-capabilities.json",
             "agent_push.py",
             "run_agent_session.py",
+            "open_link.py",
             "hf_cli_version.txt",
             "mvhub.ico"
         )
@@ -619,6 +630,7 @@ $RootFiles = @(
     "update_release_contract.ps1",
     "agent_push.py",
     "run_agent_session.py",
+    "open_link.py",
     "hf_cli_version.txt",
     # 바탕화면 바로가기 아이콘. 런처가 %LOCALAPPDATA%\MVHub 로 복사해 그 사본을 가리킨다
     # - 설치 폴더 원본을 가리키면 탐색기가 쥔 핸들 때문에 업데이트 rename 이 막힐 수 있다.
@@ -674,7 +686,7 @@ if (-not $SkipPythonRuntime) {
             (Join-Path $Python.Root "libs"),
             (Join-Path $Python.Root "tcl"),
             "__pycache__",
-            "/XF", "*.pyc", "*.pyo", "pythonw.exe", "_tkinter.pyd", "tcl*.dll", "tk*.dll"
+            "/XF", "*.pyc", "*.pyo", "_tkinter.pyd", "tcl*.dll", "tk*.dll"
         )
 
     New-Item -ItemType Directory -Force -Path $SitePackages | Out-Null

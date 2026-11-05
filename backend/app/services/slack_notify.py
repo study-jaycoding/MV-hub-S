@@ -21,7 +21,7 @@ def message(target, base):
     heading = '내 코멘트에 답글' if target['kind'] == 'reply' else '내 생성물에 새 코멘트'
     names = ' · '.join(escape(v) for v in (target['project_name'], target['author_name']) if v)  # 프로젝트 없으면 앞 '·' 없이
     text = f"{heading}\n{names}\n{escape(target['text'][:300])}"
-    url = base + '/api/open/generation/' + quote(target['gen_id'], safe='') + '?c=' + quote(target['id'], safe='')
+    url = 'mvhub://open/' + quote(target['gen_id'], safe=':') + '?c=' + quote(target['id'], safe=':')
     # 단추(actions)는 Slack 이 대화식 응답 URL 을 찾아 ⚠ 를 붙인다(LAN 서버라 둘 수 없음) → 글자 링크(Jay 2026-11-05 시안 v4)
     blocks = [{'type': 'section', 'text': {'type': 'mrkdwn', 'text': f"{text}\n<{url}|MV hub에서 보기 →>"}}]
     return text, blocks

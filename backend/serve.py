@@ -148,7 +148,15 @@ def main() -> None:
         ssl_keyfile=ssl_keyfile,
     )
     server = uvicorn.Server(config)
-    _run_server(server, sockets)
+    from app.services import open_link
+    open_link.publish()  # sockets are bound/listening; direct uvicorn never publishes
+    try:
+        _run_server(server, sockets)
+    finally:
+        open_link.session = None
+        # Keep the connection file: another hub may already have replaced it.
+        for bound in sockets:
+            bound.close()
     # Uvicorn은 lifespan startup 실패도 run()에서 예외를 삼키고 정상 반환할 수 있다.
     # 실제 리스너가 한 번도 시작되지 않았다면 작업 스케줄러·감독기가 성공으로 오해하지
     # 않도록 반드시 비정상 종료코드를 남긴다.

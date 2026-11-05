@@ -164,7 +164,7 @@ def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bo
 
     runtime = root / "runtime" / "python"
     python_exe = runtime / "python.exe"
-    if not python_exe.is_file():
+    if not python_exe.is_file() or ((root / 'open_link.py').is_file() and not (runtime / 'pythonw.exe').is_file()):
         return False, "내장 Python 실행 파일 누락"
     try:
         completed = subprocess.run(  # noqa: S603 — 설치 폴더의 고정 실행 파일

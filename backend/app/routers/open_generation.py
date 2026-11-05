@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import json
 import os
 import re
 import secrets
@@ -11,10 +12,10 @@ import time
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import active_account, config, deps
-from ..services import app_windows, shared_connection
+from ..services import app_windows, shared_connection, open_link
 from ..services.request_guards import require_loopback_request
 from ..ws import manager
 
@@ -23,6 +24,11 @@ _pending = {}
 _last_open = 0.0
 _ID = re.compile(r'^[A-Za-z0-9_.:-]{1,200}$')
 _MARKER = re.compile(r'^MVHubOpen-[0-9a-f-]{36}$')
+ACK_TIMEOUT = 3
+FIND_TIMEOUT = 0.6
+LIFT_TIMEOUT = 0.2
+FOUND_TIMEOUT = 1
+PREPARE_TIMEOUT = 2  # Leave room for acknowledgement + lookup + handler focus within 8 seconds.
 
 
 def _guard(request, *, post=False):
@@ -55,30 +61,92 @@ def _page(text, form=''):
                                  'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'"})
 
 
-async def _open(gen_id, comment_id, request):
+async def _open_core(gen_id, comment_id, request, *, native=False):
     global _last_open
     if not _ID.fullmatch(gen_id) or not _ID.fullmatch(comment_id):
         raise HTTPException(400, '열기 주소가 올바르지 않습니다')
+    if config.AUTH_ENABLED:
+        return {'result': 'unsupported', 'hwnd': 0}
     now = time.monotonic()
     if now - _last_open < 2:
-        raise HTTPException(429, '잠시 뒤 다시 눌러 주세요')
+        return {'result': 'busy', 'hwnd': 0}
     _last_open = now
-    account, scope = await asyncio.to_thread(_account, request)
+    prepare_deadline = now + PREPARE_TIMEOUT
+    try:
+        account, scope = await asyncio.wait_for(asyncio.to_thread(_account, request), PREPARE_TIMEOUT)
+    except TimeoutError:
+        return {'result': 'no_window', 'hwnd': 0}
     open_id = secrets.token_urlsafe(24)
-    entry = {'account': account, 'window': None, 'event': asyncio.Event(), 'ok': False,
-             'expires': now + 3, 'gen_id': gen_id, 'comment_id': comment_id}
+    entry = {'account': account, 'window': None, 'event': asyncio.Event(), 'found': asyncio.Event(),
+             'accepted': False, 'active': True, 'ok': False, 'hwnd': 0, 'native': native,
+             'expires': prepare_deadline + ACK_TIMEOUT, 'gen_id': gen_id, 'comment_id': comment_id}
     _pending[open_id] = entry
     try:
-        await manager.broadcast({'type': 'open_generation', 'generation_id': gen_id,
-                                 'comment_id': comment_id, 'open_id': open_id}, account_uid=scope)
         try:
-            await asyncio.wait_for(entry['event'].wait(), timeout=3)
+            await asyncio.wait_for(manager.broadcast({'type': 'open_generation', 'generation_id': gen_id,
+                                     'comment_id': comment_id, 'open_id': open_id}, account_uid=scope),
+                                   max(0.001, prepare_deadline - time.monotonic()))
         except TimeoutError:
-            return _page('MV hub 창이 꺼져 있거나 응답이 없어요')
-        return _page('MV hub 에서 열었어요. 이 탭은 닫아도 돼요.' if entry['ok'] else
-                     '열지 못했어요. 이 계정에서 볼 수 있는 코멘트인지 확인해 주세요.')
+            return {'result': 'no_window', 'hwnd': 0}
+        # An early client may claim during broadcast. Once broadcast finishes,
+        # claim/ack and the waiter must share the same full three-second window.
+        entry['expires'] = time.monotonic() + ACK_TIMEOUT
+        try:
+            await asyncio.wait_for(entry['event'].wait(), timeout=max(0, entry['expires'] - time.monotonic()))
+        except TimeoutError:
+            return {'result': 'no_window', 'hwnd': 0}
+        try:
+            await asyncio.wait_for(entry['found'].wait(), timeout=FOUND_TIMEOUT)
+        except TimeoutError:
+            pass  # A successful panel open remains successful without a focus target.
+        return {'result': 'opened' if entry['ok'] else 'denied', 'hwnd': entry['hwnd']}
     finally:
+        entry['active'] = False
         _pending.pop(open_id, None)
+
+
+async def _open(gen_id, comment_id, request):
+    result = await _open_core(gen_id, comment_id, request)
+    if result['result'] == 'busy':
+        raise HTTPException(429, '잠시 뒤 다시 눌러 주세요')
+    messages = {
+        'opened': 'MV hub 에서 열었어요. 이 탭은 닫아도 돼요.',
+        'denied': '열지 못했어요. 이 계정에서 볼 수 있는 코멘트인지 확인해 주세요.',
+        'no_window': 'MV hub 창이 꺼져 있거나 응답이 없어요',
+        'unsupported': '로컬 MV hub 에서 열어 주세요.',
+    }
+    return _page(messages[result['result']])
+
+
+@router.post('/api/open/native')
+async def open_native(request: Request):
+    current = open_link.session
+    if config.AUTH_ENABLED or os.environ.get('MVHUB_OPEN_LINK') != '1' or current is None:
+        raise HTTPException(404, '지원하지 않는 요청입니다')
+    require_loopback_request(request, '이 PC 에서만 열 수 있습니다')
+    hosts = request.headers.getlist('host')
+    if len(hosts) != 1 or hosts[0] not in (f'127.0.0.1:{config.PORT}', f'localhost:{config.PORT}'):
+        raise HTTPException(403, '이 PC 에서만 열 수 있습니다')
+    try:
+        raw = bytearray()
+        async for part in request.stream():
+            raw.extend(part)
+            if len(raw) > 4096:
+                raise ValueError('oversize')
+        body = json.loads(raw)
+        if any(len(request.headers.getlist(name)) != 1 for name in
+               ('x-mvhub-open-time', 'x-mvhub-open-nonce', 'x-mvhub-open-sig')):
+            raise ValueError('duplicate headers')
+        nonce, admitted = current.authenticate(request.headers, body)
+    except (ValueError, TypeError):
+        raise HTTPException(401, '열기 요청을 확인하지 못했습니다') from None
+    if not admitted:
+        # Capacity never recovers under this key: the handler's generic HTTP-error
+        # notice asks for a restart. Still sign busy so no unsigned result escapes.
+        return JSONResponse(current.response(nonce, 'busy'), status_code=503)
+    else:
+        result = await _open_core(body['generation_id'], body['comment_id'], request, native=True)
+    return current.response(nonce, **result)
 
 
 @router.get('/api/open/generation/{gen_id}')
@@ -120,7 +188,7 @@ async def _entry(request):
     owner = account[1] if config.AUTH_ENABLED else account[0]
     if expected and deps.expected_account_differs(request, owner or ''):
         raise HTTPException(409, '화면과 허브의 계정이 다릅니다')
-    if not entry or entry['expires'] < time.monotonic() or entry['account'] != account:
+    if not entry or not entry['active'] or entry['expires'] < time.monotonic() or entry['account'] != account:
         raise HTTPException(409, '열기 요청이 끝났거나 계정이 바뀌었습니다')
     window = body.get('window_id')
     if not isinstance(window, str) or not 1 <= len(window) <= 120:
@@ -141,17 +209,30 @@ async def claim(request: Request):
 @router.post('/api/open/ack')
 async def ack(request: Request):
     entry, body, window = await _entry(request)
-    if entry['window'] != window or entry['event'].is_set() or not isinstance(body.get('ok'), bool):
+    if entry['window'] != window or entry['accepted'] or not isinstance(body.get('ok'), bool):
         raise HTTPException(409, '열기 요청이 일치하지 않습니다')
     entry['ok'] = body['ok']
+    entry['accepted'] = True
+    entry['marker'] = body.get('marker')
     entry['event'].set()
     # 연 창이 제목을 잠깐 표식으로 바꿔 두었다 — 그 창(앱 창)을 맨 앞으로 올린 뒤 답한다(답을 받으면 창이 제목을 돌려놓는다). Jay 2026-11-05 시안 v4
-    marker = body.get('marker')
+    marker = entry['marker']
     raised = 0
-    if body['ok'] and isinstance(marker, str) and _MARKER.fullmatch(marker) and os.name == 'nt' \
-            and not shared_connection.is_shared_team_server():
-        try:
-            raised = await asyncio.to_thread(app_windows.raise_marked, marker)
-        except Exception:  # noqa: BLE001 — 창 올리기 실패는 열기 성공을 바꾸지 않는다
-            raised = 0
+    try:
+        if body['ok'] and isinstance(marker, str) and _MARKER.fullmatch(marker) and os.name == 'nt' \
+                and not shared_connection.is_shared_team_server():
+            hits = await asyncio.wait_for(asyncio.to_thread(app_windows.find_marked, marker), FIND_TIMEOUT)
+            if entry['active']:
+                if len(hits) == 1:
+                    entry['hwnd'] = hits[0][0]
+                selected = hits if not entry['native'] or len(hits) == 1 else []
+                # A hung window must not block the hub loop; the worker rechecks
+                # lifetime before each call, including after a slow restore.
+                await asyncio.wait_for(asyncio.to_thread(app_windows.lift_marked, selected,
+                    active=lambda: entry['active'] and not entry['found'].is_set()), LIFT_TIMEOUT)
+                raised = len(hits) if not entry['native'] or len(hits) == 1 else 0
+    except Exception:  # noqa: BLE001 — focus failures cannot undo opening
+        raised = 0
+    finally:
+        entry['found'].set()
     return {'ok': True, 'raised': raised}

@@ -62,6 +62,17 @@ def _identity(process, port: int, ready: dict, descriptor: dict, nonce: str) -> 
     return _owned_listener(process, port, ready)
 
 
+def _check_native_runtime(root: Path) -> None:
+    """Legacy packages have no native handler; keep their qualification contract."""
+    if not (root / 'open_link.py').is_file():
+        return
+    pythonw = _required_file(root, "runtime/python/pythonw.exe")
+    result = subprocess.run([str(pythonw), '-I', '-S', '-c', 'import ctypes,hashlib,hmac,json,urllib.request'],
+                            cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=15,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=False)
+    c.require(result.returncode == 0, 'windowless Python probe failed')
+
+
 def _boot(root: Path, work: Path, descriptor: dict, timeout: float, *, runtime_python: Path | None = None) -> dict:
     import psutil
     role = descriptor.get("role")
@@ -73,6 +84,7 @@ def _boot(root: Path, work: Path, descriptor: dict, timeout: float, *, runtime_p
                   "server runtime must be stage .venv Python")
     else:
         python = _required_file(root, "runtime/python/python.exe")
+        _check_native_runtime(root)
         c.require(runtime_python is None or _local_path(runtime_python) == _local_path(python),
                   "worker must use its bundled Python")
     python = _local_path(python)

@@ -44,7 +44,8 @@ def block_live_slack(monkeypatch):
 #  직접 실행하는 도구(tools/*.py, tests/*_mutation_check.py)는 각자 env 를 고정한다.
 # ponytail: 바깥 env 를 일부러 쓰는 탈출구는 없다 — 쓰는 시험이 생기면 그 시험 안에서 넣는다.
 # pytest-xdist 는 쓰지 않는 전제다(워커들이 이 임시 DATA 하나를 물려받아 공유한다 — 종전의 실제 폴더 공유와 같다).
-for _key in [k for k in os.environ if k.upper().startswith("CONTENT_HUB_")]:
+for _key in [k for k in os.environ if k.upper().startswith("CONTENT_HUB_")
+             or k.upper() in {"MVHUB_OPEN_LINK", "MVHUB_REGISTER_LINK"}]:
     del os.environ[_key]
 
 _data_root = tempfile.mkdtemp(prefix="mvhub-pytest-data-")

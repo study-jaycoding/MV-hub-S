@@ -68,7 +68,7 @@ def snapshot(src: Path, dst: Path) -> None:
 def isolated_base_env(parent) -> dict[str, str]:
     """부모 셸의 `CONTENT_HUB_*` 를 **전부** 버린다 — 경로 변수(작업자 백업 상태 DB·outbox·기기 신원·로그 폴더 등)는 DATA_DIR 보다
     우선하므로, 하나라도 물려받으면 격리 폴더 밖에 쓴다. 필요한 값은 start() 가 아래에서 다시 넣는다."""
-    dropped = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "ELECTRON_RUN_AS_NODE")
+    dropped = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "ELECTRON_RUN_AS_NODE", "MVHUB_OPEN_LINK", "MVHUB_REGISTER_LINK")
     return {k: v for k, v in parent.items() if not k.upper().startswith("CONTENT_HUB_") and k.upper() not in dropped}
 
 

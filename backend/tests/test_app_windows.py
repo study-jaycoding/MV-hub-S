@@ -89,6 +89,21 @@ def test_lift_is_topmost_then_notopmost_without_activation():
     assert all(flags & noactivate and flags & nomove and flags & nosize and flags & asyncpos for _, _, flags in calls)
 
 
+def test_minimized_restore_is_asynchronous_and_does_not_activate():
+    calls = []
+    api = app_windows.Win32.__new__(app_windows.Win32)
+    api.user32 = types.SimpleNamespace(ShowWindowAsync=lambda hwnd, flag: calls.append((hwnd, flag)))
+    api.restore(42)
+    assert calls == [(42, 4)]  # SW_SHOWNOACTIVATE, not activating SW_RESTORE
+
+
+def test_late_restore_never_starts_lift_after_request_ends():
+    active, lifted = [True], []
+    api = types.SimpleNamespace(restore=lambda hwnd: active.__setitem__(0, False), lift=lifted.append)
+    app_windows.lift_marked([(42, True)], api, active=lambda: active[0])
+    assert not lifted
+
+
 @pytest.fixture
 def api(monkeypatch):
     calls = []
