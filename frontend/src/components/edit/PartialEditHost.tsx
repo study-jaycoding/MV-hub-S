@@ -1,4 +1,4 @@
-// 이미지 수정 호스트 — App 에 1개 mount. InfoPopup 이 쏘는 partialEdit 이벤트(detail={genId})를
+// 수정(이미지·영상) 호스트 — App 에 1개 mount. 생성 정보 창·크게 보기 창이 쏘는 partialEdit 이벤트(detail={genId, mode})를
 // 받아 최신 Generation 을 조회한 뒤 모달을 연다(이벤트에 전체 객체를 싣지 않는 관례 준수).
 // 이미 열려 있으면 새 이벤트는 무시한다 — 그리던 마스크·진행 중 감시를 잃지 않게.
 import { useRef, useState } from "react";
@@ -24,9 +24,10 @@ export function PartialEditHost({
     const detail = (e as CustomEvent<{ genId?: unknown; mode?: unknown }>).detail;
     const genId = detail?.genId;
     const requestedMode = detail?.mode === "video" ? "video" : "image";
+    const editLabel = requestedMode === "video" ? "영상 수정" : "이미지 수정";
     if (typeof genId !== "string" || !genId) return;
     if (gen || fetchingRef.current) {
-      flashMsg("이미지 수정이 이미 열려 있습니다 — 닫은 뒤 다시 시도하세요.");
+      flashMsg("수정 창이 이미 열려 있습니다 — 닫은 뒤 다시 시도하세요."); // 열린 창은 요청과 다른 종류일 수 있다
       return;
     }
     fetchingRef.current = true;
@@ -34,13 +35,13 @@ export function PartialEditHost({
       .getGeneration(genId)
       .then((value) => {
         if (value.status !== "done" || value.assets?.[0]?.type !== requestedMode || !value.assets[0].file_path) {
-          flashMsg(`${requestedMode === "video" ? "영상" : "이미지"} 수정: 원본 파일을 확인할 수 없습니다.`);
+          flashMsg(`${editLabel}: 원본 파일을 확인할 수 없습니다.`);
           return;
         }
         setMode(requestedMode);
         setGen(value);
       })
-      .catch(() => flashMsg("이미지 수정: 생성물 정보를 불러오지 못했습니다."))
+      .catch(() => flashMsg(`${editLabel}: 생성물 정보를 불러오지 못했습니다.`))
       .finally(() => {
         fetchingRef.current = false;
       });
