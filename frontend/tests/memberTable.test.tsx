@@ -346,6 +346,56 @@ it("그룹 현황 '관리' 칸 — [수정]은 그 그룹 편집 창, [삭제]�
   expect(host.querySelector(".mtable-notice.ok")!.textContent).toContain("삭제됨 · 그룹 (2nd floor)");
 });
 
+it("그룹 삭제 확인 창이 열린 사이 표가 다시 읽혀도 연 때의 revision 으로 보낸다 — 그 사이 바뀌었으면 서버가 409(Codex 리뷰 P1)", async () => {
+  const later = table(4, [row("a@x", { group_id: "g1" }), row("b@x", { group_id: "g1" })]);
+  later.credit!.groups = [...later.credit!.groups, group("g3", "4th floor")];
+  later.groups = later.credit!.groups;
+  mocks.memberTable.mockResolvedValueOnce(table(3, [row("a@x", { group_id: "g1" })])).mockResolvedValue(later);
+  mocks.saveCreditPlan.mockResolvedValue(credit(5));
+  await mount();
+  await openSheet("그룹");
+  await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="2nd floor 그룹 삭제"]')!.click(); });
+  await act(async () => { root.render(<MemberTable workspaceId="ws1" reloadSignal={1} />); });
+  await settle();
+  expect(host.querySelector('[aria-label="4th floor 그룹 삭제"]')).not.toBeNull(); // 표는 새 판(g3 추가)
+  const confirm = host.querySelector<HTMLElement>('[role="dialog"][aria-label="그룹 삭제"]')!;
+  expect(confirm.textContent).toContain("참가자 1명"); // 본 것 그대로
+  await act(async () => { confirm.querySelector<HTMLButtonElement>("button.admin-confirm-yes")!.click(); });
+  await settle();
+  const body = mocks.saveCreditPlan.mock.calls[0][1];
+  expect(body.revision).toBe(3);
+  expect(body.groups).toEqual([{ id: "g2", name: "3rd floor", monthly_limit: 5000, limit_period: "month" }]);
+});
+
+it("그룹 삭제가 409(그 사이 다른 관리자 변경)를 받으면 조용히 덮지 않고 충돌 창으로 묻는다(Codex 2차 리뷰)", async () => {
+  mocks.memberTable.mockResolvedValue(table(3, [row("a@x", { group_id: "g1" })]));
+  const latest = credit(4);
+  latest.groups = [...latest.groups, group("g3", "4th floor")];
+  mocks.saveCreditPlan.mockRejectedValueOnce(conflictError(latest));
+  await mount();
+  await openSheet("그룹");
+  await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="2nd floor 그룹 삭제"]')!.click(); });
+  await act(async () => { host.querySelector<HTMLButtonElement>('[role="dialog"][aria-label="그룹 삭제"] button.admin-confirm-yes')!.click(); });
+  await settle();
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1); // 자동으로 다시 보내지 않는다
+  expect(mocks.saveCreditPlan.mock.calls[0][1].revision).toBe(3);
+  expect(host.querySelector(".manage-conflict")).not.toBeNull();
+});
+
+it("그 사이 지우려는 그룹에 사람이 배정됐어도 409 뒤 충돌 창으로 묻는다(Codex 3차 '확인 불가' 확인)", async () => {
+  mocks.memberTable.mockResolvedValue(table(3, [row("a@x", { group_id: "g1" })]));
+  const latest = credit(4);
+  latest.members = [{ email: "b@x", name: "b", workspace_role: "member", is_available: true, group_id: "g1" }];
+  mocks.saveCreditPlan.mockRejectedValueOnce(conflictError(latest));
+  await mount();
+  await openSheet("그룹");
+  await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="2nd floor 그룹 삭제"]')!.click(); });
+  await act(async () => { host.querySelector<HTMLButtonElement>('[role="dialog"][aria-label="그룹 삭제"] button.admin-confirm-yes')!.click(); });
+  await settle();
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  expect(host.querySelector(".manage-conflict")).not.toBeNull();
+});
+
 it("그룹을 고칠 수 없으면 그룹 현황에 '관리' 칸이 없다", async () => {
   const data = table(3, [row("a@x")]);
   data.caps = { ...data.caps, credit: false };

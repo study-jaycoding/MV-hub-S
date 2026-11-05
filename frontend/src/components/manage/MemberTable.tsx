@@ -362,8 +362,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const [topup, setTopup] = useState<DraftTopup | null>(null);
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditError, setCreditError] = useState("");
-  // 그룹 삭제 확인 — 이름·배정 인원을 보여 주고 묻는다(Jay 2026-11-05 — 프로젝트 설정 창의 그룹 삭제와 같은 문구)
-  const [groupDeleting, setGroupDeleting] = useState<MemberTableGroup | null>(null);
+  // 그룹 삭제 확인 — 이름·배정 인원을 보여 주고 묻는다(Jay 2026-11-05 — 프로젝트 설정 창의 그룹 삭제와 같은 문구).
+  // 연 순간의 크레딧 설정(source)도 쥔다 — 확인 중 표가 다시 읽혀도 본 것 기준으로 보내 바뀌었으면 409(Codex 리뷰 P1).
+  const [groupDeleting, setGroupDeleting] = useState<{ group: MemberTableGroup; source: CreditPlanSettings } | null>(null);
   const groupDeleteRef = useRef<HTMLDivElement>(null);
   useModalFocus(groupDeleteRef, Boolean(groupDeleting));
   useEscapeClose(() => setGroupDeleting(null), Boolean(groupDeleting), true, true);
@@ -612,12 +613,13 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     return true;
   };
 
-  // 그룹 삭제 — 확인 창에서 [삭제]를 눌렀을 때만. 그 그룹만 뺀 목록을 같은 크레딧 설정 API 로 저장한다.
-  const deleteGroup = (group: MemberTableGroup) => {
+  // 그룹 삭제 — 확인 창에서 [삭제]를 눌렀을 때만. 창을 연 때의 설정에서 그 그룹만 뺀 목록을 같은 크레딧 설정 API 로 저장한다.
+  const openGroupDelete = (group: MemberTableGroup) => {
+    if (data?.credit) setGroupDeleting({ group, source: data.credit });
+  };
+  const deleteGroup = ({ group, source }: { group: MemberTableGroup; source: CreditPlanSettings }) => {
     setGroupDeleting(null);
     if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return;
-    const source = data.credit;
-    if (!source) return;
     setCreditBusy(true);
     setCreditError("");
     save(async () => {
@@ -1714,7 +1716,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           {/* 크레딧 기록 표와 같은 [수정]·[삭제](Jay 2026-11-05) — 수정 = 이름 칩과 같은 그룹 편집 창 */}
                           <div className="mtable-topup-actions">
                             <button type="button" className="mtable-cancel" aria-label={`${group.name} 그룹 수정`} disabled={creditBusy || Boolean(groupEditor)} onClick={() => openGroupEditor(group.id)}>수정</button>
-                            <button type="button" className="mtable-cancel mtable-delete" aria-label={`${group.name} 그룹 삭제`} disabled={creditBusy || Boolean(groupEditor)} onClick={() => setGroupDeleting(group)}>삭제</button>
+                            <button type="button" className="mtable-cancel mtable-delete" aria-label={`${group.name} 그룹 삭제`} disabled={creditBusy || Boolean(groupEditor)} onClick={() => openGroupDelete(group)}>삭제</button>
                           </div>
                         </td>
                       ) : null}
@@ -2075,9 +2077,9 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
         <div className="admin-confirm-backdrop mtable-delete-confirm" onMouseDown={() => setGroupDeleting(null)}>
           <div ref={groupDeleteRef} className="admin-confirm" role="dialog" aria-label="그룹 삭제" onMouseDown={(event) => event.stopPropagation()}>
             <p className="admin-confirm-q">
-              <b>{groupDeleting.name}</b> 그룹을 삭제하시겠습니까?
+              <b>{groupDeleting.group.name}</b> 그룹을 삭제하시겠습니까?
               <br />
-              <small>이 그룹에 배정된 참가자 {groupDeleting.member_count.toLocaleString()}명의 배정도 함께 풀립니다.</small>
+              <small>이 그룹에 배정된 참가자 {groupDeleting.group.member_count.toLocaleString()}명의 배정도 함께 풀립니다.</small>
             </p>
             <div className="admin-confirm-actions">
               <button type="button" className="admin-confirm-yes" onClick={() => deleteGroup(groupDeleting)}>삭제</button>
