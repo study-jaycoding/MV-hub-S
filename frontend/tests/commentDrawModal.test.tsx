@@ -66,6 +66,10 @@ const type = (value: string) => act(() => {
 });
 const sendButton = () => [...document.querySelectorAll<HTMLButtonElement>("button.sl-gen")][0];
 const attached = () => document.querySelectorAll(".sl-reftray-item.cm-att").length;
+const captureButton = () => document.querySelector<HTMLButtonElement>(".pe-dock button.cm-cap");
+const capture = () => act(() => { captureButton()!.click(); });
+const badge = () => captureButton()?.querySelector(".cm-cap-badge")?.textContent ?? null;
+const hasInk = () => !document.querySelector<HTMLButtonElement>('.pe-dock button[aria-label="전체 지우기"]')!.disabled; // 그림판에 그린 것이 있나
 
 function showImage(onSaved = vi.fn(), allowPrivate = true) {
   act(() => root.render(
@@ -85,7 +89,12 @@ describe("코멘트 모드 — 이미지", () => {
     const onSaved = showImage();
     expect(attached()).toBe(0);
     stroke(10);
+    expect(attached()).toBe(0); // 캡쳐 전에는 칸에 없다
+    expect(badge()).toBeNull();
+    capture();
     expect(attached()).toBe(1);
+    expect(badge()).toBe("1");
+    expect(hasInk()).toBe(false); // 캡쳐하면 그림판이 빈다
     type("조개 작게");
     await act(async () => { sendButton().click(); });
     await settle();
@@ -112,7 +121,7 @@ describe("코멘트 모드 — 이미지", () => {
     type("다시");
     await act(async () => { sendButton().click(); });
     await settle();
-    expect(attached()).toBe(1);
+    expect(hasInk()).toBe(true); // 캡쳐 안 한 그림판도 그대로
     expect(textarea().value).toBe("다시");
     calls.v2.mockImplementationOnce(async (_gen: string, body: { id: string; drawings: { id: string; content_hash?: string }[] }) => ({
       id: body.id, result: "created", drawings: body.drawings.map((d) => ({ id: d.id, content_hash: d.content_hash ?? "" })),
@@ -123,7 +132,7 @@ describe("코멘트 모드 — 이미지", () => {
     expect(second.id).toBe(first.id);
     expect(second.drawings[0].id).toBe(first.drawings[0].id);
     expect(second.drawings[0].content_hash).toBe(first.drawings[0].content_hash);
-    expect(attached()).toBe(0);
+    expect(hasInk()).toBe(false);
   });
 
   it("앞서 보낸 것이 이미 저장된 뒤 고쳐 보내 409 가 나면, 다음엔 코멘트 id 와 그림 id 를 함께 새로 뽑는다", async () => {
@@ -133,7 +142,7 @@ describe("코멘트 모드 — 이미지", () => {
     type("고친 글");
     await act(async () => { sendButton().click(); });
     await settle();
-    expect(attached()).toBe(1); // 초안은 그대로
+    expect(hasInk()).toBe(true); // 초안은 그대로
     calls.v2.mockImplementationOnce(async (_gen: string, body: { id: string; drawings: { id: string; content_hash: string }[] }) => ({
       id: body.id, result: "created", drawings: body.drawings.map((d) => ({ id: d.id, content_hash: d.content_hash })),
     }));
@@ -161,7 +170,7 @@ describe("코멘트 모드 — 이미지", () => {
     type("확인");
     await act(async () => { sendButton().click(); });
     await settle();
-    expect(attached()).toBe(1);
+    expect(hasInk()).toBe(true);
     expect(textarea().value).toBe("확인");
   });
 
@@ -169,6 +178,7 @@ describe("코멘트 모드 — 이미지", () => {
     showImage();
     stroke(10);
     expect(sendButton().disabled).toBe(true); // 글 1자 이상 필수(Jay)
+    capture();
     act(() => { (document.querySelector<HTMLButtonElement>(".sl-reftray-item.cm-att .sl-reftray-x")!).click(); });
     expect(attached()).toBe(0);
     type("글만");
@@ -176,6 +186,34 @@ describe("코멘트 모드 — 이미지", () => {
     await settle();
     expect(calls.v1).toHaveBeenCalledWith("g1", "글만", null, false);
     expect(calls.v2).not.toHaveBeenCalled();
+  });
+
+  it("캡쳐로 여러 장 — 빨간 숫자 = 붙은 장 수, 빈 그림판은 붙지 않고, 붙은 그림을 누르면 다시 불러오며, 달 때 캡쳐 안 한 그림판도 마지막 장으로", async () => {
+    calls.v2.mockImplementation(async (_gen: string, body: { id: string; drawings: { id: string; content_hash: string }[] }) => ({
+      id: body.id, result: "created", drawings: body.drawings.map((d) => ({ id: d.id, content_hash: d.content_hash })),
+    }));
+    showImage();
+    stroke(10);
+    capture();
+    stroke(60);
+    capture();
+    expect([attached(), badge()]).toEqual([2, "2"]);
+    capture(); // 빈 그림판 — 아무것도 붙지 않는다
+    expect([attached(), badge()]).toEqual([2, "2"]);
+    act(() => { document.querySelector<HTMLButtonElement>(".sl-reftray-item.cm-att .cm-thumb")!.click(); }); // 그림 1 고치기
+    expect(hasInk()).toBe(true);
+    expect(document.querySelector(".sl-reftray-item.cm-att .cm-thumb")!.classList.contains("cur")).toBe(true);
+    expect(badge()).toBe("2");
+    capture(); // 그림 1 을 다시 붙이고 빈 판으로
+    stroke(100); // 캡쳐 안 한 세 번째
+    expect([attached(), badge()]).toEqual([2, "2"]);
+    type("세 장");
+    await act(async () => { sendButton().click(); });
+    await settle();
+    const body = calls.v2.mock.calls[0][1];
+    expect(body.drawings.map((d: { idx: number }) => d.idx)).toEqual([0, 1, 2]);
+    // 처음 그린 순서 — 그림 1(x 10~30), 그림 2(x 60~80), 캡쳐 안 한 것(x 100~120). 화면 200px → 원본 400px
+    expect(body.drawings.map((d: { strokes: { items: { points: { x: number }[] }[] } }) => d.strokes.items[0].points[0].x)).toEqual([20, 120, 200]);
   });
 
   it("쓰던 것이 있으면 닫을 때 묻는다", async () => {
@@ -206,6 +244,7 @@ describe("코멘트 모드 — 영상", () => {
     });
     act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
     expect(now).toBe(0.5);
+    expect(captureButton()).toBeNull(); // 영상은 프레임마다 한 장 — 캡쳐 단추 없음
     stroke(10);
     expect(document.querySelectorAll(".cm-mark")).toHaveLength(1);
     act(() => { (document.querySelector<HTMLButtonElement>('.pe-trans button[aria-label="한 프레임 앞으로"]')!).click(); });

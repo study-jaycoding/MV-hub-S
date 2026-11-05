@@ -6,6 +6,14 @@
 .lin-board-btn.cm-cbtn.on { background: var(--accent); color: var(--accent-ink); }
 .lin-board-btn.cm-cbtn.alert { background: #f5a623; color: #2a1500; border-color: #ffc04d; box-shadow: 0 0 9px rgba(245, 166, 35, 0.55); }
 
+/* 이미지 코멘트의 캡쳐 단추(도구 캡슐 끝) — 다른 도구처럼 아이콘만, 붙은 장 수는 오른쪽 위 빨간 숫자(Jay 11-05 시안 2차) */
+.pe-dock button.cm-cap { position: relative; overflow: visible; }
+.cm-cap-badge {
+  position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box;
+  border-radius: 8px; background: #ef4444; color: #fff; font-size: 10.5px; font-weight: 900; line-height: 16px; text-align: center;
+  box-shadow: 0 0 0 2px var(--panel, #16181d); pointer-events: none;
+}
+
 /* 코멘트 모드 = 왼쪽 그리기 + 오른쪽 지난 코멘트 */
 .partial-edit-modal.cm-modal { width: min(92vw, 1500px); box-sizing: border-box; }
 .cm-body { display: flex; gap: 14px; align-items: stretch; min-height: 0; }

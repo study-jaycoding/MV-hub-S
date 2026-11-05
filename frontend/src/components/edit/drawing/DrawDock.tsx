@@ -1,6 +1,6 @@
 // 도구 캡슐 — 그림·영상 바로 밑 가운데 한 줄(힉스필드 편집기처럼, Jay 2026-10-28 시안 4차).
 // 수정 창에서 그대로 떼어 냈고 코멘트 그림도 같은 캡슐을 쓴다. 색은 색 단추를 눌러 여는 작은 창에.
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { COLORS, textPx, type ShapeKind } from "./strokes";
 import type { DrawingInput } from "./useDrawingInput";
 
@@ -20,6 +20,7 @@ export const TOOL_ICONS = {
   redo: <svg {...TOOL_ICON}><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>,
   clear: <svg {...TOOL_ICON}><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>,
   text: <svg {...TOOL_ICON}><path d="M5 7V5h14v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>,
+  capture: <svg {...TOOL_ICON}><path d="M3 8.5A2 2 0 0 1 5 6.5h2.2L8.7 4.5h6.6l1.5 2H19a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><circle cx="12" cy="13" r="3.6" /></svg>,
 };
 // [도구, 이름, 단축키] — 펜·지우개 다음에 도형 넷(옛 Shapes 하위 단추를 캡슐로 꺼냄)과 글자. R 은 마지막 도형으로 돌아간다.
 const DRAW_TOOLS: ["pen" | "erase" | "text" | ShapeKind, string, string][] = [
@@ -27,7 +28,8 @@ const DRAW_TOOLS: ["pen" | "erase" | "text" | ShapeKind, string, string][] = [
   ["line", "선", ""], ["arrow", "화살표", ""], ["rect", "사각형", ""], ["ellipse", "원", ""], ["text", "글자", "T"],
 ];
 
-export function DrawDock({ draw }: { draw: DrawingInput }) {
+/** extra = 캡슐 끝(전체 지우기 다음)에 덧붙일 단추 — 코멘트 이미지 창의 캡쳐. 수정 창은 쓰지 않는다. */
+export function DrawDock({ draw, extra }: { draw: DrawingInput; extra?: ReactNode }) {
   const {
     tool, setTool, shapeKind, setShapeKind, color, setColor, brushSize, setBrushSize, sizeText, setSizeText, applySizeText,
     colorOpen, setColorOpen, dockRef, items, redo, undoStroke, redoStroke, clearStrokes,
@@ -77,6 +79,12 @@ export function DrawDock({ draw }: { draw: DrawingInput }) {
         <button type="button" title="되돌리기 (Ctrl+Z)" aria-label="되돌리기" disabled={!items.length} onClick={undoStroke}>{TOOL_ICONS.undo}</button>
         <button type="button" title="다시 (Ctrl+Shift+Z)" aria-label="다시" disabled={!redo.length} onClick={redoStroke}>{TOOL_ICONS.redo}</button>
         <button type="button" title="전체 지우기" aria-label="전체 지우기" disabled={!items.length} onClick={clearStrokes}>{TOOL_ICONS.clear}</button>
+        {extra && (
+          <>
+            <span className="pe-div" />
+            {extra}
+          </>
+        )}
         {colorOpen && (
           <div className="pe-pop">
             <div className="pe-pop-row">

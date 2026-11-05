@@ -13,7 +13,7 @@ import { holdUnload } from "../../lib/unloadGuard";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { CommentDrawingIn, CommentDrawingView } from "../../types";
 import { CloseIcon } from "../common/ViewIcons";
-import { DrawDock, DrawTextInput } from "../edit/drawing/DrawDock";
+import { DrawDock, DrawTextInput, TOOL_ICONS } from "../edit/drawing/DrawDock";
 import { drawingHash, MAX_DRAWINGS, StrokesTooLarge, toStrokesV1, type DrawItem } from "../edit/drawing/strokes";
 import { useDrawingInput } from "../edit/drawing/useDrawingInput";
 import { GenCommentPanel, StrokesCanvas, UNSUPPORTED_DRAWING, secLabel, useCommentDrawing } from "../GenCommentPanel";
@@ -46,8 +46,11 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 interface Thumb { b64: string; bytes: Uint8Array<ArrayBuffer>; url: string }
-// 그림 한 장 — 이미지는 하나(key 0), 영상은 그린 프레임마다 하나
-interface Sheet { id: string; key: number; timeSec: number | null; items: DrawItem[]; thumb: Thumb | null; thumbJob: Promise<void> | null }
+// 그림 한 장 — 이미지는 캡쳐한 판마다(key = 판 번호), 영상은 그린 프레임마다 하나.
+//  captured = 이미지에서 붙은 장(캡쳐했거나 다른 판으로 넘어감) — 붙는 그림 칸·빨간 숫자에 보인다. 보낼 때는 캡쳐 안 한 판도 함께 간다.
+interface Sheet {
+  id: string; key: number; timeSec: number | null; items: DrawItem[]; thumb: Thumb | null; thumbJob: Promise<void> | null; captured: boolean;
+}
 
 /** 지금 장면의 작은 JPEG — 다른 출처 영상은 lib/mediaCapture 가 CORS 사본으로 뜬다. 실패하면 null(thumb 없이 획만 — 정상 계약 C6). */
 async function frameThumb(video: HTMLVideoElement): Promise<Thumb | null> {
@@ -150,19 +153,36 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
     for (const s of sheetsRef.current.values()) if (s.thumb) URL.revokeObjectURL(s.thumb.url);
   }, []);
   // 다른 프레임으로 가면 지금 프레임의 그림을 판에 맡기고 그 프레임의 것을 꺼낸다(그린 것이 없으면 판을 버린다 — 책갈피도 사라진다)
-  const syncKey = (at: number) => {
-    const key = isVideo ? frameOf(at) : 0;
+  //  이미지는 판마다 번호 — 캡쳐하면 다음 번호의 빈 판으로 넘어간다(떠난 판은 '붙은 장'이 된다).
+  const switchToKey = (key: number) => {
     if (key === curKeyRef.current) return;
     const cur = sheetsRef.current.get(curKeyRef.current);
     if (cur) {
       cur.items = itemsRef.current;
       if (!cur.items.length) dropSheet(cur.key);
+      else cur.captured = true; // 그리던 것을 두고 다른 판으로 가면 붙은 장으로 남는다(잃지 않게)
     }
     curKeyRef.current = key;
     draw.cancelText();
     draw.setItems(sheetsRef.current.get(key)?.items ?? []);
     draw.setRedo([]);
     bump();
+  };
+  const syncKey = (at: number) => {
+    if (isVideo) switchToKey(frameOf(at));
+  };
+  const nextKeyRef = useRef(1); // 이미지 판 번호
+  // 캡쳐(이미지) — 지금 그림판을 붙은 장으로 넘기고 빈 판에서 다시 그린다
+  const captureSheet = () => {
+    if (!itemsRef.current.length || !sheetsRef.current.get(curKeyRef.current)) {
+      flashMsg("캡쳐할 그림이 없습니다 — 먼저 그려 주세요");
+      return;
+    }
+    if (sheets.length >= MAX_DRAWINGS) {
+      flashMsg(`그림은 코멘트 하나에 ${MAX_DRAWINGS}장까지 붙일 수 있습니다`);
+      return;
+    }
+    switchToKey(nextKeyRef.current++);
   };
   // 처음 그릴 때 판을 만든다 — 기준 시각은 지금 video.currentTime 으로 고정, 영상은 그 장면의 미리보기를 뜬다
   function beginSheet(): boolean {
@@ -184,7 +204,7 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
       flashMsg(`그림은 코멘트 하나에 ${MAX_DRAWINGS}장까지 붙일 수 있습니다`);
       return false;
     }
-    const sheet: Sheet = { id: uuid(), key, timeSec: isVideo ? (video?.currentTime ?? time) : null, items: [], thumb: null, thumbJob: null };
+    const sheet: Sheet = { id: uuid(), key, timeSec: isVideo ? (video?.currentTime ?? time) : null, items: [], thumb: null, thumbJob: null, captured: false };
     if (isVideo && video) {
       sheet.thumbJob = frameThumb(video).then((made) => {
         if (sheetsRef.current.get(key) === sheet) {
@@ -372,9 +392,12 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
   const stageStyle = {
     aspectRatio: natural ? `${natural.w} / ${natural.h}` : undefined,
     width: "100%",
-    maxWidth: `calc(${isVideo ? "(56vh - 106px)" : "58vh"} * ${ratio.toFixed(6)})`,
+    // 영상 높이 상한은 수정 창과 같은 50vh−124px(Jay 11-05 — 비율이 다르면 이미지도 꽉 차지 않으니 영상만 따로 맞추지 않는다)
+    maxWidth: `calc(${isVideo ? "(50vh - 124px)" : "58vh"} * ${ratio.toFixed(6)})`,
   };
   const curKey = curKeyRef.current;
+  // 붙는 그림 칸 — 영상은 그린 프레임 모두, 이미지는 붙은 장(캡쳐했거나 다른 판으로 넘어간 것)만. 빨간 숫자 = 이미지의 붙은 장 수
+  const shownSheets = isVideo ? sheets : sheets.filter((s) => s.captured);
   const pct = (at: number | null) => `${duration > 0 ? Math.min(100, Math.max(0, ((at ?? 0) / duration) * 100)) : 0}%`;
   const imageBg = thumb || url;
 
@@ -386,7 +409,7 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
           <span className="partial-edit-sub">
             {isVideo
               ? "프레임을 옮겨 가며 표시하고 코멘트 — 그린 프레임마다 책갈피가 생기고 그림이 코멘트에 붙습니다"
-              : "그림 위에 표시하고 코멘트 — 그린 것이 코멘트에 붙습니다"}
+              : "그림 위에 표시하고 캡쳐 — 여러 장을 그려 한 코멘트에 붙일 수 있습니다"}
           </span>
           <button className="assets-x" onClick={requestClose} title="닫기">
             <CloseIcon />
@@ -519,17 +542,32 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
                 </div>
               )}
             </div>
-            <DrawDock draw={draw} />
+            <DrawDock
+              draw={draw}
+              extra={isVideo ? undefined : (
+                // 캡쳐(이미지만) — 아이콘만, 붙은 장 수 = 빨간 숫자(캡쳐 전엔 없음). Jay 11-05 시안 2차
+                <button type="button" className="cm-cap" title="캡쳐 — 그린 것을 한 장으로 붙이고 그림판을 비운다"
+                  aria-label={`캡쳐${shownSheets.length ? ` (붙은 그림 ${shownSheets.length}장)` : ""}`}
+                  disabled={sending} onClick={captureSheet}>
+                  {TOOL_ICONS.capture}
+                  {shownSheets.length > 0 && <span className="cm-cap-badge">{shownSheets.length}</span>}
+                </button>
+              )}
+            />
             <div className="sl-panel pe-prompt">
-              {/* 붙는 그림 — 그림만. 마우스를 올린 그림에 × · 누르면 그 프레임으로 */}
+              {/* 붙는 그림 — 그림만. 마우스를 올린 그림에 × · 누르면 그 프레임으로(이미지는 그 그림을 다시 불러와 고친다) */}
               <div className="sl-reftray" aria-label="붙는 그림">
                 <div className="sl-reftray-scroll">
-                  {sheets.map((s, i) => {
+                  {shownSheets.map((s, i) => {
                     const back = isVideo ? s.thumb?.url : imageBg;
                     return (
                       <div key={s.id} className="sl-reftray-item cm-att" title={isVideo ? timecode(s.timeSec ?? 0) : `그림 ${i + 1}`}>
-                        <button type="button" className={"cm-thumb" + (s.key === curKey ? " cur" : "")} aria-label={isVideo ? `${secLabel(s.timeSec)} 프레임으로` : "그림"}
-                          onClick={() => { if (isVideo && s.timeSec != null) seekTo(s.timeSec); }}>
+                        <button type="button" className={"cm-thumb" + (s.key === curKey ? " cur" : "")}
+                          aria-label={isVideo ? `${secLabel(s.timeSec)} 프레임으로` : `그림 ${i + 1} 고치기`}
+                          onClick={() => {
+                            if (isVideo) { if (s.timeSec != null) seekTo(s.timeSec); }
+                            else switchToKey(s.key);
+                          }}>
                           {back && <img src={back} alt="" draggable={false} />}
                           {work && <SheetCanvas items={s.items} work={work} />}
                         </button>
@@ -538,9 +576,11 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
                       </div>
                     );
                   })}
-                  {!sheets.length && (
+                  {!shownSheets.length && (
                     <div className="sl-reftray-empty">
-                      {isVideo ? "프레임을 옮겨 가며 위에 그리면 그 프레임 그림이 여기에 붙습니다" : "위 그림에 그리면 그린 것이 여기에 붙습니다"}
+                      {isVideo
+                        ? "프레임을 옮겨 가며 위에 그리면 그 프레임 그림이 여기에 붙습니다"
+                        : "그리고 캡쳐하면 그린 것이 여기에 한 장씩 붙습니다 — 캡쳐 안 한 그림도 [코멘트 달기] 때 함께 붙습니다"}
                     </div>
                   )}
                 </div>
