@@ -257,13 +257,13 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
           const hash = await drawingHash({ strokes, kind, width: natural.w, height: natural.h, timeSec, idx, thumb: shot?.bytes ?? null });
           return {
             id: s.id, idx, kind, width: natural.w, height: natural.h, time_sec: timeSec,
-            strokes: strokes as CommentDrawingIn["strokes"], thumb_b64: shot?.b64 ?? null, ...(hash ? { content_hash: hash } : {}),
+            strokes: strokes as CommentDrawingIn["strokes"], thumb_b64: shot?.b64 ?? null, content_hash: hash,
           };
         }));
         const res = await api.addGenCommentV2(genId, { id: commentIdRef.current, text: body, parent_id: null, private: writePrivate, drawings });
         // 저장된 것이 보낸 것과 같은가(C1) — 다르면 저장 실패로 보고 초안을 지킨다
         const same = res.drawings.length === drawings.length
-          && res.drawings.every((d, i) => d.id === drawings[i].id && (!drawings[i].content_hash || d.content_hash === drawings[i].content_hash));
+          && res.drawings.every((d, i) => d.id === drawings[i].id && d.content_hash === drawings[i].content_hash);
         if (!same) throw new Error("저장된 그림이 보낸 것과 다릅니다 — 다시 눌러 주세요");
       }
       resetDraft();

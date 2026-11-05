@@ -562,7 +562,7 @@ export interface CommentDrawingBody extends Omit<CommentDrawingMeta, "v"> {
   comment_id: string;
   strokes: { v: number; items: unknown[] };
 }
-// comments-v2 로 보내는 그림 1장 — content_hash 는 브라우저가 계산할 수 있을 때만(서버가 대조한다)
+// comments-v2 로 보내는 그림 1장 — content_hash 는 브라우저가 계산해 보낸다(서버가 다시 계산해 대조한다)
 export interface CommentDrawingIn {
   id: string;
   idx: number;
@@ -572,7 +572,7 @@ export interface CommentDrawingIn {
   time_sec: number | null;
   strokes: { v: 1; items: unknown[] };
   thumb_b64: string | null;
-  content_hash?: string;
+  content_hash: string;
 }
 // 크게 보기에서 겹쳐 볼 코멘트 그림(코멘트 창의 그림을 눌렀을 때)
 export interface CommentDrawingView {

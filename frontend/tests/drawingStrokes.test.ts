@@ -1,7 +1,7 @@
 // 코멘트 그림 획 목록 v1 — 프런트 정규화·해시가 서버(backend/app/services/comment_strokes.py)와 같은 바이트인가.
 //  기준값은 서버 코드로 뽑았다(같은 입력 → canonical·content_hash). 설계 docs/status/크게보기_코멘트그림_설계_2026-11-05.md §10 C4.
-import { describe, expect, it } from "vitest";
-import { canonical, drawingHash, quantize, quantizeTime, StrokesTooLarge, toStrokesV1, type DrawItem } from "../src/components/edit/drawing/strokes";
+import { describe, expect, it, vi } from "vitest";
+import { canonical, drawingHash, quantize, quantizeTime, sha256Plain, StrokesTooLarge, toStrokesV1, type DrawItem } from "../src/components/edit/drawing/strokes";
 
 const ITEMS: DrawItem[] = [
   { kind: "pen", erase: false, color: "#ef4444", size: 7.25, points: [{ x: 10.04, y: 20.05 }, { x: 40.26, y: 30 }] },
@@ -31,6 +31,25 @@ describe("획 목록 v1", () => {
     const thumb = new Uint8Array([0xff, 0xd8, 0x61, 0x62, 0x63]);
     expect(await drawingHash({ strokes: doc, kind: "video", width: 1920, height: 1080, timeSec: 1.2345, idx: 2, thumb }))
       .toBe("51ba400076cd10fe291ebc8066dcae9057e7a0dc1f3183ae310abeaed2557a86");
+  });
+
+  it("안전하지 않은 주소(crypto.subtle 없음)에서도 같은 해시 — 직접 계산한 SHA-256 이 표준값·subtle 과 같다", async () => {
+    const enc = (s: string) => new TextEncoder().encode(s);
+    expect(sha256Plain(enc(""))).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(sha256Plain(enc("abc"))).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    for (const size of [55, 56, 63, 64, 65, 1000, 70000]) { // 덧붙임 경계(55·56·64)와 여러 덩이
+      const data = new Uint8Array(size).map((_, i) => (i * 31 + 7) & 0xff);
+      const subtle = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+      expect(sha256Plain(data), `size ${size}`).toBe(Array.from(subtle, (b) => b.toString(16).padStart(2, "0")).join(""));
+    }
+    const doc = toStrokesV1(ITEMS, { w: 1920, h: 1080 }, 1920, 1080);
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) }); // subtle 이 없는 브라우저
+    try {
+      expect(await drawingHash({ strokes: doc, kind: "image", width: 1920, height: 1080, timeSec: null, idx: 0, thumb: null }))
+        .toBe("8cd90c8ee38750dba9465d0c7881571492146f305480fc07d5d78a3e933de0e7");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("줄인 캔버스의 획을 원본 좌표계로 옮기고 범위 밖 점은 가장자리로", () => {
