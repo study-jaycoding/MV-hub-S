@@ -263,20 +263,21 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             )}
           </span>
           <div className="preview-head-actions">
-            {cur.type === "image" && cur.genId && (
+            {/* 수정 단추는 결과 종류에 맞는 것 하나만(오디오는 없음) — 생성 정보 창과 같은 규칙(Jay 2026-10-28) */}
+            {(cur.type === "image" || isVideo) && cur.genId && (
               <button
                 className="lin-board-btn preview-edit-btn"
-                title="이미지 위에 펜·도형으로 표시해 수정 지시 (Seedream)"
+                title={isVideo ? "영상 프레임 위에 펜·도형으로 표시해 수정 지시" : "이미지 위에 펜·도형으로 표시해 수정 지시 (Seedream)"}
                 onClick={() => {
                   window.dispatchEvent(
                     new CustomEvent(APP_EVENTS.partialEdit, {
-                      detail: { genId: cur.genId },
+                      detail: { genId: cur.genId, mode: isVideo ? "video" : "image" },
                     }),
                   );
                   onClose();
                 }}
               >
-                🖌 이미지 수정
+                {isVideo ? "🖌 영상 수정" : "🖌 이미지 수정"}
               </button>
             )}
             {onOpenInBoard && cur.genId && (

@@ -4,6 +4,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { APP_EVENTS } from "../src/lib/appEvents";
 import type { PreviewTarget } from "../src/types";
 
 const capture = vi.hoisted(() => ({
@@ -138,6 +139,40 @@ describe("크게 보기 우클릭", () => {
     await show({ url: "/a.mp3", type: "audio", name: "a" });
     expect(rightClick().defaultPrevented).toBe(false);
     expect(menu()).toBeNull();
+  });
+});
+
+// 머리줄 수정 단추 — 결과 종류에 맞는 것 하나만(생성 정보 창과 같은 규칙 · Jay 2026-10-28). 받는 쪽(PartialEditHost)은 mode 로 창을 고른다.
+describe("크게 보기 수정 단추", () => {
+  const editButton = () => host.querySelector<HTMLButtonElement>(".preview-edit-btn");
+
+  it("영상은 [영상 수정] → mode=video, 이미지는 [이미지 수정] → mode=image 로 쏘고 창을 닫는다", async () => {
+    const sent: unknown[] = [];
+    const listen = (e: Event) => sent.push((e as CustomEvent).detail);
+    window.addEventListener(APP_EVENTS.partialEdit, listen);
+    try {
+      await show(VIDEO);
+      expect(editButton()?.textContent).toBe("🖌 영상 수정");
+      act(() => editButton()!.click());
+      expect(sent).toEqual([{ genId: "gen-12345678", mode: "video" }]);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      await show({ ...IMAGE, genId: "gen-image" });
+      expect(editButton()?.textContent).toBe("🖌 이미지 수정");
+      act(() => editButton()!.click());
+      expect(sent).toEqual([{ genId: "gen-12345678", mode: "video" }, { genId: "gen-image", mode: "image" }]);
+      expect(onClose).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener(APP_EVENTS.partialEdit, listen);
+    }
+  });
+
+  it("오디오와 생성물이 아닌 파일(genId 없음)에는 수정 단추가 없다", async () => {
+    await show({ url: "/a.mp3", type: "audio", name: "a", genId: "gen-audio" });
+    expect(editButton()).toBeNull();
+    await show(IMAGE);
+    expect(editButton()).toBeNull();
+    await show({ ...VIDEO, genId: undefined });
+    expect(editButton()).toBeNull();
   });
 });
 
