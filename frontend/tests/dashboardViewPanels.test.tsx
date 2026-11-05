@@ -64,6 +64,53 @@ it("L3-4 상세를 읽는 중에 예약된 재조회는 그 사이 판을 닫으
   expect(mocks.summary).toHaveBeenCalledTimes(1);
 });
 
+it("에피소드·시퀀스 검색 — Enter 로 알약을 쌓고, 알약이 모두 맞는 시퀀스만 보인다(Jay B안 2026-11-05)", async () => {
+  const folder = (path: string, name: string) => ({
+    folder_path: path, count: 1, final_count: 0, credits: 1, elapsed_seconds: 0, created_start: "2026-08-01", created_end: "2026-08-01",
+    models: [], members: [{ uid: name, name, count: 1, final_count: 0, credits: 1 }],
+  });
+  mocks.summary.mockResolvedValue({ projects: [{ pid: "p1", name: "뻘뻘뻘", folders: [folder("e001/c0010", "제이"), folder("e020/c0010", "리버"), folder("e020/c0030", "리버")] }] });
+  await render("a");
+  await click("[data-detail]");
+  const input = () => host.querySelector<HTMLInputElement>('input[aria-label="에피소드·시퀀스 검색"]')!;
+  const rows = () => [...host.querySelectorAll("tbody tr")].map((row) => row.querySelector(".dash-episode-toggle span[title]")?.textContent ?? row.querySelector(".dash-sequence-path")?.textContent).filter(Boolean);
+  const pills = () => [...host.querySelectorAll(".dash-seq-pills .usage-drill-chip")].map((pill) => pill.textContent);
+  const type = async (text: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), text);
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const key = async (name: string, init: KeyboardEventInit = {}) => {
+    await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init })); });
+  };
+
+  expect(rows()).toEqual(["e001", "c0010", "e020", "c0010", "c0030"]);
+  await type("c0010");
+  await key("Enter");
+  expect(pills()).toEqual(["c0010×"]);
+  expect(input().value).toBe("");
+  expect(rows()).toEqual(["e001", "c0010", "e020", "c0010"]);
+  await type("리버");
+  await key("Enter");
+  expect(pills()).toEqual(["c0010×", "리버×"]);
+  expect(rows()).toEqual(["e020", "c0010"]); // c0010 이면서 리버
+  await type("C0010");
+  await key("Enter"); // 같은 글(대소문자 무시)은 다시 쌓지 않는다
+  expect(pills()).toEqual(["c0010×", "리버×"]);
+  await type("제");
+  await key("Enter", { isComposing: true }); // 한글 조합 중 Enter 는 글자 확정만
+  expect(pills()).toEqual(["c0010×", "리버×"]);
+  expect(input().value).toBe("제");
+  expect(rows()).toEqual([]); // 치고 있는 글도 함께 맞아야 한다
+  await type("");
+  await key("Backspace"); // 빈 칸 Backspace = 마지막 알약 빼기
+  expect(pills()).toEqual(["c0010×"]);
+  await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="검색어 c0010 빼기"]')!.click(); });
+  expect(pills()).toEqual([]);
+  expect(rows()).toEqual(["e001", "c0010", "e020", "c0010", "c0030"]);
+});
+
 it("L3-4 상세 판이 닫혀 있으면 요약을 읽지 않고, 열면 읽고 그 안에서 로딩을 보인다", async () => {
   await render("a");
   await render("a", 1);
