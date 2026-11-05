@@ -23,7 +23,7 @@ const task: Task = {
 };
 const props: WorkViewProps = {
   tasks: [task], seqOptions: [], thumb: (path) => path || undefined, disabled: new Set(),
-  onPatch: vi.fn(), onDelete: vi.fn(), onLinkGen: vi.fn(), onUnlinkGen: vi.fn(),
+  onPatch: vi.fn(), onLinkGen: vi.fn(), onUnlinkGen: vi.fn(),
 };
 
 beforeEach(() => {

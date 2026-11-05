@@ -1,5 +1,5 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
-// 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
+// 드래그 핸들(⠿)로 순서 변경(줄 선택·삭제는 2026-11-05 뺐다 — Jay B안). 격자선으로 표 가독성.
 // 생성자는 실제 생성자(연결 컷 파생)만 — 수동 담당 배정 개념은 폐기됨(2026-08-21).
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { fmtElapsed } from "../../lib/format";
@@ -94,9 +94,6 @@ export function TableView(props: WorkViewProps) {
     disabled,
     colorMap,
     readOnly,
-    selected,
-    onToggleSelect,
-    onToggleSelectAll,
     onReorder,
     onPatch,
     onLinkGen,
@@ -109,8 +106,6 @@ export function TableView(props: WorkViewProps) {
   const commitText = (t: Task, value: string, base?: string) => onPatch(t.id, { description: value }, base); // 보낼지 말지는 칸(DescCell)이 정한다
 
   const totals = tasks.length ? workTableTotals(tasks) : null;
-  const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
-  const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
   const toggleDetails = (id: string) =>
     setExpanded((previous) => {
       const next = new Set(previous);
@@ -123,15 +118,8 @@ export function TableView(props: WorkViewProps) {
       <table className="manage-table work-table work-table-grid">
         <thead>
           <tr>
-            <th className="work-sel-col">
-              <input
-                type="checkbox"
-                checked={allSelected}
-                disabled={!allIds.length}
-                onChange={(e) => onToggleSelectAll?.(allIds, e.target.checked)}
-                title="전체 선택"
-              />
-            </th>
+            {/* 순서 손잡이 칸 — 줄 선택·삭제는 뺐다(2026-11-05 Jay B안) */}
+            <th className="work-sel-col" />
             <th>프로젝트</th>
             <th>에피소드</th>
             <th>시퀀스</th>
@@ -147,7 +135,6 @@ export function TableView(props: WorkViewProps) {
         </thead>
         <tbody>
           {tasks.map((t) => {
-            const isSel = !!selected?.has(t.id);
             const modelUsage = taskModelUsage(t);
             const stateColor = statusColor(t.status);
             const detailsOpen = expanded.has(t.id);
@@ -156,7 +143,7 @@ export function TableView(props: WorkViewProps) {
             return (
               <Fragment key={t.id}>
               <tr
-                className={(isSel ? "work-row-sel" : "") + (t.archived ? " work-row-archived" : "")}
+                className={t.archived ? "work-row-archived" : undefined}
                 onDragOver={(e) => {
                   if (!locked && e.dataTransfer.types.includes(ROW_MIME)) e.preventDefault();
                 }}
@@ -179,12 +166,6 @@ export function TableView(props: WorkViewProps) {
                   >
                     ⠿
                   </span>
-                  <input
-                    type="checkbox"
-                    checked={isSel}
-                    disabled={locked}
-                    onChange={() => onToggleSelect?.(t.id)}
-                  />
                   <button
                     type="button"
                     className="work-mobile-detail-btn"

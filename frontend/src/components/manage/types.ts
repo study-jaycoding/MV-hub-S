@@ -254,13 +254,9 @@ export interface WorkViewProps {
   // 아직 서버에 없는 설명 글(작업 id → 가장 최근에 친 글, failed = 저장을 시도했다 실패함). 표 밖(WorkBoard)에 둔다 —
   //  보기 전환·검색으로 그 줄이 화면에서 빠졌다 돌아와도 남게.
   descDrafts?: DescDraftStore;
-  onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
   onUnlinkGen: (tid: string, genId: string) => void;
-  // 테이블 전용(선택·순서) — 보드/캘린더는 사용 안 함(옵션).
-  selected?: Set<string>;
-  onToggleSelect?: (id: string) => void;
-  onToggleSelectAll?: (ids: string[], on: boolean) => void;
+  // 테이블 전용(순서) — 보드/캘린더는 사용 안 함(옵션). 줄 선택·삭제는 2026-11-05 뺐다(Jay B안).
   onReorder?: (draggedId: string, targetId: string) => void;
 }
 
