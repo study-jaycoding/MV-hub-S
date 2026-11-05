@@ -1037,6 +1037,8 @@
 /* 원본이 오는 동안의 자리 표시(썸네일)와 원본을 같은 칸에 겹친다 — 원본이 위라 받는 대로 덮어 그린다 */
 .media-preview-stack { display: grid; place-items: center; }
 .media-preview-stack > img { grid-area: 1 / 1; }
+/* 오디오 머리줄 받기 — 글 없는 아이콘 네모(시안 ⑱), 머리줄 단추와 같은 높이 */
+.lin-board-btn.preview-dl-btn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 /* Ctrl 카드 단추(Jay 2026-11-05 시안 ⑩·⑪) — 격자 카드(.card)·어셋 칸(.asset-cell)을 원본이 그려진 사각형에 겹치고 카드의 그림은 감춘다.
    단추만 누를 수 있고 나머지 누름(우클릭 캡쳐·영상 재생 막대)은 원본으로 간다. 마우스를 올린 카드처럼 단추를 늘 보이고 조금 키운다(시안 1.3배) */
 .mp-card-layer { position: absolute; z-index: 3; pointer-events: none; }

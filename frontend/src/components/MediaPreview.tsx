@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 import { api } from "../api";
 import { TEAM_SCOPE, recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
-import { fetchBlob } from "../lib/download";
+import { downloadGeneration, downloadOne, fetchBlob } from "../lib/download";
 import { flashMsg } from "../lib/flash";
 import { hubHasFeature } from "../lib/hubFeatures";
 import { copyPng, imagePng, saveBlobAs, videoFramePng } from "../lib/mediaCapture";
@@ -43,6 +43,15 @@ const subscribeAssetCard = (listener: () => void) => {
   return () => { assetCardListeners.delete(listener); };
 };
 const noop = () => {};
+
+// 받기 아이콘(오디오 머리줄 — Jay 2026-11-05 시안 ⑱)
+const DOWNLOAD_ICON = (
+  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 4v11" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M5 20h14" />
+  </svg>
+);
 
 /** 카드 C 가 코멘트 그림 창을 여는가(Jay 2026-11-05 시안 ⑮) — 그림을 아는 허브의 이미지·영상만. 아니면 종전 작은 창. */
 export function cardCommentOpensDrawing(g: Pick<Generation, "assets">): boolean {
@@ -503,6 +512,21 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                 onClick={() => onOpenInBoard(cur.genId!)}
               >
                 ⧉ History
+              </button>
+            )}
+            {/* 오디오만 받기(시안 ⑱) — 오디오엔 Ctrl 카드 단추가 없다. 이미지·영상은 그 ⤓ 로 받는다 */}
+            {cur.type === "audio" && (
+              <button
+                className="lin-board-btn preview-dl-btn"
+                title="다운로드"
+                aria-label="다운로드"
+                onClick={() => {
+                  // 생성물은 허브가 정한 이름(프로젝트_폴더_종류_작업자_번호)으로 받는다 — 아래 이름은 그것을 못 받았을 때와 에셋의 것
+                  const name = previewDownloadName(cur.url, cur.name, cur.type, cur.genId);
+                  return cur.genId ? downloadGeneration(cur.url, cur.genId, name) : downloadOne(cur.url, name);
+                }}
+              >
+                {DOWNLOAD_ICON}
               </button>
             )}
           </div>

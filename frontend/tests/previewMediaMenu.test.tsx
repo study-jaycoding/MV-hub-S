@@ -18,6 +18,8 @@ vi.mock("../src/lib/generationViews", () => ({ recordGenerationView: vi.fn(), TE
 vi.mock("../src/lib/download", async (original) => ({
   ...(await original<typeof import("../src/lib/download")>()),
   fetchBlob: vi.fn(async () => new Blob(["img"], { type: "image/png" })),
+  downloadGeneration: vi.fn(),
+  downloadOne: vi.fn(),
 }));
 
 let host: HTMLDivElement;
@@ -200,6 +202,25 @@ describe("크게 보기 코멘트 모드", () => {
     const head = [...host.querySelectorAll(".preview-head-actions button")].map((b) => b.textContent);
     expect(head).toEqual(["🖌 Edit", "⧉ History"]);
     expect(host.querySelector(".cm-cbtn, .preview-dl-btn")).toBeNull();
+  });
+
+  it("오디오만 머리줄에 받기 아이콘 단추(시안 ⑱) — 생성물은 앱 이름 규칙(downloadGeneration), 어셋은 파일 이름 그대로(downloadOne)", async () => {
+    const { downloadGeneration, downloadOne } = await import("../src/lib/download");
+    vi.mocked(downloadGeneration).mockClear();
+    vi.mocked(downloadOne).mockClear();
+    const dl = () => host.querySelector<HTMLButtonElement>(".preview-head-actions .preview-dl-btn");
+    await show({ url: "/media/s.mp3", type: "audio", name: "신호음", genId: "gen-audio-1" });
+    expect(dl()?.getAttribute("aria-label")).toBe("다운로드");
+    expect(dl()?.textContent).toBe(""); // 글 없이 아이콘만
+    act(() => dl()!.click());
+    expect(downloadGeneration).toHaveBeenCalledWith("/media/s.mp3", "gen-audio-1", "신호음-gen-audi.mp3");
+    await show({ url: "/files/p/bgm.mp3", type: "audio", name: "bgm.mp3", assetPath: "bgm.mp3" });
+    act(() => dl()!.click());
+    expect(downloadOne).toHaveBeenCalledWith("/files/p/bgm.mp3", "bgm.mp3");
+    for (const t of [IMAGE, VIDEO, { ...IMAGE, genId: "gen-image" }]) {
+      await show(t);
+      expect(dl()).toBeNull(); // 이미지·영상은 Ctrl 카드 단추의 ⤓
+    }
   });
 
   it("오디오·에셋(genId 없음)·그림을 모르는 허브에서는 c 가 코멘트 모드를 열지 않는다", async () => {

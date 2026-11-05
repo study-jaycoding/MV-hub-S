@@ -278,7 +278,8 @@ describe("크게 보기 — 영상·오디오의 조작부", () => {
     act(() => root.render(page(<MediaPreview target={{ url, type, name: "n" }} onClose={noop} />)));
     const box = host.querySelector<HTMLElement>(".media-preview")!;
     const media = box.querySelector<HTMLElement>(type)!;
-    const first = box.querySelector<HTMLElement>(".assets-x")!; // 머리줄 첫 단추 — 다운로드를 뺀 뒤(시안 ⑩) 어셋·오디오는 닫기뿐
+    // 머리줄 첫 단추 — 오디오는 받기 아이콘(시안 ⑱), 어셋 영상은 다운로드를 뺀 뒤(시안 ⑩) 닫기뿐
+    const first = box.querySelector<HTMLElement>(".preview-dl-btn") ?? box.querySelector<HTMLElement>(".assets-x")!;
     act(() => box.querySelector<HTMLElement>(".assets-x")!.focus());
     expect(tabKey().defaultPrevented).toBe(false); // 브라우저에 맡긴다 — 다음 자리는 매체다
     act(() => { document.dispatchEvent(new KeyboardEvent("keyup", { key: "Tab" })); });
