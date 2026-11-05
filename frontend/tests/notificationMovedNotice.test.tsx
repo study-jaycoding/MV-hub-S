@@ -43,6 +43,9 @@ afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(
 const settle = async () => { for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); }); };
 const movedItem = () => [...document.querySelectorAll<HTMLButtonElement>(".notification-update")]
   .find((b) => b.textContent?.includes("공유 서버 주소가 바뀌었습니다: http://192.168.1.171:8010"));
+const tabs = () => [...document.querySelectorAll<HTMLButtonElement>(".notification-tabs button")];
+// 창은 '안읽음' 탭으로 열린다 — 읽음이 된 알림도 계속 보려고 '전체' 탭으로 옮긴다.
+const showAll = async () => { await act(async () => { tabs()[0].click(); }); };
 
 it("이미 새 주소인 PC 에도 '주소가 바뀌었다'가 안읽음으로 뜨고, 누르면 읽음만 된다", async () => {
   await act(async () => {
@@ -51,6 +54,9 @@ it("이미 새 주소인 PC 에도 '주소가 바뀌었다'가 안읽음으로 �
   await settle();
   await act(async () => { host.querySelector("button")!.click(); }); // 종 열기
   await settle();
+  expect(tabs()[1].classList.contains("on"), "처음엔 '안읽음' 탭").toBe(true);
+  expect(movedItem(), "안 읽은 알림은 '안읽음' 탭에 보인다").toBeTruthy();
+  await showAll();
   const item = movedItem();
   expect(item, "정보 알림이 안 보인다").toBeTruthy();
   expect(item!.textContent).toContain("이 PC 는 이미 새 주소에 연결돼 있습니다");
@@ -71,6 +77,7 @@ it("읽음 처리 뒤 늦게 끝난 조회가 그 알림을 다시 '안읽음'�
   releaseStatus.mockImplementation(() => new Promise((_, reject) => { finishSlow = () => reject(new Error("늦음")); }));
   await act(async () => { host.querySelector("button")!.click(); }); // 종 열기 = 다시 조회 시작(한쪽 응답이 늦다)
   await settle();
+  await showAll();
   await act(async () => { movedItem()!.click(); }); // 조회가 끝나기 전에 읽음
   await settle();
   expect(movedItem()!.classList.contains("unread")).toBe(false);
