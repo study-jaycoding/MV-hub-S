@@ -714,6 +714,18 @@ def _failed(code: int) -> str:
     return f"실패: 업데이트가 끝나지 않았습니다(종료 코드 {code}). 위 메시지를 확인하고 이 화면을 보내 주세요."
 
 
+def _run_watched(updater):
+    # For tests that assert step lines: the window's output goes to a file the fake coordinator reads, so it leaves
+    # a step only after the window printed that step (a pipe would leave it on the fixed 1.2 s pause and a busy PC
+    # could skip a step).
+    out = updater.folder / "window.out"
+    updater.env["MVHUB_FAKE_OUTPUT"] = str(out)
+    with out.open("wb") as sink:
+        result = subprocess.run(updater.command(), cwd=updater.root, env=updater.env, stdin=subprocess.DEVNULL,
+                                stdout=sink, stderr=subprocess.PIPE, timeout=30)
+    return result.returncode, out.read_text(encoding="utf-8", errors="replace"), result.stderr.decode("utf-8", "replace")
+
+
 @pytest.mark.parametrize("mode,code,expected", [
     # The line ends there: nothing is added from records that cannot prove which run they belong to.
     ("committed", "0", DONE + "\n"),
@@ -724,15 +736,9 @@ def _failed(code: int) -> str:
 ])
 def test_server_update_window_shows_steps_and_one_result(updater, mode, code, expected):
     updater.holder()
-    # The window's output goes to a file the fake coordinator reads, so it leaves a step only after the
-    # window printed that step (a pipe would leave it on the fixed 1.2 s pause and a busy PC could skip [1/6]).
-    out = updater.folder / "window.out"
-    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": code, "MVHUB_FAKE_OUTPUT": str(out)})
-    with out.open("wb") as sink:
-        result = subprocess.run(updater.command(), cwd=updater.root, env=updater.env, stdin=subprocess.DEVNULL,
-                                stdout=sink, stderr=subprocess.PIPE, timeout=30)
-    stdout = out.read_text(encoding="utf-8", errors="replace")
-    assert result.returncode == int(code), stdout + result.stderr.decode("utf-8", "replace")
+    updater.env.update({"MVHUB_FAKE_PROGRESS": mode, "MVHUB_COORDINATOR_EXIT": code})
+    returncode, stdout, stderr = _run_watched(updater)
+    assert returncode == int(code), stdout + stderr
     assert expected in stdout, stdout
     assert (DONE in stdout) == (code == "0"), stdout
     assert "[1/6]" in stdout and "[5/6]" in stdout, stdout
@@ -785,9 +791,9 @@ def test_an_unreadable_earlier_record_never_breaks_this_runs_result(updater, ear
     (updater.root / "logs/server-prepare.json").write_text(earlier, encoding="utf-8")
     updater.holder()
     updater.env.update({"MVHUB_FAKE_PROGRESS": "committed", "MVHUB_COORDINATOR_EXIT": "0"})
-    result = updater.run()
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert DONE + "\n" in result.stdout and "[6/6]" in result.stdout, result.stdout
+    returncode, stdout, stderr = _run_watched(updater)
+    assert returncode == 0, stdout + stderr
+    assert DONE + "\n" in stdout and "[6/6]" in stdout, stdout
 
 
 def test_quick_edit_stays_off_until_the_result_is_printed():
