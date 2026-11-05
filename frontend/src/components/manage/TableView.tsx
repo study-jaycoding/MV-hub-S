@@ -386,8 +386,8 @@ export function TableView(props: WorkViewProps) {
             <tr className="work-calc-row">
               <td />
               <td><Calc label="고유">{count(totals.projects)}</Calc></td>
-              <td><Calc label="고유">{count(totals.episodes)}</Calc></td>
-              <td><Calc label="고유">{count(totals.sequences)}</Calc></td>
+              <td><Calc label="개수">{count(totals.episodes)}</Calc></td>
+              <td><Calc label="개수">{count(totals.sequences)}</Calc></td>
               <td>
                 {/* 행과 같은 모양 — 합계 위, 미공유 아래 줄(한 줄이면 이 글이 생성물 칸을 다시 넓힌다) */}
                 <Calc label="합계">{count(totals.gens)}</Calc>
@@ -398,7 +398,7 @@ export function TableView(props: WorkViewProps) {
                   </div>
                 )}
               </td>
-              <td><Calc label="고유">{count(totals.creators)}</Calc></td>
+              <td><Calc label="인원">{count(totals.creators)}</Calc></td>
               <td>
                 {/* 상태는 한 줄에 하나, 크레딧은 cr 없이 — 계산 줄 글이 칸을 넓혀 설명 칸을 누르지 않게(빌드 CSS 측정 48 → 92px) */}
                 {totals.statuses.map(([label, n]) => (
@@ -419,7 +419,7 @@ export function TableView(props: WorkViewProps) {
                 )}
               </td>
               <td />
-              <td><Calc label="합계">{count(totals.comments)}</Calc></td>
+              <td><Calc label="개수">{count(totals.comments)}</Calc></td>
             </tr>
           </tfoot>
         )}

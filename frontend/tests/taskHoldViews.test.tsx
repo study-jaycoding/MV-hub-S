@@ -64,7 +64,8 @@ it("puts an empty grid row and a calc row under the table, only when rows exist"
   expect(cells[7]).toBe("합계1.62"); // 머리글이 크레딧 — cr 없이
   expect(cells[8]).toBe("합계1m30s");
   expect(cells[9]).toBe("범위9/17");
-  expect(cells[11]).toBe("합계1");
+  expect(cells[11]).toBe("개수1");
+  expect(cells.slice(1, 6)).toEqual(["고유0", "개수1", "개수1", "합계2미공유1", "인원1"]); // 프로젝트 이름 없는 시험 작업
   act(() => root.render(<TableView {...props} tasks={[]} />));
   expect(host.querySelector("tfoot")).toBeNull();
 });
