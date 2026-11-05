@@ -4,10 +4,14 @@ import { getAccountNamespace, getConnectionKey } from './accountScope';
 import { getApiPause, getAuthToken, jsonFetch, withRequestTimeout } from './http';
 import { EXPECT_ACCOUNT_HEADER } from './hubFeatures';
 import { requestCommentHighlight } from './commentHighlight';
+import { isAppWindow } from './appWindow';
 import type { GenComment } from '../types';
 
 export interface OpenGeneration { generation_id: string; comment_id: string; open_id: string }
 const scope = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken()}`;
+// 일반 브라우저 탭은 늦게 받는다 — 앱 창이 있으면 앱 창이 먼저 받아 맨 앞으로 오게(Jay 2026-11-05 A안).
+//  일반 탭이 먼저 받으면 그 탭에서만 열리고 창은 안 올라온다(승인 창이 아니라서). 허브의 받기 기한(방송 뒤 3초) 안이다.
+export const REGULAR_TAB_CLAIM_DELAY_MS = 500;
 let openingOwner: symbol | null = null;
 const openFetch = <T,>(url: string, init?: RequestInit) => withRequestTimeout(
   signal => jsonFetch<T>(url, { ...init, signal }), 3000, '열기 요청 시간이 지났습니다',
@@ -77,7 +81,9 @@ export function useOpenGeneration(open: (id: string) => void) {
       if (!leader || !detail?.open_id || seen.has(detail.open_id)) return;
       seen.add(detail.open_id);
       if (seen.size > 100) seen.delete(seen.values().next().value!);
-      void handleOpenGeneration(detail, id, target => openRef.current(target));
+      const claim = () => { if (alive) void handleOpenGeneration(detail, id, target => openRef.current(target)); };
+      if (isAppWindow()) claim();
+      else setTimeout(claim, REGULAR_TAB_CLAIM_DELAY_MS);
     };
     window.addEventListener(APP_EVENTS.openGeneration, receive);
     return () => { alive = false; abort.abort(); release?.(); window.removeEventListener(APP_EVENTS.openGeneration, receive); };
