@@ -17,6 +17,18 @@ import shutil
 import sys
 import tempfile
 import time
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def block_live_slack(monkeypatch):
+    """No test may accidentally send a real Slack request, including lifespan workers."""
+    from app.services import slack_client
+    original = slack_client._slack_api
+    def blocked(*args, **kwargs):
+        raise AssertionError('Live Slack API is disabled in tests')
+    monkeypatch.setattr(slack_client, '_slack_api', blocked)
+    return original
 
 # 격리 — 부모(셸·배포 게이트·도구)가 넘긴 CONTENT_HUB_* 는 **전부 버리고** 시험용 값만 다시 짠다.
 # config·app.db 가 import 시점에 값을 굳히므로 어떤 테스트 모듈보다 먼저(conftest 로드 시점에) 한다.

@@ -269,6 +269,8 @@ def _pre_migrate(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """기존 DB 에 누락된 컬럼을 추가(멱등). schema.sql 의 CREATE IF NOT EXISTS 는
     기존 테이블에 컬럼을 더하지 않으므로 여기서 보강한다."""
+    from .db_slack import migrate as migrate_slack
+    migrate_slack(conn)
     _migrate_share_state_intent(conn)
     # RL-22: 공유·최종 생성물 원본 보존 상태. 옛 DB도 멱등 보강한다. URL·프롬프트는
     # 저장하지 않고 상태와 안전한 집계만 기록한다.

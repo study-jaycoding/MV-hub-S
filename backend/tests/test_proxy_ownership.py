@@ -182,6 +182,13 @@ class ProxyOwnershipTests(unittest.TestCase):
         from app.routers._proxy import is_local_path
 
         for p in (
+            "/api/slack/link",
+            "/api/slack/link/start",
+            "/api/slack/link/verify",
+            "/api/admin/slack",
+            "/api/open/generation/g1",
+            "/api/open/claim",
+            "/api/open/ack",
             "/api/generation-comments/c1",
             "/api/generation-comments/c1/seen",
             "/api/cache-all",

@@ -348,6 +348,8 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
             command_results[anchor] = result
             return result["receipt"]["import_result"]
     counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID, actor, author_uids, command_handler=command_handler)
+    from ..services.slack_notify import notifier
+    notifier.kick()
     # 공유 서버의 정식 발행 입구는 개별 publish 라우트가 아니라 이 번들 수신이다.
     # 따라서 운영자가 나중에 "누가 어떤 생성물을 공유했나"를 복원할 수 있도록 여기서
     # 요청 단위 감사 이력을 남긴다. 500개 전체를 빠뜨리지 않되 DB 쓰기는 50개 묶음으로 제한한다.

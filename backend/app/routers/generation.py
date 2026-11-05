@@ -25,6 +25,9 @@ from .. import active_account, rbac, repo
 from ..repo.asset_sync import UndeliverableMove
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ..deps import (
+    EXPECT_ACCOUNT_HEADER,
+    current_account,
+    expected_account_differs,
     account_global_roles,
     account_scope_uid,
     actor_id,
@@ -60,6 +63,14 @@ logger = logging.getLogger(__name__)
 _LEGACY_FANOUT_LIMIT = 100
 
 router = APIRouter(prefix="/api", tags=["generation"])
+
+
+def _check_slack_open_account(request: Request) -> None:
+    """New navigation clients pin reads/seen; old callers keep their existing contract."""
+    if request.headers.get(EXPECT_ACCOUNT_HEADER):
+        owner = (current_account(request) or {}).get('email', '') if AUTH_ENABLED else active_account.account_key()
+        if expected_account_differs(request, owner or ''):
+            raise HTTPException(409, '화면과 허브의 계정이 다릅니다')
 
 
 # ── 계정 무관 공유 메타데이터(서버 CLI 제공) — 모델 목록·params·비용. 모두에게 동일한
@@ -1151,6 +1162,7 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
 def list_gen_comments(gen_id: str, request: Request):
     """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신). 공유 스레드에 내 비공개(로컬)를 합친다."""
     with _personal_meta_account_scope(request):
+        _check_slack_open_account(request)
         gen = repo.get_generation(gen_id)
         if _comments_on_server(gen):
             _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
@@ -1221,6 +1233,8 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
             cid = repo.add_generation_comment(
                 gen_id, actor_id(request), text, body.parent_id, body.muted
             )
+            from ..services.slack_notify import notifier
+            notifier.kick()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"id": cid}
@@ -1297,8 +1311,10 @@ def read_gen_comments(gen_id: str, body: GenCommentReadIn, request: Request):
 def seen_gen_comment(comment_id: str, request: Request):
     """코멘트 한 건 확인 처리(패널에서 NEW 코멘트 클릭). 개인 상태라 멱등·가벼운 처리."""
     with _personal_meta_account_scope(request):
+        _check_slack_open_account(request)
         if not _comment_local(comment_id):  # 공유본(서버) 코멘트 확인은 서버 seen 으로
-            return _proxy.proxy_json("POST", f"/api/generation-comments/{comment_id}/seen")
+            with _proxy.pinned_connection((_proxy.base_url(), _proxy.token())):
+                return _proxy.proxy_json("POST", f"/api/generation-comments/{comment_id}/seen")
         repo.mark_generation_comment_seen(actor_id(request), comment_id)
         return {"ok": True}
 

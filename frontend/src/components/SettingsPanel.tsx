@@ -42,6 +42,7 @@ import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 import { ComfyUnresolvedRunsSection } from "./settings/ComfyUnresolvedRunsSection";
 import { SettingsDescription } from "./settings/SettingsDescription";
 import { SettingsGroup } from "./settings/SettingsGroup";
+import { SlackNotificationSection } from "./settings/SlackNotificationSection";
 import { saveResolveSelectionFollow, useResolveSelectionFollow } from "../lib/resolveSelectionSettings";
 import {
   getResolveConnectionStatus,
@@ -643,6 +644,8 @@ export function SettingsPanel({
               <p>{t("한 번 연결하면 LLM이 MV Hub의 자료를 조회하고, 요청한 워크스페이스·폴더에 생성합니다.")}</p>
             </SettingsDescription>
           </section>}
+
+          <SlackNotificationSection />
 
           <section className="settings-section">
             <h4>{t("생성물 재점검")}</h4>

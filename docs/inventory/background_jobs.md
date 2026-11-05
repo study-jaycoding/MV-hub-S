@@ -27,6 +27,7 @@
 | `periodic_media_preservation` | start() | MEDIA_PRESERVATION_ENABLED and not READ_ONLY | `backend/app/services/media_preservation.py` |
 | `asset_registry_controller` | start() | ASSET_REGISTRY_ENABLED and not READ_ONLY | `backend/app/services/asset_registry.py` |
 | `periodic_share_state_reconciler` | start() | 항상 | `backend/app/services/share_state_reconciler.py` |
+| `slack_notifier` | start() | not READ_ONLY | `backend/app/services/slack_notify.py` |
 | `asset_sync_worker` | start() | not READ_ONLY | `backend/app/services/asset_sync.py` |
 | `asset_watcher` | start() | 항상 | `backend/app/services/asset_watcher.py` |
 | `startup_history_audit() (name=history-startup-audit)` | create_task | 항상 | `backend/app/services/history_autofill.py` |
@@ -92,6 +93,7 @@
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor.start` | create_task | `self._run() (name=resolve-selection-monitor)` |
 | `backend/app/services/result_probe.py` | `PeriodicResultProbe.start` | create_task | `self._run() (name=result-probe)` |
 | `backend/app/services/share_state_reconciler.py` | `PeriodicShareStateReconciler.start` | create_task | `self._run() (name=share-state-reconciler)` |
+| `backend/app/services/slack_notify.py` | `SlackNotifier.start` | create_task | `self._run() (name=slack-notifier)` |
 | `backend/app/services/syncer.py` | `PeriodicSync.start` | create_task | `self._run() (name=periodic-sync)` |
 | `backend/app/services/temp_sweeper.py` | `PeriodicSweeper.start` | create_task | `self._run() (name=temp-sweeper)` |
 | `backend/app/services/windows_drag.py` | `_run_worker` | Thread | `commands` |

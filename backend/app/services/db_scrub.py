@@ -57,16 +57,20 @@ def strip_transfer_secrets(db_path: Path) -> None:
     try:
         trash_transfer.configure_connection(c)
         c.execute("BEGIN")
-        for k in SESSION_KEYS:
-            c.execute("DELETE FROM app_setting WHERE key=?", (k,))
-        if _table_exists(c, "asset_upload_token"):
-            c.execute("DELETE FROM asset_upload_token")
+        scrub_slack_connection(c)  # Strict errors stay outside the legacy best-effort block.
+        c.execute('SAVEPOINT legacy_secrets')
+        try:
+            for k in SESSION_KEYS:
+                c.execute("DELETE FROM app_setting WHERE key=?", (k,))
+            if _table_exists(c, "asset_upload_token"):
+                c.execute("DELETE FROM asset_upload_token")
+        except sqlite3.DatabaseError:
+            # B1 pending/guard failures must never publish an unscrubbed copy.
+            if trash_transfer.enabled(c):
+                raise
+            c.execute('ROLLBACK TO legacy_secrets')
+        c.execute('RELEASE legacy_secrets')
         c.execute("COMMIT")
-    except sqlite3.DatabaseError:
-        # B1 pending/guard failures must never publish an unscrubbed copy.
-        if trash_transfer.enabled(c):
-            raise
-        pass
     finally:
         c.close()
 
@@ -87,6 +91,7 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
     with closing(sqlite3.connect(str(db_path))) as conn:
         trash_transfer.configure_connection(conn)
         conn.execute("BEGIN")
+        scrub_slack_connection(conn)
         if _table_exists(conn, "app_setting"):
             for k in SESSION_KEYS:
                 conn.execute("DELETE FROM app_setting WHERE key=?", (k,))
@@ -115,3 +120,26 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
                     ),
                 )
         conn.execute("COMMIT")
+
+
+def scrub_slack_connection(conn: sqlite3.Connection) -> None:
+    """Strip and verify on the caller's configured connection and transaction."""
+    keys = ('slack_bot_config', 'slack_notify_floor', 'slack_notify_generation')
+    if _table_exists(conn, 'app_setting'):
+        for key in keys:
+            conn.execute('DELETE FROM app_setting WHERE key=?', (key,))
+        if conn.execute("SELECT COUNT(*) FROM app_setting WHERE key LIKE 'slack_%'").fetchone()[0]:
+            raise RuntimeError('Slack settings remain in snapshot')
+    for table in ('slack_link', 'slack_dm_outbox'):
+        if _table_exists(conn, table):
+            conn.execute(f'DELETE FROM {table}')
+            if conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
+                raise RuntimeError('Slack rows remain in snapshot')
+
+
+def scrub_slack(db_path: Path) -> None:
+    """File wrapper for workroom_data's offline copies; runtime uses configured connections."""
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        scrub_slack_connection(conn)
+        conn.commit()

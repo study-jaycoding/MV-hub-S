@@ -45,6 +45,7 @@ def prepare_runtime(runtime: Path, source_db: Path | None, repo: Path) -> None:
             continue
         dst = runtime / "data/db" / name
         snapshot(src, dst)
+        scrub.scrub_slack(dst)
         with closing(sqlite3.connect(dst)) as conn, conn:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "app_setting" in tables:

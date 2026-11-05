@@ -594,7 +594,10 @@ export interface ProgressMessage {
     | "manage_changed"
     | "credits_changed"
     | "flash"
-    | "resolve_selection";
+    | "resolve_selection"
+    | "open_generation";
+  comment_id?: string;
+  open_id?: string;
   generation_id?: string;
   generation_ids?: string[];
   selected_count?: number;

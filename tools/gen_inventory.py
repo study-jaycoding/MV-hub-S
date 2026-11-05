@@ -27,6 +27,8 @@ SECRET_NAME = re.compile(r"PASSWORD|SECRET|TOKEN|KEY")
 # DDL(CREATE TABLE)이 있는 파일 → 그 테이블이 사는 DB. 기계로는 안 나오는 유일한 수동 표라, 표에 없는 DDL 위치가
 # 생기면 생성을 실패시켜 조용히 낡지 않게 한다.
 DB_FAMILY = {
+    "backend/app/db_slack.py": "content DB",
+    "backend/app/repo/slack_notifications.py": "content DB",
     "backend/schema.sql": "content DB",
     "backend/app/db_migrations.py": "content DB",
     "backend/app/db_share_commands.py": "content DB",

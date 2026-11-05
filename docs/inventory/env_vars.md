@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 152개.
+제품 환경변수 154개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -111,6 +111,8 @@
 | `CONTENT_HUB_SHARED` | `DATA_DIR / "shared"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_SHARED_URL` | — | `backend/app/shared_server_config.py` | `MV_agent.bat` |
 | `CONTENT_HUB_SHARE_RECONCILE_INTERVAL_SECONDS` | `"30"` | `backend/app/services/share_state_reconciler.py` | — |
+| `CONTENT_HUB_SLACK_TEST_RECIPIENTS` | `''` | `backend/app/services/slack_client.py` | — |
+| `CONTENT_HUB_SLACK_TEST_SEND` | — | `backend/app/services/slack_client.py` `backend/app/services/slack_notify.py` | — |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `"1000"` | `backend/app/main.py` | — |
 | `CONTENT_HUB_SSL_CERTFILE` | `""` | `backend/serve.py` `tools/server_console/install.py` | — |
 | `CONTENT_HUB_SSL_KEYFILE` | `(표시 안 함)` | `backend/serve.py` | — |

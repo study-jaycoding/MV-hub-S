@@ -38,6 +38,7 @@ from ..emailnorm import norm_email
 from ..repo import identity
 from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
+from ..services.db_scrub import scrub_slack_connection
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db, validate_db_compatibility
@@ -156,6 +157,7 @@ def _post_install_security_init(path: Path) -> None:
     try:
         trash_transfer.configure_connection(conn)
         conn.execute("BEGIN IMMEDIATE")
+        scrub_slack_connection(conn)
         for key in _SESSION_KEYS:
             conn.execute("DELETE FROM app_setting WHERE key=?", (key,))
         conn.execute(

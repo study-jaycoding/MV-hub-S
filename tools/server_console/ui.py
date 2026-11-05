@@ -23,6 +23,7 @@ from tkinter import messagebox, ttk
 from . import (account_rows, actions, activity, backup, comfy_key, console_stage, install, jobs, logs, mcp_stage, moves, names,
                power, release, server_api, status)
 from . import main as main_boot
+from .slack import SlackPage
 
 BG, BG2, PANEL, PANEL2 = "#08090a", "#0c0e10", "#121316", "#181a1e"
 TEXT, MUTED, MUTED2, LIME, INK = "#f3f4f6", "#8b909c", "#5f6573", "#c4e84a", "#131806"
@@ -39,7 +40,7 @@ SERVER_COLORS = {"ok": LIME, "switching": AMBER, "starting": AMBER, "maintenance
                  "not_ready": RED, "no_answer": RED, "stopped": MUTED, "unknown": MUTED, "no_task": MUTED}
 JOB_TERMINAL = ("finished", "refused", "check_needed", "runner_error")
 NAV = (("status", "상태·로그"), ("intake", "생성 접수"), ("power", "켜기·끄기"), ("backup", "DB·백업"),
-       ("accounts", "계정 정리"), ("comfykey", "Comfy 키"), ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"),
+       ("accounts", "계정 정리"), ("comfykey", "Comfy 키"), ("slack", "Slack"), ("update", "업데이트"), ("release", "릴리스"), ("mcp", "MCP 관리"),
        ("address", "서버 주소"), ("move", "서버 이사"))
 # 로그 탭 위의 표(activity.read_activity 의 키·제목·칸). 칸 = (키, 머리글, 너비)
 TABLES = {
@@ -267,7 +268,7 @@ class App:
         if self.note:  # 부트스트랩 알림(관리 창 stage 확인 실패 등)은 어느 화면에서도 보이게 맨 위에
             tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",
                      wraplength=1000, padx=12, pady=6).pack(fill="x")
-        builders = {"status": self._build_status_page, "intake": self._build_intake_page,
+        builders = {"slack": self._build_slack_page, "status": self._build_status_page, "intake": self._build_intake_page,
                     "power": self._build_power_page, "backup": self._build_backup_page,
                     "accounts": self._build_accounts_page, "comfykey": self._build_comfy_key_page,
                     "address": self._build_address_page, "update": self._build_update_page,
@@ -310,6 +311,8 @@ class App:
             self._load_accounts()
         if key == "comfykey":
             self._load_comfy_key()
+        if key == "slack":
+            self.slack_page.start()
         if key in ("release", "address"):
             self.release_due = True
         if key == "move":
@@ -836,6 +839,9 @@ class App:
         else:
             self.accounts_note.configure(text=done or f"{len(self.account_rows)}개", fg=LIME if done else MUTED2)
         self._relogin_if_needed([problem])
+
+    def _build_slack_page(self, page: tk.Frame) -> None:
+        self.slack_page = SlackPage(page, self)
 
     # ---------- Comfy 키(팀 comfy.org API 키 — docs/status/Comfy팀키_서버배포_2026-11-04.md) ----------
     def _build_comfy_key_page(self, page: tk.Frame) -> None:
@@ -2474,6 +2480,8 @@ class App:
             self._show_move()
         elif kind == "accounts":
             self._on_accounts(item[1], item[2], item[3], item[4])
+        elif kind == "slack_result":
+            self.slack_page.result(item[1], item[2], item[3])
         elif kind == "comfy_key":
             self._on_comfy_key(item[1], item[2], item[3], item[4])
         elif kind == "presence":

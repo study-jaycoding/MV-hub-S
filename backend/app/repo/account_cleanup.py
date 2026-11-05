@@ -24,6 +24,8 @@ from .trash import _with_trash
 
 # 계정과 함께 지우는 칸 — 그 사람의 소속과 읽음 표시다. 나머지 _REMAP_PLAN 칸은 전부 이력이다.
 REMOVED_WITH_ACCOUNT = frozenset({
+    ("slack_link", "account_email"),
+    ("slack_dm_outbox", "recipient_email"),
     ("project_member", "creator_uid"),
     ("generation_view", "owner_uid"),
     ("release_update_notice_seen", "actor_uid"),

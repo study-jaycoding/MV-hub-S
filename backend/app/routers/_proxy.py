@@ -580,6 +580,9 @@ def _cleanup_file(path: str) -> None:
 
 # 로컬에서 직접 처리해야 하는 경로 — 이 PC 의 자원(디스크·CLI·에이전트·실행)에 의존.
 _LOCAL_PREFIXES = (
+    "/api/slack/link",  # Explicit account-pinned relay, never generic forwarding.
+    "/api/admin/slack",  # Server console only.
+    "/api/open/",  # This PC's navigation/claim/ack.
     "/api/local-asset-sync/",  # 로컬 불변 파일·영속 전송 대기열
     "/api/asset-sync/files/",  # 로컬 검증 캐시 우선, 서버 원본은 제한 스트리밍
     "/api/asset-sync/uploads/",  # 전송 작업자가 원격으로 직접 스트리밍; 로컬 중계는 본문 버퍼 전 거절

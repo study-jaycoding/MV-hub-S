@@ -53,6 +53,9 @@ export function connectProgress(
     ws.onmessage = (ev) => {
       try {
         const message = JSON.parse(ev.data) as import("../types").ProgressMessage;
+        if (message.type === "open_generation" && message.generation_id && message.comment_id && message.open_id) {
+          dispatchAppEvent(APP_EVENTS.openGeneration, message);
+        }
         if (connectedToken === getAuthToken() &&
           (message.type === "credits_changed" || message.status === "done")) {
           dispatchAppEvent(APP_EVENTS.creditsChanged);

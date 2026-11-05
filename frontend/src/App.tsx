@@ -58,6 +58,7 @@ import { folderPeekQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { useResolveLibraryFollow } from "./lib/useResolveLibraryFollow";
 import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { reloadedIntoEdit, useAppNavigation } from "./lib/useAppNavigation";
+import { useOpenGeneration } from "./lib/useOpenGeneration";
 import {
   exportSceneText,
   confirmSceneWrite,
@@ -1505,6 +1506,7 @@ export default function App() {
     locationCtxFor,
     setEditOpen,
   });
+  useOpenGeneration(openComment);
   const libraryTabs = useLibraryFolderTabs({
     library: libraryFilters, authKey: libraryAuthKey,
     enabled: authReady && !editOpen && !listPeek,

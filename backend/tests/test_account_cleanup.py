@@ -314,6 +314,8 @@ KEPT = {
     ("account", "creator_uid"): "지울 계정 본체",
 }
 NOT_IDENTITY = {
+    ("slack_link", "slack_user_id"): "Slack 신원 — account_email 소유 행과 함께 제거",
+    ("slack_link", "slack_email"): "Slack 이메일 — account_email 소유 행과 함께 제거",
     ("worker", "account_type"): "personal/team 구분",
     ("schema_meta", "minimum_reader_protocol"): "스키마 호환 번호",
     ("workspace_member", "user_role"): "역할 이름",
