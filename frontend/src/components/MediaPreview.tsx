@@ -235,8 +235,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     };
   }, []);
   const assetRender = useSyncExternalStore(subscribeAssetCard, () => assetCardRender);
-  const cardShown = (ctrlDown || cardPinned) && !commenting && cur.type !== "audio"
-    && (cur.genId ? !!cardActions : !!cur.assetPath && !!assetRender);
+  // 카드를 못 띄우는 대상(오디오·정보 창의 레퍼런스처럼 genId·assetPath 가 없는 것·카드 동작을 못 받은 곳)은 머리줄 ⤓ 로 받는다(Codex 묶음 리뷰 11-05)
+  const cardAvailable = cur.type !== "audio" && (cur.genId ? !!cardActions : !!cur.assetPath && !!assetRender);
+  const cardShown = (ctrlDown || cardPinned) && !commenting && cardAvailable;
   // 카드에 그릴 생성물 — 뜰 때 읽고, 앱이 생성물을 바꾸면(공유·태그·코멘트) 다시 읽는다
   const [cardGen, setCardGen] = useState<Generation | null>(null);
   const [genTick, setGenTick] = useState(0);
@@ -316,6 +317,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
         return;
       }
       if (items && items.length > 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        const t = e.target instanceof Element ? e.target : null;
+        if (t?.closest("input, textarea, select, [contenteditable]")) return; // 글자 입력(Ctrl 카드 태그 등)의 ←/→ 는 커서 이동(Codex 묶음 리뷰 11-05)
         e.preventDefault();
         e.stopPropagation();
         setIdx((i) => {
@@ -486,7 +489,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
               </span>
             )}
           </span>
-          {/* 머리줄 = [Edit] [History] 만(Jay 2026-11-05 시안 ⑩) — 코멘트 C·다운로드는 Ctrl 카드 단추에 있다 */}
+          {/* 머리줄 = [Edit] [History] 만(Jay 2026-11-05 시안 ⑩) — 코멘트 C·다운로드는 Ctrl 카드 단추에 있다(카드를 못 띄우면 ⤓ 만 여기) */}
           <div className="preview-head-actions">
             {/* 수정 단추는 결과 종류에 맞는 것 하나만(오디오는 없음) — 생성 정보 창과 같은 규칙(Jay 2026-10-28) */}
             {(cur.type === "image" || isVideo) && cur.genId && (
@@ -514,8 +517,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                 ⧉ History
               </button>
             )}
-            {/* 오디오만 받기(시안 ⑱) — 오디오엔 Ctrl 카드 단추가 없다. 이미지·영상은 그 ⤓ 로 받는다 */}
-            {cur.type === "audio" && (
+            {/* 카드를 못 띄우는 대상만 받기(시안 ⑱ — 오디오 포함). 카드가 뜨는 이미지·영상은 그 ⤓ 로 받는다 */}
+            {!cardAvailable && (
               <button
                 className="lin-board-btn preview-dl-btn"
                 title="다운로드"
