@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemberTable } from "../src/components/manage/MemberTable";
 import { draftFromSettings, GROUP_COLOR_PALETTE, newDraftGroup, todayLocal, type CreditPlanSettings } from "../src/lib/creditPlan";
 import { HttpError } from "../src/lib/http";
-import { fillReorder, groupAssignBody, groupColorBody, groupEditBody, groupTermsBody, mainPeople, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
+import { fillReorder, groupAssignBody, groupColorBody, groupDeleteBody, groupEditBody, groupTermsBody, mainPeople, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
 import { recurringEditBody } from "../src/lib/workspaceConsole";
 import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 
@@ -276,7 +276,7 @@ it("그룹 탭에서 고른 색은 대상 그룹만 기존 크레딧 설정 API 
   await openSheet("그룹");
 
   const headers = [...host.querySelectorAll('table[aria-label="크레딧 그룹 현황"] th')].map((cell) => cell.textContent);
-  expect(headers).toEqual(["그룹", "인원", "기간", "그룹 크레딧", "이번 기간 사용", "남음"]);
+  expect(headers).toEqual(["그룹", "인원", "기간", "그룹 크레딧", "이번 기간 사용", "남음", "관리"]);
   expect(host.querySelector(".mtable-group-dot")).toBeNull();
   const trigger = host.querySelector<HTMLButtonElement>('[aria-label^="2nd floor 색상 선택"]')!;
   expect(trigger.getAttribute("aria-label")).toContain("현재 파랑");
@@ -304,6 +304,57 @@ it("그룹 탭에서 고른 색은 대상 그룹만 기존 크레딧 설정 API 
   expect(body.groups[1]).not.toHaveProperty("color");
   expect(body).not.toHaveProperty("members");
   expect(body).not.toHaveProperty("topups");
+});
+
+it("그룹 삭제 본문은 그 그룹만 빼고, 남은 그룹의 허용 모델·색과 배정 키는 싣지 않는다", () => {
+  const settings = credit(7);
+  settings.members = [{ email: "a@x", name: "a", workspace_role: "member", is_available: true, group_id: "g1" }];
+  expect(groupDeleteBody(settings, "g1")).toEqual({ revision: 7, note: "메모", groups: [{ id: "g2", name: "3rd floor", monthly_limit: 5000, limit_period: "month" }] });
+  expect(groupDeleteBody(settings, "없는 그룹").groups).toHaveLength(2);
+});
+
+it("그룹 현황 '관리' 칸 — [수정]은 그 그룹 편집 창, [삭제]는 확인 창을 거쳐 그 그룹만 뺀 목록을 저장한다(Jay 2026-11-05)", async () => {
+  mocks.memberTable.mockResolvedValue(table(3, [row("a@x", { group_id: "g1" })]));
+  mocks.saveCreditPlan.mockResolvedValue(credit(4));
+  await mount();
+  await openSheet("그룹");
+  const button = (label: string) => host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+
+  await act(async () => { button("3rd floor 그룹 수정").click(); });
+  const editor = host.querySelector<HTMLElement>('[role="dialog"][aria-label="그룹 편집"]')!;
+  expect(editor.querySelector<HTMLInputElement>('input[placeholder="예: Producer"]')!.value).toBe("3rd floor");
+  await act(async () => { editor.querySelector<HTMLButtonElement>("button.credit-modal-delete")!.click(); }); // [닫기]
+  expect(host.querySelector('[role="dialog"][aria-label="그룹 편집"]')).toBeNull();
+
+  await act(async () => { button("2nd floor 그룹 삭제").click(); });
+  const confirm = () => host.querySelector<HTMLElement>('[role="dialog"][aria-label="그룹 삭제"]');
+  expect(confirm()!.textContent).toContain("2nd floor 그룹을 삭제하시겠습니까?");
+  expect(confirm()!.textContent).toContain("참가자 1명의 배정도 함께 풀립니다");
+  expect(confirm()!.closest(".mtable-delete-confirm")).not.toBeNull(); // 빨간 [삭제] 규칙이 걸리는 자리
+  await act(async () => { confirm()!.querySelector<HTMLButtonElement>("button.admin-confirm-no")!.click(); });
+  expect(confirm()).toBeNull();
+  expect(mocks.saveCreditPlan).not.toHaveBeenCalled();
+
+  await act(async () => { button("2nd floor 그룹 삭제").click(); });
+  await act(async () => { confirm()!.querySelector<HTMLButtonElement>("button.admin-confirm-yes")!.click(); });
+  await settle();
+  expect(confirm()).toBeNull();
+  expect(mocks.saveCreditPlan).toHaveBeenCalledTimes(1);
+  const [workspace, body] = mocks.saveCreditPlan.mock.calls[0];
+  expect(workspace).toBe("ws1");
+  expect(body).toEqual({ revision: 3, note: "메모", groups: [{ id: "g2", name: "3rd floor", monthly_limit: 5000, limit_period: "month" }] });
+  expect(host.querySelector(".mtable-notice.ok")!.textContent).toContain("삭제됨 · 그룹 (2nd floor)");
+});
+
+it("그룹을 고칠 수 없으면 그룹 현황에 '관리' 칸이 없다", async () => {
+  const data = table(3, [row("a@x")]);
+  data.caps = { ...data.caps, credit: false };
+  mocks.memberTable.mockResolvedValue(data);
+  await mount();
+  await openSheet("그룹");
+  const headers = [...host.querySelectorAll('table[aria-label="크레딧 그룹 현황"] th')].map((cell) => cell.textContent);
+  expect(headers).not.toContain("관리");
+  expect(host.querySelector('[aria-label="2nd floor 그룹 삭제"]')).toBeNull();
 });
 
 it("멤버 배정은 행 배경 없이 선택된 그룹만 멤버 탭 형식의 색상 태그로 보여준다", async () => {
@@ -1413,6 +1464,7 @@ it("그룹 시트 남음 — 그룹 크레딧이 없는 그룹은 '제한 없음
   await mount();
   await openSheet("그룹");
   const rowOf = (name: string) => [...host.querySelectorAll('table[aria-label="크레딧 그룹 현황"] tbody tr')].find((tr) => tr.textContent?.includes(name))!;
-  expect(rowOf("2nd floor").lastElementChild!.textContent).toBe("제한 없음");
-  expect(rowOf("3rd floor").lastElementChild!.textContent).toBe("3,480");
+  const remaining = (name: string) => rowOf(name).children[5].textContent; // 6번째 칸 = 남음(그 뒤는 '관리' 칸)
+  expect(remaining("2nd floor")).toBe("제한 없음");
+  expect(remaining("3rd floor")).toBe("3,480");
 });

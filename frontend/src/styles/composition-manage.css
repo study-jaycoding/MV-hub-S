@@ -1461,6 +1461,10 @@ button.mtable-chip.off:hover { opacity: 1; border-color: var(--accent); }
 .mtable-topup-actions { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; }
 .mtable-topup-actions button { width: 54px; min-width: 54px; padding: 0; }
 .mtable-topup-actions .mtable-delete { color: #fb7185; }
+/* 그룹 현황 '관리' 칸 · 그룹 삭제 확인의 [삭제] = 빨강(앱 설정 창 위험 단추와 같은 색, Jay 2026-11-05) */
+.mtable th.mtable-group-actions-col, .mtable td.mtable-group-actions-col { width: 126px; }
+.mtable-delete-confirm .admin-confirm-yes { background: #ff3b30; color: #fff; }
+.mtable-delete-confirm .admin-confirm-yes:hover { background: #ff5247; }
 /* 관리 표 = 서브스페이스의 표 버전(§16) — 정기 크레딧 칸 묶음 · 렌더 폴더 · 보관 프로젝트 · 줄 끌기 */
 .mtable-recurring, .mtable-folder { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .mtable-folder input { min-width: 180px; }
