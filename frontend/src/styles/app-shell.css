@@ -550,6 +550,11 @@
   background: transparent; color: var(--muted); border-color: var(--border2);
 }
 .settings-action.ghost:hover:not(:disabled) { background: rgba(255,255,255,0.05); color: var(--text); }
+/* 설정 'Slack 알림' 연결됨 칸 — 이름 한 줄 + 이메일 작은 회색 한 줄, [연결 끊기]는 줄을 꽉 채운다(Jay 2026-11-05 시안 B안) */
+.slack-linked { flex: 1; min-width: 0; line-height: 1.35; }
+.slack-linked b { display: block; font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.slack-linked span { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.settings-action.ghost.slack-unlink { flex: 1 1 auto; }
 /* 지우는 확인(씬 삭제) — 눈에 띄게 꽉 찬 밝은 빨강(Jay 2026-10-22 모의 이미지 안 B) */
 .settings-action.danger { background: #ff3b30; border-color: #ff3b30; color: #fff; font-weight: 700; }
 .settings-action.danger:hover:not(:disabled) { background: #ff5247; border-color: #ff5247; color: #fff; }

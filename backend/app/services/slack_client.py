@@ -134,9 +134,13 @@ def _slack_api(method, token, payload, *, recipient_id=None, revision=None, time
         with _lock:
             if not recipient_id or _channels.get((revision, recipient_id)) != payload.get('channel'):
                 raise SlackError('recipient_mismatch')
-    request = urllib.request.Request('https://slack.com/api/' + method,
-        data=json.dumps(payload).encode('utf-8'), headers={'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json; charset=utf-8'}, method='POST')
+    # Slack rejects JSON bodies on read methods (users.lookupByEmail → invalid_arguments, measured 2026-11-05); only chat.postMessage needs JSON (blocks).
+    if method == 'chat.postMessage':
+        data, content_type = json.dumps(payload).encode('utf-8'), 'application/json; charset=utf-8'
+    else:
+        data, content_type = urllib.parse.urlencode(payload).encode('utf-8'), 'application/x-www-form-urlencoded'
+    request = urllib.request.Request('https://slack.com/api/' + method, data=data,
+        headers={'Authorization': 'Bearer ' + token, 'Content-Type': content_type}, method='POST')
     deadline = time.monotonic() + timeout
     try:
         with urllib.request.build_opener(_NoRedirect()).open(request, timeout=max(0.1, timeout)) as response:

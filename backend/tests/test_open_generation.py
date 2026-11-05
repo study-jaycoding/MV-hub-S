@@ -52,6 +52,16 @@ def test_post_requires_same_origin(client):
     assert client.post('/api/open/ack', json={'open_id': 'x', 'window_id': 'w', 'ok': True}).status_code == 403
 
 
+def test_localhost_window_can_claim_but_origin_must_match_host(client):
+    body = {'open_id': 'gone', 'window_id': 'w'}
+    same = {'host': 'localhost:8010', 'origin': 'http://localhost:8010', 'sec-fetch-site': 'same-origin'}
+    # Past the guard: the unknown open_id is the only refusal left.
+    assert client.post('/api/open/claim', json=body, headers=same).status_code == 409
+    crossed = {'host': '127.0.0.1:8010', 'origin': 'http://localhost:8010', 'sec-fetch-site': 'same-origin'}
+    assert client.post('/api/open/claim', json=body, headers=crossed).status_code == 403
+    assert client.get('/api/open/generation/g?c=c', headers={'host': 'localhost:9999'}).status_code == 403
+
+
 def test_claim_is_single_and_ack_checks_window_and_account(client, monkeypatch):
     broadcast = threading.Event()
     captured = {}

@@ -21,6 +21,12 @@ describe('Slack settings approved copy', () => {
     expect(html).toContain(button); expect(html).toContain(text);
     expect(html).not.toContain('…'); expect(html).not.toContain('...');
   });
+  it('shows the linked Slack name and email on two lines with a full-width unlink button', () => {
+    vi.mocked(useSlackSettings).mockReturnValue({ ...base, status: { ...base.status, linked: true, slack_name: '@제이', slack_email: 'jay@unit.test' } });
+    const html = renderToStaticMarkup(<SlackNotificationSection />);
+    expect(html).toContain('<div class="slack-linked"><b>@제이</b><span>jay@unit.test</span></div>');
+    expect(html).toContain('settings-action ghost slack-unlink');
+  });
   it.each(['', '연결 상태를 확인하지 못했어요'])('does not report unlinked before a successful lookup', notice => {
     vi.mocked(useSlackSettings).mockReturnValue({ ...base, status: null, notice });
     const html = renderToStaticMarkup(<SlackNotificationSection />);

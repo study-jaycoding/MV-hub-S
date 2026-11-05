@@ -26,11 +26,12 @@ _ID = re.compile(r'^[A-Za-z0-9_.:-]{1,200}$')
 def _guard(request, *, post=False):
     require_loopback_request(request, '이 PC 에서만 열 수 있습니다')
     values = request.headers.getlist('host')
-    if len(values) != 1 or values[0] != f'127.0.0.1:{config.PORT}':
+    # Hub windows opened as localhost:<port> must claim too (2026-11-05 live test: a localhost window was refused).
+    if len(values) != 1 or values[0] not in (f'127.0.0.1:{config.PORT}', f'localhost:{config.PORT}'):
         raise HTTPException(403, '이 PC 에서만 열 수 있습니다')
     if 'prefetch' in (request.headers.get('purpose', '') + request.headers.get('sec-purpose', '')).lower():
         raise HTTPException(403, '자동으로 열 수 없습니다')
-    if post and (request.headers.get('origin') != f'http://127.0.0.1:{config.PORT}'
+    if post and (request.headers.get('origin') != f'http://{values[0]}'
                  or request.headers.get('sec-fetch-site') != 'same-origin'):
         raise HTTPException(403, '다른 사이트에서 열 수 없습니다')
 

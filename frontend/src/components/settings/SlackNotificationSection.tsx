@@ -10,8 +10,9 @@ export function SlackNotificationSection() {
   return <section className="settings-section">
     <h4>Slack 알림</h4>
     {s.status?.linked ? <>
-      <div className="comfy-set-row"><label>연결된 Slack</label><div>@{s.status.slack_name.replace(/^@/, '')} · {s.status.slack_email}</div></div>
-      <div className="settings-actions-row"><button className="settings-action ghost" disabled={s.busy || locked} onClick={() => void s.action('delete')}>연결 끊기</button></div>
+      {/* 연결됨 = 이름 한 줄 + 이메일 작은 회색 한 줄(Jay 2026-11-05 시안 B안) */}
+      <div className="comfy-set-row"><label>연결된 Slack</label><div className="slack-linked"><b>@{s.status.slack_name.replace(/^@/, '')}</b><span>{s.status.slack_email}</span></div></div>
+      <div className="settings-actions-row"><button className="settings-action ghost slack-unlink" disabled={s.busy || locked} onClick={() => void s.action('delete')}>연결 끊기</button></div>
     </> : !locked && <>
       <div className="comfy-set-row"><label htmlFor="slack-email">Slack 이메일</label><input id="slack-email" type="email" placeholder="회사 Slack 에 쓰는 이메일" value={s.email} disabled={s.busy || s.pending} onChange={e => s.setEmail(e.target.value)} /></div>
       {s.pending && <div className="comfy-set-row"><label htmlFor="slack-code">확인 코드</label><input id="slack-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="Slack DM 의 6자리" value={s.code} disabled={s.busy} onChange={e => s.setCode(e.target.value.replace(/\D/g, ''))} /></div>}

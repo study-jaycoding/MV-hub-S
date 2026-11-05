@@ -133,6 +133,22 @@ def test_connection_timeout_is_unknown(monkeypatch, block_live_slack):
     assert error.value.code == 'unknown'
 
 
+def test_read_methods_send_form_body_and_post_message_sends_json(monkeypatch, block_live_slack):
+    # Real Slack answered invalid_arguments to a JSON users.lookupByEmail (2026-11-05); fakes must pin the wire format.
+    monkeypatch.setattr(client.shared_connection, 'is_shared_team_server', lambda: True)
+    monkeypatch.setattr(client, '_channels', {(1, 'UUNIT'): 'DUNIT'})
+    sent = []
+    class Opener:
+        def open(self, request, *args, **kwargs):
+            sent.append((request.get_header('Content-type'), request.data))
+            return io.BytesIO(b'{"ok":true,"user":{"id":"UUNIT"}}')
+    monkeypatch.setattr(client.urllib.request, 'build_opener', lambda *a: Opener())
+    block_live_slack('users.lookupByEmail', 'fake', {'email': 'a+b@unit.test'})
+    block_live_slack('chat.postMessage', 'fake', {'channel': 'DUNIT', 'text': '안녕'}, recipient_id='UUNIT', revision=1)
+    assert sent[0] == ('application/x-www-form-urlencoded', b'email=a%2Bb%40unit.test')
+    assert sent[1][0].startswith('application/json') and json.loads(sent[1][1]) == {'channel': 'DUNIT', 'text': '안녕'}
+
+
 def test_channel_verification_is_bound_to_revision(monkeypatch, block_live_slack):
     monkeypatch.setattr(client.shared_connection, 'is_shared_team_server', lambda: True)
     monkeypatch.setattr(client, '_channels', {})
