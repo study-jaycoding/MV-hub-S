@@ -136,18 +136,51 @@ def export_drawings(conn: sqlite3.Connection, comment_ids: Iterable[str]) -> dic
     return out
 
 
+_TRASH_COLUMNS = "id, comment_id, idx, kind, width, height, time_sec, strokes_json, thumb_jpg, content_hash, created_at"
+
+
+def trash_rows(conn: sqlite3.Connection, comment_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """생성물 휴지통 기록용 — 그림 행 그대로(thumb 만 base64). 코멘트가 없으면 표를 보지 않는다.
+    표가 어긋났으면 이동을 거절한다(코멘트가 지워지면 외래키 연쇄로 그림이 사라지므로)."""
+    ids = [i for i in dict.fromkeys(comment_ids) if i]
+    if not ids:
+        return []
+    require(conn, DRAWING)
+    return [{**{k: row[k] for k in row.keys() if k != "thumb_jpg"},
+             "thumb_b64": base64.b64encode(row["thumb_jpg"]).decode("ascii") if row["thumb_jpg"] else None}
+            for row in _drawing_rows(conn, ids, _TRASH_COLUMNS)]
+
+
+def restore_trash_rows(conn: sqlite3.Connection, rows: list[Any], comment_ids: set[str]) -> None:
+    """휴지통 복원 — 되살린 코멘트의 그림만 넣는다. 같은 id·같은 순서 칸이 이미 있으면 그대로 둔다."""
+    keep = [r for r in rows if isinstance(r, dict) and r.get("comment_id") in comment_ids]
+    if not keep:
+        return
+    require(conn, DRAWING)
+    conn.executemany(
+        f"INSERT OR IGNORE INTO {DRAWING}(id, comment_id, idx, kind, width, height, time_sec, strokes_json, "
+        "thumb_jpg, content_hash, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,COALESCE(?, datetime('now')))",
+        [(r["id"], r["comment_id"], r["idx"], r["kind"], r["width"], r["height"], r.get("time_sec"),
+          r["strokes_json"], base64.b64decode(r["thumb_b64"]) if r.get("thumb_b64") else None,
+          r["content_hash"], r.get("created_at")) for r in keep],
+    )
+
+
 def has_public_drawings(conn: sqlite3.Connection, gen_ids: Iterable[str]) -> set[str]:
-    """그림이 달린 공개 코멘트가 있는 생성물 — 발행 묶음을 그림 유무로 나눌 때(C3)."""
+    """그림이 달린 공개 코멘트가 있는 생성물 — 발행 묶음을 그림 유무로 나눌 때(C3).
+    표 구조가 어긋나도 코멘트와 이어지는 그림이 있으면 '있음'으로 본다 — 그 생성물만 그림 경로의 구조 검사에서
+    막히고 글 전용 발행은 그대로 간다. 표가 없거나 이을 수 없으면 '없음'."""
     ids = [i for i in dict.fromkeys(gen_ids) if i]
     found: set[str] = set()
-    if not ids or not _table_ok(conn, DRAWING):
-        return found
-    for offset in range(0, len(ids), 500):
-        batch = ids[offset:offset + 500]
-        ph = ",".join("?" * len(batch))
-        found.update(r[0] for r in conn.execute(
-            f"SELECT DISTINCT c.gen_id FROM generation_comment c JOIN {DRAWING} d ON d.comment_id=c.id "
-            f"WHERE c.is_private=0 AND c.gen_id IN ({ph})", batch))
+    try:
+        for offset in range(0, len(ids), 500):
+            batch = ids[offset:offset + 500]
+            ph = ",".join("?" * len(batch))
+            found.update(r[0] for r in conn.execute(
+                f"SELECT DISTINCT c.gen_id FROM generation_comment c JOIN {DRAWING} d ON d.comment_id=c.id "
+                f"WHERE c.is_private=0 AND c.gen_id IN ({ph})", batch))
+    except sqlite3.OperationalError:
+        return set()
     return found
 
 

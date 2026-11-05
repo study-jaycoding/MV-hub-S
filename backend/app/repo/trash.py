@@ -32,6 +32,7 @@ from ..emailnorm import norm_email
 from ..services import media_cache
 from ..services import trash_transfer
 from . import manage_telemetry as _manage_telemetry
+from . import comment_drawings
 from . import tags
 from ._common import VERIFYING_NOTE
 from .event_journal import has_anchored_job_event
@@ -304,6 +305,8 @@ def _gather(conn: sqlite3.Connection, gen_id: str, gen: sqlite3.Row) -> dict[str
         refs = [_row(r) for r in conn.execute(
             f"SELECT * FROM reference WHERE id IN ({ph})", ref_ids
         ).fetchall()]
+    comments = [_row(r) for r in conn.execute(
+        "SELECT * FROM generation_comment WHERE gen_id=?", (gen_id,)).fetchall()]
     return {
         "generation": _row(gen),
         "assets": [_row(r) for r in conn.execute(
@@ -319,8 +322,9 @@ def _gather(conn: sqlite3.Connection, gen_id: str, gen: sqlite3.Row) -> dict[str
         "history": [_row(r) for r in conn.execute(
             "SELECT * FROM history WHERE parent_gen_id=? OR child_gen_id=?",
             (gen_id, gen_id)).fetchall()],
-        "comments": [_row(r) for r in conn.execute(
-            "SELECT * FROM generation_comment WHERE gen_id=?", (gen_id,)).fetchall()],
+        "comments": comments,
+        # 코멘트 그림(설계 §3.5) — 코멘트를 지우면 외래키 연쇄로 사라지므로 같이 담는다.
+        "comment_drawings": comment_drawings.trash_rows(conn, [c["id"] for c in comments]),
         "comment_reads": [_row(r) for r in conn.execute(
             "SELECT * FROM generation_comment_read WHERE gen_id=?", (gen_id,)).fetchall()],
         # 코멘트단위 seen(comment_id 기준) — 빠뜨리면 복원 시 모든 코멘트가 다시 NEW 로 떠 재알림 폭주.
@@ -700,12 +704,25 @@ def _restore_payload(conn, gen_id, p, telemetry_enabled):
             # payload 가 엣지를 재생성한다).
             if l["parent_gen_id"] in existing and l["child_gen_id"] in existing:
                 _insert_row(conn, "history", l, or_ignore=True)
-    for c in p.get("comments", []):
+    comments = p.get("comments", [])
+    drawing_rows = p.get("comment_drawings") or []  # 그림 기능 전의 옛 기록엔 없다
+    dead: set[str] = set()
+    if comments:
+        # 삭제 기록 우선(C2): 사람이 지운 코멘트와 그 답글은 되살리지 않는다(복원이 기록을 지우지도 않는다).
+        # 그림 표가 어긋나면 그림 달린 항목은 통째로 거절해 휴지통에 남긴다(빼고 복원하면 그림을 영영 잃는다).
+        comment_drawings.require(conn, comment_drawings.TOMBSTONE,
+                                 *((comment_drawings.DRAWING,) if drawing_rows else ()))
+        dead = comment_drawings.tombstoned(
+            conn, [c.get("id") for c in comments] + [c.get("parent_id") for c in comments])
+        comments = [c for c in comments if c.get("id") not in dead and c.get("parent_id") not in dead]
+    for c in comments:
         _insert_row(conn, "generation_comment", c, or_ignore=True)
+    comment_drawings.restore_trash_rows(conn, drawing_rows, {c.get("id") for c in comments})
     for rd in p.get("comment_reads", []):
         _insert_row(conn, "generation_comment_read", rd, or_ignore=True)
     for sn in p.get("comment_seen", []):  # 코멘트 seen 복원(없으면 전부 NEW 로 재등장)
-        _insert_row(conn, "generation_comment_seen", sn, or_ignore=True)
+        if sn.get("comment_id") not in dead:
+            _insert_row(conn, "generation_comment_seen", sn, or_ignore=True)
     for s in p.get("shares", []):
         _insert_row(conn, "share", s, or_ignore=True)
     if telemetry_enabled:

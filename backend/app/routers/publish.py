@@ -272,10 +272,39 @@ def _single_bundle_creator_uid(bundle: dict[str, Any]) -> Optional[str]:
 def receive_published_bundle(body: PublishBundleIn, request: Request):
     """공유 서버 입구 — 로컬 허브가 보낸 번들을 받아 병합(받은 공유로 표식). 멱등(uuid 앵커).
     '누가 공유했나' = 발행한(인증된) 계정으로 확정 — provider 를 그 계정으로 덮어 share.shared_by
-    가 발행자 본인이 되게 한다(역할도 그 계정 기준)."""
+    가 발행자 본인이 되게 한다(역할도 그 계정 기준). 그림 달린 코멘트는 받지 않는다(v2 경로)."""
+    return _receive_bundle(body, request, drawings_allowed=False)
+
+
+@router.post("/share/publish-bundle-v2")
+def receive_published_bundle_v2(body: PublishBundleIn, request: Request):
+    """그림 달린 코멘트를 싣는 새 판 입구(C3) — 옛 서버엔 없어 허브가 404 로 '업데이트 필요'를 안다."""
+    return _receive_bundle(body, request, drawings_allowed=True)
+
+
+def _require_comment_tables_for(bundle: dict[str, Any], *, drawings_allowed: bool) -> None:
+    """받기 전에(바꾸기 전에) 코멘트 표 구조를 본다 — 합치기는 삭제 기록을, 그림은 그림 표를 읽는다."""
+    from ..repo import comment_drawings
+    comments = [c for item in bundle.get("generations") or [] if isinstance(item, dict)
+                for c in (item.get("comments") or []) if isinstance(c, dict)]
+    has_drawings = any(c.get("drawings") for c in comments)
+    if has_drawings and not drawings_allowed:
+        raise HTTPException(status_code=400, detail="그림이 달린 코멘트는 publish-bundle-v2 로 보내야 합니다")
+    if not comments:
+        return
+    with db.get_connection() as conn:
+        try:
+            comment_drawings.require(conn, comment_drawings.TOMBSTONE,
+                                     *((comment_drawings.DRAWING,) if has_drawings else ()))
+        except comment_drawings.StructureError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _receive_bundle(body: PublishBundleIn, request: Request, *, drawings_allowed: bool):
     bundle = body.bundle or {}
     if not isinstance(bundle.get("generations"), list):
         raise HTTPException(status_code=400, detail="번들 형식이 올바르지 않습니다")
+    _require_comment_tables_for(bundle, drawings_allowed=drawings_allowed)
     acc = getattr(request.state, "account", None)
     author_uids = None
     if acc:
@@ -1029,6 +1058,51 @@ def _blocked_summary(out: dict[str, Any], blocked: int) -> dict[str, Any]:
     return out
 
 
+_DRAWINGS_UPDATE_NEEDED = "팀 서버 업데이트 뒤 그림이 달린 코멘트를 발행할 수 있습니다"
+
+
+def _require_comment_drawings(url: str, token: str) -> None:
+    """그림 달린 발행의 사전 확인(C3·J4) — 발행과 같은 고정 문맥에서 원장 prepare 전에. 어느 실패도 '지원함'으로 보지 않는다.
+    안내용이고 실제로 막는 장치는 새 판 경로(옛 서버엔 없음)다."""
+    status, capability = _http_json("GET", f"{url}/api/share/capabilities", token=token)
+    if status == 200 and isinstance(capability, dict) and capability.get("comment_drawings") == 1:
+        return
+    if status == 401:
+        raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인).")
+    if status == 403:
+        raise HTTPException(status_code=403, detail="그림이 달린 코멘트를 발행할 권한이 없습니다")
+    if status in {200, 404, 405}:
+        raise HTTPException(status_code=409, detail=_DRAWINGS_UPDATE_NEEDED)
+    raise HTTPException(status_code=503, detail="팀 서버가 그림을 받는지 확인하지 못했습니다 — 잠시 뒤 다시 발행해 주세요")
+
+
+def _merge_publish_results(first: "PublishBundleResult", second: "PublishBundleResult") -> "PublishBundleResult":
+    """그림 유무로 나눠 보낸 두 발행(C3)의 결과를 한 응답으로."""
+    def remote_sum(key: str) -> Any:
+        a, b = (first.get("remote") or {}).get(key), (second.get("remote") or {}).get(key)
+        return a if b is None else b if a is None else a + b
+
+    out: dict[str, Any] = {
+        "published": int(first.get("published") or 0) + int(second.get("published") or 0),
+        "remote": {key: remote_sum(key) for key in ("inserted", "updated", "unchanged", "skipped", "blocked")},
+    }
+    blocked = int(first.get("blocked") or 0) + int(second.get("blocked") or 0)
+    if blocked:
+        out["blocked"] = blocked
+        out["message"] = " / ".join(m for m in (first.get("message"), second.get("message")) if m)
+    if first.get("mirror_pending") or second.get("mirror_pending"):
+        out["mirror_pending"] = True
+    return PublishBundleResult(out, {**first.intent_refs, **second.intent_refs},
+                               int(first.remote_accepted) + int(second.remote_accepted))
+
+
+def _drawn_half_refused(gen_ids: list[str], exc: HTTPException) -> "PublishBundleResult":
+    """글 전용 항목은 이미 발행됐다 — 그림 달린 쪽의 거절은 응답을 깨지 않고 '반영 안 됨'으로 알린다."""
+    detail = exc.detail if isinstance(exc.detail, str) else _DRAWINGS_UPDATE_NEEDED
+    return PublishBundleResult({"published": 0, "remote": {}, "blocked": len(gen_ids),
+                                "message": f"그림이 달린 {len(gen_ids)}건은 발행하지 않았습니다 — {detail}"}, {}, 0)
+
+
 @contextlib.contextmanager
 def _pinned_account_scope():
     """계정/UID와 DB 세대를 함께 고정하며 중첩 발행은 원래 문맥을 이어받는다."""
@@ -1048,6 +1122,7 @@ def publish_bundle_to_server(
     expected_final_by: Optional[str] = None,
     settle_intents: bool = True,
     expected_revision: Optional[int] = None,
+    _split: bool = True,
 ) -> PublishBundleResult:
     """고른 로컬 생성물을 번들(export_bundle)로 공유 서버에 발행 + 로컬 share 표식.
     publish-to-shared 엔드포인트와 finalize(골드 동반 발행)가 공유한다.
@@ -1074,6 +1149,25 @@ def publish_bundle_to_server(
     ]
     if not gen_ids:
         raise HTTPException(status_code=400, detail="발행할 완료본이 없습니다(진행중/실패 제외)")
+    if _split:
+        # 그림 유무는 항목 단위(C3) — 섞이면 최초 전송부터 두 묶음으로 나눠 경로마다 따로 보낸다.
+        # 글 전용 쪽을 먼저 보내고, 그림 쪽의 거절(옛 서버 등)은 응답을 깨지 않고 '반영 안 됨'으로 알린다.
+        from ..repo import comment_drawings
+        with db.get_connection() as conn:
+            drawn = comment_drawings.has_public_drawings(conn, gen_ids)
+        if drawn and len(drawn) < len(set(gen_ids)):
+            kwargs = dict(operation_kind=operation_kind, desired_final=desired_final,
+                          expected_final_by=expected_final_by, settle_intents=settle_intents,
+                          expected_revision=expected_revision, _split=False)
+            drawn_ids = [g for g in gen_ids if g in drawn]
+            first = publish_bundle_to_server([g for g in gen_ids if g not in drawn], **kwargs)
+            try:
+                second = publish_bundle_to_server(drawn_ids, **kwargs)
+            except db.DatabaseEpochChanged:
+                raise
+            except HTTPException as exc:
+                second = _drawn_half_refused(drawn_ids, exc)
+            return _merge_publish_results(first, second)
 
     initial: list[tuple[str, str]] = []
     for gid in gen_ids:
@@ -1130,6 +1224,14 @@ def publish_bundle_to_server(
             if operation_kind == "composite_finalize":
                 raise HTTPException(status_code=409, detail=SHARE_PROJECT_REQUIRED)
             return PublishBundleResult(_blocked_summary({"published": 0, "remote": {}}, len(refused)), {}, False)
+        from ..services import share_commands
+        drawn_items = sum(1 for item in bundle["generations"] if share_commands.item_has_drawings(item))
+        if drawn_items and drawn_items != len(bundle["generations"]):
+            # 잠금을 기다리는 사이 그림이 붙었다 — 경로가 섞인 묶음은 원장 prepare·원격 호출 전에 안전 실패(재시도 때 다시 나눈다).
+            raise HTTPException(status_code=409, detail="발행 대상이 갱신되었습니다. 요청을 다시 시도하세요")
+        bundle_path = share_commands.bundle_path(bundle["generations"])
+        if drawn_items:
+            _require_comment_drawings(url, token)
 
         try:
             refs = repo.prepare_share_state_intents(
@@ -1167,14 +1269,13 @@ def publish_bundle_to_server(
         # 타임아웃·연결 실패·프로세스 중단은 아래 전이까지 오지 않으므로 prepared가 남고,
         # 3b가 서버 현재 상태를 관측한다.
         try:
-            from ..services import share_commands
             commands = share_commands.prepare_bundle(
                 _http_json, url, token, bundle, refs_by_anchor,
                 **({"expected_revisions": {targets[0]["anchor"]: expected_revision}}
                    if expected_revision is not None else {}),
             )
             status, resp = _http_json(
-                "POST", f"{url}/api/share/publish-bundle", token=token,
+                "POST", f"{url}{bundle_path}", token=token,
                 body={"bundle": bundle, **({"commands": commands} if commands is not None else {})},
             )
             if commands is not None and status == 200:

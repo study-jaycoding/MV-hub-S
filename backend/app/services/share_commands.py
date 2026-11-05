@@ -33,6 +33,16 @@ def supported(proxy):
     return isinstance(result, dict) and result.get("share_command") == 1 and result.get("receipt_replay") is True
 
 
+def item_has_drawings(item):
+    """발행 항목의 코멘트에 그림이 있나 — 최초 전송과 동결 재전송이 같은 판정으로 경로를 고른다(C3)."""
+    return any(isinstance(c, dict) and c.get("drawings") for c in (item.get("comments") or []))
+
+
+def bundle_path(items):
+    """그림 달린 항목은 새 판 경로(옛 서버엔 없어 404 — 조용히 그림을 버리지 않게), 나머지는 지금 경로."""
+    return "/api/share/publish-bundle-v2" if any(item_has_drawings(i) for i in items) else "/api/share/publish-bundle"
+
+
 def _legacy_fallback(conditional):
     if conditional:
         raise HTTPException(409, "share_revision_precondition_unsupported")
@@ -87,7 +97,7 @@ def replay(proxy, intent, server_origin, token):
     body, path = command, "/api/share/commands"
     if command["command_kind"] == "publish_bundle":
         body = {"bundle": {"provider": command["parameters"].get("provider", {}), "generations": [command["parameters"]["item"]]}, "commands": [command]}
-        path = "/api/share/publish-bundle"
+        path = bundle_path([command["parameters"]["item"]])
     status, payload = proxy.raw_request("POST", f"{server_origin}{path}", token=token, body=body, timeout=15)
     if status != 200 or not isinstance(payload, dict) or payload.get("protocol") != "share-command-v1":
         raise HTTPException(status if status >= 400 else 503, "share_receipt_unconfirmed")

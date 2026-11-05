@@ -54,6 +54,7 @@ def execute(load_actor, command, publication=None):
             raise ShareCommandError("share_revision_conflict")
         if gen.get("deleted_at") or gen["status"] != "done":
             raise ShareCommandError("generation_not_ready")
+        skipped_deleted: list[str] = []
         try:
             import_result = None
             if publication is None:
@@ -66,9 +67,10 @@ def execute(load_actor, command, publication=None):
                 def validate_target(actual_target):
                     if actual_target != expected_target:
                         raise ShareCommandError("generation_identity_changed")
-                import_result = share_repo._import_bundle_item(
-                    conn, copy.deepcopy(command["parameters"]["item"]), worker_id, shared_by,
-                    actor.final_actor, author_uids, validate_target=validate_target)
+                with share_repo.collect_skipped_deleted() as skipped_deleted:
+                    import_result = share_repo._import_bundle_item(
+                        conn, copy.deepcopy(command["parameters"]["item"]), worker_id, shared_by,
+                        actor.final_actor, author_uids, validate_target=validate_target)
                 if import_result in {"blocked", "skipped"}:
                     raise ShareCommandError("publish_blocked")
         except (FinalGenerationUnpublishError, GenerationHoldStateError, ShareProjectRequired) as exc:
@@ -76,6 +78,8 @@ def execute(load_actor, command, publication=None):
         result = commands.public_state(commands.state(conn, gen["id"]))
         if import_result is not None:
             result["import_result"] = import_result
+        if skipped_deleted:  # 영수증에 '삭제로 건너뜀'(C2) — 재전송도 같은 영수증을 돌려받는다
+            result["skipped_deleted"] = skipped_deleted
         result.update(operation_id=command["operation_id"], request_hash=digest, result_code="ok", state="completed")
         commands.complete(conn, actor.actor_id, command, digest, result)
         return {"protocol": "share-command-v1", "receipt": result, "current": commands.public_state(commands.state(conn, gen["id"])), "replayed": False}
