@@ -335,6 +335,11 @@ tr.work-row-archived td { opacity: .62; }
   border-radius: 6px; padding: 3px 7px; white-space: nowrap;
 }
 .work-creators { font-size: 11px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 표의 생성자가 셋 이상이면 두 명 + '+N' 칩(마우스를 올리면 전체 이름) — 생성물 칸 '+N' 과 같은 모양(2026-11-05 Jay A안) */
+.work-creators-more {
+  display: inline-flex; align-items: center; margin-left: 4px; padding: 0 5px; min-height: 18px; vertical-align: middle;
+  font-size: 10px; font-weight: 700; opacity: .65; border: 1px solid var(--border); border-radius: 6px; cursor: default;
+}
 /* 예정 생성자(수동 self-assign) — 실제 생성자와 구분되는 파란 배지 */
 .planned-tag {
   display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600;

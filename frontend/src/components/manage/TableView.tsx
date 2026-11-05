@@ -77,6 +77,10 @@ export function workTableTotals(tasks: Task[]): WorkTableTotals {
 
 const count = (value: number) => value.toLocaleString("en-US");
 
+// 생성자 칸에 보이는 이름 수 — 넘으면 '+N' 칩(마우스를 올리면 전체 이름). 이름을 전부 이으면 칸이 사람 수만큼 넓어져
+//  설명 칸을 눌렀다(빌드 CSS 측정 6명: 설명 칸 64px → 156px, 2026-11-05 Jay A안).
+const CREATOR_NAMES_MAX = 2;
+
 function Calc({ label, children }: { label: string; children: ReactNode }) {
   return (
     <span className="work-calc">
@@ -239,15 +243,24 @@ export function TableView(props: WorkViewProps) {
                   />
                 </td>
                 <td className="work-creators">
-                  {/* 실제 생성자(연결 컷 파생)만. */}
-                  {t.creators?.length
-                    ? t.creators.map((c, i) => (
+                  {/* 실제 생성자(연결 컷 파생)만. 두 명까지 이름, 그 뒤는 '+N' 칩 */}
+                  {t.creators?.length ? (
+                    <>
+                      {t.creators.slice(0, CREATOR_NAMES_MAX).map((c, i) => (
                         <span key={c}>
                           {i > 0 && " "}
                           <ColorTag field="creator" value={c} colorMap={colorMap} />
                         </span>
-                      ))
-                    : "—"}
+                      ))}
+                      {t.creators.length > CREATOR_NAMES_MAX && (
+                        <span className="work-creators-more" title={t.creators.join(", ")}>
+                          +{t.creators.length - CREATOR_NAMES_MAX}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td>
                   {/* 상태 — 기존 색을 유지한 텍스트 배지. 자동 폴더 작업은 생성·공유·완료로 읽는다. */}

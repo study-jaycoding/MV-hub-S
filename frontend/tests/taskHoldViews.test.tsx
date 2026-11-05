@@ -88,6 +88,18 @@ it("moves private-cut text under the thumbnail row in the table only, and opens 
   expect(host.querySelector(".work-cut-privates")).toBeNull();
 });
 
+it("shows two creator names and a '+N' chip with every name on hover", () => {
+  act(() => root.render(<TableView {...props} tasks={[
+    { ...task, creators: ["개미", "오지짱", "베리", "우루사"] },
+    { ...task, id: "two", creators: ["리버", "제이"] },
+  ]} />));
+  const [many, two] = [...host.querySelectorAll("tbody td.work-creators")];
+  expect(many.textContent).toBe("개미 오지짱+2");
+  expect(many.querySelector(".work-creators-more")?.getAttribute("title")).toBe("개미, 오지짱, 베리, 우루사");
+  expect(two.textContent).toBe("리버 제이");
+  expect(two.querySelector(".work-creators-more")).toBeNull();
+});
+
 it("uses a red-S badge for valid held cuts without adding a held border class", () => {
   const cuts = [task.cuts![0],
     { ...task.cuts![0], id: "final", is_final: true },
