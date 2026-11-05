@@ -234,8 +234,27 @@ describe("코멘트 모드 — 영상", () => {
     stroke(10); // 1.000초에 그림
     now = 1.016; // 같은 칸(round(1.016×24) = 24)의 다음 장면 — 영상 자체가 옮겨 갔다
     act(() => { video.dispatchEvent(new Event("timeupdate")); });
-    stroke(60);
+    stroke(60); // 기준 장면으로 옮기기만 하고 이 누름은 그리지 않는다(장면이 뜨기 전)
     expect(now).toBe(1); // 보고 고치는 장면 = 저장되는 장면
+    expect(attached()).toBe(1);
+    const clear = () => document.querySelector<HTMLButtonElement>('.pe-dock button[aria-label="전체 지우기"]')!;
+    act(() => { document.querySelector<HTMLButtonElement>('.pe-dock button[aria-label="되돌리기"]')!.click(); });
+    expect(clear().disabled).toBe(true); // 획은 처음 하나뿐이었다
+  });
+
+  it("장면을 옮기는 중(seeking)에는 누름이 그리지 않는다", async () => {
+    act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" onClose={() => {}} onSaved={() => {}} />));
+    const video = document.querySelector<HTMLVideoElement>(".partial-edit-stagebox video")!;
+    let seeking = true;
+    Object.defineProperties(video, {
+      videoWidth: { value: 400 }, videoHeight: { value: 200 }, duration: { value: 4 }, paused: { value: true },
+      seeking: { get: () => seeking },
+    });
+    act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+    stroke(10);
+    expect(attached()).toBe(0);
+    seeking = false;
+    stroke(10);
     expect(attached()).toBe(1);
   });
 

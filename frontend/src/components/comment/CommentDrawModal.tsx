@@ -167,6 +167,8 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
   // 처음 그릴 때 판을 만든다 — 기준 시각은 지금 video.currentTime 으로 고정, 영상은 그 장면의 미리보기를 뜬다
   function beginSheet(): boolean {
     const video = videoRef.current;
+    // 장면을 옮기는 중(seeked 전)이면 아직 앞 장면이 보인다 — 보고 그린 장면과 저장 장면이 어긋나지 않게 이 누름은 그리지 않는다
+    if (isVideo && video?.seeking) return false;
     if (isVideo && video && !video.paused) {
       video.pause();
       setPlaying(false);
@@ -175,8 +177,8 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
     const key = curKeyRef.current;
     const existing = sheetsRef.current.get(key);
     if (existing) {
-      snapTo(existing); // 같은 칸의 다른 시각에 서 있으면 그 그림의 기준 시각 장면으로 — 보고 그린 장면 = 저장되는 장면
-      return true;
+      // 같은 칸의 다른 시각에 서 있으면 그 그림의 기준 시각 장면으로 옮기고 이 누름은 버린다(장면이 뜬 뒤 다시 누른다)
+      return !snapTo(existing);
     }
     if (sheets.length >= MAX_DRAWINGS) {
       flashMsg(`그림은 코멘트 하나에 ${MAX_DRAWINGS}장까지 붙일 수 있습니다`);
@@ -202,11 +204,13 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
   };
 
   // ── 영상 조작(수정 창과 같은 24fps 눈금) ──
-  function snapTo(sheet: Sheet) {
+  /** 그 그림의 기준 시각 장면으로 옮긴다 — 옮겼으면 true(장면이 뜨기 전이라 이 누름으로는 그리지 않는다). */
+  function snapTo(sheet: Sheet): boolean {
     const video = videoRef.current;
-    if (!isVideo || !video || sheet.timeSec == null || Math.abs(video.currentTime - sheet.timeSec) < 1e-4) return;
+    if (!isVideo || !video || sheet.timeSec == null || Math.abs(video.currentTime - sheet.timeSec) < 1e-4) return false;
     video.currentTime = sheet.timeSec;
     setTime(sheet.timeSec);
+    return true;
   }
   const seekTo = (at: number) => {
     const video = videoRef.current;
