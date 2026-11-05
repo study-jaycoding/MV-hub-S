@@ -10,18 +10,21 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qsl, quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import _proxy, _telemetry
 from ._delivery import delivery_notice, require_hub_delivery
 from ..services.async_tools import to_thread_non_abandon
 from .. import active_account, rbac, repo
+from ..repo import comment_drawings
 from ..repo.asset_sync import UndeliverableMove
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_PRESERVATION_ENABLED
 from ..deps import (
@@ -47,7 +50,7 @@ from ..models import (
     SourceIn,
     TagsIn,
 )
-from ..services import cli_bridge, syncer
+from ..services import cli_bridge, comment_strokes, syncer
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
 from ..services.telemetry_drain import drain_isolated_telemetry
@@ -1159,14 +1162,15 @@ def list_gen_comments(gen_id: str, request: Request):
             # 팀 탭(서버 UUID)에서 연 스레드에도 내 비공개가 보인다(합의 BE-P1-4).
             _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
             anchor = r_local_id or r_server_id
-            mine = repo.list_private_generation_comments(anchor, actor_id(request))
+            # 비공개 그림 메타는 로컬에서 붙인다(서버 스레드의 그림 메타는 서버가 붙여 온다 — C5 목록은 메타만)
+            mine = comment_drawings.attach_meta(repo.list_private_generation_comments(anchor, actor_id(request)))
             merged = ([*shared, *mine] if isinstance(shared, list) else mine)
             merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
             return merged
         if not gen:
             raise HTTPException(status_code=404, detail="generation 없음")
         require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
-        return repo.list_generation_comments(gen_id, actor_id(request))
+        return comment_drawings.attach_meta(repo.list_generation_comments(gen_id, actor_id(request)))
 
 
 @router.post("/generations/{gen_id}/comments")
@@ -1226,6 +1230,75 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
         return {"id": cid}
 
 
+# ── 그림 붙인 코멘트(comments-v2) — docs/status/크게보기_코멘트그림_설계_2026-11-05.md §10 C1·C3 ──
+# 옛 길(위 POST /comments)은 그대로 둔다. 이 길은 옛 서버에 없으므로 그림이 조용히 버려지지 않는다(404 → 409 안내).
+_NO_STORE = {"Cache-Control": "private, no-store"}
+
+
+class GenCommentV2In(BaseModel):
+    id: str  # 클라가 정한 uuid — 같은 요청 재시도는 같은 결과(C1)
+    text: str
+    parent_id: str | None = None
+    private: bool = False
+    drawings: list[dict[str, Any]] | None = Field(default=None, max_length=comment_strokes.MAX_DRAWINGS)
+
+
+def _route_missing(exc: HTTPException) -> bool:
+    """서버에 경로 자체가 없음(옛 서버) — FastAPI 기본 404 본문. 생성물 없음·권한 숨김 404 와 구분한다."""
+    return exc.status_code == 404 and exc.detail == "Not Found"
+
+
+def _create_v2(*, gen_id: str, gen_key: str, body: GenCommentV2In, drawings: list[dict[str, Any]],
+               request: Request, private: bool, allow_external_parent: bool = False) -> dict[str, Any]:
+    try:
+        return comment_drawings.create_comment_v2(
+            gen_id=gen_id, gen_key=gen_key, author=actor_id(request), comment_id=body.id, text=body.text,
+            parent_id=body.parent_id, is_private=private, drawings=drawings,
+            allow_external_parent=allow_external_parent)
+    except comment_drawings.CommentDeleted as exc:
+        raise HTTPException(status_code=410, detail={"result": "deleted", "id": body.id}) from exc
+    except comment_strokes.StructureError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except comment_drawings.CommentConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/generations/{gen_id}/comments-v2")
+def add_gen_comment_v2(gen_id: str, body: GenCommentV2In, request: Request):
+    """글 + 그림(획 목록)을 한 번에 저장. 비공개 = 늘 로컬, 로컬 장부에 있는 id = 처음 장소(로컬)의 결과,
+    공유·팀 항목 = 서버의 같은 경로로 위임, 미발행 = 로컬. 응답 {id, result, drawings:[{id, content_hash}]}."""
+    if not comment_strokes.is_uuid(body.id):
+        raise HTTPException(status_code=400, detail="bad_comment_id")
+    try:
+        drawings = comment_strokes.normalize_drawings(body.drawings)
+    except comment_strokes.StrokeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with _personal_meta_account_scope(request):
+        if body.private:
+            if _proxy.is_shared_team_server():  # 서버 본체는 비공개를 받지 않는다(옛 길과 같은 불변식)
+                raise HTTPException(status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다")
+            _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+            anchor = r_local_id or r_server_id
+            return _create_v2(gen_id=anchor, gen_key=anchor, body=body, drawings=drawings, request=request,
+                              private=True, allow_external_parent=_proxy.proxying())
+        # C1 — 로컬 장부를 공유 분기보다 먼저 본다: 처음 로컬에서 만든 코멘트는 그 사이 발행됐어도 로컬의 처음 결과
+        local_retry = comment_drawings.has_request(body.id)
+        gen = repo.get_generation(gen_id)
+        if not local_retry and _comments_on_server(gen):
+            _, server_id = repo.finalize_id_map(gen_id)
+            try:
+                return _proxy.proxy_json("POST", f"/api/generations/{server_id}/comments-v2", body=body.model_dump())
+            except HTTPException as exc:
+                if _route_missing(exc):
+                    raise HTTPException(status_code=409, detail="팀 서버 업데이트 뒤 그림을 붙일 수 있습니다") from exc
+                raise
+        if not gen:
+            raise HTTPException(status_code=404, detail="generation 없음")
+        require_view_generation(request, gen)
+        return _create_v2(gen_id=gen_id, gen_key=gen_id, body=body, drawings=drawings, request=request,
+                          private=False)
+
+
 # by-id 코멘트 연산(수정/삭제/확인) 라우팅: 공유본(share 있음)에 달린 코멘트는 — 로컬에 같은 id 가
 # 있어도(발행 번들이 같은 id 로 서버에 심음) — 서버 단일 스레드가 정답이므로 서버로 위임한다.
 # 내 비공개 작업 코멘트(share 없음)만 로컬에서 처리. comment_gen_shared: None=서버전용/True=공유본/False=비공개.
@@ -1274,6 +1347,8 @@ def delete_gen_comment(comment_id: str, request: Request):
             repo.delete_generation_comment(comment_id, actor_id(request))
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e))
+        except comment_strokes.StructureError as e:  # 삭제 기록 표를 믿을 수 없으면 지우기 전에 거절(C2)
+            raise HTTPException(status_code=503, detail=str(e))
         return {"ok": True}
 
 
@@ -1301,6 +1376,53 @@ def seen_gen_comment(comment_id: str, request: Request):
             return _proxy.proxy_json("POST", f"/api/generation-comments/{comment_id}/seen")
         repo.mark_generation_comment_seen(actor_id(request), comment_id)
         return {"ok": True}
+
+
+def _visible_drawing(comment_id: str, drawing_id: str, request: Request) -> dict[str, Any]:
+    """권한 검사를 통과한 코멘트에서만 그림을 꺼낸다 — 비공개는 작성자만, 공개는 그 생성물을 볼 수 있는 사람만."""
+    comment, drawing = comment_drawings.load_drawing(comment_id, drawing_id)
+    if comment is None or drawing is None:
+        raise HTTPException(status_code=404, detail="그림 없음")
+    if comment["is_private"]:
+        if comment["author"] != actor_id(request):
+            raise HTTPException(status_code=404, detail="그림 없음")
+    else:
+        gen = repo.get_generation(comment["gen_id"])
+        if not gen:
+            raise HTTPException(status_code=404, detail="그림 없음")
+        require_view_generation(request, gen)
+    return drawing
+
+
+@router.get("/generation-comments/{comment_id}/drawings/{drawing_id}")
+def get_comment_drawing(comment_id: str, drawing_id: str, request: Request):
+    """그림 1장의 획 목록(C5 — 목록에는 메타만). 비공개·미발행 = 로컬, 공유 = 서버 권위(서버 거절을 로컬 사본으로 대신하지 않는다)."""
+    with _personal_meta_account_scope(request):
+        if not _comment_local(comment_id):
+            return JSONResponse(_proxy.proxy_json("GET", f"/api/generation-comments/{comment_id}/drawings/{drawing_id}"),
+                                headers=_NO_STORE)
+        d = _visible_drawing(comment_id, drawing_id, request)
+        return JSONResponse({
+            "id": d["id"], "comment_id": d["comment_id"], "idx": d["idx"], "kind": d["kind"],
+            "width": d["width"], "height": d["height"], "time_sec": d["time_sec"],
+            "strokes": json.loads(d["strokes_json"]), "has_thumb": d["thumb_jpg"] is not None,
+            "content_hash": d["content_hash"],
+        }, headers=_NO_STORE)
+
+
+@router.get("/generation-comments/{comment_id}/drawings/{drawing_id}/thumb")
+def get_comment_drawing_thumb(comment_id: str, drawing_id: str, request: Request):
+    """영상 그림의 목록용 미리보기(JPEG). 없으면 404 — 화면은 획만 보인다(thumb=null 은 정상 계약, C6)."""
+    with _personal_meta_account_scope(request):
+        if not _comment_local(comment_id):
+            data, content_type = _proxy.proxy_bytes(
+                f"/api/generation-comments/{comment_id}/drawings/{drawing_id}/thumb",
+                max_bytes=comment_strokes.MAX_THUMB_BYTES)
+            return Response(content=data, media_type=content_type, headers=_NO_STORE)
+        d = _visible_drawing(comment_id, drawing_id, request)
+        if d["thumb_jpg"] is None:
+            raise HTTPException(status_code=404, detail="미리보기 없음")
+        return Response(content=d["thumb_jpg"], media_type="image/jpeg", headers=_NO_STORE)
 
 
 @router.post("/generations/{gen_id}/cache")
