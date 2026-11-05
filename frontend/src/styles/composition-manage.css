@@ -308,6 +308,9 @@ tr.work-row-archived td { opacity: .62; }
 /* 엑셀식 격자선 테이블 */
 .work-table-grid { border-collapse: collapse; }
 .work-table-grid th, .work-table-grid td { border: 1px solid var(--border); }
+/* 노션처럼 표 양 끝 세로선은 없앤다 — 칸 사이 세로선·가로선은 그대로(2026-11-05 Jay) */
+.work-table-grid th:first-child, .work-table-grid td:first-child { border-left-color: transparent; }
+.work-table-grid th:last-child, .work-table-grid td:last-child { border-right-color: transparent; }
 /* 선택/드래그 열 */
 .work-sel-col { width: 1%; white-space: nowrap; text-align: center; }
 .work-row-handle { cursor: grab; opacity: .4; margin-right: 4px; user-select: none; }
@@ -447,7 +450,7 @@ tr.work-row-archived td { opacity: .62; }
 }
 .work-root:has(.work-table) > * { flex: 0 0 auto; }
 .work-root > .manage-table-wrap:has(> .work-table) { flex: 1 1 auto; min-height: 160px; overflow: auto; }
-.work-table > tfoot > .work-gap-row > td { height: 36px; }
+.work-table > tfoot > .work-gap-row > td { height: 36px; border-left-color: transparent; border-right-color: transparent; } /* 빈 줄은 세로선 없이(위·아래 가로선만) */
 .manage-table.work-table > tfoot > .work-calc-row > td {
   position: sticky; bottom: 0; z-index: 1; background: var(--bg);
   border: none; box-shadow: inset 0 1px 0 var(--border);
