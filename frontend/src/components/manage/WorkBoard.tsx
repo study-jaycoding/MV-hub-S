@@ -561,7 +561,8 @@ export function WorkBoard({
   }, [workspaceId, contextKey, viewerUid, personalByDefault]);
 
   useEffect(() => {
-    api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
+    // 전역 태그만 쓴다 — /api/facets 는 색·태그·생성자까지 내 생성물 전체를 집계한다(생성물이 많으면 무겁다)
+    api.autoTags().then((r) => setSeqOptions(r.auto_tags || [])).catch(() => {});
   }, []);
 
   useEffect(() => {

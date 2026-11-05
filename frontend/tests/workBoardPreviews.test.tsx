@@ -7,7 +7,7 @@ import { api } from "../src/api";
 import { manageApi } from "../src/lib/manageApi";
 import type { Task, TaskPreviewResponse, WorkViewProps } from "../src/components/manage/types";
 
-vi.mock("../src/api", () => ({ api: { facets: vi.fn(), projects: vi.fn() } }));
+vi.mock("../src/api", () => ({ api: { autoTags: vi.fn(), projects: vi.fn() } }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: {
   taskProjects: vi.fn(), listTasksBatch: vi.fn(), localTaskPreviews: vi.fn(),
   linkGenerations: vi.fn(), unlinkGeneration: vi.fn(),
@@ -43,7 +43,7 @@ function preview(workspace = "a", viewer = "me"): TaskPreviewResponse {
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear(); sessionStorage.clear(); vi.clearAllMocks();
-  vi.mocked(api.facets).mockResolvedValue({ auto_tags: [] } as never);
+  vi.mocked(api.autoTags).mockResolvedValue({ auto_tags: [] });
   vi.mocked(manageApi.taskProjects).mockResolvedValue({ projects: [{ id: "project", name: "Project" }] });
   vi.mocked(manageApi.listTasksBatch).mockImplementation(async (_ids, workspace) => ({ project: [task(workspace)] }));
   vi.mocked(manageApi.localTaskPreviews).mockImplementation(async () => preview());

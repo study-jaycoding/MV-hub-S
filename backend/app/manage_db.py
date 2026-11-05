@@ -438,8 +438,9 @@ def task_activity_facts(
                     found[row["id"]] = dict(row)
 
             refs = [*(content_refs or []), *found.values()]
+            wanted: dict[str, set[tuple[str, str]]] = {}
             for field, source_field in (("job_id", "job_id"), ("local_gen_id", "id")):
-                pairs = sorted({
+                wanted[field] = {
                     (str(row.get("creator_uid") or "").strip(), str(
                         row.get(field) if field == "job_id" else
                         row.get("local_gen_id") or row.get(source_field) or ""
@@ -448,15 +449,20 @@ def task_activity_facts(
                     if row.get("creator_uid") and (
                         row.get(field) or (field == "local_gen_id" and row.get(source_field))
                     )
-                })
-                for start in range(0, len(pairs), 400):
-                    batch = pairs[start:start + 400]
-                    values = ",".join("(?,?)" for _ in batch)
-                    for row in conn.execute(
-                        f"WITH wanted(uid, anchor) AS (VALUES {values}) "
-                        f"SELECT f.* FROM team_generation_fact f JOIN wanted w "
-                        f"ON f.creator_uid=w.uid AND f.{field}=w.anchor",
-                        [value for pair in batch for value in pair],
+                }
+            # (생성자, 앵커) 짝을 400개씩 VALUES 로 묶어 찾던 것은 local_gen_id 색인이 없고, job 도 표가 크면
+            # 플래너가 색인을 버려 묶음마다 표 전체를 훑었다(2026-11-05 측정: 2만 건 28초). 생성자별로 한 번
+            # 읽고 파이썬에서 짝을 맞춘다 — 같은 행 집합이다.
+            uids = sorted({uid for pairs in wanted.values() for uid, _ in pairs})
+            for start in range(0, len(uids), 400):
+                batch = uids[start:start + 400]
+                for row in conn.execute(
+                    "SELECT * FROM team_generation_fact WHERE creator_uid IN ("
+                    + ",".join("?" * len(batch)) + ")", batch,
+                ):
+                    uid = row["creator_uid"]
+                    if (uid, row["job_id"]) in wanted["job_id"] or (
+                        (uid, row["local_gen_id"]) in wanted["local_gen_id"]
                     ):
                         found[row["id"]] = dict(row)
             return list(found.values())

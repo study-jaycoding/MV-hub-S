@@ -10,7 +10,7 @@ import { api } from "../src/api";
 import { manageApi } from "../src/lib/manageApi";
 import type { Task } from "../src/components/manage/types";
 
-vi.mock("../src/api", () => ({ api: { facets: vi.fn(), projects: vi.fn() } }));
+vi.mock("../src/api", () => ({ api: { autoTags: vi.fn(), projects: vi.fn() } }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: {
   taskProjects: vi.fn(), listTasksBatch: vi.fn(), localTaskPreviews: vi.fn(), updateTask: vi.fn(), deleteTasksBatch: vi.fn(),
 } }));
@@ -42,7 +42,7 @@ beforeEach(() => {
   vi.spyOn(window, "alert").mockImplementation(() => {});
   vi.spyOn(window, "confirm").mockReturnValue(true);
   rows = [task("alpha"), task("beta"), task("gamma")];
-  vi.mocked(api.facets).mockResolvedValue({ auto_tags: [] } as never);
+  vi.mocked(api.autoTags).mockResolvedValue({ auto_tags: [] });
   vi.mocked(manageApi.taskProjects).mockResolvedValue({ projects: [{ id: "project", name: "Project" }] });
   vi.mocked(manageApi.listTasksBatch).mockImplementation(async () => ({ project: rows }));
   vi.mocked(manageApi.localTaskPreviews).mockResolvedValue({ viewer_uid: "me", items: {} });

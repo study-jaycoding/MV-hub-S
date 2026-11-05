@@ -298,6 +298,17 @@ class TaskActivityFactsTests(unittest.TestCase):
         self.assertNotIn("local_gen_id", task["cuts"][0])
         self.assertEqual(self.read(), [])
 
+    def test_same_local_id_from_other_account_in_other_project_stays_ambiguous(self):
+        """local_gen_id 짝은 요청 프로젝트 밖까지 찾아야 모호함이 잡힌다(2026-11-05 생성자별 한 번 읽기로 바꿈)."""
+        self.fact("local-1", job_id=None)
+        self.fact("local-1", email="other@example.test", job_id=None,
+                  project_id="p2", workspace_id="ws-b", folder_path="ep002/c0020")
+        self.content(gid="local-1", job=None)
+        task = self.read("manager", read_all=True)[0]
+        self.assertEqual(task["gen_count"], 1)
+        self.assertNotIn("local_gen_id", task["cuts"][0])
+        self.assertEqual(self.read(), [])
+
     def test_preview_owner_cannot_be_other_than_viewer(self):
         self.fact()
         task = manage.list_tasks("p1", workspace_id="ws-a", include_activity=True,

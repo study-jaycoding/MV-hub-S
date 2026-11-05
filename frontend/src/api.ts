@@ -747,6 +747,7 @@ export const api = {
     jsonFetch<{ restored: boolean }>(`/api/generations/${pathPart(id)}/restore`, { method: "POST" }),
 
   // 자동 태그(별도 네임스페이스) — 필터 사이드바 +버튼/×
+  autoTags: () => jsonFetch<{ auto_tags: string[] }>(`/api/auto-tags`),
   createAutoTag: (name: string) =>
     jsonFetch<{ ok: boolean; name: string }>(`/api/auto-tags`, {
       method: "POST",

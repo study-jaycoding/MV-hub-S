@@ -76,22 +76,22 @@ def load_activity_snapshot(conn, project_ids: list[str]) -> dict[str, Any]:
             content[row["id"]] = dict(row)
     facts = manage_db.task_activity_facts(project_ids, content_refs=list(content.values()))
     for field in ("job_id", "id"):
-        pairs = sorted({
+        pairs = {
             (str(f.get("creator_uid") or ""), str(f.get(
                 "job_id" if field == "job_id" else "local_gen_id"
             ) or "")) for f in facts
             if f.get("creator_uid") and f.get("job_id" if field == "job_id" else "local_gen_id")
-        })
-        for start in range(0, len(pairs), 400):
-            batch = pairs[start:start + 400]
-            values = ",".join("(?,?)" for _ in batch)
-            # 앵커를 왼쪽에 두어 generation의 job/id 인덱스를 사용한다. 중복은 ID 맵으로 흡수.
+        }
+        anchors = sorted({anchor for _, anchor in pairs})
+        for start in range(0, len(anchors), 400):
+            batch = anchors[start:start + 400]
+            # 앵커 IN 목록은 늘 job/id 색인을 탄다. (생성자, 앵커) VALUES 묶음 조인은 플래너가 생성자 색인으로
+            # 새어 앵커마다 그 사람의 생성물을 다시 훑었다(2026-11-05 EXPLAIN). 생성자는 파이썬에서 맞춘다.
             for row in conn.execute(
-                f"WITH wanted(uid,anchor) AS (VALUES {values}) " + _CONTENT_SELECT
-                + f"JOIN wanted w ON w.uid=g.creator_uid AND w.anchor=g.{field}",
-                [value for pair in batch for value in pair],
+                _CONTENT_SELECT + f"WHERE g.{field} IN ({','.join('?' * len(batch))})", batch,
             ):
-                content[row["id"]] = dict(row)
+                if (row["creator_uid"], row[field]) in pairs:
+                    content[row["id"]] = dict(row)
 
     facts_by_job: dict[tuple[str, str], list[dict]] = defaultdict(list)
     facts_by_id: dict[tuple[str, str], list[dict]] = defaultdict(list)
