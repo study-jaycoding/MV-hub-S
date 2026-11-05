@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import ctypes
+import time
 from typing import Any, Optional
 
 HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
+SW_RESTORE = 9
 # NOSIZE · NOMOVE · NOACTIVATE · ASYNCWINDOWPOS(크롬 창 스레드가 바빠도 허브가 기다리지 않는다)
 SWP_LIFT = 0x0001 | 0x0002 | 0x0010 | 0x4000
 
@@ -46,6 +48,7 @@ class Win32:
         u.GetForegroundWindow.restype = W.HWND
         u.SetWindowPos.argtypes = [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.UINT]
         u.SetWindowPos.restype = W.BOOL
+        u.ShowWindow.argtypes = [W.HWND, ctypes.c_int]
 
     def windows(self) -> list[Window]:
         found: list[Window] = []
@@ -69,8 +72,46 @@ class Win32:
         for after in (HWND_TOPMOST, HWND_NOTOPMOST):
             self.user32.SetWindowPos(hwnd, self.W.HWND(after), 0, 0, 0, 0, SWP_LIFT)
 
+    def titled(self, title: str) -> list[tuple[int, bool]]:
+        """제목이 title 인 보이는 최상위 창(최소화 포함) — (hwnd, 최소화됨)."""
+        found: list[tuple[int, bool]] = []
+
+        def each(hwnd, _):
+            if self.user32.IsWindowVisible(hwnd):
+                text = ctypes.create_unicode_buffer(256)
+                self.user32.GetWindowTextW(hwnd, text, 256)
+                if title_matches(text.value, title):
+                    found.append((int(hwnd), bool(self.user32.IsIconic(hwnd))))
+            return True
+
+        self.user32.EnumWindows(self.WNDENUMPROC(each), 0)
+        return found
+
+    def restore(self, hwnd: int) -> None:
+        self.user32.ShowWindow(hwnd, SW_RESTORE)
+
 
 _api: Optional[Win32] = None
+
+
+def raise_marked(marker: str, api: Any = None, tries: int = 6, wait: float = 0.1) -> int:
+    """Slack 알림 링크로 코멘트를 연 창을 맨 앞으로(초점 없이) — 그 창이 제목을 잠깐 marker 로 바꿔 둔다. 올린 창 수.
+    크롬이 새 제목을 창에 반영하는 데 잠깐 걸려 몇 번 다시 본다. 보통 브라우저 탭이면 그 탭이 앞 탭이 아닌 한 창 제목이 아니라 못 찾는다(0)."""
+    global _api
+    if api is None:
+        _api = _api or Win32()
+        api = _api
+    for attempt in range(tries):
+        hits = api.titled(marker)
+        if hits:
+            for hwnd, iconic in hits:
+                if iconic:
+                    api.restore(hwnd)
+                api.lift(hwnd)
+            return len(hits)
+        if attempt < tries - 1:
+            time.sleep(wait)
+    return 0
 
 
 def raise_over_foreground(main: str, titles: list[str], api: Any = None) -> int:

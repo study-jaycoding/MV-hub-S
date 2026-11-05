@@ -188,8 +188,18 @@ def test_native_generation_url_uses_comment_generation_id(world):
         conn.execute("UPDATE generation SET job_id='different-job' WHERE id='g'")
     target = store.delivery_target(comment(world), 'owner@unit.test')
     _, blocks = worker.message(target, 'http://127.0.0.1:8010')
-    assert blocks[1]['elements'][0]['url'] == f"http://127.0.0.1:8010/api/open/generation/g?c={target['id']}"
+    assert f"<http://127.0.0.1:8010/api/open/generation/g?c={target['id']}|MV hub에서 보기 →>" in blocks[0]['text']['text']
     assert 'job_id' not in target
+
+
+def test_message_uses_text_link_not_button_and_skips_empty_project(world):
+    target = store.delivery_target(comment(world, 'hello'), 'owner@unit.test')
+    target['project_name'], target['author_name'] = '', 'author'
+    text, blocks = worker.message(target, 'http://127.0.0.1:8010')
+    assert [block['type'] for block in blocks] == ['section']  # actions 단추는 Slack 에 ⚠ 를 붙인다
+    assert text.split('\n')[1] == 'author'
+    target['project_name'] = 'proj'
+    assert worker.message(target, 'http://127.0.0.1:8010')[0].split('\n')[1] == 'proj · author'
 
 
 def test_queued_comment_skips_target_and_name_resolution(world, monkeypatch):

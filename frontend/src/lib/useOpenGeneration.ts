@@ -3,6 +3,7 @@ import { APP_EVENTS } from './appEvents';
 import { getAccountNamespace, getConnectionKey } from './accountScope';
 import { getApiPause, getAuthToken, jsonFetch } from './http';
 import { EXPECT_ACCOUNT_HEADER } from './hubFeatures';
+import { requestCommentHighlight } from './commentHighlight';
 import type { GenComment } from '../types';
 
 export interface OpenGeneration { generation_id: string; comment_id: string; open_id: string }
@@ -23,10 +24,17 @@ export async function handleOpenGeneration(detail: OpenGeneration, windowId: str
     catch { /* Read marking is best effort; acknowledgement reflects opening the panel. */ }
     if (before !== scope() || getApiPause()) throw new Error('changed');
     open(detail.generation_id);
+    requestCommentHighlight(detail.comment_id); // 누르고 온 코멘트가 3번 깜빡인다(시안 v4)
     ok = before === scope() && !getApiPause();
   } catch { /* acknowledge failure without exposing comment data */ }
-  try { await jsonFetch('/api/open/ack', { method: 'POST', headers, body: JSON.stringify({ ...body, ok }) }); }
+  // 열었으면 이 창의 제목을 잠깐 표식으로 바꿔 허브가 그 창(앱 창)을 맨 앞으로 올리게 한다(Jay 2026-11-05 시안 v4).
+  //  허브는 ack 를 받은 뒤 이 제목의 최상위 창을 찾아 올리고 답한다 — 답을 받으면 제목을 돌려놓는다.
+  const title = document.title;
+  const marker = ok ? `MVHubOpen-${crypto.randomUUID()}` : '';
+  if (marker) document.title = marker;
+  try { await jsonFetch('/api/open/ack', { method: 'POST', headers, body: JSON.stringify({ ...body, ok, ...(marker ? { marker } : {}) }) }); }
   catch { /* expired request or changed account: never retry opening */ }
+  finally { if (marker && document.title === marker) document.title = title; }
 }
 
 export function useOpenGeneration(open: (id: string) => void) {

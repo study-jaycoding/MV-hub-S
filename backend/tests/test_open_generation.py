@@ -62,6 +62,33 @@ def test_localhost_window_can_claim_but_origin_must_match_host(client):
     assert client.get('/api/open/generation/g?c=c', headers={'host': 'localhost:9999'}).status_code == 403
 
 
+def test_successful_ack_raises_the_marked_window_only(client, monkeypatch):
+    raised = []
+    monkeypatch.setattr(opening.app_windows, 'raise_marked', lambda marker: raised.append(marker) or 1)
+    monkeypatch.setattr(opening.shared_connection, 'is_shared_team_server', lambda: False)
+    monkeypatch.setattr(opening.os, 'name', 'nt')
+    headers = {'origin': 'http://127.0.0.1:8010', 'sec-fetch-site': 'same-origin'}
+    marker = 'MVHubOpen-123e4567-e89b-12d3-a456-426614174000'
+    for ok, mark, expect in ((True, marker, [marker]), (True, 'MVHubOpen-<script>', []), (False, marker, [])):
+        broadcast = threading.Event()
+        captured = {}
+        async def send(message, **kwargs):
+            captured.update(message)
+            broadcast.set()
+        monkeypatch.setattr(opening.manager, 'broadcast', send)
+        opening._last_open = 0
+        thread = threading.Thread(target=lambda: client.get('/api/open/generation/g?c=c', headers={
+            'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}))
+        thread.start()
+        assert broadcast.wait(2)
+        body = {'open_id': captured['open_id'], 'window_id': 'w'}
+        assert client.post('/api/open/claim', json=body, headers=headers).status_code == 200
+        raised.clear()
+        answer = client.post('/api/open/ack', json={**body, 'ok': ok, 'marker': mark}, headers=headers)
+        thread.join(3)
+        assert answer.status_code == 200 and raised == expect
+
+
 def test_claim_is_single_and_ack_checks_window_and_account(client, monkeypatch):
     broadcast = threading.Event()
     captured = {}

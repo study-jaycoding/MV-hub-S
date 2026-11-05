@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { holdUnload } from "../../lib/unloadGuard";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
+import { COMMENT_HIGHLIGHT_EVENT, takeCommentHighlight } from "../../lib/commentHighlight";
 import { fmtWhen } from "../../lib/format";
 import { loadString } from "../../lib/storage";
 
@@ -116,6 +117,25 @@ export function CommentPanel<T extends CommentPanelItem>({
   // 공유 부모는 서버에서 지워지는데 비공개 답글은 로컬에 남아 부모 없는 고아가 된다(적대 리뷰 P2).
   const fullTree = useMemo(() => buildCommentTree(comments), [comments]);
 
+  // Slack 알림 링크로 열고 온 코멘트 — 그 코멘트로 스크롤하고 연두 배경이 3번 깜빡인 뒤 멈춘다(Jay 2026-11-05 시안 v4).
+  //  열기 요청이 창보다 먼저 올 수 있어 코멘트를 그릴 때마다 가져갈 것이 있는지 본다(lib/commentHighlight).
+  const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    const take = () => {
+      const id = takeCommentHighlight(visible.map((c) => c.id));
+      if (id) setFlashId(id);
+    };
+    take();
+    window.addEventListener(COMMENT_HIGHLIGHT_EVENT, take);
+    return () => window.removeEventListener(COMMENT_HIGHLIGHT_EVENT, take);
+  }, [visible]);
+  useEffect(() => {
+    if (!flashId) return;
+    document.querySelector(`[data-comment-id="${CSS.escape(flashId)}"]`)?.scrollIntoView({ block: "center" });
+    const timer = window.setTimeout(() => setFlashId(null), 2000); // 깜빡임(0.6초 × 3) 뒤 강조를 걷는다
+    return () => window.clearTimeout(timer);
+  }, [flashId]);
+
   // 쓴 글은 **저장된 뒤에** 비운다(조작 규칙 41). 전엔 보내자마자 입력을 비우고 답글·수정 칸을 닫아, 서버가 실패하면 "전송 실패"만 뜨고
   //  쓴 글이 사라졌다 — 다시 시도하려면 다시 써야 했다. 보내는 동안은 그 칸을 읽기 전용으로 두고 다시 보내지 않는다(전엔 바로 비우는 것이
   //  Enter 연타를 막았다). 성공하면 비우고 done(답글·수정 칸 닫기), 실패하면 글과 칸을 그대로 둔다.
@@ -178,11 +198,13 @@ export function CommentPanel<T extends CommentPanelItem>({
     return (
       <div
         key={c.id}
+        data-comment-id={c.id}
         className={
           "cmt-item" +
           (isReply ? " reply" : "") +
           (c.unread ? " unread" : "") +
-          (c.private ? " private" : "")
+          (c.private ? " private" : "") +
+          (c.id === flashId ? " is-target" : "")
         }
         title={
           c.private

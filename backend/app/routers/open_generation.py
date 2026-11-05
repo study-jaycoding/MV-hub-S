@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import os
 import re
 import secrets
 import time
@@ -13,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from .. import active_account, config, deps
-from ..services import shared_connection
+from ..services import app_windows, shared_connection
 from ..services.request_guards import require_loopback_request
 from ..ws import manager
 
@@ -21,6 +22,7 @@ router = APIRouter(tags=['open-generation'])
 _pending = {}
 _last_open = 0.0
 _ID = re.compile(r'^[A-Za-z0-9_.:-]{1,200}$')
+_MARKER = re.compile(r'^MVHubOpen-[0-9a-f-]{36}$')
 
 
 def _guard(request, *, post=False):
@@ -143,4 +145,13 @@ async def ack(request: Request):
         raise HTTPException(409, '열기 요청이 일치하지 않습니다')
     entry['ok'] = body['ok']
     entry['event'].set()
-    return {'ok': True}
+    # 연 창이 제목을 잠깐 표식으로 바꿔 두었다 — 그 창(앱 창)을 맨 앞으로 올린 뒤 답한다(답을 받으면 창이 제목을 돌려놓는다). Jay 2026-11-05 시안 v4
+    marker = body.get('marker')
+    raised = 0
+    if body['ok'] and isinstance(marker, str) and _MARKER.fullmatch(marker) and os.name == 'nt' \
+            and not shared_connection.is_shared_team_server():
+        try:
+            raised = await asyncio.to_thread(app_windows.raise_marked, marker)
+        except Exception:  # noqa: BLE001 — 창 올리기 실패는 열기 성공을 바꾸지 않는다
+            raised = 0
+    return {'ok': True, 'raised': raised}

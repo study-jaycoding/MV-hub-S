@@ -58,6 +58,25 @@ def test_raise_lifts_bottom_first_so_popups_keep_their_order():
     assert api.lifted == [6, 3]  # 아래(Assets) 먼저 → 위(관리)가 마지막에 맨 위 — 둘의 앞뒤 그대로
 
 
+def test_raise_marked_restores_minimized_and_lifts_after_title_shows_up():
+    class Marked:
+        def __init__(self):
+            self.seen, self.restored, self.lifted = 0, [], []
+        def titled(self, title):
+            self.seen += 1
+            return [] if self.seen < 3 else [(7, True)]  # 크롬이 새 제목을 늦게 반영해도 다시 본다
+        def restore(self, hwnd):
+            self.restored.append(hwnd)
+        def lift(self, hwnd):
+            self.lifted.append(hwnd)
+    api = Marked()
+    assert app_windows.raise_marked('MVHubOpen-x', api, tries=5, wait=0) == 1
+    assert (api.seen, api.restored, api.lifted) == (3, [7], [7])
+    gone = Marked()
+    gone.titled = lambda title: []
+    assert app_windows.raise_marked('MVHubOpen-x', gone, tries=3, wait=0) == 0 and gone.lifted == []
+
+
 def test_lift_is_topmost_then_notopmost_without_activation():
     calls = []
     api = app_windows.Win32.__new__(app_windows.Win32)
