@@ -174,8 +174,10 @@ export function toStrokesV1(items: DrawItem[], work: { w: number; h: number }, w
       return { kind: "pen", erase: it.erase, color: it.color, size: size(it.size), points: it.points.map(pt) };
     }
     if (it.kind === "shape") return { kind: "shape", shape: it.shape, color: it.color, size: size(it.size), from: pt(it.from), to: pt(it.to) };
-    // 글자는 코드 포인트로 200자·제어 문자 없이(서버 규칙과 같게 — 짝 없는 서로게이트도 뺀다)
-    const text = Array.from(it.text.replace(/\p{Cc}/gu, "").replace(/[\uD800-\uDFFF]/g, "")).slice(0, MAX_TEXT).join("");
+    // 글자는 서버 규칙과 같게 — 제어 문자·짝 없는 서로게이트(직렬화가 갈린다)만 빼고, 이모지 같은 짝 맞은 글자는 그대로.
+    //  200자(코드 포인트)를 넘으면 자르지 않고 알린다 — 그린 것과 저장된 것이 달라지지 않게.
+    const text = it.text.replace(/\p{Cc}/gu, "").replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+    if (Array.from(text).length > MAX_TEXT) throw new StrokesTooLarge(`그림에 쓴 글자는 한 덩이에 ${MAX_TEXT}자까지입니다`);
     return { kind: "text", text: text || " ", color: it.color, size: size(it.size), at: pt(it.at) };
   });
   return { v: 1, items: out };

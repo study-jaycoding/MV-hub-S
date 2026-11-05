@@ -582,9 +582,10 @@ CREATE TABLE IF NOT EXISTS generation_comment_drawing (
     thumb_jpg    BLOB,                                -- 영상만(없어도 정상)
     content_hash TEXT NOT NULL,                       -- 서버 계산 — 재전송·합치기 대조(C4)
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (comment_id, idx)
+    UNIQUE (comment_id, idx)                          -- comment_id 로 찾는 색인을 겸한다
 );
-CREATE INDEX IF NOT EXISTS idx_gen_comment_drawing_comment ON generation_comment_drawing(comment_id);
+-- ★이 표에 따로 CREATE INDEX 를 두지 않는다 — 어긋난 옛 표(comment_id 없음)면 색인 줄이 schema 적용을 깨뜨려
+--   구조 검사(표별 거절)까지 못 가고 시작 자체가 막힌다(Codex 독립 리뷰 P1).
 
 -- comments-v2 작성 장부 — 코멘트마다 처음 요청의 지문(바뀌지 않음, 글 수정은 코멘트 행만). 재시도 판정(C1).
 CREATE TABLE IF NOT EXISTS generation_comment_request (

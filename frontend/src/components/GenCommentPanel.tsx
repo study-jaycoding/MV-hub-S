@@ -34,36 +34,63 @@ const GEN_LS = makeStore("ch.gen.");
 //  401·403·404·410 이면 그 그림을 화면에서 걷는다(권한이 없어졌거나 지워졌다).
 export const secLabel = (sec: number | null | undefined) => `${(sec ?? 0).toFixed(2)}초`;
 
-type DrawingState = { status: "loading" } | { status: "gone" } | { status: "error" } | { status: "ok"; items: DrawItem[]; thumbUrl: string | null };
+type DrawingState =
+  | { status: "loading" } | { status: "gone" } | { status: "error" } | { status: "unsupported" }
+  | { status: "ok"; items: DrawItem[]; thumbUrl: string | null };
+export const UNSUPPORTED_DRAWING = "이 그림은 새 판에서 볼 수 있습니다";
+const GONE = (error: unknown) => isHttpStatus(error, 401, 403, 404, 410); // 권한이 없어졌거나 지워졌다 — 그림을 걷는다
 
-export function useCommentDrawing(commentId: string, meta: CommentDrawingMeta): DrawingState {
+/** 그림 1장의 획(+영상 미리보기)을 받는다. enabled 가 참이 될 때까지(화면에 보일 때까지) 받지 않는다. */
+export function useCommentDrawing(commentId: string, meta: CommentDrawingMeta, enabled = true): DrawingState {
   const [state, setState] = useState<DrawingState>({ status: "loading" });
   useEffect(() => {
+    if (!enabled) return;
     const abort = new AbortController();
     let thumbUrl: string | null = null;
     setState({ status: "loading" });
     (async () => {
       const body = await api.commentDrawing(commentId, meta.id, { signal: abort.signal });
+      if (body.strokes?.v !== 1) {
+        // 이 판이 모르는 획 판 — 그리지 않고 알린다(서버는 원문을 그대로 보관한다, C4)
+        if (!abort.signal.aborted) setState({ status: "unsupported" });
+        return;
+      }
       if (meta.kind === "video" && meta.has_thumb) {
         try {
           thumbUrl = URL.createObjectURL(await api.commentDrawingThumb(commentId, meta.id, { signal: abort.signal }));
         } catch (error) {
-          if (abort.signal.aborted) throw error;
-          thumbUrl = null; // 미리보기를 못 받으면 획만(정상 계약 C6)
+          // 권한 거절·지워짐은 그림 전체를 걷는다(획만 남기지 않는다). 그 밖(연결 실패)은 미리보기 없이 획만(C6)
+          if (abort.signal.aborted || GONE(error)) throw error;
+          thumbUrl = null;
         }
       }
       if (abort.signal.aborted) return;
-      setState({ status: "ok", items: (body.strokes?.items ?? []) as DrawItem[], thumbUrl });
+      setState({ status: "ok", items: body.strokes.items as DrawItem[], thumbUrl });
     })().catch((error) => {
       if (abort.signal.aborted) return;
-      setState(isHttpStatus(error, 401, 403, 404, 410) ? { status: "gone" } : { status: "error" });
+      setState(GONE(error) ? { status: "gone" } : { status: "error" });
     });
     return () => {
       abort.abort();
       if (thumbUrl) URL.revokeObjectURL(thumbUrl);
     };
-  }, [commentId, meta.id, meta.content_hash, meta.kind, meta.has_thumb]);
+  }, [commentId, meta.id, meta.content_hash, meta.kind, meta.has_thumb, enabled]);
   return state;
+}
+
+/** 칸이 화면(스크롤 상자)에 들어온 적이 있나 — 긴 스레드의 화면 밖 그림을 한꺼번에 받지 않는다(C5). 관찰기가 없는 곳은 바로 참. */
+function useSeen(ref: React.RefObject<Element | null>): boolean {
+  const [seen, setSeen] = useState(() => typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    const el = ref.current;
+    if (seen || !el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+    }, { rootMargin: "120px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref, seen]);
+  return seen;
 }
 
 /** 획을 좌표계(width×height) 비율 그대로의 캔버스에 그린다 — 캔버스 해상도는 maxPx 로 줄인다(작은 칸에 원본 크기 캔버스를 두지 않게). */
@@ -86,15 +113,19 @@ export function StrokesCanvas({ items, width, height, maxPx = 320, className }: 
 function DrawingChip({ commentId, meta, bg, onOpen }: {
   commentId: string; meta: CommentDrawingMeta; bg: string | null | undefined; onOpen: (meta: CommentDrawingMeta) => void;
 }) {
-  const state = useCommentDrawing(commentId, meta);
+  const ref = useRef<HTMLButtonElement>(null);
+  const state = useCommentDrawing(commentId, meta, useSeen(ref));
   if (state.status === "gone") return null;
   const back = meta.kind === "video" ? (state.status === "ok" ? state.thumbUrl : null) : bg;
   return (
-    <button type="button" className="cmt-att" title={meta.kind === "video" ? `${secLabel(meta.time_sec)} — 눌러서 크게 보기` : "눌러서 크게 보기"}
+    <button ref={ref} type="button" className="cmt-att"
+      title={state.status === "unsupported" ? UNSUPPORTED_DRAWING : meta.kind === "video" ? `${secLabel(meta.time_sec)} — 눌러서 크게 보기` : "눌러서 크게 보기"}
+      disabled={state.status === "unsupported"}
       onClick={(e) => { e.stopPropagation(); onOpen(meta); }}>
       {back && <img src={back} alt="" draggable={false} />}
       {state.status === "ok" && <StrokesCanvas items={state.items} width={meta.width} height={meta.height} />}
       {state.status === "error" && <span className="cmt-att-err">불러오지 못함</span>}
+      {state.status === "unsupported" && <span className="cmt-att-err">새 판에서 볼 수 있음</span>}
       {meta.kind === "video" && <span className="cmt-att-f">{secLabel(meta.time_sec)}</span>}
     </button>
   );

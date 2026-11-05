@@ -256,7 +256,10 @@ def create_comment_v2(*, gen_id: str, gen_key: str, author: str, comment_id: str
                 "INSERT INTO generation_comment(id, gen_id, author, text, parent_id, muted, is_private) VALUES(?,?,?,?,?,0,?)",
                 (comment_id, gen_id, author, text, parent_id, 1 if is_private else 0))
             if drawings:
-                insert_drawings(conn, comment_id, drawings)
+                try:
+                    insert_drawings(conn, comment_id, drawings)
+                except sqlite3.IntegrityError as exc:  # 다른 코멘트가 이미 가진 그림 id(앞서 저장된 요청의 그림을 고쳐 다시 보냄)
+                    raise CommentConflict("drawing_id_conflict") from exc
             conn.execute(f"INSERT INTO {REQUEST}(id, fingerprint, gen_key) VALUES(?,?,?)", (comment_id, fp, gen_key))
             if parent_id:  # 답글을 달면 부모를 확인한 것(옛 작성 길과 같다)
                 conn.execute("INSERT OR IGNORE INTO generation_comment_seen(worker_id, comment_id) VALUES(?, ?)",

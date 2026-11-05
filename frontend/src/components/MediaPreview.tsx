@@ -16,13 +16,14 @@ import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from
 import type { CommentDrawingView, PreviewTarget } from "../types";
 import { CommentDrawModal } from "./comment/CommentDrawModal";
 import { CloseIcon, CopyIcon } from "./common/ViewIcons";
-import { StrokesCanvas, secLabel, useCommentDrawing } from "./GenCommentPanel";
+import { StrokesCanvas, UNSUPPORTED_DRAWING, secLabel, useCommentDrawing } from "./GenCommentPanel";
 
 interface Props {
   target: PreviewTarget;
   onClose: () => void;
   onOpenInBoard?: (genId: string) => void; // 결과물이면 '구성에서 보기'(구성탭 히스토리 트리)
   myId?: string; // 코멘트 그림 창의 '지난 코멘트'(내 것만 고치기·지우기)
+  localHub?: boolean; // 로컬 허브 화면인가 — 아니면(서버 직결) 코멘트 그림 창에 비공개 입력을 두지 않는다
 }
 
 // 굵은 선 C — 코멘트 단추(Jay 2026-11-05 확정: 머리줄 단추들 맨 왼쪽)
@@ -41,6 +42,7 @@ function PreviewDrawing({ view, box, onGone }: {
     if (state.status === "gone") onGone();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.status]);
+  if (state.status === "unsupported") return <div className="cm-preview-layer" style={box}><div className="cm-view-note">{UNSUPPORTED_DRAWING}</div></div>;
   if (state.status !== "ok") return null;
   return (
     <div className="cm-preview-layer" style={box}>
@@ -71,7 +73,7 @@ export function fitPreviewBox(nw: number, nh: number, vw: number, vh: number, up
   return { w: Math.round(nw * k), h: Math.round(nh * k) };
 }
 
-export function MediaPreview({ target, onClose, onOpenInBoard, myId = "" }: Props) {
+export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localHub = true }: Props) {
   const [pos, setPos] = useState({ x: 0, y: 0 }); // 화면 중앙 기준 오프셋
   const drag = useRef<{ ox: number; oy: number; sx: number; sy: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null); // 스페이스바 재생/일시정지용
@@ -526,6 +528,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "" }: Prop
             name={cur.name}
             myId={myId}
             startTime={commentStartRef.current}
+            allowPrivate={localHub}
             onClose={() => setCommenting(false)}
             onSaved={() => setCommentTick((n) => n + 1)}
           />,

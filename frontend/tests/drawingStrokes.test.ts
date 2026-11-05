@@ -66,6 +66,20 @@ describe("획 목록 v1", () => {
     expect((doc.items[0] as { size: number }).size).toBe(1234.2);
   });
 
+  it("그림 글자의 이모지는 그대로, 짝 없는 서로게이트만 빼고, 200자를 넘으면 자르지 않고 막는다", () => {
+    const text = (value: string) => toStrokesV1([{ kind: "text", text: value, color: "#ffffff", size: 20, at: { x: 1, y: 1 } }], { w: 10, h: 10 }, 10, 10).items[0];
+    expect(text("확인 👍")).toMatchObject({ text: "확인 👍" });
+    expect(text("a\uD800b")).toMatchObject({ text: "ab" });
+    expect(text("👍".repeat(200))).toMatchObject({ text: "👍".repeat(200) }); // 코드 포인트로 200 — UTF-16 400 이라도 된다
+    expect(() => text("가".repeat(201))).toThrow(StrokesTooLarge);
+  });
+
+  it("이모지 글자도 서버와 같은 해시(서버 값)", async () => {
+    const doc = toStrokesV1([{ kind: "text", text: "확인 👍", color: "#ffffff", size: 20, at: { x: 1, y: 1 } }], { w: 10, h: 10 }, 10, 10);
+    expect(await drawingHash({ strokes: doc, kind: "image", width: 10, height: 10, timeSec: null, idx: 0, thumb: null }))
+      .toBe("146592b093f87dbadc0d01555f76baf71857e7e815a1aba522c6ce3a3c2bbd89");
+  });
+
   it("빈 그림·너무 긴 획은 보내기 전에 막는다", () => {
     expect(() => toStrokesV1([], { w: 10, h: 10 }, 10, 10)).toThrow(StrokesTooLarge);
     const long = Array.from({ length: 5001 }, (_, i) => ({ x: i % 10, y: 1 }));

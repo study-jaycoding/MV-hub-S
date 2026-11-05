@@ -9,6 +9,8 @@ const calls = vi.hoisted(() => ({
   v2: vi.fn(),
   v1: vi.fn(async () => ({ id: "c-plain" })),
   list: vi.fn(async () => []),
+  drawing: vi.fn(),
+  thumb: vi.fn(),
 }));
 vi.mock("../src/api", () => ({
   api: new Proxy({} as Record<string, unknown>, {
@@ -16,6 +18,8 @@ vi.mock("../src/api", () => ({
       if (name === "addGenCommentV2") return calls.v2;
       if (name === "addGenComment") return calls.v1;
       if (name === "genComments") return calls.list;
+      if (name === "commentDrawing") return calls.drawing;
+      if (name === "commentDrawingThumb") return calls.thumb;
       if (name === "genCommentsCached") return () => undefined;
       return () => new Promise(() => {});
     },
@@ -24,7 +28,9 @@ vi.mock("../src/api", () => ({
 vi.mock("../src/lib/mediaCapture", () => ({ videoFramePng: vi.fn(async () => { throw new Error("no frame in jsdom"); }) }));
 
 import { CommentDrawModal } from "../src/components/comment/CommentDrawModal";
+import { CommentDrawingStrip } from "../src/components/GenCommentPanel";
 import { HttpError } from "../src/lib/http";
+import type { GenComment } from "../src/types";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -61,9 +67,9 @@ const type = (value: string) => act(() => {
 const sendButton = () => [...document.querySelectorAll<HTMLButtonElement>("button.sl-gen")][0];
 const attached = () => document.querySelectorAll(".sl-reftray-item.cm-att").length;
 
-function showImage(onSaved = vi.fn()) {
+function showImage(onSaved = vi.fn(), allowPrivate = true) {
   act(() => root.render(
-    <CommentDrawModal genId="g1" type="image" url="/o.png" name="n" myId="u1" onClose={() => {}} onSaved={onSaved} />,
+    <CommentDrawModal genId="g1" type="image" url="/o.png" name="n" myId="u1" allowPrivate={allowPrivate} onClose={() => {}} onSaved={onSaved} />,
   ));
   const img = document.querySelector<HTMLImageElement>(".partial-edit-stagebox img")!;
   Object.defineProperties(img, { naturalWidth: { value: 400 }, naturalHeight: { value: 200 } });
@@ -118,6 +124,34 @@ describe("코멘트 모드 — 이미지", () => {
     expect(second.drawings[0].id).toBe(first.drawings[0].id);
     expect(second.drawings[0].content_hash).toBe(first.drawings[0].content_hash);
     expect(attached()).toBe(0);
+  });
+
+  it("앞서 보낸 것이 이미 저장된 뒤 고쳐 보내 409 가 나면, 다음엔 코멘트 id 와 그림 id 를 함께 새로 뽑는다", async () => {
+    calls.v2.mockRejectedValueOnce(new HttpError(409, "comment_id_request_mismatch"));
+    showImage();
+    stroke(10);
+    type("고친 글");
+    await act(async () => { sendButton().click(); });
+    await settle();
+    expect(attached()).toBe(1); // 초안은 그대로
+    calls.v2.mockImplementationOnce(async (_gen: string, body: { id: string; drawings: { id: string; content_hash: string }[] }) => ({
+      id: body.id, result: "created", drawings: body.drawings.map((d) => ({ id: d.id, content_hash: d.content_hash })),
+    }));
+    await act(async () => { sendButton().click(); });
+    await settle();
+    const [first, second] = calls.v2.mock.calls.map((call) => call[1]);
+    expect(second.id).not.toBe(first.id);
+    expect(second.drawings[0].id).not.toBe(first.drawings[0].id); // 그림 id 도 앞 코멘트가 가졌다 — 같이 바꾼다
+  });
+
+  it("서버 직결 화면(allowPrivate=false)에는 비공개 입력이 없고, 저장된 '비공개' 설정이 있어도 공개로 보낸다", async () => {
+    localStorage.setItem("ch.cmt.private", "1");
+    showImage(vi.fn(), false);
+    expect(document.querySelector(".sl-chip")).toBeNull();
+    type("서버 직결");
+    await act(async () => { sendButton().click(); });
+    await settle();
+    expect(calls.v1).toHaveBeenCalledWith("g1", "서버 직결", null, false);
   });
 
   it("저장된 것이 보낸 그림과 다르면 실패로 보고 초안을 지킨다", async () => {
@@ -188,6 +222,23 @@ describe("코멘트 모드 — 영상", () => {
       .toEqual([["video", 0, 0.5, null], ["video", 1, 0.5 + 1 / 24, null]]); // 미리보기를 못 뜨면 thumb 없이(정상 계약)
   });
 
+  it("같은 24fps 칸의 다른 장면(60fps 영상)에서 다시 그리면 그 그림의 기준 시각 장면으로 맞춘다", async () => {
+    act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" startTime={1} onClose={() => {}} onSaved={() => {}} />));
+    const video = document.querySelector<HTMLVideoElement>(".partial-edit-stagebox video")!;
+    let now = 0;
+    Object.defineProperties(video, {
+      videoWidth: { value: 400 }, videoHeight: { value: 200 }, duration: { value: 4 }, paused: { value: true },
+      currentTime: { get: () => now, set: (v: number) => { now = v; } },
+    });
+    act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+    stroke(10); // 1.000초에 그림
+    now = 1.016; // 같은 칸(round(1.016×24) = 24)의 다음 장면 — 영상 자체가 옮겨 갔다
+    act(() => { video.dispatchEvent(new Event("timeupdate")); });
+    stroke(60);
+    expect(now).toBe(1); // 보고 고치는 장면 = 저장되는 장면
+    expect(attached()).toBe(1);
+  });
+
   it("떠 있는 동안 방향키·Space 는 이 창이 갖고 뒤로 흘리지 않는다", async () => {
     act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" onClose={() => {}} onSaved={() => {}} />));
     const behind = vi.fn();
@@ -202,5 +253,58 @@ describe("코멘트 모드 — 영상", () => {
     } finally {
       window.removeEventListener("keydown", behind);
     }
+  });
+});
+
+// 지난 코멘트의 그림 줄(C5) — 화면에 보일 때만 받고, 권한 거절(thumb 포함)이면 걷고, 모르는 획 판은 그리지 않고 알린다.
+describe("지난 코멘트 그림 줄", () => {
+  const meta = { id: "d1", idx: 0, kind: "video" as const, width: 400, height: 200, time_sec: 1.5, has_thumb: true, content_hash: "h", v: 1 as const };
+  const comment = { id: "c1", author: "u2", author_name: "팀원", text: "t", created_at: "", parent_id: null, drawings: [meta] } as GenComment;
+  const body = (v: number) => ({ ...meta, comment_id: "c1", strokes: { v, items: [] } });
+  const show = () => act(() => root.render(<CommentDrawingStrip comment={comment} bg={null} onOpen={() => {}} />));
+
+  it("미리보기 요청이 403 이면 받은 획까지 걷는다(획만 남기지 않는다)", async () => {
+    calls.drawing.mockResolvedValue(body(1));
+    calls.thumb.mockRejectedValue(new HttpError(403, "권한 없음"));
+    show();
+    await settle();
+    expect(document.querySelector(".cmt-att")).toBeNull();
+  });
+
+  it("미리보기를 연결 문제로 못 받으면 획만 보인다", async () => {
+    calls.drawing.mockResolvedValue(body(1));
+    calls.thumb.mockRejectedValue(new HttpError(502, "연결 실패"));
+    show();
+    await settle();
+    expect(document.querySelector(".cmt-att canvas")).not.toBeNull();
+    expect(document.querySelector(".cmt-att img")).toBeNull();
+  });
+
+  it("이 판이 모르는 획 판(v2)은 그리지 않고 '새 판에서 볼 수 있음'", async () => {
+    calls.drawing.mockResolvedValue(body(2));
+    show();
+    await settle();
+    expect(document.querySelector(".cmt-att canvas")).toBeNull();
+    expect(document.querySelector(".cmt-att")?.textContent).toContain("새 판에서 볼 수 있음");
+    expect(calls.thumb).not.toHaveBeenCalled();
+  });
+
+  it("화면 밖 그림은 보일 때까지 받지 않는다", async () => {
+    let fire: (hit: boolean) => void = () => {};
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: (entries: { isIntersecting: boolean }[]) => void) { fire = (hit) => callback([{ isIntersecting: hit }]); }
+      observe() {}
+      disconnect() {}
+    });
+    calls.drawing.mockResolvedValue(body(1));
+    calls.thumb.mockResolvedValue(new Blob(["j"], { type: "image/jpeg" }));
+    URL.createObjectURL = vi.fn(() => "blob:t");
+    URL.revokeObjectURL = vi.fn();
+    show();
+    await settle();
+    expect(calls.drawing).not.toHaveBeenCalled();
+    act(() => fire(true));
+    await settle();
+    expect(calls.drawing).toHaveBeenCalledTimes(1);
   });
 });

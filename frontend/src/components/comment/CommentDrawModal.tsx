@@ -16,7 +16,7 @@ import { CloseIcon } from "../common/ViewIcons";
 import { DrawDock, DrawTextInput } from "../edit/drawing/DrawDock";
 import { drawingHash, MAX_DRAWINGS, StrokesTooLarge, toStrokesV1, type DrawItem } from "../edit/drawing/strokes";
 import { useDrawingInput } from "../edit/drawing/useDrawingInput";
-import { GenCommentPanel, StrokesCanvas, secLabel, useCommentDrawing } from "../GenCommentPanel";
+import { GenCommentPanel, StrokesCanvas, UNSUPPORTED_DRAWING, secLabel, useCommentDrawing } from "../GenCommentPanel";
 
 const MAX_WORK_PIXELS = 12_000_000; // 그리는 캔버스만 줄인다 — 좌표계는 원본 크기(C4)
 const THUMB_SIDE = 320; // 영상 그림의 목록용 미리보기 긴 변(설계 §3.2)
@@ -84,6 +84,7 @@ function ViewingLayer({ view, onGone }: { view: CommentDrawingView; onGone: () =
     if (state.status === "gone") onGone();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.status]);
+  if (state.status === "unsupported") return <div className="cm-view-note">{UNSUPPORTED_DRAWING}</div>;
   if (state.status !== "ok") return null;
   return <StrokesCanvas className="cm-view-layer" items={state.items} width={view.drawing.width} height={view.drawing.height} maxPx={2048} />;
 }
@@ -96,11 +97,13 @@ interface Props {
   name: string;
   myId: string;
   startTime?: number; // 영상 — 크게 보기에서 보던 시각
+  // 비공개로 쓸 수 있나 — 로컬 허브만(서버 직결 화면은 서버가 비공개를 받지 않는다: 입력을 숨긴다)
+  allowPrivate?: boolean;
   onClose: () => void;
   onSaved: () => void; // 코멘트를 달았다(크게 보기의 C 단추 상태를 다시 읽는다)
 }
 
-export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTime = 0, onClose, onSaved }: Props) {
+export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTime = 0, allowPrivate = true, onClose, onSaved }: Props) {
   const isVideo = type === "video";
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const work = useMemo(() => (natural ? workSize(natural.w, natural.h) : null), [natural]);
@@ -110,13 +113,14 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
   const [playing, setPlaying] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [writePrivate, setWritePrivate] = useState(() => {
+  const [privateChoice, setWritePrivate] = useState(() => {
     try {
       return localStorage.getItem(PRIV_KEY) === "1";
     } catch {
       return false;
     }
   });
+  const writePrivate = allowPrivate && privateChoice;
   const [viewing, setViewing] = useState<CommentDrawingView | null>(null);
   const [sideTick, setSideTick] = useState(0);
   // 같은 코멘트를 다시 보낼 때 같은 id — 답을 못 받았어도 하나만 생긴다(C1). 저장되면 새로 뽑는다.
@@ -169,7 +173,11 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
       syncKey(video.currentTime);
     }
     const key = curKeyRef.current;
-    if (sheetsRef.current.has(key)) return true;
+    const existing = sheetsRef.current.get(key);
+    if (existing) {
+      snapTo(existing); // 같은 칸의 다른 시각에 서 있으면 그 그림의 기준 시각 장면으로 — 보고 그린 장면 = 저장되는 장면
+      return true;
+    }
     if (sheets.length >= MAX_DRAWINGS) {
       flashMsg(`그림은 코멘트 하나에 ${MAX_DRAWINGS}장까지 붙일 수 있습니다`);
       return false;
@@ -194,12 +202,20 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
   };
 
   // ── 영상 조작(수정 창과 같은 24fps 눈금) ──
+  function snapTo(sheet: Sheet) {
+    const video = videoRef.current;
+    if (!isVideo || !video || sheet.timeSec == null || Math.abs(video.currentTime - sheet.timeSec) < 1e-4) return;
+    video.currentTime = sheet.timeSec;
+    setTime(sheet.timeSec);
+  }
   const seekTo = (at: number) => {
     const video = videoRef.current;
     if (!video) return;
     if (!video.paused) video.pause();
     setPlaying(false);
-    const t = Math.min(Math.max(0, at), Math.max(0, (duration || video.duration || 0) - 1 / EDIT_FPS));
+    const clamped = Math.min(Math.max(0, at), Math.max(0, (duration || video.duration || 0) - 1 / EDIT_FPS));
+    // 그림이 있는 칸이면 그 그림의 기준 시각으로 멈춘다 — 60fps 영상은 한 칸에 장면이 여럿이라 다른 장면 위에 그 그림을 고치게 된다
+    const t = sheetsRef.current.get(frameOf(clamped))?.timeSec ?? clamped;
     video.currentTime = t;
     setTime(t);
     syncKey(t);
@@ -229,12 +245,17 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
     holdUnload("comment:draw", dirty); // 쓰던 코멘트·그림이 있는 동안 창을 닫거나 새로고침하면 묻는다("코멘트")
     return () => holdUnload("comment:draw", false);
   }, [dirty]);
+  // 작성 의도가 바뀌었다(앞 요청이 이미 저장됨·지워진 id) — 코멘트와 그림 식별자를 함께 새로 뽑는다(C1)
+  const renewIds = () => {
+    commentIdRef.current = uuid();
+    for (const sheet of sheetsRef.current.values()) sheet.id = uuid();
+    bump();
+  };
   const resetDraft = () => {
     for (const key of [...sheetsRef.current.keys()]) dropSheet(key);
     draw.clearStrokes();
     setText("");
-    commentIdRef.current = uuid();
-    bump();
+    renewIds();
   };
   const send = async () => {
     const body = text.trim();
@@ -274,11 +295,11 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
       if (error instanceof StrokesTooLarge) flashMsg(error.message);
       else if (error instanceof ApiPausedError) flashMsg(API_PAUSED_MESSAGE);
       else if (error instanceof HttpError && error.status === 410) {
-        commentIdRef.current = uuid(); // 지워진 코멘트 id — 다시 만들지 않는다. 새 id 로 다시 보내게
+        renewIds(); // 지워진 코멘트 id — 다시 만들지 않는다. 새 id 로 다시 보내게
         flashMsg("이 코멘트는 지워진 것으로 기록돼 있습니다 — 한 번 더 누르면 새 코멘트로 보냅니다");
-      } else if (error instanceof HttpError && error.status === 409 && /comment_id/.test(error.detail)) {
-        // 앞서 보낸 것이 이미 저장됐는데 그 뒤 고쳤다 — 고친 것은 새 코멘트로
-        commentIdRef.current = uuid();
+      } else if (error instanceof HttpError && error.status === 409 && /comment_id|drawing_id/.test(error.detail)) {
+        // 앞서 보낸 것이 이미 저장됐는데 그 뒤 고쳤다 — 고친 것은 새 코멘트·새 그림으로(그림 id 도 앞 코멘트가 가졌다)
+        renewIds();
         setSideTick((n) => n + 1);
         flashMsg("앞서 보낸 코멘트가 이미 저장됐습니다 — 지난 코멘트를 확인한 뒤, 고친 것을 보내려면 한 번 더 누르세요");
       } else flashMsg(`코멘트를 달지 못했습니다 — ${errorDetail(error)}`); // 쓴 글·그림은 그대로(같은 id 로 다시 보낼 수 있다)
@@ -540,15 +561,17 @@ export function CommentDrawModal({ genId, type, url, thumb, name, myId, startTim
               </div>
               <div className="sl-controls">
                 <div className="sl-left">
-                  <button type="button" className={"sl-chip" + (writePrivate ? " on" : "")} aria-pressed={writePrivate}
-                    title="개인 기록으로 저장 — 팀 공유 스레드·발행에 안 나감"
-                    onClick={() => setWritePrivate((v) => {
-                      try { localStorage.setItem(PRIV_KEY, v ? "0" : "1"); } catch { /* 저장만 건너뛴다 */ }
-                      return !v;
-                    })}>
-                    <span>🔒</span>
-                    <span className="sl-chip-label">비공개로 쓰기</span>
-                  </button>
+                  {allowPrivate && (
+                    <button type="button" className={"sl-chip" + (writePrivate ? " on" : "")} aria-pressed={writePrivate}
+                      title="개인 기록으로 저장 — 팀 공유 스레드·발행에 안 나감"
+                      onClick={() => setWritePrivate((v) => {
+                        try { localStorage.setItem(PRIV_KEY, v ? "0" : "1"); } catch { /* 저장만 건너뛴다 */ }
+                        return !v;
+                      })}>
+                      <span>🔒</span>
+                      <span className="sl-chip-label">비공개로 쓰기</span>
+                    </button>
+                  )}
                 </div>
                 <button type="button" className="sl-gen partial-edit-gen" disabled={sending || !text.trim() || !work} onClick={() => void send()}>
                   {sending ? "보내는 중" : "코멘트 달기"}

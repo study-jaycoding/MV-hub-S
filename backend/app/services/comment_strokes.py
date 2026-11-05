@@ -265,7 +265,8 @@ def table_ok(conn: Any, table: str) -> bool:
     for wanted in spec.get("unique", []):
         found = False
         for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
-            if index[2]:
+            # 부분 색인(WHERE …)은 고유 제약이 아니다 — 일부 행에만 걸린다(index_list 5번째 칸 = partial)
+            if index[2] and not (len(index) > 4 and index[4]):
                 cols = tuple(r[2] for r in conn.execute(f"PRAGMA index_info({index[1]})").fetchall())
                 found = found or cols == wanted
         if not found:

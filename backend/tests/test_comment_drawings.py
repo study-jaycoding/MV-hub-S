@@ -256,6 +256,35 @@ class StructureGuardTests(_DbCase):
         self.assertEqual(self.count("generation_comment"), 0)
         self.assertEqual(self.post({"id": _uid(), "text": "글만"})["result"], "created")
 
+    def test_broken_drawing_table_without_comment_id_still_starts(self):
+        # 어긋난 옛 표에 comment_id 가 없어도 schema 적용(시작)이 깨지지 않고, 글 전용은 되고 그림만 막힌다(Codex 독립 리뷰 P1)
+        self._break("generation_comment_drawing", "id TEXT PRIMARY KEY")
+        db.flush_pool()
+        db.init_db()
+        self.assertEqual(self.post({"id": _uid(), "text": "글만"})["result"], "created")
+        with self.assertRaises(HTTPException) as ctx:
+            self.post({"id": _uid(), "text": "그림", "drawings": [_drawing(0)]})
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_partial_unique_index_is_not_a_unique_constraint(self):
+        with db.get_connection() as conn:
+            conn.execute("DROP TABLE generation_comment_drawing")
+            conn.execute(
+                "CREATE TABLE generation_comment_drawing (id TEXT PRIMARY KEY, comment_id TEXT NOT NULL REFERENCES "
+                "generation_comment(id) ON DELETE CASCADE, idx INTEGER NOT NULL, kind TEXT NOT NULL, width INTEGER NOT NULL, "
+                "height INTEGER NOT NULL, time_sec REAL, strokes_json TEXT NOT NULL, thumb_jpg BLOB, content_hash TEXT NOT NULL, "
+                "created_at TEXT NOT NULL DEFAULT (datetime('now')))")
+            conn.execute("CREATE UNIQUE INDEX part_idx ON generation_comment_drawing(comment_id, idx) WHERE idx < 0")
+            self.assertFalse(cs.table_ok(conn, cs.DRAWING))  # idx=0 에는 고유성이 없다
+
+    def test_reused_drawing_id_under_new_comment_is_409_without_writes(self):
+        d = _drawing(0)
+        self.post({"id": _uid(), "text": "먼저 저장된 것", "drawings": [d]})
+        with self.assertRaises(HTTPException) as ctx:  # 고친 뒤 새 코멘트 id 로 보냈는데 그림 id 는 그대로
+            self.post({"id": _uid(), "text": "고친 것", "drawings": [{**d, "strokes": _strokes()}]})
+        self.assertEqual((ctx.exception.status_code, ctx.exception.detail), (409, "drawing_id_conflict"))
+        self.assertEqual(self.count("generation_comment"), 1)  # 글까지 통째로 취소
+
     def test_broken_request_ledger_blocks_v2(self):
         self._break("generation_comment_request", "id TEXT")
         with self.assertRaises(HTTPException) as ctx:
