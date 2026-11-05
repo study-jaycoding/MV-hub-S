@@ -138,7 +138,10 @@ def test_focus_targets_only_approved_windows(launcher, monkeypatch: pytest.Monke
 
 # 32비트 int 를 넘는 HWND. 이런 창은 실제로 없지만 Win32 는 0(없음)을 돌려줄 뿐 오류가 아니다.
 _BIG_HWND = 0x7FFF_0000_1234
-_win32_only = pytest.mark.skipif(sys.platform != "win32", reason="Win32 user32 전용")
+# 32비트 파이썬은 HWND 가 32비트라 큰 값이 잘린다 — 64비트에서만 뜻이 있다(Codex 리뷰 P2).
+_win32_only = pytest.mark.skipif(
+    sys.platform != "win32" or sys.maxsize <= 2**32, reason="64비트 Win32 user32 전용"
+)
 
 
 @_win32_only
