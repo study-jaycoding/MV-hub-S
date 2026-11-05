@@ -961,7 +961,7 @@ export function WorkBoard({
               onClick={() => setMineOnly((v) => !v)}
               title="내가 만든 작업만 보기"
             >
-              내 작업만
+              My
             </button>
           ) : null}
           <div className="manage-toggles">
