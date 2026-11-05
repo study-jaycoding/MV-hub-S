@@ -94,8 +94,18 @@ async def run(base: str, work: Path, debug_port: int, shots: bool, verbose: bool
         await w.step("단축키", "# = 태그 입력", w.appeared(w.press("#", "Digit3", modifiers=8, vk=51, text="#")), expect=lambda s, n: True if n and n["new"] else "아무것도 안 열림")
         await w.escape_all()
         await w.step("카드", "다시 선택", w.click(card), expect=one_selected)
-        await w.step("단축키", "c = 코멘트 패널", w.appeared(w.press("c", "KeyC", vk=67, text="c"), 2), expect=lambda s, n: True if n and "cmt-panel" in n["new"] else f"{n}")
-        await w.step("코멘트", "✕ 로 닫기(Esc 로는 안 닫히는 설계)", w.click("document.querySelector('.cmt-x')"))
+        await w.step("단축키", "c = 코멘트 창", w.appeared(w.press("c", "KeyC", vk=67, text="c"), 2), expect=lambda s, n: True if n and "cmt-panel" in n["new"] else f"{n}")
+
+        # 2026-11-05 뒤로 카드 C 는 코멘트 그림 창(.cm-modal, 안에 '지난 코멘트' 패널)을 연다 — Esc 로 닫힌다.
+        #  옛 앱과 섞어 재면 종전 떠 있는 패널이라 ✕ 로 닫는다(그 패널은 Esc 로는 안 닫히는 설계)
+        async def close_comment():
+            if await pg.eval("!!document.querySelector('.cm-modal')"):
+                await pg.key("Escape", "Escape", vk=27)
+                await asyncio.sleep(0.6)
+                return "그림 창 Esc" if not await pg.eval("!!document.querySelector('.cm-modal')") else False
+            return "옛 패널 ✕" if await pg.click("document.querySelector('.cmt-x')") else False
+        await w.step("코멘트", "닫기(그림 창 Esc · 옛 패널 ✕)", close_comment,
+                     expect=lambda s, n: True if not any(l.startswith(("partial-edit", "cmt-panel")) for l in s["layers"]) else f"{s['layers']}")
         await w.step("카드", "더블클릭=미리보기", w.click(card, count=2), settle=2.5, expect=lambda s, n: True if "preview-backdrop" in s["layers"] else f"{s['layers']}")
         await w.step("미리보기", "Esc", w.press("Escape", "Escape", vk=27), expect=lambda s, n: True if "preview-backdrop" not in s["layers"] else "안 닫힘")
         await w.step("카드", "휠클릭=정보 팝업", w.click(card, button="middle"), settle=2, expect=lambda s, n: True if "info-popup" in s["layers"] else f"{s['layers']}")
