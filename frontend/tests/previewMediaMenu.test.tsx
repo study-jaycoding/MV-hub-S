@@ -14,10 +14,12 @@ const capture = vi.hoisted(() => ({
   videoFramePng: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
 }));
 vi.mock("../src/lib/mediaCapture", () => capture);
-vi.mock("../src/lib/generationViews", () => ({ recordGenerationView: vi.fn() }));
+vi.mock("../src/lib/generationViews", () => ({ recordGenerationView: vi.fn(), TEAM_SCOPE: "@team" }));
 vi.mock("../src/lib/download", async (original) => ({
   ...(await original<typeof import("../src/lib/download")>()),
   fetchBlob: vi.fn(async () => new Blob(["img"], { type: "image/png" })),
+  downloadGeneration: vi.fn(),
+  downloadOne: vi.fn(),
 }));
 
 let host: HTMLDivElement;
@@ -146,18 +148,18 @@ describe("크게 보기 우클릭", () => {
 describe("크게 보기 수정 단추", () => {
   const editButton = () => host.querySelector<HTMLButtonElement>(".preview-edit-btn");
 
-  it("영상은 [영상 수정] → mode=video, 이미지는 [이미지 수정] → mode=image 로 쏘고 창을 닫는다", async () => {
+  it("이름은 이미지·영상 모두 [Edit] — 영상은 mode=video, 이미지는 mode=image 로 쏘고 창을 닫는다", async () => {
     const sent: unknown[] = [];
     const listen = (e: Event) => sent.push((e as CustomEvent).detail);
     window.addEventListener(APP_EVENTS.partialEdit, listen);
     try {
       await show(VIDEO);
-      expect(editButton()?.textContent).toBe("🖌 영상 수정");
+      expect(editButton()?.textContent).toBe("🖌 Edit");
       act(() => editButton()!.click());
       expect(sent).toEqual([{ genId: "gen-12345678", mode: "video" }]);
       expect(onClose).toHaveBeenCalledTimes(1);
       await show({ ...IMAGE, genId: "gen-image" });
-      expect(editButton()?.textContent).toBe("🖌 이미지 수정");
+      expect(editButton()?.textContent).toBe("🖌 Edit");
       act(() => editButton()!.click());
       expect(sent).toEqual([{ genId: "gen-12345678", mode: "video" }, { genId: "gen-image", mode: "image" }]);
       expect(onClose).toHaveBeenCalledTimes(2);
@@ -173,6 +175,250 @@ describe("크게 보기 수정 단추", () => {
     expect(editButton()).toBeNull();
     await show({ ...VIDEO, genId: undefined });
     expect(editButton()).toBeNull();
+  });
+});
+
+// 코멘트 모드(Jay 2026-11-05) — c 키·Ctrl 카드의 C 로 연다(머리줄 C 는 시안 ⑩에서 뺐다). 떠 있는 동안 크게 보기의 키는 쉰다.
+//  생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만.
+describe("크게 보기 코멘트 모드", () => {
+  const modal = () => document.body.querySelector(".cm-modal");
+  const pressC = () => act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true })); });
+  let restore: (() => void)[] = [];
+  beforeEach(async () => {
+    const { api } = await import("../src/api");
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["comment_drawings_v1"]);
+    const counts = vi.spyOn(api, "commentCounts").mockImplementation(async (ids: string[]) =>
+      Object.fromEntries(ids.map((id) => [id, id === "gen-new" ? { comment_count: 1, has_unread: true } : id === "gen-12345678" ? { comment_count: 2, has_unread: false } : { comment_count: 0, has_unread: false }])));
+    const list = vi.spyOn(api, "genComments").mockResolvedValue([]);
+    restore = [() => counts.mockRestore(), () => list.mockRestore(), () => setHubFeatures([])];
+  });
+  afterEach(() => restore.forEach((undo) => undo()));
+
+  it("머리줄 = [Edit] [History] 만 — 코멘트 C·다운로드는 없다(Ctrl 카드 단추에 있다)", async () => {
+    const { MediaPreview } = await import("../src/components/MediaPreview");
+    act(() => root.render(<MediaPreview target={VIDEO} onClose={onClose} onOpenInBoard={vi.fn()} />));
+    await settle();
+    const head = [...host.querySelectorAll(".preview-head-actions button")].map((b) => b.textContent);
+    expect(head).toEqual(["🖌 Edit", "⧉ History"]);
+    expect(host.querySelector(".cm-cbtn, .preview-dl-btn")).toBeNull();
+  });
+
+  it("오디오만 머리줄에 받기 아이콘 단추(시안 ⑱) — 생성물은 앱 이름 규칙(downloadGeneration), 어셋은 파일 이름 그대로(downloadOne)", async () => {
+    const { downloadGeneration, downloadOne } = await import("../src/lib/download");
+    vi.mocked(downloadGeneration).mockClear();
+    vi.mocked(downloadOne).mockClear();
+    const dl = () => host.querySelector<HTMLButtonElement>(".preview-head-actions .preview-dl-btn");
+    await show({ url: "/media/s.mp3", type: "audio", name: "신호음", genId: "gen-audio-1" });
+    expect(dl()?.getAttribute("aria-label")).toBe("다운로드");
+    expect(dl()?.textContent).toBe(""); // 글 없이 아이콘만
+    act(() => dl()!.click());
+    expect(downloadGeneration).toHaveBeenCalledWith("/media/s.mp3", "gen-audio-1", "신호음-gen-audi.mp3");
+    await show({ url: "/files/p/bgm.mp3", type: "audio", name: "bgm.mp3", assetPath: "bgm.mp3" });
+    act(() => dl()!.click());
+    expect(downloadOne).toHaveBeenCalledWith("/files/p/bgm.mp3", "bgm.mp3");
+    for (const t of [IMAGE, VIDEO, { ...IMAGE, genId: "gen-image" }]) {
+      await show(t);
+      expect(dl()).toBeNull(); // 이미지·영상은 Ctrl 카드 단추의 ⤓
+    }
+  });
+
+  it("오디오·에셋(genId 없음)·그림을 모르는 허브에서는 c 가 코멘트 모드를 열지 않는다", async () => {
+    await show({ url: "/a.mp3", type: "audio", name: "a", genId: "gen-audio" });
+    pressC();
+    expect(modal()).toBeNull();
+    await show(IMAGE);
+    pressC();
+    expect(modal()).toBeNull();
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures([]);
+    await show({ ...VIDEO, genId: "gen-other" });
+    pressC();
+    expect(modal()).toBeNull();
+  });
+
+  it("c 를 누르면 코멘트 모드가 뜨고, 그동안 ←/→ 는 크게 보기 장을 넘기지 않는다 · Esc 는 코멘트 모드만 닫는다", async () => {
+    const items = [{ ...VIDEO, url: "/a.mp4", genId: "gen-a" }, { ...VIDEO, url: "/b.mp4", genId: "gen-b" }];
+    await show({ ...items[0], items, index: 0 });
+    await settle();
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true })); });
+    expect(modal()).not.toBeNull();
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
+    expect(host.querySelector(".preview-count")?.textContent?.trim()).toBe("1/2");
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(modal()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await settle();
+  });
+
+  it("코멘트 창의 그림을 누르면 보고 있는 크게 보기가 받아 원본 위에 겹친다(띠 = 작성자·시각·끄기)", async () => {
+    await show(VIDEO);
+    await settle();
+    const view = { genId: "gen-12345678", commentId: "c1", author: "팀원 A",
+      drawing: { id: "d1", idx: 0, kind: "video" as const, width: 854, height: 480, time_sec: 1.5, has_thumb: false, content_hash: "h", v: 1 as const } };
+    const event = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: view, cancelable: true });
+    act(() => { window.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true); // 받았다 — 코멘트 창은 크게 보기를 새로 열지 않는다
+    expect(host.querySelector(".cm-viewing")?.textContent).toContain("팀원 A");
+    expect(host.querySelector(".cm-viewing")?.textContent).toContain("1.50초");
+    const other = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, genId: "gen-other" }, cancelable: true });
+    act(() => { window.dispatchEvent(other); });
+    expect(other.defaultPrevented).toBe(false); // 다른 생성물의 그림은 받지 않는다
+    act(() => { host.querySelector<HTMLButtonElement>(".cm-viewing button")!.click(); });
+    expect(host.querySelector(".cm-viewing")).toBeNull();
+    await settle();
+  });
+});
+
+// Ctrl 카드 단추(Jay 2026-11-05 시안 ⑩·⑪) — 누르고 있는 동안 원본 위에 격자 카드(생성물)·어셋 칸(등록된 그리기)이 뜬다.
+//  뜬 단추를 누르면 떼도 남고, 단추 밖을 누르면 걷힌다. 카드의 C = 이 창의 코멘트 모드.
+describe("크게 보기 Ctrl 카드 단추", () => {
+  const GEN = { id: "g1", prompt: "운동장", shared: false, is_final: false, is_mine: true, status: "done", created_at: "2026-11-05",
+    assets: [{ id: "a", generation_id: "g1", type: "image", file_path: "/media/g1.png", thumbnail_path: null }],
+    references: [], tags: [], auto_tags: [], deleted: false, project_id: "p1", project_name: "P", folder_path: "e001/c0010",
+    comment_count: 1, has_unread: true } as unknown as import("../src/types").Generation;
+  const TARGET: PreviewTarget = { url: "/media/g1.png", type: "image", name: "운동장", genId: "g1" };
+  const layer = () => host.querySelector<HTMLElement>(".mp-card-layer");
+  const ctrl = (type: "keydown" | "keyup") =>
+    act(() => { window.dispatchEvent(new KeyboardEvent(type, { key: "Control", ctrlKey: type === "keydown", bubbles: true })); });
+  const press = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); });
+  const actions = () => ({
+    canFinalize: () => false, onReview: vi.fn(), onPublish: vi.fn(), onUnpublish: vi.fn(), onFinalize: vi.fn(), onUnfinalize: vi.fn(),
+    onSetTags: vi.fn(), onSetAutoTags: vi.fn(), autoTagOptions: [], onRegenerate: vi.fn(), onImport: vi.fn(), onInfo: vi.fn(),
+    onOpenComments: vi.fn(), onOpenFolder: vi.fn(), myCreatorUid: "me",
+  });
+  let restore: (() => void)[] = [];
+  beforeEach(async () => {
+    const { api } = await import("../src/api");
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["comment_drawings_v1"]);
+    const getGen = vi.spyOn(api, "getGeneration").mockResolvedValue(GEN);
+    const list = vi.spyOn(api, "genComments").mockResolvedValue([]);
+    // 원본이 그려진 사각형 — jsdom 은 크기를 재지 않는다
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
+      { x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 300, width: 400, height: 300, toJSON: () => ({}) } as DOMRect);
+    const proto = HTMLImageElement.prototype;
+    const nw = Object.getOwnPropertyDescriptor(proto, "naturalWidth");
+    const nh = Object.getOwnPropertyDescriptor(proto, "naturalHeight");
+    Object.defineProperty(proto, "naturalWidth", { configurable: true, get: () => 800 });
+    Object.defineProperty(proto, "naturalHeight", { configurable: true, get: () => 600 });
+    restore = [() => getGen.mockRestore(), () => list.mockRestore(), () => rect.mockRestore(), () => setHubFeatures([]), () => {
+      if (nw) Object.defineProperty(proto, "naturalWidth", nw);
+      if (nh) Object.defineProperty(proto, "naturalHeight", nh);
+    }];
+  });
+  afterEach(() => restore.forEach((undo) => undo()));
+
+  async function showCard(target: PreviewTarget, cardActions?: ReturnType<typeof actions>) {
+    const { MediaPreview } = await import("../src/components/MediaPreview");
+    act(() => root.render(<MediaPreview target={target} onClose={onClose} cardActions={cardActions} />));
+    await settle();
+  }
+
+  it("생성물: Ctrl 을 누르는 동안 카드 단추(S·T·C·ⓘ·⤓·@·↻·폴더)가 원본 사각형에 뜨고, 떼면 사라진다", async () => {
+    await showCard(TARGET, actions());
+    expect(layer()).toBeNull();
+    ctrl("keydown");
+    await settle();
+    expect(layer()?.style.width).toBe("400px");
+    expect([...layer()!.querySelectorAll(".card-tl button")].map((b) => b.textContent)).toEqual(["S", "T", "C"]);
+    expect(layer()!.querySelector(".card-tl button:last-child")?.className).toContain("alert"); // 새 코멘트
+    expect(layer()!.querySelector(".ov-info")).not.toBeNull();
+    expect([...layer()!.querySelectorAll(".ov-bottom button")].map((b) => b.textContent)).toEqual(["⤓", "@", "↻"]);
+    expect(layer()!.querySelector(".card-folder")?.textContent).toBe("e001 c0010");
+    ctrl("keyup");
+    expect(layer()).toBeNull();
+  });
+
+  it("카드의 C = 이 창의 코멘트 모드(그 동안 카드 단추는 걷힌다) · Ctrl 없이는 안 뜨고 cardActions 가 없으면 생성물엔 안 뜬다", async () => {
+    await showCard(TARGET);
+    ctrl("keydown");
+    await settle();
+    expect(layer()).toBeNull(); // 앱 동작을 못 받은 곳
+    ctrl("keyup");
+    const acts = actions();
+    await showCard(TARGET, acts);
+    ctrl("keydown");
+    await settle();
+    act(() => { layer()!.querySelector<HTMLButtonElement>(".card-tl button:last-child")!.click(); });
+    expect(document.body.querySelector(".cm-modal")).not.toBeNull();
+    expect(acts.onOpenComments).not.toHaveBeenCalled();
+    expect(layer()).toBeNull();
+    ctrl("keyup");
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await settle();
+  });
+
+  it("뜬 단추를 누르면 Ctrl 을 떼도 남고, 단추 밖을 누르면 걷힌다", async () => {
+    await showCard(TARGET, actions());
+    ctrl("keydown");
+    await settle();
+    press(layer()!.querySelector(".card-drag-grip")!);
+    ctrl("keyup");
+    expect(layer()).not.toBeNull();
+    press(host.querySelector(".info-head")!);
+    expect(layer()).toBeNull();
+  });
+
+  it("어셋: 어셋 화면이 등록한 칸을 그 경로·사각형으로 그린다 — 등록이 없으면 뜨지 않는다", async () => {
+    const { registerAssetPreviewCard } = await import("../src/components/MediaPreview");
+    const ASSET: PreviewTarget = { url: "/files/p/bg/a.png", type: "image", name: "a.png", assetPath: "bg/a.png" };
+    await showCard(ASSET);
+    ctrl("keydown");
+    await settle();
+    expect(layer()).toBeNull();
+    ctrl("keyup");
+    const seen: unknown[] = [];
+    let off = () => {};
+    act(() => { off = registerAssetPreviewCard((item, box) => { seen.push([item.assetPath, box.width]); return <button className="asset-probe">S</button>; }); });
+    ctrl("keydown");
+    await settle();
+    expect(layer()?.querySelector(".asset-probe")).not.toBeNull();
+    expect(seen).toContainEqual(["bg/a.png", 400]);
+    act(() => off());
+    expect(layer()).toBeNull();
+    ctrl("keyup");
+  });
+});
+
+// 카드 C(격자·캔버스·편집 풀) → 코멘트 그림 창(Jay 2026-11-05 시안 ⑮⑯) — 앱이 고르고(cardCommentOpensDrawing) AppOverlays 가 띄운다.
+describe("카드 C → 코멘트 그림 창", () => {
+  it("그림을 아는 허브의 이미지·영상만 새 창 — 오디오·미디어 없음·그림을 모르는 허브는 종전 작은 창", async () => {
+    const { cardCommentOpensDrawing } = await import("../src/components/MediaPreview");
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    const of = (type?: string) => ({ assets: type ? [{ type }] : [] }) as unknown as import("../src/types").Generation;
+    setHubFeatures(["comment_drawings_v1"]);
+    try {
+      expect([of("image"), of("video"), of("audio"), of()].map(cardCommentOpensDrawing)).toEqual([true, true, false, false]);
+      setHubFeatures([]);
+      expect(cardCommentOpensDrawing(of("image"))).toBe(false);
+    } finally {
+      setHubFeatures([]);
+    }
+  });
+
+  it("AppOverlays 는 commentDraw 를 받으면 그 생성물의 코멘트 그림 창을 띄우고, 닫기는 onCommentDrawClose", async () => {
+    const { api } = await import("../src/api");
+    const list = vi.spyOn(api, "genComments").mockResolvedValue([]);
+    const { AppOverlays } = await import("../src/components/app/AppOverlays");
+    const noop = () => {};
+    const closeDraw = vi.fn();
+    const gen = { id: "g9", prompt: "달리기", assets: [{ id: "a", generation_id: "g9", type: "video", file_path: "/media/g9.mp4", thumbnail_path: null }],
+      references: [], tags: [] } as unknown as import("../src/types").Generation;
+    try {
+      act(() => root.render(
+        <AppOverlays adminOpen={false} localHub commentGenId={null} commentLabel="" commentDraw={gen} compareGens={null} info={null}
+          myId="me" preview={null} projects={[]} syncTick={0} toast={null} onAdminClose={noop} onCloseOverlay={noop} onCommentClose={noop}
+          onCommentDrawClose={closeDraw} onCompareClose={noop} onHistoryChanged={noop} onInfoClose={noop} onInfoOpenInBoard={noop}
+          onInfoOpenCanvas={noop} onRecoveryRequeue={async () => true} onOpenInBoardFromPreview={noop} onPreview={noop} />,
+      ));
+      await settle();
+      expect(document.body.querySelector(".cm-modal video")?.getAttribute("src")).toBe("/media/g9.mp4");
+      act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+      expect(closeDraw).toHaveBeenCalled();
+    } finally {
+      list.mockRestore();
+    }
   });
 });
 

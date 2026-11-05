@@ -549,6 +549,13 @@ def init_db(db_path: Path | None = None) -> Path:
         schema_compat.record_baseline(conn, "content_core")
         # 구조만 본다 — 이름표를 남기면 서버·되돌리기의 옛 검사기가 모르는 이름이라 막는다(docs/CODE_MAP.md §5).
         schema_compat.validate_baseline(conn, "content_comfy_canvas_runs")
+        # 코멘트 그림 새 표 3개 — 이름표·BASELINES 없이 구조만 본다. 어긋나면 그 표에 기대는 쓰기를 저장소가 바꾸기 전에 거절하고
+        #  여기는 남기기만 한다(docs/status/크게보기_코멘트그림_설계_2026-11-05.md §11).
+        from .services import comment_strokes
+        bad_comment_tables = [t for t, ok in comment_strokes.check_structure(conn).items() if not ok]
+        if bad_comment_tables:
+            logging.getLogger(__name__).warning("코멘트 그림 표 구조가 어긋남 — 기대는 동작을 거절합니다: %s",
+                                                ", ".join(bad_comment_tables))
         from . import db_share_commands
         db_share_commands.migrate(conn)
         conn.execute("INSERT INTO app_setting(key,value) VALUES('share_db_generation',?) ON CONFLICT(key) DO NOTHING",

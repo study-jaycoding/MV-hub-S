@@ -38,6 +38,7 @@ const SceneBoard = lazy(() =>
   import("./components/scene/SceneBoard").then((m) => ({ default: m.SceneBoard })),
 );
 import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
+import { cardCommentOpensDrawing } from "./components/MediaPreview";
 import { ResolveNotices } from "./components/app/ResolveNotices";
 import { AuthPauseBanner } from "./components/app/AuthPauseBanner";
 import { getApiPause } from "./lib/http";
@@ -437,6 +438,7 @@ export default function App() {
   // 씬(캔버스) 툴바 카운트 — SceneBoard 가 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고.
   const [sceneTypeCount, setSceneTypeCount] = useState(0);
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
+  const [commentDraw, setCommentDraw] = useState<Generation | null>(null); // 카드 C 로 연 코멘트 그림 창(Jay 2026-11-05 시안 ⑮)
   const [syncTick, setSyncTick] = useState(0); // WS 'synced' 수신 카운터 — 열린 코멘트 패널 실시간 갱신용
   const [preview, setPreview] = useState<PreviewTarget | null>(null); // 클릭 미리보기
   const [folderPeek, setFolderPeek] = useState(false); // 캔버스 '폴더 보기' 창 — 규칙은 아래 folderSel 옆
@@ -534,6 +536,7 @@ export default function App() {
     setInfo(null);
     setPreview(null);
     setCommentGenId(null);
+    setCommentDraw(null);
     setCompareGens(null);
     setVideoCompare(null);
     selectedRef.current = new Set();
@@ -1994,6 +1997,12 @@ export default function App() {
     enterBoard(g.id);
   };
 
+  // 카드의 C(격자·캔버스·편집 풀) → 코멘트 그림 창(Jay 2026-11-05 시안 ⑮⑯). 그림을 모르는 허브·오디오·미디어 없음은 종전 작은 창.
+  const openCardComment = (g: Generation) => {
+    if (cardCommentOpensDrawing(g)) setCommentDraw(g);
+    else openComment(g.id);
+  };
+
   // 미리보기(크게 보기) '구성에서 보기' → 구성탭 계보 트리(위와 동일).
   const onOpenInBoardFromPreview = (genId: string) => {
     if (canvasIsElsewhere()) return;
@@ -2478,7 +2487,7 @@ export default function App() {
           onBulkAddAutoTags={onBulkAddAutoTags}
           onBulkRemoveAutoTags={onBulkRemoveAutoTags}
           onWorkspaceCommand={onWorkspaceCommand}
-          onOpenComments={(g) => openComment(g.id)}
+          onOpenComments={openCardComment}
           onRegenerate={onRegenerate}
           onPublish={onPublish}
           onUnpublish={onUnpublish}
@@ -2670,7 +2679,7 @@ export default function App() {
               // 풀 카드의 호버 단추(Jay 2026-10-15) — 공유 & 리뷰 격자에 주는 것과 같은 동작. 정보는 라이브러리 선택(여러 장이면 비교)을 보지 않는다
               cardActions={{
                 canFinalize, onReview, onPublish, onUnpublish, onFinalize, onUnfinalize, onSetTags, onSetAutoTags,
-                autoTagOptions: facets.auto_tags, onOpenComments: (g) => openComment(g.id), onInfo: setInfo,
+                autoTagOptions: facets.auto_tags, onOpenComments: openCardComment, onInfo: setInfo,
               }}
             />
           </Suspense>
@@ -2905,7 +2914,7 @@ export default function App() {
                 onSetAutoTags={onSetAutoTags}
                 autoTagOptions={facets.auto_tags}
                 onWorkspaceCommand={onCanvasWorkspaceCommand}
-                onOpenComments={(g) => openComment(g.id)}
+                onOpenComments={openCardComment}
                 // '생성 결과' 창 — 라이브러리와 같은 보기 설정·툴바(건수만 그 창의 것으로). 공간 필터·실패 정리는 목록의 것이라 뺀다.
                 libraryView={{ scale, layout, groupByDate, masonry }}
                 renderVariantToolbar={(count) =>
@@ -3165,6 +3174,7 @@ export default function App() {
         localHub={!authConfig?.auth_enabled}
         commentGenId={commentGenId}
         commentLabel={commentLabel}
+        commentDraw={commentDraw}
         compareGens={compareGens}
         info={info}
         myId={account?.creator_uid || "me"}
@@ -3178,6 +3188,7 @@ export default function App() {
         }}
         onCloseOverlay={closeOverlay}
         onCommentClose={() => setCommentGenId(null)}
+        onCommentDrawClose={() => setCommentDraw(null)}
         onCompareClose={() => setCompareGens(null)}
         onHistoryChanged={reload}
         onInfoClose={() => setInfo(null)}
@@ -3192,6 +3203,12 @@ export default function App() {
         onRecoveryRequeue={onRecoveryRequeue}
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
+        // 크게 보기 Ctrl 카드 단추(시안 ⑩) — 격자 카드와 같은 동작. 정보는 라이브러리 선택(여러 장이면 비교)을 보지 않는다
+        previewCardActions={{
+          canFinalize, onReview, onPublish, onUnpublish, onFinalize, onUnfinalize, onSetTags, onSetAutoTags,
+          autoTagOptions: facets.auto_tags, onRegenerate, onImport, onInfo: setInfo, onOpenComments: openCardComment,
+          onOpenFolder: openFolderWindow, myCreatorUid: account?.creator_uid ?? null,
+        }}
       />
       {/* Resolve 보내기 결과 가운데 확인이 필요한 것 — 알림 바로 아래에 닫을 때까지 남는다(겹이 아니다 — 뒤 화면을 그대로 쓴다).
           편집 탭의 경고(상황이 이어지는 동안)도 같은 줄의 위쪽에 — Jay 2026-10-24 */}

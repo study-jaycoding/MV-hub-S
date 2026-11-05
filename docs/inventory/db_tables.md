@@ -10,7 +10,7 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 100개.
+테이블 103개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
@@ -54,9 +54,12 @@
 | `gen_tag` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/tags.py` | `repo/facets.py` `repo/generation_rows.py` `repo/generations.py` `repo/generations_query.py` `repo/id_resolve.py` `repo/share.py` `repo/sources.py` `repo/tags.py` `repo/trash.py` |
 | `gen_tag_overlay` | content DB | `backend/schema.sql` `repo/id_resolve.py` | `repo/id_resolve.py` `repo/tags.py` | `repo/facets.py` `repo/id_resolve.py` |
 | `generation` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/gen_requests.py` `repo/generation_delete.py` `repo/generation_sync.py` `repo/generations.py` `repo/identity.py` `repo/projects.py` `repo/scene_keeps.py` `repo/share.py` `repo/share_state_intents.py` `repo/trash.py` `repo/workspace_assignments.py` `schema_compat.py` | `backend/cleanup_orphan_creators.py` `db_account_dbs.py` `db_migrations.py` `repo/_common.py` `repo/asset_registry.py` `repo/asset_sync.py` `repo/comfy_canvas_runs.py` `repo/facets.py` `repo/folder_cover.py` `repo/gen_requests.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generation_views.py` `repo/generations.py` `repo/generations_query.py` `repo/history.py` `repo/id_resolve.py` `repo/identity.py` `repo/lineage.py` `repo/manage.py` `repo/manage_analytics.py` `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_task_previews.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/manage_transactions.py` `repo/mcp_v2.py` `repo/media_preservation.py` `repo/projects.py` `repo/result_fingerprint.py` `repo/scene_cards.py` `repo/scene_keeps.py` `repo/share.py` `repo/share_commands.py` `repo/share_state_intents.py` `repo/sources.py` `repo/tags.py` `repo/trash.py` `repo/workspace_assignments.py` `services/asset_backfill.py` `services/operational_health.py` `services/trash_transfer.py` `services/update_activity.py` |
-| `generation_comment` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/assets.py` `repo/generation_delete.py` `repo/share.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/_common.py` `repo/assets.py` `repo/generation_delete.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/manage_tasks.py` `repo/share.py` `repo/trash.py` |
+| `generation_comment` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/assets.py` `repo/comment_drawings.py` `repo/generation_delete.py` `repo/share.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/_common.py` `repo/assets.py` `repo/comment_drawings.py` `repo/generation_delete.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/manage_tasks.py` `repo/share.py` `repo/trash.py` |
+| `generation_comment_drawing` | content DB | `backend/schema.sql` | — | — |
 | `generation_comment_read` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/assets.py` `repo/generation_delete.py` | `db_migrations.py` `repo/trash.py` |
-| `generation_comment_seen` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/assets.py` `repo/generation_delete.py` | `db_migrations.py` `repo/_common.py` `repo/trash.py` |
+| `generation_comment_request` | content DB | `backend/schema.sql` | — | — |
+| `generation_comment_seen` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/assets.py` `repo/comment_drawings.py` `repo/generation_delete.py` | `db_migrations.py` `repo/_common.py` `repo/trash.py` |
+| `generation_comment_tombstone` | content DB | `backend/schema.sql` | — | — |
 | `generation_event` | content DB | `backend/schema.sql` | `backend/schema.sql` `repo/event_journal.py` | `repo/event_journal.py` `services/operational_health.py` |
 | `generation_fts` | content DB | `db_migrations.py` | `db_migrations.py` | `repo/generations_query.py` |
 | `generation_local_flag` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/generation_sync.py` | `repo/generation_rows.py` |

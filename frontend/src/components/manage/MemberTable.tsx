@@ -34,6 +34,7 @@ import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
 import { errorDetail, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { holdUnload } from "../../lib/unloadGuard";
+import { useModalFocus } from "../../lib/keyGate";
 import { manageApi } from "../../lib/manageApi";
 import {
   applyProjectRoles,
@@ -42,6 +43,7 @@ import {
   mainPeople,
   groupAssignBody,
   groupColorBody,
+  groupDeleteBody,
   memberQuotaBody,
   groupEditBody,
   groupTermsBody,
@@ -360,6 +362,12 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const [topup, setTopup] = useState<DraftTopup | null>(null);
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditError, setCreditError] = useState("");
+  // 그룹 삭제 확인 — 이름·배정 인원을 보여 주고 묻는다(Jay 2026-11-05 — 프로젝트 설정 창의 그룹 삭제와 같은 문구).
+  // 연 순간의 크레딧 설정(source)도 쥔다 — 확인 중 표가 다시 읽혀도 본 것 기준으로 보내 바뀌었으면 409(Codex 리뷰 P1).
+  const [groupDeleting, setGroupDeleting] = useState<{ group: MemberTableGroup; source: CreditPlanSettings } | null>(null);
+  const groupDeleteRef = useRef<HTMLDivElement>(null);
+  useModalFocus(groupDeleteRef, Boolean(groupDeleting));
+  useEscapeClose(() => setGroupDeleting(null), Boolean(groupDeleting), true, true);
   const [retries, setRetries] = useState<{ key: string; label: string; operation: () => Promise<void> }[]>([]);
   const [statusBusy, setStatusBusy] = useState(false); // 서브스페이스 서브 상태 반영 중(서브 전체 — §16)
   const [folders, setFolders] = useState<Record<string, FolderCell>>({}); // 렌더 폴더(이 PC)
@@ -603,6 +611,30 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
       }
     });
     return true;
+  };
+
+  // 그룹 삭제 — 확인 창에서 [삭제]를 눌렀을 때만. 창을 연 때의 설정에서 그 그룹만 뺀 목록을 같은 크레딧 설정 API 로 저장한다.
+  const openGroupDelete = (group: MemberTableGroup) => {
+    if (data?.credit) setGroupDeleting({ group, source: data.credit });
+  };
+  const deleteGroup = ({ group, source }: { group: MemberTableGroup; source: CreditPlanSettings }) => {
+    setGroupDeleting(null);
+    if (!data || !inScope || !workspaceId || creditBusy || groupEditor) return;
+    setCreditBusy(true);
+    setCreditError("");
+    save(async () => {
+      try {
+        await saveCredit(source, groupDeleteBody(source, group.id));
+        setNotice({ tone: "ok", text: `삭제됨 · 그룹 (${group.name})` });
+      } catch (reason) {
+        setCreditError(isHttpStatus(reason, 409)
+          ? "다른 곳에서 먼저 바꿨습니다. 최신 값을 읽었으니 다시 삭제해 주세요."
+          : `그룹을 삭제하지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
+        throw reason;
+      } finally {
+        setCreditBusy(false);
+      }
+    });
   };
 
   /** 정기 크레딧 한 칸 저장(방식·주기·충전일·금액 — 서브스페이스 CreditDialog 와 같은 `recurringPlanBody`, §16).
@@ -1634,6 +1666,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                     <th className="num">그룹 크레딧</th>
                     <th className="num">이번 기간 사용</th>
                     <th className="num" title="할당 크레딧 합계 − 이번 기간 사용(이월 없음)">남음</th>
+                    {canGroup ? <th className="mtable-group-actions-col">관리</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -1678,14 +1711,23 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                       </td>
                       <td className="num">{credits(groupUsed(group))}</td>
                       <td className="num">{group.remaining === null ? (group.monthly_limit == null ? <span className="mtable-muted">제한 없음</span> : "—") : <span className={`credit-pct tone-${remainingTone(group.remaining, group.quota_total ?? null)}`}>{credits(group.remaining)}</span>}</td>
+                      {canGroup ? (
+                        <td className="mtable-group-actions-col">
+                          {/* 크레딧 기록 표와 같은 [수정]·[삭제](Jay 2026-11-05) — 수정 = 이름 칩과 같은 그룹 편집 창 */}
+                          <div className="mtable-topup-actions">
+                            <button type="button" className="mtable-cancel" aria-label={`${group.name} 그룹 수정`} disabled={creditBusy || Boolean(groupEditor)} onClick={() => openGroupEditor(group.id)}>수정</button>
+                            <button type="button" className="mtable-cancel mtable-delete" aria-label={`${group.name} 그룹 삭제`} disabled={creditBusy || Boolean(groupEditor)} onClick={() => openGroupDelete(group)}>삭제</button>
+                          </div>
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                   {!data.groups.length ? (
-                    <tr><td className="mtable-empty" colSpan={6}>설정된 크레딧 그룹이 없습니다.</td></tr>
+                    <tr><td className="mtable-empty" colSpan={canGroup ? 7 : 6}>설정된 크레딧 그룹이 없습니다.</td></tr>
                   ) : null}
                   {canGroup ? (
                     <tr className="mtable-new-row">
-                      <td colSpan={6}><button type="button" disabled={creditBusy} onClick={() => openGroupEditor()}>+ 새 그룹</button></td>
+                      <td colSpan={7}><button type="button" disabled={creditBusy} onClick={() => openGroupEditor()}>+ 새 그룹</button></td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -2030,6 +2072,21 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
           onClose={() => { if (!creditBusy) { setGroupEditor(null); setCreditError(""); } }}
           onApply={saveGroupEdit}
         />
+      ) : null}
+      {groupDeleting ? (
+        <div className="admin-confirm-backdrop mtable-delete-confirm" onMouseDown={() => setGroupDeleting(null)}>
+          <div ref={groupDeleteRef} className="admin-confirm" role="dialog" aria-label="그룹 삭제" onMouseDown={(event) => event.stopPropagation()}>
+            <p className="admin-confirm-q">
+              <b>{groupDeleting.group.name}</b> 그룹을 삭제하시겠습니까?
+              <br />
+              <small>이 그룹에 배정된 참가자 {groupDeleting.group.member_count.toLocaleString()}명의 배정도 함께 풀립니다.</small>
+            </p>
+            <div className="admin-confirm-actions">
+              <button type="button" className="admin-confirm-yes" onClick={() => deleteGroup(groupDeleting)}>삭제</button>
+              <button type="button" className="admin-confirm-no" onClick={() => setGroupDeleting(null)}>취소</button>
+            </div>
+          </div>
+        </div>
       ) : null}
       {addOpen && data.credit ? (
         <AddMemberDialog groups={data.credit.groups} onClose={() => setAddOpen(false)} onSave={addParticipant} />

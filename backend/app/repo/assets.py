@@ -14,6 +14,7 @@ from ._common import (
     new_id,
 )
 from ._visibility import alert_comment_visibility_clause as _alert_visibility_clause
+from .comment_drawings import TOMBSTONE, record_tombstones, require as require_comment_tables
 from .identity import resolve_display_names
 
 
@@ -502,6 +503,15 @@ def delete_generation_comment(comment_id: str, worker_id: str) -> None:
                 raise PermissionError("내 코멘트만 삭제할 수 있습니다")
             if locked:
                 raise PermissionError("답글이 달려 삭제할 수 없습니다")
+            # 삭제 기록(C2) — 실제로 지우는 모든 id(부모+직접 답글)를 같은 트랜잭션에 남겨 발행 재전송·재시도·휴지통 복원이
+            #  되살리지 못하게 한다. 기록 표를 믿을 수 없으면 지우기 전에 거절(글 전용 코멘트도). 그림은 외래키로 함께 지워진다.
+            require_comment_tables(conn, TOMBSTONE)
+            doomed = conn.execute(
+                "SELECT id, gen_id FROM generation_comment WHERE id=? OR parent_id=?",
+                (comment_id, comment_id),
+            ).fetchall()
+            for row in doomed:
+                record_tombstones(conn, [row["id"]], row["gen_id"])
             conn.execute(
                 "DELETE FROM generation_comment WHERE id=? OR parent_id=?",
                 (comment_id, comment_id),

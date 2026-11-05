@@ -788,6 +788,9 @@ table.dash-tree td.l { text-align: left; }
 /* 에피소드·시퀀스 머리 오른쪽 — 개수 · 검색 · 한 번에 접기/펼치기 */
 .dash-seq-tools { display: flex; align-items: center; gap: 10px; }
 .dash-seq-search { width: 210px; }
+/* 검색 알약 — 대시보드 '인원 · 리버 ×' 알약(.usage-drill-chip)과 같은 모양, 검색칸 왼쪽(Jay B안 2026-11-05) */
+.dash-seq-pills { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.dash-seq-pills .usage-drill-chip { padding: 5px 8px; font-weight: 700; }
 .dash-seq-fold {
   border: 1px solid var(--usage-line); border-radius: 8px; background: #17191b; color: var(--text);
   padding: 6px 10px; font-size: 11px; white-space: nowrap;
@@ -1458,6 +1461,10 @@ button.mtable-chip.off:hover { opacity: 1; border-color: var(--accent); }
 .mtable-topup-actions { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; }
 .mtable-topup-actions button { width: 54px; min-width: 54px; padding: 0; }
 .mtable-topup-actions .mtable-delete { color: #fb7185; }
+/* 그룹 현황 '관리' 칸 · 그룹 삭제 확인의 [삭제] = 빨강(앱 설정 창 위험 단추와 같은 색, Jay 2026-11-05) */
+.mtable th.mtable-group-actions-col, .mtable td.mtable-group-actions-col { width: 126px; }
+.mtable-delete-confirm .admin-confirm-yes { background: #ff3b30; color: #fff; }
+.mtable-delete-confirm .admin-confirm-yes:hover { background: #ff5247; }
 /* 관리 표 = 서브스페이스의 표 버전(§16) — 정기 크레딧 칸 묶음 · 렌더 폴더 · 보관 프로젝트 · 줄 끌기 */
 .mtable-recurring, .mtable-folder { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .mtable-folder input { min-width: 180px; }

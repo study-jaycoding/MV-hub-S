@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 420개.
+전체 424개.
 
 ## `backend/app/main.py` — 11개
 
@@ -281,7 +281,7 @@
 | `POST` | `/api/gen-requests/{rid}/release-claim` | `release_gen_request_claim` | 로컬 예외 | — |
 | `POST` | `/api/gen-requests` | `create_gen_request` | 로컬 예외 | — |
 
-## `backend/app/routers/generation.py` — 42개
+## `backend/app/routers/generation.py` — 45개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -289,6 +289,8 @@
 | `POST` | `/api/cache-all` | `cache_all` | 로컬 예외 | — |
 | `POST` | `/api/cost` | `estimate_cost` | 로컬 예외 | — |
 | `GET` | `/api/creators` | `list_creators` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/generation-comments/{comment_id}/drawings/{drawing_id}/thumb` | `get_comment_drawing_thumb` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/generation-comments/{comment_id}/drawings/{drawing_id}` | `get_comment_drawing` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generation-comments/{comment_id}/seen` | `seen_gen_comment` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `DELETE` | `/api/generation-comments/{comment_id}` | `delete_gen_comment` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `PUT` | `/api/generation-comments/{comment_id}` | `edit_gen_comment` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
@@ -303,6 +305,7 @@
 | `POST` | `/api/generations/{gen_id}/cache` | `cache_one` | 로컬 예외 | — |
 | `PUT` | `/api/generations/{gen_id}/color` | `set_color` | 로컬 예외 | — |
 | `PUT` | `/api/generations/{gen_id}/comment` | `set_comment` | 로컬 예외 | — |
+| `POST` | `/api/generations/{gen_id}/comments-v2` | `add_gen_comment_v2` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/comments/read` | `read_gen_comments` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/generations/{gen_id}/comments` | `list_gen_comments` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/generations/{gen_id}/comments` | `add_gen_comment` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
@@ -512,12 +515,13 @@
 | `GET` | `/api/projects` | `list_projects` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/projects` | `create_project` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 
-## `backend/app/routers/publish.py` — 14개
+## `backend/app/routers/publish.py` — 15개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/publish-to-shared/folder` | `publish_folder_to_shared` | 로컬 예외 | — |
 | `POST` | `/api/publish-to-shared` | `publish_to_shared` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `POST` | `/api/share/publish-bundle-v2` | `receive_published_bundle_v2` | 기본 중계 | — |
 | `POST` | `/api/share/publish-bundle` | `receive_published_bundle` | 기본 중계 | — |
 | `POST` | `/api/shared-server/de-elevate` | `shared_server_de_elevate` | 로컬 예외 | — |
 | `POST` | `/api/shared-server/elevate` | `shared_server_elevate` | 로컬 예외 | — |

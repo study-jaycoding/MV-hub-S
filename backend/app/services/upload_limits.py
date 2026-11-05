@@ -77,7 +77,20 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/edit-shares/save": 264 * KIB,
     "/api/scene-keeps": 8 * MIB + 64 * KIB,
     "/api/scene-keeps/restore": 4 * KIB,
+    # 코멘트 그림이 실린 발행 묶음(설계 C5) — 그림 본문까지 JSON 으로 온다. 파싱 전에 막는다.
+    "/api/share/publish-bundle-v2": 32 * MIB,
 }
+# 경로 안에 id 가 있는 입구 — (앞, 끝) 조각으로 고른다. comments-v2 = 그림 12장(획 256KiB + thumb base64 ≈ 86KiB) + 글.
+UPLOAD_REQUEST_SUFFIX_LIMITS: dict[tuple[str, str], int] = {
+    ("/api/generations/", "/comments-v2"): 5 * MIB,
+}
+
+
+def _suffix_limit(path: str) -> int | None:
+    for (head, tail), limit in UPLOAD_REQUEST_SUFFIX_LIMITS.items():
+        if path.startswith(head) and path.endswith(tail) and len(path) > len(head) + len(tail):
+            return limit
+    return None
 
 _log = logging.getLogger("mvhub.upload")
 
@@ -233,6 +246,8 @@ class UploadBodyLimitMiddleware:
             return
         path = _normalise_path(str(scope.get("path") or ""))
         limit = self.limits.get(path)
+        if limit is None:
+            limit = _suffix_limit(path)
         if limit is None:
             await self.app(scope, receive, send)
             return

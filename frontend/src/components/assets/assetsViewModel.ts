@@ -259,12 +259,14 @@ export function assetPreviewTarget(
     url: assetFileUrl(project, file.path),
     type: file.type as "image" | "video" | "audio",
     name: file.name,
+    assetPath: file.path,
   }));
   const index = media.findIndex((file) => file.path === target.path);
   return {
     url: assetFileUrl(project, target.path),
     type: target.type,
     name: target.name,
+    assetPath: target.path,
     items,
     index,
   };

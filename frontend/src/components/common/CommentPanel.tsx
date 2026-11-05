@@ -2,7 +2,7 @@ import { backgroundKeysBlocked } from "../../lib/keyGate";
 import { markKeyHandled } from "../../lib/keyHandled";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { holdUnload } from "../../lib/unloadGuard";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
 import { loadString } from "../../lib/storage";
@@ -65,6 +65,8 @@ export function CommentPanel<T extends CommentPanelItem>({
   onSeen,
   targetKey,
   onUnsentChange,
+  embedded = false,
+  renderExtra,
 }: {
   comments: T[];
   label: string;
@@ -84,6 +86,10 @@ export function CommentPanel<T extends CommentPanelItem>({
   targetKey?: string;
   // 보내지 않은 글이 생기거나 없어질 때 — 패널을 대상마다 다시 만드는 쪽(Assets)이 대상을 바꾸기 전에 묻는다(Jay 결정 5A)
   onUnsentChange?: (unsent: boolean) => void;
+  // 끼워 쓰기(코멘트 그림 창의 오른쪽 '지난 코멘트') — 떠 있는 창의 자리·끌기·닫기·아래 입력칸 없이 목록만(답글·수정·삭제는 그대로)
+  embedded?: boolean;
+  // 글 아래 덧붙일 것(생성물 코멘트의 그림 줄)
+  renderExtra?: (comment: T) => ReactNode;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
@@ -251,6 +257,7 @@ export function CommentPanel<T extends CommentPanelItem>({
         ) : (
           <div className="cmt-text">{c.text}</div>
         )}
+        {renderExtra?.(c)}
 
         {replyingId === c.id && (
           <form
@@ -287,7 +294,7 @@ export function CommentPanel<T extends CommentPanelItem>({
 
   return (
     <div
-      className="cmt-panel"
+      className={"cmt-panel" + (embedded ? " cmt-embedded" : "")}
       ref={panelRef}
       data-cmt-hold={holdName}
       onInput={syncUnsent}
@@ -302,20 +309,22 @@ export function CommentPanel<T extends CommentPanelItem>({
         if (from.matches?.('.cmt-input input')) from.blur();
       }}
       style={
-        {
-          left: (pos || fallbackPos).x,
-          top: (pos || fallbackPos).y,
-          width: size?.w,
-          height: size?.h,
-          "--cmt-fs": `${fontPx}px`,
-        } as CSSProperties
+        (embedded
+          ? { "--cmt-fs": `${fontPx}px` }
+          : {
+              left: (pos || fallbackPos).x,
+              top: (pos || fallbackPos).y,
+              width: size?.w,
+              height: size?.h,
+              "--cmt-fs": `${fontPx}px`,
+            }) as unknown as CSSProperties
       }
     >
-      <div className="cmt-head" onMouseDown={(e) => onHeadMouseDown(e, fallbackPos)}>
+      <div className="cmt-head" onMouseDown={embedded ? undefined : (e) => onHeadMouseDown(e, fallbackPos)}>
         <span className="cmt-title">
-          💬 코멘트 <span className="muted">({visible.length})</span>
+          💬 {embedded ? "지난 코멘트" : "코멘트"} <span className="muted">({visible.length})</span>
         </span>
-        <span className="cmt-file">{label}</span>
+        {!embedded && <span className="cmt-file">{label}</span>}
         <div className="cmt-fs" onMouseDown={(e) => e.stopPropagation()}>
           <button title="글씨 작게" onClick={() => setFs(fontPx - 1)} disabled={fontPx <= FS_MIN}>
             A−
@@ -324,9 +333,11 @@ export function CommentPanel<T extends CommentPanelItem>({
             A+
           </button>
         </div>
-        <button className="cmt-x" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
-          ✕
-        </button>
+        {!embedded && (
+          <button className="cmt-x" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
+            ✕
+          </button>
+        )}
       </div>
 
       <div className="cmt-thread">
@@ -334,27 +345,32 @@ export function CommentPanel<T extends CommentPanelItem>({
         {roots.map((root) => renderThread(root))}
       </div>
 
-      <form
-        className="cmt-input"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submitComment(e.currentTarget.elements.namedItem("c") as HTMLInputElement);
-        }}
-      >
-        <input
-          name="c"
-          autoComplete="off"
-          placeholder={writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎"}
-          autoFocus
-        />
-        <button type="submit">전송</button>
-      </form>
+      {/* 끼워 쓰기에서는 새 코멘트를 그 창의 아래 판에서 쓴다(그림과 함께) */}
+      {!embedded && (
+        <form
+          className="cmt-input"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitComment(e.currentTarget.elements.namedItem("c") as HTMLInputElement);
+          }}
+        >
+          <input
+            name="c"
+            autoComplete="off"
+            placeholder={writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎"}
+            autoFocus
+          />
+          <button type="submit">전송</button>
+        </form>
+      )}
 
       <div className="cmt-opt">
-        <label title="개인 기록으로 저장 — 팀 공유 스레드·발행·통계에 표시되지 않습니다">
-          <input type="checkbox" checked={writePrivate} onChange={togglePrivate} />
-          비공개 코멘트(쓰기)
-        </label>
+        {!embedded && (
+          <label title="개인 기록으로 저장 — 팀 공유 스레드·발행·통계에 표시되지 않습니다">
+            <input type="checkbox" checked={writePrivate} onChange={togglePrivate} />
+            비공개 코멘트(쓰기)
+          </label>
+        )}
         <label title="끄면 팀이 보는 그대로(공유 코멘트만) 표시">
           <input type="checkbox" checked={showPrivate} onChange={toggleShow} />
           비공개 코멘트(읽기)

@@ -82,12 +82,27 @@ describe("project usage hierarchy", () => {
       folder("ep001/c0015", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
       folder("ep002/c0020", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
     ]);
-    const names = (query: string) => filterProjectUsage(episodes, query).map((episode) => `${episode.episode_name}:${episode.sequences.map((sequence) => sequence.sequence_name).join(",")}`);
+    const names = (...terms: string[]) => filterProjectUsage(episodes, terms).map((episode) => `${episode.episode_name}:${episode.sequences.map((sequence) => sequence.sequence_name).join(",")}`);
     expect(names("")).toEqual(["ep001:c0010,c0015", "ep002:c0020"]);
+    expect(names()).toEqual(["ep001:c0010,c0015", "ep002:c0020"]);
     expect(names("EP002")).toEqual(["ep002:c0020"]); // 대소문자 무시 · 에피소드가 맞으면 시퀀스 전부
     expect(names("0015")).toEqual(["ep001:c0015"]); // 시퀀스 이름
     expect(names("제이")).toEqual(["ep001:c0010"]); // 멤버(fixture: 0010 폴더 = 제이)
     expect(names("없는말")).toEqual([]);
-    expect(filterProjectUsage(episodes, "0015")[0].count).toBe(2); // 에피소드 줄 합계는 전체 값 그대로
+    expect(filterProjectUsage(episodes, ["0015"])[0].count).toBe(2); // 에피소드 줄 합계는 전체 값 그대로
+  });
+
+  it("검색 알약 여러 개 — 모두 맞는 시퀀스만 남는다(Jay B안), 빈 알약은 빼고 센다", () => {
+    const episodes = buildProjectUsageHierarchy([
+      folder("ep001/c0010", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
+      folder("ep001/c0015", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
+      folder("ep002/c0010", 1, 0, 1, 0, "2026-08-01", "2026-08-01"),
+    ]);
+    const names = (...terms: string[]) => filterProjectUsage(episodes, terms).map((episode) => `${episode.episode_name}:${episode.sequences.map((sequence) => sequence.sequence_name).join(",")}`);
+    expect(names("c0010")).toEqual(["ep001:c0010", "ep002:c0010"]);
+    expect(names("c0010", "ep002")).toEqual(["ep002:c0010"]); // 시퀀스 이름 + 에피소드 이름
+    expect(names("ep001", "제이")).toEqual(["ep001:c0010"]); // 에피소드 이름 + 멤버(fixture: 0010 폴더 = 제이)
+    expect(names("0015", "제이")).toEqual([]); // 하나만 맞으면 빠진다
+    expect(names("ep001", " ")).toEqual(["ep001:c0010,c0015"]);
   });
 });

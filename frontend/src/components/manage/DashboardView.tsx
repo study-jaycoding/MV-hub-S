@@ -1,6 +1,6 @@
 // 통합 대시보드 — 상단 프로젝트 전체 요약, 하단 실제 폴더 기준 에피소드·시퀀스 사용량 구조.
 // 프로젝트 클릭 → 에피소드 합계와 하위 시퀀스의 생성·최종·크레딧·시간·기간을 표시한다.
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { isHttpStatus } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { projectApi } from "../../lib/projectApi";
@@ -195,14 +195,35 @@ function ProjectDetail({
   const [sequencePageSize, setSequencePageSize] = useState<number>(USAGE_PAGE_SIZES[0]);
   const [collapsedEpisodes, setCollapsedEpisodes] = useState<Set<string>>(() => new Set());
   const [query, setQuery] = useState("");
+  // 검색 알약 — Enter 로 쌓고, 지금 치는 글과 함께 모두 맞아야 보인다(Jay B안 2026-11-05)
+  const [terms, setTerms] = useState<string[]>([]);
   const allEpisodes = useMemo(() => buildProjectUsageHierarchy(folders), [folders]);
-  const episodes = useMemo(() => filterProjectUsage(allEpisodes, query), [allEpisodes, query]);
+  const episodes = useMemo(() => filterProjectUsage(allEpisodes, [...terms, query]), [allEpisodes, terms, query]);
+  const searching = terms.length > 0 || Boolean(query.trim());
   const sequenceCount = episodes.reduce((total, episode) => total + episode.sequences.length, 0);
   useEffect(() => {
     setSequencePage(1);
     setCollapsedEpisodes(new Set());
     setQuery("");
+    setTerms([]);
   }, [pid]);
+  const searchKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return; // 한글 조합 중 Enter 는 글자 확정만
+    const text = query.trim();
+    if (event.key === "Enter" && text) {
+      event.preventDefault();
+      setTerms((current) => (current.some((term) => term.toLowerCase() === text.toLowerCase()) ? current : [...current, text]));
+      setQuery("");
+      setSequencePage(1);
+    } else if (event.key === "Backspace" && !query && terms.length) {
+      setTerms((current) => current.slice(0, -1));
+      setSequencePage(1);
+    }
+  };
+  const removeTerm = (term: string) => {
+    setTerms((current) => current.filter((item) => item !== term));
+    setSequencePage(1);
+  };
   // 한 번에 접기/펼치기 — 보이는 에피소드가 모두 접혀 있으면 펼치기, 아니면 전부 접기(Jay 2026-09-30)
   const allCollapsed = episodes.length > 0 && episodes.every((episode) => collapsedEpisodes.has(episode.episode_name));
   const toggleAll = () => setCollapsedEpisodes(allCollapsed ? new Set() : new Set(allEpisodes.map((episode) => episode.episode_name)));
@@ -235,15 +256,25 @@ function ProjectDetail({
               <span className="work-source-label">{usageSourceLabel(usageSource, usageScope)}</span>
             </div>
             <div className="dash-seq-tools">
-              <span className="meta">{query.trim() ? "찾음 · " : ""}에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
+              <span className="meta">{searching ? "찾음 · " : ""}에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
               {folders.length ? (
                 <>
+                  {terms.length ? (
+                    <div className="dash-seq-pills">
+                      {terms.map((term) => (
+                        <button key={term} type="button" className="usage-drill-chip" title="이 검색어 빼기" aria-label={`검색어 ${term} 빼기`} onClick={() => removeTerm(term)}>
+                          {term}<span aria-hidden="true">×</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="work-search dash-seq-search">
                     <span className="work-search-ic">🔍</span>
-                    <input value={query} aria-label="에피소드·시퀀스 검색" placeholder="에피소드·시퀀스·멤버 검색" onChange={(event) => { setQuery(event.target.value); setSequencePage(1); }} />
+                    <input value={query} aria-label="에피소드·시퀀스 검색" placeholder="에피소드·시퀀스·멤버 검색" title="Enter = 검색어 알약으로 · 알약이 모두 맞는 것만 보입니다"
+                      onChange={(event) => { setQuery(event.target.value); setSequencePage(1); }} onKeyDown={searchKey} />
                   </div>
-                  <button type="button" className="dash-seq-fold" disabled={!episodes.length || Boolean(query.trim())} onClick={toggleAll}
-                    title={query.trim() ? "검색 중에는 찾은 시퀀스를 모두 펼쳐 보입니다" : undefined}>
+                  <button type="button" className="dash-seq-fold" disabled={!episodes.length || searching} onClick={toggleAll}
+                    title={searching ? "검색 중에는 찾은 시퀀스를 모두 펼쳐 보입니다" : undefined}>
                     {allCollapsed ? "모두 펼치기" : "모두 접기"}
                   </button>
                 </>
@@ -266,7 +297,7 @@ function ProjectDetail({
                 </thead>
                 <tbody>
                   {pagedEpisodes.items.map((episode) => {
-                    const collapsed = !query.trim() && collapsedEpisodes.has(episode.episode_name); // 검색 중엔 찾은 것을 다 보인다
+                    const collapsed = !searching && collapsedEpisodes.has(episode.episode_name); // 검색 중엔 찾은 것을 다 보인다
                     return (
                       <Fragment key={episode.episode_name}>
                         <EpisodeUsageRow

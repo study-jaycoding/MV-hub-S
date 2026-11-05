@@ -567,6 +567,42 @@ CREATE TABLE IF NOT EXISTS generation_comment_seen (
 );
 CREATE INDEX IF NOT EXISTS idx_gen_comment_seen_w ON generation_comment_seen(worker_id);
 
+-- 코멘트에 붙은 그림(획 목록 v1) — docs/status/크게보기_코멘트그림_설계_2026-11-05.md §3.2·C4.
+-- 원본은 저장하지 않는다(코멘트가 달린 생성물을 가리킴). 영상만 목록용 작은 미리보기(thumb_jpg).
+-- ★이름표(baseline)·BASELINES 항목 없음 — 옛 검사기·공개판 목록 시험이 막는다. 구조는 repo/comment_drawings.check_structure 가 본다.
+CREATE TABLE IF NOT EXISTS generation_comment_drawing (
+    id           TEXT PRIMARY KEY,                    -- 클라 uuid(식별자)
+    comment_id   TEXT NOT NULL REFERENCES generation_comment(id) ON DELETE CASCADE,
+    idx          INTEGER NOT NULL,                    -- 붙는 순서
+    kind         TEXT NOT NULL,                       -- 'image' | 'video'
+    width        INTEGER NOT NULL,                    -- 그린 좌표계 = 원본 크기
+    height       INTEGER NOT NULL,
+    time_sec     REAL,                                -- 영상만, 책갈피의 기준 시각
+    strokes_json TEXT NOT NULL,                       -- 정규화한 획 목록 {"v":1,"items":[...]}
+    thumb_jpg    BLOB,                                -- 영상만(없어도 정상)
+    content_hash TEXT NOT NULL,                       -- 서버 계산 — 재전송·합치기 대조(C4)
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (comment_id, idx)                          -- comment_id 로 찾는 색인을 겸한다
+);
+-- ★이 표에 따로 CREATE INDEX 를 두지 않는다 — 어긋난 옛 표(comment_id 없음)면 색인 줄이 schema 적용을 깨뜨려
+--   구조 검사(표별 거절)까지 못 가고 시작 자체가 막힌다(Codex 독립 리뷰 P1).
+
+-- comments-v2 작성 장부 — 코멘트마다 처음 요청의 지문(바뀌지 않음, 글 수정은 코멘트 행만). 재시도 판정(C1).
+CREATE TABLE IF NOT EXISTS generation_comment_request (
+    id          TEXT PRIMARY KEY,                     -- 코멘트 id(클라 uuid)
+    fingerprint TEXT NOT NULL,
+    gen_key     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 사람이 지운 코멘트의 기록(영구) — 발행 재전송·재시도·휴지통 복원이 되살리지 못하게(C2).
+-- 생성물 휴지통 이동·중복 정리는 기록하지 않는다(되살릴 수 있어야 하므로).
+CREATE TABLE IF NOT EXISTS generation_comment_tombstone (
+    id         TEXT PRIMARY KEY,                      -- 지운 코멘트 id
+    gen_key    TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 남의 팀 카드에 다는 '내 로컬 색'(개인 뷰) — 로컬 generation 행이 없는(남이 만든) 카드용.
 -- 색은 서버에 미러 안 하는 개인메타라 계정별 로컬 DB 에만 둔다. anchor = job_id 우선, 없으면 서버 id.
 CREATE TABLE IF NOT EXISTS gen_color_overlay (

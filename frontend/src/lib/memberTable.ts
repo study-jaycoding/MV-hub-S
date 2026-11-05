@@ -209,6 +209,21 @@ export function groupColorBody(credit: CreditPlanSettings, groupId: string, colo
   };
 }
 
+/** 그룹 삭제 — 그 그룹만 뺀 목록을 보낸다. 서버가 빠진 그룹의 배정·몫을 함께 지우므로 members 는 싣지 않고,
+ *  남는 그룹의 허용 모델·색은 키를 빼서 기존값을 유지한다(save_settings). 생성·크레딧 기록은 사람별이라 그대로다. */
+export function groupDeleteBody(credit: CreditPlanSettings, groupId: string): CreditPlanSaveBody {
+  return {
+    revision: credit.plan.revision,
+    note: credit.plan.note,
+    groups: credit.groups.filter((group) => group.id !== groupId).map((group) => ({
+      id: group.id,
+      name: group.name,
+      monthly_limit: group.monthly_limit,
+      limit_period: group.limit_period ?? "month",
+    })),
+  };
+}
+
 /** 그룹 한도 한 줄 저장. 다른 그룹의 모델·색상과 전체 멤버 배정은 키를 빼서 기존값을 유지한다. */
 export function groupTermsBody(
   credit: CreditPlanSettings,

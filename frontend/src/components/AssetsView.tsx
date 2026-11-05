@@ -4,7 +4,7 @@
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
 import { isKeyHandled } from "../lib/keyHandled";
 import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../lib/keyGate";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { cloneElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
 import { DRAG_TYPES } from "../lib/dragTypes";
@@ -22,6 +22,8 @@ import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
+import { assetFileUrl } from "../lib/assetUrls";
+import { registerAssetPreviewCard } from "./MediaPreview";
 import { FolderIcon } from "./FolderIcon";
 import { SidebarEdgeToggle } from "./common/SidebarEdgeToggle";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
@@ -945,6 +947,18 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       />
     );
   };
+  // 크게 보기 Ctrl 카드 단추(Jay 2026-11-05 시안 ⑪) — 이 화면이 연 어셋이면 그 칸을 크게 보기 위에 겹쳐 그린다. 렌더마다 다시 등록해
+  //  칸의 상태(소스·태그)가 따라간다. C·정보는 크게 보기 아래 겹에 뜨는 창이라 크게 보기를 닫은 뒤 연다.
+  //  shortcut: 같은 프로젝트를 연 어셋 화면이 둘 떠 있으면 나중에 그린 것이 칸을 그린다 — 둘을 함께 쓰게 되면 화면별로 가른다.
+  useEffect(() => registerAssetPreviewCard((item, box, close) => {
+    const idx = item.assetPath ? files.findIndex((f) => f.path === item.assetPath) : -1;
+    const cell = idx >= 0 && item.url === assetFileUrl(project, files[idx].path) ? renderAssetCell(idx, box.width, box.height) : null;
+    return cell && cloneElement(cell, {
+      layout: "grid", selected: false, focused: false, lastViewed: false,
+      onC: (path: string) => close(() => cellOnC(path)),
+      onInfo: (target: InfoTarget) => close(() => onInfo(target)),
+    });
+  }));
   const marqueeEl = marquee && (
     <div
       className="assets-marquee"
