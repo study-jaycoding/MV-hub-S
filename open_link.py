@@ -131,10 +131,17 @@ class Windows:
     def focus(self, hwnd):
         if self.u.IsIconic(hwnd):
             self.u.ShowWindow(hwnd, 9)
-        success = self.u.SetForegroundWindow(hwnd)
-        if not success or self.u.GetForegroundWindow() != hwnd:
-            info = self.flash_info(ctypes.sizeof(self.flash_info), hwnd, 3, 3, 0)
-            self.u.FlashWindowEx(ctypes.byref(info))
+        if self.u.SetForegroundWindow(hwnd):
+            # Another process's activation lands a moment later (2026-11-05 live: flashed after it came forward).
+            until = time.monotonic() + 0.3
+            while self.u.GetForegroundWindow() != hwnd:
+                if time.monotonic() >= until:
+                    break
+                time.sleep(0.03)
+            else:
+                return
+        info = self.flash_info(ctypes.sizeof(self.flash_info), hwnd, 3, 3, 0)
+        self.u.FlashWindowEx(ctypes.byref(info))
 
 
 def focus_window(hwnd, root, deadline, api=None):

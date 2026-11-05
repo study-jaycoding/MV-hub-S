@@ -275,6 +275,22 @@ def test_win32_restore_and_foreground_refusal_flash_only_verified_hwnd():
     assert actions == [('restore', 42, 9), ('flash', 42)]
 
 
+@pytest.mark.parametrize('foreground,flashes', [([99, 99, 42], False), ([99] * 100, True)])
+def test_accepted_foreground_waits_for_late_activation_before_flashing(foreground, flashes):
+    from ctypes import wintypes as W
+    api = object.__new__(handler.Windows)
+    class Info(ctypes.Structure):
+        _fields_ = [('cbSize', W.UINT), ('hwnd', W.HWND), ('dwFlags', W.DWORD),
+                    ('uCount', W.UINT), ('dwTimeout', W.DWORD)]
+    actions, answers = [], iter(foreground)
+    api.flash_info = Info
+    api.u = SimpleNamespace(IsIconic=lambda hwnd: False, SetForegroundWindow=lambda hwnd: True,
+                            GetForegroundWindow=lambda: next(answers, 99),
+                            FlashWindowEx=lambda ptr: actions.append(('flash', ptr._obj.hwnd)))
+    api.focus(42)
+    assert (actions == [('flash', 42)]) is flashes
+
+
 def test_key_generation_disabled_does_not_write(monkeypatch):
     from app.services import open_link as service
     monkeypatch.delenv('MVHUB_OPEN_LINK', raising=False)
