@@ -542,6 +542,44 @@ export interface AssetComment {
   parent_id: string | null; // 답글이면 부모 id
   unread?: boolean; // 생성본 코멘트 전용 — 내가 아직 확인 안 한 새 코멘트(NEW 표시·클릭해 확인)
   private?: boolean; // 비공개 — 내 로컬 DB 에만 있고 팀에게 안 보임(글씨색 구분)
+  drawings?: CommentDrawingMeta[]; // 생성본 코멘트 전용 — 붙은 그림의 메타만(그림이 없으면 칸이 없다)
+}
+
+// 코멘트에 붙은 그림(획 목록 v1)의 메타 — 획·영상 미리보기 본문은 그림마다 따로 받는다(설계 크게보기_코멘트그림 §10 C5).
+export interface CommentDrawingMeta {
+  id: string;
+  idx: number; // 붙는 순서
+  kind: "image" | "video";
+  width: number; // 좌표계 = 원본 크기
+  height: number;
+  time_sec: number | null; // 영상만 — 책갈피 시각
+  has_thumb: boolean; // 영상 미리보기(JPEG)가 있나 — 없어도 정상(획만 보인다)
+  content_hash: string;
+  v: 1;
+}
+// 그림 1장의 본문(GET …/drawings/{id}) — strokes 는 획 목록 v1({v:1, items}) 그대로
+export interface CommentDrawingBody extends Omit<CommentDrawingMeta, "v"> {
+  comment_id: string;
+  strokes: { v: number; items: unknown[] };
+}
+// comments-v2 로 보내는 그림 1장 — content_hash 는 브라우저가 계산할 수 있을 때만(서버가 대조한다)
+export interface CommentDrawingIn {
+  id: string;
+  idx: number;
+  kind: "image" | "video";
+  width: number;
+  height: number;
+  time_sec: number | null;
+  strokes: { v: 1; items: unknown[] };
+  thumb_b64: string | null;
+  content_hash?: string;
+}
+// 크게 보기에서 겹쳐 볼 코멘트 그림(코멘트 창의 그림을 눌렀을 때)
+export interface CommentDrawingView {
+  genId: string;
+  commentId: string;
+  drawing: CommentDrawingMeta;
+  author: string | null;
 }
 
 // 중간클릭 정보 팝업 대상 (generation 카드 또는 Assets 파일)
@@ -582,6 +620,7 @@ export interface PreviewTarget {
   // 같은 목록(그리드/폴더)의 이미지·영상 — 있으면 ←/→ 방향키로 이전·다음 이동(생성·에셋 공통).
   items?: PreviewItem[];
   index?: number; // items 내 현재 위치
+  drawing?: CommentDrawingView; // 열자마자 겹쳐 볼 코멘트 그림(떠 있는 코멘트 창에서 그림을 눌러 연 경우)
 }
 
 // WebSocket 진행률 메시지

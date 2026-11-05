@@ -176,6 +176,82 @@ describe("크게 보기 수정 단추", () => {
   });
 });
 
+// 머리줄 맨 왼쪽 C(Jay 2026-11-05) — 색은 카드 C 와 같은 규칙(없음 = 테두리 · 있음 = 라임 · 새 코멘트 = 호박색). 누르거나 c → 코멘트 모드,
+//  떠 있는 동안 크게 보기의 키는 쉰다. 생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만.
+describe("크게 보기 코멘트 C", () => {
+  const cButton = () => host.querySelector<HTMLButtonElement>(".cm-cbtn");
+  const modal = () => document.body.querySelector(".cm-modal");
+  let restore: (() => void)[] = [];
+  beforeEach(async () => {
+    const { api } = await import("../src/api");
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["comment_drawings_v1"]);
+    const counts = vi.spyOn(api, "commentCounts").mockImplementation(async (ids: string[]) =>
+      Object.fromEntries(ids.map((id) => [id, id === "gen-new" ? { comment_count: 1, has_unread: true } : id === "gen-12345678" ? { comment_count: 2, has_unread: false } : { comment_count: 0, has_unread: false }])));
+    const list = vi.spyOn(api, "genComments").mockResolvedValue([]);
+    restore = [() => counts.mockRestore(), () => list.mockRestore(), () => setHubFeatures([])];
+  });
+  afterEach(() => restore.forEach((undo) => undo()));
+
+  it("상태는 그 장의 코멘트 수 — 있음 = on, 새 코멘트 = alert, 없음 = 테두리", async () => {
+    await show(VIDEO);
+    await settle();
+    expect(cButton()?.className).toBe("lin-board-btn cm-cbtn on");
+    expect(cButton()?.title).toBe("코멘트 2개 (c)");
+    expect(host.querySelector(".preview-head-actions")!.firstElementChild).toBe(cButton()); // 맨 왼쪽
+    await show({ ...IMAGE, genId: "gen-new" });
+    await settle();
+    expect(cButton()?.className).toBe("lin-board-btn cm-cbtn alert");
+    await show({ ...IMAGE, genId: "gen-empty" });
+    await settle();
+    expect(cButton()?.className).toBe("lin-board-btn cm-cbtn");
+    expect(cButton()?.title).toBe("코멘트 달기 (c)");
+  });
+
+  it("오디오·에셋(genId 없음)·그림을 모르는 허브에는 C 가 없다", async () => {
+    await show({ url: "/a.mp3", type: "audio", name: "a", genId: "gen-audio" });
+    expect(cButton()).toBeNull();
+    await show(IMAGE);
+    expect(cButton()).toBeNull();
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures([]);
+    await show({ ...VIDEO, genId: "gen-other" });
+    expect(cButton()).toBeNull();
+  });
+
+  it("c 를 누르면 코멘트 모드가 뜨고, 그동안 ←/→ 는 크게 보기 장을 넘기지 않는다 · Esc 는 코멘트 모드만 닫는다", async () => {
+    const items = [{ ...VIDEO, url: "/a.mp4", genId: "gen-a" }, { ...VIDEO, url: "/b.mp4", genId: "gen-b" }];
+    await show({ ...items[0], items, index: 0 });
+    await settle();
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true })); });
+    expect(modal()).not.toBeNull();
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
+    expect(host.querySelector(".preview-count")?.textContent?.trim()).toBe("1/2");
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(modal()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await settle();
+  });
+
+  it("코멘트 창의 그림을 누르면 보고 있는 크게 보기가 받아 원본 위에 겹친다(띠 = 작성자·시각·끄기)", async () => {
+    await show(VIDEO);
+    await settle();
+    const view = { genId: "gen-12345678", commentId: "c1", author: "팀원 A",
+      drawing: { id: "d1", idx: 0, kind: "video" as const, width: 854, height: 480, time_sec: 1.5, has_thumb: false, content_hash: "h", v: 1 as const } };
+    const event = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: view, cancelable: true });
+    act(() => { window.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true); // 받았다 — 코멘트 창은 크게 보기를 새로 열지 않는다
+    expect(host.querySelector(".cm-viewing")?.textContent).toContain("팀원 A");
+    expect(host.querySelector(".cm-viewing")?.textContent).toContain("1.50초");
+    const other = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, genId: "gen-other" }, cancelable: true });
+    act(() => { window.dispatchEvent(other); });
+    expect(other.defaultPrevented).toBe(false); // 다른 생성물의 그림은 받지 않는다
+    act(() => { host.querySelector<HTMLButtonElement>(".cm-viewing button")!.click(); });
+    expect(host.querySelector(".cm-viewing")).toBeNull();
+    await settle();
+  });
+});
+
 describe("클립보드·저장(lib/mediaCapture 실물)", () => {
   const real = () => vi.importActual<typeof import("../src/lib/mediaCapture")>("../src/lib/mediaCapture");
   const png = new Blob(["png"], { type: "image/png" });

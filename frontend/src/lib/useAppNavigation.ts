@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Filters, InfoTarget, PreviewTarget } from "../types";
+import { APP_EVENTS } from "./appEvents";
 
 type NavOverlay = "preview" | "comment" | "admin";
 /** 기록에 싣는 **보는 자리**(2026-10-13 ② — 뒤로·앞으로 가기가 폴더 위치를 되살린다). `ctx` = 계정·서버·공간 범위(App 이 만든다) — 다른 문맥에서
@@ -195,6 +196,16 @@ export function useAppNavigation({
   // 코멘트는 nav 오버레이가 아니라 독립 상태 — 열면 그대로 두고(탭 전환에도 유지) X 로만 닫는다.
   const openComment = useCallback((genId: string) => setCommentGenId(genId), [setCommentGenId]);
   const openAdmin = useCallback(() => openOverlay("admin"), [openOverlay]);
+
+  // 코멘트 그림 보기 — 떠 있는 코멘트 창의 그림을 받을 크게 보기가 없으면 그 생성물의 크게 보기를 그림을 겹친 채 연다(설계 크게보기_코멘트그림 §3.1-4)
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const target = (e as CustomEvent<PreviewTarget | undefined>).detail;
+      if (target?.url) openPreview(target);
+    };
+    window.addEventListener(APP_EVENTS.commentDrawingOpen, onOpen);
+    return () => window.removeEventListener(APP_EVENTS.commentDrawingOpen, onOpen);
+  }, [openPreview]);
 
   useEffect(() => {
     window.history.replaceState({ chv: viewRef.current }, "");

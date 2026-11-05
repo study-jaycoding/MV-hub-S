@@ -1,0 +1,78 @@
+/* 크게 보기 코멘트 그림(설계 docs/status/크게보기_코멘트그림_설계_2026-11-05.md) — C 단추 · 코멘트 모드 창(.cm-*) ·
+   지난 코멘트의 그림 줄(.cmt-att*) · 크게 보기 겹쳐 보기. 시안(Jay 11-05 확정)의 값 그대로. 수정 창 부품(.pe-*·.sl-*)은 그대로 빌린다. */
+
+/* C 단추 — 머리줄 단추와 같은 높이의 네모. 색은 카드 C(.card-cm .on/.alert)와 같은 규칙 */
+.lin-board-btn.cm-cbtn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; margin-left: 0; }
+.lin-board-btn.cm-cbtn.on { background: var(--accent); color: var(--accent-ink); }
+.lin-board-btn.cm-cbtn.alert { background: #f5a623; color: #2a1500; border-color: #ffc04d; box-shadow: 0 0 9px rgba(245, 166, 35, 0.55); }
+
+/* 코멘트 모드 = 왼쪽 그리기 + 오른쪽 지난 코멘트 */
+.partial-edit-modal.cm-modal { width: min(92vw, 1500px); box-sizing: border-box; }
+.cm-body { display: flex; gap: 14px; align-items: stretch; min-height: 0; }
+.cm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.cm-side {
+  flex: none; width: 340px; display: flex; flex-direction: column; min-height: 0; max-height: calc(92vh - 80px); overflow: hidden;
+  border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.02);
+}
+/* 끼워 쓴 지난 코멘트 — 떠 있는 창의 자리·크기 조절·그림자 없이 칸을 채운다 */
+.cmt-panel.cmt-embedded {
+  position: static; z-index: auto; width: auto; height: auto; min-width: 0; min-height: 0; max-width: none; max-height: none;
+  flex: 1; resize: none; border: 0; border-radius: 0; box-shadow: none; background: transparent;
+}
+.cmt-panel.cmt-embedded .cmt-head { cursor: default; }
+.cmt-panel.cmt-embedded .cmt-fs { margin-left: auto; }
+.cmt-panel.cmt-embedded .cmt-thread { flex: 1; }
+
+/* 영상 — 그린 프레임 수·책갈피(타임바 위) */
+.cm-bm { display: inline-block; width: 7px; height: 9px; background: currentColor; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 68%, 0 100%); vertical-align: -1px; }
+.cm-count {
+  flex: none; font-size: 11.5px; font-weight: 700; color: var(--accent);
+  border: 1px solid rgba(190, 242, 100, 0.45); border-radius: 10px; padding: 2px 8px;
+}
+.cm-marks { position: absolute; left: 0; right: 0; top: 6px; height: 11px; pointer-events: none; }
+.cm-mark {
+  position: absolute; top: 0; width: 10px; height: 11px; margin-left: -5px; background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 68%, 0 100%);
+}
+.cm-mark.cur { background: #fff; }
+
+/* 붙는 그림 칸 — 레퍼런스 칸(.sl-reftray-item) 모양, 그림 위에 그린 표시를 겹친다. × 는 마우스를 올린 그림에만(.sl-reftray-x 규칙) */
+.cm-thumb {
+  position: relative; width: 66px; height: 66px; padding: 0; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--border2); background: #050608; box-sizing: border-box; cursor: pointer;
+}
+.sl-reftray-item .cm-thumb img { width: 100%; height: 100%; border: 0; border-radius: 0; object-fit: cover; }
+.cm-thumb img, .cm-thumb canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.cm-thumb.cur { border: 2px solid var(--accent); }
+.sl-reftray-item.cm-att { cursor: default; }
+.sl-reftray-item.cm-att:hover .cm-thumb { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35); }
+.sl-reftray-item.cm-att .sl-reftray-x:hover { color: var(--text); border-color: #ef4444; }
+.pe-prompt textarea.cm-text { padding-right: 6px; }
+
+/* 겹쳐 보는 그림 — 무대(코멘트 창)와 크게 보기 공통 띠 */
+.cm-viewing {
+  position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 3;
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  font-size: 12px; font-weight: 700; color: var(--text);
+  background: rgba(8, 9, 10, 0.78); border: 1px solid var(--border2); border-radius: 16px; padding: 5px 6px 5px 12px;
+}
+.cm-viewing b { color: var(--accent); }
+.cm-viewing button { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 12px; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+.cm-viewing button:hover { color: var(--text); }
+.media-preview-body { position: relative; }
+.cm-preview-layer { position: absolute; pointer-events: none; z-index: 2; }
+.cm-preview-layer canvas { width: 100%; height: 100%; display: block; }
+
+/* 지난 코멘트 — 글 아래 그림 줄(누르면 크게 보기·무대에 겹쳐 본다) */
+.cmt-atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.cmt-att {
+  position: relative; width: 96px; height: 54px; padding: 0; border-radius: 7px; overflow: hidden;
+  border: 1px solid var(--border2); background: #050608; cursor: zoom-in;
+}
+.cmt-att img, .cmt-att canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.cmt-att .cmt-att-f {
+  position: absolute; left: 4px; bottom: 4px; font-size: 10px; font-weight: 800; line-height: 1;
+  padding: 3px 5px; border-radius: 5px; background: rgba(0, 0, 0, 0.72); color: var(--accent);
+}
+.cmt-att .cmt-att-err { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--muted); }
+.cmt-att:hover { border-color: var(--accent); }

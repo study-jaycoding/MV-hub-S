@@ -3,21 +3,50 @@
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { api } from "../api";
 import { recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
 import { downloadGeneration, downloadOne, fetchBlob } from "../lib/download";
 import { flashMsg } from "../lib/flash";
+import { hubHasFeature } from "../lib/hubFeatures";
 import { copyPng, imagePng, saveBlobAs, videoFramePng } from "../lib/mediaCapture";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
-import type { PreviewTarget } from "../types";
+import type { CommentDrawingView, PreviewTarget } from "../types";
+import { CommentDrawModal } from "./comment/CommentDrawModal";
 import { CloseIcon, CopyIcon } from "./common/ViewIcons";
+import { StrokesCanvas, secLabel, useCommentDrawing } from "./GenCommentPanel";
 
 interface Props {
   target: PreviewTarget;
   onClose: () => void;
   onOpenInBoard?: (genId: string) => void; // 결과물이면 '구성에서 보기'(구성탭 히스토리 트리)
+  myId?: string; // 코멘트 그림 창의 '지난 코멘트'(내 것만 고치기·지우기)
+}
+
+// 굵은 선 C — 코멘트 단추(Jay 2026-11-05 확정: 머리줄 단추들 맨 왼쪽)
+const COMMENT_C = (
+  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <path d="M17.2 7.4A6.6 6.6 0 1 0 17.2 16.6" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" />
+  </svg>
+);
+
+/** 크게 보기에서 원본 위에 겹친 코멘트 그림 — 미디어가 실제 그려진 사각형(box)에 맞춘다. */
+function PreviewDrawing({ view, box, onGone }: {
+  view: CommentDrawingView; box: { left: number; top: number; width: number; height: number }; onGone: () => void;
+}) {
+  const state = useCommentDrawing(view.commentId, view.drawing);
+  useEffect(() => {
+    if (state.status === "gone") onGone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.status]);
+  if (state.status !== "ok") return null;
+  return (
+    <div className="cm-preview-layer" style={box}>
+      <StrokesCanvas items={state.items} width={view.drawing.width} height={view.drawing.height} maxPx={2048} />
+    </div>
+  );
 }
 
 // 크게 보기에서 받는 파일명 — 에셋은 이름에 이미 확장자가 있으니 그대로 쓰고, 생성물은 프롬프트
@@ -42,7 +71,7 @@ export function fitPreviewBox(nw: number, nh: number, vw: number, vh: number, up
   return { w: Math.round(nw * k), h: Math.round(nh * k) };
 }
 
-export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
+export function MediaPreview({ target, onClose, onOpenInBoard, myId = "" }: Props) {
   const [pos, setPos] = useState({ x: 0, y: 0 }); // 화면 중앙 기준 오프셋
   const drag = useRef<{ ox: number; oy: number; sx: number; sy: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null); // 스페이스바 재생/일시정지용
@@ -103,11 +132,67 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   const [seenUrl, setSeenUrl] = useState(cur.url);
   // 우클릭 메뉴(프레임·이미지 캡쳐/저장 — Jay 2026-10-22). 다른 장으로 넘어가면 닫는다(메뉴는 연 장의 것이다).
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // 겹쳐 보는 코멘트 그림 — 그 생성물을 보는 동안만(다른 장으로 넘어가면 걷는다). 그림과 함께 연 크게 보기는 처음부터 겹친다.
+  const [view, setView] = useState<CommentDrawingView | null>(target.drawing ?? null);
   if (seenUrl !== cur.url) {
     setSeenUrl(cur.url);
     setReadyUrl(null);
     setMenu(null);
+    if (view && view.genId !== cur.genId) setView(null);
   }
+  useEffect(() => {
+    setView(target.drawing ?? null);
+  }, [target]);
+  const curGenRef = useRef(cur.genId);
+  curGenRef.current = cur.genId;
+  useEffect(() => {
+    // 코멘트 창의 그림을 눌렀다 — 지금 그 생성물을 보고 있으면 받는다(받지 않으면 코멘트 창이 크게 보기를 새로 연다)
+    const onView = (e: Event) => {
+      const detail = (e as CustomEvent<CommentDrawingView | undefined>).detail;
+      if (!detail || !curGenRef.current || detail.genId !== curGenRef.current) return;
+      e.preventDefault();
+      setView(detail);
+    };
+    window.addEventListener(APP_EVENTS.commentDrawingView, onView);
+    return () => window.removeEventListener(APP_EVENTS.commentDrawingView, onView);
+  }, []);
+  const activeView = view && view.genId === cur.genId ? view : null;
+
+  // ── 코멘트(C 단추·c 키 → 코멘트 모드). 생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만 ──
+  const canComment = !!cur.genId && cur.type !== "audio" && hubHasFeature("comment_drawings_v1");
+  const [commenting, setCommenting] = useState(false);
+  const commentingRef = useRef(false);
+  commentingRef.current = commenting;
+  const [commentState, setCommentState] = useState<{ genId: string; count: number; unread: boolean } | null>(null);
+  const [commentTick, setCommentTick] = useState(0);
+  useEffect(() => {
+    const genId = cur.genId;
+    if (!canComment || !genId) return;
+    let alive = true;
+    api
+      .commentCounts([genId])
+      .then((r) => {
+        if (alive) setCommentState({ genId, count: r[genId]?.comment_count ?? 0, unread: !!r[genId]?.has_unread });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [cur.genId, canComment, commentTick]);
+  const cstate = commentState && commentState.genId === cur.genId ? commentState : null;
+  const commentStartRef = useRef(0);
+  const openComment = () => {
+    if (!canComment) return;
+    const v = videoRef.current;
+    commentStartRef.current = v?.currentTime ?? 0;
+    v?.pause(); // 코멘트 모드가 떠 있는 동안 크게 보기의 재생은 쉰다
+    setMenu(null);
+    setCommenting(true);
+  };
+  const openCommentRef = useRef(openComment);
+  openCommentRef.current = openComment;
+  const canCommentRef = useRef(canComment);
+  canCommentRef.current = canComment;
   const thumb = cur.type === "audio" ? null : cur.thumb || null;
   useEffect(() => {
     setPh(null);
@@ -145,7 +230,16 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
     // ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
     const onKey = (e: KeyboardEvent) => {
+      if (commentingRef.current) return; // 코멘트 모드가 떠 있으면 키는 그 창의 것(방향키·Space 가 아래로 새지 않게)
       if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로(격자와 같다 — 56회차)
+      if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && canCommentRef.current) {
+        const t = e.target instanceof Element ? e.target : null;
+        if (t?.closest("input, textarea, select, [contenteditable]")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openCommentRef.current();
+        return;
+      }
       if (items && items.length > 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();
         e.stopPropagation();
@@ -234,6 +328,57 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
       else if (result !== "cancelled") flashMsg(`저장했습니다: ${name}`);
     });
   };
+  // 겹칠 상자 = 미디어가 실제 그려진 사각형(contain — 레터박스 빼고). 크기가 바뀌면 다시 잰다.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [drawBox, setDrawBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!activeView || !body) {
+      setDrawBox(null);
+      return;
+    }
+    const el = cur.type === "video" ? videoRef.current : body.querySelector<HTMLImageElement>("img:not(.media-preview-ph)");
+    if (!el) return;
+    const measure = () => {
+      const nw = el instanceof HTMLVideoElement ? el.videoWidth : el.naturalWidth;
+      const nh = el instanceof HTMLVideoElement ? el.videoHeight : el.naturalHeight;
+      const r = el.getBoundingClientRect();
+      const b = body.getBoundingClientRect();
+      if (!nw || !nh || !r.width || !r.height) {
+        setDrawBox(null);
+        return;
+      }
+      const k = Math.min(r.width / nw, r.height / nh);
+      setDrawBox({ left: r.left - b.left + (r.width - nw * k) / 2, top: r.top - b.top + (r.height - nh * k) / 2, width: nw * k, height: nh * k });
+    };
+    measure();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    el.addEventListener("load", measure);
+    el.addEventListener("loadedmetadata", measure);
+    return () => {
+      ro?.disconnect();
+      el.removeEventListener("load", measure);
+      el.removeEventListener("loadedmetadata", measure);
+    };
+  }, [activeView, cur.url, cur.type, readyUrl]);
+  // 영상 그림은 그 시각으로 옮기고 멈춘다
+  useEffect(() => {
+    const v = videoRef.current;
+    const at = activeView?.drawing.time_sec;
+    if (!v || at == null) return;
+    const go = () => {
+      v.pause();
+      v.currentTime = at;
+    };
+    if (v.readyState >= 1) {
+      go();
+      return;
+    }
+    v.addEventListener("loadedmetadata", go, { once: true });
+    return () => v.removeEventListener("loadedmetadata", go);
+  }, [activeView, cur.url]);
+
   const onMediaContextMenu = (e: React.MouseEvent) => {
     // 전체 화면 영상 위에는 앱 메뉴가 안 보인다(그 영상만 그려진다) — 그때의 그냥 우클릭은 브라우저 메뉴로 둔다
     if (cur.type === "audio" || e.altKey || (e.shiftKey && !e.ctrlKey) || (document.fullscreenElement && !e.ctrlKey)) return;
@@ -263,6 +408,17 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             )}
           </span>
           <div className="preview-head-actions">
+            {/* 코멘트 C — 맨 왼쪽(Jay 확정). 색은 카드 C 와 같은 규칙: 없음 = 테두리 · 있음 = 라임 · 새 코멘트 = 호박색 */}
+            {canComment && (
+              <button
+                className={"lin-board-btn cm-cbtn" + (cstate?.count ? (cstate.unread ? " alert" : " on") : "")}
+                title={cstate?.count ? `코멘트 ${cstate.count}개 (c)` : "코멘트 달기 (c)"}
+                aria-label="코멘트"
+                onClick={openComment}
+              >
+                {COMMENT_C}
+              </button>
+            )}
             {/* 수정 단추는 결과 종류에 맞는 것 하나만(오디오는 없음) — 생성 정보 창과 같은 규칙(Jay 2026-10-28) */}
             {(cur.type === "image" || isVideo) && cur.genId && (
               <button
@@ -305,7 +461,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             <CloseIcon />
           </button>
         </header>
-        <div className="media-preview-body" onContextMenu={onMediaContextMenu}>
+        <div className="media-preview-body" ref={bodyRef} onContextMenu={onMediaContextMenu}>
           {cur.type === "video" ? (
             <video
               ref={videoRef}
@@ -351,7 +507,30 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             // 썸네일을 안 넘기는 곳(Assets·레퍼런스·정보 팝업)은 종전 마크업 그대로
             <img src={cur.url} alt={cur.name} draggable={false} />
           )}
+          {activeView && drawBox && <PreviewDrawing view={activeView} box={drawBox} onGone={() => setView(null)} />}
+          {activeView && (
+            <div className="cm-viewing">
+              💬 <b>{activeView.author || "팀원"}</b>
+              {activeView.drawing.kind === "video" && <span>· {secLabel(activeView.drawing.time_sec)}</span>}
+              <button type="button" onClick={() => setView(null)}>끄기</button>
+            </div>
+          )}
         </div>
+        {/* 코멘트 모드 — 창이 transform 이라 body 로 그린다. 여기(창 안)에 두어 누름이 뒤 막(닫기)으로 가지 않는다. */}
+        {commenting && cur.genId && createPortal(
+          <CommentDrawModal
+            genId={cur.genId}
+            type={isVideo ? "video" : "image"}
+            url={cur.url}
+            thumb={thumb}
+            name={cur.name}
+            myId={myId}
+            startTime={commentStartRef.current}
+            onClose={() => setCommenting(false)}
+            onSaved={() => setCommentTick((n) => n + 1)}
+          />,
+          document.body,
+        )}
         {/* 창(.media-preview)이 transform 이라 그 안의 fixed 는 창 기준이 된다 — body 로 옮겨 그린다. 바깥 누름은 메뉴만 닫는다. */}
         {menu && createPortal(
           <div

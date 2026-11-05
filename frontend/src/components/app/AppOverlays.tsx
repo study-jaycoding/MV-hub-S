@@ -154,6 +154,7 @@ export function AppOverlays({
           target={preview}
           onClose={onCloseOverlay}
           onOpenInBoard={onOpenInBoardFromPreview}
+          myId={myId}
         />
       )}
       {adminOpen && (
