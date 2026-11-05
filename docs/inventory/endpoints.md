@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 433개.
+전체 434개.
 
 ## `backend/app/main.py` — 11개
 
@@ -490,7 +490,7 @@
 | `POST` | `/api/notifications/comments/seen-all` | `seen_all_comment_notifications` | 기본 중계 | — |
 | `GET` | `/api/notifications/comments` | `list_comment_notifications` | 기본 중계 | — |
 
-## `backend/app/routers/open_generation.py` — 4개
+## `backend/app/routers/open_generation.py` — 5개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -498,6 +498,7 @@
 | `POST` | `/api/open/claim` | `claim` | 로컬 예외 | — |
 | `GET` | `/api/open/generation/{gen_id}` | `open_get` | 로컬 예외 | — |
 | `POST` | `/api/open/generation/{gen_id}` | `open_post` | 로컬 예외 | — |
+| `POST` | `/api/open/native` | `open_native` | 로컬 예외 | — |
 
 ## `backend/app/routers/projects.py` — 17개
 

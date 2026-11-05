@@ -107,6 +107,7 @@
 | `backend/app/ws.py` | `ConnectionManager._deliver` | create_task | `self._collect(client, "overflow")` |
 | `backend/app/ws.py` | `ConnectionManager._schedule_notify` | create_task | `self._debounced_notify()` |
 | `backend/app/ws.py` | `ConnectionManager.connect` | create_task | `self._sender_loop(client)` |
+| `open_link.py` | `run` | Thread | `request` |
 
 ## ④ 작업자 에이전트 (`agent_push.py`)
 
