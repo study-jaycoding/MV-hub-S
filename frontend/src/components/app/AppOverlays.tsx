@@ -2,9 +2,11 @@ import { useModalFocus } from "../../lib/keyGate";
 import { ModalShellContext, useEscapeClose } from "../../lib/useEscapeClose";
 import { lazy, Suspense, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { previewTargetFromGenerations } from "../../lib/generationGrid";
+import { CommentDrawModal } from "../comment/CommentDrawModal";
 import { GenCommentPanel } from "../GenCommentPanel";
 import { InfoPopup } from "../InfoPopup";
-import { MediaPreview } from "../MediaPreview";
+import { MediaPreview, type PreviewCardActions } from "../MediaPreview";
 import type { CompareVideo } from "../VideoCompareModal";
 import type {
   Account,
@@ -83,6 +85,7 @@ export function AppOverlays({
   localHub,
   commentGenId,
   commentLabel,
+  commentDraw,
   compareGens,
   info,
   myId,
@@ -93,6 +96,7 @@ export function AppOverlays({
   onAdminClose,
   onCloseOverlay,
   onCommentClose,
+  onCommentDrawClose,
   onCompareClose,
   onHistoryChanged,
   onInfoClose,
@@ -101,12 +105,14 @@ export function AppOverlays({
   onRecoveryRequeue,
   onOpenInBoardFromPreview,
   onPreview,
+  previewCardActions,
 }: {
   account?: Account | null;
   adminOpen: boolean;
   localHub: boolean;
   commentGenId: string | null;
   commentLabel: string;
+  commentDraw: Generation | null; // 카드 C 로 연 코멘트 그림 창(이미지·영상, 그림을 아는 허브)
   compareGens: Generation[] | null;
   info: InfoTarget | null;
   myId: string;
@@ -117,6 +123,7 @@ export function AppOverlays({
   onAdminClose: () => void;
   onCloseOverlay: () => void;
   onCommentClose: () => void;
+  onCommentDrawClose: () => void;
   onCompareClose: () => void;
   onHistoryChanged: () => void;
   onInfoClose: () => void;
@@ -125,9 +132,25 @@ export function AppOverlays({
   onRecoveryRequeue: (generation: Generation) => Promise<boolean>;
   onOpenInBoardFromPreview: (generationId: string) => void;
   onPreview: (target: PreviewTarget) => void;
+  previewCardActions?: PreviewCardActions; // 크게 보기 Ctrl 카드 단추가 부르는 앱 동작(격자 카드와 같다)
 }) {
+  const drawTarget = commentDraw ? previewTargetFromGenerations([commentDraw], commentDraw) : null;
   return (
     <>
+      {commentDraw && drawTarget && drawTarget.type !== "audio" && (
+        <CommentDrawModal
+          genId={commentDraw.id}
+          type={drawTarget.type}
+          url={drawTarget.url}
+          thumb={drawTarget.thumb ?? null}
+          name={drawTarget.name}
+          myId={myId}
+          startTime={0}
+          allowPrivate={localHub}
+          onClose={onCommentDrawClose}
+          onSaved={onHistoryChanged}
+        />
+      )}
       {commentGenId && (
         <GenCommentPanel
           genId={commentGenId}
@@ -156,6 +179,7 @@ export function AppOverlays({
           onOpenInBoard={onOpenInBoardFromPreview}
           myId={myId}
           localHub={localHub}
+          cardActions={previewCardActions}
         />
       )}
       {adminOpen && (

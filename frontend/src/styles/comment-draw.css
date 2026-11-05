@@ -1,10 +1,5 @@
-/* 크게 보기 코멘트 그림(설계 docs/status/크게보기_코멘트그림_설계_2026-11-05.md) — C 단추 · 코멘트 모드 창(.cm-*) ·
+/* 크게 보기 코멘트 그림(설계 docs/status/크게보기_코멘트그림_설계_2026-11-05.md) — 코멘트 모드 창(.cm-*) ·
    지난 코멘트의 그림 줄(.cmt-att*) · 크게 보기 겹쳐 보기. 시안(Jay 11-05 확정)의 값 그대로. 수정 창 부품(.pe-*·.sl-*)은 그대로 빌린다. */
-
-/* C 단추 — 머리줄 단추와 같은 높이의 네모. 색은 카드 C(.card-cm .on/.alert)와 같은 규칙 */
-.lin-board-btn.cm-cbtn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; margin-left: 0; }
-.lin-board-btn.cm-cbtn.on { background: var(--accent); color: var(--accent-ink); }
-.lin-board-btn.cm-cbtn.alert { background: #f5a623; color: #2a1500; border-color: #ffc04d; box-shadow: 0 0 9px rgba(245, 166, 35, 0.55); }
 
 /* 이미지 코멘트의 캡쳐 단추(도구 캡슐 끝) — 다른 도구처럼 아이콘만, 붙은 장 수는 오른쪽 위 빨간 숫자(Jay 11-05 시안 2차) */
 .pe-dock button.cm-cap { position: relative; overflow: visible; }

@@ -3,20 +3,52 @@
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
-import { recordGenerationView } from "../lib/generationViews";
+import { TEAM_SCOPE, recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
-import { downloadGeneration, downloadOne, fetchBlob } from "../lib/download";
+import { fetchBlob } from "../lib/download";
 import { flashMsg } from "../lib/flash";
 import { hubHasFeature } from "../lib/hubFeatures";
 import { copyPng, imagePng, saveBlobAs, videoFramePng } from "../lib/mediaCapture";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
-import type { CommentDrawingView, PreviewTarget } from "../types";
+import type { CommentDrawingView, Generation, PreviewItem, PreviewTarget } from "../types";
 import { CommentDrawModal } from "./comment/CommentDrawModal";
 import { CloseIcon, CopyIcon } from "./common/ViewIcons";
 import { StrokesCanvas, UNSUPPORTED_DRAWING, secLabel, useCommentDrawing } from "./GenCommentPanel";
+import { GenerationCard } from "./GenerationCard";
+
+/** Ctrl 카드 단추(생성물) — 격자 카드(GenerationCard)에 주는 것과 같은 앱 동작. App 이 AppOverlays 로 넘긴다. */
+export type PreviewCardActions = Pick<ComponentProps<typeof GenerationCard>,
+  "canFinalize" | "onReview" | "onPublish" | "onUnpublish" | "onFinalize" | "onUnfinalize" | "onSetTags" | "onSetAutoTags"
+  | "autoTagOptions" | "onRegenerate" | "onImport" | "onInfo" | "onOpenFolder" | "onOpenComments" | "myCreatorUid">;
+
+// Ctrl 카드 단추(어셋) — 어셋 화면이 그 칸(AssetCell)을 그려 주는 함수를 등록한다(칸의 동작이 그 화면 상태에 있다).
+//  close(then) = 크게 보기를 닫고, 닫힌 뒤에 then — 크게 보기 아래 겹에 뜨는 창(정보·코멘트)을 열 때.
+type AssetCardRender = (item: PreviewItem, box: { width: number; height: number }, close: (then: () => void) => void) => ReactNode;
+let assetCardRender: AssetCardRender | null = null;
+const assetCardListeners = new Set<() => void>();
+export function registerAssetPreviewCard(render: AssetCardRender): () => void {
+  assetCardRender = render;
+  assetCardListeners.forEach((listener) => listener());
+  return () => {
+    if (assetCardRender !== render) return;
+    assetCardRender = null;
+    assetCardListeners.forEach((listener) => listener());
+  };
+}
+const subscribeAssetCard = (listener: () => void) => {
+  assetCardListeners.add(listener);
+  return () => { assetCardListeners.delete(listener); };
+};
+const noop = () => {};
+
+/** 카드 C 가 코멘트 그림 창을 여는가(Jay 2026-11-05 시안 ⑮) — 그림을 아는 허브의 이미지·영상만. 아니면 종전 작은 창. */
+export function cardCommentOpensDrawing(g: Pick<Generation, "assets">): boolean {
+  const type = g.assets?.[0]?.type;
+  return hubHasFeature("comment_drawings_v1") && (type === "image" || type === "video");
+}
 
 interface Props {
   target: PreviewTarget;
@@ -24,14 +56,8 @@ interface Props {
   onOpenInBoard?: (genId: string) => void; // 결과물이면 '구성에서 보기'(구성탭 히스토리 트리)
   myId?: string; // 코멘트 그림 창의 '지난 코멘트'(내 것만 고치기·지우기)
   localHub?: boolean; // 로컬 허브 화면인가 — 아니면(서버 직결) 코멘트 그림 창에 비공개 입력을 두지 않는다
+  cardActions?: PreviewCardActions; // 없으면 생성물에 Ctrl 카드 단추를 띄우지 않는다
 }
-
-// 굵은 선 C — 코멘트 단추(Jay 2026-11-05 확정: 머리줄 단추들 맨 왼쪽)
-const COMMENT_C = (
-  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-    <path d="M17.2 7.4A6.6 6.6 0 1 0 17.2 16.6" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" />
-  </svg>
-);
 
 /** 크게 보기에서 원본 위에 겹친 코멘트 그림 — 미디어가 실제 그려진 사각형(box)에 맞춘다. */
 function PreviewDrawing({ view, box, onGone }: {
@@ -73,7 +99,7 @@ export function fitPreviewBox(nw: number, nh: number, vw: number, vh: number, up
   return { w: Math.round(nw * k), h: Math.round(nh * k) };
 }
 
-export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localHub = true }: Props) {
+export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localHub = true, cardActions }: Props) {
   const [pos, setPos] = useState({ x: 0, y: 0 }); // 화면 중앙 기준 오프셋
   const drag = useRef<{ ox: number; oy: number; sx: number; sy: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null); // 스페이스바 재생/일시정지용
@@ -136,10 +162,16 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // 겹쳐 보는 코멘트 그림 — 그 생성물을 보는 동안만(다른 장으로 넘어가면 걷는다). 그림과 함께 연 크게 보기는 처음부터 겹친다.
   const [view, setView] = useState<CommentDrawingView | null>(target.drawing ?? null);
+  // Ctrl 카드 단추 — 누르고 있는 동안 뜨고, 뜬 단추를 한 번 누르면(태그 입력·공유 메뉴) 그 장을 벗어나거나 단추 밖을 누를 때까지 남는다
+  const [ctrlDown, setCtrlDown] = useState(false);
+  const [cardPinned, setCardPinned] = useState(false);
+  const [cardTagging, setCardTagging] = useState(false);
   if (seenUrl !== cur.url) {
     setSeenUrl(cur.url);
     setReadyUrl(null);
     setMenu(null);
+    setCardPinned(false);
+    setCardTagging(false);
     if (view && view.genId !== cur.genId) setView(null);
   }
   useEffect(() => {
@@ -160,28 +192,11 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   }, []);
   const activeView = view && view.genId === cur.genId ? view : null;
 
-  // ── 코멘트(C 단추·c 키 → 코멘트 모드). 생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만 ──
+  // ── 코멘트(Ctrl 카드의 C·c 키 → 코멘트 모드). 생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만 ──
   const canComment = !!cur.genId && cur.type !== "audio" && hubHasFeature("comment_drawings_v1");
   const [commenting, setCommenting] = useState(false);
   const commentingRef = useRef(false);
   commentingRef.current = commenting;
-  const [commentState, setCommentState] = useState<{ genId: string; count: number; unread: boolean } | null>(null);
-  const [commentTick, setCommentTick] = useState(0);
-  useEffect(() => {
-    const genId = cur.genId;
-    if (!canComment || !genId) return;
-    let alive = true;
-    api
-      .commentCounts([genId])
-      .then((r) => {
-        if (alive) setCommentState({ genId, count: r[genId]?.comment_count ?? 0, unread: !!r[genId]?.has_unread });
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [cur.genId, canComment, commentTick]);
-  const cstate = commentState && commentState.genId === cur.genId ? commentState : null;
   const commentStartRef = useRef(0);
   const openComment = () => {
     if (!canComment) return;
@@ -195,6 +210,55 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   openCommentRef.current = openComment;
   const canCommentRef = useRef(canComment);
   canCommentRef.current = canComment;
+
+  // ── Ctrl 카드 단추(Jay 2026-11-05 시안 ⑩·⑪) — 생성물은 격자 카드(GenerationCard), 어셋은 등록된 어셋 칸을 원본 위에 겹친다 ──
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => { if (e.key === "Control") setCtrlDown(true); };
+    const onUp = (e: KeyboardEvent) => { if (e.key === "Control") setCtrlDown(false); };
+    const onBlur = () => setCtrlDown(false); // 창을 떠나면 keyup 이 안 온다
+    window.addEventListener("keydown", onDown, true);
+    window.addEventListener("keyup", onUp, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onDown, true);
+      window.removeEventListener("keyup", onUp, true);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+  const assetRender = useSyncExternalStore(subscribeAssetCard, () => assetCardRender);
+  const cardShown = (ctrlDown || cardPinned) && !commenting && cur.type !== "audio"
+    && (cur.genId ? !!cardActions : !!cur.assetPath && !!assetRender);
+  // 카드에 그릴 생성물 — 뜰 때 읽고, 앱이 생성물을 바꾸면(공유·태그·코멘트) 다시 읽는다
+  const [cardGen, setCardGen] = useState<Generation | null>(null);
+  const [genTick, setGenTick] = useState(0);
+  const cardGenId = cardShown ? cur.genId : undefined;
+  useEffect(() => {
+    if (!cardGenId) return;
+    let alive = true;
+    api.getGeneration(cardGenId).then((g) => { if (alive) setCardGen(g); }).catch(() => {});
+    return () => { alive = false; };
+  }, [cardGenId, genTick]);
+  useEffect(() => {
+    if (!cardGenId) return;
+    const bump = () => setGenTick((n) => n + 1);
+    window.addEventListener(APP_EVENTS.libraryChanged, bump);
+    window.addEventListener(APP_EVENTS.generationTagsSettled, bump);
+    return () => {
+      window.removeEventListener(APP_EVENTS.libraryChanged, bump);
+      window.removeEventListener(APP_EVENTS.generationTagsSettled, bump);
+    };
+  }, [cardGenId]);
+  const liveGen = cardGen && cardGen.id === cur.genId ? cardGen : null;
+  // 크게 보기 아래 겹에 뜨는 창(정보·폴더·작은 코멘트 창)은 크게 보기가 실제로 닫힌 뒤에 연다 — 닫기가 기록 뒤로가기(비동기)라 먼저 열면 꼬인다
+  const afterCloseRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    const then = afterCloseRef.current;
+    if (then) setTimeout(then, 0);
+  }, []);
+  const leave = (then: () => void) => {
+    afterCloseRef.current = then;
+    onClose();
+  };
   const thumb = cur.type === "audio" ? null : cur.thumb || null;
   useEffect(() => {
     setPh(null);
@@ -335,7 +399,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   const [drawBox, setDrawBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   useLayoutEffect(() => {
     const body = bodyRef.current;
-    if (!activeView || !body) {
+    if (!(activeView || cardShown) || !body) {
       setDrawBox(null);
       return;
     }
@@ -363,7 +427,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
       el.removeEventListener("load", measure);
       el.removeEventListener("loadedmetadata", measure);
     };
-  }, [activeView, cur.url, cur.type, readyUrl]);
+  }, [activeView, cardShown, cur.url, cur.type, readyUrl]);
   // 영상 그림은 그 시각으로 옮기고 멈춘다
   useEffect(() => {
     const v = videoRef.current;
@@ -397,6 +461,10 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
         className="media-preview"
         style={{ transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))` }}
         onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => {
+          // 붙어 있던 카드 단추는 단추 밖을 누르면 걷는다
+          if (cardPinned && !(e.target instanceof Element && e.target.closest(".mp-card-layer, .s-pick"))) setCardPinned(false);
+        }}
       >
         <header className="info-head" onPointerDown={onDragStart}>
           <span className="info-title" title={cur.name}>
@@ -409,18 +477,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
               </span>
             )}
           </span>
+          {/* 머리줄 = [Edit] [History] 만(Jay 2026-11-05 시안 ⑩) — 코멘트 C·다운로드는 Ctrl 카드 단추에 있다 */}
           <div className="preview-head-actions">
-            {/* 코멘트 C — 맨 왼쪽(Jay 확정). 색은 카드 C 와 같은 규칙: 없음 = 테두리 · 있음 = 라임 · 새 코멘트 = 호박색 */}
-            {canComment && (
-              <button
-                className={"lin-board-btn cm-cbtn" + (cstate?.count ? (cstate.unread ? " alert" : " on") : "")}
-                title={cstate?.count ? `코멘트 ${cstate.count}개 (c)` : "코멘트 달기 (c)"}
-                aria-label="코멘트"
-                onClick={openComment}
-              >
-                {COMMENT_C}
-              </button>
-            )}
             {/* 수정 단추는 결과 종류에 맞는 것 하나만(오디오는 없음) — 생성 정보 창과 같은 규칙(Jay 2026-10-28) */}
             {(cur.type === "image" || isVideo) && cur.genId && (
               <button
@@ -435,7 +493,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                   onClose();
                 }}
               >
-                {isVideo ? "🖌 영상 수정" : "🖌 이미지 수정"}
+                🖌 Edit
               </button>
             )}
             {onOpenInBoard && cur.genId && (
@@ -444,20 +502,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                 title="구성탭에서 원본 → 파생 트리로 한눈에 보기"
                 onClick={() => onOpenInBoard(cur.genId!)}
               >
-                ⧉ 히스토리 보기
+                ⧉ History
               </button>
             )}
-            <button
-              className="lin-board-btn preview-dl-btn"
-              title="원본 다운로드"
-              onClick={() => {
-                // 생성물은 허브가 정한 이름(프로젝트_폴더_종류_작업자_번호)으로 받는다 — 아래 이름은 그것을 못 받았을 때와 에셋의 것
-                const name = previewDownloadName(cur.url, cur.name, cur.type, cur.genId);
-                return cur.genId ? downloadGeneration(cur.url, cur.genId, name) : downloadOne(cur.url, name);
-              }}
-            >
-              ⤓ 다운로드
-            </button>
           </div>
           <button className="assets-x" onClick={onClose} title="닫기">
             <CloseIcon />
@@ -517,6 +564,34 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
               <button type="button" onClick={() => setView(null)}>끄기</button>
             </div>
           )}
+          {/* Ctrl 카드 단추 — 카드의 그림은 감추고(assets.css .mp-card-layer) 단추만 원본 위에. 단추 밖 누름은 원본으로 간다(Ctrl+우클릭 캡쳐 그대로) */}
+          {cardShown && drawBox && (
+            <div className={"mp-card-layer" + (isVideo ? " is-video" : "")} style={drawBox} onPointerDown={() => setCardPinned(true)}>
+              {cur.genId ? (
+                liveGen && cardActions && (
+                  <GenerationCard
+                    gen={liveGen}
+                    tab={(cur.sceneId ?? target.sceneId) === TEAM_SCOPE ? "team" : "my"}
+                    layout="grid"
+                    {...cardActions}
+                    editingField={cardTagging ? "tag" : null}
+                    onRequestEdit={(_, field) => setCardTagging(field === "tag")}
+                    onEditDone={() => setCardTagging(false)}
+                    // C = 이 창의 코멘트 모드(그림을 모르는 허브는 종전 작은 창)
+                    onOpenComments={(g) => (canComment ? openComment() : leave(() => cardActions.onOpenComments(g)))}
+                    onInfo={(info) => leave(() => cardActions.onInfo(info))}
+                    onOpenFolder={cardActions.onOpenFolder && ((g) => leave(() => cardActions.onOpenFolder!(g)))}
+                    onShowHistory={onOpenInBoard && ((g) => onOpenInBoard(g.id))} // 머리줄 [History] 와 같은 길
+                    onSetSource={noop}
+                    onRestore={noop}
+                    onPreview={noop}
+                  />
+                )
+              ) : (
+                assetRender?.(cur, { width: drawBox.width, height: drawBox.height }, leave)
+              )}
+            </div>
+          )}
         </div>
         {/* 코멘트 모드 — 창이 transform 이라 body 로 그린다. 여기(창 안)에 두어 누름이 뒤 막(닫기)으로 가지 않는다. */}
         {commenting && cur.genId && createPortal(
@@ -530,7 +605,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
             startTime={commentStartRef.current}
             allowPrivate={localHub}
             onClose={() => setCommenting(false)}
-            onSaved={() => setCommentTick((n) => n + 1)}
+            onSaved={() => setGenTick((n) => n + 1)}
           />,
           document.body,
         )}

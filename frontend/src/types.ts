@@ -608,6 +608,7 @@ export interface PreviewItem {
   // card_id 는 씬 간 유일하지 않아(importScene) scene_id 와 짝이어야 한다.
   sceneId?: string;
   cardId?: string;
+  assetPath?: string; // 어셋(파일) 미리보기면 그 프로젝트 안 경로 — Ctrl 카드 단추가 그 칸을 찾는다
 }
 export interface PreviewTarget {
   url: string;
@@ -617,6 +618,7 @@ export interface PreviewTarget {
   thumb?: string | null; // PreviewItem 과 같은 뜻
   sceneId?: string; // PreviewItem 과 같은 뜻 — 캔버스에서 연 경우에만
   cardId?: string;
+  assetPath?: string; // PreviewItem 과 같은 뜻
   // 같은 목록(그리드/폴더)의 이미지·영상 — 있으면 ←/→ 방향키로 이전·다음 이동(생성·에셋 공통).
   items?: PreviewItem[];
   index?: number; // items 내 현재 위치
