@@ -280,6 +280,15 @@
   color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .acct-item-meta { font-size: 10.5px; color: var(--muted); }
+/* 고르지 않은 워크스페이스 줄은 회색, 마우스를 올리면 지금처럼 밝게(Jay 2026-11-06 시안 G) — 고른 줄(.on)은 그대로 */
+.acct-item:not(.on) .acct-item-name-txt { color: var(--muted); transition: color .12s; }
+.acct-item:not(.on) .acct-item-credits,
+.acct-item:not(.on) .acct-item-meta { color: var(--muted2); transition: color .12s; }
+.acct-item:not(.on) .acct-item-plan { color: var(--muted2); border-color: var(--border); background: transparent; }
+.acct-item:not(.on):hover .acct-item-name-txt { color: var(--text); }
+.acct-item:not(.on):hover .acct-item-credits,
+.acct-item:not(.on):hover .acct-item-meta { color: var(--muted); }
+.acct-item:not(.on):hover .acct-item-plan { color: var(--muted); border-color: var(--border2); background: rgba(255,255,255,0.04); }
 .acct-sep { height: 1px; background: var(--border); margin: 7px 4px; }
 .acct-action {
   display: block; width: 100%; text-align: left; padding: 8px 9px; border-radius: 8px;
