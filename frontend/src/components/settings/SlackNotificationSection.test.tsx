@@ -31,6 +31,11 @@ describe('Slack settings approved copy', () => {
     expect(html.indexOf('Slack 연결 끊기')).toBeGreaterThan(more);
     expect(html.indexOf('slack-unlink')).toBeGreaterThan(more);
   });
+  it('keeps unlink usable while Slack is paused or its token failed', () => {
+    vi.mocked(useSlackSettings).mockReturnValue({ ...base, status: { ready: false, linked: true, slack_name: 'unit', slack_email: 'unit@slack.test' } });
+    const html = renderToStaticMarkup(<SlackNotificationSection />);
+    expect(html).toContain('<button class="settings-action ghost slack-unlink">Slack 연결 끊기</button>'); // disabled 없음
+  });
   it('has no unlink button before linking', () => {
     vi.mocked(useSlackSettings).mockReturnValue({ ...base });
     expect(renderToStaticMarkup(<SlackNotificationSection />)).not.toContain('연결 끊기');

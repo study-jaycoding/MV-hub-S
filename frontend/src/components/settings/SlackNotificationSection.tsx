@@ -22,7 +22,8 @@ export function SlackNotificationSection() {
     </>}
     {summary && <SettingsDescription summary={summary}>
       <p>회사 Slack 이메일은 MV Hub 이메일과 달라도 됩니다. 내 생성물의 코멘트와 내 코멘트의 답글을 DM으로 받습니다.</p>
-      {s.status?.linked && <button className="settings-action ghost slack-unlink" disabled={s.busy || locked} onClick={() => void s.action('delete')}>Slack 연결 끊기</button>}
+      {/* 끊기는 보내기 가능 여부와 무관 — 관리자가 멈췄거나 토큰 오류여도 끊을 수 있다(Codex 리뷰 P2, 서버 DELETE 는 그 상태에서도 된다) */}
+      {s.status?.linked && <button className="settings-action ghost slack-unlink" disabled={s.busy} onClick={() => void s.action('delete')}>Slack 연결 끊기</button>}
     </SettingsDescription>}
     {s.notice && <p className="settings-hint" role="status">{s.notice}</p>}
   </section>;

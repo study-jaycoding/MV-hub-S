@@ -65,6 +65,23 @@ describe('Slack open navigation', () => {
     expect(document.title).toBe('Millionvolt Hub');
   });
 
+  it('does not open after the hub deadline even when each request was within its own limit', async () => {
+    vi.useFakeTimers();
+    vi.mocked(jsonFetch).mockImplementation(async url => {
+      if (url === '/api/open/claim') return new Promise(resolve => setTimeout(() => resolve({ ok: true }), 1200));
+      if (String(url).endsWith('/comments')) return new Promise(resolve => setTimeout(() => resolve([{ id: 'c' }]), 1400));
+      return { ok: true };
+    });
+    const open = vi.fn();
+    const done = handleOpenGeneration(detail, 'window', open); // 1.2초 + 1.4초 = 받은 때부터 2.6초 — 허브 기한(OPEN_BUDGET_MS) 뒤
+    await vi.advanceTimersByTimeAsync(3000);
+    await done;
+    expect(open).not.toHaveBeenCalled();
+    expect(vi.mocked(jsonFetch).mock.calls.some(c => String(c[0]).includes('/seen'))).toBe(false);
+    const ack = vi.mocked(jsonFetch).mock.calls.find(c => c[0] === '/api/open/ack');
+    expect(JSON.parse(String(ack?.[1]?.body)).ok).toBe(false);
+  });
+
   it('does not replace a title changed by another owner during acknowledgement', async () => {
     vi.mocked(jsonFetch).mockImplementation(async url => {
       if (String(url).endsWith('/comments')) return [{ id: 'c' }];
