@@ -111,8 +111,13 @@ def test_file_changed_during_hash_is_not_cached(isolated_cache, monkeypatch):
 
 
 def test_corrupted_cache_is_not_returned_and_download_failure_is_cleaned(isolated_cache):
+    import os
+
     path = get_cached()
+    previous = path.stat()
     path.write_bytes(b'x' * len(PNG))
+    # A rewrite in the same clock tick keeps the stamp (file_digest shortcut); move it like the tests above.
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000))
     assert get_cached() == path and path.read_bytes() == PNG
     def broken(url, temporary, **kwargs):
         temporary.write_bytes(b'partial')
