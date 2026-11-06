@@ -1049,7 +1049,9 @@
 .mp-card-layer :is(.card-thumb, .asset-media) > :is(img, video, picture, .thumb-placeholder, .audio-tile),
 .mp-card-layer :is(.card-thumb, .asset-media) :is(img, video):not(button *),
 .mp-card-layer :is(.play-badge, .last-viewed-badge, .card-colorbar) { visibility: hidden; }
-.mp-card-layer :is(.card-sf, .card-cm, .card-drag-grip) { opacity: 1; pointer-events: auto; zoom: 1.3; }
+.mp-card-layer :is(.card-sf, .card-cm, .card-drag-grip) { opacity: 1; pointer-events: auto; }
+/* 키우기는 S·T·C 묶음과 ⠿ 에 같은 배율로 — 단추마다 키우면 묶음 자리는 그대로인데 혼자 떠 있는 ⠿ 만 자리값까지 커져 어긋났다(11-06 Jay) */
+.mp-card-layer :is(.card-tl, .card-drag-grip) { zoom: 1.3; }
 .mp-card-layer .thumb-overlay { opacity: 1; }
 .mp-card-layer :is(button, [draggable="true"], input, textarea, .card-status, .card-folder) { pointer-events: auto; }
 .mp-card-layer .ov-icon { zoom: 1.3; }
