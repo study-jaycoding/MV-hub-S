@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { useComfyUnresolvedRuns } from "../../lib/useComfyUnresolvedRuns";
 
@@ -7,15 +7,19 @@ const PHASE_LABELS: Record<string, string> = {
   orphaned: "실행 확인 필요", result_pending: "결과 회수 필요", collecting: "결과 회수 중", collected: "로컬 저장 확인 필요",
 };
 
-export function ComfyUnresolvedRunsSection() {
+// 설정의 ComfyUI 묶음 안, ComfyUI 칸 아래에 붙은 작은 칸(왼쪽 선 — Jay 2026-11-06 시안 F). onSummary = 묶음 제목 밑 줄에 넣을 미회수 수.
+export function ComfyUnresolvedRunsSection({ onSummary }: { onSummary?: (summary: string) => void } = {}) {
   const t = useT();
   const state = useComfyUnresolvedRuns();
   const [confirmed, setConfirmed] = useState<string | null>(null);
+  const summary = state.error ? t("미회수 확인 실패")
+    : state.runs.length ? t("미회수 {n}건").replace("{n}", String(state.runs.length)) : t("미회수 없음");
+  useEffect(() => { onSummary?.(summary); }, [onSummary, summary]);
   return (
-    <section className="settings-section">
-      <h4>{t("Comfy 미회수 실행")}</h4>
-      <p className="settings-hint">{t("카드가 없어도 실행 기록은 여기에 남습니다. 목록 확인은 원격 서비스를 호출하지 않습니다.")}</p>
+    <section className="settings-section comfy-unresolved">
+      <h4>{t("미회수 실행")}</h4>
       <button type="button" className="settings-action" disabled={state.busy} onClick={() => void state.refresh()}>{t("다시 조회")}</button>
+      <p className="settings-hint">{t("카드가 없어도 실행 기록은 여기에 남습니다. 목록 확인은 원격 서비스를 호출하지 않습니다.")}</p>
       {state.error && <p role="alert" className="settings-hint">{state.error}</p>}
       {!!state.foreignCount && <p role="note" className="settings-hint">{t("원래 PC 에서 확인 필요")} · {state.foreignCount}</p>}
       {!state.runs.length && !state.error && <p className="settings-hint">{t("미회수 실행이 없습니다.")}</p>}

@@ -239,7 +239,7 @@ export function DownloadLocationSection({
         <>
           <div className="settings-row">
             <button className="settings-action" onClick={onPickDir}>
-              📁 {dlDir ? t("다운로드 폴더 위치 변경") : t("다운로드 폴더 위치 선택")}
+              {dlDir ? t("다운로드 폴더 위치 변경") : t("다운로드 폴더 위치 선택")}
             </button>
             {dlDir && (
               <button className="settings-action ghost" onClick={onClearDir}>
@@ -271,6 +271,18 @@ export function DownloadLocationSection({
   );
 }
 
+// 공유 서버 자동 백업 상태 이름 — 메타데이터 칸과 설정 '자료 관리' 묶음 제목 밑 줄이 같이 쓴다.
+export const BACKUP_STATE_LABELS: Record<string, string> = {
+  waiting_for_backup: "첫 자동 백업 대기",
+  waiting_for_data: "작업 데이터 대기",
+  pending: "전송 대기",
+  uploading: "전송 중",
+  success: "정상",
+  login_required: "로그인 대기",
+  failed: "재시도 대기",
+  server_update_required: "서버 업데이트 필요",
+};
+
 export function MetadataContinuitySection({
   dbBusy,
   dbMsg,
@@ -298,16 +310,7 @@ export function MetadataContinuitySection({
 }) {
   const t = useT();
   const apiPaused = !!useSyncExternalStore(subscribeApiPause, getApiPause);
-  const stateLabels: Record<string, string> = {
-    waiting_for_backup: "첫 자동 백업 대기",
-    waiting_for_data: "작업 데이터 대기",
-    pending: "전송 대기",
-    uploading: "전송 중",
-    success: "정상",
-    login_required: "로그인 대기",
-    failed: "재시도 대기",
-    server_update_required: "서버 업데이트 필요",
-  };
+  const stateLabels = BACKUP_STATE_LABELS;
   const shared = backupContinuity?.shared;
   const lastSuccess = shared?.last_success_at
     ? fmtBackupWhen(shared.last_success_at)
@@ -335,7 +338,7 @@ export function MetadataContinuitySection({
           onClick={onSyncMetadata}
           disabled={dbBusy || serverBackupsLoading}
         >
-          {dbBusy ? "동기화 중…" : serverBackupsLoading ? "확인 중…" : "🔄 메타데이터 동기화"}
+          {dbBusy ? "동기화 중…" : serverBackupsLoading ? "확인 중…" : "메타데이터 동기화"}
         </button>
       </div>
       {/* 실시간 정보(동기화 대상·백업 상태)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
@@ -415,10 +418,10 @@ export function MetadataContinuitySection({
               if (apiPaused) flashMsg(API_PAUSED_MESSAGE);
             }}
           >
-            ⬆ 내 DB 내보내기
+            내 DB 내보내기
           </a>
           <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
-            {dbBusy ? "가져오는 중…" : "⬇ DB 가져오기 (통째 교체)"}
+            {dbBusy ? "가져오는 중…" : "DB 가져오기 (통째 교체)"}
             <input
               type="file"
               accept=".db,application/octet-stream"
@@ -527,10 +530,10 @@ export function ResolveScriptSettingsSection({
       </p>
       <div className="settings-row">
         <button className="settings-action" onClick={onRefreshConnection} disabled={connectionBusy}>
-          ◆ {connectionBusy ? "진단 중…" : "Resolve 진단"}
+          {connectionBusy ? "진단 중…" : "Resolve 진단"}
         </button>
         <button className="settings-action" onClick={onInstall} disabled={busy}>
-          ◆ {busy ? "설치 중…" : "Script 설치"}
+          {busy ? "설치 중…" : "Script 설치"}
         </button>
       </div>
       <SettingsDescription
@@ -578,7 +581,7 @@ export function ResolveScriptSettingsSection({
                   onClick={handlePythonInstall}
                   disabled={pythonInstallBusy}
                 >
-                  ◆ {pythonInstallBusy ? "설치 준비 중…" : "Python 자동 설치"}
+                  {pythonInstallBusy ? "설치 준비 중…" : "Python 자동 설치"}
                 </button>
                 {pythonInstallMsg && (
                   <p className="resolve-python-install-msg">{pythonInstallMsg}</p>
@@ -681,12 +684,12 @@ export function ReleaseUpdateSettingsSection({
       : active > 0
       ? `${busyText} 완료 후 업데이트`
       : status?.can_update
-        ? "프로그램 업데이트"
+        ? "MV 업데이트"
         : "최신 버전";
 
   return (
     <section className="settings-section">
-      <h4>프로그램 업데이트</h4>
+      <h4>MV 업데이트</h4>
       <div className="settings-row">
         <button
           className={
@@ -697,10 +700,16 @@ export function ReleaseUpdateSettingsSection({
           onClick={onUpdate}
           disabled={!status?.can_update || running || active > 0}
         >
-          ↻ {actionText}
+          {actionText}
         </button>
-        <button className="settings-action ghost" onClick={onRefresh} disabled={running}>
-          다시 확인
+        {/* 다시 확인 = 새로 고침 아이콘 단추(Jay 2026-11-06 시안 E) — 32px 정사각·16px 아이콘, 이름은 title·aria-label 로 */}
+        <button className="settings-action ghost release-update-refresh" onClick={onRefresh} disabled={running}
+          title="다시 확인" aria-label="다시 확인">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
         </button>
       </div>
       {/* 실시간 정보(버전·진행 메시지·대기 경고)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}

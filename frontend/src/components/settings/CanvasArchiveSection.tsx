@@ -57,10 +57,10 @@ export function CanvasArchiveSection() {
       <h4>캔버스 자료</h4>
       <div className="settings-row">
         <button className="settings-action" onClick={exportAll} disabled={busy}>
-          ⤓ 전체 내보내기
+          전체 내보내기
         </button>
         <button className="settings-action" onClick={() => fileRef.current?.click()} disabled={busy || floating}>
-          ⤒ 전체 가져오기
+          전체 가져오기
         </button>
       </div>
       <input

@@ -1,12 +1,15 @@
+import { useEffect } from 'react';
 import { useSlackSettings } from '../../lib/useSlackSettings';
 import { SettingsDescription } from './SettingsDescription';
 
-export function SlackNotificationSection() {
+// onSummary 를 주면 상태 문장을 접는 묶음 제목 밑으로 넘기고 본문에서는 뺀다(펼쳤을 때 같은 줄이 두 번 보이지 않게 — 시안 F).
+export function SlackNotificationSection({ onSummary }: { onSummary?: (summary: string) => void } = {}) {
   const s = useSlackSettings();
   const locked = s.missing || !s.status?.ready;
   const summary = s.missing ? '서버 업데이트가 필요해요' : !s.status ? (s.notice ? '' : '확인 중') : !s.status.ready ? '관리자가 아직 Slack 알림을 켜지 않았어요'
     : s.status?.linked ? '✓ 연결됨 — 코멘트가 달리면 Slack DM 으로 알려 줘요'
     : s.pending ? 'Slack DM 으로 코드를 보냈어요 · 10분 안에 넣기' : '연결 안 됨 — 연결하면 코멘트를 DM 으로 받아요';
+  useEffect(() => { onSummary?.(summary); }, [onSummary, summary]);
   return <section className="settings-section">
     <h4>Slack 알림</h4>
     {s.status?.linked ? <>
@@ -20,7 +23,7 @@ export function SlackNotificationSection() {
         {s.pending && <button className="settings-action ghost" disabled={s.busy} onClick={() => void s.action('start')}>다시 받기</button>}
       </div>
     </>}
-    {summary && <SettingsDescription summary={summary}>
+    {summary && <SettingsDescription summary={onSummary ? undefined : summary}>
       <p>회사 Slack 이메일은 MV Hub 이메일과 달라도 됩니다. 내 생성물의 코멘트와 내 코멘트의 답글을 DM으로 받습니다.</p>
       {/* 끊기는 보내기 가능 여부와 무관 — 관리자가 멈췄거나 토큰 오류여도 끊을 수 있다(Codex 리뷰 P2, 서버 DELETE 는 그 상태에서도 된다) */}
       {s.status?.linked && <button className="settings-action ghost slack-unlink" disabled={s.busy} onClick={() => void s.action('delete')}>Slack 연결 끊기</button>}

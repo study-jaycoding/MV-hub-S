@@ -5,18 +5,20 @@ export function SettingsDescription({
   summary,
   children,
 }: {
-  summary: ReactNode;
+  summary?: ReactNode; // 없으면 더보기만 — 요약을 접는 묶음 제목 밑으로 올린 칸(Slack)
   children?: ReactNode;
 }) {
   const t = useT();
   return (
     <div className="settings-description">
-      <p
-        className="settings-hint settings-description-summary"
-        title={typeof summary === "string" ? summary : undefined}
-      >
-        {summary}
-      </p>
+      {summary !== undefined && (
+        <p
+          className="settings-hint settings-description-summary"
+          title={typeof summary === "string" ? summary : undefined}
+        >
+          {summary}
+        </p>
+      )}
       {children && (
         <details className="settings-help-more">
           <summary>

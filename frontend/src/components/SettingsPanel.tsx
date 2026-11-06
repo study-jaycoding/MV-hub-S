@@ -5,6 +5,7 @@
 //  · 생성물 점검(HF 최신분 동기화·삭제물 확인) + 100건 밖 과거 전체 MCP 백필
 import { useEffect, useRef, useState } from "react";
 import {
+  FOLDER_TREE_THEMES,
   loadAccent,
   loadLang,
   loadReduceMotion,
@@ -19,8 +20,11 @@ import { setLang, useT } from "../lib/i18n";
 import {
   clearDownloadDir,
   downloadDirName,
+  fsaSupported,
   pickDownloadDir,
 } from "../lib/downloadDir";
+import { listScenes } from "../lib/scenes";
+import { sceneStoreReady } from "../lib/sceneStore";
 import { api, type HistoryImportStatus } from "../api";
 import {
   selectCurrentServerBackup,
@@ -32,11 +36,13 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import { ShortcutsWindow } from "./ShortcutsWindow";
 import {
   AppearanceSettingsSection,
+  BACKUP_STATE_LABELS,
   DownloadLocationSection,
   MetadataContinuitySection,
   ReleaseUpdateSettingsSection,
   ResolveScriptSettingsSection,
 } from "./settings/SettingsSections";
+import { SettingsFold } from "./settings/SettingsFold";
 import { CanvasArchiveSection } from "./settings/CanvasArchiveSection";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 import { ComfyUnresolvedRunsSection } from "./settings/ComfyUnresolvedRunsSection";
@@ -109,6 +115,10 @@ export function SettingsPanel({
   const [releaseUpdateBusy, setReleaseUpdateBusy] = useState(false);
   const [releaseUpdateMsg, setReleaseUpdateMsg] = useState("");
   const [releaseUpdatePolling, setReleaseUpdatePolling] = useState(false);
+  // 접는 묶음 제목 밑 상태 줄 — 칸 안에서만 아는 값(Slack 상태·저장된 Comfy 연결·미회수 수)은 칸이 넘겨 준다
+  const [slackSummary, setSlackSummary] = useState("");
+  const [comfySummary, setComfySummary] = useState("");
+  const [unresolvedSummary, setUnresolvedSummary] = useState("");
 
   useEffect(() => {
     downloadDirName().then(setDlDir).catch(() => {});
@@ -561,6 +571,25 @@ export function SettingsPanel({
     saveReduceMotion(value);
   };
 
+  // 접는 묶음 제목 밑 줄 — 접어 둬도 보이는 지금 상태("실시간 정보는 접기 밖", Jay 08-20). 글자 끝 '…' 없음(Jay 10-29).
+  const themeLabel = (FOLDER_TREE_THEMES.find((item) => item.key === treeTheme) ?? FOLDER_TREE_THEMES[0]).label;
+  const appearanceSummary = (
+    <>
+      <span className="settings-fold-dot" style={{ background: accent }} aria-hidden="true" />
+      {[lang === "ko" ? "한글" : "English", `${t("모션")} ${reduceMotion ? "OFF" : "ON"}`, `${t("필터")} ${t(themeLabel)}`].join(" · ")}
+    </>
+  );
+  const workSummary = dlDir
+    ? `${t("선택된 폴더")}: ${dlDir}`
+    : fsaSupported() ? t("다운로드 폴더 지정 안 됨") : t("현재 접속에서는 다운로드 폴더를 직접 지정할 수 없습니다.");
+  const sharedBackup = backupContinuity?.shared;
+  const dataSummary = [
+    sceneStoreReady() ? t("캔버스 {n}개").replace("{n}", String(listScenes(null).length)) : "",
+    backupContinuity?.local.set_count != null ? t("로컬 백업 {n}세트").replace("{n}", String(backupContinuity.local.set_count)) : "",
+    sharedBackup ? `${t("서버")} ${BACKUP_STATE_LABELS[sharedBackup.state] || sharedBackup.state}` : "",
+  ].filter(Boolean).join(" · ");
+  const resolveSummary = resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.message || "";
+
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
@@ -572,122 +601,137 @@ export function SettingsPanel({
           </button>
         </header>
 
+        {/* 바깥엔 두 묶음 + MV 업데이트만, 옆 패널 안은 처음엔 접힌 큰 묶음(Jay 2026-11-06 시안 F) */}
         <div className="admin-body">
           <SettingsGroup title={t("기본 설정")}>
-            <AppearanceSettingsSection
-              accent={accent}
-              lang={lang}
-              reduceMotion={reduceMotion}
-              treeTheme={treeTheme}
-              onAccent={pickAccent}
-              onLang={pickLang}
-              onReduceMotion={pickReduceMotion}
-              onTreeTheme={saveFolderTreeTheme}
-            />
+            <SettingsFold title={t("화면")} summary={appearanceSummary}>
+              <AppearanceSettingsSection
+                accent={accent}
+                lang={lang}
+                reduceMotion={reduceMotion}
+                treeTheme={treeTheme}
+                onAccent={pickAccent}
+                onLang={pickLang}
+                onReduceMotion={pickReduceMotion}
+                onTreeTheme={saveFolderTreeTheme}
+              />
+            </SettingsFold>
 
-            <DownloadLocationSection
-              dlDir={dlDir}
-              dlErr={dlErr}
-              onPickDir={pickDir}
-              onClearDir={clearDir}
-            />
+            <SettingsFold title={t("작업")} summary={workSummary}>
+              <DownloadLocationSection
+                dlDir={dlDir}
+                dlErr={dlErr}
+                onPickDir={pickDir}
+                onClearDir={clearDir}
+              />
 
-            <section className="settings-section">
-              <h4>{t("단축키")}</h4>
-              <button className="settings-action" onClick={() => setScOpen(true)}>
-                ⌨️ {t("단축키 설정")}
-              </button>
-              <SettingsDescription summary={t("현재 단축키를 확인하고 원하는 키로 변경합니다.")} />
-            </section>
+              <section className="settings-section">
+                <h4>{t("단축키")}</h4>
+                <button className="settings-action" onClick={() => setScOpen(true)}>
+                  {t("단축키 설정")}
+                </button>
+                <SettingsDescription summary={t("현재 단축키를 확인하고 원하는 키로 변경합니다.")} />
+              </section>
+            </SettingsFold>
 
-            <CanvasArchiveSection />
+            <SettingsFold title={t("자료 관리")} summary={dataSummary}>
+              <CanvasArchiveSection />
 
-            <MetadataContinuitySection
-              dbBusy={dbBusy}
-              dbMsg={dbMsg}
-              backupContinuity={backupContinuity}
-              serverBackups={serverBackups}
-              serverBackupsLoading={serverBackupsLoading}
-              metadataSyncTarget={metadataSyncTarget}
-              metadataSyncTargetState={metadataSyncTargetState}
-              onSyncMetadata={syncMetadata}
-              onLoadServerBackups={loadServerBackups}
-              onServerRestore={serverRestore}
-              onImportDb={importDb}
-            />
+              <MetadataContinuitySection
+                dbBusy={dbBusy}
+                dbMsg={dbMsg}
+                backupContinuity={backupContinuity}
+                serverBackups={serverBackups}
+                serverBackupsLoading={serverBackupsLoading}
+                metadataSyncTarget={metadataSyncTarget}
+                metadataSyncTargetState={metadataSyncTargetState}
+                onSyncMetadata={syncMetadata}
+                onLoadServerBackups={loadServerBackups}
+                onServerRestore={serverRestore}
+                onImportDb={importDb}
+              />
+
+              <section className="settings-section">
+                <h4>{t("생성물 재점검")}</h4>
+                <button className="settings-action" onClick={reinspectGenerations} disabled={!!reinspectMsg}>
+                  {reinspectMsg || t("생성물 재점검")}
+                </button>
+                <div className="settings-row">
+                  <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
+                    {syncMsg || t("HF 생성물 체크")}
+                  </button>
+                  <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
+                    {hfMsg || t("HF 삭제물 체크")}
+                  </button>
+                </div>
+                {/* 실시간 정보(과거 가져오기 진행·결과)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
+                <SettingsDescription
+                  summary={
+                    historyImport?.state === "running"
+                      ? `과거 생성물 가져오는 중… ${historyImport.received}건`
+                      : historyImport?.message
+                        ? historyImport.message +
+                          (historyImport.state === "complete"
+                            ? ` · 신규 ${historyImport.inserted} · 갱신 ${historyImport.updated} · 기존 ${historyImport.unchanged}`
+                            : "")
+                        : t("HF 생성물의 누락·상태·삭제 여부를 한곳에서 확인합니다.")
+                  }
+                >
+                  <p>{t("생성물 재점검은 최근 결과의 잘못된 상태를 정정합니다.")}</p>
+                  <p>{t("HF 생성물 체크는 힉스필드에서 직접 만든 최신 결과물을 가져옵니다.")}</p>
+                  <p>{t("HF 삭제물 체크는 힉스필드에서 지워진 생성물을 허브 휴지통으로 보냅니다.")}</p>
+                  <button
+                    className={"settings-action" + (historyImport?.state === "running" ? " is-busy" : "")}
+                    onClick={startHistoryImport}
+                    disabled={historyImport?.state === "running"}
+                  >
+                    {historyImport?.state === "running"
+                      ? `가져오는 중… ${historyImport.received}건`
+                      : "과거 생성물 전체 가져오기"}
+                  </button>
+                  <p>{t("과거 생성물 전체 가져오기는 최신 100건 밖의 오래된 결과까지 보충합니다.")}</p>
+                </SettingsDescription>
+              </section>
+            </SettingsFold>
           </SettingsGroup>
 
           <SettingsGroup title={t("외부 프로그램")}>
-            <ComfyConnectionSection />
-            <ComfyUnresolvedRunsSection />
+            <SettingsFold title={t("Slack 알림")} summary={slackSummary} hideFirstTitle>
+              <SlackNotificationSection onSummary={setSlackSummary} />
+            </SettingsFold>
 
-            <ResolveScriptSettingsSection
-              selectionFollow={resolveSelectionFollow}
-              onSelectionFollowChange={saveResolveSelectionFollow}
-              status={resolveScriptStatus}
-              connection={resolveConnection}
-              diagnostics={resolveDiagnostics}
-              connectionBusy={resolveConnectionBusy}
-              busy={resolveScriptBusy}
-              msg={resolveScriptMsg}
-              onInstall={installResolveExporter}
-              onRefreshConnection={refreshResolveConnection}
-            />
+            <SettingsFold title="ComfyUI" summary={[comfySummary, unresolvedSummary].filter(Boolean).join(" · ")} hideFirstTitle>
+              <ComfyConnectionSection onSummary={setComfySummary} />
+              <ComfyUnresolvedRunsSection onSummary={setUnresolvedSummary} />
+            </SettingsFold>
+
+            <SettingsFold title="DaVinci Resolve" summary={resolveSummary} hideFirstTitle>
+              <ResolveScriptSettingsSection
+                selectionFollow={resolveSelectionFollow}
+                onSelectionFollowChange={saveResolveSelectionFollow}
+                status={resolveScriptStatus}
+                connection={resolveConnection}
+                diagnostics={resolveDiagnostics}
+                connectionBusy={resolveConnectionBusy}
+                busy={resolveScriptBusy}
+                msg={resolveScriptMsg}
+                onInstall={installResolveExporter}
+                onRefreshConnection={refreshResolveConnection}
+              />
+            </SettingsFold>
+
+            {onOpenMcp && <SettingsFold title={t("MV·MCP 연결")} summary={t("Codex·Claude Code 연결")} hideFirstTitle>
+              <section className="settings-section">
+                <h4>{t("MV·MCP 연결")}</h4>
+                <button className="settings-action" onClick={() => { onClose(); onOpenMcp(); }}>{t("MV·MCP 연결 열기")}</button>
+                {/* 다른 항목과 같은 설명 모양(한 줄 요약 + 더보기) — 전에는 스타일 없는 <p> 라 글자가 크고 밝았다(Jay 2026-10-16) */}
+                <SettingsDescription summary={t("Codex·Claude Code 등록과 생성 실행 허용을 관리합니다.")}>
+                  <p>{t("이 PC의 로컬 앱에서 Codex·Claude Code 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.")}</p>
+                  <p>{t("한 번 연결하면 LLM이 MV Hub의 자료를 조회하고, 요청한 워크스페이스·폴더에 생성합니다.")}</p>
+                </SettingsDescription>
+              </section>
+            </SettingsFold>}
           </SettingsGroup>
-
-          {onOpenMcp && <section className="settings-section">
-            <h4>{t("MV·MCP 연결")}</h4>
-            <button className="settings-action" onClick={() => { onClose(); onOpenMcp(); }}>{t("MV·MCP 연결 열기")}</button>
-            {/* 다른 항목과 같은 설명 모양(한 줄 요약 + 더보기) — 전에는 스타일 없는 <p> 라 글자가 크고 밝았다(Jay 2026-10-16) */}
-            <SettingsDescription summary={t("Codex·Claude Code 등록과 생성 실행 허용을 관리합니다.")}>
-              <p>{t("이 PC의 로컬 앱에서 Codex·Claude Code 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.")}</p>
-              <p>{t("한 번 연결하면 LLM이 MV Hub의 자료를 조회하고, 요청한 워크스페이스·폴더에 생성합니다.")}</p>
-            </SettingsDescription>
-          </section>}
-
-          <SlackNotificationSection />
-
-          <section className="settings-section">
-            <h4>{t("생성물 재점검")}</h4>
-            <button className="settings-action" onClick={reinspectGenerations} disabled={!!reinspectMsg}>
-              🔄 {reinspectMsg || t("생성물 재점검")}
-            </button>
-            <div className="settings-row">
-              <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
-                📤 {syncMsg || t("HF 생성물 체크")}
-              </button>
-              <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
-                🗑️ {hfMsg || t("HF 삭제물 체크")}
-              </button>
-            </div>
-            {/* 실시간 정보(과거 가져오기 진행·결과)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
-            <SettingsDescription
-              summary={
-                historyImport?.state === "running"
-                  ? `과거 생성물 가져오는 중… ${historyImport.received}건`
-                  : historyImport?.message
-                    ? historyImport.message +
-                      (historyImport.state === "complete"
-                        ? ` · 신규 ${historyImport.inserted} · 갱신 ${historyImport.updated} · 기존 ${historyImport.unchanged}`
-                        : "")
-                    : t("HF 생성물의 누락·상태·삭제 여부를 한곳에서 확인합니다.")
-              }
-            >
-              <p>{t("생성물 재점검은 최근 결과의 잘못된 상태를 정정합니다.")}</p>
-              <p>{t("HF 생성물 체크는 힉스필드에서 직접 만든 최신 결과물을 가져옵니다.")}</p>
-              <p>{t("HF 삭제물 체크는 힉스필드에서 지워진 생성물을 허브 휴지통으로 보냅니다.")}</p>
-              <button
-                className={"settings-action" + (historyImport?.state === "running" ? " is-busy" : "")}
-                onClick={startHistoryImport}
-                disabled={historyImport?.state === "running"}
-              >
-                {historyImport?.state === "running"
-                  ? `가져오는 중… ${historyImport.received}건`
-                  : "⏱ 과거 생성물 전체 가져오기"}
-              </button>
-              <p>{t("과거 생성물 전체 가져오기는 최신 100건 밖의 오래된 결과까지 보충합니다.")}</p>
-            </SettingsDescription>
-          </section>
 
           <ReleaseUpdateSettingsSection
             status={releaseUpdateStatus}

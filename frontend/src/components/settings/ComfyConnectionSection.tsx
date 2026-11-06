@@ -45,7 +45,8 @@ export function pendingKeyText(source: "team" | "personal", hasKey: boolean): st
   return hasKey ? "저장하면 개인 키(이 PC 에 넣은 키)로 바뀝니다" : "저장하면 개인 키로 바뀝니다 — 아래 칸에 키를 넣으세요";
 }
 
-export function ComfyConnectionSection() {
+// onSummary — 접는 묶음 제목 밑 줄에 **저장된** 연결 대상·키 출처를 넘긴다(고치는 중인 초안이 아니라 지금 실행에 쓰는 값).
+export function ComfyConnectionSection({ onSummary }: { onSummary?: (summary: string) => void } = {}) {
   const [s, setS] = useState<ComfySettings | null>(null);
   const [saved, setSaved] = useState<ComfySettings | null>(null);
   const [apiKeyEdit, setApiKeyEdit] = useState(""); // 새로 입력하는 키(빈칸이면 기존 유지)
@@ -62,6 +63,15 @@ export function ComfyConnectionSection() {
       })
       .catch(() => setMsg("설정을 불러오지 못했습니다."));
   }, []);
+
+  useEffect(() => {
+    if (!onSummary) return;
+    if (!saved) { onSummary(""); return; }
+    const target = saved.comfy_target === "local" ? "로컬 (내 PC)" : "Comfy Cloud";
+    // 옛 허브(comfy_key_source 없음)는 키 출처 단추가 없다 — 줄에도 넣지 않는다
+    const key = saved.comfy_key_source ? (keySourceOf(saved) === "team" ? "팀 키" : "개인 키") : "";
+    onSummary([target, key].filter(Boolean).join(" · "));
+  }, [onSummary, saved]);
 
   if (!s) {
     return (

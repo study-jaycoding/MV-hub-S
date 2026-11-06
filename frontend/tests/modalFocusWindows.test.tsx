@@ -94,6 +94,14 @@ const press = (target: HTMLElement) => {
   act(() => { target.dispatchEvent(new Event("pointerup", { bubbles: true })); });
   act(() => target.click());
 };
+/** 설정 창의 묶음을 마우스로 펼친다 — 옆 패널(그룹) → 그 안의 접는 묶음(시안 F, 2026-11-06). 펼친 묶음을 돌려준다. */
+const openSettingsFold = (group: string, fold: string) => {
+  press([...document.querySelectorAll<HTMLElement>(".settings-float .settings-group-toggle")].find((item) => item.textContent?.includes(group))!);
+  const target = [...document.querySelectorAll<HTMLElement>(".settings-group-flyout .settings-fold")]
+    .find((item) => item.querySelector(".settings-fold-title")?.textContent === fold)!;
+  press(target.querySelector<HTMLElement>(".settings-fold-head")!);
+  return target;
+};
 
 // 브라우저의 Tab — keydown 을 보내고, 아무도 막지 않았으면 문서 순서의 다음(이전) 자리로 초점을 옮긴다(jsdom 에는 이 기본 동작이 없다).
 const stops = () => [...document.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, summary, [tabindex]")]
@@ -177,7 +185,9 @@ describe("설정 창 + 옆 패널 + 단축키 창", () => {
     const order: string[] = [];
     act(() => root.render(<SettingsPanel onClose={() => order.push("close")} onOpenMcp={() => order.push("mcp")} />));
     await settle();
-    const button = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "MV·MCP 연결 열기")!;
+    // 외부 프로그램 옆 패널의 'MV·MCP 연결' 묶음 안(시안 F)
+    const button = [...openSettingsFold("외부 프로그램", "MV·MCP 연결").querySelectorAll<HTMLButtonElement>("button")]
+      .find((item) => item.textContent === "MV·MCP 연결 열기")!;
     expect(button).toBeDefined();
     press(button);
     expect(order).toEqual(["close", "mcp"]);
@@ -197,8 +207,9 @@ describe("설정 창 + 옆 패널 + 단축키 창", () => {
   it("그 위의 단축키 창 — Tab 은 단축키 창 안에서만 돈다(옆 패널로 가지 않는다). 닫으면 초점이 연 단추로 돌아오고 다시 설정+옆 패널 안에서 돈다", async () => {
     act(() => root.render(page(<SettingsPanel onClose={noop} onImported={noop} />)));
     await settle();
-    press(float().querySelector<HTMLElement>(".settings-group-toggle")!);
-    const opener = [...flyout()!.querySelectorAll<HTMLElement>(".settings-action")].find((button) => button.textContent?.includes("단축키"))!;
+    // 기본 설정 옆 패널의 '작업' 묶음 안(시안 F)
+    const opener = [...openSettingsFold("기본 설정", "작업").querySelectorAll<HTMLElement>(".settings-action")]
+      .find((button) => button.textContent?.includes("단축키"))!;
     press(opener);
     expect(shortcuts()).not.toBeNull();
     expect(shortcuts()!.contains(active())).toBe(true);
@@ -372,7 +383,8 @@ describe("상단바", () => {
     const settings = [...document.querySelectorAll<HTMLButtonElement>(".acct-pop button")].find((item) => item.textContent?.includes("Setting"))!;
     expect(settings).toBeDefined();
     press(settings); await settle();
-    const mcp = [...document.querySelectorAll<HTMLButtonElement>(".settings-float button")].find((item) => item.textContent === "MV·MCP 연결 열기")!;
+    const mcp = [...openSettingsFold("외부 프로그램", "MV·MCP 연결").querySelectorAll<HTMLButtonElement>("button")]
+      .find((item) => item.textContent === "MV·MCP 연결 열기")!;
     expect(mcp).toBeDefined();
     press(mcp); await settle();
     expect(onOpenMcp).toHaveBeenCalledTimes(1);
