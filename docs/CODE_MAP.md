@@ -541,7 +541,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `api.ts` | 타입 안전 API 클라이언트(`/api` 프록시), 100여 메서드 | 약 859줄 |
 | `types.ts` | 백엔드 모델과 1:1 타입 56개 | 약 513줄 |
 | `main.tsx` | 부트스트랩 — `?embed=` 로 App/AssetsWindow/ManageWindow 분기, 테마 선적용 | §3.5 |
-| `styles.css` | `styles/*.css` 13개 @import 목록만 | |
+| `styles.css` | `styles/*.css` 15개 @import 목록만(`edit-tab.css` 는 편집 탭이 따로 불러온다) | |
 | `vite-env.d.ts` | Vite 타입 참조 1줄 | |
 
 ### 3.2 components (`frontend/src/components/`, 152파일)
@@ -641,7 +641,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `GradeStepModal.tsx`(37줄) | 등급 S 다중선택 확인 모달 | `GradeStepModal` |
 | `GenCommentPanel.tsx`(123줄) | 생성물 코멘트 패널(seq 가드 보유 — §6 계약) | `GenCommentPanel` |
 
-#### 계정·알림·설정·관리자 창(최상위 + `settings/` + `admin/`, 18파일)
+#### 계정·알림·설정·관리자 창(최상위 + `settings/` + `admin/`, 19파일)
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
@@ -652,6 +652,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `SettingsPanel.tsx`(671줄) | 설정 플로팅 창 껍데기 + 생성물 점검/백필 | `SettingsPanel` |
 | `settings/SettingsSections.tsx`(611줄) | 설정 4개 절(외형·다운로드 위치·메타 연속성·Resolve) | 4개 export |
 | `settings/SettingsGroup.tsx`(165줄) | 설정 그룹 → 옆으로 펼치는 플라이아웃(포털·직접 위치계산) | `SettingsGroup` |
+| `settings/SettingsFold.tsx`(약 40줄) | 옆 패널 안의 크게 접는 묶음(화면·작업·자료 관리 / Slack·ComfyUI·Resolve·MV·MCP) — 처음엔 접힘·열림 기억 안 함, 제목 밑 실시간 상태 한 줄은 늘 보임, 본문은 붙여 둔 채 `hidden`(칸들의 조회가 펼치기 전에도 돈다). 상태 줄 값은 `SettingsPanel` 이 만들거나 칸이 `onSummary` 로 넘긴다 | `SettingsFold` |
 | `settings/SettingsDescription.tsx`(29줄) | 설명문 + `<details>` 더보기 | 〃 |
 | `settings/ComfyConnectionSection.tsx`(178줄) | Comfy 연결 설정·확인 | 〃 |
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
@@ -1160,7 +1161,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 `spotlightPromptConfig.test.ts` · `usageModelIndex.test.ts` · `useGenerationProgress.test.ts` ·
 `workspaceCommand.test.ts`.
 
-### 3.4 styles (`frontend/src/styles/`, 13파일)
+### 3.4 styles (`frontend/src/styles/`, 16파일)
 
 담당 화면은 클래스 접두어와 실제 컴포넌트의 className 대조(S1 조사)로 추정했다. 한 파일이 여러
 화면을 겸하는 경우가 있다(§5-d).
@@ -1182,6 +1183,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `comment-draw.css` | 약 100 | 크게 보기 코멘트 그림 — C 단추·코멘트 모드 창(`.cm-*`)·지난 코멘트 그림 줄(`.cmt-att*`)·겹쳐 보기 띠. 수정 창 부품(`.pe-*`·`.sl-*`)은 그대로 빌린다 |
 | `edit-tab.css` | 188 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다). 생성물 카드만 라이브러리 카드의 클래스를 일부러 같이 쓴다(같은 모양) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
+| `settings-panel.css` | 약 60 | 설정 창의 접는 묶음(`.settings-fold-*`)·미회수 작은 칸·**설정 창 안 단추 모양**(회색 알약, 마우스를 올리면 라임 — `.settings-float`·`.settings-group-flyout` 안의 `.settings-action` 만. 폴더 등록 창 등 밖의 `.settings-action` 은 app-shell.css 그대로). 같은 우선순위의 app-shell 규칙을 이기려고 `styles.css` 맨 뒤에서 불러온다 |
 
 ### 3.5 숨은 진입점
 
