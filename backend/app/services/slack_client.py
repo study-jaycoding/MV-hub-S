@@ -76,9 +76,11 @@ def save_config(token, team_id, open_base_url, enabled, updated_by=''):
                   'data': data, 'enabled': bool(enabled), 'paused': False,
                   'open_base_url': open_base_url.rstrip('/'), 'updated_by': updated_by,
                   'updated_at': datetime.now(timezone.utc).isoformat()}
-        # Also reset first activation. Same-team credential repair keeps the floor.
+        # Also reset first activation. Same-team credential repair keeps the floor, except after a restore.
         if not old.get('team_id') or old.get('team_id') != team_id:
             repo.slack_notifications.reset_floor(reason='team_changed')
+        elif old.get('restored'):
+            repo.slack_notifications.reset_floor(reason='restored')
         repo.set_setting(SETTING_KEY, json.dumps(config))
         return public_config()
 
@@ -99,6 +101,7 @@ def set_paused(paused, *, revision=None):
             config['pause_reason'] = 'manual' if paused else ''
         if revision is None and not paused:
             repo.slack_notifications.reset_floor()
+            config.pop('restored', None)  # the floor reset above is what the restore marker asked for
         repo.set_setting(SETTING_KEY, json.dumps(config))
 
 

@@ -137,6 +137,38 @@ def scrub_slack_connection(conn: sqlite3.Connection) -> None:
                 raise RuntimeError('Slack rows remain in snapshot')
 
 
+def pause_slack_for_restore(db_path: Path) -> bool:
+    """복원 설치 사본 전용: 토큰 있는 Slack 설정에 복원 표시를 남기고 켜져 있으면 멈춤(복원됨)으로.
+
+    [다시 켜기]·토큰 재등록이 이 표시를 보고 기준 시각과 밀린 줄을 정리한다(slack_client).
+    오류를 삼키지 않는다 — B1 이전이 진행 중인 사본은 설치가 거부돼야 한다.
+    """
+    import json
+
+    from . import trash_transfer
+
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        if not _table_exists(conn, 'app_setting'):
+            return False
+        row = conn.execute("SELECT value FROM app_setting WHERE key='slack_bot_config'").fetchone()
+        try:
+            config = json.loads(row[0]) if row and row[0] else None
+        except (TypeError, ValueError):
+            config = None
+        if not isinstance(config, dict) or not config.get('data') or (config.get('restored') and config.get('paused')):
+            return False
+        config['restored'] = True
+        if not config.get('paused'):  # manual·auth_error 는 사유를 그대로 둔다(토큰 재등록 안내 보존)
+            config['paused'], config['pause_reason'] = True, 'restored'
+        # 쓸 때만 B1 연결로 — Slack 이 없는 사본까지 B1 상태로 거부하지 않는다(사본은 이 도구만 연다).
+        trash_transfer.configure_connection(conn)
+        conn.execute('BEGIN')
+        conn.execute("UPDATE app_setting SET value=? WHERE key='slack_bot_config'", (json.dumps(config),))
+        conn.execute('COMMIT')
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    return True
+
+
 def scrub_slack(db_path: Path) -> None:
     """File wrapper for workroom_data's offline copies; runtime uses configured connections."""
     with closing(sqlite3.connect(str(db_path))) as conn:

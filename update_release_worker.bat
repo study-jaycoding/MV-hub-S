@@ -1347,6 +1347,47 @@ function Finalize-FailedInstall {
     }
 }
 
+function Clear-DanglingOpenLink {
+    # A downgrade or rollback can leave mvhub:// pointing at this install's removed pythonw.exe.
+    # Only that registration is removed, under the launcher's registration lock. Never throws.
+    param(
+        [string]$Root,
+        [string]$KeyPath = 'HKCU:\Software\Classes\mvhub',
+        [string]$MutexName = 'Local\MVHubOpenLinkRegistration',
+        [int]$WaitMs = 3000
+    )
+    $Mutex = $null
+    $Held = $false
+    try {
+        $Mutex = New-Object System.Threading.Mutex($false, $MutexName)
+        # An abandoned mutex (holder died) is acquired by this wait; treating it as busy would block cleanup forever.
+        try { $Held = $Mutex.WaitOne($WaitMs) } catch [System.Threading.AbandonedMutexException] { $Held = $true }
+        if (-not $Held) {
+            Write-Host '[update] warn: link registration is busy; left unchanged.'
+            return
+        }
+        $CommandKey = Join-Path $KeyPath 'shell\open\command'
+        if (-not (Test-Path -LiteralPath $CommandKey)) { return }
+        $Command = [string](Get-Item -LiteralPath $CommandKey).GetValue('')
+        if (-not $Command.StartsWith('"')) { return }
+        $End = $Command.IndexOf('"', 1)
+        if ($End -lt 2) { return }
+        $Exe = [IO.Path]::GetFullPath($Command.Substring(1, $End - 1))
+        $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+        if (-not $Exe.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) { return }
+        if (Test-Path -LiteralPath $Exe -PathType Leaf) { return }
+        Remove-Item -LiteralPath $KeyPath -Recurse -Force
+        Write-Host '[update] Removed the mvhub:// link registration that pointed at a missing file.'
+    }
+    catch {
+        Write-Host "[update] warn: link registration left unchanged: $($_.Exception.Message)"
+    }
+    finally {
+        if ($Held) { try { $Mutex.ReleaseMutex() } catch {} }
+        if ($Mutex) { $Mutex.Dispose() }
+    }
+}
+
 function Install-Package {
     param(
         [object]$Latest,
@@ -1696,6 +1737,8 @@ try {
     if ($NeedsInstall) {
         Write-Host "[2/3] Updating: '$CurrentVersion' -> '$($Latest.version)'"
         Install-Package -Latest $Latest -TempRoot $TempRoot
+        try { Clear-DanglingOpenLink -Root $TargetDir }
+        catch { Write-Host "[update] warn: link registration check failed: $($_.Exception.Message)" }
         if ($RestartAfterInstall -eq "1") {
             Restart-MvHubAndWaitReady -ExpectedVersion $LatestVersion
         }
@@ -1727,6 +1770,10 @@ catch {
         catch {
             $script:RecoveryState = 'recovery_required'
             try { Set-InstallPhase -Phase 'recovery_required' } catch {}
+        }
+        # A new launcher that ran once before the rollback may have registered a now-missing pythonw.exe.
+        if ($script:RecoveryState -eq 'rolled_back') {
+            try { Clear-DanglingOpenLink -Root $TargetDir } catch {}
         }
         try {
             Write-UpdateState -State "failed" -Message ("Update failed: " + $InstallFailure.Exception.Message) -Latest $LatestVersion -Recovery $script:RecoveryState

@@ -1,8 +1,14 @@
-"""Read-only release contract checks. Never execute an installer or release script."""
+"""Release contract checks. Never execute an installer or release script; the one worker
+function run here touches only a temporary HKCU test key and a test-only mutex name."""
 import ast
+import ctypes
+import os
 from pathlib import Path
 import re
+import subprocess
+import threading
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -104,3 +110,166 @@ def test_qualifier_legacy_or_complete_native_package(tmp_path, monkeypatch, nati
         with pytest.raises((FileNotFoundError, qualifier.c.ContractError)):
             qualifier._check_native_runtime(tmp_path)
     assert bool(calls) is (native and pythonw)
+
+
+# ---- downgrade / rollback: dangling mvhub:// registration cleanup in the worker
+
+
+def _payload() -> str:
+    raw = (ROOT / 'update_release_worker.bat').read_text(encoding='utf-8')
+    return raw.split('### MVHUB_' + 'UPDATE_POWERSHELL ###')[-1]
+
+
+def _clear_harness(tmp_path: Path) -> Path:
+    payload = _payload()
+    function = payload[payload.index('function Clear-DanglingOpenLink'):payload.index('function Install-Package')]
+    harness = tmp_path / 'clear_link.ps1'
+    harness.write_text(
+        "param([string]$Root, [string]$KeyPath, [string]$MutexName, [int]$WaitMs = 3000)\n"
+        "$ErrorActionPreference = 'Stop'\n" + function +
+        "\nClear-DanglingOpenLink -Root $Root -KeyPath $KeyPath -MutexName $MutexName -WaitMs $WaitMs\n"
+        "if (Test-Path -LiteralPath $KeyPath) { Write-Host 'KEY=kept' } else { Write-Host 'KEY=gone' }\n",
+        encoding='utf-8-sig')
+    return harness
+
+
+@pytest.fixture
+def link_key():
+    """A throwaway HKCU key standing in for Software\\Classes\\mvhub (the real one is never opened)."""
+    import winreg
+    base = rf'Software\MVHubTest-{uuid.uuid4().hex}'
+    chain = [base, base + r'\mvhub', base + r'\mvhub\shell', base + r'\mvhub\shell\open', base + r'\mvhub\shell\open\command']
+
+    def write(command):
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, chain[-1], 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, '', 0, winreg.REG_SZ, command)
+    yield SimpleNamespace(ps_path='HKCU:\\' + chain[1], write=write)
+    for path in reversed(chain):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+        except FileNotFoundError:
+            pass
+
+
+def _run_clear(tmp_path, root, key, mutex, wait_ms=3000):
+    done = subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(_clear_harness(tmp_path)),
+                           '-Root', str(root), '-KeyPath', key.ps_path, '-MutexName', mutex, '-WaitMs', str(wait_ms)],
+                          capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60, check=False)
+    assert done.returncode == 0, done.stdout + done.stderr  # never throws into the updater
+    return done.stdout
+
+
+def _command(exe: Path) -> str:
+    return f'"{exe}" -I -S "{exe.parents[2] / "open_link.py"}" --port 8472 "%1"'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows registry')
+@pytest.mark.parametrize('case,expected', [
+    ('missing_in_root', 'gone'),        # downgrade done, or rolled back after the new launcher ran once
+    ('present', 'kept'),                # downgrade failed and the new tree came back
+    ('other_install', 'kept'),
+    ('sibling_old_folder', 'kept'),     # <root>-old is another install, not this one
+    ('case_only_difference', 'gone'),
+    ('unquoted', 'kept'),
+    ('unclosed_quote', 'kept'),
+])
+def test_worker_removes_only_this_installs_dangling_link(tmp_path, link_key, case, expected):
+    root = tmp_path / 'MV Hub'
+    exe = root / 'runtime' / 'python' / 'pythonw.exe'
+    command = {
+        'missing_in_root': _command(exe),
+        'present': _command(exe),
+        'other_install': _command(tmp_path / 'Other' / 'runtime' / 'python' / 'pythonw.exe'),
+        'sibling_old_folder': _command(tmp_path / 'MV Hub-old' / 'runtime' / 'python' / 'pythonw.exe'),
+        'case_only_difference': _command(Path(str(exe).upper())),
+        'unquoted': f'{exe} -I -S x.py "%1"',
+        'unclosed_quote': f'"{exe} -I -S x.py %1',
+    }[case]
+    if case == 'present':
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b'never executed')
+    link_key.write(command)
+    out = _run_clear(tmp_path, root, link_key, 'Local\\MVHubTest-' + uuid.uuid4().hex)
+    assert f'KEY={expected}' in out
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows registry')
+def test_worker_without_registration_is_silent(tmp_path, link_key):
+    out = _run_clear(tmp_path, tmp_path / 'MV Hub', link_key, 'Local\\MVHubTest-' + uuid.uuid4().hex)
+    assert 'KEY=gone' in out and 'warn' not in out
+
+
+def _hold_mutex(name, release: threading.Event | None):
+    """Own the named mutex on another thread; release=None exits without releasing (abandoned)."""
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handles, owned = [], threading.Event()
+
+    def run():
+        handle = kernel32.CreateMutexW(None, False, name)
+        handles.append(handle)
+        assert kernel32.WaitForSingleObject(handle, 5000) == 0
+        owned.set()
+        if release is not None:
+            release.wait(30)
+            kernel32.ReleaseMutex(handle)
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert owned.wait(10)
+    return thread, handles, kernel32
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named mutex')
+def test_worker_leaves_registration_while_another_process_holds_the_lock(tmp_path, link_key):
+    root = tmp_path / 'MV Hub'
+    link_key.write(_command(root / 'runtime' / 'python' / 'pythonw.exe'))
+    name, release = 'Local\\MVHubTest-' + uuid.uuid4().hex, threading.Event()
+    thread, handles, kernel32 = _hold_mutex(name, release)
+    try:
+        out = _run_clear(tmp_path, root, link_key, name, wait_ms=200)
+    finally:
+        release.set()
+        thread.join(10)
+        kernel32.CloseHandle(handles[0])
+    assert 'KEY=kept' in out and 'busy' in out
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named mutex')
+def test_worker_treats_an_abandoned_lock_as_acquired(tmp_path, link_key):
+    root = tmp_path / 'MV Hub'
+    link_key.write(_command(root / 'runtime' / 'python' / 'pythonw.exe'))
+    name = 'Local\\MVHubTest-' + uuid.uuid4().hex
+    thread, handles, kernel32 = _hold_mutex(name, None)
+    thread.join(10)  # owner thread ended without releasing
+    try:
+        out = _run_clear(tmp_path, root, link_key, name, wait_ms=200)
+    finally:
+        kernel32.CloseHandle(handles[0])
+    assert 'KEY=gone' in out
+
+
+def test_worker_calls_cleanup_after_install_and_after_rollback_only():
+    payload = _payload()
+    main = payload[payload.index('Install-Package -Latest $Latest -TempRoot $TempRoot'):]
+    first = main.index('Clear-DanglingOpenLink -Root $TargetDir')
+    assert first < main.index('Restart-MvHubAndWaitReady -ExpectedVersion')
+    assert main[:first].rstrip().endswith('try {')
+    outer = payload[payload.index('$InstallFailure = $_'):]
+    outer = outer[:outer.index('throw $InstallFailure')]
+    finalize = outer.index('try { Finalize-FailedInstall }')
+    gate = outer.index("if ($script:RecoveryState -eq 'rolled_back') {\n            try { Clear-DanglingOpenLink -Root $TargetDir } catch {}")
+    assert finalize < gate < outer.index('Write-UpdateState -State "failed"')
+    assert payload.count('Clear-DanglingOpenLink -Root $TargetDir') == 2
+
+
+def test_worker_bat_stays_ascii_and_lock_name_matches_launcher():
+    assert all(b < 128 for b in (ROOT / 'update_release_worker.bat').read_bytes())
+    tree = ast.parse((ROOT / 'run_agent_session.py').read_text(encoding='utf-8'))
+    launcher_name = next(n.value.value for n in tree.body if isinstance(n, ast.Assign)
+                         and getattr(n.targets[0], 'id', '') == 'OPEN_LINK_LOCK_NAME')
+    assert f"[string]$MutexName = '{launcher_name}'" in _payload()

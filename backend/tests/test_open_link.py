@@ -335,6 +335,84 @@ def test_registry_contract_without_filesystem_or_real_winreg(monkeypatch):
     assert 'another install' in registry.values[r'Software\Classes\mvhub\shell\open\command', ''][0]
 
 
+def test_registration_writes_only_under_the_lock_and_always_releases(monkeypatch):
+    import contextlib
+    monkeypatch.setattr(launcher, '_native_link_eligible', lambda: True)
+    state = {'held': False}
+
+    class Guarded(Registry):
+        def QueryValueEx(self, key, name):
+            assert state['held'], 'registry read outside the lock'
+            return super().QueryValueEx(key, name)
+
+        def SetValueEx(self, *args):
+            assert state['held'], 'registry write outside the lock'
+            return super().SetValueEx(*args)
+    registry = Guarded()
+    assert not launcher.register_open_link('8472', registry, lambda: contextlib.nullcontext(False))
+    assert registry.writes == 0  # busy: skip, startup goes on
+    events = []
+
+    @contextlib.contextmanager
+    def lock():
+        events.append('acquire')
+        state['held'] = True
+        try:
+            yield True
+        finally:
+            state['held'] = False
+            events.append('release')
+    assert launcher.register_open_link('8472', registry, lock) and registry.writes == 3
+    assert events == ['acquire', 'release']
+    registry.values.clear()
+    monkeypatch.setattr(registry, 'SetValueEx', lambda *a: (_ for _ in ()).throw(PermissionError()))
+    assert not launcher.register_open_link('8472', registry, lock)
+    assert events[-2:] == ['acquire', 'release']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named mutex')
+def test_real_registration_lock_busy_released_and_abandoned():
+    import threading
+    import uuid
+    name = 'Local\\MVHubTest-' + uuid.uuid4().hex
+    owned, release = threading.Event(), threading.Event()
+
+    def holder():
+        with launcher._open_link_lock(1000, name) as held:
+            assert held
+            owned.set()
+            release.wait(10)
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert owned.wait(10)
+    with launcher._open_link_lock(100, name) as held:
+        assert not held  # another thread holds it
+    release.set()
+    thread.join(10)
+    with launcher._open_link_lock(100, name) as held:
+        assert held  # released on exit
+
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handles = []
+
+    def abandon():
+        handles.append(kernel32.CreateMutexW(None, False, name))
+        assert kernel32.WaitForSingleObject(handles[0], 1000) == 0  # owns it, ends without releasing
+    abandoner = threading.Thread(target=abandon)
+    abandoner.start()
+    abandoner.join(10)
+    try:
+        with launcher._open_link_lock(100, name) as held:
+            assert held  # WAIT_ABANDONED counts as acquired
+    finally:
+        kernel32.CloseHandle(handles[0])
+
+
 def test_isolated_script_invalid_argv_is_silent():
     import subprocess
     import sys

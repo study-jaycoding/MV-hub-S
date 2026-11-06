@@ -160,3 +160,98 @@ def test_channel_verification_is_bound_to_revision(monkeypatch, block_live_slack
     assert client._channels == {(1, 'UUNIT'): 'DUNIT'}
     with pytest.raises(client.SlackError, match='recipient_mismatch'):
         block_live_slack('chat.postMessage', 'fake-new', {'channel': 'DUNIT'}, recipient_id='UUNIT', revision=2)
+
+
+# A backup's config as server_move install leaves it (memory fixture reverses 'test-only-token').
+BACKUP = {'revision': 4, 'team_id': 'TUNIT', 'data': 'nekot-ylno-tset', 'enabled': True,
+          'open_base_url': 'http://127.0.0.1:8010'}
+
+
+def _restored(tmp_path, config):
+    import sqlite3
+    from contextlib import closing
+    from app.services import db_scrub
+    path = tmp_path / 'restored.db'
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute('CREATE TABLE app_setting(key TEXT PRIMARY KEY, value TEXT)')
+        conn.execute('INSERT INTO app_setting VALUES(?,?)', (client.SETTING_KEY, json.dumps(config)))
+        conn.commit()
+    assert db_scrub.pause_slack_for_restore(path)
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute('SELECT value FROM app_setting WHERE key=?', (client.SETTING_KEY,)).fetchone()[0]
+
+
+def test_restored_resume_resets_floor_and_clears_marker(memory, tmp_path, monkeypatch):
+    memory[client.SETTING_KEY] = _restored(tmp_path, {**BACKUP, 'paused': False})
+    assert client.public_config()['pause_reason'] == 'restored' and client.read_config()['paused']
+    resets = []
+    monkeypatch.setattr(client.repo.slack_notifications, 'reset_floor', lambda **kw: resets.append(kw))
+    client.set_paused(False)
+    stored = json.loads(memory[client.SETTING_KEY])
+    assert resets == [{}] and stored['paused'] is False and stored['pause_reason'] == '' and 'restored' not in stored
+
+
+def test_manual_pause_keeps_restore_marker(memory, tmp_path, monkeypatch):
+    memory[client.SETTING_KEY] = _restored(tmp_path, {**BACKUP, 'paused': False})
+    resets = []
+    monkeypatch.setattr(client.repo.slack_notifications, 'reset_floor', lambda **kw: resets.append(kw))
+    client.set_paused(True)
+    assert json.loads(memory[client.SETTING_KEY])['restored'] is True and not resets
+
+
+@pytest.mark.parametrize('before', [{'paused': False}, {'paused': True, 'pause_reason': 'manual'},
+                                    {'paused': True, 'pause_reason': 'auth_error'}])
+def test_restored_same_team_reregistration_resets_floor_once(memory, tmp_path, monkeypatch, before):
+    memory[client.SETTING_KEY] = _restored(tmp_path, {**BACKUP, **before})
+    resets = []
+    monkeypatch.setattr(client.repo.slack_notifications, 'reset_floor', lambda **kw: resets.append(kw))
+    client.save_config('test-only-new', 'TUNIT', 'http://127.0.0.1:8010', True)
+    stored = json.loads(memory[client.SETTING_KEY])
+    assert resets == [{'reason': 'restored'}] and 'restored' not in stored and stored['paused'] is False
+    client.save_config('test-only-newer', 'TUNIT', 'http://127.0.0.1:8010', True)  # marker gone: J7 again
+    assert resets == [{'reason': 'restored'}]
+
+
+def test_restored_auth_error_still_needs_a_new_token(memory, tmp_path):
+    memory[client.SETTING_KEY] = _restored(tmp_path, {**BACKUP, 'paused': True, 'pause_reason': 'auth_error'})
+    assert client.public_config()['pause_reason'] == 'auth_error'
+    with pytest.raises(ValueError):
+        client.set_paused(False)
+    assert json.loads(memory[client.SETTING_KEY])['restored'] is True
+
+
+def test_unmarked_manual_pause_reregistration_keeps_floor(memory, monkeypatch):
+    client.save_config('test-only-token', 'TUNIT', 'http://127.0.0.1:8010', True)
+    client.set_paused(True)
+    resets = []
+    monkeypatch.setattr(client.repo.slack_notifications, 'reset_floor', lambda **kw: resets.append(kw))
+    client.save_config('test-only-new', 'TUNIT', 'http://127.0.0.1:8010', True)
+    assert not resets
+
+
+def test_restored_auth_wait_row_is_not_resent_after_reregistration(tmp_path, monkeypatch):
+    """Codex 2nd-round case: an auth_error backup's auth_wait row must not revive under the new token revision."""
+    import time
+    from app import config, db, repo
+    from app.services import db_scrub
+    monkeypatch.setenv('CONTENT_HUB_DB', str(tmp_path / 'content_hub.db'))
+    monkeypatch.setattr(config, 'MANAGE_ENABLED', False)
+    monkeypatch.setattr(client.comfy_team_key, 'protect', lambda key: key[::-1])
+    monkeypatch.setattr(client.comfy_team_key, 'unprotect', lambda key: key[::-1])
+    db.flush_pool()
+    db.init_db()
+    try:
+        with db.get_connection() as conn:
+            conn.execute('INSERT INTO app_setting(key,value) VALUES(?,?)', (client.SETTING_KEY, json.dumps(
+                {**BACKUP, 'paused': True, 'pause_reason': 'auth_error'})))
+            conn.execute("INSERT INTO slack_dm_outbox(comment_id,recipient_email,kind,created_at,db_generation,state,"
+                         "token_revision,slack_team_id) VALUES('c1','a@unit.test','mention',?,'g','auth_wait',4,'TUNIT')",
+                         (time.time() - 60,))
+        db.flush_pool()
+        assert db_scrub.pause_slack_for_restore(db.get_db_path())
+        client.save_config('test-only-new', 'TUNIT', 'http://127.0.0.1:8010', True)
+        assert repo.slack_notifications.claim(time.time(), 'TUNIT', client.read_config()['revision']) is None
+        with db.get_connection() as conn:
+            assert tuple(conn.execute('SELECT state, close_reason FROM slack_dm_outbox').fetchone()) == ('closed', 'restored')
+    finally:
+        db.flush_pool()

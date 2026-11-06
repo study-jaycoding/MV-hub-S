@@ -646,3 +646,136 @@ def test_drill_result_must_pass_every_check():
         },
     ):
         assert sm._drill_ok(broken) is False
+
+
+# ------------------------------------------------------------ Slack 복원 멈춤
+
+
+SLACK_ON = {"revision": 3, "team_id": "TUNIT", "data": "unit-ciphertext", "enabled": True, "paused": False}
+
+
+def _put_slack(db_path: Path, raw: str | None) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE app_setting(key TEXT PRIMARY KEY, value TEXT)")
+        if raw is not None:
+            conn.execute("INSERT INTO app_setting VALUES('slack_bot_config', ?)", (raw,))
+        conn.commit()
+
+
+def _slack_of(db_path: Path) -> str | None:
+    with closing(sqlite3.connect(db_path)) as conn:  # 설치 도구와 따로 연 연결
+        row = conn.execute("SELECT value FROM app_setting WHERE key='slack_bot_config'").fetchone()
+    return row[0] if row else None
+
+
+@pytest.mark.parametrize(
+    "before,reason",
+    [({}, "restored"), ({"paused": True, "pause_reason": "manual"}, "manual"),
+     ({"paused": True, "pause_reason": "auth_error"}, "auth_error")],
+)
+def test_restore_installs_slack_paused_and_marked(tmp_path, monkeypatch, capsys, before, reason):
+    sm = _module()
+    data = tmp_path / "data"
+    _make_live_set(data / "db", tag="old")
+    package = _make_package(tmp_path / "pkg")
+    _put_slack(package["content"], json.dumps({**SLACK_ON, **before}))
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+    expected = _sha(sm, package)
+
+    result = sm.install_set(package, data, 8010, expected)  # [5/6] 재검증까지 통과
+
+    installed = json.loads(_slack_of(Path(result["targets"]["content"])))
+    assert installed == {**SLACK_ON, **before, "paused": True, "pause_reason": reason, "restored": True}
+    assert _sha(sm, package) == expected  # 백업 원본은 그대로
+    assert "멈춤(복원됨)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [json.dumps({"revision": 2, "enabled": False}), "not json", "[1, 2]", None,
+     json.dumps({**SLACK_ON, "paused": True, "pause_reason": "restored", "restored": True})],
+)
+def test_restore_leaves_other_slack_states_alone(tmp_path, monkeypatch, capsys, raw):
+    sm = _module()
+    data = tmp_path / "data"
+    package = _make_package(tmp_path / "pkg")
+    _put_slack(package["content"], raw)
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+
+    result = sm.install_set(package, data, 8010, _sha(sm, package))
+
+    assert _slack_of(Path(result["targets"]["content"])) == raw
+    assert "멈춤(복원됨)" not in capsys.readouterr().out
+
+
+def test_restore_without_app_setting_table_installs_unchanged(tmp_path, monkeypatch, capsys):
+    sm = _module()
+    package = _make_package(tmp_path / "pkg")  # 옛 DB 꼴 — app_setting 없음
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+    result = sm.install_set(package, tmp_path / "data", 8010, _sha(sm, package))
+    assert Path(result["targets"]["content"]).is_file()
+    assert "멈춤(복원됨)" not in capsys.readouterr().out
+
+
+def _b1_package(tmp_path, monkeypatch, *, in_flight: bool) -> dict[str, Path]:
+    """B1 보호가 켜진 실제 content/trash 짝(임시 합성 DB 에서만) + 켜진 Slack 설정."""
+    from app import config, db, repo
+    from app.repo import trash
+    from app.services import trash_transfer as transfer
+
+    src = tmp_path / "src" / "content_hub.db"
+    src.parent.mkdir(parents=True)
+    monkeypatch.setenv("CONTENT_HUB_DB", str(src))
+    monkeypatch.setattr(config, "MANAGE_ENABLED", False)
+    db.flush_pool()
+    db.init_db()
+    repo.ensure_default_worker()
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO generation(id,worker_id,prompt,status,created_at,job_id) "
+                     "VALUES('g1','me','kept','done','2026-10-18','job1')")
+        conn.execute("INSERT INTO app_setting(key,value) VALUES('slack_bot_config',?)", (json.dumps(SLACK_ON),))
+    trash.activate_transfer(src, storage_evidence="fixture-only", writer_evidence="fixture-only")
+    if in_flight:  # D2 에서 멈춘 휴지통 이동 = 이전 진행 중
+        monkeypatch.setattr(transfer, "checkpoint",
+                            lambda phase: (_ for _ in ()).throw(RuntimeError("stop")) if phase == "D2" else None)
+        with pytest.raises(RuntimeError):
+            trash.move_to_trash("g1")
+    db.flush_pool()
+    monkeypatch.delenv("CONTENT_HUB_DB")  # role_live_paths 가 원본을 운영 DB 로 잡지 않게
+    package = _make_package(tmp_path / "pkg")
+    for role, source in (("content", src), ("trash", src.with_name("content_hub_trash.db"))):
+        package[role].unlink()
+        with closing(sqlite3.connect(source)) as a, closing(sqlite3.connect(package[role])) as b:
+            a.backup(b)
+    return package
+
+
+def test_restore_pauses_slack_on_a_b1_protected_set(tmp_path, monkeypatch):
+    sm = _module()
+    package = _b1_package(tmp_path, monkeypatch, in_flight=False)
+    data = tmp_path / "data"
+    _make_live_set(data / "db", tag="old")
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+
+    result = sm.install_set(package, data, 8010, _sha(sm, package))
+
+    installed = json.loads(_slack_of(Path(result["targets"]["content"])))
+    assert installed["paused"] is True and installed["pause_reason"] == "restored" and installed["restored"] is True
+
+
+def test_restore_refuses_a_b1_set_with_a_transfer_in_flight(tmp_path, monkeypatch):
+    sm = _module()
+    package = _b1_package(tmp_path, monkeypatch, in_flight=True)
+    data = tmp_path / "data"
+    db_dir = data / "db"
+    live = _make_live_set(db_dir, tag="old")
+    before = {role: path.read_bytes() for role, path in live.items()}
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+
+    with pytest.raises(sqlite3.IntegrityError, match="transfer_writer"):
+        sm.install_set(package, data, 8010, _sha(sm, package))
+
+    assert {role: path.read_bytes() for role, path in live.items()} == before
+    assert not (db_dir / sm.JOURNAL_NAME).exists()
+    assert not _left(db_dir, sm.STAGED_PREFIX)
+    assert not _left(db_dir, sm.ARCHIVE_PREFIX)

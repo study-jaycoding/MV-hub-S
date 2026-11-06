@@ -11,6 +11,7 @@ the handle and terminates every process created by the guarded launcher.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -321,7 +322,34 @@ def _native_link_eligible() -> bool:
             and (root / 'runtime/python/pythonw.exe').is_file())
 
 
-def register_open_link(port: str, registry=None) -> bool:
+OPEN_LINK_LOCK_NAME = 'Local\\MVHubOpenLinkRegistration'  # same name in update_release_worker.bat
+
+
+@contextlib.contextmanager
+def _open_link_lock(timeout_ms: int = 2000, name: str = OPEN_LINK_LOCK_NAME):
+    """Yield True while the registration lock is held; always released on exit.
+    An abandoned mutex (owner died) counts as held, or a crashed holder would block cleanup forever."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        yield False
+        return
+    held = kernel32.WaitForSingleObject(handle, timeout_ms) in (0, 0x80)  # WAIT_OBJECT_0, WAIT_ABANDONED
+    try:
+        yield held
+    finally:
+        if held:
+            kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
+
+
+def register_open_link(port: str, registry=None, lock=None) -> bool:
     """Normal launch only. Compare all HKCU values; failure must not block startup."""
     if not _native_link_eligible() or not re.fullmatch(r'[0-9]{1,5}', port) or not 1 <= int(port) <= 65535:
         return False
@@ -333,15 +361,20 @@ def register_open_link(port: str, registry=None) -> bool:
         values = [(r'Software\Classes\mvhub', '', 'URL:MV Hub'),
                   (r'Software\Classes\mvhub', 'URL Protocol', ''),
                   (r'Software\Classes\mvhub\shell\open\command', '', command)]
-        for path, name, value in values:
-            try:
-                with registry.OpenKey(registry.HKEY_CURRENT_USER, path) as key:
-                    current = registry.QueryValueEx(key, name)
-            except FileNotFoundError:
-                current = None
-            if current != (value, registry.REG_SZ):
-                with registry.CreateKeyEx(registry.HKEY_CURRENT_USER, path, 0, registry.KEY_SET_VALUE) as key:
-                    registry.SetValueEx(key, name, 0, registry.REG_SZ, value)
+        # The updater deletes a dangling registration under the same lock; skip rather than race it.
+        with (lock or _open_link_lock)() as held:
+            if not held:
+                print('[info] Native link registration busy; retrying next launch.')
+                return False
+            for path, name, value in values:
+                try:
+                    with registry.OpenKey(registry.HKEY_CURRENT_USER, path) as key:
+                        current = registry.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    current = None
+                if current != (value, registry.REG_SZ):
+                    with registry.CreateKeyEx(registry.HKEY_CURRENT_USER, path, 0, registry.KEY_SET_VALUE) as key:
+                        registry.SetValueEx(key, name, 0, registry.REG_SZ, value)
         return True
     except OSError:
         print('[info] Native link registration unavailable.')
