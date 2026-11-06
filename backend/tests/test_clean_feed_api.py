@@ -1284,6 +1284,19 @@ def test_relay_keeps_status_and_headers_and_head_has_no_body(accounts, shared):
     run(go())
 
 
+def _end_on_loop_and_wait(hub, sess):
+    """일꾼 스레드에서 — 세션 끝내기를 루프에 맡기고 그것이 실제로 돈 뒤에 돌아온다. 잠깐 쉬기(옛 50ms)로는 맡긴 쪽이 늦으면 결과가
+    end() 를 앞지른다: run_in_executor 는 일을 먼저 맡기고 결과 연결을 나중에 붙여, 그 사이 끝난 결과는 루프를 안 거치고 바로 이어 간다."""
+    done = threading.Event()
+
+    def end_now():
+        hub.end(sess, "closed")
+        done.set()
+
+    hub._loop.call_soon_threadsafe(end_now)
+    assert done.wait(3), "end() 가 루프에서 돌지 않았다"
+
+
 def test_session_ending_while_relay_connects_closes_that_upstream(accounts, shared):
     async def go():
         hub = Hub(FakeWindows(), clock=Clock())
@@ -1292,8 +1305,7 @@ def test_session_ending_while_relay_connects_closes_that_upstream(accounts, shar
         upstream = Upstream(200, b"x" * 10, {"Content-Type": "video/mp4"})
 
         def ends_meanwhile(req):
-            hub._loop.call_soon_threadsafe(hub.end, sess, "closed")  # 연결을 기다리는 사이 세션이 끝난다
-            time.sleep(0.05)
+            _end_on_loop_and_wait(hub, sess)  # 연결을 기다리는 사이 세션이 끝난다
             return upstream
 
         shared.reply = ends_meanwhile
@@ -1368,8 +1380,7 @@ def test_error_response_arriving_after_session_ended_is_not_read(accounts, share
         msg["Content-Type"] = "text/plain"
 
         def ends_then_errors(req):
-            hub._loop.call_soon_threadsafe(hub.end, sess, "closed")  # 연결을 기다리는 사이 끝남
-            time.sleep(0.05)
+            _end_on_loop_and_wait(hub, sess)  # 연결을 기다리는 사이 끝남
             raise urllib.error.HTTPError("http://a.invalid/x", 416, "x", msg, Body())  # 그 뒤에 온 오류 응답
 
         shared.reply = ends_then_errors

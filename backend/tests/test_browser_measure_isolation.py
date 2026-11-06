@@ -141,6 +141,7 @@ def test_clean_path_drops_every_folder_that_holds_the_cli(tmp_path):
 def _load_tool(name: str):
     import sys
 
+    saved = list(sys.path)
     sys.path.insert(0, str(ROOT / "tools" / "browser_measure"))
     try:
         spec = importlib.util.spec_from_file_location(f"bm_{name}", ROOT / "tools" / "browser_measure" / f"{name}.py")
@@ -148,7 +149,7 @@ def _load_tool(name: str):
         spec.loader.exec_module(module)
         return module
     finally:
-        sys.path.pop(0)
+        sys.path[:] = saved  # 도구가 불러올 때 스스로 넣는 경로(corner_scan)까지 — 뒤 시험 파일의 import 를 가리지 않게
 
 
 class _FakeChrome:
@@ -257,7 +258,11 @@ def test_a_probe_failure_is_a_failure_not_a_stale_scenario(tmp_path):
 
 def test_corner_scan_writes_only_to_the_isolated_server_of_its_work_folder():
     # 11-06 Codex 묶음 리뷰: 자격 파일만 남은 채 다른 포트(인증이 꺼진 로컬 서버 등)를 가리키면 어셋 폴더 등록이 실사용 목록에 쓸 수 있었다
+    import sys
+
+    before = list(sys.path)
     scan = _load_tool("corner_scan")
+    assert sys.path == before  # 불러올 때 자기 폴더를 앞에 넣는 도구여도 경로를 남기지 않는다
     email = "bm-1234@isolated.test"
     me = {"status": 200, "body": {"email": email}}
     isolated = {"status": 200, "body": {"cli_available": False}}
