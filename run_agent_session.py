@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -379,6 +380,84 @@ def register_open_link(port: str, registry=None, lock=None) -> bool:
     except OSError:
         print('[info] Native link registration unavailable.')
         return False
+
+
+def _read_install_record(path: Path):
+    # read_bytes opens and closes at once: the worker's File.Replace retries only 2 seconds while a reader holds it.
+    return json.loads(path.read_bytes().decode('utf-8-sig'))
+
+
+def _boot_would_be_accepted() -> bool:
+    """Normal boot: the non-update branch of Initialize-WorkerActivation (update_release_contract.ps1),
+    which runs only after this launcher. A legacy journal (no format_version) needs its payload check,
+    whose result is unknown here, so it does not register either."""
+    root = _install_root()
+    try:
+        journal_path = root / 'update-journal.json'
+        if journal_path.exists():
+            journal = _read_install_record(journal_path)
+            if not isinstance(journal, dict) or journal.get('format_version') != 1 \
+                    or journal.get('phase') not in ('committed', 'rolled_back'):
+                return False
+            if journal['phase'] == 'rolled_back':
+                return True  # the boot writes a fresh control after a rollback
+        try:
+            control = _read_install_record(root / '.install-activation.json')
+        except FileNotFoundError:
+            return True
+        return (control.get('format_version') == 1 and control.get('state') in ('normal', 'activated')
+                and bool(re.fullmatch(r'[0-9a-f]{32}', str(control.get('execution_nonce', '')))))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _update_boot_outcome(nonce: str) -> bool | None:
+    """True once this update boot's own install committed, False once it was rolled back or superseded,
+    None while pending or unreadable. Same chain as runtime_activation: control -> the journal it names.
+    'activated' alone is not a commit: the worker writes it before the journal says committed."""
+    root = _install_root().resolve()
+    try:
+        control = _read_install_record(root / '.install-activation.json')
+        if control.get('execution_nonce') != nonce:
+            return False  # a rollback restored the previous control, or another boot replaced it
+        if control.get('state') != 'activated':
+            return None
+        run_id = control.get('run_id')
+        path = Path(control['journal']).resolve()
+        # Only the two places the worker names: the live journal, or this run's history copy. run_id is the
+        # worker's Guid('N'); anything else (e.g. '../x') could steer the history path out of the root.
+        if not isinstance(run_id, str) or not re.fullmatch(r'[0-9a-f]{32}', run_id) or path not in {
+                (root / 'update-journal.json').resolve(), (root / '.install-journals' / f'{run_id}.json').resolve()}:
+            return None
+        journal = _read_install_record(path)
+        if journal.get('execution_nonce') != nonce or journal.get('run_id') != run_id:
+            return None
+        phase = journal.get('phase')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if phase == 'committed':
+        return True
+    return False if phase in ('rolled_back', 'recovery_required') else None
+
+
+def _register_after_update_commit(port: str, nonce: str, sleep=time.sleep) -> None:
+    while (outcome := _update_boot_outcome(nonce)) is None:
+        sleep(5)
+    if outcome:
+        register_open_link(port)
+
+
+def _start_open_link_registration(port: str) -> None:
+    """Called once this launcher owns its mutex, so a duplicate launch never registers. An update boot
+    registers only after its own install commits: a first update rolled back by an updater without link
+    cleanup would otherwise leave a link to files the old version lacks."""
+    if os.environ.get('MVHUB_ACTIVATION_CONTROL', ''):
+        nonce = os.environ.get('MVHUB_EXECUTION_NONCE', '')
+        if nonce:  # without one the boot itself is refused
+            threading.Thread(target=_register_after_update_commit, args=(port, nonce),
+                             name='open-link-after-commit', daemon=True).start()
+    elif _boot_would_be_accepted():
+        register_open_link(port)
 
 
 def _find_app_browser() -> tuple[str, str] | None:
@@ -1335,7 +1414,6 @@ def main(argv: list[str] | None = None) -> int:
         # 단일 실행 — 같은 포트·설치의 런처가 이미 살아 있으면 허브 포트를 뺏지 않고
         # 기존 앱 창만 앞으로 올린 뒤 조용히 끝낸다(코덱스 검토: split-ownership 방지).
         port = os.environ.get("CONTENT_HUB_PORT", "8010")
-        register_open_link(port)
         if not acquire_launcher_mutex(port):
             if _focus_app_window():
                 # 창이 실제로 있음 = 진짜 중복 실행 — 그 창만 앞으로 올리고 끝.
@@ -1355,6 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
                     "found. Close it (Task Manager: python/cmd under MV Hub) and retry."
                 )
                 return 1
+        _start_open_link_registration(port)
         _close_stale_launcher_shells(script)
         ensure_desktop_shortcut()
         return run_guarded(script)

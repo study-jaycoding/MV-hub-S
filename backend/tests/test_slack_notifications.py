@@ -1,5 +1,7 @@
 """Slack contract tests: disposable databases and fake HTTP only."""
+import contextlib
 import json
+import math
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app import db, manage_db, repo, schema_compat
+from app.emailnorm import norm_email
 from app.repo import slack_notifications as store
 from app.services import slack_client as client, slack_notify as worker
 from app.services.db_scrub import scrub_slack
@@ -47,6 +50,21 @@ def rows():
         return [dict(r) for r in conn.execute('SELECT * FROM slack_dm_outbox ORDER BY id')]
 
 
+def candidates(team='TUNIT'):
+    now = time.time()
+    return store.window_candidates(now - 1700, now + 120, team)
+
+
+def emails_for(cid):
+    return sorted(e for c, e in candidates() if c == cid)
+
+
+def cycle(monkeypatch):
+    monkeypatch.setattr(client, 'send_dm', lambda *a, **kw: None)
+    worker.run_cycle()
+    return {(r['comment_id'], r['recipient_email']) for r in rows()}
+
+
 def test_named_baselines_unchanged_and_migration_idempotent(world):
     with db.get_connection() as conn:
         before = schema_compat.inspect_schema(conn, 'content').components
@@ -59,7 +77,7 @@ def test_named_baselines_unchanged_and_migration_idempotent(world):
 
 def test_recipient_private_self_deleted_and_blocked(world):
     cid = comment(world)
-    assert store.recipient_emails(cid) == ['owner@unit.test']
+    assert emails_for(cid) == ['owner@unit.test']
     assert store.delivery_target(cid, 'owner@unit.test')
     assert store.delivery_target(comment(world, private=True), 'owner@unit.test') is None
     mine = repo.add_generation_comment('g', world[0]['owner']['creator_uid'], 'mine')
@@ -230,7 +248,7 @@ def test_floor_inside_a_second_keeps_that_seconds_comment_for_1000_seconds(world
         _comment_at(world, f's{k:04}', base + k)
     for k in range(1000):
         # resume at .800 of the second the comment was stored in; the next second's comment is past the upper bound
-        assert [r['id'] for r in store.recent_comments(base + k + 0.8, base + k + 0.9)] == [f's{k:04}'], k
+        assert [c for c, _ in store.window_candidates(base + k + 0.8, base + k + 0.9, 'TUNIT')] == [f's{k:04}'], k
 
 
 def test_resume_then_same_second_comment_is_delivered_once_and_older_second_is_not(world, monkeypatch):
@@ -287,16 +305,187 @@ def test_recipients_are_linked_unambiguous_accounts_only(world):
     parent_uid = world[0]['parent']['creator_uid']
     parent = repo.add_generation_comment('g', parent_uid, 'question')
     reply = comment(world, parent=parent)
-    assert store.recipient_emails(reply) == ['owner@unit.test']  # parent is not linked: no row, no lookups
+    assert emails_for(reply) == ['owner@unit.test']  # parent is not linked: not a candidate
     store.save_link('PARENT@unit.test ', 'UPARENT', 'TUNIT', 'parent', 'parent@slack.test')
-    assert store.recipient_emails(reply) == ['owner@unit.test', 'parent@unit.test']
+    assert emails_for(reply) == ['owner@unit.test', 'parent@unit.test']
     with db.get_connection() as conn:  # a plain (non acct:) owner uid resolves through the account table
         conn.execute("UPDATE account SET creator_uid='u-shared' WHERE email='owner@unit.test'")
         conn.execute("UPDATE generation SET creator_uid='u-shared' WHERE id='g'")
-    assert store.recipient_emails(reply) == ['owner@unit.test', 'parent@unit.test']
+    assert emails_for(reply) == ['owner@unit.test', 'parent@unit.test']
     with db.get_connection() as conn:  # a second approved account on that uid: ambiguous, so out even though linked
         conn.execute("UPDATE account SET creator_uid='u-shared' WHERE email='author@unit.test'")
-    assert store.recipient_emails(reply) == ['parent@unit.test']
+    assert emails_for(reply) == ['parent@unit.test']
+
+
+def _reference_pairs(team):
+    """The pre-11-07 collection path (a recipient lookup per comment), kept as the oracle for window_candidates."""
+    now = time.time()
+    with db.get_connection() as conn:
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM generation_comment WHERE is_private=0 AND julianday(created_at) "
+            "BETWEEN julianday(?,'unixepoch') AND julianday(?,'unixepoch') ORDER BY julianday(created_at),id",
+            (math.floor(now - 1700), now + 120))]
+    pairs = []
+    for cid in ids:
+        with db.get_connection() as conn:
+            row = conn.execute('SELECT g.creator_uid,p.author FROM generation_comment c JOIN generation g ON g.id=c.gen_id '
+                               'LEFT JOIN generation_comment p ON p.id=c.parent_id WHERE c.id=?', (cid,)).fetchone()
+            emails = set()
+            for uid in set(row or ()):
+                if not uid or uid == 'me':
+                    continue
+                if uid.startswith('acct:'):
+                    found = conn.execute("SELECT email FROM account WHERE email=? AND status='approved'",
+                                         (norm_email(uid[5:]),)).fetchall()
+                else:
+                    found = conn.execute("SELECT email FROM account WHERE creator_uid=? AND status='approved'", (uid,)).fetchall()
+                if len(found) == 1:
+                    emails.add(found[0][0])
+            emails = {e for e in emails if conn.execute('SELECT 1 FROM slack_link WHERE account_email=?', (norm_email(e),)).fetchone()}
+            emails -= {r[0] for r in conn.execute('SELECT recipient_email FROM slack_dm_outbox WHERE comment_id=?', (cid,))}
+        for email in sorted(emails):
+            target = store.delivery_target(cid, email)
+            if target and target['slack_team_id'] == team:
+                pairs.append((cid, email))
+    return pairs
+
+
+def test_window_candidates_queue_exactly_what_the_old_per_comment_path_queued(world):
+    def account(name, uid):
+        email = name + '@unit.test'
+        repo.register(email, 'fake-test-password', name)
+        repo.set_account_status(email, 'approved')
+        with db.get_connection() as conn:
+            conn.execute('UPDATE account SET creator_uid=? WHERE email=?', (uid, email))
+        return email
+    blank = account('blank', '')  # empty creator_uid: judged as acct:<email>
+    keyed = account('keyed', 'uid-keyed')  # reached through acct:, judged by its own creator_uid
+    dup = account('dup1', 'u-dup')
+    account('dup2', 'u-dup')  # second approved account on that uid: ambiguous
+    other = account('other', 'uid-other')
+    for email, team in ((blank, 'TUNIT'), (keyed, 'TUNIT'), (dup, 'TUNIT'), (other, 'TOTHER')):
+        store.save_link(email, 'U' + email.split('@')[0], team, email, email)
+    store.save_link('parent@unit.test', 'UPARENT', 'TUNIT', 'parent', 'parent@slack.test')
+    owner_uid, author_uid, parent_uid = (world[0][n]['creator_uid'] for n in ('owner', 'author', 'parent'))
+    gens = {'gb': 'acct:' + blank, 'gk': 'acct:' + keyed, 'gd': 'u-dup', 'go': 'uid-other', 'gm': 'me', 'gt': owner_uid}
+    with db.get_connection() as conn:
+        for gid, creator in gens.items():
+            conn.execute("INSERT INTO generation(id,job_id,worker_id,prompt,status,creator_uid) VALUES(?,?,'me','x','done',?)",
+                         (gid, gid, creator))
+        conn.execute("UPDATE generation SET deleted_at=datetime('now') WHERE id='gt'")  # trashed: dynamic rejection
+        conn.execute("UPDATE account SET global_role='admin' WHERE email='owner@unit.test'")  # reads all, still not self
+    question = repo.add_generation_comment('g', parent_uid, 'question')
+    for gid in [*gens, 'g']:
+        repo.add_generation_comment(gid, author_uid, 'hello')
+        repo.add_generation_comment(gid, author_uid, 'secret', is_private=True)
+    comment(world, 'reply', parent=question)
+    repo.add_generation_comment('g', owner_uid, 'mine')
+    with db.get_connection() as conn:  # its generation has not arrived yet
+        conn.execute("INSERT INTO generation_comment(id,gen_id,author,text) VALUES('early','g-late',?,'x')", (author_uid,))
+    sent = comment(world, 'already sent')
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO slack_dm_outbox(comment_id,recipient_email,kind,created_at,db_generation,state,slack_team_id) "
+                     "VALUES(?,'owner@unit.test','comment',?,?,'sent','TUNIT')", (sent, time.time(), store.generation(conn)))
+    for team in ('TUNIT', 'TOTHER'):
+        new = [(c, e) for c, e in candidates(team) if (t := store.delivery_target(c, e)) and t['slack_team_id'] == team]
+        assert new == _reference_pairs(team), team
+    assert {e for _, e in _reference_pairs('TUNIT')} >= {blank, 'owner@unit.test'}  # not a vacuous comparison
+    assert _reference_pairs('TOTHER') and (sent, 'owner@unit.test') not in candidates()
+
+
+def test_window_reads_one_snapshot_regardless_of_comment_count(world, monkeypatch):
+    opened = []
+    real = store.get_connection
+    monkeypatch.setattr(store, 'get_connection', lambda *a: opened.append(1) or real(*a))
+    for count in (10, 300):
+        with db.get_connection() as conn:
+            conn.executemany("INSERT INTO generation_comment(id,gen_id,author,text) VALUES(?,'g',?,'x')",
+                             [(f'n{count}-{i}', world[0]['author']['creator_uid']) for i in range(count)])
+        opened.clear()
+        assert len(candidates()) >= count
+        assert len(opened) == 1  # not one recipient lookup per comment
+
+
+def test_window_snapshot_is_four_selects_closed_before_anything_is_judged(world, monkeypatch):
+    # Production pools one connection per thread (tests turn it off): an unclosed snapshot would leak into
+    # the next caller on this thread, so check with the pool on.
+    db.flush_pool()
+    monkeypatch.setattr(db, '_POOL_ENABLED', True)
+    comment(world)
+    statements = []
+    real = store.get_connection
+
+    @contextlib.contextmanager
+    def traced(*a):
+        with real(*a) as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+    monkeypatch.setattr(store, 'get_connection', traced)
+    assert candidates()
+    monkeypatch.setattr(store, 'get_connection', real)
+    assert statements[0].strip().upper() == 'BEGIN'
+    assert [s.lstrip().upper().startswith('SELECT') for s in statements[1:]] == [True] * 4
+    with db.get_connection() as conn:  # the snapshot ended with the function (the pool reuses this connection)
+        assert not conn.in_transaction
+    judged = []
+
+    def judge(*args):
+        with db.get_connection() as conn:
+            judged.append(conn.in_transaction)
+        return None
+    monkeypatch.setattr(store, 'delivery_target', judge)
+    worker.run_cycle()
+    assert judged == [False]
+    db.flush_pool()
+
+
+def test_queued_and_self_comments_are_never_judged_while_collecting(world, monkeypatch):
+    owner_uid, author_uid = world[0]['owner']['creator_uid'], world[0]['author']['creator_uid']
+    with db.get_connection() as conn:
+        conn.executemany("INSERT INTO generation_comment(id,gen_id,author,text) VALUES(?,'g',?,'x')",
+                         [(f'q{i}', author_uid) for i in range(200)] + [(f'm{i}', owner_uid) for i in range(200)])
+        gen = store.generation(conn)
+        conn.executemany("INSERT INTO slack_dm_outbox(comment_id,recipient_email,kind,created_at,db_generation,state,slack_team_id) "
+                         "VALUES(?,'owner@unit.test','comment',?,?,?,'TUNIT')",
+                         [(f'q{i}', time.time(), gen, ('sent', 'closed', 'pending')[i % 3]) for i in range(200)])
+    monkeypatch.setattr(store, 'delivery_target', lambda *a: pytest.fail('nothing should be judged while collecting'))
+    monkeypatch.setattr(store, 'claim', lambda *a: None)  # the delivery stage re-judges queued rows; not this test
+    assert candidates() == []
+    worker.run_cycle()
+
+
+def test_link_team_mismatch_is_not_a_candidate(world):
+    cid = comment(world)
+    assert emails_for(cid) == ['owner@unit.test']
+    assert candidates('TOTHER') == []
+
+
+def test_late_generation_late_import_new_link_and_regained_visibility_land_next_cycle(world, monkeypatch):
+    author_uid, parent_uid = world[0]['author']['creator_uid'], world[0]['parent']['creator_uid']
+    with db.get_connection() as conn:  # a comment whose generation has not arrived yet
+        conn.execute("INSERT INTO generation_comment(id,gen_id,author,text) VALUES('early','g3',?,'x')", (author_uid,))
+    assert ('early', 'owner@unit.test') not in cycle(monkeypatch)
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO generation(id,job_id,worker_id,prompt,status,creator_uid) VALUES('g3','g3','me','x','done',?)",
+                     (world[0]['owner']['creator_uid'],))
+    assert ('early', 'owner@unit.test') in cycle(monkeypatch)
+    # imported after the cycles above but stamped before them (still after the 60-second floor of `world`)
+    _comment_at(world, 'late-import', int(time.time()) - 30)
+    assert ('late-import', 'owner@unit.test') in cycle(monkeypatch)
+    question = repo.add_generation_comment('g', parent_uid, 'question')
+    reply = comment(world, parent=question)
+    assert (reply, 'parent@unit.test') not in cycle(monkeypatch)  # parent not linked yet
+    store.save_link('parent@unit.test', 'UPARENT', 'TUNIT', 'parent', 'parent@slack.test')
+    assert (reply, 'parent@unit.test') not in cycle(monkeypatch)  # linked, but cannot see the generation
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO project(id,name,kind) VALUES('p','Project','team')")
+        conn.execute("UPDATE generation SET project_id='p' WHERE id='g'")
+        conn.execute("INSERT INTO share(generation_id,shared_by) VALUES('g','me')")
+        conn.execute("INSERT INTO project_member(project_id,creator_uid,project_role) VALUES('p',?,'creator')", (parent_uid,))
+    assert (reply, 'parent@unit.test') in cycle(monkeypatch)
 
 
 def test_snapshot_scrub_is_strict_and_verified(world):

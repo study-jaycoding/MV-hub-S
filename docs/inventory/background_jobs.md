@@ -108,6 +108,7 @@
 | `backend/app/ws.py` | `ConnectionManager._schedule_notify` | create_task | `self._debounced_notify()` |
 | `backend/app/ws.py` | `ConnectionManager.connect` | create_task | `self._sender_loop(client)` |
 | `open_link.py` | `run` | Thread | `request` |
+| `run_agent_session.py` | `_start_open_link_registration` | Thread | `_register_after_update_commit (name=open-link-after-commit)` |
 
 ## ④ 작업자 에이전트 (`agent_push.py`)
 

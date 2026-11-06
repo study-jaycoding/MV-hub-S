@@ -52,48 +52,58 @@ def scan_context(now):
         return current, max(floor, now - 1800)
 
 
-def recent_comments(lower, upper, after=None, limit=500):
-    # The caller freezes bounds for the whole traversal. Comment times are whole seconds, so the
-    # lower bound is floored, and SQLite converts both bounds the same way it converts created_at
-    # (a Python Julian-day formula can differ in the last digit and drop that second's comments).
-    params = [math.floor(lower), upper]
-    extra = ''
-    if after:
-        extra = ' AND (julianday(created_at),id) > (?,?)'
-        params.extend(after)
-    with get_connection() as conn:
-        return [dict(r) for r in conn.execute(
-            'SELECT id,julianday(created_at) AS jd FROM generation_comment '
-            "WHERE is_private=0 AND julianday(created_at) BETWEEN julianday(?,'unixepoch') AND julianday(?,'unixepoch')"
-            + extra + ' ORDER BY jd,id LIMIT ?', (*params, limit))]
+def _judged_uid(email, creator_uid):
+    """The uid the bell judges an account by; window_candidates and delivery_target must agree."""
+    return creator_uid or 'acct:' + email
 
 
-def recipient_emails(comment_id, *, only_unqueued=False):
+# The caller freezes bounds for the whole cycle. Comment times are whole seconds, so the lower bound is
+# floored, and SQLite converts both bounds the same way it converts created_at (a Python Julian-day
+# formula can differ in the last digit and drop that second's comments).
+_WINDOW = ("c.is_private=0 AND julianday(c.created_at) "
+           "BETWEEN julianday(?,'unixepoch') AND julianday(?,'unixepoch')")
+
+
+def window_candidates(lower, upper, team_id):
+    """Unqueued (comment_id, email) pairs in the window that delivery_target may still accept.
+
+    Four queries in one snapshot for the whole window, closed before the caller judges each pair
+    (per-comment recipient lookups cost 4-5 queries per comment every cycle: 1.6s at 2,000 comments).
+    Recipients resolve exactly as before: the approved account a uid maps to unambiguously, linked to
+    Slack, not already queued (sent and closed included). Only facts that never change for a pair
+    (author, owner, parent, link team) are pre-checked; delivery_target stays the authority.
+    shortcut: a pair rejected on trash/visibility/membership is re-judged every cycle; fine while rare.
+    """
+    bounds = (math.floor(lower), upper)
     with get_connection() as conn:
-        row = conn.execute('SELECT g.creator_uid,p.author FROM generation_comment c '
-                           'JOIN generation g ON g.id=c.gen_id '
-                           'LEFT JOIN generation_comment p ON p.id=c.parent_id WHERE c.id=?', (comment_id,)).fetchone()
-        if not row:
-            return []
-        emails = set()
-        for uid in set(row):
-            if not uid or uid == 'me':
-                continue
-            if uid.startswith('acct:'):
-                found = conn.execute("SELECT email FROM account WHERE email=? AND status='approved'",
-                                     (norm_email(uid[5:]),)).fetchall()
-            else:
-                found = conn.execute("SELECT email FROM account WHERE creator_uid=? AND status='approved'", (uid,)).fetchall()
-            if len(found) == 1:
-                emails.add(found[0][0])
-        # Only after the owner is unambiguous: an unlinked recipient never gets a row, so it would
-        # otherwise be re-resolved every cycle for the whole 30-minute window.
-        emails = {e for e in emails if conn.execute(
-            'SELECT 1 FROM slack_link WHERE account_email=?', (norm_email(e),)).fetchone()}
-        if only_unqueued:
-            emails.difference_update(r[0] for r in conn.execute(
-                'SELECT recipient_email FROM slack_dm_outbox WHERE comment_id=?', (comment_id,)))
-        return sorted(emails)
+        conn.execute('BEGIN')
+        comments = conn.execute(
+            'SELECT c.id,c.author,g.creator_uid,p.author FROM generation_comment c JOIN generation g ON g.id=c.gen_id '
+            f'LEFT JOIN generation_comment p ON p.id=c.parent_id WHERE {_WINDOW} '
+            'ORDER BY julianday(c.created_at),c.id', bounds).fetchall()
+        accounts = {r[0]: r[1] for r in conn.execute("SELECT email,creator_uid FROM account WHERE status='approved'")}
+        teams = {r[0]: r[1] for r in conn.execute('SELECT account_email,slack_team_id FROM slack_link')}
+        queued = {(r[0], r[1]) for r in conn.execute(
+            'SELECT o.comment_id,o.recipient_email FROM slack_dm_outbox o '
+            f'JOIN generation_comment c ON c.id=o.comment_id WHERE {_WINDOW}', bounds)}
+    owners = {}
+    for email, uid in accounts.items():
+        owners.setdefault(uid, []).append(email)
+
+    def resolve(uid):
+        if not uid or uid == 'me':
+            return None
+        found = [e for e in (norm_email(uid[5:]),) if e in accounts] if uid.startswith('acct:') else owners.get(uid, [])
+        return found[0] if len(found) == 1 else None
+
+    pairs = []
+    for comment_id, author, owner_uid, parent_uid in comments:
+        for email in sorted({e for e in map(resolve, {owner_uid, parent_uid}) if e}):
+            judged = _judged_uid(email, accounts[email])
+            if (teams.get(norm_email(email)) == team_id and (comment_id, email) not in queued
+                    and author is not None and author != judged and judged in (owner_uid, parent_uid)):
+                pairs.append((comment_id, email))
+    return pairs
 
 
 def delivery_target(comment_id, email):
@@ -104,7 +114,7 @@ def delivery_target(comment_id, email):
         link = conn.execute('SELECT * FROM slack_link WHERE account_email=?', (norm_email(email),)).fetchone()
         if not account or not link:
             return None
-        uid = account['creator_uid'] or 'acct:' + account['email']
+        uid = _judged_uid(account['email'], account['creator_uid'])
         read_all = rbac.has_global_cap(rbac.parse_roles(account['global_role']), 'read_all')
         projects = [r[0] for r in conn.execute('SELECT project_id FROM project_member WHERE creator_uid=?', (uid,))]
         clause, args = alert_comment_visibility_clause(uid, read_all, projects)

@@ -446,3 +446,183 @@ def test_link_message_has_only_native_url_and_keeps_v4_text():
     assert '&lt;a&gt;' in text and '&lt;text&gt;' in text
     assert '<mvhub://open/server:gen?c=comment:1|MV hub에서 보기 →>' in blocks[0]['text']['text']
     assert 'http' not in str(blocks)
+
+
+# ── 업데이트 부팅은 자기 설치가 확정된 뒤에만 등록 (배포전검토_남은위험_2026-11-07) ──────────────
+NONCE, OTHER = 'a' * 32, 'b' * 32
+RUN, RUN2 = 'c' * 32, 'd' * 32  # the worker's run_id is Guid('N')
+
+
+def _write(path, record):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(json.dumps(record).encode('utf-8'))
+
+
+@pytest.fixture
+def install(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, '_install_root', lambda: tmp_path)
+    calls = []
+    monkeypatch.setattr(launcher, 'register_open_link', lambda port, *a: calls.append(port) or True)
+    return tmp_path, calls
+
+
+def _boot(root, state, phase, *, nonce=NONCE, journal_nonce=NONCE, history=False, run_id=RUN, journal_run=RUN,
+          journal_at=None):
+    """The worker's records at one step: control (state, nonce, the journal it names) and that journal."""
+    journal = journal_at or (root / (f'.install-journals/{journal_run}.json' if history else 'update-journal.json'))
+    _write(journal, {'format_version': 1, 'run_id': journal_run, 'execution_nonce': journal_nonce, 'phase': phase})
+    control = {'format_version': 1, 'state': state, 'execution_nonce': nonce}
+    if state == 'activated':
+        control.update(run_id=run_id, journal=str(journal))
+    _write(root / '.install-activation.json', control)
+
+
+def test_update_boot_registers_once_only_after_its_own_commit(install):
+    root, calls = install
+    steps = iter([('pending', 'starting', False), ('activated', 'ready', False),  # 'activated' alone is not a commit
+                  ('activated', 'committed', True)])  # control already names the history copy
+
+    def advance(_):
+        state, phase, history = next(steps)
+        _boot(root, state, phase, history=history)
+        if history:  # the next update check moves the live journal away
+            (root / 'update-journal.json').unlink()
+    advance(0)
+    launcher._register_after_update_commit('8472', NONCE, sleep=advance)
+    assert calls == ['8472'] and next(steps, None) is None  # registered at the commit step, not before
+
+
+@pytest.mark.parametrize('records', [
+    dict(state='pending', phase='starting', nonce=OTHER),  # a rollback restored the previous control
+    dict(state='activated', phase='rolled_back'),
+    dict(state='activated', phase='recovery_required'),
+])
+def test_update_boot_never_registers_after_rollback_or_supersede(install, records):
+    root, calls = install
+    _boot(root, **records)
+    launcher._register_after_update_commit('8472', NONCE, sleep=lambda _: pytest.fail('must end without waiting'))
+    assert calls == []
+
+
+@pytest.mark.parametrize('records', [
+    dict(state='activated', phase='committed', journal_nonce=OTHER),  # another boot's commit
+    dict(state='activated', phase='committed', run_id=RUN2),          # control and journal disagree
+    dict(state='activated', phase='committed', history=True, run_id=RUN2),  # not this run's history copy
+    dict(state='activated', phase='committed', run_id='run-1', journal_run='run-1'),  # not a worker run_id
+    dict(state='activated', phase='ready'),
+    dict(state='pending', phase='starting'),
+])
+def test_update_boot_keeps_waiting_without_its_own_commit(install, records):
+    root, calls = install
+    _boot(root, **records)
+    assert launcher._update_boot_outcome(NONCE) is None
+    assert calls == []
+
+
+def test_update_boot_follows_only_the_two_journal_places(install, tmp_path_factory):
+    root, _ = install
+    _boot(root, 'activated', 'committed')  # the live journal, before the history copy exists
+    assert launcher._update_boot_outcome(NONCE) is True
+    _boot(root, 'activated', 'committed', journal_at=tmp_path_factory.mktemp('elsewhere') / 'update-journal.json')
+    assert launcher._update_boot_outcome(NONCE) is None
+    _boot(root, 'activated', 'committed', journal_at=root / 'other.json')  # inside the root, but not a worker path
+    assert launcher._update_boot_outcome(NONCE) is None
+    escape = '../../outside'  # a run_id that would steer the history path out of the root
+    _boot(root, 'activated', 'committed', run_id=escape, journal_run=escape,
+          journal_at=(root / '.install-journals' / f'{escape}.json').resolve())
+    assert launcher._update_boot_outcome(NONCE) is None
+    for broken in (b'{broken', b'null', b'[]'):
+        (root / '.install-activation.json').write_bytes(broken)
+        assert launcher._update_boot_outcome(NONCE) is None
+
+
+COMMITTED = {'format_version': 1, 'phase': 'committed'}
+NORMAL = {'format_version': 1, 'state': 'normal', 'execution_nonce': NONCE}
+
+
+@pytest.mark.parametrize('journal,control,registers', [
+    (None, None, True),                                                       # fresh or cleaned install
+    (COMMITTED, None, True),
+    (COMMITTED, NORMAL, True),
+    (COMMITTED, {**NORMAL, 'state': 'activated'}, True),
+    ({'format_version': 1, 'phase': 'rolled_back'}, {**NORMAL, 'state': 'pending'}, True),  # boot rewrites control
+    (None, NORMAL, True),
+    ({'format_version': 1, 'phase': 'starting'}, NORMAL, False),             # install in progress: boot refused too
+    ({'format_version': 1, 'phase': 'activation_pending'}, None, False),
+    ({'format_version': 2, 'phase': 'committed'}, None, False),
+    ({'run_id': 'legacy', 'phase': 'committed'}, None, False),               # legacy: payload check unknown here
+    (b'{broken', None, False),
+    (b'[]', None, False),
+    (b'null', None, False),                                                   # a journal file, not a missing one
+    (b'null', NORMAL, False),
+    (COMMITTED, b'null', False),
+    (COMMITTED, {**NORMAL, 'state': 'pending'}, False),
+    (COMMITTED, {**NORMAL, 'execution_nonce': 'A' * 32}, False),             # the boot check is case-sensitive
+    (COMMITTED, {**NORMAL, 'format_version': 2}, False),
+    (COMMITTED, b'{broken', False),
+])
+def test_normal_boot_registers_only_when_the_boot_check_would_accept(install, monkeypatch, journal, control, registers):
+    root, calls = install
+    monkeypatch.delenv('MVHUB_ACTIVATION_CONTROL', raising=False)
+    for name, value in (('update-journal.json', journal), ('.install-activation.json', control)):
+        if isinstance(value, bytes):
+            (root / name).write_bytes(value)
+        elif value is not None:
+            _write(root / name, value)
+    launcher._start_open_link_registration('8472')
+    assert calls == (['8472'] if registers else [])
+
+
+def test_update_boot_defers_to_a_thread_instead_of_registering(install, monkeypatch):
+    root, calls = install
+    started = []
+
+    class Thread:
+        def __init__(self, target, args, name, daemon):
+            started.append((target, args, daemon))
+
+        def start(self):
+            pass
+    monkeypatch.setattr(launcher.threading, 'Thread', Thread)
+    monkeypatch.setenv('MVHUB_ACTIVATION_CONTROL', str(root / '.install-activation.json'))
+    monkeypatch.setenv('MVHUB_EXECUTION_NONCE', NONCE)
+    launcher._start_open_link_registration('8472')
+    assert calls == [] and started == [(launcher._register_after_update_commit, ('8472', NONCE), True)]
+    monkeypatch.delenv('MVHUB_EXECUTION_NONCE')
+    launcher._start_open_link_registration('8472')  # inherited control without a nonce: the boot is refused anyway
+    assert calls == [] and len(started) == 1
+
+
+@pytest.mark.parametrize('owns_mutex', [False, True])
+def test_registration_starts_only_after_owning_the_launcher_mutex(install, monkeypatch, owns_mutex):
+    root, _ = install
+    script = root / 'MV_agent.bat'
+    script.write_text('@echo off')
+    order = []
+    monkeypatch.setattr(launcher, 'acquire_launcher_mutex', lambda port: order.append('mutex') or owns_mutex)
+    monkeypatch.setattr(launcher, '_focus_app_window', lambda: True)  # duplicate launch: switch to the window
+    monkeypatch.setattr(launcher, '_start_open_link_registration', lambda port: order.append('register'))
+    for name in ('_close_stale_launcher_shells', 'ensure_desktop_shortcut'):
+        monkeypatch.setattr(launcher, name, lambda *a: None)
+    monkeypatch.setattr(launcher, 'run_guarded', lambda path: 0)
+    assert launcher.main([str(script)]) == 0
+    assert order == (['mutex', 'register'] if owns_mutex else ['mutex'])  # a duplicate launch never registers
+
+
+@pytest.mark.parametrize('frees_after', [2, None])  # previous session finishes closing / never does
+def test_registration_after_waiting_out_a_closing_session_and_never_on_timeout(install, monkeypatch, frees_after):
+    root, _ = install
+    script = root / 'MV_agent.bat'
+    script.write_text('@echo off')
+    clock, order = [0.0], []
+    monkeypatch.setattr(launcher, 'time', SimpleNamespace(time=lambda: clock[0],
+                                                          sleep=lambda s: clock.__setitem__(0, clock[0] + s)))
+    monkeypatch.setattr(launcher, 'acquire_launcher_mutex',
+                        lambda port: order.append('mutex') or (frees_after is not None and order.count('mutex') > frees_after))
+    monkeypatch.setattr(launcher, '_focus_app_window', lambda: False)  # mutex held but no window: still closing
+    monkeypatch.setattr(launcher, '_start_open_link_registration', lambda port: order.append('register'))
+    for name in ('_close_stale_launcher_shells', 'ensure_desktop_shortcut'):
+        monkeypatch.setattr(launcher, name, lambda *a: None)
+    monkeypatch.setattr(launcher, 'run_guarded', lambda path: 0)
+    assert launcher.main([str(script)]) == (0 if frees_after else 1)
+    assert order[-1] == ('register' if frees_after else 'mutex') and order.count('register') == (1 if frees_after else 0)

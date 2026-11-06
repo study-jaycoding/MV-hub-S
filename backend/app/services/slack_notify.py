@@ -38,17 +38,10 @@ def run_cycle():
     now = time.time()
     with db.pinned_share_operation():
         generation, lower = store.scan_context(now)
-        after = None
-        while True:
-            rows = store.recent_comments(lower, now + 120, after)
-            for row in rows:
-                for email in store.recipient_emails(row['id'], only_unqueued=True):
-                    target = store.delivery_target(row['id'], email)
-                    if target and target['slack_team_id'] == config.get('team_id'):
-                        store.enqueue(row['id'], target, generation, now)
-            if len(rows) < 500:
-                break
-            after = rows[-1]['jd'], rows[-1]['id']
+        for comment_id, email in store.window_candidates(lower, now + 120, config.get('team_id')):
+            target = store.delivery_target(comment_id, email)
+            if target and target['slack_team_id'] == config.get('team_id'):
+                store.enqueue(comment_id, target, generation, now)
         if time.monotonic() < _send_pause_until:
             return  # still inside Slack's Retry-After: keep queueing, send nothing
         # Bound one run so shutdown and coalesced wakeups are not starved.
