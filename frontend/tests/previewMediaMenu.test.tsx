@@ -212,13 +212,13 @@ describe("크게 보기 코멘트 모드", () => {
     expect(host.querySelector(".cm-cbtn, .preview-dl-btn")).toBeNull();
   });
 
-  // 오디오는 계보 트리에 볼 것이 거의 없어 [History] 를 뺀다 — 받기(⤓)만 남는다(Jay 2026-11-06)
-  it("오디오 생성물 머리줄에는 History 가 없고 받기만 — 이미지는 그대로 History", async () => {
+  // 오디오도 [History](계보 트리)와 받기(⤓)가 있다 — 11-06 한 번 뺐다가 Jay 가 되돌렸다
+  it("오디오 생성물 머리줄에는 History 와 받기 — 이미지는 Edit·History", async () => {
     const { MediaPreview } = await import("../src/components/MediaPreview");
     const head = () => [...host.querySelectorAll(".preview-head-actions button")].map((b) => b.getAttribute("aria-label") || b.textContent);
     act(() => root.render(<MediaPreview target={{ url: "/media/v.mp3", type: "audio", name: "voice", genId: "gen-audio-2" }} onClose={onClose} onOpenInBoard={vi.fn()} cardActions={actions()} />));
     await settle();
-    expect(head()).toEqual(["다운로드"]);
+    expect(head()).toEqual(["⧉ History", "다운로드"]);
     act(() => root.render(<MediaPreview target={{ ...IMAGE, genId: "gen-image" }} onClose={onClose} onOpenInBoard={vi.fn()} cardActions={actions()} />));
     await settle();
     expect(head()).toEqual(["🖌 Edit", "⧉ History"]);
