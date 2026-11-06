@@ -48,6 +48,7 @@ def _drawing(idx=0, kind="image", **extra):
 
 class _Request:
     state = SimpleNamespace(account={"email": "u1@example.com", "creator_uid": "u1"})
+    headers: dict = {}  # 실제 요청처럼 — 코멘트 목록이 Slack 열기 계정 머리글을 본다
 
 
 _SERVER_REQUEST = SimpleNamespace(state=SimpleNamespace(account=None))  # 인증 없는 받기 입구(단독·시험)

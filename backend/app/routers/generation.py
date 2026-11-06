@@ -1309,8 +1309,11 @@ def add_gen_comment_v2(gen_id: str, body: GenCommentV2In, request: Request):
         if not gen:
             raise HTTPException(status_code=404, detail="generation 없음")
         require_view_generation(request, gen)
-        return _create_v2(gen_id=gen_id, gen_key=gen_id, body=body, drawings=drawings, request=request,
-                          private=False)
+        result = _create_v2(gen_id=gen_id, gen_key=gen_id, body=body, drawings=drawings, request=request,
+                            private=False)
+        from ..services.slack_notify import notifier
+        notifier.kick()  # 옛 길(POST /comments)과 같이 저장 때 Slack 알림을 깨운다
+        return result
 
 
 # by-id 코멘트 연산(수정/삭제/확인) 라우팅: 공유본(share 있음)에 달린 코멘트는 — 로컬에 같은 id 가

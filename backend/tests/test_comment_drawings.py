@@ -25,6 +25,7 @@ class _State:
 
 class _Request:
     state = _State()
+    headers: dict = {}  # 실제 요청처럼 — 코멘트 목록이 Slack 열기 계정 머리글을 본다
 
 
 def _uid() -> str:
@@ -164,6 +165,17 @@ class LocalCommentV2Tests(_DbCase):
         with self.assertRaises(HTTPException) as ctx:
             self.post({"id": cid, "text": "  조개 작게  ", "drawings": [{**d_img, "id": _uid()}, d_vid]})
         self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_shared_save_wakes_slack_notifier_private_does_not(self):
+        from app.services import slack_notify
+        with mock.patch.object(slack_notify.notifier, "kick") as kick:
+            self.post({"id": _uid(), "text": "알림 깨우기", "drawings": [_drawing(0)]})
+            self.assertEqual(kick.call_count, 1)  # 옛 길(POST /comments)과 같이 저장 때 깨운다
+            self.post({"id": _uid(), "text": "비공개 메모", "private": True})
+            self.assertEqual(kick.call_count, 1)  # 비공개는 알림 대상이 아니다
+            with self.assertRaises(HTTPException):
+                self.post({"id": _uid(), "text": "   "})
+            self.assertEqual(kick.call_count, 1)  # 저장이 안 되면 깨우지 않는다
 
     def test_delete_records_tombstone_cascades_drawings_and_blocks_retry(self):
         d = _drawing(0)
