@@ -42,10 +42,12 @@ async function openGeneration(detail: OpenGeneration, windowId: string, open: (i
   const headers = { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() };
   const body = { open_id: detail.open_id, window_id: windowId };
   let claimed: { remaining_ms?: unknown } | null;
+  const claimStart = Date.now();
   try { claimed = await openFetch<{ remaining_ms?: unknown } | null>('/api/open/claim', { method: 'POST', headers, body: JSON.stringify(body) }, deadline); }
   catch { return; }
-  // 허브가 센 남은 시간으로 기한을 당긴다 — 받은 때부터 센 2.5초는 방송을 늦게 처리하면 허브 기한보다 늦게 끝난다
-  if (typeof claimed?.remaining_ms === 'number') deadline = Math.min(deadline, Date.now() + claimed.remaining_ms - HUB_DEADLINE_MARGIN_MS);
+  // 허브가 센 남은 시간으로 기한을 당긴다 — 받은 때부터 센 2.5초는 방송을 늦게 처리하면 허브 기한보다 늦게 끝난다.
+  //  허브는 요청을 보낸 뒤에 셌으므로 '보낸 시각 + 남은 시간'은 허브 기한을 넘지 않는다(응답이 늦게 와도 기한이 늘지 않게, Codex 리뷰 3차 P2)
+  if (typeof claimed?.remaining_ms === 'number') deadline = Math.min(deadline, claimStart + claimed.remaining_ms - HUB_DEADLINE_MARGIN_MS);
   let ok = false;
   try {
     const comments = await openFetch<GenComment[]>(`/api/generations/${encodeURIComponent(detail.generation_id)}/comments`, { headers }, deadline);

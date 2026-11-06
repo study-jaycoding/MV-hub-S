@@ -98,6 +98,23 @@ describe('Slack open navigation', () => {
     expect(JSON.parse(String(ack?.[1]?.body)).ok).toBe(false);
   });
 
+  it('does not stretch the hub deadline by a slow claim response', async () => {
+    vi.useFakeTimers();
+    vi.mocked(jsonFetch).mockImplementation(async url => {
+      // 허브는 0.4초 남았다고 셌는데 응답이 0.5초 늦게 도착한다
+      if (url === '/api/open/claim') return new Promise(resolve => setTimeout(() => resolve({ ok: true, remaining_ms: 400 }), 500));
+      if (String(url).endsWith('/comments')) return [{ id: 'c' }];
+      return { ok: true };
+    });
+    const open = vi.fn();
+    const done = handleOpenGeneration(detail, 'window', open);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(open).not.toHaveBeenCalled(); // 받은 시각 + 0.4초로 셌다면 0.5초에 열었을 것
+    const ack = vi.mocked(jsonFetch).mock.calls.find(c => c[0] === '/api/open/ack');
+    expect(JSON.parse(String(ack?.[1]?.body)).ok).toBe(false);
+  });
+
   it('does not replace a title changed by another owner during acknowledgement', async () => {
     vi.mocked(jsonFetch).mockImplementation(async url => {
       if (String(url).endsWith('/comments')) return [{ id: 'c' }];
