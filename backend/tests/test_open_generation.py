@@ -104,13 +104,14 @@ def test_claim_reports_remaining_time_never_past_the_hub_deadline(client, monkey
     entry = opening._pending[captured['open_id']]
     deadline = opening.time.monotonic() + 2
     while entry['expires'] > opening.time.monotonic() + opening.ACK_TIMEOUT and opening.time.monotonic() < deadline:
-        pass  # 방송이 끝나 기한이 '방송 끝 + 3초'로 다시 정해질 때까지
+        opening.time.sleep(0.005)  # 방송이 끝나 기한이 '방송 끝 + 3초'로 다시 정해질 때까지(GIL 을 쥐고 돌지 않게 쉰다)
     entry['expires'] = opening.time.monotonic() + 0.4  # 이 창이 방송을 늦게 처리해 0.4초만 남았다
     headers = {'origin': 'http://127.0.0.1:8010', 'sec-fetch-site': 'same-origin'}
     answer = client.post('/api/open/claim', json={'open_id': captured['open_id'], 'window_id': 'w'}, headers=headers)
     assert answer.status_code == 200
     assert 0 <= answer.json()['remaining_ms'] <= 400  # 허브 기한보다 길게 알려 주지 않는다
-    thread.join(3)
+    # 허브의 기다림은 시작할 때 정한 3초를 그대로 쓴다(시험이 바꾼 기한은 claim·ack 판정에만) — 부하가 있어도 끝나게 넉넉히
+    thread.join(10)
     assert not thread.is_alive()
 
 
