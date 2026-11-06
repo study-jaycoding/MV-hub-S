@@ -31,7 +31,7 @@ import {
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
-import { AccountIcon, SettingIcon, SignOutIcon, UserGroupIcon } from "./common/ViewIcons";
+import { AccountIcon, SettingIcon, SignOutIcon } from "./common/ViewIcons";
 import { manageApi } from "../lib/manageApi";
 import { formatCredits } from "../lib/formatCredits";
 import { hasPersonalQuota, quotaUncertainty, showsWorkspacePool, useMyCreditQuota } from "../lib/myCreditQuota";
@@ -601,13 +601,10 @@ export function AccountMenu({
               </div>
               {uncertainty ? <div className="acct-quota-note">{uncertainty}</div> : null}
               <div className="acct-limit-row acct-limit-sep">
-                <span className="acct-limit-label"><UserGroupIcon />User group</span>
+                <span className="acct-limit-label">User group</span>
                 <span className="acct-limit-val">{groupName}</span>
               </div>
             </div>
-          )}
-          {!liveMode && reported?.reported && (
-            <div className="acct-hint acct-hint-sm">에이전트 보고값 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
           )}
 
           {/* 'HF 생성물 체크'·'HF 삭제물 체크'는 설정 패널로 이동(중복 제거). */}

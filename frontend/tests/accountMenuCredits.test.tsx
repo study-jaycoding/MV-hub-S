@@ -31,16 +31,21 @@ function quota(over: Partial<MyCreditQuota>): MyCreditQuota {
 function serve(myQuota: MyCreditQuota | null) {
   vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
     const url = String(input);
-    const body = url.includes("/my-quota") ? myQuota : url.endsWith("/api/workspaces") ? WORKSPACES : undefined;
+    const body = url.includes("/my-quota") ? myQuota
+      : url.endsWith("/api/workspaces") ? WORKSPACES
+      : url.endsWith("/api/account/hf") ? { reported: true, credits: 40934.34, workspaces: WORKSPACES } // 공유 서버 로그인 = 에이전트 보고값
+      : undefined;
     if (body === undefined || body === null) return Promise.reject(new Error("offline"));
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
   });
 }
 
-async function open(context: WorkspaceContext) {
+const ACCOUNT = { email: "member-a@example.com", name: "팀원 A", status: "approved", creator_uid: "u1", created_at: "2026-11-01", approved_at: "2026-11-01" };
+
+async function open(context: WorkspaceContext, signedIn = false) {
   await act(async () => root.render(
     <AccountMenu provider={null} onProviderUpdated={noop} onWorkspaceSwitched={noop} onWorkspaceContextChange={noop}
-      workspaceContext={context} />,
+      workspaceContext={context} account={signedIn ? ACCOUNT : undefined} />,
   ));
   await act(async () => { host.querySelector<HTMLButtonElement>(".acct-avatar-btn")!.click(); });
   for (let i = 0; i < 4; i++) await act(async () => {}); // 목록·내 몫 조회
@@ -78,6 +83,7 @@ it("한도 있는 그룹: Credits = 워크스페이스 잔액 + 점, Limit = 남
   expect(m.limit!.querySelector(".acct-dots")).toBeNull();
   expect(m.limitText).toBe("6,460.5 / 7,000");
   expect(m.groupText).toBe("Line 4");
+  expect(m.limit!.querySelector(".acct-limit-sep svg")).toBeNull(); // User group 앞 아이콘 없음(Jay 11-06 손질)
   expect(m.limitTitle).toContain("월 한도 7,000");
   expect(m.limitTitle).toContain("사용 539.5");
 });
@@ -106,6 +112,15 @@ it("내 몫을 못 읽으면 Limit·그룹은 — 로 두고 잔액은 그대로
   expect(m.limitText).toBe("—");
   expect(m.groupText).toBe("—");
   expect(m.limitTitle).toBe("확인 불가");
+});
+
+it("공유 서버 로그인(에이전트 보고값)에서도 두 칸이 그대로이고 '에이전트 보고값 기준' 안내 줄은 없다", async () => {
+  serve(quota({ source: "unlimited", group_id: "gp", group_name: "Pipeline TD", pool_total: 60000 }));
+  const m = await open(TEAM, true);
+  expect(m.creditsText).toContain("40,934.34 left");
+  expect(m.limitText).toBe("∞");
+  expect(m.groupText).toBe("Pipeline TD");
+  expect(document.querySelector(".acct-pop")!.textContent).not.toContain("에이전트 보고값");
 });
 
 it("팀 공간이 아니면 Credits 칸만 — Limit·User group 칸이 없다", async () => {

@@ -246,7 +246,6 @@
 .acct-sync-state span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-sync-state span:last-child { flex: none; color: var(--text); }
 .acct-sync-warn { font-size: 11px; color: #e0a23a; background: rgba(224,162,58,0.12); line-height: 1.4; padding: 6px 10px; margin: 2px 8px; border-radius: 6px; }
-.acct-hint-sm { padding: 4px 10px 2px; }
 /* 읽기전용 워크스페이스(보고값) — 클릭 불가, 커서/호버 없음 */
 .acct-item.readonly { cursor: default; opacity: 0.92; }
 .acct-item.readonly:hover { background: none; }
@@ -326,7 +325,7 @@
 .fp-ok:hover { filter: brightness(1.1); }
 /* 잔여 크레딧(힉스필드 스타일) — 드롭다운: "Credits  N left" + 점 세그먼트 게이지 */
 .acct-credits {
-  padding: 10px 11px; margin-top: 6px; border-radius: 10px; background: rgba(255,255,255,0.05);
+  padding: 10px 11px; margin-top: 6px; border-radius: 10px; background: rgba(255,255,255,0.03); /* 예전 크레딧 칸 색(Jay 11-06) */
 }
 /* 누르면 PM 대시보드(그 창을 쓸 수 있는 계정만, Jay 2026-10-22) */
 .acct-credits-btn { cursor: pointer; }
@@ -341,12 +340,11 @@
 }
 .acct-credits-chev { font-size: 13px; margin-left: 2px; }
 .acct-credits-top:last-child { margin-bottom: 0; } /* 점이 없을 때(충전량 모름) 칸 아래 빈 줄 없이 */
-.acct-limit { padding: 10px 11px; margin-top: 6px; border-radius: 10px; background: rgba(255,255,255,0.05); }
+.acct-limit { padding: 10px 11px; margin-top: 6px; border-radius: 10px; background: rgba(255,255,255,0.03); }
 .acct-limit-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
 .acct-limit-sep { margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,0.07); }
 .acct-limit-val b { color: var(--text); font-weight: 700; }
 .acct-limit-inf { font-size: 17px; line-height: 1; }
-.acct-group-icon { color: var(--muted); flex: none; }
 .acct-quota-note { margin-top: 6px; font-size: 11px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
 /* 점 세그먼트 — 켜진 칸(라임)이 남은 비율. 위에 텍스트 없어 라임 위 검은글씨 규칙과 무관 */
 .acct-dots { display: flex; justify-content: space-between; align-items: center; }
