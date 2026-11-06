@@ -212,6 +212,18 @@ describe("크게 보기 코멘트 모드", () => {
     expect(host.querySelector(".cm-cbtn, .preview-dl-btn")).toBeNull();
   });
 
+  // 오디오는 계보 트리에 볼 것이 거의 없어 [History] 를 뺀다 — 받기(⤓)만 남는다(Jay 2026-11-06)
+  it("오디오 생성물 머리줄에는 History 가 없고 받기만 — 이미지는 그대로 History", async () => {
+    const { MediaPreview } = await import("../src/components/MediaPreview");
+    const head = () => [...host.querySelectorAll(".preview-head-actions button")].map((b) => b.getAttribute("aria-label") || b.textContent);
+    act(() => root.render(<MediaPreview target={{ url: "/media/v.mp3", type: "audio", name: "voice", genId: "gen-audio-2" }} onClose={onClose} onOpenInBoard={vi.fn()} cardActions={actions()} />));
+    await settle();
+    expect(head()).toEqual(["다운로드"]);
+    act(() => root.render(<MediaPreview target={{ ...IMAGE, genId: "gen-image" }} onClose={onClose} onOpenInBoard={vi.fn()} cardActions={actions()} />));
+    await settle();
+    expect(head()).toEqual(["🖌 Edit", "⧉ History"]);
+  });
+
   it("오디오만 머리줄에 받기 아이콘 단추(시안 ⑱) — 생성물은 앱 이름 규칙(downloadGeneration), 어셋은 파일 이름 그대로(downloadOne)", async () => {
     const { downloadGeneration, downloadOne } = await import("../src/lib/download");
     vi.mocked(downloadGeneration).mockClear();

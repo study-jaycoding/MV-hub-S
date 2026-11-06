@@ -508,7 +508,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                 🖌 Edit
               </button>
             )}
-            {onOpenInBoard && cur.genId && (
+            {/* 계보 트리 — 오디오는 볼 계보가 거의 없어 뺀다(Jay 2026-11-06, 수정 단추와 같은 '종류에 맞는 것만') */}
+            {onOpenInBoard && cur.genId && cur.type !== "audio" && (
               <button
                 className="lin-board-btn preview-board-btn"
                 title="구성탭에서 원본 → 파생 트리로 한눈에 보기"
