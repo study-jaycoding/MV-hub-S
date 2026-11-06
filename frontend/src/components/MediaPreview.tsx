@@ -270,20 +270,35 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     onClose();
   };
   const thumb = cur.type === "audio" ? null : cur.thumb || null;
-  useEffect(() => {
+  // 그리기 전에(layout) — 격자가 이미 띄운 썸네일이면 바로 크기를 잡는다. onload 만 기다리면 첫 장면이 크기 없이(영상은 표지 256px,
+  //  그림은 빈 작은 상자로) 그려졌다 커져 한 번 깜빡였다(11-06 Jay, 격리 크롬 5회 매번)
+  useLayoutEffect(() => {
     setPh(null);
     if (!thumb) return;
     let alive = true;
     const im = new Image();
-    im.onload = () => {
+    const fit = () => {
       if (alive && im.naturalWidth && im.naturalHeight)
         setPh({ url: thumb, ...fitPreviewBox(im.naturalWidth, im.naturalHeight, window.innerWidth, window.innerHeight) });
     };
+    im.onload = fit;
     im.src = thumb;
+    if (im.complete) fit();
     return () => {
       alive = false;
     };
   }, [thumb]);
+  // 영상은 실제 크기(재생 정보)가 오거나 150ms 가 지날 때까지 창을 투명하게 — 원본 치수를 몰라 썸네일로 키운 자리가 작은 영상에서
+  //  한두 장면 떴다 줄어든다. 캐시된 영상의 재생 정보는 실측 11~43ms. opacity 라 초점은 그대로 받는다(11-06 Jay)
+  //  shortcut: 고정 150ms — 목록이 영상의 실제 가로·세로를 넘기게 되면 숨김 없이 처음부터 제 크기로
+  const [holdUrl, setHoldUrl] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    if (cur.type !== "video" || !thumb) return setHoldUrl(null);
+    const url = cur.url;
+    setHoldUrl(url);
+    const timer = window.setTimeout(() => setHoldUrl((held) => (held === url ? null : held)), 150);
+    return () => window.clearTimeout(timer);
+  }, [cur.url, cur.type, thumb]);
   const waiting = ph && ph.url === thumb && readyUrl !== cur.url ? ph : null;
   // 영상은 표지를 보여 주는 동안 **표지 크기**가 제 크기다(HTML 규격) — 재생 정보가 왔다고 고정 크기를 풀면 재생이 시작될
   // 때까지(자동 재생이 막히면 계속) 창이 썸네일 크기(256px)로 줄어든다(2026-09-20 브라우저 실측). 재생 정보가 오면 영상의
@@ -471,7 +486,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
       <div
         ref={boxRef}
         className="media-preview"
-        style={{ transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))` }}
+        style={{ transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`, ...(holdUrl === cur.url ? { opacity: 0 } : null) }}
         onMouseDown={(e) => e.stopPropagation()}
         onPointerDown={(e) => {
           // 붙어 있던 카드 단추는 단추 밖을 누르면 걷는다
@@ -550,6 +565,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                 const v = e.currentTarget;
                 if (thumb && v.videoWidth && v.videoHeight)
                   setVideoBox({ url: cur.url, ...fitPreviewBox(v.videoWidth, v.videoHeight, window.innerWidth, window.innerHeight, false) });
+                setHoldUrl(null); // 실제 크기가 왔다 — 이제 보인다
               }}
               onPlaying={() => setReadyUrl(cur.url)}
               controls

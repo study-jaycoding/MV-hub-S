@@ -15,12 +15,14 @@ vi.mock("../src/lib/generationViews", () => ({ recordGenerationView: vi.fn() }))
 let host: HTMLDivElement;
 let root: Root;
 let images: FakeImage[];
+let cached = false; // 격자가 이미 띄운 썸네일 — 브라우저는 src 를 넣는 즉시 complete 다
 class FakeImage {
   onload: (() => void) | null = null;
   naturalWidth = 512;
   naturalHeight = 288;
   fetchPriority = "";
   src = "";
+  complete = cached;
   constructor() {
     images.push(this);
   }
@@ -28,6 +30,7 @@ class FakeImage {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   images = [];
+  cached = false;
   vi.stubGlobal("Image", FakeImage);
   Object.assign(window, { innerWidth: 1000, innerHeight: 1000 });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -89,6 +92,40 @@ it("영상: 썸네일이 표지가 되고, 재생 정보가 오면 영상의 실
   expect([video.style.width, video.style.height]).toEqual(["400px", "300px"]); // 상자보다 작은 영상은 키우지 않는다(종전 CSS 와 같음)
   act(() => { video.dispatchEvent(new Event("playing")); });
   expect(video.style.width).toBe("");
+});
+
+// 11-06 Jay: 영상을 더블클릭해 열면 한 번 깜빡였다 — 격리 크롬 5회 매번 첫 1~2 장면이 표지 크기(256px)로 작게 그려진 뒤 커졌다.
+it("썸네일이 이미 읽혀 있으면 첫 그림부터 자리 크기다 — 그림은 자리 표시, 영상은 고정 크기", () => {
+  cached = true;
+  show({ url: "/o.png", type: "image", name: "n", thumb: "/t.jpg" });
+  const ph = host.querySelector<HTMLImageElement>(".media-preview-ph"); // onload 를 기다리지 않는다
+  expect([ph?.style.width, ph?.style.height]).toEqual(["780px", "439px"]);
+  show({ url: "/o.mp4", type: "video", name: "n", thumb: "/t.jpg" });
+  const video = host.querySelector("video")!;
+  expect([video.style.width, video.style.height]).toEqual(["780px", "439px"]);
+});
+
+it("영상 창은 실제 크기(재생 정보)가 오거나 150ms 가 지날 때까지 투명하다 — 썸네일로 키운 자리가 떴다 줄어들지 않게", () => {
+  vi.useFakeTimers();
+  try {
+    cached = true;
+    const box = () => host.querySelector<HTMLElement>(".media-preview")!;
+    show({ url: "/o.mp4", type: "video", name: "n", thumb: "/t.jpg" });
+    expect(box().style.opacity).toBe("0");
+    const video = host.querySelector("video")!;
+    Object.defineProperties(video, { videoWidth: { value: 400 }, videoHeight: { value: 300 } });
+    act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
+    expect(box().style.opacity).toBe(""); // 실제 크기로 잡힌 뒤 보인다
+    expect([video.style.width, video.style.height]).toEqual(["400px", "300px"]);
+    show({ url: "/p.mp4", type: "video", name: "p", thumb: "/t.jpg" }); // 재생 정보가 늦는 영상(처음 받는 것)
+    expect(box().style.opacity).toBe("0");
+    act(() => { vi.advanceTimersByTime(150); });
+    expect(box().style.opacity).toBe(""); // 오래 숨기지 않는다 — 종전처럼 자리 크기로
+    show({ url: "/o.png", type: "image", name: "n", thumb: "/t.jpg" });
+    expect(box().style.opacity).toBe(""); // 그림은 숨기지 않는다
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("썸네일이 없으면 종전 마크업 그대로다 — 감싸는 칸도 자리 표시도 표지도 없다", () => {
