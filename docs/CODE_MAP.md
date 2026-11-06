@@ -1342,6 +1342,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `tools/server_console/account_rows.py` | 관리 창 '계정 정리'의 글자(표 칸·판정·확인 창) — 화면과 떼어 시험한다. 호출은 `server_api.py` 의 `read_cleanup`·`delete_cleanup`·`block_account`, 판정은 서버가 한다 |
 | `tools/server_console/comfy_key.py` | 관리 창 'Comfy 키'의 글자(상태·확인 창 — 키 조각 없음). 호출은 `server_api.py` 의 `read_comfy_key`·`put_comfy_key`·`delete_comfy_key`(404 = 옛 서버 안내, 409 = 서버 사유) |
 | `tools/browser_measure/smoke.py` | 핵심 화면 41단계 시나리오(보기·검색·카드 단축키·미리보기·다중 선택·탭·도크·**처음 연 창의 Esc 1회**·분리 창). 종료 코드 0 통과 · 1 제품 확인 필요(실패·`/api/gen-requests` 요청 발생) · 2 시나리오만 낡음. `--shots`·`--verbose` 는 선택. 유료·외부 실행 단추는 누르지 않는다. → `walk.py` |
+| `tools/browser_measure/corner_scan.py` | 겹친 층의 **모서리 반경 어긋남** 찾기(2026-11-06) — 그림·영상 모서리와 같은 자리에 모서리가 있는 색 있는 층의 실제 반경(자기 반경·같은 모서리를 자르는 조상 틀)을 비교해 그늘이 빠진 초승달·삐진 색을 잡는다. 워크스페이스·크게 보기(+Ctrl)·정보 창·코멘트 그림 창·공유 탭·캔버스·어셋 창을 돌고, 그림 없는 화면은 '미검사'로 따로 적는다. 종료 코드 0 없음 · 1 있음 · 3 격리 서버 아님. 격리 서버·작업 폴더에만 쓴다(카드 두 장 공유·씬 불러오기·시험 어셋 폴더) → `cdp.py`, `walk.py` |
 | `tools/credit_round_rules.py` | 옛 반올림 크레딧 **판정 규칙 한 곳**. 판별·보정·서버 집계가 모두 `scan()` 만 쓴다 — 따로 들고 있으면 "판별엔 안 나왔는데 보정이 건드리는" 행이 생긴다. `alive`(생성물 생존)·`has_local`(로컬 값 유무)까지 담는다 |
 | `tools/credit_round_repair.py` | 되살리기 실행. **기본은 예행연습**이고 `--apply` 로만 쓴다. 잠금(`BEGIN IMMEDIATE`) 뒤 재판정·CAS UPDATE·같은 트랜잭션에서 재전송 표시. 서버 팩트는 직접 안 고친다(`manage_db._UPSERT_SET` 의 COALESCE 때문에 되돌아온다) → `backend/tests/test_credit_round_repair.py` |
 | `tools/credit_round_audit_server.py` | 서버에서 계정 DB 를 전부 훑어 **집계만** 찍는다(신원 가림). 같은 `scan()` 을 쓴다 |
