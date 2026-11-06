@@ -1043,6 +1043,8 @@
    단추만 누를 수 있고 나머지 누름(우클릭 캡쳐·영상 재생 막대)은 원본으로 간다. 마우스를 올린 카드처럼 단추를 늘 보이고 조금 키운다(시안 1.3배) */
 .mp-card-layer { position: absolute; z-index: 3; pointer-events: none; }
 .mp-card-layer .card, .mp-card-layer .asset-cell { height: 100%; background: transparent; border: 0; padding: 0; box-shadow: none; transform: none; filter: none; }
+/* 생성물 카드의 안쪽 틀(.card-clip, 패널색)과 상태 색(.card.st-shared:not(.selected) 등 — 위 규칙보다 세다)까지 비워야 원본이 비친다(11-06 Jay: 메인 창 Ctrl 카드가 원본을 검게 덮음) */
+.mp-card-layer .card, .mp-card-layer .card-clip { background: transparent !important; box-shadow: none !important; }
 .mp-card-layer .card-thumb, .mp-card-layer .asset-media { width: 100%; height: 100%; flex: 1 1 auto; aspect-ratio: auto; padding: 0; background: transparent; }
 .mp-card-layer :is(.card-thumb, .asset-media) > :is(img, video, picture, .thumb-placeholder, .audio-tile),
 .mp-card-layer :is(.card-thumb, .asset-media) :is(img, video):not(button *),

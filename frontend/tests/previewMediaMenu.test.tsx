@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 // 크게 보기 우클릭(Jay 2026-10-22): 그냥 우클릭 = 앱 메뉴(캡쳐·저장 + 단축키 표시) · Ctrl = 바로 캡쳐 · Ctrl+Shift = 바로 저장 ·
 // Alt = 브라우저 원래 메뉴. 메뉴 바깥 누름·Esc 는 메뉴만 닫고 크게 보기는 남는다. 그림을 실제로 뜨는 것은 격리 크롬 실측이 맡는다.
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -410,6 +412,17 @@ describe("크게 보기 Ctrl 카드 단추", () => {
     act(() => off());
     expect(layer()).toBeNull();
     ctrl("keyup");
+  });
+
+  // jsdom 은 CSS 를 겹쳐 계산하지 않아 규칙을 직접 본다 — 실제로 비치는지는 크롬 화면 확인(11-06 Jay 지적: 생성물 카드가 원본을 검게 덮음)
+  it("생성물 카드의 안쪽 틀(.card-clip)과 상태 색까지 비워 원본이 비친다", () => {
+    const css = readFileSync(new NodeURL("../src/styles/assets.css", import.meta.url), "utf8");
+    const rule = css.match(/\.mp-card-layer \.card, \.mp-card-layer \.card-clip \{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/background: transparent !important/);
+    expect(rule?.[1]).toMatch(/box-shadow: none !important/);
+    // 비우는 대상인 틀이 이름을 바꾸면 이 규칙이 헛돈다 — 틀이 아직 패널색 배경을 가진 .card-clip 인지 함께 본다
+    const gen = readFileSync(new NodeURL("../src/styles/generations.css", import.meta.url), "utf8");
+    expect(gen).toMatch(/\.card-clip \{[^}]*background: var\(--panel\)/);
   });
 });
 
