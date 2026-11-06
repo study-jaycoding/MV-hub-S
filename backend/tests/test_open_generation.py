@@ -90,6 +90,30 @@ def test_successful_ack_raises_the_marked_window_only(client, monkeypatch):
         assert answer.status_code == 200 and raised == expect
 
 
+def test_claim_reports_remaining_time_never_past_the_hub_deadline(client, monkeypatch):
+    broadcast = threading.Event()
+    captured = {}
+    async def send(message, **kwargs):
+        captured.update(message)
+        broadcast.set()
+    monkeypatch.setattr(opening.manager, 'broadcast', send)
+    thread = threading.Thread(target=lambda: client.get('/api/open/generation/g?c=c', headers={
+        'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}))
+    thread.start()
+    assert broadcast.wait(2)
+    entry = opening._pending[captured['open_id']]
+    deadline = opening.time.monotonic() + 2
+    while entry['expires'] > opening.time.monotonic() + opening.ACK_TIMEOUT and opening.time.monotonic() < deadline:
+        pass  # 방송이 끝나 기한이 '방송 끝 + 3초'로 다시 정해질 때까지
+    entry['expires'] = opening.time.monotonic() + 0.4  # 이 창이 방송을 늦게 처리해 0.4초만 남았다
+    headers = {'origin': 'http://127.0.0.1:8010', 'sec-fetch-site': 'same-origin'}
+    answer = client.post('/api/open/claim', json={'open_id': captured['open_id'], 'window_id': 'w'}, headers=headers)
+    assert answer.status_code == 200
+    assert 0 <= answer.json()['remaining_ms'] <= 400  # 허브 기한보다 길게 알려 주지 않는다
+    thread.join(3)
+    assert not thread.is_alive()
+
+
 def test_claim_is_single_and_ack_checks_window_and_account(client, monkeypatch):
     broadcast = threading.Event()
     captured = {}

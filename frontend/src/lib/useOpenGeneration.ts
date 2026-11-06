@@ -15,6 +15,8 @@ export const REGULAR_TAB_CLAIM_DELAY_MS = 500;
 // 허브는 방송 뒤 3초까지만 받기·확인(ack)을 받는다 — 받은 때부터(일반 탭 지연 포함) 이 안에 열고 확인을 보낸다.
 //  요청마다 3초씩 주면 합쳐서 기한을 넘겨, 허브는 '창 없음'을 답했는데 화면은 열리는 일이 생긴다(Codex 리뷰 P2).
 export const OPEN_BUDGET_MS = 2500;
+// claim 응답의 남은 시간에서 확인(ack)이 닿을 여유 — 이벤트를 늦게 처리했어도 허브 기한 안에서만 연다(Codex 리뷰 P2)
+export const HUB_DEADLINE_MARGIN_MS = 300;
 let openingOwner: symbol | null = null;
 const openFetch = <T,>(url: string, init: RequestInit, deadline: number) => {
   const left = deadline - Date.now();
@@ -39,8 +41,11 @@ async function openGeneration(detail: OpenGeneration, windowId: string, open: (i
   const still = () => live() && before === scope() && !getApiPause() && Date.now() < deadline;
   const headers = { [EXPECT_ACCOUNT_HEADER]: getAccountNamespace() };
   const body = { open_id: detail.open_id, window_id: windowId };
-  try { await openFetch('/api/open/claim', { method: 'POST', headers, body: JSON.stringify(body) }, deadline); }
+  let claimed: { remaining_ms?: unknown } | null;
+  try { claimed = await openFetch<{ remaining_ms?: unknown } | null>('/api/open/claim', { method: 'POST', headers, body: JSON.stringify(body) }, deadline); }
   catch { return; }
+  // 허브가 센 남은 시간으로 기한을 당긴다 — 받은 때부터 센 2.5초는 방송을 늦게 처리하면 허브 기한보다 늦게 끝난다
+  if (typeof claimed?.remaining_ms === 'number') deadline = Math.min(deadline, Date.now() + claimed.remaining_ms - HUB_DEADLINE_MARGIN_MS);
   let ok = false;
   try {
     const comments = await openFetch<GenComment[]>(`/api/generations/${encodeURIComponent(detail.generation_id)}/comments`, { headers }, deadline);

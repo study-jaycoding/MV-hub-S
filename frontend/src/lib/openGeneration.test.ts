@@ -82,6 +82,22 @@ describe('Slack open navigation', () => {
     expect(JSON.parse(String(ack?.[1]?.body)).ok).toBe(false);
   });
 
+  it('follows the hub remaining time from the claim when the broadcast was handled late', async () => {
+    vi.useFakeTimers();
+    vi.mocked(jsonFetch).mockImplementation(async url => {
+      if (url === '/api/open/claim') return { ok: true, remaining_ms: 400 }; // 이 창이 방송을 늦게 처리해 허브 기한이 0.4초 남음
+      if (String(url).endsWith('/comments')) return new Promise(resolve => setTimeout(() => resolve([{ id: 'c' }]), 200));
+      return { ok: true };
+    });
+    const open = vi.fn();
+    const done = handleOpenGeneration(detail, 'window', open); // 받은 때부터 센 2.5초로는 아직 열 수 있는 0.2초 뒤
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(open).not.toHaveBeenCalled();
+    const ack = vi.mocked(jsonFetch).mock.calls.find(c => c[0] === '/api/open/ack');
+    expect(JSON.parse(String(ack?.[1]?.body)).ok).toBe(false);
+  });
+
   it('does not replace a title changed by another owner during acknowledgement', async () => {
     vi.mocked(jsonFetch).mockImplementation(async url => {
       if (String(url).endsWith('/comments')) return [{ id: 'c' }];

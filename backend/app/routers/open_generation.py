@@ -203,7 +203,10 @@ async def claim(request: Request):
     if entry['window'] is not None:
         raise HTTPException(409, '다른 창에서 열고 있습니다')
     entry['window'] = window
-    return {'ok': True}
+    # 남은 받기 시간을 알려 준다 — 화면이 방송을 늦게 처리했어도 허브 기한 안에서만 열게(Codex 리뷰 P2).
+    #  방송 중에 온 claim 은 기한이 '방송 끝 + 3초'로 다시 정해지므로 '지금 + 3초'가 넘지 않는 아래 값이다.
+    now = time.monotonic()
+    return {'ok': True, 'remaining_ms': int(max(0.0, min(entry['expires'], now + ACK_TIMEOUT) - now) * 1000)}
 
 
 @router.post('/api/open/ack')
