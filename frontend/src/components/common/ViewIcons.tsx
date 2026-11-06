@@ -67,6 +67,17 @@ export function AccountIcon() {
     </svg>
   );
 }
+// 두 사람 — 계정 메뉴 크레딧의 User group 앞(힉스필드 계정 메뉴와 같은 자리, Jay 2026-11-06 시안)
+export function UserGroupIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width={14} height={14} fill="currentColor" className="acct-group-icon" aria-hidden="true">
+      <circle cx="9" cy="8" r="3.4" />
+      <path d="M2.5 19c0-3.3 2.9-5.5 6.5-5.5s6.5 2.2 6.5 5.5v1h-13z" />
+      <circle cx="16.8" cy="8.6" r="2.8" opacity=".75" />
+      <path d="M16.2 13.7c3 .2 5.3 2.2 5.3 5.1v1.2h-4.4v-1c0-2.1-.3-3.8-.9-5.3z" opacity=".75" />
+    </svg>
+  );
+}
 // 톱니·문+나가는 화살표 — 계정 메뉴 Setting·Sign Out 앞. 사람 아이콘과 같은 14px 선 그림이라 세 줄의 글자 시작점이 같다(Jay 2026-10-22 B안).
 export function SettingIcon() {
   return (
