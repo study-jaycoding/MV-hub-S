@@ -742,10 +742,22 @@ def _record_settings_edit(conn, workspace_id, before, expected_revision, actor_u
             fields.add(f"{path}.group_id")
         if old_quotas.get(email) != quotas.get(email):
             fields.add(f"{path}.quota")
+    # 그룹 이동 전·후(Jay 2026-11-06 "어느 그룹에서 어느 그룹으로") — 한 줄 = "지문: 전 그룹 id → 후 그룹 id"(없으면 '없음').
+    #  감사 기록엔 사람이 쓴 글(그룹 이름·메모)·이메일을 남기지 않는다 — 이름은 볼 때 그룹 표에서 푼다(지운 그룹은 id 만).
+    #  옛 형식 id 는 사용자 글이 들 수 있어 'legacy', 이메일 아닌 배정 키는 'account:?'.
+    def _group_label(gid: Optional[str]) -> str:
+        return "없음" if not gid else gid if _CLIENT_ID_RE.fullmatch(gid) else "legacy"
+
+    moves = sorted(
+        f"{account_target(email) if '@' in email else 'account:?'}: "
+        f"{_group_label(old_assign.get(email))} → {_group_label(assigned.get(email))}"
+        for email in old_assign.keys() | assigned.keys() if old_assign.get(email) != assigned.get(email)
+    )
     _record_audit_event(
         conn, "workspace.credit_plan_changed", actor_uid=actor_uid, target_type="workspace_credit_plan",
         target_id=workspace_id, fields=sorted(fields),
-        details={"revision": plan["revision"], "expected_revision": expected_revision, "fields_complete": len(fields) <= 100},
+        details={"revision": plan["revision"], "expected_revision": expected_revision, "fields_complete": len(fields) <= 100,
+                 "group_moves": moves[:50], "group_moves_complete": len(moves) <= 50},
     )
 
 
