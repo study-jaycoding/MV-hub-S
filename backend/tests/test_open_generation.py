@@ -46,6 +46,30 @@ def test_security_failure_never_shows_button(client, headers):
     assert '<form' not in answer.text
 
 
+HUMAN = {'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}
+
+
+@pytest.mark.parametrize('site', ['cross-site', 'same-site', None])
+def test_link_from_another_site_gets_the_button_page_never_a_broadcast(client, monkeypatch, site):
+    async def fail(*a, **k):
+        raise AssertionError('must not broadcast or mark read')
+    monkeypatch.setattr(opening.manager, 'broadcast', fail)
+    monkeypatch.setattr(opening, '_open', fail)
+    answer = client.get('/api/open/generation/g?c=c', headers={**HUMAN, **({'sec-fetch-site': site} if site else {})})
+    assert answer.status_code == 200 and '<form' in answer.text
+
+
+@pytest.mark.parametrize('site', ['none', 'same-origin'])
+def test_address_bar_bookmark_or_same_app_still_opens(client, monkeypatch, site):
+    called = []
+    async def opened(gen_id, comment_id, request):
+        called.append((gen_id, comment_id))
+        return opening._page('ok')
+    monkeypatch.setattr(opening, '_open', opened)
+    answer = client.get('/api/open/generation/g?c=c', headers={**HUMAN, 'sec-fetch-site': site})
+    assert answer.status_code == 200 and called == [('g', 'c')]
+
+
 def test_post_requires_same_origin(client):
     assert client.post('/api/open/generation/g', data={'comment_id': 'c'}).status_code == 403
     assert client.post('/api/open/claim', json={'open_id': 'x', 'window_id': 'w'}).status_code == 403
@@ -79,7 +103,7 @@ def test_successful_ack_raises_the_marked_window_only(client, monkeypatch):
         monkeypatch.setattr(opening.manager, 'broadcast', send)
         opening._last_open = 0
         thread = threading.Thread(target=lambda: client.get('/api/open/generation/g?c=c', headers={
-            'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}))
+            'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1', 'sec-fetch-site': 'none'}))
         thread.start()
         assert broadcast.wait(2)
         body = {'open_id': captured['open_id'], 'window_id': 'w'}
@@ -98,7 +122,7 @@ def test_claim_reports_remaining_time_never_past_the_hub_deadline(client, monkey
         broadcast.set()
     monkeypatch.setattr(opening.manager, 'broadcast', send)
     thread = threading.Thread(target=lambda: client.get('/api/open/generation/g?c=c', headers={
-        'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}))
+        'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1', 'sec-fetch-site': 'none'}))
     thread.start()
     assert broadcast.wait(2)
     entry = opening._pending[captured['open_id']]
@@ -124,7 +148,7 @@ def test_claim_is_single_and_ack_checks_window_and_account(client, monkeypatch):
     monkeypatch.setattr(opening.manager, 'broadcast', send)
     result = []
     thread = threading.Thread(target=lambda: result.append(client.get('/api/open/generation/g?c=c', headers={
-        'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'})))
+        'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-user': '?1', 'sec-fetch-site': 'none'})))
     thread.start()
     assert broadcast.wait(2)
     body = {'open_id': captured['open_id'], 'window_id': 'window'}

@@ -162,6 +162,104 @@ def test_channel_verification_is_bound_to_revision(monkeypatch, block_live_slack
         block_live_slack('chat.postMessage', 'fake-new', {'channel': 'DUNIT'}, recipient_id='UUNIT', revision=2)
 
 
+CONFIG = {'token': 'fake-token', 'revision': 1}
+
+
+@pytest.fixture
+def fake_slack(monkeypatch):
+    """Records Slack calls; `fail[method]` makes that method raise once with the given code."""
+    monkeypatch.setattr(client, '_channels', {})
+    calls, fail = [], {}
+    def api(method, token, payload, *, recipient_id=None, revision=None, timeout=10):
+        calls.append(method)
+        code = fail.pop(method, None)
+        if code:
+            raise client.SlackError(code)
+        if method == 'conversations.open':
+            client._channels[(revision, recipient_id)] = 'D' + recipient_id
+            return {'ok': True, 'channel': {'id': 'D' + recipient_id}}
+        return {'ok': True}
+    monkeypatch.setattr(client, '_slack_api', api)
+    return calls, fail
+
+
+def test_dm_channel_is_reused_per_token_revision(fake_slack):
+    calls, _ = fake_slack
+    client.send_dm(CONFIG, 'U1', 'a')
+    client.send_dm(CONFIG, 'U1', 'b')
+    assert calls == ['conversations.open', 'chat.postMessage', 'chat.postMessage']
+    client.send_dm({**CONFIG, 'revision': 2}, 'U1', 'c')
+    assert calls[-2:] == ['conversations.open', 'chat.postMessage']
+
+
+def test_stale_remembered_channel_is_forgotten_and_retried(fake_slack):
+    calls, fail = fake_slack
+    client.send_dm(CONFIG, 'U1', 'a')
+    fail['chat.postMessage'] = 'channel_not_found'
+    with pytest.raises(client.SlackError, match='not_connected'):  # Slack refused it: nothing was sent
+        client.send_dm(CONFIG, 'U1', 'b')
+    assert (1, 'U1') not in client._channels
+    client.send_dm(CONFIG, 'U1', 'b')  # the retry opens again and sends
+    assert calls[-2:] == ['conversations.open', 'chat.postMessage']
+
+
+def test_fresh_channel_not_found_still_closes(fake_slack):
+    _, fail = fake_slack
+    fail['chat.postMessage'] = 'channel_not_found'
+    with pytest.raises(client.SlackError, match='channel_not_found'):
+        client.send_dm(CONFIG, 'U1', 'a')
+
+
+def test_stale_entry_is_kept_when_the_cache_already_changed(fake_slack, monkeypatch):
+    client.send_dm(CONFIG, 'U1', 'a')
+    def api(method, *a, **k):
+        client._channels[(1, 'U1')] = 'DNEWER'  # another send re-opened meanwhile
+        raise client.SlackError('channel_not_found')
+    monkeypatch.setattr(client, '_slack_api', api)
+    with pytest.raises(client.SlackError, match='not_connected'):
+        client.send_dm(CONFIG, 'U1', 'b')
+    assert client._channels[(1, 'U1')] == 'DNEWER'
+
+
+@pytest.mark.parametrize('code,expected', [('unknown', 'not_connected'), ('invalid_auth', 'invalid_auth'),
+                                           ('rate_limited', 'rate_limited'), ('not_connected', 'not_connected')])
+def test_open_stage_failures_never_post(fake_slack, code, expected):
+    calls, fail = fake_slack
+    fail['conversations.open'] = code
+    with pytest.raises(client.SlackError, match=expected):
+        client.send_dm(CONFIG, 'U1', 'a')
+    assert 'chat.postMessage' not in calls
+
+
+def test_no_time_left_after_open_is_retryable_without_posting(fake_slack, monkeypatch):
+    calls, _ = fake_slack
+    ticks = iter([0.0, 11.0])
+    monkeypatch.setattr(client.time, 'monotonic', lambda: next(ticks, 11.0))
+    with pytest.raises(client.SlackError, match='not_connected'):
+        client.send_dm(CONFIG, 'U1', 'a')
+    assert calls == ['conversations.open']
+
+
+def test_post_stage_unknown_is_never_resent(fake_slack):
+    calls, fail = fake_slack
+    fail['chat.postMessage'] = 'unknown'  # may already have been delivered
+    with pytest.raises(client.SlackError, match='^unknown$'):
+        client.send_dm(CONFIG, 'U1', 'a')
+    assert calls.count('chat.postMessage') == 1
+
+
+@pytest.mark.parametrize('error', ['users_not_found', 'user_not_found', 'invalid_email'])
+def test_lookup_not_found_keeps_its_code(monkeypatch, block_live_slack, error):
+    monkeypatch.setattr(client.shared_connection, 'is_shared_team_server', lambda: True)
+    class Opener:
+        def open(self, *args, **kwargs):
+            return io.BytesIO(json.dumps({'ok': False, 'error': error}).encode())
+    monkeypatch.setattr(client.urllib.request, 'build_opener', lambda *a: Opener())
+    with pytest.raises(client.SlackError) as raised:
+        block_live_slack('users.lookupByEmail', 'fake', {'email': 'typo@slack.test'})
+    assert raised.value.code == error
+
+
 # A backup's config as server_move install leaves it (memory fixture reverses 'test-only-token').
 BACKUP = {'revision': 4, 'team_id': 'TUNIT', 'data': 'nekot-ylno-tset', 'enabled': True,
           'open_base_url': 'http://127.0.0.1:8010'}

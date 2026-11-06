@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { APP_EVENTS } from './appEvents';
 import { getAccountNamespace, getConnectionKey } from './accountScope';
-import { getApiPause, getAuthToken, jsonFetch, withRequestTimeout } from './http';
+import { getApiPause, getAuthToken, jsonFetch, subscribeApiPause, withRequestTimeout } from './http';
 import { EXPECT_ACCOUNT_HEADER } from './hubFeatures';
 import { requestCommentHighlight } from './commentHighlight';
 import { isAppWindow } from './appWindow';
@@ -76,28 +76,35 @@ async function openGeneration(detail: OpenGeneration, windowId: string, open: (i
 export function useOpenGeneration(open: (id: string) => void) {
   const openRef = useRef(open);
   openRef.current = open;
+  // 이 문서가 앱 창인지·임베드인지는 뜰 때 한 번 정해진다 — 잠금 이름과 받기 시점이 같은 판정을 쓴다
+  const [app] = useState(isAppWindow);
+  const [embed] = useState(() => new URLSearchParams(location.search).has('embed'));
+  const leaderRef = useRef(!navigator.locks);
+  // 다른 탭 로그아웃으로 멈춘 탭은 열기를 거절하므로 대표 자리를 놓는다 — 쥐고 있으면 정상 탭이 대표가 못 돼 링크가 안 열린다(배포 전 검토 Codex 1)
+  const paused = useSyncExternalStore(subscribeApiPause, getApiPause) !== null;
   useEffect(() => {
-    if (new URLSearchParams(location.search).has('embed')) return;
-    const id = crypto.randomUUID();
+    if (embed || !navigator.locks || paused) return;
     const abort = new AbortController();
-    let leader = !navigator.locks;
     let release: (() => void) | undefined;
+    let active = true;
+    // 앱 창과 일반 탭은 대표를 따로 뽑는다 — 일반 탭이 먼저 잡아 둔 잠금 때문에 같은 프로필의 앱 창이 못 받는 일이 없게(Codex 리뷰 P2).
+    //  둘 다 받아도 허브의 받기(claim)는 먼저 온 한 창만 받는다 — 앱 창은 바로, 일반 탭은 0.5초 뒤.
+    void navigator.locks.request(app ? 'mvhub-slack-open-app' : 'mvhub-slack-open-tab', { signal: abort.signal }, async () => {
+      if (!active || getApiPause()) return; // 기다리는 사이 멈췄거나 사라졌으면 받자마자 놓는다
+      leaderRef.current = true;
+      await new Promise<void>(resolve => { release = resolve; });
+      leaderRef.current = false;
+    }).catch(() => {});
+    return () => { active = false; leaderRef.current = false; abort.abort(); release?.(); };
+  }, [app, embed, paused]);
+  useEffect(() => {
+    if (embed) return;
+    const id = crypto.randomUUID();
     let alive = true;
     const seen = new Set<string>();
-    const app = isAppWindow(); // 이 문서가 앱 창인지는 뜰 때 한 번 정해진다 — 잠금 이름과 받기 시점이 같은 판정을 쓴다
-    if (navigator.locks) {
-      // 앱 창과 일반 탭은 대표를 따로 뽑는다 — 일반 탭이 먼저 잡아 둔 잠금 때문에 같은 프로필의 앱 창이 못 받는 일이 없게(Codex 리뷰 P2).
-      //  둘 다 받아도 허브의 받기(claim)는 먼저 온 한 창만 받는다 — 앱 창은 바로, 일반 탭은 0.5초 뒤.
-      void navigator.locks.request(app ? 'mvhub-slack-open-app' : 'mvhub-slack-open-tab', { signal: abort.signal }, async () => {
-        if (!alive) return;
-        leader = true;
-        await new Promise<void>(resolve => { release = resolve; });
-        leader = false;
-      }).catch(() => {});
-    }
     const receive = (event: Event) => {
       const detail = (event as CustomEvent<OpenGeneration>).detail;
-      if (!leader || !detail?.open_id || seen.has(detail.open_id)) return;
+      if (!leaderRef.current || !detail?.open_id || seen.has(detail.open_id)) return;
       seen.add(detail.open_id);
       if (seen.size > 100) seen.delete(seen.values().next().value!);
       const deadline = Date.now() + OPEN_BUDGET_MS;
@@ -106,6 +113,6 @@ export function useOpenGeneration(open: (id: string) => void) {
       else setTimeout(claim, REGULAR_TAB_CLAIM_DELAY_MS);
     };
     window.addEventListener(APP_EVENTS.openGeneration, receive);
-    return () => { alive = false; abort.abort(); release?.(); window.removeEventListener(APP_EVENTS.openGeneration, receive); };
-  }, []);
+    return () => { alive = false; window.removeEventListener(APP_EVENTS.openGeneration, receive); };
+  }, [app, embed]);
 }

@@ -6,9 +6,13 @@ vi.mock('./http', async (importOriginal) => ({
   getApiPause: vi.fn(() => null), getAuthToken: vi.fn(() => 'token'), jsonFetch: vi.fn(),
 }));
 vi.mock('./accountScope', () => ({ getAccountNamespace: vi.fn(() => 'acct:unit'), getConnectionKey: vi.fn(() => 'server') }));
+vi.mock('./appWindow', () => ({ isAppWindow: () => true })); // claim at once (no regular-tab delay)
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { getAccountNamespace } from './accountScope';
-import { jsonFetch } from './http';
-import { handleOpenGeneration } from './useOpenGeneration';
+import { APP_EVENTS } from './appEvents';
+import { getApiPause, jsonFetch, setApiPause } from './http';
+import { handleOpenGeneration, useOpenGeneration } from './useOpenGeneration';
 import { takeCommentHighlight } from './commentHighlight';
 
 const detail = { generation_id: 'g', comment_id: 'c', open_id: 'request' };
@@ -196,5 +200,130 @@ describe('Slack open navigation', () => {
     const open = vi.fn();
     await handleOpenGeneration(detail, 'window', open);
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+// ── 열기 대표 잠금: 다른 탭 로그아웃으로 멈춘 탭은 잠금을 놓는다(배포 전 검토 Codex 1) ──
+// 다른 탭(B)은 같은 잠금 이름으로 이 시험이 직접 요청한다 — Web Locks 는 문서 사이에서 이름 하나를 나눈다.
+const LOCK = 'mvhub-slack-open-app';
+function fakeLocks() {
+  const held = new Set<string>();
+  const queues = new Map<string, Array<() => void>>();
+  const request = (name: string, opts: { signal?: AbortSignal } | (() => Promise<void>), maybe?: () => Promise<void>) => {
+    const options = typeof opts === 'function' ? {} : opts;
+    const callback = (typeof opts === 'function' ? opts : maybe)!;
+    return new Promise<void>((resolve, reject) => {
+      const run = async () => {
+        held.add(name);
+        try { await callback(); resolve(); } catch (error) { reject(error); }
+        finally { held.delete(name); queues.get(name)?.shift()?.(); }
+      };
+      if (options.signal?.aborted) { reject(new DOMException('aborted', 'AbortError')); return; }
+      if (!held.has(name)) { void run(); return; }
+      const queue = queues.get(name) ?? [];
+      queues.set(name, queue);
+      const onAbort = () => { const at = queue.indexOf(entry); if (at >= 0) queue.splice(at, 1); reject(new DOMException('aborted', 'AbortError')); };
+      const entry = () => { options.signal?.removeEventListener('abort', onAbort); void run(); };
+      options.signal?.addEventListener('abort', onAbort);
+      queue.push(entry);
+    });
+  };
+  return { request, held, waiting: (name: string) => queues.get(name)?.length ?? 0 };
+}
+/** 다른 탭 B 가 잠금을 쥐었다 놓는다. */
+function otherTab(locks: ReturnType<typeof fakeLocks>) {
+  let release!: () => void;
+  let granted = false;
+  void locks.request(LOCK, {}, () => { granted = true; return new Promise<void>(resolve => { release = resolve; }); });
+  return { get granted() { return granted; }, release: () => release() };
+}
+
+describe('Slack open leader lock', () => {
+  let host: HTMLDivElement;
+  let root: Root;
+  let locks: ReturnType<typeof fakeLocks>;
+  const flush = () => act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); });
+  const pause = (value: 'shared' | null) => act(async () => { vi.mocked(getApiPause).mockReturnValue(value); setApiPause(value); });
+  const mount = () => act(async () => { root.render(createElement(() => { useOpenGeneration(() => {}); return null; })); });
+  const claims = () => vi.mocked(jsonFetch).mock.calls.filter(call => call[0] === '/api/open/claim').length;
+  const ask = async (openId: string) => {
+    window.dispatchEvent(new CustomEvent(APP_EVENTS.openGeneration, { detail: { ...detail, open_id: openId } }));
+    await flush();
+  };
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    locks = fakeLocks();
+    Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
+    vi.mocked(jsonFetch).mockResolvedValue(null);
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+    await pause(null);
+    Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });
+    vi.unstubAllGlobals();
+  });
+
+  it('a paused leader hands the lock to a working tab and takes its turn again when resumed', async () => {
+    await mount();
+    expect(locks.held.has(LOCK)).toBe(true);
+    await ask('first');
+    expect(claims()).toBe(1);
+    await pause('shared');
+    expect(locks.held.has(LOCK)).toBe(false);
+    const b = otherTab(locks);
+    await flush();
+    expect(b.granted).toBe(true); // the working tab becomes the leader
+    await pause(null);
+    expect(locks.waiting(LOCK)).toBe(1); // resumed: queued behind B
+    b.release();
+    await flush();
+    await ask('second');
+    expect(claims()).toBe(2);
+  });
+
+  it('pausing while still waiting drops the queued request, so it is not granted later', async () => {
+    const b = otherTab(locks);
+    await mount();
+    expect(locks.waiting(LOCK)).toBe(1);
+    await pause('shared');
+    expect(locks.waiting(LOCK)).toBe(0);
+    b.release();
+    await flush();
+    expect(locks.held.has(LOCK)).toBe(false);
+    await ask('while-paused');
+    expect(claims()).toBe(0);
+  });
+
+  it('a quick pause and resume leaves exactly one request for this tab', async () => {
+    const b = otherTab(locks);
+    await mount();
+    await act(async () => {
+      vi.mocked(getApiPause).mockReturnValue('shared'); setApiPause('shared');
+      vi.mocked(getApiPause).mockReturnValue(null); setApiPause(null);
+    });
+    expect(locks.waiting(LOCK)).toBe(1);
+    b.release();
+    await flush();
+    expect(locks.held.has(LOCK)).toBe(true);
+  });
+
+  it('a lock granted after unmount, or granted while paused, is released at once', async () => {
+    let b = otherTab(locks);
+    await mount();
+    await act(async () => root.unmount());
+    b.release();
+    await flush();
+    expect(locks.held.has(LOCK)).toBe(false);
+    root = createRoot(host);
+    b = otherTab(locks);
+    await mount();
+    vi.mocked(getApiPause).mockReturnValue('shared'); // paused before the grant, the effect has not re-run yet
+    b.release();
+    await flush();
+    expect(locks.held.has(LOCK)).toBe(false);
   });
 });

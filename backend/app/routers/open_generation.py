@@ -152,9 +152,11 @@ async def open_native(request: Request):
 @router.get('/api/open/generation/{gen_id}')
 async def open_get(gen_id: str, request: Request, c: str = ''):
     _guard(request)
+    # Address bar, bookmark, an app link (none) or this hub (same-origin) only: another site's link gets the button page.
     human = (request.headers.get('sec-fetch-mode') == 'navigate'
              and request.headers.get('sec-fetch-dest') == 'document'
-             and request.headers.get('sec-fetch-user') == '?1')
+             and request.headers.get('sec-fetch-user') == '?1'
+             and request.headers.get('sec-fetch-site') in ('none', 'same-origin'))
     if not human:
         if not _ID.fullmatch(gen_id) or not _ID.fullmatch(c):
             raise HTTPException(400, '열기 주소가 올바르지 않습니다')

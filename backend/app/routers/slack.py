@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from .. import active_account, config, deps, rbac, repo
 from ..emailnorm import norm_email
 from ..services import slack_client as client, slack_link
+from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_local_browser_context, require_local_machine_request
 from ..services.slack_notify import notifier
 from . import _proxy
@@ -80,7 +81,7 @@ async def start_link(request: Request):
     value = body.get('slack_email')
     if not isinstance(value, str) or len(value) > 320:
         raise HTTPException(400, 'Slack 이메일을 확인해 주세요')
-    return await asyncio.to_thread(_link_request, request, 'POST', '/api/slack/link/start', {'slack_email': value})
+    return await to_thread_non_abandon(_link_request, request, 'POST', '/api/slack/link/start', {'slack_email': value})
 
 
 @router.post('/api/slack/link/verify')
@@ -89,7 +90,7 @@ async def verify_link(request: Request):
     code = body.get('code')
     if not isinstance(code, str) or len(code) != 6 or not code.isascii() or not code.isdecimal():
         raise HTTPException(400, '6자리 확인 코드를 입력해 주세요')
-    return await asyncio.to_thread(_link_request, request, 'POST', '/api/slack/link/verify', {'code': code})
+    return await to_thread_non_abandon(_link_request, request, 'POST', '/api/slack/link/verify', {'code': code})
 
 
 @router.delete('/api/slack/link')
@@ -133,7 +134,7 @@ async def admin_put(request: Request):
             result = client.save_config(token.strip(), answer['team_id'], base, body.get('enabled', True), (deps.current_account(request) or {}).get('email', ''))
             notifier.kick()
             return result
-        return await asyncio.to_thread(save)
+        return await to_thread_non_abandon(save)
     except client.SlackError:
         raise HTTPException(400, 'Slack 토큰을 확인하지 못했습니다') from None
     except (ValueError, client.comfy_team_key.ProtectError):

@@ -32,6 +32,7 @@ def world(tmp_path, monkeypatch):
     config = {'state': 'ok', 'token': 'fake-token', 'revision': 1, 'team_id': 'TUNIT',
               'enabled': True, 'paused': False, 'open_base_url': 'http://127.0.0.1:8010'}
     monkeypatch.setattr(client, 'read_config', lambda: dict(config))
+    monkeypatch.setattr(worker, '_send_pause_until', 0.0)  # a 429 in one test must not silence the next
     store.reset_floor(time.time() - 60)
     yield accounts, config, tmp_path
     db.flush_pool()
@@ -96,8 +97,11 @@ def test_600_comments_mixed_dates_no_duplicate_sends(world, monkeypatch):
         conn.execute("INSERT INTO generation_comment(id,gen_id,author,text,created_at) VALUES('old','g',?,'old','2020-01-01T01:00:00Z')", (uid,))
     sent = []
     monkeypatch.setattr(client, 'send_dm', lambda config, user, text, **kw: sent.append(user))
-    for _ in range(7):
+    # Each cycle delivers at most 100 rows or 5 seconds; a busy PC needs more cycles (11-06 gate: 591/600 after 7).
+    for _ in range(60):
         worker.run_cycle()
+        if rows() and all(r['state'] == 'sent' for r in rows()):
+            break
     assert len(rows()) == 600
     assert len(sent) == 600
     assert all(r['state'] == 'sent' for r in rows())
@@ -177,7 +181,7 @@ def test_unlink_closes_pending(world):
 def test_text_escapes_names_and_content(world):
     target = store.delivery_target(comment(world, '<!channel> & text'), 'owner@unit.test')
     target['author_name'] = '<name>'
-    text, blocks = worker.message(target, 'http://127.0.0.1:8010')
+    text, blocks = worker.message(target)
     assert '<!channel>' not in text and '&lt;!channel&gt;' in text
     assert '&lt;name&gt;' in text and '&amp;' in text
     assert not any(block['type'] == 'image' for block in blocks)
@@ -187,7 +191,7 @@ def test_native_generation_url_uses_comment_generation_id(world):
     with db.get_connection() as conn:
         conn.execute("UPDATE generation SET job_id='different-job' WHERE id='g'")
     target = store.delivery_target(comment(world), 'owner@unit.test')
-    _, blocks = worker.message(target, 'http://127.0.0.1:8010')
+    _, blocks = worker.message(target)
     assert f"<mvhub://open/g?c={target['id']}|MV hub에서 보기 →>" in blocks[0]['text']['text']
     assert 'job_id' not in target
 
@@ -195,11 +199,11 @@ def test_native_generation_url_uses_comment_generation_id(world):
 def test_message_uses_text_link_not_button_and_skips_empty_project(world):
     target = store.delivery_target(comment(world, 'hello'), 'owner@unit.test')
     target['project_name'], target['author_name'] = '', 'author'
-    text, blocks = worker.message(target, 'http://127.0.0.1:8010')
+    text, blocks = worker.message(target)
     assert [block['type'] for block in blocks] == ['section']  # actions 단추는 Slack 에 ⚠ 를 붙인다
     assert text.split('\n')[1] == 'author'
     target['project_name'] = 'proj'
-    assert worker.message(target, 'http://127.0.0.1:8010')[0].split('\n')[1] == 'proj · author'
+    assert worker.message(target)[0].split('\n')[1] == 'proj · author'
 
 
 def test_queued_comment_skips_target_and_name_resolution(world, monkeypatch):
@@ -212,6 +216,87 @@ def test_queued_comment_skips_target_and_name_resolution(world, monkeypatch):
     monkeypatch.setattr(store, 'delivery_target', unexpected)
     worker.run_cycle()
     assert len(rows()) == 1
+
+
+def _comment_at(world, cid, epoch):
+    with db.get_connection() as conn:  # the app's own format: whole seconds, 'YYYY-MM-DD HH:MM:SS'
+        conn.execute("INSERT INTO generation_comment(id,gen_id,author,text,created_at) VALUES(?,'g',?,'x',datetime(?,'unixepoch'))",
+                     (cid, world[0]['author']['creator_uid'], epoch))
+
+
+def test_floor_inside_a_second_keeps_that_seconds_comment_for_1000_seconds(world):
+    base = int(time.time()) - 2000
+    for k in range(1000):
+        _comment_at(world, f's{k:04}', base + k)
+    for k in range(1000):
+        # resume at .800 of the second the comment was stored in; the next second's comment is past the upper bound
+        assert [r['id'] for r in store.recent_comments(base + k + 0.8, base + k + 0.9)] == [f's{k:04}'], k
+
+
+def test_resume_then_same_second_comment_is_delivered_once_and_older_second_is_not(world, monkeypatch):
+    now = int(time.time()) - 5
+    store.reset_floor(now + 0.8)
+    _comment_at(world, 'same', now)
+    _comment_at(world, 'older', now - 2)
+    monkeypatch.setattr(client, 'send_dm', lambda *a, **kw: None)
+    worker.run_cycle()
+    worker.run_cycle()
+    assert [r['comment_id'] for r in rows()] == ['same']
+
+
+def test_rate_limit_pauses_the_whole_deliverer_until_retry_after(world, monkeypatch):
+    for i in range(3):
+        comment(world, f'c{i}')
+    calls = []
+    def send(config, user, text, **kw):
+        calls.append(text)
+        if len(calls) == 1:
+            raise client.SlackError('rate_limited', 30)
+    monkeypatch.setattr(client, 'send_dm', send)
+    worker.run_cycle()
+    assert len(calls) == 1 and worker._send_pause_until > time.monotonic() + 25
+    worker.run_cycle()  # next cycle / a kick inside Retry-After
+    comment(world, 'during')  # queueing goes on while paused
+    worker.run_cycle()
+    assert len(calls) == 1 and len(rows()) == 4
+    assert rows()[0]['state'] == 'pending' and rows()[0]['next_retry_at'] > time.time() + 25
+    monkeypatch.setattr(worker, '_send_pause_until', time.monotonic() - 1)  # Retry-After over
+    worker.run_cycle()
+    assert len(calls) == 4  # the other three go; the 429 row keeps its own retry time
+    assert [r['state'] for r in rows()] == ['pending', 'sent', 'sent', 'sent']
+    with db.get_connection() as conn:  # that row's own retry time passes too
+        conn.execute("UPDATE slack_dm_outbox SET next_retry_at=? WHERE state='pending'", (time.time() - 1,))
+    worker.run_cycle()
+    worker.run_cycle()
+    assert len(calls) == 5 and calls.count(calls[0]) == 2  # the 429 row is delivered exactly once more
+    assert [r['state'] for r in rows()] == ['sent'] * 4
+
+
+def test_generation_cleanup_closes_only_unfinished_rows(world):
+    with db.get_connection() as conn:
+        for i, state in enumerate(('pending', 'auth_wait', 'sending', 'sent', 'closed')):
+            conn.execute("INSERT INTO slack_dm_outbox(comment_id,recipient_email,kind,created_at,db_generation,state,close_reason,slack_team_id) "
+                         "VALUES(?, 'owner@unit.test', 'comment', 1, 'old-generation', ?, ?, 'TUNIT')",
+                         (f'x{i}', state, 'kept' if state == 'closed' else None))
+    store.scan_context(time.time())
+    assert [(r['state'], r['close_reason']) for r in rows()] == [
+        ('closed', 'db_changed'), ('closed', 'db_changed'), ('closed', 'db_changed'), ('sent', None), ('closed', 'kept')]
+
+
+def test_recipients_are_linked_unambiguous_accounts_only(world):
+    parent_uid = world[0]['parent']['creator_uid']
+    parent = repo.add_generation_comment('g', parent_uid, 'question')
+    reply = comment(world, parent=parent)
+    assert store.recipient_emails(reply) == ['owner@unit.test']  # parent is not linked: no row, no lookups
+    store.save_link('PARENT@unit.test ', 'UPARENT', 'TUNIT', 'parent', 'parent@slack.test')
+    assert store.recipient_emails(reply) == ['owner@unit.test', 'parent@unit.test']
+    with db.get_connection() as conn:  # a plain (non acct:) owner uid resolves through the account table
+        conn.execute("UPDATE account SET creator_uid='u-shared' WHERE email='owner@unit.test'")
+        conn.execute("UPDATE generation SET creator_uid='u-shared' WHERE id='g'")
+    assert store.recipient_emails(reply) == ['owner@unit.test', 'parent@unit.test']
+    with db.get_connection() as conn:  # a second approved account on that uid: ambiguous, so out even though linked
+        conn.execute("UPDATE account SET creator_uid='u-shared' WHERE email='author@unit.test'")
+    assert store.recipient_emails(reply) == ['parent@unit.test']
 
 
 def test_snapshot_scrub_is_strict_and_verified(world):

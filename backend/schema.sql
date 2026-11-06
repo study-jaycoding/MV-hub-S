@@ -530,8 +530,6 @@ CREATE TABLE IF NOT EXISTS asset_comment_read (
     PRIMARY KEY (worker_id, project, path)
 );
 
--- 생성본 코멘트 스레드(공유, 에셋과 별개) — 글·답글(parent_id). 팀 공유 대상.
--- asset_comment 와 동일 모델이되 키가 (project,path) 가 아니라 gen_id.
 -- Slack additions deliberately do not register a schema_migrations component.
 CREATE TABLE IF NOT EXISTS slack_link (
     account_email TEXT PRIMARY KEY,
@@ -563,6 +561,8 @@ CREATE TABLE IF NOT EXISTS slack_dm_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_slack_dm_due ON slack_dm_outbox(state, next_retry_at);
 
+-- 생성본 코멘트 스레드(공유, 에셋과 별개) — 글·답글(parent_id). 팀 공유 대상.
+-- asset_comment 와 동일 모델이되 키가 (project,path) 가 아니라 gen_id.
 CREATE TABLE IF NOT EXISTS generation_comment (
     id         TEXT PRIMARY KEY,
     gen_id     TEXT NOT NULL,

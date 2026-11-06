@@ -35,6 +35,10 @@ describe('Slack settings approved copy', () => {
     vi.mocked(useSlackSettings).mockReturnValue({ ...base, status: { ready: false, linked: true, slack_name: 'unit', slack_email: 'unit@slack.test' } });
     const html = renderToStaticMarkup(<SlackNotificationSection />);
     expect(html).toContain('<button class="settings-action ghost slack-unlink">Slack 연결 끊기</button>'); // disabled 없음
+    // 연결된 사람에게 '관리자가 아직 켜지 않았어요'가 아니라 연결 상태부터(배포 전 검토 Claude 8)
+    expect(html).toContain('연결됨 · 지금은 알림이 멈춰 있어요');
+    expect(html).not.toContain('관리자가 아직');
+    expect(html).toContain('<div class="slack-linked"><b>@unit</b><span>unit@slack.test</span></div>');
   });
   it('has no unlink button before linking', () => {
     vi.mocked(useSlackSettings).mockReturnValue({ ...base });

@@ -6,8 +6,10 @@ import { SettingsDescription } from './SettingsDescription';
 export function SlackNotificationSection({ onSummary }: { onSummary?: (summary: string) => void } = {}) {
   const s = useSlackSettings();
   const locked = s.missing || !s.status?.ready;
-  const summary = s.missing ? '서버 업데이트가 필요해요' : !s.status ? (s.notice ? '' : '확인 중') : !s.status.ready ? '관리자가 아직 Slack 알림을 켜지 않았어요'
-    : s.status?.linked ? '✓ 연결됨 — 코멘트가 달리면 Slack DM 으로 알려 줘요'
+  // 연결된 사람은 연결 상태를 먼저 — 관리자가 멈췄거나 토큰 오류여도 '켜지 않았어요'가 아니다(배포 전 검토 Claude 8)
+  const summary = s.missing ? '서버 업데이트가 필요해요' : !s.status ? (s.notice ? '' : '확인 중')
+    : s.status.linked ? (s.status.ready ? '✓ 연결됨 — 코멘트가 달리면 Slack DM 으로 알려 줘요' : '연결됨 · 지금은 알림이 멈춰 있어요')
+    : !s.status.ready ? '관리자가 아직 Slack 알림을 켜지 않았어요'
     : s.pending ? 'Slack DM 으로 코드를 보냈어요 · 10분 안에 넣기' : '연결 안 됨 — 연결하면 코멘트를 DM 으로 받아요';
   useEffect(() => { onSummary?.(summary); }, [onSummary, summary]);
   return <section className="settings-section">

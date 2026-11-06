@@ -22,10 +22,6 @@ class SlackPage:
         tk.Label(body, text='봇 토큰', bg='#121316', fg='#ddd').pack(anchor='w')
         self.token = tk.Entry(body, show='•', width=60)
         self.token.pack(anchor='w')
-        tk.Label(body, text='열기 주소', bg='#121316', fg='#ddd').pack(anchor='w', pady=(12, 0))
-        self.url = tk.Entry(body, width=60)
-        self.url.insert(0, 'http://127.0.0.1:8010')
-        self.url.pack(anchor='w')
         buttons = tk.Frame(body, bg='#121316')
         buttons.pack(anchor='w', pady=12)
         self.buttons = []
@@ -50,7 +46,8 @@ class SlackPage:
                 return
             if not messagebox.askokcancel('Slack 알림', 'Slack 토큰을 등록합니다. 연결 확인 요청을 보냅니다.', default='cancel'):
                 return
-            body = {'bot_token': token, 'open_base_url': self.url.get().strip(), 'enabled': True}
+            # DM links are mvhub:// now; the server still stores this field, so send its old default.
+            body = {'bot_token': token, 'open_base_url': 'http://127.0.0.1:8010', 'enabled': True}
             self.token.delete(0, 'end')
         elif action != 'get' and not messagebox.askokcancel('Slack 알림', 'Slack 알림 설정을 변경합니다.', default='cancel'):
             return

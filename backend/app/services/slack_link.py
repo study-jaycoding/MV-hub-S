@@ -14,7 +14,9 @@ from . import slack_client as client
 _lock = threading.RLock()
 _pending = {}
 _generations = {}
-_requests = {}
+_requests = {}  # email -> lookup times within the hour (the hourly cap; never undone)
+_last_start = {}  # email -> time of the request holding the 1-minute gap
+EMAIL_NOT_FOUND = frozenset({'users_not_found', 'user_not_found', 'invalid_email'})
 
 
 class LinkError(Exception):
@@ -52,12 +54,23 @@ def start(email, slack_email):
     now = time.monotonic()
     with _lock:
         recent = [t for t in _requests.get(email, []) if t > now - 3600]
-        if recent and (recent[-1] > now - 60 or len(recent) >= 10):
+        last = _last_start.get(email)
+        if (last is not None and last > now - 60) or len(recent) >= 10:
             raise LinkError('잠시 기다린 뒤 다시 받아 주세요')
         _requests[email] = [*recent, now]
+        _last_start[email] = now
         ticket = _generations[email] = _generations.get(email, 0) + 1
         _pending.pop(email, None)
-    answer = client._slack_api('users.lookupByEmail', config['token'], {'email': slack_email})
+    try:
+        answer = client._slack_api('users.lookupByEmail', config['token'], {'email': slack_email})
+    except client.SlackError as exc:
+        if exc.code not in EMAIL_NOT_FOUND:
+            raise
+        with _lock:
+            # A typo can be fixed at once; the lookup still counts toward the hourly cap.
+            if _last_start.get(email) == now:
+                del _last_start[email]
+        raise LinkError('그 이메일을 쓰는 Slack 사람을 못 찾았어요') from None
     user = answer.get('user') or {}
     if not user.get('id') or user.get('is_bot') or user.get('deleted'):
         raise LinkError('그 이메일을 쓰는 Slack 사람을 못 찾았어요')

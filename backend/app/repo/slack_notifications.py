@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 import uuid
 
@@ -46,14 +47,16 @@ def scan_context(now):
             _setting(conn, FLOOR_KEY, now)
             _setting(conn, GENERATION_KEY, current)
         conn.execute("UPDATE slack_dm_outbox SET state='closed',closed_at=?,close_reason='db_changed' "
-                     "WHERE db_generation<>? AND state NOT IN ('sent','closed')", (now, current))
+                     "WHERE db_generation<>? AND state IN ('pending','auth_wait','sending')", (now, current))
         floor = float(settings[FLOOR_KEY]) if settings.get(GENERATION_KEY) == current and FLOOR_KEY in settings else now
         return current, max(floor, now - 1800)
 
 
 def recent_comments(lower, upper, after=None, limit=500):
-    # UNIX epoch -> Julian day. The caller freezes bounds for the whole traversal.
-    params = [lower / 86400 + 2440587.5, upper / 86400 + 2440587.5]
+    # The caller freezes bounds for the whole traversal. Comment times are whole seconds, so the
+    # lower bound is floored, and SQLite converts both bounds the same way it converts created_at
+    # (a Python Julian-day formula can differ in the last digit and drop that second's comments).
+    params = [math.floor(lower), upper]
     extra = ''
     if after:
         extra = ' AND (julianday(created_at),id) > (?,?)'
@@ -61,8 +64,8 @@ def recent_comments(lower, upper, after=None, limit=500):
     with get_connection() as conn:
         return [dict(r) for r in conn.execute(
             'SELECT id,julianday(created_at) AS jd FROM generation_comment '
-            'WHERE is_private=0 AND julianday(created_at) BETWEEN ? AND ?' + extra +
-            ' ORDER BY jd,id LIMIT ?', (*params, limit))]
+            "WHERE is_private=0 AND julianday(created_at) BETWEEN julianday(?,'unixepoch') AND julianday(?,'unixepoch')"
+            + extra + ' ORDER BY jd,id LIMIT ?', (*params, limit))]
 
 
 def recipient_emails(comment_id, *, only_unqueued=False):
@@ -83,6 +86,10 @@ def recipient_emails(comment_id, *, only_unqueued=False):
                 found = conn.execute("SELECT email FROM account WHERE creator_uid=? AND status='approved'", (uid,)).fetchall()
             if len(found) == 1:
                 emails.add(found[0][0])
+        # Only after the owner is unambiguous: an unlinked recipient never gets a row, so it would
+        # otherwise be re-resolved every cycle for the whole 30-minute window.
+        emails = {e for e in emails if conn.execute(
+            'SELECT 1 FROM slack_link WHERE account_email=?', (norm_email(e),)).fetchone()}
         if only_unqueued:
             emails.difference_update(r[0] for r in conn.execute(
                 'SELECT recipient_email FROM slack_dm_outbox WHERE comment_id=?', (comment_id,)))

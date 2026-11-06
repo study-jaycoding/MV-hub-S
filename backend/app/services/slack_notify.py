@@ -13,9 +13,11 @@ from . import slack_client as client, shared_connection
 from .async_tools import to_thread_non_abandon
 
 log = logging.getLogger(__name__)
+# Slack's Retry-After applies to the whole deliverer (one token, one row at a time), not just the row that got 429.
+_send_pause_until = 0.0
 
 
-def message(target, base):
+def message(target):
     def escape(value):
         return str(value or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     heading = '내 코멘트에 답글' if target['kind'] == 'reply' else '내 생성물에 새 코멘트'
@@ -28,6 +30,7 @@ def message(target, base):
 
 
 def run_cycle():
+    global _send_pause_until
     config = client.read_config()
     if not client.available(config):
         return
@@ -46,6 +49,8 @@ def run_cycle():
             if len(rows) < 500:
                 break
             after = rows[-1]['jd'], rows[-1]['id']
+        if time.monotonic() < _send_pause_until:
+            return  # still inside Slack's Retry-After: keep queueing, send nothing
         # Bound one run so shutdown and coalesced wakeups are not starved.
         delivery_deadline = time.monotonic() + 5
         for _ in range(100):
@@ -64,7 +69,7 @@ def run_cycle():
             if not store.begin_send(item, time.time(), config['revision']):
                 continue
             try:
-                text, blocks = message(target, config['open_base_url'])
+                text, blocks = message(target)
                 client.send_dm(config, target['slack_user_id'], text, blocks=blocks)
             except client.SlackError as exc:
                 if exc.code in client.AUTH_ERRORS:
@@ -74,6 +79,9 @@ def run_cycle():
                 if exc.code in ('not_connected', 'rate_limited'):
                     delay = exc.retry_after if exc.code == 'rate_limited' else min(3600, 60 * (item['attempts'] + 1) ** 2)
                     store.settle(item, 'pending', exc.code, time.time() + delay)
+                    if exc.code == 'rate_limited':
+                        _send_pause_until = time.monotonic() + delay
+                        break
                 else:
                     store.settle(item, 'closed', exc.code)
             except Exception:

@@ -72,6 +72,12 @@ import {
 import { CloseIcon } from "./common/ViewIcons";
 import { reloadIfFree, reloadNow, unsavedNote, unsavedPlaces } from "../lib/unloadGuard"; // 앱이 스스로 하는 새로고침 — 서버 상태를 바꾼 뒤라 묻지 않고 진행한다
 
+/** 자료 관리 묶음 제목 밑 줄 — 진행·결과 문구는 접어 둬도 보이게 맨 앞에, 여럿이 함께 돌면 모두(배포 전 검토 Claude 2). */
+export function dataFoldSummary(history: HistoryImportStatus | null, progress: string[], rest: string[]): string {
+  const historyText = history?.state === "running" ? `과거 생성물 가져오는 중 ${history.received}건` : history?.message || "";
+  return [historyText, ...progress, ...rest].filter(Boolean).join(" · ");
+}
+
 export function SettingsPanel({
   onClose,
   onImported,
@@ -583,11 +589,11 @@ export function SettingsPanel({
     ? `${t("선택된 폴더")}: ${dlDir}`
     : fsaSupported() ? t("다운로드 폴더 지정 안 됨") : t("현재 접속에서는 다운로드 폴더를 직접 지정할 수 없습니다.");
   const sharedBackup = backupContinuity?.shared;
-  const dataSummary = [
+  const dataSummary = dataFoldSummary(historyImport, [dbMsg, reinspectMsg, syncMsg, hfMsg], [
     sceneStoreReady() ? t("캔버스 {n}개").replace("{n}", String(listScenes(null).length)) : "",
     backupContinuity?.local.set_count != null ? t("로컬 백업 {n}세트").replace("{n}", String(backupContinuity.local.set_count)) : "",
     sharedBackup ? `${t("서버")} ${BACKUP_STATE_LABELS[sharedBackup.state] || sharedBackup.state}` : "",
-  ].filter(Boolean).join(" · ");
+  ]);
   const resolveSummary = resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.message || "";
 
   return (

@@ -184,7 +184,7 @@ def _slack_api(method, token, payload, *, recipient_id=None, revision=None, time
         raise SlackError('unknown')
     if result.get('ok') is not True:
         code = result.get('error')
-        safe = AUTH_ERRORS | {'user_not_found', 'channel_not_found', 'account_inactive', 'is_bot', 'missing_scope', 'not_allowed_token_type', 'invalid_email'}
+        safe = AUTH_ERRORS | {'user_not_found', 'users_not_found', 'channel_not_found', 'account_inactive', 'is_bot', 'missing_scope', 'not_allowed_token_type', 'invalid_email'}
         raise SlackError(code if code in safe else 'unknown')
     if method == 'conversations.open':
         channel = (result.get('channel') or {}).get('id')
@@ -197,12 +197,31 @@ def _slack_api(method, token, payload, *, recipient_id=None, revision=None, time
 
 def send_dm(config, user_id, text, *, blocks=None):
     deadline = time.monotonic() + 10
-    answer = _slack_api('conversations.open', config['token'], {'users': user_id}, recipient_id=user_id, revision=config['revision'])
-    channel = answer['channel']['id']
+    revision = config['revision']
+    with _lock:
+        channel = _channels.get((revision, user_id))  # verified by an earlier open under this token revision
+    cached = channel is not None
+    if not cached:
+        try:
+            answer = _slack_api('conversations.open', config['token'], {'users': user_id}, recipient_id=user_id, revision=revision)
+        except SlackError as exc:
+            if exc.code == 'unknown':
+                raise SlackError('not_connected') from None  # opening sends nothing: safe to retry
+            raise
+        channel = answer['channel']['id']
     payload = {'channel': channel, 'text': text, 'unfurl_links': False, 'unfurl_media': False}
     if blocks:
         payload['blocks'] = blocks
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise SlackError('unknown')
-    return _slack_api('chat.postMessage', config['token'], payload, recipient_id=user_id, revision=config['revision'], timeout=remaining)
+        raise SlackError('not_connected')  # nothing was posted yet
+    try:
+        return _slack_api('chat.postMessage', config['token'], payload, recipient_id=user_id, revision=revision, timeout=remaining)
+    except SlackError as exc:
+        if cached and exc.code == 'channel_not_found':
+            # Slack refused the remembered channel, so nothing was sent: forget it and retry with a fresh open.
+            with _lock:
+                if _channels.get((revision, user_id)) == channel:
+                    del _channels[(revision, user_id)]
+            raise SlackError('not_connected') from None
+        raise

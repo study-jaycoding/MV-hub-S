@@ -442,7 +442,7 @@ def test_link_message_has_only_native_url_and_keeps_v4_text():
     from app.services.slack_notify import message
     target = {'kind': 'comment', 'project_name': 'p', 'author_name': '<a>', 'text': '<text>',
               'gen_id': 'server:gen', 'id': 'comment:1'}
-    text, blocks = message(target, 'http://should-not-be-used.invalid')
+    text, blocks = message(target)
     assert '&lt;a&gt;' in text and '&lt;text&gt;' in text
     assert '<mvhub://open/server:gen?c=comment:1|MV hub에서 보기 →>' in blocks[0]['text']['text']
     assert 'http' not in str(blocks)
