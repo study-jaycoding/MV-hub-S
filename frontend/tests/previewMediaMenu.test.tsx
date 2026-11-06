@@ -424,6 +424,15 @@ describe("크게 보기 Ctrl 카드 단추", () => {
     const gen = readFileSync(new NodeURL("../src/styles/generations.css", import.meta.url), "utf8");
     expect(gen).toMatch(/\.card-clip \{[^}]*background: var\(--panel\)/);
   });
+
+  // 겹친 층의 모서리 반경이 원본과 같아야 그늘 막이 모서리에서 빠지지 않는다 — 실제 화면 검사는 tools/browser_measure/corner_scan.py(11-06 Jay)
+  it("원본 그림 반경은 --mp-media-r 하나이고 Ctrl 층의 카드·칸·틀도 그 이름으로 자른다", () => {
+    const css = readFileSync(new NodeURL("../src/styles/assets.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.media-preview-body \{[^}]*--mp-media-r: \d+px/);
+    expect(css).toMatch(/\.media-preview-body img, \.media-preview-body video \{[^}]*border-radius: var\(--mp-media-r\)/);
+    expect(css).toMatch(/\.mp-card-layer :is\(\.card, \.asset-cell\) \{ border-radius: var\(--mp-media-r\); \}/);
+    expect(css).toMatch(/\.mp-card-layer \.card-clip \{ clip-path: inset\(0 round var\(--mp-media-r\)\); \}/);
+  });
 });
 
 // 카드 C(격자·캔버스·편집 풀) → 코멘트 그림 창(Jay 2026-11-05 시안 ⑮⑯) — 앱이 고르고(cardCommentOpensDrawing) AppOverlays 가 띄운다.
