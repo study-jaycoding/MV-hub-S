@@ -84,7 +84,6 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 어셋/생성물 썸네일 | `components/MediaThumbnail.tsx` | `services/thumbs.py`, `routers/library.py`(media-thumb) | |
 | ComfyUI 실행(로컬/Cloud) | `lib/useSceneComfyExecution.ts`, `components/scene/cards/ComfyCard.tsx` | `routers/comfy.py`, `services/comfy_client.py`, `services/comfy_run_keys.py`(실행 요청표 접수 장부 — 다시 보낸 같은 요청은 처음 작업을 돌려준다, Jay 결정 2A) | |
 | 팀 Comfy 키(관리자가 서버에 한 번 등록) | `components/settings/ComfyConnectionSection.tsx`(키 출처 라디오·'지금 쓰는 키' 줄) | `routers/comfy_team_key.py`, `services/comfy_team_key.py`, `routers/comfy.py _raw_settings`(team 이면 받은 키) · 관리 창 `tools/server_console/comfy_key.py`·`ui.py` 'Comfy 키' | 실행 지문 v2 = 로컬은 종류+전체 주소(키 해시 없음) — 키 교체가 옛 실행 회수를 막지 않게. Cloud 는 v1 그대로 |
-| Slack 코멘트 DM·계정 연결·로컬 열기 | `components/settings/SlackNotificationSection.tsx`, `lib/useSlackSettings.ts`, `lib/slackApi.ts`, `lib/useOpenGeneration.ts`(앱 창이 먼저 받음 — 일반 탭은 0.5초 늦게), `lib/commentHighlight.ts`(열고 온 코멘트 3번 깜빡임) | `routers/slack.py`, `routers/open_generation.py`, `services/open_link.py`, `services/app_windows.py`(`find_marked`·`lift_marked` — 연 창을 찾아 올림, 옛 `raise_marked` 유지), `services/slack_client.py`, `services/slack_link.py`, `services/slack_notify.py`, `repo/slack_notifications.py`, `db_slack.py`, `tools/server_console/slack.py` | [설계·구현 기록](status/Slack알림_2026-11-05.md). 이름표 없는 추가 표, 실제 전송은 서버 또는 제한된 시험 모드만. 복원·사본 정제는 같은 기록 참조. |
 | DaVinci Resolve 전송 | `lib/useResolveTransferActions.ts` | `routers/resolve_integration.py`, `services/resolve_transfer.py` | 편집 탭의 타임라인 보내기도 같은 줄·같은 관문을 지난다(위 '편집 탭' 줄) |
 | Assets의 DaVinci 프로젝트 목록·열기 | `components/assets/ResolveProjectBrowser.tsx` | `routers/assets.py`, `services/resolve_project_library.py`, `services/resolve_project_open_worker.py` | `@davinci` 내부 DB 폴더는 일반 Assets 트리에 펼치지 않는다 |
 | 앱 자동 업데이트·릴리스 절차 | `lib/releaseUpdate.ts`, `components/UpdateProgressOverlay.tsx`(진행 덮개), `components/admin/UpdateNoticesSection.tsx`(관리자 창 업데이트 탭 — NAS 모든 판·이 PC에 먼저 설치), `tools/server_console/release.py`(팀 `배포`) | `routers/release_update.py`, `services/release_update.py`, `update_release_worker.bat` | 릴리스는 후보(`candidate.json`)만, 서버 관리 창 [릴리스]의 `배포`가 알림과 팀 표지(`latest.json`) 교체를 수행한다. `공지`/`재공지`는 알림만 — [UPDATE_ANNOUNCEMENTS.md](UPDATE_ANNOUNCEMENTS.md). 배포 스크립트는 §4. 강제 업데이트는 **워커까지** 닿아야 재설치가 된다(`MVHUB_UPDATE_FORCE` → `-ForceReinstall`) |
@@ -159,8 +158,6 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | `ws.py` | WebSocket 연결 관리·브로드캐스트·디바운스 | 약 473줄 |
 
 ### 2.2 routers (`backend/app/routers/`)
-
-Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리자 5개 메서드, `routers/open_generation.py`는 로컬 HTTP 열기 GET/POST·native·claim·ack 5개 메서드를 담당한다. `services/open_link.py`는 바인드 뒤 연결 파일 게시와 HMAC·nonce 검사를 맡는다. 루트 `open_link.py`는 pythonw 전용 처리기(표준 라이브러리만)로, 응답 증명 확인 뒤 승인된 앱 창만 올린다. 두 파일의 HMAC 형식은 고정 예상값 시험으로 맞춘다. 정확한 목록은 [엔드포인트 인벤토리](inventory/endpoints.md)를 따른다.
 
 라우트 수는 라우트 데코레이터를 소스 구조(AST)로 센 291개 엔드포인트 기준이다(main.py 10개 포함). "프록시 위임"은
 `_proxy.proxying()` 호출 횟수(B1 실측, 11파일 95곳)다 — 이 라우터 코드가 로컬 허브 실행모드에서
@@ -1204,8 +1201,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
 | [`MV_agent.bat`](../MV_agent.bat)(437줄) | 워커 PC 원클릭: 로컬허브 기동+CLI핀 선택+에이전트 실행+앱창모드 | → `tools/stop_local_hub_on_port.ps1`, `run_agent_session.py` |
-| `run_agent_session.py` | Win32 Job Object 로 프로세스트리 가둠, 앱창 감시/포커스, 바탕화면 바로가기. 일반 설치 실행에서만 mvhub 프로토콜 HKCU 등록·허브 자식에 MVHUB_OPEN_LINK 전달 | 단독(표준 라이브러리) |
-| `open_link.py`(루트) | `mvhub://` 엄격 파싱·설치/포트 연결 파일 읽기·상호 HMAC·8초 기한·승인 창 복원/초점. import 때 등록/파일 쓰기 없음 | 단독(표준 라이브러리), `backend/tests/test_open_link.py` |
+| `run_agent_session.py`(1291줄) | Win32 Job Object 로 프로세스트리 가둠, 앱창 감시/포커스, 바탕화면 바로가기 | 단독(ctypes 만) |
 | `run_py.bat`(22줄) | 파이썬 실행파일 찾아 스크립트 실행하는 범용 헬퍼 | 다수 스크립트가 이걸 호출 |
 
 **공유서버 실행·감독 — 서버 PC, 상시**
