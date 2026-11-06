@@ -60,7 +60,7 @@ export function NotificationCenter({
   // 알림 본문(코멘트 내용)은 사용자 데이터라 그대로 두고, UI 문구·날짜만 언어를 따른다.
   const dateLocale = getLang() === "en" ? "en-US" : "ko-KR";
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<NotificationTab>("all");
+  const [tab, setTab] = useState<NotificationTab>("unread"); // 처음엔 안 읽은 것부터(Jay 2026-11-05)
   const [category, setCategory] = useState<NotificationCategory>("all");
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [comments, setComments] = useState<NotificationComment[]>([]);

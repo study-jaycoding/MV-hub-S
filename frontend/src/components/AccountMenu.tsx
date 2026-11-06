@@ -319,9 +319,18 @@ export function AccountMenu({
   //  크레딧으로 보이고, 고리는 잔액 ÷ 이번 충전 달 총량(정기 + 긴급 충전, 서버 pool_total)으로 그린다(Jay 2026-09-29).
   //  총량을 모르면(구서버·충전 미설정) 숫자만 보이고 고리는 그리지 않는다.
   const poolQuota = Boolean(quotaWorkspaceId) && showsWorkspacePool(myQuota);
-  const poolLabel = myQuota?.source === "unassigned" ? "그룹 없음" : "제한 없음"; // 서브스페이스·관리 표와 같은 말
   // 견적·미확인 건수는 '내 사용량'의 불확실성이다 — 잔액을 보일 때는 뜻이 없어 숨긴다.
   const uncertainty = poolQuota ? "" : quotaUncertainty(myQuota);
+  // 아래 칸(Limit · User group, Jay 2026-11-06 시안) — 한도 있는 그룹 = 남은 몫 / 내 한도, 한도 없는 그룹 = ∞, 그룹 없음 = —.
+  //  기간·사용량·할당 출처는 줄의 풀이 글(title)로.
+  const limitTitle = personalQuota
+    ? `${personalQuota.limit_period === "day" ? "일" : personalQuota.limit_period === "week" ? "주" : "월"} 한도 ${formatCredits(personalQuota.quota)}` +
+      ` · 사용 ${uncertainty ? "≈ " : ""}${formatCredits(personalQuota.used)}` +
+      ` · ${personalQuota.source === "auto" ? "그룹 크레딧" : "매니저가 지정한 할당 크레딧"}`
+    : myQuota?.source === "unlimited" ? "그룹 한도 없음(제한 없음) — 워크스페이스 잔액 안에서 씁니다"
+    : myQuota?.source === "unassigned" ? "그룹에 들지 않았습니다 — 워크스페이스 잔액 안에서 씁니다"
+    : quotaState.loading ? "확인 중" : "확인 불가";
+  const groupName = myQuota?.group_name || (myQuota?.source === "unassigned" ? "None" : "—");
   const gaugeMax = quotaWorkspaceId
     ? poolQuota ? myQuota?.pool_total ?? 0 : personalQuota?.quota ?? 0
     : budgetMax ?? MONTHLY_CREDIT_MAX;
@@ -538,24 +547,27 @@ export function AccountMenu({
                   }
                 : {})}
             >
+              {/* 위 칸 Credits = 워크스페이스 잔액(값은 회색) + 점 게이지(모두 이 칸, Jay 2026-11-06 시안). 점의 뜻은 ? 풀이 글에 */}
               <div className="acct-credits-top">
-                <span className="acct-credits-label">{poolQuota ? "워크스페이스 잔액" : quotaWorkspaceId ? "내 크레딧" : "Credits"}</span>
-                <span className="acct-credits-left" title={uncertainty || undefined}>
-                  {poolQuota
-                    ? activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} 크레딧`
-                    : quotaWorkspaceId
-                    ? personalQuota
-                      ? `${uncertainty ? "≈ " : ""}${formatCredits(personalQuota.remaining)}`
-                      : quotaState.loading ? "확인 중" : "확인 불가"
-                    : `${formatCredits(activeCredits ?? 0)} left`}
+                <span className="acct-credits-label">
+                  Credits
+                  <span
+                    className="acct-credits-q"
+                    title={personalQuota
+                      ? "워크스페이스 남은 크레딧 · 점 = 내 남은 몫 ÷ 내 한도"
+                      : poolQuota
+                        ? myQuota?.pool_total != null // 0 은 '모름'이 아니다 — 이번 달 충전 0
+                          ? `워크스페이스 남은 크레딧 · 점 = 이번 달 충전 ${formatCredits(myQuota.pool_total)} 중 남은 양`
+                          : "워크스페이스 남은 크레딧 · 공용 잔액 안에서 씁니다"
+                        : "남은 크레딧"}
+                    aria-hidden="true"
+                  >?</span>
+                </span>
+                <span className="acct-credits-left">
+                  {activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} left`}
+                  {onOpenManage ? <span className="acct-credits-chev" aria-hidden="true">›</span> : null}
                 </span>
               </div>
-              {personalQuota ? (
-                <div className="acct-quota-summary" title={personalQuota.source === "auto" ? "그룹 크레딧" : "매니저가 지정한 할당 크레딧"}>
-                  <span>{personalQuota.limit_period === "day" ? "일" : personalQuota.limit_period === "week" ? "주" : "월"} 한도 {formatCredits(personalQuota.quota)}</span>
-                  <span>사용 {uncertainty ? "≈ " : ""}{formatCredits(personalQuota.used)}</span>
-                </div>
-              ) : null}
               {gaugeMax > 0 && creditPct != null ? (
               <div
                 className="acct-dots"
@@ -570,20 +582,29 @@ export function AccountMenu({
                 ))}
               </div>
               ) : null}
-              {uncertainty ? <div className="acct-quota-note">{uncertainty}</div> : null}
-              {poolQuota ? (
-                <div className="acct-quota-note">
-                  {myQuota?.pool_total != null // 0 은 '모름'이 아니다 — 이번 달 충전 0
-                    ? `${poolLabel} · 이번 달 충전 ${formatCredits(myQuota.pool_total)} 중 남은 양`
-                    : `${poolLabel} · 공용 잔액 안에서 씁니다`}
-                </div>
-              ) : quotaWorkspaceId ? (
-                <div className="acct-quota-note">워크스페이스 잔액 {activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} 크레딧`}</div>
-              ) : null}
             </div>
           )}
-          {!liveMode && reported?.reported && (
-            <div className="acct-hint acct-hint-sm">에이전트 보고값 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
+          {/* 아래 칸 = 내 한도 + 사용자 그룹(팀 공간만) — 그룹을 옮겨도 따로 붙는 글·색 없음(Jay 2026-11-06) */}
+          {quotaWorkspaceId && (
+            <div className="acct-limit">
+              <div className="acct-limit-row" title={limitTitle}>
+                <span className="acct-limit-label">Limit</span>
+                {personalQuota ? (
+                  <span className="acct-limit-val">
+                    <b>{uncertainty ? "≈ " : ""}{formatCredits(personalQuota.remaining)}</b> / {formatCredits(personalQuota.quota)}
+                  </span>
+                ) : myQuota?.source === "unlimited" ? (
+                  <span className="acct-limit-val acct-limit-inf" aria-label="제한 없음">∞</span>
+                ) : (
+                  <span className="acct-limit-val">—</span>
+                )}
+              </div>
+              {uncertainty ? <div className="acct-quota-note">{uncertainty}</div> : null}
+              <div className="acct-limit-row acct-limit-sep">
+                <span className="acct-limit-label">User group</span>
+                <span className="acct-limit-val">{groupName}</span>
+              </div>
+            </div>
           )}
 
           {/* 'HF 생성물 체크'·'HF 삭제물 체크'는 설정 패널로 이동(중복 제거). */}

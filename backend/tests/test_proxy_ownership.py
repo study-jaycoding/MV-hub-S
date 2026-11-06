@@ -118,6 +118,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/provider",
         # /api/ready 는 2026-10-03 부터 로컬 — 업데이터가 설치 확인에 쓰는 '이 허브'의 준비 상태다.
         "/api/share/publish-bundle",
+        # 코멘트 그림이 실린 발행 묶음의 새 판 입구 — 받는 곳은 팀 서버(옛 서버엔 없어 허브가 '업데이트 필요'를 안다).
+        "/api/share/publish-bundle-v2",
         # Shared command authority and its replay receipts belong to the team server.
         "/api/share/capabilities",
         "/api/share/command-state/{gen_id}",

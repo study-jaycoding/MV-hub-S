@@ -259,8 +259,13 @@ def test_every_upload_route_has_a_positive_request_limit() -> None:
         "/api/edit-shares/save",  # 편집 공유 저장(JSON) — 스냅샷 256 KiB + 덧붙는 칸, 파싱 전에 막는다
         "/api/scene-keeps",
         "/api/scene-keeps/restore",
+        "/api/share/publish-bundle-v2",  # 코멘트 그림이 실린 발행 묶음(JSON) — 파싱 전에 막는다
     }
     assert all(value > 0 for value in upload_limits.UPLOAD_REQUEST_LIMITS.values())
+    # 경로 안에 id 가 있는 입구(comments-v2)는 앞·끝 조각으로 고른다 — 다른 경로를 잘못 잡지 않는다.
+    assert upload_limits._suffix_limit("/api/generations/g1/comments-v2") == 5 * 1024 * 1024
+    assert upload_limits._suffix_limit("/api/generations/comments-v2") is None
+    assert upload_limits._suffix_limit("/api/generations/g1/comments") is None
 
 
 def _middleware_order() -> list[str]:

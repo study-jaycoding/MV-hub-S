@@ -99,7 +99,7 @@ it("작업 보드의 열: 그 위에서 끌기를 취소하면 강조가 꺼진�
   };
   const props: WorkViewProps = {
     tasks: [task], seqOptions: [], thumb: (path) => path || undefined, disabled: new Set(),
-    onPatch: vi.fn(), onDelete: vi.fn(), onLinkGen: vi.fn(), onUnlinkGen: vi.fn(),
+    onPatch: vi.fn(), onLinkGen: vi.fn(), onUnlinkGen: vi.fn(),
   };
   await act(async () => { root.render(<BoardView {...props} />); });
   await cancelOver(() => host.querySelectorAll(".kanban-col")[1], "drop", [TASK_MIME]);

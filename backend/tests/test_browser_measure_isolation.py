@@ -253,3 +253,17 @@ def test_a_probe_failure_is_a_failure_not_a_stale_scenario(tmp_path):
     assert record["verdict"] == "failed" and record["reason"] == "화면 조사 실패"
     record = asyncio.run(walker.step("f", "s2", missing, settle=0, expect=lambda s, n: s["cards"] > 0))
     assert record["verdict"] == "failed"
+
+
+def test_corner_scan_writes_only_to_the_isolated_server_of_its_work_folder():
+    # 11-06 Codex 묶음 리뷰: 자격 파일만 남은 채 다른 포트(인증이 꺼진 로컬 서버 등)를 가리키면 어셋 폴더 등록이 실사용 목록에 쓸 수 있었다
+    scan = _load_tool("corner_scan")
+    email = "bm-1234@isolated.test"
+    me = {"status": 200, "body": {"email": email}}
+    isolated = {"status": 200, "body": {"cli_available": False}}
+    assert scan.isolation_refusal(me, isolated, email) is None
+    assert scan.isolation_refusal({"status": 200, "body": {"email": "jay@team.test"}}, isolated, email)  # 다른 계정
+    assert scan.isolation_refusal({"status": 401, "body": {"detail": "로그인이 필요합니다"}}, isolated, email)  # 인증 꺼진 서버·로그인 실패
+    assert scan.isolation_refusal({"status": 200, "body": None}, isolated, email)
+    for health in ({"status": 200, "body": {"cli_available": True}}, {"status": 200, "body": {}}, {"status": 500, "body": None}):
+        assert scan.isolation_refusal(me, health, email)  # CLI 가 켜졌거나 알 수 없으면 격리라고 보지 않는다

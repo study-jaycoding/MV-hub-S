@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -293,6 +294,90 @@ class TaskActivityFactsTests(unittest.TestCase):
         self.fact(job_id="collision")
         self.fact("other-id", email="other@example.test", job_id="collision")
         self.content(job="collision")
+        task = self.read("manager", read_all=True)[0]
+        self.assertEqual(task["gen_count"], 1)
+        self.assertNotIn("local_gen_id", task["cuts"][0])
+        self.assertEqual(self.read(), [])
+
+    def _pairs_reference(self, project_ids, refs):
+        """기준: 팩트 전체를 읽고 파이썬에서 (생성자, 앵커) 짝을 맞춘 결과 — 색인으로 좁혀 읽어도 이것과 같아야 한다."""
+        conn = sqlite3.connect(manage_db.MANAGE_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM team_generation_fact")]
+        finally:
+            conn.close()
+        found = {r["id"] for r in rows if r["project_id"] in set(project_ids)}
+        all_refs = [*refs, *(r for r in rows if r["id"] in found)]
+
+        def pairs(field, source):
+            return {(str(r.get("creator_uid") or "").strip(), str(
+                r.get(field) if field == "job_id" else r.get("local_gen_id") or r.get(source) or "").strip())
+                for r in all_refs if r.get("creator_uid") and (r.get(field) or (field == "local_gen_id" and r.get(source)))}
+
+        job, local = pairs("job_id", "job_id"), pairs("local_gen_id", "id")
+        return found | {r["id"] for r in rows
+                        if (r["creator_uid"], r["job_id"]) in job or (r["creator_uid"], r["local_gen_id"]) in local}
+
+    def test_activity_pairs_match_full_scan_at_batch_edges_and_odd_refs(self):
+        """색인 짝 찾기(2026-11-05) = 전체 읽기 기준과 같은 행 — 400개 묶음 경계·여러 생성자·공백/None uid·job 과 local 이 다른 행."""
+        base = dict(project_id="p2", folder_path="ep002/c0020", workspace_scope="team", workspace_id="ws-b",
+                    workspace_name="B", status="done", model="model", created_at=self.now, sort_ts=1)
+        manage_db.upsert_facts("u1@example.test", "u1",
+                               [dict(base, local_gen_id=f"x-{i}", job_id=None, creator_uid="u1") for i in range(401)])
+        manage_db.upsert_facts("u2@example.test", "u2",
+                               [dict(base, local_gen_id=f"x-{i}", job_id=f"job-u2-{i}", creator_uid="u2") for i in range(5)])
+        manage_db.upsert_facts("other@example.test", "u1",  # 같은 uid 다른 계정 — 모호 행도 찾아야 한다
+                               [dict(base, local_gen_id="x-7", job_id=None, creator_uid="u1", project_id="p9")])
+        self.fact("a-local", job_id="job-a")  # p1: local 은 a-local, job 은 job-a
+        self.fact("b-local", job_id="job-b")  # p1 밖으로 옮긴다 — job-b 로만 닿는 행
+        with closing(sqlite3.connect(manage_db.MANAGE_DB_PATH)) as conn, conn:
+            conn.execute("UPDATE team_generation_fact SET project_id='p2' WHERE local_gen_id='b-local'")
+        odd = [
+            {"id": "a-local", "creator_uid": "u1", "job_id": "job-b"},  # local·job 이 서로 다른 행을 가리킨다
+            {"id": "x-1", "creator_uid": None}, {"id": "x-2", "creator_uid": "   "},  # uid 없음 — 짝이 아니다
+            {"id": "x-3", "creator_uid": " u2 "},  # 앞뒤 공백 uid 는 다듬어 짝을 만든다
+            {"id": "x-4", "creator_uid": "u404"},  # 짝 없는 uid
+            {"id": "srv-1", "creator_uid": "u2", "job_id": "job-u2-4"},  # job 으로만
+        ]
+        for n in (399, 400, 401):
+            refs = [{"id": f"x-{i}", "creator_uid": "u1"} for i in range(n)] + odd
+            got = {row["id"] for row in manage_db.task_activity_facts(["p1"], content_refs=refs)}
+            self.assertEqual(got, self._pairs_reference(["p1"], refs), n)
+            local_ids = {row["local_gen_id"] for row in manage_db.task_activity_facts(["p1"], content_refs=refs)
+                         if row["creator_uid"] == "u1" and row["local_gen_id"].startswith("x-")}
+            self.assertEqual(len(local_ids), n)  # 묶음 경계에서 빠지는 앵커 없음
+        rows = {(r["creator_uid"], r["local_gen_id"]) for r in manage_db.task_activity_facts(["p1"], content_refs=odd)}
+        self.assertTrue({("u1", "a-local"), ("u1", "b-local"), ("u2", "x-3"), ("u2", "x-4")} <= rows)
+        self.assertNotIn(("u1", "x-1"), rows)
+        self.assertNotIn(("u1", "x-2"), rows)
+
+    def test_creator_local_index_is_added_and_used(self):
+        """idx_tgf_creator_local — 기존 DB 에도 멱등 추가, 짝 쿼리가 그 색인을 쓰고, 호환 검사·기준선은 그대로 통과."""
+        from app import schema_compat
+
+        with closing(sqlite3.connect(manage_db.MANAGE_DB_PATH)) as conn, conn:
+            conn.execute("DROP INDEX idx_tgf_creator_local")  # 색인이 없던 옛 DB
+        manage_db.init_manage_db()
+        manage_db.init_manage_db()  # 두 번째도 그대로(멱등)
+        conn = sqlite3.connect(manage_db.MANAGE_DB_PATH)
+        try:
+            names = {r[1] for r in conn.execute("PRAGMA index_list(team_generation_fact)")}
+            self.assertIn("idx_tgf_creator_local", names)
+            plan = " ".join(r[-1] for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM team_generation_fact WHERE creator_uid=? AND local_gen_id IN (?,?)",
+                ("u1", "a", "b")))
+            self.assertIn("idx_tgf_creator_local", plan)
+            self.assertEqual(schema_compat.inspect_schema(conn, "manage").status, "compatible")
+        finally:
+            conn.close()
+
+    def test_same_local_id_from_other_account_in_other_project_stays_ambiguous(self):
+        """local_gen_id 짝은 요청 프로젝트 밖까지 찾아야 모호함이 잡힌다(2026-11-05 생성자별 한 번 읽기로 바꿈)."""
+        self.fact("local-1", job_id=None)
+        self.fact("local-1", email="other@example.test", job_id=None,
+                  project_id="p2", workspace_id="ws-b", folder_path="ep002/c0020")
+        self.content(gid="local-1", job=None)
         task = self.read("manager", read_all=True)[0]
         self.assertEqual(task["gen_count"], 1)
         self.assertNotIn("local_gen_id", task["cuts"][0])

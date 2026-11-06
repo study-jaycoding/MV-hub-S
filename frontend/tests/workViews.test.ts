@@ -10,6 +10,7 @@ import {
   taskCalendarTitle,
   taskSpan,
 } from "../src/components/manage/MonthlyTaskCalendar";
+import { workTableTotals } from "../src/components/manage/TableView";
 import { taskIsReadOnly, type Task } from "../src/components/manage/types";
 import { HttpError } from "../src/lib/http";
 
@@ -25,6 +26,29 @@ function task(patch: Partial<Task> = {}): Task {
     ...patch,
   };
 }
+
+describe("work table totals", () => {
+  it("adds only the given rows — unique counts, unshared, statuses, credits, time, range, comments", () => {
+    const totals = workTableTotals([
+      task({ id: "a", name: "e050", sequence: "c0040", folder_path: "e050/c0040", status: "publish",
+        gen_count: 3, creators: ["사자", "무지"], credits: 0.12, elapsed: 60, comment_count: 1,
+        derived_start: "2026-09-17", derived_due: "2026-10-08",
+        cuts: [{ id: "1", status: "done", shared: true }, { id: "2", status: "done", shared: false },
+          { id: "3", status: "done" }] }),
+      task({ id: "b", name: "e050", sequence: "c0050", folder_path: "e050/c0050", status: "publish",
+        gen_count: 1, creators: ["무지"], credits: 1.5, elapsed: 30,
+        derived_start: "2026-07-28", derived_due: "2026-09-20", cuts: [{ id: "4", status: "done", shared: true }] }),
+      // 폴더 1단계 작업 — 시퀀스 칸은 이름을 보인다 · 날짜 없는 줄은 범위에서 빠진다
+      task({ id: "c", name: "e001", sequence: null, folder_path: "e001", status: "in_progress",
+        gen_count: 2, creators: ["제이"], credits: 0, cuts: [] }),
+    ]);
+    expect(totals).toMatchObject({
+      projects: 1, episodes: 2, sequences: 3, gens: 6, unshared: 2, creators: 3,
+      statuses: [["생성", 1], ["공유", 2]], elapsed: 90, start: "2026-07-28", end: "2026-10-08", comments: 1,
+    });
+    expect(totals.credits).toBeCloseTo(1.62);
+  });
+});
 
 describe("work board flow", () => {
   it("shows generation, hold, sharing, and completion columns in order", () => {

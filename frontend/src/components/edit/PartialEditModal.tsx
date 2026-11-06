@@ -15,7 +15,9 @@
 //  · 결과 = 전체 이미지 표시(원본 비교 꾹) — 카드는 라이브러리에 그대로 남는다
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { DrawDock, DrawTextInput } from "./drawing/DrawDock";
+import { useDrawingInput } from "./drawing/useDrawingInput";
 import { api, type GenerationCreateBody } from "../../api";
 import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
@@ -85,141 +87,12 @@ const modelLabel = (id: string) => MODEL_LABELS[id] ?? id;
 const QUALITY_LABELS: Record<string, string> = { std: "720p", pro: "1080p", "4k": "4K" };
 const bitrateLabel = (value = "") => value.charAt(0).toUpperCase() + value.slice(1); // high → High(힉스필드 웹 표기)
 
-// 도구 캡슐의 선 아이콘(18px) — 이 창에서만 쓴다.
-const TOOL_ICON = {
-  viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 2,
-  strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true,
-};
-const TOOL_ICONS = {
-  pen: <svg {...TOOL_ICON}><path d="M4 20h4L18.5 9.5a2.83 2.83 0 1 0-4-4L4 16v4" /><path d="M13.5 6.5l4 4" /></svg>,
-  erase: <svg {...TOOL_ICON}><path d="M19 20h-10.5l-4.21-4.3a1 1 0 0 1 0-1.41l10-10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" /><path d="M18 13.3l-6.3-6.3" /></svg>,
-  line: <svg {...TOOL_ICON}><path d="M5 19 19 5" /></svg>,
-  arrow: <svg {...TOOL_ICON}><path d="M5 19 19 5" /><path d="M9 5h10v10" /></svg>,
-  rect: <svg {...TOOL_ICON}><rect x="4" y="5" width="16" height="14" rx="2" /></svg>,
-  ellipse: <svg {...TOOL_ICON}><ellipse cx="12" cy="12" rx="8.5" ry="7" /></svg>,
-  undo: <svg {...TOOL_ICON}><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>,
-  redo: <svg {...TOOL_ICON}><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>,
-  clear: <svg {...TOOL_ICON}><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>,
-  text: <svg {...TOOL_ICON}><path d="M5 7V5h14v2" /><path d="M12 5v14" /><path d="M9 19h6" /></svg>,
-};
-// [도구, 이름, 단축키] — 펜·지우개 다음에 도형 넷(옛 Shapes 하위 단추를 캡슐로 꺼냄)과 글자. R 은 마지막 도형으로 돌아간다.
-const DRAW_TOOLS: ["pen" | "erase" | "text" | ShapeKind, string, string][] = [
-  ["pen", "펜", "D"], ["erase", "지우개", "E"],
-  ["line", "선", ""], ["arrow", "화살표", ""], ["rect", "사각형", ""], ["ellipse", "원", ""], ["text", "글자", "T"],
-];
+// 그리기 도구(획·도구 캡슐·포인터 입력)는 edit/drawing/* — 코멘트 그림과 함께 쓴다. 시작 색 = 레드, 이후엔
+// 마지막 사용한 색·도구를 기억한다(Jay).
 const POLL_MS = 2_000;
 const SLOW_AFTER_MS = 180_000; // 이후에도 계속 감시 — 실패 처리 아님(이중 과금 방지)
 
-// 펜 컬러 스와치 — 웹 편집기의 구성(흰·라임·주황·빨강·민트·파랑·분홍·검정).
-// 시작 색 = 레드, 이후엔 마지막 사용한 색·도구를 기억한다(Jay).
-const COLORS = ["#ffffff", "#bef264", "#f59e0b", "#ef4444", "#2dd4bf", "#3b82f6", "#ec4899", "#111111"];
-const DEFAULT_COLOR = "#ef4444"; // 레드
-const LS_COLOR = "ch.partialEdit.color";
-const LS_TOOL = "ch.partialEdit.tool";
-
-interface PenStroke {
-  kind: "pen";
-  erase: boolean;
-  color: string;
-  size: number; // 작업 해상도 px
-  points: { x: number; y: number }[];
-}
-type ShapeKind = "line" | "arrow" | "rect" | "ellipse";
-interface ShapeItem {
-  kind: "shape";
-  shape: ShapeKind;
-  color: string;
-  size: number;
-  from: { x: number; y: number };
-  to: { x: number; y: number };
-}
-// 글자 — 누른 자리(at, 작업 해상도)가 글자 상자의 왼쪽 위. size 는 글자 높이(작업 px).
-interface TextItem {
-  kind: "text";
-  text: string;
-  color: string;
-  size: number;
-  at: { x: number; y: number };
-}
-type DrawItem = PenStroke | ShapeItem | TextItem;
-const TEXT_FONT = '700 {px}px "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif';
-// 굵기(brushSize) → 글자 높이. 같은 슬라이더로 펜 굵기와 글자 크기를 함께 정한다(2배는 작은 그림에서 너무 컸다 — 10-28 실측).
-const textPx = (brush: number) => Math.round(brush * 1.5);
-
 type Stage = "load" | "draw" | "wait" | "result";
-
-function drawPen(ctx: CanvasRenderingContext2D, stroke: PenStroke) {
-  ctx.globalCompositeOperation = stroke.erase ? "destination-out" : "source-over";
-  ctx.strokeStyle = stroke.erase ? "#ffffff" : stroke.color;
-  ctx.fillStyle = ctx.strokeStyle;
-  ctx.lineWidth = stroke.size;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  const pts = stroke.points;
-  if (pts.length === 1) {
-    ctx.beginPath();
-    ctx.arc(pts[0].x, pts[0].y, stroke.size / 2, 0, Math.PI * 2);
-    ctx.fill();
-    return;
-  }
-  ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.stroke();
-}
-
-function drawShape(ctx: CanvasRenderingContext2D, s: ShapeItem) {
-  ctx.globalCompositeOperation = "source-over";
-  ctx.strokeStyle = s.color;
-  ctx.lineWidth = s.size;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  const { from, to } = s;
-  if (s.shape === "rect") {
-    ctx.strokeRect(Math.min(from.x, to.x), Math.min(from.y, to.y), Math.abs(to.x - from.x), Math.abs(to.y - from.y));
-    return;
-  }
-  if (s.shape === "ellipse") {
-    ctx.beginPath();
-    ctx.ellipse((from.x + to.x) / 2, (from.y + to.y) / 2, Math.abs(to.x - from.x) / 2, Math.abs(to.y - from.y) / 2, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    return;
-  }
-  ctx.beginPath();
-  ctx.moveTo(from.x, from.y);
-  ctx.lineTo(to.x, to.y);
-  ctx.stroke();
-  if (s.shape === "arrow") {
-    // 화살촉 — 선 끝(to)에서 150° 로 짧은 두 선. 굵기에 비례하되 최소 길이 보장.
-    const ang = Math.atan2(to.y - from.y, to.x - from.x);
-    const len = Math.max(s.size * 2.5, 14);
-    for (const off of [(Math.PI * 5) / 6, -(Math.PI * 5) / 6]) {
-      ctx.beginPath();
-      ctx.moveTo(to.x, to.y);
-      ctx.lineTo(to.x + Math.cos(ang + off) * len, to.y + Math.sin(ang + off) * len);
-      ctx.stroke();
-    }
-  }
-}
-
-// 글자는 굵게 + 얇은 어두운 테두리 — 밝은 바탕·어두운 바탕 어디서나 모델이 읽게.
-function drawText(ctx: CanvasRenderingContext2D, t: TextItem) {
-  ctx.globalCompositeOperation = "source-over";
-  ctx.font = TEXT_FONT.replace("{px}", String(t.size));
-  ctx.textBaseline = "top";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = Math.max(2, t.size / 8);
-  ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
-  ctx.fillStyle = t.color;
-  ctx.strokeText(t.text, t.at.x, t.at.y);
-  ctx.fillText(t.text, t.at.x, t.at.y);
-}
-
-function drawItem(ctx: CanvasRenderingContext2D, it: DrawItem) {
-  if (it.kind === "pen") drawPen(ctx, it);
-  else if (it.kind === "text") drawText(ctx, it);
-  else drawShape(ctx, it);
-}
 
 // 모델 aspect_ratio enum 에서 원본 비율에 최근접한 값 — abs(log(r/target)) 가 가로·세로 대칭.
 function nearestAspect(enumValues: string[] | undefined, w: number, h: number): string | null {
@@ -404,203 +277,18 @@ export function PartialEditModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── 주석(펜·도형 → annot 캔버스, 표시 = 전송본) ──
-  const [items, setItems] = useState<DrawItem[]>([]);
-  // 되돌린 획 — 다시(Ctrl+Shift+Z·Ctrl+Y)가 꺼낸다. 새 획을 그리거나 전체 지우면 비운다.
-  const [redo, setRedo] = useState<DrawItem[]>([]);
-  const undoStroke = () => {
-    if (!items.length) return;
-    setRedo([...redo, items[items.length - 1]]);
-    setItems(items.slice(0, -1));
-  };
-  const redoStroke = () => {
-    if (!redo.length) return;
-    setItems([...items, redo[redo.length - 1]]);
-    setRedo(redo.slice(0, -1));
-  };
-  const clearStrokes = () => {
-    setItems([]);
-    setRedo([]);
-  };
-  // 도구·색은 마지막 사용값을 기억 — 프라이빗 모드 등 스토리지 차단 환경에서도 크래시 없이 기본값.
-  const [tool, setTool] = useState<"pen" | "erase" | "shape" | "text">(() => {
-    try {
-      const saved = localStorage.getItem(LS_TOOL);
-      if (saved === "pen" || saved === "erase" || saved === "shape" || saved === "text") return saved;
-    } catch {
-      /* 스토리지 차단 — 기본값 사용 */
-    }
-    return "pen";
+  // ── 주석(펜·도형 → annot 캔버스, 표시 = 전송본) — 그리기 입력은 edit/drawing/useDrawingInput(코멘트 그림과 같은 도구) ──
+  const draw = useDrawingInput({
+    src,
+    active: stage === "draw",
+    // 재생 중이면 그 자리에 멈추고 그린다
+    onStrokeStart: () => { if (playing) seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current); },
   });
-  const [shapeKind, setShapeKind] = useState<ShapeKind>("rect");
-  const [color, setColor] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem(LS_COLOR);
-      if (saved && COLORS.includes(saved)) return saved;
-    } catch {
-      /* 스토리지 차단 — 기본값 사용 */
-    }
-    return DEFAULT_COLOR;
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(LS_TOOL, tool);
-      localStorage.setItem(LS_COLOR, color);
-    } catch {
-      /* 유지 저장만 건너뛴다 */
-    }
-  }, [tool, color]);
-  const [brushSize, setBrushSize] = useState(18); // 작업 해상도 px
-  // 굵기 숫자칸에 치는 중인 글자 — null 이면 brushSize 를 보인다. Enter·바깥 누름에 4~120 으로 맞춰 적용.
-  const [sizeText, setSizeText] = useState<string | null>(null);
-  const applySizeText = () => {
-    if (sizeText === null) return;
-    const n = Math.round(Number(sizeText));
-    if (sizeText.trim() && Number.isFinite(n)) setBrushSize(Math.min(120, Math.max(4, n)));
-    setSizeText(null);
-  };
-  const annotRef = useRef<HTMLCanvasElement | null>(null);
-  const liveRef = useRef<PenStroke | ShapeItem | null>(null);
-  // 쓰는 중인 글자 — at = 누른 자리(작업 px), left·top = 무대 상자 기준 화면 px, scale = 화면 px / 작업 px.
-  // 확정·취소는 ref 로 먼저 비운다 — 같은 누름에서 pointerdown 과 blur 가 함께 확정해 글자가 두 번 들어가지 않게.
-  const [textDraft, setTextDraft] = useState<null | { at: { x: number; y: number }; left: number; top: number; scale: number; text: string }>(null);
-  const textDraftRef = useRef(textDraft);
-  textDraftRef.current = textDraft;
-  const commitText = () => {
-    const draft = textDraftRef.current;
-    if (!draft) return;
-    textDraftRef.current = null;
-    setTextDraft(null);
-    const text = draft.text.trim();
-    if (!text) return;
-    setItems((prev) => [...prev, { kind: "text", text, color, size: textPx(brushSize), at: draft.at }]);
-    setRedo([]);
-  };
-
-  const renderAll = (list: DrawItem[], live?: DrawItem | null) => {
-    const cv = annotRef.current;
-    const ctx = cv?.getContext("2d");
-    if (!cv || !ctx) return;
-    ctx.save();
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    for (const it of list) drawItem(ctx, it);
-    if (live) drawItem(ctx, live);
-    ctx.restore();
-  };
-  useEffect(() => {
-    if (stage === "draw") renderAll(items);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, items, src]);
-
-  const activePointerRef = useRef<number | null>(null); // 멀티 포인터 혼선 방지 — 첫 포인터만
-  // 브러시 크기 커서 미리보기 — 실제 칠해질 지름의 원을 포인터에 따라 표시(상태 없이
-  // ref 직접 갱신: mousemove 마다 리렌더 없이). 도형 도구는 crosshair 만 쓰므로 숨긴다.
-  const cursorRef = useRef<HTMLDivElement | null>(null);
-  const cursorPosRef = useRef<{ x: number; y: number } | null>(null); // 무대 상자 기준 px
-  const updateCursor = () => {
-    const el = cursorRef.current;
-    if (!el) return;
-    const annot = annotRef.current;
-    const pos = cursorPosRef.current;
-    if (!pos || !annot || !src || stage !== "draw" || tool === "shape" || tool === "text") {
-      el.style.display = "none";
-      return;
-    }
-    const rect = annot.getBoundingClientRect();
-    if (!rect.width) return;
-    const d = brushSize * (rect.width / src.w); // 작업 px → 화면 px
-    el.style.display = "block";
-    el.style.left = `${pos.x}px`;
-    el.style.top = `${pos.y}px`;
-    el.style.width = `${d}px`;
-    el.style.height = `${d}px`;
-    el.classList.toggle("erase", tool === "erase");
-    el.style.borderColor = tool === "erase" ? "" : color; // erase 는 클래스(흰 점선)가 결정
-  };
-  const trackCursor = (e: React.PointerEvent) => {
-    const annot = annotRef.current;
-    if (!annot) return;
-    const rect = annot.getBoundingClientRect();
-    cursorPosRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    updateCursor();
-  };
-  useEffect(() => {
-    updateCursor(); // [ ] 크기·도구·색 변경 시 제자리에서 즉시 반영
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brushSize, tool, color, stage]);
-  const toWork = (e: React.PointerEvent) => {
-    const annot = annotRef.current;
-    if (!annot || !src) return null;
-    const rect = annot.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    return {
-      x: ((e.clientX - rect.left) / rect.width) * src.w,
-      y: ((e.clientY - rect.top) / rect.height) * src.h,
-    };
-  };
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (stage !== "draw" || activePointerRef.current != null) return;
-    const p = toWork(e);
-    if (!p) return;
-    if (playing) seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current); // 재생 중이면 그 자리에 멈추고 그린다
-    if (tool === "text") {
-      // 쓰던 글자가 있으면 먼저 확정(이 누름은 확정만), 없으면 누른 자리에 입력칸을 연다.
-      // preventDefault — 뒤따르는 mousedown 이 방금 연 입력칸의 초점을 빼앗지 않게.
-      e.preventDefault();
-      if (textDraftRef.current) { commitText(); return; }
-      const rect = annotRef.current!.getBoundingClientRect();
-      setTextDraft({ at: p, left: e.clientX - rect.left, top: e.clientY - rect.top, scale: rect.width / (src?.w || 1), text: "" });
-      return;
-    }
-    // 캔버스에 그리기 시작 = 그리기 모드 복귀 — 프롬프트 포커스를 풀어 단축키([ ]·D·E·R·
-    // Ctrl+Z)가 돌아오게 한다(입력은 프롬프트를 다시 클릭해야 재개).
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && (active.tagName === "TEXTAREA" || active.isContentEditable)) active.blur();
-    activePointerRef.current = e.pointerId;
-    (e.target as Element).setPointerCapture(e.pointerId);
-    liveRef.current =
-      tool === "shape"
-        ? { kind: "shape", shape: shapeKind, color, size: brushSize, from: p, to: p }
-        : { kind: "pen", erase: tool === "erase", color, size: brushSize, points: [p] };
-    renderAll(items, liveRef.current);
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    trackCursor(e); // 그리는 중이 아니어도 커서 원은 따라온다
-    const live = liveRef.current;
-    if (!live || e.pointerId !== activePointerRef.current) return;
-    const p = toWork(e);
-    if (!p) return;
-    if (live.kind === "pen") live.points.push(p);
-    else live.to = p;
-    renderAll(items, live);
-  };
-  const onPointerLeave = () => {
-    cursorPosRef.current = null;
-    updateCursor();
-  };
-  const endStroke = (e: React.PointerEvent) => {
-    if (e.pointerId !== activePointerRef.current) return;
-    activePointerRef.current = null;
-    const live = liveRef.current;
-    if (!live) return;
-    liveRef.current = null;
-    // 도형은 드래그 없이 클릭만 한 것(크기 0)이면 버린다 — 보이지 않는 잉크 방지.
-    if (live.kind === "shape" && Math.hypot(live.to.x - live.from.x, live.to.y - live.from.y) < 3) {
-      renderAll(items);
-      return;
-    }
-    setItems((prev) => [...prev, live]);
-    setRedo([]);
-  };
-  // 취소 경로(pointercancel·capture 강탈)는 그리다 만 것을 커밋하지 않고 버린다 —
-  // 특히 중단된 도형이 엉뚱한 크기로 남는 것 방지(코덱스 WARN). 정상 pointerup 뒤에
-  // 오는 lostpointercapture 는 activePointerRef 가 이미 null 이라 no-op.
-  const cancelStroke = (e: React.PointerEvent) => {
-    if (e.pointerId !== activePointerRef.current) return;
-    activePointerRef.current = null;
-    liveRef.current = null;
-    renderAll(items);
-  };
+  const {
+    items, redo, undoStroke, redoStroke, setTool, setBrushSize, sizeText, setSizeText, colorOpen, setColorOpen,
+    annotRef, cursorRef, textDraftRef, setTextDraft, renderAll, tool, trackCursor, onPointerDown, onPointerMove,
+    onPointerLeave, endStroke, cancelStroke,
+  } = draw;
 
   // ── 모델·비율·옵션·견적 ──
   const modelPolicy = useModelPolicy();
@@ -688,9 +376,6 @@ export function PartialEditModal({
   const [menu, setMenu] = useState<null | "model" | "option" | "bitrate" | "duration">(null);
   const chipsRef = useRef<HTMLDivElement>(null);
   useOutsideMouseDown(chipsRef, () => setMenu(null), menu !== null);
-  const [colorOpen, setColorOpen] = useState(false);
-  const dockRef = useRef<HTMLDivElement>(null);
-  useOutsideMouseDown(dockRef, () => setColorOpen(false), colorOpen);
 
   // ── 제출 + 폴링 ──
   const [prompt, setPrompt] = useState("");
@@ -1267,27 +952,7 @@ export function PartialEditModal({
               {/* 펜 크기 미리보기 원(선택 색) — 지우개는 흰 점선, 도형은 crosshair 만 */}
               <div ref={cursorRef} className="partial-edit-cursor" />
               {/* 글자 입력칸 — 누른 자리에 뜬다. Enter·바깥 누름 = 확정, Esc = 이 글자만 취소 */}
-              {textDraft && stage === "draw" && (
-                <input
-                  className="pe-text-input"
-                  aria-label="글자 입력"
-                  // 초점은 화면을 움직이지 않고 — autoFocus 는 무대 상자를 옆으로 굴려 그림이 밀렸다(10-28 실측)
-                  ref={(el) => { if (el && document.activeElement !== el) el.focus({ preventScroll: true }); }}
-                  value={textDraft.text}
-                  // 폭 = 글자 수 × 1em(한글 한 자 폭) — size 속성은 영문 평균 폭이라 한글 앞글자가 칸 안에서 밀려 가려졌다(10-28 실측)
-                  style={{ left: textDraft.left, top: textDraft.top, color, fontSize: `${textPx(brushSize) * textDraft.scale}px`,
-                    width: `${Math.max(3, textDraft.text.length + 1)}em` }}
-                  onChange={(e) => setTextDraft({ ...textDraft, text: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.nativeEvent.isComposing || e.keyCode === 229) return; // 한글 조합 중 Enter 는 확정이 아니다
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      commitText();
-                    }
-                  }}
-                  onBlur={commitText}
-                />
-              )}
+              {stage === "draw" && <DrawTextInput draw={draw} />}
               {stage === "wait" && (
                 <div className="partial-edit-waitveil">
                   {waitStopped ? (
@@ -1374,64 +1039,8 @@ export function PartialEditModal({
             </div>
             {stage === "draw" && (
               <>
-                {/* 도구 — 그림·영상 바로 밑 가운데 한 줄 캡슐(힉스필드 편집기처럼, Jay 2026-10-28 시안 4차).
-                    색·굵기는 색 단추를 눌러 여는 작은 창에. */}
-                <div className="pe-toolrow">
-                  <div className="pe-dock" ref={dockRef}>
-                    {DRAW_TOOLS.map(([key, label, keyHint]) => {
-                      const single = key === "pen" || key === "erase" || key === "text";
-                      const on = single ? tool === key : tool === "shape" && shapeKind === key;
-                      return (
-                        <Fragment key={key}>
-                          {key === "line" && <span className="pe-div" />}
-                          <button type="button" className={on ? "on" : ""} title={`${label}${keyHint ? ` (${keyHint})` : ""}`} aria-label={label}
-                            aria-pressed={on}
-                            onClick={() => {
-                              if (key === "pen" || key === "erase" || key === "text") setTool(key);
-                              else { setTool("shape"); setShapeKind(key); }
-                            }}>
-                            {TOOL_ICONS[key]}
-                          </button>
-                        </Fragment>
-                      );
-                    })}
-                    <span className="pe-div" />
-                    <button type="button" className={colorOpen ? "on-soft" : ""} title="색" aria-label="색"
-                      aria-expanded={colorOpen} onClick={() => setColorOpen(!colorOpen)}>
-                      <span className="pe-dot" style={{ background: color }} />
-                    </button>
-                    {/* 굵기 — 캡슐에 바로(Jay 10-28: 색 창 안에 있어 못 찾음). 펜·지우개·도형 굵기와 글자 크기를 함께 정한다 */}
-                    <div className="pe-size" title="굵기·글자 크기 ([ ] 로도)">
-                      <span className="pe-size-dotbox">
-                        <span className="pe-size-dot" style={{ width: Math.min(16, Math.max(3, brushSize / 7)), height: Math.min(16, Math.max(3, brushSize / 7)), background: color }} />
-                      </span>
-                      <input type="range" aria-label="굵기" min={4} max={120} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
-                      {/* 숫자는 고정 폭 칸 — 1~3자리여도 캡슐 크기가 그대로이고, 직접 칠 수 있다(Jay 10-28) */}
-                      <input className="pe-size-val" type="text" inputMode="numeric" aria-label="굵기 숫자" maxLength={3}
-                        value={sizeText ?? String(brushSize)}
-                        onFocus={(e) => e.currentTarget.select()}
-                        onChange={(e) => setSizeText(e.target.value.replace(/\D/g, ""))}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") { e.preventDefault(); applySizeText(); e.currentTarget.blur(); }
-                        }}
-                        onBlur={applySizeText} />
-                    </div>
-                    <span className="pe-div" />
-                    <button type="button" title="되돌리기 (Ctrl+Z)" aria-label="되돌리기" disabled={!items.length} onClick={undoStroke}>{TOOL_ICONS.undo}</button>
-                    <button type="button" title="다시 (Ctrl+Shift+Z)" aria-label="다시" disabled={!redo.length} onClick={redoStroke}>{TOOL_ICONS.redo}</button>
-                    <button type="button" title="전체 지우기" aria-label="전체 지우기" disabled={!items.length} onClick={clearStrokes}>{TOOL_ICONS.clear}</button>
-                    {colorOpen && (
-                      <div className="pe-pop">
-                        <div className="pe-pop-row">
-                          {COLORS.map((c) => (
-                            <button key={c} type="button" className={"pe-swatch" + (color === c ? " sel" : "")} style={{ background: c }}
-                              title={c} aria-label={`색 ${c}`} aria-pressed={color === c} onClick={() => setColor(c)} />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
+                {/* 도구 — 그림·영상 바로 밑 가운데 한 줄 캡슐(edit/drawing/DrawDock — 코멘트 그림과 같은 캡슐) */}
+                <DrawDock draw={draw} />
                 {/* 프롬프트·모델·Generate — 생성창 프롬프트 판과 같은 부품(.sl-*, prompt-dock.css 는 전역).
                     autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작 */}
                 <div className="sl-panel pe-prompt" onDragOver={isVideo ? onRefDragOver : undefined} onDrop={isVideo ? onRefDrop : undefined}>

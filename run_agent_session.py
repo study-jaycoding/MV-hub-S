@@ -284,7 +284,23 @@ _launcher_mutex_handle = None  # 프로세스 수명 동안 유지 — GC 로 �
 
 
 def _user32():
-    return ctypes.WinDLL("user32", use_last_error=True)
+    # HWND 는 포인터 폭이다 — argtypes 가 없으면 ctypes 가 C int 로 넣다가 큰 핸들에서 OverflowError 를 낸다
+    # (EnumWindows 콜백 안에서는 조용히 삼켜져 그 창이 목록에서 빠진다, 2026-11-05 실측).
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    HWND = wintypes.HWND
+    user32.IsWindow.argtypes = [HWND]
+    user32.IsWindowVisible.argtypes = [HWND]
+    user32.GetWindowThreadProcessId.argtypes = [HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetClassNameW.argtypes = [HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.argtypes = [HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.ShowWindow.argtypes = [HWND, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [HWND]
+    user32.PostMessageW.argtypes = [HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SetPropW.argtypes = [HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+    user32.GetPropW.argtypes = [HWND, wintypes.LPCWSTR]
+    user32.GetPropW.restype = wintypes.HANDLE
+    return user32
 
 
 def _install_root() -> Path:
@@ -620,16 +636,11 @@ def _is_app_title(title: str) -> bool:
 
 
 def _mark_approved(hwnd: int) -> None:
-    user32 = _user32()
-    user32.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
-    user32.SetPropW(hwnd, _approved_prop_name(), wintypes.HANDLE(1))
+    _user32().SetPropW(hwnd, _approved_prop_name(), wintypes.HANDLE(1))
 
 
 def _is_marked_approved(hwnd: int) -> bool:
-    user32 = _user32()
-    user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
-    user32.GetPropW.restype = wintypes.HANDLE
-    return bool(user32.GetPropW(hwnd, _approved_prop_name()))
+    return bool(_user32().GetPropW(hwnd, _approved_prop_name()))
 
 
 def _classify_app_hwnds(pids: set[int]) -> tuple[list[int], list[int]]:

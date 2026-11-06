@@ -566,6 +566,40 @@ def stream_download(
         raise HTTPException(status_code=502, detail=f"공유 서버 다운로드 실패: {e}")
 
 
+def proxy_bytes(path: str, *, max_bytes: int = 256 * 1024, timeout: int = 30) -> tuple[bytes, str]:
+    """서버 {base}{path} 의 작은 바이트 응답(코멘트 그림 미리보기 등)을 메모리로 받는다 — 성공·오류 본문 모두 상한.
+
+    stream_download 와 같은 헤더·인증 실패 규칙. 반환: (본문, Content-Type)."""
+    tok = token()
+    if not tok:
+        raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
+    req = urllib.request.Request(
+        base_url() + path,
+        headers={"Authorization": f"Bearer {tok}", "Accept-Encoding": "identity"},
+    )
+    try:
+        with _open(req, timeout=timeout) as r:
+            data = r.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise HTTPException(status_code=502, detail="서버 응답이 너무 큼(상한 초과)")
+            return data, r.headers.get("Content-Type") or "application/octet-stream"
+    except HTTPException:
+        raise
+    except urllib.error.HTTPError as e:
+        raw = e.read(4096) if hasattr(e, "read") else b""
+        try:
+            parsed = json.loads(raw.decode("utf-8")) if raw else None
+        except (UnicodeDecodeError, ValueError):
+            parsed = None
+        detail = parsed.get("detail") if isinstance(parsed, dict) and "detail" in parsed else f"서버 응답 실패({e.code})"
+        headers = None
+        if e.code == 401:
+            headers = {AUTH_STATE_HEADER: _handle_auth_failure(_K_TOKEN, tok, path)}
+        raise HTTPException(status_code=e.code, detail=detail, headers=headers)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
+
+
 def _cleanup_file(path: str) -> None:
     try:
         os.unlink(path)

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { consumeOwnDomainSync } from "./librarySync";
 import {
+  manageRefreshDelay,
   shouldRefreshManageForLibrarySync,
   shouldRunManageFallbackRefresh,
 } from "./manageRefreshPolicy";
@@ -17,25 +18,42 @@ export function useManageRealtime(enabled: boolean): number {
   useEffect(() => {
     if (!enabled) return;
     let timer: number | undefined;
+    let dueAt = 0;
+    let deadline = Infinity; // 출처 없는 변경이 늦어도 이때는 읽혀야 한다 — 디바운스가 이 뒤로 밀지 못한다
     let dirtyWhileHidden = false;
-    const schedule = () => {
+    // coalesce = 출처 없는 신호: 이미 더 일찍 잡힌 재조회가 이 신호도 담으니 미루지 않는다. 그 밖의 신호는 예전처럼
+    // 마지막 신호 뒤 180ms(디바운스) — 연달아 오는 출처 있는 변경을 한 번에 읽는다(Codex 리뷰 P2 2026-11-05).
+    const schedule = (delay = MANAGE_SYNC_DEBOUNCE_MS, coalesce = false) => {
       if (document.hidden) {
         dirtyWhileHidden = true;
         return;
       }
       dirtyWhileHidden = false;
+      const now = Date.now();
+      const at = now + delay;
+      if (coalesce) {
+        deadline = Math.min(deadline, at);
+        if (timer && dueAt <= at) return;
+      }
       if (timer) clearTimeout(timer);
+      dueAt = Math.min(at, deadline);
       timer = window.setTimeout(() => {
         timer = undefined;
+        deadline = Infinity;
         lastRefreshAtRef.current = Date.now();
         setReloadSignal((value) => value + 1);
-      }, MANAGE_SYNC_DEBOUNCE_MS);
+      }, dueAt - now);
     };
     const disconnect = connectProgress(
       (message) => {
         if (message.type === "manage_changed") {
           if (consumeOwnDomainSync("manage", message.origins)) return;
-          schedule();
+          const originless = !message.origins?.length;
+          schedule(manageRefreshDelay({
+            originless,
+            lastRefreshAt: lastRefreshAtRef.current,
+            now: Date.now(),
+          }), originless);
         } else if (message.type === "synced") {
           // 작업 카드의 연결 생성물·완료/게시 상태는 라이브러리 변경에도 영향을 받는다.
           // 다만 syncer·구형 위임 서버의 출처 없는 신호는 조회 반향과 구분할 수 없고 연속 도착할 수
@@ -44,7 +62,7 @@ export function useManageRealtime(enabled: boolean): number {
           schedule();
         }
       },
-      schedule,
+      () => schedule(),
     );
     // WebSocket 신호가 누락되거나 구버전 서버가 출처 없는 synced 만 보내도 대시보드·작업·완료
     // 탭이 결국 최신 상태를 따라잡는다. 현재 보이는 관리 창만 느슨하게 다시 조회한다.

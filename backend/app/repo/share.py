@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, Iterable, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterable, Iterator, Optional
 
 from .. import config
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
+from ..services.comment_strokes import StrokeError
 from ..task_activity import merge_task_activity_location
-from . import generation_sync, identity, tags
+from . import comment_drawings, generation_sync, identity, tags
 from .asset_locations import project_generation_locations
 from .asset_sync import undeliverable_generations
 from .generation_references import _reference_copy_positions
@@ -520,6 +523,13 @@ def export_bundle(
                     "muted": bool(r["muted"]),
                 }
             )
+        # 코멘트 그림(C3) — 그림 있는 코멘트에만 칸을 붙인다(그림 없는 묶음은 옛 서버가 받던 모양 그대로).
+        if crows and comment_drawings.has_public_drawings(conn, ids):
+            drawn = comment_drawings.export_drawings(conn, [r["id"] for r in crows])
+            for g in gens:
+                for c in g["_comments"]:
+                    if drawn.get(c["id"]):
+                        c["drawings"] = drawn[c["id"]]
 
         # 작성자 이름 맵(user_<id> → 이름) — 같은 커넥션에서 한 번에 조회(두 번째 연결 제거).
         creator_names: dict[str, str] = {}
@@ -629,15 +639,41 @@ def _find_id_by_job(conn: sqlite3.Connection, job_id: str) -> Optional[str]:
     return row["id"] if row else None
 
 
+_skipped_deleted: ContextVar[Optional[list[str]]] = ContextVar("share_skipped_deleted", default=None)
+
+
+@contextmanager
+def collect_skipped_deleted() -> Iterator[list[str]]:
+    """이 안에서 받은 묶음이 삭제 기록 때문에 건너뛴 코멘트 id 를 모은다(영수증의 '삭제로 건너뜀', C2)."""
+    bucket: list[str] = []
+    token = _skipped_deleted.set(bucket)
+    try:
+        yield bucket
+    finally:
+        _skipped_deleted.reset(token)
+
+
 def _merge_comments(
     conn: sqlite3.Connection, gen_id: str, comments: Iterable[dict[str, Any]]
-) -> None:
+) -> list[str]:
     """코멘트 id 로 dedup append(작성자 표기 보존). 같은 id 는 무시(중복 방지).
-    작성자 이름이 함께 오면 worker 행을 보장해 목록 join 에서 이름이 뜨게 한다."""
+    작성자 이름이 함께 오면 worker 행을 보장해 목록 join 에서 이름이 뜨게 한다.
+    삭제 기록이 우선(C2) — 사람이 지운 코멘트와 그 답글은 되살리지 않고 건너뛴 id 를 돌려준다.
+    그림은 같은 생성물·작성자·공개 코멘트에만 붙는다(어긋나면 CommentMergeError → 그 항목만 막힘)."""
+    comments = [c for c in comments if isinstance(c, dict)]
+    if not comments:
+        return []
+    comment_drawings.require(conn, comment_drawings.TOMBSTONE)
+    dead = comment_drawings.tombstoned(
+        conn, [c.get("id") for c in comments] + [c.get("parent_id") for c in comments])
+    skipped: list[str] = []
     for c in comments:
         cid = c.get("id")
         text = (c.get("text") or "").strip()
         if not cid or not text:
+            continue
+        if cid in dead or c.get("parent_id") in dead:
+            skipped.append(cid)
             continue
         author = c.get("author") or DEFAULT_WORKER_ID
         aname = c.get("author_name")
@@ -650,6 +686,10 @@ def _merge_comments(
             (cid, gen_id, author, text, c.get("created_at"),
              c.get("parent_id"), 1 if c.get("muted") else 0),
         )
+        if c.get("drawings"):
+            comment_drawings.merge_drawings(conn, comment_id=cid, gen_id=gen_id, author=author,
+                                            raw_drawings=c["drawings"])
+    return skipped
 
 
 def import_bundle_item(
@@ -809,7 +849,15 @@ def _import_bundle_item(conn,
         )
         tags._add_tags(conn, gid, item.get("tags") or [])
         tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
-        _merge_comments(conn, gid, item.get("comments") or [])
+        try:
+            skipped = _merge_comments(conn, gid, item.get("comments") or [])
+        except (comment_drawings.CommentMergeError, StrokeError):
+            conn.execute("ROLLBACK TO share_bundle_item")
+            conn.execute("RELEASE share_bundle_item")  # 그림을 붙일 수 없는 항목은 통째로 되돌린다(다른 항목은 계속)
+            return "blocked"
+        bucket = _skipped_deleted.get()
+        if bucket is not None:
+            bucket.extend(skipped)
         # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등·race-safe: UNIQUE(generation_id)
         # + ON CONFLICT DO NOTHING. 동시 import 두 개가 같은 gid 를 처리해도 IntegrityError 없이 통과).
         if shared_by and shared_by != DEFAULT_WORKER_ID:
@@ -857,18 +905,21 @@ def import_bundle_payload(
         "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "blocked": 0,
     }
     blocked_ids: list[str] = []
-    for it in bundle.get("generations") or []:
-        if not isinstance(it, dict):
-            counts["skipped"] += 1
-            continue
-        result = (command_handler(it, worker_id, shared_by, final_actor, author_uids)
-                  if command_handler else import_bundle_item(it, worker_id, shared_by, final_actor, author_uids))
-        counts[result] += 1
-        if result == "blocked":
-            anchor = (it.get("generation") or {}).get("id")
-            if anchor:
-                blocked_ids.append(str(anchor))
+    with collect_skipped_deleted() as skipped_deleted:
+        for it in bundle.get("generations") or []:
+            if not isinstance(it, dict):
+                counts["skipped"] += 1
+                continue
+            result = (command_handler(it, worker_id, shared_by, final_actor, author_uids)
+                      if command_handler else import_bundle_item(it, worker_id, shared_by, final_actor, author_uids))
+            counts[result] += 1
+            if result == "blocked":
+                anchor = (it.get("generation") or {}).get("id")
+                if anchor:
+                    blocked_ids.append(str(anchor))
     counts["blocked_ids"] = blocked_ids
+    if skipped_deleted:
+        counts["skipped_deleted"] = skipped_deleted
     # 계보 엣지 — 생성물 import 후에 넣는다. 양끝(parent·child)이 모두 서버에 실재할 때만(FK 보호,
     # 멱등). 공유된 조상끼리만 연결돼 팀원이 공유물 사이 계보를 본다(미공유 조상은 자동 생략).
     for e in bundle.get("history") or []:

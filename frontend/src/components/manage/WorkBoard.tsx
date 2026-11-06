@@ -1,6 +1,6 @@
 // 작업 탭 컨테이너 — 전체 프로젝트의 작업을 병합해 보여주고, 노션식 칩 필터(프로젝트/에피소드/
 // 시퀀스/상태/생성자)+검색으로 좁힌다. 보드/테이블/캘린더에 데이터·핸들러를 주입한다.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import {
   addDisabledGen,
@@ -66,25 +66,6 @@ export function taskWriteErrorMessage(action: string, error: unknown): string {
   }
   const detail = error instanceof Error ? error.message : String(error);
   return `${action} 실패: ${detail}`;
-}
-
-// 전체 선택/해제 — ids 마다 tasks 를 훑으면 O(n²)(수천 행에서 체감). id→작업을 한 번만 인덱싱한다.
-// 같은 id 가 여러 번 있으면 tasks.find 와 같게 '첫 항목'을 쓴다(읽기전용 판정이 뒤집히지 않게).
-export function applyTaskSelectAll(
-  selected: Set<string>,
-  ids: string[],
-  on: boolean,
-  tasks: Task[],
-  readOnly: boolean,
-): Set<string> {
-  const next = new Set(selected);
-  const taskById = new Map<string, Task>();
-  for (const item of tasks) if (!taskById.has(item.id)) taskById.set(item.id, item);
-  for (const id of ids) {
-    const task = taskById.get(id);
-    if (task && !taskIsReadOnly(task, readOnly)) on ? next.add(id) : next.delete(id);
-  }
-  return next;
 }
 
 export async function recoverTaskWriteFailure(
@@ -299,22 +280,8 @@ export function WorkBoard({
       return next;
     });
   };
-  // 테이블 행 다중선택(하단 선택바에서 일괄 삭제). 뷰 전환 시 초기화.
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  useEffect(() => setSelected(new Set()), [view]);
-  useEffect(() => setSelected(new Set()), [scopeKey]);
-  const toggleSelect = (id: string) => {
-    const task = tasks.find((item) => item.id === id);
-    if (!task || taskIsReadOnly(task, showHistory)) return;
-    setSelected((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  };
-  const toggleSelectAll = (ids: string[], on: boolean) =>
-    setSelected((s) => applyTaskSelectAll(s, ids, on, tasks, showHistory));
-  const clearSel = () => setSelected(new Set());
+  // 줄 선택·[삭제] 막대는 뺐다(2026-11-05 Jay B안) — 폴더에서 생긴 줄은 지워도 다음 조회 때 다시 생기고,
+  //  PM 이 적은 설명·마감일·순서·담당만 잃었다. 서버 삭제 API 는 남아 있지만 이 화면은 부르지 않는다.
 
   // 필터·뷰 영속 — 창을 닫았다 와도 마지막 설정을 기억한다(localStorage).
   useEffect(() => saveJSON(STORAGE_KEYS.manageWorkFilters, filters), [filters]);
@@ -561,7 +528,8 @@ export function WorkBoard({
   }, [workspaceId, contextKey, viewerUid, personalByDefault]);
 
   useEffect(() => {
-    api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
+    // 전역 태그만 쓴다 — /api/facets 는 색·태그·생성자까지 내 생성물 전체를 집계한다(생성물이 많으면 무겁다)
+    api.autoTags().then((r) => setSeqOptions(r.auto_tags || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -729,20 +697,6 @@ export function WorkBoard({
     });
     return result;
   };
-  const onDelete = (tid: string) => {
-    if (writeBlocked(tid)) return;
-    const requestScope = scopeKey;
-    void (async () => {
-      try {
-        await manageApi.deleteTask(tid);
-        descDraftsRef.current.drafts.delete(tid);
-        taskDataRevisionRef.current += 1;
-        if (scopeIsActive(requestScope)) await loadAllRef.current();
-      } catch (error) {
-        await recoverWriteFailure("작업 삭제", error, requestScope);
-      }
-    })();
-  };
   const onLinkGen = (tid: string, genId: string) => {
     if (genId.startsWith("fact:")) return;
     if (writeBlocked(tid)) return;
@@ -810,18 +764,6 @@ export function WorkBoard({
     () => visibleScope.filter((task) => matchTask(task, filters)),
     [filters, visibleScope],
   );
-  // 표에서 사라진 줄은 선택에서도 뺀다(조작 규칙 42). 선택은 id 집합이고 보기·공간이 바뀔 때만 비웠다 — 고른 뒤 검색·필터로 가려진 작업이
-  //  남아 보이는 것만 지우려던 [삭제]에 같이 지워졌고, 다시 읽어 없어진 작업이 남으면 삭제 자체가 "목록이 변경되었습니다"로 막혔다
-  //  (500개씩 나가는 삭제의 앞 묶음만 성공했을 때도). 그리기 전에 맞춘다 — 낡은 선택으로 [삭제]가 눌릴 틈이 없게.
-  useLayoutEffect(() => {
-    setSelected((current) => {
-      if (!current.size) return current;
-      const shown = new Set(filtered.map((task) => task.id));
-      const kept = [...current].filter((id) => shown.has(id));
-      return kept.length === current.size ? current : new Set(kept);
-    });
-  }, [filtered]);
-
   // 필터·검색·내 작업 보기 중에는 드래그 정렬을 막는다 — 숨겨진 작업과의 상대 순서를 알 수 없어
   // 부분 목록 재정렬이 전역 순서를 임의로 바꾸게 된다(합의 설계: 전체 스냅샷일 때만 저장).
   const filterActive = useMemo(
@@ -880,26 +822,6 @@ export function WorkBoard({
     );
   };
 
-  // 선택 일괄 삭제 — 확인 후 작업 행 삭제. (폴더 자동 작업은 생성물이 남아 있으면 다음 동기화 때
-  // 다시 생성됨 — 실질 삭제는 생성탭에서 생성물 자체를 지워야 함. 여기선 정리용.)
-  const bulkDelete = async () => {
-    const ids = [...selected];
-    if (!ids.length) return;
-    if (ids.some((id) => writeBlocked(id))) return;
-    if (!window.confirm(`선택한 작업 ${ids.length}개를 삭제할까요?`)) return;
-    const requestScope = scopeKey;
-    try {
-      await manageApi.deleteTasksBatch(ids);
-      for (const id of ids) descDraftsRef.current.drafts.delete(id);
-      taskDataRevisionRef.current += 1;
-      if (!scopeIsActive(requestScope)) return;
-      clearSel();
-      await loadAllRef.current();
-    } catch (e) {
-      await recoverWriteFailure("작업 삭제", e, requestScope);
-    }
-  };
-
   // 받은 표가 있으면 재조회가 실패해도 걷지 않는다 — 표를 걷으면 치던 설명 글과 '저장 안 됨' 표시가 같이 사라졌다(2026-10-10 격리 실측:
   //  저장 실패 뒤의 복구 조회까지 실패하면 '불러오기 실패' 화면만 남고, 다시 받아도 친 글은 돌아오지 않았다). 띠로 알리고 표는 그대로 둔다.
   //  받은 적 없는 범위(첫 조회 실패·공간을 바꾼 뒤)는 전처럼 오류 화면이다 — 빈 표를 '작업 없음'으로 오인하지 않게.
@@ -922,12 +844,8 @@ export function WorkBoard({
     thumb: taskThumb,
     disabled: disabledCuts,
     colorMap,
-    selected,
-    onToggleSelect: toggleSelect,
-    onToggleSelectAll: toggleSelectAll,
     onReorder,
     onPatch,
-    onDelete,
     onLinkGen,
     onUnlinkGen,
     descDrafts: descDraftsRef.current,
@@ -960,7 +878,7 @@ export function WorkBoard({
               onClick={() => setMineOnly((v) => !v)}
               title="내가 만든 작업만 보기"
             >
-              내 작업만
+              My
             </button>
           ) : null}
           <div className="manage-toggles">
@@ -1011,18 +929,6 @@ export function WorkBoard({
         <TableView {...viewProps} />
       ) : (
         <CalendarView {...viewProps} />
-      )}
-
-      {!showHistory && selected.size > 0 && (
-        <div className="work-selbar">
-          <span className="work-selbar-count">{selected.size}개 선택</span>
-          <button className="work-selbar-btn" onClick={clearSel}>
-            선택 해제
-          </button>
-          <button className="work-selbar-btn danger" onClick={bulkDelete}>
-            🗑 삭제
-          </button>
-        </div>
       )}
     </div>
   );

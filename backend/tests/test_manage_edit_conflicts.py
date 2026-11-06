@@ -384,6 +384,48 @@ def test_legacy_identifiers_are_not_copied_to_journal_paths(isolated):
     assert "private" not in json.dumps(event)
 
 
+def _move_details(revision):
+    """그 revision 저장의 details — 같은 밀리초 저장은 created_at 순서가 흔들리니 revision 으로 고른다."""
+    for event in _journal():
+        details = event["details"] or {}  # list_audit_events 가 이미 풀어 준다
+        if event["action"] == "workspace.credit_plan_changed" and details.get("revision") == revision:
+            return event, details
+    raise AssertionError(f"revision {revision} 감사 줄 없음")
+
+
+def test_group_moves_record_from_and_to_without_raw_identifiers(isolated):
+    # Jay 2026-11-06 "어느 그룹에서 어느 그룹으로 갔는지도 기록" — 들어옴·옮김·몫만·빠짐
+    g1, g2 = "a" * 32, "b" * 32
+    groups = [{"id": g1, "name": "Line 4", "monthly_limit": 7000}, {"id": g2, "name": "Practice", "monthly_limit": 500}]
+    who = event_journal.account_target("member@example.test")
+    _credit_save(revision=0, groups=groups, members=[{"email": "member@example.test", "group_id": g1}])
+    _credit_save(revision=1, groups=groups, members=[{"email": "member@example.test", "group_id": g2}])
+    _credit_save(revision=2, groups=groups, members=[{"email": "member@example.test", "quota": 100}])
+    _credit_save(revision=3, groups=groups, members=[{"email": "member@example.test", "group_id": None}])
+    expected = {
+        1: [f"{who}: 없음 → {g1}"],
+        2: [f"{who}: {g1} → {g2}"],
+        3: [],  # 몫만 바뀜 — 이동 아님
+        4: [f"{who}: {g2} → 없음"],
+    }
+    for revision, moves in expected.items():
+        event, details = _move_details(revision)
+        assert details["group_moves"] == moves
+        assert details["group_moves_complete"] is True
+        text = json.dumps(event, ensure_ascii=False)
+        assert "@" not in text and "Line 4" not in text and "Practice" not in text  # 이름(사람이 쓴 글)은 남기지 않는다
+
+
+def test_group_moves_over_fifty_are_marked_incomplete(isolated):
+    g1 = "c" * 32
+    members = [{"email": f"m{i:02d}@example.test", "group_id": g1} for i in range(51)]
+    _credit_save(revision=0, groups=[{"id": g1, "name": "Big", "monthly_limit": 10}], members=members)
+    event, details = _move_details(1)
+    assert len(details["group_moves"]) == 50
+    assert details["group_moves_complete"] is False
+    assert "@" not in json.dumps(event, ensure_ascii=False)
+
+
 def test_additive_legacy_schema_migration_is_idempotent(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "legacy.db"))
     db.flush_pool()

@@ -930,6 +930,8 @@ svg.thumb-broken-ic { width: 24px; height: 24px; }
   .card-thumb:has(> .card-bottom) .ov-bottom { margin-bottom: 15px; }
   .card-tl { gap: 4px; }
   .card-sf, .card-cm { width: 22px; height: 22px; font-size: 11px; }
+  /* ⠿ 도 S 와 같은 크기로 S 줄 바로 밑에(7 + 22 + 4) — 26px·39px 그대로 두면 크기와 위 간격이 어긋났다(11-06 Jay) */
+  .card-drag-grip { top: 33px; width: 22px; height: 22px; font-size: 12px; }
   .card-sf.on { font-size: 12px; }
   .card-sf.final { font-size: 14px; }
 }

@@ -21,8 +21,12 @@ export const APP_EVENTS = {
   // 생성물 변경(담기/폴더·최종·공유·삭제·새 생성)의 같은 창(same-window) 알림 — 사이드바 폴더 카운트
   // 즉시 갱신 등. BroadcastChannel(ch-generations)은 창 간 전달용이라, 같은 창 갱신은 이 이벤트로 확실히.
   libraryChanged: "ch:library-changed",
-  // 부분 수정(브러시 인페인트) 모달 열기 — InfoPopup → App 의 PartialEditHost. detail={genId}
+  // 수정 창(이미지·영상) 열기 — InfoPopup·MediaPreview → App 의 PartialEditHost. detail={genId, mode: "image"|"video"}
   partialEdit: "ch:partial-edit",
+  // 코멘트 그림 겹쳐 보기 — 코멘트 창 → 떠 있는 크게 보기(그 생성물을 보고 있으면 preventDefault 로 받는다). detail=CommentDrawingView
+  commentDrawingView: "ch:comment-drawing-view",
+  // 받는 크게 보기가 없을 때 그 생성물의 크게 보기를 그림을 겹친 채 연다 — useAppNavigation. detail=PreviewTarget(drawing 포함)
+  commentDrawingOpen: "ch:comment-drawing-open",
   reusePrompt: "ch:reuse-prompt",
   resolveSelection: "ch:resolve-selection",
   resolveSelectionSettingsChanged: "ch:resolve-selection-settings-changed",

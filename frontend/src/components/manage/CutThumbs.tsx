@@ -13,6 +13,7 @@ export function CutThumbs({
   readOnly = false,
   myUid,
   onUnlinkGen,
+  privateBelow = false,
 }: {
   task: Task;
   thumb: WorkViewProps["thumb"];
@@ -20,6 +21,7 @@ export function CutThumbs({
   readOnly?: boolean;
   myUid?: string | null;
   onUnlinkGen: WorkViewProps["onUnlinkGen"];
+  privateBelow?: boolean; // 표: '미공유 N개' 같은 글을 썸네일 줄 아래로 — 생성물 칸이 좁아져 설명 칸이 넓어진다(2026-11-05 Jay A안)
 }) {
   const t = useT();
   const cuts = task.cuts || [];
@@ -36,7 +38,22 @@ export function CutThumbs({
     const label = privateCutLabel(cut, myUid);
     privateCounts.set(label, (privateCounts.get(label) || 0) + 1);
   }
-  return (
+  const privates = (
+    <>
+      {[...privateCounts].map(([label, count]) => (
+        <span key={label} className="work-cut-private" title={t(label)}>
+          {t("{label} {count}개").replace("{label}", t(label)).replace("{count}", String(count))}
+        </span>
+      ))}
+      {privateLinked.map((cut) => <span key={cut.id} className="work-cut-private">
+        {t(privateCutLabel(cut, myUid))}
+        <button className="work-cut-private-unlink" title="연결 해제(수동)"
+          onClick={() => onUnlinkGen(task.id, cut.id)}>✕</button>
+      </span>)}
+    </>
+  );
+  const hasPrivates = privateCounts.size > 0 || privateLinked.length > 0;
+  const row = (
     <div className="work-cut-thumbs">
       {shown.map((c) => {
         const isVideo = c.media_type === "video";
@@ -90,16 +107,14 @@ export function CutThumbs({
           +{extra}
         </span>
       )}
-      {[...privateCounts].map(([label, count]) => (
-        <span key={label} className="work-cut-private" title={t(label)}>
-          {t("{label} {count}개").replace("{label}", t(label)).replace("{count}", String(count))}
-        </span>
-      ))}
-      {privateLinked.map((cut) => <span key={cut.id} className="work-cut-private">
-        {t(privateCutLabel(cut, myUid))}
-        <button className="work-cut-private-unlink" title="연결 해제(수동)"
-          onClick={() => onUnlinkGen(task.id, cut.id)}>✕</button>
-      </span>)}
+      {!privateBelow && privates}
     </div>
+  );
+  if (!privateBelow || !hasPrivates) return row;
+  return (
+    <>
+      {row}
+      <div className="work-cut-privates">{privates}</div>
+    </>
   );
 }

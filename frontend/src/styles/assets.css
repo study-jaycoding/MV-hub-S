@@ -1042,16 +1042,42 @@
   overflow: hidden;
 }
 .media-preview-body {
+  /* 원본 그림의 모서리 — 그 위에 얹는 층(Ctrl 카드·칸)도 이 이름 하나로 자른다(숫자를 따로 적으면 한쪽만 바뀌어 어긋난다) */
+  --mp-media-r: 6px;
   display: flex; align-items: center; justify-content: center;
   min-height: 0; padding: 10px; background: #050608;
 }
 .media-preview-body img, .media-preview-body video {
   max-width: 78vw; max-height: 74vh; object-fit: contain;
-  display: block; border-radius: 6px;
+  display: block; border-radius: var(--mp-media-r);
 }
 /* 원본이 오는 동안의 자리 표시(썸네일)와 원본을 같은 칸에 겹친다 — 원본이 위라 받는 대로 덮어 그린다 */
 .media-preview-stack { display: grid; place-items: center; }
 .media-preview-stack > img { grid-area: 1 / 1; }
+/* 오디오 머리줄 받기 — 글 없는 아이콘 네모(시안 ⑱), 머리줄 단추와 같은 높이 */
+.lin-board-btn.preview-dl-btn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+/* Ctrl 카드 단추(Jay 2026-11-05 시안 ⑩·⑪) — 격자 카드(.card)·어셋 칸(.asset-cell)을 원본이 그려진 사각형에 겹치고 카드의 그림은 감춘다.
+   단추만 누를 수 있고 나머지 누름(우클릭 캡쳐·영상 재생 막대)은 원본으로 간다. 마우스를 올린 카드처럼 단추를 늘 보이고 조금 키운다(시안 1.3배) */
+.mp-card-layer { position: absolute; z-index: 3; pointer-events: none; }
+.mp-card-layer .card, .mp-card-layer .asset-cell { height: 100%; background: transparent; border: 0; padding: 0; box-shadow: none; transform: none; filter: none; }
+/* 생성물 카드의 안쪽 틀(.card-clip, 패널색)과 상태 색(.card.st-shared:not(.selected) 등 — 위 규칙보다 세다)까지 비워야 원본이 비친다(11-06 Jay: 메인 창 Ctrl 카드가 원본을 검게 덮음) */
+.mp-card-layer .card, .mp-card-layer .card-clip { background: transparent !important; box-shadow: none !important; }
+/* 모서리도 원본과 같게 — 그늘 막(.thumb-overlay)이 카드 틀(13px)·어셋 칸(8px) 모서리로 잘려, 6px 로 둥근 원본 모서리에만 그늘이 빠진
+   밝은 초승달이 생겼다(11-06 Jay). 층 전체를 overflow 로 자르지 않는 것은 태그 입력 같은 떠 있는 것이 잘리지 않게 */
+.mp-card-layer :is(.card, .asset-cell) { border-radius: var(--mp-media-r); }
+.mp-card-layer .card-clip { clip-path: inset(0 round var(--mp-media-r)); }
+.mp-card-layer .card-thumb, .mp-card-layer .asset-media { width: 100%; height: 100%; flex: 1 1 auto; aspect-ratio: auto; padding: 0; background: transparent; }
+.mp-card-layer :is(.card-thumb, .asset-media) > :is(img, video, picture, .thumb-placeholder, .audio-tile),
+.mp-card-layer :is(.card-thumb, .asset-media) :is(img, video):not(button *),
+.mp-card-layer :is(.play-badge, .last-viewed-badge, .card-colorbar) { visibility: hidden; }
+.mp-card-layer :is(.card-sf, .card-cm, .card-drag-grip) { opacity: 1; pointer-events: auto; }
+/* 키우기는 S·T·C 묶음과 ⠿ 에 같은 배율로 — 단추마다 키우면 묶음 자리는 그대로인데 혼자 떠 있는 ⠿ 만 자리값까지 커져 어긋났다(11-06 Jay) */
+.mp-card-layer :is(.card-tl, .card-drag-grip) { zoom: 1.3; }
+.mp-card-layer .thumb-overlay { opacity: 1; }
+.mp-card-layer :is(button, [draggable="true"], input, textarea, .card-status, .card-folder) { pointer-events: auto; }
+.mp-card-layer .ov-icon { zoom: 1.3; }
+/* 영상 — 아래 단추 줄·이름표를 재생 막대(네이티브 조작 줄) 위로 */
+.mp-card-layer.is-video .ov-bottom, .mp-card-layer.is-video .card-bottom { margin-bottom: 40px; }
 /* 크게 보기 우클릭 메뉴(프레임·이미지 캡쳐/저장) — body 포털·고정 위치. 틀은 폴더 우클릭 메뉴(.folder-ctx-menu)와 같은 값,
    줄은 편집 탭 트랙 메뉴(.ed-tmenu-item)와 같은 값(그 CSS 는 편집 탭을 열 때 실려 여기서 못 빌린다) */
 .preview-menu-catcher { position: fixed; inset: 0; z-index: 240; }

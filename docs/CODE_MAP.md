@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-05
+updated: 2026-11-06
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -108,6 +108,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 워크스페이스 콘솔(서브스페이스 — 대시보드 '워크스페이스' 단추, 메인·서브) | `components/manage/console/WorkspaceConsole.tsx`(목록·메인 조율·만들기), `ConsoleSubView.tsx`(그룹·크레딧·참가자), `lib/workspaceConsole.ts`(`topupAddBody`) | `routers/workspace_console.py`(`/api/manage/console/*`), `repo/workspace_console.py`(시드·연결·메인 최초 지정(바꾸지 않음)·개요), `repo/console_guard.py`(보호 판정) | 설계 `docs/WORKSPACE_CONSOLE_DESIGN.md` · 앱은 힉스필드 워크스페이스를 **못 만든다** — '만들기'=보고된 것을 서브로 연결. 할당·그룹·참가자 쓰기는 기존 `PUT credit-plan` 뿐이고 **note·topups 전체를 되보내야** 한다(빼면 지운다) |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
+| 크게 보기 코멘트 그림(C 단추·코멘트 모드·그림 겹쳐 보기) | `components/MediaPreview.tsx`(C·`c`·겹쳐 보기), `App.tsx`(`openCardComment` — 카드 C 도 이 창), `components/comment/CommentDrawModal.tsx`, `components/edit/drawing/*`(수정 창과 같은 그리기 도구·획 v1 정규화/해시), `components/GenCommentPanel.tsx`(그림 줄·그림 불러오기) | `routers/generation.py`(`comments-v2`·그림 조회), `repo/comment_drawings.py`, `services/comment_strokes.py`(검증·해시·표 구조 검사), `repo/share.py`·`routers/publish.py`(발행 `publish-bundle-v2`), `repo/trash.py` | 설계·계약 [크게보기_코멘트그림_설계_2026-11-05.md](status/크게보기_코멘트그림_설계_2026-11-05.md) §10. 새 표 셋은 이름표(baseline)가 없다 — 구조는 시작·쓰기 전에 직접 본다. 프런트·서버가 **같은 바이트**로 정규화·해시한다(`strokes.ts` ↔ `comment_strokes.py`) |
 | 생성물 비교(Compare) | `components/CompareModal.tsx`, `VideoCompareModal.tsx` | — | |
 | 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `routers/generation.py`(`/history`·`/history-tree`), `repo/history.py`, `repo/lineage.py` | |
 | 스포트라이트 프롬프트 도크(@/# 피커) | `components/SpotlightPrompt.tsx`, `components/spotlight/SpotlightMentionPicker.tsx`, `lib/libraryPromptDraft.ts`(라이브러리 프롬프트 초안 자동 저장, Jay 결정 5B) | — | |
@@ -271,6 +272,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `facets.py` | 82 | 필터 사이드바 facet(컬러·태그·자동태그·워커) | `repo.get_facets` |
 | `sources.py` | 170 | 스포트라이트 @/# 피커의 소스 검색 | `repo.search_sources` |
 | `assets.py` | 756 | 분리창 파일 메타 + 에셋 코멘트·생성본 코멘트 두 스레드 전체 | `repo.get_asset_meta`·`list_generation_comments`(33개) |
+| `comment_drawings.py` | 약 290 | 코멘트 그림·comments-v2 작성 장부·삭제 기록(설계 C1·C2) — 재시도 판정, 삭제 기록, 발행 합치기 검사, 휴지통 담기·되살리기. **파사드 별표 export 안 함** — `from app.repo import comment_drawings` | `create_comment_v2`·`merge_drawings`·`record_tombstones`·`trash_rows` |
 | `nas_results.py` | 66 | 결과물 훑기 스냅샷 — 지금 루트 읽기(트랜잭션 안)·통째 교체·지금 루트로 만든 스냅샷만 조회([NAS_RESULTS.md](NAS_RESULTS.md)) | `current_root`·`replace_snapshot`·`snapshot` |
 | `asset_registry.py` | 340 | 에셋 대장 표 읽기·쓰기 · 훑기 결과 반영(정체 판정 — 순수 함수 `plan_changes` → 한 트랜잭션 `apply_plan`) · 조회(가시 프로젝트 밖은 전부 '없음') · 레퍼런스 번호 연결(지문=판 확인, 이름·경로 정확 일치=가능 연결). **파사드 별표 export 안 함** — `from app.repo import asset_registry` | `plan_changes`·`apply_plan`·`lookup_*`·`attach_reference_registry`·`backfill_reference_links` |
 
@@ -489,7 +491,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `update_activity.py` | 원격 생성 업데이트 체크포인트와 로컬 결과 쓰기 수(업데이트 중 거절은 `release_update.local_write`) | `release_update`·`gen_requests` |
 | `runtime_metrics.py` | 요청 지연·RSS(ctypes PSAPI)·디스크 TTL 스냅샷 | `main`·`db` |
 | `release_update.py`(약 900줄) | 작업자 릴리스 설치본 자기 업데이트 상태·게이트·실행기 + B안 후보 배포(`release_overview`·`promote_candidate` — `release.lock` 공유 모드 잠금·교체 실패 셋 분류) | `comfy`·`console`·`gen_requests`·`resolve_integration` |
-| `upload_limits.py` | 업로드 파일 수/크기/본문 상한 + ASGI 미들웨어 | `main`·`comfy`·`db_backup`·`db_transfer` |
+| `upload_limits.py` | 업로드 파일 수/크기/본문 상한 + ASGI 미들웨어(경로 안에 id 가 있는 입구는 앞·끝 조각 — comments-v2) | `main`·`comfy`·`db_backup`·`db_transfer` |
+| `comment_strokes.py` | 코멘트 그림 '획 목록 v1' 검증·정규화·내용 해시(프런트 `edit/drawing/strokes.ts` 와 같은 바이트) + 새 표 셋의 구조 검사(`require`·`StructureError`) — 앱의 다른 모듈을 import 하지 않는다(db 초기화도 쓴다) | `db`·`repo/comment_drawings`·`routers/generation` |
 
 **기타**
 
@@ -684,7 +687,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `FolderReviewCount.tsx`(18줄) | 폴더 검토 카운트 배지 | 1(`FolderTreeView` 전용 — 공용 폴더에 있지만 실제 공용 아님, §5-b) |
 | `ViewIcons.tsx`(99줄) | 리스트/그리드 SVG(기본 16px — 15px 는 선이 반 픽셀에 걸려 0.5px 아래였다) · 작업 탭 "보관 기록" 아이콘(`ArchiveHistoryIcon` — 상자+시곗바늘) · 꽉 채우기/정보(`FitIcon`·`InfoIcon` — 글자 ▣ⓘ 가 기준선 탓에 1~1.6px 아래라 SVG 로, 2026-09-22 실측) · 빼기·더하기(`StepIcon` — 캔버스 카드 배치 12px·줌 8px, 글자 −/+ 는 1.5~2.4px 아래) · 닫기(`CloseIcon` — `.assets-x` 12곳·씬 팝업, 글자 ✕·× 는 1.3~1.5px 아래) · 비교 창 크게/원래(`MaximizeIcon`, 글자 □ 3.4px 아래) | 23(`ViewControls`·`LibraryToolbar`·`CompareModal`·`VideoCompareModal`·`assets/AssetCell`·`assets/ResolveProjectBrowser`·`generation/GenerationThumbOverlay`·`scene/SceneVariantPopup`·`history/HistoryBoardNode`·`manage/WorkBoard`·`scene/cards/{Generation,Comfy,Render}Card`·닫기 단추 창 10곳 — `AdminWindow`·`InfoPopup`·`ManageAccount`·`MediaPreview`·`SettingsPanel`·`ShortcutsWindow`·`assets/MountManager`·`edit/PartialEditModal`·`settings/SettingsGroup`·`spotlight/ServerConsolePanel`) |
 
-#### 미디어 보기·비교·부분수정(최상위 + `compare/` + `edit/`, 9파일)
+#### 미디어 보기·비교·부분수정·코멘트 그림(최상위 + `compare/` + `edit/` + `comment/`, 13파일)
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
@@ -694,7 +697,11 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `VideoCompareModal.tsx`(251줄) | 생성정보 없는 미디어 N개 비교(+ 같은 A/B 와이프) | `VideoCompareModal` — 이름과 달리 이미지도 다룸(§5-b) |
 | `compare/CompareGenerationColumn.tsx`(209줄) | 비교 모달의 한 열(미디어·파라미터) | 〃 |
 | `compare/CompareSourceLightbox.tsx`(29줄) | 비교 모달 위 원본 라이트박스 | 〃 |
-| `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B) | `PartialEditModal` |
+| `edit/PartialEditModal.tsx`(966줄) | 부분 수정 캔버스(펜·도형·마스크·A/B). 그리기 입력·도구 캡슐은 `edit/drawing/*` 를 쓴다 | `PartialEditModal` |
+| `edit/drawing/strokes.ts` | 그리기 획 형식·그리기 함수(수정 창·코멘트 그림 공용) + 코멘트 그림 '획 목록 v1' 정규화·해시(서버 `services/comment_strokes.py` 와 같은 바이트 — `tests/drawingStrokes.test.ts` 가 서버 값으로 고정) | `drawItem`·`renderStrokes`·`toStrokesV1`·`drawingHash` |
+| `edit/drawing/useDrawingInput.ts` | 획·되돌리기·도구·색·굵기·글자 입력·포인터 처리 훅(수정 창에서 그대로 떼어 냄) | `useDrawingInput` |
+| `edit/drawing/DrawDock.tsx` | 도구 캡슐(펜·지우개·도형·글자·색·굵기·되돌리기)과 무대 위 글자 입력칸 | `DrawDock`·`DrawTextInput` |
+| `comment/CommentDrawModal.tsx` | 크게 보기 코멘트 모드 창 — 무대에 그려 코멘트에 붙인다(영상은 프레임마다 한 장·책갈피), 오른쪽 지난 코멘트. 그림이 있을 때만 comments-v2(같은 id 재시도), 글만이면 옛 경로 | `CommentDrawModal`(`MediaPreview` 와 `app/AppOverlays`(카드 C) 가 연다) |
 | `edit/EditRefPrompt.tsx`(136줄) | 수정 창 지시문 칸 — `@imageN` 을 레퍼런스 칸 썸네일 알약으로·`@` 목록·없는 번호 경고(알약은 `lib/promptEditor` 재사용, 내보내는 글은 `@imageN` 그대로) | `EditRefPrompt` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
@@ -1172,6 +1179,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
 | `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
+| `comment-draw.css` | 약 100 | 크게 보기 코멘트 그림 — C 단추·코멘트 모드 창(`.cm-*`)·지난 코멘트 그림 줄(`.cmt-att*`)·겹쳐 보기 띠. 수정 창 부품(`.pe-*`·`.sl-*`)은 그대로 빌린다 |
 | `edit-tab.css` | 188 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다). 생성물 카드만 라이브러리 카드의 클래스를 일부러 같이 쓴다(같은 모양) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
 
@@ -1338,6 +1346,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `tools/server_console/account_rows.py` | 관리 창 '계정 정리'의 글자(표 칸·판정·확인 창) — 화면과 떼어 시험한다. 호출은 `server_api.py` 의 `read_cleanup`·`delete_cleanup`·`block_account`, 판정은 서버가 한다 |
 | `tools/server_console/comfy_key.py` | 관리 창 'Comfy 키'의 글자(상태·확인 창 — 키 조각 없음). 호출은 `server_api.py` 의 `read_comfy_key`·`put_comfy_key`·`delete_comfy_key`(404 = 옛 서버 안내, 409 = 서버 사유) |
 | `tools/browser_measure/smoke.py` | 핵심 화면 41단계 시나리오(보기·검색·카드 단축키·미리보기·다중 선택·탭·도크·**처음 연 창의 Esc 1회**·분리 창). 종료 코드 0 통과 · 1 제품 확인 필요(실패·`/api/gen-requests` 요청 발생) · 2 시나리오만 낡음. `--shots`·`--verbose` 는 선택. 유료·외부 실행 단추는 누르지 않는다. → `walk.py` |
+| `tools/browser_measure/corner_scan.py` | 겹친 층의 **모서리 반경 어긋남** 찾기(2026-11-06) — 그림·영상 모서리와 같은 자리에 모서리가 있는 색 있는 층의 실제 반경(자기 반경·같은 모서리를 자르는 조상 틀)을 비교해 그늘이 빠진 초승달·삐진 색을 잡는다. 워크스페이스·크게 보기(+Ctrl)·정보 창·코멘트 그림 창·공유 탭·캔버스·어셋 창을 돌고, 그림 없는 화면은 '미검사'로 따로 적는다. 종료 코드 0 없음 · 1 있음 · 3 격리 서버 아님. 격리 서버·작업 폴더에만 쓴다(카드 두 장 공유·씬 불러오기·시험 어셋 폴더) → `cdp.py`, `walk.py` |
 | `tools/credit_round_rules.py` | 옛 반올림 크레딧 **판정 규칙 한 곳**. 판별·보정·서버 집계가 모두 `scan()` 만 쓴다 — 따로 들고 있으면 "판별엔 안 나왔는데 보정이 건드리는" 행이 생긴다. `alive`(생성물 생존)·`has_local`(로컬 값 유무)까지 담는다 |
 | `tools/credit_round_repair.py` | 되살리기 실행. **기본은 예행연습**이고 `--apply` 로만 쓴다. 잠금(`BEGIN IMMEDIATE`) 뒤 재판정·CAS UPDATE·같은 트랜잭션에서 재전송 표시. 서버 팩트는 직접 안 고친다(`manage_db._UPSERT_SET` 의 COALESCE 때문에 되돌아온다) → `backend/tests/test_credit_round_repair.py` |
 | `tools/credit_round_audit_server.py` | 서버에서 계정 DB 를 전부 훑어 **집계만** 찍는다(신원 가림). 같은 `scan()` 을 쓴다 |

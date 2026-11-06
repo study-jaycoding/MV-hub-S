@@ -747,6 +747,7 @@ export const api = {
     jsonFetch<{ restored: boolean }>(`/api/generations/${pathPart(id)}/restore`, { method: "POST" }),
 
   // 자동 태그(별도 네임스페이스) — 필터 사이드바 +버튼/×
+  autoTags: () => jsonFetch<{ auto_tags: string[] }>(`/api/auto-tags`),
   createAutoTag: (name: string) =>
     jsonFetch<{ ok: boolean; name: string }>(`/api/auto-tags`, {
       method: "POST",
@@ -815,6 +816,29 @@ export const api = {
       method: "POST",
       body: jsonBody({ text, parent_id: parent_id ?? null, private: isPrivate }),
     }),
+  // 크게 보기 코멘트 그림(설계 크게보기_코멘트그림 §10 C1·C5) — 그림이 있을 때만 이 경로(글만이면 위의 옛 경로 — 옛 서버도 받는다).
+  //  코멘트 id 는 화면이 정한다: 답을 못 받았으면 같은 id·같은 내용으로 다시 보내도 하나만 생긴다(같은 id·다른 내용 = 409).
+  addGenCommentV2: (
+    genId: string,
+    body: { id: string; text: string; parent_id: string | null; private: boolean; drawings: import("./types").CommentDrawingIn[] },
+  ) =>
+    jsonFetch<{ id: string; result: "created" | "replayed" | "present"; drawings: { id: string; content_hash: string }[] }>(
+      `/api/generations/${pathPart(genId)}/comments-v2`,
+      { method: "POST", body: jsonBody(body) },
+    ),
+  // 그림 1장의 획 — 브라우저 캐시에 두지 않는다(서버도 no-store)
+  commentDrawing: (commentId: string, drawingId: string, init?: RequestInit) =>
+    jsonFetch<import("./types").CommentDrawingBody>(
+      `/api/generation-comments/${pathPart(commentId)}/drawings/${pathPart(drawingId)}`,
+      { cache: "no-store", ...init },
+    ),
+  // 영상 그림의 미리보기(JPEG) — 없으면 404(정상 계약 — 화면은 획만 보인다)
+  commentDrawingThumb: async (commentId: string, drawingId: string, init?: RequestInit): Promise<Blob> => {
+    const url = `/api/generation-comments/${pathPart(commentId)}/drawings/${pathPart(drawingId)}/thumb`;
+    const res = await fetch(url, { cache: "no-store", ...init });
+    if (!res.ok) await throwHttpError(res, url);
+    return res.blob();
+  },
   editGenComment: (commentId: string, text: string) =>
     jsonFetch<{ ok: boolean }>(`/api/generation-comments/${pathPart(commentId)}`, {
       method: "PUT",

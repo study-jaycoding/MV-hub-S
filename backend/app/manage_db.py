@@ -133,6 +133,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         # 관리 요약(프로젝트 대시보드) 폴더 집계 — project_id+folder_path GROUP BY(2026-09-09)
         "CREATE INDEX IF NOT EXISTS idx_tgf_project_folder "
         "ON team_generation_fact(project_id, folder_path)",
+        # 작업 탭 활동 짝 찾기(task_activity_facts) — (생성자, local_gen_id) 로 바로 찾는다(2026-11-05).
+        # 임시 DB 측정: 한 사람 10만 건 468 → 56ms, 색인 만들기 약 75ms(10만 행), 쓰기 1,000건 +5ms.
+        # 일반 색인이라 schema_compat 기준선·이주 이름은 그대로 — 구버전으로 되돌려도 남지만 무해하다.
+        "CREATE INDEX IF NOT EXISTS idx_tgf_creator_local "
+        "ON team_generation_fact(creator_uid, local_gen_id)",
     ):
         conn.execute(statement)
 
@@ -438,8 +443,9 @@ def task_activity_facts(
                     found[row["id"]] = dict(row)
 
             refs = [*(content_refs or []), *found.values()]
+            wanted: dict[str, set[tuple[str, str]]] = {}
             for field, source_field in (("job_id", "job_id"), ("local_gen_id", "id")):
-                pairs = sorted({
+                wanted[field] = {
                     (str(row.get("creator_uid") or "").strip(), str(
                         row.get(field) if field == "job_id" else
                         row.get("local_gen_id") or row.get(source_field) or ""
@@ -448,17 +454,33 @@ def task_activity_facts(
                     if row.get("creator_uid") and (
                         row.get(field) or (field == "local_gen_id" and row.get(source_field))
                     )
-                })
-                for start in range(0, len(pairs), 400):
-                    batch = pairs[start:start + 400]
-                    values = ",".join("(?,?)" for _ in batch)
-                    for row in conn.execute(
-                        f"WITH wanted(uid, anchor) AS (VALUES {values}) "
-                        f"SELECT f.* FROM team_generation_fact f JOIN wanted w "
-                        f"ON f.creator_uid=w.uid AND f.{field}=w.anchor",
-                        [value for pair in batch for value in pair],
-                    ):
+                }
+            # (생성자, 앵커) 짝을 400개씩 VALUES 로 묶어 찾던 것은 플래너가 생성자 색인으로 새어 묶음마다
+            # 그 사람의 팩트를 다시 훑었다(2026-11-05 측정: 2만 건 28초). 생성자 전체 읽기도 프로젝트 밖
+            # 이력에 비례했다(Codex 리뷰 P2) → 앵커 색인으로 좁혀 읽는다: job = idx_tgf_job IN 목록,
+            # local = idx_tgf_creator_local(creator_uid=? AND local_gen_id IN). 짝은 파이썬에서 다시 맞춘다 — 같은 행 집합.
+            jobs = sorted({anchor for _, anchor in wanted["job_id"]})
+            for start in range(0, len(jobs), 400):
+                batch = jobs[start:start + 400]
+                for row in conn.execute(
+                    "SELECT * FROM team_generation_fact WHERE job_id IN ("
+                    + ",".join("?" * len(batch)) + ")", batch,
+                ):
+                    if (row["creator_uid"], row["job_id"]) in wanted["job_id"]:
                         found[row["id"]] = dict(row)
+            locals_by_uid: dict[str, list[str]] = {}
+            for uid, anchor in wanted["local_gen_id"]:
+                locals_by_uid.setdefault(uid, []).append(anchor)
+            for uid in sorted(locals_by_uid):
+                anchors = sorted(locals_by_uid[uid])
+                for start in range(0, len(anchors), 400):
+                    batch = anchors[start:start + 400]
+                    for row in conn.execute(
+                        "SELECT * FROM team_generation_fact WHERE creator_uid=? AND local_gen_id IN ("
+                        + ",".join("?" * len(batch)) + ")", [uid, *batch],
+                    ):
+                        if (row["creator_uid"], row["local_gen_id"]) in wanted["local_gen_id"]:
+                            found[row["id"]] = dict(row)
             return list(found.values())
         finally:
             conn.close()

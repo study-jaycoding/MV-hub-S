@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -133,6 +134,62 @@ def test_focus_targets_only_approved_windows(launcher, monkeypatch: pytest.Monke
     monkeypatch.setattr(launcher, "_any_profile_app_hwnds", lambda: ([], [111], True))
     assert launcher._focus_app_window() is False
     user32.SetForegroundWindow.assert_not_called()
+
+
+# 32비트 int 를 넘는 HWND. 이런 창은 실제로 없지만 Win32 는 0(없음)을 돌려줄 뿐 오류가 아니다.
+_BIG_HWND = 0x7FFF_0000_1234
+# 32비트 파이썬은 HWND 가 32비트라 큰 값이 잘린다 — 64비트에서만 뜻이 있다(Codex 리뷰 P2).
+_win32_only = pytest.mark.skipif(
+    sys.platform != "win32" or sys.maxsize <= 2**32, reason="64비트 Win32 user32 전용"
+)
+
+
+@_win32_only
+def test_big_hwnd_checks_answer_instead_of_raising(launcher):
+    """argtypes 없이 부르면 큰 핸들에서 ctypes.ArgumentError(OverflowError)가 난다(2026-11-05 실측)."""
+    user32 = launcher._user32()
+    for name in (
+        "IsWindow", "IsWindowVisible", "GetWindowThreadProcessId", "GetClassNameW", "GetWindowTextW",
+        "ShowWindow", "SetForegroundWindow", "PostMessageW", "SetPropW", "GetPropW",
+    ):
+        assert getattr(user32, name).argtypes[0] is launcher.wintypes.HWND, name
+    assert launcher._approved_alive(_BIG_HWND) is False
+    assert launcher._is_marked_approved(_BIG_HWND) is False
+    assert launcher._window_title(_BIG_HWND) == ""
+
+
+@_win32_only
+def test_enum_callback_keeps_app_window_with_big_hwnd(launcher, monkeypatch: pytest.MonkeyPatch):
+    """EnumWindows 콜백의 예외는 ctypes 가 삼키고 그 창만 조용히 빠진다 — 큰 핸들의 앱 창도 잡혀야 한다.
+    진짜 user32 함수로 인자 변환을 거친 뒤(옛 코드는 여기서 실패) 창이 있는 것처럼 답을 꾸민다."""
+    real_user32 = launcher._user32
+    pid = 4321
+
+    def through_real(real_fn, answer):
+        def call(*args):
+            real_fn(*args)  # 없는 핸들이라 진짜 답은 늘 0 — 변환만 확인한다
+            return answer(*args)
+        return call
+
+    def owner(_hwnd, pid_ref):
+        pid_ref._obj.value = pid
+
+    def class_name(_hwnd, buffer, _size):
+        buffer.value = launcher._APP_WINDOW_CLASS_PREFIX + "1"
+
+    def fake_user32():
+        user32 = real_user32()
+        user32.IsWindowVisible = through_real(user32.IsWindowVisible, lambda _h: True)
+        user32.GetWindowThreadProcessId = through_real(user32.GetWindowThreadProcessId, owner)
+        user32.GetClassNameW = through_real(user32.GetClassNameW, class_name)
+        user32.EnumWindows = lambda proc, _lparam: proc(_BIG_HWND, 0)  # 진짜 WNDENUMPROC 를 거쳐 넘긴다
+        return user32
+
+    swallowed: list = []
+    monkeypatch.setattr(sys, "unraisablehook", swallowed.append)
+    monkeypatch.setattr(launcher, "_user32", fake_user32)
+    assert launcher._visible_app_hwnds({pid}) == [_BIG_HWND]
+    assert swallowed == []
 
 
 def test_spawn_app_window_returns_the_process(launcher, monkeypatch: pytest.MonkeyPatch):
