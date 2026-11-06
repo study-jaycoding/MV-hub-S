@@ -116,7 +116,7 @@ export function FolderTreeView({
   scroll?: boolean;
   className?: string;
 }) {
-  // 설정의 필터 테마 — 기본(화살표 + 폴더) / v1(막대·선). 바꾸면 열린 트리가 바로 다시 그린다.
+  // 설정의 필터 테마 — 기본(폴더 아이콘) / v1(막대·선). 바꾸면 열린 트리가 바로 다시 그린다.
   const theme = useFolderTreeTheme();
   if (!nodes.length) return null;
   const treeLevels = Math.max(...nodes.map(levelsBelow)) + 1;
@@ -207,8 +207,8 @@ function FolderTreeRow({
   const holds = (path?: string) => !open && under(path);
   const barTone = tone ?? (holds(viewedPath) ? viewedTone : holds(selectedPath) ? selectedTone : holds(seePath) ? "see" : open ? "gen" : undefined);
   const barCount = Math.min(levelsBelow(node), MAX_BARS);
-  // 기본 테마 = 옛 기본 사이드바(df394b23)의 앞쪽: ▸/▾ 화살표 + 폴더 아이콘. 막대·연결선은 v1 에만(Jay 2026-11-04).
-  //  들여쓰기는 6+깊이×10 — 옛 값 ×14 는 처음 폭 200px 에서 깊은 줄 이름이 서너 글자로 잘려 v1 과 같은 단계 폭으로 줄였다(Jay ① 안).
+  // 기본 테마 = 줄 앞이 폴더 아이콘 하나 — 하위 있는 폴더는 아이콘을 누르면 펴고 접는다(옛 ▸/▾ 칸을 대신, Jay 2026-11-06 H1). 막대·연결선은 v1 에만.
+  //  들여쓰기는 v1 과 같은 8+깊이×10 — 옛 값 ×14 는 처음 폭 200px 에서 깊은 줄 이름이 서너 글자로 잘려 단계 폭을 10 으로 줄였다(Jay ① 안).
   const base = theme === "base";
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
@@ -261,7 +261,7 @@ function FolderTreeRow({
           (dropOver ? " drop-over" : "")
         }
         // 들여쓰기는 인라인으로 — 줄이 button 이라 담기 메뉴 같은 곳의 'button' 규칙이 padding 을 덮어쓴다.
-        style={{ "--tree-depth": depth, paddingLeft: base ? 6 + depth * 10 : 8 + depth * 10 } as CSSProperties}
+        style={{ "--tree-depth": depth, paddingLeft: 8 + depth * 10 } as CSSProperties}
         data-resolve-viewed={viewed || undefined}
         title={
           (node.virtual
@@ -343,21 +343,18 @@ function FolderTreeRow({
         {...dropProps}
       >
         {base ? (
-          <>
-            {/* 화살표 색은 v1 막대와 같은 규칙(barTone) — 펼침 라임, 고른 줄을 품고 접히면 그 색. 펴고 접기가 없는 트리에서는 숨는다(옛 모양). */}
-            <span
-              className={"folder-tree-caret" + (canToggle ? " toggle" : " hidden") + (canToggle && barTone ? ` st-${barTone}` : "")}
-              title={canToggle ? (open ? "접기" : "펴기") : undefined}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (canToggle) onToggle?.(node.path);
-              }}
-              onDoubleClick={(e) => e.stopPropagation()} // 빠른 두 번 누름은 이미 두 번 토글했다 — 줄의 더블클릭까지 받으면 세 번이 된다
-            >
-              {canToggle ? (open ? "▾" : "▸") : ""}
-            </span>
+          // 폴더 아이콘이 펴고 접기 자리다(옛 ▸/▾). 펼 것이 없는 줄·펴고 접기가 없는 트리는 누름을 줄에 넘겨 그 폴더를 고른다.
+          <span
+            className={"folder-tree-fold" + (canToggle ? " toggle" : "")}
+            title={canToggle ? (open ? "접기" : "펴기") : undefined}
+            onClick={canToggle ? (e) => {
+              e.stopPropagation();
+              onToggle?.(node.path);
+            } : undefined}
+            onDoubleClick={canToggle ? (e) => e.stopPropagation() : undefined} // 빠른 두 번 누름은 이미 두 번 토글했다 — 줄의 더블클릭까지 받으면 세 번이 된다
+          >
             <span className="folder-tree-icon" />
-          </>
+          </span>
         ) : hasChildren ? (
           <span
             className={"folder-tree-slot folder-tree-bars" + (canToggle ? " toggle" : "") + (barTone ? ` st-${barTone}` : "")}

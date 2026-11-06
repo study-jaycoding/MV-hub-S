@@ -365,7 +365,7 @@ it("다빈치가 펴 준 폴더·프로젝트는 잠시뿐이다 — 옮기거�
   />));
   const names = () => [...host.querySelectorAll(".folder-tree-name")].map((el) => el.textContent);
   const bar = (name: string) => [...host.querySelectorAll(".folder-tree-row")]
-    .find((row) => row.querySelector(".folder-tree-name")?.textContent === name)!.querySelector<HTMLElement>(".folder-tree-caret")!; // 필터 테마 기본의 ▸/▾
+    .find((row) => row.querySelector(".folder-tree-name")?.textContent === name)!.querySelector<HTMLElement>(".folder-tree-fold")!; // 필터 테마 기본의 폴더 아이콘(펴고 접기)
   const saved = () => [...loadProjectFolderExpansion()["view-project"]];
   const collapsedProjects = () => JSON.parse(localStorage.getItem("ch.collapsedProjects")!);
 

@@ -824,7 +824,7 @@ const EN: Record<string, string> = {
   "확인하는 중": "Checking",
   "사이드바 폴더 트리 모양을 고릅니다.": "Choose how the sidebar folder tree looks.",
   "기본": "Default",
-  "화살표 + 폴더 아이콘": "Arrows + folder icons",
+  "폴더 아이콘": "Folder icons",
   "막대·선": "Bars and lines",
   "ON은 최종 카드에 마우스를 올릴 때 지나가는 빛과 '생성 중' 표시의 움직임을 재생하고, OFF는 이 움직임을 멈춥니다.":
     "ON plays the sheen that passes when you hover a final card and the motion of the 'generating' indicators; OFF stops them.",

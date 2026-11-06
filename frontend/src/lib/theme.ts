@@ -138,11 +138,11 @@ export function saveReduceMotion(on: boolean): void {
 }
 
 // ── 필터 테마(폴더 트리 모양) ────────────────────────────────────────────
-// 기본 = 화살표 + 폴더 아이콘(옛 기본 사이드바 df394b23 의 앞쪽), v1 = 막대·선(2026-10-31 트리). 처음 값 기본(Jay 2026-11-04).
+// 기본 = 폴더 아이콘(누르면 펴고 접기 — 옛 ▸/▾ 를 대신, Jay 2026-11-06), v1 = 막대·선(2026-10-31 트리). 처음 값 기본(Jay 2026-11-04).
 // 이 PC 의 화면 설정이라 강조색·모션처럼 밑줄 키 — 계정 전환 정리(personalSettings)는 `ch.` 로 시작하는 키를 지운다.
 export type FolderTreeTheme = "base" | "v1";
 export const FOLDER_TREE_THEMES: { key: FolderTreeTheme; label: string; hint: string }[] = [
-  { key: "base", label: "기본", hint: "화살표 + 폴더 아이콘" },
+  { key: "base", label: "기본", hint: "폴더 아이콘" },
   { key: "v1", label: "v1", hint: "막대·선" },
 ];
 const TREE_THEME_KEY = "ch_folder_tree_theme";
