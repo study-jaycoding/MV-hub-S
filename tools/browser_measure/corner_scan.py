@@ -114,6 +114,20 @@ async def _api(pg: Page, method: str, url: str, body=None):
         let j = null; try {{ j = await r.json(); }} catch {{}} return {{status: r.status, body: j}}; }})()""")
 
 
+class IsolationRefused(RuntimeError):
+    """격리 S 가 아니라 아무것도 쓰지 않고 멈춘다."""
+
+
+def isolation_refusal(me: dict, health: dict, email: str) -> str | None:
+    """첫 쓰기 전에 — 이 서버가 그 작업 폴더의 격리 S 인가(servers.py 가 만든 일회용 관리자로 로그인됐고 CLI 가 꺼져 있다).
+    자격 파일만 남은 채 다른 포트(인증이 꺼진 로컬 서버 등)를 가리키면 거부한다(Codex 묶음 리뷰 11-06). 이유 글, 통과면 None."""
+    if me.get("status") != 200 or (me.get("body") or {}).get("email") != email:
+        return "로그인한 계정이 이 작업 폴더의 일회용 관리자가 아니다(격리 S 가 아니거나 로그인 실패)"
+    if (health.get("body") or {}).get("cli_available") is not False:
+        return "서버의 CLI 가 꺼져 있지 않다(격리 표시가 없다)"
+    return None
+
+
 def _asset_folder(work: Path) -> Path:
     """S 의 그림 몇 장을 작업 폴더 안 시험 폴더로 복사한다(원본은 읽기만)."""
     dst = work / "corner_assets"
@@ -147,6 +161,9 @@ async def run(base: str, work: Path, extra_css: str) -> dict:
 
         await login(pg, base, creds)
         await asyncio.sleep(4)
+        refusal = isolation_refusal(await _api(pg, "GET", "/api/auth/me"), await _api(pg, "GET", "/api/health"), creds["email"])
+        if refusal:
+            raise IsolationRefused(refusal)  # 아래의 공유·씬·어셋 폴더 등록보다 먼저
         await css()
         card = "document.querySelector('.gen-cell .card')"
         for i in range(2):  # 준비 1 — 공유 탭이 비지 않게 앞 카드 두 장 공유(격리 서버)
@@ -258,7 +275,11 @@ def main() -> int:
     if args.server_port == 8010 or not (args.work / "S" / "creds.json").is_file():
         print("격리 S 서버(servers.py start 의 작업 폴더)가 아니라 시작하지 않는다", file=sys.stderr)
         return 3
-    report = asyncio.run(run(f"http://127.0.0.1:{args.server_port}/", args.work, args.css.read_text(encoding="utf-8") if args.css else ""))
+    try:
+        report = asyncio.run(run(f"http://127.0.0.1:{args.server_port}/", args.work, args.css.read_text(encoding="utf-8") if args.css else ""))
+    except IsolationRefused as exc:
+        print(f"격리 S 서버가 아니라 아무것도 쓰지 않고 멈춘다 — {exc}", file=sys.stderr)
+        return 3
     (args.work / "results_corner.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     bad = [(name, f) for name, r in report["states"].items() for f in r["findings"]]
     empty = [name for name, r in report["states"].items() if not r["media"]]
