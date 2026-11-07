@@ -267,32 +267,35 @@ def _save_canvas_run(run: dict, identity: _ComfyIdentity, request: Optional[Requ
     canvas_runs.set_state(run["attempt_id"], "saving")
     newly_saved = 0
     try:
-        for item in run["outputs"]:
-            if item["kind"] == "text" or item.get("generation_id") or item["state"] != "ready":
-                continue
-            output = item["metadata"]
-            url = "/media/" + output["rel"]
-            _preflight_local_output(url, identity.scope)
-            saved = comfy_save.save_output(
-                url=url, kind=item["kind"], record=record, output=output,
-                creator_uid=identity.creator_uid, prompt="Comfy 출력", params={}, references=[],
-                project_id=pid, folder_path=None, can_view_source=can_view_source,
-                archive_output=lambda url, kind, project, expected: _archive_output(
-                    url, kind, identity, project_id=project,
-                    server_origin=record.get("asset_server_origin", ""), expected=expected),
-                canvas_attempt_id=run["attempt_id"], canvas_output_key=item["output_key"],
-            )
-            if not saved["existed"]:
-                newly_saved += 1
-            elapsed = record.get("elapsed_seconds")
-            if elapsed is not None and not saved["existed"]:
-                _pm(lambda _m, g=saved["generation_id"]: _m.record_elapsed(g, elapsed))
+        try:
+            for item in run["outputs"]:
+                if item["kind"] == "text" or item.get("generation_id") or item["state"] != "ready":
+                    continue
+                output = item["metadata"]
+                url = "/media/" + output["rel"]
+                _preflight_local_output(url, identity.scope)
+                saved = comfy_save.save_output(
+                    url=url, kind=item["kind"], record=record, output=output,
+                    creator_uid=identity.creator_uid, prompt="Comfy 출력", params={}, references=[],
+                    project_id=pid, folder_path=None, can_view_source=can_view_source,
+                    archive_output=lambda url, kind, project, expected: _archive_output(
+                        url, kind, identity, project_id=project,
+                        server_origin=record.get("asset_server_origin", ""), expected=expected),
+                    canvas_attempt_id=run["attempt_id"], canvas_output_key=item["output_key"],
+                )
+                if not saved["existed"]:
+                    newly_saved += 1
+                elapsed = record.get("elapsed_seconds")
+                if elapsed is not None and not saved["existed"]:
+                    _pm(lambda _m, g=saved["generation_id"]: _m.record_elapsed(g, elapsed))
+        finally:
+            settled = canvas_runs.settle(run["attempt_id"])
+            _ack_canvas_journal(settled, identity)
     finally:
-        settled = canvas_runs.settle(run["attempt_id"])
-        _ack_canvas_journal(settled, identity)
         if newly_saved:
-            # 뒤쪽 스레드 저장은 HTTP 알림이 없다 — 저장이 스스로 라이브러리 신호를 낸다(일부 저장 뒤 예외로 끝나도,
-            # 2026-11-07 2-15). 범위는 realtime_scope 와 같은 규칙(AUTH on = 그 계정 이메일, off = 전체).
+            # 뒤쪽 스레드 저장은 HTTP 알림이 없다 — 저장이 스스로 라이브러리 신호를 낸다(2026-11-07 2-15). 일부 저장 뒤
+            # 예외로 끝나도, 정리(settle·ack)가 실패해도 알린다 — 다시 시도하면 이미 저장된 출력이라 신호를 낼 기회가 없다.
+            # 범위는 realtime_scope 와 같은 규칙(AUTH on = 그 계정 이메일, off = 전체).
             manager.notify_mutation_threadsafe(f"acct:{identity.owner}" if identity.auth_enabled else None)
     return settled
 

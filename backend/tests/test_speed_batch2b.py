@@ -207,6 +207,25 @@ def test_forward_relays_a_304_with_its_etag():
     assert response.body == b""
 
 
+def test_forward_read_failure_does_not_leave_gzip_headers_on_the_502():
+    class Broken(_Upstream):
+        def read(self):
+            raise TimeoutError("read timed out")
+
+    def opener(req, timeout):
+        return Broken(200, b"", {"Content-Type": "application/json", "Content-Encoding": "gzip", "ETag": 'W/"t1"'})
+
+    with (mock.patch.object(_proxy, "base_url", return_value="http://server.test"),
+          mock.patch.object(_proxy, "token", return_value=None),
+          mock.patch.object(_proxy, "_open", side_effect=opener)):
+        response = asyncio.run(_proxy._forward(_request("/api/manage/projects/p1/tasks",
+                                                        headers=[("Accept-Encoding", "gzip")])))
+    assert response.status_code == 502
+    assert "content-encoding" not in response.headers  # 평문 오류 본문을 브라우저가 풀 수 있어야 한다
+    assert "etag" not in response.headers
+    assert json.loads(response.body)["detail"].startswith("공유 서버 연결 실패")
+
+
 def test_forward_without_those_headers_sends_none():
     captured = {}
 
@@ -582,6 +601,18 @@ def test_a_partial_save_that_ends_in_an_error_still_notifies(canvas_save, monkey
     canvas_save.assert_called_once_with("acct:a@x")
 
 
+def test_a_failed_cleanup_after_a_new_save_still_notifies(canvas_save, monkeypatch):
+    monkeypatch.setattr(comfy.comfy_save, "save_output", lambda **_k: {"existed": False, "generation_id": "g1"})
+
+    def settle_fails(*_a):
+        raise OSError("journal locked")
+
+    monkeypatch.setattr(comfy.canvas_runs, "settle", settle_fails)
+    with pytest.raises(OSError):
+        comfy._save_canvas_run(_canvas_run(["comfy/a.png"]), _identity(), None)
+    canvas_save.assert_called_once_with("acct:a@x")  # 다시 시도하면 '이미 저장됨'이라 신호를 낼 기회가 없다
+
+
 # ── 2-4 바뀐 것 없는 계정 보고 ────────────────────────────────────────────────
 
 WS = {"id": "ws-1", "name": "Team", "plan_type": "team", "credits": 100, "user_role": "member", "is_selected": True}
@@ -628,6 +659,26 @@ def test_a_new_project_enrollment_is_a_change(account_db):
 def test_an_old_style_report_compares_the_raw_text(account_db):
     assert identity.record_account_status("a@x", {"credits": 5}) is True
     assert identity.record_account_status("a@x", {"credits": 5}) is False
+
+
+def test_an_old_style_report_compares_inside_the_write_lock(account_db, tmp_path):
+    """다른 쓰기가 끼어든 뒤의 같은 원문 재저장은 '바뀜'이다 — 비교와 저장이 한 잠금 안이어야 그 쓰기를 본다."""
+    import sqlite3
+
+    x = {"credits": 5}
+    identity.record_account_status("a@x", x)
+    other = sqlite3.connect(str(tmp_path / "content.db"), isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")  # 다른 저장이 잠금을 쥔 채 Y 를 쓰는 중
+    other.execute("UPDATE app_setting SET value=? WHERE key='hf_status:a@x'", (json.dumps({"credits": 9}),))
+    result = {}
+    worker = threading.Thread(target=lambda: result.setdefault("changed", identity.record_account_status("a@x", x)))
+    worker.start()
+    worker.join(0.5)  # 잠금에 막혀 기다린다(잠금 없이 읽으면 이미 옛 X 를 읽었다)
+    other.execute("COMMIT")
+    other.close()
+    worker.join(10)
+    assert result["changed"] is True  # Y → X 로 되돌렸다
+    assert json.loads(repo.get_setting("hf_status:a@x")) == x
 
 
 def _report_route(monkeypatch, status):

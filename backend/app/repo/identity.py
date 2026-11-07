@@ -970,9 +970,16 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
         # 옛/불완전 보고 — raw 만 저장(기존 멤버십을 전부 unavailable로 만들지 않는다).
-        before_raw = get_setting(f"hf_status:{email}")
-        set_setting(f"hf_status:{email}", raw_payload)
-        return before_raw != raw_payload
+        # 비교와 저장을 한 쓰기 잠금 안에서 — 따로 하면 그 사이 끼어든 다른 저장을 '바뀜 없음'으로 오판한다.
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM app_setting WHERE key=?", (f"hf_status:{email}",)).fetchone()
+            conn.execute(
+                "INSERT INTO app_setting(key, value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (f"hf_status:{email}", raw_payload),
+            )
+            return (row["value"] if row else None) != raw_payload
     from .project_membership import enroll_uid_into_workspace_projects
 
     reported = sorted({

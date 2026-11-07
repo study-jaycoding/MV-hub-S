@@ -753,15 +753,19 @@ async def _forward(request: Request) -> Response:
                 req.add_header(name, value)
         if tok:
             req.add_header("Authorization", f"Bearer {tok}")
+        # 머리글은 본문을 다 읽은 뒤에만 옮긴다 — 읽다 실패해 평문 502 를 만들 때 gzip 머리글이 남으면 브라우저가 못 푼다.
         try:
             with _open(req, timeout=120) as r:
+                data = r.read()
                 _relay(r.headers)
-                return r.status, r.read(), (r.headers.get_content_type() or "application/json")
+                return r.status, data, (r.headers.get_content_type() or "application/json")
         except urllib.error.HTTPError as e:
-            _relay(e.headers)  # 304 도 여기로 온다 — ETag 를 같이 돌려줘야 브라우저가 캐시를 쓴다
             ct = e.headers.get_content_type() if e.headers else "application/json"
-            return e.code, e.read(), (ct or "application/json")
+            data = e.read()
+            _relay(e.headers)  # 304 도 여기로 온다 — ETag 를 같이 돌려줘야 브라우저가 캐시를 쓴다
+            return e.code, data, (ct or "application/json")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
+            relayed.clear()
             payload = json.dumps({"detail": f"공유 서버 연결 실패: {e}"}).encode()
             return 502, payload, "application/json"
 
