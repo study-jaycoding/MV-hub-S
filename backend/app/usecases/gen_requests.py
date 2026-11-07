@@ -904,9 +904,11 @@ async def anchor_request(
 @_account_scoped("request_row", from_request_row=True)
 async def reconcile_request(
     request_row: dict, job: dict, force_fail_reason: str | None, account_uid: str | None,
+    notes: dict | None = None,
 ) -> dict:
+    """notes: 라우터가 넘긴 빈 dict — 처리 중 반복 보고가 화면 값을 안 바꿨으면 ``library_unchanged`` 를 적는다(응답 모양은 그대로)."""
     with local_write():
-        result = await _reconcile_request(request_row, job, force_fail_reason, account_uid)
+        result = await _reconcile_request(request_row, job, force_fail_reason, account_uid, notes)
         await _record_result_evidence(request_row, job)
         return result
 
@@ -916,6 +918,7 @@ async def _reconcile_request(
     job: dict,
     force_fail_reason: str | None,
     account_uid: str | None,
+    notes: dict | None = None,
 ) -> dict:
     """에이전트가 재조회한 권위 상태를 로컬 placeholder에 보정한다."""
     gen_id = request_row["gen_id"]
@@ -1102,15 +1105,19 @@ async def _reconcile_request(
             note = f"{repo.VERIFYING_NOTE} (알 수 없는 상태: {raw_provider_status or '없음'})"
         elif provider_kind == "action_required":
             note = f"조치 필요 — Higgsfield 상태: {raw_provider_status}"
-        await _sync_io(
+        # next_seconds = 에이전트의 정상 확인 간격(agent_push `_DIRECT_CHECK_INTERVAL_SECONDS`) — 툴팁의 '다음 확인' 이 실제 예약과 같게
+        check = await _sync_io(
             repo.record_request_check,
             request_row["id"],
             raw_provider_status,
             phase=phase,
             error=note,
-            next_seconds=30,
+            next_seconds=15,
         )
-        await _sync_io(repo.set_status, gen_id, "running", note)
+        card = await _sync_io(repo.set_status, gen_id, "running", note)
+        if notes is not None:
+            # 둘 다 '대상이 있고 같은 값' 일 때만 — 종결 보호로 못 쓴(not_applied) 늦은 보고는 synced 로 화면을 DB 값에 되돌린다
+            notes["library_unchanged"] = check == "same" and card == "same"
         if (
             provider_kind in ("unknown", "action_required")
             and (

@@ -65,6 +65,7 @@ from .mutation_notify import (
     MUTATION_ID_HEADER,
     notification_domains,
     parse_mutation_origin,
+    without_unchanged_library,
 )
 from .static_files import ImmutableStaticFiles
 from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
@@ -978,7 +979,10 @@ async def mutation_notify(request: Request, call_next):
     response = await call_next(request)
     try:
         path = request.url.path
-        domains = notification_domains(request.method, path, response.status_code)
+        domains = without_unchanged_library(
+            notification_domains(request.method, path, response.status_code),
+            bool(getattr(request.state, "library_unchanged", False)),
+        )
         if domains:
             from .deps import realtime_scope
 

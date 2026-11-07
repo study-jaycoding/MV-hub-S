@@ -1216,8 +1216,19 @@ async def _execute(ctx, plan_id):
     return _public_plan(await asyncio.to_thread(store.get_plan, ctx.client, plan_id))
 
 
+# 라이브러리를 바꾸지 않는 MCP 동작(조회·대기·미리보기·견적·계획 조회) — 200 POST 라 경로만으로는 '라이브러리 바뀜' 이 되어
+# Claude·Codex 가 부를 때마다 모든 창이 목록 전체를 다시 읽었다. execute_generation_plan 은 내부 create_gen_request 라
+# 이 신호가 새 카드를 알리는 유일한 계기다 — 넣지 않는다. 모르는 메서드도 지금처럼 신호.
+_LIBRARY_READ_METHODS = frozenset({
+    "read_context", "get_result", "get_generation", "wait_results", "show_results",
+    "estimate_plan", "get_plan", "request_execution",
+})
+
+
 @router.post("/client/action")
 async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
+    if body.method in _LIBRARY_READ_METHODS:
+        ctx.request.state.library_unchanged = True
     try:
         if body.method == "read_context":
             return await _read(ctx, ReadIn.model_validate(body.args))

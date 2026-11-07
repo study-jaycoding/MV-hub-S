@@ -119,6 +119,14 @@ def notification_domains(method: str, path: str, status_code: int) -> tuple[str,
     return tuple(domains)
 
 
+def without_unchanged_library(domains: tuple[str, ...], library_unchanged: bool) -> tuple[str, ...]:
+    """처리 코드가 '보이는 라이브러리 값이 그대로'(``request.state.library_unchanged``)라고 표시한 쓰기 — synced 만 뺀다.
+
+    경로로는 같은 경로의 바뀜/안 바뀜을 못 가른다(에이전트의 처리 중 반복 보고·MCP 읽기 동작). 다른 영역은 그대로 둔다.
+    """
+    return tuple(domain for domain in domains if domain != DOMAIN_LIBRARY) if library_unchanged else domains
+
+
 def parse_mutation_origin(
     client_id: Optional[str], mutation_id: Optional[str]
 ) -> Optional[MutationOrigin]:

@@ -926,10 +926,14 @@ async def reconcile_gen_request(
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
+    notes: dict = {}
     try:
-        result = await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc))
+        result = await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc), notes=notes)
     except UpdateActivityBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if notes.get("library_unchanged"):
+        # 확인 시각만 바뀐 처리 중 반복 보고 — 모든 창이 목록 전체를 다시 읽지 않게(main.mutation_notify 가 synced 만 뺀다)
+        request.state.library_unchanged = True
     if result.get("applied"):
         schedule_telemetry_drain()
     return result

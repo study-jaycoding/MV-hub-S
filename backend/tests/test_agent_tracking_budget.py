@@ -511,17 +511,19 @@ class WholePassSharesOneBudgetTests(unittest.TestCase):
             seen["direct"] = budget_end
             return 0
 
-        def grab_probe(server, token, cli, budget_end=None, account_email=None):
+        def grab_probe(server, token, cli, budget_end=None, account_email=None, prefetched=None):
             seen["recovery"] = budget_end
             seen["recovery_email"] = account_email
             return 0
 
-        def grab_reconcile(server, token, cli, email=None, skip_job_ids=None, budget_end=None):
+        def grab_reconcile(server, token, cli, email=None, skip_job_ids=None, budget_end=None, prefetched=None):
             seen["reconcile"] = budget_end
 
         with (
             patch.object(self.agent.time, "monotonic", self.clock),
             patch.object(self.agent, "_cycle_account_email", return_value="me@example.com"),
+            # 추적 중인 패스 — 쉬는 바퀴 판정(상태 DB·후보 HTTP 선조회)은 이 시험의 대상이 아니다
+            patch.object(self.agent, "_state_has_work", return_value=True),
             patch.object(self.agent, "_runtime_active", return_value={"job-1": {}}),
             patch.object(self.agent, "_poll_active_jobs", side_effect=grab_poll),
             patch.object(self.agent, "recovery_probe_pass", side_effect=grab_probe),

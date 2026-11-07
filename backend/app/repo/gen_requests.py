@@ -1770,18 +1770,28 @@ def record_request_check(
     error: Optional[str] = None,
     check_failed: bool = False,
     next_seconds: int = 30,
-) -> bool:
-    """권위 조회 결과와 다음 확인 시각을 기록한다. terminal 요청은 절대 되돌리지 않는다."""
+) -> str:
+    """권위 조회 결과와 다음 확인 시각을 기록한다. terminal 요청은 절대 되돌리지 않는다.
+
+    반환(같은 트랜잭션의 판정 — 속도 점검 2-A): ``changed`` 단계·공급자 상태·사유 중 하나가 바뀜 ·
+    ``same`` 셋이 그대로(확인 시각만 갱신) · ``not_applied`` 행 없음 또는 종결 요청이라 쓰지 않음."""
     if phase not in {"tracking", "verifying", "blocked"}:
         phase = "verifying"
     with get_connection() as conn:
-        cur = conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT status, provider_status, error FROM gen_request WHERE id=?", (rid,)
+        ).fetchone()
+        if row is None or row["status"] in ("done", "failed", "canceled"):
+            return "not_applied"
+        conn.execute(
             "UPDATE gen_request SET status=?, provider_status=?, error=?, "
             "last_checked_at=datetime('now'), "
             "next_check_at=datetime('now', ?), "
             "check_failures=CASE WHEN ? THEN check_failures+1 ELSE 0 END, "
             "lease_expires_at=datetime('now','+5 minutes'), updated_at=datetime('now') "
-            "WHERE id=? AND status NOT IN ('done','failed','canceled')",
+            "WHERE id=?",
             (phase, provider_status, error, f"+{max(1, next_seconds)} seconds", int(check_failed), rid),
         )
-    return cur.rowcount > 0
+        same = (row["status"], row["provider_status"], row["error"]) == (phase, provider_status, error)
+    return "same" if same else "changed"

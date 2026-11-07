@@ -1504,8 +1504,10 @@ def recovery_probe_pass(
     cli: str,
     budget_end: float | None = None,
     account_email: str | None = None,
+    prefetched: tuple | None = None,
 ) -> int:
     """모호한 제출을 최신 목록에서 읽기만 해 찾고, 유일 후보만 기존 placeholder에 앵커한다.
+    prefetched: 같은 패스의 쉬는 판정이 이미 받은 `_list_recovery_probes` 응답 — 다시 묻지 않는다.
 
     ★예산이 없어도 **후보 조회와 첫 1건의 처리 시도**는 한다(2026-09-13). 종전엔 진입부에서
      통째로 돌아갔는데 그것이 **회귀**였다 — `tracking_pass` 의 직접 확인은 조회 하나에 15초를
@@ -1534,7 +1536,7 @@ def recovery_probe_pass(
      · 진행 보장 + '시작한 호출은 정상 timeout' 계약 때문에 **롱폴 주기(약 25초)는 보장되지
        않는다**. 최악은 CLI 120초 + 보고 60초가 그 위에 붙는다.
     """
-    status, data = _list_recovery_probes(server, token)
+    status, data = prefetched or _list_recovery_probes(server, token)
     requests = data.get("requests") if status == 200 and isinstance(data, dict) else None
     if not isinstance(requests, list) or not requests:
         return 0
@@ -1660,11 +1662,14 @@ def recovery_probe_pass(
     return anchored
 
 
-def _wait_event(server: str, token: str, timeout: int = 35):
+def _wait_event(server: str, token: str, timeout: int = 35, wait_seconds: int | None = None):
     """롱폴 — 서버가 내 계정 이벤트(생성요청/동기화)가 생길 때까지 잡고 있다 반환.
     반환: reason('gen-request'|'sync') | None(타임아웃=idle 또는 일시 네트워크 오류 → 재대기).
-    30초 고정 폴링을 대체 — 평소엔 여기서 조용히 대기하다 액션 순간 즉시 깨어난다."""
-    req = urllib.request.Request(f"{server}/api/agent/wait", method="GET")
+    30초 고정 폴링을 대체 — 평소엔 여기서 조용히 대기하다 액션 순간 즉시 깨어난다.
+    wait_seconds: 허브가 붙잡을 시간(1~25) — 추적 중인 작업의 다음 확인 시각까지만. timeout(소켓 시한)은 그대로 둔다:
+    인자를 모르는 옛 허브가 25초 붙잡아도 끊지 않게."""
+    url = f"{server}/api/agent/wait" + (f"?timeout={int(wait_seconds)}" if wait_seconds else "")
+    req = urllib.request.Request(url, method="GET")
     req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -3518,7 +3523,11 @@ _MAX_IN_FLIGHT_JOBS = max(
     _env_int("MVHUB_CLI_MAX_IN_FLIGHT", 64, 1, 256),
 )
 _JOB_POLL_INTERVAL_SECONDS = 5.0
-_DIRECT_CHECK_INTERVAL_SECONDS = 30.0
+# 처리 중 작업의 다음 직접 확인(2026-11-07 속도 점검 2-A: 30→15). 대기 바퀴도 이 시각에 맞춰 깨어난다(`_next_wait_seconds`) —
+# 종전엔 30초 예약이 25초 롱폴 바퀴를 건너뛰어 실제로는 약 50초마다 확인했고 끝난 생성이 그만큼 늦게 떴다.
+_DIRECT_CHECK_INTERVAL_SECONDS = 15.0
+# 조회·보고 실패의 재시도 간격 바탕(30·60·120초) — 정상 간격과 따로 둔다(장애 중 재시도까지 늘리지 않게, Codex).
+_DIRECT_CHECK_RETRY_SECONDS = 30.0
 # 한 추적 패스가 **새 확인을 시작**하는 데 쓰는 시간 상한(2026-09-12). 종전엔 고정 8건이라
 # 의도한 확인 간격(_DIRECT_CHECK_INTERVAL_SECONDS=30초)을 지킬 수 없었다 — 추적이
 # 롱폴 사이클당 1회(약 25초)만 돌아서, 64건이면 한 바퀴에 ceil(64/8)×25초 ≈ 200초가 걸렸다.
@@ -3856,7 +3865,7 @@ def _poll_active_jobs(
         )
         if not (isinstance(full, dict) and full.get("id")):
             tracked["check_failures"] = int(tracked.get("check_failures", 0)) + 1
-            delay = min(120.0, _DIRECT_CHECK_INTERVAL_SECONDS * (2 ** min(2, tracked["check_failures"] - 1)))
+            delay = min(120.0, _DIRECT_CHECK_RETRY_SECONDS * (2 ** min(2, tracked["check_failures"] - 1)))
             tracked["next_direct_check"] = time.monotonic() + delay
             if account_email is not None and not persist_failed:
                 _tracked_save_safe(server, account_email, tracked)
@@ -3885,7 +3894,7 @@ def _poll_active_jobs(
             finished.append(job_id)
         else:
             tracked["next_direct_check"] = time.monotonic() + (
-                15.0 if kind == "success" else _DIRECT_CHECK_INTERVAL_SECONDS
+                15.0 if kind == "success" else _DIRECT_CHECK_RETRY_SECONDS
             )
             if account_email is not None and not persist_failed:
                 _tracked_save_safe(server, account_email, tracked)
@@ -4435,10 +4444,12 @@ def reconcile_pass(
     account_email: str | None = None,
     skip_job_ids: set[str] | None = None,
     budget_end: float | None = None,
+    prefetched: tuple | None = None,
 ) -> None:
     """서버가 준 '확인중/유실된 running'(job_id 보유) 로컬 카드를, 내 CLI 계정으로 generate get 해
     실제 상태로 보정 push 한다 — 우리 앱은 '실패/생성중'인데 힉스필드엔 실제로 완료된 카드를 자동 교정.
-    조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
+    조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지).
+    prefetched: 쉬는 판정이 이미 받은 후보 응답 — outbox 가 빈 것을 확인한 뒤에만 넘어온다(재전송 다음에 후보 조회 순서가 유지된다)."""
     # 지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 먼저 재전송 — 앵커돼야 아래 후보에 잡힌다.
     account_email = account_email or _cycle_account_email(cli)
     replay_outbox(server, token, account_email, budget_end)
@@ -4446,7 +4457,7 @@ def reconcile_pass(
     #  보장이 무력해져 재조정이 영영 0회가 된다(직접 확인이 예산을 다 쓰는 상황이 바로 그 경우다).
     #  대신 진입부에서 여러 번 도는 `replay_outbox` 는 위에서 예산으로 자른다 — 그쪽은
     #  못 보낸 항목을 보관해 다음에 재시도하는 것이 원래 계약이라 잘라도 잃는 게 없다.
-    st, data = _list_reconcile_candidates(server, token)
+    st, data = prefetched or _list_reconcile_candidates(server, token)
     if st != 200 or not isinstance(data, dict):
         return
     cands = data.get("candidates")
@@ -4516,9 +4527,59 @@ def reconcile_pass(
     _cap_reconcile_retries(retries)  # 이번 패스에서 늘어난 기록까지 포함해 자른다
 
 
+# 직전 tracking_pass 가 실제로 처리한 (서버, CLI 계정) 범위 — 대기 시간 계산용 힌트일 뿐 신원 확인을 대신하지 않는다.
+_LAST_TRACK_SCOPE: tuple[str, str] | None = None
+
+
+def _next_wait_seconds() -> int | None:
+    """추적 중이면 가장 이른 다음 직접 확인까지만 기다린다(1~25초). 다른 계정 범위의 남은 기한은 넣지 않는다(Codex:
+    CLI 를 B 로 바꾸면 A 의 지난 기한이 계속 1초 대기를 만든다). 추적이 없으면 None = 허브 기본 25초."""
+    active = _ACTIVE_BY_SCOPE.get(_LAST_TRACK_SCOPE) if _LAST_TRACK_SCOPE else None
+    if not active:
+        return None
+    due = min(tracked.get("next_direct_check", 0.0) for tracked in active.values())
+    return max(1, min(25, int(due - time.monotonic() + 0.999)))
+
+
+def _state_has_work(server: str) -> bool | None:
+    """이 서버의 **모든 계정·unknown 범위**에 추적·outbox 행이 있나. 조회 실패면 None(쉬는 판정을 하지 않는다)."""
+    server_key = server.rstrip("/").lower()
+    try:
+        with _outbox_lock, _state_db() as conn:
+            return any(
+                conn.execute(f"SELECT 1 FROM {table} WHERE server_key=? LIMIT 1", (server_key,)).fetchone()
+                for table in ("tracked_job", "anchor_outbox")
+            )
+    except (sqlite3.Error, OSError):
+        return None
+
+
+def _empty_reply(reply: tuple, field: str) -> bool:
+    """200 이고 그 필드가 실제 빈 list 일 때만 '할 일 없음' — 401·404·5xx·시한 초과·필드 없음은 아니다."""
+    status, data = reply
+    return status == 200 and isinstance(data, dict) and data.get(field) == []
+
+
 def tracking_pass(server: str, token: str, cli: str) -> int:
-    """메모리/SQLite 추적 작업을 먼저 확인하고, 나머지 서버 복구 후보를 뒤이어 보정한다."""
+    """메모리/SQLite 추적 작업을 먼저 확인하고, 나머지 서버 복구 후보를 뒤이어 보정한다.
+
+    ★쉬는 바퀴(2026-11-07 속도 점검 2-A): 메모리 추적이 모든 범위에서 비고, 상태 DB 에 이 서버의 추적·outbox 행이 없고,
+     복구·재조정 후보 HTTP 가 둘 다 200·빈 list 면 CLI 계정 확인(`account status`) 없이 돌아간다 — 종전엔 할 일이 없어도
+     대기 바퀴마다(약 25초) node+hf.exe 를 띄웠다. 하나라도 있거나 판정이 불확실하면 지금처럼 계정 확인부터. 후보 HTTP 결과를
+     CLI 신원으로 쓰지 않는다(AUTH-off 허브는 활성 계정 기준이다). 선조회 비용(로컬 HTTP 최대 둘)은 패스 예산 밖에 붙는다."""
+    global _LAST_TRACK_SCOPE
+    probes = candidates = None
+    with _ACTIVE_BY_SCOPE_LOCK:
+        tracking_any = any(_ACTIVE_BY_SCOPE.values())
+    if not tracking_any and _state_has_work(server) is False:
+        probes = _list_recovery_probes(server, token)
+        if _empty_reply(probes, "requests"):
+            candidates = _list_reconcile_candidates(server, token)
+            if _empty_reply(candidates, "candidates"):
+                _LAST_TRACK_SCOPE = None
+                return 0
     account_email = _cycle_account_email(cli)
+    _LAST_TRACK_SCOPE = _state_scope(server, account_email)
     active = _runtime_active(server, account_email)
     # ★한 패스가 쓰는 시간을 **여기서 한 번** 정해 직접 확인과 재조정이 나눠 쓰게 한다.
     #  각자 예산을 새로 가지면 패스 전체는 제한되지 않는다(코덱스 지적).
@@ -4536,9 +4597,10 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
         else 0
     )
     # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
-    recovery_probe_pass(server, token, cli, budget_end, account_email)
+    recovery_probe_pass(server, token, cli, budget_end, account_email, prefetched=probes)
     reconcile_pass(
-        server, token, cli, account_email, skip_job_ids=set(active), budget_end=budget_end
+        server, token, cli, account_email, skip_job_ids=set(active), budget_end=budget_end,
+        prefetched=candidates,
     )
     return finished
 
@@ -4917,7 +4979,8 @@ def main() -> None:
             print(f"[경고] 초기 처리 오류(무시): {e}")
         next_status_report = time.monotonic() + _STATUS_REPORT_INTERVAL_SECONDS
         while True:
-            reason = _wait_event(server, token)  # 이벤트 올 때까지 대기(폴링 없음)
+            # 이벤트 올 때까지 대기(폴링 없음) — 추적 중이면 다음 확인 시각까지만
+            reason = _wait_event(server, token, wait_seconds=_next_wait_seconds())
             _begin_account_cycle()  # 대기 경계를 넘긴 snapshot 재사용 금지(3-A) — 반복마다 새로 시작
             if args.pair_secret:
                 pair_status, pair_body = _request_local_pair(server, args.pair_secret)

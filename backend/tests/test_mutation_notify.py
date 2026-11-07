@@ -4,6 +4,7 @@ from app.mutation_notify import (
     DOMAIN_MANAGE,
     notification_domains,
     parse_mutation_origin,
+    without_unchanged_library,
 )
 
 
@@ -99,6 +100,14 @@ def test_get_and_failed_mutation_do_not_broadcast_synced():
     assert not _notifies_library("GET", "/api/generations", 200)
     assert not _notifies_library("POST", "/api/gen-requests", 400)
     assert not _notifies_library("POST", "/api/gen-requests", 307)
+
+
+def test_marked_unchanged_write_drops_only_the_library_domain():
+    both = (DOMAIN_LIBRARY, DOMAIN_MANAGE)
+    assert without_unchanged_library(both, True) == (DOMAIN_MANAGE,)
+    assert without_unchanged_library(both, False) == both
+    assert without_unchanged_library((DOMAIN_LIBRARY,), True) == ()
+    assert without_unchanged_library((), True) == ()
 
 
 def test_mutation_origin_accepts_only_bounded_safe_identifiers():

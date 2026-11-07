@@ -2660,7 +2660,7 @@ def test_poll_cli_failure_logs_a_bounded_detail_without_reporting_or_finishing(c
     ):
         assert agent._poll_active_jobs("http://hub", "token", "hf", active) == 0
     lines = capsys.readouterr().out.splitlines()
-    delay = int(agent._DIRECT_CHECK_INTERVAL_SECONDS)
+    delay = int(agent._DIRECT_CHECK_RETRY_SECONDS)  # 실패 재시도는 정상 확인 간격과 따로(30초 바탕, 2026-11-07 속도 점검 2-A)
     assert lines[0] == f"  ⚠ 상태 조회 실패(job-1) — {delay}초 뒤 재시도"
     assert len(lines) == 2
     assert lines[1].startswith("    CLI 실패: warning ")

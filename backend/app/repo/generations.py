@@ -218,7 +218,7 @@ def create_comfy_generation(
             raise
 
 
-def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
+def set_status(gen_id: str, status: str, error: Optional[str] = None) -> str:
     """상태 전이. 터미널(failed·nsfw 등)이면 error(사유)를 저장하고, 그 외 전이는 error 를 비운다
     (재시도/재생성으로 성공·진행 시 옛 사유가 남지 않게).
 
@@ -226,12 +226,20 @@ def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
     경로인데, 주기 동기화가 먼저 done 으로 확정한 직후 늦은 reconcile(캐시된 generate get,
     빈 바디 POST /reconcile 포함)이 도착하면 완료본이 '생성중'으로 회귀해 사용자가 재생성
     → 크레딧 이중 지출로 이어졌다. 형제 함수들(apply_reconcile·apply_local_anchor·
-    apply_local_fulfillment)과 같은 규약. failed→running 은 허용(고아 복구 경로)."""
+    apply_local_fulfillment)과 같은 규약. failed→running 은 허용(고아 복구 경로).
+
+    반환(같은 트랜잭션의 판정 — 속도 점검 2-A): ``changed`` 바꿈 · ``same`` 이미 같은 값이라 쓰지 않음 ·
+    ``not_applied`` 행 없음 또는 done 보호. 처리 중 반복 보고가 화면을 안 바꿨는지 가르는 데 쓴다."""
+    stored = stored_error(status, error)
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE generation SET status=?, error=? WHERE id=? AND status <> 'done'",
-            (status, stored_error(status, error), gen_id),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT status, error FROM generation WHERE id=?", (gen_id,)).fetchone()
+        if row is None or row["status"] == "done":
+            return "not_applied"
+        if row["status"] == status and row["error"] == stored:
+            return "same"
+        conn.execute("UPDATE generation SET status=?, error=? WHERE id=?", (status, stored, gen_id))
+        return "changed"
 
 
 def fail_orphaned_jobs() -> int:

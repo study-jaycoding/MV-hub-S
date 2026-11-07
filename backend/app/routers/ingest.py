@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -724,12 +725,22 @@ goto :eof
     )
 
 
+def _agent_wait_seconds(raw: str | None) -> float:
+    """에이전트가 바란 대기 시간(초) — 1~25 로 자르고, 없거나 숫자가 아니면 25(옛 에이전트 그대로)."""
+    try:
+        value = float(raw) if raw is not None else 25.0
+    except ValueError:
+        return 25.0
+    return min(25.0, max(1.0, value)) if math.isfinite(value) else 25.0
+
+
 @router.get("/agent/wait")
-async def agent_wait(request: Request):
+async def agent_wait(request: Request, timeout: str | None = None):
     """에이전트 롱폴 — 내 계정에 이벤트(생성요청/동기화)가 생길 때까지 대기하다 즉시 반환.
-    타임아웃이면 wake=false(에이전트가 즉시 재대기). 30초 고정 폴링을 대체한다."""
+    타임아웃이면 wake=false(에이전트가 즉시 재대기). 30초 고정 폴링을 대체한다.
+    timeout: 추적 중인 작업의 다음 확인 시각까지만 기다리게 에이전트가 준다(속도 점검 2-A)."""
     acc = _agent_acc(request)
-    reason = await agent_signals.wait(acc["email"], timeout=25.0)
+    reason = await agent_signals.wait(acc["email"], timeout=_agent_wait_seconds(timeout))
     return {"wake": reason is not None, "reason": reason}
 
 
