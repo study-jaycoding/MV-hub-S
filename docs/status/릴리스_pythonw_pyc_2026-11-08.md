@@ -5,7 +5,7 @@ updated: 2026-11-08
 
 # 릴리스 제작 실패 — pythonw 확인이 스테이징에 pyc 를 남김 (2026-11-08)
 
-owner: Claude 총괄(구현) · reviewer: Codex(사전 검토·독립 리뷰, 읽기 전용) · status: 검증 중(게이트·main 반영 뒤 고정 폴더 제작 남음) · touched_paths: 아래 계약 · updated: 2026-11-08
+owner: Claude 총괄(구현) · reviewer: Codex(사전 검토·독립 리뷰, 읽기 전용) · status: 완료(NAS 후보 게시 — 팀 [배포]는 Jay) · touched_paths: 아래 계약 · updated: 2026-11-08
 
 합의(계약 `05d3387f…`): Codex 세션 `01a1b69d`(gpt-6-astra·high·read-only, rollout 확인, 도구 0회) — 1차 [고침] 2 → 2차 [고침] 1 → 3차 VIBE-AGREE · 별도 Claude 세션 `9248a512`(claude-opus-5-5, 읽기 전용, 도구 0회) — 1차 [고침] 4 → 2차 [고침] 1(+범위 밖 관찰: 실패 뒤 자동 복원 — 호출 목록으로 해당 없음 확인) → 3차 VIBE-AGREE.
 
@@ -29,6 +29,7 @@ main `f040925d` 반영 뒤 Jay "릴리스 만들어서 나스에 올려라" → 
 - 조건별 시험 기록(지문 `3631dab2…`): no-staging-pyc `2961bc9c` — 사본 1,842 파일이 실패한 스테이징 런타임의 pyc 아닌 파일과 경로·SHA256 모두 같음 · 고친 함수 pyc 0→0(오류 없음) · 고치기 전(f040925d) 함수 0→75 · 그 75개 = 스테이징 75개(이름 같음, runtime/python 밖 0) / regression `fb85cfd7` — test_open_link_release·test_release_frontend_build 55 통과(새 단언은 고치기 전 코드와 `-c` 뒤 `-B` 를 둘 다 실패시킴, 리뷰 확인).
 - 독립 리뷰: 새 Codex 세션 `01a1b6a8`(gpt-6-astra·high·read-only, rollout 확인, 도구 0회) — 1차 [P2] 확인 사본의 출처 증명 없음·[P3] 숨김 항목 → 확인 스크립트에 사본↔스테이징 경로·SHA256 대조와 `-Force` → 2차 **VIBE-REVIEW-PASS**(코드 diff 는 1차부터 지적 없음).
 - 실제 제작 확인(`-SkipPublish`)은 main 반영 뒤 고정 폴더에서만 한다(배포판은 그 폴더에서만 만든다는 안전선). 실패하면 게시 전에 멈춘다.
+- **main 반영·릴리스(2026-11-08)**: 게이트 PASSED(head `3d0ff280`, 고정 사본 38분, 백엔드 9,150·3 skip, 프런트 518파일 6,237, 빌드 `index-CMt51kZ3.js`, 100명 부하 p95 약 206~242ms) → Jay 직접 푸시(후보 브랜치 `codex/candidate-20261108b` → Draft PR #11 → main `f040925d`→`3d0ff280`, PR MERGED 확인) → 고정 폴더 ff → `make_release.ps1 -SkipPublish` 통과(`[7/8]` 완성 ZIP 의 pythonw·python·MCP 확인 포함) → ZIP `MVHub-2026.11.08-0123.zip` 89,226,766B · SHA-256 `e60a9330…` · build-manifest source commit `3d0ff280` dirty=False · pyc 0 · `open_link.py`·`runtime/python/pythonw.exe` 있음 · CLI pin·번들 1.2.2 → `qualify_release_artifact.py` passed(run `6579e566`, 필수 5·skip 0, release_eligible) → `release_contract.py qualify`·`verify` → `-PublishCandidatePath … -PublishDir Z:\mvutil\MV_hub_S\packages`(다시 빌드 안 함) → NAS ZIP·candidate·validation 바이트 같음 · **latest = 2026.10.29-1302 그대로**(표지 해시 게시 전과 같음).
 - 지난 실패의 스테이징은 재사용되지 않는다(Claude 사전 검토 [고침] 4): 제작은 시작할 때 `Remove-Item -LiteralPath $StagingRoot -Recurse -Force`(`make_release.ps1:572`)로 `_staging` 전체를 지우고, 스테이징 폴더 이름도 제작 시각 버전이라 새로 만든다. pyc 목록 대조는 그 전에(다음 제작 전에) 남은 스테이징을 읽기만 해서 한다.
 
 ```vibe-intent
