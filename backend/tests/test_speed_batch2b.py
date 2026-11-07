@@ -30,6 +30,9 @@ from app.ws import ConnectionManager
 
 @pytest.fixture
 def task_world(tmp_path, monkeypatch):
+    # 실제 앱처럼 풀을 켠다 — 시험 기본(풀 끔)은 요청마다 연결을 닫아 마지막 닫힘이 -wal 을 비우고 수정 시각을
+    # 바꾼다. 그러면 같은 DB 인데 표식이 달라 보여 '조회자 사이 공유'가 시각에 따라 깨진다(dev 에서 재현).
+    monkeypatch.setattr(db, "_POOL_ENABLED", True)
     monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "content.db"))
     db.flush_pool()
     monkeypatch.setattr(manage_db, "MANAGE_DB_PATH", tmp_path / "manage.db")
