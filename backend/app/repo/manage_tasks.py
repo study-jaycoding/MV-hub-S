@@ -99,6 +99,41 @@ def clear_task_read_cache() -> None:
     with _TASK_READ_CACHE_GUARD:
         _TASK_READ_CACHE.clear()
         _TASK_READ_FLIGHTS.clear()
+        _ACTIVITY_SNAPSHOTS.clear()
+
+
+_ACTIVITY_SNAPSHOT_TTL = 10.0
+_ACTIVITY_SNAPSHOT_MAX = 8
+_ACTIVITY_SNAPSHOTS: dict[tuple, tuple[float, tuple, dict[str, Any]]] = {}
+
+
+def _activity_snapshot(conn, project_ids: list[str]) -> dict[str, Any]:
+    """조회자와 무관한 활동 대조를 같은 DB 표식·같은 프로젝트 목록이면 조회자 사이에서 한 번만 계산한다.
+
+    결과 캐시는 조회자마다 키가 달라, 텔레메트리 쓰기 뒤 전 창이 다시 받을 때 이 무거운 대조를 사람 수만큼
+    했다(2026-11-07 2-5). 받는 쪽(folder_sources·project_cuts·visible_activity_projects)은 스냅샷을 고치지 않는다.
+    계산 중 표식이 바뀌면 저장하지 않는다(작업 표 캐시와 같은 규칙)."""
+    if _TASK_READ_CACHE_TTL <= 0:
+        return load_activity_snapshot(conn, project_ids)
+    key = ("activity", str(get_db_path()), tuple(project_ids))
+    with _task_flight_lock(key):
+        stamp = _task_cache_stamp()
+        if stamp is None:
+            return load_activity_snapshot(conn, project_ids)
+        with _TASK_READ_CACHE_GUARD:
+            hit = _ACTIVITY_SNAPSHOTS.get(key)
+            if hit and hit[0] >= time.monotonic() and hit[1] == stamp:
+                return hit[2]
+        snapshot = load_activity_snapshot(conn, project_ids)
+        if _task_cache_stamp() == stamp:
+            with _TASK_READ_CACHE_GUARD:
+                now = time.monotonic()
+                for stale in [item for item, entry in _ACTIVITY_SNAPSHOTS.items() if entry[0] <= now]:
+                    _ACTIVITY_SNAPSHOTS.pop(stale, None)
+                _ACTIVITY_SNAPSHOTS[key] = (now + _ACTIVITY_SNAPSHOT_TTL, stamp, snapshot)
+                while len(_ACTIVITY_SNAPSHOTS) > _ACTIVITY_SNAPSHOT_MAX:
+                    _ACTIVITY_SNAPSHOTS.pop(min(_ACTIVITY_SNAPSHOTS, key=lambda item: _ACTIVITY_SNAPSHOTS[item][0]))
+        return snapshot
 
 
 def _task_cache_hit(key: tuple, stamp: tuple, now: float):
@@ -732,7 +767,7 @@ def _list_tasks_batch_uncached(
         return {}
     with get_connection() as conn:
         _ensure_schema(conn)
-        activity = load_activity_snapshot(conn, project_ids) if include_activity else None
+        activity = _activity_snapshot(conn, project_ids) if include_activity else None
         sync_folder_tasks_batch(
             conn, project_ids,
             **({"activity_sources": folder_sources(activity)} if activity is not None else {}),
@@ -1246,7 +1281,7 @@ def task_projects_for_workspace(
             all_projects = conn.execute(
                 "SELECT id,name,workspace_scope,workspace_id,archived FROM project"
             ).fetchall()
-            facts = load_activity_snapshot(conn, [row["id"] for row in all_projects])
+            facts = _activity_snapshot(conn, [row["id"] for row in all_projects])
             viewer = normalize_viewer(activity_viewer)
             visible_ids = visible_activity_projects(facts, workspace_id, viewer, activity_read_all)
             # 다른 조회자가 facts로 자동 행을 만든 뒤에도 그 존재가 일반 멤버에게 새지 않게

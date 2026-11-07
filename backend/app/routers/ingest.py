@@ -17,7 +17,7 @@ import logging
 import math
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -124,7 +124,7 @@ def _mcp_backfill_jobs(
     return jobs
 
 
-def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> IngestOut:
+def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: Optional[dict] = None) -> IngestOut:
     """CLI list 형태 잡들을 적재 + 계정↔힉스필드 uid 연결 + 크레딧 보고. push/mcp 공통 코어.
     각 잡은 자기 고유 creator_uid(URL의 user_<id>)를 유지하고, 이미 실제 uid 에 연결된 계정은
     재연결하지 않는다(레퍼런스 오염 방지, 실측 버그)."""
@@ -227,6 +227,8 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
                 reason = "creator_uid_link_" + link_result
                 _logger.warning("Ingest identity link rejected: %s", reason)
                 raise HTTPException(status_code=409, detail=reason)
+            if notes is not None:
+                notes["identity_changed"] = True  # 첫 신원 연결 — '내 작업' 범위가 바뀔 수 있다
 
     # 보강 기준 uid 선결정: 명시 creator_uid / 링크된 계정 uid(own_uid) > 잡 다수결(URL user_<id>).
     boost_uid = own_uid or (uid_votes.most_common(1)[0][0] if uid_votes else None)
@@ -263,6 +265,8 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
     #   boost_uid 가 잡 루프 전에 확정되므로 첫 ingest 부터 올바른 uid 로 학습된다.
     if not AUTH_ENABLED and (boost_uid or linked):
         my_uid = boost_uid or linked
+        if notes is not None:
+            notes["identity_changed"] = True  # 보수적으로 — 처음 학습이면 is_mine 판정이 바뀐다
         repo.learn_my_creator_uid(my_uid)
         # ★내 표시이름을 내 creator 에 붙인다 — 사이드바·생성정보·카드의 '생성자'가 '나'/'팀원'
         #   대신 내 계정 표시이름(로그인 시 보관한 provider 이름)으로 뜨게 한다. resolve_display_names
@@ -271,7 +275,9 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
         if pname:
             repo.set_creator_name(my_uid, pname)
     if account_status:
-        repo.record_account_status(acc["email"], account_status)
+        changed = repo.record_account_status(acc["email"], account_status)
+        if notes is not None:
+            notes["status_changed"] = bool(changed)
 
     # 팀 매니징: 적재된 내 생성물을 텔레메트리 outbox 에 dirty 표시(메타만, best-effort).
     # 실제 서버 전송은 ingest 엔드포인트가 공용 백그라운드 drain으로 처리한다.
@@ -394,12 +400,18 @@ def ingest_account_report(body: AccountReportIn, request: Request, background_ta
     if not MANAGE_ENABLED:
         raise HTTPException(status_code=503, detail="관리 텔레메트리가 비활성입니다")
     acc = _agent_write_acc(request)
+    notes: dict = {}
     out = _ingest_core(
         acc,
         [],
         body.creator_uid,
         body.account_status,
+        notes=notes,
     )
+    if not notes.get("identity_changed") and notes.get("status_changed") is False:
+        # 똑같은 보고 — 처리는 했지만 화면에 바뀐 것이 없다. 보고마다 그 계정 창이 목록 전체를 다시 받던 신호를
+        # 뺀다(2026-11-07 2-4, 크레딧은 거래가 들어오면 credits_changed 가 따로 간다).
+        request.state.library_unchanged = True
     if body.account_transactions and not out.linked_uid:
         raise HTTPException(
             status_code=409,

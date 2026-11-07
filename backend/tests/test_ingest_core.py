@@ -132,7 +132,7 @@ class IngestCoreTests(unittest.TestCase):
         self.assertEqual(result.transactions_inserted, 1)
         self.assertEqual(result.transactions_matched, 1)
         core.assert_called_once_with(
-            {"email": "me@example.com"}, [], "u_me", body.account_status
+            {"email": "me@example.com"}, [], "u_me", body.account_status, notes=mock.ANY
         )
         record.assert_called_once_with("u_me", "me@example.com", body.account_transactions)
 

@@ -218,11 +218,16 @@ class RemoteRealtimeBridge:
             return None
         return base_url.strip().rstrip("/"), token.strip()
 
+    async def _config_now(self) -> Optional[RemoteConfig]:
+        # 설정 제공자는 DB 를 읽는다 — DB 유지보수 대기(시한 없음)에 걸려도 허브의 이벤트 루프가 서지 않게
+        # 스레드에서 읽는다(2026-11-07 2-13, data_proxy_middleware 의 proxying() 과 같은 이유).
+        return await asyncio.to_thread(self._read_config)
+
     async def _run(self) -> None:
         backoff = self._min_backoff_seconds
         try:
             while True:
-                config = self._read_config()
+                config = await self._config_now()
                 if config is None:
                     self._connected = False
                     if self._state != "config_error":
@@ -263,7 +268,7 @@ class RemoteRealtimeBridge:
             self._connected = False
 
     async def _wait_until_config_change(self, expected_config: RemoteConfig) -> None:
-        while self._read_config() == expected_config:
+        while await self._config_now() == expected_config:
             await asyncio.sleep(self._config_poll_seconds)
 
     async def _wait_or_config_change(
@@ -272,7 +277,7 @@ class RemoteRealtimeBridge:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + delay
         while loop.time() < deadline:
-            if self._read_config() != expected_config:
+            if await self._config_now() != expected_config:
                 return
             await asyncio.sleep(min(self._config_poll_seconds, deadline - loop.time()))
 
@@ -322,7 +327,7 @@ class RemoteRealtimeBridge:
                     now = loop.time()
                     if now >= next_config_check:
                         # 로그인/로그아웃/계정전환/서버주소 변경은 프로세스 재시작 없이 반영한다.
-                        if self._read_config() != config:
+                        if await self._config_now() != config:
                             return
                         next_config_check = now + self._connected_config_poll_seconds
                     if now >= next_heartbeat:

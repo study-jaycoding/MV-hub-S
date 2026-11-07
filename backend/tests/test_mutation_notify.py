@@ -40,12 +40,12 @@ def test_non_library_side_effect_posts_do_not_force_library_reload():
         assert not _notifies_library("POST", path, 200)
 
 
-def test_canvas_recovery_polls_do_not_reload_library_but_ack_still_does():
+def test_canvas_recovery_polls_and_ack_do_not_reload_library():
     # 2.5초마다 도는 조회 — 신호를 내면 그때마다 목록 전체를 다시 읽는다
     assert notification_domains("POST", "/api/comfy/canvas-runs/resolve", 200) == ()
     assert notification_domains("POST", "/api/gen-requests/canvas-links/resolve", 200) == ()
-    # 실행마다 한 번 — 뒤쪽에서 저장된 Comfy 결과를 목록에 맞추는 계기
-    assert notification_domains("POST", "/api/comfy/canvas-runs/ack", 200) == (DOMAIN_LIBRARY,)
+    # 실행마다 한 번 — 뒤쪽 저장이 스스로 신호를 내므로(2-15) ack 의 신호는 두 번째 다시 받기였다
+    assert notification_domains("POST", "/api/comfy/canvas-runs/ack", 200) == ()
     assert _notifies_library("POST", "/api/gen-requests/canvas-links/repair", 200)
 
 

@@ -264,15 +264,18 @@ def _team_local_filtered_for_account(
         for (k, v) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True)
         if k not in ("color", "colors", "tag", "tags", "auto_tags", "cursor_ts", "cursor_id", "limit")
     ]
-    PAGE = 200  # 서버에서 한 번에 당길 양(프론트 GEN_PAGE 와 동일)
-    # 종료는 '서버 소진'(page<PAGE)이 정상 경로 — 정상 팀 규모는 여기서 먼저 끝난다.
-    # MAX_FETCHES 는 서버 버그(커서 안 전진 등)로 인한 runaway 만 막는 안전상한(≈12000행).
-    # 그보다 큰 팀 + 매우 희소한 필터면 상위 ~12000행 내에서만 필터됨(현실적으로 도달 안 함, Jay 인지).
+    page_size = 200  # 첫 장은 프론트 GEN_PAGE 와 같다 — 촘촘한 필터는 여기서 끝난다
+    # 이어 받을 때마다 두 배(200·400·800). 희소한 필터는 팀 목록 끝까지 받아야 해서 200개씩이면 왕복이 많았다
+    # (2026-11-07 2-14). 800 에서 멈추는 것은 공유 서버가 목록 압축 중 이벤트 루프를 잡기 때문이다(list_gzip.py).
+    PAGE_MAX = 800
+    # 종료는 '서버 소진'(그 회차 요청보다 적게 옴)이 정상 경로 — 정상 팀 규모는 여기서 먼저 끝난다.
+    # MAX_FETCHES 는 서버 버그(커서 안 전진 등)로 인한 runaway 만 막는 안전상한(≈4.7만 행).
+    # 그보다 큰 팀 + 매우 희소한 필터면 그 안에서만 필터됨(현실적으로 도달 안 함, Jay 인지).
     MAX_FETCHES = 60
     matches: list = []
     cur_ts, cur_id = cursor_ts, cursor_id
     for _ in range(MAX_FETCHES):
-        pairs = list(base) + [("limit", str(PAGE))]
+        pairs = list(base) + [("limit", str(page_size))]
         if cur_ts is not None:
             pairs.append(("cursor_ts", str(cur_ts)))
         if cur_id is not None:
@@ -284,12 +287,13 @@ def _team_local_filtered_for_account(
             break
         _overlay_personal_meta(page, request)  # 내 색·태그·shadow 덧입힘(in-place)
         matches.extend(g for g in page if isinstance(g, dict) and _match(g))
-        if len(matches) >= limit or len(page) < PAGE:
+        if len(matches) >= limit or len(page) < page_size:
             break  # 충분히 채웠거나 서버 소진
         last = page[-1]
         cur_ts, cur_id = last.get("sort_ts"), last.get("id")
         if cur_ts is None or cur_id is None:
             break
+        page_size = min(page_size * 2, PAGE_MAX)
     else:
         if workspace_scope:
             # 새 personal 조건을 모르는 구서버에서 희소한 결과를 조용히 잘라내지 않는다.

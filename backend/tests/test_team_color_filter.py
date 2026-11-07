@@ -113,10 +113,12 @@ class TeamLocalFilterTests(unittest.TestCase):
     def test_personal_old_server_safety_limit_does_not_report_a_false_end_of_results(self):
         from fastapi import HTTPException
 
-        pages = [
-            [self._card(f"team-{page}-{i}", ws="ws-a", ts=20000 - page * 200 - i) for i in range(200)]
-            for page in range(60)
-        ]
+        # 서버는 요청한 만큼(200·400·800…) 꽉 채워 준다 — 회차마다 요청보다 적게 오면 그것이 '서버 소진'이다(2-14).
+        sizes = [min(200 * 2 ** page, 800) for page in range(60)]
+        pages, ts = [], 100000
+        for page, size in enumerate(sizes):
+            pages.append([self._card(f"team-{page}-{i}", ws="ws-a", ts=ts - i) for i in range(size)])
+            ts -= size
         with self.assertRaises(HTTPException) as error:
             self._run(pages, workspace_scope="personal")
         self.assertEqual(error.exception.status_code, 503)

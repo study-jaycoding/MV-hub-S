@@ -472,8 +472,12 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
     _enter_connection_context()
     pooled = db_path is None and _POOL_ENABLED
     conn: sqlite3.Connection | None = None
+    owns = True
     try:
         conn = _pooled_conn(get_db_path()) if pooled else _connect(db_path or get_db_path())
+        # 바깥 문맥이 같은 풀 연결로 이미 연 트랜잭션은 바깥이 끝낸다 — 안쪽(설정 읽기 등)이 나가며
+        # COMMIT 하면 바깥 BEGIN IMMEDIATE 뒤의 확인·쓰기가 잠금 없이 문장마다 커밋된다(2026-11-07 2-12).
+        owns = not (pooled and conn.in_transaction)
         if pooled:
             # A long-lived connection must not keep writing after another
             # supported process raises the writer floor in the same file.
@@ -481,9 +485,11 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
             from .services import trash_transfer
             trash_transfer.configure_connection(conn)
         yield conn
-        if conn.in_transaction:
+        if owns and conn.in_transaction:
             conn.execute("COMMIT;")
     except BaseException as exc:
+        if not owns:
+            raise  # 트랜잭션·연결의 주인은 바깥 문맥 — 롤백·폐기는 바깥이 예외를 받을 때 한다
         if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
             try:
                 from .services.runtime_metrics import metrics

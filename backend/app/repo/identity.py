@@ -953,22 +953,48 @@ def migrate_all_acct_to_creator_uid() -> int:
     return total
 
 
-def record_account_status(email: str, status: dict[str, Any]) -> None:
+def record_account_status(email: str, status: dict[str, Any]) -> bool:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
     원본 JSON은 계정 메뉴 하위호환용으로 보존하고, 팀 워크스페이스는 registry/member 테이블에
-    정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다."""
+    정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다.
+
+    보이는 변화가 있었으면 참 — 원문, 보고 워크스페이스의 등록부 행(여러 계정이 같이 쓰는 값), 이 계정의
+    멤버 행, 자동 편입 추가 중 하나라도(2026-11-07 2-4: 똑같은 보고마다 목록 전체 다시 받기를 없앤다).
+    처리 자체는 매번 그대로 한다(편입 자가치유·그날 잔액)."""
     import json as _json
 
     email = norm_email(email)
     if not email or not isinstance(status, dict):
-        return
+        return False
     raw_payload = _json.dumps(status, ensure_ascii=False)
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
         # 옛/불완전 보고 — raw 만 저장(기존 멤버십을 전부 unavailable로 만들지 않는다).
+        before_raw = get_setting(f"hf_status:{email}")
         set_setting(f"hf_status:{email}", raw_payload)
-        return
+        return before_raw != raw_payload
     from .project_membership import enroll_uid_into_workspace_projects
+
+    reported = sorted({
+        str(w.get("id") or "").strip() for w in workspaces
+        if isinstance(w, dict) and str(w.get("id") or "").strip() and str(w.get("name") or "").strip()
+    })
+
+    def _visible(conn) -> tuple:
+        ph = ",".join("?" * len(reported))
+        registry = conn.execute(
+            f"SELECT id, name, plan_type, credits FROM workspace_registry WHERE id IN ({ph}) ORDER BY id",
+            reported,
+        ).fetchall() if reported else []
+        members = conn.execute(
+            "SELECT workspace_id, creator_uid, user_role, is_selected, is_available FROM workspace_member "
+            "WHERE account_email=? ORDER BY workspace_id",
+            (email,),
+        ).fetchall()
+        row = conn.execute("SELECT value FROM app_setting WHERE key=?", (f"hf_status:{email}",)).fetchone()
+        return (row["value"] if row else None, [tuple(r) for r in registry], [tuple(r) for r in members])
+
+    added = 0
 
     with get_connection() as conn:
         # autocommit 커넥션이라, 가용성 리셋~멤버 upsert~프로젝트 자동 편입을 한 트랜잭션으로 묶어
@@ -977,6 +1003,7 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
         # 코덱스 계약) — 종전엔 raw 가 autocommit 으로 먼저 저장돼 후반 실패 시 두 표현이
         # 어긋났다. set_setting() 호출 금지(내부 get_connection 중첩) — 같은 conn 직접 UPSERT.
         conn.execute("BEGIN IMMEDIATE")
+        before = _visible(conn)
         conn.execute(
             "INSERT INTO app_setting(key, value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1042,7 +1069,8 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
             # 확인된 멤버를 이 워크스페이스의 기존 활성 프로젝트에 자동 편입 — 매 보고 멱등이라
             # 놓친 편입을 다음 보고가 자가치유한다. PM 의 수동 제외(✕)는 leaf 규칙이 존중한다.
             if creator_uid:
-                enroll_uid_into_workspace_projects(conn, workspace_id, creator_uid)
+                added += enroll_uid_into_workspace_projects(conn, workspace_id, creator_uid) or 0
+        return added > 0 or _visible(conn) != before
 
 
 def list_workspace_registry(

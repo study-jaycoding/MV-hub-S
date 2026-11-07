@@ -558,6 +558,7 @@ async def _application_lifespan(app: FastAPI):
 
         runtime_loop = asyncio.get_running_loop()
         agent_signals.bind_loop(runtime_loop)
+        manager.bind_loop(runtime_loop)  # 뒤쪽 저장(Comfy 결과)이 스레드에서 라이브러리 신호를 넘기는 곳
         agent_loop_bound = True
         asset_watcher.start(runtime_loop)
         asset_watcher_started = True
@@ -733,6 +734,7 @@ async def _application_lifespan(app: FastAPI):
             _attempt_sync_cleanup(_unbind_history_loop)
         if (startup_complete or agent_loop_bound) and runtime_loop is not None:
             _attempt_sync_cleanup(lambda: agent_signals.unbind_loop(runtime_loop))
+            _attempt_sync_cleanup(lambda: manager.unbind_loop(runtime_loop))
         if (startup_complete or asset_watcher_started) and runtime_loop is not None:
             _attempt_sync_cleanup(asset_watcher.stop)
         # CLI 를 쓰는 작업이 모두 멈춘 뒤 — 남은 호출과 맡겨 둔 taskkill 을 loop 가 닫히기 전에 거둔다.

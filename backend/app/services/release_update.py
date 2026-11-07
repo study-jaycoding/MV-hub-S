@@ -143,22 +143,64 @@ def _unfinished_install(root: Path) -> bool:
         return True
 
 
+_HEALTH_REQUIRED = (
+    "MV_agent.bat",
+    "update_release.bat",
+    "run_release_update.ps1",
+    "update_release_worker.bat",
+    "run_agent_session.py",
+    "agent_push.py",
+    "backend/serve.py",
+    "backend/app/main.py",
+    "frontend/dist/index.html",
+)
+_HEALTH_OK_SECONDS = 1800.0
+_HEALTH_OK: dict[tuple, float] = {}
+
+
+def _install_marker(root: Path) -> tuple:
+    """건강 검사가 실행해 보는 설치 파일들의 (경로, mtime_ns, 크기) — 하나라도 바뀌면 다시 검사한다."""
+    runtime = root / "runtime" / "python"
+    cli = root / "runtime" / "higgsfield" / "node_modules" / "@higgsfield" / "cli"
+    paths = [root / Path(name) for name in _HEALTH_REQUIRED] + [
+        runtime, runtime / "python.exe", runtime / "pythonw.exe", runtime / "Lib" / "site-packages",
+        root / "hf_cli_version.txt", cli / "package.json", cli / "bin" / "higgsfield.js",
+        root / "runtime" / "node" / "node.exe",
+    ] + sorted(runtime.glob("python*.dll"))
+    marker = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            marker.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            marker.append((str(path), None, None))
+    return tuple(marker)
+
+
+def _installation_health_cached(root: Path, expected_cli_version: str = "") -> tuple[bool, str]:
+    """알림 종(60초마다 get_status)의 건강 검사 — 설치 파일 표식이 같으면 30분 안에는 Python·CLI 를 다시 실행하지 않는다.
+
+    매번 내장 Python 모듈 검사와 Node CLI version 을 실제로 띄웠다(2026-11-07 2-9). 건강할 때만 기억하고,
+    미완료 설치는 매번 본다. 업데이트 시작(start_update)은 이것을 쓰지 않고 늘 새로 검사한다."""
+    if _unfinished_install(root):
+        return _installation_health(root, expected_cli_version)
+    key = (str(root.resolve()), expected_cli_version, _install_marker(root))
+    checked = _HEALTH_OK.get(key)
+    if checked is not None and time.monotonic() - checked < _HEALTH_OK_SECONDS:
+        return True, ""
+    healthy, reason = _installation_health(root, expected_cli_version)
+    if healthy:
+        if len(_HEALTH_OK) > 8:
+            _HEALTH_OK.clear()
+        _HEALTH_OK[key] = time.monotonic()
+    return healthy, reason
+
+
 def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bool, str]:
     """완료 버전 표식만 믿지 않고 실제 설치본이 실행 가능한지 확인한다."""
     if _unfinished_install(root):
         return False, '설치 journal이 완료되지 않았습니다. 같은 설치 산출물로 복구를 계속하세요.'
-    required = (
-        "MV_agent.bat",
-        "update_release.bat",
-        "run_release_update.ps1",
-        "update_release_worker.bat",
-        "run_agent_session.py",
-        "agent_push.py",
-        "backend/serve.py",
-        "backend/app/main.py",
-        "frontend/dist/index.html",
-    )
-    missing = [name for name in required if not (root / Path(name)).is_file()]
+    missing = [name for name in _HEALTH_REQUIRED if not (root / Path(name)).is_file()]
     if missing:
         return False, f"필수 파일 누락: {missing[0]}"
 
@@ -538,10 +580,11 @@ def _installed_candidate(root: Path, current: str, latest: dict[str, Any]) -> di
     return cand
 
 
-def _candidate_verdict(root: Path, cand: dict[str, Any]) -> tuple[str, str]:
+def _candidate_verdict(root: Path, cand: dict[str, Any], *, cached: bool = False) -> tuple[str, str]:
     """후보를 쓰는 PC 의 판정 — 건강하면 up_to_date, 손상이면 check_failed(성공으로 보이지 않게, Codex).
-    건강 검사는 Python·CLI 를 실행해 수 초 걸린다 — get_status 는 상태 잠금 밖에서 부른다."""
-    healthy, reason = _installation_health(root, cand["higgsfield_cli_version"])
+    건강 검사는 Python·CLI 를 실행해 수 초 걸린다 — get_status 는 상태 잠금 밖에서 부른다(그때만 cached)."""
+    check = _installation_health_cached if cached else _installation_health
+    healthy, reason = check(root, cand["higgsfield_cli_version"])
     if healthy:
         return "up_to_date", f"공지 전 후보 v{cand['version']} 를 이 PC 에서 쓰는 중입니다 — [공지]하면 팀에 배포됩니다."
     return "check_failed", (
@@ -1164,7 +1207,7 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
 
     if not refresh and stored:
         if stored.get("state") == "up_to_date" and not stored.get("candidate"):
-            healthy, reason = _installation_health(root)
+            healthy, reason = _installation_health_cached(root)
             if not healthy:
                 latest_version = str(stored.get("latest_version") or _read_version(root))
                 current = _read_version(root)
@@ -1227,7 +1270,7 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
         }
     if cand is not None:
         # 느린 건강 검사는 잠금 밖에서 먼저 — 잠금 안에서는 다시 읽은 최신 상태를 지키고 기록만 한다(Codex 코드 리뷰).
-        verdict = _candidate_verdict(root, cand)
+        verdict = _candidate_verdict(root, cand, cached=True)
 
         def _keep_failed_or_candidate(stored_now: dict[str, Any]) -> dict[str, Any]:
             # 후보·건강을 읽는 사이 다른 설치 시도가 남긴 실패는 덮지 않는다(Codex U1 v2 B). 진행 중·복구 필요는
@@ -1241,7 +1284,7 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
             root, {**base, "current_version": current, "latest_version": cand["version"]}, _keep_failed_or_candidate,
         )
     if current == latest["version"]:
-        healthy, reason = _installation_health(root, latest["higgsfield_cli_version"])
+        healthy, reason = _installation_health_cached(root, latest["higgsfield_cli_version"])
         if not healthy:
             return _commit_status(
                 root, {**base, "current_version": current, "latest_version": latest["version"]},

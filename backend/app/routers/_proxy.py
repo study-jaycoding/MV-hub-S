@@ -718,16 +718,29 @@ async def _forward(request: Request) -> Response:
     # 그대로 들어가면 urllib 이 URL 을 ascii 로 인코딩하다 터진다(태그 삭제 500의 원인).
     raw = request.scope.get("raw_path")
     path = raw.decode("latin-1") if raw else request.url.path
-    url = base_url() + path + (("?" + qs) if qs else "")
-    # 일반 API는 항상 현재 로그인 계정으로 수행한다. 슈퍼 관리자 토큰은 일반 로그인 토큰을
-    # 대체하지 않으며 workspace 전용 명시 경로에서만 별도 헤더로 전달한다.
-    tok = token()
     method = request.method
     ctype = request.headers.get("content-type")
     client_id = request.headers.get(CLIENT_ID_HEADER)
     mutation_id = request.headers.get(MUTATION_ID_HEADER)
+    # 조건부·압축 머리글을 오가게 한다 — 서버 작업 표의 304·gzip 이 허브 사용자에게도 듣는다(2026-11-07 2-6).
+    # 본문은 바이트 그대로 돌려주므로 압축 본문은 Content-Encoding 과 함께 브라우저가 푼다.
+    passed = {name: request.headers.get(name) for name in ("If-None-Match", "Accept-Encoding")}
+    relayed: dict[str, str] = {}
+    # 일반 API는 항상 현재 로그인 계정으로 수행한다. 슈퍼 관리자 토큰은 일반 로그인 토큰을
+    # 대체하지 않으며 workspace 전용 명시 경로에서만 별도 헤더로 전달한다.
+    tok: Optional[str] = None
+
+    def _relay(headers) -> None:
+        for name in ("ETag", "Cache-Control", "Vary", "Content-Encoding"):
+            value = headers.get(name) if headers else None
+            if value:
+                relayed[name] = value
 
     def _do() -> tuple[int, bytes, str]:
+        nonlocal tok
+        # 설정(주소·토큰)은 DB 를 읽는다 — DB 유지보수 대기에 걸려도 이벤트 루프가 서지 않게 이 스레드에서(2-13).
+        url = base_url() + path + (("?" + qs) if qs else "")
+        tok = token()
         req = urllib.request.Request(url, data=body if body else None, method=method)
         if ctype:
             req.add_header("Content-Type", ctype)
@@ -735,12 +748,17 @@ async def _forward(request: Request) -> Response:
             req.add_header(CLIENT_ID_HEADER, client_id)
         if mutation_id:
             req.add_header(MUTATION_ID_HEADER, mutation_id)
+        for name, value in passed.items():
+            if value:
+                req.add_header(name, value)
         if tok:
             req.add_header("Authorization", f"Bearer {tok}")
         try:
             with _open(req, timeout=120) as r:
+                _relay(r.headers)
                 return r.status, r.read(), (r.headers.get_content_type() or "application/json")
         except urllib.error.HTTPError as e:
+            _relay(e.headers)  # 304 도 여기로 온다 — ETag 를 같이 돌려줘야 브라우저가 캐시를 쓴다
             ct = e.headers.get_content_type() if e.headers else "application/json"
             return e.code, e.read(), (ct or "application/json")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -756,7 +774,7 @@ async def _forward(request: Request) -> Response:
             tok,
             request.url.path,
         )
-    response = Response(content=raw, status_code=status, media_type=resp_ctype)
+    response = Response(content=raw, status_code=status, media_type=resp_ctype, headers=relayed)
     if auth_state:
         response.headers[AUTH_STATE_HEADER] = auth_state
     domains = notification_domains(method, request.url.path, status)
@@ -824,9 +842,10 @@ async def _forward_stream(request: Request) -> Response:
     raw = request.scope.get("raw_path")
     path = raw.decode("latin-1") if raw else request.url.path
     qs = request.url.query
-    url = base_url() + path + (("?" + qs) if qs else "")
+    # 설정 DB 읽기는 스레드에서 — DB 유지보수 대기에 걸려도 이벤트 루프가 서지 않게(2026-11-07 2-13).
+    base, tok = await asyncio.to_thread(lambda: (base_url(), token()))
+    url = base + path + (("?" + qs) if qs else "")
     req = urllib.request.Request(url, method=request.method)
-    tok = token()
     if tok:
         req.add_header("Authorization", f"Bearer {tok}")
     # 영상 탐색(seek)은 브라우저가 Range 요청으로 수행한다. 이 헤더를 버리면 매번 원본 전체를

@@ -107,6 +107,33 @@ class ConnectionManager:
         # (영역, 스코프, 요청 출처) 조합을 짧게 기억해 한 HTTP 쓰기가 두 번 reload를 만들지 않게 한다.
         # 출처가 없는 변경은 서로 다른 실제 변경일 수 있으므로 절대 억지로 합치지 않는다.
         self._recent_origins: dict[tuple[str, str, MutationOrigin], tuple[float, str]] = {}
+        # 동기 스레드(뒤쪽 저장)가 알림을 넘길 메인 루프 — lifespan 이 묶는다.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def unbind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        if self._loop is loop:
+            self._loop = None
+
+    def notify_mutation_threadsafe(self, account_uid: Optional[str] = None) -> None:
+        """스레드에서 라이브러리 변경을 알린다 — 그 스레드엔 루프가 없어 notify_mutation 의 예약이 조용히 빠졌다
+        (2026-11-07 2-15, Comfy 결과 뒤쪽 저장). 묶인 루프로 넘기고, 루프가 없거나 닫혔으면 생략한다."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self.notify_mutation(account_uid)
+            return
+        try:
+            loop.call_soon_threadsafe(self.notify_mutation, account_uid)
+        except RuntimeError:
+            pass  # 종료 중 닫힌 루프
 
     def _stats_unlocked(self) -> dict[str, int]:
         scoped = sum(1 for c in self._clients.values() if c.account_uid is not None)
