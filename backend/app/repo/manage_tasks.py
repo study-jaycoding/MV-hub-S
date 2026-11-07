@@ -1016,8 +1016,12 @@ def list_tasks_batch(
         )
         if _task_cache_stamp() == stamp:
             with _TASK_READ_CACHE_GUARD:
+                now = time.monotonic()
+                # 수명 지난 칸은 같은 키로 다시 읽힐 때만 지워져, 죽은 결과가 128칸까지 메모리에 남았다
+                for stale in [item for item, entry in _TASK_READ_CACHE.items() if entry[0] <= now]:
+                    _TASK_READ_CACHE.pop(stale, None)
                 _TASK_READ_CACHE[key] = (
-                    time.monotonic() + _TASK_READ_CACHE_TTL,
+                    now + _TASK_READ_CACHE_TTL,
                     stamp,
                     result,
                 )

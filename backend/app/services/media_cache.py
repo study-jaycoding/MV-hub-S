@@ -512,7 +512,8 @@ def _account_thumb_source(target: Path) -> None:
                 return
         _THUMB_SOURCE_STATE[key] = (total, known)
         if total > THUMB_SOURCE_CACHE_MAX_BYTES:
-            _evict_thumb_sources_locked(root, THUMB_SOURCE_CACHE_MAX_BYTES)
+            # 상한 바로 아래까지만 지우면 그 뒤 새 원본마다 다시 넘쳐, 파일마다 폴더를 두 번 훑었다(이 잠금 안에서).
+            _evict_thumb_sources_locked(root, int(THUMB_SOURCE_CACHE_MAX_BYTES * 0.9))
 
 
 def _mark_thumb_source_used(path: Path) -> None:

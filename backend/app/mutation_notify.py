@@ -50,6 +50,11 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/edit-shares/save",  # 편집 공유 저장은 라이브러리를 바꾸지 않는다(다른 사람은 목록 주기 조회로 안다)
         "/api/comfy/parse",
         "/api/comfy/run",
+        # 캔버스의 2.5초 복구 조회 — 읽기뿐인데 빠져 있어, Comfy 실행·생성 연결이 남은 동안(다른 PC 실행이면 계속)
+        # 2.5초마다 목록 전체를 다시 읽었다. 실행마다 한 번 오는 canvas-runs/ack 는 라이브러리 신호로 남긴다
+        # (캔버스 Comfy 결과는 서버 뒤쪽에서 라이브러리에 저장돼 그 ack 가 목록을 맞추는 계기다).
+        "/api/comfy/canvas-runs/resolve",
+        "/api/gen-requests/canvas-links/resolve",
         # 내가 마지막으로 본 표시 — 생성물 자체는 안 바뀐다. 라이브러리 변경으로 치면
         # 미리보기를 넘길 때마다 다른 창이 목록을 통째로 다시 읽는다.
         "/api/generation-views",

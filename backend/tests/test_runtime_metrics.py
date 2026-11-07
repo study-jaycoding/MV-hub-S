@@ -1,6 +1,7 @@
 """운영 지표의 고정 메모리·집계 계약 테스트."""
 
 import unittest
+from unittest import mock
 
 from app.services.runtime_metrics import RuntimeMetrics
 
@@ -58,6 +59,19 @@ class RuntimeMetricsTests(unittest.TestCase):
         snapshot = metrics.request_snapshot()
         self.assertEqual(snapshot["methods"], {"OTHER": 1000})
         self.assertEqual(snapshot["status"], {"other": 1000})
+
+    def test_snapshot_does_not_rescan_disk_every_report_interval(self):
+        metrics = RuntimeMetrics()
+        clock = [1000.0]
+        with mock.patch("app.services.runtime_metrics._disk_snapshot", return_value={"media_bytes": 1}) as scan, \
+                mock.patch("app.services.runtime_metrics.time.monotonic", side_effect=lambda: clock[0]):
+            metrics.snapshot()
+            clock[0] += 61  # 보고 주기 60초 뒤
+            metrics.snapshot()
+            self.assertEqual(scan.call_count, 1)
+            clock[0] += 600
+            metrics.snapshot()
+            self.assertEqual(scan.call_count, 2)
 
     def test_process_snapshot_has_safe_cross_platform_shape(self):
         metrics = RuntimeMetrics()

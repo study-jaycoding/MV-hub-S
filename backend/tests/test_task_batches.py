@@ -227,6 +227,31 @@ class TaskBatchTests(unittest.TestCase):
         )
         manage_tasks.clear_task_read_cache()
 
+    def test_task_caches_drop_expired_entries_when_storing(self) -> None:
+        """수명(0.75초)이 지난 칸은 다른 키를 넣을 때 지운다 — 같은 키로 다시 읽힐 때만 지우면 128칸까지 남는다."""
+        manage_tasks.clear_task_read_cache()
+        manage_tasks._TASK_READ_CACHE[("dead-read",)] = (0.0, ("old",), {"p": []})
+        with (
+            patch.object(manage_tasks, "_TASK_READ_CACHE_TTL", 1.0),
+            patch.object(manage_tasks, "get_db_path", return_value=Path("purge.db")),
+            patch.object(manage_tasks, "_task_cache_stamp", return_value=("stable",)),
+            patch.object(manage_tasks, "_list_tasks_batch_uncached", return_value={"p1": []}),
+        ):
+            manage_tasks.list_tasks_batch(["p1"], workspace_id="workspace-a")
+        self.assertNotIn(("dead-read",), manage_tasks._TASK_READ_CACHE)
+        self.assertEqual(len(manage_tasks._TASK_READ_CACHE), 1)
+        manage_tasks.clear_task_read_cache()
+
+        manage_router._TASK_RESPONSE_CACHE.clear()
+        manage_router._TASK_RESPONSE_CACHE[("dead-response",)] = (0.0, ("old",), b"{}")
+        with (
+            patch.object(manage_router, "_TASK_RESPONSE_TTL", 1.0),
+            patch.object(manage_router.repo_manage_tasks, "_task_cache_stamp", return_value=("stable",)),
+        ):
+            manage_router._task_json_response(("live",), {"p1": []}, expected_stamp=("stable",))
+        self.assertEqual(list(manage_router._TASK_RESPONSE_CACHE), [("live",)])
+        manage_router._TASK_RESPONSE_CACHE.clear()
+
     def test_task_cache_stamp_changes_when_same_path_database_is_replaced(self) -> None:
         """flush_pool 에폭은 파일 메타가 같은 복원본도 이전 캐시와 구분해야 한다."""
         same_file_stamp = (1_700_000_000_000_000_000, 4096)

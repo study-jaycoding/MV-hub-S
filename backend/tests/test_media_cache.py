@@ -153,6 +153,35 @@ class MediaCacheTests(unittest.TestCase):
                 self.assertEqual(media_cache._THUMB_SOURCE_STATE[key][0], 350)
             media_cache._THUMB_SOURCE_STATE.clear()
 
+    def test_overflowing_thumb_source_evicts_with_headroom(self):
+        """상한을 넘기면 상한의 90% 까지 지운다 — 바로 아래에서 멈추면 다음 원본마다 다시 훑는다."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source_dir = root / ".thumb-sources" / "aa"  # 캐시는 한 단계 아래(샤드) 파일만 센다
+            source_dir.mkdir(parents=True)
+            base = time.time() - 1000
+            files = []
+            for index in range(10):
+                path = source_dir / f"{index}.png"
+                path.write_bytes(b"x" * 100)
+                os.utime(path, (base + index, base + index))  # 0 이 가장 오래됨
+                files.append(path)
+            with mock.patch.object(media_cache, "MEDIA_DIR", root), \
+                    mock.patch.object(media_cache, "THUMB_SOURCE_CACHE_MAX_BYTES", 1000):
+                media_cache._THUMB_SOURCE_STATE.clear()
+                key = str(media_cache._thumb_source_dir())
+                media_cache._THUMB_SOURCE_STATE[key] = (1000, {str(p) for p in files})
+                newest = source_dir / "new.png"
+                newest.write_bytes(b"n" * 100)
+                media_cache._account_thumb_source(newest)
+                total, known = media_cache._THUMB_SOURCE_STATE[key]
+                self.assertLessEqual(total, 900)
+                self.assertFalse(files[0].exists())
+                self.assertFalse(files[1].exists())
+                self.assertTrue(newest.exists())
+                self.assertIn(str(newest), known)
+            media_cache._THUMB_SOURCE_STATE.clear()
+
     def test_thumb_source_url_uses_dedicated_directory(self):
         rel = media_cache.thumb_source_rel_for("https://cdn.example.com/image.png?sig=x")
         self.assertTrue(rel.startswith("/media/.thumb-sources/"))

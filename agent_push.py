@@ -1675,6 +1675,8 @@ def _wait_event(server: str, token: str, timeout: int = 35):
             # 세션 만료 — 즉시 종료하지 않고 호출자(main 루프)가 자동 재로그인을 시도하게 알린다.
             # (며칠 상주하다 만료되면 수동 재시작이 필요하던 것을 자가 복구로.)
             return "__reauth__"
+        # 허브 활성화 관문 503·500 은 곧바로 다시 물어도 같다 — 쉬지 않으면 바퀴마다 CLI·HTTP 가 초당 한 번꼴로 돈다.
+        time.sleep(3)
         return None
     except (urllib.error.URLError, TimeoutError, OSError):
         time.sleep(3)  # 서버 일시 불가/타임아웃 → 잠깐 쉬고 재대기(폭주 방지)

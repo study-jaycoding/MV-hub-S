@@ -204,8 +204,12 @@ def _task_json_response(
             and repo_manage_tasks._task_cache_stamp() == stamp
         ):
             with _TASK_RESPONSE_GUARD:
+                now = time.monotonic()
+                # 수명 지난 칸은 같은 키로 다시 읽힐 때만 지워져, 죽은 응답 바이트가 128칸까지 메모리에 남았다
+                for stale in [item for item, entry in _TASK_RESPONSE_CACHE.items() if entry[0] <= now]:
+                    _TASK_RESPONSE_CACHE.pop(stale, None)
                 _TASK_RESPONSE_CACHE[key] = (
-                    time.monotonic() + _TASK_RESPONSE_TTL,
+                    now + _TASK_RESPONSE_TTL,
                     stamp,
                     encoded,
                 )

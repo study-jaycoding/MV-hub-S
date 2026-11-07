@@ -175,7 +175,9 @@ class RuntimeMetrics:
         return {
             "requests": self.request_snapshot(),
             "process": self.process_snapshot(),
-            "disk": self.disk_snapshot(),
+            # 60초 보고 주기와 같은 60초 캐시는 늘 빗나가 1분마다 미디어 폴더 전체를 재귀로 셌다.
+            # 디스크 값은 로그·관리자 지표에만 쓰고 경보에는 안 쓴다 — 10분이면 충분하다.
+            "disk": self.disk_snapshot(ttl_seconds=600.0),
         }
 
 
