@@ -143,7 +143,7 @@
 | `DEV` | — | `frontend/src/lib/sceneStore.ts` | — |
 | `HOME` | `None` | `tools/server_console/main.py` | `MV_console.bat` |
 | `MVHUB_ACTIVATION_CONTROL` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` `run_agent_session.py` | `MV_agent.bat` `update_release_worker.bat` |
-| `MVHUB_ACTIVATION_ROOT` | `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
+| `MVHUB_ACTIVATION_ROOT` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_APP_BROWSER` | `""` | `run_agent_session.py` | — |
 | `MVHUB_BUILD_ID` | `""` | `backend/app/services/runtime_activation.py` | — |
 | `MVHUB_CLI_MAX_IN_FLIGHT` | `64` | `agent_push.py` | — |
