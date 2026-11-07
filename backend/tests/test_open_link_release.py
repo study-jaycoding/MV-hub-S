@@ -26,6 +26,9 @@ def test_release_copies_and_allows_handler_and_windowless_runtime():
     function = script.split('function Assert-PythonRuntimeTree', 1)[1].split('\nfunction ', 1)[0]
     assert '"pythonw.exe"' in function and "'-I', '-S'" in function
     assert '-WindowStyle Hidden' in function and '$WindowlessProbe.ExitCode' in function
+    # Only the pythonw ArgumentList counts (python.exe already has -B); after -c it would be a script argument.
+    windowless = re.search(r'\$WindowlessProbe\s*=\s*Start-Process[^\r\n]*?-ArgumentList\s*@\(([^)]*)\)', function).group(1)
+    assert re.match(r"\s*'-I',\s*'-S',\s*'-B',\s*'-c',", windowless)
 
 
 def test_install_health_and_update_include_new_files_without_new_swap_branch():

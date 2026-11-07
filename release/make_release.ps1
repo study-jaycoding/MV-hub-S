@@ -96,7 +96,8 @@ function Assert-PythonRuntimeTree {
     if (-not (Test-Path -LiteralPath $Windowless -PathType Leaf)) {
         throw "Bundled Python validation failed ($Label): pythonw.exe is missing."
     }
-    $WindowlessProbe = Start-Process -FilePath $Windowless -ArgumentList @('-I', '-S', '-c', '"import ctypes,hashlib,hmac,json,urllib.request"') -WindowStyle Hidden -Wait -PassThru
+    # -B(-c 앞): 이 확인이 스테이징에 pyc 를 쓰면 ZIP 금지 검사가 제작을 멈춘다(2026-11-08, 아래 python.exe 확인과 같은 이유).
+    $WindowlessProbe = Start-Process -FilePath $Windowless -ArgumentList @('-I', '-S', '-B', '-c', '"import ctypes,hashlib,hmac,json,urllib.request"') -WindowStyle Hidden -Wait -PassThru
     if ($WindowlessProbe.ExitCode -ne 0) {
         throw "Bundled Python windowless validation failed ($Label)."
     }
