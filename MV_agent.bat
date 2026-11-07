@@ -218,11 +218,24 @@ REM rechecks process identity immediately before stopping it. Foreign owners fai
 REM Guard: older release bundles shipped without tools\ - skip quietly instead of a red
 REM PowerShell "-File does not exist" error on worker PCs.
 if exist "%ROOT%tools\stop_local_hub_on_port.ps1" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
-  if errorlevel 1 (
-    echo [ERROR] Port %PORT% could not be cleared safely - another process owns it.
-    echo         Close any old MV Hub / MV agent windows ^(or reboot^), then run this launcher again.
-    goto :err
+  REM Nothing on this port = nothing to stop. netstat answers in ~0.07s, PowerShell takes ~1s just
+  REM to start (2026-11-07). Skip ONLY when netstat itself worked AND no line has the port; any
+  REM line (listening, connected, closing) or a failed netstat still runs the full owner check.
+  REM One netstat run into a file: findstr exit 1 = no line (skip), 0 = found, 2 = could not read (check).
+  set "_PORT_BUSY=1"
+  netstat -ano > "%TEMP%\mvhub_ports_%PORT%.txt" 2>nul
+  if not errorlevel 1 (
+    findstr /c:":%PORT% " "%TEMP%\mvhub_ports_%PORT%.txt" >nul
+    if errorlevel 1 if not errorlevel 2 set "_PORT_BUSY="
+  )
+  del "%TEMP%\mvhub_ports_%PORT%.txt" >nul 2>nul
+  if defined _PORT_BUSY (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
+    if errorlevel 1 (
+      echo [ERROR] Port %PORT% could not be cleared safely - another process owns it.
+      echo         Close any old MV Hub / MV agent windows ^(or reboot^), then run this launcher again.
+      goto :err
+    )
   )
 ) else (
   echo [warn] tools\stop_local_hub_on_port.ps1 missing - skipping port cleanup.

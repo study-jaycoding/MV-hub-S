@@ -4,18 +4,20 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { api } from "../src/api";
 import { useGenerationAutoRefresh } from "../src/lib/useGenerationAutoRefresh";
 import { APP_EVENTS } from "../src/lib/appEvents";
 import type { Filters, Generation } from "../src/types";
 
-type Props = { tab?: Filters["tab"]; paused?: boolean; active?: boolean };
+type Props = { tab?: Filters["tab"]; paused?: boolean; active?: boolean; gens?: Generation[] };
 let root: Root;
 let host: HTMLDivElement;
 const reload = vi.fn<(silent?: boolean, light?: boolean, intent?: string) => Promise<void>>();
 const idle: Generation[] = [];
 const running = [{ id: "g", status: "running" }] as unknown as Generation[];
-function Harness({ tab = "team", paused, active }: Props) {
-  useGenerationAutoRefresh({ generations: active ? running : idle, tab, reload, paused });
+let batch: ReturnType<typeof vi.spyOn>;
+function Harness({ tab = "team", paused, active, gens }: Props) {
+  useGenerationAutoRefresh({ generations: gens ?? (active ? running : idle), tab, reload, paused });
   return null;
 }
 const show = (props: Props = {}) => act(() => root.render(<Harness {...props} />));
@@ -46,6 +48,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   reload.mockReset();
   reload.mockResolvedValue();
+  // 생성 중 확인(2-7)은 기본으로 실패 — 실패는 '바뀜'으로 보고 목록을 받는다(아래 옛 시험들의 매 틱 조회가 그대로다).
+  batch = vi.spyOn(api, "getGenerationsBatch").mockRejectedValue(new Error("offline"));
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -53,7 +57,134 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  batch.mockRestore();
   vi.useRealTimers();
+});
+
+// ── 2-7 생성 중에는 처리 중 카드만 확인한다 ──
+const job = (fields: Partial<Generation> = {}) =>
+  ({ id: "g1", status: "running", execution_phase: "tracking", provider_status: "in_progress", ...fields }) as unknown as Generation;
+const answer = (items: Record<string, Partial<Generation>>, missing: string[] = []) =>
+  batch.mockResolvedValue({ items: items as Record<string, Generation>, materials: {}, missing });
+
+it("[2-7] 처리 중 카드가 그대로면 목록을 받지 않고, 다섯 번째 틱(15초)에만 안전망으로 받는다", async () => {
+  answer({ g1: job() });
+  show({ tab: "my", gens: [job()] });
+  for (let tick = 1; tick <= 4; tick++) {
+    await pass(3_000);
+    expect(reload).not.toHaveBeenCalled();
+  }
+  expect(batch).toHaveBeenCalledTimes(4);
+  expect(batch).toHaveBeenLastCalledWith(["g1"], undefined, { signal: expect.any(AbortSignal) });
+  await pass(3_000);
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(reload).toHaveBeenLastCalledWith(true, true, "check");
+  expect(batch).toHaveBeenCalledTimes(4); // 안전망 틱은 묻지 않고 바로 받는다
+});
+
+it.each([
+  ["완료", { status: "done" }],
+  ["실패 사유", { error: "boom" }],
+  ["단계", { execution_phase: "verifying" }],
+  ["공급자 상태", { provider_status: "queued" }],
+])("[2-7] %s 이 바뀌면 그 틱에 목록을 받는다", async (_name, change) => {
+  answer({ g1: job(change as Partial<Generation>) });
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000);
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("[2-7] 확인 응답에 없거나 사라진 카드는 바뀐 것으로 본다", async () => {
+  answer({}, ["g1"]);
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000);
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("[2-7] 확인이 실패하면 지금처럼 목록을 받는다", async () => {
+  show({ tab: "my", gens: [job()] }); // beforeEach 의 기본 = 실패
+  await pass(3_000);
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("[2-7] 서버에 없는 임시 Comfy 카드가 있으면 묻지 않고 매 틱 목록을 받는다", async () => {
+  answer({ g1: job() });
+  show({ tab: "my", gens: [job(), job({ id: "tmp", _comfyPending: true } as Partial<Generation>)] });
+  await pass(3_000);
+  await pass(3_000);
+  expect(batch).not.toHaveBeenCalled();
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
+it("[2-7] 팀 탭은 목록과 같은 team 출처로 묻는다", async () => {
+  answer({ g1: job() });
+  show({ tab: "team", gens: [job()] });
+  await pass(3_000);
+  expect(batch).toHaveBeenLastCalledWith(["g1"], undefined, { authority: "team", signal: expect.any(AbortSignal) });
+  expect(reload).not.toHaveBeenCalled();
+});
+
+const hangUntilAborted = (seen: AbortSignal[] = []) =>
+  batch.mockImplementation((_ids: string[], _assert?: () => void, opts?: { signal?: AbortSignal }) => new Promise((_done, fail) => {
+    if (opts?.signal) seen.push(opts.signal);
+    opts?.signal?.addEventListener("abort", () => fail(new DOMException("aborted", "AbortError")));
+  }));
+
+it("[2-7] 확인이 8초 안에 안 오면 실제로 끊고 목록을 받는다 — 허브가 멎어도 폴링이 멈추지 않는다", async () => {
+  const seen: AbortSignal[] = [];
+  hangUntilAborted(seen);
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000);
+  expect(reload).not.toHaveBeenCalled();
+  await pass(8_000);
+  expect(seen[0]?.aborted).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("[2-7] 확인을 기다리는 사이 쉬기에 들어가면 늦게 온 '바뀜' 응답으로 목록을 받지 않는다", async () => {
+  let finish!: (value: unknown) => void;
+  batch.mockImplementationOnce(() => new Promise((done) => { finish = done; }));
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000);
+  show({ tab: "my", gens: [job()], paused: true });
+  await act(async () => finish({ items: { g1: job({ status: "done" }) }, materials: {}, missing: [] }));
+  expect(reload).not.toHaveBeenCalled();
+});
+
+it("[2-7] 화면을 떠나면 떠 있는 확인을 끊고 목록을 받지 않는다", async () => {
+  const seen: AbortSignal[] = [];
+  hangUntilAborted(seen);
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000);
+  show({ tab: "compose", gens: [job()] });
+  await pass(0);
+  expect(seen[0]?.aborted).toBe(true);
+  expect(reload).not.toHaveBeenCalled();
+});
+
+it("[2-7] 안전망은 마지막으로 목록을 받은 때부터 15초를 센다", async () => {
+  batch.mockResolvedValueOnce({ items: { g1: job({ provider_status: "queued" }) } as Record<string, Generation>, materials: {}, missing: [] });
+  answer({ g1: job() });
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000); // 바뀜 → 목록
+  expect(reload).toHaveBeenCalledTimes(1);
+  await pass(12_000); // 15초 — 처음부터 세면 안전망이지만, 마지막 목록(3초)부터는 12초다
+  expect(reload).toHaveBeenCalledTimes(1);
+  await pass(3_000); // 18초 — 마지막 목록부터 15초
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
+it("[2-7] 확인이 오래 걸려도 다음 틱이 겹쳐 묻지 않는다", async () => {
+  let finish!: (value: unknown) => void;
+  batch.mockImplementationOnce(() => new Promise((done) => { finish = done; }));
+  show({ tab: "my", gens: [job()] });
+  await pass(3_000);
+  await pass(6_000);
+  expect(batch).toHaveBeenCalledTimes(1);
+  await act(async () => finish({ items: { g1: job() }, materials: {}, missing: [] }));
+  await pass(3_000);
+  expect(batch).toHaveBeenCalledTimes(2);
 });
 
 it.each([false, true])("[r5b] 주기 틱이 수 ms 일찍 와도 매번 조회한다 (active=%s)", async (active) => {

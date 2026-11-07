@@ -232,12 +232,14 @@ function fetchGenerationBatchPage(
   assertCurrent?: () => void,
   allowPartial = false,
   authority?: "local" | "team",
+  signal?: AbortSignal,
 ): Promise<GenerationBatchResponse> {
   assertCurrent?.();
   const isCurrent = captureShareRead();
   return jsonFetch<GenerationBatchResponse>("/api/generations/batch", {
     method: "POST",
     body: jsonBody({ gen_ids: genIds, ...(allowPartial ? { allow_partial: true } : {}), ...(authority ? { authority } : {}) }),
+    signal,
   }).then((batch) => {
     if (authority && batch.authority !== authority) throw new GenerationAuthorityUnsupportedError();
     return {
@@ -253,10 +255,11 @@ function fetchGenerationBatchPage(
 }
 
 // allowPartial: 캔버스 상태 조회만 켠다 — 서버 장애 때 로컬 결과 + unavailable 로 받는다(다른 소비자는 지금처럼 실패를 받는다).
+// signal: 끊을 수 있는 확인(목록 자동 새로고침의 처리 중 카드 확인, 2026-11-07 2-7)만 넘긴다.
 async function getGenerationsBatch(
   genIds: string[],
   assertCurrent?: () => void,
-  { allowPartial = false, authority }: { allowPartial?: boolean; authority?: "local" | "team" } = {},
+  { allowPartial = false, authority, signal }: { allowPartial?: boolean; authority?: "local" | "team"; signal?: AbortSignal } = {},
 ): Promise<GenerationBatchResponse> {
   const ids = Array.from(new Set(genIds.map((id) => id.trim()).filter(Boolean)));
   if (!ids.length) return { items: {}, materials: {}, missing: [] };
@@ -264,7 +267,7 @@ async function getGenerationsBatch(
   for (let i = 0; i < ids.length; i += GENERATION_BATCH_LIMIT) {
     chunks.push(ids.slice(i, i + GENERATION_BATCH_LIMIT));
   }
-  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent, allowPartial, authority);
+  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0], assertCurrent, allowPartial, authority, signal);
 
   // 큰 씬도 서버 상한을 넘기지 않되 요청 수만큼 한꺼번에 연결하지 않는다. 한 페이지가 실패하면
   // 나머지 worker가 끝난 뒤 전체를 reject해 호출부가 기존 캐시를 유지하고 다음 tick에 다시 시도한다.
@@ -273,7 +276,7 @@ async function getGenerationsBatch(
   const worker = async () => {
     while (nextPage < chunks.length) {
       const index = nextPage++;
-      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent, allowPartial, authority);
+      pages[index] = await fetchGenerationBatchPage(chunks[index], assertCurrent, allowPartial, authority, signal);
     }
   };
   const workers = Array.from(

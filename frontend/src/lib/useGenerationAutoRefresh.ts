@@ -1,8 +1,44 @@
 import { useEffect, useRef } from "react";
+import { api } from "../api";
 import { APP_EVENTS, dispatchAppEvent, LIBRARY_POLL_TICK } from "./appEvents";
 import { hasActiveGenerationJob } from "./generationDisplay";
 import type { Filters, Generation } from "../types";
 import type { LibraryIntent } from "./useGenerationLibraryData";
+
+// 처리 중 카드에서 화면에 보이는 진행 필드 — 확인 시각(last_checked_at·next_check_at)은 15초 안전망이 맞춘다.
+const PROGRESS_FIELDS = ["status", "error", "execution_phase", "provider_status", "recovery_probe_status", "check_failures"] as const;
+// 처리 중 카드가 있는 동안 마지막으로 목록을 받은 지 이만큼 지나면 비교 없이 받는다(팀 탭 유휴 주기와 같다).
+const FULL_EVERY_MS = 15_000;
+// 처리 중 카드 확인의 제한 시간 — 넘으면 실제로 끊고 '바뀜'으로 보아 목록을 받는다(목록 쪽은 자기 30초 제한이 있다).
+export const ACTIVE_CHECK_TIMEOUT_MS = 8_000;
+
+function isActive(g: Generation): boolean {
+  return g.status === "pending" || g.status === "running";
+}
+
+// 처리 중 카드가 바뀌었나 — 바뀌었거나 확인할 수 없으면(오류·시간 초과·끊김) true. 실패를 '바뀜 없음'으로 보지 않는다.
+export async function activeGenerationsChanged(generations: Generation[], tab: Filters["tab"], stop?: AbortSignal): Promise<boolean> {
+  const active = generations.filter(isActive);
+  if (!active.length || active.some((g) => g._comfyPending)) return true; // 임시 Comfy 카드는 서버에 없다 — 목록으로 맞춘다
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, ACTIVE_CHECK_TIMEOUT_MS);
+  stop?.addEventListener("abort", abort);
+  try {
+    const batch = await api.getGenerationsBatch(active.map((g) => g.id), undefined,
+      { ...(tab === "team" ? { authority: "team" as const } : {}), signal: controller.signal });
+    return active.some((g) => {
+      const fresh = Object.prototype.hasOwnProperty.call(batch.items, g.id) ? batch.items[g.id] : undefined;
+      if (!fresh) return true;
+      return PROGRESS_FIELDS.some((field) => field in fresh && fresh[field] !== g[field]);
+    });
+  } catch {
+    return true;
+  } finally {
+    clearTimeout(timer);
+    stop?.removeEventListener("abort", abort);
+  }
+}
 
 interface UseGenerationAutoRefreshArgs {
   generations: Generation[];
@@ -30,6 +66,9 @@ export function useGenerationAutoRefresh({
   // 마지막 갱신 시각 — 폴링 인터벌과 focus/visibility 복귀가 공유해 중복 리로드를 막는다.
   const lastRefreshRef = useRef(0);
   const inflightRef = useRef(false);
+  // 생성 중 3초 틱은 처리 중 카드만 확인한다(2026-11-07 2-7) — 확인에 쓰는 최신 목록.
+  const generationsRef = useRef(generations);
+  generationsRef.current = generations;
 
   // 탭 전환 자체가 목록 reload 를 일으키므로, 직후 따라오는 브라우저 focus 이벤트는 중복 처리하지 않는다.
   useEffect(() => {
@@ -46,6 +85,8 @@ export function useGenerationAutoRefresh({
     // 3초 전체 리로드(프록시 왕복+원격 썸네일 prewarm 재스케줄)는 과했다.
     const ms = hasActiveJob ? 3000 : 15000;
     let alive = true;
+    const stop = new AbortController(); // 이 주기가 끝나면(탭 전환·정리) 떠 있는 확인도 끊는다
+    let lastFullAt = Date.now();
     const id = setInterval(() => {
       // 창이 안 보이면 쉰다(복귀 시 아래 visibilitychange 가 즉시 1회 갱신).
       if (inflightRef.current || pausedRef.current || document.visibilityState === "hidden") return;
@@ -54,7 +95,16 @@ export function useGenerationAutoRefresh({
       if (now - lastRefreshRef.current < ms / 2) return;
       inflightRef.current = true;
       lastRefreshRef.current = now;
-      void Promise.resolve(reload(true, true, "check")).finally(() => {
+      // 생성 중: 처리 중 카드만 묻고 바뀌었을 때만 목록 첫 쪽(약 3.38MB)을 받는다. 마지막으로 받은 지 15초가 지나면 비교 없이 받는다(안전망).
+      const full = !hasActiveJob || now - lastFullAt >= FULL_EVERY_MS;
+      const run = async () => {
+        if (!full && !(await activeGenerationsChanged(generationsRef.current, tab, stop.signal))) return;
+        // 확인을 기다리는 사이 이 주기가 정리됐거나(탭 전환) 쉬기·숨김에 들어갔으면 새 조회를 시작하지 않는다.
+        if (!alive || pausedRef.current || document.visibilityState === "hidden") return;
+        lastFullAt = Date.now();
+        await reload(true, true, "check");
+      };
+      void run().finally(() => {
         if (alive) inflightRef.current = false;
         // 팀 탭 유휴 폴링: light 리로드는 projects 를 안 갱신해 사이드바 폴더 카운트(+N 신규 배지)가
         // 낡는다 — 사이드바 카운트 갱신 채널을 깨운다(활성 잡 3초 폴링에선 스팸 방지 위해 제외).
@@ -64,6 +114,7 @@ export function useGenerationAutoRefresh({
     }, ms);
     return () => {
       alive = false;
+      stop.abort();
       inflightRef.current = false;
       clearInterval(id);
     };
