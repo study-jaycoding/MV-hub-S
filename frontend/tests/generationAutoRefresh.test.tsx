@@ -175,6 +175,31 @@ it("[2-7] 안전망은 마지막으로 목록을 받은 때부터 15초를 센�
   expect(reload).toHaveBeenCalledTimes(2);
 });
 
+it("[2-7] 안전망 기한(마지막 목록 뒤 15초)이 되면 떠 있는 확인을 끊고 목록을 받는다", async () => {
+  const same = { items: { g1: job() } as Record<string, Generation>, materials: {}, missing: [] };
+  batch.mockResolvedValueOnce(same).mockResolvedValueOnce(same).mockResolvedValueOnce(same);
+  const seen: AbortSignal[] = [];
+  show({ tab: "my", gens: [job()] });
+  await pass(9_000); // 3·6·9초 확인 — 그대로
+  expect(reload).not.toHaveBeenCalled();
+  hangUntilAborted(seen);
+  await pass(3_000); // 12초 확인이 멈췄다
+  expect(reload).not.toHaveBeenCalled();
+  await pass(3_000); // 15초 — 기다리지 않고 끊고 목록
+  expect(seen[0]?.aborted).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("[2-7] 목록을 받지 않은 확인은 창 복귀 조회를 막지 않는다", async () => {
+  answer({ g1: job() });
+  show({ tab: "my", gens: [job()] });
+  await pass(6_000); // 3·6초 확인만 — 목록은 0초 그대로
+  expect(reload).not.toHaveBeenCalled();
+  await pass(2_000);
+  await act(async () => { window.dispatchEvent(new Event("focus")); }); // 8초 — 목록은 8초 묵었다
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
 it("[2-7] 확인이 오래 걸려도 다음 틱이 겹쳐 묻지 않는다", async () => {
   let finish!: (value: unknown) => void;
   batch.mockImplementationOnce(() => new Promise((done) => { finish = done; }));

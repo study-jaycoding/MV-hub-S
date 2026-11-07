@@ -85,23 +85,35 @@ export function useGenerationAutoRefresh({
     // 3초 전체 리로드(프록시 왕복+원격 썸네일 prewarm 재스케줄)는 과했다.
     const ms = hasActiveJob ? 3000 : 15000;
     let alive = true;
-    const stop = new AbortController(); // 이 주기가 끝나면(탭 전환·정리) 떠 있는 확인도 끊는다
+    let checking: AbortController | null = null; // 지금 떠 있는 처리 중 카드 확인 — 주기가 끝나면(탭 전환·정리) 끊는다
     let lastFullAt = Date.now();
     const id = setInterval(() => {
       // 창이 안 보이면 쉰다(복귀 시 아래 visibilitychange 가 즉시 1회 갱신).
-      if (inflightRef.current || pausedRef.current || document.visibilityState === "hidden") return;
+      if (pausedRef.current || document.visibilityState === "hidden") return;
       const now = Date.now();
+      if (inflightRef.current) {
+        // 확인만 떠 있는데 안전망 기한이 지났다 — 그 확인을 끊는다(끊긴 확인은 '바뀜'으로 보고 목록을 받는다).
+        if (checking && now - lastFullAt >= FULL_EVERY_MS) checking.abort();
+        return;
+      }
       // 직전 복귀 조회는 중복을 막되, 주기보다 수 ms 일찍 온 틱은 버리지 않는다.
       if (now - lastRefreshRef.current < ms / 2) return;
       inflightRef.current = true;
-      lastRefreshRef.current = now;
       // 생성 중: 처리 중 카드만 묻고 바뀌었을 때만 목록 첫 쪽(약 3.38MB)을 받는다. 마지막으로 받은 지 15초가 지나면 비교 없이 받는다(안전망).
       const full = !hasActiveJob || now - lastFullAt >= FULL_EVERY_MS;
       const run = async () => {
-        if (!full && !(await activeGenerationsChanged(generationsRef.current, tab, stop.signal))) return;
+        if (!full) {
+          const check = (checking = new AbortController());
+          try {
+            if (!(await activeGenerationsChanged(generationsRef.current, tab, check.signal))) return;
+          } finally {
+            if (checking === check) checking = null;
+          }
+        }
         // 확인을 기다리는 사이 이 주기가 정리됐거나(탭 전환) 쉬기·숨김에 들어갔으면 새 조회를 시작하지 않는다.
         if (!alive || pausedRef.current || document.visibilityState === "hidden") return;
-        lastFullAt = Date.now();
+        // 목록을 실제로 받을 때만 시계를 넘긴다 — 확인만 한 틱이 창 복귀 조회(5초 가드)를 막지 않게.
+        lastRefreshRef.current = lastFullAt = Date.now();
         await reload(true, true, "check");
       };
       void run().finally(() => {
@@ -114,7 +126,7 @@ export function useGenerationAutoRefresh({
     }, ms);
     return () => {
       alive = false;
-      stop.abort();
+      checking?.abort();
       inflightRef.current = false;
       clearInterval(id);
     };

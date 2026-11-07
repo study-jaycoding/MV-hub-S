@@ -28,9 +28,10 @@ def test_launcher_stays_ascii():
 
 def test_port_check_comes_before_the_powershell_cleanup():
     block = _cleanup_block()
-    assert block.index("netstat -ano >") < block.index("stop_local_hub_on_port.ps1\" -Port")
+    assert block.index("netstat -ano 2>nul || echo MVHUB_NETSTAT_FAILED") < block.index("stop_local_hub_on_port.ps1\" -Port")
     assert "if errorlevel 1 if not errorlevel 2 set \"_PORT_BUSY=\"" in block
     assert "if defined _PORT_BUSY (" in block
+    assert "%TEMP%" not in block  # 임시 파일이 없다 — 다른 설치본의 같은 포트 실행과 파일을 나눠 쓰지 않는다
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 배치 파일")

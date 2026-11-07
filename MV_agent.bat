@@ -221,14 +221,11 @@ if exist "%ROOT%tools\stop_local_hub_on_port.ps1" (
   REM Nothing on this port = nothing to stop. netstat answers in ~0.07s, PowerShell takes ~1s just
   REM to start (2026-11-07). Skip ONLY when netstat itself worked AND no line has the port; any
   REM line (listening, connected, closing) or a failed netstat still runs the full owner check.
-  REM One netstat run into a file: findstr exit 1 = no line (skip), 0 = found, 2 = could not read (check).
+  REM One netstat run, no temp file: a failed netstat adds a marker line that findstr also looks for,
+  REM so failure counts as "found". findstr exit 1 = no line (skip), 0 = found, 2 = error (check).
   set "_PORT_BUSY=1"
-  netstat -ano > "%TEMP%\mvhub_ports_%PORT%.txt" 2>nul
-  if not errorlevel 1 (
-    findstr /c:":%PORT% " "%TEMP%\mvhub_ports_%PORT%.txt" >nul
-    if errorlevel 1 if not errorlevel 2 set "_PORT_BUSY="
-  )
-  del "%TEMP%\mvhub_ports_%PORT%.txt" >nul 2>nul
+  (netstat -ano 2>nul || echo MVHUB_NETSTAT_FAILED) | findstr /c:":%PORT% " /c:"MVHUB_NETSTAT_FAILED" >nul
+  if errorlevel 1 if not errorlevel 2 set "_PORT_BUSY="
   if defined _PORT_BUSY (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
     if errorlevel 1 (
