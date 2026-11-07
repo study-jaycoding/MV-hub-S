@@ -2692,6 +2692,8 @@ def test_runner_rechecks_the_same_release_target_then_deploys_and_resumes(tmp_pa
     assert release.find_resumable(inst) == {"job_id": first, "version": FIELDS_C["version"]}
     params, from_state, intent = release.resume_source(inst, first)
     resume = actions.plan_release_resume(inst, SERVER, "\\\\NAS\\r", first, params, from_state, intent, [])
+    # 작업 순서는 request.json 수정 시각이다 — 몇 ms 안에 만든 두 작업은 Windows 시각 단위 안에서 같아질 수 있다(바쁜 PC 의 게이트에서 실패)
+    os.utime(jobs.job_dir(inst, first) / "request.json", (1, 1))
     second = jobs.new_job(inst, resume, fake_runner(), login_email="admin@x")
     assert job_main.run_release(inst, second, jobs.read_json(jobs.job_dir(inst, second) / "request.json"), "tok") == 0
     # 배포: 다시 읽기 → 후보 promote(500) · 이어서: 다시 읽기(표지 그대로) → promote — 알림은 한 번뿐
