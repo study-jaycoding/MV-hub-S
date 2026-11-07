@@ -86,14 +86,22 @@ def _report(rid, status):
 def test_only_repeated_processing_reports_are_quiet(isolated):
     out, quiet = _report(isolated, "queued")
     assert out["outcome"] == "not_ready" and not quiet  # claimed→tracking·pending→running 첫 전환
+    sent_before = usecase.manager.broadcast.await_count
     out, quiet = _report(isolated, "queued")
     assert out["outcome"] == "not_ready" and quiet  # 확인 시각만 바뀐 반복 보고
+    # 조용한 보고는 progress 도 보내지 않는다 — 판정 직후 다른 요청이 완료를 저장해도 덮을 메시지가 없다
+    assert usecase.manager.broadcast.await_count == sent_before
     out, quiet = _report(isolated, "in_progress")
     assert not quiet  # 공급자 상태가 바뀜 — 툴팁 값이 바뀐다
     _, quiet = _report(isolated, "in_progress")
     assert quiet
     _, quiet = _report(isolated, "mystery_status")
     assert not quiet  # unknown → 단계·사유가 바뀜
+    _, quiet = _report(isolated, "mystery_status")
+    assert not quiet  # 같은 값이어도 note 가 있으면 progress(running) 를 보낸다 — 완료가 끼어들면 덮을 수 있어 synced 를 남긴다
+    _, quiet = _report(isolated, "needs_action")
+    _, quiet = _report(isolated, "needs_action")
+    assert not quiet  # action_required 도 note 가 있다
     with db.get_connection() as conn:
         row = conn.execute("SELECT next_check_at, last_checked_at FROM gen_request WHERE id=?", (isolated,)).fetchone()
         assert conn.execute("SELECT (julianday(?) - julianday(?)) * 86400", (row[0], row[1])).fetchone()[0] == pytest.approx(15, abs=1)

@@ -1116,8 +1116,9 @@ async def _reconcile_request(
         )
         card = await _sync_io(repo.set_status, gen_id, "running", note)
         if notes is not None:
-            # 둘 다 '대상이 있고 같은 값' 일 때만 — 종결 보호로 못 쓴(not_applied) 늦은 보고는 synced 로 화면을 DB 값에 되돌린다
-            notes["library_unchanged"] = check == "same" and card == "same"
+            # 둘 다 '대상이 있고 같은 값' 이고 아래 progress 를 보내지 않을 때(note 없음)만 — 종결 보호로 못 쓴(not_applied) 늦은 보고와,
+            # 판정 직후 다른 요청이 완료를 저장한 뒤 이 요청의 progress(running) 가 완료 카드를 덮는 경합은 synced 가 DB 값으로 되돌린다
+            notes["library_unchanged"] = note is None and check == "same" and card == "same"
         if (
             provider_kind in ("unknown", "action_required")
             and (
