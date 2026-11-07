@@ -182,6 +182,35 @@ class MediaCacheTests(unittest.TestCase):
                 self.assertIn(str(newest), known)
             media_cache._THUMB_SOURCE_STATE.clear()
 
+    def test_overflow_keeps_the_just_received_source_even_when_it_is_large(self):
+        """방금 받은 원본이 목표(90%)보다 커도 지우지 않는다 — 곧바로 그 파일로 썸네일을 만든다(독립 리뷰 P2)."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source_dir = root / ".thumb-sources" / "aa"
+            source_dir.mkdir(parents=True)
+            old = source_dir / "old.png"
+            old.write_bytes(b"o" * 100)
+            os.utime(old, (time.time() - 1000, time.time() - 1000))
+            big = source_dir / "big.mp4"
+            big.write_bytes(b"b" * 950)
+            with mock.patch.object(media_cache, "MEDIA_DIR", root), \
+                    mock.patch.object(media_cache, "THUMB_SOURCE_CACHE_MAX_BYTES", 1000):
+                media_cache._THUMB_SOURCE_STATE.clear()
+                key = str(media_cache._thumb_source_dir())
+                media_cache._THUMB_SOURCE_STATE[key] = (100, {str(old)})
+                media_cache._account_thumb_source(big)  # 1,050 > 1,000 → 목표 900
+                self.assertFalse(old.exists())
+                self.assertTrue(big.exists())
+                self.assertEqual(media_cache._THUMB_SOURCE_STATE[key][0], 950)
+                media_cache._THUMB_SOURCE_STATE.clear()  # 상태 없음(첫 계상) 경로도 같다
+                old.write_bytes(b"o" * 100)
+                os.utime(old, (time.time() - 1000, time.time() - 1000))
+                big.write_bytes(b"b" * 1200)  # 상한보다 커도 방금 받은 것은 남는다
+                media_cache._account_thumb_source(big)
+                self.assertFalse(old.exists())
+                self.assertTrue(big.exists())
+            media_cache._THUMB_SOURCE_STATE.clear()
+
     def test_thumb_source_url_uses_dedicated_directory(self):
         rel = media_cache.thumb_source_rel_for("https://cdn.example.com/image.png?sig=x")
         self.assertTrue(rel.startswith("/media/.thumb-sources/"))

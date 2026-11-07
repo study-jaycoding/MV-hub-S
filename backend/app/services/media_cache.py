@@ -460,7 +460,8 @@ def _thumb_source_entries(root: Path) -> list[tuple[float, int, Path]]:
     return entries
 
 
-def _evict_thumb_sources_locked(root: Path, max_bytes: int) -> int:
+def _evict_thumb_sources_locked(root: Path, max_bytes: int, keep: Path | None = None) -> int:
+    """keep: 방금 받아 곧 썸네일을 만들 원본 — 크기가 커도 지우지 않는다(목표를 못 맞추면 다음 정리 때 오래된 순서로)."""
     entries = _thumb_source_entries(root)
     total = sum(size for _mtime, size, _path in entries)
     removed = 0
@@ -469,6 +470,8 @@ def _evict_thumb_sources_locked(root: Path, max_bytes: int) -> int:
         for _mtime, size, path in entries:
             if total <= max_bytes:
                 break
+            if keep is not None and path == keep:
+                continue
             try:
                 path.unlink()
                 total -= size
@@ -499,7 +502,7 @@ def _account_thumb_source(target: Path) -> None:
     with _THUMB_SOURCE_STATE_LOCK:
         state = _THUMB_SOURCE_STATE.get(key)
         if state is None:
-            _evict_thumb_sources_locked(root, THUMB_SOURCE_CACHE_MAX_BYTES)
+            _evict_thumb_sources_locked(root, THUMB_SOURCE_CACHE_MAX_BYTES, keep=target)
             return
         total, known = state
         if target_key not in known:
@@ -513,7 +516,7 @@ def _account_thumb_source(target: Path) -> None:
         _THUMB_SOURCE_STATE[key] = (total, known)
         if total > THUMB_SOURCE_CACHE_MAX_BYTES:
             # 상한 바로 아래까지만 지우면 그 뒤 새 원본마다 다시 넘쳐, 파일마다 폴더를 두 번 훑었다(이 잠금 안에서).
-            _evict_thumb_sources_locked(root, int(THUMB_SOURCE_CACHE_MAX_BYTES * 0.9))
+            _evict_thumb_sources_locked(root, int(THUMB_SOURCE_CACHE_MAX_BYTES * 0.9), keep=target)
 
 
 def _mark_thumb_source_used(path: Path) -> None:

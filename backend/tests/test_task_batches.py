@@ -229,27 +229,35 @@ class TaskBatchTests(unittest.TestCase):
 
     def test_task_caches_drop_expired_entries_when_storing(self) -> None:
         """수명(0.75초)이 지난 칸은 다른 키를 넣을 때 지운다 — 같은 키로 다시 읽힐 때만 지우면 128칸까지 남는다."""
+        now = 5000.0
+        stamp = ("stable",)
+        # 같은 stamp 의 만료·미만료 칸을 함께 넣는다 — 만료 칸만 지워져야 한다(통째로 비우는 구현은 실패, 리뷰 P3)
         manage_tasks.clear_task_read_cache()
-        manage_tasks._TASK_READ_CACHE[("dead-read",)] = (0.0, ("old",), {"p": []})
+        manage_tasks._TASK_READ_CACHE[("dead-read",)] = (now - 0.1, stamp, {"p": []})
+        manage_tasks._TASK_READ_CACHE[("live-read",)] = (now + 0.5, stamp, {"p": []})
         with (
+            patch.object(manage_tasks.time, "monotonic", return_value=now),
             patch.object(manage_tasks, "_TASK_READ_CACHE_TTL", 1.0),
             patch.object(manage_tasks, "get_db_path", return_value=Path("purge.db")),
-            patch.object(manage_tasks, "_task_cache_stamp", return_value=("stable",)),
+            patch.object(manage_tasks, "_task_cache_stamp", return_value=stamp),
             patch.object(manage_tasks, "_list_tasks_batch_uncached", return_value={"p1": []}),
         ):
             manage_tasks.list_tasks_batch(["p1"], workspace_id="workspace-a")
         self.assertNotIn(("dead-read",), manage_tasks._TASK_READ_CACHE)
-        self.assertEqual(len(manage_tasks._TASK_READ_CACHE), 1)
+        self.assertIn(("live-read",), manage_tasks._TASK_READ_CACHE)
+        self.assertEqual(len(manage_tasks._TASK_READ_CACHE), 2)
         manage_tasks.clear_task_read_cache()
 
         manage_router._TASK_RESPONSE_CACHE.clear()
-        manage_router._TASK_RESPONSE_CACHE[("dead-response",)] = (0.0, ("old",), b"{}")
+        manage_router._TASK_RESPONSE_CACHE[("dead-response",)] = (now - 0.1, stamp, b"{}")
+        manage_router._TASK_RESPONSE_CACHE[("live-response",)] = (now + 0.5, stamp, b"{}")
         with (
+            patch.object(manage_router.time, "monotonic", return_value=now),
             patch.object(manage_router, "_TASK_RESPONSE_TTL", 1.0),
-            patch.object(manage_router.repo_manage_tasks, "_task_cache_stamp", return_value=("stable",)),
+            patch.object(manage_router.repo_manage_tasks, "_task_cache_stamp", return_value=stamp),
         ):
-            manage_router._task_json_response(("live",), {"p1": []}, expected_stamp=("stable",))
-        self.assertEqual(list(manage_router._TASK_RESPONSE_CACHE), [("live",)])
+            manage_router._task_json_response(("live",), {"p1": []}, expected_stamp=stamp)
+        self.assertEqual(sorted(manage_router._TASK_RESPONSE_CACHE), [("live",), ("live-response",)])
         manage_router._TASK_RESPONSE_CACHE.clear()
 
     def test_task_cache_stamp_changes_when_same_path_database_is_replaced(self) -> None:
