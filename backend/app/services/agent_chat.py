@@ -56,6 +56,13 @@ GUIDE = (
 )
 
 
+def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
+    """이 엔진으로 차례를 시작해도 되나(None = 된다) — Claude 는 화면(입력칸 잠금)과 같은 상태 판정 하나, Codex 는 판·잠금·로그인."""
+    if engine == "claude":
+        return claude.claude_problem(prefix)
+    return process.engine_problem(engine, prefix)
+
+
 def enabled() -> bool:
     """라우터·기능 표식을 붙일지 — 켠 로컬 허브만. 공유 서버 본체는 켜도 붙이지 않는다."""
     return config.AGENT_CHAT_ENABLED and not is_shared_team_server()
@@ -165,7 +172,7 @@ class AgentChat:
         return result
 
     def engine_problem(self, engine: str) -> str | None:
-        return process.engine_problem(engine, process.engine_prefix(engine))
+        return engine_problem(engine, process.engine_prefix(engine))
 
     # ── 차례 ──
     def start_turn(self, identity: Identity, *, conversation: dict, turn: dict, model: str, effort: str,
@@ -291,7 +298,7 @@ class AgentChat:
         watcher = threading.Thread(target=self._watch, args=(runtime,), daemon=True)
         watcher.start()
         try:
-            problem = process.engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
+            problem = engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
             if problem:
                 raise EngineUnavailable(problem)
             if runtime.engine == "claude":  # 같은 Claude 자격을 쓰는 허브들과 줄 서기 — 이 스레드가 잡고 회수 확인 뒤 놓는다

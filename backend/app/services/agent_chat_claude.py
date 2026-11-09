@@ -66,16 +66,6 @@ class RecordUnreadable(Exception):
 
 
 # ── 상태 판정 ──
-def version_tuple(value: str) -> tuple[int, ...]:
-    parts = []
-    for piece in (value or "").split("."):
-        digits = "".join(ch for ch in piece if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
-
-
 def _auth_status(prefix: list[str]) -> dict | None:
     """JSON 상태(종료 코드와 상관없이) — 실행 실패·시간 초과·JSON 아님이면 None."""
     try:
@@ -99,7 +89,7 @@ def claude_state(prefix: list[str] | None) -> dict:
     version = process.cli_version(prefix)
     if not version:
         return {"state": "unknown", "version": None, "subscription": None}
-    if version_tuple(version) < MIN_VERSION:
+    if process.version_tuple(version) < MIN_VERSION:
         return {"state": "outdated", "version": version, "subscription": None}
     data = _auth_status(prefix)
     if data is None:

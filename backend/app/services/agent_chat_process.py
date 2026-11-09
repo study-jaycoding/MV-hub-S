@@ -73,7 +73,6 @@ def find_claude() -> list[str] | None:
     candidates = _claude_candidates()
     if len(candidates) <= 1:
         return candidates[0] if candidates else None
-    from .agent_chat_claude import version_tuple  # 순환 import 를 피해 여기서
     official = str(official_claude()).casefold()
     return max(candidates, key=lambda c: (version_tuple(cli_version(c)), c[0].casefold() == official))
 
@@ -104,6 +103,17 @@ def cli_version(prefix: list[str]) -> str:
     return words[0] if words[0][:1].isdigit() else words[-1]
 
 
+def version_tuple(value: str) -> tuple[int, ...]:
+    """"2.1.296" → (2, 1, 296) — 숫자 조각만(앞에서 끊김까지)."""
+    parts = []
+    for piece in (value or "").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
 def _status_output(prefix: list[str], args: list[str]) -> str:
     try:
         done = subprocess.run([*prefix, *args], capture_output=True, stdin=subprocess.DEVNULL, text=True,
@@ -114,12 +124,8 @@ def _status_output(prefix: list[str], args: list[str]) -> str:
     return done.stdout or "" if done.returncode == 0 else ""
 
 
-def auth_problem(engine: str, prefix: list[str]) -> str | None:
-    """구독 로그인인지 — 비밀값을 내지 않는 상태 확인으로만 본다(설계 3-4). 출력(이메일 등)은 판정에만 쓰고 남기지 않는다.
-    Claude 는 상태 판정 하나(agent_chat_claude.claude_state — 로그아웃 종료 코드 1 의 JSON 도 읽는다)를 화면과 함께 쓴다."""
-    if engine == "claude":
-        from .agent_chat_claude import claude_problem  # 순환 import 를 피해 여기서
-        return claude_problem(prefix)
+def auth_problem(prefix: list[str]) -> str | None:
+    """Codex 가 구독(ChatGPT) 로그인인지 — 비밀값을 내지 않는 상태 확인으로만 본다(설계 3-4)."""
     text = _status_output(prefix, ["login", "status"])
     if "Logged in using ChatGPT" in text:
         return None
@@ -127,17 +133,20 @@ def auth_problem(engine: str, prefix: list[str]) -> str | None:
 
 
 def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
-    """지금 설치된 실행 파일로 이 엔진을 써도 되나 — 차례마다 실행 직전에 다시 본다(이어 가기 포함). None 이면 된다."""
+    """Codex 를 지금 써도 되나 — 차례마다 실행 직전에 다시 본다(이어 가기 포함). None 이면 된다.
+    Claude 는 여기서 보지 않는다 — agent_chat.engine_problem → agent_chat_claude.claude_problem(화면과 같은 상태 판정 하나)."""
+    if engine != "codex":
+        raise ValueError("Claude 판정은 agent_chat.engine_problem 으로")
     if not prefix:
         return "이 PC 에 설치되어 있지 않습니다"
-    if engine == "codex" and CODEX_LOCK:
+    if CODEX_LOCK:
         return CODEX_LOCK
     version = cli_version(prefix)
     if not version:
         return "판을 확인하지 못했습니다"
-    if engine == "codex" and version not in CODEX_VERIFIED:
+    if version not in CODEX_VERIFIED:
         return f"점검 필요 — 확인하지 않은 판입니다({version})"
-    return auth_problem(engine, prefix)  # Claude 는 판(최소 판 포함)·로그인·구독을 상태 판정 하나로 다시 본다
+    return auth_problem(prefix)
 
 
 def _toml_literal(value: str) -> str:

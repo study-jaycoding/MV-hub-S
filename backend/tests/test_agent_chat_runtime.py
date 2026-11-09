@@ -490,7 +490,7 @@ def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):
     for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아"), ("none", "로그인되어 있지 않")):
         monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
         for engine in ("claude", "codex"):
-            problem = process.engine_problem(engine, [sys.executable, str(FAKE), f"--fake-engine={engine}"])
+            problem = chat.engine_problem(engine, [sys.executable, str(FAKE), f"--fake-engine={engine}"])
             assert (problem is None) if expected is None else (expected in problem), (engine, auth, problem)
 
 
