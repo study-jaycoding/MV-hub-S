@@ -65,8 +65,8 @@
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Thread | `self._watch` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Timer | `self._timeout` |
 | `backend/app/services/agent_chat.py` | `AgentChat.start_turn` | Thread | `self._run` |
-| `backend/app/services/agent_chat_process.py` | `JobProcess.__init__` | Thread | `self._drain_stderr` |
 | `backend/app/services/agent_chat_process.py` | `JobProcess.feed` | Thread | `write` |
+| `backend/app/services/agent_chat_process.py` | `JobProcess.start` | Thread | `self._drain_stderr` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.start` | create_task | `self._loop() (name=asset-registry-loop)` |
 | `backend/app/services/asset_registry_helper.py` | `HelperController._project_run` | create_task | `self._renew_loop(lease_id)` |
