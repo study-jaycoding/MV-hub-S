@@ -380,7 +380,7 @@ describe("크게 보기 Ctrl 카드 단추", () => {
     expect(layer()).toBeNull();
   });
 
-  it("카드의 C = 이 창의 코멘트 모드(그 동안 카드 단추는 걷힌다) · Ctrl 없이는 안 뜨고 cardActions 가 없으면 생성물엔 안 뜬다", async () => {
+  it("카드의 C·c 키 = 앱의 작은 코멘트 창(크게 보기는 둔다 — Jay 11-09) · Ctrl 없이는 안 뜨고 cardActions 가 없으면 생성물엔 안 뜬다", async () => {
     await showCard(TARGET);
     ctrl("keydown");
     await settle();
@@ -391,12 +391,15 @@ describe("크게 보기 Ctrl 카드 단추", () => {
     ctrl("keydown");
     await settle();
     act(() => { layer()!.querySelector<HTMLButtonElement>(".card-tl button:last-child")!.click(); });
-    expect(document.body.querySelector(".cm-modal")).not.toBeNull();
-    expect(acts.onOpenComments).not.toHaveBeenCalled();
-    expect(layer()).toBeNull();
+    expect(acts.onOpenComments).toHaveBeenCalledTimes(1);
+    expect(acts.onOpenComments.mock.calls[0][0]).toMatchObject({ id: "g1" });
+    expect(document.body.querySelector(".cm-modal")).toBeNull(); // 그림 창은 작은 창의 [편집] 으로
+    expect(host.querySelector(".media-preview")).not.toBeNull();
     ctrl("keyup");
-    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true })); });
     await settle();
+    expect(acts.onOpenComments).toHaveBeenCalledTimes(2); // c 키도 같은 작은 창
+    expect(document.body.querySelector(".cm-modal")).toBeNull();
   });
 
   it("뜬 단추를 누르면 Ctrl 을 떼도 남고, 단추 밖을 누르면 걷힌다", async () => {

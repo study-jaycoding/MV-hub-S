@@ -270,9 +270,8 @@ describe("어셋 그림 창 — 보내기", () => {
       reply.value = "쓰던 답글";
       reply.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     act(() => { document.querySelector<HTMLButtonElement>(".partial-edit-head .assets-x")!.click(); });
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".host-exit-confirm")?.textContent).toContain("버릴까요");
     expect(onClose).not.toHaveBeenCalled();
   });
 });

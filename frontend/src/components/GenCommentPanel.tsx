@@ -30,6 +30,8 @@ interface Props {
   allowPrivate?: boolean;
   onUnsentChange?: (unsent: boolean) => void;
   onComments?: (comments: GenComment[]) => void; // 그림 창이 지난 그림 책갈피를 그린다
+  // 작은 창의 [편집](입력칸과 [전송] 사이) — 쓰던 글을 넘기고 그림 창을 연다(Jay 11-09: 생성물도 C = 작은 창 → [편집] → 그림 창)
+  onEditDraw?: (text: string) => boolean;
 }
 
 const GEN_LS = makeStore("ch.gen.");
@@ -186,6 +188,7 @@ export function GenCommentPanel({
   allowPrivate,
   onUnsentChange,
   onComments,
+  onEditDraw,
 }: Props) {
   const [comments, setComments] = useState<GenComment[]>([]);
   useEffect(() => onComments?.(comments), [comments, onComments]);
@@ -305,6 +308,7 @@ export function GenCommentPanel({
       composer={composer}
       allowPrivate={allowPrivate}
       onUnsentChange={onUnsentChange}
+      onEditDraw={onEditDraw}
       renderExtra={(c) => (
         <CommentDrawingStrip
           target={{ kind: "generation", genId }}

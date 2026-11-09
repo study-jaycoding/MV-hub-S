@@ -18,6 +18,7 @@ import { holdUnload } from "../../lib/unloadGuard";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { AssetComment, CommentDrawingIn, CommentDrawingMeta, CommentDrawingView, CommentTarget, GenComment } from "../../types";
 import { CommentPanel, type CommentComposer } from "../common/CommentPanel";
+import { HostConfirm } from "../common/HostConfirm";
 import { CloseIcon } from "../common/ViewIcons";
 import { DrawDock, DrawTextInput, TOOL_ICONS } from "../edit/drawing/DrawDock";
 import { drawingHash, MAX_DRAWINGS, StrokesTooLarge, toStrokesV1, type DrawItem } from "../edit/drawing/strokes";
@@ -425,14 +426,17 @@ export function CommentDrawModal({
     }
   };
 
+  // 쓰던 것이 있으면 앱 확인창(씬 삭제와 같은 HostConfirm — Jay 11-09, 브라우저 확인창 대신)으로 묻는다
+  const [confirmClose, setConfirmClose] = useState(false);
   const requestClose = () => {
-    if ((dirty || sideUnsent) && !window.confirm("쓰던 코멘트와 그림을 버릴까요?")) return;
-    onClose();
+    if (dirty || sideUnsent) setConfirmClose(true);
+    else onClose();
   };
 
   // ── 키 — 떠 있는 동안 크게 보기의 키·재생은 쉰다(크게 보기가 이 창이 떠 있으면 키를 넘긴다) ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (confirmClose) return; // 확인창이 떠 있는 동안 키는 그 창의 것(Enter = 버리기, Esc = 취소)
       const t = e.target instanceof Element ? e.target : null;
       const typing = !!t?.closest("input, textarea, select, [contenteditable]");
       const mod = e.ctrlKey || e.metaKey;
@@ -590,7 +594,7 @@ export function CommentDrawModal({
                 )}
               </div>
               {/* 무대 아래 한 판 — 영상: 타임라인·재생 줄·도구 줄 / 이미지: 번호 줄·도구 줄(시안 ⑥⑦) */}
-              <div className="cm-board">
+              <div className="pe-board">
                 {isVideo ? (
                   <>
                     <div className="pe-scrub" role="slider" aria-label="코멘트할 영상 시점" aria-valuemin={0}
@@ -629,9 +633,9 @@ export function CommentDrawModal({
                         </div>
                       </div>
                     </div>
-                    <div className="pe-trans cm-trans">
-                      <span className="cm-time">{timecode(time)} <span className="muted">/ {timecode(duration)}</span></span>
-                      <div className="cm-trans-mid">
+                    <div className="pe-trans pe-trans-row">
+                      <span className="pe-time">{timecode(time)} <span className="muted">/ {timecode(duration)}</span></span>
+                      <div className="pe-trans-mid">
                         <button type="button" className="pe-tbtn" title="처음으로 (Home)" aria-label="처음으로" onClick={() => seekTo(0)}>
                           <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>
                         </button>
@@ -647,7 +651,7 @@ export function CommentDrawModal({
                         <button type="button" className="pe-tbtn" title="끝으로 (End)" aria-label="끝으로" onClick={() => seekTo(duration)}>
                           <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>
                         </button>
-                        <span className="cm-frame">{Math.min(frameCount, frameOf(time) + 1)} / {frameCount}</span>
+                        <span className="pe-frame">{Math.min(frameCount, frameOf(time) + 1)} / {frameCount}</span>
                       </div>
                       <span className="pe-keys">← → 한 프레임 · Space 재생</span>
                     </div>
@@ -734,6 +738,12 @@ export function CommentDrawModal({
           </aside>
         </div>
       </div>
+      {confirmClose && (
+        <HostConfirm label="코멘트 닫기" title="💬 코멘트 닫기" confirmLabel="버리기"
+          onConfirm={() => { setConfirmClose(false); onClose(); }} onCancel={() => setConfirmClose(false)}>
+          쓰던 코멘트와 그림을 버릴까요?
+        </HostConfirm>
+      )}
     </div>
   );
 }

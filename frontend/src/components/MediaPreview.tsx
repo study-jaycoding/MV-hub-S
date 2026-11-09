@@ -207,8 +207,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   }, []);
   const activeView = view && previewShowsTarget(cur, view.target) ? view : null;
 
-  // ── 코멘트(Ctrl 카드의 C·c 키 → 코멘트 모드). 생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만 ──
-  const canComment = !!cur.genId && cur.type !== "audio" && hubHasFeature("comment_drawings_v1");
+  // ── 코멘트(생성물 c 키) — 앱이 있으면(cardActions) 작은 코멘트 창을 크게 보기 위 겹에 연다. 그 창의 [편집] = 앱의 그림 창(Jay 11-09,
+  //  Ctrl 카드 C 와 같다). 앱 동작이 없는 곳만 종전대로 이 창의 코멘트 모드(그림을 아는 허브) ──
+  const canComment = !!cur.genId && cur.type !== "audio" && (!!cardActions || hubHasFeature("comment_drawings_v1"));
   // 어셋 c = Ctrl 카드 C 와 같은 작은 코멘트 창(크게 보기 위 겹에 뜬다 — CommentPanel over-preview). 그 칸을 그린 화면이 여는 함수를 등록했을 때만
   const assetCommentRegistered = !!useSyncExternalStore(subscribeAssetCard, () => assetCommentOpen);
   const canAssetComment = !cur.genId && !!cur.assetPath && cur.type !== "audio" && assetCommentRegistered;
@@ -220,6 +221,14 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   const commentStartRef = useRef(0);
   const openComment = () => {
     if (!canComment) return;
+    if (cardActions && cur.genId) {
+      const genId = cur.genId;
+      setMenu(null);
+      if (liveGen?.id === genId) cardActions.onOpenComments(liveGen);
+      else api.getGeneration(genId).then((g) => cardActions.onOpenComments(g))
+        .catch(() => flashMsg("코멘트를 열지 못했습니다 — 생성물을 찾지 못했습니다"));
+      return;
+    }
     const v = videoRef.current;
     commentStartRef.current = v?.currentTime ?? 0;
     v?.pause(); // 코멘트 모드가 떠 있는 동안 크게 보기의 재생은 쉰다
@@ -638,8 +647,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                     editingField={cardTagging ? "tag" : null}
                     onRequestEdit={(_, field) => setCardTagging(field === "tag")}
                     onEditDone={() => setCardTagging(false)}
-                    // C = 이 창의 코멘트 모드(그림을 모르는 허브는 종전 작은 창)
-                    onOpenComments={(g) => (canComment ? openComment() : leave(() => cardActions.onOpenComments(g)))}
+                    // C = 작은 코멘트 창을 크게 보기 위 겹에(크게 보기는 둔다) — 그 창의 [편집] = 그림 창(Jay 11-09)
+                    onOpenComments={(g) => cardActions.onOpenComments(g)}
                     onInfo={cardActions.onInfo} // 크게 보기는 둔 채 정보 창을 위에(11-09 Jay)
                     menuScope="preview" // 뒤 격자의 같은 생성물 카드와 S 선택 창을 가른다(11-09 Jay: 워크스페이스·공유 탭 S 무반응)
                     onOpenFolder={cardActions.onOpenFolder && ((g) => leave(() => cardActions.onOpenFolder!(g)))}

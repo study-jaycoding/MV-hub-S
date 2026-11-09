@@ -443,7 +443,10 @@ export default function App() {
   // 씬(캔버스) 툴바 카운트 — SceneBoard 가 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고.
   const [sceneTypeCount, setSceneTypeCount] = useState(0);
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
-  const [commentDraw, setCommentDraw] = useState<Generation | null>(null); // 카드 C 로 연 코멘트 그림 창(Jay 2026-11-05 시안 ⑮)
+  const [commentDraw, setCommentDraw] = useState<Generation | null>(null); // 작은 코멘트 창의 [편집] 으로 연 코멘트 그림 창
+  const [commentGen, setCommentGen] = useState<Generation | null>(null); // 카드로 연 작은 창의 생성물 — [편집] 판정(이미지·영상)
+  const [commentDrawText, setCommentDrawText] = useState(""); // [편집] 때 작은 창에서 넘겨받은 쓰던 글
+  const [commentReread, setCommentReread] = useState(0); // 그림 창을 닫으면 작은 창 목록을 다시 읽는다
   const [syncTick, setSyncTick] = useState(0); // WS 'synced' 수신 카운터 — 열린 코멘트 패널 실시간 갱신용
   const [preview, setPreview] = useState<PreviewTarget | null>(null); // 클릭 미리보기
   const [folderPeek, setFolderPeek] = useState(false); // 캔버스 '폴더 보기' 창 — 규칙은 아래 folderSel 옆
@@ -2003,10 +2006,11 @@ export default function App() {
     enterBoard(g.id);
   };
 
-  // 카드의 C(격자·캔버스·편집 풀) → 코멘트 그림 창(Jay 2026-11-05 시안 ⑮⑯). 그림을 모르는 허브·오디오·미디어 없음은 종전 작은 창.
+  // 카드의 C(격자·캔버스·편집 풀·크게 보기 Ctrl 카드) → 작은 코멘트 창. 그 창의 [편집] → 코멘트 그림 창(Jay 11-09 — 어셋과 같은 순서,
+  //  11-05 시안 ⑮의 'C = 그림 창 바로'를 바꿨다). [편집] 은 그림을 아는 허브의 이미지·영상만(cardCommentOpensDrawing).
   const openCardComment = (g: Generation) => {
-    if (cardCommentOpensDrawing(g)) setCommentDraw(g);
-    else openComment(g.id);
+    setCommentGen(g);
+    openComment(g.id);
   };
 
   // 미리보기(크게 보기) '구성에서 보기' → 구성탭 계보 트리(위와 동일).
@@ -2167,6 +2171,11 @@ export default function App() {
         ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
         : "생성본",
     [commentGenId, gens],
+  );
+  // 작은 창 [편집] 의 생성물 — 카드로 열었으면 그 카드(캔버스·팀 항목은 목록에 없을 수 있다), 아니면 목록에서
+  const commentEditGen = useMemo(
+    () => (commentGenId ? (commentGen?.id === commentGenId ? commentGen : gens.find((g) => g.id === commentGenId) ?? null) : null),
+    [commentGenId, commentGen, gens],
   );
   // 여러 장을 골랐을 때 리뷰 메뉴에서 켤 항목 — 격자가 이 객체를 모든 카드에 그대로 넘긴다. 렌더마다 새 객체면 선택이 바뀔 때마다
   //  보이는 카드의 memo 가 전부 깨진다 → 네 값이 같으면 같은 객체를 쓴다(선택 목록에 걸면 선택마다 다시 만들어진다).
@@ -3216,12 +3225,18 @@ export default function App() {
         commentGenId={commentGenId}
         commentLabel={commentLabel}
         commentDraw={commentDraw}
+        commentDrawText={commentDrawText}
+        onCommentEditDraw={commentEditGen && cardCommentOpensDrawing(commentEditGen) ? (text) => {
+          setCommentDrawText(text);
+          setCommentDraw(commentEditGen);
+          return true;
+        } : undefined}
         compareGens={compareGens}
         info={info}
         myId={account?.creator_uid || "me"}
         preview={preview}
         projects={projects}
-        syncTick={syncTick}
+        syncTick={syncTick + commentReread}
         toast={toast}
         onAdminClose={() => {
           closeOverlay(); // 히스토리 뒤로 → 관리자 창 닫힘 반영
@@ -3229,7 +3244,10 @@ export default function App() {
         }}
         onCloseOverlay={closeOverlay}
         onCommentClose={() => setCommentGenId(null)}
-        onCommentDrawClose={() => setCommentDraw(null)}
+        onCommentDrawClose={() => {
+          setCommentDraw(null);
+          setCommentReread((n) => n + 1); // 떠 있던 작은 창으로 돌아와 목록을 새로 읽는다
+        }}
         onCompareClose={() => setCompareGens(null)}
         onHistoryChanged={reload}
         onInfoClose={() => setInfo(null)}

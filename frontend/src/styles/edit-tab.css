@@ -657,9 +657,10 @@
 .ed-mk {
   position: absolute; top: 1px; width: 11px; height: 13px; margin-left: -5.5px; padding: 0; border: 0; border-radius: 2px 2px 0 0;
   background: var(--mk, #1287ff); clip-path: polygon(0 0, 100% 0, 100% 68%, 50% 100%, 0 68%); cursor: pointer; z-index: 2;
+  transform-origin: 50% 100%; transition: transform 0.12s ease, filter 0.12s ease;
 }
-.ed-mk:hover { filter: brightness(1.25); }
-.ed-mk:active { transform: none; }
+/* 마우스를 올리면 커지고 밝아진다(코멘트 그림 창 책갈피와 같은 반응 — Jay 11-09). 누르는 동안도 같은 크기(단추 공통 눌림 이동을 덮는다) */
+.ed-mk:hover, .ed-mk:focus-visible, .ed-mk:active { transform: scale(1.4); filter: brightness(1.25); z-index: 3; }
 .ed-lane { position: relative; box-sizing: border-box; border-bottom: 1px solid #1a1a1e; }
 .ed-l-cut { background: #2a2a2f; } /* 컷 줄은 눈금자에 붙은 줄 */
 .ed-l-v, .ed-l-a { background: #26262b; } /* 트랙 줄 — 그 밖(빈 공간)은 칸 바탕 #1e1e22 */

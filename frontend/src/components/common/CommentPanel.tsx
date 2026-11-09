@@ -426,9 +426,6 @@ export function CommentPanel<T extends CommentPanelItem>({
           {onEditDraw && (
             <button type="button" className="cmt-draw-btn" title="그림을 그려 코멘트에 붙이기 — 쓰던 글은 그림 창으로 옮겨 갑니다"
               onClick={(e) => handOff(e.currentTarget.form)}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-              </svg>
               편집
             </button>
           )}

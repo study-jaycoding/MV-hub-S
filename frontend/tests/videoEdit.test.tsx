@@ -157,11 +157,16 @@ describe("video edit reuses annotation UI", () => {
   });
   it("locks the frame after drawing, redoes an undone stroke and unlocks only after clearing", async () => {
     await render();
+    // 무대 아래 한 판(코멘트 그림 창과 같은 모양 — Jay 11-09): 타임라인 → 재생 줄(시각·프레임·단축키) → 도구 줄, 위 시각 줄 없음
+    expect(container.querySelector(".pe-vtop")).toBeNull();
+    expect(container.querySelector(".pe-board .pe-trans-row .pe-frame")).not.toBeNull();
+    expect(container.querySelector(".pe-board .pe-trans-row .pe-keys")).not.toBeNull();
+    expect(container.querySelector(".pe-board .pe-dock")).not.toBeNull();
     expect(scrub().getAttribute("aria-disabled")).toBe("false");
     const canvas = container.querySelector("canvas")!;
     await act(async () => { for (const type of ["pointerdown", "pointerup"]) pointer(canvas, type, 10); });
     expect(scrub().getAttribute("aria-disabled")).toBe("true");
-    expect(container.querySelector(".pe-lock")).not.toBeNull();
+    expect(container.querySelector(".pe-board .pe-trans-row .pe-lock")).not.toBeNull(); // 고정 안내는 단축키 안내 자리에
     await act(async () => button("되돌리기").click());
     expect(scrub().getAttribute("aria-disabled")).toBe("false");
     await act(async () => button("다시").click());

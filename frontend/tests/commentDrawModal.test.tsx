@@ -224,17 +224,29 @@ describe("코멘트 모드 — 이미지", () => {
     expect(body.drawings.map((d: { strokes: { items: { points: { x: number }[] }[] } }) => d.strokes.items[0].points[0].x)).toEqual([20, 120, 200]);
   });
 
-  it("쓰던 것이 있으면 닫을 때 묻는다", async () => {
+  it("쓰던 것이 있으면 닫을 때 앱 확인창으로 묻는다(브라우저 확인창 아님) — 취소·Esc 는 남고, [버리기] 는 닫힌다", async () => {
     const onClose = vi.fn();
     act(() => root.render(<CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="image" url="/o.png" name="n" myId="u1" onClose={onClose} onSaved={() => {}} />));
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    act(() => { document.querySelector<HTMLButtonElement>(".partial-edit-head .assets-x")!.click(); });
-    expect(confirm).not.toHaveBeenCalled(); // 쓴 것이 없으면 묻지 않고 닫는다
+    const closeX = () => document.querySelector<HTMLButtonElement>(".partial-edit-head .assets-x")!;
+    const dialog = () => document.querySelector(".host-exit-confirm");
+    act(() => { closeX().click(); });
+    expect(dialog()).toBeNull(); // 쓴 것이 없으면 묻지 않고 닫는다
     expect(onClose).toHaveBeenCalledTimes(1);
     type("버릴까");
-    act(() => { document.querySelector<HTMLButtonElement>(".partial-edit-head .assets-x")!.click(); });
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1); // '아니오' — 남는다
+    act(() => { closeX().click(); });
+    expect(dialog()?.textContent).toContain("쓰던 코멘트와 그림을 버릴까요?");
+    act(() => { [...dialog()!.querySelectorAll("button")].find((b) => b.textContent === "취소")!.click(); });
+    expect(dialog()).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1); // 취소 — 남는다
+    act(() => { closeX().click(); });
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(dialog()).toBeNull(); // Esc 는 확인창만 닫는다
+    expect(onClose).toHaveBeenCalledTimes(1);
+    act(() => { closeX().click(); });
+    act(() => { [...dialog()!.querySelectorAll("button")].find((b) => b.textContent === "버리기")!.click(); });
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(confirm).not.toHaveBeenCalled();
   });
 });
 
@@ -254,7 +266,7 @@ describe("코멘트 모드 — 영상", () => {
     expect(now).toBe(0.5);
     expect(captureButton()).toBeNull(); // 영상은 프레임마다 한 장 — 캡쳐 단추 없음
     expect(document.querySelector(".pe-vtop")).toBeNull(); // 시각 정보는 재생 줄로(시안 ⑥)
-    expect(document.querySelector(".cm-trans .cm-frame")?.textContent).toBe("13 / 96");
+    expect(document.querySelector(".pe-trans-row .pe-frame")?.textContent).toBe("13 / 96");
     stroke(10);
     expect(marks()).toHaveLength(1);
     expect(marks()[0].classList.contains("cur")).toBe(true);
@@ -264,6 +276,9 @@ describe("코멘트 모드 — 영상", () => {
     stroke(60);
     expect(marks()).toHaveLength(2);
     expect(marks().map((el) => el.getAttribute("aria-label"))).toEqual(["그린 프레임 0.50초", "그린 프레임 0.54초"]);
+    act(() => { (marks()[0] as HTMLButtonElement).click(); }); // 북마크를 누르면 그 자리로(Jay 11-09)
+    expect(now).toBe(0.5);
+    act(() => { (document.querySelector<HTMLButtonElement>('.pe-trans button[aria-label="한 프레임 앞으로"]')!).click(); });
     type("두 프레임");
     await act(async () => { sendButton().click(); });
     await settle();
