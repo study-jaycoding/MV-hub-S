@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -510,3 +511,30 @@ def test_start_failure_after_spawn_keeps_job_and_reaps(runtime, monkeypatch):
     assert done["status"] == "failed"
     job = seen[0]
     assert job.closed and job.proc.poll() is not None  # 전에는 Job 을 잃어 CLI 가 남았다
+
+
+@windows
+def test_assign_failure_keeps_outside_process_until_it_is_gone(monkeypatch):
+    """Job 배정이 실패하고 직접 끄기도 실패하면, Job 밖 CLI 가 꺼질 때까지 회수 성공으로 보지 않는다(리뷰 3차 P1)."""
+    real_api, real_kill = process._api, subprocess.Popen.kill
+
+    def api():
+        k32, ntdll = real_api()
+
+        class NoAssign:
+            def __getattr__(self, name):
+                return getattr(k32, name)
+
+            def AssignProcessToJobObject(self, job, handle):
+                return 0
+
+        return NoAssign(), ntdll
+
+    monkeypatch.setattr(process, "_api", api)
+    job = process.JobProcess()
+    monkeypatch.setattr(subprocess.Popen, "kill", lambda self: None)  # 직접 끄기도 실패
+    with pytest.raises(OSError):
+        job.start([sys.executable, "-c", "import time; time.sleep(60)"], Path.cwd(), process.child_env())
+    assert not job.reap(0.5) and job.proc.poll() is None and not job.closed
+    monkeypatch.setattr(subprocess.Popen, "kill", real_kill)
+    assert job.reap(5.0) and job.proc.poll() is not None and job.closed

@@ -436,6 +436,33 @@ describe("Ask Agent 옆 칸", () => {
     expect(host.querySelector(".agent-model-btn")!.textContent).toContain("높음");
   });
 
+  it("보낸 직후 칸을 닫아 접수 답이 늦게 와도, 다시 열면 그 대화에 붙는다 — 같은 일을 또 시작하지 않는다", async () => {
+    const accepted = deferred<Response>();
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return accepted.promise;
+      if (c.path === "/conversations/c1") {
+        return json({
+          conversation: { id: "c1", title: "늦은 접수", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true },
+          turns: [{ id: "t1", status: "done", text: "늦은 접수", created_at: "", events: [{ seq: 1, kind: "text", text: "끝났어요" }] }],
+        });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    type("늦은 접수");
+    enter();
+    await flush();
+    act(() => root.unmount()); // 접수 답을 받기 전에 닫는다
+    accepted.resolve(started());
+    await flush();
+    root = createRoot(host);
+    await mount();
+    expect(texts(".agent-user")).toEqual(["늦은 접수"]);
+    expect(texts(".agent-assistant")).toEqual(["끝났어요"]);
+    expect(turnCalls()).toHaveLength(1);
+  });
+
   it("칸을 다시 열어 지난 대화를 불러오는 동안에는 보내지 않는다 — 늦게 온 지난 대화가 새 차례를 덮지 않게", async () => {
     const restore = deferred<Response>();
     let restoring = false;

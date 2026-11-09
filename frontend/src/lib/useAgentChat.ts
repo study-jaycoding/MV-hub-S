@@ -260,7 +260,7 @@ export function useAgentChat(context: AgentContext) {
     const account = getAccountNamespace();
     const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, body, contextRef.current]);
     const key = pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID();
-    pendingSend = { account, sig, key }; // 받아들인 답을 받으면 지운다
+    pendingSend = { account, sig, key }; // 받아들인 답을 화면에 붙이면 지운다
     try {
       const r = await agentChatApi.startTurn({
         idempotency_key: key,
@@ -268,8 +268,13 @@ export function useAgentChat(context: AgentContext) {
         engine: choice.engine, model: choice.model, effort: choice.effort,
         text: body, context: contextRef.current,
       });
-      if (pendingSend?.key === key) pendingSend = null; // 답을 받았다 — 화면이 바뀌어 버리는 답이어도 허브는 받아들였다
-      if (stale()) return false;
+      if (stale()) {
+        // 칸을 닫는 등 화면이 바뀐 뒤 온 접수 답 — 허브는 받아들였다. 같은 계정이면 다음에 열 때 그 대화로 붙게 남기고,
+        // 열쇠 기록도 남겨 둔다(같은 요청을 다시 보내면 허브가 이 차례를 돌려준다 — 두 번 돌지 않게, 리뷰 3차)
+        if (getAccountNamespace() === account) remember(r.conversation_id);
+        return false;
+      }
+      if (pendingSend?.key === key) pendingSend = null; // 받아들인 답을 화면에 붙였다
       setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body }]);
       setConversationId(r.conversation_id);
       remember(r.conversation_id);

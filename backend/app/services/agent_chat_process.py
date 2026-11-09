@@ -198,6 +198,7 @@ class JobProcess:
         self._k32, self._ntdll = _api()
         self._lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
+        self._assigned = False
         self.stderr = bytearray()
         self._job = self._k32.CreateJobObjectW(None, None)
         info = _Extended()
@@ -210,11 +211,12 @@ class JobProcess:
         """멈춘 채 생성 → Job 배정 → 재개. 실패하면 예외 — Job 은 그대로 두므로 부르는 쪽이 reap 으로 0개를 확인한다."""
         self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      cwd=str(cwd), env=env, creationflags=CREATE_SUSPENDED | CREATE_NO_WINDOW)
-        # 배정 전에는 재개하지 않는다 — 그 사이 생긴 자식을 놓치지 않게. 배정 실패면 실행 거부(Job 밖이라 직접 끈다).
+        # 배정 전에는 재개하지 않는다 — 그 사이 생긴 자식을 놓치지 않게. 배정 실패면 실행 거부(Job 밖이라 직접 끈다 —
+        # 꺼졌는지는 reap 이 Job 과 함께 확인한다).
         if not self._k32.AssignProcessToJobObject(self._job, int(self.proc._handle)):
-            self.proc.kill()
-            self.proc.wait(10)
+            self._kill_outside()
             raise OSError("실행 묶음에 넣지 못해 실행하지 않았습니다.")
+        self._assigned = True
         threading.Thread(target=self._drain_stderr, daemon=True).start()  # 재개 전에 — 여기서 실패해도 멈춘 채로 Job 안
         if self._ntdll.NtResumeProcess(int(self.proc._handle)) != 0:
             self.terminate()
@@ -273,19 +275,35 @@ class JobProcess:
         with self._lock:
             return self._job is None
 
+    def _outside_alive(self) -> bool:
+        """Job 에 넣지 못한 채 살아 있는 CLI — Job 을 꺼도 안 꺼지니 따로 본다."""
+        return self.proc is not None and not self._assigned and self.proc.poll() is None
+
+    def _kill_outside(self) -> None:
+        if self._outside_alive():
+            try:
+                self.proc.kill()
+            except OSError:
+                pass  # 못 껐으면 reap 이 '남음'으로 보고 다시 시도한다
+
     def terminate(self) -> None:
         with self._lock:
             if self._job:
                 self._k32.TerminateJobObject(self._job, 1)
+        self._kill_outside()
+
+    def _left(self) -> bool:
+        return self.pids() != [] or self._outside_alive()  # pids None(조회 실패)도 '남음'
 
     def reap(self, timeout: float = 15.0) -> bool:
-        """트리를 끄고 남은 프로세스가 0이 될 때까지 기다린다. 0을 확인했을 때만 핸들을 닫고 True —
+        """트리를 끄고 남은 프로세스가 0이 될 때까지 기다린다(Job 밖에 남은 CLI 포함). 0을 확인했을 때만 핸들을 닫고 True —
         못 했으면 핸들을 쥔 채 False(부르는 쪽이 차례를 풀지 않고 다시 회수한다)."""
         self.terminate()
         deadline = time.monotonic() + timeout
-        while self.pids() != [] and time.monotonic() < deadline:  # None(조회 실패)도 '남음'으로 본다
+        while self._left() and time.monotonic() < deadline:
             time.sleep(0.1)
-        if self.pids() != []:
+            self._kill_outside()
+        if self._left():
             return False
         self._close_job()
         return True
