@@ -41,7 +41,7 @@ const DB_VERSION = 2;
 const STORE = "kv";
 const K_LEGACY_SCENES = "scenes"; // 옛 배치 — 씬 묶음 전체가 한 값. 열 때 씬별 키로 풀고 지운다
 const K_LAYOUT = "layout"; // 2 = 씬별 키 배치로 초기화가 끝났다
-const K_VERSION = "version"; // 씬이 바뀔 때마다 1씩 — 다른 창이 그사이 썼는지 값싸게 안다
+const K_VERSION = "version"; // 씬/공책 판·의도가 바뀔 때마다 1씩 — 다른 창이 그사이 썼는지 값싸게 안다
 const K_BASE = "absorbBase"; // 마지막으로 처리한 옛 저장소 내용(흡수 판정의 B)
 const K_GENERATION = "generation"; // 이관 세대 — 바깥 표식과 짝을 이룬다
 const K_CONFLICTS = "conflicts"; // 해결 전까지 남겨 두는 흡수 충돌
@@ -77,7 +77,9 @@ let working: ScenesByProject = {};
 let conflictList: SceneAbsorbConflict[] = [];
 
 interface PendingOp {
-  mutate: (all: ScenesByProject) => void;
+  intentId: string;
+  leaseGenerations: Record<string, string | null>;
+  mutate: (all: ScenesByProject, generations: Readonly<Record<string, string | null>>) => void;
   /** true 면 working 에 미리 반영하지 않는다 — 확정된 뒤에만 보인다(계정 귀속처럼 '먼저 보이면 안 되는' 변경). */
   confirmedOnly: boolean;
   waiters: Array<(ok: boolean) => void>;
@@ -98,6 +100,59 @@ interface PendingOp {
 }
 let pending: PendingOp[] = [];
 
+export interface SceneBase { history: string; rev: number; hash: string }
+export interface SceneIntent { intentId: string; base: SceneBase | null }
+export interface SceneOrderBase { history: string; rev: number }
+export interface SceneOrderState { base: SceneOrderBase | null; dirty: string | null }
+export const notebookKey = (...parts: string[]): string => JSON.stringify(parts);
+const NOTEBOOK_PREFIXES = ["b", "d", "r", "ob", "nj"];
+const isNotebookMeta = (key: string): boolean => NOTEBOOK_PREFIXES.some((kind) => key.startsWith(`["${kind}",`));
+let intentSequence = 0;
+// 공유 서버의 HTTP 주소/옛 브라우저에서는 randomUUID가 없을 수 있다. 인증 토큰이 아닌 재시도 식별자다.
+export function newSceneIntentId(): string {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const random = globalThis.crypto?.getRandomValues
+    ? Array.from(globalThis.crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(16)).join("-")
+    : `${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  return `${Date.now().toString(36)}-${++intentSequence}-${random}`;
+}
+
+// 임대 흐름은 3단계가 연결한다. undefined = 종전 모드, null = 공책 모드이지만 임대 없음.
+let leaseGenerations: Record<string, string | null> = {};
+export function setSceneLeaseGeneration(account: string, generation: string | null): void {
+  leaseGenerations = { ...leaseGenerations, [account]: generation };
+}
+export function sceneLeaseGeneration(bucket: string): string | null | undefined {
+  return leaseGenerations[bucket.split("::")[0]];
+}
+
+// 순수 연산을 재생한 직후의 차이에서 의도를 기록한다. 묶음 전체의 차이만 보면 삭제→되돌리기가 사라진다.
+function recordNotebookChanges(before: ScenesByProject, after: ScenesByProject, meta: StoreValues, intentId: string): void {
+  for (const bucket of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[bucket] === after[bucket]) continue;
+    const was = before[bucket] ?? [];
+    const now = after[bucket] ?? [];
+    const oldIds = new Set(was.map((scene) => scene.id));
+    const newIds = new Set(now.map((scene) => scene.id));
+    for (const id of oldIds) if (!newIds.has(id)) {
+      meta[notebookKey("d", bucket, id)] = { intentId, base: meta[notebookKey("b", bucket, id)] ?? null };
+      delete meta[notebookKey("r", bucket, id)];
+    }
+    for (const id of newIds) if (!oldIds.has(id)) {
+      const base = meta[notebookKey("b", bucket, id)] ?? null;
+      // 삭제 확인 뒤 d가 없어져도, 같은 id의 판이 남아 있으면 명시적 되살리기다.
+      if (base || meta[notebookKey("d", bucket, id)]) {
+        meta[notebookKey("r", bucket, id)] = { intentId, base };
+        delete meta[notebookKey("d", bucket, id)];
+      }
+    }
+    if (!sameIds(was, now)) {
+      const key = notebookKey("ob", bucket);
+      meta[key] = { base: (meta[key] as SceneOrderState | undefined)?.base ?? null, dirty: intentId };
+    }
+  }
+}
+
 /** 부팅 게이트가 끝났는가. false 면 읽은 값을 믿을 수 없다(빈 데이터로 오해하면 안 된다). */
 export const sceneStoreReady = (): boolean => ready;
 /** 자동으로 정하지 못해 남겨 둔 흡수 충돌(확정본). */
@@ -117,7 +172,7 @@ function setAsideConflicts(base: ScenesByProject, ops: PendingOp[]): SceneAbsorb
   const theirs: ScenesByProject = { ...base };
   for (const op of ops) {
     try {
-      op.mutate(theirs);
+      op.mutate(theirs, leaseGenerations);
     } catch {
       // 재생할 수 없는 연산 — 저장 때도 버려진다.
     }
@@ -216,9 +271,7 @@ function assertKnownLayout(meta: StoreValues): void {
 // 키는 JSON 배열 글자라 계정 이름에 어떤 글자가 들어도 서로 겹치지 않고, 낱말로 된 메타 키와 범위가 갈린다.
 const orderKey = (bucket: string): string => JSON.stringify(["o", bucket]);
 const sceneKey = (bucket: string, id: string): string => JSON.stringify(["s", bucket, id]);
-const SCENE_KEY_FROM = '["';
-const SCENE_KEY_TO = '["' + String.fromCharCode(0xffff); // 범위의 끝 — 소스에 보이지 않는 글자를 넣지 않으려고 코드로 만든다
-const isSceneKey = (key: string): boolean => key.startsWith(SCENE_KEY_FROM);
+const isSceneKey = (key: string): boolean => key.startsWith('["s",') || key.startsWith('["o",');
 
 interface TxWrite {
   puts: Entries;
@@ -330,6 +383,7 @@ async function storeTx(
   wantScenes: (meta: StoreValues) => boolean,
   decide: (meta: StoreValues, scenes: ScenesByProject | null) => TxWrite,
   mode: IDBTransactionMode = "readwrite",
+  notebook = false,
 ): Promise<void> {
   const writing = mode === "readwrite";
   if (writing && delayWritesForTest) await new Promise((resolve) => setTimeout(resolve, delayWritesForTest));
@@ -339,6 +393,7 @@ async function storeTx(
     const meta: StoreValues = {};
     // 저장소가 돌려주는 값은 호출부 소유다(IDB 는 매번 새 객체를 준다) — 메모리 대체도 같게.
     for (const key of metaKeys) meta[key] = cloneStored(active.get(key));
+    if (notebook) for (const [key, value] of active) if (isNotebookMeta(key)) meta[key] = cloneStored(value);
     const write = decide(meta, wantScenes(meta) ? assembleScenes(sceneEntries(active)) : null);
     if (writing && abortWritesForTest) throw new Error("scene store aborted (test)");
     for (const [key, value] of write.puts) active.set(key, cloneStored(value));
@@ -377,21 +432,31 @@ async function storeTx(
     const afterMeta = () => {
       try {
         if (!wantScenes(meta)) return finish(null);
-        const range = IDBKeyRange.bound(SCENE_KEY_FROM, SCENE_KEY_TO);
-        const keys = store.getAllKeys(range);
-        const values = store.getAll(range);
-        // 한 트랜잭션의 요청은 낸 순서대로 끝난다 — 값이 왔으면 키도 와 있다. 둘은 같은 키 순서다.
-        values.onsuccess = () => {
-          const found = keys.result as string[];
-          finish(assembleScenes(found.map((key, i): [string, unknown] => [key, values.result[i]])));
-        };
-        keys.onerror = values.onerror = () => reject(values.error || keys.error);
+        // na(허브 전 사본)는 클 수 있다. 씬 조회에 사본/메타 전체를 읽지 않는다.
+        const entries: Entries = [];
+        let left = 2;
+        for (const kind of ["o", "s"]) readPrefix(kind, (found) => {
+          entries.push(...found);
+          if (--left === 0) finish(assembleScenes(entries));
+        });
       } catch (error) {
         giveUp(error);
       }
     };
-    let waiting = metaKeys.length;
+    const readPrefix = (kind: string, done: (entries: Entries) => void) => {
+      const prefix = `["${kind}",`;
+      const range = IDBKeyRange.bound(prefix, prefix + String.fromCharCode(0xffff));
+      const keys = store.getAllKeys(range);
+      const values = store.getAll(range);
+      values.onsuccess = () => done((keys.result as string[]).map((key, i) => [key, values.result[i]]));
+      keys.onerror = values.onerror = () => giveUp(values.error || keys.error);
+    };
+    let waiting = metaKeys.length + (notebook ? NOTEBOOK_PREFIXES.length : 0);
     if (!waiting) return afterMeta();
+    if (notebook) for (const kind of NOTEBOOK_PREFIXES) readPrefix(kind, (entries) => {
+      Object.assign(meta, Object.fromEntries(entries));
+      if (--waiting === 0) afterMeta();
+    });
     for (const key of metaKeys) {
       const got = store.get(key) as IDBRequest<unknown>;
       got.onsuccess = () => {
@@ -447,6 +512,7 @@ interface TxStepResult {
   changed: boolean;
   /** 같은 트랜잭션에 함께 쓸 다른 키(기준·충돌 등). */
   entries: Entries;
+  deletes?: string[];
   /** 씬은 그대로여도 화면에 알려야 하는가(충돌 목록만 바뀐 경우). */
   notify?: boolean;
 }
@@ -459,7 +525,8 @@ type TxStep = (live: ScenesByProject, current: StoreValues) => TxStepResult;
  * 아직 확정 안 된 내 편집을 흡수가 추월하지 않는다.
  * @returns 트랜잭션이 끝났는가
  */
-function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void): Promise<boolean> {
+function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void, fromHub = false): Promise<boolean> {
+  const stepIntent = newSceneIntentId();
   return enqueueTx(async () => {
     if (!ready) return false;
     const batch = pending.slice(); // ★묶음 고정 — 끝난 뒤 이 묶음만 뺀다(도중에 들어온 연산은 남긴다)
@@ -484,9 +551,16 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
         (meta) => baselineStale || ((meta[K_VERSION] as number | undefined) ?? 0) !== confirmedVersion,
         (meta, scenes) => {
           assertKnownLayout(meta);
+          // 허브 조건부 쓰기가 큐/IDB 읽기를 기다린 동안 들어온 편집도 조건 판정 앞에 둔다.
+          // 특히 첫 합류의 보관본에서 이 편집이 빠지면 안 된다.
+          if (fromHub) for (const op of pending) if (!batch.includes(op)) {
+            op.flying = true;
+            batch.push(op);
+          }
           liveVersion = (meta[K_VERSION] as number | undefined) ?? 0;
           external = scenes !== null;
           const base = scenes ?? confirmed;
+          const oldNotebook = Object.fromEntries(Object.entries(meta).filter(([key]) => isNotebookMeta(key)));
           live = { ...base };
           moved = batch.filter((op) => op.aside && !op.handed);
           movedConflicts = moved.length ? setAsideConflicts(base, moved) : [];
@@ -496,7 +570,9 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           for (const op of batch) {
             if (op.handed || op.aside) continue;
             try {
-              op.mutate(live);
+              const before = { ...live };
+              op.mutate(live, leaseGenerations);
+              recordNotebookChanges(before, live, meta, op.intentId);
             } catch (error) {
               // 화면(working)에서는 됐는데 저장소 내용 위에서는 던진 연산 — 다시 해도 같으므로 버린다.
               // 조용히 버리지 않는다: 그 연산을 기다리던 쪽은 실패를 받고, 콘솔에 남긴다.
@@ -504,23 +580,31 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
               console.error("[sceneStore] 재생할 수 없는 연산을 버립니다", error);
             }
           }
+          const beforeStep = { ...live };
           stepOut = step ? step(live, meta) : stepOut;
+          if (!fromHub) recordNotebookChanges(beforeStep, live, meta, stepIntent);
+          const notebookPuts = Object.entries(meta).filter(([key, value]) => isNotebookMeta(key) && JSON.stringify(oldNotebook[key]) !== JSON.stringify(value));
+          const notebookDeletes = Object.keys(oldNotebook).filter((key) => !(key in meta));
           freezeScenes(live);
           wrote = batch.length > 0 || stepOut.changed;
           const write = diffScenes(base, live);
-          const touched = write.puts.length + write.deletes.length > 0;
-          if (touched) liveVersion += 1; // 씬이 실제로 바뀌었을 때만 — 다른 창이 다시 읽을 까닭이 생겼다
+          const touched = write.puts.length + write.deletes.length + notebookPuts.length + notebookDeletes.length +
+            (fromHub ? stepOut.entries.length + (stepOut.deletes?.length ?? 0) : 0) > 0;
+          if (touched) liveVersion += 1; // 씬/공책 상태가 실제로 바뀌었을 때만
           if (wrote) lastWriteForTest = { puts: write.puts.map(([key]) => key), deletes: write.deletes };
           return {
             puts: [
               ...write.puts,
+              ...notebookPuts,
               ...(touched ? ([[K_VERSION, liveVersion]] as Entries) : []),
               ...stepOut.entries,
               ...(movedConflicts.length && !stepOut.entries.some(([key]) => key === K_CONFLICTS) ? ([[K_CONFLICTS, storedConflicts]] as Entries) : []),
             ],
-            deletes: write.deletes,
+            deletes: [...write.deletes, ...notebookDeletes, ...(stepOut.deletes ?? [])],
           };
         },
+        "readwrite",
+        true,
       );
     } catch {
       // 확정 실패 — pending 은 그대로 둔다(다음 쓰기·타이머가 다시 시도). 기다리던 쪽에는 '지금은 안 됐다'.
@@ -545,13 +629,15 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
       retryTimer = undefined;
     }
     if (movedConflicts.length) conflictList = storedConflicts;
+    const nextConflicts = stepOut.entries.find(([key]) => key === K_CONFLICTS);
+    if (nextConflicts) conflictList = nextConflicts[1] as SceneAbsorbConflict[];
     for (const op of moved) op.poisoned = true; // 기다리던 쪽에는 '저장되지 않았다' — 재생을 정한 뒤 표시가 붙은 연산은 저장됐다
     after?.();
     // working = confirmed + 남은 pending. 내 묶음만 확정됐고 바깥 변화가 없으면 내용이 같아 다시 계산할
     // 필요가 없다(종전 working = 옛 confirmed + 묶음 + 나머지). 바깥 변화·step·확정 전용 연산이 있었으면
     // 다시 계산하고 화면에 알린다. 버린 연산이 있을 때도 — 화면 값에는 그 연산이 남아 있어서, 그대로 두면
     // 저장소에 없는 편집을 화면이 계속 보여 준다. 표시된 연산은 표시할 때 화면 값에서 빠졌으니 저장됐으면 다시 넣는다.
-    const dropped = batch.some((op) => op.poisoned || op.aside);
+    const dropped = batch.some((op) => op.poisoned || op.aside || op.handover);
     if (external || stepOut.changed || hadConfirmedOnly || dropped) {
       rebaseWorking();
       externalSubs.forEach((fn) => fn());
@@ -573,13 +659,33 @@ function rebaseWorking(): void {
   for (const op of pending) {
     if (op.confirmedOnly || op.aside) continue; // 표시된 연산이 화면 값에 남으면 그 위의 다음 저장이 숨은 옛 편집을 되살린다
     try {
-      op.mutate(next);
+      op.mutate(next, leaseGenerations);
     } catch {
       op.poisoned = true;
     }
   }
   freezeScenes(next);
   working = next;
+}
+
+/** 공책 저장 연산의 내부 관문. 네트워크/await 없는 계산만 받는다. paused 중에도 실행한다.
+ * 값은 oncomplete 뒤에만 돌려준다. 실패한 조건부 쓰기를 성공으로 보고 판을 앞당기면 안 된다. */
+export async function sceneNotebookTransaction<T>(
+  keys: string[],
+  decide: (all: ScenesByProject, meta: Record<string, unknown>) => { value: T; changed: boolean },
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  let value: T;
+  const ok = await runStoreTx(keys, (all, meta) => {
+    const before = { ...meta };
+    const result = decide(all, meta);
+    value = cloneStored(result.value);
+    return {
+      changed: result.changed,
+      entries: Object.entries(meta).filter(([key, item]) => !isNotebookMeta(key) && before[key] !== item),
+      deletes: Object.keys(before).filter((key) => !isNotebookMeta(key) && !(key in meta)),
+    };
+  }, undefined, true);
+  return ok ? { ok: true, value: value! } : { ok: false };
 }
 
 // ── flush 예약·재시도 ────────────────────────────────────────────────────────────
@@ -651,7 +757,7 @@ let captureFailed: boolean[] = [];
  *  (`all[key] = next`) — 들어 있는 배열·씬 객체를 제자리에서 고치지 않는다.
  */
 export function applySceneOp<T, P = never>(
-  mutate: (all: ScenesByProject) => SceneMutation<T>,
+  mutate: (all: ScenesByProject, generations: Readonly<Record<string, string | null>>) => SceneMutation<T>,
   options: { confirmedOnly?: boolean; merge?: SceneOpMerge<P>; handover?: boolean } = {},
 ): { ok: boolean; value: T; paused?: boolean } {
   ensureMemoryStoreOutsideBrowser();
@@ -665,10 +771,10 @@ export function applySceneOp<T, P = never>(
   if (refused) {
     captureFailed = captureFailed.map(() => true);
     if (ready && !paused) flushListener?.(false); // 상한 — '저장 안 됨'을 다시 알린다(조용히 버리지 않는다)
-    return { ok: false, paused, value: mutate({ ...working }).value };
+    return { ok: false, paused, value: mutate({ ...working }, leaseGenerations).value };
   }
   const draft: ScenesByProject = { ...working };
-  const outcome = mutate(draft);
+  const outcome = mutate(draft, leaseGenerations);
   if (!outcome.write) return { ok: true, value: outcome.value };
   if (!options.confirmedOnly) {
     freezeScenes(draft);
@@ -681,6 +787,8 @@ export function applySceneOp<T, P = never>(
   } else if (merge) {
     let patch = merge.patch;
     op = {
+      intentId: newSceneIntentId(),
+      leaseGenerations,
       confirmedOnly: Boolean(options.confirmedOnly),
       handover: options.handover,
       waiters: [],
@@ -693,11 +801,13 @@ export function applySceneOp<T, P = never>(
     pending.push(op);
   } else {
     op = {
+      intentId: newSceneIntentId(),
+      leaseGenerations,
       confirmedOnly: Boolean(options.confirmedOnly),
       handover: options.handover,
       waiters: [],
-      mutate: (all) => {
-        mutate(all);
+      mutate: (all, generations) => {
+        mutate(all, generations);
       },
     };
     pending.push(op);
@@ -972,10 +1082,15 @@ async function absorbInTx(legacy: ScenesByProject | null): Promise<SceneAbsorbPl
       const kept = (current[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? [];
       merged = kept;
       if (!legacy) return { changed: false, entries: [] };
-      plan = planAbsorption(base, live, legacy);
+      // 합류한 계정의 옛 localStorage는 보관 원본이다. 다시 흡수하면 첫 합류 뒤 옛 탭이 돌아온다.
+      // 가입하지 않은 계정은 종전 흡수 계약을 그대로 적용한다.
+      const joined = (bucket: string) => Boolean(current[notebookKey("nj", bucket.split("::")[0])]);
+      const unjoined = (all: ScenesByProject) => Object.fromEntries(Object.entries(all).filter(([bucket]) => !joined(bucket)));
+      plan = planAbsorption(base ? unjoined(base) : null, unjoined(live), unjoined(legacy));
+      plan.next = { ...plan.next, ...Object.fromEntries(Object.entries(live).filter(([bucket]) => joined(bucket))) };
       merged = mergeConflicts(kept, plan.conflicts);
       const entries: Entries = [
-        [K_BASE, legacy],
+        [K_BASE, { ...Object.fromEntries(Object.entries(base ?? {}).filter(([bucket]) => joined(bucket))), ...unjoined(legacy) }],
         [K_CONFLICTS, merged],
       ];
       if (!plan.changed) return { changed: false, entries, notify: plan.conflicts.length > 0 };
@@ -1100,7 +1215,7 @@ export function dumpSceneStore(): Promise<SceneStoreDump> {
       for (const op of pending) {
         if (op.aside) continue;
         try {
-          op.mutate(buckets);
+          op.mutate(buckets, leaseGenerations);
         } catch {
           // 재생할 수 없는 연산 — 확정 때 버려지고 그 작업에 알린다. 내보내기에서는 건너뛴다.
         }
@@ -1311,6 +1426,7 @@ export function refreshSceneStore(): Promise<boolean> {
 // 그래서 캔버스 창은 닫힐 때 미확정 변경을 동기 호출로 메인 창에 넘긴다(docs/status/캔버스_닫는순간_2026-10-31.md).
 export interface SceneHandover {
   bucket: string;
+  leaseGeneration?: string | null;
   created: Scene[];
   changed: Scene[];
   removed: string[];
@@ -1323,7 +1439,7 @@ export function unconfirmedSceneWrites(): SceneHandover[] {
   for (const op of pending) {
     if (op.confirmedOnly) continue; // 저장소 내용을 보고 정하는 연산(계정 귀속) — 씬 차이로 바꾸면 그 조건이 사라진다. 이 창에 남아 직접 쓰인다
     try {
-      op.mutate(next);
+      op.mutate(next, leaseGenerations);
     } catch {
       // 재생할 수 없는 연산 — 확정 때도 버려진다.
     }
@@ -1337,7 +1453,10 @@ export function unconfirmedSceneWrites(): SceneHandover[] {
     const removed = [...was.keys()].filter((id) => !ids.has(id));
     const order = before && sameIds(before, after) ? null : after.map((scene) => scene.id);
     if (!fresh.length && !removed.length && !order) return [];
-    return [{ bucket, created: fresh.filter((scene) => !was.has(scene.id)), changed: fresh.filter((scene) => was.has(scene.id)), removed, order }];
+    const account = bucket.split("::")[0];
+    const generations = pending.filter((op) => !op.confirmedOnly).map((op) => op.leaseGenerations[account]);
+    const leaseGeneration = generations.every((value) => value === generations[0]) ? generations[0] : null;
+    return [{ bucket, leaseGeneration, created: fresh.filter((scene) => !was.has(scene.id)), changed: fresh.filter((scene) => was.has(scene.id)), removed, order }];
   });
 }
 
@@ -1442,6 +1561,7 @@ export async function settleSceneStoreForTest(): Promise<boolean> {
 
 /** 시험 전용 — 모듈 상태를 비운다. */
 export function resetSceneStoreForTest(): void {
+  leaseGenerations = {};
   channel?.close();
   channel = null;
   externalSubs.clear();

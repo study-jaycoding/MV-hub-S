@@ -11,6 +11,7 @@ import { normalizeForUndo, withoutComfyRuns, type ComfyCanvasRun, type ComfyCard
 import type { SceneSnap } from "./sceneUndoStore";
 import type { CanvasTarget, CanvasWriteReceipt } from "../features/canvas/api";
 import { holdUnload } from "./unloadGuard";
+import { makeLocalNotebookCopy } from "./sceneNotebook";
 import {
   applySceneOp,
   captureSceneOps,
@@ -179,6 +180,16 @@ export interface Scene {
   // 옛 판 창과 엇갈려 따로 살려 둔 사본이라는 표식(recoverSceneConflicts) — id = 원래 씬, sum = 만들 때의 내용 지문.
   // 같은 씬이 또 엇갈렸을 때 '손대지 않은 사본'이면 새 탭을 늘리지 않고 이 탭을 갈아 끼우려고 둔다.
   recoveredFrom?: { id: string; sum: string };
+  /** 로컬 보존 탭의 사유. upload_failed는 허브 전송 제외, stale_handover는 다음 맞추기의 새 id다. */
+  localNotebookCopy?: "upload_failed" | "stale_handover";
+  backupForkOf?: {
+    id: string;
+    comfyRuns?: ComfyCanvasRun[];
+    comfyCardRuns?: ComfyCardRuns;
+    pendingGenerationAttempts?: Record<string, CanvasGenerationAttempt[]>;
+    comfyLegacyRuns?: Record<string, number>;
+    previous?: Scene["backupForkOf"];
+  };
   created_at: number;
   mcpAttachmentReceipts?: string[]; // 저장 확인 응답이 유실돼도 삭제한 카드를 다시 붙이지 않는 처리 기록.
   comfyRuns?: ComfyCanvasRun[]; // 실행과 적용 영수증 — 카드 Undo 밖.
@@ -390,7 +401,7 @@ setSceneFlushListener((ok) => {
 // 씬 쓰기의 단일 관문. mutate 는 화면 값에 한 번, 저장소 내용 위에서 다시(재생) 실행된다 —
 // **순수**해야 한다: id·시각·계정 키·입력은 밖에서 고정해 넣고, 버킷은 새 배열로 갈아 끼운다.
 function commit<T, P = never>(
-  mutate: (all: ScenesByProject) => { write: boolean; value: T },
+  mutate: (all: ScenesByProject, generations: Readonly<Record<string, string | null>>) => { write: boolean; value: T },
   options?: { confirmedOnly?: boolean; merge?: SceneOpMerge<P>; handover?: boolean },
 ): { ok: boolean; value: T; paused?: boolean } {
   const result = applySceneOp(mutate, options);
@@ -636,8 +647,19 @@ export function deleteScene(projectId: string | null, sceneId: string): boolean 
  */
 export function adoptCanvasSceneWrites(writes: SceneHandover[]): boolean {
   if (!sceneStoreReady()) return false;
-  return commit((all) => {
-    for (const { bucket, created, changed, removed, order } of writes) {
+  const incoming = structuredClone(writes).map((write) => ({
+    ...write,
+    copies: [...write.changed, ...write.created].map((scene) => makeLocalNotebookCopy(scene, uid(), "stale_handover")),
+  }));
+  // 세대는 저장 관문이 재생 시점에 주입한다. 처음 받았을 때만 검사하면 큐에서 기다리는 동안 낡을 수 있다.
+  return commit((all, generations) => {
+    for (const { bucket, created, changed, removed, order, leaseGeneration, copies } of incoming) {
+      const current = generations[bucket.split("::")[0]];
+      if (current === null || current !== leaseGeneration) {
+        const known = new Set((all[bucket] ?? []).map((scene) => scene.id));
+        all[bucket] = [...(all[bucket] ?? []), ...copies.filter((scene) => !known.has(scene.id))];
+        continue;
+      }
       if (!all[bucket] && !created.length) continue;
       const fixed = new Map([...changed, ...created].map((scene) => [scene.id, scene]));
       const kept = (all[bucket] || []).filter((scene) => !removed.includes(scene.id)).map((scene) => fixed.get(scene.id) ?? scene);
