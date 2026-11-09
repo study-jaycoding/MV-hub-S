@@ -190,3 +190,28 @@
 .ep-grid .ep-meta .reel-rv .all { display: none; }
 .ep-foot { display: flex; align-items: center; gap: 10px; padding: 3px 12px 11px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .ep-foot .ep-bar { flex: 1; min-width: 20px; }
+
+/* ── 고른 컷 묶음(그리드, Jay 2026-11-09 시안) — 이웃끼리 라임 선 하나로 한 판 + 번호 + 알약 [▶ N컷 연결 재생].
+   틀·틈·알약은 격자 안의 절대 위치(FolderCardGrid 가 카드 자리를 잰다). 틀은 카드 위에 선만 — 누름은 아래 카드로 간다. ── */
+.cut-card.ep-card.sel.bound { border-color: #262830; box-shadow: none; } /* 묶음에 든 카드는 틀이 선택 표시 */
+.cut-card.ep-card.sel.bound:hover, .cut-card.ep-card.sel.bound:focus-visible { border-color: var(--accent); }
+.cut-bind {
+  position: absolute; z-index: 2; border: 2px solid var(--accent); border-radius: 12px; pointer-events: none;
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.35);
+}
+.cut-bind-gap { position: absolute; background: rgba(var(--accent-rgb), 0.14); pointer-events: none; } /* 카드 사이 틈도 같은 판 */
+.cut-order {
+  position: absolute; left: 12px; bottom: 10px; z-index: 1; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink); font-size: 12.5px; font-weight: 900; line-height: 1; pointer-events: none;
+}
+/* 알약 — 전역 button 모양(패딩·테두리·눌림의 translateY)을 덮는다. 가운데 맞춤 transform 은 눌러도 그대로 */
+.cut-play {
+  position: absolute; z-index: 3; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 8px; height: 42px;
+  margin: 0; padding: 0 18px 0 14px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink);
+  font-size: 14.5px; font-weight: 900; line-height: 1; white-space: nowrap; cursor: pointer;
+  box-shadow: 0 0 0 3px #08090a, 0 0 22px 3px rgba(var(--accent-rgb), 0.5);
+}
+.cut-play:hover { filter: brightness(1.08); }
+.cut-play:active { transform: translate(-50%, -50%); }
+.cut-play:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.cut-play svg { flex: none; fill: currentColor; }

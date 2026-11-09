@@ -840,7 +840,7 @@ export default function App() {
   //  창이 보여 주는 카드는 늘 지금 받아 둔 카드다(대표를 바꾸면 카드가 새로 와서 창도 새 값).
   const [cutSel, setCutSel] = useState<Set<string>>(() => new Set());
   const [cutInfo, setCutInfo] = useState<{ projectId: string; path: string; x: number; y: number; ctx: string } | null>(null);
-  const [cutReel, setCutReel] = useState<{ paths: string[]; ctx: string } | null>(null);
+  const [cutReel, setCutReel] = useState<{ paths: string[]; ctx: string; mode?: ReelMode } | null>(null); // mode = 이번만의 보기(묶음의 알약 = 연결)
   const [reelMode, setReelModeState] = useState<ReelMode>(() => (LS.get("cutReelMode", "grid") === "linked" ? "linked" : "grid"));
   const setReelMode = useCallback((mode: ReelMode) => {
     LS.set("cutReelMode", mode);
@@ -2270,8 +2270,11 @@ export default function App() {
   // 라이브러리 선택 액션바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다.
   // 컷 카드를 골랐을 때의 막대 — [모아보기]. 생성물 선택 막대와 같은 자리(프롬프트 위·Ctrl+K 땐 상단 중앙)에 뜬다.
   //  폴더 창이 떠 있으면 뒤의 고른 컷은 보이지 않으니 막대도 없다.
+  //  그리드 보기에서 컷(잎)만 골랐으면 띄우지 않는다 — 고른 컷의 묶음 모양이 선택 표시이고 알약이 모아보기다(빈 곳·Esc 로 푼다. Jay 2026-11-09).
+  //  리스트·표, 에피소드(하위 폴더 있음 — 알약이 없다)를 고른 때는 그대로.
+  const cutBarHidden = !listPeek && cutMode && layout === "grid" && selectedCuts.length > 0 && selectedCuts.every((folder) => !folder.subfolders);
   const cutSelectionBar =
-    !listPeek && cutMode && selectedCuts.length > 0 ? (
+    !listPeek && cutMode && !cutBarHidden && selectedCuts.length > 0 ? (
       <div className="select-bar">
         <span className="sb-count">{selectedCuts.length}{t("컷 선택")}</span>
         <button
@@ -2285,7 +2288,7 @@ export default function App() {
       </div>
     ) : undefined;
   const librarySelectionBar = cutSelectionBar ?? (
-    selected.size > 0 ? (
+    !cutBarHidden && selected.size > 0 ? (
       <LibrarySelectionActionBar
         selectedCount={selected.size}
         selectedGenerations={selectedGenerations}
@@ -3041,7 +3044,8 @@ export default function App() {
                   onInfo={(folder, x, y) => {
                     if (cutScope) setCutInfo({ projectId: cutScope.projectId, path: folder.path, x, y, ctx: listPeekCtx });
                   }}
-                  onReel={(paths) => setCutReel({ paths, ctx: listPeekCtx })} // 컷 두 번 클릭 = 모아보기(Jay 2026-10-13 낮) — 막대의 단추와 같은 창
+                  // 컷 두 번 클릭 = 모아보기(Jay 2026-10-13 낮) — 막대의 단추와 같은 창. 묶음의 알약(linked)은 이번만 연결로(Jay 2026-11-09)
+                  onReel={(paths, linked) => setCutReel({ paths, ctx: listPeekCtx, mode: linked ? "linked" : undefined })}
                   outside={cutCards.own_count} onShowAll={() => setCutView(false)}
                 />
               ) : listPeek ? null : cutPending ? (
@@ -3228,7 +3232,9 @@ export default function App() {
       )}
       {cutReelOpen && (
         <CutReel
-          folders={cutReelFolders} mode={reelMode} onModeChange={setReelMode} previewOpen={!!preview}
+          // 알약으로 연 창은 이번만 연결(cutReel.mode). 창 안에서 바꾸면 그 값을 저장하고 이번만의 값은 버린다
+          folders={cutReelFolders} mode={cutReel?.mode ?? reelMode} previewOpen={!!preview}
+          onModeChange={(mode) => { setReelMode(mode); setCutReel((open) => (open?.mode ? { ...open, mode: undefined } : open)); }}
           onClose={() => setCutReel(null)} onPreview={openPreview}
           // [폴더로] = 그 컷 폴더로 이동(사이드바에서 누른 것과 같다 — 기록 한 칸). 창을 먼저 닫는다(컷 정보 창의 [폴더 열기]와 같은 순서)
           onEnter={(folder) => { setCutReel(null); enterFolderCard(folder); }}

@@ -14,7 +14,10 @@
 //  단추(컷 띠의 컷 · '+N' · [열기], `data-ep-action`)의 누름은 카드 고르기·두 번 클릭으로 읽지 않는다 — 그 단추가 제 일을 한다.
 //  **컷 화면의 리스트**(2026-10-13 오후): 리스트 단추 한 번 = 같은 줄 모양(띠에는 그 컷의 생성물 — 누르면 크게 보기, [폴더로] = 그 컷 폴더로),
 //  한 번 더(도구 줄의 '날짜별 구분' 자리 — 폴더 카드에는 날짜 구분이 없다) = 표.
-import { useCallback, useEffect, useRef, useState } from "react";
+//  **고른 컷 묶음**(그리드만, Jay 2026-11-09): 컷을 2장 이상 고르면 번호 1..N(격자 순서 = 재생 순서). 같은 줄의 이웃끼리는 라임 선 하나로 한 판에
+//  묶고(카드마다의 선택 테두리는 끈다), 알약 [▶ N컷 연결 재생] = 모아보기를 연결로 바로 연다 — 마지막 고른 카드가 묶음에 들면 묶음 가운데, 아니면
+//  그 카드 위. 열 수는 CSS 가 폭에 맞춰 정하므로 '같은 줄' 은 그린 뒤 카드 자리를 재서 안다(마퀴처럼 격자 안의 절대 위치 — 스크롤을 따라간다).
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { boardView, EPISODE_CARD_WIDTH, isEpisodeLevel, numberColumn, takesOf } from "../lib/episodeBoard";
 import { useT } from "../lib/i18n";
 import { backgroundKeysBlocked, contextMenuCovered, isTypingTarget, pressStartedCovered, useLooseKeys } from "../lib/keyGate";
@@ -39,7 +42,9 @@ interface Props {
   onOpen: (folder: FolderCard) => void; // 우클릭·메뉴 키 — 그 폴더의 창(에피소드·컷 모두. Jay 2026-10-13 낮)
   onInfo: (folder: FolderCard, x: number, y: number) => void; // 컷 정보 단추
   onOpenTab: (folder: FolderCard) => void; // 휠 클릭 — 새 폴더 탭
-  onReel: (paths: string[]) => void; // 두 번 클릭·Enter(하위 폴더 없음 = 컷) — 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만)
+  // 두 번 클릭·Enter(하위 폴더 없음 = 컷) — 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만).
+  //  linked = 묶음의 알약 — 이번만 연결 보기로 연다(저장해 둔 보기 방식은 그대로)
+  onReel: (paths: string[], linked?: boolean) => void;
   onPreview: (target: PreviewTarget) => void; // 컷 줄의 생성물 띠 — 크게 보기(그 띠에 실린 것끼리 ←/→)
   top: boolean; // 프로젝트 맨 위(에피소드 단계)인가 — '컷 밖' 대신 '에피소드 밖'
   outside: number; // 고른 폴더에 직접 든 수 — 어느 카드에도 들지 않아 맨 끝 칸으로 알린다
@@ -70,7 +75,13 @@ interface Drag {
   moved: boolean;
 }
 
-// 카드 안의 단추(에피소드 카드의 컷 띠·[열기])에서 난 누름인가 — 그 누름은 카드의 것이 아니다.
+// 고른 컷 묶음의 자리(격자 안 px) — 이웃 묶음마다 틀 하나와 카드 사이 틈, 알약의 가운데.
+interface BindLayout {
+  groups: { l: number; t: number; w: number; h: number; gaps: { l: number; w: number }[]; paths: string[] }[];
+  pill: { x: number; y: number };
+}
+
+// 카드 안의 단추(에피소드 카드의 컷 띠·[열기])에서 난 누름인가 — 그 누름은 카드의 것이 아니다. 묶음의 알약도 같은 표시를 단다.
 function inCardAction(target: EventTarget | null): boolean {
   return !!(target as HTMLElement | null)?.closest?.("[data-ep-action]");
 }
@@ -100,7 +111,7 @@ export function FolderCardGrid({
   // 두 번 클릭·Enter — 컷이면 모아보기(고른 카드 위면 고른 컷 전부(격자 순서), 아니면 그 컷만 골라서), 에피소드면 들어가기.
   //  열 경로를 먼저 정한다 — 고르기를 바꾼 뒤의 낡은 선택을 읽지 않게. 최신 props 는 ref 로(두 번 클릭의 첫 클릭이 고르기를 바꾼 직후다).
   //  일반 두 번 클릭은 첫 클릭이 고르기를 그 카드 하나로 줄이므로 결국 그 컷만 연다(탐색기와 같다) — 여러 컷은 Ctrl 로 고른 뒤 두 번 클릭하거나
-  //  Shift+방향키로 고른 뒤 Enter, 또는 선택 막대의 단추(Codex 코드 리뷰 — 숨은 규칙이 아니라 의도).
+  //  Shift+방향키로 고른 뒤 Enter, 또는 묶음의 알약(그리드)·선택 막대의 단추(리스트·표)(Codex 코드 리뷰 — 숨은 규칙이 아니라 의도).
   const activate = (folder: FolderCard) => {
     if (folder.subfolders) {
       onEnter(folder);
@@ -124,6 +135,66 @@ export function FolderCardGrid({
   opsRef.current = { folders, selected, onSelect };
   const rafRef = useRef<number | null>(null);
   const lastMoveRef = useRef<MouseEvent | null>(null);
+
+  // 고른 컷 묶음(머리말) — 그리드에서 2장 이상, 모두 컷(하위 폴더 없음)일 때. 순서는 두 번 클릭의 모아보기와 같은 격자 순서.
+  const chosenCuts = view === "grid" ? folders.filter((folder) => selected.has(folder.path)) : [];
+  const reelPaths = chosenCuts.length >= 2 && chosenCuts.every((folder) => !folder.subfolders) ? chosenCuts.map((folder) => folder.path) : [];
+  const orderOf = new Map(reelPaths.map((path, i) => [path, i + 1]));
+  const reelKey = reelPaths.join("\n");
+  const [bind, setBind] = useState<BindLayout | null>(null);
+  // 카드 자리를 재서 묶음을 정한다 — 그린 뒤·격자나 카드 크기가 바뀔 때(창 폭을 바꾸면 줄이 다시 나뉜다). 최신 값은 ref 로(감시자가 낡은 값을 잡지 않게).
+  const measureRef = useRef<() => void>(() => {});
+  measureRef.current = () => {
+    const grid = gridRef.current;
+    const cards = new Map<string, HTMLElement>();
+    for (const el of grid?.querySelectorAll<HTMLElement>(".cut-card[data-path]") ?? []) if (el.dataset.path) cards.set(el.dataset.path, el);
+    const index = new Map(folders.map((folder, i) => [folder.path, i]));
+    // 이웃 = 목록에서 바로 다음이고 같은 줄(카드의 위쪽이 같다)
+    const runs: HTMLElement[][] = [];
+    let previous: string | null = null;
+    for (const path of reelPaths) {
+      const el = cards.get(path);
+      if (!el) continue;
+      const run = runs[runs.length - 1];
+      const last = run?.[run.length - 1];
+      if (last && previous !== null && index.get(path) === (index.get(previous) ?? -2) + 1 && last.offsetTop === el.offsetTop) run.push(el);
+      else runs.push([el]);
+      previous = path;
+    }
+    const groups = runs.filter((run) => run.length > 1).map((run) => {
+      const first = run[0];
+      const end = run[run.length - 1];
+      return {
+        l: first.offsetLeft, t: first.offsetTop, w: end.offsetLeft + end.offsetWidth - first.offsetLeft, h: Math.max(...run.map((el) => el.offsetHeight)),
+        gaps: run.slice(1).map((el, i) => ({ l: run[i].offsetLeft + run[i].offsetWidth, w: el.offsetLeft - run[i].offsetLeft - run[i].offsetWidth })),
+        paths: run.map((el) => el.dataset.path ?? ""),
+      };
+    });
+    // 알약 = 마지막으로 고른 카드(클릭·방향키가 남긴 자리 — 마퀴·Ctrl+A 처럼 자리가 없으면 고른 것 중 격자의 마지막) 표지 가운데. 묶음에 들면 묶음 가운데.
+    const kept = cursorRef.current;
+    const target = kept !== null && reelPaths.includes(kept) ? kept : reelPaths[reelPaths.length - 1];
+    const el = target === undefined ? undefined : cards.get(target);
+    const group = groups.find((one) => one.paths.includes(target ?? ""));
+    const cover = el?.querySelector<HTMLElement>(".ep-cover");
+    const next: BindLayout | null = el ? {
+      groups,
+      pill: {
+        x: group ? group.l + group.w / 2 : el.offsetLeft + el.offsetWidth / 2,
+        y: el.offsetTop + (cover ? cover.offsetTop + cover.offsetHeight / 2 : el.offsetHeight / 2),
+      },
+    } : null;
+    setBind((now) => (JSON.stringify(now) === JSON.stringify(next) ? now : next));
+  };
+  useLayoutEffect(() => measureRef.current(), [reelKey, selected, folders, scale, fill]);
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid || !reelKey || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureRef.current());
+    observer.observe(grid);
+    for (const el of grid.querySelectorAll<HTMLElement>(".cut-card[data-path]")) observer.observe(el); // 앞줄 카드가 커지면 뒷줄이 밀린다
+    return () => observer.disconnect();
+  }, [reelKey, folders]);
+  const bound = new Set(reelPaths.length ? bind?.groups.flatMap((group) => group.paths) : []);
 
   // 마퀴 히트 계산은 프레임당 한 번(ThumbnailGrid 와 같다).
   const flushMarquee = useCallback(() => {
@@ -402,9 +473,10 @@ export function FolderCardGrid({
           return (
             <div
               key={folder.path} role="button" tabIndex={0}
-              className={`cut-card ep-card ep-${view}` + (subfolders ? "" : " leaf") + (isSelected ? " sel" : "")}
+              className={`cut-card ep-card ep-${view}` + (subfolders ? "" : " leaf") + (isSelected ? " sel" : "") + (bound.has(folder.path) ? " bound" : "")}
               {...card}
             >
+              {orderOf.has(folder.path) && <span className="cut-order" aria-hidden="true">{orderOf.get(folder.path)}</span>}
               <EpisodeCardBody
                 folder={folder} layout={view} thumbSize={thumbSize} fill={fill} now={now} cutsColumn={cutsColumn}
                 onEnter={(e) => {
@@ -436,6 +508,26 @@ export function FolderCardGrid({
             <span className="cut-out-count">{t(top ? "에피소드 밖" : "컷 밖")} {outside}{t("건")}</span>
             <span className="cut-out-hint">{t("한 장씩 보기")}</span>
           </button>
+        )}
+        {reelPaths.length > 0 && bind && (
+          <>
+            {bind.groups.flatMap((group) => group.gaps.map((gap, i) => (
+              <span key={`gap-${group.paths[i + 1]}`} className="cut-bind-gap" style={{ left: gap.l, top: group.t, width: gap.w, height: group.h }} />
+            )))}
+            {bind.groups.map((group) => (
+              <span key={`bind-${group.paths[0]}`} className="cut-bind" style={{ left: group.l, top: group.t, width: group.w, height: group.h }} />
+            ))}
+            <button
+              type="button" className="cut-play" data-ep-action="play" style={{ left: bind.pill.x, top: bind.pill.y }}
+              title={t("고른 컷을 처음부터 이어서 재생한다 (모아보기 · 연결)")}
+              onClick={(e) => {
+                if (!actionCovered(e)) onReel(reelPaths, true);
+              }}
+            >
+              <svg width="14" height="15" viewBox="0 0 26 28" aria-hidden="true"><path d="M2 1.5v25L24 14z" /></svg>
+              {reelPaths.length}{t("컷 연결 재생")}
+            </button>
+          </>
         )}
         {marquee && (
           <div

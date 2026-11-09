@@ -1771,6 +1771,18 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   expect([...reel()!.querySelectorAll(".reel-ttl b")].map((el) => el.textContent)).toEqual(["shot"]);
   act(() => { reel()!.querySelector<HTMLButtonElement>(".assets-x")!.click(); });
   expect(reel()).toBeNull();
+  // 2026-11-09(Jay): 그리드에서 컷 둘을 고르면 선택 막대 대신 묶음의 알약 — 누르면 모아보기를 이번만 연결로 연다(저장된 보기 방식은 그대로)
+  act(() => { cutGrid()!.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true })); });
+  await settle();
+  expect([document.querySelector(".select-bar"), document.querySelector(".cut-play")?.textContent]).toEqual([null, "2컷 연결 재생"]);
+  // 연결 재생기는 영상 요소를 다룬다 — jsdom 에 없는 재생·멈춤·다시 읽기는 빈 것으로
+  const media = (["play", "pause", "load"] as const).map((name) => vi.spyOn(HTMLMediaElement.prototype, name).mockImplementation((() => Promise.resolve()) as never));
+  act(() => { document.querySelector<HTMLButtonElement>(".cut-play")!.click(); });
+  await settle();
+  expect([reel()?.querySelector(".reel-seg .on")?.textContent, localStorage.getItem("ch.lib.cutReelMode")]).toEqual(["▶ 연결", null]);
+  act(() => { reel()!.querySelector<HTMLButtonElement>(".assets-x")!.click(); });
+  expect(reel()).toBeNull();
+  for (const spy of media) spy.mockRestore();
   // 컷 우클릭(메뉴 키) — 그 폴더의 창. 뒤의 컷 카드는 그대로
   act(() => { cutTile("shot").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
   await settle();

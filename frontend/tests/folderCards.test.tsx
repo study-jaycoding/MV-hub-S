@@ -569,6 +569,77 @@ it("두 번 클릭은 하위 폴더가 있으면(에피소드) 그 폴더로 들
 const mouse = (type: string, el: EventTarget, init: MouseEventInit = {}) =>
   act(() => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, buttons: type === "mousemove" ? 1 : 0, ...init })); });
 
+// ── 고른 컷 묶음(2026-11-09 Jay 시안) — 그리드에서 컷 2장 이상: 번호(격자 순서) · 같은 줄의 이웃끼리 한 판 · 알약 [▶ N컷 연결 재생] ──
+//  jsdom 은 자리를 재지 않아 카드·표지의 offset 을 꾸민다(한 줄 3칸 — 칸 340 + 틈 12, 줄 500, 표지 높이 190).
+it("고른 컷 묶음 — 같은 줄의 이웃만 한 판, 번호는 격자 순서, 알약은 마지막 고른 카드 위(묶음이면 가운데)·누르면 연결로 모아보기", () => {
+  const names = ["C0010", "C0020", "C0030", "C0040", "C0050"];
+  const slot = (el: HTMLElement) => names.indexOf((el.dataset.path ?? "").replace("e035/", ""));
+  const geometry: Record<string, (el: HTMLElement) => number> = {
+    offsetLeft: (el) => (slot(el) < 0 ? 0 : (slot(el) % 3) * 352),
+    offsetTop: (el) => (slot(el) < 0 ? 0 : Math.floor(slot(el) / 3) * 500),
+    offsetWidth: (el) => (slot(el) < 0 ? 0 : 340),
+    offsetHeight: (el) => (el.classList.contains("ep-cover") ? 190 : slot(el) < 0 ? 0 : 480),
+  };
+  const saved = Object.keys(geometry).map((key) => [key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)] as const);
+  for (const [key, read] of Object.entries(geometry)) {
+    Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get() { return read(this as HTMLElement); } });
+  }
+  try {
+    const reels: [string[], boolean | undefined][] = [];
+    let selected = new Set<string>();
+    let layout: "grid" | "list" = "grid";
+    const folders = names.map((name) => card(name, 2));
+    const draw = (shown: FolderCard[] = folders) => act(() => root.render(
+      <FolderCardGrid {...gridProps} folders={shown} layout={layout} selected={selected} outside={0}
+        onSelect={(next) => { selected = next; draw(shown); }} onReel={(paths, linked) => reels.push([paths, linked])} />,
+    ));
+    draw();
+    const tile = (name: string) => host.querySelector<HTMLElement>(`.cut-card[data-path="e035/${name}"]`)!;
+    const ctrlPress = (name: string) => { mouse("mousedown", tile(name), { ctrlKey: true }); mouse("mouseup", window); };
+    const pill = () => host.querySelector<HTMLButtonElement>(".cut-play");
+    const frames = () => [...host.querySelectorAll<HTMLElement>(".cut-bind")].map((el) => [el.style.left, el.style.top, el.style.width, el.style.height].join(" "));
+    const orders = () => names.map((name) => tile(name).querySelector(".cut-order")?.textContent ?? "");
+
+    // 한 장 — 번호·알약 없음(두 번 클릭이 그대로 모아보기)
+    ctrlPress("C0020");
+    expect([orders(), pill(), frames()]).toEqual([["", "", "", "", ""], null, []]);
+    // 같은 줄의 이웃 둘 — 한 판(틀 하나 + 사이 틈), 카드마다의 선택 테두리는 끄고(bound), 알약은 묶음 가운데·표지 높이 가운데
+    ctrlPress("C0030");
+    expect(orders()).toEqual(["", "1", "2", "", ""]);
+    expect(frames()).toEqual(["352px 0px 692px 480px"]);
+    const gap = host.querySelector<HTMLElement>(".cut-bind-gap")!;
+    expect([gap.style.left, gap.style.top, gap.style.width, gap.style.height]).toEqual(["692px", "0px", "12px", "480px"]);
+    expect(["C0020", "C0030"].map((name) => [tile(name).classList.contains("sel"), tile(name).classList.contains("bound")])).toEqual([[true, true], [true, true]]);
+    expect([pill()!.textContent, pill()!.style.left, pill()!.style.top]).toEqual(["2컷 연결 재생", "698px", "95px"]);
+    // 목록에선 이웃이지만 다른 줄(C0040 = 둘째 줄 첫 칸) — 묶음 밖(제 선택 테두리), 알약은 마지막으로 고른 그 카드 위
+    ctrlPress("C0040");
+    expect(orders()).toEqual(["", "1", "2", "3", ""]);
+    expect(frames()).toEqual(["352px 0px 692px 480px"]);
+    expect([tile("C0040").classList.contains("sel"), tile("C0040").classList.contains("bound")]).toEqual([true, false]);
+    expect([pill()!.textContent, pill()!.style.left, pill()!.style.top]).toEqual(["3컷 연결 재생", "170px", "595px"]);
+    // 알약 누름 — 고르기는 그대로, 격자 순서로 연결 모아보기
+    mouse("mousedown", pill()!);
+    mouse("mouseup", window);
+    act(() => { pill()!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
+    expect(reels).toEqual([[["e035/C0020", "e035/C0030", "e035/C0040"], true]]);
+    expect([...selected]).toEqual(["e035/C0020", "e035/C0030", "e035/C0040"]);
+    // 리스트 보기 — 묶음·번호·알약 없음(선택 막대가 그대로 맡는다)
+    layout = "list";
+    draw();
+    expect([host.querySelector(".cut-play, .cut-bind, .cut-order"), tile("C0020").classList.contains("bound")]).toEqual([null, false]);
+    // 에피소드(하위 폴더 있음)가 섞인 선택 — 알약 없음
+    layout = "grid";
+    selected = new Set(["e035/C0020", "e036"]);
+    draw([...folders, { ...card("e036", 3), path: "e036", subfolders: 2 }]);
+    expect([host.querySelector(".cut-play"), host.querySelector(".cut-order")]).toEqual([null, null]);
+  } finally {
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+    }
+  }
+});
+
 // ── 에피소드 화면(2026-10-13) — 모양만 다르다: 리스트 = 한 줄에 하나, 그리드 = 컷 띠가 붙은 카드. 고르기·두 번 클릭·키는 같은 격자의 것 ──
 it("에피소드 화면: 리스트는 한 줄에 하나·그리드는 폭에 맞춰 채운다. 카드 안 단추(컷 띠·[열기])는 고르기를 바꾸지 않고 제 일을 한다", () => {
   const entered: FolderCard[] = [];

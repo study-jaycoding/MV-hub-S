@@ -971,6 +971,8 @@ const EN: Record<string, string> = {
   "다음 컷 (↓)": "Next cut (↓)",
   "↑↓ 컷 이동 · Space 재생/정지 · 이미지 컷은 3초": "↑↓ cut · Space play/pause · image cuts last 3 s",
   "컷 선택": " cuts selected",
+  "컷 연결 재생": " cuts · play linked",
+  "고른 컷을 처음부터 이어서 재생한다 (모아보기 · 연결)": "Play the selected cuts back to back from the start (Collect · Linked)",
   "고른 컷의 대표(없으면 최신 것)를 순서대로 모아 본다": "Collect the covers (or latest) of the selected cuts in order",
   // (컷·모델·이 컷의 생성물·보기 방식·처음으로·재생/정지·끝으로·반복 재생·선택 해제 는 편집 탭 항목과 겹쳐 그쪽 것을 쓴다)
   // 그리드/공통
