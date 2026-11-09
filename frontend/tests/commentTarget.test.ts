@@ -91,6 +91,18 @@ describe("서버 능력(어셋 그림)", () => {
     expect(calls.shareCapabilities).toHaveBeenCalledTimes(3); // 마지막은 기억한 값
   });
 
+  it("문맥이 바뀌면 '받는다' 기억을 버린다 — A→B→A 사이 A 가 옛 판으로 돌아갔으면 다시 물어 숨긴다", async () => {
+    const a = await hub(true);
+    calls.shareCapabilities.mockResolvedValueOnce({ asset_comment_drawings: 1 });
+    expect(await serverAcceptsAssetDrawings(a)).toBe(true);
+    const b = { ...a, serverUrl: "http://other:8010", key: a.key + "-b" };
+    calls.shareCapabilities.mockResolvedValueOnce({ asset_comment_drawings: 1 });
+    expect(await serverAcceptsAssetDrawings(b)).toBe(true);
+    calls.shareCapabilities.mockResolvedValueOnce({ share_command: 1 }); // A 가 그사이 옛 판으로
+    expect(await serverAcceptsAssetDrawings(a)).toBe(false);
+    expect(calls.shareCapabilities).toHaveBeenCalledTimes(3);
+  });
+
   it("취소된 조회의 답은 기억하지 않는다", async () => {
     const ctx = await hub(true);
     const abort = new AbortController();

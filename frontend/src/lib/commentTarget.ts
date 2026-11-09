@@ -111,18 +111,19 @@ export function useCommentWriteContext(): CommentWriteContext | null {
   return ctx;
 }
 
-// 서버가 어셋 그림을 받는가 — '받는다'만 문맥별로 기억한다. 안 받음(옛 서버의 칸 없음)·실패(경로 없음·401·403·연결·5xx)는
-//  기억하지 않아, 같은 문맥에서 서버를 업데이트한 뒤 다음 확인(작은 창을 열 때)에 보인다(독립 리뷰 P2). 서버를 되돌리면 [편집]이 남지만
-//  실제 차단은 comments-v2 의 경로 없음 409(server_update_needed — 초안 유지)다(설계 E5).
-const supportCache = new Map<string, true>();
+// 서버가 어셋 그림을 받는가 — **지금 문맥의 '받는다' 하나만** 기억한다. 문맥이 바뀌면 버리고(A→B→A 로 돌아와도 다시 묻는다), 안 받음
+//  (옛 서버의 칸 없음)·실패(경로 없음·401·403·연결·5xx)는 기억하지 않아 같은 문맥에서 서버를 업데이트한 뒤 다음 확인(작은 창을 열 때)에
+//  보인다(독립 리뷰 P2 ×2). 같은 문맥에서 서버를 되돌리면 [편집]이 남지만 실제 차단은 comments-v2 의 경로 없음 409(server_update_needed — 초안 유지)다(설계 E5).
+let supportedKey: string | null = null;
 export async function serverAcceptsAssetDrawings(ctx: CommentWriteContext, signal?: AbortSignal): Promise<boolean> {
+  if (supportedKey !== ctx.key) supportedKey = null; // 다른 문맥의 기억은 버린다
   if (!hubHasFeature(ASSET_DRAWING_FEATURE)) return false;
   if (ctx.mode === "isolated" || (ctx.mode === "hub" && !ctx.proxying)) return true; // 서버 없음 — 허브 표식만 본다
-  if (supportCache.has(ctx.key)) return true;
+  if (supportedKey === ctx.key) return true;
   try {
     const caps = await api.shareCapabilities(signal);
     const ok = caps?.asset_comment_drawings === 1;
-    if (ok && !signal?.aborted) supportCache.set(ctx.key, true);
+    if (ok && !signal?.aborted) supportedKey = ctx.key;
     return ok;
   } catch {
     return false;
@@ -146,5 +147,5 @@ export function useAssetDrawingSupport(ctx: CommentWriteContext | null, recheck:
 }
 
 export function clearAssetDrawingSupportCache(): void {
-  supportCache.clear();
+  supportedKey = null;
 }
