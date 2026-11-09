@@ -1124,6 +1124,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `compareDiff.ts` | 순수 | 비교 모달의 프롬프트·파라미터 차이 계산 |
 | `compareWindow.ts` | 순수 | 비교 창 이동·크기·뷰포트 맞춤 |
 | `synchronizedVideos.ts` | 브라우저 | 비교 영상 재생·탐색 동기화 바인더 |
+| `commentPip.ts` | 브라우저 | 코멘트 창 '창 밖으로'(Jay 2026-11-10) — 크롬 떠 있는 작은 창(Document PiP)을 열고 앱 스타일을 옮긴다 · 문서에 창 하나를 묶음(`gen`·`asset`)이 쥐고 새 패널이 이어받는다(Assets 파일 전환) · '띄워서 보기' 기억(`ch.cmt.pip`) · 안전한 주소만. 그리기는 `common/CommentPanel`(createPortal) |
 | `popupWindows.ts` | 브라우저 | 임베드 창(에셋·관리) `window.open()`·재활성화 · 앱(앱 창·별도 창)을 떠났다 앱 창으로 돌아오면 허브에 별도 창 올리기(`/api/app-windows/raise`) · 떠 있는 캔버스 창의 신호·창 메모리 주고받기·닫힌 뒤 저장본을 다시 읽고 돌려주기 |
 | `historyGraphLayout.ts` | 순수 | 계보 보드 노드 배치·간선·하이라이트 추적 |
 | `useHistoryBoardState.ts` | 훅 | 계보 보드 상태(App.tsx 추출) |
