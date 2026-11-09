@@ -190,7 +190,7 @@ export function useGenerationProgress({
     const off = connectProgress(
       (m) => {
         if (!alive) return;
-        if (m.type === "scene_writer_want" || m.type === "scene_writer_changed" || m.type === "scenes_changed") {
+        if (m.type === "scene_writer_want" || m.type === "scene_writer_changed") {
           signalSceneWriter();
           return;
         }

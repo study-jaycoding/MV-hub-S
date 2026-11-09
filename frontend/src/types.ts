@@ -630,7 +630,6 @@ export interface ProgressMessage {
   type:
     | "scene_writer_want"
     | "scene_writer_changed"
-    | "scenes_changed"
     | "queued"
     | "progress"
     | "synced"

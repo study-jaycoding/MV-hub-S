@@ -2693,7 +2693,7 @@ export default function App() {
             />
           </Suspense>
         ) : canvasAway ? (
-          (canvasWriter.mode === "away" || canvasWriter.mode === "taking" || canvasWriter.mode === "giving") && !canvasOtherTab ? <CanvasWriterStatus /> :
+          (["away", "taking", "giving", "checking", "syncing"].includes(canvasWriter.mode)) && !canvasOtherTab ? <CanvasWriterStatus /> :
           <div className="canvas-away" role="status">
             <CanvasFloatIcon />
             <span>{t(canvasOtherTab ? CANVAS_OTHER_TAB : "캔버스가 별도 창에 떠 있습니다")}</span>
@@ -3192,7 +3192,7 @@ export default function App() {
         preview={preview}
         projects={projects}
         syncTick={syncTick}
-        toast={toast}
+        toast={typeof toast === "string" && toast === tGlobal("강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다") ? <span className="toast--canvas-forced">{toast}</span> : toast}
         onAdminClose={() => {
           closeOverlay(); // 히스토리 뒤로 → 관리자 창 닫힘 반영
           reload(); // 등급·프로젝트 변경이 라이브러리/필터에 반영되게

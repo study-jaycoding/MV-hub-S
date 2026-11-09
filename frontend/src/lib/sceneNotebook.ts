@@ -240,6 +240,7 @@ export interface NotebookSyncResult {
 let tokenProvider: () => NotebookToken | null = () => null;
 let providerEpoch = 0;
 let inFlight: Promise<NotebookSyncResult> | null = null;
+let freshAfter: { after: Promise<NotebookSyncResult>; promise: Promise<NotebookSyncResult> } | null = null;
 const resultListeners = new Set<(result: NotebookSyncResult) => void>();
 export function subscribeNotebookSyncResult(fn: (result: NotebookSyncResult) => void): () => void {
   resultListeners.add(fn);
@@ -359,9 +360,18 @@ function hubBucket(book: HubBook): NotebookHubBucket {
   };
 }
 
-/** 동시 호출은 하나로 합친다. 실패 뒤 다음 호출도 저장된 request_id로 재전송한다. */
-export function syncSceneNotebook(): Promise<NotebookSyncResult> {
+/** 동시 호출은 합치되, 넘기기는 settle 뒤의 새 고정본으로 한 번 더 맞춘다. */
+export function syncSceneNotebook(options: { fresh?: boolean } = {}): Promise<NotebookSyncResult> {
   if (!hubHasFeature(SCENE_WRITER_FEATURE)) return Promise.resolve({ status: "disabled", changed: false });
+  if (options.fresh && inFlight) {
+    if (freshAfter?.after === inFlight) return freshAfter.promise;
+    const after = inFlight;
+    const promise = after.then(() => syncSceneNotebook()).finally(() => {
+      if (freshAfter?.promise === promise) freshAfter = null;
+    });
+    freshAfter = { after, promise };
+    return promise;
+  }
   if (inFlight) return inFlight;
   inFlight = runNotebookSync().then((result) => {
     resultListeners.forEach((fn) => fn(result));
@@ -429,7 +439,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         }
         let book = await getBook();
         if (!local.joined || !book.notebook_id) {
-          const releaseHold = holdNotebookWrites(account);
+          let releaseHold: (() => void) | undefined;
           try {
             local = await snapshot();
             if (!book.notebook_id) {
@@ -452,6 +462,15 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
                 for (const upserts of batches(scenes.map((s) => ({ id: s.id, name: s.name, data: JSON.stringify(s) })))) {
                   await request("notebook/start", { ...start, upserts, commit: false });
                 }
+                // 시작 칸은 아직 공책이 아니다. 올리는 동안 편집을 허용하고 확정 직전에만
+                // 입력을 거둔다. flush가 만든 마지막 편집도 같아야 이 시작본을 확정한다.
+                releaseHold = holdNotebookWrites(account);
+                local = await snapshot();
+                const currentScenes = local.joined && book.hasLiveRows ? [] : local.buckets[bucket]?.scenes ?? [];
+                if (!equal(currentScenes, scenes)) {
+                  await writeNotebookProgress(account, "start", progress, null, guard);
+                  continue;
+                }
                 await request("notebook/start", { ...start, upserts: [], commit: true });
               } catch (error) {
                 const code = errorCode(error);
@@ -471,6 +490,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             }
             if (!book.notebook_id) throw new Error("notebook_not_started");
             if (!local.joined) {
+              releaseHold ??= holdNotebookWrites(account);
               if (!(await joinSceneNotebook(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard))) throw new Error("join_failed");
               changed = true;
               const progress = (await snapshot()).starting;
@@ -480,7 +500,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             const progress = (await snapshot()).starting;
             if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
             local = await snapshot(); // 합류했던 프로필은 보관/합류를 다시 하지 않고 기존 판으로 맞춘다.
-          } finally { releaseHold(); }
+          } finally { releaseHold?.(); }
         }
         if (!book.notebook_id) throw new Error("notebook_missing");
         let pending = local.writing as PendingWrite | null;

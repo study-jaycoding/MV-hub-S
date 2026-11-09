@@ -8,9 +8,10 @@ import { collectCanvasForWriter, flushWriterInput, hasProfileSceneWriter, isCanv
 import { SCENE_WRITER_FEATURE, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
 import { isNotebookWriteHeld, setAsidePendingWrites, setSceneLeaseGeneration, settleSceneWrites, subscribeNotebookWriteHold } from "./sceneStore";
 import { listScenes, subscribeScenesPersisted } from "./scenes";
+import { t } from "./i18n";
 
-export type WriterMode = "disabled" | "writer" | "uncertain" | "away" | "taking" | "giving" | "local_only";
-export interface WriterView { mode: WriterMode; handed: boolean; localCount: number }
+export type WriterMode = "disabled" | "checking" | "syncing" | "writer" | "uncertain" | "away" | "taking" | "giving" | "local_only";
+export interface WriterView { mode: WriterMode; handed: boolean; localCount: number; error?: string; floating?: boolean }
 export interface WriterStatus {
   boot_id: string; account_epoch: number; token?: string;
   writer: { browser_id: string; tab_id: string; generation: string; expires_in_ms: number } | null;
@@ -21,7 +22,7 @@ interface WriterDeps {
   account: () => string;
   eligible: () => boolean;
   send: (account: string, body: Record<string, unknown>) => Promise<WriterStatus>;
-  sync: () => Promise<NotebookSyncResult>;
+  sync: (fresh?: boolean) => Promise<NotebookSyncResult>;
   settle: () => Promise<boolean>;
   lost: () => void;
   generation: (account: string, value: string | null) => void;
@@ -46,7 +47,7 @@ async function beforeDeadline<T>(promise: Promise<T>, deadline: number): Promise
     return await Promise.race([promise, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())); })]);
   } finally { clearTimeout(timer); }
 }
-const blocked = (mode: WriterMode) => mode === "away" || mode === "taking" || mode === "giving";
+const blocked = (mode: WriterMode) => ["away", "taking", "giving", "checking", "syncing"].includes(mode);
 const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 const errorCode = (e: unknown) => (e as { detail?: string })?.detail;
 
@@ -69,16 +70,20 @@ export class SceneWriterClient {
   private again = false;
   private pendingNotice: string | undefined;
   private mayClaim = true;
+  private reconciled = false;
+  private needsSync = false;
   constructor(private deps: WriterDeps, private browserId: string, private tabId: string) {}
   token = (): NotebookToken | null => this.active && this.deps.eligible() && this.account === this.deps.account() &&
     this.prepared && performance.now() < this.confirmedUntil ? this.lease : null;
-  private show(mode: WriterMode, handed = this.view.handed) {
-    this.view = { mode, handed, localCount: this.deps.localCount() };
+  private show(mode: WriterMode, handed = this.view.handed, error?: string) {
+    this.view = { mode, handed, localCount: this.deps.localCount(), ...(error ? { error } : {}) };
     this.deps.changed(this.view);
   }
   configure(enabled: boolean) {
     const account = this.deps.account();
     if (this.active === enabled && this.account === account) return;
+    // 해제는 캡처한 계정/토큰으로만 보낸다. 늦은 응답은 새 계정의 상태를 바꾸지 않는다.
+    if (this.lease) void this.deps.send(this.account, { action: "release", token: this.lease.token }).catch(() => {});
     this.epoch++;
     this.active = enabled;
     this.account = account;
@@ -92,20 +97,24 @@ export class SceneWriterClient {
     this.localReason = undefined;
     this.localSceneIds = [];
     this.prepared = false;
+    this.reconciled = false;
+    this.needsSync = false;
     this.pendingNotice = undefined;
     this.mayClaim = true;
     if (enabled) this.deps.generation(account, null);
-    this.show(enabled ? "uncertain" : "disabled", false);
+    this.show(enabled ? "checking" : "disabled", false);
   }
   private valid(epoch: number) { return this.active && epoch === this.epoch && this.account === this.deps.account() && this.deps.eligible(); }
   private send(action: string, extra: Record<string, unknown> = {}) {
     return this.deps.send(this.account, { action, browser_id: this.browserId, tab_id: this.tabId, ...extra });
   }
   private lose(handed = false) {
+    if (this.view.mode === "away" && !this.lease) return;
     this.mayClaim = false;
     this.confirmedUntil = 0;
     this.lease = null;
     this.prepared = false;
+    this.reconciled = false;
     this.pendingNotice = undefined;
     this.deps.lost();
     this.deps.generation(this.account, null);
@@ -113,16 +122,30 @@ export class SceneWriterClient {
   }
   uncertain() {
     this.confirmedUntil = 0; // 정지/BFCache 복귀 직후에는 renew보다 업로드가 먼저 갈 수 없다.
-    if (!blocked(this.view.mode) && this.active && !this.localStopped) this.show("uncertain");
+    if ((!blocked(this.view.mode) || this.view.mode === "checking") && this.active && !this.localStopped) this.show("uncertain");
   }
   resume() {
     if (!this.active || this.taking || this.view.mode === "giving") return;
-    this.epoch++;
-    this.busy = null;
-    this.uncertain();
+    if (this.lease && performance.now() >= this.confirmedUntil) this.uncertain();
   }
   localChanged() {
-    if (!this.localStopped || this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) !== false) this.localStopped = false;
+    if (this.localStopped && this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) !== false) this.localStopped = false;
+  }
+  private localReady() {
+    if (this.localReason && this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) === false) {
+      this.localStopped = true;
+      this.show("local_only");
+      return false;
+    }
+    return true;
+  }
+  private async failedStart(epoch: number, error = t("허브 공책을 맞추지 못했습니다. 전체 내보내기로 작업을 보관한 뒤 다시 시도해 주세요.")) {
+    const token = this.lease?.token;
+    this.confirmedUntil = 0;
+    if (token) { try { await this.send("release", { token }); } catch { /* 만료가 남아도 원래 토큰으로만 해제한다. */ } }
+    if (!this.valid(epoch)) return;
+    this.lose();
+    this.show("away", false, error);
   }
   private confirm(status: WriterStatus) {
     if (!status.writer || !status.token) throw new Error("invalid_writer_reply");
@@ -134,10 +157,16 @@ export class SceneWriterClient {
     this.deps.generation(this.account, status.writer.generation);
   }
   private async reconcile(epoch: number) {
-    const wasEditing = this.view.mode === "writer" || this.view.mode === "uncertain";
-    const result = await this.deps.sync();
+    // 이미 쓰던 탭의 일시 실패는 로컬 편집을 유지한다. 최초 맞추기만 유한하게 재시도한다.
+    let result: NotebookSyncResult = { status: "retry", changed: false };
+    for (let attempt = 0; attempt < (this.reconciled ? 1 : 3); attempt++) {
+      result = await this.deps.sync();
+      if (!this.valid(epoch)) return;
+      if (result.status !== "retry") break;
+    }
     if (!this.valid(epoch)) return;
     if (result.status === "ready") {
+      this.reconciled = true;
       this.localReason = undefined;
       this.localSceneIds = [];
       this.show("writer", false);
@@ -154,32 +183,39 @@ export class SceneWriterClient {
       this.localSceneIds = [...(result.sceneIds ?? [])];
       this.localStopped = true;
       this.show("local_only");
-      if (result.reason === "start_too_big") this.deps.notice(`5MiB 넘는 씬이 있어 허브 공책을 시작하지 못했습니다 — 이 브라우저에서만 편집됩니다: ${this.deps.names(result.sceneIds ?? [])}`);
+      if (result.reason === "start_too_big") this.deps.notice(t("5MiB 넘는 씬이 있어 허브 공책을 시작하지 못했습니다 — 이 브라우저에서만 편집됩니다: {names}").replace("{names}", this.deps.names(result.sceneIds ?? [])));
     } else if (result.status === "waiting_token") {
       if (["writer_required", "writer_changed", "writer_expired"].includes(result.reason ?? "")) this.lose();
+      else if (!this.reconciled) await this.failedStart(epoch);
       else this.uncertain();
-    } else if (wasEditing) this.uncertain();
-    else this.show("taking"); // 최초 맞추기를 마치기 전에는 편집을 열지 않는다.
+    } else if (this.reconciled) this.uncertain();
+    else await this.failedStart(epoch);
   }
-  refresh(): Promise<void> {
+  refresh(synchronize = true, renew = false): Promise<void> {
     if (!this.active || !this.deps.eligible() || this.taking || this.localStopped) return Promise.resolve();
+    this.needsSync ||= synchronize;
     if (this.busy) { this.again = true; return this.busy; }
     const epoch = this.epoch;
-    const work = this.check(epoch).finally(() => {
+    const work = this.check(epoch, renew).finally(() => {
       if (this.busy !== work) return;
       this.busy = null;
-      if (this.again) { this.again = false; void this.refresh(); }
+      if (this.again) { this.again = false; void this.refresh(false); }
     });
     this.busy = work;
     return work;
   }
-  private async check(epoch: number) {
+  private async check(epoch: number, renew: boolean) {
     const ownedAtStart = !!this.lease;
+    // 첫 응답을 기다리는 짧은 동안만 보드를 감춘다. 허브 장애에서는 로컬 편집을 연다.
+    const opening = this.view.mode === "checking";
+    const openingTimer = opening ? setTimeout(() => {
+      if (this.valid(epoch) && this.view.mode === "checking") this.show("uncertain");
+    }, 1500) : undefined;
     try {
       // 새 프로세스·계정 세대 확인 뒤에만 claim/renew한다. 신호 내용은 권한으로 쓰지 않는다.
       let renewedFirst = false;
       let status: WriterStatus;
-      if (this.lease && !this.token()) {
+      if (this.lease && (!this.token() || renew)) {
         try {
           status = await this.send("renew", { token: this.lease.token });
           if (!this.valid(epoch)) return;
@@ -188,41 +224,56 @@ export class SceneWriterClient {
         } catch (error) {
           if (!this.valid(epoch)) return;
           if (errorCode(error) !== "writer_required") throw error;
-          this.lose();
           status = await this.send("status");
         }
       } else status = await this.send("status");
       if (!this.valid(epoch)) return;
       if (this.lease && (status.boot_id !== this.boot || status.account_epoch !== this.accountEpoch || status.writer?.generation !== this.lease.generation)) {
-        this.lose();
+        if (status.boot_id !== this.boot && !status.writer) {
+          // 재시작은 다른 브라우저로 넘김이 아니다. 미전송 연산과 편집 화면을 유지한다.
+          this.lease = null;
+          this.confirmedUntil = 0;
+          this.prepared = false;
+          this.needsSync = true;
+        } else this.lose();
       }
       if (!status.writer) {
         // 넘겨준 탭은 자동으로 되찾지 않는다. 요청한 탭에 claim 기회를 남긴다.
         if (!this.mayClaim && !ownedAtStart) return;
+        if (!this.localReady()) return;
         const granted = await this.send("claim");
         if (!this.valid(epoch)) return;
         this.confirm(granted);
-        this.show("taking");
-        if (!(await this.deps.settle()) || !this.valid(epoch)) return;
+        if (!ownedAtStart && this.view.mode !== "local_only") this.show("syncing");
+        if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
+        if (!this.valid(epoch)) return;
         this.prepared = true;
+        this.needsSync = false;
         await this.reconcile(epoch);
       } else if (this.lease && status.writer.generation === this.lease.generation) {
-        const renewed = renewedFirst ? status : await this.send("renew", { token: this.lease.token });
-        if (!this.valid(epoch)) return;
-        this.confirm(renewed);
+        if (!renewedFirst && performance.now() >= this.confirmedUntil) {
+          const renewed = await this.send("renew", { token: this.lease.token });
+          if (!this.valid(epoch)) return;
+          this.confirm(renewed);
+        }
         if (!this.prepared) {
-          if (!(await this.deps.settle()) || !this.valid(epoch)) return;
+          if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
+          if (!this.valid(epoch)) return;
           this.prepared = true;
         }
         if (status.handoff && status.handoff.generation === this.lease.generation && status.handoff.tab_id !== this.tabId) {
           await this.give(epoch);
-        } else await this.reconcile(epoch);
+        } else if (this.needsSync || !this.reconciled) {
+          this.needsSync = false;
+          await this.reconcile(epoch);
+        } else if (this.view.mode === "uncertain") this.show("writer");
       } else this.lose();
     } catch (error) {
       if (!this.valid(epoch)) return;
       if (["writer_busy", "writer_required", "writer_changed"].includes(errorCode(error) ?? "")) this.lose();
+      else if (this.view.mode === "syncing" || this.view.mode === "taking") await this.failedStart(epoch);
       else this.uncertain(); // 허브가 꺼져도 확정적으로 넘긴 적 없는 브라우저는 로컬 편집 가능.
-    }
+    } finally { clearTimeout(openingTimer); }
   }
   private async give(epoch: number) {
     const lease = this.lease;
@@ -233,8 +284,12 @@ export class SceneWriterClient {
     try {
       const saved = await Promise.race([
         (async () => {
-          if (!(await this.deps.settle()) || expired || !this.valid(epoch)) return false;
-          const result = await this.deps.sync();
+          if (!(await this.deps.settle())) {
+            if (!expired && this.valid(epoch)) this.deps.notice(t("분리 캔버스 창을 닫아 주세요"));
+            return false;
+          }
+          if (expired || !this.valid(epoch)) return false;
+          const result = await this.deps.sync(true);
           return result.status === "ready";
         })(),
         new Promise<boolean>((resolve) => { timer = setTimeout(() => {
@@ -255,12 +310,16 @@ export class SceneWriterClient {
   }
   async take(): Promise<void> {
     if (!this.active || !this.deps.eligible() || this.taking || this.view.mode === "giving") return;
+    if (!this.localReady()) return;
+    this.localStopped = false;
     const epoch = ++this.epoch; // 진행 중 조회/맞추기의 늦은 응답도 이 요청을 덮지 못한다.
     this.taking = true;
     this.lease = null;
     this.prepared = false;
+    this.reconciled = false;
     this.confirmedUntil = 0;
-    this.show("taking", false);
+    const retryLocal = this.view.mode === "local_only";
+    if (!retryLocal) this.show("taking", false);
     try {
       const request = await this.send("request");
       if (!this.valid(epoch)) return;
@@ -274,20 +333,27 @@ export class SceneWriterClient {
           const grant = await this.send("claim");
           if (!this.valid(epoch)) return;
           this.confirm(grant);
-          if (!(await this.deps.settle()) || !this.valid(epoch)) return;
+          if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
+          if (!this.valid(epoch)) return;
           this.prepared = true;
-          this.pendingNotice = "넘겨받았습니다";
+          this.pendingNotice = t("넘겨받았습니다");
           await this.reconcile(epoch);
           return;
         }
         await delay(Math.min(1000, Math.max(0, deadline - Date.now())));
       }
-      const grant = await this.send("force", { request_id: request.request_id });
+      // 기한 경계에서 정상 release가 끝났을 수 있다. 최종 조회가 실패하면 강제 성공도 알리지 않는다.
+      const finalStatus = await beforeDeadline(this.send("status"), Date.now() + 1500);
+      if (!this.valid(epoch)) return;
+      if (!finalStatus) { await this.failedStart(epoch); return; }
+      const forced = !!finalStatus.writer;
+      const grant = await this.send(forced ? "force" : "claim", forced ? { request_id: request.request_id } : {});
       if (!this.valid(epoch)) return;
       this.confirm(grant);
-      if (!(await this.deps.settle()) || !this.valid(epoch)) return;
+      if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
+      if (!this.valid(epoch)) return;
       this.prepared = true;
-      this.pendingNotice = "강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다";
+      this.pendingNotice = forced ? t("강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다") : t("넘겨받았습니다");
       await this.reconcile(epoch);
     } catch { if (this.valid(epoch)) this.lose(); }
     finally { if (epoch === this.epoch) this.taking = false; }
@@ -316,7 +382,7 @@ export function setSceneWriterFlush(flush: () => void): () => void {
   return () => { if (flushPending === flush) flushPending = () => {}; };
 }
 export function signalSceneWriter(): void { void client?.refresh(); }
-export function sceneWriterSuspended(): void { client?.resume(); }
+export function sceneWriterSuspended(): void { client?.uncertain(); }
 export function sceneWriterAccountChanged(): void {
   if (!client) return;
   client.configure(false);
@@ -342,7 +408,12 @@ export function startSceneWriter(): void {
     floatingStarted = true;
     // 창이 열릴 때 복사된 세대를 고정한다. 늦은 인계에 새 세대를 붙이지 않는다.
     const enable = () => {
-      if (!hubHasFeature(SCENE_WRITER_FEATURE)) return;
+      if (!hubHasFeature(SCENE_WRITER_FEATURE)) {
+        setHubCanvasPaused(false);
+        view = { mode: "disabled", handed: false, localCount: 0 };
+        subscribers.forEach((fn) => fn());
+        return;
+      }
       let generation: string | null = null;
       try { generation = sessionStorage.getItem(GENERATION_KEY); } catch { /* 저장소 차단 */ }
       setSceneLeaseGeneration(getAccountNamespace(), generation);
@@ -353,9 +424,19 @@ export function startSceneWriter(): void {
     if (channel) channel.onmessage = (event: MessageEvent<{ account: string; paused: boolean }>) => {
       if (!hubHasFeature(SCENE_WRITER_FEATURE) || event.data.account !== getAccountNamespace()) return;
       if (event.data.paused) flushWriterInput(flushPending);
+      view = { mode: event.data.paused ? "away" : "local_only", handed: false, localCount: 0, floating: true };
       setHubCanvasPaused(event.data.paused);
+      subscribers.forEach((fn) => fn());
     };
-    setInterval(() => { if (!window.opener || window.opener.closed) setHubCanvasPaused(false); }, 1000);
+    setInterval(() => {
+      if (!window.opener || window.opener.closed) {
+        setHubCanvasPaused(false);
+        if (view.mode === "away") {
+          view = { mode: "local_only", handed: false, localCount: 0, floating: true };
+          subscribers.forEach((fn) => fn());
+        }
+      }
+    }, 1000);
     return;
   }
   const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("mvhub-scene-lease");
@@ -366,7 +447,7 @@ export function startSceneWriter(): void {
     account: getAccountNamespace,
     eligible: () => hasProfileSceneWriter() && !getApiPause(),
     send: (account, body) => jsonFetch<WriterStatus>("/api/scenes/writer", { method: "POST", body: JSON.stringify(body), headers: { [EXPECT_ACCOUNT_HEADER]: account }, signal: AbortSignal.timeout(5000) }),
-    sync: syncSceneNotebook,
+    sync: (fresh) => syncSceneNotebook({ fresh }),
     settle: async () => {
       if (!(await collectCanvasForWriter(4500))) return false;
       return settleSceneWrites(4500, () => flushWriterInput(flushPending));
@@ -399,7 +480,7 @@ export function startSceneWriter(): void {
   setSceneNotebookTokenProvider(() => client?.token() ?? null);
   const configure = () => {
     client!.configure(hubHasFeature(SCENE_WRITER_FEATURE) && !getApiPause());
-    signalSceneWriter();
+    void client!.refresh(false);
   };
   subscribeHubFeatures(configure);
   subscribeApiPause(configure);
@@ -411,8 +492,8 @@ export function startSceneWriter(): void {
     }
   });
   subscribeScenesPersisted(() => { if (client?.view.mode === "local_only") { client.localChanged(); signalSceneWriter(); } });
-  setInterval(() => { configure(); }, 20_000);
-  const resume = () => { if (document.visibilityState !== "hidden") { sceneWriterSuspended(); configure(); } };
+  setInterval(() => { void client?.refresh(false, true); }, 20_000);
+  const resume = () => { if (document.visibilityState !== "hidden") { client?.resume(); configure(); } };
   window.addEventListener("pageshow", resume);
   window.addEventListener("focus", resume);
   window.addEventListener("online", resume);

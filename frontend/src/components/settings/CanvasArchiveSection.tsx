@@ -5,6 +5,7 @@ import { getAccountNamespace } from "../../lib/accountScope";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, type NotebookArchive } from "../../lib/sceneNotebook";
 import { useSceneWriter } from "../../lib/sceneWriter";
+import { useT } from "../../lib/i18n";
 import { readSceneMigrationInfo, sceneStoreReady, type SceneMigrationInfo } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
@@ -12,6 +13,7 @@ import { SettingsDescription } from "./SettingsDescription";
 // 캔버스 전체를 파일 하나로 내려받고, 그 파일에서 다시 가져온다(백업·PC 옮기기·저장소가 막혔을 때 건지기).
 // 씬 하나를 주고받는 캔버스의 [저장]/[불러오기]와 다르다 — 이쪽은 계정·씬 id 를 그대로 싣고, 가져올 때 합친다.
 export function CanvasArchiveSection() {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [failing, setFailing] = useState(isSceneSaveFailing);
@@ -74,8 +76,8 @@ export function CanvasArchiveSection() {
     <section className="settings-section">
       <h4>캔버스 자료</h4>
       {archive && <div className="settings-row">
-        <span>허브로 바꾸기 전 이 브라우저 캔버스 {Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)}개 — 합치지 않고 따로 남겨 둔 것</span>
-        <button className="settings-action" disabled={busy} onClick={() => downloadNotebookArchive(archive)}>내려받기</button>
+        <span>{t("허브로 바꾸기 전 이 브라우저 캔버스 {count}개 — 합치지 않고 따로 남겨 둔 것").replace("{count}", String(Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)))}</span>
+        <button className="settings-action" disabled={busy} onClick={() => downloadNotebookArchive(archive)}>{t("내려받기")}</button>
       </div>}
       <div className="settings-row">
         <button className="settings-action" onClick={exportAll} disabled={busy}>
@@ -104,8 +106,9 @@ export function CanvasArchiveSection() {
             ? "⚠ 지금 캔버스가 저장되지 않고 있습니다 — 내보내 두세요."
             : floating
               ? otherTab ? `${CANVAS_OTHER_TAB} — 그 뒤에 가져오세요.`
-                : writer.mode === "away" ? "캔버스가 다른 브라우저에 열려 있습니다 — 여기서 연 뒤 가져오세요"
-                : writer.mode === "taking" || writer.mode === "giving" ? "캔버스를 넘기는 중입니다 — 끝난 뒤 가져오세요"
+                : writer.mode === "away" ? t("캔버스가 다른 브라우저에 열려 있습니다 — 여기서 연 뒤 가져오세요")
+                : writer.mode === "taking" || writer.mode === "giving" ? t("캔버스를 넘기는 중입니다 — 끝난 뒤 가져오세요")
+                : writer.mode === "checking" || writer.mode === "syncing" ? t("허브 공책을 맞추는 중입니다 — 끝난 뒤 가져오세요")
                 : "캔버스가 별도 창에 떠 있는 동안은 가져올 수 없습니다. 창을 닫은 뒤 가져오세요."
               : "이 PC 의 모든 캔버스를 파일 하나로 내려받거나, 그 파일에서 다시 가져옵니다.")
         }

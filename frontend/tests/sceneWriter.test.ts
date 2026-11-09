@@ -27,7 +27,7 @@ function harness() {
       if (action === "request") return { ...server, request_id: "request" };
       return structuredClone(server);
     }),
-    sync: vi.fn(async (): Promise<NotebookSyncResult> => ready), settle: vi.fn(async () => true), lost: vi.fn(),
+    sync: vi.fn(async (_fresh?: boolean): Promise<NotebookSyncResult> => ready), settle: vi.fn(async () => true), lost: vi.fn(),
     generation: vi.fn(), changed: vi.fn(), notice: vi.fn(), names: () => "큰 씬", localCount: () => 2,
     canRetryLocal: vi.fn((_reason: string | undefined, _sceneIds: string[]) => true),
   };
@@ -39,6 +39,13 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("hub scene writer", () => {
+  it("an expired token during first sync exits the locked screen with recovery actions", async () => {
+    const h = harness(); h.client.configure(true);
+    h.deps.sync.mockResolvedValueOnce({ status: "waiting_token", changed: false });
+    await h.client.refresh();
+    expect(h.client.view.mode).toBe("away"); expect(h.client.view.error).toBeTruthy();
+    expect(h.calls.at(-1)).toMatchObject({ action: "release", token: "token1" });
+  });
   it("feature off and profile follower never contact the hub", async () => {
     const h = harness(); await h.client.refresh(); expect(h.calls).toEqual([]);
     h.client.configure(true); h.eligible(false); await h.client.refresh(); expect(h.calls).toEqual([]);
@@ -47,8 +54,28 @@ describe("hub scene writer", () => {
     const h = harness(), syncing = deferred<typeof ready>();
     h.deps.sync.mockReturnValueOnce(syncing.promise); h.client.configure(true);
     const run = h.client.refresh(); await vi.advanceTimersByTimeAsync(0);
-    expect(h.client.view.mode).toBe("taking"); expect(h.deps.settle).toHaveBeenCalledOnce();
+    expect(h.client.view.mode).toBe("syncing"); expect(h.deps.settle).toHaveBeenCalledOnce();
     syncing.resolve(ready); await run; expect(h.client.view.mode).toBe("writer"); expect(h.client.token()?.generation).toBe("g1");
+  });
+  it("three initial reconcile failures release authority and allow an explicit retry", async () => {
+    const h = harness(); h.client.configure(true);
+    h.deps.sync.mockResolvedValue({ status: "retry", changed: false, reason: "reconcile_limit" });
+    await h.client.refresh();
+    expect(h.deps.sync).toHaveBeenCalledTimes(3); expect(h.client.token()).toBeNull();
+    expect(h.client.view).toMatchObject({ mode: "away", handed: false }); expect(h.client.view.error).toContain("전체 내보내기");
+    expect(h.calls.at(-1)).toMatchObject({ action: "release", token: "token1" });
+    await h.client.refresh(); expect(h.deps.sync).toHaveBeenCalledTimes(3);
+    h.deps.sync.mockResolvedValue(ready); await h.client.take();
+    expect(h.client.view.mode).toBe("writer"); expect(h.client.view.error).toBeUndefined();
+    expect(h.client.token()?.token).toBe("token2");
+  });
+  it("initial status hides the board briefly, then allows local editing if the hub hangs", async () => {
+    const h = harness(), response = deferred<WriterStatus>(); h.client.configure(true);
+    h.deps.send.mockReturnValueOnce(response.promise); const run = h.client.refresh(false);
+    expect(h.client.view.mode).toBe("checking"); await vi.advanceTimersByTimeAsync(1499);
+    expect(h.client.view.mode).toBe("checking"); await vi.advanceTimersByTimeAsync(1);
+    expect(h.client.view.mode).toBe("uncertain"); response.resolve(h.server()); await run;
+    expect(h.client.view.mode).toBe("writer");
   });
   it("normal handoff blocks, flushes, uploads, then releases with the captured token", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh();
@@ -59,9 +86,13 @@ describe("hub scene writer", () => {
     h.setServer({ ...h.server(), handoff: { request_id: "req", generation: "g1", browser_id: "other", tab_id: "other" } });
     await h.client.refresh();
     expect(events).toEqual(["giving", "flush", "upload", "away"]);
+    expect(h.deps.sync).toHaveBeenLastCalledWith(true);
     expect(h.calls.at(-1)).toMatchObject({ action: "release", token: "token1" });
     expect(h.client.view.handed).toBe(true);
     await h.client.refresh(); expect(h.calls.at(-1)?.action).toBe("status");
+    h.other(); await h.client.refresh(); await h.client.refresh();
+    expect(h.client.view).toMatchObject({ mode: "away", handed: true });
+    expect(h.deps.lost).toHaveBeenCalledOnce();
   });
   it("failed input flush never releases or reports a normal handoff", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh(); h.deps.settle.mockResolvedValueOnce(false);
@@ -81,13 +112,25 @@ describe("hub scene writer", () => {
     const run = h.client.take(); await vi.advanceTimersByTimeAsync(4999);
     expect(h.calls.some((x) => x.action === "force")).toBe(false);
     await vi.advanceTimersByTimeAsync(1); await run;
-    expect(h.calls.filter((x) => x.action === "status")).toHaveLength(5);
+    expect(h.calls.filter((x) => x.action === "status")).toHaveLength(6);
     expect(h.calls.at(-1)).toMatchObject({ action: "force", request_id: "request" });
     expect(h.deps.notice.mock.calls[0][0]).toContain("강제로 넘겨받았습니다\n");
   });
   it("released owner is claimed without force and normal notice follows a clean sync", async () => {
     const h = harness(); h.client.configure(true); await h.client.take();
     expect(h.deps.notice).toHaveBeenCalledWith("넘겨받았습니다"); expect(h.calls.some((x) => x.action === "force")).toBe(false);
+  });
+  it("an owner releasing exactly at the deadline is claimed normally after a final status", async () => {
+    const h = harness(); h.other(); h.client.configure(true);
+    const original = h.deps.send.getMockImplementation()!; let lookups = 0;
+    h.deps.send.mockImplementation((account, body) => {
+      if (body.action === "status" && ++lookups === 6) h.setServer({ ...h.server(), writer: null, token: undefined });
+      return original(account, body);
+    });
+    const run = h.client.take(); await vi.advanceTimersByTimeAsync(5000); await run;
+    expect(h.calls.filter((c) => c.action === "status")).toHaveLength(6);
+    expect(h.calls.at(-1)?.action).toBe("claim"); expect(h.calls.some((c) => c.action === "force")).toBe(false);
+    expect(h.deps.notice).toHaveBeenCalledWith("넘겨받았습니다");
   });
   it("a third party winning claim does not open editing or claim success", async () => {
     const h = harness(); h.client.configure(true);
@@ -104,13 +147,28 @@ describe("hub scene writer", () => {
   });
   it("BFCache/suspension clears upload authority and renew is first on return", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh(); h.calls.length = 0;
-    h.client.resume(); expect(h.client.token()).toBeNull(); await h.client.refresh();
+    h.client.releaseBeacon(() => {});
+    h.client.resume(); expect(h.client.token()).toBeNull(); await h.client.refresh(false);
     expect(h.calls[0].action).toBe("renew"); expect(h.client.token()?.token).toBe("token1");
+  });
+  it("focus checks retain authority without renew or sync; the twenty second timer only renews", async () => {
+    let clock = 100; vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = harness(); h.client.configure(true); await h.client.refresh();
+    h.calls.length = 0; h.deps.sync.mockClear();
+    for (let i = 0; i < 5; i++) { h.client.resume(); expect(h.client.token()?.token).toBe("token1"); await h.client.refresh(false); }
+    expect(h.calls.map((c) => c.action)).toEqual(Array(5).fill("status")); expect(h.deps.sync).not.toHaveBeenCalled();
+    h.calls.length = 0; clock += 20000; await h.client.refresh(false, true);
+    expect(h.calls.map((c) => c.action)).toEqual(["renew"]); expect(h.deps.sync).not.toHaveBeenCalled();
+    h.calls.length = 0; clock += 89000; h.client.resume(); expect(h.client.token()).toBeNull(); await h.client.refresh(false);
+    expect(h.calls.map((c) => c.action)).toEqual(["renew"]); expect(h.client.token()?.token).toBe("token1");
+    expect(h.deps.sync).not.toHaveBeenCalled();
   });
   it("hub restart loses old authority, claims a new token and synchronizes again", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh();
+    h.deps.changed.mockClear();
     h.setServer({ boot_id: "boot2", account_epoch: 1, writer: null, handoff: null });
-    h.client.resume(); await h.client.refresh(); expect(h.deps.lost).toHaveBeenCalled();
+    h.client.resume(); await h.client.refresh(); expect(h.deps.lost).not.toHaveBeenCalled();
+    expect(h.deps.changed.mock.calls.every(([view]) => view.mode === "writer")).toBe(true);
     expect(h.client.token()?.token).toBe("token2"); expect(h.deps.sync).toHaveBeenCalledTimes(2);
   });
   it("network loss leaves the previous writer locally editable but stops token uploads", async () => {
@@ -122,10 +180,17 @@ describe("hub scene writer", () => {
     const h = harness(); h.client.configure(true); await h.client.refresh(); h.other(); await h.client.refresh();
     h.deps.send.mockRejectedValueOnce(new TypeError("offline")); await h.client.refresh();
     expect(h.client.view.mode).toBe("away"); expect(h.deps.lost).toHaveBeenCalled();
+    await h.client.refresh(); await h.client.refresh(); expect(h.deps.lost).toHaveBeenCalledOnce();
   });
   it("release beacon contains the old token in its body and invalidates late responses", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh(); const send = vi.fn();
     h.client.releaseBeacon(send); expect(JSON.parse(send.mock.calls[0][0])).toEqual({ action: "release", token: "token1" }); expect(h.client.token()).toBeNull();
+  });
+  it("disabling sends a release for the captured account and original token", async () => {
+    const h = harness(); h.client.configure(true); await h.client.refresh(); h.deps.send.mockClear();
+    h.account("B"); h.client.configure(false); await vi.advanceTimersByTimeAsync(0);
+    expect(h.deps.send).toHaveBeenCalledWith("A", { action: "release", token: "token1" });
+    expect(h.client.view.mode).toBe("disabled"); expect(h.client.token()).toBeNull();
   });
   it("an upload network failure also keeps local editing available", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh();
@@ -159,8 +224,14 @@ describe("hub scene writer", () => {
     current = [small, { ...current[0], id: "new-large" }];
     h.client.localChanged(); await h.client.refresh(); expect(h.calls).toEqual([]);
     current = [small];
-    h.client.localChanged(); await h.client.refresh(); expect(h.client.view.mode).toBe("writer");
-    expect(h.calls.some(call => call.action === "claim")).toBe(true);
+    const staging = deferred<typeof ready>(); h.deps.sync.mockReturnValueOnce(staging.promise);
+    h.client.localChanged(); const retry = h.client.refresh(); await vi.advanceTimersByTimeAsync(0);
+    expect(h.client.view.mode).toBe("local_only");
+    expect(h.deps.changed.mock.calls.some(([view]) => ["taking", "syncing"].includes(view.mode))).toBe(false);
+    for (let i = 0; i < 3; i++) { h.client.localChanged(); void h.client.refresh(); }
+    expect(h.calls.filter(call => call.action === "claim")).toHaveLength(1);
+    staging.resolve(ready); await retry; await vi.advanceTimersByTimeAsync(0);
+    expect(h.client.view.mode).toBe("writer"); expect(h.calls.filter(call => call.action === "claim")).toHaveLength(1);
   });
   it("empty notebook retries only when the first local scene appears", async () => {
     const h = harness(); h.client.configure(true);
@@ -185,22 +256,25 @@ describe("hub scene writer", () => {
   });
   it("a floating window which cannot be collected prevents uploads and editing", async () => {
     const h = harness(); h.client.configure(true); h.deps.settle.mockResolvedValueOnce(false);
-    await h.client.refresh(); expect(h.client.token()).toBeNull(); expect(h.deps.sync).not.toHaveBeenCalled(); expect(h.client.view.mode).toBe("taking");
-    await h.client.refresh(); expect(h.client.view.mode).toBe("writer");
+    await h.client.refresh(); expect(h.client.token()).toBeNull(); expect(h.deps.sync).not.toHaveBeenCalled();
+    expect(h.client.view).toMatchObject({ mode: "away", error: "분리 캔버스 창을 닫아 주세요" });
+    await h.client.refresh(); expect(h.client.view.mode).toBe("away");
+    await h.client.take(); expect(h.client.view.mode).toBe("writer");
   });
   it("a signal received while checking is queried again rather than lost", async () => {
     const h = harness(), reply = deferred<WriterStatus>(); h.client.configure(true);
     h.deps.send.mockReturnValueOnce(reply.promise); const run = h.client.refresh(); void h.client.refresh();
     reply.resolve(h.server()); await run; await vi.advanceTimersByTimeAsync(0);
     expect(h.calls.filter((c) => c.action === "status")).toHaveLength(1); // first status was the delayed mock
-    expect(h.calls.some((c) => c.action === "renew")).toBe(true);
+    expect(h.calls.some((c) => c.action === "renew")).toBe(false);
   });
-  it("a hung status lookup cannot extend the five second takeover wait", async () => {
+  it("a hung final status lookup stops takeover without guessing force success", async () => {
     const h = harness(); h.other(); h.client.configure(true);
     const original = h.deps.send.getMockImplementation()!;
     h.deps.send.mockImplementation((account, body) => body.action === "status" ? new Promise(() => {}) : original(account, body));
-    const run = h.client.take(); await vi.advanceTimersByTimeAsync(5000); await run;
-    expect(h.calls.at(-1)?.action).toBe("force"); expect(h.client.view.mode).toBe("writer");
+    const run = h.client.take(); await vi.advanceTimersByTimeAsync(6500); await run;
+    expect(h.calls.some((c) => c.action === "force")).toBe(false);
+    expect(h.client.view.mode).toBe("away"); expect(h.client.view.error).toBeTruthy();
   });
   it("late release acknowledgement after the deadline is never labelled a normal handoff", async () => {
     const h = harness(); h.client.configure(true); await h.client.refresh();
@@ -215,7 +289,13 @@ describe("hub scene writer", () => {
     window.name = "contenthub-canvas"; localStorage.clear(); sessionStorage.clear();
     sessionStorage.setItem("mvhub.sceneLeaseGeneration", "opened-generation");
     const network = vi.fn(); vi.stubGlobal("fetch", network);
-    vi.stubGlobal("BroadcastChannel", class { postMessage() {} close() {} });
+    const channels = new Map<string, { onmessage?: (event: MessageEvent) => void }>();
+    vi.stubGlobal("BroadcastChannel", class {
+      onmessage?: (event: MessageEvent) => void;
+      constructor(name: string) { channels.set(name, this); }
+      postMessage() {} close() {}
+    });
+    const opener = { closed: false }; vi.stubGlobal("opener", opener);
     const store = await import("../src/lib/sceneStore");
     const scenes = await import("../src/lib/scenes");
     const features = await import("../src/lib/hubFeatures");
@@ -227,8 +307,12 @@ describe("hub scene writer", () => {
       scenes.updateScene(null, "s", { name: "분리 창 편집" });
       expect(store.unconfirmedSceneWrites()[0].leaseGeneration).toBe("opened-generation");
       await store.settleSceneStoreForTest();
-      popup.setHubCanvasPaused(true); await vi.advanceTimersByTimeAsync(1000);
+      channels.get("mvhub-scene-lease")!.onmessage!(new MessageEvent("message", { data: { account: "local", paused: true } }));
+      expect(runtime.getSceneWriterView()).toMatchObject({ mode: "away", floating: true });
+      expect(popup.isCanvasFloating()).toBe(true);
+      opener.closed = true; await vi.advanceTimersByTimeAsync(1000);
       expect(popup.isCanvasFloating()).toBe(false);
+      expect(runtime.getSceneWriterView()).toMatchObject({ mode: "local_only", floating: true });
       expect(scenes.listScenes(null)[0].name).toBe("분리 창 편집");
       runtime.signalSceneWriter(); expect(network).not.toHaveBeenCalled();
     } finally {

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { syncSceneNotebook, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, joinSceneNotebook, completeNotebookMcpTask, type NotebookToken } from "../src/lib/sceneNotebook";
+import { syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, joinSceneNotebook, completeNotebookMcpTask, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
-import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate } from "../src/lib/sceneStore";
+import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold } from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const scene = (id = "s", name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
@@ -111,10 +111,52 @@ it("c07 failed join transaction preserves old scenes and does not mark joined", 
   expect((await syncSceneNotebook()).status).toBe("retry"); expect(readWorkingBucket(bucket)[0].id).toBe("old");
   abortSceneStoreWritesForTest(false); hook = null; expect((await state()).joined).toBeNull(); expect((await syncSceneNotebook()).status).toBe("ready");
 });
-it("bootstrap gate blocks edits and releases afterwards", async () => {
-  await writeScenesStore({ [bucket]: [scene()] }); let blocked = false;
-  hook = (p) => { if (p.endsWith("/start")) blocked = !edit([scene("late")]).ok; };
-  expect((await syncSceneNotebook()).status).toBe("ready"); expect(blocked).toBe(true); expect(edit([scene("after")]).ok).toBe(true);
+it("bootstrap allows staging edits, restarts that snapshot, and holds only commit and join", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); let edited = false, blocked = false;
+  hook = (p, body) => {
+    if (!p.endsWith("/start")) return;
+    if (!body.commit && !edited) { edited = true; expect(edit([scene("late")]).ok).toBe(true); }
+    if (body.commit) blocked = !edit([scene("blocked")]).ok;
+  };
+  expect((await syncSceneNotebook()).status).toBe("ready"); expect(blocked).toBe(true);
+  expect([...fake.rows.keys()]).toEqual(["late"]); expect(readWorkingBucket(bucket).map((s) => s.id)).toEqual(["late"]);
+  const stages = fake.calls.filter((c) => c.path.endsWith("/start"));
+  expect(stages.map((c) => c.body.commit)).toEqual([false, false, true]);
+  expect(stages[0].body.attempt_id).not.toBe(stages[1].body.attempt_id);
+  expect(edit([scene("after")]).ok).toBe(true);
+});
+it("bootstrap flush before commit participates in snapshot verification", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); let flushed = false;
+  const unsubscribe = subscribeNotebookWriteHold((_account, held) => {
+    if (held && !flushed) { flushed = true; expect(edit([scene("flushed")]).ok).toBe(true); }
+  });
+  try {
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect([...fake.rows.keys()]).toEqual(["flushed"]);
+    expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+  } finally { unsubscribe(); }
+});
+it("continuous bootstrap edits stop after three snapshots without committing or keeping input held", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); let edits = 0;
+  hook = (p, body) => {
+    if (p.endsWith("/start") && !body.commit) expect(edit([scene(`edit${++edits}`)]).ok).toBe(true);
+  };
+  expect(await syncSceneNotebook()).toMatchObject({ status: "retry", reason: "reconcile_limit" });
+  expect(edits).toBe(3); expect(fake.book).toBeNull(); expect((await state()).starting).toBeNull();
+  expect(edit([scene("after")]).ok).toBe(true);
+});
+it("handoff fresh sync waits for existing work and uploads a newly settled snapshot", async () => {
+  await joined(); let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  hook = async (path) => { if (path.includes("notebook?")) { hook = null; enter(); await blocked; } };
+  const existing = syncSceneNotebook(); await entered;
+  const fresh = syncSceneNotebook({ fresh: true });
+  expect(syncSceneNotebook({ fresh: true })).toBe(fresh); expect(fresh).not.toBe(existing);
+  const unsubscribe = subscribeNotebookSyncResult(() => { unsubscribe(); expect(edit([scene("s", "settled")]).ok).toBe(true); });
+  release();
+  expect((await existing).status).toBe("ready"); expect((await fresh).status).toBe("ready");
+  expect(JSON.parse(fake.rows.get("s")!.data).name).toBe("settled"); expect(fake.rows.size).toBe(1);
 });
 it("empty_notebook retries with a new attempt when a local scene appears", async () => {
   await writeScenesStore({ [bucket]: [] }); expect(await syncSceneNotebook()).toMatchObject({ status: "local_only", reason: "empty_notebook" });
@@ -125,7 +167,10 @@ it("empty browser takes existing hub rows", async () => {
 });
 it("c07 oversized start releases lease without partial start or lost local data", async () => {
   const huge = { ...scene(), padding: "x".repeat(5 * 1024 * 1024) } as Scene; await writeScenesStore({ [bucket]: [huge, scene("small")] });
-  expect(await syncSceneNotebook()).toMatchObject({ status: "local_only", reason: "start_too_big" }); expect(fake.calls.some((c) => c.path.endsWith("/start"))).toBe(false);
+  const held: boolean[] = [], unsubscribe = subscribeNotebookWriteHold((_account, value) => { held.push(value); });
+  try { expect(await syncSceneNotebook()).toMatchObject({ status: "local_only", reason: "start_too_big" }); }
+  finally { unsubscribe(); }
+  expect(held).toEqual([]); expect(fake.calls.some((c) => c.path.endsWith("/start"))).toBe(false);
   expect(fake.calls.at(-1)?.body.action).toBe("release"); expect(readWorkingBucket(bucket)).toHaveLength(2); expect(edit([scene()]).ok).toBe(true);
 });
 it("lost staging response reuses immutable attempt id", async () => {
