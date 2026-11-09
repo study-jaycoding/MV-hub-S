@@ -119,6 +119,19 @@ export function newSceneIntentId(): string {
 
 // 임대 흐름은 3단계가 연결한다. undefined = 종전 모드, null = 공책 모드이지만 임대 없음.
 let leaseGenerations: Record<string, string | null> = {};
+const notebookWriteHolds = new Map<string, number>();
+/** 첫 시작/합류만 쓰기 입구를 잠근다. 다른 계정·허브 조건부 연산은 막지 않는다. */
+export function holdNotebookWrites(account: string): () => void {
+  notebookWriteHolds.set(account, (notebookWriteHolds.get(account) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (notebookWriteHolds.get(account) ?? 1) - 1;
+    if (remaining) notebookWriteHolds.set(account, remaining);
+    else notebookWriteHolds.delete(account);
+  };
+}
 export function setSceneLeaseGeneration(account: string, generation: string | null): void {
   leaseGenerations = { ...leaseGenerations, [account]: generation };
 }
@@ -673,9 +686,11 @@ function rebaseWorking(): void {
 export async function sceneNotebookTransaction<T>(
   keys: string[],
   decide: (all: ScenesByProject, meta: Record<string, unknown>) => { value: T; changed: boolean },
+  stillCurrent: () => boolean = () => true,
 ): Promise<{ ok: true; value: T } | { ok: false }> {
   let value: T;
   const ok = await runStoreTx(keys, (all, meta) => {
+    if (!stillCurrent()) throw new Error("notebook scope changed");
     const before = { ...meta };
     const result = decide(all, meta);
     value = cloneStored(result.value);
@@ -775,6 +790,11 @@ export function applySceneOp<T, P = never>(
   }
   const draft: ScenesByProject = { ...working };
   const outcome = mutate(draft, leaseGenerations);
+  if (outcome.write && [...new Set([...Object.keys(working), ...Object.keys(draft)])].some((bucket) =>
+    notebookWriteHolds.has(bucket.split("::")[0]) && draft[bucket] !== working[bucket])) {
+    captureFailed = captureFailed.map(() => true);
+    return { ok: false, paused: true, value: outcome.value };
+  }
   if (!outcome.write) return { ok: true, value: outcome.value };
   if (!options.confirmedOnly) {
     freezeScenes(draft);
@@ -1561,6 +1581,7 @@ export async function settleSceneStoreForTest(): Promise<boolean> {
 
 /** 시험 전용 — 모듈 상태를 비운다. */
 export function resetSceneStoreForTest(): void {
+  notebookWriteHolds.clear();
   leaseGenerations = {};
   channel?.close();
   channel = null;

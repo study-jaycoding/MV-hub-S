@@ -27,7 +27,7 @@ import { restoreCanvasDocuments } from "../features/canvas/api";
 //    사본 행으로 받는다(갈래 — 그 뒤 이 씬의 편집은 그 사본 행으로 미러). 설계: docs/status/결정일곱_설계_2026-10-15.md 1A.
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
-import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
+import { hubHasFeature, EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import {
   confirmSceneWrite,
   hasPersistedSceneBucket,
@@ -37,6 +37,7 @@ import {
   type Scene,
 } from "./scenes";
 import { subscribeSceneStoreExternal } from "./sceneStore";
+import { syncSceneNotebook, SCENE_WRITER_FEATURE } from "./sceneNotebook";
 import { withoutComfyRuns } from "./comfyRunState";
 
 const API = "/api/scenes/backup";
@@ -83,6 +84,7 @@ let initPromise: Promise<InitResult> | null = null; // scope 의 복구 판정 �
 let serverHash: Map<string, string> | null = null; // 서버 메타 캐시 sceneId→data_hash
 let lastPushed = new Map<string, string>(); // 마지막으로 밀어올린(또는 복구한) 씬 JSON — 정확 비교
 let timer: ReturnType<typeof setTimeout> | null = null;
+let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let syncing = false;
 let rerun = false; // 동기화 중 새 변경 — 끝나고 한 번 더
@@ -192,6 +194,7 @@ export function subscribeSceneBackupForked(fn: (names: string[]) => void): () =>
 
 // 다른 탭이 저장한 확정본을 받았다 — 받은 글자의 지문을 기억하고, 그 씬의 장부를 **새로 읽어** 같은 지문이면 승계한다(Codex D1).
 async function onExternalScenes(): Promise<void> {
+  if (hubHasFeature(SCENE_WRITER_FEATURE)) { schedule(); return; }
   const scope = ns();
   if (scope !== curScope) return;
   const changed: { id: string; text: string }[] = [];
@@ -225,6 +228,7 @@ async function onExternalScenes(): Promise<void> {
 
 // 다른 탭이 장부를 고쳤다(뒤늦게 온 백업 확인) — 그 값이 이 탭이 받은 내용의 지문과 같을 때만 승계한다(Codex E1).
 function onLedgerStorage(event: StorageEvent): void {
+  if (hubHasFeature(SCENE_WRITER_FEATURE)) return;
   const scope = curScope;
   if (!scope || !event.key?.startsWith(`${LEDGER_PREFIX}${scope}:`) || !event.newValue) return;
   const id = event.key.slice(`${LEDGER_PREFIX}${scope}:`.length);
@@ -272,7 +276,7 @@ function recountOverLimit(): void {
   overLimit = new Set();
   for (const s of persisted) {
     const hit = overLimitCache.get(s.id);
-    const over = hit?.text === s.text ? hit.over : exceedsSceneLimit(s.text);
+    const over = hit?.text === s.text ? hit.over : (exceedsSceneLimit(s.text) || (hubHasFeature(SCENE_WRITER_FEATURE) && JSON.parse(s.text).localNotebookCopy === "upload_failed"));
     overLimitCache.set(s.id, { text: s.text, over });
     if (over) overLimit.add(s.id);
   }
@@ -325,7 +329,7 @@ function enterScope(): string {
     oversized = new Set();
     copyTooBig = new Set();
     overLimitCache.clear();
-    ledger = loadLedger(s); // 이 범위의 판 — 여기서 한 번만 읽는다(Codex C1)
+    ledger = hubHasFeature(SCENE_WRITER_FEATURE) ? new Map() : loadLedger(s); // 이 범위의 판 — 여기서 한 번만 읽는다(Codex C1)
     received = new Map();
     knownText = new Map();
     noteSeenTexts();
@@ -335,6 +339,8 @@ function enterScope(): string {
     rerun = false;
     if (timer) clearTimeout(timer);
     timer = null;
+    if (maxWaitTimer) clearTimeout(maxWaitTimer);
+    maxWaitTimer = null;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
   }
@@ -437,6 +443,15 @@ async function syncNow(): Promise<void> {
   const scope = enterScope();
   try {
     // ★복구 판정이 끝나기 전 삭제 정합 금지 — 새 브라우저에서 로컬=[] 로 서버를 지우는 사고 방지.
+    if (hubHasFeature(SCENE_WRITER_FEATURE)) {
+      const result = await syncSceneNotebook();
+      failed = result.status === "retry";
+      if (ns() === scope) {
+        recountOverLimit();
+        if (result.changed) restoreSubs.forEach((fn) => fn());
+      }
+      return;
+    }
     const init = await ensureInit(scope);
     if (init === "retry") {
       failed = true; // 판정 미상(미로그인 등) — 백오프로 재판정
@@ -695,10 +710,14 @@ async function syncNow(): Promise<void> {
 
 function schedule(): void {
   if (timer) clearTimeout(timer);
-  timer = setTimeout(() => {
-    timer = null;
+  const run = () => {
+    if (timer) clearTimeout(timer);
+    if (maxWaitTimer) clearTimeout(maxWaitTimer);
+    timer = maxWaitTimer = null;
     void syncNow();
-  }, DEBOUNCE_MS);
+  };
+  timer = setTimeout(run, DEBOUNCE_MS);
+  if (hubHasFeature(SCENE_WRITER_FEATURE) && !maxWaitTimer) maxWaitTimer = setTimeout(run, 10000);
 }
 
 // ── 명시적 가져오기 — 자동 복구가 닿지 못하는 자리를 사람이 직접 여는 문 ──────────────
@@ -709,6 +728,7 @@ function schedule(): void {
 
 /** DB 백업에만 있고 이 브라우저엔 없는 씬 수. 0 이면 가져올 게 없다(UI 노출 판단용). */
 export async function countBackupOnlyScenes(): Promise<number> {
+  if (hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
   const scope = enterScope();
   try {
     const r = await jsonFetch<{ items: { id: string }[] }>(`${API}?project_id=`, asAccount(scope));
@@ -723,6 +743,7 @@ export async function countBackupOnlyScenes(): Promise<number> {
 
 /** DB 백업에만 있는 씬을 이 브라우저로 가져온다. 반환 = 실제로 더한 개수. */
 export async function importFromBackup(): Promise<number> {
+  if (hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
   if (importing) return 0; // 연타 방지
   importing = true;
   try {
@@ -798,6 +819,11 @@ export async function initSceneBackup(): Promise<boolean> {
     window.addEventListener("online", () => void syncNow());
   }
   const scope = enterScope();
+  if (hubHasFeature(SCENE_WRITER_FEATURE)) {
+    const result = await syncSceneNotebook();
+    schedule();
+    return result.changed;
+  }
   const res = await ensureInit(scope);
   // 복구 여부와 무관하게 초기 reconcile 1회 — 배포 전부터 있던(수정 안 한) 씬도 미러되게(코덱스 P1).
   // 실패(미로그인 401 포함)는 30s 백오프가 이어받아 로그인 후 자연 회복된다.

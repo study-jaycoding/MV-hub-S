@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .. import active_account, repo
+from ..services.scene_writer import enabled as scene_writer_enabled
 from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..emailnorm import norm_email
 from ..deps import (
@@ -210,8 +211,10 @@ def auth_config():
         # 화면이 켤 때 읽는 기능 표식. request_retry_v1 = 생성·Comfy 요청을 답이 없을 때 같은 요청표로 한 번 더 보내도 되는 허브
         #  (계정 확인 헤더 X-MVHub-Expect-Account + Comfy run_key 장부). 없으면 화면은 다시 보내지 않는다(Jay 결정 2A).
         #  comment_drawings_v1 = 크게 보기 코멘트 그림(comments-v2·그림 조회)을 아는 허브 — 없으면 화면은 C 그리기를 열지 않는다.
+        # 공책은 전 단계 완료 전까지 공개하지 않는다. 기존 격리 시험 opt-in만 연결한다.
         "features": ["request_retry_v1", "edit_doc_backup_v1", "audio-models-v1", "video-voice-v1", "comfy_canvas_runs_v1",
-                     "comment_drawings_v1"] + ([] if AUTH_ENABLED else ["scene_keep_v1"]),
+                     "comment_drawings_v1"] + ([] if AUTH_ENABLED else ["scene_keep_v1"])
+                    + (["scene_writer_v1"] if not AUTH_ENABLED and scene_writer_enabled() else []),
     }
 
 
