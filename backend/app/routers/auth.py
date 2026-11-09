@@ -216,8 +216,9 @@ def auth_config():
         #  agent_chat_v1 = MV Agent 칸(이 PC 의 Claude Code·Codex) 라우터가 붙은 로컬 허브.
         #  agent_chat_connect_v1 = 칸의 Claude 연결 경로(/api/agent-chat/claude)를 아는 허브 — 없으면 화면은 엔진 사유만 보인다.
         "features": ["request_retry_v1", "edit_doc_backup_v1", "audio-models-v1", "video-voice-v1", "comfy_canvas_runs_v1",
-                     "comment_drawings_v1", "asset_comment_drawings_v1"] + ([] if AUTH_ENABLED else ["scene_keep_v1"])
-                    + (["agent_chat_v1", "agent_chat_connect_v1"] if agent_chat.enabled() else []),
+                     "comment_drawings_v1", "asset_comment_drawings_v1"]
+                    + (["agent_chat_v1", "agent_chat_connect_v1"] if agent_chat.enabled() else [])
+                    + ([] if AUTH_ENABLED else ["scene_keep_v1"]),  # 로컬 전용은 맨 뒤 — '서버 표식 + 로컬 추가' 모양 유지(test_scene_keeps)
         # 공유 팀 서버 본체인가 — 화면이 auth_enabled 와 함께 허브·서버 직결·격리 로컬(로그인 켬 + 중계 끔)을 나눈다(어셋 그림 §3.2).
         "shared_team_server": is_shared_team_server(),
     }
