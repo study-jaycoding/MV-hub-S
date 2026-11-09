@@ -4,6 +4,7 @@ import { lazy, Suspense, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { previewTargetFromGenerations } from "../../lib/generationGrid";
 import { CommentDrawModal } from "../comment/CommentDrawModal";
+import type { CommentMedia } from "../common/CommentPanel";
 import { GenCommentPanel } from "../GenCommentPanel";
 import { InfoPopup } from "../InfoPopup";
 import { MediaPreview, type PreviewCardActions } from "../MediaPreview";
@@ -85,6 +86,7 @@ export function AppOverlays({
   localHub,
   commentGenId,
   commentLabel,
+  commentGen = null,
   commentDraw,
   commentDrawText = "",
   onCommentEditDraw,
@@ -114,6 +116,7 @@ export function AppOverlays({
   localHub: boolean;
   commentGenId: string | null;
   commentLabel: string;
+  commentGen?: Generation | null; // 작은 코멘트 창의 대상 — 왼쪽 썸네일 칸(11-09 시안 C-2). 모르면 칸 없이 label 글자
   commentDraw: Generation | null; // 작은 코멘트 창의 [편집] 으로 연 코멘트 그림 창(이미지·영상, 그림을 아는 허브)
   commentDrawText?: string; // [편집] 때 작은 창에서 넘겨받은 쓰던 글
   onCommentEditDraw?: (text: string) => boolean; // 작은 창의 [편집] — 없으면 단추가 없다(오디오·그림을 모르는 허브)
@@ -139,6 +142,13 @@ export function AppOverlays({
   previewCardActions?: PreviewCardActions; // 크게 보기 Ctrl 카드 단추가 부르는 앱 동작(격자 카드와 같다)
 }) {
   const drawTarget = commentDraw ? previewTargetFromGenerations([commentDraw], commentDraw) : null;
+  // 작은 코멘트 창 왼쪽 썸네일 — 누르면 그 생성물의 크게 보기(창은 크게 보기 아래에 남고, 닫으면 돌아온다)
+  const panelTarget = commentGen && commentGen.id === commentGenId ? previewTargetFromGenerations([commentGen], commentGen) : null;
+  const panelMedia: CommentMedia | null = panelTarget
+    ? { thumb: panelTarget.thumb || (panelTarget.type === "image" ? panelTarget.url : null), type: panelTarget.type,
+        title: commentGen?.prompt || commentLabel, onOpen: () => onPreview(panelTarget),
+        videoUrl: panelTarget.type === "video" ? panelTarget.url : undefined }
+    : null;
   return (
     <>
       {commentDraw && drawTarget && drawTarget.type !== "audio" && (
@@ -165,6 +175,7 @@ export function AppOverlays({
           onClose={onCommentClose}
           onChanged={onHistoryChanged}
           onEditDraw={onCommentEditDraw}
+          media={panelMedia}
         />
       )}
       {info && (

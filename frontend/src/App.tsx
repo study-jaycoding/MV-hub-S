@@ -3224,6 +3224,7 @@ export default function App() {
         localHub={!authConfig?.auth_enabled}
         commentGenId={commentGenId}
         commentLabel={commentLabel}
+        commentGen={commentEditGen}
         commentDraw={commentDraw}
         commentDrawText={commentDrawText}
         onCommentEditDraw={commentEditGen && cardCommentOpensDrawing(commentEditGen) ? (text) => {

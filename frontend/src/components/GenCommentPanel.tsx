@@ -9,7 +9,7 @@ import { API_PAUSED_MESSAGE, ApiPausedError, isHttpStatus } from "../lib/http";
 import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import type { CommentDrawingMeta, CommentDrawingView, CommentTarget, GenComment } from "../types";
-import { CommentPanel, type CommentComposer } from "./common/CommentPanel";
+import { CommentPanel, type CommentComposer, type CommentMedia } from "./common/CommentPanel";
 import { renderStrokes, type DrawItem } from "./edit/drawing/strokes";
 
 interface Props {
@@ -32,6 +32,7 @@ interface Props {
   onComments?: (comments: GenComment[]) => void; // 그림 창이 지난 그림 책갈피를 그린다
   // 작은 창의 [편집](입력칸과 [전송] 사이) — 쓰던 글을 넘기고 그림 창을 연다(Jay 11-09: 생성물도 C = 작은 창 → [편집] → 그림 창)
   onEditDraw?: (text: string) => boolean;
+  media?: CommentMedia | null; // 떠 있는 창 왼쪽 썸네일 칸(11-09 시안 C-2)
 }
 
 const GEN_LS = makeStore("ch.gen.");
@@ -189,13 +190,15 @@ export function GenCommentPanel({
   onUnsentChange,
   onComments,
   onEditDraw,
+  media,
 }: Props) {
   const [comments, setComments] = useState<GenComment[]>([]);
   useEffect(() => onComments?.(comments), [comments, onComments]);
+  // 크기 열쇠 — 왼쪽 썸네일 칸(11-09 시안 C-2)이 생겨 옛 저장 크기(약 320 폭)로는 두 칸이 좁다. 한 번 처음 크기로 연다
   const { pos, size, panelRef, onHeadMouseDown } = useFloatingPanel(
     GEN_LS,
     "cmtPos",
-    "cmtSize",
+    "cmtSizeMedia",
     !embedded,
   );
 
@@ -309,6 +312,7 @@ export function GenCommentPanel({
       allowPrivate={allowPrivate}
       onUnsentChange={onUnsentChange}
       onEditDraw={onEditDraw}
+      media={media}
       renderExtra={(c) => (
         <CommentDrawingStrip
           target={{ kind: "generation", genId }}
