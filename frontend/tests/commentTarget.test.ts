@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 // 코멘트 그림의 저장 문맥 — auth_enabled × shared_team_server 세 모드, 중계 여부 = 실제 proxying(has_token 아님), 기대값,
 //  서버 능력 조회(실패 = 안 받음, 문맥별 기억). 설계 docs/status/어셋코멘트그림_설계_2026-11-05.md §3.2·§4.
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls = vi.hoisted(() => ({
@@ -13,7 +15,7 @@ vi.mock("../src/api", () => ({ api: calls }));
 import { setAccountScope } from "../src/lib/accountScope";
 import {
   ASSET_DRAWING_FEATURE, clearAssetDrawingSupportCache, expectationFor, loadCommentWriteContext, previewShowsTarget, sameCommentTarget,
-  serverAcceptsAssetDrawings,
+  serverAcceptsAssetDrawings, useAssetDrawingSupport, type CommentWriteContext,
 } from "../src/lib/commentTarget";
 import { assetFileUrl } from "../src/lib/assetUrls";
 import { setHubFeatures } from "../src/lib/hubFeatures";
@@ -101,6 +103,32 @@ describe("서버 능력(어셋 그림)", () => {
     calls.shareCapabilities.mockResolvedValueOnce({ share_command: 1 }); // A 가 그사이 옛 판으로
     expect(await serverAcceptsAssetDrawings(a)).toBe(false);
     expect(calls.shareCapabilities).toHaveBeenCalledTimes(3);
+  });
+
+  it("[편집] 표시 — B 의 답이 오기 전에 A 로 돌아와도 A 를 다시 묻는 동안은 숨김(옛 A 의 '보임'을 쓰지 않는다)", async () => {
+    const a = await hub(true);
+    const b = { ...a, serverUrl: "http://other:8010", key: a.key + "-b" };
+    let shown: boolean | null = null;
+    function Probe({ ctx }: { ctx: CommentWriteContext }) {
+      shown = useAssetDrawingSupport(ctx);
+      return null;
+    }
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    try {
+      calls.shareCapabilities.mockResolvedValueOnce({ asset_comment_drawings: 1 });
+      await act(async () => { root.render(createElement(Probe, { ctx: a })); });
+      expect(shown).toBe(true);
+      calls.shareCapabilities.mockImplementation(() => new Promise(() => {})); // B·A 다시 묻기 — 답이 안 온다
+      await act(async () => { root.render(createElement(Probe, { ctx: b })); });
+      expect(shown).toBe(false);
+      await act(async () => { root.render(createElement(Probe, { ctx: a })); });
+      expect(shown).toBe(false);
+    } finally {
+      act(() => root.unmount());
+      vi.unstubAllGlobals();
+    }
   });
 
   it("취소된 조회의 답은 기억하지 않는다", async () => {

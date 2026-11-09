@@ -135,6 +135,8 @@ export function useAssetDrawingSupport(ctx: CommentWriteContext | null, recheck:
   const [state, setState] = useState<{ key: string; ok: boolean } | null>(null);
   const key = ctx?.key ?? "";
   useEffect(() => {
+    // 문맥·recheck 가 바뀌면 앞 표시를 먼저 비운다 — A 받음 → B(답 전) → A 로 돌아오면 A 를 다시 묻는 동안 옛 A 의 '보임'이 남았다(독립 리뷰 P2)
+    setState(null);
     if (!ctx) return;
     const abort = new AbortController();
     void serverAcceptsAssetDrawings(ctx, abort.signal).then((ok) => {
