@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 157개.
+제품 환경변수 158개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -22,8 +22,9 @@
 | `CONTENT_HUB_ACCESS_LOG` | `"0"` | `backend/serve.py` | — |
 | `CONTENT_HUB_ADMIN_EMAIL` | — | `backend/app/main.py` `backend/app/repo/account_cleanup.py` | — |
 | `CONTENT_HUB_ADMIN_PASSWORD` | — | `backend/app/main.py` | — |
-| `CONTENT_HUB_AGENT_CHAT` | `"0"` | `backend/app/config.py` | — |
+| `CONTENT_HUB_AGENT_CHAT` | `"1"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_AGENT_CHAT_DIR` | — | `backend/app/config.py` | — |
+| `CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_REGISTRY` | `"0"` | `backend/app/config.py` | `test_dev.bat` |
@@ -201,4 +202,4 @@
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |
 | `TEMP` | `tools/mcp_adapter/server.py` `tools/server_console/install.py` |
 | `USERNAME` | `tools/server_console/install.py` `tools/server_console/jobs.py` |
-| `USERPROFILE` | `tools/server_console/install.py` |
+| `USERPROFILE` | `backend/app/services/agent_chat_process.py` `tools/server_console/install.py` |
