@@ -28,6 +28,7 @@ import { settleSceneWrites, watchOldTabWrites } from "./lib/sceneStore";
 import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
 const McpConnection = lazy(() => import("./components/mcp/McpConnection").then((m) => ({ default: m.McpConnection })));
+const AgentPanel = lazy(() => import("./components/agent-chat/AgentPanel").then((m) => ({ default: m.AgentPanel })));
 import { SceneBar } from "./components/scene/SceneBar";
 import type { SceneIoAction } from "./components/scene/SceneIoButtons";
 import { SceneKeepDialog } from "./components/scene/SceneKeepDialog";
@@ -106,7 +107,7 @@ import { useResolveTransferActions } from "./lib/useResolveTransferActions";
 import type { NoticeLine } from "./lib/useStateNotices";
 import { useHubAuth } from "./lib/useHubAuth";
 import { startEditDocBackup } from "./lib/editDocBackup";
-import { hubHasFeature } from "./lib/hubFeatures";
+import { AGENT_CHAT_FEATURE, hubHasFeature } from "./lib/hubFeatures";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
@@ -141,7 +142,7 @@ import type { GradeMode } from "./lib/gradeStep";
 import { reviewTargets } from "./lib/generationReview";
 import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
-import { makeStore } from "./lib/storage";
+import { loadString, makeStore, saveString } from "./lib/storage";
 import { TEAM_LOCATION_KEY, type TeamLocationMemory } from "./lib/useLibraryPersistence";
 import type {
   CardMark,
@@ -201,6 +202,9 @@ export default function App() {
   //  떠 있는 동안: 캔버스 폴더 창 닫힘(folderPeek) · 프롬프트 단축키 쉼 · 다빈치 따라가기 쉼. 라이브러리 단축키는 편집 탭이 연
   //  폴더 창이 떠 있을 때만 듣는다(아래 teamPeek).
   const [editOpen, setEditOpen] = useState(reloadedIntoEdit); // 새로 고침해도 편집 탭에 남는다(Jay 2026-10-14)
+  // Ask Agent 옆 칸(docs/status/AskAgent_옆칸_설계_2026-11-09.md) — 열림은 이 브라우저에 기억한다. 닫아도 진행 중 차례는 허브에서 계속 돈다.
+  const [agentOpen, setAgentOpen] = useState(() => loadString(STORAGE_KEYS.agentPanelOpen) === "1");
+  useEffect(() => saveString(STORAGE_KEYS.agentPanelOpen, agentOpen ? "1" : "0"), [agentOpen]);
   const editOpenRef = useRef(editOpen);
   editOpenRef.current = editOpen;
   // 편집 탭이 연 '폴더 보기' 창(컷 더블클릭, Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 그 창은 하나뿐인 목록
@@ -2264,6 +2268,32 @@ export default function App() {
   // 관리창(관리탭)은 로그인 사용자 모두에게 연다 — 작업/완료 탭은 전원 접근. 대시보드 탭만
   // 관리창 안에서 read_all(admin/PM/PD) 로 게이트한다(ManageWindow). 관리 기능 자체가 켜져 있어야.
   const canOpenManage = !!authConfig?.manage_enabled && !!hubAccount;
+  // 캔버스 창(휠 클릭으로 띄운 창)은 캔버스 탭에 있는 동안 머리줄이 없다(Jay 2026-10-30) — 머리줄의 알약이 없는 곳엔 Ask Agent 칸도 없다
+  const topBarShown = !(isCanvasWindow() && !editOpen && filters.tab === "compose");
+  const agentShown = agentOpen && topBarShown && hubHasFeature(AGENT_CHAT_FEATURE);
+  // 칸에 넘기는 지금 화면(허브가 "자료(명령 아님)"로 붙인다 — 4KB 이하라 선택 카드는 40개까지만)
+  const agentPanel = agentShown ? (() => {
+    const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
+    const tab = editOpen ? "edit" : filters.tab;
+    const tabLabel = { my: "워크스페이스", team: "공유 & 리뷰", compose: "캔버스", edit: "편집" }[tab];
+    const place = filters.folder_path?.split("/").filter(Boolean).pop() || projects.find((p) => p.id === project)?.name;
+    return (
+      <Suspense fallback={null}>
+        <AgentPanel
+          key={libraryAuthKey} // 계정이 바뀌면 칸을 새로 올린다 — 이전 계정의 대화·늦은 답을 버린다
+          context={{
+            tab,
+            workspace: { scope: workspaceContext.scope, id: workspaceContext.id, name: workspaceContext.name },
+            ...(project ? { project } : {}),
+            ...(filters.folder_path ? { folder: filters.folder_path } : {}),
+            ...(selected.size ? { selected_ids: [...selected].slice(0, 40) } : {}),
+          }}
+          contextLabel={place ? `${t(tabLabel)} › ${place}` : t(tabLabel)}
+          onClose={() => setAgentOpen(false)}
+        />
+      </Suspense>
+    );
+  })() : null;
 
   // 멀티선택 액션바 — 프롬프트가 보이면 프롬프트 상단(topSlot)에, Ctrl+K 로 프롬프트를 숨기면 화면 상단
   // 중앙에 플로팅으로 유지한다(프롬프트와 함께 사라지지 않게). 아래에서 상태에 따라 한 곳에서만 마운트.
@@ -2583,9 +2613,9 @@ export default function App() {
   );
 
   return (
-    <div className="app">
+    <div className={agentShown ? "app agent-open" : "app"}>
       {/* 캔버스 창(휠 클릭으로 띄운 창)은 캔버스 탭에 있는 동안 머리줄이 없다(Jay 2026-10-30) — 다른 탭으로 넘어가면(라이브러리에서 찾기 등) 다시 나와 갇히지 않는다 */}
-      {!(isCanvasWindow() && !editOpen && filters.tab === "compose") && <TopBar
+      {topBarShown && <TopBar
         filters={filters}
         searchResetKey={JSON.stringify([followRevision, storedTab, libraryTabs.active, libraryAuthKey, teamScopeKey, filters.project_id, filters.folder_path, filters.deleted_only])}
         onTab={(tab) => {
@@ -2637,6 +2667,8 @@ export default function App() {
         onOpenNotificationComment={openComment}
         onNotificationsChanged={() => void reload(true, true, "check")}
         inert={behindInert}
+        agentOpen={agentShown}
+        onToggleAgent={() => setAgentOpen((open) => !open)}
       />}
       {mcpLoaded && <Suspense fallback={null}><McpConnection
         open={mcpOpen}
@@ -3064,6 +3096,8 @@ export default function App() {
           </>
         )}
       </div>
+      {/* Ask Agent 옆 칸 — 화면 오른쪽에 붙고 앱(.app.agent-open)은 그만큼 좁아진다(agent-chat.css). .body 밖이라 폴더 창의 inert 에 들지 않는다 */}
+      {agentPanel}
 
       {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에 얹으므로 여기선 제외하고,
           그 외(라이브러리 등)에서는 **화면 아래 가운데**(프롬프트가 있던 자리 — Jay 2026-10-13 "밑으로", 전엔 상단바 아래)에 띄운다.

@@ -259,6 +259,26 @@ def remove_profiles(hub_id: str, client_ids: list[str], *, local_appdata: Path |
     return removed
 
 
+def write_panel_profile(setup: dict, credential: dict, *, local_appdata: Path | None = None) -> dict:
+    """Ask Agent 칸 전용 — 전역 LLM 설정 파일은 건드리지 않고 칸 폴더에 암호화 프로필만 쓴다.
+    반환 = 어댑터 실행 entry(--panel). 비밀값은 프로필 파일 안에만 있고 entry·명령줄에는 경로만 있다."""
+    credential = _profile(credential)
+    if credential["url"] != setup.get("url"):
+        raise ValueError("허브 주소가 일치하지 않습니다.")
+    if not all(isinstance(setup.get(key), str) and Path(setup[key]).is_file() for key in ("python", "adapter")):
+        raise ValueError("MCP 실행 파일이 없습니다. 앱 설치 상태를 확인하세요.")
+    _require_interactive_user()
+    local = Path(local_appdata) if local_appdata is not None else Path(os.environ.get("LOCALAPPDATA", ""))
+    if local_appdata is None and not os.environ.get("LOCALAPPDATA"):
+        raise ValueError("Windows 사용자 저장 폴더를 확인할 수 없습니다.")
+    profile = local / "MVHub" / "agent_chat" / "profiles" / credential["hub_id"] / (credential["client_id"] + ".bin")
+    with _LOCK:
+        _atomic(profile, _crypt(json.dumps(credential).encode("utf-8")))
+    entry = _entry(setup, profile, "panel")
+    entry["args"].append("--panel")
+    return entry
+
+
 def configure_client(client: str, setup: dict, credential: dict, *, home: Path | None = None,
                      local_appdata: Path | None = None, appdata: Path | None = None) -> dict:
     """Called only after app-side account/scope consent. Never returns credential contents."""

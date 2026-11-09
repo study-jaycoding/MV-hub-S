@@ -3,11 +3,14 @@
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
+import { useEscapeClose } from "../../../lib/useEscapeClose";
+import { isTopLayer, isTypingTarget, useModalFocus } from "../../../lib/keyGate";
 import { refServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
@@ -36,6 +39,7 @@ export function ListCard({
   addListAsReference,
   onOutPortDown,
   onResizeDown,
+  reorderable = false,
 }: {
   card: SceneCard;
   cardsById: Map<string, SceneCard>;
@@ -53,7 +57,10 @@ export function ListCard({
   addListAsReference: (generationCardIds: string[]) => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
+  // 순서 바꾸기는 더블클릭 팝업에서만(Jay 2026-11-09). 캔버스 노드에서는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
+  reorderable?: boolean;
 }) {
+  const moveTip = reorderable ? "\n드래그 = 순서 바꾸기" : "\n더블클릭 = 크게 보고 순서 바꾸기";
   // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트). input(무선)은 실제 소스로 해석.
   const li = collectListInputs(card.id, cardsById, resolvedEdges);
   const label =
@@ -114,14 +121,16 @@ export function ListCard({
                       title="중첩 소스 — 내부 생성물을 펼쳐 사용"
                       onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                     >
-                      <span
-                        className="scene-listrow-grip"
-                        title="드래그 = 순서 바꾸기"
-                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        ⠿
-                      </span>
+                      {reorderable && (
+                        <span
+                          className="scene-listrow-grip"
+                          title="드래그 = 순서 바꾸기"
+                          onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          ⠿
+                        </span>
+                      )}
                       <span className="scene-listrow-count">
                         <span className="scene-listrow-badge">
                           {gc.kind === "render" ? "렌더" : "리스트"} {nestedCount}
@@ -143,14 +152,16 @@ export function ListCard({
                     data-reid={cid}
                     onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                   >
-                    <span
-                      className="scene-listrow-grip"
-                      title="드래그 = 순서 바꾸기"
-                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ⠿
-                    </span>
+                    {reorderable && (
+                      <span
+                        className="scene-listrow-grip"
+                        title="드래그 = 순서 바꾸기"
+                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        ⠿
+                      </span>
+                    )}
                     <span
                       className="scene-listrow-view"
                       title={gen?.assets?.[0] ? "클릭 = 크게 보기" : undefined}
@@ -200,14 +211,16 @@ export function ListCard({
                     className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
                     data-reid={cid}
                   >
-                    <span
-                      className="scene-listrow-grip"
-                      title="드래그 = 순서 바꾸기"
-                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ⠿
-                    </span>
+                    {reorderable && (
+                      <span
+                        className="scene-listrow-grip"
+                        title="드래그 = 순서 바꾸기"
+                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        ⠿
+                      </span>
+                    )}
                     <span className="scene-listrow-text">{txt || "(빈 텍스트)"}</span>
                   </div>
                 );
@@ -230,8 +243,8 @@ export function ListCard({
                       key={cid}
                       className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
                       data-reid={cid}
-                      title={`${i + 1}번 · 생성물\n드래그 = 순서 바꾸기`}
-                      onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
+                      title={`${i + 1}번 · 생성물` + moveTip}
+                      onMouseDown={reorderable ? (e) => startReorder(e, card.id, cid, "h") : undefined}
                     >
                       {genKind === "audio" ? (
                         audioTile
@@ -262,10 +275,10 @@ export function ListCard({
                     title={
                       `${i + 1}번 · 레퍼런스 ${refs.length}장` +
                       (anyHeld ? "\n연결 안 된 레퍼런스 있음" : flagged ? "\n서버에 없는 레퍼런스 있음" : "") +
-                      "\n드래그 = 순서 바꾸기"
+                      moveTip
                     }
                     data-tip-tone={anyHeld || flagged ? "bad" : undefined}
-                    onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
+                    onMouseDown={reorderable ? (e) => startReorder(e, card.id, cid, "h") : undefined}
                   >
                     {first === "missing" || first === "held" ? (
                       <>
@@ -347,5 +360,96 @@ export function ListCard({
         title="드래그 = 크기 조절"
       />
     </>
+  );
+}
+
+// ── 크게 보기 팝업(Jay 2026-11-09 — "지금 보이는 노드 그대로, 그 자리에서 크게"). 속은 같은 ListCard 를 children 으로 그대로 그리고,
+//  틀만 노드 가운데를 기준으로 배율을 키운다(화면을 넘으면 배율을 줄인다). 순서 끌기는 노드의 startReorder 그대로 —
+//  칸 위치를 화면 좌표로 재므로 배율과 상관없고, 저장도 노드와 같은 orderListItems 다.
+export function ListPopup({
+  kindCls,
+  w,
+  h,
+  at,
+  shown,
+  onUndo,
+  onRedo,
+  onClose,
+  children,
+}: {
+  kindCls: string; // 노드 틀과 같은 종류 클래스(scene-card-list lk-*)
+  w: number; // 노드의 레이아웃 크기(캔버스 배율 전)
+  h: number;
+  at: { x: number; y: number }; // 노드 가운데의 화면 좌표
+  shown: number; // 지금 화면에 보이는 노드의 배율(캔버스 줌) — 팝업은 그 2배(Jay 11-09 "열려 있는 창의 2배 정도로만")
+  // 팝업이 떠 있는 동안 캔버스 단축키는 쉰다(keyGate) — 되돌리기는 팝업이 직접 캔버스의 것을 부른다(Jay 11-09 "Ctrl+Z 안 되나")
+  onUndo: () => void;
+  onRedo: () => void;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const backRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ left: number; top: number; k: number } | null>(null);
+  const undoRef = useRef(onUndo);
+  undoRef.current = onUndo;
+  const redoRef = useRef(onRedo);
+  redoRef.current = onRedo;
+  const layer = useEscapeClose(onClose);
+  useModalFocus(layerRef);
+  // 막의 실제 자리를 재서 놓는다(fixed 의 기준이 늘 화면이라고 가정하지 않는다).
+  //  shortcut: 브라우저 창 크기를 바꿔도 다시 재지 않는다 — 다시 열면 맞는다. 필요하면 resize 에 다시 재기.
+  useLayoutEffect(() => {
+    const b = backRef.current?.getBoundingClientRect();
+    if (!b) return;
+    const M = 24, LABEL = 30, HINT = 34; // 위 이름표·아래 안내 자리
+    // 보이던 크기의 2배, 화면을 넘으면 줄인다. 아주 멀리서 본 노드(2배도 원래 크기보다 작음)는 원래 크기(1)까지는 키운다.
+    const fit = Math.min((b.width - 2 * M) / w, (b.height - 2 * M - LABEL - HINT) / h);
+    const k = Math.min(fit, Math.max(2 * shown, 1));
+    const sw = w * k, sh = h * k;
+    const left = Math.min(Math.max(at.x - b.left - sw / 2, M), b.width - M - sw);
+    const top = Math.min(Math.max(at.y - b.top - sh / 2, M + LABEL), b.height - M - HINT - sh);
+    setBox({ left, top, k });
+  }, [w, h, at.x, at.y, shown]);
+  useEffect(() => {
+    // 캔버스와 같은 키(lib/sceneKeyboard): Ctrl+Z 되돌리기, Ctrl+Shift+Z 다시 하기 — 초점과 상관없이 받는다(보드가 누름마다 초점을 가져간다)
+    const onKey = (e: KeyboardEvent) => {
+      if (!isTopLayer(layer) || isTypingTarget(e.target)) return; // 위에 크게 보기 등이 떠 있으면 그쪽 키
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key.toLowerCase() !== "z") return;
+      e.preventDefault();
+      (e.shiftKey ? redoRef : undoRef).current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layer]);
+  return (
+    <div
+      ref={backRef}
+      className="scene-listpop-backdrop"
+      onMouseDown={(e) => {
+        e.stopPropagation(); // 뒤 보드의 고르기·끌기로 번지지 않게
+        onClose();
+      }}
+    >
+      <div
+        ref={layerRef}
+        className="scene-listpop-layer"
+        role="dialog"
+        aria-label="리스트 크게 보기"
+        tabIndex={-1}
+        style={box ? { left: box.left, top: box.top, width: w * box.k, height: h * box.k } : { visibility: "hidden" }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className={"scene-card sel scene-listpop " + kindCls} style={{ width: w, height: h, transform: `scale(${box?.k ?? 1})` }}>
+          {children}
+        </div>
+        <button type="button" className="scene-listpop-x" title="닫기" aria-label="닫기" onClick={onClose}>
+          <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+        </button>
+        <div className="scene-listpop-hint">
+          끌어서 순서 바꾸기 · <kbd>Ctrl</kbd>+<kbd>Z</kbd> 되돌리기 · <kbd>Esc</kbd> 닫기
+        </div>
+      </div>
+    </div>
   );
 }

@@ -72,6 +72,7 @@ from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
     account_cleanup,
+    agent_chat,
     app_windows,
     asset_registry,
     asset_sync,
@@ -618,6 +619,9 @@ async def _application_lifespan(app: FastAPI):
         if asset_sync_started:
             from .services import asset_sync as asset_sync_worker
             _attempt_sync_cleanup(asset_sync_worker.signal_stop)
+        # Ask Agent 칸의 CLI 묶음(Job)을 먼저 회수한다 — 새 차례도 받지 않는다(켜지 않았으면 할 일 없음).
+        from .services.agent_chat import service as agent_chat_service
+        _attempt_sync_cleanup(agent_chat_service.shutdown)
         # 모델 목록은 shield 안의 실제 CLI leader를 회수한다. 부분 부팅도 정리한다.
         # 다른 종료 작업이 await하는 동안에도 새 모델 갱신이 예약되지 않게 먼저 닫는다.
         await _attempt_async_cleanup(cli_bridge.shutdown_model_refreshes)
@@ -828,6 +832,10 @@ app.include_router(app_windows.router)  # 별도 창(Assets·관리)을 앱 창 
 app.include_router(mcp.router)
 app.include_router(mcp_adapter.router)
 app.include_router(mcp_v2.router)
+from .services.agent_chat import enabled as agent_chat_enabled  # noqa: E402 - 라우터 등록 바로 앞에서만 쓴다
+
+if agent_chat_enabled():  # Ask Agent 칸 — 켠 로컬 허브만(공유 서버는 켜도 안 붙인다)
+    app.include_router(agent_chat.router)
 app.include_router(asset_registry.router)
 app.include_router(asset_sync.router)
 app.include_router(asset_sync.local_router)

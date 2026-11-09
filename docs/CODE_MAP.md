@@ -65,6 +65,15 @@ ZIP 없는 MCP 독립 업데이트의 파일 검증·불변 버전·설치 선�
 사용자 UI는 `McpUpdate.tsx`가 맡는다. 원본 생성 ID 표시 준비는 `routers/mcp_v2.py`의 권한 검사 뒤에서 제공한다.
 파일 전환과 서버 후보의 격리 시험은 `tools/mcp_adapter/test_update.py`·`tools/server_console/test_mcp_stage.py`다.
 
+Ask Agent 옆 칸(이 PC 의 Claude Code·Codex 를 각자 로그인으로 — 계약 [AskAgent 설계](status/AskAgent_옆칸_설계_2026-11-09.md))은
+`CONTENT_HUB_AGENT_CHAT=1` 인 로컬 허브에만 붙는다(`services/agent_chat.py` 의 `enabled()`, `/api/agent-chat/` 는 `_proxy` 로컬 목록 — 빠지면 공유 서버로 샌다).
+HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_still_current`, [실행] = `mcp_v2.submit_plan`),
+차례·사건·긴 기다림·취소·계획 대응 `backend/app/services/agent_chat.py`, CLI 찾기·명령·자식 환경·Job `backend/app/services/agent_chat_process.py`
+(루트 런처 import 금지 — 옵션은 0단계 실측값), 출력 해석 `backend/app/services/agent_chat_parse.py`(순수), 신원별 기록 DB `backend/app/repo/agent_chat.py`.
+칸 전용 MCP 연결은 `mcp_v2.issue_panel_client`(실행권 영구 끔 — `repo/mcp_v2.create_client` 도 강제)·`local_setup.write_panel_profile`(전역 설정 안 건드림)·어댑터 `--panel`(도구 6개만).
+화면은 `frontend/src/components/agent-chat/AgentPanel.tsx`·`AgentPlanCard.tsx`, 상태 `frontend/src/lib/useAgentChat.ts`, 호출 `frontend/src/lib/agentChatApi.ts`
+(칸 표 401 은 로그인 만료로 보지 않는다), 모양 `frontend/src/styles/agent-chat.css`, 알약은 `TopBar.tsx`. 시험은 가짜 CLI `backend/tests/agent_chat_fake_cli.py` 로만.
+
 편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
 MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_picture.py)다.
 

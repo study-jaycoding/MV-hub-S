@@ -108,6 +108,14 @@ MEDIA_PRESERVATION_ENABLED = os.environ.get(
     "CONTENT_HUB_MEDIA_PRESERVATION", "0"
 ).lower() in ("1", "true", "yes", "on")
 
+# ── Ask Agent 옆 칸(docs/status/AskAgent_옆칸_설계_2026-11-09.md) ───────────────────
+# 이 PC 의 Claude Code·Codex 를 각자 로그인으로 불러 쓰는 칸. 기본 꺼짐 — 켠 로컬 허브만 라우터·기능 표식을 붙인다
+# (공유 서버에서는 켜도 붙이지 않는다). 기록 DB·작업 폴더는 저장소·DATA_DIR 밖 사용자 폴더에 둔다.
+AGENT_CHAT_ENABLED = os.environ.get("CONTENT_HUB_AGENT_CHAT", "0").lower() in ("1", "true", "yes", "on")
+AGENT_CHAT_DIR = Path(
+    os.environ.get("CONTENT_HUB_AGENT_CHAT_DIR") or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MVHub" / "agent_chat"
+).resolve()
+
 # ── 에셋 대장(docs/ASSET_REGISTRY.md) ─────────────────────────────────────
 # 켠 곳(공유 서버)만 PM 프로젝트 루트를 훑어 파일마다 번호를 붙인다. 기본은 꺼짐 — 첫 전체 훑기는 관리자가
 # 사람 적은 시간에 수동으로 한다. 누가 훑는지(서버 / 관리자 PC)와 자동 훑기 시간(끔·매월·매주·매일)은 관리자 창에서

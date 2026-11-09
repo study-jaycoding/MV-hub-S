@@ -14,6 +14,8 @@ def encode(value):
 
 def create_client(secret_hash, hub_id, owner, account, password_stamp, workspace, name, can_execute):
     client_id = str(uuid4())
+    # Ask Agent 칸 연결은 실행권을 가질 수 없다 — 부르는 쪽이 실수로 켜도 여기서 끈다(실행은 사람의 [실행] 단추만).
+    can_execute = bool(can_execute) and name != "agent_panel"
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO mcp_client(id,secret_hash,hub_id,owner_uid,account_email,password_stamp,workspace,name,can_execute) "
@@ -26,6 +28,12 @@ def create_client(secret_hash, hub_id, owner, account, password_stamp, workspace
 def client_for_secret(secret_hash):
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM mcp_client WHERE secret_hash=?", (secret_hash,)).fetchone()
+    return dict(row) if row else None
+
+
+def client_by_id(client_id):
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM mcp_client WHERE id=?", (client_id,)).fetchone()
     return dict(row) if row else None
 
 
