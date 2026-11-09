@@ -456,7 +456,8 @@ def test_long_poll_wakes_on_new_event_and_times_out(tmp_path, monkeypatch):
 @windows
 def test_reap_keeps_job_when_process_count_unknown(monkeypatch):
     """Job 조회 실패를 '0개'로 보고 차례를 풀던 것 — 조회 실패면 핸들을 쥔 채 False."""
-    job = process.JobProcess([sys.executable, "-c", "pass"], Path.cwd(), process.child_env())
+    job = process.JobProcess()
+    job.start([sys.executable, "-c", "pass"], Path.cwd(), process.child_env())
     job.proc.wait(20)
     real = process.JobProcess.pids
     monkeypatch.setattr(process.JobProcess, "pids", lambda self: None)
@@ -490,3 +491,22 @@ def test_engine_problem_checks_login_kind(monkeypatch):
         for engine in ("claude", "codex"):
             problem = process.engine_problem(engine, prefix)
             assert (problem is None) if expected is None else (expected in problem), (engine, auth, problem)
+
+
+@windows
+def test_start_failure_after_spawn_keeps_job_and_reaps(runtime, monkeypatch):
+    """띄운 뒤 시작 단계에서 예외가 나도(재개 실패·스레드 실패 등) 실행기가 Job 을 쥐고 0개까지 회수한다(리뷰 2차 P1)."""
+    service, identity, _ = runtime
+    real_start, seen = process.JobProcess.start, []
+
+    def start_then_fail(self, command, cwd, env):
+        real_start(self, command, cwd, env)
+        seen.append(self)
+        raise OSError("시작 단계 실패 흉내")
+
+    monkeypatch.setattr(process.JobProcess, "start", start_then_fail)
+    path, _, turn = start(service, identity, monkeypatch, "claude_slow")
+    done = finish(path, turn["id"])
+    assert done["status"] == "failed"
+    job = seen[0]
+    assert job.closed and job.proc.poll() is not None  # 전에는 Job 을 잃어 CLI 가 남았다

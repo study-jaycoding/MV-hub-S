@@ -196,6 +196,36 @@ describe("Ask Agent 옆 칸", () => {
     expect(keys[2]).not.toBe(keys[0]);
   });
 
+  it("같은 글이라도 화면 정보가 다르면 새 열쇠 · 칸을 닫았다 열어도 같은 요청이면 같은 열쇠", async () => {
+    let attempt = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") {
+        attempt += 1;
+        return attempt <= 3 ? Promise.reject(new TypeError("Failed to fetch")) : started();
+      }
+      return json({ events: [], status: "done", last_seq: 0 });
+    };
+    await mount();
+    type("여우");
+    enter();
+    await flush();
+    act(() => root.unmount()); // 닫았다 다시 연다 — 같은 화면
+    root = createRoot(host);
+    await mount();
+    type("여우");
+    enter();
+    await flush();
+    act(() => root.render(<AgentPanel context={{ tab: "my", folder: "e002" }} contextLabel="워크스페이스 › e002" onClose={() => {}} />));
+    await flush();
+    enter(); // 같은 글, 다른 폴더
+    await flush();
+    const keys = turnCalls().map((c) => c.body!.idempotency_key);
+    expect(keys).toHaveLength(3);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[1]);
+  });
+
   it("[실행] 응답이 attention(거절·접수 불명확)이면 '보냈어요' 대신 라이브러리 확인 안내", async () => {
     route = (c) => {
       if (c.path === "/session") return session();
@@ -404,6 +434,42 @@ describe("Ask Agent 옆 칸", () => {
     expect(host.querySelector('.agent-model-item[aria-pressed="true"]')!.textContent).toContain("Opus 5.5");
     act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-effort-seg button")][2].click());
     expect(host.querySelector(".agent-model-btn")!.textContent).toContain("높음");
+  });
+
+  it("칸을 다시 열어 지난 대화를 불러오는 동안에는 보내지 않는다 — 늦게 온 지난 대화가 새 차례를 덮지 않게", async () => {
+    const restore = deferred<Response>();
+    let restoring = false;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started();
+      if (c.path.startsWith("/turns/t1/events")) return json({ events: [{ seq: 1, kind: "text", text: "첫 답" }], status: "done", last_seq: 1 });
+      if (c.path === "/conversations/c1" && restoring) return restore.promise;
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    type("첫 질문");
+    enter();
+    await flush();
+    act(() => root.unmount());
+    restoring = true;
+    root = createRoot(host);
+    await mount(); // 지난 대화 c1 을 불러오는 중(답을 붙잡아 둔다)
+    type("둘째 질문");
+    enter();
+    await flush();
+    expect(turnCalls()).toHaveLength(1);
+    expect(button("보내기")!.disabled).toBe(true);
+    restore.resolve(json({
+      conversation: { id: "c1", title: "첫 질문", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true },
+      turns: [{ id: "t1", status: "done", text: "첫 질문", created_at: "", events: [{ seq: 1, kind: "text", text: "첫 답" }] }],
+    }));
+    await flush();
+    expect(texts(".agent-user")).toEqual(["첫 질문"]);
+    expect(button("보내기")!.disabled).toBe(false);
+    enter();
+    await flush();
+    expect(turnCalls()).toHaveLength(2);
+    expect(turnCalls()[1].body).toMatchObject({ conversation_id: "c1", text: "둘째 질문" });
   });
 
   it("칸을 닫으면 기다림만 끊고(취소 안 함), 다시 열면 마지막 대화를 읽어 마지막 순번 뒤부터 이어 붙는다", async () => {

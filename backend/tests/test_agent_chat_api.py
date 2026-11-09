@@ -162,10 +162,14 @@ def test_turn_plan_card_and_human_execute_once(hub, monkeypatch):
     async def estimate_cost(model, params, prompt, timeout):
         return {"credits": 3}
 
+    async def no_submit(request_body, request):
+        raise AssertionError("견적이 제출 경로를 불렀다")
+
     monkeypatch.setattr(api.cli_bridge, "estimate_cost", estimate_cost)
+    monkeypatch.setattr(gen_requests, "create_gen_request", no_submit)  # 견적 동안 제출 경로를 지킨다
     estimated = client.post(f"/api/agent-chat/plans/{plan_id}/estimate", headers=headers)
     assert estimated.status_code == 200 and estimated.json()["total_credits"] == 3  # 카드의 견적(무료 조회)
-    assert calls == []  # 견적은 제출하지 않는다
+    assert mcp_store.client_by_id(profiles[-1]["client_id"])["can_execute"] == 0
     monkeypatch.setattr(gen_requests, "create_gen_request", submit)
     for _ in range(2):
         executed = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers)

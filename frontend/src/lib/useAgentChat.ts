@@ -91,6 +91,11 @@ const remembered = (): string | null => {
 };
 const remember = (id: string | null) => saveJSON(STORAGE_KEYS.agentPanelConversation, id ? { account: getAccountNamespace(), id } : null);
 
+// 받아들였는지 모르는 채 실패한 마지막 보내기. 계정·대화·모델·글·화면 정보가 모두 같은 요청을 다시 보내면 같은 열쇠 —
+//  허브가 이미 받은 차례면 그 차례를, 못 받았으면 새로 시작한다(어느 쪽이든 두 번 돌지 않는다). 칸을 닫았다 열어도 남는다(모듈 변수).
+//  shortcut: 페이지를 새로 고치면 사라진다 — 새로 고침 뒤 복구가 필요해지면 sessionStorage 로 옮긴다
+let pendingSend: { account: string; sig: string; key: string } | null = null;
+
 export function useAgentChat(context: AgentContext) {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [choice, setChoice] = useState<AgentChoice | null>(null);
@@ -109,8 +114,6 @@ export function useAgentChat(context: AgentContext) {
   const busy = useRef(false); // 보내는 중·차례 진행 중 — 두 번 보내기 막음(상태보다 먼저 바뀐다)
   const executing = useRef(new Set<string>());
   const estimating = useRef(new Set<string>());
-  // 받아들였는지 모르는 채 실패한 마지막 보내기 — 같은 글·같은 대화·같은 모델로 다시 보내면 같은 열쇠를 써서 허브가 그 차례를 돌려준다
-  const lastFailed = useRef<{ sig: string; key: string } | null>(null);
 
   // 지금 시작하는 요청의 표 — 답이 왔을 때 대화가 바뀌었거나 계정이 바뀌었으면 stale() 이 참
   const ticket = () => {
@@ -179,6 +182,9 @@ export function useAgentChat(context: AgentContext) {
     if (busy.current) return; // 보내는 중·진행 중엔 대화를 바꾸지 않는다 — 허브에서 시작한 차례를 놓치지 않게
     drop();
     setError(null);
+    // 불러오는 동안 보내기·전환을 막는다 — 늦게 온 지난 대화가 그사이 보낸 새 차례를 덮지 않게(리뷰 2차)
+    busy.current = true;
+    setSending(true);
     const stale = ticket();
     try {
       const r = await agentChatApi.conversation(id);
@@ -202,6 +208,11 @@ export function useAgentChat(context: AgentContext) {
       if (stale()) return;
       if (isHttpStatus(e, 403, 404)) remember(null); // 지워졌거나 다른 신원의 대화 — 새 대화로 둔다
       fail(e);
+    } finally {
+      if (!stale()) {
+        setSending(false);
+        if (!poll.current) busy.current = false; // 진행 중 차례를 이어 받았으면 follow 가 끝날 때 푼다
+      }
     }
   }, [drop, fail, follow]);
 
@@ -246,9 +257,10 @@ export function useAgentChat(context: AgentContext) {
     setSending(true);
     setError(null);
     const stale = ticket();
-    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, body]);
-    const key = lastFailed.current?.sig === sig ? lastFailed.current.key : crypto.randomUUID();
-    lastFailed.current = { sig, key }; // 받아들인 답을 받으면 지운다
+    const account = getAccountNamespace();
+    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, body, contextRef.current]);
+    const key = pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID();
+    pendingSend = { account, sig, key }; // 받아들인 답을 받으면 지운다
     try {
       const r = await agentChatApi.startTurn({
         idempotency_key: key,
@@ -256,8 +268,8 @@ export function useAgentChat(context: AgentContext) {
         engine: choice.engine, model: choice.model, effort: choice.effort,
         text: body, context: contextRef.current,
       });
+      if (pendingSend?.key === key) pendingSend = null; // 답을 받았다 — 화면이 바뀌어 버리는 답이어도 허브는 받아들였다
       if (stale()) return false;
-      lastFailed.current = null;
       setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body }]);
       setConversationId(r.conversation_id);
       remember(r.conversation_id);

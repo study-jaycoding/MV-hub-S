@@ -189,36 +189,36 @@ def _api():
 
 
 class JobProcess:
-    """CLI 한 번 = Job 하나. 닫으면 CLI 와 그 자식(MCP 어댑터 포함)이 함께 꺼진다(탈출 허용 없음)."""
+    """CLI 한 번 = Job 하나. 닫으면 CLI 와 그 자식(MCP 어댑터 포함)이 함께 꺼진다(탈출 허용 없음).
+    만들기(빈 Job)와 띄우기(start)를 나눈다 — 부르는 쪽이 띄우기 전에 Job 을 쥐어, 띄우다 실패해도 회수를 확인할 수 있게."""
 
-    def __init__(self, command: list[str], cwd: Path, env: dict):
+    def __init__(self):
         if os.name != "nt":
             raise RuntimeError("Ask Agent 칸은 Windows 에서만 실행합니다.")
-        self._k32, ntdll = _api()
+        self._k32, self._ntdll = _api()
         self._lock = threading.Lock()
+        self.proc: subprocess.Popen | None = None
+        self.stderr = bytearray()
         self._job = self._k32.CreateJobObjectW(None, None)
         info = _Extended()
         info.Basic.LimitFlags = _KILL_ON_JOB_CLOSE
         if not self._job or not self._k32.SetInformationJobObject(self._job, _EXT_INFO, ctypes.byref(info), ctypes.sizeof(info)):
             self._close_job()
             raise OSError("실행 묶음을 만들지 못했습니다.")
-        try:
-            self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         cwd=str(cwd), env=env, creationflags=CREATE_SUSPENDED | CREATE_NO_WINDOW)
-        except OSError:
-            self._close_job()
-            raise
-        # 배정 전에는 재개하지 않는다 — 그 사이 생긴 자식을 놓치지 않게. 배정 실패면 실행 거부.
+
+    def start(self, command: list[str], cwd: Path, env: dict) -> None:
+        """멈춘 채 생성 → Job 배정 → 재개. 실패하면 예외 — Job 은 그대로 두므로 부르는 쪽이 reap 으로 0개를 확인한다."""
+        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     cwd=str(cwd), env=env, creationflags=CREATE_SUSPENDED | CREATE_NO_WINDOW)
+        # 배정 전에는 재개하지 않는다 — 그 사이 생긴 자식을 놓치지 않게. 배정 실패면 실행 거부(Job 밖이라 직접 끈다).
         if not self._k32.AssignProcessToJobObject(self._job, int(self.proc._handle)):
             self.proc.kill()
             self.proc.wait(10)
-            self._close_job()
             raise OSError("실행 묶음에 넣지 못해 실행하지 않았습니다.")
-        if ntdll.NtResumeProcess(int(self.proc._handle)) != 0:
-            self.reap()
+        threading.Thread(target=self._drain_stderr, daemon=True).start()  # 재개 전에 — 여기서 실패해도 멈춘 채로 Job 안
+        if self._ntdll.NtResumeProcess(int(self.proc._handle)) != 0:
+            self.terminate()
             raise OSError("실행을 시작하지 못했습니다.")
-        self.stderr = bytearray()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
 
     def feed(self, data: bytes) -> None:
         """stdin 쓰기는 따로 — 읽지 않는 CLI 때문에 막혀도 실행 스레드·시간 제한은 계속 돈다."""
@@ -255,7 +255,7 @@ class JobProcess:
             yield raw
 
     def exited(self) -> bool:
-        return self.proc.poll() is not None
+        return self.proc is not None and self.proc.poll() is not None
 
     def pids(self) -> list[int] | None:
         """Job 안 프로세스 id. 조회에 실패하면(260개 넘음 등) None — '0개'와 섞지 않는다."""

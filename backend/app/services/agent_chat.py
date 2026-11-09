@@ -280,9 +280,10 @@ class AgentChat:
             problem = process.engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
             if problem:
                 raise EngineUnavailable(problem)
-            job = process.JobProcess(runtime.command, config.AGENT_CHAT_DIR / "work", process.child_env())
-            with self._lock:
+            job = process.JobProcess()
+            with self._lock:  # 띄우기 전에 쥔다 — 띄우다 실패해도 finally 의 회수가 이 Job 을 0개까지 확인한다(리뷰 2차)
                 runtime.job = job
+            job.start(runtime.command, config.AGENT_CHAT_DIR / "work", process.child_env())
             if runtime.stopped():  # 띄우는 사이에 취소·시간 초과가 왔다
                 job.terminate()
             else:
