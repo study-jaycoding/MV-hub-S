@@ -361,6 +361,7 @@ export function ListPopup({
   w,
   h,
   at,
+  shown,
   onUndo,
   onRedo,
   onClose,
@@ -370,6 +371,7 @@ export function ListPopup({
   w: number; // 노드의 레이아웃 크기(캔버스 배율 전)
   h: number;
   at: { x: number; y: number }; // 노드 가운데의 화면 좌표
+  shown: number; // 지금 화면에 보이는 노드의 배율(캔버스 줌) — 팝업은 그 2배(Jay 11-09 "열려 있는 창의 2배 정도로만")
   // 팝업이 떠 있는 동안 캔버스 단축키는 쉰다(keyGate) — 되돌리기는 팝업이 직접 캔버스의 것을 부른다(Jay 11-09 "Ctrl+Z 안 되나")
   onUndo: () => void;
   onRedo: () => void;
@@ -391,12 +393,14 @@ export function ListPopup({
     const b = backRef.current?.getBoundingClientRect();
     if (!b) return;
     const M = 24, LABEL = 30, HINT = 34; // 위 이름표·아래 안내 자리
-    const k = Math.max(1, Math.min(2.6, (b.width - 2 * M) / w, (b.height - 2 * M - LABEL - HINT) / h));
+    // 보이던 크기의 2배, 화면을 넘으면 줄인다. 아주 멀리서 본 노드(2배도 원래 크기보다 작음)는 원래 크기(1)까지는 키운다.
+    const fit = Math.min((b.width - 2 * M) / w, (b.height - 2 * M - LABEL - HINT) / h);
+    const k = Math.min(fit, Math.max(2 * shown, 1));
     const sw = w * k, sh = h * k;
     const left = Math.min(Math.max(at.x - b.left - sw / 2, M), b.width - M - sw);
     const top = Math.min(Math.max(at.y - b.top - sh / 2, M + LABEL), b.height - M - HINT - sh);
     setBox({ left, top, k });
-  }, [w, h, at.x, at.y]);
+  }, [w, h, at.x, at.y, shown]);
   useEffect(() => {
     // 캔버스와 같은 키(lib/sceneKeyboard): Ctrl+Z 되돌리기, Ctrl+Shift+Z 다시 하기 — 초점과 상관없이 받는다(보드가 누름마다 초점을 가져간다)
     const onKey = (e: KeyboardEvent) => {

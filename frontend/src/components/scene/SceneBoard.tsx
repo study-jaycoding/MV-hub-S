@@ -675,7 +675,7 @@ export function SceneBoard({
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [comfyModalId, setComfyModalId] = useState<string | null>(null); // comfy 노드 설정 모달 대상 카드 id
   // 리스트 더블클릭 → 같은 노드를 그 자리에서 크게(Jay 2026-11-09). w·h = 노드 레이아웃 크기, x·y = 노드 가운데 화면 좌표
-  const [listPop, setListPop] = useState<{ id: string; w: number; h: number; x: number; y: number } | null>(null);
+  const [listPop, setListPop] = useState<{ id: string; w: number; h: number; x: number; y: number; shown: number } | null>(null);
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   // 떠 있는 동안 Esc 는 이 창들이 갖는다(맨 위 겹만 닫힌다) — 뒤 보드의 단축키도 쉰다(lib/keyGate).
   useEscapeClose(() => setViewTextModal(null), !!viewTextModal);
@@ -3432,7 +3432,14 @@ export function SceneBoard({
                           const el = cardEls.current[card.id];
                           if (!el || (k !== "reference" && k !== "generation" && k !== "text")) return;
                           const r = el.getBoundingClientRect();
-                          setListPop({ id: card.id, w: el.offsetWidth, h: el.offsetHeight, x: r.left + r.width / 2, y: r.top + r.height / 2 });
+                          setListPop({
+                            id: card.id,
+                            w: el.offsetWidth,
+                            h: el.offsetHeight,
+                            x: r.left + r.width / 2,
+                            y: r.top + r.height / 2,
+                            shown: el.offsetWidth ? r.width / el.offsetWidth : 1, // 화면 폭 ÷ 레이아웃 폭 = 지금 보이는 배율
+                          });
                         }
                       : undefined
               }
@@ -3901,6 +3908,7 @@ export function SceneBoard({
               w={listPop.w}
               h={listPop.h}
               at={listPop}
+              shown={listPop.shown}
               onUndo={undo}
               onRedo={redo}
               onClose={() => setListPop(null)}
