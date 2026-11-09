@@ -272,6 +272,7 @@ export interface AuthConfig {
   has_accounts: boolean;
   manage_enabled?: boolean; // PM 대시보드(분리형) 활성 여부 — 버튼 노출 게이트
   features?: string[]; // 허브 기능 표식(lib/hubFeatures) — 옛 허브는 없다
+  shared_team_server?: boolean; // 공유 팀 서버 본체인가 — auth_enabled 와 함께 허브·서버 직결·격리 로컬을 나눈다(옛 허브는 없다)
 }
 
 // 팀 크레딧 집계 — 각 계정 에이전트가 보고한 마지막 잔액(실시간 아님).
@@ -542,8 +543,14 @@ export interface AssetComment {
   parent_id: string | null; // 답글이면 부모 id
   unread?: boolean; // 생성본 코멘트 전용 — 내가 아직 확인 안 한 새 코멘트(NEW 표시·클릭해 확인)
   private?: boolean; // 비공개 — 내 로컬 DB 에만 있고 팀에게 안 보임(글씨색 구분)
-  drawings?: CommentDrawingMeta[]; // 생성본 코멘트 전용 — 붙은 그림의 메타만(그림이 없으면 칸이 없다)
+  drawings?: CommentDrawingMeta[]; // 붙은 그림의 메타만(그림이 없으면 칸이 없다) — 생성물·어셋 코멘트 공통
 }
+
+// 코멘트 그림의 대상 — 생성물은 genId, 어셋(파일)은 project·path 로 짝짓는다(설계 어셋코멘트그림 §4).
+//  그림 조회·크게 보기 겹쳐 보기가 이 대상을 들고 다녀, 어셋 그림을 생성물 API 로 묻거나 다른 대상의 크게 보기에 겹치지 않는다.
+export type CommentTarget =
+  | { kind: "generation"; genId: string }
+  | { kind: "asset"; project: string; path: string };
 
 // 코멘트에 붙은 그림(획 목록 v1)의 메타 — 획·영상 미리보기 본문은 그림마다 따로 받는다(설계 크게보기_코멘트그림 §10 C5).
 export interface CommentDrawingMeta {
@@ -576,7 +583,7 @@ export interface CommentDrawingIn {
 }
 // 크게 보기에서 겹쳐 볼 코멘트 그림(코멘트 창의 그림을 눌렀을 때)
 export interface CommentDrawingView {
-  genId: string;
+  target: CommentTarget;
   commentId: string;
   drawing: CommentDrawingMeta;
   author: string | null;

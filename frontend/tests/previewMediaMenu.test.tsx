@@ -305,16 +305,20 @@ describe("크게 보기 코멘트 모드", () => {
   it("코멘트 창의 그림을 누르면 보고 있는 크게 보기가 받아 원본 위에 겹친다(띠 = 작성자·시각·끄기)", async () => {
     await show(VIDEO);
     await settle();
-    const view = { genId: "gen-12345678", commentId: "c1", author: "팀원 A",
+    const view = { target: { kind: "generation" as const, genId: "gen-12345678" }, commentId: "c1", author: "팀원 A",
       drawing: { id: "d1", idx: 0, kind: "video" as const, width: 854, height: 480, time_sec: 1.5, has_thumb: false, content_hash: "h", v: 1 as const } };
     const event = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: view, cancelable: true });
     act(() => { window.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(true); // 받았다 — 코멘트 창은 크게 보기를 새로 열지 않는다
     expect(host.querySelector(".cm-viewing")?.textContent).toContain("팀원 A");
     expect(host.querySelector(".cm-viewing")?.textContent).toContain("1.50초");
-    const other = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, genId: "gen-other" }, cancelable: true });
+    const other = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, target: { kind: "generation", genId: "gen-other" } }, cancelable: true });
     act(() => { window.dispatchEvent(other); });
     expect(other.defaultPrevented).toBe(false); // 다른 생성물의 그림은 받지 않는다
+    // 어셋 그림은 생성물 크게 보기에 겹치지 않는다(대상 = project·path 로 짝 — 어셋 그림 §4)
+    const asset = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, target: { kind: "asset", project: "P", path: "a.mp4" } }, cancelable: true });
+    act(() => { window.dispatchEvent(asset); });
+    expect(asset.defaultPrevented).toBe(false);
     act(() => { host.querySelector<HTMLButtonElement>(".cm-viewing button")!.click(); });
     expect(host.querySelector(".cm-viewing")).toBeNull();
     await settle();
@@ -376,7 +380,7 @@ describe("크게 보기 Ctrl 카드 단추", () => {
     expect(layer()).toBeNull();
   });
 
-  it("카드의 C = 이 창의 코멘트 모드(그 동안 카드 단추는 걷힌다) · Ctrl 없이는 안 뜨고 cardActions 가 없으면 생성물엔 안 뜬다", async () => {
+  it("카드의 C·c 키 = 앱의 작은 코멘트 창(크게 보기는 둔다 — Jay 11-09) · Ctrl 없이는 안 뜨고 cardActions 가 없으면 생성물엔 안 뜬다", async () => {
     await showCard(TARGET);
     ctrl("keydown");
     await settle();
@@ -387,12 +391,15 @@ describe("크게 보기 Ctrl 카드 단추", () => {
     ctrl("keydown");
     await settle();
     act(() => { layer()!.querySelector<HTMLButtonElement>(".card-tl button:last-child")!.click(); });
-    expect(document.body.querySelector(".cm-modal")).not.toBeNull();
-    expect(acts.onOpenComments).not.toHaveBeenCalled();
-    expect(layer()).toBeNull();
+    expect(acts.onOpenComments).toHaveBeenCalledTimes(1);
+    expect(acts.onOpenComments.mock.calls[0][0]).toMatchObject({ id: "g1" });
+    expect(document.body.querySelector(".cm-modal")).toBeNull(); // 그림 창은 작은 창의 [편집] 으로
+    expect(host.querySelector(".media-preview")).not.toBeNull();
     ctrl("keyup");
-    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true })); });
     await settle();
+    expect(acts.onOpenComments).toHaveBeenCalledTimes(2); // c 키도 같은 작은 창
+    expect(document.body.querySelector(".cm-modal")).toBeNull();
   });
 
   it("뜬 단추를 누르면 Ctrl 을 떼도 남고, 단추 밖을 누르면 걷힌다", async () => {

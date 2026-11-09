@@ -86,6 +86,8 @@ export function AppOverlays({
   commentGenId,
   commentLabel,
   commentDraw,
+  commentDrawText = "",
+  onCommentEditDraw,
   compareGens,
   info,
   myId,
@@ -112,7 +114,9 @@ export function AppOverlays({
   localHub: boolean;
   commentGenId: string | null;
   commentLabel: string;
-  commentDraw: Generation | null; // 카드 C 로 연 코멘트 그림 창(이미지·영상, 그림을 아는 허브)
+  commentDraw: Generation | null; // 작은 코멘트 창의 [편집] 으로 연 코멘트 그림 창(이미지·영상, 그림을 아는 허브)
+  commentDrawText?: string; // [편집] 때 작은 창에서 넘겨받은 쓰던 글
+  onCommentEditDraw?: (text: string) => boolean; // 작은 창의 [편집] — 없으면 단추가 없다(오디오·그림을 모르는 허브)
   compareGens: Generation[] | null;
   info: InfoTarget | null;
   myId: string;
@@ -139,7 +143,7 @@ export function AppOverlays({
     <>
       {commentDraw && drawTarget && drawTarget.type !== "audio" && (
         <CommentDrawModal
-          genId={commentDraw.id}
+          target={{ kind: "generation", genId: commentDraw.id }}
           type={drawTarget.type}
           url={drawTarget.url}
           thumb={drawTarget.thumb ?? null}
@@ -147,6 +151,7 @@ export function AppOverlays({
           myId={myId}
           startTime={0}
           allowPrivate={localHub}
+          initialText={commentDrawText}
           onClose={onCommentDrawClose}
           onSaved={onHistoryChanged}
         />
@@ -159,6 +164,7 @@ export function AppOverlays({
           syncTick={syncTick}
           onClose={onCommentClose}
           onChanged={onHistoryChanged}
+          onEditDraw={onCommentEditDraw}
         />
       )}
       {info && (

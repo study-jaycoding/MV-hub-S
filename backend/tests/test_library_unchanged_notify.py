@@ -136,7 +136,7 @@ def test_store_functions_tell_changed_same_and_not_applied_in_one_transaction(is
 
 def _mcp(method, args=None):
     req = _request("/api/mcp/v2/client/action")
-    ctx = SimpleNamespace(request=req)
+    ctx = SimpleNamespace(request=req, client={"name": "claude"})  # 실제 /client/action 맥락은 늘 연결(client)을 쥔다
     asyncio.run(mcp_v2.action(ActionIn(method=method, args=args or {}), ctx))
     return bool(getattr(req.state, "library_unchanged", False))
 

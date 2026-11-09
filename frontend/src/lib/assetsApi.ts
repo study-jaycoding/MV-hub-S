@@ -3,8 +3,23 @@ import type {
   AssetMeta,
   AssetMount,
   AssetTree,
+  CommentDrawingBody,
+  CommentDrawingIn,
   ProjectsInfo,
 } from "../types";
+
+export interface AssetCommentV2Body {
+  id: string;
+  project: string;
+  path: string;
+  text: string;
+  parent_id: null;
+  private: boolean;
+  drawings: CommentDrawingIn[];
+  expected_target: "local" | "server";
+  expected_server_url: string | null;
+  expected_server_account: string | null;
+}
 import { chunked } from "./batching";
 import {
   assetCommentsUrl,
@@ -436,6 +451,24 @@ export const assetsApi = {
       method: "POST",
       body: jsonBody({ project, path, text, parent_id: parent_id ?? null, private: isPrivate }),
     }),
+  // 그림 붙인 코멘트(설계 docs/status/어셋코멘트그림_설계_2026-11-05.md §3.2) — 기대값(계정 머리글·저장 대상)을 함께 싣는다.
+  //  받는 쪽이 장부를 보기 전에 대조한다(다르면 409 context_changed — 아무것도 안 쓴다).
+  addAssetCommentV2: (body: AssetCommentV2Body, expectAccount: string, init?: RequestInit) =>
+    jsonFetch<{ id: string; result: "created" | "replayed"; drawings: { id: string; content_hash: string }[] }>(
+      `/api/assets/comments-v2`,
+      { ...init, method: "POST", body: jsonBody(body), headers: { [EXPECT_ACCOUNT_HEADER]: expectAccount } },
+    ),
+  assetCommentDrawing: (commentId: string, drawingId: string, init?: RequestInit) =>
+    jsonFetch<CommentDrawingBody>(
+      `/api/assets/comments/${pathPart(commentId)}/drawings/${pathPart(drawingId)}`,
+      { cache: "no-store", ...init },
+    ),
+  assetCommentDrawingThumb: async (commentId: string, drawingId: string, init?: RequestInit): Promise<Blob> => {
+    const url = `/api/assets/comments/${pathPart(commentId)}/drawings/${pathPart(drawingId)}/thumb`;
+    const res = await fetch(url, { cache: "no-store", ...init });
+    if (!res.ok) await throwHttpError(res, url);
+    return res.blob();
+  },
   editAssetComment: (id: string, text: string) =>
     jsonFetch<{ ok: boolean }>(`/api/assets/comments/${pathPart(id)}`, {
       method: "PUT",

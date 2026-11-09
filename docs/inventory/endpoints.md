@@ -10,7 +10,7 @@
 - `로컬 예외 · 핸들러가 _proxy 호출` 은 핸들러 **본문이 `_proxy` 를 직접 참조**할 때만 붙는다(팀 탭 등에서 핸들러가 골라서 위임). 헬퍼·usecase 를 거쳐 위임하면 안 보이므로, 이 표시가 없다고 위임이 없다는 뜻은 아니다.
 - `Depends` 칸은 라우터·데코레이터·핸들러 인자에 직접 적힌 것만이다. 인증 미들웨어와 핸들러 본문의 권한 검사는 안 나온다.
 
-전체 446개.
+전체 449개.
 
 ## `backend/app/main.py` — 11개
 
@@ -123,14 +123,17 @@
 | `POST` | `/api/assets/upload` | `upload_assets` | 로컬 예외 | `_require_local_assets` |
 | `GET` | `/api/assets/zip` | `export_zip` | 로컬 예외 | `_require_local_assets` |
 
-## `backend/app/routers/assets_metadata.py` — 12개
+## `backend/app/routers/assets_metadata.py` — 15개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
 | `PUT` | `/api/assets/color` | `asset_set_color` | 로컬 예외 | `_assets_access.require_local_assets` |
 | `PUT` | `/api/assets/colors/batch` | `asset_set_colors_batch` | 로컬 예외 | `_assets_access.require_local_assets` |
 | `PUT` | `/api/assets/comment` | `asset_set_comment` | 로컬 예외 | `_assets_access.require_local_assets` |
+| `POST` | `/api/assets/comments-v2` | `add_comment_v2` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/assets/comments/read` | `read_comments` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/assets/comments/{comment_id}/drawings/{drawing_id}/thumb` | `get_asset_comment_drawing_thumb` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
+| `GET` | `/api/assets/comments/{comment_id}/drawings/{drawing_id}` | `get_asset_comment_drawing` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `DELETE` | `/api/assets/comments/{comment_id}` | `delete_comment` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `PUT` | `/api/assets/comments/{comment_id}` | `edit_comment` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `GET` | `/api/assets/comments` | `list_comments` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
@@ -555,7 +558,7 @@
 | `POST` | `/api/shared-server/relocate` | `relocate_shared_server` | 로컬 예외 | — |
 | `POST` | `/api/shared-server/relocation/publish` | `publish_relocation_announcement` | 로컬 예외 | — |
 | `GET` | `/api/shared-server/relocation` | `shared_server_relocation` | 로컬 예외 | — |
-| `GET` | `/api/shared-server/status` | `shared_server_status` | 로컬 예외 | — |
+| `GET` | `/api/shared-server/status` | `shared_server_status` | 로컬 예외 · 핸들러가 `_proxy` 호출 | — |
 | `POST` | `/api/shared-server/url` | `set_shared_url` | 로컬 예외 | — |
 
 ## `backend/app/routers/registry_helper.py` — 2개

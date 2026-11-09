@@ -914,15 +914,8 @@ export function PartialEditModal({
         {stage === "load" && <div className="partial-edit-loading">원본 불러오는 중…</div>}
         {(stage === "draw" || stage === "wait") && src && (
           <>
-            <div className={isVideo ? "pe-viewer" : "pe-plain"}>
-            {isVideo && (
-              <div className="pe-vtop">
-                <span className="pe-vtc" ref={tcRef}>{timecode(frameTime)}</span>
-                <span className="pe-vlabel">수정할 프레임 <b ref={frameNoRef}>{Math.min(totalFrames, Math.round(frameTime * EDIT_FPS) + 1)}</b> / {totalFrames}</span>
-                {frameLocked && <span className="pe-lock">🔒 그린 표시가 있어 프레임 고정 — 전체 지우기로 풀림</span>}
-                <span className="pe-vtc pe-vtotal">{timecode(videoDuration)}</span>
-              </div>
-            )}
+            {/* 무대 + 그 아래 한 판(타임라인·재생 줄·도구 줄) — 코멘트 그림 창과 같은 모양(Jay 11-09). 위 시각 줄은 없고 시각·프레임은 재생 줄에 */}
+            <div className="pe-viewer">
             <div className="partial-edit-stagebox" style={stageStyle}>
               {isVideo ? (
                 // 원본 영상 요소를 그대로 붙인다 — 끄는 동안 브라우저가 바로 그 장면을 그린다(그림 뜨기는 멈춘 뒤에만)
@@ -980,8 +973,9 @@ export function PartialEditModal({
                 </div>
               )}
             </div>
-            {isVideo && (
-              <div className="pe-vbot">
+            {(isVideo || stage === "draw") && (
+              <div className="pe-board">
+                {isVideo && (<>
                 {/* 타임바 — 누르거나 끌어서 훑는다(편집 탭 뷰어와 같은 모양). 끄는 동안은 영상만 옮기고, 놓으면 그 장면을 뜬다. */}
                 <div className="pe-scrub" role="slider" aria-label="수정할 영상 시점" aria-valuemin={0}
                   aria-valuemax={Number(videoDuration.toFixed(3))} aria-valuenow={Number(frameTime.toFixed(3))}
@@ -1013,8 +1007,9 @@ export function PartialEditModal({
                     <div className="pe-scrub-head" ref={headRef} />
                   </div>
                 </div>
-                <div className="pe-trans">
-                  <span className="pe-keys">← → 한 프레임 · Space 재생</span>
+                <div className="pe-trans pe-trans-row">
+                  <span className="pe-time"><span ref={tcRef}>{timecode(frameTime)}</span> <span className="muted">/ {timecode(videoDuration)}</span></span>
+                  <div className="pe-trans-mid">
                   <button type="button" className="pe-tbtn" title="처음으로 (Home)" aria-label="처음으로" disabled={frameLocked || stage !== "draw"}
                     onClick={() => seekTo(0)}>
                     <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>
@@ -1033,14 +1028,20 @@ export function PartialEditModal({
                     onClick={() => seekTo(videoDuration)}>
                     <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>
                   </button>
+                  <span className="pe-frame" title="수정할 프레임"><b ref={frameNoRef}>{Math.min(totalFrames, Math.round(frameTime * EDIT_FPS) + 1)}</b> / {totalFrames}</span>
+                  </div>
+                  {frameLocked
+                    ? <span className="pe-lock">🔒 그린 표시가 있어 프레임 고정 — 전체 지우기로 풀림</span>
+                    : <span className="pe-keys">← → 한 프레임 · Space 재생</span>}
                 </div>
+                </>)}
+                {/* 도구 — 한 판의 마지막 줄(edit/drawing/DrawDock — 코멘트 그림과 같은 줄) */}
+                {stage === "draw" && <DrawDock draw={draw} />}
               </div>
             )}
             </div>
             {stage === "draw" && (
               <>
-                {/* 도구 — 그림·영상 바로 밑 가운데 한 줄 캡슐(edit/drawing/DrawDock — 코멘트 그림과 같은 캡슐) */}
-                <DrawDock draw={draw} />
                 {/* 프롬프트·모델·Generate — 생성창 프롬프트 판과 같은 부품(.sl-*, prompt-dock.css 는 전역).
                     autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작 */}
                 <div className="sl-panel pe-prompt" onDragOver={isVideo ? onRefDragOver : undefined} onDrop={isVideo ? onRefDrop : undefined}>
