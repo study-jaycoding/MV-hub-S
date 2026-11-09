@@ -165,7 +165,7 @@ import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
 import { SetCard } from "./cards/SetCard";
-import { ListCard } from "./cards/ListCard";
+import { ListCard, ListWindow } from "./cards/ListCard";
 import { RenderCard } from "./cards/RenderCard";
 import { GenerationCard } from "./cards/GenerationCard";
 import { useGenerationViewsSynced } from "../../lib/useGenerationViewsSynced";
@@ -674,6 +674,7 @@ export function SceneBoard({
   nodePickerRef.current = nodePicker; // 열림여부(truthy) + 생성 좌표(cx/cy) 둘 다 여기서 참조
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [comfyModalId, setComfyModalId] = useState<string | null>(null); // comfy 노드 설정 모달 대상 카드 id
+  const [listWinId, setListWinId] = useState<string | null>(null); // 리스트 더블클릭 → 크게 보기 창(Jay 2026-11-09 시안 A)
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   // 떠 있는 동안 Esc 는 이 창들이 갖는다(맨 위 겹만 닫힌다) — 뒤 보드의 단축키도 쉰다(lib/keyGate).
   useEscapeClose(() => setViewTextModal(null), !!viewTextModal);
@@ -3416,13 +3417,20 @@ export function SceneBoard({
                 ...(origin ? { translate: `${card.x - origin.x}px ${card.y - origin.y}px` } : null),
                 ...(autoSize ? {} : { width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }),
               }}
-              // View=재생, 모델=모달. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
+              // View=재생, 모델=모달, 리스트=크게 보기 창. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
               onDoubleClick={
                 card.kind === "view"
                   ? () => openView(card.id)
                   : card.kind === "model"
                     ? () => setModelModalId(card.id)
-                    : undefined
+                    : card.kind === "list"
+                      ? (e) => {
+                          // 행 미리보기·결과 수·복사 단추·연결점·손잡이를 두 번 누른 것은 그 단추의 일이다
+                          if ((e.target as HTMLElement).closest(".scene-listrow-view, .scene-listrow-count, .scene-copy-btn, .scene-port, .scene-resize")) return;
+                          const k = collectListInputs(card.id, cardsById, resolvedEdges).kind;
+                          if (k === "reference" || k === "generation" || k === "text") setListWinId(card.id);
+                        }
+                      : undefined
               }
             >
               {isRef ? (
@@ -3875,6 +3883,23 @@ export function SceneBoard({
             />
           );
         })()}
+
+      {/* 리스트 노드 더블클릭 → 크게 보기 창. 순서 저장은 노드 끌기와 같은 reorderListToIndex. */}
+      {listWinId && cardsById.get(listWinId)?.kind === "list" && (
+        <ListWindow
+          key={listWinId}
+          listId={listWinId}
+          cardsById={cardsById}
+          resolvedEdges={resolvedEdges}
+          genData={genData}
+          workspaceId={refWorkspaceId}
+          onMove={(cid, at) => reorderListToIndex(listWinId, cid, at)}
+          onPreview={(cid, p) => (p.genId ? getNodePreview(cid)(p) : onPreview?.(p))}
+          onUndo={undo}
+          onRedo={redo}
+          onClose={() => setListWinId(null)}
+        />
+      )}
 
       {/* Comfy 노드 더블클릭 → ComfyUI 워크플로우 로드 + 파라미터 노출 모달. 저장 시 comfyCfg 스냅샷. */}
       {comfyModalId &&
