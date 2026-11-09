@@ -39,6 +39,18 @@ const saveFlag = (key: string, v: boolean) => {
   }
 };
 
+// 입력칸 안 아이콘(Jay 11-09 시안 C) — 편집 = 펜, 전송 = 종이비행기
+const PEN_ICON = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </svg>
+);
+const SEND_ICON = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4Z" />
+  </svg>
+);
+
 // 그림 창 오른쪽 칸의 새 코멘트 입력 — 글·비공개 체크·보내는 중의 주인은 그림 창 하나다(설계 어셋코멘트그림 §4).
 //  보내면 그린 그림이 그 코멘트에 붙는다. 답글·수정은 이 패널의 onSend·onEdit(지금 경로) 그대로.
 export interface CommentComposer {
@@ -423,13 +435,16 @@ export function CommentPanel<T extends CommentPanelItem>({
             placeholder={allowPrivate && writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎"}
             autoFocus
           />
-          {onEditDraw && (
-            <button type="button" className="cmt-draw-btn" title="그림을 그려 코멘트에 붙이기 — 쓰던 글은 그림 창으로 옮겨 갑니다"
-              onClick={(e) => handOff(e.currentTarget.form)}>
-              편집
-            </button>
-          )}
-          <button type="submit">전송</button>
+          {/* 입력칸 안 오른쪽 아이콘 — 편집(펜)·전송(종이비행기, 라임). Jay 11-09 시안 C */}
+          <div className="cmt-inside">
+            {onEditDraw && (
+              <button type="button" className="cmt-draw-btn" aria-label="편집" title="편집 — 그림을 그려 코멘트에 붙이기(쓰던 글은 그림 창으로 옮겨 갑니다)"
+                onClick={(e) => handOff(e.currentTarget.form)}>
+                {PEN_ICON}
+              </button>
+            )}
+            <button type="submit" className="cmt-send-btn" aria-label="전송" title="전송 (Enter)">{SEND_ICON}</button>
+          </div>
         </form>
       )}
       {embedded && composer && (
@@ -452,7 +467,10 @@ export function CommentPanel<T extends CommentPanelItem>({
               if (e.key === "Enter" && (e.nativeEvent.isComposing || e.keyCode === 229)) e.preventDefault(); // 한글 조합 중 Enter 는 보내기가 아니다
             }}
           />
-          <button type="submit" disabled={!composer.canSend || composer.sending}>{composer.sending ? "보내는 중" : "전송"}</button>
+          <div className="cmt-inside">
+            <button type="submit" className="cmt-send-btn" aria-label="전송" title={composer.sending ? "보내는 중" : "전송 (Enter) — 그린 그림이 함께 붙습니다"}
+              disabled={!composer.canSend || composer.sending}>{SEND_ICON}</button>
+          </div>
         </form>
       )}
 

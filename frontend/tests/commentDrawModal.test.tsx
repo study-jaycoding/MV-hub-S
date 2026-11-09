@@ -235,7 +235,7 @@ describe("코멘트 모드 — 이미지", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     type("버릴까");
     act(() => { closeX().click(); });
-    expect(dialog()?.textContent).toContain("쓰던 코멘트와 그림을 버릴까요?");
+    expect(dialog()?.textContent).toContain("쓰던 코멘트와 그림을 삭제할까요?");
     act(() => { [...dialog()!.querySelectorAll("button")].find((b) => b.textContent === "취소")!.click(); });
     expect(dialog()).toBeNull();
     expect(onClose).toHaveBeenCalledTimes(1); // 취소 — 남는다
@@ -244,7 +244,7 @@ describe("코멘트 모드 — 이미지", () => {
     expect(dialog()).toBeNull(); // Esc 는 확인창만 닫는다
     expect(onClose).toHaveBeenCalledTimes(1);
     act(() => { closeX().click(); });
-    act(() => { [...dialog()!.querySelectorAll("button")].find((b) => b.textContent === "버리기")!.click(); });
+    act(() => { [...dialog()!.querySelectorAll("button")].find((b) => b.textContent === "삭제")!.click(); });
     expect(onClose).toHaveBeenCalledTimes(2);
     expect(confirm).not.toHaveBeenCalled();
   });

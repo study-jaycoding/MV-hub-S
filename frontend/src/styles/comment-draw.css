@@ -73,8 +73,19 @@ body:has(.cm-modal) .host-exit-confirm { z-index: 1300; }
 }
 .cm-notice button:hover:not(:disabled) { border-color: var(--accent); }
 
-/* 작은 코멘트 창의 [편집](입력칸과 [전송] 사이) — 글자만, [전송]과 같은 크기(Jay 11-09 아이콘 뺌), 테두리만인 보조 단추 */
-.cmt-input .cmt-draw-btn { flex: none; background: transparent; color: var(--text); border: 1px solid var(--border2); }
+/* 작은 코멘트 창 입력칸 안 오른쪽 아이콘(Jay 11-09 시안 C) — 편집(펜)·전송(종이비행기, 라임). 테두리 없음, 입력칸이 가장 넓다 */
+.cmt-input { position: relative; }
+.cmt-input:has(.cmt-inside) input { padding-right: 40px; }
+.cmt-input:has(.cmt-inside button + button) input { padding-right: 70px; }
+.cmt-inside { position: absolute; right: 18px; top: 50%; transform: translateY(-50%); display: flex; gap: 4px; }
+.cmt-input .cmt-inside button {
+  width: 26px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #c9ccd3;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.cmt-input .cmt-inside button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: #fff; }
+.cmt-input .cmt-inside button.cmt-send-btn { color: var(--accent); }
+.cmt-input .cmt-inside button:disabled { opacity: 0.35; cursor: default; }
+.cmt-inside svg { display: block; }
 .cmt-input .cmt-draw-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* 겹쳐 보는 그림 — 무대(코멘트 창)와 크게 보기 공통 띠 */

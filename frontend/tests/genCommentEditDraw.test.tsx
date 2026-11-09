@@ -45,7 +45,9 @@ describe("생성물 작은 코멘트 창 [편집]", () => {
   it("입력칸과 [전송] 사이에 있고, 누르면 쓰던 글을 넘긴 뒤 입력을 비운다", () => {
     const onEditDraw = vi.fn(() => true);
     show(onEditDraw);
-    expect([...document.querySelectorAll(".cmt-input button")].map((b) => b.textContent?.trim())).toEqual(["편집", "전송"]);
+    // 입력칸 안 오른쪽 아이콘(시안 C) — 글자 없이 펜·종이비행기, 이름은 aria-label
+    expect([...document.querySelectorAll(".cmt-input .cmt-inside button")].map((b) => b.getAttribute("aria-label"))).toEqual(["편집", "전송"]);
+    expect(drawButton()!.textContent).toBe("");
     const field = document.querySelector<HTMLInputElement>('.cmt-input input[name="c"]')!;
     field.value = "조개 작게";
     act(() => { drawButton()!.click(); });

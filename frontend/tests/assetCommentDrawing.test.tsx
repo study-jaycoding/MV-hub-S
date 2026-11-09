@@ -271,7 +271,7 @@ describe("어셋 그림 창 — 보내기", () => {
       reply.dispatchEvent(new Event("input", { bubbles: true }));
     });
     act(() => { document.querySelector<HTMLButtonElement>(".partial-edit-head .assets-x")!.click(); });
-    expect(document.querySelector(".host-exit-confirm")?.textContent).toContain("버릴까요");
+    expect(document.querySelector(".host-exit-confirm")?.textContent).toContain("삭제할까요");
     expect(onClose).not.toHaveBeenCalled();
   });
 });
@@ -325,7 +325,8 @@ describe("작은 코멘트 창 [편집]", () => {
     const handed: string[] = [];
     panel((text) => { handed.push(text); return accept; });
     const field = document.querySelector<HTMLInputElement>('.cmt-input input[name="c"]')!;
-    const buttons = [...document.querySelectorAll(".cmt-input button")].map((b) => b.textContent?.trim());
+    // 입력칸 안 오른쪽 아이콘(시안 C) — 편집(펜)·전송(종이비행기)
+    const buttons = [...document.querySelectorAll(".cmt-input .cmt-inside button")].map((b) => b.getAttribute("aria-label"));
     expect(buttons).toEqual(["편집", "전송"]);
     field.value = "쓰던 글";
     act(() => { drawButton()!.click(); });

@@ -739,9 +739,9 @@ export function CommentDrawModal({
         </div>
       </div>
       {confirmClose && (
-        <HostConfirm label="코멘트 닫기" title="💬 코멘트 닫기" confirmLabel="버리기"
+        <HostConfirm label="코멘트 닫기" title="💬 코멘트 닫기" confirmLabel="삭제"
           onConfirm={() => { setConfirmClose(false); onClose(); }} onCancel={() => setConfirmClose(false)}>
-          쓰던 코멘트와 그림을 버릴까요?
+          쓰던 코멘트와 그림을 삭제할까요?
         </HostConfirm>
       )}
     </div>
