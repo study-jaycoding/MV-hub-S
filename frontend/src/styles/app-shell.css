@@ -700,7 +700,7 @@
 /* 강제 인계 안내의 두 번째 줄도 기존 토스트에서 줄바꿈 그대로 읽힌다. */
 .toast--canvas-forced { white-space: pre-line; }
 .canvas-writer-actions { display: flex; align-items: center; gap: 10px; }
-.canvas-writer-spinner { width: 28px; height: 28px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: canvas-writer-spin 1s linear infinite; }
+.canvas-writer-spinner { width: 28px; height: 28px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: canvas-writer-spin 1s steps(12) infinite; }
 @keyframes canvas-writer-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .canvas-writer-spinner { animation-duration: 3s; } }
 .sidebar {

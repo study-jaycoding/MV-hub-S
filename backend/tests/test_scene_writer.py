@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 import pytest
 from app import active_account
 from app.services.scene_writer import SceneWriter, WriterConflict

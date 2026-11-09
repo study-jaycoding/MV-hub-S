@@ -1,4 +1,4 @@
-﻿"""Hub notebook transactions. Callers hold scene_writer.writing for mutations.
+"""Hub notebook transactions. Callers hold scene_writer.writing for mutations.
 
 Connection-taking helpers never commit: startup, restore and identity remap can
 include them in their own atomic operation. Legacy rows/archives stay recoverable.
@@ -10,9 +10,10 @@ import secrets
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 
-from ..db import get_connection
+from .. import config
+from ..db import get_connection, register_init_hook
 from .scenes_backup import MAX_SCENE_BYTES, MAX_SCENE_UPSERTS, MAX_SCENE_DELETES, MAX_SYNC_TOTAL_BYTES, _hash, _fork_copy
-from ..services.scene_writer import WriterConflict
+from ..services.scene_writer import WriterConflict, enabled as scene_writer_enabled
 
 # Per account, across projects. Retain recent lost-response retries without growing forever.
 MAX_REQUEST_RECEIPTS = 2048
@@ -480,3 +481,18 @@ def cleanup(conn, owner):
     for table in ('scene_notebook', 'scene_backup', 'scene_archive', 'scene_start_item',
                   'scene_start_attempt', 'scene_tab_order', 'scene_request_receipt'):
         conn.execute(f'DELETE FROM {table} WHERE owner_uid=?', (owner,))
+
+
+def _after_db_init(conn, scene_restore):
+    """Use init_db's connection/transaction, including inactive account DBs."""
+    if config.AUTH_ENABLED:
+        return
+    if not scene_writer_enabled() and not conn.execute('SELECT 1 FROM scene_notebook LIMIT 1').fetchone():
+        return
+    if scene_restore:
+        restore_history(conn)  # Includes legacy normalization before rotating history.
+    else:
+        normalize_legacy(conn)
+
+
+register_init_hook(_after_db_init)

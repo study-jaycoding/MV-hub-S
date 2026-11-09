@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import active_account, repo
+from .repo import scene_notebook as _scene_notebook  # Register DB init work before lifespan/account switches.
 from .list_gzip import ListGzipMiddleware, mode_options as list_gzip_options
 from .config import (
     ALLOW_REMOTE_AUTH_OFF,

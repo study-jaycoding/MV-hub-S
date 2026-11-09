@@ -381,8 +381,8 @@ def test_direct_content_connection_rejects_future(content):
 
 def test_failed_legacy_migration_never_records_baseline_and_can_resume(content, monkeypatch):
     migrate = db.db_migrations._migrate
-    def interrupted(conn):
-        migrate(conn)
+    def interrupted(conn, *, schema_path=None):
+        migrate(conn, schema_path=schema_path)
         raise RuntimeError("synthetic interruption after legacy commits")
     monkeypatch.setattr(db.db_migrations, "_migrate", interrupted)
     with pytest.raises(RuntimeError, match="synthetic interruption"):

@@ -97,7 +97,7 @@
 | `scene_backup` | content DB | `backend/schema.sql` | `repo/identity.py` `repo/scene_notebook.py` `repo/scenes_backup.py` | `repo/mcp_v2.py` `repo/scene_notebook.py` `repo/scenes_backup.py` `services/worker_backup.py` |
 | `scene_card_generation` | content DB | `backend/schema.sql` | `repo/gen_requests.py` `repo/identity.py` `repo/scene_cards.py` | `repo/gen_requests.py` `repo/identity.py` `repo/scene_cards.py` |
 | `scene_keep` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/scene_keeps.py` | `repo/scene_keeps.py` |
-| `scene_notebook` | content DB | `backend/schema.sql` | `repo/scene_notebook.py` | `db.py` `db_migrations.py` `repo/scene_notebook.py` |
+| `scene_notebook` | content DB | `backend/schema.sql` | `repo/scene_notebook.py` | `db_migrations.py` `repo/scene_notebook.py` |
 | `scene_request_receipt` | content DB | `backend/schema.sql` | `repo/scene_notebook.py` | `repo/scene_notebook.py` |
 | `scene_start_attempt` | content DB | `backend/schema.sql` | `repo/scene_notebook.py` | `repo/scene_notebook.py` |
 | `scene_start_item` | content DB | `backend/schema.sql` | `repo/scene_notebook.py` | `repo/scene_notebook.py` |

@@ -206,6 +206,8 @@ export class SceneWriterClient {
   }
   private async check(epoch: number, renew: boolean) {
     const ownedAtStart = !!this.lease;
+    // BFCache 복귀에서는 닫기 영수증을 받지 못했을 수 있어 판을 맞추기 전 입력을 잠근다.
+    if (ownedAtStart && !this.reconciled) this.show("syncing");
     // 첫 응답을 기다리는 짧은 동안만 보드를 감춘다. 허브 장애에서는 로컬 편집을 연다.
     const opening = this.view.mode === "checking";
     const openingTimer = opening ? setTimeout(() => {
@@ -244,7 +246,7 @@ export class SceneWriterClient {
         const granted = await this.send("claim");
         if (!this.valid(epoch)) return;
         this.confirm(granted);
-        if (!ownedAtStart && this.view.mode !== "local_only") this.show("syncing");
+        if ((!ownedAtStart || !this.reconciled) && this.view.mode !== "local_only") this.show("syncing");
         if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
         if (!this.valid(epoch)) return;
         this.prepared = true;
@@ -366,6 +368,8 @@ export class SceneWriterClient {
     this.busy = null;
     this.taking = false;
     this.confirmedUntil = 0;
+    this.prepared = false;
+    this.reconciled = false;
     if (this.active && token) send(closing ?? JSON.stringify({ action: "release", token }), closing ? "/api/scenes/notebook/close" : "/api/scenes/writer", this.account);
   }
 }

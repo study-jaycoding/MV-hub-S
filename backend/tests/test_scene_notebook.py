@@ -1,4 +1,4 @@
-﻿"""Notebook transaction contracts, using only a temporary content database."""
+"""Notebook transaction contracts, using only a temporary content database."""
 import json
 import pytest
 from app import active_account, config, db

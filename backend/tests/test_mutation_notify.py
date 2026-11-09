@@ -51,6 +51,7 @@ def test_canvas_recovery_polls_and_ack_do_not_reload_library():
 
 def test_scene_backup_asset_metadata_and_comfy_settings_use_their_own_refresh_channels():
     assert not _notifies_library("PUT", "/api/scenes/backup", 200)
+    assert notification_domains("POST", "/api/scenes/notebook/close", 200) == ()
     assert notification_domains("PUT", "/api/edit-docs/backup", 200) == ()
     assert notification_domains("POST", "/api/edit-docs/backup/restore", 200) == ()
     assert not _notifies_library("PUT", "/api/comfy/settings", 200)

@@ -1,4 +1,4 @@
-﻿"""Single-process canvas leases. Lock order: account transition -> lease -> SQLite.
+"""Single-process canvas leases. Lock order: account transition -> lease -> SQLite.
 
 No timer or WS disconnect grants ownership. Every mutation revalidates the lease
 inside the same critical section that commits its database transaction.

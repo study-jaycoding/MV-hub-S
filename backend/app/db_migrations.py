@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 
 _PROJECT_ACTIVE_NAME_INDEX = "idx_project_active_name"
@@ -266,10 +267,10 @@ def _pre_migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE lineage RENAME TO history")
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
+def _migrate(conn: sqlite3.Connection, *, schema_path: Path | None = None) -> None:
     """기존 DB 에 누락된 컬럼을 추가(멱등). schema.sql 의 CREATE IF NOT EXISTS 는
     기존 테이블에 컬럼을 더하지 않으므로 여기서 보강한다."""
-    _migrate_scene_notebook(conn)
+    _migrate_scene_notebook(conn, schema_path=schema_path)
     from .db_slack import migrate as migrate_slack
     migrate_slack(conn)
     _migrate_share_state_intent(conn)
@@ -987,7 +988,7 @@ def _migrate_fts(conn: sqlite3.Connection) -> None:
         print(f"[migrate] FTS5 사용 불가 — 검색은 LIKE 폴백: {e}")
 
 
-def _migrate_scene_notebook(conn: sqlite3.Connection) -> None:
+def _migrate_scene_notebook(conn: sqlite3.Connection, *, schema_path: Path | None = None) -> None:
     """Keep public rollback readable; triggers run even when old Python writes."""
     for table, additions in (
         ('scene_backup', [('rev', 'INTEGER NOT NULL DEFAULT 0'), ('rev_hash', 'TEXT'), ('deleted_at', 'TEXT')]),
@@ -998,11 +999,11 @@ def _migrate_scene_notebook(conn: sqlite3.Connection) -> None:
             if column not in cols:
                 conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
     # Tables are also in schema.sql. This entry point supports migration-only callers.
-    from . import db
-    sql = db.SCHEMA_PATH.read_text(encoding='utf-8')
+    schema_path = schema_path if schema_path is not None else Path(__file__).resolve().parent.parent / 'schema.sql'
+    sql = schema_path.read_text(encoding='utf-8')
     marker = '-- Canvas notebook: additive schema, deliberately no new compatibility baseline.'
     if marker not in sql:
-        raise RuntimeError(f'Canvas notebook schema marker missing: {db.SCHEMA_PATH}')
+        raise RuntimeError(f'Canvas notebook schema marker missing: {schema_path}')
     block = sql.split(marker, 1)[1]
     for statement in block.split(';'):
         if statement.strip():

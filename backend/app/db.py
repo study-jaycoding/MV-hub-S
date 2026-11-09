@@ -35,7 +35,7 @@ import weakref
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from . import config
 from . import db_migrations, schema_compat
@@ -47,6 +47,15 @@ from .db_paths import DEFAULT_DB_PATH, LEGACY_DB_PATH as _LEGACY_DB_PATH, get_db
 # backend/app/db.py → backend/ 가 기준 디렉터리
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = BACKEND_DIR / "schema.sql"
+
+# Upper layers register post-schema work; this layer never imports its callers.
+_init_hooks: list[Callable[[sqlite3.Connection, bool], None]] = []
+
+
+def register_init_hook(hook: Callable[[sqlite3.Connection, bool], None]) -> None:
+    """Register once before startup; init_db owns the hooks' transaction."""
+    if hook not in _init_hooks:
+        _init_hooks.append(hook)
 
 # 백엔드 스위치 — sqlite 만 지원. 다른 값이 설정돼도 조용히 오작동하지 않게 진입에서 명시 차단한다.
 DB_BACKEND = os.environ.get("CONTENT_HUB_DB_BACKEND", "sqlite").strip().lower()
@@ -549,16 +558,12 @@ def init_db(db_path: Path | None = None, *, scene_restore: bool = False) -> Path
             trash_transfer.reconcile(lambda: open_transfer_connections(path))
         db_migrations._pre_migrate(conn)  # ★ executescript 이전 — 테이블 리네임(빈 테이블 충돌 회피)
         conn.executescript(schema_sql)
-        db_migrations._migrate(conn)
-        # Before accepting any request, preserve old-hub edits and their preimages.
-        from .repo import scene_notebook
-        if not config.AUTH_ENABLED:
+        db_migrations._migrate(conn, schema_path=SCHEMA_PATH)
+        if _init_hooks:
             conn.execute('BEGIN IMMEDIATE')
             try:
-                scene_notebook.normalize_legacy(conn)
-                from .services.scene_writer import enabled as scene_writer_enabled
-                if scene_restore and (scene_writer_enabled() or conn.execute('SELECT 1 FROM scene_notebook LIMIT 1').fetchone()):
-                    scene_notebook.restore_history(conn)
+                for hook in tuple(_init_hooks):
+                    hook(conn, scene_restore)
                 conn.commit()
             except BaseException:
                 conn.rollback()

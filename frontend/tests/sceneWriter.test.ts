@@ -220,6 +220,21 @@ describe("hub scene writer", () => {
     h.client.resume(); expect(h.client.token()).toBeNull(); await h.client.refresh(false);
     expect(h.calls[0].action).toBe("renew"); expect(h.client.token()?.token).toBe("token1");
   });
+  it.each([true, false])("BFCache return blocks editing until close receipts reconcile (released=%s)", async (released) => {
+    const h = harness(); h.client.configure(true); await h.client.refresh();
+    h.client.releaseBeacon(() => {});
+    if (released) h.setServer({ ...h.server(), writer: null, token: undefined });
+    const syncing = deferred<typeof ready>(); h.deps.sync.mockReturnValueOnce(syncing.promise);
+    h.client.resume(); const run = h.client.refresh(false);
+    expect(h.client.view.mode).toBe("syncing");
+    expect(h.client.token()).toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.client.view.mode).toBe("syncing");
+    expect(h.deps.sync).toHaveBeenCalledTimes(2);
+    syncing.resolve(ready); await run;
+    expect(h.client.view.mode).toBe("writer");
+    expect(h.client.token()?.token).toBe(released ? "token2" : "token1");
+  });
   it("focus checks retain authority without renew or sync; the twenty second timer only renews", async () => {
     let clock = 100; vi.spyOn(performance, "now").mockImplementation(() => clock);
     const h = harness(); h.client.configure(true); await h.client.refresh();
