@@ -52,9 +52,107 @@ def test_start_oversize_releases_lease_and_keeps_old_rows(client):
     result = client.post('/api/scenes/notebook/start', json={'token': token, 'attempt_id': 'huge', 'expected_count': 1,
         'order': ['s'], 'upserts': [scene(padding='x' * store.MAX_SCENE_BYTES)], 'commit': True})
     assert result.status_code == 413
+    assert result.headers['X-MVHub-Scene-Writer-Changed'] == '1'
     assert result.json()['detail']['local_edit_only']
     assert client.post('/api/scenes/writer', json={'action': 'status'}).json()['writer'] is None
     assert not store.is_started('u')
+
+
+def test_real_schema_worker_set_passes_public_manifest_normalization(notebook_db, monkeypatch):
+    from app import active_account
+    from app.services import worker_backup
+    from app.routers.db_backup import _normalise_set_manifest
+    seed()
+    push('delete', deletes=[{'id': 's', 'intent_id': 'd', 'base': base()}])
+    monkeypatch.setattr(worker_backup, 'STATE_DB', notebook_db / 'worker-state.db')
+    monkeypatch.setattr(worker_backup, 'OUTBOX_DIR', notebook_db / 'outbox')
+    monkeypatch.setattr(worker_backup, 'DEVICE_IDENTITY_PATH', notebook_db / 'device.json')
+    # Copy real schema bytes, not the simplified legacy fixture that hid this regression.
+    import sqlite3
+    from contextlib import closing
+    path = notebook_db / 'content_hub_20261109_010101_000001.db'
+    with db.get_connection() as conn, closing(sqlite3.connect(path)) as dest:
+        conn.backup(dest)
+    set_id = worker_backup.queue_backup_set(path, account_email='u@example.test')
+    assert set_id  # tombstone-only metadata still merits a backup
+    stage = worker_backup.OUTBOX_DIR / active_account.slug('u@example.test') / set_id
+    manifest = json.loads((stage / 'manifest.json').read_text('utf-8'))
+    assert manifest['summary']['canvases'] == 0
+    assert 'canvas_retained' not in manifest['summary']
+    assert _normalise_set_manifest(json.dumps(manifest)) == manifest
+
+
+def test_install_db_replaces_history_without_restarting_notebook(notebook_db, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+    from app.routers import db_transfer
+    seed()
+    before = store.notebook('u')
+    restored = notebook_db / 'restore.db'
+    with db.get_connection() as conn, closing(sqlite3.connect(restored)) as dest:
+        conn.backup(dest)
+    monkeypatch.setattr(db_transfer, '_post_install_security_init', lambda path: None)
+    monkeypatch.setattr(db_transfer, '_strict_clear_active', lambda: None)
+    db_transfer._install_db(restored)
+    after = store.notebook('u')
+    assert after['notebook_id'] == before['notebook_id']
+    assert after['history_id'] != before['history_id']
+    assert len(after['items']) == 1
+
+
+def test_request_emits_want_and_size_release_emits_changed(client, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from starlette.requests import Request
+    from starlette.responses import Response
+    from app import main
+    response = client.post('/api/scenes/writer', json={'action': 'request', 'browser_id': 'b', 'tab_id': 't'})
+    assert response.headers['X-MVHub-Scene-Writer-Want'] == '1'
+    broadcast = AsyncMock()
+    monkeypatch.setattr(main, 'AUTH_ENABLED', False)
+    monkeypatch.setattr(main.manager, 'broadcast', broadcast)
+    async def returned(_):
+        return Response(headers=dict(response.headers))
+    asyncio.run(main.mutation_notify(Request({'type': 'http', 'method': 'POST', 'path': '/api/scenes/writer',
+        'scheme': 'http', 'server': ('testserver', 80), 'headers': [], 'query_string': b''}), returned))
+    assert {'type': 'scene_writer_want'} in [call.args[0] for call in broadcast.call_args_list]
+
+
+def test_legacy_mode_releases_transition_lock_before_repository_work(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from app import active_account
+    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    def probe(*args):
+        def acquire_elsewhere():
+            acquired = active_account.transition_lock.acquire(blocking=False)
+            if acquired:
+                active_account.transition_lock.release()
+            return acquired
+        with ThreadPoolExecutor(1) as pool:
+            return [pool.submit(acquire_elsewhere).result()]
+    monkeypatch.setattr(scenes.repo, 'list_scene_backups', probe)
+    assert client.get('/api/scenes/backup').json()['items'] == [True]
+    seed()
+    assert client.get('/api/scenes/backup').json()['items'] == [False]
+
+
+def test_legacy_upload_racing_start_is_rejected_with_flag(client):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'b', 'tab_id': 't'}).json()['token']
+    barrier = threading.Barrier(2)
+    def start():
+        barrier.wait()
+        return client.post('/api/scenes/notebook/start', json={'token': token, 'attempt_id': 'race',
+            'expected_count': 1, 'order': ['s'], 'upserts': [scene()], 'commit': True})
+    def old_put():
+        barrier.wait()
+        return client.put('/api/scenes/backup', json={'upserts': [scene(name='old')]})
+    with ThreadPoolExecutor(2) as pool:
+        a, b = pool.submit(start), pool.submit(old_put)
+        assert a.result().status_code == 200
+        assert b.result().status_code == 409
+    assert json.loads(store.notebook('u')['items'][0]['data'])['name'] == 'X'
 
 
 def task(task_id='task', sid='s'):
@@ -161,3 +259,14 @@ def test_account_epoch_aba_invalidates_http_upload(client):
         'upserts':[{**scene(name='lost-owner'), 'base':original}]})
     assert response.status_code == 409
     assert base() == original
+
+
+def test_auth_feature_is_only_advertised_in_isolated_opt_in(notebook_db, monkeypatch):
+    from app.routers import auth
+    monkeypatch.setattr(auth, 'AUTH_ENABLED', False)
+    assert 'scene_writer_v1' in auth.auth_config()['features']
+    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    assert 'scene_writer_v1' not in auth.auth_config()['features']
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER_TEST', '1')
+    monkeypatch.setattr(auth, 'AUTH_ENABLED', True)
+    assert 'scene_writer_v1' not in auth.auth_config()['features']

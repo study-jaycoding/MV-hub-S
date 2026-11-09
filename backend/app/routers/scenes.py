@@ -6,7 +6,7 @@ owner 는 항상 서버가 actor_id 로 결정한다(클라는 owner 를 보내�
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -28,11 +28,24 @@ def _account_scope(request: Request):
     다른 브라우저 프로필에서 계정을 바꾸면(storage 알림은 프로필을 넘지 않는다) 옛 화면의 자동 백업·복구·카드 소속이 새 계정 DB 를
     읽고 썼다(81회차 F-A-02). 비교 뒤 DB 를 다시 고르면 그 사이 전환이 끼므로, 고정한 키로 비교하고 그 범위에서 읽고 쓴다.
     헤더가 없는 옛 화면은 지금처럼 받는다(옛 화면까지 막을지는 Jay 결정 대기)."""
-    with (nullcontext() if config.AUTH_ENABLED else active_account.transition_lock), active_account.pinned_account_scope() as key:
-        owner = norm_email((current_account(request) or {}).get("email")) if config.AUTH_ENABLED else key
-        if expected_account_differs(request, owner):
-            raise HTTPException(status_code=409, detail="그사이 이 PC 의 계정이 바뀌어 씬 백업을 하지 않았습니다 — 화면을 새로 고쳐 주세요")
-        yield
+    locked = not config.AUTH_ENABLED
+    if locked:
+        active_account.transition_lock.acquire()
+    try:
+        with active_account.pinned_account_scope() as key:
+            owner = norm_email((current_account(request) or {}).get("email")) if config.AUTH_ENABLED else key
+            if expected_account_differs(request, owner):
+                raise HTTPException(status_code=409, detail="그사이 이 PC 의 계정이 바뀌어 씬 백업을 하지 않았습니다 — 화면을 새로 고쳐 주세요")
+            # Notebook leases depend on the global account epoch: pin + epoch check +
+            # commit must exclude account switching. Legacy mode only needs the short
+            # pin/check section; its fixed DB scope is safe without this global lock.
+            if locked and not (enabled() or scene_notebook.is_started(actor_id(request))):
+                active_account.transition_lock.release()
+                locked = False
+            yield
+    finally:
+        if locked:
+            active_account.transition_lock.release()
 
 
 class SceneUpsertIn(BaseModel):
@@ -146,6 +159,8 @@ def scene_writer(body: WriterIn, request: Request, response: Response):
             result = writer.action(owner, **body.model_dump())
             if body.action in ('claim', 'release', 'request', 'force'):
                 response.headers['X-MVHub-Scene-Writer-Changed'] = '1'
+            if body.action == 'request':
+                response.headers['X-MVHub-Scene-Writer-Want'] = '1'
             return result
         except WriterConflict as exc:
             raise HTTPException(409, exc.code)
@@ -185,7 +200,8 @@ def start_notebook(body: StartIn, request: Request):
                     writer.action(owner, 'release', token=body.token)
                     raise
         except scene_notebook.StartTooBig as exc:
-            raise HTTPException(413, {'code': 'start_too_big', 'scene_ids': exc.ids, 'local_edit_only': True})
+            raise HTTPException(413, {'code': 'start_too_big', 'scene_ids': exc.ids, 'local_edit_only': True},
+                                headers={'X-MVHub-Scene-Writer-Changed': '1'})
         except WriterConflict as exc:
             raise HTTPException(409, exc.code)
         except ValueError as exc:

@@ -13,6 +13,9 @@ from ..db import get_connection
 from .scenes_backup import MAX_SCENE_BYTES, MAX_SCENE_UPSERTS, MAX_SCENE_DELETES, MAX_SYNC_TOTAL_BYTES, _hash, _fork_copy
 from ..services.scene_writer import WriterConflict
 
+# Per account, across projects. Retain recent lost-response retries without growing forever.
+MAX_REQUEST_RECEIPTS = 2048
+
 
 class StartTooBig(ValueError):
     def __init__(self, ids):
@@ -135,7 +138,7 @@ def normalize_legacy(conn, owner=None):
     for saved in archives:
         current = row_for(conn, saved['owner_uid'], saved['project_id'], saved['scene_id'])
         # Physically deleted originals remain deleted; the archive is sufficient.
-        if current and current['data_hash'] != saved['data_hash']:
+        if current and saved['deleted_at'] is None and current['data_hash'] != saved['data_hash']:
             copy_scene(conn, saved['owner_uid'], saved['project_id'], saved['scene_id'], saved['data'], fixed=True)
         conn.execute('''UPDATE scene_archive SET consumed=1 WHERE owner_uid=? AND project_id=? AND scene_id=?
             AND history_id=? AND reason=? AND data_hash=?''',
@@ -330,7 +333,9 @@ def sync(owner, project, payload):
             if status == 'deleted' and project == '':
                 conn.execute("UPDATE mcp_canvas_task SET status='cancelled',cancel_reason='scene_deleted' "
                              "WHERE owner_uid=? AND scene_id=? AND status='pending'", (owner, sid))
-            delete_results.append({'id': sid, 'status': status, 'intent_id': item['intent_id']})
+            saved = row_for(conn, owner, project, sid)
+            delete_results.append({'id': sid, 'status': status, 'intent_id': item['intent_id'],
+                                   'base': version(conn, saved) if saved else None})
         live_ids = [r[0] for r in conn.execute('SELECT scene_id FROM scene_backup WHERE owner_uid=? AND project_id=? '
                                              'AND deleted_at IS NULL ORDER BY scene_id', (owner, project))]
         previous = conn.execute('SELECT * FROM scene_tab_order WHERE owner_uid=? AND project_id=?', (owner, project)).fetchone()
@@ -361,6 +366,9 @@ def sync(owner, project, payload):
                   'order': {'ids': merged, 'rev': order_row[0], 'history_id': history(conn)}}
         conn.execute('INSERT INTO scene_request_receipt VALUES(?,?,?,?,?,?)',
                      (owner, project, request_id, history(conn), request_hash, encode(result)))
+        conn.execute('''DELETE FROM scene_request_receipt WHERE owner_uid=? AND rowid NOT IN
+            (SELECT rowid FROM scene_request_receipt WHERE owner_uid=? ORDER BY rowid DESC LIMIT ?)''',
+            (owner, owner, MAX_REQUEST_RECEIPTS))
         return result
 
 

@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import pytest
 from app import db, db_migrations
 from app.repo import scene_notebook as store, scenes_backup as legacy
 from test_scene_notebook import notebook_db, seed, scene
@@ -53,6 +54,16 @@ def test_legacy_edit_of_tombstone_is_revived(notebook_db):
     db.init_db()
     with db.get_connection() as conn:
         assert store.row_for(conn, 'u', '', 's')['deleted_at'] is None
+        assert conn.execute('SELECT COUNT(*) FROM scene_backup').fetchone()[0] == 1
+        assert conn.execute('SELECT consumed FROM scene_archive').fetchone()[0] == 1
+
+
+def test_schema_marker_error_names_configured_schema(notebook_db, monkeypatch):
+    path = notebook_db / 'missing-marker.sql'
+    path.write_text('SELECT 1;', encoding='utf-8')
+    monkeypatch.setattr(db, 'SCHEMA_PATH', path)
+    with db.get_connection() as conn, pytest.raises(RuntimeError, match='schema marker missing.*missing-marker.sql'):
+        db_migrations._migrate_scene_notebook(conn)
 
 
 def test_delete_dedupe_does_not_collide_across_restored_history(notebook_db):

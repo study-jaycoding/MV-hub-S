@@ -86,7 +86,7 @@ _log = logging.getLogger("mvhub.worker_backup")
 _SUMMARY_TABLES = {
     "generations": ("generation",),
     "tags": ("tag", "auto_tag", "gen_tag_overlay"),
-    "canvases": ("scene_backup", "scene_card_generation"),
+    "canvases": ("scene_backup",),
     "timelines": ("edit_doc_head", "edit_doc_copy"),
     "assets": ("asset_meta", "asset_blob", "asset_location", "asset_sync_outbox", "asset_destination_outbox"),
     "projects": ("project",),
@@ -390,23 +390,25 @@ def _existing_table_names(conn: sqlite3.Connection) -> set[str]:
     }
 
 
-def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]:
+def metadata_summary(content: Path, trash: Path | None = None, *, include_retained: bool = False) -> dict[str, int]:
     """민감한 본문 없이 동기화 비교에 필요한 개수만 계산한다."""
     summary: dict[str, int] = {}
+    retained = 0
     with contextlib.closing(
         sqlite3.connect(read_only_uri(content), uri=True)
     ) as conn:
         conn.execute("PRAGMA query_only=ON")
         existing = _existing_table_names(conn)
+        canvas_links = _table_count(conn, 'scene_card_generation', existing_tables=existing)
         for label, tables in _SUMMARY_TABLES.items():
             summary[label] = sum(
                 _table_count(conn, table, existing_tables=existing) for table in tables
             )
         if 'scene_backup' in existing and 'deleted_at' in {r[1] for r in conn.execute('PRAGMA table_info(scene_backup)')}:
-            # Keep canvas links in the legacy total, but separate retained bodies.
+            # Wire manifests must keep the public server's fixed summary vocabulary.
             dead = conn.execute('SELECT COUNT(*) FROM scene_backup WHERE deleted_at IS NOT NULL').fetchone()[0]
             summary['canvases'] -= dead
-            summary['canvas_retained'] = dead + _table_count(conn, 'scene_archive', existing_tables=existing)
+            retained = dead + _table_count(conn, 'scene_archive', existing_tables=existing)
     summary["trash"] = 0
     if trash is not None and Path(trash).is_file():
         with contextlib.closing(
@@ -414,7 +416,10 @@ def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]
         ) as conn:
             conn.execute("PRAGMA query_only=ON")
             summary["trash"] = _table_count(conn, "trashed")
-    summary["meaningful_records"] = sum(summary.values())
+    # Retained bodies and card links still merit backup, but neither is a live scene.
+    summary["meaningful_records"] = sum(summary.values()) + retained + canvas_links
+    if include_retained:  # Local display only; queue_backup_set never enables this.
+        summary['canvas_retained'] = retained
     return summary
 
 

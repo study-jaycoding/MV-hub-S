@@ -45,7 +45,8 @@ def test_delete_intent_retry_revive_and_late_delete(notebook_db):
     assert result == push('d', deletes=[intent])
     assert legacy.list_scene_backups('u') == []
     assert push('d2', deletes=[{**intent, 'intent_id': 'd2'}])['deletes'][0]['status'] == 'deleted'
-    revive = {**scene(), 'revive': True, 'intent_id': 'r1', 'base': base()}
+    # No GET between delete and undo: the response itself supplies the tombstone revision.
+    revive = {**scene(), 'revive': True, 'intent_id': 'r1', 'base': result['deletes'][0]['base']}
     assert push('r', upserts=[revive])['results'][0]['status'] == 'saved'
     assert push('late', deletes=[intent])['deletes'][0]['status'] == 'kept'
     assert len(legacy.list_scene_backups('u')) == 1
@@ -195,9 +196,65 @@ def test_backup_summary_separates_retained_bodies(notebook_db):
     seed()
     legacy.sync_scene_backups('u', '', [scene(name='Y')], [])
     push('delete', deletes=[{'id': 's', 'intent_id': 'd', 'base': base()}])
-    summary = metadata_summary(db.get_db_path())
+    summary = metadata_summary(db.get_db_path(), include_retained=True)
     assert summary['canvases'] == 1  # normalized X copy is live
     assert summary['canvas_retained'] == 2  # original tombstone and archived X
+
+
+def test_receipts_bounded_per_owner_and_lost_response_retry_retained(notebook_db, monkeypatch):
+    monkeypatch.setattr(store, 'MAX_REQUEST_RECEIPTS', 2)
+    seed()
+    seed(owner='other')
+    store.sync('other', '', {'request_id': 'keep'})
+    push('old')
+    payload = {'upserts': [{**scene(name='Y'), 'base': base()}]}
+    response = push('lost-response', **payload)
+    store.sync('u', 'project', {'request_id': 'new'})
+    assert push('lost-response', **payload) == response
+    with db.get_connection() as conn:
+        rows = {(r['owner_uid'], r['request_id']) for r in conn.execute('SELECT * FROM scene_request_receipt')}
+        assert rows == {('u', 'lost-response'), ('u', 'new'), ('other', 'keep')}
+
+
+def test_already_deleted_response_can_revive_without_lookup(notebook_db):
+    seed()
+    intent = {'id': 's', 'intent_id': 'd', 'base': base()}
+    push('delete', deletes=[intent])
+    repeated = push('again', deletes=[intent])['deletes'][0]
+    assert repeated['base']['rev'] == 2
+    revived = push('undo', upserts=[{**scene(), 'revive': True, 'intent_id': 'undo', 'base': repeated['base']}])
+    assert revived['results'][0]['status'] == 'saved'
+    assert revived['results'][0]['target_id'] == 's'
+
+
+def test_start_chunk_snapshot_and_attempt_fences(notebook_db):
+    body = {'attempt_id': 'a', 'expected_count': 2, 'order': ['s', 't'], 'upserts': [scene()]}
+    store.start('u', 'lease', body)
+    with pytest.raises(WriterConflict, match='start_snapshot_changed'):
+        store.start('u', 'lease', {**body, 'upserts': [scene(name='changed')]})
+    for changed in ({'expected_count': 3}, {'order': ['t', 's']}, {'project_id': 'new'}):
+        with pytest.raises(WriterConflict, match='start_attempt_changed'):
+            store.start('u', 'lease', {**body, **changed, 'upserts': [scene('t')]})
+    with pytest.raises(WriterConflict, match='start_attempt_changed'):
+        store.start('u', 'new-lease', body)
+    result = store.start('u', 'lease', {**body, 'upserts': [scene('t')], 'commit': True})
+    assert result['status'] == 'committed'
+    assert len(store.notebook('u')['items']) == 2
+
+
+def test_identity_remap_entry_point_preserves_notebook_and_replaces_history(notebook_db):
+    from app.repo.identity import remap_creator_uid
+    seed(owner='old', items=[scene(), scene('dead')])
+    seed(owner='new', items=[scene(name='new'), scene('dead', name='live')])
+    with store.transaction() as conn:
+        conn.execute("UPDATE scene_backup SET deleted_at='deleted',rev=rev+1 WHERE owner_uid='old' AND scene_id='dead'")
+        previous = store.history(conn)
+        remap_creator_uid(conn, 'old', 'new')
+        assert store.history(conn) != previous
+    state = store.notebook('new')
+    assert len(state['items']) == 3
+    assert set(state['order']['ids']) == {r['id'] for r in state['items']}
+    assert not store.is_started('old')
 
 
 def test_new_write_after_restore_must_reconcile_old_history(notebook_db):
@@ -239,3 +296,13 @@ def test_remap_legacy_source_without_order_adds_copy_tab(notebook_db):
     state = store.notebook('new')
     assert len(state['items']) == 2
     assert set(state['order']['ids']) == {r['id'] for r in state['items']}
+
+
+def test_card_links_alone_still_merit_backup_without_counting_as_canvases(notebook_db):
+    from app.services.worker_backup import metadata_summary
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO scene_card_generation(owner_uid,scene_id,card_id,generation_id) VALUES('u','s','c','g')")
+    result = metadata_summary(db.get_db_path())
+    assert result['canvases'] == 0
+    assert result['meaningful_records'] > 0
+    assert 'canvas_retained' not in result

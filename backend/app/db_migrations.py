@@ -998,9 +998,12 @@ def _migrate_scene_notebook(conn: sqlite3.Connection) -> None:
             if column not in cols:
                 conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
     # Tables are also in schema.sql. This entry point supports migration-only callers.
-    from pathlib import Path
-    sql = (Path(__file__).resolve().parents[1] / 'schema.sql').read_text(encoding='utf-8')
-    block = sql.split('-- Canvas notebook: additive schema, deliberately no new compatibility baseline.')[1]
+    from . import db
+    sql = db.SCHEMA_PATH.read_text(encoding='utf-8')
+    marker = '-- Canvas notebook: additive schema, deliberately no new compatibility baseline.'
+    if marker not in sql:
+        raise RuntimeError(f'Canvas notebook schema marker missing: {db.SCHEMA_PATH}')
+    block = sql.split(marker, 1)[1]
     for statement in block.split(';'):
         if statement.strip():
             conn.execute(statement)
