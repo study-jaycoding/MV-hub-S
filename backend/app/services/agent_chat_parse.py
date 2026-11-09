@@ -1,4 +1,4 @@
-"""Ask Agent 칸 — Claude Code·Codex 의 JSON 줄을 화면 사건으로 바꾸는 순수 해석기(프로세스·DB·HTTP 없음).
+"""MV Agent 칸 — Claude Code·Codex 의 JSON 줄을 화면 사건으로 바꾸는 순수 해석기(프로세스·DB·HTTP 없음).
 
 사건 모양은 docs/status/AskAgent_옆칸_설계_2026-11-09.md 10절. 해석기는 한 차례(프로세스 하나)마다 새로 만든다 —
 도구 id → 이름 표를 차례 안에서만 들고 있다. 허용 목록 밖 도구·명령 실행·파일 변경은 `violation` 으로 알려
@@ -57,6 +57,11 @@ class ClaudeParser:
             if failed:
                 out.append({"kind": "error", "message": "MV Hub 연결을 열지 못했습니다. 허브를 다시 켠 뒤 새 대화로 시도하세요."})
             return out
+        if kind == "system":
+            # init 밖 시스템 알림(예: 빠른 모드를 쓸 수 없어 표준 모드로 돌렸다) — 사람이 읽을 글이 있으면 칸에 그대로 보인다.
+            # shortcut: 알림 줄 모양을 0단계에서 아직 못 잡아 message/text/content 글만 본다 — 실제 모양을 잡으면 좁힌다
+            note = next((data.get(key) for key in ("message", "text", "content") if isinstance(data.get(key), str)), "")
+            return [{"kind": "notice", "text": _text(note)[:500]}] if note.strip() else []
         if kind == "stream_event":
             event = data.get("event") or {}
             delta = event.get("delta") or {}

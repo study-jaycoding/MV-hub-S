@@ -33,16 +33,44 @@ def grandchild_and_wait():
     time.sleep(120)
 
 
+# FAKE_AGENT_AUTH → Claude `auth status` 모양(문서: 로그아웃이면 종료 코드 1, authMethod ∈ none·claude.ai·oauth_token·api_key·…)
+CLAUDE_STATUS = {
+    "subscription": ({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "subscriptionType": "max"}, 0),
+    "team": ({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "subscriptionType": "team"}, 0),
+    "free": ({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "subscriptionType": "free"}, 0),
+    "unknown_plan": ({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "subscriptionType": "galaxy"}, 0),
+    "missing_plan": ({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"}, 0),
+    "api_key": ({"loggedIn": True, "authMethod": "api_key", "apiProvider": "firstParty", "subscriptionType": None}, 0),
+    "api_key_helper": ({"loggedIn": True, "authMethod": "api_key_helper", "apiProvider": "firstParty"}, 0),
+    "oauth_token": ({"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstParty", "subscriptionType": "max"}, 0),
+    "third_party": ({"loggedIn": True, "authMethod": "third_party", "apiProvider": "bedrock"}, 0),
+    "none": ({"loggedIn": False, "authMethod": "none", "apiProvider": "firstParty", "subscriptionType": None}, 1),
+}
+
+
 def main():
-    if "--version" in sys.argv:
-        print(os.environ.get("FAKE_AGENT_VERSION", "0.162.0-alpha.17.2"))
+    args = sys.argv[1:]
+    claude = "--fake-engine=claude" in args  # 시험의 실행기 앞부분이 엔진을 알려 준다(판이 엔진마다 다르다)
+    if "--version" in args:
+        default = "2.1.296 (Claude Code)" if claude else "0.162.0-alpha.17.2"
+        print(os.environ.get("FAKE_CLAUDE_VERSION" if claude else "FAKE_AGENT_VERSION", default))
         return
-    auth = os.environ.get("FAKE_AGENT_AUTH", "subscription")  # subscription | api_key | none
-    if sys.argv[1:3] == ["auth", "status"]:  # Claude 모양
-        print(json.dumps({"loggedIn": auth != "none", "authMethod": "claude.ai" if auth == "subscription" else "console",
-                          "apiProvider": "firstParty"}))
-        return
-    if sys.argv[1:3] == ["login", "status"]:  # Codex 모양
+    auth = os.environ.get("FAKE_AGENT_AUTH", "subscription")
+    if "auth" in args and args[args.index("auth") + 1:args.index("auth") + 2] == ["status"]:  # Claude 모양
+        if auth == "badjson":
+            print("not json")
+            return
+        if auth == "slow":
+            time.sleep(60)
+        if auth == "leak":  # 응답·기록으로 새면 안 되는 값들
+            print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
+                              "subscriptionType": "max", "email": "secret@example.test", "orgId": "org-SECRET",
+                              "configDirectory": "C:\\Users\\SECRET\\.claude"}))
+            return
+        data, code = CLAUDE_STATUS.get(auth, CLAUDE_STATUS["subscription"])
+        print(json.dumps({**data, "email": "secret@example.test", "orgId": "org-SECRET"}))
+        sys.exit(code)
+    if args[-2:] == ["login", "status"] or (len(args) >= 2 and args[0:2] == ["login", "status"]):  # Codex 모양
         print({"subscription": "Logged in using ChatGPT", "api_key": "Logged in using an API key"}.get(auth, "Not logged in"))
         return
     prompt = sys.stdin.buffer.read().decode("utf-8")

@@ -36,7 +36,7 @@ def alive(pid):
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
-    monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE)])
+    monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
     monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
     monkeypatch.setenv("FAKE_AGENT_PIDFILE", str(tmp_path / "grandchild.pid"))
     service = chat.AgentChat()
@@ -484,13 +484,13 @@ def test_codex_locked_until_isolation_checked(monkeypatch):
     assert process.CODEX_LOCK and process.engine_problem("codex", [sys.executable, str(FAKE)]) == process.CODEX_LOCK
 
 
-def test_engine_problem_checks_login_kind(monkeypatch):
+def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "CODEX_LOCK", None)
-    prefix = [sys.executable, str(FAKE)]
-    for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아닙니다"), ("none", "로그인되어 있지 않습니다")):
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아"), ("none", "로그인되어 있지 않")):
         monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
         for engine in ("claude", "codex"):
-            problem = process.engine_problem(engine, prefix)
+            problem = process.engine_problem(engine, [sys.executable, str(FAKE), f"--fake-engine={engine}"])
             assert (problem is None) if expected is None else (expected in problem), (engine, auth, problem)
 
 

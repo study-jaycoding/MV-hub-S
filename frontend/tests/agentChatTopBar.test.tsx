@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Ask Agent 알약(시안 _shots/ask-agent-pill-v2.png) — 검색 묶음 바로 왼쪽 · 아이콘 없음 · 평소 회색 · 칸이 열린 동안 라임 + 검은 글자.
+// MV Agent 알약(Jay 11-09 이름 바꿈 · 시안 _shots/ask-agent-pill-v2.png) — 검색 묶음 바로 왼쪽 · 아이콘 없음 · 평소 회색 · 칸이 열린 동안 라임 + 검은 글자.
 //  허브가 agent_chat_v1 을 알릴 때만 보인다(docs/status/AskAgent_옆칸_설계_2026-11-09.md 4·10절).
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
@@ -42,7 +42,7 @@ function bar(props: Partial<Parameters<typeof TopBar>[0]> = {}) {
 }
 const pill = () => host.querySelector<HTMLButtonElement>(".topbar .agent-pill");
 
-describe("Ask Agent 알약", () => {
+describe("MV Agent 알약", () => {
   it("허브가 agent_chat_v1 을 알리지 않으면 없다", () => {
     act(() => root.render(bar({ onToggleAgent: noop })));
     expect(pill()).toBeNull();
@@ -53,7 +53,7 @@ describe("Ask Agent 알약", () => {
     const onToggleAgent = vi.fn();
     act(() => root.render(bar({ onToggleAgent })));
     const button = pill()!;
-    expect(button.textContent).toBe("Ask Agent");
+    expect(button.textContent).toBe("MV Agent");
     expect(button.querySelector("svg")).toBeNull();
     expect(button.nextElementSibling).toBe(host.querySelector(".topbar .top-ic-group"));
     expect(button.getAttribute("aria-pressed")).toBe("false");

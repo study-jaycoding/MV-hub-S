@@ -213,10 +213,11 @@ def auth_config():
         #  (계정 확인 헤더 X-MVHub-Expect-Account + Comfy run_key 장부). 없으면 화면은 다시 보내지 않는다(Jay 결정 2A).
         #  comment_drawings_v1 = 크게 보기 코멘트 그림(comments-v2·그림 조회)을 아는 허브 — 없으면 화면은 C 그리기를 열지 않는다.
         #  asset_comment_drawings_v1 = 어셋(파일) 코멘트 그림(/api/assets/comments-v2·그림 조회)을 아는 허브.
-        #  agent_chat_v1 = Ask Agent 칸(이 PC 의 Claude Code·Codex) 라우터가 붙은 로컬 허브.
+        #  agent_chat_v1 = MV Agent 칸(이 PC 의 Claude Code·Codex) 라우터가 붙은 로컬 허브.
+        #  agent_chat_connect_v1 = 칸의 Claude 연결 경로(/api/agent-chat/claude)를 아는 허브 — 없으면 화면은 엔진 사유만 보인다.
         "features": ["request_retry_v1", "edit_doc_backup_v1", "audio-models-v1", "video-voice-v1", "comfy_canvas_runs_v1",
                      "comment_drawings_v1", "asset_comment_drawings_v1"] + ([] if AUTH_ENABLED else ["scene_keep_v1"])
-                    + (["agent_chat_v1"] if agent_chat.enabled() else []),
+                    + (["agent_chat_v1", "agent_chat_connect_v1"] if agent_chat.enabled() else []),
         # 공유 팀 서버 본체인가 — 화면이 auth_enabled 와 함께 허브·서버 직결·격리 로컬(로그인 켬 + 중계 끔)을 나눈다(어셋 그림 §3.2).
         "shared_team_server": is_shared_team_server(),
     }

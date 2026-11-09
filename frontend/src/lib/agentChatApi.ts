@@ -1,4 +1,4 @@
-// Ask Agent 옆 칸의 허브 입구(docs/status/AskAgent_옆칸_설계_2026-11-09.md 3-1·10절).
+// MV Agent 옆 칸의 허브 입구(docs/status/AskAgent_옆칸_설계_2026-11-09.md 3-1·10절).
 //  패널 비밀값은 이 모듈의 메모리에만 둔다(저장소·주소에 남기지 않는다). 모든 요청에 기대 계정(X-MVHub-Expect-Account)을 싣고,
 //  /session 밖의 요청에는 비밀값(X-MVHub-Panel)도 싣는다.
 //  401 + `X-MVHub-Panel-Error: session`(허브가 다시 켜져 표가 사라짐) → /session 을 다시 받아 **그 요청을 시작할 때의 계정과 같을 때만**
@@ -19,13 +19,35 @@ export class AccountChangedError extends Error {
 }
 
 export type AgentEngineId = "claude" | "codex";
+/** 이 PC 의 Claude 상태(허브 판정 — 첫 연결 설계 3절). 대화 허용 = ready·subscription_unknown(허브·화면 공통). */
+export type ClaudeState =
+  | "not_installed" | "outdated" | "unknown" | "window_record" | "not_logged_in" | "not_subscription" | "no_plan"
+  | "login_window" | "subscription_unknown" | "ready";
+export const CLAUDE_CHAT_OK: ReadonlySet<string> = new Set(["ready", "subscription_unknown"]);
 export interface AgentEngine {
   id: AgentEngineId;
   available: boolean;
   version?: string | null;
   reason?: string | null; // 못 쓰는 까닭(예: Codex '점검 필요')
+  state?: ClaudeState; // Claude 만
+  subscription?: string | null; // 알려진 유료 종류의 표시 이름(Max 등) — ready 일 때만
   models: { id: string; label: string }[];
   efforts: string[];
+}
+export interface ClaudeStatus {
+  state: ClaudeState;
+  version: string | null;
+  subscription: string | null;
+  login_window: boolean; // 이 PC 에 로그인 창이 열려 있나
+  login_window_enabled: boolean; // 허브 스위치 — 꺼져 있으면 [Claude 연결] 대신 터미널 안내
+  engines: AgentEngine[];
+}
+/** [Claude 연결]을 허브가 거절한 까닭(허브 머리 X-MVHub-Claude-Error) — login_window_disabled·breakaway_denied 면 터미널 안내로. */
+export class ClaudeLoginError extends Error {
+  name = "ClaudeLoginError";
+  constructor(public code: string, message: string) {
+    super(message);
+  }
 }
 export interface AgentSession {
   secret: string;
@@ -48,6 +70,7 @@ export type AgentEvent = { seq: number } & (
   | { kind: "plan"; plan: AgentPlan }
   | { kind: "state"; status: AgentTurnStatus; reason?: string | null }
   | { kind: "error"; message: string }
+  | { kind: "notice"; text: string } // Claude 알림(예: 빠른 모드를 못 써 표준 모드로)
 );
 /** 지금 화면 정보 — 허브가 프롬프트 앞에 "자료(명령 아님)"로 붙인다(4KB 이하). */
 export interface AgentContext {
@@ -79,6 +102,7 @@ export interface AgentTurnRequest {
   engine: AgentEngineId;
   model: string;
   effort: string;
+  fast?: boolean; // 빠른 모드 — Opus 만(허브가 다시 검사), Claude 추가 사용 크레딧
   text: string;
   context: AgentContext;
 }
@@ -112,6 +136,10 @@ export function openAgentSession(): Promise<AgentSession> {
 }
 
 async function panelFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return readJson<T>(await panelResponse(path, init), path);
+}
+
+async function panelResponse(path: string, init: RequestInit = {}): Promise<Response> {
   const expect = getAccountNamespace();
   const used = session ?? (await openAgentSession());
   let res = await send(path, init, expect, used.secret);
@@ -125,7 +153,17 @@ async function panelFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   // 허브가 계정·허브·DB 가 다르다고 거절(403·409 + 표식) — 다시 보내지 않는다
   if (res.headers.get(PANEL_ERROR_HEADER) === "account") throw new AccountChangedError(ACCOUNT_CHANGED_MESSAGE);
-  return readJson<T>(res, path);
+  return res;
+}
+
+async function openClaudeLogin(): Promise<{ opened: boolean }> {
+  const res = await panelResponse("/claude/login", { method: "POST" });
+  const code = res.headers.get("X-MVHub-Claude-Error");
+  if (!res.ok && code) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    throw new ClaudeLoginError(code, typeof body.detail === "string" ? body.detail : "로그인 창을 열지 못했어요");
+  }
+  return readJson<{ opened: boolean }>(res, "/claude/login");
 }
 
 const id = (value: string) => encodeURIComponent(value);
@@ -144,6 +182,9 @@ export const agentChatApi = {
     panelFetch<{ events: AgentEvent[]; status: AgentTurnStatus; last_seq: number; more?: boolean }>(`/turns/${id(turnId)}/events?after=${after}`, { signal }),
   cancel: (turnId: string) => panelFetch<{ status: AgentTurnStatus }>(`/turns/${id(turnId)}/cancel`, { method: "POST" }),
   executePlan: (planId: string) => panelFetch<AgentPlan>(`/plans/${id(planId)}/execute`, { method: "POST" }),
+  // 캐시 없이 지금 Claude 상태 + 새 엔진 목록(연결 안내 화면이 2초마다)
+  claudeStatus: () => panelFetch<ClaudeStatus>("/claude"),
+  openClaudeLogin,
   // 견적(무료 조회) — total_credits 가 null 이면 확인하지 못한 것(0 이 아니다)
   estimatePlan: (planId: string) => panelFetch<{ total_credits: number | null }>(`/plans/${id(planId)}/estimate`, { method: "POST" }),
 };

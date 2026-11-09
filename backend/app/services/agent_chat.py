@@ -19,6 +19,7 @@ from typing import Callable
 
 from .. import active_account, config
 from ..repo import agent_chat as store
+from . import agent_chat_claude as claude
 from . import agent_chat_process as process
 from .agent_chat_parse import parser_for
 from .shared_connection import is_shared_team_server
@@ -36,13 +37,16 @@ EVENT_PAGE = 5000  # 한 번에 돌려주는 사건 수(> MAX_EVENTS 라 끝난 
 _DELTA_FLUSH_CHARS = 120
 _DELTA_FLUSH_SECONDS = 0.3
 MODELS = {
-    "claude": [{"id": "opus", "label": "Opus 5.5"}, {"id": "sonnet", "label": "Sonnet 5.5"}, {"id": "haiku", "label": "Haiku 5.5"}],
+    "claude": [{"id": "opus", "label": "Opus 5.5"}, {"id": "sonnet", "label": "Sonnet 5.5"}, {"id": "haiku", "label": "Haiku 5.5"},
+               {"id": "fable", "label": "Fable 5.1"}],
     "codex": [{"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol"}, {"id": "gpt-6-astra", "label": "GPT-6 Astra"}],
 }
-EFFORTS = ("low", "medium", "high")
+# 생각 깊이 — Claude 는 CLI `--effort low|medium|high|xhigh|max`(도움말 확인), Codex 는 지금처럼 셋. 모든 조합을 보장하지는 않는다:
+# Claude 가 거절한 조합은 그 오류를 그대로 보이고 다른 모델·깊이로 몰래 바꾸지 않는다.
+EFFORTS = {"claude": ("low", "medium", "high", "xhigh", "max"), "codex": ("low", "medium", "high")}
 TERMINAL = ("done", "failed", "cancelled", "interrupted")
 GUIDE = (
-    "[MV Hub Ask Agent 칸 안내]\n"
+    "[MV Hub MV Agent 칸 안내]\n"
     "- 너는 MV Hub 앱 옆 칸에서 사용자를 돕는다. 한국어로 짧고 쉽게 답한다.\n"
     "- MV Hub 일은 mvhub_panel 도구로만 한다. 먼저 read_context(kind='workspaces')로 공간을 확인하고, 이름이 겹치거나 "
     "대상이 불명확하면 사용자에게 묻는다. ID·모델·옵션은 추측하지 말고 read_context 로 확인한다.\n"
@@ -97,6 +101,7 @@ class _Runtime:
     overflow: bool = False
     watch_failed: bool = False
     violation: dict | None = None
+    claude_lock: object | None = None  # agent_chat_claude.ClaudeLock — 이 차례 스레드가 잡고 놓는다
     session_seen: bool = False
     events: int = 0
     checked_at: float = field(default=0.0)
@@ -136,17 +141,25 @@ class AgentChat:
         return found[0] if found else None
 
     # ── 엔진 ──
-    def engines(self) -> list[dict]:
-        """화면 표시용(잠깐 캐시). 실제 실행 허용은 차례마다 engine_problem 으로 다시 본다."""
+    def engines(self, refresh: bool = False) -> list[dict]:
+        """화면 표시용(잠깐 캐시 — refresh 면 새로). 실제 실행 허용은 차례마다 engine_problem 으로 다시 본다.
+        Claude 는 상태(state)·구독 표시 이름도 싣는다 — 화면이 연결 안내를 고른다. available = 대화 허용 조건(CHAT_OK)."""
         with self._lock:
-            if self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS:
+            if not refresh and self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS:
                 return self._engines[1]
         result = []
         for engine in ("claude", "codex"):
             prefix = process.engine_prefix(engine)
-            reason = process.engine_problem(engine, prefix)
-            result.append({"id": engine, "available": reason is None, "version": process.cli_version(prefix) if prefix else "",
-                           "reason": reason, "models": MODELS[engine], "efforts": list(EFFORTS)})
+            row = {"id": engine, "models": MODELS[engine], "efforts": list(EFFORTS[engine])}
+            if engine == "claude":
+                state = claude.claude_state(prefix)
+                ok = state["state"] in claude.CHAT_OK
+                row.update(available=ok, version=state["version"] or "", state=state["state"], subscription=state["subscription"],
+                           reason=None if ok else claude.MESSAGES.get(state["state"], claude.MESSAGES["unknown"]))
+            else:
+                reason = process.engine_problem(engine, prefix)
+                row.update(available=reason is None, version=process.cli_version(prefix) if prefix else "", reason=reason)
+            result.append(row)
         with self._lock:
             self._engines = (time.monotonic(), result)
         return result
@@ -156,7 +169,7 @@ class AgentChat:
 
     # ── 차례 ──
     def start_turn(self, identity: Identity, *, conversation: dict, turn: dict, model: str, effort: str,
-                   text: str, context: dict, still_current: Callable[[], None]) -> None:
+                   text: str, context: dict, still_current: Callable[[], None], fast: bool = False) -> None:
         if self._closing:
             raise RuntimeError("허브가 종료 중입니다.")
         path = identity.db_file()
@@ -169,7 +182,8 @@ class AgentChat:
         work.mkdir(parents=True, exist_ok=True)
         command = process.build_command(engine, prefix, model=model, effort=effort, resume=resume,
                                         mcp_entry=conversation["mcp_entry"],
-                                        mcp_file=config.AGENT_CHAT_DIR / "mcp" / f"{conversation['id']}.json", work=work)
+                                        mcp_file=config.AGENT_CHAT_DIR / "mcp" / f"{conversation['id']}.json", work=work,
+                                        fast=fast)
         runtime = _Runtime(identity, path, turn["id"], conversation["id"], conversation["client_id"], engine, prefix, command,
                            build_prompt(text, context).encode("utf-8"), bool(resume), still_current)
         with self._lock:
@@ -280,6 +294,10 @@ class AgentChat:
             problem = process.engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
             if problem:
                 raise EngineUnavailable(problem)
+            if runtime.engine == "claude":  # 같은 Claude 자격을 쓰는 허브들과 줄 서기 — 이 스레드가 잡고 회수 확인 뒤 놓는다
+                lock = claude.ClaudeLock("turn")
+                lock.acquire()  # Busy → 아래에서 차례 실패로
+                runtime.claude_lock = lock
             job = process.JobProcess()
             with self._lock:  # 띄우기 전에 쥔다 — 띄우다 실패해도 finally 의 회수가 이 Job 을 0개까지 확인한다(리뷰 2차)
                 runtime.job = job
@@ -339,6 +357,9 @@ class AgentChat:
         except EngineUnavailable as exc:
             status, reason = "failed", "engine_locked"
             self._emit(runtime, "error", {"message": f"이 AI 는 지금 쓸 수 없습니다 — {exc}"})
+        except claude.Busy as exc:
+            status, reason = "failed", "claude_busy"
+            self._emit(runtime, "error", {"message": str(exc)})
         except process.OutputLimit:
             status, reason = "failed", "output_limit"
             store.append_event(runtime.path, runtime.turn_id, "error", {"message": "출력이 너무 많아 멈췄습니다."})
@@ -355,6 +376,8 @@ class AgentChat:
             watcher.join(10)
             reaped = self._reap(runtime)
             if reaped:
+                if runtime.claude_lock:  # 회수(Job 0개)를 확인했으니 clean 을 쓰고 놓는다 — 못 했으면 쥔 채 남아 다른 허브도 막는다
+                    runtime.claude_lock.release()
                 if runtime.cancelled and status not in ("interrupted",):
                     status = "cancelled"
                 if store.set_status(runtime.path, runtime.turn_id, status, reason=reason):
