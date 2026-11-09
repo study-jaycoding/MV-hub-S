@@ -79,6 +79,8 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/scene-keeps/restore": 4 * KIB,
     # 코멘트 그림이 실린 발행 묶음(설계 C5) — 그림 본문까지 JSON 으로 온다. 파싱 전에 막는다.
     "/api/share/publish-bundle-v2": 32 * MIB,
+    # 어셋 코멘트 그림(설계 docs/status/어셋코멘트그림_설계_2026-11-05.md §3.2) — 생성물 comments-v2 와 같은 상한.
+    "/api/assets/comments-v2": 5 * MIB,
 }
 # 경로 안에 id 가 있는 입구 — (앞, 끝) 조각으로 고른다. comments-v2 = 그림 12장(획 256KiB + thumb base64 ≈ 86KiB) + 글.
 UPLOAD_REQUEST_SUFFIX_LIMITS: dict[tuple[str, str], int] = {

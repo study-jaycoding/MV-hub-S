@@ -624,6 +624,7 @@ _LOCAL_PREFIXES = (
     "/api/gen-requests",   # 로컬 실행 큐(에이전트가 폴링해 자기 CLI 로 실행)
     "/api/mcp/",          # 로컬 MCP 연결·계획은 공유 서버에 위임하지 않는다
     "/api/agent/",         # 에이전트 롱폴·상태·다운로드(이 허브에 붙음)
+    "/api/agent-chat/",    # Ask Agent 칸 — 이 PC 의 Claude Code·Codex 실행과 칸 기록(서버 위임 금지 — 빠지면 공유 서버로 새어 나간다)
     "/api/models",         # CLI 모델 목록·params
     "/api/voices",         # CLI 목소리 목록·상세(모델 목록과 같은 이 PC 의 CLI)
     "/api/comfy",          # ComfyUI 연결·파싱·실행(이 PC 의 로컬/Cloud 자원 — 서버 위임 금지)

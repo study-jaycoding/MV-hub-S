@@ -209,28 +209,18 @@
 .partial-edit-video-result { display: block; max-width: 100%; max-height: 65vh; margin: auto; }
 
 /* ── 영상 프레임 띠 — 편집 탭 뷰어(.ed-vtop·.ed-scrub·.ed-trans)와 같은 값. edit-tab.css 는 편집 탭(지연 로드)에서만
-   읽혀서 여기 옮겨 적는다(2026-10-28 수정 창 개편). 이미지는 띠 없이 무대만(.pe-plain). */
-.pe-plain { display: contents; }
+   읽혀서 여기 옮겨 적는다(2026-10-28 수정 창 개편). 무대 + 아래 한 판(.pe-board)을 한 상자에(이미지·영상 같다 — Jay 11-09). */
 .pe-viewer {
   align-self: center; display: flex; flex-direction: column; flex: none;
   border: 1px solid #1a1a1e; border-radius: 8px; overflow: hidden; background: #1c1c1f;
 }
 .pe-viewer .partial-edit-stagebox { border-radius: 0; }
-.pe-vtop {
-  height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px;
-  background: #28282d; border-bottom: 1px solid #1a1a1e; user-select: none;
-}
-.pe-vtc { flex: none; min-width: 84px; font: 600 12.5px ui-monospace, Consolas, monospace; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
-.pe-vtotal { text-align: right; color: var(--muted); font-weight: 500; }
-.pe-vlabel { flex: 1; min-width: 0; text-align: center; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.pe-vlabel b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .pe-lock {
   flex: none; display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 6px;
   font-size: 11px; color: #ffcf7a; background: rgba(255, 190, 80, 0.1); white-space: nowrap;
 }
 .pe-vhost, .pe-video { position: absolute; inset: 0; width: 100%; height: 100%; }
 .pe-video { object-fit: contain; display: block; }
-.pe-vbot { background: #28282d; border-top: 1px solid #1a1a1e; user-select: none; }
 /* 타임바 — 누르는 자리는 넉넉하게(28px), 보이는 줄은 4px. 빨강 = 지금 자리. 그린 표시가 있으면 흐리게 잠근다. */
 .pe-scrub { height: 28px; padding: 0 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
 .pe-scrub[aria-disabled="true"] { cursor: default; opacity: 0.45; }
@@ -250,6 +240,19 @@
 .pe-tbtn.pe-step { width: 40px; border-radius: 7px; font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3; }
 .pe-tbtn.pe-play { width: 30px; height: 30px; background: var(--accent); }
 .pe-tbtn.pe-play svg { fill: var(--accent-ink); }
+
+/* ── 무대 아래 한 판(Jay 11-09 — 코멘트 그림 창 시안 ⑥⑦, 수정 창도 같은 모양) — 타임라인 → 재생 줄 → 도구 줄.
+   도구 줄은 떠 있는 캡슐의 테두리·그림자 없이 재생 줄과 같은 바탕, 사이에 얇은 구분선. 위 시각 줄(.pe-vtop)은 쓰지 않고 시각은 재생 줄로. */
+.pe-board { background: #28282d; border-top: 1px solid #1a1a1e; user-select: none; }
+.pe-board .pe-toolrow { margin: 0; border-top: 1px solid #1a1a1e; }
+.pe-board .pe-dock { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.pe-trans.pe-trans-row { justify-content: space-between; padding: 0 14px; gap: 10px; }
+.pe-trans-row .pe-keys { position: static; }
+.pe-trans-row .pe-lock { height: 20px; padding: 0 8px; }
+.pe-time { font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pe-time .muted { color: #7d828e; }
+.pe-trans-mid { display: flex; align-items: center; gap: 12px; }
+.pe-frame { font: 600 11.5px ui-monospace, Consolas, monospace; color: #c9ccd3; min-width: 64px; font-variant-numeric: tabular-nums; }
 
 /* ── 도구 캡슐 — 그림·영상 바로 밑 가운데 한 줄(힉스필드 편집기처럼). 켜진 도구 = 라임 칸 ── */
 .pe-toolrow { display: flex; justify-content: center; margin-top: -2px; }

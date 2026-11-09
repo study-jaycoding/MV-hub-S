@@ -7,6 +7,7 @@ import { buildCommentTree } from "../../lib/commentTree";
 import { COMMENT_HIGHLIGHT_EVENT, takeCommentHighlightRequest, type CommentHighlight } from "../../lib/commentHighlight";
 import { fmtWhen } from "../../lib/format";
 import { loadString } from "../../lib/storage";
+import { MediaThumbnail } from "../MediaThumbnail";
 
 // 코멘트 본문 글씨 크기(px) — 사용자별 localStorage 저장, 패널마다 공통 적용.
 const FS_KEY = "ch.cmt.fontPx";
@@ -39,6 +40,39 @@ const saveFlag = (key: string, v: boolean) => {
   }
 };
 
+// 입력칸 안 아이콘(Jay 11-09 시안 C) — 편집 = 펜, 전송 = 종이비행기
+const PEN_ICON = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </svg>
+);
+const SEND_ICON = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4Z" />
+  </svg>
+);
+
+// 그림 창 오른쪽 칸의 새 코멘트 입력 — 글·비공개 체크·보내는 중의 주인은 그림 창 하나다(설계 어셋코멘트그림 §4).
+//  보내면 그린 그림이 그 코멘트에 붙는다. 답글·수정은 이 패널의 onSend·onEdit(지금 경로) 그대로.
+export interface CommentComposer {
+  text: string;
+  setText: (text: string) => void;
+  writePrivate: boolean;
+  setWritePrivate: (on: boolean) => void;
+  sending: boolean;
+  canSend: boolean;
+  onSubmit: () => void;
+}
+
+// 떠 있는 창 왼쪽 썸네일 칸(Jay 11-09 시안 C-2) — 어떤 생성물·파일의 코멘트인지 보인다. 누르면 크게 보기, 마우스를 올리면 title(프롬프트·파일 이름)
+export interface CommentMedia {
+  thumb: string | null;
+  type: "image" | "video" | "audio";
+  title: string;
+  onOpen?: () => void;
+  videoUrl?: string; // 영상 원본 — 생성 카드처럼 포스터를 깔고 마우스를 올리면 재생(Jay 11-09)
+}
+
 export interface CommentPanelItem {
   id: string;
   author: string;
@@ -68,6 +102,10 @@ export function CommentPanel<T extends CommentPanelItem>({
   onUnsentChange,
   embedded = false,
   renderExtra,
+  composer,
+  allowPrivate = true,
+  onEditDraw,
+  media,
 }: {
   comments: T[];
   label: string;
@@ -89,9 +127,32 @@ export function CommentPanel<T extends CommentPanelItem>({
   onUnsentChange?: (unsent: boolean) => void;
   // 끼워 쓰기(코멘트 그림 창의 오른쪽 '지난 코멘트') — 떠 있는 창의 자리·끌기·닫기·아래 입력칸 없이 목록만(답글·수정·삭제는 그대로)
   embedded?: boolean;
-  // 글 아래 덧붙일 것(생성물 코멘트의 그림 줄)
+  // 글 아래 덧붙일 것(코멘트의 그림 줄)
   renderExtra?: (comment: T) => ReactNode;
+  // 끼워 쓰기의 새 코멘트 입력(그림 창이 쥔다) — 있으면 목록 아래에 한 줄 입력·[전송]·비공개 쓰기를 그린다
+  composer?: CommentComposer;
+  // 비공개를 쓸 수 있나 — 서버 직결 화면은 거짓: 새 글·답글 모두 저장된 선택과 상관없이 공개로 보낸다(Codex 4차 P2)
+  allowPrivate?: boolean;
+  // 작은 창의 [편집](입력칸과 [전송] 사이) — 쓰던 글을 넘기고 그림 창을 연다. 넘겼으면 참(그때 입력칸을 비운다)
+  onEditDraw?: (text: string) => boolean;
+  // 왼쪽 썸네일 칸 — 떠 있는 창에만. 있으면 머리줄의 label 글자는 빼고 썸네일의 title 로 보인다
+  media?: CommentMedia | null;
 }) {
+  const showMedia = !embedded && !!media;
+  // 영상 썸네일 — 생성 카드와 같다(GenerationCard onEnter/onLeave): 올리면 무음 재생, 떼면 멈추고 처음으로
+  const mediaVideoRef = useRef<HTMLVideoElement>(null);
+  const playMedia = () => {
+    const video = mediaVideoRef.current;
+    if (!video) return;
+    video.muted = true; // React 의 muted 속성은 DOM 프로퍼티로 안 붙는다 — 재생 직전에 강제(카드와 같다)
+    Promise.resolve(video.play()).catch(() => {});
+  };
+  const stopMedia = () => {
+    const video = mediaVideoRef.current;
+    if (!video) return;
+    video.pause();
+    video.currentTime = 0;
+  };
   // 크게 보기 위에서 열었으면(어셋 Ctrl 카드 C) 그 위 겹에 띄운다 — 열 때 한 번만 본다(먼저 연 창은 나중에 연 크게 보기 아래 그대로, 11-09 Jay)
   const [overPreview] = useState(() => !embedded && !!document.querySelector(".media-preview"));
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -198,7 +259,17 @@ export function CommentPanel<T extends CommentPanelItem>({
   const submitComment = (input: HTMLInputElement, parentId?: string | null) => {
     // 비공개 코멘트에 단 답글은 무조건 비공개 — 공유로 나가면 팀에겐 부모 없는 답글이 된다.
     const parentPrivate = !!(parentId && byId[parentId]?.private);
-    return submitFrom(input, (text) => onSend(text, parentId, parentPrivate || writePrivate), parentId ? () => setReplyingId(null) : undefined);
+    // 그림 창에서는 보이는 체크(composer)가 답글에도 쓰인다 — 패널이 따로 쥔 저장값을 쓰면 체크와 다르게 나갔다(독립 리뷰 확인 불가 항목 — 실제로 어긋남)
+    const isPrivate = allowPrivate && (parentPrivate || (composer ? composer.writePrivate : writePrivate));
+    return submitFrom(input, (text) => onSend(text, parentId, isPrivate), parentId ? () => setReplyingId(null) : undefined);
+  };
+  // [편집] — 쓰던 글을 그림 창으로 넘긴다. 넘긴 뒤에만 비운다(두 번 보내기 방지 — 그림 창이 그 글의 주인이 된다)
+  const handOff = (form: HTMLFormElement | null) => {
+    const input = form?.elements.namedItem("c") as HTMLInputElement | null;
+    if (!input || !onEditDraw || sendingRef.current.has(input)) return;
+    if (!onEditDraw(input.value)) return;
+    input.value = "";
+    syncUnsent();
   };
 
   const submitEdit = (id: string, input: HTMLInputElement) =>
@@ -326,7 +397,7 @@ export function CommentPanel<T extends CommentPanelItem>({
 
   return (
     <div
-      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview ? " over-preview" : "")}
+      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview ? " over-preview" : "") + (showMedia ? " cmt-with-media" : "")}
       ref={panelRef}
       data-cmt-hold={holdName}
       onInput={syncUnsent}
@@ -352,11 +423,23 @@ export function CommentPanel<T extends CommentPanelItem>({
             }) as unknown as CSSProperties
       }
     >
+      {showMedia && media && (
+        <button type="button" className="cmt-media" title={media.title} aria-label="크게 보기" disabled={!media.onOpen} onClick={media.onOpen}
+          onMouseEnter={playMedia} onMouseLeave={stopMedia}>
+          {/* 생성 카드와 같은 부품·같은 ▶(가운데 흰 삼각형, 올리면 숨김 — Jay 11-09 "기존 생성카드처럼") */}
+          <MediaThumbnail thumb={media.thumb} isVideo={media.type === "video"} src={media.type === "video" ? media.videoUrl : null}
+            videoRef={mediaVideoRef} fallback={<span className="cmt-media-ph">{media.type === "audio" ? "♪" : ""}</span>} />
+          {media.type === "video" && <span className="play-badge">▶</span>}
+          {media.onOpen && <span className="cmt-media-zoom">⤢ 크게 보기</span>}
+        </button>
+      )}
+      {/* 썸네일 칸이 없으면 없는 상자(display: contents) — 칸이 있을 때만 오른쪽 세로 칸이 된다. 늘 두어 칸이 생겨도 입력칸이 다시 만들어지지 않게 */}
+      <div className="cmt-col">
       <div className="cmt-head" onMouseDown={embedded ? undefined : (e) => onHeadMouseDown(e, fallbackPos)}>
         <span className="cmt-title">
-          💬 {embedded ? "지난 코멘트" : "코멘트"} <span className="muted">({visible.length})</span>
+          💬 {embedded && !composer ? "지난 코멘트" : "코멘트"} <span className="muted">({visible.length})</span>
         </span>
-        {!embedded && <span className="cmt-file">{label}</span>}
+        {!embedded && !showMedia && <span className="cmt-file">{label}</span>}
         <div className="cmt-fs" onMouseDown={(e) => e.stopPropagation()}>
           <button title="글씨 작게" onClick={() => setFs(fontPx - 1)} disabled={fontPx <= FS_MIN}>
             A−
@@ -377,7 +460,7 @@ export function CommentPanel<T extends CommentPanelItem>({
         {roots.map((root) => renderThread(root))}
       </div>
 
-      {/* 끼워 쓰기에서는 새 코멘트를 그 창의 아래 판에서 쓴다(그림과 함께) */}
+      {/* 끼워 쓰기(그림 창)는 새 코멘트 입력을 그 창이 쥔다 — 보내면 그린 그림이 붙는다 */}
       {!embedded && (
         <form
           className="cmt-input"
@@ -389,17 +472,59 @@ export function CommentPanel<T extends CommentPanelItem>({
           <input
             name="c"
             autoComplete="off"
-            placeholder={writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎"}
+            placeholder={allowPrivate && writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎"}
             autoFocus
           />
-          <button type="submit">전송</button>
+          {/* 입력칸 안 오른쪽 아이콘 — 편집(펜)·전송(종이비행기, 라임). Jay 11-09 시안 C */}
+          <div className="cmt-inside">
+            {onEditDraw && (
+              <button type="button" className="cmt-draw-btn" aria-label="편집" title="편집 — 그림을 그려 코멘트에 붙이기(쓰던 글은 그림 창으로 옮겨 갑니다)"
+                onClick={(e) => handOff(e.currentTarget.form)}>
+                {PEN_ICON}
+              </button>
+            )}
+            <button type="submit" className="cmt-send-btn" aria-label="전송" title="전송 (Enter)">{SEND_ICON}</button>
+          </div>
+        </form>
+      )}
+      {embedded && composer && (
+        <form
+          className="cmt-input"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (composer.canSend && !composer.sending) composer.onSubmit();
+          }}
+        >
+          <input
+            name="cd"
+            aria-label="코멘트"
+            autoComplete="off"
+            value={composer.text}
+            readOnly={composer.sending}
+            placeholder={allowPrivate && composer.writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎ — 그린 그림이 함께 붙습니다"}
+            onChange={(e) => composer.setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.nativeEvent.isComposing || e.keyCode === 229)) e.preventDefault(); // 한글 조합 중 Enter 는 보내기가 아니다
+            }}
+          />
+          <div className="cmt-inside">
+            <button type="submit" className="cmt-send-btn" aria-label="전송" title={composer.sending ? "보내는 중" : "전송 (Enter) — 그린 그림이 함께 붙습니다"}
+              disabled={!composer.canSend || composer.sending}>{SEND_ICON}</button>
+          </div>
         </form>
       )}
 
       <div className="cmt-opt">
-        {!embedded && (
+        {allowPrivate && !embedded && (
           <label title="개인 기록으로 저장 — 팀 공유 스레드·발행·통계에 표시되지 않습니다">
             <input type="checkbox" checked={writePrivate} onChange={togglePrivate} />
+            비공개 코멘트(쓰기)
+          </label>
+        )}
+        {allowPrivate && embedded && composer && (
+          <label title="개인 기록으로 저장 — 팀 공유 스레드·발행·통계에 표시되지 않습니다">
+            <input type="checkbox" checked={composer.writePrivate} disabled={composer.sending}
+              onChange={() => composer.setWritePrivate(!composer.writePrivate)} />
             비공개 코멘트(쓰기)
           </label>
         )}
@@ -407,6 +532,7 @@ export function CommentPanel<T extends CommentPanelItem>({
           <input type="checkbox" checked={showPrivate} onChange={toggleShow} />
           비공개 코멘트(읽기)
         </label>
+      </div>
       </div>
     </div>
   );

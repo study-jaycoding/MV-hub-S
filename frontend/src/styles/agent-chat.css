@@ -1,0 +1,153 @@
+/* ── Ask Agent (docs/status/AskAgent_옆칸_설계_2026-11-09.md 4절 · 시안 _shots/ask-agent-pill-v2.png · ask-agent-open-v2.png) ── */
+
+/* 머리줄 알약 — 검색 묶음 왼쪽, 아이콘 없음. 평소 = 옆 단추들과 같은 바탕·테두리의 회색, 칸이 열린 동안 = 라임 바탕 + 검은 글자. */
+.topbar .agent-pill {
+  flex: none; height: 34px; padding: 0 16px; border-radius: 17px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border);
+  color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.topbar .agent-pill:hover { border-color: var(--border2); color: var(--text); }
+.topbar .agent-pill[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.topbar .agent-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 칸이 열리면 앱 전체(머리줄·본문)가 왼쪽으로 좁아진다 — 겹치지 않는다. 화면에 고정된 프롬프트 도크·아래 선택 막대도 같은 폭으로. */
+.app.agent-open { padding-right: 520px; }
+.app.agent-open .sl-dockbar,
+.app.agent-open .dock-float { right: 520px; }
+
+.agent-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 61; width: 520px;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel); border-left: 1px solid var(--border); color: var(--text);
+}
+.agent-panel button:focus-visible,
+.agent-panel textarea:focus-visible,
+.agent-panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 머리 — 머리줄과 같은 높이에 '새 대화 ⌄' · 새 대화 · 옆 칸 닫기 */
+.agent-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  height: 59px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border);
+}
+.agent-history-wrap { position: relative; min-width: 0; }
+.agent-title {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 360px; padding: 6px 8px;
+  border: 0; background: transparent; color: var(--text); font-size: 15px; font-weight: 700;
+}
+.agent-title span { overflow: hidden; text-overflow: clip; white-space: nowrap; }
+.agent-title:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); }
+.agent-chevron { flex: none; color: var(--muted); }
+.agent-head-actions { display: flex; gap: 4px; }
+.agent-ic {
+  display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted);
+}
+.agent-ic:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+
+/* 떠 있는 메뉴(지난 대화 · 모델) */
+.agent-menu {
+  position: absolute; z-index: 5; min-width: 260px; max-height: 420px; overflow-y: auto; padding: 6px;
+  background: var(--panel2); border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.agent-history { top: calc(100% + 6px); left: 0; width: 340px; }
+.agent-menu-note { margin: 0; padding: 12px; color: var(--muted); font-size: 12px; }
+.agent-history-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text); text-align: left;
+}
+.agent-history-item span { max-width: 100%; overflow: hidden; white-space: nowrap; font-size: 13px; }
+.agent-history-item small { color: var(--muted); font-size: 11px; }
+.agent-history-item:hover, .agent-history-item.on { background: rgba(255, 255, 255, 0.06); }
+
+/* 대화 */
+.agent-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+.agent-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); text-align: center; }
+.agent-empty-mark { font-size: 40px; line-height: 1; color: var(--muted2); opacity: 0.6; }
+.agent-empty p { margin: 0; font-size: 13px; }
+.agent-msg { max-width: 92%; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-user { align-self: flex-end; padding: 9px 13px; border: 1px solid var(--border2); border-radius: 14px; background: rgba(255, 255, 255, 0.04); }
+.agent-assistant { align-self: flex-start; }
+.agent-msg-error { align-self: flex-start; color: #ff8a7a; font-size: 12.5px; }
+.agent-tool {
+  align-self: flex-start; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
+  color: var(--muted); font-size: 12px;
+}
+.agent-tool-state { margin-left: 6px; color: var(--muted2); }
+.agent-tool.is-failed .agent-tool-state { color: #ff8a7a; }
+.agent-working { margin: 0; color: var(--muted); font-size: 12px; }
+
+/* 계획 카드 */
+.agent-plan {
+  align-self: stretch; padding: 14px 16px; border: 1px solid var(--border2); border-radius: 12px; background: rgba(255, 255, 255, 0.02);
+}
+.agent-plan-title { margin: 0 0 8px; font-size: 14px; font-weight: 700; }
+.agent-plan-items { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.agent-plan-items li { white-space: pre-wrap; overflow-wrap: anywhere; } /* 줄임표 없이 전부 보인다 */
+.agent-plan-items b { margin-right: 6px; color: var(--text); font-weight: 600; }
+.agent-plan-where, .agent-plan-cost { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
+.agent-plan-warn { margin: 0 0 10px; color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.agent-plan-fail { margin: 0 0 10px; color: #ff8a7a; font-size: 12.5px; }
+.agent-plan-done { margin: 0; color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.agent-plan-actions { display: flex; gap: 8px; }
+.agent-plan-run, .agent-plan-fix { height: 32px; padding: 0 16px; border-radius: 16px; font-size: 13px; font-weight: 700; }
+.agent-plan-run { background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); }
+.agent-plan-fix { background: transparent; border: 1px solid var(--border2); color: var(--text); }
+
+.agent-error { flex: none; margin: 0 16px 8px; color: #ff8a7a; font-size: 12.5px; }
+
+/* 입력칸 */
+.agent-composer {
+  flex: none; margin: 0 14px 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--border2); border-radius: 16px; background: rgba(255, 255, 255, 0.03);
+}
+.agent-context {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 10px 5px 6px;
+  border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.03);
+}
+.agent-context-mark {
+  display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 7px;
+  background: var(--accent); color: var(--accent-ink); font-size: 14px;
+}
+.agent-context-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.agent-context-text b { font-size: 12px; }
+.agent-context-text small { overflow: hidden; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.agent-input {
+  width: 100%; min-height: 44px; max-height: 180px; resize: vertical; padding: 4px 2px;
+  border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.5;
+}
+.agent-input::placeholder { color: var(--muted2); }
+.agent-input:focus { outline: none; }
+.agent-composer-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.agent-model-wrap { position: relative; }
+.agent-model-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: 15px; background: transparent; color: var(--text); font-size: 12.5px; font-weight: 600;
+}
+.agent-model-btn:hover:not(:disabled) { border-color: var(--border2); }
+.agent-model-effort { color: var(--muted); font-weight: 500; }
+.agent-model-menu { right: 0; bottom: calc(100% + 8px); width: 300px; }
+.agent-model-search {
+  width: 100%; margin-bottom: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04); color: var(--text); font: inherit; font-size: 12.5px;
+}
+.agent-model-group { padding: 2px 0 6px; }
+.agent-model-group-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px 4px; color: var(--muted); font-size: 11.5px; }
+.agent-model-reason { padding: 1px 7px; border: 1px solid var(--border2); border-radius: 999px; color: #f5c542; font-size: 10.5px; }
+.agent-model-item {
+  display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; text-align: left;
+}
+.agent-model-item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+.agent-model-item.on { background: rgba(var(--accent-rgb), 0.12); }
+.agent-model-check { color: var(--accent); }
+.agent-effort { padding-top: 6px; border-top: 1px solid var(--border); }
+.agent-effort-seg { display: flex; margin: 2px 6px 4px; border: 1px solid var(--border2); border-radius: 999px; overflow: hidden; }
+.agent-effort-seg button { flex: 1; height: 30px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 12.5px; }
+.agent-effort-seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.agent-send {
+  display: grid; place-items: center; width: 34px; height: 34px; padding: 0; flex: none;
+  border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 17px; font-weight: 800;
+}
+.agent-send:disabled { opacity: 0.4; }
+.agent-stop-mark { width: 11px; height: 11px; border-radius: 2px; background: var(--accent-ink); }

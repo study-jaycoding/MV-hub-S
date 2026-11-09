@@ -5,6 +5,7 @@ import { useEffect, useId, useState } from "react";
 import { api } from "../api";
 import type { Filters, WorkspaceContext } from "../types";
 import type { ProviderIdentity } from "../lib/accountIdentity";
+import { AGENT_CHAT_FEATURE, hubHasFeature } from "../lib/hubFeatures";
 import { useT } from "../lib/i18n";
 import { CANVAS_OTHER_TAB, closeEmbedWindow, EMBED_MODES, useEmbedWindowOpen } from "../lib/popupWindows";
 import { AccountMenu } from "./AccountMenu";
@@ -39,6 +40,8 @@ interface Props {
   onNotificationsChanged: () => void;
   inert?: boolean; // 폴더 창이 떠 있는 동안 — 마우스는 창의 막이 막지만 Tab 으로는 닿았다(App 의 behindInert)
   searchResetKey?: string | number; // 폴더 탭·범위 변경과 자동 따라가기 때 예약 검색을 버린다
+  agentOpen?: boolean; // Ask Agent 옆 칸이 열려 있다 — 알약이 라임
+  onToggleAgent?: () => void; // Ask Agent 옆 칸 열기·닫기. 허브가 agent_chat_v1 을 알릴 때만 알약이 보인다
 }
 
 export function TopBar({
@@ -68,6 +71,8 @@ export function TopBar({
   onNotificationsChanged,
   inert,
   searchResetKey = 0,
+  agentOpen = false,
+  onToggleAgent,
 }: Props) {
   const t = useT();
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
@@ -130,6 +135,13 @@ export function TopBar({
           켜진 채 다시 누르면 닫는다: 편집 = 밑의 탭 단추를 누른 것과 같게 떠난다 · 창 = 닫는다. Assets·관리는 분리된 브라우저 창. 관리(PM)는 플래그 on 일 때만.
           바탕이 이어진 한 캡슐로 묶고(시안 G3) — 첫 칸은 검색칸(B′ — 짧은 구분선, 칠 때 검색칸 바탕만 밝게), 끝 칸은 알림 종(B안 — 배지는
           칸 오른쪽 위에 걸침). 모두 Jay 2026-10-26. */}
+      {/* Ask Agent — 검색 묶음 바로 왼쪽, 아이콘 없는 글자 알약(Jay 2026-11-09 시안 v2). 칸이 열린 동안 라임 */}
+      {onToggleAgent && hubHasFeature(AGENT_CHAT_FEATURE) && (
+        <button type="button" className="agent-pill" onClick={onToggleAgent} aria-pressed={agentOpen}
+          title={t(agentOpen ? "Ask Agent 옆 칸 닫기" : "Ask Agent — 오른쪽에 대화칸 열기")}>
+          Ask Agent
+        </button>
+      )}
       <div className="top-ic-group">
         {/* 프롬프트·태그 검색. key = 탭 + 탭을 누른 횟수 — 탭을 누르면(같은 탭이어도) 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이
             초기화된 화면에 걸리지 않게(언마운트가 예약을 버린다). 자동 따라가기(searchResetKey)는 key 가 아니라 신호로 내린다 — 사용자가

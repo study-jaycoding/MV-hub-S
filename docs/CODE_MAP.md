@@ -75,6 +75,15 @@ ZIP 없는 MCP 독립 업데이트의 파일 검증·불변 버전·설치 선�
 사용자 UI는 `McpUpdate.tsx`가 맡는다. 원본 생성 ID 표시 준비는 `routers/mcp_v2.py`의 권한 검사 뒤에서 제공한다.
 파일 전환과 서버 후보의 격리 시험은 `tools/mcp_adapter/test_update.py`·`tools/server_console/test_mcp_stage.py`다.
 
+Ask Agent 옆 칸(이 PC 의 Claude Code·Codex 를 각자 로그인으로 — 계약 [AskAgent 설계](status/AskAgent_옆칸_설계_2026-11-09.md))은
+`CONTENT_HUB_AGENT_CHAT=1` 인 로컬 허브에만 붙는다(`services/agent_chat.py` 의 `enabled()`, `/api/agent-chat/` 는 `_proxy` 로컬 목록 — 빠지면 공유 서버로 샌다).
+HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_still_current`, [실행] = `mcp_v2.submit_plan`),
+차례·사건·긴 기다림·취소·계획 대응 `backend/app/services/agent_chat.py`, CLI 찾기·명령·자식 환경·Job `backend/app/services/agent_chat_process.py`
+(루트 런처 import 금지 — 옵션은 0단계 실측값), 출력 해석 `backend/app/services/agent_chat_parse.py`(순수), 신원별 기록 DB `backend/app/repo/agent_chat.py`.
+칸 전용 MCP 연결은 `mcp_v2.issue_panel_client`(실행권 영구 끔 — `repo/mcp_v2.create_client` 도 강제)·`local_setup.write_panel_profile`(전역 설정 안 건드림)·어댑터 `--panel`(도구 6개만).
+화면은 `frontend/src/components/agent-chat/AgentPanel.tsx`·`AgentPlanCard.tsx`, 상태 `frontend/src/lib/useAgentChat.ts`, 호출 `frontend/src/lib/agentChatApi.ts`
+(칸 표 401 은 로그인 만료로 보지 않는다), 모양 `frontend/src/styles/agent-chat.css`, 알약은 `TopBar.tsx`. 시험은 가짜 CLI `backend/tests/agent_chat_fake_cli.py` 로만.
+
 편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
 MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_picture.py)다.
 
@@ -283,6 +292,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `sources.py` | 170 | 스포트라이트 @/# 피커의 소스 검색 | `repo.search_sources` |
 | `assets.py` | 756 | 분리창 파일 메타 + 에셋 코멘트·생성본 코멘트 두 스레드 전체 | `repo.get_asset_meta`·`list_generation_comments`(33개) |
 | `comment_drawings.py` | 약 290 | 코멘트 그림·comments-v2 작성 장부·삭제 기록(설계 C1·C2) — 재시도 판정, 삭제 기록, 발행 합치기 검사, 휴지통 담기·되살리기. **파사드 별표 export 안 함** — `from app.repo import comment_drawings` | `create_comment_v2`·`merge_drawings`·`record_tombstones`·`trash_rows` |
+| `asset_comment_drawings.py` | 약 180 | 어셋(파일) 코멘트 그림·comments-v2 작성 장부(설계 docs/status/어셋코멘트그림_설계_2026-11-05.md §3) — 생성물 것을 일반화하지 않은 **어셋 전용**. 삭제 기록 표 없이 장부 행을 남겨 '장부엔 있고 코멘트 없음' = 지워짐(410). 지문 키 = `asset_key`(생성물 `gen_key` 바이트는 그대로). **파사드 별표 export 안 함** | `create_comment_v2`·`local_request_state`·`attach_meta`·`load_drawing` |
 | `nas_results.py` | 66 | 결과물 훑기 스냅샷 — 지금 루트 읽기(트랜잭션 안)·통째 교체·지금 루트로 만든 스냅샷만 조회([NAS_RESULTS.md](NAS_RESULTS.md)) | `current_root`·`replace_snapshot`·`snapshot` |
 | `asset_registry.py` | 340 | 에셋 대장 표 읽기·쓰기 · 훑기 결과 반영(정체 판정 — 순수 함수 `plan_changes` → 한 트랜잭션 `apply_plan`) · 조회(가시 프로젝트 밖은 전부 '없음') · 레퍼런스 번호 연결(지문=판 확인, 이름·경로 정확 일치=가능 연결). **파사드 별표 export 안 함** — `from app.repo import asset_registry` | `plan_changes`·`apply_plan`·`lookup_*`·`attach_reference_registry`·`backfill_reference_links` |
 
@@ -712,7 +722,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `edit/drawing/strokes.ts` | 그리기 획 형식·그리기 함수(수정 창·코멘트 그림 공용) + 코멘트 그림 '획 목록 v1' 정규화·해시(서버 `services/comment_strokes.py` 와 같은 바이트 — `tests/drawingStrokes.test.ts` 가 서버 값으로 고정) | `drawItem`·`renderStrokes`·`toStrokesV1`·`drawingHash` |
 | `edit/drawing/useDrawingInput.ts` | 획·되돌리기·도구·색·굵기·글자 입력·포인터 처리 훅(수정 창에서 그대로 떼어 냄) | `useDrawingInput` |
 | `edit/drawing/DrawDock.tsx` | 도구 캡슐(펜·지우개·도형·글자·색·굵기·되돌리기)과 무대 위 글자 입력칸 | `DrawDock`·`DrawTextInput` |
-| `comment/CommentDrawModal.tsx` | 크게 보기 코멘트 모드 창 — 무대에 그려 코멘트에 붙인다(영상은 프레임마다 한 장·책갈피), 오른쪽 지난 코멘트. 그림이 있을 때만 comments-v2(같은 id 재시도), 글만이면 옛 경로 | `CommentDrawModal`(`MediaPreview` 와 `app/AppOverlays`(카드 C) 가 연다) |
+| `comment/CommentDrawModal.tsx` | 코멘트 그림 창 — 생성물·어셋 공용(대상 `CommentTarget`). 무대 아래 한 판(영상 = 타임라인 책갈피·재생 줄·도구 줄 / 이미지 = 그림 ①②③ 번호 줄·도구 줄, 시안 ⑥⑦), 오른쪽 = 작은 코멘트 창 그대로 + 새 코멘트 입력(composer). 그림이 있을 때만 comments-v2(의도가 같으면 같은 id, 처음 보낸 문맥에 묶임), 글만이면 옛 경로 | `CommentDrawModal`·`AssetCommentSide`(`MediaPreview`·`app/AppOverlays`(카드 C)·`AssetsView`(작은 창 [편집]) 가 연다) |
 | `edit/EditRefPrompt.tsx`(136줄) | 수정 창 지시문 칸 — `@imageN` 을 레퍼런스 칸 썸네일 알약으로·`@` 목록·없는 번호 경고(알약은 `lib/promptEditor` 재사용, 내보내는 글은 `@imageN` 그대로) | `EditRefPrompt` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
@@ -1122,6 +1132,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | 파일 | 역할 | 한 줄 책임 |
 |---|---|---|
 | `commentTree.ts` | 순수 | 코멘트 부모→답글 트리 |
+| `commentTarget.ts` | 훅·조회 | 코멘트 그림의 대상(생성물 genId · 어셋 project·path) 짝짓기와 저장 문맥 — `auth_enabled` × `shared_team_server` 로 허브·서버 직결·격리 로컬을 나누고(허브 중계 여부 = 상태의 `proxying`, `has_token` 아님) 어셋 comments-v2 의 기대값을 만든다. 서버 능력(`asset_comment_drawings`)은 문맥별로 기억, 실패는 숨김. 분리 창은 이것으로 허브 표식·작업 문맥을 초기화한다(`AssetsWindow`) |
 | `statsFreshness.ts` | 순수 | 라이브러리가 `/api/generations-stats` 를 반영한 시각 — 벨 60초 폴링은 10초 안이고 벨 수가 그것과 같으면 건너뛴다(`NotificationCenter`). 시험 `tests/notificationDetailPoll.test.tsx` |
 | `commentBadgeTargets.ts` | 순수 | 배지 폴링 대상·변화 판정 |
 | `useCommentBadgePoll.ts` | 훅 | 코멘트 배지 주기 폴링(+stale 방어) |

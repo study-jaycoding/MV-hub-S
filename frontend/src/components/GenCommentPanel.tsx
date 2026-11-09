@@ -8,8 +8,8 @@ import { previewTargetFromGenerations } from "../lib/generationGrid";
 import { API_PAUSED_MESSAGE, ApiPausedError, isHttpStatus } from "../lib/http";
 import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
-import type { CommentDrawingMeta, CommentDrawingView, GenComment } from "../types";
-import { CommentPanel } from "./common/CommentPanel";
+import type { CommentDrawingMeta, CommentDrawingView, CommentTarget, GenComment } from "../types";
+import { CommentPanel, type CommentComposer, type CommentMedia } from "./common/CommentPanel";
 import { renderStrokes, type DrawItem } from "./edit/drawing/strokes";
 
 interface Props {
@@ -25,6 +25,14 @@ interface Props {
   drawingBg?: string | null;
   // 그림을 눌렀을 때 — 없으면 크게 보기에서 원본 위에 겹쳐 본다
   onOpenDrawing?: (view: CommentDrawingView) => void;
+  // 그림 창 오른쪽 칸 — 새 코멘트 입력은 그림 창이 쥔다(CommentPanel composer). 답글·수정은 지금 경로 그대로
+  composer?: CommentComposer;
+  allowPrivate?: boolean;
+  onUnsentChange?: (unsent: boolean) => void;
+  onComments?: (comments: GenComment[]) => void; // 그림 창이 지난 그림 책갈피를 그린다
+  // 작은 창의 [편집](입력칸과 [전송] 사이) — 쓰던 글을 넘기고 그림 창을 연다(Jay 11-09: 생성물도 C = 작은 창 → [편집] → 그림 창)
+  onEditDraw?: (text: string) => boolean;
+  media?: CommentMedia | null; // 떠 있는 창 왼쪽 썸네일 칸(11-09 시안 C-2)
 }
 
 const GEN_LS = makeStore("ch.gen.");
@@ -40,16 +48,20 @@ type DrawingState =
 export const UNSUPPORTED_DRAWING = "이 그림은 새 판에서 볼 수 있습니다";
 const GONE = (error: unknown) => isHttpStatus(error, 401, 403, 404, 410); // 권한이 없어졌거나 지워졌다 — 그림을 걷는다
 
-/** 그림 1장의 획(+영상 미리보기)을 받는다. enabled 가 참이 될 때까지(화면에 보일 때까지) 받지 않는다. */
-export function useCommentDrawing(commentId: string, meta: CommentDrawingMeta, enabled = true): DrawingState {
+/** 그림 1장의 획(+영상 미리보기)을 받는다. enabled 가 참이 될 때까지(화면에 보일 때까지) 받지 않는다.
+ *  대상이 어셋이면 어셋 경로로 묻는다(생성물 API 로 묻지 않는다 — 설계 어셋코멘트그림 §4). */
+export function useCommentDrawing(target: CommentTarget, commentId: string, meta: CommentDrawingMeta, enabled = true): DrawingState {
   const [state, setState] = useState<DrawingState>({ status: "loading" });
+  const asset = target.kind === "asset";
   useEffect(() => {
     if (!enabled) return;
     const abort = new AbortController();
     let thumbUrl: string | null = null;
     setState({ status: "loading" });
+    const fetchBody = asset ? api.assetCommentDrawing : api.commentDrawing;
+    const fetchThumb = asset ? api.assetCommentDrawingThumb : api.commentDrawingThumb;
     (async () => {
-      const body = await api.commentDrawing(commentId, meta.id, { signal: abort.signal });
+      const body = await fetchBody(commentId, meta.id, { signal: abort.signal });
       if (body.strokes?.v !== 1) {
         // 이 판이 모르는 획 판 — 그리지 않고 알린다(서버는 원문을 그대로 보관한다, C4)
         if (!abort.signal.aborted) setState({ status: "unsupported" });
@@ -57,7 +69,7 @@ export function useCommentDrawing(commentId: string, meta: CommentDrawingMeta, e
       }
       if (meta.kind === "video" && meta.has_thumb) {
         try {
-          thumbUrl = URL.createObjectURL(await api.commentDrawingThumb(commentId, meta.id, { signal: abort.signal }));
+          thumbUrl = URL.createObjectURL(await fetchThumb(commentId, meta.id, { signal: abort.signal }));
         } catch (error) {
           // 권한 거절·지워짐은 그림 전체를 걷는다(획만 남기지 않는다). 그 밖(연결 실패)은 미리보기 없이 획만(C6)
           if (abort.signal.aborted || GONE(error)) throw error;
@@ -74,7 +86,7 @@ export function useCommentDrawing(commentId: string, meta: CommentDrawingMeta, e
       abort.abort();
       if (thumbUrl) URL.revokeObjectURL(thumbUrl);
     };
-  }, [commentId, meta.id, meta.content_hash, meta.kind, meta.has_thumb, enabled]);
+  }, [asset, commentId, meta.id, meta.content_hash, meta.kind, meta.has_thumb, enabled]);
   return state;
 }
 
@@ -110,11 +122,11 @@ export function StrokesCanvas({ items, width, height, maxPx = 320, className }: 
   return <canvas ref={ref} className={className} aria-hidden="true" />;
 }
 
-function DrawingChip({ commentId, meta, bg, onOpen }: {
-  commentId: string; meta: CommentDrawingMeta; bg: string | null | undefined; onOpen: (meta: CommentDrawingMeta) => void;
+function DrawingChip({ target, commentId, meta, bg, onOpen }: {
+  target: CommentTarget; commentId: string; meta: CommentDrawingMeta; bg: string | null | undefined; onOpen: (meta: CommentDrawingMeta) => void;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
-  const state = useCommentDrawing(commentId, meta, useSeen(ref));
+  const state = useCommentDrawing(target, commentId, meta, useSeen(ref));
   if (state.status === "gone") return null;
   const back = meta.kind === "video" ? (state.status === "ok" ? state.thumbUrl : null) : bg;
   return (
@@ -131,33 +143,36 @@ function DrawingChip({ commentId, meta, bg, onOpen }: {
   );
 }
 
-/** 코멘트 글 아래 그림 줄 — 붙은 순서대로. */
-export function CommentDrawingStrip({ comment, bg, onOpen }: {
-  comment: GenComment; bg: string | null | undefined; onOpen: (meta: CommentDrawingMeta) => void;
+/** 코멘트 글 아래 그림 줄 — 붙은 순서대로. 대상(생성물·어셋)에 맞는 경로로 그림을 받는다. */
+export function CommentDrawingStrip({ target, comment, bg, onOpen }: {
+  target: CommentTarget; comment: Pick<GenComment, "id" | "drawings">; bg: string | null | undefined; onOpen: (meta: CommentDrawingMeta) => void;
 }) {
   const drawings = comment.drawings ?? [];
   if (!drawings.length) return null;
   return (
     <div className="cmt-atts">
       {[...drawings].sort((a, b) => a.idx - b.idx).map((meta) => (
-        <DrawingChip key={meta.id} commentId={comment.id} meta={meta} bg={bg} onOpen={onOpen} />
+        <DrawingChip key={meta.id} target={target} commentId={comment.id} meta={meta} bg={bg} onOpen={onOpen} />
       ))}
     </div>
   );
 }
 
-/** 크게 보기에서 겹쳐 본다 — 그 생성물을 보고 있는 크게 보기가 받고(preventDefault), 없으면 크게 보기를 그림과 함께 연다. */
-export function openDrawingInPreview(view: CommentDrawingView): void {
+/** 크게 보기에서 겹쳐 본다 — 그 대상을 보고 있는 크게 보기가 받는다(preventDefault). 받는 곳이 없으면 생성물은 크게 보기를 그림과 함께 연다
+ *  (어셋은 연 화면이 자기 파일 목록으로 연다 — 받은 곳이 없으면 false). */
+export function openDrawingInPreview(view: CommentDrawingView): boolean {
   const event = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: view, cancelable: true });
-  if (!window.dispatchEvent(event)) return;
+  if (!window.dispatchEvent(event)) return true;
+  if (view.target.kind !== "generation") return false;
   api
-    .getGeneration(view.genId)
+    .getGeneration(view.target.genId)
     .then((gen) => {
       const target = previewTargetFromGenerations([gen], gen);
       if (!target) throw new Error("no media");
       window.dispatchEvent(new CustomEvent(APP_EVENTS.commentDrawingOpen, { detail: { ...target, drawing: view } }));
     })
     .catch(() => flashMsg("크게 보기를 열지 못했습니다 — 생성물을 찾지 못했습니다"));
+  return true;
 }
 
 export function GenCommentPanel({
@@ -170,12 +185,20 @@ export function GenCommentPanel({
   embedded = false,
   drawingBg,
   onOpenDrawing = openDrawingInPreview,
+  composer,
+  allowPrivate,
+  onUnsentChange,
+  onComments,
+  onEditDraw,
+  media,
 }: Props) {
   const [comments, setComments] = useState<GenComment[]>([]);
+  useEffect(() => onComments?.(comments), [comments, onComments]);
+  // 크기 열쇠 — 왼쪽 썸네일 칸(11-09 시안 C-2)이 생겨 옛 저장 크기(약 320 폭)로는 두 칸이 좁다. 한 번 처음 크기로 연다
   const { pos, size, panelRef, onHeadMouseDown } = useFloatingPanel(
     GEN_LS,
     "cmtPos",
-    "cmtSize",
+    "cmtSizeMedia",
     !embedded,
   );
 
@@ -285,11 +308,17 @@ export function GenCommentPanel({
       onSeen={confirmSeen}
       targetKey={genId}
       embedded={embedded}
+      composer={composer}
+      allowPrivate={allowPrivate}
+      onUnsentChange={onUnsentChange}
+      onEditDraw={onEditDraw}
+      media={media}
       renderExtra={(c) => (
         <CommentDrawingStrip
+          target={{ kind: "generation", genId }}
           comment={c}
           bg={drawingBg}
-          onOpen={(drawing) => onOpenDrawing({ genId, commentId: c.id, drawing, author: c.author_name })}
+          onOpen={(drawing) => onOpenDrawing({ target: { kind: "generation", genId }, commentId: c.id, drawing, author: c.author_name })}
         />
       )}
     />

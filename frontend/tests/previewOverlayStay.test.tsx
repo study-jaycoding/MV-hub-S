@@ -256,6 +256,20 @@ describe("어셋 Ctrl 카드(실제 어셋 화면이 칸을 등록)", () => {
     expect(host.querySelector(".media-preview")).not.toBeNull();
   });
 
+  it("c 키 — Ctrl 카드 C 와 같은 작은 코멘트 창을 크게 보기 위 겹에 띄운다(어셋 그림 §4 — 전엔 아무 일도 없었다)", async () => {
+    await render(<>{view()}<MediaPreview target={ITEMS} onClose={onClose} /></>);
+    await settle();
+    expect(host.querySelector(".cmt-panel")).toBeNull();
+    key("c");
+    await settle();
+    const panel = host.querySelector(".cmt-panel");
+    expect(panel?.classList.contains("over-preview")).toBe(true);
+    // 어느 파일의 코멘트인지 = 왼쪽 썸네일 칸(마우스를 올리면 파일 이름, 11-09 시안 C-2) — 머리줄 글자는 뺐다
+    expect(panel?.querySelector(".cmt-media")?.getAttribute("title")).toBe("a.png");
+    expect(panel?.querySelector(".cmt-file")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("ⓘ — 크게 보기를 닫지 않고 그 파일의 정보를 연다", async () => {
     const onInfo = vi.fn();
     await render(<>{view(onInfo)}<MediaPreview target={ITEMS} onClose={onClose} /></>);

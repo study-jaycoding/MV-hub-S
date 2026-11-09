@@ -40,6 +40,7 @@ DB_FAMILY = {
     "backend/app/repo/trash.py": "trash DB (ATTACH)",
     "backend/app/services/worker_backup.py": "worker_backup_state.db",
     "backend/app/services/trash_transfer.py": "content / trash DB (B1 transfer)",
+    "backend/app/repo/agent_chat.py": "agent_chat/<신원>.db (Ask Agent 칸, %LOCALAPPDATA%)",
     "agent_push.py": "agent_state.db (작업자 PC)",
 }
 

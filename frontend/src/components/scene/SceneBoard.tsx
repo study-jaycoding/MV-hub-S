@@ -165,7 +165,7 @@ import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
 import { SetCard } from "./cards/SetCard";
-import { ListCard } from "./cards/ListCard";
+import { ListCard, ListPopup } from "./cards/ListCard";
 import { RenderCard } from "./cards/RenderCard";
 import { GenerationCard } from "./cards/GenerationCard";
 import { useGenerationViewsSynced } from "../../lib/useGenerationViewsSynced";
@@ -674,6 +674,8 @@ export function SceneBoard({
   nodePickerRef.current = nodePicker; // 열림여부(truthy) + 생성 좌표(cx/cy) 둘 다 여기서 참조
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [comfyModalId, setComfyModalId] = useState<string | null>(null); // comfy 노드 설정 모달 대상 카드 id
+  // 리스트 더블클릭 → 같은 노드를 그 자리에서 크게(Jay 2026-11-09). w·h = 노드 레이아웃 크기, x·y = 노드 가운데 화면 좌표
+  const [listPop, setListPop] = useState<{ id: string; w: number; h: number; x: number; y: number; shown: number } | null>(null);
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   // 떠 있는 동안 Esc 는 이 창들이 갖는다(맨 위 겹만 닫힌다) — 뒤 보드의 단축키도 쉰다(lib/keyGate).
   useEscapeClose(() => setViewTextModal(null), !!viewTextModal);
@@ -3416,13 +3418,30 @@ export function SceneBoard({
                 ...(origin ? { translate: `${card.x - origin.x}px ${card.y - origin.y}px` } : null),
                 ...(autoSize ? {} : { width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }),
               }}
-              // View=재생, 모델=모달. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
+              // View=재생, 모델=모달, 리스트=그 자리에서 크게. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
               onDoubleClick={
                 card.kind === "view"
                   ? () => openView(card.id)
                   : card.kind === "model"
                     ? () => setModelModalId(card.id)
-                    : undefined
+                    : card.kind === "list"
+                      ? (e) => {
+                          // 행 미리보기·결과 수·복사 단추·연결점·손잡이를 두 번 누른 것은 그 단추의 일이다
+                          if ((e.target as HTMLElement).closest(".scene-listrow-view, .scene-listrow-count, .scene-copy-btn, .scene-port, .scene-resize")) return;
+                          const k = collectListInputs(card.id, cardsById, resolvedEdges).kind;
+                          const el = cardEls.current[card.id];
+                          if (!el || (k !== "reference" && k !== "generation" && k !== "text")) return;
+                          const r = el.getBoundingClientRect();
+                          setListPop({
+                            id: card.id,
+                            w: el.offsetWidth,
+                            h: el.offsetHeight,
+                            x: r.left + r.width / 2,
+                            y: r.top + r.height / 2,
+                            shown: el.offsetWidth ? r.width / el.offsetWidth : 1, // 화면 폭 ÷ 레이아웃 폭 = 지금 보이는 배율
+                          });
+                        }
+                      : undefined
               }
             >
               {isRef ? (
@@ -3754,7 +3773,8 @@ export function SceneBoard({
       {reorderLine && (
         <div
           className="scene-reorder-line"
-          style={{ left: reorderLine.x, top: reorderLine.y, width: reorderLine.w, height: reorderLine.h }}
+          // 리스트 팝업(z 200)이 떠 있으면 그 위로 — 팝업 안에서 끌 때도 선이 보이게
+          style={{ left: reorderLine.x, top: reorderLine.y, width: reorderLine.w, height: reorderLine.h, zIndex: listPop ? 210 : undefined }}
         />
       )}
 
@@ -3873,6 +3893,46 @@ export function SceneBoard({
                 if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) requestFit(modelModalId);
               }}
             />
+          );
+        })()}
+
+      {/* 리스트 노드 더블클릭 → 같은 노드(ListCard)를 그 자리에서 크게. 끌기·저장은 노드와 같은 startReorder. */}
+      {listPop &&
+        (() => {
+          const c = cardsById.get(listPop.id);
+          if (!c || c.kind !== "list") return null;
+          return (
+            <ListPopup
+              key={listPop.id}
+              kindCls={"scene-card-list lk-" + collectListInputs(c.id, cardsById, resolvedEdges).kind}
+              w={listPop.w}
+              h={listPop.h}
+              at={listPop}
+              shown={listPop.shown}
+              onUndo={undo}
+              onRedo={redo}
+              onClose={() => setListPop(null)}
+            >
+              <ListCard
+                card={c}
+                cardsById={cardsById}
+                resolvedEdges={resolvedEdges}
+                genData={genData}
+                disabledIds={disabledIds}
+                rowSel={rowSel}
+                reorderFrom={reorderFrom}
+                cardWidth={widthOf(c)}
+                workspaceId={refWorkspaceId}
+                toggleRowSel={toggleRowSel}
+                startReorder={startReorder}
+                getNodePreview={getNodePreview}
+                setCardMenu={setCardMenu}
+                addListAsReference={addListAsReference}
+                onOutPortDown={onOutPortDown}
+                onResizeDown={onResizeDown}
+                reorderable
+              />
+            </ListPopup>
           );
         })()}
 

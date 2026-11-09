@@ -10,20 +10,26 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 111개.
+테이블 117개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
 | `account` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/identity.py` `routers/db_transfer.py` `services/db_scrub.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/asset_sync.py` `repo/identity.py` `repo/last_admin.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/scene_keeps.py` `repo/slack_notifications.py` `repo/trash.py` `routers/_share_authority.py` `services/slack_link.py` |
 | `account_report_delivery_state` | content DB | `repo/manage_schema.py` | `repo/manage_account_reports.py` | `repo/manage_account_reports.py` |
 | `account_report_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_account_reports.py` | `repo/manage_account_reports.py` |
+| `agent_chat_conversation` | agent_chat/<신원>.db (Ask Agent 칸, %LOCALAPPDATA%) | `repo/agent_chat.py` | `repo/agent_chat.py` | `repo/agent_chat.py` |
+| `agent_chat_event` | agent_chat/<신원>.db (Ask Agent 칸, %LOCALAPPDATA%) | `repo/agent_chat.py` | `repo/agent_chat.py` | `repo/agent_chat.py` |
+| `agent_chat_plan_binding` | agent_chat/<신원>.db (Ask Agent 칸, %LOCALAPPDATA%) | `repo/agent_chat.py` | `repo/agent_chat.py` | `repo/agent_chat.py` |
+| `agent_chat_turn` | agent_chat/<신원>.db (Ask Agent 칸, %LOCALAPPDATA%) | `repo/agent_chat.py` | `repo/agent_chat.py` | `repo/agent_chat.py` |
 | `ai_generation_batch` | content DB | `backend/schema.sql` | `repo/mcp_plans.py` | `repo/mcp_plans.py` |
 | `anchor_outbox` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |
 | `app_setting` | content DB | `backend/schema.sql` | `db.py` `db_migrations.py` `repo/account_cleanup.py` `repo/identity.py` `repo/scene_notebook.py` `repo/slack_notifications.py` `routers/db_transfer.py` `routers/publish.py` `services/asset_registry.py` `services/auth.py` `services/db_scrub.py` `services/update_activity.py` | `db_account_dbs.py` `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/asset_locations.py` `repo/identity.py` `repo/scene_notebook.py` `repo/share_commands.py` `repo/slack_notifications.py` `services/asset_registry.py` `services/auth.py` `services/db_scrub.py` `services/update_activity.py` `services/worker_backup.py` |
 | `asset` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/generation_sync.py` `repo/generations.py` `repo/result_fingerprint.py` `repo/scene_keeps.py` `services/asset_backfill.py` | `repo/asset_sync.py` `repo/assets.py` `repo/folder_cover.py` `repo/generation_rows.py` `repo/generation_sync.py` `repo/generations.py` `repo/generations_query.py` `repo/identity.py` `repo/manage.py` `repo/manage_task_previews.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/result_fingerprint.py` `repo/scene_keeps.py` `repo/share.py` `repo/trash.py` `services/asset_backfill.py` `services/thumbs.py` `services/update_activity.py` |
 | `asset_blob` | content DB | `db_asset_sync.py` | `repo/asset_sync.py` | `repo/asset_locations.py` `repo/asset_sync.py` `routers/asset_sync.py` `services/asset_destination.py` `services/asset_sync.py` |
-| `asset_comment` | content DB | `backend/schema.sql` | `repo/assets.py` | `repo/assets.py` |
+| `asset_comment` | content DB | `backend/schema.sql` | `repo/asset_comment_drawings.py` `repo/assets.py` | `repo/asset_comment_drawings.py` `repo/assets.py` |
+| `asset_comment_drawing` | content DB | `backend/schema.sql` | — | — |
 | `asset_comment_read` | content DB | `backend/schema.sql` | `repo/assets.py` | `repo/assets.py` |
+| `asset_comment_request` | content DB | `backend/schema.sql` | — | — |
 | `asset_destination_outbox` | content DB | `db_asset_destination.py` | `repo/identity.py` `services/asset_destination.py` | `services/asset_destination.py` |
 | `asset_location` | content DB | `db_asset_sync.py` | `repo/asset_sync.py` `routers/assets.py` `services/asset_destination.py` `services/asset_sync.py` | `repo/asset_locations.py` `repo/asset_registry.py` `repo/asset_sync.py` `routers/asset_sync.py` `routers/assets.py` `services/asset_backfill.py` `services/asset_destination.py` `services/asset_sync.py` |
 | `asset_location_alias` | content DB | `db_asset_sync.py` | `repo/identity.py` | `repo/asset_sync.py` |

@@ -5,6 +5,7 @@
 import { isKeyHandled } from "../lib/keyHandled";
 import { activationKeyOwned, backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../lib/keyGate";
 import { cloneElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
 import { DRAG_TYPES } from "../lib/dragTypes";
@@ -20,10 +21,13 @@ import { STORAGE_KEYS } from "../lib/storageKeys";
 import { flashMsg } from "../lib/flash";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../lib/windowDrag";
-import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
+import type { AssetComment, AssetNode, CommentDrawingView, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
-import { assetFileUrl } from "../lib/assetUrls";
+import { assetFileUrl, assetThumbUrl } from "../lib/assetUrls";
+import { useAssetDrawingSupport, type CommentWriteContext } from "../lib/commentTarget";
 import { registerAssetPreviewCard } from "./MediaPreview";
+import { CommentDrawModal } from "./comment/CommentDrawModal";
+import { CommentDrawingStrip, openDrawingInPreview } from "./GenCommentPanel";
 import { FolderIcon } from "./FolderIcon";
 import { SidebarEdgeToggle } from "./common/SidebarEdgeToggle";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
@@ -67,9 +71,11 @@ import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 interface Props {
   onInfo: (t: InfoTarget) => void;
   onPreview: (t: PreviewTarget) => void;
+  // 계정·연결 문맥(분리 창이 읽는다) — 코멘트 그림의 [편집] 표시·저장 대상·비공개 허용. null = 준비 안 됨
+  writeContext?: CommentWriteContext | null;
 }
 
-export function AssetsView({ onInfo, onPreview }: Props) {
+export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
   const t = useT();
   // 내 신원(로그인 계정 creator_uid, 단독이면 'me') — 코멘트 '내 것' 판별용. 독립 창이라 자체 조회.
   const myId = useAssetViewerIdentity();
@@ -257,7 +263,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     size: cmtSize,
     panelRef: cmtPanelRef,
     onHeadMouseDown: onCmtHeadDown,
-  } = useFloatingPanel(LS, "cmtPos", "cmtSize", !!commentPath);
+  } = useFloatingPanel(LS, "cmtPos", "cmtSizeMedia", !!commentPath); // 크기 열쇠 새로 — 왼쪽 썸네일 칸(11-09 시안 C-2)
 
   // 등록 폴더(마운트) 관리 창
   const [mountOpen, setMountOpen] = useState(false);
@@ -828,6 +834,22 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     reconcile,
     canLeaveComment,
   });
+  // 코멘트 그림(설계 어셋코멘트그림 §4) — 작은 창의 [편집] 은 허브 표식 + (중계 중이면) 서버 표식이 있고 이미지·영상이며 문맥이 준비됐을 때만.
+  //  누르면 쓰던 글을 넘기고 그림 창을 연다. 닫으면 떠 있던 작은 창으로 돌아와 목록을 새로 읽는다.
+  const drawSupported = useAssetDrawingSupport(writeContext, commentPath); // 작은 창을 열 때마다 다시 확인(그사이 서버 업데이트)
+  const [drawFor, setDrawFor] = useState<{ path: string; text: string } | null>(null);
+  const commentNode = commentPath ? files.find((f) => f.path === commentPath) ?? null : null;
+  const commentKind = commentNode?.type === "image" || commentNode?.type === "video" ? commentNode.type : null;
+  const canDraw = drawSupported && !!writeContext && !!commentKind;
+  useLayoutEffect(() => setDrawFor(null), [project]);
+  // 지난 그림을 누르면 크게 보기에서 겹쳐 본다 — 그 파일을 보고 있는 크게 보기가 받고, 없으면 그 파일의 크게 보기를 그림과 함께 연다
+  const openAssetDrawing = (view: CommentDrawingView) => {
+    if (openDrawingInPreview(view) || view.target.kind !== "asset" || view.target.project !== project) return;
+    const assetPath = view.target.path;
+    const f = filesRef.current.find((x) => x.path === assetPath);
+    const target = f && assetPreviewTarget(project, filesRef.current, f);
+    if (target) onPreview({ ...target, drawing: view });
+  };
   useAssetBroadcastSync({
     project,
     refreshProjectData: async (...args) => { await refreshProjectData(...args); },
@@ -960,6 +982,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       onT: () => (metaReadyRef.current ? onTagging(true) : flashMsg(ASSET_META_NOT_READY)), // 격자의 startTagEdit 와 같은 조건
       onTagCancel: () => onTagging(false),
     });
+  }, (item) => {
+    // 크게 보기 어셋 c 키 = Ctrl 카드 C 와 같은 작은 코멘트 창(이 화면이 연 그 파일일 때만)
+    const f = item.assetPath ? files.find((x) => x.path === item.assetPath) : undefined;
+    if (!f || item.url !== assetFileUrl(project, f.path)) return false;
+    cellOnC(f.path);
+    return true;
   }));
   const marqueeEl = marquee && (
     <div
@@ -1189,7 +1217,41 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               onSend={sendComment}
               onEdit={editComment}
               onDelete={delComment}
+              allowPrivate={writeContext ? writeContext.allowPrivate : true}
+              onEditDraw={canDraw ? (text) => { setDrawFor({ path: commentPath, text }); return true; } : undefined}
+              media={commentNode && (commentNode.type === "image" || commentNode.type === "video" || commentNode.type === "audio") ? {
+                thumb: commentNode.type === "audio" ? null : assetThumbUrl(project, commentPath, 512, commentNode.version),
+                type: commentNode.type, title: commentNode.name, onOpen: () => openPreview(commentNode),
+                videoUrl: commentNode.type === "video" ? assetFileUrl(project, commentPath) : undefined,
+              } : null}
+              renderExtra={(c) => (
+                <CommentDrawingStrip target={{ kind: "asset", project, path: commentPath }} comment={c}
+                  bg={commentKind === "image" ? assetThumbUrl(project, commentPath, 512, commentNode?.version) : null}
+                  onOpen={(drawing) => openAssetDrawing({ target: { kind: "asset", project, path: commentPath }, commentId: c.id, drawing, author: c.author_name })} />
+              )}
             />
+          )}
+          {drawFor && drawFor.path === commentPath && commentKind && createPortal(
+            <CommentDrawModal
+              target={{ kind: "asset", project, path: drawFor.path }}
+              type={commentKind}
+              url={assetFileUrl(project, drawFor.path)}
+              name={drawFor.path.split("/").pop() || ""}
+              myId={myId}
+              allowPrivate={writeContext ? writeContext.allowPrivate : false}
+              initialText={drawFor.text}
+              writeContext={writeContext}
+              assetSide={{
+                comments, onSend: sendComment, onEdit: editComment, onDelete: delComment,
+                refresh: () => void refreshComments().then(reconcile).catch(() => {}),
+              }}
+              onClose={() => {
+                setDrawFor(null);
+                void refreshComments().catch(() => {});
+              }}
+              onSaved={() => {}}
+            />,
+            document.body,
           )}
 
           {error && <div className="error" style={{ padding: 12 }}>{error}</div>}

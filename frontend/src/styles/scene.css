@@ -919,6 +919,24 @@
 }
 .scene-modelmodal-ft button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .scene-modelmodal-ft button:disabled { opacity: 0.5; cursor: default; }
+/* ── 리스트 크게 보기 팝업(Jay 2026-11-09 "지금 보이는 노드 그대로, 그 자리에서 크게") — 같은 노드 틀·속(ListCard)을 배율로 키운다.
+   막 z 200 = 모델 설정 창과 같고, 순서 끌기의 흰 선(.scene-reorder-line)은 팝업이 떠 있는 동안 z 210 으로 올린다(SceneBoard).
+   칸에서 여는 크게 보기(.preview-backdrop z 232)는 그 위. */
+.scene-listpop-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(4, 5, 7, 0.5); }
+.scene-listpop-layer { position: absolute; outline: none; }
+.scene-card.scene-listpop {
+  left: 0; top: 0; transform-origin: 0 0; cursor: default;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pc, var(--accent)) 25%, transparent), 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+.scene-listpop :is(.scene-port, .scene-resize) { display: none; } /* 팝업 안에서는 선을 잇거나 크기를 바꾸지 않는다 */
+.scene-listpop-x {
+  position: absolute; right: -14px; top: -14px; z-index: 1; width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+  border-radius: 50%; cursor: pointer; color: #dfe2e7; background: #1a1c22; border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+.scene-listpop-x:hover { background: #262932; }
+.scene-listpop-hint { position: absolute; left: 0; right: 0; top: 100%; margin-top: 10px; text-align: center; font-size: 12.5px; color: #b9bdc6; white-space: nowrap; }
+.scene-listpop-hint kbd { font-family: inherit; font-size: 11.5px; font-weight: 700; color: #c9cdd4; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 5px; padding: 1px 6px; }
+
 /* 모델 설정 창 줄 배치(Jay 2026-10-28 시안 b2) — 머리줄 '모델 설정' 옆에 종류 단추, 본문은 옵션마다 '아이콘+이름 | 값' 한 줄.
    줄 모양은 Set 창 줄(.sl-adv-pop .sl-adv-row)과 같고 이름 칸만 넓다. 값 = 한 캡슐 안 칸(.sl-row-cap)·넓은 모델 칩·길이 막대·칩. */
 .scene-modelmodal-rows { width: min(520px, 94vw); }

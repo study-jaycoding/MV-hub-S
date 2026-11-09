@@ -35,7 +35,11 @@ export const sharedApi = {
       elevated_as: string | null;
       super_admin_active: boolean;
       super_admin_expires_at: number | null;
+      proxying?: boolean; // 실제 중계 여부(has_token 이 아니다 — NO_PROXY 면 토큰이 있어도 끈다). 옛 허브에는 없다
     }>("/api/shared-server/status", signal ? { signal } : undefined),
+  // 서버가 받는 기능 — 중계 중인 허브는 서버로 넘긴다. 옛 서버는 칸이 없거나 404(화면은 숨김으로 본다)
+  shareCapabilities: (signal?: AbortSignal) =>
+    jsonFetch<{ asset_comment_drawings?: number }>("/api/share/capabilities", { cache: "no-store", ...(signal ? { signal } : {}) }),
   sharedServerElevate: (password: string) =>
     jsonFetch<{
       ok: boolean;
