@@ -90,6 +90,7 @@ class _Runtime:
     timed_out: bool = False
     identity_lost: bool = False
     overflow: bool = False
+    watch_failed: bool = False
     violation: dict | None = None
     session_seen: bool = False
     events: int = 0
@@ -100,7 +101,7 @@ class _Runtime:
     emit_lock: threading.RLock = field(default_factory=threading.RLock)  # 내보내기 순서 — 실행 스레드와 감시 스레드가 함께 쓴다
 
     def stopped(self) -> bool:
-        return bool(self.cancelled or self.timed_out or self.identity_lost or self.overflow or self.violation)
+        return bool(self.cancelled or self.timed_out or self.identity_lost or self.overflow or self.watch_failed or self.violation)
 
 
 class AgentChat:
@@ -204,6 +205,9 @@ class AgentChat:
     def _flush(self, runtime: _Runtime, *, only_old: bool = False) -> None:
         """모아 둔 글 조각을 한 사건으로. only_old 면 0.3초 넘게 기다린 것만(다음 출력이 안 와도 보이게 — 감시 스레드)."""
         with runtime.emit_lock:
+            if runtime.done.is_set():  # 끝 표시 뒤에는 아무것도 내보내지 않는다(끝남 사건 뒤에 조각이 붙지 않게)
+                runtime.pending.clear()
+                return
             if not runtime.pending or (only_old and time.monotonic() - runtime.pending_since < _DELTA_FLUSH_SECONDS):
                 return
             text = "".join(runtime.pending)
@@ -215,15 +219,20 @@ class AgentChat:
         """출력과 상관없이 — 계정이 바뀌면 끄고, CLI 부모가 끝났는데 자식이 출력을 붙잡고 있으면 남은 트리를 끄고,
         오래 기다린 글 조각을 내보낸다."""
         exited_at = None
-        while not runtime.done.wait(0.25):
-            self._flush(runtime, only_old=True)
-            with self._lock:
-                job = runtime.job
-            if job and job.exited():
-                exited_at = exited_at or time.monotonic()
-                if time.monotonic() - exited_at > _PARENT_GRACE_SECONDS:
-                    job.terminate()
-            self._still_ok(runtime)
+        try:
+            while not runtime.done.wait(0.25):
+                self._flush(runtime, only_old=True)
+                with self._lock:
+                    job = runtime.job
+                if job and job.exited():
+                    exited_at = exited_at or time.monotonic()
+                    if time.monotonic() - exited_at > _PARENT_GRACE_SECONDS:
+                        job.terminate()
+                self._still_ok(runtime)
+        except Exception:  # noqa: BLE001 - 감시가 죽은 채 CLI 만 남지 않게 — 끄고 실패로 넘긴다
+            _log.exception("agent chat turn %s: watcher failed", runtime.turn_id)
+            runtime.watch_failed = True
+            self._terminate(runtime)
 
     def _identity_ok(self, runtime: _Runtime) -> bool:
         if runtime.identity_lost:
@@ -256,7 +265,8 @@ class AgentChat:
         timer = threading.Timer(TURN_TIMEOUT, self._timeout, args=(runtime,))  # 띄우기·stdin 까지 시간 제한에 넣는다
         timer.daemon = True
         timer.start()
-        threading.Thread(target=self._watch, args=(runtime,), daemon=True).start()
+        watcher = threading.Thread(target=self._watch, args=(runtime,), daemon=True)
+        watcher.start()
         try:
             problem = process.engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
             if problem:
@@ -292,6 +302,9 @@ class AgentChat:
             if runtime.violation:
                 status, reason = "failed", "tool_violation"
                 self._emit(runtime, "error", {"message": "허용하지 않은 도구가 보여 바로 멈췄습니다."})
+            elif runtime.watch_failed:
+                status, reason = "failed", "watch_error"
+                store.append_event(runtime.path, runtime.turn_id, "error", {"message": "칸 감시가 멈춰 이 차례를 끝냈습니다."})
             elif not self._identity_ok(runtime):
                 status, reason = "interrupted", "account_changed"
                 store.append_event(runtime.path, runtime.turn_id, "error", {"message": "앱의 계정이 바뀌어 멈췄습니다."})
@@ -324,8 +337,10 @@ class AgentChat:
                 pass
         finally:
             timer.cancel()
+            with runtime.emit_lock:  # 감시 스레드가 내보내는 중이면 끝나길 기다린 뒤 끝 표시 — 이후 조각은 버린다
+                runtime.done.set()
+            watcher.join(10)
             reaped = self._reap(runtime)
-            runtime.done.set()
             if reaped:
                 if runtime.cancelled and status not in ("interrupted",):
                     status = "cancelled"

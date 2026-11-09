@@ -358,6 +358,41 @@ def test_short_delta_shows_up_while_cli_is_quiet(runtime, monkeypatch):
     assert finish(path, turn["id"])["status"] == "done"
 
 
+@windows
+def test_watcher_failure_stops_turn_instead_of_leaving_cli(runtime, monkeypatch):
+    service, identity, _ = runtime
+    real_append = store.append_event
+
+    def broken(path, turn_id, kind, payload):
+        if kind == "text_delta" and threading.current_thread().name != threading.main_thread().name \
+                and not threading.current_thread().name.startswith("agent-chat-"):
+            raise __import__("sqlite3").OperationalError("disk I/O error")  # 감시 스레드의 조각 저장만 실패
+        return real_append(path, turn_id, kind, payload)
+
+    monkeypatch.setattr(store, "append_event", broken)
+    started = time.monotonic()
+    path, _, turn = start(service, identity, monkeypatch, "pause_after_delta")
+    done = finish(path, turn["id"])
+    assert done["status"] == "failed" and done["reason"] == "watch_error"
+    assert time.monotonic() - started < 3.0  # 3초 조용한 가짜를 기다리지 않고 끈다
+
+
+@windows
+def test_state_is_last_even_when_watcher_flush_is_slow(runtime, monkeypatch):
+    service, identity, _ = runtime
+
+    def slow_still():
+        time.sleep(0.8)  # 감시 스레드가 조각을 내보내는 중 신원 확인이 느리다
+
+    path, _, turn = start(service, identity, monkeypatch, "pause_after_delta", still=slow_still)
+    time.sleep(0.5)
+    service.cancel(identity, turn["id"])
+    finish(path, turn["id"])
+    time.sleep(1.5)  # 늦게 끝나는 감시 스레드가 끝남 뒤에 무엇을 붙이는지 본다
+    kinds = [event["kind"] for event in store.events_after(path, turn["id"])]
+    assert kinds[-1] == "state"
+
+
 def test_long_poll_never_reports_done_with_events_missing(tmp_path, monkeypatch):
     """마지막 사건 저장·'끝남'이 두 읽기 사이에 끼어도 빠뜨리지 않는다 — 상태와 사건을 한 시점에서 읽는다."""
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
