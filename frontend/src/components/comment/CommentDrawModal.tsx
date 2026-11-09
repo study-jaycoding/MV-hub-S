@@ -36,7 +36,6 @@ function workSize(w: number, h: number) {
   return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) };
 }
 const frameOf = (time: number) => Math.round(time * EDIT_FPS);
-const circled = (n: number) => (n >= 1 && n <= 20 ? String.fromCharCode(0x245f + n) : String(n));
 
 // 안전하지 않은 주소(LAN http)에서는 crypto.randomUUID 가 없다 — getRandomValues 로 v4 를 만든다
 function uuid(): string {
@@ -662,7 +661,7 @@ export function CommentDrawModal({
                     {pages.map((p, i) => (
                       <span key={p.key} className={"cm-page" + (p.cur ? " cur" : "")}>
                         <button type="button" className="cm-page-n" aria-label={`그림 ${i + 1}${p.cur ? " (지금 그리는 장)" : " 고치기"}`}
-                          onClick={() => switchToKey(p.key)}>{circled(i + 1)}</button>
+                          onClick={() => switchToKey(p.key)}>{i + 1}</button>
                         {sheetsRef.current.has(p.key) && (
                           <button type="button" className="cm-page-x" title="이 그림 지우기" aria-label={`그림 ${i + 1} 지우기`}
                             onClick={() => removeSheet(p.key)}>×</button>

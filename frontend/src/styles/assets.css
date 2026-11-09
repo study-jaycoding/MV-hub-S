@@ -629,6 +629,30 @@
 }
 /* 크게 보기(.preview-backdrop 232) 위에서 연 코멘트 창(어셋 Ctrl 카드 C — 11-09 Jay) */
 .cmt-panel.over-preview { z-index: 233; }
+/* 왼쪽 썸네일 칸(Jay 11-09 시안 C-2) — 창 높이 전체, 코멘트 칸과 같은 폭. 칸이 없으면 .cmt-col 은 없는 상자(지금 모양 그대로) */
+.cmt-col { display: contents; }
+.cmt-panel.cmt-with-media { flex-direction: row; width: 644px; min-width: min(400px, calc(100vw - 16px)); }
+.cmt-with-media > .cmt-col { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; }
+.cmt-with-media .cmt-title { margin-right: auto; }
+/* 모서리 = 창 왼쪽 모서리(창 12px − 테두리 1px) — 초점 테두리(::after)도 이 모양을 따른다 */
+.cmt-media {
+  position: relative; flex: 1 1 0; min-width: 0; margin: 0; padding: 0;
+  border: 0; border-right: 1px solid var(--border); border-radius: 11px 0 0 11px;
+  background: #0d0e11; cursor: zoom-in; overflow: hidden;
+}
+.cmt-media:disabled { cursor: default; }
+.cmt-media img, .cmt-media-video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.cmt-media-video { position: absolute; inset: 0; background: #0d0e11; }
+.cmt-media::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+.cmt-media-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--muted2); font-size: 34px; }
+.cmt-media-play, .cmt-media-zoom {
+  position: absolute; font-size: 10.5px; line-height: 1.4; border-radius: 5px; padding: 2px 6px; pointer-events: none;
+}
+.cmt-media-play { left: 8px; bottom: 8px; font-weight: 800; color: #fff; background: rgba(0,0,0,0.62); }
+.cmt-media-zoom { right: 8px; top: 8px; color: #e5e7eb; background: rgba(0,0,0,0.55); opacity: 0.8; transition: opacity 0.12s; }
+.cmt-media:hover .cmt-media-zoom, .cmt-media:focus-visible .cmt-media-zoom { opacity: 1; }
+.cmt-media:focus-visible { outline: none; }
+.cmt-media:focus-visible::after { box-shadow: inset 0 0 0 2px var(--accent); }
 .cmt-head {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 12px; border-bottom: 1px solid var(--border);

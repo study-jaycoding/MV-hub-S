@@ -99,7 +99,7 @@ describe("코멘트 모드 — 이미지", () => {
     expect(badge()).toBeNull();
     capture();
     expect(capturedPages()).toBe(1);
-    expect(pages().map((p) => p.textContent?.replace("×", ""))).toEqual(["①", "②"]);
+    expect(pages().map((p) => p.textContent?.replace("×", ""))).toEqual(["1", "2"]); // 원 하나 + 보통 숫자(Jay 11-09 시안 A)
     expect(badge()).toBe("1");
     expect(hasInk()).toBe(false); // 캡쳐하면 그림판이 빈다
     type("조개 작게");
@@ -207,7 +207,9 @@ describe("코멘트 모드 — 이미지", () => {
     expect([capturedPages(), badge()]).toEqual([2, "2"]);
     capture(); // 빈 그림판 — 아무것도 붙지 않는다
     expect([capturedPages(), badge()]).toEqual([2, "2"]);
-    act(() => { document.querySelector<HTMLButtonElement>(".cm-page .cm-page-n")!.click(); }); // 그림 ① 고치기
+    // 번호 = 원 하나 안의 보통 숫자(Jay 11-09 시안 A — 전엔 원 안에 ① 글자가 또 있어 원이 두 겹이었다)
+    expect([...document.querySelectorAll(".cm-page .cm-page-n")].map((n) => n.textContent)).toEqual(["1", "2", "3"]); // 붙은 둘 + 지금 빈 판
+    act(() => { document.querySelector<HTMLButtonElement>(".cm-page .cm-page-n")!.click(); }); // 그림 1 고치기
     expect(hasInk()).toBe(true);
     expect(pages()[0].classList.contains("cur")).toBe(true); // 고치는 장이 제자리에서 채운 번호가 된다
     expect(pages()).toHaveLength(2);

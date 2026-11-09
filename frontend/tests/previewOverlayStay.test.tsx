@@ -264,7 +264,9 @@ describe("어셋 Ctrl 카드(실제 어셋 화면이 칸을 등록)", () => {
     await settle();
     const panel = host.querySelector(".cmt-panel");
     expect(panel?.classList.contains("over-preview")).toBe(true);
-    expect(panel?.querySelector(".cmt-file")?.textContent).toBe("a.png");
+    // 어느 파일의 코멘트인지 = 왼쪽 썸네일 칸(마우스를 올리면 파일 이름, 11-09 시안 C-2) — 머리줄 글자는 뺐다
+    expect(panel?.querySelector(".cmt-media")?.getAttribute("title")).toBe("a.png");
+    expect(panel?.querySelector(".cmt-file")).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
   });
 

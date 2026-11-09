@@ -263,7 +263,7 @@ export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
     size: cmtSize,
     panelRef: cmtPanelRef,
     onHeadMouseDown: onCmtHeadDown,
-  } = useFloatingPanel(LS, "cmtPos", "cmtSize", !!commentPath);
+  } = useFloatingPanel(LS, "cmtPos", "cmtSizeMedia", !!commentPath); // 크기 열쇠 새로 — 왼쪽 썸네일 칸(11-09 시안 C-2)
 
   // 등록 폴더(마운트) 관리 창
   const [mountOpen, setMountOpen] = useState(false);
@@ -1219,6 +1219,11 @@ export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
               onDelete={delComment}
               allowPrivate={writeContext ? writeContext.allowPrivate : true}
               onEditDraw={canDraw ? (text) => { setDrawFor({ path: commentPath, text }); return true; } : undefined}
+              media={commentNode && (commentNode.type === "image" || commentNode.type === "video" || commentNode.type === "audio") ? {
+                thumb: commentNode.type === "audio" ? null : assetThumbUrl(project, commentPath, 512, commentNode.version),
+                type: commentNode.type, title: commentNode.name, onOpen: () => openPreview(commentNode),
+                videoUrl: commentNode.type === "video" ? assetFileUrl(project, commentPath) : undefined,
+              } : null}
               renderExtra={(c) => (
                 <CommentDrawingStrip target={{ kind: "asset", project, path: commentPath }} comment={c}
                   bg={commentKind === "image" ? assetThumbUrl(project, commentPath, 512, commentNode?.version) : null}

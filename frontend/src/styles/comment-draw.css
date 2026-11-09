@@ -49,9 +49,11 @@ body:has(.cm-modal) .host-exit-confirm { z-index: 1300; }
 .cm-pages { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; overflow: hidden; }
 .cm-pages-label { font-size: 11.5px; font-weight: 700; color: #7d828e; margin-right: 2px; }
 .cm-page { position: relative; display: inline-flex; }
+/* 원 하나 + 보통 숫자, 가운데 정렬(Jay 11-09 시안 A) — 전엔 원 안에 동그라미 숫자 글자(①)를 또 넣어 원이 두 겹·숫자가 떴다 */
 .cm-page-n {
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
   width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid var(--accent); background: transparent;
-  color: var(--accent); font-size: 14px; font-weight: 800; line-height: 1; cursor: pointer;
+  color: var(--accent); font-size: 13px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; cursor: pointer;
 }
 .cm-page.cur .cm-page-n { background: var(--accent); color: var(--accent-ink); border-color: #fff; }
 .cm-page-x {

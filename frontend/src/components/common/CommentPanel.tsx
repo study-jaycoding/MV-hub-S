@@ -63,6 +63,15 @@ export interface CommentComposer {
   onSubmit: () => void;
 }
 
+// 떠 있는 창 왼쪽 썸네일 칸(Jay 11-09 시안 C-2) — 어떤 생성물·파일의 코멘트인지 보인다. 누르면 크게 보기, 마우스를 올리면 title(프롬프트·파일 이름)
+export interface CommentMedia {
+  thumb: string | null;
+  type: "image" | "video" | "audio";
+  title: string;
+  onOpen?: () => void;
+  videoUrl?: string; // 영상 — 마우스를 올린 동안 칸에서 소리 없이 반복 재생(Jay 11-09)
+}
+
 export interface CommentPanelItem {
   id: string;
   author: string;
@@ -95,6 +104,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   composer,
   allowPrivate = true,
   onEditDraw,
+  media,
 }: {
   comments: T[];
   label: string;
@@ -124,7 +134,11 @@ export function CommentPanel<T extends CommentPanelItem>({
   allowPrivate?: boolean;
   // 작은 창의 [편집](입력칸과 [전송] 사이) — 쓰던 글을 넘기고 그림 창을 연다. 넘겼으면 참(그때 입력칸을 비운다)
   onEditDraw?: (text: string) => boolean;
+  // 왼쪽 썸네일 칸 — 떠 있는 창에만. 있으면 머리줄의 label 글자는 빼고 썸네일의 title 로 보인다
+  media?: CommentMedia | null;
 }) {
+  const showMedia = !embedded && !!media;
+  const [mediaHover, setMediaHover] = useState(false); // 영상 썸네일 위 — 그동안만 재생 요소를 둔다(떼면 내려 멈춘다)
   // 크게 보기 위에서 열었으면(어셋 Ctrl 카드 C) 그 위 겹에 띄운다 — 열 때 한 번만 본다(먼저 연 창은 나중에 연 크게 보기 아래 그대로, 11-09 Jay)
   const [overPreview] = useState(() => !embedded && !!document.querySelector(".media-preview"));
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -369,7 +383,7 @@ export function CommentPanel<T extends CommentPanelItem>({
 
   return (
     <div
-      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview ? " over-preview" : "")}
+      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview ? " over-preview" : "") + (showMedia ? " cmt-with-media" : "")}
       ref={panelRef}
       data-cmt-hold={holdName}
       onInput={syncUnsent}
@@ -395,11 +409,24 @@ export function CommentPanel<T extends CommentPanelItem>({
             }) as unknown as CSSProperties
       }
     >
+      {showMedia && media && (
+        <button type="button" className="cmt-media" title={media.title} aria-label="크게 보기" disabled={!media.onOpen} onClick={media.onOpen}
+          onMouseEnter={() => setMediaHover(true)} onMouseLeave={() => setMediaHover(false)}>
+          {media.thumb ? <img src={media.thumb} alt="" draggable={false} /> : <span className="cmt-media-ph">{media.type === "audio" ? "♪" : ""}</span>}
+          {mediaHover && media.type === "video" && media.videoUrl && (
+            <video className="cmt-media-video" src={media.videoUrl} poster={media.thumb ?? undefined} autoPlay muted loop playsInline />
+          )}
+          {media.type === "video" && <span className="cmt-media-play">▶</span>}
+          {media.onOpen && <span className="cmt-media-zoom">⤢ 크게 보기</span>}
+        </button>
+      )}
+      {/* 썸네일 칸이 없으면 없는 상자(display: contents) — 칸이 있을 때만 오른쪽 세로 칸이 된다. 늘 두어 칸이 생겨도 입력칸이 다시 만들어지지 않게 */}
+      <div className="cmt-col">
       <div className="cmt-head" onMouseDown={embedded ? undefined : (e) => onHeadMouseDown(e, fallbackPos)}>
         <span className="cmt-title">
           💬 {embedded && !composer ? "지난 코멘트" : "코멘트"} <span className="muted">({visible.length})</span>
         </span>
-        {!embedded && <span className="cmt-file">{label}</span>}
+        {!embedded && !showMedia && <span className="cmt-file">{label}</span>}
         <div className="cmt-fs" onMouseDown={(e) => e.stopPropagation()}>
           <button title="글씨 작게" onClick={() => setFs(fontPx - 1)} disabled={fontPx <= FS_MIN}>
             A−
@@ -492,6 +519,7 @@ export function CommentPanel<T extends CommentPanelItem>({
           <input type="checkbox" checked={showPrivate} onChange={toggleShow} />
           비공개 코멘트(읽기)
         </label>
+      </div>
       </div>
     </div>
   );
