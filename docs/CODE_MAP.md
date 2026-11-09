@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-06
+updated: 2026-11-09
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -56,6 +56,16 @@ updated: 2026-11-06
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
 프런트 연결은 `McpRegistration.tsx`, `McpConnection.tsx`, `mcp.css`, `mcpContext.ts`, `mcpPlans.ts`,
 캔버스 요청 처리는 `mcpCanvasTasks.ts`에서 맡는다.
+
+허브 공책의 SQL·시작/복원/영수증은 `backend/app/repo/scene_notebook.py`, 계정별 메모리 임대는
+`backend/app/services/scene_writer.py`가 맡는다. 프런트 저장 판·합류·맞추기는 `frontend/src/lib/sceneNotebook.ts`,
+임대·정상/강제 인계는 `frontend/src/lib/sceneWriter.ts`, 상태 화면은 `frontend/src/components/CanvasWriterStatus.tsx`다.
+관련 시험은 `backend/tests/test_scene_notebook.py`, `backend/tests/test_scene_writer.py`,
+`backend/tests/test_scene_notebook_migration.py`, `backend/tests/test_scene_notebook_integration.py`,
+`frontend/tests/sceneNotebookStore.test.ts`, `frontend/tests/sceneNotebook.test.ts`,
+`frontend/tests/sceneWriter.test.ts`, `frontend/tests/canvasWriterStatus.test.tsx`, `frontend/tests/mcpCanvasTasks.test.tsx`다.
+브라우저 실측은 `tools/browser_measure/canvas_notebook.py`, 실행·증거 검증은 `tools/verify_canvas_notebook_measure.py`,
+도구 단위 시험은 `tools/tests/test_canvas_notebook_measure.py`다. 저장 계약은 [CANVAS_SCENE_STORAGE](CANVAS_SCENE_STORAGE.md)를 따른다.
 백엔드 진입은 `routers/mcp.py`, `routers/mcp_v2.py`, 저장은 `repo/mcp_plans.py`, `repo/mcp_v2.py`,
 검증 모델·브로커는 `mcp_models.py`, `mcp_broker.py`다.
 stdio 실행·설정 보존은 `tools/mcp_adapter/server.py`, `local_setup.py`,
