@@ -7,8 +7,9 @@
   줄 세운다 — 이름·기록 위치는 자격 폴더(CLAUDE_CONFIG_DIR 또는 ~/.claude)로 정한다. 뮤텍스는 스레드 소유라 잡은 스레드가 놓는다.
   주인 기록(running|clean)은 정상·버려진 획득 모두에서 먼저 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다.
 - 기록은 필수 필드·상태까지 검사한다. 깨졌거나 프로세스가 살았는지 확인 못 하면(열기 거절 포함) 막는 쪽이 기본이고, 확인된 근거가 있을 때만
-  이어 간다 — 창 기록: 잠금 안에서 허브가 띄운 로그인 창(claude.exe … auth login)이 하나도 없음 · 주인 기록: 회수 안 된 차례 표식
-  (이름 있는 이벤트 — 차례 잠금을 쥔 허브가 회수 확인 뒤 놓을 때까지 열어 둠, 허브가 죽으면 커널이 닫음)이 없음.
+  이어 간다 — 창 기록: 잠금 안에서 허브가 띄운 로그인 창(claude.exe … auth login)이 하나도 없음 · 잠금을 얻을 때마다(주인 기록이
+  있든 없든 깨졌든) 회수 안 된 차례 표식(이름 있는 이벤트 — 차례 잠금을 쥔 허브가 회수 확인 뒤 놓을 때까지 열어 둠, 허브가 죽으면
+  커널이 닫음)이 없음을 먼저 확인한다.
 - 상태·기록·응답에 이메일·조직 id·경로를 싣지 않는다.
 """
 from __future__ import annotations
@@ -366,15 +367,18 @@ class ClaudeLock:
             k32.CloseHandle(handle)
             raise Busy("Claude 작업 잠금을 확인하지 못했어요")
         try:
-            # 정상·버려진 획득 모두 먼저 기록을 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다(죽은 허브면 커널이 그 Job 을 껐다)
+            # 정상·버려진 획득 모두 먼저 본다 — ① 회수 안 된 차례 표식(기록이 있든 없든 깨졌든): 있거나 모르면 막는다
+            work = turn_work_alive()
+            if work is None:
+                raise Busy("이전 Claude 작업 표식을 확인하지 못했어요 — MV Hub 를 모두 다시 켜 주세요")
+            if work:
+                raise Busy("이전 Claude 작업 정리를 확인하지 못했어요 — MV Hub 를 모두 다시 켜 주세요", "unclean")
+            # ② 주인 기록 — 살아 있는 허브의 정리 안 된 일이면 막는다(죽은 허브면 커널이 그 Job 을 껐다)
             try:
                 owner = _read(_owner_file(), _valid_owner)
                 running = bool(owner) and owner["status"] == "running" and _alive(owner["pid"], owner["start"])
             except RecordUnreadable:
-                # 기록이 깨졌거나 주인이 살았는지 모름 — 회수 안 된 차례가 어느 허브에도 없다는 표식 확인이 있을 때만 이어 간다(기록은 아래에서 새로 씀)
-                if turn_work_alive() is not False:
-                    raise Busy("이전 Claude 작업 기록을 확인하지 못했어요 — MV Hub 를 모두 다시 켜 주세요") from None
-                running = False
+                running = False  # 깨졌거나 주인이 살았는지 모름 — ①에서 회수 안 된 차례가 어느 허브에도 없음을 확인했다(기록은 아래에서 새로 씀)
             if running:
                 raise Busy("이전 Claude 작업 정리를 확인하지 못했어요 — 그 MV Hub 를 다시 켜 주세요", "unclean")
             if self.kind == "turn":

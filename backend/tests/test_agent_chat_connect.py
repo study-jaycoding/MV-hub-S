@@ -398,44 +398,64 @@ def test_lock_blocks_other_hub_and_releases_clean():
 
 @windows
 def test_abandoned_lock_rules(monkeypatch):
-    # A 스레드만 죽음(허브 살아 있음, 기록 running) → B 버려진 획득·거절 → C 정상 획득도 거절
-    box = _in_thread(lambda: claude.ClaudeLock("turn").acquire())  # 놓지 않고 스레드가 끝난다 = 버려진 뮤텍스
-    assert "error" not in box
+    def dead_turn():
+        """차례 잠금을 잡은 채 스레드만 끝난다(놓지 않음 = 버려진 뮤텍스·표식 열린 채) — 그 잠금을 돌려준다."""
+        lock = claude.ClaudeLock("turn")
+        assert "error" not in _in_thread(lock.acquire)
+        return lock
+
+    def kernel_closes(lock):  # 주인 허브가 죽으면 커널이 그 허브의 표식(과 Job)을 닫는다
+        claude._k32().CloseHandle(lock._marker)
+        lock._marker = None
+
+    def enters(kind="turn"):
+        lock = claude.ClaudeLock(kind)
+        lock.acquire()
+        lock.release()
+
+    # A 스레드만 죽음(허브 살아 있음) → B 버려진 획득·거절 → C 정상 획득도 거절
+    a = dead_turn()
     for _ in range(2):
         with pytest.raises(claude.Busy) as blocked:
             claude.ClaudeLock("turn").acquire()
         assert blocked.value.code == "unclean"
-    # A 가 회수를 확인해 clean 을 쓰면 들어간다
-    record = json.loads(claude._owner_file().read_text(encoding="utf-8"))
-    claude._write(claude._owner_file(), {**record, "status": "clean"})
-    lock = claude.ClaudeLock("turn")
-    lock.acquire()
-    lock.release()
-    # 주인 허브가 죽었으면(Job 이 닫히며 커널이 정리) 이어 간다
+    claude._owner_file().unlink()  # 주인 기록이 없어져도 표식이 열려 있으면 막는다(로그인도)
+    with pytest.raises(claude.Busy) as blocked:
+        claude.ClaudeLock("login").acquire()
+    assert blocked.value.code == "unclean"
+    a.release()  # A 가 회수를 확인하고 놓으면(clean·표식 닫음) 들어간다 — 남의 스레드라 뮤텍스는 버려진 채로 둔다
+    enters()
+    # 주인 허브가 죽었으면(커널이 Job·표식을 닫음) 기록이 running 이어도 이어 간다
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait(10)
-    _in_thread(lambda: claude.ClaudeLock("turn").acquire())
+    kernel_closes(dead_turn())
     claude._write(claude._owner_file(), {"pid": dead.pid, "start": 1, "kind": "turn", "status": "running"})
-    lock = claude.ClaudeLock("turn")
-    lock.acquire()
-    lock.release()
-    # 주인 기록이 깨지면(JSON 아님 · 필수 필드·상태 어긋남): 위에서 스레드가 놓지 못하고 죽은 차례들의 표식이 열려 있어 막는다 —
-    # claude.exe 가 없어도(Job 에 MCP 자식만 남은 경우) 막는다. 표식이 없음을 확인했을 때만 이어 간다
-    real_marker = claude.turn_work_alive
-    assert real_marker() is True
+    enters()
+    # 주인 기록이 없거나 깨져도(JSON 아님 · 필수 필드·상태 어긋남): 놓지 못한 차례의 표식이 열려 있으면 claude.exe 가 없어도
+    # (Job 에 MCP 자식만 남은 경우) 막고, 표식을 확인 못 해도 막고, 없음을 확인했을 때만 이어 간다
     monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])
-    for broken in ("{broken", '{"pid": 1, "start": 1, "kind": "turn", "status": "runing"}', '{"status": "running"}'):
+    real_marker = claude.turn_work_alive
+    c = dead_turn()
+    cases = (None, "{broken", '{"pid": 1, "start": 1, "kind": "turn", "status": "runing"}', '{"status": "running"}')
+
+    def put(broken):
+        if broken is None:
+            claude._owner_file().unlink(missing_ok=True)
+        else:
+            claude._owner_file().write_text(broken, encoding="utf-8")
+
+    for broken in cases:
+        put(broken)
+        with pytest.raises(claude.Busy):
+            claude.ClaudeLock("turn").acquire()
+    kernel_closes(c)
+    for broken in cases:
+        put(broken)
+        monkeypatch.setattr(claude, "turn_work_alive", lambda: None)
+        with pytest.raises(claude.Busy):
+            claude.ClaudeLock("turn").acquire()
         monkeypatch.setattr(claude, "turn_work_alive", real_marker)
-        claude._owner_file().write_text(broken, encoding="utf-8")
-        with pytest.raises(claude.Busy):
-            claude.ClaudeLock("turn").acquire()
-        monkeypatch.setattr(claude, "turn_work_alive", lambda: None)  # 표식을 확인 못 함 = 막음
-        with pytest.raises(claude.Busy):
-            claude.ClaudeLock("turn").acquire()
-        monkeypatch.setattr(claude, "turn_work_alive", lambda: False)
-        lock = claude.ClaudeLock("turn")
-        lock.acquire()
-        lock.release()
+        enters()
 
 
 @windows
