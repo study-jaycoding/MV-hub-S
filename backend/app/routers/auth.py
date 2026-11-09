@@ -35,6 +35,7 @@ from ..services import local_agent_pair
 from ..services.agent_signals import agent_signals
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
+from ..services.shared_connection import is_shared_team_server
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -210,8 +211,11 @@ def auth_config():
         # 화면이 켤 때 읽는 기능 표식. request_retry_v1 = 생성·Comfy 요청을 답이 없을 때 같은 요청표로 한 번 더 보내도 되는 허브
         #  (계정 확인 헤더 X-MVHub-Expect-Account + Comfy run_key 장부). 없으면 화면은 다시 보내지 않는다(Jay 결정 2A).
         #  comment_drawings_v1 = 크게 보기 코멘트 그림(comments-v2·그림 조회)을 아는 허브 — 없으면 화면은 C 그리기를 열지 않는다.
+        #  asset_comment_drawings_v1 = 어셋(파일) 코멘트 그림(/api/assets/comments-v2·그림 조회)을 아는 허브.
         "features": ["request_retry_v1", "edit_doc_backup_v1", "audio-models-v1", "video-voice-v1", "comfy_canvas_runs_v1",
-                     "comment_drawings_v1"] + ([] if AUTH_ENABLED else ["scene_keep_v1"]),
+                     "comment_drawings_v1", "asset_comment_drawings_v1"] + ([] if AUTH_ENABLED else ["scene_keep_v1"]),
+        # 공유 팀 서버 본체인가 — 화면이 auth_enabled 와 함께 허브·서버 직결·격리 로컬(로그인 켬 + 중계 끔)을 나눈다(어셋 그림 §3.2).
+        "shared_team_server": is_shared_team_server(),
     }
 
 

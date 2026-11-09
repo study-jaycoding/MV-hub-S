@@ -139,7 +139,7 @@ export function AppOverlays({
     <>
       {commentDraw && drawTarget && drawTarget.type !== "audio" && (
         <CommentDrawModal
-          genId={commentDraw.id}
+          target={{ kind: "generation", genId: commentDraw.id }}
           type={drawTarget.type}
           url={drawTarget.url}
           thumb={drawTarget.thumb ?? null}

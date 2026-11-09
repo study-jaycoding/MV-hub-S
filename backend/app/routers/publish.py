@@ -512,7 +512,9 @@ def _validated_effective_url() -> str:
 @router.get("/shared-server/status")
 def shared_server_status(request: Request):
     _require_local_shared_connection(request)
-    return _shared_status()
+    # proxying = 실제 중계 여부(has_token 이 아니다 — NO_PROXY 면 토큰이 있어도 끈다). 주소·계정과 같은 계정 문맥에서 읽는다(어셋 그림 §3.2).
+    with active_account.pinned_account_scope():
+        return {**_shared_status(), "proxying": _proxy.proxying()}
 
 
 @router.post("/shared-server/login")

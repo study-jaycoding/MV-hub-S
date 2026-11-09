@@ -196,6 +196,10 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/generation-comments/c1/seen",
             "/api/cache-all",
             "/api/generations/g1/comments/read",
+            # 어셋 그림 코멘트 — 핸들러가 기대값 대조·로컬 장부를 본 뒤 비공개=로컬·공유=서버로 나눈다(미들웨어가 먼저 보내면 대조가 빠진다)
+            "/api/assets/comments-v2",
+            "/api/assets/comments/c1/drawings/d1",
+            "/api/assets/comments/c1/drawings/d1/thumb",
             "/api/sync-status",  # 로컬 허브 자기 상태 — 서버 위임 금지
             "/api/scenes/backup",  # 개인 캔버스 — 팀 서버 전송 금지
             "/api/scenes/cards",   # 개인 캔버스 카드 소속 — 위와 같은 이유

@@ -58,14 +58,18 @@ const pointer = (type: string, x: number, y: number) => act(() => {
   canvas().dispatchEvent(Object.assign(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y }), { pointerId: 1 }));
 });
 const stroke = (x: number) => { pointer("pointerdown", x, 10); pointer("pointermove", x + 20, 30); pointer("pointerup", x + 20, 30); };
-const textarea = () => document.querySelector<HTMLTextAreaElement>("textarea.cm-text")!;
+// 새 코멘트 입력 = 오른쪽 칸(작은 코멘트 창 그대로)의 한 줄 입력·[전송](시안 ⑥⑦)
+const textarea = () => document.querySelector<HTMLInputElement>('.cm-side .cmt-input input[name="cd"]')!;
 const type = (value: string) => act(() => {
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   setter.call(textarea(), value);
   textarea().dispatchEvent(new Event("input", { bubbles: true }));
 });
-const sendButton = () => [...document.querySelectorAll<HTMLButtonElement>("button.sl-gen")][0];
-const attached = () => document.querySelectorAll(".sl-reftray-item.cm-att").length;
+const sendButton = () => document.querySelector<HTMLButtonElement>('.cm-side .cmt-input button[type="submit"]')!;
+// 붙은 그림 — 영상 = 타임라인의 채운 책갈피, 이미지 = 번호 줄의 캡쳐해 둔 장(빈 번호)
+const marks = () => [...document.querySelectorAll(".cm-mark:not(.past)")];
+const pages = () => [...document.querySelectorAll(".cm-page")];
+const capturedPages = () => document.querySelectorAll(".cm-page:not(.cur)").length;
 const captureButton = () => document.querySelector<HTMLButtonElement>(".pe-dock button.cm-cap");
 const capture = () => act(() => { captureButton()!.click(); });
 const badge = () => captureButton()?.querySelector(".cm-cap-badge")?.textContent ?? null;
@@ -73,7 +77,7 @@ const hasInk = () => !document.querySelector<HTMLButtonElement>('.pe-dock button
 
 function showImage(onSaved = vi.fn(), allowPrivate = true) {
   act(() => root.render(
-    <CommentDrawModal genId="g1" type="image" url="/o.png" name="n" myId="u1" allowPrivate={allowPrivate} onClose={() => {}} onSaved={onSaved} />,
+    <CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="image" url="/o.png" name="n" myId="u1" allowPrivate={allowPrivate} onClose={() => {}} onSaved={onSaved} />,
   ));
   const img = document.querySelector<HTMLImageElement>(".partial-edit-stagebox img")!;
   Object.defineProperties(img, { naturalWidth: { value: 400 }, naturalHeight: { value: 200 } });
@@ -87,12 +91,15 @@ describe("코멘트 모드 — 이미지", () => {
       id: body.id, result: "created", drawings: body.drawings.map((d) => ({ id: d.id, content_hash: d.content_hash ?? "x" })),
     }));
     const onSaved = showImage();
-    expect(attached()).toBe(0);
+    expect(pages()).toHaveLength(1); // 지금 그리는 장(채운 번호)만
+    expect(document.querySelector(".pe-vtop")).toBeNull(); // 위 시각 줄·아래 입력 판·붙는 그림 칸 없음(시안 ⑥⑦)
+    expect(document.querySelector(".sl-reftray, textarea")).toBeNull();
     stroke(10);
-    expect(attached()).toBe(0); // 캡쳐 전에는 칸에 없다
+    expect(capturedPages()).toBe(0); // 캡쳐 전에는 빈 번호가 없다
     expect(badge()).toBeNull();
     capture();
-    expect(attached()).toBe(1);
+    expect(capturedPages()).toBe(1);
+    expect(pages().map((p) => p.textContent?.replace("×", ""))).toEqual(["①", "②"]);
     expect(badge()).toBe("1");
     expect(hasInk()).toBe(false); // 캡쳐하면 그림판이 빈다
     type("조개 작게");
@@ -110,7 +117,7 @@ describe("코멘트 모드 — 이미지", () => {
     expect(d.strokes.items[0]).toMatchObject({ kind: "pen", points: [{ x: 20, y: 20 }, { x: 60, y: 60 }] });
     expect(d.content_hash).toMatch(/^[0-9a-f]{64}$/); // 브라우저가 계산해 보냈다(서버가 대조)
     expect(onSaved).toHaveBeenCalledTimes(1);
-    expect(attached()).toBe(0);
+    expect(capturedPages()).toBe(0);
     expect(textarea().value).toBe("");
   });
 
@@ -156,7 +163,7 @@ describe("코멘트 모드 — 이미지", () => {
   it("서버 직결 화면(allowPrivate=false)에는 비공개 입력이 없고, 저장된 '비공개' 설정이 있어도 공개로 보낸다", async () => {
     localStorage.setItem("ch.cmt.private", "1");
     showImage(vi.fn(), false);
-    expect(document.querySelector(".sl-chip")).toBeNull();
+    expect([...document.querySelectorAll(".cm-side .cmt-opt label")].some((label) => label.textContent?.includes("쓰기"))).toBe(false);
     type("서버 직결");
     await act(async () => { sendButton().click(); });
     await settle();
@@ -179,8 +186,8 @@ describe("코멘트 모드 — 이미지", () => {
     stroke(10);
     expect(sendButton().disabled).toBe(true); // 글 1자 이상 필수(Jay)
     capture();
-    act(() => { (document.querySelector<HTMLButtonElement>(".sl-reftray-item.cm-att .sl-reftray-x")!).click(); });
-    expect(attached()).toBe(0);
+    act(() => { (document.querySelector<HTMLButtonElement>(".cm-page:not(.cur) .cm-page-x")!).click(); });
+    expect(capturedPages()).toBe(0);
     type("글만");
     await act(async () => { sendButton().click(); });
     await settle();
@@ -197,16 +204,17 @@ describe("코멘트 모드 — 이미지", () => {
     capture();
     stroke(60);
     capture();
-    expect([attached(), badge()]).toEqual([2, "2"]);
+    expect([capturedPages(), badge()]).toEqual([2, "2"]);
     capture(); // 빈 그림판 — 아무것도 붙지 않는다
-    expect([attached(), badge()]).toEqual([2, "2"]);
-    act(() => { document.querySelector<HTMLButtonElement>(".sl-reftray-item.cm-att .cm-thumb")!.click(); }); // 그림 1 고치기
+    expect([capturedPages(), badge()]).toEqual([2, "2"]);
+    act(() => { document.querySelector<HTMLButtonElement>(".cm-page .cm-page-n")!.click(); }); // 그림 ① 고치기
     expect(hasInk()).toBe(true);
-    expect(document.querySelector(".sl-reftray-item.cm-att .cm-thumb")!.classList.contains("cur")).toBe(true);
+    expect(pages()[0].classList.contains("cur")).toBe(true); // 고치는 장이 제자리에서 채운 번호가 된다
+    expect(pages()).toHaveLength(2);
     expect(badge()).toBe("2");
     capture(); // 그림 1 을 다시 붙이고 빈 판으로
     stroke(100); // 캡쳐 안 한 세 번째
-    expect([attached(), badge()]).toEqual([2, "2"]);
+    expect([capturedPages(), badge()]).toEqual([2, "2"]);
     type("세 장");
     await act(async () => { sendButton().click(); });
     await settle();
@@ -218,7 +226,7 @@ describe("코멘트 모드 — 이미지", () => {
 
   it("쓰던 것이 있으면 닫을 때 묻는다", async () => {
     const onClose = vi.fn();
-    act(() => root.render(<CommentDrawModal genId="g1" type="image" url="/o.png" name="n" myId="u1" onClose={onClose} onSaved={() => {}} />));
+    act(() => root.render(<CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="image" url="/o.png" name="n" myId="u1" onClose={onClose} onSaved={() => {}} />));
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     act(() => { document.querySelector<HTMLButtonElement>(".partial-edit-head .assets-x")!.click(); });
     expect(confirm).not.toHaveBeenCalled(); // 쓴 것이 없으면 묻지 않고 닫는다
@@ -235,7 +243,7 @@ describe("코멘트 모드 — 영상", () => {
     calls.v2.mockImplementation(async (_gen: string, body: { id: string; drawings: { id: string; content_hash?: string }[] }) => ({
       id: body.id, result: "created", drawings: body.drawings.map((d) => ({ id: d.id, content_hash: d.content_hash ?? "" })),
     }));
-    act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" startTime={0.5} onClose={() => {}} onSaved={() => {}} />));
+    act(() => root.render(<CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="video" url="/v.mp4" name="v" myId="u1" startTime={0.5} onClose={() => {}} onSaved={() => {}} />));
     const video = document.querySelector<HTMLVideoElement>(".partial-edit-stagebox video")!;
     let now = 0;
     Object.defineProperties(video, {
@@ -245,14 +253,17 @@ describe("코멘트 모드 — 영상", () => {
     act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
     expect(now).toBe(0.5);
     expect(captureButton()).toBeNull(); // 영상은 프레임마다 한 장 — 캡쳐 단추 없음
+    expect(document.querySelector(".pe-vtop")).toBeNull(); // 시각 정보는 재생 줄로(시안 ⑥)
+    expect(document.querySelector(".cm-trans .cm-frame")?.textContent).toBe("13 / 96");
     stroke(10);
-    expect(document.querySelectorAll(".cm-mark")).toHaveLength(1);
+    expect(marks()).toHaveLength(1);
+    expect(marks()[0].classList.contains("cur")).toBe(true);
     act(() => { (document.querySelector<HTMLButtonElement>('.pe-trans button[aria-label="한 프레임 앞으로"]')!).click(); });
-    expect(attached()).toBe(1); // 다음 프레임은 비어 있다 — 앞 프레임 그림은 칸에 남는다
+    expect(marks()).toHaveLength(1); // 다음 프레임은 비어 있다 — 앞 프레임 그림은 책갈피로 남는다
+    expect(marks()[0].classList.contains("cur")).toBe(false);
     stroke(60);
-    expect(document.querySelectorAll(".cm-mark")).toHaveLength(2);
-    expect(attached()).toBe(2);
-    expect([...document.querySelectorAll(".sl-reftray-item.cm-att .sl-reftray-name")].map((el) => el.textContent)).toEqual(["0.50초", "0.54초"]);
+    expect(marks()).toHaveLength(2);
+    expect(marks().map((el) => el.getAttribute("aria-label"))).toEqual(["그린 프레임 0.50초", "그린 프레임 0.54초"]);
     type("두 프레임");
     await act(async () => { sendButton().click(); });
     await settle();
@@ -262,7 +273,7 @@ describe("코멘트 모드 — 영상", () => {
   });
 
   it("같은 24fps 칸의 다른 장면(60fps 영상)에서 다시 그리면 그 그림의 기준 시각 장면으로 맞춘다", async () => {
-    act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" startTime={1} onClose={() => {}} onSaved={() => {}} />));
+    act(() => root.render(<CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="video" url="/v.mp4" name="v" myId="u1" startTime={1} onClose={() => {}} onSaved={() => {}} />));
     const video = document.querySelector<HTMLVideoElement>(".partial-edit-stagebox video")!;
     let now = 0;
     Object.defineProperties(video, {
@@ -275,14 +286,14 @@ describe("코멘트 모드 — 영상", () => {
     act(() => { video.dispatchEvent(new Event("timeupdate")); });
     stroke(60); // 기준 장면으로 옮기기만 하고 이 누름은 그리지 않는다(장면이 뜨기 전)
     expect(now).toBe(1); // 보고 고치는 장면 = 저장되는 장면
-    expect(attached()).toBe(1);
+    expect(marks()).toHaveLength(1);
     const clear = () => document.querySelector<HTMLButtonElement>('.pe-dock button[aria-label="전체 지우기"]')!;
     act(() => { document.querySelector<HTMLButtonElement>('.pe-dock button[aria-label="되돌리기"]')!.click(); });
     expect(clear().disabled).toBe(true); // 획은 처음 하나뿐이었다
   });
 
   it("장면을 옮기는 중(seeking)에는 누름이 그리지 않는다", async () => {
-    act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" onClose={() => {}} onSaved={() => {}} />));
+    act(() => root.render(<CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="video" url="/v.mp4" name="v" myId="u1" onClose={() => {}} onSaved={() => {}} />));
     const video = document.querySelector<HTMLVideoElement>(".partial-edit-stagebox video")!;
     let seeking = true;
     Object.defineProperties(video, {
@@ -291,14 +302,14 @@ describe("코멘트 모드 — 영상", () => {
     });
     act(() => { video.dispatchEvent(new Event("loadedmetadata")); });
     stroke(10);
-    expect(attached()).toBe(0);
+    expect(marks()).toHaveLength(0);
     seeking = false;
     stroke(10);
-    expect(attached()).toBe(1);
+    expect(marks()).toHaveLength(1);
   });
 
   it("떠 있는 동안 방향키·Space 는 이 창이 갖고 뒤로 흘리지 않는다", async () => {
-    act(() => root.render(<CommentDrawModal genId="g1" type="video" url="/v.mp4" name="v" myId="u1" onClose={() => {}} onSaved={() => {}} />));
+    act(() => root.render(<CommentDrawModal target={{ kind: "generation", genId: "g1" }} type="video" url="/v.mp4" name="v" myId="u1" onClose={() => {}} onSaved={() => {}} />));
     const behind = vi.fn();
     window.addEventListener("keydown", behind);
     try {
@@ -319,7 +330,7 @@ describe("지난 코멘트 그림 줄", () => {
   const meta = { id: "d1", idx: 0, kind: "video" as const, width: 400, height: 200, time_sec: 1.5, has_thumb: true, content_hash: "h", v: 1 as const };
   const comment = { id: "c1", author: "u2", author_name: "팀원", text: "t", created_at: "", parent_id: null, drawings: [meta] } as GenComment;
   const body = (v: number) => ({ ...meta, comment_id: "c1", strokes: { v, items: [] } });
-  const show = () => act(() => root.render(<CommentDrawingStrip comment={comment} bg={null} onOpen={() => {}} />));
+  const show = () => act(() => root.render(<CommentDrawingStrip target={{ kind: "generation", genId: "g1" }} comment={comment} bg={null} onOpen={() => {}} />));
 
   it("미리보기 요청이 403 이면 받은 획까지 걷는다(획만 남기지 않는다)", async () => {
     calls.drawing.mockResolvedValue(body(1));

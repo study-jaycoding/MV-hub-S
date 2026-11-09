@@ -10,6 +10,7 @@ import { TEAM_SCOPE, recordGenerationView } from "../lib/generationViews";
 import { APP_EVENTS } from "../lib/appEvents";
 import { downloadGeneration, downloadOne, fetchBlob } from "../lib/download";
 import { flashMsg } from "../lib/flash";
+import { previewShowsTarget } from "../lib/commentTarget";
 import { hubHasFeature } from "../lib/hubFeatures";
 import { copyPng, imagePng, saveBlobAs, videoFramePng } from "../lib/mediaCapture";
 import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from "../lib/windowDrag";
@@ -27,14 +28,19 @@ export type PreviewCardActions = Pick<ComponentProps<typeof GenerationCard>,
 // Ctrl 카드 단추(어셋) — 어셋 화면이 그 칸(AssetCell)을 그려 주는 함수를 등록한다(칸의 동작이 그 화면 상태에 있다).
 //  tagging·onTagging = 이 창 칸의 태그 입력 — 격자 칸의 입력과 따로 둔다(같은 상태면 두 칸에 입력이 같이 열려 서로 초점을 뺏고 둘 다 닫혔다, 11-09 Jay: T 무반응)
 type AssetCardRender = (item: PreviewItem, box: { width: number; height: number }, tagging: boolean, onTagging: (on: boolean) => void) => ReactNode;
+// 어셋 c 키 = Ctrl 카드 C 와 같은 작은 코멘트 창 열기(설계 어셋코멘트그림 §4) — 그 칸을 그린 화면이 연다. 열었으면 참
+type AssetCommentOpen = (item: PreviewItem) => boolean;
 let assetCardRender: AssetCardRender | null = null;
+let assetCommentOpen: AssetCommentOpen | null = null;
 const assetCardListeners = new Set<() => void>();
-export function registerAssetPreviewCard(render: AssetCardRender): () => void {
+export function registerAssetPreviewCard(render: AssetCardRender, openComment?: AssetCommentOpen): () => void {
   assetCardRender = render;
+  assetCommentOpen = openComment ?? null;
   assetCardListeners.forEach((listener) => listener());
   return () => {
     if (assetCardRender !== render) return;
     assetCardRender = null;
+    assetCommentOpen = null;
     assetCardListeners.forEach((listener) => listener());
   };
 }
@@ -72,7 +78,7 @@ interface Props {
 function PreviewDrawing({ view, box, onGone }: {
   view: CommentDrawingView; box: { left: number; top: number; width: number; height: number }; onGone: () => void;
 }) {
-  const state = useCommentDrawing(view.commentId, view.drawing);
+  const state = useCommentDrawing(view.target, view.commentId, view.drawing);
   useEffect(() => {
     if (state.status === "gone") onGone();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -181,28 +187,33 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     setMenu(null);
     setCardPinned(false);
     setCardTagging(false);
-    if (view && view.genId !== cur.genId) setView(null);
+    if (view && !previewShowsTarget(cur, view.target)) setView(null);
   }
   useEffect(() => {
     setView(target.drawing ?? null);
   }, [target]);
-  const curGenRef = useRef(cur.genId);
-  curGenRef.current = cur.genId;
+  const curItemRef = useRef(cur);
+  curItemRef.current = cur;
   useEffect(() => {
-    // 코멘트 창의 그림을 눌렀다 — 지금 그 생성물을 보고 있으면 받는다(받지 않으면 코멘트 창이 크게 보기를 새로 연다)
+    // 코멘트 창의 그림을 눌렀다 — 지금 그 대상(생성물 = genId, 어셋 = 경로·파일 주소)을 보고 있으면 받는다(받지 않으면 연 쪽이 크게 보기를 새로 연다)
     const onView = (e: Event) => {
       const detail = (e as CustomEvent<CommentDrawingView | undefined>).detail;
-      if (!detail || !curGenRef.current || detail.genId !== curGenRef.current) return;
+      if (!detail?.target || !previewShowsTarget(curItemRef.current, detail.target)) return;
       e.preventDefault();
       setView(detail);
     };
     window.addEventListener(APP_EVENTS.commentDrawingView, onView);
     return () => window.removeEventListener(APP_EVENTS.commentDrawingView, onView);
   }, []);
-  const activeView = view && view.genId === cur.genId ? view : null;
+  const activeView = view && previewShowsTarget(cur, view.target) ? view : null;
 
   // ── 코멘트(Ctrl 카드의 C·c 키 → 코멘트 모드). 생성물만(에셋·오디오는 1단계 밖), 그림을 아는 허브만 ──
   const canComment = !!cur.genId && cur.type !== "audio" && hubHasFeature("comment_drawings_v1");
+  // 어셋 c = Ctrl 카드 C 와 같은 작은 코멘트 창(크게 보기 위 겹에 뜬다 — CommentPanel over-preview). 그 칸을 그린 화면이 여는 함수를 등록했을 때만
+  const assetCommentRegistered = !!useSyncExternalStore(subscribeAssetCard, () => assetCommentOpen);
+  const canAssetComment = !cur.genId && !!cur.assetPath && cur.type !== "audio" && assetCommentRegistered;
+  const canAssetCommentRef = useRef(canAssetComment);
+  canAssetCommentRef.current = canAssetComment;
   const [commenting, setCommenting] = useState(false);
   const commentingRef = useRef(false);
   commentingRef.current = commenting;
@@ -328,12 +339,13 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
       if (commentingRef.current) return; // 코멘트 모드가 떠 있으면 키는 그 창의 것(방향키·Space 가 아래로 새지 않게)
       if (!isTopLayer(layer)) return; // 위에 뜬 겹(정보 창·S 선택 창·우클릭 메뉴)의 키 — 잡는 단계라 여기서 먼저 가져가면 그 창이 못 쓴다
       if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로(격자와 같다 — 56회차)
-      if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && canCommentRef.current) {
+      if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (canCommentRef.current || canAssetCommentRef.current)) {
         const t = e.target instanceof Element ? e.target : null;
         if (t?.closest("input, textarea, select, [contenteditable]")) return;
         e.preventDefault();
         e.stopPropagation();
-        openCommentRef.current();
+        if (canCommentRef.current) openCommentRef.current();
+        else assetCommentOpen?.(curItemRef.current);
         return;
       }
       if (items && items.length > 1 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
@@ -646,7 +658,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
         {/* 코멘트 모드 — 창이 transform 이라 body 로 그린다. 여기(창 안)에 두어 누름이 뒤 막(닫기)으로 가지 않는다. */}
         {commenting && cur.genId && createPortal(
           <CommentDrawModal
-            genId={cur.genId}
+            target={{ kind: "generation", genId: cur.genId }}
             type={isVideo ? "video" : "image"}
             url={cur.url}
             thumb={thumb}

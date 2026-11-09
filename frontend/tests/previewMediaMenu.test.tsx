@@ -305,16 +305,20 @@ describe("크게 보기 코멘트 모드", () => {
   it("코멘트 창의 그림을 누르면 보고 있는 크게 보기가 받아 원본 위에 겹친다(띠 = 작성자·시각·끄기)", async () => {
     await show(VIDEO);
     await settle();
-    const view = { genId: "gen-12345678", commentId: "c1", author: "팀원 A",
+    const view = { target: { kind: "generation" as const, genId: "gen-12345678" }, commentId: "c1", author: "팀원 A",
       drawing: { id: "d1", idx: 0, kind: "video" as const, width: 854, height: 480, time_sec: 1.5, has_thumb: false, content_hash: "h", v: 1 as const } };
     const event = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: view, cancelable: true });
     act(() => { window.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(true); // 받았다 — 코멘트 창은 크게 보기를 새로 열지 않는다
     expect(host.querySelector(".cm-viewing")?.textContent).toContain("팀원 A");
     expect(host.querySelector(".cm-viewing")?.textContent).toContain("1.50초");
-    const other = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, genId: "gen-other" }, cancelable: true });
+    const other = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, target: { kind: "generation", genId: "gen-other" } }, cancelable: true });
     act(() => { window.dispatchEvent(other); });
     expect(other.defaultPrevented).toBe(false); // 다른 생성물의 그림은 받지 않는다
+    // 어셋 그림은 생성물 크게 보기에 겹치지 않는다(대상 = project·path 로 짝 — 어셋 그림 §4)
+    const asset = new CustomEvent(APP_EVENTS.commentDrawingView, { detail: { ...view, target: { kind: "asset", project: "P", path: "a.mp4" } }, cancelable: true });
+    act(() => { window.dispatchEvent(asset); });
+    expect(asset.defaultPrevented).toBe(false);
     act(() => { host.querySelector<HTMLButtonElement>(".cm-viewing button")!.click(); });
     expect(host.querySelector(".cm-viewing")).toBeNull();
     await settle();

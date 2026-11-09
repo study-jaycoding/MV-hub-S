@@ -233,15 +233,25 @@ def normalize_drawing(raw: Any) -> dict[str, Any]:
 DRAWING = "generation_comment_drawing"
 REQUEST = "generation_comment_request"
 TOMBSTONE = "generation_comment_tombstone"
+# 어셋(파일) 코멘트 그림 — docs/status/어셋코멘트그림_설계_2026-11-05.md §3.1(삭제 기록 표 없음 — 장부 행을 남겨 판정)
+ASSET_DRAWING = "asset_comment_drawing"
+ASSET_REQUEST = "asset_comment_request"
+_DRAWING_COLUMNS = {"id", "comment_id", "idx", "kind", "width", "height", "time_sec",
+                    "strokes_json", "thumb_jpg", "content_hash", "created_at"}
 _SPEC: dict[str, dict[str, Any]] = {
     DRAWING: {
-        "columns": {"id", "comment_id", "idx", "kind", "width", "height", "time_sec",
-                    "strokes_json", "thumb_jpg", "content_hash", "created_at"},
+        "columns": _DRAWING_COLUMNS,
         "pk": ("id",), "unique": [("comment_id", "idx")],
         "fk": ("comment_id", "generation_comment", "id", "CASCADE"),
     },
     REQUEST: {"columns": {"id", "fingerprint", "gen_key", "created_at"}, "pk": ("id",)},
     TOMBSTONE: {"columns": {"id", "gen_key", "deleted_at"}, "pk": ("id",)},
+    ASSET_DRAWING: {
+        "columns": _DRAWING_COLUMNS,
+        "pk": ("id",), "unique": [("comment_id", "idx")],
+        "fk": ("comment_id", "asset_comment", "id", "CASCADE"),
+    },
+    ASSET_REQUEST: {"columns": {"id", "fingerprint", "asset_key", "created_at"}, "pk": ("id",)},
 }
 
 

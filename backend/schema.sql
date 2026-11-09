@@ -634,6 +634,33 @@ CREATE TABLE IF NOT EXISTS generation_comment_tombstone (
     deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 어셋(파일) 코멘트에 붙은 그림(획 v1) — docs/status/어셋코멘트그림_설계_2026-11-05.md §3.1. 칸은 생성물 그림 표와 같다.
+-- ★이름표(baseline)·BASELINES 항목 없음(생성물 그림 표와 같은 이유). 구조는 services/comment_strokes.check_structure 가 본다.
+CREATE TABLE IF NOT EXISTS asset_comment_drawing (
+    id           TEXT PRIMARY KEY,                    -- 클라 uuid
+    comment_id   TEXT NOT NULL REFERENCES asset_comment(id) ON DELETE CASCADE,
+    idx          INTEGER NOT NULL,                    -- 붙는 순서
+    kind         TEXT NOT NULL,                       -- 'image' | 'video' = 파일 종류
+    width        INTEGER NOT NULL,                    -- 좌표계 = 원본 크기
+    height       INTEGER NOT NULL,
+    time_sec     REAL,                                -- 영상만
+    strokes_json TEXT NOT NULL,                       -- 정규화한 획 목록
+    thumb_jpg    BLOB,                                -- 영상만(없어도 정상)
+    content_hash TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (comment_id, idx)                          -- comment_id 로 찾는 색인을 겸한다
+);
+-- ★따로 CREATE INDEX 를 두지 않는다 — 어긋난 옛 표면 색인 줄이 schema 적용을 깨뜨린다(생성물 그림 표와 같은 이유).
+
+-- 어셋 comments-v2 작성 장부 — 코멘트마다 처음 요청의 지문. 코멘트를 지워도 남겨 '장부엔 있는데 코멘트가 없음' = 지워진 코멘트로 본다
+--  (어셋 코멘트는 발행 합치기가 없어 되살아나는 길이 재시도뿐 — 설계 E2).
+CREATE TABLE IF NOT EXISTS asset_comment_request (
+    id          TEXT PRIMARY KEY,                     -- 코멘트 id(클라 uuid)
+    fingerprint TEXT NOT NULL,
+    asset_key   TEXT NOT NULL,                        -- real_meta_key 로 정규화한 project + '\0' + path
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 남의 팀 카드에 다는 '내 로컬 색'(개인 뷰) — 로컬 generation 행이 없는(남이 만든) 카드용.
 -- 색은 서버에 미러 안 하는 개인메타라 계정별 로컬 DB 에만 둔다. anchor = job_id 우선, 없으면 서버 id.
 CREATE TABLE IF NOT EXISTS gen_color_overlay (

@@ -260,6 +260,7 @@ def test_every_upload_route_has_a_positive_request_limit() -> None:
         "/api/scene-keeps",
         "/api/scene-keeps/restore",
         "/api/share/publish-bundle-v2",  # 코멘트 그림이 실린 발행 묶음(JSON) — 파싱 전에 막는다
+        "/api/assets/comments-v2",  # 어셋 코멘트 그림(JSON) — 생성물 comments-v2 와 같은 5MiB
     }
     assert all(value > 0 for value in upload_limits.UPLOAD_REQUEST_LIMITS.values())
     # 경로 안에 id 가 있는 입구(comments-v2)는 앞·끝 조각으로 고른다 — 다른 경로를 잘못 잡지 않는다.
