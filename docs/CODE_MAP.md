@@ -699,6 +699,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `TagFilterPanel.tsx`(204줄) | 태그 필터 플로팅 패널 | 4 |
 | `LibraryWorkspaceFilter.tsx`(약 280줄) | 워크스페이스 칩 + 필터 단추 창(Workspaces 옆 목록 · Hide failed · Activity 실패·차단 정리 — 2026-10-30) | 3 |
 | `ViewControls.tsx`(약 190줄) | 크기 슬라이더 + 리스트/그리드 토글. `onSetMasonry` 를 받은 툴바(라이브러리)는 보기 단추 하나 + 보기 창(Layout·Split by date·Fill·Card size — 2026-10-30) | 4 |
+| `LoadRing.tsx`(30줄) | 원본 받는 중 링(Jay 2026-11-09 시안 A2 — 크고 얇은 링, 글자는 링 안. % 를 알면 채움·모르면 도는 호). 수정 창(흐린 썸네일 위 · 받은 양)·크게 보기(썸네일 자리 표시 동안) | 2 |
 | `HostConfirm.tsx`(50줄) | 앱 확인 창(브라우저 confirm 대신 — 'MV Hub 종료' 모양 · 확인 단추 초점 · Esc·바깥 = 취소). 씬 삭제·실패·차단 정리·프로젝트 삭제·이 PC에 먼저 설치 | 4 |
 | `ColorFilterDots.tsx`(69줄) | 색 점 필터 + 색 상수표 | 7 |
 | `WorkspaceMark.tsx`(49줄) | 워크스페이스 색 표식(id 해시 색상) | 4 |

@@ -48,11 +48,29 @@
   color: var(--muted, #8b93a3);
   font-size: 12px;
 }
-.partial-edit-loading {
-  padding: 40px;
-  text-align: center;
-  color: var(--muted, #8b93a3);
+/* 원본 받는 중(Jay 11-09 시안 A2) — 카드가 띄운 썸네일을 흐리게 깔고(창이 처음부터 제 비율) 가운데 링. 크게 보기도 같은 링을 쓴다 */
+.partial-edit-stagebox.pe-loading::after { content: ""; position: absolute; inset: 0; background: rgba(8, 9, 12, 0.45); }
+.partial-edit-stagebox img.pe-loading-thumb { inset: -12px; width: calc(100% + 24px); height: calc(100% + 24px); object-fit: cover; filter: blur(7px) saturate(0.85); }
+.load-ring {
+  position: absolute; left: 50%; top: 50%; z-index: 3; width: 92px; height: 92px;
+  transform: translate(-50%, -50%); pointer-events: none;
 }
+.load-ring svg { display: block; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5)); }
+.load-ring svg.spin { animation: load-ring-spin 1s steps(12) infinite; } /* 끝없이 도는 것은 steps() — 쉬는 동안 CPU(tests/idleCssAnimations) */
+@keyframes load-ring-spin { to { transform: rotate(360deg); } }
+.load-ring-track { stroke: rgba(255, 255, 255, 0.14); }
+.load-ring-bar { stroke: var(--accent); transition: stroke-dashoffset 0.2s linear; }
+.load-ring-in {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+.load-ring-in b { font-size: 22px; font-weight: 800; line-height: 1.1; }
+.load-ring-in b.word { font-size: 12px; font-weight: 700; }
+.load-ring-in span { margin-top: 2px; font-size: 9.5px; color: #c9ccd3; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .load-ring svg.spin { animation: none; } }
+.reduce-motion .load-ring svg.spin { animation: none; } /* 앱 설정의 모션 끄기도 같게 */
+/* 크게 보기 — 썸네일 자리 표시·영상 표지를 흐리게(원본·첫 장면이 오면 풀린다) */
+.media-preview-ph.is-loading, .media-preview-body video.is-loading { filter: blur(7px) saturate(0.85) brightness(0.7); }
 
 /* 이미지 비율 그대로의 무대 — 오버레이 캔버스가 이미지와 1:1 로 겹친다(레터박스 없음).
    크기는 인라인 스타일이 결정: width=min(86vw,1380px), max-width=calc(62vh × 비율) —

@@ -32,15 +32,38 @@ function _anchor(href: string, name?: string, newTab = false) {
   a.remove();
 }
 
+/** 받은 양 알림 — 받은 바이트와 전체(Content-Length, 모르면 null). */
+export type BlobProgress = (loaded: number, total: number | null) => void;
+
+// 진행 알림을 줄 때만 몸을 조각으로 읽는다 — 안 주면 res.blob() 그대로(지금 동작)
+async function readBlob(res: Response, onProgress?: BlobProgress): Promise<Blob> {
+  if (!onProgress || !res.body) return res.blob();
+  const total = Number(res.headers.get("Content-Length")) || null;
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let loaded = 0;
+  onProgress(0, total);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded, total);
+  }
+  return new Blob(parts as BlobPart[], { type: res.headers.get("Content-Type") || "" });
+}
+
 // bytes 를 Blob 으로 받는다(실패 시 null). 로컬(/...)은 쿠키 동봉·직접, 원격은 CDN CORS(*)로 직접
 // 받고, CORS 막힌 호스트면 같은 오리진 서버 프록시(/api/download)로 재시도.
 export async function fetchBlob(
   url: string,
   name: string,
   genId?: string,
-  init?: { signal?: AbortSignal; assertCurrent?: () => void }, // 호출측 타임아웃/문맥 중단 — 폴백에도 적용
+  // 호출측 타임아웃/문맥 중단 — 폴백에도 적용. onProgress = 받은 양(수정 창의 로딩 링)
+  init?: { signal?: AbortSignal; assertCurrent?: () => void; onProgress?: BlobProgress },
 ): Promise<Blob | null> {
   const assertCurrent = init?.assertCurrent;
+  const onProgress = init?.onProgress;
   assertCurrent?.();
   url = managedAssetUrl(url) || url;
   const signal = init?.signal;
@@ -54,7 +77,7 @@ export async function fetchBlob(
         { credentials: "include", signal },
       );
       assertCurrent?.();
-      if (res.ok) { const blob = await res.blob(); assertCurrent?.(); return blob; }
+      if (res.ok) { const blob = await readBlob(res, onProgress); assertCurrent?.(); return blob; }
     } catch {
       assertCurrent?.();
       /* 허브 경유 실패 → 아래 기존 경로로 폴백 */
@@ -64,7 +87,7 @@ export async function fetchBlob(
     assertCurrent?.();
     const res = await fetch(url, url.startsWith("/") ? { credentials: "include", signal } : { signal });
     assertCurrent?.();
-    if (res.ok) { const blob = await res.blob(); assertCurrent?.(); return blob; }
+    if (res.ok) { const blob = await readBlob(res, onProgress); assertCurrent?.(); return blob; }
   } catch {
     assertCurrent?.();
     /* 직접 실패 → 프록시 시도(로컬 제외) */
@@ -77,7 +100,7 @@ export async function fetchBlob(
       { credentials: "include", signal },
     );
     assertCurrent?.();
-    if (res.ok) { const blob = await res.blob(); assertCurrent?.(); return blob; }
+    if (res.ok) { const blob = await readBlob(res, onProgress); assertCurrent?.(); return blob; }
   } catch {
     assertCurrent?.();
     /* 프록시도 실패 */

@@ -17,6 +17,7 @@ import { addWindowPointerDrag, keepHeadReachable, removeWindowPointerDrag } from
 import type { CommentDrawingView, Generation, PreviewItem, PreviewTarget } from "../types";
 import { CommentDrawModal } from "./comment/CommentDrawModal";
 import { CloseIcon, CopyIcon } from "./common/ViewIcons";
+import { LoadRing } from "./common/LoadRing";
 import { StrokesCanvas, UNSUPPORTED_DRAWING, secLabel, useCommentDrawing } from "./GenCommentPanel";
 import { GenerationCard } from "./GenerationCard";
 
@@ -325,6 +326,10 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   // 때까지(자동 재생이 막히면 계속) 창이 썸네일 크기(256px)로 줄어든다(2026-09-20 브라우저 실측). 재생 정보가 오면 영상의
   // 실제 크기로 바꿔 잡고(CSS 가 냈을 크기 = 상자보다 크면 맞추고 작으면 그대로), 실제로 재생이 시작되면 CSS 에 돌려준다.
   const [videoBox, setVideoBox] = useState<{ url: string; w: number; h: number } | null>(null);
+  // 원본 받는 중(Jay 11-09 시안 A2) — 썸네일이 깔린 동안 흐림 + 도는 링. 영상은 첫 장면이 준비되면(loadeddata) 걷는다 —
+  //  재생 시작(playing)을 기다리면 자동 재생이 막힌 영상에서 링이 계속 돈다
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const videoLoading = cur.type === "video" && !!thumb && dataUrl !== cur.url;
   const videoSize =
     !thumb || readyUrl === cur.url ? undefined : videoBox && videoBox.url === cur.url ? videoBox : waiting;
 
@@ -586,6 +591,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
               key={cur.url}
               src={cur.url}
               poster={thumb ?? undefined}
+              className={videoLoading ? "is-loading" : undefined}
+              onLoadedData={() => setDataUrl(cur.url)}
               style={videoSize ? { width: videoSize.w, height: videoSize.h } : undefined}
               onLoadedMetadata={(e) => {
                 const v = e.currentTarget;
@@ -605,7 +612,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
             <div className="media-preview-stack">
               {waiting && (
                 <img
-                  className="media-preview-ph"
+                  className="media-preview-ph is-loading"
                   src={waiting.url}
                   alt=""
                   aria-hidden="true"
@@ -626,6 +633,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
             // 썸네일을 안 넘기는 곳(Assets·레퍼런스·정보 팝업)은 종전 마크업 그대로
             <img src={cur.url} alt={cur.name} draggable={false} />
           )}
+          {/* 받은 양은 그림·영상 요소가 알려 주지 않아 도는 링(진행률 없음) */}
+          {(videoLoading || (cur.type === "image" && waiting)) && <LoadRing pct={null} label="불러오는 중" />}
           {activeView && drawBox && <PreviewDrawing view={activeView} box={drawBox} onGone={() => setView(null)} />}
           {activeView && (
             <div className="cm-viewing">

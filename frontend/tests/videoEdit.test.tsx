@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({ prepareCreate: vi.fn(), uploadCapture: vi.fn()
   cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), uploadRefs: vi.fn(), accountHf: vi.fn(), probe: vi.fn(), discard: vi.fn(),
   current: true, blocked: null as string | null, model: null as string | null }));
 vi.mock("../src/api", () => ({ api: { prepareCreate: mocks.prepareCreate, uploadCapture: mocks.uploadCapture,
-  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: mocks.discard, uploadReferenceFiles: mocks.uploadRefs,
+  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", thumbOrRaw: (path: string) => `/thumb/${path}`, discardCapture: mocks.discard, uploadReferenceFiles: mocks.uploadRefs,
   accountHf: mocks.accountHf } }));
 // 원본 머리 읽기만 가짜로 — 판별 규칙(klingVideoVerdict)·대상 모델은 실제 것(videoFormat.test.ts 가 머리 읽기를 본다)
 vi.mock("../src/lib/videoFormat", async (importOriginal) => ({
@@ -153,6 +153,38 @@ describe("video edit reuses annotation UI", () => {
     await render();
     expect((container.querySelector(".partial-edit-gen") as HTMLButtonElement).disabled).toBe(true);
     expect(mocks.prepareCreate).not.toHaveBeenCalled();
+  });
+  it("opens on the blurred thumbnail with a progress ring while the original downloads directly; the prompt can be written meanwhile (Jay 11-09 A2)", async () => {
+    let finish!: (blob: Blob) => void;
+    mocks.fetchBlob.mockImplementation((_url: string, _name: string, _genId: string | undefined, init?: { onProgress?: (loaded: number, total: number | null) => void }) => {
+      init?.onProgress?.(3_100_000, 7_300_000);
+      return new Promise<Blob>((resolve) => { finish = resolve; });
+    });
+    const gen = generation();
+    gen.assets[0].thumbnail_path = "thumbs/source.jpg";
+    await render(gen);
+    expect(mocks.fetchBlob.mock.calls[0][2]).toBeUndefined(); // 각인 다운로드(허브 경유)를 거치지 않는다 — 브라우저가 직접(캐시·진행률)
+    expect(container.querySelector(".pe-loading img.pe-loading-thumb")).not.toBeNull(); // 카드가 띄운 썸네일을 흐리게
+    const ring = container.querySelector('.load-ring[role="progressbar"]')!;
+    expect(ring.getAttribute("aria-valuenow")).toBe("42");
+    expect(ring.textContent).toContain("3.1 / 7.3MB");
+    await prompt(); // 받는 동안에도 지시문을 쓴다
+    const generate = () => container.querySelector<HTMLButtonElement>(".partial-edit-gen")!;
+    expect(generate().disabled).toBe(true);
+    expect(generate().textContent).toContain("원본 받는 중");
+    expect(container.textContent).not.toContain("견적 확인 안 됨"); // 길이·견적은 받은 뒤
+    await act(async () => { finish(new Blob(["media"])); });
+    for (let i = 0; i < 6; i += 1) await act(async () => {});
+    expect(container.querySelector(".load-ring")).toBeNull();
+    expect(container.querySelector('[aria-label="수정 지시"]')?.textContent).toBe("옷 색을 바꿔 주세요"); // 쓴 지시가 그대로
+    expect(generate().disabled).toBe(false);
+  });
+  it("a failed original shows only the error — no spinning ring, no prompt", async () => {
+    mocks.fetchBlob.mockResolvedValue(null);
+    await render();
+    expect(container.querySelector(".partial-edit-error")?.textContent).toContain("원본 영상을 불러오지 못했습니다");
+    expect(container.querySelector(".load-ring")).toBeNull();
+    expect(container.querySelector(".partial-edit-gen")).toBeNull();
   });
   it("does not allow editing when the original video file is absent", async () => {
     const missing = generation(); missing.assets[0].file_path = "";
