@@ -79,17 +79,25 @@ describe("서버 능력(어셋 그림)", () => {
     expect(await serverAcceptsAssetDrawings(local)).toBe(false);
   });
 
-  it("중계 중이면 서버 표식 — 성공만 기억, 실패(옛 서버·권한·연결)는 숨기고 다음에 다시 묻는다", async () => {
+  it("중계 중이면 서버 표식 — '받는다'만 기억, 옛 서버·실패는 숨기고 다음에 다시 묻는다(같은 문맥에서 서버를 업데이트하면 보인다)", async () => {
     const ctx = await hub(true);
     calls.shareCapabilities.mockRejectedValueOnce(new Error("404"));
     expect(await serverAcceptsAssetDrawings(ctx)).toBe(false);
     calls.shareCapabilities.mockResolvedValueOnce({ share_command: 1 });
     expect(await serverAcceptsAssetDrawings(ctx)).toBe(false); // 칸 없음 = 옛 서버
-    clearAssetDrawingSupportCache();
-    calls.shareCapabilities.mockResolvedValueOnce({ asset_comment_drawings: 1 });
+    calls.shareCapabilities.mockResolvedValueOnce({ asset_comment_drawings: 1 }); // 같은 문맥 — 서버 업데이트 뒤
     expect(await serverAcceptsAssetDrawings(ctx)).toBe(true);
     expect(await serverAcceptsAssetDrawings(ctx)).toBe(true);
     expect(calls.shareCapabilities).toHaveBeenCalledTimes(3); // 마지막은 기억한 값
+  });
+
+  it("취소된 조회의 답은 기억하지 않는다", async () => {
+    const ctx = await hub(true);
+    const abort = new AbortController();
+    calls.shareCapabilities.mockImplementationOnce(async () => { abort.abort(); return { asset_comment_drawings: 1 }; });
+    await serverAcceptsAssetDrawings(ctx, abort.signal);
+    calls.shareCapabilities.mockResolvedValueOnce({ share_command: 1 });
+    expect(await serverAcceptsAssetDrawings(ctx)).toBe(false);
   });
 });
 

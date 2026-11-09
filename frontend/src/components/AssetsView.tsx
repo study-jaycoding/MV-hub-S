@@ -836,7 +836,7 @@ export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
   });
   // 코멘트 그림(설계 어셋코멘트그림 §4) — 작은 창의 [편집] 은 허브 표식 + (중계 중이면) 서버 표식이 있고 이미지·영상이며 문맥이 준비됐을 때만.
   //  누르면 쓰던 글을 넘기고 그림 창을 연다. 닫으면 떠 있던 작은 창으로 돌아와 목록을 새로 읽는다.
-  const drawSupported = useAssetDrawingSupport(writeContext);
+  const drawSupported = useAssetDrawingSupport(writeContext, commentPath); // 작은 창을 열 때마다 다시 확인(그사이 서버 업데이트)
   const [drawFor, setDrawFor] = useState<{ path: string; text: string } | null>(null);
   const commentNode = commentPath ? files.find((f) => f.path === commentPath) ?? null : null;
   const commentKind = commentNode?.type === "image" || commentNode?.type === "video" ? commentNode.type : null;

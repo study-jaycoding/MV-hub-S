@@ -219,7 +219,8 @@ export function CommentPanel<T extends CommentPanelItem>({
   const submitComment = (input: HTMLInputElement, parentId?: string | null) => {
     // 비공개 코멘트에 단 답글은 무조건 비공개 — 공유로 나가면 팀에겐 부모 없는 답글이 된다.
     const parentPrivate = !!(parentId && byId[parentId]?.private);
-    const isPrivate = allowPrivate && (parentPrivate || writePrivate);
+    // 그림 창에서는 보이는 체크(composer)가 답글에도 쓰인다 — 패널이 따로 쥔 저장값을 쓰면 체크와 다르게 나갔다(독립 리뷰 확인 불가 항목 — 실제로 어긋남)
+    const isPrivate = allowPrivate && (parentPrivate || (composer ? composer.writePrivate : writePrivate));
     return submitFrom(input, (text) => onSend(text, parentId, isPrivate), parentId ? () => setReplyingId(null) : undefined);
   };
   // [편집] — 쓰던 글을 그림 창으로 넘긴다. 넘긴 뒤에만 비운다(두 번 보내기 방지 — 그림 창이 그 글의 주인이 된다)

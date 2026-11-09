@@ -120,10 +120,10 @@ def comment_privacy(comment_id: str) -> Optional[bool]:
 # ── comments-v2 작성(설계 §3.2) ───────────────────────────────────────────────
 def local_request_state(comment_id: str) -> Optional[dict[str, Any]]:
     """허브가 처리 장소를 정하기 전에 로컬 장부를 먼저 본다 — None = 장부에 없음.
-    {"exists": 코멘트 행이 있나, "private": 그 행이 비공개인가}. 장부 표가 어긋났으면 None(그 경우 쓰기는 create 에서 거절된다)."""
+    {"exists": 코멘트 행이 있나, "private": 그 행이 비공개인가}. 장부 표가 어긋났으면 StructureError — '기록 없음'으로 보고
+    서버로 넘기면 로컬에 처음 저장한 같은 id 가 서버에 새로 생길 수 있다(독립 리뷰 P1). 중계 분기 전에 거절한다."""
     with get_connection() as conn:
-        if not table_ok(conn, ASSET_REQUEST):
-            return None
+        require(conn, ASSET_REQUEST)
         if conn.execute(f"SELECT 1 FROM {ASSET_REQUEST} WHERE id=?", (comment_id,)).fetchone() is None:
             return None
         row = conn.execute("SELECT is_private FROM asset_comment WHERE id=?", (comment_id,)).fetchone()

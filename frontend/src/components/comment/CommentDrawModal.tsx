@@ -404,15 +404,22 @@ export function CommentDrawModal({
           && res.drawings.every((d, i) => d.id === drawings[i].id && d.content_hash === drawings[i].content_hash);
         if (!same) throw new Error("저장된 그림이 보낸 것과 다릅니다 — 다시 눌러 주세요");
       }
-      if (contextMoved(op)) return; // 다른 문맥의 늦은 응답은 버린다(초안은 그대로 — 그 문맥으로 다시 보내지 않는다)
+      // 다른 문맥의 늦은 응답은 버린다 — 초안은 그대로(처음 문맥에 묶여 다른 문맥으로는 다시 보내지 않는다). 보낸 것은 알린다(독립 리뷰 P2)
+      if (contextMoved(op)) {
+        setNotice(MOVED_AFTER_SEND);
+        return;
+      }
       resetDraft();
       setSideTick((n) => n + 1);
       assetSide?.refresh();
       onSaved();
       flashMsg("코멘트를 달았습니다");
     } catch (error) {
-      if (contextMoved(op) && !(error instanceof StopBeforeSend)) return; // 늦은 실패도 다른 문맥이면 버린다
-      setNotice(describeFailure(error, sent, isAsset, renewIds, setSideTick));
+      if (contextMoved(op) && !(error instanceof StopBeforeSend)) {
+        setNotice(sent ? MOVED_AFTER_SEND : { text: "보내지 않았습니다 — 계정·연결이 바뀌었습니다. 쓰던 글·그림은 그대로입니다" });
+        return;
+      }
+      setNotice(describeFailure(error, sent, attached.length > 0, isAsset, renewIds, setSideTick));
     } finally {
       setSending(false);
     }
@@ -735,8 +742,11 @@ class StopBeforeSend extends Error {
   constructor() { super("계정·연결이 바뀌어 보내지 않았습니다"); }
 }
 
-/** 실패를 세 갈래(보내지 않음 · 결과 모름 · 받는 쪽의 판정)로 안내한다 — 어느 경우든 초안은 지킨다. */
-function describeFailure(error: unknown, sent: boolean, isAsset: boolean, renewIds: () => void,
+const MOVED_AFTER_SEND: Notice = { text: "보낸 뒤 계정·연결이 바뀌어 결과를 확인하지 못했습니다 — 앞선 요청은 저장됐을 수 있습니다. 목록을 확인하세요" };
+
+/** 실패를 세 갈래(보내지 않음 · 결과 모름 · 받는 쪽의 판정)로 안내한다 — 어느 경우든 초안은 지킨다.
+ *  retryable = 같은 id 로 다시 보내면 장부가 처음 결과를 돌려주는 길(comments-v2). 글만 보내는 옛 길은 id 가 없어 다시 보내면 두 번 생길 수 있다. */
+function describeFailure(error: unknown, sent: boolean, retryable: boolean, isAsset: boolean, renewIds: () => void,
   setSideTick: (fn: (n: number) => number) => void): Notice {
   if (error instanceof StopBeforeSend) return { text: "보내지 않았습니다 — 계정·연결이 바뀌었습니다. 쓰던 글·그림은 그대로입니다" };
   if (error instanceof StrokesTooLarge) return { text: error.message };
@@ -763,6 +773,7 @@ function describeFailure(error: unknown, sent: boolean, isAsset: boolean, renewI
   if (error instanceof HttpError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) {
     return { text: `코멘트를 달지 못했습니다 — ${errorDetail(error)}` }; // 받는 쪽이 거절했다(저장 안 됨)
   }
-  // 연결 실패·시간 초과·서버 오류 — 들어갔는지 모른다. 같은 계정·대상이면 다시 눌러 같은 id 로(장부가 처음 결과를 돌려준다)
+  // 연결 실패·시간 초과·서버 오류 — 들어갔는지 모른다. 그림 길은 같은 계정·대상이면 다시 눌러 같은 id 로(장부가 처음 결과를 돌려준다)
+  if (!retryable) return { text: "이번 전송의 결과를 모릅니다 — 저장됐을 수 있습니다. 목록을 확인한 뒤 다시 보내세요(글만 보내는 코멘트는 다시 보내면 두 번 생길 수 있습니다)" };
   return { text: "이번 전송의 결과를 모릅니다 — 앞선 요청은 저장됐을 수 있습니다. 다시 누르면 같은 코멘트로 확인합니다" };
 }

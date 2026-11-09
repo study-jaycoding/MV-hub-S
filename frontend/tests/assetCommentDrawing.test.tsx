@@ -27,6 +27,7 @@ vi.mock("../src/api", () => ({
 }));
 vi.mock("../src/lib/mediaCapture", () => ({ videoFramePng: vi.fn(async () => { throw new Error("no frame in jsdom"); }) }));
 
+import { invalidateOperationContext } from "../src/app/operationContext";
 import { CommentDrawModal, type AssetCommentSide } from "../src/components/comment/CommentDrawModal";
 import { CommentPanel } from "../src/components/common/CommentPanel";
 import type { CommentWriteContext } from "../src/lib/commentTarget";
@@ -176,6 +177,47 @@ describe("어셋 그림 창 — 보내기", () => {
     expect(b.id).toBe(a.id);
     expect(c.id).not.toBe(a.id);
     expect(c.drawings[0].id).not.toBe(a.drawings[0].id);
+  });
+
+  it("글만 보내는 옛 길의 결과 모름은 '같은 코멘트로 확인' 이라 하지 않는다(id 가 없다)", async () => {
+    calls.v1.mockRejectedValueOnce(new HttpError(502, "서버 연결 실패"));
+    showImage();
+    type("글만");
+    await send();
+    expect(notice()).toContain("두 번 생길 수 있습니다");
+    expect(notice()).not.toContain("같은 코멘트로 확인");
+  });
+
+  it("보낸 뒤 계정·연결이 바뀌면 늦은 응답은 버리되 '결과를 확인하지 못함' 을 남긴다(초안 유지)", async () => {
+    calls.v2.mockImplementationOnce(async (body: { id: string; drawings: { id: string; content_hash: string }[] }) => {
+      invalidateOperationContext(); // 응답이 오기 전에 다른 창에서 계정이 바뀌었다
+      return echo(body);
+    });
+    showImage();
+    stroke(10);
+    type("늦은 답");
+    await send();
+    expect(notice()).toContain("보낸 뒤 계정·연결이 바뀌어");
+    expect([hasInk(), input().value]).toEqual([true, "늦은 답"]);
+  });
+
+  it("오른쪽 칸 답글은 보이는 비공개(쓰기) 체크를 따른다", async () => {
+    const comments: AssetComment[] = [{ id: "c1", author: "u2", author_name: "팀원", text: "원글", created_at: "", parent_id: null }];
+    const assetSide = side(comments);
+    act(() => root.render(
+      <CommentDrawModal target={TARGET} type="image" url="/x.png" name="a.png" myId="u1" assetSide={assetSide} writeContext={relayCtx()}
+        onClose={() => {}} onSaved={() => {}} />,
+    ));
+    const reply = async (text: string) => {
+      act(() => { [...document.querySelectorAll<HTMLButtonElement>(".cm-side .cmt-acts button")].find((b) => b.textContent === "답글")!.click(); });
+      const field = document.querySelector<HTMLInputElement>('.cm-side input[name="r"]')!;
+      field.value = text;
+      await act(async () => { field.form!.requestSubmit(); });
+    };
+    await reply("공개 답");
+    act(() => { document.querySelector<HTMLInputElement>(".cm-side .cmt-opt input[type=checkbox]")!.click(); }); // 비공개(쓰기) 켬
+    await reply("비공개 답");
+    expect(assetSide.onSend.mock.calls.map((call) => [call[0], call[2]])).toEqual([["공개 답", false], ["비공개 답", true]]);
   });
 
   it("처음 보낸 계정·저장 대상과 다르면 같은 id 로도 새 id 로도 보내지 않는다 · 문맥이 준비 안 됐으면 전송 단추가 잠긴다", async () => {

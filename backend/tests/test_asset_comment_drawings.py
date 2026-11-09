@@ -319,6 +319,17 @@ class RelayHubTests(_DbCase):
                 self.assert_code(ctx, 409, "stored_local")
             relay.assert_not_called()
 
+    def test_broken_ledger_is_rejected_before_relaying(self):
+        # 장부 표가 어긋났는데 '기록 없음'으로 보고 서버로 넘기면 로컬에 처음 저장한 같은 id 가 서버에 새로 생긴다(독립 리뷰 P1)
+        with db.get_connection() as conn:
+            conn.execute(f"DROP TABLE {cs.ASSET_REQUEST}")
+            conn.execute(f"CREATE TABLE {cs.ASSET_REQUEST}(id TEXT)")
+        with mock.patch.object(_proxy, "proxy_json") as relay:
+            with self.assertRaises(HTTPException) as ctx:
+                self.post(self.shared())
+            relay.assert_not_called()
+        self.assertEqual(ctx.exception.status_code, 503)
+
     def test_drawing_fetch_is_server_authority_with_limits(self):
         calls = []
 
@@ -407,13 +418,16 @@ class IsolatedLocalTests(_DbCase):
         self.assert_code(ctx, 409, "context_changed")
         self.assertEqual(self.count("asset_comment"), 2)
 
-    def test_relayed_request_to_isolated_test_server_uses_body_expectation(self):
-        # 격리 허브 → 격리 시험 서버 실측: 허브 중계는 머리글을 옮기지 않는다 — 본문 server 기대값을 인증 계정과 대조
+    def test_body_cannot_switch_isolated_local_into_server_mode(self):
+        # 실행 모드는 서버 설정으로만 — server 기대값을 실어도 격리 로컬은 머리글 필수·저장 대상 local(독립 리뷰 P1)
         relayed = _body(expected_target="server", expected_server_account="u1@example.com")
-        self.assertEqual(self.post(relayed, _Request(expect=None))["result"], "created")
         with self.assertRaises(HTTPException) as ctx:
-            self.post(_body(expected_target="server", expected_server_account="x@example.com"), _Request(expect=None))
+            self.post(relayed, _Request(expect=None))
+        self.assertEqual(ctx.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            self.post(relayed, _Request(expect="acct:u1@example.com"))
         self.assert_code(ctx, 409, "context_changed")
+        self.assertEqual(self.count("asset_comment"), 0)
 
 
 class FlagTests(_DbCase):

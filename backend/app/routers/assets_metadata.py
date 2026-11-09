@@ -367,9 +367,9 @@ def add_comment_v2(body: AssetCommentV2In, request: Request):
             raise HTTPException(status_code=400, detail="unsupported_file_type")
         if any(d["kind"] != kind for d in drawings):
             raise HTTPException(status_code=400, detail="kind_mismatch")
-    # 서버로 온 요청 — 공유 팀 서버 본체, 또는 허브가 중계한 격리 시험 서버(로그인 켬 + NO_PROXY: 허브는 머리글을 옮기지 않고
-    #  본문에 server 기대값을 싣는다). 그 경우는 본문 기대값을 인증 계정과 대조한다.
-    if _proxy.is_shared_team_server() or (_assets_access.AUTH_ENABLED and body.expected_target == "server"):
+    # 실행 모드는 서버 설정으로만 정한다(본문이 모드를 바꾸지 못한다 — 독립 리뷰 P1). 격리 로컬(로그인 켬 + 중계 끔)은 아래 허브 길:
+    #  머리글 필수 · 저장 대상 = local 이라 server 기대값은 장부 전에 409. 중계를 받는 시험 서버는 공유 서버 모드(NO_PROXY 없이)로 띄운다.
+    if _proxy.is_shared_team_server():
         return _on_team_server(body, project, path, drawings, request)
     with active_account.pinned_account_scope() as key:
         # 허브(로그인 끔) = 고정한 계정 DB 키 · 격리 로컬(로그인 켬 + 중계 끔) = 고정 키가 없어 인증 계정
@@ -391,8 +391,11 @@ def add_comment_v2(body: AssetCommentV2In, request: Request):
                 raise HTTPException(status_code=400, detail="서버 주소 기대값이 없습니다")
             if not _same_url(body.expected_server_url, connection[0]):
                 raise _fail(409, "context_changed", _ACCOUNT_CHANGED)
-        # 로컬 장부를 공유 분기보다 먼저 — 처리 장소가 바뀐 재시도를 새 저장으로 만들지 않는다
-        state = asset_comment_drawings.local_request_state(body.id)
+        # 로컬 장부를 공유 분기보다 먼저 — 처리 장소가 바뀐 재시도를 새 저장으로 만들지 않는다(장부 표가 어긋났으면 중계 전에 503)
+        try:
+            state = asset_comment_drawings.local_request_state(body.id)
+        except comment_strokes.StructureError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if state is not None:
             if not state["exists"]:
                 raise _fail(410, "deleted", "이미 지워진 코멘트입니다")
