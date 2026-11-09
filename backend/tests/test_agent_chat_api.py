@@ -1,6 +1,7 @@
 """Ask Agent 칸 HTTP — 격리 DB·가짜 CLI·가짜 제출. 실제 Claude·Codex·생성·공유 서버 없음."""
 import asyncio
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -34,8 +35,9 @@ def hub(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "AUTH_ENABLED", True)
     account = repo.register(EMAIL, "testpass")
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
-    monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE)])
-    monkeypatch.setattr(process, "cli_version", lambda prefix: "0.162.0-alpha.17.2")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
+    monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
+    monkeypatch.setattr(process, "cli_version", lambda prefix: "2.1.296" if "--fake-engine=claude" in prefix else "0.162.0-alpha.17.2")
     monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
     service = chat.AgentChat()
     monkeypatch.setattr(chat, "service", service)
@@ -262,9 +264,9 @@ def test_api_key_login_locks_engine(hub, monkeypatch):
     monkeypatch.setenv("FAKE_AGENT_AUTH", "api_key")
     body = client.post("/api/agent-chat/session", headers=HEADERS).json()
     assert {e["id"]: e["available"] for e in body["engines"]} == {"claude": False, "codex": False}
-    assert all("구독 로그인이 아닙니다" in e["reason"] for e in body["engines"])
+    assert all("구독 로그인이 아" in e["reason"] for e in body["engines"])
     turn = start_turn(client, {**HEADERS, "X-MVHub-Panel": body["secret"]})
-    assert turn.status_code == 409 and "구독 로그인이 아닙니다" in turn.json()["detail"]
+    assert turn.status_code == 409 and "구독 로그인이 아" in turn.json()["detail"]
 
 
 def test_enabled_only_on_local_hub_and_feature_flag(monkeypatch):
@@ -288,3 +290,53 @@ def test_panel_client_can_never_execute(hub):
     secret_hash = "h" * 64
     cid = mcp_store.create_client(secret_hash, "a" * 32, "me", EMAIL, None, {"scope": "account"}, "agent_panel", True)
     assert mcp_store.client_by_id(cid)["can_execute"] == 0
+
+
+@windows
+def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch):
+    """GET /claude(새 상태·스위치·누출 없음) · 스위치 꺼짐 = 터미널 안내 · 켜면 로그인 창 하나 · 창이 열려 있으면 차례 409."""
+    from app.services import agent_chat_claude as claude
+    client, _, _ = hub
+    headers = panel_headers(client)
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "leak")
+    status = client.get("/api/agent-chat/claude", headers=headers)
+    assert status.status_code == 200, status.text
+    body = status.json()
+    assert (body["state"], body["subscription"], body["login_window"], body["login_window_enabled"]) == ("ready", "Max", False, False)
+    assert "secret@example.test" not in status.text and "org-SECRET" not in status.text and "SECRET" not in status.text
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    off = client.post("/api/agent-chat/claude/login", headers=headers)
+    assert off.status_code == 409 and off.headers["X-MVHub-Claude-Error"] == "login_window_disabled"
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
+    windows_opened = []
+
+    def spawn(command):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        windows_opened.append(proc)
+        return proc
+
+    monkeypatch.setattr(claude, "_spawn_window", spawn)
+    monkeypatch.setattr(claude, "_resume", lambda proc: None)
+    try:
+        opened = client.post("/api/agent-chat/claude/login", headers=headers)
+        assert opened.status_code == 200 and opened.json() == {"opened": True}
+        again = client.post("/api/agent-chat/claude/login", headers=headers)
+        assert again.status_code == 409 and again.headers["X-MVHub-Claude-Error"] == "login_window_open"
+        assert client.get("/api/agent-chat/claude", headers=headers).json()["state"] == "login_window"
+        turn = start_turn(client, headers)
+        assert turn.status_code == 409 and "로그인 창" in turn.json()["detail"]
+    finally:
+        for proc in windows_opened:
+            proc.kill()
+            proc.wait(10)
+        claude._held_windows.clear()
+    assert len(windows_opened) == 1
+
+
+def test_turn_validates_fast_mode_and_effort(hub):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    assert start_turn(client, headers, fast=True).status_code == 422  # haiku 는 빠른 모드 없음
+    assert start_turn(client, headers, engine="codex", model="gpt-6-astra", effort="xhigh").status_code == 422
+    assert start_turn(client, headers, effort="ultra").status_code == 422

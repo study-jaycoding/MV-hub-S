@@ -20,9 +20,8 @@ from .agent_chat_parse import CLAUDE_ALLOWED, MAX_LINE, PANEL_SERVER, PANEL_TOOL
 CREATE_SUSPENDED, CREATE_NO_WINDOW = 0x00000004, 0x08000000
 _KILL_ON_JOB_CLOSE, _EXT_INFO, _PID_LIST = 0x00002000, 9, 3
 # 자식이 구독 로그인이 아닌 요금 경로로 새지 않게 — API 키·제공자 전환·중첩 실행 표식을 뺀다(0단계 6-1 '인증').
-_STRIP = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-          "CODEX_API_KEY", "ELECTRON_RUN_AS_NODE", "CLAUDECODE"}
-_STRIP_PREFIX = ("CLAUDE_CODE_",)
+_STRIP = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "ELECTRON_RUN_AS_NODE", "CLAUDECODE"}
+_STRIP_PREFIX = ("CLAUDE_CODE_", "ANTHROPIC_")  # ANTHROPIC_* 는 전부 — 키·제공자 전환 변수가 늘어도 막히게(첫 연결 설계 4절)
 # 0단계를 통과한 Codex 판 — 새 판은 기본으로 켜지는 기능(연결 앱 등)이 늘 수 있어 다시 점검하기 전엔 잠근다.
 CODEX_VERIFIED = frozenset({"0.162.0-alpha.17.2"})
 # Jay 11-09 "Claude 먼저": 0단계에 남은 Codex 격리 확인(훅 대조 시험·허용 밖 도구 3개)을 마칠 때까지 Codex 를 잠근다.
@@ -47,16 +46,35 @@ def child_env(base: dict | None = None) -> dict:
     return env
 
 
+def official_claude() -> Path:
+    """공식 설치(`irm https://claude.ai/install.ps1 | iex`)의 실행 파일 — 허브가 켜진 뒤 설치하면 허브의 PATH 엔 안 보여 직접 본다."""
+    return Path(os.environ.get("USERPROFILE") or Path.home()) / ".local" / "bin" / "claude.exe"
+
+
+def _claude_candidates() -> list[list[str]]:
+    found, out = shutil.which("claude"), []
+    if found:
+        path = Path(found)
+        if path.suffix.lower() == ".exe":
+            out.append([str(path)])
+        else:
+            # npm 셰임(.cmd/.ps1)은 빈 인자(`--tools ""`)를 망가뜨린다 — 옆 패키지의 실제 실행 파일을 직접 부른다.
+            native = path.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+            if native.is_file():
+                out.append([str(native)])
+    official = official_claude()
+    if official.is_file() and all(Path(c[0]).resolve() != official.resolve() for c in out):
+        out.append([str(official)])
+    return out
+
+
 def find_claude() -> list[str] | None:
-    found = shutil.which("claude")
-    if not found:
-        return None
-    path = Path(found)
-    if path.suffix.lower() == ".exe":
-        return [str(path)]
-    # npm 셰임(.cmd/.ps1)은 빈 인자(`--tools ""`)를 망가뜨린다 — 옆 패키지의 실제 실행 파일을 직접 부른다.
-    native = path.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
-    return [str(native)] if native.is_file() else None
+    """PATH → npm 옆 실제 실행 파일 → 공식 설치 위치. 둘 이상이면 판이 높은 쪽, 같으면 공식 위치."""
+    candidates = _claude_candidates()
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    official = str(official_claude()).casefold()
+    return max(candidates, key=lambda c: (version_tuple(cli_version(c)), c[0].casefold() == official))
 
 
 def find_codex() -> list[str] | None:
@@ -85,6 +103,17 @@ def cli_version(prefix: list[str]) -> str:
     return words[0] if words[0][:1].isdigit() else words[-1]
 
 
+def version_tuple(value: str) -> tuple[int, ...]:
+    """"2.1.296" → (2, 1, 296) — 숫자 조각만(앞에서 끊김까지)."""
+    parts = []
+    for piece in (value or "").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
 def _status_output(prefix: list[str], args: list[str]) -> str:
     try:
         done = subprocess.run([*prefix, *args], capture_output=True, stdin=subprocess.DEVNULL, text=True,
@@ -95,18 +124,8 @@ def _status_output(prefix: list[str], args: list[str]) -> str:
     return done.stdout or "" if done.returncode == 0 else ""
 
 
-def auth_problem(engine: str, prefix: list[str]) -> str | None:
-    """구독 로그인인지 — 비밀값을 내지 않는 상태 확인으로만 본다(설계 3-4). 출력(이메일 등)은 판정에만 쓰고 남기지 않는다."""
-    if engine == "claude":
-        try:
-            data = json.loads(_status_output(prefix, ["auth", "status"]))
-        except ValueError:
-            return "로그인 상태를 확인하지 못했습니다"
-        if not data.get("loggedIn"):
-            return "로그인되어 있지 않습니다"
-        if data.get("authMethod") != "claude.ai" or data.get("apiProvider") != "firstParty":
-            return "구독 로그인이 아닙니다(API 키 방식은 쓰지 않습니다)"
-        return None
+def auth_problem(prefix: list[str]) -> str | None:
+    """Codex 가 구독(ChatGPT) 로그인인지 — 비밀값을 내지 않는 상태 확인으로만 본다(설계 3-4)."""
     text = _status_output(prefix, ["login", "status"])
     if "Logged in using ChatGPT" in text:
         return None
@@ -114,17 +133,20 @@ def auth_problem(engine: str, prefix: list[str]) -> str | None:
 
 
 def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
-    """지금 설치된 실행 파일로 이 엔진을 써도 되나 — 차례마다 실행 직전에 다시 본다(이어 가기 포함). None 이면 된다."""
+    """Codex 를 지금 써도 되나 — 차례마다 실행 직전에 다시 본다(이어 가기 포함). None 이면 된다.
+    Claude 는 여기서 보지 않는다 — agent_chat.engine_problem → agent_chat_claude.claude_problem(화면과 같은 상태 판정 하나)."""
+    if engine != "codex":
+        raise ValueError("Claude 판정은 agent_chat.engine_problem 으로")
     if not prefix:
         return "이 PC 에 설치되어 있지 않습니다"
-    if engine == "codex" and CODEX_LOCK:
+    if CODEX_LOCK:
         return CODEX_LOCK
     version = cli_version(prefix)
     if not version:
         return "판을 확인하지 못했습니다"
-    if engine == "codex" and version not in CODEX_VERIFIED:
+    if version not in CODEX_VERIFIED:
         return f"점검 필요 — 확인하지 않은 판입니다({version})"
-    return auth_problem(engine, prefix)
+    return auth_problem(prefix)
 
 
 def _toml_literal(value: str) -> str:
@@ -134,14 +156,16 @@ def _toml_literal(value: str) -> str:
 
 
 def build_command(engine: str, prefix: list[str], *, model: str, effort: str, resume: str | None,
-                  mcp_entry: dict, mcp_file: Path, work: Path) -> list[str]:
+                  mcp_entry: dict, mcp_file: Path, work: Path, fast: bool = False) -> list[str]:
     if engine == "claude":
         mcp_file.parent.mkdir(parents=True, exist_ok=True)
         mcp_file.write_text(json.dumps({"mcpServers": {PANEL_SERVER: mcp_entry}}, ensure_ascii=False), encoding="utf-8")
         command = [*prefix, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                    "--model", model, "--effort", effort, "--tools", "", "--strict-mcp-config", "--mcp-config", str(mcp_file),
                    "--allowedTools", ",".join(sorted(CLAUDE_ALLOWED)), "--permission-mode", "dontAsk",
-                   "--setting-sources", "local"]
+                   "--setting-sources", "local",
+                   # 빠른 모드는 매 차례 켬/끔을 적는다 — 사용자 설정·이어 가기가 켜 둔 값이 남지 않게(Claude 추가 사용 크레딧이 든다)
+                   "--settings", json.dumps({"fastMode": bool(fast)})]
         return command + (["--resume", resume] if resume else [])
     server = f"mcp_servers.{PANEL_SERVER}"
     options = ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only",

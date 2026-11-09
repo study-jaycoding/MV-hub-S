@@ -40,8 +40,8 @@ interface Props {
   onNotificationsChanged: () => void;
   inert?: boolean; // 폴더 창이 떠 있는 동안 — 마우스는 창의 막이 막지만 Tab 으로는 닿았다(App 의 behindInert)
   searchResetKey?: string | number; // 폴더 탭·범위 변경과 자동 따라가기 때 예약 검색을 버린다
-  agentOpen?: boolean; // Ask Agent 옆 칸이 열려 있다 — 알약이 라임
-  onToggleAgent?: () => void; // Ask Agent 옆 칸 열기·닫기. 허브가 agent_chat_v1 을 알릴 때만 알약이 보인다
+  agentOpen?: boolean; // MV Agent 옆 칸이 열려 있다 — 알약이 라임
+  onToggleAgent?: () => void; // MV Agent 옆 칸 열기·닫기. 허브가 agent_chat_v1 을 알릴 때만 알약이 보인다
 }
 
 export function TopBar({
@@ -135,11 +135,11 @@ export function TopBar({
           켜진 채 다시 누르면 닫는다: 편집 = 밑의 탭 단추를 누른 것과 같게 떠난다 · 창 = 닫는다. Assets·관리는 분리된 브라우저 창. 관리(PM)는 플래그 on 일 때만.
           바탕이 이어진 한 캡슐로 묶고(시안 G3) — 첫 칸은 검색칸(B′ — 짧은 구분선, 칠 때 검색칸 바탕만 밝게), 끝 칸은 알림 종(B안 — 배지는
           칸 오른쪽 위에 걸침). 모두 Jay 2026-10-26. */}
-      {/* Ask Agent — 검색 묶음 바로 왼쪽, 아이콘 없는 글자 알약(Jay 2026-11-09 시안 v2). 칸이 열린 동안 라임 */}
+      {/* MV Agent(Jay 11-09 이름 바꿈) — 검색 묶음 바로 왼쪽, 아이콘 없는 글자 알약(시안 v2). 칸이 열린 동안 라임 */}
       {onToggleAgent && hubHasFeature(AGENT_CHAT_FEATURE) && (
         <button type="button" className="agent-pill" onClick={onToggleAgent} aria-pressed={agentOpen}
-          title={t(agentOpen ? "Ask Agent 옆 칸 닫기" : "Ask Agent — 오른쪽에 대화칸 열기")}>
-          Ask Agent
+          title={t(agentOpen ? "MV Agent 옆 칸 닫기" : "MV Agent — 오른쪽에 대화칸 열기")}>
+          MV Agent
         </button>
       )}
       <div className="top-ic-group">

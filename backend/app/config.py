@@ -109,12 +109,16 @@ MEDIA_PRESERVATION_ENABLED = os.environ.get(
 ).lower() in ("1", "true", "yes", "on")
 
 # ── Ask Agent 옆 칸(docs/status/AskAgent_옆칸_설계_2026-11-09.md) ───────────────────
-# 이 PC 의 Claude Code·Codex 를 각자 로그인으로 불러 쓰는 칸. 기본 꺼짐 — 켠 로컬 허브만 라우터·기능 표식을 붙인다
-# (공유 서버에서는 켜도 붙이지 않는다). 기록 DB·작업 폴더는 저장소·DATA_DIR 밖 사용자 폴더에 둔다.
-AGENT_CHAT_ENABLED = os.environ.get("CONTENT_HUB_AGENT_CHAT", "0").lower() in ("1", "true", "yes", "on")
+# 이 PC 의 Claude Code·Codex 를 각자 로그인으로 불러 쓰는 칸(MV Agent). 로컬 허브에서 기본 켜짐(Jay 11-09 '배포하면 보여야')
+# — 공유 서버에서는 켜도 붙이지 않는다. 끄려면 0 을 주고 허브를 다시 켠다(켜질 때 읽음). 기록 DB·작업 폴더는 사용자 폴더.
+AGENT_CHAT_ENABLED = os.environ.get("CONTENT_HUB_AGENT_CHAT", "1").lower() in ("1", "true", "yes", "on")
+# [Claude 연결]이 사람이 보는 로그인 창을 띄울지 — 기본 꺼짐(터미널 안내). 실측(설계 AskAgent_첫연결 7절 4)·Jay 확인 뒤에만 켠다.
+AGENT_CHAT_LOGIN_WINDOW = os.environ.get("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", "0").lower() in ("1", "true", "yes", "on")
 AGENT_CHAT_DIR = Path(
     os.environ.get("CONTENT_HUB_AGENT_CHAT_DIR") or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MVHub" / "agent_chat"
 ).resolve()
+# Claude 잠금·로그인 창 기록 — 기록 폴더(AGENT_CHAT_DIR)를 따로 준 허브도 같은 Claude 자격이면 같은 곳을 보게 사용자마다 한 곳에 고정.
+AGENT_CHAT_CLAUDE_DIR = (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MVHub" / "claude").resolve()
 
 # ── 에셋 대장(docs/ASSET_REGISTRY.md) ─────────────────────────────────────
 # 켠 곳(공유 서버)만 PM 프로젝트 루트를 훑어 파일마다 번호를 붙인다. 기본은 꺼짐 — 첫 전체 훑기는 관리자가

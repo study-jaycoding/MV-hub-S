@@ -1,4 +1,4 @@
-"""Ask Agent 칸 HTTP 입구(설계 docs/status/AskAgent_옆칸_설계_2026-11-09.md 10절).
+"""MV Agent 칸 HTTP 입구(설계 docs/status/AskAgent_옆칸_설계_2026-11-09.md 10절).
 
 로컬 허브에서 CONTENT_HUB_AGENT_CHAT=1 일 때만 붙는다(main). 권한 = 로그인 신원(허브 id + DB 경로 + 계정) — 신원 판정은
 MCP 와 같은 `mcp_v2._capture`(AUTH off 워커는 공유 서버 로그인까지 대조)·`_still_current` 를 쓴다. 칸 비밀값은 다른
@@ -14,14 +14,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field
 
-from .. import active_account
+from .. import active_account, config
 from ..deps import expected_account_differs
 from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..repo import agent_chat as chat_store
 from ..repo import mcp_v2 as mcp_store
 from ..services import agent_chat as chat
-from ..services.agent_chat import MODELS, Identity, service
+from ..services import agent_chat_claude as claude
+from ..services.agent_chat import EFFORTS, MODELS, Identity, service
 from ..services.request_guards import require_loopback_browser_request
 from . import _proxy, mcp, mcp_v2
 
@@ -45,7 +46,7 @@ def _identity(ctx) -> Identity:
 
 
 async def _captured(request: Request):
-    require_loopback_browser_request(request, "Ask Agent 칸은 이 PC 의 앱에서만 쓸 수 있습니다.")
+    require_loopback_browser_request(request, "MV Agent 칸은 이 PC 의 앱에서만 쓸 수 있습니다.")
     if len(request.headers.getlist(_EXPECT)) != 1 or not request.headers.get(_EXPECT, "").strip():
         raise HTTPException(400, "계정 확인 머리글이 필요합니다.")
     ctx = await asyncio.to_thread(mcp_v2._capture, request)
@@ -58,7 +59,7 @@ async def _captured(request: Request):
 async def _panel(request: Request):
     secret_identity = service.session_identity(request.headers.get(_PANEL))
     if secret_identity is None:  # 신원 확인 전에 먼저 본다 — 표 없는 요청에 공유 서버 확인을 쓰지 않게
-        require_loopback_browser_request(request, "Ask Agent 칸은 이 PC 의 앱에서만 쓸 수 있습니다.")
+        require_loopback_browser_request(request, "MV Agent 칸은 이 PC 의 앱에서만 쓸 수 있습니다.")
         raise HTTPException(401, "칸 연결이 끝났습니다. 다시 여세요.", headers=_SESSION_GONE)
     ctx, identity = await _captured(request)
     if identity != secret_identity:
@@ -80,6 +81,48 @@ async def session(request: Request):
     engines = await asyncio.to_thread(service.engines)
     return {"secret": service.issue_session(identity), "account_email": identity.email, "identity_key": identity.key(),
             "engines": engines}
+
+
+def _window_open() -> bool:
+    try:
+        return claude.window_alive()
+    except claude.RecordUnreadable:
+        return True  # 깨진 기록은 '열려 있음'처럼 막는다(상태 문구가 까닭을 알린다)
+
+
+@router.get("/claude")
+async def claude_status(panel=Depends(_panel)):
+    """캐시 없이 지금 Claude 상태 — 연결 안내 화면이 2초마다 본다. 엔진 목록도 새로(입력칸·모델 선택 갱신용)."""
+    engines = await asyncio.to_thread(service.engines, True)
+    row = next(item for item in engines if item["id"] == "claude")
+    return {"state": row["state"], "version": row["version"] or None, "subscription": row["subscription"],
+            "login_window": await asyncio.to_thread(_window_open), "login_window_enabled": config.AGENT_CHAT_LOGIN_WINDOW,
+            "engines": engines}
+
+
+_CLAUDE_ERROR = "X-MVHub-Claude-Error"
+
+
+@router.post("/claude/login")
+async def claude_login(panel=Depends(_panel)):
+    """[Claude 연결] — 사람이 보는 로그인 창(스위치가 켜졌을 때만). 창은 사람의 것이라 끄는 경로는 없다."""
+    ctx, _ = panel
+    try:
+        await asyncio.to_thread(claude.open_login_window, lambda: mcp_v2._still_current(ctx))
+    except claude.LoginDisabled as exc:
+        raise HTTPException(409, "이 PC 에서는 터미널에서 로그인해 주세요.", headers={_CLAUDE_ERROR: "login_window_disabled"}) from exc
+    except claude.BreakawayDenied as exc:
+        raise HTTPException(409, "로그인 창을 열 수 없는 환경이에요 — 터미널에서 로그인해 주세요.",
+                            headers={_CLAUDE_ERROR: "breakaway_denied"}) from exc
+    except claude.Busy as exc:
+        raise HTTPException(409, str(exc), headers={_CLAUDE_ERROR: exc.code}) from exc
+    except HTTPException as exc:  # 띄우기 직전 신원 재대조에서 계정·허브가 바뀜
+        raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED) from exc
+    except OSError as exc:
+        raise HTTPException(503, "로그인 창을 열지 못했어요 — 터미널에서 로그인해 주세요.",
+                            headers={_CLAUDE_ERROR: "spawn_failed"}) from exc
+    await asyncio.to_thread(service.engines, True)  # 캐시 비움
+    return {"opened": True}
 
 
 @router.get("/conversations")
@@ -113,7 +156,8 @@ class TurnIn(StrictModel):
     conversation_id: UUID | None = None
     engine: Literal["claude", "codex"]
     model: str = Field(min_length=1, max_length=40)
-    effort: Literal["low", "medium", "high"]
+    effort: Literal["low", "medium", "high", "xhigh", "max"]
+    fast: bool = False  # 빠른 모드 — Opus 만, 매 차례 켬/끔을 CLI 에 적는다(Claude 추가 사용 크레딧)
     text: str = Field(min_length=1, max_length=8000)
     context: dict = Field(default_factory=dict)
 
@@ -123,6 +167,10 @@ async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
     ctx, identity = panel
     if body.model not in {row["id"] for row in MODELS[body.engine]}:
         raise HTTPException(422, "모델을 다시 고르세요.")
+    if body.effort not in EFFORTS[body.engine]:
+        raise HTTPException(422, "생각 깊이를 다시 고르세요.")
+    if body.fast and (body.engine != "claude" or body.model not in claude.FAST_MODELS):
+        raise HTTPException(422, "빠른 모드는 Opus 5.5 에서만 쓸 수 있어요.")
     if len(json.dumps(body.context, ensure_ascii=False)) > _MAX_CONTEXT:
         raise HTTPException(422, "화면 정보가 너무 큽니다.")
     async with _turn_lock(identity):
@@ -140,6 +188,10 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
     problem = await asyncio.to_thread(service.engine_problem, body.engine)
     if problem:
         raise HTTPException(409, f"이 AI 는 지금 쓸 수 없습니다 — {problem}")
+    if body.engine == "claude":  # 다른 허브 대화 중·로그인 창 — 빠른 확인(실제 잠금은 차례 스레드가 잡는다)
+        blocked = await asyncio.to_thread(claude.would_block)
+        if blocked:
+            raise HTTPException(409, blocked)
     if body.conversation_id:
         conv = await asyncio.to_thread(chat_store.get_conversation, path, str(body.conversation_id))
         if not conv:
@@ -166,7 +218,8 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         await asyncio.to_thread(chat_store.update_conversation, path, conv["id"], model=body.model, effort=body.effort)
         try:
             service.start_turn(identity, conversation=conv, turn=turn, model=body.model, effort=body.effort,
-                               text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx))
+                               text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
+                               fast=body.fast)
         except Exception as exc:  # noqa: BLE001 - 실행 전 실패는 그 차례를 끝내고 알린다
             await asyncio.to_thread(chat_store.set_status, path, turn["id"], "failed", reason="start_failed")
             await asyncio.to_thread(chat_store.append_event, path, turn["id"], "error", {"message": "AI 프로그램을 시작하지 못했습니다."})

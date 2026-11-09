@@ -26,8 +26,8 @@ function deferred<T>() {
 }
 
 const ENGINES = [
-  { id: "claude", available: true, version: "2.1.296", reason: null, efforts: ["low", "medium", "high"],
-    models: [{ id: "opus", label: "Opus 5.5" }, { id: "sonnet", label: "Sonnet 5.5" }, { id: "haiku", label: "Haiku 5.5" }] },
+  { id: "claude", available: true, version: "2.1.296", reason: null, state: "ready", subscription: "Max", efforts: ["low", "medium", "high", "xhigh", "max"],
+    models: [{ id: "opus", label: "Opus 5.5" }, { id: "sonnet", label: "Sonnet 5.5" }, { id: "haiku", label: "Haiku 5.5" }, { id: "fable", label: "Fable 5.1" }] },
   { id: "codex", available: true, version: "0.162.0-alpha.17.2", reason: null, efforts: ["low", "medium", "high"],
     models: [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol" }, { id: "gpt-6-astra", label: "GPT-6 Astra" }] },
 ];
@@ -86,6 +86,12 @@ const enter = () => act(() => { input().dispatchEvent(new KeyboardEvent("keydown
 function pickModel(label: string) {
   act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
   const item = [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent?.includes(label))!;
+  act(() => item.click());
+}
+function pickCompany(name: string) {
+  act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+  act(() => host.querySelector<HTMLButtonElement>(".agent-company-head")!.click());
+  const item = [...host.querySelectorAll<HTMLButtonElement>(".agent-company-list .agent-model-item")].find((b) => b.textContent?.startsWith(name))!;
   act(() => item.click());
 }
 
@@ -409,7 +415,7 @@ describe("Ask Agent 옆 칸", () => {
     await flush();
     expect(turnCalls()[1].body).toMatchObject({ conversation_id: "c1", engine: "claude", model: "sonnet" });
 
-    pickModel("GPT-6.1 Sol");
+    pickCompany("ChatGPT"); // 회사를 바꾸면 그 회사 첫 모델 + 새 대화
     expect(host.querySelector(".agent-user")).toBeNull();
     expect(host.querySelector(".agent-title")!.textContent).toBe("새 대화");
     expect(panel().textContent).toContain("지금 보는 화면을 같이 보면서 일해요");
@@ -421,21 +427,40 @@ describe("Ask Agent 옆 칸", () => {
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.model")!)).toEqual({ engine: "codex", model: "gpt-6.1-sol", effort: "medium" });
   });
 
-  it("못 쓰는 엔진은 까닭을 보이고 고를 수 없다 · 생각 깊이는 낮음·보통·높음", async () => {
-    route = (c) => (c.path === "/session"
-      ? json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: [ENGINES[0], { ...ENGINES[1], available: false, reason: "점검 필요" }] })
-      : json({ detail: "Not Found" }, 404));
+  it("못 쓰는 회사(ChatGPT)는 까닭을 보이고 고를 수 없다 · 생각 깊이는 Low~Max · 빠른 모드는 Opus 에서만, 보낼 때 실리고 모델을 바꾸면 꺼진다", async () => {
+    route = (c) => {
+      if (c.path === "/session") {
+        return json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: [ENGINES[0], { ...ENGINES[1], available: false, reason: "점검 필요" }] });
+      }
+      if (c.path === "/turns") return started();
+      return json({ events: [], status: "done", last_seq: 0 });
+    };
     await mount();
     act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
-    expect(texts(".agent-model-group-head")).toEqual(["Claude", "GPT점검 필요", "생각 깊이"]);
-    const gpt = [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].filter((b) => b.textContent?.startsWith("GPT"));
-    expect(gpt.map((b) => b.disabled)).toEqual([true, true]);
-    expect(texts(".agent-effort-seg button")).toEqual(["낮음", "보통", "높음"]);
-    expect(host.querySelector('.agent-model-item[aria-pressed="true"]')!.textContent).toContain("Opus 5.5");
-    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-effort-seg button")][2].click());
-    expect(host.querySelector(".agent-model-btn")!.textContent).toContain("높음");
+    expect(texts(".agent-model-menu > .agent-model-item")).toEqual(["Claude Opus 5.5✓", "Claude Sonnet 5.5", "Claude Haiku 5.5", "Claude Fable 5.1"]);
+    act(() => host.querySelector<HTMLButtonElement>(".agent-company-head")!.click());
+    const companies = [...host.querySelectorAll<HTMLButtonElement>(".agent-company-list .agent-model-item")];
+    expect(companies.map((b) => [b.textContent, b.disabled])).toEqual([["Claude✓", false], ["ChatGPT점검 필요", true]]);
+    act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click()); // 닫기
+    act(() => host.querySelector<HTMLButtonElement>(".agent-effort-btn")!.click());
+    expect(texts('.agent-effort-menu [role="radio"]')).toEqual(["Low", "Medium✓", "High", "Extra High", "Max"]);
+    const fast = () => host.querySelector<HTMLButtonElement>('.agent-effort-menu [role="switch"]');
+    expect(fast()!.getAttribute("aria-checked")).toBe("false");
+    expect(panel().textContent).toContain("Claude 추가 사용 크레딧이 들어요");
+    act(() => fast()!.click());
+    expect(fast()!.getAttribute("aria-checked")).toBe("true");
+    act(() => [...host.querySelectorAll<HTMLButtonElement>('.agent-effort-menu [role="radio"]')][4].click());
+    expect(host.querySelector(".agent-effort-btn")!.textContent).toContain("Max");
+    expect(host.querySelector(".agent-effort-btn")!.textContent).toContain("빠름");
+    type("빨리");
+    enter();
+    await flush();
+    expect(turnCalls()[0].body).toMatchObject({ model: "opus", effort: "max", fast: true });
+    expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.model")!)).toEqual({ engine: "claude", model: "opus", effort: "max" }); // 빠른 모드는 기억 안 함
+    pickModel("Sonnet 5.5");
+    act(() => host.querySelector<HTMLButtonElement>(".agent-effort-btn")!.click());
+    expect(fast()).toBeNull(); // Opus 가 아니면 스위치가 없다
   });
-
   it("보낸 직후 칸을 닫아 접수 답이 늦게 와도, 다시 열면 그 대화에 붙는다 — 같은 일을 또 시작하지 않는다", async () => {
     const accepted = deferred<Response>();
     route = (c) => {
@@ -591,7 +616,8 @@ describe("Ask Agent 옆 칸", () => {
     expect(seen.join("\n")).toContain("MV Hub · 자료 조회 하는 중");
     expect(seen.join("\n")).not.toMatch(/\.\.\.|…/);
 
-    for (const file of ["components/agent-chat/AgentPanel.tsx", "components/agent-chat/AgentPlanCard.tsx", "lib/useAgentChat.ts", "lib/agentChatApi.ts"]) {
+    for (const file of ["components/agent-chat/AgentPanel.tsx", "components/agent-chat/AgentPlanCard.tsx", "components/agent-chat/AgentConnect.tsx",
+      "components/agent-chat/AgentMarkdown.tsx", "lib/useAgentChat.ts", "lib/agentChatApi.ts"]) {
       const src = readFileSync(new NodeURL(`../src/${file}`, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
       const literals = [...src.matchAll(/"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`|>([^<>{}\n]*\S[^<>{}\n]*)</g)].map((m) => m[0]);
       expect([file, literals.filter((s) => /\.\.\.|…/.test(s))]).toEqual([file, []]);
