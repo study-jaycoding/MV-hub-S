@@ -376,6 +376,8 @@ export function ListWindow({
   workspaceId,
   onMove,
   onPreview,
+  onUndo,
+  onRedo,
   onClose,
 }: {
   listId: string;
@@ -385,6 +387,9 @@ export function ListWindow({
   workspaceId: string;
   onMove: (cid: string, insertIndex: number) => void; // insertIndex = 지금 순서 기준 0..n(reorderListToIndex 와 같은 뜻)
   onPreview: (cid: string, p: PreviewTarget) => void;
+  // 창이 떠 있는 동안 캔버스 단축키는 쉰다(keyGate) — 되돌리기는 창이 직접 캔버스의 것을 부른다(Jay 11-09 "Ctrl+Z 안 되나")
+  onUndo: () => void;
+  onRedo: () => void;
   onClose: () => void;
 }) {
   const winRef = useRef<HTMLDivElement>(null);
@@ -394,7 +399,10 @@ export function ListWindow({
   const [drag, setDrag] = useState<{ id: string; x: number; y: number; bar: { x: number; y: number; w: number; h: number } | null } | null>(null);
   useEscapeClose(onClose);
   useModalFocus(winRef);
-  useEffect(() => () => dragEnd.current?.(), []); // 끄는 중에 닫혀도 창 밖 리스너가 남지 않게
+  useEffect(() => {
+    winRef.current?.focus({ preventScroll: true }); // 열자마자 Ctrl+Z·Ctrl+방향키가 창에 오게
+    return () => dragEnd.current?.(); // 끄는 중에 닫혀도 창 밖 리스너가 남지 않게
+  }, []);
 
   const li = collectListInputs(listId, cardsById, resolvedEdges);
   const rows = li.kind === "text";
@@ -503,6 +511,12 @@ export function ListWindow({
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // 캔버스와 같은 키(lib/sceneKeyboard): Ctrl+Z 되돌리기, Ctrl+Shift+Z 다시 하기. 끄는 중에는 순서가 바뀌는 중이라 쉰다.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (!dragEnd.current) (e.shiftKey ? onRedo : onUndo)();
+      return;
+    }
     if (!e.ctrlKey || e.altKey || !picked) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로
     const back = e.key === "ArrowLeft" || (rows && e.key === "ArrowUp");
     const fwd = e.key === "ArrowRight" || (rows && e.key === "ArrowDown");
@@ -582,6 +596,7 @@ export function ListWindow({
         <div className="scene-listwin-ft">
           <span>끌어서 순서 바꾸기</span>
           <span><kbd>Ctrl</kbd> + <kbd>{rows ? "↑↓" : "←→"}</kbd> 고른 칸 한 칸씩</span>
+          <span><kbd>Ctrl</kbd> + <kbd>Z</kbd> 되돌리기</span>
           {!rows && <span>더블클릭 = 크게 보기</span>}
           <span><kbd>Esc</kbd> 닫기</span>
           <span className="scene-listwin-ok">바뀐 순서는 노드에 바로 반영</span>

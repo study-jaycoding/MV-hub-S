@@ -3895,6 +3895,8 @@ export function SceneBoard({
           workspaceId={refWorkspaceId}
           onMove={(cid, at) => reorderListToIndex(listWinId, cid, at)}
           onPreview={(cid, p) => (p.genId ? getNodePreview(cid)(p) : onPreview?.(p))}
+          onUndo={undo}
+          onRedo={redo}
           onClose={() => setListWinId(null)}
         />
       )}
