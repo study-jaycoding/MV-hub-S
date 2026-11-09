@@ -2,12 +2,14 @@
 
 권한은 로그인 신원(허브 id + DB 경로 + 계정)이다. 라우터가 신원을 확인해 넘기고, 여기서는 그 신원의 기록 파일만 쓴다.
 CLI 는 차례마다 한 번 띄운다(JobProcess). 사건은 저장한 뒤 깨운다 — 대기자는 다시 읽으므로 신호를 잃어도 늦을 뿐 빠지지 않는다.
+트리 회수(Job 안 프로세스 0)를 확인하기 전에는 차례를 끝난 것으로 바꾸지 않는다 — 다음 차례는 그동안 409 로 기다린다.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
 import threading
 import time
@@ -21,11 +23,18 @@ from . import agent_chat_process as process
 from .agent_chat_parse import parser_for
 from .shared_connection import is_shared_team_server
 
+_log = logging.getLogger(__name__)
 TURN_TIMEOUT = 600.0
 WAIT_SECONDS = 25.0
 _IDENTITY_CHECK_SECONDS = 2.0
+_PARENT_GRACE_SECONDS = 2.0
+_REAP_RETRY_SECONDS = 5.0
 _SESSION_LIMIT = 64
-_ENGINE_CACHE_SECONDS = 300.0
+_ENGINE_CACHE_SECONDS = 60.0
+MAX_EVENTS = 1000  # 한 차례 사건 상한 — 글 조각은 모아서 저장하므로 보통 답은 수십 개다
+EVENT_PAGE = 5000  # 한 번에 돌려주는 사건 수(> MAX_EVENTS 라 끝난 차례도 한 번에 다 온다)
+_DELTA_FLUSH_CHARS = 120
+_DELTA_FLUSH_SECONDS = 0.3
 MODELS = {
     "claude": [{"id": "opus", "label": "Opus 5.5"}, {"id": "sonnet", "label": "Sonnet 5.5"}, {"id": "haiku", "label": "Haiku 5.5"}],
     "codex": [{"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol"}, {"id": "gpt-6-astra", "label": "GPT-6 Astra"}],
@@ -48,7 +57,7 @@ def enabled() -> bool:
     return config.AGENT_CHAT_ENABLED and not is_shared_team_server()
 
 
-class IdentityChanged(Exception):
+class EngineUnavailable(Exception):
     pass
 
 
@@ -71,6 +80,7 @@ class _Runtime:
     conversation_id: str
     client_id: str
     engine: str
+    prefix: list[str]
     command: list[str]
     stdin: bytes
     resume: bool
@@ -78,9 +88,16 @@ class _Runtime:
     job: process.JobProcess | None = None
     cancelled: bool = False
     timed_out: bool = False
+    identity_lost: bool = False
+    overflow: bool = False
     violation: dict | None = None
     session_seen: bool = False
+    events: int = 0
     checked_at: float = field(default=0.0)
+    done: threading.Event = field(default_factory=threading.Event)
+
+    def stopped(self) -> bool:
+        return bool(self.cancelled or self.timed_out or self.identity_lost or self.overflow or self.violation)
 
 
 class AgentChat:
@@ -111,28 +128,22 @@ class AgentChat:
 
     # ── 엔진 ──
     def engines(self) -> list[dict]:
+        """화면 표시용(잠깐 캐시). 실제 실행 허용은 차례마다 engine_problem 으로 다시 본다."""
         with self._lock:
             if self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS:
                 return self._engines[1]
         result = []
         for engine in ("claude", "codex"):
             prefix = process.engine_prefix(engine)
-            version = process.cli_version(prefix) if prefix else ""
-            reason = None
-            if not prefix:
-                reason = "이 PC 에 설치되어 있지 않습니다"
-            elif not version:
-                reason = "판을 확인하지 못했습니다"
-            elif engine == "codex" and version not in process.CODEX_VERIFIED:
-                reason = f"점검 필요 — 확인하지 않은 판입니다({version})"
-            result.append({"id": engine, "available": reason is None, "version": version, "reason": reason,
-                           "models": MODELS[engine], "efforts": list(EFFORTS)})
+            reason = process.engine_problem(engine, prefix)
+            result.append({"id": engine, "available": reason is None, "version": process.cli_version(prefix) if prefix else "",
+                           "reason": reason, "models": MODELS[engine], "efforts": list(EFFORTS)})
         with self._lock:
             self._engines = (time.monotonic(), result)
         return result
 
-    def engine_ready(self, engine: str) -> bool:
-        return any(row["id"] == engine and row["available"] for row in self.engines())
+    def engine_problem(self, engine: str) -> str | None:
+        return process.engine_problem(engine, process.engine_prefix(engine))
 
     # ── 차례 ──
     def start_turn(self, identity: Identity, *, conversation: dict, turn: dict, model: str, effort: str,
@@ -143,14 +154,14 @@ class AgentChat:
         engine = conversation["engine"]
         prefix = process.engine_prefix(engine)
         if not prefix:
-            raise RuntimeError("AI 프로그램을 찾지 못했습니다.")
+            raise EngineUnavailable("AI 프로그램을 찾지 못했습니다.")
         resume = conversation.get("cli_session_id") or None
         work = config.AGENT_CHAT_DIR / "work"
         work.mkdir(parents=True, exist_ok=True)
         command = process.build_command(engine, prefix, model=model, effort=effort, resume=resume,
                                         mcp_entry=conversation["mcp_entry"],
                                         mcp_file=config.AGENT_CHAT_DIR / "mcp" / f"{conversation['id']}.json", work=work)
-        runtime = _Runtime(identity, path, turn["id"], conversation["id"], conversation["client_id"], engine, command,
+        runtime = _Runtime(identity, path, turn["id"], conversation["id"], conversation["client_id"], engine, prefix, command,
                            build_prompt(text, context).encode("utf-8"), bool(resume), still_current)
         with self._lock:
             self._runtimes[turn["id"]] = runtime
@@ -159,38 +170,98 @@ class AgentChat:
 
     def _emit(self, runtime: _Runtime, kind: str, payload: dict) -> None:
         store.append_event(runtime.path, runtime.turn_id, kind, payload)
+        runtime.events += 1
         self._notify(runtime.turn_id)
+        if runtime.events >= MAX_EVENTS and not runtime.overflow:
+            runtime.overflow = True
+            self._terminate(runtime)
 
-    def _check_identity(self, runtime: _Runtime) -> None:
-        now = time.monotonic()
-        if now - runtime.checked_at < _IDENTITY_CHECK_SECONDS:
-            return
-        runtime.checked_at = now
-        try:
-            runtime.still_current()
-        except Exception as exc:  # noqa: BLE001 - 어떤 이유든 신원이 흔들리면 그 차례는 버린다
-            raise IdentityChanged() from exc
+    def _terminate(self, runtime: _Runtime) -> None:
+        with self._lock:
+            job = runtime.job
+        if job:
+            job.terminate()
 
     def _timeout(self, runtime: _Runtime) -> None:
         runtime.timed_out = True
-        if runtime.job:
-            runtime.job.terminate()
+        self._terminate(runtime)
+
+    def _still_ok(self, runtime: _Runtime) -> bool:
+        """신원 확인(2초에 한 번) — 흔들리면 그 차례를 버리고 트리를 끈다. 감시 스레드와 사건 저장 직전이 같이 쓴다."""
+        now = time.monotonic()
+        if not runtime.identity_lost and now - runtime.checked_at >= _IDENTITY_CHECK_SECONDS:
+            runtime.checked_at = now
+            try:
+                runtime.still_current()
+            except Exception:  # noqa: BLE001 - 어떤 이유든 신원이 흔들리면 그 차례는 버린다
+                runtime.identity_lost = True
+                self._terminate(runtime)
+        return not runtime.identity_lost
+
+    def _watch(self, runtime: _Runtime) -> None:
+        """출력과 상관없이 — 계정이 바뀌면 끄고, CLI 부모가 끝났는데 자식이 출력을 붙잡고 있으면 남은 트리를 끈다."""
+        exited_at = None
+        while not runtime.done.wait(0.5):
+            with self._lock:
+                job = runtime.job
+            if job and job.exited():
+                exited_at = exited_at or time.monotonic()
+                if time.monotonic() - exited_at > _PARENT_GRACE_SECONDS:
+                    job.terminate()
+            self._still_ok(runtime)
+
+    def _identity_ok(self, runtime: _Runtime) -> bool:
+        if runtime.identity_lost:
+            return False
+        try:
+            runtime.still_current()
+            return True
+        except Exception:  # noqa: BLE001
+            runtime.identity_lost = True
+            return False
 
     def _run(self, runtime: _Runtime) -> None:
         status, reason = "failed", None
         got_result = False
-        timer = threading.Timer(TURN_TIMEOUT, self._timeout, args=(runtime,))
+        timer = threading.Timer(TURN_TIMEOUT, self._timeout, args=(runtime,))  # 띄우기·stdin 까지 시간 제한에 넣는다
         timer.daemon = True
+        timer.start()
+        threading.Thread(target=self._watch, args=(runtime,), daemon=True).start()
         try:
+            problem = process.engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
+            if problem:
+                raise EngineUnavailable(problem)
+            job = process.JobProcess(runtime.command, config.AGENT_CHAT_DIR / "work", process.child_env())
+            with self._lock:
+                runtime.job = job
+            if runtime.stopped():  # 띄우는 사이에 취소·시간 초과가 왔다
+                job.terminate()
+            else:
+                job.feed(runtime.stdin)
             parser = parser_for(runtime.engine)
-            runtime.job = process.JobProcess(runtime.command, config.AGENT_CHAT_DIR / "work", process.child_env(), runtime.stdin)
-            timer.start()
-            for raw in runtime.job.lines():
+            pending: list[str] = []
+            pending_since = 0.0
+
+            def flush():
+                if pending and not runtime.stopped() and self._still_ok(runtime):
+                    self._emit(runtime, "text_delta", {"text": "".join(pending)})
+                pending.clear()
+
+            for raw in job.lines():
                 for event in parser.feed(raw):
                     kind = event.pop("kind")
+                    if kind == "text_delta":
+                        if not runtime.stopped():
+                            if not pending:
+                                pending_since = time.monotonic()
+                            pending.append(event["text"])
+                            if sum(map(len, pending)) >= _DELTA_FLUSH_CHARS or time.monotonic() - pending_since >= _DELTA_FLUSH_SECONDS:
+                                flush()
+                        continue
+                    flush()
                     if kind == "violation":
                         runtime.violation = event
-                        runtime.job.terminate()
+                        job.terminate()
                     elif kind == "session":
                         if event.get("cli_session_id"):
                             runtime.session_seen = True
@@ -198,18 +269,24 @@ class AgentChat:
                     elif kind == "result":
                         got_result = True
                         status = "done" if event.get("ok") else "failed"
-                        if not event.get("ok") and not (runtime.cancelled or runtime.violation):
+                        if not event.get("ok") and not runtime.stopped():
                             self._emit(runtime, "error", {"message": event.get("message") or "실행하지 못했습니다."})
-                    elif not (runtime.cancelled or runtime.violation or runtime.timed_out):
-                        self._check_identity(runtime)
+                    elif not runtime.stopped() and self._still_ok(runtime):
                         self._emit(runtime, kind, event)
-            runtime.job.proc.wait(30)
+            flush()
+            job.proc.wait(30)
             if runtime.violation:
                 status, reason = "failed", "tool_violation"
                 self._emit(runtime, "error", {"message": "허용하지 않은 도구가 보여 바로 멈췄습니다."})
+            elif not self._identity_ok(runtime):
+                status, reason = "interrupted", "account_changed"
+                store.append_event(runtime.path, runtime.turn_id, "error", {"message": "앱의 계정이 바뀌어 멈췄습니다."})
             elif runtime.timed_out:
                 status, reason = "failed", "timeout"
                 self._emit(runtime, "error", {"message": "10분이 지나 멈췄습니다."})
+            elif runtime.overflow:
+                status, reason = "failed", "too_many_events"
+                store.append_event(runtime.path, runtime.turn_id, "error", {"message": "답이 너무 길어 멈췄습니다."})
             elif runtime.cancelled:
                 status = "cancelled"
             elif not got_result:
@@ -219,9 +296,12 @@ class AgentChat:
                     self._emit(runtime, "error", {"message": "이 대화는 이어 갈 수 없어요 · 새 대화로 시작하세요."})
                 else:
                     self._emit(runtime, "error", {"message": "AI 프로그램이 답 없이 끝났습니다. 로그인 상태를 확인하세요."})
-        except IdentityChanged:
-            status, reason = "interrupted", "account_changed"
-            store.append_event(runtime.path, runtime.turn_id, "error", {"message": "앱의 계정이 바뀌어 멈췄습니다."})
+        except EngineUnavailable as exc:
+            status, reason = "failed", "engine_locked"
+            self._emit(runtime, "error", {"message": f"이 AI 는 지금 쓸 수 없습니다 — {exc}"})
+        except process.OutputLimit:
+            status, reason = "failed", "output_limit"
+            store.append_event(runtime.path, runtime.turn_id, "error", {"message": "출력이 너무 많아 멈췄습니다."})
         except Exception as exc:  # noqa: BLE001 - 실행기 오류는 차례 실패로 남기고 허브는 계속 돈다
             status, reason = "failed", type(exc).__name__
             try:
@@ -230,27 +310,41 @@ class AgentChat:
                 pass
         finally:
             timer.cancel()
-            reaped = runtime.job.reap() if runtime.job else True
-            if reaped:  # 트리 회수를 확인하기 전엔 차례를 풀지 않는다 — 다음 차례가 409 로 기다린다
-                # 사람이 읽을 까닭은 앞의 error 사건에 있다 — state 에는 상태만(기계용 reason 은 DB 에만)
+            reaped = self._reap(runtime)
+            runtime.done.set()
+            if reaped:
+                if runtime.cancelled and status not in ("interrupted",):
+                    status = "cancelled"
                 if store.set_status(runtime.path, runtime.turn_id, status, reason=reason):
                     store.append_event(runtime.path, runtime.turn_id, "state", {"status": status})
-            with self._lock:
-                self._runtimes.pop(runtime.turn_id, None)
-                if self._by_client.get(runtime.client_id) == runtime.turn_id:
-                    self._by_client.pop(runtime.client_id, None)
+                with self._lock:
+                    self._runtimes.pop(runtime.turn_id, None)
+                    if self._by_client.get(runtime.client_id) == runtime.turn_id:
+                        self._by_client.pop(runtime.client_id, None)
+            else:  # 실행 정보를 쥔 채 남긴다 — 차례는 진행 중으로 남아 다음 차례를 막고, 다음 프로세스 시작 때 끝난 것으로 정리된다
+                _log.warning("agent chat turn %s: process tree not reaped", runtime.turn_id)
             self._notify(runtime.turn_id)
+
+    def _reap(self, runtime: _Runtime) -> bool:
+        with self._lock:
+            job = runtime.job
+        if job is None:
+            return True
+        while not job.reap(15.0):
+            if self._closing:
+                return False
+            time.sleep(_REAP_RETRY_SECONDS)
+        return True
 
     def cancel(self, identity: Identity, turn_id: str) -> str:
         path = identity.db_file()
         with self._lock:
             runtime = self._runtimes.get(turn_id)
-        if runtime and runtime.identity == identity:
-            if store.set_status(path, turn_id, "cancelling", only_from=("running",)):
+        if runtime:
+            if runtime.identity == identity and store.set_status(path, turn_id, "cancelling", only_from=("running",)):
                 runtime.cancelled = True
                 store.append_event(path, turn_id, "state", {"status": "cancelling"})
-                if runtime.job:
-                    runtime.job.terminate()
+                self._terminate(runtime)
                 self._notify(turn_id)
         elif store.set_status(path, turn_id, "cancelled", reason="no_runtime"):
             store.append_event(path, turn_id, "state", {"status": "cancelled"})  # 이 프로세스에 실행이 없는 남은 줄
@@ -263,7 +357,7 @@ class AgentChat:
         with self._lock:
             turn_id = self._by_client.get(client_id)
             runtime = self._runtimes.get(turn_id) if turn_id else None
-        if not runtime or runtime.cancelled or runtime.violation:
+        if not runtime or runtime.stopped() or runtime.done.is_set():
             return False
         store.bind_plan(runtime.path, plan_id=str(plan["plan_id"]), turn_id=runtime.turn_id, client_id=client_id)
         summary = {"plan_id": str(plan["plan_id"]), "title": plan.get("title"), "status": plan.get("status"),
@@ -293,14 +387,15 @@ class AgentChat:
                 self._waiters.setdefault(turn_id, set()).add(waiter)
             try:
                 # 등록한 뒤 다시 읽는다 — 저장과 등록 사이에 온 신호를 잃지 않게
-                events = await asyncio.to_thread(store.events_after, path, turn_id, after)
+                events = await asyncio.to_thread(store.events_after, path, turn_id, after, EVENT_PAGE)
                 turn = await asyncio.to_thread(store.get_turn, path, turn_id)
                 if turn is None:
-                    return {"events": [], "status": "missing", "last_seq": after}
+                    return {"events": [], "status": "missing", "last_seq": after, "more": False}
                 remaining = deadline - loop.time()
                 if events or turn["status"] in TERMINAL or remaining <= 0:
                     last = events[-1]["seq"] if events else after
-                    return {"events": events, "status": turn["status"], "last_seq": last}
+                    # 끝난 차례라도 더 남았으면 화면이 이어서 읽는다
+                    return {"events": events, "status": turn["status"], "last_seq": last, "more": len(events) >= EVENT_PAGE}
                 try:
                     await asyncio.wait_for(event.wait(), remaining)
                 except asyncio.TimeoutError:
@@ -319,8 +414,10 @@ class AgentChat:
             runtimes = list(self._runtimes.values())
         for runtime in runtimes:
             runtime.cancelled = True
-            if runtime.job:
-                runtime.job.reap(5.0)
+            with self._lock:
+                job = runtime.job
+            if job:
+                job.reap(5.0)
 
 
 def build_prompt(text: str, context: dict) -> str:

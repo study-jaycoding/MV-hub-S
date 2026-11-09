@@ -139,7 +139,8 @@ export const agentChatApi = {
   // 새 사건이 없고 진행 중이면 허브가 최대 25초 붙잡고 있다가 답한다(긴 기다림). 칸을 닫으면 signal 로 끊는다.
   //  shortcut: 브라우저 쪽 제한 시간은 두지 않는다(허브가 25초 안에 답한다) — 매달리는 일이 보이면 그때 더한다.
   events: (turnId: string, after: number, signal?: AbortSignal) =>
-    panelFetch<{ events: AgentEvent[]; status: AgentTurnStatus; last_seq: number }>(`/turns/${id(turnId)}/events?after=${after}`, { signal }),
+    // more = 끝난 차례라도 사건이 더 남았다(한 번에 다 못 받음) — 이어서 읽는다
+    panelFetch<{ events: AgentEvent[]; status: AgentTurnStatus; last_seq: number; more?: boolean }>(`/turns/${id(turnId)}/events?after=${after}`, { signal }),
   cancel: (turnId: string) => panelFetch<{ status: AgentTurnStatus }>(`/turns/${id(turnId)}/cancel`, { method: "POST" }),
   executePlan: (planId: string) => panelFetch<AgentPlan>(`/plans/${id(planId)}/execute`, { method: "POST" }),
 };

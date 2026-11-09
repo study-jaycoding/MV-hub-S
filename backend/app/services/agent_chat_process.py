@@ -15,7 +15,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-from .agent_chat_parse import CLAUDE_ALLOWED, PANEL_SERVER, PANEL_TOOLS
+from .agent_chat_parse import CLAUDE_ALLOWED, MAX_LINE, PANEL_SERVER, PANEL_TOOLS
 
 CREATE_SUSPENDED, CREATE_NO_WINDOW = 0x00000004, 0x08000000
 _KILL_ON_JOB_CLOSE, _EXT_INFO, _PID_LIST = 0x00002000, 9, 3
@@ -29,6 +29,11 @@ CODEX_FEATURES_OFF = ("apps", "multi_agent", "image_generation", "unified_exec",
                       "goals", "sleep_tool", "tool_suggest", "browser_use", "computer_use", "hooks",
                       "skill_mcp_dependency_install", "skill_search", "view_image")
 MAX_STDERR = 64 * 1024
+MAX_TOTAL = 32 * 1024 * 1024  # 한 차례 stdout 전체 상한 — 넘으면 끈다
+
+
+class OutputLimit(Exception):
+    """한 차례 출력이 상한을 넘었다."""
 
 
 def child_env(base: dict | None = None) -> dict:
@@ -65,8 +70,9 @@ def engine_prefix(engine: str) -> list[str] | None:
 
 def cli_version(prefix: list[str]) -> str:
     try:
-        done = subprocess.run([*prefix, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=20, env=child_env(), creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
+        done = subprocess.run([*prefix, "--version"], capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                              encoding="utf-8", errors="replace", timeout=20, env=child_env(),
+                              creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     words = (done.stdout or "").split()
@@ -74,6 +80,18 @@ def cli_version(prefix: list[str]) -> str:
         return ""
     # "2.1.296 (Claude Code)" / "codex-cli 0.162.0-alpha.17.2"
     return words[0] if words[0][:1].isdigit() else words[-1]
+
+
+def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
+    """지금 설치된 실행 파일로 이 엔진을 써도 되나 — 차례마다 실행 직전에 다시 본다(이어 가기 포함). None 이면 된다."""
+    if not prefix:
+        return "이 PC 에 설치되어 있지 않습니다"
+    version = cli_version(prefix)
+    if not version:
+        return "판을 확인하지 못했습니다"
+    if engine == "codex" and version not in CODEX_VERIFIED:
+        return f"점검 필요 — 확인하지 않은 판입니다({version})"
+    return None
 
 
 def _toml_literal(value: str) -> str:
@@ -140,7 +158,7 @@ def _api():
 class JobProcess:
     """CLI 한 번 = Job 하나. 닫으면 CLI 와 그 자식(MCP 어댑터 포함)이 함께 꺼진다(탈출 허용 없음)."""
 
-    def __init__(self, command: list[str], cwd: Path, env: dict, stdin: bytes):
+    def __init__(self, command: list[str], cwd: Path, env: dict):
         if os.name != "nt":
             raise RuntimeError("Ask Agent 칸은 Windows 에서만 실행합니다.")
         self._k32, ntdll = _api()
@@ -168,11 +186,16 @@ class JobProcess:
             raise OSError("실행을 시작하지 못했습니다.")
         self.stderr = bytearray()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
-        try:
-            self.proc.stdin.write(stdin)
-            self.proc.stdin.close()
-        except OSError:
-            pass  # 바로 끝난 프로세스 — 종료 코드와 stderr 로 판단한다
+
+    def feed(self, data: bytes) -> None:
+        """stdin 쓰기는 따로 — 읽지 않는 CLI 때문에 막혀도 실행 스레드·시간 제한은 계속 돈다."""
+        def write():
+            try:
+                self.proc.stdin.write(data)
+                self.proc.stdin.close()
+            except (OSError, ValueError):
+                pass  # 이미 끝났거나 끈 프로세스 — 종료 코드·출력으로 판단한다
+        threading.Thread(target=write, daemon=True).start()
 
     def _drain_stderr(self) -> None:
         for chunk in iter(lambda: self.proc.stderr.read(4096), b""):
@@ -180,8 +203,26 @@ class JobProcess:
                 self.stderr.extend(chunk[: MAX_STDERR - len(self.stderr)])
 
     def lines(self):
-        for raw in self.proc.stdout:
+        """줄마다 — 읽는 단계에서 줄 크기를 끊고(넘는 줄은 버림) 차례 전체 출력이 상한을 넘으면 OutputLimit."""
+        stream, total = self.proc.stdout, 0
+        while True:
+            raw = stream.readline(MAX_LINE + 1)
+            if not raw:
+                return
+            total += len(raw)
+            if total > MAX_TOTAL:
+                raise OutputLimit()
+            if len(raw) > MAX_LINE and not raw.endswith(b"\n"):
+                while raw and not raw.endswith(b"\n"):
+                    raw = stream.readline(MAX_LINE + 1)
+                    total += len(raw)
+                    if total > MAX_TOTAL:
+                        raise OutputLimit()
+                continue
             yield raw
+
+    def exited(self) -> bool:
+        return self.proc.poll() is not None
 
     def pids(self) -> list[int]:
         with self._lock:
@@ -193,20 +234,27 @@ class JobProcess:
             count = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD))[1]
             return [int(buf[1 + index]) for index in range(count)]  # DWORD 2개 = ulonglong 1칸 뒤부터 id
 
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._job is None
+
     def terminate(self) -> None:
         with self._lock:
             if self._job:
                 self._k32.TerminateJobObject(self._job, 1)
 
     def reap(self, timeout: float = 15.0) -> bool:
-        """트리를 끄고 남은 프로세스가 0이 될 때까지 기다린다 — 0을 확인하기 전엔 차례를 풀지 않는다."""
+        """트리를 끄고 남은 프로세스가 0이 될 때까지 기다린다. 0을 확인했을 때만 핸들을 닫고 True —
+        못 했으면 핸들을 쥔 채 False(부르는 쪽이 차례를 풀지 않고 다시 회수한다)."""
         self.terminate()
         deadline = time.monotonic() + timeout
         while self.pids() and time.monotonic() < deadline:
             time.sleep(0.1)
-        empty = not self.pids()
+        if self.pids():
+            return False
         self._close_job()
-        return empty
+        return True
 
     def _close_job(self) -> None:
         with self._lock:

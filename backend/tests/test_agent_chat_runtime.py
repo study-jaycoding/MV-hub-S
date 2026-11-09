@@ -150,7 +150,8 @@ def test_claude_turn_streams_and_passes_korean_stdin(runtime, monkeypatch):
     assert finish(path, turn["id"])["status"] == "done"
     events = store.events_after(path, turn["id"])
     kinds = [event["kind"] for event in events]
-    assert kinds[:2] == ["text_delta", "text_delta"] and "tool" in kinds and kinds[-1] == "state"
+    assert kinds[0] == "text_delta" and events[0]["text"] == "받은 말: "  # 글 조각은 모아서 한 사건으로
+    assert "tool" in kinds and kinds[-1] == "state" and "reason" not in events[-1]
     assert any(event["kind"] == "text" and event["text"].endswith("고양이 그려 줘") for event in events)
     assert store.get_conversation(path, conv["id"])["cli_session_id"] == "S-claude-1"
 
@@ -241,6 +242,107 @@ def test_failed_resume_marks_conversation_not_resumable(runtime, monkeypatch):
     assert store.get_conversation(path, conv["id"])["resumable"] is False
 
 
+@windows
+def test_unverified_codex_version_is_refused_even_when_resuming(runtime, monkeypatch):
+    service, identity, _ = runtime
+    monkeypatch.setenv("FAKE_AGENT_VERSION", "0.170.0")
+    assert "점검 필요" in service.engine_problem("codex")
+    path = identity.db_file()
+    conv = store.create_conversation(path, engine="codex", model="gpt-6-astra", effort="low", client_id="client-1",
+                                     mcp_entry={"command": sys.executable, "args": []}, title="t")
+    store.update_conversation(path, conv["id"], cli_session_id="T-old")
+    _, _, turn = start(service, identity, monkeypatch, "codex_ok", engine="codex", conv=store.get_conversation(path, conv["id"]))
+    done = finish(path, turn["id"])
+    assert done["status"] == "failed" and done["reason"] == "engine_locked"
+    assert "text" not in [event["kind"] for event in store.events_after(path, turn["id"])]
+
+
+@windows
+def test_cancel_while_starting_never_leaves_cli_running(runtime, monkeypatch):
+    service, identity, tmp = runtime
+    real = process.JobProcess
+    started = threading.Event()
+
+    class SlowStart(real):
+        def __init__(self, *args, **kwargs):
+            started.set()
+            time.sleep(1.0)  # 이 사이에 취소가 온다
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(process, "JobProcess", SlowStart)
+    path, _, turn = start(service, identity, monkeypatch, "claude_slow")
+    assert started.wait(10)
+    service.cancel(identity, turn["id"])
+    assert finish(path, turn["id"])["status"] == "cancelled"
+    pidfile = tmp / "grandchild.pid"
+    assert not pidfile.exists() or not alive(int(pidfile.read_text(encoding="utf-8") or 0))
+
+
+@windows
+def test_unreaped_tree_keeps_turn_open_until_reaped(runtime, monkeypatch):
+    service, identity, tmp = runtime
+    real_reap = process.JobProcess.reap
+    attempts = []
+
+    def flaky(self, timeout=15.0):
+        attempts.append(1)
+        if len(attempts) == 1:
+            self.terminate()
+            return False  # 첫 회수는 실패한 것처럼
+        return real_reap(self, timeout)
+
+    monkeypatch.setattr(process.JobProcess, "reap", flaky)
+    monkeypatch.setattr(chat, "_REAP_RETRY_SECONDS", 1.0)
+    path, conv, turn = start(service, identity, monkeypatch, "claude_slow")
+    wait_file(tmp / "grandchild.pid")
+    service.cancel(identity, turn["id"])
+    time.sleep(0.4)
+    assert store.get_turn(path, turn["id"])["status"] == "cancelling"
+    assert service.cancel(identity, turn["id"]) == "cancelling"  # 두 번째 취소도 실행 정보가 있어 '끝남'으로 바꾸지 않는다
+    with pytest.raises(store.Busy):
+        store.claim_turn(path, conversation_id=conv["id"], idempotency_key="key-busy-2", text="x", context={})
+    assert finish(path, turn["id"])["status"] == "cancelled" and len(attempts) >= 2
+
+
+@windows
+def test_account_change_without_output_interrupts(runtime, monkeypatch):
+    service, identity, tmp = runtime
+    flag = {"lost": False}
+
+    def still():
+        if flag["lost"]:
+            raise RuntimeError("account switched")
+
+    path, _, turn = start(service, identity, monkeypatch, "claude_slow", still=still)
+    grandchild = wait_file(tmp / "grandchild.pid")
+    flag["lost"] = True
+    done = finish(path, turn["id"], timeout=20)
+    assert done["status"] == "interrupted" and done["reason"] == "account_changed"
+    assert not alive(grandchild)
+
+
+@windows
+def test_parent_exit_with_orphan_holding_stdout_is_reaped(runtime, monkeypatch):
+    service, identity, tmp = runtime
+    started = time.monotonic()
+    path, _, turn = start(service, identity, monkeypatch, "orphan_stdout")
+    done = finish(path, turn["id"], timeout=30)
+    assert done["status"] == "done" and time.monotonic() - started < 20
+    assert not alive(int((tmp / "grandchild.pid").read_text(encoding="utf-8")))
+
+
+@windows
+def test_event_flood_and_huge_line_are_bounded(runtime, monkeypatch):
+    service, identity, _ = runtime
+    path, _, turn = start(service, identity, monkeypatch, "flood")
+    done = finish(path, turn["id"])
+    assert done["status"] == "failed" and done["reason"] == "too_many_events"
+    assert len(store.events_after(path, turn["id"], 0, limit=10_000)) <= chat.MAX_EVENTS + 5
+    path, _, turn = start(service, identity, monkeypatch, "long_line")
+    assert finish(path, turn["id"])["status"] == "done"
+    assert [event["text"] for event in store.events_after(path, turn["id"]) if event["kind"] == "text"] == ["긴 줄 뒤"]
+
+
 def test_long_poll_wakes_on_new_event_and_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     service = chat.AgentChat()
@@ -258,7 +360,14 @@ def test_long_poll_wakes_on_new_event_and_times_out(tmp_path, monkeypatch):
     started = time.monotonic()
     result = asyncio.run(service.wait_events(identity, turn["id"], 0, timeout=10))
     assert [event["text"] for event in result["events"]] == ["도착"] and time.monotonic() - started < 5
+    assert result["more"] is False
     empty = asyncio.run(service.wait_events(identity, turn["id"], result["last_seq"], timeout=0.3))
     assert empty["events"] == [] and empty["status"] == "running" and empty["last_seq"] == result["last_seq"]
+    monkeypatch.setattr(chat, "EVENT_PAGE", 2)  # 끝난 차례라도 더 남았으면 more
+    for index in range(3):
+        store.append_event(path, turn["id"], "text", {"text": str(index)})
+    store.set_status(path, turn["id"], "done")
+    page = asyncio.run(service.wait_events(identity, turn["id"], result["last_seq"], timeout=0.3))
+    assert page["status"] == "done" and page["more"] is True and len(page["events"]) == 2
     missing = asyncio.run(service.wait_events(identity, str(uuid4()), 0, timeout=0.1))
     assert missing["status"] == "missing"

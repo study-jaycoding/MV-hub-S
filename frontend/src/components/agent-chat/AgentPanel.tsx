@@ -76,7 +76,7 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
     <aside className="agent-panel" aria-label="Ask Agent">
       <header className="agent-head">
         <div className="agent-history-wrap" ref={historyRef}>
-          <button type="button" className="agent-title" onClick={openHistory} disabled={chat.running}
+          <button type="button" className="agent-title" onClick={openHistory} disabled={chat.running || chat.sending}
             aria-haspopup="true" aria-expanded={menu === "history"} aria-label={t("지난 대화 보기")}>
             <span>{chat.title || t("새 대화")}</span>
             <Chevron />
@@ -99,7 +99,7 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
           )}
         </div>
         <div className="agent-head-actions">
-          <button type="button" className="agent-ic" onClick={() => { chat.newConversation(); setText(""); }} disabled={chat.running}
+          <button type="button" className="agent-ic" onClick={() => { chat.newConversation(); setText(""); }} disabled={chat.running || chat.sending}
             title={t("새 대화")} aria-label={t("새 대화")}>
             <NewChatIcon />
           </button>
@@ -136,7 +136,7 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
           onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
         <div className="agent-composer-foot">
           <div className="agent-model-wrap" ref={modelRef}>
-            <button type="button" className="agent-model-btn" disabled={!chat.choice || chat.running}
+            <button type="button" className="agent-model-btn" disabled={!chat.choice || chat.running || chat.sending}
               onClick={() => setMenu(menu === "model" ? null : "model")} aria-haspopup="true" aria-expanded={menu === "model"}
               aria-label={t("모델과 생각 깊이 고르기")}>
               <span>{modelLabel}</span>

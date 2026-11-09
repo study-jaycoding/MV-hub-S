@@ -154,7 +154,7 @@ export function useAgentChat(context: AgentContext) {
         if (r.events.length) setMessages((m) => r.events.reduce((acc, ev) => applyAgentEvent(acc, ev, turnId), m));
         seq = Math.max(seq, r.last_seq);
         setTurn({ id: turnId, status: r.status });
-        if (TERMINAL_TURN.has(r.status)) break;
+        if (TERMINAL_TURN.has(r.status) && !r.more) break; // 끝났어도 남은 사건(계획 카드 등)은 마저 받는다
       } catch (e) {
         if (controller.signal.aborted || stale()) return;
         failures += 1;
@@ -171,6 +171,7 @@ export function useAgentChat(context: AgentContext) {
   }, [fail]);
 
   const openConversation = useCallback(async (id: string) => {
+    if (busy.current) return; // 보내는 중·진행 중엔 대화를 바꾸지 않는다 — 허브에서 시작한 차례를 놓치지 않게
     drop();
     setError(null);
     const stale = ticket();
@@ -218,13 +219,15 @@ export function useAgentChat(context: AgentContext) {
   }, []);
 
   const newConversation = useCallback(() => {
+    if (busy.current) return; // 보내는 중·진행 중엔 막는다(단추도 잠긴다)
     drop();
     remember(null);
     setError(null);
   }, [drop]);
 
-  /** 모델·생각 깊이를 고른다. 엔진이 바뀌면 새 대화로 시작한다. */
+  /** 모델·생각 깊이를 고른다. 엔진이 바뀌면 새 대화로 시작한다(보내는 중·진행 중엔 엔진을 바꾸지 않는다). */
   const choose = useCallback((next: AgentChoice) => {
+    if (choice && next.engine !== choice.engine && busy.current) return;
     if (choice && next.engine !== choice.engine && (conversationId || messages.length)) newConversation();
     setChoice(next);
     saveJSON(STORAGE_KEYS.agentPanelModel, next);
@@ -285,7 +288,12 @@ export function useAgentChat(context: AgentContext) {
     try {
       const plan = await agentChatApi.executePlan(planId);
       if (stale()) return;
-      setExec(planId, { state: "done" }, { ...plan, plan_id: plan.plan_id || planId });
+      const merged = { ...plan, plan_id: plan.plan_id || planId };
+      // 200 이어도 접수됐다는 뜻은 아니다 — submitted 만 '보냈어요', attention(거절·접수 불명확)은 따로 알린다
+      if (plan.status === "submitted") setExec(planId, { state: "done" }, merged);
+      else setExec(planId, { state: "failed", message: plan.status === "attention"
+        ? "일부 항목을 접수하지 못했거나 접수 여부를 확인하지 못했어요 — 다시 누르지 말고 라이브러리에서 확인하세요"
+        : `실행 상태를 확인하지 못했어요(${plan.status ?? "알 수 없음"}) — 라이브러리에서 확인하세요` }, merged);
     } catch (e) {
       if (stale()) return;
       executing.current.delete(planId);

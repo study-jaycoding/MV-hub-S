@@ -20,6 +20,7 @@ from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..repo import agent_chat as chat_store
 from ..repo import mcp_v2 as mcp_store
+from ..services import agent_chat as chat
 from ..services.agent_chat import MODELS, Identity, service
 from ..services.request_guards import require_loopback_browser_request
 from . import _proxy, mcp, mcp_v2
@@ -88,7 +89,7 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
         found = chat_store.get_conversation(path, str(conversation_id))
         if not found:
             return None
-        turns = [{**turn, "events": chat_store.events_after(path, turn["id"], 0, limit=5000)}
+        turns = [{**turn, "events": chat_store.events_after(path, turn["id"], 0, limit=chat.EVENT_PAGE)}
                  for turn in chat_store.turns_for(path, found["id"])]
         public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable")}
         return {"conversation": public, "turns": turns}
@@ -122,6 +123,10 @@ async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
         return {"turn_id": existing["id"], "conversation_id": existing["conversation_id"], "status": existing["status"]}
     if await asyncio.to_thread(chat_store.has_active, path):
         raise HTTPException(409, "앞 차례가 아직 진행 중입니다.")
+    # 새 대화든 이어 가기든 지금 설치된 판을 다시 본다(실행 직전에도 한 번 더 — 서비스)
+    problem = await asyncio.to_thread(service.engine_problem, body.engine)
+    if problem:
+        raise HTTPException(409, f"이 AI 는 지금 쓸 수 없습니다 — {problem}")
     if body.conversation_id:
         conv = await asyncio.to_thread(chat_store.get_conversation, path, str(body.conversation_id))
         if not conv:
@@ -131,8 +136,6 @@ async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
         if not conv["resumable"]:
             raise HTTPException(409, "이 대화는 이어 갈 수 없어요 · 새 대화로 시작하세요.")
     else:
-        if not await asyncio.to_thread(service.engine_ready, body.engine):
-            raise HTTPException(409, "이 AI 는 지금 쓸 수 없습니다.")
         setup = await mcp.setup(request, identity=None)
         try:
             client_id, entry = await asyncio.to_thread(mcp_v2.issue_panel_client, ctx, setup)

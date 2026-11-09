@@ -145,6 +145,59 @@ describe("Ask Agent 옆 칸", () => {
     expect(panel().textContent).toContain("실행을 보냈어요");
   });
 
+  it("끝난 차례라도 허브가 more 를 주면 남은 사건(계획 카드)을 마저 받는다", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started();
+      if (c.path === "/turns/t1/events?after=0") return json({ events: [{ seq: 1, kind: "text", text: "앞부분" }], status: "done", last_seq: 1, more: true });
+      if (c.path === "/turns/t1/events?after=1") return json({ events: [{ seq: 2, kind: "plan", plan: PLAN }], status: "done", last_seq: 2, more: false });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    type("계획 세워 줘");
+    enter();
+    await flush();
+    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장");
+    expect(calls.filter((c) => c.path.startsWith("/turns/t1/events")).map((c) => c.path)).toEqual(
+      ["/turns/t1/events?after=0", "/turns/t1/events?after=1"]);
+  });
+
+  it("[실행] 응답이 attention(거절·접수 불명확)이면 '보냈어요' 대신 라이브러리 확인 안내", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started();
+      if (c.path === "/plans/p1/execute") return json({ ...PLAN, status: "attention" });
+      return json({ events: [{ seq: 1, kind: "plan", plan: PLAN }], status: "done", last_seq: 1 });
+    };
+    await mount();
+    type("계획 세워 줘");
+    enter();
+    await flush();
+    act(() => host.querySelector<HTMLButtonElement>(".agent-plan-run")!.click());
+    await flush();
+    expect(panel().textContent).not.toContain("실행을 보냈어요");
+    expect(panel().textContent).toContain("라이브러리에서 확인하세요");
+  });
+
+  it("보내는 중에는 새 대화·지난 대화·모델 단추가 잠겨 허브에서 시작한 차례를 놓치지 않는다", async () => {
+    const gate = deferred<Response>();
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return gate.promise;
+      return new Promise<Response>(() => {});
+    };
+    await mount();
+    type("하나");
+    enter();
+    await flush(3);
+    expect(button("새 대화")!.disabled).toBe(true);
+    expect(button("지난 대화 보기")!.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".agent-model-btn")!.disabled).toBe(true);
+    gate.resolve(started());
+    await flush();
+    expect(texts(".agent-user")).toEqual(["하나"]); // 접수 응답을 버리지 않고 그 차례를 따라간다
+  });
+
   it("[고치기]는 입력칸을 채운다", async () => {
     route = (c) => {
       if (c.path === "/session") return session();

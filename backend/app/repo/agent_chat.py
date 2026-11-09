@@ -69,6 +69,7 @@ def connect(path: Path):
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA synchronous=NORMAL")  # WAL 이라 커밋마다 디스크 동기화는 필요 없다(칸 기록 — 잃어도 화면 기록일 뿐)
         yield conn
     finally:
         conn.close()

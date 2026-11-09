@@ -33,6 +33,9 @@ def grandchild_and_wait():
 
 
 def main():
+    if "--version" in sys.argv:
+        print(os.environ.get("FAKE_AGENT_VERSION", "0.162.0-alpha.17.2"))
+        return
     prompt = sys.stdin.buffer.read().decode("utf-8")
     user = prompt.rsplit("[사용자]\n", 1)[-1].strip()
     scenario = os.environ.get("FAKE_AGENT_SCENARIO", "claude_ok")
@@ -55,6 +58,24 @@ def main():
         grandchild_and_wait()
     elif scenario == "silent":
         return
+    elif scenario == "orphan_stdout":  # 부모는 끝나는데 손자가 같은 stdout 을 쥐고 남는다
+        init()
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdout=sys.stdout)
+        path = os.environ.get("FAKE_AGENT_PIDFILE")
+        if path:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(str(child.pid))
+        out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
+    elif scenario == "flood":
+        init()
+        for index in range(5000):
+            out({"type": "assistant", "parent_tool_use_id": None, "message": {"content": [{"type": "text", "text": f"줄 {index}"}]}})
+        out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
+    elif scenario == "long_line":
+        init()
+        sys.stdout.write("x" * (2 * 1024 * 1024) + "\n")
+        out({"type": "assistant", "parent_tool_use_id": None, "message": {"content": [{"type": "text", "text": "긴 줄 뒤"}]}})
+        out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
     elif scenario == "codex_ok":
         out({"type": "thread.started", "thread_id": "T-codex-1"})
         out({"type": "turn.started"})
