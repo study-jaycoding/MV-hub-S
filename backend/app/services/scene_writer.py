@@ -79,6 +79,17 @@ class SceneWriter:
         with self.locked(owner) as key:
             yield self.require(key, token)
 
+    @contextmanager
+    def closing(self, owner, token):
+        """Commit pending edits before another writer can claim the account.
+
+        A failed write keeps the lease. Do not recheck its clock after the DB
+        commit: the same lock has excluded renewal, takeover and account changes.
+        """
+        with self.locked(owner) as key:
+            yield self.require(key, token)
+            self._leases.pop(key, None)
+
     def action(self, owner, action, browser_id='', tab_id='', token=None, request_id=None):
         with self.locked(owner) as key:
             lease = self.current(key)

@@ -47,6 +47,137 @@ def test_flag_off_and_auth_on_keep_legacy_contract(client, monkeypatch):
     assert client.put('/api/scenes/backup', json={'upserts': [scene(name='auth')]}).status_code == 200
 
 
+def test_close_persists_final_edit_delete_order_then_releases(client):
+    seed(items=[scene('s'), scene('gone'), scene('last')])
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    before = client.get('/api/scenes/notebook').json()
+    order = before['order']
+    result = client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'close',
+        'upserts': [{**scene(name='last edit'), 'base': base()}],
+        'deletes': [{'id': 'gone', 'intent_id': 'delete-on-close', 'base': base('gone')}],
+        'order': {**order, 'ids': ['last', 's']},
+    })
+    assert result.status_code == 200, result.text
+    assert result.json()['released']
+    assert result.headers['X-MVHub-Scene-Writer-Changed'] == '1'
+    # A second browser can claim only after the delta is durable.
+    assert client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'b', 'tab_id': 'b'}).status_code == 200
+    after = client.get('/api/scenes/notebook').json()
+    live = {item['id']: json.loads(item['data']) for item in after['items'] if not item['deleted_at']}
+    assert live['s']['name'] == 'last edit'
+    assert 'gone' not in live
+    assert after['order']['ids'] == ['last', 's']
+    # Late release/write, even an exact close retry, cannot affect the new owner.
+    assert client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'late', 'upserts': [scene(name='late')],
+    }).status_code == 409
+
+
+def test_failed_close_rolls_back_and_keeps_lease(client):
+    seed()
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    order = client.get('/api/scenes/notebook').json()['order']
+    result = client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'bad-close', 'upserts': [{**scene(name='bad'), 'base': base()}],
+        'order': {**order, 'ids': ['s', 's']},
+    })
+    assert result.status_code == 400
+    assert json.loads(store.notebook('u')['items'][0]['data'])['name'] == 'X'
+    assert client.post('/api/scenes/writer', json={'action': 'renew', 'token': token}).status_code == 200
+    with db.get_connection() as conn:
+        assert not conn.execute("SELECT 1 FROM scene_request_receipt WHERE request_id='bad-close'").fetchone()
+
+
+def test_close_reuses_saved_request_receipt_before_releasing(client):
+    seed()
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    payload = {'token': token, 'request_id': 'lost-response', 'upserts': [{**scene(name='saved'), 'base': base()}]}
+    first = client.put('/api/scenes/backup', json=payload)
+    assert first.status_code == 200
+    closed = client.post('/api/scenes/notebook/close', json=payload)
+    assert closed.status_code == 200, closed.text
+    assert closed.json() == {**first.json(), 'released': True}
+    assert client.post('/api/scenes/writer', json={'action': 'status'}).json()['writer'] is None
+
+
+@pytest.mark.parametrize('already_saved', [False, True])
+def test_close_replays_inflight_edit_and_rebases_final_edit_delete_order(client, already_saved):
+    seed(items=[scene('s'), scene('gone'), scene('last')])
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    original, gone = base(), base('gone')
+    order = client.get('/api/scenes/notebook').json()['order']
+    pending = {'token': token, 'request_id': 'in-flight',
+        'upserts': [{**scene(name='middle'), 'base': original}, {**scene('gone', name='middle'), 'base': gone}],
+        'order': {**order, 'ids': ['last', 'gone', 's']}}
+    if already_saved:
+        assert client.put('/api/scenes/backup', json=pending).status_code == 200
+    closed = client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'close-after-inflight', 'pending_requests': [pending],
+        'upserts': [{**scene(name='final'), 'base': original}],
+        'deletes': [{'id': 'gone', 'intent_id': 'final-delete', 'base': gone}],
+        'order': {**order, 'ids': ['s', 'last']},
+    })
+    assert closed.status_code == 200, closed.text
+    assert closed.json()['results'][0]['status'] == 'saved'
+    assert closed.json()['deletes'][0]['status'] == 'deleted'
+    state = store.notebook('u')
+    assert len(state['items']) == 3  # original rows only, no conflict copies
+    assert json.loads(next(item for item in state['items'] if item['id'] == 's')['data'])['name'] == 'final'
+    assert state['order']['ids'] == ['s', 'last']
+
+
+def test_close_pending_and_final_failure_are_one_transaction(client):
+    seed()
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    original = base()
+    pending = {'request_id': 'pending-rollback', 'upserts': [{**scene(name='middle'), 'base': original}]}
+    order = client.get('/api/scenes/notebook').json()['order']
+    closed = client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'final-rollback', 'pending_requests': [pending],
+        'upserts': [{**scene(name='final'), 'base': original}], 'order': {**order, 'ids': ['s', 's']},
+    })
+    assert closed.status_code == 400
+    assert base() == original
+    assert client.post('/api/scenes/writer', json={'action': 'renew', 'token': token}).status_code == 200
+    with db.get_connection() as conn:
+        assert not conn.execute("SELECT 1 FROM scene_request_receipt WHERE request_id IN ('pending-rollback','final-rollback')").fetchone()
+
+
+@pytest.mark.parametrize('order_proof', ['exact', 'absent', 'mismatch'])
+def test_close_preserves_last_reorder_after_inflight_add_advanced_order(client, order_proof):
+    seed(items=[scene('s'), scene('last')])
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    original_order = client.get('/api/scenes/notebook').json()['order']
+    pending_add = {'request_id': 'add-before-close', 'upserts': [scene('new')]}
+    add_receipt = client.put('/api/scenes/backup', json={**pending_add, 'token': token}).json()
+    # Normal sync has already persisted its revised outgoing order request,
+    # but local metadata still has the pre-upload frozen order base.
+    pending_order = {'request_id': 'order-before-close', 'order': {
+        **add_receipt['order'], 'ids': ['s', 'new', 'last'],
+    }}
+    assert client.put('/api/scenes/backup', json={**pending_order, 'token': token}).status_code == 200
+    payload = {'token': token, 'request_id': 'close-last-order',
+        'pending_requests': [pending_add, pending_order],
+        'order': {**original_order, 'ids': ['last', 'new', 's']}}
+    if order_proof != 'absent':
+        payload['pending_order_base'] = {
+            'history_id': original_order['history_id'],
+            'rev': original_order['rev'] + (1 if order_proof == 'mismatch' else 0),
+        }
+    result = client.post('/api/scenes/notebook/close', json=payload)
+    assert result.status_code == 200, result.text
+    expected = ['last', 'new', 's'] if order_proof == 'exact' else ['s', 'new', 'last']
+    assert result.json()['order']['ids'] == expected
+    if order_proof == 'exact':
+        # The same close body can be retried under a new valid lease: rebasing
+        # changes no receipt hash and does not increment the order twice.
+        new_token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+        retried = client.post('/api/scenes/notebook/close', json={**payload, 'token': new_token})
+        assert retried.status_code == 200, retried.text
+        assert retried.json() == result.json()
+
+
 def test_start_oversize_releases_lease_and_keeps_old_rows(client):
     token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'b', 'tab_id': 't'}).json()['token']
     result = client.post('/api/scenes/notebook/start', json={'token': token, 'attempt_id': 'huge', 'expected_count': 1,
@@ -180,6 +311,39 @@ def test_mcp_done_requires_original_scene_receipt_and_is_atomic(notebook_db):
     receipt_scene = scene(name='Y', mcpAttachmentReceipts=['task'])
     assert push('proof', upserts=[{**receipt_scene, 'base': base()}], mcp_complete=['task'])['mcp_done'] == ['task']
     assert push('same', upserts=[{**receipt_scene, 'base': base()}], mcp_complete=['task'])['mcp_done'] == ['task']
+
+
+def test_close_finishes_original_mcp_with_scene_before_release(client):
+    seed()
+    task()
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    result = client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'close-mcp',
+        'upserts': [{**scene(mcpAttachmentReceipts=['task']), 'base': base()}], 'mcp_complete': ['task'],
+    })
+    assert result.status_code == 200, result.text
+    assert result.json()['mcp_done'] == ['task']
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT status FROM mcp_canvas_task WHERE id='task'").fetchone()[0] == 'done'
+    assert client.post('/api/scenes/writer', json={'action': 'status'}).json()['writer'] is None
+
+
+def test_close_replays_pending_delete_and_final_undo(client):
+    seed()
+    original = base()
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    result = client.post('/api/scenes/notebook/close', json={
+        'token': token, 'request_id': 'close-undo',
+        'pending_requests': [{'request_id': 'pending-delete',
+            'deletes': [{'id': 's', 'intent_id': 'd', 'base': original}]}],
+        'upserts': [{**scene(name='undo'), 'base': original, 'revive': True, 'intent_id': 'r'}],
+    })
+    assert result.status_code == 200, result.text
+    assert result.json()['results'][0]['status'] == 'saved'
+    state = store.notebook('u')['items']
+    assert len(state) == 1
+    assert state[0]['deleted_at'] is None
+    assert json.loads(state[0]['data'])['name'] == 'undo'
 
 
 def test_start_cancels_only_hidden_mcp_tasks(notebook_db):

@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canRetryLocalNotebook, SceneWriterClient, type WriterStatus } from "../src/lib/sceneWriter";
 import * as scenes from "../src/lib/scenes";
 import type { NotebookSyncResult } from "../src/lib/sceneNotebook";
+import { joinSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook } from "../src/lib/sceneNotebook";
+import { initSceneStore, resetSceneStoreForTest, setSceneWriteGate, settleSceneStoreForTest } from "../src/lib/sceneStore";
+import { setHubFeatures } from "../src/lib/hubFeatures";
+import { setAccountScope } from "../src/lib/accountScope";
+import { createHash } from "node:crypto";
 
 const ready = { status: "ready" as const, changed: false };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
@@ -39,6 +44,70 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("hub scene writer", () => {
+  async function joinedWriter() {
+    const initial = ["a", "b", "c"].map(id => ({ id, name: id, cards: [], edges: [], created_at: 1 }));
+    setAccountScope(null); setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false);
+    await initSceneStore(() => ({ "local::_none": initial }), null, () => true);
+    await joinSceneNotebook("local", "book", "history", { "local::_none": {
+      scenes: initial, bases: Object.fromEntries(initial.map(scene => [scene.id, { history: "history", rev: 1,
+        hash: createHash("sha256").update(JSON.stringify(scene)).digest("hex") }])), order: { history: "history", rev: 1 },
+    } });
+    const h = harness(); h.account("local");
+    setSceneNotebookTokenProvider(() => h.client.token());
+    h.client.configure(true); await h.client.refresh();
+    return h;
+  }
+  async function closeStore() {
+    await settleSceneStoreForTest(); setSceneNotebookTokenProvider(() => null);
+    setHubFeatures([]); setSceneWriteGate(() => false); resetSceneStoreForTest();
+  }
+  it("pagehide sends the last rename, deletion and tab order together with the release token", async () => {
+    const h = await joinedWriter();
+    try {
+      scenes.updateScene(null, "a", { name: "last rename" });
+      scenes.deleteScene(null, "b");
+      scenes.updateScenesWith(null, current => [current.find(s => s.id === "c")!, current.find(s => s.id === "a")!]);
+      const send = vi.fn(); h.client.releaseBeacon(send);
+      expect(send).toHaveBeenCalledOnce();
+      const [body, path, account] = send.mock.calls[0];
+      expect(path).toBe("/api/scenes/notebook/close"); expect(account).toBe("local");
+      const payload = JSON.parse(body);
+      expect(payload.token).toBe("token1");
+      expect(payload.upserts.map((up: { data: string }) => JSON.parse(up.data))).toEqual([expect.objectContaining({ id: "a", name: "last rename" })]);
+      expect(payload.deletes).toEqual([expect.objectContaining({ id: "b", base: expect.objectContaining({ history_id: "history", rev: 1 }) })]);
+      expect(payload.order.ids).toEqual(["c", "a"]);
+      expect(h.client.token()).toBeNull();
+      expect((await syncSceneNotebook()).status).toBe("waiting_token");
+    } finally { await closeStore(); }
+  });
+  it("a UTF-8 close body over 64 KiB releases only and preserves the local edit for reopening", async () => {
+    const h = await joinedWriter();
+    try {
+      const name = "한".repeat(23_000);
+      scenes.updateScene(null, "a", { name });
+      const send = vi.fn(); h.client.releaseBeacon(send);
+      expect(send).toHaveBeenCalledOnce();
+      expect(send.mock.calls[0].slice(1)).toEqual(["/api/scenes/writer", "local"]);
+      expect(JSON.parse(send.mock.calls[0][0])).toEqual({ action: "release", token: "token1" });
+      await settleSceneStoreForTest();
+      expect(scenes.listPersistedScenes(null).find(s => s.id === "a")?.name).toBe(name);
+      expect(h.client.token()).toBeNull();
+    } finally { await closeStore(); }
+  });
+  it("a late synchronization response after the combined close cannot restore upload authority", async () => {
+    const h = await joinedWriter();
+    try {
+      scenes.updateScene(null, "a", { name: "last rename" });
+      const late = deferred<typeof ready>(); h.deps.sync.mockReturnValueOnce(late.promise);
+      const run = h.client.refresh(); await vi.advanceTimersByTimeAsync(0);
+      const send = vi.fn(); h.client.releaseBeacon(send);
+      expect(send.mock.calls[0][1]).toBe("/api/scenes/notebook/close");
+      const generationCalls = h.deps.generation.mock.calls.length;
+      late.resolve(ready); await run;
+      expect(h.client.token()).toBeNull(); expect(h.deps.generation).toHaveBeenCalledTimes(generationCalls);
+      expect((await syncSceneNotebook()).status).toBe("waiting_token");
+    } finally { await closeStore(); }
+  });
   it("an expired token during first sync exits the locked screen with recovery actions", async () => {
     const h = harness(); h.client.configure(true);
     h.deps.sync.mockResolvedValueOnce({ status: "waiting_token", changed: false });
@@ -317,6 +386,59 @@ describe("hub scene writer", () => {
       runtime.signalSceneWriter(); expect(network).not.toHaveBeenCalled();
     } finally {
       features.setHubFeatures([]); window.name = ""; store.resetSceneStoreForTest(); vi.unstubAllGlobals();
+    }
+  });
+  it("hidden flushes and requests a fresh sync, then pagehide makes one keepalive close POST", async () => {
+    vi.resetModules(); window.name = ""; localStorage.clear(); sessionStorage.clear();
+    const events: string[] = [];
+    const sync = vi.fn(async () => { events.push("sync"); return ready; });
+    const closeBody = JSON.stringify({ token: "runtime-token", upserts: [{ id: "a", name: "flushed" }] });
+    const buildClose = vi.fn(() => { events.push("close-body"); return closeBody; });
+    const jsonFetch = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/scenes/notebook/close") return {};
+      if (path !== "/api/scenes/writer") throw new Error(`unexpected ${path}`);
+      const action = JSON.parse(String(init?.body)).action;
+      return { boot_id: "boot", account_epoch: 1, handoff: null, ...(action === "status"
+        ? { writer: null } : { token: "runtime-token", writer: { browser_id: "browser", tab_id: "tab", generation: "g", expires_in_ms: 90000 } }) };
+    });
+    vi.doMock("../src/lib/http", async () => ({ ...await vi.importActual<typeof import("../src/lib/http")>("../src/lib/http"), jsonFetch, getApiPause: () => false }));
+    vi.doMock("../src/lib/popupWindows", async () => ({ ...await vi.importActual<typeof import("../src/lib/popupWindows")>("../src/lib/popupWindows"),
+      hasProfileSceneWriter: () => true, isCanvasWindow: () => false, collectCanvasForWriter: async () => true,
+      subscribeProfileSceneWriter: () => () => {}, setHubCanvasPaused: () => {},
+    }));
+    vi.doMock("../src/lib/sceneNotebook", async () => ({ ...await vi.importActual<typeof import("../src/lib/sceneNotebook")>("../src/lib/sceneNotebook"),
+      syncSceneNotebook: sync, buildSceneNotebookClose: buildClose,
+    }));
+    vi.doMock("../src/lib/sceneStore", async () => ({ ...await vi.importActual<typeof import("../src/lib/sceneStore")>("../src/lib/sceneStore"),
+      settleSceneWrites: async (_ms: number, flush?: () => void) => { flush?.(); return true; },
+    }));
+    const listeners = new Map<string, EventListenerOrEventListenerObject>();
+    vi.spyOn(window, "addEventListener").mockImplementation((name, callback) => { if (callback) listeners.set(`window:${name}`, callback); });
+    vi.spyOn(document, "addEventListener").mockImplementation((name, callback) => { if (callback) listeners.set(`document:${name}`, callback); });
+    vi.stubGlobal("BroadcastChannel", class { postMessage() {} close() {} });
+    const beacon = vi.fn(); Object.defineProperty(navigator, "sendBeacon", { configurable: true, value: beacon });
+    const features = await import("../src/lib/hubFeatures");
+    try {
+      features.setHubFeatures(["scene_writer_v1"]);
+      const runtime = await import("../src/lib/sceneWriter");
+      runtime.setSceneWriterFlush(() => events.push("flush")); runtime.startSceneWriter();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runtime.getSceneWriterView().mode).toBe("writer");
+      events.length = 0; sync.mockClear(); jsonFetch.mockClear();
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      (listeners.get("document:visibilitychange") as EventListener)(new Event("visibilitychange"));
+      expect(events).toEqual(["flush", "sync"]); expect(sync).toHaveBeenCalledWith({ fresh: true });
+      events.length = 0;
+      (listeners.get("window:pagehide") as EventListener)(new Event("pagehide"));
+      expect(events).toEqual(["flush", "close-body"]);
+      expect(jsonFetch).toHaveBeenCalledOnce(); expect(beacon).not.toHaveBeenCalled();
+      expect(jsonFetch).toHaveBeenCalledWith("/api/scenes/notebook/close", expect.objectContaining({
+        method: "POST", body: closeBody, keepalive: true, headers: { "X-MVHub-Expect-Account": "local" },
+      }));
+    } finally {
+      vi.doUnmock("../src/lib/http"); vi.doUnmock("../src/lib/popupWindows");
+      vi.doUnmock("../src/lib/sceneNotebook"); vi.doUnmock("../src/lib/sceneStore");
+      Reflect.deleteProperty(navigator, "sendBeacon"); vi.unstubAllGlobals(); vi.resetModules();
     }
   });
 });

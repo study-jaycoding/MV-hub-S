@@ -2,6 +2,7 @@
 import {
   notebookKey as key, sceneNotebookTransaction,
   holdNotebookWrites, newSceneIntentId,
+  readSceneStoreForClose,
   type SceneBase, type SceneIntent, type SceneOrderBase, type SceneOrderState,
 } from "./sceneStore";
 import { makeLocalNotebookCopy, readStoredScene, type Scene, type ScenesByProject } from "./scenes";
@@ -10,7 +11,7 @@ import type { SceneAbsorbConflict } from "./sceneAbsorb";
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
 import { hubHasFeature, EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
-import { sha256Hex } from "./editShare";
+import { sha256Hex, sha256Js } from "./editShare";
 
 export type { SceneBase, SceneIntent, SceneOrderBase, SceneOrderState } from "./sceneStore";
 export interface NotebookSceneState {
@@ -289,6 +290,48 @@ const emptyBucket = (): NotebookBucket => ({ scenes: [], states: {}, order: empt
 const fromBase = (base: WireBase): SceneBase => ({ history: base.history_id, rev: base.rev, hash: base.hash });
 const toBase = (base: SceneBase | null): WireBase | null => base && ({ history_id: base.history, rev: base.rev, hash: base.hash });
 const bytes = (text: string): number => new TextEncoder().encode(text).byteLength;
+
+/** pagehide에서는 await하지 않는다. 로컬 판/의도를 지우지 않고 마지막 동기 편집만 보낸다.
+ * 진행 중 PUT은 같은 요청 id로 먼저 확인해, 닫기 요청이 그 영수증 판을 이어받게 한다. */
+export function buildSceneNotebookClose(lease: NotebookToken): string | null {
+  if (!hubHasFeature(SCENE_WRITER_FEATURE) || lease.account !== getAccountNamespace()) return null;
+  const current = tokenProvider();
+  if (current?.token !== lease.token || current.generation !== lease.generation || current.account !== lease.account) return null;
+  const snapshot = readSceneStoreForClose();
+  if (!snapshot || !snapshot.meta[key("nj", lease.account)]) return null;
+  const bucket = `${lease.account}::_none`, scenes = snapshot.scenes[bucket] ?? [];
+  const order = (snapshot.meta[key("ob", bucket)] as SceneOrderState | undefined) ?? emptyOrder();
+  if (!order.base) return null;
+  const pending = snapshot.meta[key("nw", lease.account)] as PendingWrite | undefined;
+  if (pending && pending.history !== order.base.history) return null;
+  const pendingIds = new Set(pending?.requests.flatMap((r) => [...r.upserts, ...r.deletes].map((item) => item.id)) ?? []);
+  const payload: Payload = { request_id: newSceneIntentId(), project_id: "", upserts: [], deletes: [] };
+  for (const scene of scenes) {
+    if (scene.localNotebookCopy === "upload_failed") continue;
+    const state = stateOf(snapshot.scenes, snapshot.meta, bucket, scene.id), text = state.text!;
+    const hash = sha256Js(new TextEncoder().encode(text));
+    if (hash === state.base?.hash && !state.revival && !pendingIds.has(scene.id) && !needsMcpConfirmation(lease.account, scene)) continue;
+    payload.upserts.push({ id: scene.id, name: scene.name, data: text, base: toBase(state.base),
+      ...(state.revival ? { revive: true, intent_id: state.revival.intentId } : {}) });
+  }
+  for (const [name, value] of Object.entries(snapshot.meta)) {
+    if (!name.startsWith('["d",')) continue;
+    const [, scope, id] = JSON.parse(name) as string[];
+    if (scope !== bucket) continue;
+    const intent = value as SceneIntent;
+    payload.deletes.push({ id, base: toBase(intent.base), intent_id: intent.intentId });
+  }
+  if (order.dirty) payload.order = { ids: scenes.filter((s) => s.localNotebookCopy !== "upload_failed").map((s) => s.id),
+    history_id: order.base.history, rev: order.base.rev };
+  payload.mcp_complete = [...new Set(payload.upserts.flatMap((up) => (JSON.parse(up.data) as Scene).mcpAttachmentReceipts ?? []))];
+  if (!payload.upserts.length && !payload.deletes.length && !payload.order && !pending?.requests.length) return null;
+  if (payload.upserts.length > 200 || payload.deletes.length > 500 || payload.mcp_complete.length > 500 || (pending?.requests.length ?? 0) > 200) return null;
+  const pendingOrderBase = pending?.orderCanAdvance && equal(order.base, pending.frozen.order.base)
+    ? { history_id: order.base.history, rev: order.base.rev } : null;
+  const body = JSON.stringify({ ...payload, token: lease.token, pending_requests: pending?.requests ?? [], pending_order_base: pendingOrderBase });
+  // keepalive의 전체 본문 한도. 일부 씬만 보내고 정상 인계로 오해시키지 않는다.
+  return bytes(body) <= 64 * 1024 ? body : null;
+}
 async function fingerprint(text: string): Promise<string> {
   return sha256Hex(text); // HTTP 문맥도 기존의 검증된 JS SHA-256 대체 경로를 쓴다.
 }

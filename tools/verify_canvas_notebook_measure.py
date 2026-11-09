@@ -9,6 +9,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+from urllib.parse import urlsplit
 
 CASES = {
     "cross_browser": {"closed_before_open", "content", "order", "deletion"},
@@ -33,8 +34,19 @@ def verify(report: dict) -> list[str]:
     if not isinstance(case, str) or case not in CASES:
         return errors + ["unknown case"]
     safety = report.get("isolation", {})
-    if not isinstance(safety, dict) or safety.get("shared_url") != "http://127.0.0.1:9" or safety.get("has_token") is not False or safety.get("cli_available") is not False:
-        errors.append("isolated shared-server status and health evidence required")
+    if not isinstance(safety, dict):
+        safety = {}
+    try:
+        shared = urlsplit(safety.get("shared_url", ""))
+        loopback = (shared.scheme == "http" and shared.hostname == "127.0.0.1" and shared.port is not None
+                    and 1024 <= shared.port <= 65535 and shared.port not in (8010, 8012)
+                    and not (shared.username or shared.password or shared.path or shared.query or shared.fragment))
+    except (TypeError, ValueError, AttributeError):
+        loopback = False
+    if (not loopback or safety.get("shared_url") != safety.get("owned_shared_url")
+            or safety.get("has_token") is not True or safety.get("cli_available") is not False
+            or any(safety.get(key) is not True for key in ("shared_process_owned", "shared_auth_enabled", "ephemeral_admin", "token_verified"))):
+        errors.append("owned loopback S with verified ephemeral-admin session and CLI isolation required")
     profiles = report.get("profiles", [])
     if not isinstance(profiles, list) or len(profiles) != 2 or not all(isinstance(p, str) and p for p in profiles) or len(set(profiles)) != 2:
         errors.append("two distinct Chrome profiles required")

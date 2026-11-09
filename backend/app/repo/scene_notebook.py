@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import json
 import secrets
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 
 from ..db import get_connection
 from .scenes_backup import MAX_SCENE_BYTES, MAX_SCENE_UPSERTS, MAX_SCENE_DELETES, MAX_SYNC_TOTAL_BYTES, _hash, _fork_copy
@@ -264,7 +265,7 @@ def start(owner, lease_id, body):
         return result
 
 
-def sync(owner, project, payload):
+def sync(owner, project, payload, *, conn=None, receipt_payload=None):
     upserts, deletes = payload.get('upserts', []), payload.get('deletes', [])
     if len(upserts) > MAX_SCENE_UPSERTS or len(deletes) > MAX_SCENE_DELETES:
         raise ValueError('scene batch limit exceeded')
@@ -283,8 +284,8 @@ def sync(owner, project, payload):
     request_id = payload.get('request_id')
     if not request_id:
         raise ValueError('request_id required')
-    request_hash = _hash(encode({k: v for k, v in payload.items() if k != 'token'}))
-    with transaction() as conn:
+    request_hash = _hash(encode({k: v for k, v in (receipt_payload if receipt_payload is not None else payload).items() if k != 'token'}))
+    with (nullcontext(conn) if conn is not None else transaction()) as conn:
         if not started(conn, owner):
             raise WriterConflict('notebook_not_started')
         normalize_legacy(conn, owner)
@@ -370,6 +371,48 @@ def sync(owner, project, payload):
             (SELECT rowid FROM scene_request_receipt WHERE owner_uid=? ORDER BY rowid DESC LIMIT ?)''',
             (owner, owner, MAX_REQUEST_RECEIPTS))
         return result
+
+
+def close_sync(owner, project, payload, pending_requests, pending_order_base=None):
+    """Replay unknown replies and the final pagehide delta in one DB transaction.
+
+    Rebase only on the exact predecessor supplied by this browser. This does not
+    turn an unrelated stale edit into an unconditional write. Receipt hashes use
+    the original body, so a lost-reply retry remains independent of the replay.
+    """
+    final = deepcopy(payload)
+    receipt_payload = {**payload, 'pending_requests': pending_requests} if pending_requests else payload
+    if pending_order_base is not None:
+        receipt_payload = {**receipt_payload, 'pending_order_base': pending_order_base}
+    final_order = final.get('order')
+    advance_order = bool(pending_order_base and final_order and all(
+        final_order.get(key) == pending_order_base.get(key) for key in ('history_id', 'rev')))
+    latest_order = None
+    with transaction() as conn:
+        for pending in pending_requests:
+            if pending.get('project_id', '') != project or pending.get('token') not in (None, payload.get('token')):
+                raise ValueError('pending request scope mismatch')
+            if pending.get('deleted_ids') or pending.get('delete_bases') is not None:
+                raise ValueError('new writes require delete intents')
+            receipt = sync(owner, project, pending, conn=conn)
+            if advance_order:
+                advance_order = receipt['history_id'] == pending_order_base['history_id']
+                latest_order = receipt['order']
+            previous = {item['id']: item for item in pending.get('upserts', []) + pending.get('deletes', [])}
+            advances = [item for item in receipt['results']
+                        if item['status'] in ('saved', 'same') and item['target_id'] == item['id']]
+            advances += [item for item in receipt['deletes'] if item['status'] == 'deleted']
+            for saved in advances:
+                source = previous[saved['id']]
+                for item in final.get('upserts', []) + final.get('deletes', []):
+                    if item['id'] == saved['id'] and item.get('base') == source.get('base'):
+                        item['base'] = saved['base']
+            before, after = pending.get('order'), final.get('order')
+            if pending_order_base is None and before and after and all(after.get(key) == before.get(key) for key in ('history_id', 'rev')):
+                after.update({key: receipt['order'][key] for key in ('history_id', 'rev')})
+        if advance_order and latest_order:
+            final_order.update({key: latest_order[key] for key in ('history_id', 'rev')})
+        return sync(owner, project, final, conn=conn, receipt_payload=receipt_payload)
 
 
 def restore_history(conn):

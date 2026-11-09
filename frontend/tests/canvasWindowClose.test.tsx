@@ -284,6 +284,7 @@ describe("닫기 전 확정 — 돌려준 되돌리기 기록과 넘긴 씬이 �
     const sent: Record<string, unknown>[] = [];
     Object.defineProperty(window, "opener", { value: { __mvhubCanvasMemory: { save: () => ({}), load: (memory: Record<string, unknown>) => { sent.push(memory); return []; } } }, configurable: true });
     const box = { session: null as unknown as ReturnType<typeof useCanvasSession>, cards: () => [] as SceneCard[] };
+    const onChange = vi.fn();
     function Harness() {
       const [cards, setCards] = useState<SceneCard[]>([card as SceneCard]);
       const [edges, setEdges] = useState<SceneEdge[]>([]);
@@ -295,7 +296,7 @@ describe("닫기 전 확정 — 돌려준 되돌리기 기록과 넘긴 씬이 �
       const frozenRef = useRef(false);
       const layerMoveRef = useRef<SceneLayerMove | null>(null);
       box.session = useCanvasSession({ sceneId: "s1", initialSnapshot: { cards: [card as SceneCard], edges: [], groups: [] },
-        sceneIdRef, cardsRef, edgesRef, groupsRef, setCards, setEdges, setGroups, frozenRef, layerMoveRef, clearSelection: vi.fn(), onChange: vi.fn() });
+        sceneIdRef, cardsRef, edgesRef, groupsRef, setCards, setEdges, setGroups, frozenRef, layerMoveRef, clearSelection: vi.fn(), onChange });
       box.cards = () => cardsRef.current;
       return null;
     }
@@ -305,8 +306,34 @@ describe("닫기 전 확정 — 돌려준 되돌리기 기록과 넘긴 씬이 �
       const entries = (sent.at(-1)!.sceneHistories as { entries: [string, { undo: { cards: SceneCard[] }[]; redo: unknown[]; lastCommit: { cards: SceneCard[] } }][] }).entries;
       return entries.find(([id]) => id === "s1")![1];
     };
-    return { box, historyOf };
+    return { box, historyOf, popup, onChange };
   }
+
+  it("정상 넘기기는 손을 놓기 전 끌기와 밀린 글을 닫기 확정 경로로 저장한다", async () => {
+    const { box, popup, onChange } = await openBoard();
+    const { useSceneCoordination } = await import("../src/lib/useSceneCoordination");
+    const writer = await import("../src/lib/sceneWriter");
+    let flushWriter: (() => void) | undefined;
+    vi.spyOn(writer, "setSceneWriterFlush").mockImplementation((flush) => { flushWriter = flush; return () => {}; });
+    const bindingHost = document.createElement("div");
+    const bindingRoot = createRoot(bindingHost);
+    function WriterBinding() { useSceneCoordination(); return null; }
+    await act(async () => bindingRoot.render(<WriterBinding />));
+    try {
+      act(() => { box.session.commit({ type: "editCardPrompt", cardId: "card", prompt: "넘기기 직전 글" }); });
+      const move = box.session.gestures.beginCardMove(["card"], []);
+      act(() => { move.preview({ positions: { card: { x: 75, y: 95 } } }); });
+      onChange.mockClear();
+      // sceneWriter가 새 입력을 막은 다음 settleSceneWrites의 flush로 호출한다.
+      popup.setHubCanvasPaused(true);
+      act(() => popup.flushWriterInput(() => flushWriter!()));
+      expect(onChange).toHaveBeenCalled();
+      expect(onChange.mock.calls.at(-1)![0].cards[0]).toMatchObject({ x: 75, y: 95, prompt: "넘기기 직전 글" });
+    } finally {
+      popup.setHubCanvasPaused(false);
+      act(() => bindingRoot.unmount());
+    }
+  });
 
   it("입력 대기 중 닫으면 돌려준 기록의 lastCommit 에 그 글이 있고 되돌리기 단계도 있다", async () => {
     const { box, historyOf } = await openBoard();

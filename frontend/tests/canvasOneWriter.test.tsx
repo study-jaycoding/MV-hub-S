@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const EMPTY_SKIPPED = vi.hoisted(() => new Set<string>());
+const backupState = vi.hoisted(() => ({ only: 0, imported: vi.fn(async () => 0) }));
 const cardLinks = vi.hoisted(() => ({
   items: [] as import("../src/lib/sceneCardLinks").CardLink[],
   loaded: new Set<() => void>(),
@@ -17,8 +18,8 @@ vi.mock("../src/api", () => ({
 }));
 vi.mock("../src/lib/sceneBackup", () => ({
   initSceneBackup: async () => false,
-  countBackupOnlyScenes: async () => 0,
-  importFromBackup: async () => 0,
+  countBackupOnlyScenes: async () => backupState.only,
+  importFromBackup: backupState.imported,
   subscribeSceneRestore: () => () => {},
   subscribeSceneBackupSkipped: () => () => {},
   subscribeSceneBackupSkippedIds: () => () => {},
@@ -97,6 +98,8 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   cardLinks.items = [];
+  backupState.only = 0;
+  backupState.imported.mockClear();
   cardLinks.loaded.clear();
 });
 afterEach(() => {
@@ -1161,21 +1164,41 @@ describe("창끼리 나누는 실행 표시 — 창마다 쥐는 잠금", () => 
 });
 
 describe("원래 창의 사람 동작", () => {
-  async function coordinationIn(follow: boolean) {
+  async function coordinationIn(follow: boolean, showBar = false) {
     const { store, data } = await openStore([scene("a", "가"), scene("b", "나")]);
     const { useSceneCoordination } = await import("../src/lib/useSceneCoordination");
+    const { SceneBar } = await import("../src/components/scene/SceneBar");
     let coordination: ReturnType<typeof useSceneCoordination> | null = null;
     const host = document.createElement("div");
     const root = createRoot(host);
     function Screen({ following }: { following: boolean }) {
       coordination = useSceneCoordination(vi.fn(), following);
-      return null;
+      return showBar ? <SceneBar scenes={coordination.scenes} activeId={coordination.activeSceneId}
+        workspaceContext={{ scope: "personal", id: null, name: null }} onSelect={vi.fn()} onAdd={vi.fn()}
+        onRename={vi.fn()} onDelete={vi.fn()} onReorder={vi.fn()} onAssignWorkspace={vi.fn()}
+        backupOnly={coordination.backupOnly} onImportBackup={coordination.importBackupScenes} /> : null;
     }
     await act(async () => root.render(<Screen following={false} />));
     await act(async () => { await sleep(0); coordination!.selectScene("a"); });
     if (follow) await act(async () => root.render(<Screen following />));
-    return { store, data, coordination: () => coordination!, follow: (following: boolean) => act(async () => root.render(<Screen following={following} />)), stop: () => act(() => root.unmount()) };
+    return { store, data, host, coordination: () => coordination!, follow: (following: boolean) => act(async () => root.render(<Screen following={following} />)), stop: () => act(() => root.unmount()) };
   }
+
+  it("공책 표식이 켜지면 옛 백업 가져오기 단추를 숨기고 이미 잡힌 가져오기 호출도 막는다", async () => {
+    backupState.only = 3;
+    const { host, coordination, stop } = await coordinationIn(false, true);
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    try {
+      expect(host.querySelector(".scene-restore")?.textContent).toContain("씬 3개 가져오기");
+      const staleImport = coordination().importBackupScenes;
+      act(() => setHubFeatures(["scene_writer_v1"]));
+      expect(host.querySelector(".scene-restore")).toBeNull();
+      await staleImport();
+      expect(backupState.imported).not.toHaveBeenCalled();
+      act(() => setHubFeatures([]));
+      expect(host.querySelector(".scene-restore")).not.toBeNull();
+    } finally { stop(); }
+  });
 
   it("떠 있는 동안 selectScene 은 활성 씬도 '마지막 연 씬'도 바꾸지 않는다 · 풀리면 다시 바뀐다", async () => {
     const { data, coordination, follow, stop } = await coordinationIn(true);

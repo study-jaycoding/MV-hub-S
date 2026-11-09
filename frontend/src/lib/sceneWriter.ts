@@ -5,7 +5,7 @@ import { flashMsg } from "./flash";
 import { EXPECT_ACCOUNT_HEADER, hubHasFeature, subscribeHubFeatures } from "./hubFeatures";
 import { getApiPause, jsonFetch, subscribeApiPause } from "./http";
 import { collectCanvasForWriter, flushWriterInput, hasProfileSceneWriter, isCanvasWindow, setHubCanvasPaused, subscribeProfileSceneWriter } from "./popupWindows";
-import { SCENE_WRITER_FEATURE, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
+import { SCENE_WRITER_FEATURE, buildSceneNotebookClose, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
 import { isNotebookWriteHeld, setAsidePendingWrites, setSceneLeaseGeneration, settleSceneWrites, subscribeNotebookWriteHold } from "./sceneStore";
 import { listScenes, subscribeScenesPersisted } from "./scenes";
 import { t } from "./i18n";
@@ -358,13 +358,15 @@ export class SceneWriterClient {
     } catch { if (this.valid(epoch)) this.lose(); }
     finally { if (epoch === this.epoch) this.taking = false; }
   }
-  releaseBeacon(send: (body: string) => void) {
+  releaseBeacon(send: (body: string, path?: string, account?: string) => void) {
     const token = this.lease?.token;
+    const lease = this.token();
+    const closing = lease ? buildSceneNotebookClose(lease) : null;
     this.epoch++;
     this.busy = null;
     this.taking = false;
     this.confirmedUntil = 0;
-    if (this.active && token) send(JSON.stringify({ action: "release", token }));
+    if (this.active && token) send(closing ?? JSON.stringify({ action: "release", token }), closing ? "/api/scenes/notebook/close" : "/api/scenes/writer", this.account);
   }
 }
 
@@ -497,9 +499,21 @@ export function startSceneWriter(): void {
   window.addEventListener("pageshow", resume);
   window.addEventListener("focus", resume);
   window.addEventListener("online", resume);
-  document.addEventListener("visibilitychange", resume);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      if (!client?.token()) return;
+      flushWriterInput(flushPending);
+      void syncSceneNotebook({ fresh: true });
+    } else resume();
+  });
   window.addEventListener("pagehide", () => {
-    client?.releaseBeacon((body) => { if (!getApiPause()) navigator.sendBeacon?.("/api/scenes/writer", new Blob([body], { type: "application/json" })); });
+    flushWriterInput(flushPending);
+    client?.releaseBeacon((body, path, account) => {
+      if (getApiPause()) return;
+      if (path === "/api/scenes/notebook/close") {
+        void jsonFetch(path, { method: "POST", body, keepalive: true, headers: { [EXPECT_ACCOUNT_HEADER]: account! } }).catch(() => {});
+      } else navigator.sendBeacon?.("/api/scenes/writer", new Blob([body], { type: "application/json" }));
+    });
   });
   configure();
 }

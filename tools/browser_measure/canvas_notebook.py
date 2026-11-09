@@ -1,4 +1,4 @@
-"""Canvas notebook measurements on a NEW isolated hub and two NEW Chrome profiles.
+"""Canvas notebook measurements on a NEW isolated H, AUTH-on S and two NEW Chrome profiles.
 
 Run with the repository venv, after building frontend/dist:
   python tools/browser_measure/canvas_notebook.py --case cross_browser
@@ -10,6 +10,9 @@ Run with the repository venv, after building frontend/dist:
 
 No default/source DB is opened or copied. Artifacts remain in a newly allocated
 temporary directory, printed on exit. Only this process's server/Chrome are stopped.
+H signs into the owned loopback S using a fresh ephemeral admin; no credential/token
+is printed. NO_PROXY requires a pre-boot ch.activeAccount seed. The report records
+that delegated browser login and separate account DB routing are outside this run.
 Exit 0 = all required evidence passed, 1 = failed/unverified. BFCache not used by
 Chrome, a missing old checkout/baseline, or missing evidence never counts as success.
 """
@@ -31,6 +34,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from contextlib import AsyncExitStack
 from contextlib import closing
 from pathlib import Path
@@ -104,14 +108,25 @@ def validate_checkout(path: Path) -> Path:
     return path
 
 
-def make_env(data: Path, port: int, checkout: Path = REPO, *, legacy: bool = False) -> dict[str, str]:
+def make_env(data: Path, port: int, checkout: Path = REPO, *, legacy: bool = False, shared_url: str | None = None) -> dict[str, str]:
     if port in FORBIDDEN_PORTS or not 1024 <= port <= 65535:
         raise ValueError("unsafe measurement port")
     env = servers.server_env(os.environ, "H", port, data.resolve())
+    if shared_url is not None:
+        validate_shared_url(shared_url)
+        env["CONTENT_HUB_SHARED_URL"] = shared_url
     env["CONTENT_HUB_FRONTEND_DIST"] = str(checkout / "frontend" / "dist")
     if not legacy:
         env["CONTENT_HUB_SCENE_WRITER_TEST"] = "1"
     return env
+
+
+def validate_shared_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.username or parsed.password
+            or parsed.path or parsed.query or parsed.fragment or parsed.port is None
+            or not 1024 <= parsed.port <= 65535 or parsed.port in FORBIDDEN_PORTS):
+        raise ValueError("shared server must be the owned isolated loopback server")
 
 
 def fixture(*, performance: bool = False) -> list[dict]:
@@ -126,11 +141,11 @@ def fixture(*, performance: bool = False) -> list[dict]:
     return result
 
 
-def scene_rows(entries: list) -> list[dict]:
+def scene_rows(entries: list, bucket: str = BUCKET) -> list[dict]:
     values = dict(entries)
-    order = values.get(json.dumps(["o", BUCKET], separators=(",", ":")), [])
-    return [values[json.dumps(["s", BUCKET, sid], separators=(",", ":"))] for sid in order
-            if json.dumps(["s", BUCKET, sid], separators=(",", ":")) in values]
+    order = values.get(json.dumps(["o", bucket], separators=(",", ":")), [])
+    return [values[json.dumps(["s", bucket, sid], separators=(",", ":"))] for sid in order
+            if json.dumps(["s", bucket, sid], separators=(",", ":")) in values]
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -151,6 +166,8 @@ def sync_window(records: list[dict]) -> dict:
 
 
 def retained_rows(work: Path) -> list[dict]:
+    # server_env fixes CONTENT_HUB_DB: account switching does not change this file.
+    # These measurements therefore inspect the owned default DB (scene owner 'me').
     database = (work / "hub" / "db" / "content_hub.db").resolve(strict=True)
     if work.resolve() not in database.parents:
         raise ValueError("retained-row inspection must stay inside the owned measurement directory")
@@ -171,11 +188,17 @@ from app.routers.publish import _switch_account_db
 async def account_aba(request: Request):
     if request.client.host not in ('127.0.0.1', '::1') or request.headers.get('X-Measure-Control') != {control_token!r}:
         raise HTTPException(403, 'isolated measurement control only')
-    before = active_account.account_epoch()
     with active_account.transition_lock:
+        before = active_account.account_epoch()
+        original = active_account.account_key()
+        original_uid = active_account.active_uid()
+        if not original:
+            raise HTTPException(409, 'ephemeral admin account must be active before ABA')
         _switch_account_db('measure-b@localhost.invalid', 'measure-b')
-        active_account.clear_active()
-    return {{'before': before, 'after': active_account.account_epoch(), 'account': active_account.account_key()}}
+        middle = active_account.account_key()
+        _switch_account_db(original, original_uid)
+        return {{'before': before, 'after': active_account.account_epoch(), 'account_before': original,
+                 'account_b': middle, 'account': active_account.account_key()}}
 app.router.routes.insert(0, app.router.routes.pop())
 sys.argv = [{str(checkout / 'backend' / 'serve.py')!r}]
 runpy.run_path(sys.argv[0], run_name='__main__')
@@ -196,6 +219,75 @@ class AttachedPage(Page):
         return self
 
 
+def isolated_request(url: str, path: str, body: dict | None = None, method: str | None = None,
+                     headers: dict | None = None):
+    validate_shared_url(url)
+    if not path.startswith("/api/"):
+        raise ValueError("API path required")
+    req = urllib.request.Request(url + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method or ("POST" if body is not None else "GET"),
+        headers={"Content-Type": "application/json", **(headers or {})})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=20) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+class IsolatedSharedServer:
+    """AUTH-on S with one newly generated admin; no source database or credential file."""
+    def __init__(self, work: Path):
+        self.work, self.port = work, fresh_port()
+        self.email = f"bm-{secrets.token_hex(8)}{servers.ADMIN_DOMAIN}"
+        self.password = secrets.token_urlsafe(24)
+        self.proc = None
+        self.log = None
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def start(self) -> None:
+        if self.proc is not None:
+            if self.proc.poll() is not None:
+                raise RuntimeError("owned shared server stopped unexpectedly")
+            return
+        data = self.work / "shared-server"
+        data.mkdir(exist_ok=True)
+        env = servers.server_env(os.environ, "S", self.port, data.resolve())
+        env.update({"CONTENT_HUB_ADMIN_EMAIL": self.email, "CONTENT_HUB_ADMIN_PASSWORD": self.password,
+                    "CONTENT_HUB_AUTH_SECRET": secrets.token_urlsafe(32)})
+        self.log = (data / "server.log").open("a", encoding="utf-8")
+        self.proc = subprocess.Popen([sys.executable, str(REPO / "backend" / "serve.py")],
+            cwd=REPO / "backend", env=env, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            if not servers.wait_ready(self.port, proc=self.proc):
+                raise RuntimeError("owned shared server did not become ready")
+            if isolated_request(self.url, "/api/health")[1].get("cli_available") is not False:
+                raise RuntimeError("shared server CLI isolation failed")
+            if isolated_request(self.url, "/api/auth/config")[1].get("auth_enabled") is not True:
+                raise RuntimeError("shared server AUTH must be enabled")
+        except BaseException:
+            self.stop()
+            raise
+
+    def stop(self) -> None:
+        if self.proc is not None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=10)
+            self.proc = None
+        if self.log is not None:
+            self.log.close()
+            self.log = None
+
+
 class Hub:
     def __init__(self, work: Path, *, controls: bool = False):
         self.work, self.port = work, fresh_port()
@@ -203,47 +295,71 @@ class Hub:
         self.log = None
         self.isolation: dict = {}
         self.control_token = secrets.token_urlsafe(32) if controls else None
+        self.shared = IsolatedSharedServer(work)
+        while self.shared.port == self.port:
+            self.shared.port = fresh_port()
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
     def request(self, path: str, body: dict | None = None, method: str | None = None):
-        if not path.startswith("/api/"):
-            raise ValueError("API path required")
-        headers = {"Content-Type": "application/json"}
+        headers = {}
+        if path.startswith('/api/scenes/'):
+            headers['X-MVHub-Expect-Account'] = f'acct:{self.shared.email.lower()}'
         if path.startswith("/api/__measure/") and self.control_token:
             headers["X-Measure-Control"] = self.control_token
-        req = urllib.request.Request(self.url + path,
-            data=json.dumps(body).encode() if body is not None else None,
-            method=method or ("POST" if body is not None else "GET"), headers=headers)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        try:
-            with opener.open(req, timeout=10) as response:
-                return response.status, json.load(response)
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        return isolated_request(self.url, path, body, method, headers)
+
+    def authenticate(self) -> dict:
+        shared = self.request("/api/shared-server/status")[1]
+        if shared.get("url") != self.shared.url:
+            raise RuntimeError("hub shared URL is not this run's owned S")
+        if not shared.get("has_token"):
+            status, _ = self.request("/api/shared-server/login", {
+                "url": self.shared.url, "email": self.shared.email, "password": self.shared.password})
+            if status != 200:
+                raise RuntimeError("hub login to owned S failed")
+            shared = self.request("/api/shared-server/status")[1]
+        if (shared.get("url") != self.shared.url or shared.get("has_token") is not True
+                or shared.get("email", "").lower() != self.shared.email.lower() or shared.get("is_admin") is not True):
+            raise RuntimeError("hub session does not belong to this run's ephemeral admin")
+        # Validate the stored bearer against S, including on restart. Never put it in evidence/logs.
+        database = (self.work / "hub" / "db" / "content_hub.db").resolve(strict=True)
+        if self.work.resolve() not in database.parents:
+            raise ValueError("session inspection must stay in the owned measurement directory")
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+            row = connection.execute("SELECT value FROM app_setting WHERE key='shared_server_token'").fetchone()
+        if not row or not row[0]:
+            raise RuntimeError("owned hub token missing")
+        status, account = isolated_request(self.shared.url, "/api/auth/me", headers={"Authorization": f"Bearer {row[0]}"})
+        if status != 200 or account.get("email", "").lower() != self.shared.email.lower() or "admin" not in account.get("global_roles", []):
+            raise RuntimeError("owned S did not validate the ephemeral admin token")
+        return shared
 
     def start(self, checkout: Path = REPO, *, legacy: bool = False) -> None:
         if self.proc is not None:
             raise RuntimeError("owned server already running")
+        self.shared.start()
         data = self.work / "hub"
         data.mkdir(exist_ok=True)
         self.log = (self.work / ("old-server.log" if legacy else "server.log")).open("a", encoding="utf-8")
         command = [sys.executable, "-c", controlled_launcher(checkout, self.control_token)] if self.control_token and not legacy else [sys.executable, str(checkout / "backend" / "serve.py")]
         self.proc = subprocess.Popen(command,
-            cwd=checkout / "backend", env=make_env(data, self.port, checkout, legacy=legacy),
+            cwd=checkout / "backend", env=make_env(data, self.port, checkout, legacy=legacy, shared_url=self.shared.url),
             stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             if not servers.wait_ready(self.port, proc=self.proc):
                 raise RuntimeError("isolated server did not become ready; inspect owned server.log")
             health = self.request("/api/health")[1]
-            shared = self.request("/api/shared-server/status")[1]
+            shared = self.authenticate()
             self.isolation = {"shared_url": shared.get("url"), "has_token": shared.get("has_token"),
-                              "cli_available": health.get("cli_available")}
-            if self.isolation != {"shared_url": servers.DEAD_URL, "has_token": False, "cli_available": False}:
-                raise RuntimeError("shared-server URL/token or CLI isolation failed")
+                              "cli_available": health.get("cli_available"), "owned_shared_url": self.shared.url,
+                              "shared_process_owned": self.shared.proc is not None and self.shared.proc.poll() is None,
+                              "shared_auth_enabled": True, "ephemeral_admin": True, "token_verified": True}
+            if health.get("cli_available") is not False:
+                raise RuntimeError("hub CLI isolation failed")
             if not legacy and "scene_writer_v1" not in self.request("/api/auth/config")[1].get("features", []):
                 raise RuntimeError("isolated scene_writer_v1 feature missing")
         except BaseException:
@@ -267,9 +383,15 @@ class Hub:
 class Measurement:
     def __init__(self, case: str, work: Path):
         self.case, self.work, self.hub = case, work, Hub(work, controls=case == "lease_races")
+        self.bucket = f"acct:{self.hub.shared.email.lower()}::_none"
         self.report = {"format": "mvhub-canvas-notebook-measure-v1", "case": case,
             "profiles": [str(work / "chrome-a"), str(work / "chrome-b")], "checks": {}, "errors": [],
-            "forbidden_requests": [], "machine": platform.node(), "platform": platform.platform()}
+            "forbidden_requests": [], "machine": platform.node(), "platform": platform.platform(),
+            "account_bootstrap": {"method": "ch.activeAccount before app boot", "bucket": self.bucket},
+            "database": {"path": str(work / "hub" / "db" / "content_hub.db"), "owner": "me",
+                         "account_db_switching": False, "reason": "server_env fixes CONTENT_HUB_DB"},
+            "limitations": ["CONTENT_HUB_NO_PROXY=1 leaves /api/auth/me at 401. ch.activeAccount is seeded before boot; delegated browser authentication is not measured.",
+                            "CONTENT_HUB_DB is fixed to the owned default DB (owner me). Account epoch transitions are tested, separate per-account database routing is not."]}
 
     def check(self, key: str, actual, expected, passed: bool | None = None) -> None:
         result = {"status": "passed" if (actual == expected if passed is None else passed) else "failed",
@@ -281,24 +403,31 @@ class Measurement:
     async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None) -> Page:
         page = await stack.enter_async_context(Page(0, self.work / f"chrome-{name}"))
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=MEASURE_SCRIPT)
+        await page.send("Page.addScriptToEvaluateOnNewDocument", source=f"""if (location.origin === {json.dumps(self.hub.url)}) {{
+            localStorage.setItem('ch.activeAccount', {json.dumps(self.hub.shared.email.lower())}); }}""")
         if seed is not None:
             # Seed legacy storage before first app boot, only on our exact origin, once per profile.
             script = f"""if (location.origin === {json.dumps(self.hub.url)} && !localStorage.getItem('measure-seeded')) {{
-                localStorage.setItem('ch.scenes', {json.dumps(json.dumps({BUCKET: seed}))});
-                localStorage.setItem('ch.scenes.active', {json.dumps(json.dumps({BUCKET: seed[0]['id'] if seed else None}))});
+                localStorage.setItem('ch.scenes', {json.dumps(json.dumps({self.bucket: seed}))});
+                localStorage.setItem('ch.scenes.active', {json.dumps(json.dumps({self.bucket: seed[0]['id'] if seed else None}))});
                 localStorage.setItem('ch.lib.filters', '{{"tab":"compose"}}');
                 localStorage.setItem('measure-seeded', '1'); }}"""
             await page.send("Page.addScriptToEvaluateOnNewDocument", source=script)
         await page.goto(self.hub.url, settle=0.2)
-        if not await page.wait("document.querySelector('.scene-tab, .canvas-away')", 30):
-            # A library landing page may ignore an old filter shape; use the real tab control.
-            await page.click("[...document.querySelectorAll('button')].find(e => e.innerText.trim() === '캔버스')")
-        if not await page.wait("document.querySelector('.scene-tab, .canvas-away')", 15):
-            raise RuntimeError("canvas UI unavailable; no synthetic success")
+        await self.ensure_canvas(page)
         return page
 
+    async def ensure_canvas(self, page: Page) -> None:
+        # Library folder chips also use .scene-tab. Require the visible board/away surface.
+        ready = "[...document.querySelectorAll('.scene-board, .canvas-away')].some(e => e.getClientRects().length > 0)"
+        for _ in range(10):
+            if await page.wait(ready, 2):
+                return
+            await page.click("[...document.querySelectorAll('nav button, header button, button')].find(e => e.getClientRects().length && ['캔버스', 'Canvas'].includes(e.innerText.trim()))")
+        raise RuntimeError("canvas UI unavailable; no synthetic success")
+
     async def local(self, page: Page) -> list[dict]:
-        return scene_rows(await page.eval(READ_STORE))
+        return scene_rows(await page.eval(READ_STORE), self.bucket)
 
     async def wait_local(self, page: Page, predicate, timeout: float = 20) -> list[dict]:
         end = time.monotonic() + timeout
@@ -321,16 +450,29 @@ class Measurement:
         raise RuntimeError("browser and hub did not converge")
 
     async def rename(self, page: Page, name: str, sid: str = "measure-0", *, enter: bool = True) -> None:
-        selector = json.dumps(f'[data-scene-tab="{sid}"] .scene-tab')
-        if not await page.click(f"document.querySelector({selector})", count=2):
+        modern = f"document.querySelector({json.dumps(f'[data-scene-tab="{sid}"] .scene-tab')})"
+        if await page.eval(f"Boolean({modern})"):
+            target, button, count, field = modern, "left", 2, ".scene-name-input"
+        else:
+            # 5f885bb4 has no data-scene-tab or double-click rename: right-click the
+            # scene-bar tab, then edit SceneWorkspaceMenu's name input.
+            target, button, count, field = await self.legacy_tab(page, sid), "right", 1, ".scene-ws-menu-name"
+        if not await page.click(target, button=button, count=count):
             raise RuntimeError("scene rename target missing")
-        if not await page.wait("document.querySelector('.scene-name-input')", 3):
+        input_element = f"document.querySelector({json.dumps(field)})"
+        if not await page.wait(input_element, 3) or not await page.click(input_element):
             raise RuntimeError("scene name input missing")
         await page.key("a", "KeyA", modifiers=2, vk=65)
         await page.type(name)
         if enter:
             await page.key("Enter", "Enter", vk=13)
             await self.wait_local(page, lambda rows: any(s["id"] == sid and s["name"] == name for s in rows))
+
+    async def legacy_tab(self, page: Page, sid: str) -> str:
+        scene = next((row for row in await self.local(page) if row["id"] == sid), None)
+        if scene is None:
+            raise RuntimeError("scene absent from isolated browser storage")
+        return f"[...document.querySelectorAll('.scene-bar button.scene-tab')].find(e => e.title.split('\\n')[0] === {json.dumps(scene['name'])})"
 
     async def text_input(self, page: Page, text: str) -> None:
         if not await page.click("document.querySelector('.scene-card[data-id=\"card-0\"] .scene-textview-inline')", count=2):
@@ -389,7 +531,11 @@ class Measurement:
 
     async def delete(self, page: Page, sid: str) -> None:
         selector = json.dumps(f'[data-scene-tab="{sid}"] .scene-del')
-        if not await page.click(f"document.querySelector({selector})"):
+        target = f"document.querySelector({selector})"
+        if not await page.eval(f"Boolean({target})"):
+            tab = await self.legacy_tab(page, sid)
+            target = f"({tab})?.closest('.scene-tab-wrap')?.querySelector('.scene-del')"
+        if not await page.click(target):
             raise RuntimeError("delete button missing")
         if not await page.click("document.querySelector('.host-exit-actions button')"):
             raise RuntimeError("delete confirmation missing")
@@ -495,7 +641,7 @@ class Measurement:
                 self.check("first_canvas", [r["id"] for r in book_initial["items"]], [s["id"] for s in seeds])
                 await self.take(b)
                 archive = [v for k, v in await b.eval(READ_STORE) if isinstance(k, str) and k.startswith('["na",')]
-                self.check("archive", bool(archive) and any(s["id"] == "prior-b" for s in archive[0]["scenes"].get(BUCKET, [])), True)
+                self.check("archive", bool(archive) and any(s["id"] == "prior-b" for s in archive[0]["scenes"].get(self.bucket, [])), True)
                 self.check("no_merge", any(s["id"] == "prior-b" for s in await self.local(b)), False)
                 await b.goto(self.hub.url, settle=1)
                 after = [v for k, v in await b.eval(READ_STORE) if isinstance(k, str) and k.startswith('["na",')]
@@ -503,7 +649,7 @@ class Measurement:
 
             elif self.case == "lease_races":
                 # Fault injection is separate from product API evidence; never export the control credential.
-                self.report["fault_injection"] = "owned-process loopback control invokes real account DB switch and clear_active; not login UI coverage"
+                self.report["fault_injection"] = "owned-process loopback control captures A account/uid, invokes real account switches A to B to the same A; not login UI coverage"
                 old_token = await a.eval("window.__measureLeaseTokens.at(-1)")
                 if not old_token:
                     raise RuntimeError("actual browser lease token observation missing")
@@ -516,9 +662,14 @@ class Measurement:
                 self.check("late_write", code, 409)
                 current_token = await b.eval("window.__measureLeaseTokens.at(-1)")
                 code, epoch = self.hub.request("/api/__measure/account-aba", {})
-                stale, _ = self.hub.request("/api/scenes/backup", {"token": current_token, "request_id": "aba-late", "upserts": []}, "PUT")
-                self.check("account_aba", {"control_status": code, "epoch_advanced": epoch.get("after", 0) > epoch.get("before", 0), "returned_to_a": epoch.get("account") in (None, ""), "old_token_status": stale},
-                           {"control_status": 200, "epoch_advanced": True, "returned_to_a": True, "old_token_status": 409})
+                stale, stale_body = self.hub.request("/api/scenes/backup", {"token": current_token, "request_id": "aba-late", "upserts": []}, "PUT")
+                self.check("account_aba", {"control_status": code, "epoch_advanced": epoch.get("after", 0) >= epoch.get("before", 0) + 2,
+                           "started_at_a": epoch.get("account_before") == self.hub.shared.email,
+                           "visited_b": epoch.get("account_b") == "measure-b@localhost.invalid",
+                           "returned_to_a": epoch.get("account") == self.hub.shared.email, "old_token_status": stale,
+                           "old_token_error": stale_body.get("detail")},
+                           {"control_status": 200, "epoch_advanced": True, "started_at_a": True, "visited_b": True,
+                            "returned_to_a": True, "old_token_status": 409, "old_token_error": "writer_required"})
                 self.hub.stop(); self.hub.start()
                 await a.goto(self.hub.url, settle=1)
                 if await a.eval("!!document.querySelector('.canvas-away button')"):
@@ -609,6 +760,7 @@ class Measurement:
                 self.check("old_checkout", str(old), "separate explicitly supplied checkout", old != REPO.resolve())
                 self.hub.stop(); self.hub.start(old, legacy=True)
                 await a.goto(self.hub.url, settle=3)
+                await self.ensure_canvas(a)
                 await self.rename(a, "legacy-overwrite")
                 old_rows = await self.wait_legacy(lambda rows: any("legacy-overwrite" in r.get("data", "") for r in rows))
                 self.check("old_write", any("legacy-overwrite" in r.get("data", "") for r in old_rows), True)
@@ -618,6 +770,7 @@ class Measurement:
                 await self.wait_legacy(lambda rows: all(r["id"] != "measure-1" for r in rows))
                 self.hub.stop(); self.hub.start()
                 await a.goto(self.hub.url, settle=3)
+                await self.ensure_canvas(a)
                 final = await self.synced(a, 40)
                 names = [json.loads(r["data"]).get("name") for r in final["items"] if not r.get("deleted_at")]
                 self.check("new_recovery", "legacy-overwrite" in names, True)
@@ -652,6 +805,7 @@ async def execute(args) -> int:
         measurement.report["errors"].append(f"{type(exc).__name__}: {exc}")
     finally:
         measurement.hub.stop()
+        measurement.hub.shared.stop()
     for key in CASES[args.case] - measurement.report["checks"].keys():
         measurement.report["checks"][key] = {"status": "unverified", "reason": "not measured; required prerequisite or scenario coverage missing"}
     problems = verify(measurement.report)
@@ -678,6 +832,9 @@ async def execute_baseline(args) -> int:
             raise RuntimeError("Chrome required for baseline")
         measurement.hub.start(checkout, legacy=True)
         report["isolation"] = measurement.hub.isolation
+        report["account_bootstrap"] = measurement.report["account_bootstrap"]
+        report["database"] = measurement.report["database"]
+        report["limitations"] = measurement.report["limitations"]
         seeds = fixture(performance=True)
         report["fixture_sha256"] = hashlib.sha256(json.dumps(seeds, sort_keys=True).encode()).hexdigest()
         async with AsyncExitStack() as stack:
@@ -691,6 +848,7 @@ async def execute_baseline(args) -> int:
         report["errors"].append(f"{type(exc).__name__}: {exc}")
     finally:
         measurement.hub.stop()
+        measurement.hub.shared.stop()
     path = work / "baseline.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"{report['verdict']}: {path}")

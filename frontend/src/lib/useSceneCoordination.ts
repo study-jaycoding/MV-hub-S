@@ -2,7 +2,7 @@ import { setSceneWriterFlush } from "./sceneWriter";
 import type { CanvasInputCommand, CanvasTarget } from "../features/canvas/api";
 import { createCanvasDocumentPort, importCanvasSnapshot, restoreCanvasCardLinks } from "../features/canvas/api";
 import { getAccountNamespace } from "./accountScope";
-import { hubHasFeature } from "./hubFeatures";
+import { hubHasFeature, subscribeHubFeatures } from "./hubFeatures";
 // Canvas 씬(빈 캔버스) 상태·CRUD 를 App.tsx 에서 추출.
 //  · 씬 목록/활성/바인딩/선택 상태 + 씬 CRUD(선택·추가·이름변경·삭제)를 한곳에.
 //  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
@@ -53,6 +53,7 @@ import {
 } from "./sceneCardLinks";
 import { subscribeSceneStoreExternal } from "./sceneStore";
 import type { CanvasSelection } from "./popupWindows";
+import { flushCanvasMemoryReturn } from "./popupWindows";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
@@ -105,6 +106,7 @@ export function useRelinkOnWorkspaceChange(workspaceKey: string, relink: () => v
 //  활성 씬도 저장본을 따른다: 지킬 편집이 없고, 지키면 떠 있는 창이 고칠 때마다 '다른 탭에서 변경' 알림이 뜨고 돌아왔을 때 낡은 씬을 그려
 //  다음 편집이 그 창의 작업을 덮는다(2026-10-30, docs/status/캔버스_떠있는창_2026-10-30.md).
 export function useSceneCoordination(flash?: (msg: string) => void, followStore = false) {
+  const notebookEnabled = useSyncExternalStore(subscribeHubFeatures, () => hubHasFeature("scene_writer_v1"));
   const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() => getActiveSceneId(null));
   const followStoreRef = useRef(followStore);
@@ -316,7 +318,10 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   const flushScenePending = useCallback((sceneId: string) => {
     if (activeSceneIdRef.current === sceneId) sceneActionRef.current?.flushPending();
   }, []);
-  useEffect(() => setSceneWriterFlush(() => sceneActionRef.current?.flushPending()), []);
+  useEffect(() => setSceneWriterFlush(() => {
+    flushCanvasMemoryReturn(); // 손을 놓지 않은 끌기도 저장소에 확정한 뒤 넘긴다.
+    sceneActionRef.current?.flushPending();
+  }), []);
 
   const refreshScenes = () => setScenes(listScenes(null));
   // 자산 복구 답을 화면에 입히는 두 관문 — 자동 복구와 '레퍼런스 찾기' 단추가 같이 쓴다.
@@ -416,6 +421,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   };
   // DB 백업에만 있는 씬을 이 브라우저로 가져온다(로컬은 덮지 않는다 — 같은 id 는 로컬 유지).
   const importBackupScenes = async () => {
+    if (hubHasFeature("scene_writer_v1")) return;
     try {
       const before = new Set(listScenes(null).map((s) => s.id));
       const added = await importFromBackup();
@@ -559,7 +565,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     refreshSceneById,
     reorderScenes,
     setSceneWorkspace,
-    backupOnly,
+    backupOnly: notebookEnabled ? 0 : backupOnly,
     importBackupScenes,
     sceneSaveFailing,
     sceneBackupSkippedIds,

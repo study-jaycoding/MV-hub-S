@@ -177,6 +177,38 @@ def get_notebook(request: Request, project_id: str = ''):
             return scene_notebook.notebook(owner, project_id)
 
 
+class SceneOrderBaseIn(BaseModel):
+    history_id: str = Field(min_length=1, max_length=200)
+    rev: int = Field(ge=0)
+
+
+class SceneCloseIn(SceneSyncIn):
+    pending_requests: list[SceneSyncIn] = Field(default_factory=list, max_length=200)
+    pending_order_base: Optional[SceneOrderBaseIn] = None
+
+
+@router.post('/notebook/close')
+def close_notebook(body: SceneCloseIn, request: Request, response: Response):
+    """Pagehide keepalive: persist the final delta and release in one lease lock."""
+    with _account_scope(request):
+        owner = actor_id(request)
+        _notebook_available(owner)
+        try:
+            if body.deleted_ids or body.delete_bases is not None:
+                raise ValueError('new writes require delete intents')
+            with writer.closing(owner, body.token):
+                result = scene_notebook.close_sync(owner, body.project_id,
+                    body.model_dump(exclude={'pending_requests', 'pending_order_base'}),
+                    [item.model_dump() for item in body.pending_requests],
+                    body.pending_order_base.model_dump() if body.pending_order_base else None)
+            response.headers['X-MVHub-Scene-Writer-Changed'] = '1'
+            return {'ok': True, **result, 'released': True}
+        except WriterConflict as exc:
+            raise HTTPException(409, exc.code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+
 class StartIn(BaseModel):
     token: str = Field(min_length=1, max_length=200)
     attempt_id: str = Field(min_length=1, max_length=200)

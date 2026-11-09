@@ -18,7 +18,9 @@ from verify_canvas_notebook_measure import CASES, verify
 def report(case="cross_browser"):
     result = {"format": "mvhub-canvas-notebook-measure-v1", "case": case,
         "profiles": ["temporary/chrome-a", "temporary/chrome-b"], "browser_kind": "chrome",
-        "isolation": {"shared_url": "http://127.0.0.1:9", "has_token": False, "cli_available": False},
+        "isolation": {"shared_url": "http://127.0.0.1:8237", "owned_shared_url": "http://127.0.0.1:8237",
+                      "has_token": True, "cli_available": False, "shared_process_owned": True,
+                      "shared_auth_enabled": True, "ephemeral_admin": True, "token_verified": True},
         "checks": {name: {"status": "passed", "actual": True, "expected": True} for name in CASES[case]},
         "errors": [], "forbidden_requests": []}
     if case == "performance":
@@ -41,7 +43,9 @@ def test_unmeasured_or_failed_step_never_certifies_case(status):
     assert verify(value)
 
 
-@pytest.mark.parametrize("field,value", [("shared_url", "http://192.168.1.171:8010"), ("has_token", True), ("cli_available", True)])
+@pytest.mark.parametrize("field,value", [("shared_url", "http://192.168.1.171:8010"), ("has_token", False), ("cli_available", True),
+    ("shared_url", "http://127.0.0.1:8238"), ("shared_process_owned", False), ("shared_auth_enabled", False),
+    ("ephemeral_admin", False), ("token_verified", False), ("owned_shared_url", None)])
 def test_shared_status_and_health_are_mandatory(field, value):
     evidence = report()
     evidence["isolation"][field] = value
@@ -192,7 +196,7 @@ def test_isolated_account_switch_launcher_has_loopback_and_secret_checks(tmp_pat
     compile(script, "isolated-launcher", "exec")  # Never execute/import the backend.
     assert "request.client.host not in ('127.0.0.1', '::1')" in script
     assert "X-Measure-Control" in script and "test-control-secret" in script
-    assert "_switch_account_db(" in script and "active_account.clear_active()" in script
+    assert "_switch_account_db(original, original_uid)" in script and "active_account.clear_active()" not in script
     assert "runpy.run_path" in script
 
 
@@ -200,6 +204,7 @@ def test_measurement_report_does_not_contain_control_secret(tmp_path):
     instance = measure.Measurement("lease_races", tmp_path)
     assert instance.hub.control_token
     assert instance.hub.control_token not in json.dumps(instance.report)
+    assert instance.hub.shared.password not in json.dumps(instance.report)
 
 
 def test_cross_browser_closes_first_profile_before_opening_second_without_take(tmp_path, monkeypatch):
@@ -305,3 +310,192 @@ def test_runner_marks_every_missing_required_probe_unverified(tmp_path, monkeypa
     saved = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     assert saved["checks"]["account_aba"]["status"] == "unverified"
     assert saved["verdict"] == "failed"
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:9", "http://127.0.0.1:8010", "http://127.0.0.1:8012",
+    "https://127.0.0.1:8237", "http://localhost:8237", "http://127.0.0.1:8237/path", "http://user@127.0.0.1:8237",
+    "http://127.0.0.1:8237?remote=1", "http://127.0.0.1:bad", "http://192.168.1.171:8010"])
+def test_owned_shared_server_requires_exact_safe_loopback_origin(tmp_path, url):
+    with pytest.raises(ValueError):
+        measure.make_env(tmp_path, 8239, shared_url=url)
+    value = report()
+    value["isolation"].update(shared_url=url, owned_shared_url=url)
+    assert verify(value)
+
+
+def test_shared_server_uses_isolation_builder_and_ephemeral_admin_without_writing_credentials(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    launched = []
+    proc = SimpleNamespace(poll=lambda: None, terminate=lambda: None, wait=lambda **_: 0)
+    monkeypatch.setattr(measure.subprocess, "Popen", lambda command, **kwargs: launched.append((command, kwargs)) or proc)
+    monkeypatch.setattr(measure.servers, "wait_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(measure, "isolated_request", lambda _url, path: (200, {"cli_available": False} if path == "/api/health" else {"auth_enabled": True}))
+    shared = measure.IsolatedSharedServer(tmp_path)
+    shared.start()
+    shared.start()  # restarts of H reuse this owned S and its session signing secret
+    assert len(launched) == 1
+    env = launched[0][1]["env"]
+    assert env["CONTENT_HUB_AUTH"] == "1"
+    assert env["CONTENT_HUB_ADMIN_EMAIL"] == shared.email
+    assert shared.email.endswith("@localhost.invalid")
+    assert env["CONTENT_HUB_ADMIN_PASSWORD"] == shared.password
+    assert env["CONTENT_HUB_SHARED_URL"] == measure.servers.DEAD_URL
+    assert Path(env["CONTENT_HUB_DB"]).is_relative_to(tmp_path)
+    assert not list(tmp_path.rglob("creds.json"))
+    shared.stop()
+
+
+@pytest.mark.parametrize("already_logged_in", [False, True])
+def test_hub_login_only_when_missing_then_validates_existing_token_with_owned_s(tmp_path, monkeypatch, already_logged_in):
+    import sqlite3
+    from contextlib import closing
+    hub = measure.Hub(tmp_path)
+    database = tmp_path / "hub" / "db" / "content_hub.db"
+    database.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)")
+        connection.execute("INSERT INTO app_setting VALUES('shared_server_token','synthetic-token')")
+    status = {"url": hub.shared.url, "has_token": already_logged_in, "email": hub.shared.email, "is_admin": True}
+    calls = []
+    def request(path, body=None):
+        calls.append(path)
+        if path == "/api/shared-server/login":
+            assert body == {"url": hub.shared.url, "email": hub.shared.email, "password": hub.shared.password}
+            status["has_token"] = True
+        return 200, dict(status)
+    def shared_request(url, path, *, headers):
+        assert (url, path) == (hub.shared.url, "/api/auth/me")
+        assert headers == {"Authorization": "Bearer synthetic-token"}
+        return 200, {"email": hub.shared.email, "global_roles": ["admin"]}
+    monkeypatch.setattr(hub, "request", request)
+    monkeypatch.setattr(measure, "isolated_request", shared_request)
+    assert hub.authenticate()["has_token"] is True
+    assert calls.count("/api/shared-server/login") == int(not already_logged_in)
+    assert "synthetic-token" not in json.dumps(hub.isolation)
+
+
+def test_hub_rejects_foreign_shared_session_before_any_login(tmp_path, monkeypatch):
+    hub = measure.Hub(tmp_path)
+    monkeypatch.setattr(hub, "request", lambda *_: (200, {"url": "http://192.168.1.171:8010", "has_token": True}))
+    with pytest.raises(RuntimeError, match="owned S"):
+        hub.authenticate()
+
+
+def test_open_seeds_account_bucket_before_boot_and_requires_canvas_not_library_chips(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    events, scripts = [], []
+    instance = measure.Measurement("cross_browser", tmp_path)
+    async def send(method, **kwargs):
+        events.append(method)
+        scripts.append(kwargs["source"])
+    async def goto(*_args, **_kwargs):
+        events.append("goto")
+    async def wait(condition, _timeout):
+        events.append("wait")
+        assert ".scene-board" in condition and ".canvas-away" in condition and ".scene-tab" not in condition
+        return events.count("wait") > 1
+    async def click(expression):
+        events.append("canvas-menu")
+        assert "getClientRects" in expression
+        return True
+    page = SimpleNamespace(send=send, goto=goto, wait=wait, click=click)
+    class Stack:
+        async def enter_async_context(self, _context):
+            return page
+    monkeypatch.setattr(measure, "Page", lambda *_: object())
+    asyncio.run(instance.open(Stack(), "a", [{"id": "s"}]))
+    assert "ch.activeAccount" in scripts[1] and instance.hub.shared.email.lower() in scripts[1]
+    assert instance.bucket in scripts[2] and instance.bucket.startswith("acct:")
+    assert events == ["Page.addScriptToEvaluateOnNewDocument"] * 3 + ["goto", "wait", "canvas-menu", "wait"]
+    assert instance.report["database"]["owner"] == "me"
+    assert instance.report["database"]["account_db_switching"] is False
+    assert any("401" in line for line in instance.report["limitations"])
+
+
+def test_legacy_rename_and_delete_use_scene_bar_title_then_context_menu(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    events = []
+    instance = measure.Measurement("rollback", tmp_path)
+    async def local(_page):
+        return [{"id": "s", "name": "old name"}]
+    async def evaluate(_expression):
+        return False  # old SceneBar has no data-scene-tab
+    async def click(expression, **kwargs):
+        events.append(("click", expression, kwargs)); return True
+    async def wait(_expression, _timeout):
+        return True
+    async def key(*args, **_kwargs):
+        events.append(("key", args))
+    async def type_text(text):
+        events.append(("type", text))
+    async def wait_local(*_args):
+        return []
+    page = SimpleNamespace(eval=evaluate, click=click, wait=wait, key=key, type=type_text)
+    monkeypatch.setattr(instance, "local", local)
+    monkeypatch.setattr(instance, "wait_local", wait_local)
+    asyncio.run(instance.rename(page, "new name", "s"))
+    assert ".scene-bar button.scene-tab" in events[0][1] and "old name" in events[0][1]
+    assert events[0][2]["button"] == "right"
+    assert ".scene-ws-menu-name" in events[1][1]
+    events.clear()
+    asyncio.run(instance.delete(page, "s"))
+    assert ".scene-bar button.scene-tab" in events[0][1]
+    assert "closest('.scene-tab-wrap')" in events[0][1]
+
+
+def test_account_scoped_idb_reader_does_not_read_local_bucket():
+    key = lambda parts: json.dumps(parts, separators=(",", ":"))
+    bucket = "acct:synthetic@localhost.invalid::_none"
+    entries = [[key(["o", bucket]), ["a"]], [key(["s", bucket, "a"]), {"id": "a"}],
+               [key(["o", measure.BUCKET]), ["legacy"]], [key(["s", measure.BUCKET, "legacy"]), {"id": "legacy"}]]
+    assert measure.scene_rows(entries, bucket) == [{"id": "a"}]
+
+
+@pytest.mark.parametrize("safety", [None, [], "invalid", 1, True])
+def test_non_object_isolation_is_rejected_without_throwing(safety):
+    evidence = report()
+    evidence["isolation"] = safety
+    assert verify(evidence)
+
+
+def test_account_aba_control_restores_the_same_authenticated_a_and_uid(tmp_path):
+    import ast
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+    state = {"account": "bm-a@localhost.invalid", "uid": "original-uid", "epoch": 10}
+    changes = []
+    active = SimpleNamespace(transition_lock=threading.RLock(),
+        account_key=lambda: state["account"], active_uid=lambda: state["uid"], account_epoch=lambda: state["epoch"])
+    def switch(account, uid):
+        changes.append((account, uid))
+        state.update(account=account, uid=uid, epoch=state["epoch"] + 1)
+    # Execute only the isolated route's function with doubles, never backend imports/serve.py.
+    route = next(node for node in ast.parse(measure.controlled_launcher(tmp_path, "synthetic-control")).body
+                 if isinstance(node, ast.AsyncFunctionDef))
+    route.decorator_list = []
+    scope = {"Request": object, "HTTPException": RuntimeError, "active_account": active, "_switch_account_db": switch}
+    exec(compile(ast.Module(body=[route], type_ignores=[]), "isolated-route-unit", "exec"), scope)
+    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={"X-Measure-Control": "synthetic-control"})
+    result = asyncio.run(scope["account_aba"](request))
+    assert changes == [("measure-b@localhost.invalid", "measure-b"), ("bm-a@localhost.invalid", "original-uid")]
+    assert result == {"before": 10, "after": 12, "account_before": "bm-a@localhost.invalid",
+                      "account_b": "measure-b@localhost.invalid", "account": "bm-a@localhost.invalid"}
+    assert state["uid"] == "original-uid"
+
+
+def test_direct_scene_probes_send_the_same_expected_account_as_seeded_browser(tmp_path, monkeypatch):
+    hub = measure.Hub(tmp_path)
+    calls = []
+    def request(url, path, body, method, headers):
+        calls.append((path, dict(headers)))
+        return 200, {}
+    monkeypatch.setattr(measure, "isolated_request", request)
+    hub.request("/api/scenes/notebook")
+    hub.request("/api/scenes/backup", {"token": "synthetic", "upserts": []}, "PUT")
+    hub.request("/api/shared-server/status")
+    assert calls[:2] == [(path, {"X-MVHub-Expect-Account": f"acct:{hub.shared.email.lower()}"})
+                         for path in ("/api/scenes/notebook", "/api/scenes/backup")]
+    assert calls[2][1] == {}

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, joinSceneNotebook, completeNotebookMcpTask, type NotebookToken } from "../src/lib/sceneNotebook";
+import { syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, joinSceneNotebook, completeNotebookMcpTask, buildSceneNotebookClose, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
 import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold } from "../src/lib/sceneStore";
@@ -88,6 +88,60 @@ beforeEach(() => {
   vi.stubGlobal("crypto", {});
 });
 afterEach(async () => { abortSceneStoreWritesForTest(false); await settleSceneStoreForTest(); setSceneWriteGate(() => false); setHubFeatures([]); setAccountScope(null); vi.unstubAllGlobals(); vi.useRealTimers(); });
+it("close captures same-tick rename, deletion and order with the durable intent id", async () => {
+  await joined([scene("a"), scene("b"), scene("c")]);
+  edit([scene("c"), scene("a", "last edit")]); // IDB 완료를 기다리기 전에 닫는다.
+  const body = JSON.parse(buildSceneNotebookClose(token!)!);
+  expect(body.upserts.map((u: any) => JSON.parse(u.data).name)).toEqual(["last edit"]);
+  expect(body.deletes.map((d: any) => d.id)).toEqual(["b"]);
+  expect(body.order.ids).toEqual(["c", "a"]);
+  await settleSceneStoreForTest();
+  expect((await state()).buckets[bucket].states.b.deletion?.intentId).toBe(body.deletes[0].intent_id);
+  fake.handle("/api/scenes/backup", body);
+  expect(JSON.parse(fake.rows.get("a")!.data).name).toBe("last edit");
+  expect(fake.rows.get("b")!.deleted_at).not.toBeNull(); expect(fake.order).toEqual(["c", "a"]);
+});
+it("close over the UTF-8 keepalive limit leaves all local edits and intentions pending", async () => {
+  await joined([scene("a"), scene("b")]);
+  edit([scene("a", "한".repeat(23000))]);
+  expect(buildSceneNotebookClose(token!)).toBeNull();
+  await settleSceneStoreForTest();
+  expect((await state()).buckets[bucket].states.b.deletion).not.toBeNull();
+  expect(readWorkingBucket(bucket)[0].name.length).toBe(23000);
+  expect(fake.calls.filter((c) => c.path.endsWith("backup"))).toHaveLength(0);
+});
+it("close retains the preceding request and an undo back to its old base text", async () => {
+  await joined([scene()]); edit([scene("s", "in flight")]);
+  let entered!: () => void, release!: () => void;
+  const seen = new Promise<void>((r) => { entered = r; }), wait = new Promise<void>((r) => { release = r; });
+  hook = async (path) => { if (path.endsWith("/backup")) { hook = null; entered(); await wait; } };
+  const run = syncSceneNotebook(); await seen;
+  edit([scene()]);
+  const body = JSON.parse(buildSceneNotebookClose(token!)!);
+  expect(body.pending_requests[0].request_id).toBe(fake.calls.find((c) => c.path.endsWith("/backup"))!.body.request_id);
+  expect(body.upserts).toHaveLength(1); expect(JSON.parse(body.upserts[0].data).name).toBe("s");
+  expect(body.pending_order_base).toEqual({ history_id: "h1", rev: 1 });
+  release(); await run;
+});
+it("close carries the frozen order base when an in-flight order already advanced", async () => {
+  await joined([scene("a"), scene("b")]); edit([scene("a"), scene("b"), scene("c")]);
+  let entered!: () => void, release!: () => void;
+  const seen = new Promise<void>((r) => { entered = r; }), wait = new Promise<void>((r) => { release = r; });
+  hook = async (path, body) => { if (path.endsWith("/backup") && body.order) { hook = null; entered(); await wait; } };
+  const run = syncSceneNotebook(); await seen;
+  edit([scene("c"), scene("b"), scene("a")]);
+  const body = JSON.parse(buildSceneNotebookClose(token!)!);
+  expect(body.pending_requests.find((p: any) => p.order).order.rev).toBeGreaterThan(1);
+  expect(body.pending_order_base).toEqual({ history_id: "h1", rev: 1 });
+  expect(body.order.ids).toEqual(["c", "b", "a"]);
+  release(); await run;
+});
+it("close ignores a stale token, disabled feature and an unjoined profile", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); expect(buildSceneNotebookClose(token!)).toBeNull();
+  await joined(); edit([scene("s", "changed")]);
+  expect(buildSceneNotebookClose({ ...token!, token: "old" })).toBeNull();
+  setHubFeatures([]); expect(buildSceneNotebookClose(token!)).toBeNull();
+});
 it("c13 disabled and missing token perform no IO", async () => {
   setHubFeatures([]); expect((await syncSceneNotebook()).status).toBe("disabled"); setHubFeatures(["scene_writer_v1"]); token = null;
   expect((await syncSceneNotebook()).status).toBe("waiting_token"); expect(fake.calls).toEqual([]);

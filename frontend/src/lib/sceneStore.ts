@@ -69,6 +69,8 @@ let ready = false;
 
 let confirmed: ScenesByProject = {};
 let confirmedVersion = 0;
+// pagehide는 IDB 읽기를 기다릴 수 없다. 성공한 트랜잭션에서 본 판만 닫기 전송에 쓴다.
+let confirmedNotebookMeta: StoreValues | null = null;
 // 메모리의 confirmed 를 저장소 내용으로 믿어도 되는가. 평소 저장은 버전 숫자만 읽고 confirmed 를 기준으로 쓰는데,
 // **연결이 끊겼다 다시 이어지면 믿지 않는다** — 그사이 저장소가 지워지고 다른 창이 새로 만들었을 수 있고, 새 저장소의
 // 버전 숫자는 우연히 같을 수 있다. 그때 옛 confirmed 를 기준으로 쓰면 씬 키만 쓰고 순서 키는 안 써서, 확정됐다고
@@ -562,6 +564,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     let moved: PendingOp[] = []; // 이번 트랜잭션에서 충돌로 옮긴 연산 — 표시는 재생을 정한 뒤에 붙을 수 있어 따로 본다
     let movedConflicts: SceneAbsorbConflict[] = [];
     let storedConflicts: SceneAbsorbConflict[] = [];
+    let notebookMeta: StoreValues | null = null;
     try {
       if (!(await ensureDb())) throw new Error("scene store not open");
       await storeTx(
@@ -604,6 +607,11 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           const beforeStep = { ...live };
           stepOut = step ? step(live, meta) : stepOut;
           if (notebook && !fromHub) recordNotebookChanges(beforeStep, live, meta, stepIntent);
+          if (notebook) {
+            notebookMeta = { ...confirmedNotebookMeta };
+            for (const name of Object.keys(notebookMeta)) if (isNotebookMeta(name) || extraReads.includes(name)) delete notebookMeta[name];
+            for (const [name, value] of Object.entries(meta)) if (isNotebookMeta(name) || /^\["n[sw]",/.test(name)) notebookMeta[name] = value;
+          }
           const notebookPuts = Object.entries(meta).filter(([key, value]) => isNotebookMeta(key) && JSON.stringify(oldNotebook[key]) !== JSON.stringify(value));
           const notebookDeletes = Object.keys(oldNotebook).filter((key) => !(key in meta));
           freezeScenes(live);
@@ -641,6 +649,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     }
     const hadConfirmedOnly = batch.some((op) => op.confirmedOnly);
     confirmed = live;
+    if (notebookMeta) confirmedNotebookMeta = notebookMeta;
     confirmedVersion = liveVersion;
     baselineStale = false;
     pending = pending.filter((op) => !batch.includes(op));
@@ -922,6 +931,22 @@ export const workingBucketLength = (key: string): number => {
 };
 /** 저장소에 확정된 값만. DB 미러·복구 판정은 이것을 본다. */
 export const readConfirmedBucket = (key: string): Scene[] => copiesOf(confirmed, key);
+
+/** 닫기 전송 전용: 확인된 판 위에 아직 IDB에 못 쓴 동기 편집과 같은 의도 id를 재생한다.
+ * 성공 응답/영속화로 취급하지 않는다. 표식 꺼짐·다른 창의 재읽기 중에는 쓰지 않는다. */
+export function readSceneStoreForClose(): { scenes: ScenesByProject; meta: StoreValues } | null {
+  if (!hubHasFeature("scene_writer_v1") || !ready || baselineStale || !confirmedNotebookMeta) return null;
+  const all = { ...confirmed }, meta = { ...confirmedNotebookMeta };
+  try {
+    for (const op of pending) {
+      if (op.confirmedOnly || op.aside || op.handed || op.poisoned) continue;
+      const before = { ...all };
+      op.mutate(all, leaseGenerations);
+      recordNotebookChanges(before, all, meta, op.intentId);
+    }
+    return { scenes: all, meta };
+  } catch { return null; }
+}
 export const hasConfirmedBucket = (key: string): boolean => owns(confirmed, key);
 /** 확정본을 씬별 **글자**로 — DB 미러가 올리는 모양 그대로다. 안 바뀐 씬은 다시 글자로 바꾸지 않는다. */
 export const readConfirmedTexts = (key: string): Array<{ id: string; name: string; text: string }> =>
@@ -1414,6 +1439,7 @@ function refreshFromStore(): Promise<boolean> {
       return true;
     }
     confirmed = scenes;
+    confirmedNotebookMeta = null;
     confirmedVersion = (meta[K_VERSION] as number | undefined) ?? 0;
     baselineStale = false;
     rebaseWorking();
@@ -1608,6 +1634,7 @@ export function resetSceneStoreForTest(): void {
   memory = null;
   ready = false;
   confirmed = {};
+  confirmedNotebookMeta = null;
   confirmedVersion = 0;
   baselineStale = false;
   working = {};

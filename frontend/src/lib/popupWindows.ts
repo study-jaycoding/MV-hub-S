@@ -524,6 +524,11 @@ export function onCanvasMemoryReturn(settle: () => void): () => void {
   };
 }
 
+/** 허브 넘기기도 닫기와 같은 순서로 진행 중 끌기와 밀린 입력을 확정한다. */
+export function flushCanvasMemoryReturn(): void {
+  beforeMemoryReturn.forEach((settle) => settle());
+}
+
 // 인계 번호 — 메인 창이 캔버스 창을 새로 열 때마다 정한다. sessionStorage 라 메인 창을 새로 고쳐도 남고, 새 창은 열 때 복사본을 받아
 //  같은 번호를 본다. 돌려받은 기록은 이 번호가 맞을 때만 들인다(sceneUndoStore.adoptSceneHistory).
 const HANDOFF_KEY = "mvhub.canvasMemoryHandoff";
@@ -586,7 +591,7 @@ export function shareCanvasMemory(settled: () => Promise<boolean> = () => Promis
   });
   const port: CanvasMemoryPort = {
     prepare: async () => {
-      flushWriterInput(() => beforeMemoryReturn.forEach((flush) => flush()));
+      flushWriterInput(flushCanvasMemoryReturn);
       setHubCanvasPaused(true);
       return settled();
     },
