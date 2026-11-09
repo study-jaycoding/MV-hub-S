@@ -595,8 +595,14 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     # 작업 담당(배정) 신원 — acct:→user_ 전환 시 함께 정합(안 하면 내 배분 작업이 끊김).
     ("task_assignment", "assignee_uid", "ignore_del"),
     ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
-    # 캔버스 씬 백업 owner(PK 선두) — 충돌(양 신원 행 공존) 시 user_ 행 유지·acct: 행 폐기(백업 미러라 손실 무해).
-    ("scene_backup", "owner_uid", "ignore_del"),
+    # 공책은 충돌 본문을 사본으로 보존하고 history를 교체한다. 미전환 미러만 옛 병합 정책 유지.
+    ("scene_backup", "owner_uid", "notebook"),
+    ("scene_notebook", "owner_uid", "notebook_aux"),
+    ("scene_start_attempt", "owner_uid", "notebook_aux"),
+    ("scene_start_item", "owner_uid", "notebook_aux"),
+    ("scene_archive", "owner_uid", "notebook_aux"),
+    ("scene_tab_order", "owner_uid", "notebook_aux"),
+    ("scene_request_receipt", "owner_uid", "notebook_aux"),
     ("ai_generation_batch", "owner_uid", "plain"),
     ("mcp_client", "owner_uid", "plain"),
     ("mcp_generation_plan", "owner_uid", "plain"),
@@ -834,7 +840,17 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
     for table, col, strat in _REMAP_PLAN:
         if not _col_exists(conn, table, col):
             continue
-        if strat == "plain":
+        if strat == 'notebook':
+            from . import scene_notebook
+            from ..services.scene_writer import enabled
+            if enabled() or scene_notebook.started(conn, old_uid) or scene_notebook.started(conn, new_uid):
+                n += scene_notebook.remap(conn, old_uid, new_uid)
+            else:
+                conn.execute('UPDATE OR IGNORE scene_backup SET owner_uid=? WHERE owner_uid=?', (new_uid, old_uid))
+                n += conn.execute('DELETE FROM scene_backup WHERE owner_uid=?', (old_uid,)).rowcount
+        elif strat == 'notebook_aux':
+            pass  # scene_backup branch moves the notebook as one unit.
+        elif strat == "plain":
             n += conn.execute(
                 f"UPDATE {table} SET {col}=? WHERE {col}=?",  # noqa: S608 — 상수 화이트리스트
                 (new_uid, old_uid),

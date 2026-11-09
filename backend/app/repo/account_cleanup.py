@@ -24,6 +24,12 @@ from .trash import _with_trash
 
 # 계정과 함께 지우는 칸 — 그 사람의 소속과 읽음 표시다. 나머지 _REMAP_PLAN 칸은 전부 이력이다.
 REMOVED_WITH_ACCOUNT = frozenset({
+    ("scene_notebook", "owner_uid"),
+    ("scene_start_attempt", "owner_uid"),
+    ("scene_start_item", "owner_uid"),
+    ("scene_archive", "owner_uid"),
+    ("scene_tab_order", "owner_uid"),
+    ("scene_request_receipt", "owner_uid"),
     ("slack_link", "account_email"),
     ("slack_dm_outbox", "recipient_email"),
     ("project_member", "creator_uid"),
@@ -297,6 +303,9 @@ def delete_cleanup_account(
         uids = _uids(row)
         memberships = _project_memberships(conn, row)
         with last_admin_guard(conn):
+            from .scene_notebook import cleanup as cleanup_notebook
+            for uid in uids:
+                cleanup_notebook(conn, uid)
             for table, col in sorted(REMOVED_WITH_ACCOUNT):
                 if _col_exists(conn, table, col):
                     conn.execute(f'DELETE FROM "{table}" WHERE "{col}" IN ({_in(uids)})', uids)  # noqa: S608 — 상수

@@ -415,7 +415,7 @@ def _install_db(
                         trash_path.unlink(missing_ok=True)
                     else:
                         os.replace(staged_trash, trash_path)
-                db.init_db(path)  # ★명시 경로(코덱스 P1) — 활성 DB 재해석 금지
+                db.init_db(path, scene_restore=True)  # 복원 세대·공책 확정도 보상 롤백 경계 안
                 # ★보안 초기화·활성 계정 해제도 이 보상 롤백 경계 안(R7 0-B, 코덱스 P1)
                 # — 하나라도 실패하면 성공 응답 없이 기존 파일 세트로 되돌린다.
                 _post_install_security_init(path)

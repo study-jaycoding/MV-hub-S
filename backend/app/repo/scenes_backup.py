@@ -43,7 +43,7 @@ def list_scene_backups(
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT {cols} FROM scene_backup WHERE owner_uid=? AND project_id=? "
-            f"ORDER BY updated_at DESC",
+            f"AND deleted_at IS NULL ORDER BY updated_at DESC",
             (owner_uid, project_id),
         ).fetchall()
     out: list[dict[str, Any]] = []

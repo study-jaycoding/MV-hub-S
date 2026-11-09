@@ -200,12 +200,12 @@ def add_canvas_task(client, plan_id, scene_id, generation_ids, workspace=None):
         # 씬이 아직 있는지를 같은 쓰기 잠금 안에서 다시 본다 — 라우터의 확인 직후 씬이 지워지면 거둘 수 없는 작업이 남았다(Codex 리뷰 P2 ⑥)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            if conn.execute("SELECT 1 FROM scene_backup WHERE owner_uid=? AND project_id='' AND scene_id=?",
+            if conn.execute("SELECT 1 FROM scene_backup WHERE owner_uid=? AND project_id='' AND scene_id=? AND deleted_at IS NULL",
                             (client["owner_uid"], scene_id)).fetchone() is None:
                 raise LookupError("scene is gone")
             conn.execute(
                 "INSERT INTO mcp_canvas_task(id,plan_id,owner_uid,account_email,workspace,scene_id,generation_ids) VALUES(?,?,?,?,?,?,?) "
-                "ON CONFLICT(plan_id,scene_id) DO UPDATE SET id=excluded.id,status='pending',generation_ids=excluded.generation_ids "
+                "ON CONFLICT(plan_id,scene_id) DO UPDATE SET id=excluded.id,status='pending',cancel_reason=NULL,generation_ids=excluded.generation_ids "
                 "WHERE mcp_canvas_task.status='cancelled'",
                 (task_id, plan_id, client["owner_uid"], client["account_email"], encode(workspace), scene_id, encode(generation_ids)),
             )
@@ -245,6 +245,12 @@ def has_canvas_tasks(owner, email, workspace):
 
 def complete_canvas_task(task_id, owner, email, workspace):
     with get_connection() as conn:
+        from .. import config
+        from ..services.scene_writer import enabled, WriterConflict
+        from .scene_notebook import started
+        conn.execute('BEGIN IMMEDIATE')
+        if not config.AUTH_ENABLED and (enabled() or started(conn, owner)):
+            raise WriterConflict('scene_upload_required')
         return bool(conn.execute(
             "UPDATE mcp_canvas_task SET status='done' WHERE id=? AND owner_uid=? AND account_email=? "
             "AND json_extract(workspace,'$.scope')=? AND COALESCE(json_extract(workspace,'$.id'),'')=? "

@@ -45,6 +45,8 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/ingest/known-jobs",
         "/api/projects/folder-counts/batch",
         "/api/scenes/backup",
+        "/api/scenes/writer",
+        "/api/scenes/notebook/start",
         "/api/edit-docs/backup",
         "/api/edit-docs/backup/restore",
         "/api/edit-shares/save",  # 편집 공유 저장은 라이브러리를 바꾸지 않는다(다른 사람은 목록 주기 조회로 안다)

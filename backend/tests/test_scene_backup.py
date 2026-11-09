@@ -222,7 +222,7 @@ class SceneBackupTests(unittest.TestCase):
         # 계정 신원 전환(acct:→user_) 시 백업이 사라지지 않게 — 리맵 대상 등록을 고정(코덱스 P1).
         from app.repo.identity import _REMAP_PLAN
 
-        self.assertIn(("scene_backup", "owner_uid", "ignore_del"), _REMAP_PLAN)
+        self.assertIn(("scene_backup", "owner_uid", "notebook"), _REMAP_PLAN)
 
 
 if __name__ == "__main__":

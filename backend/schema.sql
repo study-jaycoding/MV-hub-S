@@ -716,6 +716,9 @@ CREATE TABLE IF NOT EXISTS scene_backup (
     name       TEXT,
     data       TEXT NOT NULL,                          -- 씬 JSON 원문(프론트 직렬화 그대로)
     data_hash  TEXT NOT NULL,                          -- sha256(data) — 변경분만 재업로드하는 대조 키
+    rev        INTEGER NOT NULL DEFAULT 0,
+    rev_hash   TEXT,
+    deleted_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (owner_uid, project_id, scene_id)
 );
@@ -930,6 +933,7 @@ CREATE TABLE IF NOT EXISTS mcp_canvas_task (
     scene_id TEXT NOT NULL,
     generation_ids TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
+    cancel_reason TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(plan_id,scene_id)
 );
@@ -966,4 +970,62 @@ CREATE TABLE IF NOT EXISTS comfy_canvas_output (
     state TEXT NOT NULL,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (attempt_id, output_key)
+);
+
+-- Canvas notebook: additive schema, deliberately no new compatibility baseline.
+CREATE TABLE IF NOT EXISTS scene_notebook (
+    owner_uid TEXT PRIMARY KEY,
+    notebook_id TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS scene_start_attempt (
+    owner_uid TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    lease_id TEXT NOT NULL,
+    history_id TEXT NOT NULL,
+    expected_count INTEGER NOT NULL,
+    order_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'staging',
+    result_json TEXT,
+    PRIMARY KEY(owner_uid, attempt_id)
+);
+CREATE TABLE IF NOT EXISTS scene_start_item (
+    owner_uid TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    PRIMARY KEY(owner_uid, attempt_id, scene_id)
+);
+CREATE TABLE IF NOT EXISTS scene_archive (
+    owner_uid TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    scene_id TEXT NOT NULL,
+    history_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    name TEXT,
+    data TEXT NOT NULL,
+    rev INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(owner_uid, project_id, scene_id, history_id, reason, data_hash)
+);
+CREATE TABLE IF NOT EXISTS scene_tab_order (
+    owner_uid TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    ids_json TEXT NOT NULL DEFAULT '[]',
+    rev INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(owner_uid, project_id)
+);
+CREATE TABLE IF NOT EXISTS scene_request_receipt (
+    owner_uid TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL,
+    history_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY(owner_uid, project_id, request_id)
 );

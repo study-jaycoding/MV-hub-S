@@ -402,6 +402,11 @@ def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]
             summary[label] = sum(
                 _table_count(conn, table, existing_tables=existing) for table in tables
             )
+        if 'scene_backup' in existing and 'deleted_at' in {r[1] for r in conn.execute('PRAGMA table_info(scene_backup)')}:
+            # Keep canvas links in the legacy total, but separate retained bodies.
+            dead = conn.execute('SELECT COUNT(*) FROM scene_backup WHERE deleted_at IS NOT NULL').fetchone()[0]
+            summary['canvases'] -= dead
+            summary['canvas_retained'] = dead + _table_count(conn, 'scene_archive', existing_tables=existing)
     summary["trash"] = 0
     if trash is not None and Path(trash).is_file():
         with contextlib.closing(

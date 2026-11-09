@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 155개.
+제품 환경변수 156개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -105,6 +105,7 @@
 | `CONTENT_HUB_RESOLVE_SELECTION_POLL_SECONDS` | `"0.05"` | `backend/app/services/resolve_selection_worker.py` | — |
 | `CONTENT_HUB_RESOLVE_STATUS_TIMEOUT_SECONDS` | `"8"` | `backend/app/services/resolve_status_runner.py` | — |
 | `CONTENT_HUB_RESTART_LIMIT` | `"5"` | `tools/server_supervisor.py` | — |
+| `CONTENT_HUB_SCENE_WRITER_TEST` | — | `backend/app/services/scene_writer.py` | — |
 | `CONTENT_HUB_SERVER_ALERT_PATH` | `""` | `tools/server_supervisor.py` | — |
 | `CONTENT_HUB_SERVER_SYNC` | `"1"` | `backend/app/services/syncer.py` | `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_SERVICE_NAME` | `"mvhub-backend"` | `backend/app/services/operational_logging.py` | — |

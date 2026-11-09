@@ -526,7 +526,7 @@ def open_transfer_connections(path: Path | None = None):
             yield pair
 
 
-def init_db(db_path: Path | None = None) -> Path:
+def init_db(db_path: Path | None = None, *, scene_restore: bool = False) -> Path:
     """schema.sql 을 적용해 DB 를 초기화한다(멱등). 적용된 DB 경로를 반환."""
     _assert_supported_backend()
     path = db_path or get_db_path()
@@ -550,6 +550,19 @@ def init_db(db_path: Path | None = None) -> Path:
         db_migrations._pre_migrate(conn)  # ★ executescript 이전 — 테이블 리네임(빈 테이블 충돌 회피)
         conn.executescript(schema_sql)
         db_migrations._migrate(conn)
+        # Before accepting any request, preserve old-hub edits and their preimages.
+        from .repo import scene_notebook
+        if not config.AUTH_ENABLED:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                scene_notebook.normalize_legacy(conn)
+                from .services.scene_writer import enabled as scene_writer_enabled
+                if scene_restore and (scene_writer_enabled() or conn.execute('SELECT 1 FROM scene_notebook LIMIT 1').fetchone()):
+                    scene_notebook.restore_history(conn)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         # Existing migrations may have committed earlier steps. Only register
         # their validated result; do not claim the whole legacy path is atomic.
         schema_compat.record_baseline(conn, "content_core")

@@ -981,6 +981,8 @@ async def mutation_notify(request: Request, call_next):
     response = await call_next(request)
     try:
         path = request.url.path
+        if not AUTH_ENABLED and response.headers.get('X-MVHub-Scene-Writer-Changed') == '1':
+            await manager.broadcast({'type': 'scene_writer_changed'})
         domains = without_unchanged_library(
             notification_domains(request.method, path, response.status_code),
             bool(getattr(request.state, "library_unchanged", False)),

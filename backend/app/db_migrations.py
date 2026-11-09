@@ -269,6 +269,7 @@ def _pre_migrate(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """기존 DB 에 누락된 컬럼을 추가(멱등). schema.sql 의 CREATE IF NOT EXISTS 는
     기존 테이블에 컬럼을 더하지 않으므로 여기서 보강한다."""
+    _migrate_scene_notebook(conn)
     from .db_slack import migrate as migrate_slack
     migrate_slack(conn)
     _migrate_share_state_intent(conn)
@@ -984,3 +985,37 @@ def _migrate_fts(conn: sqlite3.Connection) -> None:
             conn.execute("INSERT INTO generation_fts(generation_fts) VALUES('rebuild')")
     except sqlite3.OperationalError as e:
         print(f"[migrate] FTS5 사용 불가 — 검색은 LIKE 폴백: {e}")
+
+
+def _migrate_scene_notebook(conn: sqlite3.Connection) -> None:
+    """Keep public rollback readable; triggers run even when old Python writes."""
+    for table, additions in (
+        ('scene_backup', [('rev', 'INTEGER NOT NULL DEFAULT 0'), ('rev_hash', 'TEXT'), ('deleted_at', 'TEXT')]),
+        ('mcp_canvas_task', [('cancel_reason', 'TEXT')]),
+    ):
+        cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}
+        for column, declaration in additions:
+            if column not in cols:
+                conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
+    # Tables are also in schema.sql. This entry point supports migration-only callers.
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / 'schema.sql').read_text(encoding='utf-8')
+    block = sql.split('-- Canvas notebook: additive schema, deliberately no new compatibility baseline.')[1]
+    for statement in block.split(';'):
+        if statement.strip():
+            conn.execute(statement)
+    conn.execute("INSERT OR IGNORE INTO app_setting(key,value) VALUES('scene_history_id',lower(hex(randomblob(16))))")
+    for reason, event, condition in (
+        ('legacy_overwrite', 'UPDATE', 'NEW.rev = OLD.rev AND NEW.data_hash IS NOT OLD.data_hash AND OLD.data_hash = OLD.rev_hash'),
+        ('legacy_delete', 'DELETE', '1'),
+    ):
+        conn.execute(f'''CREATE TRIGGER IF NOT EXISTS scene_notebook_{reason}
+            BEFORE {event} ON scene_backup
+            WHEN ({condition}) AND EXISTS(SELECT 1 FROM scene_notebook WHERE owner_uid=OLD.owner_uid)
+            BEGIN
+              INSERT OR IGNORE INTO scene_archive
+                (owner_uid,project_id,scene_id,history_id,reason,data_hash,name,data,rev,deleted_at)
+              VALUES(OLD.owner_uid,OLD.project_id,OLD.scene_id,
+                (SELECT value FROM app_setting WHERE key='scene_history_id'),'{reason}',
+                OLD.data_hash,OLD.name,OLD.data,OLD.rev,OLD.deleted_at);
+            END''')

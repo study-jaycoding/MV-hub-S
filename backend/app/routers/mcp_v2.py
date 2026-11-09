@@ -1300,7 +1300,12 @@ class CompleteIn(StrictModel):
 
 @router.post("/app/canvas-tasks/{task_id}/complete")
 async def complete_task(task_id: UUID, body: CompleteIn, ctx=Depends(_app_context)):
-    if not await asyncio.to_thread(store.complete_canvas_task, str(task_id), ctx.owner, norm_email(ctx.account["email"]), body.workspace.model_dump()):
+    from ..services.scene_writer import WriterConflict
+    try:
+        completed = await asyncio.to_thread(store.complete_canvas_task, str(task_id), ctx.owner, norm_email(ctx.account["email"]), body.workspace.model_dump())
+    except WriterConflict as exc:
+        raise HTTPException(409, exc.code)
+    if not completed:
         raise HTTPException(404, "캔버스 작업을 찾을 수 없습니다.")
     return {"ok": True}
 
