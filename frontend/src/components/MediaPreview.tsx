@@ -1,7 +1,7 @@
 // 미디어 미리보기 — 이미지/동영상 클릭 시 떠오르는 플로팅 창(정보 팝업과 같은 구성).
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
-import { useModalFocus } from "../lib/keyGate";
+import { isTopLayer, useModalFocus } from "../lib/keyGate";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -25,8 +25,8 @@ export type PreviewCardActions = Pick<ComponentProps<typeof GenerationCard>,
   | "autoTagOptions" | "onRegenerate" | "onImport" | "onInfo" | "onOpenFolder" | "onOpenComments" | "myCreatorUid">;
 
 // Ctrl 카드 단추(어셋) — 어셋 화면이 그 칸(AssetCell)을 그려 주는 함수를 등록한다(칸의 동작이 그 화면 상태에 있다).
-//  close(then) = 크게 보기를 닫고, 닫힌 뒤에 then — 크게 보기 아래 겹에 뜨는 창(정보·코멘트)을 열 때.
-type AssetCardRender = (item: PreviewItem, box: { width: number; height: number }, close: (then: () => void) => void) => ReactNode;
+//  tagging·onTagging = 이 창 칸의 태그 입력 — 격자 칸의 입력과 따로 둔다(같은 상태면 두 칸에 입력이 같이 열려 서로 초점을 뺏고 둘 다 닫혔다, 11-09 Jay: T 무반응)
+type AssetCardRender = (item: PreviewItem, box: { width: number; height: number }, tagging: boolean, onTagging: (on: boolean) => void) => ReactNode;
 let assetCardRender: AssetCardRender | null = null;
 const assetCardListeners = new Set<() => void>();
 export function registerAssetPreviewCard(render: AssetCardRender): () => void {
@@ -259,7 +259,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     };
   }, [cardGenId]);
   const liveGen = cardGen && cardGen.id === cur.genId ? cardGen : null;
-  // 크게 보기 아래 겹에 뜨는 창(정보·폴더·작은 코멘트 창)은 크게 보기가 실제로 닫힌 뒤에 연다 — 닫기가 기록 뒤로가기(비동기)라 먼저 열면 꼬인다
+  // 크게 보기 아래 겹에 뜨는 창(폴더·작은 코멘트 창)은 크게 보기가 실제로 닫힌 뒤에 연다 — 닫기가 기록 뒤로가기(비동기)라 먼저 열면 꼬인다.
+  //  정보 창은 닫지 않고 위에 띄운다(InfoPopup over-preview — 11-09 Jay)
   const afterCloseRef = useRef<(() => void) | null>(null);
   useEffect(() => () => {
     const then = afterCloseRef.current;
@@ -308,7 +309,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     !thumb || readyUrl === cur.url ? undefined : videoBox && videoBox.url === cur.url ? videoBox : waiting;
 
   // Esc → 자기만 닫는다(맨 위 겹 — lib/useEscapeClose. 떠 있는 동안 뒤 화면의 단축키도 쉰다).
-  useEscapeClose(onClose, true, true, true);
+  const layer = useEscapeClose(onClose, true, true, true);
   useEscapeClose(() => setMenu(null), !!menu, true, true); // 메뉴가 떠 있으면 Esc 는 메뉴만 닫는다(나중에 켜진 겹이 위)
   // 막이 있는 창 — 초점을 창(뿌리)에 둔다(lib/keyGate '모달의 초점'). 단추가 아니라 뿌리라 Space·Enter 는 전처럼 아래 리스너가 받는다
   //  (재생/정지). 뒤 격자의 초점 카드는 격자가 따로 쥐고 있어 그대로고, 닫으면 초점은 연 자리(격자)로 돌아간다.
@@ -322,6 +323,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     // ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
     const onKey = (e: KeyboardEvent) => {
       if (commentingRef.current) return; // 코멘트 모드가 떠 있으면 키는 그 창의 것(방향키·Space 가 아래로 새지 않게)
+      if (!isTopLayer(layer)) return; // 위에 뜬 겹(정보 창·S 선택 창·우클릭 메뉴)의 키 — 잡는 단계라 여기서 먼저 가져가면 그 창이 못 쓴다
       if (e.altKey && e.key.startsWith("Arrow")) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로(격자와 같다 — 56회차)
       if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && canCommentRef.current) {
         const t = e.target instanceof Element ? e.target : null;
@@ -359,7 +361,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [items]);
+  }, [items, layer]);
 
   // 머리(제목·닫기·받기)가 화면 안에 남게 — 끌어 옮긴 뒤 브라우저를 확대하거나 창을 줄이면 머리가 화면 밖에 남아 다시 잡을 수 없었다(51회차).
   //  이 창은 가운데 기준 오프셋이라, 왼쪽 위 자리로 바꿔 keepHeadReachable(다른 떠 있는 창과 같은 규칙)에 맞춘 뒤 되돌린다.
@@ -623,7 +625,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                     onEditDone={() => setCardTagging(false)}
                     // C = 이 창의 코멘트 모드(그림을 모르는 허브는 종전 작은 창)
                     onOpenComments={(g) => (canComment ? openComment() : leave(() => cardActions.onOpenComments(g)))}
-                    onInfo={(info) => leave(() => cardActions.onInfo(info))}
+                    onInfo={cardActions.onInfo} // 크게 보기는 둔 채 정보 창을 위에(11-09 Jay)
+                    menuScope="preview" // 뒤 격자의 같은 생성물 카드와 S 선택 창을 가른다(11-09 Jay: 워크스페이스·공유 탭 S 무반응)
                     onOpenFolder={cardActions.onOpenFolder && ((g) => leave(() => cardActions.onOpenFolder!(g)))}
                     onShowHistory={onOpenInBoard && ((g) => onOpenInBoard(g.id))} // 머리줄 [History] 와 같은 길
                     onSetSource={noop}
@@ -632,7 +635,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                   />
                 )
               ) : (
-                assetRender?.(cur, { width: drawBox.width, height: drawBox.height }, leave)
+                assetRender?.(cur, { width: drawBox.width, height: drawBox.height }, cardTagging, setCardTagging)
               )}
             </div>
           )}

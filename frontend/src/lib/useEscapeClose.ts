@@ -20,7 +20,7 @@ export function useEscapeClose(
   enabled = true,
   capture = false,
   consume = false,
-) {
+): object {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const token = useRef({}).current;
@@ -46,6 +46,7 @@ export function useEscapeClose(
       window.removeEventListener("keydown", onKey, capture);
     };
   }, [enabled, capture, consume, token]);
+  return token; // 이 겹 — 창이 자기 키(크게 보기의 ←/→)를 맨 위일 때만 받으려고 isTopLayer 로 본다
 }
 
 // ── 지연 로딩 창의 틀 ──

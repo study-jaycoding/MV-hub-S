@@ -114,6 +114,8 @@ export function InfoPopup({
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
   useEscapeClose(onClose);
+  // 크게 보기 위에서 열었으면(Ctrl 카드 ⓘ) 그 위 겹에 그린다 — 나중에 연 창이 위다. 열 때 한 번만 본다: 이 창에서 연 크게 보기는 이 창 위다(11-09 Jay)
+  const [overPreview] = useState(() => !!document.querySelector(".media-preview"));
 
   // 화면 아래로 나가지 않게 — clampStart 는 높이를 모른 채 top 만 막는데(아래 200px), 팝업은 80vh 까지 자라고 견적·썸네일이
   // 늦게 채워져 열린 뒤에도 커진다. 아래쪽 줄 카드를 열면 단추 절반이 화면 밖이었다(2026-09-20 실측: 1664×905 에서 210px).
@@ -529,8 +531,8 @@ export function InfoPopup({
 
   return (
     <>
-      <div className="info-catcher" onMouseDown={onClose} />
-      <div className="info-popup" ref={popRef} style={{ left: pos.x, top: pos.y, width: POP_W }}>
+      <div className={"info-catcher" + (overPreview ? " over-preview" : "")} onMouseDown={onClose} />
+      <div className={"info-popup" + (overPreview ? " over-preview" : "")} ref={popRef} style={{ left: pos.x, top: pos.y, width: POP_W }}>
         <header className="info-head info-head-gen" onPointerDown={onDragStart}>
           <span className="info-title" title={title}>
             {target.kind === "generation" ? "ℹ 생성 정보" : "ℹ 파일 정보"}

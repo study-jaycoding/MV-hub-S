@@ -948,15 +948,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     );
   };
   // 크게 보기 Ctrl 카드 단추(Jay 2026-11-05 시안 ⑪) — 이 화면이 연 어셋이면 그 칸을 크게 보기 위에 겹쳐 그린다. 렌더마다 다시 등록해
-  //  칸의 상태(소스·태그)가 따라간다. C·정보는 크게 보기 아래 겹에 뜨는 창이라 크게 보기를 닫은 뒤 연다.
+  //  칸의 상태(소스·태그)가 따라간다. C·정보는 크게 보기를 둔 채 그 위에 뜬다(CommentPanel·InfoPopup over-preview — 11-09 Jay).
+  //  태그 입력은 크게 보기의 것이다(격자 칸의 tagEditPath 와 따로 — 같으면 두 칸에 입력이 같이 열려 둘 다 닫혔다).
   //  shortcut: 같은 프로젝트를 연 어셋 화면이 둘 떠 있으면 나중에 그린 것이 칸을 그린다 — 둘을 함께 쓰게 되면 화면별로 가른다.
-  useEffect(() => registerAssetPreviewCard((item, box, close) => {
+  useEffect(() => registerAssetPreviewCard((item, box, tagging, onTagging) => {
     const idx = item.assetPath ? files.findIndex((f) => f.path === item.assetPath) : -1;
     const cell = idx >= 0 && item.url === assetFileUrl(project, files[idx].path) ? renderAssetCell(idx, box.width, box.height) : null;
     return cell && cloneElement(cell, {
       layout: "grid", selected: false, focused: false, lastViewed: false,
-      onC: (path: string) => close(() => cellOnC(path)),
-      onInfo: (target: InfoTarget) => close(() => onInfo(target)),
+      editingTag: tagging,
+      onT: () => (metaReadyRef.current ? onTagging(true) : flashMsg(ASSET_META_NOT_READY)), // 격자의 startTagEdit 와 같은 조건
+      onTagCancel: () => onTagging(false),
     });
   }));
   const marqueeEl = marquee && (

@@ -627,6 +627,8 @@
   background: #14151a; border: 1px solid var(--border2); border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0,0,0,0.6);
 }
+/* 크게 보기(.preview-backdrop 232) 위에서 연 코멘트 창(어셋 Ctrl 카드 C — 11-09 Jay) */
+.cmt-panel.over-preview { z-index: 233; }
 .cmt-head {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 12px; border-bottom: 1px solid var(--border);
@@ -894,6 +896,9 @@
 
 /* ── 정보 팝업 (휠클릭) — 예전 플로팅 패널 구성 재사용 ── */
 .info-catcher { position: fixed; inset: 0; z-index: 230; }
+/* 크게 보기(.preview-backdrop 232) 위에서 연 정보 창 — 나중에 연 창이 위(11-09 Jay). 내 계정 패널(235)·우클릭 메뉴 막(240) 아래는 그대로 */
+.info-catcher.over-preview { z-index: 233; }
+.info-popup.over-preview { z-index: 234; }
 .info-popup {
   position: fixed; z-index: 231;
   display: flex; flex-direction: column; max-height: 80vh;

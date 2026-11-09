@@ -92,6 +92,8 @@ export function CommentPanel<T extends CommentPanelItem>({
   // 글 아래 덧붙일 것(생성물 코멘트의 그림 줄)
   renderExtra?: (comment: T) => ReactNode;
 }) {
+  // 크게 보기 위에서 열었으면(어셋 Ctrl 카드 C) 그 위 겹에 띄운다 — 열 때 한 번만 본다(먼저 연 창은 나중에 연 크게 보기 아래 그대로, 11-09 Jay)
+  const [overPreview] = useState(() => !embedded && !!document.querySelector(".media-preview"));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
   const [fontPx, setFontPx] = useState<number>(loadFontPx);
@@ -324,7 +326,7 @@ export function CommentPanel<T extends CommentPanelItem>({
 
   return (
     <div
-      className={"cmt-panel" + (embedded ? " cmt-embedded" : "")}
+      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview ? " over-preview" : "")}
       ref={panelRef}
       data-cmt-hold={holdName}
       onInput={syncUnsent}

@@ -97,6 +97,7 @@ interface Props {
   wheelMenu?: boolean;
   showFolder?: boolean; // onOpenFolder 가 없어도 폴더 표를 '표시만' 한다(캔버스 '생성 결과' 창 — 누르기 없음)
   dimmed?: boolean; // 흐리게(캔버스에서 고른 폴더 밖). 호버하면 다시 선명
+  menuScope?: string; // S 선택 창 열림을 가를 자리 — 같은 생성물 카드가 격자와 크게 보기에 함께 붙을 때(크게 보기 = "preview")
 }
 
 // 열린 등급 메뉴(팀 탭 S) — 카드 밖에 하나만 둔다(50회차). 팀 탭에 새 카드가 들어와 행이 바뀌면 격자가 그 카드를 다시 만들어
@@ -131,6 +132,7 @@ function GenerationCardImpl({
   wheelMenu = false,
   showFolder = false,
   dimmed = false,
+  menuScope,
   fill = true,
   selected = false,
   resolveHighlighted = false,
@@ -186,19 +188,21 @@ function GenerationCardImpl({
   const videoRef = useRef<HTMLVideoElement>(null);
   // T 버튼 → 적용된 태그 목록 팝업(보기/✕삭제). 태그 '입력'은 # 키(editingField) 로만 — 에셋과 동일.
   const reviewSig =`${gen.shared}|${gen.is_held}|${gen.is_final}|${selectedCount}|${tab}`;
+  // 열림의 열쇠 — 자리가 다르면 같은 생성물이라도 따로다(전엔 격자 카드가 크게 보기 카드의 창을 '상태가 바뀐 것'으로 보고 바로 닫았다, 11-09 Jay)
+  const menuId = menuScope ? `${menuScope}:${gen.id}` : gen.id;
   // 이 카드의 것이 열렸을 때만 값이 생긴다 — 다른 카드의 메뉴가 열리고 닫혀도 이 카드는 다시 그리지 않는다
-  const openSig = useSyncExternalStore(subscribeReviewMenu, () => (openReviewMenu?.id === gen.id ? openReviewMenu.sig : null));
+  const openSig = useSyncExternalStore(subscribeReviewMenu, () => (openReviewMenu?.id === menuId ? openReviewMenu.sig : null));
   const confirmReview = openSig === reviewSig;
   const setConfirmReview = (open: boolean) => {
-    if (open) setOpenReviewMenu({ id: gen.id, sig: reviewSig });
-    else if (openReviewMenu?.id === gen.id) setOpenReviewMenu(null);
+    if (open) setOpenReviewMenu({ id: menuId, sig: reviewSig });
+    else if (openReviewMenu?.id === menuId) setOpenReviewMenu(null);
   };
   // 열린 뒤 상태가 바뀌었으면 닫는다 — 되돌아와도 다시 열리지 않게(전의 효과와 같다)
   useEffect(() => {
     if (openSig !== null && openSig !== reviewSig) setOpenReviewMenu(null);
   }, [openSig, reviewSig]);
   useEffect(() => {
-    const id = gen.id;
+    const id = menuId;
     mountedCards.set(id, (mountedCards.get(id) ?? 0) + 1);
     return () => {
       const left = (mountedCards.get(id) ?? 1) - 1;
@@ -208,7 +212,7 @@ function GenerationCardImpl({
         if (!mountedCards.has(id) && openReviewMenu?.id === id) setOpenReviewMenu(null);
       });
     };
-  }, [gen.id]);
+  }, [menuId]);
   // 미디어 로드 실패(원본 URL 죽음 = 힉스필드에서 삭제 등) → '원본 없음' 흐림 표시(즉시 감지 신호).
   // 소스가 바뀌면(리로드로 캐시 URL 전환 등) 초기화해 다시 시도.
   const [broken, setBroken] = useState(false);
