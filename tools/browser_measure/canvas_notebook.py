@@ -108,7 +108,7 @@ def validate_checkout(path: Path) -> Path:
     return path
 
 
-def make_env(data: Path, port: int, checkout: Path = REPO, *, legacy: bool = False, shared_url: str | None = None) -> dict[str, str]:
+def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | None = None) -> dict[str, str]:
     if port in FORBIDDEN_PORTS or not 1024 <= port <= 65535:
         raise ValueError("unsafe measurement port")
     env = servers.server_env(os.environ, "H", port, data.resolve())
@@ -116,9 +116,7 @@ def make_env(data: Path, port: int, checkout: Path = REPO, *, legacy: bool = Fal
         validate_shared_url(shared_url)
         env["CONTENT_HUB_SHARED_URL"] = shared_url
     env["CONTENT_HUB_FRONTEND_DIST"] = str(checkout / "frontend" / "dist")
-    if not legacy:
-        env["CONTENT_HUB_SCENE_WRITER_TEST"] = "1"
-    return env
+    return env  # 허브 공책은 운영 기본 켬 그대로 잰다(server_env 가 부모의 CONTENT_HUB_* 를 뺀다)
 
 
 def validate_shared_url(url: str) -> None:
@@ -346,7 +344,7 @@ class Hub:
         self.log = (self.work / ("old-server.log" if legacy else "server.log")).open("a", encoding="utf-8")
         command = [sys.executable, "-c", controlled_launcher(checkout, self.control_token)] if self.control_token and not legacy else [sys.executable, str(checkout / "backend" / "serve.py")]
         self.proc = subprocess.Popen(command,
-            cwd=checkout / "backend", env=make_env(data, self.port, checkout, legacy=legacy, shared_url=self.shared.url),
+            cwd=checkout / "backend", env=make_env(data, self.port, checkout, shared_url=self.shared.url),
             stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:

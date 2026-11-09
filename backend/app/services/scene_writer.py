@@ -26,8 +26,8 @@ class WriterConflict(ValueError):
 
 
 def enabled() -> bool:
-    # Stage 1 test opt-in only; not advertised in hub features.
-    return not config.AUTH_ENABLED and os.environ.get('CONTENT_HUB_SCENE_WRITER_TEST') == '1'
+    # 로컬 허브 기본 켬(Jay 2026-11-10). CONTENT_HUB_SCENE_WRITER=0 = 현장에서 옛 계약으로 끄는 스위치.
+    return not config.AUTH_ENABLED and os.environ.get('CONTENT_HUB_SCENE_WRITER', '1') != '0'
 
 
 @dataclass

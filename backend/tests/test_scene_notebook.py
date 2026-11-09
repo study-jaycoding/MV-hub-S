@@ -10,7 +10,7 @@ from app.services.scene_writer import WriterConflict
 def notebook_db(tmp_path, monkeypatch):
     monkeypatch.setenv('CONTENT_HUB_DB', str(tmp_path / 'notebook.db'))
     monkeypatch.setattr(config, 'AUTH_ENABLED', False)
-    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER_TEST', '1')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     pin = active_account.set_override('')
     db.flush_pool()
     db.init_db()
@@ -171,14 +171,14 @@ def test_cleanup_removes_book_first_and_archive_last(notebook_db):
 
 def test_restore_init_is_gated_but_started_book_is_always_fenced(notebook_db, monkeypatch):
     legacy.sync_scene_backups('u', '', [scene()], [])
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     db.init_db(scene_restore=True)
     assert not store.is_started('u')
-    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER_TEST', '1')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     db.init_db(scene_restore=True)
     assert store.is_started('u')
     before = store.notebook('u')['history_id']
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     db.init_db(scene_restore=True)
     assert store.notebook('u')['history_id'] != before
 

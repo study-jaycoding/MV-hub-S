@@ -142,10 +142,10 @@ def test_flag_off_without_notebook_and_auth_on_skip_init_work(notebook_db, monke
         pytest.fail('disabled notebook must not normalize or restore')
     monkeypatch.setattr(store, 'normalize_legacy', unexpected)
     monkeypatch.setattr(store, 'restore_history', unexpected)
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     db.init_db()
     db.init_db(scene_restore=True)
-    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER_TEST', '1')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     monkeypatch.setattr(config, 'AUTH_ENABLED', True)
     db.init_db(scene_restore=True)
 

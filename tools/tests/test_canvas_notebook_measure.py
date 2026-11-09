@@ -133,13 +133,13 @@ def test_server_environment_uses_existing_isolation_builder(tmp_path, monkeypatc
     monkeypatch.setenv("CONTENT_HUB_DB", "forbidden-original.db")
     monkeypatch.setenv("CONTENT_HUB_WORKER_BACKUP_STATE_DB", "forbidden-worker.db")
     monkeypatch.setenv("CONTENT_HUB_SHARED_URL", "http://192.168.1.171:8010")
+    monkeypatch.setenv("CONTENT_HUB_SCENE_WRITER", "0")
     env = measure.make_env(tmp_path, 8239)
     assert env["CONTENT_HUB_DB"] == str(tmp_path / "db" / "content_hub.db")
     assert "CONTENT_HUB_WORKER_BACKUP_STATE_DB" not in env
     assert env["CONTENT_HUB_SHARED_URL"] == "http://127.0.0.1:9"
-    assert env["CONTENT_HUB_SCENE_WRITER_TEST"] == "1"
+    assert "CONTENT_HUB_SCENE_WRITER" not in env  # 바깥에서 끈 값이 새지 않고 운영 기본(켬)으로 잰다
     assert env["CONTENT_HUB_AUTH"] == "0"
-    assert "CONTENT_HUB_SCENE_WRITER_TEST" not in measure.make_env(tmp_path, 8239, legacy=True)
 
 
 @pytest.mark.parametrize("name", ["MV-hub-S-dev", "MV-hub-S-release", "MV-hub-S", "data_test", "data"])

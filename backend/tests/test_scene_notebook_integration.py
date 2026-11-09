@@ -31,17 +31,17 @@ def test_http_token_gate_start_retry_and_legacy_get(client, monkeypatch):
         'deletes': [{'id': 's', 'intent_id': 'd1', 'base': state['items'][0]['base']}]})
     assert result.status_code == 200, result.text
     assert client.get('/api/scenes/backup?include_data=true').json()['items'] == []
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     assert client.put('/api/scenes/backup', json={'upserts': [scene()]}).status_code == 409
     assert client.post('/api/scenes/writer', json={'action': 'release', 'token': lease['token']}).status_code == 200
     assert client.put('/api/scenes/backup', json={'token': lease['token'], 'request_id': 'late', 'upserts': [scene()]}).status_code == 409
 
 
 def test_flag_off_and_auth_on_keep_legacy_contract(client, monkeypatch):
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     assert client.post('/api/scenes/writer', json={'action': 'status'}).status_code == 404
     assert client.put('/api/scenes/backup', json={'upserts': [scene()]}).status_code == 200
-    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER_TEST', '1')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     monkeypatch.setattr(config, 'AUTH_ENABLED', True)
     assert client.post('/api/scenes/writer', json={'action': 'status'}).status_code == 404
     assert client.put('/api/scenes/backup', json={'upserts': [scene(name='auth')]}).status_code == 200
@@ -260,7 +260,7 @@ def test_request_emits_want_and_size_release_emits_changed(client, monkeypatch):
 def test_legacy_mode_releases_transition_lock_before_repository_work(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from app import active_account
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     def probe(*args):
         def acquire_elsewhere():
             acquired = active_account.transition_lock.acquire(blocking=False)
@@ -433,12 +433,16 @@ def test_account_epoch_aba_invalidates_http_upload(client):
     assert base() == original
 
 
-def test_auth_feature_is_only_advertised_in_isolated_opt_in(notebook_db, monkeypatch):
+def test_auth_feature_is_default_on_for_local_hub_with_off_switch(notebook_db, monkeypatch):
     from app.routers import auth
     monkeypatch.setattr(auth, 'AUTH_ENABLED', False)
     assert 'scene_writer_v1' in auth.auth_config()['features']
-    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER_TEST')
+    monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER')  # 운영 기본(변수 없음) = 켬
+    assert 'scene_writer_v1' in auth.auth_config()['features']
+    from app.services import scene_writer
+    assert scene_writer.enabled()
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     assert 'scene_writer_v1' not in auth.auth_config()['features']
-    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER_TEST', '1')
+    monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     monkeypatch.setattr(auth, 'AUTH_ENABLED', True)
     assert 'scene_writer_v1' not in auth.auth_config()['features']
