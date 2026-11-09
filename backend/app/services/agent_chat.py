@@ -67,6 +67,11 @@ class Identity:
     db_path: str
     email: str
 
+    def key(self) -> str:
+        """화면에 주는 신원 표식(계정·허브·DB 를 묶은 해시) — 표를 다시 받을 때 같은 신원인지 비교한다. 경로·계정은 드러내지 않는다."""
+        raw = "\0".join((self.hub, self.db_path.casefold(), self.email)).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()[:32]
+
     def db_file(self) -> Path:
         digest = hashlib.sha256(self.db_path.casefold().encode("utf-8")).hexdigest()[:16]
         return store.open_db(config.AGENT_CHAT_DIR / f"{self.hub}-{digest}-{active_account.slug(self.email)}.db")
@@ -247,9 +252,13 @@ class AgentChat:
     def _handle(self, runtime: _Runtime, kind: str, event: dict, job: process.JobProcess) -> None:
         """글 조각 밖의 사건 하나 — emit_lock 안에서 부른다."""
         if kind == "violation":
-            runtime.violation = event
+            runtime.violation = runtime.violation or event  # 처음 본 까닭을 남긴다
             job.terminate()
         elif kind == "session":
+            if event.get("auth") not in (None, "none"):  # 실행 전 확인 뒤 바뀌었어도 — 구독 아닌 요금 경로면 바로 멈춘다
+                runtime.violation = {"what": "auth", "detail": [str(event.get("auth"))[:40]]}
+                job.terminate()
+                return
             if event.get("cli_session_id"):
                 runtime.session_seen = True
                 store.update_conversation(runtime.path, runtime.conversation_id, cli_session_id=event["cli_session_id"])
@@ -299,7 +308,10 @@ class AgentChat:
                             status = "done" if event.get("ok") else "failed"
             self._flush(runtime)
             job.proc.wait(30)
-            if runtime.violation:
+            if runtime.violation and runtime.violation.get("what") == "auth":
+                status, reason = "failed", "auth_not_subscription"
+                self._emit(runtime, "error", {"message": "구독 로그인이 아닌 인증(API 키)이 보여 바로 멈췄습니다."})
+            elif runtime.violation:
                 status, reason = "failed", "tool_violation"
                 self._emit(runtime, "error", {"message": "허용하지 않은 도구가 보여 바로 멈췄습니다."})
             elif runtime.watch_failed:
@@ -386,13 +398,18 @@ class AgentChat:
         with self._lock:
             turn_id = self._by_client.get(client_id)
             runtime = self._runtimes.get(turn_id) if turn_id else None
-        if not runtime or runtime.stopped() or runtime.done.is_set():
+        if not runtime:
             return False
-        store.bind_plan(runtime.path, plan_id=str(plan["plan_id"]), turn_id=runtime.turn_id, client_id=client_id)
+        # shortcut: 프롬프트는 항목마다 2000자까지만 카드에 싣는다 — 더 긴 프롬프트가 흔해지면 전문 보기를 붙인다
         summary = {"plan_id": str(plan["plan_id"]), "title": plan.get("title"), "status": plan.get("status"),
                    "workspace": plan.get("workspace"),
-                   "items": [{"model": item.get("model"), "prompt": str(item.get("prompt") or "")[:400]} for item in plan.get("items") or []]}
-        self._emit(runtime, "plan", {"plan": summary})
+                   "items": [{"model": item.get("model"), "prompt": str(item.get("prompt") or "")[:2000]} for item in plan.get("items") or []]}
+        with runtime.emit_lock:  # 끝 표시(_run finally)와 한 줄로 — 끝난 뒤에 계획이 붙거나, 끝남 사건 뒤에 계획이 오지 않게
+            if runtime.stopped() or runtime.done.is_set():
+                return False
+            self._flush(runtime)
+            store.bind_plan(runtime.path, plan_id=str(plan["plan_id"]), turn_id=runtime.turn_id, client_id=client_id)
+            self._emit(runtime, "plan", {"plan": summary})
         return True
 
     # ── 긴 기다림 ──

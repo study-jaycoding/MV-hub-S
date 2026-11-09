@@ -25,7 +25,8 @@ export type AgentMessage =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; open: boolean } // open = 아직 조각을 받는 덩어리
   | { kind: "tool"; id: string; name: string; status: "started" | "done" | "failed" }
-  | { kind: "plan"; id: string; plan: AgentPlan; exec?: { state: "running" | "done" | "failed"; message?: string } }
+  | { kind: "plan"; id: string; plan: AgentPlan; exec?: { state: "running" | "done" | "failed"; message?: string };
+      estimate?: { credits: number | null } } // 없으면 견적 확인 중 · credits null = 확인하지 못함
   | { kind: "error"; id: string; message: string };
 
 export interface AgentChoice {
@@ -107,6 +108,9 @@ export function useAgentChat(context: AgentContext) {
   const poll = useRef<AbortController | null>(null);
   const busy = useRef(false); // 보내는 중·차례 진행 중 — 두 번 보내기 막음(상태보다 먼저 바뀐다)
   const executing = useRef(new Set<string>());
+  const estimating = useRef(new Set<string>());
+  // 받아들였는지 모르는 채 실패한 마지막 보내기 — 같은 글·같은 대화·같은 모델로 다시 보내면 같은 열쇠를 써서 허브가 그 차례를 돌려준다
+  const lastFailed = useRef<{ sig: string; key: string } | null>(null);
 
   // 지금 시작하는 요청의 표 — 답이 왔을 때 대화가 바뀌었거나 계정이 바뀌었으면 stale() 이 참
   const ticket = () => {
@@ -120,6 +124,7 @@ export function useAgentChat(context: AgentContext) {
     poll.current = null;
     busy.current = false;
     executing.current.clear();
+    estimating.current.clear();
     setConversationId(null);
     setTitle(null);
     setMessages([]);
@@ -241,14 +246,18 @@ export function useAgentChat(context: AgentContext) {
     setSending(true);
     setError(null);
     const stale = ticket();
+    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, body]);
+    const key = lastFailed.current?.sig === sig ? lastFailed.current.key : crypto.randomUUID();
+    lastFailed.current = { sig, key }; // 받아들인 답을 받으면 지운다
     try {
       const r = await agentChatApi.startTurn({
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: key,
         ...(conversationId ? { conversation_id: conversationId } : {}),
         engine: choice.engine, model: choice.model, effort: choice.effort,
         text: body, context: contextRef.current,
       });
       if (stale()) return false;
+      lastFailed.current = null;
       setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body }]);
       setConversationId(r.conversation_id);
       remember(r.conversation_id);
@@ -278,6 +287,23 @@ export function useAgentChat(context: AgentContext) {
 
   const setExec = (planId: string, exec: Extract<AgentMessage, { kind: "plan" }>["exec"], plan?: AgentPlan) =>
     setMessages((list) => list.map((m) => (m.kind === "plan" && m.plan.plan_id === planId ? { ...m, exec, plan: plan ?? m.plan } : m)));
+
+  // 계획 카드가 새로 보이면 견적을 한 번 묻는다(무료 조회). 실패해도 카드·실행은 그대로 — '확인하지 못했어요'로 보인다.
+  useEffect(() => {
+    for (const m of messages) {
+      if (m.kind !== "plan" || m.estimate || estimating.current.has(m.plan.plan_id)) continue;
+      const planId = m.plan.plan_id;
+      estimating.current.add(planId);
+      const stale = ticket();
+      const put = (credits: number | null) => {
+        if (stale()) return;
+        setMessages((list) => list.map((x) => (x.kind === "plan" && x.plan.plan_id === planId ? { ...x, estimate: { credits } } : x)));
+      };
+      agentChatApi.estimatePlan(planId).then((r) => put(typeof r.total_credits === "number" ? r.total_credits : null), () => put(null));
+    }
+    // ticket 은 매번 새로 만드는 표라 넣지 않는다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   /** [실행] — 사람만 누른다. 허브의 앱 입구가 계획을 다시 읽어 확인한 뒤 낸다(두 번 눌러도 한 번만 나간다 — 허브의 선점). */
   const executePlan = useCallback(async (planId: string) => {

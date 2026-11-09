@@ -183,7 +183,8 @@ function Message({ message: m, onExecute, onRevise }: {
         </div>
       );
     case "plan":
-      return <AgentPlanCard plan={m.plan} exec={m.exec} onExecute={() => onExecute(m.plan.plan_id)} onRevise={() => onRevise(m.plan.title ?? "")} />;
+      return <AgentPlanCard plan={m.plan} exec={m.exec} estimate={m.estimate} onExecute={() => onExecute(m.plan.plan_id)}
+        onRevise={() => onRevise(m.plan.title ?? "")} />;
     case "error":
       return <div className="agent-msg agent-msg-error" role="alert">{m.message}</div>;
   }

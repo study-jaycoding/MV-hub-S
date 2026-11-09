@@ -31,6 +31,13 @@ _PANEL = "x-mvhub-panel"
 _MAX_CONTEXT = 4096
 _SESSION_GONE = {"X-MVHub-Panel-Error": "session", "X-MVHub-Auth-State": "preserved"}  # 로그인 만료로 보지 않게
 _ACCOUNT_CHANGED = {"X-MVHub-Panel-Error": "account"}
+# 같은 신원의 차례 시작·취소를 한 줄로 — 선점과 실행 등록 사이에 취소·같은 열쇠 재요청이 끼면 실행 정보 없는 차례가
+# 끝난 것으로 바뀐 채 CLI 가 뒤늦게 뜨거나, 같은 열쇠에 대화가 둘 생긴다(독립 리뷰 2차). 허브는 이벤트 루프 하나다.
+_turn_locks: dict[str, asyncio.Lock] = {}
+
+
+def _turn_lock(identity: Identity) -> asyncio.Lock:
+    return _turn_locks.setdefault(identity.key(), asyncio.Lock())
 
 
 def _identity(ctx) -> Identity:
@@ -71,7 +78,8 @@ async def _still(ctx) -> None:
 async def session(request: Request):
     ctx, identity = await _captured(request)
     engines = await asyncio.to_thread(service.engines)
-    return {"secret": service.issue_session(identity), "account_email": identity.email, "engines": engines}
+    return {"secret": service.issue_session(identity), "account_email": identity.email, "identity_key": identity.key(),
+            "engines": engines}
 
 
 @router.get("/conversations")
@@ -117,6 +125,11 @@ async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
         raise HTTPException(422, "모델을 다시 고르세요.")
     if len(json.dumps(body.context, ensure_ascii=False)) > _MAX_CONTEXT:
         raise HTTPException(422, "화면 정보가 너무 큽니다.")
+    async with _turn_lock(identity):
+        return await _start_turn_locked(body, request, ctx, identity)
+
+
+async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Identity) -> dict:
     path = await asyncio.to_thread(identity.db_file)
     existing = await asyncio.to_thread(chat_store.turn_by_key, path, body.idempotency_key)
     if existing:  # 응답을 잃고 다시 보낸 같은 요청 — 새로 실행하지 않는다
@@ -158,7 +171,7 @@ async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
             await asyncio.to_thread(chat_store.set_status, path, turn["id"], "failed", reason="start_failed")
             await asyncio.to_thread(chat_store.append_event, path, turn["id"], "error", {"message": "AI 프로그램을 시작하지 못했습니다."})
             raise HTTPException(503, "AI 프로그램을 시작하지 못했습니다.") from exc
-    return {"turn_id": turn["id"], "conversation_id": conv["id"], "status": turn["status"]}
+    return {"turn_id": turn["id"], "conversation_id": turn["conversation_id"], "status": turn["status"]}
 
 
 @router.get("/turns/{turn_id}/events")
@@ -174,17 +187,16 @@ async def turn_events(turn_id: UUID, after: int = Query(0, ge=0), panel=Depends(
 @router.post("/turns/{turn_id}/cancel")
 async def cancel_turn(turn_id: UUID, panel=Depends(_panel)):
     _, identity = panel
-    status = await asyncio.to_thread(service.cancel, identity, str(turn_id))
+    async with _turn_lock(identity):  # 시작이 실행 정보를 등록할 때까지 기다린다
+        status = await asyncio.to_thread(service.cancel, identity, str(turn_id))
     if status == "missing":
         raise HTTPException(404, "차례를 찾을 수 없습니다.")
     return {"status": status}
 
 
-@router.post("/plans/{plan_id}/execute")
-async def execute_plan(plan_id: UUID, panel=Depends(_panel)):
-    """사람이 칸의 [실행] 을 눌렀을 때만 — 허브가 MCP 응답에서 직접 묶어 둔 계획만 그 칸 연결로 실행한다."""
-    ctx, identity = panel
-    binding = await asyncio.to_thread(chat_store.binding_for, identity.db_file(), str(plan_id))
+async def _bound_plan(ctx, identity: Identity, plan_id: str) -> None:
+    """허브가 MCP 응답에서 직접 묶어 둔 계획만 — 그 칸 연결(실행권 없는 패널 연결)을 ctx 에 싣는다."""
+    binding = await asyncio.to_thread(chat_store.binding_for, identity.db_file(), plan_id)
     if not binding:
         raise HTTPException(404, "이 칸에서 만든 계획이 아닙니다.")
     client = await asyncio.to_thread(mcp_store.client_by_id, binding["client_id"])
@@ -193,4 +205,19 @@ async def execute_plan(plan_id: UUID, panel=Depends(_panel)):
         raise HTTPException(403, "이 계획을 실행할 수 없습니다.")
     ctx.client = client
     await _still(ctx)
+
+
+@router.post("/plans/{plan_id}/estimate")
+async def estimate_plan(plan_id: UUID, panel=Depends(_panel)):
+    """계획 카드의 견적(무료 조회 — 생성·실행하지 않는다)."""
+    ctx, identity = panel
+    await _bound_plan(ctx, identity, str(plan_id))
+    return await mcp_v2._estimate_plan(ctx, str(plan_id))
+
+
+@router.post("/plans/{plan_id}/execute")
+async def execute_plan(plan_id: UUID, panel=Depends(_panel)):
+    """사람이 칸의 [실행] 을 눌렀을 때만 — 허브가 MCP 응답에서 직접 묶어 둔 계획만 그 칸 연결로 실행한다."""
+    ctx, identity = panel
+    await _bound_plan(ctx, identity, str(plan_id))
     return await mcp_v2.submit_plan(ctx, str(plan_id))

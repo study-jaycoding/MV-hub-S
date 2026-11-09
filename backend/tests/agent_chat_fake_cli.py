@@ -20,7 +20,8 @@ def out(value):
 
 def init(tools=ALLOWED, session="S-claude-1"):
     out({"type": "system", "subtype": "init", "session_id": session, "tools": tools,
-         "mcp_servers": [{"name": "mvhub_panel", "status": "connected"}], "apiKeySource": "none"})
+         "mcp_servers": [{"name": "mvhub_panel", "status": "connected"}],
+         "apiKeySource": os.environ.get("FAKE_AGENT_INIT_AUTH", "none")})
 
 
 def grandchild_and_wait():
@@ -35,6 +36,14 @@ def grandchild_and_wait():
 def main():
     if "--version" in sys.argv:
         print(os.environ.get("FAKE_AGENT_VERSION", "0.162.0-alpha.17.2"))
+        return
+    auth = os.environ.get("FAKE_AGENT_AUTH", "subscription")  # subscription | api_key | none
+    if sys.argv[1:3] == ["auth", "status"]:  # Claude 모양
+        print(json.dumps({"loggedIn": auth != "none", "authMethod": "claude.ai" if auth == "subscription" else "console",
+                          "apiProvider": "firstParty"}))
+        return
+    if sys.argv[1:3] == ["login", "status"]:  # Codex 모양
+        print({"subscription": "Logged in using ChatGPT", "api_key": "Logged in using an API key"}.get(auth, "Not logged in"))
         return
     prompt = sys.stdin.buffer.read().decode("utf-8")
     user = prompt.rsplit("[사용자]\n", 1)[-1].strip()

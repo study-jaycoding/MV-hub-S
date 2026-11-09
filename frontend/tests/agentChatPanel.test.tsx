@@ -31,7 +31,8 @@ const ENGINES = [
   { id: "codex", available: true, version: "0.162.0-alpha.17.2", reason: null, efforts: ["low", "medium", "high"],
     models: [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol" }, { id: "gpt-6-astra", label: "GPT-6 Astra" }] },
 ];
-const session = (email = "jay@example.com", secret = "s1") => json({ secret, account_email: email, engines: ENGINES });
+const session = (email = "jay@example.com", secret = "s1", identity = "id-1") =>
+  json({ secret, account_email: email, identity_key: identity, engines: ENGINES });
 const started = (turnId = "t1", conversationId = "c1") => json({ turn_id: turnId, conversation_id: conversationId, status: "running" });
 const PLAN = { plan_id: "p1", title: "고양이 컷 4장", status: "draft", items: [{ model: "Nano Banana 2", prompt: "고양이" }], workspace: { scope: "personal", name: null } };
 
@@ -99,6 +100,7 @@ describe("Ask Agent 옆 칸", () => {
       }
       if (c.path === "/turns/t1/events?after=2") return rest.promise;
       if (c.path === "/plans/p1/execute") return json({ ...PLAN, status: "submitted" });
+      if (c.path === "/plans/p1/estimate") return json({ plan_id: "p1", total_credits: 12 });
       return json({ detail: "Not Found" }, 404);
     };
     await mount();
@@ -125,6 +127,8 @@ describe("Ask Agent 옆 칸", () => {
     expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장");
     expect(panel().textContent).toContain("실행하면 크레딧이 나갑니다");
     expect(panel().textContent).toContain("저장 위치: 내 공간");
+    expect(host.querySelector(".agent-plan-cost")!.textContent).toBe("예상 크레딧: 12"); // 카드가 보이면 견적(무료)을 한 번 묻는다
+    expect(calls.filter((c) => c.path === "/plans/p1/estimate").map((c) => c.method)).toEqual(["POST"]);
     expect(button("보내기")).toBeTruthy();
 
     // 허브 계약: 모든 요청에 기대 계정, /session 밖에는 패널 비밀값
@@ -160,6 +164,36 @@ describe("Ask Agent 옆 칸", () => {
     expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장");
     expect(calls.filter((c) => c.path.startsWith("/turns/t1/events")).map((c) => c.path)).toEqual(
       ["/turns/t1/events?after=0", "/turns/t1/events?after=1"]);
+    // 견적을 못 받았으면 0 이 아니라 '확인하지 못했어요' — 카드와 [실행]은 그대로
+    expect(host.querySelector(".agent-plan-cost")!.textContent).toBe("예상 크레딧: 확인하지 못했어요");
+    expect(host.querySelector(".agent-plan-run")).toBeTruthy();
+  });
+
+  it("접수 답을 잃고(연결 끊김) 같은 글을 다시 보내면 같은 열쇠 — 허브가 그 차례를 돌려준다. 글을 바꾸면 새 열쇠", async () => {
+    let attempt = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") {
+        attempt += 1;
+        if (attempt <= 2) return Promise.reject(new TypeError("Failed to fetch"));
+        return started();
+      }
+      return json({ events: [], status: "done", last_seq: 0 });
+    };
+    await mount();
+    type("고양이");
+    enter();
+    await flush();
+    expect(input().value).toBe("고양이"); // 받아들이지 않았으면 글이 남는다
+    enter();
+    await flush();
+    type("강아지");
+    enter();
+    await flush();
+    const keys = turnCalls().map((c) => c.body!.idempotency_key);
+    expect(keys).toHaveLength(3);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
   });
 
   it("[실행] 응답이 attention(거절·접수 불명확)이면 '보냈어요' 대신 라이브러리 확인 안내", async () => {
@@ -236,7 +270,7 @@ describe("Ask Agent 옆 칸", () => {
     expect(input().value).toBe("둘");
   });
 
-  it("패널 표 401(허브 재시작) → 새 표가 같은 계정이면 같은 요청(같은 중복 방지 키)을 한 번 다시 보낸다 — 로그인은 그대로", async () => {
+  it("패널 표 401(허브 재시작) → 새 표가 같은 신원(계정·허브·DB)이면 같은 요청(같은 중복 방지 키)을 한 번 다시 보낸다 — 로그인은 그대로", async () => {
     setAuthToken("tok");
     let issued = 0;
     route = (c) => {
@@ -258,7 +292,10 @@ describe("Ask Agent 옆 칸", () => {
     setAuthToken("tok");
     let issued = 0;
     route = (c) => {
-      if (c.path === "/session") { issued += 1; return session(issued === 1 ? "jay@example.com" : "other@example.com", `s${issued}`); }
+      if (c.path === "/session") {
+        issued += 1;
+        return session(issued === 1 ? "jay@example.com" : "other@example.com", `s${issued}`, `id-${issued}`);
+      }
       if (c.path === "/turns") return json({ detail: "panel" }, 401, { "X-MVHub-Panel-Error": "session" });
       return json({ detail: "Not Found" }, 404);
     };
@@ -269,6 +306,22 @@ describe("Ask Agent 옆 칸", () => {
     expect(turnCalls()).toHaveLength(1);
     expect(host.querySelector(".agent-error")!.textContent).toBe("계정이 바뀌었어요");
     expect(getAuthToken()).toBe("tok");
+  });
+
+  it("패널 표 401 뒤 계정은 같아도 신원 표식이 다르면(같은 계정·다른 DB) 다시 보내지 않는다", async () => {
+    setAuthToken("tok");
+    let issued = 0;
+    route = (c) => {
+      if (c.path === "/session") { issued += 1; return session("jay@example.com", `s${issued}`, `id-${issued}`); }
+      if (c.path === "/turns") return json({ detail: "panel" }, 401, { "X-MVHub-Panel-Error": "session" });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    type("안녕");
+    enter();
+    await flush();
+    expect(turnCalls()).toHaveLength(1);
+    expect(host.querySelector(".agent-error")!.textContent).toBe("계정이 바뀌었어요");
   });
 
   it("계정이 바뀐 뒤 도착한 늦은 사건은 버린다 · 허브가 계정 표식(account)으로 거절하면 다시 묻지 않고 비운다", async () => {
@@ -340,7 +393,7 @@ describe("Ask Agent 옆 칸", () => {
 
   it("못 쓰는 엔진은 까닭을 보이고 고를 수 없다 · 생각 깊이는 낮음·보통·높음", async () => {
     route = (c) => (c.path === "/session"
-      ? json({ secret: "s1", account_email: "jay@example.com", engines: [ENGINES[0], { ...ENGINES[1], available: false, reason: "점검 필요" }] })
+      ? json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: [ENGINES[0], { ...ENGINES[1], available: false, reason: "점검 필요" }] })
       : json({ detail: "Not Found" }, 404));
     await mount();
     act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());

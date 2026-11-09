@@ -6,6 +6,7 @@ import type { AgentMessage } from "../../lib/useAgentChat";
 interface Props {
   plan: AgentPlan;
   exec?: Extract<AgentMessage, { kind: "plan" }>["exec"];
+  estimate?: Extract<AgentMessage, { kind: "plan" }>["estimate"];
   onExecute: () => void;
   onRevise: () => void;
 }
@@ -17,7 +18,7 @@ function workspaceLabel(value: unknown): string {
   return ws?.name || (ws?.scope === "personal" ? "내 공간" : "");
 }
 
-export function AgentPlanCard({ plan, exec, onExecute, onRevise }: Props) {
+export function AgentPlanCard({ plan, exec, estimate, onExecute, onRevise }: Props) {
   const t = useT();
   const items = plan.items ?? [];
   const where = workspaceLabel(plan.workspace);
@@ -36,6 +37,11 @@ export function AgentPlanCard({ plan, exec, onExecute, onRevise }: Props) {
         </ul>
       )}
       {where && <p className="agent-plan-where">{t("저장 위치")}: {where}</p>}
+      <p className="agent-plan-cost">
+        {!estimate ? t("예상 크레딧 확인 중")
+          : estimate.credits === null ? t("예상 크레딧: 확인하지 못했어요")
+          : `${t("예상 크레딧")}: ${estimate.credits}`}
+      </p>
       {exec?.state === "done" ? (
         <p className="agent-plan-done" role="status">{t("실행을 보냈어요 — 결과는 라이브러리에 들어와요")}</p>
       ) : (

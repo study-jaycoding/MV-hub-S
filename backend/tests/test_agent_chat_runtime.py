@@ -36,6 +36,7 @@ def alive(pid):
 def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE)])
+    monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
     monkeypatch.setenv("FAKE_AGENT_PIDFILE", str(tmp_path / "grandchild.pid"))
     service = chat.AgentChat()
     identity = chat.Identity("a" * 32, str(tmp_path / "hub.db"), "jay@example.test")
@@ -218,12 +219,12 @@ def test_plan_binds_only_while_turn_runs(runtime, monkeypatch):
     path, conv, turn = start(service, identity, monkeypatch, "claude_slow")
     wait_file(tmp / "grandchild.pid")
     plan = {"plan_id": "plan-1", "title": "고양이", "status": "planned", "workspace": {"scope": "personal"},
-            "items": [{"model": "nano", "prompt": "고양이 " * 200}]}
+            "items": [{"model": "nano", "prompt": "고양이 " * 600}]}
     assert service.bind_plan("client-1", plan)
     assert not service.bind_plan("someone-else", plan)
     assert store.binding_for(path, "plan-1")["turn_id"] == turn["id"]
     card = [event for event in store.events_after(path, turn["id"]) if event["kind"] == "plan"][0]["plan"]
-    assert card["plan_id"] == "plan-1" and len(card["items"][0]["prompt"]) == 400
+    assert card["plan_id"] == "plan-1" and len(card["items"][0]["prompt"]) == 2000
     service.cancel(identity, turn["id"])
     finish(path, turn["id"])
     assert not service.bind_plan("client-1", {**plan, "plan_id": "plan-2"})
@@ -449,3 +450,43 @@ def test_long_poll_wakes_on_new_event_and_times_out(tmp_path, monkeypatch):
     assert page["status"] == "done" and page["more"] is True and len(page["events"]) == 2
     missing = asyncio.run(service.wait_events(identity, str(uuid4()), 0, timeout=0.1))
     assert missing["status"] == "missing"
+
+
+# ── 리뷰 2차 ──
+@windows
+def test_reap_keeps_job_when_process_count_unknown(monkeypatch):
+    """Job 조회 실패를 '0개'로 보고 차례를 풀던 것 — 조회 실패면 핸들을 쥔 채 False."""
+    job = process.JobProcess([sys.executable, "-c", "pass"], Path.cwd(), process.child_env())
+    job.proc.wait(20)
+    real = process.JobProcess.pids
+    monkeypatch.setattr(process.JobProcess, "pids", lambda self: None)
+    assert not job.reap(0.3) and not job.closed
+    monkeypatch.setattr(process.JobProcess, "pids", real)
+    assert job.reap(5.0) and job.closed
+
+
+@windows
+def test_api_key_source_in_init_stops_turn(runtime, monkeypatch):
+    """실행 전 확인을 지나도 CLI 첫 사건이 구독 아닌 인증을 말하면 바로 멈춘다."""
+    service, identity, _ = runtime
+    monkeypatch.setenv("FAKE_AGENT_INIT_AUTH", "ANTHROPIC_API_KEY")
+    path, _, turn = start(service, identity, monkeypatch, "claude_slow")
+    done = finish(path, turn["id"])
+    assert done["status"] == "failed" and done["reason"] == "auth_not_subscription"
+    assert store.get_conversation(path, store.get_turn(path, turn["id"])["conversation_id"])["cli_session_id"] in (None, "")
+
+
+def test_codex_locked_until_isolation_checked(monkeypatch):
+    """Jay 11-09 'Claude 먼저' — 실사용 기본값은 Codex 잠금(판·로그인 확인 전에 바로 거절, 프로세스도 안 띄운다)."""
+    monkeypatch.setattr(process, "cli_version", lambda prefix: pytest.fail("잠긴 Codex 는 판 확인도 하지 않는다"))
+    assert process.CODEX_LOCK and process.engine_problem("codex", [sys.executable, str(FAKE)]) == process.CODEX_LOCK
+
+
+def test_engine_problem_checks_login_kind(monkeypatch):
+    monkeypatch.setattr(process, "CODEX_LOCK", None)
+    prefix = [sys.executable, str(FAKE)]
+    for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아닙니다"), ("none", "로그인되어 있지 않습니다")):
+        monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
+        for engine in ("claude", "codex"):
+            problem = process.engine_problem(engine, prefix)
+            assert (problem is None) if expected is None else (expected in problem), (engine, auth, problem)

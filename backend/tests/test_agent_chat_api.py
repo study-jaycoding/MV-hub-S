@@ -1,6 +1,8 @@
 """Ask Agent 칸 HTTP — 격리 DB·가짜 CLI·가짜 제출. 실제 Claude·Codex·생성·공유 서버 없음."""
+import asyncio
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -34,6 +36,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE)])
     monkeypatch.setattr(process, "cli_version", lambda prefix: "0.162.0-alpha.17.2")
+    monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
     service = chat.AgentChat()
     monkeypatch.setattr(chat, "service", service)
     monkeypatch.setattr(router, "service", service)
@@ -81,6 +84,7 @@ def panel_headers(client):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["account_email"] == EMAIL and {e["id"] for e in body["engines"] if e["available"]} == {"claude", "codex"}
+    assert len(body["identity_key"]) == 32  # 화면이 표를 다시 받을 때 계정·허브·DB 를 함께 비교하는 표식
     return {**HEADERS, "X-MVHub-Panel": body["secret"]}
 
 
@@ -155,6 +159,13 @@ def test_turn_plan_card_and_human_execute_once(hub, monkeypatch):
         calls.append(request_body)
         return {"id": "generation-1"}
 
+    async def estimate_cost(model, params, prompt, timeout):
+        return {"credits": 3}
+
+    monkeypatch.setattr(api.cli_bridge, "estimate_cost", estimate_cost)
+    estimated = client.post(f"/api/agent-chat/plans/{plan_id}/estimate", headers=headers)
+    assert estimated.status_code == 200 and estimated.json()["total_credits"] == 3  # 카드의 견적(무료 조회)
+    assert calls == []  # 견적은 제출하지 않는다
     monkeypatch.setattr(gen_requests, "create_gen_request", submit)
     for _ in range(2):
         executed = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers)
@@ -186,6 +197,70 @@ def test_idempotent_resend_and_foreign_plan_rejected(hub):
     assert wrong_engine.status_code == 409
     client.post(f"/api/agent-chat/turns/{first['turn_id']}/cancel", headers=headers)
     wait_status(client, headers, first["turn_id"], ("cancelled",))
+
+
+@windows
+def test_cancel_during_start_waits_for_runtime(hub, monkeypatch):
+    """선점과 실행 등록 사이에 온 취소 — 실행 정보 없이 '끝남'으로 바꾸고 CLI 가 뒤늦게 뜨던 것(리뷰 2차 P1)."""
+    client, _, _ = hub
+    headers = panel_headers(client)
+    real_claim, claimed = chat_store.claim_turn, {}
+    ready = threading.Event()
+
+    def slow_claim(path, **kwargs):
+        turn, created = real_claim(path, **kwargs)
+        claimed["id"] = turn["id"]
+        ready.set()
+        time.sleep(0.8)  # 워커 스레드에서 — 이 사이에 취소가 들어온다
+        return turn, created
+
+    monkeypatch.setattr(chat_store, "claim_turn", slow_claim)
+    result = {}
+    starter = threading.Thread(target=lambda: result.setdefault("start", start_turn(client, headers)))
+    starter.start()
+    assert ready.wait(10)
+    cancelled = client.post(f"/api/agent-chat/turns/{claimed['id']}/cancel", headers=headers).json()
+    starter.join(20)
+    assert result["start"].status_code == 200
+    assert cancelled["status"] == "cancelling"  # 실행 정보를 찾아 끈다(전에는 'cancelled' — 실행 없이 끝남 처리)
+    assert wait_status(client, headers, claimed["id"], ("cancelled",))["status"] == "cancelled"
+
+
+@windows
+def test_same_key_at_once_returns_one_turn_and_one_conversation(hub, monkeypatch):
+    client, profiles, _ = hub
+    headers = panel_headers(client)
+    real_setup = mcp_router.setup
+
+    async def slow_setup(request, identity=None):
+        await asyncio.sleep(0.5)  # 두 요청이 같이 앞 확인을 지나가게
+        return await real_setup(request, identity)
+
+    monkeypatch.setattr(mcp_router, "setup", slow_setup)
+    key, results = uuid4().hex, []
+    threads = [threading.Thread(target=lambda: results.append(start_turn(client, headers, idempotency_key=key))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+    bodies = [r.json() for r in results]
+    assert [r.status_code for r in results] == [200, 200]
+    assert bodies[0]["turn_id"] == bodies[1]["turn_id"] and bodies[0]["conversation_id"] == bodies[1]["conversation_id"]
+    assert len(profiles) == 1
+    assert len(client.get("/api/agent-chat/conversations", headers=headers).json()["conversations"]) == 1
+    client.post(f"/api/agent-chat/turns/{bodies[0]['turn_id']}/cancel", headers=headers)
+    wait_status(client, headers, bodies[0]["turn_id"], ("cancelled",))
+
+
+def test_api_key_login_locks_engine(hub, monkeypatch):
+    """구독 로그인이 아니면(API 키) 엔진을 잠근다 — 실행 전 상태 확인(비밀값 없이)."""
+    client, _, _ = hub
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "api_key")
+    body = client.post("/api/agent-chat/session", headers=HEADERS).json()
+    assert {e["id"]: e["available"] for e in body["engines"]} == {"claude": False, "codex": False}
+    assert all("구독 로그인이 아닙니다" in e["reason"] for e in body["engines"])
+    turn = start_turn(client, {**HEADERS, "X-MVHub-Panel": body["secret"]})
+    assert turn.status_code == 409 and "구독 로그인이 아닙니다" in turn.json()["detail"]
 
 
 def test_enabled_only_on_local_hub_and_feature_flag(monkeypatch):

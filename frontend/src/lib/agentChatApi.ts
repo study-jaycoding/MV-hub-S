@@ -30,6 +30,7 @@ export interface AgentEngine {
 export interface AgentSession {
   secret: string;
   account_email: string;
+  identity_key: string; // 계정·허브·DB 를 묶은 표식 — 표를 다시 받을 때 이것이 같아야 같은 요청을 다시 보낸다
   engines: AgentEngine[];
 }
 export type AgentTurnStatus = "running" | "cancelling" | "cancelled" | "done" | "failed" | "interrupted";
@@ -85,8 +86,8 @@ export interface AgentTurnRequest {
 let session: AgentSession | null = null;
 let issuing: Promise<AgentSession> | null = null;
 
-const sameAccount = (a: string | null | undefined, b: string | null | undefined) =>
-  (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+// 같은 신원 = 계정·허브·DB 가 모두 같다(허브의 identity_key). 같은 계정이어도 DB 가 바뀌었으면 다시 보내지 않는다.
+const sameIdentity = (a: AgentSession, b: AgentSession) => !!a.identity_key && a.identity_key === b.identity_key;
 const isPanelSessionError = (res: Response) => res.status === 401 && res.headers.get(PANEL_ERROR_HEADER) === "session";
 
 function send(path: string, init: RequestInit, expect: string, secret?: string): Promise<Response> {
@@ -117,7 +118,7 @@ async function panelFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (isPanelSessionError(res)) {
     // 다른 요청이 그사이 새 표를 받았으면 그것으로, 아니면 새로 받는다. 신원은 이 요청을 시작할 때의 표와 비교한다.
     const fresh = session && session.secret !== used.secret ? session : await openAgentSession();
-    if (!sameAccount(fresh.account_email, used.account_email)) throw new AccountChangedError(ACCOUNT_CHANGED_MESSAGE);
+    if (!sameIdentity(fresh, used)) throw new AccountChangedError(ACCOUNT_CHANGED_MESSAGE);
     res = await send(path, init, expect, fresh.secret);
     // 한 번만 다시 보낸다. 또 표 401 이면 로그인 만료 처리(throwHttpError)에 넘기지 않는다
     if (isPanelSessionError(res)) throw new Error("Agent 연결을 다시 열지 못했어요 — 칸을 닫았다 다시 열어 주세요");
@@ -143,4 +144,6 @@ export const agentChatApi = {
     panelFetch<{ events: AgentEvent[]; status: AgentTurnStatus; last_seq: number; more?: boolean }>(`/turns/${id(turnId)}/events?after=${after}`, { signal }),
   cancel: (turnId: string) => panelFetch<{ status: AgentTurnStatus }>(`/turns/${id(turnId)}/cancel`, { method: "POST" }),
   executePlan: (planId: string) => panelFetch<AgentPlan>(`/plans/${id(planId)}/execute`, { method: "POST" }),
+  // 견적(무료 조회) — total_credits 가 null 이면 확인하지 못한 것(0 이 아니다)
+  estimatePlan: (planId: string) => panelFetch<{ total_credits: number | null }>(`/plans/${id(planId)}/estimate`, { method: "POST" }),
 };
