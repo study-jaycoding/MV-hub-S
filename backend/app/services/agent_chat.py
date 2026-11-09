@@ -95,6 +95,9 @@ class _Runtime:
     events: int = 0
     checked_at: float = field(default=0.0)
     done: threading.Event = field(default_factory=threading.Event)
+    pending: list = field(default_factory=list)  # 아직 안 내보낸 글 조각
+    pending_since: float = 0.0
+    emit_lock: threading.RLock = field(default_factory=threading.RLock)  # 내보내기 순서 — 실행 스레드와 감시 스레드가 함께 쓴다
 
     def stopped(self) -> bool:
         return bool(self.cancelled or self.timed_out or self.identity_lost or self.overflow or self.violation)
@@ -198,10 +201,22 @@ class AgentChat:
                 self._terminate(runtime)
         return not runtime.identity_lost
 
+    def _flush(self, runtime: _Runtime, *, only_old: bool = False) -> None:
+        """모아 둔 글 조각을 한 사건으로. only_old 면 0.3초 넘게 기다린 것만(다음 출력이 안 와도 보이게 — 감시 스레드)."""
+        with runtime.emit_lock:
+            if not runtime.pending or (only_old and time.monotonic() - runtime.pending_since < _DELTA_FLUSH_SECONDS):
+                return
+            text = "".join(runtime.pending)
+            runtime.pending.clear()
+            if not runtime.stopped() and self._still_ok(runtime):
+                self._emit(runtime, "text_delta", {"text": text})
+
     def _watch(self, runtime: _Runtime) -> None:
-        """출력과 상관없이 — 계정이 바뀌면 끄고, CLI 부모가 끝났는데 자식이 출력을 붙잡고 있으면 남은 트리를 끈다."""
+        """출력과 상관없이 — 계정이 바뀌면 끄고, CLI 부모가 끝났는데 자식이 출력을 붙잡고 있으면 남은 트리를 끄고,
+        오래 기다린 글 조각을 내보낸다."""
         exited_at = None
-        while not runtime.done.wait(0.5):
+        while not runtime.done.wait(0.25):
+            self._flush(runtime, only_old=True)
             with self._lock:
                 job = runtime.job
             if job and job.exited():
@@ -219,6 +234,21 @@ class AgentChat:
         except Exception:  # noqa: BLE001
             runtime.identity_lost = True
             return False
+
+    def _handle(self, runtime: _Runtime, kind: str, event: dict, job: process.JobProcess) -> None:
+        """글 조각 밖의 사건 하나 — emit_lock 안에서 부른다."""
+        if kind == "violation":
+            runtime.violation = event
+            job.terminate()
+        elif kind == "session":
+            if event.get("cli_session_id"):
+                runtime.session_seen = True
+                store.update_conversation(runtime.path, runtime.conversation_id, cli_session_id=event["cli_session_id"])
+        elif kind == "result":
+            if not event.get("ok") and not runtime.stopped():
+                self._emit(runtime, "error", {"message": event.get("message") or "실행하지 못했습니다."})
+        elif not runtime.stopped() and self._still_ok(runtime):
+            self._emit(runtime, kind, event)
 
     def _run(self, runtime: _Runtime) -> None:
         status, reason = "failed", None
@@ -239,41 +269,25 @@ class AgentChat:
             else:
                 job.feed(runtime.stdin)
             parser = parser_for(runtime.engine)
-            pending: list[str] = []
-            pending_since = 0.0
-
-            def flush():
-                if pending and not runtime.stopped() and self._still_ok(runtime):
-                    self._emit(runtime, "text_delta", {"text": "".join(pending)})
-                pending.clear()
-
             for raw in job.lines():
                 for event in parser.feed(raw):
                     kind = event.pop("kind")
                     if kind == "text_delta":
                         if not runtime.stopped():
-                            if not pending:
-                                pending_since = time.monotonic()
-                            pending.append(event["text"])
-                            if sum(map(len, pending)) >= _DELTA_FLUSH_CHARS or time.monotonic() - pending_since >= _DELTA_FLUSH_SECONDS:
-                                flush()
+                            with runtime.emit_lock:
+                                if not runtime.pending:
+                                    runtime.pending_since = time.monotonic()
+                                runtime.pending.append(event["text"])
+                                if sum(map(len, runtime.pending)) >= _DELTA_FLUSH_CHARS:
+                                    self._flush(runtime)
                         continue
-                    flush()
-                    if kind == "violation":
-                        runtime.violation = event
-                        job.terminate()
-                    elif kind == "session":
-                        if event.get("cli_session_id"):
-                            runtime.session_seen = True
-                            store.update_conversation(runtime.path, runtime.conversation_id, cli_session_id=event["cli_session_id"])
-                    elif kind == "result":
-                        got_result = True
-                        status = "done" if event.get("ok") else "failed"
-                        if not event.get("ok") and not runtime.stopped():
-                            self._emit(runtime, "error", {"message": event.get("message") or "실행하지 못했습니다."})
-                    elif not runtime.stopped() and self._still_ok(runtime):
-                        self._emit(runtime, kind, event)
-            flush()
+                    with runtime.emit_lock:  # 앞의 조각을 먼저 내보내고 이 사건을 — 감시 스레드와 순서가 섞이지 않게
+                        self._flush(runtime)
+                        self._handle(runtime, kind, event, job)
+                        if kind == "result":
+                            got_result = True
+                            status = "done" if event.get("ok") else "failed"
+            self._flush(runtime)
             job.proc.wait(30)
             if runtime.violation:
                 status, reason = "failed", "tool_violation"
@@ -386,9 +400,8 @@ class AgentChat:
             with self._lock:
                 self._waiters.setdefault(turn_id, set()).add(waiter)
             try:
-                # 등록한 뒤 다시 읽는다 — 저장과 등록 사이에 온 신호를 잃지 않게
-                events = await asyncio.to_thread(store.events_after, path, turn_id, after, EVENT_PAGE)
-                turn = await asyncio.to_thread(store.get_turn, path, turn_id)
+                # 등록한 뒤 다시 읽는다 — 저장과 등록 사이에 온 신호를 잃지 않게. 상태와 사건은 한 시점에서(끝남 + 빠진 사건 방지)
+                turn, events = await asyncio.to_thread(store.snapshot, path, turn_id, after, EVENT_PAGE)
                 if turn is None:
                     return {"events": [], "status": "missing", "last_seq": after, "more": False}
                 remaining = deadline - loop.time()

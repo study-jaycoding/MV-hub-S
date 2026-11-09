@@ -343,6 +343,49 @@ def test_event_flood_and_huge_line_are_bounded(runtime, monkeypatch):
     assert [event["text"] for event in store.events_after(path, turn["id"]) if event["kind"] == "text"] == ["긴 줄 뒤"]
 
 
+@windows
+def test_short_delta_shows_up_while_cli_is_quiet(runtime, monkeypatch):
+    service, identity, _ = runtime
+    path, _, turn = start(service, identity, monkeypatch, "pause_after_delta")
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        deltas = [event["text"] for event in store.events_after(path, turn["id"]) if event["kind"] == "text_delta"]
+        if deltas:
+            break
+        time.sleep(0.1)
+    assert deltas == ["짧은 답"]
+    assert store.get_turn(path, turn["id"])["status"] == "running"  # 아직 CLI 가 조용한 동안 보였다
+    assert finish(path, turn["id"])["status"] == "done"
+
+
+def test_long_poll_never_reports_done_with_events_missing(tmp_path, monkeypatch):
+    """마지막 사건 저장·'끝남'이 두 읽기 사이에 끼어도 빠뜨리지 않는다 — 상태와 사건을 한 시점에서 읽는다."""
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    service = chat.AgentChat()
+    identity = chat.Identity("c" * 32, str(tmp_path / "hub.db"), "jay@example.test")
+    path = identity.db_file()
+    conv = store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="c", mcp_entry={}, title="t")
+    for round_index in range(20):
+        turn, _ = store.claim_turn(path, conversation_id=conv["id"], idempotency_key=f"key-race-{round_index:03d}", text="a", context={})
+
+        def finish_now():
+            store.append_event(path, turn["id"], "plan", {"plan": {"plan_id": f"p{round_index}"}})
+            store.set_status(path, turn["id"], "done")
+            service._notify(turn["id"])
+
+        writer = threading.Thread(target=finish_now)
+        writer.start()
+        seen, after = [], 0
+        while True:
+            page = asyncio.run(service.wait_events(identity, turn["id"], after, timeout=2))
+            seen += page["events"]
+            after = page["last_seq"]
+            if page["status"] == "done" and not page["more"]:
+                break
+        writer.join()
+        assert [event["kind"] for event in seen] == ["plan"]
+
+
 def test_long_poll_wakes_on_new_event_and_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     service = chat.AgentChat()

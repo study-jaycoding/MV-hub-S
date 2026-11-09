@@ -66,6 +66,12 @@ def main():
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(str(child.pid))
         out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
+    elif scenario == "pause_after_delta":  # 짧은 조각 뒤 한참 조용 — 다음 출력이 없어도 조각이 보여야 한다
+        init()
+        out({"type": "stream_event", "parent_tool_use_id": None,
+             "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "짧은 답"}}})
+        time.sleep(3)
+        out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
     elif scenario == "flood":
         init()
         for index in range(5000):

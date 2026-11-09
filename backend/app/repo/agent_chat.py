@@ -214,6 +214,19 @@ def events_after(path, turn_id, after=0, limit=500) -> list[dict]:
     return [{"seq": row["seq"], "kind": row["kind"], **json.loads(row["payload"])} for row in rows]
 
 
+def snapshot(path, turn_id, after=0, limit=500) -> tuple[dict | None, list[dict]]:
+    """차례 상태와 사건을 한 읽기 시점(WAL 스냅샷)에서 — '끝남'이 보이면 그 전에 저장된 사건은 모두 함께 보인다."""
+    with connect(path) as conn:
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute("SELECT * FROM agent_chat_turn WHERE id=?", (turn_id,)).fetchone()
+            rows = conn.execute("SELECT seq,kind,payload FROM agent_chat_event WHERE turn_id=? AND seq>? ORDER BY seq LIMIT ?",
+                                (turn_id, after, limit)).fetchall()
+        finally:
+            conn.execute("COMMIT")
+    return (dict(row) if row else None), [{"seq": r["seq"], "kind": r["kind"], **json.loads(r["payload"])} for r in rows]
+
+
 def bind_plan(path, *, plan_id, turn_id, client_id) -> None:
     with connect(path) as conn:
         conn.execute("INSERT OR IGNORE INTO agent_chat_plan_binding(plan_id,turn_id,client_id) VALUES(?,?,?)",
