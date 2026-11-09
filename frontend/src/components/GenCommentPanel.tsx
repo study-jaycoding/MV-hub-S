@@ -313,6 +313,7 @@ export function GenCommentPanel({
       onUnsentChange={onUnsentChange}
       onEditDraw={onEditDraw}
       media={media}
+      pipId={embedded ? undefined : "gen"}
       renderExtra={(c) => (
         <CommentDrawingStrip
           target={{ kind: "generation", genId }}

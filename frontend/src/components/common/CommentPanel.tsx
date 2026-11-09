@@ -1,7 +1,11 @@
 import { backgroundKeysBlocked } from "../../lib/keyGate";
 import { markKeyHandled } from "../../lib/keyHandled";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { holdUnload } from "../../lib/unloadGuard";
+import {
+  claimCommentPip, commentPipSupported, openCommentPip, prefersCommentPip, releaseCommentPip, returnCommentPip, useCommentPipWindow,
+} from "../../lib/commentPip";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { COMMENT_HIGHLIGHT_EVENT, takeCommentHighlightRequest, type CommentHighlight } from "../../lib/commentHighlight";
@@ -49,6 +53,18 @@ const PEN_ICON = (
 const SEND_ICON = (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4Z" />
+  </svg>
+);
+
+// 창 밖으로(네모에서 오른쪽 위로 나가는 화살표) · 앱 안으로(네모로 들어오는 화살표) — Jay 11-10 떠 있는 창
+const PIP_OUT_ICON = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 4h6v6" /><path d="M20 4l-8 8" /><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+  </svg>
+);
+const PIP_IN_ICON = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M10 14H4v6" /><path d="M4 20l8-8" /><path d="M14 4h5a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-5" />
   </svg>
 );
 
@@ -106,6 +122,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   allowPrivate = true,
   onEditDraw,
   media,
+  pipId,
 }: {
   comments: T[];
   label: string;
@@ -137,8 +154,17 @@ export function CommentPanel<T extends CommentPanelItem>({
   onEditDraw?: (text: string) => boolean;
   // 왼쪽 썸네일 칸 — 떠 있는 창에만. 있으면 머리줄의 label 글자는 빼고 썸네일의 title 로 보인다
   media?: CommentMedia | null;
+  // [창 밖으로] 묶음 — 주면 떠 있는 창(lib/commentPip)으로 옮길 수 있다. 같은 묶음의 새 패널이 그 창을 이어받는다(Assets 는 파일마다 새 패널)
+  pipId?: string;
 }) {
   const showMedia = !embedded && !!media;
+  // 떠 있는 창(Jay 11-10) — 그 창의 문서에 같은 부품을 그린다. 입력칸이 글을 쥐고 있어(state 아님) 옮길 때 글을 들고 간다(draftRef)
+  const canPip = !embedded && !!pipId && commentPipSupported();
+  const pipWin = useCommentPipWindow(canPip ? pipId : undefined);
+  const pipWinRef = useRef(pipWin);
+  pipWinRef.current = pipWin;
+  const panelDoc = () => pipWinRef.current?.document ?? document;
+  const draftRef = useRef<Record<string, string>>({});
   // 영상 썸네일 — 생성 카드와 같다(GenerationCard onEnter/onLeave): 올리면 무음 재생, 떼면 멈추고 처음으로
   const mediaVideoRef = useRef<HTMLVideoElement>(null);
   const playMedia = () => {
@@ -201,7 +227,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   }, [visible]);
   useEffect(() => {
     if (!flash) return;
-    const panel = document.querySelector(`[data-cmt-hold="${CSS.escape(holdName)}"]`);
+    const panel = panelDoc().querySelector(`[data-cmt-hold="${CSS.escape(holdName)}"]`);
     const row = panel?.querySelector<HTMLElement>(`[data-comment-id="${CSS.escape(flash.id)}"]`);
     if (row) {
       // Restart even for the same comment, without remounting its unsaved input.
@@ -223,13 +249,14 @@ export function CommentPanel<T extends CommentPanelItem>({
   // 보내지 못한 글이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻는다(Jay 결정 6A, 10-15) — 새 글·답글은 비어 있지 않으면, 고치는 글은
   //  원문(data-original)과 달라졌으면. 입력칸이 글을 쥐고 있어(state 가 아니다) 칠 때·그린 뒤·보낸 뒤에 이 패널의 칸들을 다시 센다.
   const syncUnsent = () => {
-    const panel = document.querySelector(`[data-cmt-hold="${holdName}"]`);
+    const panel = panelDoc().querySelector(`[data-cmt-hold="${holdName}"]`);
     // 사라진 패널(늦게 끝난 전송)은 부모에게 알리지 않는다 — 그사이 다음 파일의 패널이 알린 '보내지 않은 글 있음'을 지웠다(Codex 5A 리뷰)
     if (!panel) {
       holdUnload(holdName, false);
       return;
     }
     const inputs = [...panel.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]')];
+    draftRef.current = Object.fromEntries(inputs.map((input) => [input.name, input.value])); // 떠 있는 창 ↔ 앱 안으로 옮길 때 들고 갈 글
     // 고치는 칸(data-original 있음)은 다 지운 것도 고친 것이다
     const unsent = inputs.some((input) => input.dataset.original !== undefined ? input.value !== input.dataset.original : input.value.trim() !== "");
     holdUnload(holdName, unsent);
@@ -240,6 +267,28 @@ export function CommentPanel<T extends CommentPanelItem>({
     holdUnload(holdName, false);
     onUnsentChange?.(false);
   }, [holdName, onUnsentChange]);
+  // 떠 있는 창 ↔ 앱 안으로 옮겨 그린 직후 — 쓰던 글을 새 칸에 넣는다. 위 syncUnsent(그린 뒤 효과)가 빈 새 칸을 읽기 전에(layout)
+  const placedRef = useRef<Window | null>(pipWin);
+  useLayoutEffect(() => {
+    if (placedRef.current === pipWin) return;
+    placedRef.current = pipWin;
+    const panel = (pipWin?.document ?? document).querySelector(`[data-cmt-hold="${holdName}"]`);
+    panel?.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]').forEach((input) => {
+      const kept = draftRef.current[input.name];
+      if (kept !== undefined) input.value = kept;
+    });
+  }, [pipWin, holdName]);
+  // 같은 묶음의 떠 있는 창이 있으면 이어받고(Assets 의 파일 전환), '띄워서 보기'면 연 누름으로 바로 띄운다. 사라질 때 닫기를 예약한다
+  const panelSize = () => {
+    const el = document.querySelector<HTMLElement>(`[data-cmt-hold="${holdName}"]`);
+    return el ? { width: el.offsetWidth || 644, height: el.offsetHeight || 380 } : { width: 644, height: 380 };
+  };
+  useEffect(() => {
+    if (!canPip || !pipId) return;
+    if (!claimCommentPip(pipId) && prefersCommentPip()) void openCommentPip(pipId, panelSize());
+    return () => releaseCommentPip(pipId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPip, pipId]);
   const submitFrom = async (input: HTMLInputElement, send: (text: string) => Promise<boolean>, done?: () => void) => {
     const text = input.value;
     if (!text.trim() || sendingRef.current.has(input)) return;
@@ -395,10 +444,12 @@ export function CommentPanel<T extends CommentPanelItem>({
     </div>
   );
 
-  return (
+  const panel = (
     <div
-      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview ? " over-preview" : "") + (showMedia ? " cmt-with-media" : "")}
-      ref={panelRef}
+      className={"cmt-panel" + (embedded ? " cmt-embedded" : "") + (overPreview && !pipWin ? " over-preview" : "") + (showMedia ? " cmt-with-media" : "")
+        + (pipWin ? " cmt-pip" : "")}
+      // 떠 있는 창에서는 앱 안 자리·크기 기억(useFloatingPanel)에 잇지 않는다 — 그 창의 크기가 앱 안 크기로 저장되지 않게
+      ref={pipWin ? undefined : panelRef}
       data-cmt-hold={holdName}
       onInput={syncUnsent}
       // 패널 안에서 난 Esc 는 패널이 쓴다(고치던 것·답글 접기는 그 입력칸이 한다) — '쓴 것'으로 표시해 뒤 화면으로 새지 않게 한다.
@@ -412,7 +463,7 @@ export function CommentPanel<T extends CommentPanelItem>({
         if (from.matches?.('.cmt-input input')) from.blur();
       }}
       style={
-        (embedded
+        (embedded || pipWin
           ? { "--cmt-fs": `${fontPx}px` }
           : {
               left: (pos || fallbackPos).x,
@@ -435,7 +486,7 @@ export function CommentPanel<T extends CommentPanelItem>({
       )}
       {/* 썸네일 칸이 없으면 없는 상자(display: contents) — 칸이 있을 때만 오른쪽 세로 칸이 된다. 늘 두어 칸이 생겨도 입력칸이 다시 만들어지지 않게 */}
       <div className="cmt-col">
-      <div className="cmt-head" onMouseDown={embedded ? undefined : (e) => onHeadMouseDown(e, fallbackPos)}>
+      <div className="cmt-head" onMouseDown={embedded || pipWin ? undefined : (e) => onHeadMouseDown(e, fallbackPos)}>
         <span className="cmt-title">
           💬 {embedded && !composer ? "지난 코멘트" : "코멘트"} <span className="muted">({visible.length})</span>
         </span>
@@ -448,6 +499,14 @@ export function CommentPanel<T extends CommentPanelItem>({
             A+
           </button>
         </div>
+        {canPip && pipId && (
+          <button type="button" className="cmt-pip-btn" onMouseDown={(e) => e.stopPropagation()}
+            aria-label={pipWin ? "앱 안으로" : "창 밖으로"}
+            title={pipWin ? "앱 안으로 — 코멘트 창을 앱 화면 안으로 돌려놓기" : "창 밖으로 — 브라우저 밖 어디로든 옮기는 떠 있는 창으로(늘 다른 창 위)"}
+            onClick={() => (pipWin ? returnCommentPip(pipId) : void openCommentPip(pipId, panelSize()))}>
+            {pipWin ? PIP_IN_ICON : PIP_OUT_ICON}
+          </button>
+        )}
         {!embedded && (
           <button className="cmt-x" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
             ✕
@@ -536,4 +595,6 @@ export function CommentPanel<T extends CommentPanelItem>({
       </div>
     </div>
   );
+  // 떠 있는 창이면 그 창의 문서에 그린다(같은 앱 상태 — 고른 카드를 따라가고 [편집]·크게 보기는 앱 창에 열린다)
+  return pipWin ? createPortal(panel, pipWin.document.body) : panel;
 }
