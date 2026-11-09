@@ -39,6 +39,7 @@ export function ListCard({
   addListAsReference,
   onOutPortDown,
   onResizeDown,
+  reorderable = false,
 }: {
   card: SceneCard;
   cardsById: Map<string, SceneCard>;
@@ -56,7 +57,10 @@ export function ListCard({
   addListAsReference: (generationCardIds: string[]) => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
+  // 순서 바꾸기는 더블클릭 팝업에서만(Jay 2026-11-09). 캔버스 노드에서는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
+  reorderable?: boolean;
 }) {
+  const moveTip = reorderable ? "\n드래그 = 순서 바꾸기" : "\n더블클릭 = 크게 보고 순서 바꾸기";
   // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트). input(무선)은 실제 소스로 해석.
   const li = collectListInputs(card.id, cardsById, resolvedEdges);
   const label =
@@ -117,14 +121,16 @@ export function ListCard({
                       title="중첩 소스 — 내부 생성물을 펼쳐 사용"
                       onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                     >
-                      <span
-                        className="scene-listrow-grip"
-                        title="드래그 = 순서 바꾸기"
-                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        ⠿
-                      </span>
+                      {reorderable && (
+                        <span
+                          className="scene-listrow-grip"
+                          title="드래그 = 순서 바꾸기"
+                          onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          ⠿
+                        </span>
+                      )}
                       <span className="scene-listrow-count">
                         <span className="scene-listrow-badge">
                           {gc.kind === "render" ? "렌더" : "리스트"} {nestedCount}
@@ -146,14 +152,16 @@ export function ListCard({
                     data-reid={cid}
                     onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                   >
-                    <span
-                      className="scene-listrow-grip"
-                      title="드래그 = 순서 바꾸기"
-                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ⠿
-                    </span>
+                    {reorderable && (
+                      <span
+                        className="scene-listrow-grip"
+                        title="드래그 = 순서 바꾸기"
+                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        ⠿
+                      </span>
+                    )}
                     <span
                       className="scene-listrow-view"
                       title={gen?.assets?.[0] ? "클릭 = 크게 보기" : undefined}
@@ -203,14 +211,16 @@ export function ListCard({
                     className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
                     data-reid={cid}
                   >
-                    <span
-                      className="scene-listrow-grip"
-                      title="드래그 = 순서 바꾸기"
-                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ⠿
-                    </span>
+                    {reorderable && (
+                      <span
+                        className="scene-listrow-grip"
+                        title="드래그 = 순서 바꾸기"
+                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        ⠿
+                      </span>
+                    )}
                     <span className="scene-listrow-text">{txt || "(빈 텍스트)"}</span>
                   </div>
                 );
@@ -233,8 +243,8 @@ export function ListCard({
                       key={cid}
                       className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
                       data-reid={cid}
-                      title={`${i + 1}번 · 생성물\n드래그 = 순서 바꾸기`}
-                      onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
+                      title={`${i + 1}번 · 생성물` + moveTip}
+                      onMouseDown={reorderable ? (e) => startReorder(e, card.id, cid, "h") : undefined}
                     >
                       {genKind === "audio" ? (
                         audioTile
@@ -265,10 +275,10 @@ export function ListCard({
                     title={
                       `${i + 1}번 · 레퍼런스 ${refs.length}장` +
                       (anyHeld ? "\n연결 안 된 레퍼런스 있음" : flagged ? "\n서버에 없는 레퍼런스 있음" : "") +
-                      "\n드래그 = 순서 바꾸기"
+                      moveTip
                     }
                     data-tip-tone={anyHeld || flagged ? "bad" : undefined}
-                    onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
+                    onMouseDown={reorderable ? (e) => startReorder(e, card.id, cid, "h") : undefined}
                   >
                     {first === "missing" || first === "held" ? (
                       <>

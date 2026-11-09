@@ -3930,6 +3930,7 @@ export function SceneBoard({
                 addListAsReference={addListAsReference}
                 onOutPortDown={onOutPortDown}
                 onResizeDown={onResizeDown}
+                reorderable
               />
             </ListPopup>
           );
