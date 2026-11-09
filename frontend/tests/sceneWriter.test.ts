@@ -8,6 +8,7 @@ import { initSceneStore, resetSceneStoreForTest, setSceneWriteGate, settleSceneS
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
 import { createHash } from "node:crypto";
+import { HttpError } from "../src/lib/http";
 
 const ready = { status: "ready" as const, changed: false };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
@@ -234,6 +235,43 @@ describe("hub scene writer", () => {
     syncing.resolve(ready); await run;
     expect(h.client.view.mode).toBe("writer");
     expect(h.client.token()?.token).toBe(released ? "token2" : "token1");
+  });
+  it.each(["renew", "status"])("BFCache offline %s allows local editing then reconciles after hub recovery", async (phase) => {
+    const h = harness(); h.client.configure(true); await h.client.refresh();
+    h.client.releaseBeacon(() => {}); h.calls.length = 0; h.deps.sync.mockClear();
+    const send = h.deps.send.getMockImplementation()!;
+    let offline = true;
+    h.deps.send.mockImplementation(async (account, body) => {
+      if (offline && body.action === phase) throw new TypeError("Failed to fetch");
+      return send(account, body);
+    });
+    if (phase === "status") h.setServer({ ...h.server(), writer: null, token: undefined });
+    h.client.resume(); await h.client.refresh(false);
+    expect(h.client.view.mode).toBe("uncertain"); expect(h.client.token()).toBeNull();
+    expect(h.deps.lost).not.toHaveBeenCalled(); expect(h.deps.sync).not.toHaveBeenCalled();
+    expect(h.calls.some(c => c.action === "release")).toBe(false);
+    offline = false;
+    h.setServer({ ...h.server(), writer: null, token: undefined }); h.calls.length = 0;
+    await h.client.refresh(false);
+    expect(h.calls.map(c => c.action)).toEqual(["renew", "status", "claim"]);
+    expect(h.deps.sync).toHaveBeenCalledOnce(); expect(h.client.view.mode).toBe("writer");
+  });
+  it("BFCache HTTP 500 still releases and reports failed initial reconciliation", async () => {
+    const h = harness(); h.client.configure(true); await h.client.refresh();
+    h.client.releaseBeacon(() => {}); h.calls.length = 0;
+    h.deps.send.mockRejectedValueOnce(new HttpError(500, "server error"));
+    h.client.resume(); await h.client.refresh(false);
+    expect(h.calls).toEqual([{ action: "release", browser_id: "browser", tab_id: "tab", token: "token1" }]);
+    expect(h.client.view).toMatchObject({ mode: "away", error: expect.stringContaining("전체 내보내기") });
+    expect(h.client.token()).toBeNull();
+  });
+  it("BFCache network failure after claim still fails the initial reconciliation", async () => {
+    const h = harness(); h.client.configure(true); await h.client.refresh();
+    h.client.releaseBeacon(() => {}); h.setServer({ ...h.server(), writer: null, token: undefined });
+    h.deps.settle.mockRejectedValueOnce(new TypeError("post-claim failure"));
+    await h.client.refresh(false);
+    expect(h.calls.at(-1)).toMatchObject({ action: "release", token: "token2" });
+    expect(h.client.view.mode).toBe("away");
   });
   it("focus checks retain authority without renew or sync; the twenty second timer only renews", async () => {
     let clock = 100; vi.spyOn(performance, "now").mockImplementation(() => clock);

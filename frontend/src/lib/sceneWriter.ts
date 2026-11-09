@@ -206,8 +206,10 @@ export class SceneWriterClient {
   }
   private async check(epoch: number, renew: boolean) {
     const ownedAtStart = !!this.lease;
+    const resuming = ownedAtStart && !this.reconciled;
+    let checkingLease = true;
     // BFCache 복귀에서는 닫기 영수증을 받지 못했을 수 있어 판을 맞추기 전 입력을 잠근다.
-    if (ownedAtStart && !this.reconciled) this.show("syncing");
+    if (resuming) this.show("syncing");
     // 첫 응답을 기다리는 짧은 동안만 보드를 감춘다. 허브 장애에서는 로컬 편집을 연다.
     const opening = this.view.mode === "checking";
     const openingTimer = opening ? setTimeout(() => {
@@ -229,6 +231,7 @@ export class SceneWriterClient {
           status = await this.send("status");
         }
       } else status = await this.send("status");
+      checkingLease = false;
       if (!this.valid(epoch)) return;
       if (this.lease && (status.boot_id !== this.boot || status.account_epoch !== this.accountEpoch || status.writer?.generation !== this.lease.generation)) {
         if (status.boot_id !== this.boot && !status.writer) {
@@ -273,6 +276,11 @@ export class SceneWriterClient {
     } catch (error) {
       if (!this.valid(epoch)) return;
       if (["writer_busy", "writer_required", "writer_changed"].includes(errorCode(error) ?? "")) this.lose();
+      else if (resuming && checkingLease && (error as { status?: number })?.status == null &&
+        (error instanceof TypeError || (error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name)))) {
+        this.confirmedUntil = 0;
+        this.show("uncertain"); // Keep the old lease for renew; offline editing remains local.
+      }
       else if (this.view.mode === "syncing" || this.view.mode === "taking") await this.failedStart(epoch);
       else this.uncertain(); // 허브가 꺼져도 확정적으로 넘긴 적 없는 브라우저는 로컬 편집 가능.
     } finally { clearTimeout(openingTimer); }

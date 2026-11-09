@@ -502,6 +502,8 @@ class Measurement:
         raise RuntimeError("old hub backup write did not settle")
 
     async def take(self, page: Page) -> float:
+        if not await page.wait("document.querySelector('.canvas-away button')", 10):
+            raise RuntimeError("takeover button missing")
         start = time.monotonic()
         if not await page.click("document.querySelector('.canvas-away button')"):
             raise RuntimeError("takeover button missing")

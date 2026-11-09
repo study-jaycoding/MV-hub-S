@@ -238,6 +238,36 @@ def test_cross_browser_closes_first_profile_before_opening_second_without_take(t
     assert instance.report["checks"]["closed_before_open"]["status"] == "passed"
 
 
+@pytest.mark.parametrize("visible,clicked", [(True, True), (False, True), (True, False)])
+def test_take_waits_for_button_before_click_and_timing(tmp_path, monkeypatch, visible, clicked):
+    import asyncio
+    from types import SimpleNamespace
+    events = []
+    async def wait(expression, timeout):
+        events.append(("wait", timeout))
+        if timeout == 10:
+            assert expression == "document.querySelector('.canvas-away button')"
+            return visible
+        assert timeout == 15
+        return True
+    async def click(expression):
+        assert expression == "document.querySelector('.canvas-away button')"
+        events.append(("click",))
+        return clicked
+    def now():
+        events.append(("time",))
+        return 1.0
+    monkeypatch.setattr(measure, 'time', SimpleNamespace(monotonic=now))
+    operation = measure.Measurement("normal_handoff", tmp_path).take(SimpleNamespace(wait=wait, click=click))
+    if visible and clicked:
+        assert asyncio.run(operation) == 0
+        assert events == [("wait", 10), ("time",), ("click",), ("wait", 15), ("time",)]
+    else:
+        with pytest.raises(RuntimeError, match="takeover button missing"):
+            asyncio.run(operation)
+        assert events == ([("wait", 10), ("time",), ("click",)] if visible else [("wait", 10)])
+
+
 def test_handoff_input_probe_leaves_real_text_editor_pending(tmp_path):
     import asyncio
     from types import SimpleNamespace
