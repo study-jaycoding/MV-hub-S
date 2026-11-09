@@ -12,6 +12,10 @@ vi.mock("../src/lib/sceneStore", async (original) => ({ ...await original<typeof
 vi.mock("../src/lib/scenes", async (original) => ({ ...await original<typeof import("../src/lib/scenes")>(), listScenes: () => io.working, listPersistedScenes: () => io.saved, updateScenesWith: io.write, confirmSceneWrite: io.confirm }));
 import { attachMcpCanvasTask, useMcpCanvasTasks, type McpCanvasTask } from "../src/lib/mcpCanvasTasks";
 import { readStoredScene } from "../src/lib/scenes";
+import { setHubFeatures } from "../src/lib/hubFeatures";
+import { joinSceneNotebook, setSceneNotebookTokenProvider } from "../src/lib/sceneNotebook";
+import { writeScenesStore } from "../src/lib/sceneStore";
+import { createHash } from "node:crypto";
 const workspace: WorkspaceContext = { scope: "team", id: "w1", name: "작업 공간" };
 const task: McpCanvasTask = { id: "task1", scene_id: "s1", workspace, generation_ids: ["g1"], status: "pending" };
 const generation = { id: "g1", status: "done", prompt: "바나나", workspace_scope: "team", workspace_id: "w1" } as Generation;
@@ -20,6 +24,7 @@ let root: Root | undefined, host: HTMLDivElement | undefined;
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 beforeEach(async () => {
   vi.resetAllMocks(); io.token = "a"; io.account = "a";
+  setHubFeatures([]);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("crypto", (await vi.importActual<{ webcrypto: Crypto }>("node:crypto")).webcrypto);
   io.working = [{ id: "s1", name: "Scene", created_at: 1, workspace: { id: "w1", name: "작업 공간" }, cards: [], edges: [] }]; io.saved = clone(io.working);
@@ -27,7 +32,7 @@ beforeEach(async () => {
   io.write.mockImplementation((_project, mutate: (scenes: Scene[]) => Scene[] | null) => { const next = mutate(io.working); if (next) io.working = next; return true; });
   io.confirm.mockImplementation((fn: () => unknown) => { const value = fn(); io.saved = clone(io.working); return { value, confirmed: Promise.resolve(true) }; });
 });
-afterEach(async () => { if (root) await act(async () => root!.unmount()); host?.remove(); root = undefined; host = undefined; vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(async () => { if (root) await act(async () => root!.unmount()); host?.remove(); root = undefined; host = undefined; setHubFeatures([]); setSceneNotebookTokenProvider(() => null); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("기존 생성물만 붙이고 재전달·동시 요청은 카드 하나와 영수증 하나로 합친다", async () => {
   const results = await Promise.all([attachMcpCanvasTask(task, workspace, ports, () => true), attachMcpCanvasTask(task, workspace, ports, () => true)]);
@@ -133,5 +138,47 @@ it("소비자가 생성물을 기다리는 중 실제 계정이 바뀌면 저장
   await act(async () => root!.render(<Consumer ready={false} />));
   await act(async () => finish(generation));
   expect(io.write).not.toHaveBeenCalled();
+  expect(io.http.mock.calls.some(([url]) => String(url).endsWith("/complete"))).toBe(false);
+});
+
+it("notebook completion: saved response lost, same retry, deleted card never reattaches", async () => {
+  vi.useFakeTimers(); setHubFeatures(["scene_writer_v1"]);
+  let serial = 0; vi.stubGlobal("crypto", { randomUUID: () => `mcp-test-${++serial}` });
+  const digest = (s: string) => createHash("sha256").update(s).digest("hex");
+  const bucket = "a::_none";
+  let data = JSON.stringify(io.saved[0]), rev = 1;
+  const base = () => ({ history_id: "h", rev, hash: digest(data) });
+  const order = { ids: ["s1"], rev: 1, history_id: "h" };
+  await writeScenesStore({ [bucket]: [] });
+  await joinSceneNotebook("a", "book", "h", { [bucket]: { scenes: clone(io.saved), bases: { s1: { history: "h", rev, hash: digest(data) } }, order: { history: "h", rev: 1 } } });
+  setSceneNotebookTokenProvider(() => ({ account: "a", token: "lease", generation: "gen" }));
+  io.confirm.mockImplementation((fn: () => unknown) => { const value = fn(); io.saved = clone(io.working); return { value, confirmed: writeScenesStore({ [bucket]: clone(io.saved) }).then(() => true) }; });
+  const statuses: string[] = [], ids: string[] = [];
+  let lost = true, completed = false;
+  io.http.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url.includes("canvas-tasks?")) return { tasks: [task] }; // Deliberately replay a stale pending task too.
+    if (url.includes("/notebook?")) return { notebook_id: "book", history_id: "h", order, items: [{ id: "s1", data, base: base(), deleted_at: null }] };
+    if (url.endsWith("/backup")) {
+      const body = JSON.parse(String(init?.body)); ids.push(body.request_id);
+      const results = body.upserts.map((up: { id: string; data: string }) => {
+        const status = up.data === data ? "same" : "saved";
+        if (status === "saved") { data = up.data; rev++; }
+        statuses.push(status); return { id: up.id, target_id: up.id, status, base: base() };
+      });
+      const done = (body.mcp_complete ?? []).filter((id: string) => JSON.parse(data).mcpAttachmentReceipts?.includes(id));
+      completed ||= done.includes(task.id);
+      if (lost && done.length) { lost = false; throw new Error("lost PUT reply"); }
+      return { history_id: "h", results, deletes: [], order, mcp_done: done };
+    }
+    throw new Error(`unexpected ${url}`);
+  });
+  function Consumer() { useMcpCanvasTasks({ ...ports, authReady: true, authKey: "a", workspace }); return null; }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Consumer />));
+  expect(completed).toBe(true); expect(statuses.slice(0, 2)).toEqual(["saved", "same"]); expect(ids[1]).toBe(ids[0]);
+  io.working[0].cards = []; io.saved = clone(io.working); await writeScenesStore({ [bucket]: clone(io.saved) });
+  await act(async () => vi.advanceTimersByTimeAsync(15_000));
+  expect(io.saved[0].cards).toEqual([]); expect(JSON.parse(data).cards).toEqual([]);
+  expect(io.get).toHaveBeenCalledTimes(1);
   expect(io.http.mock.calls.some(([url]) => String(url).endsWith("/complete"))).toBe(false);
 });

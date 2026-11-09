@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { syncSceneNotebook, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, joinSceneNotebook, type NotebookToken } from "../src/lib/sceneNotebook";
+import { syncSceneNotebook, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, joinSceneNotebook, completeNotebookMcpTask, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
 import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate } from "../src/lib/sceneStore";
@@ -66,7 +66,8 @@ class FakeHub {
         this.order = [...new Set<string>([...ids, ...this.order])].filter((id) => this.rows.get(id)?.deleted_at === null);
       }
       if (JSON.stringify(this.order) !== previousOrder) this.rev++;
-      const reply = { history_id: this.history, results, deletes, order: structuredClone(this.view().order) };
+      const mcp_done = (body.mcp_complete ?? []).filter((id: string) => results.some((r) => r.id === r.target_id && ["saved", "same"].includes(r.status) && JSON.parse(this.rows.get(r.id)!.data).mcpAttachmentReceipts?.includes(id)));
+      const reply = { history_id: this.history, results, deletes, order: structuredClone(this.view().order), mcp_done };
       this.receipts.set(body.request_id, structuredClone(reply)); return reply;
     }
     throw new Error(`unexpected ${path}`);
@@ -92,7 +93,7 @@ it("c13 disabled and missing token perform no IO", async () => {
   expect((await syncSceneNotebook()).status).toBe("waiting_token"); expect(fake.calls).toEqual([]);
 });
 it("c01 stages current browser before commit and keeps same-id execution fields", async () => {
-  const s = { ...scene(), comfyRuns: { image: { runId: "active" } }, cards: [{ id: "c", pendingGenerationAttempts: [{ attemptId: "a" }] }] } as unknown as Scene;
+  const s = { ...scene(), comfyRuns: { image: { runId: "active" } }, cards: [{ id: "c", kind: "text", x: 0, y: 0, pendingGenerationAttempts: [{ attemptId: "a" }] }] } as unknown as Scene;
   await writeScenesStore({ [bucket]: [s] }); fake.save(scene("old"));
   expect(await syncSceneNotebook()).toMatchObject({ status: "ready", changed: true }); expect([...fake.rows.keys()]).toEqual(["s"]); expect(readWorkingBucket(bucket)).toEqual([s]);
   expect(fake.calls.filter((c) => c.path.endsWith("/start")).map((c) => c.body.commit)).toEqual([false, true]); expect((await state()).starting).toBeNull();
@@ -166,15 +167,26 @@ it.each(["account", "generation"])("c10 rejects late %s response", async (kind) 
   await joined(); fake.save(scene("s", "remote")); hook = (p) => { if (p.includes("notebook?")) { if (kind === "account") setAccountScope("other@test"); else token = { ...token!, generation: "g2" }; } };
   expect((await syncSceneNotebook()).status).toBe("waiting_token"); expect(readWorkingBucket(bucket)[0].name).toBe("s");
 });
-it("c10 prior joined profile never bootstraps a missing notebook", async () => {
-  await joined(); fake.book = null; expect(await syncSceneNotebook()).toMatchObject({ status: "retry", reason: "notebook_missing" }); expect(fake.calls.some((c) => c.path.endsWith("/start"))).toBe(false);
+it.each([true, false])("c10 prior joined starts missing notebook without rejoining (hub rows %s)", async (hasRows) => {
+  await joined(); const archive = await readNotebookArchive("local", "book1");
+  fake.book = null; fake.history = "h2"; fake.rows.clear(); fake.order = [];
+  if (hasRows) fake.save(scene("remote"));
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)[0].body.expected_count).toBe(hasRows ? 0 : 1);
+  expect(await readNotebookArchive("local", "book1")).toEqual(archive);
+  expect((await state()).joined?.history).toBe("h1");
 });
 it("history replacement with reused rev preserves offline edits as copies", async () => {
   await joined(); fake.history = "h2"; fake.rows.clear(); fake.save(scene("s", "restored")); edit([scene("s", "offline")]);
   expect((await syncSceneNotebook()).status).toBe("ready"); expect(readWorkingBucket(bucket).map((s) => s.name)).toEqual(["restored", "[old] offline"]); expect((await state()).buckets[bucket].states.s.base?.history).toBe("h2");
 });
-it("malformed row refuses the whole join", async () => {
-  fake.book = "book1"; fake.save(scene()).data = "{}"; await writeScenesStore({ [bucket]: [scene("old")] }); expect((await syncSceneNotebook()).status).toBe("retry"); expect((await state()).joined).toBeNull(); expect(readWorkingBucket(bucket)[0].id).toBe("old");
+it("malformed row skips only that row and missing name/edges use stored-scene defaults", async () => {
+  fake.book = "book1"; fake.save(scene()).data = "{}";
+  fake.save({ id: "valid", cards: [], created_at: 1 } as unknown as Scene);
+  await writeScenesStore({ [bucket]: [scene("old")] });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toMatchObject([{ id: "valid", name: "이름 없는 씬", edges: [] }]);
+  expect(fake.rows.has("s")).toBe(true);
 });
 it("201-scene start uses multiple chunks with one snapshot", async () => {
   const scenes = Array.from({ length: 201 }, (_, i) => scene(`s${i}`)); await writeScenesStore({ [bucket]: scenes }); expect((await syncSceneNotebook()).status).toBe("ready");
@@ -289,4 +301,69 @@ it("partial batch failure retries receipts without duplicating rows or losing or
   expect(fake.order).toEqual(scenes.map((s) => s.id));
   const first = fake.calls.filter((c) => c.path.endsWith("/backup") && c.body.upserts.length === 200);
   expect(first).toHaveLength(2); expect(first[0].body).toEqual(first[1].body);
+});
+
+it.each([false, true])("P0 edit during PUT advances receipt base without copies (new scene %s)", async (fresh) => {
+  await joined(fresh ? [] : [scene()]); edit([scene("s", "first")]);
+  let once = false;
+  hook = (p, body) => { if (!once && p.endsWith("/backup") && body.upserts.length) { once = true; edit([scene("s", "second")]); } };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect([...fake.rows.keys()]).toEqual(["s"]);
+  expect(JSON.parse(fake.rows.get("s")!.data).name).toBe("second");
+  expect([...fake.receipts.values()].flatMap((r) => r.results).map((r) => r.status)).toEqual(["saved", "saved"]);
+});
+it("unchanged old history receives existing hub row without uploading old content", async () => {
+  await joined(); fake.history = "h2"; fake.rows.clear(); fake.save(scene("s", "restored"));
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.flatMap((c) => c.body?.upserts ?? [])).toHaveLength(0);
+  expect(readWorkingBucket(bucket)[0].name).toBe("restored");
+});
+it("upload_failed copy reduced below limit uploads as its independent id", async () => {
+  await joined(); edit([scene(), { ...scene("local-copy"), localNotebookCopy: "upload_failed" }]);
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.rows.has("local-copy")).toBe(true);
+  expect(readWorkingBucket(bucket).find((s) => s.id === "local-copy")?.localNotebookCopy).toBeUndefined();
+});
+
+it.each(["copied", "too_big"])("MCP %s leaves completion pending", async (kind) => {
+  await joined();
+  if (kind === "copied") fake.save(scene("s", "remote"));
+  const appended = { ...scene("s", "attached"), mcpAttachmentReceipts: ["task"], ...(kind === "too_big" ? { padding: "x".repeat(5 * 1024 * 1024) } : {}) };
+  edit([appended]);
+  expect(await completeNotebookMcpTask("local", "s", "task")).toBe(false);
+  expect([...fake.receipts.values()].flatMap((r) => r.mcp_done)).toEqual([]);
+});
+it("MCP existing local receipt forces same and confirms only server receipt", async () => {
+  await joined([{ ...scene(), mcpAttachmentReceipts: ["task"] }]);
+  expect(await completeNotebookMcpTask("local", "s", "task")).toBe(true);
+  expect([...fake.receipts.values()].flatMap((r) => r.results).map((r) => r.status)).toEqual(["same"]);
+});
+it("MCP more than 500 receipts splits completion without losing the newest task", async () => {
+  const ids = Array.from({ length: 501 }, (_, i) => `task-${i}`);
+  await joined(); edit([{ ...scene(), mcpAttachmentReceipts: ids }]);
+  expect(await completeNotebookMcpTask("local", "s", "task-500")).toBe(true);
+  expect(fake.calls.filter((c) => c.body?.mcp_complete).map((c) => c.body.mcp_complete.length)).toEqual([500, 1]);
+});
+
+it("delete during a new-scene PUT inherits our saved base but retains the deletion intent", async () => {
+  await joined([]); edit([scene()]); let once = false;
+  hook = (p, body) => { if (!once && p.endsWith("/backup") && body.upserts.length) { once = true; edit([]); } };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([]); expect(fake.rows.get("s")?.deleted_at).toBeTruthy();
+  expect([...fake.rows.keys()]).toEqual(["s"]);
+});
+it("bad hub row preserves its existing local scene while other rows reconcile", async () => {
+  await joined([scene("s"), scene("ok")]);
+  fake.rows.get("s")!.data = "{}"; fake.save(scene("ok", "remote"));
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("ok", "remote"), scene("s")]);
+  expect((await state()).buckets[bucket].states.s.base?.hash).toBe(hash(JSON.stringify(scene("s"))));
+});
+
+it("missing notebook with unreadable live hub rows still establishes those rows using expected zero", async () => {
+  await joined(); fake.book = null; fake.rows.get("s")!.data = "{}";
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((c) => c.path.endsWith("/start")).every((c) => c.body.expected_count === 0)).toBe(true);
+  expect(fake.rows.get("s")!.data).toBe("{}");
+  expect(readWorkingBucket(bucket)).toEqual([scene()]);
 });

@@ -4,7 +4,8 @@ import {
   holdNotebookWrites, newSceneIntentId,
   type SceneBase, type SceneIntent, type SceneOrderBase, type SceneOrderState,
 } from "./sceneStore";
-import type { Scene, ScenesByProject } from "./scenes";
+import { makeLocalNotebookCopy, readStoredScene, type Scene, type ScenesByProject } from "./scenes";
+import { flashMsg } from "./flash";
 import type { SceneAbsorbConflict } from "./sceneAbsorb";
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
@@ -107,40 +108,40 @@ export function addNotebookSceneIfAbsent(bucket: string, scene: Scene, base: Sce
 /** 조회/업로드 응답은 기대 글자·판·의도가 그대로일 때만 반영. 동일 id 실행 표식은 원문대로 둔다. */
 export function replaceNotebookSceneIfUnchanged(bucket: string, expected: NotebookSceneState, scene: Scene, base: SceneBase, guard?: () => boolean): Promise<boolean> {
   const input = structuredClone({ expected, scene, base });
-  return change([], (all, meta) => {
-    if (!sameState(stateOf(all, meta, bucket, input.scene.id), input.expected)) return false;
-    if (input.expected.text === null || input.expected.deletion || input.expected.revival) return false;
-    all[bucket] = all[bucket].map((item) => item.id === input.scene.id ? input.scene : item);
-    meta[key("b", bucket, input.scene.id)] = input.base;
-    return true;
-  }, guard);
+  return change([], (all, meta) => replaceNotebookSceneIfUnchangedInTransaction(all, meta, bucket, input.expected, input.scene, input.base), guard);
+}
+function replaceNotebookSceneIfUnchangedInTransaction(all: ScenesByProject, meta: Meta, bucket: string, expected: NotebookSceneState, scene: Scene, base: SceneBase): boolean {
+  if (!sameState(stateOf(all, meta, bucket, scene.id), expected) || expected.text === null || expected.deletion || expected.revival) return false;
+  all[bucket] = all[bucket].map((item) => item.id === scene.id ? scene : item);
+  meta[key("b", bucket, scene.id)] = base;
+  return true;
 }
 
 /** 허브의 지움/행 소실 반영. 변경·되살리기 의도가 생겼으면 지우지 않는다. */
 export function removeNotebookSceneIfUnchanged(bucket: string, id: string, expected: NotebookSceneState, base: SceneBase | null, guard?: () => boolean): Promise<boolean> {
   const input = structuredClone({ expected, base });
-  return change([], (all, meta) => {
-    if (!sameState(stateOf(all, meta, bucket, id), input.expected) || input.expected.deletion || input.expected.revival) return false;
-    if (input.expected.text === null) return false;
-    all[bucket] = all[bucket].filter((item) => item.id !== id);
-    if (input.base) meta[key("b", bucket, id)] = input.base;
-    else delete meta[key("b", bucket, id)];
-    return true;
-  }, guard);
+  return change([], (all, meta) => removeNotebookSceneIfUnchangedInTransaction(all, meta, bucket, id, input.expected, input.base), guard);
+}
+function removeNotebookSceneIfUnchangedInTransaction(all: ScenesByProject, meta: Meta, bucket: string, id: string, expected: NotebookSceneState, base: SceneBase | null): boolean {
+  if (!sameState(stateOf(all, meta, bucket, id), expected) || expected.deletion || expected.revival || expected.text === null) return false;
+  all[bucket] = all[bucket].filter((item) => item.id !== id);
+  if (base) meta[key("b", bucket, id)] = base;
+  else delete meta[key("b", bucket, id)];
+  return true;
 }
 
 /** 늦은 확인은 새 의도를 거둘 수 없다. 허브가 '남김'을 답하면 d만 거두고 다음 조회가 행을 더한다. */
 export function acknowledgeNotebookIntent(bucket: string, id: string, kind: "delete" | "revive", expected: NotebookSceneState, base: SceneBase | null, guard?: () => boolean): Promise<boolean> {
   const input = structuredClone({ expected, base });
-  return change([], (all, meta) => {
-    const current = stateOf(all, meta, bucket, id);
-    const intent = kind === "delete" ? current.deletion : current.revival;
-    if (!intent || !sameState(current, input.expected)) return false;
-    if ((kind === "delete") !== (current.text === null)) return false;
-    delete meta[key(kind === "delete" ? "d" : "r", bucket, id)];
-    meta[key("b", bucket, id)] = input.base;
-    return true;
-  }, guard);
+  return change([], (all, meta) => acknowledgeNotebookIntentInTransaction(all, meta, bucket, id, kind, input.expected, input.base), guard);
+}
+function acknowledgeNotebookIntentInTransaction(all: ScenesByProject, meta: Meta, bucket: string, id: string, kind: "delete" | "revive", expected: NotebookSceneState, base: SceneBase | null): boolean {
+  const current = stateOf(all, meta, bucket, id);
+  const intent = kind === "delete" ? current.deletion : current.revival;
+  if (!intent || !sameState(current, expected) || ((kind === "delete") !== (current.text === null))) return false;
+  delete meta[key(kind === "delete" ? "d" : "r", bucket, id)];
+  meta[key("b", bucket, id)] = base;
+  return true;
 }
 
 /** 순서 ABA도 dirty 의도 id로 구별. 로컬 전용 탭을 포함해 현재 id들을 한 번씩 남긴다. */
@@ -208,32 +209,6 @@ export function writeNotebookProgress(account: string, kind: "start" | "write", 
   }, guard);
 }
 
-/** 새 id에는 능동 실행 연결을 옮기지 않는다. 수동 확인용 원래 표식은 backupForkOf 안에 보관한다. */
-export function makeLocalNotebookCopy(scene: Scene, id: string, reason: "upload_failed" | "stale_handover"): Scene {
-  const copy = structuredClone(scene);
-  const attempts = Object.fromEntries(copy.cards.filter((card) => card.pendingGenerationAttempts?.length).map((card) => [card.id, card.pendingGenerationAttempts!]));
-  const legacyRuns = Object.fromEntries(copy.cards.filter((card) => card.comfyCfg?.runId).map((card) => [card.id, card.comfyCfg!.runId!]));
-  copy.backupForkOf = {
-    id: scene.id, comfyRuns: copy.comfyRuns, comfyCardRuns: copy.comfyCardRuns,
-    pendingGenerationAttempts: attempts, comfyLegacyRuns: legacyRuns, previous: copy.backupForkOf,
-  };
-  copy.id = id;
-  copy.name = `[옛 창] ${scene.name}`;
-  copy.localNotebookCopy = reason;
-  delete copy.comfyRuns;
-  delete copy.comfyCardRuns;
-  delete copy.mcpAttachmentReceipts;
-  for (const card of copy.cards) {
-    delete card.pendingGenerationAttempts;
-    if (card.comfyCfg) {
-      delete card.comfyCfg.runId;
-      delete card.comfyCfg.status;
-      delete card.comfyCfg.error;
-    }
-  }
-  return copy;
-}
-
 /** 못 올린 내용을 먼저 새 로컬 id로 보존하고 원래 id를 맞춘다. 둘 중 하나만 확정될 수 없다. */
 export function preserveUnuploadableNotebookScene(bucket: string, id: string, expected: NotebookSceneState, copyId: string, incoming: Scene | null, base: SceneBase | null, guard?: () => boolean): Promise<boolean> {
   const input = structuredClone({ expected, incoming, base });
@@ -274,14 +249,37 @@ export function subscribeNotebookSyncResult(fn: (result: NotebookSyncResult) => 
 export function setSceneNotebookTokenProvider(provider: () => NotebookToken | null): void {
   tokenProvider = provider;
   providerEpoch++;
+  mcpCompletions.clear(); // 미완료 작업은 서버 pending 조회가 새 세대에서 다시 접수한다.
 }
 type WireBase = { history_id: string; rev: number; hash: string };
 type HubRow = { id: string; data: string; deleted_at: string | null; base: WireBase };
-type HubBook = { notebook_id: string | null; history_id: string; items: HubRow[]; order: { ids: string[]; rev: number; history_id: string } };
+type HubBook = { notebook_id: string | null; history_id: string; items: HubRow[]; order: { ids: string[]; rev: number; history_id: string }; skipped?: string[]; hasLiveRows?: boolean };
 type Upload = { id: string; name: string; data: string; base: WireBase | null; revive?: boolean; intent_id?: string };
 type Delete = { id: string; intent_id: string; base: WireBase | null };
-type Payload = { request_id: string; project_id: string; upserts: Upload[]; deletes: Delete[]; order?: HubBook["order"] };
-type Receipt = { history_id: string; order: HubBook["order"]; results: { id: string; status: "saved" | "same" | "copied" | "too_big"; target_id: string | null; base?: WireBase }[]; deletes: { id: string; status: "deleted" | "kept"; base: WireBase | null; intent_id: string }[] };
+type Payload = { request_id: string; project_id: string; upserts: Upload[]; deletes: Delete[]; order?: HubBook["order"]; mcp_complete?: string[] };
+type Receipt = { history_id: string; order: HubBook["order"]; results: { id: string; status: "saved" | "same" | "copied" | "too_big"; target_id: string | null; base?: WireBase }[]; deletes: { id: string; status: "deleted" | "kept"; base: WireBase | null; intent_id: string }[]; mcp_done?: string[] };
+// 서버의 pending 작업이 재전달의 원장이다. 이 큐는 이미 저장된 씬에도 same 확인을 요청한다.
+const mcpCompletions = new Map<string, { account: string; sceneId: string; confirmed: boolean }>();
+export async function completeNotebookMcpTask(account: string, sceneId: string, taskId: string): Promise<boolean> {
+  if (!hubHasFeature(SCENE_WRITER_FEATURE) || account !== getAccountNamespace()) return false;
+  const id = JSON.stringify([account, taskId]);
+  const pending = mcpCompletions.get(id) ?? { account, sceneId, confirmed: false };
+  mcpCompletions.set(id, pending);
+  await syncSceneNotebook();
+  return account === getAccountNamespace() && pending.confirmed;
+}
+function needsMcpConfirmation(account: string, scene: Scene): boolean {
+  return [...mcpCompletions.entries()].some(([id, item]) => item.account === account && item.sceneId === scene.id && scene.mcpAttachmentReceipts?.includes((JSON.parse(id) as string[])[1]));
+}
+function uploadRequests(upserts: Upload[]): Payload[] {
+  return batches(upserts).flatMap((chunk) => {
+    const ids = [...new Set(chunk.flatMap((s) => (JSON.parse(s.data) as Scene).mcpAttachmentReceipts ?? []))];
+    const requests: Payload[] = [];
+    // API는 한 번에 완료 500개. 옛 영수증이 많아도 새 작업을 잘라 버리지 않는다.
+    for (let i = 0; i < Math.max(1, ids.length); i += 500) requests.push({ request_id: newSceneIntentId(), project_id: "", upserts: chunk, deletes: [], mcp_complete: ids.slice(i, i + 500) });
+    return requests;
+  });
+}
 interface PendingWrite extends NotebookProgress {
   history: string; notebookId: string; frozen: NotebookBucket; requests: Payload[]; tooBig: string[]; orderCanAdvance: boolean;
 }
@@ -329,21 +327,33 @@ function parseBook(value: HubBook): HubBook {
       !Array.isArray(value.items) || !value.order || !Array.isArray(value.order.ids) ||
       value.order.history_id !== value.history_id || !Number.isInteger(value.order.rev)) throw new Error("invalid_notebook");
   const ids = new Set<string>();
+  const skipped: string[] = [];
+  const valid: HubRow[] = [];
   for (const row of value.items) {
     if (typeof row.id !== "string" || ids.has(row.id) || !validBase(row.base, value.history_id) || typeof row.data !== "string") throw new Error("invalid_notebook");
     ids.add(row.id);
-    const scene = JSON.parse(row.data) as Scene;
-    if (!scene || scene.id !== row.id || typeof scene.name !== "string" || !Array.isArray(scene.cards) || !Array.isArray(scene.edges)) throw new Error("invalid_notebook");
+    try {
+      const raw = JSON.parse(row.data);
+      const scene = readStoredScene({ ...raw, edges: raw?.edges ?? [] });
+      if (scene.id !== row.id) throw new Error("scene id mismatch");
+      valid.push(row);
+    } catch { skipped.push(row.id); }
     if (row.deleted_at !== null && typeof row.deleted_at !== "string") throw new Error("invalid_notebook");
   }
   const live = new Set(value.items.filter((r) => r.deleted_at === null).map((r) => r.id));
   if (new Set(value.order.ids).size !== value.order.ids.length || value.order.ids.some((id) => !live.has(id)) || live.size !== value.order.ids.length) throw new Error("invalid_order");
-  return value;
+  if (skipped.length) flashMsg(`읽을 수 없는 허브 씬 ${skipped.length}개를 건너뛰었습니다 — 원본은 허브에 남아 있습니다`);
+  return { ...value, items: valid, order: { ...value.order, ids: value.order.ids.filter((id) => !skipped.includes(id)) }, skipped, hasLiveRows: live.size > 0 };
+}
+function rowScene(row: HubRow): Scene {
+  const raw = JSON.parse(row.data) as Scene;
+  // 파일 가져오기 관문은 실행 표식을 제거한다. 같은 id 받기에서는 원문 표식을 그대로 보존한다.
+  return { ...raw, ...(typeof raw.name !== "string" || !raw.name ? { name: readStoredScene({ ...raw, edges: raw.edges ?? [] }).name } : {}), ...(!Array.isArray(raw.edges) ? { edges: [] } : {}) };
 }
 function hubBucket(book: HubBook): NotebookHubBucket {
   const rows = new Map(book.items.map((row) => [row.id, row]));
   return {
-    scenes: book.order.ids.map((id) => JSON.parse(rows.get(id)!.data) as Scene),
+    scenes: book.order.ids.map((id) => rowScene(rows.get(id)!)),
     bases: Object.fromEntries(book.items.map((row) => [row.id, fromBase(row.base)])),
     order: { history: book.history_id, rev: book.order.rev },
   };
@@ -363,6 +373,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
   const provided = tokenProvider();
   const lease = provided ? { ...provided } : null;
   const account = getAccountNamespace(), epoch = providerEpoch;
+  for (const [id, pending] of mcpCompletions) if (pending.account !== account) mcpCompletions.delete(id);
   if (!lease || lease.account !== account) return { status: "waiting_token", changed: false };
   const guard = () => {
     const now = tokenProvider();
@@ -404,13 +415,25 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
     for (let round = 0; round < 3; round++) {
       try {
         let local = await snapshot();
+        const reduced = (local.buckets[bucket]?.scenes ?? []).filter((s) => s.localNotebookCopy === "upload_failed" && bytes(JSON.stringify(s)) <= SCENE_LIMIT);
+        if (reduced.length) {
+          await sceneNotebookTransaction([], (all) => {
+            let modified = false;
+            all[bucket] = (all[bucket] ?? []).map((s) => {
+              if (!reduced.some((before) => before.id === s.id && equal(before, s))) return s;
+              const copy = { ...s }; delete copy.localNotebookCopy; modified = true; return copy;
+            });
+            return { value: modified, changed: modified };
+          }, guard);
+          local = await snapshot();
+        }
         let book = await getBook();
-        if (!local.joined) {
+        if (!local.joined || !book.notebook_id) {
           const releaseHold = holdNotebookWrites(account);
           try {
             local = await snapshot();
             if (!book.notebook_id) {
-              const scenes = local.buckets[bucket]?.scenes ?? [];
+              const scenes = local.joined && book.hasLiveRows ? [] : local.buckets[bucket]?.scenes ?? [];
               // 현재 캔버스는 전역 버킷이다. 옛 프로젝트 버킷은 합류 전 사본에 남긴다.
               const oversizedIds = scenes.filter((s) => bytes(JSON.stringify(s)) > SCENE_LIMIT).map((s) => s.id);
               if (oversizedIds.length) {
@@ -447,11 +470,16 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               book = await getBook();
             }
             if (!book.notebook_id) throw new Error("notebook_not_started");
-            if (!(await joinSceneNotebook(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard))) throw new Error("join_failed");
-            changed = true;
+            if (!local.joined) {
+              if (!(await joinSceneNotebook(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard))) throw new Error("join_failed");
+              changed = true;
+              const progress = (await snapshot()).starting;
+              if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
+              return { status: "ready", changed };
+            }
             const progress = (await snapshot()).starting;
             if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
-            return { status: "ready", changed };
+            local = await snapshot(); // 합류했던 프로필은 보관/합류를 다시 하지 않고 기존 판으로 맞춘다.
           } finally { releaseHold(); }
         }
         if (!book.notebook_id) throw new Error("notebook_missing");
@@ -465,6 +493,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
           const rows = new Map(book.items.map((row) => [row.id, row]));
           const upserts: Upload[] = [], deletes: Delete[] = [], tooBig: string[] = [];
           for (const [id, state] of Object.entries(frozen.states)) {
+            if (book.skipped?.includes(id)) continue;
             if (state.deletion) {
               deletes.push({ id, intent_id: state.deletion.intentId, base: toBase(state.deletion.base) });
             } else if (state.text !== null) {
@@ -472,9 +501,10 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               if (scene.localNotebookCopy === "upload_failed") continue;
               const hash = await fingerprint(state.text); check();
               const row = rows.get(id);
+              if (!state.revival && row && state.base?.history !== book.history_id && hash === state.base?.hash) continue;
               const unknown = !state.base || state.base.history !== book.history_id || !row || row.base.rev < state.base.rev ||
                 (row.base.rev === state.base.rev && row.base.hash !== state.base.hash);
-              if (!state.revival && !unknown && hash === state.base?.hash) continue;
+              if (!state.revival && !unknown && hash === state.base?.hash && !needsMcpConfirmation(account, scene)) continue;
               if (bytes(state.text) > SCENE_LIMIT) { tooBig.push(id); continue; }
               upserts.push({ id, name: scene.name, data: state.text,
                 base: state.revival && row?.deleted_at ? row.base : toBase(state.base),
@@ -482,7 +512,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               });
             }
           }
-          const requests: Payload[] = batches(upserts).map((chunk) => ({ request_id: newSceneIntentId(), project_id: "", upserts: chunk, deletes: [] }));
+          const requests: Payload[] = uploadRequests(upserts);
           for (let i = 0; i < deletes.length; i += 500) requests.push({ request_id: newSceneIntentId(), project_id: "", upserts: [], deletes: deletes.slice(i, i + 500) });
           if (frozen.order.dirty || !frozen.order.base || frozen.order.base.history !== book.history_id) {
             requests.push({ request_id: newSceneIntentId(), project_id: "", upserts: [], deletes: [], order: {
@@ -523,6 +553,12 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
                 (r.status !== "too_big" && (!r.target_id || !validBase(r.base, receipt.history_id)))) ||
               receipt.deletes.some((r, i) => r.id !== payload.deletes[i].id || r.intent_id !== payload.deletes[i].intent_id || !["deleted", "kept"].includes(r.status) || (r.base && !validBase(r.base, receipt.history_id)))) throw new Error("invalid_receipt");
           receipts.push(receipt);
+          if (receipt.mcp_done && (!Array.isArray(receipt.mcp_done) || receipt.mcp_done.some((id) => !payload.mcp_complete?.includes(id) || !payload.upserts.some((up) =>
+            (JSON.parse(up.data) as Scene).mcpAttachmentReceipts?.includes(id) && receipt.results.some((r) => r.id === up.id && r.target_id === up.id && ["saved", "same"].includes(r.status)))))) throw new Error("invalid_mcp_receipt");
+          for (const id of receipt.mcp_done ?? []) {
+            const name = JSON.stringify([account, id]), completion = mcpCompletions.get(name);
+            if (completion) { completion.confirmed = true; mcpCompletions.delete(name); }
+          }
         }
         const received = await getBook();
         if (received.history_id !== pending.history || received.notebook_id !== pending.notebookId) continue;
@@ -534,7 +570,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         // 방금 올린 편집을 로컬에서도 없애게 된다. 옛 영수증은 버리고 현 로컬 글자로 다시 판정받는다.
         const receiptRegressed = [...results.values()].some((r) => r.base && r.target_id && regressed(receivedRows.get(r.target_id), r.base));
         const localRegressed = Object.entries(pending.frozen.states).some(([id, state]) => state.text !== null &&
-          !results.has(id) && !pending.tooBig.includes(id) &&
+          !received.skipped?.includes(id) && !results.has(id) && !pending.tooBig.includes(id) &&
           (JSON.parse(state.text) as Scene).localNotebookCopy !== "upload_failed" && state.base?.history === received.history_id &&
           regressed(receivedRows.get(id), toBase(state.base)!));
         if (receiptRegressed || localRegressed) {
@@ -543,7 +579,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         }
         const tooBig = new Set([...pending.tooBig, ...[...results.values()].filter((r) => r.status === "too_big").map((r) => r.id)]);
         // All replacements and acknowledgements use the original frozen states, including intent IDs.
-        // A concurrent local edit rejects this whole receive; no newer edit is stamped with an older base.
+        // A concurrent edit skips text replacement but inherits the receipt for our own preceding write.
         const work = pending;
         const applied = await sceneNotebookTransaction([key("nw", account)], (all, meta) => {
           if (!equal(meta[key("nw", account)], work)) return { value: "retry" as const, changed: false };
@@ -551,22 +587,62 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
           const stable = equal((all[bucket] ?? []).map((s) => s.id), work.frozen.scenes.map((s) => s.id)) &&
             equal(meta[key("ob", bucket)] ?? emptyOrder(), work.frozen.order) && [...ids].every((id) =>
               sameState(stateOf(all, meta, bucket, id), work.frozen.states[id] ?? { text: null, base: null, deletion: null, revival: null }));
-          if (!stable) { delete meta[key("nw", account)]; return { value: "retry" as const, changed: true }; }
+          if (!stable) {
+            // 서버가 확인한 내 쓰기의 판은 최신 글자와 별개로 잇는다. 그렇지 않으면 다음 편집마다
+            // 옛 판으로 재전송되어 내 직전 편집과 충돌하고 사본이 계속 늘어난다(새 씬도 동일).
+            for (const r of results.values()) {
+              const before = work.frozen.states[r.id];
+              const now = stateOf(all, meta, bucket, r.id);
+              if (!before || !r.base || !["saved", "same"].includes(r.status) || r.target_id !== r.id || !equal(now.base, before.base)) continue;
+              meta[key("b", bucket, r.id)] = fromBase(r.base);
+              if (before.revival && now.revival?.intentId === before.revival.intentId) delete meta[key("r", bucket, r.id)];
+              // 올리는 동안 새로 한 삭제는 남기되, 내가 저장한 글자의 판으로 삭제하게 한다.
+              if (now.deletion && equal(now.deletion.base, before.base)) meta[key("d", bucket, r.id)] = { ...now.deletion, base: fromBase(r.base) };
+            }
+            for (const r of receipts.flatMap((receipt) => receipt.deletes)) {
+              const before = work.frozen.states[r.id], now = stateOf(all, meta, bucket, r.id);
+              if (!before || !equal(now.base, before.base)) continue;
+              meta[key("b", bucket, r.id)] = r.base ? fromBase(r.base) : null;
+              if (now.deletion?.intentId === r.intent_id) delete meta[key("d", bucket, r.id)];
+            }
+            const last = receipts[receipts.length - 1];
+            const order = (meta[key("ob", bucket)] as SceneOrderState | undefined) ?? emptyOrder();
+            if (last && work.orderCanAdvance && equal(order.base, work.frozen.order.base)) meta[key("ob", bucket)] = {
+              base: { history: last.order.history_id, rev: last.order.rev }, dirty: order.dirty === work.frozen.order.dirty ? null : order.dirty,
+            };
+            delete meta[key("nw", account)]; return { value: "retry" as const, changed: true };
+          }
           const rows = new Map(received.items.map((row) => [row.id, row]));
           for (const r of results.values()) if (r.status === "copied" && (!rows.get(r.target_id!) || rows.get(r.target_id!)!.deleted_at !== null)) {
             delete meta[key("nw", account)]; return { value: "retry" as const, changed: true };
           }
           const extra: Scene[] = [];
           for (const scene of work.frozen.scenes) {
-            if (scene.localNotebookCopy === "upload_failed") extra.push(scene);
+            if (scene.localNotebookCopy === "upload_failed" || received.skipped?.includes(scene.id)) extra.push(scene);
             else if (tooBig.has(scene.id)) extra.push(makeLocalNotebookCopy(scene, newSceneIntentId(), "upload_failed"));
           }
           const incoming = hubBucket(received);
-          if (extra.some((s) => incoming.scenes.some((r) => r.id === s.id))) throw new Error("local_copy_collision");
+          if (extra.some((s) => incoming.scenes.some((r) => r.id === s.id))) return { value: "retry" as const, changed: false };
           const next = [...incoming.scenes, ...extra];
           let modified = !equal(all[bucket] ?? [], next);
-          all[bucket] = next;
+          for (const receipt of receipts) {
+            for (const r of receipt.deletes) acknowledgeNotebookIntentInTransaction(all, meta, bucket, r.id, "delete", stateOf(all, meta, bucket, r.id), r.base ? fromBase(r.base) : null);
+            for (const r of receipt.results) if (r.base && ["saved", "same"].includes(r.status)) acknowledgeNotebookIntentInTransaction(all, meta, bucket, r.id, "revive", stateOf(all, meta, bucket, r.id), fromBase(r.base));
+          }
+          // The whole frozen state is still current and conflicting/oversized contents have a copy.
+          // Resolve remaining intents before applying the same conditional store primitives.
+          for (const id of ids) if (!received.skipped?.includes(id)) { delete meta[key("d", bucket, id)]; delete meta[key("r", bucket, id)]; }
+          for (const scene of all[bucket] ?? []) if (!next.some((s) => s.id === scene.id)) removeNotebookSceneIfUnchangedInTransaction(all, meta, bucket, scene.id, stateOf(all, meta, bucket, scene.id), null);
+          for (const scene of incoming.scenes) {
+            const expected = stateOf(all, meta, bucket, scene.id);
+            if (expected.text === null) all[bucket] = [...(all[bucket] ?? []), scene];
+            else replaceNotebookSceneIfUnchangedInTransaction(all, meta, bucket, expected, scene, incoming.bases[scene.id]);
+          }
+          const appliedScenes = new Map((all[bucket] ?? []).map((s) => [s.id, s]));
+          extra.forEach((s) => appliedScenes.set(s.id, s));
+          all[bucket] = next.map((s) => appliedScenes.get(s.id)!);
           for (const name of Object.keys(meta)) if (/^\["[bdr]",/.test(name) && (JSON.parse(name) as string[])[1] === bucket) {
+            if (received.skipped?.includes((JSON.parse(name) as string[])[2])) continue;
             delete meta[name]; modified = true;
           }
           for (const row of received.items) meta[key("b", bucket, row.id)] = fromBase(row.base);

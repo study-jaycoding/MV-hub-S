@@ -8,6 +8,10 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const EMPTY_SKIPPED = vi.hoisted(() => new Set<string>());
+const cardLinks = vi.hoisted(() => ({
+  items: [] as import("../src/lib/sceneCardLinks").CardLink[],
+  loaded: new Set<() => void>(),
+}));
 vi.mock("../src/api", () => ({
   api: { locateAssets: async (tokens: string[]) => ({ fixed: [], unresolved: [], missing: [], local: [], open: tokens }) },
 }));
@@ -21,11 +25,14 @@ vi.mock("../src/lib/sceneBackup", () => ({
   getSceneBackupSkippedIds: () => EMPTY_SKIPPED,
   subscribeSceneBackupForked: () => () => {},
 }));
-vi.mock("../src/lib/sceneCardLinks", () => ({
+vi.mock("../src/lib/sceneCardLinks", async original => ({
   initSceneCardLinks: () => {},
-  mergeCardLinksIntoScenes: () => null,
-  serverCardLinks: () => [],
-  subscribeCardLinksLoaded: () => () => {},
+  mergeCardLinksIntoScenes: (await original<typeof import("../src/lib/sceneCardLinks")>()).mergeCardLinksIntoScenes,
+  serverCardLinks: () => cardLinks.items,
+  subscribeCardLinksLoaded: (listener: () => void) => {
+    cardLinks.loaded.add(listener);
+    return () => { cardLinks.loaded.delete(listener); };
+  },
 }));
 
 const BUCKET = "local::_none";
@@ -89,6 +96,8 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
   sessionStorage.clear();
+  cardLinks.items = [];
+  cardLinks.loaded.clear();
 });
 afterEach(() => {
   window.name = "";
@@ -99,6 +108,71 @@ afterEach(() => {
 });
 
 describe("쓰기 입구 — 떠 있는 동안 원래 창은 씬을 쓰지 않는다", () => {
+  it("공책 시작 중 생성 완료 쓰기를 거절해도 확정된 시도 표식으로 해제 뒤 다시 붙인다", async () => {
+    const { store, data } = await openStore([{ id: "a", name: "a", created_at: 1, edges: [],
+      cards: [{ id: "c", kind: "generation", x: 0, y: 0 }] }]);
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["scene_writer_v1"]);
+    const { createCanvasDocumentPort, canvasTarget } = await import("../src/features/canvas/session");
+    const port = createCanvasDocumentPort({ flushPending: () => {} });
+    const target = canvasTarget("a");
+    const link = { scene_id: "a", card_id: "c", attempt_id: "attempt", generation_id: "result" };
+    const reserved = port.commit(target, { type: "reserveGeneration", links: [link], createdAt: Date.now() });
+    expect(reserved.queued).toBe(true);
+    expect(await reserved.confirmed).toBe(true);
+    const release = store.holdNotebookWrites("local");
+    try {
+      const completed = port.commit(target, { type: "settleGeneration", cardId: "c", generationId: "result" });
+      expect(completed.queued).toBe(false);
+      expect(await completed.confirmed).toBe(false);
+      expect(data.listPersistedScenes(null)[0].cards[0].pendingGenerationAttempts?.[0].attemptId).toBe("attempt");
+    } finally { release(); }
+    const retry = port.commit(target, { type: "reconcileGenerations", links: [link], now: Date.now() });
+    expect(retry.queued).toBe(true);
+    expect(await retry.confirmed).toBe(true);
+    const card = data.listPersistedScenes(null)[0].cards[0];
+    expect(card.pendingGenerationAttempts).toBeUndefined();
+    expect(card.genIds).toEqual(["result"]);
+  });
+
+  it("공책 합류 잠금 중 Comfy 완료를 거절하면 ACK하지 않고 해제 뒤 같은 실행을 반영한다", async () => {
+    const { store, data } = await openStore([{ id: "a", name: "a", created_at: 1, edges: [],
+      cards: [{ id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } }],
+      comfyCardRuns: { c: { groupId: "group", groupSeq: 1 } } }]);
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["scene_writer_v1", "comfy_canvas_runs_v1"]);
+    const { comfySceneFingerprints } = await import("../src/lib/sceneComfyInputs");
+    const origin = { hub_id: "hub", device_id: "pc" };
+    data.updateScene(null, "a", { comfyRuns: [{ version: 1, attemptId: "run", cardId: "c", copyIndex: 0,
+      runGroupId: "group", groupSeq: 1, originHubId: "hub", originDeviceId: "pc", localState: "submitted",
+      ...comfySceneFingerprints(data.listScenes(null)[0], "c")! }] });
+    await store.settleSceneStoreForTest();
+    const { createCanvasDocumentPort } = await import("../src/features/canvas/session");
+    const { recoverCanvasComfyRuns } = await import("../src/lib/useCanvasComfyRuns");
+    const resolution = { attempt_id: "run", state: "saved" as const, result_revision: 1, origin,
+      outputs: [{ output_key: "out", kind: "image" as const, generation_id: "result", state: "saved" as const }] };
+    const api = {
+      canvasOrigin: vi.fn(async () => origin),
+      resolveCanvasRuns: vi.fn(async () => ({ runs: [resolution] })),
+      ackCanvasRun: vi.fn(async (receipt: { attempt_id: string; result_revision: number; disposition: import("../src/lib/comfyRunState").ComfyApplicationReceipt["disposition"] }) =>
+        ({ ...resolution, ...receipt, state: "linked" as const, outputs: [] })),
+    };
+    const recover = () => recoverCanvasComfyRuns({ canvasDocument: createCanvasDocumentPort({ flushPending: () => {} }), canWrite: () => true, api });
+    const release = store.holdNotebookWrites("local");
+    try {
+      await recover();
+      expect(api.resolveCanvasRuns).toHaveBeenCalledOnce();
+      expect(api.ackCanvasRun).not.toHaveBeenCalled();
+      expect(data.listPersistedScenes(null)[0].comfyRuns?.[0].localState).toBe("submitted");
+      expect(data.listPersistedScenes(null)[0].cards[0].genId).toBeUndefined();
+    } finally { release(); }
+    await recover();
+    await store.settleSceneStoreForTest();
+    expect(data.listPersistedScenes(null)[0].cards[0].genId).toBe("result");
+    expect(data.listPersistedScenes(null)[0].comfyRuns).toEqual([]);
+    expect(api.ackCanvasRun).toHaveBeenCalledOnce();
+  });
+
   it("일반 쓰기가 모두 거절되고 작업본·저장소가 그대로이며 저장 실패로 알리지 않는다 · 풀리면 다시 써진다", async () => {
     const { store, data } = await openStore([scene("a", "그대로")]);
     let floating = true;
@@ -1114,6 +1188,26 @@ describe("원래 창의 사람 동작", () => {
     await act(async () => { coordination().selectScene("b"); });
     expect(data.getActiveSceneId(null)).toBe("b");
     stop();
+  });
+
+  it.each([true, false])("공책 표식 %s — 잠금 중 한 번 받은 카드 소속을 해제 때 다시 적용한다", async enabled => {
+    const { store, data, follow, stop } = await coordinationIn(true);
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(enabled ? ["scene_writer_v1"] : []);
+    try {
+      data.updateScene(null, "a", { cards: [{ id: "c", kind: "generation", x: 0, y: 0 }] });
+      await store.settleSceneStoreForTest();
+      const release = store.holdNotebookWrites("local");
+      try {
+        cardLinks.items = [{ scene_id: "a", card_id: "c", generation_id: "result" }];
+        await act(async () => { cardLinks.loaded.forEach(listener => listener()); });
+        expect(data.listPersistedScenes(null)[0].cards[0].genId).toBeUndefined();
+      } finally { release(); }
+      // 서버 소속 내용은 같아 loaded 알림이 다시 오지 않는다.
+      await follow(false);
+      await act(async () => { await store.settleSceneStoreForTest(); });
+      expect(data.listPersistedScenes(null)[0].cards[0].genId).toBe(enabled ? "result" : undefined);
+    } finally { setHubFeatures([]); await stop(); }
   });
 
   it("옛 창 충돌 정리는 떠 있는 동안 돌지 않고, 풀리면 돈다", async () => {

@@ -8,6 +8,8 @@ import { listPersistedScenes, listScenes, type Scene, type SceneCard } from "./s
 import { sceneStoreReady } from "./sceneStore";
 import { isCanvasFloating } from "./popupWindows";
 import { sceneMatchesWorkspace } from "./sceneWorkspace";
+import { hubHasFeature } from "./hubFeatures";
+import { completeNotebookMcpTask, SCENE_WRITER_FEATURE } from "./sceneNotebook";
 
 export interface McpCanvasTask {
   id: string;
@@ -83,7 +85,11 @@ export function useMcpCanvasTasks(props: CanvasPorts & { authReady: boolean; aut
           if (!fresh()) return;
           try {
             if (await attachMcpCanvasTask(task, props.workspace, current.current, fresh) && fresh()) {
-              await jsonFetch(`/api/mcp/v2/app/canvas-tasks/${encodeURIComponent(task.id)}/complete`, { method: "POST", headers: { "X-MVHub-Tab": tab }, body: jsonBody({ workspace: props.workspace }), signal: abort.signal });
+              if (hubHasFeature(SCENE_WRITER_FEATURE)) {
+                if (!await completeNotebookMcpTask(account, task.scene_id, task.id)) failed = true;
+              } else {
+                await jsonFetch(`/api/mcp/v2/app/canvas-tasks/${encodeURIComponent(task.id)}/complete`, { method: "POST", headers: { "X-MVHub-Tab": tab }, body: jsonBody({ workspace: props.workspace }), signal: abort.signal });
+              }
             } else failed = true;
           } catch { failed = true; }
         }

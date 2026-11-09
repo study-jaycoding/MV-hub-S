@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SceneWriterClient, type WriterStatus } from "../src/lib/sceneWriter";
+import { canRetryLocalNotebook, SceneWriterClient, type WriterStatus } from "../src/lib/sceneWriter";
+import * as scenes from "../src/lib/scenes";
 import type { NotebookSyncResult } from "../src/lib/sceneNotebook";
 
 const ready = { status: "ready" as const, changed: false };
@@ -28,13 +29,14 @@ function harness() {
     }),
     sync: vi.fn(async (): Promise<NotebookSyncResult> => ready), settle: vi.fn(async () => true), lost: vi.fn(),
     generation: vi.fn(), changed: vi.fn(), notice: vi.fn(), names: () => "큰 씬", localCount: () => 2,
+    canRetryLocal: vi.fn((_reason: string | undefined, _sceneIds: string[]) => true),
   };
   const client = new SceneWriterClient(deps, "browser", "tab");
   const other = () => { server = { ...server, token: "other", writer: { browser_id: "other", tab_id: "other", generation: "other", expires_in_ms: 90000 } }; };
   return { client, deps, calls, other, server: () => server, setServer: (value: WriterStatus) => { server = value; }, account: (value: string) => { account = value; }, eligible: (value: boolean) => { eligible = value; } };
 }
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("hub scene writer", () => {
   it("feature off and profile follower never contact the hub", async () => {
@@ -135,13 +137,51 @@ describe("hub scene writer", () => {
     h.setServer({ ...h.server(), writer: null }); h.calls.length = 0; await h.client.refresh();
     expect(h.calls.map((c) => c.action)).toEqual(["status"]); expect(h.client.view.mode).toBe("away");
   });
-  it("oversize start warns once, allows local editing, and retries when a scene changes", async () => {
+  it("oversize start stays local across edits and focus until every scene fits", async () => {
     const h = harness(); h.client.configure(true);
+    h.deps.canRetryLocal.mockImplementation(canRetryLocalNotebook);
+    const small: scenes.Scene = { id: "large", name: "large", created_at: 1, cards: [], edges: [] };
+    let current = [{ ...small, name: "한".repeat(2 * 1024 * 1024) }];
+    vi.spyOn(scenes, "listScenes").mockImplementation(() => current);
     h.deps.sync.mockResolvedValueOnce({ status: "local_only", changed: false, reason: "start_too_big", sceneIds: ["large"] });
     await h.client.refresh(); expect(h.client.view.mode).toBe("local_only"); expect(h.client.token()).toBeNull();
     expect(h.deps.notice).toHaveBeenCalledWith("5MiB 넘는 씬이 있어 허브 공책을 시작하지 못했습니다 — 이 브라우저에서만 편집됩니다: 큰 씬");
-    await h.client.refresh(); expect(h.deps.notice).toHaveBeenCalledOnce();
+    h.calls.length = 0; h.deps.changed.mockClear();
+    for (let i = 0; i < 3; i++) {
+      current = [{ ...current[0], created_at: i }];
+      h.client.localChanged(); h.client.resume(); await h.client.refresh();
+      expect(h.client.view.mode).toBe("local_only");
+    }
+    expect(h.calls).toEqual([]); expect(h.deps.changed).not.toHaveBeenCalled();
+    expect(h.deps.sync).toHaveBeenCalledOnce(); expect(h.deps.notice).toHaveBeenCalledOnce();
+    expect(h.deps.canRetryLocal).toHaveBeenLastCalledWith("start_too_big", ["large"]);
+    // 첫 초과 씬을 줄여도 이후 추가한 씬이 크면 다시 잠그지 않는다.
+    current = [small, { ...current[0], id: "new-large" }];
+    h.client.localChanged(); await h.client.refresh(); expect(h.calls).toEqual([]);
+    current = [small];
     h.client.localChanged(); await h.client.refresh(); expect(h.client.view.mode).toBe("writer");
+    expect(h.calls.some(call => call.action === "claim")).toBe(true);
+  });
+  it("empty notebook retries only when the first local scene appears", async () => {
+    const h = harness(); h.client.configure(true);
+    h.deps.canRetryLocal.mockImplementation(canRetryLocalNotebook);
+    const current = vi.spyOn(scenes, "listScenes").mockReturnValue([]);
+    h.deps.sync.mockResolvedValueOnce({ status: "local_only", changed: false, reason: "empty_notebook" });
+    await h.client.refresh(); h.calls.length = 0;
+    h.client.localChanged(); await h.client.refresh(); expect(h.calls).toEqual([]);
+    current.mockReturnValue([{ id: "first", name: "first", created_at: 1, cards: [], edges: [] }]);
+    h.client.localChanged(); await h.client.refresh(); expect(h.client.view.mode).toBe("writer");
+  });
+  it("local size eligibility includes JSON overhead and uses UTF-8 byte length", () => {
+    const scene = { id: "large", name: "", created_at: 1, cards: [], edges: [] };
+    const bytes = new TextEncoder().encode(JSON.stringify(scene)).byteLength;
+    const atLimit = { ...scene, name: "x".repeat(5 * 1024 * 1024 - bytes) };
+    const current = vi.spyOn(scenes, "listScenes").mockReturnValue([atLimit]);
+    expect(canRetryLocalNotebook("start_too_big")).toBe(true);
+    current.mockReturnValue([{ ...atLimit, name: atLimit.name + "x" }]);
+    expect(canRetryLocalNotebook("start_too_big")).toBe(false);
+    current.mockReturnValue([{ ...scene, name: "한".repeat(2 * 1024 * 1024) }]);
+    expect(canRetryLocalNotebook("start_too_big")).toBe(false);
   });
   it("a floating window which cannot be collected prevents uploads and editing", async () => {
     const h = harness(); h.client.configure(true); h.deps.settle.mockResolvedValueOnce(false);

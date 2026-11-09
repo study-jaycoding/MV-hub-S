@@ -1,10 +1,11 @@
+import { setHubFeatures } from "../src/lib/hubFeatures";
 // 저장 계약의 메모리 어댑터 시험. 실제 IDB 다중 창/디스크 중단은 격리 브라우저 실측에서 별도로 확인한다.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   abortSceneStoreWritesForTest, applySceneOp, delaySceneStoreWritesForTest, initSceneStore,
   readConfirmedBucket, readWorkingBucket, setSceneLeaseGeneration, setSceneWriteGate,
   settleSceneStoreForTest, unconfirmedSceneWrites, writeSceneStoreAsOtherWindowForTest, writeScenesStore,
-  sceneNotebookTransaction, notebookKey,
+  sceneNotebookTransaction, notebookKey, sceneStoreKeysForTest, captureSceneOps,
   absorbLegacyScenes, sceneStoreConflicts,
 } from "../src/lib/sceneStore";
 import {
@@ -34,12 +35,34 @@ async function seeded(value = scene()) {
 }
 const hub = (value = scene("hub"), history = "h") => ({ [bucket]: { scenes: [value], bases: { [value.id]: base(1, "hash-1", history) }, order: { history, rev: 1 } } });
 
-beforeEach(() => setSceneWriteGate(() => false));
+beforeEach(() => { setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false); });
+it("c13 feature off writes no notebook metadata during edit/delete/undo", async () => {
+  setHubFeatures([]);
+  await writeScenesStore({ [bucket]: [scene()] });
+  drop(); revive(); drop(); await settleSceneStoreForTest();
+  expect(sceneStoreKeysForTest().filter((key) => /^\["(?:b|d|r|ob|nj)",/.test(key))).toEqual([]);
+});
+it("c13 feature off does not scan existing notebook base values", async () => {
+  await seeded(); setHubFeatures([]);
+  const clone = vi.spyOn(globalThis, "structuredClone");
+  drop(); await settleSceneStoreForTest();
+  expect(clone.mock.calls.some(([value]) => value && typeof value === "object" && "hash" in value && value.hash === "hash-1")).toBe(false);
+  clone.mockRestore();
+});
+it.each(["guard", "collision"])("hub %s rejection does not fail the queued user edit", async (kind) => {
+  await seeded(); delaySceneStoreWritesForTest(10);
+  const receive = sceneNotebookTransaction([], () => { throw new Error("local_copy_collision"); }, () => kind !== "guard");
+  const edited = captureSceneOps(() => edit((all) => { all[bucket] = [scene("s", "new edit")]; }));
+  expect(await receive).toEqual({ ok: false });
+  expect(await edited.confirmed).toBe(true);
+  expect(readConfirmedBucket(bucket)[0].name).toBe("new edit");
+});
 afterEach(async () => {
   abortSceneStoreWritesForTest(false);
   delaySceneStoreWritesForTest(0);
   setSceneWriteGate(() => false);
   await settleSceneStoreForTest();
+  setHubFeatures([]);
   vi.unstubAllGlobals();
 });
 
@@ -298,6 +321,14 @@ describe("c07: 못 올리는 씬을 로컬 사본으로 먼저 보존", () => {
 });
 
 describe("4차①: 분리 창 인계 세대", () => {
+  it.each([false, true])("matching or disabled lease does not pre-clone copy bodies (enabled %s)", async (enabled) => {
+    await seeded(); setHubFeatures(enabled ? ["scene_writer_v1"] : []); setSceneLeaseGeneration("local", "same");
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    adoptCanvasSceneWrites([{ bucket, leaseGeneration: enabled ? "same" : "old", changed: [scene("s", "fresh")], created: [], removed: [], order: null }]);
+    expect(clone.mock.calls.some(([value]) => value && typeof value === "object" && "id" in value && value.id === "s")).toBe(false);
+    clone.mockRestore();
+    await settleSceneStoreForTest(); expect(readConfirmedBucket(bucket)).toEqual([scene("s", "fresh")]);
+  });
   it("같은 세대의 인계는 paused에도 동기로 적용하고 확정한다", async () => {
     await seeded(); setSceneLeaseGeneration("local", "same");
     setSceneWriteGate(() => true);

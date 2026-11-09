@@ -6,7 +6,7 @@ import { EXPECT_ACCOUNT_HEADER, hubHasFeature, subscribeHubFeatures } from "./hu
 import { getApiPause, jsonFetch, subscribeApiPause } from "./http";
 import { collectCanvasForWriter, flushWriterInput, hasProfileSceneWriter, isCanvasWindow, setHubCanvasPaused, subscribeProfileSceneWriter } from "./popupWindows";
 import { SCENE_WRITER_FEATURE, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
-import { setAsidePendingWrites, setSceneLeaseGeneration, settleSceneWrites } from "./sceneStore";
+import { isNotebookWriteHeld, setAsidePendingWrites, setSceneLeaseGeneration, settleSceneWrites, subscribeNotebookWriteHold } from "./sceneStore";
 import { listScenes, subscribeScenesPersisted } from "./scenes";
 
 export type WriterMode = "disabled" | "writer" | "uncertain" | "away" | "taking" | "giving" | "local_only";
@@ -29,6 +29,15 @@ interface WriterDeps {
   notice: (text: string) => void;
   names: (ids: string[]) => string;
   localCount: () => number;
+  canRetryLocal?: (reason: string | undefined, sceneIds: string[]) => boolean;
+}
+/** 지금의 모든 씬으로 중단 사유 해소를 확인한다. 최초 초과 ID만 보면 이후 추가한 큰 씬을 놓친다. */
+export function canRetryLocalNotebook(reason: string | undefined): boolean {
+  const scenes = listScenes(null);
+  if (reason === "empty_notebook") return scenes.length > 0;
+  if (reason !== "start_too_big") return true;
+  try { return scenes.every(scene => new TextEncoder().encode(JSON.stringify(scene)).byteLength <= 5 * 1024 * 1024); }
+  catch { return false; }
 }
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function beforeDeadline<T>(promise: Promise<T>, deadline: number): Promise<T | null> {
@@ -54,6 +63,8 @@ export class SceneWriterClient {
   private boot = "";
   private accountEpoch = -1;
   private localStopped = false;
+  private localReason: string | undefined;
+  private localSceneIds: string[] = [];
   private prepared = false;
   private again = false;
   private pendingNotice: string | undefined;
@@ -78,6 +89,8 @@ export class SceneWriterClient {
     this.boot = "";
     this.accountEpoch = -1;
     this.localStopped = false;
+    this.localReason = undefined;
+    this.localSceneIds = [];
     this.prepared = false;
     this.pendingNotice = undefined;
     this.mayClaim = true;
@@ -100,7 +113,7 @@ export class SceneWriterClient {
   }
   uncertain() {
     this.confirmedUntil = 0; // 정지/BFCache 복귀 직후에는 renew보다 업로드가 먼저 갈 수 없다.
-    if (!blocked(this.view.mode) && this.active) this.show("uncertain");
+    if (!blocked(this.view.mode) && this.active && !this.localStopped) this.show("uncertain");
   }
   resume() {
     if (!this.active || this.taking || this.view.mode === "giving") return;
@@ -108,7 +121,9 @@ export class SceneWriterClient {
     this.busy = null;
     this.uncertain();
   }
-  localChanged() { this.localStopped = false; }
+  localChanged() {
+    if (!this.localStopped || this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) !== false) this.localStopped = false;
+  }
   private confirm(status: WriterStatus) {
     if (!status.writer || !status.token) throw new Error("invalid_writer_reply");
     this.boot = status.boot_id;
@@ -123,6 +138,8 @@ export class SceneWriterClient {
     const result = await this.deps.sync();
     if (!this.valid(epoch)) return;
     if (result.status === "ready") {
+      this.localReason = undefined;
+      this.localSceneIds = [];
       this.show("writer", false);
       if (this.pendingNotice) this.deps.notice(this.pendingNotice);
       this.pendingNotice = undefined;
@@ -133,8 +150,10 @@ export class SceneWriterClient {
       catch (error) { released = errorCode(error) === "writer_required"; }
       if (!this.valid(epoch)) return;
       if (released) this.lease = null;
-      this.show("local_only");
+      this.localReason = result.reason;
+      this.localSceneIds = [...(result.sceneIds ?? [])];
       this.localStopped = true;
+      this.show("local_only");
       if (result.reason === "start_too_big") this.deps.notice(`5MiB 넘는 씬이 있어 허브 공책을 시작하지 못했습니다 — 이 브라우저에서만 편집됩니다: ${this.deps.names(result.sceneIds ?? [])}`);
     } else if (result.status === "waiting_token") {
       if (["writer_required", "writer_changed", "writer_expired"].includes(result.reason ?? "")) this.lose();
@@ -360,14 +379,23 @@ export function startSceneWriter(): void {
     changed: (next) => {
       if (blocked(next.mode)) flushWriterInput(flushPending);
       view = next;
-      setHubCanvasPaused(blocked(next.mode));
-      if (hasProfileSceneWriter()) channel?.postMessage({ account: getAccountNamespace(), paused: blocked(next.mode) });
+      const paused = blocked(next.mode) || (hubHasFeature(SCENE_WRITER_FEATURE) && isNotebookWriteHeld(getAccountNamespace()));
+      setHubCanvasPaused(paused);
+      if (hasProfileSceneWriter()) channel?.postMessage({ account: getAccountNamespace(), paused });
       subscribers.forEach((fn) => fn());
     },
     notice: flashMsg,
     names: (ids) => listScenes(null).filter((s) => ids.includes(s.id)).map((s) => s.name).join(", "),
     localCount: () => listScenes(null).filter((s) => s.localNotebookCopy === "upload_failed").length,
+    canRetryLocal: canRetryLocalNotebook,
   }, browserId, id());
+  subscribeNotebookWriteHold((account, held) => {
+    if (!hubHasFeature(SCENE_WRITER_FEATURE) || account !== getAccountNamespace()) return;
+    if (held) flushWriterInput(flushPending);
+    const paused = blocked(view.mode) || held;
+    setHubCanvasPaused(paused);
+    if (hasProfileSceneWriter()) channel?.postMessage({ account, paused });
+  });
   setSceneNotebookTokenProvider(() => client?.token() ?? null);
   const configure = () => {
     client!.configure(hubHasFeature(SCENE_WRITER_FEATURE) && !getApiPause());

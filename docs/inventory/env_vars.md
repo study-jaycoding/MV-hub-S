@@ -49,7 +49,7 @@
 | `CONTENT_HUB_CORS` | `"http://localhost:5173,http://127.0.0.1:5173"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_COST_TTL` | `12 * 3600` | `backend/app/services/cli_bridge.py` | — |
 | `CONTENT_HUB_DATA` | `""` `BACKEND_DIR / "data"` `Path(__file__).resolve().parent / "data"` `str(REPO_ROOT / "backend" / "data")` | `backend/app/config.py` `backend/app/routers/backup_replica.py` `backend/cleanup_orphan_creators.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/server_console/backup.py` `tools/server_console/install.py` `tools/server_move.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` |
-| `CONTENT_HUB_DB` | `""` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_console/actions.py` `tools/server_console/install.py` `tools/server_move.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
+| `CONTENT_HUB_DB` | `""` `"forbidden-original.db"` `None` | `backend/app/db_paths.py` `backend/app/routers/db_transfer.py` `backend/cleanup_orphan_creators.py` `tools/credit_round_audit.py` `tools/deploy_fence_check.py` `tools/endurance_probe.py` `tools/preflight_task_workspace.py` `tools/server_console/actions.py` `tools/server_console/install.py` `tools/server_move.py` `tools/tests/test_canvas_notebook_measure.py` `tools/verify_generation_submission_recovery.py` | `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` `tools/load_test_100.py` `tools/preflight_task_workspace.py` `tools/verify_generation_submission_recovery.py` |
 | `CONTENT_HUB_DB_BACKEND` | `"sqlite"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_POOL` | `"1"` | `backend/app/db.py` | — |
 | `CONTENT_HUB_DB_UPLOAD_FILE_MAX_BYTES` | `512 * MIB` | `backend/app/services/upload_limits.py` | — |
@@ -110,7 +110,7 @@
 | `CONTENT_HUB_SERVER_SYNC` | `"1"` | `backend/app/services/syncer.py` | `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_SERVICE_NAME` | `"mvhub-backend"` | `backend/app/services/operational_logging.py` | — |
 | `CONTENT_HUB_SHARED` | `DATA_DIR / "shared"` | `backend/app/config.py` | — |
-| `CONTENT_HUB_SHARED_URL` | — | `backend/app/shared_server_config.py` | `MV_agent.bat` |
+| `CONTENT_HUB_SHARED_URL` | `"http://192.168.1.171:8010"` | `backend/app/shared_server_config.py` `tools/tests/test_canvas_notebook_measure.py` | `MV_agent.bat` |
 | `CONTENT_HUB_SHARE_RECONCILE_INTERVAL_SECONDS` | `"30"` | `backend/app/services/share_state_reconciler.py` | — |
 | `CONTENT_HUB_SLACK_TEST_RECIPIENTS` | `''` | `backend/app/services/slack_client.py` | — |
 | `CONTENT_HUB_SLACK_TEST_SEND` | — | `backend/app/services/slack_client.py` `backend/app/services/slack_notify.py` | — |
@@ -136,7 +136,7 @@
 | `CONTENT_HUB_WORKER_BACKUP_OUTBOX_DIR` | `str(DATA_DIR / "worker-backup-outbox")` | `backend/app/services/worker_backup.py` | — |
 | `CONTENT_HUB_WORKER_BACKUP_PENDING_KEEP` | `"10"` | `backend/app/services/worker_backup.py` | — |
 | `CONTENT_HUB_WORKER_BACKUP_STARTUP_DELAY_SECONDS` | `"3"` | `backend/app/services/worker_backup.py` | — |
-| `CONTENT_HUB_WORKER_BACKUP_STATE_DB` | `str(DATA_DIR / "worker_backup_state.db")` | `backend/app/services/worker_backup.py` | — |
+| `CONTENT_HUB_WORKER_BACKUP_STATE_DB` | `"forbidden-worker.db"` `str(DATA_DIR / "worker_backup_state.db")` | `backend/app/services/worker_backup.py` `tools/tests/test_canvas_notebook_measure.py` | — |
 | `CONTENT_HUB_WORKER_BACKUP_UPLOAD_INTERVAL` | `"60"` | `backend/app/services/worker_backup.py` | — |
 | `CONTENT_HUB_WORKER_BACKUP_UPLOAD_TIMEOUT` | `"120"` | `backend/app/services/worker_backup.py` | — |
 | `CONTENT_HUB_WORKER_ID` | `"me"` | `backend/app/config.py` | — |

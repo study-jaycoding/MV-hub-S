@@ -5,13 +5,13 @@
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
+import { hubHasFeature } from "./hubFeatures";
 import type { AssetReferenceIdentity } from "../shared/contracts/assets";
 import { sceneBodySum } from "./sceneAbsorb";
 import { normalizeForUndo, withoutComfyRuns, type ComfyCanvasRun, type ComfyCardRuns } from "./comfyRunState";
 import type { SceneSnap } from "./sceneUndoStore";
 import type { CanvasTarget, CanvasWriteReceipt } from "../features/canvas/api";
 import { holdUnload } from "./unloadGuard";
-import { makeLocalNotebookCopy } from "./sceneNotebook";
 import {
   applySceneOp,
   captureSceneOps,
@@ -638,6 +638,32 @@ export function deleteScene(projectId: string | null, sceneId: string): boolean 
   }).ok;
 }
 
+/** 새 id에는 능동 실행 연결을 옮기지 않는다. 수동 확인용 원래 표식은 backupForkOf 안에 보관한다. */
+export function makeLocalNotebookCopy(scene: Scene, id: string, reason: "upload_failed" | "stale_handover"): Scene {
+  const copy = structuredClone(scene);
+  const attempts = Object.fromEntries(copy.cards.filter((card) => card.pendingGenerationAttempts?.length).map((card) => [card.id, card.pendingGenerationAttempts!]));
+  const legacyRuns = Object.fromEntries(copy.cards.filter((card) => card.comfyCfg?.runId).map((card) => [card.id, card.comfyCfg!.runId!]));
+  copy.backupForkOf = {
+    id: scene.id, comfyRuns: copy.comfyRuns, comfyCardRuns: copy.comfyCardRuns,
+    pendingGenerationAttempts: attempts, comfyLegacyRuns: legacyRuns, previous: copy.backupForkOf,
+  };
+  copy.id = id;
+  copy.name = `[옛 창] ${scene.name}`;
+  copy.localNotebookCopy = reason;
+  delete copy.comfyRuns;
+  delete copy.comfyCardRuns;
+  delete copy.mcpAttachmentReceipts;
+  for (const card of copy.cards) {
+    delete card.pendingGenerationAttempts;
+    if (card.comfyCfg) {
+      delete card.comfyCfg.runId;
+      delete card.comfyCfg.status;
+      delete card.comfyCfg.error;
+    }
+  }
+  return copy;
+}
+
 /**
  * 닫히는 캔버스 창이 넘긴 미확정 변경을 이 창의 연산으로 잇는다(sceneStore 의 '닫히는 창의 넘겨주기'). 반환 = 받았나 — 저장소 준비 전이면 받지 않는다:
  * 들고 있다가 늦게 쓰면 그 창이 이미 쓴 뒤의 더 새 편집을 덮는다.
@@ -649,13 +675,17 @@ export function adoptCanvasSceneWrites(writes: SceneHandover[]): boolean {
   if (!sceneStoreReady()) return false;
   const incoming = structuredClone(writes).map((write) => ({
     ...write,
-    copies: [...write.changed, ...write.created].map((scene) => makeLocalNotebookCopy(scene, uid(), "stale_handover")),
+    copyIds: [...write.changed, ...write.created].map(() => uid()),
+    copies: null as Scene[] | null,
   }));
+  const notebook = hubHasFeature("scene_writer_v1");
   // 세대는 저장 관문이 재생 시점에 주입한다. 처음 받았을 때만 검사하면 큐에서 기다리는 동안 낡을 수 있다.
   return commit((all, generations) => {
-    for (const { bucket, created, changed, removed, order, leaseGeneration, copies } of incoming) {
+    for (const write of incoming) {
+      const { bucket, created, changed, removed, order, leaseGeneration } = write;
       const current = generations[bucket.split("::")[0]];
-      if (current === null || current !== leaseGeneration) {
+      if (notebook && (current === null || current !== leaseGeneration)) {
+        const copies = write.copies ??= [...changed, ...created].map((scene, i) => makeLocalNotebookCopy(scene, write.copyIds[i], "stale_handover"));
         const known = new Set((all[bucket] ?? []).map((scene) => scene.id));
         all[bucket] = [...(all[bucket] ?? []), ...copies.filter((scene) => !known.has(scene.id))];
         continue;

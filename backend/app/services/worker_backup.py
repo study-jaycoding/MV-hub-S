@@ -86,7 +86,7 @@ _log = logging.getLogger("mvhub.worker_backup")
 _SUMMARY_TABLES = {
     "generations": ("generation",),
     "tags": ("tag", "auto_tag", "gen_tag_overlay"),
-    "canvases": ("scene_backup",),
+    "canvases": ("scene_backup", "scene_card_generation"),
     "timelines": ("edit_doc_head", "edit_doc_copy"),
     "assets": ("asset_meta", "asset_blob", "asset_location", "asset_sync_outbox", "asset_destination_outbox"),
     "projects": ("project",),
@@ -399,7 +399,6 @@ def metadata_summary(content: Path, trash: Path | None = None, *, include_retain
     ) as conn:
         conn.execute("PRAGMA query_only=ON")
         existing = _existing_table_names(conn)
-        canvas_links = _table_count(conn, 'scene_card_generation', existing_tables=existing)
         for label, tables in _SUMMARY_TABLES.items():
             summary[label] = sum(
                 _table_count(conn, table, existing_tables=existing) for table in tables
@@ -416,8 +415,9 @@ def metadata_summary(content: Path, trash: Path | None = None, *, include_retain
         ) as conn:
             conn.execute("PRAGMA query_only=ON")
             summary["trash"] = _table_count(conn, "trashed")
-    # Retained bodies and card links still merit backup, but neither is a live scene.
-    summary["meaningful_records"] = sum(summary.values()) + retained + canvas_links
+    # Keep the public canvas count (live scenes + card links); retained bodies
+    # still merit backup but only appear separately in the local display.
+    summary["meaningful_records"] = sum(summary.values()) + retained
     if include_retained:  # Local display only; queue_backup_set never enables this.
         summary['canvas_retained'] = retained
     return summary

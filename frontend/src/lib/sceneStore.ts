@@ -31,6 +31,7 @@
 //    함께 사라져, 낡은 옛 저장소를 '처음 이관'으로 착각해 최신인 양 되살린다.
 import { planAbsorption, sameSceneContent, type SceneAbsorbConflict, type SceneAbsorbPlan } from "./sceneAbsorb";
 import type { Scene, ScenesByProject } from "./scenes";
+import { hubHasFeature } from "./hubFeatures";
 
 const DB_NAME = "mvhub-scenes";
 // 2 = 씬별 키 배치(아래 '씬별 키'). ★object store 는 그대로지만 버전을 올린다. 옛 배치(씬 전체가 한 키)를 쓰는
@@ -120,8 +121,14 @@ export function newSceneIntentId(): string {
 // 임대 흐름은 3단계가 연결한다. undefined = 종전 모드, null = 공책 모드이지만 임대 없음.
 let leaseGenerations: Record<string, string | null> = {};
 const notebookWriteHolds = new Map<string, number>();
+const notebookHoldListeners = new Set<(account: string, held: boolean) => void>();
+export const isNotebookWriteHeld = (account: string): boolean => !!notebookWriteHolds.get(account);
+export function subscribeNotebookWriteHold(fn: (account: string, held: boolean) => void): () => void {
+  notebookHoldListeners.add(fn); return () => { notebookHoldListeners.delete(fn); };
+}
 /** 첫 시작/합류만 쓰기 입구를 잠근다. 다른 계정·허브 조건부 연산은 막지 않는다. */
 export function holdNotebookWrites(account: string): () => void {
+  if (!notebookWriteHolds.has(account)) notebookHoldListeners.forEach((fn) => fn(account, true));
   notebookWriteHolds.set(account, (notebookWriteHolds.get(account) ?? 0) + 1);
   let released = false;
   return () => {
@@ -129,7 +136,7 @@ export function holdNotebookWrites(account: string): () => void {
     released = true;
     const remaining = (notebookWriteHolds.get(account) ?? 1) - 1;
     if (remaining) notebookWriteHolds.set(account, remaining);
-    else notebookWriteHolds.delete(account);
+    else { notebookWriteHolds.delete(account); notebookHoldListeners.forEach((fn) => fn(account, false)); }
   };
 }
 export function setSceneLeaseGeneration(account: string, generation: string | null): void {
@@ -539,8 +546,9 @@ type TxStep = (live: ScenesByProject, current: StoreValues) => TxStepResult;
  * @returns 트랜잭션이 끝났는가
  */
 function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void, fromHub = false): Promise<boolean> {
-  const stepIntent = newSceneIntentId();
   return enqueueTx(async () => {
+    const notebook = fromHub || hubHasFeature("scene_writer_v1");
+    const stepIntent = notebook ? newSceneIntentId() : "";
     if (!ready) return false;
     const batch = pending.slice(); // ★묶음 고정 — 끝난 뒤 이 묶음만 뺀다(도중에 들어온 연산은 남긴다)
     for (const op of batch) op.flying = true;
@@ -585,7 +593,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
             try {
               const before = { ...live };
               op.mutate(live, leaseGenerations);
-              recordNotebookChanges(before, live, meta, op.intentId);
+              if (notebook) recordNotebookChanges(before, live, meta, op.intentId);
             } catch (error) {
               // 화면(working)에서는 됐는데 저장소 내용 위에서는 던진 연산 — 다시 해도 같으므로 버린다.
               // 조용히 버리지 않는다: 그 연산을 기다리던 쪽은 실패를 받고, 콘솔에 남긴다.
@@ -595,7 +603,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           }
           const beforeStep = { ...live };
           stepOut = step ? step(live, meta) : stepOut;
-          if (!fromHub) recordNotebookChanges(beforeStep, live, meta, stepIntent);
+          if (notebook && !fromHub) recordNotebookChanges(beforeStep, live, meta, stepIntent);
           const notebookPuts = Object.entries(meta).filter(([key, value]) => isNotebookMeta(key) && JSON.stringify(oldNotebook[key]) !== JSON.stringify(value));
           const notebookDeletes = Object.keys(oldNotebook).filter((key) => !(key in meta));
           freezeScenes(live);
@@ -617,7 +625,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           };
         },
         "readwrite",
-        true,
+        notebook,
       );
     } catch {
       // 확정 실패 — pending 은 그대로 둔다(다음 쓰기·타이머가 다시 시도). 기다리던 쪽에는 '지금은 안 됐다'.
@@ -689,10 +697,19 @@ export async function sceneNotebookTransaction<T>(
   stillCurrent: () => boolean = () => true,
 ): Promise<{ ok: true; value: T } | { ok: false }> {
   let value: T;
+  let applied = false;
   const ok = await runStoreTx(keys, (all, meta) => {
-    if (!stillCurrent()) throw new Error("notebook scope changed");
+    if (!stillCurrent()) return { changed: false, entries: [] };
     const before = { ...meta };
-    const result = decide(all, meta);
+    const draft = { ...all }, draftMeta = { ...meta };
+    let result: { value: T; changed: boolean };
+    try { result = decide(draft, draftMeta); }
+    catch { return { changed: false, entries: [] }; } // 허브 조건 실패로 같은 묶음의 사용자 편집을 실패시키지 않는다.
+    for (const name of Object.keys(all)) if (!(name in draft)) delete all[name];
+    Object.assign(all, draft);
+    for (const name of Object.keys(meta)) if (!(name in draftMeta)) delete meta[name];
+    Object.assign(meta, draftMeta);
+    applied = true;
     value = cloneStored(result.value);
     return {
       changed: result.changed,
@@ -700,7 +717,7 @@ export async function sceneNotebookTransaction<T>(
       deletes: Object.keys(before).filter((key) => !isNotebookMeta(key) && !(key in meta)),
     };
   }, undefined, true);
-  return ok ? { ok: true, value: value! } : { ok: false };
+  return ok && applied ? { ok: true, value: value! } : { ok: false };
 }
 
 // ── flush 예약·재시도 ────────────────────────────────────────────────────────────

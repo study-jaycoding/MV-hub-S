@@ -58,12 +58,19 @@ def test_start_oversize_releases_lease_and_keeps_old_rows(client):
     assert not store.is_started('u')
 
 
-def test_real_schema_worker_set_passes_public_manifest_normalization(notebook_db, monkeypatch):
+@pytest.mark.parametrize('with_live_scene_and_card_link', [False, True])
+def test_real_schema_worker_set_passes_public_manifest_normalization(
+    notebook_db, monkeypatch, with_live_scene_and_card_link,
+):
     from app import active_account
     from app.services import worker_backup
     from app.routers.db_backup import _normalise_set_manifest
     seed()
     push('delete', deletes=[{'id': 's', 'intent_id': 'd', 'base': base()}])
+    if with_live_scene_and_card_link:
+        push('live', upserts=[scene('live')])
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO scene_card_generation(owner_uid,scene_id,card_id,generation_id) VALUES('u','live','c','g')")
     monkeypatch.setattr(worker_backup, 'STATE_DB', notebook_db / 'worker-state.db')
     monkeypatch.setattr(worker_backup, 'OUTBOX_DIR', notebook_db / 'outbox')
     monkeypatch.setattr(worker_backup, 'DEVICE_IDENTITY_PATH', notebook_db / 'device.json')
@@ -77,7 +84,8 @@ def test_real_schema_worker_set_passes_public_manifest_normalization(notebook_db
     assert set_id  # tombstone-only metadata still merits a backup
     stage = worker_backup.OUTBOX_DIR / active_account.slug('u@example.test') / set_id
     manifest = json.loads((stage / 'manifest.json').read_text('utf-8'))
-    assert manifest['summary']['canvases'] == 0
+    # A tombstone is excluded; each live scene and card link keeps its old count.
+    assert manifest['summary']['canvases'] == (2 if with_live_scene_and_card_link else 0)
     assert 'canvas_retained' not in manifest['summary']
     assert _normalise_set_manifest(json.dumps(manifest)) == manifest
 

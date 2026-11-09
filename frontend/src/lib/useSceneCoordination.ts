@@ -2,6 +2,7 @@ import { setSceneWriterFlush } from "./sceneWriter";
 import type { CanvasInputCommand, CanvasTarget } from "../features/canvas/api";
 import { createCanvasDocumentPort, importCanvasSnapshot, restoreCanvasCardLinks } from "../features/canvas/api";
 import { getAccountNamespace } from "./accountScope";
+import { hubHasFeature } from "./hubFeatures";
 // Canvas 씬(빈 캔버스) 상태·CRUD 를 App.tsx 에서 추출.
 //  · 씬 목록/활성/바인딩/선택 상태 + 씬 CRUD(선택·추가·이름변경·삭제)를 한곳에.
 //  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
@@ -109,9 +110,13 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   const followStoreRef = useRef(followStore);
   followStoreRef.current = followStore;
   const followedRef = useRef(followStore);
+  const retryCardLinksRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (followStore) setScenes(listScenes(null)); // 따르기 시작 — 비키며 내보낸 입력까지 든 저장본으로
     else if (followedRef.current) {
+      // 공책 맞추기 중 받은 소속은 loaded 알림을 건너뛰었다. 서버 목록이 같으면
+      // 다음 조회는 다시 알리지 않으므로, 입력을 다시 열 때 현재 목록으로 한 번 적용한다.
+      if (hubHasFeature("scene_writer_v1")) retryCardLinksRef.current?.();
       // 떠 있던 창이 닫혔다 — 저장본과 그 창이 마지막으로 연 씬으로 돌아온다(씬을 고를 때마다 '마지막 연 씬'에 적는다, selectScene)
       setScenes(listScenes(null));
       setActiveSceneId(getActiveSceneId(null));
@@ -188,7 +193,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     //  빈 로컬을 기준으로 "올릴 게 없다"고 판단한다(멱등이라 사고는 아니지만 한 사이클 헛돈다).
     // 카드 소속 합치기 — DB 가 아는 소속을 화면 씬에 반영한다(다른 브라우저에서 담은 결과가 보이게).
     //  바뀐 게 없으면 merge 가 null 을 주므로 저장→알림 고리가 돌지 않는다.
-    const unsubscribeLinks = subscribeCardLinksLoaded(() => {
+    const applyCardLinks = () => {
       if (followStoreRef.current) return; // 캔버스가 다른 창에 떠 있다 — 씬은 그 창만 쓴다(그 창도 같은 합치기를 한다)
       // ★병합 전에 활성 캔버스의 디바운스 저장을 먼저 확정한다 — listScenes()는 저장본이라,
       //  막 입력한 텍스트/파라미터가 아직 디바운스 중이면 그걸 지운 옛 상태로 병합·저장해
@@ -199,7 +204,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       const links = [...serverCardLinks()];
       if (!restoreCanvasCardLinks(getAccountNamespace(), links)) return;
       setScenes(listScenes(null));
-    });
+    };
+    retryCardLinksRef.current = applyCardLinks;
+    const unsubscribeLinks = subscribeCardLinksLoaded(applyCardLinks);
     void initSceneBackup()
       .catch(() => false)
       .then(() => initSceneCardLinks())
@@ -225,6 +232,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       );
     });
     return () => {
+      retryCardLinksRef.current = null;
       unsubscribe();
       unsubscribeLinks();
       unsubscribeSkipped();

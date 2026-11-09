@@ -298,11 +298,11 @@ def test_remap_legacy_source_without_order_adds_copy_tab(notebook_db):
     assert set(state['order']['ids']) == {r['id'] for r in state['items']}
 
 
-def test_card_links_alone_still_merit_backup_without_counting_as_canvases(notebook_db):
+def test_card_links_count_as_canvases_once_in_backup_summary(notebook_db):
     from app.services.worker_backup import metadata_summary
     with db.get_connection() as conn:
         conn.execute("INSERT INTO scene_card_generation(owner_uid,scene_id,card_id,generation_id) VALUES('u','s','c','g')")
     result = metadata_summary(db.get_db_path())
-    assert result['canvases'] == 0
-    assert result['meaningful_records'] > 0
+    assert result['canvases'] == 1
+    assert result['meaningful_records'] == 1
     assert 'canvas_retained' not in result
