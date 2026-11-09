@@ -1,3 +1,4 @@
+import { setSceneWriterFlush } from "./sceneWriter";
 import type { CanvasInputCommand, CanvasTarget } from "../features/canvas/api";
 import { createCanvasDocumentPort, importCanvasSnapshot, restoreCanvasCardLinks } from "../features/canvas/api";
 import { getAccountNamespace } from "./accountScope";
@@ -307,6 +308,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   const flushScenePending = useCallback((sceneId: string) => {
     if (activeSceneIdRef.current === sceneId) sceneActionRef.current?.flushPending();
   }, []);
+  useEffect(() => setSceneWriterFlush(() => sceneActionRef.current?.flushPending()), []);
 
   const refreshScenes = () => setScenes(listScenes(null));
   // 자산 복구 답을 화면에 입히는 두 관문 — 자동 복구와 '레퍼런스 찾기' 단추가 같이 쓴다.

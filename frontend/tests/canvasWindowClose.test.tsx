@@ -59,6 +59,20 @@ afterEach(() => {
 });
 
 describe("닫는 창의 미확정 변경을 메인 창이 이어 쓴다", () => {
+  it("허브 인계 준비는 밀린 입력을 확정하고 새 쓰기를 막은 뒤 저장을 기다린다", async () => {
+    const { store, data } = await openWindowStore([scene("a", "이전")]);
+    const popup = await import("../src/lib/popupWindows");
+    store.setSceneWriteGate(popup.isCanvasFloating);
+    popup.onCanvasMemoryReturn(() => data.updateScene(null, "a", { cards: [{ id: "c", kind: "text", x: 0, y: 0, text: "마지막 입력" }] as never }));
+    popup.shareCanvasMemory(() => store.settleSceneWrites(1000));
+    const port = (window as unknown as Record<string, { prepare: () => Promise<boolean> }>).__mvhubCanvasMemory;
+    expect(await port.prepare()).toBe(true);
+    expect(popup.isCanvasFloating()).toBe(true);
+    expect(textOf(data.listPersistedScenes(null)[0])).toBe("마지막 입력");
+    data.updateScene(null, "a", { name: "늦은 배경 쓰기" });
+    expect(data.listScenes(null)[0].name).toBe("a");
+    popup.setHubCanvasPaused(false);
+  });
   it("미확정 변경만 씬 단위로 넘기고, 메인 창은 작업본·저장소에 넣는다 — 안 바뀐 씬·다른 창이 더한 씬은 그대로", async () => {
     const canvas = await openWindowStore([scene("a", "옛 글"), scene("b", "그대로")]);
     await canvas.store.settleSceneStoreForTest();

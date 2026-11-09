@@ -628,6 +628,9 @@ export interface PreviewTarget {
 // WebSocket 진행률 메시지
 export interface ProgressMessage {
   type:
+    | "scene_writer_want"
+    | "scene_writer_changed"
+    | "scenes_changed"
     | "queued"
     | "progress"
     | "synced"

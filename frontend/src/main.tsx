@@ -1,3 +1,4 @@
+import { startSceneWriter } from "./lib/sceneWriter";
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
@@ -144,5 +145,6 @@ if (cleanFeed) {
     if (result.kind === "failed") return renderStoreError(result.error);
     await restoreUndoHistories(); // 새로 고치기 전의 되돌리기 기록 — 보드가 처음 열릴 때 바로 쓰게(늦으면 기다리지 않고 띄운다)
     render(<App />);
+    startSceneWriter();
   });
 }

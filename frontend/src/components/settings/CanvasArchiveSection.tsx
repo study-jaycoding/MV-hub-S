@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
-import { describeSceneMigration, downloadSceneArchive, importSceneArchiveText } from "../../lib/sceneArchive";
+import { describeSceneMigration, downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText } from "../../lib/sceneArchive";
+import { getAccountNamespace } from "../../lib/accountScope";
+import { hubHasFeature } from "../../lib/hubFeatures";
+import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, type NotebookArchive } from "../../lib/sceneNotebook";
+import { useSceneWriter } from "../../lib/sceneWriter";
 import { readSceneMigrationInfo, sceneStoreReady, type SceneMigrationInfo } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
@@ -13,6 +17,20 @@ export function CanvasArchiveSection() {
   const [failing, setFailing] = useState(isSceneSaveFailing);
   const floating = useCanvasFloating(); // 캔버스가 다른 창에 떠 있는 동안 씬은 그 창만 쓴다 — 가져오기는 저장 입구를 지나지 않아 여기서 막는다
   const otherTab = useCanvasFollower();
+  const writer = useSceneWriter();
+  const [archive, setArchive] = useState<NotebookArchive | null>(null);
+  const account = getAccountNamespace();
+  useEffect(() => {
+    let alive = true;
+    setArchive(null);
+    if (hubHasFeature(SCENE_WRITER_FEATURE) && sceneStoreReady()) void (async () => {
+      const snapshot = await readSceneNotebook(account);
+      if (!snapshot.ok || !snapshot.value.joined) return;
+      const result = await readNotebookArchive(account, snapshot.value.joined.notebookId);
+      if (alive && account === getAccountNamespace() && result.ok) setArchive(result.value);
+    })();
+    return () => { alive = false; };
+  }, [account, writer.mode]);
   // 옛 저장 칸에서 옮길 때의 기록 — undefined = 읽는 중, null = 기록 없음.
   const [migration, setMigration] = useState<SceneMigrationInfo | null | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -55,6 +73,10 @@ export function CanvasArchiveSection() {
   return (
     <section className="settings-section">
       <h4>캔버스 자료</h4>
+      {archive && <div className="settings-row">
+        <span>허브로 바꾸기 전 이 브라우저 캔버스 {Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)}개 — 합치지 않고 따로 남겨 둔 것</span>
+        <button className="settings-action" disabled={busy} onClick={() => downloadNotebookArchive(archive)}>내려받기</button>
+      </div>}
       <div className="settings-row">
         <button className="settings-action" onClick={exportAll} disabled={busy}>
           전체 내보내기
@@ -81,7 +103,10 @@ export function CanvasArchiveSection() {
           (failing
             ? "⚠ 지금 캔버스가 저장되지 않고 있습니다 — 내보내 두세요."
             : floating
-              ? otherTab ? `${CANVAS_OTHER_TAB} — 그 뒤에 가져오세요.` : "캔버스가 별도 창에 떠 있는 동안은 가져올 수 없습니다. 창을 닫은 뒤 가져오세요."
+              ? otherTab ? `${CANVAS_OTHER_TAB} — 그 뒤에 가져오세요.`
+                : writer.mode === "away" ? "캔버스가 다른 브라우저에 열려 있습니다 — 여기서 연 뒤 가져오세요"
+                : writer.mode === "taking" || writer.mode === "giving" ? "캔버스를 넘기는 중입니다 — 끝난 뒤 가져오세요"
+                : "캔버스가 별도 창에 떠 있는 동안은 가져올 수 없습니다. 창을 닫은 뒤 가져오세요."
               : "이 PC 의 모든 캔버스를 파일 하나로 내려받거나, 그 파일에서 다시 가져옵니다.")
         }
       >

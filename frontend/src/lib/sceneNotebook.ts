@@ -265,6 +265,11 @@ export interface NotebookSyncResult {
 let tokenProvider: () => NotebookToken | null = () => null;
 let providerEpoch = 0;
 let inFlight: Promise<NotebookSyncResult> | null = null;
+const resultListeners = new Set<(result: NotebookSyncResult) => void>();
+export function subscribeNotebookSyncResult(fn: (result: NotebookSyncResult) => void): () => void {
+  resultListeners.add(fn);
+  return () => { resultListeners.delete(fn); };
+}
 /** 4단계가 공급한다. 토큰 자체는 IndexedDB/로컬 저장소에 기록하지 않는다. */
 export function setSceneNotebookTokenProvider(provider: () => NotebookToken | null): void {
   tokenProvider = provider;
@@ -348,7 +353,10 @@ function hubBucket(book: HubBook): NotebookHubBucket {
 export function syncSceneNotebook(): Promise<NotebookSyncResult> {
   if (!hubHasFeature(SCENE_WRITER_FEATURE)) return Promise.resolve({ status: "disabled", changed: false });
   if (inFlight) return inFlight;
-  inFlight = runNotebookSync().finally(() => { inFlight = null; });
+  inFlight = runNotebookSync().then((result) => {
+    resultListeners.forEach((fn) => fn(result));
+    return result;
+  }).finally(() => { inFlight = null; });
   return inFlight;
 }
 async function runNotebookSync(): Promise<NotebookSyncResult> {

@@ -1,5 +1,6 @@
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { dropAuthIfCurrent, getApiPause, getAuthToken } from "./http";
+import { signalSceneWriter, sceneWriterSuspended } from "./sceneWriter";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -44,6 +45,7 @@ export function connectProgress(
     connectedToken = getAuthToken();
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => {
+      signalSceneWriter();
       openedAt = performance.now(); // 단조 시계 — 시스템 시각 점프가 1013 수 ms 거부를 "안정 연결"로 오판하지 않게
       // 최초 연결은 App의 초기 reload와 겹치므로 보정 조회가 필요 없다. 실제로 한 번 연결된 뒤
       // 끊겼거나 최초 연결 시도부터 실패했다가 복구된 경우에만 그 사이 놓친 상태를 따라잡는다.
@@ -87,6 +89,7 @@ export function connectProgress(
     ws.onclose = (ev) => {
       if (ping) clearInterval(ping);
       if (closed) return;
+      sceneWriterSuspended();
       if (ev.code === 1008) {
         if (ev.reason === "auth-off-local-only") {
           // AUTH off 서버에 원격 접속한 정책 거부(백엔드 _WS_REASON_AUTH_OFF_LOCAL_ONLY).

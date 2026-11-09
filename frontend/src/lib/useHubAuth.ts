@@ -14,6 +14,7 @@ import { loggedOutKind } from "./otherTabLogout";
 import type { Account, AuthConfig } from "../types";
 import { forgetAuthToken, getApiPause, HttpError, setApiPause, subscribeApiPause } from "./http";
 import { setHubFeatures } from "./hubFeatures";
+import { sceneWriterAccountChanged } from "./sceneWriter";
 
 const FINALIZE_ROLES_RETRY_MS = 30_000;
 const LOGOUT_WAIT_MS = 10_000;
@@ -149,6 +150,7 @@ export function useHubAuth() {
     if (newEmail && prev && prev !== newEmail) clearPersonalSettings();
     if (newEmail) {
       setAccountScope(newEmail);
+      sceneWriterAccountChanged();
       saveString(STORAGE_KEYS.activeAccount, newEmail);
     }
     reloadNow();
@@ -287,6 +289,7 @@ export function useHubAuth() {
     if (!account?.email) return;
     const prev = loadString(STORAGE_KEYS.activeAccount);
     const accountScopeChanged = setAccountScope(account.email);
+    if (accountScopeChanged) sceneWriterAccountChanged();
     if (prev && prev !== account.email && authConfig?.auth_enabled) {
       clearPersonalSettings();
       saveString(STORAGE_KEYS.activeAccount, account.email);

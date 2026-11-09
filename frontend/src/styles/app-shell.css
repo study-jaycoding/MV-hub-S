@@ -694,6 +694,14 @@
   background: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1.2px) 0 0 / 22px 22px;
 }
 .canvas-away svg { width: 34px; height: 34px; stroke-width: 1.2; }
+.canvas-away small { font-size: 12px; font-weight: 400; max-width: 90%; text-align: center; }
+.canvas-writer-open { height: 34px; border-radius: 999px; padding: 0 18px; border: 0; background: var(--grad); color: var(--accent-ink); font-weight: 800; cursor: pointer; }
+.canvas-writer-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* 강제 인계 안내의 두 번째 줄도 기존 토스트에서 줄바꿈 그대로 읽힌다. */
+.toast { white-space: pre-line; }
+.canvas-writer-spinner { width: 28px; height: 28px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: canvas-writer-spin 1s linear infinite; }
+@keyframes canvas-writer-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .canvas-writer-spinner { animation-duration: 3s; } }
 .sidebar {
   width: var(--sidebar-w, 200px); flex: 0 0 var(--sidebar-w, 200px);
   padding: 18px 14px;

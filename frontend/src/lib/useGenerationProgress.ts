@@ -1,3 +1,4 @@
+import { signalSceneWriter } from "./sceneWriter";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api, connectProgress } from "../api";
@@ -189,6 +190,10 @@ export function useGenerationProgress({
     const off = connectProgress(
       (m) => {
         if (!alive) return;
+        if (m.type === "scene_writer_want" || m.type === "scene_writer_changed" || m.type === "scenes_changed") {
+          signalSceneWriter();
+          return;
+        }
         if (m.type === "assets_changed") {
           // 어셋 파일 실시간 변경(watchdog) → BroadcastChannel 로 재전파해 어셋 창·캔버스가 각자 갱신.
           postAssetsUpdated(Array.isArray(m.projects) ? m.projects : [], m.origins);

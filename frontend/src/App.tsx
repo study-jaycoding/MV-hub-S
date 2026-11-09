@@ -1,3 +1,5 @@
+import { CanvasWriterStatus } from "./components/CanvasWriterStatus";
+import { useSceneWriter } from "./lib/sceneWriter";
 import { getAccountNamespace } from "./lib/accountScope";
 import { captureSubmissionScope, configureOperationContext, watchOperationContext } from "./app/operationContext";
 import { prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
@@ -257,6 +259,7 @@ export default function App() {
   // 캔버스 탭을 휠 클릭해 띄운 창이 떠 있다(Jay 2026-10-30) — 그동안 이 창의 캔버스 자리는 알림만 보이고 씬은 저장본을 따른다
   const canvasFloating = useCanvasFloating();
   const canvasOtherTab = useCanvasFollower(); // 그중 다른 메인 탭이 쓰는 경우 — 안내 글자만 다르다
+  const canvasWriter = useSceneWriter();
   // 업데이트 전에 열어 둔 탭은 쓰는 탭 규칙을 모른다 — 함께 쓰면 나중 저장이 덮어쓰므로 새 탭이 알아채 알린다
   useEffect(() => (isCanvasWindow() ? undefined : watchOldTabWrites(
     () => flash(tGlobal("업데이트 전에 열어 둔 탭이 씬을 쓰고 있습니다 — 그 탭을 닫거나 새로 고쳐 주세요. 함께 쓰면 나중 저장이 덮어씁니다.")),
@@ -2690,6 +2693,7 @@ export default function App() {
             />
           </Suspense>
         ) : canvasAway ? (
+          (canvasWriter.mode === "away" || canvasWriter.mode === "taking" || canvasWriter.mode === "giving") && !canvasOtherTab ? <CanvasWriterStatus /> :
           <div className="canvas-away" role="status">
             <CanvasFloatIcon />
             <span>{t(canvasOtherTab ? CANVAS_OTHER_TAB : "캔버스가 별도 창에 떠 있습니다")}</span>

@@ -4,6 +4,7 @@
 // 이쪽은 **백업·복원**이다 — 버킷(계정)·씬 id 를 그대로 싣고, 가져올 때 지금 것을 덮지 않고 합친다.
 // 저장소가 막혔을 때 사용자가 작업을 건질 유일한 길이므로, 내보내기는 아직 확정 안 된 편집까지 싣는다.
 import { getAccountNamespace } from "./accountScope";
+import type { NotebookArchive } from "./sceneNotebook";
 import { downloadText } from "./download";
 import { sameSceneContent, sceneBodySum, type SceneAbsorbConflict } from "./sceneAbsorb";
 import { reviveCardGenerations } from "./sceneCardLinks";
@@ -20,6 +21,14 @@ import { readStoredScene, uid, variantIds, type Scene, type ScenesByProject } fr
 
 export const SCENE_ARCHIVE_FORMAT = "mvhub-scenes-full";
 export const SCENE_ARCHIVE_VERSION = 1;
+
+/** 합류 때 한 번 보관한 원본. 현재 버킷을 섞지 않으며 기존 전체 가져오기가 읽는 형식이다. */
+export function downloadNotebookArchive(archive: NotebookArchive): void {
+  downloadText("mvhub-canvas-before-hub.json", JSON.stringify({
+    format: SCENE_ARCHIVE_FORMAT, schemaVersion: SCENE_ARCHIVE_VERSION,
+    exportedAt: new Date().toISOString(), buckets: archive.scenes, conflicts: archive.conflicts ?? [],
+  }), "application/json");
+}
 
 /** 지금 저장소 내용 전체를 파일 글로 만든다. */
 export async function exportSceneArchiveText(): Promise<string> {

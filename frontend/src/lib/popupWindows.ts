@@ -261,6 +261,10 @@ export function announceCanvasWindow(): void {
   const channel = new BroadcastChannel(CANVAS_CHANNEL);
   channel.onmessage = (event) => {
     if (event.data === "ping") channel.postMessage("open");
+    if (event.data === "writer-collect") {
+      const port = (window as unknown as Record<string, CanvasMemoryPort>)[MEMORY_PORT];
+      void port?.prepare?.().then((ok) => { if (ok) window.close(); });
+    }
   };
   channel.postMessage("open");
   window.addEventListener("pagehide", (event) => {
@@ -410,7 +414,26 @@ export function useCanvasFloating(): boolean {
 
 /** 지금 이 창의 캔버스가 다른 창에 있나(떠 있거나 다른 메인 탭이 쓰고 있다) — 화면이 아닌 배경 작업(씬 쓰기)이 쉴지 볼 때. 캔버스 창에서는 늘 거짓. */
 export function isCanvasFloating(): boolean {
-  return canvasFloating || canvasFollower;
+  return canvasFloating || canvasFollower || (hubPaused && !flushingWriter);
+}
+
+let hubPaused = false;
+let flushingWriter = false;
+/** 새 입력과 배경 쓰기는 막되 이미 화면에 받은 입력을 동기로 확정하는 동안만 통과시킨다. */
+export function flushWriterInput(flush: () => void): void {
+  flushingWriter = true;
+  try { flush(); } finally { flushingWriter = false; }
+}
+export function setHubCanvasPaused(paused: boolean): void {
+  hubPaused = paused;
+  floatingListeners.forEach((listener) => listener());
+}
+let profileWriter = false;
+const profileWriterListeners = new Set<() => void>();
+export const hasProfileSceneWriter = (): boolean => profileWriter;
+export function subscribeProfileSceneWriter(fn: () => void): () => void {
+  profileWriterListeners.add(fn);
+  return () => { profileWriterListeners.delete(fn); };
 }
 
 // 씬을 쓰는 메인 탭은 하나다(docs/status/배포전_남은제한_해결_2026-11-02.md) — 둘째 탭은 떠 있는 캔버스를 둔 메인 창과 같은 상태로 쉰다(쓰기 멈춤·저장본 따르기·보드 없음).
@@ -439,6 +462,8 @@ async function promoteToWriter(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, wait));
   }
   canvasFollower = false;
+  profileWriter = true;
+  profileWriterListeners.forEach((fn) => fn());
   floatingListeners.forEach((listener) => listener());
 }
 
@@ -456,7 +481,11 @@ export function claimSceneWriter(): Promise<void> {
     void locks.request(WRITER_LOCK, () => {
       clearTimeout(timer);
       if (waited) void promoteToWriter();
-      else resolve();
+      else {
+        profileWriter = true;
+        profileWriterListeners.forEach((fn) => fn());
+        resolve();
+      }
       return new Promise<void>(() => {}); // 평생 쥔다 — 문서가 어떻게 끝나든 브라우저가 풀어 준다
     }).catch(() => {
       clearTimeout(timer);
@@ -477,6 +506,7 @@ export interface CanvasMemoryPart {
   accepted?: () => void; // 보낸 쪽 — 받는 창이 true 로 답했다
 }
 type CanvasMemoryPort = {
+  prepare?: () => Promise<boolean>;
   save: () => Record<string, unknown>;
   load: (memory: Record<string, unknown>) => string[] | void;
   settled: () => Promise<boolean>; // 넘겨받은 쓰기까지 저장소에 확정됐나 — 새로 고친 캔버스 창이 읽기 전에 묻는다
@@ -555,6 +585,11 @@ export function shareCanvasMemory(settled: () => Promise<boolean> = () => Promis
     leaving = false;
   });
   const port: CanvasMemoryPort = {
+    prepare: async () => {
+      flushWriterInput(() => beforeMemoryReturn.forEach((flush) => flush()));
+      setHubCanvasPaused(true);
+      return settled();
+    },
     save: saveCanvasMemory,
     settled,
     load: (memory) => {
@@ -569,6 +604,31 @@ export function shareCanvasMemory(settled: () => Promise<boolean> = () => Promis
     },
   };
   (window as unknown as Record<string, CanvasMemoryPort>)[MEMORY_PORT] = port;
+}
+
+/** 허브 인계는 분리 창의 입력·저장을 먼저 거둔다. 창이 응답하지 않으면 정상 인계가 아니다. */
+export async function collectCanvasForWriter(timeoutMs: number): Promise<boolean> {
+  if (!canvasFloating) return true;
+  const deadline = Date.now() + timeoutMs;
+  const child = openWindows.canvas;
+  try {
+    const port = child && (child as unknown as Record<string, CanvasMemoryPort>)[MEMORY_PORT];
+    if (child && port?.prepare) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let ready = false;
+      try {
+        ready = await Promise.race([
+          port.prepare(),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now())); }),
+        ]);
+      } finally { clearTimeout(timer); }
+      if (!ready || Date.now() >= deadline) return false;
+      child.close();
+    } else if (floatingChannel) floatingChannel.postMessage("writer-collect");
+    else return false;
+    while (canvasFloating && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    return !canvasFloating;
+  } catch { return false; }
 }
 
 function openerPort(): CanvasMemoryPort | null {

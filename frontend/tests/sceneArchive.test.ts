@@ -7,10 +7,13 @@ import { setAccountScope } from "../src/lib/accountScope";
 
 // 카드 소속의 명시적 되살리기(네트워크로 나간다) — 가져오기가 무엇을 되살리라고 하는지만 본다
 const revive = vi.hoisted(() => vi.fn());
+const download = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/download", () => ({ downloadText: download }));
 vi.mock("../src/lib/sceneCardLinks", async (orig) => ({ ...(await orig<typeof import("../src/lib/sceneCardLinks")>()), reviveCardGenerations: revive }));
 import {
   SCENE_ARCHIVE_FORMAT,
   exportSceneArchiveText,
+  downloadNotebookArchive,
   importSceneArchiveText,
   parseSceneArchive,
   mergeArchiveBucket,
@@ -82,6 +85,15 @@ const names = (list: Scene[]) => list.map((s) => s.name);
 const ACCOUNT = "a@x.com";
 const bucketOf = (account: string) => `acct:${account}::_none`; // scenes.ts 의 버킷 키(계정 네임스페이스)
 const BUCKET = bucketOf(ACCOUNT);
+
+it("허브 전 사본 내려받기는 현재 캔버스를 섞지 않고 전체 가져오기 v1로 읽힌다", () => {
+  const old = mk("before", "합류 전");
+  downloadNotebookArchive({ notebookId: "book", scenes: { [BUCKET]: [old] }, conflicts: [] });
+  const [filename, text, mime] = download.mock.calls.at(-1)!;
+  expect(filename).toBe("mvhub-canvas-before-hub.json"); expect(mime).toBe("application/json");
+  expect(JSON.parse(text)).toMatchObject({ format: "mvhub-scenes-full", schemaVersion: 1 });
+  expect(parseSceneArchive(text).buckets[BUCKET]).toEqual([old]);
+});
 
 beforeEach(() => {
   (globalThis as { localStorage?: Storage }).localStorage = storageMock();
