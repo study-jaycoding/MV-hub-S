@@ -4,10 +4,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { Generation, WorkspaceContext } from "../src/types";
 const mocks = vi.hoisted(() => ({ prepareCreate: vi.fn(), uploadCapture: vi.fn(), getGeneration: vi.fn(), fetchBlob: vi.fn(),
-  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), uploadRefs: vi.fn(), accountHf: vi.fn(), probe: vi.fn(),
+  cost: vi.fn(), queued: vi.fn(), setModel: vi.fn(), uploadRefs: vi.fn(), accountHf: vi.fn(), probe: vi.fn(), discard: vi.fn(),
   current: true, blocked: null as string | null, model: null as string | null }));
 vi.mock("../src/api", () => ({ api: { prepareCreate: mocks.prepareCreate, uploadCapture: mocks.uploadCapture,
-  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: vi.fn(), uploadReferenceFiles: mocks.uploadRefs,
+  getGeneration: mocks.getGeneration, assetThumbUrl: () => "thumb", discardCapture: mocks.discard, uploadReferenceFiles: mocks.uploadRefs,
   accountHf: mocks.accountHf } }));
 // 원본 머리 읽기만 가짜로 — 판별 규칙(klingVideoVerdict)·대상 모델은 실제 것(videoFormat.test.ts 가 머리 읽기를 본다)
 vi.mock("../src/lib/videoFormat", async (importOriginal) => ({
@@ -58,12 +58,18 @@ async function scrubTo(x: number) {
   for (let i = 0; i < 4; i += 1) await act(async () => {});
 }
 const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+/** Generate 를 누르고, 프레임 굽기·올리기(몇 번의 await)가 끝날 때까지 기다린다. */
+async function generate() {
+  await act(async () => (container.querySelector(".partial-edit-gen") as HTMLButtonElement).click());
+  for (let i = 0; i < 12; i += 1) await act(async () => {});
+}
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.current = true; mocks.blocked = null; mocks.model = null; nextUrl = 0;
   for (const fn of [mocks.prepareCreate, mocks.uploadCapture, mocks.getGeneration, mocks.fetchBlob, mocks.cost, mocks.queued, mocks.setModel,
-    mocks.uploadRefs, mocks.accountHf, mocks.probe]) fn.mockReset();
+    mocks.uploadRefs, mocks.accountHf, mocks.probe, mocks.discard]) fn.mockReset();
   mocks.probe.mockResolvedValue(null);
+  mocks.discard.mockResolvedValue(undefined);
   mocks.accountHf.mockResolvedValue({ reported: true, credits: 1, workspaces: [] });
   mocks.fetchBlob.mockResolvedValue(new Blob(["media"]));
   mocks.cost.mockResolvedValue({ credits: 26, saved_at: Date.now() / 1000 });
@@ -155,25 +161,83 @@ describe("video edit reuses annotation UI", () => {
     expect(mocks.prepareCreate).not.toHaveBeenCalled();
     expect(mocks.fetchBlob).not.toHaveBeenCalled();
   });
-  it("locks the frame after drawing, redoes an undone stroke and unlocks only after clearing", async () => {
+  it("draws on several frames — each keeps its own marks with a bookmark; undo/redo/clear act on the current frame only", async () => {
     await render();
     // 무대 아래 한 판(코멘트 그림 창과 같은 모양 — Jay 11-09): 타임라인 → 재생 줄(시각·프레임·단축키) → 도구 줄, 위 시각 줄 없음
     expect(container.querySelector(".pe-vtop")).toBeNull();
     expect(container.querySelector(".pe-board .pe-trans-row .pe-frame")).not.toBeNull();
-    expect(container.querySelector(".pe-board .pe-trans-row .pe-keys")).not.toBeNull();
     expect(container.querySelector(".pe-board .pe-dock")).not.toBeNull();
-    expect(scrub().getAttribute("aria-disabled")).toBe("false");
     const canvas = container.querySelector("canvas")!;
-    await act(async () => { for (const type of ["pointerdown", "pointerup"]) pointer(canvas, type, 10); });
-    expect(scrub().getAttribute("aria-disabled")).toBe("true");
-    expect(container.querySelector(".pe-board .pe-trans-row .pe-lock")).not.toBeNull(); // 고정 안내는 단축키 안내 자리에
+    const stroke = () => act(async () => { for (const type of ["pointerdown", "pointerup"]) pointer(canvas, type, 10); });
+    const marks = () => [...container.querySelectorAll<HTMLButtonElement>(".pe-scrub .cm-mark")].map((mark) => mark.getAttribute("aria-label"));
+    await stroke();
+    // 그린 뒤에도 타임라인이 잠기지 않는다(11-09 Jay "만들어") — 고정 안내 없음
+    expect(scrub().getAttribute("aria-disabled")).toBe("false");
+    expect(container.querySelector(".pe-lock")).toBeNull();
+    expect(container.querySelector(".pe-board .pe-trans-row .pe-keys")).not.toBeNull();
+    expect(marks()).toEqual(["그린 프레임 0.00초"]);
+    await scrubTo(30);
+    expect(button("전체 지우기").disabled).toBe(true); // 1.5초는 빈 판 — 앞 프레임 그림이 겹치지 않는다
+    await stroke();
+    expect(marks()).toEqual(["그린 프레임 0.00초", "그린 프레임 1.50초"]);
+    expect(container.querySelector(".cm-mark.cur")?.getAttribute("aria-label")).toBe("그린 프레임 1.50초");
+    await act(async () => container.querySelector<HTMLButtonElement>('.cm-mark[aria-label="그린 프레임 0.00초"]')!.click());
+    expect(scrub().getAttribute("aria-valuenow")).toBe("0"); // 책갈피를 누르면 그 프레임으로
+    expect(button("전체 지우기").disabled).toBe(false); // 돌아오면 그린 것이 그대로
     await act(async () => button("되돌리기").click());
-    expect(scrub().getAttribute("aria-disabled")).toBe("false");
+    expect(marks()).toEqual(["그린 프레임 1.50초"]); // 다 지운 프레임은 책갈피가 사라진다 — 1.5초 것은 그대로
     await act(async () => button("다시").click());
-    expect(scrub().getAttribute("aria-disabled")).toBe("true");
+    expect(marks()).toEqual(["그린 프레임 0.00초", "그린 프레임 1.50초"]);
     await act(async () => button("전체 지우기").click());
-    expect(scrub().getAttribute("aria-disabled")).toBe("false");
+    expect(marks()).toEqual(["그린 프레임 1.50초"]);
     expect(button("다시").disabled).toBe(true); // 전체 지우기는 다시로 되살리지 않는다
+  });
+  it("sends every drawn frame in time order as its own image reference with each time in the prompt; limits count them", async () => {
+    await render(); await prompt(); // Kling 3.0 Omni Edit — 그린 프레임 포함 4장
+    const canvas = container.querySelector("canvas")!;
+    const stroke = () => act(async () => { for (const type of ["pointerdown", "pointerup"]) pointer(canvas, type, 10); });
+    await scrubTo(30); await stroke(); // 1.5초 먼저 그리고
+    await scrubTo(10); await stroke(); // 0.5초 — 보낼 땐 시각 순
+    const names = () => [...container.querySelectorAll(".sl-reftray-item .sl-reftray-name")].map((node) => node.textContent);
+    expect(names()).toEqual(["0.50초", "1.50초"]);
+    const items = ["a", "b", "c"].map((name) => ({ project: "project", path: `${name}.png`, name: `${name}.png`, type: "image" }));
+    await act(async () => {
+      container.querySelector(".sl-reftray")!.dispatchEvent(Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
+        dataTransfer: { types: [DRAG_TYPES.asset], getData: (type: string) => type === DRAG_TYPES.asset ? JSON.stringify(items) : "", files: [], items: [] },
+      }));
+    });
+    expect(names()).toEqual(["0.50초", "1.50초", "a.png", "b.png"]); // 4장 중 그린 프레임 2장 — 칸은 2장만
+    expect(container.querySelector(".pe-refhint")?.textContent).toContain("이미지 4 / 최대 4장");
+    mocks.uploadCapture.mockResolvedValueOnce({ project: "project", path: "f05.png", reused: false, discard_token: "t05" })
+      .mockResolvedValueOnce({ project: "project", path: "f15.png", reused: false, discard_token: "t15" });
+    expect((container.querySelector(".partial-edit-gen") as HTMLButtonElement).disabled).toBe(false);
+    await generate();
+    const body = mocks.prepareCreate.mock.calls[0][0];
+    expect(body.references.map((ref: { file_path: string; role: string }) => [ref.file_path, ref.role])).toEqual([
+      ["source.mp4", "video"], ["asset:project|f05.png", "image_references"], ["asset:project|f15.png", "image_references"],
+      ["asset:project|a.png", "image_references"], ["asset:project|b.png", "image_references"],
+    ]);
+    expect(body.references[1]).toMatchObject({ source_gen_id: "source" });
+    expect(body.prompt).toContain("첫 번째 참고 이미지는 원본 영상 0.500초, 두 번째는 1.500초 장면에 고칠 곳을 표시한 그림입니다. 표시(선·도형)는 결과 영상에 넣지 마세요.");
+    expect(mocks.uploadCapture).toHaveBeenCalledTimes(2);
+  });
+  it("a definite refusal cleans up every newly uploaded frame; a failed upload cleans up the ones already sent", async () => {
+    const { HttpError } = await import("../src/lib/http");
+    await render(); await prompt();
+    const canvas = container.querySelector("canvas")!;
+    const stroke = () => act(async () => { for (const type of ["pointerdown", "pointerup"]) pointer(canvas, type, 10); });
+    await stroke(); await scrubTo(30); await stroke();
+    mocks.uploadCapture.mockResolvedValueOnce({ project: "project", path: "a.png", reused: false, discard_token: "ta" })
+      .mockResolvedValueOnce({ project: "project", path: "b.png", reused: false, discard_token: "tb" });
+    mocks.prepareCreate.mockReturnValue(async () => { throw new HttpError(422, "bad"); });
+    await generate();
+    expect(mocks.discard.mock.calls.map((call) => call[0])).toEqual(["ta", "tb"]);
+    mocks.discard.mockClear();
+    mocks.uploadCapture.mockResolvedValueOnce({ project: "project", path: "a.png", reused: false, discard_token: "ta2" })
+      .mockRejectedValueOnce(new Error("disk full"));
+    await generate();
+    expect(mocks.discard.mock.calls.map((call) => call[0])).toEqual(["ta2"]);
+    expect(container.textContent).toContain("주석 이미지 업로드 실패");
   });
   it("writes text where the image is clicked — Enter keeps it, Esc drops only the typing, undo removes it", async () => {
     await render(generation("image"));

@@ -18,6 +18,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DrawDock, DrawTextInput } from "./drawing/DrawDock";
 import { useDrawingInput } from "./drawing/useDrawingInput";
+import { drawItem, type DrawItem } from "./drawing/strokes";
 import { api, type GenerationCreateBody } from "../../api";
 import { fetchBlob } from "../../lib/download";
 import { flashMsg } from "../../lib/flash";
@@ -79,8 +80,22 @@ const VIDEO_EDIT_PARAMS: Record<string, {
   seedance_2_5: { fixed: { mode: "video_edit", aspect_ratio: "auto" }, option: "resolution", maxImages: 30,
     seconds: { min: 4, max: 30 }, bitrate: true, audio: true },
 };
-// 수정 창 레퍼런스 칸에 넣은 이미지(2번부터 — 1번은 늘 그린 프레임)
+// 수정 창 레퍼런스 칸에 넣은 이미지(그린 프레임 뒤 번호부터)
 type ExtraRef = AssetReferenceIdentity & { uid: string; file_path: string; name: string; thumb: string };
+// 보낼 그림 한 장 — discardToken 은 새로 올린 캡처에만(생성 요청 확정 거절 400/422 때 고아 정리용)
+type RefBits = AssetReferenceIdentity & { file_path: string; thumbnail?: string; discardToken?: string };
+// 영상 그림 장 — 그린 프레임(24fps 칸 = key)마다 하나. 그 장면 PNG(작업 해상도)와 획을 쥔다. 지금 칸의 획은 그리기 입력이 쥔다.
+interface FrameSheet { key: number; timeSec: number; items: DrawItem[]; blob: Blob; url: string; w: number; h: number }
+const frameOf = (time: number) => Math.round(time * EDIT_FPS);
+const ORDINALS = ["첫", "두", "세", "네", "다섯", "여섯", "일곱", "여덟", "아홉", "열"];
+const ordinal = (n: number) => (n <= ORDINALS.length ? `${ORDINALS[n - 1]} 번째` : `${n}번째`);
+// 지시문 끝 시각 안내 — 편집 모델엔 그림이 몇 초 장면인지 받는 칸이 없다(10-28 시험 · 여러 장은 11-09 유료 시험과 같은 꼴)
+function frameNote(times: number[], hasExtra: boolean) {
+  const at = times.length === 1
+    ? `${hasExtra ? "첫 번째 참고 이미지" : "참고 이미지"}는 원본 영상 ${times[0].toFixed(3)}초`
+    : times.map((t, i) => (i === 0 ? `첫 번째 참고 이미지는 원본 영상 ${t.toFixed(3)}초` : `${ordinal(i + 1)}는 ${t.toFixed(3)}초`)).join(", ");
+  return `${at} 장면에 고칠 곳을 표시한 그림입니다. 표시(선·도형)는 결과 영상에 넣지 마세요.`;
+}
 const modelLabel = (id: string) => MODEL_LABELS[id] ?? id;
 // Kling 3.0 Omni Edit 의 품질(mode)은 해상도다 — 힉스필드 웹처럼 해상도로 보인다. 보내는 값은 std·pro·4k 그대로(Jay 2026-10-28).
 //  pro=1920×1080·4k=3840×2160 은 생성 실측, std=720p 는 웹 코드 표기.
@@ -139,6 +154,7 @@ export function PartialEditModal({
   // ── 원본 로드(작업 해상도 결정) ──
   const [src, setSrc] = useState<{ bmp: ImageBitmap; w: number; h: number } | null>(null);
   const srcUrlRef = useRef<string>("");
+  const srcBlobRef = useRef<Blob | null>(null); // 지금 프레임 PNG — 그림 장이 이 장면을 쥔다
   const sourceVideoRef = useRef<HTMLVideoElement | null>(null);
   const sourceVideoUrlRef = useRef("");
   const [videoDuration, setVideoDuration] = useState(0);
@@ -175,6 +191,7 @@ export function PartialEditModal({
       if (ticket !== frameTicket.current || !mountedRef.current) { bmp.close(); return; }
       if (srcUrlRef.current) URL.revokeObjectURL(srcUrlRef.current);
       srcUrlRef.current = URL.createObjectURL(blob);
+      srcBlobRef.current = blob;
       setSrc({ bmp, w, h });
       setStage("draw");
     } catch (e) {
@@ -207,11 +224,7 @@ export function PartialEditModal({
           video.muted = true;
           video.playsInline = true;
           video.className = "pe-video";
-          video.onended = () => {
-            setPlaying(false);
-            setFrameTime(video.currentTime);
-            void captureFrame(video, video.currentTime);
-          };
+          video.onended = () => endedRef.current(); // 멈춘 자리를 확정하고 그 칸의 그림으로(아래 seekTo)
           sourceVideoRef.current = video;
           sourceVideoUrlRef.current = URL.createObjectURL(blob);
           await new Promise<void>((resolve, reject) => {
@@ -281,14 +294,64 @@ export function PartialEditModal({
   const draw = useDrawingInput({
     src,
     active: stage === "draw",
-    // 재생 중이면 그 자리에 멈추고 그린다
-    onStrokeStart: () => { if (playing) seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current); },
+    onStrokeStart: () => (isVideo ? beginSheet() : undefined),
   });
   const {
     items, redo, undoStroke, redoStroke, setTool, setBrushSize, sizeText, setSizeText, colorOpen, setColorOpen,
     annotRef, cursorRef, textDraftRef, setTextDraft, renderAll, tool, trackCursor, onPointerDown, onPointerMove,
     onPointerLeave, endStroke, cancelStroke,
   } = draw;
+
+  // ── 영상 그림 장(프레임별) — 코멘트 그림 창과 같은 방식: 다른 프레임으로 가면 지금 그림을 장에 맡기고 그 프레임의 것을 꺼낸다 ──
+  const sheetsRef = useRef(new Map<number, FrameSheet>());
+  const [, setSheetsTick] = useState(0);
+  const curKeyRef = useRef(0); // -1 = 재생 중(어느 칸의 그림도 겹치지 않는다)
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const liveSheets = (): FrameSheet[] =>
+    [...sheetsRef.current.values()]
+      .map((s) => (s.key === curKeyRef.current ? { ...s, items: itemsRef.current } : s))
+      .filter((s) => s.items.length > 0)
+      .sort((a, b) => a.timeSec - b.timeSec);
+  const sheets = isVideo ? liveSheets() : [];
+  const dropSheet = (key: number) => {
+    const sheet = sheetsRef.current.get(key);
+    if (sheet) URL.revokeObjectURL(sheet.url);
+    sheetsRef.current.delete(key);
+  };
+  useEffect(() => () => {
+    for (const s of sheetsRef.current.values()) URL.revokeObjectURL(s.url);
+  }, []);
+  const switchToKey = (key: number) => {
+    if (key === curKeyRef.current) return;
+    const cur = sheetsRef.current.get(curKeyRef.current);
+    if (cur) {
+      cur.items = itemsRef.current;
+      if (!cur.items.length) dropSheet(cur.key); // 다 지운 프레임은 책갈피도 사라진다
+    }
+    curKeyRef.current = key;
+    draw.cancelText();
+    draw.setItems(sheetsRef.current.get(key)?.items ?? []);
+    draw.setRedo([]);
+    setSheetsTick((n) => n + 1);
+  };
+  // 처음 그릴 때 그 프레임의 장을 만든다 — 장면은 지금 뜬 PNG. 재생 중·장면을 뜨는 중이면 이 누름은 그리지 않는다
+  //  (보고 그린 장면과 보낼 장면이 어긋나지 않게 — 재생 중 누름은 그 자리에 멈추기만 한다).
+  function beginSheet(): boolean {
+    if (playing) {
+      seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current);
+      return false;
+    }
+    const key = curKeyRef.current;
+    if (sheetsRef.current.has(key)) return true;
+    const blob = srcBlobRef.current;
+    if (key < 0 || frameLoading || !src || !blob) return false;
+    sheetsRef.current.set(key, { key, timeSec: frameTime, items: [], blob, url: URL.createObjectURL(blob), w: src.w, h: src.h });
+    setSheetsTick((n) => n + 1);
+    return true;
+  }
+  // 보낼 그림 수 — 그린 것이 없으면 지금 장면 한 장(옛 동작)
+  const frameRefCount = isVideo ? Math.max(1, sheets.length) : 0;
 
   // ── 모델·비율·옵션·견적 ──
   const modelPolicy = useModelPolicy();
@@ -396,27 +459,33 @@ export function PartialEditModal({
   const [importingRefs, setImportingRefs] = useState(0); // 탐색기 파일을 올리는 동안은 제출하지 않는다
   const refUid = useRef(0);
   const maxImages = videoSpec?.maxImages ?? 0;
-  // 지시문 알약이 가리키는 레퍼런스 칸 — @image1 = 그린 프레임, @image2 부터 칸 순서(보낼 때 image_references 순서와 같다)
+  // 레퍼런스 칸 앞쪽 = 보낼 프레임 그림(그린 프레임 시각 순, 그린 것이 없으면 지금 장면) — 지시문 알약·칸 번호·보낼 순서가 같다
   const frameThumb = srcUrlRef.current;
+  const frameSlots = sheets.length
+    ? sheets.map((s) => ({ key: String(s.key), name: `${s.timeSec.toFixed(2)}초`, thumb: s.url }))
+    : [{ key: "now", name: "그린 프레임", thumb: frameThumb }];
+  const frameSlotsKey = frameSlots.map((s) => `${s.key}|${s.name}|${s.thumb}`).join("\n");
   const promptRefs = useMemo<EditPromptRef[]>(() => (isVideo ? [
-    { token: "@image1", kind: "image", name: "그린 프레임", thumb: frameThumb },
-    ...extraRefs.map((ref, index) => ({ token: `@image${index + 2}`, kind: "image" as const, name: ref.name, thumb: ref.thumb })),
-  ] : []), [isVideo, frameThumb, extraRefs]);
+    ...frameSlots.map((s, index) => ({ token: `@image${index + 1}`, kind: "image" as const,
+      name: s.key === "now" ? s.name : `그린 프레임 ${s.name}`, thumb: s.thumb })),
+    ...extraRefs.map((ref, index) => ({ token: `@image${index + frameSlots.length + 1}`, kind: "image" as const, name: ref.name, thumb: ref.thumb })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ] : []), [isVideo, frameSlotsKey, extraRefs]);
   const refsEditable = isVideo && stage === "draw" && !submitting;
-  // 탐색기 파일은 올린 뒤에 칸에 넣는다 — 그사이 모델이 바뀌면 그 함수가 쥔 한도·목록은 옛 것이라 지금 값을 여기서 읽는다(Codex D-①)
-  const refRoomRef = useRef({ max: maxImages, count: extraRefs.length, model: m.model });
-  useEffect(() => { refRoomRef.current = { max: maxImages, count: extraRefs.length, model: m.model }; });
+  // 탐색기 파일은 올린 뒤에 칸에 넣는다 — 그사이 모델·그린 프레임 수가 바뀌면 그 함수가 쥔 한도·목록은 옛 것이라 지금 값을 여기서 읽는다(Codex D-①)
+  const refRoomRef = useRef({ max: maxImages, frames: frameRefCount, count: extraRefs.length, model: m.model });
+  useEffect(() => { refRoomRef.current = { max: maxImages, frames: frameRefCount, count: extraRefs.length, model: m.model }; });
   const addImageRefs = (items: SpotlightAssetDragItem[], dropped = items.length) => {
-    const { max, count, model } = refRoomRef.current;
+    const { max, frames, count, model } = refRoomRef.current;
     const images = items.filter((item) => item.type === "image");
-    const room = Math.max(0, max - 1 - count);
+    const room = Math.max(0, max - frames - count);
     const added = images.slice(0, room).map((item): ExtraRef => {
       const base = spotlightAssetRefBase(item);
       return { ...assetIdentityForProject(base, gen.project_id || undefined), uid: `ref-${++refUid.current}`,
         file_path: base.file_path, name: base.name, thumb: base.thumb };
     });
     // 넣을 수만 센다 — 이미 있는 레퍼런스는 자르지 않는다(한도를 넘으면 tooManyRefs 가 제출만 막는다)
-    if (added.length) setExtraRefs((prev) => [...prev, ...added.slice(0, Math.max(0, max - 1 - prev.length))]);
+    if (added.length) setExtraRefs((prev) => [...prev, ...added.slice(0, Math.max(0, max - frames - prev.length))]);
     const left = dropped - added.length;
     if (left > 0) {
       flashMsg(images.length > added.length
@@ -456,7 +525,7 @@ export function PartialEditModal({
       if (refsEditable) void importRefFiles(filesFromDataTransfer(e.dataTransfer));
     }
   };
-  const tooManyRefs = isVideo && extraRefs.length + 1 > maxImages;
+  const tooManyRefs = isVideo && frameRefCount + extraRefs.length > maxImages;
   // Kling 영상 수정 미리 알림 — 원본이 앱의 변환 정책상 '변환 대상'이면 한 줄 안내(생성 단추는 막지 않는다: 실제 판단·변환은 에이전트).
   //  계정 보고(ffmpeg_h264)는 이메일별 마지막 값이라 실행 PC·버전을 모른다 — 생성 전 중지를 단정하지 않는다.
   const klingVerdict = isVideo && KLING_VIDEO_EDIT_MODELS.has(m.model) ? klingVideoVerdict(sourceFormat) : null;
@@ -472,7 +541,7 @@ export function PartialEditModal({
   }, [klingConvert, ffmpegReport]);
 
   // 그린 획·친 프롬프트는 이 창의 상태에만 있다 — 그동안 창을 닫거나 새로고침하면 브라우저가 묻는다(56회차). 보낸 뒤는 서버에 있다.
-  const drafting = stage === "draw" && (items.length > 0 || !!prompt.trim());
+  const drafting = stage === "draw" && (items.length > 0 || sheets.length > 0 || !!prompt.trim());
   useEffect(() => {
     holdUnload("partial-edit", drafting);
     return () => holdUnload("partial-edit", false);
@@ -599,13 +668,9 @@ export function PartialEditModal({
   // 없으면 원본 URL 그대로. 업로드는 sha256 중복 재사용이라 재시도에도 파일이 늘지 않는다.
   // 업로드 후 생성이 최종 실패하면 캡처 파일 1개가 captures 에 남을 수 있다(잡 미연결) —
   // 롤백 없음은 수용(캡처는 Assets 에서 보이고 지울 수 있다, 코덱스 WARN 문서화).
-  const buildReference = async (): Promise<AssetReferenceIdentity & {
-    file_path: string;
-    thumbnail?: string;
-    discardToken?: string; // 신규 캡처에만 — 생성 요청 확정 거절(400/422) 시 고아 정리용
-  }> => {
+  const buildReference = async (): Promise<RefBits> => {
     renderAll(items); // 잉크 검사·평면화 전에 최신 스트로크 보장(undo 직후 stale 캔버스 방지)
-    if (!isVideo && (!items.length || !annotHasInk())) {
+    if (!items.length || !annotHasInk()) {
       return { file_path: asset!.file_path, thumbnail: asset!.thumbnail_path || undefined };
     }
     const annot = annotRef.current;
@@ -619,7 +684,10 @@ export function PartialEditModal({
     fctx.drawImage(annot, 0, 0);
     const blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("주석 이미지 인코딩 실패");
-    // 주석 평면화 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
+    return uploadFrame(blob);
+  };
+  // 주석 평면화 그림은 이 PC 설치 폴더(captures)에 저장한다(Jay 2026-09-29 옛 방식).
+  const uploadFrame = async (blob: Blob): Promise<RefBits> => {
     const up = await api.uploadCapture(blob, { target_project_id: gen.project_id || undefined,
       target_workspace_id: workspace.id || undefined });
     return {
@@ -630,15 +698,53 @@ export function PartialEditModal({
       discardToken: up.reused ? undefined : up.discard_token,
     };
   };
+  // 영상 — 그린 프레임마다 그 장면 + 표시를 한 장으로 굽는다(시각 순). 그린 것이 없으면 지금 장면 한 장(옛 동작).
+  //  획은 화면과 같은 그리기 함수로 따로 층에 다시 그려 얹는다(화면 = 전송본). 올리다 실패하면 앞서 올린 새 그림은 정리한다(요청 전이라 쓰인 적 없다).
+  const buildFrameRefs = async (): Promise<(RefBits & { timeSec: number })[]> => {
+    const list = sheets.length ? sheets : [{ timeSec: frameTime, items: [] as DrawItem[], blob: srcBlobRef.current, w: src!.w, h: src!.h }];
+    const done: (RefBits & { timeSec: number })[] = [];
+    try {
+      for (const sheet of list) {
+        if (!sheet.blob) throw new Error("프레임 그림이 없습니다");
+        let blob: Blob | null = sheet.blob;
+        if (sheet.items.length) {
+          const bmp = await createImageBitmap(sheet.blob);
+          try {
+            const flat = document.createElement("canvas");
+            flat.width = sheet.w;
+            flat.height = sheet.h;
+            const layer = document.createElement("canvas");
+            layer.width = sheet.w;
+            layer.height = sheet.h;
+            const fctx = flat.getContext("2d");
+            const lctx = layer.getContext("2d");
+            if (!fctx || !lctx) throw new Error("캔버스 생성 실패");
+            fctx.drawImage(bmp, 0, 0, sheet.w, sheet.h);
+            for (const it of sheet.items) drawItem(lctx, it); // 화면 주석 층(renderAll)과 같은 그리기 — 지우개는 이 층에서만 지운다
+            fctx.drawImage(layer, 0, 0);
+            blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, "image/png"));
+          } finally {
+            bmp.close();
+          }
+          if (!blob) throw new Error("주석 이미지 인코딩 실패");
+        }
+        done.push({ ...(await uploadFrame(blob)), timeSec: sheet.timeSec });
+      }
+    } catch (e) {
+      for (const ref of done) if (ref.discardToken) api.discardCapture(ref.discardToken).catch(() => {});
+      throw e;
+    }
+    return done;
+  };
 
   const submit = async () => {
     if (!canSubmit || !src) return;
     const operation = captureOperationContext(workspace);
     setError("");
     setSubmitting(true);
-    let refBits: AssetReferenceIdentity & { file_path: string; thumbnail?: string; discardToken?: string };
+    let refBits: (RefBits & { timeSec: number })[];
     try {
-      refBits = await buildReference();
+      refBits = isVideo ? await buildFrameRefs() : [{ ...(await buildReference()), timeSec: 0 }];
     } catch (e) {
       if (mountedRef.current) {
         setSubmitting(false);
@@ -652,7 +758,7 @@ export function PartialEditModal({
     const body: GenerationCreateBody = {
       // 영상 편집 모델은 그림이 몇 초 장면인지 받는 칸이 없다 — 글로 알려 주고, 표시가 결과에 그려지지 않게 한다(10-28 시험과 같은 안내).
       prompt: isVideo
-        ? `${prompt.trim()}\n${extraRefs.length ? "첫 번째 참고 이미지" : "참고 이미지"}는 원본 영상 ${frameTime.toFixed(3)}초 장면에 고칠 곳을 표시한 그림입니다. 표시(선·도형)는 결과 영상에 넣지 마세요.`
+        ? `${prompt.trim()}\n${frameNote(refBits.map((ref) => ref.timeSec), extraRefs.length > 0)}`
         : prompt.trim(),
       model: m.model,
       params: editParams,
@@ -660,16 +766,16 @@ export function PartialEditModal({
       folder_path: gen.folder_path || undefined,
       references: [
         ...(isVideo ? [{ file_path: asset!.file_path, type: "video", role: "video", source_gen_id: gen.id }] : []),
-        {
-          ...assetIdentity(refBits),
-          file_path: refBits.file_path,
+        ...refBits.map((ref) => ({
+          ...assetIdentity(ref),
+          file_path: ref.file_path,
           type: "image",
           role: isVideo ? "image_references" : "@Image1",
           source_gen_id: gen.id,
-          thumbnail: refBits.thumbnail,
+          thumbnail: ref.thumbnail,
           name: gen.source_name || undefined,
-        },
-        // 레퍼런스 칸 2번부터 — 그린 프레임 뒤에 칸 순서대로(같은 image_references 로 이어진다)
+        })),
+        // 레퍼런스 칸 — 그린 프레임 뒤에 칸 순서대로(같은 image_references 로 이어진다)
         ...extraRefs.map((ref) => ({ ...assetIdentity(ref), file_path: ref.file_path, type: "image", role: "image_references",
           thumbnail: ref.thumb, name: ref.name })),
       ],
@@ -683,8 +789,8 @@ export function PartialEditModal({
     } catch (e) {
       // 확정 거절(400/422)만 방금 올린 신규 캡처를 정리한다 — 4xx 는 서버에 커밋된 적이 없다는 뜻.
       // 네트워크 오류·5xx·타임아웃·408/409/429 는 커밋됐을 수 있어 절대 지우지 않는다(코덱스).
-      if (refBits.discardToken && e instanceof HttpError && (e.status === 400 || e.status === 422)) {
-        api.discardCapture(refBits.discardToken).catch(() => {});
+      if (e instanceof HttpError && (e.status === 400 || e.status === 422)) {
+        for (const ref of refBits) if (ref.discardToken) api.discardCapture(ref.discardToken).catch(() => {});
       }
       if (mountedRef.current) {
         setSubmitting(false);
@@ -727,7 +833,6 @@ export function PartialEditModal({
 
   // ── 프레임 띠 — 편집 탭 뷰어와 같은 조작(빨간 재생헤드를 끌어 훑기·−1f/+1f·재생, ←→ Space Home End) ──
   const totalFrames = Math.max(1, Math.round(videoDuration * EDIT_FPS));
-  const frameLocked = items.length > 0; // 그린 표시는 그 장면에 붙는다 — 다 지워야 다시 움직인다
   const frameTimeRef = useRef(0);
   const tcRef = useRef<HTMLSpanElement>(null);
   const frameNoRef = useRef<HTMLElement>(null);
@@ -750,10 +855,13 @@ export function PartialEditModal({
   // commit=false 는 끄는 중 — 화면만 옮기고, 놓을 때(commit) 그 장면을 그림으로 뜬다(평면화·비율용).
   const seekTo = (time: number, commit = true) => {
     const video = sourceVideoRef.current;
-    if (!video || frameLocked || stage !== "draw") return;
+    if (!video || stage !== "draw") return;
     if (!video.paused) video.pause();
     setPlaying(false);
-    const t = Math.min(Math.max(0, time), Math.max(0, videoDuration - 1 / EDIT_FPS));
+    const clamped = Math.min(Math.max(0, time), Math.max(0, videoDuration - 1 / EDIT_FPS));
+    // 그림이 있는 칸이면 그 그림의 장면으로 — 60fps 영상은 한 칸에 장면이 여럿이라 다른 장면 위에 그 그림을 고치게 된다
+    const t = sheetsRef.current.get(frameOf(clamped))?.timeSec ?? clamped;
+    switchToKey(frameOf(t));
     // 앞서 뜨던·뜨려고 예약한 장면은 버린다 — 끄는 중에도. 놓은 직후 120ms 안에 다시 끌면 그 예약이 영상을 옛 자리로
     //  되감았다(Codex D-②). 놓을 때(commit) 새로 뜰 때까지 제출도 잠근다(frameLoading).
     window.clearTimeout(captureTimer.current);
@@ -765,16 +873,22 @@ export function PartialEditModal({
     setFrameTime(t);
     captureTimer.current = window.setTimeout(() => void captureFrame(video, t), 120);
   };
+  const endedRef = useRef(() => {});
+  endedRef.current = () => seekTo(sourceVideoRef.current?.currentTime ?? frameTimeRef.current);
   const togglePlay = () => {
     const video = sourceVideoRef.current;
-    if (!video || frameLocked || stage !== "draw") return;
+    if (!video || stage !== "draw") return;
     if (!video.paused) {
-      seekTo(video.currentTime); // 멈춘 자리를 확정하고 그 장면을 뜬다
+      seekTo(video.currentTime); // 멈춘 자리를 확정하고 그 칸의 그림·장면으로
       return;
     }
     if (video.currentTime >= videoDuration - 1 / EDIT_FPS) video.currentTime = 0;
+    switchToKey(-1); // 재생하는 동안은 어느 프레임의 그림도 겹치지 않는다(멈추면 그 칸의 것이 다시 보인다)
     setPlaying(true);
-    void video.play().catch(() => setPlaying(false));
+    void video.play().catch(() => {
+      setPlaying(false);
+      switchToKey(frameOf(frameTimeRef.current));
+    });
   };
   useEffect(() => {
     const video = sourceVideoRef.current;
@@ -899,7 +1013,7 @@ export function PartialEditModal({
         <header className="partial-edit-head">
           <span className="partial-edit-title">{isVideo ? <VideoEditIcon /> : <ImageEditIcon />}{editLabel}</span>
           <span className="partial-edit-sub">
-            {isVideo ? "고칠 프레임을 고르고 펜·도형으로 표시한 뒤 지시" : "펜·도형으로 표시하고 지시"} — 그린 표시는 모델에게 그대로 보입니다
+            {isVideo ? "고칠 프레임마다 펜·도형으로 표시한 뒤 지시(여러 프레임 가능)" : "펜·도형으로 표시하고 지시"} — 그린 표시는 모델에게 그대로 보입니다
           </span>
           {closable && (
             <button className="assets-x" onClick={onClose} title="닫기">
@@ -979,9 +1093,9 @@ export function PartialEditModal({
                 {/* 타임바 — 누르거나 끌어서 훑는다(편집 탭 뷰어와 같은 모양). 끄는 동안은 영상만 옮기고, 놓으면 그 장면을 뜬다. */}
                 <div className="pe-scrub" role="slider" aria-label="수정할 영상 시점" aria-valuemin={0}
                   aria-valuemax={Number(videoDuration.toFixed(3))} aria-valuenow={Number(frameTime.toFixed(3))}
-                  aria-disabled={frameLocked || stage !== "draw"}
+                  aria-disabled={stage !== "draw"}
                   onPointerDown={(e) => {
-                    if (e.button !== 0 || frameLocked || stage !== "draw") return;
+                    if (e.button !== 0 || stage !== "draw" || (e.target as Element).closest(".cm-mark")) return;
                     scrubbingRef.current = true;
                     e.currentTarget.setPointerCapture?.(e.pointerId);
                     const time = scrubTime(e);
@@ -1005,34 +1119,41 @@ export function PartialEditModal({
                   <div className="pe-scrub-track" ref={trackRef}>
                     <div className="pe-scrub-fill" ref={fillRef} />
                     <div className="pe-scrub-head" ref={headRef} />
+                    {/* 책갈피 = 그린 프레임(지금 칸은 흰색) — 누르면 그 프레임으로(코멘트 그림 창·편집 탭 북마크와 같은 모양) */}
+                    <div className="cm-marks">
+                      {sheets.map((s) => (
+                        <button key={s.key} type="button" className={"cm-mark" + (s.key === curKeyRef.current ? " cur" : "")}
+                          style={{ left: `${videoDuration > 0 ? Math.min(100, Math.max(0, (s.timeSec / videoDuration) * 100)) : 0}%` }}
+                          title={`그린 프레임 ${s.timeSec.toFixed(2)}초`} aria-label={`그린 프레임 ${s.timeSec.toFixed(2)}초`}
+                          disabled={stage !== "draw"} onClick={() => seekTo(s.timeSec)} />
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <div className="pe-trans pe-trans-row">
                   <span className="pe-time"><span ref={tcRef}>{timecode(frameTime)}</span> <span className="muted">/ {timecode(videoDuration)}</span></span>
                   <div className="pe-trans-mid">
-                  <button type="button" className="pe-tbtn" title="처음으로 (Home)" aria-label="처음으로" disabled={frameLocked || stage !== "draw"}
+                  <button type="button" className="pe-tbtn" title="처음으로 (Home)" aria-label="처음으로" disabled={stage !== "draw"}
                     onClick={() => seekTo(0)}>
                     <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="1" y="1" width="2" height="12" /><path d="M15 1v12L5 7z" /></svg>
                   </button>
-                  <button type="button" className="pe-tbtn pe-step" title="한 프레임 뒤로 (←)" aria-label="한 프레임 뒤로" disabled={frameLocked || stage !== "draw"}
+                  <button type="button" className="pe-tbtn pe-step" title="한 프레임 뒤로 (←)" aria-label="한 프레임 뒤로" disabled={stage !== "draw"}
                     onClick={() => seekTo(frameTimeRef.current - 1 / EDIT_FPS)}>−1f</button>
-                  <button type="button" className="pe-tbtn pe-play" title="재생/정지 (Space)" aria-label="재생/정지" disabled={frameLocked || stage !== "draw"}
+                  <button type="button" className="pe-tbtn pe-play" title="재생/정지 (Space)" aria-label="재생/정지" disabled={stage !== "draw"}
                     onClick={togglePlay}>
                     {playing
                       ? <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><rect x="1.5" y="1" width="3.2" height="12" /><rect x="7.3" y="1" width="3.2" height="12" /></svg>
                       : <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1v12l9-6z" /></svg>}
                   </button>
-                  <button type="button" className="pe-tbtn pe-step" title="한 프레임 앞으로 (→)" aria-label="한 프레임 앞으로" disabled={frameLocked || stage !== "draw"}
+                  <button type="button" className="pe-tbtn pe-step" title="한 프레임 앞으로 (→)" aria-label="한 프레임 앞으로" disabled={stage !== "draw"}
                     onClick={() => seekTo(frameTimeRef.current + 1 / EDIT_FPS)}>+1f</button>
-                  <button type="button" className="pe-tbtn" title="끝으로 (End)" aria-label="끝으로" disabled={frameLocked || stage !== "draw"}
+                  <button type="button" className="pe-tbtn" title="끝으로 (End)" aria-label="끝으로" disabled={stage !== "draw"}
                     onClick={() => seekTo(videoDuration)}>
                     <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><rect x="13" y="1" width="2" height="12" /><path d="M1 1v12l10-6z" /></svg>
                   </button>
                   <span className="pe-frame" title="수정할 프레임"><b ref={frameNoRef}>{Math.min(totalFrames, Math.round(frameTime * EDIT_FPS) + 1)}</b> / {totalFrames}</span>
                   </div>
-                  {frameLocked
-                    ? <span className="pe-lock">🔒 그린 표시가 있어 프레임 고정 — 전체 지우기로 풀림</span>
-                    : <span className="pe-keys">← → 한 프레임 · Space 재생</span>}
+                  <span className="pe-keys">← → 한 프레임 · Space 재생 · 프레임마다 그릴 수 있음</span>
                 </div>
                 </>)}
                 {/* 도구 — 한 판의 마지막 줄(edit/drawing/DrawDock — 코멘트 그림과 같은 줄) */}
@@ -1048,18 +1169,21 @@ export function PartialEditModal({
                   {isVideo && (
                     <div className="sl-reftray" aria-label="레퍼런스">
                       <div className="sl-reftray-scroll">
-                        <div className="sl-reftray-item" title="1. 그린 프레임 — 자동으로 들어갑니다(뺄 수 없음)">
-                          <span className="sl-reftray-num">1</span>
-                          {srcUrlRef.current ? <img src={srcUrlRef.current} alt="" draggable={false} /> : <span className="sl-reftray-ph" />}
-                          <span className="sl-reftray-name">그린 프레임</span>
-                          <span className="sl-reftray-linked">🔒</span>
-                        </div>
+                        {frameSlots.map((slot, index) => (
+                          <div key={slot.key} className="sl-reftray-item"
+                            title={`${index + 1}. 그린 프레임${slot.key === "now" ? "" : ` ${slot.name}`} — 자동으로 들어갑니다(빼려면 그 프레임의 그림을 지우세요)`}>
+                            <span className="sl-reftray-num">{index + 1}</span>
+                            {slot.thumb ? <img src={slot.thumb} alt="" draggable={false} /> : <span className="sl-reftray-ph" />}
+                            <span className="sl-reftray-name">{slot.name}</span>
+                            <span className="sl-reftray-linked">🔒</span>
+                          </div>
+                        ))}
                         {extraRefs.map((ref, index) => (
-                          <div key={ref.uid} className="sl-reftray-item" title={`${index + 2}. ${ref.name}`}>
-                            <span className="sl-reftray-num">{index + 2}</span>
+                          <div key={ref.uid} className="sl-reftray-item" title={`${index + frameSlots.length + 1}. ${ref.name}`}>
+                            <span className="sl-reftray-num">{index + frameSlots.length + 1}</span>
                             <img src={ref.thumb} alt="" draggable={false} />
                             <span className="sl-reftray-name">{ref.name}</span>
-                            <button type="button" className="sl-reftray-x" title="빼기" aria-label={`${index + 2}번 레퍼런스 빼기`}
+                            <button type="button" className="sl-reftray-x" title="빼기" aria-label={`${index + frameSlots.length + 1}번 레퍼런스 빼기`}
                               disabled={!refsEditable} onMouseDown={(e) => e.preventDefault()}
                               onClick={() => setExtraRefs((prev) => prev.filter((item) => item.uid !== ref.uid))}>×</button>
                           </div>
@@ -1067,7 +1191,7 @@ export function PartialEditModal({
                         <div className="sl-reftray-empty pe-refhint">
                           <span>
                             에셋 창 또는 탐색기에서 이미지를 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다<br />
-                            <b>이미지 {extraRefs.length + 1} / 최대 {maxImages}장</b> (그린 프레임 포함)
+                            <b>이미지 {frameRefCount + extraRefs.length} / 최대 {maxImages}장</b> (그린 프레임 포함)
                             {importingRefs > 0 && " · 가져오는 중…"}
                           </span>
                         </div>
@@ -1231,7 +1355,7 @@ export function PartialEditModal({
                 {blockedMessage && <div className="partial-edit-hint">{blockedMessage}</div>}
                 {tooManyRefs && (
                   <div className="partial-edit-hint">
-                    {modelLabel(m.model)} 는 그린 프레임 포함 이미지 {maxImages}장까지입니다 — 레퍼런스를 {extraRefs.length + 1 - maxImages}개 빼세요.
+                    {modelLabel(m.model)} 는 그린 프레임 포함 이미지 {maxImages}장까지입니다 — 레퍼런스나 그린 프레임을 {frameRefCount + extraRefs.length - maxImages}개 빼세요.
                   </div>
                 )}
                 {klingConvert && sourceFormat && (
