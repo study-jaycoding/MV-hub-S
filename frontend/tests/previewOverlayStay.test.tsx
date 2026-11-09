@@ -130,6 +130,21 @@ describe("생성물 Ctrl 카드", () => {
     expect(document.body.querySelectorAll(".s-pick")).toHaveLength(1);
   });
 
+  it("T 입력창의 Esc 는 입력창만 닫는다 — 크게 보기는 남고 다음 Esc 에 닫힌다(11-09 Jay)", async () => {
+    await render(<MediaPreview target={GEN_TARGET} onClose={onClose} cardActions={actions()} />);
+    ctrlDown();
+    await settle();
+    await tap(tlButton("T"));
+    const input = layer()!.querySelector<HTMLInputElement>(".card-status input")!;
+    expect(input).not.toBeNull();
+    act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    await settle();
+    expect(layer()?.querySelector(".card-status input") ?? null).toBeNull();
+    expect(onClose).not.toHaveBeenCalled(); // 전엔 크게 보기가 잡는 단계에서 먼저 닫혔다
+    key("Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("ⓘ — 크게 보기는 닫지 않고 정보를 바로 연다", async () => {
     const acts = actions();
     await render(<MediaPreview target={GEN_TARGET} onClose={onClose} cardActions={acts} />);
@@ -196,7 +211,7 @@ describe("어셋 Ctrl 카드(실제 어셋 화면이 칸을 등록)", () => {
   });
   const gridInputs = () => [...host.querySelectorAll(".asset-cell .card-status input")].filter((input) => !input.closest(".mp-card-layer"));
 
-  it("T — 크게 보기 칸에만 태그 입력이 열리고 남는다(격자 칸에는 안 열림) · 장을 넘기면 닫힌다", async () => {
+  it("T — 크게 보기 칸에만 태그 입력이 열리고 남는다(격자 칸에는 안 열림) · 떠 있는 동안 ←/→ 는 장을 넘기지 않는다", async () => {
     await render(<>{view()}<MediaPreview target={ITEMS} onClose={onClose} /></>);
     ctrlDown();
     await settle();
@@ -206,10 +221,27 @@ describe("어셋 Ctrl 카드(실제 어셋 화면이 칸을 등록)", () => {
     expect(gridInputs()).toHaveLength(0); // 전엔 격자 칸에도 열려 서로 초점을 뺏고 둘 다 닫혔다
     await settle();
     expect(layer()!.querySelector(".card-status input")).not.toBeNull();
-    key("ArrowRight"); // 창에서 넘김(입력칸 밖)
+    key("ArrowRight"); // 입력칸 밖에서 눌러도 — 입력창이 위 겹이라 크게 보기 키는 쉰다
+    await settle();
+    expect(count()).toBe("1/2");
+    expect(layer()!.querySelector(".card-status input")).not.toBeNull();
+  });
+
+  it("T 입력창의 Esc 는 입력창만 닫는다 — 크게 보기는 남는다(11-09 Jay)", async () => {
+    await render(<>{view()}<MediaPreview target={ITEMS} onClose={onClose} /></>);
+    ctrlDown();
+    await settle();
+    await tap(tlButton("T"));
+    const input = layer()!.querySelector<HTMLInputElement>(".card-status input")!;
+    act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    await settle();
+    expect(layer()?.querySelector(".card-status input") ?? null).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    key("ArrowRight"); // 입력창을 닫으면 다시 크게 보기의 키
     await settle();
     expect(count()).toBe("2/2");
-    expect(layer()?.querySelector(".card-status input") ?? null).toBeNull();
+    key("Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("C — 크게 보기를 닫지 않고 코멘트 창을 그 위 겹에 띄운다", async () => {

@@ -311,6 +311,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   // Esc → 자기만 닫는다(맨 위 겹 — lib/useEscapeClose. 떠 있는 동안 뒤 화면의 단축키도 쉰다).
   const layer = useEscapeClose(onClose, true, true, true);
   useEscapeClose(() => setMenu(null), !!menu, true, true); // 메뉴가 떠 있으면 Esc 는 메뉴만 닫는다(나중에 켜진 겹이 위)
+  // Ctrl 카드의 태그 입력(T)도 한 겹 — 크게 보기가 잡는 단계에서 Esc 를 먼저 가져가 입력창의 Esc 에 창 전체가 닫혔다(11-09 Jay).
+  //  크게 보기 칸의 입력에는 워크스페이스 명령(처리 중 닫기 막음)이 없어 여기서 바로 닫아도 입력창의 Esc 와 같다
+  useEscapeClose(() => setCardTagging(false), cardTagging && cardShown, true, true);
   // 막이 있는 창 — 초점을 창(뿌리)에 둔다(lib/keyGate '모달의 초점'). 단추가 아니라 뿌리라 Space·Enter 는 전처럼 아래 리스너가 받는다
   //  (재생/정지). 뒤 격자의 초점 카드는 격자가 따로 쥐고 있어 그대로고, 닫으면 초점은 연 자리(격자)로 돌아간다.
   const boxRef = useRef<HTMLDivElement>(null);
