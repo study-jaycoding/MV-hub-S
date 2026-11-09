@@ -7,6 +7,7 @@ import { buildCommentTree } from "../../lib/commentTree";
 import { COMMENT_HIGHLIGHT_EVENT, takeCommentHighlightRequest, type CommentHighlight } from "../../lib/commentHighlight";
 import { fmtWhen } from "../../lib/format";
 import { loadString } from "../../lib/storage";
+import { MediaThumbnail } from "../MediaThumbnail";
 
 // 코멘트 본문 글씨 크기(px) — 사용자별 localStorage 저장, 패널마다 공통 적용.
 const FS_KEY = "ch.cmt.fontPx";
@@ -69,7 +70,7 @@ export interface CommentMedia {
   type: "image" | "video" | "audio";
   title: string;
   onOpen?: () => void;
-  videoUrl?: string; // 영상 — 마우스를 올린 동안 칸에서 소리 없이 반복 재생(Jay 11-09)
+  videoUrl?: string; // 영상 원본 — 생성 카드처럼 포스터를 깔고 마우스를 올리면 재생(Jay 11-09)
 }
 
 export interface CommentPanelItem {
@@ -138,7 +139,20 @@ export function CommentPanel<T extends CommentPanelItem>({
   media?: CommentMedia | null;
 }) {
   const showMedia = !embedded && !!media;
-  const [mediaHover, setMediaHover] = useState(false); // 영상 썸네일 위 — 그동안만 재생 요소를 둔다(떼면 내려 멈춘다)
+  // 영상 썸네일 — 생성 카드와 같다(GenerationCard onEnter/onLeave): 올리면 무음 재생, 떼면 멈추고 처음으로
+  const mediaVideoRef = useRef<HTMLVideoElement>(null);
+  const playMedia = () => {
+    const video = mediaVideoRef.current;
+    if (!video) return;
+    video.muted = true; // React 의 muted 속성은 DOM 프로퍼티로 안 붙는다 — 재생 직전에 강제(카드와 같다)
+    Promise.resolve(video.play()).catch(() => {});
+  };
+  const stopMedia = () => {
+    const video = mediaVideoRef.current;
+    if (!video) return;
+    video.pause();
+    video.currentTime = 0;
+  };
   // 크게 보기 위에서 열었으면(어셋 Ctrl 카드 C) 그 위 겹에 띄운다 — 열 때 한 번만 본다(먼저 연 창은 나중에 연 크게 보기 아래 그대로, 11-09 Jay)
   const [overPreview] = useState(() => !embedded && !!document.querySelector(".media-preview"));
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -411,12 +425,11 @@ export function CommentPanel<T extends CommentPanelItem>({
     >
       {showMedia && media && (
         <button type="button" className="cmt-media" title={media.title} aria-label="크게 보기" disabled={!media.onOpen} onClick={media.onOpen}
-          onMouseEnter={() => setMediaHover(true)} onMouseLeave={() => setMediaHover(false)}>
-          {media.thumb ? <img src={media.thumb} alt="" draggable={false} /> : <span className="cmt-media-ph">{media.type === "audio" ? "♪" : ""}</span>}
-          {mediaHover && media.type === "video" && media.videoUrl && (
-            <video className="cmt-media-video" src={media.videoUrl} poster={media.thumb ?? undefined} autoPlay muted loop playsInline />
-          )}
-          {media.type === "video" && <span className="cmt-media-play">▶</span>}
+          onMouseEnter={playMedia} onMouseLeave={stopMedia}>
+          {/* 생성 카드와 같은 부품·같은 ▶(가운데 흰 삼각형, 올리면 숨김 — Jay 11-09 "기존 생성카드처럼") */}
+          <MediaThumbnail thumb={media.thumb} isVideo={media.type === "video"} src={media.type === "video" ? media.videoUrl : null}
+            videoRef={mediaVideoRef} fallback={<span className="cmt-media-ph">{media.type === "audio" ? "♪" : ""}</span>} />
+          {media.type === "video" && <span className="play-badge">▶</span>}
           {media.onOpen && <span className="cmt-media-zoom">⤢ 크게 보기</span>}
         </button>
       )}

@@ -641,15 +641,14 @@
   background: #0d0e11; cursor: zoom-in; overflow: hidden;
 }
 .cmt-media:disabled { cursor: default; }
-.cmt-media img, .cmt-media-video { display: block; width: 100%; height: 100%; object-fit: contain; }
-.cmt-media-video { position: absolute; inset: 0; background: #0d0e11; }
+.cmt-media img, .cmt-media video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.cmt-media:hover .play-badge { opacity: 0; } /* 생성 카드와 같다 — 호버 재생 중엔 숨김 */
 .cmt-media::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
 .cmt-media-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--muted2); font-size: 34px; }
-.cmt-media-play, .cmt-media-zoom {
-  position: absolute; font-size: 10.5px; line-height: 1.4; border-radius: 5px; padding: 2px 6px; pointer-events: none;
+.cmt-media-zoom {
+  position: absolute; right: 8px; top: 8px; font-size: 10.5px; line-height: 1.4; border-radius: 5px; padding: 2px 6px; pointer-events: none;
+  color: #e5e7eb; background: rgba(0,0,0,0.55); opacity: 0.8; transition: opacity 0.12s;
 }
-.cmt-media-play { left: 8px; bottom: 8px; font-weight: 800; color: #fff; background: rgba(0,0,0,0.62); }
-.cmt-media-zoom { right: 8px; top: 8px; color: #e5e7eb; background: rgba(0,0,0,0.55); opacity: 0.8; transition: opacity 0.12s; }
 .cmt-media:hover .cmt-media-zoom, .cmt-media:focus-visible .cmt-media-zoom { opacity: 1; }
 .cmt-media:focus-visible { outline: none; }
 .cmt-media:focus-visible::after { box-shadow: inset 0 0 0 2px var(--accent); }

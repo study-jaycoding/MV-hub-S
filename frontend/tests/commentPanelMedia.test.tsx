@@ -33,8 +33,7 @@ it("shows the target's thumbnail on the left; clicking it opens the big view and
   expect(panel.classList.contains("cmt-with-media")).toBe(true);
   const media = panel.querySelector<HTMLButtonElement>(".cmt-media")!;
   expect(media.getAttribute("title")).toBe("매튜집 프롬프트 전체"); // 마우스를 올리면 프롬프트
-  expect(media.querySelector("img")?.getAttribute("src")).toBe("/thumbs/g1.jpg");
-  expect(media.querySelector(".cmt-media-play")).not.toBeNull(); // 영상 표시
+  expect(media.querySelector(".play-badge")).not.toBeNull(); // 영상 = 생성 카드와 같은 가운데 ▶
   expect(panel.querySelector(".cmt-file")).toBeNull(); // 머리줄 프롬프트 글자는 뺐다
   // 썸네일 칸 옆 세로 칸에 머리줄·목록·입력이 그대로 있다
   const col = panel.querySelector(".cmt-col")!;
@@ -45,19 +44,27 @@ it("shows the target's thumbnail on the left; clicking it opens the big view and
   expect(onOpen).toHaveBeenCalledTimes(1);
 });
 
-it("a video plays silently in place while the pointer is over the thumbnail and stops when it leaves (Jay 11-09)", () => {
+it("a video is a poster like the generation card — plays muted while hovered, stops and rewinds on leave (Jay 11-09)", () => {
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   show({ thumb: "/thumbs/v.jpg", type: "video", title: "v", onOpen: () => {}, videoUrl: "/files/v.mp4" });
   const media = host.querySelector<HTMLButtonElement>(".cmt-media")!;
-  expect(media.querySelector("video")).toBeNull(); // 올리기 전엔 영상을 받지 않는다
-  act(() => { media.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
   const video = media.querySelector("video")!;
-  expect(video.getAttribute("src")).toBe("/files/v.mp4");
-  expect(video.muted && video.loop && video.autoplay).toBe(true);
+  // 생성 카드의 MediaThumbnail 과 같다 — 썸네일을 포스터로 깔고, 올리기 전엔 영상을 받지 않는다
+  expect([video.getAttribute("src"), video.getAttribute("poster"), video.getAttribute("preload")]).toEqual(["/files/v.mp4", "/thumbs/v.jpg", "none"]);
+  expect(media.querySelector(".play-badge")).not.toBeNull();
+  act(() => { media.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+  expect(play).toHaveBeenCalledTimes(1);
+  expect(video.muted).toBe(true);
+  video.currentTime = 2;
   act(() => { media.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); });
-  expect(media.querySelector("video")).toBeNull(); // 떼면 내려 멈춘다
+  expect(pause).toHaveBeenCalledTimes(1);
+  expect(video.currentTime).toBe(0); // 떼면 처음으로
   show({ thumb: "/thumbs/i.jpg", type: "image", title: "i", onOpen: () => {} });
-  act(() => { host.querySelector(".cmt-media")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
-  expect(host.querySelector(".cmt-media video")).toBeNull(); // 이미지는 그대로
+  expect(host.querySelector(".cmt-media video")).toBeNull(); // 이미지는 그림 그대로, ▶ 없음
+  expect(host.querySelector(".cmt-media .play-badge")).toBeNull();
+  expect(host.querySelector(".cmt-media img")?.getAttribute("src")).toBe("/thumbs/i.jpg");
+  vi.restoreAllMocks();
 });
 
 it("keeps the old header text without a thumbnail, and never adds the column inside the draw window", () => {
