@@ -76,4 +76,29 @@ describe("fetchBlob", () => {
     ).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  // 수정 창의 로딩 링(11-09 Jay 시안 A2) — 받은 양을 알린다. 알림을 안 주는 호출은 위 시험들처럼 res.blob() 그대로다
+  const streamed = (headers: Record<string, string>) => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3]));
+      controller.enqueue(new Uint8Array([4, 5]));
+      controller.close();
+    },
+  }), { headers });
+
+  it("진행 알림을 주면 받은 바이트·전체를 알리고 같은 내용을 돌려준다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamed({ "Content-Length": "5", "Content-Type": "image/png" })));
+    const seen: [number, number | null][] = [];
+    const blob = await fetchBlob("https://cdn.example/a.png", "a.png", undefined, { onProgress: (loaded, total) => seen.push([loaded, total]) });
+    expect(seen).toEqual([[0, 5], [3, 5], [5, 5]]);
+    expect(blob?.type).toBe("image/png");
+    expect([...new Uint8Array(await blob!.arrayBuffer())]).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("전체 크기를 모르면 total 은 null 로 알린다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamed({})));
+    const totals: (number | null)[] = [];
+    await fetchBlob("https://cdn.example/a.mp4", "a.mp4", undefined, { onProgress: (_loaded, total) => totals.push(total) });
+    expect(totals).toEqual([null, null, null]);
+  });
 });

@@ -34,7 +34,7 @@ import { copyText } from "../../lib/flash";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { EDIT_FPS, timecode } from "../../lib/editTimeline";
 import { DRAG_TYPES } from "../../lib/dragTypes";
-import { dataTransferHasFiles, filesFromDataTransfer } from "../../lib/media";
+import { dataTransferHasFiles, filesFromDataTransfer, thumbOf } from "../../lib/media";
 import {
   notifySpotlightAssetsChanged, parseSpotlightAssetItems, readSpotlightAssetPayload, referenceDropTypeFromFile,
   spotlightAssetRefBase, type SpotlightAssetDragItem,
@@ -43,6 +43,7 @@ import type { Generation, WorkspaceContext } from "../../types";
 import { assetIdentity, assetIdentityForProject, type AssetReferenceIdentity } from "../../shared/contracts/assets";
 import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
 import { CloseIcon, CopyIcon, EraserIcon, ImageEditIcon, VideoEditIcon } from "../common/ViewIcons";
+import { LoadRing } from "../common/LoadRing";
 import { SpotlightOptionIcon } from "../spotlight/SpotlightOptionIcon";
 import { SpotlightDurationChip } from "../spotlight/SpotlightDurationChip";
 import { EditRefPrompt, type EditPromptRef } from "./EditRefPrompt";
@@ -162,6 +163,17 @@ export function PartialEditModal({
   const [frameLoading, setFrameLoading] = useState(false);
   const [sourceFormat, setSourceFormat] = useState<VideoFormat | null>(null); // 원본 영상 머리(Kling 미리 알림용)
   const [playing, setPlaying] = useState(false);
+  // 원본 받는 중(Jay 11-09 시안 A2) — 받은 양·썸네일 비율. 받은 양은 % 가 바뀔 때만 다시 그린다(조각마다 그리지 않게)
+  const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number | null } | null>(null);
+  const [thumbRatio, setThumbRatio] = useState<number | null>(null);
+  const loadThumb = asset?.file_path && asset.type === mode ? thumbOf(gen, 512) : null;
+  const progressKeyRef = useRef("");
+  const onLoadProgress = (loaded: number, total: number | null) => {
+    const key = total ? String(Math.floor((loaded / total) * 100)) : String(Math.floor(loaded / 100_000));
+    if (key === progressKeyRef.current || !mountedRef.current) return;
+    progressKeyRef.current = key;
+    setLoadProgress({ loaded, total });
+  };
   const frameTicket = useRef(0);
   const captureFrame = async (video: HTMLVideoElement, time: number) => {
     const ticket = ++frameTicket.current;
@@ -208,10 +220,12 @@ export function PartialEditModal({
         return;
       }
       if (asset.type !== mode) { setError("수정할 원본 미디어 종류가 다릅니다."); return; }
-      const blob = await fetchBlob(asset.file_path, isVideo ? "edit-source.mp4" : "partial-src.png", gen.id);
+      // 각인 없이 브라우저가 직접 받는다(CDN CORS 허용·1년 캐시 — 다시 열면 캐시, 받은 양을 안다). 막히면 fetchBlob 이 허브 프록시로.
+      //  전엔 gen.id 를 넘겨 허브 각인 다운로드(끝까지 받아 다시 쓰기)를 거쳐 열 때마다 CDN 에서 새로 받았다(11-09 실측).
+      const blob = await fetchBlob(asset.file_path, isVideo ? "edit-source.mp4" : "partial-src.png", undefined, { onProgress: onLoadProgress });
       if (!alive) return;
       if (!blob) {
-        setError(`원본 ${isVideo ? "영상" : "이미지"}를 불러오지 못했습니다.`);
+        setError(`원본 ${isVideo ? "영상을" : "이미지를"} 불러오지 못했습니다.`);
         return;
       }
       try {
@@ -256,7 +270,7 @@ export function PartialEditModal({
         setSrc({ bmp: full, w, h });
         setStage("draw");
       } catch {
-        if (alive) setError(`원본 ${isVideo ? "영상" : "이미지"}를 해석하지 못했습니다.`);
+        if (alive) setError(`원본 ${isVideo ? "영상을" : "이미지를"} 해석하지 못했습니다.`);
       }
     })();
     return () => {
@@ -999,13 +1013,19 @@ export function PartialEditModal({
   const slow = elapsed > SLOW_AFTER_MS;
   // 비율 보존 무대 크기 — 높이 상한(62vh, 영상은 위아래 띠 자리만큼 50vh)을 비율로 폭 상한에 옮겨, 어느 축이
   // 클램프돼도 상자 비율 = 이미지 비율(주석 좌표 매핑의 전제)이 유지된다. 50vh = 1500×980 창에서 Generate 까지 한 화면(10-28 실측).
-  const stageStyle = src
-    ? {
-        aspectRatio: `${src.w} / ${src.h}`,
-        width: "min(86vw, 1380px)",
-        // 영상은 아래 레퍼런스 칸(약 106px)·두 줄 안내만큼 더 줄인다 — 1500×980 창에서 스크롤 없이 Generate 까지(10-28 실측)
-        maxWidth: `calc(${isVideo ? "(50vh - 124px)" : "62vh"} * ${(src.w / src.h).toFixed(6)})`,
-      }
+  const stageBox = (aspectRatio: string, ratio: number) => ({
+    aspectRatio,
+    width: "min(86vw, 1380px)",
+    // 영상은 아래 레퍼런스 칸(약 106px)·두 줄 안내만큼 더 줄인다 — 1500×980 창에서 스크롤 없이 Generate 까지(10-28 실측)
+    maxWidth: `calc(${isVideo ? "(50vh - 124px)" : "62vh"} * ${ratio.toFixed(6)})`,
+  });
+  const stageStyle = src ? stageBox(`${src.w} / ${src.h}`, src.w / src.h) : undefined;
+  // 원본 받는 동안(Jay 11-09 시안 A2) — 썸네일 비율로 같은 크기의 무대를 먼저 연다(썸네일을 모르면 16:9)
+  const loadRatio = thumbRatio ?? 16 / 9;
+  const loadPct = loadProgress?.total ? loadProgress.loaded / loadProgress.total : null;
+  const mb = (bytes: number) => (bytes / 1e6).toFixed(1);
+  const loadSub = loadProgress
+    ? loadProgress.total ? `${mb(loadProgress.loaded)} / ${mb(loadProgress.total)}MB` : `${mb(loadProgress.loaded)}MB`
     : undefined;
   return (
     <div className="partial-edit-backdrop">
@@ -1025,10 +1045,25 @@ export function PartialEditModal({
         {error && <div className="partial-edit-error">{error}</div>}
         {note && <div className="partial-edit-note">{note}</div>}
 
-        {stage === "load" && <div className="partial-edit-loading">원본 불러오는 중…</div>}
-        {(stage === "draw" || stage === "wait") && src && (
+        {(stage === "load" || ((stage === "draw" || stage === "wait") && src)) && (
           <>
+            {/* 원본 받는 중 — 흐린 썸네일 + 가운데 링(% · 받은 MB). 못 받으면 링 없이 위 오류만 */}
+            {stage === "load" && !error && (
+              <div className="pe-viewer">
+                <div className="partial-edit-stagebox pe-loading" style={stageBox(String(loadRatio), loadRatio)}>
+                  {loadThumb && (
+                    <img className="pe-loading-thumb" src={loadThumb} alt="" draggable={false}
+                      onLoad={(e) => {
+                        const im = e.currentTarget;
+                        if (im.naturalWidth && im.naturalHeight) setThumbRatio(im.naturalWidth / im.naturalHeight);
+                      }} />
+                  )}
+                  <LoadRing pct={loadPct} label="원본 받는 중" sub={loadSub} />
+                </div>
+              </div>
+            )}
             {/* 무대 + 그 아래 한 판(타임라인·재생 줄·도구 줄) — 코멘트 그림 창과 같은 모양(Jay 11-09). 위 시각 줄은 없고 시각·프레임은 재생 줄에 */}
+            {stage !== "load" && src && (
             <div className="pe-viewer">
             <div className="partial-edit-stagebox" style={stageStyle}>
               {isVideo ? (
@@ -1161,10 +1196,12 @@ export function PartialEditModal({
               </div>
             )}
             </div>
-            {stage === "draw" && (
+            )}
+            {(stage === "draw" || (stage === "load" && !error)) && (
               <>
                 {/* 프롬프트·모델·Generate — 생성창 프롬프트 판과 같은 부품(.sl-*, prompt-dock.css 는 전역).
-                    autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작 */}
+                    autoFocus 없음: 기본은 그리기 모드(단축키 유지), 입력은 클릭해야 시작.
+                    원본을 받는 동안에도 지시문·모델을 먼저 쓸 수 있다 — 생성 단추만 잠긴다(11-09 시안 A2) */}
                 <div className="sl-panel pe-prompt" onDragOver={isVideo ? onRefDragOver : undefined} onDrop={isVideo ? onRefDrop : undefined}>
                   {isVideo && (
                     <div className="sl-reftray" aria-label="레퍼런스">
@@ -1337,12 +1374,14 @@ export function PartialEditModal({
                       onClick={submit}
                       title={costKnown ? `${editLabel} — 예상 ${formatCredits(cost!)} 크레딧` : `${editLabel} — 견적 확인 안 됨`}
                     >
-                      {submitting ? "보내는 중…" : "Generate"} <span className="sl-sparkle">✦</span>
+                      {submitting ? "보내는 중…" : stage === "load" ? "원본 받는 중" : "Generate"} <span className="sl-sparkle">✦</span>
                       {costKnown ? <span className="sl-cost partial-edit-cost">{formatCredits(cost!)}</span>
                         : costLoading ? <span className="sl-cost loading partial-edit-cost">…</span> : null}
                     </button>
                   </div>
                 </div>
+                {/* 안내 줄은 원본을 받은 뒤 — 받는 중엔 영상 길이·견적이 아직 없어 '견적 확인 안 됨' 이 잘못 뜬다 */}
+                {stage === "draw" && (<>
                 {!costKnown && !costLoading && paramsReady && (
                   <div className="partial-edit-hint">
                     견적 확인 안 됨{!isVideo ? "" : costVideoRef ? " — 영상은 견적이 나와야 생성할 수 있습니다."
@@ -1372,6 +1411,7 @@ export function PartialEditModal({
                     모델 파라미터를 불러오지 못해 생성할 수 없습니다 — 다시 열어보세요.
                   </div>
                 )}
+                </>)}
               </>
             )}
           </>

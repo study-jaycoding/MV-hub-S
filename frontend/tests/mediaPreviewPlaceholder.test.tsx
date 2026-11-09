@@ -75,9 +75,23 @@ it("그림: 썸네일을 원본 크기로 먼저 깔고, 원본이 뜨면 걷는
   expect([ph.style.width, ph.style.height]).toEqual(["780px", "439px"]);
   const original = host.querySelector<HTMLImageElement>('.media-preview-stack img[alt="n"]')!;
   expect(original.getAttribute("src")).toBe("/o.png");
+  // 원본이 오는 동안 흐림 + 도는 링(Jay 11-09 시안 A2 — 받은 양은 <img> 가 안 알려 줘 % 없음)
+  expect(ph.classList.contains("is-loading")).toBe(true);
+  expect(host.querySelector('.load-ring[role="progressbar"]')?.textContent).toBe("불러오는 중");
   act(() => { original.dispatchEvent(new Event("load")); });
   expect(host.querySelector(".media-preview-ph")).toBeNull();
+  expect(host.querySelector(".load-ring")).toBeNull();
   expect(host.querySelector('img[alt="n"]')).not.toBeNull();
+});
+
+it("영상: 첫 장면이 준비될 때까지 표지를 흐리고 링을 돌린다 — 재생 시작을 기다리지 않는다(자동 재생이 막혀도 걷힌다)", () => {
+  show({ url: "/o.mp4", type: "video", name: "n", thumb: "/t.jpg" });
+  const video = host.querySelector("video")!;
+  expect(video.classList.contains("is-loading")).toBe(true);
+  expect(host.querySelector(".load-ring")).not.toBeNull();
+  act(() => { video.dispatchEvent(new Event("loadeddata")); });
+  expect(video.classList.contains("is-loading")).toBe(false);
+  expect(host.querySelector(".load-ring")).toBeNull();
 });
 
 it("영상: 썸네일이 표지가 되고, 재생 정보가 오면 영상의 실제 크기로, 재생이 시작되면 고정 크기를 푼다", () => {
