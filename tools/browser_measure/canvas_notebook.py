@@ -555,6 +555,18 @@ class Measurement:
         if release:
             await page.send("Input.dispatchMouseEvent", type="mouseReleased", **end, button="left", clickCount=1)
 
+    async def start_card_drag(self, page: Page) -> None:
+        # Text cards hide their header and disable its pointer events; drag the body.
+        source = '.scene-card[data-id="card-0"]'
+        position = f"(() => {{ const r=document.querySelector({json.dumps(source)}).getBoundingClientRect(); return [r.x,r.y]; }})()"
+        before = await page.eval(position)
+        await self.drag(page, source, release=False)
+        moved = await page.wait(
+            f"(() => {{ const p={position}; return Math.abs(p[0]-{json.dumps(before[0])}) >= 1 || Math.abs(p[1]-{json.dumps(before[1])}) >= 1; }})()", 3)
+        self.check("drag_started", moved, True)
+        if not moved:
+            raise RuntimeError("card body did not move before handoff with pointer held")
+
     async def run(self, args) -> dict:
         browser = find_browser()
         self.report["browser_kind"] = "chrome" if Path(browser).name.casefold() in {"chrome.exe", "chrome"} else "other"
@@ -596,7 +608,7 @@ class Measurement:
                 self.check("content", received, await self.local(a))
                 await self.take(a)
                 before = (await self.local(a))[0]["cards"][0]
-                await self.drag(a, '.scene-card[data-id="card-0"] .scene-card-hd', release=False)
+                await self.start_card_drag(a)
                 await self.take(b)
                 after = (await self.local(b))[0]["cards"][0]
                 self.check("drag_flush", [after["x"], after["y"]], "moved before pointer release", [after["x"], after["y"]] != [before["x"], before["y"]])

@@ -258,6 +258,41 @@ def test_handoff_input_probe_leaves_real_text_editor_pending(tmp_path):
     assert not any(event[0] == "key" and event[1][0] == "Enter" for event in events)
 
 
+@pytest.mark.parametrize("moved", [True, False])
+def test_handoff_drag_uses_card_body_and_checks_visible_motion_before_release(tmp_path, moved):
+    import asyncio
+    from types import SimpleNamespace
+    events = []
+
+    async def evaluate(expression):
+        events.append(("eval", expression))
+        assert '.scene-card[data-id=\\"card-0\\"]' in expression
+        assert "scene-card-hd" not in expression
+        assert "getBoundingClientRect" in expression
+        return [20, 30] if "return [r.x,r.y]" in expression else {"x": 100, "y": 38}
+
+    async def send(method, **kwargs):
+        events.append(("send", kwargs["type"]))
+
+    async def wait(expression, timeout):
+        events.append(("wait", expression))
+        assert "getBoundingClientRect" in expression
+        assert "p[0]-20" in expression and "p[1]-30" in expression
+        assert timeout == 3
+        return moved
+
+    instance = measure.Measurement("normal_handoff", tmp_path)
+    operation = instance.start_card_drag(SimpleNamespace(eval=evaluate, send=send, wait=wait))
+    if moved:
+        asyncio.run(operation)
+    else:
+        with pytest.raises(RuntimeError, match="card body did not move"):
+            asyncio.run(operation)
+    assert events[-1][0] == "wait"
+    assert [event[1] for event in events if event[0] == "send"] == ["mousePressed"] + ["mouseMoved"] * 5
+    assert instance.report["checks"]["drag_started"]["status"] == ("passed" if moved else "failed")
+
+
 def test_retained_inspection_reads_only_owned_synthetic_database(tmp_path):
     import sqlite3
     from contextlib import closing
