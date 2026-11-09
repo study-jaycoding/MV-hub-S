@@ -2270,9 +2270,10 @@ export default function App() {
   // 라이브러리 선택 액션바 — 라이브러리 탭 본문과 캔버스 '폴더 보기' 창이 같은 요소를 쓴다.
   // 컷 카드를 골랐을 때의 막대 — [모아보기]. 생성물 선택 막대와 같은 자리(프롬프트 위·Ctrl+K 땐 상단 중앙)에 뜬다.
   //  폴더 창이 떠 있으면 뒤의 고른 컷은 보이지 않으니 막대도 없다.
-  //  그리드 보기에서 컷(잎)만 골랐으면 띄우지 않는다 — 고른 컷의 묶음 모양이 선택 표시이고 알약이 모아보기다(빈 곳·Esc 로 푼다. Jay 2026-11-09).
-  //  리스트·표, 에피소드(하위 폴더 있음 — 알약이 없다)를 고른 때는 그대로.
-  const cutBarHidden = !listPeek && cutMode && layout === "grid" && selectedCuts.length > 0 && selectedCuts.every((folder) => !folder.subfolders);
+  //  그리드·리스트 보기에서 컷(잎)만 골랐으면 띄우지 않는다 — 고른 컷의 묶음 모양이 선택 표시이고 알약이 모아보기다(빈 곳·Esc 로 푼다. Jay 2026-11-09).
+  //  표(리스트 + 날짜별 구분 자리), 에피소드(하위 폴더 있음 — 알약이 없다)를 고른 때는 그대로.
+  const cutBarHidden = !listPeek && cutMode && !(layout === "list" && groupByDate)
+    && selectedCuts.length > 0 && selectedCuts.every((folder) => !folder.subfolders);
   const cutSelectionBar =
     !listPeek && cutMode && !cutBarHidden && selectedCuts.length > 0 ? (
       <div className="select-bar">

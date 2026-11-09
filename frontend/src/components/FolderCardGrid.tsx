@@ -14,9 +14,10 @@
 //  단추(컷 띠의 컷 · '+N' · [열기], `data-ep-action`)의 누름은 카드 고르기·두 번 클릭으로 읽지 않는다 — 그 단추가 제 일을 한다.
 //  **컷 화면의 리스트**(2026-10-13 오후): 리스트 단추 한 번 = 같은 줄 모양(띠에는 그 컷의 생성물 — 누르면 크게 보기, [폴더로] = 그 컷 폴더로),
 //  한 번 더(도구 줄의 '날짜별 구분' 자리 — 폴더 카드에는 날짜 구분이 없다) = 표.
-//  **고른 컷 묶음**(그리드만, Jay 2026-11-09): 컷을 2장 이상 고르면 번호 1..N(격자 순서 = 재생 순서). 같은 줄의 이웃끼리는 라임 선 하나로 한 판에
-//  묶고(카드마다의 선택 테두리는 끈다), 알약 [▶ N컷 연결 재생] = 모아보기를 연결로 바로 연다 — 마지막 고른 카드가 묶음에 들면 묶음 가운데, 아니면
-//  그 카드 위. 열 수는 CSS 가 폭에 맞춰 정하므로 '같은 줄' 은 그린 뒤 카드 자리를 재서 안다(마퀴처럼 격자 안의 절대 위치 — 스크롤을 따라간다).
+//  **고른 컷 묶음**(그리드·리스트, Jay 2026-11-09 — 표는 뺀다): 컷을 2장 이상 고르면 번호 1..N(격자 순서 = 재생 순서). 이웃(그리드 = 같은 줄의 옆,
+//  리스트 = 바로 아랫줄)끼리는 라임 선 하나로 한 판에 묶고(카드마다의 선택 테두리는 끈다), 알약 [▶ N컷 연결 재생] = 모아보기를 연결로 바로 연다 —
+//  마지막 고른 카드가 묶음에 들면 묶음 가운데(리스트는 표지 세로줄의 이음매), 아니면 그 카드 표지 위. 열 수는 CSS 가 폭에 맞춰 정하므로 '같은 줄' 은
+//  그린 뒤 카드 자리를 재서 안다(마퀴처럼 격자 안의 절대 위치 — 스크롤을 따라간다).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { boardView, EPISODE_CARD_WIDTH, isEpisodeLevel, numberColumn, takesOf } from "../lib/episodeBoard";
 import { useT } from "../lib/i18n";
@@ -77,7 +78,7 @@ interface Drag {
 
 // 고른 컷 묶음의 자리(격자 안 px) — 이웃 묶음마다 틀 하나와 카드 사이 틈, 알약의 가운데.
 interface BindLayout {
-  groups: { l: number; t: number; w: number; h: number; gaps: { l: number; w: number }[]; paths: string[] }[];
+  groups: { l: number; t: number; w: number; h: number; gaps: { l: number; t: number; w: number; h: number }[]; paths: string[] }[];
   pill: { x: number; y: number };
 }
 
@@ -136,8 +137,9 @@ export function FolderCardGrid({
   const rafRef = useRef<number | null>(null);
   const lastMoveRef = useRef<MouseEvent | null>(null);
 
-  // 고른 컷 묶음(머리말) — 그리드에서 2장 이상, 모두 컷(하위 폴더 없음)일 때. 순서는 두 번 클릭의 모아보기와 같은 격자 순서.
-  const chosenCuts = view === "grid" ? folders.filter((folder) => selected.has(folder.path)) : [];
+  // 고른 컷 묶음(머리말) — 그리드·리스트에서 2장 이상, 모두 컷(하위 폴더 없음)일 때. 표는 줄(48px)이 알약만큼 낮아 뺀다.
+  //  순서는 두 번 클릭의 모아보기와 같은 격자 순서.
+  const chosenCuts = view === "grid" || view === "list" ? folders.filter((folder) => selected.has(folder.path)) : [];
   const reelPaths = chosenCuts.length >= 2 && chosenCuts.every((folder) => !folder.subfolders) ? chosenCuts.map((folder) => folder.path) : [];
   const orderOf = new Map(reelPaths.map((path, i) => [path, i + 1]));
   const reelKey = reelPaths.join("\n");
@@ -149,7 +151,7 @@ export function FolderCardGrid({
     const cards = new Map<string, HTMLElement>();
     for (const el of grid?.querySelectorAll<HTMLElement>(".cut-card[data-path]") ?? []) if (el.dataset.path) cards.set(el.dataset.path, el);
     const index = new Map(folders.map((folder, i) => [folder.path, i]));
-    // 이웃 = 목록에서 바로 다음이고 같은 줄(카드의 위쪽이 같다)
+    // 이웃 = 목록에서 바로 다음 + 그리드는 같은 줄(카드의 위쪽이 같다). 리스트는 한 줄에 하나라 바로 아래 줄이 이웃이다.
     const runs: HTMLElement[][] = [];
     let previous: string | null = null;
     for (const path of reelPaths) {
@@ -157,35 +159,42 @@ export function FolderCardGrid({
       if (!el) continue;
       const run = runs[runs.length - 1];
       const last = run?.[run.length - 1];
-      if (last && previous !== null && index.get(path) === (index.get(previous) ?? -2) + 1 && last.offsetTop === el.offsetTop) run.push(el);
+      const nextInList = previous !== null && index.get(path) === (index.get(previous) ?? -2) + 1;
+      if (last && nextInList && (view === "list" || last.offsetTop === el.offsetTop)) run.push(el);
       else runs.push([el]);
       previous = path;
     }
     const groups = runs.filter((run) => run.length > 1).map((run) => {
-      const first = run[0];
-      const end = run[run.length - 1];
-      return {
-        l: first.offsetLeft, t: first.offsetTop, w: end.offsetLeft + end.offsetWidth - first.offsetLeft, h: Math.max(...run.map((el) => el.offsetHeight)),
-        gaps: run.slice(1).map((el, i) => ({ l: run[i].offsetLeft + run[i].offsetWidth, w: el.offsetLeft - run[i].offsetLeft - run[i].offsetWidth })),
-        paths: run.map((el) => el.dataset.path ?? ""),
-      };
+      const l = Math.min(...run.map((el) => el.offsetLeft));
+      const t = Math.min(...run.map((el) => el.offsetTop));
+      const r = Math.max(...run.map((el) => el.offsetLeft + el.offsetWidth));
+      const b = Math.max(...run.map((el) => el.offsetTop + el.offsetHeight));
+      // 카드 사이 틈 — 그리드는 옆 카드와의 세로 띠, 리스트는 아랫줄과의 가로 띠
+      const gaps = run.slice(1).map((el, i) => {
+        const prev = run[i];
+        return view === "list"
+          ? { l, t: prev.offsetTop + prev.offsetHeight, w: r - l, h: el.offsetTop - prev.offsetTop - prev.offsetHeight }
+          : { l: prev.offsetLeft + prev.offsetWidth, t, w: el.offsetLeft - prev.offsetLeft - prev.offsetWidth, h: b - t };
+      });
+      return { l, t, w: r - l, h: b - t, gaps, paths: run.map((el) => el.dataset.path ?? "") };
     });
-    // 알약 = 마지막으로 고른 카드(클릭·방향키가 남긴 자리 — 마퀴·Ctrl+A 처럼 자리가 없으면 고른 것 중 격자의 마지막) 표지 가운데. 묶음에 들면 묶음 가운데.
+    // 알약 = 마지막으로 고른 카드(클릭·방향키가 남긴 자리 — 마퀴·Ctrl+A 처럼 자리가 없으면 고른 것 중 격자의 마지막)의 표지(그리드 .ep-cover ·
+    //  리스트 .ep-poster) 가운데. 묶음에 들면 그리드는 묶음의 가로 가운데, 리스트는 세로 가운데(두 줄이면 이음매 — Jay 2026-11-09 가안).
     const kept = cursorRef.current;
     const target = kept !== null && reelPaths.includes(kept) ? kept : reelPaths[reelPaths.length - 1];
     const el = target === undefined ? undefined : cards.get(target);
     const group = groups.find((one) => one.paths.includes(target ?? ""));
-    const cover = el?.querySelector<HTMLElement>(".ep-cover");
+    const media = el?.querySelector<HTMLElement>(view === "list" ? ".ep-poster" : ".ep-cover");
     const next: BindLayout | null = el ? {
       groups,
       pill: {
-        x: group ? group.l + group.w / 2 : el.offsetLeft + el.offsetWidth / 2,
-        y: el.offsetTop + (cover ? cover.offsetTop + cover.offsetHeight / 2 : el.offsetHeight / 2),
+        x: group && view === "grid" ? group.l + group.w / 2 : el.offsetLeft + (media ? media.offsetLeft + media.offsetWidth / 2 : el.offsetWidth / 2),
+        y: group && view === "list" ? group.t + group.h / 2 : el.offsetTop + (media ? media.offsetTop + media.offsetHeight / 2 : el.offsetHeight / 2),
       },
     } : null;
     setBind((now) => (JSON.stringify(now) === JSON.stringify(next) ? now : next));
   };
-  useLayoutEffect(() => measureRef.current(), [reelKey, selected, folders, scale, fill]);
+  useLayoutEffect(() => measureRef.current(), [reelKey, selected, folders, view, scale, fill]);
   useEffect(() => {
     const grid = gridRef.current;
     if (!grid || !reelKey || typeof ResizeObserver === "undefined") return;
@@ -512,7 +521,7 @@ export function FolderCardGrid({
         {reelPaths.length > 0 && bind && (
           <>
             {bind.groups.flatMap((group) => group.gaps.map((gap, i) => (
-              <span key={`gap-${group.paths[i + 1]}`} className="cut-bind-gap" style={{ left: gap.l, top: group.t, width: gap.w, height: group.h }} />
+              <span key={`gap-${group.paths[i + 1]}`} className="cut-bind-gap" style={{ left: gap.l, top: gap.t, width: gap.w, height: gap.h }} />
             )))}
             {bind.groups.map((group) => (
               <span key={`bind-${group.paths[0]}`} className="cut-bind" style={{ left: group.l, top: group.t, width: group.w, height: group.h }} />

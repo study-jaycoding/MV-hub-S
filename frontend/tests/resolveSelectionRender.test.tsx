@@ -1783,6 +1783,16 @@ it("App 공유·리뷰: 컷 두 번 클릭 = 모아보기 · 우클릭 = 폴더 
   act(() => { reel()!.querySelector<HTMLButtonElement>(".assets-x")!.click(); });
   expect(reel()).toBeNull();
   for (const spy of media) spy.mockRestore();
+  // 리스트 보기(Jay 가안)도 막대 대신 알약 · 표(리스트 단추 한 번 더)는 줄이 낮아 지금처럼 막대 — 막대가 이 틀에서 실제로 그려진다는 것도 여기서 확인된다
+  act(() => toolbarSnapshot!.onLayout("list"));
+  await settle();
+  expect([document.querySelector(".select-bar"), document.querySelector(".cut-play")?.textContent]).toEqual([null, "2컷 연결 재생"]);
+  act(() => toolbarSnapshot!.onToggleGroupByDate());
+  await settle();
+  expect([document.querySelector(".select-bar .sb-count")?.textContent, document.querySelector(".cut-play")]).toEqual(["2컷 선택", null]);
+  act(() => toolbarSnapshot!.onToggleGroupByDate());
+  act(() => toolbarSnapshot!.onLayout("grid"));
+  await settle();
   // 컷 우클릭(메뉴 키) — 그 폴더의 창. 뒤의 컷 카드는 그대로
   act(() => { cutTile("shot").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
   await settle();

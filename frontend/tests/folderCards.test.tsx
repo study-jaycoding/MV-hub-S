@@ -570,15 +570,18 @@ const mouse = (type: string, el: EventTarget, init: MouseEventInit = {}) =>
   act(() => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, buttons: type === "mousemove" ? 1 : 0, ...init })); });
 
 // ── 고른 컷 묶음(2026-11-09 Jay 시안) — 그리드에서 컷 2장 이상: 번호(격자 순서) · 같은 줄의 이웃끼리 한 판 · 알약 [▶ N컷 연결 재생] ──
-//  jsdom 은 자리를 재지 않아 카드·표지의 offset 을 꾸민다(한 줄 3칸 — 칸 340 + 틈 12, 줄 500, 표지 높이 190).
-it("고른 컷 묶음 — 같은 줄의 이웃만 한 판, 번호는 격자 순서, 알약은 마지막 고른 카드 위(묶음이면 가운데)·누르면 연결로 모아보기", () => {
+//  jsdom 은 자리를 재지 않아 카드·표지의 offset 을 꾸민다 — 그리드: 한 줄 3칸(칸 340 + 틈 12), 줄 500, 표지 340×190 /
+//  리스트: 줄 1336×154 를 166 간격으로, 표지(.ep-poster)는 줄 안 (6, 10) 236×132.
+it("고른 컷 묶음 — 그리드는 같은 줄의 이웃·리스트는 위아래 줄만 한 판, 번호는 격자 순서, 알약은 마지막 고른 카드 표지(묶음이면 가운데·리스트는 이음매)·누르면 연결로 모아보기", () => {
   const names = ["C0010", "C0020", "C0030", "C0040", "C0050"];
+  let rows = false; // 리스트 모양의 자리
   const slot = (el: HTMLElement) => names.indexOf((el.dataset.path ?? "").replace("e035/", ""));
+  const poster = (el: HTMLElement) => el.classList.contains("ep-poster");
   const geometry: Record<string, (el: HTMLElement) => number> = {
-    offsetLeft: (el) => (slot(el) < 0 ? 0 : (slot(el) % 3) * 352),
-    offsetTop: (el) => (slot(el) < 0 ? 0 : Math.floor(slot(el) / 3) * 500),
-    offsetWidth: (el) => (slot(el) < 0 ? 0 : 340),
-    offsetHeight: (el) => (el.classList.contains("ep-cover") ? 190 : slot(el) < 0 ? 0 : 480),
+    offsetLeft: (el) => (rows ? (poster(el) ? 6 : 0) : slot(el) < 0 ? 0 : (slot(el) % 3) * 352),
+    offsetTop: (el) => (rows ? (poster(el) ? 10 : slot(el) < 0 ? 0 : slot(el) * 166) : slot(el) < 0 ? 0 : Math.floor(slot(el) / 3) * 500),
+    offsetWidth: (el) => (rows ? (poster(el) ? 236 : slot(el) < 0 ? 0 : 1336) : el.classList.contains("ep-cover") || slot(el) >= 0 ? 340 : 0), // 그리드 표지 = 카드 폭
+    offsetHeight: (el) => (rows ? (poster(el) ? 132 : slot(el) < 0 ? 0 : 154) : el.classList.contains("ep-cover") ? 190 : slot(el) < 0 ? 0 : 480),
   };
   const saved = Object.keys(geometry).map((key) => [key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)] as const);
   for (const [key, read] of Object.entries(geometry)) {
@@ -588,9 +591,10 @@ it("고른 컷 묶음 — 같은 줄의 이웃만 한 판, 번호는 격자 순�
     const reels: [string[], boolean | undefined][] = [];
     let selected = new Set<string>();
     let layout: "grid" | "list" = "grid";
+    let table = false;
     const folders = names.map((name) => card(name, 2));
     const draw = (shown: FolderCard[] = folders) => act(() => root.render(
-      <FolderCardGrid {...gridProps} folders={shown} layout={layout} selected={selected} outside={0}
+      <FolderCardGrid {...gridProps} folders={shown} layout={layout} table={table} selected={selected} outside={0}
         onSelect={(next) => { selected = next; draw(shown); }} onReel={(paths, linked) => reels.push([paths, linked])} />,
     ));
     draw();
@@ -623,10 +627,30 @@ it("고른 컷 묶음 — 같은 줄의 이웃만 한 판, 번호는 격자 순�
     act(() => { pill()!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); });
     expect(reels).toEqual([[["e035/C0020", "e035/C0030", "e035/C0040"], true]]);
     expect([...selected]).toEqual(["e035/C0020", "e035/C0030", "e035/C0040"]);
-    // 리스트 보기 — 묶음·번호·알약 없음(선택 막대가 그대로 맡는다)
+    // 리스트 보기(Jay 가안) — 바로 위아래 줄이 이웃: 세 줄이 한 판(줄 사이 가로 틈 둘), 알약은 표지 세로줄의 묶음 세로 가운데
     layout = "list";
+    rows = true;
+    draw();
+    expect(orders()).toEqual(["", "1", "2", "3", ""]);
+    expect(frames()).toEqual(["0px 166px 1336px 486px"]);
+    const gapsAt = () => [...host.querySelectorAll<HTMLElement>(".cut-bind-gap")].map((el) => [el.style.left, el.style.top, el.style.width, el.style.height].join(" "));
+    expect(gapsAt()).toEqual(["0px 320px 1336px 12px", "0px 486px 1336px 12px"]);
+    expect(names.map((name) => tile(name).classList.contains("bound"))).toEqual([false, true, true, true, false]);
+    expect([pill()!.textContent, pill()!.style.left, pill()!.style.top]).toEqual(["3컷 연결 재생", "124px", "409px"]);
+    // 두 줄이면 알약은 두 줄의 이음매(틈 가운데)
+    selected = new Set(["e035/C0020", "e035/C0030"]);
+    draw();
+    expect([frames(), pill()!.style.left, pill()!.style.top]).toEqual([["0px 166px 1336px 320px"], "124px", "326px"]);
+    // 떨어진 줄 — 묶음 없이 줄마다 제 선택 테두리, 알약은 마지막 고른 줄(자리가 남지 않은 줄이면 격자의 마지막)의 표지 가운데
+    selected = new Set(["e035/C0020", "e035/C0050"]);
+    draw();
+    expect([frames(), orders(), pill()!.style.left, pill()!.style.top]).toEqual([[], ["", "1", "", "", "2"], "124px", "740px"]);
+    // 표(리스트 단추 한 번 더) — 줄이 알약만큼 낮아 묶음·번호·알약 없음(선택 막대가 그대로 맡는다)
+    table = true;
     draw();
     expect([host.querySelector(".cut-play, .cut-bind, .cut-order"), tile("C0020").classList.contains("bound")]).toEqual([null, false]);
+    table = false;
+    rows = false;
     // 에피소드(하위 폴더 있음)가 섞인 선택 — 알약 없음
     layout = "grid";
     selected = new Set(["e035/C0020", "e036"]);
