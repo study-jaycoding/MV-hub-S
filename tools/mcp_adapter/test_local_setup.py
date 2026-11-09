@@ -2,13 +2,14 @@
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import tomllib
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from local_setup import configure_client, drop_old_dev_entry, read_profile, remove_profiles, server_name, update_codex, update_claude, _atomic
+from local_setup import configure_client, drop_old_dev_entry, read_profile, remove_profiles, server_name, update_codex, update_claude, write_panel_profile, _atomic
 
 
 class SetupTests(unittest.TestCase):
@@ -315,6 +316,36 @@ class SetupTests(unittest.TestCase):
             read_profile(path)
         with self.assertRaises(ValueError):
             configure_client("other", self.setup, {**self.credential, "extra": True}, home=self.root, local_appdata=self.root)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI")
+    def test_panel_profile_leaves_client_configs_and_adapter_exposes_only_panel_tools(self):
+        import anyio
+        from mcp import Client, StdioServerParameters
+
+        home, local = self.root / "home", self.root / "local"
+        claude = home / ".claude.json"
+        claude.parent.mkdir(parents=True)
+        claude.write_text('{"keep": 1}', encoding="utf-8")
+        before = claude.read_bytes()
+        setup = {"python": sys.executable, "adapter": str(Path(__file__).with_name("server.py")), "url": self.setup["url"],
+                 "python_args": [], "release": False}
+        with patch("local_setup._require_interactive_user"):
+            entry = write_panel_profile(setup, self.credential, local_appdata=local)
+        profile = local / "MVHub" / "agent_chat" / "profiles" / self.credential["hub_id"] / (self.credential["client_id"] + ".bin")
+        self.assertEqual(read_profile(profile), self.credential)
+        self.assertNotIn(self.credential["secret"], json.dumps(entry))
+        self.assertEqual(entry["args"][-1], "--panel")
+        self.assertEqual(claude.read_bytes(), before)
+        self.assertFalse((home / ".codex").exists())
+        self.assertFalse((local / "MVHub-MCP").exists())
+
+        async def tool_names():
+            with anyio.fail_after(30):
+                async with Client(StdioServerParameters(command=entry["command"], args=entry["args"])) as client:
+                    return {tool.name for tool in (await client.list_tools()).tools}
+
+        self.assertEqual(anyio.run(tool_names),
+                         {"check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan"})
 
 
 if __name__ == "__main__":

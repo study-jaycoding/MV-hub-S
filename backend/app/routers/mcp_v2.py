@@ -31,7 +31,7 @@ from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext, seedance_audio_reference_error
 from ..repo import mcp_v2 as store
-from ..services import auth, cli_bridge, thumbs, reference_match, upload_limits, asset_tree
+from ..services import agent_chat, auth, cli_bridge, thumbs, reference_match, upload_limits, asset_tree
 from ..services.auth import hub_id  # main·시험은 mcp_v2.hub_id 로 부른다
 from ..services.seedance_draft import fresh_params
 from ..services.async_tools import to_thread_non_abandon
@@ -283,6 +283,29 @@ def _register_client(ctx, name, setup, workspace, allow_execution):
             store.revoke(cid, ctx.owner, email)
             result = {"client": name, "status": "error", "message": _setup_error_message(exc)}
         return {**result, "id": cid}
+
+
+PANEL_CLIENT = "agent_panel"
+
+
+def issue_panel_client(ctx, setup):
+    """Ask Agent 칸 전용 연결 — 전역 LLM 설정(~/.claude.json·~/.codex/config.toml)은 건드리지 않고 칸 폴더에 프로필만 쓴다.
+    실행 허용은 영구히 끔(repo 도 이 이름은 강제로 끈다). 반환 = (연결 id, 어댑터 실행 entry — 비밀값 없음, 프로필 경로만)."""
+    with _registration_lock:
+        _still_current(ctx)
+        email = norm_email(ctx.account["email"])
+        if config.AUTH_ENABLED:  # /app/configure 와 같게 — AUTH 켠 허브의 연결은 활성 MCP 계정에만 듣는다(_capture)
+            repo.set_setting("mcp_active_account", email)
+        secret = secrets.token_urlsafe(32)
+        cid = store.create_client(mcp.digest(secret), ctx.hub, ctx.owner, email, ctx.account.get("password_changed_at"),
+                                  {"scope": "account"}, PANEL_CLIENT, False)
+        try:
+            entry = _setup_module().write_panel_profile(setup, {"secret": secret, "hub_id": ctx.hub, "client_id": cid, "url": setup["url"]})
+            _still_current(ctx)
+        except Exception:
+            store.revoke(cid, ctx.owner, email)
+            raise
+        return cid, entry
 
 
 @router.post("/app/configure")
@@ -1157,6 +1180,12 @@ async def _estimate_plan(ctx, plan_id):
 async def _execute(ctx, plan_id):
     if not ctx.client["can_execute"]:
         raise HTTPException(403, "앱에서 이 클라이언트의 실행을 허용하세요.", headers={"X-MVHub-MCP-Error": "execution_not_allowed"})
+    return await submit_plan(ctx, plan_id)
+
+
+async def submit_plan(ctx, plan_id):
+    """실행권 검사 아래의 공통 제출 — MCP 실행과 Ask Agent 칸의 [실행] 단추(사람이 누름)가 같이 쓴다.
+    계획 원자 선점(claim_plan)·항목별 중복 방지 키·취소와 불명확 접수 복구가 그대로 따라온다(떼어 쓰지 말 것)."""
     plan = await _authorized_plan(ctx, plan_id)
     if plan["status"] != "planned":
         return _public_plan(plan)
@@ -1225,11 +1254,18 @@ _LIBRARY_READ_METHODS = frozenset({
 })
 
 
+# Ask Agent 칸 연결이 허브에서 부를 수 있는 동작 — 어댑터의 패널 모드·CLI 허용 목록과 별개로 허브도 막는다(실행은 can_execute=0 으로도 막힘).
+_PANEL_METHODS = frozenset({"read_context", "prepare_generation_plan", "estimate_plan", "get_plan"})
+
+
 @router.post("/client/action")
 async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
     if body.method in _LIBRARY_READ_METHODS:
         ctx.request.state.library_unchanged = True
     try:
+        panel = ctx.client.get("name") == PANEL_CLIENT
+        if panel and body.method not in _PANEL_METHODS:
+            raise HTTPException(403, "Ask Agent 칸 연결은 이 도구를 쓸 수 없습니다.")
         if body.method == "read_context":
             return await _read(ctx, ReadIn.model_validate(body.args))
         if body.method == "prepare_generation_plan":
@@ -1237,7 +1273,11 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
             items = [item.model_dump() for item in data.items]
             ws = await asyncio.to_thread(_request_workspace, ctx, data.workspace_scope, data.workspace_id)
             ws = await _validate_items(ctx, items, ws)
-            return _public_plan(await asyncio.to_thread(store.create_plan, ctx.client, data.title, items, ws))
+            plan = _public_plan(await asyncio.to_thread(store.create_plan, ctx.client, data.title, items, ws))
+            # 칸의 [실행] 은 허브가 여기서 직접 받은 계획만 실행한다 — CLI 글에 나온 id 로는 대응을 만들지 않는다.
+            if panel and not await asyncio.to_thread(agent_chat.service.bind_plan, ctx.client["id"], plan):
+                raise HTTPException(409, "Ask Agent 칸의 진행 중인 차례가 없어 계획을 칸에 올리지 못했습니다.")
+            return plan
         if body.method == "get_result":
             return await _result(ctx, ResultIn.model_validate(body.args))
         if body.method == "get_generation":

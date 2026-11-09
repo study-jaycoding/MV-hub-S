@@ -21,6 +21,11 @@ export const STORAGE_KEYS = {
 
   // 로컬 허브에서 로그아웃한 시각 — 같은 브라우저의 다른 탭이 storage 알림으로 듣는 신호(Jay 결정 4B). 값 자체는 쓰지 않는다.
   hubLogoutAt: "mvhub.hubLogoutAt",
+  // Ask Agent 옆 칸(이 브라우저) — 열림 "1"/"0" · 마지막 모델 {engine, model, effort} · 마지막 대화 {account, id}(다시 열거나 새로 고치면 이어 붙는다).
+  //  `ch.` 로 시작하지 않는다 — 계정 전환 정리가 지우지 않게(대화는 계정을 같이 적어 다른 계정이면 쓰지 않는다).
+  agentPanelOpen: "mvhub.agentPanel.open",
+  agentPanelModel: "mvhub.agentPanel.model",
+  agentPanelConversation: "mvhub.agentPanel.conversation",
   // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
   canvasHandoff: "mvhub.canvasHandoff",
   historyPos: "ch.history.pos",
