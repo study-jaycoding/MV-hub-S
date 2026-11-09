@@ -258,31 +258,36 @@ def test_window_record_after_crashes(monkeypatch):
     assert claude.window_alive()  # 살아 있는 허브가 만드는 중
     claude._write(claude._window_file(), {"status": "open", "pid": dead.pid, "start": 1})
     assert not claude.window_alive()
-    # 기록이 깨짐: 허브가 띄운 로그인 프로세스가 떠 있거나 목록을 못 보면 막는다(대화도 — 차례 잠금과 같은 판정)
-    claude._window_file().write_text("{broken", encoding="utf-8")
-    for auth in ("none", "subscription"):
-        monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
-        for lines in (["claude.exe --setting-sources local auth login --claudeai"], None):
-            monkeypatch.setattr(claude, "_claude_command_lines", lambda lines=lines: lines)
-            assert claude.claude_state(CLAUDE)["state"] == "window_record", (auth, lines)
-            with pytest.raises(claude.Busy):
-                claude.ClaudeLock("turn").acquire()
-    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
-    with pytest.raises(claude.Busy):
-        claude.open_login_window(lambda: None)
-    # 로그인 프로세스가 없으면(다른 Claude 는 상관없음) 옆으로 치우고 이어 간다
-    monkeypatch.setattr(claude, "_claude_command_lines", lambda: ["claude.exe -p --output-format stream-json"])
-    assert claude.claude_state(CLAUDE)["state"] == "not_logged_in"
-    assert not claude._window_file().exists() and claude._window_file().with_name(claude._window_file().name + ".bad").exists()
+    # 기록이 깨짐(JSON 아님 · 모양만 맞고 필수 필드·상태가 어긋남): 허브가 띄운 로그인 프로세스가 떠 있거나 목록을 못 보면 막는다(대화도)
+    bad = claude._window_file().with_name(claude._window_file().name + ".bad")
+    for broken in ("{broken", '{"status": "open", "pid": 12345}', '{"status": "opened", "pid": 12345, "start": 1}',
+                   '{"status": "open", "pid": true, "start": 1}', '["open"]'):
+        claude._window_file().write_text(broken, encoding="utf-8")
+        for auth in ("none", "subscription"):
+            monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
+            for lines in (["claude.exe --setting-sources local auth login --claudeai"], None):
+                monkeypatch.setattr(claude, "_claude_command_lines", lambda lines=lines: lines)
+                assert claude.claude_state(CLAUDE)["state"] == "window_record", (broken, auth, lines)
+                with pytest.raises(claude.Busy):
+                    claude.ClaudeLock("turn").acquire()
+        monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+        with pytest.raises(claude.Busy):
+            claude.open_login_window(lambda: None)
+        # 로그인 프로세스가 없으면(다른 Claude 는 상관없음) 옆으로 치우고 이어 간다
+        monkeypatch.setattr(claude, "_claude_command_lines", lambda: ["claude.exe -p --output-format stream-json"])
+        assert claude.claude_state(CLAUDE)["state"] == "not_logged_in", broken
+        assert not claude._window_file().exists() and bad.read_text(encoding="utf-8") == broken
 
 
 @windows
-def test_liveness_query_failure_blocks_but_foreign_process_is_dead(monkeypatch):
+def test_liveness_unconfirmed_blocks_until_no_login_process(monkeypatch):
     real = claude._k32
 
     def fake(error):
         class K32:
-            def OpenProcess(self, *args):
+            def OpenProcess(self, access, inherit, pid):
+                if pid != 12345:  # 기록 속 번호만 못 연다(허브 자신은 연다)
+                    return real().OpenProcess(access, inherit, pid)
                 ctypes.set_last_error(error)
                 return 0
 
@@ -291,15 +296,34 @@ def test_liveness_query_failure_blocks_but_foreign_process_is_dead(monkeypatch):
 
         return lambda: K32()
 
-    claude._write(claude._window_file(), {"status": "open", "pid": 12345, "start": 1})
-    for error, blocked in ((87, False), (5, False), (6, True)):  # 없음 · 다른 사용자의 프로세스 = 우리 창 아님 · 그 밖 = 확인 못 함
+    login = ["claude.exe --setting-sources local auth login --claudeai"]
+    for error in (87, 5, 6):  # 그런 번호 없음 = 끝남 · 열기 거절·그 밖 = 확인 못 함
+        claude._write(claude._window_file(), {"status": "open", "pid": 12345, "start": 1})
         monkeypatch.setattr(claude, "_k32", fake(error))
-        if blocked:
-            with pytest.raises(claude.RecordUnreadable):
-                claude.window_alive()
-        else:
+        monkeypatch.setattr(claude, "_claude_command_lines", lambda: login)
+        if error == 87:
             assert not claude.window_alive()
+            continue
+        with pytest.raises(claude.RecordUnreadable):
+            claude.window_alive()  # 로그인 창 프로세스가 떠 있으면 계속 막는다
+        monkeypatch.setattr(claude, "_claude_command_lines", lambda: None)
+        with pytest.raises(claude.RecordUnreadable):
+            claude.window_alive()  # 목록을 못 봐도 막는다
+        monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])
+        assert not claude.window_alive() and not claude._window_file().exists()  # 로그인 창이 하나도 없음 = 치우고 이어 감
     monkeypatch.setattr(claude, "_k32", real)
+    # 주인 허브가 살았는지 모르면(열기 거절) 회수 안 된 차례 표식이 없을 때만 이어 간다
+    claude._write(claude._owner_file(), {"pid": 12345, "start": 1, "kind": "turn", "status": "running"})
+    monkeypatch.setattr(claude, "_k32", fake(5))
+    for marker, ok in ((True, False), (None, False), (False, True)):
+        monkeypatch.setattr(claude, "turn_work_alive", lambda marker=marker: marker)
+        if ok:
+            lock = claude.ClaudeLock("login")
+            lock.acquire()
+            lock.release()
+        else:
+            with pytest.raises(claude.Busy):
+                claude.ClaudeLock("login").acquire()
 
 
 @windows
@@ -395,16 +419,39 @@ def test_abandoned_lock_rules(monkeypatch):
     lock = claude.ClaudeLock("turn")
     lock.acquire()
     lock.release()
-    # 주인 기록이 깨지면: 허브가 띄운 Claude 가 떠 있거나 목록을 못 보면 막고, 없으면 치우고 이어 간다
-    claude._owner_file().write_text("{broken", encoding="utf-8")
-    for lines in (["claude.exe --setting-sources local -p --output-format stream-json"], None):
-        monkeypatch.setattr(claude, "_claude_command_lines", lambda lines=lines: lines)
+    # 주인 기록이 깨지면(JSON 아님 · 필수 필드·상태 어긋남): 위에서 스레드가 놓지 못하고 죽은 차례들의 표식이 열려 있어 막는다 —
+    # claude.exe 가 없어도(Job 에 MCP 자식만 남은 경우) 막는다. 표식이 없음을 확인했을 때만 이어 간다
+    real_marker = claude.turn_work_alive
+    assert real_marker() is True
+    monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])
+    for broken in ("{broken", '{"pid": 1, "start": 1, "kind": "turn", "status": "runing"}', '{"status": "running"}'):
+        monkeypatch.setattr(claude, "turn_work_alive", real_marker)
+        claude._owner_file().write_text(broken, encoding="utf-8")
         with pytest.raises(claude.Busy):
             claude.ClaudeLock("turn").acquire()
-    monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])
+        monkeypatch.setattr(claude, "turn_work_alive", lambda: None)  # 표식을 확인 못 함 = 막음
+        with pytest.raises(claude.Busy):
+            claude.ClaudeLock("turn").acquire()
+        monkeypatch.setattr(claude, "turn_work_alive", lambda: False)
+        lock = claude.ClaudeLock("turn")
+        lock.acquire()
+        lock.release()
+
+
+@windows
+def test_turn_marker_lives_until_release_or_thread_death():
+    assert claude.turn_work_alive() is False
     lock = claude.ClaudeLock("turn")
     lock.acquire()
+    assert claude.turn_work_alive() is True  # 차례 중
     lock.release()
+    assert claude.turn_work_alive() is False  # 회수 확인 뒤 놓으면 닫힘
+    login = claude.ClaudeLock("login")
+    login.acquire()
+    assert claude.turn_work_alive() is False  # 로그인(Job 없음)은 표식 없음
+    login.release()
+    _in_thread(lambda: claude.ClaudeLock("turn").acquire())  # 놓지 못하고 스레드가 끝남
+    assert claude.turn_work_alive() is True  # 허브가 살아 있는 동안 열린 채(허브가 죽으면 커널이 닫는다)
 
 
 # ── 빠른 모드·깊이·해석기 ──

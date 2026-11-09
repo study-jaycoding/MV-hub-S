@@ -6,7 +6,9 @@
 - 같은 Claude 자격을 쓰는 허브들(dev·배포판, 기록 폴더를 따로 준 허브까지)은 이름 있는 뮤텍스 하나로 '차례'와 '로그인 창 만들기'를
   줄 세운다 — 이름·기록 위치는 자격 폴더(CLAUDE_CONFIG_DIR 또는 ~/.claude)로 정한다. 뮤텍스는 스레드 소유라 잡은 스레드가 놓는다.
   주인 기록(running|clean)은 정상·버려진 획득 모두에서 먼저 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다.
-- 기록이 깨지면 잠금을 잡고 이 PC 에 허브가 띄운 Claude 프로세스가 없음을 확인했을 때만 옆으로 치우고 이어 간다(확인 못 하면 막는다).
+- 기록은 필수 필드·상태까지 검사한다. 깨졌거나 프로세스가 살았는지 확인 못 하면(열기 거절 포함) 막는 쪽이 기본이고, 확인된 근거가 있을 때만
+  이어 간다 — 창 기록: 잠금 안에서 허브가 띄운 로그인 창(claude.exe … auth login)이 하나도 없음 · 주인 기록: 회수 안 된 차례 표식
+  (이름 있는 이벤트 — 차례 잠금을 쥔 허브가 회수 확인 뒤 놓을 때까지 열어 둠, 허브가 죽으면 커널이 닫음)이 없음.
 - 상태·기록·응답에 이메일·조직 id·경로를 싣지 않는다.
 """
 from __future__ import annotations
@@ -43,11 +45,10 @@ MESSAGES = {
     "window_record": "로그인 창 상태를 확인하지 못했어요 — 열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요",
 }
 LOGIN_MARK = " auth login"  # 허브가 띄운 로그인 창의 명령줄 표식(login_command)
-HUB_MARK = "--setting-sources local"  # 허브가 띄운 Claude 프로세스(차례·로그인·상태 확인) 공통 표식
 CREATE_NEW_CONSOLE, CREATE_BREAKAWAY_FROM_JOB = 0x00000010, 0x01000000
 _WAIT_OBJECT_0, _WAIT_ABANDONED, _WAIT_TIMEOUT = 0x0, 0x80, 0x102
-_PROCESS_QUERY_LIMITED, _STILL_ACTIVE = 0x1000, 259
-_ERROR_ACCESS_DENIED, _ERROR_INVALID_PARAMETER = 5, 87
+_PROCESS_QUERY_LIMITED, _STILL_ACTIVE, _SYNCHRONIZE = 0x1000, 259, 0x00100000
+_ERROR_FILE_NOT_FOUND, _ERROR_INVALID_PARAMETER = 2, 87
 _held_windows: list[subprocess.Popen] = []  # 띄운 창의 Popen 을 쥐어 둔다(정리 경고만 막음 — 창을 끄지 않는다)
 
 
@@ -154,7 +155,26 @@ def _window_file() -> Path:
     return config.AGENT_CHAT_CLAUDE_DIR / f"{_scope()}-login.json"
 
 
-def _read(path: Path) -> dict | None:
+def _id(value) -> bool:
+    return type(value) is int and value > 0  # bool 은 int 의 하위형이라 type 으로 가른다
+
+
+def _valid_window(data: dict) -> bool:
+    status = data.get("status")
+    if status == "open":
+        return _id(data.get("pid")) and _id(data.get("start"))
+    if status == "launching":
+        return _id(data.get("hub_pid")) and _id(data.get("hub_start"))
+    return status == "none"
+
+
+def _valid_owner(data: dict) -> bool:
+    return (data.get("status") in ("running", "clean") and data.get("kind") in ("turn", "login")
+            and _id(data.get("pid")) and _id(data.get("start")))
+
+
+def _read(path: Path, valid: Callable[[dict], bool]) -> dict | None:
+    """없으면 None. 못 읽음·JSON 아님·필수 필드·상태가 어긋나면 RecordUnreadable — 모양만 맞는 기록이 막는 판정을 비켜 가지 않게."""
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -165,7 +185,7 @@ def _read(path: Path) -> dict | None:
         data = json.loads(raw)
     except ValueError as exc:
         raise RecordUnreadable(str(path.name)) from exc
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or not valid(data):
         raise RecordUnreadable(str(path.name))
     return data
 
@@ -190,6 +210,10 @@ def _k32():
     k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     k32.WaitForSingleObject.restype = wintypes.DWORD
     k32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    k32.CreateEventW.restype = wintypes.HANDLE
+    k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.OpenEventW.restype = wintypes.HANDLE
+    k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     return k32
 
 
@@ -201,12 +225,12 @@ def _handle_start(k32, handle) -> int | None:
 
 
 def process_start(pid: int) -> int | None:
-    """살아 있으면 생성 시각(FILETIME 정수), 끝났으면 None — 살았는지 확인하지 못하면 RecordUnreadable(막는 쪽).
-    열기 거절(5)은 '우리 것이 아님'이다: 기록한 프로세스는 같은 사용자라 늘 열리니, 못 열면 그 번호를 다른 프로세스가 쓰고 있다."""
+    """살아 있으면 생성 시각(FILETIME 정수), 끝났으면 None — 살았는지 확인하지 못하면(열기 거절 포함) RecordUnreadable(막는 쪽).
+    '끝남'은 그런 번호가 없음(87)·종료 코드가 있음만. 시작 시각이 다르면 부른 쪽이 다른 프로세스로 본다."""
     k32 = _k32()
     handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED, False, int(pid))
     if not handle:
-        if ctypes.get_last_error() in (_ERROR_ACCESS_DENIED, _ERROR_INVALID_PARAMETER):  # 다른 프로세스 / 그런 번호 없음
+        if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:  # 그런 번호 없음
             return None
         raise RecordUnreadable("process")
     try:
@@ -223,8 +247,8 @@ def process_start(pid: int) -> int | None:
         k32.CloseHandle(handle)
 
 
-def _alive(pid, start) -> bool:
-    return isinstance(pid, int) and isinstance(start, int) and process_start(pid) == start
+def _alive(pid: int, start: int) -> bool:
+    return process_start(pid) == start  # 기록 모양(_valid_*)이 pid·start 를 양의 정수로 보장
 
 
 def _me() -> dict:
@@ -250,55 +274,69 @@ def _claude_command_lines() -> list[str] | None:
     return None if any(not isinstance(line, str) or not line for line in lines) else lines
 
 
-def _recover(path: Path, mark: str) -> bool:
-    """깨진 기록을 옆으로 치웠으면 True. 잠금을 잡고(다른 허브가 쓰는 중이 아니게 — 잡은 스레드면 다시 잡아도 된다)
-    다시 읽어도 깨졌고, 표식이 든 claude.exe 가 하나도 없음을 확인했을 때만 치운다."""
+@contextlib.contextmanager
+def _scope_lock():
+    """같은 자격의 잠금을 기다리지 않고 잡아 본다(이미 잡은 스레드면 다시 잡힌다) — 못 잡으면 False."""
     k32 = _k32()
     handle = k32.CreateMutexW(None, False, mutex_name())
     if not handle:
-        return False
+        yield False
+        return
     try:
-        if k32.WaitForSingleObject(handle, 0) not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
-            return False
+        held = k32.WaitForSingleObject(handle, 0) in (_WAIT_OBJECT_0, _WAIT_ABANDONED)
         try:
-            try:
-                _read(path)
-                return True  # 그새 다른 허브가 고쳐 썼다 — 부른 쪽이 다시 읽는다
-            except RecordUnreadable:
-                pass
-            lines = _claude_command_lines()
-            if lines is None or any(mark in line for line in lines):
-                return False
-            os.replace(path, path.with_name(f"{path.name}.bad"))
-            return True
+            yield held
         finally:
-            k32.ReleaseMutex(handle)
-    except OSError:
-        return False
+            if held:
+                k32.ReleaseMutex(handle)
     finally:
         k32.CloseHandle(handle)
 
 
-def _read_or_recover(path: Path, mark: str) -> dict | None:
-    try:
-        return _read(path)
-    except RecordUnreadable:
-        if not _recover(path, mark):
-            raise
-        return _read(path)  # 치웠으면 없음, 그새 다시 써졌으면 그 기록
+def _window_alive_once() -> bool:
+    record = _read(_window_file(), _valid_window)
+    if not record or record["status"] == "none":
+        return False
+    if record["status"] == "open":
+        return _alive(record["pid"], record["start"])
+    return _alive(record["hub_pid"], record["hub_start"])  # launching — 만드는 허브가 살아 있나
 
 
 def window_alive() -> bool:
     """이 PC 에 칸이 연 로그인 창이 살아 있나 — open = 창 프로세스, launching = 만드는 허브가 살아 있나.
-    기록이 깨졌는데 되살리지 못했거나 살았는지 확인하지 못하면 RecordUnreadable."""
-    record = _read_or_recover(_window_file(), LOGIN_MARK)
-    if not record:
-        return False
-    if record.get("status") == "open":
-        return _alive(record.get("pid"), record.get("start"))
-    if record.get("status") == "launching":
-        return _alive(record.get("hub_pid"), record.get("hub_start"))
-    return False
+    기록이 깨졌거나 살았는지 확인하지 못하면: 잠금 안에서 다시 보고(그새 다른 허브가 고쳐 썼을 수 있다), 그래도 모르면
+    허브가 띄운 로그인 창(claude.exe … auth login)이 하나도 없음을 확인했을 때만 기록을 치운다. 그것도 못 하면 RecordUnreadable(막음)."""
+    try:
+        return _window_alive_once()
+    except RecordUnreadable:
+        pass
+    with _scope_lock() as held:
+        if held:
+            try:
+                return _window_alive_once()
+            except RecordUnreadable:
+                lines = _claude_command_lines()
+                if lines is not None and not any(LOGIN_MARK in line for line in lines):
+                    path = _window_file()
+                    with contextlib.suppress(OSError):
+                        os.replace(path, path.with_name(f"{path.name}.bad"))
+                    return False
+    raise RecordUnreadable("window")
+
+
+def _marker_name() -> str:
+    return f"Local\\MVHub.ClaudeTurn.{_scope()}"
+
+
+def turn_work_alive() -> bool | None:
+    """회수를 확인하지 못한 Claude 차례가 이 PC 의 어느 허브에 남아 있나(확인 못 하면 None). 차례 잠금을 쥔 허브는 회수를 확인하고
+    놓을 때까지 이름 있는 이벤트를 열어 둔다 — 스레드가 놓지 못하고 죽으면 열린 채 남고, 허브가 죽으면 커널이 그 Job 과 함께 닫는다."""
+    k32 = _k32()
+    handle = k32.OpenEventW(_SYNCHRONIZE, False, _marker_name())
+    if handle:
+        k32.CloseHandle(handle)
+        return True
+    return False if ctypes.get_last_error() == _ERROR_FILE_NOT_FOUND else None
 
 
 # ── PC 전체 뮤텍스 ──
@@ -313,6 +351,7 @@ class ClaudeLock:
     def __init__(self, kind: str):
         self.kind = kind
         self._handle = None
+        self._marker = None  # 차례만 — 회수 확인 뒤 놓을 때까지 열어 두는 표식(turn_work_alive)
 
     def acquire(self) -> None:
         k32 = _k32()
@@ -329,10 +368,13 @@ class ClaudeLock:
         try:
             # 정상·버려진 획득 모두 먼저 기록을 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다(죽은 허브면 커널이 그 Job 을 껐다)
             try:
-                owner = _read_or_recover(_owner_file(), HUB_MARK)
-                running = owner and owner.get("status") == "running" and _alive(owner.get("pid"), owner.get("start"))
+                owner = _read(_owner_file(), _valid_owner)
+                running = bool(owner) and owner["status"] == "running" and _alive(owner["pid"], owner["start"])
             except RecordUnreadable:
-                raise Busy("이전 Claude 작업 기록을 확인하지 못했어요 — 열린 Claude 창·작업이 끝난 뒤 다시 해 주세요") from None
+                # 기록이 깨졌거나 주인이 살았는지 모름 — 회수 안 된 차례가 어느 허브에도 없다는 표식 확인이 있을 때만 이어 간다(기록은 아래에서 새로 씀)
+                if turn_work_alive() is not False:
+                    raise Busy("이전 Claude 작업 기록을 확인하지 못했어요 — MV Hub 를 모두 다시 켜 주세요") from None
+                running = False
             if running:
                 raise Busy("이전 Claude 작업 정리를 확인하지 못했어요 — 그 MV Hub 를 다시 켜 주세요", "unclean")
             if self.kind == "turn":
@@ -341,21 +383,30 @@ class ClaudeLock:
                         raise Busy("Claude 로그인 창이 열려 있어요 — 마치거나 닫은 뒤 보내 주세요", "login_window_open")
                 except RecordUnreadable:
                     raise Busy(MESSAGES["window_record"]) from None
+                self._marker = k32.CreateEventW(None, True, False, _marker_name())
+                if not self._marker:
+                    raise Busy("Claude 작업 표식을 만들지 못했어요")
             _write(_owner_file(), {**_me(), "kind": self.kind, "status": "running"})
         except BaseException:
+            if self._marker:
+                k32.CloseHandle(self._marker)
+                self._marker = None
             k32.ReleaseMutex(handle)
             k32.CloseHandle(handle)
             raise
         self._handle = handle
 
     def release(self) -> None:
-        """자기 일의 회수(Job 0개)를 확인한 뒤에만 부른다 — clean 을 쓰고 놓는다."""
+        """자기 일의 회수(Job 0개)를 확인한 뒤에만 부른다 — clean 을 쓰고 표식을 닫고 놓는다."""
         if not self._handle:
             return
         k32 = _k32()
         try:
             _write(_owner_file(), {**_me(), "kind": self.kind, "status": "clean"})
         finally:
+            if self._marker:
+                k32.CloseHandle(self._marker)
+                self._marker = None
             k32.ReleaseMutex(self._handle)
             k32.CloseHandle(self._handle)
             self._handle = None
