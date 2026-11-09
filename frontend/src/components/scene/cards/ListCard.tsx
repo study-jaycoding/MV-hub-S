@@ -3,11 +3,14 @@
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
-import { refThumbSrc } from "../../../lib/sceneMedia";
+import { refMediaSrc, refMediaType, refThumbSrc } from "../../../lib/sceneMedia";
+import { useEscapeClose } from "../../../lib/useEscapeClose";
+import { useModalFocus } from "../../../lib/keyGate";
 import { refServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
@@ -347,5 +350,248 @@ export function ListCard({
         title="드래그 = 크기 조절"
       />
     </>
+  );
+}
+
+// ── 크게 보기 창(Jay 2026-11-09 시안 A) — 리스트 더블클릭. 칸을 끌거나 Ctrl+방향키로 순서를 바꾼다.
+//  저장은 노드 끌기와 같은 길(SceneBoard.reorderListToIndex → orderListItems)이라 창과 노드 순서가 어긋나지 않는다.
+//  놓을 자리는 창이 자기 칸으로 센다 — 노드의 startReorder 는 리스트 단독 선택이 조건이고 선을 캔버스 층(창 아래)에 그린다.
+const KIND_LABEL = { image: "이미지", video: "영상", audio: "오디오" } as const;
+type WinItem = {
+  id: string;
+  src: string | null;
+  kind: "image" | "video" | "audio";
+  name: string;
+  meta: string;
+  count?: number;
+  off?: "missing" | "held";
+  preview?: PreviewTarget;
+};
+
+export function ListWindow({
+  listId,
+  cardsById,
+  resolvedEdges,
+  genData,
+  workspaceId,
+  onMove,
+  onPreview,
+  onClose,
+}: {
+  listId: string;
+  cardsById: Map<string, SceneCard>;
+  resolvedEdges: SceneEdge[];
+  genData: Record<string, Generation>;
+  workspaceId: string;
+  onMove: (cid: string, insertIndex: number) => void; // insertIndex = 지금 순서 기준 0..n(reorderListToIndex 와 같은 뜻)
+  onPreview: (cid: string, p: PreviewTarget) => void;
+  onClose: () => void;
+}) {
+  const winRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const dragEnd = useRef<(() => void) | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ id: string; x: number; y: number; bar: { x: number; y: number; w: number; h: number } | null } | null>(null);
+  useEscapeClose(onClose);
+  useModalFocus(winRef);
+  useEffect(() => () => dragEnd.current?.(), []); // 끄는 중에 닫혀도 창 밖 리스너가 남지 않게
+
+  const li = collectListInputs(listId, cardsById, resolvedEdges);
+  const rows = li.kind === "text";
+  const ids = li.kind === "reference" ? li.referenceCardIds : li.kind === "generation" || rows ? li.sourceIds : [];
+  const lk = li.kind === "reference" || li.kind === "text" || li.kind === "generation" ? li.kind : "empty";
+
+  const itemOf = (cid: string): WinItem => {
+    const c = cardsById.get(cid);
+    if (rows) return { id: cid, src: null, kind: "image", name: effectiveTextOf(cid, cardsById, resolvedEdges).trim() || "(빈 텍스트)", meta: "" };
+    if (c?.kind === "reference") {
+      const refs = c.refs || [];
+      const first = refs[0];
+      const st = first ? refServerStatus(workspaceId, first) : undefined;
+      const off = st === "missing" || st === "held" ? st : undefined;
+      const kind = kindOf(first?.type);
+      const url = first && !off ? refMediaSrc(first) : undefined;
+      return {
+        id: cid,
+        src: first ? refThumbSrc(first) ?? null : null,
+        kind,
+        name: first?.name || "레퍼런스",
+        meta: KIND_LABEL[kind] + (refs.length > 1 ? ` ${refs.length}장` : ""),
+        count: refs.length,
+        off,
+        preview: url && first ? { url, type: refMediaType(first), name: first.name || "레퍼런스" } : undefined,
+      };
+    }
+    if (c?.kind === "list" || c?.kind === "render") {
+      const nested = c.kind === "list" ? collectListInputs(c.id, cardsById, resolvedEdges) : null;
+      const n = nested ? (nested.kind === "generation" ? nested.generationCardIds.length : 0) : collectRenderGenCardIds(c.id, cardsById, resolvedEdges).length;
+      return { id: cid, src: null, kind: "image", name: `${c.kind === "render" ? "렌더" : "리스트"} ${n}`, meta: "중첩 소스" };
+    }
+    const gid = c?.genId || (c ? variantIds(c)[0] : undefined);
+    const gen = gid ? ownEntry(genData, gid) : undefined;
+    const a = gen?.assets?.[0];
+    const kind = kindOf(a?.type);
+    return {
+      id: cid,
+      src: gen ? thumbOf(gen, 512) : null,
+      kind,
+      name: gen?.prompt?.slice(0, 60) || (gid ? "생성물" : "빈 카드"),
+      meta: "생성물 · " + KIND_LABEL[kind],
+      preview: a && gid ? { url: a.file_path, type: a.type, name: gen?.prompt?.slice(0, 50) || "결과", genId: gid } : undefined,
+    };
+  };
+
+  // 포인터 자리 → 놓을 자리(0..n)와 표시 막대. 격자 = 가장 가까운 칸의 왼쪽/오른쪽(노드의 가로 썸네일과 같은 규칙), 줄 = 위/아래.
+  const insertAt = (cx: number, cy: number) => {
+    const body = bodyRef.current;
+    const els = Array.from(body?.querySelectorAll<HTMLElement>("[data-wid]") ?? []);
+    if (!body || !els.length) return null;
+    let idx = els.length;
+    if (rows) {
+      for (let i = 0; i < els.length; i++) {
+        const r = els[i].getBoundingClientRect();
+        if (cy < r.top + r.height / 2) { idx = i; break; }
+      }
+    } else {
+      let best = 0, bestD = Infinity, after = false;
+      els.forEach((el, i) => {
+        const r = el.getBoundingClientRect();
+        const d = Math.hypot(cx - (r.left + r.width / 2), cy - (r.top + r.height / 2));
+        if (d < bestD) { bestD = d; best = i; after = cx > r.left + r.width / 2; }
+      });
+      idx = after ? best + 1 : best;
+    }
+    const box = body.getBoundingClientRect();
+    const end = idx >= els.length;
+    const r = els[end ? els.length - 1 : idx].getBoundingClientRect();
+    const top = body.scrollTop - box.top;
+    const bar = rows
+      ? { x: r.left - box.left, y: (end ? r.bottom + 4 : r.top - 7) + top, w: r.width, h: 3 }
+      : { x: (end ? r.right + 7 : r.left - 11) - box.left, y: r.top + top, w: 4, h: r.height };
+    return { idx, bar };
+  };
+
+  const onTileDown = (e: React.MouseEvent, cid: string) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // 그림 끌기·글자 긁기 막기 — 초점은 창에 둔다(Ctrl+방향키)
+    winRef.current?.focus({ preventScroll: true });
+    setPicked(cid);
+    const sx = e.clientX, sy = e.clientY;
+    let moved = false, at = -1;
+    const move = (ev: MouseEvent) => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) <= 4) return; // 그냥 누르기·두 번 누르기는 끌기가 아니다
+      moved = true;
+      const hit = insertAt(ev.clientX, ev.clientY);
+      at = hit ? hit.idx : -1;
+      setDrag({ id: cid, x: ev.clientX, y: ev.clientY, bar: hit?.bar ?? null });
+    };
+    const stop = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", stop);
+      dragEnd.current = null;
+      setDrag(null);
+    };
+    const up = () => {
+      stop();
+      if (moved && at >= 0) onMove(cid, at); // 제자리면 reorderListToIndex 가 아무것도 안 한다
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("blur", stop); // 창 밖으로 초점이 나가면 순서는 그대로, 표시만 정리
+    dragEnd.current = stop;
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!e.ctrlKey || e.altKey || !picked) return; // Alt+←/→ 는 브라우저의 뒤로/앞으로
+    const back = e.key === "ArrowLeft" || (rows && e.key === "ArrowUp");
+    const fwd = e.key === "ArrowRight" || (rows && e.key === "ArrowDown");
+    const i = ids.indexOf(picked);
+    if ((!back && !fwd) || i < 0) return;
+    e.preventDefault();
+    if (back && i > 0) onMove(picked, i - 1);
+    if (fwd && i < ids.length - 1) onMove(picked, i + 2);
+  };
+
+  const items = ids.map(itemOf);
+  const ghost = drag ? items.find((it) => it.id === drag.id) : undefined;
+  const title = li.kind === "reference" ? "레퍼런스" : li.kind === "text" ? "텍스트" : "생성물";
+  return (
+    <div className="scene-listwin-backdrop" onMouseDown={onClose}>
+      <div
+        ref={winRef}
+        className={"scene-listwin lk-" + lk}
+        role="dialog"
+        aria-label={`리스트 · ${title} ${ids.length}개`}
+        tabIndex={-1}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={onKeyDown}
+      >
+        <div className="scene-listwin-hd">
+          <span className="scene-listwin-chip">리스트</span>
+          <b>{title} {ids.length}개</b>
+          <span className="scene-listwin-sp" />
+          <span className="scene-listwin-tip">끌어서 순서 바꾸기</span>
+          <button type="button" className="scene-listwin-x" title="닫기" aria-label="닫기" onClick={onClose}>
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+        <div ref={bodyRef} className={"scene-listwin-body" + (rows ? " rows" : "")}>
+          {items.length === 0 ? (
+            <div className="scene-listwin-empty">연결된 항목이 없습니다</div>
+          ) : (
+            items.map((it, i) => (
+              <div
+                key={it.id}
+                data-wid={it.id}
+                className={"scene-listwin-item" + (picked === it.id ? " picked" : "") + (drag?.id === it.id ? " from" : "")}
+                title={it.preview ? "끌기 = 순서 바꾸기\n더블클릭 = 크게 보기" : "끌기 = 순서 바꾸기"}
+                onMouseDown={(e) => onTileDown(e, it.id)}
+                onDoubleClick={() => it.preview && onPreview(it.id, it.preview)}
+              >
+                {rows ? (
+                  <>
+                    <span className="scene-listwin-n">{i + 1}</span>
+                    <span className="scene-listwin-text">{it.name}</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="scene-listwin-media">
+                      {it.off ? (
+                        <span className="scene-listwin-off">{it.off === "held" ? <LinkOffIcon /> : <CloudOffIcon />}</span>
+                      ) : it.kind === "audio" ? (
+                        audioTile
+                      ) : it.src ? (
+                        <img src={it.src} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
+                      ) : null}
+                      {it.kind === "video" && !it.off && <span className="scene-listwin-play">▶ 영상</span>}
+                      {(it.count ?? 0) > 1 && <span className="scene-listwin-cnt">{it.count}장</span>}
+                    </div>
+                    <span className={`scene-listwin-n k-${it.kind}`}>{i + 1}</span>
+                    <div className="scene-listwin-name">{it.name}</div>
+                    <div className="scene-listwin-meta">{it.meta}</div>
+                  </>
+                )}
+              </div>
+            ))
+          )}
+          {drag?.bar && (
+            <span className="scene-listwin-bar" style={{ left: drag.bar.x, top: drag.bar.y, width: drag.bar.w, height: drag.bar.h }} />
+          )}
+        </div>
+        <div className="scene-listwin-ft">
+          <span>끌어서 순서 바꾸기</span>
+          <span><kbd>Ctrl</kbd> + <kbd>{rows ? "↑↓" : "←→"}</kbd> 고른 칸 한 칸씩</span>
+          {!rows && <span>더블클릭 = 크게 보기</span>}
+          <span><kbd>Esc</kbd> 닫기</span>
+          <span className="scene-listwin-ok">바뀐 순서는 노드에 바로 반영</span>
+        </div>
+      </div>
+      {drag && ghost && (
+        <div className={"scene-listwin-ghost" + (rows ? " rows" : "")} style={{ left: drag.x, top: drag.y }}>
+          {rows ? ghost.name : ghost.src && !ghost.off ? <img src={ghost.src} alt="" /> : <span>{ghost.name}</span>}
+        </div>
+      )}
+    </div>
   );
 }
