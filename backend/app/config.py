@@ -117,6 +117,8 @@ AGENT_CHAT_LOGIN_WINDOW = os.environ.get("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", 
 AGENT_CHAT_DIR = Path(
     os.environ.get("CONTENT_HUB_AGENT_CHAT_DIR") or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MVHub" / "agent_chat"
 ).resolve()
+# Claude 잠금·로그인 창 기록 — 기록 폴더(AGENT_CHAT_DIR)를 따로 준 허브도 같은 Claude 자격이면 같은 곳을 보게 사용자마다 한 곳에 고정.
+AGENT_CHAT_CLAUDE_DIR = (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MVHub" / "claude").resolve()
 
 # ── 에셋 대장(docs/ASSET_REGISTRY.md) ─────────────────────────────────────
 # 켠 곳(공유 서버)만 PM 프로젝트 루트를 훑어 파일마다 번호를 붙인다. 기본은 꺼짐 — 첫 전체 훑기는 관리자가

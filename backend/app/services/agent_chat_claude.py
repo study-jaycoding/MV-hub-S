@@ -3,12 +3,15 @@
 - 상태는 `claude --setting-sources local auth status` 하나로 본다. 로그아웃이면 종료 코드 1 이어도 JSON 이 오니 종료 코드로 버리지 않는다.
 - 로그인은 사람이 보는 새 콘솔 창(`CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB`)이다 — 허브는 그 창을 Job 에 넣지도 끄지도 않는다
   (브라우저 자동 열기를 끄는 방법이 공식 문서에 없어서, 숨긴 프로세스로 띄우면 사용자 브라우저를 끌 수 있다). 스위치 기본 꺼짐.
-- 같은 Claude 자격을 쓰는 허브들(dev·배포판)은 이름 있는 뮤텍스 하나로 '차례'와 '로그인 창 만들기'를 줄 세운다. 뮤텍스는 스레드 소유라
-  잡은 스레드가 놓는다. 주인 기록(running|clean)은 정상·버려진 획득 모두에서 먼저 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다.
+- 같은 Claude 자격을 쓰는 허브들(dev·배포판, 기록 폴더를 따로 준 허브까지)은 이름 있는 뮤텍스 하나로 '차례'와 '로그인 창 만들기'를
+  줄 세운다 — 이름·기록 위치는 자격 폴더(CLAUDE_CONFIG_DIR 또는 ~/.claude)로 정한다. 뮤텍스는 스레드 소유라 잡은 스레드가 놓는다.
+  주인 기록(running|clean)은 정상·버려진 획득 모두에서 먼저 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다.
+- 기록이 깨지면 잠금을 잡고 이 PC 에 허브가 띄운 Claude 프로세스가 없음을 확인했을 때만 옆으로 치우고 이어 간다(확인 못 하면 막는다).
 - 상태·기록·응답에 이메일·조직 id·경로를 싣지 않는다.
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -37,11 +40,14 @@ MESSAGES = {
     "not_subscription": "구독 로그인이 아니에요(API 키 방식은 쓰지 않아요)",
     "no_plan": "이 계정엔 Claude Code 를 쓸 수 있는 구독이 없어요",
     "login_window": "Claude 로그인 창이 열려 있어요",
-    "window_record": "로그인 창 기록을 확인하지 못했어요 — 열린 Claude 로그인 창을 닫고 MV Hub 를 다시 켜 주세요",
+    "window_record": "로그인 창 상태를 확인하지 못했어요 — 열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요",
 }
+LOGIN_MARK = " auth login"  # 허브가 띄운 로그인 창의 명령줄 표식(login_command)
+HUB_MARK = "--setting-sources local"  # 허브가 띄운 Claude 프로세스(차례·로그인·상태 확인) 공통 표식
 CREATE_NEW_CONSOLE, CREATE_BREAKAWAY_FROM_JOB = 0x00000010, 0x01000000
 _WAIT_OBJECT_0, _WAIT_ABANDONED, _WAIT_TIMEOUT = 0x0, 0x80, 0x102
 _PROCESS_QUERY_LIMITED, _STILL_ACTIVE = 0x1000, 259
+_ERROR_ACCESS_DENIED, _ERROR_INVALID_PARAMETER = 5, 87
 _held_windows: list[subprocess.Popen] = []  # 띄운 창의 Popen 을 쥐어 둔다(정리 경고만 막음 — 창을 끄지 않는다)
 
 
@@ -105,12 +111,11 @@ def claude_state(prefix: list[str] | None) -> dict:
         state = "no_plan"
     else:
         state = "subscription_unknown"  # 누락·모르는 값 — 막는 판정은 확인된 사실만
-    if state in LOGIN_OK:
-        try:
-            if window_alive():
-                state = "login_window"
-        except RecordUnreadable:
-            state = "window_record"
+    try:
+        if window_alive():  # 연결된 뒤에도 창이 닫힐 때까지는 창 상태 — 차례 잠금(창이 살아 있으면 거절)과 같은 판정
+            state = "login_window"
+    except RecordUnreadable:
+        state = "window_record"
     return {"state": state, "version": version, "subscription": plan.capitalize() if state == "ready" else None}
 
 
@@ -127,12 +132,26 @@ def _work_dir() -> Path:
     return work
 
 
+def _credential_dir() -> str:
+    """Claude 자격이 사는 폴더(자식 환경 기준 — 차례·로그인·상태 확인이 보는 곳)."""
+    env = process.child_env()
+    raw = env.get("CLAUDE_CONFIG_DIR") or str(Path(env.get("USERPROFILE") or Path.home()) / ".claude")
+    return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+
+
+def _scope() -> str:
+    """잠금 이름·기록 이름의 열쇠 = 기록 위치 + 자격 폴더. 기록 위치는 사용자마다 하나라 같은 자격의 허브들이 같은 열쇠,
+    시험은 임시 위치라 실제 허브와 겹치지 않는다."""
+    key = f"{config.AGENT_CHAT_CLAUDE_DIR}\n{_credential_dir()}".casefold()
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
 def _owner_file() -> Path:
-    return config.AGENT_CHAT_DIR / "claude-owner.json"
+    return config.AGENT_CHAT_CLAUDE_DIR / f"{_scope()}-owner.json"
 
 
 def _window_file() -> Path:
-    return config.AGENT_CHAT_DIR / "claude-login.json"
+    return config.AGENT_CHAT_CLAUDE_DIR / f"{_scope()}-login.json"
 
 
 def _read(path: Path) -> dict | None:
@@ -174,35 +193,105 @@ def _k32():
     return k32
 
 
+def _handle_start(k32, handle) -> int | None:
+    created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+    if not k32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+        return None
+    return (created.dwHighDateTime << 32) | created.dwLowDateTime
+
+
 def process_start(pid: int) -> int | None:
-    """살아 있으면 생성 시각(FILETIME 정수), 끝났거나 열 수 없으면 None."""
+    """살아 있으면 생성 시각(FILETIME 정수), 끝났으면 None — 살았는지 확인하지 못하면 RecordUnreadable(막는 쪽).
+    열기 거절(5)은 '우리 것이 아님'이다: 기록한 프로세스는 같은 사용자라 늘 열리니, 못 열면 그 번호를 다른 프로세스가 쓰고 있다."""
     k32 = _k32()
     handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED, False, int(pid))
     if not handle:
-        return None
+        if ctypes.get_last_error() in (_ERROR_ACCESS_DENIED, _ERROR_INVALID_PARAMETER):  # 다른 프로세스 / 그런 번호 없음
+            return None
+        raise RecordUnreadable("process")
     try:
         code = wintypes.DWORD()
-        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != _STILL_ACTIVE:
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise RecordUnreadable("process")
+        if code.value != _STILL_ACTIVE:
             return None
-        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        if not k32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
-            return None
-        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+        start = _handle_start(k32, handle)
+        if start is None:
+            raise RecordUnreadable("process")
+        return start
     finally:
         k32.CloseHandle(handle)
 
 
 def _alive(pid, start) -> bool:
-    return isinstance(pid, int) and start is not None and process_start(pid) == start
+    return isinstance(pid, int) and isinstance(start, int) and process_start(pid) == start
 
 
 def _me() -> dict:
     return {"pid": os.getpid(), "start": process_start(os.getpid())}
 
 
+def _claude_command_lines() -> list[str] | None:
+    """이 PC 에 떠 있는 claude.exe 들의 명령줄 — 조회 실패·못 읽는 줄이 하나라도 있으면 None(없다고 단정하지 않는다).
+    run_agent_session._powershell_rows 와 같은 규칙: 출력 UTF-8 고정·0개는 '[]'·cmdlet 오류는 Stop."""
+    script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+              "$rows = @(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | Select-Object ProcessId,CommandLine); "
+              "if ($rows.Count) { $rows | ConvertTo-Json -Compress } else { '[]' }")
+    powershell = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    try:
+        done = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                              stdin=subprocess.DEVNULL, timeout=STATUS_TIMEOUT, creationflags=process.CREATE_NO_WINDOW)
+        rows = json.loads(done.stdout.decode("utf-8")) if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if rows is None:
+        return None
+    lines = [row.get("CommandLine") if isinstance(row, dict) else None for row in (rows if isinstance(rows, list) else [rows])]
+    return None if any(not isinstance(line, str) or not line for line in lines) else lines
+
+
+def _recover(path: Path, mark: str) -> bool:
+    """깨진 기록을 옆으로 치웠으면 True. 잠금을 잡고(다른 허브가 쓰는 중이 아니게 — 잡은 스레드면 다시 잡아도 된다)
+    다시 읽어도 깨졌고, 표식이 든 claude.exe 가 하나도 없음을 확인했을 때만 치운다."""
+    k32 = _k32()
+    handle = k32.CreateMutexW(None, False, mutex_name())
+    if not handle:
+        return False
+    try:
+        if k32.WaitForSingleObject(handle, 0) not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+            return False
+        try:
+            try:
+                _read(path)
+                return True  # 그새 다른 허브가 고쳐 썼다 — 부른 쪽이 다시 읽는다
+            except RecordUnreadable:
+                pass
+            lines = _claude_command_lines()
+            if lines is None or any(mark in line for line in lines):
+                return False
+            os.replace(path, path.with_name(f"{path.name}.bad"))
+            return True
+        finally:
+            k32.ReleaseMutex(handle)
+    except OSError:
+        return False
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _read_or_recover(path: Path, mark: str) -> dict | None:
+    try:
+        return _read(path)
+    except RecordUnreadable:
+        if not _recover(path, mark):
+            raise
+        return _read(path)  # 치웠으면 없음, 그새 다시 써졌으면 그 기록
+
+
 def window_alive() -> bool:
-    """이 PC 에 칸이 연 로그인 창이 살아 있나 — open = 창 프로세스, launching = 만드는 허브가 살아 있나. 기록이 깨지면 RecordUnreadable."""
-    record = _read(_window_file())
+    """이 PC 에 칸이 연 로그인 창이 살아 있나 — open = 창 프로세스, launching = 만드는 허브가 살아 있나.
+    기록이 깨졌는데 되살리지 못했거나 살았는지 확인하지 못하면 RecordUnreadable."""
+    record = _read_or_recover(_window_file(), LOGIN_MARK)
     if not record:
         return False
     if record.get("status") == "open":
@@ -214,9 +303,8 @@ def window_alive() -> bool:
 
 # ── PC 전체 뮤텍스 ──
 def mutex_name() -> str:
-    """같은 기록 폴더를 쓰는 허브들(기본 = 이 사용자의 dev·배포판)이 같은 이름 — 시험은 임시 폴더라 겹치지 않는다."""
-    digest = hashlib.sha256(str(config.AGENT_CHAT_DIR).casefold().encode("utf-8")).hexdigest()[:12]
-    return f"Local\\MVHub.Claude.{digest}"
+    """같은 Claude 자격을 쓰는 허브들이 같은 이름(_scope)."""
+    return f"Local\\MVHub.Claude.{_scope()}"
 
 
 class ClaudeLock:
@@ -241,10 +329,11 @@ class ClaudeLock:
         try:
             # 정상·버려진 획득 모두 먼저 기록을 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다(죽은 허브면 커널이 그 Job 을 껐다)
             try:
-                owner = _read(_owner_file())
+                owner = _read_or_recover(_owner_file(), HUB_MARK)
+                running = owner and owner.get("status") == "running" and _alive(owner.get("pid"), owner.get("start"))
             except RecordUnreadable:
-                raise Busy("이전 Claude 작업 기록을 확인하지 못했어요 — MV Hub 를 다시 켜 주세요") from None
-            if owner and owner.get("status") == "running" and _alive(owner.get("pid"), owner.get("start")):
+                raise Busy("이전 Claude 작업 기록을 확인하지 못했어요 — 열린 Claude 창·작업이 끝난 뒤 다시 해 주세요") from None
+            if running:
                 raise Busy("이전 Claude 작업 정리를 확인하지 못했어요 — 그 MV Hub 를 다시 켜 주세요", "unclean")
             if self.kind == "turn":
                 try:
@@ -313,24 +402,22 @@ def _resume(proc: subprocess.Popen) -> None:
 
 
 def open_login_window(still_current: Callable[[], None]) -> None:
-    """[Claude 연결] — 스위치가 켜졌고 연결이 필요한 상태일 때만. 순서: 잠금 → 창 기록 확인 → 신원 재대조 → launching 기록 →
-    멈춘 채 생성 → open 기록 → 재개 → 놓기(추적 안 된 로그인은 실행되지 않는다)."""
+    """[Claude 연결] — 스위치가 켜졌고 연결이 필요한 상태일 때만. 순서: 잠금 → 상태·창 기록 판정(잠금 안에서 — 그새 다른 허브가
+    연결했거나 창을 열었으면 안 연다) → 신원 재대조 → launching 기록 → 멈춘 채 생성 → open 기록(생성 핸들의 시작 시각) → 재개 → 놓기.
+    open 기록·재개가 안 되면 멈춘 창을 끈다 — 추적 안 된 로그인은 실행되지 않는다."""
     if not config.AGENT_CHAT_LOGIN_WINDOW:
         raise LoginDisabled()
     prefix = process.engine_prefix("claude")  # 차례·엔진 목록과 같은 찾기
-    state = claude_state(prefix)["state"]
-    if state == "login_window":
-        raise Busy("열린 로그인 창에서 마쳐 주세요", "login_window_open")
-    if state not in LOGIN_OK:
-        raise Busy(MESSAGES.get(state, MESSAGES["unknown"]), "not_needed")
     lock = ClaudeLock("login")
     lock.acquire()
     try:
-        try:
-            if window_alive():
-                raise Busy("열린 로그인 창에서 마쳐 주세요", "login_window_open")
-        except RecordUnreadable:
-            raise Busy(MESSAGES["window_record"]) from None
+        state = claude_state(prefix)["state"]
+        if state == "login_window":
+            raise Busy("열린 로그인 창에서 마쳐 주세요", "login_window_open")
+        if state == "window_record":
+            raise Busy(MESSAGES["window_record"])
+        if state not in LOGIN_OK:
+            raise Busy(MESSAGES.get(state, MESSAGES["unknown"]), "not_needed")
         still_current()
         me = _me()
         _write(_window_file(), {"status": "launching", "hub_pid": me["pid"], "hub_start": me["start"], "at": time.time()})
@@ -341,8 +428,18 @@ def open_login_window(still_current: Callable[[], None]) -> None:
             if getattr(exc, "winerror", None) == 5:  # 탈출을 허용하지 않는 Job 아래
                 raise BreakawayDenied() from exc
             raise
-        _write(_window_file(), {"status": "open", "pid": proc.pid, "start": process_start(proc.pid), "at": time.time()})
+        try:
+            start = _handle_start(_k32(), int(proc._handle))  # 번호로 다시 열지 않는다 — 생성 핸들이 그 프로세스 자체
+            if start is None:
+                raise OSError("로그인 창 시작 시각을 읽지 못했어요")
+            _write(_window_file(), {"status": "open", "pid": proc.pid, "start": start, "at": time.time()})
+            _resume(proc)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                proc.kill()  # 멈춘 채 끈다 — 사람에게 보인 적 없는 창
+            with contextlib.suppress(OSError):
+                _write(_window_file(), {"status": "none", "at": time.time()})
+            raise
         _held_windows.append(proc)
-        _resume(proc)  # 실패하면 창은 멈춘 채 open 으로 남아 사람이 닫을 때까지 막는다
     finally:
         lock.release()

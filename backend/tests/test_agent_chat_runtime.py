@@ -36,6 +36,7 @@ def alive(pid):
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
     monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
     monkeypatch.setenv("FAKE_AGENT_PIDFILE", str(tmp_path / "grandchild.pid"))
@@ -398,6 +399,7 @@ def test_state_is_last_even_when_watcher_flush_is_slow(runtime, monkeypatch):
 def test_long_poll_never_reports_done_with_events_missing(tmp_path, monkeypatch):
     """마지막 사건 저장·'끝남'이 두 읽기 사이에 끼어도 빠뜨리지 않는다 — 상태와 사건을 한 시점에서 읽는다."""
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     service = chat.AgentChat()
     identity = chat.Identity("c" * 32, str(tmp_path / "hub.db"), "jay@example.test")
     path = identity.db_file()
@@ -425,6 +427,7 @@ def test_long_poll_never_reports_done_with_events_missing(tmp_path, monkeypatch)
 
 def test_long_poll_wakes_on_new_event_and_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     service = chat.AgentChat()
     identity = chat.Identity("b" * 32, str(tmp_path / "hub.db"), "jay@example.test")
     path = identity.db_file()
@@ -487,6 +490,7 @@ def test_codex_locked_until_isolation_checked(monkeypatch):
 def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "CODEX_LOCK", None)
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아"), ("none", "로그인되어 있지 않")):
         monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
         for engine in ("claude", "codex"):

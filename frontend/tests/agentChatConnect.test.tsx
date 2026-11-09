@@ -193,6 +193,66 @@ describe("MV Agent 칸 — Claude 연결 안내", () => {
     }
   });
 
+  it("늦게 온 옛 상태 답은 더 나중 확인(연결됨)을 덮지 않는다", async () => {
+    let release: (r: Response) => void = () => {};
+    let first = true;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude") {
+        if (first) { first = false; return new Promise<Response>((done) => { release = done; }); } // 칸을 열 때의 확인 — 늦게 온다
+        return status("ready", { enabled: true, subscription: "Max" });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    act(() => buttonText("다시 확인")!.click());
+    await flush();
+    expect(input().disabled).toBe(false);
+    release(status("not_logged_in", { enabled: true }));
+    await flush();
+    expect(input().disabled).toBe(false);
+    expect(host.querySelector(".cn")).toBeNull();
+  });
+
+  it("2초 확인은 앞 확인이 끝나기 전엔 겹쳐 보내지 않고, 칸을 닫으면 확인도 타이머도 멈춘다", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let opened = false;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") { opened = true; return json({ opened: true }); }
+      if (c.path === "/claude") return opened ? new Promise<Response>(() => {}) : status("not_logged_in", { enabled: true }); // 창이 열린 뒤엔 답이 안 온다
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    act(() => buttonText("Claude 연결")!.click());
+    await flush();
+    const before = calls.filter((c) => c.path === "/claude").length;
+    await act(async () => { vi.advanceTimersByTime(8000); });
+    await flush();
+    expect(calls.filter((c) => c.path === "/claude").length).toBe(before); // 연결 직후 확인이 아직 안 끝남 = 더 보내지 않음
+    act(() => root.unmount());
+    root = createRoot(host);
+    await act(async () => { vi.advanceTimersByTime(8000); });
+    expect(calls.filter((c) => c.path === "/claude").length).toBe(before);
+  });
+
+  it("로그인 창 장면에서 [그만두기] 뒤엔 [다시 확인]이 남는다", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    route = (c) => {
+      if (c.path === "/session") return session("login_window");
+      if (c.path === "/claude") return status("login_window", { enabled: true, window: true });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    act(() => buttonText("그만두기")!.click());
+    await flush();
+    expect(buttonText("그만두기")).toBeNull();
+    const polls = calls.filter((c) => c.path === "/claude").length;
+    act(() => buttonText("다시 확인")!.click());
+    await flush();
+    expect(calls.filter((c) => c.path === "/claude").length).toBe(polls + 1);
+  });
+
   it("구독 종류를 모르면 대화는 열려 있다(허브와 같은 허용 조건) · 옛 허브(연결 표식 없음)는 안내 없이 엔진 사유만", async () => {
     route = (c) => (c.path === "/session" ? session("subscription_unknown", true) : json({ detail: "Not Found" }, 404));
     await mount();

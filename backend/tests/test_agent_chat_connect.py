@@ -2,6 +2,7 @@
 
 가짜 CLI·가짜 창 프로세스만 쓴다 — 실제 로그인·실제 Claude 대화·과금·공유 서버 없음. 창은 띄우지 않는다(_spawn_window 를 바꿔 끼움).
 """
+import ctypes
 import importlib
 import json
 import os
@@ -26,7 +27,9 @@ windows = pytest.mark.skipif(os.name != "nt", reason="Windows 뮤텍스·프로�
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
+    monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])  # 진짜 프로세스 목록을 보지 않는다(이 PC 의 Claude 와 무관하게)
     monkeypatch.setattr(process, "engine_prefix", lambda engine: CLAUDE if engine == "claude" else None)
     monkeypatch.setattr(process, "find_claude", lambda: CLAUDE)
     yield tmp_path
@@ -87,6 +90,7 @@ def test_child_env_and_login_argument_order(monkeypatch):
 def test_find_claude_official_location_and_highest_version(tmp_path, monkeypatch):
     monkeypatch.undo()  # 이 시험은 진짜 find_claude 를 본다
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     home = tmp_path / "home"
     official = home / ".local" / "bin" / "claude.exe"
     official.parent.mkdir(parents=True)
@@ -161,8 +165,50 @@ def test_login_window_order_record_and_duplicate_block(window, monkeypatch):
         lock.acquire()
     assert turn.value.code == "login_window_open"
     assert win.proc.poll() is None  # 허브는 창을 끄지 않는다
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "subscription")  # 연결은 됐지만 창이 아직 열림 = 창 상태 유지(차례도 거절)
+    assert claude.claude_state(CLAUDE)["state"] == "login_window" and claude.claude_problem(CLAUDE) is not None
     win.kill()
-    assert not claude.window_alive() and claude.claude_state(CLAUDE)["state"] == "not_logged_in"
+    assert not claude.window_alive() and claude.claude_state(CLAUDE)["state"] == "ready"
+
+
+@windows
+def test_login_window_never_runs_untracked(window, monkeypatch):
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    real = claude._handle_start
+    spawned = lambda handle: any(handle == int(w._handle) for _, w in window["spawned"])  # noqa: E731
+    monkeypatch.setattr(claude, "_handle_start", lambda k32, handle: None if spawned(handle) else real(k32, handle))
+    with pytest.raises(OSError):
+        claude.open_login_window(lambda: None)  # 생성 핸들의 시작 시각을 못 읽으면 재개하지 않고 끈다
+    monkeypatch.setattr(claude, "_handle_start", real)
+
+    def broken_resume(proc):
+        raise OSError("resume failed")
+
+    monkeypatch.setattr(claude, "_resume", broken_resume)
+    with pytest.raises(OSError):
+        claude.open_login_window(lambda: None)  # 재개가 안 되면 멈춘 창을 끈다(보인 적 없는 창이 기록을 막지 않게)
+    assert window["resumed"] == [] and len(window["spawned"]) == 2
+    for _, win in window["spawned"]:
+        assert win.proc.wait(10) is not None
+    assert json.loads(claude._window_file().read_text(encoding="utf-8"))["status"] == "none"
+    assert not claude.window_alive() and claude._held_windows == []
+
+
+@windows
+def test_login_state_is_judged_inside_the_lock(window, monkeypatch):
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    real, seen = claude.claude_state, []
+
+    def judged(prefix):
+        seen.append(_in_thread(claude.would_block).get("value"))  # 다른 허브가 보면 잠겨 있다
+        monkeypatch.setenv("FAKE_AGENT_AUTH", "subscription")  # 잠금을 기다리는 사이 다른 허브가 연결을 마침
+        return real(prefix)
+
+    monkeypatch.setattr(claude, "claude_state", judged)
+    with pytest.raises(claude.Busy) as done:
+        claude.open_login_window(lambda: None)
+    assert done.value.code == "not_needed" and window["spawned"] == []
+    assert seen == ["다른 MV Hub 에서 Claude 가 일하는 중이에요"]
 
 
 @windows
@@ -212,13 +258,76 @@ def test_window_record_after_crashes(monkeypatch):
     assert claude.window_alive()  # 살아 있는 허브가 만드는 중
     claude._write(claude._window_file(), {"status": "open", "pid": dead.pid, "start": 1})
     assert not claude.window_alive()
+    # 기록이 깨짐: 허브가 띄운 로그인 프로세스가 떠 있거나 목록을 못 보면 막는다(대화도 — 차례 잠금과 같은 판정)
     claude._window_file().write_text("{broken", encoding="utf-8")
+    for auth in ("none", "subscription"):
+        monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
+        for lines in (["claude.exe --setting-sources local auth login --claudeai"], None):
+            monkeypatch.setattr(claude, "_claude_command_lines", lambda lines=lines: lines)
+            assert claude.claude_state(CLAUDE)["state"] == "window_record", (auth, lines)
+            with pytest.raises(claude.Busy):
+                claude.ClaudeLock("turn").acquire()
     monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
-    assert claude.claude_state(CLAUDE)["state"] == "window_record"
     with pytest.raises(claude.Busy):
         claude.open_login_window(lambda: None)
-    with pytest.raises(claude.Busy):
-        claude.ClaudeLock("turn").acquire()
+    # 로그인 프로세스가 없으면(다른 Claude 는 상관없음) 옆으로 치우고 이어 간다
+    monkeypatch.setattr(claude, "_claude_command_lines", lambda: ["claude.exe -p --output-format stream-json"])
+    assert claude.claude_state(CLAUDE)["state"] == "not_logged_in"
+    assert not claude._window_file().exists() and claude._window_file().with_name(claude._window_file().name + ".bad").exists()
+
+
+@windows
+def test_liveness_query_failure_blocks_but_foreign_process_is_dead(monkeypatch):
+    real = claude._k32
+
+    def fake(error):
+        class K32:
+            def OpenProcess(self, *args):
+                ctypes.set_last_error(error)
+                return 0
+
+            def __getattr__(self, name):
+                return getattr(real(), name)
+
+        return lambda: K32()
+
+    claude._write(claude._window_file(), {"status": "open", "pid": 12345, "start": 1})
+    for error, blocked in ((87, False), (5, False), (6, True)):  # 없음 · 다른 사용자의 프로세스 = 우리 창 아님 · 그 밖 = 확인 못 함
+        monkeypatch.setattr(claude, "_k32", fake(error))
+        if blocked:
+            with pytest.raises(claude.RecordUnreadable):
+                claude.window_alive()
+        else:
+            assert not claude.window_alive()
+    monkeypatch.setattr(claude, "_k32", real)
+
+
+@windows
+def test_lock_scope_follows_claude_credentials(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    name, owner = claude.mutex_name(), claude._owner_file()
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "other_hub")  # 기록 폴더를 따로 준 허브 = 같은 잠금·기록
+    assert (claude.mutex_name(), claude._owner_file()) == (name, owner)
+    held, release = threading.Event(), threading.Event()
+
+    def first_hub():
+        lock = claude.ClaudeLock("turn")
+        lock.acquire()
+        held.set()
+        release.wait(20)
+        lock.release()
+
+    thread = threading.Thread(target=first_hub)
+    thread.start()
+    assert held.wait(10)
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "third_hub")
+    with pytest.raises(claude.Busy) as busy:
+        claude.ClaudeLock("login").acquire()
+    assert busy.value.code == "claude_busy"
+    release.set()
+    thread.join(10)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "other_credentials"))  # 다른 자격 = 다른 잠금
+    assert claude.mutex_name() != name and claude._owner_file() != owner
 
 
 # ── PC 뮤텍스(같은 이름을 쓰는 다른 허브 = 다른 스레드로 흉내) ──
@@ -264,7 +373,7 @@ def test_lock_blocks_other_hub_and_releases_clean():
 
 
 @windows
-def test_abandoned_lock_rules():
+def test_abandoned_lock_rules(monkeypatch):
     # A 스레드만 죽음(허브 살아 있음, 기록 running) → B 버려진 획득·거절 → C 정상 획득도 거절
     box = _in_thread(lambda: claude.ClaudeLock("turn").acquire())  # 놓지 않고 스레드가 끝난다 = 버려진 뮤텍스
     assert "error" not in box
@@ -286,10 +395,16 @@ def test_abandoned_lock_rules():
     lock = claude.ClaudeLock("turn")
     lock.acquire()
     lock.release()
-    # 주인 기록이 깨지면 막는다
+    # 주인 기록이 깨지면: 허브가 띄운 Claude 가 떠 있거나 목록을 못 보면 막고, 없으면 치우고 이어 간다
     claude._owner_file().write_text("{broken", encoding="utf-8")
-    with pytest.raises(claude.Busy):
-        claude.ClaudeLock("turn").acquire()
+    for lines in (["claude.exe --setting-sources local -p --output-format stream-json"], None):
+        monkeypatch.setattr(claude, "_claude_command_lines", lambda lines=lines: lines)
+        with pytest.raises(claude.Busy):
+            claude.ClaudeLock("turn").acquire()
+    monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])
+    lock = claude.ClaudeLock("turn")
+    lock.acquire()
+    lock.release()
 
 
 # ── 빠른 모드·깊이·해석기 ──

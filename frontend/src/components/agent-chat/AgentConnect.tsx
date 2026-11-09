@@ -95,10 +95,10 @@ export function AgentConnect({ state, version, loginWindowEnabled, waiting, note
             <h3>{t("열린 창에서 로그인을 마쳐 주세요")}</h3>
             <p>{t("브라우저가 안 열리면 그 창에서 c 를 눌러 주소를 복사해요. 마치면 여기가 알아서 바뀌어요.")}</p>
             <Steps installed version={version} login="wait" />
-            {note === "expired"
-              ? <><p className="cn-note">{t("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]")}</p>
-                <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>
-              : waiting && <button type="button" className="cn-text" onClick={onStopWaiting}>{t("그만두기")}</button>}
+            {waiting
+              ? <button type="button" className="cn-text" onClick={onStopWaiting}>{t("그만두기")}</button>
+              : <>{note === "expired" && <p className="cn-note">{t("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]")}</p>}
+                <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>}
           </>
         );
       case "not_subscription":
@@ -106,9 +106,9 @@ export function AgentConnect({ state, version, loginWindowEnabled, waiting, note
       case "not_logged_in": {
         const head = state === "not_logged_in" ? t("Claude 를 연결하세요")
           : state === "no_plan" ? t("이 계정엔 Claude Code 를 쓸 수 있는 구독이 없어요") : t("구독 로그인이 아니에요");
-        const lead = state === "not_logged_in" ? t("이 PC 의 Claude 로그인으로 MV Hub 일을 같이 해요. API 키·추가 요금 없이 내 Claude 구독을 써요.")
+        const lead = state === "not_logged_in" ? t("이 PC 의 Claude 로그인으로 MV Hub 일을 같이 해요. API 키 없이 내 Claude 구독 사용량을 써요.")
           : state === "no_plan" ? t("Pro·Max·Ultra·Team·Enterprise 구독 계정으로 다시 연결하세요.")
-          : t("지금 Claude 가 API 키(Console)로 로그인돼 있어요. 이 칸은 추가 요금을 막으려고 구독 로그인만 써요.");
+          : t("지금 Claude 가 API 키(Console)로 로그인돼 있어요. 이 칸은 API 요금이 들지 않게 구독 로그인만 써요.");
         const action = state === "not_logged_in" ? t("Claude 연결") : state === "no_plan" ? t("다른 계정으로 연결") : t("구독으로 다시 연결");
         return (
           <>
@@ -130,7 +130,7 @@ export function AgentConnect({ state, version, loginWindowEnabled, waiting, note
         return (
           <>
             <h3>{t("Claude 상태를 확인하지 못했어요")}</h3>
-            {state === "window_record" && <p>{t("열린 Claude 로그인 창을 닫고 MV Hub 를 다시 켜 주세요.")}</p>}
+            {state === "window_record" && <p>{t("열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요.")}</p>}
             <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button>
           </>
         );
@@ -140,7 +140,7 @@ export function AgentConnect({ state, version, loginWindowEnabled, waiting, note
     <section className="cn" aria-label={t("Claude 연결")} role="status">
       <div className="cn-mark" aria-hidden="true">⬡</div>
       {body}
-      <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요 · [실행]만 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
+      <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · [실행]만 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
     </section>
   );
 }

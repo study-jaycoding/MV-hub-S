@@ -35,6 +35,7 @@ def hub(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "AUTH_ENABLED", True)
     account = repo.register(EMAIL, "testpass")
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
     monkeypatch.setattr(process, "cli_version", lambda prefix: "2.1.296" if "--fake-engine=claude" in prefix else "0.162.0-alpha.17.2")
     monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)

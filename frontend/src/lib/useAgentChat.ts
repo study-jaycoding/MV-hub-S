@@ -233,6 +233,9 @@ export function useAgentChat(context: AgentContext) {
   const [connected, setConnected] = useState<{ subscription: string | null } | null>(null); // 막 연결됐다는 띠(한 번)
   const claudeTimer = useRef<number | null>(null);
   const lastClaudeState = useRef<string | null>(null);
+  const claudeSeq = useRef(0); // 가장 나중에 보낸 확인만 반영 — 늦게 온 옛 답이 '연결됨'을 덮지 않게
+  const claudeInFlight = useRef(false); // 2초 확인은 앞 확인이 끝나야 다음을 보낸다
+  const mounted = useRef(true); // 닫힌 칸엔 답·타이머가 쓰지 않는다
 
   const stopWaiting = useCallback(() => {
     if (claudeTimer.current !== null) window.clearInterval(claudeTimer.current);
@@ -243,9 +246,12 @@ export function useAgentChat(context: AgentContext) {
   /** 캐시 없이 Claude 상태를 다시 본다 — 엔진 목록·모델 선택도 같이 바꾼다(입력칸이 잠긴 채 남지 않게). */
   const recheck = useCallback(async (): Promise<ClaudeStatus | null> => {
     const account = getAccountNamespace();
+    const seq = ++claudeSeq.current;
+    const current = () => mounted.current && seq === claudeSeq.current && account === getAccountNamespace();
+    claudeInFlight.current = true;
     try {
       const status = await agentChatApi.claudeStatus();
-      if (account !== getAccountNamespace()) return null;
+      if (!current()) return null;
       const before = lastClaudeState.current;
       lastClaudeState.current = status.state;
       if (before && !CLAUDE_CHAT_OK.has(before) && CLAUDE_CHAT_OK.has(status.state)) setConnected({ subscription: status.subscription });
@@ -254,8 +260,10 @@ export function useAgentChat(context: AgentContext) {
       setChoice((c) => c ?? pickChoice(status.engines, loadJSON<AgentChoice>(STORAGE_KEYS.agentPanelModel)));
       return status;
     } catch (e) {
-      if (account === getAccountNamespace()) setError(errorDetail(e));
+      if (current()) setError(errorDetail(e));
       return null;
+    } finally {
+      if (seq === claudeSeq.current) claudeInFlight.current = false;
     }
   }, []);
 
@@ -269,6 +277,7 @@ export function useAgentChat(context: AgentContext) {
         setLoginNote("expired"); // 창은 그대로 — 마치면 [다시 확인]
         return;
       }
+      if (claudeInFlight.current) return;
       void recheck().then((status) => {
         if (!status) return;
         if (CLAUDE_CHAT_OK.has(status.state)) stopWaiting();
@@ -286,9 +295,11 @@ export function useAgentChat(context: AgentContext) {
     setError(null);
     try {
       await agentChatApi.openClaudeLogin();
+      if (!mounted.current) return; // 그새 칸이 닫혔으면 타이머를 새로 걸지 않는다
       startWaiting();
       void recheck();
     } catch (e) {
+      if (!mounted.current) return;
       if (e instanceof ClaudeLoginError && ["login_window_disabled", "breakaway_denied", "spawn_failed"].includes(e.code)) {
         setLoginNote("terminal");
       } else if (e instanceof ClaudeLoginError && e.code === "login_window_open") {
@@ -300,6 +311,7 @@ export function useAgentChat(context: AgentContext) {
   }, [recheck, startWaiting]);
 
   useEffect(() => {
+    mounted.current = true; // 개발 모드의 두 번 올리기에서도 다시 켠다
     const stale = ticket();
     agentChatApi.session().then((s) => {
       if (stale()) return;
@@ -315,9 +327,11 @@ export function useAgentChat(context: AgentContext) {
       if (last) void openConversation(last);
     }).catch((e) => { if (!stale()) fail(e); });
     return () => {
+      mounted.current = false;
       epoch.current += 1;
       poll.current?.abort();
       if (claudeTimer.current !== null) window.clearInterval(claudeTimer.current);
+      claudeTimer.current = null;
     };
     // 칸을 열 때 한 번 — 계정이 바뀌면 App 이 칸을 새로 올린다(key)
     // eslint-disable-next-line react-hooks/exhaustive-deps
