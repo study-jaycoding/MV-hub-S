@@ -1,14 +1,5 @@
-/* ── MV Agent (docs/status/AskAgent_옆칸_설계_2026-11-09.md 4절 · 시안 _shots/ask-agent-pill-v2.png · ask-agent-open-v2.png) ── */
-
-/* 머리줄 알약 — 검색 묶음 왼쪽, 아이콘 없음. 평소 = 옆 단추들과 같은 바탕·테두리의 회색, 칸이 열린 동안 = 라임 바탕 + 검은 글자. */
-.topbar .agent-pill {
-  flex: none; height: 34px; padding: 0 16px; border-radius: 17px;
-  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border);
-  color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap;
-}
-.topbar .agent-pill:hover { border-color: var(--border2); color: var(--text); }
-.topbar .agent-pill[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.topbar .agent-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* ── MV Agent (docs/status/AskAgent_옆칸_설계_2026-11-09.md 4절 · 시안 _shots/ask-agent-open-v2.png) ── */
+/* 머리줄 단추 = 아이콘 캡슐의 번개 칸(TopBar .agent-btn — docs/status/MVAgent_머리줄아이콘_2026-11-10.md). 모양은 .top-ic-btn 규칙 그대로라 여기엔 없다. */
 
 /* 칸이 열리면 앱 전체(머리줄·본문)가 왼쪽으로 좁아진다 — 겹치지 않는다. 화면에 고정된 프롬프트 도크·아래 선택 막대도 같은 폭으로. */
 .app.agent-open { padding-right: 520px; }

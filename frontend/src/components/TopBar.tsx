@@ -135,13 +135,6 @@ export function TopBar({
           켜진 채 다시 누르면 닫는다: 편집 = 밑의 탭 단추를 누른 것과 같게 떠난다 · 창 = 닫는다. Assets·관리는 분리된 브라우저 창. 관리(PM)는 플래그 on 일 때만.
           바탕이 이어진 한 캡슐로 묶고(시안 G3) — 첫 칸은 검색칸(B′ — 짧은 구분선, 칠 때 검색칸 바탕만 밝게), 끝 칸은 알림 종(B안 — 배지는
           칸 오른쪽 위에 걸침). 모두 Jay 2026-10-26. */}
-      {/* MV Agent(Jay 11-09 이름 바꿈) — 검색 묶음 바로 왼쪽, 아이콘 없는 글자 알약(시안 v2). 칸이 열린 동안 라임 */}
-      {onToggleAgent && hubHasFeature(AGENT_CHAT_FEATURE) && (
-        <button type="button" className="agent-pill" onClick={onToggleAgent} aria-pressed={agentOpen}
-          title={t(agentOpen ? "MV Agent 옆 칸 닫기" : "MV Agent — 오른쪽에 대화칸 열기")}>
-          MV Agent
-        </button>
-      )}
       <div className="top-ic-group">
         {/* 프롬프트·태그 검색. key = 탭 + 탭을 누른 횟수 — 탭을 누르면(같은 탭이어도) 검색칸을 다시 올린다. 예약해 둔(0.3초 뒤) 검색이
             초기화된 화면에 걸리지 않게(언마운트가 예약을 버린다). 자동 따라가기(searchResetKey)는 key 가 아니라 신호로 내린다 — 사용자가
@@ -154,6 +147,19 @@ export function TopBar({
           value={filters.search}
           onSearch={onSearch}
         />
+        {/* MV Agent — 검색칸 바로 뒤 번개 아이콘 칸(Jay 11-10 시안 자리 1·I 번개, 옛 글자 알약 대체). 칸이 열린 동안 라임 투톤, 다시 누르면 닫기 */}
+        {onToggleAgent && hubHasFeature(AGENT_CHAT_FEATURE) && (
+          <button
+            type="button"
+            className={`top-ic-btn agent-btn${agentOpen ? " lit" : ""}`}
+            onClick={onToggleAgent}
+            title={t(agentOpen ? "MV Agent 옆 칸 닫기" : "MV Agent — 오른쪽에 대화칸 열기")}
+            aria-label="MV Agent"
+            aria-pressed={!!agentOpen}
+          >
+            <AgentIcon />
+          </button>
+        )}
         {onOpenEdit && (
           <button
             className={`top-ic-btn${editOpen ? " lit" : ""}`}
@@ -267,6 +273,25 @@ function AssetsIcon() {
             />
             <path d="M1.5 7.6h21v7.5c0 1.2-1 2.2-2.2 2.2H3.7c-1.2 0-2.2-1-2.2-2.2V7.6Z" fill={`url(#${g})`} />
           </g>
+        </>
+      }
+    />
+  );
+}
+
+// MV Agent = 번개(Millionvolt 의 볼트, Jay 2026-11-10 시안 I). 그림 가운데 = 24 격자 한가운데(12, 12) — 선 상자 4.8~19.2 × 2.2~21.8,
+//  투톤은 뒤판(+0.8, +0.65)·앞면(-0.8, -0.65)을 같은 만큼 반대로 밀어 합친 상자도 가운데.
+const BOLT = "M13.5 2.2L4.8 13.4h6.4l-1 8.4 9-11.4h-6.3l.6-8.2Z";
+function AgentIcon() {
+  const g = useId();
+  return (
+    <TopIcon
+      line={<path d={BOLT} />}
+      lit={
+        <>
+          <Grad id={g} top="#f1fbb8" bottom="#b4dc36" y1={2.2} y2={21.8} />
+          <path d={BOLT} fill="#6c8c1e" transform="translate(0.8 0.65)" />
+          <path d={BOLT} fill={`url(#${g})`} transform="translate(-0.8 -0.65)" />
         </>
       }
     />

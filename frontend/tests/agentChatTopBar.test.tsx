@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// MV Agent 알약(Jay 11-09 이름 바꿈 · 시안 _shots/ask-agent-pill-v2.png) — 검색 묶음 바로 왼쪽 · 아이콘 없음 · 평소 회색 · 칸이 열린 동안 라임 + 검은 글자.
-//  허브가 agent_chat_v1 을 알릴 때만 보인다(docs/status/AskAgent_옆칸_설계_2026-11-09.md 4·10절).
+// MV Agent 머리줄 단추(Jay 11-10 시안 자리 1·I 번개 — docs/status/MVAgent_머리줄아이콘_2026-11-10.md) — 아이콘 캡슐 안 검색칸 바로 뒤(편집 앞)
+//  번개 칸 · 평소 선·칸 열림 투톤(옆 칸들과 같은 규칙). 허브가 agent_chat_v1 을 알릴 때만 보인다(docs/status/AskAgent_옆칸_설계_2026-11-09.md 4·10절).
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 import { act } from "react";
@@ -40,39 +40,42 @@ function bar(props: Partial<Parameters<typeof TopBar>[0]> = {}) {
       {...props} />
   );
 }
-const pill = () => host.querySelector<HTMLButtonElement>(".topbar .agent-pill");
+const agent = () => host.querySelector<HTMLButtonElement>(".topbar .top-ic-group > .agent-btn");
 
-describe("MV Agent 알약", () => {
+describe("MV Agent 머리줄 번개 칸", () => {
   it("허브가 agent_chat_v1 을 알리지 않으면 없다", () => {
     act(() => root.render(bar({ onToggleAgent: noop })));
-    expect(pill()).toBeNull();
+    expect(agent()).toBeNull();
   });
 
-  it("기능이 켜져 있으면 검색 묶음 바로 왼쪽에 글자만 있는 알약 — 누르면 칸을 열고 닫는다(aria-pressed)", () => {
+  it("기능이 켜져 있으면 캡슐 안 검색칸 바로 뒤(편집 앞) 아이콘 칸 — 선·투톤 두 그림, 누르면 열고 켜진 채 다시 누르면 닫는다", () => {
     setHubFeatures([AGENT_CHAT_FEATURE]);
     const onToggleAgent = vi.fn();
-    act(() => root.render(bar({ onToggleAgent })));
-    const button = pill()!;
-    expect(button.textContent).toBe("MV Agent");
-    expect(button.querySelector("svg")).toBeNull();
-    expect(button.nextElementSibling).toBe(host.querySelector(".topbar .top-ic-group"));
-    expect(button.getAttribute("aria-pressed")).toBe("false");
+    act(() => root.render(bar({ onToggleAgent, onOpenEdit: noop })));
+    const button = agent()!;
+    expect(button.previousElementSibling).toBe(host.querySelector(".topbar .top-ic-group > .topbar-search"));
+    expect(button.nextElementSibling!.getAttribute("aria-label")).toBe("편집");
+    expect([button.getAttribute("aria-label"), button.textContent]).toEqual(["MV Agent", ""]);
+    expect([button.querySelectorAll(".top-ic-line").length, button.querySelectorAll(".top-ic-lit").length]).toEqual([1, 1]);
+    expect(host.querySelector(".agent-pill")).toBeNull(); // 옛 글자 알약은 없다
+    expect([button.getAttribute("aria-pressed"), button.classList.contains("lit")]).toEqual(["false", false]);
     act(() => button.click());
     expect(onToggleAgent).toHaveBeenCalledTimes(1);
-    act(() => root.render(bar({ onToggleAgent, agentOpen: true })));
-    expect(pill()!.getAttribute("aria-pressed")).toBe("true");
+    act(() => root.render(bar({ onToggleAgent, onOpenEdit: noop, agentOpen: true })));
+    expect([agent()!.getAttribute("aria-pressed"), agent()!.classList.contains("lit")]).toEqual(["true", true]);
+    act(() => agent()!.click());
+    expect(onToggleAgent).toHaveBeenCalledTimes(2);
   });
 
   it("연결이 없으면(onToggleAgent 없음) 기능이 켜져 있어도 없다", () => {
     setHubFeatures([AGENT_CHAT_FEATURE]);
     act(() => root.render(bar()));
-    expect(pill()).toBeNull();
+    expect(agent()).toBeNull();
   });
 
-  it("평소 회색(옆 단추와 같은 바탕·테두리) · 켜지면 라임 바탕 + 검은 글자 — 라임 바탕은 어디서나 검은 글자", () => {
+  it("라임 바탕은 어디서나 검은 글자 · 칸 폭 520", () => {
     const css = readFileSync(new NodeURL("../src/styles/agent-chat.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.topbar \.agent-pill \{[^}]*background: rgba\(255, 255, 255, 0\.04\); border: 1px solid var\(--border\);[^}]*color: var\(--muted\)/);
-    expect(css).toMatch(/\.agent-pill\[aria-pressed="true"\] \{[^}]*background: var\(--accent\);[^}]*color: var\(--accent-ink\)/);
+    expect(css).not.toMatch(/agent-pill/);
     const lime = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => /background: var\(--accent\)/.test(m[2]));
     expect(lime.length).toBeGreaterThan(3);
     for (const [, selector, body] of lime) expect([selector.trim(), body.includes("color: var(--accent-ink)")]).toEqual([selector.trim(), true]);
