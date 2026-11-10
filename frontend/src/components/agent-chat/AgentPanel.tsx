@@ -210,8 +210,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           onNew={startNew}
           onOpen={(id) => { setDrawer(false); setScreenOn(true); void chat.openConversation(id); }}
           onClose={closeDrawer}
-          claude={engines.find((e) => e.id === "claude")} modelLabel={chat.choice ? `${modelLabel} · ${t(EFFORT[chat.choice.effort] ?? chat.choice.effort)}` : null}
-          place={popout ? (onDock ? "window" : null) : (onPopOut ? "side" : null)} onPlace={popout ? onDock : onPopOut} />
+          claude={engines.find((e) => e.id === "claude")} modelLabel={chat.choice ? `${modelLabel} · ${t(EFFORT[chat.choice.effort] ?? chat.choice.effort)}` : null} />
       )}
 
       <div className="agent-log" ref={logRef} aria-live="polite">
@@ -335,8 +334,9 @@ function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }:
   }
 }
 
-/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점) · 아래 설정(Claude 연결 · 새 대화 모델 · 칸 위치). 보내는 중·일하는 중에는 고르기만 잠근다. */
-function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose, claude, modelLabel, place, onPlace }: {
+/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점) · 아래 설정(Claude 연결 · 새 대화 모델). 보내는 중·일하는 중에는 고르기만 잠근다.
+ *  칸 위치(옆 칸/새 창) 줄은 넣지 않는다 — 머리의 단추로 충분(Jay 11-10). */
+function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose, claude, modelLabel }: {
   conversations: AgentConversationSummary[] | null;
   currentId: string | null;
   running: boolean;
@@ -347,8 +347,6 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
   onClose: () => void;
   claude?: AgentEngine;
   modelLabel: string | null;
-  place: "side" | "window" | null; // 지금 칸 위치 — null 이면 바꾸는 줄 없음
-  onPlace?: () => void;
 }) {
   const t = useT();
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
@@ -409,15 +407,6 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
             </b>
           </div>
           {modelLabel && <div className="agent-drawer-row"><span>{t("새 대화 모델")}</span><b>{modelLabel}</b></div>}
-          {place && onPlace && (
-            <div className="agent-drawer-row">
-              <span>{t("칸 위치")}</span>
-              <span className="agent-seg" role="group" aria-label={t("칸 위치")}>
-                <button type="button" aria-pressed={place === "side"} onClick={place === "side" ? undefined : onPlace}>{t("옆 칸")}</button>
-                <button type="button" aria-pressed={place === "window"} onClick={place === "window" ? undefined : onPlace}>{t("새 창")}</button>
-              </span>
-            </div>
-          )}
         </div>
       </nav>
     </>

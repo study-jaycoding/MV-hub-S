@@ -747,8 +747,7 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     expect(docked).toBe(1);
   });
 
-  it("≡ 서랍 — 대화를 프로젝트별로 묶고(이름 모르는 프로젝트는 한 묶음, '프로젝트 없음'은 맨 아래) 고르면 열고 닫힌다 · 칸 위치로 새 창", async () => {
-    let popped = 0;
+  it("≡ 서랍 — 대화를 프로젝트별로 묶고(이름 모르는 프로젝트는 한 묶음, '프로젝트 없음'은 맨 아래) 고르면 열고 닫힌다 · 칸 위치 줄은 없다", async () => {
     route = (c) => {
       if (c.path === "/session") return session();
       if (c.path === "/conversations") {
@@ -765,7 +764,7 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
       return json({ detail: "Not Found" }, 404);
     };
     act(() => root.render(<AgentPanel context={{ tab: "my" }} contextLabel="워크스페이스" onClose={() => {}}
-      projectName={(id) => (id === "p1" ? "뻘뻘뻘" : undefined)} onPopOut={() => { popped += 1; }} />));
+      projectName={(id) => (id === "p1" ? "뻘뻘뻘" : undefined)} onPopOut={() => {}} />));
     await flush();
     act(() => button("대화 목록")!.click());
     await flush();
@@ -774,14 +773,13 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     expect(groups()).toEqual([
       ["뻘뻘뻘", ["딸기와 바나나", "사과"]], ["다른 공간 프로젝트", ["강아지이어 가기 불가"]], ["프로젝트 없음", ["고양이"]],
     ]);
+    expect(texts(".agent-drawer-row > span")).toEqual(["Claude", "새 대화 모델"]); // 칸 위치(옆 칸/새 창) 줄은 뺐다(Jay 11-10)
     expect(texts(".agent-drawer-row b")[0]).toBe("연결됨 · Max 구독");
     act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-drawer-item")][0].click());
     await flush();
     expect([host.querySelector(".agent-drawer"), host.querySelector(".agent-title")!.textContent]).toEqual([null, "딸기와 바나나"]);
     act(() => button("대화 목록")!.click());
     await flush();
-    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-seg button")].find((b) => b.textContent === "새 창")!.click());
-    expect(popped).toBe(1);
     act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
     expect(host.querySelector(".agent-drawer")).toBeNull();
   });

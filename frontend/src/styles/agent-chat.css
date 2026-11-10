@@ -91,9 +91,6 @@
 .agent-drawer-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12.5px; }
 .agent-drawer-row b { color: var(--text); font-weight: 600; }
 .agent-drawer-row b.ok { color: var(--accent); }
-.agent-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: #2e2e2e; }
-.agent-seg button { padding: 3px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 600; }
-.agent-seg button[aria-pressed="true"] { background: #464646; color: var(--text); }
 
 /* 대화 */
 .agent-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
