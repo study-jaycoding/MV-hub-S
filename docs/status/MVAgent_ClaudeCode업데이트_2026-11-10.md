@@ -3,72 +3,60 @@ status: active
 updated: 2026-11-10
 ---
 
-# MV Agent — Claude Code 새 판 [업데이트] 단추 (2026-11-10)
+# MV Agent — Claude Code 공식 설치 보장 · [업데이트] 단추 (2026-11-10)
 
-owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 보류 · updated: 2026-11-10
-
-> [!IMPORTANT]
-> 1차 설계 검토(아래 4절) 결과 **양측 수정 요청** — 범위(앱이 조용히 설치 / 보이는 창에서 설치 / 안내만)를 Jay 에게 묻고 멈춤. 코드 0.
+owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 설계 중 · updated: 2026-11-10
 
 ## 1. 요청과 사실
 
-- Jay 11-10: 서랍 아래 설정 칸을 없애고(dev `ef0f2954` 완료), 그 자리에 **"npm 업데이트가 생기면 [업데이트]를 눌러 설치"**.
-- 실측(11-10): 이 PC 허브가 쓰는 Claude Code = npm 전역 설치본 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` **2.1.296**(`agent_chat_process.find_claude` — PATH 의 npm 셰임 옆 실제 exe → 공식 설치 `~\.local\bin\claude.exe`, 둘이면 판이 높은 쪽). npm 최신 2.1.322. 데스크톱 앱 내장 2.1.321 은 허브 후보가 아니다.
-- 앞 결정과의 관계: 「Claude Code 없는 PC = 설치 안내(B), 앱이 설치를 실행하지 않음」(옆 칸 설계)은 **새로 설치**의 결정이다. 이번 Jay 요청은 **이미 npm 으로 설치된 Claude Code 의 판 올리기**만 앱이 실행한다. 새로 설치는 지금처럼 안내만.
-- 위험: 앱이 PC 의 전역 프로그램을 바꾼다(그 PC 터미널의 `claude` 도 바뀜). 실행 중인 claude.exe 가 파일을 쥐고 있으면 npm 교체가 실패하고 반쯤 지워진 설치가 남을 수 있다(10-27 업데이터에서 겪은 Windows 파일 잠금과 같은 종류). 팀 PC 마다 각자 누른다.
+- Jay 11-10(차례대로): 서랍 아래에 "업데이트가 생기면 [업데이트]를 눌러 설치" → "MV Agent 는 최신 에이전트로 자동 업데이트되어야 한다" → "MV Hub 를 설치·업데이트할 때 공식 설치를 하게 하자".
+- 실측(11-10):
+  - 이 PC 허브가 쓰는 Claude Code = npm 전역 설치본 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` **2.1.296**(10-14 뒤 그대로 — `~/.claude.json` `autoUpdates: false`). 공식 설치본(`~\.local\bin\claude.exe`)은 없다(`~\.local\share\claude\versions` 에 5월 판 2.1.143·144 흔적만).
+  - 허브 고르기(`agent_chat_process.find_claude`) = PATH 의 npm 셰임 옆 실제 exe · 공식 위치 — 둘이면 판이 높은 쪽, 같으면 공식.
+  - 칸 모델은 별칭(`opus`·`fable`…)이라 실제 모델이 CLI 판을 따른다 — 2.1.296 의 fable = claude-fable-5-1, 2.1.321 = claude-fable-5-2. **CLI 를 최신으로 두면 모델도 자동으로 최신**이 된다.
+  - Claude 데스크톱 앱 업데이트로는 허브의 Claude Code 가 안 바뀐다(앱은 `%APPDATA%\Claude\claude-code\<판>\` 을 따로 쓴다).
+- 공식 문서(code.claude.com/docs/en/setup·troubleshoot-install, 하위 에이전트가 읽음): 공식 설치는 **백그라운드에서 스스로 업데이트**(시작할 때·실행 중 확인, 다음 시작에 적용) · `claude update` = 지금 바로 업데이트 · 데스크톱 앱과 CLI 는 나란히 써도 되고 설정(`~/.claude`)을 같이 쓴다 · npm → 공식 = 공식 설치 뒤 npm 판 지우기 권장(설치는 하나만).
+- 공식 설치 스크립트 원문(11-10, `claude.ai/install.ps1` → 302 → `downloads.claude.ai/claude-code-releases/bootstrap.ps1`): `downloads.claude.ai` 에서 판·manifest·`claude.exe` 를 받아 **SHA-256 확인** 뒤 `claude.exe install latest` 실행 · 묻는 것 없음 · 관리자 불필요 · PATH·레지스트리는 스크립트가 안 건드림(`claude install` 안쪽은 미확인) · 실패면 종료 코드 1.
+- MV Hub 설치·업데이트 흐름(11-10 코드 조사): 첫 설치(`release/MVHub_Install.bat`)·앱 안 업데이트(`release_update.py` → `update_release.bat` → 워커)·손 업데이트 모두 **사용자 계정(관리자 아님)**으로 돌고 끝에 `MV_agent.bat` → `run_agent_session.py` 로 허브를 다시 켠다. 공유 서버는 다른 길(`MV_server.bat`·SYSTEM 예약 작업·`update_git`). 실행기 `main()` 은 이미 `ensure_desktop_shortcut()`(1438행 — 표식·`.git` 이면 건너뜀·실패 삼킴)을 같은 자리에서 돈다.
+- **앞 결정 변경(Jay 11-10)**: 「Claude Code 없는 PC = 설치 안내(B), 앱이 설치를 실행하지 않음」(옆 칸 설계) → **MV Hub 설치·업데이트 때 공식 설치를 실행**. 실패해도 MV Hub 설치는 계속, 공유 서버 제외.
 
-## 2. 설계
+## 2. 설계 v2
 
-### 2-1. 판 확인 — `GET /api/agent-chat/claude/update` (칸 표 `_panel`)
-- 답: `{method, current, latest, can_update, reason, job}`.
-  - `method`: `npm`(허브가 고른 exe 가 PATH 의 npm 전역 접두사 아래 `node_modules/@anthropic-ai/claude-code/bin/claude.exe`) · `official`(공식 설치 — 스스로 업데이트하므로 단추 없음) · `none`(Claude Code 없음).
-  - `current` = `cli_version(find_claude())`, `latest` = npm 의 `latest` 판(아래), `can_update` = method npm · 둘 다 읽힘 · latest > current(판 비교 `version_tuple`) · 진행 중 업데이트 없음.
-  - `reason`(단추를 안 보이는 까닭, 화면엔 안 씀): `not_npm` · `check_failed` · `up_to_date` · `no_claude`.
-- `latest` 읽기: npm 자체로 묻는다 — `node <npm>/node_modules/npm/bin/npm-cli.js view @anthropic-ai/claude-code@latest version --json`(PC 의 npm 설정·사내 미러를 그대로 따르게 — 설치와 같은 출처). 20초 제한, 결과 6시간 메모리 캐시(실패도 10분 캐시 — 서랍을 열 때마다 npm 을 띄우지 않게). 판 모양(`\d+\.\d+\.\d+`)만 받는다.
-- node·npm-cli.js 찾기: `shutil.which("npm")` 의 폴더 + `node_modules/npm/bin/npm-cli.js`, node 는 `shutil.which("node")`(find_codex 와 같은 방식 — `.cmd` 셰임을 거치지 않아 인자가 안전).
+원칙: **npm 설치본은 앱이 바꾸지 않는다** — 1차 검토(4절)의 위험 대부분이 npm 제자리 교체(Windows 파일 잠금·설치 위치 판정·되돌리기·허브 종료 복구)에서 나왔다. 모든 PC 를 공식 설치본으로 모으고, 업데이트도 공식 업데이트만 쓴다.
 
-### 2-2. 업데이트 — `POST /api/agent-chat/claude/update` (칸 표 `_panel`)
-- 허브 안에서 한 번에 하나(모듈 잠금). 바로 `{job}` 을 돌려주고 일은 스레드에서. 화면은 GET 으로 2초마다 `job` 을 본다.
-- 스레드 순서(하나라도 걸리면 실패로 끝내고 아무것도 바꾸지 않는다):
-  1. 판 확인을 **새로** 다시(캐시 무시) — `can_update` 가 아니면 끝.
-  2. `ClaudeLock("update")` 획득(PC 전체 뮤텍스 — 다른 허브의 차례·로그인 창 만들기와 겹치지 않게. 기존 획득 규칙 그대로: 회수 안 된 차례 표식·살아 있는 주인이면 막음). 못 잡으면 "Claude 가 일하는 중이에요".
-  3. 잠금 안에서: 로그인 창이 살아 있지 않음(`window_alive()` 거짓, 기록 못 읽으면 막음) · **이 exe 경로로 떠 있는 claude.exe 가 0개**(`_claude_command_lines()` — 못 읽으면 막음, 명령줄에 그 exe 경로가 들어 있으면(대소문자 무시) 막음: "Claude Code 가 다른 곳(터미널 등)에서 실행 중이에요 — 닫고 다시 눌러 주세요").
-  4. `node npm-cli.js install -g @anthropic-ai/claude-code@<1단계 latest 그대로> --no-fund --no-audit` 를 `JobProcess` 로(창 없음·자식까지 Job 안·10분 제한, 넘으면 Job 을 닫아 끈다). 환경 = `child_env()`.
-  5. 끝나면 `find_claude()`·`cli_version` 으로 **새 판 == 목표** 확인 → 성공. 다르거나 npm 실패면 실패 — 이때 Claude Code 가 아직 도는지(`cli_version` 읽힘)를 함께 알린다: 못 읽으면 "Claude Code 를 다시 설치해야 해요 — 터미널에서 `npm install -g @anthropic-ai/claude-code`".
-  6. 잠금을 놓고(Job 0개 확인 뒤), 판 확인 캐시와 엔진 캐시(`service.engines(True)`)를 비운다.
-- 차례와 겹침: 업데이트가 잠금을 쥔 동안 새 차례는 `would_block` 이 막는다 — 주인 기록 kind 가 `update` 면 문구를 "Claude Code 업데이트 중이에요"로. 진행 중인 차례가 있으면 2단계에서 업데이트가 막힌다(차례가 잠금을 쥐고 있다).
-- 기록: 허브 로그에 시작·끝·npm 종료 코드·목표 판만(npm 출력 원문은 남기지 않는다). 화면 실패 문구에는 npm 오류 코드(`EBUSY`·`EPERM`·`ENOTFOUND` 등 대문자 코드 하나)만 뽑아 보인다.
+### 2-1. 공식 설치 보장 — MV Hub 실행기(`run_agent_session.py`)
+- 자리: `main()` 의 `ensure_desktop_shortcut()` 다음, `run_guarded` 전 — 첫 설치·업데이트 모두 실행기로 끝나므로 둘 다 닿는다. **배경 스레드로 시작만 하고 넘어간다**(앱 기동을 막지 않음).
+- 할 때(모두 참): Windows · 릴리스 설치(설치 폴더에 `.git` 없음 — 바로가기와 같은 판정) · 일반 사용자(현재 토큰 SID 가 SYSTEM `S-1-5-18` 아님, `USERPROFILE` 있음) · 공유 서버 아님(`CONTENT_HUB_AUTH` != `1`) · 끄는 스위치 없음(`MVHUB_CLAUDE_INSTALL` != `0`) · `%USERPROFILE%\.local\bin\claude.exe` 없음 · 표식 `%LOCALAPPDATA%\MVHub\claude-install.json` 의 마지막 시도가 24시간보다 오래됨(실패 반복 막기 — 표식을 못 읽으면 시도).
+- 하는 일: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex"`(공식 문서 명령 그대로) · 창 없음 · **실행기 Job 밖**(`CREATE_BREAKAWAY_FROM_JOB` — MV Hub 창을 닫아도 설치가 반쯤 끊기지 않게, 기존 797·1130행 방식) 이면서 **설치 전용 Job**(자식까지 묶음)에 담아 15분 넘으면 Job 을 닫아 끈다 · 출력은 `%LOCALAPPDATA%\MVHub\claude-install.log` 에 덮어쓰기(뒤 64KB만).
+- 결과: 끝난 뒤 `~\.local\bin\claude.exe` 가 있으면 성공, 아니면 실패 — 표식에 시각·결과·종료 코드만(경로·출력 원문 없음). 실패해도 앱은 그대로(MV Agent 는 지금의 연결 안내를 보인다).
+- npm 설치본은 지우지 않는다 — 허브가 판이 높은 쪽(같으면 공식)을 고르므로 공식 설치가 끝나면 그쪽으로 간다. 허브의 엔진 상태 캐시(60초) 뒤 저절로 새 판을 본다(재시작 불필요). 터미널 PATH 순서는 사용자 몫.
 
-### 2-3. 화면 — 서랍 맨 아래(옛 설정 칸 자리)
-- 서랍을 열 때 GET 한 번. `can_update` 일 때만 한 줄: `Claude Code 새 판 2.1.322 (지금 2.1.296)` + **[업데이트]**(라임 바탕·검은 글자).
-- 누르면 POST → 줄이 `업데이트하는 중` (단추 잠금) → 끝나면 `2.1.322 로 업데이트했어요` / `업데이트하지 못했어요 · <까닭>` + [다시]. 대화가 도는 중(`chat.running`)엔 단추를 잠그고 `대화가 끝나면 업데이트할 수 있어요`.
-- 서랍을 닫아도 업데이트는 허브에서 계속된다(다시 열면 job 상태를 이어 보인다).
-- 새 창(?embed=agent)에서도 같은 서랍이라 같다.
+### 2-2. [업데이트] 단추 — 공식 설치본일 때만
+- `GET /api/agent-chat/claude/version` 에 `method`(`official` = 허브가 고른 exe 가 `official_claude()` 와 같은 파일 · `npm` · `none`) · `can_update`(official · 새 판 · 업데이트 안 하는 중) · `job`(`idle|running|done|failed` + 판·까닭) 을 더한다.
+- 서랍 아래 줄: `v<지금>` 옆에 `can_update` 일 때 **[업데이트]**. npm 이면 단추 없이 지금처럼 라임 글자 + 알림 글(다음 MV Hub 켜짐에 공식 설치 — 2-1). `job` 이 running·failed 면 `can_update` 와 상관없이 그 상태를 보인다.
+- `POST /api/agent-chat/claude/update`(칸 표): 허브 안 한 번에 하나, 바로 `job` 을 돌려주고 일은 스레드:
+  1. `ClaudeLock("update")` — 차례·로그인 창 만들기와 같은 뮤텍스. `_valid_owner` 가 `update` 를 받게 하고, 차례처럼 **회수 표식**을 연다(놓지 못하고 죽으면 다음 획득이 막힘). 진행 중 차례·로그인 창이면 거절("Claude 가 일하는 중이에요"). `would_block` 은 주인 기록 kind 가 `update` 면 "Claude Code 업데이트 중이에요"(읽지 못하면 지금 문구).
+  2. 업데이트 중에는 **허브가 claude.exe 를 띄우는 길이 모두 띄우지 않는다**: 엔진 목록·`/claude` 상태는 마지막 값을 그대로(+ `updating`), 차례 시작은 `engine_problem` **보다 먼저** 409, 판 확인은 캐시만.
+  3. 실행: `<공식 claude.exe> update` 를 `JobProcess` 로(창 없음·stdin 닫음·출력 읽어 버림·10분 제한). 공식 설치는 실행 중에도 백그라운드 업데이트가 도는 방식이라(문서) 다른 곳에 claude 가 떠 있어도 막지 않는다.
+  4. 끝: Job 0개 확인 뒤 잠금 놓기(못 하면 놓지 않음 — 차례와 같은 규칙) · 엔진·최신 판 캐시 비움 · 공식 exe 로 판 다시 읽기 → `done(새 판)` / `failed(종료 코드·시간 초과)`.
+- 허브가 도중에 꺼지면 Job 이 `claude update` 를 끈다 — 공식 업데이터가 새 판을 따로 받은 뒤 바꾸는지는 **미확인(격리 실측 항목)**. 다음 켜짐에 판 확인이 그대로 보여 준다.
+- 화면: [업데이트] → `업데이트하는 중`(잠금) → `v<새 판>` / `업데이트하지 못했어요` + [다시] · 대화 중엔 잠금 · 서랍을 닫아도 허브에서 계속(다시 열면 이어 보임).
 
-## 4. 1차 설계 검토(계약 SHA 50333a1d…)
+### 2-3. 1차 검토 지적 처리
+- ① 허브가 업데이트 중 exe 를 띄움 → 2-2 의 2. ② 잠금·주인 기록·회수 표식 → 2-2 의 1·4. ③ npm 위치 판정 · ④ 실행 중 exe·되돌리기 · ⑤ 허브 종료 복구 → npm 을 앱이 바꾸지 않아 범위에서 빠짐(공식 업데이터의 일 — ⑤의 공식 쪽 동작은 실측). ⑥ 엄격한 판 모양(숫자.숫자.숫자) · job 은 `can_update` 와 따로.
 
-- Codex(설계 세션 `01a1bf3c` 이어 받기, 요청 모델 gpt-6.1-sol·high, 무도구·읽기 전용) — **수정 요청**, P1 6 · P2 3.
-- Claude(읽기 전용 새 세션 `d77d3d43`, claude-opus-5-5) — **수정 요청**, 중대 3 · 보통 2 · 작음 2.
-- 겹친 중대 지적:
-  1. 업데이트 중에도 **허브 자신이 같은 claude.exe 를 띄운다** — 상태 조회(`claude_state` 의 `--version`·`auth status`), 차례 시작의 `engine_problem`(잠금 확인 `would_block` 보다 먼저, `routers/agent_chat.py:217`), `/session` 의 엔진 목록, 2초마다 도는 판 확인. 업데이트 중엔 이 길들이 모두 실행하지 않아야 한다.
-  2. `ClaudeLock` 은 설치 파일 기준이 아니라 **자격 폴더 기준·`Local\`** 뮤텍스다(`agent_chat_claude.py:144`·`:346`). 주인 기록 검사 `_valid_owner` 가 `update` 를 몰라(173줄) 업데이트 주인 기록을 깨진 기록으로 읽고 막지 않는다 · 업데이트엔 차례 표식(회수 확인)도 없다.
-  3. **npm 전역 설치 위치 판정이 틀렸다** — `which("npm")` 폴더(보통 `C:\Program Files\nodejs`)가 아니라 `npm prefix -g`(보통 `%APPDATA%\npm`)와 Claude 셰임 폴더를 맞춰야 한다. 사후 확인도 `find_claude()`(판이 같으면 공식 설치를 고름) 말고 npm exe 경로를 직접.
-  4. 실행 중 확인은 명령줄 글자 대신 `ExecutablePath` 로. 그래도 확인~설치 사이에 터미널에서 claude 를 켜는 틈이 남는다 → Codex: **실패 뒤 되돌릴 수 있는 교체**(설치 전 패키지·셰임 복사본 → 실패하면 복원).
-  5. 허브가 설치 도중 꺼지면(Job 이 npm 을 끔) 복구 계약이 없다 → 시작 전 대상·목표·진행 상태를 파일에 남기고 다시 켤 때 확인.
-  6. (P2) 판 확인은 종료 코드·엄격한 판 모양 · 진행·실패·복구 상태는 `can_update` 와 따로 보여야 한다 · touched_paths 에 `services/agent_chat.py`·`agent_chat_process.py`·`tests/test_agent_chat_claude.py` 추가.
-- 원문: 세션 스크래치 `agentpanel/codex_update_design_reply.md` · `claude_update_agree.json`.
+## 3. 시험(가짜만 — 진짜 설치·진짜 업데이트·외부 네트워크 없음)
 
-## 5. 다시 본 사실 — 단추가 꼭 필요한가(11-10 저녁, Jay "클로드 앱에서 업데이트하면 자동으로 되나?")
+- 실행기: 조건마다 설치를 안 부름(`.git`·SYSTEM·서버·스위치 0·이미 있음·24시간 안 시도·Windows 아님) · 부를 때 명령·창 없음·Job 밖 플래그 · 성공/실패 표식(경로·출력 없음) · 15분 시간 초과로 끔 · 배경이라 `main()` 이 기다리지 않음.
+- 허브: method 판정(공식·npm·없음) · `can_update` · 업데이트 성공(명령 = `<공식 exe> update`)·실패·시간 초과 · 동시 두 번(하나만) · **업데이트 중 exe 를 띄우는 길 0**(엔진 목록·상태·차례 시작) · 주인 기록 `update` 와 회수 표식(놓지 못하면 다음 획득을 막음) · 진행 중 차례·로그인 창이면 거절 · `would_block` 문구.
+- 화면: 공식 + 새 판일 때만 [업데이트] · 진행·성공·실패 · 대화 중 잠금 · npm 일 때 알림 글.
+- 격리 실측(진짜 설치 없이): 실행기 배경 시작이 기동 시간을 늘리지 않음. 실제 설치·업데이트 1회는 Jay PC 에서 Jay 승인 뒤.
 
-- **Claude 데스크톱 앱 업데이트로는 허브의 Claude Code 가 안 바뀐다**(실측): 앱은 자기 폴더 `%APPDATA%\Claude\claude-code\<판>\…\claude.exe`(2.1.317·2.1.321)를 따로 쓰고, 허브가 쓰는 npm 설치본은 2.1.296 그대로(exe 고친 때 10-14). 공식 문서는 둘이 바이너리를 나누는지 말하지 않는다.
-- 공식 문서(code.claude.com/docs/en/setup · troubleshoot-install, 하위 에이전트가 읽음): **공식 설치(`irm https://claude.ai/install.ps1 | iex` → `~\.local\bin\claude.exe`)는 백그라운드에서 스스로 업데이트**한다(채널 `autoUpdatesChannel` latest/stable). npm 설치도 시작할 때·실행 중 확인해 업데이트한다고 적혀 있으나, 이 PC 는 `~/.claude.json` 에 `autoUpdates: false`·`installMethod: global` 이 있고 실제로 10-14 이후 안 바뀌었다(이 칸의 뜻은 읽은 문서에 없어 원인 단정 못 함). npm → 공식으로 옮기는 법 = 공식 설치 뒤 `npm uninstall -g @anthropic-ai/claude-code`(설치는 하나만).
-- **칸의 연결 안내가 이미 공식 설치 명령을 준다**(`AgentConnect.tsx` `INSTALL_COMMAND`) → 안내대로 설치한 팀 PC 는 스스로 업데이트된다. 허브는 공식 설치본을 이미 후보로 보고 판이 높은 쪽을 고른다(`find_claude`). 단추가 필요한 곳은 npm 으로 깐 PC(지금은 Jay PC)뿐.
-- 그래서 제안: Jay PC 를 공식 설치로 옮기고 단추는 만들지 않는다(Jay 답 대기).
+## 4. 1차 설계 검토(v1 — npm 을 앱이 교체하는 안, 계약 SHA 50333a1d…)
 
-## 3. 시험
-
-- 백엔드(가짜만 — 진짜 npm·진짜 Claude Code 를 바꾸지 않는다): 판 확인(npm 경로 판정·official·none, 최신 > 지금일 때만 can_update, 판 모양 아님·실패 캐시) · 업데이트가 막히는 경우(잠금 못 잡음·로그인 창·같은 exe 실행 중·명령줄 조회 실패·1단계에서 최신 아님) · 성공(명령 인자에 정확한 판, 끝 판 확인, 캐시 비움) · npm 실패·판 불일치·시간 초과(Job 닫기) · 동시 두 번 누름(하나만) · 업데이트 중 `would_block` 문구.
-- 프런트: can_update 일 때만 줄 · 누르면 POST 후 진행·성공·실패 문구 · 대화 중 잠금 · 그 밖 기존 칸 시험·CSS 계약·빌드·경계 검사.
+- Codex(설계 세션 `01a1bf3c` 이어 받기, 요청 모델 gpt-6.1-sol·high, 무도구·읽기 전용) — **수정 요청**, P1 6 · P2 3. Claude(읽기 전용 새 세션 `d77d3d43`, claude-opus-5-5) — **수정 요청**, 중대 3 · 보통 2 · 작음 2.
+- 겹친 중대 지적: ① 업데이트 중에도 허브가 같은 claude.exe 를 띄운다(상태 조회·차례 시작의 `engine_problem` 이 `would_block` 보다 먼저 — `routers/agent_chat.py:217`) ② `ClaudeLock` 은 자격 폴더 기준 `Local\` 뮤텍스이고 `_valid_owner` 가 `update` 를 모름(173줄)·업데이트엔 회수 표식 없음 ③ npm 전역 설치 위치를 `which("npm")` 폴더로 판정하면 틀림(`npm prefix -g`) ④ 명령줄 글자 대신 ExecutablePath · 확인~설치 사이 틈 → 되돌릴 수 있는 교체 ⑤ 허브가 설치 도중 꺼질 때 복구 계약 없음 ⑥ (P2) 판 모양·상태 표시·touched_paths.
+- 원문: 세션 스크래치 `agentpanel/codex_update_design_reply.md` · `claude_update_agree.json`. → v2 에서 2-3 처럼 처리.
 
 ```vibe-intent
 {
@@ -76,19 +64,20 @@ owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 보류
   "id": "mvagent-claude-update-2026-11-10",
   "root": "D:/ClaudeCode/MV-hub-S-dev",
   "owner": {"host": "claude", "session": "70730ef8-86b1-4d03-8e24-0b2533ad8e0f"},
-  "risk": {"level": "major", "reason": "앱이 PC 의 전역 프로그램(npm 의 Claude Code)을 설치·교체한다 — 업데이트 실행, Windows 파일 잠금으로 실패하면 Claude Code 가 깨질 수 있고, 팀 PC 마다 돈다"},
-  "goal": "MV Agent 서랍 맨 아래에, 허브가 쓰는 npm 설치 Claude Code 의 새 판이 있을 때만 [업데이트]를 보이고 누르면 안전 확인 뒤 그 판으로 설치한다(Jay 11-10).",
-  "touched_paths": ["backend/app/services/agent_chat_update.py", "backend/app/services/agent_chat_claude.py", "backend/app/routers/agent_chat.py", "backend/tests/test_agent_chat_update.py", "frontend/src/lib/agentChatApi.ts", "frontend/src/components/agent-chat/AgentPanel.tsx", "frontend/src/styles/agent-chat.css", "frontend/tests/agentChatPanel.test.tsx", "docs/inventory/endpoints.md", "docs/inventory/background_jobs.md", "docs/CODE_MAP.md"],
+  "risk": {"level": "major", "reason": "MV Hub 실행기가 팀 PC 마다 Claude Code 공식 설치를 실행하고, 칸 단추가 공식 업데이트를 실행한다 — 설치·업데이트 흐름 변경, 실패 시 MV Agent 를 못 쓰게 될 수 있음"},
+  "goal": "MV Hub 를 켤 때(설치·업데이트 직후 포함) 공식 Claude Code 가 없으면 배경에서 공식 설치를 하고, 서랍 아래 줄에 공식 설치본의 새 판이 있으면 [업데이트](claude update)를 보여 MV Agent 가 늘 최신 Claude Code 로 돌게 한다(Jay 11-10).",
+  "touched_paths": ["run_agent_session.py", "backend/tests/test_claude_official_install.py", "backend/app/services/agent_chat_claude.py", "backend/app/services/agent_chat.py", "backend/app/routers/agent_chat.py", "backend/tests/test_agent_chat_update.py", "backend/tests/test_agent_chat_connect.py", "frontend/src/lib/agentChatApi.ts", "frontend/src/components/agent-chat/AgentPanel.tsx", "frontend/src/styles/agent-chat.css", "frontend/tests/agentChatPanel.test.tsx", "docs/inventory/endpoints.md", "docs/inventory/env_vars.md", "docs/inventory/background_jobs.md", "docs/CODE_MAP.md"],
   "criteria": [
-    {"id": "backend", "success": "새 업데이트 시험(판 확인·막힘 6가지·성공·실패·시간 초과·동시 누름·would_block 문구) + 칸 기록·실행기 시험 통과, 진짜 npm·Claude Code 는 건드리지 않음", "failure": "시험 실패 또는 시험이 진짜 npm 을 부름", "required": true, "verification": []},
-    {"id": "frontend", "success": "업데이트 줄 시험 + MV Agent 칸·머리줄·연결 시험 + CSS 계약 + 빌드 + 경계 검사 통과", "failure": "시험·빌드 실패", "required": true, "verification": []},
+    {"id": "launcher", "success": "실행기 공식 설치 시험(조건별 안 부름·명령·Job 밖·표식·시간 초과·배경) + 바로가기·실행기 기존 시험 통과, 진짜 설치·네트워크 없음", "failure": "시험 실패 또는 시험이 진짜 설치를 부름", "required": true, "verification": []},
+    {"id": "backend", "success": "업데이트 시험(method·can_update·성공·실패·시간 초과·동시·업데이트 중 exe 0·주인 기록·회수 표식·거절·문구) + 칸 연결·입구·기록 시험 통과", "failure": "시험 실패", "required": true, "verification": []},
+    {"id": "frontend", "success": "업데이트 단추 시험 + MV Agent 칸·머리줄·연결 시험 + CSS 계약 + 빌드 + 경계 검사 통과", "failure": "시험·빌드 실패", "required": true, "verification": []},
     {"id": "inventory", "success": "gen_inventory --check · check_code_map 통과", "failure": "목록 낡음", "required": true, "verification": []}
   ],
   "decisions": [
-    {"choice": "이미 npm 으로 설치된 Claude Code 의 판 올리기만 앱이 실행(새로 설치는 안내 그대로)", "why": "Jay 11-10 요청 — 앞 결정(설치 안내 B)은 새로 설치 범위", "alternative": "업데이트도 안내만(명령 복사)", "revisit": "팀 PC 에서 업데이트 실패가 잦을 때"},
-    {"choice": "최신 판은 npm view 로(PC 의 npm 설정·미러를 따름), 설치는 그 정확한 판 번호로", "why": "확인한 판과 설치하는 판이 같아야 하고, 사내 미러가 있으면 직접 레지스트리 주소와 다를 수 있다", "alternative": "registry.npmjs.org 직접 조회", "revisit": "npm view 가 느리거나 실패가 잦을 때"},
-    {"choice": "PC 전체 Claude 잠금(ClaudeLock update) + 로그인 창 없음 + 같은 exe 의 claude.exe 0개일 때만 설치", "why": "실행 중인 exe 를 npm 이 바꾸다 실패하면 설치가 반쯤 남는다(Windows 파일 잠금)", "alternative": "그냥 실행하고 실패하면 안내", "revisit": "실측에서 막힘이 너무 잦을 때"},
-    {"choice": "공식 설치본(~/.local/bin)은 단추 없음", "why": "공식 설치는 Claude Code 가 스스로 업데이트한다", "alternative": "claude update 실행", "revisit": "공식 설치 PC 가 판이 밀릴 때"}
+    {"choice": "MV Hub 실행기가 공식 설치를 보장(설치·업데이트 직후 포함, 배경·실패 무시·24시간 간격)", "why": "Jay 11-10 '설치·업데이트 때 공식 설치' — 설치·업데이트 모두 실행기로 끝나고 사용자 계정으로 돈다", "alternative": "설치·업데이트 스크립트(MVHub_Install.bat·워커)에 단계 추가", "revisit": "실행기가 아닌 길로 허브를 켜는 경우가 생길 때"},
+    {"choice": "npm 설치본은 앱이 바꾸지 않는다(지우지도 않음) — 공식 설치본으로 모은다", "why": "1차 검토의 위험 대부분이 npm 제자리 교체에서 나옴, 허브는 판이 높은 쪽을 고른다", "alternative": "npm 업데이트를 앱이 실행(v1)", "revisit": "공식 설치가 막힌 PC 가 많을 때"},
+    {"choice": "[업데이트] = 공식 설치본의 claude update, 공식일 때만", "why": "공식 업데이터는 실행 중에도 도는 방식(문서) — 파일 잠금·되돌리기를 앱이 떠안지 않는다", "alternative": "단추 없이 백그라운드 자동 업데이트만", "revisit": "공식 업데이터가 허브 종료에 약한 것이 실측되면"},
+    {"choice": "공유 서버·SYSTEM·개발 트리·스위치 0 에서는 설치 안 함", "why": "서버는 다른 길·SYSTEM 이면 시스템 프로필에 깔림·개발본은 사람 PC 설정을 바꾸지 않게", "alternative": "어디서나", "revisit": "서버에도 MV Agent 가 필요해질 때"}
   ],
   "evidence": {"target": {"kind": "worktree"}}
 }
