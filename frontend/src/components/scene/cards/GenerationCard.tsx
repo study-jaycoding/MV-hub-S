@@ -10,7 +10,7 @@ import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../..
 import { generationIssueFor, generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
 import { folderChipLabel } from "../../../lib/folderLabel";
 import { useT } from "../../../lib/i18n";
-import { HistoryBoardNode } from "../../history/HistoryBoardNode";
+import { HistoryBoardNode, type HistoryBoardNodeActions } from "../../history/HistoryBoardNode";
 import { ImageOffIcon, StepIcon } from "../../common/ViewIcons";
 import { LastViewedBadge } from "../LastViewedBadge";
 import { TagEditor } from "../../TagEditor";
@@ -34,14 +34,14 @@ export type HistPass = {
   sConfirm: { id: string } | null;
   // 참조 그대로 통과. boolean 계산은 각 카드에서 — HBN은 primitive만 받아 memo를 유지한다.
   canFinalize?: (g: Generation) => boolean;
-  onSClick: React.ComponentProps<typeof HistoryBoardNode>["onSClick"];
-  onSConfirmYes: React.ComponentProps<typeof HistoryBoardNode>["onSConfirmYes"];
-  onSConfirmNo: React.ComponentProps<typeof HistoryBoardNode>["onSConfirmNo"];
+  onSClick: HistoryBoardNodeActions["onSClick"];
+  onSConfirmYes: HistoryBoardNodeActions["onSConfirmYes"];
+  onSConfirmNo: HistoryBoardNodeActions["onSConfirmNo"];
   onInfo?: (t: InfoTarget) => void;
   onRegenerate?: (gen: Generation) => void;
-  onTag?: React.ComponentProps<typeof HistoryBoardNode>["onTag"];
-  onOpenComments?: React.ComponentProps<typeof HistoryBoardNode>["onOpenComments"];
-  onOpenFolder?: React.ComponentProps<typeof HistoryBoardNode>["onOpenFolder"]; // 이름표가 붙은 카드의 우클릭 = 폴더 보기 창
+  onTag?: HistoryBoardNodeActions["onTag"];
+  onOpenComments?: HistoryBoardNodeActions["onOpenComments"];
+  onOpenFolder?: HistoryBoardNodeActions["onOpenFolder"]; // 이름표가 붙은 카드의 우클릭 = 폴더 보기 창
 };
 
 // 받은 값이 같은가 — 묶음(hist·actions·tagEdit)은 보드가 그릴 때마다 새 객체로 만들어 넘기므로 정체성이 아니라 **안의 값**을 한 겹
@@ -57,28 +57,8 @@ function sameValues(a: Record<string, unknown>, b: Record<string, unknown>, bund
   );
 }
 
-// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
-export const GenerationCard = memo(function GenerationCard({
-  card,
-  sel,
-  g,
-  showNode,
-  waiting,
-  genMissing,
-  genKnown = true,
-  width,
-  height,
-  fill,
-  selectedOnly,
-  laneDelta,
-  getNodePreview,
-  lastViewed,
-  hist,
-  actions,
-  tagEdit,
-}: {
+type GenerationCardView = {
   card: SceneCard;
-  sel: boolean;
   g: Generation | null;
   showNode: boolean;
   waiting: boolean; // 상류 comfy 실행 중 — '생성중(회색)' 최우선 표시
@@ -87,10 +67,25 @@ export const GenerationCard = memo(function GenerationCard({
   width: number;
   height: number;
   fill: boolean;
-  selectedOnly: boolean; // 이 카드 '하나만' 선택됨 — Generate 툴바 노출 조건
-  laneDelta: (lane: ScenePortLane, card: SceneCard) => number; // 카드별 레인 목록·높이로 대칭 배치(SceneBoard 소유)
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
   lastViewed?: boolean; // 이 씬에서 마지막으로 크게 열어본 카드인가
+};
+/** 읽기 형태가 받는 표시값 — 필터·폴더(흐리게)와 정보 창(읽기)뿐, 공유·태그·재생성·코멘트 같은 변경은 없다 */
+export type ReadHistPass = Pick<HistPass, "disabledIds" | "typeFilter" | "colorFilter" | "tagFilter" | "sharedOnly" | "reviewFilter" | "commentOnly" | "finalOnly" | "hideFailed" | "folderSel" | "onInfo">;
+
+// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
+//  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 결과 미리보기·정보만(포트·Generate·태그·결과 창 단추 없음).
+export const GenerationCard = memo(function GenerationCard(props: GenerationCardEditProps | (GenerationCardView & { mode: "read"; hist: ReadHistPass })) {
+  const { card, g, showNode, waiting, genMissing, genKnown = true, width, height, fill, getNodePreview, lastViewed, hist } = props;
+  const edit = props.mode === "read" ? null : props;
+  return <GenerationCardBody {...{ card, g, showNode, waiting, genMissing, genKnown, width, height, fill, getNodePreview, lastViewed, hist, edit }} />;
+}, (prev, next) => sameValues(prev as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>, BUNDLES));
+
+type GenerationCardEditProps = GenerationCardView & {
+  mode?: "edit";
+  sel: boolean;
+  selectedOnly: boolean; // 이 카드 '하나만' 선택됨 — Generate 툴바 노출 조건
+  laneDelta: (lane: ScenePortLane, card: SceneCard) => number; // 카드별 레인 목록·높이로 대칭 배치(SceneBoard 소유)
   hist: HistPass;
   actions: {
     setCardMenu: (cardId: string | null) => void;
@@ -114,9 +109,15 @@ export const GenerationCard = memo(function GenerationCard({
     ) => Promise<boolean>; // ## 모드 #+/#- — 라이브러리 카드와 동일한 워크스페이스 변경
     close: () => void;
   };
-}) {
+};
+
+// 본문 — 편집 형태(edit 있음)와 읽기 형태(edit null)가 같이 쓴다. 읽기 형태엔 변경 단추·포트·창을 그리지 않는다.
+function GenerationCardBody({
+  card, g, showNode, waiting, genMissing, genKnown, width, height, fill, getNodePreview, lastViewed, hist, edit,
+}: GenerationCardView & { genKnown: boolean; hist: HistPass | ReadHistPass; edit: GenerationCardEditProps | null }) {
   // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
   const t = useT();
+  const sel = edit?.sel ?? false;
   return (
     <>
       {waiting ? (
@@ -129,7 +130,34 @@ export const GenerationCard = memo(function GenerationCard({
             </span>
           </div>
         </div>
-      ) : showNode && g ? (
+      ) : showNode && g && !edit ? (
+        // 읽기 형태 — 같은 노드의 읽기 갈래(정보·미리보기만)
+        <HistoryBoardNode
+          mode="read"
+          generation={g}
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          isRoot={false}
+          isSelected={false}
+          onLine={false}
+          offLine={false}
+          fill={fill}
+          disabled={hist.disabledIds.has(g.id)}
+          typeFilter={hist.typeFilter}
+          colorFilter={hist.colorFilter}
+          tagFilter={hist.tagFilter}
+          sharedOnly={hist.sharedOnly}
+          reviewFilter={hist.reviewFilter}
+          commentOnly={hist.commentOnly}
+          finalOnly={hist.finalOnly}
+          folderSel={hist.folderSel}
+          onPreview={getNodePreview(card.id)}
+          onInfo={hist.onInfo || NOOP}
+          folderChip={genMissing || g.deleted ? undefined : folderChipLabel(g.folder_path)}
+        />
+      ) : showNode && g && edit ? (
         // 완료 결과 → 히스토리 카드(HistoryBoardNode) 그대로 — 캡션·오버레이(S/ⓘ/⠿/⤓/@/↻) 전부.
         <HistoryBoardNode
           generation={g}
@@ -151,19 +179,19 @@ export const GenerationCard = memo(function GenerationCard({
           commentOnly={hist.commentOnly}
           finalOnly={hist.finalOnly}
           folderSel={hist.folderSel}
-          sConfirm={hist.sConfirm?.id === g.id ? hist.sConfirm : null}
-          mayFinalize={hist.canFinalize ? hist.canFinalize(g) : true}
-          onSClick={hist.onSClick}
-          onSConfirmYes={hist.onSConfirmYes}
-          onSConfirmNo={hist.onSConfirmNo}
+          sConfirm={edit.hist.sConfirm?.id === g.id ? edit.hist.sConfirm : null}
+          mayFinalize={edit.hist.canFinalize ? edit.hist.canFinalize(g) : true}
+          onSClick={edit.hist.onSClick}
+          onSConfirmYes={edit.hist.onSConfirmYes}
+          onSConfirmNo={edit.hist.onSConfirmNo}
           onPreview={getNodePreview(card.id)}
           onInfo={hist.onInfo || NOOP}
-          onRegenerate={hist.onRegenerate || NOOP}
-          onTag={hist.onTag}
-          onOpenComments={hist.onOpenComments}
+          onRegenerate={edit.hist.onRegenerate || NOOP}
+          onTag={edit.hist.onTag}
+          onOpenComments={edit.hist.onOpenComments}
           // 폴더 이름표(Jay 14A, 2026-10-15) — 라이브러리 카드와 같은 글자. 지운 생성물에는 안 단다(휴지통에 안 다는 것과 같이)
           folderChip={genMissing || g.deleted ? undefined : folderChipLabel(g.folder_path)}
-          onOpenFolder={hist.onOpenFolder}
+          onOpenFolder={edit.hist.onOpenFolder}
         />
       ) : (
         <div className="scene-card-inner">
@@ -241,19 +269,30 @@ export const GenerationCard = memo(function GenerationCard({
           거기 넣으면 안 된다 — 이건 반대로 평소 보이고 호버 때 비켜준다. */}
       {lastViewed && <LastViewedBadge />}
       {/* 다중 결과 배지 — 이 카드에서 만든 결과가 2개 이상이면. 클릭=팝업으로 모아보기 */}
-      {variantIds(card).length > 1 && (
+      {variantIds(card).length > 1 && !edit && <span className="scene-multi-badge">▤ {variantIds(card).length}</span>}
+      {variantIds(card).length > 1 && edit && (
         <button
           className="scene-multi-badge"
           title={`이 카드의 생성 결과 ${variantIds(card).length}개 모두 보기`}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            actions.setCardMenu(card.id);
+            edit.actions.setCardMenu(card.id);
           }}
         >
           ▤ {variantIds(card).length}
         </button>
       )}
+      {edit && <GenerationCardEditParts card={card} sel={sel} g={g} edit={edit} />}
+    </>
+  );
+}
+
+// 편집 형태에만 있는 조각 — 입력 단자·출력 포트·크기 손잡이·Generate 막대·태그 편집
+function GenerationCardEditParts({ card, sel, g, edit }: { card: SceneCard; sel: boolean; g: Generation | null; edit: GenerationCardEditProps }) {
+  const { laneDelta, selectedOnly, actions, tagEdit } = edit;
+  return (
+    <>
       {/* 4 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(보라)·맨아래=세트(금색, Set 노드만).
           연결 역할은 소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
       {(
@@ -366,4 +405,4 @@ export const GenerationCard = memo(function GenerationCard({
       )}
     </>
   );
-}, (prev, next) => sameValues(prev as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>, BUNDLES));
+}

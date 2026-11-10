@@ -24,25 +24,26 @@ const refFileName = (r: SceneRef): string =>
 // memo — 받은 값이 그대로면 다시 그리지 않는다. 보드는 카드를 끄는 걸음마다 통째로 다시 그려지는데(2026-10-11 실측: 412장 씬에서
 //  한 장만 끌어도 컴포넌트 651개), 움직이지 않은 카드까지 따라 그릴 까닭이 없다. 넘어오는 함수(getGen·onBroken·onOutPortDown)의
 //  정체성을 안 바꾸는 것은 보드의 몫이다 — 바뀌면 전처럼 다시 그린다(낡은 함수를 쥐지 않는다).
-export const ReferenceCard = memo(function ReferenceCard({
-  card,
-  fill,
-  workspaceId,
-  getGen,
-  onInfo,
-  onPreview,
-  onOutPortDown,
-  onBroken,
-}: {
+type ReferenceCardView = {
   card: SceneCard;
   fill: boolean;
   workspaceId: string; // 서버 판정의 열쇠(캔버스 탭의 공간) — 자동 복구가 물을 때와 같은 값
   getGen: (id: string) => Generation | undefined;
   onInfo?: (target: InfoTarget) => void;
   onPreview?: (t: PreviewTarget) => void;
-  onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
-  onBroken?: (r: SceneRef) => void; // 그림이 끝내 안 떴다 — 옮겨졌을 수 있어 한 번 다시 묻는다(recheckBrokenRef)
-}) {
+};
+// 읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 미리보기·정보만, 포트·다시 묻기(onBroken — 참조를 고칠 수 있다)는 없다.
+type ReferenceCardProps =
+  | (ReferenceCardView & {
+      mode?: "edit";
+      onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
+      onBroken?: (r: SceneRef) => void; // 그림이 끝내 안 떴다 — 옮겨졌을 수 있어 한 번 다시 묻는다(recheckBrokenRef)
+    })
+  | (ReferenceCardView & { mode: "read" });
+
+export const ReferenceCard = memo(function ReferenceCard(props: ReferenceCardProps) {
+  const { card, fill, workspaceId, getGen, onInfo, onPreview } = props;
+  const edit = props.mode === "read" ? null : props;
   // 그릴 때 읽는 두 저장소를 카드가 직접 듣는다 — 서버 판정(refServerStatus·refJudged: 빨간 빗금·'이 PC 에만' 표시)과 어셋 버전
   //  (refThumbSrc: 썸네일 주소). 전엔 보드가 듣고 통째로 다시 그려 줘서 따라 그려졌다 — memo 가 된 뒤에는 그 길이 끊긴다.
   useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
@@ -205,7 +206,7 @@ export const ReferenceCard = memo(function ReferenceCard({
                         </>
                       )
                     }
-                    onError={() => onBroken?.(r)}
+                    onError={() => edit?.onBroken?.(r)}
                     retrySrcOnThumbError
                   />
                 )}
@@ -230,11 +231,13 @@ export const ReferenceCard = memo(function ReferenceCard({
           })}
         </div>
       </div>
-      <span
-        className="scene-port out"
-        onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title={"레퍼런스 출력\n드래그 = 생성 카드에 연결"}
-      />
+      {edit && (
+        <span
+          className="scene-port out"
+          onMouseDown={(e) => edit.onOutPortDown(e, card.id)}
+          title={"레퍼런스 출력\n드래그 = 생성 카드에 연결"}
+        />
+      )}
     </>
   );
 });

@@ -25,44 +25,39 @@ const audioTile = <div className="audio-tile"><span className="audio-glyph">🎵
 
 // memo — 받은 값이 그대로면 판이 다시 그려져도(줌 확정·이동·선택) 다시 그리지 않는다. 다른 카드가 움직이면 cardsById 가 새 객체라
 //  그대로 다시 그린다(모은 것의 순서를 자리로 정한다). 넘어오는 함수의 정체성을 안 바꾸는 것은 보드의 몫이다.
-export const ListCard = memo(function ListCard({
-  card,
-  cardsById,
-  resolvedEdges,
-  genData,
-  disabledIds,
-  rowSel,
-  reorderFrom,
-  cardWidth,
-  workspaceId,
-  toggleRowSel,
-  startReorder,
-  getNodePreview,
-  setCardMenu,
-  addListAsReference,
-  onOutPortDown,
-  onResizeDown,
-  reorderable = false,
-}: {
+type ListCardView = {
   card: SceneCard;
   cardsById: Map<string, SceneCard>;
   resolvedEdges: SceneEdge[];
   genData: Record<string, Generation>;
   disabledIds: Set<string>;
-  rowSel: { listId: string; cids: Set<string> };
-  reorderFrom: string | null;
   cardWidth: number; // widthOf(card) — 부모 계산(head 폭 측정 ref 의존이라 값으로 받음)
   workspaceId: string; // 서버에 없는 레퍼런스 판정의 열쇠(캔버스 탭의 공간) — ReferenceCard 와 같은 값
+  getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
+};
+type ListCardEdit = {
+  rowSel: { listId: string; cids: Set<string> };
+  reorderFrom: string | null;
   toggleRowSel: (listId: string, cid: string, additive: boolean) => void;
   startReorder: (e: React.MouseEvent, listId: string, cid: string, axis: "v" | "h") => void;
-  getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
   setCardMenu: (cardId: string | null) => void;
   addListAsReference: (generationCardIds: string[]) => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
   // 순서 바꾸기는 더블클릭 팝업에서만(Jay 2026-11-09). 캔버스 노드에서는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
   reorderable?: boolean;
-}) {
+};
+// 읽기 형태 안에서만 쓰는 빈 값 — 줄 고르기·순서·결과 창·복사·포트를 그리지도 걸지도 않는다(받는 속성에는 변경 콜백이 없다)
+const LIST_READ_ONLY: ListCardEdit = {
+  rowSel: { listId: "", cids: new Set() }, reorderFrom: null, toggleRowSel: () => {}, startReorder: () => {}, setCardMenu: () => {},
+  addListAsReference: () => {}, onOutPortDown: () => {}, onResizeDown: () => {}, reorderable: false,
+};
+
+//  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 미리보기(줄의 크게 보기)·카드 안 스크롤만.
+export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEdit & { mode?: "edit" }) | (ListCardView & { mode: "read" })) {
+  const read = props.mode === "read";
+  const { card, cardsById, resolvedEdges, genData, disabledIds, cardWidth, workspaceId, getNodePreview } = props;
+  const { rowSel, reorderFrom, toggleRowSel, startReorder, setCardMenu, addListAsReference, onOutPortDown, onResizeDown, reorderable = false } = read ? LIST_READ_ONLY : props;
   // 그릴 때 읽는 두 저장소(서버 판정 = 빨간 빗금·마크, 어셋 버전 = 썸네일 주소) — memo 뒤로 보드가 대신 그려 주지 않으니 직접 듣는다
   useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
@@ -125,7 +120,7 @@ export const ListCard = memo(function ListCard({
                       className={"scene-listrow" + (brsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
                       data-reid={cid}
                       title="중첩 소스 — 내부 생성물을 펼쳐 사용"
-                      onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
+                      onClick={read ? undefined : (e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                     >
                       {reorderable && (
                         <span
@@ -156,7 +151,7 @@ export const ListCard = memo(function ListCard({
                     key={cid}
                     className={"scene-listrow" + (off ? " off" : "") + (rsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
                     data-reid={cid}
-                    onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
+                    onClick={read ? undefined : (e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                   >
                     {reorderable && (
                       <span
@@ -187,9 +182,9 @@ export const ListCard = memo(function ListCard({
                     </span>
                     <span
                       className="scene-listrow-count"
-                      title={n > 0 ? "클릭 = 이 카드의 생성 결과 모두 보기" : undefined}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
+                      title={n > 0 && !read ? "클릭 = 이 카드의 생성 결과 모두 보기" : undefined}
+                      onMouseDown={read ? undefined : (e) => e.stopPropagation()}
+                      onClick={read ? undefined : (e) => {
                         if (n <= 0) return;
                         e.stopPropagation();
                         setCardMenu(cid);
@@ -328,7 +323,7 @@ export const ListCard = memo(function ListCard({
           )}
         </div>
       </div>
-      {li.kind === "text" && (
+      {!read && li.kind === "text" && (
         <button
           className="scene-copy-btn"
           title="합친 텍스트 복사"
@@ -341,7 +336,7 @@ export const ListCard = memo(function ListCard({
           ⧉
         </button>
       )}
-      {li.kind === "generation" && li.generationCardIds.length > 0 && (
+      {!read && li.kind === "generation" && li.generationCardIds.length > 0 && (
         <button
           className="scene-copy-btn"
           title="모든 생성물을 레퍼런스로 사용"
@@ -354,17 +349,21 @@ export const ListCard = memo(function ListCard({
           @
         </button>
       )}
-      <span className="scene-port in" title={"리스트 입력\n생성·텍스트·레퍼런스 카드를 이어 모은다"} />
-      <span
-        className="scene-port out"
-        onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title={"리스트 출력\n드래그 = View(재생)·생성 카드에 연결"}
-      />
-      <span
-        className="scene-resize"
-        onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그 = 크기 조절"
-      />
+      {!read && (
+        <>
+          <span className="scene-port in" title={"리스트 입력\n생성·텍스트·레퍼런스 카드를 이어 모은다"} />
+          <span
+            className="scene-port out"
+            onMouseDown={(e) => onOutPortDown(e, card.id)}
+            title={"리스트 출력\n드래그 = View(재생)·생성 카드에 연결"}
+          />
+          <span
+            className="scene-resize"
+            onMouseDown={(e) => onResizeDown(e, card.id)}
+            title="드래그 = 크기 조절"
+          />
+        </>
+      )}
     </>
   );
 });

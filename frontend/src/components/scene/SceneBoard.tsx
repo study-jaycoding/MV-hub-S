@@ -138,6 +138,14 @@ import { copyText, flashMsg } from "../../lib/flash";
 import { notifyPeekDropAdded } from "../../lib/peekDragOut";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
+import { buildGpuScene, GpuBoard, GpuOverlayCard, useGpuBoardMode } from "../../features/canvas/api";
+import { BOARD_KINDS } from "../../lib/boardCanvasDraw";
+import { folderChipLabel } from "../../lib/folderLabel";
+import { refTypeLabel } from "../../lib/sceneMedia";
+import { STORAGE_KEYS } from "../../lib/storageKeys";
+import { modelAllowed } from "../../lib/modelPolicyCore";
+import { currentModelPolicy } from "../../lib/modelPolicy";
+import higgsfieldLogo from "../../assets/higgsfield-logo.svg";
 import { comfyCardRuntime, projectComfyCard } from "../../lib/comfyRunState";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
@@ -941,6 +949,8 @@ export function SceneBoard({
   const cullItemsRef = useRef<SceneCullItems>({ cards: [], edges: [] });
   // 카드·그룹을 쥐고 있나 — 줌 뒤의 쉼 정리가 끄는 중에 판을 다시 그리지 않게 미룬다(아래 moveHeldRef 를 선언 뒤에 이어 준다)
   const interactingRef = useRef<() => boolean>(() => false);
+  // GPU 판이 그리는 동안(gpu 단계) — DOM 카드를 안 그리므로 컬링 범위를 다시 확정하지 않는다(판을 다시 그리지 않게). 돌아올 때 한 번 확정.
+  const gpuViewRef = useRef(false);
   const {
     scrollRef,
     canvasRef,
@@ -958,6 +968,7 @@ export function SceneBoard({
     stepZoom,
     beginPan,
     cancelSettle: cancelViewSettle,
+    cameraSource,
   } = useSceneViewport({
     sceneId: scene.id,
     camera: scene.camera,
@@ -973,12 +984,42 @@ export function SceneBoard({
     gridSize: GRID,
     // 가운데 버튼으로 끄는 동안·줌: 새로 붙일 카드·선이 없으면 확정하지 않는다(다시 그리기 생략). 씬을 바꾸는 틈엔 늘 확정.
     shouldCommitView: (committed: SceneViewRect | null, next: SceneViewRect) =>
-      !committed || switchingRef.current || sceneCullNeedsCommit(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current),
+      !committed || switchingRef.current || (!gpuViewRef.current && sceneCullNeedsCommit(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current)),
     // 줌을 쉬었을 때의 정리: 붙이거나 뗄 카드·선이 있을 때만(확대로 화면 밖이 된 카드를 떼어 낸다)
     cullSetChanged: (committed: SceneViewRect | null, next: SceneViewRect) =>
-      !committed || switchingRef.current || sceneCullSetChanged(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current),
+      !committed || switchingRef.current || (!gpuViewRef.current && sceneCullSetChanged(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current)),
     isInteracting: () => interactingRef.current(),
   });
+  // ── GPU 보기 모드(docs/status/캔버스_GPU판설계_2026-11-11.md) — 개발 표식 mvhub.canvas.gpuBoard="1" 일 때만. 꺼져 있으면 아래 훅은
+  //  이벤트를 보내지 않아 상태가 그대로이고(phase dom), 그릴 모델도 만들지 않는다. 씬은 카드가 속한 씬(cardsSceneId) — 바꾸는 틈에 옛 씬의
+  //  카드로 새 씬을 미지원으로 막지 않게.
+  const gpuFlag = useMemo(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.canvasGpuBoard) === "1";
+    } catch {
+      return false;
+    }
+  }, []);
+  const gpuUnsupported = useMemo(() => gpuFlag && cards.some((c) => !BOARD_KINDS.has(c.kind)), [gpuFlag, cards]);
+  const gpu = useGpuBoardMode({
+    flag: gpuFlag,
+    sceneId: cardsSceneId,
+    unsupported: gpuUnsupported,
+    cameraSource,
+    busy: !!(editTextId || draggingIds.length || tempWire || cutHeld || cardMenu || nodePicker || modelModalId || comfyModalId || listPop
+      || viewTextModal || colorPopId || editingGroupId),
+  });
+  const gpuView = gpu.mode.phase === "gpu";
+  gpuViewRef.current = gpuView;
+  // GPU 판에서 돌아오면 지금 화면 범위로 컬링을 한 번 확정한다(그리는 동안 확정을 멈췄다)
+  const gpuWasViewRef = useRef(false);
+  useEffect(() => {
+    if (gpuWasViewRef.current && !gpuView) commitLiveView();
+    gpuWasViewRef.current = gpuView;
+  }, [gpuView, commitLiveView]);
+  // 사용자 편집 허용(isFrozen 과 따로) — probing·gpu 단계는 보기 모드. 입력 진입점이 렌더 밖에서 읽는다.
+  const gpuEditRef = useRef(gpu.editAllowed);
+  gpuEditRef.current = gpu.editAllowed;
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
   const cardsRef = useRef(cards);
@@ -1175,6 +1216,8 @@ export function SceneBoard({
     },
     onChange,
     frozenRef: switchingRef,
+    // GPU 보기 모드 — 세션 실행점에서도 사용자 변경을 한 번 더 거절(입력 진입점과 둘 다). 표식이 꺼져 있으면 넘기지 않는다.
+    ...(gpuFlag ? { editAllowed: () => gpuEditRef.current, onEditRefused: gpu.refuse } : {}),
   });
   const { commit: commitDocument, undo, redo } = canvasSession;
   const comfyOperation = captureOperationContext({ scope: "personal", id: null, name: null });
@@ -2258,6 +2301,8 @@ export function SceneBoard({
     onTag: editSelectedTag,
     onCutHeldChange: setCutHeld,
     onDelete: () => deleteCards([...selectedRef.current]),
+    // GPU 보기 모드 — 보는 키만(표식이 꺼져 있으면 넘기지 않아 지금과 같다)
+    ...(gpuFlag ? { isViewMode: () => !gpuEditRef.current, onViewRefuse: gpu.refuse, onToggleView: gpu.toggle } : {}),
   });
 
   // ── 마우스: 미들=팬 · 카드=이동/선택 · 배경=마퀴 복수선택 ──
@@ -3026,6 +3071,104 @@ export function SceneBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [selected, cardsById, heightTick],
   );
+  // ── GPU 판의 그릴 모델 — preparing·probing·gpu 단계에서만 만든다(dom 이면 null: 표식 끔이면 늘 null). DOM 과 같은 자료·같은 판정을 쓴다.
+  const gpuActive = gpuFlag && gpu.mode.phase !== "dom";
+  const pendingKey = [...pendingInputs].join(",");
+  const cutKey = [...edgesToCut].join(",");
+  const refStatusVersion = getRefServerStatusVersion();
+  const assetVersion = assetVersionsSnapshot();
+  const recentDoneVersion = getRecentDoneVersion();
+  const gpuModel = useMemo(() => {
+    if (!gpuActive) return null;
+    const missingHere = (refs: SceneRef[] | undefined) =>
+      !!refs?.some((r) => {
+        const status = refServerStatus(refWorkspaceId, r);
+        return status === "missing" || status === "held";
+      });
+    const listKinds = new Map<string, string>();
+    const offServer = new Set<string>();
+    const glow = new Set<string>();
+    for (const card of visibleCards) {
+      if (card.kind === "reference" && missingHere(card.refs)) offServer.add(card.id);
+      if (card.kind === "list") {
+        const li = collectListInputs(card.id, cardsById, resolvedEdges);
+        listKinds.set(card.id, li.kind);
+        if (li.referenceCardIds.some((rid) => { const item = cardsById.get(rid); return item?.kind === "reference" && missingHere(item.refs); })) offServer.add(card.id);
+      }
+      if ((card.kind === "generation" || card.kind === "comfy") && variantIds(card).some(isRecentlyDone)) glow.add(card.id);
+    }
+    // 쌓임 = DOM 순서, 다만 방금 생성(z 4)·고름(z 5)은 위로(scene.css)
+    const rank = (c: SceneCard) => (selected.has(c.id) ? 2 : glow.has(c.id) ? 1 : 0);
+    const ordered = [...visibleCards].sort((a, b) => rank(a) - rank(b));
+    const lines: { d: string; cls: string }[] = [];
+    const dots = new Map<string, { x: number; y: number; cls: string; on: boolean }>();
+    const putDot = (x: number, y: number, cls: string, on: boolean) => {
+      const key = x + "," + y;
+      const had = dots.get(key);
+      if (!had || (on && !had.on)) dots.set(key, { x, y, cls, on });
+      else if (on && had.cls !== cls) had.cls = "scene-dot mix";
+    };
+    for (const e of edgeGeometry.edges) {
+      const role = edgeRoles.get(e.id);
+      const active = selected.has(e.from) || selected.has(e.to);
+      lines.push({ d: e.d, cls: edgeClassName({ role, ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id), active, pending: pendingInputs.has(e.from), cut: edgesToCut.has(e.id) }) });
+      const dotCls = "scene-dot" + (active
+        ? role === "model" ? " model" : role === "text" ? " text" : role === "set" ? " set"
+          : refCardEdgeIds.has(e.id) || genRefEdgeIds.has(e.id) || role === "ref" ? " ref" : ""
+        : " idle");
+      putDot(e.x1, e.y1, dotCls, active);
+      putDot(e.x2, e.y2, dotCls, active);
+    }
+    for (const t of traceGeometry) lines.push({ d: t.d, cls: "scene-edge trace" });
+    for (const be of edgeGeometry.bridges) lines.push({ d: be.d, cls: "scene-edge bridge" });
+    for (const gb of edgeGeometry.groupBridges)
+      lines.push({ d: gb.d, cls: edgeClassName({ role: gb.role, ref: gb.ref, refg: gb.refg, active: selected.has(gb.from) || selected.has(gb.to), cut: edgesToCut.has(gb.id) }) });
+    const policy = currentModelPolicy();
+    return buildGpuScene({
+      cards: ordered.map((card) => ({ card, w: widthOf(card), h: heightOf(card) })),
+      build: {
+        workspaceId: refWorkspaceId, fill, cardsById, resolvedEdges, genData,
+        filters: { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly },
+        folderSel, modelBlocked: (model) => !modelAllowed(policy, model),
+        waiting: (id) => comfyWaitingIds.has(id) || genWaitingFromComfy.has(id),
+        genMissing: (gid) => missingIds.has(gid),
+        genKnown: (gid) => !answeredIds || answeredIds.has(gid),
+        disabled: (gid) => disabledIds.has(gid),
+        hideFailed, lastViewedCardId: genViews.lastCardId ?? null, logo: higgsfieldLogo,
+        isSelected: (id) => selected.has(id),
+      },
+      selected, glow, offServer,
+      listKind: (id) => listKinds.get(id) ?? null,
+      lines, dots: [...dots.values()],
+      groups: groupViews.map(({ g, frame, bar }) => {
+        const box = g.collapsed ? bar : frame;
+        return { id: g.id, x: box.x, y: box.y, w: box.w, h: box.h, color: g.color ?? null, name: g.name, count: g.cardIds.filter((id) => cardById(id)).length,
+          collapsed: !!g.collapsed, selected: selectedGroupIds.has(g.id) };
+      }),
+      lowLod: gpu.lowLod,
+      variantCount: (card) => variantIds(card).length,
+      folderChip: (card) => {
+        const g = card.genId ? ownEntry(genData, card.genId) : undefined;
+        return !g || (card.genId && missingIds.has(card.genId)) || g.deleted ? undefined : folderChipLabel(g.folder_path);
+      },
+      refTypeLabel: (card) => refTypeLabel(card.refs),
+    });
+    // 모든 판정 자료를 넣는다 — pendingInputs·edgesToCut 은 렌더마다 새 Set 이라 내용 글자로, 서버 판정·어셋 버전·방금 생성은 저장소 판 번호로
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gpuActive, visibleCards, heightTick, cardsById, resolvedEdges, genData, selected, edgeGeometry, traceGeometry, groupViews, selectedGroupIds, gpu.lowLod,
+    fill, refWorkspaceId, typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, folderSel, comfyWaitingIds, genWaitingFromComfy,
+    missingIds, answeredIds, disabledIds, hideFailed, genViews.lastCardId, edgeRoles, refCardEdgeIds, genRefEdgeIds, pendingKey, cutKey,
+    refStatusVersion, assetVersion, recentDoneVersion]);
+  // 덧판(마우스 올린 카드 한 장, 읽기 형태) — GPU 단계에서만
+  const [gpuOverlayId, setGpuOverlayId] = useState<string | null>(null);
+  const gpuOverlayRef = useRef<HTMLDivElement>(null);
+  const [gpuOverlayPinned, setGpuOverlayPinned] = useState(false);
+  useEffect(() => {
+    if (!gpuView) {
+      setGpuOverlayId(null);
+      setGpuOverlayPinned(false);
+    }
+  }, [gpuView]);
   // 선이 닿은 포트 — 카드 틀의 data-linked(out · in · in-<칸>). 고르지도 올리지도 않은 카드에서 선이 없는 포트만 작은 빈 원으로
   //  보이게 CSS 가 읽는다(Jay 2026-10-29 A안). 점 층과 같은 선(visibleEdges) + 숨긴 카드 우회선의 보이는 쪽 끝.
   const linkedPorts = useMemo(() => {
@@ -3054,8 +3197,16 @@ export function SceneBoard({
       //  뒤에 놓이면 옛 시작값이 새 씬의 카드·그룹에 섞이고, Comfy 실행 단추는 옛 카드로 실행을 건다(Codex 코드 리뷰 — React 18
       //  타입에 inert 가 없어 spread 로 넘긴다). 키는 아래 useSceneKeyboardShortcuts 의 isFrozen 이 막는다.
       {...(cardsSceneId !== scene.id ? { inert: "" } : {})}
+      data-gpu={gpuActive ? gpu.mode.phase : undefined}
       onMouseDownCapture={onBoardMouseDownCapture}
-      onMouseDown={onMouseDown}
+      // GPU 보기 모드 — 가운데 버튼(화면 이동)만. 덧판(읽기 카드) 위 누름은 조용히 넘기고, 그 밖의 보드 누름은 안내 한 번(고르기·끌기·범위 선택 없음)
+      onMouseDown={(e) => {
+        if (gpuFlag && !gpu.editAllowed && e.button !== 1) {
+          if (!(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpu.refuse();
+          return;
+        }
+        onMouseDown(e);
+      }}
       onMouseMove={(e) => {
         lastMouseRef.current = { x: e.clientX, y: e.clientY, over: true };
       }}
@@ -3071,6 +3222,20 @@ export function SceneBoard({
       }}
     >
       <div className="scene-grid" ref={gridRef} />
+      {gpuModel && gpu.mode.phase !== "dom" && (
+        <GpuBoard
+          phase={gpu.mode.phase}
+          token={gpu.mode.token}
+          sceneId={cardsSceneId}
+          model={gpuModel}
+          hiddenId={gpuOverlayId}
+          cameraSource={cameraSource}
+          boardRef={scrollRef}
+          dispatch={gpu.dispatch}
+          onHover={setGpuOverlayId}
+          overlayPinned={gpuOverlayPinned}
+        />
+      )}
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
         {/* 가져오는 중인 파일의 자리 표시(28회차, Jay 결정) — 놓은(붙인) 자리에 점선 카드. 올라가면 그 자리가 진짜 카드가 된다(레퍼런스 카드가
             놓이는 자리와 같은 식: 가운데에서 N 장 폭의 절반). 실패하면 빨간 테두리와 까닭이 남고 ✕ 로 치운다. 지금 씬의 것만 그린다. */}
@@ -3105,7 +3270,7 @@ export function SceneBoard({
           );
         })}
         {/* 그룹 프레임(펼침)·막대(접힘) — 카드 뒤(맨 앞 렌더). 헤더만 잡기/이름변경/접기 가능 */}
-        {groupViews.map(({ g, frame, bar }) => {
+        {!gpuView && groupViews.map(({ g, frame, bar }) => {
           const collapsed = !!g.collapsed;
           const box = collapsed ? bar : frame;
           const memberCount = g.cardIds.filter((id) => cardById(id)).length;
@@ -3307,7 +3472,7 @@ export function SceneBoard({
             </div>
           );
         })}
-        <svg
+        {!gpuView && <svg
           className="scene-edges"
           style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}
         >
@@ -3387,9 +3552,9 @@ export function SceneBoard({
                 />
               );
             })()}
-        </svg>
+        </svg>}
 
-        {renderCards.map((card) => {
+        {!gpuView && renderCards.map((card) => {
           const sel = selected.has(card.id);
           const isRef = card.kind === "reference";
           const autoH = isAutoCard(card); // 레퍼런스·Input·Output = 내용에 맞춘 자동 높이(고정 height 미지정)
@@ -3729,7 +3894,56 @@ export function SceneBoard({
 
         {/* 연결선 끝점 색 점 — 포트마다 점 하나(Jay 2026-10-29: 전엔 선마다 13px 벌려 찍었다). 같은 자리에서 끝나는 선은
             점 하나를 같이 쓰고, 색은 켜진(고른 카드에 닿은) 선을 따른다(파랑=레퍼런스, 초록=계보). 켜진 선끼리 색이 다르면 흰 점. */}
-        <svg
+        {gpuView && gpuOverlayId && (() => {
+          // GPU 보기 모드의 덧판 — 마우스 올린 카드 한 장을 읽기 형태로(변경 콜백 없음). 자리·크기는 GPU 판이 그린 것과 같은 값.
+          const card = cardById(gpuOverlayId);
+          if (!card) return null;
+          const g = card.kind === "generation" && card.genId ? ownEntry(genData, card.genId) ?? null : null;
+          const showNode = !!g && String(g.status) === "done";
+          const listKind = card.kind === "list" ? collectListInputs(card.id, cardsById, resolvedEdges).kind : null;
+          const kindCls = card.kind === "reference" ? "scene-card-ref" : card.kind === "generation" ? "scene-card-gen" : "scene-card-" + card.kind + (listKind ? " lk-" + listKind : "");
+          return (
+            <GpuOverlayCard
+              ref={gpuOverlayRef}
+              x={card.x}
+              y={card.y}
+              w={widthOf(card)}
+              h={heightOf(card)}
+              className={kindCls + (selected.has(card.id) ? " sel" : "") + (showNode ? " has-node" : "")}
+              onPinChange={setGpuOverlayPinned}
+            >
+              {card.kind === "reference" ? (
+                <ReferenceCard mode="read" card={card} fill={fill} workspaceId={refWorkspaceId} getGen={cardFns.getGen} onInfo={onInfo} onPreview={onPreview} />
+              ) : card.kind === "text" ? (
+                <TextCard mode="read" card={card} cardsById={cardsById} resolvedEdges={resolvedEdges} genData={genData} />
+              ) : card.kind === "model" ? (
+                <ModelCard mode="read" card={card} />
+              ) : card.kind === "head" ? (
+                <HeadCard mode="read" card={card} />
+              ) : card.kind === "list" ? (
+                <ListCard mode="read" card={card} cardsById={cardsById} resolvedEdges={resolvedEdges} genData={genData} disabledIds={disabledIds}
+                  cardWidth={widthOf(card)} workspaceId={refWorkspaceId} getNodePreview={getNodePreview} />
+              ) : card.kind === "generation" ? (
+                <GenerationCard
+                  mode="read"
+                  card={card}
+                  g={g}
+                  showNode={showNode}
+                  waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
+                  genMissing={!!card.genId && missingIds.has(card.genId)}
+                  genKnown={!card.genId || !answeredIds || answeredIds.has(card.genId)}
+                  width={widthOf(card)}
+                  height={heightOf(card)}
+                  fill={fill}
+                  getNodePreview={getNodePreview}
+                  lastViewed={genViews.lastCardId === card.id}
+                  hist={{ disabledIds, typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, hideFailed, folderSel, onInfo }}
+                />
+              ) : null}
+            </GpuOverlayCard>
+          );
+        })()}
+        {!gpuView && <svg
           className="scene-edge-dots"
           style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none", zIndex: 9 }}
         >
@@ -3764,7 +3978,7 @@ export function SceneBoard({
             }
             return [...dots].map(([key, p]) => <circle key={key} className={p.cls} cx={p.x} cy={p.y} r={5} />);
           })()}
-        </svg>
+        </svg>}
       </div>
 
       {/* 노드 설명 창 — 노드 안 요소의 설명(title)을 앱 모양 창으로(Jay 2026-10-30 B안) */}
@@ -3774,6 +3988,22 @@ export function SceneBoard({
         <div className="scene-topbar-overlay" onMouseDown={(e) => e.stopPropagation()}>
           {topCenterOverlay}
         </div>
+      )}
+      {gpuFlag && (
+        // GPU 보기 모드 단추(개발 표식) — 지금 모드와 까닭을 한 줄로, 누르면(또는 ` 키) 편집 ↔ 보기
+        <button
+          type="button"
+          className="scene-gpu-mode"
+          data-on={gpu.mode.phase === "gpu" ? "" : undefined}
+          title={"편집 모드 ↔ 보기 모드(GPU) 바꾸기 — ` 키\n보기 모드에서는 줌·이동·읽기만 됩니다"}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={gpu.toggle}
+        >
+          {gpu.mode.phase === "gpu" ? "보기 모드(GPU)" : gpu.mode.phase === "dom"
+            ? gpu.mode.reason === "locked" ? "편집 모드 · GPU 못 씀" : gpu.mode.reason === "unsupported" ? "편집 모드 · 미지원 노드"
+              : gpu.mode.reason === "user" ? "편집 모드" : gpu.mode.reason === "zoom" ? "편집 모드 · 확대" : "편집 모드"
+            : "보기 모드 준비 중"}
+        </button>
       )}
       {mmBounds && mmBoxes.length > 0 && (
         <SceneMinimap

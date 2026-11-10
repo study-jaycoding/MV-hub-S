@@ -4,19 +4,8 @@ import { memo } from "react";
 import type { SceneCard } from "../../../lib/scenes";
 import { GROUP_COLORS } from "../sceneColors";
 
-// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
-export const HeadCard = memo(function HeadCard({
-  card,
-  sel,
-  editing,
-  colorPopId,
-  setEditTextId,
-  setColorPopId,
-  setNodeText,
-  setNodeFontSize,
-  setNodeColor,
-  flushPending,
-}: {
+type HeadCardEditProps = {
+  mode?: "edit";
   card: SceneCard;
   sel: boolean;
   editing: boolean;
@@ -27,10 +16,22 @@ export const HeadCard = memo(function HeadCard({
   setNodeFontSize: (cardId: string, fontSize: number) => void;
   setNodeColor: (cardId: string, color: string) => void;
   flushPending: () => void;
-}) {
+};
+
+// memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
+//  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 변경 콜백 없이 글씨만(편집·색·크기 조절 없음).
+export const HeadCard = memo(function HeadCard(props: HeadCardEditProps | { mode: "read"; card: SceneCard }) {
+  const { card } = props;
   // Head(제목) — 포트 없는 주석 글씨. 박스는 글씨에 맞춰 자동 크기. 색·글씨크기는 선택 시 컨트롤로.
   const fs = card.fontSize ?? 32;
   const col = card.color || "#e8c341";
+  if (props.mode === "read")
+    return (
+      <div className="scene-headnode-text" style={{ fontSize: fs, color: col }}>
+        {card.text || "제목"}
+      </div>
+    );
+  const { sel, editing, colorPopId, setEditTextId, setColorPopId, setNodeText, setNodeFontSize, setNodeColor, flushPending } = props;
   return (
     <>
       {editing ? (

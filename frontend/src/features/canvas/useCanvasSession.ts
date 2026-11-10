@@ -31,6 +31,10 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
   cardSize?: (card: SceneCard) => { w: number; h: number };
   sourceScene?: Scene;
   onReceiveScene?: (sceneId: string, switched: boolean, replaced: boolean) => void;
+  /** GPU 보기 모드의 사용자 편집 허용(isFrozen 과 따로) — 거짓이면 사용자 변경 입구(편집 명령·레퍼런스 넣기·붙여넣기·되돌리기·다시하기·제스처
+   *  시작)를 거절한다. 씬 수신·실패 정리·Comfy 결과(승인된 비동기 결과)·참조 동기화(파생)는 막지 않는다. 없으면 늘 허용. */
+  editAllowed?: () => boolean;
+  onEditRefused?: () => void;
 }) {
   // 값 반환을 버리는 래퍼를 두지 않는다. B의 history가 이 편집의 영수증을 그대로 받는다.
   const history = useSceneHistory({ ...options, onChange: snapshot => options.onChange(snapshot) });
@@ -45,8 +49,16 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
     && options.sceneIdRef.current === target.sceneId && !options.frozenRef.current;
   const snapshot = (): CanvasSnapshot => ({ cards: options.cardsRef.current, edges: options.edgesRef.current, groups: options.groupsRef.current });
   const generations = () => options.generationDataRef?.current || {};
+  const editOk = () => !options.editAllowed || options.editAllowed();
+  /** 사용자 변경 입구 — 보기 모드면 안내 한 번 하고 거짓(실행하지 않는다) */
+  const userGate = () => {
+    if (editOk()) return true;
+    options.onEditRefused?.();
+    return false;
+  };
+  // 제스처는 보기 모드에서 시작하지 않는다(시작 손잡이가 빈 손잡이를 돌려준다 — current 가 거짓일 때와 같다)
   const gestures = createCanvasGestures({ cardsRef: options.cardsRef, edgesRef: options.edgesRef, groupsRef: options.groupsRef,
-    setCards: options.setCards, setGroups: options.setGroups, history, current,
+    setCards: options.setCards, setGroups: options.setGroups, history, current: () => current() && editOk(),
     withGenerationRefs: (cards, edges) => withCanvasReferences(cards, edges, generations()),
     cardSize: options.cardSize || (card => ({ w: card.w ?? CARD_W, h: card.h ?? CARD_H })), activeRef: gestureActiveRef });
   const reflect = (next: CanvasSnapshot) => {
@@ -59,6 +71,8 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
   };
   const commit = useCallback((command: CanvasInputCommand): boolean => {
     if (!current()) return false;
+    // Comfy 명령은 실행 결과 반영(승인된 비동기)·참조 동기화는 파생 — 보기 모드에서도 받는다. 그 밖의 편집 명령은 사용자 변경이다.
+    if (!isCanvasComfyCommand(command) && command.type !== "synchronizeReferences" && !userGate()) return false;
     if (isCanvasComfyCommand(command)) {
       if (command.type === "updateComfyRuntime" || command.type === "refreshComfyMetadata" || command.type === "saveComfyOutputs")
         input.confirmPendingInput();
@@ -150,7 +164,7 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source?.id, source?.cards, source?.edges, source?.groups]);
   const addReferences = (references: SceneRef[], center: { x: number; y: number }, size: { w: number; h: number }, connectToGenerationIds?: string[]) => {
-    if (!current()) return null;
+    if (!current() || !userGate()) return null;
     const appended = appendSceneReferenceCards({ ...snapshot(), refs: references, center, cardWidth: size.w, cardHeight: size.h, connectToGenerationIds, makeId: uid });
     if (!appended.createdCards.length) return null;
     reflect({ ...snapshot(), edges: appended.edges });
@@ -159,7 +173,7 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
     return { createdCardIds: appended.createdCards.map(card => card.id), connectedTargetIds: appended.connectedTargetIds };
   };
   const pasteNodes = (clipboard: SceneClipboard, position?: { x: number; y: number; cardWidth: number; cardHeight: number }) => {
-    if (!current() || !clipboard.cards.length) return null;
+    if (!current() || !clipboard.cards.length || !userGate()) return null;
     const pasted = pasteSceneClipboard(options.cardsRef.current, options.edgesRef.current, clipboard, uid, undefined, position);
     reflect({ ...snapshot(), edges: pasted.edges });
     input.applyCards(withCanvasReferences(pasted.cards, pasted.edges, generations()), "persistUser");
@@ -173,8 +187,8 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
     history.propagateAssetRelinkToHistory(workspaceId, found);
     return result.changed;
   };
-  const undo = () => { if (current()) { input.flushPending(); history.undo(); synchronizeReferences(); } };
-  const redo = () => { if (current()) { input.flushPending(); history.redo(); synchronizeReferences(); } };
+  const undo = () => { if (current() && userGate()) { input.flushPending(); history.undo(); synchronizeReferences(); } };
+  const redo = () => { if (current() && userGate()) { input.flushPending(); history.redo(); synchronizeReferences(); } };
   return { target, commit, flush, dispose, gestures,
     snapshot: () => current() ? snapshot() : undefined, addReferences, pasteNodes, relinkAssets, undo, redo };
 }

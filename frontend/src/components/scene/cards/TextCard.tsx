@@ -31,24 +31,8 @@ const SEPARATE_INPUTS = new Set(["insertParagraph", "insertLineBreak", "insertFr
 
 // memo — 받은 값(카드·연결·생성 자료…)이 그대로면 판이 다시 그려져도(줌 확정·이동·선택) 다시 그리지 않는다. 다른 카드가 움직이면
 //  cardsById 가 새 객체라 그대로 다시 그린다(연결된 것의 순서를 자리로 정한다). 넘어오는 함수의 정체성을 안 바꾸는 것은 보드의 몫이다.
-export const TextCard = memo(function TextCard({
-  card,
-  cardsById,
-  resolvedEdges,
-  genData,
-  editing,
-  caretPosRef,
-  setEditTextId,
-  setSelected,
-  setNodeText,
-  flushPending,
-  onOutPortDown,
-  onResizeDown,
-}: {
-  card: SceneCard;
-  cardsById: Map<string, SceneCard>;
-  resolvedEdges: SceneEdge[];
-  genData: Record<string, Generation>;
+type TextCardView = { card: SceneCard; cardsById: Map<string, SceneCard>; resolvedEdges: SceneEdge[]; genData: Record<string, Generation> };
+type TextCardEdit = {
   editing: boolean;
   caretPosRef: MutableRefObject<Map<string, number>>;
   setEditTextId: (id: string | null) => void;
@@ -57,7 +41,18 @@ export const TextCard = memo(function TextCard({
   flushPending: () => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
-}) {
+};
+// 읽기 형태 안에서만 쓰는 빈 값 — 편집 칸·복사·포트를 그리지 않으므로 불릴 길이 없다(받는 속성에는 변경 콜백이 없다)
+const READ_ONLY: TextCardEdit = {
+  editing: false, caretPosRef: { current: new Map() }, setEditTextId: () => {}, setSelected: () => {}, setNodeText: () => {},
+  flushPending: () => {}, onOutPortDown: () => {}, onResizeDown: () => {},
+};
+
+//  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 글 보기·카드 안 스크롤만(더블클릭 편집·복사·포트·크기 손잡이 없음).
+export const TextCard = memo(function TextCard(props: (TextCardView & TextCardEdit & { mode?: "edit" }) | (TextCardView & { mode: "read" })) {
+  const read = props.mode === "read";
+  const { card, cardsById, resolvedEdges, genData } = props;
+  const { editing, caretPosRef, setEditTextId, setSelected, setNodeText, flushPending, onOutPortDown, onResizeDown } = read ? READ_ONLY : props;
   // 알약 썸네일 주소(refThumbSrc)는 어셋 버전을 읽는다 — memo 뒤로 보드가 대신 그려 주지 않으니 직접 듣는다
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   // 연결된 레퍼런스(레퍼런스 카드 refs + 생성물)를 순서대로 @image1/@video1... 에 매핑. input 은 실제 소스로 해석.
@@ -351,7 +346,7 @@ export const TextCard = memo(function TextCard({
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
-          onDoubleClick={(e) => {
+          onDoubleClick={read ? undefined : (e) => {
             e.stopPropagation();
             setSelected(new Set([card.id]));
             // 자기 텍스트가 비어있고 들어온 텍스트가 있으면, 그걸 편집 본문으로 채택(한 번).
@@ -490,33 +485,37 @@ export const TextCard = memo(function TextCard({
           </div>
         </div>
       )}
-      <button
-        className="scene-copy-btn"
-        title={"텍스트 전체 복사\n연결 입력 + 편집 텍스트"}
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation();
-          void copyText(
-            effectiveTextOf(card.id, cardsById, resolvedEdges),
-          );
-        }}
-      >
-        ⧉
-      </button>
-      <span
-        className="scene-port in"
-        title={"텍스트 입력\n레퍼런스(@토큰)·텍스트(Comfy 결과·텍스트 노드)를 잇는다"}
-      />
-      <span
-        className="scene-port out"
-        onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title={"텍스트 출력\n드래그 = 생성 카드 텍스트 입력에 연결"}
-      />
-      <span
-        className="scene-resize"
-        onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그 = 크기 조절"
-      />
+      {!read && (
+        <>
+          <button
+            className="scene-copy-btn"
+            title={"텍스트 전체 복사\n연결 입력 + 편집 텍스트"}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              void copyText(
+                effectiveTextOf(card.id, cardsById, resolvedEdges),
+              );
+            }}
+          >
+            ⧉
+          </button>
+          <span
+            className="scene-port in"
+            title={"텍스트 입력\n레퍼런스(@토큰)·텍스트(Comfy 결과·텍스트 노드)를 잇는다"}
+          />
+          <span
+            className="scene-port out"
+            onMouseDown={(e) => onOutPortDown(e, card.id)}
+            title={"텍스트 출력\n드래그 = 생성 카드 텍스트 입력에 연결"}
+          />
+          <span
+            className="scene-resize"
+            onMouseDown={(e) => onResizeDown(e, card.id)}
+            title="드래그 = 크기 조절"
+          />
+        </>
+      )}
     </>
   );
 });

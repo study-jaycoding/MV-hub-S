@@ -16,7 +16,7 @@ import { isDraftGeneration } from "../../lib/seedanceDraft";
 
 type SConfirm = { id: string } | null;
 
-interface Props {
+interface ViewProps {
   generation: Generation;
   x: number;
   y: number;
@@ -38,56 +38,36 @@ interface Props {
   // 캔버스에서 폴더를 선택했을 때, 그 폴더(하위 포함) 밖 카드를 흐리게(딤) — 어떤 게 들어갔는지
   // 한눈에. path==="" 는 프로젝트 루트(전체) 선택이라 프로젝트만 일치하면 됨. 없으면 폴더 딤 없음.
   folderSel?: { projectId: string; path: string } | null;
+  onPreview: (target: PreviewTarget) => void;
+  onInfo: (target: InfoTarget) => void;
+  folderChip?: string; // 아래 변 가운데의 폴더 이름표 글자 — 표시만(캔버스 생성 카드, Jay 14A). 비면 안 단다
+}
+export interface HistoryBoardNodeActions {
   sConfirm: SConfirm;
   mayFinalize?: boolean;
   onSClick: (generation: Generation) => void;
   onSConfirmYes: (generation: Generation, action: ReviewAction) => void;
   onSConfirmNo: () => void;
-  onPreview: (target: PreviewTarget) => void;
-  onInfo: (target: InfoTarget) => void;
   onRegenerate: (generation: Generation) => void;
   onTag?: (generation: Generation) => void; // T → 태그 편집(있을 때만 버튼 표시)
   onOpenComments?: (generation: Generation) => void; // C → 코멘트 스레드(있을 때만 버튼 표시)
-  folderChip?: string; // 아래 변 가운데의 폴더 이름표 글자 — 표시만(캔버스 생성 카드, Jay 14A). 비면 안 단다
   onOpenFolder?: (generation: Generation, button: number) => void; // 이름표가 붙은 노드의 우클릭 — 그 폴더의 창(button = contextmenu 의 것)
 }
+const NOOP = () => {};
+// 읽기 형태 안에서만 쓰는 빈 값 — 공유(S)·태그·코멘트·재생성 단추를 그리지 않는다(받는 속성에는 변경 콜백이 없다)
+const READ_ONLY: HistoryBoardNodeActions = { sConfirm: null, mayFinalize: true, onSClick: NOOP, onSConfirmYes: NOOP, onSConfirmNo: NOOP, onRegenerate: NOOP };
 
-export const HistoryBoardNode = memo(function HistoryBoardNode({
-  generation,
-  x,
-  y,
-  width,
-  height,
-  isRoot,
-  isSelected,
-  onLine,
-  offLine,
-  fill,
-  disabled,
-  typeFilter,
-  colorFilter,
-  tagFilter,
-  sharedOnly,
-  reviewFilter = "shared",
-  commentOnly,
-  finalOnly,
-  folderSel,
-  sConfirm,
-  mayFinalize = true,
-  onSClick,
-  onSConfirmYes,
-  onSConfirmNo,
-  onPreview,
-  onInfo,
-  onRegenerate,
-  onTag,
-  onOpenComments,
-  folderChip,
-  onOpenFolder,
-}: Props) {
+//  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 미리보기(더블클릭)·정보(ⓘ·휠클릭)만 — 재사용(⠿)·@·⤓·↻·S·T·C·폴더 창 없음.
+export const HistoryBoardNode = memo(function HistoryBoardNode(props: (ViewProps & HistoryBoardNodeActions & { mode?: "edit" }) | (ViewProps & { mode: "read" })) {
+  const read = props.mode === "read";
+  const {
+    generation, x, y, width, height, isRoot, isSelected, onLine, offLine, fill, disabled, typeFilter, colorFilter, tagFilter, sharedOnly,
+    reviewFilter = "shared", commentOnly, finalOnly, folderSel, onPreview, onInfo, folderChip,
+  } = props;
+  const { sConfirm, mayFinalize = true, onSClick, onSConfirmYes, onSConfirmNo, onRegenerate, onTag, onOpenComments, onOpenFolder } = read ? READ_ONLY : props;
   const t = useT();
   // 대체 S/★ 버튼이 없는 읽기 전용 배지는 호버 중에도 남기고, T/C 버튼 자리를 비킨다.
-  const showShareAction = generation.status === "done" && canShowShareAction(generation, mayFinalize);
+  const showShareAction = !read && generation.status === "done" && canShowShareAction(generation, mayFinalize);
   const sfReadonly = (generation.shared || generation.is_final) && !showShareAction;
   const sButtonRef = useRef<HTMLButtonElement>(null);
   const picking = sConfirm?.id === generation.id; // S 옆에 창이 떠 있다 — 이 노드만 흐려진다
@@ -263,7 +243,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
             <InfoIcon />
           </button>
         </div>
-        <span
+        {!read && <span
           className="linb-ov-btn linb-ov-drag linb-ov-grip"
           draggable
           title="클릭 또는 끌어내려 프롬프트 재사용(프롬프트·옵션 불러오기)"
@@ -278,8 +258,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           }}
         >
           ⠿
-        </span>
-        <div className="linb-ov-bot">
+        </span>}
+        {!read && <div className="linb-ov-bot">
           {asset && (
             <button
               className="linb-ov-btn"
@@ -308,7 +288,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           >
             ↻
           </button>
-        </div>
+        </div>}
       </div>
       {picking && (
         <ReviewPicker anchorRef={sButtonRef} state={reviewState(generation)} options={workspaceReviewOptions(generation)}

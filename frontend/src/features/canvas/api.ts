@@ -5,3 +5,7 @@ export { doneOutputsPatch } from "./comfyCommands";
 export type { CanvasGestures, CanvasMoveHandle, CanvasCardResizeHandle, CanvasGroupResizeHandle, CanvasGestureRect, CanvasGroupFrame } from "./gestures";
 export { gatherCanvasReferences } from "./references";
 export { sceneRefWorkspaceId, relinkCards, applyRelink, relinkKey, type RelinkTarget } from "./assetRefs";
+// GPU 보기 모드(docs/status/캔버스_GPU판설계_2026-11-11.md) — 개발 표식 mvhub.canvas.gpuBoard 뒤
+export { GpuBoard, useGpuBoardMode, cardScreenRect } from "./gpu/GpuBoard";
+export { GpuOverlayCard } from "./gpu/GpuOverlayCard";
+export { buildGpuScene, type GpuSceneInput, type GpuSceneModel } from "./gpu/gpuScene";

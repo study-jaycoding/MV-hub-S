@@ -31,6 +31,8 @@ export const STORAGE_KEYS = {
   agentPanelScreen: "mvhub.agentPanel.screen", // 메인 창의 '지금 화면' {context, label, projects} — 새 창이 따라 읽는다
   // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
   canvasHandoff: "mvhub.canvasHandoff",
+  // GPU 보기 모드 개발 표식(features/canvas/gpu) — "1" 이면 켬, 그 밖은 끔(기본). 이 브라우저만.
+  canvasGpuBoard: "mvhub.canvas.gpuBoard",
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",

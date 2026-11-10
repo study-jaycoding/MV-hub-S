@@ -37,7 +37,15 @@ interface SceneKeyboardActions {
   onTag: () => boolean;
   onCutHeldChange: (held: boolean) => void;
   onDelete: () => void;
+  /** GPU 보기 모드(features/canvas/gpu) — 참이면 보는 키(Esc·F 화면 맞춤·모드 바꾸기)만 받고 나머지 보드 키는 거절 안내 */
+  isViewMode?: () => boolean;
+  onViewRefuse?: () => void;
+  /** 모드 바꾸기(` 키) — GPU 표식이 켜졌을 때만 넘긴다 */
+  onToggleView?: () => void;
 }
+
+/** GPU 보기 모드 ↔ DOM 편집 모드 단축키 — 비어 있는 백틱(`) 키(g 는 초록 색, Ctrl+G 는 묶기) */
+export const SCENE_VIEW_TOGGLE_CODE = "Backquote";
 
 const colorValue = (color: "red" | "green" | "blue") =>
   color === "red" ? KEY_COLORS.r : color === "green" ? KEY_COLORS.g : KEY_COLORS.b;
@@ -64,6 +72,33 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
       //  (2026-10-10 캔버스 실측 7가지 길, 각 6/6). 그 키는 창 안 격자가 받는다(lib/keyGate.useLooseKeys).
       if (document.querySelector(".folder-peek")) return;
       if (isSceneTextEntryTarget(event.target as HTMLElement | null)) return;
+
+      const bare = !event.ctrlKey && !event.metaKey && !event.altKey;
+      // GPU 표식이 꺼져 있으면 아래 두 동작은 넘어오지 않는다 — 있는지(in)부터 본다(없는 동작을 읽지 않는다)
+      if ("onToggleView" in current && current.onToggleView && event.code === SCENE_VIEW_TOGGLE_CODE && bare && !event.repeat) {
+        event.preventDefault();
+        current.onToggleView();
+        return;
+      }
+      if ("isViewMode" in current && current.isViewMode?.()) {
+        // 보기 모드 — 보는 키만. 편집 키(지우기·되돌리기·묶기·색·연결·복사·새 노드…)는 받지 않고 안내 한 번(창 안 Esc 처리는 그대로 존중)
+        if (event.key === "Escape") {
+          if (!isKeyHandled(event)) current.onEscape();
+          return;
+        }
+        if (bare && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          current.onFrame();
+          return;
+        }
+        const intent = sceneKeyIntent(event, { pickerOpen: false, selectionCount: current.selectionCount() }, matchShortcut);
+        const copy = sceneCopyShortcut(event, current.selectionCount());
+        if (intent || copy) {
+          event.preventDefault(); // 전체 선택이면 브라우저의 글자 전체 선택도 막는다
+          if (!event.repeat) current.onViewRefuse?.();
+        }
+        return;
+      }
 
       // 실제 입력 요소에 포커스가 없는 Ctrl+C는 최우선으로 처리한다. 편집 상태나 결과 팝업이
       // 비정상적으로 남더라도 선택 노드 복사가 새로고침 전까지 막히지 않게 한다.

@@ -7,17 +7,16 @@ import type { SceneCard } from "../../../lib/scenes";
 import { spotlightParamLabel, spotlightValueLabel } from "../../../lib/spotlightPromptConfig";
 import { normalizeSeedanceDraftParams } from "../../../lib/seedanceDraft";
 
+// 읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸이 쓴다. 변경 콜백을 받지 않고 포트·크기 손잡이를 그리지 않는다.
+type ModelCardProps =
+  | { mode?: "edit"; card: SceneCard; onOutPortDown: (e: React.MouseEvent, cardId: string) => void; onResizeDown: (e: React.MouseEvent, cardId: string) => void }
+  | { mode: "read"; card: SceneCard };
+
 // memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
 //  그룹 사용 모델(정책)은 아래 useModelPolicy 가 직접 듣는다.
-export const ModelCard = memo(function ModelCard({
-  card,
-  onOutPortDown,
-  onResizeDown,
-}: {
-  card: SceneCard;
-  onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
-  onResizeDown: (e: React.MouseEvent, cardId: string) => void;
-}) {
+export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
+  const { card } = props;
+  const edit = props.mode === "read" ? null : props;
   // 그룹 사용 모델 — 저장된 모델을 못 쓰면 값은 그대로 두고 '사용 불가'만 표시(Render 는 이 카드를 건너뛴다).
   const policy = useModelPolicy();
   const blocked = !!card.modelCfg?.model && !modelAllowed(policy, card.modelCfg.model);
@@ -67,16 +66,20 @@ export const ModelCard = memo(function ModelCard({
           </div>
         )}
       </div>
-      <span
-        className="scene-port out"
-        onMouseDown={(e) => onOutPortDown(e, card.id)}
-        title={"모델 출력\n드래그 = 생성 카드 모델 입력에 연결"}
-      />
-      <span
-        className="scene-resize"
-        onMouseDown={(e) => onResizeDown(e, card.id)}
-        title="드래그 = 크기 조절"
-      />
+      {edit && (
+        <>
+          <span
+            className="scene-port out"
+            onMouseDown={(e) => edit.onOutPortDown(e, card.id)}
+            title={"모델 출력\n드래그 = 생성 카드 모델 입력에 연결"}
+          />
+          <span
+            className="scene-resize"
+            onMouseDown={(e) => edit.onResizeDown(e, card.id)}
+            title="드래그 = 크기 조절"
+          />
+        </>
+      )}
     </>
   );
 });

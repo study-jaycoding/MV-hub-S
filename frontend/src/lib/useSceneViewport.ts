@@ -108,6 +108,10 @@ export function useSceneViewport({
   incomingCameraRef.current = camera;
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
+  // 카메라 출처 — GPU 판이 듣는다(features/canvas/gpu). 화면을 옮기는 모든 길(applyTransform·slidePan)이 알리고, 저장(persistCamera)과는 따로다.
+  //  듣는 쪽이 없으면(GPU 판 꺼짐) 하는 일이 없다 — SceneBoard 를 다시 그리지 않는다. transitionMs = 화면 맞춤의 미끄러짐 시간(없으면 바로).
+  const cameraListenersRef = useRef(new Set<(transitionMs: number) => void>());
+  const cameraTransitionRef = useRef(0);
 
   const getCamera = useCallback(
     (): SceneCamera => ({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y }),
@@ -288,6 +292,7 @@ export function useSceneViewport({
     }
     minimapUpdateRef.current?.();
     scheduleCull();
+    for (const listener of cameraListenersRef.current) listener(cameraTransitionRef.current);
   }, [getCamera, gridSize, scheduleCull]);
 
   // 가운데 버튼으로 끄는 한 걸음 — 화면 전체 레이어를 다시 합치지 않고 합성기만으로 민다. 걸음마다 transform 을 바꾸면 크롬이 그때마다
@@ -312,6 +317,7 @@ export function useSceneViewport({
     }
     minimapUpdateRef.current?.(true);
     scheduleCull();
+    for (const listener of cameraListenersRef.current) listener(0);
   }, [gridSize, scheduleCull]);
 
   // 렌더마다 카메라를 다시 적용한다 — 가운데 버튼으로 끄는 중이면 접지 않고 민 채로 둔다. 보이는 범위가 바뀌어 다시 그릴 때마다 접으면
@@ -421,7 +427,9 @@ export function useSceneViewport({
         }, FRAME_TRANSITION_CLEAR_MS);
       }
 
+      cameraTransitionRef.current = FRAME_TRANSITION_MS; // GPU 판도 같은 시간 동안 미끄러진다
       applyTransform();
+      cameraTransitionRef.current = 0;
       persistCamera();
     },
     [applyTransform, cancelSettle, persistCamera, replaceCamera],
@@ -583,6 +591,19 @@ export function useSceneViewport({
     [],
   );
 
+  const cameraSource = useMemo(
+    () => ({
+      subscribe: (listener: (transitionMs: number) => void) => {
+        cameraListenersRef.current.add(listener);
+        return () => {
+          cameraListenersRef.current.delete(listener);
+        };
+      },
+      getSnapshot: getCamera,
+    }),
+    [getCamera],
+  );
+
   return {
     scrollRef,
     canvasRef,
@@ -592,6 +613,7 @@ export function useSceneViewport({
     minimapUpdateRef,
     viewRect,
     liveView,
+    cameraSource,
     commitLiveView,
     cancelSettle,
     getCamera,
