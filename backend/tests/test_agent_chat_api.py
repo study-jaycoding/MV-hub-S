@@ -293,6 +293,24 @@ def test_human_and_agent_execute_race_on_claim_submits_once(hub, monkeypatch):
     wait_status(client, headers, body["turn_id"], ("cancelled",))
 
 
+@windows
+def test_panel_connection_reports_its_execute_rule_not_the_general_flag(hub):
+    """칸 연결은 connect·read_context(workspace)에 can_execute true + 칸 실행 규칙 — DB 일반 실행권은 0 그대로(화면 읽기 설계 3-3).
+    false 를 그대로 보이면 AI 가 '실행 권한이 없다'고 말했다(11-10 실사용)."""
+    client, profiles, _ = hub
+    headers = panel_headers(client)
+    body = start_turn(client, headers).json()
+    secret = profiles[-1]["secret"]
+    connected = client.post("/api/mcp/v2/client/connect", headers={"X-MVHub-MCP": "1", "X-MVHub-MCP-Secret": secret}, json={})
+    seen = adapter_action(client, secret, "read_context", {"kind": "workspace", "workspace_scope": "personal"})
+    for response in (connected, seen):
+        assert response.status_code == 200, response.text
+        assert response.json()["can_execute"] is True and "이 대화에서 생성하라고" in response.json()["execute_rule"]
+    assert mcp_store.client_by_id(profiles[-1]["client_id"])["can_execute"] == 0
+    client.post(f"/api/agent-chat/turns/{body['turn_id']}/cancel", headers=headers)
+    wait_status(client, headers, body["turn_id"], ("cancelled",))
+
+
 def test_restore_budget_covers_binding_and_client_lookups(monkeypatch):
     """대화 복원 예산은 바인딩·연결 조회까지 한 마감 — 늦은 조회에도 예산 안에 끝나고 그때까지 읽은 것만(독립 리뷰 P2)."""
     monkeypatch.setattr(router, "_RESTORE_SECONDS", 0.2)

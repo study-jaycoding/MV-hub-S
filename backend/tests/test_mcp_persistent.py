@@ -1216,6 +1216,67 @@ def test_account_grant_requires_explicit_scope_and_preserves_legacy(local, team_
         {"scope": "personal", "id": None, "name": None}]
 
 
+def test_unassigned_scenes_are_visible_from_every_workspace_like_the_app(local, team_access, monkeypatch):
+    """지정 없는 씬은 앱 탭 줄처럼 어느 공간에서나 보이고 표시된다 · 지정된 씬은 그 팀에서만(Jay 11-10 '앱과 같게' — 화면 읽기 설계 3-2)."""
+    configure(local, scope="account")
+    owner = local[2]["creator_uid"] or "acct:" + local[2]["email"]
+    repo.sync_scene_backups(owner, "", [
+        {"id": "free", "name": "씬 7", "data": '{"id":"free"}'},
+        {"id": "old-personal", "name": "옛", "data": '{"id":"old-personal","workspace":{"scope":"personal"}}'},
+        {"id": "blank-id", "name": "빈", "data": '{"id":"blank-id","workspace":{"id":"  "}}'},  # 앱 규칙: 공백·글자 아닌 id = 지정 없음
+        {"id": "number-id", "name": "숫자", "data": '{"id":"number-id","workspace":{"id":5}}'},
+        {"id": "team-a-scene", "name": "a", "data": '{"id":"team-a-scene","workspace":{"scope":"team","id":" team-a "}}'},
+        {"id": "team-b-scene", "name": "b", "data": '{"id":"team-b-scene","workspace":{"id":"team-b"}}'},
+        {"id": "bk_free", "name": "씬 7 (옛 창 사본)", "data": '{"id":"bk_free","backupForkOf":{"id":"free","sum":"s"}}'}], [])
+
+    def listed(scope, workspace_id=None):
+        response = action(local, "read_context", {"kind": "scenes", "workspace_scope": scope, "workspace_id": workspace_id})
+        assert response.status_code == 200, response.text
+        return {row["id"]: row for row in response.json()["scenes"]}
+
+    free = {"free", "old-personal", "blank-id", "number-id", "bk_free"}
+    team_a = listed("team", "team-a")
+    assert set(team_a) == free | {"team-a-scene"}
+    assert all(team_a[key]["workspace_unassigned"] is True and "어느 공간에서나" in team_a[key]["workspace_note"] for key in free)
+    assert "workspace_unassigned" not in team_a["team-a-scene"]
+    assert team_a["bk_free"]["backup_copy"] is True and "원래 씬" in team_a["bk_free"]["note"]  # 사본 안내는 따로 그대로
+    assert set(listed("personal")) == free
+
+    async def submit(body, request):
+        return {"id": "generation-" + body.workspace.id}
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    plan = scoped_plan(local, "team", "team-a").json()
+    assert action(local, "execute_generation_plan", {"plan_id": plan["id"]}).status_code == 200
+    placed = action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "free"})
+    assert placed.status_code == 200, placed.text
+    assert placed.json()["workspace"]["id"] == "team-a"  # 반영은 그 팀 공간을 연 앱에서(캔버스 작업 공간 = 계획 공간)
+    assert action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "team-b-scene"}).status_code == 404
+    # 앱이 그 팀 공간에서 받아 붙인 뒤 완료 — 씬은 지정 없음 그대로, 작업 공간(계획 공간)으로 완료된다. 다른 공간 완료는 404
+    tasks = local[0].get("/api/mcp/v2/app/canvas-tasks?workspace_scope=team&workspace_id=team-a", headers=APP_HEADERS).json()["tasks"]
+    assert [task["scene_id"] for task in tasks] == ["free"]
+    url = f"/api/mcp/v2/app/canvas-tasks/{tasks[0]['id']}/complete"
+    assert local[0].post(url, headers=APP_HEADERS, json={"workspace": {"scope": "personal"}}).status_code == 404
+    for _ in range(2):  # 다시 받아 완료해도 같은 결과
+        assert local[0].post(url, headers=APP_HEADERS, json={"workspace": {"scope": "team", "id": "team-a"}}).status_code == 200
+    # 목록 확인 뒤 씬이 다른 팀으로 지정되면 쓰기 잠금 안 확인이 막는다(라우터 목록과 같은 규칙)
+    client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
+    repo.sync_scene_backups(owner, "", [{"id": "free", "name": "씬 7", "data": '{"id":"free","workspace":{"id":"team-b"}}'}], [])
+    with pytest.raises(LookupError):
+        store.add_canvas_task(client, plan["id"], "free", ["generation-team-a"], {"scope": "team", "id": "team-a"})
+
+
+def test_general_connection_still_reports_its_own_execute_flag(local):
+    """일반 연결은 실행 허용값 그대로 — 칸 연결만 칸 실행 규칙을 싣는다(화면 읽기 설계 3-3)."""
+    for allowed in (False, True):
+        configure(local, execute=allowed)
+        connected = local[0].post("/api/mcp/v2/client/connect", headers=headers(local), json={}).json()
+        seen = action(local, "read_context", {}).json()
+        for result in (connected, seen):
+            assert result["can_execute"] is allowed and "execute_rule" not in result
+    configure(local, execute=False)
+    assert action(local, "execute_generation_plan", {"plan_id": prepare(local)["id"]}).status_code == 403
+
+
 def test_account_plans_remain_independent_across_workspaces(local, team_access, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     configure(local, ["codex", "claude"], scope="account")

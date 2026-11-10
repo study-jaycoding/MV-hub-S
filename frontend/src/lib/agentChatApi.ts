@@ -95,6 +95,44 @@ export interface AgentContext {
   project?: string;
   folder?: string;
   selected_ids?: string[];
+  scene?: { id: string; name: string }; // 캔버스 탭에서 열린 씬(화면 읽기 설계 3-1)
+}
+
+// 허브가 지금 화면 JSON 을 4096자에서 자른다 — 여유를 두고, 넘으면 씬 id·공간은 남기고 선택 카드부터 줄인다(화면 읽기 설계 리뷰 P2)
+const AGENT_CONTEXT_BUDGET = 3500;
+
+/** 앱 화면 상태 → 칸의 지금 화면. 선택 카드는 40개까지(예산 안에서), 캔버스 탭이면 열린 씬(이름 80자까지 — 자료일 뿐). */
+export function buildAgentContext(screen: {
+  tab: string;
+  workspace: NonNullable<AgentContext["workspace"]>;
+  project?: string;
+  folder?: string;
+  selected: Iterable<string>;
+  scene?: { id: string; name: string } | null;
+}): AgentContext {
+  let selected = [...screen.selected].slice(0, 40);
+  let folder = screen.folder;
+  let workspace = screen.workspace;
+  const build = (): AgentContext => ({
+    tab: screen.tab,
+    workspace,
+    ...(screen.project ? { project: screen.project } : {}),
+    ...(folder ? { folder } : {}),
+    ...(selected.length ? { selected_ids: selected } : {}),
+    ...(screen.tab === "compose" && screen.scene ? { scene: { id: screen.scene.id, name: screen.scene.name.slice(0, 80) } } : {}),
+  });
+  let context = build();
+  while (selected.length && JSON.stringify(context).length > AGENT_CONTEXT_BUDGET) {
+    selected = selected.slice(0, -1);
+    context = build();
+  }
+  if (JSON.stringify(context).length > AGENT_CONTEXT_BUDGET) {
+    // 선택을 다 빼도 넘으면(아주 긴 폴더·공간 이름) 표시용 글을 줄인다 — 폴더는 끝 300자, 공간 이름은 80자(id 는 그대로)
+    folder = folder?.slice(-300);
+    workspace = { ...workspace, name: workspace.name?.slice(0, 80) ?? null };
+    context = build();
+  }
+  return context;
 }
 export interface AgentConversationSummary {
   id: string;

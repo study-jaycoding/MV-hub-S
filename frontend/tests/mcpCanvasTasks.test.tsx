@@ -55,6 +55,17 @@ it("없는 씬·다른 공간·조회 도중 계정 변경은 카드와 완료 �
   expect(io.write).not.toHaveBeenCalled(); expect(io.saved[0].cards).toEqual([]);
 });
 
+it("팀 공간 작업은 공간 지정 없는 씬에도 붙는다(앱 탭 줄과 같은 규칙) · 그사이 다른 팀으로 지정된 씬엔 붙지 않는다(MVAgent_화면읽기 3-2)", async () => {
+  io.working = [{ id: "s1", name: "씬 7", created_at: 1, cards: [], edges: [] }]; io.saved = clone(io.working);
+  expect(await attachMcpCanvasTask(task, workspace, ports, () => true)).toBe(true);
+  expect(io.saved[0].cards.map((card) => card.genId)).toEqual(["g1"]);
+  expect([io.saved[0].workspace, io.saved[0].mcpAttachmentReceipts]).toEqual([undefined, ["task1"]]); // 씬은 지정 없음 그대로
+  io.working = [{ id: "s1", name: "씬 7", created_at: 1, workspace: { id: "other-team", name: null }, cards: [], edges: [] }];
+  io.saved = clone(io.working); io.write.mockClear();
+  expect(await attachMcpCanvasTask({ ...task, id: "task2" }, workspace, ports, () => true)).toBe(false);
+  expect(io.write).not.toHaveBeenCalled();
+});
+
 it("저장이 실패하면 완료 처리하지 않으며 저장 대기 중 편집을 늦은 새로고침으로 덮지 않는다", async () => {
   let settle!: (ok: boolean) => void;
   io.confirm.mockImplementationOnce((fn: () => unknown) => ({ value: fn(), confirmed: new Promise<boolean>((resolve) => { settle = resolve; }) }));

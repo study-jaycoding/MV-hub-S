@@ -110,6 +110,7 @@ import type { NoticeLine } from "./lib/useStateNotices";
 import { useHubAuth } from "./lib/useHubAuth";
 import { startEditDocBackup } from "./lib/editDocBackup";
 import { AGENT_CHAT_FEATURE, hubHasFeature } from "./lib/hubFeatures";
+import { buildAgentContext } from "./lib/agentChatApi";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
@@ -2291,18 +2292,20 @@ export default function App() {
     const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
     const tab = editOpen ? "edit" : filters.tab;
     const tabLabel = { my: "워크스페이스", team: "공유 & 리뷰", compose: "캔버스", edit: "편집" }[tab];
-    const place = filters.folder_path?.split("/").filter(Boolean).pop() || projects.find((p) => p.id === project)?.name;
+    const openScene = tab === "compose" && activeScene ? { id: activeScene.id, name: activeScene.name } : null; // 캔버스에서 열린 씬(화면 읽기 설계 3-1)
+    const place = openScene?.name || filters.folder_path?.split("/").filter(Boolean).pop() || projects.find((p) => p.id === project)?.name;
     return (
       <Suspense fallback={null}>
         <AgentPanel
           key={libraryAuthKey} // 계정이 바뀌면 칸을 새로 올린다 — 이전 계정의 대화·늦은 답을 버린다
-          context={{
+          context={buildAgentContext({
             tab,
             workspace: { scope: workspaceContext.scope, id: workspaceContext.id, name: workspaceContext.name },
-            ...(project ? { project } : {}),
-            ...(filters.folder_path ? { folder: filters.folder_path } : {}),
-            ...(selected.size ? { selected_ids: [...selected].slice(0, 40) } : {}),
-          }}
+            project,
+            folder: filters.folder_path || undefined,
+            selected,
+            scene: openScene,
+          })}
           contextLabel={place ? `${t(tabLabel)} › ${place}` : t(tabLabel)}
           onClose={() => setAgentOpen(false)}
           findGeneration={findGeneration}

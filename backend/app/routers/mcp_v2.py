@@ -292,6 +292,17 @@ def _register_client(ctx, name, setup, workspace, allow_execution):
 
 
 PANEL_CLIENT = "agent_panel"
+# 칸 연결의 실행 가능 표시(화면 읽기 설계 3-3) — DB can_execute=0 은 그대로, 실제 실행은 칸 실행 문(_panel_execute)만 연다.
+#  false 를 그대로 보이면 AI 가 "실행 권한이 없다"고 말했다.
+PANEL_EXECUTE_RULE = ("MV Agent 칸 — 사용자가 이 대화에서 생성하라고 한 계획만, 사용자가 보낸 차례가 도는 동안 "
+                      "execute_generation_plan 으로 실행합니다(일반 실행권과 별개).")
+
+
+def _execute_view(ctx):
+    """connect·read_context(workspace) 가 싣는 실행 가능 표시 — 칸 연결이면 칸 실행 문 규칙, 아니면 일반 실행권 그대로."""
+    if ctx.client.get("name") == PANEL_CLIENT:
+        return {"can_execute": True, "execute_rule": PANEL_EXECUTE_RULE}
+    return {"can_execute": bool(ctx.client["can_execute"])}
 
 
 def issue_panel_client(ctx, setup):
@@ -343,7 +354,7 @@ async def revoke(client_id: UUID, ctx=Depends(_app_context)):
 async def connect(body: mcp.ConnectIn, ctx=Depends(_client_context)):
     grant = json.loads(ctx.client["workspace"])
     return {"client_id": ctx.client["id"], "hub_id": ctx.hub, "connected": True,
-            "can_execute": bool(ctx.client["can_execute"]), "scope": "account" if grant.get("scope") == "account" else "workspace",
+            **_execute_view(ctx), "scope": "account" if grant.get("scope") == "account" else "workspace",
             "workspace": None if grant.get("scope") == "account" else grant}
 
 
@@ -442,18 +453,18 @@ def _scenes(ctx, ws):
             continue
         if not isinstance(scene, dict):
             continue
-        assigned = scene.get("workspace")
-        # Unassigned legacy canvases are personal; team attachment needs an exact ID.
-        if ws["scope"] == "team":
-            matches = isinstance(assigned, dict) and assigned.get("id") == ws["id"]
-        else:
-            matches = not assigned or (isinstance(assigned, dict) and assigned.get("scope") == "personal")
-        if matches:
-            entry = {"id": row["id"], "name": row.get("name") or scene.get("name")}
-            if scene.get("backupForkOf"):
-                # 옛 창 사본(bk_*) — 그 사본을 가져온 브라우저에서만 붙는다. 원래 씬에서 갈라진 사본이라 고르지 않게 알린다(Codex 리뷰 P2)
-                entry.update(backup_copy=True, note="옛 창 사본입니다. 이 사본을 연 브라우저에서만 캔버스에 붙습니다 — 보통은 원래 씬을 고르세요.")
-            result.append(entry)
+        # 지정 없는 씬은 앱 탭 줄처럼 어느 공간에서나 보인다(Jay 11-10 '앱과 같게' — docs/status/MVAgent_화면읽기_2026-11-10.md 3-2).
+        #  지정된 씬은 그 팀 공간에서만. add_to_canvas 의 쓰기 잠금 안 확인(store.add_canvas_task)과 같은 규칙.
+        if not store.scene_fits_workspace(row["data"], ws):
+            continue
+        assigned = store.scene_workspace_id(scene.get("workspace"))
+        entry = {"id": row["id"], "name": row.get("name") or scene.get("name")}
+        if assigned is None:
+            entry.update(workspace_unassigned=True, workspace_note="공간 지정 없는 씬 — 앱 탭 줄에서 어느 공간에서나 보입니다.")
+        if scene.get("backupForkOf"):
+            # 옛 창 사본(bk_*) — 그 사본을 가져온 브라우저에서만 붙는다. 원래 씬에서 갈라진 사본이라 고르지 않게 알린다(Codex 리뷰 P2)
+            entry.update(backup_copy=True, note="옛 창 사본입니다. 이 사본을 연 브라우저에서만 캔버스에 붙습니다 — 보통은 원래 씬을 고르세요.")
+        result.append(entry)
     return result
 
 
@@ -620,7 +631,7 @@ async def _read(ctx, args):
         return {"workspaces": await asyncio.to_thread(_available_workspaces, ctx, args.limit, args.search)}
     ws = await asyncio.to_thread(_request_workspace, ctx, args.workspace_scope, args.workspace_id)
     if args.kind == "workspace":
-        return {"workspace": ws, "can_execute": bool(ctx.client["can_execute"]),
+        return {"workspace": ws, **_execute_view(ctx),
                 "instructions": "일반 생성은 캔버스 없이 실행됩니다. 계획 저장 후 명시적으로 실행하세요. 캔버스 추가는 add_to_canvas입니다."}
     if args.kind == "models":
         models = await _models(ctx, ws)

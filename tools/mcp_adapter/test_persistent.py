@@ -68,7 +68,8 @@ class Handler(BaseHTTPRequestHandler):
         if not client:
             return self.reply(403, {"private": "not returned"})
         if self.path == "/api/mcp/v2/client/connect":
-            return self.reply(200, {"client_id": client, "can_execute": True, "workspace": {"scope": "personal"}})
+            return self.reply(200, {"client_id": client, "can_execute": True, "workspace": {"scope": "personal"},
+                                    **getattr(self.server, "connect_extra", {})})
         if self.path == "/api/mcp/v2/client/action":
             failure = getattr(self.server, "failure", None)
             if failure:
@@ -350,6 +351,17 @@ class PersistentTests(unittest.TestCase):
         with self.assertRaises(ToolError):
             broker.connect()
         self.assertNotIn(credential["secret"], json.dumps(self.http.calls))
+
+    def test_panel_execute_rule_passes_through_connect_and_read_context(self):
+        # MV Agent 칸 연결의 실행 규칙(execute_rule)은 어댑터가 그대로 AI 에게 넘긴다(docs/status/MVAgent_화면읽기_2026-11-10.md 3-3)
+        config, _ = self.profile()
+        rule = "MV Agent 칸 — 사용자가 이 대화에서 생성하라고 한 계획만"
+        self.http.connect_extra = {"execute_rule": rule}
+        self.http.context_values = {"workspace": {"workspace": {"scope": "personal"}, "can_execute": True, "execute_rule": rule}}
+        broker = Broker(self.url, config["args"][-1])
+        connected = broker.connect()
+        self.assertEqual((connected["can_execute"], connected["execute_rule"]), (True, rule))
+        self.assertEqual(broker.action("read_context", {"kind": "workspace"})["execute_rule"], rule)
 
     def test_wrong_hub_never_receives_profile_credential(self):
         config, _ = self.profile()

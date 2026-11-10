@@ -199,18 +199,39 @@ def update_plan(plan_id, items, status):
         conn.execute("UPDATE mcp_generation_plan SET items=?,status=? WHERE id=?", (encode(items), status, plan_id))
 
 
+def scene_workspace_id(value):
+    """씬에 지정된 팀 공간 id — 앱 normalizeSceneWorkspace 와 같은 규칙(dict 이고 id 가 공백 아닌 글자). 아니면 지정 없음(None)."""
+    if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"].strip():
+        return value["id"].strip()
+    return None
+
+
+def scene_fits_workspace(data, workspace):
+    """이 공간의 계획 결과를 놓을 수 있는 씬인가 — 지정 없음은 어느 공간이나(앱 탭 줄과 같게), 지정은 그 팀만(MVAgent_화면읽기 3-2)."""
+    try:
+        scene = json.loads(data)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(scene, dict):
+        return False
+    assigned = scene_workspace_id(scene.get("workspace"))
+    return assigned is None or (workspace.get("scope") == "team" and assigned == workspace.get("id"))
+
+
 def add_canvas_task(client, plan_id, scene_id, generation_ids, workspace=None):
     workspace = workspace if workspace is not None else json.loads(client["workspace"])
     if not _grant_allows(client, workspace):
         raise ValueError("A canvas task requires the plan workspace")
     task_id = str(uuid4())
     with get_connection() as conn:
-        # 씬이 아직 있는지를 같은 쓰기 잠금 안에서 다시 본다 — 라우터의 확인 직후 씬이 지워지면 거둘 수 없는 작업이 남았다(Codex 리뷰 P2 ⑥)
+        # 씬이 아직 있는지·그 공간에 놓을 수 있는지를 같은 쓰기 잠금 안에서 다시 본다 — 라우터의 목록 확인 직후 씬이 지워지거나
+        #  다른 팀으로 지정되면 거둘 수 없는(또는 엉뚱한 공간의) 작업이 남았다(Codex 리뷰 P2 ⑥ · 화면 읽기 설계 리뷰 P1)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            if conn.execute("SELECT 1 FROM scene_backup WHERE owner_uid=? AND project_id='' AND scene_id=? AND deleted_at IS NULL",
-                            (client["owner_uid"], scene_id)).fetchone() is None:
-                raise LookupError("scene is gone")
+            scene = conn.execute("SELECT data FROM scene_backup WHERE owner_uid=? AND project_id='' AND scene_id=? AND deleted_at IS NULL",
+                                 (client["owner_uid"], scene_id)).fetchone()
+            if scene is None or not scene_fits_workspace(scene["data"], workspace):
+                raise LookupError("scene is gone or not in this workspace")
             conn.execute(
                 "INSERT INTO mcp_canvas_task(id,plan_id,owner_uid,account_email,workspace,scene_id,generation_ids) VALUES(?,?,?,?,?,?,?) "
                 "ON CONFLICT(plan_id,scene_id) DO UPDATE SET id=excluded.id,status='pending',cancel_reason=NULL,generation_ids=excluded.generation_ids "
