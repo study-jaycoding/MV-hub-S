@@ -9,7 +9,9 @@
 }
 /* ── 가상 스크롤(virtua) 모드 — .gen-grid 를 순수 스크롤 컨테이너로. 레이아웃은 행 단위로 위임 ── */
 /* 좌우 padding 은 "컨테이너"에 둔다 → 컬럼 측정(clientWidth 기준)이 실제 카드 행 폭과 일치. */
-.gen-grid.gen-grid-virtual { display: block; padding: 0 16px; }
+/* overflow-anchor: 브라우저 스크롤 고정을 끈다 — 줄 위치 보정은 virtua 가 하고, 브라우저는 아래 여백을 기준으로 잡아 다음 쪽이 붙는 만큼
+   화면을 끌고 내려갔다(격리 실측, docs/status/격자스크롤_2026-11-10.md) */
+.gen-grid.gen-grid-virtual { display: block; padding: 0 16px; overflow-anchor: none; }
 .gen-grid-virtual.as-list { padding: 0 14px; }
 .gen-vrow-grid { display: grid; gap: 12px; padding-bottom: 12px; } /* 반응형 컬럼은 인라인 style */
 /* Masonry(그림 비율 줄, Jay 2026-10-30) — 칸 폭·높이는 인라인(줄 높이 × 그림 비율, lib/gridVirtualRows). 간격 4 · 모서리 8.
