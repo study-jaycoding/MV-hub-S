@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type UIEventHandler } from "react";
+import { useLayoutEffect, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type UIEventHandler } from "react";
 import { api } from "../../api";
 import { useT } from "../../lib/i18n";
 import { backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../../lib/keyGate";
@@ -95,6 +95,27 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
   };
   useLooseKeys(scrollRef, onGridKey, (e) => e.key !== "Backspace"); // Backspace 는 어셋 창의 '상위 폴더로' 처리 몫(AssetsView)
   const onGridKeyDown = (e: ReactKeyboardEvent) => onGridKey(e.nativeEvent);
+  // 화면 밖 카드의 자리 높이 — CSS(assets.css)가 먼 카드를 건너뛰고(content-visibility) 이 높이로 자리만 잡는다. 지금 그려진 카드 하나를
+  //  잰다(건너뛴 카드는 자리 높이를 돌려준다). 크기·보기·맞춤·개수·격자 폭이 바뀌면 다시 잰다. 자리 높이는 내용 높이라 테두리·안쪽 여백을 뺀다.
+  useLayoutEffect(() => {
+    const grid = scrollRef.current;
+    if (!grid || layout === "table") return;
+    const measure = () => {
+      const cards = grid.querySelectorAll<HTMLElement>(":scope > .assets-folder-card");
+      const shown = [...cards].find((card) => card.firstElementChild?.checkVisibility?.({ contentVisibilityAuto: true }) !== false);
+      if (!shown) return;
+      const s = getComputedStyle(shown);
+      const edges = parseFloat(s.borderTopWidth) + parseFloat(s.borderBottomWidth) + parseFloat(s.paddingTop) + parseFloat(s.paddingBottom);
+      const next = `${Math.max(0, shown.offsetHeight - edges)}px`;
+      // 같은 값이면 쓰지 않는다 — 변수는 물려받는 값이라 쓸 때마다 카드 전체 스타일을 다시 계산한다
+      if (grid.style.getPropertyValue("--folder-card-h") !== next) grid.style.setProperty("--folder-card-h", next);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [scrollRef, layout, scale, fit, groups.length, directFiles.length]);
   if (layout === "table") return <AssetFolderTable {...props} selected={selected} setSelected={setSelected} onGridKeyDown={onGridKeyDown} />;
   const thumb = (file: AssetNode, size: number) => <MediaThumbnail
     thumb={file.type === "audio" ? null : api.assetThumbUrl(project, file.path, size, file.version)}
