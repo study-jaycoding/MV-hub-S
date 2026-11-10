@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 159개.
+제품 환경변수 160개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -70,6 +70,7 @@
 | `CONTENT_HUB_FFMPEG_CONCURRENCY` | `"3"` | `backend/app/services/thumbs.py` | — |
 | `CONTENT_HUB_FOLDER_TREE_CACHE_TTL` | `"30"` | `backend/app/services/project_folders.py` | — |
 | `CONTENT_HUB_FRONTEND_DIST` | `BACKEND_DIR.parent / "frontend" / "dist"` | `backend/app/config.py` | — |
+| `CONTENT_HUB_HF_ORG_USAGE_TODAY_SECONDS` | `"600"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_HISTORY_AUDIT_INTERVAL` | `str(24 * 60 * 60)` | `backend/app/services/history_autofill.py` | — |
 | `CONTENT_HUB_HISTORY_AUTO_COOLDOWN` | `str(6 * 60 * 60)` | `backend/app/services/history_autofill.py` | — |
 | `CONTENT_HUB_HOST` | `"0.0.0.0" if AUTH_ENABLED else "127.0.0.1"` | `backend/app/config.py` `tools/endurance_probe.py` | `MV_agent.bat` `MV_server.bat` |

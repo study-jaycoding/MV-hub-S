@@ -28,6 +28,7 @@
 | `asset_registry_controller` | start() | ASSET_REGISTRY_ENABLED and not READ_ONLY | `backend/app/services/asset_registry.py` |
 | `periodic_share_state_reconciler` | start() | 항상 | `backend/app/services/share_state_reconciler.py` |
 | `slack_notifier` | start() | not READ_ONLY | `backend/app/services/slack_notify.py` |
+| `hf_org_collector` | start() | 항상 | `backend/app/services/hf_org_usage_collector.py` |
 | `asset_sync_worker` | start() | not READ_ONLY | `backend/app/services/asset_sync.py` |
 | `asset_watcher` | start() | 항상 | `backend/app/services/asset_watcher.py` |
 | `startup_history_audit() (name=history-startup-audit)` | create_task | 항상 | `backend/app/services/history_autofill.py` |
@@ -87,6 +88,7 @@
 | `backend/app/services/cli_bridge.py` | `_single_flight_task` | create_task | `factory()` |
 | `backend/app/services/cli_bridge.py` | `_stop_cli_tasks` | ensure_future | `drain()` |
 | `backend/app/services/cli_bridge.py` | `_terminate_cli_process` | ensure_future | `_finish_slow_tree_kill(killer, proc)` |
+| `backend/app/services/hf_org_usage_collector.py` | `Collector.start` | Thread | `self.run (name=hf-org-usage)` |
 | `backend/app/services/history_autofill.py` | `_start_history_task` | create_task | `_run_history_import(key, dict(acc), account_scope=captured_scope)` |
 | `backend/app/services/history_autofill.py` | `schedule_history_auto_start._spawn` | create_task | `auto_start_history_import(account_email, reason="gap") (name=history-gap-auto-start)` |
 | `backend/app/services/media_preservation.py` | `PeriodicMediaPreservation.start` | create_task | `self._run() (name=media-preservation)` |

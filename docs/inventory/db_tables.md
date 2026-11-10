@@ -10,11 +10,11 @@
 - **쓰는 모듈** = 리터럴 안의 `INSERT INTO`·`REPLACE INTO`·`UPDATE`·`DELETE FROM <테이블>`, **읽는 모듈** = `FROM`·`JOIN <테이블>`. 테이블 이름 자체를 `{}` 로 끼워 조립한 SQL 과 `FROM a, b` 의 둘째 이름은 못 잡는다 — **빈칸이 '아무도 안 쓴다'는 뜻은 아니다.** 경로는 `backend/app/` 을 뗀 것이다.
 - 컬럼은 싣지 않는다. 정의 파일의 `CREATE TABLE` 과 그 뒤 `ALTER TABLE … ADD COLUMN` 마이그레이션을 본다.
 
-테이블 117개.
+테이블 124개.
 
 | 테이블 | DB | 정의 파일 | 쓰는 모듈 | 읽는 모듈 |
 | --- | --- | --- | --- | --- |
-| `account` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/identity.py` `routers/db_transfer.py` `services/db_scrub.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/asset_sync.py` `repo/identity.py` `repo/last_admin.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/scene_keeps.py` `repo/slack_notifications.py` `repo/trash.py` `routers/_share_authority.py` `services/slack_link.py` |
+| `account` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/identity.py` `routers/db_transfer.py` `services/db_scrub.py` | `backend/cleanup_orphan_creators.py` `db_migrations.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/asset_sync.py` `repo/hf_org_usage.py` `repo/identity.py` `repo/last_admin.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/project_membership.py` `repo/scene_keeps.py` `repo/slack_notifications.py` `repo/trash.py` `routers/_share_authority.py` `services/slack_link.py` |
 | `account_report_delivery_state` | content DB | `repo/manage_schema.py` | `repo/manage_account_reports.py` | `repo/manage_account_reports.py` |
 | `account_report_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_account_reports.py` | `repo/manage_account_reports.py` |
 | `agent_chat_conversation` | agent_chat/<신원>.db (Ask Agent 칸, %LOCALAPPDATA%) | `repo/agent_chat.py` | `repo/agent_chat.py` | `repo/agent_chat.py` |
@@ -45,7 +45,7 @@
 | `comfy_canvas_output` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/comfy_canvas_runs.py` | `repo/comfy_canvas_runs.py` |
 | `comfy_canvas_run` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/comfy_canvas_runs.py` | `repo/comfy_canvas_runs.py` |
 | `creator` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/account_cleanup.py` `repo/accounts.py` `repo/identity.py` | `backend/cleanup_orphan_creators.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/manage_telemetry.py` `repo/share.py` `repo/trash.py` |
-| `credit_txn` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_transactions.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_transactions.py` |
+| `credit_txn` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_transactions.py` | `repo/hf_org_usage.py` `repo/manage.py` `repo/manage_schema.py` `repo/manage_transactions.py` |
 | `credit_txn_alias_merged` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` | `repo/manage_schema.py` |
 | `edit_doc_copy` | content DB | `backend/schema.sql` | `repo/edit_docs.py` | `repo/edit_docs.py` |
 | `edit_doc_head` | content DB | `backend/schema.sql` | `repo/edit_docs.py` | `repo/edit_docs.py` |
@@ -72,6 +72,13 @@
 | `generation_metrics` | content DB | `repo/manage_schema.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_transactions.py` | `repo/generations_query.py` `repo/manage_analytics.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/manage_transactions.py` `repo/trash.py` |
 | `generation_transfer` | content / trash DB (B1 transfer) | `services/trash_transfer.py` | `services/trash_transfer.py` | `repo/scene_keeps.py` `repo/trash.py` `services/trash_transfer.py` |
 | `generation_view` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/generation_views.py` | `repo/generation_views.py` |
+| `hf_org_identity_link` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_check` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_collector` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_config` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_row` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_window` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` |
+| `hf_usage_stage` | manage_hub.db (connection TEMP staging) | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
 | `history` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/lineage.py` `repo/share.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/history.py` `repo/lineage.py` `repo/share.py` `repo/trash.py` |
 | `history_import_audit` | content DB | `backend/schema.sql` | `repo/history_import_audit.py` | `repo/history_import_audit.py` |
 | `manage_schema_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/workspace_console.py` | `repo/console_guard.py` `repo/manage_schema.py` `repo/workspace_console.py` |
@@ -112,7 +119,7 @@
 | `task_assignment` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage_tasks.py` |
 | `task_generation` | content DB | `repo/manage_schema.py` | `repo/manage.py` `repo/manage_tasks.py` | `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |
 | `task_planned_creator` | content DB | `repo/manage_schema.py` | — | — |
-| `team_generation_fact` | manage_hub.db | `manage_db.py` | `manage_db.py` | `manage_db.py` `repo/manage_quota.py` `services/nas_results.py` |
+| `team_generation_fact` | manage_hub.db | `manage_db.py` | `manage_db.py` | `manage_db.py` `repo/hf_org_usage.py` `repo/manage_quota.py` `services/nas_results.py` |
 | `telemetry_delivery_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` | `repo/manage_telemetry.py` |
 | `telemetry_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_telemetry.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` |
 | `tracked_job` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |

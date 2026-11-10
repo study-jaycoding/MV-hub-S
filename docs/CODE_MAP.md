@@ -7,10 +7,25 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-09
+updated: 2026-11-10
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
+
+힉스필드 조직 사용량 1단계(관리자 대조 전용):
+
+| 파일 | 책임 |
+|---|---|
+| `backend/app/db_hf_org_usage.py` | 관리 DB 전용 6개 표·색인. migration 이름표 추가 없음 |
+| `backend/app/repo/hf_org_usage.py` | 키 revision·임대·공통 요청 예산·성공본 원자 교체·별도 DB 읽기 스냅샷·신원 연결 근거 |
+| `backend/app/services/hf_org_usage_key.py` | DPAPI 암호화·복호 실패 구분·비밀 없는 상태 |
+| `backend/app/services/hf_org_usage_client.py` | 고정 조직 API·금액 정수 변환·응답 제한·고정 오류 |
+| `backend/app/services/hf_org_usage_collector.py` | 실행 조건·주기·하루/정확 창 수집·재시도·시작/종료 |
+| `backend/app/usecases/hf_org_usage.py` | 키 관리·수집 제어·기간 예약·API/팩트/거래 대조 |
+| `backend/app/routers/hf_org_usage.py` | 서버 PC의 현재 관리자만 사용하는 7개 HTTP 경로 |
+| `tools/server_console/hf_org_usage.py` | 힉스필드 키 메뉴·상태·기간 표·늦은 응답 차단 |
+
+기존 몫·텔레메트리·거래 수집은 이 새 표를 읽지 않는다. 설계 정본은 [작업 기록](status/hf_org_usage_2026-11-10.md).
 
 이 문서는 "무엇을 고치려면 어느 파일을 열어야 하나"를 빨리 찾기 위한 **파일 단위 색인**이다.
 계층 원칙(무엇을 어디에 두는가)의 정본은 루트 [ARCHITECTURE.md](../ARCHITECTURE.md), 실행 흐름·데이터
