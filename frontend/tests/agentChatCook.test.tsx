@@ -78,6 +78,11 @@ describe("항목 칸 글(설계 A4)", () => {
   ])("state=%s 서버=%s 라이브러리=%s → %s", (state, server, library, kind) => {
     expect(itemKind(state, server, library)).toBe(kind);
   });
+
+  it("계획이 아직 보내는 중(executing)이면 대기 항목은 보내는 중 — 끝난 뒤에만 미제출(독립 리뷰 P1)", () => {
+    expect(itemKind("pending", undefined, undefined, "executing")).toBe("sending");
+    expect(itemKind("pending", undefined, undefined, "attention")).toBe("unsent");
+  });
 });
 
 let host: HTMLDivElement;
@@ -139,6 +144,39 @@ describe("보낸 계획 카드", () => {
     await flush();
     expect(tiles()).toEqual(["실패", "결과 없음", "실패"]);
     expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("끝났어요 · 완료 0 · 실패 2 · 결과 없음 1");
+  });
+
+  it("보내는 중(executing)인 계획은 대기 항목이 있어도 끝났어요가 아니다 — 끝난 뒤에야 미제출로 센다(독립 리뷰 P1)", async () => {
+    const executing = applyPlanSnapshot(card(), snap("1", [sub(0, "failed"), { index: 1, state: "pending", generation_id: null }], "executing")).progress;
+    act(() => root.render(<AgentPlanCard plan={PLAN} progress={executing} onExecute={() => {}} onRevise={() => {}} />));
+    await flush();
+    expect(tiles()).toEqual(["실패", "보내는 중"]);
+    expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("생성을 보냈어요");
+    const stopped = applyPlanSnapshot(card(), snap("2", [sub(0, "failed"), { index: 1, state: "pending", generation_id: null }], "attention")).progress;
+    act(() => root.render(<AgentPlanCard plan={PLAN} progress={stopped} onExecute={() => {}} onRevise={() => {}} />));
+    await flush();
+    expect(tiles()).toEqual(["실패", "미제출"]);
+    expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("끝났어요 · 완료 0 · 실패 1 · 미제출 1");
+  });
+
+  it("완료 썸네일은 항목마다 한 번만 읽는다 — 응답이 따로 와도 진행 중 조회를 버리거나 다시 묻지 않는다(독립 리뷰 P2)", async () => {
+    const gates: Record<string, (res: Response) => void> = {};
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      fetched.push(String(url));
+      return new Promise<Response>((done) => { gates[String(url)] = done; });
+    }));
+    const ok = (id: string) => new Response(JSON.stringify(gen(id)), { status: 200, headers: { "Content-Type": "application/json" } });
+    const progress = applyPlanSnapshot(card(), snap("1", [sub(0, "done"), sub(1, "done")])).progress;
+    act(() => root.render(<AgentPlanCard plan={PLAN} progress={progress} onExecute={() => {}} onRevise={() => {}} />));
+    await flush();
+    const gens = () => fetched.filter((u) => u.includes("/generations/")).sort();
+    expect(gens()).toEqual(["/api/generations/g0", "/api/generations/g1"]);
+    act(() => gates["/api/generations/g0"](ok("g0")));
+    await flush();
+    act(() => gates["/api/generations/g1"](ok("g1")));
+    await flush();
+    expect(gens()).toEqual(["/api/generations/g0", "/api/generations/g1"]); // 다시 묻지 않았다
+    expect(host.querySelectorAll(".agent-plan-tile.is-done")).toHaveLength(2); // 늦게 온 응답도 버리지 않았다
   });
 
   it("계획만(보내기 전)은 지금 그대로 — [실행]·[고치기]·크레딧 경고, 칸 없음", async () => {

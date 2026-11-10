@@ -1,6 +1,6 @@
 // MV Agent 칸의 계획 카드 — 계획만이면 [실행]·[고치기], 보냈으면(AI 실행 또는 사람 [실행]) 항목마다 확인된 상태와 완료 썸네일
 //  (앱 동작 도구 설계 A4). 상태는 확인된 출처에서만: 허브가 새로 읽은 스냅샷의 생성 상태 → 앱이 읽은 라이브러리 카드 → 그 밖은 '접수됨'.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { AgentPlan } from "../../lib/agentChatApi";
 import { useT } from "../../lib/i18n";
@@ -29,12 +29,14 @@ const SETTLED: ReadonlySet<ItemKind> = new Set(["done", "failed", "rejected", "m
 const genSettled = (s?: string | null) => !!s && s !== "pending" && s !== "running";
 
 /** 항목 하나의 칸 글 — server = 스냅샷의 생성 상태(없으면 확인 못 함), library = 앱이 읽은 카드의 상태. 완료라고 확인되지 않으면 완료라 하지 않는다. */
-export function itemKind(state: string | null | undefined, server: string | null | undefined, library: string | null | undefined): ItemKind {
+export function itemKind(state: string | null | undefined, server: string | null | undefined, library: string | null | undefined,
+  planStatus?: string | null): ItemKind {
   if (state === "rejected") return "rejected";
   if (state === "uncertain") return "unconfirmed";
   if (state === "submitting") return "sending";
   if (state == null) return "accepted"; // 항목 상태를 싣지 않은 옛 응답 — 안 보냈다고 단정하지 않는다
-  if (state !== "submitted") return "unsent"; // 보낸 카드인데 pending — 앞 항목 거절 등으로 안 보냄
+  // pending: 계획이 아직 보내는 중(executing)이면 보낼 차례, 끝난 뒤면 앞 항목 거절 등으로 안 보냄(독립 리뷰 P1)
+  if (state !== "submitted") return planStatus === "executing" ? "sending" : "unsent";
   const status = genSettled(library) ? library : server ?? library;
   if (status === "missing") return "missing";
   if (status === "done") return "done";
@@ -66,25 +68,27 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
     const it = progress?.items[index];
     const genId = it?.generation_id ?? null;
     const known = genId ? findGeneration?.(genId) : undefined;
-    const kind = itemKind(it?.state, it?.generation_status, known?.status);
+    const kind = itemKind(it?.state, it?.generation_status, known?.status, progress?.planStatus);
     return { index, genId, kind, gen: known ?? (genId ? fetched[genId] ?? undefined : undefined) };
   });
-  // 완료로 확인됐는데 앱이 읽은 목록에 없으면(다른 폴더) 한 번만 읽어 썸네일을 얻는다
+  // 완료로 확인됐는데 앱이 읽은 목록에 없으면(다른 폴더) 항목마다 한 번만 읽어 썸네일을 얻는다 —
+  //  다른 항목 응답이 먼저 와도 진행 중 조회를 버리거나 다시 내지 않는다(독립 리뷰 P2)
+  const requested = useRef(new Set<string>());
   const missingThumbs = rows.filter((r) => r.kind === "done" && r.genId && !r.gen && !(r.genId in fetched)).map((r) => r.genId as string);
   const missingKey = missingThumbs.join(",");
   useEffect(() => {
-    if (!missingKey) return;
-    let live = true;
-    for (const id of missingKey.split(",")) {
+    for (const id of missingKey ? missingKey.split(",") : []) {
+      if (requested.current.has(id)) continue;
+      requested.current.add(id);
       api.getGeneration(id).then(
-        (gen) => { if (live) setFetched((m) => ({ ...m, [id]: gen })); },
-        () => { if (live) setFetched((m) => ({ ...m, [id]: null })); },
+        (gen) => setFetched((m) => ({ ...m, [id]: gen })),
+        () => setFetched((m) => ({ ...m, [id]: null })),
       );
     }
-    return () => { live = false; };
   }, [missingKey]);
 
-  const settled = sent && rows.length > 0 && rows.every((r) => SETTLED.has(r.kind));
+  // 계획이 아직 보내는 중이면 끝났다고 하지 않는다(독립 리뷰 P1)
+  const settled = sent && progress?.planStatus !== "executing" && rows.length > 0 && rows.every((r) => SETTLED.has(r.kind));
   const count = (...kinds: ItemKind[]) => rows.filter((r) => kinds.includes(r.kind)).length;
   const summary = [
     `${t("완료")} ${count("done")}`, `${t("실패")} ${count("failed", "rejected")}`,

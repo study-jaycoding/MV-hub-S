@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -227,7 +228,7 @@ def test_agent_executes_this_conversations_plan_while_turn_runs(hub, monkeypatch
     assert len(first) == 1 and first[0]["plan_id"] == plan_id and first[0]["plan_status"] == "submitted"
     assert first[0]["items"][0]["state"] == "submitted" and first[0]["items"][0]["generation_id"] == "generation-1"
     assert "title" not in first[0] and "prompt" not in first[0]["items"][0]  # 카드(plan 사건)와 따로 — 상태만
-    # 사람 [실행]·AI 재실행이 겹쳐도 제출은 한 번
+    # 이미 보낸 계획에 사람 [실행]·AI 재실행이 와도 제출은 한 번(동시에 선점하러 만나는 경우는 아래 race 시험)
     assert client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers).status_code == 200
     assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id}).status_code == 200
     assert len(calls) == 1
@@ -253,6 +254,69 @@ def test_agent_executes_this_conversations_plan_while_turn_runs(hub, monkeypatch
     assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": late}).status_code == 409
     assert len(calls) == 1
     assert len(_progress(client, headers, body["turn_id"])) == 3  # 끝난 차례엔 사건을 더하지 않는다
+
+
+@windows
+def test_human_and_agent_execute_race_on_claim_submits_once(hub, monkeypatch):
+    """사람 [실행]과 AI 실행이 같은 planned 계획을 동시에 — 둘 다 선점 직전 장벽에서 만난 뒤 원자 선점, 제출은 한 번(독립 리뷰 P1)."""
+    client, profiles, _ = hub
+    headers = panel_headers(client)
+    body = start_turn(client, headers, text="고양이 한 장 생성해").json()
+    secret = profiles[-1]["secret"]
+    calls = _submits(monkeypatch)
+    plan_id = adapter_action(client, secret, "prepare_generation_plan", plan_args()).json()["plan_id"]
+    real_claim, meet, won = mcp_store.claim_plan, threading.Barrier(2, timeout=10), []
+
+    def claim(*args, **kwargs):
+        meet.wait()  # 두 요청 모두 planned 를 읽고 선점 직전까지 왔다(한쪽이 안 오면 장벽이 깨져 시험 실패)
+        result = real_claim(*args, **kwargs)
+        won.append(result)
+        return result
+
+    monkeypatch.setattr(api.store, "claim_plan", claim)
+    results = {}
+    threads = [
+        threading.Thread(target=lambda: results.setdefault(
+            "human", client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers))),
+        threading.Thread(target=lambda: results.setdefault(
+            "agent", adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id}))),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert sorted(won) == [False, True]  # 둘 다 선점했고 하나만 이겼다
+    assert results["human"].status_code == 200, results["human"].text
+    assert results["agent"].status_code == 200, results["agent"].text
+    assert len(calls) == 1
+    client.post(f"/api/agent-chat/turns/{body['turn_id']}/cancel", headers=headers)
+    wait_status(client, headers, body["turn_id"], ("cancelled",))
+
+
+def test_restore_budget_covers_binding_and_client_lookups(monkeypatch):
+    """대화 복원 예산은 바인딩·연결 조회까지 한 마감 — 늦은 조회에도 예산 안에 끝나고 그때까지 읽은 것만(독립 리뷰 P2)."""
+    monkeypatch.setattr(router, "_RESTORE_SECONDS", 0.2)
+    identity, ctx = SimpleNamespace(db_file=lambda: "x.db"), SimpleNamespace(client=None)
+
+    async def timed():
+        started = time.monotonic()
+        result = await router._plan_snapshots(ctx, identity, "c1")
+        return result, time.monotonic() - started
+
+    monkeypatch.setattr(router.chat_store, "bindings_for_conversation", lambda path, cid: time.sleep(1) or [])
+    result, took = asyncio.run(timed())
+    assert result == [] and took < 0.8  # 바인딩 조회가 늦어도 예산에서 끊는다
+
+    async def snap(ctx, plan_id, turn):
+        return {"plan_id": plan_id}
+
+    monkeypatch.setattr(router.chat_store, "bindings_for_conversation",
+                        lambda path, cid: [{"plan_id": "p1", "client_id": "a"}, {"plan_id": "p2", "client_id": "b"}])
+    monkeypatch.setattr(router, "_panel_client", lambda ctx, identity, cid: time.sleep(1) if cid == "b" else {"id": cid})
+    monkeypatch.setattr(router.mcp_v2, "panel_snapshot", snap)
+    monkeypatch.setattr(router.service, "turn_for_client", lambda cid: None)
+    result, took = asyncio.run(timed())
+    assert result == [{"plan_id": "p1"}] and took < 0.8  # 둘째 연결 조회가 늦으면 첫 계획만
 
 
 @windows

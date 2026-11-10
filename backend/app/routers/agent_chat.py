@@ -158,26 +158,25 @@ _RESTORE_SECONDS = 15.0
 
 
 async def _plan_snapshots(ctx, identity: Identity, conversation_id: str) -> list[dict]:
-    """대화 복원 보정 — 이 대화에 묶인 계획(최근 20개)의 지금 상태. 전체 15초 예산, 못 읽은 계획은 뺀다(카드는 사건으로 복원한 그대로)."""
-    bindings = await asyncio.to_thread(chat_store.bindings_for_conversation, identity.db_file(), conversation_id)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _RESTORE_SECONDS
-    out = []
-    for binding in bindings:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            break
-        client = await asyncio.to_thread(_panel_client, ctx, identity, binding["client_id"])
-        if not client:
-            continue
-        ctx.client = client
-        try:
-            snapshot = await asyncio.wait_for(
-                mcp_v2.panel_snapshot(ctx, binding["plan_id"], service.turn_for_client(client["id"])), remaining)
-        except asyncio.TimeoutError:
-            break
-        if snapshot:
-            out.append(snapshot)
+    """대화 복원 보정 — 이 대화에 묶인 계획(최근 20개)의 지금 상태. 전체 15초 예산은 바인딩·연결 조회까지 한 마감으로(독립 리뷰 P2),
+    넘으면 그때까지 읽은 것만 — 못 읽은 계획은 뺀다(카드는 사건으로 복원한 그대로)."""
+    out: list[dict] = []
+
+    async def collect():
+        bindings = await asyncio.to_thread(chat_store.bindings_for_conversation, identity.db_file(), conversation_id)
+        for binding in bindings:
+            client = await asyncio.to_thread(_panel_client, ctx, identity, binding["client_id"])
+            if not client:
+                continue
+            ctx.client = client
+            snapshot = await mcp_v2.panel_snapshot(ctx, binding["plan_id"], service.turn_for_client(client["id"]))
+            if snapshot:
+                out.append(snapshot)
+
+    try:
+        await asyncio.wait_for(collect(), _RESTORE_SECONDS)
+    except asyncio.TimeoutError:
+        pass
     return out
 
 
