@@ -25,6 +25,60 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// 끄는 도중 다른 길이 바꾼 카메라를 다음 걸음이 덮지 않는다(Codex 묶음 리뷰 P2, 2026-11-10)
+async function mountPlain() {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => root!.render(<Host onCameraChange={() => {}} />));
+  let drag: { move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null = null;
+  const beginDrag: BeginSceneDrag = (move, up) => { drag = { move, up }; };
+  api.beginPan({ button: 1, clientX: 100, clientY: 100, preventDefault: () => {} }, beginDrag);
+  return { move: (x: number, y: number) => drag!.move(new MouseEvent("mousemove", { clientX: x, clientY: y })), up: () => drag!.up(new MouseEvent("mouseup")) };
+}
+
+it("끄는 도중 보드가 스스로 스크롤돼 접힌 만큼은 다음 걸음에도 남는다", async () => {
+  const pan = await mountPlain();
+  pan.move(110, 100); // 시작 카메라 (2, 10, 20) → x 20
+  const board = api.scrollRef.current!;
+  board.scrollTop = 30;
+  board.dispatchEvent(new Event("scroll")); // 캐럿 보이기 등 — 30px 를 팬으로 접는다(y 20 → −10)
+  pan.move(120, 100); // 10px 더
+  expect(api.getCamera()).toEqual({ z: 2, x: 30, y: -10 });
+  pan.up();
+});
+
+it("끄는 도중 화면 맞춤은 지금 보이는 자리를 먼저 전환 없이 접고 나서 미끄러진다", async () => {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    { x: 0, y: 0, left: 0, top: 0, width: 1000, height: 600, right: 1000, bottom: 600, toJSON: () => ({}) } as DOMRect,
+  );
+  const pan = await mountPlain();
+  pan.move(150, 70); // (10, 20) + (50, −30) = (60, −10) — 화면은 translate 로 밀려 있다
+  const canvas = api.canvasRef.current!;
+  // transform 이 쓰일 때마다 그때의 전환(transition)과 함께 적는다
+  const writes: string[] = [];
+  let proto: object | null = canvas.style;
+  let desc: PropertyDescriptor | undefined;
+  while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "transform"))) proto = Object.getPrototypeOf(proto);
+  Object.defineProperty(canvas.style, "transform", {
+    configurable: true,
+    get: () => desc!.get!.call(canvas.style),
+    set: (v: string) => { writes.push(`${canvas.style.transition || "none"} | ${v}`); desc!.set!.call(canvas.style, v); },
+  });
+  // 접은 뒤 스타일을 확정(계산된 값 읽기)해야 그 자리가 전환의 출발점이 된다 — 그 순서도 적는다
+  const realComputed = window.getComputedStyle.bind(window);
+  vi.spyOn(window, "getComputedStyle").mockImplementation((el: Element, pseudo?: string | null) => {
+    if (el === canvas) writes.push("flush");
+    return realComputed(el, pseudo);
+  });
+  await act(async () => api.frameRects([{ x: 0, y: 0, w: 100, h: 100 }], 1));
+  expect(writes[0]).toBe("none | translate(60px, -10px) scale(2)"); // 먼저 보이던 자리 그대로, 전환 없이 접는다
+  expect(writes[1]).toBe("flush"); // 그 스타일을 확정한다
+  expect(writes[2]).toMatch(/^transform 0\.25s ease \| translate\(/); // 그다음 맞춤 자리로 미끄러진다
+  expect(canvas.style.translate).toBe("");
+  pan.up();
+});
+
 // 끄는 동안 컬링 확정 건너뛰기(2026-11-10) — 판정(shouldCommitView)이 거짓이면 확정값(viewRect)을 두고 최신 범위만 올린다
 // 범위의 -0(카메라 0 ÷ 줌)을 0 으로 — toEqual 은 둘을 다르게 본다
 const plain = (r: { l: number; t: number; r: number; b: number } | null) => r && { l: r.l + 0, t: r.t + 0, r: r.r + 0, b: r.b + 0 };
@@ -144,8 +198,10 @@ it("끄는 동안은 translate·표식으로만 밀고(격자는 칸 나머지 �
 
   drag!.up(new MouseEvent("mouseup"));
   const end = api.getCamera();
-  expect(end.x).toBe(60);
-  expect(canvas.style.transform).toBe(`translate(60px, -10px) scale(${end.z})`);
+  // 줌이 옮긴 카메라(50,−10 → 55,−11)에서 그대로 이어 10px 더 — 시작 카메라로 다시 셈하면 60 으로 되튀었다(Codex 묶음 리뷰 P3)
+  expect(end.x).toBeCloseTo(65);
+  expect(end.y).toBeCloseTo(-11);
+  expect(canvas.style.transform).toBe(`translate(${end.x}px, ${end.y}px) scale(${end.z})`);
   expect([canvas.style.translate, canvas.hasAttribute("data-layer-move")]).toEqual(["", false]);
   expect([grid.style.translate, grid.hasAttribute("data-layer-move")]).toEqual(["", false]);
   expect(minimap).toHaveBeenLastCalledWith(); // 접을 때는 slide 없이 — 상자 transform·크기를 맞춘다

@@ -303,6 +303,15 @@ export function useSceneViewport({
         maxZoom,
       );
       if (!next) return;
+      // 가운데 버튼으로 끄는 도중이면 지금 보이는 자리를 먼저 전환 없이 접고 그 스타일을 확정한 뒤 미끄러진다 — 밀어 둔 translate 를
+      //  지운 채 미끄러지면 끌기 시작 자리로 튀었다가 맞춤 자리로 갔다. CSS 전환은 마지막으로 확정된 스타일에서 출발하므로 접은 뒤
+      //  계산된 값을 한 번 읽어 확정해야 그 자리가 출발점이 된다(Codex 묶음 리뷰 P2 두 번, 2026-11-10)
+      if (slidingRef.current) {
+        const canvas = canvasRef.current;
+        if (canvas) canvas.style.transition = "";
+        applyTransform();
+        if (canvas) void getComputedStyle(canvas).transform;
+      }
       replaceCamera(next);
 
       const canvas = canvasRef.current;
@@ -345,9 +354,10 @@ export function useSceneViewport({
     (event: ScenePanStartEvent, beginDrag: BeginSceneDrag) => {
       if (event.button !== 1) return false;
       event.preventDefault();
-      const start = getCamera();
       const startX = event.clientX;
       const startY = event.clientY;
+      let lastX = startX;
+      let lastY = startY;
       let moved = false; // 정지 휠 클릭은 카드 정보(auxclick)다 — 실제로 끌었을 때만 놓는 순간의 auxclick 을 삼킨다
       const move = (moveEvent: MouseEvent) => {
         if (!moved && Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) > 3) {
@@ -356,11 +366,11 @@ export function useSceneViewport({
           //  클래스가 아니라 속성이다 — 보드의 className 은 React 가 그려서(가위 Y·연결선) 끄는 도중 바뀌면 손으로 붙인 클래스가 지워졌다(Codex 리뷰 P2)
           scrollRef.current?.setAttribute("data-panning", "");
         }
-        const next = panSceneCamera(
-          start,
-          moveEvent.clientX - startX,
-          moveEvent.clientY - startY,
-        );
+        // 지난 걸음에서 움직인 만큼만 지금 카메라에 더한다 — 끄는 도중 다른 길(보드 스크롤 접기·휠 줌·화면 맞춤)이 바꾼 카메라를
+        //  덮지 않게. 시작 카메라 + 끈 거리로 다시 셈하면 그 변화만큼 화면이 되튀었다(Codex 묶음 리뷰 P2·P3, 2026-11-10).
+        const next = panSceneCamera(getCamera(), moveEvent.clientX - lastX, moveEvent.clientY - lastY);
+        lastX = moveEvent.clientX;
+        lastY = moveEvent.clientY;
         panRef.current = { x: next.x, y: next.y };
         slidePan();
       };
