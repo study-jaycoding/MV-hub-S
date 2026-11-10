@@ -19,6 +19,55 @@ export function textTokenInfo(m: RegExpExecArray): TextTokenInfo {
   return { label: m[0], kind, key: `@${kind === "start" || kind === "end" ? "image" : word}${n}` };
 }
 
+// ── 보기 칸에 넣는 글 줄이기(2026-11-10) — 글 카드는 위쪽만 보이는데 원문(실제 씬에서 평균 1.7만 자)을 다 넣으면 줌할 때마다 그 글을
+//  모두 다시 그렸다(격리 실측: 본문을 빼면 휠 줌 긴 프레임 약 70%↓). 보기 칸에만 줄인 글을 넣고 원문은 편집·복사·연결 입력에 그대로 쓴다.
+/** 보기 칸에 넣을 글의 후보 길이 — 글꼴 12px·줄 1.7(scene.css `.scene-textview-inline`)로 보이는 줄 + 여유, 한 줄은 좁은 글자
+ *  기준(6px)으로 넉넉히. 후보일 뿐이다 — TextCard 가 넣은 뒤 보기 칸을 다 채우는지 재서 모자라면 늘린다. */
+export function textViewBudget(width: number, height: number): number {
+  const lines = Math.ceil(Math.max(0, height) / 20.4) + 4;
+  const perLine = Math.ceil(Math.max(0, width) / 6);
+  return Math.max(400, lines * perLine);
+}
+
+// Intl.Segmenter — 이 프로젝트의 TS lib 에 타입이 없어 필요한 모양만 적는다(크롬·Electron 은 있다, 없으면 아래 대체 규칙)
+type GraphemeSegmenter = { segment(text: string): Iterable<{ index: number }> };
+const SegmenterCtor = (typeof Intl !== "undefined"
+  ? (Intl as unknown as { Segmenter?: new (locale: undefined, options: { granularity: "grapheme" }) => GraphemeSegmenter }).Segmenter
+  : undefined);
+const GRAPHEMES = SegmenterCtor ? new SegmenterCtor(undefined, { granularity: "grapheme" }) : null;
+const TOKEN_AT_START = new RegExp(`^(?:${TEXT_TOKEN_SRC})`, "i");
+
+/** 보기 칸용으로 글을 limit 근처에서 자른다 — 토큰(@image12·<<<image1>>>)과 글자 덩어리(이모지·결합 문자·서로게이트) 한가운데가
+ *  아니게, 줄임표 없이(Jay 규칙: UI 글 끝에 ... 금지). limit 보다 짧으면 그대로. */
+export function cutTextForView(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  let cut = Math.max(0, Math.floor(limit));
+  // 토큰이 자르는 자리를 걸치면 그 토큰 앞에서(토큰은 32자 안쪽)
+  for (let i = Math.max(0, cut - 32); i < cut; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch !== 64 && ch !== 60) continue; // '@' · '<'
+    const m = TOKEN_AT_START.exec(text.slice(i, i + 40));
+    if (m && i + m[0].length > cut) {
+      cut = i;
+      break;
+    }
+  }
+  // 글자 덩어리 경계로 — 자르는 자리가 든 덩어리의 시작. 경계는 **원문 처음부터** 나눠야 맞다: 중간 자리에서 나누기 시작하면
+  //  이음 문자로 길게 이은 이모지·결합 문자가 수백 개 붙은 글자를 경계로 잘못 봤다(독립 리뷰 P2 재현 둘). 길이 = 자르는 자리 + 여유
+  //  (그 뒤는 경계 판정에 영향 없음). 비용은 글자 수만큼이라 TextCard 가 글·길이가 바뀔 때만 부른다(useMemo).
+  if (GRAPHEMES) {
+    let boundary = 0;
+    for (const part of GRAPHEMES.segment(text.slice(0, cut + 64))) {
+      if (part.index > cut) break;
+      boundary = part.index;
+    }
+    cut = boundary;
+  } else {
+    while (cut > 0 && /[̀-ͯ‍️\udc00-\udfff]/.test(text[cut])) cut--;
+  }
+  return text.slice(0, cut);
+}
+
 const TOKEN_ATTR = "data-tok"; // 편집칸 알약 표시 — 감싼 것은 다시 감싸지 않고, 그 안 글자는 @ 목록을 띄우지 않는다
 
 // 노드의 글 — 알약은 원래 글자, 그림 자리 표시(음표 등)는 빼고, <br> 은 줄바꿈.

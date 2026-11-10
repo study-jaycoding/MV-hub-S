@@ -142,6 +142,7 @@ export interface AgentConversationSummary {
   effort: string;
   updated_at: string;
   resumable: boolean;
+  project?: string | null; // 대화를 시작한 화면의 프로젝트(첫 차례) — 서랍이 프로젝트별로 묶는다
 }
 export interface AgentTurnRecord {
   id: string;

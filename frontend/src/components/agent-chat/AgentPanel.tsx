@@ -1,16 +1,16 @@
-// MV Agent 옆 칸(기본 폭 520px — 시안 _shots/ask-agent-open-v2.png · 모델 칩 ask-agent-models.png). 머리('새 대화 ⌄' · 새 대화 ·
-//  띄우기/붙이기 · 닫기) · 대화(또는 Claude 연결 안내) · 입력칸(지금 화면 · [모델 ⌄] [생각 깊이 ⌄] · 보내기). 칸을 닫아도 차례는 허브에서 계속 돈다.
-//  옆에 붙은 동안 왼쪽 끝선을 끌어 폭을 바꾸고, 떠 있는 창으로 띄울 수 있다(Jay 11-10 — docs/status/MVAgent_칸폭_떠있는창_2026-11-10.md).
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+// MV Agent 옆 칸(기본 폭 520px — 시안 _shots/ask-agent-open-v2.png · 모델 칩 ask-agent-models.png). 머리(왼쪽 [≡ 대화 목록][옆 칸 닫기] · 제목 ·
+//  오른쪽 [새 대화][새 창]) · 대화(또는 Claude 연결 안내) · 입력칸(지금 화면 · [모델 ⌄] [생각 깊이 ⌄] · 보내기). 칸을 닫아도 차례는 허브에서 계속 돈다.
+//  옆에 붙은 동안 왼쪽 끝선을 끌어 폭을 바꾸고, ≡ 는 대화 서랍(프로젝트별·설정), [새 창]은 Assets 같은 별도 창(AgentWindow)으로 뺀다
+//  (Jay 11-10 시안 A안·② — docs/status/MVAgent_서랍_새창_2026-11-10.md).
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
-import type { AgentContext, AgentEngine, AgentEngineId } from "../../lib/agentChatApi";
+import type { AgentContext, AgentConversationSummary, AgentEngine, AgentEngineId } from "../../lib/agentChatApi";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useT } from "../../lib/i18n";
-import { loadJSON, makeStore, saveJSON } from "../../lib/storage";
+import { loadJSON, saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
-import { useFloatingPanel } from "../../lib/useFloatingPanel";
 import type { Generation, PreviewTarget } from "../../types";
 import { AgentConnect } from "./AgentConnect";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -20,8 +20,10 @@ interface Props {
   context: AgentContext;
   contextLabel: string; // 입력칸의 '지금 화면' 표시(예: 워크스페이스 › e001)
   onClose: () => void;
-  floating?: boolean; // 떠 있는 창(앱이 기억한다 — 떠 있는 동안 앱 본문은 좁아지지 않는다)
-  onToggleFloat?: () => void; // 없으면 띄우기 단추도 없다
+  popout?: boolean; // 별도 창(?embed=agent) 안 — 창을 채우고, 폭 손잡이·[새 창] 대신 [옆 칸으로 붙이기]
+  onPopOut?: () => void; // 옆 칸 → 새 창(없으면 단추도 없다)
+  onDock?: () => void; // 새 창 → 옆 칸
+  projectName?: (id: string) => string | undefined; // 서랍의 프로젝트 묶음 이름
   findGeneration?: (id: string) => Generation | undefined; // 계획 카드 썸네일 — 앱이 이미 읽은 라이브러리 카드
   onPreview?: (target: PreviewTarget) => void; // 썸네일을 누르면 기존 크게 보기
 }
@@ -34,7 +36,6 @@ const MIN_W = 380;
 const maxWidth = () => Math.max(MIN_W, Math.floor(window.innerWidth / 2));
 const clampWidth = (w: number) => Math.max(MIN_W, Math.min(maxWidth(), Math.round(w)));
 const showWidth = (w: number) => document.documentElement.style.setProperty("--agent-w", `${w}px`);
-const FLOAT_LS = makeStore("mvhub.agentPanel."); // 떠 있는 창 자리(pos)·크기(size)
 
 const GROUP: Record<AgentEngineId, string> = { claude: "Claude", codex: "ChatGPT" };
 const EFFORT: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
@@ -53,7 +54,7 @@ const TOOL: Record<string, string> = {
 };
 const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
 
-export function AgentPanel({ context, contextLabel, onClose, floating = false, onToggleFloat, findGeneration, onPreview }: Props) {
+export function AgentPanel({ context, contextLabel, onClose, popout = false, onPopOut, onDock, projectName, findGeneration, onPreview }: Props) {
   const t = useT();
 
   // 옆 칸 폭 — 고른 폭은 남기고, 보이는 폭은 지금 창 폭의 절반까지(창을 줄였다 키우면 고른 폭으로 돌아간다 — ResizableSidebar 와 같다)
@@ -85,41 +86,20 @@ export function AgentPanel({ context, contextLabel, onClose, floating = false, o
     else showWidth(clampWidth(width));
   };
 
-  // 떠 있는 창 — 앱의 다른 떠 있는 창과 같은 부품(자리·크기 저장, 화면 밖 보정, 앞뒤 띠 152~159)
-  const float = useFloatingPanel(FLOAT_LS, "pos", "size", floating);
-  const panelNode = useRef<HTMLElement | null>(null);
-  const setPanel = useCallback((node: HTMLElement | null) => {
-    panelNode.current = node;
-    float.panelRef(node as HTMLDivElement | null);
-  }, [float.panelRef]);
-  // 띄운 순간의 크기 — 떠 있는 동안 모서리로 바꾸는 크기는 브라우저가 쥔다(인라인으로 다시 덮지 않는다 · EditTrimPop 과 같다).
-  //  폭·높이는 늘 인라인에 둔다: 붙일 때 React 가 지워야 브라우저가 적은 크기까지 같이 지워진다.
-  const openSize = useRef<{ w: number; h: number } | null>(null);
-  if (!floating) openSize.current = null;
-  else if (!openSize.current) openSize.current = float.size ?? { w: BASE_W, h: Math.max(360, Math.min(720, window.innerHeight - 96)) };
-  const at = float.pos ?? { x: Math.max(8, window.innerWidth - (openSize.current?.w ?? BASE_W) - 24), y: 64 };
-  const floatStyle: CSSProperties | undefined = floating && openSize.current
-    ? { left: at.x, top: at.y, width: openSize.current.w, height: openSize.current.h }
-    : undefined;
-  // 붙이면 부품이 준 앞뒤(z 152~)를 걷는다 — 옆 칸은 CSS 의 61
-  useLayoutEffect(() => { if (!floating) panelNode.current?.style.removeProperty("z-index"); }, [floating]);
-  const onHeadMouseDown = (event: ReactMouseEvent) => {
-    if (!floating || event.button !== 0 || (event.target as HTMLElement).closest("button, .agent-menu")) return;
-    float.onHeadMouseDown(event, at);
-  };
-
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
   const chat = useAgentChat(screenOn ? context : NO_SCREEN);
   const [text, setText] = useState("");
-  const [menu, setMenu] = useState<"history" | "model" | "effort" | null>(null);
+  const [menu, setMenu] = useState<"model" | "effort" | null>(null);
+  const [drawer, setDrawer] = useState(false); // ≡ 대화 서랍
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
-  const historyRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
   const effortRef = useRef<HTMLDivElement>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
+  const closeDrawer = useCallback(() => setDrawer(false), []);
   useEscapeClose(closeMenu, menu !== null);
-  useOutsideMouseDown(menu === "history" ? historyRef : menu === "effort" ? effortRef : modelRef, closeMenu, menu !== null);
+  useEscapeClose(closeDrawer, drawer && menu === null);
+  useOutsideMouseDown(menu === "effort" ? effortRef : modelRef, closeMenu, menu !== null);
 
   useEffect(() => {
     const log = logRef.current;
@@ -140,11 +120,13 @@ export function AgentPanel({ context, contextLabel, onClose, floating = false, o
       void submit();
     }
   };
-  const openHistory = () => {
-    if (menu === "history") return setMenu(null);
-    setMenu("history");
+  const toggleDrawer = () => {
+    if (drawer) return setDrawer(false);
+    setMenu(null);
+    setDrawer(true);
     void chat.loadConversations();
   };
+  const startNew = () => { chat.newConversation(); setText(""); setScreenOn(true); setDrawer(false); };
   const revise = (title: string) => {
     setText(`${t("「{title}」 계획을 이렇게 고쳐 주세요").replace("{title}", title || t("계획"))}: `);
     inputRef.current?.focus();
@@ -159,8 +141,8 @@ export function AgentPanel({ context, contextLabel, onClose, floating = false, o
   const locked = needsConnect || !chat.choice;
 
   return (
-    <aside ref={setPanel} className={floating ? "agent-panel floating" : "agent-panel"} aria-label="MV Agent" style={floatStyle}>
-      {!floating && (
+    <aside className={popout ? "agent-panel popout" : "agent-panel"} aria-label="MV Agent">
+      {!popout && (
         <div className="agent-resize" role="separator" tabIndex={0} aria-orientation="vertical"
           aria-label={t("MV Agent 칸 너비 조절")} aria-valuemin={MIN_W} aria-valuemax={maxWidth()} aria-valuenow={clampWidth(width)}
           title={t("드래그하여 너비 조절 · 더블클릭하여 기본 너비로 복원")}
@@ -190,47 +172,45 @@ export function AgentPanel({ context, contextLabel, onClose, floating = false, o
           }}
         />
       )}
-      <header className="agent-head" onMouseDown={onHeadMouseDown}>
-        <div className="agent-history-wrap" ref={historyRef}>
-          <button type="button" className="agent-title" onClick={openHistory} disabled={chat.running || chat.sending}
-            aria-haspopup="true" aria-expanded={menu === "history"} aria-label={t("지난 대화 보기")}>
-            <span>{chat.title || t("새 대화")}</span>
-            <Chevron />
+      <header className="agent-head">
+        <div className="agent-head-left">
+          <button type="button" className={`agent-ic${drawer ? " on" : ""}`} onClick={toggleDrawer}
+            aria-expanded={drawer} title={t("대화 목록")} aria-label={t("대화 목록")}>
+            <MenuIcon />
           </button>
-          {menu === "history" && (
-            <div className="agent-menu agent-history" role="menu" aria-label={t("지난 대화")}>
-              {chat.conversations === null ? (
-                <p className="agent-menu-note">{t("불러오는 중")}</p>
-              ) : chat.conversations.length === 0 ? (
-                <p className="agent-menu-note">{t("지난 대화가 없어요")}</p>
-              ) : chat.conversations.map((c) => (
-                <button key={c.id} type="button" role="menuitem"
-                  className={`agent-history-item${c.id === chat.conversationId ? " on" : ""}`}
-                  onClick={() => { setMenu(null); setScreenOn(true); void chat.openConversation(c.id); }}>
-                  <span>{c.title || t("제목 없음")}</span>
-                  <small>{GROUP[c.engine] ?? c.engine} · {c.model}{c.resumable ? "" : ` · ${t("이어 가기 불가")}`}</small>
-                </button>
-              ))}
-            </div>
+          {popout ? (
+            onDock && (
+              <button type="button" className="agent-ic" onClick={onDock} title={t("옆 칸으로 붙이기")} aria-label={t("옆 칸으로 붙이기")}>
+                <SidePanelIcon />
+              </button>
+            )
+          ) : (
+            <button type="button" className="agent-ic" onClick={onClose} title={t("옆 칸 닫기")} aria-label={t("옆 칸 닫기")}>
+              <SidePanelIcon />
+            </button>
           )}
+          <span className="agent-title"><span>{chat.title || t("새 대화")}</span></span>
         </div>
         <div className="agent-head-actions">
-          <button type="button" className="agent-ic" onClick={() => { chat.newConversation(); setText(""); setScreenOn(true); }} disabled={chat.running || chat.sending}
+          <button type="button" className="agent-ic" onClick={startNew} disabled={chat.running || chat.sending}
             title={t("새 대화")} aria-label={t("새 대화")}>
             <NewChatIcon />
           </button>
-          {onToggleFloat && (
-            <button type="button" className="agent-ic" onClick={onToggleFloat}
-              title={t(floating ? "옆에 붙이기" : "떠 있는 창으로 띄우기")} aria-label={t(floating ? "옆에 붙이기" : "떠 있는 창으로 띄우기")}>
-              {floating ? <DockIcon /> : <PopOutIcon />}
+          {!popout && onPopOut && (
+            <button type="button" className="agent-ic" onClick={onPopOut} title={t("새 창으로 띄우기")} aria-label={t("새 창으로 띄우기")}>
+              <PopOutIcon />
             </button>
           )}
-          <button type="button" className="agent-ic" onClick={onClose}
-            title={t(floating ? "창 닫기" : "옆 칸 닫기")} aria-label={t(floating ? "창 닫기" : "옆 칸 닫기")}>
-            {floating ? <CloseIcon /> : <SidePanelIcon />}
-          </button>
         </div>
       </header>
+
+      {drawer && (
+        <AgentDrawer conversations={chat.conversations} currentId={chat.conversationId} running={chat.running}
+          locked={chat.running || chat.sending} projectName={projectName}
+          onNew={startNew}
+          onOpen={(id) => { setDrawer(false); setScreenOn(true); void chat.openConversation(id); }}
+          onClose={closeDrawer} />
+      )}
 
       <div className="agent-log" ref={logRef} aria-live="polite">
         {chat.connect.connected && (
@@ -353,6 +333,73 @@ function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }:
   }
 }
 
+/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점). 보내는 중·일하는 중에는 고르기만 잠근다.
+ *  설정 칸(Claude 연결·새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10 — 구독 이름은 Claude Code 가 주는 값이 실제 요금제와 달랐다). */
+function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose }: {
+  conversations: AgentConversationSummary[] | null;
+  currentId: string | null;
+  running: boolean;
+  locked: boolean;
+  projectName?: (id: string) => string | undefined;
+  onNew: () => void;
+  onOpen: (id: string) => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const noProject = t("프로젝트 없음");
+  // 목록은 최근 순 — 묶음도 가장 최근 대화가 있는 순, '프로젝트 없음'은 맨 아래. 이름을 모르는 프로젝트(지금 공간 밖)는 한 묶음으로
+  const groups: { label: string; items: AgentConversationSummary[] }[] = [];
+  for (const c of conversations ?? []) {
+    const label = c.project ? projectName?.(c.project) ?? t("다른 공간 프로젝트") : noProject;
+    const group = groups.find((g) => g.label === label);
+    if (group) group.items.push(c);
+    else groups.push({ label, items: [c] });
+  }
+  groups.sort((a, b) => Number(a.label === noProject) - Number(b.label === noProject));
+  const fold = (label: string) => setFolded((prev) => {
+    const next = new Set(prev);
+    if (next.has(label)) next.delete(label);
+    else next.add(label);
+    return next;
+  });
+  return (
+    <>
+      <div className="agent-drawer-dim" onMouseDown={onClose} aria-hidden="true" />
+      <nav className="agent-drawer" aria-label={t("대화 목록")}>
+        <button type="button" className="agent-drawer-new" onClick={onNew} disabled={locked}>
+          <NewChatIcon /><span>{t("새 대화")}</span>
+        </button>
+        <div className="agent-drawer-list">
+          {conversations === null ? (
+            <p className="agent-menu-note">{t("불러오는 중")}</p>
+          ) : groups.length === 0 ? (
+            <p className="agent-menu-note">{t("지난 대화가 없어요")}</p>
+          ) : groups.map((g) => (
+            <div key={g.label} className="agent-drawer-group">
+              <button type="button" className="agent-drawer-ghead" aria-expanded={!folded.has(g.label)} onClick={() => fold(g.label)}>
+                <span>{g.label}</span><Chevron />
+              </button>
+              {!folded.has(g.label) && (
+                <div className="agent-drawer-items">
+                  {g.items.map((c) => (
+                    <button key={c.id} type="button" className={`agent-drawer-item${c.id === currentId ? " on" : ""}`}
+                      disabled={locked} onClick={() => (c.id === currentId ? onClose() : onOpen(c.id))}>
+                      <span>{c.title || t("제목 없음")}</span>
+                      {!c.resumable && <small>{t("이어 가기 불가")}</small>}
+                      {running && c.id === currentId && <i className="agent-drawer-dot" title={t("일하는 중")} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </nav>
+    </>
+  );
+}
+
 /** [모델 ⌄] — 맨 위 회사(Claude ⌄ — 누르면 회사 목록, ChatGPT 는 잠금이면 까닭), 아래 그 회사의 모델. */
 function ModelMenu({ engines, choice, onChoose }: {
   engines: AgentEngine[];
@@ -447,29 +494,8 @@ function NewChatIcon() {
   );
 }
 
+/** 옆 칸 닫기(새 창에서는 옆 칸으로 붙이기) — 오른쪽 칸이 채워진 창(Jay 11-10 시안 — 이미지의 사이드바 단추를 오른쪽 칸으로) */
 function SidePanelIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-      <path d="M14.5 4.5v15" />
-    </svg>
-  );
-}
-
-/** 떠 있는 창으로 띄우기 — 큰 창 안의 작은 창(화면 속 화면) */
-function PopOutIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-      <rect x="11.5" y="11.5" width="6" height="5" rx="1" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-/** 옆에 붙이기 — 오른쪽 칸이 채워진 창 */
-function DockIcon() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -479,11 +505,23 @@ function DockIcon() {
   );
 }
 
-function CloseIcon() {
+/** ≡ 대화 목록 — 왼쪽 맞춘 세 줄 */
+function MenuIcon() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
       strokeLinecap="round" aria-hidden="true">
-      <path d="M6 6l12 12M18 6 6 18" />
+      <path d="M4 6.5h16M4 12h11M4 17.5h7" />
+    </svg>
+  );
+}
+
+/** 새 창으로 띄우기 — 겹친 두 창(Jay 11-10 시안 ②) */
+function PopOutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="8.5" y="3.5" width="12" height="10" rx="2" />
+      <path d="M15.5 17v1.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2H7" />
     </svg>
   );
 }

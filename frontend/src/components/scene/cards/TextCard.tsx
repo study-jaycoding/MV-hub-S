@@ -3,7 +3,7 @@
 //   리마운트되지 않아 포커스가 유지된다. 캐럿 위치는 부모 소유 caretPosRef(노드별, 글자 위치)로 복원.
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
-import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { variantIds } from "../../../lib/scenes";
 import type { Generation } from "../../../types";
@@ -16,9 +16,11 @@ import {
   buildTextTokenPill,
   caretMention,
   caretTextOffset,
+  cutTextForView,
   editorText,
   placeCaretAtTextOffset,
   textTokenInfo,
+  textViewBudget,
   wrapTextTokens,
 } from "../../../lib/textNodeTokens";
 import { breakTextTyping, recordTextEdit, redoTextEdit, startTextHistory, undoTextEdit, type TextEditHistory } from "../../../lib/textEditHistory";
@@ -137,6 +139,44 @@ export function TextCard({
     .join("\n");
   // 표시/사용 텍스트 = 내가 편집한 자기 텍스트 우선, 없으면 들어온 텍스트를 그대로(내가 적은 것처럼).
   const shownText = (card.text || "").trim() ? card.text || "" : incomingText;
+
+  // 보기 칸에는 보이는 만큼만(lib/textNodeTokens cutTextForView) — 원문은 편집·마우스 올림·안쪽 스크롤·카드 안 포커스 때.
+  //  선택은 원문 조건이 아니다(Ctrl+A 로 글 카드를 다 고르면 원문 수십만 자가 한꺼번에 다시 그려진다). 복사·편집칸·연결 입력은 늘 원문.
+  const viewRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const viewW = card.w ?? 400;
+  const viewH = card.h ?? 300;
+  // 늘린 배수 — 글·크기가 바뀌면 처음(1)부터 다시 잰다(값과 함께 기억해 렌더 중에 판정)
+  const [growState, setGrowState] = useState({ text: shownText, w: viewW, h: viewH, grow: 1 });
+  const growFits = growState.text === shownText && growState.w === viewW && growState.h === viewH;
+  const grow = growFits ? growState.grow : 1;
+  const fullView = editing || hovered || scrolled || focused;
+  const viewLimit = textViewBudget(viewW, viewH) * grow;
+  // 자르기는 글자 경계를 원문 처음부터 세므로(cutTextForView) 글·길이가 바뀔 때만 — 이 카드는 보드가 그릴 때마다 다시 그려진다
+  const viewText = useMemo(() => (fullView ? shownText : cutTextForView(shownText, viewLimit)), [fullView, shownText, viewLimit]);
+  const viewTrimmed = viewText.length < shownText.length;
+  // 줄인 글이 보기 칸을 다 채우나 — 좁은 글자가 많으면 후보 길이로는 아래가 빌 수 있다. 내용·크기·줄이기가 바뀔 때만 잰다.
+  useLayoutEffect(() => {
+    const el = viewRef.current;
+    if (!viewTrimmed || !el || el.clientHeight === 0) return; // 그려지지 않은 칸(숨김)은 재지 않는다
+    if (el.scrollHeight <= el.clientHeight + 1) setGrowState({ text: shownText, w: viewW, h: viewH, grow: grow * 2 });
+    // 후보 길이(viewLimit)도 본다 — 늘려도 같은 앞부분(예: 첫 글자 덩어리가 아주 길어 빈 글)이 나오면 다시 재지 않아 칸이 빈 채 멈췄다(독립 리뷰 P2)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewTrimmed, viewText, viewLimit, viewW, viewH]);
+  useEffect(() => {
+    const cardEl = viewRef.current?.closest(".scene-card");
+    if (!cardEl) return;
+    const onIn = () => setFocused(true);
+    const onOut = (event: Event) => setFocused(cardEl.contains((event as FocusEvent).relatedTarget as Node | null));
+    cardEl.addEventListener("focusin", onIn);
+    cardEl.addEventListener("focusout", onOut);
+    return () => {
+      cardEl.removeEventListener("focusin", onIn);
+      cardEl.removeEventListener("focusout", onOut);
+    };
+  }, []);
 
   // ── 편집칸(Jay 2026-10-29) — 쓰는 중에도 이어진 번호는 알약(lib/textNodeTokens: 원래 글자를 알약 안에 그대로 둬 저장 글은 친 그대로).
   //  치는 중인 토큰(캐럿이 걸친 것)은 글자로 두고 캐럿이 떠나면 알약 · 알약을 누르면 글자로 풀려 번호를 고친다.
@@ -301,7 +341,11 @@ export function TextCard({
       <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
       <div className="scene-card-inner">
         <div
+          ref={viewRef}
           className={"scene-textview-inline" + (editing ? " is-editing" : "")}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
           onDoubleClick={(e) => {
             e.stopPropagation();
             setSelected(new Set([card.id]));
@@ -312,7 +356,7 @@ export function TextCard({
           }}
         >
           {shownText ? (
-            renderInline(shownText)
+            renderInline(viewText)
           ) : (
             <span className="scene-textnode-ph2">텍스트 입력</span>
           )}

@@ -94,6 +94,19 @@ def test_store_claim_is_idempotent_single_active_and_recovers(tmp_path):
     store.claim_turn(path, conversation_id=conv["id"], idempotency_key="key-0003", text="c", context={})
 
 
+def test_store_list_carries_first_project(tmp_path):
+    """칸 서랍의 프로젝트 묶음 — 프로젝트를 고른 화면에서 보낸 첫 차례의 project, 없으면 None."""
+    path = store.open_db(tmp_path / "p.db")
+    make = lambda: store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="c", mcp_entry={}, title="t")
+    a, b = make(), make()
+    for key, ctx in (("key-p1", {}), ("key-p2", {"tab": "my", "project": "p-first"}), ("key-p3", {"project": "p-later"})):
+        turn, _ = store.claim_turn(path, conversation_id=a["id"], idempotency_key=key, text="x", context=ctx)
+        store.set_status(path, turn["id"], "done", only_from=("running",))
+    turn, _ = store.claim_turn(path, conversation_id=b["id"], idempotency_key="key-p4", text="x", context={"project": 7})
+    store.set_status(path, turn["id"], "done", only_from=("running",))
+    assert {row["id"]: row["project"] for row in store.list_conversations(path)} == {a["id"]: "p-first", b["id"]: None}
+
+
 def test_store_events_order_and_binding_needs_matching_client(tmp_path):
     path = store.open_db(tmp_path / "y.db")
     conv = store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="c1", mcp_entry={}, title="t")

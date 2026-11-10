@@ -87,7 +87,7 @@ function GateHost({ gate, sceneId = "s", camera = { z: 1, x: 0, y: 0 } }: { gate
   return <div ref={api.scrollRef}><div ref={api.gridRef} /><div ref={api.canvasRef} /></div>;
 }
 
-it("끄는 동안 판정이 거짓이면 확정을 건너뛰고 최신 범위만 갱신하며, 손 떼면 다시 묻고, 줌·씬 전환은 묻지 않고 확정한다", async () => {
+it("끄는 동안 판정이 거짓이면 확정을 건너뛰고 최신 범위만 갱신하며, 손 떼면 다시 묻고, 씬 전환은 묻지 않고 확정한다 · 줌도 묻고 건너뛰면 쉼 정리가 지금 범위로 확정한다", async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const frames: FrameRequestCallback[] = [];
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
@@ -128,8 +128,9 @@ it("끄는 동안 판정이 거짓이면 확정을 건너뛰고 최신 범위만
   expect(gate).not.toHaveBeenCalled();
   expect(plain(api.viewRect)).toEqual({ l: 700, t: 0, r: 1700, b: 600 });
 
-  // 끄는 동안 건너뛴 뒤 손을 떼자마자(같은 프레임) 한 단계 축소 — 최신 범위(1400..2400)와는 500 안쪽이지만, 확정값(700..1700)과
-  //  비교해 묻지 않고 지금 카메라의 범위로 확정해야 한다(Codex 독립 리뷰 P2)
+  // 끄는 동안 건너뛴 뒤 손을 떼자마자(같은 프레임) 한 단계 축소 — 줌(범위 크기 변경)도 판정을 묻는데, 비교 기준은 최신 범위(1400..2400)가
+  //  아니라 확정값(700..1700)이다(Codex 독립 리뷰 P2). 판정이 거짓이면 확정을 미루고, 휠을 쉬면(150ms) 그때의 카메라 범위로 정리한다(2026-11-10)
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   api.beginPan({ button: 1, clientX: 500, clientY: 300, preventDefault: () => {} }, beginDrag);
   await act(async () => drag!.move(new MouseEvent("mousemove", { clientX: -200, clientY: 300 })));
   await flush();
@@ -138,10 +139,14 @@ it("끄는 동안 판정이 거짓이면 확정을 건너뛰고 최신 범위만
   await act(async () => drag!.up(new MouseEvent("mouseup")));
   await act(async () => api.stepZoom(-1));
   await flush();
-  expect(gate).not.toHaveBeenCalled();
   const zoomed = plain(sceneViewRect(api.getCamera(), { width: 1000, height: 600 }));
   expect(zoomed!.r - zoomed!.l).toBeCloseTo(1100); // 실제로 축소됐다
-  expect(plain(api.viewRect)).toEqual(zoomed);
+  expect(gate).toHaveBeenLastCalledWith(expect.objectContaining({ l: 700, r: 1700 }), expect.anything()); // 확정값과 견준다
+  expect(plain(api.viewRect)).toEqual({ l: 700, t: 0, r: 1700, b: 600 }); // 미뤘다
+  expect(plain(api.liveView.getSnapshot())).toEqual(zoomed); // 최신 범위는 올렸다
+  await act(async () => { vi.advanceTimersByTime(150); });
+  vi.useRealTimers();
+  expect(plain(api.viewRect)).toEqual(zoomed); // 쉼 정리 — 지금 카메라 범위로(판정 함수가 없으면 범위가 다르면 정리)
   expect(api.liveView.getSnapshot()).toBe(api.viewRect);
 
   // 끄는 동안 건너뛴 뒤 SceneBoard 가 부르는 확정

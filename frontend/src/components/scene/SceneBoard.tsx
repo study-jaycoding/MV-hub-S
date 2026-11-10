@@ -181,7 +181,7 @@ import {
   type ResolveOpenPopup,
   type ResolveSceneSelectionTarget,
 } from "../../lib/resolveSelection";
-import { sceneCullNeedsCommit, sceneCullRect, sceneIoPanelLeft, type SceneCullItems, type SceneViewRect } from "../../lib/sceneViewport";
+import { sceneCullNeedsCommit, sceneCullRect, sceneCullSetChanged, sceneIoPanelLeft, type SceneCullItems, type SceneViewRect } from "../../lib/sceneViewport";
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
@@ -936,6 +936,8 @@ export function SceneBoard({
 
   // 컬링 다시 확정 판정의 자료 — 같은 렌더의 카드 사각형(늘 그리는 카드 제외)·일반 연결선 끝점 상자를 layout 단계에서 한 묶음으로 넣는다(아래)
   const cullItemsRef = useRef<SceneCullItems>({ cards: [], edges: [] });
+  // 카드·그룹을 쥐고 있나 — 줌 뒤의 쉼 정리가 끄는 중에 판을 다시 그리지 않게 미룬다(아래 moveHeldRef 를 선언 뒤에 이어 준다)
+  const interactingRef = useRef<() => boolean>(() => false);
   const {
     scrollRef,
     canvasRef,
@@ -952,6 +954,7 @@ export function SceneBoard({
     frameRects,
     stepZoom,
     beginPan,
+    cancelSettle: cancelViewSettle,
   } = useSceneViewport({
     sceneId: scene.id,
     camera: scene.camera,
@@ -965,9 +968,13 @@ export function SceneBoard({
     }),
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
-    // 가운데 버튼으로 끄는 동안: 새로 붙일 카드·선이 없으면 확정하지 않는다(다시 그리기 생략). 씬을 바꾸는 틈엔 늘 확정.
+    // 가운데 버튼으로 끄는 동안·줌: 새로 붙일 카드·선이 없으면 확정하지 않는다(다시 그리기 생략). 씬을 바꾸는 틈엔 늘 확정.
     shouldCommitView: (committed: SceneViewRect | null, next: SceneViewRect) =>
       !committed || switchingRef.current || sceneCullNeedsCommit(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current),
+    // 줌을 쉬었을 때의 정리: 붙이거나 뗄 카드·선이 있을 때만(확대로 화면 밖이 된 카드를 떼어 낸다)
+    cullSetChanged: (committed: SceneViewRect | null, next: SceneViewRect) =>
+      !committed || switchingRef.current || sceneCullSetChanged(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current),
+    isInteracting: () => interactingRef.current(),
   });
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
@@ -2428,6 +2435,7 @@ export function SceneBoard({
   //  움직인 뒤에야 붙고 React 가 className 을 다시 쓰면 지워져(가위 Y 를 누를 때) 기준으로 못 쓴다(Codex 코드 리뷰).
   //  손을 뗀 것을 놓친(mouseup 이 오지 않은) 끌기는 끌기의 끝맺음이 내린다(위 endMoveGesture).
   const moveHeldRef = useRef(false);
+  interactingRef.current = () => moveHeldRef.current;
   // 끄는 중에 키가 오면 층에만 밀어 둔 전체 끌기의 이동량을 좌표에 먼저 넣는다 — 붙여넣기·삭제·맞춤·색이 옛 좌표를 보고 저장하지
   //  않게. 잡는 단계로 들어 다른 키 처리보다 먼저 돈다(수식키만 누른 것은 뺀다). 그런 끌기가 없으면 아무 일도 없다.
   useEffect(() => {
@@ -2441,6 +2449,8 @@ export function SceneBoard({
   }, []);
   const holdMove = () => {
     moveHeldRef.current = true;
+    cancelViewSettle(); // 카드·그룹 끌기 시작 — 휠 줌 뒤의 쉼 정리가 끄는 중에 판을 다시 그리지 않게
+
     const release = () => {
       moveHeldRef.current = false;
       window.removeEventListener("mouseup", release, true);
