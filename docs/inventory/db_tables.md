@@ -77,7 +77,7 @@
 | `hf_org_usage_collector` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
 | `hf_org_usage_config` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` | `repo/hf_org_usage.py` |
 | `hf_org_usage_row` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
-| `hf_org_usage_window` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` |
+| `hf_org_usage_window` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
 | `hf_usage_stage` | manage_hub.db (connection TEMP staging) | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
 | `history` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/lineage.py` `repo/share.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/history.py` `repo/lineage.py` `repo/share.py` `repo/trash.py` |
 | `history_import_audit` | content DB | `backend/schema.sql` | `repo/history_import_audit.py` | `repo/history_import_audit.py` |
