@@ -61,7 +61,7 @@
 | `backend/app/routers/comfy.py` | `_start_run` | Thread | `_run_comfy_job_worker` |
 | `backend/app/routers/comfy.py` | `collect_unresolved_run` | Thread | `_collect_run_worker` |
 | `backend/app/routers/gen_requests.py` | `_release_claim_on_abort` | create_task | `release_claim(acc["email"], realtime_scope(acc), rid, agent_id)` |
-| `backend/app/routers/mcp_v2.py` | `submit_plan` | ensure_future | `asyncio.to_thread(store.claim_plan, ctx.client, plan_id, plan["workspa…` |
+| `backend/app/routers/mcp_v2.py` | `submit_plan` | ensure_future | `asyncio.to_thread(_claim, gate, ctx.client, plan_id, plan["workspace"]…` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Thread | `self._watch` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Timer | `self._timeout` |
 | `backend/app/services/agent_chat.py` | `AgentChat.start_turn` | Thread | `self._run` |
