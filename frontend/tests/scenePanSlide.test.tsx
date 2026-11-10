@@ -5,6 +5,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { sceneViewRect } from "../src/lib/sceneViewport";
 import type { BeginSceneDrag } from "../src/lib/useSceneDragSession";
 import { useSceneViewport } from "../src/lib/useSceneViewport";
 
@@ -20,6 +21,85 @@ function Host({ onCameraChange }: { onCameraChange: (camera: Camera) => void }) 
 afterEach(() => {
   act(() => root?.unmount());
   root = null;
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+// 끄는 동안 컬링 확정 건너뛰기(2026-11-10) — 판정(shouldCommitView)이 거짓이면 확정값(viewRect)을 두고 최신 범위만 올린다
+// 범위의 -0(카메라 0 ÷ 줌)을 0 으로 — toEqual 은 둘을 다르게 본다
+const plain = (r: { l: number; t: number; r: number; b: number } | null) => r && { l: r.l + 0, t: r.t + 0, r: r.r + 0, b: r.b + 0 };
+function GateHost({ gate, sceneId = "s", camera = { z: 1, x: 0, y: 0 } }: { gate: (committed: unknown, next: unknown) => boolean; sceneId?: string; camera?: Camera }) {
+  api = useSceneViewport({ sceneId, camera, cullingEnabled: true, shouldCommitView: gate as never });
+  return <div ref={api.scrollRef}><div ref={api.gridRef} /><div ref={api.canvasRef} /></div>;
+}
+
+it("끄는 동안 판정이 거짓이면 확정을 건너뛰고 최신 범위만 갱신하며, 손 떼면 다시 묻고, 줌·씬 전환은 묻지 않고 확정한다", async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    { x: 0, y: 0, left: 0, top: 0, width: 1000, height: 600, right: 1000, bottom: 600, toJSON: () => ({}) } as DOMRect,
+  );
+  const flush = () => act(async () => { for (let i = 0; i < 3; i++) frames.splice(0).forEach((cb) => cb(0)); });
+  let allow = false;
+  const gate = vi.fn(() => allow);
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => root!.render(<GateHost gate={gate} />));
+  await flush();
+  expect(plain(api.viewRect)).toEqual({ l: 0, t: 0, r: 1000, b: 600 }); // 처음 잰 범위는 묻지 않고 확정
+  expect(gate).not.toHaveBeenCalled();
+  const first = api.viewRect;
+
+  let drag: { move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null = null;
+  const beginDrag: BeginSceneDrag = (move, up) => { drag = { move, up }; };
+  api.beginPan({ button: 1, clientX: 500, clientY: 300, preventDefault: () => {} }, beginDrag);
+  await act(async () => drag!.move(new MouseEvent("mousemove", { clientX: -200, clientY: 300 })));
+  await flush();
+  expect(gate).toHaveBeenCalledTimes(1);
+  expect(api.viewRect).toBe(first); // 건너뜀 — SceneBoard 는 다시 그려지지 않는다
+  expect(plain(api.liveView.getSnapshot())).toEqual({ l: 700, t: 0, r: 1700, b: 600 });
+
+  await act(async () => drag!.up(new MouseEvent("mouseup")));
+  await flush();
+  expect(gate).toHaveBeenCalledTimes(2); // 손 뗀 직후 한 번 더 묻는다 — 여전히 거짓이면 그대로
+  expect(api.viewRect).toBe(first);
+
+  // 확정이 낡은 채(0..1000) 지금 카메라와 같은 자리(−700)에서 여는 씬으로 바꾼다 — 최신 범위와 같아도 비우고 새로 재서 확정해야 한다
+  gate.mockClear();
+  await act(async () => root!.render(<GateHost gate={gate} sceneId="s2" camera={{ z: 1, x: -700, y: 0 }} />));
+  await flush();
+  expect(gate).not.toHaveBeenCalled();
+  expect(plain(api.viewRect)).toEqual({ l: 700, t: 0, r: 1700, b: 600 });
+
+  // 끄는 동안 건너뛴 뒤 손을 떼자마자(같은 프레임) 한 단계 축소 — 최신 범위(1400..2400)와는 500 안쪽이지만, 확정값(700..1700)과
+  //  비교해 묻지 않고 지금 카메라의 범위로 확정해야 한다(Codex 독립 리뷰 P2)
+  api.beginPan({ button: 1, clientX: 500, clientY: 300, preventDefault: () => {} }, beginDrag);
+  await act(async () => drag!.move(new MouseEvent("mousemove", { clientX: -200, clientY: 300 })));
+  await flush();
+  expect(plain(api.viewRect)).toEqual({ l: 700, t: 0, r: 1700, b: 600 });
+  gate.mockClear();
+  await act(async () => drag!.up(new MouseEvent("mouseup")));
+  await act(async () => api.stepZoom(-1));
+  await flush();
+  expect(gate).not.toHaveBeenCalled();
+  const zoomed = plain(sceneViewRect(api.getCamera(), { width: 1000, height: 600 }));
+  expect(zoomed!.r - zoomed!.l).toBeCloseTo(1100); // 실제로 축소됐다
+  expect(plain(api.viewRect)).toEqual(zoomed);
+  expect(api.liveView.getSnapshot()).toBe(api.viewRect);
+
+  // 끄는 동안 건너뛴 뒤 SceneBoard 가 부르는 확정
+  api.beginPan({ button: 1, clientX: 500, clientY: 300, preventDefault: () => {} }, beginDrag);
+  await act(async () => drag!.move(new MouseEvent("mousemove", { clientX: -500, clientY: 300 })));
+  await flush();
+  await act(async () => drag!.up(new MouseEvent("mouseup")));
+  await flush();
+  expect(plain(api.viewRect)).toEqual(zoomed);
+  await act(async () => api.commitLiveView());
+  expect(api.viewRect).toBe(api.liveView.getSnapshot());
+  expect(plain(api.viewRect)).toEqual(plain(sceneViewRect(api.getCamera(), { width: 1000, height: 600 })));
 });
 
 it("끄는 동안은 translate·표식으로만 밀고(격자는 칸 나머지 차이), 손 떼면 transform 으로 접고 저장한다", async () => {

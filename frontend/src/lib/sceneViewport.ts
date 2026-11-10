@@ -107,6 +107,31 @@ export function sameSceneViewRect(
   );
 }
 
+/** 보이는 범위 ± 여백 = 컬링 범위 — 카드·연결선 컬링이 함께 쓰는 단 하나의 기준 사각형. */
+export function sceneCullRect(view: SceneViewRect, margin = SCENE_CULL_MARGIN): SceneViewRect {
+  return { l: view.l - margin, t: view.t - margin, r: view.r + margin, b: view.b + margin };
+}
+
+/** 컬링 다시 확정 판정의 자료 — 한 렌더의 묶음. cards = 숨기지 않았고 늘 그리는 카드(keepIds)가 아닌 카드의 사각형,
+ *  edges = 일반 연결선의 끝점 상자(그리기와 같은 edgeEnds 결과, 컬링 전 전부). */
+export interface SceneCullItems {
+  cards: readonly SceneWorldRect[];
+  edges: readonly SceneViewRect[];
+}
+
+/** 화면을 끄는 동안 컬링 범위를 다시 확정해야 하나 — 새 컬링 범위와 겹치는데 지금 확정한 범위와는 안 겹치는(=새로 붙여야 할)
+ *  카드·연결선이 하나라도 있으면 참. 나가기만 하는 것은 다음 확정까지 붙여 두면 되니 거짓이다(2026-11-10 격리 실측: 그릴 대상이
+ *  그대로인 다시 그리기가 끄는 동안 덜컥거림의 큰 몫이었다). 겹침 판정은 SceneBoard 의 카드·연결선 컬링 식과 같다. */
+export function sceneCullNeedsCommit(committed: SceneViewRect | null, next: SceneViewRect, items: SceneCullItems): boolean {
+  if (!committed) return true;
+  const hitCard = (c: SceneWorldRect, r: SceneViewRect) => c.x <= r.r && c.x + c.w >= r.l && c.y <= r.b && c.y + c.h >= r.t;
+  const hitBox = (e: SceneViewRect, r: SceneViewRect) => !(e.r < r.l || e.l > r.r || e.b < r.t || e.t > r.b);
+  return (
+    items.cards.some((c) => hitCard(c, next) && !hitCard(c, committed)) ||
+    items.edges.some((e) => hitBox(e, next) && !hitBox(e, committed))
+  );
+}
+
 /** 커서 아래 월드 좌표를 고정한 채 한 단계 확대하거나 축소한다. */
 export function zoomSceneCameraAt(
   camera: SceneCamera,

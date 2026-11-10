@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BeginSceneDrag } from "./useSceneDragSession";
 import {
   centerSceneCamera,
@@ -38,6 +38,9 @@ interface UseSceneViewportOptions {
   onCameraChange?: (camera: SceneCamera) => void;
   cullingEnabled: boolean;
   gridSize?: number;
+  /** 가운데 버튼으로 끄는 동안(과 손 뗀 직후 정리) 컬링 범위를 다시 확정할지 — 거짓이면 확정값(viewRect)을 그대로 두어
+   *  SceneBoard 를 다시 그리지 않는다. 최신 범위(liveView)는 늘 갱신한다. 줌·화면 맞춤·창 크기·씬 전환은 묻지 않고 확정한다. */
+  shouldCommitView?: (committed: SceneViewRect | null, next: SceneViewRect) => boolean;
 }
 
 /** 점 격자 층을 미는 양 — 한 칸 안(음수 팬도 0..cell), 화면 픽셀로 반올림. */
@@ -59,6 +62,7 @@ export function useSceneViewport({
   onCameraChange,
   cullingEnabled,
   gridSize = 22,
+  shouldCommitView,
 }: UseSceneViewportOptions) {
   const initialCamera = normalizedCamera(camera);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -70,8 +74,14 @@ export function useSceneViewport({
   // 캔버스 transform 에 지금 들어 있는 팬 — 가운데 버튼으로 끄는 동안은 여기서부터 translate 로만 민다(slidePan)
   const shownPanRef = useRef({ x: initialCamera.x, y: initialCamera.y });
   const slidingRef = useRef(false);
+  // viewRect = 컬링에 쓰는 '확정' 범위(바뀌면 SceneBoard 를 다시 그린다) · liveView = 문턱을 넘을 때마다의 최신 범위(무선 짝 꼬리표 등)
   const [viewRect, setViewRect] = useState<SceneViewRect | null>(null);
   const viewRectRef = useRef<SceneViewRect | null>(null);
+  const liveViewRef = useRef<SceneViewRect | null>(null);
+  const liveListenersRef = useRef(new Set<() => void>());
+  const panEndRef = useRef(false); // 가운데 버튼을 뗐다 — 다음 범위 계산에서 확정이 필요한지만 본다
+  const shouldCommitRef = useRef(shouldCommitView);
+  shouldCommitRef.current = shouldCommitView;
   const cullFrameRef = useRef<number | null>(null);
   const cameraSaveTimerRef = useRef<number | undefined>(undefined);
   const transitionTimerRef = useRef<number | undefined>(undefined);
@@ -104,11 +114,58 @@ export function useSceneViewport({
         width: viewport.width,
         height: viewport.height,
       });
-      if (sameSceneViewRect(viewRectRef.current, next)) return;
-      viewRectRef.current = next;
-      setViewRect(next);
+      const panEnd = panEndRef.current;
+      panEndRef.current = false;
+      const prevLive = liveViewRef.current;
+      // 크기가 바뀐 범위 = 줌·창 크기 변경이다(끌어 옮기기는 크기가 그대로) — 끄는 중이거나 막 뗐어도 그 변화는 끄기로 보지 않는다
+      const resized = !!prevLive && (Math.abs(next.r - next.l - (prevLive.r - prevLive.l)) > 1 || Math.abs(next.b - next.t - (prevLive.b - prevLive.t)) > 1);
+      const panning = (slidingRef.current || panEnd) && !resized;
+      const publish = (view: SceneViewRect) => {
+        liveViewRef.current = view;
+        for (const listener of liveListenersRef.current) listener();
+      };
+      const liveMoved = !sameSceneViewRect(prevLive, next);
+      if (liveMoved) publish(next);
+      if (!panning) {
+        // 줌·화면 맞춤·창 크기·씬 전환·그 밖의 이동 — 예전처럼 **확정값**과 비교해 문턱을 넘으면 묻지 않고 확정한다
+        //  (끄는 동안 건너뛴 뒤의 줌이 최신 범위와만 비교되어 확정이 낡은 채 남지 않게 — Codex 독립 리뷰 P2)
+        if (sameSceneViewRect(viewRectRef.current, next)) return;
+        if (!liveMoved) publish(next);
+        viewRectRef.current = next;
+        setViewRect(next);
+        return;
+      }
+      // 가운데 버튼으로 끄는 동안·손 뗀 직후 — 문턱 비교는 최신 범위와 한다(확정값과 비교하면 건너뛴 뒤 매 걸음 문턱을 넘은 것으로 셌다).
+      //  새로 붙일 카드·선이 없으면 확정하지 않는다(다시 그리기 생략, 2026-11-10)
+      if (!liveMoved && !panEnd) return;
+      const live = liveViewRef.current;
+      if (!live || live === viewRectRef.current) return;
+      if (shouldCommitRef.current && !shouldCommitRef.current(viewRectRef.current, live)) return;
+      viewRectRef.current = live;
+      setViewRect(live);
     });
   }, [cullingEnabled, getCamera]);
+
+  // 최신 범위로 확정한다 — 확정값이 낡은 채 내용이 바뀌어(선택 해제·높이 측정·카드 추가 …) 새로 그려야 할 것이 생겼을 때 SceneBoard 가 부른다
+  const commitLiveView = useCallback(() => {
+    const live = liveViewRef.current;
+    if (!live || live === viewRectRef.current) return;
+    viewRectRef.current = live;
+    setViewRect(live);
+  }, []);
+  // 최신 범위 저장소 — 보드마다 하나, 값은 바뀔 때까지 같은 객체다(useSyncExternalStore)
+  const liveView = useMemo(
+    () => ({
+      subscribe: (listener: () => void) => {
+        liveListenersRef.current.add(listener);
+        return () => {
+          liveListenersRef.current.delete(listener);
+        };
+      },
+      getSnapshot: () => liveViewRef.current,
+    }),
+    [],
+  );
 
   const applyTransform = useCallback(() => {
     const current = getCamera();
@@ -309,6 +366,7 @@ export function useSceneViewport({
       };
       const finish = () => {
         scrollRef.current?.removeAttribute("data-panning");
+        panEndRef.current = true; // 끄는 동안 건너뛴 확정을 정리 — 새로 그릴 것이 없으면 그대로 둔다
         applyTransform(); // 밀어 둔 화면을 transform 으로 접는다
         persistCamera();
       };
@@ -394,6 +452,10 @@ export function useSceneViewport({
       cameraSaveTimerRef.current = undefined;
     }
     replaceCamera(normalizedCamera(incomingCameraRef.current));
+    // 씬이 바뀌면 옛 씬의 범위를 버린다 — 카메라가 같은 씬끼리 바꿔도 새로 재서 확정한다(끄는 동안 건너뛴 낡은 확정값이 남지 않게)
+    viewRectRef.current = null;
+    liveViewRef.current = null;
+    panEndRef.current = false;
     applyTransform();
   }, [sceneId, applyTransform, replaceCamera]);
 
@@ -414,6 +476,8 @@ export function useSceneViewport({
     panRef,
     minimapUpdateRef,
     viewRect,
+    liveView,
+    commitLiveView,
     getCamera,
     toCanvas,
     navigateTo,

@@ -10,9 +10,34 @@ import {
   SCENE_MAX_ZOOM,
   SCENE_MIN_ZOOM,
   sameSceneViewRect,
+  sceneCullNeedsCommit,
+  sceneCullRect,
   sceneViewRect,
   zoomSceneCameraAt,
 } from "../src/lib/sceneViewport";
+
+// 화면을 끄는 동안 컬링 범위를 다시 확정할지(2026-11-10) — 새로 붙일 카드·선이 있을 때만 참, 나가기만 하면 거짓
+describe("scene cull commit gate", () => {
+  const committed = { l: 0, t: 0, r: 1000, b: 600 };
+  const card = (x: number, y: number) => ({ x, y, w: 100, h: 100 });
+  it("확정한 적이 없으면 늘 확정한다", () => {
+    expect(sceneCullNeedsCommit(null, committed, { cards: [], edges: [] })).toBe(true);
+  });
+  it("새 범위에만 겹치는 카드가 있으면 확정, 이미 겹치던 카드·나가는 카드뿐이면 건너뛴다", () => {
+    const next = { l: 500, t: 0, r: 1500, b: 600 };
+    expect(sceneCullNeedsCommit(committed, next, { cards: [card(1200, 100)], edges: [] })).toBe(true); // 들어온다
+    expect(sceneCullNeedsCommit(committed, next, { cards: [card(600, 100), card(-400, 100)], edges: [] })).toBe(false); // 그대로·나감
+    expect(sceneCullNeedsCommit(committed, next, { cards: [card(950, 100)], edges: [] })).toBe(false); // 경계에 걸친 카드는 이미 그려져 있다
+  });
+  it("카드는 그대로여도 새로 겹치는 연결선 끝점 상자가 있으면 확정한다", () => {
+    const next = { l: 0, t: 400, r: 1000, b: 1000 };
+    expect(sceneCullNeedsCommit(committed, next, { cards: [], edges: [{ l: -2000, t: 700, r: 3000, b: 750 }] })).toBe(true);
+    expect(sceneCullNeedsCommit(committed, next, { cards: [], edges: [{ l: -2000, t: 500, r: 3000, b: 550 }] })).toBe(false);
+  });
+  it("컬링 범위 = 보이는 범위 ± 여백", () => {
+    expect(sceneCullRect({ l: 0, t: 0, r: 100, b: 50 }, 10)).toEqual({ l: -10, t: -10, r: 110, b: 60 });
+  });
+});
 
 describe("scene viewport calculations", () => {
   it("클라이언트 좌표를 팬·줌이 적용된 캔버스 좌표로 변환한다", () => {

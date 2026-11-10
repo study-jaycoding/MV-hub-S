@@ -181,7 +181,7 @@ import {
   type ResolveOpenPopup,
   type ResolveSceneSelectionTarget,
 } from "../../lib/resolveSelection";
-import { SCENE_CULL_MARGIN as CULL_MARGIN, sceneIoPanelLeft } from "../../lib/sceneViewport";
+import { sceneCullNeedsCommit, sceneCullRect, sceneIoPanelLeft, type SceneCullItems, type SceneViewRect } from "../../lib/sceneViewport";
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
@@ -307,6 +307,51 @@ function moveLayerTargets(at: SceneMoveDraw["at"], cards: readonly SceneCard[], 
   return count;
 }
 const subscribeNothing = () => () => {};
+
+/** 무선 짝이 화면 밖이면 위쪽 가운데 꼬리표 — 보드의 최신 범위(useSceneViewport.liveView)를 구독해, 끄는 동안 컬링 확정을
+ *  건너뛰어도 범위가 바뀔 때마다 갱신된다(2026-11-10 전엔 SceneBoard 의 확정값으로 그렸다). */
+function SceneTraceChips({
+  liveView,
+  wireTrace,
+  cardById,
+  cardRect,
+  navigateTo,
+}: {
+  liveView: { subscribe: (listener: () => void) => () => void; getSnapshot: () => SceneViewRect | null };
+  wireTrace: readonly [string, string][];
+  cardById: (id: string) => SceneCard | undefined;
+  cardRect: (card: SceneCard) => { x: number; y: number; w: number; h: number };
+  navigateTo: (worldX: number, worldY: number, commit: boolean) => void;
+}) {
+  const view = useSyncExternalStore(liveView.subscribe, liveView.getSnapshot);
+  if (!view) return null;
+  const off = wireTrace
+    .map(([, toId]) => cardById(toId))
+    .filter((c): c is SceneCard => !!c && rectOutsideView(cardRect(c), view));
+  if (!off.length) return null;
+  const MAX_CHIPS = 6; // shortcut: 짝이 아주 많으면 6개 + '+N' 만, 목록 창이 필요하면 그때
+  return (
+    <div className="scene-trace-chips" onMouseDown={(e) => e.stopPropagation()}>
+      {off.slice(0, MAX_CHIPS).map((c) => {
+        const r = cardRect(c);
+        const name = ((c.kind === "input" ? cardById(c.channel || "")?.text : c.text) || "").trim() || "(이름 없음)";
+        return (
+          <button
+            key={c.id}
+            type="button"
+            className="scene-trace-chip"
+            title="눌러서 그 카드로 이동"
+            onClick={() => navigateTo(r.x + r.w / 2, r.y + r.h / 2, true)}
+          >
+            <b>{viewDirectionArrow(r, view)}</b>
+            {c.kind === "input" ? "INPUT" : "OUTPUT"} {name} · 화면 밖
+          </button>
+        );
+      })}
+      {off.length > MAX_CHIPS && <span className="scene-trace-chip more">+{off.length - MAX_CHIPS}</span>}
+    </div>
+  );
+}
 // 상태를 바꾸면서 그 상태를 비추는 ref 도 바로 맞춘다 — 다음 렌더 전에 같은 입력 처리가 ref 를 읽을 때(범위 선택 확정).
 const setAndSync =
   <T,>(ref: MutableRefObject<T>, set: (value: T) => void) =>
@@ -889,6 +934,8 @@ export function SceneBoard({
   // 생성물 변경(휴지통 이동·복원 등) 때 다시 읽는 것까지 훅이 맡는다 — 생성 탭과 같은 훅.
   const genViews = useGenerationViewsSynced(scene.id);
 
+  // 컬링 다시 확정 판정의 자료 — 같은 렌더의 카드 사각형(늘 그리는 카드 제외)·일반 연결선 끝점 상자를 layout 단계에서 한 묶음으로 넣는다(아래)
+  const cullItemsRef = useRef<SceneCullItems>({ cards: [], edges: [] });
   const {
     scrollRef,
     canvasRef,
@@ -897,6 +944,8 @@ export function SceneBoard({
     panRef,
     minimapUpdateRef: mmUpdateRef,
     viewRect,
+    liveView,
+    commitLiveView,
     getCamera,
     toCanvas,
     navigateTo,
@@ -916,6 +965,9 @@ export function SceneBoard({
     }),
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
+    // 가운데 버튼으로 끄는 동안: 새로 붙일 카드·선이 없으면 확정하지 않는다(다시 그리기 생략). 씬을 바꾸는 틈엔 늘 확정.
+    shouldCommitView: (committed: SceneViewRect | null, next: SceneViewRect) =>
+      !committed || switchingRef.current || sceneCullNeedsCommit(sceneCullRect(committed), sceneCullRect(next), cullItemsRef.current),
   });
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
@@ -2635,15 +2687,7 @@ export function SceneBoard({
   // 실제 렌더 대상 — 플래그 off/뷰포트 미측정이면 전체(visibleCards). on 이면 뷰포트+마진 교차 || keepIds.
   // 확장 뷰포트(뷰포트 ± 마진) — 카드·연결선 컬링이 공유하는 단 하나의 기준 사각형. 컬링 꺼졌거나
   // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF 로, 네 변 중 하나가 SCENE_CULL_REFRESH_DISTANCE 넘게 움직일 때만 갱신됨.
-  const cullRect = useMemo(() => {
-    if (!CULL_ENABLED || !viewRect) return null;
-    return {
-      l: viewRect.l - CULL_MARGIN,
-      t: viewRect.t - CULL_MARGIN,
-      r: viewRect.r + CULL_MARGIN,
-      b: viewRect.b + CULL_MARGIN,
-    };
-  }, [viewRect]);
+  const cullRect = useMemo(() => (CULL_ENABLED && viewRect ? sceneCullRect(viewRect) : null), [viewRect]);
   // 보드의 카드를 전부 끄는 동안에는 연결선·끝 점을 컬링하지 않는다 — 그때는 좌표를 놓을 때까지 그대로 두고 캔버스 층만 밀어서
   //  (lib/useSceneCardMove 의 빠른 길) 화면 밖에 있던 선이 끌려 들어와도 다시 계산되지 않는다. 카드는 keepIds 가 이미 다 그린다.
   //  끄는 중 카드가 새로 생겨도(생성 완료) 그 끌기가 끝날 때까지 쉰다 — 층을 미는 끌기가 살아 있는 동안이 기준이다.
@@ -2661,6 +2705,23 @@ export function SceneBoard({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleCards, cullRect, keepIds, heightTick]);
+  // 컬링 다시 확정 판정의 자료(이 렌더의 것) — 늘 그리는 카드(keepIds)를 뺀 카드 사각형 + 아래 연결선 루프가 채우는 일반선 끝점 상자.
+  const cullCardRects = useMemo(
+    () => visibleCards.filter((card) => !keepIds.has(card.id)).map((card) => cardRect(card)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleCards, keepIds, heightTick],
+  );
+  const cullEdgeBoxes: SceneViewRect[] = [];
+  // 같은 렌더의 묶음을 그린 뒤(layout 단계)에 내놓는다 — 렌더 중에 공유 ref 에 쌓으면 중단된 렌더·측정 전후 값이 섞인다(Codex 설계 검토).
+  //  확정 범위가 최신 범위보다 낡았으면 여기서 다시 판정해 필요하면 확정한다 — 끄는 동안 확정을 건너뛴 뒤 선택 해제·Comfy 대기 끝·
+  //  높이 측정·카드 추가·숨김/접힘·연결 변경으로 새로 그려야 할 것이 생기면, 낡은 확정값 때문에 카드·선이 빠지지 않게(칠하기 전이라 깜박임이 없다).
+  useLayoutEffect(() => {
+    cullItemsRef.current = { cards: cullCardRects, edges: cullEdgeBoxes };
+    const live = liveView.getSnapshot();
+    if (live && viewRect && live !== viewRect && sceneCullNeedsCommit(sceneCullRect(viewRect), sceneCullRect(live), cullItemsRef.current)) {
+      commitLiveView();
+    }
+  });
 
   // 장기 누적 방지 — 실제 삭제된(현재 cards 에 없는) 카드의 측정 캐시를 정리. ★컬링으로 언마운트된
   // 카드는 cards 에 남아 있어 안 지워진다(측정값 유지 → keepIds 의 '미측정' 오판 방지). ref 직접 변경(무리렌더).
@@ -3252,6 +3313,8 @@ export function SceneBoard({
               (pendingInputs.has(e.from) ? " pending" : "") +
               (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
             const { x1, y1, x2, y2, m1, m2 } = edgeEnds(e, a, b);
+            // 컬링 다시 확정 판정용 — 컬링 전에 모든 일반선의 끝점 상자를 이 렌더의 배열에 담는다(끝 점 루프도 같은 선·같은 끝점이다)
+            cullEdgeBoxes.push({ l: Math.min(x1, x2), t: Math.min(y1, y2), r: Math.max(x1, x2), b: Math.max(y1, y2) });
             // 연결선 컬링 — 양 끝점 bbox 가 확장뷰포트 밖이면 곡선 전체가 밖(제어점이 bbox 내라 보장) → 안 그림.
             if (
               edgeCullRect &&
@@ -3782,35 +3845,11 @@ export function SceneBoard({
         <div className="scene-cut-hint">✂ 연결 자르기 — 드래그로 선을 지나가고 손을 떼면 끊깁니다</div>
       )}
 
-      {/* 무선 짝이 화면 밖이면 위쪽 가운데 꼬리표 — 누르면 그 카드로 화면 이동(선택은 그대로). 오른쪽 위는 미니맵 자리. */}
-      {viewRect && (() => {
-        const off = wireTrace
-          .map(([, toId]) => cardById(toId))
-          .filter((c): c is SceneCard => !!c && rectOutsideView(cardRect(c), viewRect));
-        if (!off.length) return null;
-        const MAX_CHIPS = 6; // shortcut: 짝이 아주 많으면 6개 + '+N' 만, 목록 창이 필요하면 그때
-        return (
-          <div className="scene-trace-chips" onMouseDown={(e) => e.stopPropagation()}>
-            {off.slice(0, MAX_CHIPS).map((c) => {
-              const r = cardRect(c);
-              const name = ((c.kind === "input" ? cardById(c.channel || "")?.text : c.text) || "").trim() || "(이름 없음)";
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  className="scene-trace-chip"
-                  title="눌러서 그 카드로 이동"
-                  onClick={() => navigateTo(r.x + r.w / 2, r.y + r.h / 2, true)}
-                >
-                  <b>{viewDirectionArrow(r, viewRect)}</b>
-                  {c.kind === "input" ? "INPUT" : "OUTPUT"} {name} · 화면 밖
-                </button>
-              );
-            })}
-            {off.length > MAX_CHIPS && <span className="scene-trace-chip more">+{off.length - MAX_CHIPS}</span>}
-          </div>
-        );
-      })()}
+      {/* 무선 짝이 화면 밖이면 위쪽 가운데 꼬리표 — 누르면 그 카드로 화면 이동(선택은 그대로). 오른쪽 위는 미니맵 자리.
+          최신 범위를 스스로 구독한다 — 끄는 동안 컬링 확정을 건너뛰어도 꼬리표는 범위가 바뀔 때마다 갱신된다. */}
+      {wireTrace.length > 0 && (
+        <SceneTraceChips liveView={liveView} wireTrace={wireTrace} cardById={cardById} cardRect={cardRect} navigateTo={navigateTo} />
+      )}
 
       {/* 씬 패널 — 탭 휠 클릭으로 그 탭 밑에 뜬다. Import(새 탭)·Export(파일로)·레퍼런스 찾기. 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
       {(onSaveScene || onLoadSceneFile || onFindRefs || onKeepScene || onOpenSceneKeeps) && (
