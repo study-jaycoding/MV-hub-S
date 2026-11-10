@@ -44,6 +44,7 @@ import {
   FOLDER_KIND_TONE,
   assetDragItemsForPath,
   assetFolderKind,
+  assetCellThumbPx,
   assetPreviewTarget,
   copyAssetFiles,
   toggleAssetDateSelection,
@@ -710,10 +711,11 @@ export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
 
   const openPreview = useCallback(
     (f: AssetNode) => {
-      const target = assetPreviewTarget(project, filesRef.current, f);
+      // 셀과 같은 썸네일 폭 — 원본이 오는 동안 크게 보기가 셀이 이미 받은 썸네일을 자리 표시로 깐다(2026-11-10)
+      const target = assetPreviewTarget(project, filesRef.current, f, assetCellThumbPx(scale, isList, masonryOn));
       if (target) { setLastViewed(`${project}|${f.path}`); onPreview(target); }
     },
-    [project, onPreview],
+    [project, onPreview, scale, isList, masonryOn],
   );
 
   const onGridDblClick = (e: React.MouseEvent) => {
@@ -847,7 +849,7 @@ export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
     if (openDrawingInPreview(view) || view.target.kind !== "asset" || view.target.project !== project) return;
     const assetPath = view.target.path;
     const f = filesRef.current.find((x) => x.path === assetPath);
-    const target = f && assetPreviewTarget(project, filesRef.current, f);
+    const target = f && assetPreviewTarget(project, filesRef.current, f, assetCellThumbPx(scale, isList, masonryOn));
     if (target) onPreview({ ...target, drawing: view });
   };
   useAssetBroadcastSync({
