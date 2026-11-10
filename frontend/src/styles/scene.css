@@ -103,7 +103,10 @@
   position: absolute; z-index: 10; pointer-events: none;
   background: rgba(var(--accent-rgb), 0.16); border: 1px solid var(--accent); border-radius: 2px;
 }
-.scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
+/* filter: blur(0px) — 보이는 것은 그대로이고(픽셀을 옮기는 필터라) 크롬이 이 층 아래의 그릴 범위(cull rect)를 무한으로 둔다. 범위가 배율에 따라 바뀌면
+   축소할 때마다 화면 근처 카드 수백 장을 다시 기록했다(2026-11-11 격리 실측: 4배 느린 CPU 중간 배율 축소의 칠하기 약 −50%). position: fixed 자손의 기준과
+   쌓임 맥락은 transform 이 이미 만든다. 안의 backdrop-filter(레퍼런스 영상 표시)는 같은 카드의 썸네일을 흐리니 그대로다. */
+.scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; filter: blur(0px); }
 /* 씬을 바꾸는 틈(SceneBoard data-switching — 새 씬은 왔는데 카드는 아직 떠난 씬의 것)에는 캔버스 층·미니맵을 보이지 않게 하고, 보드 위
    덮개 하나로 그 카드들이 눌리지 않게 한다. 다음 렌더에 새 씬의 것으로 바뀐다. 층과 DOM 은 그대로 두어(display 가 아니다) 틈의 막기
    장치·크기 측정에 손대지 않는다(70회차). visibility·pointer-events 가 아니라 opacity·덮개다 — 둘은 자식에게 물려져 켜고 끌 때 캔버스

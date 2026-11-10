@@ -186,6 +186,8 @@ import { sceneCullNeedsCommit, sceneCullRect, sceneCullSetChanged, sceneIoPanelL
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
 const CULL_ENABLED = true;
+// 이미 붙은 카드를 떼는 범위 — 보이는 범위의 몇 배인가(아래 renderCards)
+const SCENE_CULL_KEEP_SPAN = 4;
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
 // 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
 const CARD_MIN_W = GRID * 5; // 110
@@ -2706,15 +2708,36 @@ export function SceneBoard({
     [cullRect, draggingIds],
   );
 
-  const renderCards = useMemo(() => {
-    if (!cullRect) return visibleCards;
-    return visibleCards.filter((card) => {
-      if (keepIds.has(card.id)) return true;
+  // 범위 판정으로 붙은 카드는 보이는 범위를 사방으로 넓혀 SCENE_CULL_KEEP_SPAN 배(+ 마진)가 된 곳 밖으로 나가야 뗀다 — 확대 뒤 쉴 때 떼어 낸 카드를
+  //  다시 축소할 때 그대로 다시 붙여 그 프레임이 끊겼다(2026-11-11 격리 실측: 이 PC 그대로도 66장 = 약 38ms). 들어오는 기준(보이는 범위 ± 마진)은 그대로다.
+  //  늘 그리는 카드(keepIds — 선택·편집·대기·끄는 중·높이 미측정)로만 붙어 있던 카드는 기억하지 않는다(씬을 연 직후 높이를 재려고 전부 붙인 것 등).
+  //  떼는 범위 밖으로 나간 카드는 다음 컬링 확정(카드가 컬링 범위를 드나들 때) 때 뗀다 — 떼기만을 위해 보드를 다시 그리지 않는다.
+  //  씬을 바꾸면 기억을 쓰지 않는다 — 바꾼 직후 몇 번의 그리기는 보이는 범위(viewRect)가 아직 옛 씬의 것이라, 그 범위로 잰 것도 새 씬의 기억으로 남기지 않는다
+  //  (범위 객체가 처음 쓰인 씬을 같이 적어 둔다 — 새로 잰 범위는 새 객체다).
+  const culledInRef = useRef<{ sceneId: string; view: SceneViewRect | null; viewScene: string; ids: ReadonlySet<string> }>({ sceneId: "", view: null, viewScene: "", ids: new Set() });
+  const culled = useMemo(() => {
+    const prev = culledInRef.current;
+    const viewScene = prev.view === viewRect ? prev.viewScene : cardsSceneId;
+    if (!cullRect || !viewRect) return { cards: visibleCards, inside: null, viewScene };
+    const current = viewScene === cardsSceneId;
+    const kept = current && prev.sceneId === cardsSceneId ? prev.ids : null;
+    const spanX = ((viewRect.r - viewRect.l) * (SCENE_CULL_KEEP_SPAN - 1)) / 2;
+    const spanY = ((viewRect.b - viewRect.t) * (SCENE_CULL_KEEP_SPAN - 1)) / 2;
+    const keepRect = sceneCullRect({ l: viewRect.l - spanX, t: viewRect.t - spanY, r: viewRect.r + spanX, b: viewRect.b + spanY });
+    const inside = new Set<string>();
+    const cards = visibleCards.filter((card) => {
       const r = cardRect(card);
-      return r.x <= cullRect.r && r.x + r.w >= cullRect.l && r.y <= cullRect.b && r.y + r.h >= cullRect.t;
+      const box = kept?.has(card.id) ? keepRect : cullRect;
+      if (r.x <= box.r && r.x + r.w >= box.l && r.y <= box.b && r.y + r.h >= box.t) inside.add(card.id);
+      return inside.has(card.id) || keepIds.has(card.id);
     });
+    return { cards, inside: current ? inside : null, viewScene };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleCards, cullRect, keepIds, heightTick]);
+  const renderCards = culled.cards;
+  useLayoutEffect(() => {
+    culledInRef.current = { sceneId: cardsSceneId, view: viewRect, viewScene: culled.viewScene, ids: culled.inside ?? new Set() };
+  }, [culled, cardsSceneId, viewRect]);
   // 컬링 다시 확정 판정의 자료(이 렌더의 것) — 늘 그리는 카드(keepIds)를 뺀 카드 사각형 + 아래 연결선 루프가 채우는 일반선 끝점 상자.
   const cullCardRects = useMemo(
     () => visibleCards.filter((card) => !keepIds.has(card.id)).map((card) => cardRect(card)),
