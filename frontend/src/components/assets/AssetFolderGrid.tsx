@@ -1,4 +1,5 @@
-import { useLayoutEffect, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type UIEventHandler } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode, type RefObject, type UIEventHandler } from "react";
 import { api } from "../../api";
 import { useT } from "../../lib/i18n";
 import { backgroundKeysBlocked, isTypingTarget, useLooseKeys } from "../../lib/keyGate";
@@ -35,6 +36,89 @@ export interface AssetFolderSelection {
   selected: string | null;
   setSelected: (path: string | null) => void;
   onGridKeyDown: (e: ReactKeyboardEvent) => void;
+}
+
+// 폴더가 많으면 먼 카드의 썸네일은 가까워질 때 붙인다 — 폴더 300개를 열 때 멈춤의 70~80% 가 썸네일 부품(카드마다 표지 + 띠)을 만드는
+//  비용이었다(2026-11-10 실측, 설계 docs/status/격자지연_폴더카드_가상목록_설계_2026-11-10.md v3.1 · Codex 합의). 카드 DOM 은 그대로라
+//  방향키·Backspace 되돌아오기·스크롤 복원은 바뀌지 않는다.
+const NEAR_EAGER_MAX = 48; // shortcut: 항목이 이 수 이하면 지금처럼 바로 그린다 — 화면 두세 쪽 분량으로 정한 값, 실측으로 바꿀 수 있다
+const NEAR_MARGIN = "600px 0px"; // 스크롤 상자 위아래 가장자리에서 이만큼 안에 들면 붙인다
+
+interface NearRegistry {
+  watch(card: Element, onNear: () => void): () => void;
+}
+const NearContext = createContext<NearRegistry | null>(null);
+
+/** 카드 요소마다 {켜짐, 구독자}. 관찰자(root = 스크롤 상자)는 상자가 생기거나 바뀔 때 attach 로 다시 만든다 — 그 전에 들어온 등록은 pending 에 남아
+ *  새 관찰자가 관찰한다(자식 효과가 부모 효과보다 먼저 돈다). 늦게 온 옛 관찰자의 알림은 세대 번호로 버린다. */
+function createNearRegistry() {
+  const entries = new WeakMap<Element, { on: boolean; subs: Set<() => void> }>();
+  const pending = new Set<Element>(); // 안 켜졌고 구독자가 있는 카드
+  let observer: IntersectionObserver | null = null;
+  let generation = 0;
+  const turnOn = (card: Element) => {
+    const entry = entries.get(card);
+    if (!entry || entry.on) return;
+    entry.on = true;
+    pending.delete(card);
+    observer?.unobserve(card);
+    for (const notify of [...entry.subs]) notify();
+  };
+  return {
+    watch(card: Element, onNear: () => void) {
+      const entry = entries.get(card) ?? { on: false, subs: new Set<() => void>() };
+      entries.set(card, entry);
+      // 이미 켜진 카드에 새로 붙은 썸네일(검색·트리 갱신으로 띠가 바뀜)은 바로 — 교차 상태가 그대로면 알림이 다시 오지 않는다
+      if (entry.on) {
+        onNear();
+        return () => {};
+      }
+      entry.subs.add(onNear);
+      if (!pending.has(card)) {
+        pending.add(card);
+        observer?.observe(card);
+      }
+      return () => { // 자기 구독만 뺀다 — 같은 카드의 다른 썸네일이 남아 있으면 관찰을 풀지 않는다
+        entry.subs.delete(onNear);
+        if (!entry.on && entry.subs.size === 0) {
+          pending.delete(card);
+          observer?.unobserve(card);
+        }
+      };
+    },
+    attach(root: Element) {
+      observer?.disconnect();
+      const mine = ++generation;
+      observer = new IntersectionObserver((list) => {
+        if (mine !== generation) return;
+        for (const item of list) if (item.isIntersecting) turnOn(item.target);
+      }, { root, rootMargin: NEAR_MARGIN });
+      for (const card of pending) observer.observe(card);
+    },
+    detach() {
+      generation += 1;
+      observer?.disconnect();
+      observer = null;
+    },
+  };
+}
+
+/** 썸네일 자리 — 처음엔 빈 자리(단추의 직계 자식 span 하나), 카드가 가까워지면 render() 를 감싸는 요소 없이 그대로. 한 번 붙으면 떼지 않는다.
+ *  카드 요소(.assets-folder-card)를 관찰한다 — 카드는 content-visibility 로 내용을 건너뛰어도 자기 상자는 있다. */
+function NearThumb({ eager, render }: { eager: boolean; render: () => ReactNode }) {
+  const registry = useContext(NearContext);
+  const [shown, setShown] = useState(eager);
+  const spot = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (shown) return;
+    const card = spot.current?.closest(".assets-folder-card");
+    if (eager || !registry || !card) {
+      setShown(true);
+      return;
+    }
+    return registry.watch(card, () => setShown(true));
+  }, [eager, shown, registry]);
+  return shown ? <>{render()}</> : <span ref={spot} className="assets-folder-placeholder" />;
 }
 
 // 카드가 한 줄에 몇 장인가 — 위·아래 방향키의 걸음(공유 탭 컷 카드 격자와 같은 셈).
@@ -97,12 +181,13 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
   const onGridKeyDown = (e: ReactKeyboardEvent) => onGridKey(e.nativeEvent);
   // 화면 밖 카드의 자리 높이 — CSS(assets.css)가 먼 카드를 건너뛰고(content-visibility) 이 높이로 자리만 잡는다. 지금 그려진 카드 하나를
   //  잰다(건너뛴 카드는 자리 높이를 돌려준다). 크기·보기·맞춤·개수·격자 폭이 바뀌면 다시 잰다. 자리 높이는 내용 높이라 테두리·안쪽 여백을 뺀다.
+  // 재는 카드 = 띠가 있는 첫 폴더(없으면 첫 카드) — CSS 가 이 카드는 늘 그려(.measure-card) 격자가 처음 붙는 순간에도 잰다.
+  const measurePath = (groups.find((group) => group.children.length || group.files.length) ?? groups[0])?.folder.path ?? directFiles[0]?.path;
   useLayoutEffect(() => {
-    const grid = scrollRef.current;
+    const grid = scrollRef?.current; // 시험처럼 scrollRef 없이 그려도 견딘다
     if (!grid || layout === "table") return;
     const measure = () => {
-      const cards = grid.querySelectorAll<HTMLElement>(":scope > .assets-folder-card");
-      const shown = [...cards].find((card) => card.firstElementChild?.checkVisibility?.({ contentVisibilityAuto: true }) !== false);
+      const shown = grid.querySelector<HTMLElement>(":scope > .assets-folder-card.measure-card");
       if (!shown) return;
       const s = getComputedStyle(shown);
       const edges = parseFloat(s.borderTopWidth) + parseFloat(s.borderBottomWidth) + parseFloat(s.paddingTop) + parseFloat(s.paddingBottom);
@@ -115,14 +200,23 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
     const observer = new ResizeObserver(measure);
     observer.observe(grid);
     return () => observer.disconnect();
-  }, [scrollRef, layout, scale, fit, groups.length, directFiles.length]);
+  }, [scrollRef, layout, scale, fit, groups.length, directFiles.length, measurePath]);
+  // 먼 카드 썸네일 늦게 붙이기 — 등록부는 렌더 중에 한 번 만든다(자식이 부모 효과보다 먼저 등록해도 보관). 항목이 적거나 관찰자가 없는 환경은 바로.
+  const [nearRegistry] = useState(createNearRegistry);
+  const eagerThumbs = items.length <= NEAR_EAGER_MAX || typeof IntersectionObserver === "undefined";
+  useEffect(() => {
+    const root = scrollRef?.current;
+    if (!root || layout === "table" || typeof IntersectionObserver === "undefined") return;
+    nearRegistry.attach(root); // 표 ↔ 그리드처럼 상자가 바뀌면 옛 관찰자를 끊고 새 상자로 다시 관찰한다
+    return () => nearRegistry.detach();
+  }, [nearRegistry, scrollRef, layout]);
   if (layout === "table") return <AssetFolderTable {...props} selected={selected} setSelected={setSelected} onGridKeyDown={onGridKeyDown} />;
-  const thumb = (file: AssetNode, size: number) => <MediaThumbnail
+  const thumb = (file: AssetNode, size: number) => <NearThumb eager={eagerThumbs} render={() => <MediaThumbnail
     thumb={file.type === "audio" ? null : api.assetThumbUrl(project, file.path, size, file.version)}
     isVideo={false} alt={file.name}
     fallback={<span className="assets-folder-placeholder">{file.type === "audio" ? t("오디오") : <FolderIcon />}</span>}
-  />;
-  return <div ref={scrollRef} onScroll={onScroll} className={"assets-folder-grid" + (layout === "list" ? " list" : "")}
+  />} />;
+  return <NearContext.Provider value={nearRegistry}><div ref={scrollRef} onScroll={onScroll} className={"assets-folder-grid" + (layout === "list" ? " list" : "")}
     onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}
     onKeyDown={onGridKeyDown}
     style={{ "--ep-scale": scale, gridTemplateColumns: layout === "list" ? "1fr" : `repeat(auto-fill, minmax(min(100%, ${Math.round(EPISODE_CARD_WIDTH * scale)}px), 1fr))` } as CSSProperties}>
@@ -132,7 +226,7 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
         audioCount ? `${t("오디오")} ${audioCount}` : ""].filter(Boolean).join(" · ");
       const more = Math.max(0, (children.length || files.length) - STRIP_SHOWN.grid);
       return <article key={folder.path}
-      className={"cut-card ep-card ep-grid assets-folder-card" + (selected === folder.path ? " sel" : "")} data-folder-path={folder.path}
+      className={"cut-card ep-card ep-grid assets-folder-card" + (selected === folder.path ? " sel" : "") + (folder.path === measurePath ? " measure-card" : "")} data-folder-path={folder.path}
       onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }}
       onAuxClick={(event) => {
         if (event.button !== 1 || (event.target instanceof Element && event.target.closest("[data-ep-action], [data-folder-action]"))) return;
@@ -170,7 +264,7 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
       </span>}
     </article>;
     })}
-    {directFiles.map((file) => <article key={file.path} className={"cut-card ep-card ep-grid assets-folder-card" + (selected === file.path ? " sel" : "")} data-file-path={file.path}>
+    {directFiles.map((file) => <article key={file.path} className={"cut-card ep-card ep-grid assets-folder-card" + (selected === file.path ? " sel" : "") + (file.path === measurePath ? " measure-card" : "")} data-file-path={file.path}>
       <button type="button" className={"ep-cover" + (fit === "contain" ? " contain" : "")}
         aria-label={`${file.name} ${t("미리보기")}`} title={file.name} onClick={() => { setSelected(file.path); onPreview(file); }}>
         {thumb(file, 512)}
@@ -180,5 +274,5 @@ export function AssetFolderGrid(props: AssetFolderGridProps) {
       {layout === "list" && <span className="assets-folder-info"><strong>{file.name}</strong><AssetSourcePath project={project} path={file.path} /></span>}
     </article>)}
     {groups.length === 0 && directFiles.length === 0 && <div className="assets-empty">{t("이 폴더에 미디어가 없습니다.")}</div>}
-  </div>;
+  </div></NearContext.Provider>;
 }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -102,6 +103,17 @@ async def claude_status(panel=Depends(_panel)):
 
 
 _CLAUDE_ERROR = "X-MVHub-Claude-Error"
+
+
+@router.get("/claude/version")
+async def claude_version(panel=Depends(_panel)):
+    """서랍 아래 줄 — 지금 판(엔진 캐시, exe 를 새로 띄우지 않음)·npm 최신 판·새 판 여부(docs/status/MVAgent_서랍아래줄_2026-11-10.md)."""
+    engines = await asyncio.to_thread(service.engines)
+    current = next((item["version"] for item in engines if item["id"] == "claude"), "") or None
+    latest = await asyncio.to_thread(claude.latest_version)
+    strict = re.compile(r"\d+\.\d+\.\d+")
+    newer = bool(current and latest and strict.fullmatch(current) and tuple(map(int, latest.split("."))) > tuple(map(int, current.split("."))))
+    return {"current": current, "latest": latest, "newer": newer}
 
 
 @router.post("/claude/login")

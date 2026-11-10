@@ -1219,6 +1219,9 @@ body:has(.auth-pause-banner) .resolve-notices { top: 172px; }
    화면 밖 카드에 옛 높이가 남는다. 고른 카드는 늘 그린다 — 바깥 그림자 테두리가 잘리지 않게. */
 .assets-folder-grid > .assets-folder-card { content-visibility: auto; contain-intrinsic-block-size: var(--folder-card-h, 320px); }
 .assets-folder-grid > .assets-folder-card.sel { content-visibility: visible; }
+/* 자리 높이를 재는 카드(띠가 있는 첫 폴더)는 늘 그린다 — 격자가 처음 붙는 순간엔 모든 카드가 '건너뜀'이라 잴 카드가 없어, 부모가 스크롤을
+   복원·되돌아온 카드를 보이는 동안 기본 높이(320px)로 자리를 잡았다가 잰 뒤 줄어 카드가 화면 밖으로 밀렸다(2026-11-10 실측). */
+.assets-folder-grid > .assets-folder-card.measure-card { content-visibility: visible; }
 .assets-folder-card .ep-cover { width: 100%; padding: 0; border: 0; border-radius: 0; text-align: left; }
 .assets-folder-card .ep-cover:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .assets-folder-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); }

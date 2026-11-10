@@ -226,6 +226,8 @@ const id = (value: string) => encodeURIComponent(value);
 export const agentChatApi = {
   session: openAgentSession,
   conversations: () => panelFetch<{ conversations: AgentConversationSummary[] }>("/conversations"),
+  // 서랍 아래 줄 — 지금 Claude Code 판·npm 최신 판·새 판 여부(못 읽으면 null)
+  claudeVersion: () => panelFetch<{ current: string | null; latest: string | null; newer: boolean }>("/claude/version"),
   // plans = 이 대화에 묶인 계획의 지금 상태(사건 다음에 읽음 — 조건 없이 넣고 기준이 된다). 옛 허브는 없음
   conversation: (conversationId: string) =>
     panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[]; plans?: AgentPlanSnapshot[] }>(

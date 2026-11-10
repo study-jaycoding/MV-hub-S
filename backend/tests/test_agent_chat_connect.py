@@ -29,6 +29,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))  # 진짜 ~/.claude.json(요금제 이름)을 읽지 않게
     monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])  # 진짜 프로세스 목록을 보지 않는다(이 PC 의 Claude 와 무관하게)
     monkeypatch.setattr(process, "engine_prefix", lambda engine: CLAUDE if engine == "claude" else None)
     monkeypatch.setattr(process, "find_claude", lambda: CLAUDE)
@@ -52,6 +53,50 @@ def state(auth, monkeypatch):
 def test_state_classification(auth, expected, subscription, monkeypatch):
     got = state(auth, monkeypatch)
     assert got["state"] == expected and got["subscription"] == subscription and got["version"] == "2.1.296"
+
+
+def test_plan_display_name_only_for_same_account(isolated, monkeypatch):
+    """서랍 아래 줄의 요금제 — .claude.json 의 planDisplayName(Ultra), 같은 계정일 때만. 아니면 옛 값(subscriptionType)."""
+    folder = isolated / "claude-config"
+    folder.mkdir()
+    write = lambda account: (folder / ".claude.json").write_text(json.dumps({"oauthAccount": account}), encoding="utf-8")
+    assert state("subscription", monkeypatch)["subscription"] == "Max"  # 파일 없음
+    write({"emailAddress": "SECRET@example.test", "planDisplayName": "Ultra"})
+    assert state("subscription", monkeypatch)["subscription"] == "Ultra"  # 대소문자 무시로 같은 계정
+    assert state("free", monkeypatch)["subscription"] is None  # 쓸 수 있는 구독이 아니면 이름도 없다
+    write({"emailAddress": "other@example.test", "planDisplayName": "Ultra"})
+    assert state("subscription", monkeypatch)["subscription"] == "Max"  # 다른 계정의 파일
+    write({"emailAddress": "secret@example.test", "planDisplayName": "<b>Ultra</b>"})
+    assert state("subscription", monkeypatch)["subscription"] == "Max"  # 이상한 글은 버린다
+    (folder / ".claude.json").write_text("{broken", encoding="utf-8")
+    assert state("subscription", monkeypatch)["subscription"] == "Max"
+
+
+def test_latest_version_shape_and_cache(monkeypatch):
+    """최신 판 — 숫자.숫자.숫자만, 성공·실패 모두 기억해 다시 묻지 않는다(진짜 네트워크 없음)."""
+    calls, answers = [], [b'{"version": "2.1.322"}']
+
+    class Reply:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def read(self, limit): return self.body[:limit]
+
+    def fake_open(request, timeout):
+        calls.append(request.full_url)
+        body = answers.pop(0)
+        if isinstance(body, Exception):
+            raise body
+        return Reply(body)
+
+    monkeypatch.setattr(claude.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(claude, "_latest_cache", None)
+    assert claude.latest_version() == "2.1.322" and claude.latest_version() == "2.1.322" and len(calls) == 1
+    for body in (b'{"version": "2.2.0-beta.1"}', OSError("offline"), b"not json"):
+        monkeypatch.setattr(claude, "_latest_cache", None)
+        answers[:] = [body]
+        assert claude.latest_version() is None and claude.latest_version() is None  # 실패도 기억 — 두 번째는 묻지 않는다
+    assert len(calls) == 4 and all(url == claude.LATEST_URL for url in calls)
 
 
 def test_state_not_installed_outdated_and_timeout(monkeypatch):
