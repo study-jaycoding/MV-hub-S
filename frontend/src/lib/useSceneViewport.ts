@@ -313,6 +313,30 @@ export function useSceneViewport({
     return () => board.removeEventListener("wheel", onWheel);
   }, [applyTransform, getCamera, persistCamera, replaceCamera]);
 
+  // 보드는 overflow:hidden 이라 손으로는 안 굴러가지만 브라우저는 초점·캐럿을 보이려고 스스로 스크롤한다(화면 아래쪽 글 카드에서 줄을 칠 때 등).
+  //  toCanvas 는 그 스크롤을 빼지 않아 붙여넣기·새 노드가 그만큼 위에 놓였다(2026-11-10 격리 실측 121px). 스크롤 양을 팬으로 옮기고 0 으로 되돌린다 —
+  //  보이는 자리는 브라우저가 옮긴 그대로(캐럿이 보인다)이고 좌표는 늘 맞다. 저장은 휠처럼 늦춘다.
+  useEffect(() => {
+    const board = scrollRef.current;
+    if (!board) return;
+    const onScroll = () => {
+      const dx = board.scrollLeft;
+      const dy = board.scrollTop;
+      if (!dx && !dy) return;
+      board.scrollLeft = 0;
+      board.scrollTop = 0;
+      panRef.current = { x: panRef.current.x - dx, y: panRef.current.y - dy };
+      applyTransform();
+      if (cameraSaveTimerRef.current) clearTimeout(cameraSaveTimerRef.current);
+      cameraSaveTimerRef.current = window.setTimeout(() => {
+        cameraSaveTimerRef.current = undefined;
+        persistCamera();
+      }, CAMERA_SAVE_DELAY_MS);
+    };
+    board.addEventListener("scroll", onScroll);
+    return () => board.removeEventListener("scroll", onScroll);
+  }, [applyTransform, persistCamera]);
+
   useEffect(() => {
     if (cameraSaveTimerRef.current) {
       clearTimeout(cameraSaveTimerRef.current);
