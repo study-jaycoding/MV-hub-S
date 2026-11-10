@@ -132,6 +132,18 @@ export function sceneCullNeedsCommit(committed: SceneViewRect | null, next: Scen
   );
 }
 
+/** 컬링 대상 집합이 달라졌나 — 들어오는 것뿐 아니라 빠지는 카드·연결선도 센다. 줌을 쉬었을 때 한 번 정리할지 정한다
+ *  (확대하면 빠지기만 해서 sceneCullNeedsCommit 은 거짓이지만, 그대로 두면 화면 밖 카드가 계속 붙어 있다). */
+export function sceneCullSetChanged(committed: SceneViewRect | null, next: SceneViewRect, items: SceneCullItems): boolean {
+  if (!committed) return true;
+  const hitCard = (c: SceneWorldRect, r: SceneViewRect) => c.x <= r.r && c.x + c.w >= r.l && c.y <= r.b && c.y + c.h >= r.t;
+  const hitBox = (e: SceneViewRect, r: SceneViewRect) => !(e.r < r.l || e.l > r.r || e.b < r.t || e.t > r.b);
+  return (
+    items.cards.some((c) => hitCard(c, next) !== hitCard(c, committed)) ||
+    items.edges.some((e) => hitBox(e, next) !== hitBox(e, committed))
+  );
+}
+
 /** 커서 아래 월드 좌표를 고정한 채 한 단계 확대하거나 축소한다. */
 export function zoomSceneCameraAt(
   camera: SceneCamera,

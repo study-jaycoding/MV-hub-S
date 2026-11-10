@@ -111,7 +111,7 @@ import type {
 } from "../lib/canvasGenerationRecovery";
 import type { Generation, PreviewTarget, WorkspaceContext } from "../types";
 import { captureOperationContext, isOperationContextCurrent } from "../app/operationContext";
-import { assetIdentityForProject, promoteAssetReference, type AssetSyncReceipt } from "../shared/contracts/assets";
+import { assetIdentityForProject, isLiveProjectRef, promoteAssetReference, type AssetSyncReceipt } from "../shared/contracts/assets";
 import type { OperationContext } from "../shared/contracts/generation";
 import { chunked } from "../lib/batching";
 
@@ -403,7 +403,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       ...(stored?.trayRefs || []), ...(stored?.parts.flatMap(part => part?.t === "chip" ? [part.ref] : []) || [])];
     const byProject = new Map<string, Map<string, Set<string>>>();
     for (const ref of references) {
-      if (!ref.asset_content_id || !ref.target_project_id || receipts.some(receipt =>
+      if (!ref.asset_content_id || !ref.target_project_id || isLiveProjectRef(ref) || receipts.some(receipt =>
         receipt.asset_content_id === ref.asset_content_id && receipt.project_id === ref.target_project_id
         && (promoteAssetReference(ref, receipt) !== ref || ref.file_path === receipt.file_path))) continue;
       let ids = byProject.get(ref.target_project_id);
@@ -450,7 +450,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       if (JSON.stringify(parts) !== JSON.stringify(promoted)) libraryDraftRef.current = JSON.stringify(promoted);
     }
     const sources = [...localTrayRefs, ...(editorRef.current ? serialize(editorRef.current).refs : [])]
-      .filter(ref => !!ref.target_project_id && (!ref.asset_content_id || (!ref.server_location
+      .filter(ref => !!ref.target_project_id && !isLiveProjectRef(ref) && (!ref.asset_content_id || (!ref.server_location
         && !detail.items.some(item => item.asset_content_id === ref.asset_content_id && item.project_id === ref.target_project_id
           && item.server_origin?.replace(/\/$/, "") === detail.operation.serverOrigin.replace(/\/$/, "")))));
     const unique = new Map(sources.map(ref => [`${ref.target_project_id}\u0000${ref.file_path}`, ref]));

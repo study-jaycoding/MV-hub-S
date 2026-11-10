@@ -323,7 +323,9 @@ describe("Ask Agent 옆 칸", () => {
     enter();
     await flush(3);
     expect(button("새 대화")!.disabled).toBe(true);
-    expect(button("지난 대화 보기")!.disabled).toBe(true);
+    act(() => button("대화 목록")!.click()); // 서랍은 열리지만 새 대화·지난 대화 고르기는 잠긴다
+    expect(host.querySelector<HTMLButtonElement>(".agent-drawer-new")!.disabled).toBe(true);
+    act(() => button("대화 목록")!.click());
     expect(host.querySelector<HTMLButtonElement>(".agent-model-btn")!.disabled).toBe(true);
     gate.resolve(started());
     await flush();
@@ -667,9 +669,10 @@ describe("Ask Agent 옆 칸", () => {
     look();
     act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
     look();
-    act(() => host.querySelector<HTMLButtonElement>(".agent-title")!.click());
+    act(() => button("대화 목록")!.click());
     await flush();
     look();
+    act(() => button("대화 목록")!.click());
     type("안녕");
     enter();
     await flush();
@@ -702,5 +705,81 @@ describe("applyAgentEvent", () => {
     expect(m.map((x) => [x.kind, "text" in x ? x.text : "status" in x ? x.status : "message" in x ? x.message : ""])).toEqual([
       ["assistant", "첫째"], ["assistant", "둘째"], ["tool", "failed"], ["error", "허브가 다시 켜져 멈췄어요"],
     ]);
+  });
+});
+
+// 칸 폭(docs/status/MVAgent_칸폭_떠있는창_2026-11-10.md) · 서랍·새 창(docs/status/MVAgent_서랍_새창_2026-11-10.md)
+describe("MV Agent 칸 폭·서랍·새 창", () => {
+  const agentW = () => document.documentElement.style.getPropertyValue("--agent-w");
+  const width0 = window.innerWidth;
+  const setWindowWidth = (value: number) => Object.defineProperty(window, "innerWidth", { configurable: true, value });
+  beforeEach(() => { setWindowWidth(1600); document.documentElement.style.removeProperty("--agent-w"); });
+  afterEach(() => setWindowWidth(width0));
+
+  it("끝선 손잡이 — 방향키·더블클릭으로 폭을 바꿔 남기고 창 폭의 절반을 넘지 않는다 · 새 창 안에서는 손잡이 대신 [옆 칸으로 붙이기]", async () => {
+    let popped = 0;
+    let docked = 0;
+    const render = (popout: boolean) => act(() => root.render(
+      <AgentPanel context={{ tab: "my" }} contextLabel="워크스페이스" onClose={() => {}} popout={popout}
+        onPopOut={() => { popped += 1; }} onDock={() => { docked += 1; }} />));
+    render(false);
+    await flush();
+    const handle = host.querySelector<HTMLElement>(".agent-resize")!;
+    expect(agentW()).toBe("520px");
+    act(() => { handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); }); // 오른쪽 칸 — 왼쪽으로 = 넓게
+    expect([agentW(), localStorage.getItem("mvhub.agentPanel.width")]).toEqual(["528px", "528"]);
+    act(() => { handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+    expect(agentW()).toBe("520px");
+    setWindowWidth(900);
+    act(() => { window.dispatchEvent(new Event("resize")); });
+    expect([agentW(), localStorage.getItem("mvhub.agentPanel.width")]).toEqual(["450px", "520"]); // 보이는 폭만 줄고 고른 폭은 그대로
+
+    // 옆 칸 머리 = 왼쪽 [대화 목록][옆 칸 닫기] · 오른쪽 [새 대화][새 창으로 띄우기](시안 A안)
+    const heads = () => [...panel().querySelectorAll(".agent-head button")].map((b) => b.getAttribute("aria-label"));
+    expect(heads()).toEqual(["대화 목록", "옆 칸 닫기", "새 대화", "새 창으로 띄우기"]);
+    act(() => button("새 창으로 띄우기")!.click());
+    expect(popped).toBe(1);
+    render(true);
+    await flush();
+    expect([panel().classList.contains("popout"), host.querySelector(".agent-resize")]).toEqual([true, null]);
+    expect(heads()).toEqual(["대화 목록", "옆 칸으로 붙이기", "새 대화"]);
+    act(() => button("옆 칸으로 붙이기")!.click());
+    expect(docked).toBe(1);
+  });
+
+  it("≡ 서랍 — 대화를 프로젝트별로 묶고(이름 모르는 프로젝트는 한 묶음, '프로젝트 없음'은 맨 아래) 고르면 열고 닫힌다 · 설정 칸은 없다", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations") {
+        return json({ conversations: [
+          { id: "c1", title: "고양이", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true, project: null },
+          { id: "c2", title: "딸기와 바나나", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true, project: "p1" },
+          { id: "c3", title: "강아지", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: false, project: "p-other" },
+          { id: "c4", title: "사과", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true, project: "p1" },
+        ] });
+      }
+      if (c.path === "/conversations/c2") {
+        return json({ conversation: { id: "c2", title: "딸기와 바나나", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true }, turns: [] });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    act(() => root.render(<AgentPanel context={{ tab: "my" }} contextLabel="워크스페이스" onClose={() => {}}
+      projectName={(id) => (id === "p1" ? "뻘뻘뻘" : undefined)} onPopOut={() => {}} />));
+    await flush();
+    act(() => button("대화 목록")!.click());
+    await flush();
+    const groups = () => [...host.querySelectorAll(".agent-drawer-group")].map((g) => [
+      g.querySelector(".agent-drawer-ghead")!.textContent, [...g.querySelectorAll(".agent-drawer-item")].map((i) => i.textContent)]);
+    expect(groups()).toEqual([
+      ["뻘뻘뻘", ["딸기와 바나나", "사과"]], ["다른 공간 프로젝트", ["강아지이어 가기 불가"]], ["프로젝트 없음", ["고양이"]],
+    ]);
+    expect(host.querySelector(".agent-drawer")!.textContent).not.toMatch(/설정|구독|새 대화 모델|칸 위치/); // 설정 칸은 뺐다(Jay 11-10)
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-drawer-item")][0].click());
+    await flush();
+    expect([host.querySelector(".agent-drawer"), host.querySelector(".agent-title")!.textContent]).toEqual([null, "딸기와 바나나"]);
+    act(() => button("대화 목록")!.click());
+    await flush();
+    act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    expect(host.querySelector(".agent-drawer")).toBeNull();
   });
 });

@@ -25,7 +25,7 @@ import { STORAGE_KEYS } from "./storageKeys";
 import { loadStoredWorkspaceContext } from "./workspaceContext";
 import { captureOperationContext, isOperationContextCurrent } from "../app/operationContext";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
-import { promoteAssetReference } from "../shared/contracts/assets";
+import { isLiveProjectRef, promoteAssetReference } from "../shared/contracts/assets";
 import { chunked } from "./batching";
 
 // 에셋 참조 토큰 전부. 이미 잘 열리는 것은 서버가 그대로 두므로 여기서 거르지 않는다 —
@@ -640,7 +640,7 @@ export async function syncSceneAssetReferences(hooks: RelinkHooks = {}, current:
   const registrations = new Map<string, RelinkTarget>();
   const waiting = new Map<string, { workspaceId: string; ref: SceneRef }>();
   for (const scene of listScenes(null)) for (const card of scene.cards) for (const ref of card.refs || []) {
-    if (ref.target_project_id && (!ref.asset_content_id || (!ref.server_location
+    if (ref.target_project_id && !isLiveProjectRef(ref) && (!ref.asset_content_id || (!ref.server_location
       && !reply.items.some(item => item.asset_content_id === ref.asset_content_id && item.project_id === ref.target_project_id
         && item.server_origin?.replace(/\/$/, "") === operation.serverOrigin.replace(/\/$/, "")))))
       waiting.set(relinkKey(sceneRefWorkspaceId(scene), ref.file_path, undefined, ref.target_project_id),
@@ -665,7 +665,7 @@ export async function syncSceneAssetReferences(hooks: RelinkHooks = {}, current:
   const resolveByProject = new Map<string, Set<string>>();
   const previousLocations = new Map<string, Map<string, Set<string>>>();
   for (const scene of listScenes(null)) for (const ref of sceneReferencesWithHistory(scene)) {
-    if (!ref.asset_content_id || !ref.target_project_id) continue;
+    if (!ref.asset_content_id || !ref.target_project_id || isLiveProjectRef(ref)) continue;
     if (reply.items.some(item => item.state === "ready" && item.asset_content_id === ref.asset_content_id
       && item.project_id === ref.target_project_id && item.server_origin?.replace(/\/$/, "") === operation.serverOrigin.replace(/\/$/, "")
       && (promoteAssetReference(ref, item) !== ref || ref.file_path === item.file_path))) continue;

@@ -26,6 +26,9 @@ export const STORAGE_KEYS = {
   agentPanelOpen: "mvhub.agentPanel.open",
   agentPanelModel: "mvhub.agentPanel.model",
   agentPanelConversation: "mvhub.agentPanel.conversation",
+  agentPanelFloat: "mvhub.agentPanel.float", // 별도 창(?embed=agent) 모드 "1"/"0" — 새 창의 [옆 칸으로 붙이기]가 "0" 을 적으면 메인 창이 storage 알림으로 옆 칸을 연다
+  agentPanelWidth: "mvhub.agentPanel.width", // 옆에 붙은 칸의 폭(px)
+  agentPanelScreen: "mvhub.agentPanel.screen", // 메인 창의 '지금 화면' {context, label, projects} — 새 창이 따라 읽는다
   // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
   canvasHandoff: "mvhub.canvasHandoff",
   historyPos: "ch.history.pos",

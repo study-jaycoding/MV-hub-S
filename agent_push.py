@@ -3430,7 +3430,8 @@ def _submit_one_attempt(
                 submitted_refs[position].update(digest)
                 expected = ref.get("expected_asset_content_id") or ref.get("asset_content_id")
                 if expected and expected != "sha256:" + digest["sha256"]:
-                    _fail(server, token, rid, "레퍼런스 내용이 변경되어 생성을 중단했습니다")
+                    name = _safe_ref_label(val).rsplit("|", 1)[-1].rsplit("/", 1)[-1]
+                    _fail(server, token, rid, f"레퍼런스({name})가 예상한 내용과 달라 생성을 멈췄습니다 · 크레딧은 쓰지 않았습니다")
                     return None
                 if r.get("asset_content_protocol") == 1 and not _preserve_reference(
                     server, token, val, resolved, digest, r, account_email
@@ -3681,8 +3682,21 @@ def _claim_capacity(submitting_count: int, active_count: int) -> int:
     return max(0, min(local_free, remote_free))
 
 
+_MANAGED_ASSET_PROJECTS = ("imports", "captures", "imp/cap")
+
+
+def _is_mutable_project_ref(val: str) -> bool:
+    """프로젝트 폴더 원본(asset:<project>|<path>, 내장 폴더 제외) — 같은 이름으로 덮어쓸 수 있다."""
+    if not val.startswith("asset:"):
+        return False
+    project, separator, _ = val[len("asset:"):].partition("|")
+    return bool(separator and project) and project not in _MANAGED_ASSET_PROJECTS
+
+
 def _resolve_refs_for(server: str, token: str, reqs: list, ref_cache: dict | None = None) -> tuple:
     """새로 claim한 요청의 고유 레퍼런스만 받아 공유 캐시에 추가한다.
+    프로젝트 원본 경로는 claim 묶음마다 다시 받는다 — 앞 묶음이 받은 옛 판을 덮어쓴 뒤의 요청에 쓰지 않게.
+    앞 묶음 요청은 자기 batch_ref_cache 사본·임시파일을 그대로 쓰고, 다시 받기에 실패하면 옛 판으로 돌아가지 않는다.
     반환: (ref_cache={값→해석값}, 이번에 만든 임시파일 리스트)."""
     ref_cache = ref_cache if ref_cache is not None else {}
     ref_temps: list = []
@@ -3692,7 +3706,7 @@ def _resolve_refs_for(server: str, token: str, reqs: list, ref_cache: dict | Non
         for ref in (r.get("references") or [])
         if ref.get("file_path")
     }:
-        if val in ref_cache:
+        if val in ref_cache and not _is_mutable_project_ref(val):
             continue
         resolved, tmp = _resolve_ref(server, token, val)
         ref_cache[val] = resolved

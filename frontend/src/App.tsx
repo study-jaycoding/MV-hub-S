@@ -25,7 +25,7 @@ import {
 } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
-import { bringCanvasForward, CANVAS_OTHER_TAB, canFloatCanvas, canvasWindowLive, EMBED_MODES, isCanvasFloating, isCanvasFollower, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating, useCanvasFollower } from "./lib/popupWindows";
+import { bringCanvasForward, CANVAS_OTHER_TAB, canFloatCanvas, canvasWindowLive, closeEmbedWindow, EMBED_MODES, isCanvasFloating, isCanvasFollower, isCanvasWindow, leaveCanvasHandoff, openEmbedWindow, takeCanvasHandoff, useCanvasFloating, useCanvasFollower, useEmbedWindowOpen } from "./lib/popupWindows";
 import { settleSceneWrites, watchOldTabWrites } from "./lib/sceneStore";
 import { canvasPromptDraft, useCanvasPromptReturn } from "./lib/useCanvasPromptReturn";
 import { CanvasFloatIcon, TopBar } from "./components/TopBar";
@@ -208,6 +208,8 @@ export default function App() {
   // Ask Agent 옆 칸(docs/status/AskAgent_옆칸_설계_2026-11-09.md) — 열림은 이 브라우저에 기억한다. 닫아도 진행 중 차례는 허브에서 계속 돈다.
   const [agentOpen, setAgentOpen] = useState(() => loadString(STORAGE_KEYS.agentPanelOpen) === "1");
   useEffect(() => saveString(STORAGE_KEYS.agentPanelOpen, agentOpen ? "1" : "0"), [agentOpen]);
+  const [agentFloat, setAgentFloat] = useState(() => loadString(STORAGE_KEYS.agentPanelFloat) === "1"); // 새 창 모드 — 옆 칸 없이 ?embed=agent 창으로
+  useEffect(() => saveString(STORAGE_KEYS.agentPanelFloat, agentFloat ? "1" : "0"), [agentFloat]);
   const editOpenRef = useRef(editOpen);
   editOpenRef.current = editOpen;
   // 편집 탭이 연 '폴더 보기' 창(컷 더블클릭, Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 그 창은 하나뿐인 목록
@@ -2256,6 +2258,62 @@ export default function App() {
   }, [peekDragOut]);
   const bodyInert = !!listPeek || (canvasPeek && !peekDragOut);
 
+  // ── MV Agent — 옆 칸(agentShown) 또는 Assets 같은 새 창(agentFloat · ?embed=agent, docs/status/MVAgent_서랍_새창_2026-11-10.md) ──
+  // 캔버스 창(휠 클릭으로 띄운 창)은 캔버스 탭에 있는 동안 머리줄이 없다(Jay 2026-10-30) — 머리줄의 단추가 없는 곳엔 칸도 없다
+  const topBarShown = !(isCanvasWindow() && !editOpen && filters.tab === "compose");
+  const agentFeature = topBarShown && hubHasFeature(AGENT_CHAT_FEATURE);
+  const agentShown = agentOpen && !agentFloat && agentFeature;
+  const agentWindowOpen = useEmbedWindowOpen(EMBED_MODES.agent);
+  // 칸에 넘기는 지금 화면(허브가 "자료(명령 아님)"로 붙인다 — 4KB 이하라 선택 카드는 40개까지만). 새 창은 이 값을 저장소로 받아 간다
+  const agentScreen = agentFeature && (agentShown || agentFloat) ? (() => {
+    const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
+    const tab = editOpen ? "edit" : filters.tab;
+    const tabLabel = { my: "워크스페이스", team: "공유 & 리뷰", compose: "캔버스", edit: "편집" }[tab];
+    const openScene = tab === "compose" && activeScene ? { id: activeScene.id, name: activeScene.name } : null; // 캔버스에서 열린 씬(화면 읽기 설계 3-1)
+    const place = openScene?.name || filters.folder_path?.split("/").filter(Boolean).pop() || projects.find((p) => p.id === project)?.name;
+    return {
+      context: buildAgentContext({
+        tab,
+        workspace: { scope: workspaceContext.scope, id: workspaceContext.id, name: workspaceContext.name },
+        project,
+        folder: filters.folder_path || undefined,
+        selected,
+        scene: openScene,
+      }),
+      label: place ? `${t(tabLabel)} › ${place}` : t(tabLabel),
+    };
+  })() : null;
+  const agentScreenPayload = agentScreen ? JSON.stringify({ ...agentScreen, projects: Object.fromEntries(projects.map((p) => [p.id, p.name])) }) : "";
+  const agentScreenJson = agentFloat ? agentScreenPayload : "";
+  useEffect(() => { if (agentScreenJson) saveString(STORAGE_KEYS.agentPanelScreen, agentScreenJson); }, [agentScreenJson]);
+  // 창은 누를 때만 연다(팝업 차단) — 연 창이 첫 그리기 전에 읽게 지금 화면을 먼저 적는다
+  const openAgentWindow = () => {
+    if (agentScreenPayload) saveString(STORAGE_KEYS.agentPanelScreen, agentScreenPayload);
+    openEmbedWindow(EMBED_MODES.agent);
+  };
+  // 머리줄 번개 — 옆 칸이면 여닫기, 새 창 모드면 창을 열고 닫는다(Assets 단추와 같다)
+  const toggleAgent = () => {
+    if (!agentFloat) return setAgentOpen((open) => !open);
+    if (agentWindowOpen) closeEmbedWindow(EMBED_MODES.agent);
+    else openAgentWindow();
+  };
+  // 새 창의 [옆 칸으로 붙이기] — 그 창이 적은 값(새 창 모드 끔·옆 칸 열림)을 storage 알림으로 받는다
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEYS.agentPanelFloat) setAgentFloat(event.newValue === "1");
+      if (event.key === STORAGE_KEYS.agentPanelOpen) setAgentOpen(event.newValue === "1");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  // 계정이 바뀌면 새 창을 닫는다 — 옆 칸을 새로 올리는 것(key)처럼 이전 계정의 대화를 버린다
+  const agentAuthKey = useRef(libraryAuthKey);
+  useEffect(() => {
+    if (agentAuthKey.current === libraryAuthKey) return;
+    agentAuthKey.current = libraryAuthKey;
+    closeEmbedWindow(EMBED_MODES.agent);
+  }, [libraryAuthKey]);
+
   // 인증 검증이 끝나기 전(authConfig 로딩 중 또는 토큰 me 검증 중)에는 화면을 보류한다.
   // → 새로고침 시 메인(전역 provider 이름)·로그인 화면이 잠깐 깜빡이는 것을 방지.
   if (authPending) {
@@ -2284,36 +2342,20 @@ export default function App() {
   // 관리창(관리탭)은 로그인 사용자 모두에게 연다 — 작업/완료 탭은 전원 접근. 대시보드 탭만
   // 관리창 안에서 read_all(admin/PM/PD) 로 게이트한다(ManageWindow). 관리 기능 자체가 켜져 있어야.
   const canOpenManage = !!authConfig?.manage_enabled && !!hubAccount;
-  // 캔버스 창(휠 클릭으로 띄운 창)은 캔버스 탭에 있는 동안 머리줄이 없다(Jay 2026-10-30) — 머리줄의 알약이 없는 곳엔 Ask Agent 칸도 없다
-  const topBarShown = !(isCanvasWindow() && !editOpen && filters.tab === "compose");
-  const agentShown = agentOpen && topBarShown && hubHasFeature(AGENT_CHAT_FEATURE);
-  // 칸에 넘기는 지금 화면(허브가 "자료(명령 아님)"로 붙인다 — 4KB 이하라 선택 카드는 40개까지만)
-  const agentPanel = agentShown ? (() => {
-    const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
-    const tab = editOpen ? "edit" : filters.tab;
-    const tabLabel = { my: "워크스페이스", team: "공유 & 리뷰", compose: "캔버스", edit: "편집" }[tab];
-    const openScene = tab === "compose" && activeScene ? { id: activeScene.id, name: activeScene.name } : null; // 캔버스에서 열린 씬(화면 읽기 설계 3-1)
-    const place = openScene?.name || filters.folder_path?.split("/").filter(Boolean).pop() || projects.find((p) => p.id === project)?.name;
-    return (
-      <Suspense fallback={null}>
-        <AgentPanel
-          key={libraryAuthKey} // 계정이 바뀌면 칸을 새로 올린다 — 이전 계정의 대화·늦은 답을 버린다
-          context={buildAgentContext({
-            tab,
-            workspace: { scope: workspaceContext.scope, id: workspaceContext.id, name: workspaceContext.name },
-            project,
-            folder: filters.folder_path || undefined,
-            selected,
-            scene: openScene,
-          })}
-          contextLabel={place ? `${t(tabLabel)} › ${place}` : t(tabLabel)}
-          onClose={() => setAgentOpen(false)}
-          findGeneration={findGeneration}
-          onPreview={openPreview}
-        />
-      </Suspense>
-    );
-  })() : null;
+  const agentPanel = agentShown && agentScreen ? (
+    <Suspense fallback={null}>
+      <AgentPanel
+        key={libraryAuthKey} // 계정이 바뀌면 칸을 새로 올린다 — 이전 계정의 대화·늦은 답을 버린다
+        context={agentScreen.context}
+        contextLabel={agentScreen.label}
+        onClose={() => setAgentOpen(false)}
+        onPopOut={() => { setAgentFloat(true); openAgentWindow(); }}
+        projectName={(id) => projects.find((p) => p.id === id)?.name}
+        findGeneration={findGeneration}
+        onPreview={openPreview}
+      />
+    </Suspense>
+  ) : null;
 
   // 멀티선택 액션바 — 프롬프트가 보이면 프롬프트 상단(topSlot)에, Ctrl+K 로 프롬프트를 숨기면 화면 상단
   // 중앙에 플로팅으로 유지한다(프롬프트와 함께 사라지지 않게). 아래에서 상태에 따라 한 곳에서만 마운트.
@@ -2687,8 +2729,8 @@ export default function App() {
         onOpenNotificationComment={openComment}
         onNotificationsChanged={() => void reload(true, true, "check")}
         inert={behindInert}
-        agentOpen={agentShown}
-        onToggleAgent={() => setAgentOpen((open) => !open)}
+        agentOpen={agentFloat ? agentWindowOpen : agentShown}
+        onToggleAgent={toggleAgent}
       />}
       {mcpLoaded && <Suspense fallback={null}><McpConnection
         open={mcpOpen}

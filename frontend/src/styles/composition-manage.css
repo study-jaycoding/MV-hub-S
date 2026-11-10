@@ -443,12 +443,14 @@ tr.work-row-archived td { opacity: .62; }
    테이블 보기일 때만 표 칸이 세로 스크롤을 맡는다(완료 탭 .export-root 와 같은 세로 flex) — 표 칸의 가로 스크롤(overflow-x)
    때문에 창 스크롤 기준 sticky 는 걸리지 않는다. 표가 길면 계산 줄이 표 칸 아래에 붙고, 맨 아래에선 빈 줄 밑 제자리다. */
 .manage-window:has(> .work-root .work-table) { display: flex; flex-direction: column; }
-.manage-window:has(> .work-root .work-table) > * { flex: 0 0 auto; }
+/* ★':has(…) > *'(모든 자식) 꼴은 쓰지 않는다 — 이 CSS 는 메인 앱에도 실려, 격자에 줄이 붙을 때마다 문서 전체 스타일을 다시 계산했다
+   (2026-11-10 실측: 워크스페이스 스크롤 4배 CPU 스타일 4.3→1.1초). 표 보기에서 창의 자식은 배너(fixed)·탭 줄·.work-root(아래 규칙이 덮음)뿐이다. */
+.manage-window > .manage-tabs { flex: 0 0 auto; }
 .manage-window > .work-root:has(.work-table) {
   flex: 1 1 auto; min-height: 0; width: 100%; box-sizing: border-box;
   display: flex; flex-direction: column; padding-bottom: 14px;
 }
-.work-root:has(.work-table) > * { flex: 0 0 auto; }
+.manage-dash.work-root > * { flex: 0 0 auto; } /* 위와 같은 이유로 :has 없이 — .work-root 가 flex 인 것은 표 보기뿐이라 다른 보기에선 효과 없다 */
 .work-root > .manage-table-wrap:has(> .work-table) { flex: 1 1 auto; min-height: 160px; overflow: auto; }
 .work-table > tfoot > .work-gap-row > td { height: 36px; border-left-color: transparent; border-right-color: transparent; } /* 빈 줄은 세로선 없이(위·아래 가로선만) */
 .manage-table.work-table > tfoot > .work-calc-row > td {

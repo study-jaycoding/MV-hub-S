@@ -73,12 +73,13 @@ describe("MV Agent 머리줄 번개 칸", () => {
     expect(agent()).toBeNull();
   });
 
-  it("라임 바탕은 어디서나 검은 글자 · 칸 폭 520", () => {
+  it("라임 바탕은 어디서나 검은 글자 · 칸 기본 폭 520(끝선을 끌면 --agent-w)", () => {
     const css = readFileSync(new NodeURL("../src/styles/agent-chat.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).not.toMatch(/agent-pill/);
     const lime = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => /background: var\(--accent\)/.test(m[2]));
     expect(lime.length).toBeGreaterThan(3);
     for (const [, selector, body] of lime) expect([selector.trim(), body.includes("color: var(--accent-ink)")]).toEqual([selector.trim(), true]);
-    expect(css).toMatch(/\.agent-panel \{[^}]*width: 520px/);
+    expect(css).toMatch(/\.agent-panel \{[^}]*width: var\(--agent-w, 520px\)/);
+    expect(css).toMatch(/\.app\.agent-open \{ padding-right: var\(--agent-w, 520px\); \}/); // 앱 본문도 같은 폭만큼 좁아진다
   });
 });
