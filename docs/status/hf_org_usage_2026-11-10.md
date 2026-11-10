@@ -5,7 +5,7 @@ updated: 2026-11-10
 
 # 힉스필드 조직 사용량 1단계 — 관리자 대조 — 2026-11-10
 
-owner: 구현 Codex(`01a1c44e-9a49-72e1-93b6-52bd87d63b36`, 작업실 `D:\ClaudeCode\work\mvhub-hf-org-usage-20261110` · 브랜치 `codex/hf-org-usage` · 기준 dev `869ed363`) · 총괄·설계: Claude(세션 `8bdc8dff-5ef4-4f02-9e56-c1dab088d39e`) · reviewer: 설계 Codex `01a1c3e2-958f-7b12-940c-7044af7dc570`(합의), 독립 리뷰는 구현·설계·합의에 안 낀 별도 Claude 세션 · status: 설계 중 · touched_paths: 아래 계약 · updated: 2026-11-10
+owner: 구현 Codex(`01a1c44e-9a49-72e1-93b6-52bd87d63b36`, 작업실 `D:\ClaudeCode\work\mvhub-hf-org-usage-20261110` · 브랜치 `codex/hf-org-usage` · 기준 dev `869ed363`) · 총괄·설계: Claude(세션 `8bdc8dff-5ef4-4f02-9e56-c1dab088d39e`) · reviewer: 설계 Codex `01a1c3e2-958f-7b12-940c-7044af7dc570`(합의), 독립 리뷰 별도 Claude `dbdb4761-c750-4dff-9827-4a6a4b539cf5`(통과) · status: 완료 — dev 통합 `d6231f9e`(11-10, 빨리감기), 운영 서버 업데이트·키 등록 전(Jay) · touched_paths: 아래 계약 · updated: 2026-11-10
 
 ## 요청과 결정 (Jay, 2026-11-10)
 
@@ -88,16 +88,16 @@ owner: 구현 Codex(`01a1c44e-9a49-72e1-93b6-52bd87d63b36`, 작업실 `D:\Claude
     "docs/inventory/background_jobs.md"
   ],
   "criteria": [
-    {"id": "secret_boundary", "success": "서버 PC 의 현재 승인된 관리자만 키를 등록·확인·삭제하고, 응답·로그·오류·시험 사본·내보내기 DB 에서 가짜 비밀값이 검출되지 않으며 로컬 허브는 관리 경로를 중계하지 않는다.", "failure": "권한 우회, 키 반사·유출, 정제 실패 사본 공개, 허브 중계 중 하나라도 발생한다.", "required": true, "verification": []},
-    {"id": "execution_gate", "success": "env_ok·collect_ok·키 확인 조건이 분리되어 test_dev(NO_PROXY)·READ_ONLY·외부 복구 차단·복원 정지·disabled 에서 외부 수집을 하지 않고, 키 확인 성공이 수집을 자동으로 켜지 않는다.", "failure": "금지 조건에서 외부 호출이 일어나거나 키 확인·조회가 수집을 켠다.", "required": true, "verification": []},
-    {"id": "atomic_snapshot", "success": "완결된 창만 행·실제 범위·버전과 함께 한 트랜잭션으로 교체되고, 임대 fence·조직·키 revision·enabled 가 바뀐 작업 결과는 버려지며 실패가 성공본을 지우지 않는다.", "failure": "부분 결과 노출, 성공본 손실, 오래된 작업의 반영이 하나라도 발생한다.", "required": true, "verification": []},
-    {"id": "bounded_collection", "success": "모든 요청(키 확인·수동 새로고침·재시도 포함)이 공통 30회/분·동시 1 을 지키고 410·429·5xx·401/403·반복 커서·상한 규칙대로 끝나며 과거 순환이 진행되고 지연이 보인다.", "failure": "예산·동시성 우회, 중복 수집, 무한 재시도, 과거 순환의 무기한 정체가 발생한다.", "required": true, "verification": []},
-    {"id": "comparison_contract", "success": "KST 경계·1/100 정수 금액·빈 창과 미수집·누락·중복·정확 창 불일치·31일 초과를 구분하고, 세 비교값의 출처·시점·완전성을 표시하며 API 를 못 내면 null + 사유를 준다.", "failure": "불완전 값을 0·정확값으로 표시하거나 하루·정확 창을 이중 합산하거나 float 오차가 생긴다.", "required": true, "verification": []},
-    {"id": "identity_and_relation", "success": "정확한 creator_uid 단일 일치만 자동 연결하고, MV 관계 3분류가 금액을 늘리지 않으며 미연결 actor·삭제·미등록 공간 금액도 합계에 남고 조직 이력이 있는 계정은 계정 정리에서 '이력 없음'이 되지 않는다.", "failure": "이메일만으로 연결, 권한·등록부 자동 변경, 신원 충돌 은폐, 이력 있는 계정의 잘못된 삭제가 발생한다.", "required": true, "verification": []},
-    {"id": "restore_compatibility", "success": "시험·작업실 사본은 키·새 표가 비고, 서버 복원 사본은 disabled·복원 정지·임대 초기화로 수집하지 않으며, 새 표가 있는 관리 DB 가 기존 호환성 검사와 migration 이름표 목록을 그대로 통과한다.", "failure": "복원 사본 자동 수집, 새 이력·키 유출, 기존 DB 거부, migration 이름표 추가가 발생한다.", "required": true, "verification": []},
-    {"id": "console_workflow", "success": "관리 창 '힉스필드 키' 메뉴가 가짜 서버로 키 등록·확인·삭제·수집 켜기/끄기·기간 대조의 정상·실패·지연 흐름을 처리하고 늦은 응답·세션 바뀐 응답을 버리며 키 입력 칸을 비운다.", "failure": "창 멈춤, 키 노출, 잘못된 기간 결과 표시, 실행되지 않은 동작의 성공 표시가 발생한다.", "required": true, "verification": []},
-    {"id": "phase1_isolation", "success": "기존 개인 몫·그룹·관리 표·대시보드·카드·생성 팩트·거래 수집·텔레메트리 결과와 계약이 바뀌지 않고, 관련 기존 회귀 시험이 통과한다.", "failure": "기존 소비처 금액·권한·텔레메트리 계약이 의도 없이 바뀌거나 관련 회귀 시험이 실패한다.", "required": true, "verification": []},
-    {"id": "docs_inventory", "success": "gen_inventory --check·check_code_map 이 통과하고 SERVER.md·SERVER_RECOVERY.md 에 키 등록·수집 켜기·이사/복원 때 재등록과 수동 복사본 외부 호출 차단 절차가 적혀 있다.", "failure": "목록·코드 지도가 낡았거나 운영 절차 문서가 빠진다.", "required": true, "verification": []}
+    {"id": "secret_boundary", "success": "서버 PC 의 현재 승인된 관리자만 키를 등록·확인·삭제하고, 응답·로그·오류·시험 사본·내보내기 DB 에서 가짜 비밀값이 검출되지 않으며 로컬 허브는 관리 경로를 중계하지 않는다.", "failure": "권한 우회, 키 반사·유출, 정제 실패 사본 공개, 허브 중계 중 하나라도 발생한다.", "required": true, "verification": ["78a5f557aa8740e9a3e1063aa0a16138"]},
+    {"id": "execution_gate", "success": "env_ok·collect_ok·키 확인 조건이 분리되어 test_dev(NO_PROXY)·READ_ONLY·외부 복구 차단·복원 정지·disabled 에서 외부 수집을 하지 않고, 키 확인 성공이 수집을 자동으로 켜지 않는다.", "failure": "금지 조건에서 외부 호출이 일어나거나 키 확인·조회가 수집을 켠다.", "required": true, "verification": ["8206135f02734fb6b8230b15d8300a9d"]},
+    {"id": "atomic_snapshot", "success": "완결된 창만 행·실제 범위·버전과 함께 한 트랜잭션으로 교체되고, 임대 fence·조직·키 revision·enabled 가 바뀐 작업 결과는 버려지며 실패가 성공본을 지우지 않는다.", "failure": "부분 결과 노출, 성공본 손실, 오래된 작업의 반영이 하나라도 발생한다.", "required": true, "verification": ["c9df7fee2078498c94ff93506092db2f"]},
+    {"id": "bounded_collection", "success": "모든 요청(키 확인·수동 새로고침·재시도 포함)이 공통 30회/분·동시 1 을 지키고 410·429·5xx·401/403·반복 커서·상한 규칙대로 끝나며 과거 순환이 진행되고 지연이 보인다.", "failure": "예산·동시성 우회, 중복 수집, 무한 재시도, 과거 순환의 무기한 정체가 발생한다.", "required": true, "verification": ["660d4785b3c141ecb39b4adddcea783d"]},
+    {"id": "comparison_contract", "success": "KST 경계·1/100 정수 금액·빈 창과 미수집·누락·중복·정확 창 불일치·31일 초과를 구분하고, 세 비교값의 출처·시점·완전성을 표시하며 API 를 못 내면 null + 사유를 준다.", "failure": "불완전 값을 0·정확값으로 표시하거나 하루·정확 창을 이중 합산하거나 float 오차가 생긴다.", "required": true, "verification": ["b62ba9df22434ee28b5d122cfe78c2c1"]},
+    {"id": "identity_and_relation", "success": "정확한 creator_uid 단일 일치만 자동 연결하고, MV 관계 3분류가 금액을 늘리지 않으며 미연결 actor·삭제·미등록 공간 금액도 합계에 남고 조직 이력이 있는 계정은 계정 정리에서 '이력 없음'이 되지 않는다.", "failure": "이메일만으로 연결, 권한·등록부 자동 변경, 신원 충돌 은폐, 이력 있는 계정의 잘못된 삭제가 발생한다.", "required": true, "verification": ["19bf4719af384289ab87ddfa3f154f0f"]},
+    {"id": "restore_compatibility", "success": "시험·작업실 사본은 키·새 표가 비고, 서버 복원 사본은 disabled·복원 정지·임대 초기화로 수집하지 않으며, 새 표가 있는 관리 DB 가 기존 호환성 검사와 migration 이름표 목록을 그대로 통과한다.", "failure": "복원 사본 자동 수집, 새 이력·키 유출, 기존 DB 거부, migration 이름표 추가가 발생한다.", "required": true, "verification": ["c1f65c488e984635b4eb741bc65bb44a", "0f68d07d726f449f91a86b255195d74b"]},
+    {"id": "console_workflow", "success": "관리 창 '힉스필드 키' 메뉴가 가짜 서버로 키 등록·확인·삭제·수집 켜기/끄기·기간 대조의 정상·실패·지연 흐름을 처리하고 늦은 응답·세션 바뀐 응답을 버리며 키 입력 칸을 비운다.", "failure": "창 멈춤, 키 노출, 잘못된 기간 결과 표시, 실행되지 않은 동작의 성공 표시가 발생한다.", "required": true, "verification": ["3a8d80af7455410687bb7fe108c84492"]},
+    {"id": "phase1_isolation", "success": "기존 개인 몫·그룹·관리 표·대시보드·카드·생성 팩트·거래 수집·텔레메트리 결과와 계약이 바뀌지 않고, 관련 기존 회귀 시험이 통과한다.", "failure": "기존 소비처 금액·권한·텔레메트리 계약이 의도 없이 바뀌거나 관련 회귀 시험이 실패한다.", "required": true, "verification": ["d5e94a838d0e4d60a26bc908c2c67f22", "65b0c6fa7a61418b8c631a8c2e52f4f8"]},
+    {"id": "docs_inventory", "success": "gen_inventory --check·check_code_map 이 통과하고 SERVER.md·SERVER_RECOVERY.md 에 키 등록·수집 켜기·이사/복원 때 재등록과 수동 복사본 외부 호출 차단 절차가 적혀 있다.", "failure": "목록·코드 지도가 낡았거나 운영 절차 문서가 빠진다.", "required": true, "verification": ["f0bc3017dc9a489f9db9e99ab3db0af3", "955b73fea6af474ab6149cb588c3cb31", "8a09174453b146b0bfaf3d2bc61f7e90"]}
   ],
   "decisions": [
     {"choice": "조직 사용량 API 를 1단계에서는 관리자 대조에만 쓴다", "why": "창 의미·신원 연결·지연을 실제 운영 값으로 확인하기 전에 몫·카드 숫자를 바꾸면 되돌리기 어렵다(Codex 4차 합의 범위)", "alternative": "바로 개인 몫 전환 — 0b 미확인 항목(지연·늦은 정산)과 J3·J4 미정 때문에 보류", "revisit": "1단계 대조에서 공간·사람별 값이 안정적으로 맞고 J3·J4 가 정해질 때(2단계)"},
@@ -110,7 +110,8 @@ owner: 구현 Codex(`01a1c44e-9a49-72e1-93b6-52bd87d63b36`, 작업실 `D:\Claude
     {"path": "docs/status/hf_org_usage_2026-11-10.md", "begin": "<!-- hf-org-usage-design:begin -->", "end": "<!-- hf-org-usage-design:end -->", "sha256": "10655f24772d78dff84a2fa85a5a1d007baa4daf94515ce8b3f03b48ff261db8"}
   ],
   "evidence": {
-    "target": {"kind": "worktree"},
+    "target": {"kind": "revision", "revision": "d6231f9e8327b8b59933a7abbc92414a242cc881"},
+    "review": {"host": "claude", "session": "dbdb4761-c750-4dff-9827-4a6a4b539cf5", "transcript": "C:/Users/FX-PC06/.claude/projects/D--ClaudeCode/dbdb4761-c750-4dff-9827-4a6a4b539cf5.jsonl"},
     "consensus": [
       {"host": "codex", "session": "01a1c3e2-958f-7b12-940c-7044af7dc570", "transcript": "C:/Users/FX-PC06/.codex/sessions/2026/11/10/rollout-2026-11-10T14-16-09-01a1c3e2-958f-7b12-940c-7044af7dc570.jsonl"},
       {"host": "claude", "session": "1a0cd9b2-9180-43d7-a43f-3f7afe341dc9", "transcript": "C:/Users/FX-PC06/.claude/projects/D--ClaudeCode/1a0cd9b2-9180-43d7-a43f-3f7afe341dc9.jsonl"}
@@ -123,6 +124,9 @@ owner: 구현 Codex(`01a1c44e-9a49-72e1-93b6-52bd87d63b36`, 작업실 `D:\Claude
 ```
 
 ## 진행 기록
+
+- 11-10 **dev 통합 완료**: 독립 재리뷰 2차(같은 세션 `dbdb4761`) `VIBE-REVIEW-PASS … bb1689b8…` — 1차 P1 1·P2 9, 재리뷰 P2 4 모두 고침 확인, 남은 지적 0. 고침 커밋 `1dd99097`·`d32e4fdf`·`5245b941`·`dd412a5e`, dev 재병합 `e173bfb4`·`4daa2440`·`d6231f9e`(계약 파일 안 건드림 — 지문 그대로 `bb1689b8c4cc7816aea969240ee6434e949fdb237447ba19faeb8c172681439f`). dev 작업 트리에 후보 40파일을 `git restore --source --worktree` 로 꺼내 검사기 inspect 지문 일치 확인 → 조건별 `run-test` 시험 기록 14개 전부 exit 0·대상 불변(secret_boundary 78a5f557 · execution_gate 8206135f · atomic_snapshot c9df7fee · bounded_collection 660d4785 · comparison_contract b62ba9df · identity_and_relation 19bf4719 · restore_compatibility c1f65c48·0f68d07d · console_workflow 3a8d80af · phase1_isolation d5e94a83·65b0c6fa · docs_inventory f0bc3017·955b73fe·8a091744) → `check --stage integrate --revision d6231f9e` 통과 → 같은 명령에서 스테이징 빔 확인·우리 파일만 올리고 `merge --ff-only` (`383b8a10..d6231f9e`, 41파일).
+- **Jay 가 할 일(운영 반영)**: main 병합은 Jay "병합" 뒤 후보 PR·Gate 6-A → 공유 서버 업데이트(관리 창 [관리 도구 갱신] → [Git 업데이트]) → 관리 창 '힉스필드 키'에서 키 등록 → [키 확인] → [수집 켜기]. 앱 릴리스는 필요 없음(서버만 바뀜). 남은 작은 다듬기: 대조 표 머리글 두 칸(서버 생성 기록·생성 아닌 차감) 폭. 1b(MV 관계 5분류)·2단계(몫·그룹 전환)·3단계(카드 금액)는 별도.
 
 - 11-10 구현(Codex `01a1c44e`, workspace-write): 36개 파일(새 16 + 수정 20), 계약 밖 0. 첫 판은 조직 API 봉투 규격이 기록에 없어 클라이언트를 `protocol_unconfirmed` 로 막아 둠(추측 전송 안 함) → 총괄이 공식 문서 추출본·0b 성공 스크립트를 넘겨 완성. Codex 샌드박스 안 관련 시험 14파일 302 통과·13 하위시험(`--basetemp` 새 경로).
 - 11-10 총괄 확인(샌드박스 밖): `gen_inventory.py` 재생성(endpoints 462·env_vars 160·db_tables 124·background_jobs 99) → `--check` 통과 · `check_code_map` 빠짐 0. 관리 창 페이지를 가짜 값으로 실제 코드 렌더(투명 창 + PrintWindow, 스크래치 `render_hforg.py`) → 흰 입력칸·주 단추·잘리는 열 4건 고침(Codex) → 다시 찍어 확인. 머리글 일부(서버 생성 기록·생성 아닌 차감)는 좁아 잘림 — 남은 작은 다듬기.
