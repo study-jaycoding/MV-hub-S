@@ -58,6 +58,13 @@ owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 보류
   6. (P2) 판 확인은 종료 코드·엄격한 판 모양 · 진행·실패·복구 상태는 `can_update` 와 따로 보여야 한다 · touched_paths 에 `services/agent_chat.py`·`agent_chat_process.py`·`tests/test_agent_chat_claude.py` 추가.
 - 원문: 세션 스크래치 `agentpanel/codex_update_design_reply.md` · `claude_update_agree.json`.
 
+## 5. 다시 본 사실 — 단추가 꼭 필요한가(11-10 저녁, Jay "클로드 앱에서 업데이트하면 자동으로 되나?")
+
+- **Claude 데스크톱 앱 업데이트로는 허브의 Claude Code 가 안 바뀐다**(실측): 앱은 자기 폴더 `%APPDATA%\Claude\claude-code\<판>\…\claude.exe`(2.1.317·2.1.321)를 따로 쓰고, 허브가 쓰는 npm 설치본은 2.1.296 그대로(exe 고친 때 10-14). 공식 문서는 둘이 바이너리를 나누는지 말하지 않는다.
+- 공식 문서(code.claude.com/docs/en/setup · troubleshoot-install, 하위 에이전트가 읽음): **공식 설치(`irm https://claude.ai/install.ps1 | iex` → `~\.local\bin\claude.exe`)는 백그라운드에서 스스로 업데이트**한다(채널 `autoUpdatesChannel` latest/stable). npm 설치도 시작할 때·실행 중 확인해 업데이트한다고 적혀 있으나, 이 PC 는 `~/.claude.json` 에 `autoUpdates: false`·`installMethod: global` 이 있고 실제로 10-14 이후 안 바뀌었다(이 칸의 뜻은 읽은 문서에 없어 원인 단정 못 함). npm → 공식으로 옮기는 법 = 공식 설치 뒤 `npm uninstall -g @anthropic-ai/claude-code`(설치는 하나만).
+- **칸의 연결 안내가 이미 공식 설치 명령을 준다**(`AgentConnect.tsx` `INSTALL_COMMAND`) → 안내대로 설치한 팀 PC 는 스스로 업데이트된다. 허브는 공식 설치본을 이미 후보로 보고 판이 높은 쪽을 고른다(`find_claude`). 단추가 필요한 곳은 npm 으로 깐 PC(지금은 Jay PC)뿐.
+- 그래서 제안: Jay PC 를 공식 설치로 옮기고 단추는 만들지 않는다(Jay 답 대기).
+
 ## 3. 시험
 
 - 백엔드(가짜만 — 진짜 npm·진짜 Claude Code 를 바꾸지 않는다): 판 확인(npm 경로 판정·official·none, 최신 > 지금일 때만 can_update, 판 모양 아님·실패 캐시) · 업데이트가 막히는 경우(잠금 못 잡음·로그인 창·같은 exe 실행 중·명령줄 조회 실패·1단계에서 최신 아님) · 성공(명령 인자에 정확한 판, 끝 판 확인, 캐시 비움) · npm 실패·판 불일치·시간 초과(Job 닫기) · 동시 두 번 누름(하나만) · 업데이트 중 `would_block` 문구.
