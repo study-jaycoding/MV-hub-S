@@ -5,7 +5,10 @@ updated: 2026-11-10
 
 # MV Agent — Claude Code 공식 설치 보장 · [업데이트] 단추 (2026-11-10)
 
-owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 설계 중 · updated: 2026-11-10
+owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 보류 · updated: 2026-11-10
+
+> [!IMPORTANT]
+> 2차 설계 검토(v2, 5절) — Codex **수정 요청**(P1 6 · P2 3). Claude 합의 세션은 npm `claude.cmd` 가 지워져 시작하지 못함(아래). 같은 때 **Jay PC 는 공식 설치 2.1.322 로 바뀌고 npm 판은 지워졌다**(18:54 — 허브가 공식 설치본을 고르고 요금제 Ultra·최신 2.1.322 확인). 다음 판(v3) 범위를 Jay 에게 묻고 멈춤. 코드 0.
 
 ## 1. 요청과 사실
 
@@ -57,6 +60,19 @@ owner: Claude · reviewer: Codex(설계 검토·독립 리뷰) · status: 설계
 - Codex(설계 세션 `01a1bf3c` 이어 받기, 요청 모델 gpt-6.1-sol·high, 무도구·읽기 전용) — **수정 요청**, P1 6 · P2 3. Claude(읽기 전용 새 세션 `d77d3d43`, claude-opus-5-5) — **수정 요청**, 중대 3 · 보통 2 · 작음 2.
 - 겹친 중대 지적: ① 업데이트 중에도 허브가 같은 claude.exe 를 띄운다(상태 조회·차례 시작의 `engine_problem` 이 `would_block` 보다 먼저 — `routers/agent_chat.py:217`) ② `ClaudeLock` 은 자격 폴더 기준 `Local\` 뮤텍스이고 `_valid_owner` 가 `update` 를 모름(173줄)·업데이트엔 회수 표식 없음 ③ npm 전역 설치 위치를 `which("npm")` 폴더로 판정하면 틀림(`npm prefix -g`) ④ 명령줄 글자 대신 ExecutablePath · 확인~설치 사이 틈 → 되돌릴 수 있는 교체 ⑤ 허브가 설치 도중 꺼질 때 복구 계약 없음 ⑥ (P2) 판 모양·상태 표시·touched_paths.
 - 원문: 세션 스크래치 `agentpanel/codex_update_design_reply.md` · `claude_update_agree.json`. → v2 에서 2-3 처럼 처리.
+
+## 5. 2차 설계 검토(v2, 계약 SHA b0b17b6c…)
+
+- Codex(같은 설계 세션 `01a1bf3c` 이어 받기, 요청 모델 gpt-6.1-sol·high, 무도구) — **수정 요청**:
+  1. [P1] 배경 스레드는 실행기와 함께 죽는다 — Job 을 실행기가 쥐면 닫힐 때 설치가 죽고, 아니면 시간 제한·결과 기록을 맡을 주체가 없다 → **독립 감독 프로세스**가 설치 Job·시한·로그·표식을 쥔다(멈춘 채 생성→Job 배정→재개).
+  2. [P1] 설치 중복·업데이트와의 배타 부족(잠금이 자격 폴더·세션별) → 공식 설치 대상 기준 **유지보수 잠금**을 설치·업데이트가 함께 쓰고, 잠금 안에서 조건 재확인·시작 표식 먼저.
+  3. [P1] `.git` 없음 ≠ 릴리스, SYSTEM 아님 ≠ 일반 사용자(서비스 계정·상승 관리자) → 릴리스 표식·허용된 실행 경로·실제 사용자 토큰으로 판정, 상승 실행 제외.
+  4. [P1] 파일이 있다고 성공으로 보면 깨진 설치가 굳는다 → 정확한 경로로 실행해 종료 코드·판을 확인, 있는데 안 도는 경우는 복구 필요 상태.
+  5. [P1] 공식 업데이터를 강제로 끊어도 안전한지 미확인 → 실사용 전 공식 근거 또는 격리 중단·재시작 검증, 미완료 기록·손상 감지·복구 안내.
+  6. [P1] 공식 설치가 npm 보다 옛 판이면 허브가 npm 을 고르고 단추도 숨는다 → 사용 대상과 업데이트 대상 고르기를 나눈다.
+  7. [P2] 원격 스크립트 신뢰 범위·로그 정책 · [P2] 새 판 판정 출처(npm latest)와 공식 업데이트 채널 일치 · [P2] `agent_chat_process.py` 를 touched_paths 에, 경계 시험(여러 실행기·표식 쓰기 실패·설치 중 실행기 종료) 추가.
+- Claude(세션 `d77d3d43` 이어 받기) — **실행 실패**: `%APPDATA%\npm\claude.cmd` 가 없어졌다(Jay 가 공식 설치로 옮기며 npm 판을 지움). 다음 합의는 공식 설치본 `~\.local\bin\claude.exe` 로 띄운다.
+- 원문: 세션 스크래치 `agentpanel/codex_update_design2_reply.md`.
 
 ```vibe-intent
 {
