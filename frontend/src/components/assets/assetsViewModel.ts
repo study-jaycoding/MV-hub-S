@@ -1,4 +1,4 @@
-import { assetFileUrl } from "../../lib/assetUrls";
+import { assetFileUrl, assetThumbUrl } from "../../lib/assetUrls";
 import type { AssetMeta, AssetNode, PreviewTarget } from "../../types";
 import type { FolderTone } from "../FolderIcon";
 import { findFolder, flattenFiles } from "./treeUtils";
@@ -246,20 +246,32 @@ export async function copyAssetFiles(
   return { asked: paths.length, copied: result.count };
 }
 
+/** 셀이 받는 썸네일 폭 — 셀 표시폭(≈180~200×배율)×DPR 이 256 이하면 256, 아니면 512, Masonry 는 512. 크게 보기의 자리 표시가
+ *  셀과 **같은 주소**여야 캐시에서 바로 뜨므로 셀(AssetCell)과 크게 보기가 이 함수 하나를 같이 쓴다. */
+export function assetCellThumbPx(scale: number, isList: boolean, masonry: boolean): number {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  return masonry || Math.round((isList ? 200 : 180) * scale) * dpr > 256 ? 512 : 256;
+}
+
+/** thumbPx 를 주면 그림·영상에 셀과 같은 썸네일(`thumb`)을 넣는다 — 원본이 오는 동안 크게 보기가 자리 표시로 깐다(라이브러리 격자와 같음). */
 export function assetPreviewTarget(
   project: string,
   files: AssetNode[],
   target: AssetNode,
+  thumbPx?: number,
 ): PreviewTarget | null {
   if (target.type !== "image" && target.type !== "video" && target.type !== "audio") return null;
   const media = files.filter(
     (file) => file.type === "image" || file.type === "video" || file.type === "audio",
   );
+  const thumbOf = (file: AssetNode) =>
+    thumbPx && file.type !== "audio" ? { thumb: assetThumbUrl(project, file.path, thumbPx, file.version) } : {};
   const items = media.map((file) => ({
     url: assetFileUrl(project, file.path),
     type: file.type as "image" | "video" | "audio",
     name: file.name,
     assetPath: file.path,
+    ...thumbOf(file),
   }));
   const index = media.findIndex((file) => file.path === target.path);
   return {
@@ -267,6 +279,7 @@ export function assetPreviewTarget(
     type: target.type,
     name: target.name,
     assetPath: target.path,
+    ...thumbOf(target),
     items,
     index,
   };

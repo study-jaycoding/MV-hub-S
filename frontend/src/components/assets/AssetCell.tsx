@@ -10,6 +10,7 @@ import { TagEditor } from "../TagEditor";
 import { InfoIcon } from "../common/ViewIcons";
 import { LastViewedBadge } from "../scene/LastViewedBadge";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
+import { assetCellThumbPx } from "./assetsViewModel";
 
 export const AssetCell = memo(function AssetCell({
   project,
@@ -85,8 +86,8 @@ export const AssetCell = memo(function AssetCell({
   const masonry = !isList && boxW !== undefined && boxH !== undefined;
   // 썸네일 요청 폭 버킷 — 셀 표시폭(≈180~200*scale)×DPR 이 256 이하면 256, 아니면 512. 1x 디스플레이·
   // 작은 줌에선 512 가 과해 256 으로 디코딩 메모리 1/4. 레티나·큰 줌에선 512 유지(화질 무손실). Masonry 는 넓은 칸이 있어 512.
-  const _dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-  const thumbPx = masonry || Math.round((isList ? 200 : 180) * scale) * _dpr > 256 ? 512 : 256;
+  //  크게 보기의 자리 표시가 같은 주소를 쓰도록 계산은 assetCellThumbPx 하나로 같이 쓴다.
+  const thumbPx = assetCellThumbPx(scale, isList, masonry);
   // 이미지는 리사이즈 썸네일로(풀해상도 디코딩 렉 방지). 영상/오디오는 원본 사용.
   // node.version(수정시각 나노초+크기)을 붙여 원본이 같은 이름으로 바뀌면 새 썸네일을 불러온다.
   const imgSrc = node.type === "image" ? api.assetThumbUrl(project, node.path, thumbPx, node.version) : url;
