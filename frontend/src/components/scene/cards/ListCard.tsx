@@ -3,7 +3,8 @@
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { CSSProperties } from "react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { assetVersionsSnapshot, subscribeAssetVersions } from "../../../lib/assetVersions";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
@@ -11,7 +12,7 @@ import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../
 import { refThumbSrc } from "../../../lib/sceneMedia";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { isTopLayer, isTypingTarget, useModalFocus } from "../../../lib/keyGate";
-import { refServerStatus } from "../../../lib/sceneAssetRelink";
+import { getRefServerStatusVersion, refServerStatus, subscribeRefServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
 import { CloudOffIcon, LinkOffIcon } from "../../common/ViewIcons";
@@ -22,7 +23,9 @@ const kindOf = (type?: string) => (type === "video" ? "video" : type === "audio"
 // 오디오는 썸네일이 없다 — 에셋 창 오디오 카드와 같은 음표 타일
 const audioTile = <div className="audio-tile"><span className="audio-glyph">🎵</span></div>;
 
-export function ListCard({
+// memo — 받은 값이 그대로면 판이 다시 그려져도(줌 확정·이동·선택) 다시 그리지 않는다. 다른 카드가 움직이면 cardsById 가 새 객체라
+//  그대로 다시 그린다(모은 것의 순서를 자리로 정한다). 넘어오는 함수의 정체성을 안 바꾸는 것은 보드의 몫이다.
+export const ListCard = memo(function ListCard({
   card,
   cardsById,
   resolvedEdges,
@@ -60,6 +63,9 @@ export function ListCard({
   // 순서 바꾸기는 더블클릭 팝업에서만(Jay 2026-11-09). 캔버스 노드에서는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
   reorderable?: boolean;
 }) {
+  // 그릴 때 읽는 두 저장소(서버 판정 = 빨간 빗금·마크, 어셋 버전 = 썸네일 주소) — memo 뒤로 보드가 대신 그려 주지 않으니 직접 듣는다
+  useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
+  useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   const moveTip = reorderable ? "\n드래그 = 순서 바꾸기" : "\n더블클릭 = 크게 보고 순서 바꾸기";
   // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트). input(무선)은 실제 소스로 해석.
   const li = collectListInputs(card.id, cardsById, resolvedEdges);
@@ -361,7 +367,7 @@ export function ListCard({
       />
     </>
   );
-}
+});
 
 // 크게 보기 격자의 열 수(Jay 2026-11-10 시안) — 노드와 같은 열, 5줄을 넘으면 열을 늘리되 5열까지(나머지는 줄로).
 export function listPopCols(n: number, nodeCols: number): number {

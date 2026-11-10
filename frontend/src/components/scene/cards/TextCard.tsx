@@ -3,7 +3,8 @@
 //   리마운트되지 않아 포커스가 유지된다. 캐럿 위치는 부모 소유 caretPosRef(노드별, 글자 위치)로 복원.
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject } from "react";
+import { assetVersionsSnapshot, subscribeAssetVersions } from "../../../lib/assetVersions";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { variantIds } from "../../../lib/scenes";
 import type { Generation } from "../../../types";
@@ -28,7 +29,9 @@ import { breakTextTyping, recordTextEdit, redoTextEdit, startTextHistory, undoTe
 // 앞뒤 입력과 묶지 않는 변경 — 되돌리면 이것만 돌아간다
 const SEPARATE_INPUTS = new Set(["insertParagraph", "insertLineBreak", "insertFromPaste", "insertFromDrop", "deleteByCut"]);
 
-export function TextCard({
+// memo — 받은 값(카드·연결·생성 자료…)이 그대로면 판이 다시 그려져도(줌 확정·이동·선택) 다시 그리지 않는다. 다른 카드가 움직이면
+//  cardsById 가 새 객체라 그대로 다시 그린다(연결된 것의 순서를 자리로 정한다). 넘어오는 함수의 정체성을 안 바꾸는 것은 보드의 몫이다.
+export const TextCard = memo(function TextCard({
   card,
   cardsById,
   resolvedEdges,
@@ -55,6 +58,8 @@ export function TextCard({
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
 }) {
+  // 알약 썸네일 주소(refThumbSrc)는 어셋 버전을 읽는다 — memo 뒤로 보드가 대신 그려 주지 않으니 직접 듣는다
+  useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   // 연결된 레퍼런스(레퍼런스 카드 refs + 생성물)를 순서대로 @image1/@video1... 에 매핑. input 은 실제 소스로 해석.
   const refSrcs = resolvedEdges
     .filter((e) => e.to === card.id)
@@ -514,4 +519,4 @@ export function TextCard({
       />
     </>
   );
-}
+});
