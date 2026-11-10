@@ -466,3 +466,67 @@ it("missing notebook with unreadable live hub rows still establishes those rows 
   expect(fake.rows.get("s")!.data).toBe("{}");
   expect(readWorkingBucket(bucket)).toEqual([scene()]);
 });
+
+// ── visibleChanged(2026-11-10, docs/status/캔버스_카메라저장뒤처리_2026-11-10.md) — 진행 기록·기준만 바뀐 동기화는 '화면 변화'가 아니다 ──
+it("visibleChanged: 카메라만 바꾼 씬을 올린 동기화는 화면 변화가 아니고 씬 객체도 그대로", async () => {
+  await joined();
+  edit([{ ...scene(), camera: { z: 0.5, x: 10, y: 20 } }]); await settleSceneStoreForTest();
+  const before = readWorkingBucket(bucket)[0];
+  const r = await syncSceneNotebook();
+  expect(r).toMatchObject({ status: "ready", visibleChanged: false });
+  expect(JSON.parse(fake.rows.get("s")!.data).camera).toEqual({ z: 0.5, x: 10, y: 20 }); // 올리기는 그대로 한다
+  expect(readWorkingBucket(bucket)[0]).toBe(before);
+  expect((await syncSceneNotebook()).visibleChanged).toBe(false); // 확인 동기화도
+});
+it.each([
+  ["다른 브라우저가 고친 내용", (f: FakeHub) => { f.save(scene("b", "remote")); }],
+  ["순서", (f: FakeHub) => { f.order = ["b", "a"]; f.rev++; }],
+  ["삭제", (f: FakeHub) => { const row = f.rows.get("b")!; row.deleted_at = "today"; row.base = { ...row.base, rev: row.base.rev + 1 }; f.order = ["a"]; f.rev++; }],
+  ["추가", (f: FakeHub) => { f.save(scene("c")); f.rev++; }],
+])("visibleChanged: 허브에서 온 %s 는 화면 변화다", async (_, change) => {
+  await joined([scene("a"), scene("b")]);
+  change(fake);
+  expect(await syncSceneNotebook()).toMatchObject({ status: "ready", visibleChanged: true });
+});
+it("visibleChanged: 첫 합류는 내용이 같으면 false, 다르면 true", async () => {
+  await writeScenesStore({ [bucket]: [scene("s")] });
+  fake.book = "book1"; fake.save(scene("s"));
+  expect(await syncSceneNotebook()).toMatchObject({ status: "ready", changed: true, visibleChanged: false });
+});
+it("visibleChanged: 첫 합류가 로컬과 다른 허브 내용으로 바꾸면 true", async () => {
+  await writeScenesStore({ [bucket]: [scene("s", "local")] });
+  fake.book = "book1"; fake.save(scene("s", "hub"));
+  expect(await syncSceneNotebook()).toMatchObject({ status: "ready", visibleChanged: true });
+  expect(readWorkingBucket(bucket)[0].name).toBe("hub");
+});
+it("visibleChanged: 합류 직전 큐에 든 편집이 허브 내용으로 바뀌면 true(앞의 목록만 보고 같다고 하지 않는다)", async () => {
+  await writeScenesStore({ [bucket]: [scene("s")] });
+  fake.book = "book1"; fake.save(scene("s"));
+  hook = (path) => { if (path.includes("notebook?")) { hook = null; edit([scene("s", "queued")]); } };
+  const r = await syncSceneNotebook();
+  expect(r).toMatchObject({ status: "ready", visibleChanged: true });
+  expect(readWorkingBucket(bucket)[0].name).toBe("s");
+});
+it("visibleChanged: 실패 사본 표식을 거둔 뒤 네트워크가 실패해도 화면 변화는 남는다", async () => {
+  await joined(); edit([scene(), { ...scene("local-copy"), localNotebookCopy: "upload_failed" }]); await settleSceneStoreForTest();
+  let gets = 0;
+  hook = (path) => { if (path.includes("notebook?") && ++gets >= 1) throw { status: 503 }; };
+  const r = await syncSceneNotebook();
+  expect(r.status).toBe("retry");
+  expect(r.visibleChanged).toBe(true);
+  expect(readWorkingBucket(bucket).find((s) => s.id === "local-copy")?.localNotebookCopy).toBeUndefined();
+});
+it("visibleChanged: 올리는 동안의 내 편집 — 기준만 승계하고 다시 맞춰도 화면 변화가 아니다", async () => {
+  await joined(); edit([scene("s", "one")]); await settleSceneStoreForTest();
+  hook = (path) => { if (path.endsWith("/backup")) { hook = null; edit([scene("s", "two")]); } };
+  const r = await syncSceneNotebook();
+  expect(r).toMatchObject({ status: "ready", visibleChanged: false });
+  expect(readWorkingBucket(bucket)[0].name).toBe("two");
+  expect(JSON.parse(fake.rows.get("s")!.data).name).toBe("two");
+});
+it("visibleChanged: 동기화가 안 도는 경우(꺼짐·토큰 없음)는 false", async () => {
+  setHubFeatures([]);
+  expect(await syncSceneNotebook()).toEqual({ status: "disabled", changed: false, visibleChanged: false });
+  setHubFeatures(["scene_writer_v1"]); token = null;
+  expect(await syncSceneNotebook()).toEqual({ status: "waiting_token", changed: false, visibleChanged: false });
+});

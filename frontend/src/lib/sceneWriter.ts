@@ -158,7 +158,7 @@ export class SceneWriterClient {
   }
   private async reconcile(epoch: number) {
     // 이미 쓰던 탭의 일시 실패는 로컬 편집을 유지한다. 최초 맞추기만 유한하게 재시도한다.
-    let result: NotebookSyncResult = { status: "retry", changed: false };
+    let result: NotebookSyncResult = { status: "retry", changed: false, visibleChanged: false };
     for (let attempt = 0; attempt < (this.reconciled ? 1 : 3); attempt++) {
       result = await this.deps.sync();
       if (!this.valid(epoch)) return;

@@ -113,7 +113,9 @@ export function replaceNotebookSceneIfUnchanged(bucket: string, expected: Notebo
 }
 function replaceNotebookSceneIfUnchangedInTransaction(all: ScenesByProject, meta: Meta, bucket: string, expected: NotebookSceneState, scene: Scene, base: SceneBase): boolean {
   if (!sameState(stateOf(all, meta, bucket, scene.id), expected) || expected.text === null || expected.deletion || expected.revival) return false;
-  all[bucket] = all[bucket].map((item) => item.id === scene.id ? scene : item);
+  // 정본 글자가 지금 글자와 같으면(방금 올린 그 씬) 객체를 바꾸지 않고 기준만 잇는다 — 새 객체가 저장소에서 씬 쓰기가 되어
+  //  화면이 같은 씬을 다시 받아 그렸다(2026-11-10). 위 조건 검사·기준 갱신은 그대로다.
+  if (expected.text !== JSON.stringify(scene)) all[bucket] = all[bucket].map((item) => item.id === scene.id ? scene : item);
   meta[key("b", bucket, scene.id)] = base;
   return true;
 }
@@ -161,16 +163,26 @@ export function applyNotebookOrder(bucket: string, expectedIds: string[], expect
 
 /** 합류 표시는 계정당 한 번이다. 공책/history가 바뀌어도 이 연산을 다시 쓰지 않는다.
  * 호출자는 합류 동안 편집을 잠근다(3단계). 저장 큐 앞의 pending도 보관본에 포함된다. */
-export function joinSceneNotebook(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean): Promise<boolean> {
+export async function joinSceneNotebook(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean): Promise<boolean> {
+  return (await joinSceneNotebookDetailed(account, notebookId, history, buckets, guard)).joined;
+}
+/** 이 계정의 보이는 씬 목록(빈 버킷 제외, 버킷 이름순) — 합류 전후 비교용 */
+function shownScenes(all: ScenesByProject, account: string): string {
+  return JSON.stringify(Object.entries(all).filter(([bucket, scenes]) => belongs(bucket, account) && scenes.length).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+/** 합류 + 그 트랜잭션 안에서 본 화면 변화(합류 성공이 곧 화면 변화는 아니다 — 같은 내용이면 false) */
+async function joinSceneNotebookDetailed(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean): Promise<{ joined: boolean; visible: boolean }> {
   const input = structuredClone(buckets);
+  const none = { joined: false, visible: false };
   // 서버 응답 해석은 3단계. 경계를 잘못 넘긴 입력은 부분 적용하지 않는다.
   for (const [bucket, value] of Object.entries(input)) {
     if (!belongs(bucket, account) || new Set(value.scenes.map((s) => s.id)).size !== value.scenes.length ||
-      value.order.history !== history || value.scenes.some((scene) => own(value.bases, scene.id)?.history !== history)) return Promise.resolve(false);
+      value.order.history !== history || value.scenes.some((scene) => own(value.bases, scene.id)?.history !== history)) return none;
   }
   const archiveKey = key("na", account, notebookId);
-  return change([archiveKey], (all, meta) => {
-    if (meta[key("nj", account)]) return false;
+  const result = await sceneNotebookTransaction([archiveKey], (all, meta) => {
+    if (meta[key("nj", account)]) return { value: none, changed: false };
+    const shownBefore = shownScenes(all, account);
     const conflicts = (meta.conflicts as SceneAbsorbConflict[] | undefined) ?? [];
     if (!meta[archiveKey]) meta[archiveKey] = {
       notebookId, scenes: Object.fromEntries(Object.entries(all).filter(([bucket]) => belongs(bucket, account))),
@@ -189,8 +201,11 @@ export function joinSceneNotebook(account: string, notebookId: string, history: 
       meta[key("ob", bucket)] = { base: value.order, dirty: null } satisfies SceneOrderState;
     }
     meta[key("nj", account)] = { notebookId, history } satisfies NotebookJoin;
-    return true;
+    const conflictsChanged = (meta.conflicts as SceneAbsorbConflict[]).length !== conflicts.length;
+    // 씬 차이 없이 충돌 목록만 바뀌어도 화면(충돌 탭)이 알아야 한다 — 저장소의 바깥 알림은 씬 차이가 있을 때만 돈다
+    return { value: { joined: true, visible: shownScenes(all, account) !== shownBefore }, changed: true, notify: conflictsChanged };
   }, guard);
+  return result.ok ? result.value : none;
 }
 
 export function readNotebookArchive(account: string, notebookId: string) {
@@ -235,6 +250,8 @@ export interface NotebookToken { account: string; token: string; generation: str
 export interface NotebookSyncResult {
   status: "disabled" | "waiting_token" | "ready" | "local_only" | "retry";
   changed: boolean;
+  /** 이 동기화의 공책 연산이 사용자가 볼 씬·순서를 바꿨는가(진행 기록·기준만 바뀐 것은 아님) — 복구 알림·목록 다시 받기의 열쇠 */
+  visibleChanged: boolean;
   reason?: string;
   sceneIds?: string[];
 }
@@ -252,6 +269,7 @@ export function setSceneNotebookTokenProvider(provider: () => NotebookToken | nu
   tokenProvider = provider;
   providerEpoch++;
   mcpCompletions.clear(); // 미완료 작업은 서버 pending 조회가 새 세대에서 다시 접수한다.
+  resetHashMemo(getAccountNamespace()); // 계정·쓰기 세대가 바뀌면 지문 기억도 놓는다(다른 계정의 큰 글자를 쥐지 않게)
 }
 type WireBase = { history_id: string; rev: number; hash: string };
 type HubRow = { id: string; data: string; deleted_at: string | null; base: WireBase };
@@ -332,8 +350,47 @@ export function buildSceneNotebookClose(lease: NotebookToken): string | null {
   // keepalive의 전체 본문 한도. 일부 씬만 보내고 정상 인계로 오해시키지 않는다.
   return bytes(body) <= 64 * 1024 ? body : null;
 }
+// 지문 기억 — 같은 전체 글자면 직접 계산해 둔 sha256 을 다시 쓴다. 동기화마다 허브 행 전부(받을 때 두 번)·로컬 씬 전부를
+//  다시 해싱해, 화면만 옮겨도 큰 씬이면 멈춘 직후 긴 작업이 됐다(2026-11-10 실측). 서버가 보낸 hash 는 넣지 않는다(행 대조는 그대로).
+//  shortcut: 상한은 추정(보유 글자 1,600만 자 ≈ 32MB·항목 1,000·한 글자 400만 자 초과는 기억 안 함) — 큰 공책이 늘면 실측 뒤 조정.
+const HASH_MEMO_MAX_ITEMS = 1000;
+const HASH_MEMO_MAX_CHARS = 16 * 1024 * 1024; // UTF-16 글자 수로 센다 — 상한을 세려고 다시 인코딩하지 않는다
+const HASH_MEMO_MAX_ONE = 4 * 1024 * 1024;
+const hashMemo = new Map<string, string>();
+let hashMemoChars = 0;
+let hashMemoAccount = "";
+let hashMemoGen = 0; // 비울 때마다 +1 — 비우기 전에 시작한 계산이 끝나 새 기억을 다시 채우지 않게(Codex 리뷰 P2)
+function resetHashMemo(account: string): void {
+  hashMemo.clear();
+  hashMemoChars = 0;
+  hashMemoAccount = account;
+  hashMemoGen++;
+}
 async function fingerprint(text: string): Promise<string> {
-  return sha256Hex(text); // HTTP 문맥도 기존의 검증된 JS SHA-256 대체 경로를 쓴다.
+  const account = getAccountNamespace();
+  if (account !== hashMemoAccount) resetHashMemo(account); // 다른 계정의 큰 글자를 쥐고 있지 않는다
+  const gen = hashMemoGen;
+  const kept = hashMemo.get(text);
+  if (kept !== undefined) {
+    hashMemo.delete(text); // 최근 것으로 옮긴다(오래된 것부터 버린다)
+    hashMemo.set(text, kept);
+    return kept;
+  }
+  const hash = await sha256Hex(text); // HTTP 문맥도 기존의 검증된 JS SHA-256 대체 경로를 쓴다.
+  if (text.length <= HASH_MEMO_MAX_ONE && gen === hashMemoGen && getAccountNamespace() === hashMemoAccount && !hashMemo.has(text)) {
+    hashMemo.set(text, hash);
+    hashMemoChars += text.length;
+    while (hashMemo.size > HASH_MEMO_MAX_ITEMS || hashMemoChars > HASH_MEMO_MAX_CHARS) {
+      const oldest = hashMemo.keys().next().value as string;
+      hashMemo.delete(oldest);
+      hashMemoChars -= oldest.length;
+    }
+  }
+  return hash;
+}
+/** 시험용 */
+export function notebookHashMemoForTest(): { size: number; chars: number } {
+  return { size: hashMemo.size, chars: hashMemoChars };
 }
 function batches<T extends { data: string }>(items: T[]): T[][] {
   const result: T[][] = [];
@@ -405,7 +462,7 @@ function hubBucket(book: HubBook): NotebookHubBucket {
 
 /** 동시 호출은 합치되, 넘기기는 settle 뒤의 새 고정본으로 한 번 더 맞춘다. */
 export function syncSceneNotebook(options: { fresh?: boolean } = {}): Promise<NotebookSyncResult> {
-  if (!hubHasFeature(SCENE_WRITER_FEATURE)) return Promise.resolve({ status: "disabled", changed: false });
+  if (!hubHasFeature(SCENE_WRITER_FEATURE)) return Promise.resolve({ status: "disabled", changed: false, visibleChanged: false });
   if (options.fresh && inFlight) {
     if (freshAfter?.after === inFlight) return freshAfter.promise;
     const after = inFlight;
@@ -427,7 +484,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
   const lease = provided ? { ...provided } : null;
   const account = getAccountNamespace(), epoch = providerEpoch;
   for (const [id, pending] of mcpCompletions) if (pending.account !== account) mcpCompletions.delete(id);
-  if (!lease || lease.account !== account) return { status: "waiting_token", changed: false };
+  if (!lease || lease.account !== account) return { status: "waiting_token", changed: false, visibleChanged: false };
   const guard = () => {
     const now = tokenProvider();
     return hubHasFeature(SCENE_WRITER_FEATURE) && providerEpoch === epoch && getAccountNamespace() === account &&
@@ -435,6 +492,9 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
   };
   const check = () => { if (!guard()) throw new Error("writer_changed"); };
   let changed = false;
+  // 공책 연산이 사용자가 볼 씬·순서를 바꿨는가 — 각 트랜잭션 안에서 판정해 성공한 것만 모은다(앞뒤 목록 비교는 그 사이의
+  //  사용자 편집까지 복구로 센다). 실패로 끝나도 이미 확정한 화면 변화는 지우지 않는다.
+  let visibleChanged = false;
   const bucket = `${account}::_none`;
   async function request<T>(path: string, payload?: unknown, method = "POST"): Promise<T> {
     check();
@@ -470,7 +530,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         let local = await snapshot();
         const reduced = (local.buckets[bucket]?.scenes ?? []).filter((s) => s.localNotebookCopy === "upload_failed" && bytes(JSON.stringify(s)) <= SCENE_LIMIT);
         if (reduced.length) {
-          await sceneNotebookTransaction([], (all) => {
+          const cleared = await sceneNotebookTransaction([], (all) => {
             let modified = false;
             all[bucket] = (all[bucket] ?? []).map((s) => {
               if (!reduced.some((before) => before.id === s.id && equal(before, s))) return s;
@@ -478,6 +538,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             });
             return { value: modified, changed: modified };
           }, guard);
+          if (cleared.ok && cleared.value) visibleChanged = true; // 사본 표식을 거뒀다(뒤에 네트워크가 실패해도 이미 확정)
           local = await snapshot();
         }
         let book = await getBook();
@@ -492,7 +553,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               if (oversizedIds.length) {
                 try { await request("writer", { action: "release", token: lease.token }); } catch { check(); }
                 if (local.starting) await writeNotebookProgress(account, "start", local.starting, null, guard);
-                return { status: "local_only", changed, reason: "start_too_big", sceneIds: oversizedIds };
+                return { status: "local_only", changed, visibleChanged, reason: "start_too_big", sceneIds: oversizedIds };
               }
               let progress = local.starting as PendingStart | null;
               if (!progress || progress.history !== book.history_id || progress.generation !== lease.generation || !equal(progress.scenes, scenes)) {
@@ -521,7 +582,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
                   await writeNotebookProgress(account, "start", progress, null, guard);
                   if (code === "empty_notebook" || code === "start_too_big") {
                     const ids = errorInfo(error)?.scene_ids;
-                    return { status: "local_only", reason: code, changed,
+                    return { status: "local_only", reason: code, changed, visibleChanged,
                       sceneIds: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [],
                     };
                   }
@@ -534,11 +595,13 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             if (!book.notebook_id) throw new Error("notebook_not_started");
             if (!local.joined) {
               releaseHold ??= holdNotebookWrites(account);
-              if (!(await joinSceneNotebook(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard))) throw new Error("join_failed");
+              const joined = await joinSceneNotebookDetailed(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard);
+              if (!joined.joined) throw new Error("join_failed");
               changed = true;
+              visibleChanged ||= joined.visible; // 같은 내용으로 합류하면 화면 변화 아님
               const progress = (await snapshot()).starting;
               if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
-              return { status: "ready", changed };
+              return { status: "ready", changed, visibleChanged };
             }
             const progress = (await snapshot()).starting;
             if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
@@ -589,7 +652,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               equal(frozen.order, { base: canonical.order, dirty: null }) &&
               book.items.every((r) => equal(frozen.states[r.id]?.base, fromBase(r.base))) &&
               Object.values(frozen.states).every((s) => !s.deletion && !s.revival)) {
-            if (equal((await snapshot()).buckets[bucket] ?? emptyBucket(), frozen)) return { status: "ready", changed };
+            if (equal((await snapshot()).buckets[bucket] ?? emptyBucket(), frozen)) return { status: "ready", changed, visibleChanged };
             continue;
           }
           pending = { id: newSceneIntentId(), history: book.history_id, notebookId: book.notebook_id, frozen, requests, tooBig,
@@ -644,8 +707,11 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         // All replacements and acknowledgements use the original frozen states, including intent IDs.
         // A concurrent edit skips text replacement but inherits the receipt for our own preceding write.
         const work = pending;
+        // 값 = 결과 + 이 트랜잭션이 사용자가 볼 씬·순서를 바꿨는가(콜백 밖 변수를 고치면 중단된 트랜잭션을 성공처럼 셀 수 있다)
+        type Applied = { state: "retry" | "changed" | "ready"; visible: boolean };
+        const retry: Applied = { state: "retry", visible: false };
         const applied = await sceneNotebookTransaction([key("nw", account)], (all, meta) => {
-          if (!equal(meta[key("nw", account)], work)) return { value: "retry" as const, changed: false };
+          if (!equal(meta[key("nw", account)], work)) return { value: retry, changed: false };
           const ids = new Set([...Object.keys(work.frozen.states), ...(all[bucket] ?? []).map((s) => s.id)]);
           const stable = equal((all[bucket] ?? []).map((s) => s.id), work.frozen.scenes.map((s) => s.id)) &&
             equal(meta[key("ob", bucket)] ?? emptyOrder(), work.frozen.order) && [...ids].every((id) =>
@@ -673,11 +739,11 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             if (last && work.orderCanAdvance && equal(order.base, work.frozen.order.base)) meta[key("ob", bucket)] = {
               base: { history: last.order.history_id, rev: last.order.rev }, dirty: order.dirty === work.frozen.order.dirty ? null : order.dirty,
             };
-            delete meta[key("nw", account)]; return { value: "retry" as const, changed: true };
+            delete meta[key("nw", account)]; return { value: retry, changed: true }; // 기준·의도·순서 메타만 — 화면 변화 아님
           }
           const rows = new Map(received.items.map((row) => [row.id, row]));
           for (const r of results.values()) if (r.status === "copied" && (!rows.get(r.target_id!) || rows.get(r.target_id!)!.deleted_at !== null)) {
-            delete meta[key("nw", account)]; return { value: "retry" as const, changed: true };
+            delete meta[key("nw", account)]; return { value: retry, changed: true };
           }
           const extra: Scene[] = [];
           for (const scene of work.frozen.scenes) {
@@ -685,9 +751,10 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             else if (tooBig.has(scene.id)) extra.push(makeLocalNotebookCopy(scene, newSceneIntentId(), "upload_failed"));
           }
           const incoming = hubBucket(received);
-          if (extra.some((s) => incoming.scenes.some((r) => r.id === s.id))) return { value: "retry" as const, changed: false };
+          if (extra.some((s) => incoming.scenes.some((r) => r.id === s.id))) return { value: retry, changed: false };
           const next = [...incoming.scenes, ...extra];
-          let modified = !equal(all[bucket] ?? [], next);
+          const visible = !equal(all[bucket] ?? [], next); // 받기·추가·삭제·충돌 사본·실패 사본·순서 — 아래 메타 변경은 섞지 않는다
+          let modified = visible;
           for (const receipt of receipts) {
             for (const r of receipt.deletes) acknowledgeNotebookIntentInTransaction(all, meta, bucket, r.id, "delete", stateOf(all, meta, bucket, r.id), r.base ? fromBase(r.base) : null);
             for (const r of receipt.results) if (r.base && ["saved", "same"].includes(r.status)) acknowledgeNotebookIntentInTransaction(all, meta, bucket, r.id, "revive", stateOf(all, meta, bucket, r.id), fromBase(r.base));
@@ -713,20 +780,21 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
           modified ||= !equal(meta[key("ob", bucket)], order);
           meta[key("ob", bucket)] = order;
           delete meta[key("nw", account)];
-          return { value: modified ? "changed" as const : "ready" as const, changed: true };
+          return { value: { state: modified ? "changed" : "ready", visible } satisfies Applied, changed: true };
         }, guard);
         if (!applied.ok) throw new Error("local_store_failed");
-        if (applied.value === "retry") continue;
-        changed ||= applied.value === "changed";
-        return { status: "ready", changed };
+        if (applied.value.state === "retry") continue;
+        changed ||= applied.value.state === "changed";
+        visibleChanged ||= applied.value.visible;
+        return { status: "ready", changed, visibleChanged };
       } catch (error) {
         if (error instanceof NotebookTransportError && round < 2) continue;
         throw error;
       }
     }
-    return { status: "retry", changed, reason: "reconcile_limit" };
+    return { status: "retry", changed, visibleChanged, reason: "reconcile_limit" };
   } catch (error) {
     const reason = errorCode(error);
-    return { status: ["writer_changed", "writer_required", "writer_expired"].includes(reason) ? "waiting_token" : "retry", changed, reason };
+    return { status: ["writer_changed", "writer_required", "writer_expired"].includes(reason) ? "waiting_token" : "retry", changed, visibleChanged, reason };
   }
 }

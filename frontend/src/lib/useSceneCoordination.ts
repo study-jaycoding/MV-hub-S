@@ -62,6 +62,28 @@ function withComfyState(memory: Scene, latest: Scene): Scene {
     ? memory : { ...memory, comfyRuns: latest.comfyRuns, comfyCardRuns: latest.comfyCardRuns };
 }
 
+const sameSceneList = (a: Scene[], b: Scene[]) => a.length === b.length && a.every((s, i) => s === b[i]);
+/**
+ * 저장소가 바깥 변화를 알렸을 때 화면 목록 합치기(applyExternal). 활성 씬은 내 것 유지(편집 보존), 나머지는 최신.
+ * 길이·순서·각 씬 객체가 같으면 이전 목록을 그대로 돌려준다 — 같은 목록을 새 배열로 넣어 앱·판 전체가 다시 그려졌다(2026-11-10).
+ */
+export function mergeExternalSceneList(prev: Scene[], latest: Scene[], activeId: string | null, following: boolean, notify: (msg: string) => void): Scene[] {
+  if (following) return sameSceneList(prev, latest) ? prev : latest; // 캔버스가 다른 창에 떠 있다 — 지킬 내 편집이 없다(followStore)
+  const myActive = activeId ? prev.find((s) => s.id === activeId) : undefined;
+  const latestActive = activeId ? latest.find((s) => s.id === activeId) : undefined;
+  if (myActive && !latestActive) {
+    // 다른 탭이 내가 보던 씬을 삭제 — 비파괴: 내 상태 전체 유지, 알림만.
+    notify("다른 탭에서 이 씬이 삭제됐습니다 — 새로고침하면 반영됩니다.");
+    return prev;
+  }
+  const merged = myActive ? latest.map((s) => (s.id === activeId ? withComfyState(myActive, s) : s)) : latest;
+  // 같은 객체면 내용 비교(씬 두 벌을 통째로 글자로)를 건너뛴다 — 다르면 지금처럼 비교·안내
+  if (myActive && latestActive && latestActive !== myActive && !sameSceneContent(latestActive, myActive)) {
+    notify("다른 탭에서 이 씬이 변경됐습니다 — 새로고침하면 반영됩니다.");
+  }
+  return sameSceneList(prev, merged) ? prev : merged;
+}
+
 // 백그라운드 씬의 비동기 결과가 도착해도, 현재 씬의 아직 디바운스 저장 전인 입력은 React 메모리에서
 // 보존한다. target 씬만 최신 저장본으로 교체하고 나머지는 최신 목록을 사용한다.
 // patchedSceneId=null 은 '내용을 고친 씬이 없다'(순서만 바뀜) — 활성 씬을 **항상** 보호한다.
@@ -256,25 +278,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       recoverConflicts(); // 방금 보관된 충돌이 있으면 새 탭으로 살린다(끝나면 통지가 다시 와 목록에 나타난다)
       const latest = listScenes(null);
       const following = followStoreRef.current; // 받은 때의 값 — 아래 함수는 그릴 때 돌아, 그새 떠 있음이 풀리면 낡은 씬을 지키고 알림을 띄운다
-      setScenes((prev) => {
-        if (following) return latest; // 캔버스가 다른 창에 떠 있다 — 지킬 내 편집이 없다(위 followStore)
-        const activeId = activeSceneIdRef.current;
-        const myActive = activeId ? prev.find((s) => s.id === activeId) : undefined;
-        const latestActive = activeId ? latest.find((s) => s.id === activeId) : undefined;
-        if (myActive && !latestActive) {
-          // 다른 탭이 내가 보던 씬을 삭제 — 비파괴: 내 상태 전체 유지, 알림만.
-          notify("다른 탭에서 이 씬이 삭제됐습니다 — 새로고침하면 반영됩니다.");
-          return prev;
-        }
-        // 활성 씬은 내 것 유지(편집 보존), 나머지는 최신으로.
-        const merged = myActive
-          ? latest.map((s) => (s.id === activeId ? withComfyState(myActive, s) : s))
-          : latest;
-        if (myActive && latestActive && !sameSceneContent(latestActive, myActive)) {
-          notify("다른 탭에서 이 씬이 변경됐습니다 — 새로고침하면 반영됩니다.");
-        }
-        return merged;
-      });
+      setScenes((prev) => mergeExternalSceneList(prev, latest, activeSceneIdRef.current, following, notify));
     };
     const onStorage = (e: StorageEvent) => {
       if (e.key !== STORAGE_KEYS.scenes) return; // 내 창 저장은 안 옴 — 옛 판 창이 쓴 것만
@@ -475,9 +479,13 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       }
     }
     const latest = result.ok ? result.scenes : listScenes(null);
-    setScenes((previous) =>
-      mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId),
-    );
+    // 카메라 하나만 든 쓰기(recordCamera) — 활성 씬은 화면 객체를 두고 카메라만 바꾼다. 저장소 사본으로 갈아 끼우면
+    //  카드·연결 배열이 새것이 돼 판이 카드 전부를 다시 그렸다(2026-11-10 R6). 실행 정보는 withComfyState 규칙대로 받는다.
+    const cameraOnly = result.ok && Object.keys(patch).length === 1 && "camera" in patch;
+    setScenes((previous) => {
+      const merged = mergePatchedSceneList(previous, latest, activeSceneIdRef.current, cameraOnly ? null : sceneId);
+      return cameraOnly ? merged.map((s) => (s.id === sceneId && s.camera !== patch.camera ? { ...s, camera: patch.camera } : s)) : merged;
+    });
     return result.ok;
   }, []);
   const canvasDocument = useMemo(() => createCanvasDocumentPort({ flushPending: flushScenePending, write: patchSceneById,

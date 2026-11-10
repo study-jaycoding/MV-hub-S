@@ -874,3 +874,30 @@ describe("sceneBackup — 판(1A)", () => {
     }
   });
 });
+
+// 허브 공책 동기화 뒤 '복구' 알림은 사용자가 볼 씬·순서가 바뀐 때만(2026-11-10 — 카메라만 옮겨도 진행 기록·기준 갱신이
+//  changed 로 와서 '씬을 DB 백업에서 복구했습니다' 가 떴다). 기존 changed 는 initSceneBackup 의 반환에 그대로 쓴다.
+describe("허브 공책 동기화 결과와 복구 알림", () => {
+  it.each([[false, 0], [true, 1]] as const)("visibleChanged=%s 이면 백업 예약 동기화 뒤 복구 알림 %i번", async (visibleChanged, expected) => {
+    vi.resetModules();
+    vi.doMock("../src/lib/sceneNotebook", async (original) => ({
+      ...(await original<Record<string, unknown>>()),
+      syncSceneNotebook: async () => ({ status: "ready", changed: true, visibleChanged }),
+    }));
+    vi.useFakeTimers();
+    try {
+      const { setHubFeatures } = await import("../src/lib/hubFeatures");
+      setHubFeatures(["scene_writer_v1"]);
+      const backup = await import("../src/lib/sceneBackup");
+      const notified: number[] = [];
+      backup.subscribeSceneRestore(() => notified.push(1));
+      expect(await backup.initSceneBackup()).toBe(true); // 처음 맞추기의 반환 = 기존 changed
+      await vi.advanceTimersByTimeAsync(2500); // 백업 예약(2초 디바운스) → syncNow
+      expect(notified.length).toBe(expected);
+      setHubFeatures([]);
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock("../src/lib/sceneNotebook");
+    }
+  });
+});

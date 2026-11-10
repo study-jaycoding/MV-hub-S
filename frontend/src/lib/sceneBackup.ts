@@ -448,7 +448,8 @@ async function syncNow(): Promise<void> {
       failed = result.status === "retry";
       if (ns() === scope) {
         recountOverLimit();
-        if (result.changed) restoreSubs.forEach((fn) => fn());
+        // 사용자가 볼 씬·순서가 바뀐 동기화만 '복구' 다 — 진행 기록·기준만 바뀌어도(카메라만 옮긴 뒤) 복구 알림이 떴다(2026-11-10)
+        if (result.visibleChanged) restoreSubs.forEach((fn) => fn());
       }
       return;
     }

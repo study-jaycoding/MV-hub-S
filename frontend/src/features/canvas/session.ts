@@ -155,7 +155,7 @@ export function changeCanvas(scene: Scene, command: CanvasCommand): Scene | null
 // 기존 화면 알림/목록 병합은 어댑터에 남긴다. 외부 feature에는 이 저장용 patch를 노출하지 않는다.
 export function createCanvasDocumentPort(adapter: {
   flushPending: (sceneId: string) => void;
-  write?: (sceneId: string, value: Pick<Scene, "cards" | "edges" | "groups" | "mcpAttachmentReceipts" | "camera">) => boolean;
+  write?: (sceneId: string, value: Partial<Pick<Scene, "cards" | "edges" | "groups" | "mcpAttachmentReceipts" | "camera">>) => boolean;
   editPrompt?: (sceneId: string, cardId: string, prompt: string) => boolean;
   changed?: (sceneId: string, executionOnly: boolean) => void;
 }): CanvasDocumentPort {
@@ -208,8 +208,10 @@ export function createCanvasDocumentPort(adapter: {
       const next = changeCanvas(current, command);
       if (!next) return false;
       if (next === current) return true;
-      const patch = { cards: next.cards, edges: next.edges, groups: next.groups, mcpAttachmentReceipts: next.mcpAttachmentReceipts,
-        ...(command.type === "recordCamera" ? { camera: next.camera } : {}) };
+      // 카메라 기록은 카메라만 보낸다 — 저장소 사본의 카드·연결 배열까지 실어 보내면 화면 활성 씬이 그 사본으로 바뀌어
+      //  판이 이동이 끝날 때마다 카드 전부를 다시 그렸다(2026-11-10 실측, docs/status/캔버스_카메라저장뒤처리_2026-11-10.md R6).
+      const patch = command.type === "recordCamera" ? { camera: next.camera }
+        : { cards: next.cards, edges: next.edges, groups: next.groups, mcpAttachmentReceipts: next.mcpAttachmentReceipts };
       return adapter.write ? adapter.write(target.sceneId, patch) : updateScenesWith(null, scenes => {
         const fresh = scenes.find(scene => scene.id === target.sceneId);
         if (!fresh) return null;

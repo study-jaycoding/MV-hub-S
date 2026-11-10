@@ -561,6 +561,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     let external = false;
     let wrote = false;
     let stepOut: TxStepResult = { changed: false, entries: [] };
+    let sceneWrites = 0; // 씬 본문·순서 키·빈 버킷의 넣기+지우기 수(메타 제외) — 바깥 알림을 씬이 실제로 달라진 확정에만
     let moved: PendingOp[] = []; // 이번 트랜잭션에서 충돌로 옮긴 연산 — 표시는 재생을 정한 뒤에 붙을 수 있어 따로 본다
     let movedConflicts: SceneAbsorbConflict[] = [];
     let storedConflicts: SceneAbsorbConflict[] = [];
@@ -617,6 +618,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           freezeScenes(live);
           wrote = batch.length > 0 || stepOut.changed;
           const write = diffScenes(base, live);
+          sceneWrites = write.puts.length + write.deletes.length;
           const touched = write.puts.length + write.deletes.length + notebookPuts.length + notebookDeletes.length +
             (fromHub ? stepOut.entries.length + (stepOut.deletes?.length ?? 0) : 0) > 0;
           if (touched) liveVersion += 1; // 씬/공책 상태가 실제로 바뀌었을 때만
@@ -670,7 +672,9 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     const dropped = batch.some((op) => op.poisoned || op.aside || op.handover);
     if (external || stepOut.changed || hadConfirmedOnly || dropped) {
       rebaseWorking();
-      externalSubs.forEach((fn) => fn());
+      // 화면에 알리는 것은 씬이 실제로 달라졌을 때다 — 공책 진행 기록·기준만 쓴 확정(카메라만 옮긴 뒤의 동기화)마다
+      //  앱이 씬 목록을 통째로 다시 받아 비교·다시 그렸다(2026-11-10 실측). 충돌 목록처럼 씬 밖 변화는 step 이 notify 를 낸다.
+      if (external || hadConfirmedOnly || dropped || sceneWrites > 0 || stepOut.notify) externalSubs.forEach((fn) => fn());
     } else if (stepOut.notify) {
       externalSubs.forEach((fn) => fn());
     }
@@ -702,7 +706,7 @@ function rebaseWorking(): void {
  * 값은 oncomplete 뒤에만 돌려준다. 실패한 조건부 쓰기를 성공으로 보고 판을 앞당기면 안 된다. */
 export async function sceneNotebookTransaction<T>(
   keys: string[],
-  decide: (all: ScenesByProject, meta: Record<string, unknown>) => { value: T; changed: boolean },
+  decide: (all: ScenesByProject, meta: Record<string, unknown>) => { value: T; changed: boolean; notify?: boolean },
   stillCurrent: () => boolean = () => true,
 ): Promise<{ ok: true; value: T } | { ok: false }> {
   let value: T;
@@ -711,7 +715,7 @@ export async function sceneNotebookTransaction<T>(
     if (!stillCurrent()) return { changed: false, entries: [] };
     const before = { ...meta };
     const draft = { ...all }, draftMeta = { ...meta };
-    let result: { value: T; changed: boolean };
+    let result: { value: T; changed: boolean; notify?: boolean };
     try { result = decide(draft, draftMeta); }
     catch { return { changed: false, entries: [] }; } // 허브 조건 실패로 같은 묶음의 사용자 편집을 실패시키지 않는다.
     for (const name of Object.keys(all)) if (!(name in draft)) delete all[name];
@@ -722,6 +726,7 @@ export async function sceneNotebookTransaction<T>(
     value = cloneStored(result.value);
     return {
       changed: result.changed,
+      ...(result.notify ? { notify: true } : {}), // 씬 차이 없이 화면이 알아야 하는 변화(첫 합류의 충돌 목록 등)
       entries: Object.entries(meta).filter(([key, item]) => !isNotebookMeta(key) && before[key] !== item),
       deletes: Object.keys(before).filter((key) => !isNotebookMeta(key) && !(key in meta)),
     };
