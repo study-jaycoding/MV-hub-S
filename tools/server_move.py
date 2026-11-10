@@ -53,7 +53,7 @@ from app.services.backup_verify import (  # noqa: E402
     rebuild_drifted_indexes,
     verify_restore_set,
 )
-from app.services.db_scrub import pause_slack_for_restore  # noqa: E402
+from app.services.db_scrub import pause_slack_for_restore, pause_hf_org_usage_for_restore  # noqa: E402
 from app.services.restore_runtime_verify import verify_restored_set_runtime  # noqa: E402
 
 SET_ROLES = ("content", "trash", "manage")
@@ -835,6 +835,8 @@ def install_set(
             # 검사 전에 — 아래 staged_info([5/6] 재검증 기준)가 바꾼 뒤 값이어야 한다.
             if role == "content" and pause_slack_for_restore(staged[role]):
                 _say("      Slack 알림을 멈춤(복원됨)으로 설치 — 서버를 켠 뒤 관리 창 Slack 에서 다시 켜거나 토큰을 다시 등록")
+            if role == "manage" and pause_hf_org_usage_for_restore(staged[role]):
+                _say("      힉스필드 조직 수집 복원 정지 — 관리 창에서 키 확인/재등록 뒤 수동으로 켜세요")
             info = inspect_sqlite_database(
                 staged[role], required_tables=_required_tables(role), allow_index_drift=True
             )

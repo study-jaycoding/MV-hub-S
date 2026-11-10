@@ -339,6 +339,31 @@ def delete_comfy_key(server: dict, token: str) -> dict:
     return _comfy_key_meta(*call(server, "DELETE", COMFY_KEY_PATH, token), "팀 Comfy 키 삭제")
 
 
+def hf_org_usage(server: dict, token: str, action: str, body=None) -> dict:
+    """Never show HTTP response text from a request which may contain an organization key."""
+    routes = {"status": ("GET", "/status"), "put": ("PUT", "/key"),
+              "check": ("POST", "/key/check"), "delete": ("DELETE", "/key"),
+              "enable": ("PATCH", "/collector"), "disable": ("PATCH", "/collector"),
+              "comparison": ("GET", "/comparison"), "refresh": ("POST", "/refresh")}
+    method, suffix = routes[action]
+    if action == "comparison":
+        suffix += "?" + urllib.parse.urlencode(body or {})
+        body = None
+    code, payload = call(server, method, "/api/admin/hf-org-usage" + suffix, token, body, timeout=40)
+    if code in (401, 403):
+        raise AuthExpired("관리자 권한을 확인하지 못했습니다. " + RELOGIN)
+    if code == 404:
+        raise ServerError("힉스필드 조직 사용량을 지원하는 서버인지 확인하세요")
+    if code not in (200, 202) or not isinstance(payload, dict):
+        codes = {"revision_conflict", "environment_blocked", "key_check_required", "collection_disabled",
+                 "organization_conflict", "key_undecryptable", "invalid_period", "invalid_expiry",
+                 "http_401", "http_403", "http_429", "http_503", "report_limit_exceeded", "rate_wait", "request_wait", "protect_failed"}
+        reason = payload.get("detail") if isinstance(payload, dict) else None
+        safe = reason if isinstance(reason, str) and reason in codes else "요청 실패"
+        raise ServerError(f"힉스필드 조직 사용량: {safe} — 새로 읽기 후 확인하세요")
+    return payload
+
+
 # ---- 생성 접수(서버 DB app_setting['generation_deployment_paused'] — 실행 중인 서버가 자기 DB 에 쓴다) ----
 
 INTAKE_PATH = "/api/gen-requests/deployment-pause"

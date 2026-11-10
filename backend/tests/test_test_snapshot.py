@@ -367,3 +367,30 @@ def test_transfer_strip_keeps_account_hashes(tmp_path: Path):
         assert auth.verify_password("prod-pw", row["password_hash"])
     finally:
         conn.close()
+
+
+def test_org_usage_scrub_removes_deleted_page_bytes_and_fails_closed(tmp_path):
+    from app.db_hf_org_usage import TABLES, migrate
+    from app.services.db_scrub import scrub_test_snapshot_db
+    path = tmp_path / "organization.db"
+    marker = "fake-secret-large-marker-" * 400
+    with sqlite3.connect(path) as conn:
+        migrate(conn)
+        conn.execute("PRAGMA secure_delete=OFF")
+        conn.execute("UPDATE hf_org_usage_config SET encrypted_key=?", ("old-fake-marker-" * 800,))
+        conn.commit()
+        conn.execute("UPDATE hf_org_usage_config SET encrypted_key=?", (marker,))
+        conn.execute("INSERT INTO hf_org_identity_link(org_id,actor_user_id,state) VALUES('org','actor','stale')")
+    has_marker = b"fake-secret-large-marker-" in path.read_bytes()
+    assert has_marker
+    scrub_test_snapshot_db(path, create_test_admin=False)
+    has_marker = b"fake-secret-large-marker-" in path.read_bytes()
+    assert not has_marker
+    has_old_marker = b"old-fake-marker-" in path.read_bytes()
+    assert not has_old_marker
+    with sqlite3.connect(path) as conn:
+        assert all(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0 for table in TABLES)
+        conn.execute("INSERT INTO hf_org_usage_config(singleton,encrypted_key) VALUES(1,'fake')")
+        conn.execute("CREATE TRIGGER refuse_scrub BEFORE DELETE ON hf_org_usage_config BEGIN SELECT RAISE(ABORT,'blocked'); END")
+    with pytest.raises(sqlite3.DatabaseError):
+        scrub_test_snapshot_db(path, create_test_admin=False)

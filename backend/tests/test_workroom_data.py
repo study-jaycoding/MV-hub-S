@@ -102,3 +102,19 @@ def test_env_and_hashes_do_not_use_or_change_real_home(tmp_path):
     assert env["MVHUB_NAMES_READONLY"] == "1"
     assert env["CONTENT_HUB_AUTH_SECRET"] != "source-secret"
     assert llm_config_hashes(parent) == before
+
+
+def test_workroom_scrubs_org_tables_without_importing_app(tmp_path):
+    from app.db_hf_org_usage import TABLES, migrate
+    db = source(tmp_path)
+    manage = db.parent / "manage_hub.db"
+    with sqlite3.connect(manage) as conn:
+        migrate(conn)
+        conn.execute("UPDATE hf_org_usage_config SET encrypted_key='fake-workroom-secret'")
+    runtime = tmp_path / "room"
+    prepare_runtime(runtime, db, REPO)
+    copied = runtime / "data/db/manage_hub.db"
+    assert b"fake-workroom-secret" not in copied.read_bytes()
+    with sqlite3.connect(copied) as conn:
+        assert all(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0 for table in TABLES)
+    assert b"fake-workroom-secret" in manage.read_bytes()

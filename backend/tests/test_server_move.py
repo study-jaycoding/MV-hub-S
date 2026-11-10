@@ -779,3 +779,22 @@ def test_restore_refuses_a_b1_set_with_a_transfer_in_flight(tmp_path, monkeypatc
     assert not (db_dir / sm.JOURNAL_NAME).exists()
     assert not _left(db_dir, sm.STAGED_PREFIX)
     assert not _left(db_dir, sm.ARCHIVE_PREFIX)
+
+
+def test_server_restore_pauses_org_collection_and_preserves_history(tmp_path, monkeypatch):
+    from app.db_hf_org_usage import migrate
+    sm = _module()
+    package = _make_package(tmp_path / "package")
+    with sqlite3.connect(package["manage"]) as conn:
+        migrate(conn)
+        conn.execute("UPDATE hf_org_usage_config SET revision=7,enabled=1,encrypted_key='fake-cipher',key_verified_revision=7")
+        conn.execute("UPDATE hf_org_usage_collector SET lease_owner='worker',lease_fence=4,io_owner='request',io_until_ms=999")
+        conn.execute("INSERT INTO hf_org_identity_link(org_id,actor_user_id,state) VALUES('org','actor','stale')")
+    data = tmp_path / "data"
+    _make_live_set(data / "db", tag="old")
+    monkeypatch.setattr(sm, "ensure_server_stopped", lambda port: {})
+    result = sm.install_set(package, data, 8010, _sha(sm, package))
+    with sqlite3.connect(result["targets"]["manage"]) as conn:
+        assert conn.execute("SELECT revision,enabled,restore_paused,key_verified_revision FROM hf_org_usage_config").fetchone() == (8,0,1,None)
+        assert conn.execute("SELECT lease_owner,lease_fence,io_owner,io_until_ms FROM hf_org_usage_collector").fetchone() == (None,5,None,0)
+        assert conn.execute("SELECT COUNT(*) FROM hf_org_identity_link").fetchone()[0] == 1

@@ -99,6 +99,12 @@ EXTERNAL_RECOVERY_ENABLED = os.environ.get(
 # 사본 DB 안의 로그인·캐시 갱신까지 막는 모드는 아니다. 기본 off.
 READ_ONLY = os.environ.get("CONTENT_HUB_READ_ONLY", "0").lower() in ("1", "true", "yes", "on")
 
+# Target refresh cadence, not a completion SLA; every call shares the persisted 30/min budget.
+try:
+    HF_ORG_USAGE_TODAY_SECONDS = max(60, int(os.environ.get("CONTENT_HUB_HF_ORG_USAGE_TODAY_SECONDS", "600")))
+except ValueError:
+    HF_ORG_USAGE_TODAY_SECONDS = 600
+
 # ── 원본 미디어 저장 정책 ────────────────────────────────────────────────
 # MV Hub의 기본 계약은 Higgsfield HTTPS URL을 보관하고 원본 바이트는
 # 서버에 자동 저장하지 않는 것이다. 특수한 운영 이유로 영구 보존이 필요한

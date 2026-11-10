@@ -214,6 +214,16 @@ def _fact_history(rows: list) -> dict[str, int]:
                 conn, "team_generation_fact",
                 f'LOWER(TRIM(account_email))=? OR creator_uid IN ({_in(uids)})', [row["email"], *uids],
             )
+            if _col_exists(conn, "hf_org_identity_link", "account_email"):
+                hits[row["email"]] += _count(
+                    conn, "hf_org_identity_link",
+                    f'LOWER(TRIM(account_email))=? OR actor_user_id IN ({_in(uids)})', [row["email"], *uids],
+                )
+            if _col_exists(conn, "hf_org_usage_row", "actor_email"):
+                hits[row["email"]] += _count(
+                    conn, "hf_org_usage_row",
+                    f'LOWER(TRIM(actor_email))=? OR actor_user_id IN ({_in(uids)})', [row["email"], *uids],
+                )
     return hits
 
 

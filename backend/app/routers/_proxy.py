@@ -614,6 +614,7 @@ def _cleanup_file(path: str) -> None:
 
 # 로컬에서 직접 처리해야 하는 경로 — 이 PC 의 자원(디스크·CLI·에이전트·실행)에 의존.
 _LOCAL_PREFIXES = (
+    "/api/admin/hf-org-usage",  # Server-PC administration; a local hub returns its own 404.
     "/api/slack/link",  # Explicit account-pinned relay, never generic forwarding.
     "/api/admin/slack",  # Server console only.
     "/api/open/",  # This PC's navigation/claim/ack.

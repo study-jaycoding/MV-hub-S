@@ -84,6 +84,7 @@ from .routers import (
     comfy,
     comfy_team_key,
     slack,
+    hf_org_usage,
     open_generation,
     console,
     db_backup,
@@ -548,6 +549,8 @@ async def _application_lifespan(app: FastAPI):
         from .services.slack_notify import notifier as slack_notifier
         if not READ_ONLY:
             slack_notifier.start()
+        from .services.hf_org_usage_collector import collector as hf_org_collector
+        hf_org_collector.start()
         share_state_reconciler_started = True
         from .services import asset_sync as asset_sync_worker
         if not READ_ONLY:
@@ -678,6 +681,8 @@ async def _application_lifespan(app: FastAPI):
             await _attempt_async_cleanup(periodic_share_state_reconciler.stop)
         from .services.slack_notify import notifier as slack_notifier
         await _attempt_async_cleanup(slack_notifier.stop)
+        from .services.hf_org_usage_collector import collector as hf_org_collector
+        await _attempt_async_cleanup(hf_org_collector.stop)
         if startup_complete or media_preservation_started:
             await _attempt_async_cleanup(periodic_media_preservation.stop)
         if startup_complete or remote_realtime_started:
@@ -823,6 +828,7 @@ app.include_router(db_backup.router)
 app.include_router(comfy.router)
 app.include_router(comfy_team_key.router)
 app.include_router(slack.router)
+app.include_router(hf_org_usage.router)
 app.include_router(open_generation.router)
 app.include_router(scenes.router)
 app.include_router(edit_docs.router)

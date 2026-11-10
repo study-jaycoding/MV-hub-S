@@ -40,6 +40,9 @@ TEST_ADMIN_PASSWORD = "mvhub-test-1234"
 # pbkdf2_sha256$iter$salt$hash 형식이 아니므로 verify_password 가 항상 False — 로그인 불가 마커.
 DISABLED_PASSWORD_HASH = "disabled$test-snapshot"
 
+HF_ORG_USAGE_TABLES = ('hf_org_usage_row', 'hf_org_usage_check', 'hf_org_identity_link',
+                       'hf_org_usage_window', 'hf_org_usage_collector', 'hf_org_usage_config')
+
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     row = conn.execute(
@@ -58,6 +61,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
         trash_transfer.configure_connection(c)
         c.execute("BEGIN")
         scrub_slack_connection(c)  # Strict errors stay outside the legacy best-effort block.
+        scrub_hf_org_usage_connection(c)
         c.execute('SAVEPOINT legacy_secrets')
         try:
             for k in SESSION_KEYS:
@@ -71,6 +75,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
             c.execute('ROLLBACK TO legacy_secrets')
         c.execute('RELEASE legacy_secrets')
         c.execute("COMMIT")
+        _compact_scrubbed_copy(c)
     finally:
         c.close()
 
@@ -92,6 +97,7 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
         trash_transfer.configure_connection(conn)
         conn.execute("BEGIN")
         scrub_slack_connection(conn)
+        scrub_hf_org_usage_connection(conn)
         if _table_exists(conn, "app_setting"):
             for k in SESSION_KEYS:
                 conn.execute("DELETE FROM app_setting WHERE key=?", (k,))
@@ -120,6 +126,17 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
                     ),
                 )
         conn.execute("COMMIT")
+
+        _compact_scrubbed_copy(conn)
+
+
+def _compact_scrubbed_copy(conn: sqlite3.Connection) -> None:
+    # secure_delete clears today's deletes; VACUUM also removes older freelist/overflow residues.
+    if not any(_table_exists(conn, table) for table in HF_ORG_USAGE_TABLES):
+        return
+    conn.execute('VACUUM')
+    if conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:
+        raise RuntimeError('Snapshot compaction incomplete')
 
 
 def scrub_slack_connection(conn: sqlite3.Connection) -> None:
@@ -175,3 +192,37 @@ def scrub_slack(db_path: Path) -> None:
         conn.execute('BEGIN IMMEDIATE')
         scrub_slack_connection(conn)
         conn.commit()
+
+
+def scrub_hf_org_usage_connection(conn: sqlite3.Connection) -> None:
+    """Fail closed, including deleted-page bytes. Safe for standalone workroom loading."""
+    conn.execute('PRAGMA secure_delete=ON')
+    for table in HF_ORG_USAGE_TABLES:
+        if _table_exists(conn, table):
+            conn.execute(f'DELETE FROM {table}')
+            if conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
+                raise RuntimeError('Organization usage remains in snapshot')
+
+
+def scrub_hf_org_usage(db_path: Path) -> None:
+    """Offline copied DB only. No app import: workroom_data loads this file standalone."""
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        scrub_hf_org_usage_connection(conn)
+        conn.commit()
+        _compact_scrubbed_copy(conn)
+
+
+def pause_hf_org_usage_for_restore(db_path: Path) -> bool:
+    """Preserve history/key, invalidate workers and require an explicit key check and enable."""
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        if not _table_exists(conn, 'hf_org_usage_config'):
+            return False
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('UPDATE hf_org_usage_config SET enabled=0,restore_paused=1,revision=revision+1,'
+                     'key_verified_revision=NULL')
+        conn.execute('UPDATE hf_org_usage_collector SET lease_owner=NULL,lease_fence=lease_fence+1,'
+                     'lease_until_ms=0,io_owner=NULL,io_until_ms=0,pause_code=\'restored\'')
+        conn.commit()
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    return True

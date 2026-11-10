@@ -156,6 +156,8 @@ def init_manage_db(db_path: Path | None = None) -> Path:
         conn.execute("PRAGMA journal_mode=WAL")  # 동시 읽기(집계 조회) 중 쓰기 허용
         conn.executescript(_SCHEMA)
         _migrate_schema(conn)
+        from .db_hf_org_usage import migrate as migrate_hf_org_usage
+        migrate_hf_org_usage(conn)
         conn.commit()
         schema_compat.record_baseline(conn, "manage")
     finally:

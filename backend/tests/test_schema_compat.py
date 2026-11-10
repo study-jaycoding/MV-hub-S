@@ -29,6 +29,17 @@ def connect(path):
     return closing(sqlite3.connect(path, isolation_level=None))
 
 
+def test_organization_tables_do_not_add_migration_names(tmp_path):
+    from app.db_hf_org_usage import migrate
+    path = tmp_path / "manage.db"
+    manage_db.init_manage_db(path)
+    with connect(path) as conn:
+        before = conn.execute("SELECT * FROM schema_migrations").fetchall()
+        migrate(conn)
+        compat.inspect_schema(conn, "manage")
+        assert conn.execute("SELECT * FROM schema_migrations").fetchall() == before
+
+
 def assert_reason(reason, action):
     with pytest.raises(compat.SchemaCompatibilityError) as exc:
         action()

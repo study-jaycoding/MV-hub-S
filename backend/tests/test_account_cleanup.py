@@ -303,6 +303,7 @@ _OWNERISH = re.compile(r"(uid|email|creator|owner|author|actor|assign|member|acc
                        r"sender|viewer|reader|reviewer|requester|holder|worker_id|user)", re.I)
 _SUBJECT = {"account": "email", "creator": "uid", "worker": "id"}
 KEPT = {
+    ("hf_org_usage_config", "registered_by"): "조직 키 등록 감사 스냅샷 — 삭제 후에도 보존",
     ("audit_event", "actor_uid"): "append-only 감사 — 이메일은 지문으로 저장",
     ("generation_event", "actor_uid"): "append-only 장애 이력",
     ("project_planning", "updated_by"): "저장 당시 감사 스냅샷",
@@ -314,6 +315,8 @@ KEPT = {
     ("account", "creator_uid"): "지울 계정 본체",
 }
 NOT_IDENTITY = {
+    ("hf_org_usage_collector", "lease_owner"): "수집 프로세스의 무작위 임대 ID",
+    ("hf_org_usage_collector", "io_owner"): "HTTP 요청의 무작위 ID",
     ("slack_link", "slack_user_id"): "Slack 신원 — account_email 소유 행과 함께 제거",
     ("slack_link", "slack_email"): "Slack 이메일 — account_email 소유 행과 함께 제거",
     ("worker", "account_type"): "personal/team 구분",
@@ -328,7 +331,20 @@ NOT_IDENTITY = {
     ("team_generation_fact", "creator_name"): "이름 스냅샷",
 }
 CHECKED_ELSEWHERE = {("team_generation_fact", "account_email"), ("team_generation_fact", "creator_uid"),
+                     ("hf_org_usage_row", "actor_user_id"), ("hf_org_usage_row", "actor_email"),
+                     ("hf_org_identity_link", "actor_user_id"), ("hf_org_identity_link", "account_email"),
+                     ("hf_org_identity_link", "creator_uid"),
                      ("trashed", "creator_uid")}
+
+
+def test_org_usage_history_blocks_cleanup(world):
+    account = ghost()
+    with manage_db.get_connection() as conn:
+        conn.execute("INSERT INTO hf_org_identity_link(org_id,actor_user_id,account_email,creator_uid,state) "
+                     "VALUES('fixture-org',?,?,?,'stale')", (account["creator_uid"], GHOST, account["creator_uid"]))
+    assert rows()[GHOST]["verdict"] != "deletable"
+    with pytest.raises(cleanup.CleanupRefused):
+        delete()
 
 
 def _columns(conn, schema="main"):
