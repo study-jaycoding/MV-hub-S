@@ -408,11 +408,14 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
             <span className="agent-co" aria-hidden="true">✳</span>
             {claude?.available ? <>Claude{claude.subscription && <small> · {claude.subscription}</small>}</> : t("Claude 연결 안 됨")}
           </span>
-          {version?.newer && version.latest ? (
-            <span className="agent-drawer-ver new" title={`${t("지금")} ${version.current ?? ""}`}>{t("새 판")} {version.latest}</span>
-          ) : version?.current ? (
-            <span className="agent-drawer-ver" title={t("Claude Code 판")}>{version.current}</span>
-          ) : null}
+          {/* 지금 쓰는 판(v2.1.296) — 업데이트하면 올라간다. 새 판이 있으면 라임 글자 + 알림(Jay 11-10 "새 판 대신 앞에 v만").
+              [업데이트] 단추는 docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 설계·검토 뒤 이 자리에 */}
+          {version?.current && (
+            <span className={`agent-drawer-ver${version.newer ? " new" : ""}`}
+              title={version.newer && version.latest ? `v${version.latest} ${t("이 나왔어요")}` : t("Claude Code 판")}>
+              v{version.current}
+            </span>
+          )}
         </div>
       </nav>
     </>
