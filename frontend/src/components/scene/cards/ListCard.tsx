@@ -363,8 +363,21 @@ export function ListCard({
   );
 }
 
+// 크게 보기 배율(Jay 2026-11-10 "너무 크게 나오는 것도 생긴다, 적정 비율로" — Codex 2차 합의). 보이던 크기의 2배가 기본이되,
+//  팝업 안 한 칸(item = 격자 칸 폭·행 높이, 레이아웃 px)을 화면에서 격자 48~104px·행 32~44px 로 묶고, 팝업 전체는 가용 폭 80%·높이 75% 안.
+//  item 을 못 재면 2배와 전체 상한만 — 옛 '최소 원래 크기'로 돌아가면 넓혀 둔 노드를 다시 크게 키운다.
+export function listPopScale(o: { w: number; h: number; shown: number; item: number; grid: boolean; availW: number; availH: number }): number {
+  const sizeLimit = Math.min((o.availW * 0.8) / o.w, (o.availH * 0.75) / o.h);
+  let k = 2 * o.shown;
+  if (Number.isFinite(o.item) && o.item > 0) {
+    const [lo, hi] = o.grid ? [48, 104] : [32, 44];
+    k = Math.max(lo, Math.min(2 * o.item * o.shown, hi)) / o.item;
+  }
+  return Math.min(k, sizeLimit);
+}
+
 // ── 크게 보기 팝업(Jay 2026-11-09 — "지금 보이는 노드 그대로, 그 자리에서 크게"). 속은 같은 ListCard 를 children 으로 그대로 그리고,
-//  틀만 노드 가운데를 기준으로 배율을 키운다(화면을 넘으면 배율을 줄인다). 순서 끌기는 노드의 startReorder 그대로 —
+//  틀만 노드 가운데를 기준으로 배율을 키운다(배율 = listPopScale). 순서 끌기는 노드의 startReorder 그대로 —
 //  칸 위치를 화면 좌표로 재므로 배율과 상관없고, 저장도 노드와 같은 orderListItems 다.
 export function ListPopup({
   kindCls,
@@ -381,7 +394,7 @@ export function ListPopup({
   w: number; // 노드의 레이아웃 크기(캔버스 배율 전)
   h: number;
   at: { x: number; y: number }; // 노드 가운데의 화면 좌표
-  shown: number; // 지금 화면에 보이는 노드의 배율(캔버스 줌) — 팝업은 그 2배(Jay 11-09 "열려 있는 창의 2배 정도로만")
+  shown: number; // 지금 화면에 보이는 노드의 배율(캔버스 줌) — 팝업은 그 2배가 기본(Jay 11-09 "열려 있는 창의 2배 정도로만"), 칸·전체 크기로 묶음(listPopScale)
   // 팝업이 떠 있는 동안 캔버스 단축키는 쉰다(keyGate) — 되돌리기는 팝업이 직접 캔버스의 것을 부른다(Jay 11-09 "Ctrl+Z 안 되나")
   onUndo: () => void;
   onRedo: () => void;
@@ -403,9 +416,13 @@ export function ListPopup({
     const b = backRef.current?.getBoundingClientRect();
     if (!b) return;
     const M = 24, LABEL = 30, HINT = 34; // 위 이름표·아래 안내 자리
-    // 보이던 크기의 2배, 화면을 넘으면 줄인다. 아주 멀리서 본 노드(2배도 원래 크기보다 작음)는 원래 크기(1)까지는 키운다.
-    const fit = Math.min((b.width - 2 * M) / w, (b.height - 2 * M - LABEL - HINT) / h);
-    const k = Math.min(fit, Math.max(2 * shown, 1));
+    const availW = b.width - 2 * M, availH = b.height - 2 * M - LABEL - HINT;
+    if (availW <= 0 || availH <= 0) return; // 놓을 자리가 없으면 숨긴 채 둔다(음수 배율 방지)
+    // 한 칸 = 첫 항목(격자 칸·행 — 모두 같은 크기). offset 은 transform 전 레이아웃 크기다.
+    const first = layerRef.current?.querySelector<HTMLElement>("[data-reid]");
+    const grid = !!first?.classList.contains("scene-listthumb");
+    const item = first ? (grid ? first.offsetWidth : first.offsetHeight) : 0;
+    const k = listPopScale({ w, h, shown, item, grid, availW, availH });
     const sw = w * k, sh = h * k;
     const left = Math.min(Math.max(at.x - b.left - sw / 2, M), b.width - M - sw);
     const top = Math.min(Math.max(at.y - b.top - sh / 2, M + LABEL), b.height - M - HINT - sh);
