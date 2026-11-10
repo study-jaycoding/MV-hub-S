@@ -11,7 +11,8 @@ from ..services.hf_org_usage_key import UsageError
 
 DAY_MS = 86_400_000
 LEASE_MS = 90_000
-IO_MS = 35_000  # Longer than the HTTP hard deadline, also survives process death.
+IO_MS = 90_000  # Longer than the HTTP hard deadline, also survives process death.
+NO_AUTO_DUE = 2**63 - 1
 ROW_FIELDS = (
     "row_id", "type", "created_at", "workspace_id", "workspace_name", "actor_user_id",
     "actor_email", "model", "model_name", "credits_c", "charged_c", "refunded_c",
@@ -21,6 +22,22 @@ ROW_FIELDS = (
 
 def now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def today_start(at: int) -> int:
+    return (at + 9 * 3_600_000) // DAY_MS * DAY_MS - 9 * 3_600_000
+
+
+def base_priority(start: int, at: int) -> int:
+    today = today_start(at)
+    return 20 if start >= today else 15 if start >= today - 7 * DAY_MS else 0
+
+
+def today_success(org_id: str | None, at: int) -> int | None:
+    with manage_db.get_connection() as conn:
+        row = conn.execute("SELECT succeeded_at_ms FROM hf_org_usage_window "
+                           "WHERE org_id=? AND kind='day' AND start_ms=?", (org_id, today_start(at))).fetchone()
+        return row[0] if row else None
 
 
 @contextmanager
@@ -84,9 +101,6 @@ def mark_key_check(revision: int, code: str, *, verified=False) -> None:
         conn.execute("UPDATE hf_org_usage_config SET last_check_at_ms=?,last_check_code=?,"
                      "key_verified_revision=CASE WHEN ? THEN revision ELSE key_verified_revision END "
                      "WHERE singleton=1 AND revision=?", (now_ms(), code, int(verified), revision))
-        if verified:
-            conn.execute("UPDATE hf_org_usage_collector SET pause_code=NULL WHERE singleton=1 "
-                         "AND EXISTS(SELECT 1 FROM hf_org_usage_config WHERE revision=?)", (revision,))
 
 
 def acquire_lease(owner: str, at: int | None = None) -> int | None:
@@ -141,8 +155,10 @@ def finish_request(ticket: str, *, retry_after=0) -> None:
 def pause_auth(context: dict, code: str) -> None:
     with transaction() as conn:
         if read_config(conn)["revision"] == context["revision"]:
-            conn.execute("UPDATE hf_org_usage_collector SET pause_code=? WHERE singleton=1", (code,))
-            conn.execute("UPDATE hf_org_usage_config SET key_verified_revision=NULL WHERE singleton=1")
+            conn.execute("UPDATE hf_org_usage_collector SET pause_code='auth',lease_fence=lease_fence+1,"
+                         "lease_until_ms=0 WHERE singleton=1")
+            conn.execute("UPDATE hf_org_usage_config SET enabled=0,key_verified_revision=NULL,"
+                         "revision=revision+1,last_check_code=? WHERE singleton=1", (code,))
 
 
 def reserve_windows(org_id: str, windows: list[tuple], *, at=None) -> None:
@@ -158,15 +174,25 @@ def reserve_windows(org_id: str, windows: list[tuple], *, at=None) -> None:
 def due_window(org_id: str, at: int) -> dict | None:
     with manage_db.get_connection() as conn:
         row = conn.execute("SELECT * FROM hf_org_usage_window WHERE org_id=? AND next_due_ms<=? "
-                           "ORDER BY priority DESC,next_due_ms,id LIMIT 1", (org_id, at)).fetchone()
+                           "AND (kind='day' OR end_ms<=?) "
+                           "ORDER BY priority DESC,next_due_ms,id LIMIT 1", (org_id, at, today_start(at))).fetchone()
         return dict(row) if row else None
 
 
 def attempt_failed(window_id: int, code: str, retry_ms: int = 60_000) -> None:
     with transaction() as conn:
         at = now_ms()
-        conn.execute("UPDATE hf_org_usage_window SET last_attempt_at_ms=?,last_attempt_code=?,next_due_ms=? "
-                     "WHERE id=?", (at, code, at + retry_ms, window_id))
+        window = conn.execute("SELECT * FROM hf_org_usage_window WHERE id=?", (window_id,)).fetchone()
+        if window is None:
+            return
+        failures = window["fail_count"] + 1
+        deterministic = code.startswith("invalid_") or code in {
+            "report_limit_exceeded", "row_outside_window", "response_range_mismatch",
+            "page_limit", "repeated_cursor", "duplicate_row", "integrity_error"}
+        delay = DAY_MS if deterministic else min(DAY_MS, max(retry_ms, 60_000 * 2**min(failures - 1, 11)))
+        conn.execute("UPDATE hf_org_usage_window SET last_attempt_at_ms=?,last_attempt_code=?,next_due_ms=?,"
+                     "fail_count=?,priority=? WHERE id=?",
+                     (at, code, at + delay, failures, base_priority(window["start_ms"], at), window_id))
 
 
 def publish_window(conn, window: dict, context: dict, *, actual_end: int, started: int,
@@ -185,11 +211,13 @@ def publish_window(conn, window: dict, context: dict, *, actual_end: int, starte
     at = now_ms()
     conn.execute("UPDATE hf_org_usage_window SET snapshot_version=snapshot_version+1,success_complete=?,"
                  "actual_start_ms=?,actual_end_ms=?,request_started_at_ms=?,succeeded_at_ms=?,"
-                 "row_count=?,page_count=?,last_attempt_at_ms=?,last_attempt_code='ok',next_due_ms=?,priority=0 WHERE id=?",
-                 (int(complete), actual_start, actual_end, started, at, count, pages, at, next_due, window_id))
+                 "row_count=?,page_count=?,last_attempt_at_ms=?,last_attempt_code='ok',next_due_ms=?,"
+                 "priority=?,fail_count=0 WHERE id=?",
+                 (int(complete), actual_start, actual_end, started, at, count, pages, at, next_due,
+                  base_priority(window["start_ms"], at), window_id))
     conn.execute("UPDATE hf_org_usage_collector SET last_progress_at_ms=? WHERE singleton=1", (at,))
-    update_checks(conn, window["org_id"])
     conn.commit()
+    update_checks(conn, window["org_id"], window)
 
 
 def create_stage(conn) -> None:
@@ -268,21 +296,57 @@ def row_signature(rows: list[dict]) -> dict | None:
     return result
 
 
-def update_checks(conn, org_id: str) -> None:
-    windows = [dict(r) for r in conn.execute("SELECT * FROM hf_org_usage_window WHERE org_id=?", (org_id,))]
-    for exact in (w for w in windows if w["kind"] == "exact" and w["success_complete"]):
-        days, reason = daily_selection(windows, exact["start_ms"], exact["end_ms"], now_ms())
-        if reason or not days or days[-1]["actual_end_ms"] != exact["actual_end_ms"]:
-            continue  # Cannot call different observation ranges a mismatch or a successful check.
-        daily = row_signature(rows_for(conn, [d["id"] for d in days]))
-        same = daily is not None and daily == row_signature(rows_for(conn, [exact["id"]]))
-        save_check(conn, org_id, exact["start_ms"], exact["end_ms"], "matched" if same else "mismatch",
-                   exact, {str(d["id"]): d["snapshot_version"] for d in days}, None if same else "row_mismatch")
-        if not same:
-            # Coalesced, bounded recheck; never change the successful snapshot to zero.
-            conn.execute("UPDATE hf_org_usage_window SET next_due_ms=MIN(next_due_ms,?) "
-                         "WHERE org_id=? AND start_ms>=? AND end_ms<=?",
-                         (now_ms() + 600_000, org_id, exact["start_ms"], exact["end_ms"]))
+def update_checks(conn, org_id: str, changed: dict) -> None:
+    # Compare in a read snapshot, then fence the short writes against every observed version.
+    at = now_ms()
+    results = []
+    conn.execute("BEGIN")
+    try:
+        exacts = [dict(r) for r in conn.execute(
+            "SELECT * FROM hf_org_usage_window WHERE org_id=? AND kind='exact' AND success_complete=1 "
+            "AND start_ms<? AND end_ms>? AND end_ms<=? AND end_ms-start_ms<=?",
+            (org_id, changed["end_ms"], changed["start_ms"], today_start(at), 31 * DAY_MS))]
+        for exact in exacts:
+            windows = [dict(r) for r in conn.execute(
+                "SELECT * FROM hf_org_usage_window WHERE org_id=? AND kind='day' AND start_ms>=? AND end_ms<=?",
+                (org_id, exact["start_ms"], exact["end_ms"]))]
+            days, reason = daily_selection(windows, exact["start_ms"], exact["end_ms"], at)
+            if reason or not days or days[-1]["actual_end_ms"] != exact["actual_end_ms"]:
+                continue
+            daily = row_signature(rows_for(conn, [d["id"] for d in days]))
+            state = ("duplicate" if daily is None else "matched" if daily ==
+                     row_signature(rows_for(conn, [exact["id"]])) else "mismatch")
+            results.append((exact, days, state))
+    finally:
+        conn.commit()
+    for exact, days, state in results:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            observed = {w["id"]: w["snapshot_version"] for w in [exact, *days]}
+            current = {r["id"]: r["snapshot_version"] for r in conn.execute(
+                f"SELECT id,snapshot_version FROM hf_org_usage_window WHERE id IN ({','.join('?' for _ in observed)})",
+                tuple(observed))}
+            if current != observed:
+                continue
+            save_check(conn, org_id, exact["start_ms"], exact["end_ms"], state, exact,
+                       {str(d["id"]): d["snapshot_version"] for d in days},
+                       None if state == "matched" else "duplicate_row" if state == "duplicate" else "row_mismatch")
+            if state in ("matched", "duplicate"):
+                # An explicit refresh (priority 25) still gets its requested exact snapshot.
+                conn.execute("UPDATE hf_org_usage_window SET next_due_ms=? WHERE id=? AND priority<25",
+                             (NO_AUTO_DUE, exact["id"]))
+            elif conn.execute("UPDATE hf_org_usage_window SET recheck_snapshot_version=? WHERE id=? "
+                              "AND recheck_snapshot_version<?",
+                              (exact["snapshot_version"], exact["id"], exact["snapshot_version"])).rowcount:
+                conn.execute(f"UPDATE hf_org_usage_window SET next_due_ms=MIN(next_due_ms,?) "
+                             f"WHERE id IN ({','.join('?' for _ in observed)}) AND fail_count=0",
+                             (at + 600_000, *observed))
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            if conn.in_transaction:
+                conn.commit()
 
 
 def read_comparison_snapshot(org_id: str, start: int, end: int) -> dict:

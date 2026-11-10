@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS hf_org_usage_window (
     success_complete INTEGER NOT NULL DEFAULT 0, actual_start_ms INTEGER, actual_end_ms INTEGER,
     request_started_at_ms INTEGER, succeeded_at_ms INTEGER, row_count INTEGER, page_count INTEGER,
     last_attempt_at_ms INTEGER, last_attempt_code TEXT, next_due_ms INTEGER NOT NULL DEFAULT 0,
-    priority INTEGER NOT NULL DEFAULT 0, UNIQUE(org_id,start_ms,end_ms,kind)
+    priority INTEGER NOT NULL DEFAULT 0, fail_count INTEGER NOT NULL DEFAULT 0,
+    recheck_snapshot_version INTEGER NOT NULL DEFAULT 0, UNIQUE(org_id,start_ms,end_ms,kind)
 );
 CREATE TABLE IF NOT EXISTS hf_org_usage_row (
     window_id INTEGER NOT NULL, row_id TEXT NOT NULL, type TEXT NOT NULL,
@@ -62,3 +63,7 @@ INSERT OR IGNORE INTO hf_org_usage_collector(singleton) VALUES(1);
 
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(hf_org_usage_window)")}
+    for name in ("fail_count", "recheck_snapshot_version"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE hf_org_usage_window ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")

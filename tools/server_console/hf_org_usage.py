@@ -42,17 +42,19 @@ def when(value) -> str:
 
 def status_text(meta: dict) -> str:
     collecting = ("복원 정지" if meta.get("restore_paused") else
+                  "인증 오류로 멈춤 — 키 확인 뒤 수집 켜기" if meta.get("pause_code") == "auth" else
                   "멈춤: " + meta["pause_code"] if meta.get("pause_code") else
                   "켜짐" if meta.get("enabled") else "꺼짐")
     lag = f"{meta['delay_ms'] // 60000}분" if meta.get("delay_ms") is not None else "미수집"
     return (f"등록 {'됨' if meta.get('registered') else '안 됨'} · 상태 {meta.get('state', 'none')} · revision {meta.get('revision', 0)}\n"
             f"등록 {when(meta.get('registered_at_ms'))} · 등록자 {meta.get('registered_by') or '—'} · 조직 #{meta.get('org_hash') or '—'} · 만료 {meta.get('expires_on') or '미입력'}\n"
-            f"수집 {collecting} · 실행 환경 {'허용' if meta.get('environment_ok') else '차단'} · 마지막 성공 {when(meta.get('last_success_at_ms'))} · 지연 {lag} · 최근 수집 코드 {meta.get('last_attempt_code') or '—'} · 키 확인 {meta.get('last_check_code') or '—'}")
+            f"수집 {collecting} · 실행 환경 {'허용' if meta.get('environment_ok') else '차단'} · 마지막 성공 {when(meta.get('last_success_at_ms'))} · 지연 {lag} · 최근 수집 코드 {server_api.hf_org_code_text(meta.get('last_attempt_code'))} · 키 확인 {server_api.hf_org_code_text(meta.get('last_check_code'))}")
 
 
 class HfOrgUsagePage:
     def __init__(self, page, host):
         self.host, self.busy, self.generation = host, False, 0
+        self.period_generation = 0
         self.meta, self.spaces = {}, []
         host._header(page, "힉스필드 조직 사용량")
         body = tk.Frame(page, bg=BG)
@@ -134,9 +136,13 @@ class HfOrgUsagePage:
 
     def reset(self):
         self.generation += 1
+        self.busy = False
+        for button in self.buttons:
+            button.configure(state="normal")
         self.meta, self.spaces = {}, []
         self.key.delete(0, "end")
         self.status.configure(text="관리자로 로그인하면 보입니다")
+        self.note.configure(text="")
         self.clear_tables()
 
     def clear_tables(self):
@@ -144,7 +150,7 @@ class HfOrgUsagePage:
             table.delete(*table.get_children())
 
     def period_changed(self, *_):
-        self.generation += 1
+        self.period_generation += 1
         self.spaces = []
         self.clear_tables()
         self.note.configure(text="기간이 바뀌었습니다. 불러오기를 누르세요")
@@ -179,9 +185,9 @@ class HfOrgUsagePage:
         for button in self.buttons:
             button.configure(state="disabled")
         self.note.configure(text="처리 중…")
-        threading.Thread(target=self.worker, args=(self.host.session, self.generation, action, body), daemon=True).start()
+        threading.Thread(target=self.worker, args=(self.host.session, self.generation, self.period_generation, action, body), daemon=True).start()
 
-    def worker(self, session, generation, action, body):
+    def worker(self, session, generation, period_generation, action, body):
         value, meta, error = None, None, ""
         try:
             server = server_api.verify_server(self.host.inst, self.host.runner)
@@ -194,13 +200,15 @@ class HfOrgUsagePage:
             error = str(exc)
         except Exception:
             error = "요청 결과를 확인하지 못했습니다. 새로 읽기를 누르세요"
-        self.host._put(("hf_org_result", session, generation, action, value, meta, error))
+        self.host._put(("hf_org_result", session, generation, period_generation, action, value, meta, error))
 
-    def result(self, session, generation, action, value, meta, error):
+    def result(self, session, generation, period_generation, action, value, meta, error):
+        if session is not self.host.session or generation != self.generation:
+            return
         self.busy = False
         for button in self.buttons:
             button.configure(state="normal")
-        if session is not self.host.session or generation != self.generation:
+        if action in ("comparison", "refresh") and period_generation != self.period_generation:
             return
         if error:
             self.note.configure(text=error)
@@ -219,13 +227,17 @@ class HfOrgUsagePage:
         self.clear_tables()
         self.spaces = value.get("spaces", [])
         lag = value.get("delay_ms")
-        self.note.configure(text=f"출처: {value.get('api_source') or 'API 미확정'} · 대조: {value.get('check_state')} · 사유: {value.get('api_reason') or '—'} · 지연: {lag // 60000 if lag is not None else '—'}분")
+        check = "대조 대상 아님(진행 중)" if value.get("check_state") == "ongoing" else value.get("check_state")
+        anomalies = sum(row.get("cli_sign_anomaly_count", 0) for row in self.spaces)
+        anomaly_note = f" · CLI 부호 이상 {anomalies}건(해당 행 제외)" if anomalies else ""
+        self.note.configure(text=f"출처: {value.get('api_source') or 'API 미확정'} · 대조: {check} · 사유: {value.get('api_reason') or '—'} · 지연: {lag // 60000 if lag is not None else '—'}분{anomaly_note}")
         for index, row in enumerate(self.spaces):
             fact = money(row["fact_c"]) + (f" (추정 {row['fact_estimated_count']})" if row["fact_estimated_count"] else "")
+            cli = money(row["cli_c"]) + (f" · 부호 이상 {row['cli_sign_anomaly_count']}건" if row.get("cli_sign_anomaly_count") else "")
             other = ", ".join(f"{kind}: {count}" for kind, count in row.get("other_types", {}).items())
             self.table.insert("", "end", iid=str(index), values=(row["workspace_name"], money(row["api_net_c"]),
                 money(row["api_charged_c"]), money(row["api_refunded_c"]), row["generation_count"], fact,
-                money(row["cli_c"]), money(row["difference_c"]), row["mv_record"], row["no_mv_record"], row["non_generation"],
+                cli, money(row["difference_c"]), row["mv_record"], row["no_mv_record"], row["non_generation"],
                 row["completeness"] + " · " + when(row["last_success_at_ms"]) + (" · 기타 유형 " + other if other else "")))
 
     def select_space(self, *_):

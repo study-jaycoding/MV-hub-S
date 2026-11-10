@@ -118,7 +118,8 @@ def test_410_restarts_once_and_auth_pauses(world, monkeypatch):
     monkeypatch.setattr(client, "fetch_page", unauthorized)
     with pytest.raises(UsageError):
         worker.collect_window(item, context)
-    assert repo.read_collector()["pause_code"] == "http_401"
+    assert repo.read_collector()["pause_code"] == "auth"
+    assert not repo.read_config()["enabled"]
     assert repo.read_config()["key_verified_revision"] is None
 
 
@@ -286,3 +287,95 @@ def test_concurrent_key_check_cannot_bypass_inflight_request(world, monkeypatch)
             release.set()
             thread.join(5)
         assert len(calls) == 1 and results == [context["org_id"]]
+
+
+def test_request_lane_is_reserved_for_90_seconds(world):
+    context = configured(False)
+    at = repo.now_ms()
+    repo.reserve_request("active", context, collecting=False, at=at)
+    assert repo.read_collector()["io_until_ms"] == at + 90_000
+    with pytest.raises(UsageError, match="request_wait"):
+        repo.reserve_request("too_early", context, collecting=False, at=at + 89_999)
+    repo.reserve_request("expired", context, collecting=False, at=at + 90_000)
+
+
+def test_schedule_priority_and_failure_wait_survive_rotation(world, monkeypatch):
+    at = repo.now_ms()
+    monkeypatch.setattr(repo, "now_ms", lambda: at)
+    context = configured()
+    worker.schedule_due_windows(context["org_id"], at)
+    with manage_db.get_connection() as conn:
+        rows = {r["start_ms"]: dict(r) for r in conn.execute("SELECT * FROM hf_org_usage_window")}
+    today = repo.today_start(at)
+    assert rows[today]["priority"] == 20
+    assert rows[today - repo.DAY_MS]["priority"] == 15
+    first = rows[worker.day_ms(worker.FIRST_DAY)]
+    assert first["priority"] == 1
+    repo.attempt_failed(first["id"], "invalid_response")
+    worker.schedule_due_windows(context["org_id"], at + 1000)
+    with manage_db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM hf_org_usage_window WHERE id=?", (first["id"],)).fetchone())
+    assert saved["priority"] == 0 and saved["next_due_ms"] == at + repo.DAY_MS
+    assert repo.due_window(context["org_id"], at)["start_ms"] == today
+
+
+def test_existing_ongoing_exact_is_neither_selected_nor_requested(world, monkeypatch):
+    context = configured()
+    item = window(context, repo.today_start(repo.now_ms()), kind="exact")
+    monkeypatch.setattr(worker, "request_page", lambda *a, **k: pytest.fail("ongoing exact must not call HTTP"))
+    assert repo.due_window(context["org_id"], repo.now_ms()) is None
+    with pytest.raises(UsageError, match="invalid_period"):
+        worker.collect_window(item, context)
+
+
+@pytest.mark.parametrize("failure", ["environment", "config", "schedule", "collection", "recording"])
+def test_worker_survives_entire_iteration_including_failure_recording(world, monkeypatch, caplog, failure):
+    context = configured()
+    instance = worker.Collector()
+    instance.owner = context["owner"]
+    item = window(context, repo.today_start(repo.now_ms()) - repo.DAY_MS)
+    monkeypatch.setattr(worker, "env_ok", lambda: True)
+    monkeypatch.setattr(worker, "schedule_due_windows", lambda *a: None)
+    monkeypatch.setattr(repo, "due_window", lambda *a: item)
+    monkeypatch.setattr(worker, "collect_window", lambda *a, **k: None)
+    target, attribute = {"environment": (worker, "env_ok"), "config": (repo, "read_config"),
+                         "schedule": (worker, "schedule_due_windows"), "collection": (worker, "collect_window"),
+                         "recording": (repo, "attempt_failed")}[failure]
+    original = getattr(target, attribute)
+    calls = []
+
+    def fails_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("private exception text")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, attribute, fails_once)
+    if failure == "recording":
+        def failed_collection(*args, **kwargs):
+            raise UsageError("http_5xx")
+        monkeypatch.setattr(worker, "collect_window", failed_collection)
+    waits = iter((False, False, True))
+    monkeypatch.setattr(instance._stop, "wait", lambda _: next(waits))
+    instance.run()
+    assert len(calls) >= 2
+    assert "private exception text" not in caplog.text
+    if failure != "collection":
+        assert "collection_failed" in caplog.text
+
+
+def test_stage_integrity_failure_is_recorded_as_deterministic(world, monkeypatch):
+    context = configured()
+    instance = worker.Collector()
+    instance.owner = context["owner"]
+    item = window(context, repo.today_start(repo.now_ms()) - repo.DAY_MS)
+    monkeypatch.setattr(worker, "env_ok", lambda: True)
+    monkeypatch.setattr(worker, "schedule_due_windows", lambda *a: None)
+    monkeypatch.setattr(repo, "due_window", lambda *a: item)
+    monkeypatch.setattr(client, "fetch_page", lambda *a, **k: dict(rows=[row()], next_cursor="next"))
+    before = repo.now_ms()
+    instance.run_once()
+    with manage_db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM hf_org_usage_window").fetchone())
+    assert saved["last_attempt_code"] == "integrity_error"
+    assert saved["fail_count"] == 1 and saved["next_due_ms"] >= before + repo.DAY_MS

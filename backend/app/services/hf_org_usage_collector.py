@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 import threading
 import time
 import uuid
@@ -14,6 +16,7 @@ from .hf_org_usage_key import UsageError, load_key
 
 KST = timezone(timedelta(hours=9))
 FIRST_DAY = date(2026, 2, 1)
+logger = logging.getLogger(__name__)
 
 
 def day_ms(day: date) -> int:
@@ -65,19 +68,19 @@ def schedule_due_windows(org_id: str, at: int) -> None:
             if start < first:
                 continue
             conn.execute("INSERT OR IGNORE INTO hf_org_usage_window(org_id,start_ms,end_ms,kind,priority,next_due_ms) "
-                         "VALUES(?,?,?,'day',20,?)", (org_id, start, start + repo.DAY_MS, at))
+                         "VALUES(?,?,?,'day',?,?)", (org_id, start, start + repo.DAY_MS, repo.base_priority(start, at), at))
         state = repo.read_collector(conn)
         # Cursor advances on scheduling, not on success. A bad old day cannot stop history forever.
         backfill = state["backfill_cursor"] or first
         rotation = state["rotation_cursor"] or first
         if backfill < midnight - 7 * repo.DAY_MS:
             conn.execute("INSERT OR IGNORE INTO hf_org_usage_window(org_id,start_ms,end_ms,kind,priority,next_due_ms) "
-                         "VALUES(?,?,?,'day',5,?)", (org_id, backfill, backfill + repo.DAY_MS, at))
+                         "VALUES(?,?,?,'day',1,?)", (org_id, backfill, backfill + repo.DAY_MS, at))
             backfill += repo.DAY_MS
         if rotation >= midnight - 7 * repo.DAY_MS:
             rotation = first
         # One history slot per cycle with bounded priority; manual refresh is still coalesced.
-        conn.execute("UPDATE hf_org_usage_window SET next_due_ms=MIN(next_due_ms,?),priority=MAX(priority,10) "
+        conn.execute("UPDATE hf_org_usage_window SET next_due_ms=MIN(next_due_ms,?) "
                      "WHERE org_id=? AND kind='day' AND start_ms=? AND next_due_ms<=?",
                      (at, org_id, rotation, at))
         conn.execute("UPDATE hf_org_usage_collector SET backfill_cursor=?,rotation_cursor=? WHERE singleton=1",
@@ -91,14 +94,8 @@ def collect_window(window: dict, context: dict, *, stop: threading.Event | None 
     started = repo.now_ms()
     actual_start = max(window["start_ms"], DATA_START_MS)
     actual_end = min(window["end_ms"], started)
-    if window["kind"] == "exact":
-        # A still-open KST day must be compared over identical observation ranges.
-        with manage_db.get_connection() as snapshot:
-            days = [dict(r) for r in snapshot.execute("SELECT * FROM hf_org_usage_window WHERE org_id=? AND kind='day'",
-                                                      (context["org_id"],))]
-            selected, reason = repo.daily_selection(days, window["start_ms"], window["end_ms"], started)
-            if not reason and selected:
-                actual_end = min(actual_end, selected[-1]["actual_end_ms"])
+    if window["kind"] == "exact" and window["end_ms"] > repo.today_start(started):
+        raise UsageError("invalid_period")
     if actual_end <= actual_start:
         raise UsageError("future_period")
     deadline = time.monotonic() + 240
@@ -185,28 +182,38 @@ class Collector:
 
     def run(self):
         while not self._stop.wait(2):
-            window = None
             try:
-                if not env_ok():
-                    continue
-                settings = repo.read_config()
-                if not settings["enabled"] or not settings["encrypted_key"] or settings["restore_paused"]:
-                    continue
-                fence = repo.acquire_lease(self.owner)
-                if fence is None or not collect_ok(settings, repo.read_collector(), self.owner, fence):
-                    continue
-                context = dict(revision=settings["revision"], org_id=settings["org_id"], owner=self.owner, fence=fence)
-                schedule_due_windows(settings["org_id"], repo.now_ms())
-                window = repo.due_window(settings["org_id"], repo.now_ms())
-                if window:
-                    collect_window(window, context, stop=self._stop)
-            except UsageError as exc:
-                if window:
-                    repo.attempt_failed(window["id"], exc.code, max(60_000, exc.retry_after))
+                self.run_once()
             except Exception:
-                # No remote text, secret or exception repr may enter logs/status.
-                if window:
-                    repo.attempt_failed(window["id"], "collection_failed")
+                # Failure recording can fail too; keep the worker alive without exception text.
+                logger.warning("hf_org_usage: collection_failed")
+
+    def run_once(self):
+        window = None
+        try:
+            if not env_ok():
+                return
+            settings = repo.read_config()
+            if not settings["enabled"] or not settings["encrypted_key"] or settings["restore_paused"]:
+                return
+            fence = repo.acquire_lease(self.owner)
+            if fence is None or not collect_ok(settings, repo.read_collector(), self.owner, fence):
+                return
+            context = dict(revision=settings["revision"], org_id=settings["org_id"], owner=self.owner, fence=fence)
+            schedule_due_windows(settings["org_id"], repo.now_ms())
+            window = repo.due_window(settings["org_id"], repo.now_ms())
+            if window:
+                collect_window(window, context, stop=self._stop)
+        except UsageError as exc:
+            if window:
+                repo.attempt_failed(window["id"], exc.code, max(60_000, exc.retry_after))
+            else:
+                logger.warning("hf_org_usage: collection_failed")
+        except Exception as exc:
+            if window:
+                repo.attempt_failed(window["id"], "integrity_error" if isinstance(exc, sqlite3.IntegrityError) else "collection_failed")
+            else:
+                logger.warning("hf_org_usage: collection_failed")
 
 
 collector = Collector()

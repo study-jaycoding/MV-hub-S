@@ -26,10 +26,12 @@ def status() -> dict:
     config = repo.read_config()
     result = public_key_state(config)
     state = repo.read_collector()
+    at = repo.now_ms()
+    succeeded = repo.today_success(config["org_id"], at)
     result.update(repo.latest_attempt(config["org_id"]))
     result.update(environment_ok=worker.env_ok(), pause_code=state["pause_code"],
                   last_success_at_ms=state["last_progress_at_ms"],
-                  delay_ms=repo.now_ms() - state["last_progress_at_ms"] if state["last_progress_at_ms"] else None)
+                  delay_ms=at - succeeded if succeeded is not None else None)
     return result
 
 
@@ -115,7 +117,7 @@ def request_refresh(start=None, end=None) -> dict:
         raise UsageError("key_check_required")
     at = repo.now_ms()
     windows = [(day, day + repo.DAY_MS, "day", 30) for day in range(first, min(last, at), repo.DAY_MS)]
-    if last - first <= 31 * repo.DAY_MS and first < at:
+    if last - first <= 31 * repo.DAY_MS and last <= repo.today_start(at):
         windows.append((first, last, "exact", 25))
     repo.reserve_windows(config["org_id"], windows)
     return dict(queued=len(windows), start_ms=first, end_ms=last)
@@ -150,21 +152,24 @@ def _actor_labels(snapshot: dict, org_id: str) -> dict:
 
 def compare_snapshot(snapshot: dict, org_id: str, start: int, end: int, at: int) -> dict:
     windows = snapshot["windows"]
+    ongoing = end > repo.today_start(at)
     days, reason = repo.daily_selection(windows, start, end, at)
     daily_ids = {w["id"] for w in days}
     daily_rows = [r for r in snapshot["rows"] if r["window_id"] in daily_ids]
     if repo.row_signature(daily_rows) is None:
         reason = "duplicate_row"
-    exact = next((w for w in windows if w["kind"] == "exact" and w["start_ms"] == start
+    exact = next((w for w in windows if not ongoing and w["kind"] == "exact" and w["start_ms"] == start
                   and w["end_ms"] == end and w["success_complete"]
                   and w["actual_start_ms"] == start
                   and w["actual_end_ms"] >= min(end, worker.day_ms(datetime.fromtimestamp(at // 1000, worker.KST).date()))), None)
-    check = snapshot["check"]
+    check = None if ongoing else snapshot["check"]
     versions = {str(w["id"]): w["snapshot_version"] for w in days}
     checked_current = bool(check and exact and check["exact_snapshot_version"] == exact["snapshot_version"]
                            and json.loads(check["daily_versions_json"]) == versions)
     check_state = (check["state"] if checked_current else "stale" if check else "not_checked")
-    if end - start > 31 * repo.DAY_MS:
+    if ongoing:
+        check_state = "ongoing"
+    elif end - start > 31 * repo.DAY_MS:
         check_state = "over_31_days"
     if check and check["state"] == "mismatch":
         reason = "daily_mismatch"  # Sticky until a later exact/daily check actually passes.
@@ -186,7 +191,7 @@ def compare_snapshot(snapshot: dict, org_id: str, start: int, end: int, at: int)
                                api_net_c=0 if confirmed else None, api_charged_c=0 if confirmed else None,
                                api_refunded_c=0 if confirmed else None, generation_count=0 if confirmed else None,
                                fact_c=0, fact_estimated_count=0, fact_invalid_count=0,
-                               cli_c=0, cli_other_count=0, cli_invalid_count=0,
+                               cli_c=0, cli_other_count=0, cli_invalid_count=0, cli_sign_anomaly_count=0,
                                mv_record=0 if confirmed else None, no_mv_record=0 if confirmed else None,
                                non_generation=0 if confirmed else None, actors={}, errors={}, other_types={})
         return spaces[key]
@@ -227,8 +232,10 @@ def compare_snapshot(snapshot: dict, org_id: str, start: int, end: int, at: int)
             item["cli_other_count"] += 1
             continue
         cents = _legacy_cents(transaction["credits"])
-        if cents is None or (transaction["action"] == "spend" and cents > 0) or (transaction["action"] == "refund" and cents < 0):
+        if cents is None:
             item["cli_invalid_count"] += 1
+        elif (transaction["action"] == "spend" and cents > 0) or (transaction["action"] == "refund" and cents < 0):
+            item["cli_sign_anomaly_count"] += 1
         else:
             item["cli_c"] -= cents  # Spend is negative, refund positive; never abs().
     last = min((w["succeeded_at_ms"] for w in chosen), default=None)

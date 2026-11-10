@@ -1,4 +1,6 @@
 from decimal import Decimal
+from types import SimpleNamespace
+import urllib.error
 import urllib.request
 import urllib.parse
 
@@ -123,3 +125,47 @@ def test_non_json_error_is_fixed_and_bad_range_never_calls(monkeypatch):
             with pytest.raises(UsageError, match="invalid_range"):
                 client.fetch_page(FAKE_KEY, start, end)
         assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("phase", ["open", "read"])
+def test_whole_http_deadline_closes_loopback_response(monkeypatch, status, phase):
+    # Keep real loopback sockets and response handling, but advance a virtual clock
+    # at the transport boundary so slow headers/body do not require a 25-second test.
+    clock = [0.0]
+    reads = []
+    streams = []
+    real_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), client._NoRedirect())
+
+    def mark_response(response):
+        stream = response.fp if isinstance(response, urllib.error.HTTPError) else response
+        streams.append(stream)
+        read1 = stream.read1
+
+        def timed_read(size):
+            reads.append(size)
+            chunk = read1(size)
+            clock[0] = client.HTTP_SECONDS
+            return chunk
+
+        stream.read1 = timed_read
+        if phase == "open":
+            clock[0] = client.HTTP_SECONDS
+        return response
+
+    def open_response(*args, **kwargs):
+        try:
+            response = real_opener.open(*args, **kwargs)
+        except urllib.error.HTTPError as exc:
+            mark_response(exc)
+            raise
+        return mark_response(response)
+
+    monkeypatch.setattr(client, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(client.urllib.request, "build_opener", lambda *_: SimpleNamespace(open=open_response))
+    body = {} if status == 200 else api_error("report_limit_exceeded")
+    with fake_server([(status, {}, body)]) as (url, _):
+        with pytest.raises(UsageError, match="^http_timeout$"):
+            client._request_json(urllib.request.Request(url), FAKE_KEY)
+    assert len(reads) == (0 if phase == "open" else 1)
+    assert len(streams) == 1 and streams[0].isclosed()

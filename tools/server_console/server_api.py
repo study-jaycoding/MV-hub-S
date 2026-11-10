@@ -339,6 +339,77 @@ def delete_comfy_key(server: dict, token: str) -> dict:
     return _comfy_key_meta(*call(server, "DELETE", COMFY_KEY_PATH, token), "팀 Comfy 키 삭제")
 
 
+HF_ORG_ERROR_MESSAGES = {
+    "revision_conflict": "다른 작업으로 키 상태가 바뀌었습니다. 새로 읽기 후 다시 시도하세요",
+    "environment_blocked": "현재 서버 환경에서는 외부 사용량 수집이 차단됩니다",
+    "key_check_required": "키 확인 후 수집 켜기를 누르세요",
+    "collection_disabled": "수집이 꺼져 있습니다. 수집 켜기를 누르세요",
+    "organization_conflict": "등록한 조직과 다른 조직의 키입니다",
+    "key_undecryptable": "키를 복호화하지 못했습니다. 이 서버에서 키를 다시 등록하세요",
+    "key_none": "등록한 키가 없습니다. 새 키를 등록하세요",
+    "protect_failed": "키를 안전하게 저장하지 못했습니다. 서버 실행 계정을 확인하세요",
+    "invalid_period": "조회 시작·끝 날짜를 확인하세요",
+    "invalid_expiry": "만료일을 YYYY-MM-DD 형식으로 입력하세요",
+    "invalid_revision": "키 상태를 새로 읽고 다시 시도하세요",
+    "invalid_enabled": "수집 설정 요청이 올바르지 않습니다. 새로 읽고 다시 시도하세요",
+    "invalid_body": "요청 형식이 올바르지 않습니다",
+    "invalid_key": "키 입력값을 확인하세요",
+    "body_too_large": "요청 크기가 너무 큽니다. 키 입력값을 확인하세요",
+    "usage_unavailable": "사용량 정보를 처리하지 못했습니다. 잠시 뒤 새로 읽으세요",
+    "not_initialized": "사용량 저장소가 준비되지 않았습니다. 서버 상태를 확인하세요",
+    "stale_work": "진행 중 키나 수집 상태가 바뀌었습니다. 새로 읽으세요",
+    "rate_wait": "분당 요청 한도에 도달했습니다. 잠시 기다리세요",
+    "request_wait": "다른 사용량 요청이 진행 중입니다. 잠시 기다리세요",
+    "http_401": "키 인증에 실패했습니다. 키 확인 뒤 수집 켜기를 누르세요",
+    "http_403": "키 권한 또는 조직 자격을 확인한 뒤 수집 켜기를 누르세요",
+    "http_410": "페이지가 만료되었습니다. 해당 기간을 다시 받아야 합니다",
+    "http_429": "조직 API 요청 한도에 도달했습니다. 잠시 기다리세요",
+    "http_503": "조직 API가 혼잡합니다. 잠시 뒤 다시 시도합니다",
+    "http_5xx": "조직 API 서버 오류입니다. 잠시 뒤 다시 시도합니다",
+    "http_timeout": "조직 API 응답 시간이 초과되었습니다",
+    "http_unavailable": "조직 API에 연결하지 못했습니다. 서버 연결 상태를 확인하세요",
+    "http_error": "조직 API가 요청을 거절했습니다",
+    "report_limit_exceeded": "보고서 한도를 초과했습니다. 더 작은 기간으로 확인하세요",
+    "invalid_parameter": "조직 API 요청 매개변수가 올바르지 않습니다",
+    "missing_parameter": "조직 API 필수 매개변수가 빠졌습니다",
+    "unknown_parameter": "조직 API가 요청 매개변수를 지원하지 않습니다",
+    "duplicate_parameter": "조직 API 요청 매개변수가 중복되었습니다",
+    "invalid_range": "조직 API 조회 범위가 올바르지 않습니다",
+    "before_data_start": "조직 API가 제공하는 시작일보다 이른 기간입니다",
+    "invalid_page": "조직 API 페이지 정보가 올바르지 않습니다",
+    "api_key_in_url": "조직 API 키 전달 형식이 올바르지 않습니다",
+    "invalid_cursor": "조직 API의 다음 페이지 정보가 올바르지 않습니다",
+    "invalid_organization": "조직 API 응답의 조직 정보가 올바르지 않습니다",
+    "response_range_mismatch": "조직 API가 요청과 다른 기간을 반환했습니다",
+    "invalid_pagination": "조직 API의 페이지 응답이 일관되지 않습니다",
+    "invalid_response": "조직 API 응답 형식을 확인하지 못했습니다",
+    "invalid_row": "조직 API 사용량 행의 필수 정보가 올바르지 않습니다",
+    "invalid_amount": "조직 API 사용량 금액을 정확히 읽을 수 없습니다",
+    "invalid_timestamp": "조직 API 사용량 시각이 올바르지 않습니다",
+    "row_outside_window": "조직 API가 조회 기간 밖의 행을 반환했습니다",
+    "duplicate_row": "조직 API가 같은 사용량 행을 중복 반환했습니다",
+    "redirect_refused": "조직 API의 다른 주소 이동을 차단했습니다",
+    "response_too_large": "조직 API 응답 크기가 한도를 초과했습니다",
+    "future_period": "아직 시작하지 않은 기간입니다",
+    "window_deadline": "전체 기간 수집 시간이 초과되었습니다",
+    "repeated_cursor": "조직 API가 같은 페이지를 반복 반환했습니다",
+    "page_limit": "기간별 최대 페이지 수를 초과했습니다",
+    "stopped": "수집이 중단되었습니다",
+    "integrity_error": "사용량 행이 중복되거나 저장 조건에 맞지 않습니다",
+    "collection_failed": "수집 중 내부 오류가 발생했습니다. 잠시 뒤 다시 확인하세요",
+}
+
+
+def hf_org_code_text(code) -> str:
+    if code is None or code == "":
+        return "—"
+    if code == "ok":
+        return "정상 (ok)"
+    if isinstance(code, str) and code in HF_ORG_ERROR_MESSAGES:
+        return f"{HF_ORG_ERROR_MESSAGES[code]} ({code})"
+    return "알 수 없는 오류 — 새로 읽기 후 확인하세요"
+
+
 def hf_org_usage(server: dict, token: str, action: str, body=None) -> dict:
     """Never show HTTP response text from a request which may contain an organization key."""
     routes = {"status": ("GET", "/status"), "put": ("PUT", "/key"),
@@ -355,12 +426,9 @@ def hf_org_usage(server: dict, token: str, action: str, body=None) -> dict:
     if code == 404:
         raise ServerError("힉스필드 조직 사용량을 지원하는 서버인지 확인하세요")
     if code not in (200, 202) or not isinstance(payload, dict):
-        codes = {"revision_conflict", "environment_blocked", "key_check_required", "collection_disabled",
-                 "organization_conflict", "key_undecryptable", "invalid_period", "invalid_expiry",
-                 "http_401", "http_403", "http_429", "http_503", "report_limit_exceeded", "rate_wait", "request_wait", "protect_failed"}
         reason = payload.get("detail") if isinstance(payload, dict) else None
-        safe = reason if isinstance(reason, str) and reason in codes else "요청 실패"
-        raise ServerError(f"힉스필드 조직 사용량: {safe} — 새로 읽기 후 확인하세요")
+        safe = hf_org_code_text(reason) if isinstance(reason, str) and reason in HF_ORG_ERROR_MESSAGES else "요청 실패 — 새로 읽기 후 확인하세요"
+        raise ServerError(f"힉스필드 조직 사용량: {safe}")
     return payload
 
 

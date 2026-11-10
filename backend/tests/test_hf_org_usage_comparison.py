@@ -99,3 +99,28 @@ def test_unknown_row_type_is_in_total_and_shown_without_calling_it_charge():
     item = compare(data)["spaces"][0]
     assert item["api_net_c"] == 125 and item["generation_count"] == item["non_generation"] == 0
     assert item["other_types"] == {"future_kind": 1}
+
+
+def test_ongoing_period_uses_only_days_and_ignores_old_exact_mismatch():
+    data = snapshot()
+    at = START + repo.DAY_MS // 2
+    data["windows"][0]["actual_end_ms"] = at
+    data["windows"].append(dict(data["windows"][0], id=2, kind="exact"))
+    data["check"] = dict(state="mismatch", exact_snapshot_version=1, daily_versions_json='{"1":1}')
+    data["rows"] = [dict(row(credits_c=125), window_id=1), dict(row(credits_c=999), window_id=2)]
+    result = compare_snapshot(data, "org", START, START + repo.DAY_MS, at)
+    assert result["check_state"] == "ongoing" and not result["checked_current"]
+    assert result["api_source"] == "daily" and result["api_net_c"] == 125
+    data["windows"][0]["success_complete"] = 0
+    result = compare_snapshot(data, "org", START, START + repo.DAY_MS, at)
+    assert result["api_net_c"] is None and result["api_source"] is None
+
+
+def test_ledger_sign_anomalies_are_excluded_without_losing_valid_total():
+    data = snapshot()
+    data["rows"] = [dict(row(), window_id=1)]
+    data["transactions"] = [dict(workspace_id="space-1", credits=value, action=action) for value, action in (
+        (-2, "spend"), (0.5, "refund"), (10, "spend"), (-3, "refund"), (0, "spend"), (0, "refund"))]
+    item = compare(data)["spaces"][0]
+    assert item["cli_c"] == 150 and item["difference_c"] == -25
+    assert item["cli_sign_anomaly_count"] == 2 and item["cli_invalid_count"] == 0

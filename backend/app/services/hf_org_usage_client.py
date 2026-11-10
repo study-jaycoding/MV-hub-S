@@ -159,6 +159,7 @@ def _request_json(request, key: str) -> dict:
     started = time.monotonic()
     try:
         with opener.open(request, timeout=HTTP_SECONDS) as response:
+            _remaining_seconds(started)
             payload = json.loads(_read_bytes(response, started, MAX_RESPONSE_BYTES), parse_float=Decimal,
                                  parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
             if not isinstance(payload, dict) or _contains_key(payload, key):
@@ -167,8 +168,11 @@ def _request_json(request, key: str) -> dict:
     except urllib.error.HTTPError as exc:
         code = exc.code
         retry = retry_delay(exc.headers.get("Retry-After")) if code in (429, 503) else 0
-        safe_code = _error_code(exc, started)
-        exc.close()
+        try:
+            _remaining_seconds(started)
+            safe_code = _error_code(exc, started)
+        finally:
+            exc.close()
         if code == 500 and safe_code == "report_limit_exceeded":
             result = "report_limit_exceeded"
         elif code == 400:
@@ -188,23 +192,27 @@ def _request_json(request, key: str) -> dict:
         raise UsageError("invalid_response") from None
 
 
+def _remaining_seconds(started: float) -> float:
+    remaining = HTTP_SECONDS - (time.monotonic() - started)
+    if remaining <= 0:
+        raise UsageError("http_timeout")
+    return remaining
+
+
 def _read_bytes(response, started: float, cap: int) -> bytes:
     chunks, size = [], 0
     while True:
-        remaining = HTTP_SECONDS - (time.monotonic() - started)
-        if remaining <= 0:
-            raise UsageError("http_timeout")
+        remaining = _remaining_seconds(started)
         # HTTPError wraps HTTPResponse; the latter owns the socket and buffered stream.
         stream = response.fp if isinstance(response, urllib.error.HTTPError) else response
         if stream.isclosed():
             break
         stream.fp.raw._sock.settimeout(remaining)
         chunk = stream.read1(min(65536, cap + 1 - size))
+        _remaining_seconds(started)
         size += len(chunk)
         if size > cap:
             raise UsageError("response_too_large")
-        if time.monotonic() - started > HTTP_SECONDS:
-            raise UsageError("http_timeout")
         if not chunk:
             break
         chunks.append(chunk)
@@ -220,5 +228,11 @@ def _error_code(response, started: float) -> str | None:
         error = payload.get("error") if isinstance(payload, dict) and payload.get("type") == "error" else None
         code = error.get("code") if isinstance(error, dict) else None
         return code if isinstance(code, str) and code in allowed else None
+    except UsageError as exc:
+        if exc.code == "http_timeout":
+            raise
+        return None
+    except TimeoutError:
+        raise UsageError("http_timeout") from None
     except Exception:
         return None

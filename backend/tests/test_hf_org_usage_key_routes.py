@@ -133,5 +133,43 @@ def test_saved_key_auth_failure_stops_collection_but_candidate_failure_does_not(
         assert client.post(BASE+"/key/check", json=dict(api_key=FAKE_KEY, expected_revision=context["revision"])).status_code == 409
         assert repo.read_collector()["pause_code"] is None
         assert client.post(BASE+"/key/check", json=dict(expected_revision=context["revision"])).status_code == 409
-    assert repo.read_collector()["pause_code"] == "http_403"
+    assert repo.read_collector()["pause_code"] == "auth"
     assert repo.read_config()["key_verified_revision"] is None
+    assert not repo.read_config()["enabled"]
+    revision = repo.read_config()["revision"]
+    assert revision > context["revision"]
+    assert client.patch(BASE+"/collector", json=dict(expected_revision=revision, enabled=True)).status_code == 409
+    monkeypatch.setattr(usecase, "_confirm", lambda *args: dict(org_id=ORG))
+    assert client.post(BASE+"/key/check", json=dict(expected_revision=revision)).status_code == 200
+    assert not repo.read_config()["enabled"] and repo.read_collector()["pause_code"] == "auth"
+    assert client.patch(BASE+"/collector", json=dict(expected_revision=revision, enabled=True)).status_code == 200
+    assert repo.read_config()["enabled"] and repo.read_collector()["pause_code"] is None
+
+
+def test_status_delay_uses_today_not_recent_history_success(world, monkeypatch):
+    from hf_org_usage_fake import window
+    at = repo.now_ms()
+    monkeypatch.setattr(repo, "now_ms", lambda: at)
+    context = configured()
+    assert usecase.status()["delay_ms"] is None
+    item = window(context, repo.today_start(at))
+    with repo.transaction() as conn:
+        conn.execute("UPDATE hf_org_usage_window SET succeeded_at_ms=? WHERE id=?", (at - 1_200_000, item["id"]))
+        conn.execute("UPDATE hf_org_usage_collector SET last_progress_at_ms=?", (at,))
+    assert usecase.status()["delay_ms"] == 1_200_000
+
+
+def test_refresh_queues_exact_only_for_finished_period(world, monkeypatch):
+    from datetime import datetime
+    from app import manage_db
+    configured()
+    monkeypatch.setattr(worker, "env_ok", lambda: True)
+    at = worker.day_ms(datetime(2026, 11, 10).date()) + 1000
+    monkeypatch.setattr(repo, "now_ms", lambda: at)
+    usecase.request_refresh("2026-11-09", "2026-11-11")
+    with manage_db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hf_org_usage_window WHERE kind='exact'").fetchone()[0] == 0
+    usecase.request_refresh("2026-11-08", "2026-11-10")
+    with manage_db.get_connection() as conn:
+        assert conn.execute("SELECT start_ms,end_ms FROM hf_org_usage_window WHERE kind='exact'").fetchone()[:] == (
+            worker.day_ms(datetime(2026, 11, 8).date()), repo.today_start(at))
