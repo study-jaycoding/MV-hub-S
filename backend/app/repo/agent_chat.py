@@ -112,9 +112,13 @@ def get_conversation(path, conversation_id) -> dict | None:
 
 
 def list_conversations(path, limit=50) -> list[dict]:
+    # project = 프로젝트를 고른 화면에서 보낸 첫 차례의 지금 화면 project — 칸 서랍이 대화를 프로젝트별로 묶는다(없으면 null)
     with connect(path) as conn:
-        rows = conn.execute("SELECT id,title,engine,model,effort,updated_at,resumable FROM agent_chat_conversation "
-                            "ORDER BY updated_at DESC, rowid DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(
+            "SELECT c.id,c.title,c.engine,c.model,c.effort,c.updated_at,c.resumable,"
+            " (SELECT json_extract(t.context,'$.project') FROM agent_chat_turn t WHERE t.conversation_id=c.id"
+            "  AND json_valid(t.context) AND json_type(t.context,'$.project')='text' ORDER BY t.created_at, t.rowid LIMIT 1) AS project"
+            " FROM agent_chat_conversation c ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?", (limit,)).fetchall()
     return [{**dict(row), "resumable": bool(row["resumable"])} for row in rows]
 
 

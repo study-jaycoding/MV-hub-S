@@ -7,6 +7,7 @@ export const EMBED_MODES = {
   assets: "assets",
   manage: "manage",
   canvas: "canvas", // 앱 전체를 캔버스 탭으로 — 씬을 쓰므로 main.tsx 가 보통 앱처럼 저장소를 부팅해 띄운다
+  agent: "agent", // MV Agent 대화 칸만(components/agent-chat/AgentWindow) — 띄우면 메인 창의 옆 칸은 닫힌다
 } as const;
 
 type EmbedMode = (typeof EMBED_MODES)[keyof typeof EMBED_MODES];
@@ -23,6 +24,10 @@ const WINDOW_OPTIONS: Record<EmbedMode, { name: string; features: string }> = {
   canvas: {
     name: "contenthub-canvas",
     features: "popup=yes,width=1440,height=900,left=100,top=40",
+  },
+  agent: {
+    name: "contenthub-agent",
+    features: "popup=yes,width=540,height=880,left=1320,top=60", // 화면이 작으면 브라우저가 안으로 끌어온다
   },
 };
 

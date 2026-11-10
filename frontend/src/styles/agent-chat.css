@@ -2,7 +2,7 @@
 /* 머리줄 단추 = 아이콘 캡슐의 번개 칸(TopBar .agent-btn — docs/status/MVAgent_머리줄아이콘_2026-11-10.md). 모양은 .top-ic-btn 규칙 그대로라 여기엔 없다. */
 
 /* 칸이 열리면 앱 전체(머리줄·본문)가 왼쪽으로 좁아진다 — 겹치지 않는다. 화면에 고정된 프롬프트 도크·아래 선택 막대도 같은 폭으로.
-   폭 = --agent-w(칸 왼쪽 끝선을 끌면 AgentPanel 이 :root 에 적는다 · 기본 520). 떠 있는 창일 때는 .agent-open 이 없다(본문 그대로). */
+   폭 = --agent-w(칸 왼쪽 끝선을 끌면 AgentPanel 이 :root 에 적는다 · 기본 520). 새 창 모드(?embed=agent)일 때는 .agent-open 이 없다(본문 그대로). */
 .app.agent-open { padding-right: var(--agent-w, 520px); }
 .app.agent-open .sl-dockbar,
 .app.agent-open .dock-float { right: var(--agent-w, 520px); }
@@ -24,53 +24,76 @@
 }
 .agent-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 0; border-left: 2px solid var(--accent); opacity: 0; } /* 글자 없는 선 — 라임 바탕 규칙(검은 글자) 대상 아님 */
 .agent-resize:hover::after, .agent-resize:focus-visible::after, .agent-resize.resizing::after { opacity: 1; }
-/* 떠 있는 창 — 자리·크기·앞뒤(z 152~159)는 lib/useFloatingPanel 이 인라인으로 준다. 오른쪽 아래 모서리를 끌어 크기를 바꾼다 */
-.agent-panel.floating {
-  top: auto; right: auto; bottom: auto; z-index: 152;
-  min-width: 380px; min-height: 360px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
-  border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
-  resize: both; overflow: hidden;
-}
-.agent-panel.floating .agent-head { height: 48px; cursor: move; user-select: none; }
+/* 새 창(?embed=agent · AgentWindow) — 칸이 창을 가득 채운다 */
+.agent-window { height: 100vh; background: #252525; }
+.agent-panel.popout { position: relative; width: auto; height: 100%; border-left: 0; }
 .agent-panel button:focus-visible,
 .agent-panel textarea:focus-visible,
 .agent-panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* 머리 — 머리줄과 같은 높이에 '새 대화 ⌄' · 새 대화 · 옆 칸 닫기 */
+/* 머리 — 머리줄과 같은 높이에 왼쪽 [≡ 대화 목록][옆 칸 닫기] · 제목, 오른쪽 [새 대화][새 창](Jay 11-10 시안 A안) */
 .agent-head {
   flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  height: 59px; padding: 0 12px 0 16px; border-bottom: 1px solid transparent;
+  height: 59px; padding: 0 12px 0 8px; border-bottom: 1px solid transparent;
 }
-.agent-history-wrap { position: relative; min-width: 0; }
-.agent-title {
-  display: inline-flex; align-items: center; gap: 6px; max-width: 360px; padding: 6px 8px;
-  border: 0; background: transparent; color: var(--text); font-size: 15px; font-weight: 700;
-}
-.agent-title span { overflow: hidden; text-overflow: clip; white-space: nowrap; }
-.agent-title:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); }
+.agent-head-left { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.agent-title { display: block; min-width: 0; margin-left: 6px; color: var(--text); font-size: 15px; font-weight: 700; }
+/* 긴 제목은 끝을 흐리게 자른다(글자 끝 '...' 금지) */
+.agent-title span { display: block; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
 .agent-chevron { flex: none; color: var(--muted); }
-.agent-head-actions { display: flex; gap: 4px; }
+.agent-head-actions { display: flex; flex: none; gap: 4px; }
 .agent-ic {
-  display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0;
   border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted);
 }
 .agent-ic:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+.agent-ic.on { background: rgba(255, 255, 255, 0.1); color: var(--text); }
 
-/* 떠 있는 메뉴(지난 대화 · 모델) */
+/* 떠 있는 메뉴(모델 · 생각 깊이) */
 .agent-menu {
   position: absolute; z-index: 5; min-width: 260px; max-height: 420px; overflow-y: auto; padding: 6px;
   background: var(--panel2); border: 1px solid var(--border2); border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
 }
-.agent-history { top: calc(100% + 6px); left: 0; width: 340px; }
 .agent-menu-note { margin: 0; padding: 12px; color: var(--muted); font-size: 12px; }
-.agent-history-item {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 8px 10px;
-  border: 0; border-radius: 8px; background: transparent; color: var(--text); text-align: left;
+
+/* ≡ 대화 서랍 — 머리 아래 왼쪽에서 열리고 뒤는 어둡게(누르면 닫힘). Claude 앱 목록처럼: 프로젝트 묶음 · 안쪽 세로선 · 고른 대화 회색 칸 */
+.agent-drawer-dim { position: absolute; z-index: 7; left: 0; right: 0; top: 59px; bottom: 0; background: rgba(0, 0, 0, 0.45); }
+.agent-drawer {
+  position: absolute; z-index: 8; left: 0; top: 59px; bottom: 0; width: min(310px, 82%);
+  display: flex; flex-direction: column; background: #202020; border-right: 1px solid var(--border2);
+  box-shadow: 12px 0 30px rgba(0, 0, 0, 0.35);
 }
-.agent-history-item span { max-width: 100%; overflow: hidden; white-space: nowrap; font-size: 13px; }
-.agent-history-item small { color: var(--muted); font-size: 11px; }
-.agent-history-item:hover, .agent-history-item.on { background: rgba(255, 255, 255, 0.06); }
+.agent-drawer-new {
+  display: flex; align-items: center; gap: 10px; margin: 8px 8px 4px; padding: 9px 10px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--text); font-size: 13.5px; font-weight: 600; text-align: left;
+}
+.agent-drawer-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px; }
+.agent-drawer-ghead {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px 6px; border: 0; background: transparent;
+  color: var(--muted); font-size: 12.5px; font-weight: 600; text-align: left;
+}
+.agent-drawer-ghead[aria-expanded="false"] .agent-chevron { transform: rotate(-90deg); }
+.agent-drawer-items { position: relative; margin: 0 0 6px 18px; padding-left: 8px; }
+.agent-drawer-items::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 1px; background: rgba(255, 255, 255, 0.14); }
+.agent-drawer-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: 0; border-radius: 9px;
+  background: transparent; color: #cfcfcf; font-size: 13px; text-align: left;
+}
+.agent-drawer-item span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.agent-drawer-item small { flex: none; color: var(--muted2); font-size: 11px; }
+.agent-drawer-item.on { background: #3a3a3a; color: #fff; font-weight: 600; }
+.agent-drawer-new:hover:not(:disabled), .agent-drawer-item:hover:not(:disabled):not(.on), .agent-drawer-ghead:hover { background: rgba(255, 255, 255, 0.06); }
+.agent-drawer-new:disabled, .agent-drawer-item:disabled:not(.on) { opacity: 0.5; }
+.agent-drawer-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 3.5px solid var(--accent); box-sizing: border-box; box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
+.agent-drawer-settings { flex: none; display: flex; flex-direction: column; gap: 9px; padding: 10px 14px 14px; border-top: 1px solid var(--border2); }
+.agent-drawer-shead { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.agent-drawer-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12.5px; }
+.agent-drawer-row b { color: var(--text); font-weight: 600; }
+.agent-drawer-row b.ok { color: var(--accent); }
+.agent-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: #2e2e2e; }
+.agent-seg button { padding: 3px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.agent-seg button[aria-pressed="true"] { background: #464646; color: var(--text); }
 
 /* 대화 */
 .agent-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
