@@ -26,6 +26,8 @@ export const STORAGE_KEYS = {
   agentPanelOpen: "mvhub.agentPanel.open",
   agentPanelModel: "mvhub.agentPanel.model",
   agentPanelConversation: "mvhub.agentPanel.conversation",
+  agentPanelFloat: "mvhub.agentPanel.float", // 떠 있는 창 "1"/"0" — 창 자리·크기는 `mvhub.agentPanel.pos`/`.size`(AgentPanel 의 makeStore)
+  agentPanelWidth: "mvhub.agentPanel.width", // 옆에 붙은 칸의 폭(px)
   // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
   canvasHandoff: "mvhub.canvasHandoff",
   historyPos: "ch.history.pos",

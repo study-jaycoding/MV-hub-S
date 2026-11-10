@@ -208,6 +208,8 @@ export default function App() {
   // Ask Agent 옆 칸(docs/status/AskAgent_옆칸_설계_2026-11-09.md) — 열림은 이 브라우저에 기억한다. 닫아도 진행 중 차례는 허브에서 계속 돈다.
   const [agentOpen, setAgentOpen] = useState(() => loadString(STORAGE_KEYS.agentPanelOpen) === "1");
   useEffect(() => saveString(STORAGE_KEYS.agentPanelOpen, agentOpen ? "1" : "0"), [agentOpen]);
+  const [agentFloat, setAgentFloat] = useState(() => loadString(STORAGE_KEYS.agentPanelFloat) === "1"); // 떠 있는 창이면 앱 본문을 좁히지 않는다
+  useEffect(() => saveString(STORAGE_KEYS.agentPanelFloat, agentFloat ? "1" : "0"), [agentFloat]);
   const editOpenRef = useRef(editOpen);
   editOpenRef.current = editOpen;
   // 편집 탭이 연 '폴더 보기' 창(컷 더블클릭, Jay 2026-10-08) — 공유 & 리뷰의 폴더 창을 그대로 쓴다. 그 창은 하나뿐인 목록
@@ -2308,6 +2310,8 @@ export default function App() {
           })}
           contextLabel={place ? `${t(tabLabel)} › ${place}` : t(tabLabel)}
           onClose={() => setAgentOpen(false)}
+          floating={agentFloat}
+          onToggleFloat={() => setAgentFloat((v) => !v)}
           findGeneration={findGeneration}
           onPreview={openPreview}
         />
@@ -2633,7 +2637,7 @@ export default function App() {
   );
 
   return (
-    <div className={agentShown ? "app agent-open" : "app"}>
+    <div className={agentShown && !agentFloat ? "app agent-open" : "app"}>
       {/* 캔버스 창(휠 클릭으로 띄운 창)은 캔버스 탭에 있는 동안 머리줄이 없다(Jay 2026-10-30) — 다른 탭으로 넘어가면(라이브러리에서 찾기 등) 다시 나와 갇히지 않는다 */}
       {topBarShown && <TopBar
         filters={filters}

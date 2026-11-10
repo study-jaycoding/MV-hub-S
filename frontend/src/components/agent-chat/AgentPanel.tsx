@@ -1,12 +1,16 @@
-// MV Agent 옆 칸(폭 520px 고정 — 시안 _shots/ask-agent-open-v2.png · 모델 칩 ask-agent-models.png). 머리('새 대화 ⌄' · 새 대화 ·
-//  옆 칸 닫기) · 대화(또는 Claude 연결 안내) · 입력칸(지금 화면 · [모델 ⌄] [생각 깊이 ⌄] · 보내기). 칸을 닫아도 차례는 허브에서 계속 돈다.
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+// MV Agent 옆 칸(기본 폭 520px — 시안 _shots/ask-agent-open-v2.png · 모델 칩 ask-agent-models.png). 머리('새 대화 ⌄' · 새 대화 ·
+//  띄우기/붙이기 · 닫기) · 대화(또는 Claude 연결 안내) · 입력칸(지금 화면 · [모델 ⌄] [생각 깊이 ⌄] · 보내기). 칸을 닫아도 차례는 허브에서 계속 돈다.
+//  옆에 붙은 동안 왼쪽 끝선을 끌어 폭을 바꾸고, 떠 있는 창으로 띄울 수 있다(Jay 11-10 — docs/status/MVAgent_칸폭_떠있는창_2026-11-10.md).
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
 import type { AgentContext, AgentEngine, AgentEngineId } from "../../lib/agentChatApi";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useT } from "../../lib/i18n";
+import { loadJSON, makeStore, saveJSON } from "../../lib/storage";
+import { STORAGE_KEYS } from "../../lib/storageKeys";
+import { useFloatingPanel } from "../../lib/useFloatingPanel";
 import type { Generation, PreviewTarget } from "../../types";
 import { AgentConnect } from "./AgentConnect";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -16,11 +20,21 @@ interface Props {
   context: AgentContext;
   contextLabel: string; // 입력칸의 '지금 화면' 표시(예: 워크스페이스 › e001)
   onClose: () => void;
+  floating?: boolean; // 떠 있는 창(앱이 기억한다 — 떠 있는 동안 앱 본문은 좁아지지 않는다)
+  onToggleFloat?: () => void; // 없으면 띄우기 단추도 없다
   findGeneration?: (id: string) => Generation | undefined; // 계획 카드 썸네일 — 앱이 이미 읽은 라이브러리 카드
   onPreview?: (target: PreviewTarget) => void; // 썸네일을 누르면 기존 크게 보기
 }
 
 const NO_SCREEN: Record<string, never> = {}; // '지금 화면' 칩을 뺀 동안 보내는 빈 문맥(허브가 '어디인지 묻는다' 안내)
+
+// 옆 칸 폭 — 필터 사이드바처럼 끝선을 끌어 바꾼다. 화면에 보이는 폭은 :root 의 --agent-w(앱 본문 여백 .app.agent-open 도 같이 읽는다)
+const BASE_W = 520;
+const MIN_W = 380;
+const maxWidth = () => Math.max(MIN_W, Math.floor(window.innerWidth / 2));
+const clampWidth = (w: number) => Math.max(MIN_W, Math.min(maxWidth(), Math.round(w)));
+const showWidth = (w: number) => document.documentElement.style.setProperty("--agent-w", `${w}px`);
+const FLOAT_LS = makeStore("mvhub.agentPanel."); // 떠 있는 창 자리(pos)·크기(size)
 
 const GROUP: Record<AgentEngineId, string> = { claude: "Claude", codex: "ChatGPT" };
 const EFFORT: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
@@ -39,8 +53,61 @@ const TOOL: Record<string, string> = {
 };
 const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
 
-export function AgentPanel({ context, contextLabel, onClose, findGeneration, onPreview }: Props) {
+export function AgentPanel({ context, contextLabel, onClose, floating = false, onToggleFloat, findGeneration, onPreview }: Props) {
   const t = useT();
+
+  // 옆 칸 폭 — 고른 폭은 남기고, 보이는 폭은 지금 창 폭의 절반까지(창을 줄였다 키우면 고른 폭으로 돌아간다 — ResizableSidebar 와 같다)
+  const [width, setWidth] = useState(() => {
+    const saved = loadJSON<unknown>(STORAGE_KEYS.agentPanelWidth);
+    return typeof saved === "number" && Number.isFinite(saved) ? saved : BASE_W;
+  });
+  useLayoutEffect(() => {
+    const apply = () => showWidth(clampWidth(width));
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, [width]);
+  const commitWidth = (next: number) => {
+    next = clampWidth(next);
+    setWidth(next);
+    showWidth(next);
+    saveJSON(STORAGE_KEYS.agentPanelWidth, next);
+  };
+  // 끄는 동안은 :root 변수만 바꾼다(앱을 다시 그리지 않는다) — 놓을 때 한 번 남긴다
+  const drag = useRef<{ id: number; x: number; from: number; now: number } | null>(null);
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>, keep: boolean) => {
+    const d = drag.current;
+    if (!d || d.id !== event.pointerId) return;
+    drag.current = null; // releasePointerCapture 가 lostpointercapture 를 보내도 두 번 처리하지 않는다
+    event.currentTarget.classList.remove("resizing");
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (keep && d.now !== d.from) commitWidth(d.now);
+    else showWidth(clampWidth(width));
+  };
+
+  // 떠 있는 창 — 앱의 다른 떠 있는 창과 같은 부품(자리·크기 저장, 화면 밖 보정, 앞뒤 띠 152~159)
+  const float = useFloatingPanel(FLOAT_LS, "pos", "size", floating);
+  const panelNode = useRef<HTMLElement | null>(null);
+  const setPanel = useCallback((node: HTMLElement | null) => {
+    panelNode.current = node;
+    float.panelRef(node as HTMLDivElement | null);
+  }, [float.panelRef]);
+  // 띄운 순간의 크기 — 떠 있는 동안 모서리로 바꾸는 크기는 브라우저가 쥔다(인라인으로 다시 덮지 않는다 · EditTrimPop 과 같다).
+  //  폭·높이는 늘 인라인에 둔다: 붙일 때 React 가 지워야 브라우저가 적은 크기까지 같이 지워진다.
+  const openSize = useRef<{ w: number; h: number } | null>(null);
+  if (!floating) openSize.current = null;
+  else if (!openSize.current) openSize.current = float.size ?? { w: BASE_W, h: Math.max(360, Math.min(720, window.innerHeight - 96)) };
+  const at = float.pos ?? { x: Math.max(8, window.innerWidth - (openSize.current?.w ?? BASE_W) - 24), y: 64 };
+  const floatStyle: CSSProperties | undefined = floating && openSize.current
+    ? { left: at.x, top: at.y, width: openSize.current.w, height: openSize.current.h }
+    : undefined;
+  // 붙이면 부품이 준 앞뒤(z 152~)를 걷는다 — 옆 칸은 CSS 의 61
+  useLayoutEffect(() => { if (!floating) panelNode.current?.style.removeProperty("z-index"); }, [floating]);
+  const onHeadMouseDown = (event: ReactMouseEvent) => {
+    if (!floating || event.button !== 0 || (event.target as HTMLElement).closest("button, .agent-menu")) return;
+    float.onHeadMouseDown(event, at);
+  };
+
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
   const chat = useAgentChat(screenOn ? context : NO_SCREEN);
   const [text, setText] = useState("");
@@ -92,8 +159,38 @@ export function AgentPanel({ context, contextLabel, onClose, findGeneration, onP
   const locked = needsConnect || !chat.choice;
 
   return (
-    <aside className="agent-panel" aria-label="MV Agent">
-      <header className="agent-head">
+    <aside ref={setPanel} className={floating ? "agent-panel floating" : "agent-panel"} aria-label="MV Agent" style={floatStyle}>
+      {!floating && (
+        <div className="agent-resize" role="separator" tabIndex={0} aria-orientation="vertical"
+          aria-label={t("MV Agent 칸 너비 조절")} aria-valuemin={MIN_W} aria-valuemax={maxWidth()} aria-valuenow={clampWidth(width)}
+          title={t("드래그하여 너비 조절 · 더블클릭하여 기본 너비로 복원")}
+          onPointerDown={(event) => {
+            if (event.button !== 0 || !event.isPrimary || drag.current) return;
+            event.preventDefault(); // 초점을 옮기지 않는다 — 손잡이에 남으면 ←·→ 가 칸 폭을 바꾼다
+            event.currentTarget.setPointerCapture(event.pointerId);
+            event.currentTarget.classList.add("resizing");
+            const from = clampWidth(width);
+            drag.current = { id: event.pointerId, x: event.clientX, from, now: from };
+          }}
+          onPointerMove={(event) => {
+            const d = drag.current;
+            if (!d || d.id !== event.pointerId) return;
+            d.now = clampWidth(d.from - (event.clientX - d.x)); // 칸이 오른쪽에 있어 왼쪽으로 끌면 넓어진다
+            showWidth(d.now);
+          }}
+          onPointerUp={(event) => endDrag(event, true)}
+          onPointerCancel={(event) => endDrag(event, false)}
+          onLostPointerCapture={(event) => endDrag(event, false)}
+          onDoubleClick={() => commitWidth(BASE_W)}
+          onKeyDown={(event) => {
+            const step = event.key === "ArrowLeft" ? 8 : event.key === "ArrowRight" ? -8 : 0;
+            if (!step) return;
+            event.preventDefault();
+            commitWidth(clampWidth(width) + step);
+          }}
+        />
+      )}
+      <header className="agent-head" onMouseDown={onHeadMouseDown}>
         <div className="agent-history-wrap" ref={historyRef}>
           <button type="button" className="agent-title" onClick={openHistory} disabled={chat.running || chat.sending}
             aria-haspopup="true" aria-expanded={menu === "history"} aria-label={t("지난 대화 보기")}>
@@ -122,8 +219,15 @@ export function AgentPanel({ context, contextLabel, onClose, findGeneration, onP
             title={t("새 대화")} aria-label={t("새 대화")}>
             <NewChatIcon />
           </button>
-          <button type="button" className="agent-ic" onClick={onClose} title={t("옆 칸 닫기")} aria-label={t("옆 칸 닫기")}>
-            <SidePanelIcon />
+          {onToggleFloat && (
+            <button type="button" className="agent-ic" onClick={onToggleFloat}
+              title={t(floating ? "옆에 붙이기" : "떠 있는 창으로 띄우기")} aria-label={t(floating ? "옆에 붙이기" : "떠 있는 창으로 띄우기")}>
+              {floating ? <DockIcon /> : <PopOutIcon />}
+            </button>
+          )}
+          <button type="button" className="agent-ic" onClick={onClose}
+            title={t(floating ? "창 닫기" : "옆 칸 닫기")} aria-label={t(floating ? "창 닫기" : "옆 칸 닫기")}>
+            {floating ? <CloseIcon /> : <SidePanelIcon />}
           </button>
         </div>
       </header>
@@ -349,6 +453,37 @@ function SidePanelIcon() {
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
       <path d="M14.5 4.5v15" />
+    </svg>
+  );
+}
+
+/** 떠 있는 창으로 띄우기 — 큰 창 안의 작은 창(화면 속 화면) */
+function PopOutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <rect x="11.5" y="11.5" width="6" height="5" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/** 옆에 붙이기 — 오른쪽 칸이 채워진 창 */
+function DockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M14.5 4.5h3.5a2.5 2.5 0 0 1 2.5 2.5v10a2.5 2.5 0 0 1-2.5 2.5h-3.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
+      strokeLinecap="round" aria-hidden="true">
+      <path d="M6 6l12 12M18 6 6 18" />
     </svg>
   );
 }

@@ -704,3 +704,40 @@ describe("applyAgentEvent", () => {
     ]);
   });
 });
+
+// 칸 폭·떠 있는 창(docs/status/MVAgent_칸폭_떠있는창_2026-11-10.md)
+describe("MV Agent 칸 폭·떠 있는 창", () => {
+  const agentW = () => document.documentElement.style.getPropertyValue("--agent-w");
+  const width0 = window.innerWidth;
+  const setWindowWidth = (value: number) => Object.defineProperty(window, "innerWidth", { configurable: true, value });
+  beforeEach(() => { setWindowWidth(1600); document.documentElement.style.removeProperty("--agent-w"); });
+  afterEach(() => setWindowWidth(width0));
+
+  it("끝선 손잡이 — 방향키·더블클릭으로 폭을 바꿔 남기고 창 폭의 절반을 넘지 않는다 · 띄우면 손잡이 대신 떠 있는 창, 붙이면 창 크기를 걷는다", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    let toggles = 0;
+    const render = (floating: boolean) => act(() => root.render(
+      <AgentPanel context={{ tab: "my" }} contextLabel="워크스페이스" onClose={() => {}} floating={floating} onToggleFloat={() => { toggles += 1; }} />));
+    render(false);
+    await flush();
+    const handle = host.querySelector<HTMLElement>(".agent-resize")!;
+    expect(agentW()).toBe("520px");
+    act(() => { handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); }); // 오른쪽 칸 — 왼쪽으로 = 넓게
+    expect([agentW(), localStorage.getItem("mvhub.agentPanel.width")]).toEqual(["528px", "528"]);
+    act(() => { handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+    expect(agentW()).toBe("520px");
+    setWindowWidth(900);
+    act(() => { window.dispatchEvent(new Event("resize")); });
+    expect([agentW(), localStorage.getItem("mvhub.agentPanel.width")]).toEqual(["450px", "520"]); // 보이는 폭만 줄고 고른 폭은 그대로
+
+    act(() => button("떠 있는 창으로 띄우기")!.click());
+    expect(toggles).toBe(1);
+    render(true);
+    await flush();
+    expect([panel().classList.contains("floating"), host.querySelector(".agent-resize"), panel().style.width]).toEqual([true, null, "520px"]);
+    expect([button("옆에 붙이기") !== null, button("창 닫기") !== null]).toEqual([true, true]);
+    render(false);
+    await flush();
+    expect([panel().classList.contains("floating"), panel().style.width, panel().style.zIndex]).toEqual([false, "", ""]);
+  });
+});
