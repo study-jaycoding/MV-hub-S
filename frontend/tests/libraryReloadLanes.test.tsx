@@ -239,39 +239,40 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("[F9-7 IDs
   expect(calls().list).toBe(before + 1);
 });
 
-it.each([false, true])("[F9-8 P3-1] discards loadMore overtaken by a first page and resumes from that page: trash=%s", async (trash) => {
+// 격자 스크롤 고침(docs/status/격자스크롤_2026-11-10.md) — 같은 목록 새로고침은 받은 만큼 다시 받고, 그동안의 더 받기는 옛 커서로 보내지 않고 미룬다.
+//  가득 찬 응답(받은 수 >= 요청 수)이면 그 끝에서 한 번 이어 받고, 짧으면 목록이 줄었으니 버린다.
+it.each([[false, true], [true, true], [false, false], [true, false]])("[F9-8 P3-1] defers loadMore during a same-list reload and resumes only from a full refreshed page: trash=%s full=%s", async (trash, full) => {
   const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
   const firstPage = Array.from({ length: 200 }, (_, i) => gen(`first-${i}`));
   const secondPage = Array.from({ length: 200 }, (_, i) => gen(`second-${i}`));
+  const loaded = [...firstPage, ...secondPage];
   list.mockResolvedValueOnce(firstPage);
   await mount({ query: MAIN, trash });
   list.mockResolvedValueOnce(secondPage);
   await act(async () => { await data.loadMore(); });
-  expect(ids()).toEqual([...firstPage, ...secondPage].map(g => g.id));
+  expect(ids()).toEqual(loaded.map(g => g.id));
 
   const first = hold<Generation[]>(list);
   const reload = start(() => data.reload(true, true, "check"));
-  const later = hold<Generation[]>(list);
+  expect(list.mock.calls.at(-1)?.[2]).toBe(400); // 받은 만큼 다시 받는다
+  const before = list.mock.calls.length;
   const more = start(() => data.loadMore());
-  expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 400 : { ts: 10, id: "second-199" });
-  expect(data.loadingMore).toBe(true);
-
-  await act(async () => first.resolve(firstPage));
-  await settle();
-  expect(reload.done).toBe(true);
-  expect(ids()).toEqual(firstPage.map(g => g.id));
-  expect(data.hasMore).toBe(true);
-  await act(async () => later.resolve([gen("stale-third-page")]));
-  await settle();
-  expect(more.done).toBe(true);
+  expect(list).toHaveBeenCalledTimes(before); // 새로고침 목록이 오는 동안 옛 커서로 보내지 않는다
   expect(data.loadingMore).toBe(false);
-  expect(data.hasMore).toBe(true);
-  expect(ids()).toEqual(firstPage.map(g => g.id));
 
   list.mockResolvedValueOnce([gen("fresh-next-page")]);
-  await act(async () => { await data.loadMore(); });
-  expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 200 : { ts: 10, id: "first-199" });
-  expect(ids()).toEqual([...firstPage.map(g => g.id), "fresh-next-page"]);
+  await act(async () => first.resolve(full ? loaded : firstPage));
+  await settle();
+  expect(reload.done).toBe(true);
+  expect(more.done).toBe(true);
+  if (full) {
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 400 : { ts: 10, id: "second-199" });
+    expect(ids()).toEqual([...loaded.map(g => g.id), "fresh-next-page"]);
+  } else {
+    expect(list).toHaveBeenCalledTimes(before);
+    expect(ids()).toEqual(firstPage.map(g => g.id));
+  }
   expect(data.hasMore).toBe(false);
   expect(data.loadingMore).toBe(false);
 });
@@ -462,7 +463,10 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     start(() => data.reload(true, true, "check"));
     await frame();
     expect(list).toHaveBeenCalledTimes(before + 1); // silent 첫 쪽 대기 중에도 추가 요청하지 않는다.
-    await act(async () => next.resolve([gen("new-first"), ...firstPage.slice(1)]));
+    const asked = list.mock.calls.at(-1)?.[2] as number; // 받은 만큼 다시 받는다 — 숨긴 쪽까지 2,200장이면 상한 1,000
+    expect(asked).toBe(limit === "hidden" ? 1000 : 200);
+    const pad = Array.from({ length: asked - 200 }, (_, i) => gen(`hidden-again-${i}`));
+    await act(async () => next.resolve([gen("new-first"), ...firstPage.slice(1), ...pad]));
     await settle();
     await frame();
     expect(list).toHaveBeenCalledTimes(before + 2);
@@ -581,7 +585,9 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     expect(data.loadingMore).toBe(false);
   });
 
-  it.each(["cursor", "offset", "seq"] as const)("%s discard at a filled bottom fetches the current next page once without another scroll", async (reason) => {
+  // cursor·offset = 새로고침 도중의 스크롤(더 받기를 미룬다) · seq = 떠 있는 더 받기를 새로고침이 앞지른다(seq 폐기).
+  //  어느 쪽이든 받은 만큼(400) 다시 받은 응답 뒤 스크롤 없이 그 끝에서 다음 쪽을 한 번 받는다.
+  it.each(["cursor", "offset", "seq"] as const)("%s race with a same-list reload at a filled bottom fetches the refreshed next page once without another scroll", async (reason) => {
     const trash = reason === "offset";
     const list = vi.mocked(trash ? api.listTrash : api.listGenerations);
     list.mockResolvedValueOnce(firstPage);
@@ -590,6 +596,7 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
     list.mockResolvedValueOnce(secondPage);
     await act(async () => { await data.loadMore(); });
     await frame();
+    const loaded = [...firstPage, ...secondPage];
     const first = deferred<Generation[]>();
     const later = deferred<Generation[]>();
     scrollTop = 3400;
@@ -598,28 +605,33 @@ describe("[F9-9] grid resumes discarded pages without an error retry loop", () =
       scroll();
       list.mockReturnValueOnce(first.promise);
       start(() => data.reload(true, true, "check"));
+      expect(data.loadingMore).toBe(true);
     } else {
       list.mockReturnValueOnce(first.promise);
       start(() => data.reload(true, true, "check"));
-      list.mockReturnValueOnce(later.promise);
-      scroll();
+      const sent = list.mock.calls.length;
+      scroll(); // 새로고침 목록이 오는 동안 — 옛 커서로 보내지 않고 미룬다
+      expect(list).toHaveBeenCalledTimes(sent);
+      expect(data.loadingMore).toBe(false);
     }
-    expect(data.loadingMore).toBe(true);
-    await act(async () => first.resolve(firstPage));
-    await settle();
-    scrollHeight = 2400; scrollTop = 1800;
-    scroll(); // 첫 쪽으로 줄며 바닥에 걸린 이벤트는 아직 loadingMore라 무시된다.
-    await frame();
+    expect(list.mock.calls.at(-1)?.[2]).toBe(400); // 받은 만큼 다시 받는다
     const before = list.mock.calls.length;
     list.mockResolvedValueOnce([gen("fresh-next-page")]);
-    await act(async () => later.resolve([gen("stale-third-page")]));
+    await act(async () => first.resolve(loaded));
     await settle();
-    expect(ids()).toEqual(firstPage.map(g => g.id));
+    if (reason === "seq") {
+      scroll(); // 아직 loadingMore 라 무시된다
+      await frame();
+      expect(list).toHaveBeenCalledTimes(before);
+      await act(async () => later.resolve([gen("stale-third-page")]));
+      await settle();
+      expect(ids()).toEqual(loaded.map(g => g.id));
+    }
     await frame();
     await frame();
     expect(list).toHaveBeenCalledTimes(before + 1);
-    expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 200 : { ts: 10, id: "first-199" });
-    expect(ids()).toEqual([...firstPage.map(g => g.id), "fresh-next-page"]);
+    expect(list.mock.calls.at(-1)?.[1]).toEqual(trash ? 400 : { ts: 10, id: "second-199" });
+    expect(ids()).toEqual([...loaded.map(g => g.id), "fresh-next-page"]);
     expect(data.hasMore).toBe(false);
   });
 
