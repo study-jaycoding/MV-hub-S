@@ -199,10 +199,14 @@ def update_plan(plan_id, items, status):
         conn.execute("UPDATE mcp_generation_plan SET items=?,status=? WHERE id=?", (encode(items), status, plan_id))
 
 
+# JavaScript String.prototype.trim 이 자르는 글자(공백 + 줄바꿈 + BOM) — Python str.strip() 과 집합이 달라(BOM·\x1c-\x1f·\x85) 앱과 판정이 갈렸다(독립 리뷰 P2)
+_JS_TRIM = "\t\n\v\f\r                  　﻿"
+
+
 def scene_workspace_id(value):
-    """씬에 지정된 팀 공간 id — 앱 normalizeSceneWorkspace 와 같은 규칙(dict 이고 id 가 공백 아닌 글자). 아니면 지정 없음(None)."""
-    if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"].strip():
-        return value["id"].strip()
+    """씬에 지정된 팀 공간 id — 앱 normalizeSceneWorkspace 와 같은 규칙(dict 이고 id 가 JS trim 뒤 빈칸 아닌 글자). 아니면 지정 없음(None)."""
+    if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"].strip(_JS_TRIM):
+        return value["id"].strip(_JS_TRIM)
     return None
 
 

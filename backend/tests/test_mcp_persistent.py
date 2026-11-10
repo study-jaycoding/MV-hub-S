@@ -1225,6 +1225,7 @@ def test_unassigned_scenes_are_visible_from_every_workspace_like_the_app(local, 
         {"id": "old-personal", "name": "옛", "data": '{"id":"old-personal","workspace":{"scope":"personal"}}'},
         {"id": "blank-id", "name": "빈", "data": '{"id":"blank-id","workspace":{"id":"  "}}'},  # 앱 규칙: 공백·글자 아닌 id = 지정 없음
         {"id": "number-id", "name": "숫자", "data": '{"id":"number-id","workspace":{"id":5}}'},
+        {"id": "bom-id", "name": "BOM", "data": '{"id":"bom-id","workspace":{"id":"\\ufeff"}}'},  # 앱 trim 은 BOM 도 자른다
         {"id": "team-a-scene", "name": "a", "data": '{"id":"team-a-scene","workspace":{"scope":"team","id":" team-a "}}'},
         {"id": "team-b-scene", "name": "b", "data": '{"id":"team-b-scene","workspace":{"id":"team-b"}}'},
         {"id": "bk_free", "name": "씬 7 (옛 창 사본)", "data": '{"id":"bk_free","backupForkOf":{"id":"free","sum":"s"}}'}], [])
@@ -1234,7 +1235,7 @@ def test_unassigned_scenes_are_visible_from_every_workspace_like_the_app(local, 
         assert response.status_code == 200, response.text
         return {row["id"]: row for row in response.json()["scenes"]}
 
-    free = {"free", "old-personal", "blank-id", "number-id", "bk_free"}
+    free = {"free", "old-personal", "blank-id", "number-id", "bom-id", "bk_free"}
     team_a = listed("team", "team-a")
     assert set(team_a) == free | {"team-a-scene"}
     assert all(team_a[key]["workspace_unassigned"] is True and "어느 공간에서나" in team_a[key]["workspace_note"] for key in free)
