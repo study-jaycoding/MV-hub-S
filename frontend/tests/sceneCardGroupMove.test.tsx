@@ -787,7 +787,8 @@ it("범위 선택·화면 이동도 같은 끝맺음을 쓴다 — 단추를 뗀
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "y", code: "KeyY", bubbles: true })); });
   expect([board().classList.contains("cutting"), board().hasAttribute("data-panning")]).toEqual([true, true]);
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keyup", { key: "y", code: "KeyY", bubbles: true })); });
-  expect(canvas().style.transform).toContain("translate(50px, 30px)");
+  // 끄는 동안은 transform 이 아니라 translate 로 민다(useSceneViewport.slidePan — 합성기만으로), 끝나면 transform 으로 접는다(아래)
+  expect([canvas().style.transform, canvas().style.translate]).toEqual(["translate(0px, 0px) scale(1)", "50px 30px"]);
   await hoverTo(400, 400); // 가운데 단추를 뗀 것을 놓쳤다
   expect(board().hasAttribute("data-panning")).toBe(false);
   expect(canvas().style.transform).toContain("translate(50px, 30px)");

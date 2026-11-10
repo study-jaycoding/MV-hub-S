@@ -40,6 +40,12 @@ interface UseSceneViewportOptions {
   gridSize?: number;
 }
 
+/** 점 격자 층을 미는 양 — 한 칸 안(음수 팬도 0..cell), 화면 픽셀로 반올림. */
+const gridShift = (v: number, cell: number) => {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.round((((v % cell) + cell) % cell) * dpr) / dpr;
+};
+
 const normalizedCamera = (camera?: SceneCamera): SceneCamera => ({
   z: clampSceneZoom(camera?.z),
   x: camera?.x ?? 0,
@@ -60,7 +66,10 @@ export function useSceneViewport({
   const gridRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(initialCamera.z);
   const panRef = useRef({ x: initialCamera.x, y: initialCamera.y });
-  const minimapUpdateRef = useRef<(() => void) | null>(null);
+  const minimapUpdateRef = useRef<((slide?: boolean) => void) | null>(null);
+  // 캔버스 transform 에 지금 들어 있는 팬 — 가운데 버튼으로 끄는 동안은 여기서부터 translate 로만 민다(slidePan)
+  const shownPanRef = useRef({ x: initialCamera.x, y: initialCamera.y });
+  const slidingRef = useRef(false);
   const [viewRect, setViewRect] = useState<SceneViewRect | null>(null);
   const viewRectRef = useRef<SceneViewRect | null>(null);
   const cullFrameRef = useRef<number | null>(null);
@@ -85,34 +94,7 @@ export function useSceneViewport({
     onCameraChangeRef.current?.(getCamera());
   }, [getCamera]);
 
-  const applyTransform = useCallback(() => {
-    const current = getCamera();
-    const pct = Math.round(current.z * 100);
-    setSceneZoomPct(pct); // 툴바 % — 반올림 % 가 바뀔 때만 알린다
-    const canvas = canvasRef.current;
-    if (canvas) {
-      canvas.style.transform = `translate(${current.x}px, ${current.y}px) scale(${current.z})`;
-    }
-
-    const grid = gridRef.current;
-    if (grid) {
-      // 점 격자는 따로 둔 층을 한 칸 안에서만 민다(음수 팬도 0..cell) — 보드 배경 위치를 바꾸면 보드 전체를
-      //  다시 칠했다. 크기는 확대 때만 바꾼다. 층이 사방 64px 넘쳐 있어(scene.css) 미는 동안 빈틈이 없다.
-      //  미는 양은 화면 픽셀로 반올림한다 — 소수 픽셀만큼 옮긴 층은 GPU 가 보간해 점이 번진다(0.5px 이하 오차).
-      const cell = gridSize * current.z;
-      const size = `${cell}px ${cell}px`;
-      if (grid.style.backgroundSize !== size) grid.style.backgroundSize = size;
-      const dpr = window.devicePixelRatio || 1;
-      const snap = (v: number) => Math.round((((v % cell) + cell) % cell) * dpr) / dpr;
-      grid.style.transform = `translate(${snap(current.x)}px, ${snap(current.y)}px)`;
-    }
-    const board = scrollRef.current;
-    if (board) {
-      // 멀리서 볼 때 단순화 — React 가 쓰지 않는 속성이라 className 이 다시 그려져도 남는다.
-      board.toggleAttribute("data-lod-low", pct <= SCENE_LOD_PCT);
-    }
-    minimapUpdateRef.current?.();
-
+  const scheduleCull = useCallback(() => {
     if (!cullingEnabled || cullFrameRef.current !== null) return;
     cullFrameRef.current = requestAnimationFrame(() => {
       cullFrameRef.current = null;
@@ -126,9 +108,77 @@ export function useSceneViewport({
       viewRectRef.current = next;
       setViewRect(next);
     });
-  }, [cullingEnabled, getCamera, gridSize]);
+  }, [cullingEnabled, getCamera]);
 
-  useLayoutEffect(applyTransform);
+  const applyTransform = useCallback(() => {
+    const current = getCamera();
+    const pct = Math.round(current.z * 100);
+    setSceneZoomPct(pct); // 툴바 % — 반올림 % 가 바뀔 때만 알린다
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.style.transform = `translate(${current.x}px, ${current.y}px) scale(${current.z})`;
+    }
+    shownPanRef.current = { x: current.x, y: current.y };
+
+    const grid = gridRef.current;
+    if (grid) {
+      // 점 격자는 따로 둔 층을 한 칸 안에서만 민다(음수 팬도 0..cell) — 보드 배경 위치를 바꾸면 보드 전체를
+      //  다시 칠했다. 크기는 확대 때만 바꾼다. 층이 사방 64px 넘쳐 있어(scene.css) 미는 동안 빈틈이 없다.
+      //  미는 양은 화면 픽셀로 반올림한다 — 소수 픽셀만큼 옮긴 층은 GPU 가 보간해 점이 번진다(0.5px 이하 오차).
+      const cell = gridSize * current.z;
+      const size = `${cell}px ${cell}px`;
+      if (grid.style.backgroundSize !== size) grid.style.backgroundSize = size;
+      grid.style.transform = `translate(${gridShift(current.x, cell)}px, ${gridShift(current.y, cell)}px)`;
+    }
+    if (slidingRef.current) {
+      // 가운데 버튼으로 끄는 동안 밀어 둔 translate 를 방금 쓴 transform 으로 접는다 — 같은 프레임이라 화면은 그대로다(slidePan).
+      //  끄는 중이 아닐 때는 건드리지 않는다 — 카드 전부 끌기도 캔버스 층을 같은 표식·translate 로 민다(useSceneCardMove).
+      slidingRef.current = false;
+      for (const layer of [canvas, grid]) {
+        if (!layer) continue;
+        layer.style.translate = "";
+        layer.toggleAttribute("data-layer-move", false);
+      }
+    }
+    const board = scrollRef.current;
+    if (board) {
+      // 멀리서 볼 때 단순화 — React 가 쓰지 않는 속성이라 className 이 다시 그려져도 남는다.
+      board.toggleAttribute("data-lod-low", pct <= SCENE_LOD_PCT);
+    }
+    minimapUpdateRef.current?.();
+    scheduleCull();
+  }, [getCamera, gridSize, scheduleCull]);
+
+  // 가운데 버튼으로 끄는 한 걸음 — 화면 전체 레이어를 다시 합치지 않고 합성기만으로 민다. 걸음마다 transform 을 바꾸면 크롬이 그때마다
+  //  레이어를 다시 합쳐(Layerize) 느린 PC 에서 끊겼다(2026-11-10 격리 실측, CPU 4배·400장 60걸음: 1.3~1.9초 → 주입 0.24~0.34초).
+  //  카드 전부 끌기의 빠른 길과 같은 표식(data-layer-move — 값 0 애니메이션, scene.css)과 translate 를 캔버스·점 격자·미니맵 상자
+  //  **셋 다**에 쓴다 — 하나라도 transform 으로 옮기면 합치기가 되살아났다. 카메라 값(panRef)은 걸음마다 맞으므로 toCanvas 는 그대로다.
+  //  접는 것은 applyTransform 이다(손 뗌·휠·창 크기·화면 맞춤·씬 전환·보드 스크롤 접기가 모두 그 길).
+  const slidePan = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    slidingRef.current = true;
+    const pan = panRef.current;
+    const shown = shownPanRef.current;
+    canvas.toggleAttribute("data-layer-move", true);
+    canvas.style.translate = `${pan.x - shown.x}px ${pan.y - shown.y}px`;
+    const grid = gridRef.current;
+    if (grid) {
+      // 칸 나머지의 차이만 민다 — 층이 사방 64px 만 넘쳐 있어 끈 거리만큼 밀면 가장자리가 빈다
+      const cell = gridSize * zoomRef.current;
+      grid.toggleAttribute("data-layer-move", true);
+      grid.style.translate = `${gridShift(pan.x, cell) - gridShift(shown.x, cell)}px ${gridShift(pan.y, cell) - gridShift(shown.y, cell)}px`;
+    }
+    minimapUpdateRef.current?.(true);
+    scheduleCull();
+  }, [gridSize, scheduleCull]);
+
+  // 렌더마다 카메라를 다시 적용한다 — 가운데 버튼으로 끄는 중이면 접지 않고 민 채로 둔다. 보이는 범위가 바뀌어 다시 그릴 때마다 접으면
+  //  표식이 떨어졌다 붙으며 그 프레임에 화면 전체 정리(PrePaint·레이어 합치기)가 다시 돌았다(2026-11-10 격리 실측).
+  useLayoutEffect(() => {
+    if (slidingRef.current) slidePan();
+    else applyTransform();
+  });
 
   useEffect(() => {
     if (!cullingEnabled) return;
@@ -255,10 +305,11 @@ export function useSceneViewport({
           moveEvent.clientY - startY,
         );
         panRef.current = { x: next.x, y: next.y };
-        applyTransform();
+        slidePan();
       };
       const finish = () => {
         scrollRef.current?.removeAttribute("data-panning");
+        applyTransform(); // 밀어 둔 화면을 transform 으로 접는다
         persistCamera();
       };
       // 놓는 순간(up)에만 삼킨다 — 놓친 끌기를 다음 누름이 정리할 때(onCancel)는 그 놓기의 auxclick 이 이미 지나갔다(Codex 66회차 리뷰)
@@ -268,7 +319,7 @@ export function useSceneViewport({
       }, finish);
       return true;
     },
-    [applyTransform, getCamera, persistCamera],
+    [applyTransform, getCamera, persistCamera, slidePan],
   );
 
   useEffect(() => {

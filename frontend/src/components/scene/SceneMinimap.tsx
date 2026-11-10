@@ -47,8 +47,8 @@ interface Props {
   scrollRef: RefObject<HTMLDivElement>;
   panRef: MutableRefObject<{ x: number; y: number }>;
   zoomRef: MutableRefObject<number>;
-  // 부모의 applyTransform 이 매 팬/줌마다 여기 담긴 update() 를 호출 → 뷰포트 박스 즉시 갱신.
-  updateRef: MutableRefObject<(() => void) | null>;
+  // 부모의 applyTransform 이 매 팬/줌마다 여기 담긴 update() 를 호출 → 뷰포트 박스 즉시 갱신. slide = 가운데 버튼으로 끄는 중(slidePan).
+  updateRef: MutableRefObject<((slide?: boolean) => void) | null>;
   // 미니맵의 한 지점(캔버스 좌표)을 화면 중앙으로. commit=드래그 종료 시 카메라 저장.
   onNavigate: (worldX: number, worldY: number, commit: boolean) => void;
   // 미니맵 위에 붙는 줌 막대 [− 비율 +](Jay 2026-10-30 — 툴바에서 옮김). 비율에 올리면 'Fit' · 누르면 맞춤. 미니맵과 같이 보이고 숨는다.
@@ -111,9 +111,11 @@ export function SceneMinimap({
     watchRef.current = null;
   }, []);
 
+  // 상자 transform 에 지금 들어 있는 자리 — 끄는 동안은 여기서부터 translate 로만 민다
+  const shownBoxRef = useRef<{ x: number; y: number } | null>(null);
   // 표시여부(화면 밖 카드 존재)와 뷰포트 박스를 DOM 에 직접 반영 — 리렌더 없이 팬/줌에 반응.
   //  팬은 매 프레임 불리므로 바뀐 값만 쓰고, 박스 이동은 transform 으로 한다(위치·크기를 매번 쓰면 보드를 다시 칠했다).
-  const update = () => {
+  const update = (slide = false) => {
     const wrap = wrapRef.current;
     const view = viewRef.current;
     const vp = vpRef.current;
@@ -140,8 +142,23 @@ export function SceneMinimap({
     const left = (vwl - wMinX) * scale;
     const top = (vwt - wMinY) * scale;
     const box = minimapViewBox(left, top, left + (vp.width / z) * scale, top + (vp.height / z) * scale, mmW, mmH);
-    const transform = `translate(${box.x + offX}px, ${box.y}px)`;
+    const x = box.x + offX;
+    const shown = shownBoxRef.current;
+    if (slide && shown) {
+      // 보드를 가운데 버튼으로 끄는 동안 — 상자도 합성기만으로 민다(useSceneViewport.slidePan). 상자를 transform 으로 옮기면 화면 전체
+      //  레이어 합치기가 되살아났다(2026-11-10 주입 실측). 크기(화면 끝에서 잘리는 폭·높이)는 손 뗄 때(slide 없이 부를 때) 맞춘다.
+      view.toggleAttribute("data-layer-move", true);
+      const shift = `${x - shown.x}px ${box.y - shown.y}px`;
+      if (view.style.translate !== shift) view.style.translate = shift;
+      return;
+    }
+    if (view.hasAttribute("data-layer-move")) {
+      view.style.translate = "";
+      view.toggleAttribute("data-layer-move", false);
+    }
+    const transform = `translate(${x}px, ${box.y}px)`;
     if (view.style.transform !== transform) view.style.transform = transform;
+    shownBoxRef.current = { x, y: box.y };
     const width = box.w + "px";
     const height = box.h + "px";
     if (view.style.width !== width) view.style.width = width;
@@ -151,7 +168,7 @@ export function SceneMinimap({
   // 매 렌더마다 최신 geometry 를 담은 update() 를 부모 ref 에 연결(+ 즉시 1회 반영).
   useLayoutEffect(() => {
     updateRef.current = update;
-    update();
+    update(!!viewRef.current?.hasAttribute("data-layer-move")); // 보드를 끄는 중에 다시 그려지면 민 채로 둔다 — 접는 것은 부모(applyTransform)
     return () => {
       if (updateRef.current === update) updateRef.current = null;
     };

@@ -136,10 +136,13 @@
    쌓임 순서: translate 가 걸린 요소는 쌓임 맥락이 된다. 이 표식은 **고른 카드에만** 단다 — 고른 카드(.sel — z-index 5)는 원래부터
    쌓임 맥락이라 달라질 것이 없다. 고르지 않은 채 끌리는 카드에 달면 그 카드가 새로 쌓임 맥락이 되어, 카드 안의 z-index 조각(머리줄 3·
    크기 손잡이 7·포트 8·배지 12·14)이 이웃 카드 아래로 내려간다(실측에서 확인) — 그래서 그런 끌기에서는 켜지 않는다. 여기서 z-index 를
-   주어 고치지 않는다(몸통까지 다른 카드 위로 올라가 위아래가 바뀐다). */
+   주어 고치지 않는다(몸통까지 다른 카드 위로 올라가 위아래가 바뀐다).
+
+   가운데 버튼 화면 이동도 끄는 동안 같은 표식을 캔버스 층·점 격자 층·미니맵 상자 셋 다에 달고 translate 로 민다(useSceneViewport.slidePan,
+   2026-11-10 — 걸음마다 transform 을 바꾸면 레이어 합치기가 돌아 느린 PC 에서 끊겼다. 하나라도 빼면 합치기가 되살아났다). */
 @supports (animation-composition: add) {
   @keyframes scene-layer-noop { from { translate: 0px 0px; } to { translate: 0px 0px; } }
-  .scene-canvas[data-layer-move], .scene-card[data-layer-move] { animation: scene-layer-noop 3600s linear; animation-composition: add; }
+  .scene-canvas[data-layer-move], .scene-card[data-layer-move], .scene-grid[data-layer-move], .scene-minimap-view[data-layer-move] { animation: scene-layer-noop 3600s linear; animation-composition: add; }
 }
 
 /* Ctrl+K 로 프롬프트 숨김 시 — 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹는다.
