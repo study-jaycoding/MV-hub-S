@@ -124,10 +124,11 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
       lastPoint = { clientX: moveEvent.clientX, clientY: moveEvent.clientY };
       measure(lastPoint);
     };
+    // 읽기(사각형·카드 위치)를 다 한 뒤에 쓴다(사각형 표시·미리보기) — 쓰고 나서 읽으면 브라우저가 그 자리에서 배치를 다시
+    //  계산했다(2026-11-10 실측: 범위 선택 40걸음에 강제 Layout 40번). 이동은 sceneDragSession 이 이미 프레임당 한 번으로 묶는다.
     const measure = (point: { clientX: number; clientY: number }) => {
       const latest = optionsRef.current;
       const { rect, b } = computeMarquee(surface, start, point);
-      latest.setMarquee(rect);
       const boxed = marqueeHits<Key>(
         hitRoot,
         latest.cellSelector,
@@ -164,6 +165,7 @@ export function useSceneMarqueeSelection<Key, Secondary = never>(
           !!latest.preserveSelectionOnEmptyDrag && boxed.size === 0,
         );
       }
+      latest.setMarquee(rect);
       pending = { next, nextSecondary };
       if (latest.previewSelection) latest.previewSelection(next, nextSecondary);
       else commit();

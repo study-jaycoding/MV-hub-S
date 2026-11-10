@@ -20,6 +20,7 @@ import { swallowPanAuxClick } from "./useSceneCardMove";
 const CAMERA_SAVE_DELAY_MS = 400;
 const FRAME_TRANSITION_MS = 250;
 const FRAME_TRANSITION_CLEAR_MS = 300;
+const SETTLE_MS = 150; // 줌을 건너뛴 뒤 휠을 이만큼 쉬면 컬링을 한 번 정리한다
 /** 보드 안에 뜨는 창의 바탕 — 모델·Comfy 설정·글·복구(`.scene-modelmodal-backdrop`) · 생성 결과(`.scene-varpop-backdrop`) · 타임라인 재생(`.vtl-backdrop`).
  *  창 위의 휠·끌어 놓기는 창의 것이다 — 뒤 보드가 받지 않는다(휠은 여기, 놓기는 useSceneClipboardDrop). 창이 늘면 여기에 더한다. */
 export const SCENE_WINDOW_SELECTOR = ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .vtl-backdrop";
@@ -38,9 +39,14 @@ interface UseSceneViewportOptions {
   onCameraChange?: (camera: SceneCamera) => void;
   cullingEnabled: boolean;
   gridSize?: number;
-  /** 가운데 버튼으로 끄는 동안(과 손 뗀 직후 정리) 컬링 범위를 다시 확정할지 — 거짓이면 확정값(viewRect)을 그대로 두어
-   *  SceneBoard 를 다시 그리지 않는다. 최신 범위(liveView)는 늘 갱신한다. 줌·화면 맞춤·창 크기·씬 전환은 묻지 않고 확정한다. */
+  /** 가운데 버튼으로 끄는 동안(과 손 뗀 직후 정리)·줌(범위 크기 변경) 때 컬링 범위를 다시 확정할지 — 거짓이면 확정값(viewRect)을
+   *  그대로 두어 SceneBoard 를 다시 그리지 않는다. 최신 범위(liveView)는 늘 갱신한다. 화면 맞춤 이동·씬 전환 등은 묻지 않고 확정한다. */
   shouldCommitView?: (committed: SceneViewRect | null, next: SceneViewRect) => boolean;
+  /** 줌을 건너뛴 뒤 쉬었을 때(SETTLE_MS) 한 번 정리할지 — 컬링 대상 집합이 달라졌으면(들어옴·빠짐) 참. 없으면 범위가 다르면 정리. */
+  cullSetChanged?: (committed: SceneViewRect | null, next: SceneViewRect) => boolean;
+  /** 지금 카드·그룹을 쥐고 있나 — 참이면 쉼 정리를 미룬다(끄는 중에 판을 다시 그리지 않게). 휠 직후 화면이 갱신되기 전에 끌기를
+   *  시작하면 정리 예약이 끌기 시작보다 늦게 걸려 취소로는 못 막는다(독립 리뷰 P2). */
+  isInteracting?: () => boolean;
 }
 
 /** 점 격자 층을 미는 양 — 한 칸 안(음수 팬도 0..cell), 화면 픽셀로 반올림. */
@@ -63,6 +69,8 @@ export function useSceneViewport({
   cullingEnabled,
   gridSize = 22,
   shouldCommitView,
+  cullSetChanged,
+  isInteracting,
 }: UseSceneViewportOptions) {
   const initialCamera = normalizedCamera(camera);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -82,6 +90,14 @@ export function useSceneViewport({
   const panEndRef = useRef(false); // 가운데 버튼을 뗐다 — 다음 범위 계산에서 확정이 필요한지만 본다
   const shouldCommitRef = useRef(shouldCommitView);
   shouldCommitRef.current = shouldCommitView;
+  const cullSetChangedRef = useRef(cullSetChanged);
+  cullSetChangedRef.current = cullSetChanged;
+  const isInteractingRef = useRef(isInteracting);
+  isInteractingRef.current = isInteracting;
+  // 보드 크기 — ResizeObserver 가 배치가 끝난 뒤 적어 둔다. 매 프레임 getBoundingClientRect 로 읽으면 방금 옮긴 화면의 배치를
+  //  그 자리에서 강제로 다시 계산했다(2026-11-10 실측: 휠 한 칸·끄는 한 걸음마다 한 번).
+  const boardSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const settleTimerRef = useRef<number | undefined>(undefined);
   const cullFrameRef = useRef<number | null>(null);
   const cameraSaveTimerRef = useRef<number | undefined>(undefined);
   const transitionTimerRef = useRef<number | undefined>(undefined);
@@ -104,32 +120,82 @@ export function useSceneViewport({
     onCameraChangeRef.current?.(getCamera());
   }, [getCamera]);
 
+  // 지금 카메라·보드 크기의 범위 — 크기는 ResizeObserver 가 적어 둔 값(없으면 한 번 직접 읽는다)
+  const measureView = useCallback((): SceneViewRect | null => {
+    let size = boardSizeRef.current;
+    if (!size) {
+      const viewport = scrollRef.current?.getBoundingClientRect();
+      if (!viewport) return null;
+      size = { width: viewport.width, height: viewport.height };
+    }
+    return sceneViewRect(getCamera(), size);
+  }, [getCamera]);
+  const publishLive = useCallback((view: SceneViewRect) => {
+    liveViewRef.current = view;
+    for (const listener of liveListenersRef.current) listener();
+  }, []);
+  const cancelSettle = useCallback(() => {
+    if (settleTimerRef.current === undefined) return;
+    clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = undefined;
+  }, []);
+  // 줌을 건너뛴 뒤의 쉼 정리 — 예약 때가 아니라 **지금의** 카메라·크기·판정 자료로 범위를 새로 재서, 컬링 대상이 달라졌을 때만 확정한다
+  const settleNow = useCallback(() => {
+    settleTimerRef.current = undefined;
+    if (slidingRef.current) return; // 끄는 중이면 손 뗄 때의 정리가 맡는다
+    if (isInteractingRef.current?.()) {
+      // 카드·그룹을 쥐고 있다 — 놓은 뒤로 미룬다(놓을 때까지 다시 확인)
+      settleTimerRef.current = window.setTimeout(settleNow, SETTLE_MS);
+      return;
+    }
+    const next = measureView();
+    if (!next) return;
+    const changed = cullSetChangedRef.current
+      ? cullSetChangedRef.current(viewRectRef.current, next)
+      : !sameSceneViewRect(viewRectRef.current, next);
+    if (!changed) {
+      if (!sameSceneViewRect(liveViewRef.current, next)) publishLive(next);
+      return;
+    }
+    publishLive(next);
+    viewRectRef.current = next;
+    setViewRect(next);
+  }, [measureView, publishLive]);
+
   const scheduleCull = useCallback(() => {
     if (!cullingEnabled || cullFrameRef.current !== null) return;
     cullFrameRef.current = requestAnimationFrame(() => {
       cullFrameRef.current = null;
-      const viewport = scrollRef.current?.getBoundingClientRect();
-      if (!viewport) return;
-      const next = sceneViewRect(getCamera(), {
-        width: viewport.width,
-        height: viewport.height,
-      });
+      const next = measureView();
+      if (!next) return;
       const panEnd = panEndRef.current;
       panEndRef.current = false;
       const prevLive = liveViewRef.current;
       // 크기가 바뀐 범위 = 줌·창 크기 변경이다(끌어 옮기기는 크기가 그대로) — 끄는 중이거나 막 뗐어도 그 변화는 끄기로 보지 않는다
       const resized = !!prevLive && (Math.abs(next.r - next.l - (prevLive.r - prevLive.l)) > 1 || Math.abs(next.b - next.t - (prevLive.b - prevLive.t)) > 1);
       const panning = (slidingRef.current || panEnd) && !resized;
-      const publish = (view: SceneViewRect) => {
-        liveViewRef.current = view;
-        for (const listener of liveListenersRef.current) listener();
-      };
+      const publish = publishLive;
       const liveMoved = !sameSceneViewRect(prevLive, next);
       if (liveMoved) publish(next);
       if (!panning) {
-        // 줌·화면 맞춤·창 크기·씬 전환·그 밖의 이동 — 예전처럼 **확정값**과 비교해 문턱을 넘으면 묻지 않고 확정한다
-        //  (끄는 동안 건너뛴 뒤의 줌이 최신 범위와만 비교되어 확정이 낡은 채 남지 않게 — Codex 독립 리뷰 P2)
-        if (sameSceneViewRect(viewRectRef.current, next)) return;
+        // 줌·화면 맞춤·창 크기·씬 전환·그 밖의 이동 — **확정값**과 비교한다(끄는 동안 건너뛴 뒤의 줌이 최신 범위와만 비교되어
+        //  확정이 낡은 채 남지 않게 — Codex 독립 리뷰 P2)
+        const committed = viewRectRef.current;
+        if (sameSceneViewRect(committed, next)) return;
+        // 줌(크기 변경)도 새로 붙일 카드·선이 없으면 확정하지 않는다 — 휠 한 칸마다 판 전체를 다시 그렸다(2026-11-10 실측).
+        //  확대는 빠지기만 하니 대개 건너뛰고, 쉬면 한 번 정리한다(settleNow — 빠진 카드를 떼어 낸다).
+        //  크기 변경은 최신 범위뿐 아니라 **확정값**과도 견준다 — 건너뛴 뒤 다른 까닭(선택 등)으로 다시 그려지면 최신 범위와는 크기가
+        //  같아 판정 없이 확정됐다(독립 리뷰 P2). 그 다시 그리기는 걸린 예약을 늘이지 않는다(휠 한 칸만 예약을 다시 건다).
+        const zoomedSinceCommit = !!committed && (Math.abs(next.r - next.l - (committed.r - committed.l)) > 1 || Math.abs(next.b - next.t - (committed.b - committed.t)) > 1);
+        if ((resized || zoomedSinceCommit) && shouldCommitRef.current && !shouldCommitRef.current(committed, next)) {
+          if (!liveMoved) publish(next);
+          if (resized || settleTimerRef.current === undefined) {
+            cancelSettle();
+            settleTimerRef.current = window.setTimeout(settleNow, SETTLE_MS);
+          }
+          return;
+        }
+        cancelSettle();
         if (!liveMoved) publish(next);
         viewRectRef.current = next;
         setViewRect(next);
@@ -144,7 +210,7 @@ export function useSceneViewport({
       viewRectRef.current = live;
       setViewRect(live);
     });
-  }, [cullingEnabled, getCamera]);
+  }, [cullingEnabled, measureView, publishLive, cancelSettle, settleNow]);
 
   // 최신 범위로 확정한다 — 확정값이 낡은 채 내용이 바뀌어(선택 해제·높이 측정·카드 추가 …) 새로 그려야 할 것이 생겼을 때 SceneBoard 가 부른다
   const commitLiveView = useCallback(() => {
@@ -241,17 +307,28 @@ export function useSceneViewport({
     if (!cullingEnabled) return;
     const board = scrollRef.current;
     if (!board) return;
-    const observer = new ResizeObserver(applyTransform);
+    // 크기는 지금처럼 getBoundingClientRect 의 폭·높이(같은 기준) — ResizeObserver 콜백은 배치가 끝난 뒤라 강제 계산이 아니다
+    const remember = () => {
+      const rect = board.getBoundingClientRect();
+      boardSizeRef.current = { width: rect.width, height: rect.height };
+    };
+    const observer = new ResizeObserver(() => {
+      remember();
+      applyTransform();
+    });
     observer.observe(board);
+    remember();
     applyTransform();
     return () => {
       observer.disconnect();
+      boardSizeRef.current = null;
+      cancelSettle();
       if (cullFrameRef.current !== null) {
         cancelAnimationFrame(cullFrameRef.current);
         cullFrameRef.current = null;
       }
     };
-  }, [applyTransform, cullingEnabled]);
+  }, [applyTransform, cancelSettle, cullingEnabled]);
 
   const toCanvas = useCallback(
     (clientX: number, clientY: number) => {
@@ -303,6 +380,7 @@ export function useSceneViewport({
         maxZoom,
       );
       if (!next) return;
+      cancelSettle(); // 휠 줌 뒤의 쉼 정리는 이 맞춤의 범위로 다시 판정한다
       // 가운데 버튼으로 끄는 도중이면 지금 보이는 자리를 먼저 전환 없이 접고 그 스타일을 확정한 뒤 미끄러진다 — 밀어 둔 translate 를
       //  지운 채 미끄러지면 끌기 시작 자리로 튀었다가 맞춤 자리로 갔다. CSS 전환은 마지막으로 확정된 스타일에서 출발하므로 접은 뒤
       //  계산된 값을 한 번 읽어 확정해야 그 자리가 출발점이 된다(Codex 묶음 리뷰 P2 두 번, 2026-11-10)
@@ -328,7 +406,7 @@ export function useSceneViewport({
       applyTransform();
       persistCamera();
     },
-    [applyTransform, persistCamera, replaceCamera],
+    [applyTransform, cancelSettle, persistCamera, replaceCamera],
   );
 
   // 툴바 −/+ — 휠 줌과 같은 한 단계(×1.1) 규칙을 화면 중앙 기준으로 적용.
@@ -343,17 +421,19 @@ export function useSceneViewport({
         dir > 0 ? -1 : 1, // deltaY<0 = 확대
       );
       if (next.z === zoomRef.current) return;
+      cancelSettle(); // 새 조작 — 지난 휠 줌의 쉼 정리를 거둔다(이 줌이 필요하면 다시 건다)
       replaceCamera(next);
       applyTransform();
       persistCamera();
     },
-    [applyTransform, getCamera, persistCamera, replaceCamera],
+    [applyTransform, cancelSettle, getCamera, persistCamera, replaceCamera],
   );
 
   const beginPan = useCallback(
     (event: ScenePanStartEvent, beginDrag: BeginSceneDrag) => {
       if (event.button !== 1) return false;
       event.preventDefault();
+      cancelSettle(); // 누르는 순간 — 휠 줌 뒤의 쉼 정리가 끄는 중에 판을 다시 그리지 않게(손 뗄 때의 정리가 맡는다)
       const startX = event.clientX;
       const startY = event.clientY;
       let lastX = startX;
@@ -387,7 +467,7 @@ export function useSceneViewport({
       }, finish);
       return true;
     },
-    [applyTransform, getCamera, persistCamera, slidePan],
+    [applyTransform, cancelSettle, getCamera, persistCamera, slidePan],
   );
 
   useEffect(() => {
@@ -466,14 +546,16 @@ export function useSceneViewport({
     viewRectRef.current = null;
     liveViewRef.current = null;
     panEndRef.current = false;
+    cancelSettle();
     applyTransform();
-  }, [sceneId, applyTransform, replaceCamera]);
+  }, [sceneId, applyTransform, cancelSettle, replaceCamera]);
 
   useEffect(
     () => () => {
       if (cameraSaveTimerRef.current) clearTimeout(cameraSaveTimerRef.current);
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
       if (cullFrameRef.current !== null) cancelAnimationFrame(cullFrameRef.current);
+      if (settleTimerRef.current !== undefined) clearTimeout(settleTimerRef.current);
     },
     [],
   );
@@ -488,6 +570,7 @@ export function useSceneViewport({
     viewRect,
     liveView,
     commitLiveView,
+    cancelSettle,
     getCamera,
     toCanvas,
     navigateTo,

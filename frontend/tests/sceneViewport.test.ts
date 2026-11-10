@@ -12,6 +12,7 @@ import {
   sameSceneViewRect,
   sceneCullNeedsCommit,
   sceneCullRect,
+  sceneCullSetChanged,
   sceneViewRect,
   zoomSceneCameraAt,
 } from "../src/lib/sceneViewport";
@@ -36,6 +37,15 @@ describe("scene cull commit gate", () => {
   });
   it("컬링 범위 = 보이는 범위 ± 여백", () => {
     expect(sceneCullRect({ l: 0, t: 0, r: 100, b: 50 }, 10)).toEqual({ l: -10, t: -10, r: 110, b: 60 });
+  });
+  // 줌을 쉬었을 때의 정리(2026-11-10) — 들어오는 것뿐 아니라 빠지는 카드·선도 '달라짐'으로 센다
+  it("대상 집합이 달라졌나: 들어옴·빠짐 둘 다 참, 그대로면 거짓, 확정한 적이 없으면 참", () => {
+    const zoomedIn = { l: 300, t: 100, r: 700, b: 500 };
+    expect(sceneCullSetChanged(null, zoomedIn, { cards: [], edges: [] })).toBe(true);
+    expect(sceneCullSetChanged(committed, zoomedIn, { cards: [card(850, 100)], edges: [] })).toBe(true); // 확대로 빠짐
+    expect(sceneCullSetChanged(committed, { l: -500, t: 0, r: 1500, b: 600 }, { cards: [card(1200, 100)], edges: [] })).toBe(true); // 축소로 들어옴
+    expect(sceneCullSetChanged(committed, zoomedIn, { cards: [card(400, 200)], edges: [] })).toBe(false); // 둘 다 안
+    expect(sceneCullSetChanged(committed, zoomedIn, { cards: [], edges: [{ l: 900, t: 0, r: 950, b: 50 }] })).toBe(true); // 선이 빠짐
   });
 });
 
