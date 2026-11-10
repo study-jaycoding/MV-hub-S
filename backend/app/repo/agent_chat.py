@@ -233,6 +233,16 @@ def bind_plan(path, *, plan_id, turn_id, client_id) -> None:
                      (plan_id, turn_id, client_id))
 
 
+def bindings_for_conversation(path, conversation_id, limit=20) -> list[dict]:
+    """대화 복원 보정용 — 이 대화의 칸 연결로 만든 계획, 최근 것부터 limit 개(설계 A2-5)."""
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT b.plan_id, b.client_id FROM agent_chat_plan_binding b JOIN agent_chat_turn t ON t.id=b.turn_id "
+            "JOIN agent_chat_conversation c ON c.id=t.conversation_id WHERE c.id=? AND c.client_id=b.client_id "
+            "ORDER BY b.created_at DESC, b.rowid DESC LIMIT ?", (conversation_id, limit)).fetchall()
+    return [dict(row) for row in rows]
+
+
 def binding_for(path, plan_id) -> dict | None:
     with connect(path) as conn:
         row = conn.execute(

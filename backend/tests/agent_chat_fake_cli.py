@@ -10,7 +10,8 @@ import sys
 import time
 
 ALLOWED = ["mcp__mvhub_panel__check_connection", "mcp__mvhub_panel__connect", "mcp__mvhub_panel__read_context",
-           "mcp__mvhub_panel__prepare_generation_plan", "mcp__mvhub_panel__get_plan", "mcp__mvhub_panel__estimate_plan"]
+           "mcp__mvhub_panel__prepare_generation_plan", "mcp__mvhub_panel__get_plan", "mcp__mvhub_panel__estimate_plan",
+           "mcp__mvhub_panel__execute_generation_plan", "mcp__mvhub_panel__wait_results", "mcp__mvhub_panel__add_to_canvas"]
 
 
 def out(value):

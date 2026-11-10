@@ -1,5 +1,7 @@
 """Ask Agent 칸 해석기 — 0단계 실측 출력 모양(설계 6-1)을 줄여 담은 견본. 프로세스·DB·네트워크 없음."""
+import ast
 import json
+from pathlib import Path
 
 from app.services.agent_chat_parse import CLAUDE_ALLOWED, ClaudeParser, CodexParser, MAX_LINE
 
@@ -81,3 +83,26 @@ def test_codex_violations_and_failure_message():
     ])
     assert [event["kind"] for event in events if event["kind"] == "violation"] == ["violation", "violation"]
     assert events[-1] == {"kind": "result", "ok": False, "cli_session_id": "", "message": "Reconnecting... 5/5"}
+
+
+def _frozenset_assign(path: Path, name: str) -> set[str]:
+    """어댑터는 백엔드 venv 에 없는 mcp 패키지를 쓴다 — import 하지 않고 ast 로 그 이름의 frozenset({...}) 글자만 읽는다."""
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return set(ast.literal_eval(node.value.args[0]))
+    raise AssertionError(f"{name} 를 찾지 못했다")
+
+
+def test_panel_tool_lists_agree():
+    """세 허용 목록(어댑터 --panel·해석기→CLI 허용·허브 _PANEL_METHODS) + 가짜 CLI 가 같은 뜻(앱 동작 도구 설계 A3)."""
+    from app.routers.mcp_v2 import _PANEL_METHODS
+    from app.services.agent_chat_parse import PANEL_TOOLS
+    import agent_chat_fake_cli
+
+    root = Path(__file__).resolve().parents[2]
+    adapter = _frozenset_assign(root / "tools" / "mcp_adapter" / "server.py", "PANEL_TOOLS")
+    assert adapter == set(PANEL_TOOLS)
+    assert CLAUDE_ALLOWED == {f"mcp__mvhub_panel__{name}" for name in PANEL_TOOLS} == set(agent_chat_fake_cli.ALLOWED)
+    assert set(_PANEL_METHODS) == set(PANEL_TOOLS) - {"check_connection", "connect"}  # 이 둘은 어댑터 안에서 끝난다
+    assert {"execute_generation_plan", "wait_results", "add_to_canvas"} <= set(PANEL_TOOLS)
+    assert not {"get_result", "show_results", "get_generation"} & set(PANEL_TOOLS)  # 그림을 CLI 로 보내는 도구는 칸에 없다

@@ -2,7 +2,8 @@
 
 로컬 허브에서 CONTENT_HUB_AGENT_CHAT=1 일 때만 붙는다(main). 권한 = 로그인 신원(허브 id + DB 경로 + 계정) — 신원 판정은
 MCP 와 같은 `mcp_v2._capture`(AUTH off 워커는 공유 서버 로그인까지 대조)·`_still_current` 를 쓴다. 칸 비밀값은 다른
-웹페이지의 위조 요청을 막는 표일 뿐이다. 실행(유료)은 사람이 누른 [실행] 이 `mcp_v2.submit_plan` 을 부를 때만이다.
+웹페이지의 위조 요청을 막는 표일 뿐이다. 실행(유료)은 사람이 누른 [실행](여기) 또는 칸 연결의 AI 실행(`mcp_v2._panel_execute`
+— 이 대화의 계획·도는 차례만, 앱 동작 도구 설계 A2)이 `mcp_v2.submit_plan` 을 부를 때만이다.
 """
 from __future__ import annotations
 
@@ -133,7 +134,7 @@ async def conversations(panel=Depends(_panel)):
 
 @router.get("/conversations/{conversation_id}")
 async def conversation(conversation_id: UUID, panel=Depends(_panel)):
-    _, identity = panel
+    ctx, identity = panel
 
     def load():
         path = identity.db_file()
@@ -145,10 +146,39 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
         public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable")}
         return {"conversation": public, "turns": turns}
 
-    result = await asyncio.to_thread(load)
+    result = await asyncio.to_thread(load)  # 사건을 먼저 읽고 그다음 스냅샷 — 복원 스냅샷이 함께 돌려준 사건보다 새롭다(설계 A2-5)
     if result is None:
         raise HTTPException(404, "대화를 찾을 수 없습니다.")
+    result["plans"] = await _plan_snapshots(ctx, identity, str(conversation_id))
+    await _still(ctx)  # 읽는 사이 계정이 바뀌었으면 넘기지 않는다
     return result
+
+
+_RESTORE_SECONDS = 15.0
+
+
+async def _plan_snapshots(ctx, identity: Identity, conversation_id: str) -> list[dict]:
+    """대화 복원 보정 — 이 대화에 묶인 계획(최근 20개)의 지금 상태. 전체 15초 예산, 못 읽은 계획은 뺀다(카드는 사건으로 복원한 그대로)."""
+    bindings = await asyncio.to_thread(chat_store.bindings_for_conversation, identity.db_file(), conversation_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _RESTORE_SECONDS
+    out = []
+    for binding in bindings:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        client = await asyncio.to_thread(_panel_client, ctx, identity, binding["client_id"])
+        if not client:
+            continue
+        ctx.client = client
+        try:
+            snapshot = await asyncio.wait_for(
+                mcp_v2.panel_snapshot(ctx, binding["plan_id"], service.turn_for_client(client["id"])), remaining)
+        except asyncio.TimeoutError:
+            break
+        if snapshot:
+            out.append(snapshot)
+    return out
 
 
 class TurnIn(StrictModel):
@@ -247,14 +277,22 @@ async def cancel_turn(turn_id: UUID, panel=Depends(_panel)):
     return {"status": status}
 
 
+def _panel_client(ctx, identity: Identity, client_id: str) -> dict | None:
+    """이 신원·허브의 살아 있는 칸 연결이면 그 행, 아니면 None."""
+    client = mcp_store.client_by_id(client_id)
+    if (not client or client["revoked_at"] or client["name"] != mcp_v2.PANEL_CLIENT or client["hub_id"] != ctx.hub
+            or client["account_email"] != identity.email):
+        return None
+    return client
+
+
 async def _bound_plan(ctx, identity: Identity, plan_id: str) -> None:
     """허브가 MCP 응답에서 직접 묶어 둔 계획만 — 그 칸 연결(실행권 없는 패널 연결)을 ctx 에 싣는다."""
     binding = await asyncio.to_thread(chat_store.binding_for, identity.db_file(), plan_id)
     if not binding:
         raise HTTPException(404, "이 칸에서 만든 계획이 아닙니다.")
-    client = await asyncio.to_thread(mcp_store.client_by_id, binding["client_id"])
-    if (not client or client["revoked_at"] or client["name"] != mcp_v2.PANEL_CLIENT or client["hub_id"] != ctx.hub
-            or client["account_email"] != identity.email):
+    client = await asyncio.to_thread(_panel_client, ctx, identity, binding["client_id"])
+    if not client:
         raise HTTPException(403, "이 계획을 실행할 수 없습니다.")
     ctx.client = client
     await _still(ctx)
@@ -270,7 +308,10 @@ async def estimate_plan(plan_id: UUID, panel=Depends(_panel)):
 
 @router.post("/plans/{plan_id}/execute")
 async def execute_plan(plan_id: UUID, panel=Depends(_panel)):
-    """사람이 칸의 [실행] 을 눌렀을 때만 — 허브가 MCP 응답에서 직접 묶어 둔 계획만 그 칸 연결로 실행한다."""
+    """사람이 칸의 [실행] 을 눌렀을 때 — 허브가 MCP 응답에서 직접 묶어 둔 계획만 그 칸 연결로 실행한다.
+    응답에 계획 스냅샷(observed_at)을 싣는다 — 화면은 진행 사건과 같은 규칙으로만 넣는다(실패하면 없음, 제출 결과는 그대로)."""
     ctx, identity = panel
     await _bound_plan(ctx, identity, str(plan_id))
-    return await mcp_v2.submit_plan(ctx, str(plan_id))
+    plan = await mcp_v2.submit_plan(ctx, str(plan_id))
+    snapshot = await mcp_v2.panel_snapshot(ctx, str(plan_id), service.turn_for_client(ctx.client["id"]))
+    return {**plan, "snapshot": snapshot} if snapshot else plan

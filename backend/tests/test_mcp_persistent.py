@@ -2027,3 +2027,34 @@ def test_sync_image_uses_authorized_file_without_stale_thumbnail_fallback(
     else:
         assert result["media"] is None
         assert resize_calls == []
+
+
+def test_batch_wait_transient_lookup_is_not_terminal_and_404_is_missing(monkeypatch):
+    """조회가 잠깐 실패한 항목(502·503·504)은 끝이 아니다 · 404 는 끝이되 '결과 없음(missing)'(MV Agent 요리 설계 A2-4, 모든 연결 공통)."""
+    from types import SimpleNamespace
+    checks = []
+    async def authorized(ctx, plan_id):
+        checks.append(plan_id)
+        return {"items": [{}, {}]}
+    async def selected(ctx, args, preview=False, plan=None):
+        raise HTTPException(503 if args.item_index == 0 else 404, "x")
+    async def connected():
+        return False
+    monkeypatch.setattr(api, "_authorized_plan", authorized)
+    monkeypatch.setattr(api, "_result_once", selected)
+    ctx = SimpleNamespace(request=SimpleNamespace(is_disconnected=connected))
+    both = asyncio.run(api._selected_results(ctx, api.WaitResultsIn(plan_id=uuid4(), item_indexes=[0, 1], wait_seconds=0)))
+    transient, gone = both["items"]
+    assert not both["all_terminal"] and not both["all_done"]
+    assert transient["error"]["code"] == "request_failed" and "generation_status" not in transient
+    assert gone["error"]["code"] == "not_found" and gone["generation_status"] == "missing"
+    only_gone = asyncio.run(api._selected_results(ctx, api.WaitResultsIn(plan_id=uuid4(), item_indexes=[1], wait_seconds=0)))
+    assert only_gone["all_terminal"] and not only_gone["all_done"]
+    assert len(checks) == 4  # 회마다 앞뒤로 권한을 본다
+
+
+def test_observed_at_is_strictly_increasing_decimal_text(monkeypatch):
+    """스냅샷 순서 번호 — 같은 시각에 두 번 매겨도 다른 값, 10진 글자(JS 정수 정밀도 밖)."""
+    monkeypatch.setattr(api.time, "time_ns", lambda: 1_800_000_000_000_000_000)
+    first, second = api._observed(), api._observed()
+    assert isinstance(first, str) and first.isdigit() and int(second) == int(first) + 1

@@ -1,31 +1,137 @@
-// Ask Agent 칸의 계획 카드 — 에이전트는 계획까지만 저장하고, 크레딧이 나가는 [실행]은 사람이 여기서 누른다(설계 3-3).
+// MV Agent 칸의 계획 카드 — 계획만이면 [실행]·[고치기], 보냈으면(AI 실행 또는 사람 [실행]) 항목마다 확인된 상태와 완료 썸네일
+//  (앱 동작 도구 설계 A4). 상태는 확인된 출처에서만: 허브가 새로 읽은 스냅샷의 생성 상태 → 앱이 읽은 라이브러리 카드 → 그 밖은 '접수됨'.
+import { useEffect, useState } from "react";
+import { api } from "../../api";
 import type { AgentPlan } from "../../lib/agentChatApi";
 import { useT } from "../../lib/i18n";
-import type { AgentMessage } from "../../lib/useAgentChat";
+import { thumbOf } from "../../lib/media";
+import type { AgentMessage, AgentPlanProgress } from "../../lib/useAgentChat";
+import type { Generation, PreviewTarget } from "../../types";
 
+type PlanMessage = Extract<AgentMessage, { kind: "plan" }>;
 interface Props {
   plan: AgentPlan;
-  exec?: Extract<AgentMessage, { kind: "plan" }>["exec"];
-  estimate?: Extract<AgentMessage, { kind: "plan" }>["estimate"];
+  exec?: PlanMessage["exec"];
+  estimate?: PlanMessage["estimate"];
+  progress?: AgentPlanProgress;
   onExecute: () => void;
   onRevise: () => void;
+  findGeneration?: (id: string) => Generation | undefined; // 앱이 이미 읽은 라이브러리 카드(같은 계정 — 진행 소켓이 갱신)
+  onPreview?: (target: PreviewTarget) => void;
 }
 
-// 계획의 저장 위치 — 허브가 글이나 {scope, name} 으로 준다
+export type ItemKind = "done" | "making" | "failed" | "rejected" | "missing" | "accepted" | "sending" | "unsent" | "unconfirmed";
+const LABEL: Record<ItemKind, string> = {
+  done: "완료", making: "만드는 중", failed: "실패", rejected: "거절", missing: "결과 없음", accepted: "접수됨",
+  sending: "보내는 중", unsent: "미제출", unconfirmed: "접수 확인 안 됨",
+};
+const SETTLED: ReadonlySet<ItemKind> = new Set(["done", "failed", "rejected", "missing", "unsent"]);
+const genSettled = (s?: string | null) => !!s && s !== "pending" && s !== "running";
+
+/** 항목 하나의 칸 글 — server = 스냅샷의 생성 상태(없으면 확인 못 함), library = 앱이 읽은 카드의 상태. 완료라고 확인되지 않으면 완료라 하지 않는다. */
+export function itemKind(state: string | null | undefined, server: string | null | undefined, library: string | null | undefined): ItemKind {
+  if (state === "rejected") return "rejected";
+  if (state === "uncertain") return "unconfirmed";
+  if (state === "submitting") return "sending";
+  if (state == null) return "accepted"; // 항목 상태를 싣지 않은 옛 응답 — 안 보냈다고 단정하지 않는다
+  if (state !== "submitted") return "unsent"; // 보낸 카드인데 pending — 앞 항목 거절 등으로 안 보냄
+  const status = genSettled(library) ? library : server ?? library;
+  if (status === "missing") return "missing";
+  if (status === "done") return "done";
+  if (status === "pending" || status === "running") return "making";
+  return status ? "failed" : "accepted";
+}
+
 function workspaceLabel(value: unknown): string {
   if (typeof value === "string") return value;
   const ws = value as { scope?: string; name?: string | null } | null;
   return ws?.name || (ws?.scope === "personal" ? "내 공간" : "");
 }
 
-export function AgentPlanCard({ plan, exec, estimate, onExecute, onRevise }: Props) {
+function isSent(progress?: AgentPlanProgress): boolean {
+  if (!progress) return false;
+  if (progress.planStatus && progress.planStatus !== "planned") return true;
+  return Object.values(progress.items).some((it) => it.state && it.state !== "pending");
+}
+
+export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRevise, findGeneration, onPreview }: Props) {
   const t = useT();
   const items = plan.items ?? [];
   const where = workspaceLabel(plan.workspace);
   const running = exec?.state === "running";
+  const sent = exec?.state === "done" || isSent(progress);
+  const [fetched, setFetched] = useState<Record<string, Generation | null>>({}); // null = 못 읽음
+
+  const rows = items.map((_, index) => {
+    const it = progress?.items[index];
+    const genId = it?.generation_id ?? null;
+    const known = genId ? findGeneration?.(genId) : undefined;
+    const kind = itemKind(it?.state, it?.generation_status, known?.status);
+    return { index, genId, kind, gen: known ?? (genId ? fetched[genId] ?? undefined : undefined) };
+  });
+  // 완료로 확인됐는데 앱이 읽은 목록에 없으면(다른 폴더) 한 번만 읽어 썸네일을 얻는다
+  const missingThumbs = rows.filter((r) => r.kind === "done" && r.genId && !r.gen && !(r.genId in fetched)).map((r) => r.genId as string);
+  const missingKey = missingThumbs.join(",");
+  useEffect(() => {
+    if (!missingKey) return;
+    let live = true;
+    for (const id of missingKey.split(",")) {
+      api.getGeneration(id).then(
+        (gen) => { if (live) setFetched((m) => ({ ...m, [id]: gen })); },
+        () => { if (live) setFetched((m) => ({ ...m, [id]: null })); },
+      );
+    }
+    return () => { live = false; };
+  }, [missingKey]);
+
+  const settled = sent && rows.length > 0 && rows.every((r) => SETTLED.has(r.kind));
+  const count = (...kinds: ItemKind[]) => rows.filter((r) => kinds.includes(r.kind)).length;
+  const summary = [
+    `${t("완료")} ${count("done")}`, `${t("실패")} ${count("failed", "rejected")}`,
+    ...(count("missing") ? [`${t("결과 없음")} ${count("missing")}`] : []),
+    ...(count("unsent") ? [`${t("미제출")} ${count("unsent")}`] : []),
+  ].join(" · ");
+
+  const open = (gen: Generation) => {
+    const asset = gen.assets?.[0];
+    if (asset && onPreview) {
+      onPreview({ url: asset.file_path, type: asset.type, name: gen.prompt.slice(0, 50) || "(제목 없음)", genId: gen.id, thumb: thumbOf(gen, 512) });
+    }
+  };
+
   return (
     <section className="agent-plan" aria-label={t("계획")}>
       <h4 className="agent-plan-title">{t("계획")} — {plan.title || t("이름 없는 계획")}</h4>
+      {sent && (
+        <>
+          <p className={`agent-plan-sent${settled ? " is-settled" : ""}`} role="status">
+            {settled ? `${t("끝났어요")} · ${summary}` : t("생성을 보냈어요")}
+          </p>
+          <div className="agent-plan-tiles">
+            {rows.map((r) => {
+              const thumb = r.gen ? thumbOf(r.gen, 256) : null;
+              if (r.kind === "done" && r.gen && thumb) {
+                return (
+                  <button key={r.index} type="button" className="agent-plan-tile is-done" onClick={() => open(r.gen as Generation)}
+                    aria-label={`${t("크게 보기")} — ${r.index + 1}`}>
+                    <img src={thumb} alt="" loading="lazy" />
+                    <span className="agent-plan-tile-st">{t("완료")}</span>
+                  </button>
+                );
+              }
+              const text = r.kind === "done" ? t("완료 — 라이브러리에서 확인") : t(LABEL[r.kind]);
+              // 썸네일 없는 완료는 누를 수 없다 — is-done(확대 커서)과 구분
+              return (
+                <div key={r.index} className={`agent-plan-tile is-${r.kind === "done" ? "nothumb" : r.kind}`} role="img"
+                  aria-label={`${r.index + 1}: ${text}`}>
+                  {(r.kind === "making" || r.kind === "sending") && <span className="agent-plan-spin" aria-hidden="true" />}
+                  <span>{text}</span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
       {items.length > 0 && (
         <ul className="agent-plan-items">
           {items.map((item, i) => (
@@ -42,8 +148,8 @@ export function AgentPlanCard({ plan, exec, estimate, onExecute, onRevise }: Pro
           : estimate.credits === null ? t("예상 크레딧: 확인하지 못했어요")
           : `${t("예상 크레딧")}: ${estimate.credits}`}
       </p>
-      {exec?.state === "done" ? (
-        <p className="agent-plan-done" role="status">{t("실행을 보냈어요 — 결과는 라이브러리에 들어와요")}</p>
+      {sent ? (
+        exec?.state === "failed" && <p className="agent-plan-fail" role="alert">{exec.message}</p>
       ) : (
         <>
           <p className="agent-plan-warn">{t("실행하면 크레딧이 나갑니다")}</p>

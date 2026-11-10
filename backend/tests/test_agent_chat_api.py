@@ -150,10 +150,11 @@ def test_turn_plan_card_and_human_execute_once(hub, monkeypatch):
     plan_id = plan.json()["plan_id"]
     events = client.get(f"/api/agent-chat/turns/{body['turn_id']}/events?after=0", headers=headers).json()["events"]
     assert [event["plan"]["plan_id"] for event in events if event["kind"] == "plan"] == [plan_id]
-    # 칸 연결은 실행·캔버스 도구를 못 쓴다
-    denied = adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id})
-    assert denied.status_code == 403
-    assert adapter_action(client, secret, "add_to_canvas", {"plan_id": plan_id, "scene_id": "s"}).status_code == 403
+    # 칸 연결은 그림을 CLI 로 보내는 조회 도구를 못 쓴다(실행·기다림·캔버스는 요리 2-A 에서 열림 — 아래 다른 시험)
+    for method, args in (("get_result", {"plan_id": plan_id, "item_index": 0}),
+                         ("show_results", {"plan_id": plan_id, "item_indexes": [0]}),
+                         ("get_generation", {"generation_id": "g", "workspace_scope": "personal"})):
+        assert adapter_action(client, secret, method, args).status_code == 403, method
     # 사람의 [실행] — 한 번만 제출된다
     calls = []
 
@@ -177,12 +178,104 @@ def test_turn_plan_card_and_human_execute_once(hub, monkeypatch):
         executed = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers)
         assert executed.status_code == 200, executed.text
         assert executed.json()["status"] == "submitted"
+        # 사람 [실행] 응답에도 진행 사건과 같은 규칙의 스냅샷(가짜 생성 id 라 생성 상태는 결과 없음)
+        snap = executed.json()["snapshot"]
+        assert snap["plan_id"] == plan_id and snap["observed_at"].isdigit()
+        assert snap["items"] == [{"index": 0, "state": "submitted", "generation_id": "generation-1", "generation_status": "missing"}]
     assert len(calls) == 1
     assert client.post(f"/api/agent-chat/turns/{body['turn_id']}/cancel", headers=headers).json()["status"] in ("cancelling", "cancelled")
     assert wait_status(client, headers, body["turn_id"], ("cancelled",))["status"] == "cancelled"
     # 계획을 만들 진행 중 차례가 없으면 칸에 올리지 않는다
     orphan = adapter_action(client, secret, "prepare_generation_plan", plan_args())
     assert orphan.status_code == 409
+    # 대화 복원 = 사건 + 계획의 지금 저장 상태(차례가 끝난 뒤 사람 [실행] 결과도 보인다)
+    detail = client.get(f"/api/agent-chat/conversations/{body['conversation_id']}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert [(p["plan_id"], p["items"][0]["state"]) for p in detail.json()["plans"]] == [(plan_id, "submitted")]
+
+
+def _submits(monkeypatch):
+    calls = []
+
+    async def submit(request_body, request):
+        calls.append(request_body)
+        return {"id": f"generation-{len(calls)}"}
+
+    monkeypatch.setattr(gen_requests, "create_gen_request", submit)
+    return calls
+
+
+def _progress(client, headers, turn_id):
+    events = client.get(f"/api/agent-chat/turns/{turn_id}/events?after=0", headers=headers).json()["events"]
+    return [event for event in events if event["kind"] == "plan_progress"]
+
+
+@windows
+def test_agent_executes_this_conversations_plan_while_turn_runs(hub, monkeypatch):
+    """요리 2-A: 사용자가 생성하라고 한 차례 안에서 AI 가 이 대화의 계획을 실행 — 제출 1회·진행 스냅샷·사람과 겹쳐도 1회."""
+    client, profiles, service = hub
+    headers = panel_headers(client)
+    body = start_turn(client, headers, text="고양이 한 장 생성해").json()
+    secret = profiles[-1]["secret"]
+    calls = _submits(monkeypatch)
+    plan_id = adapter_action(client, secret, "prepare_generation_plan", plan_args()).json()["plan_id"]
+    assert mcp_store.client_by_id(profiles[-1]["client_id"])["can_execute"] == 0  # 일반 실행권은 그대로 꺼짐
+    ran = adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id})
+    assert ran.status_code == 200, ran.text
+    assert ran.json()["status"] == "submitted" and len(calls) == 1
+    first = _progress(client, headers, body["turn_id"])
+    assert len(first) == 1 and first[0]["plan_id"] == plan_id and first[0]["plan_status"] == "submitted"
+    assert first[0]["items"][0]["state"] == "submitted" and first[0]["items"][0]["generation_id"] == "generation-1"
+    assert "title" not in first[0] and "prompt" not in first[0]["items"][0]  # 카드(plan 사건)와 따로 — 상태만
+    # 사람 [실행]·AI 재실행이 겹쳐도 제출은 한 번
+    assert client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers).status_code == 200
+    assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id}).status_code == 200
+    assert len(calls) == 1
+    # 기다림도 스냅샷을 남기고 순서 번호는 늘어난다 · 캔버스 도구는 칸에서 허용(없는 씬이라 404)
+    waited = adapter_action(client, secret, "wait_results", {"plan_id": plan_id, "item_indexes": [0], "wait_seconds": 0})
+    assert waited.status_code == 200, waited.text
+    stamps = [int(event["observed_at"]) for event in _progress(client, headers, body["turn_id"])]
+    assert len(stamps) == 3 and stamps == sorted(stamps) and len(set(stamps)) == 3
+    assert adapter_action(client, secret, "add_to_canvas", {"plan_id": plan_id, "scene_id": "s"}).status_code == 404
+    # 이 대화의 칸 연결로 만든 계획이 아니면 404 — 바인딩 없음 / 다른 연결의 바인딩
+    other = adapter_action(client, secret, "prepare_generation_plan", plan_args()).json()["plan_id"]
+    runtime = service._runtimes[body["turn_id"]]
+    with chat_store.connect(runtime.path) as conn:
+        conn.execute("UPDATE agent_chat_plan_binding SET client_id='someone-else' WHERE plan_id=?", (other,))
+    assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": other}).status_code == 404
+    with chat_store.connect(runtime.path) as conn:
+        conn.execute("DELETE FROM agent_chat_plan_binding WHERE plan_id=?", (other,))
+    assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": other}).status_code == 404
+    # [그만] 뒤(차례 없음 — 허브 재시작 뒤 남은 바인딩과 같은 길) 실행 전 계획은 409·제출 0
+    late = adapter_action(client, secret, "prepare_generation_plan", plan_args()).json()["plan_id"]
+    client.post(f"/api/agent-chat/turns/{body['turn_id']}/cancel", headers=headers)
+    wait_status(client, headers, body["turn_id"], ("cancelled",))
+    assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": late}).status_code == 409
+    assert len(calls) == 1
+    assert len(_progress(client, headers, body["turn_id"])) == 3  # 끝난 차례엔 사건을 더하지 않는다
+
+
+@windows
+def test_agent_execute_survives_snapshot_failure(hub, monkeypatch):
+    """제출 뒤 표시용 스냅샷이 실패해도 실행 응답은 제출 결과 그대로 · 사건 없음."""
+    client, profiles, _ = hub
+    headers = panel_headers(client)
+    body = start_turn(client, headers, text="생성해").json()
+    secret = profiles[-1]["secret"]
+    calls = _submits(monkeypatch)
+    plan_id = adapter_action(client, secret, "prepare_generation_plan", plan_args()).json()["plan_id"]
+
+    async def broken(ctx, plan_id):
+        raise RuntimeError("team space lookup failed")
+
+    monkeypatch.setattr(api, "plan_snapshot", broken)
+    ran = adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id})
+    assert ran.status_code == 200 and ran.json()["status"] == "submitted" and len(calls) == 1
+    assert _progress(client, headers, body["turn_id"]) == []
+    human = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers)
+    assert human.status_code == 200 and "snapshot" not in human.json()
+    client.post(f"/api/agent-chat/turns/{body['turn_id']}/cancel", headers=headers)
+    wait_status(client, headers, body["turn_id"], ("cancelled",))
 
 
 @windows

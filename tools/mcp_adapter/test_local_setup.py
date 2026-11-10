@@ -344,8 +344,10 @@ class SetupTests(unittest.TestCase):
                 async with Client(StdioServerParameters(command=entry["command"], args=entry["args"])) as client:
                     return {tool.name for tool in (await client.list_tools()).tools}
 
+        # 요리 2-A(앱 동작 도구 설계 A3): 실행·기다림·캔버스까지 — 그림을 CLI 로 보내는 get_result·show_results·get_generation 은 없다
         self.assertEqual(anyio.run(tool_names),
-                         {"check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan"})
+                         {"check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan",
+                          "execute_generation_plan", "wait_results", "add_to_canvas"})
 
 
 if __name__ == "__main__":

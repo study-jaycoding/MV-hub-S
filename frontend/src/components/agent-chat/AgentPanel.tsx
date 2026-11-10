@@ -7,6 +7,7 @@ import type { AgentContext, AgentEngine, AgentEngineId } from "../../lib/agentCh
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useT } from "../../lib/i18n";
+import type { Generation, PreviewTarget } from "../../types";
 import { AgentConnect } from "./AgentConnect";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { AgentPlanCard } from "./AgentPlanCard";
@@ -15,7 +16,11 @@ interface Props {
   context: AgentContext;
   contextLabel: string; // 입력칸의 '지금 화면' 표시(예: 워크스페이스 › e001)
   onClose: () => void;
+  findGeneration?: (id: string) => Generation | undefined; // 계획 카드 썸네일 — 앱이 이미 읽은 라이브러리 카드
+  onPreview?: (target: PreviewTarget) => void; // 썸네일을 누르면 기존 크게 보기
 }
+
+const NO_SCREEN: Record<string, never> = {}; // '지금 화면' 칩을 뺀 동안 보내는 빈 문맥(허브가 '어디인지 묻는다' 안내)
 
 const GROUP: Record<AgentEngineId, string> = { claude: "Claude", codex: "ChatGPT" };
 const EFFORT: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
@@ -28,12 +33,16 @@ const TOOL: Record<string, string> = {
   prepare_generation_plan: "계획 저장",
   get_plan: "계획 보기",
   estimate_plan: "견적",
+  execute_generation_plan: "생성 실행",
+  wait_results: "결과 기다리기",
+  add_to_canvas: "캔버스에 놓기",
 };
 const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
 
-export function AgentPanel({ context, contextLabel, onClose }: Props) {
+export function AgentPanel({ context, contextLabel, onClose, findGeneration, onPreview }: Props) {
   const t = useT();
-  const chat = useAgentChat(context);
+  const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
+  const chat = useAgentChat(screenOn ? context : NO_SCREEN);
   const [text, setText] = useState("");
   const [menu, setMenu] = useState<"history" | "model" | "effort" | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -100,7 +109,7 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
               ) : chat.conversations.map((c) => (
                 <button key={c.id} type="button" role="menuitem"
                   className={`agent-history-item${c.id === chat.conversationId ? " on" : ""}`}
-                  onClick={() => { setMenu(null); void chat.openConversation(c.id); }}>
+                  onClick={() => { setMenu(null); setScreenOn(true); void chat.openConversation(c.id); }}>
                   <span>{c.title || t("제목 없음")}</span>
                   <small>{GROUP[c.engine] ?? c.engine} · {c.model}{c.resumable ? "" : ` · ${t("이어 가기 불가")}`}</small>
                 </button>
@@ -109,7 +118,7 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
           )}
         </div>
         <div className="agent-head-actions">
-          <button type="button" className="agent-ic" onClick={() => { chat.newConversation(); setText(""); }} disabled={chat.running || chat.sending}
+          <button type="button" className="agent-ic" onClick={() => { chat.newConversation(); setText(""); setScreenOn(true); }} disabled={chat.running || chat.sending}
             title={t("새 대화")} aria-label={t("새 대화")}>
             <NewChatIcon />
           </button>
@@ -135,7 +144,7 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
           </div>
         )}
         {chat.messages.map((m) => (
-          <Message key={m.id} message={m} onExecute={chat.executePlan} onRevise={revise} />
+          <Message key={m.id} message={m} onExecute={chat.executePlan} onRevise={revise} findGeneration={findGeneration} onPreview={onPreview} />
         ))}
         {needsConnect && (
           <AgentConnect state={chat.connect.state} version={chat.connect.version} loginWindowEnabled={chat.connect.loginWindowEnabled}
@@ -148,13 +157,22 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
       {chat.error && <p className="agent-error" role="alert">{chat.error}</p>}
 
       <form className="agent-composer" onSubmit={submit}>
-        <div className="agent-context">
-          <span className="agent-context-mark" aria-hidden="true">⬡</span>
-          <span className="agent-context-text">
-            <b>MV Hub</b>
-            <small>{contextLabel}</small>
-          </span>
-        </div>
+        {screenOn ? (
+          <div className="agent-context">
+            <span className="agent-context-mark" aria-hidden="true">⬡</span>
+            <span className="agent-context-text">
+              <b>MV Hub</b>
+              <small>{contextLabel}</small>
+            </span>
+            {/* Aside 처럼 올리면(키보드 초점도) 보인다 — 빼면 다음 메시지부터 지금 화면 정보를 안 보낸다(앱 동작 도구 설계 A4) */}
+            <button type="button" className="agent-context-x" onClick={() => setScreenOn(false)}
+              title={t("지금 화면 정보 빼기")} aria-label={t("지금 화면 정보 빼기")}>×</button>
+          </div>
+        ) : (
+          <button type="button" className="agent-context-add" onClick={() => setScreenOn(true)} aria-label={t("지금 화면 정보 다시 붙이기")}>
+            ＋ {t("지금 화면")}
+          </button>
+        )}
         <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect}
           placeholder={needsConnect ? t("Claude 를 연결하면 쓸 수 있어요") : t("Agent 에게 일을 맡기거나 물어보세요")}
           aria-label={t("Agent 에게 보낼 말")}
@@ -202,10 +220,12 @@ export function AgentPanel({ context, contextLabel, onClose }: Props) {
   );
 }
 
-function Message({ message: m, onExecute, onRevise }: {
+function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }: {
   message: AgentMessage;
   onExecute: (planId: string) => void;
   onRevise: (title: string) => void;
+  findGeneration?: (id: string) => Generation | undefined;
+  onPreview?: (target: PreviewTarget) => void;
 }) {
   const t = useT();
   switch (m.kind) {
@@ -220,8 +240,8 @@ function Message({ message: m, onExecute, onRevise }: {
         </div>
       );
     case "plan":
-      return <AgentPlanCard plan={m.plan} exec={m.exec} estimate={m.estimate} onExecute={() => onExecute(m.plan.plan_id)}
-        onRevise={() => onRevise(m.plan.title ?? "")} />;
+      return <AgentPlanCard plan={m.plan} exec={m.exec} estimate={m.estimate} progress={m.progress} onExecute={() => onExecute(m.plan.plan_id)}
+        onRevise={() => onRevise(m.plan.title ?? "")} findGeneration={findGeneration} onPreview={onPreview} />;
     case "notice":
       return <div className="agent-notice" role="status">{m.text}</div>;
     case "error":

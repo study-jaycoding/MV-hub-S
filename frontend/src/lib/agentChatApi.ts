@@ -60,14 +60,30 @@ export interface AgentPlan {
   plan_id: string;
   title?: string | null;
   status?: string | null;
-  items?: { model?: string | null; prompt?: string | null }[];
+  // 카드(plan 사건)는 model·prompt, 실행 응답은 state·generation_id 도 싣는다
+  items?: { model?: string | null; prompt?: string | null; state?: string | null; generation_id?: string | null }[];
   workspace?: unknown;
+}
+/** 계획 항목 하나의 상태 — 허브가 새로 읽은 값. generation_status 가 없으면 '확인 못 함'(앞 값 보존), missing = 결과 없음. */
+export interface AgentPlanItemState {
+  index: number;
+  state?: string | null;
+  generation_id?: string | null;
+  generation_status?: string | null;
+}
+/** 허브가 새로 읽은 계획 스냅샷(앱 동작 도구 설계 A2-3) — observed_at = 허브가 매긴 엄격히 늘어나는 번호(10진 글자, BigInt 로 비교). */
+export interface AgentPlanSnapshot {
+  plan_id: string;
+  plan_status?: string | null;
+  observed_at: string;
+  items: AgentPlanItemState[];
 }
 export type AgentEvent = { seq: number } & (
   | { kind: "text_delta"; text: string }
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; status: "started" | "done" | "failed" }
   | { kind: "plan"; plan: AgentPlan }
+  | ({ kind: "plan_progress" } & AgentPlanSnapshot)
   | { kind: "state"; status: AgentTurnStatus; reason?: string | null }
   | { kind: "error"; message: string }
   | { kind: "notice"; text: string } // Claude 알림(예: 빠른 모드를 못 써 표준 모드로)
@@ -104,7 +120,7 @@ export interface AgentTurnRequest {
   effort: string;
   fast?: boolean; // 빠른 모드 — Opus 만(허브가 다시 검사), Claude 추가 사용 크레딧
   text: string;
-  context: AgentContext;
+  context: AgentContext | Record<string, never>; // 빈 값 = 입력칸의 '지금 화면' 칩을 뺐다(허브가 '어디인지 묻는다' 안내)
 }
 
 let session: AgentSession | null = null;
@@ -171,8 +187,10 @@ const id = (value: string) => encodeURIComponent(value);
 export const agentChatApi = {
   session: openAgentSession,
   conversations: () => panelFetch<{ conversations: AgentConversationSummary[] }>("/conversations"),
+  // plans = 이 대화에 묶인 계획의 지금 상태(사건 다음에 읽음 — 조건 없이 넣고 기준이 된다). 옛 허브는 없음
   conversation: (conversationId: string) =>
-    panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[] }>(`/conversations/${id(conversationId)}`),
+    panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[]; plans?: AgentPlanSnapshot[] }>(
+      `/conversations/${id(conversationId)}`),
   startTurn: (body: AgentTurnRequest) =>
     panelFetch<{ turn_id: string; conversation_id: string; status: AgentTurnStatus }>("/turns", { method: "POST", body: jsonBody(body) }),
   // 새 사건이 없고 진행 중이면 허브가 최대 25초 붙잡고 있다가 답한다(긴 기다림). 칸을 닫으면 signal 로 끊는다.
@@ -181,7 +199,9 @@ export const agentChatApi = {
     // more = 끝난 차례라도 사건이 더 남았다(한 번에 다 못 받음) — 이어서 읽는다
     panelFetch<{ events: AgentEvent[]; status: AgentTurnStatus; last_seq: number; more?: boolean }>(`/turns/${id(turnId)}/events?after=${after}`, { signal }),
   cancel: (turnId: string) => panelFetch<{ status: AgentTurnStatus }>(`/turns/${id(turnId)}/cancel`, { method: "POST" }),
-  executePlan: (planId: string) => panelFetch<AgentPlan>(`/plans/${id(planId)}/execute`, { method: "POST" }),
+  // snapshot = 진행 사건과 같은 규칙으로 넣는 스냅샷(허브가 못 읽으면 없음 — 제출 결과는 그대로)
+  executePlan: (planId: string) =>
+    panelFetch<AgentPlan & { snapshot?: AgentPlanSnapshot }>(`/plans/${id(planId)}/execute`, { method: "POST" }),
   // 캐시 없이 지금 Claude 상태 + 새 엔진 목록(연결 안내 화면이 2초마다)
   claudeStatus: () => panelFetch<ClaudeStatus>("/claude"),
   openClaudeLogin,

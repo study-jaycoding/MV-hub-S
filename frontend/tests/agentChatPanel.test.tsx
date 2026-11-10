@@ -152,7 +152,9 @@ describe("Ask Agent 옆 칸", () => {
     act(() => { run.click(); run.click(); });
     await flush();
     expect(calls.filter((c) => c.path === "/plans/p1/execute").map((c) => c.method)).toEqual(["POST"]);
-    expect(panel().textContent).toContain("실행을 보냈어요");
+    expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("생성을 보냈어요"); // 접수일 뿐 완료가 아니다
+    expect(texts(".agent-plan-tile")).toEqual(["접수됨"]); // 항목 상태가 없는 응답 — 완료·미제출이라 단정하지 않는다
+    expect(host.querySelector(".agent-plan-run")).toBeNull();
   });
 
   it("끝난 차례라도 허브가 more 를 주면 남은 사건(계획 카드)을 마저 받는다", async () => {
@@ -245,8 +247,68 @@ describe("Ask Agent 옆 칸", () => {
     await flush();
     act(() => host.querySelector<HTMLButtonElement>(".agent-plan-run")!.click());
     await flush();
-    expect(panel().textContent).not.toContain("실행을 보냈어요");
+    expect(panel().textContent).not.toContain("끝났어요");
     expect(panel().textContent).toContain("라이브러리에서 확인하세요");
+  });
+
+  it("AI 가 실행하면 진행 사건(plan_progress)으로 칸이 바뀐다 — 늦게 온 옛 스냅샷은 무시, 생성 상태가 빠진 항목은 앞 값 보존, 다 끝나면 끝났어요 줄", async () => {
+    const two = { ...PLAN, items: [{ model: "Nano Banana 2", prompt: "고양이 1" }, { model: "Nano Banana 2", prompt: "고양이 2" }] };
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started();
+      if (c.path === "/plans/p1/estimate") return json({ plan_id: "p1", total_credits: 6 });
+      if (c.path.startsWith("/api/generations/")) return json({ detail: "Not Found" }, 404); // 썸네일 읽기 실패 → 글
+      // 차례가 도는 동안 다음 기다림은 허브처럼 새 사건이 올 때까지 붙잡는다(바로 같은 답을 주면 끝없이 다시 묻는다)
+      if (!c.path.endsWith("after=0")) return new Promise<Response>(() => {});
+      return json({ events: [
+        { seq: 1, kind: "plan", plan: two },
+        { seq: 2, kind: "tool", name: "execute_generation_plan", status: "done" },
+        { seq: 3, kind: "plan_progress", plan_id: "p1", plan_status: "submitted", observed_at: "1000",
+          items: [{ index: 0, state: "submitted", generation_id: "g1", generation_status: "running" },
+                  { index: 1, state: "submitted", generation_id: "g2", generation_status: "running" }] },
+        { seq: 4, kind: "plan_progress", plan_id: "p1", plan_status: "submitted", observed_at: "1002",
+          items: [{ index: 0, state: "submitted", generation_id: "g1", generation_status: "done" },
+                  { index: 1, state: "submitted", generation_id: "g2" }] }, // g2 는 허브가 잠깐 못 읽음 — running 보존
+        { seq: 5, kind: "plan_progress", plan_id: "p1", plan_status: "submitted", observed_at: "1001", // 늦게 도착한 옛 스냅샷
+          items: [{ index: 0, state: "submitted", generation_id: "g1", generation_status: "running" },
+                  { index: 1, state: "submitted", generation_id: "g2", generation_status: "running" }] },
+      ], status: "running", last_seq: 5 });
+    };
+    await mount();
+    type("고양이 두 장 생성해");
+    enter();
+    await flush();
+    expect(texts(".agent-tool")).toEqual(["MV Hub · 생성 실행 끝"]);
+    expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("생성을 보냈어요");
+    expect(texts(".agent-plan-tile")).toEqual(["완료 — 라이브러리에서 확인", "만드는 중"]); // 썸네일 줄 곳이 없으면 글
+    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장"); // 진행은 제목·프롬프트를 안 덮는다
+    expect(texts(".agent-plan-items li")).toEqual(["Nano Banana 2고양이 1", "Nano Banana 2고양이 2"]);
+  });
+
+  it("'지금 화면' 칩 — × 로 빼면 다음 차례에 빈 문맥, [＋ 지금 화면] 으로 다시, 새 대화는 붙은 채 시작", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started(`t${turnCalls().length}`, "c1");
+      return json({ events: [{ seq: 1, kind: "text", text: "네" }], status: "done", last_seq: 1 });
+    };
+    await mount();
+    const remove = button("지금 화면 정보 빼기")!;
+    expect(remove.textContent).toBe("×"); // 평소엔 투명 — 올리거나 키보드 초점에서 보인다(CSS)
+    act(() => remove.click());
+    expect(host.querySelector(".agent-context")).toBeNull();
+    expect(button("지금 화면 정보 다시 붙이기")!.textContent).toBe("＋ 지금 화면");
+    type("여기에 생성해");
+    enter();
+    await flush();
+    expect(turnCalls()[0].body!.context).toEqual({});
+    act(() => button("지금 화면 정보 다시 붙이기")!.click());
+    type("e001 에 생성해");
+    enter();
+    await flush();
+    expect(turnCalls()[1].body!.context).toEqual({ tab: "my", folder: "e001" });
+    act(() => button("지금 화면 정보 빼기")!.click());
+    act(() => button("새 대화")!.click());
+    expect(host.querySelector(".agent-context")!.textContent).toContain("워크스페이스 › e001");
   });
 
   it("보내는 중에는 새 대화·지난 대화·모델 단추가 잠겨 허브에서 시작한 차례를 놓치지 않는다", async () => {

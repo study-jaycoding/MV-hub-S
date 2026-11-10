@@ -16,6 +16,8 @@ import {
   type AgentEngineId,
   type AgentEvent,
   type AgentPlan,
+  type AgentPlanItemState,
+  type AgentPlanSnapshot,
   type AgentSession,
   type AgentTurnStatus,
   type ClaudeStatus,
@@ -30,7 +32,8 @@ export type AgentMessage =
   | { kind: "assistant"; id: string; text: string; open: boolean } // open = 아직 조각을 받는 덩어리
   | { kind: "tool"; id: string; name: string; status: "started" | "done" | "failed" }
   | { kind: "plan"; id: string; plan: AgentPlan; exec?: { state: "running" | "done" | "failed"; message?: string };
-      estimate?: { credits: number | null } } // 없으면 견적 확인 중 · credits null = 확인하지 못함
+      estimate?: { credits: number | null }; // 없으면 견적 확인 중 · credits null = 확인하지 못함
+      progress?: AgentPlanProgress }
   | { kind: "error"; id: string; message: string }
   | { kind: "notice"; id: string; text: string };
 
@@ -42,6 +45,60 @@ export interface AgentChoice {
 }
 
 export const TERMINAL_TURN = new Set<AgentTurnStatus>(["cancelled", "done", "failed", "interrupted"]);
+
+/** 계획 카드의 진행(허브가 새로 읽은 스냅샷을 합친 것). observed = 마지막으로 넣은 스냅샷 번호(null = 기준 없음 — 다음 스냅샷을 받는다). */
+export interface AgentPlanProgress {
+  observed: string | null;
+  planStatus?: string | null;
+  items: Record<number, AgentPlanItemState>;
+}
+type PlanMessage = Extract<AgentMessage, { kind: "plan" }>;
+
+function newer(next: string, current: string | null | undefined): boolean {
+  if (current == null) return true;
+  try {
+    return BigInt(next) > BigInt(current);
+  } catch {
+    return false; // 번호 모양이 아니면 넣지 않는다
+  }
+}
+
+/** 스냅샷을 계획 카드에 넣는다(설계 A2-3). 진행 사건·사람 [실행] 은 번호가 지금보다 클 때만, 대화 복원(force)은 조건 없이.
+ *  생성 상태가 빠진 항목(허브가 잠깐 못 읽음)은 앞 값을 둔다. 상태 순위를 쓰지 않아 허브의 복구 전이(uncertain→submitted 등)도 그대로 보인다. */
+export function applyPlanSnapshot(m: PlanMessage, snap: AgentPlanSnapshot, force = false): PlanMessage {
+  if (!force && !newer(snap.observed_at, m.progress?.observed)) return m;
+  const items = { ...(m.progress?.items ?? {}) };
+  for (const it of snap.items) {
+    const prev = items[it.index];
+    items[it.index] = {
+      index: it.index, state: it.state ?? null, generation_id: it.generation_id ?? null,
+      generation_status: it.generation_status !== undefined ? it.generation_status : prev?.generation_status,
+    };
+  }
+  return { ...m, progress: { observed: snap.observed_at, planStatus: snap.plan_status, items } };
+}
+
+/** 대화 복원 — 허브가 사건 다음에 읽은 스냅샷을 조건 없이 넣고 그 번호를 기준으로 삼는다. 스냅샷이 빠진 계획(예산 밖·실패)은
+ *  기준만 비운다(재시작 전 큰 번호가 새 진행을 거르지 않게 — 사건으로 복원한 상태는 둔다). */
+export function restorePlans(messages: AgentMessage[], plans: AgentPlanSnapshot[]): AgentMessage[] {
+  const byId = new Map(plans.map((p) => [p.plan_id, p]));
+  return messages.map((m) => {
+    if (m.kind !== "plan") return m;
+    const snap = byId.get(m.plan.plan_id);
+    if (snap) return applyPlanSnapshot(m, snap, true);
+    return m.progress ? { ...m, progress: { ...m.progress, observed: null } } : m;
+  });
+}
+
+/** 스냅샷 없이 온 실행 응답(옛 허브·스냅샷 실패) — 그 카드에 아직 진행이 없을 때만 채운다(늦은 응답이 새 상태를 못 되돌림). */
+export function fillPlanProgress(m: PlanMessage, plan: AgentPlan): PlanMessage {
+  if (m.progress) return m;
+  const items: Record<number, AgentPlanItemState> = {};
+  (plan.items ?? []).forEach((it, index) => {
+    items[index] = { index, state: it.state ?? null, generation_id: it.generation_id ?? null };
+  });
+  return { ...m, progress: { observed: null, planStatus: plan.status, items } };
+}
 
 /** 사건 하나를 대화에 반영한다(순수). text_delta 는 열린 글 덩어리에 붙이고, text 는 그 덩어리를 최종본으로 바꾸고 닫는다(다음 조각은 새 덩어리). */
 export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent, turnId: string): AgentMessage[] {
@@ -70,6 +127,8 @@ export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent, tur
       if (at >= 0) return messages.map((m, i) => (i === at && m.kind === "plan" ? { ...m, plan: event.plan } : m));
       return [...messages, { kind: "plan", id, plan: event.plan }];
     }
+    case "plan_progress":
+      return messages.map((m) => (m.kind === "plan" && m.plan.plan_id === event.plan_id ? applyPlanSnapshot(m, event) : m));
     case "state":
       return event.reason ? [...messages, { kind: "error", id, message: event.reason }] : messages;
     case "error":
@@ -104,7 +163,7 @@ const remember = (id: string | null) => saveJSON(STORAGE_KEYS.agentPanelConversa
 //  shortcut: 페이지를 새로 고치면 사라진다 — 새로 고침 뒤 복구가 필요해지면 sessionStorage 로 옮긴다
 let pendingSend: { account: string; sig: string; key: string } | null = null;
 
-export function useAgentChat(context: AgentContext) {
+export function useAgentChat(context: AgentContext | Record<string, never>) { // 빈 값 = '지금 화면' 칩을 뺐다
   const [session, setSession] = useState<AgentSession | null>(null);
   const [choice, setChoice] = useState<AgentChoice | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -202,7 +261,7 @@ export function useAgentChat(context: AgentContext) {
         rebuilt = [...rebuilt, { kind: "user", id: `${t.id}:user`, text: t.text }];
         rebuilt = t.events.reduce((acc, ev) => applyAgentEvent(acc, ev, t.id), rebuilt);
       }
-      setMessages(rebuilt);
+      setMessages(r.plans ? restorePlans(rebuilt, r.plans) : rebuilt);
       setConversationId(id);
       setTitle(r.conversation.title);
       setChoice({ engine: r.conversation.engine, model: r.conversation.model, effort: r.conversation.effort });
@@ -410,8 +469,14 @@ export function useAgentChat(context: AgentContext) {
     }
   }, [turn, fail]);
 
-  const setExec = (planId: string, exec: Extract<AgentMessage, { kind: "plan" }>["exec"], plan?: AgentPlan) =>
-    setMessages((list) => list.map((m) => (m.kind === "plan" && m.plan.plan_id === planId ? { ...m, exec, plan: plan ?? m.plan } : m)));
+  // 실행 응답은 계획(제목·프롬프트)을 바꾸지 않는다 — 진행은 스냅샷 규칙으로만(늦은 응답이 새 상태를 못 되돌림, 설계 A2-3)
+  const setExec = (planId: string, exec: PlanMessage["exec"], response?: AgentPlan & { snapshot?: AgentPlanSnapshot }) =>
+    setMessages((list) => list.map((m) => {
+      if (m.kind !== "plan" || m.plan.plan_id !== planId) return m;
+      const next = { ...m, exec };
+      if (!response) return next;
+      return response.snapshot ? applyPlanSnapshot(next, response.snapshot) : fillPlanProgress(next, response);
+    }));
 
   // 계획 카드가 새로 보이면 견적을 한 번 묻는다(무료 조회). 실패해도 카드·실행은 그대로 — '확인하지 못했어요'로 보인다.
   useEffect(() => {
@@ -439,12 +504,11 @@ export function useAgentChat(context: AgentContext) {
     try {
       const plan = await agentChatApi.executePlan(planId);
       if (stale()) return;
-      const merged = { ...plan, plan_id: plan.plan_id || planId };
       // 200 이어도 접수됐다는 뜻은 아니다 — submitted 만 '보냈어요', attention(거절·접수 불명확)은 따로 알린다
-      if (plan.status === "submitted") setExec(planId, { state: "done" }, merged);
+      if (plan.status === "submitted") setExec(planId, { state: "done" }, plan);
       else setExec(planId, { state: "failed", message: plan.status === "attention"
         ? "일부 항목을 접수하지 못했거나 접수 여부를 확인하지 못했어요 — 다시 누르지 말고 라이브러리에서 확인하세요"
-        : `실행 상태를 확인하지 못했어요(${plan.status ?? "알 수 없음"}) — 라이브러리에서 확인하세요` }, merged);
+        : `실행 상태를 확인하지 못했어요(${plan.status ?? "알 수 없음"}) — 라이브러리에서 확인하세요` }, plan);
     } catch (e) {
       if (stale()) return;
       executing.current.delete(planId);

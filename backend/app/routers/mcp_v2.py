@@ -8,11 +8,13 @@ import hmac
 import importlib.util
 import io
 import json
+import logging
 import math
 import re
 import secrets
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +45,10 @@ _registration_lock = threading.Lock()
 _result_wait_slots = threading.BoundedSemaphore(8)
 _RESULT_POLL_SECONDS = 2.0
 _ESTIMATE_BUDGET_SECONDS = 20.0
+SNAPSHOT_SECONDS = 10.0  # 칸 계획 스냅샷 읽기 예산(설계 A2-3) — 시작한 발행은 별개로 끝까지
+_log = logging.getLogger(__name__)
+_observed_lock = threading.Lock()
+_observed_last = 0
 
 
 def _required_hub_id():
@@ -1135,10 +1141,14 @@ async def _selected_results(ctx, args, *, preview=False):
                         raise
                     result = {"plan_id": str(args.plan_id), "item_index": index, "media": None,
                               "error": {"code": "not_found" if exc.status_code == 404 else "request_failed"}}
+                    if exc.status_code == 404:  # 끝이되 '결과 없음(조회 불가)' — 완료·실패와 구분
+                        result["generation_status"] = "missing"
                 items.append(result)
             # Never return partial data after the session or workspace permission changed.
             await _authorized_plan(ctx, str(args.plan_id))
-            pending = any(_result_pending(item) for item in items if "error" not in item)
+            # 조회가 잠깐 실패한 항목(request_failed)은 끝이 아니다 — 남은 시간까지 다시 본다(설계 A2-4, 모든 연결 공통)
+            pending = any(_result_pending(item) if "error" not in item else item["error"]["code"] == "request_failed"
+                          for item in items)
             if not pending or loop.time() >= deadline:
                 return {"plan_id": str(args.plan_id), "items": items,
                         "all_done": all(item.get("presentation", {}).get("stage") == "completed" for item in items),
@@ -1149,6 +1159,63 @@ async def _selected_results(ctx, args, *, preview=False):
     finally:
         if wait:
             _result_wait_slots.release()
+
+
+def _observed() -> str:
+    """읽기 직전에 매기는 엄격히 늘어나는 번호(10진 글자 — JS 정수 정밀도 밖, 화면은 BigInt 로 비교). 설계 A2-3."""
+    global _observed_last
+    with _observed_lock:
+        _observed_last = max(time.time_ns(), _observed_last + 1)
+        return str(_observed_last)
+
+
+async def plan_snapshot(ctx, plan_id):
+    """칸 표시용 계획 스냅샷 — 항목 상태 + 접수된 항목의 생성 상태(404 = missing, 일시 오류 = 필드 생략).
+    _result_once 에 계획을 넘겨 항목마다의 공간 확인을 건너뛰므로 돌려주기 전에 권한을 다시 본다(묶음 대기와 같게)."""
+    observed = _observed()
+    plan = await _authorized_plan(ctx, plan_id)
+    items = []
+    for index, item in enumerate(plan["items"]):
+        row = {"index": index, "state": item.get("state"), "generation_id": item.get("generation_id")}
+        if item.get("state") == "submitted" and item.get("generation_id"):
+            try:
+                result = await _result_once(ctx, ResultIn(plan_id=plan_id, item_index=index), preview=False, plan=plan)
+                row["generation_status"] = result.get("generation_status")
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    row["generation_status"] = "missing"
+                elif exc.status_code not in (502, 503, 504):
+                    raise
+        items.append(row)
+    await _authorized_plan(ctx, plan_id)
+    return {"plan_id": plan_id, "plan_status": plan["status"], "observed_at": observed, "items": items}
+
+
+async def panel_snapshot(ctx, plan_id, turn=None):
+    """칸 화면에 돌려줄 스냅샷 — 그 차례가 돌면 진행 잠금 안에서 읽는다. 실패·시간 초과면 None(제출 결과를 바꾸지 않는다)."""
+    try:
+        if turn is None:
+            return await asyncio.wait_for(plan_snapshot(ctx, plan_id), SNAPSHOT_SECONDS)
+        async with turn.progress_lock:
+            return await asyncio.wait_for(plan_snapshot(ctx, plan_id), SNAPSHOT_SECONDS)
+    except Exception:  # noqa: BLE001 - 표시용 — 무엇이 실패해도 원래 응답은 그대로 간다
+        _log.warning("panel plan snapshot failed: %s", plan_id, exc_info=True)
+        return None
+
+
+async def _panel_progress(ctx, turn, plan_id):
+    """칸 연결의 실행·기다림 뒤 — 그 고정한 차례에 스냅샷 사건. 읽기+발행을 진행 잠금으로 한 번에 하나씩(사건 순서 = 읽은 순서)."""
+    if turn is None:
+        return
+    try:
+        async with turn.progress_lock:
+            if turn.stopped() or turn.done.is_set():
+                return
+            snapshot = await asyncio.wait_for(plan_snapshot(ctx, plan_id), SNAPSHOT_SECONDS)
+            # 요청이 취소돼도 시작한 발행이 끝날 때까지 잠금을 쥔다 — 다음 스냅샷이 먼저 나가지 않게
+            await to_thread_non_abandon(agent_chat.service.emit_progress, turn, snapshot)
+    except Exception:  # noqa: BLE001 - 표시 실패는 제출·대기 응답을 바꾸지 않는다
+        _log.warning("panel plan progress skipped: %s", plan_id, exc_info=True)
 
 
 async def _estimate_plan(ctx, plan_id):
@@ -1183,8 +1250,16 @@ async def _execute(ctx, plan_id):
     return await submit_plan(ctx, plan_id)
 
 
-async def submit_plan(ctx, plan_id):
-    """실행권 검사 아래의 공통 제출 — MCP 실행과 Ask Agent 칸의 [실행] 단추(사람이 누름)가 같이 쓴다.
+def _claim(gate, client, plan_id, workspace):
+    """작업 스레드 안 — 문(gate)이 있으면 그 잠금을 쥔 채 확인하고 동기 claim_plan 전체를 끝낸 뒤 놓는다(설계 A2-2c)."""
+    if gate is None:
+        return store.claim_plan(client, plan_id, workspace)
+    with gate():
+        return store.claim_plan(client, plan_id, workspace)
+
+
+async def submit_plan(ctx, plan_id, gate=None):
+    """실행권 검사 아래의 공통 제출 — MCP 실행·MV Agent 칸의 [실행] 단추(사람)·칸 연결의 AI 실행(gate = 칸 실행 문)이 같이 쓴다.
     계획 원자 선점(claim_plan)·항목별 중복 방지 키·취소와 불명확 접수 복구가 그대로 따라온다(떼어 쓰지 말 것)."""
     plan = await _authorized_plan(ctx, plan_id)
     if plan["status"] != "planned":
@@ -1192,9 +1267,11 @@ async def submit_plan(ctx, plan_id):
     ws = await _validate_items(ctx, plan["items"], plan["workspace"])
     # 실행권 선점도 끝까지 기다린다 — 선점 중 응답이 끊겨 취소되면, 실제로 선점했을 때만 '주의'로 남긴다(아무 항목도 안 보냈다).
     #  그냥 두면 큐 0·항목 pending·계획 executing 으로 멈춰 같은 프로세스에선 다시 실행도 못 했다(Codex 리뷰 P2). 경쟁 실행의 계획은 건드리지 않는다.
-    claim = asyncio.ensure_future(asyncio.to_thread(store.claim_plan, ctx.client, plan_id, plan["workspace"]))
+    claim = asyncio.ensure_future(asyncio.to_thread(_claim, gate, ctx.client, plan_id, plan["workspace"]))
     try:
         claimed = await asyncio.shield(claim)
+    except agent_chat.TurnGone as exc:  # 칸 차례가 선점보다 먼저 멈췄다 — 아무것도 안 냈다
+        raise HTTPException(409, "MV Agent 차례가 멈췄거나 끝나 실행하지 않았습니다.") from exc
     except asyncio.CancelledError:
         # 선점 스레드의 예외(DB 오류 등)가 원래 취소를 덮지 않게 함께 삼키고 끝난 상태만 본다(Codex 재리뷰 P2) — 취소는 아래 raise 로 그대로
         while not claim.done():
@@ -1254,8 +1331,22 @@ _LIBRARY_READ_METHODS = frozenset({
 })
 
 
-# Ask Agent 칸 연결이 허브에서 부를 수 있는 동작 — 어댑터의 패널 모드·CLI 허용 목록과 별개로 허브도 막는다(실행은 can_execute=0 으로도 막힘).
-_PANEL_METHODS = frozenset({"read_context", "prepare_generation_plan", "estimate_plan", "get_plan"})
+# MV Agent 칸 연결이 허브에서 부를 수 있는 동작 — 어댑터의 패널 모드·CLI 허용 목록과 별개로 허브도 막는다.
+# 실행은 can_execute=0 그대로 두고 칸 실행 문(_panel_execute)으로만 — get_result·show_results·get_generation 은 그림을 CLI 로 보내 뺀다.
+_PANEL_METHODS = frozenset({"read_context", "prepare_generation_plan", "estimate_plan", "get_plan",
+                            "execute_generation_plan", "wait_results", "add_to_canvas"})
+
+
+async def _panel_execute(ctx, plan_id, turn):
+    """칸 연결의 AI 실행(설계 A2-2) — 요청 때 고정한 차례·이 대화에서 만든 계획·그 차례 잠금 안의 선점으로만 submit_plan."""
+    if turn is None:
+        raise HTTPException(409, "MV Agent 칸에 진행 중인 차례가 없어 실행하지 않았습니다.")
+    if not await asyncio.to_thread(agent_chat.service.owns_plan, turn, ctx.client["id"], plan_id):
+        raise HTTPException(404, "이 대화에서 만든 계획이 아닙니다.")
+    client_id = ctx.client["id"]
+    plan = await submit_plan(ctx, plan_id, gate=lambda: agent_chat.service.claim_gate(turn, client_id))
+    await _panel_progress(ctx, turn, plan_id)
+    return plan
 
 
 @router.post("/client/action")
@@ -1265,7 +1356,9 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
     try:
         panel = ctx.client.get("name") == PANEL_CLIENT
         if panel and body.method not in _PANEL_METHODS:
-            raise HTTPException(403, "Ask Agent 칸 연결은 이 도구를 쓸 수 없습니다.")
+            raise HTTPException(403, "MV Agent 칸 연결은 이 도구를 쓸 수 없습니다.")
+        # 요청이 들어온 때의 차례를 고정한다 — 같은 대화의 새 차례 권한을 빌리거나 새 차례에 옛 결과를 남기지 않게(설계 A2-2a)
+        turn = agent_chat.service.turn_for_client(ctx.client["id"]) if panel else None
         if body.method == "read_context":
             return await _read(ctx, ReadIn.model_validate(body.args))
         if body.method == "prepare_generation_plan":
@@ -1283,7 +1376,11 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
         if body.method == "get_generation":
             return await _result_once(ctx, GenerationIn.model_validate(body.args))
         if body.method == "wait_results":
-            return await _selected_results(ctx, WaitResultsIn.model_validate(body.args))
+            args = WaitResultsIn.model_validate(body.args)
+            result = await _selected_results(ctx, args)
+            if panel:
+                await _panel_progress(ctx, turn, str(args.plan_id))
+            return result
         if body.method == "show_results":
             return await _selected_results(ctx, ShowResultsIn.model_validate(body.args), preview=True)
         if body.method == "estimate_plan":
@@ -1304,6 +1401,8 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
                 raise HTTPException(404, "현재 워크스페이스의 캔버스를 찾을 수 없습니다.") from exc
         data = PlanId.model_validate(body.args)
         if body.method == "execute_generation_plan":
+            if panel:
+                return await _panel_execute(ctx, str(data.plan_id), turn)
             return await _execute(ctx, str(data.plan_id))
         if body.method in ("get_plan", "request_execution"):
             return _public_plan(await _authorized_plan(ctx, str(data.plan_id)))

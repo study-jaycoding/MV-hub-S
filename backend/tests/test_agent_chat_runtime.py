@@ -542,3 +542,164 @@ def test_assign_failure_keeps_outside_process_until_it_is_gone(monkeypatch):
     assert not job.reap(0.5) and job.proc.poll() is None and not job.closed
     monkeypatch.setattr(subprocess.Popen, "kill", real_kill)
     assert job.reap(5.0) and job.proc.poll() is not None and job.closed
+
+
+# ── 요리 2-A: 칸 실행 문·진행 스냅샷(앱 동작 도구 설계 A2) ──
+def bare_turn(service, turn_id="t1", client_id="c1", path=Path("unused.db")):
+    """CLI 없이 실행 객체만 — 문·잠금 순서 시험용."""
+    runtime = chat._Runtime(chat.Identity("a" * 32, "hub.db", "jay@example.test"), path, turn_id, "conv", client_id,
+                            "claude", [], [], b"", False, lambda: None)
+    with service._lock:
+        service._runtimes[turn_id] = runtime
+        service._by_client[client_id] = turn_id
+    return runtime
+
+
+def gate_open(service, runtime, client_id="c1"):
+    try:
+        with service.claim_gate(runtime, client_id):
+            return True
+    except chat.TurnGone:
+        return False
+
+
+@pytest.mark.parametrize("flag,value", [("cancelled", True), ("timed_out", True), ("identity_lost", True), ("overflow", True),
+                                        ("watch_failed", True), ("violation", {"what": "tool"})])
+def test_claim_gate_refuses_after_any_stop(flag, value):
+    service = chat.AgentChat()
+    runtime = bare_turn(service)
+    assert gate_open(service, runtime)
+    chat._stop(runtime, flag, value)
+    assert not gate_open(service, runtime) and service.turn_for_client("c1") is None
+
+
+def test_claim_gate_refuses_finished_or_replaced_turn():
+    """요청이 잡은 옛 차례 — 끝났거나 같은 대화의 새 차례로 바뀌면 문이 닫힌다(새 차례 권한을 빌리지 않음)."""
+    service = chat.AgentChat()
+    old = bare_turn(service, "t1")
+    new = bare_turn(service, "t2")  # 같은 연결 c1 의 새 차례
+    assert not gate_open(service, old) and gate_open(service, new)
+    new.done.set()
+    assert not gate_open(service, new)
+
+
+@pytest.mark.parametrize("stopper", ["timeout", "identity", "cancel"])
+def test_stop_waits_for_claim_already_inside_gate(stopper, monkeypatch):
+    """선점이 먼저 문 안에 있으면 멈춤 표시는 그 선점이 끝날 때까지 기다린다 — 선후가 한 구간에서 정해진다."""
+    service = chat.AgentChat()
+    runtime = bare_turn(service)
+    monkeypatch.setattr(chat.store, "set_status", lambda *a, **k: True)
+    monkeypatch.setattr(chat.store, "append_event", lambda *a, **k: None)
+    monkeypatch.setattr(chat.store, "get_turn", lambda *a, **k: {"status": "cancelling"})
+    inside, release, order = threading.Event(), threading.Event(), []
+
+    def claim():
+        with service.claim_gate(runtime, "c1"):
+            inside.set()
+            release.wait(5)
+            order.append("claimed")
+
+    def stop():
+        if stopper == "timeout":
+            service._timeout(runtime)
+        elif stopper == "identity":
+            runtime.still_current = lambda: (_ for _ in ()).throw(RuntimeError("account changed"))
+            service._identity_ok(runtime)
+        else:
+            service.cancel(runtime.identity, runtime.turn_id)
+        order.append("stopped")
+
+    claimer = threading.Thread(target=claim)
+    claimer.start()
+    assert inside.wait(5)
+    stopper_thread = threading.Thread(target=stop)
+    stopper_thread.start()
+    stopper_thread.join(0.3)
+    assert stopper_thread.is_alive() and order == []  # 문 안의 선점이 끝나기 전엔 멈춤 표시가 못 들어간다
+    release.set()
+    claimer.join(5)
+    stopper_thread.join(5)
+    assert order == ["claimed", "stopped"] and runtime.stopped()
+    assert not gate_open(service, runtime)
+
+
+def test_panel_progress_reads_and_emits_one_at_a_time(monkeypatch):
+    """같은 차례에 기다림 두 개가 겹쳐도 스냅샷 읽기+발행이 한 번에 하나 — 사건 순서 = 읽은 순서."""
+    from app.routers import mcp_v2
+
+    service = chat.AgentChat()
+    runtime = bare_turn(service)
+    reads, emitted = [], []
+
+    async def snapshot(ctx, plan_id):
+        reads.append(("start", plan_id))
+        await asyncio.sleep(0.05)
+        reads.append(("end", plan_id))
+        return {"plan_id": plan_id, "observed_at": mcp_v2._observed()}
+
+    monkeypatch.setattr(mcp_v2, "plan_snapshot", snapshot)
+    monkeypatch.setattr(mcp_v2.agent_chat, "service", type("S", (), {"emit_progress": staticmethod(
+        lambda turn, snap: emitted.append(snap["observed_at"]) or True)})())
+
+    async def both():
+        await asyncio.gather(mcp_v2._panel_progress(None, runtime, "p1"), mcp_v2._panel_progress(None, runtime, "p2"))
+
+    asyncio.run(both())
+    assert [kind for kind, _ in reads] == ["start", "end", "start", "end"]
+    assert emitted == sorted(emitted, key=int) and len(emitted) == 2
+
+
+def test_panel_progress_keeps_lock_until_started_emit_finishes(monkeypatch):
+    """요청이 취소돼도 시작한 발행이 끝날 때까지 진행 잠금을 쥔다 — 다음 스냅샷이 먼저 나가지 않게."""
+    from app.routers import mcp_v2
+
+    service = chat.AgentChat()
+    runtime = bare_turn(service)
+    started, finish = threading.Event(), threading.Event()
+
+    async def snapshot(ctx, plan_id):
+        return {"plan_id": plan_id, "observed_at": mcp_v2._observed()}
+
+    def slow_emit(turn, snap):
+        started.set()
+        finish.wait(5)
+        return True
+
+    monkeypatch.setattr(mcp_v2, "plan_snapshot", snapshot)
+    monkeypatch.setattr(mcp_v2.agent_chat, "service", type("S", (), {"emit_progress": staticmethod(slow_emit)})())
+
+    async def scenario():
+        task = asyncio.create_task(mcp_v2._panel_progress(None, runtime, "p1"))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.1)
+        locked_while_emitting = runtime.progress_lock.locked()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return locked_while_emitting, runtime.progress_lock.locked()
+
+    held, after = asyncio.run(scenario())
+    assert held and not after
+
+
+def test_emit_progress_skips_finished_turn(tmp_path):
+    service = chat.AgentChat()
+    path = store.open_db(tmp_path / "chat.db")
+    conv = store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="c1",
+                                     mcp_entry={"command": "x", "args": []}, title="t")
+    turn, _ = store.claim_turn(path, conversation_id=conv["id"], idempotency_key=uuid4().hex, text="t", context={"tab": "my"})
+    runtime = bare_turn(service, turn["id"], path=path)
+    assert service.emit_progress(runtime, {"plan_id": "p", "observed_at": "1", "items": []})
+    runtime.done.set()
+    assert not service.emit_progress(runtime, {"plan_id": "p", "observed_at": "2", "items": []})
+    kinds = [event["kind"] for event in store.events_after(path, turn["id"], 0, limit=50)]
+    assert kinds == ["plan_progress"]
+
+
+def test_prompt_says_screen_was_removed_when_context_is_empty():
+    """입력칸 '지금 화면' 칩을 빼면 화면은 빈 context 를 보낸다 — 안내에 '어디인지 묻는다'(설계 A4)."""
+    removed = chat.build_prompt("여기에 생성해", {})
+    assert "사용자가 화면 정보를 뺐다" in removed and "어디인지" in removed
+    assert '"tab": "my"' in chat.build_prompt("여기에 생성해", {"tab": "my"})

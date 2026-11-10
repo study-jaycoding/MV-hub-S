@@ -922,6 +922,9 @@ export default function App() {
     useCanvasGenerationLinks({ authReady, scenes, canvasDocument, setGens });
   useCanvasComfyRuns({ authReady, authKey: libraryAuthKey, canvasDocument });
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
+  // MV Agent 계획 카드의 썸네일·상태 — 앱이 이미 읽은 카드에서 찾는다(새 조회 없음, 진행 소켓이 갱신)
+  const genById = useMemo(() => new Map(gens.map((g) => [g.id, g])), [gens]);
+  const findGeneration = useCallback((id: string) => genById.get(id), [genById]);
   // 목록에서 사라진 카드는 선택에서도 뺀다(조작 규칙 42). 선택은 id 집합이라, 다른 폴더로 담거나 다른 창에서 지우거나 자동 새로고침으로
   //  목록에서 빠진 카드가 그대로 남았다 — 남은 카드를 더 골라 지우면 보이지 않는 그 카드까지 지워졌다(삭제·복원·담기·색·d 는 선택 id 를
   //  그대로 쓴다). 숨김 필터로 가린 카드(Ctrl+A 가 고른 것)는 목록에 있으므로 남는다. 그리기 전에 맞춘다 — 낡은 선택으로 조작이 나갈 틈이 없게.
@@ -2302,6 +2305,8 @@ export default function App() {
           }}
           contextLabel={place ? `${t(tabLabel)} › ${place}` : t(tabLabel)}
           onClose={() => setAgentOpen(false)}
+          findGeneration={findGeneration}
+          onPreview={openPreview}
         />
       </Suspense>
     );
