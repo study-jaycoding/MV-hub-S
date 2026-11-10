@@ -2923,6 +2923,9 @@ export function SceneBoard({
     applyCardTags,
     applyCardAutoTags,
     applyCardWorkspace,
+    toggleRowSel, // 리스트 카드(memo)의 행 클릭·순서 끌기·@ 단추
+    startReorder,
+    addListAsReference,
   });
   // 다입력 카드(생성·comfy)로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로
   //  펼쳐 겹침 방지. comfy 도 ref(중앙)·text(아래) 레인 포트로 그려지므로 레인별 fan 이 포트와 맞아야 한다
@@ -3538,9 +3541,9 @@ export function SceneBoard({
                   caretPosRef={caretPosRef}
                   setEditTextId={setEditTextId}
                   setSelected={setSelected}
-                  setNodeText={setNodeText}
-                  flushPending={flushPending}
-                  onOutPortDown={onOutPortDown}
+                  setNodeText={cardFns.setNodeText}
+                  flushPending={cardFns.flushPending}
+                  onOutPortDown={cardFns.onOutPortDown}
                   onResizeDown={onResizeDown}
                 />
               ) : card.kind === "set" ? (
@@ -3566,12 +3569,12 @@ export function SceneBoard({
                   reorderFrom={reorderFrom}
                   cardWidth={widthOf(card)}
                   workspaceId={refWorkspaceId}
-                  toggleRowSel={toggleRowSel}
-                  startReorder={startReorder}
+                  toggleRowSel={cardFns.toggleRowSel}
+                  startReorder={cardFns.startReorder}
                   getNodePreview={getNodePreview}
                   setCardMenu={setCardMenu}
-                  addListAsReference={addListAsReference}
-                  onOutPortDown={onOutPortDown}
+                  addListAsReference={cardFns.addListAsReference}
+                  onOutPortDown={cardFns.onOutPortDown}
                   onResizeDown={onResizeDown}
                 />
               ) : card.kind === "view" ? (

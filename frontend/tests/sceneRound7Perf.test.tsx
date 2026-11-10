@@ -6,7 +6,8 @@
 //  R1-a  한 장만 끌어도 걸음마다 보드의 카드 컴포넌트가 전부 다시 그려졌다(412장 씬 실측: 컴포넌트 651개).
 //        원인은 둘이었다 — ① 카드 컴포넌트가 memo 가 아니었다 ② SceneBoard 가 걸음마다 새 함수·새 묶음 객체를 넘겼다.
 //        ① 다섯 종류(레퍼런스·머리글·모델·Set·생성)를 memo 로('카드 단위' 시험) ② 보드가 넘기는 함수의 정체성을 고정('보드' 시험).
-//        다른 카드의 위치로 순서를 정하는 카드(텍스트·리스트·뷰·렌더·입출력·Comfy)는 memo 가 아니다 — 다른 카드가 움직이면 다시 그린다.
+//        다른 카드의 위치로 순서를 정하는 카드 중 텍스트·리스트는 memo 다(2026-11-10 — 줌·이동·선택 때 안 그린다). 다른 카드가 움직이면
+//        cardsById 가 새 객체라 그대로 다시 그린다. 뷰·렌더·입출력·Comfy 는 memo 가 아니다.
 //        memo 의 위험은 '받은 값이 같아 안 그렸는데 화면은 달라져야 했던' 경우다 — 맨 아래 묶음이 길마다 본다.
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath, URL as NodeURL } from "node:url";
@@ -459,7 +460,8 @@ it("전부 고른 끌기는 걸음마다 다시 그리지 않고, 놓는 순간�
   };
   await commitsDuring(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA", ctrlKey: true, bubbles: true, cancelable: true })));
   await grab("a", 30, 30);
-  expect(await commitsDuring(() => dragTo(74, 30))).toEqual([3]); // 첫 걸음: '끄는 중' 상태가 켜진다
+  // 첫 걸음: '끄는 중' 상태가 켜지는 보드 커밋 한 번 — 카드 좌표는 그대로라 글 카드(memo)는 다시 그리지 않는다(2026-11-10, 전엔 [3])
+  expect(await commitsDuring(() => dragTo(74, 30))).toEqual([0]);
   expect(await commitsDuring(() => dragTo(118, 52))).toEqual([]); // 그 뒤의 걸음: 캔버스 층만 민다(커밋 없음)
   expect(await commitsDuring(() => dragTo(162, 74))).toEqual([]);
   // 놓는 순간: 좌표를 넣는 커밋 한 번. 전엔 그 뒤에 카드를 하나도 안 그리는 커밋이 한 번 더 있었다([3, 0]) — 씬 동기화 effect 가
@@ -545,6 +547,28 @@ it("선택과 '혼자 선택' — 머리글의 조절 단추, 생성 카드의 G
   expect(inCard("g1", ".linb-node")!.classList.contains("sel")).toBe(true);
   await press({ key: "Escape" });
   expect(inCard("g1", ".linb-node")!.classList.contains("sel")).toBe(false);
+});
+
+it("글·리스트 카드 — 받은 값이 그대로면 보드가 다시 그려져도·다른 카드를 골라도 다시 그리지 않고, 서버 판정·어셋 버전이 바뀌면 직접 다시 그린다", async () => {
+  const first = {
+    id: "S", name: "S", created_at: 0, groups: [],
+    cards: [ref("r1", 0), ref("r2", 220), { id: "t1", kind: "text", x: 660, y: 0, text: "글" }, { id: "l1", kind: "list", x: 880, y: 0 }],
+    edges: [{ id: "e1", from: "r1", to: "l1" }],
+  };
+  await act(async () => { root.render(<AppLike first={first} />); });
+  await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
+  expect(inCard("l1", ".scene-listthumb img")).not.toBeNull(); // 레퍼런스를 모은 리스트 — 대표 썸네일
+  const again = await renderedDuring(() => rerenderBoard()); // 보드만 다시(카드·연결·자료 그대로 — 줌 확정·이동과 같은 경우)
+  expect([again.TextCard, again.ListCard]).toEqual([undefined, undefined]);
+  const pick = await renderedDuring(() => click(boardCard("r2"))); // 선택은 두 카드가 받는 값이 아니다
+  expect(boardCard("r2").classList.contains("sel")).toBe(true);
+  expect([pick.TextCard, pick.ListCard]).toEqual([undefined, undefined]);
+  // 서버 판정이 도착했다(서버에 없음) — 보드가 다시 그려 주지 않아도 리스트가 빨간 빗금을 단다
+  stores.refStatus = "missing";
+  expect(await renderedDuring(() => stores.status.bump())).toMatchObject({ ListCard: 1 });
+  expect(inCard("l1", ".scene-listthumb-ph.off-server")).not.toBeNull();
+  // 어셋 원본이 바뀌어 버전이 올랐다 — 썸네일·알약 주소를 다시 만든다
+  expect(await renderedDuring(() => stores.assets.bump())).toMatchObject({ TextCard: 1, ListCard: 1 });
 });
 
 it("생성 진행과 결과 도착 — 진행 표시가 상태를 따라 바뀌고, 완료되면 결과 노드가 뜬다. 색·비활성이 바뀌면 노드가 따라 칠해진다", async () => {
