@@ -21,6 +21,7 @@ const CAMERA_SAVE_DELAY_MS = 400;
 const FRAME_TRANSITION_MS = 250;
 const FRAME_TRANSITION_CLEAR_MS = 300;
 const SETTLE_MS = 150; // 줌을 건너뛴 뒤 휠을 이만큼 쉬면 컬링을 한 번 정리한다
+const LOD_SHOW_DELAY_MS = 150; // 25% 를 넘게 확대한 뒤 배율이 이만큼 쉬면 작은 조각(포트·이름표…)을 다시 보인다 — 아래 applyTransform
 /** 보드 안에 뜨는 창의 바탕 — 모델·Comfy 설정·글·복구(`.scene-modelmodal-backdrop`) · 생성 결과(`.scene-varpop-backdrop`) · 타임라인 재생(`.vtl-backdrop`).
  *  창 위의 휠·끌어 놓기는 창의 것이다 — 뒤 보드가 받지 않는다(휠은 여기, 놓기는 useSceneClipboardDrop). 창이 늘면 여기에 더한다. */
 export const SCENE_WINDOW_SELECTOR = ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .vtl-backdrop";
@@ -101,6 +102,8 @@ export function useSceneViewport({
   const cullFrameRef = useRef<number | null>(null);
   const cameraSaveTimerRef = useRef<number | undefined>(undefined);
   const transitionTimerRef = useRef<number | undefined>(undefined);
+  const lodShowTimerRef = useRef<number | undefined>(undefined); // 작은 조각 다시 보이기 예약(위 LOD_SHOW_DELAY_MS)
+  const lodShowZoomRef = useRef(0); // 그 예약을 건 배율 — 같은 배율의 다시 그리기는 예약을 늘이지 않는다
   const incomingCameraRef = useRef(camera);
   incomingCameraRef.current = camera;
   const onCameraChangeRef = useRef(onCameraChange);
@@ -266,7 +269,22 @@ export function useSceneViewport({
     const board = scrollRef.current;
     if (board) {
       // 멀리서 볼 때 단순화 — React 가 쓰지 않는 속성이라 className 이 다시 그려져도 남는다.
-      board.toggleAttribute("data-lod-low", pct <= SCENE_LOD_PCT);
+      //  숨기기(25% 이하로 내려감)는 바로, 다시 보이기(25% 넘게 올라감)는 배율이 LOD_SHOW_DELAY_MS 쉰 뒤 한 번 — 확대 도중 경계를 넘자마자 카드 수백 장의
+      //  포트·이름표가 붙어 남은 확대 프레임마다 그만큼 더 칠했다(2026-11-10 격리 실측: 25% 넘는 확대 메인 −22%·33ms 초과 6 → 3).
+      //  축소는 바로 숨겨야 칠할 것이 준다(숨기기까지 미루면 축소가 +15% — 같은 실측).
+      const low = pct <= SCENE_LOD_PCT;
+      if (low || !board.hasAttribute("data-lod-low")) {
+        if (lodShowTimerRef.current !== undefined) clearTimeout(lodShowTimerRef.current);
+        lodShowTimerRef.current = undefined;
+        board.toggleAttribute("data-lod-low", low);
+      } else if (lodShowTimerRef.current === undefined || lodShowZoomRef.current !== current.z) {
+        if (lodShowTimerRef.current !== undefined) clearTimeout(lodShowTimerRef.current);
+        lodShowZoomRef.current = current.z;
+        lodShowTimerRef.current = window.setTimeout(() => {
+          lodShowTimerRef.current = undefined;
+          scrollRef.current?.toggleAttribute("data-lod-low", Math.round(zoomRef.current * 100) <= SCENE_LOD_PCT);
+        }, LOD_SHOW_DELAY_MS);
+      }
     }
     minimapUpdateRef.current?.();
     scheduleCull();
@@ -547,6 +565,10 @@ export function useSceneViewport({
     liveViewRef.current = null;
     panEndRef.current = false;
     cancelSettle();
+    // 씬이 바뀌면 작은 조각 표시는 새 씬의 배율로 바로 정한다(다시 보이기 예약을 남기지 않는다)
+    if (lodShowTimerRef.current !== undefined) clearTimeout(lodShowTimerRef.current);
+    lodShowTimerRef.current = undefined;
+    scrollRef.current?.removeAttribute("data-lod-low");
     applyTransform();
   }, [sceneId, applyTransform, cancelSettle, replaceCamera]);
 
@@ -556,6 +578,7 @@ export function useSceneViewport({
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
       if (cullFrameRef.current !== null) cancelAnimationFrame(cullFrameRef.current);
       if (settleTimerRef.current !== undefined) clearTimeout(settleTimerRef.current);
+      if (lodShowTimerRef.current !== undefined) clearTimeout(lodShowTimerRef.current);
     },
     [],
   );
