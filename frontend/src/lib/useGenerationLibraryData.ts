@@ -48,6 +48,8 @@ export interface LibraryOwner {
 export const GENERATION_TAB_CACHE_FRESH_MS = 15_000;
 const NO_GENS: Generation[] = []; // 탭 전환 렌더의 빈 목록 — 렌더마다 새 배열이면 쓰는 쪽의 effect 가 매번 다시 돈다
 const LOCATED_VIEW = "located"; // shownSigRef 의 '위치 주입 목록' 표시 — sig(JSON 배열 글)와 겹치지 않는다
+// 같은 목록을 다시 받을 때 한 번에 받는 최대 행 수 — 더 깊이 내려간 목록은 여기까지 남는다(서버 상한 2000, 공유 탭 200행 ≈ 6.5MB 라 낮게).
+const RELOAD_MAX_ROWS = 1000;
 
 type GenerationTabCacheEntry = {
   gens: Generation[];
@@ -120,7 +122,7 @@ export function useGenerationLibraryData({
   // Resolve의 오래된 대상은 페이지 밖에서도 보이지만, 다음 페이지 커서는 그 대상을 따라가지 않는다.
   const pageCursorRef = useRef<GenCursor | null>(null);
   // 휴지통은 offset 방식이다. 공간 필터로 숨긴 행도 소비한 원본 건수에 포함한다.
-  const trashOffsetRef = useRef(0);
+  const trashOffsetRef = useRef(0); // 받은 서버 원문 행 수 — 휴지통은 다음 쪽 offset, 일반 목록은 같은 목록을 다시 받을 때의 행 수
   const locatedRef = useRef<{ tab: "my" | "team"; location: GenerationLocation } | null>(null);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
@@ -222,6 +224,10 @@ export function useGenerationLibraryData({
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   // ★줄은 둘이다(2026-10-07): 아래 셋은 **목록 줄** — 한 실행의 목록 구간(첫 쪽 + 위치 확인)이 끝날 때까지만 잡는다.
   const inflightRef = useRef<Promise<void> | null>(null);
+  // 새로고침 목록이 오는 동안 미룬 더 받기 — 그때의 조회(sig). 새로고침이 같은 조회를 적용했고 다음 쪽이 있을 때만(moreReadyRef) 줄이 끝난 뒤 이어 받는다.
+  const moreWantedRef = useRef<string | null>(null);
+  const moreReadyRef = useRef<string | null>(null);
+  const loadMoreRef = useRef<() => void>(() => {});
   const pendingArgsRef = useRef<{ silent: boolean; light: boolean; intent: LibraryIntent; retirementCheck: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
   const recheckRetiredRef = useRef<() => void>(() => {});
@@ -570,10 +576,15 @@ export function useGenerationLibraryData({
       //    앞 묶음이 떠 있으면 그 뒤에 선다(이 실행의 목록은 그것을 기다리지 않는다).
       const keepPainted = colorLedger.stamp(); // 출발 시점을 찍는다 — 이 뒤에 칠한 색은 아래 응답이 덮지 못한다
       const located = locatedRef.current;
+      // 같은 목록을 다시 받으면 이미 받은 만큼(원문 행 수를 쪽 단위로 올림) 한 번에 받는다 — 첫 쪽만 받으면 깊이 내려간 목록이 200장으로
+      //  접혀 화면이 위로 튀고 다시 받으며 끌려 내려갔다(docs/status/격자스크롤_2026-11-10.md). 받은 범위 전체가 서버 값이라 뒤쪽이 낡거나 빠지지 않는다.
+      //  위치 주입(화면·상태)·다른 조회·빈 목록·사본/컷 뒤면 전처럼 첫 쪽만.
+      const sameList = shownSigRef.current === sig && !located && !staleListRef.current && asideRef.current !== tab;
+      const limit = sameList ? Math.min(RELOAD_MAX_ROWS, Math.max(GEN_PAGE, Math.ceil(trashOffsetRef.current / GEN_PAGE) * GEN_PAGE)) : GEN_PAGE;
       // 共有解除・削除・移動は毎回の通常更新と一緒に再確認。古い注入カードを復活させない。
       const fetchPage = () => Promise.all([
-        timedLibraryRequest((signal) => trashMode ? api.listTrash(query.search, 0, GEN_PAGE, signal)
-          : api.listGenerations(query, null, GEN_PAGE, { signal })),
+        timedLibraryRequest((signal) => trashMode ? api.listTrash(query.search, 0, limit, signal)
+          : api.listGenerations(query, null, limit, { signal })),
         located && isLocatedQuery(query, located.tab, located.location)
           ? timedLibraryRequest((signal) => api.locateGenerations({
               tab: located.tab, gen_ids: located.location.focus_ids,
@@ -607,7 +618,12 @@ export function useGenerationLibraryData({
         }
         const last = page[page.length - 1];
         pageCursorRef.current = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
-        trashOffsetRef.current = trashMode ? page.length : 0;
+        trashOffsetRef.current = page.length;
+        // 미룬 더 받기 — 같은 조회를 적용했고 이 응답에 다음 쪽이 있을 때만 줄이 끝난 뒤 이어 받는다(다른 조회·다음 쪽 없음이면 버린다).
+        //  줄에 다음 새로고침이 이어지면 앞 실행이 세운 표시를 같은 조회일 때만 넘겨받는다.
+        const askedMore = moreWantedRef.current ?? moreReadyRef.current;
+        moreWantedRef.current = null;
+        moreReadyRef.current = askedMore === sig && page.length >= limit ? sig : null;
         let g = stored.filter((item) => matchesWorkspaceFilter(item, query));
         if (located && located === locatedRef.current && isLocatedQuery(query, located.tab, located.location)) {
           const valid = checked && isLocatedQuery(query, located.tab, checked)
@@ -624,7 +640,7 @@ export function useGenerationLibraryData({
         g = keepPainted(g); // 화면·탭 캐시 둘 다 같은 값을 쓴다
         setGens((prev) => reconcileArrayState(prev, g));
         shownSigRef.current = sig;
-        setHasMore(page.length >= GEN_PAGE);
+        setHasMore(page.length >= limit);
         loadErrorRef.current = null; // 다시 그리기 전에 끝나는 다음 실패도 '새 실패'로 알린다(Codex 검토)
         setLoadError(null);
         setStaleList(false); // 새 첫 쪽이 들어왔다 — 사본 구간 끝(내용이 사본과 같아도 푼다)
@@ -633,7 +649,7 @@ export function useGenerationLibraryData({
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = {
           gens: g,
-          hasMore: page.length >= GEN_PAGE,
+          hasMore: page.length >= limit,
           cursor: pageCursorRef.current,
           trashOffset: trashOffsetRef.current,
           sig,
@@ -642,6 +658,10 @@ export function useGenerationLibraryData({
         // 이 목록 요청을 시작하기 전에 성공한 내 변경 id들은 이제 화면 데이터에 포함됐다.
         finishSync(true);
       } catch (e) {
+        if (seq === reloadSeqRef.current) {
+          moreWantedRef.current = null; // 실패·멈춤 — 미룬 더 받기는 버린다(치운 목록·커서 null 로 받지 않게)
+          moreReadyRef.current = null;
+        }
         if (e instanceof ApiPausedError) {
           // 다른 탭 로그아웃으로 멈췄다(4B) — 실패가 아니다. 띠가 이미 알리니 목록·실패 표시는 그대로 두고, 사람이 누른 다시 받기만 멈춤을 알린다(64회차 실측)
           if (!silent && seq === reloadSeqRef.current) flash(API_PAUSED_MESSAGE);
@@ -718,6 +738,11 @@ export function useGenerationLibraryData({
         } else {
           // 체인 종료 — 무효화된(seq 불일치) non-silent run 이 남긴 스피너를 확실히 내린다(silent 실행이 이어받은 것 포함).
           setLoading(false);
+          // 미룬 더 받기 — 지금 조회의 목록을 적용했고 다음 쪽이 있을 때만 이어 받는다(그사이 탭·공간이 바뀌었으면 버린다)
+          const readyMore = moreReadyRef.current;
+          moreReadyRef.current = null;
+          const nowSig = JSON.stringify([!!filtersRef.current.deleted_only, listQuery()]);
+          if (readyMore !== null && readyMore === nowSig && shownSigRef.current === nowSig) loadMoreRef.current();
         }
       };
       const p = runReload(silent, light, intent, handOver, retirementCheck).finally(handOver);
@@ -850,6 +875,11 @@ export function useGenerationLibraryData({
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !authReadyRef.current) return;
+    // 새로고침 목록이 오는 중 — 지금 붙이면 출발 때 길이로 받은 그 목록이 덮어 줄며 튄다. 조회를 적어 두고 돌아간다(runReload·handOver 가 이어 받는다).
+    if (inflightRef.current) {
+      moreWantedRef.current = JSON.stringify([!!filtersRef.current.deleted_only, listQuery()]);
+      return;
+    }
     if (staleListRef.current) return; // 사본을 보이는 중 — 커서가 없다(새 첫 쪽이 온 뒤에 이어 받는다)
     // 걸러 보는 컷 화면이 주인이거나, 주인을 막 되찾아 이 조회의 새 첫 쪽을 아직 적용하지 않았다 — 옛 커서로 더 받지 않는다(Codex FE-02)
     if (asideRef.current === filtersRef.current.tab || cutOwnerNow()) return;
@@ -885,7 +915,7 @@ export function useGenerationLibraryData({
       }
       // 같은 seq 안에서도 첫 쪽이 먼저 적용되면 옛 페이지 뒤를 이어 붙이지 않는다.
       if (pageCursorRef.current !== cursor || trashOffsetRef.current !== offset) return;
-      if (trashMode) trashOffsetRef.current += batch.length;
+      trashOffsetRef.current += batch.length; // 휴지통은 다음 offset, 일반 목록은 다시 받을 행 수
       const last = batch[batch.length - 1];
       if (last) pageCursorRef.current = { ts: last.sort_ts ?? 0, id: last.id };
       const visibleBatch = stored.filter((item) => matchesWorkspaceFilter(item, query));
@@ -914,6 +944,7 @@ export function useGenerationLibraryData({
       setLoadingMore(false);
     }
   }, []);
+  loadMoreRef.current = () => void loadMore();
 
   const listBehind = filters.tab !== "compose" &&
     (tabCacheRef.current[filters.tab]?.sig !== JSON.stringify([!!filters.deleted_only, genQuery]) || asideTab === filters.tab);

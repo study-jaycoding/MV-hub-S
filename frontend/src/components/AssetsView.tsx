@@ -1224,6 +1224,7 @@ export function AssetsView({ onInfo, onPreview, writeContext = null }: Props) {
                 type: commentNode.type, title: commentNode.name, onOpen: () => openPreview(commentNode),
                 videoUrl: commentNode.type === "video" ? assetFileUrl(project, commentPath) : undefined,
               } : null}
+              pipId="asset"
               renderExtra={(c) => (
                 <CommentDrawingStrip target={{ kind: "asset", project, path: commentPath }} comment={c}
                   bg={commentKind === "image" ? assetThumbUrl(project, commentPath, 512, commentNode?.version) : null}

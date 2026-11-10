@@ -988,7 +988,8 @@ it("끄는 카드의 표식(data-layer-move)에는 캔버스 층과 같은 값 0
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((match) => match[1].includes("[data-layer-move]"));
   expect(rules.length).toBe(1); // 표식을 고르는 규칙은 하나뿐이다 — 카드의 자손을 고르는 규칙을 따로 달지 않는다
   const [, selector, body] = rules[0];
-  expect(selector.split(",").map((part) => part.trim()).sort()).toEqual([".scene-canvas[data-layer-move]", ".scene-card[data-layer-move]"]);
+  // 점 격자·미니맵 상자 = 가운데 버튼 화면 이동(useSceneViewport.slidePan)이 끄는 동안 다는 표식
+  expect(selector.split(",").map((part) => part.trim()).sort()).toEqual([".scene-canvas[data-layer-move]", ".scene-card[data-layer-move]", ".scene-grid[data-layer-move]", ".scene-minimap-view[data-layer-move]"]);
   expect(body).toMatch(/animation:\s*scene-layer-noop\s/);
   expect(body).toMatch(/animation-composition:\s*add/);
   expect(body).not.toMatch(/infinite/);
