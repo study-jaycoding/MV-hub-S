@@ -26,6 +26,7 @@ from ..services import cli_bridge
 from ..services.release_update import local_write
 from ..services.update_activity import acknowledge_checkpoint
 from ..services.agent_signals import agent_signals
+from ..services.asset_paths import is_live_project_ref
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_generation_event
 from ..services.operational_logging import log_event
@@ -1559,8 +1560,12 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
         if cmd.kind == "create":
             payload["project_id"] = (cmd.data or {}).get("project_id")
             # 화면의 기대 지문은 검증된 DB 지문과 분리해 과금 직전 실제 바이트와 대조한다.
+            #  단 요청 경로와 실제 제출 경로가 둘 다 프로젝트 원본 이미지면 덮어쓴 최신 판을 쓴다(작업자가 실제 판을 기록).
             for supplied, submitted in zip((cmd.data or {}).get("references") or [], payload.get("references") or []):
-                if supplied.get("asset_content_id"):
+                if supplied.get("asset_content_id") and not (
+                    is_live_project_ref(supplied.get("file_path"), supplied.get("type"))
+                    and is_live_project_ref(submitted.get("file_path"), submitted.get("type"))
+                ):
                     submitted["expected_asset_content_id"] = supplied["asset_content_id"]
         else:
             generated = await _sync_io(repo.get_generation, gen_id)

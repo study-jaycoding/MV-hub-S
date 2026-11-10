@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { assetIdentityForProject, managedAssetUrl, promoteAssetReference, type AssetSyncReceipt } from "../src/shared/contracts/assets";
+import { assetIdentityForProject, isLiveProjectRef, managedAssetUrl, promoteAssetReference, type AssetSyncReceipt } from "../src/shared/contracts/assets";
+import { refsToChips } from "../src/lib/promptParts";
+import { buildRecipeScene } from "../src/lib/recipeScene";
+import type { Generation, Reference } from "../src/types";
 import { configureOperationContext, invalidateOperationContext } from "../src/app/operationContext";
 import { setAccountScope } from "../src/lib/accountScope";
 import { setApiPause } from "../src/lib/http";
@@ -202,4 +205,81 @@ it("같은 내용의 로컬→서버 전환은 실행 입력을 유지하고 다
   const replaced = promote(`sha256:${"b".repeat(64)}`);
   expect(isSceneGenerationInputSnapshotCurrent(snapshot, new Map(replaced.map(card => [card.id, card])), edges)).toBe(false);
   expect(prepareSceneComfyInputs("comfy", {}, replaced, edges, {}, {}).inputFingerprint).not.toBe(oldComfy.inputFingerprint);
+});
+
+// 2026-11-10 — 프로젝트 원본 이미지는 같은 이름 덮어쓰기를 따라간다(docs/status/레퍼런스덮어쓰기_최신추종_2026-11-10.md).
+const liveRef = (): SceneRef => ({ file_path: "asset:p|refs/hero.png", type: "image", name: "주인공",
+  asset_content_id: receipt.asset_content_id, target_project_id: "p", content_sha: sha, bytes: 10 });
+
+it("프로젝트 원본 이미지는 내용 ID·지문이 영수증과 같아도 보관본으로 바꾸지 않고, 관리 사본·영상은 지금처럼 바꾼다", () => {
+  const live = liveRef();
+  expect(isLiveProjectRef(live)).toBe(true);
+  expect(promoteAssetReference(live, receipt)).toBe(live);
+  const shaOnly = { ...live, asset_content_id: undefined };
+  expect(promoteAssetReference(shaOnly, receipt)).toBe(shaOnly);
+  for (const managed of ["asset:captures|a.png", "asset:imports|a.png", "asset:imp/cap|imports/a.png"]) {
+    const item = { ...live, file_path: managed };
+    expect(isLiveProjectRef(item)).toBe(false);
+    expect(promoteAssetReference(item, receipt).file_path).toBe(receipt.file_path);
+  }
+  const video = { ...live, type: "video" as const };
+  expect(isLiveProjectRef(video)).toBe(false);
+  expect(promoteAssetReference(video, receipt).file_path).toBe(receipt.file_path);
+  expect(isLiveProjectRef({ file_path: "/api/assets/file?project=p&path=refs%2Fhero.png", type: "image" })).toBe(false);
+  expect(isLiveProjectRef({ file_path: receipt.file_path, type: "image" })).toBe(false);
+  expect(isLiveProjectRef({ file_path: "asset:|refs/hero.png", type: "image" })).toBe(false);
+});
+
+it("씬·Undo 의 프로젝트 원본 이미지는 등록·조회·승격하지 않고, 같은 씬의 캡처는 지금처럼 보관본으로 바꾼다", async () => {
+  const before = scene("live");
+  const fresh = { ...liveRef(), file_path: "asset:p|refs/new.png", asset_content_id: undefined, content_sha: undefined, bytes: undefined };
+  before.cards[0].refs = [liveRef(), fresh, ref()];
+  saveScenes(null, [before]);
+  await settleSceneStoreForTest();
+  const snap = { cards: before.cards, edges: before.edges, groups: [] };
+  saveSceneHistory(before.id, { undo: [snap], redo: [], lastCommit: snap });
+  calls.register.mockResolvedValue({ asset_content_id: receipt.asset_content_id, sha256: sha, bytes: 10 });
+  expect(await syncSceneAssetReferences()).toBe(true);
+  const refs = listPersistedScenes(null)[0].cards[0].refs!;
+  expect(refs[0]).toMatchObject({ file_path: "asset:p|refs/hero.png", asset_content_id: receipt.asset_content_id });
+  expect(refs[0].server_location).toBeUndefined();
+  expect(refs[1].file_path).toBe("asset:p|refs/new.png");
+  expect(refs[1].asset_content_id).toBeUndefined();
+  expect(refs[2].file_path).toBe(receipt.file_path);
+  expect(calls.register).not.toHaveBeenCalled();
+  expect(calls.resolve).not.toHaveBeenCalled();
+  expect(loadSceneHistory(before.id)?.undo[0].cards[0].refs![0].file_path).toBe("asset:p|refs/hero.png");
+  expect(loadSceneHistory(before.id)?.undo[0].cards[0].refs![2].file_path).toBe(receipt.file_path);
+});
+
+it("원본 이미지 실행 입력은 경로로 식별하고, Comfy 입력 메타에는 원본의 옛 내용 ID 를 싣지 않는다", () => {
+  const live = scene("live-run");
+  live.cards[0].refs = [liveRef()];
+  live.cards[1].refs = [{ ...liveRef(), from_card: true }];
+  const comfy = { id: "comfy", kind: "comfy" as const, x: 200, y: 0, comfyCfg: { content: "workflow", paramValues: {} } };
+  const edges = [...live.edges, { id: "comfy-edge", from: "ref", to: "comfy" }];
+  const cards = [...live.cards, comfy];
+  const snapshot = captureSceneGenerationInputSnapshot(["gen"], [], new Map(cards.map(card => [card.id, card])), edges);
+  const before = prepareSceneComfyInputs("comfy", {}, cards, edges, {}, {});
+  expect(before.media[0].asset_content_id).toBeUndefined();
+  expect(before.media[0].target_project_id).toBe("p");
+  const moved = cards.map(card => card.refs ? { ...card, refs: card.refs.map(item => ({ ...item, file_path: "asset:p|refs/other.png" })) } : card);
+  expect(isSceneGenerationInputSnapshotCurrent(snapshot, new Map(moved.map(card => [card.id, card])), edges)).toBe(false);
+  expect(prepareSceneComfyInputs("comfy", {}, moved, edges, {}, {}).inputFingerprint).not.toBe(before.inputFingerprint);
+  const fixed = prepareSceneComfyInputs("comfy", {}, [...scene("fixed").cards, comfy], edges, {}, {});
+  expect(fixed.media[0].asset_content_id).toBe(receipt.asset_content_id);
+});
+
+it("생성 기록에서 꺼낸 재료는 원본 경로로 나오면 원본 추종, 보관본으로 나오면 고정이다(정보 창 칩·레시피 씬)", () => {
+  const recorded = (file_path: string): Reference => ({ id: "r1", type: "image", file_path, thumbnail_path: null, source: "주인공",
+    role: "@Image1", source_url: null, cached: false, asset_content_id: receipt.asset_content_id, target_project_id: "p" });
+  for (const [file_path, live] of [["asset:p|refs/hero.png", true], [receipt.file_path, false]] as const) {
+    const [chip] = refsToChips([recorded(file_path)]);
+    expect(chip.t === "chip" && chip.ref.file_path).toBe(file_path);
+    expect(chip.t === "chip" && isLiveProjectRef(chip.ref)).toBe(live);
+    const recipe = buildRecipeScene({ id: "generation-1", model: "nano_banana", references: [recorded(file_path)] } as unknown as Generation);
+    const sceneRef = recipe.cards.find(card => card.kind === "reference")!.refs![0];
+    expect(sceneRef.file_path).toBe(file_path);
+    expect(isLiveProjectRef(sceneRef)).toBe(live);
+  }
 });

@@ -12,7 +12,7 @@ import {
 import { refMediaType, refMediaSrc, mediaFileName } from "./sceneMedia";
 import { variantIds, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
 import type { Generation } from "../types";
-import { assetIdentity, type AssetReferenceIdentity } from "../shared/contracts/assets";
+import { assetIdentity, isLiveProjectRef, type AssetReferenceIdentity } from "../shared/contracts/assets";
 import { sha256Js } from "./editShare";
 import type { ComfyCardRuns } from "./comfyRunState";
 import type { Scene } from "./scenes";
@@ -102,7 +102,8 @@ function inputGraphFingerprint(
           kind: card.kind,
           refs: (card.refs || []).map((ref) => ({
             type: ref.type,
-            file_path: ref.asset_content_id || ref.file_path,
+            // 원본 추종 참조는 경로가 곧 입력이다 — 옛 내용 ID 가 경로 바꿈을 가리지 않게.
+            file_path: isLiveProjectRef(ref) ? ref.file_path : ref.asset_content_id || ref.file_path,
             source_gen_id: ref.source_gen_id || null,
           })),
         };
@@ -188,10 +189,12 @@ export function gatherComfyMedia(
   const pushRef = (r: SceneRef) => {
     const mt = refMediaType(r);
     if (mt === "audio") return; // 오디오는 image/video 슬롯 대상이 아님 — 제외
+    // 원본 추종 판정은 URL 로 바꾸기 전의 원래 참조로 한다 — live 면 서버가 대조할 옛 내용 ID 를 싣지 않는다.
+    const identity = isLiveProjectRef(r) ? { ...assetIdentity(r), asset_content_id: undefined } : assetIdentity(r);
     const url = refMediaSrc(r);
     if (!url) return;
     // 레퍼런스가 생성물에서 온 것이면 그 gid 를 계보용으로 전달(source_gen_id).
-    out.push({ ...assetIdentity(r), type: mt, url, name: mediaFileName(r.name || url, mt, out.length + 1), source_gen_id: r.source_gen_id });
+    out.push({ ...identity, type: mt, url, name: mediaFileName(r.name || url, mt, out.length + 1), source_gen_id: r.source_gen_id });
   };
   const pushGen = (gc?: SceneCard) => {
     const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);

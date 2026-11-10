@@ -244,6 +244,113 @@ def test_new_request_claim_keeps_expected_identity_without_certifying_it(content
     assert repo.get_generation(created['id'])['project_id'] == 'p'
 
 
+# 2026-11-10 — 프로젝트 원본 이미지는 같은 이름 덮어쓰기를 따라간다(docs/status/레퍼런스덮어쓰기_최신추종_2026-11-10.md).
+LIVE_REF = 'asset:p|refs/hero.png'
+OLD_CID = 'sha256:' + hashlib.sha256(b'before overwrite').hexdigest()
+
+
+def _create_and_claim(references, link=None):
+    command = GenRequestCommand(kind='create', email='test@example.invalid', creator_uid='user_a', worker_id='me',
+        source_gen_id=None, workspace={'scope': 'personal'}, canvas_link=link,
+        data={'prompt': 'test', 'model': 'nano-banana', 'project_id': 'p', 'references': references})
+    with patch('app.usecases.gen_requests.MANAGE_ENABLED', False), patch('app.usecases.gen_requests.journal_generation_event'):
+        created = asyncio.run(submit_gen_request(command))
+    claimed = gen_requests.claim_pending_requests('test@example.invalid', workspace_capable=True, lease_owner='agent',
+                                                  submission_stage_capable=True)
+    return created, PendingRequestOut.model_validate(claimed[0]).model_dump()
+
+
+def _submit_for_record(agent, gid, request, cache):
+    def begin(_server, _token, _rid, _owner, fingerprint):
+        with db.get_connection() as conn:
+            gen_requests._attach_submission_ref_digests(conn, gid, fingerprint)
+        return True
+
+    with patch.object(agent, '_allowed_params', return_value=set()), \
+            patch.object(agent, '_preserve_reference', return_value=True), \
+            patch.object(agent, '_ensure_request_workspace', return_value=('test-workspace', None)), \
+            patch.object(agent, '_begin_submission', side_effect=begin), \
+            patch.object(agent, '_run_with_tree_kill', side_effect=AssertionError('실제 CLI 프로세스 금지')), \
+            patch.object(agent, '_run_cli_json', return_value=(['12345678-1234-1234-1234-123456789abc'], None)) as paid, \
+            patch.object(agent, '_fail') as failed, \
+            patch.object(agent, '_outbox_add'), patch.object(agent, '_anchor_with_retry', return_value=True):
+        result = agent._submit_one('http://hub', 'fake-token', 'cli', 'test@example.invalid', request,
+                                   cache, {}, agent.Lock(), agent.Lock(), 'agent')
+    return result, paid, failed
+
+
+def test_live_project_image_create_drops_stale_expected_and_records_new_bytes(content, tmp_path):
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO project(id,name) VALUES('p','Project')")
+    source = tmp_path / 'hero.png'
+    source.write_bytes(b'after overwrite')
+    created, wire = _create_and_claim([{'file_path': LIVE_REF, 'type': 'image', 'role': '@Image1', 'asset_content_id': OLD_CID}])
+    assert wire['references'][0].get('expected_asset_content_id') is None
+    result, paid, failed = _submit_for_record(_agent(), created['id'], {**wire, 'claim_phase': 'claimed'}, {LIVE_REF: str(source)})
+    assert result and paid.call_count == 1
+    failed.assert_not_called()
+    with db.get_connection() as conn:
+        row = conn.execute('SELECT file_path,content_sha,asset_content_id FROM reference').fetchone()
+    new_sha = hashlib.sha256(b'after overwrite').hexdigest()
+    assert tuple(row) == (LIVE_REF, new_sha, 'sha256:' + new_sha)
+
+
+@pytest.mark.parametrize('ref', [
+    {'file_path': 'asset:captures|one.png', 'type': 'image'},
+    {'file_path': 'asset:imp/cap|imports/one.png', 'type': 'image'},
+    {'file_path': 'asset:p|clips/one.mp4', 'type': 'video'},
+    {'file_path': 'asset:p|voice/one.wav', 'type': 'audio'},
+    {'file_path': 'asset-sync:' + 'a' * 32, 'type': 'image'},  # 생성 기록 재료가 보관 위치로 투영돼 나온 경우
+    {'file_path': LIVE_REF, 'type': 'image', 'source_url': 'https://cdn.example.invalid/hero.png'},  # 실제 제출 경로가 원본이 아님
+], ids=['captures', 'imp-cap', 'video', 'audio', 'asset-sync', 'source-url'])
+def test_non_live_references_keep_expected_identity(content, ref):
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO project(id,name) VALUES('p','Project')")
+    _, wire = _create_and_claim([{**ref, 'role': '@Image1', 'asset_content_id': OLD_CID}])
+    assert wire['references'][0]['expected_asset_content_id'] == OLD_CID
+
+
+def test_live_create_placeholder_retry_is_idempotent(content):
+    link = {'attempt_id': 'attempt_1234567890_live', 'generation_id': 'generation_1234567890_live',
+            'scene_id': 'scene-a', 'card_id': 'card-a'}
+    command = GenRequestCommand(kind='create', email='test@example.invalid', creator_uid='user_a', worker_id='me',
+        source_gen_id=None, workspace={'scope': 'personal'}, canvas_link=link,
+        data={'prompt': 'test', 'model': 'nano-banana', 'references': [
+            {'file_path': LIVE_REF, 'type': 'image', 'role': '@Image1', 'asset_content_id': OLD_CID}]})
+    with patch('app.usecases.gen_requests.MANAGE_ENABLED', False), patch('app.usecases.gen_requests.journal_generation_event'):
+        with patch('app.usecases.gen_requests.repo.activate_canvas_gen_request', side_effect=RuntimeError('before activation')):
+            with pytest.raises(RuntimeError, match='before activation'):
+                asyncio.run(submit_gen_request(command))
+        assert asyncio.run(submit_gen_request(command))['id'] == link['generation_id']
+    claimed = gen_requests.claim_pending_requests('test@example.invalid', workspace_capable=True,
+        lease_owner='agent', submission_stage_capable=True)
+    wire = PendingRequestOut.model_validate(claimed[0]).model_dump()
+    assert len(claimed) == 1 and wire['references'][0]['file_path'] == LIVE_REF
+    assert wire['references'][0].get('expected_asset_content_id') is None
+
+
+def test_regeneration_of_live_project_image_keeps_recorded_version(content, tmp_path):
+    parent = repo.create_local_generation({'prompt': 'parent', 'model': 'nano-banana', 'references': [
+        {'file_path': LIVE_REF, 'type': 'image', 'role': '@Image1'}]}, 'me', creator_uid='user_a')
+    with db.get_connection() as conn:
+        conn.execute('UPDATE reference SET content_sha=?,content_bytes=?',
+                     (hashlib.sha256(b'before overwrite').hexdigest(), len(b'before overwrite')))
+    command = GenRequestCommand(kind='regenerate', email='test@example.invalid', creator_uid='user_a',
+        worker_id='me', source_gen_id=parent, workspace={'scope': 'personal'}, data=None)
+    with patch('app.usecases.gen_requests.MANAGE_ENABLED', False), patch('app.usecases.gen_requests.journal_generation_event'):
+        asyncio.run(submit_gen_request(command))
+    claimed = gen_requests.claim_pending_requests('test@example.invalid', workspace_capable=True,
+        lease_owner='agent', submission_stage_capable=True)
+    wire = PendingRequestOut.model_validate(claimed[0]).model_dump()
+    assert wire['references'][0]['asset_content_id'] == OLD_CID
+    source = tmp_path / 'hero.png'
+    source.write_bytes(b'after overwrite')
+    result, paid, failed = _submit_for_record(_agent(), 'unused', {**wire, 'claim_phase': 'claimed'}, {LIVE_REF: str(source)})
+    assert result is None
+    paid.assert_not_called()
+    assert '크레딧은 쓰지 않았습니다' in failed.call_args.args[3] and 'hero.png' in failed.call_args.args[3]
+
+
 def test_orphan_repair_claim_keeps_preservation_protocol_and_project(content):
     with db.get_connection() as conn:
         conn.execute("INSERT INTO project(id,name) VALUES('p','Project')")

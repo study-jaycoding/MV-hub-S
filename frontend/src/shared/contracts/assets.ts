@@ -28,6 +28,18 @@ export interface AssetSyncReceipt extends AssetServerLocation {
   registry_asset_id?: string;
 }
 
+// 내장 관리 폴더 — 백엔드 services/asset_paths.py 의 이름과 같다(내용이 고정된 사본이라 원본 추종 대상이 아니다).
+const MANAGED_ASSET_PROJECTS = new Set(["imports", "captures", "imp/cap"]);
+
+/** 프로젝트 폴더 원본 이미지(asset:<project>|<path>) — 같은 이름 덮어쓰기를 따라가므로 판 고정·보관본 승격·기대 지문 대조를 하지 않는다.
+ *  영상·오디오·내장 폴더·asset-sync·옛 /api/assets/file 형태는 지금 정책 그대로(2026-11-10 Jay, docs/status/레퍼런스덮어쓰기_최신추종_2026-11-10.md). */
+export function isLiveProjectRef(ref: { file_path?: string | null; type?: string | null }): boolean {
+  const path = ref.file_path || "";
+  if (!path.startsWith("asset:") || (ref.type || "image") !== "image") return false;
+  const cut = path.indexOf("|");
+  return cut > 6 && !MANAGED_ASSET_PROJECTS.has(path.slice(6, cut));
+}
+
 export function managedAssetUrl(token: string): string | undefined {
   const match = /^asset-sync:([a-f0-9-]{32,36})$/i.exec(token);
   return match ? `/api/asset-sync/files/${encodeURIComponent(match[1])}` : undefined;
@@ -48,10 +60,10 @@ export function assetIdentityForProject(ref: AssetReferenceIdentity, projectId?:
     ...(identity.server_location && identity.server_location.project_id !== projectId ? { server_location: undefined } : {}) };
 }
 
-export function promoteAssetReference<T extends AssetReferenceIdentity & { file_path: string; content_sha?: string; bytes?: number }>(
+export function promoteAssetReference<T extends AssetReferenceIdentity & { file_path: string; type?: string; content_sha?: string; bytes?: number }>(
   ref: T, receipt: AssetSyncReceipt,
 ): T {
-  if (receipt.state !== "ready" || !managedAssetUrl(receipt.file_path)
+  if (isLiveProjectRef(ref) || receipt.state !== "ready" || !managedAssetUrl(receipt.file_path)
     || !/^sha256:[a-f0-9]{64}$/.test(receipt.asset_content_id)
     || (ref.asset_content_id || (ref.content_sha ? `sha256:${ref.content_sha}` : "")) !== receipt.asset_content_id
     || ref.target_project_id !== receipt.project_id
