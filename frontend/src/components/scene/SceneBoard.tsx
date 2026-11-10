@@ -67,13 +67,14 @@ import {
   buildGenerationExecutionPlan,
   type SceneGenerationRun,
   comfyTextDriveKeys,
-  edgePathMerged,
-  edgePathXY,
+  buildEdgeGeometry,
+  buildWireTraceGeometry,
+  edgeBoxOutside,
+  edgeClassName,
   rectOutsideView,
   resolveInputSourceId,
   viewDirectionArrow,
   wireTracePairs,
-  wireTracePath,
   freezeLegacyCollectorOrder,
   refLaneOrderIndex,
   resolveEdgeRoles,
@@ -2738,13 +2739,12 @@ export function SceneBoard({
   useLayoutEffect(() => {
     culledInRef.current = { sceneId: cardsSceneId, view: viewRect, viewScene: culled.viewScene, ids: culled.inside ?? new Set() };
   }, [culled, cardsSceneId, viewRect]);
-  // 컬링 다시 확정 판정의 자료(이 렌더의 것) — 늘 그리는 카드(keepIds)를 뺀 카드 사각형 + 아래 연결선 루프가 채우는 일반선 끝점 상자.
+  // 컬링 다시 확정 판정의 자료 — 늘 그리는 카드를 뺀 카드 사각형과 같은 렌더의 일반선 끝점 상자를 쓴다.
   const cullCardRects = useMemo(
     () => visibleCards.filter((card) => !keepIds.has(card.id)).map((card) => cardRect(card)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [visibleCards, keepIds, heightTick],
   );
-  const cullEdgeBoxes: SceneViewRect[] = [];
   // 같은 렌더의 묶음을 그린 뒤(layout 단계)에 내놓는다 — 렌더 중에 공유 ref 에 쌓으면 중단된 렌더·측정 전후 값이 섞인다(Codex 설계 검토).
   //  확정 범위가 최신 범위보다 낡았으면 여기서 다시 판정해 필요하면 확정한다 — 끄는 동안 확정을 건너뛴 뒤 선택 해제·Comfy 대기 끝·
   //  높이 측정·카드 추가·숨김/접힘·연결 변경으로 새로 그려야 할 것이 생기면, 낡은 확정값 때문에 카드·선이 빠지지 않게(칠하기 전이라 깜박임이 없다).
@@ -2812,14 +2812,6 @@ export function SceneBoard({
     return c ? { x: c.x, y: c.y + heightOf(c) / 2 } : null;
   };
 
-  const edgePath = (from: SceneCard, to: SceneCard) => {
-    const x1 = from.x + widthOf(from);
-    const y1 = from.y + heightOf(from) / 2;
-    const x2 = to.x;
-    const y2 = to.y + heightOf(to) / 2;
-    const mx = (x1 + x2) / 2;
-    return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
-  };
   // 수집·분류에 넘길 '해석된 엣지' — input(무선) 소스를 실제 소스로 치환. 그리기(선 좌표)는 원본 edges 사용.
   //  ★엣지 id 는 보존되므로(from 만 치환) refCardEdgeIds/genRefEdgeIds 의 e.id 판정이 원본 렌더와 그대로 맞물린다.
   const resolvedEdges = useMemo(() => resolvePortEdges(cardsById, edges), [cardsById, edges]);
@@ -2997,23 +2989,6 @@ export function SceneBoard({
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleEdges, cardsById, edgeRoles]);
-  const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => {
-    const lane = laneOf(edgeRoles.get(e.id) || "ref");
-    // 끝점 = 포트 점 하나(선마다 벌리지 않는다, Jay 2026-10-29). 다입력 카드(gen·comfy)는 세로중앙 + 칸 오프셋, 그 외는 중앙(0.5).
-    const gen = b.kind === "generation";
-    const laned = gen || b.kind === "comfy";
-    const y2base = b.y + heightOf(b) * 0.5 + (laned ? laneDelta(lane, b) : 0);
-    // 같은 점에 선이 여럿이면 그 쪽은 점 앞에서 한 줄로 모인다(m1 출발·m2 도착 — edgePathMerged).
-    const fanList = laned ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
-    return {
-      x1: Math.round(a.x + widthOf(a) + PORT_GAP), // 출력 포트(카드 오른쪽 밖)
-      y1: Math.round(a.y + heightOf(a) / 2),
-      x2: Math.round(b.x - PORT_GAP), // 입력 포트(카드 왼쪽 밖)
-      y2: Math.round(y2base),
-      m1: (outEdges.get(a.id)?.length ?? 0) > 1,
-      m2: (fanList?.length ?? 0) > 1,
-    };
-  };
 
   // 접힌 그룹 막대로 재연결되는 브릿지 선 — 멤버가 숨어 visibleEdges 에서 빠진 연결을 막대 포트로 그린다.
   // 접힌 그룹이 있을 때만 도는 flatMap 이지만 매 렌더 재계산되던 것을 메모화(입력 변경 시에만).
@@ -3036,6 +3011,20 @@ export function SceneBoard({
           })
         : [],
     [collapsedMemberOf, edges, grayHidden, edgeRoles, refCardEdgeIds, genRefEdgeIds, collapsedBarById, cards, heightTick],
+  );
+  const edgeGeometry = useMemo(
+    () => buildEdgeGeometry({
+      edges: visibleEdges, cardsById, cardSize: (card) => ({ w: widthOf(card), h: heightOf(card) }),
+      laneDelta, edgeRoles, inEdges, inEdgesLaned, outEdges, bridgeEdges, groupBridges, portGap: PORT_GAP,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleEdges, cardsById, heightTick, edgeRoles, inEdges, inEdgesLaned, outEdges, bridgeEdges, groupBridges],
+  );
+  const cullEdgeBoxes = edgeGeometry.cullEdgeBoxes;
+  const traceGeometry = useMemo(
+    () => buildWireTraceGeometry(wireTrace, cardsById, (card) => ({ w: widthOf(card), h: heightOf(card) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selected, cardsById, heightTick],
   );
   // 선이 닿은 포트 — 카드 틀의 data-linked(out · in · in-<칸>). 고르지도 올리지도 않은 카드에서 선이 없는 포트만 작은 빈 원으로
   //  보이게 CSS 가 읽는다(Jay 2026-10-29 A안). 점 층과 같은 선(visibleEdges) + 숨긴 카드 우회선의 보이는 쪽 끝.
@@ -3322,45 +3311,13 @@ export function SceneBoard({
           className="scene-edges"
           style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}
         >
-          {visibleEdges.map((e) => {
-            const a = cardById(e.from);
-            const b = cardById(e.to);
-            if (!a || !b) return null;
-            const role = edgeRoles.get(e.id);
-            // ★기본은 회색(idle). 선택한 카드에 닿은 선만 종류색으로 활성화(모델=주황·텍스트=보라·레퍼런스=파란점선 등).
-            const active = selected.has(e.from) || selected.has(e.to);
-            const cls =
-              "scene-edge" +
-              (active
-                ? (role === "model"
-                    ? " model"
-                    : role === "text"
-                      ? " text"
-                      : role === "set"
-                        ? " set"
-                      : refCardEdgeIds.has(e.id)
-                        ? " ref"
-                        : genRefEdgeIds.has(e.id)
-                          ? " refg"
-                          : role === "ref" // 레퍼런스 리스트 출력 등 classifyEdges 밖의 ref = 파란점선
-                            ? " ref"
-                            : "") + " onsel"
-                : " idle") +
-              (pendingInputs.has(e.from) ? " pending" : "") +
-              (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
-            const { x1, y1, x2, y2, m1, m2 } = edgeEnds(e, a, b);
-            // 컬링 다시 확정 판정용 — 컬링 전에 모든 일반선의 끝점 상자를 이 렌더의 배열에 담는다(끝 점 루프도 같은 선·같은 끝점이다)
-            cullEdgeBoxes.push({ l: Math.min(x1, x2), t: Math.min(y1, y2), r: Math.max(x1, x2), b: Math.max(y1, y2) });
-            // 연결선 컬링 — 양 끝점 bbox 가 확장뷰포트 밖이면 곡선 전체가 밖(제어점이 bbox 내라 보장) → 안 그림.
-            if (
-              edgeCullRect &&
-              (Math.max(x1, x2) < edgeCullRect.l ||
-                Math.min(x1, x2) > edgeCullRect.r ||
-                Math.max(y1, y2) < edgeCullRect.t ||
-                Math.min(y1, y2) > edgeCullRect.b)
-            )
-              return null;
-            const d = edgePathMerged(x1, y1, x2, y2, m1, m2);
+          {edgeGeometry.edges.map((e) => {
+            if (edgeBoxOutside(e.box, edgeCullRect)) return null;
+            const cls = edgeClassName({
+              role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id),
+              active: selected.has(e.from) || selected.has(e.to), pending: pendingInputs.has(e.from), cut: edgesToCut.has(e.id),
+            });
+            const { d } = e;
             return (
               <g key={e.id}>
                 <path
@@ -3381,42 +3338,21 @@ export function SceneBoard({
               </marker>
             </defs>
           )}
-          {wireTrace.map(([fromId, toId]) => {
-            const a = cardById(fromId);
-            const b = cardById(toId);
-            const d = a && b ? wireTracePath(cardRect(a), cardRect(b)) : "";
-            return d ? <path key={"trace:" + toId} className="scene-edge trace" d={d} markerEnd="url(#scene-trace-head)" /> : null;
-          })}
+          {traceGeometry.map((trace) => (
+            <path key={trace.id} className="scene-edge trace" d={trace.d} markerEnd="url(#scene-trace-head)" />
+          ))}
           {/* 숨긴 중간 카드 우회선 — 회색 점선. 연결은 유지되지만 중간에 숨겨진 게 있다는 표시 */}
-          {bridgeEdges.map((be) => {
-            const a = cardById(be.from);
-            const b = cardById(be.to);
-            if (!a || !b) return null;
-            return <path key={be.id} className="scene-edge bridge" d={edgePath(a, b)} />;
-          })}
+          {edgeGeometry.bridges.map((be) => (
+            <path key={be.id} className="scene-edge bridge" d={be.d} />
+          ))}
           {/* 접힌 그룹 브릿지 — 멤버 대신 그룹 막대 포트로 이어 그린다(연결 유지 표시).
               일반 엣지와 동일하게 hit-path(클릭 삭제) + data-edge(가위 절단) + cut 예고 스타일을 태운다. */}
-          {groupBridges.map((gb) => {
-            const d = edgePathXY(gb.a.x, gb.a.y, gb.b.x, gb.b.y);
-            const active = selected.has(gb.from) || selected.has(gb.to);
-            const cls =
-              "scene-edge" +
-              (active
-                ? (gb.role === "model"
-                    ? " model"
-                    : gb.role === "text"
-                      ? " text"
-                      : gb.role === "set"
-                        ? " set"
-                      : gb.ref
-                        ? " ref"
-                        : gb.refg
-                          ? " refg"
-                          : gb.role === "ref"
-                            ? " ref"
-                            : "") + " onsel"
-                : " idle") +
-              (edgesToCut.has(gb.id) ? " cut" : "");
+          {edgeGeometry.groupBridges.map((gb) => {
+            const { d } = gb;
+            const cls = edgeClassName({
+              role: gb.role, ref: gb.ref, refg: gb.refg,
+              active: selected.has(gb.from) || selected.has(gb.to), cut: edgesToCut.has(gb.id),
+            });
             return (
               <g key={gb.id}>
                 <path
@@ -3805,10 +3741,7 @@ export function SceneBoard({
               if (!had || (on && !had.on)) dots.set(key, { x, y, cls, on });
               else if (on && had.cls !== cls) had.cls = "scene-dot mix"; // 켜진 선끼리 색이 섞이면 흰 점(Jay 2026-10-29)
             };
-            for (const e of visibleEdges) {
-              const a = cardById(e.from);
-              const b = cardById(e.to);
-              if (!a || !b) continue;
+            for (const e of edgeGeometry.edges) {
               const dotRole = edgeRoles.get(e.id);
               const active = selected.has(e.from) || selected.has(e.to);
               const cls =
@@ -3824,16 +3757,8 @@ export function SceneBoard({
                         ? " ref" // 생성물을 레퍼런스로 쓴 선(refg)도 선처럼 파랑
                         : ""
                   : " idle");
-              const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
-              // 끝점 점도 같은 기준으로 컬링 — bbox 가 확장뷰포트 밖이면 두 점 다 화면에서 멀어 안 그림.
-              if (
-                edgeCullRect &&
-                (Math.max(x1, x2) < edgeCullRect.l ||
-                  Math.min(x1, x2) > edgeCullRect.r ||
-                  Math.max(y1, y2) < edgeCullRect.t ||
-                  Math.min(y1, y2) > edgeCullRect.b)
-              )
-                continue;
+              const { x1, y1, x2, y2 } = e;
+              if (edgeBoxOutside(e.box, edgeCullRect)) continue;
               put(x1, y1, cls, active);
               put(x2, y2, cls, active);
             }

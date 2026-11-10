@@ -1,5 +1,5 @@
 // SceneBoard 의 '순수 엣지 기하/그래프 계산'을 컴포넌트에서 추출(렌더마다 인라인으로 돌던 것).
-//  · DOM/이벤트/상태를 건드리지 않는 순수 함수만 모은다 — 높이 측정(heightsRef) 의존인 heightOf/edgePath/edgeEnds 는 컴포넌트에 남긴다.
+//  · DOM/이벤트/상태를 건드리지 않는 순수 함수만 모은다 — 측정 크기는 호출자가 넘긴다.
 //  · 등가성 보존이 목적이라 원본의 반복/큐 순서·판정 로직을 그대로 옮긴다.
 import { ownEntry } from "./ownEntry";
 import {
@@ -1343,6 +1343,109 @@ export function edgePathMerged(x1: number, y1: number, x2: number, y2: number, m
   const ex = mergeEnd ? x2 - EDGE_MERGE : x2;
   const mx = (sx + ex) / 2;
   return `M ${x1} ${y1}` + (mergeStart ? ` L ${sx} ${y1}` : "") + ` C ${mx} ${y1}, ${mx} ${y2}, ${ex} ${y2}` + (mergeEnd ? ` L ${x2} ${y2}` : "");
+}
+
+export interface EdgeGeometryBox { l: number; t: number; r: number; b: number }
+export interface EdgeGeometryPath { id: string; from: string; to: string; d: string }
+export interface EdgeGeometryLine extends EdgeGeometryPath {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  m1: boolean;
+  m2: boolean;
+  box: EdgeGeometryBox;
+}
+export interface EdgeGroupBridge {
+  id: string;
+  from: string;
+  to: string;
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+  role?: SceneEdgeRole;
+  ref: boolean;
+  refg: boolean;
+}
+export type EdgeLane = "model" | "ref" | "text" | "set";
+export interface EdgeGeometryInput {
+  edges: readonly SceneEdge[];
+  cardsById: ReadonlyMap<string, SceneCard>;
+  cardSize: (card: SceneCard) => { w: number; h: number };
+  laneDelta: (lane: EdgeLane, card: SceneCard) => number;
+  edgeRoles: ReadonlyMap<string, SceneEdgeRole>;
+  inEdges: ReadonlyMap<string, readonly SceneEdge[]>;
+  inEdgesLaned: ReadonlyMap<string, readonly SceneEdge[]>;
+  outEdges: ReadonlyMap<string, readonly SceneEdge[]>;
+  bridgeEdges?: readonly Pick<SceneEdge, "id" | "from" | "to">[];
+  groupBridges?: readonly EdgeGroupBridge[];
+  portGap?: number;
+}
+export interface EdgeGeometry {
+  edges: EdgeGeometryLine[];
+  bridges: EdgeGeometryPath[];
+  groupBridges: (EdgeGroupBridge & { d: string })[];
+  cullEdgeBoxes: EdgeGeometryBox[];
+}
+
+export function buildEdgeGeometry(input: EdgeGeometryInput): EdgeGeometry {
+  const { cardsById, cardSize, laneDelta, edgeRoles, inEdges, inEdgesLaned, outEdges, portGap = 24 } = input;
+  const edges: EdgeGeometryLine[] = [];
+  for (const e of input.edges) {
+    const a = cardsById.get(e.from), b = cardsById.get(e.to);
+    if (!a || !b) continue;
+    const role = edgeRoles.get(e.id) || "ref";
+    const lane: EdgeLane = role === "model" ? "model" : role === "text" ? "text" : role === "set" ? "set" : "ref";
+    const laned = b.kind === "generation" || b.kind === "comfy";
+    const as = cardSize(a), bs = cardSize(b);
+    const x1 = Math.round(a.x + as.w + portGap), y1 = Math.round(a.y + as.h / 2);
+    const x2 = Math.round(b.x - portGap), y2 = Math.round(b.y + bs.h * 0.5 + (laned ? laneDelta(lane, b) : 0));
+    const fanList = laned ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
+    const m1 = (outEdges.get(a.id)?.length ?? 0) > 1, m2 = (fanList?.length ?? 0) > 1;
+    edges.push({ id: e.id, from: e.from, to: e.to, x1, y1, x2, y2, m1, m2,
+      d: edgePathMerged(x1, y1, x2, y2, m1, m2),
+      box: { l: Math.min(x1, x2), t: Math.min(y1, y2), r: Math.max(x1, x2), b: Math.max(y1, y2) } });
+  }
+  const bridges: EdgeGeometryPath[] = [];
+  for (const e of input.bridgeEdges ?? []) {
+    const a = cardsById.get(e.from), b = cardsById.get(e.to);
+    if (!a || !b) continue;
+    const as = cardSize(a), bs = cardSize(b);
+    bridges.push({ id: e.id, from: e.from, to: e.to, d: edgePathXY(a.x + as.w, a.y + as.h / 2, b.x, b.y + bs.h / 2) });
+  }
+  return { edges, bridges,
+    groupBridges: (input.groupBridges ?? []).map((gb) => ({ ...gb, d: edgePathXY(gb.a.x, gb.a.y, gb.b.x, gb.b.y) })),
+    cullEdgeBoxes: edges.map((e) => e.box) };
+}
+
+// 무선 짝은 선택에 따라 달라져 일반선 위치의 메모를 무효화하지 않도록 따로 계산한다.
+export function buildWireTraceGeometry(
+  pairs: readonly (readonly [string, string])[],
+  cardsById: ReadonlyMap<string, SceneCard>,
+  cardSize: (card: SceneCard) => { w: number; h: number },
+): EdgeGeometryPath[] {
+  return pairs.flatMap(([from, to]) => {
+    const a = cardsById.get(from), b = cardsById.get(to);
+    const d = a && b ? wireTracePath({ x: a.x, y: a.y, ...cardSize(a) }, { x: b.x, y: b.y, ...cardSize(b) }) : "";
+    return d ? [{ id: "trace:" + to, from, to, d }] : [];
+  });
+}
+
+export function edgeBoxOutside(box: EdgeGeometryBox, view: EdgeGeometryBox | null): boolean {
+  return !!view && (box.r < view.l || box.l > view.r || box.b < view.t || box.t > view.b);
+}
+
+export interface EdgeClassState {
+  role?: SceneEdgeRole;
+  ref: boolean;
+  refg: boolean;
+  active: boolean;
+  pending?: boolean;
+  cut?: boolean;
+}
+export function edgeClassName({ role, ref, refg, active, pending, cut }: EdgeClassState): string {
+  const color = role === "model" ? " model" : role === "text" ? " text" : role === "set" ? " set" :
+    ref ? " ref" : refg ? " refg" : role === "ref" ? " ref" : "";
+  return "scene-edge" + (active ? color + " onsel" : " idle") + (pending ? " pending" : "") + (cut ? " cut" : "");
 }
 
 // 무선 짝 표시(Jay 2026-10-29) — INPUT 하나를 고르면 그 INPUT 이 고른 OUTPUT, OUTPUT 하나를 고르면 그 OUTPUT 을 고른 INPUT 들.

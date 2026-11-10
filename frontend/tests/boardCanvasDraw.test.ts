@@ -59,9 +59,15 @@ describe("레퍼런스", () => {
     expect(loading.count("stroke")).toBeGreaterThan(0); // 빗금
   });
 
-  it("영상·오디오 레퍼런스가 하나라도 있으면 그리지 않는다(DOM 몸통 — 마우스 올림 재생)", () => {
-    expect(buildBoardItem(refCard("r", [{ type: "image", file_path: "asset:p|a.png" }, { type: "video", file_path: "asset:p|v.mp4" }]), box(), ctx())).toBeNull();
-    expect(buildBoardItem(refCard("r", [{ type: "audio", file_path: "asset:p|s.mp3" }]), box(), ctx())).toBeNull();
+  it("영상·오디오 레퍼런스도 그린다 — 썸네일 위 ▶·♪ 표시(GPU 판, 재생은 덧판의 몫)", () => {
+    const mixed = buildBoardItem(refCard("r", [{ type: "image", file_path: "asset:p|a.png" }, { type: "video", file_path: "asset:p|v.mp4" }]), box(), ctx())!;
+    const r = recorder();
+    drawBoardItem(r.g, mixed, () => img);
+    expect(r.texts()).toContain("▶");
+    const audio = buildBoardItem(refCard("r", [{ type: "audio", file_path: "asset:p|s.mp3" }]), box(), ctx())!;
+    const a = recorder();
+    drawBoardItem(a.g, audio, () => null);
+    expect(a.texts()).toContain("♪");
   });
 
   it("서버에 없음은 붉은 빗금·안내 글, '이 PC 에만'은 그림 위 마크 — 그림 주소를 부르지 않는다", () => {
@@ -88,12 +94,29 @@ describe("레퍼런스", () => {
 });
 
 describe("글·모델", () => {
-  it("글은 줄바꿈해 그리고 @토큰은 테두리 있는 알약", () => {
-    const item = buildBoardItem({ id: "t", kind: "text", x: 0, y: 0, text: "hello @image2 world" } as SceneCard, box(), ctx())!;
+  it("글은 줄바꿈해 그리고, 이어진 레퍼런스가 있는 @토큰만 테두리 있는 알약(없으면 그냥 글자 — TextCard 와 같게)", () => {
+    const text = { id: "t", kind: "text", x: 0, y: 0, text: "hello @image2 world" } as SceneCard;
+    const bare = recorder();
+    drawBoardItem(bare.g, buildBoardItem(text, box(), ctx())!, () => null);
+    expect(bare.texts()).toEqual(expect.arrayContaining(["hello", "@image2", "world"]));
+    expect(bare.count("stroke")).toBe(0);
+    const ref = refCard("r1", [{ type: "image", file_path: "asset:p|a.png" }, { type: "image", file_path: "asset:p|b.png" }]);
+    const linked = buildBoardItem(text, box(), ctx({ cardsById: new Map([["r1", ref], ["t", text]]), resolvedEdges: [{ id: "e", from: "r1", to: "t" }] as never }))!;
+    expect(boardItemSources(linked)).toHaveLength(2);
     const r = recorder();
-    drawBoardItem(r.g, item, () => null);
-    expect(r.texts()).toEqual(expect.arrayContaining(["hello", "@image2", "world"]));
+    drawBoardItem(r.g, linked, () => img);
+    expect(r.texts()).toContain("@image2");
     expect(r.count("stroke")).toBeGreaterThan(0);
+  });
+
+  it("자기 글이 비면 이어 들어온 글을 보이고, 둘 다 없으면 '텍스트 입력'", () => {
+    const src = { id: "s", kind: "text", x: 0, y: 0, text: "from upstream" } as SceneCard;
+    const t = { id: "t", kind: "text", x: 0, y: 100, text: "" } as SceneCard;
+    const item = buildBoardItem(t, box(), ctx({ cardsById: new Map([["s", src], ["t", t]]), resolvedEdges: [{ id: "e", from: "s", to: "t" }] as never }))!;
+    expect(item).toMatchObject({ kind: "text", text: "from upstream" });
+    const empty = recorder();
+    drawBoardItem(empty.g, buildBoardItem(t, box(), ctx())!, () => null);
+    expect(empty.texts()).toEqual(["텍스트 입력"]);
   });
 
   it("모델은 이름·종류·옵션 줄, 쓸 수 없는 모델은 '사용 불가', 설정 전은 '모델 설정'", () => {
@@ -142,7 +165,7 @@ describe("생성", () => {
     expect(state(card({ genId: "x" }), { genData: { x: gen("x") } as never })).toBe("done");
   });
 
-  it("완료는 결과 그림·S 배지·색 띠, 필터에 안 맞으면 흐리게(0.12) — 영상·비활성·마지막 열람 카드는 그리지 않는다", () => {
+  it("완료는 결과 그림·S 배지·색 띠, 필터에 안 맞으면 흐리게(0.12) — 영상 ▶·비활성(흑백·빗금)·마지막 열람 배지도 그린다", () => {
     const item = buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x", { shared: true, color: "#ff0000" }) } as never }))!;
     expect(boardItemSources(item)).toHaveLength(1);
     const r = recorder();
@@ -154,9 +177,35 @@ describe("생성", () => {
     const d = recorder();
     drawBoardItem(d.g, dim, () => img);
     expect(d.calls).toContainEqual(["alpha", 0.12]);
-    expect(buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x", { assets: [{ type: "video", file_path: "/v.mp4" }] }) } as never }))).toBeNull();
-    expect(buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x") } as never, disabled: () => true }))).toBeNull();
-    expect(buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x") } as never, lastViewedCardId: "g" }))).toBeNull();
+    const vid = buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x", { assets: [{ type: "video", file_path: "/v.mp4" }] }) } as never }))!;
+    const v = recorder();
+    drawBoardItem(v.g, vid, () => img);
+    expect(v.texts()).toContain("▶");
+    const off = buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x") } as never, disabled: () => true }))!;
+    expect(off).toMatchObject({ disabled: true, sel: false });
+    const o = recorder();
+    drawBoardItem(o.g, off, () => img);
+    expect(o.calls.some((c) => c[0] === "drawImage")).toBe(true);
+    const seen = buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x") } as never, lastViewedCardId: "g" }))!;
+    const s = recorder();
+    drawBoardItem(s.g, seen, () => img);
+    expect(s.texts()).toContain("Last viewed");
+  });
+
+  it("공유 안 된 남의 결과·비활성은 고르면 원래 크기 — 고름이 모습 열쇠에 들어가는 것은 이 둘뿐", () => {
+    const theirs = gen("x", { shared: false, is_mine: false } as never);
+    const a = buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: theirs } as never, isSelected: () => true }))!;
+    expect(a).toMatchObject({ unshared: true, sel: true });
+    const mine = buildBoardItem(card({ genId: "x" }), box("g"), ctx({ genData: { x: gen("x", { is_mine: true } as never) } as never, isSelected: () => true }))!;
+    expect(mine).toMatchObject({ unshared: false, sel: false });
+  });
+
+  it("제목(head)은 지원 종류 — 글·색·크기를 그린다", () => {
+    const head = buildBoardItem({ id: "h", kind: "head", x: 0, y: 0, text: "1장\n바다", color: "#ff0000", fontSize: 40 } as never, box("h"), ctx())!;
+    expect(head).toMatchObject({ kind: "head", text: "1장\n바다", color: "#ff0000", fontSize: 40 });
+    const r = recorder();
+    drawBoardItem(r.g, head, () => null);
+    expect(r.texts()).toEqual(["1장", "바다"]);
   });
 
   it("실패는 상태 글(실패 숨김이면 흐리게), 생성 중·빈 카드는 로고 주소를 쓴다", () => {
