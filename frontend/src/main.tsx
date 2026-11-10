@@ -3,7 +3,7 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
 import { installFileDropGuard } from "./lib/media";
-import { announceCanvasWindow, claimCanvasWindow, claimSceneWriter, EMBED_MODES, findFloatingCanvas, isCanvasWindow, openerSceneWritesSettled, retireCanvasWindow, setCanvasFloatStart, setCanvasReturnRead, setSceneWriterRead, shareCanvasMemory } from "./lib/popupWindows";
+import { announceCanvasWindow, claimCanvasWindow, claimSceneWriter, EMBED_MODES, findFloatingCanvas, isCanvasWindow, openerSceneWritesSettled, rememberEmbedWindowRect, retireCanvasWindow, setCanvasFloatStart, setCanvasReturnRead, setSceneWriterRead, shareCanvasMemory } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import { bootSceneStore, readLegacyScenesRaw, restoreUndoHistories } from "./lib/sceneBoot";
 import { refreshSceneStore, setAsidePendingWrites, settleSceneWrites } from "./lib/sceneStore";
@@ -36,6 +36,7 @@ document.documentElement.setAttribute("lang", loadLang());
 applyReduceMotion(loadReduceMotion());
 installFileDropGuard(); // 받는 곳이 없는 자리에 놓인 파일을 브라우저가 새 탭으로 열지 않게(분리 창도 같다)
 installApiGate(); // 모든 fetch 앞 관문 — 다른 탭 로그아웃 뒤 멈춤·늦은 401 판정(Jay 결정 4B). 어떤 요청보다 먼저 건다
+rememberEmbedWindowRect(); // 별도 창(Assets·관리·캔버스·Agent)은 닫힐 때 자리·크기를 적어 다음에 그 자리로 뜬다 — 메인 창은 아무것도 안 한다
 
 // `/?embed=assets` 로 열면 Assets 만 독립 창으로 렌더(분리된 브라우저 창).
 const query = new URLSearchParams(window.location.search);
