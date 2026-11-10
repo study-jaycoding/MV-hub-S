@@ -299,10 +299,12 @@ def test_request_lane_is_reserved_for_90_seconds(world):
     repo.reserve_request("expired", context, collecting=False, at=at + 90_000)
 
 
-def test_schedule_priority_and_failure_wait_survive_rotation(world, monkeypatch):
+def test_schedule_priority_and_failure_wait_survive_rescheduling(world, monkeypatch):
     at = repo.now_ms()
     monkeypatch.setattr(repo, "now_ms", lambda: at)
     context = configured()
+    with repo.transaction() as conn:
+        conn.execute("UPDATE hf_org_usage_collector SET rotation_cursor=123")
     worker.schedule_due_windows(context["org_id"], at)
     with manage_db.get_connection() as conn:
         rows = {r["start_ms"]: dict(r) for r in conn.execute("SELECT * FROM hf_org_usage_window")}
@@ -317,6 +319,7 @@ def test_schedule_priority_and_failure_wait_survive_rotation(world, monkeypatch)
         saved = dict(conn.execute("SELECT * FROM hf_org_usage_window WHERE id=?", (first["id"],)).fetchone())
     assert saved["priority"] == 0 and saved["next_due_ms"] == at + repo.DAY_MS
     assert repo.due_window(context["org_id"], at)["start_ms"] == today
+    assert repo.read_collector()["rotation_cursor"] == 123  # Legacy column stays untouched.
 
 
 def test_existing_ongoing_exact_is_neither_selected_nor_requested(world, monkeypatch):
@@ -379,3 +382,55 @@ def test_stage_integrity_failure_is_recorded_as_deterministic(world, monkeypatch
         saved = dict(conn.execute("SELECT * FROM hf_org_usage_window").fetchone())
     assert saved["last_attempt_code"] == "integrity_error"
     assert saved["fail_count"] == 1 and saved["next_due_ms"] >= before + repo.DAY_MS
+
+
+@pytest.mark.parametrize("error", [RuntimeError("private exception text"), UsageError("invalid_response")])
+def test_comparison_failure_after_commit_keeps_success_and_updates_identity(world, monkeypatch, caplog, error):
+    context = configured()
+    instance = worker.Collector()
+    instance.owner = context["owner"]
+    item = window(context, repo.today_start(repo.now_ms()) - 10 * repo.DAY_MS)
+    repo.attempt_failed(item["id"], "http_unavailable")
+    monkeypatch.setattr(worker, "env_ok", lambda: True)
+    monkeypatch.setattr(worker, "schedule_due_windows", lambda *a: None)
+    monkeypatch.setattr(repo, "due_window", lambda *a: item)
+    monkeypatch.setattr(client, "fetch_page", lambda *a, **k: dict(rows=[row()], next_cursor=None))
+
+    def broken_check(conn, *_):
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("UPDATE hf_org_usage_window SET next_due_ms=0")
+        raise error
+
+    monkeypatch.setattr(repo, "update_checks", broken_check)
+    before = repo.now_ms()
+    instance.run_once()
+    with manage_db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM hf_org_usage_window").fetchone())
+        assert saved["last_attempt_code"] == "ok" and saved["fail_count"] == 0
+        assert saved["snapshot_version"] == saved["row_count"] == 1
+        assert saved["next_due_ms"] >= before + repo.DAY_MS
+        assert conn.execute("SELECT COUNT(*) FROM hf_org_identity_link").fetchone()[0] == 1
+    assert "comparison_failed" in caplog.text
+    assert "private exception text" not in caplog.text and "invalid_response" not in caplog.text
+
+
+def test_truncated_response_uses_transient_window_backoff_and_preserves_snapshot(world, monkeypatch):
+    context = configured()
+    instance = worker.Collector()
+    instance.owner = context["owner"]
+    item = window(context, repo.today_start(repo.now_ms()) - 10 * repo.DAY_MS)
+    publish(context, item, [row(credits_c=111)])
+    monkeypatch.setattr(worker, "env_ok", lambda: True)
+    monkeypatch.setattr(worker, "schedule_due_windows", lambda *a: None)
+    monkeypatch.setattr(repo, "due_window", lambda *a: item)
+    with fake_server([(200, {}, b'{"data":[')] * 2, organization=True) as (url, calls):
+        monkeypatch.setattr(client, "ENDPOINT", url)
+        for count, delay in ((1, 60_000), (2, 120_000)):
+            instance.run_once()
+            with manage_db.get_connection() as conn:
+                saved = dict(conn.execute("SELECT * FROM hf_org_usage_window").fetchone())
+                assert saved["last_attempt_code"] == "http_unavailable" and saved["fail_count"] == count
+                assert saved["next_due_ms"] - saved["last_attempt_at_ms"] == delay
+                assert saved["snapshot_version"] == 1
+                assert conn.execute("SELECT credits_c FROM hf_org_usage_row").fetchone()[0] == 111
+        assert len(calls) == 2

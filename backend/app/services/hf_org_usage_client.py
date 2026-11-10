@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import re
 import time
 import urllib.error
@@ -169,8 +170,9 @@ def _request_json(request, key: str) -> dict:
         code = exc.code
         retry = retry_delay(exc.headers.get("Retry-After")) if code in (429, 503) else 0
         try:
-            _remaining_seconds(started)
-            safe_code = _error_code(exc, started)
+            # Authentication/rate/status decisions do not depend on an error body.
+            # A broken body must not hide an already received 401 or 403.
+            safe_code = _error_code(exc, started) if code in (400, 500) else None
         finally:
             exc.close()
         if code == 500 and safe_code == "report_limit_exceeded":
@@ -186,8 +188,13 @@ def _request_json(request, key: str) -> dict:
         raise
     except TimeoutError:
         raise UsageError("http_timeout") from None
-    except (OSError, urllib.error.URLError):
+    except (OSError, urllib.error.URLError, http.client.IncompleteRead):
         raise UsageError("http_unavailable") from None
+    except json.JSONDecodeError as exc:
+        raise UsageError("http_unavailable" if _incomplete_json(exc) else "invalid_response") from None
+    except UnicodeDecodeError as exc:
+        truncated = exc.reason == "unexpected end of data" and exc.end == len(exc.object)
+        raise UsageError("http_unavailable" if truncated else "invalid_response") from None
     except Exception:
         raise UsageError("invalid_response") from None
 
@@ -201,10 +208,12 @@ def _remaining_seconds(started: float) -> float:
 
 def _read_bytes(response, started: float, cap: int) -> bytes:
     chunks, size = [], 0
+    # HTTPResponse.length is the parsed remaining Content-Length (None for
+    # chunked/close-delimited bodies). read1() can silently return early EOF.
+    stream = response.fp if isinstance(response, urllib.error.HTTPError) else response
+    expected = stream.length
     while True:
         remaining = _remaining_seconds(started)
-        # HTTPError wraps HTTPResponse; the latter owns the socket and buffered stream.
-        stream = response.fp if isinstance(response, urllib.error.HTTPError) else response
         if stream.isclosed():
             break
         stream.fp.raw._sock.settimeout(remaining)
@@ -216,7 +225,24 @@ def _read_bytes(response, started: float, cap: int) -> bytes:
         if not chunk:
             break
         chunks.append(chunk)
+    if expected is not None and size < expected:
+        raise UsageError("http_unavailable")
     return b"".join(chunks)
+
+
+def _incomplete_json(error: json.JSONDecodeError) -> bool:
+    # Only EOF-like parse failures are retryable. A complete but invalid JSON
+    # document must retain the deterministic invalid_response classification.
+    tail = error.doc[error.pos:]
+    if not tail.strip() or error.msg.startswith("Unterminated string"):
+        return True
+    if error.msg == "Expecting value":
+        return tail == "-" or any(token.startswith(tail) for token in ("true", "false", "null"))
+    if error.msg == "Expecting ',' delimiter":
+        return tail in (".", "e", "E", "e+", "e-", "E+", "E-")
+    if error.msg == "Invalid \\uXXXX escape":
+        return tail.startswith("u") and len(tail) < 5 and all(c in "0123456789abcdefABCDEF" for c in tail[1:])
+    return False
 
 
 def _error_code(response, started: float) -> str | None:
@@ -229,10 +255,20 @@ def _error_code(response, started: float) -> str | None:
         code = error.get("code") if isinstance(error, dict) else None
         return code if isinstance(code, str) and code in allowed else None
     except UsageError as exc:
-        if exc.code == "http_timeout":
+        if exc.code in ("http_timeout", "http_unavailable"):
             raise
         return None
     except TimeoutError:
         raise UsageError("http_timeout") from None
+    except (OSError, http.client.IncompleteRead):
+        raise UsageError("http_unavailable") from None
+    except json.JSONDecodeError as exc:
+        if _incomplete_json(exc):
+            raise UsageError("http_unavailable") from None
+        return None
+    except UnicodeDecodeError as exc:
+        if exc.reason == "unexpected end of data" and exc.end == len(exc.object):
+            raise UsageError("http_unavailable") from None
+        return None
     except Exception:
         return None

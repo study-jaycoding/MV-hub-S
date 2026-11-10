@@ -161,14 +161,14 @@ def test_duplicate_check_does_not_reschedule_days(world):
         assert all(r[0] == repo.NO_AUTO_DUE for r in conn.execute("SELECT next_due_ms FROM hf_org_usage_window"))
 
 
-def test_mismatch_recheck_once_per_exact_version_and_matched_stops(world):
+def test_mismatch_recheck_once_per_regular_version_and_matched_stops(world):
     context = configured()
     start = repo.today_start(repo.now_ms()) - 3 * repo.DAY_MS
     day, exact = window(context, start), window(context, start, kind="exact")
     publish(context, day, [row()])
     publish(context, exact, [row(credits_c=999)])
     with repo.transaction() as conn:
-        assert conn.execute("SELECT recheck_snapshot_version FROM hf_org_usage_window WHERE kind='exact'").fetchone()[0] == 1
+        assert conn.execute("SELECT recheck_snapshot_version FROM hf_org_usage_window WHERE kind='exact'").fetchone()[0] == 2
         conn.execute("UPDATE hf_org_usage_window SET next_due_ms=?", (repo.NO_AUTO_DUE,))
     publish(context, day, [row()])
     with manage_db.get_connection() as conn:
@@ -236,3 +236,35 @@ def test_matching_days_do_not_cancel_an_explicit_exact_refresh(world):
     publish(context, exact, [row()])
     with manage_db.get_connection() as conn:
         assert conn.execute("SELECT next_due_ms FROM hf_org_usage_window WHERE kind='exact'").fetchone()[0] == repo.NO_AUTO_DUE
+
+
+def test_mismatching_recheck_does_not_schedule_another_until_regular_new_version(world, monkeypatch):
+    at = repo.now_ms()
+    monkeypatch.setattr(repo, "now_ms", lambda: at)
+    context = configured()
+    start = repo.today_start(at) - 10 * repo.DAY_MS
+    day, exact = window(context, start), window(context, start, kind="exact")
+    publish(context, day, [row()])
+    publish(context, exact, [row(credits_c=999)])
+    with repo.transaction() as conn:
+        assert conn.execute("SELECT next_due_ms FROM hf_org_usage_window WHERE kind='exact'").fetchone()[0] == at + 600_000
+        conn.execute("UPDATE hf_org_usage_window SET next_due_ms=? WHERE kind='day'", (at + repo.DAY_MS,))
+
+    def publish_exact():
+        with manage_db.get_connection() as conn:
+            repo.create_stage(conn)
+            repo.stage_rows(conn, [row(credits_c=999)])
+            repo.publish_window(conn, exact, context, actual_end=exact["end_ms"], started=at,
+                                pages=1, next_due=at + repo.DAY_MS)
+
+    publish_exact()  # Version 2 is the confirmation requested by version 1.
+    with manage_db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM hf_org_usage_window WHERE kind='exact'").fetchone())
+        assert saved["snapshot_version"] == saved["recheck_snapshot_version"] == 2
+        assert all(r[0] == at + repo.DAY_MS for r in conn.execute("SELECT next_due_ms FROM hf_org_usage_window"))
+        assert conn.execute("SELECT state FROM hf_org_usage_check").fetchone()[0] == "mismatch"
+    publish_exact()  # A later regular collection (version 3) may request version 4 once.
+    with manage_db.get_connection() as conn:
+        saved = dict(conn.execute("SELECT * FROM hf_org_usage_window WHERE kind='exact'").fetchone())
+        assert saved["snapshot_version"] == 3 and saved["recheck_snapshot_version"] == 4
+        assert all(r[0] == at + 600_000 for r in conn.execute("SELECT next_due_ms FROM hf_org_usage_window"))

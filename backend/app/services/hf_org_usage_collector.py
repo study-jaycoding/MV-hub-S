@@ -72,19 +72,11 @@ def schedule_due_windows(org_id: str, at: int) -> None:
         state = repo.read_collector(conn)
         # Cursor advances on scheduling, not on success. A bad old day cannot stop history forever.
         backfill = state["backfill_cursor"] or first
-        rotation = state["rotation_cursor"] or first
         if backfill < midnight - 7 * repo.DAY_MS:
             conn.execute("INSERT OR IGNORE INTO hf_org_usage_window(org_id,start_ms,end_ms,kind,priority,next_due_ms) "
                          "VALUES(?,?,?,'day',1,?)", (org_id, backfill, backfill + repo.DAY_MS, at))
             backfill += repo.DAY_MS
-        if rotation >= midnight - 7 * repo.DAY_MS:
-            rotation = first
-        # One history slot per cycle with bounded priority; manual refresh is still coalesced.
-        conn.execute("UPDATE hf_org_usage_window SET next_due_ms=MIN(next_due_ms,?) "
-                     "WHERE org_id=? AND kind='day' AND start_ms=? AND next_due_ms<=?",
-                     (at, org_id, rotation, at))
-        conn.execute("UPDATE hf_org_usage_collector SET backfill_cursor=?,rotation_cursor=? WHERE singleton=1",
-                     (backfill, rotation + repo.DAY_MS))
+        conn.execute("UPDATE hf_org_usage_collector SET backfill_cursor=? WHERE singleton=1", (backfill,))
 
 
 def collect_window(window: dict, context: dict, *, stop: threading.Event | None = None) -> None:

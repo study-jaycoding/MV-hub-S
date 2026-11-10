@@ -169,3 +169,45 @@ def test_whole_http_deadline_closes_loopback_response(monkeypatch, status, phase
             client._request_json(urllib.request.Request(url), FAKE_KEY)
     assert len(reads) == (0 if phase == "open" else 1)
     assert len(streams) == 1 and streams[0].isclosed()
+
+
+@pytest.mark.parametrize("headers,body", [
+    ({"Content-Length": "99"}, b'{}'),
+    ({"Transfer-Encoding": "chunked"}, b'5\r\n{}\r\n'),
+])
+def test_truncated_http_framing_is_transient(headers, body):
+    with fake_server([(200, headers, body)]) as (url, _):
+        with pytest.raises(UsageError, match="^http_unavailable$"):
+            client._request_json(urllib.request.Request(url), FAKE_KEY)
+
+
+@pytest.mark.parametrize("body", [b'', b'{', b'{"data": [', b'{"data": "cut',
+    b'{"data": tru', b'{"data": -', b'{"data": 1e+', b'{"data": 1.',
+    b'{"data": "\\u12', b'{"data": "\xe2\x82'])
+def test_incomplete_json_prefix_is_transient(body):
+    with fake_server([(200, {}, body)]) as (url, _):
+        with pytest.raises(UsageError, match="^http_unavailable$"):
+            client._request_json(urllib.request.Request(url), FAKE_KEY)
+
+
+@pytest.mark.parametrize("body", [b'{"data": nope}', b'{"data": true,}',
+    b'{"data": "\\u12XX"}', b'{"data": 1e+}', b'not json', b'{"data": "\xff"}', b'[]'])
+def test_complete_malformed_json_remains_deterministic(body):
+    with fake_server([(200, {}, body)]) as (url, _):
+        with pytest.raises(UsageError, match="^invalid_response$"):
+            client._request_json(urllib.request.Request(url), FAKE_KEY)
+
+
+@pytest.mark.parametrize("status,expected", [(400, "http_unavailable"), (401, "http_401"), (403, "http_403"),
+    (410, "http_410"), (429, "http_429"), (500, "http_unavailable"), (503, "http_503")])
+def test_truncated_error_body_preserves_http_status(status, expected):
+    with fake_server([(status, {"Content-Length": "99"}, b'{')]) as (url, _):
+        with pytest.raises(UsageError, match=f"^{expected}$"):
+            client._request_json(urllib.request.Request(url), FAKE_KEY)
+
+
+@pytest.mark.parametrize("status", [400, 500])
+def test_incomplete_error_json_is_transient_when_error_body_is_needed(status):
+    with fake_server([(status, {}, b'{"error":')]) as (url, _):
+        with pytest.raises(UsageError, match="^http_unavailable$"):
+            client._request_json(urllib.request.Request(url), FAKE_KEY)

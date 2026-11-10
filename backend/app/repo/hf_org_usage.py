@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from contextlib import contextmanager
 
@@ -13,6 +14,7 @@ DAY_MS = 86_400_000
 LEASE_MS = 90_000
 IO_MS = 90_000  # Longer than the HTTP hard deadline, also survives process death.
 NO_AUTO_DUE = 2**63 - 1
+logger = logging.getLogger(__name__)
 ROW_FIELDS = (
     "row_id", "type", "created_at", "workspace_id", "workspace_name", "actor_user_id",
     "actor_email", "model", "model_name", "credits_c", "charged_c", "refunded_c",
@@ -217,7 +219,12 @@ def publish_window(conn, window: dict, context: dict, *, actual_end: int, starte
                   base_priority(window["start_ms"], at), window_id))
     conn.execute("UPDATE hf_org_usage_collector SET last_progress_at_ms=? WHERE singleton=1", (at,))
     conn.commit()
-    update_checks(conn, window["org_id"], window)
+    try:
+        with manage_db.get_connection() as checks:
+            update_checks(checks, window["org_id"], window)
+    except Exception:
+        # Publication is already committed; comparison failure must not turn it into a failed fetch.
+        logger.warning("hf_org_usage: comparison_failed")
 
 
 def create_stage(conn) -> None:
@@ -335,9 +342,10 @@ def update_checks(conn, org_id: str, changed: dict) -> None:
                 # An explicit refresh (priority 25) still gets its requested exact snapshot.
                 conn.execute("UPDATE hf_org_usage_window SET next_due_ms=? WHERE id=? AND priority<25",
                              (NO_AUTO_DUE, exact["id"]))
+            # Include the confirmation's version so it cannot start another confirmation.
             elif conn.execute("UPDATE hf_org_usage_window SET recheck_snapshot_version=? WHERE id=? "
                               "AND recheck_snapshot_version<?",
-                              (exact["snapshot_version"], exact["id"], exact["snapshot_version"])).rowcount:
+                              (exact["snapshot_version"] + 1, exact["id"], exact["snapshot_version"])).rowcount:
                 conn.execute(f"UPDATE hf_org_usage_window SET next_due_ms=MIN(next_due_ms,?) "
                              f"WHERE id IN ({','.join('?' for _ in observed)}) AND fail_count=0",
                              (at + 600_000, *observed))
