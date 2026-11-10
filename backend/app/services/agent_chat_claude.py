@@ -19,8 +19,11 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import subprocess
+import threading
 import time
+import urllib.request
 from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
@@ -118,7 +121,54 @@ def claude_state(prefix: list[str] | None) -> dict:
             state = "login_window"
     except RecordUnreadable:
         state = "window_record"
-    return {"state": state, "version": version, "subscription": plan.capitalize() if state == "ready" else None}
+    shown = (_plan_display_name(data.get("email")) or plan.capitalize()) if state == "ready" else None
+    return {"state": state, "version": version, "subscription": shown}
+
+
+def _plan_display_name(email) -> str | None:
+    """Claude 앱과 같은 요금제 이름(Ultra 등) — Claude Code 설정 `.claude.json` 의 oauthAccount.planDisplayName.
+    `auth status` 의 subscriptionType 은 Ultra 를 'max' 로 답한다(2026-11-10 실측). 공식 문서에 없는 칸이라 없거나·글이 이상하거나·
+    그 파일의 계정이 지금 로그인 계정(이메일)과 다르면 None(부르는 쪽이 옛 값으로). 이메일은 비교에만 쓰고 싣지 않는다."""
+    if not isinstance(email, str) or not email.strip():
+        return None
+    env = process.child_env()
+    folder = env.get("CLAUDE_CONFIG_DIR")
+    path = Path(folder) / ".claude.json" if folder else Path(env.get("USERPROFILE") or Path.home()) / ".claude.json"
+    try:
+        account = json.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(account, dict) or str(account.get("emailAddress") or "").strip().casefold() != email.strip().casefold():
+        return None
+    name = account.get("planDisplayName")
+    return name.strip() if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9 +._-]{1,24}", name.strip()) else None
+
+
+# ── 최신 판(보여 주기만 — npm 레지스트리 공개 주소) ──
+LATEST_URL = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"
+_LATEST_OK, _LATEST_FAIL = 6 * 3600.0, 600.0
+_latest_lock = threading.Lock()
+_latest_cache: tuple[float, str | None] | None = None  # (다시 물을 때, 판 또는 실패 None)
+
+
+def latest_version() -> str | None:
+    """npm 의 latest 판 번호(숫자.숫자.숫자만) — 실패면 None. 성공은 6시간·실패는 10분 기억한다(서랍을 열 때마다 묻지 않게)."""
+    global _latest_cache
+    with _latest_lock:
+        now = time.monotonic()
+        if _latest_cache and now < _latest_cache[0]:
+            return _latest_cache[1]
+        found = None
+        try:
+            request = urllib.request.Request(LATEST_URL, headers={"User-Agent": "mvhub-agent-panel", "Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                value = json.loads(response.read(65536).decode("utf-8")).get("version")
+            if isinstance(value, str) and re.fullmatch(r"\d{1,4}\.\d{1,4}\.\d{1,6}", value):
+                found = value
+        except (OSError, ValueError, AttributeError):
+            found = None
+        _latest_cache = (now + (_LATEST_OK if found else _LATEST_FAIL), found)
+        return found
 
 
 def claude_problem(prefix: list[str] | None) -> str | None:

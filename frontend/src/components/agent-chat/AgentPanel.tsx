@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
-import type { AgentContext, AgentConversationSummary, AgentEngine, AgentEngineId } from "../../lib/agentChatApi";
+import { agentChatApi, type AgentContext, type AgentConversationSummary, type AgentEngine, type AgentEngineId } from "../../lib/agentChatApi";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useT } from "../../lib/i18n";
@@ -209,7 +209,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           locked={chat.running || chat.sending} projectName={projectName}
           onNew={startNew}
           onOpen={(id) => { setDrawer(false); setScreenOn(true); void chat.openConversation(id); }}
-          onClose={closeDrawer} />
+          onClose={closeDrawer} claude={engines.find((e) => e.id === "claude")} />
       )}
 
       <div className="agent-log" ref={logRef} aria-live="polite">
@@ -333,9 +333,10 @@ function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }:
   }
 }
 
-/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점). 보내는 중·일하는 중에는 고르기만 잠근다.
- *  설정 칸(Claude 연결·새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10 — 구독 이름은 Claude Code 가 주는 값이 실제 요금제와 달랐다). */
-function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose }: {
+/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점) · 맨 아래 한 줄(Claude · 요금제 / Claude Code 판·새 판).
+ *  보내는 중·일하는 중에는 고르기만 잠근다. 설정 칸(새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10).
+ *  요금제 = 허브가 Claude Code 설정의 표시 이름(Ultra 등)을 같은 계정일 때만 싣는다(docs/status/MVAgent_서랍아래줄_2026-11-10.md). */
+function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose, claude }: {
   conversations: AgentConversationSummary[] | null;
   currentId: string | null;
   running: boolean;
@@ -344,9 +345,16 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
   onNew: () => void;
   onOpen: (id: string) => void;
   onClose: () => void;
+  claude?: AgentEngine;
 }) {
   const t = useT();
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const [version, setVersion] = useState<{ current: string | null; latest: string | null; newer: boolean } | null>(null);
+  useEffect(() => { // 서랍을 열 때 한 번 — 허브가 최신 판을 6시간 기억한다
+    let live = true;
+    agentChatApi.claudeVersion().then((v) => { if (live) setVersion(v); }, () => {});
+    return () => { live = false; };
+  }, []);
   const noProject = t("프로젝트 없음");
   // 목록은 최근 순 — 묶음도 가장 최근 대화가 있는 순, '프로젝트 없음'은 맨 아래. 이름을 모르는 프로젝트(지금 공간 밖)는 한 묶음으로
   const groups: { label: string; items: AgentConversationSummary[] }[] = [];
@@ -394,6 +402,17 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
               )}
             </div>
           ))}
+        </div>
+        <div className="agent-drawer-foot">
+          <span className="agent-drawer-plan">
+            <span className="agent-co" aria-hidden="true">✳</span>
+            {claude?.available ? <>Claude{claude.subscription && <small> · {claude.subscription}</small>}</> : t("Claude 연결 안 됨")}
+          </span>
+          {version?.newer && version.latest ? (
+            <span className="agent-drawer-ver new" title={`${t("지금")} ${version.current ?? ""}`}>{t("새 판")} {version.latest}</span>
+          ) : version?.current ? (
+            <span className="agent-drawer-ver" title={t("Claude Code 판")}>{version.current}</span>
+          ) : null}
         </div>
       </nav>
     </>
