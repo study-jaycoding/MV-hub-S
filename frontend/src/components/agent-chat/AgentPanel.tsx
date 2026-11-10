@@ -209,8 +209,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           locked={chat.running || chat.sending} projectName={projectName}
           onNew={startNew}
           onOpen={(id) => { setDrawer(false); setScreenOn(true); void chat.openConversation(id); }}
-          onClose={closeDrawer}
-          claude={engines.find((e) => e.id === "claude")} modelLabel={chat.choice ? `${modelLabel} · ${t(EFFORT[chat.choice.effort] ?? chat.choice.effort)}` : null} />
+          onClose={closeDrawer} />
       )}
 
       <div className="agent-log" ref={logRef} aria-live="polite">
@@ -334,9 +333,9 @@ function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }:
   }
 }
 
-/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점) · 아래 설정(Claude 연결 · 새 대화 모델). 보내는 중·일하는 중에는 고르기만 잠근다.
- *  칸 위치(옆 칸/새 창) 줄은 넣지 않는다 — 머리의 단추로 충분(Jay 11-10). */
-function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose, claude, modelLabel }: {
+/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점). 보내는 중·일하는 중에는 고르기만 잠근다.
+ *  설정 칸(Claude 연결·새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10 — 구독 이름은 Claude Code 가 주는 값이 실제 요금제와 달랐다). */
+function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose }: {
   conversations: AgentConversationSummary[] | null;
   currentId: string | null;
   running: boolean;
@@ -345,8 +344,6 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
   onNew: () => void;
   onOpen: (id: string) => void;
   onClose: () => void;
-  claude?: AgentEngine;
-  modelLabel: string | null;
 }) {
   const t = useT();
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
@@ -397,16 +394,6 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
               )}
             </div>
           ))}
-        </div>
-        <div className="agent-drawer-settings">
-          <div className="agent-drawer-shead"><GearIcon /><span>{t("설정")}</span></div>
-          <div className="agent-drawer-row">
-            <span>Claude</span>
-            <b className={claude?.available ? "ok" : ""}>
-              {claude?.available ? `${t("연결됨")}${claude.subscription ? ` · ${claude.subscription} ${t("구독")}` : ""}` : t("연결 안 됨")}
-            </b>
-          </div>
-          {modelLabel && <div className="agent-drawer-row"><span>{t("새 대화 모델")}</span><b>{modelLabel}</b></div>}
         </div>
       </nav>
     </>
@@ -535,16 +522,6 @@ function PopOutIcon() {
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="8.5" y="3.5" width="12" height="10" rx="2" />
       <path d="M15.5 17v1.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2H7" />
-    </svg>
-  );
-}
-
-function GearIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth={1.7}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6" />
     </svg>
   );
 }

@@ -747,7 +747,7 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     expect(docked).toBe(1);
   });
 
-  it("≡ 서랍 — 대화를 프로젝트별로 묶고(이름 모르는 프로젝트는 한 묶음, '프로젝트 없음'은 맨 아래) 고르면 열고 닫힌다 · 칸 위치 줄은 없다", async () => {
+  it("≡ 서랍 — 대화를 프로젝트별로 묶고(이름 모르는 프로젝트는 한 묶음, '프로젝트 없음'은 맨 아래) 고르면 열고 닫힌다 · 설정 칸은 없다", async () => {
     route = (c) => {
       if (c.path === "/session") return session();
       if (c.path === "/conversations") {
@@ -773,8 +773,7 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     expect(groups()).toEqual([
       ["뻘뻘뻘", ["딸기와 바나나", "사과"]], ["다른 공간 프로젝트", ["강아지이어 가기 불가"]], ["프로젝트 없음", ["고양이"]],
     ]);
-    expect(texts(".agent-drawer-row > span")).toEqual(["Claude", "새 대화 모델"]); // 칸 위치(옆 칸/새 창) 줄은 뺐다(Jay 11-10)
-    expect(texts(".agent-drawer-row b")[0]).toBe("연결됨 · Max 구독");
+    expect(host.querySelector(".agent-drawer")!.textContent).not.toMatch(/설정|구독|새 대화 모델|칸 위치/); // 설정 칸은 뺐다(Jay 11-10)
     act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-drawer-item")][0].click());
     await flush();
     expect([host.querySelector(".agent-drawer"), host.querySelector(".agent-title")!.textContent]).toEqual([null, "딸기와 바나나"]);
