@@ -3,7 +3,7 @@
 //  (docs/status/캔버스_GPU판설계_2026-11-11.md 계약 mode·transition·camera). jsdom 에는 WebGL 이 없다.
 //  본다: 켤 때 검사는 표본 30개·모두 유한해야 믿는다 · 검사 결과는 카메라가 쉬고 화면을 끌지 않을 때 알린다 ·
 //  렌더만 다시 해서(카메라 그대로) 알림이 와도 '조작 중'이 아니다 · 끝나면 컨텍스트를 놓는다.
-import { act, createRef } from "react";
+import { act, createRef, Suspense } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GpuSceneModel } from "../src/features/canvas/gpu/gpuScene";
@@ -27,6 +27,7 @@ vi.mock("../src/features/canvas/gpu/cardAtlas", () => ({
   }),
 }));
 const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode, UNDRAWABLE } = await import("../src/features/canvas/gpu/GpuBoard");
+const { lazyGpuBoard } = await import("../src/features/canvas/gpu/gpuMode");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -408,4 +409,17 @@ it("내려가면 렌더러를 놓는다(destroy — 컨텍스트 놓기는 렌�
   mount(vi.fn());
   act(() => root.render(<div />));
   expect(fx.destroyed).toBe(1);
+});
+
+it("본체를 켤 때 불러오기 — 실패하면(덩어리 404) 오류를 위로 던지지 않고 생성 실패로 잠그고, 성공하면 그 본체를 그린다", async () => {
+  const dispatch = vi.fn();
+  const Failed = lazyGpuBoard(() => Promise.reject(new Error("chunk 404")));
+  await act(async () => { root.render(<Suspense fallback={null}><Failed {...({ dispatch } as never)} /></Suspense>); });
+  await act(async () => {});
+  expect(dispatch).toHaveBeenCalledWith({ type: "failure", reason: "creation" });
+  const seen: unknown[] = [];
+  const Loaded = lazyGpuBoard(() => Promise.resolve({ GpuBoard: (p: unknown) => { seen.push(p); return null; } }));
+  await act(async () => { root.render(<Suspense fallback={null}><Loaded {...({ dispatch, token: 7 } as never)} /></Suspense>); });
+  await act(async () => {});
+  expect(seen).toEqual([expect.objectContaining({ token: 7 })]);
 });

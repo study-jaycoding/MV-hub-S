@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useReducer, useRef, useState, type ComponentType } from "react";
 import { STORAGE_KEYS } from "../../../lib/storageKeys";
 import type { SceneCamera } from "../../../lib/sceneViewport";
+import type { GpuBoardProps } from "./GpuBoard";
 
 export type GpuPhase = "dom" | "preparing" | "probing" | "gpu";
 export type GpuModeReason = "off" | "locked" | "user" | "unsupported" | "zoom" | "busy" | null;
@@ -136,6 +137,16 @@ export function userEditAllowed(s: GpuModeState): boolean {
 // ── SceneBoard 쪽 모드 훅 ─────────────────────────────────────────────────────────────
 // GpuBoard.tsx(WebGL·아틀라스)에서 옮겨 왔다 — canvas api 가 이 훅을 내보내려고 GPU 판 본체까지 불러오면, api 를 쓰는 lib 모듈(sceneBackup 등)이
 //  무거워져 공책 시험이 전체 시험에서 시간 초과했다(11-11 실측). 본체는 api 가 켤 때만 불러온다(lazy).
+
+/** GPU 판 본체를 켤 때만 불러오는 칸(lazy). 불러오기가 실패하면(네트워크·새 배포 뒤 옛 덩어리 404) 오류를 위로 던져 캔버스 전체를
+ *  대체 화면으로 보내지 않고, 생성 실패로 이 페이지를 잠가 DOM 판에 둔다(Codex 리뷰 15차 P2). 늦게 실패해도 칸이 그려질 때만 알린다. */
+export function lazyGpuBoard(load: () => Promise<{ GpuBoard: ComponentType<GpuBoardProps> }>) {
+  return lazy<ComponentType<GpuBoardProps>>(() => load().then((m) => ({ default: m.GpuBoard }), () => ({ default: GpuBoardLoadFailed })));
+}
+function GpuBoardLoadFailed({ dispatch }: GpuBoardProps) {
+  useEffect(() => { dispatch({ type: "failure", reason: "creation" }); }, [dispatch]);
+  return null;
+}
 
 export interface CameraSource {
   /** transitionMs: > 0 화면 맞춤 미끄러짐 · 0 바로 옮김 · -1 움직임 아님(기기 배율 바뀜 — 조작 시각을 갱신하지 않는다) */
