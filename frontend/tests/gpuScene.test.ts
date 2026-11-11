@@ -1,7 +1,7 @@
 // GPU 판 그릴 모델(features/canvas/gpu/gpuScene) — 모습 열쇠·지원 판정·선 모양·단순화(docs/status/캔버스_GPU판설계_2026-11-11.md 계약 draw·geometry).
 import { describe, expect, it } from "vitest";
 import { buildGpuScene, edgeStyle, flattenPath, stableKey, type GpuSceneInput } from "../src/features/canvas/gpu/gpuScene";
-import type { BoardBuildContext } from "../src/lib/boardCanvasDraw";
+import { BOARD_KINDS, boardItemSources, buildBoardItem, drawBoardItem, type BoardBuildContext } from "../src/lib/boardCanvasDraw";
 import { edgePathMerged } from "../src/lib/sceneEdges";
 import type { SceneCard } from "../src/lib/scenes";
 
@@ -12,8 +12,9 @@ const build: BoardBuildContext = {
   hideFailed: false, lastViewedCardId: null, logo: "/logo.svg", refStatus: () => undefined, refHeldTitle: () => undefined,
 };
 const text = (id: string, x: number, body = "hello") => ({ id, kind: "text", x, y: 0, text: body }) as unknown as SceneCard;
+const boardDraw = { kinds: BOARD_KINDS, build: buildBoardItem, sources: boardItemSources, draw: drawBoardItem };
 const input = (over: Partial<GpuSceneInput> = {}): GpuSceneInput => ({
-  cards: [{ card: text("t", 0), w: 260, h: 120 }], build, selected: new Set(), glow: new Set(), offServer: new Set(), listKind: () => null,
+  cards: [{ card: text("t", 0), w: 260, h: 120 }], boardDraw, build, selected: new Set(), glow: new Set(), offServer: new Set(), listKind: () => null,
   lines: [], dots: [], groups: [], variantCount: () => 1, folderChip: () => undefined, refTypeLabel: () => "이미지", ...over,
 });
 

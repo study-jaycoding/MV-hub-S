@@ -143,7 +143,7 @@ import { hubHasFeature } from "../../lib/hubFeatures";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
 import { buildGpuScene, GpuBoard, GpuMeasure, GpuOverlayCard, useGpuBoardMode, type GpuMeasureItem, type GpuMeasureResult } from "../../features/canvas/api";
 import { flushSync } from "react-dom";
-import { BOARD_KINDS } from "../../lib/boardCanvasDraw";
+import { BOARD_KINDS, boardItemSources, buildBoardItem, drawBoardItem } from "../../lib/boardCanvasDraw";
 import { folderChipLabel } from "../../lib/folderLabel";
 import { refTypeLabel } from "../../lib/sceneMedia";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
@@ -195,6 +195,8 @@ import {
   type ResolveSceneSelectionTarget,
 } from "../../lib/resolveSelection";
 import { sceneCullNeedsCommit, sceneCullRect, sceneCullSetChanged, sceneIoPanelLeft, type SceneCullItems, type SceneViewRect } from "../../lib/sceneViewport";
+// GPU 판의 카드 몸통 그리기 — gpuScene 에 넘긴다(그쪽이 직접 import 하면 canvas api 를 쓰는 lib 모듈까지 무거워진다)
+const BOARD_DRAW = { kinds: BOARD_KINDS, build: buildBoardItem, sources: boardItemSources, draw: drawBoardItem };
 // ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
@@ -3195,6 +3197,7 @@ export function SceneBoard({
     const policy = currentModelPolicy();
     return buildGpuScene({
       cards: ordered.map((card) => ({ card, w: widthOf(card), h: heightOf(card) })),
+      boardDraw: BOARD_DRAW,
       build: {
         workspaceId: refWorkspaceId, fill, cardsById, resolvedEdges, genData,
         filters: { typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly },

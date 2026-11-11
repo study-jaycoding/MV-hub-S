@@ -2,7 +2,7 @@
 //  (docs/status/캔버스_GPU판설계_2026-11-11.md 「1단계 구현 설계」). 카드 모습은 boardCanvasDraw 가 그리고, 여기서는
 //  모습 열쇠(위치를 뺀 그릴 것의 JSON)로 다시 구울지만 가른다 — 위치·선택 테두리·카메라는 열쇠 밖이다.
 //  색·굵기는 styles/scene.css·history.css 의 값을 옮겨 적었다(바꾸면 같이 바꿀 것).
-import { buildBoardItem, boardItemSources, drawBoardItem, BOARD_KINDS, type BoardBuildContext, type BoardItem } from "../../../lib/boardCanvasDraw";
+import type { buildBoardItem, boardItemSources, drawBoardItem, BoardBuildContext, BoardItem } from "../../../lib/boardCanvasDraw";
 import type { SceneCard } from "../../../lib/scenes";
 import type { AtlasRequest } from "./cardAtlas";
 import type { GpuCardInstance, GpuDot, GpuLine, GpuQuad, GpuRect } from "./gpuRenderer";
@@ -103,9 +103,13 @@ export function dotColor(cls: string): Rgba {
 // ── 입력·출력 ────────────────────────────────────────────────────────────────────────
 export interface GpuSceneCard { card: SceneCard; w: number; h: number }
 export interface GpuSceneGroup { id: string; x: number; y: number; w: number; h: number; color: string | null; name: string; count: number; collapsed: boolean; selected: boolean }
+/** 카드 몸통 그리기(lib/boardCanvasDraw) — SceneBoard 가 넘긴다. 여기서 값으로 import 하면 canvas api 를 쓰는 lib 모듈(sceneBackup 등)이
+ *  무거운 그리기 모듈까지 불러와 첫 import 가 1.1→1.7초로 늘었다(11-11 실측, 공책 시험이 전체 시험에서 시간 초과) */
+export interface BoardDraw { kinds: ReadonlySet<string>; build: typeof buildBoardItem; sources: typeof boardItemSources; draw: typeof drawBoardItem }
 export interface GpuSceneInput {
   /** 그리는 순서(뒤가 앞) = DOM 의 카드 순서. 숨김·접힘은 SceneBoard 가 이미 뺀 목록 */
   cards: readonly GpuSceneCard[];
+  boardDraw: BoardDraw;
   build: BoardBuildContext;
   selected: ReadonlySet<string>;
   /** 방금 생성됨(라임 빛) */
@@ -301,12 +305,13 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
     textQuads.push(groupHeaderQuad(gv));
   }
 
+  const bd = input.boardDraw;
   input.cards.forEach(({ card, w, h }, z) => {
-    if (!BOARD_KINDS.has(card.kind)) {
+    if (!bd.kinds.has(card.kind)) {
       undrawable.push(card.id);
       return;
     }
-    const item = buildBoardItem(card, { id: card.id, x: card.x, y: card.y, w, h }, input.build);
+    const item = bd.build(card, { id: card.id, x: card.x, y: card.y, w, h }, input.build);
     if (!item) {
       undrawable.push(card.id);
       return;
@@ -315,8 +320,8 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
     const { id: _id, ...shape } = body; // 열쇠엔 id 를 넣지 않는다
     requests.push({
       id: card.id, key: appearanceKey(shape), w, h,
-      sources: boardItemSources(item),
-      draw: (g, imageOf) => drawBoardItem(g as never, body, imageOf),
+      sources: bd.sources(item),
+      draw: (g, imageOf) => bd.draw(g as never, body, imageOf),
     });
     const sel = input.selected.has(card.id);
     const glow = input.glow.has(card.id);
