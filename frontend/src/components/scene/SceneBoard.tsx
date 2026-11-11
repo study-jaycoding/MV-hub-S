@@ -3198,6 +3198,26 @@ export function SceneBoard({
     }
     bumpHeights((n) => n + 1); // 바뀐 것이 없어도 다음 묶음을 고르도록 한 번 다시 그린다(지문을 적었으니 같은 카드는 다시 안 고른다)
   };
+  /** GPU 단계의 읽기 동작 — 화면 좌표 아래 맨 앞 카드(그리는 쌓임과 같은 순서)의 크게 보기·정보. 덧판이 아직 안 떴거나 가려진 카드용. */
+  const gpuReadAt = (clientX: number, clientY: number, what: "preview" | "info") => {
+    const p = toCanvas(clientX, clientY);
+    const cards = gpuModel?.cards ?? [];
+    let top: { id: string; z: number } | null = null;
+    for (const c of cards) if (p.x >= c.x && p.x <= c.x + c.w && p.y >= c.y && p.y <= c.y + c.h && (!top || c.z > top.z)) top = c;
+    const card = top ? cardById(top.id) : undefined;
+    if (!card) return;
+    if (card.kind === "generation" && card.genId) {
+      const g = ownEntry(genData, card.genId);
+      const a = g?.assets?.[0];
+      if (!g || String(g.status) !== "done") return;
+      if (what === "info") onInfo?.({ kind: "generation", gen: g, x: clientX, y: clientY });
+      else if (a) getNodePreview(card.id)({ url: a.file_path, type: a.type, name: g.prompt.slice(0, 50), genId: g.id });
+    } else if (card.kind === "reference" && what === "preview") {
+      const r = card.refs?.[0];
+      const url = r ? refMediaSrc(r) : null;
+      if (r && url) onPreview?.({ url, type: refMediaType(r), name: r.name || "레퍼런스" });
+    }
+  };
   // 덧판(마우스 올린 카드 한 장, 읽기 형태) — GPU 단계에서만
   const [gpuOverlayId, setGpuOverlayId] = useState<string | null>(null);
   const gpuOverlayRef = useRef<HTMLDivElement>(null);
@@ -3246,6 +3266,9 @@ export function SceneBoard({
         }
         onMouseDown(e);
       }}
+      // GPU 보기 모드 — 덧판이 뜨기 전(또는 가려져 덧판이 안 뜨는 카드)의 더블클릭·휠클릭도 읽기 동작으로 받는다(사라지지 않게)
+      onDoubleClick={gpuView ? (e) => { if (!(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "preview"); } : undefined}
+      onAuxClick={gpuView ? (e) => { if (e.button === 1 && !(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "info"); } : undefined}
       onMouseMove={(e) => {
         lastMouseRef.current = { x: e.clientX, y: e.clientY, over: true };
       }}
@@ -3273,7 +3296,6 @@ export function SceneBoard({
           dispatch={gpu.dispatch}
           onHover={setGpuOverlayId}
           overlayPinned={gpuOverlayPinned}
-          lowLod={gpu.lowLod}
         />
       )}
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>

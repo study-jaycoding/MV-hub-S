@@ -2,7 +2,7 @@
 //  SceneBoard 가 그릴 모델(gpuScene)·모드 단계(gpuMode)를 주고, 여기서는 렌더러·아틀라스 수명, 프레임마다 굽기(예산 안)·그리기,
 //  준비 끝·켤 때 30번 검사·조작 중 긴 프레임·실패를 모드에 알리고, 마우스가 머문 카드를 덧판으로 고른다.
 //  카메라는 쓰지 않는다(읽기만) — useSceneViewport 의 카메라 출처가 화면을 옮길 때마다 알린다.
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import type { RefObject } from "react";
 import { flashMsg } from "../../../lib/flash";
 import { SCENE_LOD_PCT, type SceneCamera } from "../../../lib/sceneViewport";
@@ -37,8 +37,6 @@ export interface GpuBoardProps {
   onHover: (cardId: string | null) => void;
   /** 덧판 안에 초점·덧판에서 연 창이 있다 — 마우스가 떠나도 덧판을 두고 새 덧판도 안 띄운다 */
   overlayPinned: boolean;
-  /** 25% 이하 단순화 — hideLow 조각(결과 수 배지·폴더 이름표·회색 끝 점)을 그리지 않는다 */
-  lowLod: boolean;
 }
 
 /** 아틀라스와 같은 해상도 단계 — 화면 배율을 1.25배 넘게 늘려 그리지 않는 가장 작은 단계 */
@@ -94,6 +92,11 @@ export function GpuBoard(props: GpuBoardProps) {
     probeSent: -1,
     hit: null as HitIndex | null,
     hover: { id: null as string | null, timer: 0 },
+    // 25% 이하 단순화 — 판 안에서 정한다(React 상태로 두면 경계를 넘을 때마다 SceneBoard 가 통째로 다시 그려졌다: 11-11 실측 83ms 프레임)
+    lowLod: false,
+    lodTimer: 0,
+    sceneDirty: false, // 단순화가 바뀌어 버퍼를 다시 채울 것
+    bakedPrev: false, // 바로 앞 프레임에 구웠다 — 그 프레임 간격은 GPU 느림 판정에 세지 않는다
   });
 
   const fail = (reason: "creation" | "memory" | "context-lost") => {
@@ -154,6 +157,20 @@ export function GpuBoard(props: GpuBoardProps) {
     if (!s.raf && !s.failed) s.raf = requestAnimationFrame(frame);
   };
 
+  /** 버퍼를 다시 채운다 — 덧판이 덮는 카드는 감추고, 25% 이하면 hideLow 조각(결과 수 배지·폴더 이름표·회색 끝 점)을 뺀다 */
+  const applyScene = () => {
+    const s = st.current;
+    if (!s.renderer) return;
+    const { model, hiddenId } = live.current;
+    s.renderer.setScene({
+      cards: hiddenId ? model.cards.map((c) => (c.id === hiddenId ? { ...c, hidden: true } : c)) : model.cards,
+      lines: model.lines, rects: model.rects,
+      dots: s.lowLod ? model.dots.filter((d) => !d.hideLow) : model.dots,
+      quads: s.lowLod ? model.quads.filter((q) => !q.hideLow) : model.quads,
+      gridColor: [0, 0, 0, 0], // 점 격자는 DOM 층 그대로(.scene-grid)
+    });
+  };
+
   function frame(now: number) {
     const s = st.current;
     s.raf = 0;
@@ -174,16 +191,22 @@ export function GpuBoard(props: GpuBoardProps) {
       }
       s.dirty = true;
     }
+    if (s.sceneDirty) {
+      s.sceneDirty = false;
+      applyScene();
+      s.dirty = true;
+    }
     // 조작 중(카메라가 움직인 뒤 150ms 안)에는 굽지 않는다 — 이미 구운 그림을 늘리거나 줄여 그리고, 쉬면 또렷하게 다시 굽는다.
     //  굽기는 프레임 예산(4ms) 안이라도 느린 PC 에서는 그만큼 길어져 움직이는 프레임을 먹었다(11-11 격리 실측: CPU 4배에서 느린 GPU 잠금).
     const interacting = now - s.lastCameraAt < REST_MS;
-    let uploaded = 0, pending = 0;
+    let uploaded = 0, pending = 0, baked = 0;
     if (!interacting) {
       syncAtlas(false);
       try {
         const r = s.atlas.tick();
         uploaded = r.uploadedPx;
         pending = r.pending;
+        baked = r.baked;
       } catch {
         fail("memory");
         return;
@@ -208,8 +231,10 @@ export function GpuBoard(props: GpuBoardProps) {
         if (!st.current.failed) live.current.dispatch({ type: "probe", token, medianMs: median(ms) });
       });
     }
-    // 조작 중 긴 프레임(최근 10초 3번이면 모드가 잠근다) — 50ms 를 넘은 프레임만 알린다(그 밖엔 모드 상태가 안 바뀐다)
-    if (p.phase === "gpu" && gap > LONG_FRAME_MS && now - s.lastCameraAt < INTERACT_WINDOW_MS) p.dispatch({ type: "frame", now, ms: gap });
+    // 조작 중 긴 프레임(최근 10초 3번이면 모드가 잠근다 — 느린 GPU 판정) — 50ms 를 넘은 프레임만 알린다(그 밖엔 모드 상태가 안 바뀐다).
+    //  바로 앞 프레임에 구웠으면 세지 않는다: 그 간격은 CPU 굽기(쉰 뒤 다시 굽기)라 GPU 가 느린 것이 아니다.
+    if (p.phase === "gpu" && gap > LONG_FRAME_MS && now - s.lastCameraAt < INTERACT_WINDOW_MS && !s.bakedPrev) p.dispatch({ type: "frame", now, ms: gap });
+    s.bakedPrev = baked > 0 || uploaded > 0;
     const busy = pending > 0 || s.dirty || !!s.slide || (p.phase === "preparing" && s.preparedSent !== p.token) || now - s.lastCameraAt < INTERACT_WINDOW_MS;
     if (busy) kick();
     else s.lastFrameAt = 0; // 쉬는 동안의 간격을 다음 프레임의 긴 프레임으로 세지 않게
@@ -227,6 +252,7 @@ export function GpuBoard(props: GpuBoardProps) {
     }
     s.renderer = renderer;
     s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode: decodeImage });
+    s.lowLod = Math.round(live.current.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
     const board = live.current.boardRef.current;
     const measure = () => {
       const rect = board?.getBoundingClientRect();
@@ -242,6 +268,7 @@ export function GpuBoard(props: GpuBoardProps) {
       if (s.raf) cancelAnimationFrame(s.raf);
       s.raf = 0;
       clearTimeout(s.hover.timer);
+      clearTimeout(s.lodTimer);
       s.atlas?.dispose();
       renderer.destroy();
       s.atlas = null;
@@ -258,6 +285,15 @@ export function GpuBoard(props: GpuBoardProps) {
       if (transitionMs > 0) s.slide = { from: s.drawn ?? props.cameraSource.getSnapshot(), start: now, ms: transitionMs };
       s.lastCameraAt = now;
       s.dirty = true;
+      // 25% 이하 단순화 — 숨기기는 바로, 다시 보이기는 배율이 150ms 쉰 뒤(useSceneViewport 의 data-lod-low 와 같은 규칙)
+      const low = Math.round(props.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
+      if (low) {
+        clearTimeout(s.lodTimer);
+        if (!s.lowLod) { s.lowLod = true; s.sceneDirty = true; }
+      } else if (s.lowLod) {
+        clearTimeout(s.lodTimer);
+        s.lodTimer = window.setTimeout(() => { s.lowLod = false; s.sceneDirty = true; kick(); }, LOD_SHOW_MS);
+      }
       kick();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -278,14 +314,9 @@ export function GpuBoard(props: GpuBoardProps) {
   useLayoutEffect(() => {
     const s = st.current;
     if (!s.renderer || !s.atlas) return;
-    const { model, hiddenId, lowLod } = props;
-    s.renderer.setScene({
-      cards: hiddenId ? model.cards.map((c) => (c.id === hiddenId ? { ...c, hidden: true } : c)) : model.cards,
-      lines: model.lines, rects: model.rects,
-      dots: lowLod ? model.dots.filter((d) => !d.hideLow) : model.dots,
-      quads: lowLod ? model.quads.filter((q) => !q.hideLow) : model.quads,
-      gridColor: [0, 0, 0, 0], // 점 격자는 DOM 층 그대로(.scene-grid)
-    });
+    const { model } = props;
+    s.sceneDirty = false;
+    applyScene();
     s.hit = buildHitIndex(model.cards.map((c) => ({ id: c.id, x: c.x, y: c.y, w: c.w, h: c.h, z: c.z })));
     syncAtlas(true);
     if (props.phase !== "preparing" && !s.failed) {
@@ -296,7 +327,7 @@ export function GpuBoard(props: GpuBoardProps) {
     } else s.dirty = true;
     kick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.model, props.hiddenId, props.lowLod]);
+  }, [props.model, props.hiddenId]);
 
   // 단계가 바뀌면(준비 → 검사 → 그리기) 다시 돈다
   useEffect(() => {
@@ -363,7 +394,6 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
   modeRef.current = mode;
   const busyRef = useRef(o.busy);
   busyRef.current = o.busy;
-  const [lowLod, setLowLod] = useState(() => Math.round(o.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT);
   const quietTimer = useRef(0);
 
   useEffect(() => {
@@ -377,13 +407,12 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
   }, [o.flag, o.busy]);
   useEffect(() => () => clearTimeout(quietTimer.current), []);
 
-  // 배율 경계·25% 단순화 — 카메라 출처를 듣는다(표식 켬일 때만)
+  // 배율 경계 — 카메라 출처를 듣는다(표식 켬일 때만). 25% 단순화는 GPU 판 안에서 정한다(SceneBoard 를 다시 그리지 않게).
   useEffect(() => {
     if (!o.flag) return;
     const scaleOf = () => o.cameraSource.getSnapshot().z * (window.devicePixelRatio || 1);
     let band = zoomBand(scaleOf());
-    let low = Math.round(o.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
-    let tickTimer = 0, lodTimer = 0;
+    let tickTimer = 0;
     dispatch({ type: "zoom", scale: scaleOf(), now: performance.now(), zooming: false });
     const off = o.cameraSource.subscribe(() => {
       const now = performance.now();
@@ -398,27 +427,10 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
         clearTimeout(tickTimer);
         tickTimer = window.setTimeout(() => dispatch({ type: "tick", now: performance.now(), zooming: false }), 160);
       }
-      const nextLow = Math.round(o.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
-      if (nextLow === low) {
-        if (!nextLow) clearTimeout(lodTimer);
-        return;
-      }
-      if (nextLow) {
-        clearTimeout(lodTimer);
-        low = true;
-        setLowLod(true);
-      } else {
-        clearTimeout(lodTimer);
-        lodTimer = window.setTimeout(() => {
-          low = false;
-          setLowLod(false);
-        }, LOD_SHOW_MS);
-      }
     });
     return () => {
       off();
       clearTimeout(tickTimer);
-      clearTimeout(lodTimer);
     };
   }, [o.flag, o.cameraSource]);
 
@@ -459,7 +471,7 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
     dispatch({ type: "user-mode", mode: m.userDom ? "gpu" : "dom" });
   }, []);
 
-  return { mode, dispatch, lowLod, editAllowed: userEditAllowed(mode), noteInput, refuse, toggle };
+  return { mode, dispatch, editAllowed: userEditAllowed(mode), noteInput, refuse, toggle };
 }
 
 /** 카드 사각형 × 카메라 → 화면(보드 기준 CSS px) — GPU 단계에서 cardEls 대신(리스트 크게 보기 위치 등) */
