@@ -36,6 +36,23 @@ updated: 2026-11-11
 
 2단계 계약은 [화면 작업 계약](status/리졸브패널_2단계_화면_2026-11-11.md). 실제 플러그인·설치·Resolve 실측은 후속 단계다.
 
+리졸브 패널 3단계 플러그인:
+
+| 파일 | 책임 |
+|---|---|
+| `backend/app/services/resolve_panel_installer.py` | OS 잠금·SHA 검증·journal 복구·ProgramData 설치·릴리스 시작 조건·로컬 허브 주소 |
+| `backend/tests/test_resolve_panel_installer.py` | 임시 경로 설치·중단/복원·경쟁 잠금·시작 조건·로컬 API 시험 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/manifest.xml` | 정식 플러그인 Id·판·진입점 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/package.json` | Electron 진입점 선언 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/main.js` | 격리 창·현재 허브 출처·IPC 판정·네이티브 끌기·불통 재시도 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/preload.js` | 최상위 허브 프레임에만 동기 hello/끌기 다리 노출 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/rules.js` | URL·출처·IPC·판·매체 경로·창 위치 순수 판단 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/offline.html` | 허브 불통 시 재연결 안내 |
+| `backend/app/resources/resolve_panel/com.mvhub.resolve/img/drag.png` | 네이티브 끌기 아이콘 |
+| `frontend/tests/resolvePanelPluginRules.test.ts` | 플러그인 판단·신뢰 경계·main/preload 약속 시험 |
+
+3단계 계약은 [플러그인 작업 계약](status/리졸브패널_3단계_플러그인_2026-11-11.md). Studio 21.1 실측 전에는 릴리스 후보에 넣지 않는다.
+
 힉스필드 조직 사용량 1단계(관리자 대조 전용):
 
 | 파일 | 책임 |
