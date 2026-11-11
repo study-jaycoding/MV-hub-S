@@ -504,10 +504,12 @@ def _folder_at_path(root: Any, parts: tuple[str, ...]) -> Any | None:
     return folder
 
 
-def _subfolder(parent: Any, name: str, media_pool: Any) -> Any:
+def _subfolder(parent: Any, name: str, media_pool: Any, guard: Any = None) -> Any:
     existing = _find_subfolder(parent, name)
     if existing is not None:
         return existing
+    if guard:
+        guard()
     created = media_pool.AddSubFolder(parent, name)
     if not created:
         raise ResolveBridgeError(f"Resolve Media Pool 폴더를 만들 수 없습니다: {name}")
@@ -519,6 +521,8 @@ def _subfolder(parent: Any, name: str, media_pool: Any) -> Any:
             created.GetClipList() or []
         )
         delete_folders = getattr(media_pool, "DeleteFolders", None)
+        if guard:
+            guard()
         if (
             winner is not None
             and is_empty
@@ -532,11 +536,11 @@ def _subfolder(parent: Any, name: str, media_pool: Any) -> Any:
     return created
 
 
-def _destination_folder(media_pool: Any, root: Any, parts: list[str]) -> Any:
+def _destination_folder(media_pool: Any, root: Any, parts: list[str], guard: Any = None) -> Any:
     folder = root
     for raw_part in parts:
         part = _folder_name(raw_part, "미분류")
-        folder = _subfolder(folder, part, media_pool)
+        folder = _subfolder(folder, part, media_pool, guard)
     return folder
 
 
@@ -646,19 +650,36 @@ def parse_mvhub_clip_metadata(value: Any) -> dict[str, str] | None:
     return {"generation_id": generation_id, "project_id": project_id}
 
 
-def _stamp_mvhub_metadata(clip: Any, generation_id: str, project_id: str) -> bool:
-    """가져오기 성공과 독립된 best-effort 메타데이터 기록."""
-    setter = getattr(clip, "SetThirdPartyMetadata", None)
-    if not callable(setter) or not generation_id or not project_id:
-        return False
+def stamp_and_verify(clip: Any, generation_id: str, project_id: str, *, guard: Any = None) -> str:
+    """API 반환값 대신 되읽은 표시로 판정한다 — 21.1 dict 형을 먼저 쓴다."""
+    wanted = {"generation_id": generation_id, "project_id": project_id}
+
+    def read():
+        try:
+            return parse_mvhub_clip_metadata(clip.GetThirdPartyMetadata(MVHUB_METADATA_KEY))
+        except Exception:
+            return None
+
+    if not generation_id or not project_id:
+        return "failed"
+    if read() == wanted:
+        return "already"
     value = mvhub_clip_metadata(generation_id, project_id)
-    getter = getattr(clip, "GetThirdPartyMetadata", None)
-    try:
-        if callable(getter) and getter(MVHUB_METADATA_KEY) == value:
-            return False
-        return bool(setter(MVHUB_METADATA_KEY, value))
-    except Exception:  # noqa: BLE001 - 메타데이터 미지원이 원본 가져오기를 실패시키면 안 된다.
-        return False
+    for args in (({MVHUB_METADATA_KEY: value},), (MVHUB_METADATA_KEY, value)):
+        if guard:
+            guard()
+        try:
+            clip.SetThirdPartyMetadata(*args)
+        except Exception:
+            pass
+        if read() == wanted:
+            return "written"
+    return "failed"
+
+
+def _stamp_mvhub_metadata(clip: Any, generation_id: str, project_id: str) -> bool:
+    # 기존 반입은 새 표시가 생겼을 때만 보조 저장한다.
+    return stamp_and_verify(clip, generation_id, project_id) == "written"
 
 
 # Resolve 가 이미지 시퀀스로 묶을 수 있는 스틸 확장자. 판정은 manifest 필드가 아니라
@@ -1947,6 +1968,107 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             except Exception:  # noqa: BLE001 - 복원 실패가 원래 결과를 덮지 않게 한다.
                 pass
     return result
+
+
+def clips_by_path_all(folder: Any) -> dict[str, list[Any]]:
+    """목적 빈의 중복 항목도 빠짐없이 본다 — 하나라도 다른 표시면 쓰기 전에 막아야 한다."""
+    result: dict[str, list[Any]] = {}
+    for clip in _strict_list(folder.GetClipList):
+        path = _normal_path(_clip_file_path(clip))
+        if path:
+            result.setdefault(path, []).append(clip)
+    return result
+
+
+def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str, Any]:
+    """패널의 빈 선택·놓은 항목 확인 — 옮기기·정렬·반입은 하지 않는다."""
+    operation = payload["operation"]
+    try:
+        resolve = resolve or _connect_resolve()
+        manager = resolve.GetProjectManager()
+        project = manager.GetCurrentProject() if manager else None
+        if not project:
+            return {"state": "unavailable", "details": "열린 Resolve 프로젝트가 없습니다"}
+        project_id, project_name = _project_identity(project)
+        if not project_id:
+            return {"state": "unavailable", "details": "Resolve 프로젝트 ID를 확인하지 못했습니다"}
+        if operation == "adopt" and project_id != payload.get("resolve_project_id"):
+            return {"state": "project_changed", "details": "Resolve 프로젝트가 바뀌었습니다"}
+
+        def guard():
+            current = manager.GetCurrentProject()
+            if not current or _project_identity(current)[0] != project_id:
+                raise ResolveBridgeError("Resolve 프로젝트가 바뀌었습니다", code="project_changed")
+
+        pool = project.GetMediaPool()
+        root = pool.GetRootFolder()
+        result = {"resolve_project_id": project_id, "resolve_project_name": project_name}
+        if operation == "current-bin":
+            current = pool.GetCurrentFolder()
+            parts = _folder_path_from_root(root, current) if current else None
+            if parts is None or not _uid(current):
+                return {**result, "state": "unavailable"}
+            guard()
+            return {**result, "state": "ok", "bin_id": _uid(current), "bin_path": "/".join(parts)}
+
+        label = _folder_name(str(payload.get("project_name") or ""), payload["project_id"])
+        parts = [MEDIA_POOL_ROOT, label, *[
+            _folder_name(part, "미분류") for part in _folder_parts(payload["folder_path"])
+        ]]
+        # 빈 장부 경로는 기존 복구 관문을 건너뛰므로 여기서 명시적으로 거절한다.
+        if not payload.get("manifest_root"):
+            return {"state": "rebuild_recovery_pending", "code": "rebuild_recovery_pending",
+                    "details": "정렬 복구 기록 경로를 확인하지 못했습니다"}
+        guard()
+        _settle_recovery_record(payload, root, project_id, _path_identity((MEDIA_POOL_ROOT, label)))
+        target = _folder_at_path(root, tuple(parts))
+        if operation == "target":
+            if target is None:
+                if not payload.get("create"):
+                    return {**result, "state": "missing", "bin_path": "/".join(parts), "bin_id": ""}
+                target = _destination_folder(pool, root, parts, guard)
+            guard()
+            if not pool.SetCurrentFolder(target):
+                return {**result, "state": "unavailable", "details": "지금 빈 선택에 실패했습니다"}
+            current = pool.GetCurrentFolder()
+            guard()
+            if not _uid(target) or _uid(current) != _uid(target):
+                return {**result, "state": "unavailable", "details": "지금 빈을 되읽어 확인하지 못했습니다"}
+            return {**result, "state": "ok", "bin_path": "/".join(parts), "bin_id": _uid(target)}
+
+        path = _normal_path(payload["path"])
+        clips = clips_by_path_all(target).get(path, []) if target else []
+        if not clips:
+            def elsewhere(folder):
+                if clips_by_path_all(folder).get(path):
+                    return True
+                return any(elsewhere(child) for child in _strict_list(folder.GetSubFolderList))
+            return {**result, "state": "elsewhere" if elsewhere(root) else "not_seen", "details": {}}
+        conflicts = []
+        for clip in clips:
+            mark = parse_mvhub_clip_metadata(clip.GetThirdPartyMetadata(MVHUB_METADATA_KEY))
+            if mark and (mark["generation_id"] != payload["gen_id"] or mark["project_id"] != payload["project_id"]):
+                conflicts.append(mark)
+        if conflicts:
+            return {**result, "state": "conflict", "details": {"expected": payload["gen_id"], "found": conflicts}}
+        for clip in clips:
+            guard()
+            if stamp_and_verify(clip, payload["gen_id"], payload["project_id"], guard=guard) == "failed":
+                return {**result, "state": "stamp_failed", "details": "클립 표시를 되읽어 확인하지 못했습니다"}
+        guard()
+        try:
+            saved = manager.SaveProject()
+        except Exception:
+            saved = False
+        if not saved:
+            return {**result, "state": "save_failed", "details": "Resolve 프로젝트 저장을 확인하지 못했습니다"}
+        return {**result, "state": "in_bin", "bin_path": "/".join(parts),
+                "details": {"clip_ids": [_uid(clip) for clip in clips]}}
+    except ResolveBridgeError as exc:
+        state = exc.code if exc.code == "rebuild_recovery_pending" or (operation == "adopt" and exc.code == "project_changed") else ("unknown" if operation == "adopt" else "unavailable")
+        return {"state": state, "code": exc.code, "details": str(exc), **getattr(exc, "leftover", {})}
+    except Exception as exc:
+        return {"state": "unknown" if operation == "adopt" else "unavailable", "details": str(exc)}
 
 
 def _unavailable_import(message: str, code: str) -> dict[str, Any]:

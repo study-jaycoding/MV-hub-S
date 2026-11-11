@@ -105,6 +105,7 @@ from .routers import (
     registry_helper,
     release_update,
     resolve_integration,
+    resolve_panel,
     scenes,
     edit_docs,
     edit_shares,
@@ -821,6 +822,7 @@ app.include_router(publish.router)
 app.include_router(release_update.router)
 app.include_router(console.router)
 app.include_router(resolve_integration.router)
+app.include_router(resolve_panel.router)
 app.include_router(auth.router)
 app.include_router(db_transfer.router)
 app.include_router(account_cleanup.router)

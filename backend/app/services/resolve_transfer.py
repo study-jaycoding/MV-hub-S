@@ -654,6 +654,30 @@ def _copy_new(source: Path, dest: Path) -> bool:
             pass
 
 
+async def prepare_generation_files(
+    item: dict[str, Any], asset: dict[str, Any], source_root: Path,
+    gen_key: str, ext: str, books: export_names.Books, ident: export_names.Ident,
+    *, guard=None,
+) -> None:
+    """항목 하나의 파일만 준비한다 — 전송 장부·체크포인트는 호출자가 맡는다."""
+    dest = await asyncio.to_thread(_sent_copy, source_root, item["folder_path"], gen_key, books, ident)
+    written = False
+    if dest is not None:
+        if guard:
+            guard()
+        await asyncio.to_thread(_link_keys, books, item["folder_path"], ident)
+    else:
+        source = await _cached_source(asset)
+        if guard:
+            guard()
+        dest, written = await asyncio.to_thread(
+            _place_copy, source, source_root, item["folder_path"], gen_key, ext, books, ident,
+        )
+    item["filename"] = dest.name
+    item["local_path"] = str(dest)
+    item["status"] = "downloaded" if written else "skipped"
+
+
 async def transfer_generations(
     project_id: str,
     generations: list[dict[str, Any]],
@@ -750,27 +774,7 @@ async def transfer_generations(
     books = export_names.Books(source_root)  # 이름 장부 — 전송 한 건 동안 폴더별로 한 번만 읽는다
     for index, (item, asset, gen_key, ext, ident) in enumerate(work, 1):
         try:
-            # 전에 보낸 파일이 그대로 있으면 원본을 찾지 않고 그 파일을 쓴다.
-            dest = await asyncio.to_thread(_sent_copy, source_root, item["folder_path"], gen_key, books, ident)
-            written = False
-            if dest is not None:
-                await asyncio.to_thread(_link_keys, books, item["folder_path"], ident)
-            else:
-                source = await _cached_source(asset)
-                dest, written = await asyncio.to_thread(
-                    _place_copy,
-                    source,
-                    source_root,
-                    item["folder_path"],
-                    gen_key,
-                    ext,
-                    books,
-                    ident,
-                )
-            item["filename"] = dest.name
-            item["local_path"] = str(dest)
-            # skipped = 전에 보낸 파일이 그대로 있어 다시 복사하지 않았다(그 파일을 그대로 가져온다).
-            item["status"] = "downloaded" if written else "skipped"
+            await prepare_generation_files(item, asset, source_root, gen_key, ext, books, ident)
         except Exception as exc:  # noqa: BLE001 - 파일 1건 실패를 격리해 나머지는 계속 처리
             item["status"] = "error"
             item["error"] = str(exc)

@@ -32,7 +32,10 @@ class FakeClip:
     def GetThirdPartyMetadata(self, key=None):
         return self.third_party_metadata.get(key, "") if key else self.third_party_metadata
 
-    def SetThirdPartyMetadata(self, key, value):
+    def SetThirdPartyMetadata(self, key, value=None):
+        if isinstance(key, dict):
+            self.third_party_metadata.update(key)
+            return True
         self.third_party_metadata[key] = value
         return True
 

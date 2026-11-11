@@ -512,6 +512,46 @@ def run_resolve_project_open_isolated(
         )
 
 
+def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) -> dict[str, Any]:
+    """패널도 같은 변경 잠금을 쓴다 — 대기는 30초, 시작한 변경 자식은 끝까지 기다린다."""
+    reading = payload["operation"] == "current-bin"
+    failed_state = "unknown" if payload["operation"] == "adopt" else "unavailable"
+    deadline = time.monotonic() + 30
+    while True:
+        with resolve_mutation_slot(blocking=False) as acquired:
+            if acquired:
+                if before_start:
+                    rejected = before_start()
+                    if rejected:
+                        return rejected
+                if _resolve_is_closed():
+                    return {"state": "unavailable", "details": NOT_RUNNING_MESSAGE}
+                try:
+                    interpreter, _status, failure = _select_interpreter()
+                except (subprocess.TimeoutExpired, ResolveLaunching) as exc:
+                    return {"state": "unavailable", "details": str(exc)}
+                if not interpreter:
+                    return {"state": "unavailable", "details": _no_interpreter_message(failure)}
+                if before_start:
+                    rejected = before_start()
+                    if rejected:
+                        return rejected
+                try:
+                    completed = _run_child(
+                        interpreter, "app.services.resolve_panel_worker",
+                        timeout=8 if reading else None,
+                        input_text=json.dumps(payload, ensure_ascii=True),
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    return {"state": failed_state, "details": str(exc)}
+                result = _parse_result(completed.stdout, "MVHUB_RESOLVE_PANEL=")
+                return result or {"state": failed_state,
+                                  "details": _tail_text(completed.stderr) or "자식 실행 결과를 확인하지 못했습니다"}
+        if reading or time.monotonic() >= deadline:
+            return {"state": "busy"}
+        time.sleep(0.05)
+
+
 def _library_list_failed(error_code: str) -> dict[str, Any]:
     return {"status": "failed", "error_code": error_code, "names": []}
 
