@@ -279,6 +279,164 @@ describe("cardAtlas", () => {
     expect(h.atlas.cpuBytes()).toBe(0);
     expect(h.atlas.tick().baked).toBe(0);
   });
+
+  it("앞당겨 받은 그림으로 다음 tick에 여러 카드를 굽고 텍스처는 굽기 때 할당", async () => {
+    const h = harness();
+    const images = Array.from({ length: 6 }, () => bitmap());
+    h.decode.mockImplementation(async (src) => images[Number(src)]);
+    h.sync(images.map((_, i) => ({ ...h.request(String(i)), sources: [String(i)] })));
+    expect(h.atlas.tick()).toMatchObject({ baked: 0, pending: 6 });
+    expect(h.decode).toHaveBeenCalledTimes(6);
+    expect(h.uploader.ensurePage).not.toHaveBeenCalled();
+    await flush();
+    expect(h.atlas.cpuBytes()).toBe(6 * 8 * 8 * 4);
+    expect(h.atlas.tick()).toMatchObject({ baked: 6, pending: 0 });
+    expect(h.decode).toHaveBeenCalledTimes(6);
+    for (const image of images) expect(image.close).toHaveBeenCalledTimes(1);
+    expect(h.atlas.cpuBytes()).toBe(0);
+    expect(h.atlas.tick()).toEqual({ baked: 0, uploadedPx: 0, pending: 0 });
+  });
+
+  it("앞 카드가 디코드 대기여도 준비된 다음 카드를 먼저 굽는다", async () => {
+    const h = harness();
+    const slow = deferred<ImageBitmap | null>();
+    h.decode.mockImplementation((src) => src === "slow" ? slow.promise : Promise.resolve(bitmap()));
+    const a = { ...h.request("a"), sources: ["slow"] }, b = { ...h.request("b"), sources: ["fast"] };
+    h.sync([a, b]); h.atlas.tick(); await flush();
+    expect(h.atlas.tick()).toMatchObject({ baked: 1, pending: 1 });
+    expect(h.atlas.lookup("a")).toBeNull();
+    expect(h.atlas.lookup("b")).not.toBeNull();
+    slow.resolve(bitmap()); await flush();
+    expect(h.atlas.tick()).toMatchObject({ baked: 1, pending: 0 });
+  });
+
+  it("준비된 카드가 많아도 4ms 굽기·프레임 올리기 예산을 지킨다", async () => {
+    const h = harness({ uploadPx: 100 });
+    h.sync(["a", "b", "c"].map((id) => ({ ...h.request(id, 5, 5, 3), sources: [id] })));
+    h.atlas.tick(); await flush();
+    expect(h.atlas.tick()).toMatchObject({ baked: 2, uploadedPx: 50, pending: 1 });
+    expect(h.atlas.tick()).toMatchObject({ baked: 1, uploadedPx: 25, pending: 0 });
+    const pixels = harness({ uploadPx: 100 });
+    pixels.sync(["a", "b"].map((id) => ({ ...pixels.request(id, 8, 8), sources: [id] })));
+    pixels.atlas.tick(); await flush();
+    expect(pixels.atlas.tick()).toMatchObject({ baked: 1, uploadedPx: 64 });
+    expect(pixels.atlas.tick()).toMatchObject({ baked: 1, uploadedPx: 64, pending: 0 });
+  });
+
+  it("여러 카드 미리 받기도 디코드 합계는 6 이하, 빈 자리만 채운다", async () => {
+    const h = harness();
+    const pending = Array.from({ length: 12 }, () => deferred<ImageBitmap | null>());
+    h.decode.mockImplementation((src) => pending[Number(src)].promise);
+    h.sync(pending.map((_, i) => ({ ...h.request(String(i)), sources: [String(i)] })));
+    h.atlas.tick(); h.atlas.tick();
+    expect(h.decode).toHaveBeenCalledTimes(6);
+    pending[1].resolve(bitmap()); await flush();
+    expect(h.atlas.tick().baked).toBe(1);
+    expect(h.decode).toHaveBeenCalledTimes(7);
+    h.atlas.tick();
+    expect(h.decode).toHaveBeenCalledTimes(7);
+    h.atlas.dispose();
+    pending.forEach((p) => p.resolve(null)); await flush();
+  });
+
+  it("미리 받기 대상은 현재 카드와 대기열 앞 8장으로 제한", async () => {
+    const h = harness();
+    h.sync(Array.from({ length: 20 }, (_, i) => ({ ...h.request(String(i), 4, 4, 5), sources: [String(i)] })));
+    h.atlas.tick(); await flush();
+    for (let i = 0; i < 3; i++) { expect(h.atlas.tick().baked).toBe(1); await flush(); }
+    expect(h.decode.mock.calls.map(([src]) => Number(src))).toEqual(Array.from({ length: 12 }, (_, i) => i));
+    h.atlas.dispose();
+  });
+
+  it.each(["key", "width", "tier", "remove"])("sync에서 %s 변경은 미리 받은 비트맵을 즉시 닫는다", async (change) => {
+    const h = harness();
+    const aImage = bitmap(), bImage = bitmap();
+    h.decode.mockImplementation(async (src) => src === "a" ? aImage : bImage);
+    const a = { ...h.request("a", 40, 20, 5), sources: ["a"] }, b = { ...h.request("b"), sources: ["b"] };
+    h.sync([a, b]); h.atlas.tick(); await flush();
+    expect(h.atlas.tick().baked).toBe(1);
+    expect(bImage.close).not.toHaveBeenCalled();
+    h.sync(change === "remove" ? [a] : [a, { ...b, key: change === "key" ? "new" : b.key, w: change === "width" ? 80 : b.w }], change === "tier" ? 2 : 1);
+    expect(bImage.close).toHaveBeenCalledTimes(1);
+    expect(h.atlas.cpuBytes()).toBe(0);
+  });
+
+  it.each(["change", "reset", "dispose"])("%s 뒤 늦은 미리 받기 결과는 버린다", async (action) => {
+    const h = harness();
+    const late = deferred<ImageBitmap | null>();
+    h.decode.mockImplementation((src) => src === "b" ? late.promise : Promise.resolve(null));
+    const a = { ...h.request("a"), sources: ["a"] }, b = { ...h.request("b"), sources: ["b"] };
+    h.sync([a, b]); h.atlas.tick();
+    if (action === "change") h.sync([a, { ...b, key: "new" }]);
+    else if (action === "reset") h.atlas.reset(2);
+    else h.atlas.dispose();
+    const image = bitmap(); late.resolve(image); await flush();
+    expect(image.close).toHaveBeenCalledTimes(1);
+    expect(h.atlas.lookup("b")).toBeNull();
+    expect(h.atlas.cpuBytes()).toBe(0);
+    h.atlas.dispose();
+  });
+
+  it("CPU 예산 근처에서는 미리 받기만 멈추고 현재 카드부터 계속 처리", async () => {
+    const h = harness({ cpuBytes: 128 });
+    h.decode.mockImplementation(async () => bitmap(4, 4));
+    h.sync(["a", "b", "c"].map((id) => ({ ...h.request(id, 4, 4), sources: [id] })));
+    expect(() => h.atlas.tick()).not.toThrow();
+    expect(h.decode).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(h.atlas.cpuBytes()).toBe(64);
+    for (let i = 0; i < 3; i++) {
+      expect(h.atlas.tick()).toMatchObject({ baked: 1, pending: 2 - i });
+      await flush();
+      expect(h.atlas.cpuBytes()).toBeLessThanOrEqual(128);
+    }
+    expect(h.decode).toHaveBeenCalledTimes(3);
+  });
+
+  it("예상보다 큰 미리 받기 결과는 닫고 보류하며 throw하지 않는다", async () => {
+    const h = harness({ cpuBytes: 1024 });
+    const large = bitmap(16, 16);
+    h.decode.mockResolvedValueOnce(bitmap(4, 4)).mockResolvedValueOnce(large);
+    h.sync(["a", "b"].map((id) => ({ ...h.request(id, 4, 4), sources: [id] })));
+    h.atlas.tick(); await flush();
+    expect(large.close).toHaveBeenCalledTimes(1);
+    expect(h.atlas.cpuBytes()).toBe(64);
+    expect(() => h.atlas.tick()).not.toThrow();
+    expect(h.atlas.lookup("a")).not.toBeNull();
+    await flush();
+    expect(h.atlas.tick()).toMatchObject({ baked: 1, pending: 0 });
+  });
+
+  it("현재 카드에 필요한 메모리는 미리 받은 그림부터 놓아 확보한다", async () => {
+    const h = harness({ cpuBytes: 256 });
+    const current = deferred<ImageBitmap | null>(), next = deferred<ImageBitmap | null>();
+    h.decode.mockReturnValueOnce(current.promise).mockReturnValueOnce(next.promise);
+    h.sync(["a", "b"].map((id) => ({ ...h.request(id, 4, 4), sources: [id] })));
+    h.atlas.tick();
+    const ahead = bitmap(4, 4);
+    next.resolve(ahead); await flush();
+    expect(h.atlas.cpuBytes()).toBe(64);
+    current.resolve(bitmap(4, 10)); await flush();
+    expect(ahead.close).toHaveBeenCalledTimes(1);
+    expect(h.atlas.cpuBytes()).toBe(160);
+    expect(() => h.atlas.tick()).not.toThrow();
+    expect(h.atlas.lookup("a")).not.toBeNull();
+    h.atlas.dispose();
+  });
+
+  it.each(["reset", "dispose"])("%s는 이미 준비된 미리 받기 비트맵도 전부 닫는다", async (action) => {
+    const h = harness();
+    const images = [bitmap(), bitmap(), bitmap()];
+    h.decode.mockImplementation(async (src) => images[Number(src)]);
+    h.sync(images.map((_, i) => ({ ...h.request(String(i)), sources: [String(i)] })));
+    h.atlas.tick(); await flush();
+    expect(h.atlas.cpuBytes()).toBe(3 * 8 * 8 * 4);
+    if (action === "reset") h.atlas.reset(2);
+    else h.atlas.dispose();
+    for (const image of images) expect(image.close).toHaveBeenCalledTimes(1);
+    expect(h.atlas.cpuBytes()).toBe(0);
+    expect(h.atlas.tick()).toEqual({ baked: 0, uploadedPx: 0, pending: 0 });
+  });
 });
 
 function fakeGl(options: { compile?: boolean; link?: boolean; timer?: boolean } = {}) {

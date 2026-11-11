@@ -46,7 +46,7 @@ type Page = { id: number; size: number; free: Box[]; used: number };
 type Slot = Box & { page: Page };
 type Entry = { key: string; w: number; h: number; tier: number; slot: Slot; region: AtlasRegion };
 type Job = {
-  req: AtlasRequest; tier: number; slot: Slot; row: number; cancelled: boolean;
+  req: AtlasRequest; tier: number; slot: Slot | null; row: number; cancelled: boolean; generation: number;
   images: Map<string, ImageBitmap | null>; sources: string[]; next: number; loading: number;
 };
 
@@ -73,6 +73,8 @@ export function createCardAtlas(deps: {
   const pages = new Map<number, Page>();
   const entries = new Map<string, Entry>();
   const evicted = new Set<string>();
+  const prepared = new Map<string, Job>();
+  const prefetchBlocked = new Set<string>();
   let requests: AtlasRequest[] = [];
   let visible: ReadonlySet<string> = new Set();
   let scale = 1;
@@ -81,6 +83,7 @@ export function createCardAtlas(deps: {
   let disposed = false;
   let job: Job | null = null;
   let decodeCount = 0;
+  let decodeReservedBytes = 0;
   let bitmapBytes = 0;
   let canvasBytes = 0;
   let failure: Error | null = null;
@@ -164,48 +167,99 @@ export function createCardAtlas(deps: {
     j.images.clear();
   }
 
-  function cancelJob() {
-    if (!job) return;
-    job.cancelled = true;
-    closeImages(job);
-    release(job.slot);
-    job = null;
+  function cancelJob(j: Job | null = job) {
+    if (!j) return;
+    j.cancelled = true;
+    closeImages(j);
+    if (j.slot) release(j.slot);
+    prepared.delete(j.req.id);
+    if (j === job) { job = null; failure = null; }
+  }
+
+  function stripBytes(j: Job) {
+    const { w, h } = pixels(j.req, j.tier);
+    return w * Math.min(h - j.row, Math.floor(budget.uploadPx / w)) * 4;
+  }
+
+  function bakeReserve() {
+    let bytes = 0;
+    for (const j of prepared.values()) bytes = Math.max(bytes, stripBytes(j));
+    return bytes;
+  }
+
+  function trimPrefetch(bytes: number, keep: Job) {
+    for (const other of [...prepared.values()].reverse()) {
+      if (bitmapBytes + bytes + bakeReserve() <= budget.cpuBytes) break;
+      if (other === keep) continue;
+      prefetchBlocked.add(other.req.id);
+      cancelJob(other);
+    }
   }
 
   function decodeImages(j: Job) {
+    const { w } = pixels(j.req, j.tier);
     while (!j.cancelled && !failure && j.next < j.sources.length && decodeCount < budget.decodes) {
+      // 높이를 모르는 디코드는 정사각형 크기로 예약하고, 도착한 실제 바이트도 다시 검사한다.
+      const reserve = Math.min(budget.cpuBytes, w * w * 4);
+      if (j !== job && bitmapBytes + decodeReservedBytes + bakeReserve() + reserve > budget.cpuBytes) break;
       const src = j.sources[j.next++];
       decodeCount++;
+      decodeReservedBytes += reserve;
       j.loading++;
       const accept = (img: ImageBitmap | null) => {
         decodeCount--;
+        decodeReservedBytes -= reserve;
         j.loading--;
-        if (disposed || j.cancelled) { img?.close(); return; }
+        if (disposed || j.cancelled || j.generation !== generation) { img?.close(); return; }
         const bytes = img ? img.width * img.height * 4 : 0;
-        const stripBytes = j.slot.w * Math.min(j.slot.h - j.row, Math.floor(budget.uploadPx / j.slot.w)) * 4;
-        if (bytes + bitmapBytes + stripBytes > budget.cpuBytes) {
+        if (j === job) trimPrefetch(bytes, j);
+        if (bytes + bitmapBytes + bakeReserve() > budget.cpuBytes) {
           img?.close();
-          failure = new RangeError("Atlas decoded bitmap exceeds CPU budget");
+          if (j === job) failure = new RangeError("Atlas decoded bitmap exceeds CPU budget");
+          else { prefetchBlocked.add(j.req.id); cancelJob(j); }
         } else {
           bitmapBytes += bytes;
           j.images.set(src, img);
         }
       };
       // 동기 예외도 실패 이미지로 처리해 다른 그림의 준비를 막지 않는다.
-      try { Promise.resolve(deps.decode(src, j.slot.w)).then(accept, () => accept(null)); }
+      try { Promise.resolve(deps.decode(src, w)).then(accept, () => accept(null)); }
       catch { accept(null); }
     }
   }
 
+  function prepare(waiting: AtlasRequest[]) {
+    const first = waiting[0];
+    const head = waiting.slice(0, 9);
+    const ids = new Set(head.map((r) => r.id));
+    for (const j of prepared.values()) if (!ids.has(j.req.id)) cancelJob(j);
+    for (const r of head) {
+      if (!prepared.has(r.id) && (r === first || !prefetchBlocked.has(r.id))) {
+        prepared.set(r.id, {
+          req: { ...r }, tier: tierOf(r), slot: null, row: 0, cancelled: false, generation,
+          images: new Map(), sources: [...new Set(r.sources)], next: 0, loading: 0,
+        });
+      }
+    }
+    job = first ? prepared.get(first.id) ?? null : null;
+    if (job) decodeImages(job);
+    for (const r of head) {
+      const j = prepared.get(r.id);
+      if (j && j !== job) decodeImages(j);
+    }
+  }
+
   function reset(nextGeneration: number) {
-    cancelJob();
+    for (const j of prepared.values()) cancelJob(j);
     for (const p of pages.values()) deps.uploader.deletePage(p.id);
     pages.clear();
     entries.clear();
     evicted.clear();
+    prefetchBlocked.clear();
     requests = [];
     failure = null;
     generation = nextGeneration;
+    settled = false;
   }
 
   const atlas: CardAtlas = {
@@ -222,13 +276,17 @@ export function createCardAtlas(deps: {
       visible = new Set(visibleIds);
       scale = screenScale;
       settled = false;
-      if (job) {
-        const r = requests.find((v) => v.id === job!.req.id);
-        const visibleWaiting = !visible.has(job.req.id) && requests.some((v) => visible.has(v.id) && !matches(v, tierOf(v), entries.get(v.id)));
-        if (!r || r.key !== job.req.key || r.w !== job.req.w || r.h !== job.req.h || tierOf(r) !== job.tier || visibleWaiting) cancelJob();
+      const byId = new Map(requests.map((r) => [r.id, r]));
+      for (const j of prepared.values()) {
+        const r = byId.get(j.req.id);
+        if (!r || r.key !== j.req.key || r.w !== j.req.w || r.h !== j.req.h || tierOf(r) !== j.tier) cancelJob(j);
       }
+      prefetchBlocked.clear();
       for (const [id, e] of entries) if (!ids.has(id)) { entries.delete(id); release(e.slot); evicted.delete(id); }
       for (const id of evicted) if (!ids.has(id)) evicted.delete(id);
+      const first = requests.find((r) => visible.has(r.id) && !matches(r, tierOf(r), entries.get(r.id)))
+        ?? requests.find((r) => !evicted.has(r.id) && !matches(r, tierOf(r), entries.get(r.id)));
+      job = first ? prepared.get(first.id) ?? null : null;
     },
     tick() {
       if (disposed) return { baked: 0, uploadedPx: 0, pending: 0 };
@@ -238,24 +296,28 @@ export function createCardAtlas(deps: {
       let baked = 0, uploadedPx = 0;
       const waiting = requests.filter((r) => !matches(r, tierOf(r), entries.get(r.id)) && (visible.has(r.id) || !evicted.has(r.id)))
         .sort((a, b) => Number(visible.has(b.id)) - Number(visible.has(a.id)));
+      const bakedIds = new Set<string>();
+      prepare(waiting);
       while (deps.now() - start < budget.bakeMs) {
-        if (!job) {
-          const r = waiting.shift();
-          if (!r) break;
-          if (matches(r, tierOf(r), entries.get(r.id))) continue;
-          const tier = tierOf(r);
-          // 화면 밖 빈 자리를 채우다 보이는 카드의 교체를 막지 않는다.
-          if (!visible.has(r.id) && evicted.has(r.id)) continue;
-          const slot = allocate(r, tier);
-          job = { req: r, tier, slot, row: 0, cancelled: false, images: new Map(), sources: [...new Set(r.sources)], next: 0, loading: 0 };
+        const ready = waiting.find((r) => {
+          const j = prepared.get(r.id);
+          return j && !j.cancelled && !bakedIds.has(r.id) && !j.loading && j.next === j.sources.length;
+        });
+        const j = ready ? prepared.get(ready.id) : undefined;
+        if (!j || failure) break;
+        if (!visible.has(j.req.id) && evicted.has(j.req.id)) {
+          cancelJob(j);
+          waiting.splice(waiting.findIndex((r) => r.id === j.req.id), 1);
+          prepare(waiting);
+          continue;
         }
-        const j = job;
-        decodeImages(j);
-        if (j.loading || j.next < j.sources.length || failure) break;
-        const h = Math.min(j.slot.h - j.row, Math.floor(budget.uploadPx / j.slot.w));
-        const px = j.slot.w * h;
+        const sizePx = pixels(j.req, j.tier);
+        const h = Math.min(sizePx.h - j.row, Math.floor(budget.uploadPx / sizePx.w));
+        const px = sizePx.w * h;
         if (uploadedPx + px > budget.uploadPx) break;
-        if (bitmapBytes + px * 4 > budget.cpuBytes) { cancelJob(); throw new RangeError("Atlas baking buffer exceeds CPU budget"); }
+        trimPrefetch(0, j);
+        if (bitmapBytes + px * 4 > budget.cpuBytes) { cancelJob(j); throw new RangeError("Atlas baking buffer exceeds CPU budget"); }
+        j.slot ??= allocate(j.req, j.tier);
         let canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
         try {
           canvas = deps.makeCanvas(j.slot.w, h);
@@ -271,7 +333,7 @@ export function createCardAtlas(deps: {
           g.restore();
           deps.uploader.upload(j.slot.page.id, j.slot.x, j.slot.y + j.row, canvas, j.slot.w, h);
         } catch (error) {
-          cancelJob();
+          cancelJob(j);
           throw error;
         } finally {
           if (canvas) { canvas.width = 0; canvas.height = 0; } // 굽고 올린 뒤 놓는다(CPU 굽기 버퍼 예산)
@@ -279,12 +341,14 @@ export function createCardAtlas(deps: {
           closeImages(j);
         }
         baked++;
+        bakedIds.add(j.req.id);
         uploadedPx += px;
         j.row += h;
         if (j.row < j.slot.h) {
           // 띠 사이에는 비트맵을 놓고 다음 프레임에 필요한 크기로 다시 받는다.
           j.next = 0;
-          break;
+          prepare(waiting);
+          continue;
         }
         const old = entries.get(j.req.id);
         const s = j.slot, size = s.page.size;
@@ -295,10 +359,13 @@ export function createCardAtlas(deps: {
         if (old) release(old.slot);
         evicted.delete(j.req.id);
         const waitingIndex = waiting.findIndex((r) => r.id === j.req.id);
-        if (waitingIndex >= 0) waiting.splice(waitingIndex, 1);
-        job = null;
+        if (waitingIndex >= 0 && matches(j.req, tierOf(j.req), entries.get(j.req.id))) waiting.splice(waitingIndex, 1);
+        prepared.delete(j.req.id);
+        if (job === j) job = null;
+        prefetchBlocked.delete(j.req.id);
+        prepare(waiting);
       }
-      const pending = job ? 1 + waiting.length : waiting.length;
+      const pending = waiting.length;
       if (!pending) settled = true;
       return { baked, uploadedPx, pending };
     },
