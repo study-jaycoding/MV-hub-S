@@ -351,6 +351,28 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect(h.call("deleteVertexArray")).toHaveBeenCalledTimes(3);
   });
 
+  it("setHidden — 덧판 카드 한 장만 크기 0 으로 감추고 되살린다(버퍼 전체 다시 올림 없음)", () => {
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    const s = scene();
+    s.cards.push({ ...s.cards[0], id: "b", x: 50, w: 30, h: 15, z: 2 });
+    renderer.setScene(s);
+    void h.gl.bufferSubData; // 기록 함수는 처음 읽을 때 생긴다
+    h.call("bufferData").mockClear(); h.call("bufferSubData").mockClear();
+    renderer.setHidden("b");
+    expect(h.call("bufferData")).not.toHaveBeenCalled();
+    const sub = h.call("bufferSubData");
+    expect(sub).toHaveBeenCalledTimes(1);
+    expect(sub.mock.calls[0][1]).toBe((1 * 15 + 2) * 4); // 카드 칸 1(b)의 w·h 자리
+    expect([...(sub.mock.calls[0][2] as Float32Array)]).toEqual([0, 0]);
+    sub.mockClear();
+    renderer.setHidden("b"); // 같은 카드면 아무것도 안 함
+    expect(sub).not.toHaveBeenCalled();
+    renderer.setHidden(null);
+    expect(sub).toHaveBeenCalledTimes(1);
+    expect([...(sub.mock.calls[0][2] as Float32Array)]).toEqual([30, 15]); // 원래 크기로 되살림
+  });
+
   it("숨긴 카드 제외, 그룹→선→카드→포트→이름표 순서", () => {
     const h = fakeGl();
     const renderer = createGpuRenderer(h.canvas)!;
