@@ -177,6 +177,9 @@ export interface Scene {
   // 씬 파일로 받은 '보낸 사람 캔버스의 공간'(2026-09-29) — 그림을 그 공간 폴더부터 찾으라는 **힌트일 뿐**이다.
   // workspace 에 넣으면 남의 씬을 여는 것만으로 과금 공간이 바뀌거나 생성이 막혔다. 찾기 열쇠는 sceneRefWorkspaceId.
   refWorkspaceHint?: { id: string; name: string | null };
+  // 탭 폴더(Jay 2026-11-11) — 같은 폴더의 씬들이 같은 id·이름을 든다. 폴더 목록은 따로 없다(규칙은 sceneWorkspace 의 탭 폴더 절).
+  //  씬 파일 내보내기·가져오기에는 싣지 않는다(받는 쪽 탭 줄 정리라서).
+  tabFolder?: { id: string; name: string };
   // 옛 판 창과 엇갈려 따로 살려 둔 사본이라는 표식(recoverSceneConflicts) — id = 원래 씬, sum = 만들 때의 내용 지문.
   // 같은 씬이 또 엇갈렸을 때 '손대지 않은 사본'이면 새 탭을 늘리지 않고 이 탭을 갈아 끼우려고 둔다.
   recoveredFrom?: { id: string; sum: string };

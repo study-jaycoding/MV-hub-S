@@ -115,6 +115,32 @@ it("AUTH-on 로그인 전 기존 LoginScreen props", async () => {
   expect(mocks.login.mock.calls[0][0]).toMatchObject({ config: { auth_enabled: true }, onAuthed: expect.any(Function) });
 });
 
+it.each(["timer", "focus"])("첫 authConfig 실패 뒤 %s 재시도로 열림", async kind => {
+  mocks.config.mockRejectedValueOnce(new Error("offline")); await render();
+  expect(mocks.identity).not.toHaveBeenCalled();
+  const pendingIdentity = deferred<typeof identity>(); mocks.identity.mockReturnValueOnce(pendingIdentity.promise);
+  if (kind === "timer") await tick(3000);
+  else { await act(async () => window.dispatchEvent(new Event("focus"))); await flush(); }
+  // identity의 문맥 초기화가 오기 전에도 인증 재시도 성공이 옛 오류를 지워야 한다.
+  expect(host.textContent).not.toContain("offline");
+  await act(async () => pendingIdentity.resolve(identity)); await flush();
+  expect(host.querySelectorAll("article")).toHaveLength(1); expect(mocks.config).toHaveBeenCalledTimes(2);
+  expect(host.textContent).not.toContain("offline");
+});
+
+it.each([true, false])("not_prepared 재준비가 먼저이고 성공 %s의 결과만 표시", async success => {
+  await select(); await act(async () => control.prepareCard("g"));
+  const preparing = deferred<{ state: string; gen_id: string; path?: string; error?: string }>();
+  mocks.prepare.mockReturnValueOnce(preparing.promise);
+  mocks.adopt.mockResolvedValueOnce({ state: "not_prepared" });
+  act(() => { void control.adopt("g"); }); await tick(1000);
+  expect(control.cards.g.message).toBe("NAS 준비 중"); expect(control.cards.g.retry).toBe(false);
+  await act(async () => preparing.resolve(success ? { state: "prepared", gen_id: "g", path: "Z:/file.mp4" } : { state: "failed", gen_id: "g", error: "disk full" }));
+  await tick(5000);
+  expect(mocks.adopt).toHaveBeenCalledTimes(success ? 2 : 1);
+  expect(control.cards.g.message).toContain(success ? "리졸브 빈에 있음" : "disk full");
+});
+
 it.each([null, STORAGE_KEYS.authToken])("다른 창 로그아웃 %s는 메모리만 비우고 새 로그인 저장값을 보존", async key => {
   mocks.config.mockResolvedValue({ auth_enabled: true, has_accounts: true }); mocks.token = "old";
   await render();

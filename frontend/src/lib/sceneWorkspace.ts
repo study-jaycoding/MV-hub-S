@@ -159,3 +159,131 @@ export function applySceneMove(scenes: readonly Scene[], move: SceneMove): Scene
   const next = moveItem(scenes, from, to);
   return next === scenes ? null : next;
 }
+
+// ── 탭 폴더(Jay 2026-11-11) ──────────────────────────────────────────────
+// 폴더 = 같은 Scene.tabFolder(id·이름)를 든 씬들. 폴더 목록·폴더 순서는 따로 저장하지 않는다 —
+//  폴더는 첫 탭의 순서 자리에 놓이고, 이름은 첫 탭이 든 것을 쓴다. 넣고 빼기는 끌기로만(SceneBar).
+
+/** 탭 폴더 — 판정은 id, 이름은 표시용. */
+export interface TabFolder {
+  id: string;
+  name: string;
+}
+
+/** 저장값 정규화 — 모양이 아니면 폴더 없음(옛 백업·손상값은 그냥 줄의 탭으로). 이름이 비면 '폴더'. */
+export function normalizeTabFolder(value: unknown): TabFolder | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { id, name } = value as { id?: unknown; name?: unknown };
+  if (typeof id !== "string" || !id) return undefined;
+  return { id, name: typeof name === "string" && name.trim() ? name : "폴더" };
+}
+
+/** 탭 줄 한 칸. inFolder = 폴더 안이지만 지금 보고 있어 그 폴더 바로 뒤에 꺼내 보이는 탭. */
+export type TabRowItem =
+  | { kind: "tab"; key: string; scene: Scene; inFolder?: TabFolder }
+  | { kind: "folder"; key: string; folder: TabFolder; members: Scene[] };
+
+/** 탭 줄 차례 — 폴더는 첫 탭 자리에 한 번, 보는 탭은 자기 폴더 바로 뒤, 빈 폴더(이 창에서 막 만든 것)는 맨 뒤. */
+export function tabRowItems(
+  scenes: readonly Scene[],
+  activeId: string | null,
+  emptyFolders: readonly TabFolder[] = [],
+): TabRowItem[] {
+  const items: TabRowItem[] = [];
+  const folders = new Map<string, Extract<TabRowItem, { kind: "folder" }>>();
+  for (const scene of scenes) {
+    const folder = normalizeTabFolder(scene.tabFolder);
+    if (!folder) {
+      items.push({ kind: "tab", key: `t:${scene.id}`, scene });
+      continue;
+    }
+    let item = folders.get(folder.id);
+    if (!item) {
+      item = { kind: "folder", key: `f:${folder.id}`, folder, members: [] };
+      folders.set(folder.id, item);
+      items.push(item);
+    }
+    item.members.push(scene);
+  }
+  const active = activeId ? scenes.find((scene) => scene.id === activeId) : undefined;
+  const activeFolder = active ? folders.get(normalizeTabFolder(active.tabFolder)?.id ?? "") : undefined;
+  if (active && activeFolder) {
+    items.splice(items.indexOf(activeFolder) + 1, 0, { kind: "tab", key: `t:${active.id}`, scene: active, inFolder: activeFolder.folder });
+  }
+  const shown = new Set(folders.keys());
+  for (const folder of emptyFolders) {
+    if (shown.has(folder.id)) continue;
+    shown.add(folder.id);
+    items.push({ kind: "folder", key: `f:${folder.id}`, folder, members: [] });
+  }
+  return items;
+}
+
+/** 폴더 연산 — 탭 순서처럼 최신 목록 위에서 다시 적용된다(updateScenesWith). 바뀔 것이 없거나 대상이 사라졌으면 null(저장 안 함). */
+export type TabFolderOp =
+  // 그 씬을 폴더에 넣거나(folder null = 빼기) beforeId 앞으로 옮긴다(null = 맨 뒤, 자기 id = 제자리)
+  | { type: "put"; id: string; folder: TabFolder | null; beforeId: string | null }
+  | { type: "rename"; folderId: string; name: string }
+  // 폴더 풀기 — 안의 탭은 제 순서 자리에서 줄로 나온다
+  | { type: "ungroup"; folderId: string }
+  // 폴더째 옮기기 — 안의 탭 순서는 그대로 beforeId 앞에 모인다
+  | { type: "moveFolder"; folderId: string; beforeId: string | null }
+  // 폴더 안 순서 — 그 씬을 같은 폴더의 beforeId 앞으로(null = 폴더 맨 끝). 폴더 탭들이 차지한 자리 안에서만 바꿔 폴더 자리는 그대로다
+  | { type: "order"; folderId: string; id: string; beforeId: string | null };
+
+function withTabFolder(scene: Scene, folder: TabFolder | undefined): Scene {
+  if (folder) return { ...scene, tabFolder: { id: folder.id, name: folder.name } };
+  const next = { ...scene };
+  delete next.tabFolder;
+  return next;
+}
+
+const inTabFolder = (scene: Scene, folderId: string) => normalizeTabFolder(scene.tabFolder)?.id === folderId;
+
+export function applyTabFolderOp(scenes: readonly Scene[], op: TabFolderOp): Scene[] | null {
+  if (op.type === "put") {
+    const from = scenes.findIndex((scene) => scene.id === op.id);
+    if (from < 0) return null;
+    const to = op.beforeId ? scenes.findIndex((scene) => scene.id === op.beforeId) : scenes.length;
+    if (to < 0) return null;
+    const current = normalizeTabFolder(scenes[from].tabFolder);
+    const same = op.folder ? current?.id === op.folder.id && current.name === op.folder.name : !current;
+    const placed: readonly Scene[] = same
+      ? scenes
+      : scenes.map((scene, index) => (index === from ? withTabFolder(scene, op.folder ?? undefined) : scene));
+    const next = moveItem(placed, from, to);
+    return next === scenes ? null : next;
+  }
+  if (op.type === "moveFolder") {
+    const members = scenes.filter((scene) => inTabFolder(scene, op.folderId));
+    if (!members.length || members.some((scene) => scene.id === op.beforeId)) return null;
+    const rest = scenes.filter((scene) => !inTabFolder(scene, op.folderId));
+    const at = op.beforeId ? rest.findIndex((scene) => scene.id === op.beforeId) : rest.length;
+    if (at < 0) return null;
+    const next = [...rest.slice(0, at), ...members, ...rest.slice(at)];
+    return next.every((scene, index) => scene === scenes[index]) ? null : next;
+  }
+  if (op.type === "order") {
+    const slots = scenes.flatMap((scene, index) => (inTabFolder(scene, op.folderId) ? [index] : []));
+    const members = slots.map((index) => scenes[index]);
+    const from = members.findIndex((scene) => scene.id === op.id);
+    const to = op.beforeId ? members.findIndex((scene) => scene.id === op.beforeId) : members.length;
+    if (from < 0 || to < 0) return null;
+    const moved = moveItem(members, from, to);
+    if (moved === members) return null;
+    const next = scenes.slice();
+    slots.forEach((slot, index) => {
+      next[slot] = moved[index];
+    });
+    return next;
+  }
+  const name = op.type === "rename" ? op.name.trim() : "";
+  if (op.type === "rename" && !name) return null;
+  let changed = false;
+  const next = scenes.map((scene) => {
+    if (!inTabFolder(scene, op.folderId) || (op.type === "rename" && scene.tabFolder?.name === name)) return scene;
+    changed = true;
+    return withTabFolder(scene, op.type === "rename" ? { id: op.folderId, name } : undefined);
+  });
+  return changed ? next : null;
+}

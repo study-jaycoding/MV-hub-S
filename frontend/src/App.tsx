@@ -279,7 +279,7 @@ export default function App() {
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     flushScenePending, selectScene, addScene, importSceneSnapshot, relinkSceneRefsNow, findSceneRefs, renameScene,
     removeSceneById,
-    canvasDocument, writeBoardSnapshot, refreshSceneById, reorderScenes, setSceneWorkspace, backupOnly, importBackupScenes,
+    canvasDocument, writeBoardSnapshot, refreshSceneById, reorderScenes, changeTabFolder, setSceneWorkspace, backupOnly, importBackupScenes,
     sceneSaveFailing, sceneBackupSkippedIds,
   } = useSceneCoordination(flash, canvasFloating);
   // 위에서 고른 워크스페이스가 바뀌면 탭에 공간이 없는 씬의 참조를 새 공간으로 한 번 묻는다(2026-10-01 점검 R2-2).
@@ -2874,6 +2874,7 @@ export default function App() {
               //  여기서는 그 관문을 감싸 '지정된 워크스페이스로 함께 전환'만 덧붙인다.
               onSelect={selectSceneWithWorkspace}
               onReorder={(move: SceneMove) => reorderScenes(move)}
+              onTabFolder={changeTabFolder}
               onAssignWorkspace={(sceneId: string, workspace: SceneWorkspace | null) =>
                 setSceneWorkspace(sceneId, workspace)
               }

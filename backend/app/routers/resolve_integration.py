@@ -11,7 +11,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import _proxy
-from .. import active_account, repo
+from .. import active_account, config, repo
+from ..services import resolve_panel_installer
 from ..deps import (
     account_scope_uid,
     batch_view_member_projects,
@@ -159,6 +160,28 @@ def post_resolve_script_install(request: Request):
     try:
         return install_resolve_script()
     except ResolveScriptInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/panel-plugin")
+def get_resolve_panel_plugin(request: Request):
+    _require_local_resolve(request)
+    try:
+        return resolve_panel_installer.resolve_panel_plugin_status()
+    except resolve_panel_installer.ResolvePanelInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/panel-plugin/install")
+def post_resolve_panel_plugin_install(request: Request):
+    _require_local_resolve(request)
+    try:
+        origin = request.headers.get("origin", "")
+        if resolve_panel_installer.hub_origin(origin) is None:
+            origin = f"http://127.0.0.1:{config.PORT}"
+        resolve_panel_installer.write_hub_json(origin)
+        return resolve_panel_installer.install_resolve_panel_plugin()
+    except (OSError, resolve_panel_installer.ResolvePanelInstallError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

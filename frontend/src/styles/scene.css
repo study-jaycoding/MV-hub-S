@@ -2013,3 +2013,52 @@
 .scene-keep-desc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
 .scene-keep-desc-head .assets-x { flex-shrink: 0; }
 .scene-keep-desc-body { font-size: 14px; line-height: 1.6; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; }
+
+/* 탭 폴더(Jay 2026-11-11 시안 v4) — '+' 우클릭 [씬 추가 · 폴더 추가], 탭을 끌어 넣고 뺀다. 폴더 칸 = 북마크 폴더처럼 아이콘 + 이름 + 탭 수.
+   보는 탭이 든 폴더는 테두리·아이콘이 라임(그 탭은 폴더 바로 옆에 라임 탭으로 남는다). 색은 한 가지. */
+.scene-tab-icon { width: 15px; height: 15px; flex: none; color: #c9ccd3; }
+.scene-tab-folder {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; margin: 0; padding: 0 10px 0 8px; flex: none;
+  border-radius: 8px; border: 1px solid var(--border2); background: rgba(255, 255, 255, 0.03);
+  color: #d3d6dc; font-size: 11.5px; font-weight: 700; white-space: nowrap; cursor: pointer; touch-action: none;
+}
+.scene-tab-folder:hover { color: var(--text); border-color: rgba(var(--accent-rgb), 0.55); }
+.scene-tab-folder-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.scene-tab-folder-count { color: var(--muted2); font-size: 10.5px; font-weight: 700; }
+.scene-tab-folder.open { background: rgba(255, 255, 255, 0.10); color: #fff; }
+.scene-tab-folder.has-cur { border-color: rgba(var(--accent-rgb), 0.6); }
+.scene-tab-folder.has-cur .scene-tab-icon { color: var(--accent); }
+/* 끄는 탭을 놓으면 이 폴더로 들어간다 */
+.scene-tab-folder.drop { outline: 2px solid #fff; outline-offset: 2px; background: rgba(255, 255, 255, 0.10); }
+.scene-tab-folder.dragging { opacity: 0.45; }
+.scene-tab-folder.editing { padding-right: 4px; cursor: default; }
+/* 소속 표시(Jay 2026-11-11 A안) — 보는 탭이 폴더 안이면 폴더 칸과 그 탭이 붙은 한 알약, 라임 테두리가 둘을 함께 두른다.
+   감싼 칸에 overflow 를 쓰지 않고 안쪽 칸의 모서리를 깎는다 — 끄는 탭을 놓을 때의 하얀 테두리(outline)가 잘리지 않게. */
+.scene-tab-folder-join { display: inline-flex; align-items: stretch; flex: none; border: 1px solid var(--accent); border-radius: 9px; }
+.scene-tab-folder-join .scene-tab-folder {
+  height: auto; border: 0; border-radius: 8px 0 0 8px; padding-right: 9px; background: rgba(var(--accent-rgb), 0.12); color: #e9edd8;
+}
+.scene-tab-folder-join .scene-tab-folder.open { background: rgba(var(--accent-rgb), 0.22); }
+.scene-tab-folder-join .scene-tab-folder-count { color: rgba(var(--accent-rgb), 0.7); }
+.scene-tab-folder-join .scene-tab-wrap { border: 0; border-radius: 0 8px 8px 0; }
+/* 떠 있는 작은 메뉴('+' 우클릭 · 폴더 우클릭 · 폴더 안 목록) */
+.scene-tab-menu {
+  position: fixed; z-index: 60; display: grid; gap: 2px; min-width: 150px; max-width: 280px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55); font-size: 12.5px;
+}
+.scene-tab-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 30px; margin: 0; padding: 0 10px; border: 0; border-radius: 8px;
+  background: transparent; color: #e3e5ea; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; touch-action: none;
+}
+.scene-tab-menu-item:hover, .scene-tab-menu-item:focus-visible { background: rgba(255, 255, 255, 0.08); }
+.scene-tab-menu-item.cur { color: var(--accent); font-weight: 800; }
+.scene-tab-menu-item.dragging { opacity: 0.3; }
+/* 폴더 안 순서 삽입선 — 줄 위·아래 테두리로 긋는다(새 요소를 넣으면 목록이 들썩여 놓을 자리가 흔들린다) */
+.scene-tab-menu-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.scene-tab-menu-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.scene-tab-menu-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.scene-tab-menu-key { margin-left: auto; padding-left: 12px; color: var(--muted); font-size: 11px; }
+.scene-tab-menu-empty { padding: 6px 10px; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.scene-tab-menu-sep { height: 1px; margin: 4px; background: var(--border2); }
+.scene-tab-menu .scene-name-input { height: 26px; max-width: none; margin: 2px; padding: 0 9px; border: 1px solid var(--border2); font-size: 12px; font-weight: 800; }
+.scene-tab-menu .scene-name-input:focus { border-color: var(--accent); }

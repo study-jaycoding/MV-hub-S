@@ -7,6 +7,23 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "리졸브 안 MV 창": "MV window inside Resolve",
+  "설치 상태를 확인 중입니다": "Checking installation",
+  "설치됨": "Installed",
+  "옛 판": "Older version",
+  "설치 안 됨": "Not installed",
+  "다음 시작 때 다시 설치": "Retry installation on next start",
+  "권한이 없습니다 — 관리자가 폴더 권한을 열어야 합니다": "Permission denied — an administrator must grant folder access",
+  "다른 설치가 진행 중": "Another installation is running",
+  "망가진 설치 — 보존본": "Damaged installation — backup",
+  "더 새 판": "Newer version",
+  "이 깔려 있어 그대로 둡니다": "is installed and will be kept",
+  "이 앱": "This app",
+  "설치로 맞추기": "Install to match this app",
+  "MV가 깐 것이 아닌 폴더가 있어 손대지 않았습니다": "An unmanaged folder was left untouched",
+  "리졸브가 없는 PC": "Resolve is not installed on this PC",
+  "설치 파일을 바꿨습니다": "Installation files changed",
+  "그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다": "Restart Resolve if you have not restarted it since that time",
   "리졸브의 MV Hub 창에서만 끌어 넣을 수 있습니다": "Drag from the MV Hub window inside Resolve",
   "리졸브 창의 판이 맞지 않습니다 — 리졸브를 다시 켜 주세요": "The Resolve window version is incompatible — restart Resolve",
   "리졸브 보내기 정렬 복구가 끝나지 않았습니다 — 복구 뒤 다시": "Resolve folder recovery is pending — retry after recovery",

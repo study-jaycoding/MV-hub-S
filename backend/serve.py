@@ -151,6 +151,11 @@ def main() -> None:
     from app.services import open_link
     open_link.publish()  # sockets are bound/listening; direct uvicorn never publishes
     try:
+        from app.services.resolve_panel_installer import start_background_install
+        start_background_install()
+    except Exception:
+        pass  # 선택 기능의 설치 실패가 허브 리스너 시작을 막지 않게 한다.
+    try:
         _run_server(server, sockets)
     finally:
         open_link.session = None

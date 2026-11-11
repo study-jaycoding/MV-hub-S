@@ -55,6 +55,9 @@ def note_sequence(ctx: dict, seq: int, channel: str, window: str = "") -> None:
             del _sequences[old]
     key = (*context, window, channel)
     _sequences[key] = max(seq, _sequences.get(key, -1))
+    # 한 채널만 뒤로 보내면 같은 창의 다른 채널 때문에 오래된 창으로 오인한다.
+    for recent in [old for old in _sequences if old[:4] == (*context, window)]:
+        _sequences[recent] = _sequences.pop(recent)
     windows = list(dict.fromkeys(old[3] for old in _sequences if old[:3] == context))
     for expired in windows[:-64]:
         for old in list(_sequences):
