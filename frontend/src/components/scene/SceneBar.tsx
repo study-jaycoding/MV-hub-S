@@ -308,7 +308,10 @@ export function SceneBar({
     // 예약한다 — Esc 로 취소하고 버튼을 나중에 놓으면, 그 사이 타이머가 풀려 클릭이 통과해
     // 씬이 열리고 워크스페이스까지 바뀐다(코덱스 P2).
     suppressClickRef.current = true;
-    if (current.fromList) setOpenFolder(null); // 목록에서 끈 뒤에는 목록을 닫는다(놓았든 취소했든)
+    // 목록에서 끈 탭이 폴더를 떠날 때(탭 줄·다른 폴더에 놓음)만 목록을 닫는다 — 목록 안 순서 바꾸기·취소 뒤에는 열어 둔다(Jay 2026-11-11)
+    if (commit && current.fromList && current.listBeforeId === undefined && (current.dropBeforeKey !== undefined || current.dropFolderId)) {
+      setOpenFolder(null);
+    }
     if (commit) commitDrop(current);
   };
 

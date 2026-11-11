@@ -1,28 +1,67 @@
-.resolve-panel { color: var(--text, #e8e8e8); background: var(--bg, #17191b); height: 100dvh; display: flex; flex-direction: column; font-size: 12px; overflow: hidden; }
-.resolve-panel-head { padding: 15px 14px 10px; border-bottom: 1px solid var(--border, #333); flex: none; }
-.resolve-panel-head > strong { display: block; font-size: 19px; margin-bottom: 12px; }
-.resolve-panel-head > strong span { font-size: 11px; color: var(--muted, #999); font-weight: 400; margin-left: 6px; }
-.resolve-panel-pickers { display: flex; align-items: center; gap: 7px; }
-.resolve-panel-pickers select { min-width: 0; width: 48%; color: inherit; background: var(--panel, #232629); border: 1px solid var(--border, #3b3d40); border-radius: 5px; padding: 6px; }
-.resolve-panel-status { color: var(--accent, #c4e84a); margin-top: 10px; overflow-wrap: anywhere; }
-.resolve-panel-head p { color: var(--muted, #a3a5a7); font-size: 11px; line-height: 1.5; margin: 7px 0 0; }
-.resolve-panel-warning { margin-top: 8px; padding: 7px; background: var(--panel, #232629); line-height: 1.5; overflow-wrap: anywhere; }
+/* 리졸브 안 MV 창 — 다빈치 미디어 풀 모양(Jay 2026-11-11): 왼쪽 빈 트리 · 오른쪽 도구 줄과 썸네일 격자. 색은 리졸브 미디어 풀의 회색 판. */
+.resolve-panel { color: #d4d4d6; background: #1f2023; height: 100dvh; display: flex; flex-direction: column; font-size: 12px; overflow: hidden; }
+.resolve-panel-head { padding: 10px 12px 8px; background: #28292d; border-bottom: 1px solid #333438; flex: none; }
+.resolve-panel-head > strong { display: block; font-size: 15px; color: #e6e6e8; }
+.resolve-panel-head > strong span { font-size: 11px; color: #8a8b90; font-weight: 400; margin-left: 6px; }
+.resolve-panel-status { color: var(--accent, #c4e84a); margin-top: 6px; overflow-wrap: anywhere; }
+.resolve-panel-head p { color: #8a8b90; font-size: 11px; line-height: 1.5; margin: 4px 0 0; }
+.resolve-panel-warning, .rp-flash { margin-top: 6px; padding: 6px 7px; background: #1f2023; line-height: 1.5; overflow-wrap: anywhere; }
+.rp-flash { white-space: pre-line; }
+.rp-flash button { float: right; color: inherit; background: none; border: 0; }
 .resolve-panel button { font: inherit; cursor: pointer; }
-.resolve-panel-warning button, .resolve-panel-card-state button { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 4px 7px; margin-left: 6px; }
-.resolve-panel button:focus-visible, .resolve-panel select:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 2px; }
+.resolve-panel-warning button, .resolve-panel-card-state button { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
+.resolve-panel button:focus-visible, .resolve-panel select:focus-visible, .resolve-panel input:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 1px; }
 .resolve-panel-body { display: flex; flex: 1; min-height: 0; }
-.resolve-panel-body nav { width: 120px; flex: 0 0 120px; overflow: auto; border-right: 1px solid var(--border, #333); padding: 5px; }
-.resolve-panel-body nav button { width: 100%; border: 1px solid transparent; border-radius: 5px; background: transparent; color: inherit; padding: 9px 6px; text-align: left; overflow-wrap: anywhere; }
-.resolve-panel-body nav button.selected { border-color: var(--accent, #c4e84a); background: var(--panel, #232629); }
-.resolve-panel-body nav strong, .resolve-panel-body nav span, .resolve-panel-body nav small { display: block; margin-bottom: 3px; }
-.resolve-panel-body nav span, .resolve-panel-body nav small { color: var(--muted, #a3a5a7); font-size: 10px; }
-.resolve-panel-body main { flex: 1; min-width: 0; overflow: auto; padding: 8px; }
-.resolve-panel-card { display: flex; gap: 9px; padding: 10px 7px; margin-bottom: 6px; border: 1px solid var(--border, #333); border-radius: 6px; background: var(--panel, #232629); cursor: grab; }
-.resolve-panel-thumb { width: 64px; height: 36px; flex: 0 0 64px; object-fit: cover; border-radius: 3px; overflow: hidden; }
-.resolve-panel-thumb img, .resolve-panel-thumb video { width: 100%; height: 100%; object-fit: cover; }
-.resolve-panel-card-info { min-width: 0; flex: 1; line-height: 1.55; overflow-wrap: anywhere; }
-.resolve-panel-card-info > div, .resolve-panel-card-info small { color: var(--muted, #a3a5a7); }
-.resolve-panel-card-info .resolve-panel-card-state { color: var(--text, #e8e8e8); margin-top: 5px; font-size: 11px; }
-.resolve-panel-final { color: var(--accent, #c4e84a); }
 .resolve-panel-loading { padding: 24px; }
-@media (max-width: 440px) { .resolve-panel-head { padding: 12px 10px 8px; } .resolve-panel-body nav { width: 108px; flex-basis: 108px; } .resolve-panel-body main { padding: 5px; } .resolve-panel-card { gap: 6px; padding: 8px 5px; } }
+
+/* 왼쪽 — 빈 트리와 아래 거르기 */
+.rp-side { width: 176px; flex: 0 0 176px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #333438; }
+.rp-bins { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
+.rp-bin { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; background: transparent; color: #c9c9cc; padding: 4px 8px; text-align: left; white-space: nowrap; }
+.rp-bin:hover { background: #2a2b2f; }
+.rp-bin.rp-project { color: #e6e6e8; }
+.rp-bin.selected { background: #141517; color: #fff; }
+.rp-bin.rp-empty { color: #5e5f64; }
+.rp-chev { width: 10px; flex: none; color: #8a8b90; }
+.rp-count { margin-left: auto; color: #7d7e83; font-size: 11px; }
+.rp-count b { color: #e3b341; font-weight: 400; }
+.rp-bin.selected .rp-count { color: var(--accent, #c4e84a); }
+.rp-side .sidebar-foot-toggle { flex: none; }
+.rp-filter { flex: none; max-height: 45%; overflow: auto; }
+
+/* 오른쪽 — 도구 줄 */
+.resolve-panel-body main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.rp-tools { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid #333438; flex: none; }
+.rp-path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; color: #c4c5c9; }
+.rp-tool { color: #9c9da2; background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 3px 6px; }
+.rp-tool:hover, .rp-tool.on { color: #e6e6e8; background: #2a2b2f; }
+select.rp-tool { background: #1f2023; border-color: #333438; }
+.rp-menu { position: absolute; right: 10px; top: 100%; z-index: 5; display: flex; flex-direction: column; min-width: 170px; padding: 6px; background: #28292d; border: 1px solid #3a3b40; border-radius: 6px; }
+.rp-menu button { display: flex; gap: 8px; text-align: left; color: #d4d4d6; background: transparent; border: 0; border-radius: 4px; padding: 5px 8px; }
+.rp-menu button:hover { background: #333438; }
+.rp-menu b { width: 12px; color: var(--accent, #c4e84a); }
+.rp-menu input { margin: 8px 6px 2px; accent-color: var(--accent, #c4e84a); }
+.rp-search { margin: 6px 10px 0; padding: 5px 7px; color: inherit; background: #141517; border: 1px solid #333438; border-radius: 4px; }
+.resolve-panel-body main > p { margin: 8px 10px 0; color: #9c9da2; }
+
+/* 카드 — 세 보기 */
+.rp-cards { flex: 1; min-height: 0; overflow: auto; padding: 10px; }
+.rp-cards.rp-thumb { display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; }
+.rp-tile { flex: none; cursor: grab; }
+.rp-tile .ed-card .card-thumb { aspect-ratio: 16 / 9; }
+/* 뺀 단추 — C(코멘트)·ⓘ 정보 등 덮개 단추는 새 창을 열어 리졸브 안 창에서 쓰지 않는다. 작성자는 칸 아래 이름에 있다 */
+.rp-tile .card-tl > .card-cm:last-child, .rp-tile .thumb-overlay, .rp-tile .card-drag-grip, .rp-tile .creator-badge { display: none; }
+.rp-tile-name { margin-top: 4px; color: #a9aaae; font-size: 11px; overflow: hidden; white-space: nowrap; }
+.rp-tile .resolve-panel-card-state, .rp-meta .resolve-panel-card-state { margin-top: 3px; color: #e6e6e8; font-size: 11px; overflow-wrap: anywhere; }
+.resolve-panel-final { color: #e3b341; font-weight: 400; margin-left: 4px; }
+.rp-held { color: #ef7d8c; font-weight: 400; margin-left: 4px; }
+.rp-meta { display: flex; align-items: flex-start; gap: 12px; padding: 6px; margin-bottom: 4px; border-radius: 6px; cursor: grab; }
+.rp-meta:hover, .rp-list:hover { background: #2a2b2f; }
+.rp-meta .ed-pthumb { flex: none; }
+.rp-meta-img, .rp-meta-img img, .rp-meta-img video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rp-list { position: relative; display: grid; grid-template-columns: 6px minmax(0, 2fr) minmax(0, 1.2fr) 40px minmax(0, 1.6fr); align-items: center; gap: 8px;
+  min-height: 28px; padding: 2px 6px; border-radius: 4px; cursor: grab; }
+.rp-list > span { min-width: 0; overflow: hidden; white-space: nowrap; }
+.rp-list > .ed-pcolor { position: static; height: 18px; border-radius: 2px; }
+.rp-list .resolve-panel-card-state { overflow: hidden; white-space: nowrap; }
+@media (max-width: 440px) { .rp-side { width: 140px; flex-basis: 140px; } .rp-cards { padding: 6px; } }
