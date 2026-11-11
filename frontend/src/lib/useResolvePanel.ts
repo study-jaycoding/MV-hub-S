@@ -72,18 +72,29 @@ export function useResolvePanel() {
   useEffect(() => {
     const epoch = authEpoch.current;
     let mounted = true;
-    void api.authConfig().then(async cfg => {
+    let running = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const retry = () => {
+      if (!mounted || running) return;
+      running = true; clearTimeout(timer);
+      void api.authConfig().then(async cfg => {
       if (!mounted || epoch !== authEpoch.current) return;
       setConfig(cfg);
       if (cfg.auth_enabled) {
         if (!getAuthToken()) { setNeedsLogin(true); setAuthReady(false); return; }
         await api.me();
       }
-      if (mounted && epoch === authEpoch.current) { setNeedsLogin(false); setAuthReady(true); }
+      if (mounted && epoch === authEpoch.current) { setNotice(""); setNeedsLogin(false); setAuthReady(true); }
     }).catch(error => {
-      if (mounted && epoch === authEpoch.current) { setNotice(errorText(error)); setNeedsLogin(true); setAuthReady(false); }
-    });
-    return () => { mounted = false; };
+      if (mounted && epoch === authEpoch.current) {
+        setNotice(errorText(error)); setAuthReady(false);
+        timer = setTimeout(retry, 3000);
+      }
+    }).finally(() => { running = false; });
+    };
+    const focus = () => { if (!context.current) retry(); };
+    retry(); window.addEventListener("focus", focus);
+    return () => { mounted = false; clearTimeout(timer); window.removeEventListener("focus", focus); };
   }, [authRun]);
 
   useEffect(() => {
@@ -269,17 +280,16 @@ export function useResolvePanel() {
             continue;
           }
         }
-        const details = typeof result.details === "string" ? result.details : result.details && Object.keys(result.details).length ? JSON.stringify(result.details) : "";
-        card(selection, id, { message: [t(messages[result.state] || "확인 못 함"), details].filter(Boolean).join(" — "), retry: true });
         // not_prepared 뒤에는 재준비와 확인 한 번만 허용한다 — 반복 재준비로 NAS를 계속 건드리지 않게.
-        if (retriedPreparation) return;
-        if (action === "prepare") {
+        if (!retriedPreparation && action === "prepare") {
           retriedPreparation = true;
           card(selection, id, { path: undefined });
           await prepareCard(id);
           if (!alive(selection) || !cardsRef.current[id]?.path) return;
           continue;
         }
+        const details = typeof result.details === "string" ? result.details : result.details && Object.keys(result.details).length ? JSON.stringify(result.details) : "";
+        card(selection, id, { message: [t(messages[result.state] || "확인 못 함"), details].filter(Boolean).join(" — "), retry: true });
         return;
       }
     } finally { adoptions.current.delete(key); }

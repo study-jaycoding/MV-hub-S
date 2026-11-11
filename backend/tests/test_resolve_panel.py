@@ -603,6 +603,17 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(panel.stale(current, 4, "target", "64"))
             self.assertTrue(panel.stale(other_account, 8, "target", "64"))
 
+    def test_sequence_lru_moves_all_window_channels_together(self):
+        for index in range(64):
+            for channel in ("cache", "target"):
+                panel.note_sequence(self.ctx, 3, channel, str(index))
+        panel.note_sequence(self.ctx, 4, "target", "0")
+        panel.note_sequence(self.ctx, 1, "cache", "new")
+        self.assertTrue(panel.stale(self.ctx, 2, "cache", "0"))
+        self.assertTrue(panel.stale(self.ctx, 3, "target", "0"))
+        self.assertFalse(any(key[3] == "1" for key in panel._sequences))
+        self.assertEqual(len({key[3] for key in panel._sequences}), 64)
+
     async def test_window_sequences_are_independent_and_old_requests_are_stale(self):
         self.assertEqual((await self.target(seq=100))["state"], "ok")
         for name in ("reopened", "second-window"):

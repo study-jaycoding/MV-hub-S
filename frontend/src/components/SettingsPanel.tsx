@@ -55,6 +55,9 @@ import {
   getResolveEnvironmentDiagnostics,
   getResolveScriptStatus,
   installResolveScript,
+  getResolvePanelPluginStatus,
+  installResolvePanelPlugin,
+  type ResolvePanelPluginStatus,
   type ResolveConnectionStatus,
   type ResolveEnvironmentDiagnostics,
   type ResolveScriptStatus,
@@ -110,6 +113,15 @@ export function SettingsPanel({
   const [dlDir, setDlDir] = useState<string | null>(null);
   const [dlErr, setDlErr] = useState("");
   const [resolveScriptStatus, setResolveScriptStatus] = useState<ResolveScriptStatus | null>(null);
+  const [panelPluginStatus, setPanelPluginStatus] = useState<ResolvePanelPluginStatus | null>(null);
+  const [panelPluginBusy, setPanelPluginBusy] = useState(false);
+  const [panelPluginError, setPanelPluginError] = useState("");
+  const installPanelPlugin = async () => {
+    setPanelPluginBusy(true); setPanelPluginError("");
+    try { setPanelPluginStatus(await installResolvePanelPlugin()); }
+    catch (error) { setPanelPluginError(error instanceof Error ? error.message : String(error)); }
+    finally { setPanelPluginBusy(false); }
+  };
   const [resolveConnection, setResolveConnection] = useState<ResolveConnectionStatus | null>(null);
   const [resolveDiagnostics, setResolveDiagnostics] = useState<ResolveEnvironmentDiagnostics | null>(null);
   // 설정 창을 열면 바로 연결 검사를 시작한다. 첫 응답 전에도 버튼을 잠가
@@ -128,6 +140,9 @@ export function SettingsPanel({
 
   useEffect(() => {
     downloadDirName().then(setDlDir).catch(() => {});
+    getResolvePanelPluginStatus().then(setPanelPluginStatus).catch(error => {
+      setPanelPluginError(error instanceof Error ? error.message : String(error));
+    });
     getResolveScriptStatus().then(setResolveScriptStatus).catch(() => {
       setResolveScriptMsg("설치 상태를 확인하지 못했습니다. 로컬 MV Hub에서 다시 시도하세요.");
     });
@@ -716,6 +731,10 @@ export function SettingsPanel({
                 selectionFollow={resolveSelectionFollow}
                 onSelectionFollowChange={saveResolveSelectionFollow}
                 status={resolveScriptStatus}
+                panelPlugin={panelPluginStatus}
+                panelPluginBusy={panelPluginBusy}
+                panelPluginError={panelPluginError}
+                onInstallPanelPlugin={installPanelPlugin}
                 connection={resolveConnection}
                 diagnostics={resolveDiagnostics}
                 connectionBusy={resolveConnectionBusy}

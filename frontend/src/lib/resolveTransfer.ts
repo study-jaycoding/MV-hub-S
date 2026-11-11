@@ -1,6 +1,19 @@
 import type { Generation } from "../types";
 import { jsonBody, jsonFetch } from "./http";
 
+export interface ResolvePanelPluginStatus {
+  state: "not_installed" | "up_to_date" | "outdated" | "newer_installed" | "damaged" | "foreign" | "no_resolve" | "busy" | "deferred" | "permission_denied";
+  path: string;
+  installed_version?: string | null;
+  bundled_version?: string | null;
+  backup_path?: string;
+  reason?: string;
+  changed_at?: string | null;
+  last_attempt?: { at: string; state: string; reason: string };
+}
+export const getResolvePanelPluginStatus = () => jsonFetch<ResolvePanelPluginStatus>("/api/resolve/panel-plugin");
+export const installResolvePanelPlugin = () => jsonFetch<ResolvePanelPluginStatus>("/api/resolve/panel-plugin/install", { method: "POST" });
+
 export interface ResolveTransferItem {
   generation_id: string;
   folder_path: string;

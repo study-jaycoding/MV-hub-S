@@ -12,6 +12,7 @@ import {
   type ResolveConnectionStatus,
   type ResolveEnvironmentDiagnostics,
   type ResolveScriptStatus,
+  type ResolvePanelPluginStatus,
 } from "../../lib/resolveTransfer";
 import {
   isReleaseUpdateRunning,
@@ -445,6 +446,35 @@ export function MetadataContinuitySection({
   );
 }
 
+function PanelPluginLine({ status, busy, error, onInstall }: {
+  status: ResolvePanelPluginStatus | null; busy: boolean; error: string; onInstall?: () => void;
+}) {
+  const t = useT();
+  const deferred = status?.last_attempt && ["deferred", "permission_denied"].includes(status.last_attempt.state)
+    && ["outdated", "not_installed"].includes(status.state) ? status.last_attempt : null;
+  const state = deferred?.state || status?.state;
+  const changedDate = status?.changed_at ? new Date(status.changed_at) : null;
+  const changedAt = changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toLocaleString() : status?.changed_at;
+  let message = t("설치 상태를 확인 중입니다");
+  switch (state) {
+    case "up_to_date": message = `${t("설치됨")} ${status?.installed_version || ""}`; break;
+    case "outdated": message = t("옛 판"); break;
+    case "not_installed": message = t("설치 안 됨"); break;
+    case "deferred": message = `${t("다음 시작 때 다시 설치")} — ${deferred?.reason || status?.reason || ""}`; break;
+    case "permission_denied": message = `${t("권한이 없습니다 — 관리자가 폴더 권한을 열어야 합니다")} (${status?.path})`; break;
+    case "busy": message = t("다른 설치가 진행 중"); break;
+    case "damaged": message = `${t("망가진 설치 — 보존본")} (${status?.backup_path || status?.path})`; break;
+    case "newer_installed": message = `${t("더 새 판")} ${status?.installed_version} ${t("이 깔려 있어 그대로 둡니다")} (${t("이 앱")} ${status?.bundled_version}) — ${t("설치로 맞추기")}`; break;
+    case "foreign": message = `${t("MV가 깐 것이 아닌 폴더가 있어 손대지 않았습니다")} (${status?.path})`; break;
+    case "no_resolve": message = t("리졸브가 없는 PC"); break;
+  }
+  return <div className="settings-resolve-panel-plugin">
+    <p>{t("리졸브 안 MV 창")}: {error || message} {onInstall && <button className="settings-action" onClick={onInstall}
+      disabled={busy || ["busy", "foreign", "no_resolve"].includes(state || "")}>{busy ? t("설치 중") : t("설치")}</button>}</p>
+    {!error && state === "up_to_date" && changedAt && <p className="settings-hint">{t("설치 파일을 바꿨습니다")} ({changedAt}) — {t("그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다")}</p>}
+  </div>;
+}
+
 export function ResolveScriptSettingsSection({
   selectionFollow,
   onSelectionFollowChange,
@@ -456,6 +486,10 @@ export function ResolveScriptSettingsSection({
   msg,
   onInstall,
   onRefreshConnection,
+  panelPlugin = null,
+  panelPluginBusy = false,
+  panelPluginError = "",
+  onInstallPanelPlugin,
 }: {
   selectionFollow: boolean;
   onSelectionFollowChange: (enabled: boolean) => void;
@@ -467,6 +501,10 @@ export function ResolveScriptSettingsSection({
   msg: string;
   onInstall: () => void;
   onRefreshConnection: () => void;
+  panelPlugin?: ResolvePanelPluginStatus | null;
+  panelPluginBusy?: boolean;
+  panelPluginError?: string;
+  onInstallPanelPlugin?: () => void;
 }) {
   const [pythonInstallBusy, setPythonInstallBusy] = useState(false);
   const [pythonInstallMsg, setPythonInstallMsg] = useState("");
@@ -518,6 +556,7 @@ export function ResolveScriptSettingsSection({
   return (
     <section className="settings-section">
       <h4>DaVinci Resolve</h4>
+      <PanelPluginLine status={panelPlugin} busy={panelPluginBusy} error={panelPluginError} onInstall={onInstallPanelPlugin} />
       <label className="settings-resolve-follow">
         <input type="checkbox" checked={selectionFollow}
           onChange={(event) => onSelectionFollowChange(event.target.checked)}
