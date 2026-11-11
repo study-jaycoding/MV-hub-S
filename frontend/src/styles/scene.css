@@ -113,6 +113,9 @@
 .scene-gpu-board[data-phase="preparing"] { visibility: hidden; }
 .scene-board[data-gpu="probing"] > .scene-canvas { visibility: hidden; }
 .scene-gpu-overlay { z-index: 20; }
+/* 숨은 측정 칸 — 화면 밖에 읽기 형태 카드를 붙여 크기만 잰다(카메라 층 밖이라 배율과 무관한 레이아웃 크기) */
+.scene-gpu-measure { position: absolute; left: -100000px; top: 0; visibility: hidden; pointer-events: none; contain: layout style; }
+.scene-gpu-measure > .scene-card { position: relative; }
 /* 모드 단추(미니맵 줌 막대 옆 — 미니맵 최대 폭 180 + 간격) — 편집(DOM) ↔ 보기(GPU) */
 .scene-gpu-mode {
   position: absolute; top: 10px; right: 198px; z-index: 20; height: 26px; display: inline-flex; align-items: center; gap: 6px;

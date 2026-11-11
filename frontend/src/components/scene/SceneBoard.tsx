@@ -138,7 +138,8 @@ import { copyText, flashMsg } from "../../lib/flash";
 import { notifyPeekDropAdded } from "../../lib/peekDragOut";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
-import { buildGpuScene, GpuBoard, GpuOverlayCard, useGpuBoardMode } from "../../features/canvas/api";
+import { buildGpuScene, GpuBoard, GpuMeasure, GpuOverlayCard, useGpuBoardMode, type GpuMeasureItem, type GpuMeasureResult } from "../../features/canvas/api";
+import { GPU_MEASURE_BATCH } from "../../features/canvas/api";
 import { BOARD_KINDS } from "../../lib/boardCanvasDraw";
 import { folderChipLabel } from "../../lib/folderLabel";
 import { refTypeLabel } from "../../lib/sceneMedia";
@@ -1104,6 +1105,10 @@ export function SceneBoard({
   const heightsRef = useRef<Record<string, number>>({});
   const widthsRef = useRef<Record<string, number>>({}); // head 등 폭도 내용에 맞춰 자동측정
   const [heightTick, bumpHeights] = useState(0);
+  // 측정 지문 — 크기가 내용에 맞춰 정해지는 카드(레퍼런스 높이 = 장수, 제목 = 글·글씨 크기)의 무엇으로 쟀는가. GPU 보기 모드의 숨은 측정 칸이
+  //  지금 지문과 다른 카드만 다시 잰다(DOM 측정도 적어 둔다 — 들어가자마자 전부 다시 재지 않게).
+  const measuredSigRef = useRef<Record<string, string>>({});
+  const measureSig = (c: SceneCard) => (c.kind === "head" ? `head:${c.text || ""}:${c.fontSize || 0}` : c.kind === "reference" ? `ref:${c.refs?.length || 0}` : "");
 
   // 카드 크기(캔버스 좌표). 레퍼런스·Input·Output 은 고정폭·측정높이(내용에 맞춰 컴팩트, 리사이즈 없음),
   // 그 외(생성/텍스트/모델/리스트)는 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
@@ -1163,6 +1168,7 @@ export function SceneBoard({
     const nextW: Record<string, number> = {};
     for (const c of cardsRef.current) {
       const el = cardEls.current[c.id];
+      if (el?.offsetHeight) measuredSigRef.current[c.id] = measureSig(c);
       const h = el?.offsetHeight || heightsRef.current[c.id];
       if (h) nextH[c.id] = h;
       if (h && h !== heightsRef.current[c.id]) changed = true;
@@ -3161,6 +3167,37 @@ export function SceneBoard({
     fill, refWorkspaceId, typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, folderSel, comfyWaitingIds, genWaitingFromComfy,
     missingIds, answeredIds, disabledIds, hideFailed, genViews.lastCardId, edgeRoles, refCardEdgeIds, genRefEdgeIds, pendingKey, cutKey,
     refStatusVersion, assetVersion, recentDoneVersion]);
+  // 숨은 측정 칸 — GPU 단계에서 크기를 다시 재야 하는 카드(측정 지문이 다르거나 한 번도 안 잰 레퍼런스·제목) 4장씩
+  const gpuMeasureItems = useMemo(() => {
+    if (!gpuView) return [];
+    const out: GpuMeasureItem[] = [];
+    for (const card of visibleCards) {
+      if (card.kind !== "reference" && card.kind !== "head") continue;
+      const sig = measureSig(card);
+      if (measuredSigRef.current[card.id] === sig && heightsRef.current[card.id]) continue;
+      out.push({
+        id: card.id, sig, className: card.kind === "reference" ? "scene-card-ref" : "scene-card-head", width: card.kind === "reference" ? CARD_W : undefined,
+        node: card.kind === "reference"
+          ? <ReferenceCard mode="read" card={card} fill={fill} workspaceId={refWorkspaceId} getGen={cardFns.getGen} />
+          : <HeadCard mode="read" card={card} />,
+      });
+      if (out.length >= GPU_MEASURE_BATCH) break;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gpuView, visibleCards, heightTick, fill, refWorkspaceId]);
+  /** 측정 결과 반영 — 최신 요청(같은 씬·카드가 있고 지문이 그대로)일 때만. 늦은 결과는 버린다. 저장은 하지 않는다(화면 크기 값만). */
+  const onGpuMeasured = (sceneId: string, results: GpuMeasureResult[]) => {
+    if (sceneId !== cardsSceneId) return;
+    for (const r of results) {
+      const card = cardsById.get(r.id);
+      if (!card || measureSig(card) !== r.sig) continue;
+      measuredSigRef.current[r.id] = r.sig;
+      if (heightsRef.current[r.id] !== r.h) heightsRef.current = { ...heightsRef.current, [r.id]: r.h };
+      if (card.kind === "head" && widthsRef.current[r.id] !== r.w) widthsRef.current = { ...widthsRef.current, [r.id]: r.w };
+    }
+    bumpHeights((n) => n + 1); // 바뀐 것이 없어도 다음 묶음을 고르도록 한 번 다시 그린다(지문을 적었으니 같은 카드는 다시 안 고른다)
+  };
   // 덧판(마우스 올린 카드 한 장, 읽기 형태) — GPU 단계에서만
   const [gpuOverlayId, setGpuOverlayId] = useState<string | null>(null);
   const gpuOverlayRef = useRef<HTMLDivElement>(null);
@@ -3986,6 +4023,7 @@ export function SceneBoard({
         </svg>}
       </div>
 
+      {gpuView && <GpuMeasure sceneId={cardsSceneId} items={gpuMeasureItems} onMeasured={onGpuMeasured} />}
       {/* 노드 설명 창 — 노드 안 요소의 설명(title)을 앱 모양 창으로(Jay 2026-10-30 B안) */}
       <NodeTip rootRef={scrollRef} />
       {/* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹는다. */}

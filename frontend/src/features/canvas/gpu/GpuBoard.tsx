@@ -174,16 +174,21 @@ export function GpuBoard(props: GpuBoardProps) {
       }
       s.dirty = true;
     }
-    syncAtlas(false);
+    // 조작 중(카메라가 움직인 뒤 150ms 안)에는 굽지 않는다 — 이미 구운 그림을 늘리거나 줄여 그리고, 쉬면 또렷하게 다시 굽는다.
+    //  굽기는 프레임 예산(4ms) 안이라도 느린 PC 에서는 그만큼 길어져 움직이는 프레임을 먹었다(11-11 격리 실측: CPU 4배에서 느린 GPU 잠금).
+    const interacting = now - s.lastCameraAt < REST_MS;
     let uploaded = 0, pending = 0;
-    try {
-      const r = s.atlas.tick();
-      uploaded = r.uploadedPx;
-      pending = r.pending;
-    } catch {
-      fail("memory");
-      return;
-    }
+    if (!interacting) {
+      syncAtlas(false);
+      try {
+        const r = s.atlas.tick();
+        uploaded = r.uploadedPx;
+        pending = r.pending;
+      } catch {
+        fail("memory");
+        return;
+      }
+    } else pending = 1; // 쉬면 다시 돈다
     if ((s.dirty || uploaded > 0) && p.phase !== "preparing") {
       const c = camera();
       s.renderer.draw(c, s.atlas.lookup);
