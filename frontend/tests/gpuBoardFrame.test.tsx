@@ -3,7 +3,7 @@
 //  (docs/status/캔버스_GPU판설계_2026-11-11.md 계약 mode·transition·camera). jsdom 에는 WebGL 이 없다.
 //  본다: 켤 때 검사는 표본 30개·모두 유한해야 믿는다 · 검사 결과는 카메라가 쉬고 화면을 끌지 않을 때 알린다 ·
 //  렌더만 다시 해서(카메라 그대로) 알림이 와도 '조작 중'이 아니다 · 끝나면 컨텍스트를 놓는다.
-import { act, createRef, Suspense } from "react";
+import { act, createRef, StrictMode, Suspense } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GpuSceneModel } from "../src/features/canvas/gpu/gpuScene";
@@ -138,15 +138,35 @@ it("실제 화면 이동 중 50ms 넘는 프레임 3번이면 느린 GPU 로 잠
 
 describe("긴 프레임 까닭(LoAF)", () => {
   let deliver: ((entries: unknown[]) => void) | null = null;
+  let buffered: unknown[] = []; // 콜백은 아직 안 왔지만 관찰자 버퍼에는 있는 보고(takeRecords 가 가져간다)
+  let observeThrows = false;
+  let made = 0;
   beforeEach(() => {
+    buffered = [];
+    observeThrows = false;
+    made = 0;
     class FakeObserver {
       static supportedEntryTypes = ["long-animation-frame"];
-      constructor(cb: (list: { getEntries: () => unknown[] }) => void) { deliver = (entries) => cb({ getEntries: () => entries }); }
-      observe() {}
+      constructor(cb: (list: { getEntries: () => unknown[] }) => void) { made++; deliver = (entries) => cb({ getEntries: () => entries }); }
+      observe() { if (observeThrows) throw new Error("observe failed"); }
+      takeRecords() { return buffered.splice(0); }
       disconnect() {}
     }
     vi.stubGlobal("PerformanceObserver", FakeObserver);
   });
+  /** 저장(IndexedDB)만으로 늦어진 프레임 하나 — 보고는 how 대로(deliver = 콜백, buffer = 버퍼에만, none = 안 옴). 보고 구간 끝 = 후보 끝 */
+  const idbFrame = async (how: "deliver" | "buffer" | "none", gap = 65) => {
+    cam.x += 10;
+    act(() => listeners.forEach((l) => l(0)));
+    const from = now + 5;
+    await frameAt(from);
+    await frameAt(from + gap);
+    const entry = { startTime: from, duration: gap, scripts: [{ invoker: "IDBRequest.onsuccess", startTime: from, duration: gap - 5 }] };
+    if (how === "deliver") act(() => deliver!([entry]));
+    if (how === "buffer") buffered.push(entry);
+    return entry;
+  };
+  const idle = async (ms: number) => { const end = now + ms; while (now < end) await frameAt(now + 16); };
   // scripts 는 간격 시작(from)부터 차례로 돈 것으로 둔다 — shift 로 앞당기면(음수) 간격 밖에서 시작한 일이 된다
   const moveWithLongFrames = async (scripts: Array<{ invoker: string; duration: number }>, gap = 65, shift = 0) => {
     for (let i = 0; i < 3; i++) {
@@ -186,6 +206,133 @@ describe("긴 프레임 까닭(LoAF)", () => {
     await moveWithLongFrames(scripts, gap, shift);
     expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
   });
+
+  // J(docs/status/캔버스_카메라저장묶기_2026-11-11.md) — 뒤에 긴 프레임이 이어지면 관찰자 콜백이 120ms 넘게 늦는다. 판정은 버퍼(takeRecords)를 먼저 받고,
+  //  보고가 후보 끝까지 오면 판정한다. 끝내 안 오면 후보 뒤 1초에 받은 것만으로(덜 것 없이) 센다 — 규정된 보수적 판정.
+  it("보고 콜백이 120ms 넘게 늦어도 버퍼(takeRecords)의 저장 시간을 덜어 세지 않는다", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    for (let i = 0; i < 3; i++) {
+      await idbFrame("buffer");
+      await idle(200); // 120ms 넘게 콜백이 안 온다 — 옛 판정은 여기서 빈 기록으로 셌다
+    }
+    await idle(1500); // 상한(1초)도 지나 — 버퍼를 안 받았다면 덜 것 없이 세어 잠갔을 것이다
+    expect(failures(dispatch)).toEqual([]);
+  });
+
+  it("보고가 끝내 안 오면 1초 뒤 덜지 않고 센다 — 3번이면 잠금, 후보가 남아 다시 판정되지 않는다", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    for (let i = 0; i < 3; i++) await idbFrame("none");
+    await idle(400);
+    expect(failures(dispatch)).toEqual([]); // 아직 기다리는 중(1초 전)
+    await idle(1200);
+    expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
+    await idle(2000);
+    expect(failures(dispatch)).toHaveLength(1);
+  });
+
+  it("세 번째 후보까지 상한으로 세어 잠근 뒤 늦은 저장 보고가 와도 잠금 통지는 한 번·되돌리지 않고, 늦은 보고 오판을 진단에 센다", async () => {
+    const dispatch = vi.fn();
+    const boardRef = mount(dispatch, "gpu");
+    await frameAt(1000);
+    const late = [];
+    for (let i = 0; i < 3; i++) late.push(await idbFrame("none"));
+    await idle(1500);
+    expect(failures(dispatch)).toHaveLength(1);
+    act(() => deliver!(late));
+    await idle(100);
+    expect(failures(dispatch)).toHaveLength(1);
+    expect(Number(boardRef.current!.querySelector("canvas")!.getAttribute("data-loaf-late"))).toBeGreaterThanOrEqual(1);
+  });
+
+  it("늦게 한꺼번에 받은 후보 여럿은 발생 순서대로 한 번씩 — 실패 통지는 한 번", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    const held = [];
+    for (let i = 0; i < 4; i++) {
+      cam.x += 10;
+      act(() => listeners.forEach((l) => l(0)));
+      const from = now + 5;
+      await frameAt(from);
+      await frameAt(from + 65);
+      held.push({ startTime: from, duration: 65, scripts: [{ invoker: "MessagePort.onmessage", startTime: from, duration: 60 }] }); // 판의 일 — 센다
+    }
+    expect(failures(dispatch)).toEqual([]);
+    act(() => deliver!(held));
+    await idle(50);
+    expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
+  });
+
+  it("10초 창은 후보가 생긴 시각 기준 — 첫 후보와 10초 넘게 떨어진 세 번째는 첫 것을 밀어내 잠그지 않는다", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    for (const wait of [0, 5000, 5600]) {
+      await idle(wait);
+      cam.x += 10;
+      act(() => listeners.forEach((l) => l(0)));
+      const from = now + 5;
+      await frameAt(from);
+      await frameAt(from + 65);
+      act(() => deliver!([{ startTime: from, duration: 65, scripts: [{ invoker: "MessagePort.onmessage", startTime: from, duration: 60 }] }]));
+      await idle(50);
+    }
+    expect(failures(dispatch)).toEqual([]);
+  });
+
+  it("관찰자 observe 가 실패하면 덜지 않고 바로 판정한다(저장 프레임도 센다)", async () => {
+    observeThrows = true;
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    for (let i = 0; i < 3; i++) await idbFrame("deliver");
+    await idle(100);
+    expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
+  });
+
+  it("StrictMode(설정→정리→재설정)에서도 새 관찰자의 보고로 덜어 세지 않는다", async () => {
+    const dispatch = vi.fn();
+    const boardRef = createRef<HTMLDivElement>();
+    act(() => root.render(
+      <StrictMode>
+        <div className="scene-board" ref={boardRef}>
+          <GpuBoard phase="gpu" token={1} sceneId="s" model={model} hiddenId={null} cameraSource={source} boardRef={boardRef}
+            dispatch={dispatch} onHover={() => {}} overlayPinned={false} />
+        </div>
+      </StrictMode>,
+    ));
+    expect(made).toBeGreaterThanOrEqual(2);
+    await frameAt(1000);
+    for (let i = 0; i < 3; i++) {
+      await idbFrame("deliver");
+      await idle(50);
+    }
+    expect(failures(dispatch)).toEqual([]);
+  });
+});
+
+it("숨었다 돌아오면 프레임 간격 기준을 새로 잡는다 — 돌아온 첫 프레임 간격을 긴 프레임으로 세지 않는다", async () => {
+  const dispatch = vi.fn();
+  mount(dispatch, "gpu"); // 관찰자 없음(jsdom) — 덜지 않고 바로 판정하는 길
+  await frameAt(1000);
+  const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  try {
+    for (let i = 0; i < 3; i++) {
+      cam.x += 10;
+      act(() => listeners.forEach((l) => l(0)));
+      await frameAt(now + 5);
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); }); // 숨었다 막 돌아왔다
+      await frameAt(now + 90); // 조작 창(300ms) 안의 90ms 간격 — 기준을 새로 잡았으니 세지 않는다
+    }
+    expect(dispatch.mock.calls.map((c) => c[0]).filter((e) => e.type === "failure")).toEqual([]);
+  } finally {
+    visible.mockRestore();
+    cam.x = 0; // 실패해도 다음 시험의 카메라를 흐리지 않게
+  }
 });
 
 describe("덧판 고르기(계약 overlay)", () => {

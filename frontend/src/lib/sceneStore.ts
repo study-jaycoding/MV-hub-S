@@ -680,7 +680,13 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     }
     for (const op of batch) [...op.waiters.splice(0), ...(op.durable?.splice(0) ?? [])].forEach((fn) => fn(!op.poisoned));
     if (wrote || stepOut.notify) {
-      if (wrote) flushListener?.(true);
+      // 공책 내부 정리만 한 확정 — 공책 트랜잭션이 기준·영수증(b·d·r·ob·nj, 공책 메타)과 진행 기록(ns·nw)만 바꿨고, 함께 확정한 로컬 연산·
+      //  다른 창 확정 읽기·씬/순서/버킷 쓰기·충돌·화면 알림이 없다. 저장 성공은 지금처럼 알리되 표시를 실어, 백업이 다음 공책 동기화를
+      //  다시 예약하지 않게 한다(진행 기록을 쓸 때마다 2초 뒤 동기화가 또 돌아, 2,000장에서 기록 하나에 2~3바퀴 — 2026-11-11 프로파일).
+      const progressOnly = (key: string) => /^\["n[sw]",/.test(key);
+      const notebookMetaOnly = fromHub && batch.length === 0 && !external && sceneWrites === 0 && !stepOut.notify && movedConflicts.length === 0
+        && stepOut.entries.every(([key]) => progressOnly(key)) && (stepOut.deletes ?? []).every(progressOnly);
+      if (wrote) flushListener?.(true, { notebookMetaOnly });
       announceWrite();
     }
     if (pending.length) scheduleFlush(); // 도중에 들어온 연산
@@ -761,9 +767,11 @@ function scheduleRetry(): void {
   retryDelayMs = Math.min(retryDelayMs * 2, RETRY_MAX_MS); // 간격을 늘린다 — 막힌 저장소를 두드리지 않는다
 }
 
-let flushListener: ((ok: boolean) => void) | null = null;
+/** 확정 성공 통지에 싣는 표시 — notebookMetaOnly = 공책 내부 정리만 한 확정(runStoreTx 참고). */
+export interface SceneFlushInfo { notebookMetaOnly: boolean }
+let flushListener: ((ok: boolean, info?: SceneFlushInfo) => void) | null = null;
 /** flush 결과(확정 성공/실패)를 듣는다 — 데이터 계층이 '저장 실패' 알림과 DB 미러 통지에 쓴다. */
-export function setSceneFlushListener(fn: ((ok: boolean) => void) | null): void {
+export function setSceneFlushListener(fn: ((ok: boolean, info?: SceneFlushInfo) => void) | null): void {
   flushListener = fn;
 }
 
@@ -928,6 +936,13 @@ export const readWorkingBucket = (key: string): Scene[] => {
 export const hasWorkingBucket = (key: string): boolean => {
   ensureMemoryStoreOutsideBrowser();
   return owns(working, key);
+};
+/** 화면 값 기준 씬 하나의 존재·카메라만 — 읽기 사본(씬 전체 글자화)을 만들지 않는다. 카메라는 복사값(작업본 객체를 내주지 않는다). */
+export const readWorkingSceneCamera = (key: string, id: string): { exists: boolean; camera?: { z: number; x: number; y: number } } => {
+  ensureMemoryStoreOutsideBrowser();
+  const scene = owns(working, key) ? working[key].find((s) => s.id === id) : undefined;
+  if (!scene) return { exists: false };
+  return scene.camera ? { exists: true, camera: { z: scene.camera.z, x: scene.camera.x, y: scene.camera.y } } : { exists: true };
 };
 /** 화면 값 기준 버킷의 씬 수 — 새 씬 기본 이름("씬 N")을 접수 시점에 정하는 데 쓴다. */
 export const workingBucketLength = (key: string): number => {

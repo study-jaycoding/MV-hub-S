@@ -20,12 +20,14 @@ import {
   readConfirmedBucket,
   readConfirmedTexts,
   readWorkingBucket,
+  readWorkingSceneCamera,
   sceneStoreConflicts,
   sceneStoreHasPending,
   sceneStoreReady,
   setSceneFlushListener,
   settleConflictsAsCopies,
   workingBucketLength,
+  type SceneFlushInfo,
   type SceneHandover,
   type SceneOpMerge,
 } from "./sceneStore";
@@ -354,8 +356,9 @@ function frozen<T>(value: T): T {
 // 서로 대체하지 않으므로 구독 목록으로 둔다 — 단일 슬롯이면 나중에 등록한 쪽이 앞을 지운다.
 // ★미러는 확정본(listPersistedScenes)만 읽는다. 화면 값에는 아직 확정 안 된 편집이 섞여 있어,
 //  그것을 올리면 저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
-const scenesPersistedSubs = new Set<() => void>();
-export function subscribeScenesPersisted(fn: () => void): () => void {
+// info.notebookMetaOnly = 공책이 내부 기준·진행 기록만 정리한 확정(씬은 그대로) — 다음 공책 동기화를 다시 예약할 까닭이 없다(sceneBackup).
+const scenesPersistedSubs = new Set<(info: SceneFlushInfo) => void>();
+export function subscribeScenesPersisted(fn: (info: SceneFlushInfo) => void): () => void {
   scenesPersistedSubs.add(fn);
   return () => scenesPersistedSubs.delete(fn);
 }
@@ -395,10 +398,10 @@ function reportSaveState(failed: boolean): void {
 
 // 저장소가 확정에 성공/실패할 때마다 — 실패는 알림으로, 성공은 DB 미러로.
 // ★실패했으면 미러 구독자를 부르지 않는다 — 저장소 내용이 그대로라 올릴 것도 없다.
-setSceneFlushListener((ok) => {
+setSceneFlushListener((ok, info) => {
   holdUnload("scene-save:pending", sceneStoreHasPending());
   reportSaveState(!ok);
-  if (ok) scenesPersistedSubs.forEach((fn) => fn());
+  if (ok) scenesPersistedSubs.forEach((fn) => fn({ notebookMetaOnly: !!info?.notebookMetaOnly }));
 });
 
 // 씬 쓰기의 단일 관문. mutate 는 화면 값에 한 번, 저장소 내용 위에서 다시(재생) 실행된다 —
@@ -561,7 +564,32 @@ export function updateScene(
   sceneId: string,
   patch: Partial<Scene>,
 ): SceneWriteResult {
-  const key = keyOf(projectId); // ★접수 시점의 계정으로 고정
+  const key = keyOf(projectId);
+  const written = writeScenePatch(projectId, key, sceneId, patch);
+  if (!written.ok) return written;
+  return {
+    ok: true,
+    scenes: readWorkingBucket(key).map((s) => (s.id === sceneId ? { ...s, ...patch } : s)),
+  };
+}
+
+/** 카메라만 쓴다 — updateScene 과 같은 저장 관문·merge 슬롯(내용 패치와 합쳐도 두 필드가 남는다)이지만 쓰기 뒤 목록을 만들지 않는다.
+ *  큰 씬은 목록을 만들 때 바뀐 씬의 읽기 사본(씬 전체 글자화)을 다시 만들어, 카메라 기록 한 번이 씬 크기만큼 무거웠다(2026-11-11 2,000장 4배 프로파일). */
+export function updateSceneCamera(projectId: string | null, sceneId: string, camera: Scene["camera"]): { ok: true } | { ok: false; reason: SceneWriteFailure } {
+  return writeScenePatch(projectId, keyOf(projectId), sceneId, { camera });
+}
+
+/** 지금 작업본에서 그 씬의 존재·카메라만(읽기 사본 없이, 복사값). 씬 없음(exists 거짓)과 카메라 미설정(camera 없음)을 가른다. */
+export function readSceneCamera(projectId: string | null, sceneId: string): { exists: boolean; camera?: NonNullable<Scene["camera"]> } {
+  return readWorkingSceneCamera(keyOf(projectId), sceneId);
+}
+
+function writeScenePatch(
+  projectId: string | null,
+  key: string, // ★접수 시점의 계정으로 고정
+  sceneId: string,
+  patch: Partial<Scene>,
+): { ok: true } | { ok: false; reason: SceneWriteFailure } {
   const stored = frozen(patch);
   const apply = (all: ScenesByProject, fields: Partial<Scene>) => {
     const migrated = migrateLegacyBucket(all, projectId, key); // 옛 씬을 현재 계정으로 1회 이관
@@ -587,10 +615,7 @@ export function updateScene(
   });
   if (!out.value) return { ok: false, reason: "missing" };
   if (!out.ok) return { ok: false, reason: out.paused ? "paused" : "storage" };
-  return {
-    ok: true,
-    scenes: readWorkingBucket(key).map((s) => (s.id === sceneId ? { ...s, ...patch } : s)),
-  };
+  return { ok: true };
 }
 
 // ── 옛 판 창과 엇갈린 씬 ─────────────────────────────────────────────────────────

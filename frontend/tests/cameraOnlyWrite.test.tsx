@@ -5,7 +5,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canvasTarget, createCanvasDocumentPort } from "../src/features/canvas/api";
-import { listPersistedScenes, saveScenes, updateScene, type Scene, type SceneCard } from "../src/lib/scenes";
+import { listPersistedScenes, saveScenes, updateScene, updateSceneCamera, type Scene, type SceneCard } from "../src/lib/scenes";
+import { setSceneWriteGate, settleSceneStoreForTest } from "../src/lib/sceneStore";
 import { useSceneCoordination } from "../src/lib/useSceneCoordination";
 
 vi.mock("../src/api", () => ({
@@ -22,6 +23,12 @@ vi.mock("../src/lib/sceneBackup", () => ({
   getSceneBackupSkippedIds: () => EMPTY_SKIPPED,
   subscribeSceneBackupForked: () => () => {},
 }));
+// 카메라 전용 경로가 쓰기 뒤 목록(읽기 사본)을 만들지 않는지 세려고 읽기 함수만 감싼다(나머지는 진짜)
+const readSpy = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("../src/lib/sceneStore", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/lib/sceneStore")>();
+  return { ...real, readWorkingBucket: (key: string) => { readSpy.calls++; return real.readWorkingBucket(key); } };
+});
 vi.mock("../src/lib/sceneCardLinks", () => ({
   initSceneCardLinks: () => {},
   mergeCardLinksIntoScenes: () => null,
@@ -90,6 +97,72 @@ describe("카메라만 기록하는 쓰기(R6)", () => {
     expect(shown("s1")).toBe(active);
     expect(shown("s2").camera).toEqual({ z: 3, x: 1, y: 2 });
     expect(listPersistedScenes(null).find((s) => s.id === "s2")?.camera).toEqual({ z: 3, x: 1, y: 2 });
+  });
+
+  it("카메라 전용 경로 — 두 번째 입력 확정·전체 읽기 없이: 같은 값이면 쓰기 없이 접수, 없는 씬은 거절, 미설정 카메라는 쓴다, 계정이 바뀐 대상은 읽지도 않는다", () => {
+    const flushPending = vi.fn();
+    const write = vi.fn(() => true);
+    let now: { exists: boolean; camera?: { z: number; x: number; y: number } } = { exists: true, camera: { z: 1, x: 2, y: 3 } };
+    const readCamera = vi.fn(() => now);
+    const port = createCanvasDocumentPort({ flushPending, write, readCamera });
+    expect(port.commit(canvasTarget("s1"), { type: "recordCamera", camera: { z: 1, x: 2, y: 3 } }).queued).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+    now = { exists: false };
+    expect(port.commit(canvasTarget("s1"), { type: "recordCamera", camera: { z: 1, x: 2, y: 3 } }).queued).toBe(false);
+    now = { exists: true }; // 카메라 미설정
+    expect(port.commit(canvasTarget("s1"), { type: "recordCamera", camera: { z: 2, x: 0, y: 0 } }).queued).toBe(true);
+    expect(write).toHaveBeenCalledWith("s1", { camera: { z: 2, x: 0, y: 0 } });
+    expect(flushPending).not.toHaveBeenCalled(); // 보드가 앞에서 확정했다 — 카메라 커밋은 다시 확정하지 않는다
+    readCamera.mockClear();
+    const otherAccount = Object.freeze({ accountNamespace: "acct:someone-else", sceneId: "s1" });
+    expect(port.commit(otherAccount, { type: "recordCamera", camera: { z: 3, x: 0, y: 0 } }).queued).toBe(false);
+    expect(readCamera).not.toHaveBeenCalled();
+  });
+
+  it("조율 경로 — 카메라 기록은 쓰기 뒤 목록(읽기 사본)을 만들지 않고, 접수되면 그 씬 카메라만 바꾼다(활성·비활성 씬 카드 참조 그대로)", async () => {
+    saveScenes(null, [scene("s1"), scene("s2")]);
+    await act(async () => root.render(<Coordination />));
+    await settle();
+    await act(async () => coordination!.selectScene("s1"));
+    const s1 = shown("s1"), s2 = shown("s2");
+    await act(async () => {
+      readSpy.calls = 0;
+      expect(coordination!.canvasDocument.commit(canvasTarget("s2"), { type: "recordCamera", camera: { z: 2, x: 5, y: 6 } }).queued).toBe(true);
+      expect(readSpy.calls).toBe(0);
+    });
+    await settle();
+    expect(shown("s2").camera).toEqual({ z: 2, x: 5, y: 6 });
+    expect(shown("s2").cards).toBe(s2.cards);
+    expect(shown("s1")).toBe(s1);
+    expect(listPersistedScenes(null).find((s) => s.id === "s2")?.camera).toEqual({ z: 2, x: 5, y: 6 });
+  });
+
+  it("창 쓰기 권한이 막혀 거절되면 화면 목록의 카메라를 저장된 것처럼 바꾸지 않는다", async () => {
+    saveScenes(null, [scene("s1")]);
+    await act(async () => root.render(<Coordination />));
+    await settle();
+    await act(async () => coordination!.selectScene("s1"));
+    setSceneWriteGate(() => true);
+    try {
+      await act(async () => {
+        expect(coordination!.canvasDocument.commit(canvasTarget("s1"), { type: "recordCamera", camera: { z: 3, x: 1, y: 1 } }).queued).toBe(false);
+      });
+      await settle();
+      expect(shown("s1").camera).toBeUndefined();
+    } finally {
+      setSceneWriteGate(() => false);
+    }
+  });
+
+  it("내용 패치와 카메라 패치가 저장 전에 합쳐져도 두 필드가 다 남는다", async () => {
+    saveScenes(null, [scene("s1")]);
+    updateScene(null, "s1", { name: "renamed" });
+    updateSceneCamera(null, "s1", { z: 4, x: 1, y: 2 });
+    updateScene(null, "s1", { cards: [card("s1-x")] });
+    await settleSceneStoreForTest();
+    const saved = listPersistedScenes(null).find((s) => s.id === "s1")!;
+    expect([saved.name, saved.camera, saved.cards.map((c) => c.id)]).toEqual(["renamed", { z: 4, x: 1, y: 2 }, ["s1-x"]]);
+    expect(updateSceneCamera(null, "gone", { z: 1, x: 0, y: 0 })).toEqual({ ok: false, reason: "missing" }); // 지운·없는 씬을 되살리지 않는다
   });
 
   it("지금 씬과 같은 카메라는 카메라 패치를 쓰지 않고 접수로 끝낸다 — 외부에서 다른 카메라를 받은 뒤 옛 값으로 돌아오면 쓴다", () => {

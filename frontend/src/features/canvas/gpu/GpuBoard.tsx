@@ -18,7 +18,10 @@ const LONG_FRAME_WINDOW_MS = 10_000; // 이 창 안에
 const LONG_FRAME_LIMIT = 3; // 이만큼이면 느린 GPU(계약 mode — gpuMode 의 frame 판정과 같은 수)
 const INTERACT_WINDOW_MS = 300; // 마지막 카메라 변화 뒤 이만큼은 '조작 중'으로 보고 긴 프레임을 센다
 const PROBE_FRAMES = 30;
-const LOAF_SETTLE_MS = 120; // 긴 프레임 후보는 그 구간의 LoAF 기록이 도착할 만큼 기다렸다 판정한다
+// 긴 프레임 후보는 그 구간을 덮는 LoAF 보고가 도착한 뒤(받은 보고의 끝 ≥ 후보 끝) 판정한다. 실행 기회가 생겼을 때 후보 뒤 이만큼이 지났으면
+//  더 기다리지 않고 받은 것만으로 판정한다(보장 시간이 아니다 — 긴 작업·숨김이면 더 늦다). 120ms 만 기다리던 때는 뒤에 긴 저장 프레임이 이어지면
+//  관찰자 콜백이 아직 안 와 저장 시간을 GPU 탓으로 셌다(2026-11-11 2,000장 4배 잠금 진단 — docs/status/캔버스_카메라저장묶기_2026-11-11.md).
+const LOAF_WAIT_MAX_MS = 1000;
 // 긴 애니메이션 프레임(LoAF) 기록 — scripts 는 그 프레임에 돈 스크립트(이벤트·약속·React 렌더·rAF …)
 type LoafEntry = PerformanceEntry & { scripts?: ReadonlyArray<{ invoker?: string; startTime: number; duration: number }> };
 // GPU 판과 무관함이 확실한 일 — 저장(IndexedDB)·네트워크 응답 해석·파일 읽기 콜백. 그 밖(React 렌더·이벤트·타이머·rAF·출처 불명)은 판의 일로 본다(Codex 합의 6차)
@@ -199,7 +202,11 @@ export function GpuBoard(props: GpuBoardProps) {
     longFrames: [] as number[],
     longCandidates: [] as Array<{ from: number; to: number }>,
     loafOn: false,
+    loafObs: null as PerformanceObserver | null,
     loaf: [] as Array<{ start: number; end: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 스크립트가 돈 구간
+    loafSeenUntil: 0, // 받은 LoAF 보고의 가장 늦은 끝 — 이보다 앞에서 끝난 긴 프레임의 보고는 도착했다
+    timedOut: [] as Array<{ from: number; to: number }>, // 보고를 기다리다 상한으로 판정한 후보 — 늦게 온 보고가 덜 것을 담았으면 진단에 센다
+    loafLate: 0, // 위 늦은 보고 오판 수(진단 — canvas 의 data-loaf-late)
   });
 
   const fail = (reason: "creation" | "memory" | "context-lost" | "slow-frames") => {
@@ -263,14 +270,44 @@ export function GpuBoard(props: GpuBoardProps) {
   /** 긴 프레임 후보를 판정해 센다 — 간격에서 GPU 판과 무관한 일(저장·네트워크 응답 해석)의 시간을 덜고도 50ms 를 넘으면 센다(섞인 프레임의
    *  판 지연도 놓치지 않게). 2,060장 실측에서 이동 직후의 씬 저장(IndexedDB·응답 JSON 80~150ms)을 GPU 탓으로 세어 1배에서도 잠겼다(11-11 LoAF 진단).
    *  LoAF 를 못 쓰는 브라우저는 후보를 그대로 센다. 기준에 닿아 잠그면 true. */
+  const overlap = (c: { from: number; to: number }, e: { start: number; end: number }) => Math.max(0, Math.min(e.end, c.to) - Math.max(e.start, c.from));
+  /** LoAF 보고 받기 — 관찰자 콜백과 판정 직전 takeRecords 가 같이 쓴다 */
+  const collectLoaf = (entries: readonly PerformanceEntry[]) => {
+    const s = st.current;
+    for (const e of entries as LoafEntry[]) {
+      s.loafSeenUntil = Math.max(s.loafSeenUntil, e.startTime + e.duration);
+      for (const x of e.scripts ?? []) {
+        if (!UNRELATED_INVOKER.test(x.invoker ?? "")) continue;
+        const seg = { start: x.startTime, end: x.startTime + x.duration };
+        s.loaf.push(seg);
+        // 상한으로 이미 판정한 후보에 덜 일이 늦게 왔다 — 오판 가능성으로 센다(판이 잠겨 내려간 뒤의 보고는 여기서 못 센다 — 진단 사본의 바깥 관찰자 몫)
+        const hit = s.timedOut.findIndex((c) => overlap(c, seg) > 0);
+        if (hit >= 0) {
+          s.timedOut.splice(hit, 1);
+          s.loafLate += 1;
+          canvasRef.current?.setAttribute("data-loaf-late", String(s.loafLate));
+        }
+      }
+    }
+    const now = performance.now();
+    s.loaf = s.loaf.filter((x) => now - x.end < 15_000);
+    s.timedOut = s.timedOut.filter((c) => now - c.to < 15_000);
+  };
   const judgeLongFrames = (now: number): boolean => {
     const s = st.current;
-    const ready = s.longCandidates.filter((c) => !s.loafOn || now - c.to >= LOAF_SETTLE_MS);
-    if (!ready.length) return false;
-    s.longCandidates = s.longCandidates.filter((c) => !ready.includes(c));
-    for (const c of ready) {
+    if (!s.longCandidates.length) return false;
+    if (s.loafObs) {
+      try { collectLoaf(s.loafObs.takeRecords()); } catch { /* 관찰자가 끊겼다 — 받은 것만으로 */ }
+    }
+    // 발생 순서대로 한 번씩 — 앞 후보가 아직 보고를 기다리면 뒤 후보도 기다린다
+    while (s.longCandidates.length) {
+      const c = s.longCandidates[0];
+      const arrived = !s.loafOn || s.loafSeenUntil >= c.to;
+      if (!arrived && now - c.to < LOAF_WAIT_MAX_MS) break;
+      s.longCandidates.shift();
+      if (!arrived) s.timedOut.push(c);
       // 그 간격과 실제로 겹친 시간만 던다(스크립트 구간 단위 — 두 간격에 걸친 일을 두 번 덜지 않는다, Codex 리뷰 2차)
-      const unrelated = s.loaf.reduce((sum, e) => sum + Math.max(0, Math.min(e.end, c.to) - Math.max(e.start, c.from)), 0);
+      const unrelated = s.loaf.reduce((sum, e) => sum + overlap(c, e), 0);
       if (c.to - c.from - unrelated <= LONG_FRAME_MS) continue;
       s.longFrames = s.longFrames.filter((t) => c.to - t <= LONG_FRAME_WINDOW_MS);
       s.longFrames.push(c.to);
@@ -424,21 +461,37 @@ export function GpuBoard(props: GpuBoardProps) {
     measure();
     const ro = board ? new ResizeObserver(measure) : null;
     if (board) ro!.observe(board);
-    // 긴 프레임의 까닭 — GPU 판과 무관한 일(저장·네트워크 응답 해석)의 스크립트 시간을 프레임마다 적어 둔다(최근 15초)
-    let loafObs: PerformanceObserver | null = null;
+    // 긴 프레임의 까닭 — GPU 판과 무관한 일(저장·네트워크 응답 해석)의 스크립트 시간을 프레임마다 적어 둔다(최근 15초).
+    //  다시 설정될 때(StrictMode) 앞 관찰자의 기록이 섞이지 않게 비우고, 만들거나 observe 하다 실패하면 덜지 않고 판정하는 길로 간다.
+    s.loaf = [];
+    s.loafSeenUntil = 0;
+    s.timedOut = [];
+    s.loafOn = false;
+    s.loafObs = null;
     if (loafSupported()) {
-      s.loafOn = true;
-      loafObs = new PerformanceObserver((list) => {
-        for (const e of list.getEntries() as LoafEntry[])
-          for (const x of e.scripts ?? []) if (UNRELATED_INVOKER.test(x.invoker ?? "")) s.loaf.push({ start: x.startTime, end: x.startTime + x.duration });
-        const now = performance.now();
-        s.loaf = s.loaf.filter((x) => now - x.end < 15_000);
-        if (s.longCandidates.length) kick();
-      });
-      loafObs.observe({ type: "long-animation-frame" });
+      try {
+        const obs = new PerformanceObserver((list) => {
+          collectLoaf(list.getEntries());
+          if (s.longCandidates.length) kick();
+        });
+        obs.observe({ type: "long-animation-frame" });
+        s.loafObs = obs;
+        s.loafOn = true;
+      } catch {
+        s.loafObs = null;
+        s.loafOn = false;
+      }
     }
+    // 숨었다 돌아오면 프레임 간격 기준을 새로 잡는다 — 숨은 동안 멈춘 시간을 긴 프레임으로 세지 않게(숨기 전 후보는 돌아온 뒤 차례대로 판정)
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") s.lastFrameAt = 0;
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      loafObs?.disconnect();
+      document.removeEventListener("visibilitychange", onVisibility);
+      s.loafObs?.disconnect();
+      s.loafObs = null;
+      s.loafOn = false;
       ro?.disconnect();
       if (s.raf) cancelAnimationFrame(s.raf);
       s.raf = 0;

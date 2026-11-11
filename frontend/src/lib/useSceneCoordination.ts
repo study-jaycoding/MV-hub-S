@@ -8,7 +8,7 @@ import { hubHasFeature, subscribeHubFeatures } from "./hubFeatures";
 //  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
 // 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. scenes.ts/sceneStore.ts가 IndexedDB 확정본과 미저장 변경을 관리한다.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Scene, SceneRef, SceneSnapshot } from "./scenes";
+import type { Scene, SceneRef, SceneSnapshot, SceneWriteResult } from "./scenes";
 import {
   createScene,
   deleteScene,
@@ -16,11 +16,13 @@ import {
   hasSceneConflicts,
   isSceneSaveFailing,
   listScenes,
+  readSceneCamera,
   recoverSceneConflicts,
   setActiveSceneId as persistActiveScene,
   subscribeSceneSaveState,
   updateScenesWith,
   updateScene,
+  updateSceneCamera,
   writeSceneSnapshot,
 } from "./scenes";
 import { sameSceneContent } from "./sceneAbsorb";
@@ -462,7 +464,9 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     // 성공하면 갱신된 목록을 그대로 받는다(재파싱 제거). 대상이 없으면 지금 목록으로 화면을 맞춘다.
     // 저장소 **확정** 실패는 여기서 알 수 없다 — 그건 저장 관문 구독(subscribeSceneSaveState)이 알리고,
     // 화면은 그대로 둔다(작업을 빼앗지 않는다).
-    const result = updateScene(null, sceneId, patch);
+    // 카메라 하나만 든 쓰기(recordCamera)는 카메라 전용 관문으로 — 쓰기 뒤 목록(바뀐 큰 씬의 읽기 사본)을 만들지 않는다(2026-11-11).
+    const cameraPatch = Object.keys(patch).length === 1 && "camera" in patch;
+    const result = cameraPatch ? updateSceneCamera(null, sceneId, patch.camera) : updateScene(null, sceneId, patch);
     // 대상 씬이 사라진 경우는 저장 실패가 아니라 관문이 알리지 않는다 — 여기서 따로 알린다. 같은 씬에
     // 연달아 쓰면 매번 띄우게 되므로 씬이 바뀔 때만(적대 리뷰 P2).
     if (!result.ok && result.reason === "missing" && missingNotifiedRef.current !== sceneId) {
@@ -481,17 +485,18 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
         );
       }
     }
-    const latest = result.ok ? result.scenes : listScenes(null);
-    // 카메라 하나만 든 쓰기(recordCamera) — 활성 씬은 화면 객체를 두고 카메라만 바꾼다. 저장소 사본으로 갈아 끼우면
-    //  카드·연결 배열이 새것이 돼 판이 카드 전부를 다시 그렸다(2026-11-10 R6). 실행 정보는 withComfyState 규칙대로 받는다.
-    const cameraOnly = result.ok && Object.keys(patch).length === 1 && "camera" in patch;
-    setScenes((previous) => {
-      const merged = mergePatchedSceneList(previous, latest, activeSceneIdRef.current, cameraOnly ? null : sceneId);
-      return cameraOnly ? merged.map((s) => (s.id === sceneId && s.camera !== patch.camera ? { ...s, camera: patch.camera } : s)) : merged;
-    });
+    // 카메라 기록이 접수되면 화면 목록에서 그 씬의 카메라만 바꾼다 — 저장소 사본으로 갈아 끼우면 카드·연결 배열이 새것이 돼
+    //  판이 카드 전부를 다시 그렸다(2026-11-10 R6). 거절이면 문서 카메라를 저장된 것처럼 바꾸지 않는다(아래 실패 길로 지금 목록에 맞춤).
+    if (cameraPatch && result.ok) {
+      setScenes((previous) => previous.map((s) => (s.id === sceneId && s.camera !== patch.camera ? { ...s, camera: patch.camera } : s)));
+      return true;
+    }
+    const latest = !cameraPatch && result.ok ? (result as Extract<SceneWriteResult, { ok: true }>).scenes : listScenes(null);
+    setScenes((previous) => mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId));
     return result.ok;
   }, []);
   const canvasDocument = useMemo(() => createCanvasDocumentPort({ flushPending: flushScenePending, write: patchSceneById,
+    readCamera: (sceneId) => readSceneCamera(null, sceneId),
     changed: (sceneId, executionOnly) => setScenes(previous =>
       mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, executionOnly ? null : sceneId)),
     editPrompt: (sceneId, cardId, prompt) => sceneActionRef.current?.sceneId === sceneId

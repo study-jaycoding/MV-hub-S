@@ -808,7 +808,9 @@ export async function initSceneBackup(): Promise<boolean> {
   if (!installed) {
     installed = true;
     // 이 탭의 확정 — 본 글자로 적는다(같은 확정에 다른 탭 변경이 섞였으면 그 알림이 먼저 온다 — sceneStore runStoreTx)
-    subscribeScenesPersisted(() => {
+    subscribeScenesPersisted(({ notebookMetaOnly }) => {
+      // 공책이 자기 기준·진행 기록만 정리한 확정 — 씬은 그대로라 다시 예약·재집계하지 않는다(진행 기록 쓰기마다 2초 뒤 동기화가 또 돌았다)
+      if (notebookMetaOnly) return;
       if (ns() === curScope) {
         noteSeenTexts();
         recountOverLimit();

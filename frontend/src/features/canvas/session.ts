@@ -160,6 +160,8 @@ export function createCanvasDocumentPort(adapter: {
   write?: (sceneId: string, value: Partial<Pick<Scene, "cards" | "edges" | "groups" | "mcpAttachmentReceipts" | "camera">>) => boolean;
   editPrompt?: (sceneId: string, cardId: string, prompt: string) => boolean;
   changed?: (sceneId: string, executionOnly: boolean) => void;
+  /** 작업본에서 그 씬의 존재·카메라만(읽기 사본 없이) — 있으면 recordCamera 가 전체 읽기·두 번째 입력 확정 없이 {camera} 만 쓴다 */
+  readCamera?: (sceneId: string) => { exists: boolean; camera?: NonNullable<Scene["camera"]> };
 }): CanvasDocumentPort {
   const snapshot = (target: CanvasTarget, persisted = false) => authorized(target)
     ? (persisted ? listPersistedScenes(null) : listScenes(null)).find(scene => scene.id === target.sceneId) : undefined;
@@ -202,6 +204,15 @@ export function createCanvasDocumentPort(adapter: {
         const before = snapshot(target);
         if (!before) return false;
         if (changeCanvas(before, command) === before) return true;
+      }
+      // 카메라 전용 — 보드(SceneBoard 래퍼)가 앞에서 입력을 확정했다. 두 번째 입력 확정·씬 전체 읽기 사본 없이 작업본의 존재·카메라만 보고
+      //  같으면 쓰지 않고, 다르면 {camera} 만 쓴다(2,000장 4배에서 카메라 기록 한 번이 씬 크기만큼 무거웠다 — 2026-11-11 프로파일).
+      if (command.type === "recordCamera" && adapter.readCamera && adapter.write) {
+        const now = adapter.readCamera(target.sceneId);
+        if (!now.exists) return false;
+        const before = now.camera, after = command.camera;
+        if (before && after && before.z === after.z && before.x === after.x && before.y === after.y) return true;
+        return adapter.write(target.sceneId, { camera: after });
       }
       adapter.flushPending(target.sceneId);
       if (!authorized(target)) return false;
