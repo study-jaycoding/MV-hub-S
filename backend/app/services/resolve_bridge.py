@@ -1980,8 +1980,191 @@ def clips_by_path_all(folder: Any) -> dict[str, list[Any]]:
     return result
 
 
+def _panel_raw_mark(clip):
+    try:
+        raw = clip.GetThirdPartyMetadata(MVHUB_METADATA_KEY)
+        decoded = json.loads(raw)
+        return decoded if isinstance(decoded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _panel_stamp(clip, generation_id, project_id, guard, *, hub_key=None):
+    expected = json.loads(mvhub_clip_metadata(generation_id, project_id))
+    if hub_key:
+        expected.update(staged_by=hub_key, item_id=_uid(clip))
+    encoded = json.dumps(expected, ensure_ascii=False)
+    for args in [({MVHUB_METADATA_KEY: encoded},), (MVHUB_METADATA_KEY, encoded)]:
+        guard()
+        try:
+            clip.SetThirdPartyMetadata(*args)
+        except Exception:
+            continue
+        if _panel_raw_mark(clip) == expected:
+            return True
+    return False
+
+
+def _panel_under(path, root):
+    path, root = _normal_path(path), _normal_path(root)
+    return bool(path and root and (path == root or path.startswith(root.rstrip("/\\") + os.sep)))
+
+
+def _panel_usage(clip):
+    try:
+        value = clip.GetClipProperty("Usage")
+        # 빈 값·소수·참거짓은 사용 안 함의 근거가 아니다.
+        if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value)):
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _panel_owned(clip, payload):
+    mark = _panel_raw_mark(clip)
+    path = _clip_file_path(clip)
+    return bool(parse_mvhub_clip_metadata(json.dumps(mark)) and mark.get("staged_by") == payload.get("hub_key") and mark.get("item_id") == _uid(clip)
+                and _uid(clip) and _panel_under(path, payload.get("media_root", "")) and Path(path).is_file())
+
+
+def _panel_walk(folder, parts=()):
+    for child in _strict_list(folder.GetSubFolderList):
+        child_parts = (*parts, str(child.GetName()))
+        yield child, child_parts
+        yield from _panel_walk(child, child_parts)
+
+
+def _panel_inventory(root, payload, resolve_project_id):
+    items, other_owner, needs_attention = [], 0, 0
+    counts = {}
+    for folder, parts in _panel_walk(root):
+        if not parts or parts[0] != MEDIA_POOL_ROOT:
+            continue
+        for clip in _strict_list(folder.GetClipList):
+            mark = _panel_raw_mark(clip)
+            if _panel_owned(clip, payload):
+                items.append({"resolve_project_id": resolve_project_id, "bin_id": _uid(folder),
+                              "bin_path": "/".join(parts), "item_id": _uid(clip),
+                              "gen_id": mark["generation_id"], "project_id": mark["project_id"],
+                              "usage": _panel_usage(clip), "path": _clip_file_path(clip)})
+            elif mark.get("staged_by") and mark["staged_by"] != payload.get("hub_key"):
+                other_owner += 1
+                row = counts.setdefault(mark.get("project_id", ""), {"other_owner": 0, "needs_attention": 0})
+                row["other_owner"] += 1
+            elif mark and not mark.get("staged_by") and _panel_under(_clip_file_path(clip), payload.get("media_root", "")):
+                needs_attention += 1
+                row = counts.setdefault(mark.get("project_id", ""), {"other_owner": 0, "needs_attention": 0})
+                row["needs_attention"] += 1
+    by_id = {row["item_id"]: row for row in items}
+    # 복구 기록도 같은 커서 안에 넣어 한 쪽 500개 약속을 지킨다.
+    for row in payload.get("recovery_records", []):
+        if row.get("resolve_project_id") == resolve_project_id:
+            by_id[row["item_id"]] = {**row, "recovery": True}
+    items = list(by_id.values())
+    items.sort(key=lambda row: (row["bin_path"], row["item_id"]))
+    after = payload.get("after")
+    if after:
+        items = [row for row in items if (row["bin_path"], row["item_id"]) > tuple(after)]
+    page = items[:500]
+    return {"items": page, "more": len(items) > 500,
+            "after": [page[-1]["bin_path"], page[-1]["item_id"]] if page else None,
+            "other_owner": other_owner, "needs_attention": needs_attention, "project_counts": counts}
+
+
+def _panel_delete(pool, folder, clip, guard, *, owned=None):
+    guard()
+    if (owned is not None and not _panel_owned(clip, owned)) or _panel_usage(clip) != 0:
+        return False
+    item_id = _uid(clip)
+    if not item_id:
+        return False
+    guard()
+    # 사용자가 사이에 타임라인으로 가져갔으면 지우지 않는다.
+    if _panel_usage(clip) != 0:
+        return False
+    if owned is not None and not _panel_owned(clip, owned):
+        return False
+    try:
+        pool.DeleteClips([clip])
+        return item_id not in {_uid(row) for row in _strict_list(folder.GetClipList)}
+    except Exception:
+        return False
+
+
+def _panel_record_matches(clip, record, payload, resolve_project_id):
+    mark = _panel_raw_mark(clip)
+    valid = parse_mvhub_clip_metadata(json.dumps(mark))
+    return (record.get("account") == payload.get("account") and record.get("hub_key") == payload.get("hub_key")
+            and record.get("resolve_project_id") == resolve_project_id and record.get("item_id") == _uid(clip)
+            and _normal_path(_clip_file_path(clip)) in {_normal_path(record.get("local_path", "")), _normal_path(record.get("nas_path", ""))}
+            and (not valid or (valid["generation_id"] == record.get("gen_id") and valid["project_id"] == record.get("project_id")))
+            and (not mark.get("staged_by") or (mark.get("staged_by") == payload.get("hub_key") and mark.get("item_id") == _uid(clip))))
+
+
+def _panel_stage(pool, target, payload, resolve_project_id, guard):
+    wanted = {row["gen_id"] for row in payload.get("items", [])}
+    results, recovery, removed, deferred, unexpected = [], [], 0, 0, 0
+    clips = _strict_list(target.GetClipList)
+    for clip in clips:
+        mark = _panel_raw_mark(clip)
+        if not payload.get("capped") and mark.get("project_id") == payload["project_id"] and mark.get("generation_id") not in wanted:
+            if _panel_owned(clip, payload) and _panel_delete(pool, target, clip, guard, owned=payload):
+                removed += 1
+    for item in payload.get("items", []):
+        if item["gen_id"] in payload.get("same_file_ids", []):
+            results.append({"gen_id": item["gen_id"], "state": "same_file_exists"})
+            continue
+        clips = _strict_list(target.GetClipList)
+        present = any((mark := _panel_raw_mark(clip)).get("generation_id") == item["gen_id"]
+                      and mark.get("project_id") == payload["project_id"]
+                      and (_panel_owned(clip, payload) or (not mark.get("staged_by") and not _panel_under(_clip_file_path(clip), payload["media_root"])))
+                      for clip in clips)
+        if present:
+            results.append({"gen_id": item["gen_id"], "state": "present"})
+            continue
+        record = next((row for row in payload.get("import_records", []) if row.get("gen_id") == item["gen_id"]), None)
+        clip = next((row for row in clips if record and _uid(row) == record["item_id"]), None)
+        if clip is not None:
+            if not _panel_record_matches(clip, record, payload, resolve_project_id) or _panel_usage(clip) != 0:
+                results.append({"gen_id": item["gen_id"], "state": "conflict"})
+                continue
+        else:
+            # 사람 항목이나 복제본을 같은 파일이라는 이유로 넘겨받지 않는다.
+            if any(_normal_path(_clip_file_path(row)) == _normal_path(item["path"])
+                   and _panel_raw_mark(row).get("staged_by") in {None, payload["hub_key"]} for row in clips):
+                results.append({"gen_id": item["gen_id"], "state": "same_file_exists"})
+                continue
+            guard()
+            if _uid(pool.GetCurrentFolder()) != _uid(target):
+                deferred += 1
+                results.append({"gen_id": item["gen_id"], "state": "deferred"})
+                continue
+            before = {_uid(row) for row in clips}
+            guard()
+            imported = _import_media_items(pool, [item["path"]])
+            if len(imported) != 1 or not _uid(imported[0]) or _uid(imported[0]) in before or _normal_path(_clip_file_path(imported[0])) != _normal_path(item["path"]):
+                if len(imported) != 1 or _normal_path(_clip_file_path(imported[0])) != _normal_path(item["path"]):
+                    unexpected += len({_uid(clip) for clip in imported if _uid(clip) and _uid(clip) not in before})
+                results.append({"gen_id": item["gen_id"], "state": "import_failed"})
+                continue
+            clip = imported[0]
+        try:
+            guard()
+            clip.SetClipProperty("Clip Name", item["label"])
+            good = clip.GetClipProperty("Clip Name") == item["label"] and _panel_stamp(clip, item["gen_id"], payload["project_id"], guard, hub_key=payload["hub_key"])
+        except Exception:
+            good = False
+        results.append({"gen_id": item["gen_id"], "state": "staged" if good else "import_failed"})
+        if not good and not _panel_delete(pool, target, clip, guard):
+            recovery.append({"account": payload["account"], "hub_key": payload["hub_key"],
+                             "resolve_project_id": resolve_project_id, "project_id": payload["project_id"],
+                             "gen_id": item["gen_id"], "item_id": _uid(clip), "bin_id": _uid(target), "local_path": item["path"]})
+    return {"state": "ok", "items": results, "removed": removed, "deferred": deferred, "import_records": recovery, "unexpected_imports": unexpected}
+
+
 def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str, Any]:
-    """패널의 빈 선택·놓은 항목 확인 — 옮기기·정렬·반입은 하지 않는다."""
+    """패널 소유 항목만 다룬다 — 읽기와 저장 없는 미리 띄우기를 구분한다."""
     operation = payload["operation"]
     try:
         resolve = resolve or _connect_resolve()
@@ -2003,13 +2186,28 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
         pool = project.GetMediaPool()
         root = pool.GetRootFolder()
         result = {"resolve_project_id": project_id, "resolve_project_name": project_name}
+        if operation == "inventory":
+            inventory = _panel_inventory(root, payload, project_id)
+            guard()
+            return {**result, "state": "ok", **inventory}
         if operation == "current-bin":
             current = pool.GetCurrentFolder()
             parts = _folder_path_from_root(root, current) if current else None
             if parts is None or not _uid(current):
                 return {**result, "state": "unavailable"}
             guard()
-            return {**result, "state": "ok", "bin_id": _uid(current), "bin_path": "/".join(parts)}
+            result.update(state="ok", bin_id=_uid(current), bin_path="/".join(parts))
+            if payload.get("project_id"):
+                target_parts = [MEDIA_POOL_ROOT, _folder_name(payload.get("project_name", ""), payload["project_id"]),
+                                *[_folder_name(part, "미분류") for part in _folder_parts(payload["folder_path"])]]
+                target = _folder_at_path(root, tuple(target_parts))
+                if target is not None:
+                    result["used"] = list(dict.fromkeys(_panel_raw_mark(clip)["generation_id"] for clip in _strict_list(target.GetClipList)
+                                                       if _panel_owned(clip, payload) and _panel_raw_mark(clip).get("project_id") == payload["project_id"]
+                                                       and (_panel_usage(clip) or 0) > 0))[:200]
+                    result["target_bin_id"] = _uid(target)
+            guard()
+            return result
 
         label = _folder_name(str(payload.get("project_name") or ""), payload["project_id"])
         parts = [MEDIA_POOL_ROOT, label, *[
@@ -2022,6 +2220,17 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
         guard()
         _settle_recovery_record(payload, root, project_id, _path_identity((MEDIA_POOL_ROOT, label)))
         target = _folder_at_path(root, tuple(parts))
+        if operation == "unstage":
+            # 이름이 바뀌어도 받은 빈 ID로 찾되 MV Hub 밖에는 접근하지 않는다.
+            target = next((folder for folder, path in _panel_walk(root)
+                           if path[0] == MEDIA_POOL_ROOT and _uid(folder) == payload.get("bin_id")), None)
+            if target is None:
+                return {**result, "state": "not_seen"}
+        if operation in {"stage", "unstage"}:
+            if target is None:
+                target = _destination_folder(pool, root, parts, guard)
+            stage = _panel_stage(pool, target, payload, project_id, guard)
+            return {**result, **stage, "capped": bool(payload.get("capped")), "bin_id": _uid(target), "bin_path": "/".join(parts)}
         if operation == "target":
             if target is None:
                 if not payload.get("create"):
@@ -2036,34 +2245,54 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                 return {**result, "state": "unavailable", "details": "지금 빈을 되읽어 확인하지 못했습니다"}
             return {**result, "state": "ok", "bin_path": "/".join(parts), "bin_id": _uid(target)}
 
-        path = _normal_path(payload["path"])
-        clips = clips_by_path_all(target).get(path, []) if target else []
-        if not clips:
-            def elsewhere(folder):
-                if clips_by_path_all(folder).get(path):
-                    return True
-                return any(elsewhere(child) for child in _strict_list(folder.GetSubFolderList))
-            return {**result, "state": "elsewhere" if elsewhere(root) else "not_seen", "details": {}}
-        conflicts = []
-        for clip in clips:
-            mark = parse_mvhub_clip_metadata(clip.GetThirdPartyMetadata(MVHUB_METADATA_KEY))
-            if mark and (mark["generation_id"] != payload["gen_id"] or mark["project_id"] != payload["project_id"]):
-                conflicts.append(mark)
-        if conflicts:
-            return {**result, "state": "conflict", "details": {"expected": payload["gen_id"], "found": conflicts}}
-        for clip in clips:
+        if "records" in payload:
+            records = payload["records"]
+            found = [(clip, path, _uid(folder)) for folder, path in _panel_walk(root) if path[0] == MEDIA_POOL_ROOT
+                     for clip in _strict_list(folder.GetClipList)]
+            # 전체 읽기를 마친 뒤에만 부재를 확정한다 — 읽기 실패는 기록을 지울 근거가 아니다.
             guard()
-            if stamp_and_verify(clip, payload["gen_id"], payload["project_id"], guard=guard) == "failed":
-                return {**result, "state": "stamp_failed", "details": "클립 표시를 되읽어 확인하지 못했습니다"}
-        guard()
-        try:
-            saved = manager.SaveProject()
-        except Exception:
-            saved = False
-        if not saved:
-            return {**result, "state": "save_failed", "details": "Resolve 프로젝트 저장을 확인하지 못했습니다"}
-        return {**result, "state": "in_bin", "bin_path": "/".join(parts),
-                "details": {"clip_ids": [_uid(clip) for clip in clips]}}
+            found_ids = {_uid(entry[0]) for entry in found}
+            result["missing_record_ids"] = [record["item_id"] for record in records if record["item_id"] not in found_ids]
+            recorded_ids = {record["item_id"] for record in records}
+            replacements = [{"resolve_project_id": project_id, "project_id": payload["project_id"], "gen_id": payload["gen_id"],
+                             "item_id": _uid(clip), "bin_id": bin_id, "bin_path": "/".join(path), "path": _clip_file_path(clip)}
+                            for clip, path, bin_id in found if _uid(clip) not in recorded_ids and _panel_owned(clip, payload)
+                            and _panel_raw_mark(clip).get("generation_id") == payload["gen_id"]
+                            and _panel_raw_mark(clip).get("project_id") == payload["project_id"]]
+            if replacements:
+                return {**result, "state": "not_prepared", "adoption_candidates": replacements}
+            candidates = []
+            for record in records:
+                matches = [entry for entry in found if _uid(entry[0]) == record["item_id"]]
+                entry = next((entry for entry in matches if entry[2] == record.get("bin_id")), matches[0] if matches else None)
+                if not entry:
+                    continue
+                clip, path, _ = entry
+                if not _panel_record_matches(clip, record, payload, project_id):
+                    return {**result, "state": "conflict"}
+                candidates.append((clip, record, path))
+            if not candidates:
+                return {**result, "state": "not_seen"}
+            for index, (clip, record, path) in enumerate(candidates):
+                guard()
+                if not _panel_record_matches(clip, record, payload, project_id):
+                    return {**result, "state": "conflict", "remaining": len(candidates) - index}
+                if _normal_path(_clip_file_path(clip)) != _normal_path(record["nas_path"]):
+                    if not clip.ReplaceClip(record["nas_path"]) or _normal_path(_clip_file_path(clip)) != _normal_path(record["nas_path"]):
+                        return {**result, "state": "replace_failed", "remaining": len(candidates) - index}
+                if not _panel_stamp(clip, payload["gen_id"], payload["project_id"], guard):
+                    return {**result, "state": "stamp_failed", "remaining": len(candidates) - index}
+            guard()
+            try:
+                saved = manager.SaveProject()
+            except Exception:
+                saved = False
+            if not saved:
+                return {**result, "state": "save_failed"}
+            return {**result, "state": "in_bin", "bin_path": "/".join(candidates[0][2]),
+                    "details": {"clip_ids": [_uid(clip) for clip, _, _ in candidates]}}
+
+        return {**result, "state": "not_prepared", "details": "항목 ID 복구 기록이 없습니다"}
     except ResolveBridgeError as exc:
         state = exc.code if exc.code == "rebuild_recovery_pending" or (operation == "adopt" and exc.code == "project_changed") else ("unknown" if operation == "adopt" else "unavailable")
         return {"state": state, "code": exc.code, "details": str(exc), **getattr(exc, "leftover", {})}

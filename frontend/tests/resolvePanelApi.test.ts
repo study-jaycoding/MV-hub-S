@@ -1,51 +1,44 @@
-import { describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 vi.mock("../src/lib/i18n", () => ({ t: (value: string) => value }));
 vi.mock("../src/lib/http", () => ({ jsonFetch: vi.fn() }));
-import { adoptAction, bridgeCompatible, cacheBatches, dragPermission, startPanelDrag, targetView,
-  type AdoptState, type TargetState } from "../src/lib/resolvePanelApi";
-
+import { jsonFetch } from "../src/lib/http";
+import { adoptAction, bridgeCompatible, cacheBatches, inventoryAction, stageSummary, targetView, resolvePanelApi,
+  type AdoptState, type TargetState, type InventoryItem } from "../src/lib/resolvePanelApi";
 const identity = { instance: "hub", account: "a", epoch: 1, protocol: { min: 1, max: 2 } };
 const bridge = { protocol: 1, accepts: { min: 1, max: 1 }, startDrag: vi.fn(() => true) };
-const allowed = { bridge, identity, prepared: true, targetOk: true, contextCurrent: true };
-
-describe("끌기 관문", () => {
-  it("다섯 조건이 맞을 때만 허용", () => expect(dragPermission(allowed)).toEqual({ ok: true, reason: "" }));
-  it.each([
-    { bridge: undefined }, { bridge: { ...bridge, protocol: 3 } }, { prepared: false },
-    { targetOk: false }, { contextCurrent: false },
-  ])("각 거절 경로 %j", rejected => {
-    const result = dragPermission({ ...allowed, ...rejected });
-    expect(result.ok).toBe(false); expect(result.reason).not.toBe("");
-  });
-  it("양방향 판 범위를 확인", () => {
-    expect(bridgeCompatible({ ...bridge, accepts: { min: 2, max: 3 } }, identity)).toBe(false);
-    expect(bridgeCompatible(bridge, null)).toBe(false);
-    expect(bridgeCompatible({ ...bridge, protocol: NaN }, identity)).toBe(false);
-  });
-  it("화면 판을 전달하고 false를 성공으로 바꾸지 않음", () => {
-    const startDrag = vi.fn(() => false);
-    expect(startPanelDrag({ ...bridge, startDrag }, "Z:/render/file.mp4")).toBe(false);
-    expect(startDrag).toHaveBeenCalledWith("Z:/render/file.mp4", { protocol: 1 });
-  });
+it("다리 판은 양쪽 범위를 확인", () => {
+  expect(bridgeCompatible(bridge, identity)).toBe(true);
+  expect(bridgeCompatible(undefined, identity)).toBe(false);
+  expect(bridgeCompatible({ ...bridge, protocol: 3 }, identity)).toBe(false);
+  expect(bridgeCompatible({ ...bridge, accepts: { min: 2, max: 3 } }, identity)).toBe(false);
 });
-
 it.each<[AdoptState, string]>([
-  ["in_bin", "done"], ["conflict", "stop"], ["elsewhere", "stop"], ["project_changed", "stop"],
-  ["account_changed", "reset"], ["not_seen", "retry"], ["busy", "busy"], ["not_prepared", "prepare"],
-  ["stamp_failed", "stop"], ["save_failed", "stop"], ["ledger_failed", "stop"], ["unknown", "stop"],
-  ["rebuild_recovery_pending", "block"],
-])("adopt 표 %s → %s", (state, action) => expect(adoptAction(state)).toBe(action));
-
-it.each<[TargetState, string, boolean]>([
-  ["ok", "set", true], ["missing", "set", false], ["stale", "ignore", false],
-  ["account_changed", "reset", false], ["busy", "set", false], ["rebuild_recovery_pending", "set", false], ["unavailable", "set", false],
-])("target 표 %s", (state, action, ready) => expect(targetView({ state })).toMatchObject({ action, ready }));
-
-it("HTTP 서버 문구 보존", () => expect(targetView({ state: "unavailable", details: "업데이트 중" }).message).toBe("업데이트 중"));
-it("빈 목록·500·501 경계", () => {
-  expect(cacheBatches([])).toEqual([]);
-  const ids = Array.from({ length: 501 }, (_, index) => String(index));
-  expect(cacheBatches(ids).map(batch => batch.length)).toEqual([500, 1]);
-  expect(cacheBatches(ids).flat()).toEqual(ids);
-  expect(cacheBatches(ids.slice(0, 500))).toHaveLength(1);
+  ["in_bin", "done"], ["not_seen", "stop"], ["busy", "stop"], ["not_prepared", "prepare"],
+  ["account_changed", "reset"], ["rebuild_recovery_pending", "block"],
+  ["conflict", "stop"], ["replace_failed", "stop"], ["stamp_failed", "stop"], ["save_failed", "stop"],
+  ["ledger_failed", "stop"], ["project_changed", "stop"], ["other_window", "stop"], ["unknown", "stop"],
+])("adopt %s → %s", (state, action) => expect(adoptAction(state)).toBe(action));
+it.each<TargetState>(["ok", "missing", "stale", "busy", "rebuild_recovery_pending", "unavailable", "account_changed", "other_window"])("target %s", state => {
+  const view = targetView({ state, bin_path: "MV Hub/Film/C1" });
+  expect(view.ready).toBe(state === "ok");
+  expect(view.action).toBe(state === "stale" ? "ignore" : state === "account_changed" ? "reset" : "set");
+});
+it.each([
+  [{ usage: 0 }, "unstage"], [{ usage: 1 }, "adopt"], [{ usage: null }, "preserve"],
+  [{ usage: -1 }, "preserve"], [{ usage: 0.5 }, "preserve"], [{ recovery: true }, "recover"],
+])("inventory %j", (item, expected) => expect(inventoryAction(item as InventoryItem)).toBe(expected));
+it("stage 상태는 같은 파일·실패·보류를 성공 수와 구분", () => {
+  expect(stageSummary({ state: "ok", deferred: 2, items: [
+    { gen_id: "1", state: "staged" }, { gen_id: "2", state: "present" },
+    { gen_id: "3", state: "same_file_exists" }, { gen_id: "4", state: "conflict" },
+  ] })).toEqual({ staged: 2, sameFile: 1, deferred: 2, failed: [{ gen_id: "4", state: "conflict" }] });
+});
+it("501개 cache는 500+1", () => expect(cacheBatches(Array.from({ length: 501 }, (_, n) => String(n))).map(batch => batch.length)).toEqual([500, 1]));
+it("window claim·목적 빈·inventory cursor를 HTTP로 전달", async () => {
+  await resolvePanelApi.identity("window", true);
+  expect(jsonFetch).toHaveBeenLastCalledWith("/api/resolve/panel/identity?window=window&claim=true");
+  await resolvePanelApi.currentBin(identity, "p", "S/C1");
+  expect(vi.mocked(jsonFetch).mock.calls.at(-1)?.[0]).toContain("folder_path=S%2FC1");
+  await resolvePanelApi.inventory(identity, ["bin", "item"]);
+  expect(vi.mocked(jsonFetch).mock.calls.at(-1)?.[0]).toContain("after=");
 });

@@ -1,6 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import type { Generation, WorkspaceContext } from "../../types";
-import { api } from "../../api";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import type { WorkspaceContext } from "../../types";
 import { LoginScreen } from "../LoginScreen";
 import { useEditGenerations, useEditProjects } from "../../lib/useEditSequence";
 import type { FolderCountTreeNode } from "../../lib/folderTreeModel";
@@ -8,16 +7,9 @@ import { useT } from "../../lib/i18n";
 import { BRIDGE_MISSING, bridgeCompatible, hasResolveBridge, PROTOCOL_MISMATCH } from "../../lib/resolvePanelApi";
 import { useResolvePanel } from "../../lib/useResolvePanel";
 import { KEY_COLORS } from "../../lib/appConstants";
-import { APP_EVENTS } from "../../lib/appEvents";
-import { NO_POOL_FILTER, POOL_SIZE, type PoolFilter, type PoolSort, type PoolView } from "../../lib/editTimelineStore";
-import { canFinalizeGeneration } from "../../lib/generationDisplay";
-import { useGenerationCardActions } from "../../lib/useGenerationCardActions";
-import { useGenerationTagActions } from "../../lib/useGenerationTagActions";
-import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
+import { NO_POOL_FILTER, type PoolFilter } from "../../lib/editTimelineStore";
 import { ColorFilterDots } from "../common/ColorFilterDots";
-import type { PoolCardActions } from "../timeline/EditCard";
-import { arrangePool, poolFacets, poolFilterPass } from "../timeline/EditPool";
-import { ResolvePanelCard } from "./ResolvePanelCards";
+import { poolFacets, poolFilterPass } from "../timeline/EditPool";
 import "../../styles/edit-tab.css";
 import "../../styles/resolve-panel.css";
 
@@ -26,11 +18,9 @@ const selectionKey = "mvhub.resolvePanel.selection";
 const uiKey = "mvhub.resolvePanel.ui";
 const REFRESH_MS = 15_000; // 공유 & 리뷰 탭의 목록 확인 간격과 같다
 const COLOR_DOTS = [{ k: "r", hex: KEY_COLORS.r }, { k: "g", hex: KEY_COLORS.g }, { k: "b", hex: KEY_COLORS.b }];
-const VIEWS: { id: PoolView; label: string }[] = [{ id: "meta", label: "메타데이터 보기" }, { id: "thumb", label: "썸네일 보기" }, { id: "list", label: "목록 보기" }];
 const NO_GRAY = new Set<string>();
-const noop = () => {};
-interface PanelUi { view: PoolView; size: number; sort: PoolSort; filterOpen: boolean; filter: PoolFilter }
-const DEFAULT_UI: PanelUi = { view: "thumb", size: 120, sort: "new", filterOpen: false, filter: NO_POOL_FILTER };
+interface PanelUi { filterOpen: boolean; filter: PoolFilter }
+const DEFAULT_UI: PanelUi = { filterOpen: false, filter: NO_POOL_FILTER };
 
 function load<T>(storage: Storage, key: string, fallback: T): T {
   try { return { ...fallback, ...JSON.parse(storage.getItem(key) || "null") }; } catch { return fallback; }
@@ -87,12 +77,10 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const projects = useEditProjects({ authKey: panel.authKey, workspace: ALL_WORKSPACES, projectId: selection.project || null });
   const list = useEditGenerations({ authKey: panel.authKey, workspace: ALL_WORKSPACES, projectId: selection.project || null,
     seq: sequence || null, allWorkspaces: true });
-  // 태그 저장의 낙관적 반영은 이 사본에 — 다시 받은 목록이 오면 그것으로 덮는다(앱의 태그 훅과 같은 약속).
-  const [gens, setGens] = useState<Generation[]>(list.gens);
-  useEffect(() => setGens(list.gens), [list.gens]);
-  const gensRef = useRef(gens); gensRef.current = gens;
-  const cutGens = useMemo(() => gens.filter(gen => gen.folder_path === cut), [gens, cut]);
-  const ids = cutGens.map(gen => gen.id).join("\0");
+  const cutGens = useMemo(() => list.gens.filter(gen => gen.folder_path === cut), [list.gens, cut]);
+  const pass = poolFilterPass(ui.filter, NO_GRAY);
+  const filtered = cutGens.filter(gen => !pass || pass(gen));
+  const ids = filtered.map(gen => gen.id).sort().join("\0");
   const ready = list.state === "ok" || list.state === "capped";
 
   useEffect(() => {
@@ -109,11 +97,11 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
     const key = `${selection.project}\n${cut}`;
     if (key !== chosen.current) {
       if (!ready || !cut) { if (chosen.current) { chosen.current = ""; panel.selectCut("", "", []); } return; }
-      chosen.current = key; panel.selectCut(selection.project, cut, cutGens);
-    } else if (ready) panel.addCards(cutGens);
+      chosen.current = key; panel.selectCut(selection.project, cut, filtered, list.state === "capped");
+    } else if (ready) panel.updateSet(filtered, list.state === "capped");
     // 카드 목록 자체의 재생성으로 같은 컷을 다시 선택하지 않는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection.project, cut, ids, ready, panel.selectCut, panel.addCards]);
+  }, [selection.project, cut, ids, ready, list.state, panel.selectCut, panel.updateSet]);
   // 공유가 늘면 저절로 — 보이는 동안 15초마다·창으로 돌아올 때(3초 안 중복은 건너뜀). 리졸브 안 창은 앱의 '생성물 바뀜' 알림을 못 받는다.
   const lastRefresh = useRef(0);
   const { reload: reloadList } = list;
@@ -128,33 +116,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
     return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
   }, [reloadList, reloadCounts]);
 
-  // 카드의 S·T — 앱의 저장 훅을 그대로(권한·느린 요청·부분 실패 규칙). 최종 권한은 앱과 같은 조회로 받고, 403 이면 다시 읽는다.
-  const [flash, setFlash] = useState("");
-  const [finalizeProjects, setFinalizeProjects] = useState(new Set<string>());
-  useEffect(() => {
-    let alive = true;
-    const read = () => { api.myFinalizeRoles().then(r => { if (alive) setFinalizeProjects(new Set(r.project_ids)); }, () => {}); };
-    read(); window.addEventListener(APP_EVENTS.finalizeRolesStale, read);
-    return () => { alive = false; window.removeEventListener(APP_EVENTS.finalizeRolesStale, read); };
-  }, []);
-  const canFinalize = useCallback((gen: Generation) => canFinalizeGeneration(gen, finalizeProjects), [finalizeProjects]);
-  const selectedRef = useRef(new Set<string>());
-  const tagActions = useGenerationTagActions({ flash: setFlash, gensRef, onTagNamesAdded: noop, reload: () => reloadList(), selectedRef, setGens });
-  const cardActions = useGenerationCardActions({ armedAutoTags: NO_GRAY, bumpBoard: noop, canFinalize, flash: setFlash, navTab: noop,
-    reload: async () => reloadList(), workspace: ALL_WORKSPACES });
   const facets = useMemo(() => poolFacets(cutGens), [cutGens]);
-  // 공유물만 보이는 창이라 S 는 공유 탭 갈래(onReview)만 쓴다 — 워크스페이스 갈래(공유 올리기·내리기)는 오지 않는다.
-  const actions: PoolCardActions = { canFinalize, onReview: cardActions.onReview, onPublish: noop, onUnpublish: noop,
-    onFinalize: cardActions.onFinalize, onUnfinalize: cardActions.onUnfinalize, onSetTags: tagActions.onSetTags,
-    onSetAutoTags: tagActions.onSetAutoTags, autoTagOptions: facets.autoTags, onOpenComments: noop, onInfo: noop };
-  const [tagging, setTagging] = useState<string | null>(null);
-
-  const [menu, setMenu] = useState(false);
-  const toolsRef = useRef<HTMLDivElement>(null);
-  useOutsideMouseDown(toolsRef, () => setMenu(false), menu);
-  const [query, setQuery] = useState<string | null>(null);
-  const pass = poolFilterPass(ui.filter, NO_GRAY);
-  const shown = arrangePool(cutGens.filter(gen => !pass || pass(gen)).map(gen => ({ gen, track: null, showing: false })), query ?? "", ui.sort);
   const filterCount = ui.filter.colors.length + ui.filter.autoTags.length + (ui.filter.final ? 1 : 0) + (ui.filter.creator ? 1 : 0);
   const changeFilter = (patch: Partial<PoolFilter>) => patchUi({ filter: { ...ui.filter, ...patch } });
 
@@ -163,7 +125,6 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const different = bridgePresent && panel.current?.state === "ok" && panel.target?.state === "ok"
     && (panel.current.resolve_project_id !== panel.target.resolve_project_id || panel.current.bin_id !== panel.target.bin_id);
   const checking = panel.current && panel.current.state !== "ok";
-  const projectName = projects.projects.find(project => project.id === selection.project)?.name || "";
 
   return <div className="resolve-panel">
     <header className="resolve-panel-head">
@@ -172,7 +133,6 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
       {bridgePresent && <p>{t("이 창이 리졸브 미디어 풀의 지금 빈을 고른 컷으로 바꿉니다")}</p>}
       {different && <div className="resolve-panel-warning">{t("리졸브 지금 빈이 선택한 컷과 다릅니다")}: {cut.split("/").pop()} <button onClick={panel.align}>{t("맞추기")}</button></div>}
       {bridgePresent && !bridgeCompatible(window.mvhubResolve, panel.identity) && <div className="resolve-panel-warning">{t(PROTOCOL_MISMATCH)}</div>}
-      {flash && <div className="rp-flash" role="alert">{flash} <button onClick={() => setFlash("")} aria-label={t("닫기")}>×</button></div>}
     </header>
     <div className="resolve-panel-body">
       <aside className="rp-side">
@@ -206,34 +166,20 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
           </section>}
         </div>}
       </aside>
-      <main aria-label={t("공유물 목록")}>
-        <div className="rp-tools" ref={toolsRef}>
-          <span className="rp-path">{[projectName, ...cut.split("/").filter(Boolean)].join(" / ")}</span>
-          <button type="button" className={"rp-tool" + (menu ? " on" : "")} aria-haspopup="menu" aria-expanded={menu} aria-label={t("보기 방식")}
-            title={t("보기 방식")} onClick={() => setMenu(!menu)}>{t(VIEWS.find(view => view.id === ui.view)!.label)} ▾</button>
-          <button type="button" className={"rp-tool" + (query !== null ? " on" : "")} aria-label={t("검색")} title={t("검색")}
-            onClick={() => setQuery(query === null ? "" : null)}>⌕</button>
-          <select className="rp-tool" aria-label={t("정렬")} value={ui.sort} onChange={event => patchUi({ sort: event.target.value as PoolSort })}>
-            <option value="new">{t("최신순")}</option><option value="old">{t("오래된순")}</option>
-          </select>
-          {menu && <div className="rp-menu" role="menu">
-            {VIEWS.map(view => <button key={view.id} type="button" role="menuitemradio" aria-checked={ui.view === view.id}
-              onClick={() => { patchUi({ view: view.id }); setMenu(false); }}><b>{ui.view === view.id ? "✓" : ""}</b>{t(view.label)}</button>)}
-            <input type="range" min={POOL_SIZE.min} max={POOL_SIZE.max} step={10} value={ui.size} disabled={ui.view === "list"}
-              aria-label={t("썸네일 크기")} title={t("썸네일 크기")} onChange={event => patchUi({ size: Number(event.target.value) })} />
-          </div>}
-        </div>
-        {query !== null && <input className="rp-search" autoFocus placeholder={t("프롬프트·모델·작성자")} value={query} onChange={event => setQuery(event.target.value)} />}
+      <main aria-label={t("리졸브 상태")}>
         {(projects.tree.note || list.error) && <p role="alert">{projects.tree.note || list.error}</p>}
         {!cut && <p className="rp-empty-note">{t("왼쪽에서 컷을 고르세요")}</p>}
-        {cut && list.state === "loading" && !cutGens.length && <p>{t("받는 중")}</p>}
-        {list.state === "capped" && <p>{t("최대 2,000건 표시")}</p>}
-        {cut && !cutGens.length && list.state === "ok" && <p>{t("이 컷에 공유물이 없습니다")}</p>}
-        <div className={"rp-cards rp-" + ui.view}>
-          {shown.map(({ gen }) => <ResolvePanelCard key={gen.id} gen={gen} view={ui.view} size={ui.size} state={panel.cards[gen.id]}
-            bridge={bridgePresent} actions={actions} tagging={tagging === gen.id} onTagging={on => setTagging(on ? gen.id : null)}
-            onPrepare={() => void panel.prepareCard(gen.id)} onDrag={event => panel.drag(gen.id, event)} onRetry={() => void panel.adopt(gen.id)} />)}
-        </div>
+        {bridgePresent && <>
+          {!panel.identity?.writer && <p>{t("다른 MV 창이 리졸브를 맡고 있습니다")} <button onClick={() => void panel.takeover()}>{t("넘겨받기")}</button></p>}
+          <p>{t("띄움")} {panel.stage?.items?.filter(item => ["staged", "present"].includes(item.state)).length || 0} · {t("쓰인 것")} {panel.current?.used ? panel.current.used.length : t("확인 중")} — {t("NAS로 옮김")} {panel.moved}</p>
+          {!!panel.stage?.deferred && <p>{t("새 공유물")} {panel.stage.deferred} · {t("리졸브 지금 빈이 선택한 컷과 다릅니다")} <button onClick={panel.align}>{t("맞추기")}</button></p>}
+          {!!panel.stage?.items?.filter(item => item.state === "same_file_exists").length && <p>{t("같은 파일 항목이 이미 있습니다")} {panel.stage.items.filter(item => item.state === "same_file_exists").length}</p>}
+          {panel.stage?.capped && <p>{t("앞 200개만 띄웁니다 — 이 컷에서는 지우지 않습니다")}</p>}
+          {!!panel.stage?.unexpected_imports && <p>{t("가져오기가 어긋난 항목")} {panel.stage.unexpected_imports}{t("개 — 손대지 않았습니다")}</p>}
+          <p>{t("다른 허브")} {panel.counts.other_owner} · {t("확인 필요")} {panel.counts.needs_attention}</p>
+          {panel.failures.map((failure, index) => <p role="alert" key={index}>{failure}</p>)}
+          {panel.canRetry && <button onClick={panel.retry}>{t("다시")}</button>}
+        </>}
       </main>
     </div>
   </div>;

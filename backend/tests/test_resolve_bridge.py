@@ -21,13 +21,25 @@ class FakeClip:
         self.unique_id = f"clip-{type(self)._next_id}"
         self.path = path
         self.third_party_metadata = {}
+        self.name = Path(path).name
+        self.usage = "0"
 
     def GetUniqueId(self):
         return self.unique_id
 
     def GetClipProperty(self, key=None):
-        props = {"File Path": self.path, "Clip Name": Path(self.path).name}
+        props = {"File Path": self.path, "Clip Name": self.name, "Usage": self.usage}
         return props.get(key, "") if key else props
+
+    def SetClipProperty(self, key, value):
+        if key == "Clip Name":
+            self.name = value
+        return False
+
+    def ReplaceClip(self, path):
+        self.path = path
+        self.third_party_metadata.clear()
+        return True
 
     def GetThirdPartyMetadata(self, key=None):
         return self.third_party_metadata.get(key, "") if key else self.third_party_metadata
@@ -38,6 +50,271 @@ class FakeClip:
             return True
         self.third_party_metadata[key] = value
         return True
+
+
+class PanelStagingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.media = Path(self.tmp.name) / "media"
+        self.media.mkdir()
+        self.path = self.media / "one.png"
+        self.path.write_bytes(b"image")
+        self.pool = FakeMediaPool()
+        self.project = FakeProject(self.pool)
+        self.manager = FakeProjectManager(self.project)
+        self.resolve = FakeResolve(self.manager)
+        self.payload = {"project_id": "p", "project_name": "Film", "folder_path": "S/C1", "create": True,
+                        "manifest_root": str(Path(self.tmp.name) / "journal"), "hub_key": "hub", "account": "a",
+                        "media_root": str(self.media), "resolve_project_id": self.project.unique_id,
+                        "items": [{"gen_id": "g", "path": str(self.path), "label": "Jay · Model · 5s"}]}
+        self.assertEqual(self.run_op("target")["state"], "ok")
+        self.folder = self.pool.current
+
+    def run_op(self, operation, **kwargs):
+        return resolve_bridge.panel_operation({**self.payload, "operation": operation, **kwargs}, resolve=self.resolve)
+
+    def staged(self, usage="0"):
+        self.assertEqual(self.run_op("stage")["items"][0]["state"], "staged")
+        clip = self.folder.clips[-1]
+        clip.usage = usage
+        return clip
+
+    def record(self, clip):
+        return {"account": "a", "hub_key": "hub", "resolve_project_id": self.project.unique_id,
+                "project_id": "p", "gen_id": "g", "item_id": clip.unique_id, "bin_id": self.folder.unique_id,
+                "local_path": str(self.path), "nas_path": str(Path(self.tmp.name) / "nas.png")}
+
+    def test_stage_name_readback_raw_marker_and_no_save(self):
+        clip = self.staged()
+        self.assertEqual(clip.name, "Jay · Model · 5s")
+        self.assertEqual(resolve_bridge._panel_raw_mark(clip)["item_id"], clip.unique_id)
+        self.assertEqual(self.run_op("stage")["items"][0]["state"], "present")
+        self.assertEqual(len(self.pool.import_calls), 1)
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_deferred_creates_without_selecting(self):
+        self.pool.current = self.pool.root
+        result = self.run_op("stage", folder_path="S/C2")
+        self.assertEqual(result["deferred"], 1)
+        self.assertEqual(self.pool.import_calls, [])
+        self.assertIs(self.pool.current, self.pool.root)
+        self.assertIsNotNone(resolve_bridge._folder_at_path(self.pool.root, ("MV Hub", "Film", "S", "C2")))
+
+    def test_unstage_only_unused_owned_and_not_capped(self):
+        clip = self.staged()
+        duplicate = FakeClip(clip.path)
+        duplicate.third_party_metadata = dict(clip.third_party_metadata)
+        person = FakeClip(clip.path)
+        self.folder.clips.extend([duplicate, person])
+        self.run_op("stage", items=[], capped=True)
+        self.assertIn(clip, self.folder.clips)
+        self.run_op("unstage", items=[], bin_id=self.folder.unique_id)
+        self.assertEqual(self.folder.clips, [duplicate, person])
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_usage_unknown_used_or_changed_preserved(self):
+        for usage in ("", "bad", "1.0", "-1", None, True, "2"):
+            with self.subTest(usage=usage):
+                self.folder.clips.clear()
+                clip = self.staged(usage)
+                self.run_op("stage", items=[])
+                self.assertIn(clip, self.folder.clips)
+        clip.usage = "0"
+        original = clip.GetClipProperty
+        reads = 0
+        def changing(key=None):
+            nonlocal reads
+            if key == "Usage":
+                reads += 1
+                return "0" if reads == 1 else "1"
+            return original(key)
+        clip.GetClipProperty = changing
+        self.run_op("stage", items=[])
+        self.assertIn(clip, self.folder.clips)
+
+    def test_missing_file_other_owner_and_nas_preserved(self):
+        clip = self.staged()
+        self.path.unlink()
+        self.run_op("stage", items=[])
+        self.assertIn(clip, self.folder.clips)
+        self.path.write_bytes(b"image")
+        mark = resolve_bridge._panel_raw_mark(clip)
+        mark["staged_by"] = "elsewhere"
+        clip.third_party_metadata[resolve_bridge.MVHUB_METADATA_KEY] = json.dumps(mark)
+        self.assertEqual(self.run_op("stage")["items"][0]["state"], "staged")
+        self.assertEqual(len(self.folder.clips), 2)
+        self.run_op("stage", items=[])
+        self.assertEqual(self.folder.clips, [clip])
+
+    def test_same_file_and_existing_import_return_never_mutate(self):
+        existing = FakeClip(str(self.media / "other.png"))
+        self.folder.clips.append(existing)
+        self.pool.ImportMedia = mock.Mock(return_value=[existing])
+        with mock.patch.object(existing, "SetClipProperty") as name, mock.patch.object(existing, "SetThirdPartyMetadata") as stamp, mock.patch.object(self.pool, "DeleteClips") as delete:
+            result = self.run_op("stage")
+        self.assertEqual(result["items"][0]["state"], "import_failed")
+        self.assertEqual(result["import_records"], [])
+        name.assert_not_called(); stamp.assert_not_called(); delete.assert_not_called()
+        existing.path = str(self.path)
+        self.assertEqual(self.run_op("stage")["items"][0]["state"], "same_file_exists")
+
+    def test_failed_stamp_cleanup_and_record_resume_conflicts(self):
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False):
+            result = self.run_op("stage")
+        self.assertEqual(result["items"][0]["state"], "import_failed")
+        self.assertEqual(self.folder.clips, [])
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False), mock.patch.object(self.pool, "DeleteClips", return_value=False):
+            failed = self.run_op("stage")
+        self.assertEqual(len(failed["import_records"]), 1)
+        record = failed["import_records"][0]
+        clip = self.folder.clips[0]
+        for change in (dict(account="other"), dict(hub_key="other")):
+            self.assertEqual(self.run_op("stage", import_records=[{**record, **change}])["items"][0]["state"], "conflict")
+        clip.path = str(self.media / "different.png")
+        self.assertEqual(self.run_op("stage", import_records=[record])["items"][0]["state"], "conflict")
+        clip.path = str(self.path)
+        self.assertEqual(self.run_op("stage", import_records=[record])["items"][0]["state"], "staged")
+        self.assertEqual(len(self.folder.clips), 1)
+
+    def test_read_operations_never_mutate_and_paginate_501(self):
+        original = self.staged("1")
+        for index in range(500):
+            clip = FakeClip(str(self.path))
+            resolve_bridge._panel_stamp(clip, str(index), "p", lambda: None, hub_key="hub")
+            self.folder.clips.append(clip)
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=AssertionError), mock.patch.object(self.pool, "DeleteClips", side_effect=AssertionError), mock.patch.object(self.pool, "SetCurrentFolder", side_effect=AssertionError), mock.patch.object(self.pool, "AddSubFolder", side_effect=AssertionError), mock.patch.object(FakeClip, "SetThirdPartyMetadata", side_effect=AssertionError), mock.patch.object(FakeClip, "ReplaceClip", side_effect=AssertionError), mock.patch.object(FakeClip, "SetClipProperty", side_effect=AssertionError), mock.patch.object(self.manager, "SaveProject", side_effect=AssertionError):
+            first = self.run_op("inventory")
+            second = self.run_op("inventory", after=first["after"])
+            current = self.run_op("current-bin")
+        self.assertEqual(len(first["items"]), 500)
+        self.assertTrue(first["more"])
+        self.assertEqual(len(second["items"]), 1)
+        self.assertFalse(second["more"])
+        self.assertEqual(current["used"], ["g"])
+        self.assertEqual(original.path, str(self.path))
+
+    def test_adopt_replace_raw_stamp_save_and_recovery(self):
+        clip = self.staged("1")
+        record = self.record(clip)
+        with mock.patch.object(clip, "SetThirdPartyMetadata", return_value=False):
+            self.assertEqual(self.run_op("adopt", gen_id="g", records=[record])["state"], "stamp_failed")
+        self.assertEqual(clip.path, record["nas_path"])
+        self.manager.save_result = False
+        self.assertEqual(self.run_op("adopt", gen_id="g", records=[record])["state"], "save_failed")
+        self.manager.save_result = True
+        with mock.patch.object(clip, "ReplaceClip", side_effect=AssertionError):
+            self.assertEqual(self.run_op("adopt", gen_id="g", records=[record])["state"], "in_bin")
+        self.assertNotIn("staged_by", resolve_bridge._panel_raw_mark(clip))
+        self.assertNotIn("item_id", resolve_bridge._panel_raw_mark(clip))
+
+    def test_adopt_relinked_or_other_stamp_conflict_zero_writes(self):
+        clip = self.staged("1")
+        record = self.record(clip)
+        clip.path = str(self.media / "another.png")
+        with mock.patch.object(clip, "ReplaceClip") as replace:
+            self.assertEqual(self.run_op("adopt", gen_id="g", records=[record])["state"], "conflict")
+        replace.assert_not_called()
+        clip.path = str(self.path)
+        resolve_bridge.stamp_and_verify(clip, "other", "p")
+        self.assertEqual(self.run_op("adopt", gen_id="g", records=[record])["state"], "conflict")
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_adopt_replace_false_and_wrong_readback(self):
+        clip = self.staged("1")
+        for value in (False, True):
+            with mock.patch.object(clip, "ReplaceClip", return_value=value):
+                self.assertEqual(self.run_op("adopt", gen_id="g", records=[self.record(clip)])["state"], "replace_failed")
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_multiple_adoptions_partial_failure_and_resume(self):
+        first = self.staged("1")
+        second = FakeClip(str(self.path))
+        resolve_bridge._panel_stamp(second, "g", "p", lambda: None, hub_key="hub")
+        self.folder.clips.append(second)
+        records = [self.record(first), self.record(second)]
+        with mock.patch.object(second, "ReplaceClip", return_value=False):
+            result = self.run_op("adopt", gen_id="g", records=records)
+        self.assertEqual(result["state"], "replace_failed")
+        self.assertEqual(result["remaining"], 1)
+        self.assertEqual(self.manager.saved, 0)
+        self.assertEqual(self.run_op("adopt", gen_id="g", records=records)["state"], "in_bin")
+
+    def test_recovery_pending_blocks_stage_and_unstage_zero_writes(self):
+        clip = self.staged()
+        with mock.patch.object(resolve_bridge, "_settle_recovery_record", side_effect=resolve_bridge.ResolveBridgeError("pending", code="rebuild_recovery_pending")), mock.patch.object(self.pool, "ImportMedia") as imports, mock.patch.object(self.pool, "DeleteClips") as deletes:
+            self.assertEqual(self.run_op("stage")["state"], "rebuild_recovery_pending")
+            self.assertEqual(self.run_op("unstage", items=[], bin_id=self.folder.unique_id)["state"], "rebuild_recovery_pending")
+        imports.assert_not_called(); deletes.assert_not_called()
+        self.assertIn(clip, self.folder.clips)
+
+    def test_unmarked_nas_without_record_is_not_adopted(self):
+        clip = FakeClip(str(Path(self.tmp.name) / "nas.png"))
+        self.folder.clips.append(clip)
+        self.assertEqual(self.run_op("adopt", gen_id="g", path=clip.path)["state"], "not_prepared")
+        self.assertEqual(clip.third_party_metadata, {})
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_inventory_mixed_ownership_and_locations(self):
+        mine = self.staged()
+        outside = self.pool.AddSubFolder(self.pool.root, "Human")
+        external = FakeClip(str(self.path))
+        resolve_bridge._panel_stamp(external, "outside", "p", lambda: None, hub_key="hub")
+        outside.clips.append(external)
+        human = FakeClip(str(self.path))
+        nas = FakeClip(str(Path(self.tmp.name) / "nas.png"))
+        resolve_bridge.stamp_and_verify(nas, "nas", "p")
+        other = FakeClip(str(self.path))
+        resolve_bridge._panel_stamp(other, "other", "p", lambda: None, hub_key="other-hub")
+        attention = FakeClip(str(self.path))
+        resolve_bridge.stamp_and_verify(attention, "attention", "p")
+        self.folder.clips.extend([human, nas, other, attention])
+        result = self.run_op("inventory")
+        self.assertEqual([row["item_id"] for row in result["items"]], [mine.unique_id])
+        self.assertEqual(result["other_owner"], 1)
+        self.assertEqual(result["needs_attention"], 1)
+
+    def test_unmarked_timeline_item_usage_zero_preserved(self):
+        human = FakeClip("")
+        human.name = "Human Timeline"
+        human.usage = "0"
+        self.folder.clips.append(human)
+        for operation in ("stage", "unstage"):
+            result = self.run_op(operation, items=[], bin_id=self.folder.unique_id)
+            self.assertEqual(result["state"], "ok")
+            self.assertIn(human, self.folder.clips)
+            self.assertEqual(human.third_party_metadata, {})
+
+    def test_missing_record_confirmed_only_after_complete_read(self):
+        clip = self.staged()
+        old = {**self.record(clip), "item_id": "gone"}
+        result = self.run_op("adopt", gen_id="g", records=[old, self.record(clip)])
+        self.assertEqual(result["state"], "in_bin")
+        self.assertEqual(result["missing_record_ids"], ["gone"])
+        with mock.patch.object(self.folder, "GetClipList", side_effect=RuntimeError("read failed")):
+            result = self.run_op("adopt", gen_id="g", records=[old])
+        self.assertNotIn("missing_record_ids", result)
+
+    def test_unexpected_import_count_and_zero_mutations(self):
+        for count in (1, 2):
+            self.folder.clips.clear()
+            clips = [FakeClip(str(self.media / f"wrong-{n}.png")) for n in range(count)]
+            with mock.patch.object(self.pool, "ImportMedia", return_value=clips), mock.patch.object(FakeClip, "SetClipProperty") as name, mock.patch.object(FakeClip, "SetThirdPartyMetadata") as stamp, mock.patch.object(self.pool, "DeleteClips") as delete:
+                result = self.run_op("stage")
+            self.assertEqual(result["unexpected_imports"], count)
+            self.assertEqual(result["import_records"], [])
+            name.assert_not_called(); stamp.assert_not_called(); delete.assert_not_called()
+
+    def test_unexpected_import_count_excludes_existing_items(self):
+        existing = FakeClip(str(self.media / "existing.png"))
+        self.folder.clips.append(existing)
+        new = FakeClip(str(self.media / "wrong.png"))
+        for returned, expected in (([existing], 0), ([existing, new], 1)):
+            with mock.patch.object(self.pool, "ImportMedia", return_value=returned), mock.patch.object(FakeClip, "SetClipProperty") as name, mock.patch.object(FakeClip, "SetThirdPartyMetadata") as stamp, mock.patch.object(self.pool, "DeleteClips") as delete:
+                result = self.run_op("stage")
+            self.assertEqual(result["unexpected_imports"], expected)
+            self.assertEqual(result["import_records"], [])
+            name.assert_not_called(); stamp.assert_not_called(); delete.assert_not_called()
 
 
 class FakeFolder:
@@ -122,6 +399,13 @@ class FakeMediaPool:
             if parent is None or folder.children or folder.clips:
                 return False
             parent.children.remove(folder)
+        return True
+
+    def DeleteClips(self, clips):
+        for clip in clips:
+            folder = self._folder_containing_clip(clip)
+            if folder:
+                folder.clips.remove(clip)
         return True
 
     def RefreshFolders(self):

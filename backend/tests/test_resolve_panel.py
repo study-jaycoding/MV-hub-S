@@ -34,7 +34,14 @@ class BridgeTests(unittest.TestCase):
                         "path": str(Path(self.tmp.name) / "clip.mp4")}
 
     def run_panel(self, operation="target", **kwargs):
-        return bridge.panel_operation({**self.payload, "operation": operation, **kwargs}, resolve=self.resolve)
+        payload = {**self.payload, "operation": operation, "hub_key": "hub", "account": "a", **kwargs}
+        if operation == "adopt":
+            # 과거 경로 인수 시험도 이제 허브가 보관한 항목 ID 증거를 명시한다.
+            payload["records"] = [{"item_id": clip.unique_id, "bin_id": self.pool.current.unique_id,
+                                   "account": "a", "hub_key": "hub", "resolve_project_id": self.payload["resolve_project_id"],
+                                   "project_id": "p", "gen_id": "g", "local_path": clip.path, "nas_path": self.payload["path"]}
+                                  for clip in self.pool.current.clips if self.pool.current is not self.pool.root]
+        return bridge.panel_operation(payload, resolve=self.resolve)
 
     def placed(self):
         self.assertEqual(self.run_panel()["state"], "ok")
@@ -86,7 +93,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.run_panel("adopt")["state"], "not_seen")
         clip = FakeClip(self.payload["path"])
         self.pool.root.clips.append(clip)
-        self.assertEqual(self.run_panel("adopt")["state"], "elsewhere")
+        self.assertEqual(self.run_panel("adopt")["state"], "not_seen")
         self.assertEqual(self.run_panel("adopt", resolve_project_id="other")["state"], "project_changed")
         self.assertEqual(clip.third_party_metadata, {})
         self.assertEqual(self.manager.saved, 0)
@@ -197,6 +204,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         panel._inflight.clear()
         panel._sequences.clear()
         panel._prepare_lock = asyncio.Lock()
+        panel.write_lock = asyncio.Lock()
         self.pool = FakeMediaPool()
         self.project = FakeProject(self.pool)
         self.manager = FakeProjectManager(self.project)
@@ -207,8 +215,11 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(integration, "_reject_while_launching"),
             patch.object(integration, "_authorized_generations", AsyncMock(return_value=("p", [self.gen]))),
             patch.object(route._proxy, "proxying", return_value=False),
+            patch.object(route._proxy, "proxy_json", return_value={"projects": [{"id": "p"}]}),
             patch.object(route.repo, "get_project", return_value={"name": "영화"}),
             patch.object(transfer, "MEDIA_DIR", self.media),
+            patch.object(panel.config, "MEDIA_DIR", self.media),
+            patch.object(panel.config, "DATA_DIR", self.root / "data"),
             patch.object(transfer, "resolve_transfer_roots", return_value=(self.render, self.manifests)),
             patch.object(panel, "device_identity", return_value={"device_id": "pc-1", "device_name": "test"}),
             patch.object(runner, "run_resolve_panel_isolated", side_effect=self.child),
@@ -218,14 +229,15 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             item.start()
             self.addCleanup(item.stop)
         self.ctx = panel.identity()
+        panel._owner.update(window="test-window", context=panel.context_key(self.ctx), generation=1,
+                            seen=__import__("time").monotonic(), bin_id="")
 
     def child(self, payload, before_start=None):
         rejected = before_start() if before_start else None
         return rejected or bridge.panel_operation(payload, resolve=self.resolve)
 
     def body(self, cls, **kwargs):
-        if cls in (route.CacheIn, route.TargetIn):
-            kwargs.setdefault("window", "test-window")
+        kwargs.setdefault("window", "test-window")
         return cls(ctx=self.ctx, project_id="p", folder_path="S01/C010", **kwargs)
 
     async def prepare(self):
@@ -241,7 +253,9 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         ready = await self.prepare()
         self.assertEqual(ready["state"], "prepared")
         self.assertEqual((await self.target())["state"], "ok")
-        self.pool.current.clips.append(FakeClip(ready["path"]))
+        clip = FakeClip(str(self.media / "clip.mp4"))
+        self.pool.current.clips.append(clip)
+        bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
         return ready
 
     async def test_cache_local_only_and_prepare_without_manifest_catalog(self):
@@ -270,7 +284,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "in_bin")
         self.assertEqual(result["transfer_id"], ids[0])
         result2 = await self.adopt()
-        self.assertEqual(result2["transfer_id"], ids[0])
+        self.assertEqual(result2["state"], "not_seen")
         files = list(self.manifests.rglob("*.json"))
         self.assertEqual(len(files), 1)
         manifest = json.loads(files[0].read_text(encoding="utf-8"))
@@ -278,7 +292,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manifest["device_id"], "pc-1")
         self.assertEqual(manifest["resolve_import"]["status"], "complete")
         self.assertEqual(len(manifest["items"]), 1)
-        self.assertEqual(self.manager.saved, 3)
+        self.assertEqual(self.manager.saved, 2)
 
     async def test_not_prepared_does_not_call_resolve(self):
         self.assertEqual((await self.adopt())["state"], "not_prepared")
@@ -289,8 +303,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.manager.save_result = False
         with patch.object(transfer, "save_manifest", AsyncMock()) as save:
             self.assertEqual((await self.adopt())["state"], "save_failed")
-            self.pool.current.clips.append(FakeClip(self.pool.current.clips[0].path))
-            bridge.stamp_and_verify(self.pool.current.clips[-1], "other", "p")
+            bridge.stamp_and_verify(self.pool.current.clips[0], "other", "p")
             self.assertEqual((await self.adopt())["state"], "conflict")
             save.assert_not_called()
 
@@ -387,7 +400,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             second = asyncio.create_task(self.prepare())
             await asyncio.sleep(0.03)
             self.assertEqual(count, 1)
-            self.assertEqual(len(panel._inflight), 1)
+            self.assertEqual(len(panel._inflight), 2)
             finish.set()
             a, b = await asyncio.gather(first, second)
         self.assertEqual(a, b)
@@ -526,7 +539,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gate.call_count, 2)
         for call in gate.call_args_list:
             self.assertEqual(call.args[0]["manifest_root"], str(self.manifests))
-        self.assertEqual(self.pool.current.clips[0].third_party_metadata, {})
+        self.assertEqual(bridge._panel_raw_mark(self.pool.current.clips[0])["staged_by"], panel.hub_key())
         self.assertEqual(self.manager.saved, 0)
         save.assert_not_called()
 
@@ -544,14 +557,16 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(identity["protocol"], {"min": 1, "max": 1})
         self.assertEqual(len(identity["account"]), 16)
         self.assertEqual({r.path for r in route.router.routes}, {
-            "/api/resolve/panel/" + name for name in ("identity", "cache", "prepare", "target", "current-bin", "adopt")})
+            "/api/resolve/panel/" + name for name in ("identity", "cache", "prepare", "target", "current-bin", "adopt", "stage", "unstage", "inventory")})
 
     async def test_target_and_adopt_share_current_project_name_and_recovery_identity(self):
         self.gen["project_name"] = "옛 이름"
         ready = await self.prepare()
         with patch.object(bridge, "_settle_recovery_record", wraps=bridge._settle_recovery_record) as recovery:
             self.assertEqual((await self.target())["bin_path"], "MV Hub/영화/S01/C010")
-            self.pool.current.clips.append(FakeClip(ready["path"]))
+            clip = FakeClip(str(self.media / "clip.mp4"))
+            self.pool.current.clips.append(clip)
+            bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
             self.assertEqual((await self.adopt())["state"], "in_bin")
         self.assertEqual(recovery.call_args_list[0].args[3], recovery.call_args_list[1].args[3])
         with patch.object(route.repo, "get_project", return_value=None):
@@ -617,8 +632,10 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_window_sequences_are_independent_and_old_requests_are_stale(self):
         self.assertEqual((await self.target(seq=100))["state"], "ok")
         for name in ("reopened", "second-window"):
+            await route.get_identity(self.request, window=name, claim=True)
             result = await route.post_target(self.body(route.TargetIn, seq=1, window=name), self.request)
             self.assertEqual(result["state"], "ok")
+        await route.get_identity(self.request, window="test-window", claim=True)
         self.assertEqual((await self.target(seq=99))["state"], "stale")
         panel.note_sequence(self.ctx, 50, "cache", "first")
         self.assertTrue(panel.stale(self.ctx, 1, "cache", "first"))
@@ -636,6 +653,218 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         integration._authorized_generations.assert_not_called()
 
 
+    async def test_stage_authorized_cached_source_and_cut_sequence(self):
+        await self.target()
+        body = self.body(route.StageIn, seq=2, gen_ids=["g"])
+        result = await route.post_stage(body, self.request)
+        self.assertEqual(result["items"][0]["state"], "staged")
+        self.assertEqual(self.pool.current.clips[0].path, str(self.media / "clip.mp4"))
+        self.assertFalse(self.render.exists())
+        self.assertFalse(self.manifests.exists())
+        body.seq = 1
+        self.assertEqual((await route.post_stage(body, self.request))["state"], "stale")
+        panel.note_sequence(self.ctx, 100, "stage:p:other", "test-window")
+        body.seq = 3
+        self.assertEqual((await route.post_stage(body, self.request))["state"], "ok")
+
+    async def test_stage_nas_overlap_rejected_and_oldest_200_capped(self):
+        with patch.object(panel.config, "MEDIA_DIR", self.render):
+            with self.assertRaises(transfer.ResolveTransferError):
+                await panel.stage_items(self.ctx, [self.gen], self.request)
+        rows = [{**self.gen, "id": str(n), "created_at": f"{n:04d}"} for n in reversed(range(201))]
+        self.assertEqual([row["gen_id"] for row in await panel.stage_items(self.ctx, rows, self.request)], [str(n) for n in range(200)])
+        rows = rows[1:]
+        with patch.object(integration, "_authorized_generations", AsyncMock(return_value=("p", rows))):
+            await self.target()
+            result = await route.post_stage(self.body(route.StageIn, seq=1, gen_ids=[row["id"] for row in rows], capped=True), self.request)
+        self.assertTrue(result["capped"])
+        self.assertEqual(len(result["items"]), 200)
+        self.assertEqual(result["items"][0]["gen_id"], "0")
+        self.assertEqual(result["items"][-1]["gen_id"], "199")
+
+    async def test_same_file_not_retried_until_cut_changes(self):
+        await self.target()
+        self.pool.current.clips.append(FakeClip(str(self.media / "clip.mp4")))
+        body = self.body(route.StageIn, seq=1, gen_ids=["g"])
+        self.assertEqual((await route.post_stage(body, self.request))["items"][0]["state"], "same_file_exists")
+        self.pool.current.clips.clear()
+        body.seq = 2
+        self.assertEqual((await route.post_stage(body, self.request))["items"][0]["state"], "same_file_exists")
+        self.assertEqual(self.pool.import_calls, [])
+
+    async def test_writer_poll_never_steals_and_takeover_waits(self):
+        one = await route.get_identity(self.request, window="one", claim=True)
+        await route.get_identity(self.request, window="two")
+        self.assertTrue((await route.get_identity(self.request, window="one"))["writer"])
+        await panel.write_lock.acquire()
+        takeover = asyncio.create_task(route.get_identity(self.request, window="two", claim=True))
+        await asyncio.sleep(0.01)
+        queued = asyncio.create_task(route.post_target(self.body(route.TargetIn, window="one", seq=1), self.request))
+        await asyncio.sleep(0.01)
+        self.assertFalse(takeover.done())
+        panel.write_lock.release()
+        second = await takeover
+        self.assertGreater(second["generation"], one["generation"])
+        self.assertEqual((await queued)["state"], "other_window")
+
+    async def test_writer_global_across_auth_accounts_and_timeout(self):
+        with patch.object(panel.config, "AUTH_ENABLED", True):
+            self.request.state.account = {"email": "one@test.invalid"}
+            one = await route.get_identity(self.request, window="one", claim=True)
+            self.request.state.account = {"email": "two@test.invalid"}
+            two = await route.get_identity(self.request, window="two", claim=True)
+            self.assertNotEqual(one["account"], two["account"])
+            self.assertIsNone(panel.owner_generation(one, "one"))
+            panel._owner["seen"] -= 16
+            self.assertIsNone(panel.owner_generation(two, "two"))
+            self.assertTrue((await route.get_identity(self.request, window="two", claim=True))["writer"])
+
+    async def test_inventory_permissions_db_folder_and_active_bin_cleanup(self):
+        await self.place()
+        result = await route.get_inventory(self.request, self.ctx["instance"], self.ctx["account"], self.ctx["epoch"])
+        self.assertEqual(result["items"][0]["folder_path"], self.gen["folder_path"])
+        body = self.body(route.UnstageIn, bin_id=self.pool.current.unique_id, inventory_cleanup=True)
+        self.assertEqual((await route.post_unstage(body, self.request))["state"], "active_bin")
+        with patch.object(route, "_project_read", AsyncMock(side_effect=HTTPException(403, "hidden"))):
+            filtered = await route.get_inventory(self.request, self.ctx["instance"], self.ctx["account"], self.ctx["epoch"])
+            self.assertEqual(filtered["items"], [])
+            with self.assertRaises(HTTPException):
+                await route.post_unstage(body, self.request)
+            with self.assertRaises(HTTPException):
+                await self.adopt()
+
+    async def test_adopt_crash_after_replace_and_restart_uses_disk_ready(self):
+        await self.place()
+        clip = self.pool.current.clips[0]
+        original = clip.ReplaceClip
+        def crash(path):
+            self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+            original(path)
+            raise RuntimeError("process lost after replace")
+        with patch.object(clip, "ReplaceClip", side_effect=crash):
+            self.assertEqual((await self.adopt())["state"], "unknown")
+        panel._prepared.clear()
+        with patch.object(panel, "INSTANCE", "restarted"):
+            self.ctx = await route.get_identity(self.request, window="test-window", claim=True)
+            result = await self.adopt()
+        self.assertEqual(result["state"], "in_bin")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_import_failure_record_then_stage_recovers(self):
+        await self.target()
+        body = self.body(route.StageIn, seq=1, gen_ids=["g"])
+        with patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False), patch.object(self.pool, "DeleteClips", return_value=False):
+            self.assertEqual((await route.post_stage(body, self.request))["items"][0]["state"], "import_failed")
+        self.assertEqual(len(panel.records("import", self.ctx)), 1)
+        body.seq = 2
+        self.assertEqual((await route.post_stage(body, self.request))["items"][0]["state"], "staged")
+        self.assertEqual(len(self.pool.current.clips), 1)
+        self.assertEqual(panel.records("import", self.ctx), [])
+
+    async def test_capped_empty_stage_preserves_existing_item(self):
+        await self.place()
+        result = await route.post_stage(self.body(route.StageIn, seq=1, gen_ids=[], capped=True), self.request)
+        self.assertTrue(result["capped"])
+        self.assertEqual(len(self.pool.current.clips), 1)
+
+    async def test_old_owner_context_unclaimed_but_live_other_account_is_other_window(self):
+        with patch.object(panel, "INSTANCE", "new-instance"):
+            self.assertEqual((await route.get_identity(self.request, window="test-window"))["owner_state"], "unclaimed")
+            self.assertTrue((await route.get_identity(self.request, window="test-window", claim=True))["writer"])
+        with patch.object(panel.config, "AUTH_ENABLED", True):
+            self.request.state.account = {"email": "a@test.invalid"}
+            await route.get_identity(self.request, window="one", claim=True)
+            self.request.state.account = {"email": "b@test.invalid"}
+            self.assertEqual((await route.get_identity(self.request, window="one"))["owner_state"], "unclaimed")
+            self.assertEqual((await route.get_identity(self.request, window="two"))["owner_state"], "other_window")
+
+    async def test_missing_adoption_record_deleted_and_other_owned_item_adopted(self):
+        await self.place()
+        with patch.object(transfer, "save_manifest", side_effect=OSError("ledger")):
+            await self.adopt()
+        old = panel.records("adopt", self.ctx)[0]
+        self.pool.current.clips.clear()
+        clip = FakeClip(str(self.media / "clip.mp4"))
+        bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
+        self.pool.current.clips.append(clip)
+        result = await self.adopt()
+        self.assertEqual(result["state"], "in_bin")
+        self.assertIn(old["item_id"], result["missing_record_ids"])
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_missing_adoption_record_kept_when_read_fails(self):
+        await self.place()
+        with patch.object(transfer, "save_manifest", side_effect=OSError("ledger")):
+            await self.adopt()
+        self.pool.current.clips.clear()
+        with patch.object(self.pool.current, "GetClipList", side_effect=RuntimeError("unreadable")):
+            await self.adopt()
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+
+    async def test_missing_adoption_without_replacement_clears_confirmed_record(self):
+        await self.place()
+        with patch.object(transfer, "save_manifest", side_effect=OSError("ledger")):
+            await self.adopt()
+        self.pool.current.clips.clear()
+        self.assertEqual((await self.adopt())["state"], "not_seen")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_missing_adoption_record_kept_when_project_changes_during_read(self):
+        await self.place()
+        with patch.object(transfer, "save_manifest", side_effect=OSError("ledger")):
+            await self.adopt()
+        records = panel.records("adopt", self.ctx)
+        self.assertEqual(len(records), 1)
+
+        def changed_read():
+            self.project.unique_id = "changed-during-read"
+            return []
+
+        def child(payload, before_start=None):
+            if payload["operation"] == "adopt":
+                with patch.object(self.pool.current, "GetClipList", side_effect=changed_read):
+                    return self.child(payload, before_start)
+            return self.child(payload, before_start)
+
+        with patch.object(runner, "run_resolve_panel_isolated", side_effect=child), patch.object(transfer, "save_manifest", AsyncMock()) as save:
+            result = await self.adopt()
+        self.assertEqual(result["state"], "project_changed")
+        self.assertNotIn("missing_record_ids", result)
+        self.assertEqual(panel.records("adopt", self.ctx), records)
+        save.assert_not_called()
+
+    async def test_present_generation_clears_import_record(self):
+        await self.place()
+        clip = self.pool.current.clips[0]
+        panel.save_record("import", {"account": self.ctx["account"], "hub_key": panel.hub_key(),
+                                   "resolve_project_id": self.project.unique_id, "project_id": "p", "gen_id": "g",
+                                   "item_id": clip.unique_id, "local_path": clip.path})
+        result = await route.post_stage(self.body(route.StageIn, seq=1, gen_ids=["g"]), self.request)
+        self.assertEqual(result["items"][0]["state"], "present")
+        self.assertEqual(panel.records("import", self.ctx), [])
+
+    async def test_adopt_fallback_found_after_preflight_is_recorded_before_replace(self):
+        await self.place()
+        with patch.object(transfer, "save_manifest", side_effect=OSError("ledger")):
+            await self.adopt()
+        self.pool.current.clips.clear()
+        clip = FakeClip(str(self.media / "clip.mp4"))
+        bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
+        self.pool.current.clips.append(clip)
+        original = clip.ReplaceClip
+        def replace(path):
+            self.assertIn(clip.unique_id, {row["item_id"] for row in panel.records("adopt", self.ctx)})
+            return original(path)
+        with patch.object(route, "_inventory", AsyncMock(return_value={"state": "ok", "resolve_project_id": self.project.unique_id, "items": [], "more": False})), patch.object(clip, "ReplaceClip", side_effect=replace):
+            self.assertEqual((await self.adopt())["state"], "in_bin")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    def test_stage_request_limit_matches_screen_limit(self):
+        self.assertEqual(len(self.body(route.StageIn, seq=1, gen_ids=[str(n) for n in range(200)]).gen_ids), 200)
+        with self.assertRaises(ValueError):
+            self.body(route.StageIn, seq=1, gen_ids=[str(n) for n in range(201)])
+
+
 class RunnerTests(unittest.TestCase):
     def test_busy_read_does_not_probe_resolve(self):
         with runner.resolve_mutation_slot(), patch.object(runner, "_select_interpreter") as probe:
@@ -648,11 +877,11 @@ class RunnerTests(unittest.TestCase):
         probe.assert_not_called()
 
     def test_child_keeps_slot_and_mutations_have_no_timeout(self):
-        for operation in ("target", "adopt", "current-bin"):
+        for operation in ("target", "adopt", "stage", "unstage", "current-bin", "inventory"):
             def child(*args, **kwargs):
                 with runner.resolve_mutation_slot(blocking=False) as acquired:
                     self.assertFalse(acquired)
-                self.assertEqual(kwargs["timeout"], 8 if operation == "current-bin" else None)
+                self.assertEqual(kwargs["timeout"], {"current-bin": 8, "inventory": 20}.get(operation))
                 return SimpleNamespace(stdout=worker.RESULT_PREFIX + '{"state":"ok"}', stderr="", returncode=0)
 
             with patch.object(runner, "_resolve_is_closed", return_value=False), patch.object(runner, "_select_interpreter", return_value=("python", {}, "")), patch.object(runner, "_run_child", side_effect=child):
