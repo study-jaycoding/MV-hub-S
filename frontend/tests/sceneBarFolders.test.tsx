@@ -26,7 +26,7 @@ const rect = (left: number, top: number, width: number, height: number) =>
 // 탭 줄 칸을 가로 한 줄(폭 100)로 둔다 — jsdom 은 자리를 재 주지 않는다
 const layout = () => {
   vi.spyOn(host.querySelector<HTMLElement>(".scene-bar")!, "getBoundingClientRect").mockReturnValue(rect(0, 0, 600, 30));
-  [...host.querySelectorAll<HTMLElement>(".scene-bar > .scene-tab-wrap, .scene-bar > .scene-tab-folder")].forEach((el, index) => {
+  [...host.querySelectorAll<HTMLElement>(".scene-bar .scene-tab-wrap, .scene-bar .scene-tab-folder")].forEach((el, index) => {
     vi.spyOn(el, "getBoundingClientRect").mockReturnValue(rect(index * 100, 0, 100, 30));
   });
 };
@@ -140,13 +140,50 @@ it("목록의 탭을 탭 줄에 끌어 놓으면 폴더에서 빼서 그 자리�
   expect(onTabFolder).toHaveBeenCalledTimes(1);
 });
 
-it("보는 탭이 폴더 안이면 폴더 바로 옆에 탭으로 남고 폴더 테두리가 라임이다 · 그 탭을 줄의 다른 자리에 놓으면 폴더에서 빠진다", () => {
+it("보는 탭이 폴더 안이면 폴더 칸과 붙은 한 덩어리(A안) · 그 탭을 줄의 다른 자리에 놓으면 폴더에서 빠진다", () => {
   mount([scene("s1"), scene("s2", F), scene("s3", F)], "s2");
-  const row = [...host.querySelectorAll<HTMLElement>(".scene-bar > .scene-tab-wrap, .scene-bar > .scene-tab-folder")];
+  const row = [...host.querySelectorAll<HTMLElement>(".scene-bar .scene-tab-wrap, .scene-bar .scene-tab-folder")];
   expect(row.map((el) => el.dataset.sceneTab ?? `f:${el.dataset.tabFolder}`)).toEqual(["s1", "f:F", "s2"]);
+  const join = host.querySelector(".scene-tab-folder-join")!;
+  expect([...join.children].map((el) => el.className.split(" ")[0])).toEqual(["scene-tab-folder", "scene-tab-wrap"]);
+  expect(join.querySelector('[data-scene-tab="s2"]')?.classList.contains("on")).toBe(true);
   expect(folderChip()!.classList.contains("has-cur")).toBe(true);
   drag(tab("s2")!, [250, 15], [20, 15]);
   expect(onTabFolder).toHaveBeenCalledExactlyOnceWith({ type: "put", id: "s2", folder: null, beforeId: "s1" });
+});
+
+it("덩어리 안(폴더 칸과 보는 탭 사이)에는 삽입선을 긋지 않는다 — 다른 탭을 거기 놓으면 덩어리 뒤로", () => {
+  mount([scene("s1"), scene("s2", F), scene("s3"), scene("s4")], "s2"); // 줄: s1 | [폴더 s2] | s3 | s4
+  pointer("pointerdown", tab("s4")!, { clientX: 450, clientY: 15 });
+  pointer("pointermove", tab("s4")!, { clientX: 210, clientY: 15, buttons: 1 }); // 보는 탭 s2 왼쪽 반
+  expect(host.querySelector(".scene-tab-folder-join .scene-drop-line")).toBeNull();
+  expect(host.querySelector(".scene-drop-line")?.nextElementSibling?.getAttribute("data-scene-tab")).toBe("s3");
+  pointer("pointerup", tab("s4")!, { clientX: 210, clientY: 15 });
+  expect(onReorder).toHaveBeenCalledExactlyOnceWith({ id: "s4", beforeId: "s3" });
+});
+
+it("폴더 목록 안에서 위아래로 끌면 폴더 안 순서(order) · 삽입선은 줄 테두리로 · 맨 아래 줄 밑 = 폴더 맨 끝", async () => {
+  mount([scene("s1"), scene("s2", F), scene("s3", F), scene("s4", F)], "s1");
+  // 목록 줄 셋을 세로로 둔다(s2 40~70 · s3 70~100 · s4 100~130)
+  const openList = () => {
+    act(() => { folderChip()!.click(); });
+    menuItems().forEach((el, index) => vi.spyOn(el, "getBoundingClientRect").mockReturnValue(rect(100, 40 + index * 30, 180, 30)));
+  };
+  openList();
+  pointer("pointerdown", itemNamed("s4")!, { clientX: 150, clientY: 115 });
+  pointer("pointermove", itemNamed("s4")!, { clientX: 150, clientY: 45, buttons: 1 }); // s2 줄 위쪽 반
+  expect(itemNamed("s2")!.classList.contains("drop-before")).toBe(true);
+  expect(host.querySelector(".scene-drop-line")).toBeNull(); // 탭 줄 삽입선은 아니다
+  pointer("pointerup", itemNamed("s4")!, { clientX: 150, clientY: 45 });
+  expect(onTabFolder).toHaveBeenCalledExactlyOnceWith({ type: "order", folderId: "F", id: "s4", beforeId: "s2" });
+
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); }); // 끌기에 딸린 click 삼키기가 풀릴 때까지
+  openList();
+  pointer("pointerdown", itemNamed("s2")!, { clientX: 150, clientY: 55 });
+  pointer("pointermove", itemNamed("s2")!, { clientX: 150, clientY: 128, buttons: 1 }); // s4 줄 아래쪽 반
+  expect(itemNamed("s4")!.classList.contains("drop-after")).toBe(true);
+  pointer("pointerup", itemNamed("s2")!, { clientX: 150, clientY: 128 });
+  expect(onTabFolder).toHaveBeenLastCalledWith({ type: "order", folderId: "F", id: "s2", beforeId: null });
 });
 
 it("폴더를 끌면 폴더째 옮긴다 · 폴더 우클릭 '폴더 풀기'", () => {

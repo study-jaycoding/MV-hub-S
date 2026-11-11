@@ -3,7 +3,8 @@
 // 계보(히스토리) 뷰는 고정 탭이 아니라 정보팝업 '⧉ 히스토리'·미리보기 '구성에서 보기'로만 진입
 // (activeId=null 상태 — 그때는 어떤 씬 탭도 켜지지 않는다).
 // 탭 폴더(Jay 2026-11-11): '+' 우클릭 [씬 추가 · 폴더 추가]. 탭을 폴더 위에 끌어 놓으면 들어가고, 폴더를 눌러 연 목록에서
-//  끌어 탭 줄에 놓으면 그 자리로 돌아온다(넣고 빼는 단추는 없다). 폴더 규칙은 lib/sceneWorkspace 의 탭 폴더 절.
+//  끌어 탭 줄에 놓으면 그 자리로 돌아온다(넣고 빼는 단추는 없다). 목록 안에서 위아래로 끌면 폴더 안 순서가 바뀐다.
+//  보는 탭이 폴더 안이면 폴더 칸과 붙은 한 알약으로 보인다(A안). 폴더 규칙은 lib/sceneWorkspace 의 탭 폴더 절.
 //
 // ★드래그는 포인터 이벤트로 한다(HTML5 DnD 는 자식 요소가 부모 드래그를 막고 투명 고스트가 생긴다).
 //  5px 임계 전에는 클릭이고, 드래그가 끝나면 그 뒤에 합성되는 click/dblclick 을 한 번 삼킨다 —
@@ -39,6 +40,7 @@ import type { WorkspaceContext } from "../../types";
 const DRAG_THRESHOLD = 5; // px — 이보다 덜 움직이면 클릭
 const FOLDER_EDGE = 0.2; // 폴더 칸 양 끝 이 비율은 '앞·뒤 자리', 가운데만 '폴더에 넣기'
 const BAR_SLACK = 8; // 폴더 목록에서 끈 탭은 탭 줄(± 이만큼) 안에 놓아야 돌아온다 — 밖이면 취소
+const LIST_SLACK = 6; // 폴더 목록 위·아래 끝에서 이만큼 벗어나도 목록 안 순서 바꾸기로 본다
 
 interface Props {
   scenes: Scene[];
@@ -166,6 +168,7 @@ interface DragState {
   // 씬을 지우면 같은 인덱스가 다른 자리를 뜻하게 된다(코덱스 P2). null = 맨 뒤, undefined = 놓을 곳 없음.
   dropBeforeKey: string | null | undefined;
   dropFolderId: string | null; // 폴더 칸 가운데에 놓는다 = 그 폴더에 넣기
+  listBeforeId: string | null | undefined; // 폴더 목록 안에 놓는다 = 폴더 안 순서(이 씬 앞, null = 폴더 맨 끝)
 }
 
 const ownKey = (drag: DragState) => (drag.folderId ? `f:${drag.folderId}` : `t:${drag.sceneId}`);
@@ -205,6 +208,7 @@ export function SceneBar({
   const openItem = openFolder ? items.find((item): item is FolderItem => item.kind === "folder" && item.folder.id === openFolder.id) : undefined;
   const barRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef(new Map<string, HTMLElement>()); // 줄 칸 열쇠 → 요소(탭은 .scene-tab-wrap, 폴더는 칸 단추)
+  const listRowRefs = useRef(new Map<string, HTMLElement>()); // 열린 폴더 목록의 씬 id → 줄
   const suppressClickRef = useRef(false); // 드래그 직후의 합성 클릭 한 번을 삼킨다
   const suppressTimerRef = useRef<number | undefined>(undefined); // 그 억제를 푸는 예약(releaseSuppression) — 새 누름이 거둔다
   const dragRef = useRef<DragState | null>(null);
@@ -220,10 +224,11 @@ export function SceneBar({
     if (!menu) setOptions(cachedWorkspaceOptions());
   }, [menu]);
 
-  const setItemRef = (key: string) => (element: HTMLElement | null) => {
-    if (element) itemRefs.current.set(key, element);
-    else itemRefs.current.delete(key);
+  const setRef = (map: Map<string, HTMLElement>, key: string) => (element: HTMLElement | null) => {
+    if (element) map.set(key, element);
+    else map.delete(key);
   };
+  const setItemRef = (key: string) => setRef(itemRefs.current, key);
   const folderItem = (folderId: string | null | undefined) =>
     items.find((item): item is FolderItem => item.kind === "folder" && item.folder.id === folderId);
   // 그 칸 앞에 놓는다 = 이 씬 앞으로. 폴더 칸 앞 = 그 폴더 첫 탭 앞(빈 폴더는 줄 맨 뒤에 있으니 맨 뒤). undefined = 그 칸이 사라짐.
@@ -265,6 +270,11 @@ export function SceneBar({
     const scene = sceneId ? scenes.find((candidate) => candidate.id === sceneId) : undefined;
     if (!sceneId || !scene) return;
     const from = normalizeTabFolder(scene.tabFolder);
+    if (current.listBeforeId !== undefined) {
+      // 폴더 목록 안에 놓았다 = 폴더 안 순서(제자리는 연산이 null 로 거른다)
+      if (from) onTabFolder?.({ type: "order", folderId: from.id, id: sceneId, beforeId: current.listBeforeId });
+      return;
+    }
     if (current.dropFolderId) {
       const target = folderItem(current.dropFolderId);
       if (!target || from?.id === target.folder.id) return; // 자기 폴더 위 = 그대로
@@ -321,6 +331,7 @@ export function SceneBar({
       active: false,
       dropBeforeKey: undefined,
       dropFolderId: null,
+      listBeforeId: undefined,
     };
     if (!next.fromList) next.dropBeforeKey = ownKey(next); // 제자리
     setDrag(next);
@@ -343,6 +354,18 @@ export function SceneBar({
     const dx = event.clientX - current.startX;
     const dy = event.clientY - current.startY;
     if (!current.active && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    // 폴더 목록 안 = 폴더 안 순서 바꾸기. 목록은 짧아 움직일 때마다 잰다.
+    if (current.fromList && openItem) {
+      const rows = openItem.members.map((scene) => listRowRefs.current.get(scene.id)?.getBoundingClientRect());
+      const first = rows[0];
+      const last = rows[rows.length - 1];
+      if (first && last && rows.every(Boolean) && event.clientX >= first.left && event.clientX <= first.right
+        && event.clientY >= first.top - LIST_SLACK && event.clientY <= last.bottom + LIST_SLACK) {
+        const at = rows.findIndex((row) => !!row && event.clientY < (row.top + row.bottom) / 2);
+        setDrag({ ...current, active: true, dropBeforeKey: undefined, dropFolderId: null, listBeforeId: at < 0 ? null : openItem.members[at].id });
+        return;
+      }
+    }
     let rects = dragRectsRef.current;
     if (!rects || rects.length !== items.length) {
       rects = items
@@ -369,8 +392,14 @@ export function SceneBar({
     let dropBeforeKey: string | null | undefined;
     let dropFolderId: string | null = null;
     if (folderAt >= 0) dropFolderId = (items[folderAt] as FolderItem).folder.id;
-    else if (!current.fromList || nearBar(x, y)) dropBeforeKey = items[dropIndexAt(measured, x, y)]?.key ?? null;
-    setDrag({ ...current, active: true, dropBeforeKey, dropFolderId });
+    else if (!current.fromList || nearBar(x, y)) {
+      let index = dropIndexAt(measured, x, y);
+      // 폴더 칸에 붙은 보는 탭 앞 = 한 덩어리 안 — 덩어리 뒤로 민다(끄는 것이 그 탭 자신이면 제자리로 둔다)
+      const at = items[index];
+      if (at?.kind === "tab" && at.inFolder && at.scene.id !== current.sceneId) index += 1;
+      dropBeforeKey = items[index]?.key ?? null;
+    }
+    setDrag({ ...current, active: true, dropBeforeKey, dropFolderId, listBeforeId: undefined });
   };
 
   // 포인터를 놓은 뒤(합성 click 이 지나간 뒤) 억제를 푼다. click 은 pointerup 과 같은 태스크에서 오므로
@@ -455,6 +484,14 @@ export function SceneBar({
       if (target?.kind === "tab" && target.inFolder?.id === drag.folderId) return undefined;
     }
     return drag.dropBeforeKey;
+  })();
+  // 폴더 목록의 삽입선 — 이 씬 줄 위(null = 맨 아래 줄 밑). 제자리(자기 위·자기 바로 아래)면 긋지 않는다.
+  const listLine = (() => {
+    if (!drag?.active || !drag.fromList || drag.listBeforeId === undefined || !openItem) return undefined;
+    const ids = openItem.members.map((scene) => scene.id);
+    const from = ids.indexOf(drag.sceneId ?? "");
+    const to = drag.listBeforeId === null ? ids.length : ids.indexOf(drag.listBeforeId);
+    return to === from || to === from + 1 ? undefined : drag.listBeforeId;
   })();
 
   const workspaceMarkOf = (scene: Scene) => {
@@ -613,13 +650,28 @@ export function SceneBar({
           return <SceneTipName name={element.dataset.tipHead ?? ""} onRename={(next) => onRename(sceneId, next)} pin={pin} close={close} />;
         }}
       />
-      {items.map((item) => (
-        <Fragment key={item.key}>
-          {/* 삽입선은 칸 바깥에 그린다 — .scene-tab-wrap 은 overflow:hidden 이라 안에 그리면 잘린다(코덱스 P2). */}
-          {dropLineKey === item.key ? <span className="scene-drop-line" /> : null}
-          {item.kind === "tab" ? renderTab(item) : renderFolder(item)}
-        </Fragment>
-      ))}
+      {items.map((item, index) => {
+        if (item.kind === "tab" && item.inFolder) return null; // 보는 탭이 폴더 안이면 아래에서 그 폴더 칸과 한 덩어리로 그린다
+        const next = items[index + 1];
+        const joined = item.kind === "folder" && next?.kind === "tab" && next.inFolder?.id === item.folder.id ? next : undefined;
+        return (
+          <Fragment key={item.key}>
+            {/* 삽입선은 칸 바깥에 그린다 — .scene-tab-wrap 은 overflow:hidden 이라 안에 그리면 잘린다(코덱스 P2). */}
+            {dropLineKey === item.key ? <span className="scene-drop-line" /> : null}
+            {item.kind === "tab" ? (
+              renderTab(item)
+            ) : joined ? (
+              // 소속 표시(Jay 2026-11-11 A안) — 폴더 칸과 보는 탭이 붙어 한 알약, 라임 테두리가 둘을 함께 두른다
+              <span className="scene-tab-folder-join">
+                {renderFolder(item)}
+                {renderTab(joined)}
+              </span>
+            ) : (
+              renderFolder(item)
+            )}
+          </Fragment>
+        );
+      })}
       {/* 맨 뒤에 놓을 때의 삽입선 */}
       {dropLineKey === null ? <span className="scene-drop-line" /> : null}
       <button
@@ -679,15 +731,18 @@ export function SceneBar({
           onClose={() => setOpenFolder(null)}
         >
           {openItem.members.length ? (
-            openItem.members.map((scene) => (
+            openItem.members.map((scene, index) => (
               <button
                 key={scene.id}
+                ref={setRef(listRowRefs.current, scene.id)}
                 type="button"
                 role="menuitem"
                 className={
                   "scene-tab-menu-item" +
                   (scene.id === activeId ? " cur" : "") +
-                  (drag?.active && drag.fromList && drag.sceneId === scene.id ? " dragging" : "")
+                  (drag?.active && drag.fromList && drag.sceneId === scene.id ? " dragging" : "") +
+                  (listLine === scene.id ? " drop-before" : "") +
+                  (listLine === null && index === openItem.members.length - 1 ? " drop-after" : "")
                 }
                 title={scene.name}
                 onPointerDown={(event) => onPointerDown(event, { sceneId: scene.id, fromList: true })}

@@ -82,6 +82,22 @@ describe("applyTabFolderOp", () => {
     expect(applyTabFolderOp(two, { type: "rename", folderId: "F", name: "Act_01" })).toBeNull();
   });
 
+  it("order — 폴더 탭들이 차지한 자리 안에서만 순서를 바꾼다(폴더 자리·다른 탭 자리는 그대로)", () => {
+    const spread = [scene("a", F), scene("x"), scene("b", F), scene("c", F)];
+    expect(ids(applyTabFolderOp(spread, { type: "order", folderId: "F", id: "c", beforeId: "a" }))).toEqual(["c@F", "x", "a@F", "b@F"]);
+    expect(ids(applyTabFolderOp(spread, { type: "order", folderId: "F", id: "a", beforeId: null }))).toEqual(["b@F", "x", "c@F", "a@F"]);
+    const next = applyTabFolderOp(spread, { type: "order", folderId: "F", id: "c", beforeId: "b" });
+    expect(next?.[1]).toBe(spread[1]); // 폴더 밖 탭은 같은 객체·같은 자리
+  });
+
+  it("order — 제자리·다른 폴더의 씬·사라진 기준이면 null", () => {
+    const two = [scene("a", F), scene("b", F), scene("x")];
+    expect(applyTabFolderOp(two, { type: "order", folderId: "F", id: "a", beforeId: "b" })).toBeNull();
+    expect(applyTabFolderOp(two, { type: "order", folderId: "F", id: "b", beforeId: null })).toBeNull();
+    expect(applyTabFolderOp(two, { type: "order", folderId: "F", id: "x", beforeId: "a" })).toBeNull();
+    expect(applyTabFolderOp(two, { type: "order", folderId: "F", id: "b", beforeId: "x" })).toBeNull();
+  });
+
   it("ungroup — 안의 탭은 제자리에서 폴더 값만 빠진다(필드 자체가 없어진다)", () => {
     const next = applyTabFolderOp([scene("a", F), scene("b"), scene("c", F)], { type: "ungroup", folderId: "F" });
     expect(ids(next)).toEqual(["a", "b", "c"]);
