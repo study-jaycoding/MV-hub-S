@@ -146,6 +146,25 @@ describe("포트·쌓임(카드에 딸린 조각)", () => {
     expect(key(null)).not.toBe(key("#c4e84a"));
   });
 
+  it("긴 그룹 이름은 개수 알약·오른쪽 단추와 겹치지 않게 잘린다(DOM flex 처럼 남는 폭만, 알약과 접기 칸 사이 6)", () => {
+    for (const count of [1, 123]) {
+      const m = buildGpuScene(input({ groups: [{ id: "G", x: 0, y: 0, w: 400, h: 300, color: null, name: "아주긴그룹이름".repeat(10), count, collapsed: false, selected: false }] }));
+      const req = m.requests.find((r) => r.id === "group:G")!;
+      const texts: Array<[string, number]> = [];
+      const arcs: number[] = [];
+      const g = new Proxy({} as Record<string, unknown>, {
+        get: (t, k: string) => (k === "measureText" ? (s: string) => ({ width: s.length * 7 })
+          : k === "fillText" ? (s: string, x: number) => texts.push([s, x])
+            : k === "arcTo" ? (x1: number) => arcs.push(x1) : k in t ? t[k] : () => {}),
+        set: (t, k: string, v) => { t[k] = v; return true; },
+      });
+      req.draw(g as never, () => null);
+      const pillRight = Math.max(...arcs.slice(-4)); // 개수 알약의 arcTo 넷 — 가장 오른쪽 = 알약 끝
+      const foldCenter = texts.find(([s]) => s === "−")![1];
+      expect(pillRight).toBeLessThanOrEqual(foldCenter - 12 - 6);
+    }
+  });
+
   it("이름표·결과 수 배지·빛은 그 카드에 딸린다(owner) — 그룹 머리줄은 그룹 층(owner 없음)", () => {
     const m = buildGpuScene(input({
       cards: [{ card: gen, w: 260, h: 200 }, { card: text("t", 0), w: 260, h: 120 }], selected: new Set(["t"]), glow: new Set(["g"]), variantCount: () => 2,

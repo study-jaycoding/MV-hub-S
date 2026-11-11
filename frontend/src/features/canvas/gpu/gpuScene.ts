@@ -236,17 +236,19 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
         g.fillStyle = gv.selected ? mix(0.26, [20, 22, 26, 0.84]) : gv.color ? mix(0.36, [20, 22, 26, 0.72]) : "rgba(20,22,26,0.46)";
         g.fill();
       }
-      g.font = `700 12px ${FONT}`;
       g.textAlign = "left";
       g.textBaseline = "middle";
+      g.font = `800 11px ${FONT}`;
+      const cw = g.measureText(String(gv.count)).width + 14;
+      // 이름 칸 = DOM flex 처럼 남는 폭 — 좌우 여백 16 · 개수 알약 · 단추 셋(24+16+24) · 간격 6×4 를 뺀다(긴 이름이 알약·단추와 겹치지 않게, Codex 리뷰 9차)
+      const nameMax = Math.max(0, w - 16 - cw - 64 - 24);
+      g.font = `700 12px ${FONT}`;
       g.fillStyle = "#e6e8ec";
-      const nameMax = Math.max(0, w - 8 - 90);
       let name = gv.name;
       while (name && g.measureText(name).width > nameMax) name = name.slice(0, -1); // 끝 줄임표 없이 자른다(글자 끝 '...' 금지)
       g.fillText(name, 8, h / 2);
       const nx = 8 + g.measureText(name).width + 6;
       g.font = `800 11px ${FONT}`;
-      const cw = g.measureText(String(gv.count)).width + 14;
       g.beginPath();
       g.moveTo(nx + 8, h / 2 - 8);
       g.arcTo(nx + cw, h / 2 - 8, nx + cw, h / 2 + 8, 8);
