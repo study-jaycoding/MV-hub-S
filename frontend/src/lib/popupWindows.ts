@@ -4,6 +4,7 @@ import type { SceneModelCfg } from "./scenes";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export const EMBED_MODES = {
+  resolvePanel: "resolve-panel",
   assets: "assets",
   manage: "manage",
   canvas: "canvas", // 앱 전체를 캔버스 탭으로 — 씬을 쓰므로 main.tsx 가 보통 앱처럼 저장소를 부팅해 띄운다
@@ -13,6 +14,7 @@ export const EMBED_MODES = {
 type EmbedMode = (typeof EMBED_MODES)[keyof typeof EMBED_MODES];
 
 const WINDOW_OPTIONS: Record<EmbedMode, { name: string; features: string }> = {
+  "resolve-panel": { name: "contenthub-resolve-panel", features: "popup=yes,width=540,height=820" },
   assets: {
     name: "contenthub-assets",
     features: "popup=yes,width=1180,height=780,left=140,top=80",
