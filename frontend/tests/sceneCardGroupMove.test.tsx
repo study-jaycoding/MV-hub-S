@@ -8,6 +8,7 @@ import { act, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
+import { CAMERA_IDLE_SAVE_MS } from "../src/lib/useSceneViewport";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 
 const fixture = vi.hoisted(() => ({ data: null as unknown as SceneGenDataApi }));
@@ -56,6 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -419,12 +421,25 @@ function StoreParent({ cards, groups = [], edges = [] }: { cards: object[]; grou
   );
 }
 
+// 저장소 부모의 끄는 중 화면 맞춤 시험 — 카메라 기록은 마지막 조작 뒤 유휴 시간에 한 번이라(lib/useSceneViewport) 타이머를 흉내 내고,
+//  F 뒤 손을 쥔 채 시간을 진행해 실제 카메라 기록(그 앞의 옮긴 자리 저장 → 저장소 사본 돌아옴)을 일으킨다
+const mountStored = (el: JSX.Element) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  return act(async () => { root.render(el); });
+};
+const fitAndSave = async () => {
+  await key({ key: "f", code: "KeyF" });
+  const before = patches.length;
+  await act(async () => { vi.advanceTimersByTime(CAMERA_IDLE_SAVE_MS); });
+  expect(patches.length, "유휴 뒤 카메라 기록이 옮긴 자리를 먼저 저장한다").toBeGreaterThan(before);
+};
+
 it("끄는 중 화면 맞춤(F)으로 카메라가 저장돼도, 추가 이동 없이 놓은 자리가 저장된다 — 저장소가 돌려준 옛 카드로 덮이지 않는다", async () => {
-  await act(async () => { root.render(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />); });
+  await mountStored(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />);
   await selectAll();
   await grab("a1", 150, 150);
   await dragTo(700, 150, 2000);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await release(700, 150);
   expect([savedX("a1"), savedX("b1")]).toEqual([660, 1210]);
@@ -432,10 +447,10 @@ it("끄는 중 화면 맞춤(F)으로 카메라가 저장돼도, 추가 이동 �
 });
 
 it("한 장만 끄는 평소 길도 같다 — 끄는 중 카메라가 저장돼도 놓은 자리가 저장된다", async () => {
-  await act(async () => { root.render(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />); });
+  await mountStored(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />);
   await grab("a1", 150, 150);
   await dragTo(370, 150, 2000); // a1 만 +220
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await release(370, 150);
   expect([savedX("a1"), savedX("b1")]).toEqual([330, 660]);
@@ -445,11 +460,11 @@ it("한 장만 끄는 평소 길도 같다 — 끄는 중 카메라가 저장돼
 const undoOnce = () => key({ key: "z", code: "KeyZ", ctrlKey: true });
 
 it("끄는 중에 저장이 끼어도(화면 맞춤으로 카메라 저장) 한 번의 끌기는 되돌리기 한 단계다 — Ctrl+Z 한 번에 끌기 전 자리로", async () => {
-  await act(async () => { root.render(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />); });
+  await mountStored(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />);
   await selectAll();
   await grab("a1", 150, 150);
   await dragTo(700, 150, 2000);
-  await key({ key: "f", code: "KeyF" }); // 화면 맞춤 — 카메라를 저장하기 전에 옮긴 자리를 먼저 저장한다
+  await fitAndSave(); // 화면 맞춤 — 카메라를 저장하기 전에 옮긴 자리를 먼저 저장한다
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await release(700, 150);
   expect([savedX("a1"), savedX("b1")]).toEqual([660, 1210]);
@@ -459,10 +474,10 @@ it("끄는 중에 저장이 끼어도(화면 맞춤으로 카메라 저장) 한 
 });
 
 it("한 장만 끄는 평소 길도 같다 — 끄는 중 화면 맞춤 뒤 더 끌어 놓아도 Ctrl+Z 한 번에 끌기 전 자리로", async () => {
-  await act(async () => { root.render(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />); });
+  await mountStored(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} />);
   await grab("a1", 150, 150);
   await dragTo(370, 150, 2000);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await dragTo(480, 260, 2000); // 카메라가 바뀐 뒤 더 끈다
   await release(480, 260);
@@ -570,14 +585,12 @@ it("끌기를 놓은 뒤의 편집은 그 끌기와 묶이지 않는다 — 놓�
 });
 
 it("그룹 머리를 잡고 끄는 것도 한 번의 끌기다 — 끄는 중 화면 맞춤 뒤 더 끌어 놓아도 Ctrl+Z 한 번에 끌기 전 자리로", async () => {
-  await act(async () => {
-    root.render(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} groups={[{ id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } }]} />);
-  });
+  await mountStored(<StoreParent cards={[textCard("a1", 110), textCard("b1", 660)]} groups={[{ id: "gA", name: "A", cardIds: ["a1"], rect: { x: 66, y: 44, w: 330, h: 330 } }]} />);
   const head = () => host.querySelector<HTMLElement>('.scene-group[data-group-id="gA"] .scene-group-grab')!;
   await act(async () => { head().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 100, clientY: 50 })); });
   await dragTo(320, 50, 2000); // +220
   expect(shownAt("a1")).toEqual([330, 110]);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await dragTo(430, 160, 2000);
   await release(430, 160);

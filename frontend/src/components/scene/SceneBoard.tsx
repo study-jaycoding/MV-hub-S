@@ -24,7 +24,7 @@ import {
 } from "react";
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
-import type { CanvasDocumentPort } from "../../features/canvas/api";
+import type { CanvasDocumentPort, CanvasTarget } from "../../features/canvas/api";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
 import type { ReviewAction } from "../../lib/generationReview";
@@ -171,7 +171,7 @@ import {
   type CardHistoryLink,
 } from "../../lib/canvasDetached";
 import type { SceneModelCfg } from "../../lib/scenes";
-import { canvasHandoffSelection, markCanvasHandoffSelectionUsed, type CanvasSelection } from "../../lib/popupWindows";
+import { canvasHandoffSelection, markCanvasHandoffSelectionUsed, onCanvasMemoryReturn, type CanvasSelection } from "../../lib/popupWindows";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -415,8 +415,9 @@ interface Props {
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
   //  sceneId = 그 카드가 속한 씬(이 보드가 지금 **그리고 있는** 씬 — 씬을 바꾸는 틈에는 prop 의 씬과 다르다). 받는 쪽이 활성 씬과 견준다.
   onBindingChange?: (binding: { sceneId: string; cardId: string; refs: SceneRef[] } | null) => void;
-  // 마지막으로 본 화면(확대/이동)을 기억 — 팬/줌을 멈출 때 저장. 재렌더 없이 localStorage 에만 조용히.
-  onCameraChange?: (camera: { z: number; x: number; y: number }) => void;
+  // 마지막으로 본 화면(확대/이동)을 씬에 기록 — 마지막 조작 뒤 유휴 시간에·떠날 때 한 번(lib/useSceneViewport). target = 그 카메라를 잴 때의
+  //  씬·계정(받는 쪽은 그 target 으로 쓴다 — 지금 활성 씬으로 만들지 않는다). false = 접수 거절(다시 시도할 수 있음).
+  onCameraChange?: (camera: { z: number; x: number; y: number }, target: CanvasTarget) => boolean | void;
   // Resolve Media Pool에서 고른 생성물 — 기존 변형 팝업만 열고 대표/Last viewed는 바꾸지 않는다.
   resolveSelection?: ResolveSceneSelectionTarget | null;
   onResolveSelectionConsumed?: (nonce: number) => void;
@@ -455,6 +456,7 @@ interface Props {
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
+    flushCamera: () => void; // 밀린 카메라 기록을 지금 넘긴다(팬이면 밀린 걸음까지) — 씬 전환 직전·분리 창 열기 전. 입력 확정(flushPending)과 따로다
     applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤' — f 키와 동일(선택 있으면 선택 중심, 없으면 전체)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ — 화면 중앙 기준 한 단계 확대/축소
@@ -959,6 +961,8 @@ export function SceneBoard({
   const interactingRef = useRef<() => boolean>(() => false);
   // GPU 판이 그리는 동안(gpu 단계) — DOM 카드를 안 그리므로 컬링 범위를 다시 확정하지 않는다(판을 다시 그리지 않게). 돌아올 때 한 번 확정.
   const gpuViewRef = useRef(false);
+  // 카메라 기록 대상 — 아래 canvasSession 뒤 렌더에서 채운다. viewport 는 씬이 바뀔 때만 읽어 설치한다(lib/useSceneViewport).
+  const cameraOwnerRef = useRef<CanvasTarget | null>(null);
   const {
     scrollRef,
     canvasRef,
@@ -975,18 +979,21 @@ export function SceneBoard({
     frameRects,
     stepZoom,
     beginPan,
+    leaveCamera,
     cancelSettle: cancelViewSettle,
     cameraSource,
-  } = useSceneViewport({
+  } = useSceneViewport<CanvasTarget>({
     sceneId: scene.id,
     camera: scene.camera,
-    // 카메라를 저장하기 전에 밀린 편집을 먼저 확정한다 — 카메라만 저장해도 저장소가 돌려주는 씬의 카드는 '마지막으로 저장한 것'이라,
-    //  아직 저장 안 된 좌표·글이 그 값으로 덮였다(끄는 중 화면 맞춤 F·휠 줌 → 추가 이동 없이 놓으면 옛 자리가 저장됐다 — Codex 코드 리뷰).
-    onCameraChange: onCameraChange && ((camera) => {
-      // 씬을 바꾸는 틈의 카메라는 저장하지 않는다 — 부모는 '지금 활성 씬'(새 씬)에 쓰는데, 틈의 화면 맞춤은 떠난 씬의 카드로 잰 것이다
-      if (switchingRef.current) return;
-      flushPendingRef.current();
-      onCameraChange(camera);
+    cameraOwnerRef,
+    // 기록은 잴 때의 target(씬·계정)으로 간다 — 씬을 바꾸는 틈·떠난 뒤에도 그 씬에 쓰인다(지금 활성 씬으로 만들지 않으므로 틈에 버릴 까닭이 없다).
+    onCameraChange: onCameraChange && ((camera, target) => {
+      if (target.accountNamespace !== getAccountNamespace()) return true; // 계정이 바뀐 대기 — 쓰지 않고 버린다(정상 계정 전환은 페이지를 다시 읽는다)
+      // 카메라를 저장하기 전에 밀린 편집을 먼저 확정한다 — 카메라만 저장해도 저장소가 돌려주는 씬의 카드는 '마지막으로 저장한 것'이라,
+      //  아직 저장 안 된 좌표·글이 그 값으로 덮였다(끄는 중 화면 맞춤 F·휠 줌 → 추가 이동 없이 놓으면 옛 자리가 저장됐다 — Codex 코드 리뷰).
+      //  이 판이 지금 그 씬을 그릴 때만 — 떠난 씬의 밀린 편집은 전환 직전(selectScene)의 확정이 이미 넘겼다.
+      if (!switchingRef.current && target === canvasTargetRef.current) flushPendingRef.current();
+      return onCameraChange(camera, target);
     }),
     cullingEnabled: CULL_ENABLED,
     gridSize: GRID,
@@ -1270,6 +1277,11 @@ export function SceneBoard({
   flushPendingRef.current = flushPending;
   const canvasTargetRef = useRef(canvasSession.target);
   canvasTargetRef.current = canvasSession.target;
+  cameraOwnerRef.current = canvasSession.target;
+  // 분리 창 돌려주기·허브 넘기기(flushCanvasMemoryReturn — 숨김·pagehide 포함) 전에 밀린 카메라도 넘긴다(팬이면 밀린 걸음까지)
+  const leaveCameraRef = useRef(leaveCamera);
+  leaveCameraRef.current = leaveCamera;
+  useEffect(() => onCanvasMemoryReturn(() => { leaveCameraRef.current(); }), []);
   // 입력이 바뀌면 입력이 모두 보이게 카드를 늘린다 — 모델 설정 저장(Jay 2026-10-22), Comfy 워크플로 넣기·파라미터 창 저장,
   //  SET 태그 입력 마침(Jay 2026-10-30). 새 내용이 그려진 뒤 본문이 넘친 만큼 잰다. 줄이지는 않고, 사용자가 정한 높이는 다음 입력 변경 때까지 그대로다.
   //  useLayoutEffect 금지: 그 단계에서 늘리면 뒤이어 도는 씬 수신(useCanvasSession — App 이 돌려준 '설정만 바뀐' 씬)이
@@ -2191,6 +2203,7 @@ export function SceneBoard({
         deleteSelected: () => (gpuFlag && !gpuEditRef.current ? gpu.refuse() : deleteCards(selResultCardIds())),
         setCardRefs: (cardId, refs) => (gpuFlag && !gpuEditRef.current ? (gpu.refuse(), refs) : setCardRefs(cardId, refs)),
         flushPending,
+        flushCamera: () => { leaveCamera(); },
         applyAssetRelink,
         zoomFit: guardedZoom.onFit,
         zoomStep: guardedZoom.onStep,
@@ -2570,8 +2583,8 @@ export function SceneBoard({
     // 위에 뜬 창·메뉴의 클릭(바깥을 눌러 닫는 것 포함)은 그것의 몫 — 보드의 선택·범위 선택·화면 이동을 시작하지 않는다
     //  (2026-10-10 재실측: 재생 창·모델 설정 창의 바깥을 눌러 닫으면 뒤의 선택까지 풀렸다).
     if (pressStartedCovered()) return;
-    // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
-    if (beginPan(e, beginDrag)) return;
+    // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다. settleDrag = 떠날 때 도는 팬을 밀린 걸음까지 끝내는 손잡이.
+    if (beginPan(e, beginDrag, settleDrag)) return;
     // 가위(Y 누른 채) → 좌드래그로 궤적을 그리고 지나간 선을 빨갛게 예고, 손 떼면 실제 절단.
     if (cutHeld && e.button === 0) {
       e.preventDefault();

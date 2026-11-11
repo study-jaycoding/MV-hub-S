@@ -18,7 +18,9 @@ import { setSceneZoomPct } from "./sceneZoomStore";
 import { subscribeDevicePixelRatio } from "./devicePixelRatio";
 import { swallowPanAuxClick } from "./useSceneCardMove";
 
-const CAMERA_SAVE_DELAY_MS = 400;
+// 카메라 기록은 마지막 조작 뒤 이만큼 쉬었을 때 한 번 — 조작 도중의 기록이 씬 저장·공책 동기화를 거듭 일으켰다
+//  (2026-11-11 2,000장 CPU 4배 프로파일, docs/status/캔버스_카메라저장묶기_2026-11-11.md). 떠날 때(leaveCamera)는 바로.
+export const CAMERA_IDLE_SAVE_MS = 3000;
 const FRAME_TRANSITION_MS = 250;
 const FRAME_TRANSITION_CLEAR_MS = 300;
 const SETTLE_MS = 150; // 줌을 건너뛴 뒤 휠을 이만큼 쉬면 컬링을 한 번 정리한다
@@ -35,10 +37,14 @@ interface ScenePanStartEvent {
   preventDefault: () => void;
 }
 
-interface UseSceneViewportOptions {
+interface UseSceneViewportOptions<O> {
   sceneId: string;
   camera?: SceneCamera;
-  onCameraChange?: (camera: SceneCamera) => void;
+  /** 카메라 기록 — 마지막 조작 뒤 CAMERA_IDLE_SAVE_MS 쉬었을 때·떠날 때(leaveCamera) 한 번. owner = 그 카메라를 잴 때 설치돼 있던 대상.
+   *  false = 접수 거절(다시 시도할 수 있음). 그 밖(접수·버림)은 처리 끝이다. */
+  onCameraChange?: (camera: SceneCamera, owner: O) => boolean | void;
+  /** 기록 대상 연결 — 렌더에서 채운다. viewport 는 씬이 바뀔 때(첫 마운트 포함)에만 읽어 설치한다. 없으면 sceneId 가 대상이다. */
+  cameraOwnerRef?: { readonly current: O | null };
   cullingEnabled: boolean;
   gridSize?: number;
   /** 가운데 버튼으로 끄는 동안(과 손 뗀 직후 정리)·줌(범위 크기 변경) 때 컬링 범위를 다시 확정할지 — 거짓이면 확정값(viewRect)을
@@ -64,16 +70,17 @@ const normalizedCamera = (camera?: SceneCamera): SceneCamera => ({
 });
 
 /** SceneBoard의 팬·줌·좌표 변환과 카메라 저장 생명주기를 관리한다. */
-export function useSceneViewport({
+export function useSceneViewport<O = string>({
   sceneId,
   camera,
   onCameraChange,
+  cameraOwnerRef,
   cullingEnabled,
   gridSize = 22,
   shouldCommitView,
   cullSetChanged,
   isInteracting,
-}: UseSceneViewportOptions) {
+}: UseSceneViewportOptions<O>) {
   const initialCamera = normalizedCamera(camera);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -109,7 +116,15 @@ export function useSceneViewport({
   incomingCameraRef.current = camera;
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
-  // 카메라 출처 — GPU 판이 듣는다(features/canvas/gpu). 화면을 옮기는 모든 길(applyTransform·slidePan)이 알리고, 저장(persistCamera)과는 따로다.
+  const cameraOwnerSourceRef = useRef(cameraOwnerRef);
+  cameraOwnerSourceRef.current = cameraOwnerRef;
+  // 카메라 기록 대기 — 대기가 있는 동안 카메라 refs 는 그 owner 씬의 카메라다(owner 는 refs 를 갈아 끼우는 씬 바뀜 effect 에서만 바뀐다).
+  const ownerRef = useRef<O | null>(null);
+  const pendingCameraRef = useRef<{ owner: O } | null>(null);
+  const panningRef = useRef(false); // 가운데 버튼을 누르고 있다 — 그동안 기록 타이머를 걸지 않는다
+  const panSettleRef = useRef<(() => void) | null>(null); // 도는 팬을 끝내는 손잡이(밀린 걸음 반영 + finish) — 떠날 때
+  const activeRef = useRef(false);
+  // 카메라 출처 — GPU 판이 듣는다(features/canvas/gpu). 화면을 옮기는 모든 길(applyTransform·slidePan)이 알리고, 기록(markCameraDirty)과는 따로다.
   //  듣는 쪽이 없으면(GPU 판 꺼짐) 하는 일이 없다 — SceneBoard 를 다시 그리지 않는다. transitionMs = 화면 맞춤의 미끄러짐 시간(없으면 바로).
   const cameraListenersRef = useRef(new Set<(transitionMs: number) => void>());
   const cameraTransitionRef = useRef(0);
@@ -135,9 +150,42 @@ export function useSceneViewport({
     panRef.current = { x: next.x, y: next.y };
   }, []);
 
-  const persistCamera = useCallback(() => {
-    onCameraChangeRef.current?.(getCamera());
+  // 대기를 접수에 넘긴다. leaving = 떠남(결과와 무관하게 대기를 지운다). 유휴 타이머의 거절은 같은 owner 일 때만 대기를 남기고 다시 걸지 않는다 —
+  //  다음 조작·떠남에서 한 번 더(쓰기 권한 없는 창에서 시도 고리가 돌지 않게).
+  const flushCamera = useCallback((leaving: boolean): "none" | "queued" | "refused" => {
+    if (cameraSaveTimerRef.current !== undefined) clearTimeout(cameraSaveTimerRef.current);
+    cameraSaveTimerRef.current = undefined;
+    const pending = pendingCameraRef.current;
+    if (!pending || !activeRef.current) return "none";
+    pendingCameraRef.current = null; // 먼저 비운다 — 접수 도중 새 조작이 남긴 대기를 덮지 않게
+    const ok = onCameraChangeRef.current?.(getCamera(), pending.owner) !== false;
+    if (!ok && !leaving && pending.owner === ownerRef.current && !pendingCameraRef.current) pendingCameraRef.current = pending;
+    return ok ? "queued" : "refused";
   }, [getCamera]);
+  const armCameraSave = useCallback(() => {
+    if (cameraSaveTimerRef.current !== undefined) clearTimeout(cameraSaveTimerRef.current);
+    cameraSaveTimerRef.current = undefined;
+    if (panningRef.current) return; // 팬이 끝날 때 건다
+    cameraSaveTimerRef.current = window.setTimeout(() => {
+      cameraSaveTimerRef.current = undefined;
+      if (!panningRef.current) flushCamera(false);
+    }, CAMERA_IDLE_SAVE_MS);
+  }, [flushCamera]);
+  // 실제로 카메라가 바뀐 자리마다 — 대기 표시 + 유휴 타이머 다시 걸기. 대상 설치 전(첫 effect 전)·비활성이면 무시.
+  const markCameraDirty = useCallback(() => {
+    if (!activeRef.current || ownerRef.current === null) return;
+    pendingCameraRef.current = { owner: ownerRef.current };
+    armCameraSave();
+  }, [armCameraSave]);
+  // 떠날 때 하나의 길 — 팬이면 밀린 걸음까지 반영해 끝내고(그 finish 가 표시한다) 대기를 바로 넘긴 뒤 타이머·팬 상태를 비운다.
+  //  씬 전환·허브 넘기기·분리 창·숨김·언마운트가 모두 여기를 지난다.
+  const leaveCamera = useCallback((): "none" | "queued" | "refused" => {
+    if (panningRef.current) panSettleRef.current?.();
+    const result = flushCamera(true);
+    panningRef.current = false;
+    panSettleRef.current = null;
+    return result;
+  }, [flushCamera]);
 
   // 지금 카메라·보드 크기의 범위 — 크기는 ResizeObserver 가 적어 둔 값(없으면 한 번 직접 읽는다)
   const measureView = useCallback((): SceneViewRect | null => {
@@ -393,9 +441,9 @@ export function useSceneViewport({
         ),
       );
       applyTransform();
-      if (commit) persistCamera();
+      if (commit) markCameraDirty();
     },
-    [applyTransform, getCamera, persistCamera, replaceCamera],
+    [applyTransform, getCamera, markCameraDirty, replaceCamera],
   );
 
   const frameRects = useCallback(
@@ -442,9 +490,9 @@ export function useSceneViewport({
       cameraTransitionRef.current = FRAME_TRANSITION_MS; // GPU 판도 같은 시간 동안 미끄러진다
       applyTransform();
       cameraTransitionRef.current = 0;
-      persistCamera();
+      markCameraDirty();
     },
-    [applyTransform, cancelSettle, persistCamera, replaceCamera],
+    [applyTransform, cancelSettle, markCameraDirty, replaceCamera],
   );
 
   // 툴바 −/+ — 휠 줌과 같은 한 단계(×1.1) 규칙을 화면 중앙 기준으로 적용.
@@ -462,13 +510,13 @@ export function useSceneViewport({
       cancelSettle(); // 새 조작 — 지난 휠 줌의 쉼 정리를 거둔다(이 줌이 필요하면 다시 건다)
       replaceCamera(next);
       applyTransform();
-      persistCamera();
+      markCameraDirty();
     },
-    [applyTransform, cancelSettle, getCamera, persistCamera, replaceCamera],
+    [applyTransform, cancelSettle, getCamera, markCameraDirty, replaceCamera],
   );
 
   const beginPan = useCallback(
-    (event: ScenePanStartEvent, beginDrag: BeginSceneDrag) => {
+    (event: ScenePanStartEvent, beginDrag: BeginSceneDrag, settleDrag?: () => void) => {
       if (event.button !== 1) return false;
       event.preventDefault();
       cancelSettle(); // 누르는 순간 — 휠 줌 뒤의 쉼 정리가 끄는 중에 판을 다시 그리지 않게(손 뗄 때의 정리가 맡는다)
@@ -486,26 +534,36 @@ export function useSceneViewport({
         }
         // 지난 걸음에서 움직인 만큼만 지금 카메라에 더한다 — 끄는 도중 다른 길(보드 스크롤 접기·휠 줌·화면 맞춤)이 바꾼 카메라를
         //  덮지 않게. 시작 카메라 + 끈 거리로 다시 셈하면 그 변화만큼 화면이 되튀었다(Codex 묶음 리뷰 P2·P3, 2026-11-10).
-        const next = panSceneCamera(getCamera(), moveEvent.clientX - lastX, moveEvent.clientY - lastY);
+        const dx = moveEvent.clientX - lastX;
+        const dy = moveEvent.clientY - lastY;
+        const next = panSceneCamera(getCamera(), dx, dy);
         lastX = moveEvent.clientX;
         lastY = moveEvent.clientY;
         panRef.current = { x: next.x, y: next.y };
         slidePan();
+        if (dx || dy) markCameraDirty(); // 표시만 — 팬 중이라 타이머는 놓을 때 건다
       };
       const finish = () => {
         scrollRef.current?.removeAttribute("data-panning");
         panEndRef.current = true; // 끄는 동안 건너뛴 확정을 정리 — 새로 그릴 것이 없으면 그대로 둔다
         applyTransform(); // 밀어 둔 화면을 transform 으로 접는다
-        persistCamera();
+        panningRef.current = false;
+        panSettleRef.current = null;
+        if (pendingCameraRef.current) armCameraSave(); // 움직였거나 앞 조작의 대기가 있으면 — 놓은 뒤 유휴 시간에 한 번
       };
       // 놓는 순간(up)에만 삼킨다 — 놓친 끌기를 다음 누름이 정리할 때(onCancel)는 그 놓기의 auxclick 이 이미 지나갔다(Codex 66회차 리뷰)
       beginDrag(move, () => {
         finish();
         if (moved) swallowPanAuxClick();
       }, finish);
+      // 끌기를 연 뒤에 표시한다 — beginDrag 가 놓친 앞 끌기를 끝내며 그 finish 가 팬 표시를 지우므로. 새 조작이 걸린 기록 예약을 미룬다.
+      panningRef.current = true;
+      panSettleRef.current = settleDrag ?? null;
+      if (cameraSaveTimerRef.current !== undefined) clearTimeout(cameraSaveTimerRef.current);
+      cameraSaveTimerRef.current = undefined;
       return true;
     },
-    [applyTransform, cancelSettle, getCamera, persistCamera, slidePan],
+    [applyTransform, armCameraSave, cancelSettle, getCamera, markCameraDirty, slidePan],
   );
 
   useEffect(() => {
@@ -540,19 +598,15 @@ export function useSceneViewport({
       if (next.z === zoomRef.current) return;
       replaceCamera(next);
       applyTransform();
-      if (cameraSaveTimerRef.current) clearTimeout(cameraSaveTimerRef.current);
-      cameraSaveTimerRef.current = window.setTimeout(() => {
-        cameraSaveTimerRef.current = undefined;
-        persistCamera();
-      }, CAMERA_SAVE_DELAY_MS);
+      markCameraDirty();
     };
     board.addEventListener("wheel", onWheel, { passive: false });
     return () => board.removeEventListener("wheel", onWheel);
-  }, [applyTransform, getCamera, persistCamera, replaceCamera]);
+  }, [applyTransform, getCamera, markCameraDirty, replaceCamera]);
 
   // 보드는 overflow:hidden 이라 손으로는 안 굴러가지만 브라우저는 초점·캐럿을 보이려고 스스로 스크롤한다(화면 아래쪽 글 카드에서 줄을 칠 때 등).
   //  toCanvas 는 그 스크롤을 빼지 않아 붙여넣기·새 노드가 그만큼 위에 놓였다(2026-11-10 격리 실측 121px). 스크롤 양을 팬으로 옮기고 0 으로 되돌린다 —
-  //  보이는 자리는 브라우저가 옮긴 그대로(캐럿이 보인다)이고 좌표는 늘 맞다. 저장은 휠처럼 늦춘다.
+  //  보이는 자리는 브라우저가 옮긴 그대로(캐럿이 보인다)이고 좌표는 늘 맞다. 기록은 휠처럼 유휴 뒤 한 번.
   useEffect(() => {
     const board = scrollRef.current;
     if (!board) return;
@@ -564,22 +618,52 @@ export function useSceneViewport({
       board.scrollTop = 0;
       panRef.current = { x: panRef.current.x - dx, y: panRef.current.y - dy };
       applyTransform();
-      if (cameraSaveTimerRef.current) clearTimeout(cameraSaveTimerRef.current);
-      cameraSaveTimerRef.current = window.setTimeout(() => {
-        cameraSaveTimerRef.current = undefined;
-        persistCamera();
-      }, CAMERA_SAVE_DELAY_MS);
+      markCameraDirty();
     };
     board.addEventListener("scroll", onScroll);
     return () => board.removeEventListener("scroll", onScroll);
-  }, [applyTransform, persistCamera]);
+  }, [applyTransform, markCameraDirty]);
+
+  // 수명 — 비활성이면 타이머·표시·접수가 아무것도 하지 않는다. StrictMode 의 설정→정리→재설정에서 다시 켜진다.
+  useEffect(() => {
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+      if (cameraSaveTimerRef.current !== undefined) clearTimeout(cameraSaveTimerRef.current);
+      cameraSaveTimerRef.current = undefined;
+      pendingCameraRef.current = null;
+    };
+  }, []);
+  // 씬이 바뀔 때·언마운트 때의 떠남 — 레이아웃 정리라 아래 passive 씬 바뀜 effect(새 카메라 설치)·SceneBoard 의 끌기 버리기·끌기 세션 dispose
+  //  (모두 passive)보다 먼저, 옛 owner·옛 refs·살아 있는 팬으로 돈다. unmounted 표시는 하지 않는다(위 수명 effect 가 맡는다).
+  useLayoutEffect(() => () => {
+    leaveCamera();
+  }, [sceneId, leaveCamera]);
+  // 숨김·페이지 떠남(최선 — 문서 반영만). blur 는 기록 신호가 아니다(팬의 blur 종료는 finish → 유휴 타이머).
+  useEffect(() => {
+    const hide = () => {
+      leaveCamera();
+    };
+    const visibility = () => {
+      if (document.visibilityState === "hidden") hide();
+    };
+    window.addEventListener("pagehide", hide);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("pagehide", hide);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [leaveCamera]);
 
   useEffect(() => {
-    if (cameraSaveTimerRef.current) {
-      clearTimeout(cameraSaveTimerRef.current);
-      cameraSaveTimerRef.current = undefined;
-    }
+    // 옛 씬의 대기·팬 상태는 위 레이아웃 정리가 이미 넘겼다 — 그 사이(그림 뒤 이 effect 전)에 남은 표시는 옛 대상의 것이라 버린다
+    if (cameraSaveTimerRef.current !== undefined) clearTimeout(cameraSaveTimerRef.current);
+    cameraSaveTimerRef.current = undefined;
+    pendingCameraRef.current = null;
+    panningRef.current = false;
+    panSettleRef.current = null;
     replaceCamera(normalizedCamera(incomingCameraRef.current));
+    ownerRef.current = cameraOwnerSourceRef.current ? cameraOwnerSourceRef.current.current : (sceneId as unknown as O); // 단독 사용 = 씬 ID
     // 씬이 바뀌면 옛 씬의 범위를 버린다 — 카메라가 같은 씬끼리 바꿔도 새로 재서 확정한다(끄는 동안 건너뛴 낡은 확정값이 남지 않게)
     viewRectRef.current = null;
     liveViewRef.current = null;
@@ -642,5 +726,6 @@ export function useSceneViewport({
     frameRects,
     stepZoom,
     beginPan,
+    leaveCamera,
   };
 }

@@ -306,6 +306,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — 씬 전환 직전 호출
+    flushCamera: () => void; // 밀린 카메라 기록을 지금 넘긴다 — 씬 전환 직전(입력 확정과 따로, 커밋 안에서 다시 불리지 않는다)
     applyAssetRelink: (found: Map<string, RelinkTarget>) => number; // 자산 자동 복구 답을 메모리 카드에 입힘
     zoomFit: () => void; // 툴바 '맞춤'(f 키 프레이밍과 동일)
     zoomStep: (dir: 1 | -1) => void; // 툴바 −/+ 한 단계 확대/축소
@@ -373,6 +374,8 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     if (followStoreRef.current) return; // 캔버스가 다른 창에 떠 있다 — '마지막 연 씬'은 두 창이 함께 쓴다, 그 창이 정한다
     // ★씬을 바꾸기 전에 SceneBoard 의 밀린 입력 저장을 확정 — 그때는 activeScene 이 아직 옛 씬이라 정확히
     //  저장된다. add/import/delete 도 모두 이 selectScene 을 거치므로 전환 경로 전체가 여기서 커버된다.
+    //  밀린 카메라 기록도 옛 보드가 유효한 지금 옛 씬에 넘긴다(lib/useSceneViewport leaveCamera).
+    sceneActionRef.current?.flushCamera();
     sceneActionRef.current?.flushPending();
     setActiveSceneId(id);
     persistActiveScene(null, id);

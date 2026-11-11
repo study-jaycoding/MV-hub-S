@@ -2044,7 +2044,8 @@ export default function App() {
     if (sceneActionRef.current?.comfyPlanRunning()) return flash(CHAIN_RUNNING_NOTICE); // 떠나면 메인 창이 뒤 단계를 이어 가지 못한다
     openingCanvasRef.current = true;
     try {
-      const settled = await settleSceneWrites(3000, () => sceneActionRef.current?.flushPending(), () => {
+      // 새 창은 씬 문서의 카메라로 열린다 — 밀린 카메라 기록을 입력과 함께 먼저 넘긴다(lib/useSceneViewport leaveCamera)
+      const settled = await settleSceneWrites(3000, () => { sceneActionRef.current?.flushCamera(); sceneActionRef.current?.flushPending(); }, () => {
         if (sceneActionRef.current?.comfyPlanRunning()) return flash(CHAIN_RUNNING_NOTICE); // 저장을 기다리는 사이 시작했다
         const { sceneId, ...view } = canvasViewRef.current;
         // 새 창이 보던 그대로 시작하게 저장 안 되는 화면 값을 넘긴다(lib/popupWindows)
@@ -2927,7 +2928,7 @@ export default function App() {
                 onCloseIoPanel={closeIoPanel}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
-                onCameraChange={(camera) => canvasDocument.commit(canvasTarget(activeScene.id), { type: "recordCamera", camera })}
+                onCameraChange={(camera, target) => canvasDocument.commit(target, { type: "recordCamera", camera }).queued}
                 resolveSelection={
                   resolveSceneSelection?.sceneId === activeScene.id &&
                   resolveSceneSelection.followEnabled === resolveSelectionFollow

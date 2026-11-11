@@ -92,6 +92,18 @@ describe("카메라만 기록하는 쓰기(R6)", () => {
     expect(listPersistedScenes(null).find((s) => s.id === "s2")?.camera).toEqual({ z: 3, x: 1, y: 2 });
   });
 
+  it("지금 씬과 같은 카메라는 카메라 패치를 쓰지 않고 접수로 끝낸다 — 외부에서 다른 카메라를 받은 뒤 옛 값으로 돌아오면 쓴다", () => {
+    saveScenes(null, [{ ...scene("s1"), camera: { z: 1, x: 5, y: 6 } }]);
+    const write = vi.fn((id: string, patch: Partial<Scene>) => updateScene(null, id, patch).ok);
+    const port = createCanvasDocumentPort({ flushPending: () => {}, write });
+    expect(port.commit(canvasTarget("s1"), { type: "recordCamera", camera: { z: 1, x: 5, y: 6 } }).queued).toBe(true);
+    expect(write).not.toHaveBeenCalled(); // 같은 값 — 쓰기 0
+    updateScene(null, "s1", { camera: { z: 2, x: 0, y: 0 } }); // 다른 브라우저의 카메라를 공책으로 받음(C2)
+    expect(port.commit(canvasTarget("s1"), { type: "recordCamera", camera: { z: 1, x: 5, y: 6 } }).queued).toBe(true); // 내 C1 으로
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][1]).toEqual({ camera: { z: 1, x: 5, y: 6 } });
+  });
+
   it("recordCamera 패치는 camera 하나, 다른 명령의 패치에는 cards 가 그대로 든다", () => {
     saveScenes(null, [scene("s1")]);
     const write = vi.fn((id: string, patch: Partial<Scene>) => updateScene(null, id, patch).ok);

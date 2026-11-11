@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { sceneViewRect } from "../src/lib/sceneViewport";
 import type { BeginSceneDrag } from "../src/lib/useSceneDragSession";
-import { useSceneViewport } from "../src/lib/useSceneViewport";
+import { CAMERA_IDLE_SAVE_MS, useSceneViewport } from "../src/lib/useSceneViewport";
 
 type Camera = { z: number; x: number; y: number };
 let api: ReturnType<typeof useSceneViewport>;
@@ -161,7 +161,8 @@ it("끄는 동안 판정이 거짓이면 확정을 건너뛰고 최신 범위만
   expect(plain(api.viewRect)).toEqual(plain(sceneViewRect(api.getCamera(), { width: 1000, height: 600 })));
 });
 
-it("끄는 동안은 translate·표식으로만 밀고(격자는 칸 나머지 차이), 손 떼면 transform 으로 접고 저장한다", async () => {
+it("끄는 동안은 translate·표식으로만 밀고(격자는 칸 나머지 차이), 손 떼면 transform 으로 접고 유휴 시간 뒤 한 번 저장한다", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const host = document.body.appendChild(document.createElement("div"));
   const saved = vi.fn();
@@ -210,5 +211,9 @@ it("끄는 동안은 translate·표식으로만 밀고(격자는 칸 나머지 �
   expect([canvas.style.translate, canvas.hasAttribute("data-layer-move")]).toEqual(["", false]);
   expect([grid.style.translate, grid.hasAttribute("data-layer-move")]).toEqual(["", false]);
   expect(minimap).toHaveBeenLastCalledWith(); // 접을 때는 slide 없이 — 상자 transform·크기를 맞춘다
-  expect(saved).toHaveBeenLastCalledWith(end);
+  expect(saved).not.toHaveBeenCalled(); // 끄는 동안(툴바 줌 포함)·놓는 순간엔 기록하지 않는다
+  vi.advanceTimersByTime(CAMERA_IDLE_SAVE_MS);
+  vi.useRealTimers();
+  expect(saved).toHaveBeenCalledTimes(1);
+  expect(saved).toHaveBeenLastCalledWith(end, "s");
 });

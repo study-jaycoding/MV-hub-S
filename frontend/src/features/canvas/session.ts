@@ -119,7 +119,9 @@ export function changeCanvas(scene: Scene, command: CanvasCommand): Scene | null
         ? { ...run, localState: "submitted" } : run) };
     }
     case "editCardPrompt": return null; // 사용자 입력은 열린 Board의 세션만 받는다.
-    case "recordCamera": return { ...scene, camera: command.camera };
+    // 같은 카메라면 그 씬 그대로 — commit 이 쓰기 없이 접수로 끝낸다(지금 씬 값과 비교하므로 외부 카메라를 받은 뒤 옛 값으로 돌아오면 쓴다)
+    case "recordCamera": return scene.camera && command.camera && scene.camera.z === command.camera.z
+      && scene.camera.x === command.camera.x && scene.camera.y === command.camera.y ? scene : { ...scene, camera: command.camera };
     case "reserveGeneration":
       if (command.links.some(link => link.scene_id !== scene.id)) return null;
       cards = prepareCanvasGenerationLinks(cards, command.links, command.createdAt).cards;

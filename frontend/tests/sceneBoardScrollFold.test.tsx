@@ -4,7 +4,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { useSceneViewport } from "../src/lib/useSceneViewport";
+import { CAMERA_IDLE_SAVE_MS, useSceneViewport } from "../src/lib/useSceneViewport";
 
 type Camera = { z: number; x: number; y: number };
 let api: ReturnType<typeof useSceneViewport>;
@@ -44,7 +44,9 @@ it("보드 스크롤을 팬으로 옮겨 0 으로 되돌리고, 좌표 변환이
   board.dispatchEvent(new Event("scroll")); // 0 으로 되돌린 뒤 다시 오는 scroll 은 아무것도 안 한다
   expect(api.getCamera()).toEqual({ z: 2, x: 5, y: -101 });
   expect(saved).not.toHaveBeenCalled();
-  vi.advanceTimersByTime(400);
+  vi.advanceTimersByTime(CAMERA_IDLE_SAVE_MS - 1); // 기록은 유휴 시간 뒤 한 번(옛 400ms 아님)
+  expect(saved).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
   expect(saved).toHaveBeenCalledTimes(1);
-  expect(saved).toHaveBeenCalledWith({ z: 2, x: 5, y: -101 });
+  expect(saved).toHaveBeenCalledWith({ z: 2, x: 5, y: -101 }, "s"); // 단독 사용 = 씬 ID 가 대상
 });

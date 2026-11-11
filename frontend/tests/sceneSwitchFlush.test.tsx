@@ -314,7 +314,8 @@ it("씬을 바꾸는 틈에는 화면 조작(F·툴바 맞춤·확대)과 보드
     const actionRef = useRef(null as unknown as Actions);
     actions = actionRef;
     return (
-      <SceneBoard scene={scene} actionRef={actionRef as BoardProps["actionRef"]} onChange={() => {}} onCameraChange={() => cameras.push(scene.id)} />
+      // 기록은 콜백으로 받은 target 의 씬 — 렌더 때의 scene.id 가 아니다(카메라 기록은 잴 때의 대상으로 간다)
+      <SceneBoard scene={scene} actionRef={actionRef as BoardProps["actionRef"]} onChange={() => {}} onCameraChange={(_camera, target) => { cameras.push(target.sceneId); }} />
     );
   }
   // jsdom 은 자리를 재 주지 않는다 — 보드에 크기를 준다(화면 맞춤이 계산되게)
@@ -344,7 +345,9 @@ it("씬을 바꾸는 틈에는 화면 조작(F·툴바 맞춤·확대)과 보드
     window.dispatchEvent(new MouseEvent("mouseup", { button: 0 }));
   });
   await settle();
-  expect(cameras, "틈에 저장한 카메라").toEqual([]);
+  // 틈의 화면 조작은 새 씬(X)에 아무것도 쓰지 않는다. 떠나는 씬(Y)의 밀린 기록(열 때 맞춤 등)은 떠남이 Y 에 한 번 넘길 수 있다
+  expect(cameras.filter((id) => id !== sceneY.id), "틈에 새 씬에 저장한 카메라").toEqual([]);
+  expect(cameras.length).toBeLessThanOrEqual(1);
   expect(board().hasAttribute("inert")).toBe(false);
   // 틈이 끝난 뒤의 보드 밖 누름은 평소대로 범위 선택을 시작한다
   const outside = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 5, clientY: 5 });
@@ -357,6 +360,7 @@ it("씬을 바꾸는 틈에는 화면 조작(F·툴바 맞춤·확대)과 보드
   const before = canvas().style.transform;
   act(() => actions.current?.zoomFit());
   expect(canvas().style.transform).not.toBe(before);
+  act(() => actions.current?.flushCamera()); // 기록은 유휴 뒤·떠날 때 — App 이 전환·창 열기 전에 부르는 손잡이로 지금 넘긴다
   expect(cameras.at(-1)).toBe(sceneX.id);
 });
 

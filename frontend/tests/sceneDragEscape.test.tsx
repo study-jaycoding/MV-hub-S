@@ -8,6 +8,7 @@ import { act, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
+import { CAMERA_IDLE_SAVE_MS } from "../src/lib/useSceneViewport";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 
 const fixture = vi.hoisted(() => ({ data: null as unknown as SceneGenDataApi }));
@@ -53,6 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -86,7 +88,16 @@ function StoreParent({ cards, groups = [], edges = [] }: { cards: object[]; grou
     />
   );
 }
-const showStored = (cards: object[], groups: object[] = []) => act(async () => { root.render(<StoreParent cards={cards} groups={groups} />); });
+// 저장소 부모 시험은 타이머를 흉내 낸다 — 카메라 기록이 마지막 조작 뒤 유휴 시간에 한 번이라(lib/useSceneViewport) 아래 fitAndSave 가 시간을 진행한다
+const showStored = (cards: object[], groups: object[] = []) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  return act(async () => { root.render(<StoreParent cards={cards} groups={groups} />); });
+};
+/** 끄는 중 화면 맞춤(F) → 손을 쥔 채 유휴 시간이 지나 카메라 기록이 접수된다 — 그 기록이 옮긴 자리를 먼저 저장하고 저장소 사본이 돌아온다 */
+const fitAndSave = async () => {
+  await key({ key: "f", code: "KeyF" });
+  await act(async () => { vi.advanceTimersByTime(CAMERA_IDLE_SAVE_MS); });
+};
 const card = (id: string) => host.querySelector<HTMLElement>(`.scene-card[data-id="${id}"]`)!;
 const groupEl = (id: string) => host.querySelector<HTMLElement>(`.scene-group[data-group-id="${id}"]`)!;
 const board = () => host.querySelector<HTMLElement>(".scene-board")!;
@@ -196,7 +207,7 @@ it("전부 끄는 중 키 앞의 확정(F)으로 좌표가 저장된 뒤 Esc —
   await selectAll();
   await grab("a1", 150, 150);
   await dragTo(700, 150);
-  await key({ key: "f", code: "KeyF" }); // 화면 맞춤 — 카메라를 저장하기 전에 옮긴 자리를 먼저 저장한다
+  await fitAndSave(); // 화면 맞춤 — 카메라를 저장하기 전에 옮긴 자리를 먼저 저장한다
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect([savedX("a1"), savedX("b1")]).toEqual([660, 1210]);
   await escape();
@@ -211,7 +222,7 @@ it("한 장만 끄는 중 키 앞의 확정(F)이 끼어도 같다 — Esc 로 �
   await showStored([textCard("a1", 110), textCard("b1", 660)]);
   await grab("a1", 150, 150);
   await dragTo(370, 150);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect(savedX("a1")).toBe(330);
   await escape();
@@ -242,13 +253,13 @@ it("끌다 F 로 저장하고 제자리로 돌아와 다시 F 로 저장한 뒤 
   await showStored([textCard("a1", 110), textCard("b1", 660)]);
   await grab("a1", 150, 150);
   await dragTo(370, 150);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect(savedX("a1")).toBe(330);
   const [bx, by] = clientAt(150, 150); // F 가 카메라를 바꿨다 — 잡은 자리(캔버스 150,150)가 지금 화면 어디인지로 제자리에 놓는다
   await dragTo(bx, by);
   expect(card("a1").style.left).toBe("110px");
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect(savedX("a1")).toBe(110);
   await escape();
@@ -267,12 +278,12 @@ it("판 전체를 끌다 F 로 저장하고 제자리로 돌아와 다시 F 로 
   await selectAll();
   await grab("a1", 150, 150);
   await dragTo(700, 150);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect([savedX("a1"), savedX("b1")]).toEqual([660, 1210]);
   const [bx, by] = clientAt(150, 150);
   await dragTo(bx, by); // 제자리로 — 층에만 있던 이동량이 0 이 된다
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect([savedX("a1"), savedX("b1")]).toEqual([110, 660]);
   await escape();
@@ -288,7 +299,7 @@ it("중첩 값이 있는 카드(genIds)를 끌다 F 로 저장한 뒤 Esc — �
   await showStored([genCard("a1", 110, { genId: "g1", genIds: ["g1"] }), textCard("b1", 660)]);
   await grab("a1", 150, 150);
   await dragTo(370, 150);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect(savedX("a1")).toBe(330);
   await escape();
@@ -307,7 +318,7 @@ it("끌기를 버리면 끌기 전의 다시 하기 기록이 살아난다 — �
   expect(card("a1").style.left).toBe("110px"); // 다시 하기 한 단계가 생겼다
   await grab("b1", 700, 150);
   await dragTo(920, 150);
-  await key({ key: "f", code: "KeyF" }); // 끄는 중의 저장 — 다시 하기 기록을 비운다
+  await fitAndSave(); // 끄는 중의 저장 — 다시 하기 기록을 비운다
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   await escape(); // 끌기를 버린다 — 그 저장의 단계가 걷히며 다시 하기 기록이 돌아온다
   expect([card("b1").style.left, savedX("b1")]).toEqual(["660px", 660]);
@@ -432,7 +443,7 @@ it("그룹 머리를 끌다 F 로 저장된 뒤 Esc — 멤버·네모를 끌기
   await showStored([textCard("a1", 110), textCard("b1", 660)], [rectGroup("gA", ["a1"], 66)]);
   await grabHead("gA", 100, 50);
   await dragTo(320, 270);
-  await key({ key: "f", code: "KeyF" });
+  await fitAndSave();
   await act(async () => { frames.splice(0).forEach((cb) => cb(0)); });
   expect([savedX("a1"), savedRectX("gA")]).toEqual([330, 286]);
   await escape();
