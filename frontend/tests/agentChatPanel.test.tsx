@@ -130,10 +130,10 @@ describe("Ask Agent 옆 칸", () => {
     await flush();
     expect(texts(".agent-assistant")).toEqual(["안녕하세요.", "계획을 저장했어요"]);
     expect(texts(".agent-tool")).toEqual(["MV Hub · 계획 저장 끝"]);
-    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장");
+    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획고양이 컷 4장"); // [계획] 표 + 제목
     expect(panel().textContent).toContain("실행하면 크레딧이 나갑니다");
-    expect(panel().textContent).toContain("저장 위치: 내 공간");
-    expect(host.querySelector(".agent-plan-cost")!.textContent).toBe("예상 크레딧: 12"); // 카드가 보이면 견적(무료)을 한 번 묻는다
+    expect(host.querySelector(".agent-plan-where")!.textContent).toBe("저장 위치 내 공간");
+    expect(host.querySelector(".agent-plan-cost")!.textContent).toBe("예상 크레딧 12"); // 카드가 보이면 견적(무료)을 한 번 묻는다
     expect(calls.filter((c) => c.path === "/plans/p1/estimate").map((c) => c.method)).toEqual(["POST"]);
     expect(button("보내기")).toBeTruthy();
 
@@ -169,11 +169,11 @@ describe("Ask Agent 옆 칸", () => {
     type("계획 세워 줘");
     enter();
     await flush();
-    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장");
+    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획고양이 컷 4장");
     expect(calls.filter((c) => c.path.startsWith("/turns/t1/events")).map((c) => c.path)).toEqual(
       ["/turns/t1/events?after=0", "/turns/t1/events?after=1"]);
     // 견적을 못 받았으면 0 이 아니라 '확인하지 못했어요' — 카드와 [실행]은 그대로
-    expect(host.querySelector(".agent-plan-cost")!.textContent).toBe("예상 크레딧: 확인하지 못했어요");
+    expect(host.querySelector(".agent-plan-cost")!.textContent).toBe("예상 크레딧 확인하지 못했어요");
     expect(host.querySelector(".agent-plan-run")).toBeTruthy();
   });
 
@@ -281,8 +281,8 @@ describe("Ask Agent 옆 칸", () => {
     expect(texts(".agent-tool")).toEqual(["MV Hub · 생성 실행 끝"]);
     expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("생성을 보냈어요");
     expect(texts(".agent-plan-tile")).toEqual(["완료 — 라이브러리에서 확인", "만드는 중"]); // 썸네일 줄 곳이 없으면 글
-    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획 — 고양이 컷 4장"); // 진행은 제목·프롬프트를 안 덮는다
-    expect(texts(".agent-plan-items li")).toEqual(["Nano Banana 2고양이 1", "Nano Banana 2고양이 2"]);
+    expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획고양이 컷 4장"); // 진행은 제목·프롬프트를 안 덮는다
+    expect(texts(".agent-plan-items li")).toEqual(["1Nano Banana 2고양이 1", "2Nano Banana 2고양이 2"]);
   });
 
   it("'지금 화면' 칩 — × 로 빼면 다음 차례에 빈 문맥, [＋ 지금 화면] 으로 다시, 새 대화는 붙은 채 시작", async () => {
@@ -332,10 +332,10 @@ describe("Ask Agent 옆 칸", () => {
     expect(texts(".agent-user")).toEqual(["하나"]); // 접수 응답을 버리지 않고 그 차례를 따라간다
   });
 
-  it("[고치기]는 입력칸을 채운다", async () => {
+  it("[고치기]는 입력칸 위에 '고칠 계획' 칩을 붙이고, 고칠 내용을 써야 보내며 보낼 때 제목을 붙인다", async () => {
     route = (c) => {
       if (c.path === "/session") return session();
-      if (c.path === "/turns") return started();
+      if (c.path === "/turns") return started(`t${turnCalls().length}`, "c1");
       return json({ events: [{ seq: 1, kind: "plan", plan: PLAN }], status: "done", last_seq: 1 });
     };
     await mount();
@@ -343,8 +343,42 @@ describe("Ask Agent 옆 칸", () => {
     enter();
     await flush();
     act(() => host.querySelector<HTMLButtonElement>(".agent-plan-fix")!.click());
-    expect(input().value).toBe("「고양이 컷 4장」 계획을 이렇게 고쳐 주세요: ");
+    expect(host.querySelector(".agent-revise")!.textContent).toContain("고양이 컷 4장");
+    expect(input().value).toBe(""); // 빈 문장이 그대로 보내지지 않게 글은 넣지 않는다
     expect(document.activeElement).toBe(input());
+    expect(button("보내기")!.disabled).toBe(true);
+    type("두 장만");
+    enter();
+    await flush();
+    expect(turnCalls()[1].body!.text).toBe("「고양이 컷 4장」 계획을 이렇게 고쳐 주세요: 두 장만");
+    expect(host.querySelector(".agent-revise")).toBeNull();
+  });
+
+  it("이어진 도구 알약은 한 줄로 묶이고(이름별 횟수 · 도는 중이면 '하는 중'), 누르면 하나씩 펼친다", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started();
+      if (!c.path.endsWith("after=0")) return new Promise<Response>(() => {});
+      return json({ events: [
+        { seq: 1, kind: "tool", name: "read_context", status: "started" },
+        { seq: 2, kind: "tool", name: "read_context", status: "done" },
+        { seq: 3, kind: "tool", name: "read_context", status: "started" },
+        { seq: 4, kind: "tool", name: "read_context", status: "done" },
+        { seq: 5, kind: "tool", name: "prepare_generation_plan", status: "started" },
+        { seq: 6, kind: "tool", name: "prepare_generation_plan", status: "done" },
+        { seq: 7, kind: "text", text: "계획을 저장했어요" },
+        { seq: 8, kind: "tool", name: "execute_generation_plan", status: "started" },
+      ], status: "running", last_seq: 8 });
+    };
+    await mount();
+    type("만들어 줘");
+    enter();
+    await flush();
+    expect(texts(".agent-tool")).toEqual(["MV Hub · 자료 조회 2번, 계획 저장 끝", "MV Hub · 생성 실행 하는 중"]);
+    expect(host.querySelector(".agent-tool-list")).toBeNull();
+    act(() => host.querySelector<HTMLButtonElement>(".agent-tool")!.click());
+    expect(texts(".agent-tool-list li")).toEqual(["✓자료 조회 끝", "✓자료 조회 끝", "✓계획 저장 끝"]);
+    expect(panel().textContent).toContain("일하는 중"); // 떠 있는 알약
   });
 
   it("보내는 중·진행 중에는 다시 보내지 않는다", async () => {

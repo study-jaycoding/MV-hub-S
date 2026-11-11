@@ -234,12 +234,14 @@ def test_plan_binds_only_while_turn_runs(runtime, monkeypatch):
     path, conv, turn = start(service, identity, monkeypatch, "claude_slow")
     wait_file(tmp / "grandchild.pid")
     plan = {"plan_id": "plan-1", "title": "고양이", "status": "planned", "workspace": {"scope": "personal"},
-            "items": [{"model": "nano", "prompt": "고양이 " * 600}]}
+            "items": [{"model": "nano", "prompt": "고양이 " * 600,
+                       "params": {"aspect_ratio": "16:9", "resolution": "1k", "duration": True, "seed": 7}}]}
     assert service.bind_plan("client-1", plan)
     assert not service.bind_plan("someone-else", plan)
     assert store.binding_for(path, "plan-1")["turn_id"] == turn["id"]
     card = [event for event in store.events_after(path, turn["id"]) if event["kind"] == "plan"][0]["plan"]
     assert card["plan_id"] == "plan-1" and len(card["items"][0]["prompt"]) == 2000
+    assert card["items"][0]["params"] == {"aspect_ratio": "16:9", "resolution": "1k"}  # 표시 설정만, 참·거짓·그 밖은 안 실림
     service.cancel(identity, turn["id"])
     finish(path, turn["id"])
     assert not service.bind_plan("client-1", {**plan, "plan_id": "plan-2"})

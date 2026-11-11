@@ -60,8 +60,9 @@ export interface AgentPlan {
   plan_id: string;
   title?: string | null;
   status?: string | null;
-  // 카드(plan 사건)는 model·prompt, 실행 응답은 state·generation_id 도 싣는다
-  items?: { model?: string | null; prompt?: string | null; state?: string | null; generation_id?: string | null }[];
+  // 카드(plan 사건)는 model·prompt·보이기용 설정(비율·해상도·길이), 실행 응답은 state·generation_id 도 싣는다
+  items?: { model?: string | null; prompt?: string | null; params?: Record<string, string | number> | null;
+    state?: string | null; generation_id?: string | null }[];
   workspace?: unknown;
 }
 /** 계획 항목 하나의 상태 — 허브가 새로 읽은 값. generation_status 가 없으면 '확인 못 함'(앞 값 보존), missing = 결과 없음. */

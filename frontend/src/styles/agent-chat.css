@@ -103,26 +103,80 @@
 .agent-empty p { margin: 0; font-size: 13px; }
 .agent-msg { max-width: 92%; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-user { align-self: flex-end; padding: 9px 13px; border: 1px solid transparent; border-radius: 14px; background: #363636; }
+/* 내 말 — 올리면(키보드 초점도) 아래에 [복사][고쳐 보내기](Aside Copy · Edit message) */
+.agent-user-wrap { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; max-width: 92%; }
+.agent-user-wrap .agent-user { max-width: 100%; }
+.agent-user-acts { display: flex; gap: 2px; margin-top: 2px; opacity: 0; }
+.agent-user-wrap:hover .agent-user-acts, .agent-user-acts:focus-within { opacity: 1; }
+.agent-mini {
+  display: grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 12px;
+}
+.agent-mini:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
 .agent-assistant { align-self: flex-start; }
 .agent-msg-error { align-self: flex-start; color: #ff8a7a; font-size: 12.5px; }
+/* 도구 묶음 한 줄(시안 A — 이어진 알약을 하나로, 누르면 펼침) */
+.agent-tools { align-self: flex-start; max-width: 100%; display: flex; flex-direction: column; gap: 4px; }
 .agent-tool {
-  align-self: flex-start; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
-  color: var(--muted); font-size: 12px;
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; max-width: 100%; margin-left: -4px; padding: 4px 8px 4px 4px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12.5px; text-align: left;
 }
-.agent-tool-state { margin-left: 6px; color: var(--muted2); }
+.agent-tool:hover, .agent-tool[aria-expanded="true"] { background: rgba(255, 255, 255, 0.05); color: #bdbdbd; }
+.agent-tool[aria-expanded="true"] .agent-chevron { transform: rotate(180deg); }
+.agent-tool-mark { display: grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 5px; background: #3a3a3a; color: #b9b9b9; font-size: 11px; }
+.agent-tool-mark::before { content: "⬡"; }
+.agent-tool-spin {
+  flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.15); border-top-color: var(--accent);
+  animation: agent-spin 1s steps(12) infinite; /* 끝없이 도는 것은 steps() — 쉬는 동안 CPU(tests/idleCssAnimations) */
+}
+.agent-tool-state { color: var(--muted2); }
 .agent-tool.is-failed .agent-tool-state { color: #ff8a7a; }
-.agent-working { margin: 0; color: var(--muted); font-size: 12px; }
+.agent-tool-list {
+  margin: 0 0 0 4px; padding: 2px 0 2px 16px; list-style: none; display: flex; flex-direction: column; gap: 5px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14); color: var(--muted); font-size: 12px;
+}
+.agent-tool-list li { display: flex; align-items: center; gap: 7px; }
+.agent-tool-list small { color: var(--muted2); font-size: 11.5px; }
+.agent-tool-li-mark { width: 10px; color: var(--muted2); text-align: center; }
+.agent-tool-list li.is-failed, .agent-tool-list li.is-failed .agent-tool-li-mark { color: #ff8a7a; }
+/* '일하는 중' — 입력칸 위에 떠 있는 점 알약(누르면 맨 아래로) */
+.agent-float { position: relative; z-index: 3; flex: none; height: 0; }
+.agent-working {
+  position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 13px 0 11px; white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px; background: #2f2f2f; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  color: var(--text); font-size: 12.5px; font-weight: 600;
+}
+.agent-working:hover { background: #363636; }
+.agent-dots { display: inline-flex; gap: 3px; }
+.agent-dots i { display: block; width: 4px; height: 4px; border-radius: 50%; background: #cfcfcf; animation: agent-dot 1.2s steps(2) infinite; } /* steps — 쉬는 동안 CPU */
+.agent-dots i:nth-child(2) { animation-delay: 0.2s; }
+.agent-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes agent-dot { 50% { transform: translateY(-3px); } }
+.agent-panel.is-running .agent-log { padding-bottom: 52px; } /* 떠 있는 알약이 마지막 줄을 가리지 않게 */
 
 /* 계획 카드 */
 .agent-plan {
   align-self: stretch; padding: 14px 16px; border: 1px solid var(--border2); border-radius: 12px; background: #2c2c2c;
 }
-.agent-plan-title { margin: 0 0 8px; font-size: 14px; font-weight: 700; }
-.agent-plan-items { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; }
-.agent-plan-items li { white-space: pre-wrap; overflow-wrap: anywhere; } /* 줄임표 없이 전부 보인다 */
-.agent-plan-items b { margin-right: 6px; color: var(--text); font-weight: 600; }
-.agent-plan-where, .agent-plan-cost { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
-.agent-plan-warn { margin: 0 0 10px; color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.agent-plan-title { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.agent-plan-tag { flex: none; padding: 2px 8px; border-radius: 6px; background: #3a3a3a; color: #cfcfcf; font-size: 11.5px; font-weight: 700; }
+/* 항목 — 번호 · 모델 이름 + 설정 칩 · 프롬프트(줄임표 없이 전부 보인다) */
+.agent-plan-items { margin: 0 0 10px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 9px; }
+.agent-plan-items li { display: flex; gap: 10px; }
+.agent-plan-num {
+  display: grid; place-items: center; flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%;
+  background: #3a3a3a; color: #bdbdbd; font-size: 11px; font-weight: 700;
+}
+.agent-plan-it { flex: 1; min-width: 0; }
+.agent-plan-it-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agent-plan-it-head b { color: var(--text); font-size: 13px; font-weight: 600; }
+.agent-plan-chip { height: 19px; padding: 0 7px; border-radius: 6px; background: #383838; color: #c8c8c8; font-size: 11px; font-weight: 600; line-height: 19px; }
+.agent-plan-prompt { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-plan-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; color: var(--muted); font-size: 12.5px; }
+.agent-plan-meta b { color: #cfcfcf; font-weight: 600; }
+.agent-plan-dot { color: var(--muted2); }
+.agent-plan-warn { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; color: var(--accent); font-size: 12.5px; font-weight: 700; }
 .agent-plan-fail { margin: 0 0 10px; color: #ff8a7a; font-size: 12.5px; }
 /* 보낸 계획(요리 2-A, 시안 mvagent-cook.png) — 머리 알약 + 항목마다 칸(완료면 썸네일, 누르면 크게 보기) */
 .agent-plan-sent {
@@ -159,6 +213,8 @@
   flex: none; margin: 0 14px 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
   border: 1px solid transparent; border-radius: 16px; background: #363636;
 }
+.agent-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.agent-revise .agent-context-mark { background: #5a5a5a; color: #e6e6e6; } /* [고치기] 칩 — 지금 화면 칩(라임)과 구분 */
 .agent-context {
   align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 10px 5px 6px;
   border: 1px solid transparent; border-radius: 10px; background: #464646;
@@ -258,7 +314,7 @@
 .agent-panel .cn-done b { color: var(--accent); }
 .agent-panel .cn-done small { margin-left: auto; color: var(--muted); font-size: 11.5px; }
 @keyframes agent-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .agent-panel .cn-steps li.wait .d, .agent-plan-spin { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .agent-panel .cn-steps li.wait .d, .agent-plan-spin, .agent-tool-spin, .agent-dots i { animation: none; } }
 
 /* ── 모델·생각 깊이 칩 두 개(시안 ask-agent-models.png) ── */
 .agent-co { color: var(--text); }

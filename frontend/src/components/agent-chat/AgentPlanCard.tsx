@@ -5,6 +5,7 @@ import { api } from "../../api";
 import type { AgentPlan } from "../../lib/agentChatApi";
 import { useT } from "../../lib/i18n";
 import { thumbOf } from "../../lib/media";
+import { useModelDisplayName } from "../../lib/modelCatalog";
 import type { AgentMessage, AgentPlanProgress } from "../../lib/useAgentChat";
 import type { Generation, PreviewTarget } from "../../types";
 
@@ -44,6 +45,15 @@ export function itemKind(state: string | null | undefined, server: string | null
   return status ? "failed" : "accepted";
 }
 
+/** 항목 설정 칩 — 허브가 싣는 보이기용 세 개(비율·해상도·길이)를 이 순서로. 옛 카드(설정 없음)는 칩 없음. */
+function settingChips(params?: Record<string, string | number> | null): string[] {
+  return (["aspect_ratio", "resolution", "duration"] as const).flatMap((key) => {
+    const value = params?.[key];
+    if (typeof value !== "string" && typeof value !== "number") return [];
+    return [key === "duration" ? `${value}s` : String(value)];
+  });
+}
+
 function workspaceLabel(value: unknown): string {
   if (typeof value === "string") return value;
   const ws = value as { scope?: string; name?: string | null } | null;
@@ -58,6 +68,7 @@ function isSent(progress?: AgentPlanProgress): boolean {
 
 export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRevise, findGeneration, onPreview }: Props) {
   const t = useT();
+  const modelName = useModelDisplayName(); // 모델 코드(nano_banana_flash) 대신 앱의 이름표(Nano Banana 2)
   const items = plan.items ?? [];
   const where = workspaceLabel(plan.workspace);
   const running = exec?.state === "running";
@@ -105,7 +116,7 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
 
   return (
     <section className="agent-plan" aria-label={t("계획")}>
-      <h4 className="agent-plan-title">{t("계획")} — {plan.title || t("이름 없는 계획")}</h4>
+      <h4 className="agent-plan-title"><span className="agent-plan-tag">{t("계획")}</span>{plan.title || t("이름 없는 계획")}</h4>
       {sent && (
         <>
           <p className={`agent-plan-sent${settled ? " is-settled" : ""}`} role="status">
@@ -137,26 +148,35 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
         </>
       )}
       {items.length > 0 && (
-        <ul className="agent-plan-items">
+        <ol className="agent-plan-items">
           {items.map((item, i) => (
             <li key={i}>
-              {item.model && <b>{item.model}</b>}
-              {item.prompt && <span>{item.prompt}</span>}
+              <span className="agent-plan-num" aria-hidden="true">{i + 1}</span>
+              <div className="agent-plan-it">
+                <div className="agent-plan-it-head">
+                  {item.model && <b>{modelName(item.model)}</b>}
+                  {settingChips(item.params).map((chip) => <span key={chip} className="agent-plan-chip">{chip}</span>)}
+                </div>
+                {item.prompt && <p className="agent-plan-prompt">{item.prompt}</p>}
+              </div>
             </li>
           ))}
-        </ul>
+        </ol>
       )}
-      {where && <p className="agent-plan-where">{t("저장 위치")}: {where}</p>}
-      <p className="agent-plan-cost">
-        {!estimate ? t("예상 크레딧 확인 중")
-          : estimate.credits === null ? t("예상 크레딧: 확인하지 못했어요")
-          : `${t("예상 크레딧")}: ${estimate.credits}`}
+      {/* 저장 위치·예상 크레딧 한 줄 */}
+      <p className="agent-plan-meta">
+        {where && <><span className="agent-plan-where">{t("저장 위치")} <b>{where}</b></span><span className="agent-plan-dot" aria-hidden="true">·</span></>}
+        <span className="agent-plan-cost">
+          {!estimate ? t("예상 크레딧 확인 중")
+            : estimate.credits === null ? <>{t("예상 크레딧")} {t("확인하지 못했어요")}</>
+            : <>{t("예상 크레딧")} <b>{estimate.credits}</b></>}
+        </span>
       </p>
       {sent ? (
         exec?.state === "failed" && <p className="agent-plan-fail" role="alert">{exec.message}</p>
       ) : (
         <>
-          <p className="agent-plan-warn">{t("실행하면 크레딧이 나갑니다")}</p>
+          <p className="agent-plan-warn"><WarnIcon />{t("실행하면 크레딧이 나갑니다")}</p>
           {exec?.state === "failed" && <p className="agent-plan-fail" role="alert">{exec.message}</p>}
           <div className="agent-plan-actions">
             <button type="button" className="agent-plan-run" onClick={onExecute} disabled={running}
@@ -170,5 +190,15 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
         </>
       )}
     </section>
+  );
+}
+
+function WarnIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3 2.5 20h19Z" />
+      <path d="M12 10v4.5M12 17.2v.3" />
+    </svg>
   );
 }

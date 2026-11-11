@@ -54,6 +54,19 @@ const TOOL: Record<string, string> = {
 };
 const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
 
+type ToolMessage = Extract<AgentMessage, { kind: "tool" }>;
+type Row = AgentMessage | { kind: "tools"; id: string; tools: ToolMessage[] };
+/** 이어진 도구 알약을 한 줄로 묶는다(Aside 처럼 — 시안 A, docs/status/MVAgent_한줄묶기_2026-11-11.md). 사건·저장 형식은 그대로, 그리기만. */
+function groupTools(messages: AgentMessage[]): Row[] {
+  const rows: Row[] = [];
+  for (const m of messages) {
+    const last = rows[rows.length - 1];
+    if (m.kind === "tool" && last?.kind === "tools") last.tools.push(m);
+    else rows.push(m.kind === "tool" ? { kind: "tools", id: m.id, tools: [m] } : m);
+  }
+  return rows;
+}
+
 export function AgentPanel({ context, contextLabel, onClose, popout = false, onPopOut, onDock, projectName, findGeneration, onPreview }: Props) {
   const t = useT();
 
@@ -89,6 +102,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
   const chat = useAgentChat(screenOn ? context : NO_SCREEN);
   const [text, setText] = useState("");
+  const [revising, setRevising] = useState<{ title: string } | null>(null); // [고치기] — 입력칸의 '고칠 계획' 칩
   const [menu, setMenu] = useState<"model" | "effort" | null>(null);
   const [drawer, setDrawer] = useState(false); // ≡ 대화 서랍
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -108,10 +122,19 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (await chat.send(text)) {
+    // 칩이 있으면 AI 에게는 지금까지와 같은 문장으로 — 고칠 내용을 써야 보낸다(빈 문장 전송 막음)
+    const body = revising && text.trim()
+      ? `${t("「{title}」 계획을 이렇게 고쳐 주세요").replace("{title}", revising.title || t("계획"))}: ${text.trim()}`
+      : text;
+    if (await chat.send(body)) {
       setText("");
+      setRevising(null);
       chat.connect.dismissConnected();
     }
+  };
+  const scrollToEnd = () => {
+    const log = logRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // 한글 조합 중의 Enter 는 글자 확정이다 — 보내지 않는다
@@ -126,9 +149,13 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     setDrawer(true);
     void chat.loadConversations();
   };
-  const startNew = () => { chat.newConversation(); setText(""); setScreenOn(true); setDrawer(false); };
+  const startNew = () => { chat.newConversation(); setText(""); setRevising(null); setScreenOn(true); setDrawer(false); };
   const revise = (title: string) => {
-    setText(`${t("「{title}」 계획을 이렇게 고쳐 주세요").replace("{title}", title || t("계획"))}: `);
+    setRevising({ title });
+    inputRef.current?.focus();
+  };
+  const reuse = (value: string) => { // 내 말 [고쳐 보내기] — 입력칸에 다시 채운다
+    setText(value);
     inputRef.current?.focus();
   };
 
@@ -141,7 +168,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const locked = needsConnect || !chat.choice;
 
   return (
-    <aside className={popout ? "agent-panel popout" : "agent-panel"} aria-label="MV Agent">
+    <aside className={`agent-panel${popout ? " popout" : ""}${chat.running ? " is-running" : ""}`} aria-label="MV Agent">
       {!popout && (
         <div className="agent-resize" role="separator" tabIndex={0} aria-orientation="vertical"
           aria-label={t("MV Agent 칸 너비 조절")} aria-valuemin={MIN_W} aria-valuemax={maxWidth()} aria-valuenow={clampWidth(width)}
@@ -208,7 +235,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         <AgentDrawer conversations={chat.conversations} currentId={chat.conversationId} running={chat.running}
           locked={chat.running || chat.sending} projectName={projectName}
           onNew={startNew}
-          onOpen={(id) => { setDrawer(false); setScreenOn(true); void chat.openConversation(id); }}
+          onOpen={(id) => { setDrawer(false); setScreenOn(true); setRevising(null); void chat.openConversation(id); }}
           onClose={closeDrawer} claude={engines.find((e) => e.id === "claude")} />
       )}
 
@@ -227,38 +254,63 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             <p>{t("지금 보는 화면을 같이 보면서 일해요")}</p>
           </div>
         )}
-        {chat.messages.map((m) => (
-          <Message key={m.id} message={m} onExecute={chat.executePlan} onRevise={revise} findGeneration={findGeneration} onPreview={onPreview} />
-        ))}
+        {groupTools(chat.messages).map((r) => (r.kind === "tools" ? <ToolGroup key={r.id} tools={r.tools} /> : (
+          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={reuse}
+            findGeneration={findGeneration} onPreview={onPreview} />
+        )))}
         {needsConnect && (
           <AgentConnect state={chat.connect.state} version={chat.connect.version} loginWindowEnabled={chat.connect.loginWindowEnabled}
             waiting={chat.connect.waiting} note={chat.connect.note} onConnect={() => void chat.connect.connect()}
             onRecheck={() => void chat.connect.recheck()} onStopWaiting={chat.connect.stopWaiting} />
         )}
-        {chat.running && <p className="agent-working" role="status">{chat.turn?.status === "cancelling" ? t("멈추는 중") : t("일하는 중")}</p>}
       </div>
+
+      {/* 대화 끝의 '일하는 중' 글 대신 입력칸 위에 떠 있는 점 알약 — 누르면 맨 아래로(Aside 'Working — scroll to bottom') */}
+      {chat.running && (
+        <div className="agent-float" role="status">
+          <button type="button" className="agent-working" onClick={scrollToEnd} title={t("맨 아래로")}>
+            <span className="agent-dots" aria-hidden="true"><i /><i /><i /></span>
+            {chat.turn?.status === "cancelling" ? t("멈추는 중") : t("일하는 중")}
+          </button>
+        </div>
+      )}
 
       {chat.error && <p className="agent-error" role="alert">{chat.error}</p>}
 
       <form className="agent-composer" onSubmit={submit}>
-        {screenOn ? (
-          <div className="agent-context">
-            <span className="agent-context-mark" aria-hidden="true">⬡</span>
-            <span className="agent-context-text">
-              <b>MV Hub</b>
-              <small>{contextLabel}</small>
-            </span>
-            {/* Aside 처럼 올리면(키보드 초점도) 보인다 — 빼면 다음 메시지부터 지금 화면 정보를 안 보낸다(앱 동작 도구 설계 A4) */}
-            <button type="button" className="agent-context-x" onClick={() => setScreenOn(false)}
-              title={t("지금 화면 정보 빼기")} aria-label={t("지금 화면 정보 빼기")}>×</button>
-          </div>
-        ) : (
-          <button type="button" className="agent-context-add" onClick={() => setScreenOn(true)} aria-label={t("지금 화면 정보 다시 붙이기")}>
-            ＋ {t("지금 화면")}
-          </button>
-        )}
+        <div className="agent-chips">
+          {screenOn ? (
+            <div className="agent-context">
+              <span className="agent-context-mark" aria-hidden="true">⬡</span>
+              <span className="agent-context-text">
+                <b>MV Hub</b>
+                <small>{contextLabel}</small>
+              </span>
+              {/* Aside 처럼 올리면(키보드 초점도) 보인다 — 빼면 다음 메시지부터 지금 화면 정보를 안 보낸다(앱 동작 도구 설계 A4) */}
+              <button type="button" className="agent-context-x" onClick={() => setScreenOn(false)}
+                title={t("지금 화면 정보 빼기")} aria-label={t("지금 화면 정보 빼기")}>×</button>
+            </div>
+          ) : (
+            <button type="button" className="agent-context-add" onClick={() => setScreenOn(true)} aria-label={t("지금 화면 정보 다시 붙이기")}>
+              ＋ {t("지금 화면")}
+            </button>
+          )}
+          {revising && (
+            <div className="agent-context agent-revise">
+              <span className="agent-context-mark" aria-hidden="true"><PencilIcon /></span>
+              <span className="agent-context-text">
+                <b>{t("고칠 계획")}</b>
+                <small>{revising.title || t("이름 없는 계획")}</small>
+              </span>
+              <button type="button" className="agent-context-x" onClick={() => setRevising(null)}
+                title={t("고치기 취소")} aria-label={t("고치기 취소")}>×</button>
+            </div>
+          )}
+        </div>
         <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect}
-          placeholder={needsConnect ? t("Claude 를 연결하면 쓸 수 있어요") : t("Agent 에게 일을 맡기거나 물어보세요")}
+          placeholder={needsConnect ? t("Claude 를 연결하면 쓸 수 있어요")
+            : revising ? t("어떻게 고칠지 적어 주세요 — 예: 바나나만, 9:16 으로")
+            : t("Agent 에게 일을 맡기거나 물어보세요")}
           aria-label={t("Agent 에게 보낼 말")}
           onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
         <div className="agent-composer-foot">
@@ -304,25 +356,21 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   );
 }
 
-function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }: {
+function Message({ message: m, onExecute, onRevise, onReuse, findGeneration, onPreview }: {
   message: AgentMessage;
   onExecute: (planId: string) => void;
   onRevise: (title: string) => void;
+  onReuse: (text: string) => void;
   findGeneration?: (id: string) => Generation | undefined;
   onPreview?: (target: PreviewTarget) => void;
 }) {
-  const t = useT();
   switch (m.kind) {
     case "user":
-      return <div className="agent-msg agent-user">{m.text}</div>;
+      return <UserMessage text={m.text} onReuse={onReuse} />;
     case "assistant":
       return <div className="agent-msg agent-assistant"><AgentMarkdown text={m.text} /></div>;
     case "tool":
-      return (
-        <div className={`agent-tool is-${m.status}`}>
-          MV Hub · {t(TOOL[m.name] ?? m.name)} <span className="agent-tool-state">{t(TOOL_STATE[m.status] ?? m.status)}</span>
-        </div>
-      );
+      return <ToolGroup tools={[m]} />;
     case "plan":
       return <AgentPlanCard plan={m.plan} exec={m.exec} estimate={m.estimate} progress={m.progress} onExecute={() => onExecute(m.plan.plan_id)}
         onRevise={() => onRevise(m.plan.title ?? "")} findGeneration={findGeneration} onPreview={onPreview} />;
@@ -331,6 +379,63 @@ function Message({ message: m, onExecute, onRevise, findGeneration, onPreview }:
     case "error":
       return <div className="agent-msg agent-msg-error" role="alert">{m.message}</div>;
   }
+}
+
+/** 도구 묶음 한 줄 — "MV Hub · 자료 조회 2번, 계획 저장 끝". 이름별 횟수(처음 나온 순서)를 앞 3개까지, 나머지는 "외 N".
+ *  하나라도 도는 중이면 '하는 중', 실패가 있으면 '실패'. 누르면 하나씩 펼친다. */
+function ToolGroup({ tools }: { tools: ToolMessage[] }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const counts = new Map<string, number>();
+  for (const x of tools) counts.set(x.name, (counts.get(x.name) ?? 0) + 1);
+  const labels = [...counts].map(([name, n]) => `${t(TOOL[name] ?? name)}${n > 1 ? ` ${n}${t("번")}` : ""}`);
+  const summary = labels.slice(0, 3).join(", ") + (labels.length > 3 ? ` ${t("외")} ${labels.length - 3}` : "");
+  const status = tools.some((x) => x.status === "started") ? "started" : tools.some((x) => x.status === "failed") ? "failed" : "done";
+  return (
+    <div className="agent-tools">
+      <button type="button" className={`agent-tool is-${status}`} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="agent-tool-mark" aria-hidden="true" />
+        {status === "started" && <span className="agent-tool-spin" aria-hidden="true" />}
+        MV Hub · {summary} <span className="agent-tool-state">{t(TOOL_STATE[status])}</span>
+        <Chevron />
+      </button>
+      {open && (
+        <ul className="agent-tool-list">
+          {tools.map((x) => (
+            <li key={x.id} className={`is-${x.status}`}>
+              <span className="agent-tool-li-mark" aria-hidden="true">{x.status === "done" ? "✓" : x.status === "failed" ? "✕" : "·"}</span>
+              {t(TOOL[x.name] ?? x.name)} <small>{t(TOOL_STATE[x.status] ?? x.status)}</small>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** 내 말 — 올리면 [복사][고쳐 보내기](Aside Copy · Edit message). 고쳐 보내기는 입력칸에 다시 채울 뿐 바로 보내지 않는다. */
+function UserMessage({ text, onReuse }: { text: string; onReuse: (text: string) => void }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }, () => {});
+  };
+  return (
+    <div className="agent-user-wrap">
+      <div className="agent-msg agent-user">{text}</div>
+      <div className="agent-user-acts">
+        <button type="button" className="agent-mini" onClick={copy} title={copied ? t("복사했어요") : t("복사")} aria-label={t("복사")}>
+          {copied ? <span aria-hidden="true">✓</span> : <CopyIcon />}
+        </button>
+        <button type="button" className="agent-mini" onClick={() => onReuse(text)} title={t("고쳐 보내기")} aria-label={t("고쳐 보내기")}>
+          <PencilIcon />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점) · 맨 아래 한 줄(Claude · 요금제 / Claude Code 판·새 판).
@@ -523,6 +628,25 @@ function SidePanelIcon() {
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
       <path d="M14.5 4.5h3.5a2.5 2.5 0 0 1 2.5 2.5v10a2.5 2.5 0 0 1-2.5 2.5h-3.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth={1.9}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth={1.9}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="8" y="8" width="12" height="12" rx="2" />
+      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
     </svg>
   );
 }

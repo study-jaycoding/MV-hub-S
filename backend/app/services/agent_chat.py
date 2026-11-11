@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import secrets
 import threading
 import time
@@ -456,9 +457,16 @@ class AgentChat:
         if not runtime:
             return False
         # shortcut: 프롬프트는 항목마다 2000자까지만 카드에 싣는다 — 더 긴 프롬프트가 흔해지면 전문 보기를 붙인다
+        # 카드의 설정 칩 — get_result 표시 필드와 같은 세 개만(짧은 글·숫자만)
         summary = {"plan_id": str(plan["plan_id"]), "title": plan.get("title"), "status": plan.get("status"),
                    "workspace": plan.get("workspace"),
-                   "items": [{"model": item.get("model"), "prompt": str(item.get("prompt") or "")[:2000]} for item in plan.get("items") or []]}
+                   "items": [{"model": item.get("model"), "prompt": str(item.get("prompt") or "")[:2000],
+                              "params": {key: value[:40] if isinstance(value, str) else value
+                                         for key, value in (item.get("params") or {}).items()
+                                         if key in ("aspect_ratio", "resolution", "duration")
+                                         and isinstance(value, (str, int, float)) and not isinstance(value, bool)
+                                         and (not isinstance(value, float) or math.isfinite(value))}}
+                             for item in plan.get("items") or []]}
         with runtime.emit_lock:  # 끝 표시(_run finally)와 한 줄로 — 끝난 뒤에 계획이 붙거나, 끝남 사건 뒤에 계획이 오지 않게
             if runtime.stopped() or runtime.done.is_set():
                 return False
