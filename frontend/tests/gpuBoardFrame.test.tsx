@@ -25,7 +25,7 @@ vi.mock("../src/features/canvas/gpu/cardAtlas", () => ({
     textureBytes: () => 0, cpuBytes: () => 0, cpuPeak: () => 0, reset() {}, dispose() {},
   }),
 }));
-const { GpuBoard, imageSizeOf } = await import("../src/features/canvas/gpu/GpuBoard");
+const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode } = await import("../src/features/canvas/gpu/GpuBoard");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -319,6 +319,72 @@ describe("그림 파일 머리 크기(imageSizeOf)", () => {
     const plain = new Uint8Array([0xff, 0xd8, ...sof, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     expect(imageSizeOf(plain)).toEqual({ w: 400, h: 100 });
     expect(imageSizeOf(new Uint8Array(40))).toBeNull();
+  });
+});
+
+describe("디코드 크기(decodeImage)", () => {
+  const calls: Array<{ source: unknown; opts: ImageBitmapOptions }> = [];
+  // jsdom 의 Blob 에는 arrayBuffer 가 없다 — 머리 읽기에 쓰는 slice().arrayBuffer() 만 흉내 낸다
+  const serve = (bytes: Uint8Array, type: string) =>
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, blob: async () => ({ type, size: bytes.length, slice: (a: number, b: number) => ({ arrayBuffer: async () => bytes.slice(a, b).buffer }) }) })));
+  beforeEach(() => {
+    calls.length = 0;
+    vi.stubGlobal("createImageBitmap", vi.fn(async (source: unknown, opts: ImageBitmapOptions) => {
+      calls.push({ source, opts });
+      return { width: opts.resizeWidth ?? 0, height: opts.resizeHeight ?? 0, close() {} };
+    }));
+  });
+
+  it("머리로 크기를 아는 그림은 처음 디코드부터 두 변을 상자 안으로(폭만 주는 디코드 없음) — 1:8 긴 PNG", async () => {
+    const png = new Uint8Array(32);
+    png.set([0x89, 0x50, 0x4e, 0x47], 0);
+    png.set([0, 0, 4, 0], 16); // 1024
+    png.set([0, 0, 32, 0], 20); // 8192
+    serve(png, "image/png");
+    await decodeImage("/a-long.png", 2048, 2048);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
+  });
+
+  it("머리를 모르는 형식은 그림 요소로 원본 크기를 안 뒤 상자 안의 비트맵만 만든다", async () => {
+    serve(new Uint8Array(64), "image/avif");
+    class FakeImage { naturalWidth = 1000; naturalHeight = 8000; src = ""; decode() { return Promise.resolve(); } }
+    vi.stubGlobal("Image", FakeImage);
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:x", revokeObjectURL: () => {} }));
+    await decodeImage("/a-unknown.avif", 2048, 2048);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].source).toBeInstanceOf(FakeImage);
+    expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
+  });
+});
+
+describe("배율 상한 판정(실제 모드 훅)", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+  afterEach(() => { vi.useRealTimers(); cam.z = 1; });
+  let seen: { phase: string; reason: string | null } = { phase: "", reason: null };
+  function ModeHarness() {
+    const g = useGpuBoardMode({ flag: true, sceneId: "s", unsupported: false, busy: false, cameraSource: source });
+    seen = { phase: g.mode.phase, reason: g.mode.reason };
+    return null;
+  }
+  const advance = (ms: number) => act(() => { now += ms; vi.advanceTimersByTime(ms); });
+
+  it("처음부터 배율이 상한(2.5)을 넘고 카메라 알림이 없어도 쉼 판정으로 DOM(확대)에 둔다 — 준비에 멈추지 않는다", () => {
+    cam.z = 3;
+    act(() => root.render(<ModeHarness />));
+    advance(170);
+    expect(seen).toEqual({ phase: "dom", reason: "zoom" });
+  });
+
+  it("화면 맞춤 미끄러짐으로 상한을 넘으면 미끄러짐이 끝난 뒤에야 바꾼다", () => {
+    act(() => root.render(<ModeHarness />));
+    expect(seen.phase).toBe("preparing");
+    cam.z = 3;
+    act(() => listeners.forEach((l) => l(250)));
+    advance(300); // 미끄러짐(250) 도중 + 50 — 아직 바꾸지 않는다
+    expect(seen.phase).toBe("preparing");
+    advance(120);
+    expect(seen).toEqual({ phase: "dom", reason: "zoom" });
   });
 });
 

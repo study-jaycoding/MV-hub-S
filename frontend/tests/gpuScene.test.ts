@@ -123,6 +123,22 @@ describe("포트·쌓임(카드에 딸린 조각)", () => {
     expect(rings(none)).toEqual([]);
   });
 
+  it("그룹 머리줄 바탕 = DOM 처럼 색을 안 정한 그룹은 어두운 반투명(강조색을 섞지 않음), 색을 정한 그룹은 그 색 36%", () => {
+    const fills = (color: string | null) => {
+      const m = buildGpuScene(input({ groups: [{ id: "G", x: 0, y: 0, w: 400, h: 300, color, name: "묶음", count: 1, collapsed: false, selected: false }] }));
+      const req = m.requests.find((r) => r.id === "group:G")!;
+      const seen: string[] = [];
+      const g = new Proxy({ fillStyle: "" } as Record<string, unknown>, {
+        get: (t, k: string) => (k === "measureText" ? () => ({ width: 10 }) : k === "fill" ? () => seen.push(String(t.fillStyle)) : k in t ? t[k] : () => {}),
+        set: (t, k: string, v) => { t[k] = v; return true; },
+      });
+      req.draw(g as never, () => null);
+      return seen;
+    };
+    expect(fills(null)[0]).toBe("rgba(20,22,26,0.46)");
+    expect(fills("#ff0000")[0]).not.toBe("rgba(20,22,26,0.46)");
+  });
+
   it("이름표·결과 수 배지·빛은 그 카드에 딸린다(owner) — 그룹 머리줄은 그룹 층(owner 없음)", () => {
     const m = buildGpuScene(input({
       cards: [{ card: gen, w: 260, h: 200 }, { card: text("t", 0), w: 260, h: 120 }], selected: new Set(["t"]), glow: new Set(["g"]), variantCount: () => 2,

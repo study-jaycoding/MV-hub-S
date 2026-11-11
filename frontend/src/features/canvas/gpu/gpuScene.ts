@@ -229,7 +229,8 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
         g.lineTo(0, h);
         g.arcTo(0, 0, w, 0, 10);
         g.closePath();
-        g.fillStyle = gv.selected ? mix(0.26, [20, 22, 26, 0.84]) : mix(0.36, [20, 22, 26, 0.72]);
+        // .scene-group-hd 바탕 = color-mix(var(--gc, transparent) 36%, 어둠 0.72) — 색을 안 정한 그룹은 투명과 섞여 어두운 반투명(틀만 강조색 13%)
+        g.fillStyle = gv.selected ? mix(0.26, [20, 22, 26, 0.84]) : gv.color ? mix(0.36, [20, 22, 26, 0.72]) : "rgba(20,22,26,0.46)";
         g.fill();
       }
       g.font = `700 12px ${FONT}`;

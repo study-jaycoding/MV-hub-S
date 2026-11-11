@@ -836,6 +836,28 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect(await second).toHaveLength(30);
   });
 
+  it("질의를 낸 지 1초가 넘어 결과가 온 표본은 버리고 다시 잰다 — 늦은 값(7ms)이 표본에 섞이지 않는다", async () => {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let id = 0, clock = 0;
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.set(++id, fn); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => callbacks.delete(n));
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = fakeGl({ timer: true });
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    const result = renderer.timeGpu(30);
+    const step = () => { const [key, fn] = [...callbacks][0]; callbacks.delete(key); fn(clock); };
+    step(); step(); step();
+    const base = h.call("getQueryParameter").getMockImplementation()!;
+    clock += 1100; // 이번 질의는 1.1초 뒤에야 결과가 왔다
+    h.call("getQueryParameter").mockImplementationOnce((q: unknown, key: unknown) => (key === h.gl.QUERY_RESULT_AVAILABLE ? true : base(q, key)))
+      .mockImplementationOnce(() => 7e6);
+    for (let i = 0; i < 80 && callbacks.size; i++) step();
+    const times = await result;
+    expect(times).toHaveLength(30);
+    expect(times).not.toContain(7);
+  });
+
   it("유효 표본이 늦게(질의마다 1초 가까이) 와도 전체 10초가 지나면 거부한다(느린 GPU)", async () => {
     const callbacks = new Map<number, FrameRequestCallback>();
     let id = 0, clock = 0;

@@ -482,13 +482,16 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
               if (query && extension) {
                 const disjoint = !!g.getParameter(extension.GPU_DISJOINT_EXT);
                 const available = !disjoint && !!g.getQueryParameter(query, g.QUERY_RESULT_AVAILABLE);
-                if (!disjoint && !available && performance.now() - queryStart <= 1000) {
+                const late = performance.now() - queryStart > 1000;
+                if (!disjoint && !available && !late) {
                   raf = requestAnimationFrame(step);
                   return;
                 }
-                if (available) results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
+                // 1초를 넘긴 질의는 결과가 늦게라도 왔어도 버린다(계약: 1초 넘는 질의는 버리고 다시 — Codex 리뷰 3차)
+                const valid = available && !late;
+                if (valid) results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
                 g.deleteQuery(query); queries.delete(query); query = null;
-                if (!available && ++discarded > frames) {
+                if (!valid && ++discarded > frames) {
                   done(new Error(disjoint ? "GPU timer disjoint" : "GPU timer timeout"));
                   return;
                 }

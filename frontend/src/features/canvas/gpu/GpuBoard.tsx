@@ -119,38 +119,33 @@ export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
 }
 
 /** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 실패하면 null(빗금 자리). */
-async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
+export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
   try {
     const blob = await blobOf(src);
     if (!blob) return null;
     const W = Math.max(1, Math.floor(maxW)), H = Math.max(1, Math.floor(maxH));
-    if (blob.type === "image/svg+xml") {
-      // SVG 는 createImageBitmap(blob) 이 못 읽는다(크롬) — 그림 요소로 읽어 크기를 안 뒤 맞춘다(생성 중·빈 생성 카드의 로고, 11-11 리뷰)
-      const url = URL.createObjectURL(blob);
-      try {
-        const img = new Image();
-        img.src = url;
-        await img.decode();
-        const nw = img.naturalWidth || W, nh = img.naturalHeight || H;
-        const k = Math.min(W / nw, H / nh);
-        return await createImageBitmap(img, { resizeWidth: Math.max(1, Math.floor(nw * k)), resizeHeight: Math.max(1, Math.floor(nh * k)), resizeQuality: "high" });
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    }
     // 파일 머리에서 원본 크기(회전 반영)를 먼저 읽어 처음 디코드부터 두 변을 상자 안으로 — 폭만 주고 읽으면 긴 그림은 중간 비트맵이 예산을
     //  넘었다(2048 폭·1:8 = 128MiB, Codex 리뷰 2차). 크게 늘리지는 않는다(그릴 때 늘린다).
-    const size = imageSizeOf(new Uint8Array(await blob.slice(0, 256 * 1024).arrayBuffer()));
-    if (size) {
+    const size = blob.type === "image/svg+xml" ? null : imageSizeOf(new Uint8Array(await blob.slice(0, 1024 * 1024).arrayBuffer()));
+    if (size && size.w > 0 && size.h > 0) {
       const k = Math.min(1, W / size.w, H / size.h);
       return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.floor(size.w * k)), resizeHeight: Math.max(1, Math.floor(size.h * k)), resizeQuality: "high" });
     }
-    // 머리를 모르는 형식 — 폭에 맞춰 읽고, 세로로 길어 상자를 넘으면 높이에 맞춰 다시 읽는다(한쪽만 주면 비율이 지켜진다).
-    //  shortcut: 모르는 형식의 아주 긴 그림은 첫 읽기가 잠깐 상자를 넘는다, 그런 형식이 쓰이면 imageSizeOf 에 머리 읽기를 더할 것
-    const byW = await createImageBitmap(blob, { resizeWidth: W, resizeQuality: "high" });
-    if (byW.height <= H) return byW;
-    byW.close();
-    return await createImageBitmap(blob, { resizeHeight: H, resizeQuality: "high" });
+    // 크기를 모르면(SVG — createImageBitmap(blob) 이 못 읽는다 · 머리를 모르는 형식 · 1MiB 안에 크기가 없는 JPEG) 그림 요소로 읽어 원본 크기를 안 뒤
+    //  두 변을 상자 안으로 줄인 비트맵만 만든다 — 폭만 주는 디코드는 상자를 넘는 중간 비트맵을 만들었다(Codex 리뷰 3차). 그림 요소의 디코드는 브라우저
+    //  그림 캐시라 DOM 판이 같은 그림을 그릴 때와 같은 쓰임이다(굽기 버퍼 예산 밖).
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const nw = img.naturalWidth || W, nh = img.naturalHeight || H;
+      const k = Math.min(blob.type === "image/svg+xml" ? Infinity : 1, W / nw, H / nh); // SVG(로고)는 상자까지 키워 또렷하게
+
+      return await createImageBitmap(img, { resizeWidth: Math.max(1, Math.floor(nw * k)), resizeHeight: Math.max(1, Math.floor(nh * k)), resizeQuality: "high" });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   } catch {
     return null;
   }
@@ -647,8 +642,15 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
     const scaleOf = () => o.cameraSource.getSnapshot().z * (window.devicePixelRatio || 1);
     let band = zoomBand(scaleOf());
     let tickTimer = 0;
+    // 쉼 판정 예약 — 상한을 넘었거나 상한 때문에 DOM 인 동안만. 화면 맞춤 미끄러짐이면 미끄러짐이 끝난 뒤에 센다(그림이 아직 움직이는데 바꾸지 않게, Codex 리뷰 3차)
+    const scheduleTick = (slideMs: number) => {
+      if (band !== "hi" && !modeRef.current.zoomBlocked) return;
+      clearTimeout(tickTimer);
+      tickTimer = window.setTimeout(() => dispatch({ type: "tick", now: performance.now(), zooming: false }), Math.max(0, slideMs) + 160);
+    };
     dispatch({ type: "zoom", scale: scaleOf(), now: performance.now(), zooming: false });
-    const off = o.cameraSource.subscribe(() => {
+    scheduleTick(0); // 처음부터 상한을 넘은 채 카메라 알림이 없어도 판정한다 — 안 그러면 준비에 멈춰 있었다
+    const off = o.cameraSource.subscribe((transitionMs) => {
       const now = performance.now();
       const scale = scaleOf();
       const b = zoomBand(scale);
@@ -656,11 +658,7 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
         band = b;
         dispatch({ type: "zoom", scale, now, zooming: false });
       }
-      // 상한을 넘었거나 상한 때문에 DOM 인 동안만 쉼 판정이 필요하다
-      if (band === "hi" || modeRef.current.zoomBlocked) {
-        clearTimeout(tickTimer);
-        tickTimer = window.setTimeout(() => dispatch({ type: "tick", now: performance.now(), zooming: false }), 160);
-      }
+      scheduleTick(transitionMs);
     });
     return () => {
       off();
