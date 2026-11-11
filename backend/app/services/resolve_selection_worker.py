@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
 import time
 from typing import Any
 
@@ -148,5 +150,26 @@ def main() -> int:
         time.sleep(max(0.5, POLL_SECONDS) if payload.get("connection_state") else POLL_SECONDS)
 
 
+def _exit_when_stdin_closes(stream: Any = None, leave: Any = os._exit) -> threading.Thread:
+    """부모(허브)가 쥔 stdin 파이프가 닫히면 바로 끝낸다 — 허브가 강제 종료돼 terminate 를 못 보내도 고아로 남아 Resolve 를 계속 읽지 않게.
+
+    선택이 안 바뀌면 stdout 에 쓰지 않아 부모가 죽은 것을 달리 알 길이 없다. 읽기 전용 자식이라 os._exit 로 끊는다(지금도 부모가 terminate 로 끊는다).
+    """
+    source = stream if stream is not None else getattr(sys.stdin, "buffer", None)
+
+    def watch() -> None:
+        try:
+            while source is not None and source.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
+        leave(0)
+
+    thread = threading.Thread(target=watch, name="parent-stdin-watch", daemon=True)
+    thread.start()
+    return thread
+
+
 if __name__ == "__main__":
+    _exit_when_stdin_closes()  # Resolve 연결보다 먼저 — 연결이 오래 걸리는 사이 부모가 죽어도 끝난다
     raise SystemExit(main())

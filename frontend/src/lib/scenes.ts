@@ -17,6 +17,7 @@ import {
   captureSceneOps,
   hasConfirmedBucket,
   hasWorkingBucket,
+  lastPendingSceneSlot,
   readConfirmedBucket,
   readConfirmedTexts,
   readWorkingBucket,
@@ -577,11 +578,16 @@ export function updateScene(
 
 /** 카메라만 쓴다 — updateScene 과 같은 저장 관문이지만 merge 슬롯은 카메라 전용(내용 패치와 합치지 않고, 번갈아 오면 별도 연산으로 순서대로
  *  재생해 두 필드가 남는다 — 이 슬롯만 든 확정을 저장소가 '카메라만'으로 표시한다, E4)이고 쓰기 뒤 목록을 만들지 않는다.
- *  알려진 한계: 저장소가 오래 실패하면 '편집 → 화면 이동'마다 연산이 둘씩 쌓여 대기 상한(200)에 더 일찍 닿는다(떨어진 카메라 연산을 찾아 합치면 순서가 바뀌어 하지 않는다).
+ *  단, 맨 끝 대기 연산이 이 씬의 내용 연산이면 거기에 합친다(카메라 슬롯을 쓰지 않는다 — 그 확정은 내용이 섞여 '카메라만'이 아니다). 저장소가 오래
+ *  실패해도 '편집 → 화면 이동' 반복이 연산을 둘씩 쌓지 않게(대기 상한 200) — 바로 앞에만 합치므로 순서는 그대로다. 저장으로 떠난 연산·다른 씬·
+ *  슬롯 없는 연산이 사이에 끼면 지금처럼 새 연산이 된다(그 경계의 누적은 내용 편집도 같다).
  *  큰 씬은 목록을 만들 때 바뀐 씬의 읽기 사본(씬 전체 글자화)을 다시 만들어, 카메라 기록 한 번이 씬 크기만큼 무거웠다(2026-11-11 2,000장 4배 프로파일). */
 export function updateSceneCamera(projectId: string | null, sceneId: string, camera: Scene["camera"]): { ok: true } | { ok: false; reason: SceneWriteFailure } {
-  return writeScenePatch(projectId, keyOf(projectId), sceneId, { camera }, true);
+  const key = keyOf(projectId);
+  return writeScenePatch(projectId, key, sceneId, { camera }, lastPendingSceneSlot() !== patchSlot(false, key, sceneId));
 }
+
+const patchSlot = (camera: boolean, key: string, sceneId: string) => `${camera ? CAMERA_SLOT_PREFIX : "update\u0000"}${key}\u0000${sceneId}`;
 
 /** 지금 작업본에서 그 씬의 존재·카메라만(읽기 사본 없이, 복사값). 씬 없음(exists 거짓)과 카메라 미설정(camera 없음)을 가른다. */
 export function readSceneCamera(projectId: string | null, sceneId: string): { exists: boolean; camera?: NonNullable<Scene["camera"]> } {
@@ -610,7 +616,7 @@ function writeScenePatch(
   // 캔버스 편집의 거의 전부가 이것이라, 저장소가 막혀 있어도 밀린 연산이 쌓이지 않는다.
   const out = commit((all) => apply(all, stored), {
     merge: {
-      slot: `${cameraSlot ? CAMERA_SLOT_PREFIX : "update\u0000"}${key}\u0000${sceneId}`,
+      slot: patchSlot(cameraSlot, key, sceneId),
       patch: stored,
       join: (previous, next) => ({ ...previous, ...next }),
       replay: (all, fields) => {

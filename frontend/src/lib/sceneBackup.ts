@@ -441,9 +441,10 @@ async function syncNow(): Promise<void> {
   syncIdle = new Promise<void>((resolve) => (syncSettled = resolve)); // 명시적 가져오기가 기다릴 지점
   let failed = false;
   const scope = enterScope();
+  const viaNotebook = hubHasFeature(SCENE_WRITER_FEATURE); // 이 회차의 길 — 실패 재시도가 같은 계정·같은 길일 때만 돌게(아래 finally)
   try {
     // ★복구 판정이 끝나기 전 삭제 정합 금지 — 새 브라우저에서 로컬=[] 로 서버를 지우는 사고 방지.
-    if (hubHasFeature(SCENE_WRITER_FEATURE)) {
+    if (viaNotebook) {
       const result = await syncSceneNotebook();
       failed = result.status === "retry";
       if (ns() === scope) {
@@ -699,6 +700,9 @@ async function syncNow(): Promise<void> {
       if (!retryTimer) {
         retryTimer = setTimeout(() => {
           retryTimer = null;
+          // 돌 때 다시 본다 — 그사이 계정이 바뀌었거나, 공책 회차였는데 공책 기능이 꺼졌으면(syncNow 가 옛 백업 PUT 으로 들어간다)
+          //  이 재시도로는 아무것도 시작하지 않는다. 옛 백업 회차의 재시도는 그대로 돈다.
+          if (ns() !== scope || (viaNotebook && !hubHasFeature(SCENE_WRITER_FEATURE))) return;
           void syncNow();
         }, RETRY_MS);
       }

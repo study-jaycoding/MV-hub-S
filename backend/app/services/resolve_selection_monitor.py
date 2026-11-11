@@ -127,8 +127,19 @@ class ResolveSelectionMonitor:
 
     @staticmethod
     async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        # stdin 을 먼저 닫는다 — 자식이 EOF 를 보고 스스로 끝난다(venv 실행기 뒤의 진짜 파이썬까지 닿는다).
+        # 실행기만 이미 끝난 경우(returncode 있음)에도 닫아야 남은 자식이 풀린다.
+        stdin = getattr(process, "stdin", None)
+        if stdin is not None:
+            with contextlib.suppress(Exception):
+                stdin.close()
         if process.returncode is not None:
             return
+        if stdin is not None:
+            # 스스로 끝날 짧은 틈 — Resolve 호출에 멈춰 EOF 를 못 보면 아래 강제 종료로 넘어간다.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(process.wait(), timeout=0.5)
+                return
         with contextlib.suppress(ProcessLookupError):
             process.terminate()
         try:
@@ -164,6 +175,7 @@ class ResolveSelectionMonitor:
             "app.services.resolve_selection_worker",
             cwd=str(_BACKEND_DIR),
             env=child_env,
+            stdin=asyncio.subprocess.PIPE,  # 쓰지 않는다 — 허브가 죽으면 닫혀 자식이 스스로 끝나는 신호(작업자 _exit_when_stdin_closes)
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             limit=1024 * 1024,

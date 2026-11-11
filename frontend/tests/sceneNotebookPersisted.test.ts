@@ -279,6 +279,41 @@ describe("sceneBackup — 카메라만 바꾼 확정·바깥에서 시작한 공
     expect(http.jsonFetch).not.toHaveBeenCalled();
   });
 
+  // 재시도 연쇄 — 바깥 retry 가 건 재시도(syncNow)가 또 실패하면 그 뒤는 syncNow 자신의 재시도다. 그 타이머도 같은 계정·같은 길(공책)일 때만 돈다.
+  const failTwice = async () => {
+    sync.mockResolvedValue(retry as never); // 재시도도 실패
+    outside(retry);
+    await vi.advanceTimersByTimeAsync(30_100);
+    expect(sync).toHaveBeenCalledTimes(1); // 바깥 재시도가 돈 한 번 — 실패해 자기 재시도가 걸렸다
+  };
+
+  it("재시도가 또 실패한 뒤 계정이 바뀌면 다음 재시도는 새 계정 동기화를 시작하지 않는다", async () => {
+    await failTwice();
+    setAccountScope("other@test");
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+  });
+
+  it("재시도가 또 실패한 뒤 공책 기능이 꺼지면 다음 재시도는 옛 백업 길로 들어가지 않는다(공책 요청·옛 백업 PUT 0)", async () => {
+    await failTwice();
+    setHubFeatures([]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+  });
+
+  it("재시도가 또 실패해도 같은 계정·공책이면 30초마다 이어 돌고, 성공하면 멈춘다", async () => {
+    await failTwice();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sync).toHaveBeenCalledTimes(2);
+    sync.mockResolvedValue(ok);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sync).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(sync).toHaveBeenCalledTimes(3);
+  });
+
   it("자기 동기화와 같은 진행 중 요청을 공유한 retry 는 재시도 하나", async () => {
     sync.mockImplementationOnce(async () => { outside(retry); return retry as never; }); // 결과 알림은 자기 syncNow 가 기다리는 동안 온다
     edit("edited");

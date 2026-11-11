@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
+import subprocess
+import sys
+import threading
+import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from app.services import resolve_selection_worker
@@ -351,6 +357,86 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
                     self.assertEqual(resolve_selection_worker.POLL_SECONDS, expected)
         finally:
             importlib.reload(resolve_selection_worker)
+
+
+class ParentStdinWatchTests(unittest.TestCase):
+    """부모(허브)가 쥔 stdin 이 닫히면 작업자가 스스로 끝난다 — 허브 강제 종료 뒤 고아 방지."""
+
+    def test_stays_alive_until_stdin_closes_then_leaves(self):
+        read_fd, write_fd = os.pipe()
+        left = threading.Event()
+        codes = []
+
+        def leave(code):
+            codes.append(code)
+            left.set()
+
+        with os.fdopen(read_fd, "rb", buffering=0) as stream:
+            thread = resolve_selection_worker._exit_when_stdin_closes(stream, leave)
+            os.write(write_fd, b"ignored")  # 받은 글자는 버린다 — 닫힘만 신호
+            self.assertFalse(left.wait(0.3), "stdin 이 열려 있는 동안 끝나면 안 된다")
+            os.close(write_fd)
+            self.assertTrue(left.wait(3), "stdin 이 닫혔는데 끝나지 않았다")
+            thread.join(3)
+        self.assertEqual(codes, [0])
+        self.assertTrue(thread.daemon)
+
+    def test_real_child_exits_when_parent_process_is_killed(self):
+        """실제 프로세스 — 가짜 허브(이 venv 파이썬)를 강제 종료하면 그 자식(감시만 켠 작업자 대역)이 사라진다.
+
+        venv 실행기(python.exe → 진짜 파이썬)를 거쳐도 닿는지, 선택이 안 바뀌어 아무것도 쓰지 않는 상태에서도 끝나는지 본다.
+        """
+        backend = str(Path(resolve_selection_worker.__file__).resolve().parents[2])
+        child = (
+            "import os, sys, time\n"
+            f"sys.path.insert(0, {backend!r})\n"
+            "from app.services.resolve_selection_worker import _exit_when_stdin_closes\n"
+            "_exit_when_stdin_closes()\n"
+            "print(os.getpid(), flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        hub = (
+            "import os, subprocess, sys, time\n"
+            "p = subprocess.Popen([sys.executable, '-c', sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE)\n"
+            "print(os.getpid(), int(p.stdout.readline()), flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process = subprocess.Popen([sys.executable, "-c", hub, child], stdout=subprocess.PIPE, creationflags=flags)
+        hub_pid = worker_pid = 0
+        try:
+            hub_pid, worker_pid = map(int, process.stdout.readline().split())
+            self.assertTrue(_pid_alive(worker_pid))
+            _kill(hub_pid)  # 실행기 뒤의 진짜 허브 파이썬 — 종료 정리(lifespan)가 돌지 않는 죽음
+            deadline = time.monotonic() + 10
+            while _pid_alive(worker_pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertFalse(_pid_alive(worker_pid), "허브가 죽었는데 작업자가 남았다")
+        finally:
+            for pid in (worker_pid, hub_pid, process.pid):
+                if pid and _pid_alive(pid):
+                    _kill(pid)
+            process.stdout.close()
+            process.wait(10)
+
+
+def _pid_alive(pid: int) -> bool:
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+    return str(pid) in out
+
+
+def _kill(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    else:
+        with contextlib.suppress(OSError):
+            os.kill(pid, 9)
 
 
 if __name__ == "__main__":

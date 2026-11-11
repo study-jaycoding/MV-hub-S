@@ -720,5 +720,56 @@ class ResolveSelectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pending, [])
 
 
+class FakeStdin:
+    def __init__(self, on_close=None):
+        self.closed = 0
+        self.on_close = on_close
+
+    def close(self):
+        self.closed += 1
+        if self.on_close:
+            self.on_close()
+
+
+class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
+    """자식 회수 순서 — stdin 닫기(자식이 스스로 끝남) → 짧게 기다림 → 안 끝나면 terminate."""
+
+    async def test_child_gets_stdin_pipe_and_exit_on_close_needs_no_terminate(self):
+        process = ControlledProcess()
+        process.stdin = FakeStdin(process.finish)
+        spawn = mock.AsyncMock(return_value=process)
+        monitor = ResolveSelectionMonitor()
+        with (
+            mock.patch.object(resolve_selection_monitor, "resolve_compatible_interpreter", return_value=("fake-python", None)),
+            mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=spawn),
+        ):
+            await monitor._start_process()
+            self.assertIs(spawn.call_args.kwargs["stdin"], asyncio.subprocess.PIPE)
+            await asyncio.wait_for(monitor._stop_process(), 2)
+        self.assertEqual(process.stdin.closed, 1)
+        self.assertFalse(process.terminated.is_set(), "스스로 끝난 자식에 terminate 를 보낼 필요가 없다")
+        self.assertEqual(process.returncode, 0)
+
+    async def test_child_stuck_after_stdin_close_is_terminated_and_awaited(self):
+        process = ControlledProcess()
+        process.stdin = FakeStdin()
+        process.exit_on_terminate = False
+        task = asyncio.create_task(ResolveSelectionMonitor._terminate_process(process))
+        await asyncio.wait_for(process.terminated.wait(), 2)
+        self.assertEqual(process.stdin.closed, 1)
+        await asyncio.sleep(0.02)
+        self.assertFalse(task.done(), "terminate 만 보내고 종료를 기다리지 않으면 안 된다")
+        process.finish()
+        await asyncio.wait_for(task, 2)
+
+    async def test_stdin_closes_even_when_launcher_already_exited(self):
+        process = ControlledProcess()
+        process.stdin = FakeStdin()
+        process.returncode = 0
+        await ResolveSelectionMonitor._terminate_process(process)
+        self.assertEqual(process.stdin.closed, 1)
+        self.assertFalse(process.terminated.is_set())
+
+
 if __name__ == "__main__":
     unittest.main()
