@@ -138,7 +138,7 @@ import { copyText, flashMsg } from "../../lib/flash";
 import { notifyPeekDropAdded } from "../../lib/peekDragOut";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
-import { buildGpuScene, cardScreenRect, GpuBoard, GpuMeasure, GpuOverlayCard, useGpuBoardMode, type GpuMeasureItem, type GpuMeasureResult } from "../../features/canvas/api";
+import { buildGpuScene, GpuBoard, GpuMeasure, GpuOverlayCard, useGpuBoardMode, type GpuMeasureItem, type GpuMeasureResult } from "../../features/canvas/api";
 import { flushSync } from "react-dom";
 import { BOARD_KINDS } from "../../lib/boardCanvasDraw";
 import { folderChipLabel } from "../../lib/folderLabel";
@@ -175,7 +175,7 @@ import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
 import { SetCard } from "./cards/SetCard";
-import { ListCard, ListPopup } from "./cards/ListCard";
+import { ListCard } from "./cards/ListCard";
 import { RenderCard } from "./cards/RenderCard";
 import { GenerationCard } from "./cards/GenerationCard";
 import { useGenerationViewsSynced } from "../../lib/useGenerationViewsSynced";
@@ -731,8 +731,8 @@ export function SceneBoard({
   nodePickerRef.current = nodePicker; // 열림여부(truthy) + 생성 좌표(cx/cy) 둘 다 여기서 참조
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [comfyModalId, setComfyModalId] = useState<string | null>(null); // comfy 노드 설정 모달 대상 카드 id
-  // 리스트 더블클릭 → 같은 노드를 그 자리에서 크게(Jay 2026-11-09). w·h = 노드 레이아웃 크기, x·y = 노드 가운데 화면 좌표
-  const [listPop, setListPop] = useState<{ id: string; w: number; h: number; x: number; y: number; shown: number } | null>(null);
+  // 리스트 더블클릭 → 텍스트 노드처럼 카드 안에서 키워 순서 바꾸기(Jay 2026-11-11, ListCard expanded)
+  const [listPop, setListPop] = useState<{ id: string } | null>(null);
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   // 떠 있는 동안 Esc 는 이 창들이 갖는다(맨 위 겹만 닫힌다) — 뒤 보드의 단축키도 쉰다(lib/keyGate).
   useEscapeClose(() => setViewTextModal(null), !!viewTextModal);
@@ -1922,8 +1922,9 @@ export function SceneBoard({
   ) => {
     if (e.button !== 0) return;
     // ★리스트만 단독 선택됐을 때만 내부 순서를 바꾼다. 다른 카드도 함께 선택된 상태라면 이벤트를
-    // 보드로 흘려 선택 노드 전체 이동을 우선한다.
-    if (!shouldStartListReorder(selectedRef.current, listId)) return;
+    // 보드로 흘려 선택 노드 전체 이동을 우선한다. 펼친 리스트는 예외 — 떠 있는 칸의 누름은 보드로 가지 않고, Ctrl+Z 가 선택을
+    //  되돌려 리스트가 풀려도 펼친 채 이어서 바꿀 수 있어야 한다(2026-11-11 격리 확인에서 발견).
+    if (listPop?.id !== listId && !shouldStartListReorder(selectedRef.current, listId)) return;
     e.preventDefault();
     e.stopPropagation(); // 카드 이동/마퀴로 번지지 않게
     const container = (e.currentTarget as HTMLElement).closest("[data-reorder]") as HTMLElement | null;
@@ -3010,6 +3011,7 @@ export function SceneBoard({
     toggleRowSel, // 리스트 카드(memo)의 행 클릭·순서 끌기·@ 단추
     startReorder,
     addListAsReference,
+    closeListPop: () => setListPop(null), // 펼친 리스트 접기(바깥 누름·Esc)
   });
   // 다입력 카드(생성·comfy)로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로
   //  펼쳐 겹침 방지. comfy 도 ref(중앙)·text(아래) 레인 포트로 그려지므로 레인별 fan 이 포트와 맞아야 한다
@@ -3248,13 +3250,9 @@ export function SceneBoard({
     const card = hit?.card;
     if (!hit || !card) return;
     if (card.kind === "list" && what === "preview") {
-      // 리스트 — DOM 의 더블클릭과 같은 '그 자리에서 크게'(읽기 형태로 — 아래 listPop 렌더). 자리는 카드 사각형 × 카메라(cardEls 없음)
-      const k = collectListInputs(card.id, cardsById, resolvedEdges).kind;
-      const board = scrollRef.current?.getBoundingClientRect();
-      if (!board || (k !== "reference" && k !== "generation" && k !== "text")) return;
-      const cam = cameraSource.getSnapshot();
-      const r = cardScreenRect(hit.rect, cam);
-      setListPop({ id: card.id, w: hit.rect.w, h: hit.rect.h, x: board.left + r.left + r.width / 2, y: board.top + r.top + r.height / 2, shown: cam.z });
+      // 리스트 — DOM 의 두 번 누름은 카드 안에서 펼쳐 순서를 바꾸는 편집이다(d670d568). 보기 모드에서는 그 카드의 덧판(읽기 형태 — 미리보기·카드 안
+      //  스크롤)을 가려져 있어도 띄워 읽게 한다(계약 overlay '가려진 카드는 두 번 누름으로 읽음')
+      onGpuHover(card.id);
       return;
     }
     if (card.kind === "generation" && card.genId) {
@@ -3776,17 +3774,9 @@ export function SceneBoard({
                           // 행 미리보기·결과 수·복사 단추·연결점·손잡이를 두 번 누른 것은 그 단추의 일이다
                           if ((e.target as HTMLElement).closest(".scene-listrow-view, .scene-listrow-count, .scene-copy-btn, .scene-port, .scene-resize")) return;
                           const k = collectListInputs(card.id, cardsById, resolvedEdges).kind;
-                          const el = cardEls.current[card.id];
-                          if (!el || (k !== "reference" && k !== "generation" && k !== "text")) return;
-                          const r = el.getBoundingClientRect();
-                          setListPop({
-                            id: card.id,
-                            w: el.offsetWidth,
-                            h: el.offsetHeight,
-                            x: r.left + r.width / 2,
-                            y: r.top + r.height / 2,
-                            shown: el.offsetWidth ? r.width / el.offsetWidth : 1, // 화면 폭 ÷ 레이아웃 폭 = 지금 보이는 배율
-                          });
+                          if (k !== "reference" && k !== "generation" && k !== "text") return;
+                          setSelected(new Set([card.id])); // 순서 끌기는 리스트만 선택됐을 때만 된다(텍스트 노드의 두 번 누름과 같다)
+                          setListPop({ id: card.id });
                         }
                       : undefined
               }
@@ -3847,6 +3837,8 @@ export function SceneBoard({
                   addListAsReference={cardFns.addListAsReference}
                   onOutPortDown={cardFns.onOutPortDown}
                   onResizeDown={onResizeDown}
+                  expanded={listPop?.id === card.id}
+                  onCollapse={cardFns.closeListPop}
                 />
               ) : card.kind === "view" ? (
                 <ViewCard
@@ -4177,8 +4169,7 @@ export function SceneBoard({
       {reorderLine && (
         <div
           className="scene-reorder-line"
-          // 리스트 팝업(z 200)이 떠 있으면 그 위로 — 팝업 안에서 끌 때도 선이 보이게
-          style={{ left: reorderLine.x, top: reorderLine.y, width: reorderLine.w, height: reorderLine.h, zIndex: listPop ? 210 : undefined }}
+          style={{ left: reorderLine.x, top: reorderLine.y, width: reorderLine.w, height: reorderLine.h }}
         />
       )}
 
@@ -4273,50 +4264,6 @@ export function SceneBoard({
                 if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) requestFit(modelModalId);
               }}
             />
-          );
-        })()}
-
-      {/* 리스트 노드 더블클릭 → 같은 노드(ListCard)를 그 자리에서 크게. 끌기·저장은 노드와 같은 startReorder. */}
-      {listPop &&
-        (() => {
-          const c = cardsById.get(listPop.id);
-          if (!c || c.kind !== "list") return null;
-          return (
-            <ListPopup
-              key={listPop.id}
-              kindCls={"scene-card-list lk-" + collectListInputs(c.id, cardsById, resolvedEdges).kind}
-              w={listPop.w}
-              h={listPop.h}
-              at={listPop}
-              shown={listPop.shown}
-              onUndo={undo}
-              onRedo={redo}
-              onClose={() => setListPop(null)}
-            >
-              {gpuView ? (
-                // GPU 보기 모드 — 읽기 형태(순서 바꾸기·메뉴·연결·크기 조절 없음, 미리보기·스크롤만)
-                <ListCard mode="read" card={c} cardsById={cardsById} resolvedEdges={resolvedEdges} genData={genData} disabledIds={disabledIds}
-                  cardWidth={widthOf(c)} workspaceId={refWorkspaceId} getNodePreview={getNodePreview} />
-              ) : <ListCard
-                card={c}
-                cardsById={cardsById}
-                resolvedEdges={resolvedEdges}
-                genData={genData}
-                disabledIds={disabledIds}
-                rowSel={rowSel}
-                reorderFrom={reorderFrom}
-                cardWidth={widthOf(c)}
-                workspaceId={refWorkspaceId}
-                toggleRowSel={toggleRowSel}
-                startReorder={startReorder}
-                getNodePreview={getNodePreview}
-                setCardMenu={setCardMenu}
-                addListAsReference={addListAsReference}
-                onOutPortDown={onOutPortDown}
-                onResizeDown={onResizeDown}
-                reorderable
-              />}
-            </ListPopup>
           );
         })()}
 

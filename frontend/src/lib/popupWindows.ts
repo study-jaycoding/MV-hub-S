@@ -31,6 +31,64 @@ const WINDOW_OPTIONS: Record<EmbedMode, { name: string; features: string }> = {
   },
 };
 
+// 별도 창은 마지막으로 닫은 자리·크기에서 다시 뜬다(Jay 2026-11-11, docs/status/별도창_마지막자리_2026-11-11.md). 창이 닫힐 때(pagehide)
+//  스스로 적는다 — 메인 창은 새로 고치면 창 참조를 잃는다. 크기는 바깥 크기다(크롬·엣지 157 의 window.open width/height 가 바깥 크기 — 실측).
+//  `ch.` 로 시작하지 않는다(계정 전환에 지워지지 않게 — 자리는 이 PC 의 것).
+const RECT_KEY = "mvhub.popupRect";
+type WindowRect = { left: number; top: number; width: number; height: number };
+
+// 최소화된 창은 -32000 을 준다 — 그런 값으로 열면 화면 밖에 뜬다
+const isWindowRect = (r: unknown): r is WindowRect => {
+  if (!r || typeof r !== "object") return false;
+  const { left, top, width, height } = r as WindowRect;
+  return [left, top, width, height].every(Number.isInteger)
+    && Math.abs(left) < 20_000 && Math.abs(top) < 20_000 && width >= 200 && height >= 150 && width <= 10_000 && height <= 10_000;
+};
+
+function readRects(): Partial<Record<EmbedMode, unknown>> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(RECT_KEY) ?? "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function savedRect(mode: EmbedMode): WindowRect | null {
+  const rect = readRects()[mode];
+  return isWindowRect(rect) ? rect : null;
+}
+
+const windowFeatures = (mode: EmbedMode, rect: WindowRect | null): string =>
+  rect ? `popup=yes,width=${rect.width},height=${rect.height},left=${rect.left},top=${rect.top}` : WINDOW_OPTIONS[mode].features;
+
+// 이 창이 있는 모니터 밖인가 — 브라우저는 '여러 화면 창 배치' 허락이 없으면 그 자리를 이 모니터 가장자리로 끌어온다(크롬·엣지 실측)
+function offThisScreen(rect: WindowRect): boolean {
+  const { availLeft = 0, availTop = 0, availWidth, availHeight } = window.screen as Screen & { availLeft?: number; availTop?: number };
+  return rect.left < availLeft || rect.top < availTop || rect.left >= availLeft + availWidth || rect.top >= availTop + availHeight;
+}
+
+// 허락을 묻는다 — 처음 한 번 브라우저가 묻고, 허락했으면 곧바로 풀리고, 막았으면 곧바로 실패한다. 누른 흔적이 남은 창 열기 앞에서 부른다.
+function askScreens(): Promise<unknown> | null {
+  const get = (window as Window & { getScreenDetails?: () => Promise<unknown> }).getScreenDetails;
+  return get ? get.call(window) : null;
+}
+
+/** 별도 창 부팅 — 닫힐 때 자리·크기를 적어 둔다. 메인 창(이름이 별도 창 이름이 아님)은 아무것도 안 한다. */
+export function rememberEmbedWindowRect(): void {
+  const mode = (Object.keys(WINDOW_OPTIONS) as EmbedMode[]).find((each) => WINDOW_OPTIONS[each].name === window.name);
+  if (!mode) return;
+  window.addEventListener("pagehide", () => {
+    const rect = { left: window.screenX, top: window.screenY, width: window.outerWidth, height: window.outerHeight };
+    if (!isWindowRect(rect)) return; // 지난 좋은 값을 남긴다
+    try {
+      localStorage.setItem(RECT_KEY, JSON.stringify({ ...readRects(), [mode]: rect }));
+    } catch {
+      /* 저장소가 막혔다 — 다음엔 처음 자리 */
+    }
+  });
+}
+
 // 캔버스 탭을 휠 클릭해 연 창인가 — 창 이름은 새로 고쳐도 남는다
 export function isCanvasWindow(): boolean {
   return window.name === WINDOW_OPTIONS.canvas.name;
@@ -103,7 +161,13 @@ export function openEmbedWindow(mode: EmbedMode, onElsewhere?: () => void): void
   if (mode === EMBED_MODES.canvas && !reacquire) beginCanvasHandoff(); // 열기 전에 — 새 창은 이 창의 sessionStorage 를 복사해 같은 인계 번호를 본다
   // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
   // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
-  const w = window.open(reacquire ? "" : url, opts.name, opts.features);
+  const rect = savedRect(mode);
+  // 옆 모니터 자리면 먼저 묻는다(열기가 누른 흔적을 써 버리기 전에) — 끌려온 채 열렸다가 허락되면 그 자리로 옮긴다. 다음부터는 바로 그 자리에 뜬다.
+  const ask = !reacquire && rect && offThisScreen(rect) ? askScreens() : null;
+  const w = window.open(reacquire ? "" : url, opts.name, windowFeatures(mode, rect));
+  if (ask && rect) void ask.then(() => {
+    if (w && !w.closed) w.moveTo(rect.left, rect.top);
+  }).catch(() => {}); // 막았거나 못 옮기면 끌려온 자리 그대로
   if (reacquire && w && isBlankWindow(w)) void settleBlankCanvasWindow(w, url, onElsewhere);
   else trackEmbedWindow(mode, w);
 }

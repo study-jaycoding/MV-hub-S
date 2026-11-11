@@ -3,15 +3,15 @@
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { CSSProperties } from "react";
-import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useRef, useSyncExternalStore } from "react";
 import { assetVersionsSnapshot, subscribeAssetVersions } from "../../../lib/assetVersions";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
-import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { isTopLayer, isTypingTarget, useModalFocus } from "../../../lib/keyGate";
+import { backgroundKeysBlocked } from "../../../lib/keyGate";
+import { isKeyHandled, markKeyHandled } from "../../../lib/keyHandled";
 import { getRefServerStatusVersion, refServerStatus, subscribeRefServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
@@ -44,20 +44,54 @@ type ListCardEdit = {
   addListAsReference: (generationCardIds: string[]) => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
-  // 순서 바꾸기는 더블클릭 팝업에서만(Jay 2026-11-09). 캔버스 노드에서는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
-  reorderable?: boolean;
+  // 순서 바꾸기는 두 번 눌러 펼쳤을 때만(Jay 2026-11-09). 펼치면 텍스트 노드의 큰 편집 창처럼 카드 안에서 노드 폭 1.6배로 떠
+  //  가려진 항목까지 보인다(Jay 2026-11-11). 접힌 노드는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
+  expanded?: boolean;
+  onCollapse?: () => void; // 바깥 누름·Esc
 };
-// 읽기 형태 안에서만 쓰는 빈 값 — 줄 고르기·순서·결과 창·복사·포트를 그리지도 걸지도 않는다(받는 속성에는 변경 콜백이 없다)
+// 읽기 형태 안에서만 쓰는 빈 값 — 줄 고르기·순서·결과 창·복사·포트를 그리지도 걸지도 않고 펼치지도 않는다(받는 속성에는 변경 콜백이 없다)
 const LIST_READ_ONLY: ListCardEdit = {
   rowSel: { listId: "", cids: new Set() }, reorderFrom: null, toggleRowSel: () => {}, startReorder: () => {}, setCardMenu: () => {},
-  addListAsReference: () => {}, onOutPortDown: () => {}, onResizeDown: () => {}, reorderable: false,
+  addListAsReference: () => {}, onOutPortDown: () => {}, onResizeDown: () => {}, expanded: false,
 };
 
 //  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 미리보기(줄의 크게 보기)·카드 안 스크롤만.
 export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEdit & { mode?: "edit" }) | (ListCardView & { mode: "read" })) {
   const read = props.mode === "read";
   const { card, cardsById, resolvedEdges, genData, disabledIds, cardWidth, workspaceId, getNodePreview } = props;
-  const { rowSel, reorderFrom, toggleRowSel, startReorder, setCardMenu, addListAsReference, onOutPortDown, onResizeDown, reorderable = false } = read ? LIST_READ_ONLY : props;
+  const { rowSel, reorderFrom, toggleRowSel, startReorder, setCardMenu, addListAsReference, onOutPortDown, onResizeDown, expanded = false, onCollapse } = read ? LIST_READ_ONLY : props;
+  const reorderable = expanded;
+  const floatRef = useRef<HTMLDivElement>(null);
+  const collapseRef = useRef(onCollapse);
+  collapseRef.current = onCollapse;
+  // 펼친 동안: 카드를 다른 카드 위로(data-pop-open — 텍스트 노드·입력 고르기와 같은 표식) + 노드 테두리를 숨겨 커진 것처럼(data-list-expanded).
+  //  바깥을 누르거나 Esc 면 접는다(텍스트 노드의 편집 끝과 같다). 위에 창(칸에서 연 크게 보기·결과 창)이 떠 있으면 그 누름·키는 그 창의 것이다.
+  useEffect(() => {
+    const float = floatRef.current;
+    const cardEl = float?.closest(".scene-card");
+    if (!expanded || !float || !cardEl) return;
+    cardEl.setAttribute("data-pop-open", "");
+    cardEl.setAttribute("data-list-expanded", "");
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element;
+      // 칸의 ▤ 로 연 '생성 결과' 창은 keyGate 겹이 아니라(격자를 품은 창) 따로 본다 — 그 창을 만지는 동안 펼친 채로 둔다
+      if (backgroundKeysBlocked() || float.contains(t) || t.closest?.(".scene-varpop-backdrop")) return;
+      collapseRef.current?.();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || backgroundKeysBlocked() || isKeyHandled(e)) return;
+      markKeyHandled(e); // 같은 Esc 가 보드의 선택 풀기까지 하지 않게(텍스트 노드의 Esc 와 같다)
+      collapseRef.current?.();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true); // 보드의 window 키 처리보다 먼저
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+      cardEl.removeAttribute("data-pop-open");
+      cardEl.removeAttribute("data-list-expanded");
+    };
+  }, [expanded]);
   // 그릴 때 읽는 두 저장소(서버 판정 = 빨간 빗금·마크, 어셋 버전 = 썸네일 주소) — memo 뒤로 보드가 대신 그려 주지 않으니 직접 듣는다
   useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
@@ -84,20 +118,18 @@ export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEd
                 ); // 두 줄 가운데(Jay 2026-10-30 — 전엔 한 줄이 아무 데서나 꺾였다)
   // 리스트 카드를 늘리면 레퍼런스 썸네일도 비례해 커진다 — 최소=기본(42px), 최대=레퍼런스
   //  카드 2/3 의 1.5배(≈152px = 레퍼런스 카드 크기). 카드가 클수록 번호·장수 배지 글씨도
-  //  비례해 커져 잘 보이게 한다.
+  //  비례해 커져 잘 보이게 한다. 펼친 칸은 노드 폭의 1.6배라 썸네일도 그만큼(같은 상한).
   const listThumbPx = Math.max(
     42,
-    Math.min(Math.round(((CARD_W * 2) / 3) * 1.5), Math.round((cardWidth / CARD_W) * 42)),
+    Math.min(Math.round(((CARD_W * 2) / 3) * 1.5), Math.round(((expanded ? cardWidth * 1.6 : cardWidth) / CARD_W) * 42)),
   );
   const listThumbBadgeFs = Math.max(8, Math.min(30, Math.round((listThumbPx * 8) / 42)));
   const listThumbsStyle: CSSProperties = {
     gridTemplateColumns: `repeat(auto-fill, ${listThumbPx}px)`,
   };
   (listThumbsStyle as Record<string, string | number>)["--lt-badge-fs"] = `${listThumbBadgeFs}px`;
-  return (
-    <>
-      <div className="scene-card-hd list scene-card-hd-float">리스트</div>
-      <div className="scene-card-inner scene-listnode">
+  // 속은 한 벌만 그린다 — 접힌 노드에서는 카드 칸에, 펼치면 떠 있는 칸에(같은 항목 칸이 두 곳에 있지 않게: 순서 끌기가 칸 자리를 잰다)
+  const body = (
         <div className="scene-listnode-body">
           {li.kind === "generation" ? (
             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
@@ -322,7 +354,17 @@ export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEd
             label
           )}
         </div>
-      </div>
+  );
+  return (
+    <>
+      <div className="scene-card-hd list scene-card-hd-float">리스트</div>
+      <div className="scene-card-inner scene-listnode">{!expanded && body}</div>
+      {expanded && (
+        // 텍스트 노드의 큰 편집 창과 같은 자리·폭(scene.css .scene-listfloat). 누름·두 번 누름이 카드 끌기·다시 펼치기로 번지지 않게.
+        <div ref={floatRef} className="scene-listfloat" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+          <div className="scene-card-inner scene-listnode">{body}</div>
+        </div>
+      )}
       {!read && li.kind === "text" && (
         <button
           className="scene-copy-btn"
@@ -367,163 +409,3 @@ export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEd
     </>
   );
 });
-
-// 크게 보기 격자의 열 수(Jay 2026-11-10 시안) — 노드와 같은 열, 5줄을 넘으면 열을 늘리되 5열까지(나머지는 줄로).
-export function listPopCols(n: number, nodeCols: number): number {
-  let cols = Math.max(1, Math.min(nodeCols, n));
-  if (Math.ceil(n / cols) > 5) cols = Math.ceil(n / 5);
-  return Math.min(cols, 5);
-}
-
-// 크게 보기 배율(Jay 2026-11-10 "지금 크게 보이는 부분을 고정 · 밑에 내려야 보이는 것도 모두 보이게"). 캔버스 줌과 상관없이
-//  한 칸(item = 격자 칸 폭·행 높이, 레이아웃 px)을 화면에서 격자 104px·행 44px 로 고정. w×h = 모든 칸이 보이는 레이아웃 크기.
-//  가용 폭 80%·높이 75% 를 넘으면 줄이고, 높이 때문에 격자 48px·행 32px 아래로 가야 하면 거기서 멈추고 보일 높이(h)를 잘라 스크롤.
-//  item 을 못 재면 원래 크기(1)까지만.
-export function listPopScale(o: { item: number; grid: boolean; w: number; h: number; availW: number; availH: number }): { k: number; h: number } {
-  const kW = (o.availW * 0.8) / o.w, kH = (o.availH * 0.75) / o.h;
-  if (!(Number.isFinite(o.item) && o.item > 0)) return { k: Math.min(1, kW, kH), h: o.h };
-  const [lo, hi] = o.grid ? [48, 104] : [32, 44];
-  const k = Math.min(hi / o.item, kW, kH);
-  if (k * o.item < lo && kH < kW) {
-    const k2 = Math.min(lo / o.item, kW); // 폭 상한은 스크롤로 못 풀어 그대로 지킨다
-    return { k: k2, h: Math.min(o.h, (o.availH * 0.75) / k2) };
-  }
-  return { k, h: o.h };
-}
-
-// ── 크게 보기 팝업(Jay 2026-11-09 — "지금 보이는 노드 그대로, 그 자리에서 크게"). 속은 같은 ListCard 를 children 으로 그대로 그리고,
-//  틀만 노드 가운데를 기준으로 배율을 키운다(배율 = listPopScale). 순서 끌기는 노드의 startReorder 그대로 —
-//  칸 위치를 화면 좌표로 재므로 배율과 상관없고, 저장도 노드와 같은 orderListItems 다.
-export function ListPopup({
-  kindCls,
-  w,
-  h,
-  at,
-  onUndo,
-  onRedo,
-  onClose,
-  children,
-}: {
-  kindCls: string; // 노드 틀과 같은 종류 클래스(scene-card-list lk-*)
-  w: number; // 노드의 레이아웃 크기(캔버스 배율 전)
-  h: number;
-  at: { x: number; y: number }; // 노드 가운데의 화면 좌표
-  // shortcut: 안 쓴다 — 11-10 부터 크기는 줌과 상관없이 고정(listPopScale). SceneBoard 를 다른 세션이 고치는 중이라 넘기는 쪽 정리는 다음에.
-  shown?: number;
-  // 팝업이 떠 있는 동안 캔버스 단축키는 쉰다(keyGate) — 되돌리기는 팝업이 직접 캔버스의 것을 부른다(Jay 11-09 "Ctrl+Z 안 되나")
-  onUndo: () => void;
-  onRedo: () => void;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const backRef = useRef<HTMLDivElement>(null);
-  const layerRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
-  // 두 단계로 잰다(Jay 2026-11-10 '칸에 맞춤'): ① 노드 그대로 그려 배치(격자 여부·열·한 칸)를 고르고 ② 그 배치로 틀을 내용 크기로 그려
-  //  모든 칸이 보이는 전체 크기를 잰 뒤 배율·자리를 정한다. 다 정할 때까지 숨겨 둔다(둘 다 그리기 전 동기 갱신이라 깜박이지 않는다).
-  const [fit, setFit] = useState<{ grid: boolean; cols: number; item: number } | null>(null);
-  const fullRef = useRef<{ w: number; h: number } | null>(null); // ② 에서 잰 전체 크기 — 스크롤로 높이를 자른 뒤 다시 재지 않게
-  const [box, setBox] = useState<{ left: number; top: number; k: number; w: number; h: number; scroll: boolean } | null>(null);
-  const undoRef = useRef(onUndo);
-  undoRef.current = onUndo;
-  const redoRef = useRef(onRedo);
-  redoRef.current = onRedo;
-  const layer = useEscapeClose(onClose);
-  useModalFocus(layerRef);
-  // 막의 실제 자리를 재서 놓는다(fixed 의 기준이 늘 화면이라고 가정하지 않는다).
-  //  shortcut: 브라우저 창 크기를 바꿔도 다시 재지 않는다 — 다시 열면 맞는다. 필요하면 resize 에 다시 재기.
-  useLayoutEffect(() => {
-    const b = backRef.current?.getBoundingClientRect();
-    const card = cardRef.current;
-    if (!b || !card) return;
-    if (!fit) {
-      // ① 한 칸 = 첫 항목(격자 칸·행 — 모두 같은 크기). offset 은 transform 전 레이아웃 크기다. 노드 열 수 = 첫 칸과 같은 줄의 칸 수.
-      const first = card.querySelector<HTMLElement>("[data-reid]");
-      const grid = !!first?.classList.contains("scene-listthumb");
-      let cols = 1;
-      if (first && grid) {
-        const cells = Array.from(first.parentElement?.children ?? []).filter(
-          (el): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute("data-reid"),
-        );
-        cols = listPopCols(cells.length, cells.filter((el) => el.offsetTop === first.offsetTop).length);
-      }
-      setFit({ grid, cols, item: first ? (grid ? first.offsetWidth : first.offsetHeight) : 0 });
-      return;
-    }
-    const M = 24, LABEL = 30, HINT = 34; // 위 이름표·아래 안내 자리
-    const availW = b.width - 2 * M, availH = b.height - 2 * M - LABEL - HINT;
-    if (availW <= 0 || availH <= 0) return; // 놓을 자리가 없으면 숨긴 채 둔다(음수 배율 방지)
-    const full = fullRef.current ?? (fullRef.current = { w: card.offsetWidth, h: card.offsetHeight }); // ② 틀이 내용 크기일 때 잰다
-    if (!(full.w > 0 && full.h > 0)) return;
-    const s = listPopScale({ item: fit.item, grid: fit.grid, w: full.w, h: full.h, availW, availH });
-    const sw = full.w * s.k, sh = s.h * s.k; // 자리는 실제로 보일 크기(스크롤이면 자른 높이)로
-    const left = Math.min(Math.max(at.x - b.left - sw / 2, M), b.width - M - sw);
-    const top = Math.min(Math.max(at.y - b.top - sh / 2, M + LABEL), b.height - M - HINT - sh);
-    setBox({ left, top, k: s.k, w: full.w, h: s.h, scroll: s.h < full.h - 0.5 });
-  }, [w, h, at.x, at.y, fit]);
-  // 팝업 안 Ctrl+Z 로 항목이 늘거나 줄면(또는 종류가 바뀌면) 처음부터 다시 잰다 — 순서만 바뀐 것은 크기가 같아 그대로.
-  const shapeRef = useRef("");
-  useLayoutEffect(() => {
-    const cells = cardRef.current?.querySelectorAll("[data-reid]");
-    const shape = `${cells?.length ?? 0}:${!!cells?.[0]?.classList.contains("scene-listthumb")}`;
-    if (shapeRef.current && shape !== shapeRef.current) {
-      fullRef.current = null;
-      setBox(null);
-      setFit(null);
-    }
-    shapeRef.current = shape;
-  });
-  // ② 의 틀 — 격자는 정한 열(--lp-cols)로 폭·높이를 내용 크기에, 행은 노드 폭에 높이만 내용 크기에(scene.css .scene-listpop.fit).
-  //  다 정한 뒤에는 잰 크기를 그대로 박아 두고, 너무 많으면 .scroll 로 높이를 잘라 노드처럼 스크롤.
-  const cardStyle: CSSProperties = {
-    width: box ? box.w : fit?.grid ? undefined : w,
-    height: box ? box.h : fit ? undefined : h,
-    transform: `scale(${box?.k ?? 1})`,
-  };
-  if (fit?.grid) Object.assign(cardStyle, { "--lp-cols": fit.cols, "--lp-tile": `${fit.item}px` });
-  useEffect(() => {
-    // 캔버스와 같은 키(lib/sceneKeyboard): Ctrl+Z 되돌리기, Ctrl+Shift+Z 다시 하기 — 초점과 상관없이 받는다(보드가 누름마다 초점을 가져간다)
-    const onKey = (e: KeyboardEvent) => {
-      if (!isTopLayer(layer) || isTypingTarget(e.target)) return; // 위에 크게 보기 등이 떠 있으면 그쪽 키
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key.toLowerCase() !== "z") return;
-      e.preventDefault();
-      (e.shiftKey ? redoRef : undoRef).current();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [layer]);
-  return (
-    <div
-      ref={backRef}
-      className="scene-listpop-backdrop"
-      onMouseDown={(e) => {
-        e.stopPropagation(); // 뒤 보드의 고르기·끌기로 번지지 않게
-        onClose();
-      }}
-    >
-      <div
-        ref={layerRef}
-        className="scene-listpop-layer"
-        role="dialog"
-        aria-label="리스트 크게 보기"
-        tabIndex={-1}
-        style={box ? { left: box.left, top: box.top, width: box.w * box.k, height: box.h * box.k } : { visibility: "hidden" }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div
-          ref={cardRef}
-          className={"scene-card sel scene-listpop " + kindCls + (fit ? (fit.grid ? " fit grid" : " fit") : "") + (box?.scroll ? " scroll" : "")}
-          style={cardStyle}
-        >
-          {children}
-        </div>
-        <button type="button" className="scene-listpop-x" title="닫기" aria-label="닫기" onClick={onClose}>
-          <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-        </button>
-        <div className="scene-listpop-hint">
-          끌어서 순서 바꾸기 · <kbd>Ctrl</kbd>+<kbd>Z</kbd> 되돌리기 · <kbd>Esc</kbd> 닫기
-        </div>
-      </div>
-    </div>
-  );
-}

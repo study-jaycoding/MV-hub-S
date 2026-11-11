@@ -617,8 +617,3 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
 
   return { mode, dispatch, editAllowed: userEditAllowed(mode), noteInput, refuse, toggle, setLateBusy };
 }
-
-/** 카드 사각형 × 카메라 → 화면(보드 기준 CSS px) — GPU 단계에서 cardEls 대신(리스트 크게 보기 위치 등) */
-export function cardScreenRect(card: { x: number; y: number; w: number; h: number }, camera: SceneCamera) {
-  return { left: card.x * camera.z + camera.x, top: card.y * camera.z + camera.y, width: card.w * camera.z, height: card.h * camera.z };
-}
