@@ -76,12 +76,15 @@ class ResolveSelectionMonitor:
             task.cancel()
 
         async def finish() -> None:
-            await self._stop_process()
-            if task:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-            if self._task is task:
-                self._task = None
+            try:
+                await self._stop_process()
+            finally:
+                # 자식 종료를 확인하지 못해 회수가 예외로 끝나도 감시 태스크는 거둔다(취소만 된 채 남지 않게)
+                if task:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                if self._task is task:
+                    self._task = None
 
         # 종료 요청 자체가 취소돼도 자식과 감시 태스크의 회수를 마친다.
         await run_non_abandon(finish())
@@ -159,9 +162,10 @@ class ResolveSelectionMonitor:
         # 확인한다(쓰기 끝을 쥔 프로세스가 모두 끝나야 닫힌다). 그 전에는 돌아가지 않는다 — suspended 가 살아 있는 작업자를 둔 채 Resolve 변경을 허용하지 않게.
         # 읽기 오류는 EOF 가 아니다(종료 증거가 아님) — 삼키지 않고 올린다. 호출자가 '종료 미확인'으로 붙들어 둔다(_close_process).
         stdout = getattr(process, "stdout", None)
-        if stdout is not None:
-            while await stdout.read(65536):
-                pass
+        if stdout is None:
+            raise RuntimeError("Resolve 선택 작업자의 stdout 을 볼 수 없어 종료를 확인할 수 없습니다")  # 관측 불가도 종료 증거가 아니다
+        while await stdout.read(65536):
+            pass
 
     async def _start_process(self) -> None:
         async with self._process_lock:

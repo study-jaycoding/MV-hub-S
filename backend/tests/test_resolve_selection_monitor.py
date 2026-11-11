@@ -808,9 +808,12 @@ class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(monitor._task.done())
             self.assertEqual(spawn.await_count, 1)
             self.assertIs(monitor._unconfirmed, process)
+            task = monitor._task
             with self.assertRaises(OSError):
                 await monitor.stop()
             self.assertIs(monitor._unconfirmed, process)
+            self.assertTrue(task.done(), "회수가 실패로 끝나도 감시 태스크는 거둔다")
+            self.assertIsNone(monitor._task)
 
     async def test_read_failure_while_reaping_a_just_spawned_unregistered_child_is_kept_too(self):
         """생성은 끝났지만 등록 전에 suspend 가 들어와 직접 회수하는 경로 — 그 회수가 stdout 읽기 실패로 끝나도 자식을 붙들고, 본문에 안 들어가고, 더 띄우지 않는다."""
@@ -852,6 +855,27 @@ class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(monitor._process)
             await monitor._start_process()  # 재확인 실패 중 — 새 자식 0
             self.assertEqual(create.await_count, 1)
+
+    async def test_unobservable_stdout_is_not_exit_proof_either(self):
+        """stdout 을 아예 볼 수 없으면(None) 종료를 확인할 길이 없다 — 회수는 실패로 올라가고 자식을 붙든다."""
+        process = ControlledProcess()
+        process.stdin = FakeStdin()
+        monitor = ResolveSelectionMonitor()
+        with (
+            mock.patch.object(resolve_selection_monitor, "resolve_compatible_interpreter", return_value=("fake-python", None)),
+            mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=mock.AsyncMock(return_value=process)),
+        ):
+            await monitor._start_process()
+            process.finish()  # 실행기 종료
+            await asyncio.sleep(0)
+            process.stdout = None
+            entered = []
+            with self.assertRaises(RuntimeError):
+                async with monitor.suspended():
+                    entered.append(True)
+            self.assertEqual(entered, [])
+            self.assertIs(monitor._unconfirmed, process)
+            self.assertEqual(monitor._pause_count, 0)
 
     async def test_suspend_body_waits_for_worker_pipe_after_launcher_exit(self):
         """suspended 본문은 실행기가 끝난 뒤에도 작업자 파이프가 닫히기 전에는 시작하지 않는다."""

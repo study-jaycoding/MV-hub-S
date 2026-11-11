@@ -381,6 +381,12 @@ class ParentStdinWatchTests(unittest.TestCase):
         self.assertEqual(codes, [0])
         self.assertTrue(thread.daemon)
 
+    def test_without_stdin_there_is_nothing_to_watch_and_nothing_exits(self):
+        left = []
+        with mock.patch.object(resolve_selection_worker.sys, "stdin", None):
+            self.assertIsNone(resolve_selection_worker._exit_when_stdin_closes(leave=left.append))
+        self.assertEqual(left, [])
+
     def test_real_child_exits_when_parent_process_is_killed(self):
         """실제 프로세스 — 가짜 허브(이 venv 파이썬)를 강제 종료하면 그 자식(감시만 켠 작업자 대역)이 사라진다.
 
@@ -404,8 +410,14 @@ class ParentStdinWatchTests(unittest.TestCase):
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         process = subprocess.Popen([sys.executable, "-c", hub, child], stdout=subprocess.PIPE, creationflags=flags)
         hub_pid = worker_pid = 0
+        # 시작이 멈추면(PID 를 못 받으면) 20초 뒤 가짜 허브를 끊어 readline 이 돌아오게 한다 — 그때는 아래 변환에서 실패하고 finally 가 정리한다
+        watchdog = threading.Timer(20, process.kill)
+        watchdog.start()
         try:
-            hub_pid, worker_pid = map(int, process.stdout.readline().split())
+            started = process.stdout.readline().split()
+            watchdog.cancel()
+            self.assertEqual(len(started), 2, "가짜 허브가 20초 안에 자식을 띄우지 못했다")
+            hub_pid, worker_pid = map(int, started)
             self.assertTrue(_pid_alive(worker_pid))
             _kill(hub_pid)  # 실행기 뒤의 진짜 허브 파이썬 — 종료 정리(lifespan)가 돌지 않는 죽음
             deadline = time.monotonic() + 10
@@ -413,6 +425,7 @@ class ParentStdinWatchTests(unittest.TestCase):
                 time.sleep(0.1)
             self.assertFalse(_pid_alive(worker_pid), "허브가 죽었는데 작업자가 남았다")
         finally:
+            watchdog.cancel()
             for pid in (worker_pid, hub_pid, process.pid):
                 if pid and _pid_alive(pid):
                     _kill(pid)

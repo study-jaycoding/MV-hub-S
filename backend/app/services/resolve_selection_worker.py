@@ -150,16 +150,18 @@ def main() -> int:
         time.sleep(max(0.5, POLL_SECONDS) if payload.get("connection_state") else POLL_SECONDS)
 
 
-def _exit_when_stdin_closes(stream: Any = None, leave: Any = os._exit) -> threading.Thread:
+def _exit_when_stdin_closes(stream: Any = None, leave: Any = os._exit) -> threading.Thread | None:
     """부모(허브)가 쥔 stdin 파이프가 닫히면 바로 끝낸다 — 허브가 강제 종료돼 terminate 를 못 보내도 고아로 남아 Resolve 를 계속 읽지 않게.
 
     선택이 안 바뀌면 stdout 에 쓰지 않아 부모가 죽은 것을 달리 알 길이 없다. 읽기 전용 자식이라 os._exit 로 끊는다(지금도 부모가 terminate 로 끊는다).
     """
     source = stream if stream is not None else getattr(sys.stdin, "buffer", None)
+    if source is None:
+        return None  # stdin 없이 띄운 실행 — 닫힘 신호가 없으니 감시하지 않는다(바로 끝내면 작업자가 아예 못 돈다)
 
     def watch() -> None:
         try:
-            while source is not None and source.read(4096):
+            while source.read(4096):
                 pass
         except (OSError, ValueError):
             pass
