@@ -768,7 +768,28 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect(callbacks.size).toBe(0);
   });
 
-  it.each(["disjoint", "timeout", "nonfinite", "destroy", "lost", "draw"])("정상 표본 2개 뒤 %s는 부분 배열 대신 거부하고 질의를 해제한다", async (failure) => {
+  it.each(["disjoint", "timeout"])("한 번 난 %s 표본은 버리고 다시 재어 30개를 채운다(그 한 번으로 잠그지 않는다)", async (failure) => {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let id = 0, clock = 0;
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.set(++id, fn); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => callbacks.delete(n));
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = fakeGl({ timer: true });
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    const result = renderer.timeGpu(30);
+    const step = () => { const [key, fn] = [...callbacks][0]; callbacks.delete(key); fn(clock); };
+    step(); step(); step();
+    if (failure === "disjoint") h.call("getParameter").mockImplementationOnce((key) => key === 901);
+    if (failure === "timeout") { h.call("getQueryParameter").mockImplementationOnce(() => false); clock += 1001; }
+    for (let i = 0; i < 80 && callbacks.size; i++) step();
+    const times = await result;
+    expect(times).toHaveLength(30);
+    expect(times.every(Number.isFinite)).toBe(true);
+    expect(h.call("deleteQuery")).toHaveBeenCalledTimes(h.call("createQuery").mock.calls.length);
+  });
+
+  it.each(["disjoint", "timeout", "nonfinite", "destroy", "lost", "draw"])("정상 표본 2개 뒤 %s가 계속되면(disjoint·timeout 은 버린 것이 요청 수를 넘으면) 부분 배열 대신 거부하고 질의를 해제한다", async (failure) => {
     const callbacks = new Map<number, FrameRequestCallback>();
     let id = 0, clock = 0;
     vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.set(++id, fn); return id; });
@@ -788,7 +809,11 @@ describe("gpuRenderer (기록하는 GL)", () => {
     else if (failure === "lost") h.canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
     else {
       if (failure === "draw") vi.spyOn(renderer, "draw").mockImplementation(() => { throw new Error("draw failed"); });
-      step();
+      // disjoint·timeout 은 버리고 다시 재므로, 계속되면 버린 것이 30개를 넘을 때 거부한다(timeout 은 걸음마다 1초 넘게 흐른다)
+      for (let i = 0; i < 200 && callbacks.size; i++) {
+        if (failure === "timeout") clock += 1001;
+        step();
+      }
     }
     await rejected;
     expect(callbacks.size).toBe(0);

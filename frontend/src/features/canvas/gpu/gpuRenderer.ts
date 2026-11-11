@@ -457,6 +457,10 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
           const results: number[] = [];
           let raf = 0, query: WebGLQuery | null = null, queryStart = 0;
           let finished = false;
+          // 무효 표본(클럭·전원 변화의 disjoint, 1초 넘게 안 끝난 질의)은 버리고 다시 잰다 — 한 번에 거부하면 무거운 씬에서 켤 때마다 잠겼다(11-11 2,060장 실측).
+          //  버린 것이 요청 수를 넘거나 10초가 지나면 포기(거부 = 느린 GPU).
+          let discarded = 0;
+          const startedAt = performance.now();
           const done = (error?: Error) => {
             if (finished) return;
             finished = true;
@@ -473,14 +477,18 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
             if (dead || contextLost || !last) { done(new Error("GPU timing unavailable")); return; }
             try {
               if (query && extension) {
-                if (g.getParameter(extension.GPU_DISJOINT_EXT)) { done(new Error("GPU timer disjoint")); return; }
-                if (!g.getQueryParameter(query, g.QUERY_RESULT_AVAILABLE)) {
-                  if (performance.now() - queryStart > 1000) { done(new Error("GPU timer timeout")); return; }
+                const disjoint = !!g.getParameter(extension.GPU_DISJOINT_EXT);
+                const available = !disjoint && !!g.getQueryParameter(query, g.QUERY_RESULT_AVAILABLE);
+                if (!disjoint && !available && performance.now() - queryStart <= 1000) {
                   raf = requestAnimationFrame(step);
                   return;
                 }
-                results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
+                if (available) results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
                 g.deleteQuery(query); queries.delete(query); query = null;
+                if (!available && (++discarded > frames || performance.now() - startedAt > 10_000)) {
+                  done(new Error(disjoint ? "GPU timer disjoint" : "GPU timer timeout"));
+                  return;
+                }
               }
               if (results.some((ms) => !Number.isFinite(ms) || ms < 0)) { done(new Error("Invalid GPU timing samples")); return; }
               if (results.length === frames) { done(); return; }
