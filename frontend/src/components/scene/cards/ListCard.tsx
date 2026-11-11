@@ -11,7 +11,8 @@ import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
-import { isTopLayer, isTypingTarget, useModalFocus } from "../../../lib/keyGate";
+import { backgroundKeysBlocked, isTopLayer, isTypingTarget, useModalFocus } from "../../../lib/keyGate";
+import { isKeyHandled, markKeyHandled } from "../../../lib/keyHandled";
 import { getRefServerStatusVersion, refServerStatus, subscribeRefServerStatus } from "../../../lib/sceneAssetRelink";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
 import { copyText } from "../../../lib/flash";
@@ -42,7 +43,8 @@ export const ListCard = memo(function ListCard({
   addListAsReference,
   onOutPortDown,
   onResizeDown,
-  reorderable = false,
+  expanded = false,
+  onCollapse,
 }: {
   card: SceneCard;
   cardsById: Map<string, SceneCard>;
@@ -60,9 +62,43 @@ export const ListCard = memo(function ListCard({
   addListAsReference: (generationCardIds: string[]) => void;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
-  // 순서 바꾸기는 더블클릭 팝업에서만(Jay 2026-11-09). 캔버스 노드에서는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
-  reorderable?: boolean;
+  // 순서 바꾸기는 두 번 눌러 펼쳤을 때만(Jay 2026-11-09). 펼치면 텍스트 노드의 큰 편집 창처럼 카드 안에서 노드 폭 1.6배로 떠
+  //  가려진 항목까지 보인다(Jay 2026-11-11). 접힌 노드는 그립을 숨기고 썸네일을 눌러도 노드를 끈다.
+  expanded?: boolean;
+  onCollapse?: () => void; // 바깥 누름·Esc
 }) {
+  const reorderable = expanded;
+  const floatRef = useRef<HTMLDivElement>(null);
+  const collapseRef = useRef(onCollapse);
+  collapseRef.current = onCollapse;
+  // 펼친 동안: 카드를 다른 카드 위로(data-pop-open — 텍스트 노드·입력 고르기와 같은 표식) + 노드 테두리를 숨겨 커진 것처럼(data-list-expanded).
+  //  바깥을 누르거나 Esc 면 접는다(텍스트 노드의 편집 끝과 같다). 위에 창(칸에서 연 크게 보기·결과 창)이 떠 있으면 그 누름·키는 그 창의 것이다.
+  useEffect(() => {
+    const float = floatRef.current;
+    const cardEl = float?.closest(".scene-card");
+    if (!expanded || !float || !cardEl) return;
+    cardEl.setAttribute("data-pop-open", "");
+    cardEl.setAttribute("data-list-expanded", "");
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element;
+      // 칸의 ▤ 로 연 '생성 결과' 창은 keyGate 겹이 아니라(격자를 품은 창) 따로 본다 — 그 창을 만지는 동안 펼친 채로 둔다
+      if (backgroundKeysBlocked() || float.contains(t) || t.closest?.(".scene-varpop-backdrop")) return;
+      collapseRef.current?.();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || backgroundKeysBlocked() || isKeyHandled(e)) return;
+      markKeyHandled(e); // 같은 Esc 가 보드의 선택 풀기까지 하지 않게(텍스트 노드의 Esc 와 같다)
+      collapseRef.current?.();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true); // 보드의 window 키 처리보다 먼저
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+      cardEl.removeAttribute("data-pop-open");
+      cardEl.removeAttribute("data-list-expanded");
+    };
+  }, [expanded]);
   // 그릴 때 읽는 두 저장소(서버 판정 = 빨간 빗금·마크, 어셋 버전 = 썸네일 주소) — memo 뒤로 보드가 대신 그려 주지 않으니 직접 듣는다
   useSyncExternalStore(subscribeRefServerStatus, getRefServerStatusVersion, getRefServerStatusVersion);
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
@@ -89,20 +125,18 @@ export const ListCard = memo(function ListCard({
                 ); // 두 줄 가운데(Jay 2026-10-30 — 전엔 한 줄이 아무 데서나 꺾였다)
   // 리스트 카드를 늘리면 레퍼런스 썸네일도 비례해 커진다 — 최소=기본(42px), 최대=레퍼런스
   //  카드 2/3 의 1.5배(≈152px = 레퍼런스 카드 크기). 카드가 클수록 번호·장수 배지 글씨도
-  //  비례해 커져 잘 보이게 한다.
+  //  비례해 커져 잘 보이게 한다. 펼친 칸은 노드 폭의 1.6배라 썸네일도 그만큼(같은 상한).
   const listThumbPx = Math.max(
     42,
-    Math.min(Math.round(((CARD_W * 2) / 3) * 1.5), Math.round((cardWidth / CARD_W) * 42)),
+    Math.min(Math.round(((CARD_W * 2) / 3) * 1.5), Math.round(((expanded ? cardWidth * 1.6 : cardWidth) / CARD_W) * 42)),
   );
   const listThumbBadgeFs = Math.max(8, Math.min(30, Math.round((listThumbPx * 8) / 42)));
   const listThumbsStyle: CSSProperties = {
     gridTemplateColumns: `repeat(auto-fill, ${listThumbPx}px)`,
   };
   (listThumbsStyle as Record<string, string | number>)["--lt-badge-fs"] = `${listThumbBadgeFs}px`;
-  return (
-    <>
-      <div className="scene-card-hd list scene-card-hd-float">리스트</div>
-      <div className="scene-card-inner scene-listnode">
+  // 속은 한 벌만 그린다 — 접힌 노드에서는 카드 칸에, 펼치면 떠 있는 칸에(같은 항목 칸이 두 곳에 있지 않게: 순서 끌기가 칸 자리를 잰다)
+  const body = (
         <div className="scene-listnode-body">
           {li.kind === "generation" ? (
             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
@@ -327,7 +361,17 @@ export const ListCard = memo(function ListCard({
             label
           )}
         </div>
-      </div>
+  );
+  return (
+    <>
+      <div className="scene-card-hd list scene-card-hd-float">리스트</div>
+      <div className="scene-card-inner scene-listnode">{!expanded && body}</div>
+      {expanded && (
+        // 텍스트 노드의 큰 편집 창과 같은 자리·폭(scene.css .scene-listfloat). 누름·두 번 누름이 카드 끌기·다시 펼치기로 번지지 않게.
+        <div ref={floatRef} className="scene-listfloat" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+          <div className="scene-card-inner scene-listnode">{body}</div>
+        </div>
+      )}
       {li.kind === "text" && (
         <button
           className="scene-copy-btn"
@@ -392,6 +436,8 @@ export function listPopScale(o: { item: number; grid: boolean; w: number; h: num
   return { k, h: o.h };
 }
 
+// ★2026-11-11 부터 안 씀 — 텍스트 노드처럼 카드 안에서 키우기로 바꿨다(ListCard expanded, docs/status/캔버스_리스트_그자리키우기_2026-11-11.md).
+//  덩어리 삭제는 비활성 먼저라 아래 팝업·listPopCols·listPopScale·.scene-listpop* CSS 는 Jay 확인 뒤 지운다.
 // ── 크게 보기 팝업(Jay 2026-11-09 — "지금 보이는 노드 그대로, 그 자리에서 크게"). 속은 같은 ListCard 를 children 으로 그대로 그리고,
 //  틀만 노드 가운데를 기준으로 배율을 키운다(배율 = listPopScale). 순서 끌기는 노드의 startReorder 그대로 —
 //  칸 위치를 화면 좌표로 재므로 배율과 상관없고, 저장도 노드와 같은 orderListItems 다.
