@@ -138,6 +138,7 @@ it("목록의 탭을 탭 줄에 끌어 놓으면 폴더에서 빼서 그 자리�
   act(() => { folderChip()!.click(); });
   drag(itemNamed("s2")!, [150, 60], [150, 300]); // 캔버스 위 — 놓을 곳 없음
   expect(onTabFolder).toHaveBeenCalledTimes(1);
+  expect(menuItems().map((el) => el.textContent)).toEqual(["s2", "s3"]); // 취소면 목록은 그대로 열려 있다
 });
 
 it("보는 탭이 폴더 안이면 폴더 칸과 붙은 한 덩어리(A안) · 그 탭을 줄의 다른 자리에 놓으면 폴더에서 빠진다", () => {
@@ -176,14 +177,14 @@ it("폴더 목록 안에서 위아래로 끌면 폴더 안 순서(order) · 삽�
   expect(host.querySelector(".scene-drop-line")).toBeNull(); // 탭 줄 삽입선은 아니다
   pointer("pointerup", itemNamed("s4")!, { clientX: 150, clientY: 45 });
   expect(onTabFolder).toHaveBeenCalledExactlyOnceWith({ type: "order", folderId: "F", id: "s4", beforeId: "s2" });
+  expect(menuItems().map((el) => el.textContent)).toEqual(["s2", "s3", "s4"]); // 순서를 바꾼 뒤에도 목록은 열린 채(Jay)
 
-  await act(async () => { await new Promise((done) => setTimeout(done, 0)); }); // 끌기에 딸린 click 삼키기가 풀릴 때까지
-  openList();
   pointer("pointerdown", itemNamed("s2")!, { clientX: 150, clientY: 55 });
   pointer("pointermove", itemNamed("s2")!, { clientX: 150, clientY: 128, buttons: 1 }); // s4 줄 아래쪽 반
   expect(itemNamed("s4")!.classList.contains("drop-after")).toBe(true);
   pointer("pointerup", itemNamed("s2")!, { clientX: 150, clientY: 128 });
   expect(onTabFolder).toHaveBeenLastCalledWith({ type: "order", folderId: "F", id: "s2", beforeId: null });
+  expect(menuItems()).toHaveLength(3);
 });
 
 it("폴더를 끌면 폴더째 옮긴다 · 폴더 우클릭 '폴더 풀기'", () => {
