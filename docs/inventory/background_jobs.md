@@ -99,6 +99,7 @@
 | `backend/app/services/resolve_queue.py` | `run_non_abandon` | create_task | `coro` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor._start_process` | create_task | `self._read_selections(self._process) (name=resolve-selection-reader)` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor.start` | create_task | `self._run() (name=resolve-selection-monitor)` |
+| `backend/app/services/resolve_selection_worker.py` | `_exit_when_stdin_closes` | Thread | `watch (name=parent-stdin-watch)` |
 | `backend/app/services/result_probe.py` | `PeriodicResultProbe.start` | create_task | `self._run() (name=result-probe)` |
 | `backend/app/services/share_state_reconciler.py` | `PeriodicShareStateReconciler.start` | create_task | `self._run() (name=share-state-reconciler)` |
 | `backend/app/services/slack_notify.py` | `SlackNotifier.start` | create_task | `self._run() (name=slack-notifier)` |
