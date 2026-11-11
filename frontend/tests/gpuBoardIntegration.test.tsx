@@ -243,6 +243,27 @@ it("보기 모드에서 리스트를 두 번 누르면 모은 항목을 읽기 �
   expect(onChange).not.toHaveBeenCalled();
 });
 
+it("검사(probing) 중 DOM 리스트를 두 번 눌러도 카드 안 펼치기(순서 바꾸기 편집)가 열리지 않고, 줄 누름도 순서 바꾸기를 시작하지 않는다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  fixture.hold = "probing";
+  const list = { id: "L", kind: "list", x: 0, y: 300, w: 260, h: 200 };
+  const scene = { ...(sceneOf([textCard("a", 0, 0), textCard("b", 300, 0), list]) as object), edges: [{ id: "e1", from: "a", to: "L" }, { id: "e2", from: "b", to: "L" }] };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={onChange} actionRef={actionRef as never} />); });
+  await flush();
+  expect(phase()).toBe("probing");
+  const listEl = [...host.querySelectorAll<HTMLElement>(".scene-card")].find((el) => el.querySelector(".scene-listnode"))!;
+  expect(listEl).toBeTruthy();
+  await act(async () => {
+    listEl.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 50, clientY: 175 }));
+  });
+  await flush();
+  expect(host.querySelector("[data-list-expanded]")).toBeNull();
+  const row = listEl.querySelector<HTMLElement>("[data-reid]");
+  if (row) await act(async () => { row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); });
+  await flush();
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 it("보기 모드에서 결과 되찾기(recoverCardGeneration)는 사용자 명령이라 거절한다", async () => {
   localStorage.setItem("mvhub.canvas.gpuBoard", "1");
   await show(cards3);

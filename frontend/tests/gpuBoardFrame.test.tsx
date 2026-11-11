@@ -145,14 +145,14 @@ describe("긴 프레임 까닭(LoAF)", () => {
     }
     vi.stubGlobal("PerformanceObserver", FakeObserver);
   });
-  const moveWithLongFrames = async (scripts: Array<{ invoker: string; duration: number }>) => {
+  const moveWithLongFrames = async (scripts: Array<{ invoker: string; duration: number }>, gap = 65) => {
     for (let i = 0; i < 3; i++) {
       cam.x += 10;
       act(() => listeners.forEach((l) => l(0)));
       const from = now + 5;
       await frameAt(from);
-      await frameAt(from + 65);
-      act(() => deliver!([{ startTime: from, duration: 65, scripts }]));
+      await frameAt(from + gap);
+      act(() => deliver!([{ startTime: from, duration: gap, scripts }]));
     }
     await frameAt(now + 150);
     await frameAt(now + 150);
@@ -160,19 +160,23 @@ describe("긴 프레임 까닭(LoAF)", () => {
   };
   const failures = (d: ReturnType<typeof vi.fn>) => d.mock.calls.map((c) => c[0]).filter((e) => e.type === "failure");
 
-  it("판 밖의 일(씬 저장·React 렌더)로 늦어진 프레임은 세지 않는다 — 1배 2,060장에서 저장 때문에 잠기던 것", async () => {
+  it("GPU 판과 무관한 일(씬 저장 IndexedDB·응답 JSON)로 늦어진 프레임은 세지 않는다 — 1배 2,060장에서 저장 때문에 잠기던 것", async () => {
     const dispatch = vi.fn();
     mount(dispatch, "gpu");
     await frameAt(1000);
-    await moveWithLongFrames([{ invoker: "IDBRequest.onsuccess", duration: 60 }]);
+    await moveWithLongFrames([{ invoker: "IDBRequest.onsuccess", duration: 40 }, { invoker: "Response.json.then", duration: 20 }]);
     expect(failures(dispatch)).toEqual([]);
   });
 
-  it("판 그리기(rAF 콜백)만 있었는데 늦은 프레임은 GPU 느림으로 센다 — 3번이면 잠금", async () => {
+  it.each([
+    ["판 그리기(rAF 콜백)만 있는 늦은 프레임", [{ invoker: "FrameRequestCallback", duration: 6 }], 65],
+    ["React 렌더(출처가 판일 수 있음)로 늦은 프레임", [{ invoker: "MessagePort.onmessage", duration: 60 }], 65],
+    ["저장이 섞였어도 덜고 50ms 넘게 남는 프레임(저장 60 + 나머지 70)", [{ invoker: "IDBRequest.onsuccess", duration: 60 }], 130],
+  ])("%s 은 GPU 느림으로 센다 — 3번이면 잠금", async (_name, scripts, gap) => {
     const dispatch = vi.fn();
     mount(dispatch, "gpu");
     await frameAt(1000);
-    await moveWithLongFrames([{ invoker: "FrameRequestCallback", duration: 6 }]);
+    await moveWithLongFrames(scripts, gap);
     expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
   });
 });

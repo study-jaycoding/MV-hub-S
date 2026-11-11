@@ -23,6 +23,8 @@ const PROBE_FRAMES = 30;
 const LOAF_SETTLE_MS = 120; // 긴 프레임 후보는 그 구간의 LoAF 기록이 도착할 만큼 기다렸다 판정한다
 // 긴 애니메이션 프레임(LoAF) 기록 — scripts 는 그 프레임에 돈 스크립트(이벤트·약속·React 렌더·rAF …)
 type LoafEntry = PerformanceEntry & { scripts?: ReadonlyArray<{ invoker?: string; duration: number }> };
+// GPU 판과 무관함이 확실한 일 — 저장(IndexedDB)·네트워크 응답 해석·파일 읽기 콜백. 그 밖(React 렌더·이벤트·타이머·rAF·출처 불명)은 판의 일로 본다(Codex 합의 6차)
+const UNRELATED_INVOKER = /^(IDB|Response\.|XMLHttpRequest|FileReader|WebSocket|BroadcastChannel)/;
 const loafSupported = () => typeof PerformanceObserver !== "undefined" && !!PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame");
 
 export interface CameraSource {
@@ -147,7 +149,7 @@ export function GpuBoard(props: GpuBoardProps) {
     longFrames: [] as number[],
     longCandidates: [] as Array<{ from: number; to: number }>,
     loafOn: false,
-    loaf: [] as Array<{ start: number; end: number; other: number }>, // 판 밖의 일(rAF 콜백이 아닌 스크립트) 시간
+    loaf: [] as Array<{ start: number; end: number; other: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 시간
   });
 
   const fail = (reason: "creation" | "memory" | "context-lost" | "slow-frames") => {
@@ -208,8 +210,8 @@ export function GpuBoard(props: GpuBoardProps) {
     if (!s.raf && !s.failed) s.raf = requestAnimationFrame(frame);
   };
 
-  /** 긴 프레임 후보를 판정해 센다 — 그 사이 판 밖의 일(React 렌더·저장·JSON 해석·이벤트)로 메인 스레드가 바빴으면 GPU 느림이 아니다.
-   *  2,060장 실측에서 이동 직후의 씬 저장(IndexedDB·응답 JSON 80~150ms)을 GPU 탓으로 세어 1배에서도 잠겼다(11-11 LoAF 진단).
+  /** 긴 프레임 후보를 판정해 센다 — 간격에서 GPU 판과 무관한 일(저장·네트워크 응답 해석)의 시간을 덜고도 50ms 를 넘으면 센다(섞인 프레임의
+   *  판 지연도 놓치지 않게). 2,060장 실측에서 이동 직후의 씬 저장(IndexedDB·응답 JSON 80~150ms)을 GPU 탓으로 세어 1배에서도 잠겼다(11-11 LoAF 진단).
    *  LoAF 를 못 쓰는 브라우저는 후보를 그대로 센다. 기준에 닿아 잠그면 true. */
   const judgeLongFrames = (now: number): boolean => {
     const s = st.current;
@@ -217,8 +219,8 @@ export function GpuBoard(props: GpuBoardProps) {
     if (!ready.length) return false;
     s.longCandidates = s.longCandidates.filter((c) => !ready.includes(c));
     for (const c of ready) {
-      const other = s.loaf.reduce((sum, e) => (e.end > c.from && e.start < c.to ? sum + e.other : sum), 0);
-      if (other >= Math.max(30, (c.to - c.from) / 2)) continue;
+      const unrelated = s.loaf.reduce((sum, e) => (e.end > c.from && e.start < c.to ? sum + e.other : sum), 0);
+      if (c.to - c.from - unrelated <= LONG_FRAME_MS) continue;
       s.longFrames = s.longFrames.filter((t) => c.to - t <= LONG_FRAME_WINDOW_MS);
       s.longFrames.push(c.to);
       if (s.longFrames.length >= LONG_FRAME_LIMIT) {
@@ -369,13 +371,13 @@ export function GpuBoard(props: GpuBoardProps) {
     measure();
     const ro = board ? new ResizeObserver(measure) : null;
     if (board) ro!.observe(board);
-    // 긴 프레임의 까닭 — rAF 콜백(판 그리기·카메라)이 아닌 스크립트 시간을 프레임마다 적어 둔다(최근 15초)
+    // 긴 프레임의 까닭 — GPU 판과 무관한 일(저장·네트워크 응답 해석)의 스크립트 시간을 프레임마다 적어 둔다(최근 15초)
     let loafObs: PerformanceObserver | null = null;
     if (loafSupported()) {
       s.loafOn = true;
       loafObs = new PerformanceObserver((list) => {
         for (const e of list.getEntries() as LoafEntry[]) {
-          const other = (e.scripts ?? []).reduce((sum, x) => (x.invoker === "FrameRequestCallback" ? sum : sum + x.duration), 0);
+          const other = (e.scripts ?? []).reduce((sum, x) => (UNRELATED_INVOKER.test(x.invoker ?? "") ? sum + x.duration : sum), 0);
           s.loaf.push({ start: e.startTime, end: e.startTime + e.duration, other });
         }
         const now = performance.now();

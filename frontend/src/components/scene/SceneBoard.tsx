@@ -3370,6 +3370,8 @@ export function SceneBoard({
       } : undefined}
       onFocus={gpuFlag ? (e) => setBoardTyping(isSceneTextEntryTarget(e.target as HTMLElement)) : undefined}
       onBlur={gpuFlag ? () => setBoardTyping(false) : undefined}
+      // 검사(probing) 중엔 DOM 카드가 보이지만 보기 모드다 — 카드의 두 번 누름(리스트 카드 안 펼치기·모델 설정 창 등)이 카드에 닿지 않게 캡처에서 막는다
+      onDoubleClickCapture={gpuFlag ? (e) => { if (!gpuEditRef.current && !gpuView && onGpuPlate(e)) e.stopPropagation(); } : undefined}
       // GPU 보기 모드 — 덧판이 뜨기 전(또는 가려져 덧판이 안 뜨는 카드)의 더블클릭·휠클릭도 읽기 동작으로 받는다(사라지지 않게)
       onDoubleClick={gpuView ? (e) => { if (!(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "preview"); } : undefined}
       onAuxClick={gpuView ? (e) => { if (e.button === 1 && !(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "info"); } : undefined}
