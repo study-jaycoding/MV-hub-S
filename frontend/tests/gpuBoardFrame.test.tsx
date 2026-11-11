@@ -26,7 +26,7 @@ vi.mock("../src/features/canvas/gpu/cardAtlas", () => ({
     textureBytes: () => 0, cpuBytes: () => 0, cpuPeak: () => 0, reset() {}, dispose() {},
   }),
 }));
-const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode } = await import("../src/features/canvas/gpu/GpuBoard");
+const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode, UNDRAWABLE } = await import("../src/features/canvas/gpu/GpuBoard");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -347,9 +347,9 @@ describe("디코드 크기(decodeImage)", () => {
     expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
   });
 
-  it("원본 크기를 디코드 없이 알 수 없는 그림은 디코드하지 않는다(null = 빗금) — 원본 디코드가 예산 밖 메모리를 쓰지 않게", async () => {
+  it("원본 크기를 디코드 없이 알 수 없는 그림은 디코드하지 않고 '그릴 수 없음' — 원본 디코드가 예산 밖 메모리를 쓰지 않게, 빗금으로 정보를 빼지 않게", async () => {
     serve(new Uint8Array(64), "image/tiff");
-    expect(await decodeImage("/a-unknown.tiff", 2048, 2048)).toBeNull();
+    expect(await decodeImage("/a-unknown.tiff", 2048, 2048)).toBe(UNDRAWABLE);
     expect(calls).toHaveLength(0);
   });
 

@@ -62,7 +62,9 @@ export function createCardAtlas(deps: {
   now: () => number;
   makeCanvas: (w: number, h: number) => HTMLCanvasElement | OffscreenCanvas;
   // 디코더는 원본 비트맵을 먼저 만들지 않고 두 상한 안으로 디코드해야 예약량이 실제 할당을 보장한다.
-  decode: (src: string, resizeWidth: number, resizeHeight: number) => Promise<ImageBitmap | null>;
+  //  "undrawable" = 원본 크기를 디코드 없이 알 수 없어 그리지 못하는 그림 — 지금 작업(취소·세대 검사를 통과)일 때만 onUndrawable 로 알린다.
+  decode: (src: string, resizeWidth: number, resizeHeight: number) => Promise<ImageBitmap | null | "undrawable">;
+  onUndrawable?: (requestId: string) => void;
   budgets?: Partial<AtlasBudgets>;
 }): CardAtlas {
   const budget = { ...defaults, ...deps.budgets };
@@ -210,13 +212,15 @@ export function createCardAtlas(deps: {
       decodeCount++;
       decodeReservedBytes += reserve;
       j.loading++;
-      const accept = (img: ImageBitmap | null) => {
+      const accept = (result: ImageBitmap | null | "undrawable") => {
+        const img = result === "undrawable" ? null : result;
         decodeCount--;
         decodeReservedBytes -= reserve;
         j.loading--;
         const bytes = img ? img.width * img.height * 4 : 0;
         recordCpuPeak(bytes);
         if (disposed || j.cancelled || j.generation !== generation) { img?.close(); return; }
+        if (result === "undrawable") deps.onUndrawable?.(j.req.id); // 늦은·취소된 작업은 위에서 걸러졌다
         if (img && (img.width > side || img.height > side)) {
           img?.close();
           if (j === job) failure = new RangeError("Atlas decoder exceeded requested dimensions");

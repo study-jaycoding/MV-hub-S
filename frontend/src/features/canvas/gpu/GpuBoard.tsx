@@ -47,6 +47,8 @@ export interface GpuBoardProps {
   onHover: (cardId: string | null) => void;
   /** 덧판 안에 초점·덧판에서 연 창이 있다 — 마우스가 떠나도 덧판을 두고 새 덧판도 안 띄운다 */
   overlayPinned: boolean;
+  /** 그 카드의 그림을 GPU 판이 그릴 수 없다(원본 크기를 디코드 없이 알 수 없음) — 그 카드가 있는 동안 DOM 판에 둔다 */
+  onUndrawable?: (cardId: string) => void;
 }
 
 /** 아틀라스와 같은 해상도 단계 — 화면 배율을 1.25배 넘게 늘려 그리지 않는 가장 작은 단계 */
@@ -120,10 +122,12 @@ export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
 }
 
 const JPEG_FULL_SCAN_MAX = 64 * 1024 * 1024;
+/** 원본 크기를 디코드 없이 알 수 없는 그림 — GPU 판이 예산 안에서 그릴 수 없다(그 카드가 있는 동안 DOM 판에 둔다, 계약 mode '그릴 수 없는 카드') */
+export const UNDRAWABLE = "undrawable" as const;
 
-/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 받지 못했거나 원본 크기를
- *  디코드 없이 알 수 없으면 null(빗금 자리). */
-export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
+/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 받지 못하면 null(빗금 자리 —
+ *  DOM 판도 깨진 그림), 원본 크기를 디코드 없이 알 수 없으면 UNDRAWABLE. */
+export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null | typeof UNDRAWABLE> {
   try {
     const blob = await blobOf(src);
     if (!blob) return null;
@@ -148,10 +152,9 @@ export async function decodeImage(src: string, maxW: number, maxH: number): Prom
     let size = imageSizeOf(new Uint8Array(await blob.slice(0, 1024 * 1024).arrayBuffer()));
     if (!size && blob.size > 1024 * 1024 && blob.size <= JPEG_FULL_SCAN_MAX && blob.type !== "image/png")
       size = imageSizeOf(new Uint8Array(await blob.arrayBuffer())); // 메타데이터가 길어 크기 정보가 1MiB 뒤에 있는 JPEG — 압축된 파일만 읽는다(디코드 아님)
-    // 크기를 모르면 디코드하지 않는다(빗금) — 원본 디코드는 예산 밖 메모리를 썼다(Codex 리뷰 4차). GPU 판이 읽는 주소는 서버가 줄여 만든 썸네일
-    //  (JPEG — backend services/thumbs.py·media-thumb)이라 실제로는 생기지 않는다.
-    //  shortcut: 크기를 못 읽는 형식은 빗금으로 보인다(DOM 판은 그림), 그런 썸네일이 생기면 imageSizeOf 에 그 형식의 머리 읽기를 더할 것
-    if (!size || !(size.w > 0) || !(size.h > 0)) return null;
+    // 크기를 모르면 디코드하지 않는다 — 원본 디코드는 예산 밖 메모리를 썼다(Codex 리뷰 4차). 빗금으로 그리면 정보가 빠진 채 보기 모드에
+    //  들어가므로(리뷰 6차) '그릴 수 없음'으로 돌려 그 카드가 있는 동안 DOM 판에 둔다. GPU 판이 읽는 주소는 대개 서버 JPEG 썸네일이라 드물다.
+    if (!size || !(size.w > 0) || !(size.h > 0)) return UNDRAWABLE;
     const k = Math.min(1, W / size.w, H / size.h);
     return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.floor(size.w * k)), resizeHeight: Math.max(1, Math.floor(size.h * k)), resizeQuality: "high" });
   } catch {
@@ -413,7 +416,9 @@ export function GpuBoard(props: GpuBoardProps) {
       return;
     }
     s.renderer = renderer;
-    s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode: decodeImage });
+    // 그릴 수 없는 그림 — 아틀라스가 지금 작업(취소·세대 검사 통과)일 때만 알린다. 어느 카드인지는 SceneBoard 가 카드 단위로 기억한다(그 카드가 바뀌면 풀림)
+    s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode: decodeImage,
+      onUndrawable: (id) => { if (!s.failed) live.current.onUndrawable?.(id); } });
     s.lowLod = Math.round(live.current.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
     const board = live.current.boardRef.current;
     const measure = () => {

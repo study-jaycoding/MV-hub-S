@@ -1002,7 +1002,14 @@ export function SceneBoard({
       return false;
     }
   }, []);
-  const gpuUnsupported = useMemo(() => gpuFlag && cards.some((c) => !BOARD_KINDS.has(c.kind)), [gpuFlag, cards]);
+  // GPU 판이 그림을 그릴 수 없다고 알린 카드 — 그 카드 객체 그대로인 동안만 미지원으로 센다(옮기거나 그림을 바꾸거나 지우면 풀려, 모드 단추로
+  //  다시 켤 수 있다). 늦은·취소된 결과는 아틀라스가 걸렀다(Codex 리뷰 5·6차).
+  const [gpuUndrawable, setGpuUndrawable] = useState<ReadonlyMap<string, SceneCard>>(() => new Map());
+  const onGpuUndrawable = useCallback((id: string) => {
+    const card = cardsRef.current.find((c) => c.id === id);
+    if (card) setGpuUndrawable((m) => (m.get(id) === card ? m : new Map(m).set(id, card)));
+  }, []);
+  const gpuUnsupported = useMemo(() => gpuFlag && cards.some((c) => !BOARD_KINDS.has(c.kind) || gpuUndrawable.get(c.id) === c), [gpuFlag, cards, gpuUndrawable]);
   const gpu = useGpuBoardMode({
     flag: gpuFlag,
     sceneId: cardsSceneId,
@@ -3413,6 +3420,7 @@ export function SceneBoard({
           dispatch={gpu.dispatch}
           onHover={onGpuHover}
           overlayPinned={gpuOverlayPinned}
+          onUndrawable={onGpuUndrawable}
         />
       )}
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>

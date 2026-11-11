@@ -44,6 +44,31 @@ const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("cardAtlas", () => {
+  it("그릴 수 없는 그림(undrawable)은 지금 작업일 때만 onUndrawable 로 알리고 그림 없이 굽는다 — 취소된 작업의 늦은 결과는 버린다", async () => {
+    const onUndrawable = vi.fn();
+    const pending = new Map<string, ReturnType<typeof deferred<ImageBitmap | null | "undrawable">>>();
+    const g = { save: vi.fn(), restore: vi.fn(), setTransform: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn() };
+    const atlas = createCardAtlas({
+      now: () => 0, makeCanvas: (width, height) => ({ width, height, getContext: () => g }) as unknown as HTMLCanvasElement,
+      uploader: { ensurePage: vi.fn(), upload: vi.fn(), deletePage: vi.fn() },
+      decode: (src) => { const d = deferred<ImageBitmap | null | "undrawable">(); pending.set(src, d); return d.promise; },
+      onUndrawable,
+    });
+    const req = (id: string, src: string): AtlasRequest => ({ id, key: id, w: 40, h: 20, sources: [src], draw: vi.fn() });
+    atlas.sync([req("a", "/a")], new Set(["a"]), 1, 1);
+    atlas.tick(); // a 의 디코드 시작
+    atlas.sync([req("b", "/b")], new Set(["b"]), 1, 1);
+    atlas.tick(); // a 를 취소하고 b 시작
+    pending.get("/a")!.resolve("undrawable");
+    await flush();
+    expect(onUndrawable).not.toHaveBeenCalled();
+    pending.get("/b")!.resolve("undrawable");
+    await flush();
+    expect(onUndrawable.mock.calls).toEqual([["b"]]);
+    for (let i = 0; i < 3; i++) atlas.tick();
+    expect(atlas.lookup("b")).not.toBeNull(); // 그림 없이 구웠다(그 카드는 SceneBoard 가 미지원으로 센다)
+  });
+
   it("열쇠 불변·위치만 변경은 굽기 0, 열쇠 변경은 그 카드만", () => {
     const h = harness();
     const a = h.request("a"), b = h.request("b");
