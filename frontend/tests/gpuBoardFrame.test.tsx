@@ -26,7 +26,7 @@ vi.mock("../src/features/canvas/gpu/cardAtlas", () => ({
     textureBytes: () => 0, cpuBytes: () => 0, cpuPeak: () => 0, reset() {}, dispose() {},
   }),
 }));
-const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode, UNDRAWABLE } = await import("../src/features/canvas/gpu/GpuBoard");
+const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode } = await import("../src/features/canvas/gpu/GpuBoard");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -347,28 +347,18 @@ describe("디코드 크기(decodeImage)", () => {
     expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
   });
 
-  it("AVIF(ISOBMFF 'ispe')도 머리로 크기를 알아 상자 안으로 — 원본 디코드 없음", async () => {
-    const avif = new Uint8Array(64);
-    avif.set([0x66, 0x74, 0x79, 0x70], 4); // ftyp
-    avif.set([0x69, 0x73, 0x70, 0x65, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 32, 0], 30); // ispe 1024×8192
-    serve(avif, "image/avif");
-    await decodeImage("/a-long.avif", 2048, 2048);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
-  });
-
-  it("원본 크기를 디코드 없이 알 수 없는 그림은 디코드하지 않고 UNDRAWABLE — 원본 디코드가 예산 밖 메모리를 쓰지 않게", async () => {
+  it("원본 크기를 디코드 없이 알 수 없는 그림은 디코드하지 않는다(null = 빗금) — 원본 디코드가 예산 밖 메모리를 쓰지 않게", async () => {
     serve(new Uint8Array(64), "image/tiff");
-    expect(await decodeImage("/a-unknown.tiff", 2048, 2048)).toBe(UNDRAWABLE);
+    expect(await decodeImage("/a-unknown.tiff", 2048, 2048)).toBeNull();
     expect(calls).toHaveLength(0);
   });
 
-  it("GPU 판은 UNDRAWABLE 을 받으면 그 씬을 '미지원'으로 모드에 알린다(한 번) — DOM 판에 둔다", async () => {
-    serve(new Uint8Array(64), "image/tiff");
-    const dispatch = vi.fn();
-    mount(dispatch, "gpu");
-    await act(async () => { await fx.decode!("/b-unknown.tiff", 100, 100); await fx.decode!("/c-unknown.tiff", 100, 100); });
-    expect(dispatch.mock.calls.map((c) => c[0]).filter((e) => e.type === "unsupported")).toEqual([{ type: "unsupported", sceneId: "s", unsupported: true }]);
+  it("BMP 도 머리로 크기를 읽는다(아래로 쌓인 BMP 의 음수 높이 포함)", () => {
+    const bmp = new Uint8Array(30);
+    bmp.set([0x42, 0x4d], 0);
+    bmp.set([0x40, 1, 0, 0], 18); // 320
+    bmp.set([0x10, 0xff, 0xff, 0xff], 22); // -240
+    expect(imageSizeOf(bmp)).toEqual({ w: 320, h: 240 });
   });
 });
 

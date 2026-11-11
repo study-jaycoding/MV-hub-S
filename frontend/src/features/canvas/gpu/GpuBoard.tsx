@@ -85,17 +85,6 @@ export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
   if (b.length >= 24 && b[0] === 0x89 && ascii(1, 3) === "PNG") return { w: u32(16), h: u32(20) };
   if (b.length >= 10 && ascii(0, 4) === "GIF8") return { w: u16(6, true), h: u16(8, true) };
   if (b.length >= 26 && ascii(0, 2) === "BM") return { w: Math.abs(u32(18, true) | 0), h: Math.abs(u32(22, true) | 0) };
-  if (b.length >= 12 && ascii(4, 4) === "ftyp") {
-    // AVIF·HEIC(ISOBMFF) — 'ispe' 상자의 폭·높이, 'irot' 가 90·270도면 바꾼다
-    let size: { w: number; h: number } | null = null, turned = false;
-    for (let i = 8; i + 16 <= b.length; i++) {
-      if (b[i] !== 0x69) continue; // 'i'
-      const t = ascii(i, 4);
-      if (t === "ispe" && !size) size = { w: u32(i + 8), h: u32(i + 12) };
-      else if (t === "irot") turned = (b[i + 4] & 3) % 2 === 1;
-    }
-    return size && turned ? { w: size.h, h: size.w } : size;
-  }
   if (b.length >= 30 && ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") {
     const kind = ascii(12, 4);
     if (kind === "VP8 ") return { w: u16(26, true) & 0x3fff, h: u16(28, true) & 0x3fff };
@@ -130,13 +119,11 @@ export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
   return null;
 }
 
-/** 크기를 디코드 없이 알 수 없는 그림 — GPU 판이 예산 안에서 그릴 수 없다. 그 씬은 DOM 판에 둔다(계약 mode '그릴 수 없는 카드') */
-export const UNDRAWABLE = "undrawable";
 const JPEG_FULL_SCAN_MAX = 64 * 1024 * 1024;
 
-/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 받지 못하면 null(빗금 자리),
- *  원본 크기를 디코드 없이 알 수 없으면 UNDRAWABLE. */
-export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null | typeof UNDRAWABLE> {
+/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 받지 못했거나 원본 크기를
+ *  디코드 없이 알 수 없으면 null(빗금 자리). */
+export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
   try {
     const blob = await blobOf(src);
     if (!blob) return null;
@@ -161,7 +148,10 @@ export async function decodeImage(src: string, maxW: number, maxH: number): Prom
     let size = imageSizeOf(new Uint8Array(await blob.slice(0, 1024 * 1024).arrayBuffer()));
     if (!size && blob.size > 1024 * 1024 && blob.size <= JPEG_FULL_SCAN_MAX && blob.type !== "image/png")
       size = imageSizeOf(new Uint8Array(await blob.arrayBuffer())); // 메타데이터가 길어 크기 정보가 1MiB 뒤에 있는 JPEG — 압축된 파일만 읽는다(디코드 아님)
-    if (!size || !(size.w > 0) || !(size.h > 0)) return UNDRAWABLE;
+    // 크기를 모르면 디코드하지 않는다(빗금) — 원본 디코드는 예산 밖 메모리를 썼다(Codex 리뷰 4차). GPU 판이 읽는 주소는 서버가 줄여 만든 썸네일
+    //  (JPEG — backend services/thumbs.py·media-thumb)이라 실제로는 생기지 않는다.
+    //  shortcut: 크기를 못 읽는 형식은 빗금으로 보인다(DOM 판은 그림), 그런 썸네일이 생기면 imageSizeOf 에 그 형식의 머리 읽기를 더할 것
+    if (!size || !(size.w > 0) || !(size.h > 0)) return null;
     const k = Math.min(1, W / size.w, H / size.h);
     return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.floor(size.w * k)), resizeHeight: Math.max(1, Math.floor(size.h * k)), resizeQuality: "high" });
   } catch {
@@ -211,7 +201,6 @@ export function GpuBoard(props: GpuBoardProps) {
     cpuPeak: 0,
     longFrames: [] as number[],
     longCandidates: [] as Array<{ from: number; to: number }>,
-    undrawableScene: "", // 그릴 수 없는 그림을 알린 씬
     loafOn: false,
     loaf: [] as Array<{ start: number; end: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 스크립트가 돈 구간
   });
@@ -424,18 +413,7 @@ export function GpuBoard(props: GpuBoardProps) {
       return;
     }
     s.renderer = renderer;
-    // 원본 크기를 디코드 없이 알 수 없는 그림이 나오면 그 씬은 GPU 판이 그릴 수 없다 — 모드에 '미지원'으로 알려 DOM 판에 둔다(씬마다 한 번, 늦은 결과는 버림)
-    const decode = async (src: string, w: number, h: number) => {
-      const scene = live.current.sceneId;
-      const r = await decodeImage(src, w, h);
-      if (r !== UNDRAWABLE) return r;
-      if (!st.current.failed && live.current.sceneId === scene && s.undrawableScene !== scene) {
-        s.undrawableScene = scene;
-        live.current.dispatch({ type: "unsupported", sceneId: scene, unsupported: true });
-      }
-      return null;
-    };
-    s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode });
+    s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode: decodeImage });
     s.lowLod = Math.round(live.current.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
     const board = live.current.boardRef.current;
     const measure = () => {
