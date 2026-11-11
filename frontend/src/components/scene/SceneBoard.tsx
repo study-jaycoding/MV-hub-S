@@ -87,6 +87,7 @@ import {
   GROUP_HEADER_HEIGHT,
   deriveGroupViews,
   groupRectFromCards,
+  liveSceneGroups,
   reconcileRefs,
 } from "../../lib/sceneDerive";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
@@ -634,7 +635,7 @@ export function SceneBoard({
   switchingRef.current = cardsSceneId !== scene.id;
   // 레거시 수집기 순서 고정(order 없는 list·render 연결에 옛 표시 순서를 박음 — 변경 없으면 같은 참조). 저장은 다음 변경 때.
   const [edges, setEdgesNow] = useState<SceneEdge[]>(() => freezeLegacyCollectorOrder(scene.cards, scene.edges));
-  const [groups, setGroupsNow] = useState<SceneGroup[]>(scene.groups || []);
+  const [groups, setGroupsNow] = useState<SceneGroup[]>(() => liveSceneGroups(scene.groups)); // 묶음 모양이 아닌 항목은 버린다(손상 씬)
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
@@ -1242,7 +1243,7 @@ export function SceneBoard({
     initialSnapshot: {
       cards: settleComfyRunning(scene.cards, comfyRunningIn(getAccountNamespace(), scene.id)),
       edges,
-      groups: scene.groups || [],
+      groups: liveSceneGroups(scene.groups),
     },
     sceneIdRef,
     cardsRef,

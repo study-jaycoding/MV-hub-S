@@ -57,6 +57,22 @@ export function groupRectFromCards(
   };
 }
 
+// 손상된 묶음 거르기 — 저장된 씬의 groups 에 묶음 모양이 아닌 항목(cardIds 가 배열이 아님)이 섞이면 묶음 테두리 계산·카드 끌기가
+//  순회하다 캔버스 전체가 멈춘다(2026-11-11 실제 씬: 연결선 357개가 groups 에 들어 있었다 — docs/status/캔버스_손상묶음_2026-11-11.md).
+//  그런 항목만 버린다(씬 파일 가져오기 scenes.ts 와 같은 판정). 모두 멀쩡하면 같은 배열을 그대로 — 바뀜 비교가 참조로 한다. 같은 입력엔 같은 결과.
+const liveGroupsMemo = new WeakMap<readonly SceneGroup[], SceneGroup[]>();
+const isLiveGroup = (group: SceneGroup) => !!group && typeof group === "object" && typeof group.id === "string" && Array.isArray(group.cardIds);
+export function liveSceneGroups(groups: readonly SceneGroup[] | undefined): SceneGroup[] {
+  if (!Array.isArray(groups)) return [];
+  if (groups.every(isLiveGroup)) return groups as SceneGroup[];
+  let kept = liveGroupsMemo.get(groups);
+  if (!kept) {
+    kept = groups.filter(isLiveGroup);
+    liveGroupsMemo.set(groups, kept);
+  }
+  return kept;
+}
+
 export function unionSceneRects(a: SceneRect, b: SceneRect): SceneRect {
   const x = Math.min(a.x, b.x);
   const y = Math.min(a.y, b.y);

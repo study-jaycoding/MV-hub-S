@@ -4,10 +4,31 @@ import {
   deriveGroupViews,
   groupFrame,
   groupRectFromCards,
+  liveSceneGroups,
   pruneGroups,
   reconcileRefs,
 } from "./sceneDerive";
 import type { SceneCard, SceneRef, SceneGroup } from "./scenes";
+
+describe("liveSceneGroups", () => {
+  it("모두 멀쩡하면 같은 배열 · 없으면 빈 배열", () => {
+    const groups: SceneGroup[] = [{ id: "g1", name: "", cardIds: ["a"] }];
+    expect(liveSceneGroups(groups)).toBe(groups);
+    expect(liveSceneGroups(undefined)).toEqual([]);
+  });
+
+  it("cardIds 가 배열이 아닌 항목(연결선이 섞인 손상 씬)만 버리고, 같은 입력엔 같은 결과", () => {
+    const broken = [
+      { id: "g1", name: "", cardIds: ["a"] },
+      { id: "e1", from: "a", to: "b", order: 1 },
+      null,
+    ] as unknown as SceneGroup[];
+    const kept = liveSceneGroups(broken);
+    expect(kept.map((group) => group.id)).toEqual(["g1"]);
+    expect(kept[0]).toBe(broken[0]);
+    expect(liveSceneGroups(broken)).toBe(kept);
+  });
+});
 
 const ref = (file_path: string, extra: Partial<SceneRef> = {}): SceneRef => ({
   file_path,

@@ -14,7 +14,7 @@ import { applyCanvasEdit, type CanvasEditCommand, type CanvasSnapshot } from "./
 import { withCanvasReferences } from "./references";
 import { relinkCards, type RelinkTarget } from "./assetRefs";
 import { applyCanvasComfyCommand, isCanvasComfyCommand, type CanvasComfyCommand } from "./comfyCommands";
-import { CARD_W, CARD_H } from "../../lib/sceneDerive";
+import { CARD_W, CARD_H, liveSceneGroups } from "../../lib/sceneDerive";
 import type { SceneCard } from "../../lib/scenes";
 import type { SceneSnap } from "../../lib/sceneUndoStore";
 import { createCanvasGestures, type CanvasGestureActive } from "./gestures";
@@ -131,7 +131,8 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
   useEffect(() => {
     if (!source) return;
     const cards = settleComfyRunning(source.cards, comfyRunningIn(getAccountNamespace(), source.id));
-    const incoming = { cards, edges: freezeLegacyCollectorOrder(cards, source.edges), groups: source.groups || [] };
+    // 묶음 모양이 아닌 항목은 버린다(손상 씬 — sceneDerive.liveSceneGroups). 멀쩡하면 같은 배열이라 바뀜 비교가 그대로다.
+    const incoming = { cards, edges: freezeLegacyCollectorOrder(cards, source.edges), groups: liveSceneGroups(source.groups) };
     const switched = options.sceneIdRef.current !== source.id;
     if (switched) {
       input.cancelPendingInput();
