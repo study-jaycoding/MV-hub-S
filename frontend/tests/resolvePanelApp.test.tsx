@@ -8,8 +8,16 @@ import type { Generation } from "../src/types";
 const mocks = vi.hoisted(() => ({
   config: vi.fn(), me: vi.fn(), identity: vi.fn(), cache: vi.fn(), prepare: vi.fn(), target: vi.fn(), currentBin: vi.fn(), adopt: vi.fn(),
   projects: vi.fn(), generations: vi.fn(), login: vi.fn(), token: "", pause: (() => {}) as () => void,
+  editCard: vi.fn(), setTags: vi.fn(), review: vi.fn(), listReload: vi.fn(), countsReload: vi.fn(),
 }));
-vi.mock("../src/api", () => ({ api: { authConfig: mocks.config, me: mocks.me } }));
+vi.mock("../src/api", () => ({ api: { authConfig: mocks.config, me: mocks.me, myFinalizeRoles: vi.fn(async () => ({ project_ids: [] })) } }));
+// 썸네일 칸의 라이브러리 카드와 앱 저장 훅은 각자 시험이 있다 — 여기서는 패널이 그것을 그대로 연결하는지만 본다.
+vi.mock("../src/components/timeline/EditCard", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/components/timeline/EditCard")>(),
+  EditCard: (props: unknown) => { mocks.editCard(props); return <div className="stub-card">card</div>; },
+}));
+vi.mock("../src/lib/useGenerationTagActions", () => ({ useGenerationTagActions: () => ({ onSetTags: mocks.setTags, onSetAutoTags: vi.fn() }) }));
+vi.mock("../src/lib/useGenerationCardActions", () => ({ useGenerationCardActions: () => ({ onReview: mocks.review, onFinalize: vi.fn(), onUnfinalize: vi.fn() }) }));
 vi.mock("../src/lib/http", () => ({ jsonFetch: vi.fn(), getAuthToken: () => mocks.token, setAuthToken: (value: string) => { mocks.token = value; },
   forgetAuthToken: () => { mocks.token = ""; },
   subscribeApiPause: (fn: () => void) => { mocks.pause = fn; return () => {}; } }));
@@ -27,7 +35,7 @@ import { STORAGE_KEYS } from "../src/lib/storageKeys";
 
 const identity = { instance: "hub", account: "account", epoch: 1, protocol: { min: 1, max: 1 } };
 const destination = { state: "ok", resolve_project_id: "r", bin_id: "bin", bin_path: "MV Hub/영화/S/C2" };
-const gen = { id: "g", folder_path: "S/C2", status: "done", creator_name: "Jay", model: "Model", created_at: "2026-11-11", params: { duration: 5 },
+const gen = { id: "g", folder_path: "S/C2", status: "done", creator_name: "Jay", model: "Model", created_at: "2026-11-11", params: { duration: 5 }, prompt: "clay fish",
   assets: [{ type: "image", file_path: "/media/image.png", thumbnail_path: "/media/thumb.png" }], is_final: true } as Generation;
 let root: Root, host: HTMLDivElement;
 let control: ReturnType<typeof useResolvePanel>;
@@ -47,11 +55,11 @@ beforeEach(() => {
   mocks.cache.mockImplementation(async (body: { gen_ids: string[] }) => ({ items: body.gen_ids.map(gen_id => ({ gen_id, state: "cached" })) }));
   mocks.prepare.mockResolvedValue({ state: "prepared", gen_id: "g", path: "Z:/file.mp4" });
   mocks.target.mockResolvedValue(destination); mocks.currentBin.mockResolvedValue(destination); mocks.adopt.mockResolvedValue({ state: "in_bin" });
-  mocks.projects.mockReturnValue({ projectsState: "ok", projects: [{ id: "p", name: "영화" }], tree: { roots: [{ path: "S", name: "S", children: [
+  mocks.projects.mockReturnValue({ projectsState: "ok", projects: [{ id: "p", name: "영화" }], reloadCounts: mocks.countsReload, tree: { roots: [{ path: "S", name: "S", children: [
     { path: "S/C10", name: "C10", count: 1, reviewCounts: { final: 0, held: 1 } },
     { path: "S/C2", name: "C2", count: 3, reviewCounts: { final: 1, held: 1 } },
   ] }] } });
-  mocks.generations.mockReturnValue({ state: "ok", gens: [gen] });
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen], reload: mocks.listReload });
   window.mvhubResolve = { protocol: 1, accepts: { min: 1, max: 1 }, startDrag: vi.fn(() => true) };
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.clearAllTimers(); vi.useRealTimers(); delete window.mvhubResolve; });
@@ -323,6 +331,75 @@ it("501건 두 번째 묶음은 앞 응답 뒤, 빈 목록은 생략", async () 
   await act(async () => old.resolve({ items: [] })); await flush();
   expect(mocks.cache.mock.calls.map(call => call[0].gen_ids.length)).toEqual([500, 1]);
   act(() => control.selectCut("p", "S/C10", [])); await flush(); expect(mocks.cache).toHaveBeenCalledTimes(2);
+});
+
+function setValue(element: HTMLInputElement | HTMLSelectElement, value: string) {
+  Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value")!.set!.call(element, value);
+  element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+}
+const mina = { ...gen, id: "g2", creator_name: "Mina", creator_uid: "u2", is_final: false, created_at: "2026-11-10" } as Generation;
+
+it("빈 트리: 프로젝트·폴더 펼침, 끝 폴더를 눌러 컷 선택과 경로", async () => {
+  await render();
+  const bins = () => [...host.querySelectorAll("nav button")].map(node => node.textContent);
+  expect(bins()).toEqual(["▾영화", "▾S", "C2★1 · 3", "C101"]);
+  expect(host.querySelector(".rp-path")!.textContent).toBe("영화 / S / C2");
+  await act(async () => ([...host.querySelectorAll("nav button")][3] as HTMLButtonElement).click()); await flush();
+  expect(host.querySelector(".rp-path")!.textContent).toBe("영화 / S / C10");
+  expect(mocks.target.mock.calls.map(call => call[0].folder_path)).toEqual(["S/C2", "S/C10"]);
+  await act(async () => ([...host.querySelectorAll("nav button")][1] as HTMLButtonElement).click());
+  expect(bins()).toEqual(["▾영화", "▸S"]);
+});
+
+it("보기 셋·크기·정렬·검색·생성자 거르기", async () => {
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, mina], reload: mocks.listReload }); await render();
+  expect(host.querySelectorAll("article.rp-tile")).toHaveLength(2);
+  const viewButton = host.querySelector('[aria-label="보기 방식"]') as HTMLButtonElement;
+  const pick = async (label: string) => {
+    await act(async () => viewButton.click());
+    await act(async () => ([...host.querySelectorAll('[role="menuitemradio"]')].find(node => node.textContent?.includes(label)) as HTMLButtonElement).click());
+  };
+  await pick("목록 보기"); expect(host.querySelectorAll("article.rp-list")).toHaveLength(2);
+  await act(async () => viewButton.click());
+  expect((host.querySelector('.rp-menu input[type="range"]') as HTMLInputElement).disabled).toBe(true);
+  await act(async () => viewButton.click());
+  await pick("메타데이터 보기"); expect(host.querySelectorAll("article.rp-meta")).toHaveLength(2);
+  await act(async () => setValue(host.querySelector('select[aria-label="정렬"]')!, "old"));
+  expect(host.querySelector("article")!.textContent).toContain("Mina");
+  await act(async () => (host.querySelector('[aria-label="검색"]') as HTMLButtonElement).click());
+  await act(async () => setValue(host.querySelector(".rp-search")!, "Mina"));
+  expect(host.querySelectorAll("article")).toHaveLength(1);
+  await act(async () => (host.querySelector('[aria-label="검색"]') as HTMLButtonElement).click());
+  await act(async () => (host.querySelector(".sidebar-foot-toggle") as HTMLButtonElement).click());
+  await act(async () => ([...host.querySelectorAll(".creator-pick")].find(node => node.textContent?.includes("Jay")) as HTMLButtonElement).click());
+  expect([...host.querySelectorAll("article")].map(node => node.textContent?.includes("Jay"))).toEqual([true]);
+  expect(JSON.parse(localStorage.getItem("mvhub.resolvePanel.ui")!)).toMatchObject({ view: "meta", sort: "old", filter: { creator: expect.any(String) } });
+  expect(host.textContent).not.toMatch(/V1|V2|\.\.\./);
+});
+
+it("썸네일 칸은 편집 탭 카드에 앱의 S·T 를 넘기고 C·ⓘ 는 CSS 로 숨김", async () => {
+  await render();
+  const props = mocks.editCard.mock.calls.at(-1)![0] as { actions: Record<string, unknown> };
+  expect(props.actions.onSetTags).toBe(mocks.setTags); expect(props.actions.onReview).toBe(mocks.review);
+  const css = readFileSync(resolve(process.cwd(), "src/styles/resolve-panel.css"), "utf8");
+  expect(css).toContain(".rp-tile .card-tl > .card-cm:last-child"); expect(css).toContain(".rp-tile .thumb-overlay");
+});
+
+it("보이는 동안 15초·초점에 다시 읽고, 같은 컷의 새 카드는 캐시만(target 반복 없음)", async () => {
+  mocks.currentBin.mockImplementation(async () => ({ ...destination })); // 2초 확인마다 새 응답 — 화면이 다시 그려져 바뀐 목록을 읽는다
+  await render();
+  expect(mocks.target).toHaveBeenCalledTimes(1); expect(mocks.cache.mock.calls.map(call => call[0].gen_ids)).toEqual([["g"]]);
+  await tick(15_000); expect(mocks.listReload).toHaveBeenCalledTimes(1); expect(mocks.countsReload).toHaveBeenCalledTimes(1);
+  await act(async () => window.dispatchEvent(new Event("focus"))); expect(mocks.listReload).toHaveBeenCalledTimes(1);
+  await tick(3000); await act(async () => window.dispatchEvent(new Event("focus"))); expect(mocks.listReload).toHaveBeenCalledTimes(2);
+  mocks.generations.mockReturnValue({ state: "loading", gens: [gen], reload: mocks.listReload }); await tick(2000);
+  expect(host.querySelectorAll("article")).toHaveLength(1);
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, mina], reload: mocks.listReload }); await tick(2000);
+  expect(mocks.target).toHaveBeenCalledTimes(1); expect(mocks.cache.mock.calls.map(call => call[0].gen_ids)).toEqual([["g"], ["g2"]]);
+  const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  try { await tick(15_000); expect(mocks.listReload).toHaveBeenCalledTimes(2); }
+  finally { if (visibility) Object.defineProperty(document, "visibilityState", visibility); else Reflect.deleteProperty(document, "visibilityState"); }
 });
 
 it("identity 문맥 변경은 목록 재조회와 준비 폐기", async () => {

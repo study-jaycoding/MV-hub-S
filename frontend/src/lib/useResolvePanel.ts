@@ -202,21 +202,32 @@ export function useResolvePanel() {
       seq: ++sequence.current, window: windowId, revision: revision.current };
     selected.current = selection;
     void targetFor(selection, false);
-    void (async () => {
-      for (const ids of cacheBatches(gens.map(gen => gen.id))) {
-        if (!alive(selection)) return;
-        ids.forEach(id => card(selection, id, { message: t("받는 중") }));
-        try {
-          const result = await panel.cache({ ...selection, gen_ids: ids });
-          if (!alive(selection)) return;
-          if (result.state === "account_changed") { resetContext(); return; }
-          for (const item of result.items) {
-            if (!cardsRef.current[item.gen_id]?.path) card(selection, item.gen_id, { message: item.state === "cached" ? t("로컬 캐시 준비됨") : item.error || t("받지 못했습니다") });
-          }
-        } catch (error) { if (alive(selection)) ids.forEach(id => card(selection, id, { message: errorText(error) })); return; }
-      }
-    })();
+    void cacheCards(selection, gens.map(gen => gen.id));
     // 선택 요청은 ref를 기준으로 처리한다 — 확인 폴링마다 같은 컷을 다시 선택하지 않게.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function cacheCards(selection: Selection, all: string[]) {
+    for (const ids of cacheBatches(all)) {
+      if (!alive(selection)) return;
+      ids.forEach(id => card(selection, id, { message: t("받는 중") }));
+      try {
+        const result = await panel.cache({ ...selection, gen_ids: ids });
+        if (!alive(selection)) return;
+        if (result.state === "account_changed") { resetContext(); return; }
+        for (const item of result.items) {
+          if (!cardsRef.current[item.gen_id]?.path) card(selection, item.gen_id, { message: item.state === "cached" ? t("로컬 캐시 준비됨") : item.error || t("받지 못했습니다") });
+        }
+      } catch (error) { if (alive(selection)) ids.forEach(id => card(selection, id, { message: errorText(error) })); return; }
+    }
+  }
+
+  // 같은 컷을 다시 읽어 새로 생긴 카드 — 컷 선택(target·순번)은 다시 하지 않는다(15초마다 리졸브 지금 빈을 되돌리지 않게).
+  const addCards = useCallback((gens: Generation[]) => {
+    const selection = selected.current;
+    if (!selection || !alive(selection)) return;
+    const fresh = gens.map(gen => gen.id).filter(id => !cardsRef.current[id]);
+    if (fresh.length) void cacheCards(selection, fresh);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -315,6 +326,6 @@ export function useResolvePanel() {
 
   useEffect(() => () => { revision.current++; selected.current = null; }, []);
   return { identity, config, needsLogin, authReady, cards, target, current, notice,
-    authKey: contextKey(identity), selectCut, prepareCard, drag, adopt, onAuthed: resetAuth,
+    authKey: contextKey(identity), selectCut, addCards, prepareCard, drag, adopt, onAuthed: resetAuth,
     align: () => { const selection = selected.current; if (selection) void targetFor(selection, false); } };
 }

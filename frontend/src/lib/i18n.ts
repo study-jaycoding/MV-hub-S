@@ -8,6 +8,9 @@ import { type Lang, loadLang, saveLang } from "./theme";
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
   "리졸브 안 MV 창": "MV window inside Resolve",
+  "왼쪽에서 컷을 고르세요": "Pick a cut on the left",
+  "끌어서 리졸브 타임라인에 넣기": "Drag onto the Resolve timeline",
+  "프롬프트·모델·작성자": "Prompt, model, or creator",
   "설치 상태를 확인 중입니다": "Checking installation",
   "설치됨": "Installed",
   "옛 판": "Older version",
