@@ -27,6 +27,7 @@ import {
   type TabFolderOp,
   type TabRowItem,
 } from "../../lib/sceneWorkspace";
+import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { cachedWorkspaceOptions } from "../../lib/workspaceOptionsCache";
 import { HostConfirm } from "../common/HostConfirm";
@@ -70,6 +71,24 @@ const tipSceneId = (element: HTMLElement) =>
   element.classList.contains("scene-tab") ? element.closest<HTMLElement>("[data-scene-tab]")?.dataset.sceneTab : undefined;
 
 const BACKUP_SKIPPED_TITLE = "5MB 를 넘어 이 PC 의 DB 백업에서 빠졌습니다 — 카드를 줄이면 다시 백업됩니다. 설정의 [전체 내보내기]로 따로 받아 두세요.";
+
+// 폴더마다 마지막으로 연 탭 {폴더 id: 씬 id} — 이 브라우저에만(다른 탭을 골라도 폴더 칸 옆에 남기는 편의). 못 읽거나 못 써도 이 창에서는 그대로 돈다.
+function readShownTabs(): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(STORAGE_KEYS.tabFolderShown) || "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return {};
+  }
+}
+function writeShownTabs(value: Record<string, string>) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.tabFolderShown, JSON.stringify(value));
+  } catch {
+    // 저장 공간이 막혀도 이 창의 화면 값은 그대로 — 새로 고치면 그 폴더 옆이 빌 뿐이다
+  }
+}
 
 const newFolderId = () =>
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -204,7 +223,16 @@ export function SceneBar({
   const [folderMenu, setFolderMenu] = useState<{ folder: TabFolder; x: number; y: number } | null>(null);
   const [openFolder, setOpenFolder] = useState<{ id: string; x: number; y: number } | null>(null);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
-  const items = tabRowItems(scenes, activeId, emptyFolders);
+  // 폴더마다 마지막으로 연 탭 — 그 폴더 밖 탭을 골라도 폴더 칸 옆에 회색 알약으로 남는다(Jay 2026-11-11)
+  const [shownTabs, setShownTabs] = useState(readShownTabs);
+  const activeFolderId = normalizeTabFolder(scenes.find((scene) => scene.id === activeId)?.tabFolder)?.id;
+  useEffect(() => {
+    if (!activeId || !activeFolderId || shownTabs[activeFolderId] === activeId) return;
+    const next = { ...readShownTabs(), [activeFolderId]: activeId }; // 다른 창이 적은 폴더 값을 덮지 않게 저장본 위에 얹는다
+    writeShownTabs(next);
+    setShownTabs(next);
+  }, [activeId, activeFolderId, shownTabs]);
+  const items = tabRowItems(scenes, activeId, emptyFolders, shownTabs);
   const openItem = openFolder ? items.find((item): item is FolderItem => item.kind === "folder" && item.folder.id === openFolder.id) : undefined;
   const barRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef(new Map<string, HTMLElement>()); // 줄 칸 열쇠 → 요소(탭은 .scene-tab-wrap, 폴더는 칸 단추)
@@ -664,8 +692,9 @@ export function SceneBar({
             {item.kind === "tab" ? (
               renderTab(item)
             ) : joined ? (
-              // 소속 표시(Jay 2026-11-11 A안) — 폴더 칸과 보는 탭이 붙어 한 알약, 라임 테두리가 둘을 함께 두른다
-              <span className="scene-tab-folder-join">
+              // 소속 표시(Jay 2026-11-11 A안) — 폴더 칸과 그 탭이 붙어 한 알약. 지금 보는 탭이면 라임 테두리가 둘을 함께 두르고(cur),
+              //  폴더에서 마지막으로 연 탭(다른 탭을 고른 뒤)이면 같은 알약에 회색
+              <span className={"scene-tab-folder-join" + (joined.scene.id === activeId ? " cur" : "")}>
                 {renderFolder(item)}
                 {renderTab(joined)}
               </span>

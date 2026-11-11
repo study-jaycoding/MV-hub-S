@@ -43,6 +43,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Unexpected network in isolated UI test"))));
   [onTabFolder, onReorder, onSelect, onAdd].forEach((fn) => fn.mockClear());
+  localStorage.clear(); // 폴더마다 마지막으로 연 탭(STORAGE_KEYS.tabFolderShown)이 시험끼리 섞이지 않게
   host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -151,6 +152,25 @@ it("보는 탭이 폴더 안이면 폴더 칸과 붙은 한 덩어리(A안) · �
   expect(folderChip()!.classList.contains("has-cur")).toBe(true);
   drag(tab("s2")!, [250, 15], [20, 15]);
   expect(onTabFolder).toHaveBeenCalledExactlyOnceWith({ type: "put", id: "s2", folder: null, beforeId: "s1" });
+});
+
+it("폴더 밖 탭을 골라도 그 폴더에서 마지막으로 연 탭은 폴더 칸 옆에 회색 알약으로 남는다 · 새로 그려도(이 브라우저 저장)", () => {
+  const scenes = [scene("s1"), scene("s2", F), scene("s3", F)];
+  mount(scenes, "s2");
+  expect(host.querySelector(".scene-tab-folder-join")!.classList.contains("cur")).toBe(true);
+  mount(scenes, "s1"); // 폴더 밖 탭을 골랐다
+  const join = host.querySelector(".scene-tab-folder-join")!;
+  expect(join.classList.contains("cur")).toBe(false);
+  expect(join.querySelector("[data-scene-tab]")?.getAttribute("data-scene-tab")).toBe("s2");
+  expect(join.querySelector('[data-scene-tab="s2"]')?.classList.contains("on")).toBe(false);
+  expect(folderChip()!.classList.contains("has-cur")).toBe(false);
+
+  act(() => root.unmount()); // 앱을 새로 연 것처럼
+  root = createRoot(host);
+  mount(scenes, "s1");
+  expect(host.querySelector(".scene-tab-folder-join [data-scene-tab]")?.getAttribute("data-scene-tab")).toBe("s2");
+  act(() => { tab("s2")!.click(); }); // 회색 알약의 탭을 누르면 그 씬이 열린다
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith("s2");
 });
 
 it("덩어리 안(폴더 칸과 보는 탭 사이)에는 삽입선을 긋지 않는다 — 다른 탭을 거기 놓으면 덩어리 뒤로", () => {

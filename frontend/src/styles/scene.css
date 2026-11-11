@@ -2034,13 +2034,14 @@
 .scene-tab-folder.editing { padding-right: 4px; cursor: default; }
 /* 소속 표시(Jay 2026-11-11 A안) — 보는 탭이 폴더 안이면 폴더 칸과 그 탭이 붙은 한 알약, 라임 테두리가 둘을 함께 두른다.
    감싼 칸에 overflow 를 쓰지 않고 안쪽 칸의 모서리를 깎는다 — 끄는 탭을 놓을 때의 하얀 테두리(outline)가 잘리지 않게. */
-.scene-tab-folder-join { display: inline-flex; align-items: stretch; flex: none; border: 1px solid var(--accent); border-radius: 9px; }
-.scene-tab-folder-join .scene-tab-folder {
-  height: auto; border: 0; border-radius: 8px 0 0 8px; padding-right: 9px; background: rgba(var(--accent-rgb), 0.12); color: #e9edd8;
-}
-.scene-tab-folder-join .scene-tab-folder.open { background: rgba(var(--accent-rgb), 0.22); }
-.scene-tab-folder-join .scene-tab-folder-count { color: rgba(var(--accent-rgb), 0.7); }
+.scene-tab-folder-join { display: inline-flex; align-items: stretch; flex: none; border: 1px solid var(--border2); border-radius: 9px; }
+.scene-tab-folder-join .scene-tab-folder { height: auto; border: 0; border-radius: 8px 0 0 8px; padding-right: 9px; }
 .scene-tab-folder-join .scene-tab-wrap { border: 0; border-radius: 0 8px 8px 0; }
+/* 그 탭을 지금 보고 있으면 라임 — 폴더에서 마지막으로 연 탭(다른 탭을 고른 뒤)은 같은 알약 모양에 회색으로 남는다(Jay 2026-11-11) */
+.scene-tab-folder-join.cur { border-color: var(--accent); }
+.scene-tab-folder-join.cur .scene-tab-folder { background: rgba(var(--accent-rgb), 0.12); color: #e9edd8; }
+.scene-tab-folder-join.cur .scene-tab-folder.open { background: rgba(var(--accent-rgb), 0.22); }
+.scene-tab-folder-join.cur .scene-tab-folder-count { color: rgba(var(--accent-rgb), 0.7); }
 /* 떠 있는 작은 메뉴('+' 우클릭 · 폴더 우클릭 · 폴더 안 목록) */
 .scene-tab-menu {
   position: fixed; z-index: 60; display: grid; gap: 2px; min-width: 150px; max-width: 280px; padding: 6px;

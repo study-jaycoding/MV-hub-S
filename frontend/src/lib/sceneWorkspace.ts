@@ -178,16 +178,18 @@ export function normalizeTabFolder(value: unknown): TabFolder | undefined {
   return { id, name: typeof name === "string" && name.trim() ? name : "폴더" };
 }
 
-/** 탭 줄 한 칸. inFolder = 폴더 안이지만 지금 보고 있어 그 폴더 바로 뒤에 꺼내 보이는 탭. */
+/** 탭 줄 한 칸. inFolder = 폴더 안이지만 그 폴더 바로 뒤에 꺼내 보이는 탭(지금 보는 탭, 아니면 그 폴더에서 마지막으로 연 탭). */
 export type TabRowItem =
   | { kind: "tab"; key: string; scene: Scene; inFolder?: TabFolder }
   | { kind: "folder"; key: string; folder: TabFolder; members: Scene[] };
 
-/** 탭 줄 차례 — 폴더는 첫 탭 자리에 한 번, 보는 탭은 자기 폴더 바로 뒤, 빈 폴더(이 창에서 막 만든 것)는 맨 뒤. */
+/** 탭 줄 차례 — 폴더는 첫 탭 자리에 한 번, 그 폴더의 보는 탭(없으면 shownByFolder 의 마지막으로 연 탭)은 폴더 바로 뒤,
+ *  빈 폴더(이 창에서 막 만든 것)는 맨 뒤. */
 export function tabRowItems(
   scenes: readonly Scene[],
   activeId: string | null,
   emptyFolders: readonly TabFolder[] = [],
+  shownByFolder: Readonly<Record<string, string>> = {},
 ): TabRowItem[] {
   const items: TabRowItem[] = [];
   const folders = new Map<string, Extract<TabRowItem, { kind: "folder" }>>();
@@ -205,10 +207,9 @@ export function tabRowItems(
     }
     item.members.push(scene);
   }
-  const active = activeId ? scenes.find((scene) => scene.id === activeId) : undefined;
-  const activeFolder = active ? folders.get(normalizeTabFolder(active.tabFolder)?.id ?? "") : undefined;
-  if (active && activeFolder) {
-    items.splice(items.indexOf(activeFolder) + 1, 0, { kind: "tab", key: `t:${active.id}`, scene: active, inFolder: activeFolder.folder });
+  for (const item of folders.values()) {
+    const shown = item.members.find((scene) => scene.id === activeId) ?? item.members.find((scene) => scene.id === shownByFolder[item.folder.id]);
+    if (shown) items.splice(items.indexOf(item) + 1, 0, { kind: "tab", key: `t:${shown.id}`, scene: shown, inFolder: item.folder });
   }
   const shown = new Set(folders.keys());
   for (const folder of emptyFolders) {

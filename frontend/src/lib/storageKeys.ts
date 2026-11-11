@@ -59,6 +59,9 @@ export const STORAGE_KEYS = {
   scenesActive: "ch.scenes.active", // 프로젝트별 마지막으로 연 씬 id
   sceneKeepView: "mvhub.sceneKeepView", // 보관함 이미지/리스트 보기(내용은 저장하지 않는다)
   sceneRefVerdicts: "ch.scenes.refVerdicts", // 씬 참조의 서버 판정(계정별 맵) — 한 번 확인한 그림은 다음 실행에 NAS 를 다시 훑지 않는다
+  // 탭 폴더마다 마지막으로 연 탭 {폴더 id: 씬 id}(이 브라우저) — 다른 탭을 골라도 폴더 칸 옆에 남긴다(Jay 2026-11-11).
+  //  `ch.` 로 시작하지 않는다 — 계정 전환 정리가 지우지 않게(폴더 id 는 계정끼리 겹치지 않는다).
+  tabFolderShown: "mvhub.tabFolderShown",
   shortcuts: "ch.shortcuts",
   stateGlow: "ch.lib.stateGlow", // 내가 방금 공유·보류·최종으로 바꾼 카드(계정별 맵) — 선택 전까지 상태색 빛
   teamSeen: "ch.lib.teamSeen", // 공유&리뷰 탭 마지막 방문 시각(계정별 맵) — 신규 글로우·배지 기준선

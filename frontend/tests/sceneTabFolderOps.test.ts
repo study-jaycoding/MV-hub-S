@@ -25,6 +25,13 @@ describe("tabRowItems", () => {
     expect(shown.kind === "tab" && shown.inFolder?.id).toBe("F");
   });
 
+  it("폴더 밖 탭을 보고 있어도 그 폴더에서 마지막으로 연 탭은 폴더 바로 뒤 · 보는 탭이 그 폴더 안이면 보는 탭이 먼저 · 폴더를 떠난 씬은 무시", () => {
+    const list = [scene("a"), scene("b", F), scene("c", F), scene("d", G)];
+    expect(tabRowItems(list, "a", [], { F: "c", G: "x" }).map((it) => it.key)).toEqual(["t:a", "f:F", "t:c", "f:G"]);
+    expect(tabRowItems(list, "b", [], { F: "c" }).map((it) => it.key)).toEqual(["t:a", "f:F", "t:b", "f:G"]);
+    expect(tabRowItems(list, "a", [], { F: "a" }).map((it) => it.key)).toEqual(["t:a", "f:F", "f:G"]);
+  });
+
   it("빈 폴더는 맨 뒤 — 같은 id 의 탭이 있으면 빈 폴더로 또 보이지 않고, 겹친 빈 폴더도 한 번", () => {
     const items = tabRowItems([scene("a"), scene("b", F)], null, [F, G, G]);
     expect(items.map((it) => it.key)).toEqual(["t:a", "f:F", "f:G"]);
