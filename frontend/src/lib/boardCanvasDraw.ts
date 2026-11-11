@@ -515,8 +515,9 @@ export function drawBoardItem(g: Ctx2D, item: BoardItem, imageOf: ImageOf): void
       lines.forEach((l, i) => text(g, l, ix + iw / 2, iy + ih / 2 + (i - (lines.length - 1) / 2) * 14 + 4, 11, MUTED, 400, "center"));
     } else if (item.mode === "thumbs") {
       const fs = Math.max(8, Math.min(30, Math.round((item.thumbPx * 8) / 42)));
+      // .scene-listthumbs — 칸 폭은 고정(repeat(auto-fill, thumbPx)), 왼쪽부터 채우고 남는 폭은 오른쪽에 남는다
       const gap = fs * 0.55 + 3, cols = Math.max(1, Math.floor((pw - fs * 0.55 + gap) / (item.thumbPx + gap)));
-      const cell = (pw - fs * 0.55 - gap * (cols - 1)) / cols;
+      const cell = item.thumbPx;
       item.tiles.forEach((t, i) => {
         const cx = px + fs * 0.55 + (i % cols) * (cell + gap), cy = py + fs * 0.55 + Math.floor(i / cols) * (cell + gap);
         if (cy > py + ph) return;

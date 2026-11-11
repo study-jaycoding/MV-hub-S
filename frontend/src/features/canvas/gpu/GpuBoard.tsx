@@ -50,12 +50,29 @@ const median = (xs: number[]) => {
   return s[Math.floor(s.length / 2)];
 };
 
+// 받은 썸네일 파일(압축된 그대로) — 해상도 단계가 바뀌어 다시 구울 때 같은 주소를 다시 받지 않는다. 최근 것 400개(썸네일 수십 KB 라 수십 MB 아래).
+//  shortcut: 개수로만 자른다(크기 합계는 안 본다) — 큰 원본을 썸네일로 쓰는 카드가 많아지면 바이트 합계로 자를 것
+const BLOB_CACHE_MAX = 400;
+const blobCache = new Map<string, Promise<Blob | null>>();
+function blobOf(src: string): Promise<Blob | null> {
+  const hit = blobCache.get(src);
+  if (hit) {
+    blobCache.delete(src);
+    blobCache.set(src, hit); // 최근에 쓴 것을 뒤로(오래된 것부터 버린다)
+    return hit;
+  }
+  const p = fetch(src).then((res) => (res.ok ? res.blob() : null)).catch(() => null);
+  blobCache.set(src, p);
+  void p.then((b) => { if (!b) blobCache.delete(src); }); // 실패는 기억하지 않는다(다음에 다시 받는다)
+  while (blobCache.size > BLOB_CACHE_MAX) blobCache.delete(blobCache.keys().next().value!);
+  return p;
+}
+
 /** 이미지 주소 → 굽는 크기에 맞춘 비트맵(같은 출처 /api 썸네일). 실패하면 null(빗금 자리). */
 async function decodeImage(src: string, resizeWidth: number): Promise<ImageBitmap | null> {
   try {
-    const res = await fetch(src);
-    if (!res.ok) return null;
-    const blob = await res.blob();
+    const blob = await blobOf(src);
+    if (!blob) return null;
     return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.round(resizeWidth)), resizeQuality: "high" });
   } catch {
     return null;
