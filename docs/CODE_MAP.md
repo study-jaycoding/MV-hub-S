@@ -7,10 +7,21 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-10
+updated: 2026-11-11
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
+
+리졸브 패널 1단계(백엔드):
+
+| 파일 | 책임 |
+|---|---|
+| `backend/app/routers/resolve_panel.py` | 패널 6개 API·일반 인증 뒤 로컬/계정 고정·권한·업데이트/선택 감시 관문 |
+| `backend/app/services/resolve_panel.py` | 허브 문맥·요청 합치기·로컬 캐시·한 항목 준비·메모리 준비 기록·확인 뒤 결정적 전송 장부 |
+| `backend/app/services/resolve_panel_worker.py` | 격리 Resolve 자식의 빈 선택·현재 빈 읽기·놓은 클립 확인과 자식 전송 보호 |
+| `backend/tests/test_resolve_panel.py` | 가짜 Resolve·임시 파일로 패널 계약과 실패/재시도 검증 |
+
+설계 정본은 [리졸브 패널 작업 계약](status/리졸브패널_설계_2026-11-11.md). 화면·플러그인·실기기 검증은 후속 단계다.
 
 힉스필드 조직 사용량 1단계(관리자 대조 전용):
 
