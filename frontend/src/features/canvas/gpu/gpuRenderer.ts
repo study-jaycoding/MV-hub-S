@@ -23,6 +23,8 @@ export interface GpuRenderer extends AtlasUploader {
   setScene(s: GpuScene): void;
   /** 덧판이 덮는 카드 한 장만 감추거나(null = 되살림) — 버퍼 전체를 다시 채우지 않고 그 카드 칸만 고친다 */
   setHidden(id: string | null): void;
+  /** 25% 이하 단순화 — hideLow 조각(결과 수 배지·폴더 이름표·회색 끝 점)을 그리지 않는다(유니폼 하나 — 버퍼 그대로) */
+  setLowLod(on: boolean): void;
   draw(camera: GpuCamera, lookup: CardAtlas["lookup"]): void;
   timeGpu(frames: number): Promise<number[]>;
   textureBytes(): number;
@@ -47,6 +49,7 @@ void main() {
   float a = color.a * (1.0 - smoothstep(0.65, 1.15, length(q)));
   outColor = vec4(color.rgb * a, a);
 }`;
+// style.z = 25% 이하 단순화에서 숨길 조각(hideLow) — lowLod 유니폼이 켜지면 그 조각을 화면 밖으로 보낸다(버퍼를 다시 채우지 않는다)
 const shapeVertex = `#version 300 es
 precision highp float;
 layout(location=0) in vec2 unit;
@@ -56,16 +59,16 @@ layout(location=3) in vec4 fill;
 layout(location=4) in vec4 border;
 layout(location=5) in vec4 uv;
 ${cameraUniforms}
+uniform bool lowLod;
 out vec2 local; out vec2 texCoord;
 flat out vec2 extent; flat out vec2 edge;
 flat out vec4 fillColor; flat out vec4 borderColor;
 void main() {
-  bool dot = style.z > 0.5;
-  extent = box.zw * (dot ? 1.0 : camera.x);
+  extent = box.zw * camera.x;
   local = unit * extent;
-  edge = style.xy * (dot ? 1.0 : camera.x);
-  vec2 p = box.xy * camera.x + camera.yz + local - (dot ? extent * 0.5 : vec2(0));
-  gl_Position = vec4(p.x / viewport.x * 2.0 - 1.0, 1.0 - p.y / viewport.y * 2.0, 0, 1);
+  edge = style.xy * camera.x;
+  vec2 p = box.xy * camera.x + camera.yz + local;
+  gl_Position = lowLod && style.z > 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : vec4(p.x / viewport.x * 2.0 - 1.0, 1.0 - p.y / viewport.y * 2.0, 0, 1);
   texCoord = mix(uv.xy, uv.zw, unit);
   fillColor = fill; borderColor = border;
 }`;
@@ -221,6 +224,7 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
     let shapeData = new Float32Array(); // 지금 버퍼에 든 모양 자료(감춤 되살리기용)
     const cardIndex = new Map<string, number>(); // 카드 id → 모양 칸
     let hiddenIndex = -1;
+    let lowLod = false;
     let rects: Range = { start: 0, count: 0 }, cards = rects, selection = rects, dots = rects, quads = rects;
     let lineCount = 0;
     let gridColor: GpuColor = [1, 1, 1, 0.11];
@@ -231,6 +235,7 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
       use(shapeProgram, camera);
       g.bindVertexArray(shapeVao);
       g.uniform1i(uniform(shapeProgram, "atlas"), 0);
+      g.uniform1i(uniform(shapeProgram, "lowLod"), lowLod ? 1 : 0);
       for (let start = range.start; start < range.start + range.count;) {
         const page = shapes[start].page;
         let end = start + 1;
@@ -289,8 +294,8 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         if (dead || contextLost) return;
         const data: number[] = [];
         shapes = [];
-        function add(r: GpuRect, id?: string, dot = false) {
-          data.push(r.x, r.y, r.w, r.h, r.radius, r.borderWidth, Number(dot), ...r.fill, ...r.border);
+        function add(r: GpuRect, id?: string, hideLow = false) {
+          data.push(r.x, r.y, r.w, r.h, r.radius, r.borderWidth, Number(hideLow), ...r.fill, ...r.border);
           shapes.push({ id, page: -1, region: null });
         }
         function range(build: () => void): Range {
@@ -302,8 +307,8 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         cards = range(() => s.cards.filter((c) => !c.hidden).sort((a, b) => a.z - b.z).forEach((c) => add({ ...c, fill: [0.08, 0.09, 0.11, 1] }, c.id)));
         selection = range(() => s.selection?.forEach((r) => add(r)));
         // 끝 점(.scene-dot r=5, 테두리 2 가운데 걸침) — 월드 크기라 바깥 반지름 r+1·테두리 2
-        dots = range(() => s.dots.forEach((d) => add({ x: d.x - d.r - 1, y: d.y - d.r - 1, w: d.r * 2 + 2, h: d.r * 2 + 2, radius: d.r + 1, borderWidth: 2, fill: d.fill, border: d.border })));
-        quads = range(() => s.quads.forEach((q) => add({ ...q, radius: 0, borderWidth: 0, fill: transparent, border: transparent }, q.id)));
+        dots = range(() => s.dots.forEach((d) => add({ x: d.x - d.r - 1, y: d.y - d.r - 1, w: d.r * 2 + 2, h: d.r * 2 + 2, radius: d.r + 1, borderWidth: 2, fill: d.fill, border: d.border }, undefined, !!d.hideLow)));
+        quads = range(() => s.quads.forEach((q) => add({ ...q, radius: 0, borderWidth: 0, fill: transparent, border: transparent }, q.id, !!q.hideLow)));
         uvs = new Float32Array(shapes.length * 4);
         shapeData = new Float32Array(data);
         cardIndex.clear();
@@ -342,6 +347,7 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         if (next >= 0) g.bufferSubData(g.ARRAY_BUFFER, (next * 15 + 2) * 4, new Float32Array([0, 0]));
         hiddenIndex = next;
       },
+      setLowLod(on) { lowLod = on; },
       draw(camera, lookup) {
         if (dead || contextLost || camera.width <= 0 || camera.height <= 0 || camera.z <= 0 || camera.dpr <= 0) return;
         last = { camera: { ...camera }, lookup };

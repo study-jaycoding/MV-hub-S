@@ -15,6 +15,8 @@ import type { GpuSceneModel } from "./gpuScene";
 const OVERLAY_DWELL_MS = 120; // 마우스가 이만큼 머문 카드에만 덧판(빠른 지나감엔 안 띄움)
 const REST_MS = 150; // 카메라가 이만큼 쉬어야 준비 끝을 알린다(입력 중 교체 금지)
 const LONG_FRAME_MS = 50;
+const LONG_FRAME_WINDOW_MS = 10_000; // 이 창 안에
+const LONG_FRAME_LIMIT = 3; // 이만큼이면 느린 GPU(계약 mode — gpuMode 의 frame 판정과 같은 수)
 const INTERACT_WINDOW_MS = 300; // 마지막 카메라 변화 뒤 이만큼은 '조작 중'으로 보고 긴 프레임을 센다
 const PROBE_FRAMES = 30;
 
@@ -99,9 +101,10 @@ export function GpuBoard(props: GpuBoardProps) {
     bakedPrev: false, // 바로 앞 프레임에 구웠다 — 그 프레임 간격은 GPU 느림 판정에 세지 않는다
     texPeak: 0,
     cpuPeak: 0,
+    longFrames: [] as number[],
   });
 
-  const fail = (reason: "creation" | "memory" | "context-lost") => {
+  const fail = (reason: "creation" | "memory" | "context-lost" | "slow-frames") => {
     const s = st.current;
     if (s.failed) return;
     s.failed = true;
@@ -165,13 +168,11 @@ export function GpuBoard(props: GpuBoardProps) {
     if (!s.renderer) return;
     const { model, hiddenId } = live.current;
     s.renderer.setScene({
-      cards: model.cards,
-      lines: model.lines, rects: model.rects,
-      dots: s.lowLod ? model.dots.filter((d) => !d.hideLow) : model.dots,
-      quads: s.lowLod ? model.quads.filter((q) => !q.hideLow) : model.quads,
+      cards: model.cards, lines: model.lines, rects: model.rects, dots: model.dots, quads: model.quads,
       gridColor: [0, 0, 0, 0], // 점 격자는 DOM 층 그대로(.scene-grid)
     });
     s.renderer.setHidden(hiddenId);
+    s.renderer.setLowLod(s.lowLod);
   };
 
   const drawNow = () => {
@@ -207,8 +208,9 @@ export function GpuBoard(props: GpuBoardProps) {
       s.dirty = true;
     }
     if (s.sceneDirty) {
+      // 단순화 경계를 넘었다 — 유니폼 하나만 바꾼다(버퍼 전체를 다시 채우면 축소 도중 그 프레임이 34~83ms 였다: 11-11 실측)
       s.sceneDirty = false;
-      applyScene();
+      s.renderer.setLowLod(s.lowLod);
       s.dirty = true;
     }
     // 조작 중(카메라가 움직인 뒤 150ms 안)에는 굽지 않는다 — 이미 구운 그림을 늘리거나 줄여 그리고, 쉬면 또렷하게 다시 굽는다.
@@ -254,9 +256,17 @@ export function GpuBoard(props: GpuBoardProps) {
         if (!st.current.failed) live.current.dispatch({ type: "probe", token, medianMs: median(ms) });
       });
     }
-    // 조작 중 긴 프레임(최근 10초 3번이면 모드가 잠근다 — 느린 GPU 판정) — 50ms 를 넘은 프레임만 알린다(그 밖엔 모드 상태가 안 바뀐다).
+    // 조작 중 긴 프레임(최근 10초 3번이면 잠근다 — 느린 GPU 판정). 판 안에서 세고, 기준에 닿을 때 한 번만 모드에 알린다 —
+    //  긴 프레임마다 모드 상태를 바꾸면 SceneBoard 가 그때마다 다시 그려져 그것이 또 긴 프레임을 만들었다(11-11 CPU 4배 이동 중 잠금 연쇄).
     //  바로 앞 프레임에 구웠으면 세지 않는다: 그 간격은 CPU 굽기(쉰 뒤 다시 굽기)라 GPU 가 느린 것이 아니다.
-    if (p.phase === "gpu" && gap > LONG_FRAME_MS && now - s.lastCameraAt < INTERACT_WINDOW_MS && !s.bakedPrev) p.dispatch({ type: "frame", now, ms: gap });
+    if (p.phase === "gpu" && gap > LONG_FRAME_MS && now - s.lastCameraAt < INTERACT_WINDOW_MS && !s.bakedPrev) {
+      s.longFrames = s.longFrames.filter((t) => now - t <= LONG_FRAME_WINDOW_MS);
+      s.longFrames.push(now);
+      if (s.longFrames.length >= LONG_FRAME_LIMIT) {
+        fail("slow-frames");
+        return;
+      }
+    }
     s.bakedPrev = baked > 0 || uploaded > 0;
     const busy = pending > 0 || s.dirty || !!s.slide || (p.phase === "preparing" && s.preparedSent !== p.token) || now - s.lastCameraAt < INTERACT_WINDOW_MS;
     if (busy) kick();
