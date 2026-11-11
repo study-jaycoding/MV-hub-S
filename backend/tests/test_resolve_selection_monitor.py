@@ -812,6 +812,47 @@ class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
                 await monitor.stop()
             self.assertIs(monitor._unconfirmed, process)
 
+    async def test_read_failure_while_reaping_a_just_spawned_unregistered_child_is_kept_too(self):
+        """생성은 끝났지만 등록 전에 suspend 가 들어와 직접 회수하는 경로 — 그 회수가 stdout 읽기 실패로 끝나도 자식을 붙들고, 본문에 안 들어가고, 더 띄우지 않는다."""
+        process = ControlledProcess()
+        process.stdin = FakeStdin()
+        process.returncode = 0  # 실행기는 바로 끝남(작업자는 살아 있을 수 있다)
+        process.stdout.set_exception(OSError("pipe read failed"))
+        release = asyncio.Event()
+        spawned = asyncio.Event()
+
+        async def spawn(*_args, **_kwargs):
+            spawned.set()
+            await release.wait()
+            return process
+
+        create = mock.AsyncMock(side_effect=spawn)
+        monitor = ResolveSelectionMonitor()
+        with (
+            mock.patch.object(resolve_selection_monitor, "resolve_compatible_interpreter", return_value=("fake-python", None)),
+            mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=create),
+        ):
+            starting = asyncio.create_task(monitor._start_process())
+            await asyncio.wait_for(spawned.wait(), 2)
+            entered = []
+
+            async def transfer():
+                async with monitor.suspended():
+                    entered.append(True)
+
+            suspending = asyncio.create_task(transfer())
+            await asyncio.sleep(0.02)  # suspend 가 멈춤 표시를 올리고 잠금을 기다린다
+            release.set()
+            with self.assertRaises(OSError):
+                await asyncio.wait_for(starting, 2)
+            with self.assertRaises(OSError):
+                await asyncio.wait_for(suspending, 2)
+            self.assertEqual(entered, [])
+            self.assertIs(monitor._unconfirmed, process)
+            self.assertIsNone(monitor._process)
+            await monitor._start_process()  # 재확인 실패 중 — 새 자식 0
+            self.assertEqual(create.await_count, 1)
+
     async def test_suspend_body_waits_for_worker_pipe_after_launcher_exit(self):
         """suspended 본문은 실행기가 끝난 뒤에도 작업자 파이프가 닫히기 전에는 시작하지 않는다."""
         process = ControlledProcess()

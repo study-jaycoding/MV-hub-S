@@ -199,7 +199,11 @@ class ResolveSelectionMonitor:
         # 인터프리터 probe 중 suspend/stop이 들어온 경쟁 구간을 닫는다. 대입 전이라
         # _stop_process가 볼 수 없었던 자식은 여기서 직접 회수한다.
         if self._held() or self._stopping:
-            await self._terminate_process(process)
+            try:
+                await self._terminate_process(process)
+            except BaseException:
+                self._unconfirmed = process  # 등록 전 자식도 종료를 확인 못 했으면 붙든다 — _close_process 와 같은 규칙
+                raise
             return None
         self._priming = True
         self._worker_had_snapshot = False
