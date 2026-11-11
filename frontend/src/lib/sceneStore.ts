@@ -574,6 +574,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     let movedConflicts: SceneAbsorbConflict[] = [];
     let storedConflicts: SceneAbsorbConflict[] = [];
     let notebookMeta: StoreValues | null = null;
+    let shapeRefusals: SceneShapeRefusal[] = []; // 재생에서 모양 지킴이가 버린 연산 — 확정에 성공한 뒤에만 알린다(실패하면 재시도가 다시 판정)
     try {
       if (!(await ensureDb())) throw new Error("scene store not open");
       await storeTx(
@@ -600,11 +601,20 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           // step 앞에서 메타에 더한다 — step 이 충돌을 쓰면(흡수·정리) 이 값 위에서 쓴다. 같은 씬의 옛 충돌을 덮지 않게 뒤에 붙인다.
           storedConflicts = [...((meta[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? []), ...movedConflicts];
           if (moved.length) meta[K_CONFLICTS] = storedConflicts;
+          shapeRefusals = [];
           for (const op of batch) {
             if (op.handed || op.aside) continue;
             try {
               const before = { ...live };
               op.mutate(live, leaseGenerations);
+              const shape = shapeRegression(before, live);
+              if (shape) {
+                // 접수 때는 통과했지만(이미 깨진 씬) 다른 창이 그사이 고친 최신본 위에서 틀린 항목을 늘린다 — 되돌리고 버린다(모양 지킴이)
+                restoreBuckets(live, before);
+                op.poisoned = true;
+                shapeRefusals.push(shape); // 알림은 확정 뒤 — 같은 확정의 '저장 다시 정상' 알림에 덮이지 않게(Codex 리뷰 P2)
+                continue;
+              }
               if (notebook) recordNotebookChanges(before, live, meta, op.intentId);
             } catch (error) {
               // 화면(working)에서는 됐는데 저장소 내용 위에서는 던진 연산 — 다시 해도 같으므로 버린다.
@@ -703,6 +713,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
       if (wrote) flushListener?.(true, { notebookMetaOnly, cameraOnly });
       announceWrite();
     }
+    for (const refusal of shapeRefusals) shapeListener?.(refusal);
     if (pending.length) scheduleFlush(); // 도중에 들어온 연산
     return true;
   });
@@ -816,6 +827,56 @@ export interface SceneOpMerge<P> {
   replay: (all: ScenesByProject, patch: P) => void;
 }
 
+// ── 씬 모양 지킴이(2026-11-12) ────────────────────────────────────────────────────
+// 11-10 한 씬이 (카드, 연결선, 묶음) → (카드, 카드, 연결선)으로 한 칸씩 밀려 저장돼 연결선을 잃었는데 쓴 코드는 못 찾았다.
+// 원인을 몰라도 같은 손상이 저장본에 닿지 않게 — 이미 있던 씬의 '모양이 틀린 항목'을 늘리는 쓰기는 접수하지 않고(applySceneOp),
+// 재생 때 늘면 그 연산을 버린다(runStoreTx). 새 씬(가져오기·백업 복구)과 이미 깨진 만큼은 막지 않는다.
+// 기록: docs/status/캔버스_저장입구모양검사_2026-11-12.md
+export interface SceneShapeRefusal { sceneId: string; name: string; before: number; after: number }
+const isText = (value: unknown): boolean => typeof value === "string";
+function wrongItems(list: unknown, fits: (item: Record<string, unknown>) => boolean, optional = false): number {
+  if (!Array.isArray(list)) return list === undefined && optional ? 0 : 1;
+  let wrong = 0;
+  for (const item of list) if (!item || typeof item !== "object" || !fits(item as Record<string, unknown>)) wrong += 1;
+  return wrong;
+}
+const wrongShape = (scene: Scene): number =>
+  wrongItems(scene.cards, (card) => isText(card.id) && isText(card.kind)) +
+  wrongItems(scene.edges, (edge) => isText(edge.from) && isText(edge.to)) +
+  wrongItems(scene.groups, (group) => isText(group.id) && Array.isArray(group.cardIds), true);
+/** after 가 before 보다 틀린 항목을 늘린 첫 씬(이미 있던 씬만). 검사가 넘어지면 null — 저장이 통째로 멈추는 쪽이 더 나쁘다. */
+function shapeRegression(before: ScenesByProject, after: ScenesByProject): SceneShapeRefusal | null {
+  try {
+    for (const bucket of Object.keys(after)) {
+      const next = after[bucket];
+      const prev = before[bucket];
+      if (next === prev || !Array.isArray(next) || !Array.isArray(prev)) continue;
+      const old = new Map(prev.map((scene) => [scene?.id, scene] as const));
+      for (const scene of next) {
+        const was = scene && old.get(scene.id);
+        // 세 배열이 그대로면 수도 같다 — 이름·카메라만 바꾼 쓰기는 세지 않는다(제품 빌드는 씬을 얼리지 않아 객체별 캐시는 낡을 수 있다)
+        if (!was || was === scene || (was.cards === scene.cards && was.edges === scene.edges && was.groups === scene.groups)) continue;
+        const from = wrongShape(was);
+        const to = wrongShape(scene);
+        if (to > from) return { sceneId: scene.id, name: was.name, before: from, after: to }; // 이름은 저장본 쪽 — 들어온 값은 믿을 수 없다
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+/** 재생 중 연산 하나가 바꾼 버킷을 그 앞으로 되돌린다(모양 지킴이가 버린 연산). */
+function restoreBuckets(all: ScenesByProject, before: ScenesByProject): void {
+  for (const key of Object.keys(all)) if (!(key in before)) delete all[key];
+  Object.assign(all, before);
+}
+let shapeListener: ((refusal: SceneShapeRefusal) => void) | null = null;
+/** 모양 지킴이가 쓰기를 거절했을 때 — 데이터 계층(scenes)이 기록·알림에 쓴다. 접수 거절은 그 쓰기를 부른 틱 안에서 부른다. */
+export function setSceneShapeListener(fn: ((refusal: SceneShapeRefusal) => void) | null): void {
+  shapeListener = fn;
+}
+
 let captureStack: PendingOp[][] = [];
 let captureFailed: boolean[] = [];
 
@@ -829,7 +890,7 @@ let captureFailed: boolean[] = [];
 export function applySceneOp<T, P = never>(
   mutate: (all: ScenesByProject, generations: Readonly<Record<string, string | null>>) => SceneMutation<T>,
   options: { confirmedOnly?: boolean; merge?: SceneOpMerge<P>; handover?: boolean } = {},
-): { ok: boolean; value: T; paused?: boolean } {
+): { ok: boolean; value: T; paused?: boolean; shape?: boolean } {
   ensureMemoryStoreOutsideBrowser();
   const { merge } = options;
   const last = pending[pending.length - 1];
@@ -851,6 +912,13 @@ export function applySceneOp<T, P = never>(
     return { ok: false, paused: true, value: outcome.value };
   }
   if (!outcome.write) return { ok: true, value: outcome.value };
+  const shape = shapeRegression(working, draft);
+  if (shape) {
+    // 접수하지 않는다 — working·pending·합칠 앞 연산 모두 그대로(모양 지킴이)
+    captureFailed = captureFailed.map(() => true);
+    shapeListener?.(shape);
+    return { ok: false, value: outcome.value, shape: true };
+  }
   if (!options.confirmedOnly) {
     freezeScenes(draft);
     working = draft;
@@ -978,6 +1046,8 @@ export function readSceneStoreForClose(): { scenes: ScenesByProject; meta: Store
       if (op.confirmedOnly || op.aside || op.handed || op.poisoned) continue;
       const before = { ...all };
       op.mutate(all, leaseGenerations);
+      // 저장 재생과 같은 판정 — 고친 확정본 위에서 틀린 항목을 늘리는 연산은 닫기 전송에 싣지 않는다(Codex 리뷰 P1, 닫히는 중이라 알리지 않는다)
+      if (shapeRegression(before, all)) { restoreBuckets(all, before); continue; }
       recordNotebookChanges(before, all, meta, op.intentId);
     }
     return { scenes: all, meta };

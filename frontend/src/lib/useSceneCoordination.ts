@@ -20,6 +20,7 @@ import {
   recoverSceneConflicts,
   setActiveSceneId as persistActiveScene,
   subscribeSceneSaveState,
+  subscribeSceneShapeRefused,
   updateScenesWith,
   updateScene,
   updateSceneCamera,
@@ -293,6 +294,19 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       window.removeEventListener("storage", onStorage);
     };
   }, [recoverConflicts]);
+  // 모양 지킴이 거절(scenes.subscribeSceneShapeRefused — 10초에 한 번만 온다). 재시도 없는 단건 거절이라 '저장 안 됨' 상태와 따로 알린다.
+  //  재생 거절은 화면 값을 다시 계산해 바깥 변화 통지를 함께 내고, 그 합치기는 그릴 때 '다른 탭에서 변경됐습니다'를 띄운다 —
+  //  그 알림 묶음(5초) 시계를 찍어 거절 경고가 덮이지 않게 한다(Codex 리뷰 P2).
+  useEffect(
+    () =>
+      subscribeSceneShapeRefused(({ name }) => {
+        lastNotifyRef.current = Date.now();
+        flashRef.current?.(
+          `'${name}' 씬의 이번 편집은 저장하지 않았습니다 — 연결선·묶음 칸에 모양이 틀린 값이 들어왔습니다. 저장본은 그대로이고, 방금 편집은 새로 고치면 사라집니다.`,
+        );
+      }),
+    [],
+  );
   // 씬 생성 카드 1개 선택 시 그 카드(id+레퍼런스)를 하단 프롬프트에 바인딩. SceneBoard 가 통지.
   //  묶임은 **그 카드의 씬**과 함께 든다(sceneId) — 활성 씬과 다르면 없는 것으로 본다(아래 sceneBinding). 씬을 바꾼 직후(보드가 선택
   //  해제를 그리기 전)의 도크는 '새 씬 + 떠난 씬의 카드 id' 로 묶여 있었다: 두 씬에 같은 id 의 카드가 있으면(가져온 씬은 카드 id 를

@@ -26,12 +26,14 @@ import {
   sceneStoreHasPending,
   sceneStoreReady,
   setSceneFlushListener,
+  setSceneShapeListener,
   settleConflictsAsCopies,
   workingBucketLength,
   CAMERA_SLOT_PREFIX,
   type SceneFlushInfo,
   type SceneHandover,
   type SceneOpMerge,
+  type SceneShapeRefusal,
 } from "./sceneStore";
 
 export { pendingSceneWritesConfirmed } from "./sceneStore";
@@ -407,12 +409,30 @@ setSceneFlushListener((ok, info) => {
   if (ok) scenesPersistedSubs.forEach((fn) => fn({ notebookMetaOnly: !!info?.notebookMetaOnly, cameraOnly: !!info?.cameraOnly }));
 });
 
+// 모양 지킴이가 쓰기를 거절했을 때(sceneStore — 이미 있던 씬의 연결선·묶음·카드 칸에 모양이 틀린 값을 늘리는 쓰기).
+// 기록(호출 위치 stack — 어느 코드가 썼는지 찾는 단서)과 화면 알림을 10초에 한 번. 화면 쪽은 구독해 띄운다(useSceneCoordination).
+// '저장 안 됨' 상태와는 따로 둔다 — 재시도 없는 단건 거절이라 다른 씬의 확정 성공이 곧 '정상'으로 풀어 버린다.
+const shapeRefusedSubs = new Set<(refusal: SceneShapeRefusal) => void>();
+export function subscribeSceneShapeRefused(fn: (refusal: SceneShapeRefusal) => void): () => void {
+  shapeRefusedSubs.add(fn);
+  return () => shapeRefusedSubs.delete(fn);
+}
+const SHAPE_NOTIFY_MS = 10_000;
+let shapeNotifiedAt = -Infinity;
+setSceneShapeListener((refusal) => {
+  const now = Date.now();
+  if (now - shapeNotifiedAt < SHAPE_NOTIFY_MS) return;
+  shapeNotifiedAt = now;
+  console.error("[씬 모양 지킴이] 모양이 틀린 씬 쓰기를 받지 않았습니다", refusal, new Error("scene shape refused").stack);
+  shapeRefusedSubs.forEach((fn) => fn(refusal));
+});
+
 // 씬 쓰기의 단일 관문. mutate 는 화면 값에 한 번, 저장소 내용 위에서 다시(재생) 실행된다 —
 // **순수**해야 한다: id·시각·계정 키·입력은 밖에서 고정해 넣고, 버킷은 새 배열로 갈아 끼운다.
 function commit<T, P = never>(
   mutate: (all: ScenesByProject, generations: Readonly<Record<string, string | null>>) => { write: boolean; value: T },
   options?: { confirmedOnly?: boolean; merge?: SceneOpMerge<P>; handover?: boolean },
-): { ok: boolean; value: T; paused?: boolean } {
+): { ok: boolean; value: T; paused?: boolean; shape?: boolean } {
   const result = applySceneOp(mutate, options);
   // 정상 저장도 확정 전에는 메모리에만 있다. 실패 경고와 별도로 닫기·새로고침을 보호한다.
   holdUnload("scene-save:pending", sceneStoreHasPending());
@@ -554,7 +574,8 @@ export function createScene(projectId: string | null, name?: string): Scene | nu
 //  · missing: 대상 씬이 없어 바뀐 것이 없다(다른 창이 먼저 지움).
 //  종전에는 둘 다 '성공'으로 보여, 없는 씬에 쓴 편집이 저장된 것처럼 보였다.
 //  (저장소 **확정** 실패는 여기로 오지 않는다 — 뒤따르는 일이라 subscribeSceneSaveState 가 알린다.)
-export type SceneWriteFailure = "storage" | "missing" | "paused"; // paused = 캔버스가 다른 창에 떠 있다 — 저장 실패가 아니라 알리지 않는다
+// paused = 캔버스가 다른 창에 떠 있다 — 저장 실패가 아니라 알리지 않는다 · shape = 모양 지킴이가 거절(알림은 subscribeSceneShapeRefused)
+export type SceneWriteFailure = "storage" | "missing" | "paused" | "shape";
 export type SceneWriteResult =
   | { ok: true; scenes: Scene[] }
   | { ok: false; reason: SceneWriteFailure };
@@ -625,7 +646,7 @@ function writeScenePatch(
     },
   });
   if (!out.value) return { ok: false, reason: "missing" };
-  if (!out.ok) return { ok: false, reason: out.paused ? "paused" : "storage" };
+  if (!out.ok) return { ok: false, reason: out.paused ? "paused" : out.shape ? "shape" : "storage" };
   return { ok: true };
 }
 

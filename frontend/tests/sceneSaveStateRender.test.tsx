@@ -12,6 +12,7 @@ import {
   failSceneStoreWritesForTest,
   initSceneStore,
   settleSceneStoreForTest,
+  writeSceneStoreAsOtherWindowForTest,
 } from "../src/lib/sceneStore";
 import { useSceneCoordination } from "../src/lib/useSceneCoordination";
 
@@ -148,6 +149,33 @@ it("옛 창과 엇갈린 씬은 묻지 않고 새 탭으로 살리고 알린다"
   expect(tabNames()).toEqual(["이 창에서 고침", "s2", "[옛 창] 옛 창에서 …"]);
   expect(coordination!.scenes.map((s) => s.name)).toEqual(["이 창에서 고침", "s2", "[옛 창] 옛 창에서 고침"]);
   expect(flashed().filter((message) => message.includes("새 탭"))).toHaveLength(1);
+});
+
+// 모양 지킴이(2026-11-12) — 재생 거절은 화면 값을 다시 계산해 바깥 변화 통지도 낸다. 그 합치기가 그릴 때 '다른 탭에서 변경됐습니다'를
+//  띄우는데, 알림 칸이 하나라 그것이 거절 경고를 덮었다(Codex 리뷰 P2) — 실제 훅으로 그리기까지 본다.
+it("재생에서 거절된 편집은 다시 그린 뒤에도 거절 경고가 마지막 알림으로 남는다", async () => {
+  const card = { id: "c1", kind: "text" as const, x: 0, y: 0 };
+  const cardEdges = [card] as unknown as Scene["edges"]; // 연결선 칸에 카드 — 이미 깨진 씬(틀린 항목 1)
+  await open({ ...mk("p2"), cards: [card], edges: cardEdges });
+  await act(async () => coordination!.selectScene("p2"));
+  expect(coordination!.activeSceneId).toBe("p2");
+  failSceneStoreWritesForTest(true);
+  await act(async () => {
+    coordination!.writeBoardSnapshot({ accountNamespace: "local", sceneId: "p2" }, { cards: [card, { ...card, id: "c2" }], edges: cardEdges, groups: [] });
+  });
+  await settle(); // 저장 실패 — 편집은 대기에 남는다(접수 때 1 → 1)
+  failSceneStoreWritesForTest(false);
+  writeSceneStoreAsOtherWindowForTest((all) => {
+    all[BUCKET] = all[BUCKET].map((scene) => (scene.id === "p2" ? { ...scene, edges: [] } : scene)); // 다른 창이 고쳤다
+  });
+  await act(async () => {
+    await settleSceneStoreForTest(); // 재생에서 거절 → 화면 값 다시 계산 → act 끝에 다시 그린다
+  });
+  await settle();
+  const messages = flashed();
+  expect(messages.at(-1)).toContain("저장하지 않았습니다");
+  expect(messages.some((message) => message.includes("다른 탭에서 이 씬이 변경됐습니다"))).toBe(false);
+  expect(listPersistedScenes(null)[0].edges).toEqual([]);
 });
 
 it("앱을 켤 때 이미 보관돼 있던 엇갈림도 새 탭으로 살린다", async () => {
