@@ -39,6 +39,7 @@ class ResolveSelectionMonitor:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._unconfirmed: asyncio.subprocess.Process | None = None  # 회수했지만 진짜 작업자 종료(stdout EOF)를 확인하지 못한 자식
         self._reader_task: asyncio.Task[None] | None = None
         self._process_lock = asyncio.Lock()
         self._selection_ready = asyncio.Event()
@@ -112,6 +113,9 @@ class ResolveSelectionMonitor:
     async def _close_process(self) -> None:
         # 호출자는 시작·참조 등록과 같은 잠금을 종료 완료까지 보유한다.
         process, self._process = self._process, None
+        if process is None:
+            # 지난 회수에서 종료를 확인하지 못한 자식 — 다시 확인한다(또 실패하면 다시 붙든다)
+            process, self._unconfirmed = self._unconfirmed, None
         self._selection_revision += 1
         self._process_epoch += 1
         self._latest_line = None
@@ -123,7 +127,13 @@ class ResolveSelectionMonitor:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await reader
         if process is not None:
-            await self._terminate_process(process)
+            try:
+                await self._terminate_process(process)
+            except BaseException:
+                # 종료를 확인하지 못했다(stdout 읽기 실패·취소) — 살아 있을 수 있는 작업자를 잊지 않는다. 확인될 때까지 회수는 실패로 올라가고
+                # (suspended 본문에 들어가지 않는다) 감시도 새 자식을 띄우지 않는다(_start_process).
+                self._unconfirmed = process
+                raise
 
     @staticmethod
     async def _terminate_process(process: asyncio.subprocess.Process) -> None:
@@ -147,16 +157,16 @@ class ResolveSelectionMonitor:
                 await process.wait()
         # 직접 자식은 실행기일 수 있다 — returncode 는 실행기의 종료일 뿐이다. 진짜 작업자까지 끝났는지는 stdout 파이프가 닫히는 것(EOF)으로
         # 확인한다(쓰기 끝을 쥔 프로세스가 모두 끝나야 닫힌다). 그 전에는 돌아가지 않는다 — suspended 가 살아 있는 작업자를 둔 채 Resolve 변경을 허용하지 않게.
+        # 읽기 오류는 EOF 가 아니다(종료 증거가 아님) — 삼키지 않고 올린다. 호출자가 '종료 미확인'으로 붙들어 둔다(_close_process).
         stdout = getattr(process, "stdout", None)
         if stdout is not None:
-            with contextlib.suppress(OSError, ValueError):
-                while await stdout.read(65536):
-                    pass
+            while await stdout.read(65536):
+                pass
 
     async def _start_process(self) -> None:
         async with self._process_lock:
-            if self._held() or self._stopping:
-                return
+            if self._held() or self._stopping or self._unconfirmed is not None:
+                return  # 종료 미확인 작업자가 있으면 새로 띄우지 않는다 — 같은 Resolve 를 둘이 읽지 않게
             # _run의 판정 뒤 suspend가 들어와도 생성·참조 등록·reader 시작을
             # 한 단위로 마친다. 호출자는 이 단위가 끝난 뒤에 취소를 전파한다.
             self._process = await self._launch_process()
@@ -498,18 +508,27 @@ class ResolveSelectionMonitor:
             account_uid=scope,
         )
 
+    async def _reap(self) -> None:
+        """감시 루프용 회수 — 종료를 확인하지 못해도(stdout 읽기 실패) 루프는 살아, 다음 바퀴에 다시 확인한다(그동안 새 자식은 띄우지 않는다)."""
+        try:
+            await self._stop_process()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 보조 감시 실패가 서버 수명을 끝내면 안 된다.
+            _log.exception("Resolve 선택 감시 자식의 종료를 확인하지 못했습니다")
+
     async def _run(self) -> None:
         restart_index = 0
         while not self._stopping:
             stats = await manager.stats()
             if self._held() or stats.get("connections", 0) <= 0:
-                await self._stop_process()
+                await self._reap()
                 self._last_selection_key = None
                 restart_index = 0
                 await asyncio.sleep(_CLIENT_CHECK_SECONDS)
                 continue
             if self._process is None or self._process.returncode is not None:
-                await self._stop_process()
+                await self._reap()
                 try:
                     await run_non_abandon(self._start_process())
                 except asyncio.CancelledError:
@@ -526,7 +545,7 @@ class ResolveSelectionMonitor:
             if process is None:
                 continue  # 시작 완료 직후 suspend가 회수한 경우
             if process.stdout is None:
-                await self._stop_process()
+                await self._reap()
                 continue
             try:
                 await asyncio.wait_for(self._selection_ready.wait(), timeout=1.0)
@@ -538,7 +557,7 @@ class ResolveSelectionMonitor:
                 restart_index = 0
                 self._worker_had_snapshot = False
             if self._reader_closed:
-                await self._stop_process()
+                await self._reap()
                 delay = _RESTART_DELAYS[min(restart_index, len(_RESTART_DELAYS) - 1)]
                 restart_index += 1
                 await asyncio.sleep(delay)
@@ -555,7 +574,7 @@ class ResolveSelectionMonitor:
             except Exception:  # noqa: BLE001 - DB/NAS/WS 일시 오류 뒤 다음 선택을 계속 감시한다.
                 _log.exception("Resolve 선택 신호 처리 중 오류가 발생했습니다")
                 self._last_selection_key = None
-                await self._stop_process()
+                await self._reap()
                 delay = _RESTART_DELAYS[min(restart_index, len(_RESTART_DELAYS) - 1)]
                 restart_index += 1
                 await asyncio.sleep(delay)
