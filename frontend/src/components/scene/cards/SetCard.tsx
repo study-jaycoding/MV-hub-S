@@ -6,7 +6,76 @@ import { useDragEndReset } from "../../../lib/useDragEndReset";
 
 // 모양 = INPUT·OUTPUT 처럼 맨 위 자기 색 막대 + 물든 몸통, 값은 알약(Jay 2026-10-30 안 B).
 // memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
-export const SetCard = memo(function SetCard({
+type SetCardEdit = {
+  setFolder: (cardId: string, folder?: SceneSetFolder) => void;
+  setTagsText: (cardId: string, tagsText: string) => void;
+  flushPending: () => void;
+  requestFit: (cardId: string) => void; // 태그를 다 치면 알약이 모두 보이게 카드를 늘린다(SceneBoard — 모델 노드와 같은 길)
+  onOutPortDown: (e: MouseEvent, cardId: string) => void;
+  onResizeDown: (e: MouseEvent, cardId: string) => void;
+};
+
+//  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 폴더·태그를 보기만(끌어 놓기·지우기·태그 고치기·포트 없음).
+export const SetCard = memo(function SetCard(props: ({ card: SceneCard; mode?: "edit" } & SetCardEdit) | { card: SceneCard; mode: "read" }) {
+  if (props.mode === "read") return <SetCardRead card={props.card} />;
+  return <SetCardEditBody {...props} />;
+});
+
+function SetCardRead({ card }: { card: SceneCard }) {
+  const folder = card.setCfg?.folder;
+  const tags = parseSceneSetTags(card.setCfg?.tagsText || "");
+  return (
+    <div className="scene-card-inner scene-setnode">
+      <div className="scene-card-hd setbar">SET</div>
+      <div className="scene-setnode-body">
+        <div className="scene-setnode-folder">
+          <span className="scene-setnode-label">폴더</span>
+          {folder ? (
+            <>
+              <div className="scene-setnode-project" title={`${folder.projectName || folder.projectId} / ${folder.path}`}>
+                <span className="scene-setnode-icon">📁</span>
+                <span className="scene-setnode-project-name">{folder.projectName || folder.projectId}</span>
+              </div>
+              <div className="scene-setnode-steps" title={folder.path}>
+                {folder.path.split("/").map((step, i) => (
+                  <span key={i} className="scene-setnode-step">
+                    {i > 0 && <span className="scene-setnode-sep">›</span>}
+                    <span className="scene-setnode-tag">{step}</span>
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="scene-setnode-pill ph">
+              <span className="scene-setnode-icon">📁</span>
+              <span>폴더 끌어 놓기</span>
+            </div>
+          )}
+        </div>
+        <div className="scene-setnode-tags">
+          <span className="scene-setnode-label">태그</span>
+          <div className="scene-setnode-tagview">
+            {tags.length ? (
+              tags.map((tag) => (
+                <span key={tag} className="scene-setnode-tag">
+                  <i>#</i>
+                  {tag}
+                </span>
+              ))
+            ) : (
+              <span className="scene-setnode-pill ph">
+                <span className="scene-setnode-icon">#</span>
+                <span>태그1, 태그2</span>
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SetCardEditBody({
   card,
   setFolder,
   setTagsText,
@@ -14,15 +83,7 @@ export const SetCard = memo(function SetCard({
   requestFit,
   onOutPortDown,
   onResizeDown,
-}: {
-  card: SceneCard;
-  setFolder: (cardId: string, folder?: SceneSetFolder) => void;
-  setTagsText: (cardId: string, tagsText: string) => void;
-  flushPending: () => void;
-  requestFit: (cardId: string) => void; // 태그를 다 치면 알약이 모두 보이게 카드를 늘린다(SceneBoard — 모델 노드와 같은 길)
-  onOutPortDown: (e: MouseEvent, cardId: string) => void;
-  onResizeDown: (e: MouseEvent, cardId: string) => void;
-}) {
+}: { card: SceneCard } & SetCardEdit) {
   const [dragOver, setDragOver] = useState(false);
   const [editingTags, setEditingTags] = useState(false);
   useDragEndReset(dragOver, () => setDragOver(false)); // 이 칸 위에서 끌기를 취소하면 dragleave 가 오지 않는다
@@ -171,4 +232,4 @@ export const SetCard = memo(function SetCard({
       />
     </>
   );
-});
+}

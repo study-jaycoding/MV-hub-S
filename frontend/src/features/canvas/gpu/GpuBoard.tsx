@@ -37,7 +37,12 @@ export interface GpuBoardProps {
   onHover: (cardId: string | null) => void;
   /** 덧판 안에 초점·덧판에서 연 창이 있다 — 마우스가 떠나도 덧판을 두고 새 덧판도 안 띄운다 */
   overlayPinned: boolean;
+  /** 25% 이하 단순화 — hideLow 조각(결과 수 배지·폴더 이름표·회색 끝 점)을 그리지 않는다 */
+  lowLod: boolean;
 }
+
+/** 아틀라스와 같은 해상도 단계 — 화면 배율을 1.25배 넘게 늘려 그리지 않는 가장 작은 단계 */
+const tierOf = (scale: number) => [0.25, 0.5, 1, 2].find((t) => scale <= t * 1.25) ?? 2;
 
 const median = (xs: number[]) => {
   if (!xs.length) return Infinity;
@@ -82,7 +87,7 @@ export function GpuBoard(props: GpuBoardProps) {
     slide: null as { from: SceneCamera; start: number; ms: number } | null,
     lastCameraAt: -Infinity,
     lastFrameAt: 0,
-    synced: { z: 0, x: 0, y: 0, model: null as GpuSceneModel | null, w: 0, h: 0 },
+    synced: { z: 0, x: 0, y: 0, scale: 0, model: null as GpuSceneModel | null, w: 0, h: 0 },
     generation: 0,
     sceneId: "",
     preparedSent: -1,
@@ -114,18 +119,23 @@ export function GpuBoard(props: GpuBoardProps) {
     return ids;
   };
 
-  /** 아틀라스에 지금 요청·보이는 카드·배율을 알린다 — 모델이 바뀌었거나 화면이 꽤 움직였을 때만(매 프레임 아님) */
+  /** 아틀라스에 지금 요청·보이는 카드·배율을 알린다 — 모델이 바뀌었거나 화면이 꽤 움직였을 때만(매 프레임 아님).
+   *  해상도 단계는 카메라가 쉰 뒤(150ms)에만 바꾼다 — 줌 도중 단계가 바뀔 때마다 보이는 카드를 모두 다시 구우면 그 굽기가 줌 프레임을 먹었다
+   *  (11-11 격리 실측: 메인 2~3배). 줌 도중엔 옛 그림을 늘리거나 줄여 그린다. */
   const syncAtlas = (force: boolean) => {
     const s = st.current;
     const { model } = live.current;
     if (!s.atlas) return;
     const c = camera();
+    const resting = performance.now() - s.lastCameraAt >= REST_MS;
+    const scale = resting || !s.synced.scale ? c.z * c.dpr : s.synced.scale;
     const moved = Math.abs(c.x - s.synced.x) + Math.abs(c.y - s.synced.y) > Math.max(c.width, c.height) * 0.25;
     const zoomed = !s.synced.z || Math.abs(Math.log(c.z / s.synced.z)) > 0.1;
-    if (!force && s.synced.model === model && !moved && !zoomed && s.synced.w === c.width && s.synced.h === c.height) return;
-    s.synced = { z: c.z, x: c.x, y: c.y, model, w: c.width, h: c.height };
+    const retier = tierOf(scale) !== tierOf(s.synced.scale);
+    if (!force && s.synced.model === model && !moved && !zoomed && !retier && s.synced.w === c.width && s.synced.h === c.height) return;
+    s.synced = { z: c.z, x: c.x, y: c.y, scale, model, w: c.width, h: c.height };
     try {
-      s.atlas.sync(model.requests, visibleIds(c, model), c.z * c.dpr, s.generation);
+      s.atlas.sync(model.requests, visibleIds(c, model), scale, s.generation);
     } catch {
       fail("memory");
     }
@@ -263,10 +273,12 @@ export function GpuBoard(props: GpuBoardProps) {
   useLayoutEffect(() => {
     const s = st.current;
     if (!s.renderer || !s.atlas) return;
-    const { model, hiddenId } = props;
+    const { model, hiddenId, lowLod } = props;
     s.renderer.setScene({
       cards: hiddenId ? model.cards.map((c) => (c.id === hiddenId ? { ...c, hidden: true } : c)) : model.cards,
-      lines: model.lines, rects: model.rects, dots: model.dots, quads: model.quads,
+      lines: model.lines, rects: model.rects,
+      dots: lowLod ? model.dots.filter((d) => !d.hideLow) : model.dots,
+      quads: lowLod ? model.quads.filter((q) => !q.hideLow) : model.quads,
       gridColor: [0, 0, 0, 0], // 점 격자는 DOM 층 그대로(.scene-grid)
     });
     s.hit = buildHitIndex(model.cards.map((c) => ({ id: c.id, x: c.x, y: c.y, w: c.w, h: c.h, z: c.z })));
@@ -279,7 +291,7 @@ export function GpuBoard(props: GpuBoardProps) {
     } else s.dirty = true;
     kick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.model, props.hiddenId]);
+  }, [props.model, props.hiddenId, props.lowLod]);
 
   // 단계가 바뀌면(준비 → 검사 → 그리기) 다시 돈다
   useEffect(() => {

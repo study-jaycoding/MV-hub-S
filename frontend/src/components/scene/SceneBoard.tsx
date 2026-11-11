@@ -1266,7 +1266,8 @@ export function SceneBoard({
   useEffect(() => {
     const ids = [...selected];
     let payload: { sceneId: string; cardId: string; refs: SceneRef[] } | null = null;
-    if (ids.length === 1) {
+    // GPU 보기 모드에서는 프롬프트를 카드에 잇지 않는다(App 의 프롬프트 편집이 카드 글·참조를 바꾸므로) — 편집 모드로 돌아오면 다시 잇는다
+    if (ids.length === 1 && gpu.editAllowed) {
       const c = cards.find((cc) => cc.id === ids[0]);
       if (c && c.kind === "generation") {
         // ★연결 상태로 정규화 — 저장 refs 가 비어도 연결된 레퍼런스를 다시 모아 프롬프트·생성에 반영한다
@@ -1285,7 +1286,7 @@ export function SceneBoard({
     if (sig === lastEmitRef.current) return;
     lastEmitRef.current = sig;
     onBindingRef.current?.(payload);
-  }, [selected, cards, edges]);
+  }, [selected, cards, edges, gpu.editAllowed]);
   useEffect(() => () => onBindingRef.current?.(null), []); // 언마운트(탭·씬 이탈) → 바인딩 해제
 
   const { tagEditCardId, setTagEditCardId, tagEditNodeGenId, setTagEditNodeGenId, applyCardTags, applyCardAutoTags,
@@ -2098,7 +2099,8 @@ export function SceneBoard({
   const lastSelGensRef = useRef<Generation[]>([]);
   useEffect(() => {
     // 변형 팝업이 열려 있으면(그 자체 액션바가 있으니) 캔버스 선택바는 숨긴다 — 선택 자체는 유지.
-    const gens = cardMenu
+    //  GPU 보기 모드도 숨긴다(선택바의 지우기·공유·폴더 지정은 변경이다) — 편집 모드로 돌아오면 다시 보인다.
+    const gens = cardMenu || !gpu.editAllowed
       ? []
       : [...selected]
           .map((id) => cards.find((c) => c.id === id))
@@ -2114,7 +2116,7 @@ export function SceneBoard({
     if (gens.length === last.length && gens.every((g, index) => g === last[index])) return;
     lastSelGensRef.current = gens;
     onSelGensRef.current?.(gens);
-  }, [selected, cards, genData, cardMenu]);
+  }, [selected, cards, genData, cardMenu, gpu.editAllowed]);
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
   //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
@@ -2131,8 +2133,9 @@ export function SceneBoard({
         //  (동기화는 useEffect). 그때 비동기 결과가 새 씬 id 로 들어와 옛 카드를 새 씬에 저장하지 않게(Codex).
         sceneId: cardsSceneId,
         commitDocument,
-        deleteSelected: () => deleteCards(selResultCardIds()),
-        setCardRefs,
+        // GPU 보기 모드 — 부모 명령도 입구에서 거절(세션 실행점이 한 번 더 거절한다)
+        deleteSelected: () => (gpuFlag && !gpuEditRef.current ? gpu.refuse() : deleteCards(selResultCardIds())),
+        setCardRefs: (cardId, refs) => (gpuFlag && !gpuEditRef.current ? (gpu.refuse(), refs) : setCardRefs(cardId, refs)),
         flushPending,
         applyAssetRelink,
         zoomFit: guardedZoom.onFit,
@@ -3145,7 +3148,6 @@ export function SceneBoard({
         return { id: g.id, x: box.x, y: box.y, w: box.w, h: box.h, color: g.color ?? null, name: g.name, count: g.cardIds.filter((id) => cardById(id)).length,
           collapsed: !!g.collapsed, selected: selectedGroupIds.has(g.id) };
       }),
-      lowLod: gpu.lowLod,
       variantCount: (card) => variantIds(card).length,
       folderChip: (card) => {
         const g = card.genId ? ownEntry(genData, card.genId) : undefined;
@@ -3155,7 +3157,7 @@ export function SceneBoard({
     });
     // 모든 판정 자료를 넣는다 — pendingInputs·edgesToCut 은 렌더마다 새 Set 이라 내용 글자로, 서버 판정·어셋 버전·방금 생성은 저장소 판 번호로
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gpuActive, visibleCards, heightTick, cardsById, resolvedEdges, genData, selected, edgeGeometry, traceGeometry, groupViews, selectedGroupIds, gpu.lowLod,
+  }, [gpuActive, visibleCards, heightTick, cardsById, resolvedEdges, genData, selected, edgeGeometry, traceGeometry, groupViews, selectedGroupIds,
     fill, refWorkspaceId, typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, folderSel, comfyWaitingIds, genWaitingFromComfy,
     missingIds, answeredIds, disabledIds, hideFailed, genViews.lastCardId, edgeRoles, refCardEdgeIds, genRefEdgeIds, pendingKey, cutKey,
     refStatusVersion, assetVersion, recentDoneVersion]);
@@ -3234,6 +3236,7 @@ export function SceneBoard({
           dispatch={gpu.dispatch}
           onHover={setGpuOverlayId}
           overlayPinned={gpuOverlayPinned}
+          lowLod={gpu.lowLod}
         />
       )}
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
@@ -3920,6 +3923,8 @@ export function SceneBoard({
                 <ModelCard mode="read" card={card} />
               ) : card.kind === "head" ? (
                 <HeadCard mode="read" card={card} />
+              ) : card.kind === "set" ? (
+                <SetCard mode="read" card={card} />
               ) : card.kind === "list" ? (
                 <ListCard mode="read" card={card} cardsById={cardsById} resolvedEdges={resolvedEdges} genData={genData} disabledIds={disabledIds}
                   cardWidth={widthOf(card)} workspaceId={refWorkspaceId} getNodePreview={getNodePreview} />

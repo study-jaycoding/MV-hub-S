@@ -14,7 +14,7 @@ const build: BoardBuildContext = {
 const text = (id: string, x: number, body = "hello") => ({ id, kind: "text", x, y: 0, text: body }) as unknown as SceneCard;
 const input = (over: Partial<GpuSceneInput> = {}): GpuSceneInput => ({
   cards: [{ card: text("t", 0), w: 260, h: 120 }], build, selected: new Set(), glow: new Set(), offServer: new Set(), listKind: () => null,
-  lines: [], dots: [], groups: [], lowLod: false, variantCount: () => 1, folderChip: () => undefined, refTypeLabel: () => "이미지", ...over,
+  lines: [], dots: [], groups: [], variantCount: () => 1, folderChip: () => undefined, refTypeLabel: () => "이미지", ...over,
 });
 
 describe("모습 열쇠", () => {
@@ -44,14 +44,15 @@ describe("모습 열쇠", () => {
 });
 
 describe("지원 판정", () => {
-  it("세트·Comfy·View 같은 미지원 종류는 undrawable 로 알린다(그 씬은 GPU 판에 안 들어감)", () => {
+  it("Comfy·View 같은 미지원 종류는 undrawable 로 알린다(그 씬은 GPU 판에 안 들어감) — 세트는 그린다", () => {
     const m = buildGpuScene(input({ cards: [
       { card: text("t", 0), w: 260, h: 120 },
-      { card: { id: "s", kind: "set", x: 0, y: 0 } as unknown as SceneCard, w: 260, h: 120 },
+      { card: { id: "s", kind: "set", x: 0, y: 0, setCfg: { tagsText: "#a, b" } } as unknown as SceneCard, w: 260, h: 120 },
       { card: { id: "c", kind: "comfy", x: 0, y: 0 } as unknown as SceneCard, w: 260, h: 120 },
+      { card: { id: "v", kind: "view", x: 0, y: 0 } as unknown as SceneCard, w: 260, h: 120 },
     ] }));
-    expect(m.undrawable).toEqual(["s", "c"]);
-    expect(m.cards.map((c) => c.id)).toEqual(["t"]);
+    expect(m.undrawable).toEqual(["c", "v"]);
+    expect(m.cards.map((c) => c.id)).toEqual(["t", "s"]);
   });
 });
 
@@ -75,17 +76,25 @@ describe("연결선", () => {
 });
 
 describe("단순화(25% 이하)", () => {
-  it("회색 끝 점·결과 수 배지는 숨기고, 고른 카드의 이름표는 남긴다", () => {
+  it("회색 끝 점·결과 수 배지는 hideLow 로 표시(GPU 판이 25% 이하에서 거른다), 고른 카드의 이름표·배지는 남긴다", () => {
     const gen = { id: "g", kind: "generation", x: 0, y: 0, genId: "x" } as unknown as SceneCard;
     const base = input({
       cards: [{ card: gen, w: 260, h: 260 }, { card: text("t", 300), w: 260, h: 120 }], selected: new Set(["t"]), variantCount: () => 3,
       dots: [{ x: 1, y: 1, cls: "scene-dot idle" }, { x: 2, y: 2, cls: "scene-dot ref" }],
     });
-    const near = buildGpuScene(base);
-    expect(near.quads.map((q) => q.id).sort()).toEqual(["label:t", "multi:g"]);
-    expect(near.dots).toHaveLength(2);
-    const far = buildGpuScene({ ...base, lowLod: true });
-    expect(far.quads.map((q) => q.id)).toEqual(["label:t"]);
-    expect(far.dots).toHaveLength(1);
+    const m = buildGpuScene(base);
+    expect(m.quads.map((q) => q.id).sort()).toEqual(["label:t", "multi:g"]);
+    expect(m.quads.filter((q) => !q.hideLow).map((q) => q.id)).toEqual(["label:t"]);
+    expect(m.dots.filter((d) => !d.hideLow)).toHaveLength(1);
+    const picked = buildGpuScene({ ...base, selected: new Set(["g"]) });
+    expect(picked.quads.find((q) => q.id === "multi:g")?.hideLow).toBeUndefined();
+  });
+
+  it("모습 열쇠는 짧은 해시 — 같은 값이면 같고 글이 한 자만 달라도 다르다", async () => {
+    const { appearanceKey } = await import("../src/features/canvas/gpu/gpuScene");
+    const long = "x".repeat(5000);
+    expect(appearanceKey({ a: long })).toBe(appearanceKey({ a: long }));
+    expect(appearanceKey({ a: long })).not.toBe(appearanceKey({ a: long + "y" }));
+    expect(appearanceKey({ a: long }).length).toBeLessThan(24);
   });
 });

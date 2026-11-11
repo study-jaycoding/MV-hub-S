@@ -7,8 +7,9 @@ export interface GpuCardInstance { id: string; x: number; y: number; w: number; 
 //  화면에서 1px 보다 가늘어지면 1px 로 그리고 그만큼 옅게(브라우저가 가는 SVG 선을 옅게 그리는 것과 같은 인상).
 export interface GpuLine { points: Float32Array; color: GpuColor; width: number; dash: number; gap?: number }
 export interface GpuRect { x: number; y: number; w: number; h: number; radius: number; fill: GpuColor; border: GpuColor; borderWidth: number }
-export interface GpuDot { x: number; y: number; r: number; fill: GpuColor; border: GpuColor }
-export interface GpuQuad { id: string; x: number; y: number; w: number; h: number }
+// hideLow = 25% 이하 단순화에서 숨기는 조각(GpuBoard 가 setScene 전에 거른다)
+export interface GpuDot { x: number; y: number; r: number; fill: GpuColor; border: GpuColor; hideLow?: boolean }
+export interface GpuQuad { id: string; x: number; y: number; w: number; h: number; hideLow?: boolean }
 export interface GpuScene {
   cards: GpuCardInstance[];
   lines: GpuLine[];

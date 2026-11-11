@@ -12,12 +12,13 @@ import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "./s
 import { refMediaType, refThumbSrc } from "./sceneMedia";
 import { variantIds, type SceneCard, type SceneEdge } from "./scenes";
 import { isDraftGeneration, normalizeSeedanceDraftParams } from "./seedanceDraft";
+import { parseSceneSetTags } from "./sceneSet";
 import { spotlightParamLabel, spotlightValueLabel } from "./spotlightPromptConfig";
 import { TEXT_TOKEN_SRC, textTokenInfo, textViewBudget, cutTextForView, type TextTokenKind } from "./textNodeTokens";
 import type { Generation } from "../types";
 
-/** GPU 판이 그리는 종류(1단계 지원) — 세트·Comfy·View·Input·Output·Render 가 있으면 GPU 판에 들어가지 않는다(DOM 그대로). */
-export const BOARD_KINDS: ReadonlySet<string> = new Set(["reference", "list", "text", "model", "generation", "head"]);
+/** GPU 판이 그리는 종류(1단계 지원) — Comfy·View·Input·Output·Render 가 있으면 GPU 판에 들어가지 않는다(DOM 그대로). */
+export const BOARD_KINDS: ReadonlySet<string> = new Set(["reference", "list", "text", "model", "generation", "head", "set"]);
 
 type TileStatus = "ok" | "local" | "missing" | "held" | "incomplete";
 type Media = "image" | "video" | "audio";
@@ -33,6 +34,7 @@ export type BoardItem = Box & (
       dim: boolean; final: boolean; shared: boolean; held: boolean; color: string | null; draft: boolean; logo: string;
       media: Media; disabled: boolean; unshared: boolean; lastViewed: boolean; sel: boolean }
   | { kind: "head"; text: string; color: string; fontSize: number }
+  | { kind: "set"; project: string | null; steps: string[]; tags: string[] }
 );
 
 export interface BoardBuildContext {
@@ -117,6 +119,12 @@ export function buildBoardItem(card: SceneCard, box: Box, ctx: BoardBuildContext
   }
   if (card.kind === "text") return { ...box, kind: "text", ...textView(card, ctx) };
   if (card.kind === "head") return { ...box, kind: "head", text: card.text || "제목", color: card.color || "#e8c341", fontSize: card.fontSize ?? 32 };
+  if (card.kind === "set") {
+    // SetCard 와 같은 값 — 프로젝트 칩 + 폴더 단계 칩, 태그는 생성 카드로 실제 넘어가는 그대로(lib/sceneSet)
+    const folder = card.setCfg?.folder;
+    return { ...box, kind: "set", project: folder ? folder.projectName || folder.projectId : null, steps: folder ? folder.path.split("/") : [],
+      tags: parseSceneSetTags(card.setCfg?.tagsText || "") };
+  }
   if (card.kind === "model") {
     const cfg = card.modelCfg;
     const draft = !!cfg?.model && normalizeSeedanceDraftParams(cfg.model, cfg.params ?? {}).draft === true;
@@ -404,6 +412,7 @@ function textBlock(g: Ctx2D, raw: string, x: number, y: number, w: number, h: nu
 /** 카드 하나를 그린다 — 카드 틀(테두리·그림자)은 DOM 이 그리고, 여기는 틀 안쪽(배경·몸통)만. */
 export function drawBoardItem(g: Ctx2D, item: BoardItem, imageOf: ImageOf): void {
   if (item.kind === "head") return drawHead(g, item);
+  if (item.kind === "set") return drawSet(g, item);
   if (item.kind === "generation" && item.state === "done") return drawDoneNode(g, item, imageOf);
   const { x, y, w, h } = item;
   const bw = 2; // 틀 테두리(--bw) — 안쪽은 그 안
@@ -682,6 +691,100 @@ function drawDoneNode(g: Ctx2D, item: Extract<BoardItem, { kind: "generation" }>
     g.stroke();
     g.restore();
   }
+}
+
+const SET_PC = "#e8c341";
+/** 세트(set) — 금색 물든 몸통 + 맨 위 금색 'SET' 막대 + 폴더(프로젝트 칩·단계 칩)·태그 칩(.scene-card-set·.scene-setnode-*). 넘치면 칩은 줄을 바꾸고
+ *  카드 아래 끝에서 잘린다(DOM 도 몸통이 overflow hidden). */
+function drawSet(g: Ctx2D, item: Extract<BoardItem, { kind: "set" }>): void {
+  const { x, y, w, h } = item;
+  g.save();
+  roundRect(g, x, y, w, h, 14);
+  g.fillStyle = "#2d2818"; // color-mix(#e8c341 15%, #0c0d11)
+  g.fill();
+  roundRect(g, x + 2, y + 2, w - 4, h - 4, 12);
+  g.clip();
+  const ix = x + 2, iw = w - 4;
+  g.fillStyle = SET_PC;
+  g.fillRect(ix, y + 2, iw, 19);
+  g.font = `900 11px ${FONT}`;
+  g.fillStyle = "#06101f";
+  g.textAlign = "left";
+  g.textBaseline = "alphabetic";
+  let lx = ix + 7;
+  for (const ch of "SET") {
+    g.fillText(ch, lx, y + 2 + 14);
+    lx += g.measureText(ch).width + 1.1; // letter-spacing 0.1em
+  }
+  const px = ix + 9, pw = iw - 18;
+  let cy = y + 2 + 19 + 8;
+  const label = (s: string) => {
+    text(g, s, px, cy + 8, 9, "#d1ba56", 800);
+    cy += 9 * 1.2 + 3;
+  };
+  /** 칩 줄 — 넘치면 다음 줄(4px·3px 간격) */
+  const chips = (items: Array<{ s: string; hash?: boolean; sep?: boolean }>, gap: number) => {
+    let cx = px;
+    for (const it of items) {
+      g.font = `700 11px ${FONT}`;
+      const tw = g.measureText(it.s).width + (it.hash ? g.measureText("#").width + 1 : 0) + 16;
+      const sepW = it.sep ? 10 : 0;
+      if (cx + sepW + tw > px + pw && cx > px) {
+        cx = px;
+        cy += 20 + gap;
+      }
+      if (it.sep) {
+        text(g, "›", cx + 2, cy + 14, 10, MUTED, 700);
+        cx += sepW;
+      }
+      roundRect(g, cx, cy, Math.min(tw, pw), 20, 8);
+      g.fillStyle = "rgba(232,195,65,0.22)";
+      g.fill();
+      g.strokeStyle = SET_PC;
+      g.lineWidth = 1;
+      g.stroke();
+      let tx = cx + 8;
+      if (it.hash) {
+        text(g, "#", tx, cy + 14, 11, "#f4dd8a", 700);
+        tx += g.measureText("#").width + 1;
+      }
+      text(g, it.s, tx, cy + 14, 11, TEXT, 700);
+      cx += Math.min(tw, pw) + gap;
+    }
+    cy += 20;
+  };
+  const placeholder = (icon: string, s: string) => {
+    roundRect(g, px, cy, pw, 24, 8);
+    g.save();
+    g.strokeStyle = "rgba(232,195,65,0.55)";
+    g.lineWidth = 1;
+    g.stroke();
+    g.restore();
+    text(g, icon, px + 10 + 7, cy + 16, 11, MUTED, 600, "center");
+    text(g, s, px + 10 + 14 + 5, cy + 16, 11, MUTED, 600);
+    cy += 24;
+  };
+  label("폴더");
+  if (item.project) {
+    roundRect(g, px, cy, pw, 28, 8);
+    g.fillStyle = SET_PC;
+    g.fill();
+    text(g, "📁", px + 8 + 7, cy + 18, 12, "#06101f", 800, "center");
+    g.save();
+    g.beginPath();
+    g.rect(px + 8 + 14 + 5, cy, pw - 8 - 14 - 5 - 20, 28);
+    g.clip();
+    text(g, item.project, px + 8 + 14 + 5, cy + 18.5, 12.5, "#06101f", 800);
+    g.restore();
+    text(g, "×", px + pw - 12, cy + 18, 12, "#4a3d10", 400, "center");
+    cy += 28 + 5;
+    chips(item.steps.map((s, i) => ({ s, sep: i > 0 })), 3);
+  } else placeholder("📁", "폴더 끌어 놓기");
+  cy += 7;
+  label("태그");
+  if (item.tags.length) chips(item.tags.map((s) => ({ s, hash: true })), 4);
+  else placeholder("#", "태그1, 태그2");
+  g.restore();
 }
 
 /** 제목(head) — 틀·바탕 없는 굵은 글씨(.scene-headnode-text: 2px 6px 여백·900·줄높이 1.2·줄바꿈 보존·그림자) */

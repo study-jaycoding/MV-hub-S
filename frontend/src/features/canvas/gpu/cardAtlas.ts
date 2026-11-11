@@ -84,6 +84,8 @@ export function createCardAtlas(deps: {
   let bitmapBytes = 0;
   let canvasBytes = 0;
   let failure: Error | null = null;
+  // 할 일이 없다고 확인한 뒤 sync 가 오기 전까지는 tick 이 요청 전체를 다시 훑지 않는다(조작 중 매 프레임 불린다)
+  let settled = false;
 
   const textureBytes = () => [...pages.values()].reduce((n, p) => n + p.size * p.size * 4, 0);
   const pixels = (r: AtlasRequest, tier: number) => ({ w: Math.max(1, Math.ceil(r.w * tier)), h: Math.max(1, Math.ceil(r.h * tier)) });
@@ -219,6 +221,7 @@ export function createCardAtlas(deps: {
       requests = reqs.slice();
       visible = new Set(visibleIds);
       scale = screenScale;
+      settled = false;
       if (job) {
         const r = requests.find((v) => v.id === job!.req.id);
         const visibleWaiting = !visible.has(job.req.id) && requests.some((v) => visible.has(v.id) && !matches(v, tierOf(v), entries.get(v.id)));
@@ -230,6 +233,7 @@ export function createCardAtlas(deps: {
     tick() {
       if (disposed) return { baked: 0, uploadedPx: 0, pending: 0 };
       if (failure) { const error = failure; cancelJob(); failure = null; throw error; }
+      if (settled && !job) return { baked: 0, uploadedPx: 0, pending: 0 };
       const start = deps.now();
       let baked = 0, uploadedPx = 0;
       const waiting = requests.filter((r) => !matches(r, tierOf(r), entries.get(r.id)) && (visible.has(r.id) || !evicted.has(r.id)))
@@ -270,7 +274,7 @@ export function createCardAtlas(deps: {
           cancelJob();
           throw error;
         } finally {
-          if (canvas) { canvas.width = 0; canvas.height = 0; }
+          if (canvas) { canvas.width = 0; canvas.height = 0; } // 굽고 올린 뒤 놓는다(CPU 굽기 버퍼 예산)
           canvasBytes = 0;
           closeImages(j);
         }
@@ -294,7 +298,9 @@ export function createCardAtlas(deps: {
         if (waitingIndex >= 0) waiting.splice(waitingIndex, 1);
         job = null;
       }
-      return { baked, uploadedPx, pending: requests.filter((r) => !matches(r, tierOf(r), entries.get(r.id)) && (visible.has(r.id) || !evicted.has(r.id))).length };
+      const pending = job ? 1 + waiting.length : waiting.length;
+      if (!pending) settled = true;
+      return { baked, uploadedPx, pending };
     },
     lookup: (id) => entries.get(id)?.region ?? null,
     textureBytes,

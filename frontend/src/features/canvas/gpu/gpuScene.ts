@@ -27,6 +27,7 @@ export function cardColor(card: SceneCard, listKind: string | null): string {
     case "reference": return "#7fa9ff";
     case "model": return "#ffb84d";
     case "text": return "#b57aff";
+    case "set": return "#e8c341";
     case "list":
       return listKind === "reference" ? "#7fa9ff" : listKind === "text" ? "#b57aff" : listKind === "empty" ? "#8a909a"
         : listKind === "mixed" || listKind === "invalid" ? "#ff6b6b" : ACCENT;
@@ -114,8 +115,6 @@ export interface GpuSceneInput {
   /** 연결선 끝 점 — 좌표와 .scene-dot 클래스 */
   dots: ReadonlyArray<{ x: number; y: number; cls: string }>;
   groups: readonly GpuSceneGroup[];
-  /** 25% 이하 단순화(data-lod-low) — 결과 수 배지·폴더 이름표·회색 끝 점을 숨긴다(고른 카드의 이름표는 남김) */
-  lowLod: boolean;
   variantCount: (card: SceneCard) => number;
   folderChip: (card: SceneCard) => string | undefined;
   refTypeLabel: (card: SceneCard) => string;
@@ -133,7 +132,22 @@ export interface GpuSceneModel {
 
 const LABEL: Record<string, string> = { model: "모델", list: "리스트", text: "텍스트" };
 
-/** 정렬된 JSON — 같은 값이면 같은 글(모습 열쇠). */
+/** 모습 열쇠 — 정렬된 JSON 을 53비트 해시(cyrb53)+길이로 줄인다. 아틀라스가 조작 중 매 프레임 열쇠를 견주는데, 긴 글 카드는 JSON 이 수천 자라
+ *  글자 그대로 견주면 그것만으로 프레임을 먹는다. 같은 값이면 같은 열쇠(충돌 확률은 2^-53 수준 — 생기면 그 카드만 옛 그림). */
+export function appearanceKey(v: unknown): string {
+  const s = stableKey(v);
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36) + ":" + s.length.toString(36);
+}
+
+/** 정렬된 JSON — 같은 값이면 같은 글. */
 export function stableKey(v: unknown): string {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
   if (Array.isArray(v)) return "[" + v.map(stableKey).join(",") + "]";
@@ -146,7 +160,8 @@ function atOrigin(item: BoardItem): BoardItem {
   return { ...item, x: 0, y: 0 };
 }
 
-type TextQuad = { id: string; x: number; y: number; w: number; h: number; key: string; draw: AtlasRequest["draw"] };
+/** hideLow = 25% 이하 단순화(data-lod-low)에서 숨기는 조각 — 결과 수 배지·폴더 이름표·회색 끝 점. GPU 판이 그릴 때 거른다(모델을 다시 만들지 않게). */
+type TextQuad = { id: string; x: number; y: number; w: number; h: number; key: string; draw: AtlasRequest["draw"]; hideLow?: boolean };
 
 function measure(text: string, size: number, weight: number): number {
   // 굽기 전 크기 어림 — 이름표 상자 폭(실제 글은 굽는 캔버스의 measureText 로 그린다). 한글은 대략 1em, 그 밖은 0.6em.
@@ -160,7 +175,7 @@ function pillQuad(id: string, text: string, x: number, y: number, opts: { size: 
   const h = Math.ceil(opts.size * 1.5) + opts.padY * 2;
   return {
     id, x, y, w, h,
-    key: stableKey(["pill", text, opts]),
+    key: appearanceKey(["pill", text, opts]),
     draw: (g) => {
       const r = Math.min(opts.radius, h / 2);
       g.beginPath();
@@ -192,7 +207,7 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
   const w = Math.max(1, Math.round(gv.w)), h = 26;
   return {
     id: "group:" + gv.id, x: gv.x, y: gv.y, w, h,
-    key: stableKey(["group", gv.name, gv.count, gc, gv.collapsed, gv.selected, w]),
+    key: appearanceKey(["group", gv.name, gv.count, gc, gv.collapsed, gv.selected, w]),
     draw: (g) => {
       const [r, gg, b] = hexRgba(gc);
       const mix = (k: number, base: [number, number, number, number]) =>
@@ -277,7 +292,7 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
     const body = atOrigin(item);
     const { id: _id, ...shape } = body; // 열쇠엔 id 를 넣지 않는다
     requests.push({
-      id: card.id, key: stableKey(shape), w, h,
+      id: card.id, key: appearanceKey(shape), w, h,
       sources: boardItemSources(item),
       draw: (g, imageOf) => drawBoardItem(g as never, body, imageOf),
     });
@@ -286,7 +301,7 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
     const pc = cardColor(card, card.kind === "list" ? input.listKind(card.id) : null);
     const isHead = card.kind === "head";
     const border: Rgba = isHead ? [0, 0, 0, 0] : sel && input.offServer.has(card.id) ? hexRgba("#ff6b6b") : sel || glow ? hexRgba(pc) : [0, 0, 0, 0];
-    cards.push({ id: card.id, x: card.x, y: card.y, w, h, radius: isHead ? 0 : 12, border, borderWidth: isHead ? 0 : 2, hidden: false, z });
+    cards.push({ id: card.id, x: card.x, y: card.y, w, h, radius: isHead ? 0 : card.kind === "set" ? 14 : 12, border, borderWidth: isHead ? 0 : 2, hidden: false, z });
     if (glow && !isHead) {
       // .scene-card.glow::after — 노드 색 빛(멈춰 있는 26px 번짐을 바깥 띠 두 겹으로)
       rects.push({ x: card.x - 6, y: card.y - 6, w: w + 12, h: h + 12, radius: 18, fill: [0, 0, 0, 0], border: hexRgba(pc, 0.45), borderWidth: 6 });
@@ -305,12 +320,13 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
       q.y = card.y - 8 - q.h;
       textQuads.push(q);
     }
-    if (!input.lowLod && card.kind === "generation") {
+    if (card.kind === "generation") {
       const n = input.variantCount(card);
       if (n > 1) {
         const q = pillQuad("multi:" + card.id, `▤ ${n}`, 0, 0, { size: 12, weight: 800, padX: 11, padY: 3, radius: 8, bg: ACCENT, fg: ACCENT_INK, border: "rgba(0,0,0,0.25)" });
         q.x = card.x + w / 2 - q.w / 2;
         q.y = card.y - 4 - q.h;
+        q.hideLow = !sel; // 고른 카드는 단순화에서도 보인다(scene.css :not(.sel))
         textQuads.push(q);
       }
       const chip = input.folderChip(card);
@@ -319,6 +335,7 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
         q.w = Math.min(q.w, Math.max(0, w - 16));
         q.x = card.x + w / 2 - q.w / 2;
         q.y = card.y + h - q.h - (item.color || item.final ? 9 : 0);
+        q.hideLow = !sel;
         textQuads.push(q);
       }
     }
@@ -326,16 +343,15 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
 
   for (const q of textQuads) {
     requests.push({ id: q.id, key: q.key, w: q.w, h: q.h, sources: [], draw: q.draw });
-    quads.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: q.h });
+    quads.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: q.h, ...(q.hideLow ? { hideLow: true } : null) });
   }
 
   const lines: GpuLine[] = input.lines.map(({ d, cls }) => {
     const st = edgeStyle(cls);
     return { points: new Float32Array(flattenPath(d)), color: st.color, width: st.width, dash: st.dash, gap: st.gap };
   });
-  const dots: GpuDot[] = input.dots
-    .filter((p) => !(input.lowLod && /\bidle\b/.test(p.cls)))
-    .map((p) => ({ x: p.x, y: p.y, r: 5, fill: dotColor(p.cls), border: hexRgba("#14161a") }));
+  const dots: GpuDot[] = input.dots.map((p) => ({ x: p.x, y: p.y, r: 5, fill: dotColor(p.cls), border: hexRgba("#14161a"),
+    ...(/\bidle\b/.test(p.cls) ? { hideLow: true } : null) }));
   return { requests, cards, lines, rects, dots, quads, undrawable };
 }
 
