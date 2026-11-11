@@ -603,21 +603,25 @@ export function useSceneViewport({
     [],
   );
 
-  // 기기 배율이 바뀌면(다른 배율 모니터로 창을 옮김) 카메라 값은 그대로라도 알린다 — GPU 판의 해상도·배율 상한·굽기 단계가 따라온다(듣는 쪽이 없으면 하는 일 없음).
-  //  transitionMs = -1 은 '움직임 아님'(받는 쪽이 조작 시각을 갱신하지 않는다)
-  useEffect(() => subscribeDevicePixelRatio(() => notifyCamera(-1, true)), [notifyCamera]);
-
+  // 기기 배율이 바뀌면(다른 배율 모니터로 창을 옮김) 카메라 값은 그대로라도 알린다 — GPU 판의 해상도·배율 상한·굽기 단계가 따라온다.
+  //  transitionMs = -1 은 '움직임 아님'(받는 쪽이 조작 시각을 갱신하지 않는다). 듣는 쪽이 있을 때만 배율을 듣는다 — 표식 끔에서 듣기를 늘리지 않게.
+  const dprOffRef = useRef<(() => void) | null>(null);
   const cameraSource = useMemo(
     () => ({
       subscribe: (listener: (transitionMs: number) => void) => {
         cameraListenersRef.current.add(listener);
+        if (!dprOffRef.current) dprOffRef.current = subscribeDevicePixelRatio(() => notifyCamera(-1, true));
         return () => {
           cameraListenersRef.current.delete(listener);
+          if (!cameraListenersRef.current.size) {
+            dprOffRef.current?.();
+            dprOffRef.current = null;
+          }
         };
       },
       getSnapshot: getCamera,
     }),
-    [getCamera],
+    [getCamera, notifyCamera],
   );
 
   return {
