@@ -2,7 +2,7 @@
 // GPU 보기 모드를 실제 SceneBoard 로 본다(docs/status/캔버스_GPU판설계_2026-11-11.md 계약 off·mode·readonly·data·transition).
 //  jsdom 에는 WebGL 이 없어 GPU 판 칸(GpuBoard)만 가짜로 바꾼다 — 준비 끝·켤 때 검사를 바로 알려 보기 모드(gpu)로 들어간다.
 //  모드 관리(useGpuBoardMode)·편집 막기·세션 실행점·덧판은 진짜다.
-import { act, useEffect } from "react";
+import { act, Profiler, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
@@ -31,6 +31,10 @@ let host: HTMLDivElement;
 let root: Root;
 let frames: FrameRequestCallback[] = [];
 let onChange: ReturnType<typeof vi.fn>;
+// 거절 안내 — flashMsg 는 앱 이벤트(ch:flash)로 나간다. 모드 단추 글('보기 모드(GPU)')과 섞이지 않게 이벤트를 센다
+let notices: string[] = [];
+const onFlash = (e: Event) => notices.push(String((e as CustomEvent).detail));
+const refusals = () => notices.filter((n) => n.startsWith("보기 모드"));
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -58,12 +62,15 @@ beforeEach(() => {
     genData: {}, genDataRef: { current: {} }, setGenData: noop, missingIds: new Set(), disabledIds: new Set(), refParents: {},
   } as unknown as SceneGenDataApi;
   onChange = vi.fn();
+  notices = [];
+  window.addEventListener("ch:flash", onFlash);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
 });
 afterEach(() => {
   act(() => root.unmount());
+  window.removeEventListener("ch:flash", onFlash);
   host.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -159,7 +166,72 @@ it("보기 모드에서 사용자 변경은 입력 진입점·세션 실행점 �
   expect(committed).toBe(false);
   await flush();
   expect(onChange).not.toHaveBeenCalled();
-  expect(document.body.textContent).toContain("보기 모드");
+  expect(refusals()).toHaveLength(1); // 거절이 여럿이어도 안내는 겹치지 않게 한 번
+});
+
+it("보기 모드에서도 허용 목록(참조 동기화·실행 결과 표시)은 거절하지 않고, 화면 이동 뒤 카메라는 저장된다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  const onCameraChange = vi.fn();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await act(async () => { root.render(<SceneBoard scene={sceneOf(cards3)} onChange={onChange} actionRef={actionRef as never} onCameraChange={onCameraChange} />); });
+    await flush();
+    expect(phase()).toBe("gpu");
+    await act(async () => {
+      actionRef.current!.commitDocument({ type: "synchronizeReferences" } as never);
+      actionRef.current!.commitDocument({ type: "showComfyRunning", runs: [] } as never);
+    });
+    expect(refusals()).toEqual([]);
+    await act(async () => { board().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 500, clientY: 300 })); });
+    await act(async () => { vi.advanceTimersByTime(3000); });
+    expect(onCameraChange).toHaveBeenCalled();
+    expect(phase()).toBe("gpu");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("덧판이 뜨기 전 첫 휠 — 글 카드 위면 그 자리에서 덧판을 바로 붙인다(속이 넘치면 그 속을 굴림 — jsdom 은 배치가 없어 붙는 것만 본다)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  await show(cards3);
+  await flush();
+  expect(host.querySelector(".scene-gpu-overlay")).toBeNull();
+  // jsdom 에는 elementFromPoint 가 없다 — 붙은 덧판을 돌려준다(넘치지 않는 속이라 굴리지 않고 줌으로 간다)
+  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => host.querySelector(".scene-gpu-overlay") });
+  try {
+    await act(async () => { board().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 20, clientY: 20 })); });
+    expect(host.querySelector(".scene-gpu-overlay")).not.toBeNull();
+  } finally {
+    delete (document as unknown as Record<string, unknown>).elementFromPoint;
+  }
+});
+
+it("가려진 레퍼런스 카드도 두 번 누르면 크게 보기 창으로 읽는다(덧판은 안 띄움)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  const onPreview = vi.fn();
+  const ref = { id: "r", kind: "reference", x: 0, y: 0, w: 260, h: 195, refs: [{ type: "image", file_path: "/media/a.png", name: "a" }] };
+  const front = textCard("t", 100, 50); // 뒤 레퍼런스의 일부를 가린다
+  await act(async () => { root.render(<SceneBoard scene={sceneOf([ref, front])} onChange={onChange} actionRef={actionRef as never} onPreview={onPreview} />); });
+  await flush();
+  expect(phase()).toBe("gpu");
+  await act(async () => { board().dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 10, clientY: 10 })); });
+  expect(onPreview).toHaveBeenCalledTimes(1);
+  expect(onPreview.mock.calls[0][0]).toMatchObject({ type: "image" });
+  expect(host.querySelector(".scene-gpu-overlay")).toBeNull();
+});
+
+it("표식 끔 — 카메라 변화(휠 3번)·씬 전환 뒤 SceneBoard 렌더 수가 변경 전과 같다(dev 06a41a76 사본에서 같은 조작 = 휠 뒤 3·전환까지 9, 11-11 측정)", async () => {
+  let commits = 0;
+  const view = (id: string) => <Profiler id="sb" onRender={() => { commits++; }}><SceneBoard scene={sceneOf(cards3, id)} onChange={onChange} /></Profiler>;
+  await act(async () => { root.render(view("s1")); });
+  await flush();
+  commits = 0;
+  for (let i = 0; i < 3; i++) await act(async () => { board().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 10, clientY: 10 })); });
+  await flush();
+  const wheel = commits;
+  await act(async () => { root.render(view("s2")); });
+  await flush();
+  expect({ wheel, total: commits }).toEqual({ wheel: 3, total: 9 });
 });
 
 it("보기 모드에서 붙여넣기·끌어 놓기·문맥 메뉴는 입구에서 거절 — 서버에 올리지 않는다(fetch 0)", async () => {
@@ -262,6 +334,93 @@ it("검사(probing) 중 DOM 리스트를 두 번 눌러도 카드 안 펼치기(
   if (row) await act(async () => { row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); });
   await flush();
   expect(onChange).not.toHaveBeenCalled();
+});
+
+it("검사(probing) 중 보이는 DOM 카드의 단추 클릭(Generate)은 실행되지 않는다 — 누름만 막고 click 이 지나가 유료 생성이 걸리던 틈(리뷰 2차)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  fixture.hold = "preparing";
+  const onGenerateCard = vi.fn();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const gen = { id: "g", kind: "generation", x: 0, y: 0, w: 260, h: 260 };
+    await act(async () => { root.render(<SceneBoard scene={sceneOf([gen])} onChange={onChange} actionRef={actionRef as never} onGenerateCard={onGenerateCard as never} />); });
+    await flush();
+    // 편집 단계(준비 취소)에서 카드를 고른다
+    const cardEl = host.querySelector<HTMLElement>(".scene-card")!;
+    await act(async () => {
+      cardEl.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+    });
+    await flush();
+    const button = () => [...host.querySelectorAll<HTMLElement>("button")].find((b) => /Generate/.test(b.textContent || ""));
+    expect(button()).toBeTruthy(); // 이 카드만 고르면 Generate 막대
+    // 조용히 1초 → 준비 → 검사에서 멈춤
+    fixture.hold = "probing";
+    await act(async () => { vi.advanceTimersByTime(1100); });
+    await flush();
+    expect(phase()).toBe("probing");
+    const b = button();
+    expect(b).toBeTruthy(); // DOM 판이 그대로 보인다
+    await act(async () => {
+      b!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      b!.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    await flush();
+    expect(onGenerateCard).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("검사(probing) 중 DOM 카드의 문맥 메뉴는 캡처에서 막혀 카드 처리기에 닿지 않는다(안내 한 번)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  fixture.hold = "probing";
+  await show(cards3);
+  await flush();
+  expect(phase()).toBe("probing");
+  const cardEl = host.querySelector<HTMLElement>(".scene-card")!;
+  const reached = vi.fn();
+  cardEl.addEventListener("contextmenu", reached);
+  const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  await act(async () => { cardEl.dispatchEvent(ev); });
+  expect(ev.defaultPrevented).toBe(true);
+  expect(reached).not.toHaveBeenCalled();
+  expect(refusals()).toHaveLength(1);
+});
+
+it("미지원 노드를 지운 씬은 모드 단추로 다시 켤 수 있다 — 지금도 있으면 까닭만 알린다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  const comfy = { id: "cf", kind: "comfy", x: 0, y: 300, w: 200, h: 200 };
+  await show([...cards3, comfy]);
+  await flush();
+  expect(phase()).toBeNull();
+  const button = () => host.querySelector<HTMLButtonElement>(".scene-gpu-mode")!;
+  await act(async () => { button().click(); });
+  await flush();
+  expect(phase()).toBeNull();
+  expect(notices.some((n) => n.includes("못 그리는 노드"))).toBe(true);
+  await show(cards3); // 같은 씬에서 Comfy 노드를 지웠다(씬 막음 기록만 남음)
+  await flush();
+  expect(phase()).toBeNull();
+  await act(async () => { button().click(); });
+  await flush();
+  expect(phase()).toBe("gpu");
+});
+
+it("리스트 읽기 창의 항목은 그림과 같은 해석 — genId 없이 변형(genIds)만 있는 생성 카드도 결과물로 연다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  const g1 = { id: "g1", status: "done", prompt: "p", assets: [{ id: "a1", generation_id: "g1", type: "image", file_path: "/media/g1.png", thumbnail_path: null }] };
+  fixture.data = { ...fixture.data, genData: { g1 }, genDataRef: { current: { g1 } } } as unknown as SceneGenDataApi;
+  const onPreview = vi.fn();
+  const gen = { id: "G", kind: "generation", x: 0, y: 0, w: 260, h: 260, genIds: ["g1"] };
+  const list = { id: "L", kind: "list", x: 0, y: 400, w: 260, h: 200 };
+  const scene = { ...(sceneOf([gen, list]) as object), edges: [{ id: "e1", from: "G", to: "L" }] };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={onChange} actionRef={actionRef as never} onPreview={onPreview} />); });
+  await flush();
+  expect(phase()).toBe("gpu");
+  await act(async () => { board().dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 50, clientY: 250 })); });
+  expect(onPreview).toHaveBeenCalledTimes(1);
+  expect(onPreview.mock.calls[0][0]).toMatchObject({ url: "/media/g1.png", genId: "g1" });
 });
 
 it("보기 모드에서 결과 되찾기(recoverCardGeneration)는 사용자 명령이라 거절한다", async () => {

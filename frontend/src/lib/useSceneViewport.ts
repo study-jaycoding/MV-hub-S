@@ -15,6 +15,7 @@ import {
   type SceneWorldRect,
 } from "./sceneViewport";
 import { setSceneZoomPct } from "./sceneZoomStore";
+import { subscribeDevicePixelRatio } from "./devicePixelRatio";
 import { swallowPanAuxClick } from "./useSceneCardMove";
 
 const CAMERA_SAVE_DELAY_MS = 400;
@@ -121,10 +122,10 @@ export function useSceneViewport({
   // 마지막으로 알린 카메라 — 렌더마다 다시 적용하는 길(아래 useLayoutEffect)도 여기를 지난다. 그대로면 알리지 않는다:
   //  알리면 GPU 판이 그때마다 '조작 중'으로 보고 굽기를 멈추고, 무거운 React 렌더 프레임을 느린 GPU 로 셌다(11-11 리뷰·CPU 4배 잠금).
   const notifiedCameraRef = useRef<SceneCamera | null>(null);
-  const notifyCamera = useCallback((transitionMs: number) => {
+  const notifyCamera = useCallback((transitionMs: number, force = false) => {
     const c = getCamera();
     const n = notifiedCameraRef.current;
-    if (!transitionMs && n && n.x === c.x && n.y === c.y && n.z === c.z) return;
+    if (!force && !transitionMs && n && n.x === c.x && n.y === c.y && n.z === c.z) return;
     notifiedCameraRef.current = c;
     for (const listener of cameraListenersRef.current) listener(transitionMs);
   }, [getCamera]);
@@ -601,6 +602,10 @@ export function useSceneViewport({
     },
     [],
   );
+
+  // 기기 배율이 바뀌면(다른 배율 모니터로 창을 옮김) 카메라 값은 그대로라도 알린다 — GPU 판의 해상도·배율 상한·굽기 단계가 따라온다(듣는 쪽이 없으면 하는 일 없음).
+  //  transitionMs = -1 은 '움직임 아님'(받는 쪽이 조작 시각을 갱신하지 않는다)
+  useEffect(() => subscribeDevicePixelRatio(() => notifyCamera(-1, true)), [notifyCamera]);
 
   const cameraSource = useMemo(
     () => ({

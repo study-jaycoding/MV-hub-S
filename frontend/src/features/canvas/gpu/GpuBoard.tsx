@@ -22,12 +22,13 @@ const INTERACT_WINDOW_MS = 300; // 마지막 카메라 변화 뒤 이만큼은 '
 const PROBE_FRAMES = 30;
 const LOAF_SETTLE_MS = 120; // 긴 프레임 후보는 그 구간의 LoAF 기록이 도착할 만큼 기다렸다 판정한다
 // 긴 애니메이션 프레임(LoAF) 기록 — scripts 는 그 프레임에 돈 스크립트(이벤트·약속·React 렌더·rAF …)
-type LoafEntry = PerformanceEntry & { scripts?: ReadonlyArray<{ invoker?: string; duration: number }> };
+type LoafEntry = PerformanceEntry & { scripts?: ReadonlyArray<{ invoker?: string; startTime: number; duration: number }> };
 // GPU 판과 무관함이 확실한 일 — 저장(IndexedDB)·네트워크 응답 해석·파일 읽기 콜백. 그 밖(React 렌더·이벤트·타이머·rAF·출처 불명)은 판의 일로 본다(Codex 합의 6차)
 const UNRELATED_INVOKER = /^(IDB|Response\.|XMLHttpRequest|FileReader|WebSocket|BroadcastChannel)/;
 const loafSupported = () => typeof PerformanceObserver !== "undefined" && !!PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame");
 
 export interface CameraSource {
+  /** transitionMs: > 0 화면 맞춤 미끄러짐 · 0 바로 옮김 · -1 움직임 아님(기기 배율 바뀜 — 조작 시각을 갱신하지 않는다) */
   subscribe: (listener: (transitionMs: number) => void) => () => void;
   getSnapshot: () => SceneCamera;
 }
@@ -75,6 +76,48 @@ function blobOf(src: string): Promise<Blob | null> {
   return p;
 }
 
+/** 그림 파일 머리 → 보이는 크기(PNG·GIF·JPEG·WebP). JPEG 의 EXIF 회전(5~8)은 가로세로를 바꾼다 — createImageBitmap 이 회전한 그림을 내기 때문.
+ *  모르는 형식·잘린 머리면 null. */
+export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
+  const u16 = (i: number, le = false) => (le ? b[i] | (b[i + 1] << 8) : (b[i] << 8) | b[i + 1]);
+  const u32 = (i: number, le = false) => (le ? (u16(i, true) | (u16(i + 2, true) << 16)) >>> 0 : ((u16(i) << 16) | u16(i + 2)) >>> 0);
+  const ascii = (i: number, n: number) => String.fromCharCode(...b.subarray(i, i + n));
+  if (b.length >= 24 && b[0] === 0x89 && ascii(1, 3) === "PNG") return { w: u32(16), h: u32(20) };
+  if (b.length >= 10 && ascii(0, 4) === "GIF8") return { w: u16(6, true), h: u16(8, true) };
+  if (b.length >= 30 && ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") {
+    const kind = ascii(12, 4);
+    if (kind === "VP8 ") return { w: u16(26, true) & 0x3fff, h: u16(28, true) & 0x3fff };
+    if (kind === "VP8L") return { w: 1 + (((b[22] & 0x3f) << 8) | b[21]), h: 1 + (((b[24] & 0x0f) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6)) };
+    if (kind === "VP8X") return { w: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), h: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) };
+    return null;
+  }
+  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let turned = false;
+    for (let i = 2; i + 9 < b.length; ) {
+      if (b[i] !== 0xff) return null;
+      const m = b[i + 1];
+      if (m === 0xff) { i += 1; continue; } // 채움 바이트
+      const len = u16(i + 2);
+      if (m === 0xe1 && ascii(i + 4, 6) === "Exif\0\0") {
+        // EXIF 방향(0x0112) — TIFF 머리의 바이트 순서·IFD0 항목에서 찾는다
+        const t = i + 10, le = ascii(t, 2) === "II";
+        const ifd = t + u32(t + 4, le);
+        const n = ifd + 2 <= b.length ? u16(ifd, le) : 0;
+        for (let k = 0; k < n && ifd + 2 + k * 12 + 10 <= b.length; k++) {
+          const e = ifd + 2 + k * 12;
+          if (u16(e, le) === 0x0112) turned = u16(e + 8, le) >= 5;
+        }
+      }
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        const h = u16(i + 5), w = u16(i + 7);
+        return turned ? { w: h, h: w } : { w, h };
+      }
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
 /** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 실패하면 null(빗금 자리). */
 async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
   try {
@@ -95,8 +138,15 @@ async function decodeImage(src: string, maxW: number, maxH: number): Promise<Ima
         URL.revokeObjectURL(url);
       }
     }
-    // 폭에 맞춰 읽고, 세로로 길어 상자를 넘으면 높이에 맞춰 다시 읽는다(한쪽만 주면 비율이 지켜진다).
-    //  shortcut: 아주 긴 그림이면 첫 읽기가 잠깐 상자를 넘는 비트맵을 만든다, 문제가 되면 머리 바이트로 원본 크기를 먼저 읽을 것
+    // 파일 머리에서 원본 크기(회전 반영)를 먼저 읽어 처음 디코드부터 두 변을 상자 안으로 — 폭만 주고 읽으면 긴 그림은 중간 비트맵이 예산을
+    //  넘었다(2048 폭·1:8 = 128MiB, Codex 리뷰 2차). 크게 늘리지는 않는다(그릴 때 늘린다).
+    const size = imageSizeOf(new Uint8Array(await blob.slice(0, 256 * 1024).arrayBuffer()));
+    if (size) {
+      const k = Math.min(1, W / size.w, H / size.h);
+      return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.floor(size.w * k)), resizeHeight: Math.max(1, Math.floor(size.h * k)), resizeQuality: "high" });
+    }
+    // 머리를 모르는 형식 — 폭에 맞춰 읽고, 세로로 길어 상자를 넘으면 높이에 맞춰 다시 읽는다(한쪽만 주면 비율이 지켜진다).
+    //  shortcut: 모르는 형식의 아주 긴 그림은 첫 읽기가 잠깐 상자를 넘는다, 그런 형식이 쓰이면 imageSizeOf 에 머리 읽기를 더할 것
     const byW = await createImageBitmap(blob, { resizeWidth: W, resizeQuality: "high" });
     if (byW.height <= H) return byW;
     byW.close();
@@ -149,7 +199,7 @@ export function GpuBoard(props: GpuBoardProps) {
     longFrames: [] as number[],
     longCandidates: [] as Array<{ from: number; to: number }>,
     loafOn: false,
-    loaf: [] as Array<{ start: number; end: number; other: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 시간
+    loaf: [] as Array<{ start: number; end: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 스크립트가 돈 구간
   });
 
   const fail = (reason: "creation" | "memory" | "context-lost" | "slow-frames") => {
@@ -219,7 +269,8 @@ export function GpuBoard(props: GpuBoardProps) {
     if (!ready.length) return false;
     s.longCandidates = s.longCandidates.filter((c) => !ready.includes(c));
     for (const c of ready) {
-      const unrelated = s.loaf.reduce((sum, e) => (e.end > c.from && e.start < c.to ? sum + e.other : sum), 0);
+      // 그 간격과 실제로 겹친 시간만 던다(스크립트 구간 단위 — 두 간격에 걸친 일을 두 번 덜지 않는다, Codex 리뷰 2차)
+      const unrelated = s.loaf.reduce((sum, e) => sum + Math.max(0, Math.min(e.end, c.to) - Math.max(e.start, c.from)), 0);
       if (c.to - c.from - unrelated <= LONG_FRAME_MS) continue;
       s.longFrames = s.longFrames.filter((t) => c.to - t <= LONG_FRAME_WINDOW_MS);
       s.longFrames.push(c.to);
@@ -376,10 +427,8 @@ export function GpuBoard(props: GpuBoardProps) {
     if (loafSupported()) {
       s.loafOn = true;
       loafObs = new PerformanceObserver((list) => {
-        for (const e of list.getEntries() as LoafEntry[]) {
-          const other = (e.scripts ?? []).reduce((sum, x) => (UNRELATED_INVOKER.test(x.invoker ?? "") ? sum + x.duration : sum), 0);
-          s.loaf.push({ start: e.startTime, end: e.startTime + e.duration, other });
-        }
+        for (const e of list.getEntries() as LoafEntry[])
+          for (const x of e.scripts ?? []) if (UNRELATED_INVOKER.test(x.invoker ?? "")) s.loaf.push({ start: x.startTime, end: x.startTime + x.duration });
         const now = performance.now();
         s.loaf = s.loaf.filter((x) => now - x.end < 15_000);
         if (s.longCandidates.length) kick();
@@ -406,9 +455,17 @@ export function GpuBoard(props: GpuBoardProps) {
     return props.cameraSource.subscribe((transitionMs) => {
       const s = st.current;
       const now = performance.now();
+      s.dirty = true;
+      if (transitionMs < 0) {
+        // 기기 배율만 바뀌었다 — 다시 그리고(해상도) 굽기 단계를 맞추되 조작으로 세지 않는다
+        kick();
+        return;
+      }
       if (transitionMs > 0) s.slide = { from: s.drawn ?? props.cameraSource.getSnapshot(), start: now, ms: transitionMs };
       s.lastCameraAt = now;
-      s.dirty = true;
+      // 머무는 중이던 덧판 예약을 버린다 — 포인터 아래에서 카드가 떠나도 120ms 뒤에 그 카드 덧판이 떴다(Codex 리뷰 2차)
+      clearTimeout(s.hover.timer);
+      s.hover.id = null;
       // 25% 이하 단순화 — 숨기기는 바로, 다시 보이기는 배율이 150ms 쉰 뒤(useSceneViewport 의 data-lod-low 와 같은 규칙)
       const low = Math.round(props.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
       if (low) {
@@ -441,6 +498,8 @@ export function GpuBoard(props: GpuBoardProps) {
     s.sceneDirty = false;
     applyScene();
     s.hit = buildHitIndex(model.cards.map((c) => ({ id: c.id, x: c.x, y: c.y, w: c.w, h: c.h, z: c.z })));
+    clearTimeout(s.hover.timer); // 카드 자리가 바뀌었다 — 옛 판정으로 건 덧판 예약은 버린다(다음 움직임에 다시 고른다)
+    s.hover.id = null;
     syncAtlas(true);
     drawNow();
     kick();
@@ -493,6 +552,7 @@ export function GpuBoard(props: GpuBoardProps) {
       if (live.current.overlayPinned) return;
       s.hover.timer = window.setTimeout(() => {
         if (s.hover.id !== top.id || live.current.overlayPinned || !s.hit) return;
+        if (performance.now() - s.lastCameraAt < REST_MS || s.slide || board.hasAttribute("data-panning")) return;
         live.current.onHover(isOccluded(s.hit, top) ? null : top.id);
       }, OVERLAY_DWELL_MS);
     };
@@ -648,7 +708,8 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
     }
     if (m.userDom) return dispatch({ type: "user-mode", mode: "gpu" });
     if (m.phase !== "dom") return dispatch({ type: "user-mode", mode: "dom" });
-    if (m.reason === "unsupported") return flashMsg("이 씬에는 GPU 판이 아직 못 그리는 노드가 있어 편집 모드로 둡니다");
+    // 미지원 노드가 지금도 있으면 까닭만, 지웠으면(씬 막음 기록만 남음) 다시 켠다 — user-mode gpu 가 그 씬의 막음을 푼다(Codex 리뷰 2차)
+    if (m.reason === "unsupported") return m.unsupported ? flashMsg("이 씬에는 GPU 판이 아직 못 그리는 노드가 있어 편집 모드로 둡니다") : dispatch({ type: "user-mode", mode: "gpu" });
     if (m.reason === "zoom") return flashMsg("크게 확대한 동안은 편집 모드로 둡니다 — 줄이면 보기 모드로 돌아갑니다");
     if (busyRef.current) return flashMsg("편집 중인 것이 끝나면 보기 모드로 바꿉니다");
     clearTimeout(quietTimer.current);

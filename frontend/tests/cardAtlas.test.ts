@@ -820,6 +820,37 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect(h.call("deleteQuery")).toHaveBeenCalledTimes(h.call("createQuery").mock.calls.length);
   });
 
+  it("앞 검사가 도는 중 새 검사가 오면(씬 전환) 앞 것을 취소하고 새로 잰다 — 새 검사를 거부해 잠그지 않는다", async () => {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let id = 0;
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.set(++id, fn); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => callbacks.delete(n));
+    const h = fakeGl({ timer: true });
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    const first = renderer.timeGpu(30);
+    const firstDone = expect(first).rejects.toThrow(/cancelled/);
+    const second = renderer.timeGpu(30);
+    for (let i = 0; i < 80 && callbacks.size; i++) { const [key, fn] = [...callbacks][0]; callbacks.delete(key); fn(i * 16); }
+    await firstDone;
+    expect(await second).toHaveLength(30);
+  });
+
+  it("유효 표본이 늦게(질의마다 1초 가까이) 와도 전체 10초가 지나면 거부한다(느린 GPU)", async () => {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let id = 0, clock = 0;
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.set(++id, fn); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => callbacks.delete(n));
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = fakeGl({ timer: true });
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    const result = renderer.timeGpu(30);
+    const rejected = expect(result).rejects.toThrow(/too slow/);
+    for (let i = 0; i < 100 && callbacks.size; i++) { clock += 900; const [key, fn] = [...callbacks][0]; callbacks.delete(key); fn(clock); }
+    await rejected;
+  });
+
   it("측정할 프레임 수·그림이 유효하지 않으면 거부한다", async () => {
     const h = fakeGl();
     const renderer = createGpuRenderer(h.canvas)!;

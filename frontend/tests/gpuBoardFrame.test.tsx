@@ -8,10 +8,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GpuSceneModel } from "../src/features/canvas/gpu/gpuScene";
 
-const fx = vi.hoisted(() => ({ samples: [] as number[] | Error, destroyed: 0, draws: 0, timed: 0 }));
+const fx = vi.hoisted(() => ({ samples: [] as number[] | Error, destroyed: 0, draws: 0, timed: 0, hidden: [] as Array<string | null> }));
 vi.mock("../src/features/canvas/gpu/gpuRenderer", () => ({
   createGpuRenderer: () => ({
-    setScene() {}, setHidden() {}, setLowLod() {},
+    setScene() {}, setHidden(id: string | null) { fx.hidden.push(id); }, setLowLod() {},
     draw() { fx.draws++; },
     timeGpu() { fx.timed++; return fx.samples instanceof Error ? Promise.reject(fx.samples) : Promise.resolve(fx.samples); },
     textureBytes: () => 0, texturePeak: () => 0, lost: () => false,
@@ -25,7 +25,7 @@ vi.mock("../src/features/canvas/gpu/cardAtlas", () => ({
     textureBytes: () => 0, cpuBytes: () => 0, cpuPeak: () => 0, reset() {}, dispose() {},
   }),
 }));
-const { GpuBoard } = await import("../src/features/canvas/gpu/GpuBoard");
+const { GpuBoard, imageSizeOf } = await import("../src/features/canvas/gpu/GpuBoard");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -45,7 +45,7 @@ beforeEach(() => {
   frames = [];
   listeners = [];
   now = 1000;
-  Object.assign(fx, { samples: Array(30).fill(2), destroyed: 0, draws: 0, timed: 0 });
+  Object.assign(fx, { samples: Array(30).fill(2), destroyed: 0, draws: 0, timed: 0, hidden: [] });
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
   vi.stubGlobal("cancelAnimationFrame", () => {});
   vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -145,14 +145,18 @@ describe("긴 프레임 까닭(LoAF)", () => {
     }
     vi.stubGlobal("PerformanceObserver", FakeObserver);
   });
-  const moveWithLongFrames = async (scripts: Array<{ invoker: string; duration: number }>, gap = 65) => {
+  // scripts 는 간격 시작(from)부터 차례로 돈 것으로 둔다 — shift 로 앞당기면(음수) 간격 밖에서 시작한 일이 된다
+  const moveWithLongFrames = async (scripts: Array<{ invoker: string; duration: number }>, gap = 65, shift = 0) => {
     for (let i = 0; i < 3; i++) {
       cam.x += 10;
       act(() => listeners.forEach((l) => l(0)));
       const from = now + 5;
       await frameAt(from);
       await frameAt(from + gap);
-      act(() => deliver!([{ startTime: from, duration: gap, scripts }]));
+      let at = from + shift;
+      const timed = scripts.map((x) => { const t = { ...x, startTime: at }; at += x.duration; return t; });
+      act(() => deliver!([{ startTime: from + Math.min(0, shift), duration: gap - Math.min(0, shift), scripts: timed }]));
+      for (let k = 0; k < 4; k++) await frameAt(now + 16); // 회차 사이를 띄운다 — 앞당긴 일이 앞 회차 간격에 겹치지 않게
     }
     await frameAt(now + 150);
     await frameAt(now + 150);
@@ -171,13 +175,150 @@ describe("긴 프레임 까닭(LoAF)", () => {
   it.each([
     ["판 그리기(rAF 콜백)만 있는 늦은 프레임", [{ invoker: "FrameRequestCallback", duration: 6 }], 65],
     ["React 렌더(출처가 판일 수 있음)로 늦은 프레임", [{ invoker: "MessagePort.onmessage", duration: 60 }], 65],
-    ["저장이 섞였어도 덜고 50ms 넘게 남는 프레임(저장 60 + 나머지 70)", [{ invoker: "IDBRequest.onsuccess", duration: 60 }], 130],
-  ])("%s 은 GPU 느림으로 센다 — 3번이면 잠금", async (_name, scripts, gap) => {
+    ["저장이 섞였어도 덜고 50ms 넘게 남는 프레임(저장 60 + 나머지 70)", [{ invoker: "IDBRequest.onsuccess", duration: 60 }], 130, 0],
+    ["간격 앞에서 시작한 저장은 겹친 만큼만 던다(간격 80·저장 60 중 겹침 20 → 남는 60, 통째로 덜면 20 이라 놓쳤다)", [{ invoker: "IDBRequest.onsuccess", duration: 60 }], 80, -40],
+  ])("%s 은 GPU 느림으로 센다 — 3번이면 잠금", async (_name, scripts, gap, shift = 0) => {
     const dispatch = vi.fn();
     mount(dispatch, "gpu");
     await frameAt(1000);
-    await moveWithLongFrames(scripts, gap);
+    await moveWithLongFrames(scripts, gap, shift);
     expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
+  });
+});
+
+describe("덧판 고르기(계약 overlay)", () => {
+  const card = (id: string, x: number, y: number, z: number) => ({ id, x, y, w: 100, h: 100, radius: 12, border: [0, 0, 0, 0] as [number, number, number, number], borderWidth: 2, hidden: false, z });
+  const modelOf = (...cards: ReturnType<typeof card>[]): GpuSceneModel => ({ ...model, cards });
+  function Board(p: { m: GpuSceneModel; hiddenId?: string | null; pinned?: boolean; onHover: (id: string | null) => void; boardRef: React.RefObject<HTMLDivElement | null> }) {
+    return (
+      <div className="scene-board" ref={p.boardRef}>
+        <GpuBoard phase="gpu" token={1} sceneId="s" model={p.m} hiddenId={p.hiddenId ?? null} cameraSource={source} boardRef={p.boardRef}
+          dispatch={() => {}} onHover={p.onHover} overlayPinned={!!p.pinned} />
+      </div>
+    );
+  }
+  const move = (board: HTMLElement, x: number, y: number) => act(() => { board.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y })); });
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+  afterEach(() => vi.useRealTimers());
+
+  it("마우스 아래 맨 앞 카드에 120ms 머물러야 고른다 — 빨리 지나가면 안 고른다", () => {
+    const onHover = vi.fn();
+    const ref = createRef<HTMLDivElement>();
+    act(() => root.render(<Board m={modelOf(card("a", 0, 0, 0), card("b", 300, 0, 1))} onHover={onHover} boardRef={ref} />));
+    move(ref.current!, 50, 50);
+    act(() => { vi.advanceTimersByTime(100); });
+    move(ref.current!, 350, 50); // 120ms 전에 다른 카드로
+    act(() => { vi.advanceTimersByTime(119); });
+    expect(onHover).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(onHover.mock.calls).toEqual([["b"]]);
+  });
+
+  it("그 카드보다 앞의 카드와 겹치면 덧판을 띄우지 않는다(null) — 앞 카드를 덮지 않게", () => {
+    const onHover = vi.fn();
+    const ref = createRef<HTMLDivElement>();
+    act(() => root.render(<Board m={modelOf(card("a", 0, 0, 0), card("c", 50, 50, 1))} onHover={onHover} boardRef={ref} />));
+    move(ref.current!, 20, 20); // a 만 있는 자리지만 a 는 c 에 일부 가려짐
+    act(() => { vi.advanceTimersByTime(120); });
+    expect(onHover.mock.calls).toEqual([[null]]);
+  });
+
+  it("덧판 안 초점·덧판에서 연 창이 있으면(붙잡힘) 마우스가 떠나도 내리지 않고 다른 카드에 새 덧판도 안 띄운다", () => {
+    const onHover = vi.fn();
+    const ref = createRef<HTMLDivElement>();
+    act(() => root.render(<Board m={modelOf(card("a", 0, 0, 0), card("b", 300, 0, 1))} pinned onHover={onHover} boardRef={ref} />));
+    move(ref.current!, 350, 50);
+    act(() => { vi.advanceTimersByTime(200); });
+    move(ref.current!, 700, 500); // 카드 밖
+    act(() => { ref.current!.dispatchEvent(new MouseEvent("mouseleave")); });
+    expect(onHover).not.toHaveBeenCalled();
+  });
+
+  it("덧판이 붙는(hiddenId) 같은 렌더 단계에서 그 카드 GPU 그림을 감추고 다시 그린다 — 떼면 같은 단계에서 되살린다(깜박임 없음)", () => {
+    const ref = createRef<HTMLDivElement>();
+    const m = modelOf(card("a", 0, 0, 0));
+    act(() => root.render(<Board m={m} onHover={() => {}} boardRef={ref} />));
+    const draws = fx.draws;
+    act(() => root.render(<Board m={m} hiddenId="a" onHover={() => {}} boardRef={ref} />));
+    expect(fx.hidden.at(-1)).toBe("a");
+    expect(fx.draws).toBe(draws + 1); // 프레임을 기다리지 않고 layout 단계에서 그렸다
+    act(() => root.render(<Board m={m} hiddenId={null} onHover={() => {}} boardRef={ref} />));
+    expect(fx.hidden.at(-1)).toBeNull();
+    expect(fx.draws).toBe(draws + 2);
+  });
+
+  it("화면을 옮긴 직후(150ms 안)·끄는 중(data-panning)엔 덧판을 고르지 않는다", () => {
+    const onHover = vi.fn();
+    const ref = createRef<HTMLDivElement>();
+    act(() => root.render(<Board m={modelOf(card("a", 0, 0, 0))} onHover={onHover} boardRef={ref} />));
+    act(() => listeners.forEach((l) => l(0))); // now=1000 에 카메라 변화
+    move(ref.current!, 50, 50);
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(onHover).not.toHaveBeenCalled();
+    now = 1300;
+    ref.current!.setAttribute("data-panning", "");
+    move(ref.current!, 60, 60);
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(onHover).not.toHaveBeenCalled();
+    ref.current!.removeAttribute("data-panning");
+    move(ref.current!, 61, 61);
+    act(() => { vi.advanceTimersByTime(120); });
+    expect(onHover.mock.calls).toEqual([["a"]]);
+  });
+});
+
+describe("카메라 알림 종류·덧판 예약", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+  afterEach(() => vi.useRealTimers());
+  const twoCards: GpuSceneModel = { ...model, cards: [{ ...model.cards[0] }] };
+  function Board(p: { onHover: (id: string | null) => void; boardRef: React.RefObject<HTMLDivElement | null> }) {
+    return (
+      <div className="scene-board" ref={p.boardRef}>
+        <GpuBoard phase="gpu" token={1} sceneId="s" model={twoCards} hiddenId={null} cameraSource={source} boardRef={p.boardRef} dispatch={() => {}} onHover={p.onHover} overlayPinned={false} />
+      </div>
+    );
+  }
+  const move = (el: HTMLElement) => act(() => { el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 50, clientY: 50 })); });
+
+  it("머무는 중 화면이 움직이면(휠·F) 걸어 둔 덧판 예약을 버린다 — 포인터 아래에서 떠난 카드 덧판이 늦게 뜨지 않게", () => {
+    const onHover = vi.fn();
+    const ref = createRef<HTMLDivElement>();
+    act(() => root.render(<Board onHover={onHover} boardRef={ref} />));
+    move(ref.current!);
+    act(() => { vi.advanceTimersByTime(60); });
+    act(() => listeners.forEach((l) => l(0)));
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(onHover).not.toHaveBeenCalled();
+  });
+
+  it("기기 배율 바뀜(-1)은 다시 그리되 조작으로 세지 않는다 — 바로 뒤 마우스 올림도 덧판을 고른다", () => {
+    const onHover = vi.fn();
+    const ref = createRef<HTMLDivElement>();
+    act(() => root.render(<Board onHover={onHover} boardRef={ref} />));
+    act(() => listeners.forEach((l) => l(-1)));
+    move(ref.current!);
+    act(() => { vi.advanceTimersByTime(120); });
+    expect(onHover.mock.calls).toEqual([["a"]]);
+  });
+});
+
+describe("그림 파일 머리 크기(imageSizeOf)", () => {
+  const bytes = (n: number, set: Array<[number, number[]]>) => { const b = new Uint8Array(n); for (const [i, v] of set) b.set(v, i); return b; };
+  const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
+  it("PNG·GIF·WebP(VP8X) 크기를 읽는다", () => {
+    expect(imageSizeOf(bytes(24, [[0, [0x89, ...ascii("PNG")]], [16, [0, 0, 1, 44]], [20, [0, 0, 9, 96]]]))).toEqual({ w: 300, h: 2400 });
+    expect(imageSizeOf(bytes(10, [[0, ascii("GIF89a")], [6, [100, 0, 50, 0]]]))).toEqual({ w: 100, h: 50 });
+    expect(imageSizeOf(bytes(30, [[0, ascii("RIFF")], [8, ascii("WEBPVP8X")], [24, [199, 0, 0]], [27, [99, 0, 0]]]))).toEqual({ w: 200, h: 100 });
+  });
+  it("JPEG 는 SOF 의 크기, EXIF 방향 6(90도)이면 가로세로를 바꾼다 — 모르는 형식은 null", () => {
+    // FFD8 · APP1 Exif(II, IFD0 에 0x0112=6) · SOF0(높이 100, 폭 400)
+    const app1 = [0xff, 0xe1, 0, 34, ...ascii("Exif"), 0, 0, ...ascii("II"), 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
+    const sof = [0xff, 0xc0, 0, 17, 8, 0, 100, 1, 144, 3];
+    const jpeg = new Uint8Array([0xff, 0xd8, ...app1, ...sof, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(imageSizeOf(jpeg)).toEqual({ w: 100, h: 400 });
+    const plain = new Uint8Array([0xff, 0xd8, ...sof, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(imageSizeOf(plain)).toEqual({ w: 400, h: 100 });
+    expect(imageSizeOf(new Uint8Array(40))).toBeNull();
   });
 });
 

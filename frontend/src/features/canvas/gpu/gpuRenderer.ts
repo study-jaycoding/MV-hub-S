@@ -451,8 +451,9 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         g.bindVertexArray(null);
       },
       timeGpu(frames) {
-        if (timing) return Promise.reject(new Error("GPU timing already running"));
         if (dead || contextLost || !last || !Number.isInteger(frames) || frames < 1) return Promise.reject(new Error("GPU timing unavailable"));
+        // 앞 검사가 아직 돌면(씬을 바꿔 새 검사가 옴) 앞 것을 취소하고 새로 잰다 — 거부하면 새 씬이 느린 GPU 로 잠겼다(Codex 리뷰 2차). 앞 약속은 'cancelled' 로 끝나고 부른 쪽이 token 으로 버린다.
+        stopTiming?.();
         timing = new Promise<number[]>((resolve, reject) => {
           const results: number[] = [];
           let raf = 0, query: WebGLQuery | null = null, queryStart = 0;
@@ -475,6 +476,8 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
           function step() {
             if (finished) return;
             if (dead || contextLost || !last) { done(new Error("GPU timing unavailable")); return; }
+            // 전체 마감은 표본이 유효하든 아니든 걸음마다 본다 — 유효 표본이 1초 가까이씩 늦게 와도 30개를 다 모으면 30초 가까이 걸렸다(Codex 리뷰 2차)
+            if (performance.now() - startedAt > 10_000) { done(new Error("GPU timing too slow")); return; }
             try {
               if (query && extension) {
                 const disjoint = !!g.getParameter(extension.GPU_DISJOINT_EXT);
@@ -485,7 +488,7 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
                 }
                 if (available) results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
                 g.deleteQuery(query); queries.delete(query); query = null;
-                if (!available && (++discarded > frames || performance.now() - startedAt > 10_000)) {
+                if (!available && ++discarded > frames) {
                   done(new Error(disjoint ? "GPU timer disjoint" : "GPU timer timeout"));
                   return;
                 }

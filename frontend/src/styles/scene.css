@@ -112,6 +112,8 @@
    씬을 바꾸는 틈에도 감춘다(떠난 씬을 한 번 그리지 않게 — 아래 data-switching 과 같은 뜻). */
 .scene-gpu-board { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
 .scene-gpu-board[data-phase="preparing"], .scene-gpu-board[data-phase="probing"], .scene-board[data-switching] .scene-gpu-board { visibility: hidden; }
+/* 검사 중 보이는 DOM 카드는 보기 모드라 누를 수 없다 — 누름·클릭이 보드 자신에게 가 거절된다(카드 단추의 click 이 Generate 등을 실행하던 틈, 11-11 리뷰 2차) */
+.scene-board[data-gpu="probing"] > .scene-canvas { pointer-events: none; }
 .scene-gpu-overlay { z-index: 20; }
 /* 숨은 측정 칸 — 화면 밖에 읽기 형태 카드를 붙여 크기만 잰다(카메라 층 밖이라 배율과 무관한 레이아웃 크기) */
 .scene-gpu-measure { position: absolute; left: -100000px; top: 0; visibility: hidden; pointer-events: none; contain: layout style; }

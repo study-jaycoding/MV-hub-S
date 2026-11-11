@@ -3259,20 +3259,27 @@ export function SceneBoard({
         if (texts.length) setViewTextModal(texts);
         return;
       }
+      // 항목 해석은 그림(boardCanvasDraw 리스트)과 같다 — 생성 카드 = genId 없으면 첫 변형의 결과물, 레퍼런스 리스트 안의 생성 카드도 결과물(Codex 리뷰 2차)
       const items: PreviewItem[] = [];
-      if (li.kind === "generation")
-        for (const id of li.generationCardIds) {
-          const gc = cardById(id);
-          const g = gc?.genId ? ownEntry(genData, gc.genId) : undefined;
-          const a = g?.assets?.[0];
-          if (g && a) items.push({ url: a.file_path, type: a.type, name: g.prompt?.slice(0, 50) || "결과", genId: g.id, thumb: thumbOf(g) });
-        }
+      const pushGen = (gc: SceneCard | undefined) => {
+        const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+        const g = gid ? ownEntry(genData, gid) : undefined;
+        const a = g?.assets?.[0];
+        if (g && a) items.push({ url: a.file_path, type: a.type, name: g.prompt?.slice(0, 50) || "결과", genId: g.id, thumb: thumbOf(g) });
+      };
+      if (li.kind === "generation") for (const id of li.generationCardIds) pushGen(cardById(id));
       else if (li.kind === "reference")
-        for (const id of li.referenceCardIds)
-          for (const r of cardById(id)?.refs ?? []) {
+        for (const id of li.referenceCardIds) {
+          const rc = cardById(id);
+          if (rc && rc.kind !== "reference") {
+            pushGen(rc);
+            continue;
+          }
+          for (const r of rc?.refs ?? []) {
             const url = refMediaSrc(r);
             if (url) items.push({ url, type: refMediaType(r), name: r.name || "레퍼런스" });
           }
+        }
       if (items.length) onPreview?.({ ...items[0], items, index: 0 });
       return;
     }
@@ -3362,15 +3369,19 @@ export function SceneBoard({
         if (gpuFlag && !gpuEditRef.current && e.button !== 1) return;
         onMouseDown(e);
       }}
-      onContextMenu={gpuFlag ? (e) => {
+      // 문맥 메뉴도 캡처에서 — 버블이면 검사 중 보이는 DOM 카드의 메뉴(결과 수·카드 메뉴)가 먼저 열렸다(Codex 리뷰 2차)
+      onContextMenuCapture={gpuFlag ? (e) => {
         if (!gpuEditRef.current && onGpuPlate(e)) {
           e.preventDefault();
+          e.stopPropagation();
           gpu.refuse();
         }
       } : undefined}
       onFocus={gpuFlag ? (e) => setBoardTyping(isSceneTextEntryTarget(e.target as HTMLElement)) : undefined}
       onBlur={gpuFlag ? () => setBoardTyping(false) : undefined}
-      // 검사(probing) 중엔 DOM 카드가 보이지만 보기 모드다 — 카드의 두 번 누름(리스트 카드 안 펼치기·모델 설정 창 등)이 카드에 닿지 않게 캡처에서 막는다
+      // 검사(probing) 중엔 DOM 카드가 보이지만 보기 모드다 — 카드의 클릭(Generate·S·↻ 같은 단추 — 키보드 Enter·Space 로 난 클릭 포함)·두 번 누름(리스트 카드 안
+      //  펼치기·모델 설정 창 등)이 카드에 닿지 않게 캡처에서 막는다. 누름은 위 onMouseDownCapture 가 막지만 click 은 따로 온다(11-11 리뷰 2차: 보기 모드에서 유료 생성).
+      onClickCapture={gpuFlag ? (e) => { if (!gpuEditRef.current && !gpuView && onGpuPlate(e)) { e.preventDefault(); e.stopPropagation(); } } : undefined}
       onDoubleClickCapture={gpuFlag ? (e) => { if (!gpuEditRef.current && !gpuView && onGpuPlate(e)) e.stopPropagation(); } : undefined}
       // GPU 보기 모드 — 덧판이 뜨기 전(또는 가려져 덧판이 안 뜨는 카드)의 더블클릭·휠클릭도 읽기 동작으로 받는다(사라지지 않게)
       onDoubleClick={gpuView ? (e) => { if (!(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "preview"); } : undefined}
