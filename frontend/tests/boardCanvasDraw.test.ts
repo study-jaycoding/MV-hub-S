@@ -1,14 +1,9 @@
 // 판 한 장 그림판의 그릴 것 만들기·그리기(docs/status/캔버스_보드그림판_2026-11-10.md) — 기록하는 가짜 2D 문맥으로 종류별 호출을 본다.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { boardItemSources, buildBoardItem, drawBoardItem, type BoardBuildContext, type BoardItem } from "../src/lib/boardCanvasDraw";
 import type { SceneCard } from "../src/lib/scenes";
 
-const statuses = vi.hoisted(() => ({ map: {} as Record<string, string | undefined> }));
-vi.mock("../src/lib/sceneAssetRelink", async (original) => ({
-  ...(await original<Record<string, unknown>>()),
-  refServerStatus: (_ws: string, r: { file_path: string }) => statuses.map[r.file_path],
-  refHeldInfo: () => undefined,
-}));
+const statuses = { map: {} as Record<string, string | undefined> };
 
 function recorder() {
   const calls: Array<[string, ...unknown[]]> = [];
@@ -33,7 +28,8 @@ const ctx = (over: Partial<BoardBuildContext> = {}): BoardBuildContext => ({
   workspaceId: "ws", fill: true, cardsById: new Map(), resolvedEdges: [], genData: {},
   filters: { typeFilter: "all", colorFilter: new Set(), tagFilter: new Set(), sharedOnly: false, commentOnly: false, finalOnly: false } as never,
   folderSel: null, modelBlocked: () => false, waiting: () => false, genMissing: () => false, genKnown: () => true, disabled: () => false,
-  hideFailed: false, lastViewedCardId: null, logo: "/logo.svg", ...over,
+  hideFailed: false, lastViewedCardId: null, logo: "/logo.svg",
+  refStatus: (_ws, r) => statuses.map[r.file_path] as never, refHeldTitle: () => undefined, ...over,
 });
 const gen = (id: string, patch: Record<string, unknown> = {}) => ({
   id, status: "done", prompt: "p", shared: false, is_final: false, is_held: false, color: null, tags: [],

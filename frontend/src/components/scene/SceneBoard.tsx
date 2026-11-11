@@ -127,7 +127,9 @@ import {
 import {
   forceRefsAsk,
   getRefServerStatusVersion,
+  heldText,
   recheckBrokenRef,
+  refHeldInfo,
   recheckPastedRefs,
   refServerStatus,
   sceneAssetTokens,
@@ -1005,11 +1007,16 @@ export function SceneBoard({
   // GPU 판이 그림을 그릴 수 없다고 알린 카드 — 그 카드 객체 그대로인 동안만 미지원으로 센다(옮기거나 그림을 바꾸거나 지우면 풀려, 모드 단추로
   //  다시 켤 수 있다). 늦은·취소된 결과는 아틀라스가 걸렀다(Codex 리뷰 5·6차).
   const [gpuUndrawable, setGpuUndrawable] = useState<ReadonlyMap<string, SceneCard>>(() => new Map());
-  const onGpuUndrawable = useCallback((id: string) => {
+  const cardsSceneIdRef = useRef(cardsSceneId);
+  cardsSceneIdRef.current = cardsSceneId;
+  // sceneId = 그 알림을 낸 아틀라스 세대의 씬 — 씬을 바꾸는 틈의 옛 씬 결과가 같은 id 의 새 씬 카드를 막지 않게(Claude 리뷰 7차 P3)
+  const onGpuUndrawable = useCallback((id: string, sceneId: string) => {
+    if (sceneId !== cardsSceneIdRef.current) return;
     const card = cardsRef.current.find((c) => c.id === id);
     if (card) setGpuUndrawable((m) => (m.get(id) === card ? m : new Map(m).set(id, card)));
   }, []);
-  const gpuUnsupported = useMemo(() => gpuFlag && cards.some((c) => !BOARD_KINDS.has(c.kind) || gpuUndrawable.get(c.id) === c), [gpuFlag, cards, gpuUndrawable]);
+  const gpuKindsUnsupported = useMemo(() => gpuFlag && cards.some((c) => !BOARD_KINDS.has(c.kind)), [gpuFlag, cards]);
+  const gpuUnsupported = useMemo(() => gpuKindsUnsupported || (gpuFlag && cards.some((c) => gpuUndrawable.get(c.id) === c)), [gpuFlag, gpuKindsUnsupported, cards, gpuUndrawable]);
   const gpu = useGpuBoardMode({
     flag: gpuFlag,
     sceneId: cardsSceneId,
@@ -1029,6 +1036,18 @@ export function SceneBoard({
   // 사용자 편집 허용(isFrozen 과 따로) — probing·gpu 단계는 보기 모드. 입력 진입점이 렌더 밖에서 읽는다.
   const gpuEditRef = useRef(gpu.editAllowed);
   gpuEditRef.current = gpu.editAllowed;
+  // 모드 단추·` 키 — 그림 때문에(종류는 지원) 막힌 씬이면 그림 기록을 지우고 처음부터 다시 검사한다(그림이 그대로면 또 알려 DOM 으로 돌아간다).
+  //  카드 객체는 그대로인데 그림만 바뀐 경우(생성 결과 자료만 갱신·리스트의 원본 연결 변경)에도 다시 켤 수 있게(Codex 리뷰 7차).
+  const gpuToggle = () => {
+    const m = gpu.mode;
+    if (m.phase === "dom" && !m.userDom && !m.locked && m.reason === "unsupported" && !gpuKindsUnsupported && gpuUndrawable.size) {
+      setGpuUndrawable(new Map());
+      gpu.dispatch({ type: "unsupported", sceneId: cardsSceneId, unsupported: false });
+      gpu.dispatch({ type: "user-mode", mode: "gpu" });
+      return;
+    }
+    gpu.toggle();
+  };
   /** 판 위의 입력인가(보드 배경·점 격자·GPU 판·카드 층) — 덧판(읽기 카드)과 판 밖의 창·단추·미니맵은 아니다 */
   const onGpuPlate = (e: React.SyntheticEvent) => {
     const t = e.target as HTMLElement;
@@ -2335,7 +2354,7 @@ export function SceneBoard({
     onCutHeldChange: setCutHeld,
     onDelete: () => deleteCards([...selectedRef.current]),
     // GPU 보기 모드 — 보는 키만(표식이 꺼져 있으면 넘기지 않아 지금과 같다)
-    ...(gpuFlag ? { isViewMode: () => !gpuEditRef.current, onViewRefuse: gpu.refuse, onToggleView: gpu.toggle } : {}),
+    ...(gpuFlag ? { isViewMode: () => !gpuEditRef.current, onViewRefuse: gpu.refuse, onToggleView: gpuToggle } : {}),
   });
 
   // ── 마우스: 미들=팬 · 카드=이동/선택 · 배경=마퀴 복수선택 ──
@@ -3186,6 +3205,8 @@ export function SceneBoard({
         disabled: (gid) => disabledIds.has(gid),
         hideFailed, lastViewedCardId: genViews.lastCardId ?? null, logo: higgsfieldLogo,
         isSelected: (id) => selected.has(id),
+        refStatus: refServerStatus,
+        refHeldTitle: (ws, r) => { const h = refHeldInfo(ws, r); return h ? heldText(h).title : undefined; },
       },
       selected, glow, offServer,
       listKind: (id) => listKinds.get(id) ?? null,
@@ -4181,7 +4202,7 @@ export function SceneBoard({
           data-on={gpu.mode.phase === "gpu" ? "" : undefined}
           title={"편집 모드 ↔ 보기 모드(GPU) 바꾸기 — ` 키\n보기 모드에서는 줌·이동·읽기만 됩니다"}
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={gpu.toggle}
+          onClick={gpuToggle}
         >
           {gpu.mode.phase === "gpu" ? "보기 모드(GPU)" : gpu.mode.phase === "dom"
             ? gpu.mode.reason === "locked" ? "편집 모드 · GPU 못 씀" : gpu.mode.reason === "unsupported" ? "편집 모드 · 미지원 노드"

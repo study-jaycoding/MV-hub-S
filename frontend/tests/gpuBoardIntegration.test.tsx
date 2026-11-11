@@ -10,7 +10,7 @@ import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 import type { GpuBoardProps } from "../src/features/canvas/gpu/GpuBoard";
 
 const fixture = vi.hoisted(() => ({ data: null as unknown as SceneGenDataApi, models: [] as number[], probe: 1, hold: null as null | "preparing" | "probing", mounts: 0,
-  props: null as null | { onUndrawable?: (id: string) => void } }));
+  props: null as null | { onUndrawable?: (id: string, sceneId: string) => void } }));
 vi.mock("../src/lib/useSceneGenData", () => ({ useSceneGenData: () => fixture.data }));
 vi.mock("../src/features/canvas/gpu/GpuBoard", async (original) => {
   const real = await original<typeof import("../src/features/canvas/gpu/GpuBoard")>();
@@ -425,16 +425,23 @@ it("리스트 읽기 창의 항목은 그림과 같은 해석 — genId 없이 �
   expect(onPreview.mock.calls[0][0]).toMatchObject({ url: "/media/g1.png", genId: "g1" });
 });
 
-it("GPU 판이 그림을 그릴 수 없다고 알린 카드가 있는 동안 DOM 판에 두고, 그 카드를 지우면 모드 단추로 다시 켤 수 있다", async () => {
+it("GPU 판이 그림을 그릴 수 없다고 알린 카드가 있으면 DOM 판으로 — 다른 씬의 늦은 알림은 무시, 모드 단추는 기록을 지우고 다시 검사한다", async () => {
   localStorage.setItem("mvhub.canvas.gpuBoard", "1");
   await show(cards3);
   await flush();
   expect(phase()).toBe("gpu");
-  await act(async () => { fixture.props!.onUndrawable!("b"); });
+  await act(async () => { fixture.props!.onUndrawable!("b", "s2"); }); // 씬을 바꾸는 틈의 옛 씬 알림
+  await flush();
+  expect(phase()).toBe("gpu");
+  await act(async () => { fixture.props!.onUndrawable!("b", "s1"); });
   await flush();
   expect(phase()).toBeNull();
   const button = () => host.querySelector<HTMLButtonElement>(".scene-gpu-mode")!;
-  await act(async () => { button().click(); }); // 그 카드가 그대로면 까닭만
+  // 카드 객체는 그대로(그림 자료만 바뀐 경우와 같다) — 단추로 다시 켜면 처음부터 검사해 GPU 판으로
+  await act(async () => { button().click(); });
+  await flush();
+  expect(phase()).toBe("gpu");
+  await act(async () => { fixture.props!.onUndrawable!("b", "s1"); }); // 그림이 그대로면 판이 또 알린다 → DOM
   await flush();
   expect(phase()).toBeNull();
   await show([cards3[0], cards3[2]]); // 그 카드를 지웠다

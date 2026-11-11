@@ -48,7 +48,7 @@ export interface GpuBoardProps {
   /** 덧판 안에 초점·덧판에서 연 창이 있다 — 마우스가 떠나도 덧판을 두고 새 덧판도 안 띄운다 */
   overlayPinned: boolean;
   /** 그 카드의 그림을 GPU 판이 그릴 수 없다(원본 크기를 디코드 없이 알 수 없음) — 그 카드가 있는 동안 DOM 판에 둔다 */
-  onUndrawable?: (cardId: string) => void;
+  onUndrawable?: (cardId: string, sceneId: string) => void;
 }
 
 /** 아틀라스와 같은 해상도 단계 — 화면 배율을 1.25배 넘게 늘려 그리지 않는 가장 작은 단계 */
@@ -418,7 +418,7 @@ export function GpuBoard(props: GpuBoardProps) {
     s.renderer = renderer;
     // 그릴 수 없는 그림 — 아틀라스가 지금 작업(취소·세대 검사 통과)일 때만 알린다. 어느 카드인지는 SceneBoard 가 카드 단위로 기억한다(그 카드가 바뀌면 풀림)
     s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode: decodeImage,
-      onUndrawable: (id) => { if (!s.failed) live.current.onUndrawable?.(id); } });
+      onUndrawable: (id) => { if (!s.failed) live.current.onUndrawable?.(id, s.sceneId); } });
     s.lowLod = Math.round(live.current.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
     const board = live.current.boardRef.current;
     const measure = () => {

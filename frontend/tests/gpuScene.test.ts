@@ -9,7 +9,7 @@ const build: BoardBuildContext = {
   workspaceId: "ws", fill: true, cardsById: new Map(), resolvedEdges: [], genData: {},
   filters: { typeFilter: "all", colorFilter: new Set(), tagFilter: new Set(), sharedOnly: false, commentOnly: false, finalOnly: false } as never,
   folderSel: null, modelBlocked: () => false, waiting: () => false, genMissing: () => false, genKnown: () => true, disabled: () => false,
-  hideFailed: false, lastViewedCardId: null, logo: "/logo.svg",
+  hideFailed: false, lastViewedCardId: null, logo: "/logo.svg", refStatus: () => undefined, refHeldTitle: () => undefined,
 };
 const text = (id: string, x: number, body = "hello") => ({ id, kind: "text", x, y: 0, text: body }) as unknown as SceneCard;
 const input = (over: Partial<GpuSceneInput> = {}): GpuSceneInput => ({

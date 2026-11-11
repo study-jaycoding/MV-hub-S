@@ -6,7 +6,7 @@ import { inBoardFolder, matchesBoardFilters, type BoardFilters, type BoardFolder
 import { generationStatusLabelFor } from "./generationDisplay";
 import { thumbOf } from "./media";
 import { ownEntry } from "./ownEntry";
-import { heldText, refHeldInfo, refServerStatus } from "./sceneAssetRelink";
+import type { refServerStatus } from "./sceneAssetRelink";
 import { CARD_W } from "./sceneDerive";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "./sceneEdges";
 import { refMediaType, refThumbSrc } from "./sceneMedia";
@@ -56,9 +56,14 @@ export interface BoardBuildContext {
   logo: string;
   /** 고른 카드인가 — 공유 안 된·비활성 결과 노드는 고르면 원래 크기·불투명이라 모습이 달라진다 */
   isSelected?: (cardId: string) => boolean;
+  /** 레퍼런스 서버 상태·보류 까닭 제목(lib/sceneAssetRelink 의 판정) — SceneBoard 가 넘긴다. 여기서 값으로 import 하면
+   *  canvas api → gpuScene → 이 파일 → sceneAssetRelink → canvas api 로 순환한다 */
+  refStatus: typeof refServerStatus;
+  refHeldTitle: (workspaceId: string, ref: RefOf) => string | undefined;
 }
+type RefOf = Parameters<typeof refServerStatus>[1];
 
-const tileStatus = (workspaceId: string, ref: Parameters<typeof refServerStatus>[1]): TileStatus => refServerStatus(workspaceId, ref) ?? "ok";
+const tileStatus = (ctx: BoardBuildContext, ref: RefOf): TileStatus => ctx.refStatus(ctx.workspaceId, ref) ?? "ok";
 
 /** TextCard 와 같은 계산 — 이어진 것(위→아래·왼→오른 순)의 레퍼런스 번호(@image1…) → 썸네일, 보일 글 = 자기 글이 있으면 그것, 없으면 이어 들어온 글. */
 function textView(card: SceneCard, ctx: BoardBuildContext): { text: string; thumbs: Record<string, string | null> } {
@@ -106,11 +111,11 @@ export function buildBoardItem(card: SceneCard, box: Box, ctx: BoardBuildContext
     const tiles: Tile[] = [];
     for (const r of refs) {
       const media = mediaOf(refMediaType(r));
-      const status = tileStatus(ctx.workspaceId, r);
+      const status = tileStatus(ctx, r);
       const name = r.name || r.file_path.split("|").pop()?.split("/").pop() || r.file_path;
       if (status === "missing" || status === "held" || status === "incomplete") {
-        const held = status === "held" ? refHeldInfo(ctx.workspaceId, r) : undefined;
-        tiles.push({ src: null, status, name, media, title: status === "missing" ? "서버에 없음" : status === "held" && held ? heldText(held).title : "확인 못 함" });
+        const heldTitle = status === "held" ? ctx.refHeldTitle(ctx.workspaceId, r) : undefined;
+        tiles.push({ src: null, status, name, media, title: status === "missing" ? "서버에 없음" : heldTitle ?? "확인 못 함" });
         continue;
       }
       tiles.push({ src: refThumbSrc(r) || null, status, name, media });
@@ -156,7 +161,7 @@ export function buildBoardItem(card: SceneCard, box: Box, ctx: BoardBuildContext
           continue;
         }
         const refs = rc?.refs || [];
-        const statuses = refs.map((r) => refServerStatus(ctx.workspaceId, r));
+        const statuses = refs.map((r) => ctx.refStatus(ctx.workspaceId, r));
         const first = statuses[0];
         if (first === "missing" || first === "held") {
           tiles.push({ src: null, status: first, count: refs.length });
