@@ -16,8 +16,8 @@ updated: 2026-11-11
 
 | 파일 | 책임 |
 |---|---|
-| `backend/app/routers/resolve_panel.py` | 패널 6개 API·일반 인증 뒤 로컬/계정 고정·권한·업데이트/선택 감시 관문 |
-| `backend/app/services/resolve_panel.py` | 허브 문맥·요청 합치기·로컬 캐시·한 항목 준비·메모리 준비 기록·확인 뒤 결정적 전송 장부 |
+| `backend/app/routers/resolve_panel.py` | 패널 9개 API·로컬/계정 고정·프로젝트 권한·담당 창 세대·업데이트/선택 감시 관문 |
+| `backend/app/services/resolve_panel.py` | 허브 문맥·담당 창 잠금·빈별 순번·로컬 캐시·한 항목 준비·원자 복구 기록·결정적 전송 장부 |
 | `backend/app/services/resolve_panel_worker.py` | 격리 Resolve 자식의 빈 선택·현재 빈 읽기·놓은 클립 확인과 자식 전송 보호 |
 | `backend/tests/test_resolve_panel.py` | 가짜 Resolve·임시 파일로 패널 계약과 실패/재시도 검증 |
 
@@ -27,13 +27,14 @@ updated: 2026-11-11
 
 | 파일 | 책임 |
 |---|---|
-| `frontend/src/components/resolvePanel/ResolvePanelApp.tsx` | 씬 저장소 없는 패널·기존 로그인 · 다빈치 미디어 풀 모양(빈 트리·보기/크기/검색/정렬·색·태그·생성자 거르기)·15초/초점 자동 갱신·카드 S·T 연결 |
-| `frontend/src/components/resolvePanel/ResolvePanelCards.tsx` | 패널 카드 세 보기(썸네일 = 편집 탭 EditCard · 메타데이터 · 목록)·누르기 준비·끌기·상태 줄 |
-| `frontend/src/lib/resolvePanelApi.ts` | 6개 API 타입·양방향 끌기 판 호환·끌기 조건·adopt/target 상태 판단·캐시 묶음 |
-| `frontend/src/lib/useResolvePanel.ts` | 창별 순번·인증/문맥 폐기·직렬 폴링·카드 준비·네이티브 끌기·확인 재시도 |
-| `frontend/src/styles/resolve-panel.css` | 좁은 분리 창의 컷 목록·공유물 카드·상태 표시 |
-| `frontend/tests/resolvePanelApi.test.ts` | 끌기 관문·판 전달·상태 표·500개 경계 시험 |
-| `frontend/tests/resolvePanelApp.test.tsx` | 모의 API/다리의 화면·인증·늦은 응답·준비·재시도·분리 부팅 시험 |
+| `frontend/src/components/resolvePanel/ResolvePanelApp.tsx` | 씬 저장소 없는 패널·로그인·빈 트리·색/태그/생성자 거르기·15초/초점 갱신·빈 상태 표시 |
+| `frontend/src/lib/resolvePanelApi.ts` | 9개 API 타입·다리 판 호환·stage/adopt/target/inventory 상태 판단·캐시 묶음 |
+| `frontend/src/lib/useResolvePanel.ts` | 담당 창·인증 문맥·컷별 stage·직렬 사용 항목 adopt·선택과 분리한 앞 컷 정리·inventory 복구 |
+| `frontend/src/styles/resolve-panel.css` | 좁은 분리 창의 빈 트리·거르기·상태 표시 |
+| `frontend/tests/resolvePanelApi.test.ts` | 상태 표·다리 판·500개 경계·새 API 인자 시험 |
+| `frontend/tests/resolvePanelApp.test.tsx` | 모의 API의 화면·인증·늦은 응답·담당 창·컷 정리·501개 복구·브라우저 읽기 전용 시험 |
+
+빈 띄우기 5판은 [빈 띄우기 계약](status/리졸브패널_빈띄우기_2026-11-11.md)을 따른다. ResolvePanelCards.tsx는 제거했으며, 브리지의 패널 전용 원문 표시·Usage 삭제·ReplaceClip 복구는 일반 보내기 표시 함수와 분리한다. 실제 Resolve·NAS 실측은 미수행이며 자동 지우기 실사용 전 별도 확인이 필요하다.
 
 2단계 계약은 [화면 작업 계약](status/리졸브패널_2단계_화면_2026-11-11.md). 실제 플러그인·설치·Resolve 실측은 후속 단계다.
 
