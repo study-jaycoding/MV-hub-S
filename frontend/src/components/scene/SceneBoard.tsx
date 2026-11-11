@@ -8,7 +8,7 @@ import { captureOperationContext, isOperationContextCurrent } from "../../app/op
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
-import { contextMenuCovered, floatHost, pressStartedCovered, useModalFocus } from "../../lib/keyGate";
+import { backgroundKeysBlocked, contextMenuCovered, floatHost, pressStartedCovered, useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ownEntry } from "../../lib/ownEntry";
 import { getDevicePixelRatio, subscribeDevicePixelRatio } from "../../lib/devicePixelRatio";
@@ -138,8 +138,8 @@ import { copyText, flashMsg } from "../../lib/flash";
 import { notifyPeekDropAdded } from "../../lib/peekDragOut";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { gatherCanvasReferences, useCanvasSession, type CanvasInputCommand, type CanvasGroupResizeHandle, type CanvasWriteReceipt } from "../../features/canvas/api";
-import { buildGpuScene, GpuBoard, GpuMeasure, GpuOverlayCard, useGpuBoardMode, type GpuMeasureItem, type GpuMeasureResult } from "../../features/canvas/api";
-import { GPU_MEASURE_BATCH } from "../../features/canvas/api";
+import { buildGpuScene, cardScreenRect, GpuBoard, GpuMeasure, GpuOverlayCard, useGpuBoardMode, type GpuMeasureItem, type GpuMeasureResult } from "../../features/canvas/api";
+import { flushSync } from "react-dom";
 import { BOARD_KINDS } from "../../lib/boardCanvasDraw";
 import { folderChipLabel } from "../../lib/folderLabel";
 import { refTypeLabel } from "../../lib/sceneMedia";
@@ -1008,7 +1008,7 @@ export function SceneBoard({
     unsupported: gpuUnsupported,
     cameraSource,
     busy: !!(editTextId || draggingIds.length || tempWire || cutHeld || cardMenu || nodePicker || modelModalId || comfyModalId || listPop
-      || viewTextModal || colorPopId || editingGroupId),
+      || viewTextModal || viewTimeline || colorPopId || editingGroupId),
   });
   const gpuView = gpu.mode.phase === "gpu";
   gpuViewRef.current = gpuView;
@@ -1021,6 +1021,12 @@ export function SceneBoard({
   // 사용자 편집 허용(isFrozen 과 따로) — probing·gpu 단계는 보기 모드. 입력 진입점이 렌더 밖에서 읽는다.
   const gpuEditRef = useRef(gpu.editAllowed);
   gpuEditRef.current = gpu.editAllowed;
+  /** 판 위의 입력인가(보드 배경·점 격자·GPU 판·카드 층) — 덧판(읽기 카드)과 판 밖의 창·단추·미니맵은 아니다 */
+  const onGpuPlate = (e: React.SyntheticEvent) => {
+    const t = e.target as HTMLElement;
+    if (t === e.currentTarget) return true;
+    return !t.closest?.(".scene-gpu-overlay") && !!t.closest?.(".scene-canvas, .scene-grid, .scene-gpu-board");
+  };
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
   const cardsRef = useRef(cards);
@@ -1422,7 +1428,16 @@ export function SceneBoard({
     onDropGenerations: (ids, point) => void dropGenerations(ids, point),
     cardWidth: CARD_W,
     cardHeight: CARD_H,
+    ...(gpuFlag ? { isViewMode: () => !gpuEditRef.current, onViewRefuse: gpu.refuse } : {}),
   });
+  // GPU 보기 모드에 들어가기를 미루는 것 중 이 아래에서 정해지는 것 — 태그 편집·S 확인·되찾기 창·올리는 중인 파일(편집 모드에서 놓은 것이
+  //  보기 모드에서 끝나면 카드가 거절됐다)·보드 안 입력칸 초점(글을 치는 사이 카드가 내려가면 친 글이 사라진다)
+  const [boardTyping, setBoardTyping] = useState(false);
+  const gpuLateBusy = !!(tagEditCardId || sConfirm || canvasRecovery || pendingImports.length || boardTyping);
+  const { setLateBusy: setGpuLateBusy } = gpu;
+  useEffect(() => {
+    if (gpuFlag) setGpuLateBusy(gpuLateBusy);
+  }, [gpuFlag, gpuLateBusy, setGpuLateBusy]);
 
   // ★연결 refs 지연 재동기화 — gatherTarget 은 genData 가 로드된 카드만 asset ref 로 잡는다. 연결 시점에
   //  리스트/렌더로 묶인 둘째~N째 카드의 genData 가 아직 안 실렸으면 그 카드는 skip 돼 card.refs 에 '첫째만'
@@ -3087,6 +3102,22 @@ export function SceneBoard({
   const refStatusVersion = getRefServerStatusVersion();
   const assetVersion = assetVersionsSnapshot();
   const recentDoneVersion = getRecentDoneVersion();
+  // 선이 닿은 포트 — 카드 틀의 data-linked(out · in · in-<칸>). 고르지도 올리지도 않은 카드에서 선이 없는 포트만 작은 빈 원으로
+  //  보이게 CSS 가 읽는다(Jay 2026-10-29 A안). 점 층과 같은 선(visibleEdges) + 숨긴 카드 우회선의 보이는 쪽 끝. GPU 판도 같은 값으로 그린다.
+  const linkedPorts = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    const add = (id: string, token: string) => {
+      const s = m.get(id) ?? new Set<string>();
+      m.set(id, s.add(token));
+    };
+    for (const e of [...visibleEdges, ...groupBridges]) {
+      add(e.from, "out");
+      add(e.to, "in");
+      add(e.to, "in-" + laneOf(edgeRoles.get(e.id) || "ref"));
+    }
+    return new Map([...m].map(([id, s]) => [id, [...s].join(" ")]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleEdges, groupBridges, edgeRoles]);
   const gpuModel = useMemo(() => {
     if (!gpuActive) return null;
     const missingHere = (refs: SceneRef[] | undefined) =>
@@ -3160,28 +3191,29 @@ export function SceneBoard({
         return !g || (card.genId && missingIds.has(card.genId)) || g.deleted ? undefined : folderChipLabel(g.folder_path);
       },
       refTypeLabel: (card) => refTypeLabel(card.refs),
+      linkedPorts: (id) => linkedPorts.get(id),
+      laneDelta, portGap: PORT_GAP,
     });
     // 모든 판정 자료를 넣는다 — pendingInputs·edgesToCut 은 렌더마다 새 Set 이라 내용 글자로, 서버 판정·어셋 버전·방금 생성은 저장소 판 번호로
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gpuActive, visibleCards, heightTick, cardsById, resolvedEdges, genData, selected, edgeGeometry, traceGeometry, groupViews, selectedGroupIds,
     fill, refWorkspaceId, typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, folderSel, comfyWaitingIds, genWaitingFromComfy,
     missingIds, answeredIds, disabledIds, hideFailed, genViews.lastCardId, edgeRoles, refCardEdgeIds, genRefEdgeIds, pendingKey, cutKey,
-    refStatusVersion, assetVersion, recentDoneVersion]);
-  // 숨은 측정 칸 — GPU 단계에서 크기를 다시 재야 하는 카드(측정 지문이 다르거나 한 번도 안 잰 레퍼런스·제목) 4장씩
+    refStatusVersion, assetVersion, recentDoneVersion, linkedPorts]);
+  // 숨은 측정 칸 — GPU 단계에서 크기를 다시 재야 하는 카드(측정 지문이 다르거나 한 번도 안 잰 레퍼런스·제목) 전부(칸이 프레임마다 4장씩 잰다)
   const gpuMeasureItems = useMemo(() => {
     if (!gpuView) return [];
     const out: GpuMeasureItem[] = [];
     for (const card of visibleCards) {
       if (card.kind !== "reference" && card.kind !== "head") continue;
       const sig = measureSig(card);
-      if (measuredSigRef.current[card.id] === sig && heightsRef.current[card.id]) continue;
+      if (measuredSigRef.current[card.id] === sig) continue;
       out.push({
         id: card.id, sig, className: card.kind === "reference" ? "scene-card-ref" : "scene-card-head", width: card.kind === "reference" ? CARD_W : undefined,
         node: card.kind === "reference"
           ? <ReferenceCard mode="read" card={card} fill={fill} workspaceId={refWorkspaceId} getGen={cardFns.getGen} />
           : <HeadCard mode="read" card={card} />,
       });
-      if (out.length >= GPU_MEASURE_BATCH) break;
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3193,19 +3225,38 @@ export function SceneBoard({
       const card = cardsById.get(r.id);
       if (!card || measureSig(card) !== r.sig) continue;
       measuredSigRef.current[r.id] = r.sig;
+      if (!r.h) continue; // 0 은 못 잰 것 — 옛 크기를 둔다(지문은 적어 같은 카드를 다시 고르지 않는다)
       if (heightsRef.current[r.id] !== r.h) heightsRef.current = { ...heightsRef.current, [r.id]: r.h };
       if (card.kind === "head" && widthsRef.current[r.id] !== r.w) widthsRef.current = { ...widthsRef.current, [r.id]: r.w };
     }
-    bumpHeights((n) => n + 1); // 바뀐 것이 없어도 다음 묶음을 고르도록 한 번 다시 그린다(지문을 적었으니 같은 카드는 다시 안 고른다)
+    bumpHeights((n) => n + 1); // 남은 것만 다시 고르도록 한 번 다시 그린다(지문을 적었으니 같은 카드는 다시 안 고른다) — 칸이 묶음 8개마다 모아 부른다
   };
   /** GPU 단계의 읽기 동작 — 화면 좌표 아래 맨 앞 카드(그리는 쌓임과 같은 순서)의 크게 보기·정보. 덧판이 아직 안 떴거나 가려진 카드용. */
-  const gpuReadAt = (clientX: number, clientY: number, what: "preview" | "info") => {
+  /** 화면 좌표 아래 맨 앞 GPU 카드 — 그리는 쌓임 순서와 같다. covered = 그 카드보다 앞의 카드가 겹친다(덧판을 안 띄우는 카드) */
+  const gpuTopAt = (clientX: number, clientY: number) => {
     const p = toCanvas(clientX, clientY);
     const cards = gpuModel?.cards ?? [];
-    let top: { id: string; z: number } | null = null;
+    let top: (typeof cards)[number] | null = null;
     for (const c of cards) if (p.x >= c.x && p.x <= c.x + c.w && p.y >= c.y && p.y <= c.y + c.h && (!top || c.z > top.z)) top = c;
-    const card = top ? cardById(top.id) : undefined;
-    if (!card) return;
+    if (!top) return null;
+    const t = top;
+    const covered = cards.some((c) => c.z > t.z && c.x < t.x + t.w && c.x + c.w > t.x && c.y < t.y + t.h && c.y + c.h > t.y);
+    return { card: cardById(t.id), rect: t, covered };
+  };
+  const gpuReadAt = (clientX: number, clientY: number, what: "preview" | "info") => {
+    const hit = gpuTopAt(clientX, clientY);
+    const card = hit?.card;
+    if (!hit || !card) return;
+    if (card.kind === "list" && what === "preview") {
+      // 리스트 — DOM 의 더블클릭과 같은 '그 자리에서 크게'(읽기 형태로 — 아래 listPop 렌더). 자리는 카드 사각형 × 카메라(cardEls 없음)
+      const k = collectListInputs(card.id, cardsById, resolvedEdges).kind;
+      const board = scrollRef.current?.getBoundingClientRect();
+      if (!board || (k !== "reference" && k !== "generation" && k !== "text")) return;
+      const cam = cameraSource.getSnapshot();
+      const r = cardScreenRect(hit.rect, cam);
+      setListPop({ id: card.id, w: hit.rect.w, h: hit.rect.h, x: board.left + r.left + r.width / 2, y: board.top + r.top + r.height / 2, shown: cam.z });
+      return;
+    }
     if (card.kind === "generation" && card.genId) {
       const g = ownEntry(genData, card.genId);
       const a = g?.assets?.[0];
@@ -3228,22 +3279,42 @@ export function SceneBoard({
       setGpuOverlayPinned(false);
     }
   }, [gpuView]);
-  // 선이 닿은 포트 — 카드 틀의 data-linked(out · in · in-<칸>). 고르지도 올리지도 않은 카드에서 선이 없는 포트만 작은 빈 원으로
-  //  보이게 CSS 가 읽는다(Jay 2026-10-29 A안). 점 층과 같은 선(visibleEdges) + 숨긴 카드 우회선의 보이는 쪽 끝.
-  const linkedPorts = useMemo(() => {
-    const m = new Map<string, Set<string>>();
-    const add = (id: string, token: string) => {
-      const s = m.get(id) ?? new Set<string>();
-      m.set(id, s.add(token));
+  // 덧판에서 무언가 누른 카드 — 그 누름이 연 창(정보·크게 보기: 위에 뜬 창은 keyGate 가 센다)이 떠 있는 동안 덧판을 두고 새 덧판도 안 띄운다(계약 overlay)
+  const gpuOverlayPopupRef = useRef<string | null>(null);
+  const gpuOverlayIdRef = useRef(gpuOverlayId);
+  gpuOverlayIdRef.current = gpuOverlayId;
+  const onGpuHover = useCallback((id: string | null) => {
+    if (gpuOverlayPopupRef.current && gpuOverlayPopupRef.current === gpuOverlayIdRef.current && backgroundKeysBlocked()) return;
+    gpuOverlayPopupRef.current = null;
+    setGpuOverlayId(id);
+  }, []);
+  // 덧판이 뜨기 전의 첫 휠 — 글·리스트 카드 위면 그 자리에서 덧판을 바로 붙여, 속이 넘치면 그 속을 굴린다(DOM 판에서 넘치는 카드 위 휠이 줌이
+  //  아니라 스크롤인 것과 같게 — 계약 overlay '첫 휠'). 안 넘치면 그대로 줌(useSceneViewport 의 휠)으로 간다. 가려진 카드는 덧판을 안 띄운다.
+  const gpuTopAtRef = useRef(gpuTopAt);
+  gpuTopAtRef.current = gpuTopAt;
+  useEffect(() => {
+    const board = scrollRef.current;
+    if (!gpuView || !board) return;
+    const onWheel = (e: WheelEvent) => {
+      if ((e.target as HTMLElement).closest?.(".scene-gpu-overlay") || gpuOverlayPinned) return;
+      const hit = gpuTopAtRef.current(e.clientX, e.clientY);
+      const card = hit?.card;
+      if (!card || hit.covered || (card.kind !== "text" && card.kind !== "list") || card.id === gpuOverlayIdRef.current) return;
+      flushSync(() => onGpuHover(card.id));
+      for (let n = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null; n && n !== board; n = n.parentElement) {
+        const s = getComputedStyle(n);
+        if ((s.overflowY === "auto" || s.overflowY === "scroll") && n.scrollHeight > n.clientHeight) {
+          e.preventDefault();
+          e.stopImmediatePropagation(); // 대상이 보드 자신이면(GPU 판은 누름을 안 받는다) 같은 요소의 줌 휠까지 막아야 한다
+          n.scrollBy({ top: e.deltaY });
+          return;
+        }
+        if (n.classList.contains("scene-gpu-overlay")) return;
+      }
     };
-    for (const e of [...visibleEdges, ...groupBridges]) {
-      add(e.from, "out");
-      add(e.to, "in");
-      add(e.to, "in-" + laneOf(edgeRoles.get(e.id) || "ref"));
-    }
-    return new Map([...m].map(([id, s]) => [id, [...s].join(" ")]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleEdges, groupBridges, edgeRoles]);
+    board.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => board.removeEventListener("wheel", onWheel, { capture: true });
+  }, [gpuView, gpuOverlayPinned, onGpuHover]);
 
   return (
     <div
@@ -3257,15 +3328,29 @@ export function SceneBoard({
       //  타입에 inert 가 없어 spread 로 넘긴다). 키는 아래 useSceneKeyboardShortcuts 의 isFrozen 이 막는다.
       {...(cardsSceneId !== scene.id ? { inert: "" } : {})}
       data-gpu={gpuActive ? gpu.mode.phase : undefined}
-      onMouseDownCapture={onBoardMouseDownCapture}
-      // GPU 보기 모드 — 가운데 버튼(화면 이동)만. 덧판(읽기 카드) 위 누름은 조용히 넘기고, 그 밖의 보드 누름은 안내 한 번(고르기·끌기·범위 선택 없음)
-      onMouseDown={(e) => {
-        if (gpuFlag && !gpu.editAllowed && e.button !== 1) {
-          if (!(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpu.refuse();
+      // GPU 보기 모드 — 판(배경·카드) 누름은 캡처에서 자식에 닿기 전에 거절하고 안내 한 번(가운데 버튼 화면 이동만 남김). 덧판(읽기 카드)·판 밖
+      //  창·단추의 누름은 그대로 둔다 — 아래 onMouseDown 이 보드 동작(고르기·끌기·범위 선택)만 막는다.
+      onMouseDownCapture={(e) => {
+        if (gpuView && (e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuOverlayPopupRef.current = gpuOverlayId; // 덧판에서 연 창이면 덧판을 둔다
+        if (gpuFlag && !gpuEditRef.current && e.button !== 1 && onGpuPlate(e)) {
+          e.stopPropagation();
+          gpu.refuse();
           return;
         }
+        onBoardMouseDownCapture(e);
+      }}
+      onMouseDown={(e) => {
+        if (gpuFlag && !gpuEditRef.current && e.button !== 1) return;
         onMouseDown(e);
       }}
+      onContextMenu={gpuFlag ? (e) => {
+        if (!gpuEditRef.current && onGpuPlate(e)) {
+          e.preventDefault();
+          gpu.refuse();
+        }
+      } : undefined}
+      onFocus={gpuFlag ? (e) => setBoardTyping(isSceneTextEntryTarget(e.target as HTMLElement)) : undefined}
+      onBlur={gpuFlag ? () => setBoardTyping(false) : undefined}
       // GPU 보기 모드 — 덧판이 뜨기 전(또는 가려져 덧판이 안 뜨는 카드)의 더블클릭·휠클릭도 읽기 동작으로 받는다(사라지지 않게)
       onDoubleClick={gpuView ? (e) => { if (!(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "preview"); } : undefined}
       onAuxClick={gpuView ? (e) => { if (e.button === 1 && !(e.target as HTMLElement).closest?.(".scene-gpu-overlay")) gpuReadAt(e.clientX, e.clientY, "info"); } : undefined}
@@ -3294,7 +3379,7 @@ export function SceneBoard({
           cameraSource={cameraSource}
           boardRef={scrollRef}
           dispatch={gpu.dispatch}
-          onHover={setGpuOverlayId}
+          onHover={onGpuHover}
           overlayPinned={gpuOverlayPinned}
         />
       )}
@@ -4208,7 +4293,11 @@ export function SceneBoard({
               onRedo={redo}
               onClose={() => setListPop(null)}
             >
-              <ListCard
+              {gpuView ? (
+                // GPU 보기 모드 — 읽기 형태(순서 바꾸기·메뉴·연결·크기 조절 없음, 미리보기·스크롤만)
+                <ListCard mode="read" card={c} cardsById={cardsById} resolvedEdges={resolvedEdges} genData={genData} disabledIds={disabledIds}
+                  cardWidth={widthOf(c)} workspaceId={refWorkspaceId} getNodePreview={getNodePreview} />
+              ) : <ListCard
                 card={c}
                 cardsById={cardsById}
                 resolvedEdges={resolvedEdges}
@@ -4226,7 +4315,7 @@ export function SceneBoard({
                 onOutPortDown={onOutPortDown}
                 onResizeDown={onResizeDown}
                 reorderable
-              />
+              />}
             </ListPopup>
           );
         })()}

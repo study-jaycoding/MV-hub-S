@@ -9,15 +9,17 @@ import { SceneBoard } from "../src/components/scene/SceneBoard";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 import type { GpuBoardProps } from "../src/features/canvas/gpu/GpuBoard";
 
-const fixture = vi.hoisted(() => ({ data: null as unknown as SceneGenDataApi, models: [] as number[], probe: 1 }));
+const fixture = vi.hoisted(() => ({ data: null as unknown as SceneGenDataApi, models: [] as number[], probe: 1, hold: null as null | "preparing" | "probing", mounts: 0 }));
 vi.mock("../src/lib/useSceneGenData", () => ({ useSceneGenData: () => fixture.data }));
 vi.mock("../src/features/canvas/gpu/GpuBoard", async (original) => {
   const real = await original<typeof import("../src/features/canvas/gpu/GpuBoard")>();
   function FakeGpuBoard(props: GpuBoardProps) {
     fixture.models.push(props.model.cards.length);
+    useEffect(() => { fixture.mounts++; }, []);
     useEffect(() => {
-      if (props.phase === "preparing") props.dispatch({ type: "prepared", token: props.token });
-      if (props.phase === "probing") props.dispatch({ type: "probe", token: props.token, medianMs: fixture.probe });
+      // hold = 그 단계에서 멈춰 둔다(준비가 안 끝남·검사가 안 끝남)
+      if (props.phase === "preparing" && fixture.hold !== "preparing") props.dispatch({ type: "prepared", token: props.token });
+      if (props.phase === "probing" && fixture.hold !== "probing") props.dispatch({ type: "probe", token: props.token, medianMs: fixture.probe });
     }, [props.phase, props.token]);
     return <canvas className="scene-gpu-board" data-phase={props.phase} data-cards={props.model.cards.length} />;
   }
@@ -50,6 +52,8 @@ beforeEach(() => {
   sessionStorage.clear();
   fixture.models = [];
   fixture.probe = 1;
+  fixture.hold = null;
+  fixture.mounts = 0;
   fixture.data = {
     genData: {}, genDataRef: { current: {} }, setGenData: noop, missingIds: new Set(), disabledIds: new Set(), refParents: {},
   } as unknown as SceneGenDataApi;
@@ -122,6 +126,20 @@ it("켤 때 검사가 느리면(중앙값 > 12ms) 그 세션은 잠기고 DOM �
   expect(phase()).toBeNull();
 });
 
+it("잠금은 보드가 다시 올라와도(탭을 떠났다 옴) 이어진다 — 느린 PC 에서 다시 검사하지 않는다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  fixture.probe = 40;
+  await show(cards3);
+  await flush();
+  expect(fixture.mounts).toBe(1);
+  await act(async () => { root.render(<div />); });
+  await show(cards3);
+  await flush();
+  expect(phase()).toBeNull();
+  expect(fixture.mounts).toBe(1); // 준비(GPU 판)를 다시 만들지 않는다
+  expect(host.querySelector(".scene-gpu-mode")?.textContent).toContain("GPU 못 씀");
+});
+
 it("보기 모드에서 사용자 변경은 입력 진입점·세션 실행점 모두 거절 — 문서 쓰기 0, 안내 한 번", async () => {
   localStorage.setItem("mvhub.canvas.gpuBoard", "1");
   await show(cards3);
@@ -142,6 +160,85 @@ it("보기 모드에서 사용자 변경은 입력 진입점·세션 실행점 �
   await flush();
   expect(onChange).not.toHaveBeenCalled();
   expect(document.body.textContent).toContain("보기 모드");
+});
+
+it("보기 모드에서 붙여넣기·끌어 놓기·문맥 메뉴는 입구에서 거절 — 서버에 올리지 않는다(fetch 0)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  await show(cards3);
+  await flush();
+  expect(phase()).toBe("gpu");
+  vi.mocked(fetch).mockClear(); // 띄울 때의 열람 기록 조회는 빼고 센다
+  const png = new File(["x"], "a.png", { type: "image/png" });
+  const paste = Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+    clipboardData: { items: [{ type: "image/png", getAsFile: () => png }], files: [png], getData: () => "" },
+  });
+  await act(async () => { window.dispatchEvent(paste); });
+  expect(paste.defaultPrevented).toBe(true);
+  const drop = Object.assign(new Event("drop", { bubbles: true, cancelable: true }), {
+    dataTransfer: { types: ["Files"], files: [png], items: [{ kind: "file", type: "image/png", getAsFile: () => png }], getData: () => "" },
+  });
+  await act(async () => { board().dispatchEvent(drop); });
+  expect(drop.defaultPrevented).toBe(true);
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  await act(async () => { board().dispatchEvent(menu); });
+  expect(menu.defaultPrevented).toBe(true);
+  await flush();
+  expect(fetch).not.toHaveBeenCalled();
+  expect(onChange).not.toHaveBeenCalled();
+  expect(document.body.textContent).toContain("보기 모드");
+});
+
+it("검사(probing) 중엔 DOM 판이 그대로 보이고, 카드 누름은 캡처에서 막혀 카드에 닿지 않는다(고르기 0)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  fixture.hold = "probing";
+  await show(cards3);
+  await flush();
+  expect(phase()).toBe("probing");
+  expect(domCards()).toBe(3); // 검사가 끝나야 바꾼다(계약 transition)
+  const card = host.querySelector<HTMLElement>('.scene-card[data-id="b"]') ?? host.querySelectorAll<HTMLElement>(".scene-card")[1];
+  await act(async () => {
+    card.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 320, clientY: 20 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, clientX: 320, clientY: 20 }));
+  });
+  await flush();
+  expect(host.querySelectorAll(".scene-card.sel")).toHaveLength(0);
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it("준비를 취소한 뒤 편집이 이어지는 동안은 다시 준비하지 않는다 — 마지막 입력 뒤 1초 조용해야 처음부터(새 GPU 판 1번)", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  fixture.hold = "preparing";
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await show(cards3);
+    await flush();
+    expect(phase()).toBe("preparing");
+    expect(fixture.mounts).toBe(1);
+    const press = () => act(async () => { document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); });
+    await press(); // 준비 취소
+    expect(phase()).toBeNull();
+    for (let i = 0; i < 3; i++) {
+      await act(async () => { vi.advanceTimersByTime(900); });
+      await press(); // 편집이 이어진다 — 기다림을 늘인다
+      expect(phase()).toBeNull();
+    }
+    await act(async () => { vi.advanceTimersByTime(1100); });
+    expect(phase()).toBe("preparing");
+    expect(fixture.mounts).toBe(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("보기 모드에서 결과 되찾기(recoverCardGeneration)는 사용자 명령이라 거절한다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  await show(cards3);
+  await flush();
+  let ok = true;
+  await act(async () => { ok = actionRef.current!.commitDocument({ type: "recoverCardGeneration", cardId: "a", generationId: "g1", createdAtById: {} } as never); });
+  expect(ok).toBe(false);
+  await flush();
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 it("보기 모드에서도 씬 수신(다른 창·비동기 결과)은 반영된다 — GPU 판의 그릴 모델이 따라온다", async () => {
@@ -178,6 +275,9 @@ it("카메라 출처 — 휠·화면 맞춤·한 단계 확대가 모두 알리�
   }
   await act(async () => { root.render(<Harness />); });
   calls.length = 0;
+  // 카메라가 그대로인 다시 그리기는 알리지 않는다 — 받는 쪽이 '조작 중'으로 셌다(11-11 리뷰)
+  await act(async () => { root.render(<Harness />); });
+  expect(calls).toEqual([]);
   await act(async () => { host.querySelector(".scene-board")!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 10, clientY: 10 })); });
   expect(calls.at(-1)).toBe(0);
   const cam = api!.cameraSource.getSnapshot();

@@ -24,6 +24,9 @@ let lastOpenEpoch = 0;
 export type CanvasInputCommand = CanvasEditCommand | CanvasComfyCommand;
 
 // 기존 history/input 엔진은 이 세션의 내부다. 화면의 좌표/선택/패널 상태는 Board에 남긴다.
+// GPU 보기 모드에서도 받는 명령 — 실행 결과 반영(승인된 비동기)·파생뿐(features/canvas/gpu, 계약 readonly 허용 목록)
+const VIEW_MODE_ALLOWED: ReadonlySet<string> = new Set(["refreshComfyMetadata", "showComfyRunning", "updateComfyRuntime", "saveComfyOutputs", "synchronizeReferences"]);
+
 export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory>[0], "onChange"> & {
   onChange: (snapshot: SceneSnap) => CanvasWriteReceipt | void;
   layerMoveRef: MutableRefObject<SceneLayerMove | null>;
@@ -71,8 +74,9 @@ export function useCanvasSession(options: Omit<Parameters<typeof useSceneHistory
   };
   const commit = useCallback((command: CanvasInputCommand): boolean => {
     if (!current()) return false;
-    // Comfy 명령은 실행 결과 반영(승인된 비동기)·참조 동기화는 파생 — 보기 모드에서도 받는다. 그 밖의 편집 명령은 사용자 변경이다.
-    if (!isCanvasComfyCommand(command) && command.type !== "synchronizeReferences" && !userGate()) return false;
+    // 실행 결과 반영(승인된 비동기 — Comfy 진행·결과·메타 갱신)·참조 동기화(파생)는 보기 모드에서도 받는다. 그 밖은 사용자 변경이다 —
+    //  Comfy 라도 설정 바꾸기·워크플로 교체·결과 되찾기(recoverCardGeneration)는 사용자가 누른 것이라 거절한다(11-11 리뷰: 되찾기 창이 보기 모드에 남았다).
+    if (!VIEW_MODE_ALLOWED.has(command.type) && !userGate()) return false;
     if (isCanvasComfyCommand(command)) {
       if (command.type === "updateComfyRuntime" || command.type === "refreshComfyMetadata" || command.type === "saveComfyOutputs")
         input.confirmPendingInput();

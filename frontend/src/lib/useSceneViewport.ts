@@ -118,6 +118,17 @@ export function useSceneViewport({
     [],
   );
 
+  // 마지막으로 알린 카메라 — 렌더마다 다시 적용하는 길(아래 useLayoutEffect)도 여기를 지난다. 그대로면 알리지 않는다:
+  //  알리면 GPU 판이 그때마다 '조작 중'으로 보고 굽기를 멈추고, 무거운 React 렌더 프레임을 느린 GPU 로 셌다(11-11 리뷰·CPU 4배 잠금).
+  const notifiedCameraRef = useRef<SceneCamera | null>(null);
+  const notifyCamera = useCallback((transitionMs: number) => {
+    const c = getCamera();
+    const n = notifiedCameraRef.current;
+    if (!transitionMs && n && n.x === c.x && n.y === c.y && n.z === c.z) return;
+    notifiedCameraRef.current = c;
+    for (const listener of cameraListenersRef.current) listener(transitionMs);
+  }, [getCamera]);
+
   const replaceCamera = useCallback((next: SceneCamera) => {
     zoomRef.current = next.z;
     panRef.current = { x: next.x, y: next.y };
@@ -292,8 +303,8 @@ export function useSceneViewport({
     }
     minimapUpdateRef.current?.();
     scheduleCull();
-    for (const listener of cameraListenersRef.current) listener(cameraTransitionRef.current);
-  }, [getCamera, gridSize, scheduleCull]);
+    notifyCamera(cameraTransitionRef.current);
+  }, [getCamera, gridSize, scheduleCull, notifyCamera]);
 
   // 가운데 버튼으로 끄는 한 걸음 — 화면 전체 레이어를 다시 합치지 않고 합성기만으로 민다. 걸음마다 transform 을 바꾸면 크롬이 그때마다
   //  레이어를 다시 합쳐(Layerize) 느린 PC 에서 끊겼다(2026-11-10 격리 실측, CPU 4배·400장 60걸음: 1.3~1.9초 → 주입 0.24~0.34초).
@@ -317,8 +328,8 @@ export function useSceneViewport({
     }
     minimapUpdateRef.current?.(true);
     scheduleCull();
-    for (const listener of cameraListenersRef.current) listener(0);
-  }, [gridSize, scheduleCull]);
+    notifyCamera(0);
+  }, [gridSize, scheduleCull, notifyCamera]);
 
   // 렌더마다 카메라를 다시 적용한다 — 가운데 버튼으로 끄는 중이면 접지 않고 민 채로 둔다. 보이는 범위가 바뀌어 다시 그릴 때마다 접으면
   //  표식이 떨어졌다 붙으며 그 프레임에 화면 전체 정리(PrePaint·레이어 합치기)가 다시 돌았다(2026-11-10 격리 실측).

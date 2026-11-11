@@ -33,6 +33,8 @@ export const STORAGE_KEYS = {
   canvasHandoff: "mvhub.canvasHandoff",
   // GPU 보기 모드 개발 표식(features/canvas/gpu) — "1" 이면 켬, 그 밖은 끔(기본). 이 브라우저만.
   canvasGpuBoard: "mvhub.canvas.gpuBoard",
+  // GPU 판 잠금(실패·느린 GPU) — sessionStorage, 페이지 시작 시각과 함께(새로 고침하면 풀림)
+  canvasGpuLock: "mvhub.canvas.gpuLock",
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",

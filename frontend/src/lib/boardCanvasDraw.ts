@@ -425,7 +425,8 @@ export function drawBoardItem(g: Ctx2D, item: BoardItem, imageOf: ImageOf): void
   roundRect(g, ix, iy, iw, ih, 10);
   g.clip();
   if (item.kind === "reference") {
-    if (item.single) {
+    // 빈 레퍼런스(refs: [])는 DOM 처럼 빈 몸통 — 아래 칸 갈래가 그릴 칸이 없어 배경만 남는다
+    if (item.single && item.tiles.length) {
       const t = item.tiles[0];
       const th = iw * 0.75;
       const off = t.status === "missing" || t.status === "held" || t.status === "incomplete";

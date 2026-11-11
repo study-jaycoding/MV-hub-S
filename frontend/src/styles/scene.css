@@ -108,10 +108,10 @@
    쌓임 맥락은 transform 이 이미 만든다. 안의 backdrop-filter(레퍼런스 영상 표시)는 같은 카드의 썸네일을 흐리니 그대로다. */
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; filter: blur(0px); }
 /* GPU 보기 모드(features/canvas/gpu, 개발 표식) — 보드 크기 canvas 하나. 점 격자 층 위·카메라 층 아래, 누름은 보드가 받는다.
-   준비(preparing) 중엔 굽기만 하고 안 보인다. 검사(probing) 중엔 GPU 판을 보이고 DOM 판은 감춘 채 둔다(실패면 그대로 다시 보인다). */
+   준비(preparing)·검사(probing) 중엔 굽고 재기만 하고 안 보인다 — DOM 판이 그대로 보이다가 검사가 끝나 카메라가 쉬면 한 커밋에 바뀐다(계약 transition).
+   씬을 바꾸는 틈에도 감춘다(떠난 씬을 한 번 그리지 않게 — 아래 data-switching 과 같은 뜻). */
 .scene-gpu-board { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
-.scene-gpu-board[data-phase="preparing"] { visibility: hidden; }
-.scene-board[data-gpu="probing"] > .scene-canvas { visibility: hidden; }
+.scene-gpu-board[data-phase="preparing"], .scene-gpu-board[data-phase="probing"], .scene-board[data-switching] .scene-gpu-board { visibility: hidden; }
 .scene-gpu-overlay { z-index: 20; }
 /* 숨은 측정 칸 — 화면 밖에 읽기 형태 카드를 붙여 크기만 잰다(카메라 층 밖이라 배율과 무관한 레이아웃 크기) */
 .scene-gpu-measure { position: absolute; left: -100000px; top: 0; visibility: hidden; pointer-events: none; contain: layout style; }

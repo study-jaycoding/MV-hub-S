@@ -2,13 +2,14 @@
 //  SceneBoard 가 그릴 모델(gpuScene)·모드 단계(gpuMode)를 주고, 여기서는 렌더러·아틀라스 수명, 프레임마다 굽기(예산 안)·그리기,
 //  준비 끝·켤 때 30번 검사·조작 중 긴 프레임·실패를 모드에 알리고, 마우스가 머문 카드를 덧판으로 고른다.
 //  카메라는 쓰지 않는다(읽기만) — useSceneViewport 의 카메라 출처가 화면을 옮길 때마다 알린다.
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { flashMsg } from "../../../lib/flash";
+import { STORAGE_KEYS } from "../../../lib/storageKeys";
 import { SCENE_LOD_PCT, type SceneCamera } from "../../../lib/sceneViewport";
 import { createCardAtlas, type CardAtlas } from "./cardAtlas";
 import { buildHitIndex, hitTop, isOccluded, type HitIndex } from "./gpuHit";
-import { gpuModeReducer, initialGpuMode, userEditAllowed, type GpuModeEvent, type GpuPhase } from "./gpuMode";
+import { gpuModeReducer, initialGpuMode, userEditAllowed, type GpuFailure, type GpuModeEvent, type GpuPhase } from "./gpuMode";
 import { createGpuRenderer, type GpuCamera, type GpuRenderer } from "./gpuRenderer";
 import type { GpuSceneModel } from "./gpuScene";
 
@@ -68,12 +69,32 @@ function blobOf(src: string): Promise<Blob | null> {
   return p;
 }
 
-/** 이미지 주소 → 굽는 크기에 맞춘 비트맵(같은 출처 /api 썸네일). 실패하면 null(빗금 자리). */
-async function decodeImage(src: string, resizeWidth: number): Promise<ImageBitmap | null> {
+/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 실패하면 null(빗금 자리). */
+async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
   try {
     const blob = await blobOf(src);
     if (!blob) return null;
-    return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.round(resizeWidth)), resizeQuality: "high" });
+    const W = Math.max(1, Math.floor(maxW)), H = Math.max(1, Math.floor(maxH));
+    if (blob.type === "image/svg+xml") {
+      // SVG 는 createImageBitmap(blob) 이 못 읽는다(크롬) — 그림 요소로 읽어 크기를 안 뒤 맞춘다(생성 중·빈 생성 카드의 로고, 11-11 리뷰)
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const nw = img.naturalWidth || W, nh = img.naturalHeight || H;
+        const k = Math.min(W / nw, H / nh);
+        return await createImageBitmap(img, { resizeWidth: Math.max(1, Math.floor(nw * k)), resizeHeight: Math.max(1, Math.floor(nh * k)), resizeQuality: "high" });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+    // 폭에 맞춰 읽고, 세로로 길어 상자를 넘으면 높이에 맞춰 다시 읽는다(한쪽만 주면 비율이 지켜진다).
+    //  shortcut: 아주 긴 그림이면 첫 읽기가 잠깐 상자를 넘는 비트맵을 만든다, 문제가 되면 머리 바이트로 원본 크기를 먼저 읽을 것
+    const byW = await createImageBitmap(blob, { resizeWidth: W, resizeQuality: "high" });
+    if (byW.height <= H) return byW;
+    byW.close();
+    return await createImageBitmap(blob, { resizeHeight: H, resizeQuality: "high" });
   } catch {
     return null;
   }
@@ -109,6 +130,7 @@ export function GpuBoard(props: GpuBoardProps) {
     sceneId: "",
     preparedSent: -1,
     probeSent: -1,
+    probe: null as { token: number; medianMs: number } | null, // 끝난 검사 — 카메라가 쉴 때 알린다
     hit: null as HitIndex | null,
     hover: { id: null as string | null, timer: 0 },
     // 25% 이하 단순화 — 판 안에서 정한다(React 상태로 두면 경계를 넘을 때마다 SceneBoard 가 통째로 다시 그려졌다: 11-11 실측 83ms 프레임)
@@ -246,8 +268,9 @@ export function GpuBoard(props: GpuBoardProps) {
         return;
       }
     } else pending = 1; // 쉬면 다시 돈다
-    // 실제 할당 최고점(계약 gpu-env ④) — 텍스처 합계·CPU 굽기 버퍼. 늘 때만 canvas 속성에 적는다(실측 도구가 읽는다)
-    const tex = s.renderer.textureBytes(), cpu = s.atlas.cpuBytes();
+    // 실제 할당 최고점(계약 gpu-env ④) — 텍스처 합계·CPU 굽기 버퍼(비트맵 포함). 아틀라스·렌더러가 할당하는 순간마다 적어 둔 값을 읽는다
+    //  (tick 이 끝난 뒤의 합계는 그 사이 잡았다 놓은 굽기 캔버스를 놓친다 — 11-11 리뷰). 늘 때만 canvas 속성에 적는다(실측 도구가 읽는다)
+    const tex = s.renderer.texturePeak(), cpu = s.atlas.cpuPeak();
     if (tex > s.texPeak || cpu > s.cpuPeak) {
       s.texPeak = Math.max(s.texPeak, tex);
       s.cpuPeak = Math.max(s.cpuPeak, cpu);
@@ -269,9 +292,20 @@ export function GpuBoard(props: GpuBoardProps) {
       s.probeSent = p.token;
       const token = p.token;
       s.renderer.draw(camera(), s.atlas.lookup); // 검사는 마지막 그린 카메라로 30번
-      void s.renderer.timeGpu(PROBE_FRAMES).then((ms) => {
-        if (!st.current.failed) live.current.dispatch({ type: "probe", token, medianMs: median(ms) });
-      });
+      // 표본이 정확히 30개·모두 유한해야 중앙값을 믿는다 — 몇 개 뒤 끊긴 짧은 배열([1, 1, ∞] → 중앙값 1)이 검사를 통과했다(11-11 리뷰). 거부·모자람 = 느린 GPU.
+      void s.renderer.timeGpu(PROBE_FRAMES)
+        .then((ms) => (ms.length === PROBE_FRAMES && ms.every(Number.isFinite) ? median(ms) : Infinity), () => Infinity)
+        .then((medianMs) => {
+          if (st.current.failed) return;
+          st.current.probe = { token, medianMs };
+          kick();
+        });
+    }
+    // 검사 결과는 카메라가 쉬고(150ms) 화면을 끌고 있지 않을 때 알린다 — 검사 도중 시작한 이동·줌 사이에 판을 바꾸지 않는다(계약 transition)
+    if (s.probe && (s.probe.token !== p.token || p.phase !== "probing")) s.probe = null;
+    if (s.probe && resting && !s.slide && !p.boardRef.current?.hasAttribute("data-panning")) {
+      p.dispatch({ type: "probe", token: s.probe.token, medianMs: s.probe.medianMs });
+      s.probe = null;
     }
     // 조작 중 긴 프레임(최근 10초 3번이면 잠근다 — 느린 GPU 판정). 판 안에서 세고, 기준에 닿을 때 한 번만 모드에 알린다 —
     //  긴 프레임마다 모드 상태를 바꾸면 SceneBoard 가 그때마다 다시 그려져 그것이 또 긴 프레임을 만들었다(11-11 CPU 4배 이동 중 잠금 연쇄).
@@ -285,7 +319,7 @@ export function GpuBoard(props: GpuBoardProps) {
       }
     }
     s.bakedPrev = baked > 0 || uploaded > 0;
-    const busy = pending > 0 || s.dirty || !!s.slide || (p.phase === "preparing" && s.preparedSent !== p.token) || now - s.lastCameraAt < INTERACT_WINDOW_MS;
+    const busy = pending > 0 || s.dirty || !!s.slide || !!s.probe || (p.phase === "preparing" && s.preparedSent !== p.token) || now - s.lastCameraAt < INTERACT_WINDOW_MS;
     if (busy) kick();
     else s.lastFrameAt = 0; // 쉬는 동안의 간격을 다음 프레임의 긴 프레임으로 세지 않게
   }
@@ -402,13 +436,14 @@ export function GpuBoard(props: GpuBoardProps) {
     const onMove = (e: MouseEvent) => {
       if (!s.hit) return;
       // 화면을 옮기는 동안(가운데 버튼 끌기·휠 직후)엔 덧판을 고르지 않는다 — 지나가는 카드마다 덧판이 뜨고 내려가 프레임을 먹었다
-      if (performance.now() - s.lastCameraAt < REST_MS || board.hasAttribute("data-panning")) {
+      //  화면 맞춤 미끄러짐 중도 같다 — 덧판 DOM 은 이미 목표 카메라에 있어 그림과 어긋난다
+      if (performance.now() - s.lastCameraAt < REST_MS || s.slide || board.hasAttribute("data-panning")) {
         clearTimeout(s.hover.timer);
         s.hover.id = null;
         return;
       }
       const rect = board.getBoundingClientRect();
-      const c = live.current.cameraSource.getSnapshot();
+      const c = camera(); // 그림과 같은 카메라(미끄러짐 중엔 사이 값)
       const x = (e.clientX - rect.left - c.x) / c.z, y = (e.clientY - rect.top - c.y) / c.z;
       const top = hitTop(s.hit, x, y);
       if (!top) return clear();
@@ -441,6 +476,23 @@ export function GpuBoard(props: GpuBoardProps) {
 }
 
 const INPUT_QUIET_MS = 1000; // 준비를 취소한 입력 뒤 이만큼 조용하면 처음부터 다시 준비한다
+// 이 페이지의 잠금(실패·느린 GPU) — 모드 상태는 SceneBoard 안이라 탭을 떠났다 오면 풀려 느린 PC 에서 매번 다시 검사했다(11-11 리뷰).
+//  sessionStorage 에 페이지 시작 시각과 같이 둔다: 다시 올라온 보드는 이어 받고, 새로 고침(시작 시각이 다름)하면 풀린다.
+const readSessionLock = (): GpuFailure | null => {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(STORAGE_KEYS.canvasGpuLock) || "null") as { reason: GpuFailure; page: number } | null;
+    return v && v.page === performance.timeOrigin ? v.reason : null;
+  } catch {
+    return null;
+  }
+};
+const writeSessionLock = (reason: GpuFailure) => {
+  try {
+    sessionStorage.setItem(STORAGE_KEYS.canvasGpuLock, JSON.stringify({ reason, page: performance.timeOrigin }));
+  } catch {
+    /* 저장 못 하면 이 보드에서만 잠근다 */
+  }
+};
 const LOD_SHOW_MS = 150; // 25% 를 넘어 확대한 뒤 이만큼 쉬면 작은 조각을 다시 보인다(useSceneViewport 와 같은 값)
 const zoomBand = (scale: number) => (scale > 2.5 ? "hi" : scale < 2.2 ? "lo" : "mid");
 
@@ -451,19 +503,42 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
   const [mode, dispatch] = useReducer(gpuModeReducer, undefined, initialGpuMode);
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  const busyRef = useRef(o.busy);
-  busyRef.current = o.busy;
+  // 훅 아래에서 정해지는 한가함(태그 편집·S 확인·되찾기 창·올리는 중인 파일·보드 안 입력칸 초점) — SceneBoard 가 setLateBusy 로 알린다
+  const [lateBusy, setLateBusy] = useState(false);
+  const busy = o.busy || lateBusy;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const quietTimer = useRef(0);
+  /** 조용히 1초 지나면 한가함 — 그새 입력·바쁨이 오면 다시 센다 */
+  const armQuiet = useCallback(() => {
+    clearTimeout(quietTimer.current);
+    quietTimer.current = window.setTimeout(() => {
+      if (!busyRef.current && !modeRef.current.idle) dispatch({ type: "idle", idle: true });
+    }, INPUT_QUIET_MS);
+  }, []);
 
   useEffect(() => {
-    if (o.flag) dispatch({ type: "flag", enabled: true });
+    if (!o.flag) return;
+    const lock = readSessionLock();
+    if (lock) dispatch({ type: "failure", reason: lock });
+    dispatch({ type: "flag", enabled: true });
   }, [o.flag]);
+  useEffect(() => {
+    if (mode.locked) writeSessionLock(mode.locked);
+  }, [mode.locked]);
   useEffect(() => {
     if (o.flag) dispatch({ type: "scene", sceneId: o.sceneId, unsupported: o.unsupported });
   }, [o.flag, o.sceneId, o.unsupported]);
+  // 바쁘면 바로 한가하지 않음, 바쁨이 끝나면 1초 조용한 뒤에야 한가함 — 끌기·글 편집이 끝나자마자 준비(새 WebGL·굽기)를 시작하지 않게
   useEffect(() => {
-    if (o.flag) dispatch({ type: "idle", idle: !o.busy });
-  }, [o.flag, o.busy]);
+    if (!o.flag) return;
+    if (busy) {
+      clearTimeout(quietTimer.current);
+      if (modeRef.current.idle) dispatch({ type: "idle", idle: false });
+      return;
+    }
+    armQuiet();
+  }, [o.flag, busy, armQuiet]);
   useEffect(() => () => clearTimeout(quietTimer.current), []);
 
   // 배율 경계 — 카메라 출처를 듣는다(표식 켬일 때만). 25% 단순화는 GPU 판 안에서 정한다(SceneBoard 를 다시 그리지 않게).
@@ -493,23 +568,26 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
     };
   }, [o.flag, o.cameraSource]);
 
-  /** 사용자 입력(누름·키·붙여넣기·끌어 놓기·창 열기) — 준비 중이면 준비를 취소하고, 조용해지면 처음부터 다시 */
+  /** 사용자 입력(누름·키·붙여넣기·끌어 놓기·창 열기) — 준비 중이면 준비를 취소하고, 편집 중(한가함을 기다리는 dom)이면 기다림을 늘인다.
+   *  조용히 1초 지나야 처음부터 다시 준비한다 — 전엔 취소한 뒤 첫 입력부터 1초면 무조건 다시 준비해 편집하는 동안 1초마다 새 WebGL 을 만들었다(11-11 리뷰). */
   const noteInput = useCallback(() => {
-    if (modeRef.current.phase !== "preparing") return;
-    dispatch({ type: "input" });
-    clearTimeout(quietTimer.current);
-    quietTimer.current = window.setTimeout(() => dispatch({ type: "idle", idle: !busyRef.current }), INPUT_QUIET_MS);
-  }, []);
+    const m = modeRef.current;
+    if (m.phase === "preparing") dispatch({ type: "input" });
+    else if (m.phase !== "dom" || m.reason !== "busy") return;
+    else if (m.idle) dispatch({ type: "idle", idle: false });
+    armQuiet();
+  }, [armQuiet]);
 
-  // 준비 중에는 창 전체의 누름·키·붙여넣기·끌어 놓기를 듣는다(보드 밖에서 창을 여는 누름도 입력이다) — 준비 단계가 아니면 듣지 않는다
+  // 준비 중·한가함을 기다리는 동안 창 전체의 누름·키·붙여넣기·끌어 놓기를 듣는다(보드 밖에서 창을 여는 누름도 입력이다) — 그 밖엔 듣지 않는다
+  const listening = mode.phase === "preparing" || (mode.phase === "dom" && mode.reason === "busy");
   useEffect(() => {
-    if (mode.phase !== "preparing") return;
+    if (!listening) return;
     const types = ["mousedown", "keydown", "paste", "drop"] as const;
     for (const t of types) window.addEventListener(t, noteInput, true);
     return () => {
       for (const t of types) window.removeEventListener(t, noteInput, true);
     };
-  }, [mode.phase, noteInput]);
+  }, [listening, noteInput]);
 
   // 거절 안내 — 같은 안내가 겹치지 않게 1.5초에 한 번
   const refusedAt = useRef(-Infinity);
@@ -517,20 +595,27 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
     const now = performance.now();
     if (now - refusedAt.current < 1500) return;
     refusedAt.current = now;
-    flashMsg("보기 모드 — 편집하려면 편집 모드로 돌아가세요(` 키 또는 아래 모드 단추)");
+    flashMsg("보기 모드 — 편집하려면 편집 모드로 돌아가세요(` 키 또는 오른쪽 위 모드 단추)");
   }, []);
 
-  /** 모드 단추·` 키 — 편집(DOM) ↔ 보기(GPU). 잠긴 세션이면 까닭만 알린다. */
+  /** 모드 단추·` 키 — 편집(DOM) ↔ 보기(GPU). 잠긴 세션이면 까닭만 알린다. 사용자가 고르지 않았는데 DOM 인 동안(바쁨·확대·미지원) 누르면
+   *  보기 모드를 켜 달라는 뜻이다 — 전엔 '편집 모드 선택'으로 받아 첫 누름에 화면이 그대로였다(11-11 리뷰). */
   const toggle = useCallback(() => {
     const m = modeRef.current;
     if (m.locked) {
       flashMsg(m.locked === "context-lost" || m.locked === "creation" ? "이 PC 에서 GPU 판을 켤 수 없어 편집 모드로 둡니다" : "GPU 판이 이 PC 에서 느려 편집 모드로 둡니다");
       return;
     }
-    dispatch({ type: "user-mode", mode: m.userDom ? "gpu" : "dom" });
+    if (m.userDom) return dispatch({ type: "user-mode", mode: "gpu" });
+    if (m.phase !== "dom") return dispatch({ type: "user-mode", mode: "dom" });
+    if (m.reason === "unsupported") return flashMsg("이 씬에는 GPU 판이 아직 못 그리는 노드가 있어 편집 모드로 둡니다");
+    if (m.reason === "zoom") return flashMsg("크게 확대한 동안은 편집 모드로 둡니다 — 줄이면 보기 모드로 돌아갑니다");
+    if (busyRef.current) return flashMsg("편집 중인 것이 끝나면 보기 모드로 바꿉니다");
+    clearTimeout(quietTimer.current);
+    dispatch({ type: "idle", idle: true });
   }, []);
 
-  return { mode, dispatch, editAllowed: userEditAllowed(mode), noteInput, refuse, toggle };
+  return { mode, dispatch, editAllowed: userEditAllowed(mode), noteInput, refuse, toggle, setLateBusy };
 }
 
 /** 카드 사각형 × 카메라 → 화면(보드 기준 CSS px) — GPU 단계에서 cardEls 대신(리스트 크게 보기 위치 등) */

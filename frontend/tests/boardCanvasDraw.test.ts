@@ -91,6 +91,15 @@ describe("레퍼런스", () => {
     drawBoardItem(r.g, item, () => img);
     expect(r.count("drawImage")).toBe(4);
   });
+
+  it("빈 레퍼런스(refs: [])는 굽다가 멈추지 않는다 — DOM 처럼 빈 몸통(그림·글 없음)", () => {
+    const item = buildBoardItem(refCard("r", []), box(), ctx())!;
+    expect(item).toMatchObject({ kind: "reference", tiles: [] });
+    const r = recorder();
+    expect(() => drawBoardItem(r.g, item, () => img)).not.toThrow();
+    expect(r.count("drawImage")).toBe(0);
+    expect(r.texts()).toEqual([]);
+  });
 });
 
 describe("글·모델", () => {

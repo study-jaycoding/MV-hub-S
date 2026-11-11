@@ -6,10 +6,10 @@ export interface GpuCardInstance { id: string; x: number; y: number; w: number; 
 // 굵기·대시·점 반지름은 월드 단위다 — DOM 의 연결선 SVG·끝 점이 카메라 층 안에 있어 배율에 따라 같이 굵어지고 가늘어진다.
 //  화면에서 1px 보다 가늘어지면 1px 로 그리고 그만큼 옅게(브라우저가 가는 SVG 선을 옅게 그리는 것과 같은 인상).
 export interface GpuLine { points: Float32Array; color: GpuColor; width: number; dash: number; gap?: number }
-export interface GpuRect { x: number; y: number; w: number; h: number; radius: number; fill: GpuColor; border: GpuColor; borderWidth: number }
+export interface GpuRect { x: number; y: number; w: number; h: number; radius: number; fill: GpuColor; border: GpuColor; borderWidth: number; owner?: string; hideLow?: boolean }
 // hideLow = 25% 이하 단순화에서 숨기는 조각(GpuBoard 가 setScene 전에 거른다)
 export interface GpuDot { x: number; y: number; r: number; fill: GpuColor; border: GpuColor; hideLow?: boolean }
-export interface GpuQuad { id: string; x: number; y: number; w: number; h: number; hideLow?: boolean }
+export interface GpuQuad { id: string; x: number; y: number; w: number; h: number; hideLow?: boolean; owner?: string }
 export interface GpuScene {
   cards: GpuCardInstance[];
   lines: GpuLine[];
@@ -26,8 +26,10 @@ export interface GpuRenderer extends AtlasUploader {
   /** 25% 이하 단순화 — hideLow 조각(결과 수 배지·폴더 이름표·회색 끝 점)을 그리지 않는다(유니폼 하나 — 버퍼 그대로) */
   setLowLod(on: boolean): void;
   draw(camera: GpuCamera, lookup: CardAtlas["lookup"]): void;
+  /** 정확히 frames개의 유한한 표본을 반환하며 중단·무효 표본이면 거부한다. */
   timeGpu(frames: number): Promise<number[]>;
   textureBytes(): number;
+  texturePeak(): number;
   lost(): boolean;
   destroy(): void;
 }
@@ -58,11 +60,13 @@ layout(location=2) in vec3 style;
 layout(location=3) in vec4 fill;
 layout(location=4) in vec4 border;
 layout(location=5) in vec4 uv;
+layout(location=6) in float textureIndex;
 ${cameraUniforms}
 uniform bool lowLod;
 out vec2 local; out vec2 texCoord;
 flat out vec2 extent; flat out vec2 edge;
 flat out vec4 fillColor; flat out vec4 borderColor;
+flat out highp int textureSlot;
 void main() {
   extent = box.zw * camera.x;
   local = unit * extent;
@@ -71,13 +75,15 @@ void main() {
   gl_Position = lowLod && style.z > 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : vec4(p.x / viewport.x * 2.0 - 1.0, 1.0 - p.y / viewport.y * 2.0, 0, 1);
   texCoord = mix(uv.xy, uv.zw, unit);
   fillColor = fill; borderColor = border;
+  textureSlot = int(textureIndex);
 }`;
 const shapeFragment = `#version 300 es
 precision highp float;
-uniform sampler2D atlas; uniform bool textured;
+uniform sampler2D atlas[8];
 in vec2 local; in vec2 texCoord;
 flat in vec2 extent; flat in vec2 edge;
 flat in vec4 fillColor; flat in vec4 borderColor;
+flat in highp int textureSlot;
 out vec4 outColor;
 void main() {
   float r = min(edge.x, min(extent.x, extent.y) * 0.5);
@@ -85,7 +91,8 @@ void main() {
   float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
   float aa = max(fwidth(distance), 0.001);
   float coverage = 1.0 - smoothstep(-aa, 0.0, distance);
-  vec4 c = textured ? texture(atlas, texCoord) : fillColor;
+  vec4 c = fillColor;
+  ${Array.from({ length: 8 }, (_, i) => `${i ? "else " : ""}if (textureSlot == ${i}) c = texture(atlas[${i}], texCoord);`).join("\n  ")}
   c = vec4(c.rgb * c.a, c.a);
   float b = edge.y > 0.0 ? smoothstep(-edge.y - aa, -edge.y, distance) * borderColor.a : 0.0;
   c = vec4(borderColor.rgb * b, b) + c * (1.0 - b);
@@ -120,6 +127,7 @@ void main() {
 type Program = { value: WebGLProgram; uniforms: Map<string, WebGLUniformLocation | null> };
 type Shape = { id?: string; page: number; region: AtlasRegion | null };
 type Range = { start: number; count: number };
+type Batch = Range & { pages: number[] };
 type TimerExtension = { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number };
 
 export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLost?: () => void } = {}): GpuRenderer | null {
@@ -132,7 +140,8 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
   const shaders: WebGLShader[] = [];
   const buffers: WebGLBuffer[] = [];
   const vaos: WebGLVertexArrayObject[] = [];
-  const textures = new Map<number, { value: WebGLTexture; size: number }>();
+  const textures = new Map<number, { value: WebGLTexture; width: number; height: number }>();
+  let texturePeakBytes = 0;
   const queries = new Set<WebGLQuery>();
   let dead = false, contextLost = false;
   let stopTiming: (() => void) | null = null;
@@ -149,6 +158,11 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
     for (const v of vaos) g.deleteVertexArray(v);
     textures.clear(); queries.clear(); buffers.length = 0; programs.length = 0; shaders.length = 0; vaos.length = 0;
     last = null;
+  }
+
+  function releaseContext() {
+    canvas.removeEventListener("webglcontextlost", onLost);
+    g.getExtension("WEBGL_lose_context")?.loseContext();
   }
 
   function onLost(event: Event) {
@@ -222,10 +236,12 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
     let shapes: Shape[] = [];
     let uvs = new Float32Array();
     let shapeData = new Float32Array(); // 지금 버퍼에 든 모양 자료(감춤 되살리기용)
-    const cardIndex = new Map<string, number>(); // 카드 id → 모양 칸
-    let hiddenIndex = -1;
+    const cardRanges = new Map<string, Range>();
+    let hiddenId: string | null = null;
     let lowLod = false;
-    let rects: Range = { start: 0, count: 0 }, cards = rects, selection = rects, dots = rects, quads = rects;
+    let rects: Range = { start: 0, count: 0 }, cards = rects, dots = rects;
+    const batches = new Map<Range, Batch[]>();
+    let batchesDirty = true;
     let lineCount = 0;
     let gridColor: GpuColor = [1, 1, 1, 0.11];
     const extension = g.getExtension("EXT_disjoint_timer_query_webgl2") as TimerExtension | null;
@@ -234,35 +250,33 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
       if (!range.count) return;
       use(shapeProgram, camera);
       g.bindVertexArray(shapeVao);
-      g.uniform1i(uniform(shapeProgram, "atlas"), 0);
+      g.uniform1iv(uniform(shapeProgram, "atlas[0]"), [0, 1, 2, 3, 4, 5, 6, 7]);
       g.uniform1i(uniform(shapeProgram, "lowLod"), lowLod ? 1 : 0);
-      for (let start = range.start; start < range.start + range.count;) {
-        const page = shapes[start].page;
-        let end = start + 1;
-        while (end < range.start + range.count && shapes[end].page === page) end++;
+      for (const { start, count, pages } of batches.get(range) ?? []) {
         g.bindBuffer(g.ARRAY_BUFFER, shapeBuffer);
         attribute(1, 4, 15, start * 15, 1);
         attribute(2, 3, 15, start * 15 + 4, 1);
         attribute(3, 4, 15, start * 15 + 7, 1);
         attribute(4, 4, 15, start * 15 + 11, 1);
         g.bindBuffer(g.ARRAY_BUFFER, uvBuffer);
-        attribute(5, 4, 4, start * 4, 1);
-        const texture = textures.get(page);
-        g.activeTexture(g.TEXTURE0);
-        g.bindTexture(g.TEXTURE_2D, texture?.value ?? null);
-        g.uniform1i(uniform(shapeProgram, "textured"), texture ? 1 : 0);
-        g.drawArraysInstanced(g.TRIANGLES, 0, 6, end - start);
-        start = end;
+        attribute(5, 4, 5, start * 5, 1);
+        attribute(6, 1, 5, start * 5 + 4, 1);
+        pages.forEach((page, i) => {
+          g.activeTexture(g.TEXTURE0 + i);
+          g.bindTexture(g.TEXTURE_2D, textures.get(page)!.value);
+        });
+        g.drawArraysInstanced(g.TRIANGLES, 0, 6, count);
       }
     }
 
     const renderer: GpuRenderer = {
-      ensurePage(page, size) {
+      ensurePage(page, width, height = width) {
         if (dead || contextLost) return;
         const old = textures.get(page);
-        if (old) { if (old.size !== size) throw new Error("Atlas page size changed"); return; }
-        if (!Number.isInteger(size) || size < 1 || size > g.getParameter(g.MAX_TEXTURE_SIZE)) throw new RangeError("GPU texture size unsupported");
-        if (renderer.textureBytes() + size * size * 4 > 128 * 1024 * 1024) throw new RangeError("GPU texture budget exhausted");
+        if (old) { if (old.width !== width || old.height !== height) throw new Error("Atlas page size changed"); return; }
+        if ([width, height].some((size) => !Number.isInteger(size) || size < 1 || size > g.getParameter(g.MAX_TEXTURE_SIZE))) throw new RangeError("GPU texture size unsupported");
+        const bytes = renderer.textureBytes() + width * height * 4;
+        if (bytes > 128 * 1024 * 1024) throw new RangeError("GPU texture budget exhausted");
         const t = g.createTexture();
         if (!t) throw new Error("GPU texture unavailable");
         try {
@@ -271,15 +285,17 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
           g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
           g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
           g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
-          g.texStorage2D(g.TEXTURE_2D, 1, g.RGBA8, size, size);
+          g.texStorage2D(g.TEXTURE_2D, 1, g.RGBA8, width, height);
           if (g.getError() !== g.NO_ERROR) throw new Error("GPU texture allocation failed");
-          textures.set(page, { value: t, size });
+          textures.set(page, { value: t, width, height });
+          texturePeakBytes = Math.max(texturePeakBytes, bytes);
+          batchesDirty = true;
         } catch (error) { g.deleteTexture(t); throw error; }
       },
       upload(page, x, y, source, w, h) {
         if (dead || contextLost) return;
         const t = textures.get(page);
-        if (!t || x < 0 || y < 0 || w < 1 || h < 1 || x + w > t.size || y + h > t.size || source.width !== w || source.height !== h) throw new RangeError("Invalid atlas upload");
+        if (!t || x < 0 || y < 0 || w < 1 || h < 1 || x + w > t.width || y + h > t.height || source.width !== w || source.height !== h) throw new RangeError("Invalid atlas upload");
         g.bindTexture(g.TEXTURE_2D, t.value);
         g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
         g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
@@ -288,7 +304,7 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
       },
       deletePage(page) {
         const t = textures.get(page);
-        if (t) { g.deleteTexture(t.value); textures.delete(page); }
+        if (t) { g.deleteTexture(t.value); textures.delete(page); batchesDirty = true; }
       },
       setScene(s) {
         if (dead || contextLost) return;
@@ -303,17 +319,34 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
           build();
           return { start, count: shapes.length - start };
         }
-        rects = range(() => s.rects.forEach((r) => add(r)));
-        cards = range(() => s.cards.filter((c) => !c.hidden).sort((a, b) => a.z - b.z).forEach((c) => add({ ...c, fill: [0.08, 0.09, 0.11, 1] }, c.id)));
-        selection = range(() => s.selection?.forEach((r) => add(r)));
+        const ownedRects = new Map<string, GpuRect[]>(), ownedQuads = new Map<string, GpuQuad[]>();
+        function addQuad(q: GpuQuad) {
+          add({ ...q, radius: 0, borderWidth: 0, fill: transparent, border: transparent }, q.id, !!q.hideLow);
+        }
+        rects = range(() => {
+          for (const r of [...s.rects, ...(s.selection ?? [])]) {
+            if (r.owner === undefined) add(r, undefined, !!r.hideLow);
+            else { const list = ownedRects.get(r.owner) ?? []; list.push(r); ownedRects.set(r.owner, list); }
+          }
+          for (const q of s.quads) {
+            if (q.owner === undefined) addQuad(q);
+            else { const list = ownedQuads.get(q.owner) ?? []; list.push(q); ownedQuads.set(q.owner, list); }
+          }
+        });
+        cardRanges.clear();
+        cards = range(() => s.cards.filter((c) => !c.hidden).sort((a, b) => a.z - b.z).forEach((c) => {
+          cardRanges.set(c.id, range(() => {
+            add({ ...c, fill: [0.08, 0.09, 0.11, 1] }, c.id);
+            ownedRects.get(c.id)?.forEach((r) => add(r, undefined, !!r.hideLow));
+            ownedQuads.get(c.id)?.forEach(addQuad);
+          }));
+        }));
         // 끝 점(.scene-dot r=5, 테두리 2 가운데 걸침) — 월드 크기라 바깥 반지름 r+1·테두리 2
         dots = range(() => s.dots.forEach((d) => add({ x: d.x - d.r - 1, y: d.y - d.r - 1, w: d.r * 2 + 2, h: d.r * 2 + 2, radius: d.r + 1, borderWidth: 2, fill: d.fill, border: d.border }, undefined, !!d.hideLow)));
-        quads = range(() => s.quads.forEach((q) => add({ ...q, radius: 0, borderWidth: 0, fill: transparent, border: transparent }, q.id, !!q.hideLow)));
-        uvs = new Float32Array(shapes.length * 4);
+        uvs = new Float32Array(shapes.length * 5);
         shapeData = new Float32Array(data);
-        cardIndex.clear();
-        for (let i = cards.start; i < cards.start + cards.count; i++) cardIndex.set(shapes[i].id!, i);
-        hiddenIndex = -1;
+        hiddenId = null;
+        batchesDirty = true;
         g.bindBuffer(g.ARRAY_BUFFER, shapeBuffer);
         g.bufferData(g.ARRAY_BUFFER, shapeData, g.DYNAMIC_DRAW);
         g.bindBuffer(g.ARRAY_BUFFER, uvBuffer);
@@ -339,13 +372,18 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
       },
       setHidden(id) {
         if (dead || contextLost) return;
-        const next = id === null ? -1 : cardIndex.get(id) ?? -1;
-        if (next === hiddenIndex) return;
+        const next = id !== null && cardRanges.has(id) ? id : null;
+        if (next === hiddenId) return;
         g.bindBuffer(g.ARRAY_BUFFER, shapeBuffer);
         // 모양 칸 = x,y,w,h,반지름,테두리,점,채움4,테두리색4 (15칸) — w·h 를 0 으로 두면 그 카드는 그려지지 않는다
-        if (hiddenIndex >= 0) g.bufferSubData(g.ARRAY_BUFFER, (hiddenIndex * 15 + 2) * 4, shapeData.subarray(hiddenIndex * 15 + 2, hiddenIndex * 15 + 4));
-        if (next >= 0) g.bufferSubData(g.ARRAY_BUFFER, (next * 15 + 2) * 4, new Float32Array([0, 0]));
-        hiddenIndex = next;
+        for (const [id, hide] of [[hiddenId, false], [next, true]] as const) {
+          const range = id === null ? undefined : cardRanges.get(id);
+          if (!range) continue;
+          for (let i = range.start; i < range.start + range.count; i++) {
+            g.bufferSubData(g.ARRAY_BUFFER, (i * 15 + 2) * 4, hide ? new Float32Array([0, 0]) : shapeData.subarray(i * 15 + 2, i * 15 + 4));
+          }
+        }
+        hiddenId = next;
       },
       setLowLod(on) { lowLod = on; },
       draw(camera, lookup) {
@@ -361,14 +399,36 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
           const old = shape.region;
           if (r?.page === old?.page && r?.u0 === old?.u0 && r?.v0 === old?.v0 && r?.u1 === old?.u1 && r?.v1 === old?.v1) return;
           shape.region = r ? { ...r } : null;
+          if (shape.page !== (r?.page ?? -1)) batchesDirty = true;
           shape.page = r?.page ?? -1;
-          uvs.set(r ? [r.u0, r.v0, r.u1, r.v1] : [0, 0, 0, 0], i * 4);
+          uvs.set(r ? [r.u0, r.v0, r.u1, r.v1] : [0, 0, 0, 0], i * 5);
           first = Math.min(first, i); end = i + 1;
         });
+        if (batchesDirty) {
+          batches.clear();
+          // 텍스처 장이 바뀔 때만 묶어 카드·배지·선택을 섞어도 카드마다 그리기 호출을 늘리지 않는다.
+          for (const range of [rects, cards, dots]) {
+            const list: Batch[] = [];
+            let batch: Batch = { start: range.start, count: 0, pages: [] };
+            for (let i = range.start; i < range.start + range.count; i++) {
+              const page = textures.has(shapes[i].page) ? shapes[i].page : -1;
+              if (page >= 0 && !batch.pages.includes(page) && batch.pages.length === 8) {
+                list.push(batch); batch = { start: i, count: 0, pages: [] };
+              }
+              if (page >= 0 && !batch.pages.includes(page)) batch.pages.push(page);
+              const slot = page < 0 ? -1 : batch.pages.indexOf(page);
+              if (uvs[i * 5 + 4] !== slot) { uvs[i * 5 + 4] = slot; first = Math.min(first, i); end = Math.max(end, i + 1); }
+              batch.count++;
+            }
+            if (batch.count) list.push(batch);
+            batches.set(range, list);
+          }
+          batchesDirty = false;
+        }
         // 새 아틀라스가 준비된 때만 UV를 바꾸고 카메라 이동은 유니폼으로 끝낸다.
         if (first < end) {
           g.bindBuffer(g.ARRAY_BUFFER, uvBuffer);
-          g.bufferSubData(g.ARRAY_BUFFER, first * 16, uvs.subarray(first * 4, end * 4));
+          g.bufferSubData(g.ARRAY_BUFFER, first * 20, uvs.subarray(first * 5, end * 5));
         }
         g.viewport(0, 0, width, height);
         g.disable(g.DEPTH_TEST);
@@ -387,70 +447,82 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
           g.bindVertexArray(lineVao);
           g.drawArrays(g.TRIANGLES, 0, lineCount);
         }
-        shapeRange(cards, camera); shapeRange(selection, camera); shapeRange(dots, camera); shapeRange(quads, camera);
+        shapeRange(cards, camera); shapeRange(dots, camera);
         g.bindVertexArray(null);
       },
       timeGpu(frames) {
-        if (timing) return timing;
-        if (dead || contextLost || !last || !Number.isFinite(frames) || frames < 1) return Promise.resolve([]);
-        const count = Math.floor(frames);
-        timing = new Promise<number[]>((resolve) => {
+        if (timing) return Promise.reject(new Error("GPU timing already running"));
+        if (dead || contextLost || !last || !Number.isInteger(frames) || frames < 1) return Promise.reject(new Error("GPU timing unavailable"));
+        timing = new Promise<number[]>((resolve, reject) => {
           const results: number[] = [];
           let raf = 0, query: WebGLQuery | null = null, queryStart = 0;
-          const done = () => {
+          let finished = false;
+          const done = (error?: Error) => {
+            if (finished) return;
+            finished = true;
             cancelAnimationFrame(raf);
             if (query) { g.deleteQuery(query); queries.delete(query); query = null; }
             stopTiming = null;
-            resolve(results);
+            if (error) reject(error);
+            else if (results.length !== frames || results.some((ms) => !Number.isFinite(ms) || ms < 0)) reject(new Error("Invalid GPU timing samples"));
+            else resolve(results);
           };
-          stopTiming = done;
+          stopTiming = () => done(new Error("GPU timing cancelled"));
           function step() {
-            if (dead || contextLost || !last) { done(); return; }
-            if (query && extension) {
-              if (g.getParameter(extension.GPU_DISJOINT_EXT)) { results.push(Infinity); done(); return; }
-              if (!g.getQueryParameter(query, g.QUERY_RESULT_AVAILABLE)) {
-                if (performance.now() - queryStart > 1000) { results.push(Infinity); done(); return; }
-                raf = requestAnimationFrame(step);
-                return;
+            if (finished) return;
+            if (dead || contextLost || !last) { done(new Error("GPU timing unavailable")); return; }
+            try {
+              if (query && extension) {
+                if (g.getParameter(extension.GPU_DISJOINT_EXT)) { done(new Error("GPU timer disjoint")); return; }
+                if (!g.getQueryParameter(query, g.QUERY_RESULT_AVAILABLE)) {
+                  if (performance.now() - queryStart > 1000) { done(new Error("GPU timer timeout")); return; }
+                  raf = requestAnimationFrame(step);
+                  return;
+                }
+                results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
+                g.deleteQuery(query); queries.delete(query); query = null;
               }
-              results.push(Number(g.getQueryParameter(query, g.QUERY_RESULT)) / 1e6);
-              g.deleteQuery(query); queries.delete(query); query = null;
-            }
-            if (results.length >= count) { done(); return; }
-            if (extension) query = g.createQuery();
-            if (query && extension) {
-              queries.add(query);
-              queryStart = performance.now();
-              g.beginQuery(extension.TIME_ELAPSED_EXT, query);
-              renderer.draw(last.camera, last.lookup);
-              g.endQuery(extension.TIME_ELAPSED_EXT);
-              g.flush();
-            } else {
-              g.finish();
-              const start = performance.now();
-              renderer.draw(last.camera, last.lookup);
-              g.finish();
-              results.push(performance.now() - start);
-            }
-            raf = requestAnimationFrame(step);
+              if (results.some((ms) => !Number.isFinite(ms) || ms < 0)) { done(new Error("Invalid GPU timing samples")); return; }
+              if (results.length === frames) { done(); return; }
+              if (extension) query = g.createQuery();
+              if (query && extension) {
+                queries.add(query);
+                queryStart = performance.now();
+                g.beginQuery(extension.TIME_ELAPSED_EXT, query);
+                try { renderer.draw(last.camera, last.lookup); }
+                finally { g.endQuery(extension.TIME_ELAPSED_EXT); }
+                g.flush();
+              } else {
+                // 타이머 확장이 없는 브라우저는 GPU 완료를 기다린 벽시계로 같은 수의 표본을 채운다.
+                g.finish();
+                const start = performance.now();
+                renderer.draw(last.camera, last.lookup);
+                g.finish();
+                results.push(performance.now() - start);
+              }
+              raf = requestAnimationFrame(step);
+            } catch (error) { done(error instanceof Error ? error : new Error(String(error))); }
           }
           raf = requestAnimationFrame(step);
         }).finally(() => { timing = null; });
         return timing;
       },
-      textureBytes: () => [...textures.values()].reduce((bytes, t) => bytes + t.size * t.size * 4, 0),
+      textureBytes: () => [...textures.values()].reduce((bytes, t) => bytes + t.width * t.height * 4, 0),
+      texturePeak: () => texturePeakBytes,
       lost: () => contextLost,
       destroy() {
         if (dead) return;
         dead = true;
         canvas.removeEventListener("webglcontextlost", onLost);
         cleanup();
+        releaseContext();
       },
     };
     canvas.addEventListener("webglcontextlost", onLost);
     return renderer;
   } catch {
     cleanup();
+    releaseContext();
     return null;
   }
 }

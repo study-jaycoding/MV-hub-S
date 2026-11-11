@@ -8,7 +8,7 @@ export interface AtlasRequest {
 }
 
 export interface AtlasUploader {
-  ensurePage(page: number, size: number): void;
+  ensurePage(page: number, width: number, height?: number): void;
   upload(page: number, x: number, y: number, source: HTMLCanvasElement | OffscreenCanvas, w: number, h: number): void;
   deletePage(page: number): void;
 }
@@ -37,12 +37,13 @@ export interface CardAtlas {
   lookup(id: string): AtlasRegion | null;
   textureBytes(): number;
   cpuBytes(): number;
+  cpuPeak(): number;
   reset(generation: number): void;
   dispose(): void;
 }
 
 type Box = { x: number; y: number; w: number; h: number };
-type Page = { id: number; size: number; free: Box[]; used: number };
+type Page = { id: number; width: number; height: number; free: Box[]; used: number };
 type Slot = Box & { page: Page };
 type Entry = { key: string; w: number; h: number; tier: number; slot: Slot; region: AtlasRegion };
 type Job = {
@@ -60,7 +61,8 @@ export function createCardAtlas(deps: {
   uploader: AtlasUploader;
   now: () => number;
   makeCanvas: (w: number, h: number) => HTMLCanvasElement | OffscreenCanvas;
-  decode: (src: string, resizeWidth: number) => Promise<ImageBitmap | null>;
+  // 디코더는 원본 비트맵을 먼저 만들지 않고 두 상한 안으로 디코드해야 예약량이 실제 할당을 보장한다.
+  decode: (src: string, resizeWidth: number, resizeHeight: number) => Promise<ImageBitmap | null>;
   budgets?: Partial<AtlasBudgets>;
 }): CardAtlas {
   const budget = { ...defaults, ...deps.budgets };
@@ -86,11 +88,13 @@ export function createCardAtlas(deps: {
   let decodeReservedBytes = 0;
   let bitmapBytes = 0;
   let canvasBytes = 0;
+  let cpuPeakBytes = 0;
+  const recordCpuPeak = (incoming = 0) => { cpuPeakBytes = Math.max(cpuPeakBytes, bitmapBytes + canvasBytes + incoming); };
   let failure: Error | null = null;
   // 할 일이 없다고 확인한 뒤 sync 가 오기 전까지는 tick 이 요청 전체를 다시 훑지 않는다(조작 중 매 프레임 불린다)
   let settled = false;
 
-  const textureBytes = () => [...pages.values()].reduce((n, p) => n + p.size * p.size * 4, 0);
+  const textureBytes = () => [...pages.values()].reduce((n, p) => n + p.width * p.height * 4, 0);
   const pixels = (r: AtlasRequest, tier: number) => ({ w: Math.max(1, Math.ceil(r.w * tier)), h: Math.max(1, Math.ceil(r.h * tier)) });
   const tierOf = (r: AtlasRequest) => !visible.has(r.id) || (evicted.has(r.id) && !entries.has(r.id))
     ? 0.25 : [0.25, 0.5, 1, 2].find((t) => scale <= t * 1.25) ?? 2;
@@ -134,15 +138,16 @@ export function createCardAtlas(deps: {
   function allocate(r: AtlasRequest, tier: number): Slot {
     const { w, h } = pixels(r, tier);
     if (w > budget.uploadPx) throw new RangeError("Atlas row exceeds upload budget");
-    const size = 2 ** Math.ceil(Math.log2(Math.max(budget.pageSize, w, h)));
+    const width = 2 ** Math.ceil(Math.log2(Math.max(budget.pageSize, w)));
+    const height = 2 ** Math.ceil(Math.log2(Math.max(budget.pageSize, h)));
     const tryAllocate = () => {
       for (const p of pages.values()) {
         const slot = take(p, w, h);
         if (slot) return slot;
       }
-      if (textureBytes() + size * size * 4 > budget.textureBytes) return null;
-      const p: Page = { id: pageId++, size, free: [{ x: 0, y: 0, w: size, h: size }], used: 0 };
-      deps.uploader.ensurePage(p.id, size);
+      if (textureBytes() + width * height * 4 > budget.textureBytes) return null;
+      const p: Page = { id: pageId++, width, height, free: [{ x: 0, y: 0, w: width, h: height }], used: 0 };
+      deps.uploader.ensurePage(p.id, width, height);
       pages.set(p.id, p);
       return take(p, w, h);
     };
@@ -176,20 +181,17 @@ export function createCardAtlas(deps: {
     if (j === job) { job = null; failure = null; }
   }
 
-  function stripBytes(j: Job) {
+  function stripHeight(j: Job) {
     const { w, h } = pixels(j.req, j.tier);
-    return w * Math.min(h - j.row, Math.floor(budget.uploadPx / w)) * 4;
-  }
-
-  function bakeReserve() {
-    let bytes = 0;
-    for (const j of prepared.values()) bytes = Math.max(bytes, stripBytes(j));
-    return bytes;
+    // 절반은 굽기 띠에 남겨 여러 원본을 가진 현재 카드도 끝까지 준비할 수 있게 한다.
+    const rows = Math.floor(Math.min(budget.uploadPx, Math.floor(budget.cpuBytes / 8)) / w);
+    if (rows < 1) throw new RangeError("Atlas row exceeds CPU or upload budget");
+    return Math.min(h - j.row, rows);
   }
 
   function trimPrefetch(bytes: number, keep: Job) {
     for (const other of [...prepared.values()].reverse()) {
-      if (bitmapBytes + bytes + bakeReserve() <= budget.cpuBytes) break;
+      if (bitmapBytes + decodeReservedBytes + bytes <= budget.cpuBytes / 2) break;
       if (other === keep) continue;
       prefetchBlocked.add(other.req.id);
       cancelJob(other);
@@ -199,9 +201,11 @@ export function createCardAtlas(deps: {
   function decodeImages(j: Job) {
     const { w } = pixels(j.req, j.tier);
     while (!j.cancelled && !failure && j.next < j.sources.length && decodeCount < budget.decodes) {
-      // 높이를 모르는 디코드는 정사각형 크기로 예약하고, 도착한 실제 바이트도 다시 검사한다.
-      const reserve = Math.min(budget.cpuBytes, w * w * 4);
-      if (j !== job && bitmapBytes + decodeReservedBytes + bakeReserve() + reserve > budget.cpuBytes) break;
+      const side = Math.min(w, Math.floor(Math.sqrt(budget.cpuBytes / 8 / j.sources.length)));
+      if (side < 1) throw new RangeError("Atlas image count exceeds CPU budget");
+      const reserve = side * side * 4;
+      if (j === job) trimPrefetch(reserve, j);
+      if (bitmapBytes + decodeReservedBytes + reserve > budget.cpuBytes / 2) break;
       const src = j.sources[j.next++];
       decodeCount++;
       decodeReservedBytes += reserve;
@@ -210,12 +214,12 @@ export function createCardAtlas(deps: {
         decodeCount--;
         decodeReservedBytes -= reserve;
         j.loading--;
-        if (disposed || j.cancelled || j.generation !== generation) { img?.close(); return; }
         const bytes = img ? img.width * img.height * 4 : 0;
-        if (j === job) trimPrefetch(bytes, j);
-        if (bytes + bitmapBytes + bakeReserve() > budget.cpuBytes) {
+        recordCpuPeak(bytes);
+        if (disposed || j.cancelled || j.generation !== generation) { img?.close(); return; }
+        if (img && (img.width > side || img.height > side)) {
           img?.close();
-          if (j === job) failure = new RangeError("Atlas decoded bitmap exceeds CPU budget");
+          if (j === job) failure = new RangeError("Atlas decoder exceeded requested dimensions");
           else { prefetchBlocked.add(j.req.id); cancelJob(j); }
         } else {
           bitmapBytes += bytes;
@@ -223,7 +227,7 @@ export function createCardAtlas(deps: {
         }
       };
       // 동기 예외도 실패 이미지로 처리해 다른 그림의 준비를 막지 않는다.
-      try { Promise.resolve(deps.decode(src, w)).then(accept, () => accept(null)); }
+      try { Promise.resolve(deps.decode(src, side, side)).then(accept, () => accept(null)); }
       catch { accept(null); }
     }
   }
@@ -312,16 +316,17 @@ export function createCardAtlas(deps: {
           continue;
         }
         const sizePx = pixels(j.req, j.tier);
-        const h = Math.min(sizePx.h - j.row, Math.floor(budget.uploadPx / sizePx.w));
+        const h = stripHeight(j);
         const px = sizePx.w * h;
         if (uploadedPx + px > budget.uploadPx) break;
         trimPrefetch(0, j);
-        if (bitmapBytes + px * 4 > budget.cpuBytes) { cancelJob(j); throw new RangeError("Atlas baking buffer exceeds CPU budget"); }
+        if (bitmapBytes + decodeReservedBytes + px * 4 > budget.cpuBytes) { cancelJob(j); throw new RangeError("Atlas baking buffer exceeds CPU budget"); }
         j.slot ??= allocate(j.req, j.tier);
         let canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
         try {
           canvas = deps.makeCanvas(j.slot.w, h);
           canvasBytes = px * 4;
+          recordCpuPeak();
           const g = canvas.getContext("2d") as CanvasRenderingContext2D | null;
           if (!g) throw new Error("Atlas Canvas2D unavailable");
           g.save();
@@ -351,10 +356,10 @@ export function createCardAtlas(deps: {
           continue;
         }
         const old = entries.get(j.req.id);
-        const s = j.slot, size = s.page.size;
+        const s = j.slot, { width, height } = s.page;
         entries.set(j.req.id, {
           key: j.req.key, w: j.req.w, h: j.req.h, tier: j.tier, slot: s,
-          region: { page: s.page.id, tier: j.tier, u0: (s.x + 0.5) / size, v0: (s.y + 0.5) / size, u1: (s.x + s.w - 0.5) / size, v1: (s.y + s.h - 0.5) / size },
+          region: { page: s.page.id, tier: j.tier, u0: (s.x + 0.5) / width, v0: (s.y + 0.5) / height, u1: (s.x + s.w - 0.5) / width, v1: (s.y + s.h - 0.5) / height },
         });
         if (old) release(old.slot);
         evicted.delete(j.req.id);
@@ -372,6 +377,7 @@ export function createCardAtlas(deps: {
     lookup: (id) => entries.get(id)?.region ?? null,
     textureBytes,
     cpuBytes: () => bitmapBytes + canvasBytes,
+    cpuPeak: () => cpuPeakBytes,
     reset,
     dispose() { if (!disposed) { reset(generation + 1); disposed = true; } },
   };

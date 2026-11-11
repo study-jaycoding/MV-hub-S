@@ -5,16 +5,16 @@ import { createGpuRenderer, type GpuScene } from "../src/features/canvas/gpu/gpu
 
 function harness(budgets: Partial<AtlasBudgets> = {}) {
   let clock = 0;
-  const pages = new Map<number, number>();
+  const pages = new Map<number, { width: number; height: number }>();
   const events: string[] = [];
   const g = { save: vi.fn(), restore: vi.fn(), setTransform: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn() };
   const canvases: Array<{ width: number; height: number }> = [];
   const uploader: AtlasUploader = {
-    ensurePage: vi.fn((id, size) => { pages.set(id, size); events.push(`add:${id}`); }),
+    ensurePage: vi.fn((id, width, height = width) => { pages.set(id, { width, height }); events.push(`add:${id}`); }),
     upload: vi.fn((page) => { events.push(`upload:${page}`); }),
     deletePage: vi.fn((id) => { pages.delete(id); events.push(`delete:${id}`); }),
   };
-  const decode = vi.fn<(...args: [string, number]) => Promise<ImageBitmap | null>>().mockResolvedValue(null);
+  const decode = vi.fn<(...args: [string, number, number]) => Promise<ImageBitmap | null>>().mockResolvedValue(null);
   const atlas = createCardAtlas({
     now: () => clock,
     makeCanvas: (width, height) => {
@@ -113,10 +113,10 @@ describe("cardAtlas", () => {
     const before = h.atlas.textureBytes();
     h.sync([a]);
     expect(h.atlas.tick()).toMatchObject({ baked: 1, uploadedPx: 4 * 1024 * 1024, pending: 1 });
-    expect(h.atlas.textureBytes()).toBe(before + 4096 * 4096 * 4);
+    expect(h.atlas.textureBytes()).toBe(before + 2048 * 4096 * 4);
     expect(h.atlas.textureBytes()).toBeLessThanOrEqual(128 * 1024 * 1024);
     expect(h.atlas.tick().pending).toBe(0);
-    expect(h.atlas.textureBytes()).toBe(4096 * 4096 * 4);
+    expect(h.atlas.textureBytes()).toBe(2048 * 4096 * 4);
   });
 
   it("자리 부족이면 화면 밖의 큰 단계부터 퇴출, 재등장하면 낮은 단계부터", () => {
@@ -166,7 +166,7 @@ describe("cardAtlas", () => {
     const a = { ...h.request("a"), sources: pending.map((_, i) => `src${i}`) };
     h.sync([a]); h.atlas.tick();
     expect(h.decode).toHaveBeenCalledTimes(6);
-    expect(h.decode).toHaveBeenCalledWith("src0", 40);
+    expect(h.decode).toHaveBeenCalledWith("src0", 40, 40);
     pending.slice(0, 6).forEach((p, i) => p.resolve(images[i]));
     await flush();
     expect(h.atlas.cpuBytes()).toBe(6 * 8 * 8 * 4);
@@ -223,7 +223,7 @@ describe("cardAtlas", () => {
     await flush();
     expect(image.close).toHaveBeenCalledTimes(1);
     expect(h.atlas.cpuBytes()).toBe(0);
-    expect(() => h.atlas.tick()).toThrow(/CPU budget/);
+    expect(() => h.atlas.tick()).toThrow(/requested dimensions/);
     expect(h.uploader.upload).not.toHaveBeenCalled();
   });
 
@@ -236,6 +236,10 @@ describe("cardAtlas", () => {
     h.atlas.tick(); await flush(); h.atlas.tick();
     expect(draw).toHaveBeenCalledTimes(1);
     expect(h.atlas.cpuBytes()).toBe(0);
+    expect(h.atlas.cpuPeak()).toBe(128);
+    h.atlas.reset(2);
+    h.atlas.dispose();
+    expect(h.atlas.cpuPeak()).toBe(128);
   });
 
   it("업로드 실패는 새 자원만 놓고 옛 그림을 보존한다", () => {
@@ -409,19 +413,84 @@ describe("cardAtlas", () => {
 
   it("현재 카드에 필요한 메모리는 미리 받은 그림부터 놓아 확보한다", async () => {
     const h = harness({ cpuBytes: 256 });
-    const current = deferred<ImageBitmap | null>(), next = deferred<ImageBitmap | null>();
-    h.decode.mockReturnValueOnce(current.promise).mockReturnValueOnce(next.promise);
-    h.sync(["a", "b"].map((id) => ({ ...h.request(id, 4, 4), sources: [id] })));
-    h.atlas.tick();
     const ahead = bitmap(4, 4);
-    next.resolve(ahead); await flush();
+    h.decode.mockResolvedValueOnce(bitmap(4, 4)).mockResolvedValueOnce(ahead).mockResolvedValueOnce(bitmap(5, 5));
+    const a = { ...h.request("a", 4, 4, 5), sources: ["a"] }, b = { ...h.request("b", 4, 4), sources: ["b"] };
+    h.sync([a, b]); h.atlas.tick(); await flush(); h.atlas.tick();
     expect(h.atlas.cpuBytes()).toBe(64);
-    current.resolve(bitmap(4, 10)); await flush();
+    const c = { ...h.request("c", 5, 4), sources: ["c"] };
+    h.sync([c, b]); h.atlas.tick(); await flush();
     expect(ahead.close).toHaveBeenCalledTimes(1);
-    expect(h.atlas.cpuBytes()).toBe(160);
+    expect(h.atlas.cpuBytes()).toBe(100);
     expect(() => h.atlas.tick()).not.toThrow();
-    expect(h.atlas.lookup("a")).not.toBeNull();
+    expect(h.atlas.lookup("c")).not.toBeNull();
     h.atlas.dispose();
+  });
+
+  it("현재 카드의 모든 원본도 디코드 전 폭·높이와 동시 예약량을 제한한다", async () => {
+    const h = harness({ cpuBytes: 256 });
+    let reserved = 0, peakReserved = 0;
+    const pending = Array.from({ length: 8 }, () => deferred<ImageBitmap | null>());
+    h.decode.mockImplementation((src, width, height) => {
+      const bytes = width * height * 4;
+      reserved += bytes; peakReserved = Math.max(peakReserved, reserved + h.atlas.cpuBytes());
+      return pending[Number(src)].promise.then((image) => { reserved -= bytes; return image; });
+    });
+    h.sync([{ ...h.request("a", 4, 4), sources: pending.map((_, i) => String(i)) }]);
+    h.atlas.tick();
+    expect(h.decode).toHaveBeenCalledTimes(6);
+    expect(h.decode.mock.calls.every(([, w, height]) => w === 2 && height === 2)).toBe(true);
+    pending.slice(0, 6).forEach((p) => p.resolve(bitmap(2, 2))); await flush();
+    h.atlas.tick();
+    expect(h.decode).toHaveBeenCalledTimes(8);
+    pending.slice(6).forEach((p) => p.resolve(bitmap(2, 2))); await flush();
+    expect(h.atlas.tick().pending).toBe(0);
+    expect(peakReserved).toBeLessThanOrEqual(128);
+    expect(h.atlas.cpuPeak()).toBe(192);
+  });
+
+  it("세로로 긴 원본은 높이 상한 안에서 디코드하고 즉시 놓은 비트맵도 최고점에 기록", async () => {
+    const h = harness();
+    h.decode.mockImplementation(async (_src, width, height) => bitmap(Math.min(width, 1), height));
+    h.sync([{ ...h.request("a", 100, 3000), sources: ["1x100000000"] }]);
+    h.atlas.tick(); await flush();
+    expect(h.decode).toHaveBeenCalledWith("1x100000000", 100, 100);
+    expect(h.atlas.cpuPeak()).toBe(400);
+    h.atlas.dispose();
+    expect(h.atlas.cpuBytes()).toBe(0);
+    expect(h.atlas.cpuPeak()).toBe(400);
+  });
+
+  it("취소한 디코드의 예약량은 도착 전까지 남기고 새 작업은 그 뒤에 진행한다", async () => {
+    const h = harness({ cpuBytes: 128 });
+    const pending = deferred<ImageBitmap | null>();
+    h.decode.mockReturnValueOnce(pending.promise).mockResolvedValue(bitmap(4, 4));
+    const a = { ...h.request("a", 4, 4), sources: ["a"] }, b = { ...h.request("b", 4, 4), sources: ["b"] };
+    h.sync([a]); h.atlas.tick();
+    h.sync([b], 1, ["b"], 2); h.atlas.tick();
+    expect(h.decode).toHaveBeenCalledTimes(1);
+    pending.resolve(bitmap(4, 4)); await flush();
+    expect(h.atlas.cpuPeak()).toBe(64);
+    h.atlas.tick(); await flush();
+    expect(h.atlas.tick().pending).toBe(0);
+    expect(h.atlas.cpuPeak()).toBe(128);
+  });
+
+  it("높이 3000px 카드 두 장을 2배 띠로 구워도 직사각형 장으로 예산 안에 든다", () => {
+    const h = harness();
+    h.sync([h.request("a", 400, 3000), h.request("b", 400, 3000)], 2);
+    let pending = 2;
+    for (let i = 0; i < 10 && pending; i++) {
+      const tick = h.atlas.tick(); pending = tick.pending;
+      expect(tick.uploadedPx).toBeLessThanOrEqual(4 * 1024 * 1024);
+    }
+    expect(pending).toBe(0);
+    expect(h.atlas.lookup("a")?.tier).toBe(2);
+    expect(h.atlas.lookup("b")?.tier).toBe(2);
+    expect([...h.pages.values()]).toEqual([{ width: 1024, height: 8192 }, { width: 1024, height: 8192 }]);
+    expect(h.atlas.textureBytes()).toBe(64 * 1024 * 1024);
+    expect(h.atlas.cpuPeak()).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(h.atlas.lookup("b")?.v1).toBe((6000 - 0.5) / 8192);
   });
 
   it.each(["reset", "dispose"])("%s는 이미 준비된 미리 받기 비트맵도 전부 닫는다", async (action) => {
@@ -443,6 +512,7 @@ function fakeGl(options: { compile?: boolean; link?: boolean; timer?: boolean } 
   let constant = 1;
   const values: Record<string, unknown> = {};
   const calls = new Map<string, ReturnType<typeof vi.fn>>();
+  const loseContext = vi.fn(() => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true })));
   const gl = new Proxy(values, {
     get(target, key: string) {
       if (key in target) return target[key];
@@ -452,7 +522,8 @@ function fakeGl(options: { compile?: boolean; link?: boolean; timer?: boolean } 
         if (key === "getShaderParameter") return options.compile !== false;
         if (key === "getProgramParameter") return options.link !== false;
         if (key === "getParameter") return args[0] === gl.MAX_TEXTURE_SIZE ? 8192 : false;
-        if (key === "getExtension") return options.timer ? { TIME_ELAPSED_EXT: 900, GPU_DISJOINT_EXT: 901 } : null;
+        if (key === "getExtension") return args[0] === "WEBGL_lose_context" ? { loseContext }
+          : options.timer ? { TIME_ELAPSED_EXT: 900, GPU_DISJOINT_EXT: 901 } : null;
         if (key === "getQueryParameter") return args[1] === gl.QUERY_RESULT_AVAILABLE ? true : 2e6;
         if (key === "getError") return gl.NO_ERROR;
         return undefined;
@@ -463,7 +534,7 @@ function fakeGl(options: { compile?: boolean; link?: boolean; timer?: boolean } 
   }) as unknown as WebGL2RenderingContext;
   const canvas = document.createElement("canvas");
   vi.spyOn(canvas, "getContext").mockReturnValue(gl);
-  return { gl, canvas, call: (name: string) => calls.get(name)! };
+  return { gl, canvas, loseContext, call: (name: string) => calls.get(name)! };
 }
 const camera = { z: 1, x: 0, y: 0, dpr: 2, width: 800, height: 600 };
 const scene = (): GpuScene => ({
@@ -531,7 +602,7 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect([...(sub.mock.calls[0][2] as Float32Array)]).toEqual([30, 15]); // 원래 크기로 되살림
   });
 
-  it("숨긴 카드 제외, 그룹→선→카드→포트→이름표 순서", () => {
+  it("숨긴 카드 제외, 그룹·그룹 이름표→선→카드→포트 순서", () => {
     const h = fakeGl();
     const renderer = createGpuRenderer(h.canvas)!;
     const s = scene();
@@ -542,10 +613,10 @@ describe("gpuRenderer (기록하는 GL)", () => {
     renderer.setScene(s);
     const lookup = vi.fn((_id: string) => null);
     renderer.draw(camera, lookup);
-    expect(lookup.mock.calls.map((c) => c[0])).toEqual(["a", "label"]);
+    expect(lookup.mock.calls.map((c) => c[0])).toEqual(["label", "a"]);
     const shapeOrders = h.call("drawArraysInstanced").mock.invocationCallOrder;
     const lineOrder = h.call("drawArrays").mock.invocationCallOrder[1];
-    expect(shapeOrders).toHaveLength(4);
+    expect(shapeOrders).toHaveLength(3);
     expect(shapeOrders[0]).toBeLessThan(lineOrder);
     expect(lineOrder).toBeLessThan(shapeOrders[1]);
   });
@@ -568,6 +639,74 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect(h.call("deleteProgram")).toHaveBeenCalledTimes(3);
   });
 
+  it("destroy는 상실 듣기를 먼저 떼고 컨텍스트를 한 번 놓는다", () => {
+    const h = fakeGl();
+    const onContextLost = vi.fn();
+    const renderer = createGpuRenderer(h.canvas, { onContextLost })!;
+    renderer.destroy(); renderer.destroy();
+    expect(h.loseContext).toHaveBeenCalledTimes(1);
+    expect(onContextLost).not.toHaveBeenCalled();
+    expect(renderer.lost()).toBe(false);
+  });
+
+  it("owner 조각은 해당 카드 바로 뒤에 들어가고 숨김·복원도 함께 한다", () => {
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    const s = scene();
+    s.cards.push({ ...s.cards[0], id: "b", x: 20, z: 2 }, { ...s.cards[0], id: "hidden", hidden: true });
+    s.rects.push({ owner: "a", x: 11, y: 0, w: 30, h: 20, radius: 0, borderWidth: 1, fill: [0, 0, 0, 0], border: [1, 1, 1, 1] });
+    s.selection = [{ ...s.rects[0], owner: "b", x: 21 }];
+    s.quads.push(
+      { id: "group", x: -10, y: 0, w: 20, h: 10 },
+      { id: "badge-b", owner: "b", x: 22, y: 0, w: 20, h: 10 },
+      { id: "badge-a", owner: "a", x: 12, y: 0, w: 20, h: 10, hideLow: true },
+      { id: "badge-hidden", owner: "hidden", x: 99, y: 0, w: 20, h: 10 },
+    );
+    renderer.setScene(s);
+    const data = h.call("bufferData").mock.calls[1][1] as Float32Array;
+    expect(Array.from({ length: data.length / 15 }, (_, i) => data[i * 15])).toEqual([-10, 0, 11, 12, 20, 21, 22]);
+    expect(data[3 * 15 + 6]).toBe(1);
+    renderer.draw(camera, () => null);
+    const orders = h.call("drawArraysInstanced").mock.invocationCallOrder;
+    expect(orders[0]).toBeLessThan(h.call("drawArrays").mock.invocationCallOrder[1]);
+    expect(h.call("drawArrays").mock.invocationCallOrder[1]).toBeLessThan(orders[1]);
+    h.call("bufferSubData").mockClear(); h.call("bufferData").mockClear();
+    renderer.setHidden("a");
+    expect(h.call("bufferSubData").mock.calls.map((c) => c[1])).toEqual([1, 2, 3].map((i) => (i * 15 + 2) * 4));
+    expect(h.call("bufferSubData").mock.calls.map((c) => [...c[2] as Float32Array])).toEqual([[0, 0], [0, 0], [0, 0]]);
+    h.call("bufferSubData").mockClear();
+    renderer.setHidden(null);
+    expect(h.call("bufferSubData").mock.calls.map((c) => [...c[2] as Float32Array])).toEqual([[40, 20], [30, 20], [20, 10]]);
+    h.call("bufferSubData").mockClear();
+    renderer.setLowLod(true); renderer.draw(camera, () => null);
+    expect(h.call("bufferSubData")).not.toHaveBeenCalled();
+    expect(h.call("bufferData")).not.toHaveBeenCalled();
+  });
+
+  it("카드 500장·선택·서로 다른 장의 배지도 한 묶음으로 그리고 카메라 이동은 재업로드하지 않는다", () => {
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    const s = scene(); s.cards = []; s.lines = [];
+    for (let i = 0; i < 500; i++) {
+      const id = `c${i}`;
+      s.cards.push({ ...scene().cards[0], id, z: i });
+      s.rects.push({ owner: id, x: 0, y: 0, w: 40, h: 20, radius: 2, fill: [0, 0, 0, 0], border: [1, 1, 1, 1], borderWidth: 1 });
+      s.quads.push({ owner: id, id: `badge${i}`, x: 0, y: 0, w: 10, h: 10 });
+    }
+    renderer.setScene(s);
+    renderer.ensurePage(1, 64); renderer.ensurePage(2, 64);
+    const lookup = (id: string) => ({ page: id.startsWith("badge") ? 2 : 1, u0: 0, v0: 0, u1: 1, v1: 1, tier: 1 });
+    renderer.draw(camera, lookup);
+    expect(h.call("drawArraysInstanced").mock.calls.map((c) => c[3])).toEqual([1500]);
+    const uv = h.call("bufferSubData").mock.calls[0][2] as Float32Array;
+    expect([uv[4], uv[9], uv[14], uv[19]]).toEqual([0, -1, 1, 0]);
+    h.call("bufferData").mockClear(); h.call("bufferSubData").mockClear(); h.call("drawArraysInstanced").mockClear();
+    renderer.draw({ ...camera, x: 10 }, lookup);
+    expect(h.call("drawArraysInstanced")).toHaveBeenCalledTimes(1);
+    expect(h.call("bufferSubData")).not.toHaveBeenCalled();
+    expect(h.call("bufferData")).not.toHaveBeenCalled();
+  });
+
   it("텍스처는 밉맵 없이 할당 크기로 세고 128MiB 초과 전에 거절", () => {
     const h = fakeGl();
     const renderer = createGpuRenderer(h.canvas)!;
@@ -577,6 +716,36 @@ describe("gpuRenderer (기록하는 GL)", () => {
     expect(h.call("texStorage2D").mock.calls.every((c) => c[1] === 1)).toBe(true);
     renderer.deletePage(0);
     expect(renderer.textureBytes()).toBe(64 * 1024 * 1024);
+    expect(renderer.texturePeak()).toBe(128 * 1024 * 1024);
+    renderer.destroy();
+    expect(renderer.textureBytes()).toBe(0);
+    expect(renderer.texturePeak()).toBe(128 * 1024 * 1024);
+  });
+
+  it("텍스처 8장 경계에서만 묶음을 나누고 순서·슬롯을 유지한다", () => {
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    const s = scene(); s.lines = [];
+    s.cards = Array.from({ length: 10 }, (_, i) => ({ ...s.cards[0], id: String(i), z: i }));
+    renderer.setScene(s);
+    for (let i = 0; i < 10; i++) renderer.ensurePage(i, 16);
+    renderer.draw(camera, (id) => ({ page: Number(id), u0: 0, v0: 0, u1: 1, v1: 1, tier: 1 }));
+    expect(h.call("drawArraysInstanced").mock.calls.map((c) => c[3])).toEqual([8, 2]);
+    const uv = h.call("bufferSubData").mock.calls[0][2] as Float32Array;
+    expect(Array.from({ length: 10 }, (_, i) => uv[i * 5 + 4])).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 0, 1]);
+  });
+
+  it("직사각형 텍스처의 할당·올리기 경계는 폭과 높이를 따로 쓴다", () => {
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.ensurePage(0, 1024, 8192);
+    expect(renderer.textureBytes()).toBe(32 * 1024 * 1024);
+    expect(h.call("texStorage2D").mock.calls[0].slice(-2)).toEqual([1024, 8192]);
+    const canvas = document.createElement("canvas"); canvas.width = 10; canvas.height = 10;
+    expect(() => renderer.upload(0, 0, 6000, canvas, 10, 10)).not.toThrow();
+    expect(() => renderer.upload(0, 1020, 0, canvas, 10, 10)).toThrow(/upload/);
+    expect(() => renderer.ensurePage(0, 8192, 1024)).toThrow(/size changed/);
+    expect(() => renderer.ensurePage(1, 1, 8193)).toThrow(/size unsupported/);
   });
 
   it.each([false, true])("GPU 측정 timer=%s, 요청한 프레임 수만큼 결과 반환", async (timer) => {
@@ -587,14 +756,67 @@ describe("gpuRenderer (기록하는 GL)", () => {
     const h = fakeGl({ timer });
     const renderer = createGpuRenderer(h.canvas)!;
     renderer.setScene(scene()); renderer.draw(camera, () => null);
-    const result = renderer.timeGpu(3);
-    for (let i = 0; i < 10 && callbacks.size; i++) {
+    const result = renderer.timeGpu(30);
+    for (let i = 0; i < 40 && callbacks.size; i++) {
       const [key, fn] = [...callbacks][0]; callbacks.delete(key); fn(i * 16);
     }
     const times = await result;
-    expect(times).toHaveLength(3);
-    if (timer) expect(times).toEqual([2, 2, 2]);
-    else expect(h.call("finish")).toHaveBeenCalledTimes(6);
+    expect(times).toHaveLength(30);
+    expect(times.every(Number.isFinite)).toBe(true);
+    if (timer) expect(times).toEqual(Array(30).fill(2));
+    else expect(h.call("finish")).toHaveBeenCalledTimes(60);
     expect(callbacks.size).toBe(0);
+  });
+
+  it.each(["disjoint", "timeout", "nonfinite", "destroy", "lost", "draw"])("정상 표본 2개 뒤 %s는 부분 배열 대신 거부하고 질의를 해제한다", async (failure) => {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let id = 0, clock = 0;
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.set(++id, fn); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => callbacks.delete(n));
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = fakeGl({ timer: true });
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    const result = renderer.timeGpu(30);
+    const rejected = expect(result).rejects.toThrow();
+    const step = () => { const [key, fn] = [...callbacks][0]; callbacks.delete(key); fn(clock); };
+    step(); step(); step();
+    if (failure === "disjoint") h.call("getParameter").mockImplementation((key) => key === 901);
+    if (failure === "timeout") { h.call("getQueryParameter").mockReturnValue(false); clock = 1001; }
+    if (failure === "nonfinite") h.call("getQueryParameter").mockImplementation((_, key) => key === h.gl.QUERY_RESULT_AVAILABLE ? true : Infinity);
+    if (failure === "destroy") renderer.destroy();
+    else if (failure === "lost") h.canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    else {
+      if (failure === "draw") vi.spyOn(renderer, "draw").mockImplementation(() => { throw new Error("draw failed"); });
+      step();
+    }
+    await rejected;
+    expect(callbacks.size).toBe(0);
+    expect(h.call("deleteQuery")).toHaveBeenCalledTimes(h.call("createQuery").mock.calls.length);
+  });
+
+  it("측정할 프레임 수·그림이 유효하지 않으면 거부한다", async () => {
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    await expect(renderer.timeGpu(30)).rejects.toThrow();
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    for (const frames of [0, -1, 1.5, NaN, Infinity]) await expect(renderer.timeGpu(frames)).rejects.toThrow();
+    renderer.destroy();
+    await expect(renderer.timeGpu(30)).rejects.toThrow();
+  });
+
+  it("타이머 대체 측정도 유한하지 않은 벽시계 표본이면 거부한다", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { callbacks.push(fn); return 1; });
+    vi.stubGlobal("cancelAnimationFrame", () => { callbacks.length = 0; });
+    const h = fakeGl();
+    const renderer = createGpuRenderer(h.canvas)!;
+    renderer.setScene(scene()); renderer.draw(camera, () => null);
+    vi.spyOn(performance, "now").mockReturnValue(NaN);
+    const result = renderer.timeGpu(30);
+    const rejected = expect(result).rejects.toThrow(/samples/);
+    callbacks.shift()!(0); callbacks.shift()!(16);
+    await rejected;
+    expect(callbacks).toHaveLength(0);
   });
 });

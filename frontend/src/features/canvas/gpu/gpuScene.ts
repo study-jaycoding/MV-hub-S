@@ -9,7 +9,8 @@ import type { GpuCardInstance, GpuDot, GpuLine, GpuQuad, GpuRect } from "./gpuRe
 
 export type Rgba = [number, number, number, number];
 
-const ACCENT = "#c8ef40";
+const ACCENT = "#c4e84a"; // --accent(styles/base.css) — 연결선·끝 점·틀·그룹 기본색
+const BADGE = "#c8ef40"; // 결과 수 배지(history.css .scene-multi-badge)
 const ACCENT_INK = "#111";
 const FONT = '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif';
 
@@ -17,7 +18,7 @@ const FONT = '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif';
 export function hexRgba(hex: string, alpha = 1): Rgba {
   let h = hex.trim().replace(/^#/, "");
   if (h.length === 3) h = h.split("").map((c) => c + c).join("");
-  const n = /^[0-9a-f]{6}$/i.test(h) ? parseInt(h, 16) : 0xc8ef40;
+  const n = /^[0-9a-f]{6}$/i.test(h) ? parseInt(h, 16) : 0xc4e84a;
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, alpha];
 }
 
@@ -118,7 +119,15 @@ export interface GpuSceneInput {
   variantCount: (card: SceneCard) => number;
   folderChip: (card: SceneCard) => string | undefined;
   refTypeLabel: (card: SceneCard) => string;
+  /** 선이 닿은 포트(카드 틀 data-linked 와 같은 값: out · in · in-<칸>) — 없으면 포트를 그리지 않는다(시험용 최소 입력) */
+  linkedPorts?: (cardId: string) => string | undefined;
+  /** 생성 카드 입력 칸의 세로 어긋남(SceneBoard laneDelta)·포트가 카드 밖으로 나간 거리(PORT_GAP) */
+  laneDelta?: (lane: PortLane, card: SceneCard) => number;
+  portGap?: number;
 }
+export type PortLane = "model" | "ref" | "text" | "set";
+const GEN_LANES: PortLane[] = ["model", "ref", "text", "set"];
+const LANE_COLOR: Record<PortLane, string> = { model: "#ffb84d", ref: "#7fa9ff", text: "#b57aff", set: "#e8c341" };
 export interface GpuSceneModel {
   requests: AtlasRequest[];
   cards: GpuCardInstance[];
@@ -161,7 +170,7 @@ function atOrigin(item: BoardItem): BoardItem {
 }
 
 /** hideLow = 25% 이하 단순화(data-lod-low)에서 숨기는 조각 — 결과 수 배지·폴더 이름표·회색 끝 점. GPU 판이 그릴 때 거른다(모델을 다시 만들지 않게). */
-type TextQuad = { id: string; x: number; y: number; w: number; h: number; key: string; draw: AtlasRequest["draw"]; hideLow?: boolean };
+type TextQuad = { id: string; x: number; y: number; w: number; h: number; key: string; draw: AtlasRequest["draw"]; hideLow?: boolean; owner?: string };
 
 function measure(text: string, size: number, weight: number): number {
   // 굽기 전 크기 어림 — 이름표 상자 폭(실제 글은 굽는 캔버스의 measureText 로 그린다). 한글은 대략 1em, 그 밖은 0.6em.
@@ -302,14 +311,33 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
     const isHead = card.kind === "head";
     const border: Rgba = isHead ? [0, 0, 0, 0] : sel && input.offServer.has(card.id) ? hexRgba("#ff6b6b") : sel || glow ? hexRgba(pc) : [0, 0, 0, 0];
     cards.push({ id: card.id, x: card.x, y: card.y, w, h, radius: isHead ? 0 : card.kind === "set" ? 14 : 12, border, borderWidth: isHead ? 0 : 2, hidden: false, z });
+    // 카드에 딸린 조각(빛·바깥선·포트·이름표·배지)은 owner 로 그 카드와 같은 높이에 그린다 — 뒤 카드의 조각이 앞 카드 위로 올라오지 않게(DOM 은 카드의 자식)
+    const owner = card.id;
     if (glow && !isHead) {
       // .scene-card.glow::after — 노드 색 빛(멈춰 있는 26px 번짐을 바깥 띠 두 겹으로)
-      rects.push({ x: card.x - 6, y: card.y - 6, w: w + 12, h: h + 12, radius: 18, fill: [0, 0, 0, 0], border: hexRgba(pc, 0.45), borderWidth: 6 });
-      rects.push({ x: card.x - 14, y: card.y - 14, w: w + 28, h: h + 28, radius: 26, fill: [0, 0, 0, 0], border: hexRgba(pc, 0.18), borderWidth: 8 });
+      rects.push({ x: card.x - 6, y: card.y - 6, w: w + 12, h: h + 12, radius: 18, fill: [0, 0, 0, 0], border: hexRgba(pc, 0.45), borderWidth: 6, owner });
+      rects.push({ x: card.x - 14, y: card.y - 14, w: w + 28, h: h + 28, radius: 26, fill: [0, 0, 0, 0], border: hexRgba(pc, 0.18), borderWidth: 8, owner });
     }
     if (isHead && sel) {
       // .scene-card-head.sel — 점선 바깥선(1.5px·3px 띄움)을 옅은 실선으로
-      rects.push({ x: card.x - 4.5, y: card.y - 4.5, w: w + 9, h: h + 9, radius: 2, fill: [0, 0, 0, 0], border: [1, 1, 1, 0.35], borderWidth: 1.5 });
+      rects.push({ x: card.x - 4.5, y: card.y - 4.5, w: w + 9, h: h + 9, radius: 2, fill: [0, 0, 0, 0], border: [1, 1, 1, 0.35], borderWidth: 1.5, owner });
+    }
+    // 연결점(.scene-port) — 고른 카드: 모든 포트의 빈 고리(지름 16·테두리 2, 노드색 — 생성 카드 입력은 칸 색). 고르지 않은 생성 카드: 입력이 하나라도
+    //  이어졌을 때 선이 없는 입력 칸만 회색 작은 빈 원(지름 10·테두리 1.5, 단순화에서 숨김). 선이 닿은 포트는 끝 점(dots)이 가운데를 채운다.
+    if (input.linkedPorts && !isHead) {
+      const gap = input.portGap ?? 24;
+      const cy = card.y + h / 2;
+      const lanes: Array<PortLane | null> = card.kind === "generation" ? GEN_LANES : card.kind === "text" || card.kind === "list" ? [null] : [];
+      const ring = (x: number, y: number, r: number, color: string, bw: number, hideLow = false) =>
+        rects.push({ x: x - r, y: y - r, w: r * 2, h: r * 2, radius: r, fill: [0, 0, 0, 0], border: hexRgba(color), borderWidth: bw, owner, ...(hideLow ? { hideLow } : null) });
+      const dy = (lane: PortLane | null) => (lane && input.laneDelta ? input.laneDelta(lane, card) : 0);
+      if (sel) {
+        for (const lane of lanes) ring(card.x - gap, cy + dy(lane), 8, lane ? LANE_COLOR[lane] : pc, 2);
+        ring(card.x + w + gap, cy, 8, card.kind === "set" ? LANE_COLOR.set : pc, 2);
+      } else if (card.kind === "generation") {
+        const linked = new Set((input.linkedPorts(card.id) ?? "").split(" "));
+        if (linked.has("in")) for (const lane of GEN_LANES) if (!linked.has("in-" + lane)) ring(card.x - gap, cy + dy(lane), 5, "#5d636e", 1.5, true);
+      }
     }
     // 카드 밖 조각 — 고른 카드의 이름표(.scene-card-hd-float: 위로 8px, 13px)·결과 수(▤ n, 위 4px 가운데)·폴더 이름표(아래 변 가운데)
     const label = card.kind === "reference" ? input.refTypeLabel(card) : LABEL[card.kind];
@@ -318,15 +346,17 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
         size: 13, weight: 800, padX: 11, padY: 5, radius: 8, bg: mixRgbaCss(pc, 0.12, [12, 14, 18, 0.94]), fg: pc,
       });
       q.y = card.y - 8 - q.h;
+      q.owner = owner;
       textQuads.push(q);
     }
     if (card.kind === "generation") {
       const n = input.variantCount(card);
       if (n > 1) {
-        const q = pillQuad("multi:" + card.id, `▤ ${n}`, 0, 0, { size: 12, weight: 800, padX: 11, padY: 3, radius: 8, bg: ACCENT, fg: ACCENT_INK, border: "rgba(0,0,0,0.25)" });
+        const q = pillQuad("multi:" + card.id, `▤ ${n}`, 0, 0, { size: 12, weight: 800, padX: 11, padY: 3, radius: 8, bg: BADGE, fg: ACCENT_INK, border: "rgba(0,0,0,0.25)" });
         q.x = card.x + w / 2 - q.w / 2;
         q.y = card.y - 4 - q.h;
         q.hideLow = !sel; // 고른 카드는 단순화에서도 보인다(scene.css :not(.sel))
+        q.owner = owner;
         textQuads.push(q);
       }
       const chip = input.folderChip(card);
@@ -336,6 +366,7 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
         q.x = card.x + w / 2 - q.w / 2;
         q.y = card.y + h - q.h - (item.color || item.final ? 9 : 0);
         q.hideLow = !sel;
+        q.owner = owner;
         textQuads.push(q);
       }
     }
@@ -343,7 +374,7 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
 
   for (const q of textQuads) {
     requests.push({ id: q.id, key: q.key, w: q.w, h: q.h, sources: [], draw: q.draw });
-    quads.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: q.h, ...(q.hideLow ? { hideLow: true } : null) });
+    quads.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: q.h, ...(q.hideLow ? { hideLow: true } : null), ...(q.owner ? { owner: q.owner } : null) });
   }
 
   const lines: GpuLine[] = input.lines.map(({ d, cls }) => {

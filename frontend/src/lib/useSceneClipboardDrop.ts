@@ -57,6 +57,9 @@ interface UseSceneClipboardDropOptions {
   onDropGenerations?: (generationIds: string[], point: { x: number; y: number }) => void;
   cardWidth: number;
   cardHeight: number;
+  // GPU 보기 모드(features/canvas/gpu) — 붙여넣기·끌어 놓기를 입구에서 거절한다. 세션에서 거절하면 늦다: 그 전에 파일이 서버에 올라갔다(11-11 리뷰).
+  isViewMode?: () => boolean;
+  onViewRefuse?: () => void;
 }
 
 /** 올리는 중인 파일(놓기·붙여넣기)의 자리 표시 — 보드가 놓은 자리에 점선 카드로 그린다(28회차, Jay 결정). 응답이 오면 사라지고(성공·씬 바뀜·
@@ -264,6 +267,10 @@ export function useSceneClipboardDrop(
     if (overSceneWindow(event)) return;
     event.preventDefault();
     event.stopPropagation();
+    if (optionsRef.current.isViewMode?.()) {
+      event.dataTransfer.dropEffect = "none";
+      return;
+    }
     if (hasAssetDrag(event.dataTransfer) || dataTransferHasFiles(event.dataTransfer)
       || (hasGenerationDrag(event.dataTransfer) && !!optionsRef.current.onDropGenerations)) {
       event.dataTransfer.dropEffect = "copy";
@@ -277,6 +284,10 @@ export function useSceneClipboardDrop(
       event.stopPropagation();
       const current = optionsRef.current;
       if (current.frozenRef.current) return;
+      if (current.isViewMode?.()) {
+        current.onViewRefuse?.();
+        return;
+      }
       if (hasAssetDrag(event.dataTransfer)) {
         const items = parseSpotlightAssetItems(readSpotlightAssetPayload(event.dataTransfer));
         if (!items.length) return;
@@ -398,6 +409,11 @@ export function useSceneClipboardDrop(
       if (isTextEntryTarget(event.target)) return;
       if (backgroundKeysBlocked() || gridWindowOpen()) return; // 위에 뜬 창·메뉴의 붙여넣기 — 가려진 보드에 붙이지 않는다
       if (optionsRef.current.frozenRef.current) return; // 씬을 바꾸는 틈 — 화면은 아직 떠난 씬이다
+      if (optionsRef.current.isViewMode?.()) {
+        event.preventDefault();
+        optionsRef.current.onViewRefuse?.();
+        return;
+      }
       // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
       // 같은 키 입력을 중복 처리하지 않는다.
       if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
@@ -524,6 +540,7 @@ export function useSceneClipboardDrop(
         return;
       }
       if (optionsRef.current.frozenRef.current) return; // 씬을 바꾸는 틈 — 예약(0.18초 뒤의 폴백)도 걸지 않는다
+      if (optionsRef.current.isViewMode?.()) return; // 보기 모드 — 거절 안내는 뒤따르는 paste 가 한 번 한다
       if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
       // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한
       // 이전 paste 이벤트와 구분할 수 있도록 새 keydown에서 중복 방지 표식을 해제한다.

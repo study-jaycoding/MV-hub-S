@@ -98,3 +98,39 @@ describe("단순화(25% 이하)", () => {
     expect(appearanceKey({ a: long }).length).toBeLessThan(24);
   });
 });
+
+describe("포트·쌓임(카드에 딸린 조각)", () => {
+  const gen = { id: "g", kind: "generation", x: 100, y: 0, genId: "x" } as unknown as SceneCard;
+  const ports = { linkedPorts: (id: string) => (id === "g" ? "in in-ref" : undefined), laneDelta: (lane: string) => ({ model: -30, ref: -10, text: 10, set: 30 })[lane] ?? 0, portGap: 24 };
+  const rings = (m: ReturnType<typeof buildGpuScene>) => m.rects.filter((r) => r.owner === "g" && r.radius <= 8);
+
+  it("고른 생성 카드 — 입력 네 칸(칸 색)·출력 하나의 빈 고리(지름 16·테두리 2), 자리는 카드 밖 24px·칸 어긋남", () => {
+    const m = buildGpuScene(input({ cards: [{ card: gen, w: 260, h: 200 }], selected: new Set(["g"]), ...ports }));
+    const r = rings(m);
+    expect(r).toHaveLength(5);
+    expect(r.every((x) => x.w === 16 && x.borderWidth === 2 && x.fill[3] === 0)).toBe(true);
+    const ins = r.filter((x) => x.x + 8 === 100 - 24).map((x) => [x.y + 8, x.border.slice(0, 3).map((v) => Math.round(v * 255)).join(",")]);
+    expect(ins).toEqual([[70, "255,184,77"], [90, "127,169,255"], [110, "181,122,255"], [130, "232,195,65"]]);
+    expect(r.find((x) => x.x + 8 === 100 + 260 + 24)?.y).toBe(100 - 8);
+  });
+
+  it("고르지 않은 생성 카드 — 입력이 하나라도 이어졌으면 선 없는 칸만 회색 작은 빈 원(단순화에서 숨김), 아무 입력도 없으면 없음", () => {
+    const m = buildGpuScene(input({ cards: [{ card: gen, w: 260, h: 200 }], ...ports }));
+    const r = rings(m);
+    expect(r.map((x) => x.y + 5)).toEqual([70, 110, 130]); // model·text·set (ref 는 이어짐)
+    expect(r.every((x) => x.w === 10 && x.hideLow)).toBe(true);
+    const none = buildGpuScene(input({ cards: [{ card: gen, w: 260, h: 200 }], ...ports, linkedPorts: () => undefined }));
+    expect(rings(none)).toEqual([]);
+  });
+
+  it("이름표·결과 수 배지·빛은 그 카드에 딸린다(owner) — 그룹 머리줄은 그룹 층(owner 없음)", () => {
+    const m = buildGpuScene(input({
+      cards: [{ card: gen, w: 260, h: 200 }, { card: text("t", 0), w: 260, h: 120 }], selected: new Set(["t"]), glow: new Set(["g"]), variantCount: () => 2,
+      groups: [{ id: "G", x: 0, y: -40, w: 600, h: 300, color: null, name: "묶음", count: 2, collapsed: false, selected: false }],
+    }));
+    expect(m.quads.find((q) => q.id === "label:t")?.owner).toBe("t");
+    expect(m.quads.find((q) => q.id === "multi:g")?.owner).toBe("g");
+    expect(m.quads.find((q) => q.id === "group:G")?.owner).toBeUndefined();
+    expect(m.rects.filter((r) => r.owner === "g")).toHaveLength(2); // 빛 두 겹
+  });
+});
