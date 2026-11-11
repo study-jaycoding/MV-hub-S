@@ -248,6 +248,46 @@ describe("긴 프레임 까닭(LoAF)", () => {
     expect(Number(boardRef.current!.querySelector("canvas")!.getAttribute("data-loaf-late"))).toBeGreaterThanOrEqual(1);
   });
 
+  it("저장 보고를 받은 뒤 판정 전에 숨어 15초 넘게 지나 돌아와도, 받은 저장 시간을 덜어 세지 않는다(기다리는 후보와 겹친 기록은 남긴다)", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    const got = [];
+    for (let i = 0; i < 3; i++) got.push(await idbFrame("none"));
+    act(() => deliver!(got)); // 보고는 받았지만 판정 프레임 전에 숨었다(프레임이 안 돈다)
+    await frameAt(now + 20_000); // 20초 뒤 돌아온 첫 프레임 — 이 간격은 조작 창 밖이라 후보가 아니다
+    await idle(100);
+    expect(failures(dispatch)).toEqual([]);
+  });
+
+  it("늦은 보고 오판은 상한으로 센 후보가 늦은 저장 시간을 덜어 50ms 이하로 뒤집힐 때만 한 번 센다", async () => {
+    const dispatch = vi.fn();
+    const boardRef = mount(dispatch, "gpu");
+    await frameAt(1000);
+    const late = (e: { startTime: number }, duration: number) => ({ startTime: e.startTime, duration, scripts: [{ invoker: "IDBRequest.onsuccess", startTime: e.startTime, duration }] });
+    const a = await idbFrame("none"); // 상한으로 센다 — 늦게 1ms 저장: 64ms 남아 판정 그대로(오판 아님)
+    await idle(1200);
+    const b = await idbFrame("none"); // 상한으로 센다 — 늦게 60ms 저장: 5ms 남아 뒤집힘(오판 1)
+    await idle(1200);
+    const c = await idbFrame("deliver"); // 보고가 제때 와서 덜었다(세지 않음) — 늦은 보고가 더 와도 셀 대상이 아니다
+    await idle(200);
+    act(() => deliver!([late(a, 1), late(b, 60), late(c, 30)]));
+    await idle(50);
+    expect(failures(dispatch)).toEqual([]); // 센 것은 a·b 두 번뿐 — 잠그지 않았다
+    expect(boardRef.current!.querySelector("canvas")!.getAttribute("data-loaf-late")).toBe("1");
+  });
+
+  it("후보를 기다리는 중 내려가면(언마운트) 관찰자를 놓고, 그 뒤 온 보고는 아무 일도 하지 않는다", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    const e = await idbFrame("none");
+    act(() => root.unmount());
+    expect(() => act(() => deliver!([e]))).not.toThrow();
+    expect(failures(dispatch)).toEqual([]);
+    root = createRoot(host); // afterEach 가 내릴 뿌리
+  });
+
   it("늦게 한꺼번에 받은 후보 여럿은 발생 순서대로 한 번씩 — 실패 통지는 한 번", async () => {
     const dispatch = vi.fn();
     mount(dispatch, "gpu");

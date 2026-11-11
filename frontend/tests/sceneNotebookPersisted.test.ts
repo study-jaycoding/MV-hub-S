@@ -69,6 +69,14 @@ describe("확정 통지의 '공책 내부 정리만' 표시", () => {
     expect(infos[0]).toBe(false);
   });
 
+  it("같은 공책 트랜잭션이 로컬 삭제·되살리기 의도를 함께 확정하면 표시 거짓", async () => {
+    applySceneOp((all: ScenesByProject) => { all[bucket] = []; return { write: true, value: null }; }); // 삭제
+    applySceneOp((all: ScenesByProject) => { all[bucket] = [scene("s", "revived")]; return { write: true, value: null }; }); // 되살림
+    await notebook((_all, meta) => { meta[key("nw", "local")] = progress("p1"); });
+    await settleSceneStoreForTest();
+    expect(infos[0]).toBe(false);
+  });
+
   it("허브 수신으로 실제 씬이 바뀌면 표시 거짓", async () => {
     await notebook((all) => { all[bucket] = [scene("s", "from hub")]; });
     expect(infos).toEqual([false]);

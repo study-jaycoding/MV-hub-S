@@ -205,7 +205,7 @@ export function GpuBoard(props: GpuBoardProps) {
     loafObs: null as PerformanceObserver | null,
     loaf: [] as Array<{ start: number; end: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 스크립트가 돈 구간
     loafSeenUntil: 0, // 받은 LoAF 보고의 가장 늦은 끝 — 이보다 앞에서 끝난 긴 프레임의 보고는 도착했다
-    timedOut: [] as Array<{ from: number; to: number }>, // 보고를 기다리다 상한으로 판정한 후보 — 늦게 온 보고가 덜 것을 담았으면 진단에 센다
+    timedOut: [] as Array<{ from: number; to: number; unrelated: number; late: number }>, // 보고 없이 상한으로 센 후보(판정 때 던 시간·늦게 온 덜 시간) — 늦은 보고로 50ms 이하가 되면 진단에 센다
     loafLate: 0, // 위 늦은 보고 오판 수(진단 — canvas 의 data-loaf-late)
   });
 
@@ -280,17 +280,21 @@ export function GpuBoard(props: GpuBoardProps) {
         if (!UNRELATED_INVOKER.test(x.invoker ?? "")) continue;
         const seg = { start: x.startTime, end: x.startTime + x.duration };
         s.loaf.push(seg);
-        // 상한으로 이미 판정한 후보에 덜 일이 늦게 왔다 — 오판 가능성으로 센다(판이 잠겨 내려간 뒤의 보고는 여기서 못 센다 — 진단 사본의 바깥 관찰자 몫)
-        const hit = s.timedOut.findIndex((c) => overlap(c, seg) > 0);
-        if (hit >= 0) {
-          s.timedOut.splice(hit, 1);
+        // 상한으로 세었던 후보에 덜 일이 늦게 왔다 — 덜고 나니 50ms 이하로 떨어지면(판정이 뒤집힘) 한 번 센다(판이 잠겨 내려간 뒤의 보고는 여기서 못 센다 — 진단 사본의 바깥 관찰자 몫)
+        for (let i = 0; i < s.timedOut.length; i++) {
+          const c = s.timedOut[i];
+          c.late += overlap(c, seg);
+          if (c.to - c.from - c.unrelated - c.late > LONG_FRAME_MS) continue;
+          s.timedOut.splice(i--, 1);
           s.loafLate += 1;
           canvasRef.current?.setAttribute("data-loaf-late", String(s.loafLate));
         }
       }
     }
     const now = performance.now();
-    s.loaf = s.loaf.filter((x) => now - x.end < 15_000);
+    // 판정을 기다리는 후보와 겹칠 수 있는 기록은 오래돼도 남긴다 — 숨었다 오래 뒤 돌아와도 받은 저장 시간을 덜고 판정하게(Codex 독립 리뷰 P2)
+    const keepFrom = Math.min(now - 15_000, ...s.longCandidates.map((c) => c.from));
+    s.loaf = s.loaf.filter((x) => x.end >= keepFrom);
     s.timedOut = s.timedOut.filter((c) => now - c.to < 15_000);
   };
   const judgeLongFrames = (now: number): boolean => {
@@ -305,10 +309,10 @@ export function GpuBoard(props: GpuBoardProps) {
       const arrived = !s.loafOn || s.loafSeenUntil >= c.to;
       if (!arrived && now - c.to < LOAF_WAIT_MAX_MS) break;
       s.longCandidates.shift();
-      if (!arrived) s.timedOut.push(c);
       // 그 간격과 실제로 겹친 시간만 던다(스크립트 구간 단위 — 두 간격에 걸친 일을 두 번 덜지 않는다, Codex 리뷰 2차)
       const unrelated = s.loaf.reduce((sum, e) => sum + overlap(c, e), 0);
       if (c.to - c.from - unrelated <= LONG_FRAME_MS) continue;
+      if (!arrived) s.timedOut.push({ ...c, unrelated, late: 0 }); // 보고 없이 상한으로 센 후보 — 늦은 보고가 판정을 뒤집는지 본다
       s.longFrames = s.longFrames.filter((t) => c.to - t <= LONG_FRAME_WINDOW_MS);
       s.longFrames.push(c.to);
       if (s.longFrames.length >= LONG_FRAME_LIMIT) {

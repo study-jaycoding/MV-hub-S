@@ -372,6 +372,33 @@ describe("SceneBoard 연결", () => {
     expect(b.calls).toEqual([]); // 지운 대기는 돌아온 뒤에도 쓰지 않는다
   });
 
+  it("인계(넘기기) 때 카메라 접수가 거절되면 그 카메라는 잃는다(조건부 보장) — 뒤에 다시 싣지 않는다", async () => {
+    const b = mountBoard(() => false);
+    await b.mount();
+    await wheelBoard();
+    act(() => flushCanvasMemoryReturn());
+    expect(b.calls).toHaveLength(1); // 거절
+    await idle(CAMERA_IDLE_SAVE_MS * 2);
+    act(() => b.actionRef.current!.flushCamera());
+    expect(b.calls).toHaveLength(1); // 떠남의 거절은 대기를 지웠다
+  });
+
+  it("계정이 A→B→A 로 돌아온 뒤 울린 기록은 A 의 그 씬에 쓴다(같은 계정·같은 씬에서 잰 값) — B 에는 쓰지 않는다", async () => {
+    const before = getAccountScope();
+    const b = mountBoard();
+    await b.mount();
+    const a = canvasTarget("S").accountNamespace;
+    await wheelBoard();
+    setAccountScope("someone-else@example.test");
+    setAccountScope(before); // 유휴 시간 전에 A 로 돌아왔다
+    try {
+      await idle();
+      expect(b.calls.map((c) => [c.target.accountNamespace, c.target.sceneId])).toEqual([[a, "S"]]);
+    } finally {
+      setAccountScope(before);
+    }
+  });
+
   it("내용 되돌리기(Ctrl+Z)는 카메라 대기를 지우지 않는다", async () => {
     const b = mountBoard();
     await b.mount();

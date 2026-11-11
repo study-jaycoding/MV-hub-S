@@ -180,6 +180,7 @@ export function useSceneViewport<O = string>({
   // 떠날 때 하나의 길 — 팬이면 밀린 걸음까지 반영해 끝내고(그 finish 가 표시한다) 대기를 바로 넘긴 뒤 타이머·팬 상태를 비운다.
   //  씬 전환·허브 넘기기·분리 창·숨김·언마운트가 모두 여기를 지난다.
   const leaveCamera = useCallback((): "none" | "queued" | "refused" => {
+    // shortcut: beginPan 에 settleDrag 를 안 넘긴 단독 사용(시험)은 팬 끌기 자체를 끝내지 못하고 표시만 지운다 — SceneBoard 는 늘 넘긴다
     if (panningRef.current) panSettleRef.current?.();
     const result = flushCamera(true);
     panningRef.current = false;
