@@ -88,12 +88,12 @@ function pickModel(label: string) {
   const item = [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent?.includes(label))!;
   act(() => item.click());
 }
+/** 한 메뉴에서 그 회사 묶음의 첫 모델을 고른다 */
 function pickCompany(name: string) {
   act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
-  act(() => host.querySelector<HTMLButtonElement>(".agent-company-head")!.click());
-  const item = [...host.querySelectorAll<HTMLButtonElement>(".agent-company-list .agent-model-item")].find((b) => b.textContent?.startsWith(name))!;
-  act(() => item.click());
+  act(() => host.querySelector<HTMLButtonElement>(`.agent-model-group[aria-label="${name}"] .agent-model-item`)!.click());
 }
+const menuRadios = (group: string) => [...host.querySelectorAll<HTMLButtonElement>(`.agent-model-menu [role="radiogroup"][aria-label="${group}"] [role="radio"]`)];
 
 describe("Ask Agent 옆 칸", () => {
   it("보내면 차례를 열고 사건을 받는다 — text_delta 는 붙고 text 는 그 덩어리를 바꾸며, 계획 카드의 [실행]은 실행 입구를 한 번만 부른다", async () => {
@@ -525,7 +525,7 @@ describe("Ask Agent 옆 칸", () => {
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.model")!)).toEqual({ engine: "codex", model: "gpt-6.1-sol", effort: "medium" });
   });
 
-  it("못 쓰는 회사(ChatGPT)는 까닭을 보이고 고를 수 없다 · 생각 깊이는 Low~Max · 빠른 모드는 Opus 에서만, 보낼 때 실리고 모델을 바꾸면 꺼진다", async () => {
+  it("모델 한 메뉴(Aside) — 못 쓰는 회사는 머리에 까닭·고를 수 없음 · 찾기 · 생각 깊이 Low~Max · 속도(빠름)는 Opus 에서만, 보낼 때 실리고 모델을 바꾸면 꺼진다", async () => {
     route = (c) => {
       if (c.path === "/session") {
         return json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: [ENGINES[0], { ...ENGINES[1], available: false, reason: "점검 필요" }] });
@@ -534,30 +534,35 @@ describe("Ask Agent 옆 칸", () => {
       return json({ events: [], status: "done", last_seq: 0 });
     };
     await mount();
-    act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
-    expect(texts(".agent-model-menu > .agent-model-item")).toEqual(["Claude Opus 5.5✓", "Claude Sonnet 5.5", "Claude Haiku 5.5", "Claude Fable 5.1"]);
-    act(() => host.querySelector<HTMLButtonElement>(".agent-company-head")!.click());
-    const companies = [...host.querySelectorAll<HTMLButtonElement>(".agent-company-list .agent-model-item")];
-    expect(companies.map((b) => [b.textContent, b.disabled])).toEqual([["Claude✓", false], ["ChatGPT점검 필요", true]]);
-    act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click()); // 닫기
-    act(() => host.querySelector<HTMLButtonElement>(".agent-effort-btn")!.click());
-    expect(texts('.agent-effort-menu [role="radio"]')).toEqual(["Low", "Medium✓", "High", "Extra High", "Max"]);
-    const fast = () => host.querySelector<HTMLButtonElement>('.agent-effort-menu [role="switch"]');
-    expect(fast()!.getAttribute("aria-checked")).toBe("false");
+    const btn = () => host.querySelector<HTMLButtonElement>(".agent-model-btn")!;
+    expect(btn().textContent).toBe("✳Opus 5.5Medium"); // 모델 이름 + 흐린 생각 깊이 한 단추
+    act(() => btn().click());
+    expect(texts('.agent-model-group[aria-label="Claude"] .agent-model-item')).toEqual(["✳Opus 5.5✓", "✳Sonnet 5.5", "✳Haiku 5.5", "✳Fable 5.1"]);
+    expect(host.querySelector('.agent-model-group[aria-label="ChatGPT"] .agent-model-group-head')!.textContent).toBe("ChatGPT점검 필요");
+    expect([...host.querySelectorAll<HTMLButtonElement>('.agent-model-group[aria-label="ChatGPT"] .agent-model-item')].map((b) => b.disabled)).toEqual([true, true]);
+    act(() => {
+      const search = host.querySelector<HTMLInputElement>(".agent-model-search")!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "son");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(texts(".agent-model-menu .agent-model-group .agent-model-item")).toEqual(["✳Sonnet 5.5"]); // 찾기는 모델만 거른다
+    expect(menuRadios("생각 깊이").map((b) => b.textContent)).toEqual(["Low", "Medium✓", "High", "Extra High", "Max"]);
+    expect(menuRadios("속도").map((b) => b.textContent)).toEqual(["기본✓", "빠름"]);
     expect(panel().textContent).toContain("Claude 추가 사용 크레딧이 들어요");
-    act(() => fast()!.click());
-    expect(fast()!.getAttribute("aria-checked")).toBe("true");
-    act(() => [...host.querySelectorAll<HTMLButtonElement>('.agent-effort-menu [role="radio"]')][4].click());
-    expect(host.querySelector(".agent-effort-btn")!.textContent).toContain("Max");
-    expect(host.querySelector(".agent-effort-btn")!.textContent).toContain("빠름");
+    act(() => menuRadios("속도")[1].click()); // 고르면 닫힌다
+    expect(host.querySelector(".agent-model-menu")).toBeNull();
+    act(() => btn().click());
+    act(() => menuRadios("생각 깊이")[4].click());
+    expect(btn().textContent).toBe("✳Opus 5.5Max빠름");
     type("빨리");
     enter();
     await flush();
     expect(turnCalls()[0].body).toMatchObject({ model: "opus", effort: "max", fast: true });
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.model")!)).toEqual({ engine: "claude", model: "opus", effort: "max" }); // 빠른 모드는 기억 안 함
     pickModel("Sonnet 5.5");
-    act(() => host.querySelector<HTMLButtonElement>(".agent-effort-btn")!.click());
-    expect(fast()).toBeNull(); // Opus 가 아니면 스위치가 없다
+    act(() => btn().click());
+    expect(menuRadios("속도")).toEqual([]); // Opus 가 아니면 속도가 없다
+    expect(btn().textContent).not.toContain("빠름");
   });
   it("보낸 직후 칸을 닫아 접수 답이 늦게 와도, 다시 열면 그 대화에 붙는다 — 같은 일을 또 시작하지 않는다", async () => {
     const accepted = deferred<Response>();

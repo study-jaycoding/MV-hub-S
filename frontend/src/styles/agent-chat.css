@@ -30,6 +30,8 @@
 .agent-panel button:focus-visible,
 .agent-panel textarea:focus-visible,
 .agent-panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 입력칸·모델 찾기 칸은 Aside 처럼 테두리 없이 — 초점은 입력 카드의 옅은 테두리로 보인다 */
+.agent-panel .agent-input:focus-visible, .agent-panel .agent-model-search:focus-visible { outline: none; }
 
 /* 머리 — 머리줄과 같은 높이에 왼쪽 [≡ 대화 목록][옆 칸 닫기] · 제목, 오른쪽 [새 대화][새 창](Jay 11-10 시안 A안) */
 .agent-head {
@@ -210,63 +212,70 @@
 
 /* 입력칸 */
 .agent-composer {
-  flex: none; margin: 0 14px 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
-  border: 1px solid transparent; border-radius: 16px; background: #363636;
+  flex: none; margin: 0 14px 14px; padding: 12px; display: flex; flex-direction: column; gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 16px; background: #363636;
 }
+.agent-composer:focus-within { border-color: rgba(255, 255, 255, 0.14); }
 .agent-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.agent-revise .agent-context-mark { background: #5a5a5a; color: #e6e6e6; } /* [고치기] 칩 — 지금 화면 칩(라임)과 구분 */
+.agent-revise .agent-context-mark { background: #555; color: #e6e6e6; } /* [고치기] 칩 — 지금 화면 칩과 구분 */
+/* 칩 — Aside 처럼: 짙은 칸에 아이콘 · 이름(보통 굵기) · 흐린 둘째 줄, 빼기 × 는 오른쪽 위 모서리의 동그라미 */
 .agent-context {
-  align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 10px 5px 6px;
-  border: 1px solid transparent; border-radius: 10px; background: #464646;
+  position: relative; align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; max-width: 100%;
+  padding: 6px 16px 6px 6px; border: 1px solid transparent; border-radius: 10px; background: #464646;
 }
 .agent-context-mark {
-  display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 7px;
-  background: var(--accent); color: var(--accent-ink); font-size: 14px;
+  display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 7px;
+  background: rgba(var(--accent-rgb), 0.2); color: var(--accent); font-size: 15px;
 }
-.agent-context-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
-.agent-context-text b { font-size: 12px; }
-.agent-context-text small { overflow: hidden; white-space: nowrap; color: var(--muted); font-size: 11px; }
-/* 칩 빼기 — Aside 처럼 올리거나 키보드 초점이 오면 × 가 보인다(앱 동작 도구 설계 A4) */
+.agent-context-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.agent-context-text b { color: var(--text); font-size: 13px; font-weight: 500; }
+.agent-context-text small { overflow: hidden; white-space: nowrap; color: var(--muted); font-size: 12px; }
+/* 칩 빼기 — 올리거나 키보드 초점이 오면 보인다(앱 동작 도구 설계 A4) */
 .agent-context-x {
-  display: grid; place-items: center; width: 20px; height: 20px; flex: none; margin: 0 -4px 0 2px; padding: 0;
-  border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; opacity: 0;
+  position: absolute; top: -7px; right: -7px; display: grid; place-items: center; width: 20px; height: 20px; padding: 0;
+  border: 2px solid #363636; border-radius: 50%; background: #6a6a6a; color: #f2f2f2; font-size: 13px; line-height: 1; opacity: 0;
 }
 .agent-context:hover .agent-context-x, .agent-context-x:focus-visible { opacity: 1; }
-.agent-context-x:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.agent-context-x:hover { background: #808080; }
 .agent-context-add {
   align-self: flex-start; height: 26px; padding: 0 10px; border: 1px dashed var(--border2); border-radius: 13px;
   background: transparent; color: var(--muted); font-size: 12px;
 }
 .agent-context-add:hover { color: var(--text); border-color: var(--muted2); }
+/* 글 칸 — 테두리·크기 손잡이 없이 글 줄 수만큼 자란다(Aside) */
 .agent-input {
-  width: 100%; min-height: 44px; max-height: 180px; resize: vertical; padding: 4px 2px;
+  width: 100%; min-height: 40px; max-height: 180px; resize: none; field-sizing: content; overflow-y: auto; padding: 8px 2px 4px;
   border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.5;
 }
 .agent-input::placeholder { color: var(--muted2); }
 .agent-input:focus { outline: none; }
 .agent-composer-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .agent-model-wrap { position: relative; }
+/* 모델 단추 — 모델 이름 + 흐린 생각 깊이 + ⌄ (Aside 'GPT-6.1 Sol High ⌄') */
 .agent-model-btn {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
-  border: 1px solid transparent; border-radius: 15px; background: transparent; color: var(--text); font-size: 12.5px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: 15px; background: transparent; color: var(--text); font-size: 13px; font-weight: 500;
 }
-.agent-model-btn:hover:not(:disabled) { border-color: var(--border2); }
-.agent-model-effort { color: var(--muted); font-weight: 500; }
-.agent-model-menu { right: 0; bottom: calc(100% + 8px); width: 300px; }
+.agent-model-btn:hover:not(:disabled), .agent-model-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.06); }
+.agent-model-effort { color: var(--muted); font-weight: 400; }
+/* 모델 메뉴 — 찾기 칸 · 회사별 모델 · 생각 깊이 · 속도(Aside 모델 메뉴) */
+.agent-model-menu { right: 0; bottom: calc(100% + 8px); width: 280px; max-height: min(560px, 70vh); background: #2b2b2b; }
 .agent-model-search {
-  width: 100%; margin-bottom: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04); color: var(--text); font: inherit; font-size: 12.5px;
+  width: 100%; height: 32px; margin-bottom: 4px; padding: 0 10px; border: 0; border-radius: 8px;
+  background: #3a3a3a; color: var(--text); font: inherit; font-size: 13px;
 }
-.agent-model-group { padding: 2px 0 6px; }
-.agent-model-group-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px 4px; color: var(--muted); font-size: 11.5px; }
+.agent-model-search::placeholder { color: var(--muted2); }
+.agent-model-group-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; color: var(--muted2); font-size: 12px; }
 .agent-model-reason { padding: 1px 7px; border: 1px solid var(--border2); border-radius: 999px; color: #f5c542; font-size: 10.5px; }
 .agent-model-item {
-  display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 10px;
-  border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; text-align: left;
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13.5px; text-align: left;
 }
 .agent-model-item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
-.agent-model-item.on { background: rgba(var(--accent-rgb), 0.12); }
-.agent-model-check { color: var(--accent); }
+.agent-model-item:disabled { color: var(--muted2); }
+.agent-model-ic { flex: none; width: 16px; color: var(--muted); text-align: center; }
+.agent-model-name { flex: 1; min-width: 0; }
+.agent-model-check { flex: none; margin-left: auto; color: var(--text); }
 .agent-effort { padding-top: 6px; border-top: 1px solid var(--border); }
 .agent-effort-seg { display: flex; margin: 2px 6px 4px; border: 1px solid var(--border2); border-radius: 999px; overflow: hidden; }
 .agent-effort-seg button { flex: 1; height: 30px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 12.5px; }
@@ -316,34 +325,10 @@
 @keyframes agent-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .agent-panel .cn-steps li.wait .d, .agent-plan-spin, .agent-tool-spin, .agent-dots i { animation: none; } }
 
-/* ── 모델·생각 깊이 칩 두 개(시안 ask-agent-models.png) ── */
+/* ── 모델 단추·메뉴의 작은 표시(한 단추·한 메뉴 — Aside 모델 메뉴, Jay 11-11) ── */
 .agent-co { color: var(--text); }
-.agent-effort-btn {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
-  border: 1px solid transparent; border-radius: 15px; background: transparent; color: var(--text); font-size: 12.5px; font-weight: 600;
-}
-.agent-effort-btn:hover:not(:disabled), .agent-effort-btn[aria-expanded="true"], .agent-model-btn[aria-expanded="true"] {
-  border-color: var(--border2); background: rgba(255, 255, 255, 0.05);
-}
 .agent-fast-mark { padding: 0 6px; border-radius: 999px; background: rgba(var(--accent-rgb), 0.15); color: var(--accent); font-size: 10.5px; }
-.agent-company-head {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; border: 0; border-radius: 9px;
-  background: transparent; color: var(--text); font-size: 13.5px; font-weight: 700; text-align: left;
-}
-.agent-company-head:hover { background: rgba(255, 255, 255, 0.06); }
-.agent-sp { flex: 1; }
-.agent-company-list { margin: 2px 0 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: rgba(0, 0, 0, 0.2); }
 .agent-menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
-.agent-effort-menu { right: 0; bottom: calc(100% + 8px); width: 220px; }
-.agent-fast {
-  display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px;
-  background: transparent; color: var(--text); font-size: 13px;
-}
-.agent-fast:hover { background: rgba(255, 255, 255, 0.06); }
-.agent-switch { position: relative; width: 34px; height: 20px; border-radius: 10px; background: rgba(255, 255, 255, 0.18); }
-.agent-switch::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left 0.12s; }
-.agent-fast.on .agent-switch { background: var(--accent); color: var(--accent-ink); }
-.agent-fast.on .agent-switch::after { left: 17px; background: var(--accent-ink); }
 
 /* ── 답 글(안전한 마크다운) · Claude 알림 ── */
 .agent-assistant { white-space: normal; }
