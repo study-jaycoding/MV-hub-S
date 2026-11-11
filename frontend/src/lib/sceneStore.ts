@@ -181,8 +181,13 @@ export const sceneStoreReady = (): boolean => ready;
 export const sceneStoreConflicts = (): SceneAbsorbConflict[] => conflictList;
 /** 아직 저장소에 확정되지 않은 변경이 있는가(화면의 '저장 안 됨' 표시용). */
 export const sceneStoreHasPending = (): boolean => pending.length > 0;
-/** 맨 끝 대기 연산의 merge 슬롯(없으면 undefined) — 카메라 기록이 바로 앞의 같은 씬 내용 연산에 합쳐질지 고를 때만 쓴다(scenes.updateSceneCamera). */
-export const lastPendingSceneSlot = (): string | undefined => pending[pending.length - 1]?.slot;
+/** 맨 끝 대기 연산이 **지금 합칠 수 있는** 연산일 때 그 merge 슬롯(아니면 undefined) — 카메라 기록이 바로 앞의 같은 씬 내용 연산에 합쳐질지
+ *  고를 때만 쓴다(scenes.updateSceneCamera). 조건은 applySceneOp 의 합치기(host)와 같아야 한다 — 저장으로 떠났거나(flying) 비켜 둔(aside)·인계
+ *  연산이면 합쳐지지 않으므로, 그 뒤의 카메라는 카메라 슬롯에 남아 '카메라만' 확정으로 분류된다. */
+export const lastPendingSceneSlot = (): string | undefined => {
+  const last = pending[pending.length - 1];
+  return last?.absorb && !last.flying && !last.aside && !last.handover ? last.slot : undefined;
+};
 
 // 캔버스가 다른 창에 떠 있는 동안 이 창은 씬을 쓰지 않는다 — 씬은 그 창만 쓴다(docs/status/캔버스_분리창_한곳쓰기_2026-10-31.md).
 // 판단은 sceneBoot 가 달아 준다(이 모듈은 창을 모른다).

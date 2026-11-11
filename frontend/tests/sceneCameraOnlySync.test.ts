@@ -181,6 +181,19 @@ describe("확정 통지의 '카메라만' 표시(cameraOnly)", () => {
     expect([saved()?.name, saved()?.camera]).toEqual(["second", cam(2)]);
   });
 
+  it("내용 편집이 저장으로 떠난 뒤 온 카메라 기록은 합쳐지지 않으니 카메라 슬롯에 남아 참(편집 확정 거짓 → 카메라 확정 참)", async () => {
+    delaySceneStoreWritesForTest(30);
+    updateScene(null, "s", { name: "saving" });
+    const first = settleSceneStoreForTest();
+    await new Promise((resolve) => setTimeout(resolve, 5)); // 편집이 쓰는 중(떠난 연산)
+    updateSceneCamera(null, "s", cam(6));
+    await first;
+    delaySceneStoreWritesForTest(0);
+    await settleSceneStoreForTest();
+    expect(infos).toEqual([false, true]);
+    expect([saved()?.name, saved()?.camera]).toEqual(["saving", cam(6)]);
+  });
+
   it("확정 전용·인계 연산이 섞이면 거짓", async () => {
     updateSceneCamera(null, "s", cam(2));
     applySceneOp((all: ScenesByProject) => { all[bucket] = [scene("s", "confirmed only"), scene("t")]; return { write: true, value: null }; }, { confirmedOnly: true });
@@ -337,7 +350,7 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
 
   // 실제 진행 중 요청 공유 — 바깥(숨김·넘기기)이 시작한 동기화가 도는 사이 백업의 syncNow 가 같은 요청에 올라탄다.
   //  outcomes = 올리기 차례별 결과(붙잡은 첫 올리기, fresh 후속 올리기). 끝난 뒤 30초 재시도가 몇 번 도는지 본다.
-  const sharedRound = async (firstFails: boolean, freshFails: boolean | null): Promise<{ afterRound: number; retried: number }> => {
+  const sharedRound = async (firstFails: boolean, freshFails: boolean | null): Promise<{ afterRound: number; retried: number; byDeadline: number }> => {
     hub = new MiniHub();
     setHubFeatures(["scene_writer_v1"]);
     setSceneNotebookTokenProvider(() => ({ account: "local", token: "token", generation: "g1" }));
@@ -357,7 +370,13 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
     // 바퀴(동기화 한 번) = 결과 알림 한 번. 바퀴가 끝나는 그 자리에서 다음 바퀴의 올리기 성패를 정한다(fresh 후속은 곧바로 이어 돈다).
     const plan = [...(freshFails === null ? [] : [freshFails]), false]; // 마지막 = 재시도 바퀴(성공)
     const rounds: string[] = [];
-    const offResult = subscribeNotebookSyncResult((result) => { rounds.push(result.status); hub.failUploads = plan.shift() ?? false; });
+    // fresh 후속 바퀴는 올리기에서 10초 붙잡아 늦게 끝낸다 — 재시도 기한이 '첫 실패 뒤 30초'인지 '후속 실패 뒤 30초'인지 가르려고
+    let releaseFresh = () => {};
+    const offResult = subscribeNotebookSyncResult((result) => {
+      rounds.push(result.status);
+      hub.failUploads = plan.shift() ?? false;
+      if (rounds.length === 1 && freshFails !== null) hub.hold = new Promise<void>((resolve) => { releaseFresh = resolve; });
+    });
     try {
       hub.failUploads = firstFails;
       updateScene(null, "a", { name: "edited" }); // 올릴 것 — 2초 뒤 백업의 syncNow 가 예약된다
@@ -368,14 +387,25 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
       const fresh = freshFails === null ? null : syncSceneNotebook({ fresh: true }); // 숨김 처리기의 후속 요청
       hub.hold = null;
       release();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000); // 첫 바퀴 끝(실패 시각 = 풀고 0~1초)
       expect((await outside).status).toBe(firstFails ? "retry" : "ready");
-      if (fresh) expect((await fresh).status).toBe(freshFails ? "retry" : "ready");
+      let elapsed = 1000;
+      if (fresh) {
+        expect(rounds).toHaveLength(1); // 후속 바퀴는 아직 붙잡혀 있다
+        await vi.advanceTimersByTimeAsync(10_000);
+        hub.hold = null;
+        releaseFresh();
+        await vi.advanceTimersByTimeAsync(500);
+        elapsed += 10_500;
+        expect((await fresh).status).toBe(freshFails ? "retry" : "ready");
+      }
       const afterRound = rounds.length;
-      await vi.advanceTimersByTimeAsync(28_000);
-      expect(rounds.length).toBe(afterRound); // 기한(30초) 전
+      await vi.advanceTimersByTimeAsync(28_500 - elapsed);
+      expect(rounds.length).toBe(afterRound); // 첫 실패 뒤 28.5초 — 기한(30초) 전
+      await vi.advanceTimersByTimeAsync(2_700);
+      const byDeadline = rounds.length - afterRound; // 첫 실패 뒤 31.2초 — 기한이 후속 실패로 미뤄졌다면(41초) 아직 0
       await vi.advanceTimersByTimeAsync(63_000);
-      return { afterRound, retried: rounds.length - afterRound };
+      return { afterRound, retried: rounds.length - afterRound, byDeadline };
     } finally {
       offResult();
       setSceneNotebookTokenProvider(() => null);
@@ -383,14 +413,14 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
   };
 
   it("바깥 동기화와 백업이 같은 진행 중 요청을 공유해 실패 → 올리기 한 번, 30초 재시도 하나", async () => {
-    expect(await sharedRound(true, null)).toEqual({ afterRound: 1, retried: 1 });
+    expect(await sharedRound(true, null)).toEqual({ afterRound: 1, retried: 1, byDeadline: 1 });
   });
 
-  it("공유한 요청이 실패하고 fresh 후속 요청도 실패 → 재시도는 여전히 하나(기한 그대로)", async () => {
-    expect(await sharedRound(true, true)).toEqual({ afterRound: 2, retried: 1 });
+  it("공유한 요청이 실패하고 10초 뒤 fresh 후속 요청도 실패 → 재시도는 여전히 하나, 첫 실패 뒤 30초에 돈다(기한을 미루지 않는다)", async () => {
+    expect(await sharedRound(true, true)).toEqual({ afterRound: 2, retried: 1, byDeadline: 1 });
   });
 
   it("공유한 요청이 실패했지만 fresh 후속 요청이 성공 → 걸린 재시도를 풀어 다시 올리지 않는다", async () => {
-    expect(await sharedRound(true, false)).toEqual({ afterRound: 2, retried: 0 });
+    expect(await sharedRound(true, false)).toEqual({ afterRound: 2, retried: 0, byDeadline: 0 });
   });
 });

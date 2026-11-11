@@ -133,20 +133,25 @@ class ResolveSelectionMonitor:
         if stdin is not None:
             with contextlib.suppress(Exception):
                 stdin.close()
-        if process.returncode is not None:
-            return
-        if stdin is not None:
-            # 스스로 끝날 짧은 틈 — Resolve 호출에 멈춰 EOF 를 못 보면 아래 강제 종료로 넘어간다.
+        if process.returncode is None and stdin is not None:
+            # 스스로 끝날 짧은 틈(기존 강제 종료 앞에 더한 유예) — Resolve 호출에 멈춰 EOF 를 못 보면 아래 강제 종료로 넘어간다.
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(process.wait(), timeout=0.5)
-                return
-        with contextlib.suppress(ProcessLookupError):
-            process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        # 직접 자식은 실행기일 수 있다 — returncode 는 실행기의 종료일 뿐이다. 진짜 작업자까지 끝났는지는 stdout 파이프가 닫히는 것(EOF)으로
+        # 확인한다(쓰기 끝을 쥔 프로세스가 모두 끝나야 닫힌다). 그 전에는 돌아가지 않는다 — suspended 가 살아 있는 작업자를 둔 채 Resolve 변경을 허용하지 않게.
+        stdout = getattr(process, "stdout", None)
+        if stdout is not None:
+            with contextlib.suppress(OSError, ValueError):
+                while await stdout.read(65536):
+                    pass
 
     async def _start_process(self) -> None:
         async with self._process_lock:

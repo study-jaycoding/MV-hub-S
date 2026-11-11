@@ -762,13 +762,48 @@ class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
         process.finish()
         await asyncio.wait_for(task, 2)
 
-    async def test_stdin_closes_even_when_launcher_already_exited(self):
+    async def test_launcher_exit_alone_is_not_enough_waits_until_worker_pipe_closes(self):
+        """실행기는 이미 끝났지만(returncode 있음) 진짜 작업자가 아직 살아 stdout 파이프를 쥐고 있다 — stdin 을 닫고, 파이프가 닫힐 때까지 돌아가지 않는다."""
         process = ControlledProcess()
         process.stdin = FakeStdin()
-        process.returncode = 0
-        await ResolveSelectionMonitor._terminate_process(process)
+        process.returncode = 0  # 실행기만 끝남 — stdout 은 아직 열려 있다(작업자 생존)
+        task = asyncio.create_task(ResolveSelectionMonitor._terminate_process(process))
+        await asyncio.sleep(0.05)
         self.assertEqual(process.stdin.closed, 1)
+        self.assertFalse(task.done(), "실행기 종료만 보고 돌아가면 안 된다")
+        process.stdout.feed_data(b"late line\n")  # 끝나기 전 남긴 출력은 버린다
+        await asyncio.sleep(0.02)
+        self.assertFalse(task.done())
+        process.stdout.feed_eof()  # 작업자가 EOF 를 보고 끝남 → 파이프 닫힘
+        await asyncio.wait_for(task, 2)
         self.assertFalse(process.terminated.is_set())
+
+    async def test_suspend_body_waits_for_worker_pipe_after_launcher_exit(self):
+        """suspended 본문은 실행기가 끝난 뒤에도 작업자 파이프가 닫히기 전에는 시작하지 않는다."""
+        process = ControlledProcess()
+        process.stdin = FakeStdin()
+        process.exit_on_terminate = False
+        monitor = ResolveSelectionMonitor()
+        with (
+            mock.patch.object(resolve_selection_monitor, "resolve_compatible_interpreter", return_value=("fake-python", None)),
+            mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=mock.AsyncMock(return_value=process)),
+        ):
+            await monitor._start_process()
+            entered = []
+
+            async def transfer():
+                async with monitor.suspended():
+                    entered.append(True)
+
+            task = asyncio.create_task(transfer())
+            await asyncio.wait_for(process.terminated.wait(), 2)  # 0.5초 유예 뒤 terminate
+            process.returncode = 0  # 실행기 종료(작업자는 아직)
+            process.exited.set()
+            await asyncio.sleep(0.05)
+            self.assertEqual(entered, [], "작업자 종료 확인 전에 Resolve 변경을 시작하면 안 된다")
+            process.stdout.feed_eof()
+            await asyncio.wait_for(task, 2)
+            self.assertEqual(entered, [True])
 
 
 if __name__ == "__main__":
