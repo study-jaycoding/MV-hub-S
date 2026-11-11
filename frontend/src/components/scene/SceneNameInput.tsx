@@ -2,7 +2,7 @@
 //  Enter·바깥 누르기 = 저장, Esc = 취소. 빈 이름·같은 이름은 보내지 않는다(우클릭 메뉴의 이름 칸과 같은 규칙).
 import { useRef, useState } from "react";
 
-export function SceneNameInput({ name, onRename, onDone }: { name: string; onRename: (next: string) => void; onDone: () => void }) {
+export function SceneNameInput({ name, onRename, onDone, label = "씬 이름" }: { name: string; onRename: (next: string) => void; onDone: () => void; label?: string }) {
   const [value, setValue] = useState(name);
   const doneRef = useRef(false);
   const finish = (save: boolean) => {
@@ -16,7 +16,7 @@ export function SceneNameInput({ name, onRename, onDone }: { name: string; onRen
     <input
       className="scene-name-input"
       value={value}
-      aria-label="씬 이름"
+      aria-label={label}
       autoFocus
       spellCheck={false}
       onFocus={(event) => event.currentTarget.select()}

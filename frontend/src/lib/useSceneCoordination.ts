@@ -34,7 +34,7 @@ import {
   type RelinkHooks,
   type RelinkTarget,
 } from "./sceneAssetRelink";
-import { applySceneMove, type SceneMove, type SceneWorkspace } from "./sceneWorkspace";
+import { applySceneMove, applyTabFolderOp, type SceneMove, type SceneWorkspace, type TabFolderOp } from "./sceneWorkspace";
 import { clearSceneHistory } from "./sceneUndoStore";
 import {
   countBackupOnlyScenes,
@@ -505,12 +505,13 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   //  ★목록 스냅샷을 받으면 안 된다: 끌고 있는 동안 다른 창·DB 백업 복구가 추가한 씬이 그 스냅샷에는
   //   없어서, 그대로 저장하면 조용히 사라진다(코덱스 P0). 적용 직전에 최신 목록을 다시 읽고,
   //   ID 집합·씬 내용은 그대로 둔 채 순서만 바꾼다. 대상이 사라졌으면 취소한다.
-  const reorderScenes = (move: SceneMove): boolean => {
+  //  탭 폴더 연산(changeTabFolder)도 같은 길이다 — 순서와 폴더 소속만 바꾼다.
+  const applySceneListOp = (apply: (current: readonly Scene[]) => Scene[] | null, failMessage: string): boolean => {
     sceneActionRef.current?.flushPending(); // 밀린 입력을 먼저 확정(저장본을 읽기 때문)
     // 대상이 지금도 있는지는 화면 값으로 먼저 본다. 실제 순서 바꾸기는 **연산**으로 넘긴다 —
     // 저장소 내용 위에서 다시 계산되므로, 다른 창이 그사이 더한 씬을 순서 저장이 지우지 않는다.
-    const next = applySceneMove(listScenes(null), move);
-    const ok = next ? updateScenesWith(null, (current) => applySceneMove(current, move)) : false;
+    const next = apply(listScenes(null));
+    const ok = next ? updateScenesWith(null, apply) : false;
     if (!next) {
       // 대상·기준이 사라짐(다른 창에서 삭제) — 최신 목록을 반영하되 활성 씬 화면은 지킨다.
       setScenes((previous) =>
@@ -523,7 +524,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       setScenes((previous) =>
         mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, null),
       );
-      flashRef.current?.("탭 순서를 저장하지 못했습니다(저장 공간 부족).");
+      flashRef.current?.(failMessage);
       return false;
     }
     // 순서는 저장본을 따르되, 활성 씬의 화면 내용은 내 메모리 것을 유지한다 —
@@ -532,6 +533,23 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
       mergePatchedSceneList(previous, listScenes(null), activeSceneIdRef.current, null),
     );
     return true;
+  };
+  const reorderScenes = (move: SceneMove): boolean =>
+    applySceneListOp((current) => applySceneMove(current, move), "탭 순서를 저장하지 못했습니다(저장 공간 부족).");
+  // 탭 폴더 넣기·빼기·이름·풀기(Jay 2026-11-11). 활성 씬은 위에서 화면 사본을 지키므로 **폴더 값만** 저장본 것으로 맞춘다 —
+  //  안 맞추면 보고 있는 탭을 폴더에 넣어도 줄에는 폴더 밖으로 보인다. 카드·연결 배열은 그대로라 판이 다시 그려지지 않는다.
+  const changeTabFolder = (op: TabFolderOp): boolean => {
+    const ok = applySceneListOp((current) => applyTabFolderOp(current, op), "탭 폴더를 저장하지 못했습니다(저장 공간 부족).");
+    const stored = listScenes(null).find((s) => s.id === activeSceneIdRef.current);
+    if (stored) {
+      setScenes((previous) => previous.map((s) => {
+        if (s.id !== stored.id || (s.tabFolder?.id === stored.tabFolder?.id && s.tabFolder?.name === stored.tabFolder?.name)) return s;
+        const next = { ...s, tabFolder: stored.tabFolder };
+        if (!stored.tabFolder) delete next.tabFolder;
+        return next;
+      }));
+    }
+    return ok;
   };
 
   // 씬의 워크스페이스 지정/해제 — 최신 씬의 workspace 만 바꾼다(patchSceneById 가 저장 실패도 처리).
@@ -572,6 +590,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     removeSceneById,
     refreshSceneById,
     reorderScenes,
+    changeTabFolder,
     setSceneWorkspace,
     backupOnly: notebookEnabled ? 0 : backupOnly,
     importBackupScenes,
