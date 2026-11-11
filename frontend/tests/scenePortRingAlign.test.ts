@@ -64,6 +64,7 @@ it("노드 틀 통일(Jay 2026-10-29, 10-30 2px) — 모든 노드 2px · 평소
   expect(one(".scene-card.sel").some(([p]) => p === "box-shadow")).toBe(false); // 바깥 링을 되살리지 않는다
   expect(one(".scene-card.glow")).toContainEqual(["border-color", own]);
   expect(one(".scene-textfloat").find(([p]) => p === "box-shadow")?.[1]).toMatch(/^0 0 0 2px var\(--pc, var\(--accent\)\)/); // 텍스트 큰 편집 창도 자기 색·노드 틀 두께
+  expect(one(".scene-listfloat").find(([p]) => p === "box-shadow")?.[1]).toMatch(/^0 0 0 2px var\(--pc, var\(--accent\)\)/); // 펼친 리스트 칸도 같다(Jay 2026-11-11 "텍스트 노드처럼")
   expect(one(".scene-card.has-node .linb-node:not(.final)").find(([p]) => p === "border")?.[1]).toMatch(/^2px solid /); // 결과 노드 틀도 같은 두께
   // 그룹 틀(Jay 2026-10-30): 평소 선·빛 없음(2px 자리만 투명) · 고르면 밝힌 선 2px + 빛(바깥 링 0 0 0 Npx 없음) · 머리줄 아래 줄 없음 · 개수 배지 그룹 색
   expect(one(".scene-group")).toContainEqual(["border", "2px solid transparent"]);
@@ -77,10 +78,11 @@ it("노드 틀 통일(Jay 2026-10-29, 10-30 2px) — 모든 노드 2px · 평소
     expect(one(sel).some(([, v]) => v.includes("var(--pc")), sel).toBe(true);
     expect(one(sel).filter(([, v]) => /--accent(?!-ink)/.test(v.replaceAll("var(--pc, var(--accent))", ""))), sel).toEqual([]);
   }
-  // 종류별 규칙은 고유색(--pc)만 정하고 틀 색을 따로 칠하지 않는다(빨강 = 서버에 없음·텍스트 편집 중 숨김만 예외)
+  // 종류별 규칙은 고유색(--pc)만 정하고 틀 색을 따로 칠하지 않는다(빨강 = 서버에 없음 · 텍스트 편집 중·펼친 리스트 숨김만 예외 —
+  //  숨긴 동안은 떠 있는 칸(.scene-textfloat·.scene-listfloat)이 위에서 본 자기 색 2px 틀을 그린다)
   const KINDS = /\.scene-card-(ref|gen|text|set|model|list|view|render|comfy|input|output)(?![\w-])/;
   const painted = rules.flatMap((r) =>
-    r.selectors.some((s) => isCard(s) && KINDS.test(subjectOf(s)) && !/off-server|data-text-editing/.test(s))
+    r.selectors.some((s) => isCard(s) && KINDS.test(subjectOf(s)) && !/off-server|data-text-editing|data-list-expanded/.test(s))
       ? r.decls.filter(([p]) => p === "border-color").map(([p, v]) => `${r.selectors.join(", ")} { ${p}: ${v} }`)
       : [],
   );
