@@ -4,7 +4,7 @@
 //  모드 관리(useGpuBoardMode)·편집 막기·세션 실행점·덧판은 진짜다.
 import { act, Profiler, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { SceneBoard } from "../src/components/scene/SceneBoard";
 import type { SceneGenDataApi } from "../src/lib/useSceneGenData";
 import type { GpuBoardProps } from "../src/features/canvas/gpu/GpuBoard";
@@ -27,6 +27,8 @@ vi.mock("../src/features/canvas/gpu/GpuBoard", async (original) => {
   }
   return { ...real, GpuBoard: FakeGpuBoard };
 });
+// GPU 판 본체는 canvas api 가 켤 때 불러온다(lazy) — 파일 첫 시험이 그 불러오기를 기다리지 않게 미리 불러 둔다
+beforeAll(async () => { await import("../src/features/canvas/gpu/GpuBoard"); });
 
 const noop = () => {};
 let host: HTMLDivElement;

@@ -13,6 +13,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { ownEntry } from "../../lib/ownEntry";
 import { getDevicePixelRatio, subscribeDevicePixelRatio } from "../../lib/devicePixelRatio";
 import {
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -3434,19 +3435,22 @@ export function SceneBoard({
     >
       <div className="scene-grid" ref={gridRef} />
       {gpuModel && gpu.mode.phase !== "dom" && (
-        <GpuBoard
-          phase={gpu.mode.phase}
-          token={gpu.mode.token}
-          sceneId={cardsSceneId}
-          model={gpuModel}
-          hiddenId={gpuOverlayId}
-          cameraSource={cameraSource}
-          boardRef={scrollRef}
-          dispatch={gpu.dispatch}
-          onHover={onGpuHover}
-          overlayPinned={gpuOverlayPinned}
-          onUndrawable={onGpuUndrawable}
-        />
+        // 본체는 처음 켤 때 불러온다(lazy) — 불러오는 동안은 준비 단계라 DOM 판이 그대로 보인다
+        <Suspense fallback={null}>
+          <GpuBoard
+            phase={gpu.mode.phase}
+            token={gpu.mode.token}
+            sceneId={cardsSceneId}
+            model={gpuModel}
+            hiddenId={gpuOverlayId}
+            cameraSource={cameraSource}
+            boardRef={scrollRef}
+            dispatch={gpu.dispatch}
+            onHover={onGpuHover}
+            overlayPinned={gpuOverlayPinned}
+            onUndrawable={onGpuUndrawable}
+          />
+        </Suspense>
       )}
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
         {/* 가져오는 중인 파일의 자리 표시(28회차, Jay 결정) — 놓은(붙인) 자리에 점선 카드. 올라가면 그 자리가 진짜 카드가 된다(레퍼런스 카드가
