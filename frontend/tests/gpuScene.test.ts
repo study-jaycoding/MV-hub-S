@@ -154,6 +154,8 @@ describe("포트·쌓임(카드에 딸린 조각)", () => {
     expect(m.quads.find((q) => q.id === "label:t")?.owner).toBe("t");
     expect(m.quads.find((q) => q.id === "multi:g")?.owner).toBe("g");
     expect(m.quads.find((q) => q.id === "group:G")?.owner).toBeUndefined();
+    // 머리줄은 DOM 처럼 그룹 틀(2px) 안쪽 — 단추 자리가 DOM 실측과 맞게
+    expect(m.quads.find((q) => q.id === "group:G")).toMatchObject({ x: 2, y: -38, w: 596, h: 26 });
     expect(m.rects.filter((r) => r.owner === "g")).toHaveLength(2); // 빛 두 겹
   });
 });

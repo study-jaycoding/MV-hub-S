@@ -215,9 +215,10 @@ function pillQuad(id: string, text: string, x: number, y: number, opts: { size: 
 /** 그룹 머리줄(.scene-group-hd) — 이름·개수 알약·접기/색/× 자리. 단추는 보기 모드에서 누를 수 없어 모양만. */
 function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
   const gc = gv.color || ACCENT;
-  const w = Math.max(1, Math.round(gv.w)), h = 26;
+  // DOM 머리줄은 그룹 틀(테두리 2px, border-box) 안쪽 — 자리·폭도 그 안(실측: 머리줄 x·y = 2, 폭 = 그룹 폭 − 4)
+  const w = Math.max(1, Math.round(gv.w) - 4), h = 26;
   return {
-    id: "group:" + gv.id, x: gv.x, y: gv.y, w, h,
+    id: "group:" + gv.id, x: gv.x + 2, y: gv.y + 2, w, h,
     key: appearanceKey(["group", gv.name, gv.count, gv.color, gc, gv.collapsed, gv.selected, w]), // 색 지정 여부가 바탕을 바꾼다(지정 없음 = 어둠)
     draw: (g) => {
       const [r, gg, b] = hexRgba(gc);
@@ -258,13 +259,13 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
       g.fillStyle = ACCENT_INK;
       g.textAlign = "center";
       g.fillText(String(gv.count), nx + cw / 2, h / 2 + 0.5);
-      // 오른쪽 단추 자리(scene.css .scene-group-btn·-color·-x) — 접기 −/+(20px 800 회색) · 색 견본(16px 둥근 5, 테두리 --border2,
-      //  색을 안 정하면 바탕도 --border2) · ×(15px 회색)
+      // 오른쪽 단추 자리(scene.css .scene-group-btn·-color·-x, 오른쪽부터 여백 8·간격 6) — 접기 −/+(24px 칸, 20px 800 회색) ·
+      //  색 견본(16px 둥근 5, 테두리 --border2, 색을 안 정하면 바탕도 --border2) · ×(15px 회색, 전역 단추 여백으로 칸 폭 24 — 실측)
       g.fillStyle = MUTED;
       g.font = `800 20px ${FONT}`;
-      g.fillText(gv.collapsed ? "+" : "−", w - 8 - 18 - 6 - 16 - 6 - 12, h / 2 + 0.5);
+      g.fillText(gv.collapsed ? "+" : "−", w - 8 - 24 - 6 - 16 - 6 - 12, h / 2 + 0.5);
       g.beginPath();
-      g.roundRect(w - 8 - 18 - 6 - 16 + 0.5, h / 2 - 8 + 0.5, 15, 15, 5);
+      g.roundRect(w - 8 - 24 - 6 - 16 + 0.5, h / 2 - 8 + 0.5, 15, 15, 5);
       g.fillStyle = gv.color || BORDER2;
       g.fill();
       g.strokeStyle = BORDER2;
@@ -272,7 +273,7 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
       g.stroke();
       g.fillStyle = MUTED;
       g.font = `700 15px ${FONT}`;
-      g.fillText("×", w - 8 - 9, h / 2 + 0.5);
+      g.fillText("×", w - 8 - 12, h / 2 + 0.5);
     },
   };
 }
