@@ -93,13 +93,23 @@ class PanelStagingTests(unittest.TestCase):
         self.assertEqual(len(self.pool.import_calls), 1)
         self.assertEqual(self.manager.saved, 0)
 
-    def test_deferred_creates_without_selecting(self):
+    def test_missing_bin_defers_without_creating(self):
+        def add_and_select(parent, name):
+            # 실제 리졸브처럼 새 빈이 지금 빈이 된다(11-11 mv test 실측).
+            folder = FakeMediaPool.AddSubFolder(self.pool, parent, name)
+            self.pool.current = folder
+            return folder
         self.pool.current = self.pool.root
-        result = self.run_op("stage", folder_path="S/C2")
-        self.assertEqual(result["deferred"], 1)
-        self.assertEqual(self.pool.import_calls, [])
-        self.assertIs(self.pool.current, self.pool.root)
-        self.assertIsNotNone(resolve_bridge._folder_at_path(self.pool.root, ("MV Hub", "Film", "S", "C2")))
+        with mock.patch.object(self.pool, "AddSubFolder", side_effect=add_and_select) as add:
+            result = self.run_op("stage", folder_path="S/C2")
+            self.assertEqual((result["state"], result["deferred"], result["items"]), ("ok", 1, [{"gen_id": "g", "state": "deferred"}]))
+            self.assertEqual((result["bin_id"], result["bin_path"]), ("", "MV Hub/Film/S/C2"))  # 상태 줄에 옛 빈이 남지 않게(Codex P3)
+            self.assertEqual((add.call_count, self.pool.import_calls), (0, []))
+            self.assertIs(self.pool.current, self.pool.root)
+            self.assertIsNone(resolve_bridge._folder_at_path(self.pool.root, ("MV Hub", "Film", "S", "C2")))
+            # [맞추기] = target(create) 뒤 stage 는 가져온다.
+            self.assertEqual(self.run_op("target", folder_path="S/C2")["state"], "ok")
+            self.assertEqual(self.run_op("stage", folder_path="S/C2")["items"][0]["state"], "staged")
 
     def test_unstage_only_unused_owned_and_not_capped(self):
         clip = self.staged()

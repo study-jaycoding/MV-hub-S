@@ -2228,7 +2228,10 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                 return {**result, "state": "not_seen"}
         if operation in {"stage", "unstage"}:
             if target is None:
-                target = _destination_folder(pool, root, parts, guard)
+                # AddSubFolder 는 새 빈을 지금 빈으로 바꾼다(11-11 실측) — 빈 만들기는 target([맞추기])만 한다.
+                items = [{"gen_id": item["gen_id"], "state": "deferred"} for item in payload.get("items", [])]
+                return {**result, "state": "ok", "items": items, "removed": 0, "deferred": len(items), "import_records": [],
+                        "unexpected_imports": 0, "capped": bool(payload.get("capped")), "bin_id": "", "bin_path": "/".join(parts)}
             stage = _panel_stage(pool, target, payload, project_id, guard)
             return {**result, **stage, "capped": bool(payload.get("capped")), "bin_id": _uid(target), "bin_path": "/".join(parts)}
         if operation == "target":
