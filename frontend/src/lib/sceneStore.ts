@@ -562,6 +562,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     let wrote = false;
     let stepOut: TxStepResult = { changed: false, entries: [] };
     let sceneWrites = 0; // 씬 본문·순서 키·빈 버킷의 넣기+지우기 수(메타 제외) — 바깥 알림을 씬이 실제로 달라진 확정에만
+    let sceneBodyOnly = false; // 씬 쓰기가 본문 넣기 하나 이상뿐(지우기·순서 키 없음 — 옛 버킷 이관이면 거짓)
     let moved: PendingOp[] = []; // 이번 트랜잭션에서 충돌로 옮긴 연산 — 표시는 재생을 정한 뒤에 붙을 수 있어 따로 본다
     let movedConflicts: SceneAbsorbConflict[] = [];
     let storedConflicts: SceneAbsorbConflict[] = [];
@@ -619,6 +620,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
           wrote = batch.length > 0 || stepOut.changed;
           const write = diffScenes(base, live);
           sceneWrites = write.puts.length + write.deletes.length;
+          sceneBodyOnly = write.deletes.length === 0 && write.puts.length > 0 && write.puts.every(([key]) => key.startsWith('["s",'));
           const touched = write.puts.length + write.deletes.length + notebookPuts.length + notebookDeletes.length +
             (fromHub ? stepOut.entries.length + (stepOut.deletes?.length ?? 0) : 0) > 0;
           if (touched) liveVersion += 1; // 씬/공책 상태가 실제로 바뀌었을 때만
@@ -686,7 +688,12 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
       const progressOnly = (key: string) => /^\["n[sw]",/.test(key);
       const notebookMetaOnly = fromHub && batch.length === 0 && !external && sceneWrites === 0 && !stepOut.notify && movedConflicts.length === 0
         && stepOut.entries.every(([key]) => progressOnly(key)) && (stepOut.deletes ?? []).every(progressOnly);
-      if (wrote) flushListener?.(true, { notebookMetaOnly });
+      // 이 창의 카메라만 바꾼 확정(E4) — 카메라 전용 슬롯 연산만이고(넘김·인계·확정 전용·버림 없음) 다른 창 확정을 읽지 않았고
+      //  step·충돌 없이 씬 본문만 썼다. 백업은 공책 동기화를, 카드 연결은 훑기를 새로 예약하지 않는다. 실패한 시도는 위에서 이미 돌아갔다.
+      const cameraOnly = !fromHub && batch.length > 0 && batch.every((op) => op.slot?.startsWith(CAMERA_SLOT_PREFIX) && !op.handed)
+        && !external && !hadConfirmedOnly && !dropped && movedConflicts.length === 0
+        && !stepOut.changed && !stepOut.notify && stepOut.entries.length === 0 && !stepOut.deletes?.length && sceneBodyOnly;
+      if (wrote) flushListener?.(true, { notebookMetaOnly, cameraOnly });
       announceWrite();
     }
     if (pending.length) scheduleFlush(); // 도중에 들어온 연산
@@ -767,8 +774,10 @@ function scheduleRetry(): void {
   retryDelayMs = Math.min(retryDelayMs * 2, RETRY_MAX_MS); // 간격을 늘린다 — 막힌 저장소를 두드리지 않는다
 }
 
-/** 확정 성공 통지에 싣는 표시 — notebookMetaOnly = 공책 내부 정리만 한 확정(runStoreTx 참고). */
-export interface SceneFlushInfo { notebookMetaOnly: boolean }
+/** 확정 성공 통지에 싣는 표시 — notebookMetaOnly = 공책 내부 정리만 한 확정 · cameraOnly = 이 창의 카메라만 바꾼 확정(runStoreTx 참고). */
+export interface SceneFlushInfo { notebookMetaOnly: boolean; cameraOnly: boolean }
+/** 카메라 전용 merge 슬롯의 머리 — scenes.updateSceneCamera 만 쓴다. 이 슬롯 연산만 든 확정을 '카메라만'으로 가린다(E4). */
+export const CAMERA_SLOT_PREFIX = "camera\u0000";
 let flushListener: ((ok: boolean, info?: SceneFlushInfo) => void) | null = null;
 /** flush 결과(확정 성공/실패)를 듣는다 — 데이터 계층이 '저장 실패' 알림과 DB 미러 통지에 쓴다. */
 export function setSceneFlushListener(fn: ((ok: boolean, info?: SceneFlushInfo) => void) | null): void {

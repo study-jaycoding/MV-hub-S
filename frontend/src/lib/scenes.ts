@@ -27,6 +27,7 @@ import {
   setSceneFlushListener,
   settleConflictsAsCopies,
   workingBucketLength,
+  CAMERA_SLOT_PREFIX,
   type SceneFlushInfo,
   type SceneHandover,
   type SceneOpMerge,
@@ -357,6 +358,7 @@ function frozen<T>(value: T): T {
 // ★미러는 확정본(listPersistedScenes)만 읽는다. 화면 값에는 아직 확정 안 된 편집이 섞여 있어,
 //  그것을 올리면 저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
 // info.notebookMetaOnly = 공책이 내부 기준·진행 기록만 정리한 확정(씬은 그대로) — 다음 공책 동기화를 다시 예약할 까닭이 없다(sceneBackup).
+// info.cameraOnly = 이 창의 카메라만 바꾼 확정 — 공책 허브의 백업은 새로 예약하지 않고(E4), 카드 연결 훑기도 예약하지 않는다.
 const scenesPersistedSubs = new Set<(info: SceneFlushInfo) => void>();
 export function subscribeScenesPersisted(fn: (info: SceneFlushInfo) => void): () => void {
   scenesPersistedSubs.add(fn);
@@ -401,7 +403,7 @@ function reportSaveState(failed: boolean): void {
 setSceneFlushListener((ok, info) => {
   holdUnload("scene-save:pending", sceneStoreHasPending());
   reportSaveState(!ok);
-  if (ok) scenesPersistedSubs.forEach((fn) => fn({ notebookMetaOnly: !!info?.notebookMetaOnly }));
+  if (ok) scenesPersistedSubs.forEach((fn) => fn({ notebookMetaOnly: !!info?.notebookMetaOnly, cameraOnly: !!info?.cameraOnly }));
 });
 
 // 씬 쓰기의 단일 관문. mutate 는 화면 값에 한 번, 저장소 내용 위에서 다시(재생) 실행된다 —
@@ -576,7 +578,7 @@ export function updateScene(
 /** 카메라만 쓴다 — updateScene 과 같은 저장 관문·merge 슬롯(내용 패치와 합쳐도 두 필드가 남는다)이지만 쓰기 뒤 목록을 만들지 않는다.
  *  큰 씬은 목록을 만들 때 바뀐 씬의 읽기 사본(씬 전체 글자화)을 다시 만들어, 카메라 기록 한 번이 씬 크기만큼 무거웠다(2026-11-11 2,000장 4배 프로파일). */
 export function updateSceneCamera(projectId: string | null, sceneId: string, camera: Scene["camera"]): { ok: true } | { ok: false; reason: SceneWriteFailure } {
-  return writeScenePatch(projectId, keyOf(projectId), sceneId, { camera });
+  return writeScenePatch(projectId, keyOf(projectId), sceneId, { camera }, true);
 }
 
 /** 지금 작업본에서 그 씬의 존재·카메라만(읽기 사본 없이, 복사값). 씬 없음(exists 거짓)과 카메라 미설정(camera 없음)을 가른다. */
@@ -589,6 +591,7 @@ function writeScenePatch(
   key: string, // ★접수 시점의 계정으로 고정
   sceneId: string,
   patch: Partial<Scene>,
+  cameraSlot = false, // 카메라 기록 — 내용 패치와 합치지 않는 따로 슬롯(바로 앞 같은 슬롯과만 합침, 교차하면 별도 연산으로 순서대로 재생)
 ): { ok: true } | { ok: false; reason: SceneWriteFailure } {
   const stored = frozen(patch);
   const apply = (all: ScenesByProject, fields: Partial<Scene>) => {
@@ -605,7 +608,7 @@ function writeScenePatch(
   // 캔버스 편집의 거의 전부가 이것이라, 저장소가 막혀 있어도 밀린 연산이 쌓이지 않는다.
   const out = commit((all) => apply(all, stored), {
     merge: {
-      slot: `update\u0000${key}\u0000${sceneId}`,
+      slot: `${cameraSlot ? CAMERA_SLOT_PREFIX : "update\u0000"}${key}\u0000${sceneId}`,
       patch: stored,
       join: (previous, next) => ({ ...previous, ...next }),
       replay: (all, fields) => {

@@ -154,7 +154,7 @@ describe("카메라만 기록하는 쓰기(R6)", () => {
     }
   });
 
-  it("내용 패치와 카메라 패치가 저장 전에 합쳐져도 두 필드가 다 남는다", async () => {
+  it("내용·카메라 패치가 저장 전에 번갈아 와도(카메라는 따로 슬롯 — 별도 연산으로 순서대로 재생) 세 필드가 다 남는다", async () => {
     saveScenes(null, [scene("s1")]);
     updateScene(null, "s1", { name: "renamed" });
     updateSceneCamera(null, "s1", { z: 4, x: 1, y: 2 });

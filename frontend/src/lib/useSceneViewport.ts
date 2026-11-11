@@ -20,7 +20,8 @@ import { swallowPanAuxClick } from "./useSceneCardMove";
 
 // 카메라 기록은 마지막 조작 뒤 이만큼 쉬었을 때 한 번 — 조작 도중의 기록이 씬 저장·공책 동기화를 거듭 일으켰다
 //  (2026-11-11 2,000장 CPU 4배 프로파일, docs/status/캔버스_카메라저장묶기_2026-11-11.md). 떠날 때(leaveCamera)는 바로.
-export const CAMERA_IDLE_SAVE_MS = 3000;
+//  500ms = 조작 직후 쉬는 틈에 끝나게 — 3초는 멈춘 뒤 기록이 다음 조작 시작과 겹쳐 412장 1배가 후퇴했다(같은 기록 '공식 미달 뒤').
+export const CAMERA_IDLE_SAVE_MS = 500;
 const FRAME_TRANSITION_MS = 250;
 const FRAME_TRANSITION_CLEAR_MS = 300;
 const SETTLE_MS = 150; // 줌을 건너뛴 뒤 휠을 이만큼 쉬면 컬링을 한 번 정리한다

@@ -97,17 +97,46 @@ describe("유휴 뒤 한 번(idle)", () => {
   it("유휴 시간보다 짧은 간격으로 여러 유휴 주기 동안 계속 휠 → 기록 0, 마지막 조작 뒤 유휴 시간에 최신 카메라로 1회(최대 대기 없음)", async () => {
     const h = mountHost();
     await h.mount();
+    const gap = CAMERA_IDLE_SAVE_MS - 100;
     for (let i = 0; i < 12; i += 1) {
       await wheel(i % 2 ? 100 : -100);
-      await idle(1000);
+      await idle(gap);
     }
-    expect(h.calls).toEqual([]); // 12초 — 유휴 시간(3초)의 네 주기 동안 한 번도 안 넘긴다
-    await idle(CAMERA_IDLE_SAVE_MS - 1000 - 1);
+    expect(h.calls).toEqual([]); // 4.8초 — 유휴 시간(500ms)의 아홉 주기 넘게 한 번도 안 넘긴다
+    await idle(CAMERA_IDLE_SAVE_MS - gap - 1);
     expect(h.calls).toEqual([]);
     await idle(1);
     expect(h.calls).toEqual([{ camera: api.getCamera(), owner: "o1" }]);
     await idle(CAMERA_IDLE_SAVE_MS * 3);
     expect(h.calls).toHaveLength(1); // 접수됐으면 다시 싣지 않는다
+  });
+
+  it("유휴 경계 — 직전(유휴-1ms)에 다시 돌리면 0 → 마지막 뒤 1회, 직후(유휴+1ms)면 그 사이 1회(디바운스의 정상 동작)", async () => {
+    const h = mountHost();
+    await h.mount();
+    await wheel();
+    await idle(CAMERA_IDLE_SAVE_MS - 1);
+    await wheel(100);
+    expect(h.calls).toEqual([]);
+    await idle(CAMERA_IDLE_SAVE_MS);
+    expect(h.calls).toHaveLength(1);
+    await wheel();
+    await idle(CAMERA_IDLE_SAVE_MS + 1);
+    expect(h.calls).toHaveLength(2); // 유휴를 넘긴 쉼 — 그 사이 저장
+    await wheel(100);
+    await idle(CAMERA_IDLE_SAVE_MS);
+    expect(h.calls).toHaveLength(3);
+    expect(h.calls[2].camera).toEqual(api.getCamera());
+  });
+
+  it("느린 휠(700ms 간격)은 간격마다 1회 — 사람이 띄엄띄엄 돌리면 중간 저장이 생긴다", async () => {
+    const h = mountHost();
+    await h.mount();
+    for (let i = 0; i < 4; i += 1) {
+      await wheel(i % 2 ? 100 : -100);
+      await idle(700);
+    }
+    expect(h.calls).toHaveLength(4);
   });
 
   it("변화 없는 보드 스크롤·움직이지 않은 팬은 기록을 예약하지 않는다", async () => {

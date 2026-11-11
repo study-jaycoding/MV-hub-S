@@ -37,7 +37,7 @@ import {
   type Scene,
 } from "./scenes";
 import { subscribeSceneStoreExternal } from "./sceneStore";
-import { syncSceneNotebook, SCENE_WRITER_FEATURE } from "./sceneNotebook";
+import { subscribeNotebookSyncResult, syncSceneNotebook, SCENE_WRITER_FEATURE, type NotebookSyncResult } from "./sceneNotebook";
 import { withoutComfyRuns } from "./comfyRunState";
 
 const API = "/api/scenes/backup";
@@ -709,6 +709,25 @@ async function syncNow(): Promise<void> {
   }
 }
 
+// 이 백업이 시작하지 않은 공책 동기화(숨김·넘기기가 직접 부른 syncSceneNotebook)의 결과 — 카메라만 바뀐 확정은 동기화를 예약하지 않아(E4)
+//  숨김 동기화가 실패하면 다음 계기까지 남는다. 실패면 기존 재시도 하나(있으면 그대로 — 기한을 미루지 않음), 성공이면 그 계정의 재시도를 풀고
+//  크기 상한을 다시 센다(카메라만 확정은 다시 세지 않는다). 자기 syncNow 의 결과는 syncNow 가 처리한다(같은 진행 중 요청을 공유해도 타이머 하나).
+function onNotebookSyncResult(result: NotebookSyncResult, account: string): void {
+  if (!hubHasFeature(SCENE_WRITER_FEATURE) || account !== ns() || account !== curScope) return;
+  if (result.status === "ready") {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    if (!syncing) recountOverLimit();
+    return;
+  }
+  if (result.status !== "retry" || syncing || retryTimer) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    // 돌 때도 다시 본다 — 공책 기능이 꺼졌으면 syncNow 가 옛 백업 PUT 으로 들어가므로 이 재시도로는 아무것도 시작하지 않는다(Codex 6차)
+    if (hubHasFeature(SCENE_WRITER_FEATURE) && ns() === account) void syncNow();
+  }, RETRY_MS);
+}
+
 function schedule(): void {
   if (timer) clearTimeout(timer);
   const run = () => {
@@ -808,9 +827,12 @@ export async function initSceneBackup(): Promise<boolean> {
   if (!installed) {
     installed = true;
     // 이 탭의 확정 — 본 글자로 적는다(같은 확정에 다른 탭 변경이 섞였으면 그 알림이 먼저 온다 — sceneStore runStoreTx)
-    subscribeScenesPersisted(({ notebookMetaOnly }) => {
+    subscribeScenesPersisted(({ notebookMetaOnly, cameraOnly }) => {
       // 공책이 자기 기준·진행 기록만 정리한 확정 — 씬은 그대로라 다시 예약·재집계하지 않는다(진행 기록 쓰기마다 2초 뒤 동기화가 또 돌았다)
       if (notebookMetaOnly) return;
+      // 공책 허브에서 이 창의 카메라만 바꾼 확정 — 새로 예약·재집계하지 않는다(E4, Jay 2026-11-11 "바꿔도 됨"). 카메라는 다음 성공한
+      //  공책 동기화(내용 저장·숨김·넘기기·기존 예약·재시도)가 씬 전체 비교로 함께 싣는다. 크기 상한 표시는 그 동기화·다음 내용 확정 때 다시 센다.
+      if (cameraOnly && hubHasFeature(SCENE_WRITER_FEATURE)) return;
       if (ns() === curScope) {
         noteSeenTexts();
         recountOverLimit();
@@ -818,6 +840,7 @@ export async function initSceneBackup(): Promise<boolean> {
       schedule();
     });
     subscribeSceneStoreExternal(() => void onExternalScenes()); // 다른 탭의 확정본 — 판 승계·미러 예약(1A)
+    subscribeNotebookSyncResult(onNotebookSyncResult); // 숨김·넘기기가 시작한 공책 동기화의 실패·성공(E4)
     window.addEventListener("storage", onLedgerStorage); // 다른 탭이 장부를 고쳤다 — 받은 내용과 같으면 승계(1A)
     window.addEventListener("online", () => void syncNow());
   }

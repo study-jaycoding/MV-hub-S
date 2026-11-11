@@ -259,8 +259,9 @@ let tokenProvider: () => NotebookToken | null = () => null;
 let providerEpoch = 0;
 let inFlight: Promise<NotebookSyncResult> | null = null;
 let freshAfter: { after: Promise<NotebookSyncResult>; promise: Promise<NotebookSyncResult> } | null = null;
-const resultListeners = new Set<(result: NotebookSyncResult) => void>();
-export function subscribeNotebookSyncResult(fn: (result: NotebookSyncResult) => void): () => void {
+// account = 그 동기화를 시작한 계정 — 받는 쪽이 다른 계정의 결과로 재시도·재집계하지 않게(sceneBackup, Codex 6차)
+const resultListeners = new Set<(result: NotebookSyncResult, account: string) => void>();
+export function subscribeNotebookSyncResult(fn: (result: NotebookSyncResult, account: string) => void): () => void {
   resultListeners.add(fn);
   return () => { resultListeners.delete(fn); };
 }
@@ -473,8 +474,9 @@ export function syncSceneNotebook(options: { fresh?: boolean } = {}): Promise<No
     return promise;
   }
   if (inFlight) return inFlight;
+  const account = getAccountNamespace(); // runNotebookSync 가 같은 틱에 잡는 계정과 같다
   inFlight = runNotebookSync().then((result) => {
-    resultListeners.forEach((fn) => fn(result));
+    resultListeners.forEach((fn) => fn(result, account));
     return result;
   }).finally(() => { inFlight = null; });
   return inFlight;

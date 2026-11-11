@@ -519,7 +519,9 @@ let installed = false;
 export function initSceneCardLinks(): void {
   if (!installed) {
     installed = true;
-    subscribeScenesPersisted(schedule);
+    // 이 창의 카메라만 바꾼 확정은 카드-생성물 연결을 바꾸지 않는다 — 훑기를 예약하지 않는다(E4: 저장 2초 뒤 훑기가 다음 조작에 떨어졌다).
+    //  이미 걸린 예약·재시도·제거/되살리기 전송은 그대로.
+    subscribeScenesPersisted(({ cameraOnly }) => { if (!cameraOnly) schedule(); });
     window.addEventListener("online", () => {
       scheduleRefresh();
       void refreshSceneCardLinks().then(pushNew, pushNew);

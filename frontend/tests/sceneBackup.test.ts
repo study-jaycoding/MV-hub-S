@@ -122,6 +122,19 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
     expect(body.deleted_ids).toEqual([]);
   });
 
+  it("공책이 꺼진 허브 — 카메라만 바꾼 확정도 지금처럼 백업을 예약해 그 씬을 올린다(E4 생략은 공책 허브만)", async () => {
+    vi.stubGlobal("crypto", {}); // 해시 없는 창 — 바뀐 씬을 그대로 올린다
+    const { scenes, backup } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "카메라 씬"))]);
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1);
+    expect(scenes.updateSceneCamera(null, "s1", { z: 2, x: 3, y: 4 }).ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(2);
+    expect(JSON.parse(putBody(puts()[1]).upserts[0].data).camera).toEqual({ z: 2, x: 3, y: 4 });
+  });
+
   it("같은 세션에서 올린 씬을 삭제하면 서버 백업도 즉시 삭제한다", async () => {
     const { scenes, backup } = await boot();
     scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "잠시 만든 씬"))]);
