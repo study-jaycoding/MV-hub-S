@@ -575,7 +575,9 @@ export function updateScene(
   };
 }
 
-/** 카메라만 쓴다 — updateScene 과 같은 저장 관문·merge 슬롯(내용 패치와 합쳐도 두 필드가 남는다)이지만 쓰기 뒤 목록을 만들지 않는다.
+/** 카메라만 쓴다 — updateScene 과 같은 저장 관문이지만 merge 슬롯은 카메라 전용(내용 패치와 합치지 않고, 번갈아 오면 별도 연산으로 순서대로
+ *  재생해 두 필드가 남는다 — 이 슬롯만 든 확정을 저장소가 '카메라만'으로 표시한다, E4)이고 쓰기 뒤 목록을 만들지 않는다.
+ *  알려진 한계: 저장소가 오래 실패하면 '편집 → 화면 이동'마다 연산이 둘씩 쌓여 대기 상한(200)에 더 일찍 닿는다(떨어진 카메라 연산을 찾아 합치면 순서가 바뀌어 하지 않는다).
  *  큰 씬은 목록을 만들 때 바뀐 씬의 읽기 사본(씬 전체 글자화)을 다시 만들어, 카메라 기록 한 번이 씬 크기만큼 무거웠다(2026-11-11 2,000장 4배 프로파일). */
 export function updateSceneCamera(projectId: string | null, sceneId: string, camera: Scene["camera"]): { ok: true } | { ok: false; reason: SceneWriteFailure } {
   return writeScenePatch(projectId, keyOf(projectId), sceneId, { camera }, true);

@@ -216,6 +216,25 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
     expect(hub.cardPuts).toHaveLength(3); // 내용 확정은 지금처럼 2초 뒤
     expect(keys(hub.cardPuts[2])).toEqual(["c1:g2"]);
   });
+
+  it("명시적 제거 의도가 실패로 대기 중일 때 카메라만 → 훑기 예약 없이, 걸려 있던 재시도가 그 제거를 보낸다", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { initSceneCardLinks, markCardGenerationsRemoved } = await import("../src/lib/sceneCardLinks");
+    initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    const before = hub.cardPuts.length;
+    hub.failCards = true;
+    await markCardGenerationsRemoved("s", "c1", ["g0"]); // 사용자가 비움 — 실패 → 30초 재시도
+    expect(hub.cardPuts).toHaveLength(before + 1);
+    hub.failCards = false;
+    updateSceneCamera(null, "s", cam(4));
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hub.cardPuts).toHaveLength(before + 1); // 카메라만 — 훑기 예약 없음
+    await vi.advanceTimersByTimeAsync(26_000);
+    const sent = hub.cardPuts.slice(before + 1);
+    expect(sent.some((body) => body.removed?.some((l: { generation_id: string }) => l.generation_id === "g0"))).toBe(true);
+  });
 });
 
 describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 최신 카메라(실제 공책 동기화)", () => {
