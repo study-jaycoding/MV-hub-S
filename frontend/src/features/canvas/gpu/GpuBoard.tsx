@@ -4,7 +4,6 @@
 //  카메라는 쓰지 않는다(읽기만) — useSceneViewport 의 카메라 출처가 화면을 옮길 때마다 알린다.
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { flashMsg } from "../../../lib/flash";
 import { STORAGE_KEYS } from "../../../lib/storageKeys";
 import { SCENE_LOD_PCT, type SceneCamera } from "../../../lib/sceneViewport";
 import { createCardAtlas, type CardAtlas } from "./cardAtlas";
@@ -607,8 +606,13 @@ const zoomBand = (scale: number) => (scale > 2.5 ? "hi" : scale < 2.2 ? "lo" : "
 /** SceneBoard 쪽 모드 관리 — 표식·씬·미지원·한가함·배율 경계를 gpuMode 에 알리고, 25% 단순화·편집 허용·거절 안내를 준다.
  *  표식이 꺼져 있으면 아무 이벤트도 보내지 않아 상태가 바뀌지 않는다(SceneBoard 추가 렌더 0). 배율은 경계(2.2·2.5)를 넘을 때만 보낸다 —
  *  휠 한 칸마다 보내면 상태가 매번 새 객체라 판 전체가 다시 그려진다. */
-export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported: boolean; busy: boolean; cameraSource: CameraSource }) {
+export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported: boolean; busy: boolean; cameraSource: CameraSource;
+  /** 거절·까닭 안내(lib/flash 의 flashMsg) — SceneBoard 가 넘긴다. 여기서 import 하면 canvas api 를 쓰는 lib 모듈이 라이브러리 기능까지 불러온다 */
+  flash: (msg: string) => void }) {
   const [mode, dispatch] = useReducer(gpuModeReducer, undefined, initialGpuMode);
+  const flashRef = useRef(o.flash);
+  flashRef.current = o.flash;
+  const flashMsg = (msg: string) => flashRef.current(msg);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // 훅 아래에서 정해지는 한가함(태그 편집·S 확인·되찾기 창·올리는 중인 파일·보드 안 입력칸 초점) — SceneBoard 가 setLateBusy 로 알린다

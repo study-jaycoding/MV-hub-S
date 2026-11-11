@@ -367,7 +367,7 @@ describe("배율 상한 판정(실제 모드 훅)", () => {
   afterEach(() => { vi.useRealTimers(); cam.z = 1; });
   let seen: { phase: string; reason: string | null } = { phase: "", reason: null };
   function ModeHarness() {
-    const g = useGpuBoardMode({ flag: true, sceneId: "s", unsupported: false, busy: false, cameraSource: source });
+    const g = useGpuBoardMode({ flag: true, sceneId: "s", unsupported: false, busy: false, cameraSource: source, flash: () => {} });
     seen = { phase: g.mode.phase, reason: g.mode.reason };
     return null;
   }

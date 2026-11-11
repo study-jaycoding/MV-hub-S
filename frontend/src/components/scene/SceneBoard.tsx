@@ -1020,6 +1020,7 @@ export function SceneBoard({
   const gpuKindsUnsupported = useMemo(() => gpuFlag && cards.some((c) => !BOARD_KINDS.has(c.kind)), [gpuFlag, cards]);
   const gpuUnsupported = useMemo(() => gpuKindsUnsupported || (gpuFlag && cards.some((c) => gpuUndrawable.get(c.id) === c)), [gpuFlag, gpuKindsUnsupported, cards, gpuUndrawable]);
   const gpu = useGpuBoardMode({
+    flash: flashMsg,
     flag: gpuFlag,
     sceneId: cardsSceneId,
     unsupported: gpuUnsupported,
