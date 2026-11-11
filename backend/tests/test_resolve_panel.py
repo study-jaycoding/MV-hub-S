@@ -224,6 +224,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         return rejected or bridge.panel_operation(payload, resolve=self.resolve)
 
     def body(self, cls, **kwargs):
+        if cls in (route.CacheIn, route.TargetIn):
+            kwargs.setdefault("window", "test-window")
         return cls(ctx=self.ctx, project_id="p", folder_path="S01/C010", **kwargs)
 
     async def prepare(self):
@@ -336,7 +338,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         transfer.resolve_transfer_roots.assert_not_called()
 
     async def test_context_changed_before_response(self):
-        async def change(*args):
+        async def change(*args, **kwargs):
             panel.INSTANCE = "new-hub"
             return {"state": "prepared"}
 
@@ -543,6 +545,84 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(identity["account"]), 16)
         self.assertEqual({r.path for r in route.router.routes}, {
             "/api/resolve/panel/" + name for name in ("identity", "cache", "prepare", "target", "current-bin", "adopt")})
+
+    async def test_target_and_adopt_share_current_project_name_and_recovery_identity(self):
+        self.gen["project_name"] = "옛 이름"
+        ready = await self.prepare()
+        with patch.object(bridge, "_settle_recovery_record", wraps=bridge._settle_recovery_record) as recovery:
+            self.assertEqual((await self.target())["bin_path"], "MV Hub/영화/S01/C010")
+            self.pool.current.clips.append(FakeClip(ready["path"]))
+            self.assertEqual((await self.adopt())["state"], "in_bin")
+        self.assertEqual(recovery.call_args_list[0].args[3], recovery.call_args_list[1].args[3])
+        with patch.object(route.repo, "get_project", return_value=None):
+            self.assertEqual(panel.project_name(self.ctx, "p"), "옛 이름")
+
+    async def test_target_project_read_denial_precedes_resolve(self):
+        from app import deps
+        with patch.object(deps, "AUTH_ENABLED", True), patch.object(deps, "project_roles_of", return_value=[]), patch.object(deps, "account_global_roles", return_value=[]):
+            with self.assertRaises(HTTPException) as error:
+                await self.target()
+            self.assertEqual(error.exception.status_code, 403)
+        runner.run_resolve_panel_isolated.assert_not_called()
+
+    async def test_delegated_target_requires_project_in_upstream_visible_list(self):
+        with patch.object(route._proxy, "proxying", return_value=True), patch.object(route._proxy, "base_url", return_value="https://test.invalid"), patch.object(route._proxy, "token", return_value="fake"), patch.object(route._proxy, "proxy_json", return_value={"projects": []}) as query:
+            with self.assertRaises(HTTPException) as error:
+                await self.target()
+            self.assertEqual(error.exception.status_code, 403)
+            query.assert_called_once_with("GET", "/api/projects?tab=team")
+        runner.run_resolve_panel_isolated.assert_not_called()
+
+    async def test_target_and_adopt_context_switch_in_child_does_not_write_ledger(self):
+        await self.place()
+        original = self.child
+
+        def change(payload, before_start=None):
+            result = original(payload, before_start)
+            panel.INSTANCE = "restarted"
+            return result
+
+        for operation in (self.target, self.adopt):
+            with patch.object(panel, "INSTANCE", self.ctx["instance"]), patch.object(runner, "run_resolve_panel_isolated", side_effect=change), patch.object(transfer, "save_manifest", AsyncMock()) as save:
+                self.assertEqual((await operation())["state"], "account_changed")
+                save.assert_not_called()
+
+    def test_sequence_records_drop_past_context_and_bound_windows(self):
+        panel.note_sequence(self.ctx, 10, "target", "old")
+        current = {**self.ctx, "epoch": self.ctx["epoch"] + 1}
+        for index in range(65):
+            for channel in ("cache", "target"):
+                panel.note_sequence(current, 5, channel, str(index))
+        self.assertEqual(len(panel._sequences), 128)
+        self.assertTrue(all(key[:3] == panel.context_key(current) for key in panel._sequences))
+        self.assertEqual({key[3] for key in panel._sequences}, {str(index) for index in range(1, 65)})
+        self.assertTrue(panel.stale(current, 4, "target", "64"))
+        with patch.object(panel.config, "AUTH_ENABLED", True):
+            other_account = {**current, "account": "another-login"}
+            panel.note_sequence(other_account, 9, "target", "64")
+            self.assertTrue(panel.stale(current, 4, "target", "64"))
+            self.assertTrue(panel.stale(other_account, 8, "target", "64"))
+
+    async def test_window_sequences_are_independent_and_old_requests_are_stale(self):
+        self.assertEqual((await self.target(seq=100))["state"], "ok")
+        for name in ("reopened", "second-window"):
+            result = await route.post_target(self.body(route.TargetIn, seq=1, window=name), self.request)
+            self.assertEqual(result["state"], "ok")
+        self.assertEqual((await self.target(seq=99))["state"], "stale")
+        panel.note_sequence(self.ctx, 50, "cache", "first")
+        self.assertTrue(panel.stale(self.ctx, 1, "cache", "first"))
+        self.assertFalse(panel.stale(self.ctx, 1, "cache", "second"))
+
+    async def test_auth_on_identity_uses_request_email_and_rejects_other_login(self):
+        self.request.state.account = {"email": "first@example.test"}
+        with patch.object(panel.config, "AUTH_ENABLED", True):
+            first = await route.get_identity(self.request)
+            self.request.state.account = {"email": "second@example.test"}
+            second = await route.get_identity(self.request)
+            self.assertNotEqual(first["account"], second["account"])
+            self.ctx = first
+            self.assertEqual((await self.prepare())["state"], "account_changed")
+        integration._authorized_generations.assert_not_called()
 
 
 class RunnerTests(unittest.TestCase):

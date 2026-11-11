@@ -25,6 +25,9 @@ const ManageWindow = lazy(() =>
 const AgentWindow = lazy(() =>
   import("./components/agent-chat/AgentWindow").then((m) => ({ default: m.AgentWindow })),
 );
+const ResolvePanelApp = lazy(() =>
+  import("./components/resolvePanel/ResolvePanelApp").then((m) => ({ default: m.ResolvePanelApp })),
+);
 // 클린 피드 전용 창(로컬 허브가 띄운 키오스크 크롬) — `?cleanfeed=<세션>&key=` 전용 청크. EMBED_MODES 에 넣지 않는다(분리 창 옵션과 무관).
 const CleanFeedApp = lazy(() =>
   import("./components/timeline/CleanFeedApp").then((m) => ({ default: m.CleanFeedApp })),
@@ -117,6 +120,9 @@ if (cleanFeed) {
 } else if (embed === EMBED_MODES.agent) {
   installPopupLogoutWatch();
   render(<AgentWindow />);
+} else if (embed === EMBED_MODES.resolvePanel) {
+  // 패널은 자체 로그인·인증 이벤트 처리를 갖고 씬 저장소는 쓰지 않는다.
+  render(<ResolvePanelApp />);
 } else if (isCanvasWindow() && retireCanvasWindow()) {
   // 잠금이 없는 주소에 남은 캔버스 창 — 알리지도 저장소를 열지도 않고 물러난다(lib/popupWindows). 메인 창이 떠 있음으로 바뀌지 않게 announce 앞이다.
 } else {

@@ -23,6 +23,19 @@ updated: 2026-11-11
 
 설계 정본은 [리졸브 패널 작업 계약](status/리졸브패널_설계_2026-11-11.md). 화면·플러그인·실기기 검증은 후속 단계다.
 
+리졸브 패널 2단계 화면:
+
+| 파일 | 책임 |
+|---|---|
+| `frontend/src/components/resolvePanel/ResolvePanelApp.tsx` | 씬 저장소 없는 패널·기존 로그인·전체 워크스페이스의 프로젝트/시퀀스/컷·공유물 카드 |
+| `frontend/src/lib/resolvePanelApi.ts` | 6개 API 타입·양방향 끌기 판 호환·끌기 조건·adopt/target 상태 판단·캐시 묶음 |
+| `frontend/src/lib/useResolvePanel.ts` | 창별 순번·인증/문맥 폐기·직렬 폴링·카드 준비·네이티브 끌기·확인 재시도 |
+| `frontend/src/styles/resolve-panel.css` | 좁은 분리 창의 컷 목록·공유물 카드·상태 표시 |
+| `frontend/tests/resolvePanelApi.test.ts` | 끌기 관문·판 전달·상태 표·500개 경계 시험 |
+| `frontend/tests/resolvePanelApp.test.tsx` | 모의 API/다리의 화면·인증·늦은 응답·준비·재시도·분리 부팅 시험 |
+
+2단계 계약은 [화면 작업 계약](status/리졸브패널_2단계_화면_2026-11-11.md). 실제 플러그인·설치·Resolve 실측은 후속 단계다.
+
 힉스필드 조직 사용량 1단계(관리자 대조 전용):
 
 | 파일 | 책임 |

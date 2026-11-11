@@ -1,0 +1,28 @@
+.resolve-panel { color: var(--text, #e8e8e8); background: var(--bg, #17191b); height: 100dvh; display: flex; flex-direction: column; font-size: 12px; overflow: hidden; }
+.resolve-panel-head { padding: 15px 14px 10px; border-bottom: 1px solid var(--border, #333); flex: none; }
+.resolve-panel-head > strong { display: block; font-size: 19px; margin-bottom: 12px; }
+.resolve-panel-head > strong span { font-size: 11px; color: var(--muted, #999); font-weight: 400; margin-left: 6px; }
+.resolve-panel-pickers { display: flex; align-items: center; gap: 7px; }
+.resolve-panel-pickers select { min-width: 0; width: 48%; color: inherit; background: var(--panel, #232629); border: 1px solid var(--border, #3b3d40); border-radius: 5px; padding: 6px; }
+.resolve-panel-status { color: var(--accent, #c4e84a); margin-top: 10px; overflow-wrap: anywhere; }
+.resolve-panel-head p { color: var(--muted, #a3a5a7); font-size: 11px; line-height: 1.5; margin: 7px 0 0; }
+.resolve-panel-warning { margin-top: 8px; padding: 7px; background: var(--panel, #232629); line-height: 1.5; overflow-wrap: anywhere; }
+.resolve-panel button { font: inherit; cursor: pointer; }
+.resolve-panel-warning button, .resolve-panel-card-state button { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 4px 7px; margin-left: 6px; }
+.resolve-panel button:focus-visible, .resolve-panel select:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 2px; }
+.resolve-panel-body { display: flex; flex: 1; min-height: 0; }
+.resolve-panel-body nav { width: 120px; flex: 0 0 120px; overflow: auto; border-right: 1px solid var(--border, #333); padding: 5px; }
+.resolve-panel-body nav button { width: 100%; border: 1px solid transparent; border-radius: 5px; background: transparent; color: inherit; padding: 9px 6px; text-align: left; overflow-wrap: anywhere; }
+.resolve-panel-body nav button.selected { border-color: var(--accent, #c4e84a); background: var(--panel, #232629); }
+.resolve-panel-body nav strong, .resolve-panel-body nav span, .resolve-panel-body nav small { display: block; margin-bottom: 3px; }
+.resolve-panel-body nav span, .resolve-panel-body nav small { color: var(--muted, #a3a5a7); font-size: 10px; }
+.resolve-panel-body main { flex: 1; min-width: 0; overflow: auto; padding: 8px; }
+.resolve-panel-card { display: flex; gap: 9px; padding: 10px 7px; margin-bottom: 6px; border: 1px solid var(--border, #333); border-radius: 6px; background: var(--panel, #232629); cursor: grab; }
+.resolve-panel-thumb { width: 64px; height: 36px; flex: 0 0 64px; object-fit: cover; border-radius: 3px; overflow: hidden; }
+.resolve-panel-thumb img, .resolve-panel-thumb video { width: 100%; height: 100%; object-fit: cover; }
+.resolve-panel-card-info { min-width: 0; flex: 1; line-height: 1.55; overflow-wrap: anywhere; }
+.resolve-panel-card-info > div, .resolve-panel-card-info small { color: var(--muted, #a3a5a7); }
+.resolve-panel-card-info .resolve-panel-card-state { color: var(--text, #e8e8e8); margin-top: 5px; font-size: 11px; }
+.resolve-panel-final { color: var(--accent, #c4e84a); }
+.resolve-panel-loading { padding: 24px; }
+@media (max-width: 440px) { .resolve-panel-head { padding: 12px 10px 8px; } .resolve-panel-body nav { width: 108px; flex-basis: 108px; } .resolve-panel-body main { padding: 5px; } .resolve-panel-card { gap: 6px; padding: 8px 5px; } }
