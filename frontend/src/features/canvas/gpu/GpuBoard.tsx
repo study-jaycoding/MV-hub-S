@@ -97,6 +97,8 @@ export function GpuBoard(props: GpuBoardProps) {
     lodTimer: 0,
     sceneDirty: false, // 단순화가 바뀌어 버퍼를 다시 채울 것
     bakedPrev: false, // 바로 앞 프레임에 구웠다 — 그 프레임 간격은 GPU 느림 판정에 세지 않는다
+    texPeak: 0,
+    cpuPeak: 0,
   });
 
   const fail = (reason: "creation" | "memory" | "context-lost") => {
@@ -163,12 +165,25 @@ export function GpuBoard(props: GpuBoardProps) {
     if (!s.renderer) return;
     const { model, hiddenId } = live.current;
     s.renderer.setScene({
-      cards: hiddenId ? model.cards.map((c) => (c.id === hiddenId ? { ...c, hidden: true } : c)) : model.cards,
+      cards: model.cards,
       lines: model.lines, rects: model.rects,
       dots: s.lowLod ? model.dots.filter((d) => !d.hideLow) : model.dots,
       quads: s.lowLod ? model.quads.filter((q) => !q.hideLow) : model.quads,
       gridColor: [0, 0, 0, 0], // 점 격자는 DOM 층 그대로(.scene-grid)
     });
+    s.renderer.setHidden(hiddenId);
+  };
+
+  const drawNow = () => {
+    const s = st.current;
+    if (!s.renderer || !s.atlas || s.failed || live.current.phase === "preparing") {
+      st.current.dirty = true;
+      return;
+    }
+    const c = camera();
+    s.renderer.draw(c, s.atlas.lookup);
+    s.drawn = { z: c.z, x: c.x, y: c.y };
+    s.dirty = false;
   };
 
   function frame(now: number) {
@@ -212,6 +227,14 @@ export function GpuBoard(props: GpuBoardProps) {
         return;
       }
     } else pending = 1; // 쉬면 다시 돈다
+    // 실제 할당 최고점(계약 gpu-env ④) — 텍스처 합계·CPU 굽기 버퍼. 늘 때만 canvas 속성에 적는다(실측 도구가 읽는다)
+    const tex = s.renderer.textureBytes(), cpu = s.atlas.cpuBytes();
+    if (tex > s.texPeak || cpu > s.cpuPeak) {
+      s.texPeak = Math.max(s.texPeak, tex);
+      s.cpuPeak = Math.max(s.cpuPeak, cpu);
+      canvasRef.current?.setAttribute("data-tex-peak", String(s.texPeak));
+      canvasRef.current?.setAttribute("data-cpu-peak", String(s.cpuPeak));
+    }
     if ((s.dirty || uploaded > 0) && p.phase !== "preparing") {
       const c = camera();
       s.renderer.draw(c, s.atlas.lookup);
@@ -309,8 +332,7 @@ export function GpuBoard(props: GpuBoardProps) {
     s.synced.model = null;
   }, [props.sceneId]);
 
-  // 그릴 모델·덧판 — 버퍼를 다시 채우고 아틀라스에 알린다(위치·선택이 바뀔 때만 불린다 — 카메라는 아니다).
-  //  layout 단계에서 바로 그린다 — 덧판 DOM 이 붙거나 떨어지는 같은 프레임에 그 카드의 GPU 그림을 감추고 되살린다(깜박임 없음).
+  // 그릴 모델 — 버퍼를 다시 채우고 아틀라스에 알린다(위치·선택이 바뀔 때만 불린다 — 카메라는 아니다). layout 단계에서 바로 그린다.
   useLayoutEffect(() => {
     const s = st.current;
     if (!s.renderer || !s.atlas) return;
@@ -319,15 +341,19 @@ export function GpuBoard(props: GpuBoardProps) {
     applyScene();
     s.hit = buildHitIndex(model.cards.map((c) => ({ id: c.id, x: c.x, y: c.y, w: c.w, h: c.h, z: c.z })));
     syncAtlas(true);
-    if (props.phase !== "preparing" && !s.failed) {
-      const c = camera();
-      s.renderer.draw(c, s.atlas.lookup);
-      s.drawn = { z: c.z, x: c.x, y: c.y };
-      s.dirty = false;
-    } else s.dirty = true;
+    drawNow();
     kick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.model, props.hiddenId]);
+  }, [props.model]);
+  // 덧판 — 그 카드 한 장만 감추고 되살린다(버퍼 전체를 다시 채우면 느린 PC 에서 50ms 를 넘었다: 11-11 CPU 4배 이동 중 잠금).
+  //  layout 단계에서 바로 그린다 — 덧판 DOM 이 붙거나 떨어지는 같은 프레임에 GPU 그림을 감추고 되살린다(깜박임 없음).
+  useLayoutEffect(() => {
+    const s = st.current;
+    if (!s.renderer) return;
+    s.renderer.setHidden(props.hiddenId);
+    drawNow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.hiddenId]);
 
   // 단계가 바뀌면(준비 → 검사 → 그리기) 다시 돈다
   useEffect(() => {
@@ -348,6 +374,12 @@ export function GpuBoard(props: GpuBoardProps) {
     };
     const onMove = (e: MouseEvent) => {
       if (!s.hit) return;
+      // 화면을 옮기는 동안(가운데 버튼 끌기·휠 직후)엔 덧판을 고르지 않는다 — 지나가는 카드마다 덧판이 뜨고 내려가 프레임을 먹었다
+      if (performance.now() - s.lastCameraAt < REST_MS || board.hasAttribute("data-panning")) {
+        clearTimeout(s.hover.timer);
+        s.hover.id = null;
+        return;
+      }
       const rect = board.getBoundingClientRect();
       const c = live.current.cameraSource.getSnapshot();
       const x = (e.clientX - rect.left - c.x) / c.z, y = (e.clientY - rect.top - c.y) / c.z;

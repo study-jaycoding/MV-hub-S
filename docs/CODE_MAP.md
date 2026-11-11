@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-10
+updated: 2026-11-11
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -52,6 +52,7 @@ updated: 2026-11-10
 | 생성 접수·목적지 반영 | `frontend/src/shared/contracts/generation.ts`(자료 계약), `frontend/src/features/generation/submit.ts`(접수 분류), feature의 `api.ts`(공개 입구). Spotlight·Scene·MCP는 입력·실행 순서를 소유 |
 | 화면 간 조회 일치 | `frontend/src/features/library/readModel.ts`(필드 순서·늦은 응답), `frontend/src/features/library/readModels.ts`(계정/출처별 인스턴스), `frontend/src/features/library/changes.ts`(순수 변경 신호). 외부에서는 feature의 `api.ts` 사용 |
 | 캔버스 명령·세션 | `frontend/src/features/canvas/session.ts`(영속 대상/명령), `frontend/src/features/canvas/useCanvasSession.ts`(열린 문서·수신/flush/dispose), `frontend/src/features/canvas/edits.ts`(사용자·파생 명령 변환), `frontend/src/features/canvas/gestures.ts`(대상 세대에 묶인 이동·크기/취소·Undo), `frontend/src/features/canvas/comfyCommands.ts`(실행·저장·복구 결과의 현재 카드 병합), `frontend/src/features/canvas/references.ts`(연결 참조 계산), `frontend/src/features/canvas/assetRefs.ts`(순수 참조 교체). 외부는 feature의 `api.ts`; 기존 Undo/IDB 엔진 하나를 보존 |
+| 캔버스 GPU 보기 모드(개발 표식 `mvhub.canvas.gpuBoard`) | `frontend/src/features/canvas/gpu/gpuMode.ts`(dom→preparing→probing→gpu 상태기계·잠금/사용자/미지원/배율 상한 우선순위), `frontend/src/features/canvas/gpu/gpuScene.ts`(SceneBoard 자료 → 카드 굽기 요청·모습 열쇠·선/점/그룹 틀/이름표), `frontend/src/lib/boardCanvasDraw.ts`(카드 몸통 Canvas2D 그리기 — DOM 카드와 같은 정보), `frontend/src/features/canvas/gpu/cardAtlas.ts`(굽기 대기열·해상도 단계·예산·퇴출), `frontend/src/features/canvas/gpu/gpuRenderer.ts`(WebGL2 그리기·컨텍스트 상실·GPU 시간), `frontend/src/features/canvas/gpu/gpuHit.ts`(격자 색인·맨 앞·가림), `frontend/src/features/canvas/gpu/GpuBoard.tsx`(판 칸·프레임 루프·준비/검사/긴 프레임 알림·덧판 고르기 + `useGpuBoardMode`), `frontend/src/features/canvas/gpu/GpuOverlayCard.tsx`(마우스 올린 카드 한 장 읽기 덧판), `frontend/src/features/canvas/gpu/GpuMeasure.tsx`(숨은 측정 칸). 편집 막기 = SceneBoard 입력 진입점 + `useCanvasSession` 실행점(`editAllowed`), 카드 7종 `mode:"read"` 갈래. 설계·계약 `docs/status/캔버스_GPU판설계_2026-11-11.md` |
 | 타임라인 명령·세션 | `frontend/src/features/timeline/session.ts`: 문서 세대·명시 명령·닫기 전 수신 길이 flush. 외부는 feature의 `api.ts`; 기존 CAS/Undo 저장 엔진 유지 |
 | 공유 상태 명령 | `backend/app/usecases/share.py`(트랜잭션·권한·CAS·receipt), `backend/app/repo/share_commands.py`(원장 SQL), `backend/app/services/share_commands.py`(원격 capability/고정 재전송), `backend/app/routers/_share_authority.py`(HTTP 권한 어댑터), `backend/app/db_share_commands.py`(content v2 적용). 기존 share/publish 라우터가 입구 |
 | 자료 내용 ID·로컬 우선 자동 보관 | `backend/app/db_asset_sync.py`(추가 스키마), `backend/app/repo/asset_sync.py`(내용·위치·영속 대기열), `backend/app/services/asset_sync.py`(바이트 검증·전송), `backend/app/routers/asset_sync.py`(권한·스트리밍 API), `frontend/src/shared/contracts/assets.ts`(공유 자료 계약). 기존 캡처·반입 입구와 캔버스 공개 포트를 재사용 |

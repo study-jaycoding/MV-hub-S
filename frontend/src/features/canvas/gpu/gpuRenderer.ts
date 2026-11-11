@@ -21,6 +21,8 @@ export interface GpuScene {
 }
 export interface GpuRenderer extends AtlasUploader {
   setScene(s: GpuScene): void;
+  /** 덧판이 덮는 카드 한 장만 감추거나(null = 되살림) — 버퍼 전체를 다시 채우지 않고 그 카드 칸만 고친다 */
+  setHidden(id: string | null): void;
   draw(camera: GpuCamera, lookup: CardAtlas["lookup"]): void;
   timeGpu(frames: number): Promise<number[]>;
   textureBytes(): number;
@@ -216,6 +218,9 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
     g.bindVertexArray(null);
     let shapes: Shape[] = [];
     let uvs = new Float32Array();
+    let shapeData = new Float32Array(); // 지금 버퍼에 든 모양 자료(감춤 되살리기용)
+    const cardIndex = new Map<string, number>(); // 카드 id → 모양 칸
+    let hiddenIndex = -1;
     let rects: Range = { start: 0, count: 0 }, cards = rects, selection = rects, dots = rects, quads = rects;
     let lineCount = 0;
     let gridColor: GpuColor = [1, 1, 1, 0.11];
@@ -300,8 +305,12 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         dots = range(() => s.dots.forEach((d) => add({ x: d.x - d.r - 1, y: d.y - d.r - 1, w: d.r * 2 + 2, h: d.r * 2 + 2, radius: d.r + 1, borderWidth: 2, fill: d.fill, border: d.border })));
         quads = range(() => s.quads.forEach((q) => add({ ...q, radius: 0, borderWidth: 0, fill: transparent, border: transparent }, q.id)));
         uvs = new Float32Array(shapes.length * 4);
+        shapeData = new Float32Array(data);
+        cardIndex.clear();
+        for (let i = cards.start; i < cards.start + cards.count; i++) cardIndex.set(shapes[i].id!, i);
+        hiddenIndex = -1;
         g.bindBuffer(g.ARRAY_BUFFER, shapeBuffer);
-        g.bufferData(g.ARRAY_BUFFER, new Float32Array(data), g.DYNAMIC_DRAW);
+        g.bufferData(g.ARRAY_BUFFER, shapeData, g.DYNAMIC_DRAW);
         g.bindBuffer(g.ARRAY_BUFFER, uvBuffer);
         g.bufferData(g.ARRAY_BUFFER, uvs, g.DYNAMIC_DRAW);
         const vertices: number[] = [];
@@ -322,6 +331,16 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         g.bindBuffer(g.ARRAY_BUFFER, lineBuffer);
         g.bufferData(g.ARRAY_BUFFER, new Float32Array(vertices), g.DYNAMIC_DRAW);
         gridColor = s.gridColor ?? [1, 1, 1, 0.11];
+      },
+      setHidden(id) {
+        if (dead || contextLost) return;
+        const next = id === null ? -1 : cardIndex.get(id) ?? -1;
+        if (next === hiddenIndex) return;
+        g.bindBuffer(g.ARRAY_BUFFER, shapeBuffer);
+        // 모양 칸 = x,y,w,h,반지름,테두리,점,채움4,테두리색4 (15칸) — w·h 를 0 으로 두면 그 카드는 그려지지 않는다
+        if (hiddenIndex >= 0) g.bufferSubData(g.ARRAY_BUFFER, (hiddenIndex * 15 + 2) * 4, shapeData.subarray(hiddenIndex * 15 + 2, hiddenIndex * 15 + 4));
+        if (next >= 0) g.bufferSubData(g.ARRAY_BUFFER, (next * 15 + 2) * 4, new Float32Array([0, 0]));
+        hiddenIndex = next;
       },
       draw(camera, lookup) {
         if (dead || contextLost || camera.width <= 0 || camera.height <= 0 || camera.z <= 0 || camera.dpr <= 0) return;
