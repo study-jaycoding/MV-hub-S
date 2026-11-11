@@ -8,7 +8,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GpuSceneModel } from "../src/features/canvas/gpu/gpuScene";
 
-const fx = vi.hoisted(() => ({ samples: [] as number[] | Error, destroyed: 0, draws: 0, timed: 0, hidden: [] as Array<string | null> }));
+const fx = vi.hoisted(() => ({ samples: [] as number[] | Error, destroyed: 0, draws: 0, timed: 0, hidden: [] as Array<string | null>,
+  decode: null as null | ((src: string, w: number, h: number) => Promise<unknown>) }));
 vi.mock("../src/features/canvas/gpu/gpuRenderer", () => ({
   createGpuRenderer: () => ({
     setScene() {}, setHidden(id: string | null) { fx.hidden.push(id); }, setLowLod() {},
@@ -20,12 +21,12 @@ vi.mock("../src/features/canvas/gpu/gpuRenderer", () => ({
   }),
 }));
 vi.mock("../src/features/canvas/gpu/cardAtlas", () => ({
-  createCardAtlas: () => ({
+  createCardAtlas: (deps: { decode: (src: string, w: number, h: number) => Promise<unknown> }) => (fx.decode = deps.decode, {
     sync() {}, tick: () => ({ uploadedPx: 0, pending: 0, baked: 0 }), lookup: () => ({ page: 0 }),
     textureBytes: () => 0, cpuBytes: () => 0, cpuPeak: () => 0, reset() {}, dispose() {},
   }),
 }));
-const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode } = await import("../src/features/canvas/gpu/GpuBoard");
+const { GpuBoard, imageSizeOf, decodeImage, useGpuBoardMode, UNDRAWABLE } = await import("../src/features/canvas/gpu/GpuBoard");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -346,15 +347,28 @@ describe("디코드 크기(decodeImage)", () => {
     expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
   });
 
-  it("머리를 모르는 형식은 그림 요소로 원본 크기를 안 뒤 상자 안의 비트맵만 만든다", async () => {
-    serve(new Uint8Array(64), "image/avif");
-    class FakeImage { naturalWidth = 1000; naturalHeight = 8000; src = ""; decode() { return Promise.resolve(); } }
-    vi.stubGlobal("Image", FakeImage);
-    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:x", revokeObjectURL: () => {} }));
-    await decodeImage("/a-unknown.avif", 2048, 2048);
+  it("AVIF(ISOBMFF 'ispe')도 머리로 크기를 알아 상자 안으로 — 원본 디코드 없음", async () => {
+    const avif = new Uint8Array(64);
+    avif.set([0x66, 0x74, 0x79, 0x70], 4); // ftyp
+    avif.set([0x69, 0x73, 0x70, 0x65, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 32, 0], 30); // ispe 1024×8192
+    serve(avif, "image/avif");
+    await decodeImage("/a-long.avif", 2048, 2048);
     expect(calls).toHaveLength(1);
-    expect(calls[0].source).toBeInstanceOf(FakeImage);
     expect(calls[0].opts).toMatchObject({ resizeWidth: 256, resizeHeight: 2048 });
+  });
+
+  it("원본 크기를 디코드 없이 알 수 없는 그림은 디코드하지 않고 UNDRAWABLE — 원본 디코드가 예산 밖 메모리를 쓰지 않게", async () => {
+    serve(new Uint8Array(64), "image/tiff");
+    expect(await decodeImage("/a-unknown.tiff", 2048, 2048)).toBe(UNDRAWABLE);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("GPU 판은 UNDRAWABLE 을 받으면 그 씬을 '미지원'으로 모드에 알린다(한 번) — DOM 판에 둔다", async () => {
+    serve(new Uint8Array(64), "image/tiff");
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await act(async () => { await fx.decode!("/b-unknown.tiff", 100, 100); await fx.decode!("/c-unknown.tiff", 100, 100); });
+    expect(dispatch.mock.calls.map((c) => c[0]).filter((e) => e.type === "unsupported")).toEqual([{ type: "unsupported", sceneId: "s", unsupported: true }]);
   });
 });
 
@@ -384,6 +398,18 @@ describe("배율 상한 판정(실제 모드 훅)", () => {
     advance(300); // 미끄러짐(250) 도중 + 50 — 아직 바꾸지 않는다
     expect(seen.phase).toBe("preparing");
     advance(120);
+    expect(seen).toEqual({ phase: "dom", reason: "zoom" });
+  });
+
+  it("미끄러짐 중에 기기 배율 알림(-1)이 와도 미끄러짐이 끝나기 전엔 바꾸지 않는다", () => {
+    act(() => root.render(<ModeHarness />));
+    cam.z = 3;
+    act(() => listeners.forEach((l) => l(250)));
+    advance(20);
+    act(() => listeners.forEach((l) => l(-1)));
+    advance(200); // 시작 220ms — 미끄러짐(250) 중
+    expect(seen.phase).toBe("preparing");
+    advance(200);
     expect(seen).toEqual({ phase: "dom", reason: "zoom" });
   });
 });

@@ -84,6 +84,18 @@ export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
   const ascii = (i: number, n: number) => String.fromCharCode(...b.subarray(i, i + n));
   if (b.length >= 24 && b[0] === 0x89 && ascii(1, 3) === "PNG") return { w: u32(16), h: u32(20) };
   if (b.length >= 10 && ascii(0, 4) === "GIF8") return { w: u16(6, true), h: u16(8, true) };
+  if (b.length >= 26 && ascii(0, 2) === "BM") return { w: Math.abs(u32(18, true) | 0), h: Math.abs(u32(22, true) | 0) };
+  if (b.length >= 12 && ascii(4, 4) === "ftyp") {
+    // AVIF·HEIC(ISOBMFF) — 'ispe' 상자의 폭·높이, 'irot' 가 90·270도면 바꾼다
+    let size: { w: number; h: number } | null = null, turned = false;
+    for (let i = 8; i + 16 <= b.length; i++) {
+      if (b[i] !== 0x69) continue; // 'i'
+      const t = ascii(i, 4);
+      if (t === "ispe" && !size) size = { w: u32(i + 8), h: u32(i + 12) };
+      else if (t === "irot") turned = (b[i + 4] & 3) % 2 === 1;
+    }
+    return size && turned ? { w: size.h, h: size.w } : size;
+  }
   if (b.length >= 30 && ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") {
     const kind = ascii(12, 4);
     if (kind === "VP8 ") return { w: u16(26, true) & 0x3fff, h: u16(28, true) & 0x3fff };
@@ -118,34 +130,40 @@ export function imageSizeOf(b: Uint8Array): { w: number; h: number } | null {
   return null;
 }
 
-/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 실패하면 null(빗금 자리). */
-export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null> {
+/** 크기를 디코드 없이 알 수 없는 그림 — GPU 판이 예산 안에서 그릴 수 없다. 그 씬은 DOM 판에 둔다(계약 mode '그릴 수 없는 카드') */
+export const UNDRAWABLE = "undrawable";
+const JPEG_FULL_SCAN_MAX = 64 * 1024 * 1024;
+
+/** 이미지 주소 → maxW×maxH 상자 안에 비율을 지켜 맞춘 비트맵(아틀라스가 예약한 크기를 넘으면 그 굽기가 실패한다). 받지 못하면 null(빗금 자리),
+ *  원본 크기를 디코드 없이 알 수 없으면 UNDRAWABLE. */
+export async function decodeImage(src: string, maxW: number, maxH: number): Promise<ImageBitmap | null | typeof UNDRAWABLE> {
   try {
     const blob = await blobOf(src);
     if (!blob) return null;
     const W = Math.max(1, Math.floor(maxW)), H = Math.max(1, Math.floor(maxH));
-    // 파일 머리에서 원본 크기(회전 반영)를 먼저 읽어 처음 디코드부터 두 변을 상자 안으로 — 폭만 주고 읽으면 긴 그림은 중간 비트맵이 예산을
-    //  넘었다(2048 폭·1:8 = 128MiB, Codex 리뷰 2차). 크게 늘리지는 않는다(그릴 때 늘린다).
-    const size = blob.type === "image/svg+xml" ? null : imageSizeOf(new Uint8Array(await blob.slice(0, 1024 * 1024).arrayBuffer()));
-    if (size && size.w > 0 && size.h > 0) {
-      const k = Math.min(1, W / size.w, H / size.h);
-      return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.floor(size.w * k)), resizeHeight: Math.max(1, Math.floor(size.h * k)), resizeQuality: "high" });
+    if (blob.type === "image/svg+xml") {
+      // SVG 는 createImageBitmap(blob) 이 못 읽는다(크롬) — 그림 요소로 읽어 크기를 안 뒤 상자까지 맞춘다(생성 중·빈 생성 카드의 로고).
+      //  shortcut: 그림 요소가 SVG 를 원본 크기로 그려 둘 수 있다 — 지금 쓰는 SVG 는 앱 로고뿐이라 작다, 큰 SVG 레퍼런스가 생기면 width·height 속성을 먼저 읽을 것
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const nw = img.naturalWidth || W, nh = img.naturalHeight || H;
+        const k = Math.min(W / nw, H / nh);
+        return await createImageBitmap(img, { resizeWidth: Math.max(1, Math.floor(nw * k)), resizeHeight: Math.max(1, Math.floor(nh * k)), resizeQuality: "high" });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
-    // 크기를 모르면(SVG — createImageBitmap(blob) 이 못 읽는다 · 머리를 모르는 형식 · 1MiB 안에 크기가 없는 JPEG) 그림 요소로 읽어 원본 크기를 안 뒤
-    //  두 변을 상자 안으로 줄인 비트맵만 만든다 — 폭만 주는 디코드는 상자를 넘는 중간 비트맵을 만들었다(Codex 리뷰 3차). 그림 요소의 디코드는 브라우저
-    //  그림 캐시라 DOM 판이 같은 그림을 그릴 때와 같은 쓰임이다(굽기 버퍼 예산 밖).
-    const url = URL.createObjectURL(blob);
-    try {
-      const img = new Image();
-      img.src = url;
-      await img.decode();
-      const nw = img.naturalWidth || W, nh = img.naturalHeight || H;
-      const k = Math.min(blob.type === "image/svg+xml" ? Infinity : 1, W / nw, H / nh); // SVG(로고)는 상자까지 키워 또렷하게
-
-      return await createImageBitmap(img, { resizeWidth: Math.max(1, Math.floor(nw * k)), resizeHeight: Math.max(1, Math.floor(nh * k)), resizeQuality: "high" });
-    } finally {
-      URL.revokeObjectURL(url);
-    }
+    // 파일 머리에서 원본 크기(회전 반영)를 먼저 읽어 처음 디코드부터 두 변을 상자 안으로 — 폭만 주거나 원본을 먼저 디코드하면 긴 그림은 상자를 넘는
+    //  비트맵이 예산 밖에서 생겼다(2048×16384 = 128MiB, Codex 리뷰 2~4차). 크게 늘리지는 않는다(그릴 때 늘린다).
+    let size = imageSizeOf(new Uint8Array(await blob.slice(0, 1024 * 1024).arrayBuffer()));
+    if (!size && blob.size > 1024 * 1024 && blob.size <= JPEG_FULL_SCAN_MAX && blob.type !== "image/png")
+      size = imageSizeOf(new Uint8Array(await blob.arrayBuffer())); // 메타데이터가 길어 크기 정보가 1MiB 뒤에 있는 JPEG — 압축된 파일만 읽는다(디코드 아님)
+    if (!size || !(size.w > 0) || !(size.h > 0)) return UNDRAWABLE;
+    const k = Math.min(1, W / size.w, H / size.h);
+    return await createImageBitmap(blob, { resizeWidth: Math.max(1, Math.floor(size.w * k)), resizeHeight: Math.max(1, Math.floor(size.h * k)), resizeQuality: "high" });
   } catch {
     return null;
   }
@@ -193,6 +211,7 @@ export function GpuBoard(props: GpuBoardProps) {
     cpuPeak: 0,
     longFrames: [] as number[],
     longCandidates: [] as Array<{ from: number; to: number }>,
+    undrawableScene: "", // 그릴 수 없는 그림을 알린 씬
     loafOn: false,
     loaf: [] as Array<{ start: number; end: number }>, // GPU 판과 무관한 일(저장·네트워크 응답 해석) 스크립트가 돈 구간
   });
@@ -405,7 +424,18 @@ export function GpuBoard(props: GpuBoardProps) {
       return;
     }
     s.renderer = renderer;
-    s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode: decodeImage });
+    // 원본 크기를 디코드 없이 알 수 없는 그림이 나오면 그 씬은 GPU 판이 그릴 수 없다 — 모드에 '미지원'으로 알려 DOM 판에 둔다(씬마다 한 번, 늦은 결과는 버림)
+    const decode = async (src: string, w: number, h: number) => {
+      const scene = live.current.sceneId;
+      const r = await decodeImage(src, w, h);
+      if (r !== UNDRAWABLE) return r;
+      if (!st.current.failed && live.current.sceneId === scene && s.undrawableScene !== scene) {
+        s.undrawableScene = scene;
+        live.current.dispatch({ type: "unsupported", sceneId: scene, unsupported: true });
+      }
+      return null;
+    };
+    s.atlas = createCardAtlas({ uploader: renderer, now: () => performance.now(), makeCanvas, decode });
     s.lowLod = Math.round(live.current.cameraSource.getSnapshot().z * 100) <= SCENE_LOD_PCT;
     const board = live.current.boardRef.current;
     const measure = () => {
@@ -642,11 +672,14 @@ export function useGpuBoardMode(o: { flag: boolean; sceneId: string; unsupported
     const scaleOf = () => o.cameraSource.getSnapshot().z * (window.devicePixelRatio || 1);
     let band = zoomBand(scaleOf());
     let tickTimer = 0;
-    // 쉼 판정 예약 — 상한을 넘었거나 상한 때문에 DOM 인 동안만. 화면 맞춤 미끄러짐이면 미끄러짐이 끝난 뒤에 센다(그림이 아직 움직이는데 바꾸지 않게, Codex 리뷰 3차)
-    const scheduleTick = (slideMs: number) => {
+    let slideEnd = 0; // 진행 중인 화면 맞춤 미끄러짐이 끝나는 시각 — 그 사이 온 다른 알림(기기 배율 -1·바로 옮김 0)이 대기를 줄이지 않게(Codex 리뷰 4차)
+    // 쉼 판정 예약 — 상한을 넘었거나 상한 때문에 DOM 인 동안만. 미끄러짐이면 끝난 뒤에 센다(그림이 아직 움직이는데 바꾸지 않게, Codex 리뷰 3차)
+    const scheduleTick = (transitionMs: number) => {
+      const now = performance.now();
+      if (transitionMs > 0) slideEnd = Math.max(slideEnd, now + transitionMs);
       if (band !== "hi" && !modeRef.current.zoomBlocked) return;
       clearTimeout(tickTimer);
-      tickTimer = window.setTimeout(() => dispatch({ type: "tick", now: performance.now(), zooming: false }), Math.max(0, slideMs) + 160);
+      tickTimer = window.setTimeout(() => dispatch({ type: "tick", now: performance.now(), zooming: false }), Math.max(0, slideEnd - now) + 160);
     };
     dispatch({ type: "zoom", scale: scaleOf(), now: performance.now(), zooming: false });
     scheduleTick(0); // 처음부터 상한을 넘은 채 카메라 알림이 없어도 판정한다 — 안 그러면 준비에 멈춰 있었다

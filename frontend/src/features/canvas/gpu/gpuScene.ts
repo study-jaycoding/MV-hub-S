@@ -216,7 +216,7 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
   const w = Math.max(1, Math.round(gv.w)), h = 26;
   return {
     id: "group:" + gv.id, x: gv.x, y: gv.y, w, h,
-    key: appearanceKey(["group", gv.name, gv.count, gc, gv.collapsed, gv.selected, w]),
+    key: appearanceKey(["group", gv.name, gv.count, gv.color, gc, gv.collapsed, gv.selected, w]), // 색 지정 여부가 바탕을 바꾼다(지정 없음 = 어둠)
     draw: (g) => {
       const [r, gg, b] = hexRgba(gc);
       const mix = (k: number, base: [number, number, number, number]) =>
