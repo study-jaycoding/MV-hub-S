@@ -12,6 +12,8 @@ export type Rgba = [number, number, number, number];
 const ACCENT = "#c4e84a"; // --accent(styles/base.css) — 연결선·끝 점·틀·그룹 기본색
 const BADGE = "#c8ef40"; // 결과 수 배지(history.css .scene-multi-badge)
 const ACCENT_INK = "#111";
+const MUTED = "#8b909c"; // --muted(styles/base.css)
+const BORDER2 = "rgba(255,255,255,0.13)"; // --border2(styles/base.css)
 const FONT = '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif';
 
 /** '#rrggbb'·'#rgb' → 0..1 RGBA. 읽을 수 없는 색은 강조색. */
@@ -256,13 +258,20 @@ function groupHeaderQuad(gv: GpuSceneGroup): TextQuad {
       g.fillStyle = ACCENT_INK;
       g.textAlign = "center";
       g.fillText(String(gv.count), nx + cw / 2, h / 2 + 0.5);
-      // 오른쪽 단추 자리 — 접기(▾/▸)·색 견본·×
-      g.fillStyle = "#e6e8ec";
-      g.font = `700 12px ${FONT}`;
-      g.fillText(gv.collapsed ? "▸" : "▾", w - 8 - 18 - 6 - 16 - 6 - 12, h / 2 + 0.5);
-      g.fillStyle = gc;
-      g.fillRect(w - 8 - 18 - 6 - 16, h / 2 - 8, 16, 16);
-      g.fillStyle = "#8a909a";
+      // 오른쪽 단추 자리(scene.css .scene-group-btn·-color·-x) — 접기 −/+(20px 800 회색) · 색 견본(16px 둥근 5, 테두리 --border2,
+      //  색을 안 정하면 바탕도 --border2) · ×(15px 회색)
+      g.fillStyle = MUTED;
+      g.font = `800 20px ${FONT}`;
+      g.fillText(gv.collapsed ? "+" : "−", w - 8 - 18 - 6 - 16 - 6 - 12, h / 2 + 0.5);
+      g.beginPath();
+      g.roundRect(w - 8 - 18 - 6 - 16 + 0.5, h / 2 - 8 + 0.5, 15, 15, 5);
+      g.fillStyle = gv.color || BORDER2;
+      g.fill();
+      g.strokeStyle = BORDER2;
+      g.lineWidth = 1;
+      g.stroke();
+      g.fillStyle = MUTED;
+      g.font = `700 15px ${FONT}`;
       g.fillText("×", w - 8 - 9, h / 2 + 0.5);
     },
   };

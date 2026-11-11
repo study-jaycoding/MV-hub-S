@@ -137,6 +137,9 @@ describe("포트·쌓임(카드에 딸린 조각)", () => {
     };
     expect(fills(null)[0]).toBe("rgba(20,22,26,0.46)");
     expect(fills("#ff0000")[0]).not.toBe("rgba(20,22,26,0.46)");
+    // 색 견본(마지막 채움) — DOM 처럼 색을 안 정하면 --border2(어두운 회색), 강조색이 아니다
+    expect(fills(null).at(-1)).toBe("rgba(255,255,255,0.13)");
+    expect(fills("#ff0000").at(-1)).toBe("#ff0000");
     // 모습 열쇠도 색 지정 여부를 담는다 — 색이 없다가 강조색으로 정해져도(같은 gc) 다시 굽는다
     const key = (color: string | null) => buildGpuScene(input({ groups: [{ id: "G", x: 0, y: 0, w: 400, h: 300, color, name: "묶음", count: 1, collapsed: false, selected: false }] }))
       .requests.find((r) => r.id === "group:G")!.key;
