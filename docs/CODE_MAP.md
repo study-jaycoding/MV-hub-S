@@ -27,7 +27,8 @@ updated: 2026-11-11
 
 | 파일 | 책임 |
 |---|---|
-| `frontend/src/components/resolvePanel/ResolvePanelApp.tsx` | 씬 저장소 없는 패널·기존 로그인·전체 워크스페이스의 프로젝트/시퀀스/컷·공유물 카드 |
+| `frontend/src/components/resolvePanel/ResolvePanelApp.tsx` | 씬 저장소 없는 패널·기존 로그인 · 다빈치 미디어 풀 모양(빈 트리·보기/크기/검색/정렬·색·태그·생성자 거르기)·15초/초점 자동 갱신·카드 S·T 연결 |
+| `frontend/src/components/resolvePanel/ResolvePanelCards.tsx` | 패널 카드 세 보기(썸네일 = 편집 탭 EditCard · 메타데이터 · 목록)·누르기 준비·끌기·상태 줄 |
 | `frontend/src/lib/resolvePanelApi.ts` | 6개 API 타입·양방향 끌기 판 호환·끌기 조건·adopt/target 상태 판단·캐시 묶음 |
 | `frontend/src/lib/useResolvePanel.ts` | 창별 순번·인증/문맥 폐기·직렬 폴링·카드 준비·네이티브 끌기·확인 재시도 |
 | `frontend/src/styles/resolve-panel.css` | 좁은 분리 창의 컷 목록·공유물 카드·상태 표시 |
