@@ -514,7 +514,7 @@ def run_resolve_project_open_isolated(
 
 def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) -> dict[str, Any]:
     """패널도 같은 변경 잠금을 쓴다 — 대기는 30초, 시작한 변경 자식은 끝까지 기다린다."""
-    reading = payload["operation"] == "current-bin"
+    reading = payload["operation"] in {"current-bin", "inventory"}
     failed_state = "unknown" if payload["operation"] == "adopt" else "unavailable"
     deadline = time.monotonic() + 30
     while True:
@@ -539,7 +539,7 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                 try:
                     completed = _run_child(
                         interpreter, "app.services.resolve_panel_worker",
-                        timeout=8 if reading else None,
+                        timeout=(20 if payload["operation"] == "inventory" else 8) if reading else None,
                         input_text=json.dumps(payload, ensure_ascii=True),
                     )
                 except (OSError, subprocess.SubprocessError) as exc:

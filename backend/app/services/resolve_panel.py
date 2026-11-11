@@ -1,10 +1,13 @@
-"""리졸브 패널의 실행 문맥·파일 준비·확인 장부. 준비 기록은 허브 수명 동안만 둔다."""
+"""리졸브 패널의 담당 창·파일 준비·확인 장부. 중단된 옮기기만 디스크 기록으로 이어 받는다."""
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import os
+import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from .. import active_account, config, repo
@@ -16,6 +19,119 @@ _prepare_lock = asyncio.Lock()
 _inflight: dict[tuple, asyncio.Future] = {}
 _prepared: dict[tuple, dict] = {}
 _sequences: dict[tuple, int] = {}
+_same_files: dict[tuple, set[str]] = {}
+write_lock = asyncio.Lock()
+_owner: dict = {"window": "", "context": (), "generation": 0, "seen": 0, "bin_id": ""}
+
+
+@asynccontextmanager
+async def mutation_scope():
+    await asyncio.wait_for(write_lock.acquire(), timeout=30)
+    try:
+        yield
+    finally:
+        write_lock.release()
+
+
+def hub_key() -> str:
+    from .resolve_bridge import _normal_path
+    return hashlib.sha1((device_identity()["device_id"] + _normal_path(str(config.MEDIA_DIR))).encode()).hexdigest()[:16]
+
+
+def owner_generation(ctx, window):
+    return _owner["generation"] if _owner["window"] == window and _owner["context"] == context_key(ctx) and time.monotonic() - _owner["seen"] <= 15 else None
+
+
+def owner_state(ctx, window):
+    previous = _owner["context"]
+    if (not _owner["window"] or time.monotonic() - _owner["seen"] > 15 or not previous
+            or (previous[0], previous[2]) != (ctx["instance"], ctx["epoch"])
+            or ((_owner["window"] == window or not config.AUTH_ENABLED) and previous != context_key(ctx))):
+        return "unclaimed"
+    return "writer" if owner_generation(ctx, window) is not None else "other_window"
+
+
+async def window_identity(request, window, claim=False):
+    ctx = identity(request)
+    if claim:
+        async with mutation_scope():
+            check_context(ctx, request)
+            _owner.update(window=window, context=context_key(ctx), generation=_owner["generation"] + 1,
+                          seen=time.monotonic(), bin_id="")
+    elif _owner["window"] == window and _owner["context"] == context_key(ctx):
+        _owner["seen"] = time.monotonic()
+    return {**ctx, "writer": owner_generation(ctx, window) is not None,
+            "owner_state": owner_state(ctx, window),
+            "generation": _owner["generation"], "active_bin_id": _owner["bin_id"]}
+
+
+def remember_bin(bin_id):
+    if _owner["bin_id"] != bin_id:
+        _same_files.clear()
+    _owner["bin_id"] = bin_id
+
+
+def _record_path(kind, resolve_project_id, item_id):
+    # 리졸브 ID가 파일 이름으로 안전하다는 가정을 하지 않는다.
+    safe = lambda value: hashlib.sha256(str(value).encode()).hexdigest()
+    return Path(config.DATA_DIR) / "resolve_panel" / kind / safe(resolve_project_id) / (safe(item_id) + ".json")
+
+
+def save_record(kind, record):
+    path = _record_path(kind, record["resolve_project_id"], record["item_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix("." + uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(record, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def records(kind, ctx, resolve_project_id=None, *, include_foreign=False):
+    root = Path(config.DATA_DIR) / "resolve_panel" / kind
+    found = []
+    for path in root.glob("*/*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if (include_foreign or (row["account"] == ctx["account"] and row["hub_key"] == hub_key())) and (not resolve_project_id or row["resolve_project_id"] == resolve_project_id):
+                found.append(row)
+        except (OSError, ValueError, KeyError):
+            continue
+    return found
+
+
+def remove_records(kind, rows):
+    for row in rows:
+        _record_path(kind, row["resolve_project_id"], row["item_id"]).unlink(missing_ok=True)
+
+
+def validate_media_root(source_root):
+    from .resolve_bridge import _panel_under
+    if _panel_under(str(config.MEDIA_DIR), str(source_root)) or _panel_under(str(source_root), str(config.MEDIA_DIR)):
+        raise transfer.ResolveTransferError("이 PC 원본 폴더와 NAS 렌더 폴더가 겹칩니다")
+
+
+async def stage_items(ctx, generations, request=None):
+    from .resolve_bridge import _panel_under
+    if generations:
+        source_root, _ = await asyncio.to_thread(transfer.resolve_transfer_roots, generations[0]["project_id"])
+        validate_media_root(source_root)
+    items = []
+    for gen in sorted(generations, key=lambda row: (str(row.get("created_at") or ""), row["id"]))[:200]:
+        check_context(ctx, request)
+        async with _prepare_lock:
+            check_context(ctx, request)
+            path = await transfer._cached_source(generation_asset(gen))
+        if not _panel_under(str(path), str(config.MEDIA_DIR)) or not Path(path).is_file():
+            raise transfer.ResolveTransferError("이 PC 원본 경로를 확인하지 못했습니다")
+        duration = (gen.get("params") or {}).get("duration") or gen.get("duration")
+        label = " · ".join(str(value) for value in [gen.get("creator_name") or "", gen.get("model") or "", f"{duration}s" if duration else ""] if value)
+        items.append({"gen_id": gen["id"], "path": str(path), "label": label or gen["id"]})
+    return items
 
 
 class AccountChanged(RuntimeError):

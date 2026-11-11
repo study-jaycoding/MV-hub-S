@@ -1,4 +1,4 @@
-/* 리졸브 안 MV 창 — 다빈치 미디어 풀 모양(Jay 2026-11-11): 왼쪽 빈 트리 · 오른쪽 도구 줄과 썸네일 격자. 색은 리졸브 미디어 풀의 회색 판. */
+/* 리졸브 안 MV 창 — 다빈치 미디어 풀 모양(Jay 2026-11-11): 왼쪽 빈 트리 · 오른쪽 상태. 색은 리졸브 미디어 풀의 회색 판. */
 .resolve-panel { color: #d4d4d6; background: #1f2023; height: 100dvh; display: flex; flex-direction: column; font-size: 12px; overflow: hidden; }
 .resolve-panel-head { padding: 10px 12px 8px; background: #28292d; border-bottom: 1px solid #333438; flex: none; }
 .resolve-panel-head > strong { display: block; font-size: 15px; color: #e6e6e8; }
@@ -9,7 +9,7 @@
 .rp-flash { white-space: pre-line; }
 .rp-flash button { float: right; color: inherit; background: none; border: 0; }
 .resolve-panel button { font: inherit; cursor: pointer; }
-.resolve-panel-warning button, .resolve-panel-card-state button { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
+.resolve-panel-warning button, .resolve-panel-body main button { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
 .resolve-panel button:focus-visible, .resolve-panel select:focus-visible, .resolve-panel input:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 1px; }
 .resolve-panel-body { display: flex; flex: 1; min-height: 0; }
 .resolve-panel-loading { padding: 24px; }
@@ -29,39 +29,8 @@
 .rp-side .sidebar-foot-toggle { flex: none; }
 .rp-filter { flex: none; max-height: 45%; overflow: auto; }
 
-/* 오른쪽 — 도구 줄 */
-.resolve-panel-body main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.rp-tools { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid #333438; flex: none; }
-.rp-path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; color: #c4c5c9; }
-.rp-tool { color: #9c9da2; background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 3px 6px; }
-.rp-tool:hover, .rp-tool.on { color: #e6e6e8; background: #2a2b2f; }
-select.rp-tool { background: #1f2023; border-color: #333438; }
-.rp-menu { position: absolute; right: 10px; top: 100%; z-index: 5; display: flex; flex-direction: column; min-width: 170px; padding: 6px; background: #28292d; border: 1px solid #3a3b40; border-radius: 6px; }
-.rp-menu button { display: flex; gap: 8px; text-align: left; color: #d4d4d6; background: transparent; border: 0; border-radius: 4px; padding: 5px 8px; }
-.rp-menu button:hover { background: #333438; }
-.rp-menu b { width: 12px; color: var(--accent, #c4e84a); }
-.rp-menu input { margin: 8px 6px 2px; accent-color: var(--accent, #c4e84a); }
-.rp-search { margin: 6px 10px 0; padding: 5px 7px; color: inherit; background: #141517; border: 1px solid #333438; border-radius: 4px; }
-.resolve-panel-body main > p { margin: 8px 10px 0; color: #9c9da2; }
-
-/* 카드 — 세 보기 */
-.rp-cards { flex: 1; min-height: 0; overflow: auto; padding: 10px; }
-.rp-cards.rp-thumb { display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; }
-.rp-tile { flex: none; cursor: grab; }
-.rp-tile .ed-card .card-thumb { aspect-ratio: 16 / 9; }
-/* 뺀 단추 — C(코멘트)·ⓘ 정보 등 덮개 단추는 새 창을 열어 리졸브 안 창에서 쓰지 않는다. 작성자는 칸 아래 이름에 있다 */
-.rp-tile .card-tl > .card-cm:last-child, .rp-tile .thumb-overlay, .rp-tile .card-drag-grip, .rp-tile .creator-badge { display: none; }
-.rp-tile-name { margin-top: 4px; color: #a9aaae; font-size: 11px; overflow: hidden; white-space: nowrap; }
-.rp-tile .resolve-panel-card-state, .rp-meta .resolve-panel-card-state { margin-top: 3px; color: #e6e6e8; font-size: 11px; overflow-wrap: anywhere; }
-.resolve-panel-final { color: #e3b341; font-weight: 400; margin-left: 4px; }
-.rp-held { color: #ef7d8c; font-weight: 400; margin-left: 4px; }
-.rp-meta { display: flex; align-items: flex-start; gap: 12px; padding: 6px; margin-bottom: 4px; border-radius: 6px; cursor: grab; }
-.rp-meta:hover, .rp-list:hover { background: #2a2b2f; }
-.rp-meta .ed-pthumb { flex: none; }
-.rp-meta-img, .rp-meta-img img, .rp-meta-img video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.rp-list { position: relative; display: grid; grid-template-columns: 6px minmax(0, 2fr) minmax(0, 1.2fr) 40px minmax(0, 1.6fr); align-items: center; gap: 8px;
-  min-height: 28px; padding: 2px 6px; border-radius: 4px; cursor: grab; }
-.rp-list > span { min-width: 0; overflow: hidden; white-space: nowrap; }
-.rp-list > .ed-pcolor { position: static; height: 18px; border-radius: 2px; }
-.rp-list .resolve-panel-card-state { overflow: hidden; white-space: nowrap; }
-@media (max-width: 440px) { .rp-side { width: 140px; flex-basis: 140px; } .rp-cards { padding: 6px; } }
+/* 상태 줄은 좁은 창에서도 줄바꿈하고, 트리와 별도로 스크롤한다. */
+.resolve-panel-body main { flex: 1; min-width: 0; overflow: auto; padding: 10px; overflow-wrap: anywhere; }
+.resolve-panel-body main p { line-height: 1.6; margin: 0 0 10px; }
+.resolve-panel-body main button { color: #000; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 4px 8px; }
+@media (max-width: 460px) { .rp-side { width: 144px; flex-basis: 144px; } }

@@ -7,23 +7,15 @@ import { loadString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { t } from "./i18n";
 import {
-  adoptAction, cacheBatches, contextKey, dragPermission, hasResolveBridge, PROTOCOL_MISMATCH, RECOVERY_PENDING,
-  resolvePanelApi as panel, startPanelDrag, targetView,
-  type AdoptState, type PanelIdentity, type PanelSelection, type TargetResult,
+  cacheBatches, contextKey, hasResolveBridge, RECOVERY_PENDING,
+  resolvePanelApi as panel, targetView, inventoryAction, stageSummary, panelFailure,
+  type PanelIdentity, type PanelSelection, type TargetResult, type StageResult, type InventoryItem,
 } from "./resolvePanelApi";
 
-interface Selection extends PanelSelection { seq: number; window: string; revision: number }
-export interface PanelCard { path?: string; project?: string; message: string; retry?: boolean }
+interface Selection extends PanelSelection { seq: number; window: string; revision: number; capped?: boolean }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-const wait = () => new Promise<void>(resolve => setTimeout(resolve, 1000));
 const createWindowId = (): string => typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
   ? crypto.randomUUID() : `panel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`;
-const messages: Partial<Record<AdoptState, string>> = {
-  conflict: "표시 충돌", elsewhere: "다른 빈에 있음", project_changed: "프로젝트가 바뀜",
-  stamp_failed: "클립 표시를 확인하지 못했습니다", save_failed: "프로젝트 저장을 확인하지 못했습니다",
-  ledger_failed: "전송 장부를 기록하지 못했습니다", unknown: "확인 못 함",
-  not_seen: "확인 못 함 — 놓지 않았거나 다른 빈", busy: "확인 중 — 리졸브가 바쁨",
-};
 
 export function useResolvePanel() {
   const [config, setConfig] = useState<AuthConfig | null>(null);
@@ -33,7 +25,11 @@ export function useResolvePanel() {
   const [identity, setIdentity] = useState<PanelIdentity | null>(null);
   const [target, setTarget] = useState<TargetResult | null>(null);
   const [current, setCurrent] = useState<TargetResult | null>(null);
-  const [cards, setCards] = useState<Record<string, PanelCard>>({});
+  const [stage, setStage] = useState<StageResult | null>(null);
+  const [moved, setMoved] = useState(0);
+  const [counts, setCounts] = useState({ other_owner: 0, needs_attention: 0 });
+  const [failures, setFailures] = useState<string[]>([]);
+  const [recoveryRun, setRecoveryRun] = useState(0);
   const [notice, setNotice] = useState("");
   const [windowId] = useState(createWindowId);
   const revision = useRef(0);
@@ -43,31 +39,29 @@ export function useResolvePanel() {
   const selected = useRef<Selection | null>(null);
   const targetRef = useRef<TargetResult | null>(null);
   const currentRef = useRef<TargetResult | null>(null);
-  const cardsRef = useRef<Record<string, PanelCard>>({});
-  const pending = useRef(new Map<string, Promise<void>>());
-  const adoptions = useRef(new Set<string>());
-  const targetPending = useRef<{ selection: Selection; promise: Promise<TargetResult | null> } | null>(null);
+  const queue = useRef(Promise.resolve());
+  const adopted = useRef(new Set<string>());
+  const failedAdoptions = useRef(new Map<string, string>());
+  const generations = useRef<Generation[]>([]);
+  const claimed = useRef(false);
+  const lastContext = useRef("");
+  const recovered = useRef("");
   const authEpoch = useRef(0);
 
   const clear = useCallback(() => {
+    claimed.current = false;
     revision.current++;
     context.current = null; checkedAt.current = 0; selected.current = null;
-    targetRef.current = null; currentRef.current = null; cardsRef.current = {};
-    pending.current.clear(); adoptions.current.clear(); targetPending.current = null;
-    setIdentity(null); setTarget(null); setCurrent(null); setCards({}); setNotice("");
+    targetRef.current = null; currentRef.current = null;
+    adopted.current.clear(); failedAdoptions.current.clear(); recovered.current = "";
+    setIdentity(null); setTarget(null); setCurrent(null); setStage(null); setMoved(0); setFailures([]); setNotice("");
   }, []);
   const resetAuth = useCallback(() => {
     authEpoch.current++; clear(); setAuthReady(false); setAuthRun(n => n + 1);
   }, [clear]);
   // 일반 브라우저는 읽기 전용이며, 대기 중 다리가 사라져도 후속 요청을 보내지 않는다.
-  const alive = (selection: Selection) => hasResolveBridge(window.mvhubResolve) && selected.current === selection && selection.revision === revision.current
-    && contextKey(context.current) === contextKey(selection.ctx);
-  const card = (selection: Selection, id: string, update: Partial<PanelCard>) => {
-    if (!alive(selection)) return;
-    cardsRef.current = { ...cardsRef.current, [id]: { ...cardsRef.current[id], message: "", ...update } };
-    setCards(cardsRef.current);
-  };
-  const resetContext = () => { clear(); setAuthRun(n => n + 1); };
+  const valid = (selection: Selection) => hasResolveBridge(window.mvhubResolve) && context.current?.writer === true
+    && selection.revision === revision.current && contextKey(context.current) === contextKey(selection.ctx);
 
   useEffect(() => {
     const epoch = authEpoch.current;
@@ -131,9 +125,17 @@ export function useResolvePanel() {
       clearTimeout(timer); running = true;
       const epoch = authEpoch.current;
       try {
-        const next = await panel.identity();
+        const claim = hasResolveBridge(window.mvhubResolve) && !claimed.current && !lastContext.current;
+        let next = await panel.identity(windowId, claim);
         if (!mounted || epoch !== authEpoch.current) return;
-        if (contextKey(next) !== contextKey(context.current)) clear();
+        if (contextKey(next) !== lastContext.current) { clear(); lastContext.current = contextKey(next); }
+        if (claim) claimed.current = true;
+        if (hasResolveBridge(window.mvhubResolve) && !claimed.current) {
+          // 새 문맥은 다시 열되 실제 다른 담당 창은 자동으로 빼앗지 않는다.
+          if (next.owner_state !== "other_window") next = await panel.identity(windowId, true);
+          if (!mounted || epoch !== authEpoch.current) return;
+          claimed.current = true;
+        }
         context.current = next; checkedAt.current = Date.now(); setIdentity(next);
       } catch (error) {
         if (mounted && epoch === authEpoch.current) { checkedAt.current = 0; setNotice(errorText(error)); }
@@ -144,188 +146,186 @@ export function useResolvePanel() {
     return () => { mounted = false; clearTimeout(timer); window.removeEventListener("focus", poll); };
   }, [authReady, authRun, clear]);
 
+
+  const enqueue = (work: () => Promise<void>) => {
+    queue.current = queue.current.then(work).catch(error => setFailures(previous => [...new Set([...previous, errorText(error)])]));
+    return queue.current;
+  };
+  const check = (result: { state: string; details?: unknown }) => {
+    if (result.state === "account_changed") { clear(); throw new Error(t("계정 문맥을 확인 중입니다")); }
+    if (result.state === "other_window") {
+      if (context.current) { context.current = { ...context.current, writer: false }; setIdentity(context.current); }
+      throw new Error(t("다른 MV 창이 리졸브를 맡고 있습니다"));
+    }
+  };
+  const itemName = (id: string) => {
+    const gen = generations.current.find(item => item.id === id);
+    return gen ? [gen.creator_name, gen.model, gen.params?.duration ? String(gen.params.duration) + "s" : ""].filter(Boolean).join(" · ") || id : id;
+  };
+  const adoptOne = async (selection: Selection, id: string, project: string, bin?: string, itemIds?: string[], recovery = false) => {
+    if (!valid(selection)) return;
+    const key = JSON.stringify([contextKey(selection.ctx), project, id]);
+    if (adopted.current.has(key)) return;
+    if (failedAdoptions.current.has(key)) throw new Error(failedAdoptions.current.get(key));
+    try {
+    if (!recovery) {
+      const ready = await panel.prepare({ ...selection, gen_id: id });
+      if (!valid(selection)) return;
+      check(ready);
+      if (ready.state !== "prepared") throw new Error(id + ": " + (ready.error || ready.state));
+    }
+    if (!valid(selection)) return;
+    const result = await panel.adopt({ ...selection, gen_id: id, resolve_project_id: project, bin_id: bin, item_ids: itemIds });
+    if (!valid(selection)) return;
+    check(result);
+    if (result.state !== "in_bin") throw new Error(itemName(id) + ": " + panelFailure(result.state));
+    adopted.current.add(key); setMoved(value => value + 1);
+    } catch (error) { failedAdoptions.current.set(key, errorText(error)); throw error; }
+  };
+  const settle = async (selection: Selection) => {
+    if (!valid(selection)) return;
+    const result = await panel.currentBin(selection.ctx, selection.project_id, selection.folder_path);
+    if (!valid(selection)) return;
+    check(result);
+    if (result.state === "ok" && !result.target_bin_id) return;
+    if (result.state !== "ok" || result.used === undefined) throw new Error(t("앞 컷 정리를 확인하지 못했습니다"));
+    for (const id of result.used) await adoptOne(selection, id, result.resolve_project_id!, result.target_bin_id);
+    if (!valid(selection) || !result.target_bin_id) return;
+    const removed = await panel.unstage({ ...selection, bin_id: result.target_bin_id });
+    check(removed);
+    if (!["ok", "not_seen"].includes(removed.state)) throw new Error(t("앞 컷 정리를 확인하지 못했습니다") + ": " + removed.state);
+  };
+  const stageCut = async (selection: Selection, gens: Generation[], align: boolean) => {
+    if (!valid(selection) || selected.current !== selection) return;
+    const capped = selection.capped || gens.length > 200;
+    gens = [...gens].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id)).slice(0, 200);
+    for (const gen_ids of cacheBatches(gens.map(gen => gen.id))) {
+      const cached = await panel.cache({ ...selection, gen_ids });
+      if (!valid(selection) || selected.current !== selection) return;
+      if (cached.state) check(cached as { state: string });
+      const failed = cached.items.filter(item => item.state !== "cached");
+      if (failed.length) throw new Error(failed.map(item => item.gen_id + ": " + item.error).join(", "));
+    }
+    if (align) {
+      const result = await panel.target({ ...selection, create: true });
+      if (!valid(selection) || selected.current !== selection) return;
+      check(result);
+      targetRef.current = result; setTarget(result); setNotice(targetView(result).message);
+      if (result.state !== "ok") return;
+    }
+    const result = await panel.stage({ ...selection, capped, gen_ids: gens.map(gen => gen.id) });
+    if (!valid(selection) || selected.current !== selection) return;
+    check(result);
+    setStage(result);
+    const failed = stageSummary(result).failed;
+    if (failed.length) setFailures(previous => [...new Set([...previous, ...failed.map(item => itemName(item.gen_id) + ": " + panelFailure(item.state))])]);
+    if (!["ok", "stale"].includes(result.state)) throw new Error(String(result.details || result.state));
+    if (result.bin_path) setNotice(t("리졸브 빈") + ": " + result.bin_path);
+  };
+  const selectCut = useCallback((project_id: string, folder_path: string, gens: Generation[], capped = false) => {
+    const previous = selected.current, ctx = context.current;
+    generations.current = gens;
+    const selection = ctx && project_id && folder_path ? { ctx, project_id, folder_path, capped, window: windowId, seq: ++sequence.current, revision: revision.current } : null;
+    selected.current = selection; setStage(null);
+    // 앞 컷 정리는 선택 변경과 분리해 끝낸다 — A로 돌아와도 같은 줄 뒤에서 시작한다.
+    if (previous) void enqueue(() => settle(previous));
+    if (selection) void enqueue(() => stageCut(selection, gens, true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowId]);
+  const updateSet = useCallback((gens: Generation[], capped = false) => {
+    generations.current = gens;
+    const selection = selected.current;
+    if (!selection) return;
+    const next = { ...selection, capped, seq: ++sequence.current };
+    selected.current = next;
+    void enqueue(() => stageCut(next, gens, false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const align = () => {
+    const selection = selected.current;
+    if (selection) void enqueue(() => stageCut(selection, generations.current, true));
+  };
+  const retry = () => {
+    adopted.current.clear(); failedAdoptions.current.clear(); recovered.current = ""; setFailures([]);
+    setRecoveryRun(value => value + 1);
+    const selection = selected.current;
+    if (selection) void enqueue(() => stageCut(selection, generations.current, false));
+  };
+  const takeover = async () => {
+    if (!hasResolveBridge(window.mvhubResolve)) return;
+    const next = await panel.identity(windowId, true);
+    context.current = next; setIdentity(next); checkedAt.current = Date.now(); recovered.current = "";
+    align();
+  };
+
   useEffect(() => {
-    if (!identity) return;
+    if (!identity?.writer || !hasResolveBridge(window.mvhubResolve)) return;
     let mounted = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       const selection = selected.current;
-      if (document.visibilityState !== "hidden" && selection && alive(selection)) {
-        try {
-          const result = await panel.currentBin(selection.ctx);
-          if (!mounted) return;
-          if (alive(selection)) {
-            if (result.state === "account_changed") { resetContext(); return; }
-            currentRef.current = result; setCurrent(result);
+      if (document.visibilityState !== "hidden" && selection && valid(selection)) {
+        await enqueue(async () => {
+          if (!valid(selection)) return;
+          const result = await panel.currentBin(selection.ctx, selection.project_id, selection.folder_path);
+          if (!valid(selection)) return;
+          check(result);
+          if (selected.current === selection) { currentRef.current = result; setCurrent(result); }
+          for (const id of result.used || []) {
+            try { await adoptOne(selection, id, result.resolve_project_id!, result.target_bin_id); }
+            catch (error) { setFailures(previous => [...new Set([...previous, errorText(error)])]); }
           }
-        } catch {
-          if (mounted && alive(selection)) { currentRef.current = { state: "unavailable" }; setCurrent(currentRef.current); }
-        }
+        });
       }
       if (mounted) timer = setTimeout(() => void poll(), 2000);
     };
     void poll();
     return () => { mounted = false; clearTimeout(timer); };
-    // 문맥이 같으면 identity 확인 시각만으로 폴링을 다시 시작하지 않는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contextKey(identity)]);
+  }, [identity?.instance, identity?.account, identity?.epoch, identity?.writer]);
 
-  async function targetFor(selection: Selection, create: boolean): Promise<TargetResult | null> {
-    if (!alive(selection)) return null;
-    if (targetPending.current?.selection === selection) return targetPending.current.promise;
-    const promise = (async () => {
-      try {
-        const result = await panel.target({ ...selection, create });
-        if (!alive(selection)) return null;
-        const view = targetView(result);
-        if (view.action === "reset") { resetContext(); return null; }
-        if (view.action === "ignore") return null;
-        targetRef.current = result; setTarget(result); setNotice(view.message);
-        return result;
-      } catch (error) {
-        if (alive(selection)) {
-          targetRef.current = { state: "unavailable" }; setTarget(targetRef.current); setNotice(errorText(error));
-        }
-        return null;
+  useEffect(() => {
+    if (!identity?.writer || !hasResolveBridge(window.mvhubResolve)) return;
+    const key = contextKey(identity) + ":" + identity.generation;
+    if (recovered.current === key) return;
+    recovered.current = key;
+    const ctx = identity, rev = revision.current;
+    void enqueue(async () => {
+      let after: [string, string] | undefined;
+      const all: InventoryItem[] = [];
+      do {
+        if (rev !== revision.current || !context.current?.writer || !hasResolveBridge(window.mvhubResolve)) return;
+        const result = await panel.inventory(ctx, after);
+        if (rev !== revision.current || contextKey(ctx) !== contextKey(context.current)) return;
+        check(result);
+        if (result.state !== "ok") { recovered.current = ""; throw new Error(String(result.details || result.state)); }
+        setCounts({ other_owner: result.other_owner || 0, needs_attention: result.needs_attention || 0 });
+        all.push(...result.items || []);
+        after = result.more ? result.after : undefined;
+        if (result.more && !after) throw new Error(t("확인 못 함"));
+      } while (after);
+      const bins = new Map<string, Selection>();
+      for (const item of all) {
+        const selection = { ctx, project_id: item.project_id, folder_path: item.folder_path, window: windowId, seq: ++sequence.current, revision: rev };
+        const action = inventoryAction(item);
+        if (action === "recover" || action === "adopt") {
+          try { await adoptOne(selection, item.gen_id, item.resolve_project_id, item.bin_id, [item.item_id], item.recovery); }
+          catch (error) { setFailures(previous => [...new Set([...previous, errorText(error)])]); }
+        } else if (action === "unstage") bins.set(item.bin_id, selection);
       }
-    })();
-    targetPending.current = { selection, promise };
-    try { return await promise; }
-    finally { if (targetPending.current?.promise === promise) targetPending.current = null; }
-  }
-
-  const selectCut = useCallback((projectId: string, folderPath: string, gens: Generation[]) => {
-    selected.current = null; targetRef.current = null; currentRef.current = null; cardsRef.current = {};
-    setTarget(null); setCurrent(null); setCards({}); setNotice("");
-    if (!hasResolveBridge(window.mvhubResolve) || !context.current || !projectId || !folderPath) return;
-    const selection: Selection = { ctx: context.current, project_id: projectId, folder_path: folderPath,
-      seq: ++sequence.current, window: windowId, revision: revision.current };
-    selected.current = selection;
-    void targetFor(selection, false);
-    void cacheCards(selection, gens.map(gen => gen.id));
-    // 선택 요청은 ref를 기준으로 처리한다 — 확인 폴링마다 같은 컷을 다시 선택하지 않게.
+      for (const [bin_id, selection] of bins) {
+        if (!valid(selection)) return;
+        if (selected.current?.project_id === selection.project_id && selected.current.folder_path === selection.folder_path) continue;
+        const result = await panel.unstage({ ...selection, bin_id, inventory_cleanup: true });
+        check(result);
+        if (!["ok", "active_bin", "not_seen"].includes(result.state)) throw new Error(result.state);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [identity?.instance, identity?.account, identity?.epoch, identity?.writer, identity?.generation, recoveryRun]);
 
-  async function cacheCards(selection: Selection, all: string[]) {
-    for (const ids of cacheBatches(all)) {
-      if (!alive(selection)) return;
-      ids.forEach(id => card(selection, id, { message: t("받는 중") }));
-      try {
-        const result = await panel.cache({ ...selection, gen_ids: ids });
-        if (!alive(selection)) return;
-        if (result.state === "account_changed") { resetContext(); return; }
-        for (const item of result.items) {
-          if (!cardsRef.current[item.gen_id]?.path) card(selection, item.gen_id, { message: item.state === "cached" ? t("로컬 캐시 준비됨") : item.error || t("받지 못했습니다") });
-        }
-      } catch (error) { if (alive(selection)) ids.forEach(id => card(selection, id, { message: errorText(error) })); return; }
-    }
-  }
-
-  // 같은 컷을 다시 읽어 새로 생긴 카드 — 컷 선택(target·순번)은 다시 하지 않는다(15초마다 리졸브 지금 빈을 되돌리지 않게).
-  const addCards = useCallback((gens: Generation[]) => {
-    const selection = selected.current;
-    if (!selection || !alive(selection)) return;
-    const fresh = gens.map(gen => gen.id).filter(id => !cardsRef.current[id]);
-    if (fresh.length) void cacheCards(selection, fresh);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function prepareCard(id: string): Promise<void> {
-    const selection = selected.current;
-    if (!selection || !alive(selection)) return;
-    const key = `${selection.revision}:${selection.seq}:${id}`;
-    if (pending.current.has(key)) return pending.current.get(key);
-    const promise = (async () => {
-      let destination = targetRef.current;
-      if (destination?.state !== "ok") {
-        destination = await targetFor(selection, destination?.state === "missing");
-        if (destination?.state === "missing") destination = await targetFor(selection, true);
-      }
-      if (!alive(selection) || destination?.state !== "ok") return;
-      if (cardsRef.current[id]?.path && cardsRef.current[id].project === destination.resolve_project_id) return;
-      card(selection, id, { message: t("NAS 준비 중"), retry: false });
-      try {
-        const result = await panel.prepare({ ...selection, gen_id: id });
-        if (!alive(selection)) return;
-        if (result.state === "account_changed") { resetContext(); return; }
-        card(selection, id, result.state === "prepared"
-          ? { path: result.path, project: destination.resolve_project_id, message: t("끌 수 있음") }
-          : { path: undefined, message: result.error || t("준비하지 못했습니다") });
-      } catch (error) { card(selection, id, { message: errorText(error), path: undefined }); }
-    })();
-    pending.current.set(key, promise);
-    try { await promise; } finally { pending.current.delete(key); }
-  }
-
-  async function adopt(id: string) {
-    const selection = selected.current;
-    const project = targetRef.current?.resolve_project_id;
-    if (!selection || !alive(selection) || !project) return;
-    const key = `${selection.revision}:${selection.seq}:${id}`;
-    if (adoptions.current.has(key)) return;
-    adoptions.current.add(key);
-    card(selection, id, { message: t("확인 중"), retry: false });
-    let tries = 0, busyMs = 0, retriedPreparation = false;
-    try {
-      while (alive(selection) && tries < 8) {
-        const began = Date.now();
-        await wait();
-        if (!alive(selection)) return;
-        let result;
-        try { result = await panel.adopt({ ...selection, gen_id: id, resolve_project_id: project }); }
-        catch (error) { card(selection, id, { message: errorText(error), retry: true }); return; }
-        if (!alive(selection)) return;
-        const action = adoptAction(result.state);
-        if (action === "reset") { resetContext(); return; }
-        if (action === "done") { card(selection, id, { message: `${t("리졸브 빈에 있음")}: ${selection.folder_path.split("/").slice(-1)[0]}`, retry: false }); return; }
-        if (action === "block") {
-          targetRef.current = { state: "rebuild_recovery_pending" }; setTarget(targetRef.current);
-          card(selection, id, { message: t(RECOVERY_PENDING), retry: false }); return;
-        }
-        if (!retriedPreparation && (action === "retry" || action === "busy")) {
-          if (action === "retry") tries++;
-          else busyMs += Date.now() - began;
-          if (tries < 8 && busyMs < 30_000) {
-            card(selection, id, { message: t("확인 중"), retry: false });
-            continue;
-          }
-        }
-        // not_prepared 뒤에는 재준비와 확인 한 번만 허용한다 — 반복 재준비로 NAS를 계속 건드리지 않게.
-        if (!retriedPreparation && action === "prepare") {
-          retriedPreparation = true;
-          card(selection, id, { path: undefined });
-          await prepareCard(id);
-          if (!alive(selection) || !cardsRef.current[id]?.path) return;
-          continue;
-        }
-        const details = typeof result.details === "string" ? result.details : result.details && Object.keys(result.details).length ? JSON.stringify(result.details) : "";
-        card(selection, id, { message: [t(messages[result.state] || "확인 못 함"), details].filter(Boolean).join(" — "), retry: true });
-        return;
-      }
-    } finally { adoptions.current.delete(key); }
-  }
-
-  function drag(id: string, event: { preventDefault(): void }) {
-    event.preventDefault();
-    const selection = selected.current;
-    if (!selection) return;
-    const ready = cardsRef.current[id];
-    const destination = targetRef.current;
-    const result = dragPermission({ bridge: window.mvhubResolve, identity: context.current,
-      prepared: !!ready?.path, targetOk: destination?.state === "ok" && !!destination.resolve_project_id
-        && ready?.project === destination.resolve_project_id
-        && (currentRef.current?.state !== "ok" || currentRef.current.resolve_project_id === destination.resolve_project_id),
-      contextCurrent: alive(selection) && checkedAt.current > 0 && Date.now() - checkedAt.current <= 2000 });
-    if (!result.ok) { card(selection, id, { message: result.reason }); return; }
-    try {
-      if (!startPanelDrag(window.mvhubResolve!, ready.path!)) { card(selection, id, { message: t(PROTOCOL_MISMATCH) }); return; }
-      void adopt(id);
-    } catch (error) { card(selection, id, { message: errorText(error) }); }
-  }
-
-  useEffect(() => () => { revision.current++; selected.current = null; }, []);
-  return { identity, config, needsLogin, authReady, cards, target, current, notice,
-    authKey: contextKey(identity), selectCut, addCards, prepareCard, drag, adopt, onAuthed: resetAuth,
-    align: () => { const selection = selected.current; if (selection) void targetFor(selection, false); } };
+  return { config, needsLogin, authReady, identity, target, current, notice, stage, moved, counts, failures,
+    canRetry: failures.some(failure => !failure.includes(t(RECOVERY_PENDING))),
+    authKey: contextKey(identity), selectCut, updateSet, align, retry, takeover,
+    onAuthed: () => { setNeedsLogin(false); resetAuth(); } };
 }
