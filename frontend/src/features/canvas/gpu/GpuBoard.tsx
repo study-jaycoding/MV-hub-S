@@ -20,6 +20,10 @@ const LONG_FRAME_WINDOW_MS = 10_000; // 이 창 안에
 const LONG_FRAME_LIMIT = 3; // 이만큼이면 느린 GPU(계약 mode — gpuMode 의 frame 판정과 같은 수)
 const INTERACT_WINDOW_MS = 300; // 마지막 카메라 변화 뒤 이만큼은 '조작 중'으로 보고 긴 프레임을 센다
 const PROBE_FRAMES = 30;
+const LOAF_SETTLE_MS = 120; // 긴 프레임 후보는 그 구간의 LoAF 기록이 도착할 만큼 기다렸다 판정한다
+// 긴 애니메이션 프레임(LoAF) 기록 — scripts 는 그 프레임에 돈 스크립트(이벤트·약속·React 렌더·rAF …)
+type LoafEntry = PerformanceEntry & { scripts?: ReadonlyArray<{ invoker?: string; duration: number }> };
+const loafSupported = () => typeof PerformanceObserver !== "undefined" && !!PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame");
 
 export interface CameraSource {
   subscribe: (listener: (transitionMs: number) => void) => () => void;
@@ -141,6 +145,9 @@ export function GpuBoard(props: GpuBoardProps) {
     texPeak: 0,
     cpuPeak: 0,
     longFrames: [] as number[],
+    longCandidates: [] as Array<{ from: number; to: number }>,
+    loafOn: false,
+    loaf: [] as Array<{ start: number; end: number; other: number }>, // 판 밖의 일(rAF 콜백이 아닌 스크립트) 시간
   });
 
   const fail = (reason: "creation" | "memory" | "context-lost" | "slow-frames") => {
@@ -199,6 +206,27 @@ export function GpuBoard(props: GpuBoardProps) {
   const kick = () => {
     const s = st.current;
     if (!s.raf && !s.failed) s.raf = requestAnimationFrame(frame);
+  };
+
+  /** 긴 프레임 후보를 판정해 센다 — 그 사이 판 밖의 일(React 렌더·저장·JSON 해석·이벤트)로 메인 스레드가 바빴으면 GPU 느림이 아니다.
+   *  2,060장 실측에서 이동 직후의 씬 저장(IndexedDB·응답 JSON 80~150ms)을 GPU 탓으로 세어 1배에서도 잠겼다(11-11 LoAF 진단).
+   *  LoAF 를 못 쓰는 브라우저는 후보를 그대로 센다. 기준에 닿아 잠그면 true. */
+  const judgeLongFrames = (now: number): boolean => {
+    const s = st.current;
+    const ready = s.longCandidates.filter((c) => !s.loafOn || now - c.to >= LOAF_SETTLE_MS);
+    if (!ready.length) return false;
+    s.longCandidates = s.longCandidates.filter((c) => !ready.includes(c));
+    for (const c of ready) {
+      const other = s.loaf.reduce((sum, e) => (e.end > c.from && e.start < c.to ? sum + e.other : sum), 0);
+      if (other >= Math.max(30, (c.to - c.from) / 2)) continue;
+      s.longFrames = s.longFrames.filter((t) => c.to - t <= LONG_FRAME_WINDOW_MS);
+      s.longFrames.push(c.to);
+      if (s.longFrames.length >= LONG_FRAME_LIMIT) {
+        fail("slow-frames");
+        return true;
+      }
+    }
+    return false;
   };
 
   /** 버퍼를 다시 채운다 — 덧판이 덮는 카드는 감추고, 25% 이하면 hideLow 조각(결과 수 배지·폴더 이름표·회색 끝 점)을 뺀다 */
@@ -310,16 +338,10 @@ export function GpuBoard(props: GpuBoardProps) {
     // 조작 중 긴 프레임(최근 10초 3번이면 잠근다 — 느린 GPU 판정). 판 안에서 세고, 기준에 닿을 때 한 번만 모드에 알린다 —
     //  긴 프레임마다 모드 상태를 바꾸면 SceneBoard 가 그때마다 다시 그려져 그것이 또 긴 프레임을 만들었다(11-11 CPU 4배 이동 중 잠금 연쇄).
     //  바로 앞 프레임에 구웠으면 세지 않는다: 그 간격은 CPU 굽기(쉰 뒤 다시 굽기)라 GPU 가 느린 것이 아니다.
-    if (p.phase === "gpu" && gap > LONG_FRAME_MS && now - s.lastCameraAt < INTERACT_WINDOW_MS && !s.bakedPrev) {
-      s.longFrames = s.longFrames.filter((t) => now - t <= LONG_FRAME_WINDOW_MS);
-      s.longFrames.push(now);
-      if (s.longFrames.length >= LONG_FRAME_LIMIT) {
-        fail("slow-frames");
-        return;
-      }
-    }
+    if (p.phase === "gpu" && gap > LONG_FRAME_MS && now - s.lastCameraAt < INTERACT_WINDOW_MS && !s.bakedPrev) s.longCandidates.push({ from: now - gap, to: now });
+    if (judgeLongFrames(now)) return;
     s.bakedPrev = baked > 0 || uploaded > 0;
-    const busy = pending > 0 || s.dirty || !!s.slide || !!s.probe || (p.phase === "preparing" && s.preparedSent !== p.token) || now - s.lastCameraAt < INTERACT_WINDOW_MS;
+    const busy = pending > 0 || s.dirty || !!s.slide || !!s.probe || s.longCandidates.length > 0 || (p.phase === "preparing" && s.preparedSent !== p.token) || now - s.lastCameraAt < INTERACT_WINDOW_MS;
     if (busy) kick();
     else s.lastFrameAt = 0; // 쉬는 동안의 간격을 다음 프레임의 긴 프레임으로 세지 않게
   }
@@ -347,7 +369,23 @@ export function GpuBoard(props: GpuBoardProps) {
     measure();
     const ro = board ? new ResizeObserver(measure) : null;
     if (board) ro!.observe(board);
+    // 긴 프레임의 까닭 — rAF 콜백(판 그리기·카메라)이 아닌 스크립트 시간을 프레임마다 적어 둔다(최근 15초)
+    let loafObs: PerformanceObserver | null = null;
+    if (loafSupported()) {
+      s.loafOn = true;
+      loafObs = new PerformanceObserver((list) => {
+        for (const e of list.getEntries() as LoafEntry[]) {
+          const other = (e.scripts ?? []).reduce((sum, x) => (x.invoker === "FrameRequestCallback" ? sum : sum + x.duration), 0);
+          s.loaf.push({ start: e.startTime, end: e.startTime + e.duration, other });
+        }
+        const now = performance.now();
+        s.loaf = s.loaf.filter((x) => now - x.end < 15_000);
+        if (s.longCandidates.length) kick();
+      });
+      loafObs.observe({ type: "long-animation-frame" });
+    }
     return () => {
+      loafObs?.disconnect();
       ro?.disconnect();
       if (s.raf) cancelAnimationFrame(s.raf);
       s.raf = 0;

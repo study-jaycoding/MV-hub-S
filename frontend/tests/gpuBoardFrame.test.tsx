@@ -5,7 +5,7 @@
 //  렌더만 다시 해서(카메라 그대로) 알림이 와도 '조작 중'이 아니다 · 끝나면 컨텍스트를 놓는다.
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GpuSceneModel } from "../src/features/canvas/gpu/gpuScene";
 
 const fx = vi.hoisted(() => ({ samples: [] as number[] | Error, destroyed: 0, draws: 0, timed: 0 }));
@@ -132,6 +132,49 @@ it("실제 화면 이동 중 50ms 넘는 프레임 3번이면 느린 GPU 로 잠
   }
   expect(dispatch.mock.calls.map((c) => c[0])).toContainEqual({ type: "failure", reason: "slow-frames" });
   cam.x = 0;
+});
+
+describe("긴 프레임 까닭(LoAF)", () => {
+  let deliver: ((entries: unknown[]) => void) | null = null;
+  beforeEach(() => {
+    class FakeObserver {
+      static supportedEntryTypes = ["long-animation-frame"];
+      constructor(cb: (list: { getEntries: () => unknown[] }) => void) { deliver = (entries) => cb({ getEntries: () => entries }); }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("PerformanceObserver", FakeObserver);
+  });
+  const moveWithLongFrames = async (scripts: Array<{ invoker: string; duration: number }>) => {
+    for (let i = 0; i < 3; i++) {
+      cam.x += 10;
+      act(() => listeners.forEach((l) => l(0)));
+      const from = now + 5;
+      await frameAt(from);
+      await frameAt(from + 65);
+      act(() => deliver!([{ startTime: from, duration: 65, scripts }]));
+    }
+    await frameAt(now + 150);
+    await frameAt(now + 150);
+    cam.x = 0;
+  };
+  const failures = (d: ReturnType<typeof vi.fn>) => d.mock.calls.map((c) => c[0]).filter((e) => e.type === "failure");
+
+  it("판 밖의 일(씬 저장·React 렌더)로 늦어진 프레임은 세지 않는다 — 1배 2,060장에서 저장 때문에 잠기던 것", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    await moveWithLongFrames([{ invoker: "IDBRequest.onsuccess", duration: 60 }]);
+    expect(failures(dispatch)).toEqual([]);
+  });
+
+  it("판 그리기(rAF 콜백)만 있었는데 늦은 프레임은 GPU 느림으로 센다 — 3번이면 잠금", async () => {
+    const dispatch = vi.fn();
+    mount(dispatch, "gpu");
+    await frameAt(1000);
+    await moveWithLongFrames([{ invoker: "FrameRequestCallback", duration: 6 }]);
+    expect(failures(dispatch)).toEqual([{ type: "failure", reason: "slow-frames" }]);
+  });
 });
 
 it("내려가면 렌더러를 놓는다(destroy — 컨텍스트 놓기는 렌더러 시험이 본다)", () => {

@@ -62,6 +62,7 @@ import {
   collectRenderGenCardIds,
   collectViewGenCardIds,
   collectViewTexts,
+  effectiveTextOf,
   comfyViewMedia,
   computeBridgeEdges,
   buildGenerationExecutionPlan,
@@ -3250,9 +3251,29 @@ export function SceneBoard({
     const card = hit?.card;
     if (!hit || !card) return;
     if (card.kind === "list" && what === "preview") {
-      // 리스트 — DOM 의 두 번 누름은 카드 안에서 펼쳐 순서를 바꾸는 편집이다(d670d568). 보기 모드에서는 그 카드의 덧판(읽기 형태 — 미리보기·카드 안
-      //  스크롤)을 가려져 있어도 띄워 읽게 한다(계약 overlay '가려진 카드는 두 번 누름으로 읽음')
-      onGpuHover(card.id);
+      // 리스트 — DOM 의 두 번 누름은 카드 안에서 펼쳐 순서를 바꾸는 편집이다(d670d568). 보기 모드에서는 모은 항목을 크게 보기 창으로 읽는다
+      //  (생성물·레퍼런스 = 여러 장 넘기는 크게 보기, 글 = 글 보기 창). 가려진 카드에 덧판을 띄우면 앞 카드를 덮는다(계약 overlay)
+      const li = collectListInputs(card.id, cardsById, resolvedEdges);
+      if (li.kind === "text") {
+        const texts = li.sourceIds.map((id) => effectiveTextOf(id, cardsById, resolvedEdges)).filter((t) => t.trim());
+        if (texts.length) setViewTextModal(texts);
+        return;
+      }
+      const items: PreviewItem[] = [];
+      if (li.kind === "generation")
+        for (const id of li.generationCardIds) {
+          const gc = cardById(id);
+          const g = gc?.genId ? ownEntry(genData, gc.genId) : undefined;
+          const a = g?.assets?.[0];
+          if (g && a) items.push({ url: a.file_path, type: a.type, name: g.prompt?.slice(0, 50) || "결과", genId: g.id, thumb: thumbOf(g) });
+        }
+      else if (li.kind === "reference")
+        for (const id of li.referenceCardIds)
+          for (const r of cardById(id)?.refs ?? []) {
+            const url = refMediaSrc(r);
+            if (url) items.push({ url, type: refMediaType(r), name: r.name || "레퍼런스" });
+          }
+      if (items.length) onPreview?.({ ...items[0], items, index: 0 });
       return;
     }
     if (card.kind === "generation" && card.genId) {

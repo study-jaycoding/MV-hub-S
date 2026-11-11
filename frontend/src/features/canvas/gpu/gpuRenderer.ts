@@ -299,8 +299,8 @@ export function createGpuRenderer(canvas: HTMLCanvasElement, opts: { onContextLo
         g.bindTexture(g.TEXTURE_2D, t.value);
         g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
         g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        // 올릴 때마다 getError 로 묻지 않는다 — GPU 와 동기화해 멈춰 서서 2,060장 실측에서 프로파일 931ms 였다(11-11). 장 할당(texStorage2D)만 묻는다.
         g.texSubImage2D(g.TEXTURE_2D, 0, x, y, g.RGBA, g.UNSIGNED_BYTE, source);
-        if (g.getError() !== g.NO_ERROR) throw new Error("GPU texture upload failed");
       },
       deletePage(page) {
         const t = textures.get(page);

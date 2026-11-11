@@ -230,6 +230,19 @@ it("준비를 취소한 뒤 편집이 이어지는 동안은 다시 준비하지
   }
 });
 
+it("보기 모드에서 리스트를 두 번 누르면 모은 항목을 읽기 창으로 연다(글 리스트 = 글 보기 창) — 카드 안 펼치기(편집)는 하지 않는다", async () => {
+  localStorage.setItem("mvhub.canvas.gpuBoard", "1");
+  const list = { id: "L", kind: "list", x: 0, y: 300, w: 260, h: 200 };
+  const scene = { ...(sceneOf([textCard("a", 0, 0), textCard("b", 300, 0), list]) as object), edges: [{ id: "e1", from: "a", to: "L" }, { id: "e2", from: "b", to: "L" }] };
+  await act(async () => { root.render(<SceneBoard scene={scene as never} onChange={onChange} actionRef={actionRef as never} />); });
+  await flush();
+  expect(phase()).toBe("gpu");
+  await act(async () => { board().dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 50, clientY: 175 })); });
+  expect(host.querySelector(".scene-modelmodal-backdrop")).not.toBeNull();
+  expect(host.querySelector("[data-list-expanded]")).toBeNull();
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 it("보기 모드에서 결과 되찾기(recoverCardGeneration)는 사용자 명령이라 거절한다", async () => {
   localStorage.setItem("mvhub.canvas.gpuBoard", "1");
   await show(cards3);
