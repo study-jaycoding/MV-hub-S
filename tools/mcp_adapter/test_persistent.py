@@ -179,6 +179,22 @@ class PersistentTests(unittest.TestCase):
                 self.assertEqual(len(await legacy.list_tools()), 7)
         anyio.run(exercise)
 
+    def test_panel_plan_description_keeps_card_text_out_of_the_answer(self):
+        # 칸 모드(docs/status/MVAgent_작은것3_2026-11-12.md) — 계획 카드 글을 답에 '>' 로 되풀이하지 않게. 일반 연결 설명은 그대로
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url, "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+        async def exercise():
+            with patch("server.profile_settings", return_value=credential):
+                def pick(listing):
+                    return next(tool.description for tool in listing if tool.name == "prepare_generation_plan")
+                panel = pick(await adapter.create_server(self.url, "isolated-profile", "native", panel=True).list_tools())
+                plain = pick(await adapter.create_server(self.url, "isolated-profile", "native").list_tools())
+                return panel, plain
+        panel, plain = anyio.run(exercise)
+        self.assertIn("card_text 를 답에 옮겨 쓰거나 인용하지 말고", panel)
+        self.assertNotIn("별도 텍스트로 안내", panel)
+        self.assertIn("card_text를 사용자에게 별도 텍스트로 안내", plain)
+        self.assertIn("card_text를 답에 옮겨 쓰거나 인용하지 말고", adapter.PANEL_INSTRUCTIONS)
+
     def test_attachment_boundary_and_bad_hosts(self):
         path, env = self.attachment()
         with patch.dict(os.environ, env):

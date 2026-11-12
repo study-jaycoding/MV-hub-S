@@ -588,10 +588,11 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
                 title={t("고치기 취소")} aria-label={t("고치기 취소")}>×</button>
             </div>
           )}
-          {chips.map((c) => (
+          {chips.map((c, i) => (
             <div key={c.uid} className={`agent-context agent-attach${c.pending ? " pending" : ""}`}>
               <span className="agent-attach-thumb" aria-hidden="true">
                 {c.thumb ? <img src={c.thumb} alt="" loading="lazy" /> : c.item.kind === "folder" ? <FolderIcon /> : null}
+                <i className="agent-attach-num">{i + 1}</i>{/* 붙인 순서 = AI 가 받는 순서 — '1번'으로 부른다 */}
               </span>
               <span className="agent-context-text">
                 <b>{c.item.name ?? (c.item.kind === "generation" ? t("생성물") : lastSegment(c.item.path))}</b>
@@ -812,7 +813,7 @@ function UserMessage({ text, attachments, genOf, onPreview, onReuse }: {
     <div className="agent-user-wrap">
       {attachments?.length ? (
         <div className="agent-sent" aria-label={t("붙인 자료")}>
-          {attachments.map((a) => <SentAttachment key={attachKey(a)} item={a} genOf={genOf} onPreview={onPreview} />)}
+          {attachments.map((a, i) => <SentAttachment key={attachKey(a)} item={a} num={i + 1} genOf={genOf} onPreview={onPreview} />)}
         </div>
       ) : null}
       <div className="agent-msg agent-user">{text}</div>
@@ -829,20 +830,23 @@ function UserMessage({ text, attachments, genOf, onPreview, onReuse }: {
 }
 
 /** 내 말 위 붙인 자료 하나 — 생성물은 누르면 기존 크게 보기, 어셋은 썸네일(못 그리면 빈 칸), 폴더는 이름 칩(설계 2-5) */
-function SentAttachment({ item, genOf, onPreview }: {
+function SentAttachment({ item, num, genOf, onPreview }: {
   item: AgentAttachment;
+  num?: number; // 내 말 위에서만 — 붙인 순서 번호(정보 칸 '이 대화에서 만든 것'은 없음)
   genOf: (id: string) => Generation | undefined;
   onPreview?: (target: PreviewTarget) => void;
 }) {
   const t = useT();
   const [broken, setBroken] = useState(false);
+  const badge = num ? <i className="agent-attach-num" aria-hidden="true">{num}</i> : null;
   if (item.kind === "folder") {
-    return <span className="agent-sent-folder" title={item.path}><FolderIcon /><span>{item.name ?? lastSegment(item.path)}</span></span>;
+    return <span className="agent-sent-folder" title={item.path}>{badge}<FolderIcon /><span>{item.name ?? lastSegment(item.path)}</span></span>;
   }
   if (item.kind === "asset") {
     return (
       <span className="agent-sent-tile" title={item.path}>
         {!broken && <img src={assetThumbUrl(item.project, item.path, 256)} alt="" loading="lazy" onError={() => setBroken(true)} />}
+        {badge}
       </span>
     );
   }
@@ -855,10 +859,11 @@ function SentAttachment({ item, genOf, onPreview }: {
         onClick={() => onPreview({ url: asset.file_path, type: asset.type, name: gen.prompt.slice(0, 50) || t("(제목 없음)"), genId: gen.id,
           thumb: thumbOf(gen, 512) })}>
         {thumb && <img src={thumb} alt="" loading="lazy" />}
+        {badge}
       </button>
     );
   }
-  return <span className="agent-sent-tile" title={item.name ?? t("생성물")}>{thumb && <img src={thumb} alt="" loading="lazy" />}</span>;
+  return <span className="agent-sent-tile" title={item.name ?? t("생성물")}>{thumb && <img src={thumb} alt="" loading="lazy" />}{badge}</span>;
 }
 
 // 서랍 넓이(설계 docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-4) — 최소 220 · 최대 = 칸 폭 − 40(칸이 좁으면 최대가 이긴다) · 기본 310

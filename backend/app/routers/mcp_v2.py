@@ -1512,7 +1512,7 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
             plan = _public_plan(await asyncio.to_thread(store.create_plan, ctx.client, data.title, items, ws))
             # 칸의 [실행] 은 허브가 여기서 직접 받은 계획만 실행한다 — CLI 글에 나온 id 로는 대응을 만들지 않는다.
             if panel and not await asyncio.to_thread(agent_chat.service.bind_plan, ctx.client["id"], plan):
-                raise HTTPException(409, "Ask Agent 칸의 진행 중인 차례가 없어 계획을 칸에 올리지 못했습니다.")
+                raise HTTPException(409, "MV Agent 칸의 진행 중인 차례가 없어 계획을 칸에 올리지 못했습니다.")
             return plan
         if body.method == "get_result":
             return await _result(ctx, ResultIn.model_validate(body.args))

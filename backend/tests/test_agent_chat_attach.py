@@ -87,6 +87,12 @@ def test_gen_model_reaches_the_prompt_as_one_line(hub, monkeypatch):  # noqa: F8
     assert "먼저 쓸 생성 모델" not in chat.build_prompt("말", {"tab": "my"})
 
 
+def test_guide_numbers_attachments_and_keeps_card_text_out():
+    """작은 것 셋(docs/status/MVAgent_작은것3_2026-11-12.md) — 붙인 자료 번호 = 붙인 순서 · 계획 카드 글을 답에 되풀이하지 않음."""
+    assert "붙인 순서대로 1번·2번" in chat.GUIDE and "'1번'·'두 번째 레퍼런스'" in chat.GUIDE
+    assert "card_text 를 답에 옮겨 쓰거나 인용(>)하지 말고" in chat.GUIDE
+
+
 def test_same_key_resend_returns_stored_turn_and_no_attachments_stay_null(hub):  # noqa: F811
     client, _, service = hub
     headers = panel_headers(client)

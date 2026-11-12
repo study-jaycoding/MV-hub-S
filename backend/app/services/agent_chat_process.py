@@ -218,7 +218,7 @@ class JobProcess:
 
     def __init__(self):
         if os.name != "nt":
-            raise RuntimeError("Ask Agent 칸은 Windows 에서만 실행합니다.")
+            raise RuntimeError("MV Agent 칸은 Windows 에서만 실행합니다.")
         self._k32, self._ntdll = _api()
         self._lock = threading.Lock()
         self.proc: subprocess.Popen | None = None

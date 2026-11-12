@@ -1501,6 +1501,20 @@ describe("MV Agent 끌어다 넣기", () => {
   const chipNames = () => texts(".agent-attach .agent-context-text b");
   const notice = () => host.querySelector(".agent-notice")?.textContent ?? null;
 
+  it("붙인 자료 번호 — 칩·내 말 위는 붙인 순서 1·2(보낸 순서와 같음), 정보 칸 '이 대화에서 만든 것'은 번호 없음", async () => {
+    await render();
+    await drop({ [GEN]: "g1" });
+    await drop({ [FOLDER]: JSON.stringify({ projectId: "p1", path: "e001/c0010" }) });
+    expect(texts(".agent-chips .agent-attach-num")).toEqual(["1", "2"]);
+    type("1번을 2번 폴더에");
+    enter();
+    await flush();
+    expect(turnCalls()[0].body!.attachments).toMatchObject([{ kind: "generation", id: "g1" }, { kind: "folder", project_id: "p1" }]);
+    expect(texts(".agent-sent .agent-attach-num")).toEqual(["1", "2"]);
+    act(() => button("정보")!.click());
+    expect(host.querySelectorAll(".agent-info .agent-attach-num").length).toBe(0);
+  });
+
   it("받는 형식에만 덮개 · 어셋은 끌기 값만(저장값으로 넓히지 않음)·필드 검사 · 생성물 묶음·폴더 · 중복·8개 상한 · 입력칸 위 놓기는 기본 동작 막음", async () => {
     await render();
     const files = fire("dragenter", { Files: "" });
