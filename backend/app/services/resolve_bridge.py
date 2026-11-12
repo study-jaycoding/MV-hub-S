@@ -2163,6 +2163,30 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
     return {"state": "ok", "items": results, "removed": removed, "deferred": deferred, "import_records": recovery, "unexpected_imports": unexpected}
 
 
+def _panel_bin_by_id(root, bin_id):
+    # 이름이 바뀌어도 받은 빈 ID로 찾되 MV Hub 밖에는 접근하지 않는다.
+    return next((folder for folder, path in _panel_walk(root)
+                 if path[0] == MEDIA_POOL_ROOT and _uid(folder) == bin_id), None)
+
+
+def _panel_drop_empty_bin(pool, folder, named, guard):
+    """비게 된 컷 빈만 지운다 — 이름 경로로 찾은 그 빈이고, 지우기 직전 다시 읽어 지금 빈이 아니고 클립·하위 빈이 없을 때."""
+    try:
+        gone = _uid(folder)
+        if named is None or _uid(named) != gone:
+            return False
+        guard()
+        # 실제 DeleteFolders 는 클립이 든 빈도 지운다 — 비었는지는 여기서만 지킨다. 읽기 실패(_Unknown)는 '비었음'이 아니다.
+        if _uid(pool.GetCurrentFolder()) == gone or _strict_list(folder.GetClipList) or _strict_list(folder.GetSubFolderList):
+            return False
+        guard()
+        if not pool.DeleteFolders([folder]):
+            return False
+        return all(_uid(child) != gone for child, _ in _panel_walk(pool.GetRootFolder()))
+    except _Unknown:
+        return False
+
+
 def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str, Any]:
     """패널 소유 항목만 다룬다 — 읽기와 저장 없는 미리 띄우기를 구분한다."""
     operation = payload["operation"]
@@ -2219,12 +2243,11 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                     "details": "정렬 복구 기록 경로를 확인하지 못했습니다"}
         guard()
         _settle_recovery_record(payload, root, project_id, _path_identity((MEDIA_POOL_ROOT, label)))
-        target = _folder_at_path(root, tuple(parts))
-        if operation == "unstage":
-            # 이름이 바뀌어도 받은 빈 ID로 찾되 MV Hub 밖에는 접근하지 않는다.
-            target = next((folder for folder, path in _panel_walk(root)
-                           if path[0] == MEDIA_POOL_ROOT and _uid(folder) == payload.get("bin_id")), None)
-            if target is None:
+        target = named = _folder_at_path(root, tuple(parts))
+        # 따라가기 stage 도 ID 로 찾는다 — 이름 경로로 찾으면 이름이 같은 다른 빈에 넣을 수 있다. 못 찾으면 경로로 대신하지 않는다.
+        if operation == "unstage" or (operation == "stage" and payload.get("bin_id")):
+            target = _panel_bin_by_id(root, payload.get("bin_id"))
+            if target is None and operation == "unstage":
                 return {**result, "state": "not_seen"}
         if operation in {"stage", "unstage"}:
             if target is None:
@@ -2233,8 +2256,22 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                 return {**result, "state": "ok", "items": items, "removed": 0, "deferred": len(items), "import_records": [],
                         "unexpected_imports": 0, "capped": bool(payload.get("capped")), "bin_id": "", "bin_path": "/".join(parts)}
             stage = _panel_stage(pool, target, payload, project_id, guard)
-            return {**result, **stage, "capped": bool(payload.get("capped")), "bin_id": _uid(target), "bin_path": "/".join(parts)}
+            done = {**result, **stage, "capped": bool(payload.get("capped")), "bin_id": _uid(target), "bin_path": "/".join(parts)}
+            if operation == "unstage" and payload.get("delete_empty"):
+                done["bin_deleted"] = _panel_drop_empty_bin(pool, target, named, guard)
+            return done
         if operation == "target":
+            bins, failed = {}, []
+            if payload.get("create") and payload.get("create_paths"):
+                # 에피소드의 컷 빈을 자식 한 번으로 — 만들 때마다 지금 빈이 바뀌므로 끝에서 folder_path 빈으로 되돌린다.
+                for path in payload["create_paths"]:
+                    try:
+                        bins[path] = _uid(_destination_folder(pool, root, [MEDIA_POOL_ROOT, label, *_folder_parts(path)], guard))
+                    except Exception as exc:  # noqa: BLE001 - 한 컷 실패가 나머지와 지금 빈 맞추기를 막지 않는다.
+                        if getattr(exc, "code", "") == "project_changed":
+                            raise
+                        failed.append(path)
+                target = target or _folder_at_path(root, tuple(parts))
             if target is None:
                 if not payload.get("create"):
                     return {**result, "state": "missing", "bin_path": "/".join(parts), "bin_id": ""}
@@ -2246,7 +2283,12 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
             guard()
             if not _uid(target) or _uid(current) != _uid(target):
                 return {**result, "state": "unavailable", "details": "지금 빈을 되읽어 확인하지 못했습니다"}
-            return {**result, "state": "ok", "bin_path": "/".join(parts), "bin_id": _uid(target)}
+            done = {**result, "state": "ok", "bin_path": "/".join(parts), "bin_id": _uid(target)}
+            if "create_paths" in payload:
+                episode = _folder_at_path(root, (MEDIA_POOL_ROOT, label, *[
+                    _folder_name(part, "미분류") for part in _folder_parts(payload.get("episode_path", ""))]))
+                done.update(bins=bins, bin_create_failed=failed, episode_bin_id=_uid(episode) if episode is not None else "")
+            return done
 
         if "records" in payload:
             records = payload["records"]

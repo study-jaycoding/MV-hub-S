@@ -121,7 +121,10 @@ export function EditPool({
   onCardDrag,
   cardActions = NO_CARD_ACTIONS,
   pass = null,
+  viewOnly = false,
 }: {
+  // 리졸브 패널(Jay 2026-11-12) — 보기만: 카드 누르기·끌기·끌어 고르기 상자·더블클릭·우클릭·편집 탭 안내 글을 끈다
+  viewOnly?: boolean;
   // 왼쪽 아래 '컬러 · 전역 태그 · 생성자'로 거르기(poolFilterPass) — 검색과 같이 보여 주는 카드만 거른다. null = 거르지 않음
   pass?: ((gen: Generation) => boolean) | null;
   // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
@@ -306,6 +309,7 @@ export function EditPool({
     };
     addWindowMouseDrag(drag.move, drag.up);
   };
+  const dragStart = viewOnly ? undefined : startDrag;
   const marqueeBox = marquee && (
     <div className="assets-marquee" style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }} />
   );
@@ -315,7 +319,7 @@ export function EditPool({
     const active = document.activeElement;
     if (active instanceof HTMLInputElement && event.currentTarget.contains(active)) active.blur();
   };
-  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLElement> & { "data-id": string } => ({
+  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLElement> & { "data-id": string } => viewOnly ? { "data-id": item.gen.id } : ({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
     title: t("끌기 = 타임라인에 넣기 · 더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
@@ -479,7 +483,7 @@ export function EditPool({
         <div className="ed-pool-note">{pass ? t("필터·검색에 맞는 생성물이 없습니다.") : t("검색에 맞는 생성물이 없습니다.")}</div>
       )}
       {!notice && ui.view === "thumb" && (
-        <div className="ed-pbody ed-pgrid" ref={bodyRef} onMouseDown={startDrag}
+        <div className="ed-pbody ed-pgrid" ref={bodyRef} onMouseDown={dragStart}
           style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${ui.size}px, 1fr))` }}>
           {marqueeBox}
           {shown.map((item) => (
@@ -492,7 +496,7 @@ export function EditPool({
       {/* 메타데이터 보기(Jay 2026-10-23 ⑥) — 글은 줄마다 한 줄(넘치면 …, 마우스를 올리면 전체 글): ① 상태·만든 사람·모델 ② 날짜·길이
           ③ 넣은 트랙·다빈치 표(있을 때만 — 이름을 밀어내지 않게 자기 줄) ④ 프롬프트(옆이면 2줄). 글 칸이 좁으면 글이 아래로(stacked) */}
       {metaBody && (
-        <div className={"ed-pbody" + (stacked ? " ed-pstack" : "")} ref={bodyRef} onMouseDown={startDrag}>
+        <div className={"ed-pbody" + (stacked ? " ed-pstack" : "")} ref={bodyRef} onMouseDown={dragStart}>
           {marqueeBox}
           {shown.map((item) => {
             const info = infoOf(item);
@@ -519,7 +523,7 @@ export function EditPool({
         </div>
       )}
       {!notice && ui.view === "list" && (
-        <div className="ed-pbody ed-plist" ref={bodyRef} onMouseDown={startDrag}>
+        <div className="ed-pbody ed-plist" ref={bodyRef} onMouseDown={dragStart}>
           {marqueeBox}
           <div className="ed-prow ed-prow-list ed-prow-head">
             <span />

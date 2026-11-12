@@ -111,6 +111,83 @@ class PanelStagingTests(unittest.TestCase):
             self.assertEqual(self.run_op("target", folder_path="S/C2")["state"], "ok")
             self.assertEqual(self.run_op("stage", folder_path="S/C2")["items"][0]["state"], "staged")
 
+    def selecting_add(self, skip=()):
+        real = FakeMediaPool.AddSubFolder
+        def add(parent, name):
+            if name in skip:
+                return None
+            folder = real(self.pool, parent, name)
+            self.pool.current = folder  # 실제 리졸브처럼 새 빈이 지금 빈이 된다(11-11 실측)
+            return folder
+        return mock.patch.object(self.pool, "AddSubFolder", side_effect=add)
+
+    def bin(self, *names):
+        return resolve_bridge._folder_at_path(self.pool.root, ("MV Hub", "Film", *names))
+
+    def test_episode_target_makes_cut_bins_and_returns_to_episode(self):
+        self.assertNotIn("bins", self.run_op("target"))  # create_paths 없으면 지금과 같다
+        with self.selecting_add():
+            result = self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C10", "E1/C20"])
+        episode = self.bin("E1")
+        self.assertEqual(result["bins"], {"E1/C10": self.bin("E1", "C10").unique_id, "E1/C20": self.bin("E1", "C20").unique_id})
+        self.assertEqual((result["bin_id"], result["episode_bin_id"], result["bin_create_failed"]), (episode.unique_id, episode.unique_id, []))
+        self.assertIs(self.pool.current, episode)  # 마지막에 만든 C20 이 아니라 에피소드 빈
+        self.assertEqual(self.pool.import_calls, [])
+
+    def test_episode_target_partial_failure_still_aligns(self):
+        with self.selecting_add(skip={"C20"}):
+            result = self.run_op("target", folder_path="E1/C10", episode_path="E1", create_paths=["E1/C10", "E1/C20", "E1/C30"])
+        self.assertEqual((result["state"], sorted(result["bins"]), result["bin_create_failed"]), ("ok", ["E1/C10", "E1/C30"], ["E1/C20"]))
+        self.assertIs(self.pool.current, self.bin("E1", "C10"))
+
+    def test_follow_stage_uses_bin_id_not_name(self):
+        self.folder.name = "사람이 바꾼 이름"
+        same_name = FakeMediaPool.AddSubFolder(self.pool, self.bin("S"), "C1")  # 이름 경로로는 이 빈이 잡힌다
+        result = self.run_op("stage", bin_id=self.folder.unique_id)
+        self.assertEqual((result["items"][0]["state"], result["bin_id"]), ("staged", self.folder.unique_id))
+        self.assertEqual((len(self.folder.clips), same_name.clips), (1, []))
+        self.pool.current = same_name
+        gone = self.run_op("stage", bin_id="folder-없음")  # 그 ID 가 없으면 경로로 대신하지 않는다
+        self.assertEqual((gone["deferred"], gone["bin_id"], same_name.clips), (1, "", []))
+
+    def test_unstage_delete_empty_removes_only_emptied_cut_bin(self):
+        self.staged()
+        self.pool.current = self.pool.root
+        kept = self.run_op("unstage", items=[], bin_id=self.folder.unique_id)  # 플래그 없으면 지금과 같다
+        self.assertEqual((kept["removed"], "bin_deleted" in kept), (1, False))
+        self.assertIsNotNone(self.bin("S", "C1"))
+        self.pool.current = self.folder  # 다시 띄우고 지금 빈에서 나간 뒤
+        self.staged()
+        self.pool.current = self.pool.root
+        result = self.run_op("unstage", items=[], bin_id=self.folder.unique_id, delete_empty=True)
+        self.assertEqual((result["removed"], result["bin_deleted"]), (1, True))
+        self.assertIsNone(self.bin("S", "C1"))
+        self.assertIsNotNone(self.bin("S"))  # 에피소드 빈은 남긴다
+
+    def test_delete_empty_refuses_unsafe_bins(self):
+        def cut(name):
+            self.assertEqual(self.run_op("target", folder_path=f"S/{name}")["state"], "ok")
+            folder = self.pool.current
+            self.pool.current = self.pool.root
+            return folder
+        person = cut("P")
+        person.clips.append(FakeClip(str(self.path)))  # 사람이 넣은 항목
+        used = cut("U")
+        self.pool.current = used
+        self.assertEqual(self.run_op("stage", folder_path="S/U")["items"][0]["state"], "staged")
+        used.clips[-1].usage = "1"  # 타임라인에 쓴 항목
+        sub = cut("D")
+        FakeMediaPool.AddSubFolder(self.pool, sub, "안쪽")
+        now, other, unreadable = cut("N"), cut("A"), cut("R")
+        cases = [(person, "S/P"), (used, "S/U"), (sub, "S/D"), (now, "S/N"), (other, "S/C1"), (unreadable, "S/R")]
+        with mock.patch.object(self.pool, "DeleteFolders", side_effect=AssertionError("지우면 안 됨")), \
+                mock.patch.object(unreadable, "GetClipList", side_effect=[[], None]):
+            for folder, path in cases:
+                self.pool.current = now if folder is now else self.pool.root  # 다빈치가 보고 있는 빈
+                result = self.run_op("unstage", items=[], folder_path=path, bin_id=folder.unique_id, delete_empty=True)
+                self.assertIs(result["bin_deleted"], False, path)
+        self.assertEqual(len(person.clips) + len(used.clips) + len(sub.children), 3)
+
     def test_unstage_only_unused_owned_and_not_capped(self):
         clip = self.staged()
         duplicate = FakeClip(clip.path)

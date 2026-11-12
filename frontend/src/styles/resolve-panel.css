@@ -9,13 +9,14 @@
 .rp-flash { white-space: pre-line; }
 .rp-flash button { float: right; color: inherit; background: none; border: 0; }
 .resolve-panel button { font: inherit; cursor: pointer; }
-.resolve-panel-warning button, .resolve-panel-body main button { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
+/* 라임 단추는 이름 붙인 것만(.rp-act) — 오른쪽 칸의 미디어 풀 단추·카드에 번지지 않게 */
+.resolve-panel-warning button, .resolve-panel .rp-act { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
 .resolve-panel button:focus-visible, .resolve-panel select:focus-visible, .resolve-panel input:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 1px; }
 .resolve-panel-body { display: flex; flex: 1; min-height: 0; }
 .resolve-panel-loading { padding: 24px; }
 
-/* 왼쪽 — 빈 트리와 아래 거르기 */
-.rp-side { width: 176px; flex: 0 0 176px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #333438; }
+/* 왼쪽 — 빈 트리와 아래 거르기(폭·여백·점 크기 = MV 사이드바 값, Jay 2026-11-12) */
+.rp-side { width: 200px; flex: 0 0 200px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #333438; }
 .rp-bins { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
 .rp-bin { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; background: transparent; color: #c9c9cc; padding: 4px 8px; text-align: left; white-space: nowrap; }
 .rp-bin:hover { background: #2a2b2f; }
@@ -23,14 +24,37 @@
 .rp-bin.selected { background: #141517; color: #fff; }
 .rp-bin.rp-empty { color: #5e5f64; }
 .rp-chev { width: 10px; flex: none; color: #8a8b90; }
+/* 에피소드 줄 — 화살표(펼치기만)와 이름(컷 빈 만들기)이 따로 누르는 단추 */
+.rp-folder button { border: 0; background: transparent; color: inherit; padding: 0; text-align: left; }
+.rp-folder .rp-name { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.rp-folder .rp-name:hover { color: #fff; }
 .rp-count { margin-left: auto; color: #7d7e83; font-size: 11px; }
 .rp-count b { color: #e3b341; font-weight: 400; }
 .rp-bin.selected .rp-count { color: var(--accent, #c4e84a); }
 .rp-side .sidebar-foot-toggle { flex: none; }
-.rp-filter { flex: none; max-height: 45%; overflow: auto; }
+.rp-filter { flex: none; max-height: 45%; overflow: auto; padding: 4px 14px 14px; }
+.rp-filter h4 { margin: 18px 0 10px; }
+.rp-filter .color-dots { gap: 9px; }
+.rp-filter .af-dot { width: 22px; height: 22px; }
 
-/* 상태 줄은 좁은 창에서도 줄바꿈하고, 트리와 별도로 스크롤한다. */
-.resolve-panel-body main { flex: 1; min-width: 0; overflow: auto; padding: 10px; overflow-wrap: anywhere; }
-.resolve-panel-body main p { line-height: 1.6; margin: 0 0 10px; }
-.resolve-panel-body main button { color: #000; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 4px 8px; }
+/* 오른쪽 — 미디어 풀(보기 전용) 또는 컷 타일, 그 아래 알림과 상태 한 줄 */
+.rp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.rp-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.rp-view > .ed-pool { flex: 1; min-height: 0; }
+.rp-note, .rp-empty-note { margin: 10px; line-height: 1.6; }
+.rp-alerts { flex: none; max-height: 30%; overflow: auto; padding: 0 10px; overflow-wrap: anywhere; }
+.rp-alerts p { line-height: 1.6; margin: 6px 0; }
+.rp-alerts > .rp-act { margin: 0 0 6px; }
+.rp-foot { flex: none; margin: 0; padding: 6px 10px; border-top: 1px solid #333438; color: #8a8b90; white-space: nowrap; overflow: hidden; }
+/* 카드는 보기 전용 — 호버 단추(T·C·⠿·ⓘ·⤓)는 숨기고 S/★ 는 표시만 */
+.rp-view .ed-card .card-cm, .rp-view .ed-card .thumb-overlay, .rp-view .ed-card .card-drag-grip { display: none; }
+.rp-view .ed-card .card-sf { pointer-events: none; }
+.rp-view .ed-card, .rp-view .ed-prow { cursor: default; }
+/* 에피소드만 고른 때 — 컷 폴더 타일 */
+.rp-tiles { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 8px 12px 12px; align-content: start; }
+.rp-tile { display: flex; align-items: center; gap: 7px; padding: 8px 9px; border: 1px solid #333438; border-radius: 6px; background: #26272b; color: #d4d4d6; text-align: left; }
+.rp-tile:hover { background: #2e2f34; color: #fff; }
+.rp-tile b { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
+.rp-tile i { font-style: normal; color: #7d7e83; font-size: 11px; }
+.rp-ficon { width: 16px; height: 12px; flex: none; border-radius: 2px; background: #8a8b90; }
 @media (max-width: 460px) { .rp-side { width: 144px; flex-basis: 144px; } }

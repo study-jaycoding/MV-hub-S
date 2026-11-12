@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -41,6 +42,9 @@ class TargetIn(PanelIn):
     window: str = Field(min_length=1, max_length=80)
     seq: int = Field(ge=0)
     create: bool = False
+    # 에피소드를 고르면 생성물 있는 컷 빈을 한 번에 만든다 — 200개를 넘으면 자르지 않고 거절한다.
+    episode_path: str = Field(default="", max_length=2000)
+    create_paths: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(default_factory=list, max_length=200)
 
 
 class AdoptIn(PrepareIn):
@@ -53,11 +57,13 @@ class StageIn(PanelIn):
     seq: int = Field(ge=0)
     gen_ids: list[str] = Field(default_factory=list, max_length=200)
     capped: bool = False
+    bin_id: str = Field(default="", max_length=200)  # 다빈치에서 들어간 컷 빈을 따라갈 때 — 그 ID 의 빈에만 넣는다
 
 
 class UnstageIn(PanelIn):
     bin_id: str = Field(min_length=1, max_length=200)
     inventory_cleanup: bool = False
+    delete_empty: bool = False  # 다른 에피소드로 옮길 때 — 비게 된 컷 빈까지 지운다
 
 
 async def _project_read(request, project_id):
@@ -190,15 +196,25 @@ async def _operate(operation, body, request, ctx):
         channel = "stage:" + body.project_id + ":" + body.folder_path
         if operation == "stage" and panel.stale(ctx, body.seq, channel, body.window):
             return {"state": "stale"}
-        if operation == "unstage" and body.inventory_cleanup and body.bin_id == panel._owner["bin_id"]:
+        # 틀린 ID 면 그 빈의 다른 컷 항목을 '원하지 않는 내 항목'으로 지운다 — 이 창이 받은 그 컷의 빈만.
+        if operation == "stage" and body.bin_id and not panel.cut_bin(body.bin_id, body.window, body.project_id, body.folder_path):
+            return {"state": "not_seen"}
+        if operation == "unstage" and body.inventory_cleanup and (body.bin_id == panel._owner["bin_id"] or body.bin_id in panel._episode_bins):
             return {"state": "active_bin"}
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
                    "manifest_root": str(manifest_root), "items": await panel.stage_items(ctx, generations, request),
                    "capped": getattr(body, "capped", False) or len(generations) > 200, "import_records": panel.records("import", ctx, include_foreign=True)}
+        if operation == "stage" and body.bin_id:
+            payload["bin_id"] = body.bin_id
         if operation == "unstage":
             payload["bin_id"] = body.bin_id
+            # 빈 지우기는 이 창이 target 으로 받은 그 컷의 빈만 — 에피소드·프로젝트 빈·모르는 ID 는 항목 정리만 한다.
+            payload["delete_empty"] = body.delete_empty and not body.inventory_cleanup and panel.cut_bin(body.bin_id, body.window, body.project_id, body.folder_path)
         payload["same_file_ids"] = list(panel._same_files.get((*panel.context_key(ctx), body.window, body.project_id, body.folder_path), set()))
     else:
+        # 경로 검사는 리졸브 호출 전에 — 에피소드 밖·프로젝트 전체 빈을 만들지 않는다.
+        if body.create_paths and (not body.create or not panel.episode_scope_ok(body.episode_path, body.folder_path, body.create_paths)):
+            raise HTTPException(400, "에피소드 밖 빈은 만들 수 없습니다")
         if panel.stale(ctx, body.seq, "target", body.window):
             return {"state": "stale"}
         await asyncio.to_thread(projects._require_project_read, request, body.project_id)
@@ -211,6 +227,8 @@ async def _operate(operation, body, request, ctx):
         _source_root, manifest_root = await asyncio.to_thread(resolve_transfer.resolve_transfer_roots, body.project_id)
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
                    "manifest_root": str(manifest_root), "create": body.create}
+        if body.create_paths:
+            payload.update(episode_path=body.episode_path, create_paths=body.create_paths)
 
     payload["project_name"] = await asyncio.to_thread(panel.project_name, ctx, body.project_id)
     if not payload["project_name"] and ready:
@@ -234,6 +252,10 @@ async def _operate(operation, body, request, ctx):
             panel.check_context(ctx, request)
             if operation == "target" and result.get("state") == "ok":
                 panel.remember_bin(result.get("bin_id", ""))
+                if "bins" in result:
+                    panel.remember_episode(body.window, body.project_id, result["bins"])
+            if operation == "unstage" and result.get("bin_deleted"):
+                panel.forget_bin(body.bin_id)
             if operation in {"stage", "unstage"}:
                 same_key = (*panel.context_key(ctx), body.window, body.project_id, body.folder_path)
                 panel._same_files.setdefault(same_key, set()).update(row["gen_id"] for row in result.get("items", []) if row["state"] == "same_file_exists")

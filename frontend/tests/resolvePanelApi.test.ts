@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 vi.mock("../src/lib/i18n", () => ({ t: (value: string) => value }));
 vi.mock("../src/lib/http", () => ({ jsonFetch: vi.fn() }));
 import { jsonFetch } from "../src/lib/http";
-import { adoptAction, bridgeCompatible, cacheBatches, inventoryAction, stageSummary, targetView, resolvePanelApi,
+import { adoptAction, bridgeCompatible, cacheBatches, inventoryAction, panelFailure, stageSummary, targetView, resolvePanelApi,
   type AdoptState, type TargetState, type InventoryItem } from "../src/lib/resolvePanelApi";
 const identity = { instance: "hub", account: "a", epoch: 1, protocol: { min: 1, max: 2 } };
 const bridge = { protocol: 1, accepts: { min: 1, max: 1 }, startDrag: vi.fn(() => true) };
@@ -41,4 +41,14 @@ it("window claim·목적 빈·inventory cursor를 HTTP로 전달", async () => {
   expect(vi.mocked(jsonFetch).mock.calls.at(-1)?.[0]).toContain("folder_path=S%2FC1");
   await resolvePanelApi.inventory(identity, ["bin", "item"]);
   expect(vi.mocked(jsonFetch).mock.calls.at(-1)?.[0]).toContain("after=");
+});
+it("에피소드 빈 표·따라가기 bin_id·빈 지우기를 본문으로 전달, 영어 상태는 한국어로", async () => {
+  const selection = { ctx: identity, project_id: "p", folder_path: "S", window: "w" };
+  await resolvePanelApi.target({ ...selection, seq: 1, create: true, episode_path: "S", create_paths: ["S/C1"] });
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ episode_path: "S", create_paths: ["S/C1"] });
+  await resolvePanelApi.stage({ ...selection, folder_path: "S/C1", seq: 2, gen_ids: [], bin_id: "b1" });
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1" });
+  await resolvePanelApi.unstage({ ...selection, folder_path: "S/C1", bin_id: "b1", delete_empty: true });
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1", delete_empty: true });
+  expect(["busy", "unavailable", "active_bin"].map(panelFailure)).toEqual(["확인 중 — 리졸브가 바쁨", "리졸브에 연결하지 못했습니다", "지금 쓰는 빈이라 남겼습니다"]);
 });

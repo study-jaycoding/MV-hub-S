@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.requests import Request
 
 from app import active_account
@@ -231,6 +232,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.ctx = panel.identity()
         panel._owner.update(window="test-window", context=panel.context_key(self.ctx), generation=1,
                             seen=__import__("time").monotonic(), bin_id="")
+        panel._cut_bins.clear()
+        panel._episode_bins.clear()
 
     def child(self, payload, before_start=None):
         rejected = before_start() if before_start else None
@@ -732,6 +735,39 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                 await route.post_unstage(body, self.request)
             with self.assertRaises(HTTPException):
                 await self.adopt()
+
+    def episode(self, **kwargs):
+        values = {"window": "test-window", "seq": 1, "create": True, "folder_path": "S01", "episode_path": "S01",
+                  "create_paths": ["S01/C010", "S01/C020"], **kwargs}
+        return route.TargetIn(ctx=self.ctx, project_id="p", **values)
+
+    async def test_episode_paths_checked_before_resolve(self):
+        for bad in [{"episode_path": ""}, {"create_paths": ["S01"]}, {"create_paths": ["S0/C010"]},
+                    {"create_paths": ["S01x/C010"]}, {"folder_path": "S02"}, {"create": False}]:
+            with self.assertRaises(HTTPException, msg=str(bad)):
+                await route.post_target(self.episode(**bad), self.request)
+        self.assertEqual(self.pool.root.children, [])  # 리졸브 호출 0
+        with self.assertRaises(ValidationError):  # 200개를 넘으면 자르지 않고 거절
+            self.episode(create_paths=[f"S01/C{n}" for n in range(201)])
+
+    async def test_episode_bins_guard_follow_stage_and_delete(self):
+        result = await route.post_target(self.episode(), self.request)
+        c010, c020 = result["bins"]["S01/C010"], result["bins"]["S01/C020"]
+        cut = lambda cls, window="test-window", **kwargs: cls(ctx=self.ctx, project_id="p", folder_path="S01/C010", window=window, **kwargs)
+        # 다른 창이 잡아도(claim) 에피소드 기억은 남아 다시 열기의 inventory 정리를 막고, 지울 권한은 넘어가지 않는다
+        await route.get_identity(self.request, window="two", claim=True)
+        self.assertEqual((await route.post_unstage(cut(route.UnstageIn, "two", bin_id=c010, inventory_cleanup=True), self.request))["state"], "active_bin")
+        kept = await route.post_unstage(cut(route.UnstageIn, "two", bin_id=c010, delete_empty=True), self.request)
+        self.assertEqual((kept["state"], kept.get("bin_deleted", False)), ("ok", False))
+        await route.get_identity(self.request, window="test-window", claim=True)
+        # 따라가기 stage 의 bin_id 는 이 창이 받은 그 컷의 빈이어야 한다
+        self.assertEqual((await route.post_stage(cut(route.StageIn, seq=1, bin_id=c020), self.request))["state"], "not_seen")
+        self.assertEqual((await route.post_stage(cut(route.StageIn, seq=2, bin_id=c010), self.request))["state"], "ok")
+        done = await route.post_unstage(cut(route.UnstageIn, bin_id=c010, delete_empty=True), self.request)
+        self.assertTrue(done["bin_deleted"])
+        self.assertIsNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01", "C010")))
+        self.assertNotIn(c010, panel._cut_bins)
+        self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01")))
 
     async def test_adopt_crash_after_replace_and_restart_uses_disk_ready(self):
         await self.place()

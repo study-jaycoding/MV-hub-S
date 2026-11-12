@@ -71,6 +71,36 @@ def remember_bin(bin_id):
     _owner["bin_id"] = bin_id
 
 
+# target 이 돌려준 컷 빈 — 창을 다시 잡아도(claim) 지우지 않는다(패널 다시 열기가 그때다).
+_cut_bins: dict[str, tuple] = {}  # 빈 ID → (창, MV 프로젝트, 컷 경로): 그 창만 그 컷으로 따라가기 stage·비면 지우기
+_episode_bins: set[str] = set()  # 지금 에피소드의 컷 빈 — 어느 창의 inventory 정리도 건드리지 않는다
+
+
+def remember_episode(window, project_id, bins):
+    _episode_bins.clear()
+    for path, bin_id in bins.items():
+        if bin_id:
+            _cut_bins[bin_id] = (window, project_id, path)
+            _episode_bins.add(bin_id)
+
+
+def cut_bin(bin_id, window, project_id, folder_path):
+    return bool(bin_id) and _cut_bins.get(bin_id) == (window, project_id, folder_path)
+
+
+def forget_bin(bin_id):
+    _cut_bins.pop(bin_id, None)
+    _episode_bins.discard(bin_id)
+
+
+def episode_scope_ok(episode_path, folder_path, create_paths):
+    """만들 컷 빈은 에피소드보다 깊은 경로만 — 조각 단위로 견줘 e02 와 e020 을 섞지 않는다. 빈 에피소드 = 프로젝트 전체라 거절."""
+    from .resolve_bridge import _folder_parts
+    episode = _folder_parts(episode_path)
+    inside = lambda path: _folder_parts(path)[:len(episode)] == episode
+    return bool(episode) and inside(folder_path) and all(inside(path) and len(_folder_parts(path)) > len(episode) for path in create_paths)
+
+
 def _record_path(kind, resolve_project_id, item_id):
     # 리졸브 ID가 파일 이름으로 안전하다는 가정을 하지 않는다.
     safe = lambda value: hashlib.sha256(str(value).encode()).hexdigest()

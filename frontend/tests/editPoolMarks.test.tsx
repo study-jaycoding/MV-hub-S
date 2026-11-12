@@ -38,7 +38,9 @@ vi.mock("../src/lib/useEditSequence", async () => {
 vi.mock("../src/lib/useDisabledFolders", () => ({ useDisabledFolders: () => ({}) }));
 
 import { EditTab } from "../src/components/timeline/EditTab";
+import { EditPool } from "../src/components/timeline/EditPool";
 import { saveDisabledGen } from "../src/lib/deactivated";
+import { NO_POOL_FILTER, type EditUi, type PoolView } from "../src/lib/editTimelineStore";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -105,6 +107,43 @@ it("목록 보기 — 줄 왼쪽 막대, 끈 줄은 회색", () => {
   expect(["a", "b", "c", "d"].map((id) => colorOf(rows.get(id)!))).toEqual(["rgb(255, 87, 34)", "gold", null, "rgb(76, 175, 80)"]);
   expect(rows.get("a")!.querySelector(":scope > .ed-pcolor")).not.toBeNull();
   expect(["a", "b", "c", "d"].map((id) => rows.get(id)!.classList.contains("ed-off"))).toEqual([false, false, true, true]);
+});
+
+// 리졸브 패널(Jay 2026-11-12) — 같은 풀을 보기 전용으로. 패널 표('띄움'·'쓰임 · NAS')는 트랙 표 자리에.
+it("보기 전용 풀 — 누르기·끌기·더블클릭·우클릭·편집 탭 안내 글 없음, 패널 표는 트랙 표 자리 · 편집 탭(viewOnly 없음)은 그대로", () => {
+  const calls = { pick: vi.fn(), many: vi.fn(), open: vi.fn(), folder: vi.fn(), drag: vi.fn() };
+  const ui: EditUi = { view: "meta", size: 120, sort: "new", dual: false, views: ["source", "timeline"], loop: false, loopSrc: false, speed: 1,
+    markerColor: "#ff5722", sideHidden: false, volumes: [1, 1], filterOpen: false, poolFilter: NO_POOL_FILTER };
+  const items = [{ gen: gen("a"), track: null, showing: false, note: { label: "쓰임 · NAS", lead: true } },
+    { gen: gen("b"), track: null, showing: false, note: { label: "띄움" } }];
+  const pool = (viewOnly: boolean, view: PoolView) => (
+    <EditPool viewOnly={viewOnly} title="e070 / c1" items={items} picked={[]} ui={{ ...ui, view }} onUi={() => {}} authKey="auth"
+      listState="ok" listStartedAt={0} notice={null} onPick={calls.pick} onPickMany={calls.many} onOpen={calls.open} onCompare={() => {}}
+      resolve={{ send: () => {}, busy: false, pendingCount: 0 }} onClearPicked={() => {}} onMenu={() => {}} sideOpen onToggleSide={() => {}}
+      onFolder={calls.folder} onCardDrag={calls.drag} />
+  );
+  act(() => root.render(pool(true, "meta")));
+  const row = byId(".ed-prow-meta").get("a")!;
+  expect(row.title).toBe("");
+  expect(row.querySelector(".ed-pmarks .cd-mark.lead")!.textContent).toBe("쓰임 · NAS");
+  expect(byId(".ed-prow-meta").get("b")!.querySelector(".ed-pmarks .cd-mark")!.textContent).toBe("띄움");
+  act(() => {
+    row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }));
+    window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, buttons: 1, clientX: 80, clientY: 80 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, clientX: 80, clientY: 80 }));
+    row.click();
+    row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2 }));
+  });
+  expect(document.querySelector(".assets-marquee")).toBeNull();
+  for (const fn of Object.values(calls)) expect(fn).not.toHaveBeenCalled();
+  act(() => root.render(pool(true, "list")));
+  expect(byId(".ed-prow-list[data-id]").get("b")!.textContent).toContain("띄움");
+  act(() => root.render(pool(false, "meta")));
+  const edit = byId(".ed-prow-meta").get("a")!;
+  expect(edit.title).toContain("끌기 = 타임라인에 넣기");
+  act(() => edit.click());
+  expect(calls.pick).toHaveBeenCalledTimes(1);
 });
 
 it("썸네일 보기 — 라이브러리 카드의 색 띠·골드 그대로 + 끈 카드는 회색·빗금", () => {

@@ -15,6 +15,8 @@ export interface TargetResult {
   state: TargetState; resolve_project_id?: string; resolve_project_name?: string;
   bin_path?: string; bin_id?: string; details?: unknown;
   used?: string[]; target_bin_id?: string;
+  // 에피소드 target — 컷 경로 → 빈 ID, 에피소드 빈 ID, 못 만든 컷 / unstage(delete_empty) — 비게 된 컷 빈을 지웠다
+  bins?: Record<string, string>; episode_bin_id?: string; bin_create_failed?: string[]; bin_deleted?: boolean;
 }
 export interface StageResult extends TargetResult { items?: { gen_id: string; state: string }[]; removed?: number; deferred?: number; capped?: boolean; unexpected_imports?: number }
 export interface InventoryItem { resolve_project_id: string; project_id: string; folder_path: string; bin_id: string; bin_path: string; item_id: string; gen_id: string; usage?: number | null; recovery?: boolean }
@@ -29,11 +31,11 @@ export const resolvePanelApi = {
   identity: (window = "", claim = false) => jsonFetch<PanelIdentity>(`/api/resolve/panel/identity?${new URLSearchParams({ window, claim: String(claim) })}`),
   cache: (body: PanelSelection & { window: string; seq: number; gen_ids: string[] }) => post<{ state?: "account_changed"; items: { gen_id: string; state: "cached" | "failed"; error?: string }[] }>("cache", body),
   prepare: (body: PanelSelection & { gen_id: string }) => post<PrepareResult>("prepare", body),
-  target: (body: PanelSelection & { window: string; seq: number; create: boolean }) => post<TargetResult>("target", body),
+  target: (body: PanelSelection & { window: string; seq: number; create: boolean; episode_path?: string; create_paths?: string[] }) => post<TargetResult>("target", body),
   currentBin: (ctx: PanelContext, project_id = "", folder_path = "") => jsonFetch<TargetResult>(`/api/resolve/panel/current-bin?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), project_id, folder_path })}`),
   adopt: (body: PanelSelection & { gen_id: string; resolve_project_id: string; bin_id?: string; item_ids?: string[] }) => post<AdoptResult>("adopt", body),
-  stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean }) => post<StageResult>("stage", body),
-  unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean }) => post<TargetResult>("unstage", body),
+  stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
+  unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean; delete_empty?: boolean }) => post<TargetResult>("unstage", body),
   inventory: (ctx: PanelContext, after?: [string, string]) => jsonFetch<InventoryResult>(`/api/resolve/panel/inventory?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), ...(after ? { after: JSON.stringify(after) } : {}) })}`),
 };
 
@@ -95,6 +97,7 @@ export function panelFailure(state: string): string {
     save_failed: "프로젝트 저장을 확인하지 못했습니다", ledger_failed: "전송 장부를 기록하지 못했습니다",
     import_failed: "가져오기를 확인하지 못했습니다", conflict: "표시 충돌", not_seen: "항목을 찾지 못했습니다",
     project_changed: "프로젝트가 바뀜", busy: "확인 중 — 리졸브가 바쁨", unknown: "확인 못 함",
+    unavailable: "리졸브에 연결하지 못했습니다", active_bin: "지금 쓰는 빈이라 남겼습니다",
     rebuild_recovery_pending: RECOVERY_PENDING, not_prepared: "준비 기록을 찾지 못했습니다",
   };
   return t(labels[state] || "확인 못 함");

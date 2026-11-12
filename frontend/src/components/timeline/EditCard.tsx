@@ -15,6 +15,7 @@ export interface PoolItem {
   resolve?: boolean; // 다빈치(미디어 풀)에서 고른 것(Jay 2026-10-14) — 빨간 테두리와 '다빈치' 표
   timeline?: boolean; // 타임라인에서 고른 클립의 카드(Jay 2026-10-15 A) — 다빈치 것과 같은 빨간 고리·빛, 표는 그대로
   off?: boolean; // 비활성(회색 — 공유 탭과 같은 판정: d 키 카드·비활성 폴더 아래). 그림을 회색 + 빗금으로(Jay 2026-10-23)
+  note?: { label: string; lead?: boolean }; // 리졸브 패널의 표('띄움'·'쓰임 · NAS') — 트랙 표와 같은 자리, lead = 라임(Jay 2026-11-12)
 }
 
 // 풀 카드의 호버 단추가 부르는 앱의 동작 — 라이브러리 격자에 주는 것과 같은 것(App). 편집 탭을 떠나게 하는 것(⬇ 가져오기·가계)과
@@ -44,10 +45,10 @@ export const sourceMarkLabel = (source: PoolItem["source"], t: (key: string) => 
 export function poolMark(item: PoolItem, t: (key: string) => string): { label: string; short: string; lead: boolean } | null {
   const side = item.source === "LR" ? "L·R" : item.source === "S" ? "" : item.source ?? "";
   const source = sourceMarkLabel(item.source, t);
-  const label = [item.track !== null ? editMarkLabel(item.track, t) : "", source].filter(Boolean).join(" · ");
+  const label = [item.track !== null ? editMarkLabel(item.track, t) : "", source, item.note?.label ?? ""].filter(Boolean).join(" · ");
   if (!label) return null;
-  const short = [item.track !== null ? `V${item.track}` : "", item.source ? side || t("소스") : ""].filter(Boolean).join("·");
-  return { label, short, lead: item.showing || !!item.source }; // 지금 뷰어에 보이는 것만 라임
+  const short = [item.track !== null ? `V${item.track}` : "", item.source ? side || t("소스") : "", item.note?.label ?? ""].filter(Boolean).join("·");
+  return { label, short, lead: item.showing || !!item.source || !!item.note?.lead }; // 지금 뷰어에 보이는 것만 라임
 }
 
 export function EditCard({
