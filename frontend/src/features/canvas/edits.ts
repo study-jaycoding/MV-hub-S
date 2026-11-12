@@ -27,7 +27,8 @@ export type CanvasEditCommand =
   | { type: "connectCards"; pairs: Array<[string, string]>; role?: SceneEdgeRole }
   | { type: "disconnectEdges"; edgeIds: string[] }
   | { type: "connectSelectedCards"; cardIds: string[] }
-  | { type: "createNode"; id: string; kind: SceneCardKind; position: { x: number; y: number } }
+  // text: 글 카드의 처음 글 — 만들기와 한 명령(되돌리기 한 칸, MV Agent 화면 동작 docs/status/MVAgent_화면동작_2026-11-12.md 3-3b)
+  | { type: "createNode"; id: string; kind: SceneCardKind; position: { x: number; y: number }; text?: string }
   | { type: "createConnectedGeneration"; id: string; position: { x: number; y: number }; sourceIds: string[] }
   // 이미 있는 생성물을 결과 그대로(genId·genIds·상태) 카드로 놓는다 — 폴더 창에서 끌어 놓기(Jay 2026-10-22). 붙여넣기(pasteNodes)는
   //  결과를 지워 빈 카드로 만들므로 쓰지 않는다(Codex 설계 검토).
@@ -150,7 +151,8 @@ export function applyCanvasEdit(
     case "createNode":
     case "createConnectedGeneration": {
       if (cards.some(card => card.id === command.id)) return null;
-      const card = newCard(command.id, command.type === "createNode" ? command.kind : "generation", command.position);
+      const base = newCard(command.id, command.type === "createNode" ? command.kind : "generation", command.position);
+      const card = command.type === "createNode" && command.text !== undefined && base.kind === "text" ? { ...base, text: command.text } : base;
       if (command.type === "createConnectedGeneration") {
         const byId = new Map(cards.map(item => [item.id, item]));
         const sources = new Set(command.sourceIds);

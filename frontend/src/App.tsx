@@ -111,6 +111,7 @@ import { useHubAuth } from "./lib/useHubAuth";
 import { startEditDocBackup } from "./lib/editDocBackup";
 import { AGENT_CHAT_FEATURE, hubHasFeature } from "./lib/hubFeatures";
 import { buildAgentContext } from "./lib/agentChatApi";
+import type { SceneScreenHandle, ScreenHost } from "./lib/agentScreenActions";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
@@ -2265,6 +2266,9 @@ export default function App() {
   const agentFeature = topBarShown && hubHasFeature(AGENT_CHAT_FEATURE);
   const agentShown = agentOpen && !agentFloat && agentFeature;
   const agentWindowOpen = useEmbedWindowOpen(EMBED_MODES.agent);
+  // MV Agent 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md) — 이 창의 보드가 붙어 있는 동안만 채워지는 손잡이(SceneBoard 가 채움)
+  const sceneScreenRef = useRef<SceneScreenHandle | null>(null);
+  const agentScreenHost = useRef<ScreenHost>({ scene: () => sceneScreenRef.current }).current;
   // 칸에 넘기는 지금 화면(허브가 "자료(명령 아님)"로 붙인다 — 4KB 이하라 선택 카드는 40개까지만). 새 창은 이 값을 저장소로 받아 간다
   const agentScreen = agentFeature && (agentShown || agentFloat) ? (() => {
     const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
@@ -2354,6 +2358,7 @@ export default function App() {
         projectName={(id) => projects.find((p) => p.id === id)?.name}
         findGeneration={findGeneration}
         onPreview={openPreview}
+        screen={agentScreenHost}
       />
     </Suspense>
   ) : null;
@@ -2972,6 +2977,7 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
+                screenRef={sceneScreenRef}
                 onGenerateCard={(cardId, batch, assignment) =>
                   spotlightPromptRef.current?.submit(batch, assignment, {
                     sceneId: activeScene.id,

@@ -10,7 +10,8 @@ import json
 
 PANEL_SERVER = "mvhub_panel"
 PANEL_TOOLS = ("check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan",
-               "execute_generation_plan", "wait_results", "add_to_canvas")  # 어댑터 --panel·허브 _PANEL_METHODS 와 같은 뜻(시험이 대조)
+               "execute_generation_plan", "wait_results", "add_to_canvas",
+               "screen_action")  # 어댑터 --panel·허브 _PANEL_METHODS 와 같은 뜻(시험이 대조). screen_action = 화면 동작(옆 칸이 실행)
 CLAUDE_ALLOWED = frozenset(f"mcp__{PANEL_SERVER}__{name}" for name in PANEL_TOOLS)
 MAX_TEXT = 20_000
 MAX_LINE = 1_048_576

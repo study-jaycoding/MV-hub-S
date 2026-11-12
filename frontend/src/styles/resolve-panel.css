@@ -1,9 +1,24 @@
 /* 리졸브 안 MV 창 — 다빈치 미디어 풀 모양(Jay 2026-11-11): 왼쪽 빈 트리 · 오른쪽 상태. 색은 리졸브 미디어 풀의 회색 판. */
 .resolve-panel { color: #d4d4d6; background: #1f2023; height: 100dvh; display: flex; flex-direction: column; font-size: 12px; overflow: hidden; }
 .resolve-panel-head { position: relative; padding: 10px 12px 8px; background: #28292d; border-bottom: 1px solid #333438; flex: none; }
-/* [저장] — 머리줄 오른쪽 위 */
-.resolve-panel .rp-save { position: absolute; top: 9px; right: 12px; margin: 0; padding: 4px 14px; font-weight: 600; }
-.resolve-panel .rp-save:disabled { opacity: .6; cursor: default; }
+/* [저장] — C안(Jay 11-12): 머리줄 오른쪽, 머리줄 높이를 꽉 채우는 칸 · 아이콘 위·글자 아래 · 상태마다 바탕(시안 save_mock_c) */
+.resolve-panel-head.has-save { padding-right: 104px; }
+.resolve-panel .rp-save { position: absolute; top: 0; right: 0; bottom: 0; width: 92px; margin: 0; padding: 0 4px; border: 0; border-left: 1px solid #a9cc35; border-radius: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: #10120c; background: var(--accent, #c4e84a);
+  font-size: 14px; font-weight: 700; line-height: 1.2; text-align: center; }
+.resolve-panel .rp-save:active { transform: none; } /* 전역 button:active 의 1px 튐을 큰 칸에선 끈다 */
+.resolve-panel .rp-save svg { width: 24px; height: 24px; flex: none; }
+.resolve-panel .rp-save b { font-weight: 700; }
+.resolve-panel .rp-save small { font-size: 10.5px; font-weight: 600; opacity: .8; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: clip; }
+.resolve-panel .rp-save-saving, .resolve-panel .rp-save:disabled { background: #8fa83a; border-left-color: #7a9030; color: #10120c; opacity: 1; cursor: default; }
+.resolve-panel .rp-save-done { background: #2e3a1a; color: var(--accent, #c4e84a); border-left-color: #5d7322; }
+.resolve-panel .rp-save-blocked { background: #3a2424; color: #ff9b8f; border-left-color: #7a3a33; }
+/* 계단식(steps) — 부드러운 무한 회전은 화면을 초당 60번 다시 합친다(idleCssAnimations 시험 규칙) */
+.rp-save-spin { width: 22px; height: 22px; border: 3px solid rgba(16, 18, 12, .3); border-top-color: #10120c; border-radius: 50%; animation: rp-save-spin .9s steps(8) infinite; }
+@keyframes rp-save-spin { to { transform: rotate(360deg); } }
+.resolve-panel-status.bad { color: #ff9b8f; }
+.rp-save-list { margin-top: 6px; padding: 6px 8px; background: #1f2023; border-radius: 4px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.rp-save-list b { color: #ff9b8f; font-weight: 600; margin-right: 6px; }
 .resolve-panel-head > strong { display: block; font-size: 15px; color: #e6e6e8; }
 .resolve-panel-head > strong span { font-size: 11px; color: #8a8b90; font-weight: 400; margin-left: 6px; }
 .resolve-panel-status { color: var(--accent, #c4e84a); margin-top: 6px; overflow-wrap: anywhere; }

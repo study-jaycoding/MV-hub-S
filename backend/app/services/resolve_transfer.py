@@ -459,8 +459,9 @@ def _refresh_summary(manifest: dict[str, Any], *, finished: bool = False) -> Non
     manifest["completed_at"] = _utc_now()
 
 
-async def _cached_source(asset: dict[str, Any]) -> Path:
-    """asset의 로컬 캐시를 확보한다. 임의 절대경로는 허용하지 않는다."""
+async def _cached_source(asset: dict[str, Any], *, before_download=None) -> Path:
+    """asset의 로컬 캐시를 확보한다. 임의 절대경로는 허용하지 않는다.
+    before_download 는 media_cache 가 실제 받기 직전에 부른다(예외면 다음 후보도 받지 않고 그대로 올라간다)."""
     file_path = str(asset.get("file_path") or "")
     source_url = str(asset.get("source_url") or "")
 
@@ -476,7 +477,7 @@ async def _cached_source(asset: dict[str, Any]) -> Path:
         if candidate in seen or not candidate.startswith(("http://", "https://")):
             continue
         seen.add(candidate)
-        rel = await media_cache.cache_url(candidate)
+        rel = await media_cache.cache_url(candidate, before_download=before_download)
         if not rel or not rel.startswith("/media/"):
             continue
         local = safe_join(MEDIA_DIR, rel.removeprefix("/media/"))
@@ -667,7 +668,7 @@ async def prepare_generation_files(
             guard()
         await asyncio.to_thread(_link_keys, books, item["folder_path"], ident)
     else:
-        source = await _cached_source(asset)
+        source = await _cached_source(asset, before_download=guard)
         if guard:
             guard()
         dest, written = await asyncio.to_thread(

@@ -5,7 +5,7 @@
 
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { normalizeFolderPath } from "./folderTreeModel";
-import { loadJSON, saveJSON } from "./storage";
+import { loadJSON, removeStorage, saveJSON, trySaveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export { normalizeFolderPath } from "./folderTreeModel";
@@ -16,6 +16,38 @@ const ASSET_KEY = STORAGE_KEYS.assetsDisabled;
 
 export const DISABLED_EVENT = APP_EVENTS.disabledChanged;
 
+// 생성물 회색 바뀜 번호 — 이 창이 저장할 때와 다른 창의 storage 알림 때 오른다. MV Agent 화면 동작의 되돌리기가
+//  '그 뒤 다른 회색 변경 없음'을 본다(풀었다 다시 회색으로 한 것은 지금 값만으로 구별 못 하므로 — docs/status/MVAgent_화면동작_2026-11-12.md 3-3).
+let genRev = 0;
+export const disabledGenRev = (): number => genRev;
+// 저장마다 새로 적는 고유 표식 — 다른 창이 풀었다 다시 회색으로 해 값이 같아지고 알림이 늦어도 바뀐 것을 안다(화면 동작 독립 리뷰 P1)
+//  값보다 **먼저** 쓴다(값을 쓰다 멈춰도 표식은 이미 바뀌어 있다). 표식 쓰기가 실패하면 지워서 빈 값 — 기록해 둔 표식과 달라진다.
+const GEN_STAMP_KEY = `${GEN_KEY}.stamp`;
+export const disabledGenStamp = (): string => loadJSON<string>(GEN_STAMP_KEY) ?? "";
+/** 새 표식을 쓰고 그 값을 준다 — 못 쓰면 지우고 ""(빈 표식은 되돌리기 자격이 아니다). */
+const bumpGenStamp = (): string => {
+  const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  if (trySaveJSON(GEN_STAMP_KEY, stamp)) return stamp;
+  removeStorage(GEN_STAMP_KEY);
+  return "";
+};
+
+/** 생성물 회색 저장 — 표식 먼저, 값 다음. 값 저장이 됐는지·이번에 쓴 표식을 돌려준다(화면 동작 되돌리기가 '내 저장 실패'를 가른다). */
+function writeGen(s: Set<string>): { saved: boolean; stamp: string } {
+  const stamp = bumpGenStamp();
+  const saved = trySaveJSON(GEN_KEY, [...s]);
+  genRev += 1;
+  dispatchAppEvent(DISABLED_EVENT);
+  return { saved, stamp };
+}
+
+/** 목표 상태로(뒤집기 아님) — MV Agent 화면 동작과 그 되돌리기용. 저장 결과를 돌려준다. */
+export function setDisabledGen(ids: string[], hidden: boolean): { saved: boolean; stamp: string } {
+  const s = loadDisabledGen();
+  ids.forEach((id) => (hidden ? s.add(id) : s.delete(id)));
+  return writeGen(s);
+}
+
 function read(key: string, oldKey?: string): Set<string> {
   try {
     return new Set(loadJSON<string[]>(key) ?? (oldKey ? loadJSON<string[]>(oldKey) : null) ?? []);
@@ -25,6 +57,7 @@ function read(key: string, oldKey?: string): Set<string> {
 }
 
 function write(key: string, s: Set<string>): void {
+  if (key === GEN_KEY) return void writeGen(s);
   saveJSON(key, [...s]);
   dispatchAppEvent(DISABLED_EVENT);
 }
@@ -121,6 +154,7 @@ export function toggleDisabledFolder(projectId: string, path: string): void {
 //  storage 이벤트는 다른 창의 저장에만 온다(이 창의 저장은 위에서 직접 알린다).
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
+    if (event.key === GEN_KEY) genRev += 1;
     if (event.key === GEN_KEY || event.key === ASSET_KEY || event.key === FOLDER_KEY) dispatchAppEvent(DISABLED_EVENT);
   });
 }

@@ -22,11 +22,13 @@ import {
   type AgentPlan,
   type AgentPlanItemState,
   type AgentPlanSnapshot,
+  type AgentScreenStatus,
   type AgentSession,
   type AgentTurnStatus,
   type AgentWeeklyUsage,
   type ClaudeStatus,
 } from "./agentChatApi";
+import { runScreenAction, undoScreenAction, type ScreenHost, type ScreenUndo } from "./agentScreenActions";
 import { AGENT_CHAT_CONNECT_FEATURE, hubHasFeature } from "./hubFeatures";
 import { errorDetail, isHttpStatus } from "./http";
 import { loadJSON, loadString, saveJSON, saveString } from "./storage";
@@ -50,7 +52,10 @@ export type AgentMessage =
       estimate?: { credits: number | null }; // 없으면 견적 확인 중 · credits null = 확인하지 못함
       progress?: AgentPlanProgress }
   | { kind: "error"; id: string; message: string }
-  | { kind: "notice"; id: string; text: string };
+  | { kind: "notice"; id: string; text: string }
+  // 화면 동작의 '한 일' 카드(docs/status/MVAgent_화면동작_2026-11-12.md 3-3) — 이 칸이 실행했으면 그 영수증(undo 있음), 아니면 허브 사건
+  | { kind: "action"; id: string; actionId: string; ok: boolean; summary: string; status: AgentScreenStatus;
+      undo?: ScreenUndo; account?: string; undone?: boolean; note?: string };
 
 export interface AgentChoice {
   engine: AgentEngineId;
@@ -150,8 +155,12 @@ export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent, tur
       return [...messages, { kind: "error", id, message: event.message }];
     case "notice":
       return [...messages, { kind: "notice", id, text: event.text }];
+    case "ui_action_result":
+      // 이 칸이 실행했으면 그 영수증 카드가 먼저다(되돌리기 자료가 있다) — 허브 사건은 다른 칸·복원·실행 안 됨·결과 불명일 때만 카드가 된다
+      if (messages.some((m) => m.kind === "action" && m.actionId === event.action_id)) return messages;
+      return [...messages, { kind: "action", id, actionId: event.action_id, ok: event.ok, summary: event.summary, status: event.status }];
     default:
-      return messages; // 모르는 사건은 넘긴다
+      return messages; // 모르는 사건은 넘긴다(ui_action 은 follow 가 실행 여부를 정한다)
   }
 }
 
@@ -207,7 +216,8 @@ const remember = (id: string | null) => saveJSON(STORAGE_KEYS.agentPanelConversa
 let pendingSend: { account: string; sig: string; key: string } | null = null;
 
 export function useAgentChat(context: AgentContext | Record<string, never>, // 빈 값 = '지금 화면' 칩을 뺐다
-  options: { popout?: boolean } = {}) { // popout = 새 창(?embed=agent) — '새 창에서 열기' 요청을 받는 쪽
+  // popout = 새 창(?embed=agent) — '새 창에서 열기' 요청을 받는 쪽 · screen = 이 창의 캔버스 손잡이(옆 칸만, 화면 동작 실행)
+  options: { popout?: boolean; screen?: ScreenHost } = {}) {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [choice, setChoice] = useState<AgentChoice | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -261,6 +271,63 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const busy = useRef(false); // 보내는 중·차례 진행 중 — 두 번 보내기 막음(상태보다 먼저 바뀐다)
   const executing = useRef(new Set<string>());
   const estimating = useRef(new Set<string>());
+  // 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-2) — 이 마운트의 실행 창 번호(옆 칸만, 마운트마다 새로), 이 마운트가 직접 보낸
+  //  차례(대화를 열거나 다시 열면 비운다 — 복원은 실행하지 않음), 이미 처리한 동작
+  const screenRef = useRef(options.screen);
+  screenRef.current = options.screen;
+  const screenTab = useRef<string | null>(null);
+  if (screenTab.current === null && !options.popout && options.screen) screenTab.current = crypto.randomUUID();
+  const sentTurns = useRef(new Set<string>());
+  const handledActions = useRef(new Set<string>());
+  const messagesRef = useRef<AgentMessage[]>([]);
+  messagesRef.current = messages; // 되돌리기가 지금 카드 순서를 읽는다(상태 갱신 함수 안에서 화면을 바꾸지 않게)
+
+  /** 허브가 발급한 화면 동작 — 이 마운트가 직접 보낸 차례면 claim → 명령 직전 다시 확인 → 실행 → 영수증 카드 → 결과 보고. */
+  const runAction = useCallback(async (turnId: string, ev: Extract<AgentEvent, { kind: "ui_action" }>) => {
+    const host = screenRef.current, tab = screenTab.current;
+    if (!host || !tab || !sentTurns.current.has(turnId) || handledActions.current.has(ev.action_id)) return;
+    handledActions.current.add(ev.action_id); // 이미 처리한 동작은 다시 청하지 않는다
+    const account = getAccountNamespace();
+    let token: string;
+    try {
+      token = (await agentChatApi.claimAction(turnId, ev.action_id, tab)).token;
+    } catch {
+      return; // 다른 마운트·기한 지남·차례 끝 — 실행하지 않는다
+    }
+    if (!mounted.current || !sentTurns.current.has(turnId) || getAccountNamespace() !== account) { // claim 뒤 자격 재확인
+      void agentChatApi.reportAction(turnId, ev.action_id, { token, ok: false, summary: "화면이 바뀌어 실행하지 않았어요", data: {} }).catch(() => {});
+      return;
+    }
+    const receipt = runScreenAction(ev.name, ev.args, host); // 씬·보기 모드는 실행기가 명령 직전에 다시 본다
+    const card: AgentMessage = { kind: "action", id: `${turnId}:action:${ev.action_id}`, actionId: ev.action_id, ok: receipt.ok,
+      summary: receipt.summary, status: receipt.ok ? "done" : "failed", undo: receipt.undo, account };
+    // 영수증이 먼저다 — claim 답이 늦어 허브의 상태 카드(결과 불명 등)가 먼저 들어왔으면 그 자리를 대신한다(독립 리뷰 P1)
+    setMessages((m) => (m.some((x) => x.kind === "action" && x.actionId === ev.action_id)
+      ? m.map((x) => (x.kind === "action" && x.actionId === ev.action_id ? card : x)) : [...m, card]));
+    try {
+      await agentChatApi.reportAction(turnId, ev.action_id, { token, ok: receipt.ok, summary: receipt.summary, data: receipt.data });
+    } catch {
+      // 보고가 실패해도 이미 반영한 동작은 영수증 카드로 둔다(실패로 보이지 않게)
+    }
+    // mounted 는 아래에서 선언한 참조 — 부를 때 읽는다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** '한 일' 카드의 되돌리기 — 그 동작이 바꾼 것만, 뒤에 손댄 것이 없을 때만. 계정이 바뀌었으면 거절. 한 번 되돌리면 단추가 사라진다. */
+  const undoAction = useCallback((actionId: string) => {
+    const list = messagesRef.current;
+    const at = list.findIndex((m) => m.kind === "action" && m.actionId === actionId);
+    const card = list[at];
+    if (!card || card.kind !== "action" || !card.undo || card.undone) return;
+    const mark = (patch: { undone?: boolean; note: string; undo?: ScreenUndo }) =>
+      setMessages((m) => m.map((x) => (x.kind === "action" && x.actionId === actionId ? { ...x, ...patch } : x)));
+    const host = screenRef.current;
+    if (!host || card.account !== getAccountNamespace()) return mark({ note: "계정이나 화면이 바뀌어 되돌릴 수 없어요" });
+    const later = list.slice(at + 1).flatMap((m) => (m.kind === "action" && !m.undone && m.undo?.kind === "canvas" ? [m.undo.fingerprint] : []));
+    const result = undoScreenAction(card.undo, host, later);
+    // 내 저장 실패면 실행기가 기준을 새로 잡아 준다 — 그 자료로 바꿔 다시 누를 수 있게
+    mark(result.ok ? { undone: true, note: result.message } : { note: result.message, ...(result.undo ? { undo: result.undo } : {}) });
+  }, []);
 
   // 지금 시작하는 요청의 표 — 답이 왔을 때 대화가 바뀌었거나 계정이 바뀌었으면 stale() 이 참
   const ticket = () => {
@@ -275,6 +342,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     busy.current = false;
     executing.current.clear();
     estimating.current.clear();
+    sentTurns.current.clear(); // 대화를 바꾸거나 다시 열면 그 전 차례의 화면 동작은 실행하지 않는다
     setConversationId(null);
     setTitle(null);
     setCurrent(null);
@@ -348,6 +416,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         if (controller.signal.aborted || stale()) return;
         failures = 0;
         if (r.events.length) setMessages((m) => r.events.reduce((acc, ev) => applyAgentEvent(acc, ev, turnId), m));
+        for (const ev of r.events) if (ev.kind === "ui_action") void runAction(turnId, ev); // 살아서 받은 사건만(복원은 실행 안 함)
         noteUsage(r.events, true);
         seq = Math.max(seq, r.last_seq);
         setTurn({ id: turnId, status: r.status });
@@ -373,7 +442,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     }
     if (poll.current === controller) poll.current = null;
     busy.current = false;
-  }, [fail, forget, markRead]);
+  }, [fail, forget, markRead, runAction]);
 
   const openConversation = useCallback(async (id: string) => {
     if (busy.current) return; // 보내는 중·진행 중엔 대화를 바꾸지 않는다 — 허브에서 시작한 차례를 놓치지 않게
@@ -500,6 +569,15 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     }, 2000);
   }, [recheck, stopWaiting]);
 
+  // 실행기가 Claude Code 를 설치하는 중이면 3초마다 다시 본다 — 끝나면(running 아님) 멈추고 화면이 그 단계로 넘어간다.
+  //  로그인 창 기다림(2초·10분)과 따로다. 칸을 닫으면 정리로 멈춘다(설치 설계 2-v3-1b).
+  const installing = claude?.install?.state === "running";
+  useEffect(() => {
+    if (!installing) return;
+    const timer = window.setInterval(() => { if (!claudeInFlight.current) void recheck(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [installing, recheck]);
+
   /** [Claude 연결] — 허브가 보이는 로그인 창을 연다(스위치가 꺼졌거나 열 수 없으면 터미널 안내로). */
   const connect = useCallback(async () => {
     setLoginNote(null);
@@ -583,8 +661,17 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     const fast = !!choice.fast && choice.engine === "claude" && choice.model === "opus";
     const attached = attach?.items.length ? attach : null;
     const genModel = readDefaults().gen_model; // 칸 설정 '먼저 쓸 생성 모델'
+    // 캔버스 씬은 이 창에 그 보드가 실제로 붙어 있을 때만 싣는다 — 보내기 직전에 본다(손잡이가 바뀌어도 다시 그려지지 않으므로, 화면 동작 3-3b)
+    const screen = contextRef.current;
+    const host = screenRef.current;
+    let ctx: AgentContext | Record<string, never> = screen;
+    const full = screen as Partial<AgentContext>; // 빈 값('지금 화면' 칩을 뺌)이면 tab 이 없다
+    if (host && typeof full.tab === "string" && full.scene && host.scene()?.sceneId !== full.scene.id) {
+      const away: AgentContext = { ...(full as AgentContext), scene: undefined, scene_unavailable: "away" }; // undefined 는 보낼 때 빠진다
+      ctx = away;
+    }
     // 같은 요청인가 = 계정·대화·모델·깊이·빠른 모드·글·화면 정보·붙인 자료(와 그 공간)·먼저 쓸 생성 모델이 모두 같은가(허브는 같은 열쇠면 내용 비교 없이 그 차례를 돌려준다)
-    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, fast, body, contextRef.current,
+    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, fast, body, ctx,
       attached && { workspace: { scope: attached.workspace.scope, id: attached.workspace.id ?? null }, items: attached.items }, genModel ?? null]);
     const key = pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID();
     pendingSend = { account, sig, key }; // 받아들인 답을 화면에 붙이면 지운다
@@ -594,9 +681,11 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         idempotency_key: key,
         ...(conversationId ? { conversation_id: conversationId } : {}),
         engine: choice.engine, model: choice.model, effort: choice.effort, fast,
-        text: body, context: contextRef.current,
+        text: body, context: ctx,
         ...(attached ? { attachments: attached.items, attach_workspace: attached.workspace } : {}),
         ...(genModel ? { gen_model: genModel } : {}),
+        // 화면 정보를 뺀 차례('지금 화면' 칩을 끔)는 실행 창 번호도 싣지 않는다 — 화면 동작 불가(설계 3-1, 독립 리뷰 P2)
+        ...(screenTab.current && typeof full.tab === "string" ? { screen_tab: screenTab.current } : {}),
       });
       if (stale()) {
         // 칸을 닫는 등 화면이 바뀐 뒤 온 접수 답 — 허브는 받아들였다. 같은 계정이고 그사이 사람이 다른 대화를 고르지 않았으면
@@ -610,6 +699,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       currentId.current = r.conversation_id; // 다시 그리기 전에 끝남이 와도 읽음이 이 대화로 가게
       remember(r.conversation_id);
       setTurn({ id: r.turn_id, status: r.status });
+      sentTurns.current.add(r.turn_id); // 이 마운트가 직접 보낸 차례 — 그 화면 동작만 실행한다
       void follow(r.turn_id, 0);
       return true;
     } catch (e) {
@@ -841,7 +931,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
-    conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking,
+    conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking, undoAction,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
     // Claude 연결 — 허브가 연결 경로를 알 때만 안내(옛 허브는 엔진 사유만)
     connect: {
@@ -850,6 +940,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       version: claude?.version ?? claudeEngine?.version ?? null,
       allowed: !!claudeEngine?.available,
       loginWindowEnabled: !!claude?.login_window_enabled,
+      install: claude?.install ?? null,
       waiting, note: loginNote, connected,
       recheck, connect, stopWaiting, dismissConnected: () => setConnected(null),
     },

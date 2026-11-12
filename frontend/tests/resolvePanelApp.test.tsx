@@ -665,11 +665,14 @@ it("[저장]: NAS 로 못 옮기면 저장하지 않음 · not_clean 이면 빈 
   await act(async () => control.saveProject("p", "S")); await flush();
   expect(mocks.save).not.toHaveBeenCalled();
   expect(control.notice).toContain("저장하지 않았습니다");
+  expect(control.saveState).toEqual({ phase: "blocked", bins: [] }); // [저장] 칸 = 저장 안 됨
   mocks.inventory.mockResolvedValue({ ...destination, items: [], more: false });
   mocks.save.mockResolvedValueOnce({ state: "not_clean", resolve_project_id: "r", not_clean: { mine: 0, other: 1, in_use: 1, bins: [{ path: "MV Hub/영화/S/C2", in_use: true, mine: false }] } });
   await act(async () => control.saveProject("p", "S")); await flush();
   expect(control.notice).toContain("이 PC 클립이 남아 저장하지 않았습니다");
-  expect(control.failures.some(line => line.includes("MV Hub/영화/S/C2") && line.includes("다빈치에서 직접 확인"))).toBe(true);
+  // 걸린 빈은 [저장] 칸 옆 목록으로(C안 ④) — 알림 목록에 또 넣지 않는다
+  expect(control.saveState).toEqual({ phase: "blocked", bins: [{ path: "MV Hub/영화/S/C2", in_use: true, mine: false }] });
+  expect(control.failures.some(line => line.includes("MV Hub/영화/S/C2"))).toBe(false);
 });
 
 it("미리 띄우기가 건너뛴 컷이 있으면 에피소드 빈에 두 번 연속 머물 때 한 번 다시(스쳐 지나가기엔 안 돎)", async () => {
@@ -711,10 +714,35 @@ it("[저장] 단추: 리졸브 안·쓰기 담당일 때만 보이고 누르면 
   await act(async () => root.unmount()); root = createRoot(host);
   window.mvhubResolve = { protocol: 1, accepts: { min: 1, max: 1 }, startDrag: vi.fn(() => true) };
   await render();
-  const button = host.querySelector<HTMLButtonElement>(".rp-save")!;
-  expect(button.textContent).toBe("저장");
-  await act(async () => button.click()); await flush();
+  const button = () => host.querySelector<HTMLButtonElement>(".rp-save")!;
+  expect(button().textContent).toBe("저장");
+  expect(button().className).toBe("rp-save rp-save-idle");
+  expect(host.querySelector(".resolve-panel-head")!.className).toContain("has-save"); // 머리줄 글은 칸만큼 비운다
+  // C안 ② 저장 중 — 단계가 작은 줄에, 누를 수 없음
+  const held = deferred<{ state: string; resolve_project_id: string }>();
+  mocks.save.mockReturnValueOnce(held.promise);
+  await act(async () => button().click()); await flush();
   expect(mocks.save.mock.calls[0][0]).toMatchObject({ project_id: "p", expect_project: "r" });
+  expect([button().className, button().disabled, button().textContent]).toEqual(["rp-save rp-save-saving", true, "저장 중검사"]);
+  // ③ 저장됨 — 시각과 함께, 3초 뒤 기본
+  await act(async () => held.resolve({ state: "ok", resolve_project_id: "r" })); await flush();
+  expect(button().className).toBe("rp-save rp-save-done");
+  expect(button().querySelector("b")!.textContent).toBe("저장됨");
+  expect(button().querySelector("small")!.textContent).toMatch(/^\d\d:\d\d$/);
+  await tick(3000);
+  expect(button().className).toBe("rp-save rp-save-idle");
+  // ④ 막힘 — 걸린 빈 수·다시 저장, 머리줄에 빈 목록 · 다시 누르면 다시 저장
+  mocks.save.mockResolvedValueOnce({ state: "not_clean", resolve_project_id: "r", not_clean: { mine: 1, other: 1, in_use: 1,
+    bins: [{ path: "MV Hub/영화/S/C2", count: 12, in_use: false, mine: false }, { path: "MV Hub/영화/S/C10", count: 2, in_use: true, mine: true }] } });
+  await act(async () => button().click()); await flush();
+  expect([button().className, button().querySelector("b")!.textContent, button().querySelector("small")!.textContent])
+    .toEqual(["rp-save rp-save-blocked", "남은 빈 2", "다시 저장"]);
+  expect([...host.querySelectorAll(".rp-save-list > div")].map(row => row.textContent)).toEqual([
+    "다른 허브MV Hub/영화/S/C2 · 12 (다빈치에서 직접 확인)", "내 것MV Hub/영화/S/C10 · 2 · 쓰는 중 (다시 저장하면 풀릴 수 있음)"]);
+  expect(host.querySelector(".resolve-panel-status")!.className).toContain("bad");
+  await act(async () => button().click()); await flush();
+  expect(mocks.save).toHaveBeenCalledTimes(3);
+  expect(host.querySelector(".rp-save-list")).toBeNull(); // 다시 저장해 깨끗하면 목록이 걷힌다
 });
 
 it("미리 캐시: 기다린 뒤 선택이 그사이 받은 ID 는 다시 묻지 않음", async () => {

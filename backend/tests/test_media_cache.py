@@ -82,6 +82,45 @@ class MediaCacheTests(unittest.TestCase):
             finally:
                 media_cache.MEDIA_DIR = old_media_dir
 
+    def test_before_download_runs_in_lock_only_before_a_real_download(self):
+        # 호출자 확인 칸 — 받기 직전에만, 예외면 받기 없이(다음 후보도 안 받음) 그대로 올라가고 잠금 표는 빈다
+        from app.services import resolve_transfer
+        with tempfile.TemporaryDirectory() as td:
+            old_media_dir = media_cache.MEDIA_DIR
+            media_cache.MEDIA_DIR = Path(td)
+            calls, downloads = [], []
+
+            def ok_download(url: str, target: Path, *args) -> None:
+                downloads.append(url)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"media")
+
+            def stop():
+                calls.append("stop")
+                raise LookupError("account changed")
+
+            async def scenario():
+                with mock.patch.object(media_cache, "_download", side_effect=ok_download):
+                    with self.assertRaises(LookupError):
+                        await resolve_transfer._cached_source(
+                            {"file_path": "https://cdn.example.com/first.mp4", "source_url": "https://cdn.example.com/second.mp4"},
+                            before_download=stop)
+                    self.assertEqual((downloads, media_cache._LOCKS, media_cache._LOCK_REFS), ([], {}, {}))
+                    rel = await media_cache.cache_url("https://cdn.example.com/first.mp4", before_download=lambda: calls.append("ok"))
+                    again = await media_cache.cache_url("https://cdn.example.com/first.mp4", before_download=stop)  # 이미 있으면 안 부름
+                    plain = await media_cache.cache_url("https://cdn.example.com/plain.mp4")  # 안 넘기면 그대로
+                    return rel, again, plain
+
+            try:
+                rel, again, plain = asyncio.run(scenario())
+            finally:
+                media_cache.MEDIA_DIR = old_media_dir
+
+        self.assertEqual(rel, again)
+        self.assertTrue(plain)
+        self.assertEqual(calls, ["stop", "ok"])
+        self.assertEqual(downloads, ["https://cdn.example.com/first.mp4", "https://cdn.example.com/plain.mp4"])
+
     def test_html_response_is_rejected(self):
         with self.assertRaises(media_cache.MediaCachePermanentError):
             media_cache._validate_response(

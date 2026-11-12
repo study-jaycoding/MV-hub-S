@@ -72,7 +72,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.11.12.3"
+ADAPTER_VERSION = "2026.11.12.4"
 MCP_UPDATE_API = 1
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
                 "agent_chat_read", "reference_exact"}
@@ -854,6 +854,8 @@ class Broker:
             if feature and feature not in status["hub_features"]:
                 raise BrokerError("hub_outdated")
             timeout = RESULT_TIMEOUT + (args.get("wait_seconds", 0) if method in {"get_result", "wait_results"} else 0)
+            # 화면 동작은 허브가 옆 칸의 결과를 최대 30초(+여유) 기다린다 — 그보다 짧게 끊지 않는다
+            timeout = max(timeout, 45) if method == "screen_action" else timeout
             return self.request("/api/mcp/v2/client/action", {"method": method, "args": args}, timeout=timeout,
                                 maximum=MAX_GALLERY_RESPONSE if method == "show_results" else
                                 MAX_RESULT_RESPONSE if method in {"get_result", "get_generation"} else MAX_RESPONSE)
@@ -884,7 +886,7 @@ class Broker:
 
 # 백엔드 agent_chat_parse.PANEL_TOOLS·허브 mcp_v2._PANEL_METHODS 와 같은 뜻(따로 설치되는 파일이라 import 대신 백엔드 시험이 대조)
 PANEL_TOOLS = frozenset({"check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan",
-                         "execute_generation_plan", "wait_results", "add_to_canvas"})
+                         "execute_generation_plan", "wait_results", "add_to_canvas", "screen_action"})
 PANEL_INSTRUCTIONS = (
     "MV Hub 앱의 MV Agent 칸 전용 연결입니다. "
     "먼저 read_context(kind='workspaces')로 공간을 조회하고, 이름이 겹치거나 대상이 불명확하면 사용자에게 확인하세요. "
@@ -896,6 +898,8 @@ PANEL_INSTRUCTIONS = (
     "실행 뒤 wait_results(plan_id, item_indexes, wait_seconds=25)로 모든 항목이 끝날 때까지 기다리고 완료·실패 수를 짧게 알리세요. "
     "결과 그림·URL·경로는 나열하지 마세요(칸의 계획 카드가 보입니다). 실패·접수 불명확 항목은 다시 내지 말고 사용자에게 물으세요. "
     "캔버스는 사용자가 말했을 때만 read_context(kind='scenes')로 씬을 확인해 add_to_canvas를 부르세요. "
+    "빈 노드 만들기·잇기·고른 카드 읽기·내 생성물 회색(비활성)은 screen_action으로 합니다 — 옆 칸이 열린 MV Hub 화면에서만 되고, "
+    "캔버스 동작은 지금 화면의 scene_id로만 합니다(캔버스가 별도 창이면 안 됨). 결과는 칸에 카드로 보이니 한 줄로만 말하고 성공이 아니면 상태를 알리세요. "
     "비용이 필요하면 estimate_plan을 부르고 null을 0으로 보지 마세요."
 )
 PANEL_DESCRIPTIONS = {  # 칸 모드의 도구 설명 — 일반 연결 설명은 show_results·힉스필드 표시를 시킨다
@@ -908,6 +912,13 @@ PANEL_DESCRIPTIONS = {  # 칸 모드의 도구 설명 — 일반 연결 설명�
                     "끝나면 완료·실패 수만 짧게 알리세요(결과는 칸의 계획 카드가 보입니다). all_done과 구분하며 실패를 재생성하지 마세요.",
     "execute_generation_plan": "사용자가 이 대화에서 생성하라고 말한 계획만 실행합니다. 크레딧이 소모됩니다. "
                                "뒤이어 wait_results로 기다리세요. 불명확한 응답을 자동 재시도하지 마세요.",
+    "screen_action": "옆 칸이 열린 MV Hub 화면을 바꿉니다(옆 칸이 실행 — 과금 없음). name: "
+                     "canvas.read_selection{scene_id} = 그 씬에서 고른 카드(20개까지) · "
+                     "canvas.create_nodes{scene_id, nodes:[{kind:'generation'|'text', text?}](1~5)} = 빈 생성 카드·글 카드(잇지 않음, 한 차례 10개) · "
+                     "canvas.connect{scene_id, pairs:[[from,to]](1~10)} = 명시한 쌍만 잇기(안 되는 쌍은 건너뜀, 한 차례 20쌍) · "
+                     "library.set_hidden{generation_ids(1~50), hidden} = 내 생성물을 회색(비활성)으로/풀기(목표 상태, 이 브라우저 기준, 한 차례 100개). "
+                     "scene_id 는 지금 화면의 scene 만. status 가 done 이 아니면(failed·expired_unclaimed·unknown·closed·skipped) 그 상태를 사용자에게 알리고 "
+                     "같은 동작을 자동으로 다시 내지 마세요.",
 }
 
 
@@ -1312,6 +1323,14 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         ) -> dict[str, Any]:
             """사용자가 캔버스 노드를 요청한 경우에만 기존 결과를 지정 씬에 붙입니다. 추가 생성·과금은 없으며 앱 화면이 닫혀 있으면 반영 대기합니다."""
             return broker.action("add_to_canvas", {"plan_id": plan_id, "scene_id": scene_id})
+
+    if panel:  # 화면 동작은 칸 연결에만 — 일반 연결엔 이 도구가 없다(docs/status/MVAgent_화면동작_2026-11-12.md 3-4)
+        @tool(annotations=write, description=PANEL_DESCRIPTIONS["screen_action"])
+        def screen_action(
+            name: Literal["canvas.read_selection", "canvas.create_nodes", "canvas.connect", "library.set_hidden"],
+            args: dict[str, Any],
+        ) -> dict[str, Any]:
+            return broker.action("screen_action", {"name": name, "args": args})
 
     return server
 

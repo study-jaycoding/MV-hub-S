@@ -18,8 +18,9 @@ import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
 import {
   agentChatApi, type AgentAttachment, type AgentAttachWorkspace, type AgentContext, type AgentConversationPatch, type AgentConversationSummary,
-  type AgentEngine, type AgentEngineId, type AgentSessionFileResult,
+  type AgentEngine, type AgentEngineId, type AgentSessionFileResult, type ClaudeVersionInfo,
 } from "../../lib/agentChatApi";
+import type { ScreenHost } from "../../lib/agentScreenActions";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useT } from "../../lib/i18n";
@@ -41,6 +42,7 @@ interface Props {
   projectName?: (id: string) => string | undefined; // 서랍의 프로젝트 묶음 이름
   findGeneration?: (id: string) => Generation | undefined; // 계획 카드 썸네일 — 앱이 이미 읽은 라이브러리 카드
   onPreview?: (target: PreviewTarget) => void; // 썸네일을 누르면 기존 크게 보기
+  screen?: ScreenHost; // 이 창의 캔버스 손잡이 — 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md) 실행용, 옆 칸만
 }
 
 const NO_SCREEN: Record<string, never> = {}; // '지금 화면' 칩을 뺀 동안 보내는 빈 문맥(허브가 '어디인지 묻는다' 안내)
@@ -71,6 +73,7 @@ const TOOL: Record<string, string> = {
   execute_generation_plan: "생성 실행",
   wait_results: "결과 기다리기",
   add_to_canvas: "캔버스에 놓기",
+  screen_action: "화면 동작",
 };
 const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
 
@@ -152,7 +155,7 @@ function groupTools(messages: AgentMessage[]): Row[] {
   return rows;
 }
 
-export function AgentPanel({ context, contextLabel, onClose, popout = false, onPopOut, onDock, projectName, findGeneration, onPreview }: Props) {
+export function AgentPanel({ context, contextLabel, onClose, popout = false, onPopOut, onDock, projectName, findGeneration, onPreview, screen }: Props) {
   const t = useT();
   // 정보 칸 — 지금 화면·이 대화 결과물·붙였던 자료. 정보 단추를 다시 누를 때까지 떠 있다(바깥 누름·Esc 로 안 닫힘, 기억함 — Jay 11-12)
   const [infoOpen, setInfoOpen] = useState(() => loadJSON<unknown>(STORAGE_KEYS.agentInfoOpen) === true);
@@ -207,7 +210,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   };
 
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
-  const chat = useAgentChat(screenOn ? context : NO_SCREEN, { popout }); // 새 창이면 '새 창에서 열기' 요청을 받는다
+  // 새 창이면 '새 창에서 열기' 요청을 받는다 · 옆 칸이면 이 창의 캔버스 손잡이로 화면 동작을 실행한다(새 창은 실행하지 않음)
+  const chat = useAgentChat(screenOn ? context : NO_SCREEN, { popout, screen: popout ? undefined : screen });
   const [text, setText] = useState("");
   const [revising, setRevising] = useState<{ title: string } | null>(null); // [고치기] — 입력칸의 '고칠 계획' 칩
   // 입력칸 아래 칩 메뉴 — 모델(회사별 하위 메뉴·설정) · 생각 깊이(빠른 모드) · 사용량(docs/status/MVAgent_모델설정사용량_2026-11-12.md)
@@ -552,11 +556,12 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           </div>
         )}
         {groupTools(chat.messages).map((r) => (r.kind === "tools" ? <ToolGroup key={r.id} tools={r.tools} /> : (
-          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={reuse}
+          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={reuse} onUndo={chat.undoAction}
             findGeneration={findGeneration} genOf={genOf} onPreview={onPreview} />
         )))}
         {needsConnect && (
-          <AgentConnect state={chat.connect.state} version={chat.connect.version} loginWindowEnabled={chat.connect.loginWindowEnabled}
+          <AgentConnect state={chat.connect.state} version={chat.connect.version} install={chat.connect.install}
+            loginWindowEnabled={chat.connect.loginWindowEnabled}
             waiting={chat.connect.waiting} note={chat.connect.note} onConnect={() => void chat.connect.connect()}
             onRecheck={() => void chat.connect.recheck()} onStopWaiting={chat.connect.stopWaiting} />
         )}
@@ -744,9 +749,10 @@ function InfoCardBox({ title, count, folded, onFold, extra, children }: {
   );
 }
 
-function Message({ message: m, onExecute, onRevise, onReuse, findGeneration, genOf, onPreview }: {
+function Message({ message: m, onExecute, onRevise, onReuse, onUndo, findGeneration, genOf, onPreview }: {
   message: AgentMessage;
   onExecute: (planId: string) => void;
+  onUndo: (actionId: string) => void;
   onRevise: (title: string) => void;
   onReuse: (text: string) => void;
   findGeneration?: (id: string) => Generation | undefined;
@@ -767,7 +773,23 @@ function Message({ message: m, onExecute, onRevise, onReuse, findGeneration, gen
       return <div className="agent-notice" role="status">{m.text}</div>;
     case "error":
       return <div className="agent-msg agent-msg-error" role="alert">{m.message}</div>;
+    case "action":
+      return <ActionCard card={m} onUndo={onUndo} />;
   }
+}
+
+/** 화면 동작의 '한 일' 카드 — 실패·실행 안 됨·결과 불명도 카드로. 되돌리기는 이 칸이 실행한 것만(한 번, 뒤에 손댄 것이 없을 때). */
+function ActionCard({ card, onUndo }: { card: Extract<AgentMessage, { kind: "action" }>; onUndo: (actionId: string) => void }) {
+  const t = useT();
+  const tone = card.ok ? "is-ok" : card.status === "failed" ? "is-failed" : "is-unknown";
+  return (
+    <div className={`agent-action ${tone}`} role="status">
+      <span className="agent-action-mark" aria-hidden="true" />
+      <span className="agent-action-text">{card.summary}{card.undone ? ` · ${t("되돌림")}` : ""}</span>
+      {card.undo && !card.undone && <button type="button" className="agent-action-undo" onClick={() => onUndo(card.actionId)}>{t("되돌리기")}</button>}
+      {card.note && !card.undone && <small className="agent-action-note">{card.note}</small>}
+    </div>
+  );
 }
 
 /** 도구 묶음 한 줄 — "MV Hub · 자료 조회 2번, 계획 저장 끝". 이름별 횟수(처음 나온 순서)를 앞 3개까지, 나머지는 "외 N".
@@ -1161,7 +1183,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
 }) {
   const t = useT();
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set([ARCHIVE_GROUP]));
-  const [version, setVersion] = useState<{ current: string | null; latest: string | null; newer: boolean } | null>(null);
+  const [version, setVersion] = useState<ClaudeVersionInfo | null>(null);
   const [menu, setMenu] = useState<RowMenu | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; text: string } | null>(null);
   const [confirm, setConfirm] = useState<AgentConversationSummary | null>(null);
@@ -1388,11 +1410,15 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
             {claude?.available ? <>Claude{claude.subscription && <small> · {claude.subscription}</small>}</> : t("Claude 연결 안 됨")}
           </span>
           {/* 지금 쓰는 판(v2.1.296) — 업데이트하면 올라간다. 새 판이 있으면 라임 글자 + 알림(Jay 11-10 "새 판 대신 앞에 v만").
-              [업데이트] 단추는 docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 설계·검토 뒤 이 자리에 */}
+              옆의 회색 글 = 설치 방식만(공식·npm — 판과 같은 실행 파일). [업데이트] 단추·'자동 업데이트' 같은 보장 문구는 두지 않는다
+              (docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-2) */}
           {version?.current && (
             <span className={`agent-drawer-ver${version.newer ? " new" : ""}`}
               title={version.newer && version.latest ? `v${version.latest} ${t("이 나왔어요")}` : t("Claude Code 판")}>
               v{version.current}
+              {(version.method === "official" || version.method === "npm") && (
+                <small>{version.method === "official" ? t("공식 설치") : t("npm 설치")}</small>
+              )}
             </span>
           )}
         </div>

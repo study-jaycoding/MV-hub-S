@@ -53,6 +53,15 @@ const lastName = (path: string) => path.split("/").pop() || "";
 // 에피소드 = 생성물 있는 컷(하위가 없는 폴더)을 가진 폴더 — 누르면 그 컷 빈만 다빈치에 만든다(트리 개수라 목록 상한과 무관)
 const episodeCuts = (node: FolderCountTreeNode | null) => byName(node?.children).filter(kid => !kid.children?.length && !!kid.count);
 
+// [저장] 칸 아이콘 — 기본 = 저장(디스크), 저장됨 = 체크, 막힘 = 경고(C안)
+function SaveIcon({ kind }: { kind: "idle" | "done" | "blocked" }) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={kind === "done" ? 2.6 : 2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {kind === "done" ? <path d="M20 6 9 17l-5-5" />
+      : kind === "blocked" ? <><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></>
+        : <><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /><path d="M7 3v4a1 1 0 0 0 1 1h7" /></>}
+  </svg>;
+}
+
 // 사이드바 맨 위 — 지금 프로젝트(마크·이름·생성물 수). 누르면 볼 수 있는 프로젝트 목록이 펼쳐진다(맨 아래 목록을 여기로, Jay 11-12).
 function ProjectPicker({ projects, current, total, onPick }: {
   projects: { id: string; name: string }[]; current: string; total: number; onPick: (id: string) => void;
@@ -262,14 +271,29 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const sideShown = !ui.pool.sideHidden;
   const toggleSide = () => patchUi({ pool: { ...ui.pool, sideHidden: !ui.pool.sideHidden } });
 
+  // [저장] — 쓴 것 NAS 로·안 쓴 것 정리·깨끗할 때만 저장(Jay 11-12). 단축키·자동 저장은 이 단추를 거치지 않는다. 모양 = C안(머리줄 오른쪽 큰 칸)
+  const showSave = bridgePresent && !!panel.identity?.writer && !!selection.project;
+  const save = panel.saveState;
+  const saveText = save.phase === "saving" ? [t("저장 중"), save.step]
+    : save.phase === "done" ? [t("저장됨"), new Date(save.at).toTimeString().slice(0, 5)]
+      : save.phase === "blocked" ? [save.bins.length ? `${t("남은 빈")} ${save.bins.length}` : t("저장 안 됨"), t("다시 저장")]
+        : [t("저장"), ""];
+
   return <div className="resolve-panel">
-    <header className="resolve-panel-head">
+    <header className={"resolve-panel-head" + (showSave ? " has-save" : "")}>
       <strong>MV Hub <span>{t("리졸브")}</span></strong>
-      {/* [저장] — 쓴 것 NAS 로·안 쓴 것 정리·깨끗할 때만 저장(Jay 11-12). 단축키·자동 저장은 이 단추를 거치지 않는다 */}
-      {bridgePresent && panel.identity?.writer && selection.project && <button type="button" className="rp-act rp-save" disabled={panel.saving}
+      {showSave && <button type="button" className={"rp-save rp-save-" + save.phase} disabled={save.phase === "saving"}
         title={t("쓴 것은 NAS 로 옮기고 안 쓴 것은 정리한 뒤 저장합니다 — 단축키 저장·자동 저장은 이 단추를 거치지 않습니다")}
-        onClick={() => panel.saveProject(selection.project, cut || episode)}>{panel.saving ? t("저장 중") : t("저장")}</button>}
-      <div className="resolve-panel-status" role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}</>}</div>
+        onClick={() => panel.saveProject(selection.project, cut || episode)}>
+        {save.phase === "saving" ? <span className="rp-save-spin" aria-hidden="true" /> : <SaveIcon kind={save.phase} />}
+        <b>{saveText[0]}</b>{saveText[1] && <small>{saveText[1]}</small>}
+      </button>}
+      <div className={"resolve-panel-status" + (save.phase === "blocked" ? " bad" : "")} role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}</>}</div>
+      {/* 검사에 걸린 빈(C안 ④) — 다른 허브 것은 다빈치에서 직접, 내 것은 다시 저장하면 풀릴 수 있음 */}
+      {showSave && save.phase === "blocked" && save.bins.length > 0 && <div className="rp-save-list">
+        {save.bins.map(row => <div key={row.path}><b>{row.mine ? t("내 것") : t("다른 허브")}</b>{row.path}{row.count ? ` · ${row.count}` : ""}{row.in_use ? ` · ${t("쓰는 중")}` : ""}
+          {" "}({row.mine ? t("다시 저장하면 풀릴 수 있음") : t("다빈치에서 직접 확인")})</div>)}
+      </div>}
       {bridgePresent && <p>{t("이 창이 리졸브 미디어 풀의 지금 빈을 고른 컷으로 바꿉니다")}</p>}
       {different && <div className="resolve-panel-warning">{t("리졸브 지금 빈이 선택한 컷과 다릅니다")}: {lastName(cut || episode)} <button type="button" onClick={() => panel.align(cutPaths)}>{t("맞추기")}</button></div>}
       {bridgePresent && !bridgeCompatible(window.mvhubResolve, panel.identity) && <div className="resolve-panel-warning">{t(PROTOCOL_MISMATCH)}</div>}

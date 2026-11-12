@@ -35,7 +35,7 @@
 | `POST` | `/api/admin/account-cleanup/delete` | `delete_account` | 로컬 예외 | — |
 | `GET` | `/api/admin/account-cleanup` | `list_accounts` | 로컬 예외 | — |
 
-## `backend/app/routers/agent_chat.py` — 14개
+## `backend/app/routers/agent_chat.py` — 16개
 
 | 메서드 | 경로 | 핸들러 | 중앙 프록시 분류(위임 모드에서) | Depends |
 | --- | --- | --- | --- | --- |
@@ -50,6 +50,8 @@
 | `POST` | `/api/agent-chat/plans/{plan_id}/estimate` | `estimate_plan` | 로컬 예외 | `_panel` |
 | `POST` | `/api/agent-chat/plans/{plan_id}/execute` | `execute_plan` | 로컬 예외 | `_panel` |
 | `POST` | `/api/agent-chat/session` | `session` | 로컬 예외 | — |
+| `POST` | `/api/agent-chat/turns/{turn_id}/actions/{action_id}/claim` | `claim_action` | 로컬 예외 | `_panel` |
+| `POST` | `/api/agent-chat/turns/{turn_id}/actions/{action_id}/result` | `action_result` | 로컬 예외 | `_panel` |
 | `POST` | `/api/agent-chat/turns/{turn_id}/cancel` | `cancel_turn` | 로컬 예외 | `_panel` |
 | `GET` | `/api/agent-chat/turns/{turn_id}/events` | `turn_events` | 로컬 예외 | `_panel` |
 | `POST` | `/api/agent-chat/turns` | `start_turn` | 로컬 예외 | `_panel` |

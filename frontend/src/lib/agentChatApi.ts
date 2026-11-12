@@ -34,13 +34,24 @@ export interface AgentEngine {
   models: { id: string; label: string }[];
   efforts: string[];
 }
+/** MV Hub 실행기의 Claude Code 공식 설치(허브가 표식을 읽어 준다 — docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b).
+ *  running = 설치 중(20분 안) · failed = 마지막 설치 실패 · skipped = 건너뜀(reason: elevated·not_interactive·service_account·token_unknown). */
+export interface ClaudeInstall { state: "running" | "failed" | "skipped"; at: number; reason: string | null }
 export interface ClaudeStatus {
   state: ClaudeState;
   version: string | null;
   subscription: string | null;
   login_window: boolean; // 이 PC 에 로그인 창이 열려 있나
   login_window_enabled: boolean; // 허브 스위치 — 꺼져 있으면 [Claude 연결] 대신 터미널 안내
+  install?: ClaudeInstall | null; // 옛 허브는 없음
   engines: AgentEngine[];
+}
+/** 서랍 아래 줄 — method = 허브가 고른 실행 파일의 설치 방식(판과 같은 파일). 옛 허브는 method 없음. */
+export interface ClaudeVersionInfo {
+  current: string | null;
+  latest: string | null;
+  newer: boolean;
+  method?: "official" | "npm" | "other" | "none";
 }
 /** [Claude 연결]을 허브가 거절한 까닭(허브 머리 X-MVHub-Claude-Error) — login_window_disabled·breakaway_denied 면 터미널 안내로. */
 export class ClaudeLoginError extends Error {
@@ -91,7 +102,11 @@ export type AgentEvent = { seq: number } & (
   | { kind: "notice"; text: string } // Claude 알림(예: 빠른 모드를 못 써 표준 모드로)
   // 사용량 원 — Claude 만(주간 한도 = rate_limit_event, 대화 찬 정도 = 마지막 답 토큰 ÷ 문맥 창)
   | { kind: "usage"; weekly?: AgentWeeklyUsage; context?: { used: number; window: number } }
+  // 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-2) — 허브가 발급한 동작 · 그 결과·상태(실행 안 됨·결과 불명 포함)
+  | { kind: "ui_action"; action_id: string; name: string; args: Record<string, unknown> }
+  | { kind: "ui_action_result"; action_id: string; status: AgentScreenStatus; ok: boolean; summary: string }
 );
+export type AgentScreenStatus = "done" | "failed" | "expired_unclaimed" | "unknown";
 export interface AgentWeeklyUsage { utilization: number; resets_at: number | null } // utilization 0~1(쓴 만큼), resets_at 초
 /** 지금 화면 정보 — 허브가 프롬프트 앞에 "자료(명령 아님)"로 붙인다(4KB 이하). */
 export interface AgentContext {
@@ -101,6 +116,7 @@ export interface AgentContext {
   folder?: string;
   selected_ids?: string[];
   scene?: { id: string; name: string }; // 캔버스 탭에서 열린 씬(화면 읽기 설계 3-1)
+  scene_unavailable?: "away"; // 캔버스 탭이지만 이 창에 보드가 없다(별도 창 등) — 화면 동작을 못 한다(화면 동작 3-3b)
 }
 
 // 허브가 지금 화면 JSON 을 4096자에서 자른다 — 여유를 두고, 넘으면 씬 id·공간은 남기고 선택 카드부터 줄인다(화면 읽기 설계 리뷰 P2)
@@ -196,6 +212,7 @@ export interface AgentTurnRequest {
   attachments?: AgentAttachment[]; // 붙인 자료(최대 8) — 있으면 attach_workspace 도 함께
   attach_workspace?: AgentAttachWorkspace;
   gen_model?: string; // 칸 설정 '먼저 쓸 생성 모델'(앱 모델 코드) — 허브가 프롬프트 한 줄로
+  screen_tab?: string; // 옆 칸 마운트의 실행 창 번호 — 그 차례의 화면 동작을 이 마운트만 실행(허브 메모리에만, 화면 동작 3-1)
 }
 
 let session: AgentSession | null = null;
@@ -268,7 +285,7 @@ export const agentChatApi = {
   deleteConversation: (conversationId: string) =>
     panelFetch<{ deleted: boolean; session_file: AgentSessionFileResult }>(`/conversations/${id(conversationId)}`, { method: "DELETE" }),
   // 서랍 아래 줄 — 지금 Claude Code 판·npm 최신 판·새 판 여부(못 읽으면 null)
-  claudeVersion: () => panelFetch<{ current: string | null; latest: string | null; newer: boolean }>("/claude/version"),
+  claudeVersion: () => panelFetch<ClaudeVersionInfo>("/claude/version"),
   // plans = 이 대화에 묶인 계획의 지금 상태(사건 다음에 읽음 — 조건 없이 넣고 기준이 된다). 옛 허브는 없음
   conversation: (conversationId: string) =>
     panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[]; plans?: AgentPlanSnapshot[] }>(
@@ -286,6 +303,12 @@ export const agentChatApi = {
   executePlan: (planId: string, conversationId: string) =>
     panelFetch<AgentPlan & { snapshot?: AgentPlanSnapshot }>(`/plans/${id(planId)}/execute`,
       { method: "POST", body: jsonBody({ conversation_id: conversationId }) }),
+  // 화면 동작 실행 표(그 차례를 시작한 마운트만, 처음 한 번) · 실행 결과(기한 안·차례가 살아 있을 때만 받음)
+  claimAction: (turnId: string, actionId: string, screenTab: string) =>
+    panelFetch<{ token: string }>(`/turns/${id(turnId)}/actions/${id(actionId)}/claim`,
+      { method: "POST", body: jsonBody({ screen_tab: screenTab }) }),
+  reportAction: (turnId: string, actionId: string, body: { token: string; ok: boolean; summary: string; data: Record<string, unknown> }) =>
+    panelFetch<{ accepted: boolean }>(`/turns/${id(turnId)}/actions/${id(actionId)}/result`, { method: "POST", body: jsonBody(body) }),
   forkConversation: (conversationId: string, requestId: string) =>
     panelFetch<{ conversation: AgentConversationSummary }>(`/conversations/${id(conversationId)}/fork`,
       { method: "POST", body: jsonBody({ request_id: requestId }) }),

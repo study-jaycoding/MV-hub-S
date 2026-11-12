@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))  # 진짜 ~/.claude.json(요금제 이름)을 읽지 않게
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))  # 진짜 실행기 설치 표식을 읽지 않게
     monkeypatch.setattr(claude, "_claude_command_lines", lambda: [])  # 진짜 프로세스 목록을 보지 않는다(이 PC 의 Claude 와 무관하게)
     monkeypatch.setattr(process, "engine_prefix", lambda engine: CLAUDE if engine == "claude" else None)
     monkeypatch.setattr(process, "find_claude", lambda: CLAUDE)
@@ -153,6 +155,122 @@ def test_find_claude_official_location_and_highest_version(tmp_path, monkeypatch
     assert process.find_claude() == [str(native)]  # 판이 높은 쪽
     versions[str(official)] = "2.1.300"
     assert process.find_claude() == [str(official)]  # 같으면 공식 위치
+
+
+# ── 실행기의 공식 설치 표식(docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b) ──
+def _marker(value):
+    path = process.install_marker()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value if isinstance(value, str) else json.dumps(value), encoding="utf-8")
+
+
+def test_install_marker_states_and_twenty_minute_window():
+    now = 1_000_000.0
+    assert process.claude_install(now) is None  # 표식 없음
+    _marker({"status": "started", "at": now - 60})
+    assert process.claude_install(now) == {"state": "running", "at": int(now - 60), "reason": None}
+    _marker({"status": "started", "at": now - 20 * 60})  # 실행기가 죽어 남은 started — 20분 뒤엔 설치 중이 아니다
+    assert process.claude_install(now) is None
+    _marker({"status": "failed", "at": now - 10, "exit_code": 1, "reason": "timeout"})
+    assert process.claude_install(now) == {"state": "failed", "at": int(now - 10), "reason": "timeout"}
+    _marker({"status": "failed", "at": now - 10, "reason": "C:\\secret\\path"})  # 모르는 까닭은 싣지 않는다
+    assert process.claude_install(now)["reason"] is None
+    _marker({"status": "ok", "at": now - 10, "version": "2.1.322"})
+    assert process.claude_install(now) is None
+    for broken in ("{not json", "[]", json.dumps({"status": "started", "at": "soon"}), json.dumps({"status": "started", "at": True})):
+        _marker(broken)
+        assert process.claude_install(now) is None
+
+
+def test_install_skip_shows_only_when_newer_than_install_state():
+    now = 1_000_000.0
+    _marker({"status": "failed", "at": now - 100, "reason": "exit", "last_skip": {"reason": "elevated", "at": now - 50}})
+    assert process.claude_install(now) == {"state": "skipped", "at": int(now - 50), "reason": "elevated"}
+    _marker({"status": "failed", "at": now - 10, "reason": "exit", "last_skip": {"reason": "elevated", "at": now - 50}})
+    assert process.claude_install(now)["state"] == "failed"  # 옛 건너뜀이 뒤 설치 실패를 가리지 않는다
+    _marker({"status": "started", "at": now - 5, "last_skip": {"reason": "elevated", "at": now - 1}})
+    assert process.claude_install(now)["state"] == "running"  # 설치 중이 먼저
+    _marker({"last_skip": {"reason": "not_interactive", "at": now - 1}})
+    assert process.claude_install(now) == {"state": "skipped", "at": int(now - 1), "reason": "not_interactive"}
+    _marker({"last_skip": {"reason": "made_up", "at": now - 1}})
+    assert process.claude_install(now) is None
+
+
+def test_install_running_drops_only_the_official_candidate_and_never_runs_it(tmp_path, monkeypatch):
+    monkeypatch.undo()  # 진짜 find_claude 를 본다
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    home = tmp_path / "home"
+    official = home / ".local" / "bin" / "claude.exe"
+    official.parent.mkdir(parents=True)
+    official.write_bytes(b"")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    npm = tmp_path / "npm"
+    native = npm / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"")
+    ran = []
+    monkeypatch.setattr(process, "cli_version", lambda prefix: ran.append(prefix[0]) or "2.1.300")
+    _marker({"status": "started", "at": time.time()})
+    monkeypatch.setattr(process.shutil, "which", lambda name: str(npm / "claude.cmd"))
+    assert process.find_claude() == [str(native)]  # npm 으로 잘 쓰던 PC 는 설치 동안에도 쓴다
+    monkeypatch.setattr(process.shutil, "which", lambda name: str(official))  # PATH 가 공식 파일을 먼저 찾아도
+    assert process.find_claude() is None
+    assert str(official) not in ran  # 판 비교용 --version 까지 공식 실행 0회(가짜 시험 — 실제 설치기와의 경합 증거는 아님)
+    process.install_marker().unlink()
+    assert process.find_claude() == [str(official)]  # 설치가 끝나면 다시 후보
+
+
+def test_install_method_follows_the_chosen_file(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    native = tmp_path / "npm" / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    assert process.install_method([str(home / ".local" / "bin" / "claude.exe")]) == "official"
+    assert process.install_method([str(native)]) == "npm"
+    assert process.install_method([str(tmp_path / "tools" / "claude.exe")]) == "other"
+    assert process.install_method(None) == "none"
+
+
+def test_engine_cache_follows_install_marker(monkeypatch):
+    service = chat.AgentChat()
+    states = []
+    monkeypatch.setattr(claude, "claude_state", lambda prefix: states.append(1) or {"state": "not_installed", "version": None, "subscription": None})
+    monkeypatch.setattr(process, "engine_problem", lambda engine, prefix: "점검 필요")
+    first = service.engines()
+    assert first[0]["install"] is None and first[0]["method"] in {"official", "npm", "other", "none"}
+    service.engines()
+    assert len(states) == 1  # 표식이 그대로면 캐시
+    _marker({"status": "started", "at": time.time()})
+    assert service.engines()[0]["install"]["state"] == "running" and len(states) == 2  # 설치 시작 = 캐시 버림
+    service.engines()
+    assert len(states) == 3  # 설치 중엔 캐시를 쓰지 않는다
+    _marker({"status": "failed", "at": time.time(), "reason": "exit"})
+    assert service.engines()[0]["install"]["state"] == "failed" and len(states) == 4  # 끝남 = 캐시 버림
+    service.engines()
+    assert len(states) == 4
+    # 보이는 값이 None 으로 같아도 원본이 바뀌면(사이에 설치가 시작·성공 = ok) 캐시를 버린다(설치 독립 리뷰 P2)
+    process.install_marker().unlink()
+    service.engines()
+    assert len(states) == 5
+    _marker({"status": "ok", "at": time.time(), "exit_code": 0, "version": "2.1.322"})
+    assert service.engines()[0]["install"] is None and len(states) == 6
+
+
+def test_engine_cache_drops_when_running_expires(monkeypatch):
+    """started 가 20분을 넘겨 '설치 중'이 풀리면(원본은 그대로) 캐시를 버린다."""
+    service = chat.AgentChat()
+    states = []
+    monkeypatch.setattr(claude, "claude_state", lambda prefix: states.append(1) or {"state": "not_installed", "version": None, "subscription": None})
+    monkeypatch.setattr(process, "engine_problem", lambda engine, prefix: "점검 필요")
+    began = time.time()
+    _marker({"status": "started", "at": began})
+    clock = [began]
+    real = process.claude_install
+    monkeypatch.setattr(process, "claude_install", lambda now=None, data=None: real(clock[0], data))
+    assert service.engines()[0]["install"]["state"] == "running"
+    clock[0] = began + process.INSTALL_RUNNING_SECONDS + 1
+    assert service.engines()[0]["install"] is None and len(states) == 2
+    service.engines()
+    assert len(states) == 2  # 그 뒤엔 다시 캐시
 
 
 # ── 로그인 창 ──
