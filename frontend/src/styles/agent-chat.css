@@ -43,6 +43,18 @@
 .agent-title { display: block; flex: 1; min-width: 0; margin-left: 6px; color: var(--text); font-size: 15px; font-weight: 700; }
 /* 긴 제목은 끝을 흐리게 자른다(글자 끝 '...' 금지) */
 .agent-title span { display: block; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+/* 대화가 있으면 제목 = [제목 ⌄] 단추(누르면 대화 메뉴). 글자 폭만 차지하므로 흐림은 넘칠 때만(.clip — 재서 붙인다) */
+.agent-title-btn {
+  display: inline-flex; flex: 0 1 auto; align-items: center; gap: 5px; min-width: 0; max-width: 100%; margin-left: 0; padding: 4px 7px 4px 6px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 15px; font-weight: 700;
+}
+.agent-title-btn span { min-width: 0; overflow: hidden; white-space: nowrap; }
+.agent-title-btn span.clip { -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.agent-title-btn:hover, .agent-title-btn.on { background: rgba(255, 255, 255, 0.08); }
+.agent-title-rename {
+  flex: 1; min-width: 0; height: 32px; margin-left: 2px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid rgba(var(--accent-rgb), 0.55); background: #161616; color: #fff; font: inherit; font-size: 15px; font-weight: 700; outline: none;
+}
 .agent-chevron { flex: none; color: var(--muted); }
 .agent-head-actions { display: flex; flex: none; gap: 4px; }
 .agent-ic {

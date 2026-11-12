@@ -515,7 +515,7 @@ describe("Ask Agent 옆 칸", () => {
 
     pickCompany("ChatGPT"); // 회사를 바꾸면 그 회사 첫 모델 + 새 대화
     expect(host.querySelector(".agent-user")).toBeNull();
-    expect(host.querySelector(".agent-title")!.textContent).toBe("새 대화");
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("새 대화");
     expect(panel().textContent).toContain("지금 보는 화면을 같이 보면서 일해요");
     type("셋");
     enter();
@@ -662,7 +662,7 @@ describe("Ask Agent 옆 칸", () => {
     expect(calls.filter((c) => c.path === "/turns/t1/events?after=2")).toHaveLength(2);
     expect(texts(".agent-user")).toEqual(["안녕"]);
     expect(texts(".agent-assistant")).toEqual(["반쯤 왔어요"]);
-    expect(host.querySelector(".agent-title")!.textContent).toBe("고양이");
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("고양이");
   });
 
   it("[멈추기]는 취소를 보내고, 허브가 끝을 알릴 때까지 기다린다", async () => {
@@ -819,7 +819,7 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     expect(host.querySelector(".agent-drawer-ver")!.getAttribute("title")).toBe("v2.1.322 이 나왔어요");
     act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-drawer-item")][0].click());
     await flush();
-    expect([host.querySelector(".agent-drawer"), host.querySelector(".agent-title")!.textContent]).toEqual([null, "딸기와 바나나"]);
+    expect([host.querySelector(".agent-drawer"), host.querySelector(".agent-head-left")!.textContent]).toEqual([null, "딸기와 바나나"]);
     act(() => button("대화 목록")!.click());
     await flush();
     act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
@@ -950,7 +950,7 @@ describe("MV Agent 서랍 메뉴", () => {
     await openDrawer();
     act(() => row("고양이").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
     await flush();
-    expect(host.querySelector(".agent-title")!.textContent).toBe("고양이");
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("고양이");
     await openDrawer();
     openMenu("고양이");
     act(() => mi("삭제").click());
@@ -959,7 +959,7 @@ describe("MV Agent 서랍 메뉴", () => {
     await flush();
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/conversations/c1"]);
     expect(host.querySelector(".agent-drawer-note")!.textContent).toBe("지웠어요 · Claude 세션 파일은 확인하지 못해 남겨 뒀어요");
-    expect([row("고양이"), host.querySelector(".agent-title")!.textContent]).toEqual([undefined, "새 대화"]);
+    expect([row("고양이"), host.querySelector(".agent-head-left")!.textContent]).toEqual([undefined, "새 대화"]);
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.conversation") ?? "null")).toBeNull(); // 지운 id 와 같아서 비움
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.deleted")!)).toMatchObject({ account: "acct:jay@example.com", id: "c1" });
     openMenu("새");
@@ -981,7 +981,7 @@ describe("MV Agent 서랍 메뉴", () => {
     localStorage.setItem("mvhub.agentPanel.deleted", JSON.stringify({ account: "acct:jay@example.com", id: "c2", at: Date.now() }));
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.deleted" })); });
     await flush();
-    expect([host.querySelector(".agent-title")!.textContent, host.querySelector(".agent-notice")!.textContent]).toEqual(["새 대화", "이 대화는 다른 창에서 지워졌어요"]);
+    expect([host.querySelector(".agent-head-left")!.textContent, host.querySelector(".agent-notice")!.textContent]).toEqual(["새 대화", "이 대화는 다른 창에서 지워졌어요"]);
   });
 
   it("새 창에서 열기 — 옆 칸은 요청을 적고 띄움 · 새 창만 받고(복원보다 먼저) · 처리 번호는 공유 키 · 30초 지난 요청·다른 신원은 무시", async () => {
@@ -999,24 +999,24 @@ describe("MV Agent 서랍 메뉴", () => {
     act(() => root.unmount());
     root = createRoot(host);
     await render({ popout: true });
-    expect([host.querySelector(".agent-title")!.textContent, localStorage.getItem("mvhub.agentPanel.openDone")]).toEqual(["강아지", req.nonce]);
+    expect([host.querySelector(".agent-head-left")!.textContent, localStorage.getItem("mvhub.agentPanel.openDone")]).toEqual(["강아지", req.nonce]);
     act(() => root.unmount()); // 닫았다 다시 연 새 창 — 처리한 요청은 다시 안 연다(마지막 대화 복원)
     root = createRoot(host);
     await render({ popout: true });
-    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 열었던 대화가 '마지막 대화'가 됐다
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("강아지"); // 열었던 대화가 '마지막 대화'가 됐다
     localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ ...req, id: "c1", nonce: "n-old", at: Date.now() - 31_000 }));
     act(() => root.unmount());
     root = createRoot(host);
     await render({ popout: true });
-    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 30초 지난 요청은 뜰 때 무시
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("강아지"); // 30초 지난 요청은 뜰 때 무시
     localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ ...req, id: "c1", nonce: "n-other", identity: "id-2", at: Date.now() }));
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.openRequest" })); });
     await flush();
-    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 다른 신원
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("강아지"); // 다른 신원
     localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ ...req, id: "c1", nonce: "n-new", at: Date.now() }));
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.openRequest" })); }); // 열린 새 창은 알림으로
     await flush();
-    expect(host.querySelector(".agent-title")!.textContent).toBe("고양이");
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("고양이");
     expect(localStorage.getItem("mvhub.agentPanel.openRequest")).toContain("n-new"); // 받는 창은 요청 키를 안 지운다
     await openDrawer();
     openMenu("고양이");
@@ -1035,7 +1035,7 @@ describe("MV Agent 서랍 메뉴", () => {
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.deleted" })); });
     slow.resolve(json({ conversation: full(list[1]), turns: [] }));
     await flush();
-    expect([host.querySelector(".agent-title")!.textContent, host.querySelector(".agent-notice")!.textContent]).toEqual(["새 대화", "이 대화는 다른 창에서 지워졌어요"]);
+    expect([host.querySelector(".agent-head-left")!.textContent, host.querySelector(".agent-notice")!.textContent]).toEqual(["새 대화", "이 대화는 다른 창에서 지워졌어요"]);
 
     const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
@@ -1093,7 +1093,7 @@ describe("MV Agent 서랍 메뉴", () => {
     expect(calls.some((c) => c.method === "GET" && /^\/conversations\/c[12]$/.test(c.path))).toBe(false); // 바쁠 때는 안 바꾼다
     stay.resolve(json({ events: [{ seq: 1, kind: "state", status: "done" }], status: "done", last_seq: 1 }));
     await flush();
-    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 최신(c2)만
+    expect(host.querySelector(".agent-head-left")!.textContent).toBe("강아지"); // 최신(c2)만
     expect(calls.some((c) => c.method === "GET" && c.path === "/conversations/c1")).toBe(false);
   });
 
@@ -1249,5 +1249,64 @@ describe("MV Agent 서랍 메뉴", () => {
     openMenu("강아지");
     expect(mi("고정").disabled).toBe(false);
     expect(patches()).toEqual([]);
+  });
+
+  it("머리글 제목 메뉴 — 새 대화엔 단추 없음 · [제목 ⌄] 은 읽지 않음 뺀 같은 메뉴 · 단축키 · 제목 자리 이름 바꾸기 · 보관하면 새 대화 · 삭제 확인·안내 · 새 창에서 열기", async () => {
+    const popped = vi.fn();
+    await render({ onPopOut: popped });
+    const titleBtn = () => host.querySelector<HTMLButtonElement>(".agent-title-btn");
+    expect([titleBtn(), host.querySelector(".agent-head-left")!.textContent]).toEqual([null, "새 대화"]);
+    const open = async (title: string) => {
+      await openDrawer();
+      act(() => row(title).querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
+      await flush();
+    };
+    await open("고양이");
+    expect(titleBtn()!.textContent).toBe("고양이");
+    act(() => titleBtn()!.click());
+    expect(items()).toEqual(["새 창에서 열기", "고정P", "이름 바꾸기R", "프로젝트로 옮기기", "보관A", "삭제D"]);
+    act(() => titleBtn()!.click()); // 다시 누르면 닫힘
+    expect(host.querySelector(".agent-row-menu")).toBeNull();
+    act(() => titleBtn()!.click());
+    key({ code: "KeyP" });
+    await flush();
+    expect(patches()).toEqual([["/conversations/c1", { pinned: true }]]);
+    act(() => titleBtn()!.click());
+    expect(mi("고정 풀기")).toBeDefined(); // 허브 응답으로 머리글 요약도 바뀜
+    act(() => mi("이름 바꾸기").click());
+    const field = host.querySelector<HTMLInputElement>(".agent-title-rename")!;
+    expect(field.value).toBe("고양이");
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "검은 고양이");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => { field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await flush();
+    expect([titleBtn()!.textContent, patches().at(-1)]).toEqual(["검은 고양이", ["/conversations/c1", { title: "검은 고양이" }]]);
+    act(() => titleBtn()!.click());
+    key({ key: "Escape" }); // Esc 는 메뉴만 닫고 제목 단추로 초점
+    expect([host.querySelector(".agent-row-menu"), document.activeElement]).toEqual([null, titleBtn()]);
+    act(() => titleBtn()!.click());
+    act(() => mi("보관").click());
+    await flush();
+    expect([patches().at(-1), titleBtn(), host.querySelector(".agent-head-left")!.textContent])
+      .toEqual([["/conversations/c1", { archived: true }], null, "새 대화"]);
+
+    await open("강아지");
+    act(() => titleBtn()!.click());
+    act(() => mi("삭제").click());
+    expect(host.querySelector(".agent-drawer-confirm")!.textContent).toContain("되돌릴 수 없어요");
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-confirm-btn")].find((b) => b.textContent === "삭제")!.click());
+    await flush();
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/conversations/c2"]);
+    expect([titleBtn(), host.querySelector(".agent-notice")!.textContent]).toEqual([null, "지웠어요 · Claude 세션 파일은 확인하지 못해 남겨 뒀어요"]);
+
+    await open("새");
+    expect(host.querySelector(".agent-notice")).toBeNull(); // 다른 대화를 열면 지운 안내는 끝
+    act(() => titleBtn()!.click());
+    act(() => mi("새 창에서 열기").click());
+    expect(popped).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.openRequest")!)).toMatchObject({ id: "c3" });
+    expect(host.querySelector(".agent-row-menu")).toBeNull();
   });
 });

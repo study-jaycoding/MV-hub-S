@@ -181,6 +181,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const [choice, setChoice] = useState<AgentChoice | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
+  const [current, setCurrent] = useState<AgentConversationSummary | null>(null); // 보고 있는 대화의 요약(머리글 메뉴 — 열 때·허브 응답마다)
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [turn, setTurn] = useState<{ id: string; status: AgentTurnStatus } | null>(null);
   const [sending, setSending] = useState(false);
@@ -229,6 +230,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     estimating.current.clear();
     setConversationId(null);
     setTitle(null);
+    setCurrent(null);
     setMessages([]);
     setTurn(null);
     setSending(false);
@@ -260,6 +262,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const putSummary = (summary: AgentConversationSummary) => {
     if (changedAt.current.get(summary.id)?.deleted) return; // 지운 대화(id 는 다시 안 쓰임)에 늦게 온 응답 — 지움 표시를 풀지 않는다(독립 리뷰 재확인 3)
     touch(summary.id, { summary });
+    if (summary.id === currentId.current) setCurrent((c) => (
+      c?.id === summary.id && typeof c.unread_rev === "number" && typeof summary.unread_rev === "number" && summary.unread_rev < c.unread_rev ? c : summary));
     setConversations((list) => (list ? list.map((c) => {
       if (c.id !== summary.id) return c;
       if (typeof c.unread_rev === "number" && typeof summary.unread_rev === "number" && summary.unread_rev < c.unread_rev) return c;
@@ -345,6 +349,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       setConversationId(id);
       currentId.current = id;
       setTitle(r.conversation.title);
+      setCurrent(r.conversation);
       setChoice({ engine: r.conversation.engine, model: r.conversation.model, effort: r.conversation.effort });
       remember(id);
       // 열었다 = 봤다 — 그때의 번호로 조건부(늦게 닿아도 그 뒤의 차례 끝·수동 표시는 못 지운다), 이미 읽음이면 안 보냄
@@ -728,7 +733,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeEngine = session?.engines.find((e) => e.id === "claude");
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
-    session, choice, choose, conversationId, title, messages, turn, running, sending, error,
+    session, choice, choose, conversationId, title, current, messages, turn, running, sending, error,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
     // Claude 연결 — 허브가 연결 경로를 알 때만 안내(옛 허브는 엔진 사유만)
