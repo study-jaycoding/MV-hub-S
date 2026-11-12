@@ -803,8 +803,83 @@ def test_repeated_resume_failure_keeps_failure_count(tmp_path):
     small = {**POLICY_888, "recent": 1, "daily_days": 7, "weekly_weeks": 4}
     with mock.patch.object(Path, "unlink", locked):
         assert backup._rotate(d, policy=small, now=NOW)["failed"] == 1
-        assert backup._rotate(d, policy=small, now=NOW)["failed"] == 1  # 이어 지우기도 실패 — 수가 0 으로 덮이지 않음
+        second = backup._rotate(d, policy=small, now=NOW)  # 이어 지우기도 실패 — 수가 0 으로 덮이지 않음
+        assert second["resume_failed"] == 1 and second["failed"] == 0
     assert backup.retention_status(d, now=NOW)["delete_failed"] == 1
+
+
+# ── 독립 리뷰 2차(재확인) 지적 시험 ──────────────────────────────────────────────
+def test_registry_missing_required_fields_is_unknown_even_after_new_number(tmp_path):
+    d = tmp_path / "b"
+    old = make_set(d, NOW - 400 * 86400, 1)
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    backup._write_policy(d, POLICY_888, 2)
+    (d / "backup_policy.json").unlink()
+    for broken in ("{}", '{"format": "other", "state": "done", "last_seq": 2}', '{"format": "mvhub-backup-keep-registry"}'):
+        (d / "backup_keep_registry.json").write_text(broken, "utf-8")
+        assert backup.read_policy(d)[2] == "invalid", broken
+        assert backup._rotate(d, now=NOW)["blocked"] == "policy_invalid" and old.exists()
+    backup._next_seq(d)
+    registry = json.loads((d / "backup_keep_registry.json").read_text("utf-8"))
+    assert registry["policy_unknown"] is True and registry["state"] == "done" and registry["last_seq"] >= 3
+    assert backup.read_policy(d)[2] == "invalid"
+
+
+def test_wal_of_half_set_without_sidecar_is_kept(tmp_path):
+    d = tmp_path / "b"
+    half = make_set(d, NOW - 3 * 86400, None)  # 곁파일 없는 반쪽 세트(manifest·trash 만 남음)
+    half.unlink()
+    (d / f"{half.name}-wal").write_bytes(b"w")
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    backup._rotate(d, now=NOW)
+    assert (d / f"{half.name}-wal").exists()
+
+
+def test_hold_refuses_when_sidecar_cannot_be_read(tmp_path):
+    d = tmp_path / "b"
+    target = make_set(d, NOW - 10, 1)
+    real_read = Path.read_text
+
+    def locked(self, *args, **kwargs):
+        if self.name.endswith(".keep.json"):
+            raise PermissionError("sharing violation")
+        return real_read(self, *args, **kwargs)
+
+    with mock.patch.object(Path, "read_text", locked), pytest.raises(FileNotFoundError):
+        with backup.hold_set(target):
+            pass
+    assert not backup._held(target)
+
+
+def test_poll_falls_back_to_newest_mtime_when_numbered_sets_are_incomplete(tmp_path):
+    d = tmp_path / "b"
+    make_set(d, NOW - 30, 1, n=9, member_size_ok=False)  # 번호 있는 세트는 불완전
+    late_name_early_mtime = make_set(d, NOW - 900, None, n=8)  # 이름은 뒤인데 mtime 은 이른
+    early_name_late_mtime = make_set(d, NOW - 300, None, n=1)
+    os.utime(late_name_early_mtime, (NOW - 900, NOW - 900))
+    os.utime(early_name_late_mtime, (NOW - 300, NOW - 300))
+    mark_registered(d, 1)
+    src = tmp_path / "src.db"
+    src.write_bytes(b"s")
+    os.utime(src, (NOW - 1000, NOW - 1000))
+    with mock.patch.object(backup.time, "time", return_value=NOW):
+        age, _sig, _needed = backup._read_poll_state(src, d)
+    assert age == pytest.approx(300.0, abs=1.0)
+
+
+def test_corrupt_deleting_marker_half_set_is_counted_as_leftover(tmp_path):
+    d = tmp_path / "b"
+    gone = make_set(d, NOW - 3600, None,
+                    keep_raw=json.dumps({"format": "mvhub-backup-keep", "seq": "x", "deleting": True}))
+    gone.unlink()
+    resumable = make_set(d, NOW - 1800, 2, n=1, deleting=True)
+    resumable.unlink()
+    make_set(d, NOW - 10, 3, n=2)
+    mark_registered(d, 3)
+    status = backup.retention_status(d, now=NOW)
+    assert status["leftovers"] == 1  # 깨진 삭제 표식 잔재만(정상 표식은 이어 지우기 몫)
 
 
 def test_leftovers_count_sets_without_sidecar_too(tmp_path):

@@ -174,18 +174,24 @@ describe("백업 칸", () => {
     expect(host.textContent).toContain("지금은 남기는 양을 줄일 수 없습니다");
   });
 
-  it("목록 밖 값이 여럿이면 고르지 않은 칸은 그 이상인 가장 가까운 허용값으로 맞춰 보낸다", async () => {
+  it("목록 밖 값은 몰래 바꾸지 않고 무엇이 바뀌는지 묻는다 — 남기는 양은 더 남기는 쪽, 간격은 더 자주 찍는 쪽", async () => {
     api.backupPolicy.mockReset().mockResolvedValue({
-      policy: { ...POLICY, quiet_minutes: 2, recent: 7 }, version: 0, source: "default", choices: CHOICES,
+      policy: { ...POLICY, quiet_minutes: 2, recent: 64 }, version: 0, source: "default", choices: CHOICES,
     });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     api.saveBackupPolicy
       .mockResolvedValueOnce({ saved: false, version: 0, preview: { delete_count: 0, confirm_token: null } })
       .mockResolvedValueOnce({ saved: true, version: 1, preview: { delete_count: 0 }, applied: { deleted: 0, failed: 0, blocked: null } });
     await mount();
-    expect([...select("recent").options].map((o) => o.value)).toEqual(["7", "4", "8", "16"]); // 지금 값도 한 칸
+    expect([...select("recent").options].map((o) => o.value)).toEqual(["64", "4", "8", "16"]); // 지금 값도 한 칸
+    await choose("daily_days", 30);
+    expect(confirm.mock.calls[0][0]).toContain("조용해진 뒤 2분 → 1분");
+    expect(confirm.mock.calls[0][0]).toContain("최근 64장 → 16장");
+    expect(api.saveBackupPolicy).not.toHaveBeenCalled(); // 거절하면 아무것도 안 보냄
+    expect(host.textContent).toContain("바꾸지 않았습니다");
     await choose("daily_days", 30);
     expect(api.saveBackupPolicy.mock.calls[0][0]).toEqual({
-      ...POLICY, quiet_minutes: 5, recent: 8, daily_days: 30, version: 0, dry_run: true,
+      ...POLICY, quiet_minutes: 1, recent: 16, daily_days: 30, version: 0, dry_run: true,
     });
   });
 
@@ -194,11 +200,12 @@ describe("백업 칸", () => {
     const preview = { delete_count: 6, delete_bytes: MB, confirm_token: "t", blocked: "inverted" };
     api.saveBackupPolicy
       .mockResolvedValueOnce({ saved: false, version: 1, preview })
-      .mockResolvedValueOnce({ saved: true, version: 2, preview, applied: { deleted: 2, failed: 1, blocked: null } });
+      .mockResolvedValueOnce({ saved: true, version: 2, preview, applied: { deleted: 2, failed: 1, resume_failed: 4, blocked: null } });
     await mount();
     await choose("recent", 4);
+    // 이어 지우기 실패(resume_failed)는 이번 대상의 보류 계산에 섞지 않는다
     expect(host.querySelector(".settings-backup .manage-msg")!.textContent).toBe(
-      "저장했습니다 · 오래된 백업 2세트를 정리했습니다 · 1세트는 지우지 못했습니다(다음에 다시) · 3세트는 다음 정리 때 지웁니다",
+      "저장했습니다 · 오래된 백업 2세트를 정리했습니다 · 1세트는 지우지 못했습니다(다음에 다시) · 3세트는 현재 정리 보류 중입니다",
     );
   });
 

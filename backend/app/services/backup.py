@@ -238,20 +238,27 @@ def _duplicate_seqs(sets: list[_BackupSet]) -> set[int]:
     return {seq for seq in seqs if seqs.count(seq) > 1}
 
 
-def _live_sets(sets: list[_BackupSet]) -> tuple[list[_BackupSet], bool]:
-    """완성·지우는 중 아님 세트를 오래된 → 새 순으로 — 모든 소비자(목록·최신본·poll·복원 선택)의 한 기준.
-
-    정상 곁파일(번호 안 겹침) 세트는 촬영 순서 번호로 정렬해 **맨 뒤**에, 그 밖(곁파일 없음·깨짐·번호 겹침)은
-    이름순으로 그 앞에 둔다 — 등록된 세트가 하나라도 있으면 최신본은 늘 번호가 가장 큰 세트다(옛 세트 하나
-    때문에 시계 보호가 꺼지지 않게). 두 번째 값 = 번호로 정렬한 세트가 있나."""
+def _split_live(sets: list[_BackupSet]) -> tuple[list[_BackupSet], list[_BackupSet]]:
+    """(번호 없는 세트 이름순, 번호 있는 세트 번호순) — 완성·지우는 중 아님만. 번호 있음 = 정상 곁파일·번호 안 겹침
+    (겹침은 완성 여부와 무관하게 전체에서 센다 — poll(완성 대조 전)·회전과 같은 기준)."""
     live = [s for s in sets if s.complete and not s.deleting]
-    dup = _duplicate_seqs(sets)  # 완성 여부와 무관하게 — poll(완성 대조 전)·회전과 같은 기준
+    dup = _duplicate_seqs(sets)
     numbered = sorted(
         (s for s in live if s.keep_state == "ok" and s.keep and s.keep["seq"] not in dup),
         key=lambda s: s.keep["seq"],  # type: ignore[index]
     )
     numbered_ids = {id(s) for s in numbered}
     others = sorted((s for s in live if id(s) not in numbered_ids), key=lambda s: s.content.name)
+    return others, numbered
+
+
+def _live_sets(sets: list[_BackupSet]) -> tuple[list[_BackupSet], bool]:
+    """완성·지우는 중 아님 세트를 오래된 → 새 순으로 — 모든 소비자(목록·최신본·복원 선택)의 한 기준.
+
+    정상 곁파일(번호 안 겹침) 세트는 촬영 순서 번호로 정렬해 **맨 뒤**에, 그 밖(곁파일 없음·깨짐·번호 겹침)은
+    이름순으로 그 앞에 둔다 — 등록된 세트가 하나라도 있으면 최신본은 늘 번호가 가장 큰 세트다(옛 세트 하나
+    때문에 시계 보호가 꺼지지 않게). 두 번째 값 = 번호로 정렬한 세트가 있나."""
+    others, numbered = _split_live(sets)
     return others + numbered, bool(numbered)
 
 
@@ -302,10 +309,13 @@ def _read_registry(d: Path) -> tuple[dict | None, bool]:
         data = json.loads(raw)
     except ValueError:
         return None, True
+    # 우리가 쓰는 모양(format·state·last_seq 필수)이 아니면 깨짐 — 빈 객체·필드 유실을 '저장 이력 없음'으로 읽지 않게.
     if (
         not isinstance(data, dict)
-        or data.get("state") not in (None, "pending", "done")
-        or any(key in data and (type(data[key]) is not int or data[key] < 0) for key in ("last_seq", "policy_version"))
+        or data.get("format") != _REGISTRY_FORMAT
+        or data.get("state") not in ("pending", "done")
+        or type(data.get("last_seq")) is not int or data["last_seq"] < 0
+        or ("policy_version" in data and (type(data["policy_version"]) is not int or data["policy_version"] < 0))
         or ("policy_unknown" in data and not isinstance(data["policy_unknown"], bool))
     ):
         return None, True
@@ -331,6 +341,17 @@ def _write_registry(d: Path, **fields: object) -> None:
         base = {"policy_version": version} if version else {"policy_unknown": True}
     data = {**base, **fields, "format": _REGISTRY_FORMAT, "format_version": 1,
             "updated_at": datetime.now(timezone.utc).isoformat()}
+    if "state" not in data or "last_seq" not in data:
+        # 새로(또는 깨진 것을) 쓰는데 상태가 없다 — 곁파일이 하나라도 있으면 등록은 이미 끝났던 것(done, E4),
+        # 없으면 아직 안 한 것(pending). 번호는 곁파일에서.
+        keep_seqs = []
+        for path in d.glob(f"{_PREFIX}*.keep.json"):
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                seq = json.loads(path.read_text("utf-8")).get("seq")
+                if type(seq) is int and seq > 0:
+                    keep_seqs.append(seq)
+        data.setdefault("state", "done" if any(d.glob(f"{_PREFIX}*.keep.json")) else "pending")
+        data.setdefault("last_seq", max(keep_seqs, default=0))
     atomic_write_text(d / _REGISTRY_NAME, json.dumps(data, sort_keys=True))
 
 
@@ -433,7 +454,8 @@ def hold_set(content: Path) -> Iterator[None]:
     없으면 FileNotFoundError — 회전은 같은 잠금 안에서 붙잡힘을 보고 지우는 중 표식을 적는다."""
     key = _use_key(content)
     with _IN_USE_LOCK:
-        if not Path(content).is_file() or _raw_deleting(Path(content)):
+        # 지우는 중이거나, 곁파일을 읽지 못해 지우는 중인지 모르면(None) 거절 — 표식을 막 쓴 순간의 읽기 실패로 붙잡지 않게.
+        if not Path(content).is_file() or _raw_deleting(Path(content)) is not False:
             raise FileNotFoundError(str(content))
         _IN_USE[key] = _IN_USE.get(key, 0) + 1
     try:
@@ -452,11 +474,22 @@ def _held(content: Path) -> bool:
         return _use_key(content) in _IN_USE
 
 
-def _raw_deleting(content: Path) -> bool:
-    """곁파일에 deleting=true 가 적혔나 — 다른 필드가 깨졌어도(붙잡기는 이 경우도 거절한다)."""
-    with contextlib.suppress(OSError, ValueError, AttributeError):
-        return json.loads(_keep_path(content).read_text("utf-8")).get("deleting") is True
-    return False
+def _raw_deleting(content: Path) -> bool | None:
+    """곁파일에 deleting=true 가 적혔나 — 다른 필드가 깨졌어도. 곁파일 없음 = False, 읽기 자체가 실패(잠김 등) = None(모름)."""
+    path = _keep_path(content)
+    try:
+        raw = path.read_text("utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    except ValueError:
+        return False  # 글자가 깨진 곁파일 — 원자 쓰기라 쓰는 도중 모양이 아니다(지우기는 정상 곁파일만 잇는다)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("deleting") is True
 
 
 # ── 정책(허브·계정별 — 백업 폴더 안 파일) ─────────────────────────────────────
@@ -760,10 +793,10 @@ def _read_poll_state(
     try:
         # 목록은 poll당 정확히 한 번만 순회한다(_scan_sets). 곁파일 번호가 다 있으면 번호가 가장 큰
         # 세트가 최신이다 — 시계가 뒤로 간 뒤에도 옛 세트의 미래 mtime 에 속지 않게. 아니면 지금처럼 mtime.
-        live, by_seq = _live_sets(_scan_sets(backup_dir, verify=False))
-        # 곁파일만 읽은 목록에서 가장 새 것부터 그 세트만 완성 대조(보통 하나) — 목록·최신본과 같은 기준.
-        # 번호 있는 세트가 없으면 지금처럼 mtime 이 큰 것부터(불완전한 세트를 기준으로 백업을 미루지 않게).
-        candidates = reversed(live) if by_seq else sorted(live, key=lambda s: s.mtime_ns, reverse=True)
+        others, numbered = _split_live(_scan_sets(backup_dir, verify=False))
+        # 곁파일만 읽은 목록에서 번호가 큰 것부터 그 세트만 완성 대조(보통 하나) — 목록·최신본과 같은 기준. 완성된 번호
+        # 세트가 없으면 나머지를 지금처럼 mtime 이 큰 것부터(불완전한 세트를 기준으로 백업을 미루지 않게).
+        candidates = [*reversed(numbered), *sorted(others, key=lambda s: s.mtime_ns, reverse=True)]
         for candidate in candidates:
             if _set_complete(candidate.content, candidate.keep):
                 newest_mtime_ns = candidate.mtime_ns
@@ -859,11 +892,12 @@ def _rotate(
     그 세트만 표식이 남아 목록에서 빠지고 다음 회전이 잇는다. only = 정책을 바꾸며 확인받은 세트 — 그 밖은 지우지 않는다
     (확인과 회전 사이에 붙잡기가 풀려도 확인한 것보다 많이 지우지 않게)."""
     d = backup_dir
-    summary = {"deleted": 0, "blocked": None, "failed": 0}
+    # failed = 이번에 새로 지우려다 못 지운 세트 · resume_failed = 지우다 멈춘 세트를 이어 지우다 또 못 지운 세트
+    summary = {"deleted": 0, "blocked": None, "failed": 0, "resume_failed": 0}
     if not d.is_dir():
         return summary
     _ensure_registered(d)
-    summary["failed"] = _resume_deletions(d)
+    summary["resume_failed"] = _resume_deletions(d)
     if policy is None:
         policy, _version, source = read_policy(d)
     else:
@@ -882,13 +916,13 @@ def _rotate(
             summary["failed"] += 1
             continue
         summary["deleted"] += 1
-    _LAST_DELETE_FAILED[str(d)] = summary["failed"]
+    _LAST_DELETE_FAILED[str(d)] = summary["failed"] + summary["resume_failed"]
     # 검증·조회가 백업본(WAL 헤더)을 열 때 생긴 -wal/-shm 부산물 청소 — 옛 회전이 .db 만 지워
-    # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것만 지운다. 곁파일이 있는
-    # 세트(지우다 멈춘 세트·대표 파일만 잃은 반쪽 세트)는 건드리지 않는다 — 세트 지우기는 _finish_delete 만 한다.
-    # 열려 있으면 unlink 가 거부되므로 사용 중 파일을 지울 위험은 없다(suppress).
+    # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없고, 같은 stamp 의 구성원(대표·부속
+    # DB·manifest·곁파일)이 하나도 없는 것만 지운다 — 지우다 멈춘 세트·반쪽 세트(곁파일이 없어도)는 건드리지 않는다
+    # (세트 지우기는 _finish_delete 만 한다). 열려 있으면 unlink 가 거부되므로 사용 중 파일을 지울 위험은 없다(suppress).
     with contextlib.suppress(OSError):
-        kept = {path.name[len(_PREFIX):-len(".keep.json")] for path in d.glob(f"{_PREFIX}*.keep.json")}
+        kept = _member_stamps(d)
         for side in (*d.glob("*.db-wal"), *d.glob("*.db-shm")):
             base_name = side.name.rsplit("-", 1)[0]
             if (d / base_name).is_file() or _side_stamp(base_name) in kept:
@@ -896,6 +930,18 @@ def _rotate(
             with contextlib.suppress(OSError):
                 side.unlink()
     return summary
+
+
+def _member_stamps(d: Path) -> set[str]:
+    """구성원(대표·부속 DB·manifest·곁파일)이 하나라도 남은 stamp 들 — 한 번씩 목록을 읽는다(실패하면 OSError)."""
+    stamps: set[str] = set()
+    for pattern, cut, tail in ((f"{_PREFIX}*.db", len(_PREFIX), ".db"),
+                               (f"{_TRASH_PREFIX}*.db", len(_TRASH_PREFIX), ".db"),
+                               (f"{_MANAGE_PREFIX}*.db", len(_MANAGE_PREFIX), ".db"),
+                               (f"{_PREFIX}*.manifest.json", len(_PREFIX), ".manifest.json"),
+                               (f"{_PREFIX}*.keep.json", len(_PREFIX), ".keep.json")):
+        stamps.update(path.name[cut:-len(tail)] for path in d.glob(pattern))
+    return stamps
 
 
 def _side_stamp(db_name: str) -> str | None:
@@ -1113,8 +1159,9 @@ def retention_status(backup_dir: Path | None = None, *, now: float | None = None
                                    (f"{_PREFIX}*.keep.json", len(_PREFIX), ".keep.json")):
             stamps.update(path.name[cut:-len(tail)] for path in backup_dir.glob(pattern))
         for stamp in sorted(stamps - published):
-            if _raw_deleting(backup_dir / f"{_PREFIX}{stamp}.db"):
-                continue  # 이어 지우기 몫
+            keep, state = _read_keep(backup_dir / f"{_PREFIX}{stamp}.db")
+            if state == "ok" and keep and keep.get("deleting") is True:
+                continue  # 정상 표식 = 이어 지우기 몫(깨진 삭제 표식 잔재는 이어 지우지 않으므로 여기서 센다)
             leftovers += 1
             for member in (*_set_members(backup_dir, stamp), _keep_path(backup_dir / f"{_PREFIX}{stamp}.db")):
                 with contextlib.suppress(OSError):

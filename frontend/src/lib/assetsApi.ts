@@ -454,7 +454,8 @@ export const assetsApi = {
       saved: boolean;
       version: number;
       preview: BackupPolicyPreview;
-      applied?: { deleted: number; failed: number; blocked: string | null };
+      // failed = 이번에 새로 지우려다 못 지운 수 · resume_failed = 지우다 멈춘 세트를 이어 지우다 또 못 지운 수
+      applied?: { deleted: number; failed: number; resume_failed?: number; blocked: string | null };
     }>("/api/db/backup-policy", {
       method: "PUT",
       body: jsonBody(body),

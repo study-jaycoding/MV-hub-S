@@ -50,6 +50,14 @@ export function backupSummary(status: BackupContinuityStatus | null): string {
   return [`백업 ${retention.set_count}세트${since}`, ...backupWarnings(retention).map((w) => `⚠ ${w}`)].join(" · ");
 }
 
+const FIELD_LABELS: Record<keyof BackupPolicyValues, string> = {
+  quiet_minutes: "조용해진 뒤",
+  min_interval_minutes: "최소 간격",
+  recent: "최근",
+  daily_days: "날마다 1장",
+  weekly_weeks: "주마다 1장",
+};
+
 const FIELDS: { key: keyof BackupPolicyValues; unit: string }[] = [
   { key: "quiet_minutes", unit: "분" },
   { key: "min_interval_minutes", unit: "분" },
@@ -104,11 +112,14 @@ export function BackupSection({
   const retention = status?.local.retention;
   const shared = status?.shared;
 
-  // 지금 값이 목록 밖(환경변수 등)이면 서버가 받지 않으므로, 고르지 않은 칸은 그 값 이상인 가장 가까운 허용값으로
-  //  맞춰 보낸다(늘어나는 쪽 — 줄어드는 경우는 미리보기·확인이 걸린다).
+  // 지금 값이 목록 밖(환경변수 등)이면 서버가 받지 않는다 — 고르지 않은 칸도 허용값으로 맞춰야 하는데, 몰래 바꾸지
+  //  않고 무엇이 어떻게 바뀌는지 보여 주고 묻는다. 맞추는 쪽: 남기는 양은 더 많이 남기는 쪽, 간격은 더 자주 찍는 쪽.
   const fit = (field: keyof BackupPolicyValues, current: number): number => {
     const choices = view?.choices[field] ?? [];
     if (!choices.length || choices.includes(current)) return current;
+    if (field === "quiet_minutes" || field === "min_interval_minutes") {
+      return [...choices].reverse().find((choice) => choice <= current) ?? choices[0];
+    }
     return choices.find((choice) => choice >= current) ?? choices[choices.length - 1];
   };
 
@@ -117,6 +128,14 @@ export function BackupSection({
     const next = Object.fromEntries(
       FIELDS.map(({ key: field }) => [field, field === key ? value : fit(field, view.policy[field])]),
     ) as unknown as BackupPolicyValues;
+    const fitted = FIELDS.filter(({ key: field }) => field !== key && next[field] !== view.policy[field]);
+    if (fitted.length) {
+      const lines = fitted.map(({ key: field, unit }) => `${FIELD_LABELS[field]} ${view.policy[field]}${unit} → ${next[field]}${unit}`);
+      if (!window.confirm(`지금 값 중 고를 수 없는 값이 있어 함께 바꿉니다.\n${lines.join("\n")}\n계속할까요?`)) {
+        setMsg(t("바꾸지 않았습니다"));
+        return;
+      }
+    }
     setBusy(true);
     setMsg("");
     try {
@@ -136,15 +155,16 @@ export function BackupSection({
         token = dry.preview.confirm_token;
       }
       const saved = await api.saveBackupPolicy({ ...next, version: view.version, confirm_token: token });
-      // 실제로 지운 수(applied) — 미리보기 수와 다를 수 있다(쌍 보호·사용 중·못 지운 세트는 다음 정리 때).
+      // 실제로 지운 수(applied) — 미리보기 수와 다를 수 있다. failed 는 이번에 새로 못 지운 것만(이어 지우기 실패 제외).
+      //  보류(쌍 보호·사용 중)는 다음 정리 때 그때의 정책·시각으로 다시 계산한다 — 지운다고 약속하지 않는다.
       const deleted = saved.applied?.deleted ?? 0;
       const failed = saved.applied?.failed ?? 0;
-      const later = Math.max(0, saved.preview.delete_count - deleted - failed);
+      const held = Math.max(0, saved.preview.delete_count - deleted - failed);
       setMsg([
         t("저장했습니다"),
         deleted ? `오래된 백업 ${deleted}세트를 정리했습니다` : "",
         failed ? `${failed}세트는 지우지 못했습니다(다음에 다시)` : "",
-        later ? `${later}세트는 다음 정리 때 지웁니다` : "",
+        held ? `${held}세트는 현재 정리 보류 중입니다` : "",
       ].filter(Boolean).join(" · "));
       await loadPolicy();
       onRefresh();
