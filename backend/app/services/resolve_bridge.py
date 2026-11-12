@@ -2102,6 +2102,24 @@ def _panel_record_matches(clip, record, payload, resolve_project_id):
             and (not mark.get("staged_by") or (mark.get("staged_by") == payload.get("hub_key") and mark.get("item_id") == _uid(clip))))
 
 
+def _panel_delete_many(pool, folder, clips, guard):
+    """내 항목 여러 개를 20개씩 지운다 — 묶음마다 DeleteClips 바로 전에 사용 값을 다시 읽어 0 인 것만, 지운 수 = 목록을 되읽어 사라진 것.
+    (11-12 실측: 한 개씩 지우고 읽으면 개당 ~170ms, 20개 한 번 6ms). 리졸브가 쓰는 중인 클립을 지울 때의 동작은 미확인 — 그래서 바로 전 확인."""
+    removed = 0
+    for start in range(0, len(clips), 20):
+        guard()
+        doomed = [(clip, _uid(clip)) for clip in clips[start:start + 20] if _panel_usage(clip) == 0]
+        if not doomed:
+            continue
+        try:
+            pool.DeleteClips([clip for clip, _clip_id in doomed])
+        except Exception:  # noqa: BLE001 - 아래 되읽기로 판정한다
+            pass
+        left = {_uid(row) for row in _strict_list(folder.GetClipList)}
+        removed += sum(1 for _clip, clip_id in doomed if clip_id not in left)
+    return removed
+
+
 def _panel_import_record(payload, resolve_project_id, gen_id, item_id, bin_id, local_path, *, owned=True):
     """띄움 복구 기록 — 라우터가 저장(파일 이름 = item_id)하고 다음 띄움이 이어받는다. 칸은 늘 다 채운다(모르는 gen 은 빈 글자).
     소유 미확인(owned=False)은 진단용 — 다음 띄움이 이어받지 않는다(그 기록만으로 표식·이름·지우기 0)."""
@@ -2110,18 +2128,19 @@ def _panel_import_record(payload, resolve_project_id, gen_id, item_id, bin_id, l
     return row if owned else {**row, "owned": False}
 
 
-def _panel_stage(pool, target, payload, resolve_project_id, guard):
+def _panel_stage(pool, target, payload, resolve_project_id, guard, *, via=None, rename=True):
     """컷 빈에 띄우기 — 빠진 것을 먼저 다 고른 뒤 묶음으로 가져오고(영상은 한 호출) 표식 → 이름 순서로 한다(11-12 띄움 속도).
     리졸브는 미디어 풀이 바뀐 뒤 첫 클립 속성 읽기에 0.1~0.2초를 써서 항목마다 가져오기·읽기·이름을 번갈아 하지 않는다.
-    다루는 클립은 이번 ImportMedia 가 돌려준 것뿐이다 — 그사이 사람이 가져온 클립은 짝짓기·표식·지우기 대상이 아니다."""
+    다루는 클립은 이번 ImportMedia 가 돌려준 것뿐이다 — 그사이 사람이 가져온 클립은 짝짓기·표식·지우기 대상이 아니다.
+    via = 가져오는 자리(미리 띄우기의 에피소드 빈) — 거기 가져와 확인된 것만 MoveClips 로 target 에 옮긴다. rename=False 면 표식만(이름은 뒤따르기)."""
     items = payload.get("items", [])
     wanted = {row["gen_id"] for row in items}
-    removed, unexpected = 0, 0
-    for clip in _strict_list(target.GetClipList):
-        mark = _panel_raw_mark(clip)
-        if not payload.get("capped") and mark.get("project_id") == payload["project_id"] and mark.get("generation_id") not in wanted:
-            if _panel_owned(clip, payload) and _panel_delete(pool, target, clip, guard, owned=payload):
-                removed += 1
+    unexpected = 0
+    doomed = [clip for clip in _strict_list(target.GetClipList)
+              if not payload.get("capped") and (mark := _panel_raw_mark(clip)).get("project_id") == payload["project_id"]
+              and mark.get("generation_id") not in wanted and _panel_owned(clip, payload) and _panel_usage(clip) == 0]
+    removed = _panel_delete_many(pool, target, doomed, guard) if doomed else 0
+    dest = via if via is not None else target
     rows = [(clip, _panel_raw_mark(clip), _clip_file_path(clip)) for clip in _strict_list(target.GetClipList)] if items else []
     records = [row for row in payload.get("import_records", []) if row.get("owned", True)]  # 소유 미확인 기록은 고르기 전에 거른다
     def known_id(clip):
@@ -2161,23 +2180,23 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
             leader[path] = gen
             fresh.append(item)
 
-    recovery, unchecked, settled, attempted, good = [], set(), set(), set(), {}  # unchecked = 돌려받았지만 짝짓기·목적 빈 확인을 못 끝낸 클립 ID
+    recovery, unchecked, settled, attempted, good, moving = [], set(), set(), set(), {}, []  # unchecked = 돌려받았지만 짝짓기·목적 빈 확인을 못 끝낸 클립 ID
     try:
         by_path = {_normal_path(item["path"]): item for item in fresh}
         for group in _import_groups([item["path"] for item in fresh]):
             # 묶음마다 — 스틸을 한 건씩 넣는 사이 사람이 빈을 옮기면 그 뒤 것은 가져오지 않는다(아래에서 deferred)
             guard()
-            if _uid(pool.GetCurrentFolder()) != _uid(target):
+            if _uid(pool.GetCurrentFolder()) != _uid(dest):
                 break
             # 가져오기 전 ID 는 완전해야 한다 — 하나라도 못 읽으면 가져오지 않는다(못 읽은 사람 클립을 '새 클립'으로 오인하지 않게)
-            before = {_uid(clip) for clip in _strict_list(target.GetClipList)}
+            before = {_uid(clip) for clip in _strict_list(dest.GetClipList)}
             guard()
             imported = [(clip, known_id(clip)) for clip in _import_media_items(pool, group)]  # ID 는 한 번만 읽는다
             unexpected += sum(1 for _clip, clip_id in imported if not clip_id)  # ID 를 못 읽은 클립은 기록 없이 세기만
             returned = [(clip, clip_id) for clip, clip_id in imported if clip_id and clip_id not in before]
             unchecked.update(clip_id for _clip, clip_id in returned)
             attempted.update(_normal_path(path) for path in group)
-            inside = {known_id(clip) for clip in _strict_list(target.GetClipList)}
+            inside = {known_id(clip) for clip in _strict_list(dest.GetClipList)}
             found = {}
             for clip, clip_id in returned:
                 found.setdefault(_normal_path(_clip_file_path(clip)), []).append((clip, clip_id))
@@ -2185,6 +2204,7 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
                 item, hits = by_path[path], found.pop(path, [])
                 if len(hits) == 1 and hits[0][1] in inside:
                     ready.append((item, *hits[0]))
+                    moving.append(ready[-1])
                 elif len(hits) == 1:
                     # 그사이 지금 빈이 바뀌어 다른 빈에 들어갔다 — 리졸브가 그 빈의 사람 클립을 돌려줬을 수 있어 지우지 않고 소유 미확인 기록만
                     states[item["gen_id"]] = "import_failed"
@@ -2202,6 +2222,23 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
         for item in fresh:
             if _normal_path(item["path"]) not in attempted:
                 states[item["gen_id"]] = "deferred"
+        if via is not None and moving:
+            # 가져오는 자리(에피소드 빈) 안에 있다고 확인된 이번 클립만 옮긴다 — 컷 빈 목록을 되읽어 확인하고, 못 옮긴 것은 사용 0 이면 지운다
+            guard()
+            try:
+                pool.MoveClips([clip for _item, clip, _clip_id in moving], target)
+            except Exception:  # noqa: BLE001 - 아래 되읽기로 판정한다
+                pass
+            landed = {known_id(row) for row in _strict_list(target.GetClipList)}
+            for entry in moving:
+                item, clip, clip_id = entry
+                if clip_id in landed:
+                    continue
+                ready.remove(entry)
+                states[item["gen_id"]] = "import_failed"
+                if not _panel_delete(pool, via, clip, guard):
+                    recovery.append(_panel_import_record(payload, resolve_project_id, item["gen_id"], clip_id, known_id(via), item["path"]))
+                settled.add(clip_id)
         for item, clip, clip_id in ready:  # 표식을 먼저 모두 — 이름 바꾸기 도중 끊겨도 내 항목으로 찾는다
             try:
                 good[clip_id] = _panel_stamp(clip, item["gen_id"], payload["project_id"], guard, hub_key=payload["hub_key"])
@@ -2210,7 +2247,7 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
                     raise
                 good[clip_id] = False
         for item, clip, clip_id in ready:  # 이름은 맨 뒤 — 클립은 이미 미디어 풀에 있고 이름은 한 개에 ~0.1초(11-12 실측)
-            if good[clip_id]:
+            if rename and good[clip_id]:
                 guard()
                 try:
                     clip.SetClipProperty("Clip Name", item["label"])
@@ -2218,7 +2255,7 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
                     pass
         for item, clip, clip_id in ready:
             try:
-                named = good[clip_id] and clip.GetClipProperty("Clip Name") == item["label"]
+                named = good[clip_id] and (not rename or clip.GetClipProperty("Clip Name") == item["label"])
             except Exception:  # noqa: BLE001
                 named = False
             states[item["gen_id"]] = "staged" if named else "import_failed"
@@ -2243,6 +2280,139 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard):
     results = [{"gen_id": item["gen_id"], "state": states[item["gen_id"]]} for item in items]
     deferred = sum(1 for row in results if row["state"] == "deferred")
     return {"state": "ok", "items": results, "removed": removed, "deferred": deferred, "import_records": recovery, "unexpected_imports": unexpected}
+
+
+def _panel_prestage(pool, root, payload, resolve_project_id, guard):
+    """미리 띄우기 조각(11-12 딜레이 0) — 컷마다(사이마다 guard·지금 빈 재확인) 지금 빈이 그 컷 빈이면 바로, 에피소드 빈이면 거기 가져와
+    확인된 것만 옮기고, 그 밖(사람이 다른 컷 빈에 있음)이면 그 컷은 deferred. 이름은 바꾸지 않는다(이름 뒤따르기가 한다).
+    예외로 멈추면 이 조각에서 앞서 끝낸 컷들의 복구 기록도 leftover 에 합친다."""
+    episode = _panel_bin_by_id(root, payload.get("episode_bin_id", ""))
+    cuts = {}
+
+    def waiting(cut, state):
+        rows = [{"gen_id": item["gen_id"], "state": "deferred"} for item in cut.get("items", [])]
+        return {"state": state, "items": rows, "removed": 0, "deferred": len(rows), "import_records": [], "unexpected_imports": 0}
+
+    try:
+        for cut in payload.get("cuts", []):
+            guard()
+            target = _panel_bin_by_id(root, cut.get("bin_id", ""))
+            if target is None:
+                cuts[cut["folder_path"]] = waiting(cut, "not_seen")
+                continue
+            here, target_id = _uid(pool.GetCurrentFolder()), _uid(target)  # 빈 ID 는 먼저 — 띄운 뒤 읽기 실패로 그 컷 결과(복구 기록)를 잃지 않게
+            if here == target_id:
+                via = None
+            elif episode is not None and here == _uid(episode):
+                via = episode
+            else:  # 사람이 다른 빈에 있다 — 그 빈에 남의 클립을 잠깐이라도 넣지 않는다
+                cuts[cut["folder_path"]] = waiting(cut, "ok")
+                continue
+            part = {**payload, "items": cut.get("items", []), "capped": bool(cut.get("capped")), "same_file_ids": cut.get("same_file_ids", [])}
+            cuts[cut["folder_path"]] = {**_panel_stage(pool, target, part, resolve_project_id, guard, via=via, rename=False), "bin_id": target_id}
+    except Exception as exc:
+        earlier = [row for done in cuts.values() for row in done.get("import_records", [])]
+        error = exc if isinstance(exc, ResolveBridgeError) else ResolveBridgeError(str(exc) or type(exc).__name__)
+        error.leftover = {**getattr(error, "leftover", {}), "import_records": earlier + getattr(error, "leftover", {}).get("import_records", [])}
+        if error is exc:
+            raise
+        raise error from exc
+    return {"state": "ok", "cuts": cuts}
+
+
+def _panel_rename(root, payload, guard):
+    """이름 뒤따르기 — 받은 컷 빈들에서 이 허브 내 항목·이 프로젝트·라벨 있는 생성물이고 이름이 아직 파일 이름 그대로인 것만
+    최대 limit 개 라벨로 바꾸고 되읽는다. 사람이 바꾼 이름은 파일 이름과 달라 덮지 않는다 — 쓰기 바로 전에 이름·소유를 다시 본다.
+    훑기도 limit 개를 모으거나 클립 limit×4 개를 읽으면 멈추고 이어갈 자리(after = [빈 순번, 클립 순번])를 돌려준다
+    (이미 바꾼 클립이 많아도 한 번의 작업량·쓰기 잠금을 묶는다). failed = 이번에 쓰려다 못 바꾼 수."""
+    labels = payload.get("labels", {})
+    limit = max(1, min(int(payload.get("limit") or 10), 50))
+    bin_ids = list(payload.get("bin_ids", []))
+    start_bin, start_clip = (payload.get("after") or [0, 0])[:2]
+    todo, after, scanned = [], None, 0
+
+    def default_name(clip):
+        path = _clip_file_path(clip)
+        return bool(path) and str(clip.GetClipProperty("Clip Name") or "") == Path(path).name
+
+    # 빈은 MV Hub 트리를 한 번만 훑어 찾고, 빈 방문도 읽기 하나로 센다(빈 컷 빈이 많아도 한 번의 작업이 묶인다)
+    folders = {_uid(folder): folder for folder, path in _panel_walk(root) if path[0] == MEDIA_POOL_ROOT}
+    for bin_index in range(int(start_bin), len(bin_ids)):
+        first = int(start_clip) if bin_index == int(start_bin) else 0
+        if len(todo) >= limit or scanned >= limit * 4:
+            after = [bin_index, first]
+            break
+        scanned += 1
+        folder = folders.get(bin_ids[bin_index])
+        clips = _strict_list(folder.GetClipList) if folder is not None else []
+        for clip_index in range(first, len(clips)):
+            if len(todo) >= limit or scanned >= limit * 4:
+                after = [bin_index, clip_index]
+                break
+            scanned += 1
+            clip = clips[clip_index]
+            mark = _panel_raw_mark(clip)
+            label = labels.get(str(mark.get("generation_id") or ""))
+            if label and mark.get("project_id") == payload["project_id"] and default_name(clip) and _panel_owned(clip, payload):
+                todo.append((clip, label))
+        if after:
+            break
+    written = []
+    for clip, label in todo:
+        guard()
+        if not (default_name(clip) and _panel_owned(clip, payload)):  # 그사이 사람이 이름을 바꿨거나 내 항목이 아니게 됐다
+            continue
+        try:
+            clip.SetClipProperty("Clip Name", label)
+        except Exception:  # noqa: BLE001 - 아래 되읽기로 판정한다
+            pass
+        written.append((clip, label))
+    named = 0
+    for clip, label in written:
+        try:
+            named += clip.GetClipProperty("Clip Name") == label
+        except Exception:  # noqa: BLE001
+            pass
+    return {"state": "ok", "named": named, "failed": len(written) - named, "remaining": len(written) - named + (1 if after else 0), "after": after}
+
+
+def _panel_save_scan(root, payload):
+    """[저장] 직전 — 미디어 풀 전체를 엄격히 훑는다. (가) 이 PC MV 미디어 폴더 아래 경로 (나) 패널 표식(staged_by, 어느 허브든·파일 유무 무관)이
+    남은 클립이면 not_clean. 읽기 실패(목록 예외·None · 속성 예외·dict 아님 · 표식 읽기 예외 · MV 표식이 있는데 경로 빈 값)는 scan_failed.
+    '경로가 원래 없음'(타임라인·합성 클립)은 속성 dict 를 정상으로 받았고 경로가 빈 값이며 MV 표식이 없을 때만."""
+    counts = {"mine": 0, "other": 0, "in_use": 0}
+    bins = {}  # 빈 경로 → 그 빈에 남은 것(빈마다 한 줄 — 사람이 다빈치에서 찾아 지울 수 있게)
+    try:
+        for folder, parts in [(root, ()), *_panel_walk(root)]:
+            for clip in _strict_list(folder.GetClipList):
+                props = clip.GetClipProperty()
+                if not isinstance(props, dict):
+                    raise _Unknown("클립 속성을 읽지 못했습니다")
+                raw = clip.GetThirdPartyMetadata(MVHUB_METADATA_KEY)
+                try:
+                    mark = json.loads(raw) if raw else {}
+                except (TypeError, ValueError):
+                    mark = {}
+                mark = mark if isinstance(mark, dict) else {}
+                path = str(props.get("File Path") or "")
+                if mark and not path:
+                    raise _Unknown("MV 표식 클립의 경로가 비었습니다")
+                local = bool(path) and _panel_under(path, payload["media_root"])
+                staged = mark.get("staged_by")
+                if not (local or staged):
+                    continue
+                used = _panel_usage(clip) != 0  # 모르면 쓰는 중으로 본다
+                mine = (staged or payload.get("hub_key")) == payload.get("hub_key")
+                counts["mine" if mine else "other"] += 1
+                counts["in_use"] += used
+                key = "/".join(parts) or "Master"
+                row = bins.setdefault(key, {"path": key, "count": 0, "in_use": False, "mine": True})
+                row.update(count=row["count"] + 1, in_use=row["in_use"] or used, mine=row["mine"] and mine)
+    except Exception as exc:  # noqa: BLE001 - 다 훑지 못했으면 깨끗하다고 하지 않는다
+        return {"state": "scan_failed", "details": str(exc) or type(exc).__name__}
+    if counts["mine"] or counts["other"]:
+        return {"state": "not_clean", "not_clean": {**counts, "bins": list(bins.values())[:5]}}
+    return {"state": "clean"}
 
 
 def _panel_bin_by_id(root, bin_id):
@@ -2337,7 +2507,7 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
         if operation == "adopt" and project_id != payload.get("resolve_project_id"):
             return {"state": "project_changed", "details": "Resolve 프로젝트가 바뀌었습니다"}
         # 화면이 본 다빈치 프로젝트와 다르면 쓰기 0(복구 기록 정리도 쓰기라 그보다 먼저)
-        if operation in {"target", "stage", "unstage"} and payload.get("expect_project") and payload["expect_project"] != project_id:
+        if operation in {"target", "stage", "unstage", "prestage", "rename", "save"} and payload.get("expect_project") and payload["expect_project"] != project_id:
             return {"state": "project_changed", "code": "project_changed", "resolve_project_id": project_id,
                     "resolve_project_name": project_name, "details": "Resolve 프로젝트가 바뀌었습니다"}
 
@@ -2371,6 +2541,18 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                     result["target_bin_id"] = _uid(target)
             guard()
             return result
+        if operation == "save":
+            # [저장] — 같은 쓰기 잠금 안에서 마지막으로 훑고, 깨끗하면 SaveProject 바로 전에 프로젝트를 다시 대조한 뒤 저장한다
+            if not payload.get("expect_project"):
+                return {**result, "state": "project_changed", "code": "project_changed", "details": "저장할 프로젝트가 정해지지 않았습니다"}
+            guard()
+            scan = _panel_save_scan(root, payload)
+            if scan["state"] != "clean":
+                return {**result, **scan}
+            now = manager.GetCurrentProject()
+            if not now or _project_identity(now)[0] != payload["expect_project"]:
+                return {**result, "state": "project_changed", "code": "project_changed", "details": "Resolve 프로젝트가 바뀌었습니다"}
+            return {**result, "state": "ok" if manager.SaveProject() else "save_failed"}
 
         label = _folder_name(str(payload.get("project_name") or ""), payload["project_id"])
         parts = [MEDIA_POOL_ROOT, label, *[
@@ -2383,6 +2565,10 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
         guard()
         _settle_recovery_record(payload, root, project_id, _path_identity((MEDIA_POOL_ROOT, label)))
         target = named = _folder_at_path(root, tuple(parts))
+        if operation == "prestage":
+            return {**result, **_panel_prestage(pool, root, payload, project_id, guard)}
+        if operation == "rename":
+            return {**result, **_panel_rename(root, payload, guard)}
         # 따라가기 stage 도 ID 로 찾는다 — 이름 경로로 찾으면 이름이 같은 다른 빈에 넣을 수 있다. 못 찾으면 경로로 대신하지 않는다.
         if operation == "unstage" or (operation == "stage" and payload.get("bin_id")):
             target = _panel_bin_by_id(root, payload.get("bin_id"))

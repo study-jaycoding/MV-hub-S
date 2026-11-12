@@ -1,6 +1,9 @@
 /* 리졸브 안 MV 창 — 다빈치 미디어 풀 모양(Jay 2026-11-11): 왼쪽 빈 트리 · 오른쪽 상태. 색은 리졸브 미디어 풀의 회색 판. */
 .resolve-panel { color: #d4d4d6; background: #1f2023; height: 100dvh; display: flex; flex-direction: column; font-size: 12px; overflow: hidden; }
-.resolve-panel-head { padding: 10px 12px 8px; background: #28292d; border-bottom: 1px solid #333438; flex: none; }
+.resolve-panel-head { position: relative; padding: 10px 12px 8px; background: #28292d; border-bottom: 1px solid #333438; flex: none; }
+/* [저장] — 머리줄 오른쪽 위 */
+.resolve-panel .rp-save { position: absolute; top: 9px; right: 12px; margin: 0; padding: 4px 14px; font-weight: 600; }
+.resolve-panel .rp-save:disabled { opacity: .6; cursor: default; }
 .resolve-panel-head > strong { display: block; font-size: 15px; color: #e6e6e8; }
 .resolve-panel-head > strong span { font-size: 11px; color: #8a8b90; font-weight: 400; margin-left: 6px; }
 .resolve-panel-status { color: var(--accent, #c4e84a); margin-top: 6px; overflow-wrap: anywhere; }

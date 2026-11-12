@@ -74,18 +74,25 @@ def remember_bin(bin_id):
 # target 이 돌려준 컷 빈 — 창을 다시 잡아도(claim) 지우지 않는다(패널 다시 열기가 그때다).
 _cut_bins: dict[str, tuple] = {}  # 빈 ID → (창, MV 프로젝트, 컷 경로): 그 창만 그 컷으로 따라가기 stage·비면 지우기
 _episode_bins: set[str] = set()  # 지금 에피소드의 컷 빈 — 어느 창의 inventory 정리도 건드리지 않는다
+_episode_roots: dict[str, tuple] = {}  # 에피소드 빈 ID → (창, MV 프로젝트, 에피소드 경로): 미리 띄우기가 가져오는 자리로 쓸 수 있는 빈
 
 
-def remember_episode(window, project_id, bins):
+def remember_episode(window, project_id, bins, episode_bin_id="", episode_path=""):
     _episode_bins.clear()
     for path, bin_id in bins.items():
         if bin_id:
             _cut_bins[bin_id] = (window, project_id, path)
             _episode_bins.add(bin_id)
+    if episode_bin_id:
+        _episode_roots[episode_bin_id] = (window, project_id, episode_path)
 
 
 def cut_bin(bin_id, window, project_id, folder_path):
     return bool(bin_id) and _cut_bins.get(bin_id) == (window, project_id, folder_path)
+
+
+def episode_bin(bin_id, window, project_id, episode_path):
+    return bool(bin_id) and _episode_roots.get(bin_id) == (window, project_id, episode_path)
 
 
 def forget_bin(bin_id):
@@ -97,8 +104,17 @@ def forget_project(project_id):
     """다시 짓기로 그 MV 프로젝트의 빈 ID 가 바뀌었다 — 옛 ID 기억을 버린다(지우기·따라가기를 막는 쪽으로 안전)."""
     for bin_id in [key for key, value in _cut_bins.items() if value[1] == project_id]:
         _cut_bins.pop(bin_id, None)
+    for bin_id in [key for key, value in _episode_roots.items() if value[1] == project_id]:
+        _episode_roots.pop(bin_id, None)
     _episode_bins.clear()
     _owner["bin_id"] = ""
+
+
+def item_label(gen):
+    """다빈치 클립 이름 — '작업자 · 모델 · 5s'(없으면 생성물 ID)."""
+    duration = (gen.get("params") or {}).get("duration") or gen.get("duration")
+    label = " · ".join(str(value) for value in [gen.get("creator_name") or "", gen.get("model") or "", f"{duration}s" if duration else ""] if value)
+    return label or gen["id"]
 
 
 def episode_scope_ok(episode_path, folder_path, create_paths):
@@ -166,9 +182,7 @@ async def stage_items(ctx, generations, request=None):
             path = await transfer._cached_source(generation_asset(gen))
         if not _panel_under(str(path), str(config.MEDIA_DIR)) or not Path(path).is_file():
             raise transfer.ResolveTransferError("이 PC 원본 경로를 확인하지 못했습니다")
-        duration = (gen.get("params") or {}).get("duration") or gen.get("duration")
-        label = " · ".join(str(value) for value in [gen.get("creator_name") or "", gen.get("model") or "", f"{duration}s" if duration else ""] if value)
-        items.append({"gen_id": gen["id"], "path": str(path), "label": label or gen["id"]})
+        items.append({"gen_id": gen["id"], "path": str(path), "label": item_label(gen)})
     return items
 
 

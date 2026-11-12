@@ -704,6 +704,186 @@ class PanelStagingTests(unittest.TestCase):
         ok = self.run_op("stage", items=[twin, items[0]], import_records=[record])
         self.assertEqual([row["state"] for row in ok["items"]], ["same_file_exists", "staged"])
 
+    # ── 미리 띄우기·이름 뒤따르기·[저장]·묶음 지우기(11-12) ──
+    def episode_bins(self):
+        made = self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C10", "E1/C20"])
+        return made["episode_bin_id"], made["bins"]
+
+    def test_prestage_via_episode_bin_direct_and_deferred(self):
+        ep, bins = self.episode_bins()  # 지금 빈 = 에피소드 빈
+        cuts = [{"folder_path": "E1/C10", "bin_id": bins["E1/C10"], "items": self.videos("1", "2")},
+                {"folder_path": "E1/C20", "bin_id": bins["E1/C20"], "items": self.videos("3")}]
+        with mock.patch.object(FakeClip, "SetClipProperty", side_effect=AssertionError("이름은 뒤따르기가")):
+            done = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
+        self.assertEqual({path: [row["state"] for row in cut["items"]] for path, cut in done["cuts"].items()},
+                         {"E1/C10": ["staged", "staged"], "E1/C20": ["staged"]})
+        self.assertEqual((self.bin("E1").clips, len(self.bin("E1", "C10").clips), len(self.bin("E1", "C20").clips)), ([], 2, 1))
+        self.assertTrue(all(resolve_bridge._panel_owned(clip, self.payload) for clip in self.bin("E1", "C10").clips))
+        # 사람이 C20 안에 있으면 — C20 은 바로, C10 은 건너뜀(사람이 보는 빈에 남의 클립을 넣지 않는다)
+        for folder in (self.bin("E1", "C10"), self.bin("E1", "C20")):
+            folder.clips.clear()
+        self.pool.current = self.bin("E1", "C20")
+        calls = len(self.pool.import_calls)
+        done = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
+        self.assertEqual((done["cuts"]["E1/C10"]["deferred"], [row["state"] for row in done["cuts"]["E1/C20"]["items"]]), (2, ["staged"]))
+        self.assertEqual((len(self.pool.import_calls) - calls, self.bin("E1", "C10").clips), (1, []))
+
+    def test_prestage_move_failure_deletes_only_confirmed_clips(self):
+        ep, bins = self.episode_bins()
+        cuts = [{"folder_path": "E1/C10", "bin_id": bins["E1/C10"], "items": self.videos("1")}]
+        with mock.patch.object(self.pool, "MoveClips", return_value=False):
+            failed = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
+        self.assertEqual(([row["state"] for row in failed["cuts"]["E1/C10"]["items"]], self.bin("E1").clips), (["import_failed"], []))
+        with mock.patch.object(self.pool, "MoveClips", return_value=False), mock.patch.object(self.pool, "DeleteClips", return_value=False):
+            kept = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
+        self.assertEqual({row["bin_id"] for row in kept["cuts"]["E1/C10"]["import_records"]}, {ep})  # 못 지우면 복구 기록
+        # 가져오는 사이 사람이 다른 빈으로 — 에피소드 빈 밖으로 간 클립은 옮기지도 지우지도 않고 owned:false 만
+        other = self.pool.AddSubFolder(self.pool.root, "Human")
+        self.pool.current = self.bin("E1")
+        self.bin("E1").clips.clear()
+        real = FakeMediaPool.ImportMedia
+        def switch(paths):
+            self.pool.current = other
+            return real(self.pool, paths)
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=switch), mock.patch.object(self.pool, "MoveClips") as move:
+            stray = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
+        move.assert_not_called()
+        self.assertEqual((len(other.clips), stray["cuts"]["E1/C10"]["import_records"][0]["owned"]), (1, False))
+
+    def test_rename_only_default_file_names(self):
+        ep, bins = self.episode_bins()
+        items = self.videos("1", "2", "3")
+        self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=[{"folder_path": "E1/C10", "bin_id": bins["E1/C10"], "items": items}])
+        first, second, third = self.bin("E1", "C10").clips
+        second.name = "사람이 바꾼 이름"
+        labels = {row["gen_id"]: row["label"] for row in items}
+        step = self.run_op("rename", folder_path="E1", bin_ids=[bins["E1/C10"]], labels=labels, limit=1)
+        self.assertEqual((step["named"], step["remaining"]), (1, 1))
+        step = self.run_op("rename", folder_path="E1", bin_ids=[bins["E1/C10"]], labels=labels, limit=10)
+        self.assertEqual((step["named"], step["remaining"]), (1, 0))
+        self.assertEqual([clip.name for clip in (first, second, third)], ["Jay · 1", "사람이 바꾼 이름", "Jay · 3"])
+
+    def test_prestage_error_in_later_cut_keeps_earlier_records(self):
+        ep, bins = self.episode_bins()
+        cuts = [{"folder_path": "E1/C10", "bin_id": bins["E1/C10"], "items": self.videos("1")},
+                {"folder_path": "E1/C20", "bin_id": bins["E1/C20"], "items": self.videos("2")}]
+        real = resolve_bridge._panel_stage
+        calls = []
+        def stage(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise resolve_bridge.ResolveBridgeError("바뀜", code="project_changed")
+            return real(*args, **kwargs)
+        with mock.patch.object(self.pool, "MoveClips", return_value=False), mock.patch.object(self.pool, "DeleteClips", return_value=False), \
+                mock.patch.object(resolve_bridge, "_panel_stage", side_effect=stage):
+            result = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
+        self.assertEqual((result["state"], [row["gen_id"] for row in result["import_records"]]), ("unavailable", ["g1"]))  # 앞 컷 기록을 잃지 않는다
+
+    def test_rename_rechecks_before_write_and_resumes_from_cursor(self):
+        ep, bins = self.episode_bins()
+        items = self.videos("1", "2", "3")
+        self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=[{"folder_path": "E1/C10", "bin_id": bins["E1/C10"], "items": items}])
+        first, second, third = self.bin("E1", "C10").clips
+        labels = {row["gen_id"]: row["label"] for row in items}
+        real = FakeClip.SetClipProperty
+        def human(clip, key, value):
+            if clip is first:
+                second.name = "그사이 사람이"  # 우리 첫 쓰기와 둘째 쓰기 사이에 사람이 이름을 바꿨다
+            return real(clip, key, value)
+        with mock.patch.object(FakeClip, "SetClipProperty", human):
+            step = self.run_op("rename", folder_path="E1", bin_ids=[bins["E1/C10"]], labels=labels, limit=2)
+        self.assertEqual((step["named"], step["after"], second.name), (1, [0, 2], "그사이 사람이"))  # 덮지 않고, 두 개를 모으면 훑기를 멈춤
+        step = self.run_op("rename", folder_path="E1", bin_ids=[bins["E1/C10"]], labels=labels, limit=2, after=step["after"])
+        self.assertEqual((step["named"], step["after"], step["remaining"], third.name), (1, None, 0, "Jay · 3"))
+        # 이미 바꾼 클립뿐이어도 한 번에 limit×4 개만 읽고 자리를 돌려준다
+        for name in "4567":
+            extra = FakeClip(str(self.media / f"{name}.mp4"))
+            extra.name = "사람 이름 " + name
+            self.bin("E1", "C10").clips.append(extra)
+        cursors = []
+        step = {"after": None}
+        for _ in range(5):
+            step = self.run_op("rename", folder_path="E1", bin_ids=[bins["E1/C10"]], labels=labels, limit=1, **({"after": step["after"]} if step["after"] else {}))
+            cursors.append(step["after"])
+            if not step["after"]:
+                break
+        self.assertEqual(cursors, [[0, 3], [0, 6], None])  # 빈 방문 1 + 클립 3 = 4 읽기씩
+        # 빈 컷 빈뿐이어도 빈 방문을 세어 한 번에 4개 빈까지만
+        empties = [FakeMediaPool.AddSubFolder(self.pool, self.bin("E1"), f"빈{n}").unique_id for n in range(6)]
+        step = self.run_op("rename", folder_path="E1", bin_ids=empties, labels=labels, limit=1)
+        self.assertEqual(step["after"], [4, 0])
+        step = self.run_op("rename", folder_path="E1", bin_ids=empties, labels=labels, limit=1, after=step["after"])
+        self.assertEqual(step["after"], None)
+
+    def test_unstage_deletes_in_batches_with_last_usage_check(self):
+        items = self.videos("1", "2", "3")
+        self.run_op("stage", items=items)
+        clips = list(self.folder.clips)
+        calls = []
+        real = FakeMediaPool.DeleteClips
+        def delete(batch):
+            calls.append(len(batch))
+            return real(self.pool, batch)
+        reads = {"n": 0}
+        original = FakeClip.GetClipProperty
+        def usage(clip, key=None):
+            if key == "Usage":
+                reads["n"] += 1
+                if clip is clips[2] and reads["n"] > 3:  # 후보로 고른 뒤 지우기 바로 전에 사람이 타임라인에 넣었다
+                    return "1"
+            return original(clip, key)
+        with mock.patch.object(self.pool, "DeleteClips", side_effect=delete), mock.patch.object(FakeClip, "GetClipProperty", usage):
+            result = self.run_op("unstage", items=[], bin_id=self.folder.unique_id)
+        self.assertEqual((calls, result["removed"], self.folder.clips), ([2], 2, [clips[2]]))
+
+    def test_save_scans_whole_pool_strictly(self):
+        save = lambda **kw: self.run_op("save", expect_project=self.project.unique_id, **kw)
+        self.assertEqual((save()["state"], self.manager.saved), ("ok", 1))
+        self.assertEqual(self.run_op("save")["state"], "project_changed")  # 고정 ID 없이 저장하지 않는다
+        mine = self.staged()
+        blocked = save()
+        self.assertEqual((blocked["state"], blocked["not_clean"]["mine"], blocked["not_clean"]["bins"][0]["path"]), ("not_clean", 1, "MV Hub/Film/S/C1"))
+        self.folder.clips.remove(mine)
+        strays = [FakeClip(f"Z:/동료 PC/clip{n}.mp4") for n in range(3)]  # 다른 허브 표식 — 파일이 이 PC 에 없어도 막는다
+        for stray in strays:
+            resolve_bridge._panel_stamp(stray, "g", "p", lambda: None, hub_key="colleague")
+        self.folder.clips.extend(strays)
+        blocked = save()
+        self.assertEqual((blocked["state"], blocked["not_clean"]["other"]), ("not_clean", 3))
+        self.assertEqual(blocked["not_clean"]["bins"], [{"path": "MV Hub/Film/S/C1", "count": 3, "in_use": False, "mine": False}])  # 빈마다 한 줄
+        for stray in strays:
+            self.folder.clips.remove(stray)
+        marked = FakeClip("")
+        resolve_bridge.stamp_and_verify(marked, "g", "p")  # 표식은 있는데 경로가 빈 값 = 읽기 실패로 본다
+        self.folder.clips.append(marked)
+        self.assertEqual(save()["state"], "scan_failed")
+        self.folder.clips.remove(marked)
+        with mock.patch.object(self.folder, "GetClipList", return_value=None):
+            self.assertEqual(save()["state"], "scan_failed")
+        self.folder.clips.append(FakeClip(str(Path(self.tmp.name) / "nas.mp4")))
+        with mock.patch.object(FakeClip, "GetClipProperty", return_value="dict 아님"):
+            self.assertEqual(save()["state"], "scan_failed")
+        other_project = FakeProject(self.pool)
+        other_project.unique_id = "resolve-project-2"
+        def switch(_root, _payload):
+            self.manager.project = other_project  # 훑는 사이 사람이 프로젝트를 바꿨다
+            return {"state": "clean"}
+        saved = self.manager.saved
+        with mock.patch.object(resolve_bridge, "_panel_save_scan", side_effect=switch):
+            self.assertEqual(save()["state"], "project_changed")
+        self.assertEqual(self.manager.saved, saved)
+
+    def test_failure_inside_bins_helper_with_keep_current_is_not_ok(self):
+        self.run_op("target", folder_path="S/C3")  # 다음 keep_current 가 C2 를 사이에 넣으며 다시 짓는다
+        real = resolve_bridge._panel_walk
+        def walk(folder, parts=()):
+            if folder is not self.pool.root and len(parts) == 0 and self.bin("S", "C2") is not None:
+                raise RuntimeError("트리 읽기 실패")
+            return real(folder, parts)
+        with mock.patch.object(resolve_bridge, "_panel_walk", side_effect=walk):
+            result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2", "S/C3"], keep_current=True)
+        self.assertEqual((result["state"], result["ids_changed"]), ("unavailable", True))  # 트리 기록 리뷰 P3
+
     def test_stage_batch_same_path_imports_once_and_follows_leader(self):
         first, = self.videos("1")
         still = self.media / "s.png"

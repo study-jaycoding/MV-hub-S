@@ -234,6 +234,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                             seen=__import__("time").monotonic(), bin_id="")
         panel._cut_bins.clear()
         panel._episode_bins.clear()
+        panel._episode_roots.clear()
 
     def child(self, payload, before_start=None):
         rejected = before_start() if before_start else None
@@ -560,7 +561,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(identity["protocol"], {"min": 1, "max": 1})
         self.assertEqual(len(identity["account"]), 16)
         self.assertEqual({r.path for r in route.router.routes}, {
-            "/api/resolve/panel/" + name for name in ("identity", "cache", "prepare", "target", "current-bin", "adopt", "stage", "unstage", "inventory")})
+            "/api/resolve/panel/" + name for name in ("identity", "cache", "prepare", "target", "current-bin", "adopt", "stage", "unstage", "inventory",
+                                                      "prestage", "rename", "save")})
 
     async def test_target_and_adopt_share_current_project_name_and_recovery_identity(self):
         self.gen["project_name"] = "옛 이름"
@@ -793,6 +795,32 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(runner, "run_resolve_panel_isolated", side_effect=lambda p, before_start=None: (seen.append(p), self.child(p, before_start))[1]):
             moved = await route.post_stage(self.body(route.StageIn, seq=1, gen_ids=[], expect_project="다른 프로젝트"), self.request)
         self.assertEqual((moved["state"], seen[-1]["expect_project"]), ("project_changed", "다른 프로젝트"))
+
+    # ── 미리 띄우기·이름 뒤따르기·[저장](11-12) ──
+    async def test_prestage_rename_and_save_routes(self):
+        result = await route.post_target(self.episode(), self.request)
+        ep, c010 = result["episode_bin_id"], result["bins"]["S01/C010"]
+        cut = lambda bin_id=c010: route.CutIn(folder_path="S01/C010", bin_id=bin_id, gen_ids=["g"])
+        pre = lambda **kw: route.PrestageIn(ctx=self.ctx, project_id="p", folder_path="S01", **{"window": "test-window", "episode_bin_id": ep, "cuts": [cut()], **kw})
+        # 이 창이 받은 에피소드·컷 빈만 — 모르는 ID·다른 창이면 리졸브 호출 0
+        for bad, state in [(pre(episode_bin_id="모르는 빈"), "not_seen"), (pre(cuts=[cut("모르는 빈")]), "not_seen"), (pre(window="other"), "other_window")]:
+            self.assertEqual((await route.post_prestage(bad, self.request))["state"], state)
+        self.assertEqual(self.pool.import_calls, [])
+        done = await route.post_prestage(pre(), self.request)  # 다빈치 지금 빈 = 에피소드 빈 → 거기 가져와 컷 빈으로 옮김
+        self.assertEqual(done["cuts"]["S01/C010"]["items"], [{"gen_id": "g", "state": "staged"}])
+        episode, c10 = (bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", *parts)) for parts in (("S01",), ("S01", "C010")))
+        self.assertEqual((episode.clips, [clip.name for clip in c10.clips]), ([], ["clip.mp4"]))  # 이름은 아직(뒤따르기가)
+        renamed = await route.post_rename(route.RenameIn(ctx=self.ctx, project_id="p", folder_path="S01", window="test-window", cuts=[cut()]), self.request)
+        self.assertEqual((renamed["named"], renamed["remaining"], c10.clips[0].name), (1, 0, "작업자"))
+        # [저장] — 안 쓴 이 PC 클립이 남았으면 저장하지 않는다 → 정리 뒤 저장
+        save = lambda project=self.project.unique_id: route.post_save(route.SaveIn(ctx=self.ctx, project_id="p", folder_path="S01", window="test-window", expect_project=project), self.request)
+        blocked = await save()
+        self.assertEqual((blocked["state"], blocked["not_clean"]["mine"], self.manager.saved), ("not_clean", 1, 0))
+        self.assertEqual((await save("다른 프로젝트"))["state"], "project_changed")
+        await route.post_unstage(route.UnstageIn(ctx=self.ctx, project_id="p", folder_path="S01/C010", window="test-window", bin_id=c010), self.request)
+        self.assertEqual(((await save())["state"], self.manager.saved), ("ok", 1))
+        with self.assertRaises(ValidationError):  # 저장할 프로젝트를 고정하지 않은 저장은 받지 않는다
+            route.SaveIn(ctx=self.ctx, project_id="p", folder_path="S01", window="test-window", expect_project="")
 
     async def test_adopt_crash_after_replace_and_restart_uses_disk_ready(self):
         await self.place()

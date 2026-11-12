@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request
@@ -60,6 +61,32 @@ class StageIn(PanelIn):
     gen_ids: list[str] = Field(default_factory=list, max_length=200)
     capped: bool = False
     bin_id: str = Field(default="", max_length=200)  # 다빈치에서 들어간 컷 빈을 따라갈 때 — 그 ID 의 빈에만 넣는다
+
+
+class CutIn(BaseModel):
+    folder_path: str = Field(min_length=1, max_length=2000)
+    bin_id: str = Field(min_length=1, max_length=200)
+    gen_ids: list[str] = Field(default_factory=list, max_length=200)
+    capped: bool = False
+
+
+class PrestageIn(PanelIn):
+    """미리 띄우기 조각 — folder_path = 에피소드, 컷마다 이 창이 target 으로 받은 컷 빈 ID."""
+    window: str = Field(min_length=1, max_length=80)
+    episode_bin_id: str = Field(default="", max_length=200)
+    cuts: list[CutIn] = Field(min_length=1, max_length=200)
+
+
+class RenameIn(PanelIn):
+    window: str = Field(min_length=1, max_length=80)
+    cuts: list[CutIn] = Field(min_length=1, max_length=200)
+    limit: int = Field(default=10, ge=1, le=50)
+    after: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, min_length=2, max_length=2)  # 앞 작업이 멈춘 자리 [빈 순번, 클립 순번]
+
+
+class SaveIn(PanelIn):
+    window: str = Field(min_length=1, max_length=80)
+    expect_project: str = Field(min_length=1, max_length=200)  # [저장]이 inventory 에서 고정한 다빈치 프로젝트 — 없으면 저장하지 않는다
 
 
 class UnstageIn(PanelIn):
@@ -213,6 +240,31 @@ async def _operate(operation, body, request, ctx):
             # 빈 지우기는 이 창이 target 으로 받은 그 컷의 빈만 — 에피소드·프로젝트 빈·모르는 ID 는 항목 정리만 한다.
             payload["delete_empty"] = body.delete_empty and not body.inventory_cleanup and panel.cut_bin(body.bin_id, body.window, body.project_id, body.folder_path)
         payload["same_file_ids"] = list(panel._same_files.get((*panel.context_key(ctx), body.window, body.project_id, body.folder_path), set()))
+    elif operation in {"prestage", "rename"}:
+        source_root, manifest_root = await asyncio.to_thread(resolve_transfer.resolve_transfer_roots, body.project_id)
+        panel.validate_media_root(source_root)
+        # 이 창이 target 으로 받은 그 에피소드의 컷 빈만 — 모르는 빈 ID 로는 가져오거나 이름을 바꾸지 않는다
+        if operation == "prestage" and body.episode_bin_id and not panel.episode_bin(body.episode_bin_id, body.window, body.project_id, body.folder_path):
+            return {"state": "not_seen"}
+        cuts = []
+        for cut in body.cuts:
+            if not panel.cut_bin(cut.bin_id, body.window, body.project_id, cut.folder_path):
+                return {"state": "not_seen"}
+            gens = await _authorized(SimpleNamespace(project_id=body.project_id, folder_path=cut.folder_path), request, cut.gen_ids) if cut.gen_ids else []
+            cuts.append((cut, gens))
+        payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path, "manifest_root": str(manifest_root)}
+        if operation == "prestage":
+            payload.update(episode_bin_id=body.episode_bin_id, import_records=panel.records("import", ctx, include_foreign=True), cuts=[
+                {"folder_path": cut.folder_path, "bin_id": cut.bin_id, "capped": cut.capped or len(gens) > 200,
+                 "items": await panel.stage_items(ctx, gens, request),
+                 "same_file_ids": list(panel._same_files.get((*panel.context_key(ctx), body.window, body.project_id, cut.folder_path), set()))}
+                for cut, gens in cuts])
+        else:
+            # 라벨은 권한을 확인한 생성물에서 바로 — 받기 잠금을 잡지 않는다
+            payload.update(bin_ids=[cut.bin_id for cut, _gens in cuts], limit=body.limit, after=body.after,
+                           labels={gen["id"]: panel.item_label(gen) for _cut, gens in cuts for gen in gens})
+    elif operation == "save":
+        payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path}
     else:
         # 경로 검사는 리졸브 호출 전에 — 에피소드 밖·프로젝트 전체 빈을 만들지 않는다.
         if body.create_paths and (not body.create or not panel.episode_scope_ok(body.episode_path, body.folder_path, body.create_paths)):
@@ -238,7 +290,7 @@ async def _operate(operation, body, request, ctx):
     if not payload["project_name"] and ready:
         payload["project_name"] = ready["project_name"]
     payload.update(_base_payload(operation, ctx))
-    if operation in {"target", "stage", "unstage"} and body.expect_project:
+    if operation in {"target", "stage", "unstage", "prestage", "rename", "save"} and body.expect_project:
         payload["expect_project"] = body.expect_project
 
     def before_write():
@@ -265,9 +317,21 @@ async def _operate(operation, body, request, ctx):
                     result.get("ids_changed") or result.get("code") in {"project_changed", "rebuild_recovery_needed", "rebuild_recovery_pending"}):
                 panel.forget_project(body.project_id)
             if operation == "target" and "bins" in result:
-                panel.remember_episode(body.window, body.project_id, result["bins"])
+                panel.remember_episode(body.window, body.project_id, result["bins"], result.get("episode_bin_id", ""), body.episode_path)
             if operation == "unstage" and result.get("bin_deleted"):
                 panel.forget_bin(body.bin_id)
+            if operation == "prestage":
+                # 컷마다 같은 파일 기억 · 복구 기록 저장(멈춘 조각의 leftover 포함) · 끝난 생성물의 옛 기록 지우기
+                done_cuts = result.get("cuts") or {}
+                for folder, done in done_cuts.items():
+                    same_key = (*panel.context_key(ctx), body.window, body.project_id, folder)
+                    panel._same_files.setdefault(same_key, set()).update(row["gen_id"] for row in done.get("items", []) if row["state"] == "same_file_exists")
+                for row in [*result.get("import_records", []), *(row for done in done_cuts.values() for row in done.get("import_records", []))]:
+                    await asyncio.to_thread(panel.save_record, "import", row)
+                completed = {row["gen_id"] for done in done_cuts.values() for row in done.get("items", []) if row["state"] in {"staged", "present"}}
+                old = [row for row in panel.records("import", ctx, result.get("resolve_project_id"))
+                       if row["project_id"] == body.project_id and row["gen_id"] in completed]
+                await asyncio.to_thread(panel.remove_records, "import", old)
             if operation in {"stage", "unstage"}:
                 same_key = (*panel.context_key(ctx), body.window, body.project_id, body.folder_path)
                 panel._same_files.setdefault(same_key, set()).update(row["gen_id"] for row in result.get("items", []) if row["state"] == "same_file_exists")
@@ -330,7 +394,7 @@ async def _request(operation, body, request, ctx):
                     async with integration._tracked_resolve_transfer() if operation not in {"current-bin", "inventory"} else nullcontext():
                         if operation not in {"current-bin", "inventory"}:
                             await asyncio.to_thread(integration._reject_if_update_in_progress)
-                        if operation in {"target", "stage", "unstage", "prepare", "adopt"}:
+                        if operation in {"target", "stage", "unstage", "prepare", "adopt", "prestage", "rename", "save"}:
                             async with panel.mutation_scope():
                                 panel.check_context(ctx, request)
                                 if generation is None or generation != panel.owner_generation(ctx, body.window):
@@ -352,7 +416,7 @@ async def _request(operation, body, request, ctx):
             raise HTTPException(400, str(exc)) from exc
 
     # 보호 핸들·고정 계정·장부 기록까지 한 단위로 끝낸 뒤 요청 취소를 전파한다.
-    if operation in {"prepare", "stage", "unstage", "adopt", "target"}:
+    if operation in {"prepare", "stage", "unstage", "adopt", "target", "prestage", "rename", "save"}:
         key = ("request", operation, *panel.context_key(ctx), body.model_dump_json())
         return await resolve_queue.run_non_abandon(panel.joined(key, execute))
     return await resolve_queue.run_non_abandon(execute())
@@ -377,6 +441,21 @@ async def post_cache(body: CacheIn, request: Request):
 @router.post("/prepare")
 async def post_prepare(body: PrepareIn, request: Request):
     return await _request("prepare", body, request, body.ctx.model_dump())
+
+
+@router.post("/prestage")
+async def post_prestage(body: PrestageIn, request: Request):
+    return await _request("prestage", body, request, body.ctx.model_dump())
+
+
+@router.post("/rename")
+async def post_rename(body: RenameIn, request: Request):
+    return await _request("rename", body, request, body.ctx.model_dump())
+
+
+@router.post("/save")
+async def post_save(body: SaveIn, request: Request):
+    return await _request("save", body, request, body.ctx.model_dump())
 
 
 @router.post("/target")

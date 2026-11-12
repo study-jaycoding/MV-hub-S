@@ -5,7 +5,7 @@ import { findFolder, useEditGenerations, useEditProjects } from "../../lib/useEd
 import type { FolderCountTreeNode } from "../../lib/folderTreeModel";
 import { useT } from "../../lib/i18n";
 import { BRIDGE_MISSING, bridgeCompatible, hasResolveBridge, PROTOCOL_MISMATCH } from "../../lib/resolvePanelApi";
-import { loadSavedSelection, saveSelection, useResolvePanel, type SavedSelection } from "../../lib/useResolvePanel";
+import { loadSavedSelection, saveSelection, useResolvePanel, type PrecacheCut, type SavedSelection } from "../../lib/useResolvePanel";
 import { connectProgress } from "../../lib/progressSocket";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useEscapeClose } from "../../lib/useEscapeClose";
@@ -170,9 +170,10 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
     const byCut = new Map<string, Generation[]>();
     for (const gen of list.gens) if (gen.folder_path && (!pass || pass(gen))) byCut.set(gen.folder_path, [...byCut.get(gen.folder_path) || [], gen]);
     const order = cut ? [cut, ...cutPaths.filter(path => path !== cut)] : cutPaths;
-    return order.map((path): [string, string[]] => [path, [...byCut.get(path) || []]
-      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id)).slice(0, 200).map(gen => gen.id)])
-      .filter(([, ids]) => ids.length);
+    return order.map((path): PrecacheCut => {
+      const gens = [...byCut.get(path) || []].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id));
+      return [path, gens.slice(0, 200).map(gen => gen.id), gens.length > 200];
+    }).filter(([, ids]) => ids.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episode, cut, cutsKey, list.gens, ui.filter]);
   const precacheKey = JSON.stringify(precacheList);
@@ -247,6 +248,10 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   return <div className="resolve-panel">
     <header className="resolve-panel-head">
       <strong>MV Hub <span>{t("리졸브")}</span></strong>
+      {/* [저장] — 쓴 것 NAS 로·안 쓴 것 정리·깨끗할 때만 저장(Jay 11-12). 단축키·자동 저장은 이 단추를 거치지 않는다 */}
+      {bridgePresent && panel.identity?.writer && selection.project && <button type="button" className="rp-act rp-save" disabled={panel.saving}
+        title={t("쓴 것은 NAS 로 옮기고 안 쓴 것은 정리한 뒤 저장합니다 — 단축키 저장·자동 저장은 이 단추를 거치지 않습니다")}
+        onClick={() => panel.saveProject(selection.project, cut || episode)}>{panel.saving ? t("저장 중") : t("저장")}</button>}
       <div className="resolve-panel-status" role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}</>}</div>
       {bridgePresent && <p>{t("이 창이 리졸브 미디어 풀의 지금 빈을 고른 컷으로 바꿉니다")}</p>}
       {different && <div className="resolve-panel-warning">{t("리졸브 지금 빈이 선택한 컷과 다릅니다")}: {lastName(cut || episode)} <button type="button" onClick={() => panel.align(cutPaths)}>{t("맞추기")}</button></div>}

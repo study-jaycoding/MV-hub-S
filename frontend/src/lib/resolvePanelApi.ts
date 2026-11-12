@@ -29,6 +29,15 @@ export interface AdoptResult { state: AdoptState; details?: unknown }
 export interface PrepareResult { gen_id: string; state: "prepared" | "failed" | "account_changed" | "other_window"; path?: string; error?: string }
 // expect_project = 화면이 본 다빈치 프로젝트 — 쓰기 전에 리졸브 쪽이 대조한다(다르면 쓰기 0)
 export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string; expect_project?: string }
+// 미리 띄우기·이름 뒤따르기의 컷 — 이 창이 target 으로 받은 컷 빈 ID 와 그 컷의 생성물(거르기 통과·오래된 200개)
+export interface PanelCut { folder_path: string; bin_id: string; gen_ids: string[]; capped?: boolean }
+export interface PrestageResult extends TargetResult { cuts?: Record<string, StageResult> }
+export interface RenameResult extends TargetResult { named?: number; failed?: number; remaining?: number; after?: [number, number] | null }
+// [저장] — not_clean = 이 PC 클립·패널 표식이 남아 저장하지 않음(내 허브 것 = 다시 저장하면 풀릴 수 있음, 다른 허브 것 = 다빈치에서 직접 지워야 함)
+export interface SaveResult extends Omit<TargetResult, "state"> {
+  state: TargetState | "not_clean" | "scan_failed" | "save_failed";
+  not_clean?: { mine: number; other: number; in_use: number; bins: { path: string; count?: number; in_use: boolean; mine: boolean }[] };
+}
 export const contextKey = (ctx: PanelContext | null) => ctx ? JSON.stringify([ctx.instance, ctx.account, ctx.epoch]) : "";
 const post = <T,>(path: string, body: unknown) => jsonFetch<T>(`/api/resolve/panel/${path}`, { method: "POST", body: JSON.stringify(body) });
 export const resolvePanelApi = {
@@ -41,6 +50,9 @@ export const resolvePanelApi = {
   stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
   unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean; delete_empty?: boolean }) => post<TargetResult>("unstage", body),
   inventory: (ctx: PanelContext, after?: [string, string]) => jsonFetch<InventoryResult>(`/api/resolve/panel/inventory?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), ...(after ? { after: JSON.stringify(after) } : {}) })}`),
+  prestage: (body: PanelSelection & { window: string; episode_bin_id: string; cuts: PanelCut[] }) => post<PrestageResult>("prestage", body),
+  rename: (body: PanelSelection & { window: string; cuts: PanelCut[]; limit?: number; after?: [number, number] }) => post<RenameResult>("rename", body),
+  save: (body: PanelSelection & { window: string; expect_project: string }) => post<SaveResult>("save", body),
 };
 
 export function hasResolveBridge(bridge: ResolveDragBridge | undefined): bridge is ResolveDragBridge {
@@ -103,6 +115,7 @@ export function panelFailure(state: string): string {
     project_changed: "프로젝트가 바뀜", busy: "확인 중 — 리졸브가 바쁨", unknown: "확인 못 함",
     unavailable: "리졸브에 연결하지 못했습니다", active_bin: "지금 쓰는 빈이라 남겼습니다",
     restore_failed: "다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다",
+    not_clean: "이 PC 클립이 남아 저장하지 않았습니다", scan_failed: "미디어 풀을 다 확인하지 못해 저장하지 않았습니다",
     rebuild_recovery_pending: RECOVERY_PENDING, not_prepared: "준비 기록을 찾지 못했습니다",
   };
   return t(labels[state] || "확인 못 함");
