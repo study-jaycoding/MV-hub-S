@@ -58,6 +58,9 @@ const under = (path: string, base: string) => !!base && (path === base || path.s
 const sameEpisode = (a: Selection | null, b: Selection | null) => !!a && !!b && a.project_id === b.project_id
   && (a.episode ? a.episode === b.episode : a.folder_path === b.folder_path);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+// 자동 지우기(다른 에피소드로 옮길 때 앞 에피소드 정리 · 패널을 열 때 예전 빈의 안 쓴 것 정리) — Jay 11-12 "자동 지우기는 필요 없다,
+//  불러온 뒤 내가 지운다". 코드는 남기고 이 스위치로 끈다(AUTO-CLEANUP-OFF). 쓴 것 NAS 옮기기와 [저장] 단추는 그대로.
+const AUTO_CLEANUP = false;
 const cacheKey = (ctx: PanelSelection["ctx"], project_id: string, gen_id: string) => `${contextKey(ctx)}\n${project_id}\n${gen_id}`;
 const createWindowId = (): string => typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
   ? crypto.randomUUID() : `panel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`;
@@ -440,7 +443,7 @@ export function useResolvePanel() {
     const selection = ctx && project_id && folder_path
       ? { ctx, project_id, folder_path, episode, cuts, via, capped, resolveProject: davinciRef.current, window: windowId, seq: ++sequence.current, revision: revision.current } : null;
     selected.current = selection; setStage(null); autoTried.current = "";
-    if (previous && !sameEpisode(previous, selection)) leftovers.current.push(previous);
+    if (AUTO_CLEANUP && previous && !sameEpisode(previous, selection)) leftovers.current.push(previous);
     void enqueue(async () => {
       // 선택을 풀면(프로젝트 바꿈) 맞출 빈이 없다 — 그때도 다빈치가 들어가 있는 빈은 settleEpisode 가 건너뛴다
       const moved = !selection || await (cut ? stageCut(selection, gens, true) : alignEpisode(selection, !sameEpisode(previous, selection)));
@@ -761,7 +764,7 @@ export function useResolvePanel() {
         if (action === "recover" || action === "adopt") {
           try { await adoptOne(selection, item.gen_id, item.resolve_project_id, item.bin_id, [item.item_id], item.recovery); }
           catch (error) { setFailures(previous => [...new Set([...previous, errorText(error)])]); }
-        } else if (action === "unstage") bins.set(item.bin_id, selection);
+        } else if (AUTO_CLEANUP && action === "unstage") bins.set(item.bin_id, selection);
       }
       for (const [bin_id, selection] of bins) {
         if (!valid(selection)) return;
