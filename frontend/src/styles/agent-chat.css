@@ -111,6 +111,7 @@
   display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
   background: transparent; color: #cfcfcf; opacity: 0;
 }
+.agent-drawer-more:active { transform: translateY(-50%); } /* 공통 button:active 의 translateY(1px) 가 가운데 맞춤을 덮어 누를 때 내려가던 것 */
 .agent-drawer-row:hover .agent-drawer-more, .agent-drawer-row:focus-within .agent-drawer-more, .agent-drawer-row.menu .agent-drawer-more { opacity: 1; }
 .agent-drawer-more:hover, .agent-drawer-row.menu .agent-drawer-more { background: rgba(255, 255, 255, 0.09); }
 .agent-drawer-unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); }
@@ -207,6 +208,7 @@
   border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px; background: #2f2f2f; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   color: var(--text); font-size: 12.5px; font-weight: 600;
 }
+.agent-working:active { transform: translateX(-50%); } /* 공통 button:active 가 가운데 맞춤을 덮지 않게 */
 .agent-working:hover { background: #363636; }
 .agent-dots { display: inline-flex; gap: 3px; }
 .agent-dots i { display: block; width: 4px; height: 4px; border-radius: 50%; background: #cfcfcf; animation: agent-dot 1.2s steps(2) infinite; } /* steps — 쉬는 동안 CPU */
