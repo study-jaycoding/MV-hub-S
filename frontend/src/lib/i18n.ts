@@ -693,8 +693,8 @@ const EN: Record<string, string> = {
   "계속 사용하는 MCP 연결": "Persistent MCP connection",
   "LLM 프로그램 연결": "Connect an LLM app",
   "한 번 연결하면 Codex·Claude Code·Claude 데스크톱 채팅에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.": "Connect once and Codex, Claude Code or Claude desktop chat can browse MV Hub and generate.",
-  "현재 계정이 접근 가능한 모든 공간의 자료 조회와 사용자 요청에 따른 크레딧 사용을 허용합니다. 이후 생성마다 앱 승인을 누르지 않습니다.":
-    "Allows browsing every space this account can access and spending credits on your requests. You won't need to approve each generation in the app.",
+  "현재 계정이 접근 가능한 모든 공간의 자료와 MV Agent 대화 기록 조회, 사용자 요청에 따른 크레딧 사용을 허용합니다. 이후 생성마다 앱 승인을 누르지 않습니다.":
+    "Allows browsing every space this account can access and your MV Agent chat history, and spending credits on your requests. You won't need to approve each generation in the app.",
   "Codex·Claude 연결 허용": "Allow Codex · Claude",
   "다른 MCP 프로그램 설정": "Set up another MCP app",
   "저장된 연결 확인": "Check saved connections",

@@ -103,6 +103,15 @@ class UpdateTests(unittest.TestCase):
         new_features, _ = self.candidate(code=payload(features='{"generation_result", "new_feature"}'))
         self.assertTrue(update.compatibility(new_features, self.bundle))
 
+    def test_real_adapter_with_agent_chat_read_needs_application_update(self):
+        # 11-12 대화 기록 읽기 — 새 허브 표식이 든 실제 server.py 는 표식 없는 옛 본체에 단독 설치되지 않는다(본체 릴리스로 함께)
+        old = '{"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search"}'
+        (self.bundle / "server.py").write_bytes(payload(features=old))
+        baseline = {name: (self.bundle / name).read_bytes() for name in update.BASELINE}
+        manifest = update.build_manifest("2" * 40, (HERE / "server.py").read_bytes(), baseline)
+        self.assertIn("agent_chat_read", manifest["requires"]["hub_features"])
+        self.assertTrue(update.compatibility(manifest, self.bundle))
+
     def test_version_directory_is_immutable_and_extra_files_are_rejected(self):
         manifest, files = self.candidate()
         update.stage_version(self.release, manifest, files)

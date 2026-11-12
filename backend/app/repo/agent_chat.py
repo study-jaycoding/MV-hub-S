@@ -254,3 +254,100 @@ def binding_for(path, plan_id) -> dict | None:
             "JOIN agent_chat_turn t ON t.id=b.turn_id JOIN agent_chat_conversation c ON c.id=t.conversation_id "
             "WHERE b.plan_id=? AND c.client_id=b.client_id", (plan_id,)).fetchone()
     return dict(row) if row else None
+
+
+# ── MCP 읽기 전용(설계 docs/status/MVAgent_대화기록_MCP읽기_2026-11-12.md 2-3 ④) ──
+@contextlib.contextmanager
+def connect_readonly(path: Path):
+    """open_db 를 거치지 않는다(표 생성·남은 차례 정리 없음). mode=ro 라 없는 파일을 만들지 않고 query_only 로 쓰기를 막는다.
+    한 읽기 시점(트랜잭션) 안에서 쓴다 — 차례 상태와 사건이 같은 스냅샷. 없는 파일 = FileNotFoundError, 그 밖은 sqlite3.Error 그대로.
+    shortcut: Path.as_uri 의 file:// URI 는 UNC 경로(\\\\서버\\공유)를 SQLite 가 못 연다 — 대화 폴더는 %LOCALAPPDATA% 라 로컬이다."""
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10, isolation_level=None)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("BEGIN")
+        try:
+            yield conn
+        finally:
+            conn.execute("ROLLBACK")
+    finally:
+        conn.close()
+
+
+def ro_conversations(conn, *, search, limit, before) -> list[dict]:
+    """최근 순(updated_at, id) limit+1 개 — 하나 더 읽어 다음 쪽이 있는지 안다. before = (updated_at, id) 발급 정렬값."""
+    where, args = [], []
+    if search:
+        where.append("instr(lower(c.title), lower(?)) > 0")  # LIKE 의 %·_ 이스케이프 문제 없이, 대소문자 무시
+        args.append(search)
+    if before:
+        where.append("(c.updated_at < ? OR (c.updated_at = ? AND c.id < ?))")
+        args += [before[0], before[0], before[1]]
+    rows = conn.execute(
+        "SELECT c.id,substr(c.title,1,80) AS title,c.engine,c.model,c.updated_at,"
+        " (SELECT substr(json_extract(t.context,'$.project'),1,200) FROM agent_chat_turn t WHERE t.conversation_id=c.id"
+        "  AND json_valid(t.context) AND json_type(t.context,'$.project')='text' ORDER BY t.created_at, t.rowid LIMIT 1) AS project,"
+        " (SELECT COUNT(*) FROM agent_chat_turn t WHERE t.conversation_id=c.id) AS turns"
+        " FROM agent_chat_conversation c" + (" WHERE " + " AND ".join(where) if where else "") +
+        " ORDER BY c.updated_at DESC, c.id DESC LIMIT ?", (*args, limit + 1)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def ro_conversation(conn, conversation_id) -> dict | None:
+    row = conn.execute("SELECT id,title,engine,model,effort,updated_at FROM agent_chat_conversation WHERE id=?",
+                       (conversation_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def ro_turns(conn, conversation_id, *, limit, before) -> list[dict]:
+    """뒤에서부터 limit 개를 오래된 순으로. before = (created_at, 저장 순번) — 그보다 앞 차례만. pos = 저장 순번(rowid)."""
+    where, args = "", []
+    if before:
+        where = " AND (created_at < ? OR (created_at = ? AND rowid < ?))"
+        args = [before[0], before[0], before[1]]
+    rows = conn.execute("SELECT rowid AS pos,id,status,text,context,reason,created_at FROM agent_chat_turn WHERE conversation_id=?"
+                        + where + " ORDER BY created_at DESC, rowid DESC LIMIT ?", (conversation_id, *args, limit)).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+def ro_count_before(conn, conversation_id, created_at, pos) -> int:
+    return conn.execute("SELECT COUNT(*) FROM agent_chat_turn WHERE conversation_id=? AND (created_at < ? OR (created_at = ? AND rowid < ?))",
+                        (conversation_id, created_at, created_at, pos)).fetchone()[0]
+
+
+def ro_events(conn, turn_id, page=500):
+    """그 차례의 사건을 순서대로 끝까지(쪽 단위로 읽어 한꺼번에 들고 있지 않는다)."""
+    after = 0
+    while True:
+        rows = conn.execute("SELECT seq,kind,payload FROM agent_chat_event WHERE turn_id=? AND seq>? ORDER BY seq LIMIT ?",
+                            (turn_id, after, page)).fetchall()
+        for row in rows:
+            yield row["kind"], json.loads(row["payload"])
+        if len(rows) < page:
+            return
+        after = rows[-1]["seq"]
+
+
+def ro_progress(conn, conversation_id, plan_ids) -> dict[str, tuple[dict, str]]:
+    """돌려줄 계획(plan_ids)마다 그 대화 안에서 저장 순서(사건 rowid)로 마지막 plan_progress 한 건만 — 한 번의 조회.
+    seq 는 차례마다 새로 세서 쓰지 않는다. 다른 계획·앞선 진행 원문은 읽어 들이지 않는다."""
+    ids = sorted(set(plan_ids))
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        "SELECT payload, created_at FROM agent_chat_event WHERE rowid IN ("
+        " SELECT MAX(e.rowid) FROM agent_chat_event e JOIN agent_chat_turn t ON t.id=e.turn_id"
+        " WHERE t.conversation_id=? AND e.kind='plan_progress' AND json_valid(e.payload)"
+        f" AND json_extract(e.payload,'$.plan_id') IN ({marks}) GROUP BY json_extract(e.payload,'$.plan_id'))",
+        (conversation_id, *ids)).fetchall()
+    last: dict[str, tuple[dict, str]] = {}
+    for row in rows:
+        payload = json.loads(row["payload"])
+        if isinstance(payload, dict) and isinstance(payload.get("plan_id"), str):
+            last[payload["plan_id"]] = (payload, row["created_at"])
+    return last

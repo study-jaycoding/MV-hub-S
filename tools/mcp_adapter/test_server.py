@@ -232,6 +232,10 @@ class AdapterTests(unittest.TestCase):
                     self.assertTrue(bad.is_error)
                     excessive = await client.call_tool("read_context", {"limit": 51})
                     self.assertTrue(excessive.is_error)
+                    for chat in ({"kind": "agent_chats"}, {"kind": "agent_chat", "conversation_id": "c1"}):  # 대화 기록은 계정 연결만
+                        legacy_chat = await client.call_tool("read_context", chat)
+                        self.assertTrue(legacy_chat.is_error)
+                        self.assertIn("계정 연결", legacy_chat.content[0].text)
                     long_prompt = await client.call_tool("prepare_generation_plan", {"title": "plan", "context_id": "context-1", "items": [{**item, "prompt": "x" * 4001}]})
                     self.assertTrue(long_prompt.is_error)
                     long_context = await client.call_tool("prepare_generation_plan", {"title": "plan", "context_id": "x" * 121, "items": [item]})

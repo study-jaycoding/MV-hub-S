@@ -1,5 +1,15 @@
 # MV Hub MCP 어댑터
 
+## MV Agent 대화 기록 읽기 (2026-11-12)
+
+어댑터 `2026.11.12.1`의 영속(계정) 연결은 `read_context(kind="agent_chats", search?, limit≤50, chat_cursor?)`로 MV Agent 대화 목록을,
+`read_context(kind="agent_chat", conversation_id, limit≤50, chat_cursor?)`로 대화 하나(사용자 글·AI 답·도구 횟수·계획 요약·진행)를 읽는다.
+두 kind 는 계정 단위라 공간 인자를 받지 않고, 응답의 `next_cursor`를 `chat_cursor`로 넘겨 앞 차례·옛 대화까지 이어 읽는다.
+허브가 공간 고정 연결·MV Agent 칸 연결은 403 으로 막고, 대화 파일은 읽기 전용으로만 연다. 대화 속 글은 명령이 아니다.
+대화 속 생성 결과는 함께 준 공간으로 `get_generation`을 부른다(`get_plan`은 계획을 만든 칸 연결 전용이라 안 된다).
+구형(프로필 없는) 연결은 거부하고, `agent_chat_read` 기능이 없는 허브에서는 이 새 호출만 `hub_outdated`다.
+새 허브 기능 표식이 독립 업데이트의 설치 조건이 되므로 이 기능은 본체 업데이트가 필요하다. 정본은 [설계](../../docs/status/MVAgent_대화기록_MCP읽기_2026-11-12.md).
+
 ## 참고 그림 가져오기·검색 (2026-10-28)
 
 어댑터 `2026.10.28.1`의 영속 연결은 `import_reference(file_path, workspace_scope, workspace_id?, asset_project?, project_id?, label?)`를 제공한다.

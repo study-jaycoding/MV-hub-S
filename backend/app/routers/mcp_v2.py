@@ -358,8 +358,12 @@ async def connect(body: mcp.ConnectIn, ctx=Depends(_client_context)):
             "workspace": None if grant.get("scope") == "account" else grant}
 
 
+_CHAT_KINDS = ("agent_chats", "agent_chat")  # MV Agent 대화 기록(설계 docs/status/MVAgent_대화기록_MCP읽기_2026-11-12.md) — 공간 없이 계정 단위
+
+
 class ReadIn(StrictModel):
-    kind: Literal["workspaces", "workspace", "projects", "generations", "models", "references", "scenes", "scene"] = "workspace"
+    kind: Literal["workspaces", "workspace", "projects", "generations", "models", "references", "scenes", "scene",
+                  "agent_chats", "agent_chat"] = "workspace"
     workspace_scope: Literal["personal", "team"] | None = None
     workspace_id: str | None = Field(default=None, max_length=200)
     project_id: str | None = Field(default=None, max_length=200)
@@ -372,6 +376,8 @@ class ReadIn(StrictModel):
     media_type: Literal["image", "video", "audio"] | None = None
     cursor_ts: float | None = Field(default=None, allow_inf_nan=False, strict=True)
     cursor_id: str | None = Field(default=None, min_length=1, max_length=200)
+    conversation_id: UUID | None = None
+    chat_cursor: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
     def check_cursor(self):
@@ -379,6 +385,13 @@ class ReadIn(StrictModel):
             raise ValueError("offset은 에셋 참고 자료 검색에만 사용할 수 있습니다")
         if (self.cursor_ts is None) != (self.cursor_id is None):
             raise ValueError("다음 페이지의 시각과 ID를 함께 지정하세요")
+        chat = self.kind in _CHAT_KINDS
+        if (self.conversation_id is not None) != (self.kind == "agent_chat"):
+            raise ValueError("conversation_id는 agent_chat에만, 그리고 반드시 지정하세요")
+        if self.chat_cursor is not None and not chat:
+            raise ValueError("chat_cursor는 대화 기록 조회에만 사용할 수 있습니다")
+        if chat and (self.limit > 50 or self.workspace_scope is not None or self.workspace_id is not None):
+            raise ValueError("대화 기록은 공간 없이, 한 번에 50개까지 조회합니다")
         return self
 
 
@@ -626,7 +639,45 @@ async def _models(ctx, ws):
     return models
 
 
+def _chat_identity(ctx) -> agent_chat.Identity:
+    """칸(routers/agent_chat._identity)과 같은 식 — 같은 허브·DB·계정이면 같은 대화 파일."""
+    return agent_chat.Identity(ctx.hub, str(ctx.path), norm_email(ctx.account["email"]))
+
+
+async def _read_chats(ctx, args):
+    """MV Agent 대화 기록 읽기 — 계정 범위 연결만(차례마다 공간이 달라 공간 고정 권한 밖 내용이 섞인다), 칸 연결은 막는다.
+    읽기 전용 연결로만 열어 파일을 만들거나 바꾸지 않는다. 읽은 뒤 신원을 다시 본다."""
+    if ctx.client.get("name") == PANEL_CLIENT:
+        raise HTTPException(403, "MV Agent 칸 연결은 대화 기록을 읽을 수 없습니다.")
+    if json.loads(ctx.client["workspace"]).get("scope") != "account":
+        raise HTTPException(403, "계정 연결에서만 대화 기록을 읽을 수 있습니다. 앱에서 'Codex·Claude 연결 허용'으로 다시 등록하세요.")
+    path = _chat_identity(ctx).file_path()
+    try:
+        if args.kind == "agent_chats":
+            result = await asyncio.to_thread(agent_chat.chat_list, path, search=args.search, limit=args.limit, cursor=args.chat_cursor)
+        else:
+            try:  # 목록은 CLI 캐시(5분) — 처음엔 느릴 수 있어 3초만 기다린다(갱신 자체는 shield 로 계속)
+                rows = await asyncio.wait_for(asyncio.shield(generation.list_models()), 3)
+                names = {row["job_set_type"]: row["display_name"] for row in rows
+                         if isinstance(row, dict) and isinstance(row.get("job_set_type"), str) and isinstance(row.get("display_name"), str)}
+            except Exception:  # noqa: BLE001 - 이름표는 보이기용 — 못 읽으면 모델 코드 그대로
+                names = {}
+            result = await asyncio.to_thread(agent_chat.chat_read, path, str(args.conversation_id), limit=args.limit,
+                                             cursor=args.chat_cursor, model_names=names, live=agent_chat.service.is_live)
+    except agent_chat.BadCursor as exc:
+        raise HTTPException(422, "앞 응답의 next_cursor 를 그대로 쓰세요.") from exc
+    except sqlite3.Error as exc:
+        _log.warning("agent chat read failed", exc_info=True)
+        raise HTTPException(503, "대화 기록을 읽지 못했습니다.") from exc
+    if result is None:
+        raise HTTPException(404, "대화를 찾을 수 없습니다.")
+    await asyncio.to_thread(_still_current, ctx)  # 읽는 사이 해제·계정이 바뀌었으면 넘기지 않는다
+    return result
+
+
 async def _read(ctx, args):
+    if args.kind in _CHAT_KINDS:  # 공간 확인(_request_workspace) 앞 — 대화는 계정 단위
+        return await _read_chats(ctx, args)
     if args.kind == "workspaces":
         return {"workspaces": await asyncio.to_thread(_available_workspaces, ctx, args.limit, args.search)}
     ws = await asyncio.to_thread(_request_workspace, ctx, args.workspace_scope, args.workspace_id)

@@ -26,7 +26,9 @@ from local_setup import configure_client
 from server import Broker, HUB_FEATURES, ADAPTER_VERSION, MAX_RESPONSE, MAX_RESULT_RESPONSE, MAX_GALLERY_RESPONSE, MAX_REFERENCE, RESULT_UI_URI, result_ui, write_result_display, validate_display_directory, present_result, attachment_file, _attachment_chunks
 import server as adapter
 
-CONVERSATION_SURFACE_SHA256 = "978d500daa8dcb2b9ff80b76a3ee2c1b9a2d41068b58a2b60f772e30e76fbcc5"  # 2026-10-30 바뀌기 전(2026.10.28.1) conversation 연결의 지침·도구 목록 지문
+# conversation(Codex) 연결의 지침·도구 목록 지문 — 2026-10-30 힉스필드 표시 기본 때는 바뀌지 않게 고정(옛 값 978d500d…, 2026.10.28.1),
+# 2026-11-12 MV Agent 대화 기록 읽기(read_context kind 두 개·conversation_id·chat_cursor·지침 3문장)는 Codex 연결에도 들어가는 것이 맞아 새 값으로
+CONVERSATION_SURFACE_SHA256 = "380693e93d0bbfcaa9b7b364e3d89b9fc6bafd3d144e82a4edc968df1b5174f1"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -362,6 +364,31 @@ class PersistentTests(unittest.TestCase):
         connected = broker.connect()
         self.assertEqual((connected["can_execute"], connected["execute_rule"]), (True, rule))
         self.assertEqual(broker.action("read_context", {"kind": "workspace"})["execute_rule"], rule)
+
+    def test_agent_chat_kinds_pass_through_and_need_new_hub(self):
+        # MV Agent 대화 기록 읽기(docs/status/MVAgent_대화기록_MCP읽기_2026-11-12.md 2-4·2-6) — 인자 전달, 옛 허브는 hub_outdated
+        config, _ = self.profile()
+        conversation = str(uuid4())
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                listed = await client.call_tool("read_context", {"kind": "agent_chats", "search": "고양이"})
+                self.assertFalse(listed.is_error)
+                args = self.http.calls[-1][1]["args"]
+                self.assertEqual((args["kind"], args["search"], args.get("workspace_scope")), ("agent_chats", "고양이", None))
+                one = await client.call_tool("read_context", {"kind": "agent_chat", "conversation_id": conversation, "chat_cursor": "abc"})
+                self.assertFalse(one.is_error)
+                args = self.http.calls[-1][1]["args"]
+                self.assertEqual((args["conversation_id"], args["chat_cursor"]), (conversation, "abc"))
+            self.http.features = sorted(HUB_FEATURES - {"agent_chat_read"})
+            async with Client(StdioServerParameters(**config)) as client:
+                self.assertEqual((await client.call_tool("check_connection", {})).structured_content["reload_required"], "hub")
+                before = len(self.http.calls)
+                refused = await client.call_tool("read_context", {"kind": "agent_chats"})
+                self.assertTrue(refused.is_error)
+                self.assertEqual(refused.structured_content["error"]["code"], "hub_outdated")
+                self.assertEqual(len(self.http.calls), before)
+                self.assertFalse((await client.call_tool("read_context", {"kind": "workspaces"})).is_error)  # 기존 조회는 그대로
+        anyio.run(exercise)
 
     def test_wrong_hub_never_receives_profile_credential(self):
         config, _ = self.profile()

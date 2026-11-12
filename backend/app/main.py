@@ -1156,7 +1156,8 @@ def health():
     from .services import cli_bridge
 
     bridge = {"protocol": 1, "transport": "stdio-local", "persistent_protocol": 2,
-              "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search"]}
+              "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
+                           "agent_chat_read"]}
     try:
         bridge["hub_id"] = mcp_v2.hub_id()
     except (auth_svc.AuthSecretUnavailable, sqlite3.Error):

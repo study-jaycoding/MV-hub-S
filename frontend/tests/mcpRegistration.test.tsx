@@ -27,6 +27,7 @@ it("명시적인 최초 버튼만 세 클라이언트를 허용하고 등록과 
   ] }).mockResolvedValueOnce({ clients: [client] });
   await render(); expect(io.http).not.toHaveBeenCalled();
   expect(host.textContent).toContain("크레딧 사용을 허용");
+  expect(host.textContent).toContain("MV Agent 대화 기록 조회"); // 이미 등록한 연결도 대화 기록을 읽게 된다는 것을 동의 문구에(Jay 11-12 J1)
   // 켜 둘 것의 조건은 말줄임 되는 요약 말고 펼친 안내에도 있다
   expect(host.querySelector(".mcp-reg-notes")?.textContent).toContain("서버와 작업자는 켜져 있어야");
   await click("Codex·Claude 연결 허용");
