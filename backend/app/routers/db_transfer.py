@@ -44,7 +44,15 @@ from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db, validate_db_compatibility
 from ..services import trash_transfer
 from ..services import upload_limits
-from ..services.backup import backup_now, list_backups_info
+from ..services.backup import (
+    POLICY_CHOICES,
+    BackupPolicyError,
+    backup_now,
+    list_backups_info,
+    policy_view,
+    retention_status,
+    update_policy,
+)
 from ..services.worker_backup import (
     _verify_transfer_secrets_removed as _verify_secrets_removed,
     adopt_restored_backup,
@@ -863,9 +871,60 @@ def backup_continuity(request: Request):
             "set_count": len(local),
             "latest_created_at": latest.get("mtime") if latest else None,
             "latest_file_count": len(latest.get("files") or []) if latest else 0,
+            "retention": retention_status(),
         },
         "shared": worker_backup_status(),
     }
+
+
+_POLICY_ERROR_MESSAGES = {
+    "invalid_policy": "고를 수 없는 값입니다",
+    "version_conflict": "다른 창에서 보관 설정이 바뀌었습니다 — 다시 읽었습니다",
+    "confirm_required": "지울 백업이 있어 확인이 필요합니다",
+    "clock_skew": "컴퓨터 시계가 맞지 않아 지금은 남기는 양을 줄일 수 없습니다",
+    "local_hub_only": "공유 서버에서는 보관 양을 바꾸지 않습니다",
+}
+
+
+def _policy_http_error(exc: BackupPolicyError) -> HTTPException:
+    # message 가 있으면 프런트 HttpError.info 로 code·preview 가 구조째 간다(lib/http.ts responseErrorDetail).
+    return HTTPException(exc.status, {"code": exc.code, "message": _POLICY_ERROR_MESSAGES.get(exc.code, exc.code),
+                                      "preview": exc.preview})
+
+
+@router.get("/backup-policy")
+def get_backup_policy(request: Request):
+    """로컬 백업 보관 정책(허브·계정별) — 자료 관리 칸의 고르는 칸. AUTH(공유 서버)면 403."""
+    require_admin(request)
+    _require_local_when_open(request)
+    try:
+        return policy_view()
+    except BackupPolicyError as exc:
+        raise _policy_http_error(exc) from None
+
+
+@router.put("/backup-policy")
+async def put_backup_policy(request: Request):
+    """정책 바꾸기. 지울 세트가 생기면 미리보기의 confirm_token 을 같이 보내야 저장·회전한다."""
+    require_admin(request)
+    _require_local_when_open(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise _policy_http_error(BackupPolicyError("invalid_policy", 422)) from None
+    if not isinstance(body, dict) or type(body.get("version")) is not int:
+        raise _policy_http_error(BackupPolicyError("invalid_policy", 422))
+    token = body.get("confirm_token")
+    try:
+        return await to_thread_non_abandon(
+            update_policy,
+            {key: body.get(key) for key in POLICY_CHOICES},
+            version=body["version"],
+            dry_run=body.get("dry_run") is True,
+            confirm_token=token if isinstance(token, str) else None,
+        )
+    except BackupPolicyError as exc:
+        raise _policy_http_error(exc) from None
 
 
 @router.post("/backup-retry")

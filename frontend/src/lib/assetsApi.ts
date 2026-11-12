@@ -58,11 +58,60 @@ function appendImportTarget(fd: FormData, target?: AssetImportTarget): void {
   if (target?.target_workspace_id) fd.append("target_workspace_id", target.target_workspace_id);
 }
 
+/** 로컬 백업 보관 정책(허브·계정별) — 설정 '자료 관리' 의 고르는 칸. 분 단위·세트 수. */
+export interface BackupPolicyValues {
+  quiet_minutes: number;
+  min_interval_minutes: number;
+  recent: number;
+  daily_days: number;
+  weekly_weeks: number;
+}
+
+export interface BackupPolicyView {
+  policy: BackupPolicyValues;
+  version: number;
+  source: "default" | "saved" | "invalid";
+  choices: Record<keyof BackupPolicyValues, number[]>;
+}
+
+/** 줄이는 정책의 미리보기 — 지울 세트가 있으면 confirm_token 을 같이 보내야 저장된다. */
+export interface BackupPolicyPreview {
+  delete_count: number;
+  delete_bytes: number;
+  delete_oldest_at: string | null;
+  delete_newest_at: string | null;
+  oldest_kept_at: string | null;
+  blocked: string | null;
+  confirm_token: string | null;
+}
+
+export interface BackupRetentionStatus {
+  policy: BackupPolicyValues & { version: number; source: string };
+  set_count: number;
+  oldest_created_at: string | null;
+  newest_created_at: string | null;
+  total_bytes: number;
+  latest_set_bytes: number;
+  estimated_max_bytes: number | null;
+  reasons: Record<string, number>;
+  unregistered: number;
+  incomplete: number;
+  sidecar_invalid: number;
+  sequence_conflict: number;
+  blocked: string | null;
+  inverted: number;
+  leftovers: number;
+  leftover_bytes: number;
+  delete_failed: number;
+  last_error: { code: string; at: string } | null;
+}
+
 export interface BackupContinuityStatus {
   local: {
     set_count: number;
     latest_created_at: string | null;
     latest_file_count: number;
+    retention?: BackupRetentionStatus;
   };
   shared: {
     automatic: boolean;
@@ -398,6 +447,14 @@ export const assetsApi = {
 
   backupContinuity: () =>
     jsonFetch<BackupContinuityStatus>("/api/db/backup-continuity"),
+  backupPolicy: () => jsonFetch<BackupPolicyView>("/api/db/backup-policy"),
+  // 줄이는 값이면 서버가 409 confirm_required(미리보기 포함)로 돌려준다 — dry_run 으로 먼저 묻고 토큰을 싣는다.
+  saveBackupPolicy: (body: BackupPolicyValues & { version: number; dry_run?: boolean; confirm_token?: string | null }) =>
+    jsonFetch<{ saved: boolean; version: number; preview: BackupPolicyPreview }>("/api/db/backup-policy", {
+      method: "PUT",
+      body: jsonBody(body),
+    }),
+  backupNow: () => jsonFetch<{ ok: boolean; file: string | null }>("/api/backup", { method: "POST" }),
   serverBackups: () =>
     jsonFetch<{ backups: ServerBackupVersion[] }>("/api/db/server-backups"),
   serverRestore: (backupSetId: string) =>

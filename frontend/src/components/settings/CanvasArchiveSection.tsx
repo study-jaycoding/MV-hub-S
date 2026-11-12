@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
-import { describeSceneMigration, downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText } from "../../lib/sceneArchive";
+import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText } from "../../lib/sceneArchive";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, type NotebookArchive } from "../../lib/sceneNotebook";
 import { useSceneWriter } from "../../lib/sceneWriter";
 import { useT } from "../../lib/i18n";
-import { readSceneMigrationInfo, sceneStoreReady, type SceneMigrationInfo } from "../../lib/sceneStore";
+import { sceneStoreReady } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
 
@@ -33,19 +33,8 @@ export function CanvasArchiveSection() {
     })();
     return () => { alive = false; };
   }, [account, writer.mode]);
-  // 옛 저장 칸에서 옮길 때의 기록 — undefined = 읽는 중, null = 기록 없음.
-  const [migration, setMigration] = useState<SceneMigrationInfo | null | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => subscribeSceneSaveState(setFailing), []);
-  useEffect(() => {
-    let alive = true;
-    void readSceneMigrationInfo().then((info) => {
-      if (alive) setMigration(info);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // 분리 창(Assets·관리)은 캔버스 저장소를 열지 않는다 — 거기서는 내보낼 것이 없다.
   if (!sceneStoreReady()) return null;
@@ -73,8 +62,8 @@ export function CanvasArchiveSection() {
     });
 
   return (
-    <section className="settings-section">
-      <h4>캔버스 자료</h4>
+    <div className="settings-subblock">
+      <h6>캔버스 자료</h6>
       {archive && <div className="settings-row">
         <span>{t("허브로 바꾸기 전 이 브라우저 캔버스 {count}개 — 합치지 않고 따로 남겨 둔 것").replace("{count}", String(Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)))}</span>
         <button className="settings-action" disabled={busy} onClick={() => downloadNotebookArchive(archive)}>{t("내려받기")}</button>
@@ -118,16 +107,11 @@ export function CanvasArchiveSection() {
           가져오기는 지금 캔버스를 덮지 않습니다 — 없는 캔버스만 더하고, 같은 캔버스인데 내용이 다르면
           &apos;[사본] 이름&apos; 탭으로 따로 둡니다.
         </p>
-        <p>
-          &apos;옮길 때&apos;는 예전의 작은 저장 칸에서 지금의 큰 칸으로 처음 옮기던 순간의 기록입니다. 캔버스
-          연결이 안 붙던 문제가 저장 칸이 가득 찼기 때문이었는지 가늠하는 단서입니다.
-        </p>
       </SettingsDescription>
-      {/* 지금 수와 옮길 때의 수치를 따로 보여 준다 — 지금 잰 값을 과거 상태처럼 보이게 하지 않는다. */}
+      {/* '옮길 때(2026-10-08)' 옛 이관 기록 줄은 뺐다(자료 관리 시안 2판) — 기록은 lib/sceneStore 에 남아 있다. */}
       <p className="settings-hint" data-testid="canvas-storage-facts">
         지금 캔버스 {listScenes(null).length}개
-        {migration === undefined ? "" : ` · ${describeSceneMigration(migration)}`}
       </p>
-    </section>
+    </div>
   );
 }

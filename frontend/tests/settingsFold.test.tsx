@@ -61,12 +61,17 @@ it("설정 창 — 바깥엔 두 묶음 + MV 업데이트만, 옆 패널은 시�
   openGroup("기본 설정");
   expect(folds().map(titleOf)).toEqual(["화면", "작업", "자료 관리"]);
   expect(folds().map((fold) => fold.querySelector<HTMLElement>(".settings-fold-body")!.hidden)).toEqual([true, true, true]);
-  // 캔버스 자료 칸은 캔버스 저장소가 열린 창에서만 그린다(시험에는 저장소가 없다) — 그 밖의 칸은 모두 제 묶음에
+  // 자료 관리 = 시안 2판의 ② 백업 · ③ 전송 · ④ 점검(저장 통합 1-A). 캔버스 자료는 백업 칸 안 '파일로 챙기기'의 하위 블록이고
+  //  캔버스 저장소가 열린 창에서만 그린다(시험에는 저장소가 없다)
   expect(folds().map(sectionsOf)).toEqual([
     ["강조색", "언어 · Language", "모션", "필터 테마"],
     ["다운로드 위치", "단축키"],
-    ["메타데이터", "생성물 재점검"],
+    ["백업", "전송", "점검"],
   ]);
+  const data = folds()[2];
+  expect([...data.querySelectorAll(".settings-subgroup > h5")].map((h) => h.textContent))
+    .toEqual(["다른 PC·서버에서 가져오기", "파일로 챙기기"]);
+  expect([...data.querySelectorAll(".settings-action")].map((b) => b.textContent)).toContain("서버 백업 가져오기");
   expect(summaryOf(folds()[0])).toBe("한글 · 모션 ON · 필터 기본");
   expect(folds()[0].querySelector(".settings-fold-dot")).not.toBeNull(); // 강조색 점
 

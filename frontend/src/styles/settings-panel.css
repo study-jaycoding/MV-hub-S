@@ -56,3 +56,21 @@
 /* MV 업데이트의 [다시 확인] = 새로 고침 아이콘 단추 — 32px 정사각 */
 :is(.settings-float, .settings-group-flyout) .settings-action.release-update-refresh { width: 32px; padding: 0; }
 .release-update-refresh svg { display: block; }
+
+/* ── 자료 관리 ② 백업(settings/BackupSection, 저장 통합 1-A 시안 2판) — 상태 줄·고르는 칸·하위 칸 ── */
+.settings-backup-status { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.settings-backup-status b { color: var(--text); font-weight: 700; }
+.settings-backup-warn { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: #f5a623; }
+.settings-backup-label { margin: 12px 0 6px; font-size: 11.5px; font-weight: 700; color: var(--muted2); }
+.settings-backup-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.settings-select {
+  height: 28px; padding: 0 6px; border: 1px solid var(--border); border-radius: 9px;
+  background: rgba(255,255,255,0.05); color: var(--text); font-size: 12px; font-weight: 600;
+}
+.settings-select:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.settings-select:disabled { opacity: 0.55; }
+/* 하위 칸(다른 PC·서버에서 가져오기 · 파일로 챙기기) — 왼쪽 선으로 묶는다(시안 2판) */
+.settings-subgroup { margin-top: 14px; padding-left: 12px; border-left: 2px solid var(--border); }
+.settings-subgroup > h5 { margin: 0 0 8px; font-size: 12px; font-weight: 700; color: var(--text); }
+.settings-subblock { margin-top: 10px; }
+.settings-subblock > h6 { margin: 0 0 6px; font-size: 11.5px; font-weight: 700; color: var(--muted); }

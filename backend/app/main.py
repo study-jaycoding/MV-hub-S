@@ -1323,7 +1323,7 @@ async def trigger_backup(request: Request):
     from .services.backup import backup_now
 
     require_admin(request)
-    path = await asyncio.to_thread(backup_now)
+    path = await asyncio.to_thread(backup_now, reason="manual")  # [지금 백업] — 곁파일에 수동으로 남는다
     return {"ok": path is not None, "file": path.name if path else None}
 
 

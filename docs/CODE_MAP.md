@@ -736,7 +736,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `settings/SettingsDescription.tsx`(29줄) | 설명문 + `<details>` 더보기 | 〃 |
 | `settings/ComfyConnectionSection.tsx`(178줄) | Comfy 연결 설정·확인 | 〃 |
 | `settings/ComfyUnresolvedRunsSection.tsx`(51줄) | 미해결 Comfy 실행 목록 + 결과 회수·로컬 재저장·기록 정리 | 〃 |
-| `settings/CanvasArchiveSection.tsx`(80줄) | 설정 '캔버스 자료' — 캔버스 전체 내보내기·가져오기 단추와 저장 실패 안내 | 〃 |
+| `settings/CanvasArchiveSection.tsx`(80줄) | 설정 '캔버스 자료' — 캔버스 전체 내보내기·가져오기 단추와 저장 실패 안내(자료 관리 ② 백업의 '파일로 챙기기' 안) | 〃 |
+| `settings/BackupSection.tsx`(약 230줄) | 설정 '자료 관리' ② 백업(저장 통합 1-A) — 상태 줄·경고·사진 찍는 때·남기는 양 고르는 칸·예상 용량·[지금 백업]. 줄이는 값은 `PUT /api/db/backup-policy` dry_run 미리보기 → 확인 → 확인 토큰으로만 저장(보관 규칙은 서버 `services/backup.py`) | `BackupSection`·`backupSummary`·`backupWarnings` |
 | `ShortcutsWindow.tsx`(131줄) | 단축키 재지정 창 | `ShortcutsWindow` |
 | `timeline/EditShortcutsWindow.tsx` | 편집 탭 단축키 창(막대의 H) — 동작마다 칸 둘·휠 칸 받기·× 비우기·↺. 규칙은 `lib/editShortcuts.ts` | `EditShortcutsWindow` |
 | `AdminWindow.tsx`(약 440줄) | 관리자 창(왼쪽 메뉴 + 고정 크기: 승인·멤버·프로젝트·에셋 리스트·업데이트 + 승인 대기 수) + 권한 상승 확인(공유 서버 탭은 2026-10-25 삭제 — 서버 관리 창으로) | `AdminWindow` |

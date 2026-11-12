@@ -180,18 +180,11 @@ describe("화면에 보이는 한 줄", () => {
       return host.querySelector('[data-testid="canvas-storage-facts"]')?.textContent ?? "";
     };
 
-    it("'지금'과 '옮길 때'를 따로 보여 준다", async () => {
+    // '옮길 때(2026-10-08)' 줄은 자료 관리 시안 2판에서 뺐다(저장 통합 1-A) — 화면엔 지금 수만, 기록 함수 시험은 위에 그대로.
+    it("지금 캔버스 수만 보여 주고 '옮길 때' 줄은 없다", async () => {
       await initSceneStore(legacy, null, keepMark, () => full);
       const line = await facts();
-      expect(line).toContain("지금 캔버스 2개"); // 이 계정의 것만
-      expect(line).toContain("옮길 때(");
-      expect(line).toContain("캔버스 3개"); // 옮길 때는 모든 계정
-      expect(line).toContain("시험 쓰기 실패(가득 차 있었음)");
-    });
-
-    it("옮긴 기록이 없는 설치에서는 없다고 보여 준다", async () => {
-      await initSceneStore(legacy, committed, keepMark, () => full); // 옮기지 않은 열기
-      expect(await facts()).toBe("지금 캔버스 0개 · 옮긴 기록 없음");
+      expect(line).toBe("지금 캔버스 2개"); // 이 계정의 것만
     });
   });
 });

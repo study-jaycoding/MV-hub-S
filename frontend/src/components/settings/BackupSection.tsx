@@ -1,0 +1,230 @@
+import { useEffect, useState, type ReactNode } from "react";
+import { api } from "../../api";
+import type {
+  BackupContinuityStatus,
+  BackupPolicyPreview,
+  BackupPolicyValues,
+  BackupPolicyView,
+  BackupRetentionStatus,
+} from "../../lib/assetsApi";
+import { HttpError } from "../../lib/http";
+import { useT } from "../../lib/i18n";
+import { BACKUP_STATE_LABELS } from "./SettingsSections";
+import { SettingsDescription } from "./SettingsDescription";
+
+// 설정 '자료 관리' ② 백업 — 저장 통합 1-A(docs/status/저장통합_1A_자료관리칸_2026-11-12.md, 시안 2판).
+// 보관 규칙·삭제 확인은 서버가 지킨다: 줄이는 값은 dry_run 미리보기 → 확인 → 그 확인 토큰으로만 저장된다.
+
+export function formatBytes(size: number): string {
+  if (size >= 1024 ** 3) return `${(size / 1024 ** 3).toFixed(1)} GB`;
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(size / 1024))} KB`;
+}
+
+function day(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** 막힌 이유·실패를 쉬운 말로 — 상태 줄과 묶음 제목 밑 줄이 같이 쓴다. */
+export function backupWarnings(retention: BackupRetentionStatus | undefined): string[] {
+  if (!retention) return [];
+  const out: string[] = [];
+  if (retention.blocked === "clock_skew") out.push("컴퓨터 시계가 맞지 않아 오래된 백업 정리를 멈췄습니다");
+  if (retention.blocked === "policy_invalid") out.push("보관 설정을 읽지 못해 정리를 멈췄습니다 — 남기는 양을 다시 골라 주세요");
+  if (retention.inverted > 0) out.push(`시계가 맞지 않던 때의 백업 때문에 오래된 백업 ${retention.inverted}세트를 정리하지 않고 있습니다`);
+  if (retention.leftovers > 0) out.push(`대표 파일이 없는 반쪽 백업 ${retention.leftovers}개는 지우지 않고 남겨 둡니다`);
+  if (retention.delete_failed > 0) out.push(`오래된 백업 ${retention.delete_failed}세트를 지우지 못했습니다(다음에 다시)`);
+  if (retention.last_error?.code === "disk_full") out.push("디스크가 부족해 백업하지 못했습니다");
+  else if (retention.last_error?.code === "registry_unreadable") out.push("백업 폴더의 기록을 읽지 못해 백업하지 못했습니다 — 폴더 권한·연결을 확인해 주세요");
+  else if (retention.last_error) out.push(`마지막 백업 실패(${retention.last_error.code})`);
+  return out;
+}
+
+/** 묶음 제목 밑 줄의 백업 부분 — '백업 N세트(MM-DD부터)'. */
+export function backupSummary(status: BackupContinuityStatus | null): string {
+  const retention = status?.local.retention;
+  if (!retention) return status?.local.set_count != null ? `백업 ${status.local.set_count}세트` : "";
+  const since = retention.oldest_created_at ? `(${day(retention.oldest_created_at)}부터)` : "";
+  return [`백업 ${retention.set_count}세트${since}`, ...backupWarnings(retention).map((w) => `⚠ ${w}`)].join(" · ");
+}
+
+const FIELDS: { key: keyof BackupPolicyValues; unit: string }[] = [
+  { key: "quiet_minutes", unit: "분" },
+  { key: "min_interval_minutes", unit: "분" },
+  { key: "recent", unit: "장" },
+  { key: "daily_days", unit: "일" },
+  { key: "weekly_weeks", unit: "주" },
+];
+
+function confirmText(preview: BackupPolicyPreview): string {
+  const period = preview.delete_oldest_at
+    ? ` (${day(preview.delete_oldest_at)} ~ ${day(preview.delete_newest_at)})`
+    : "";
+  return (
+    `이렇게 바꾸면 오래된 백업 ${preview.delete_count}세트${period}, ${formatBytes(preview.delete_bytes)}가 지워집니다.\n` +
+    (preview.oldest_kept_at ? `남는 가장 오래된 백업: ${day(preview.oldest_kept_at)}\n` : "") +
+    (preview.blocked === "inverted"
+      ? "시계가 맞지 않던 때의 백업이 있어 이 수는 실제보다 많아 보일 수 있습니다. 그 백업이 정리된 뒤 그때의 시각으로 다시 계산해 지웁니다.\n"
+      : "") +
+    "지운 백업은 되돌릴 수 없습니다. 계속할까요?"
+  );
+}
+
+export function BackupSection({
+  status,
+  onRefresh,
+  children,
+}: {
+  status: BackupContinuityStatus | null;
+  onRefresh: () => void;
+  children?: ReactNode;
+}) {
+  const t = useT();
+  const [view, setView] = useState<BackupPolicyView | null>(null);
+  const [readonly, setReadonly] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const loadPolicy = async () => {
+    try {
+      setView(await api.backupPolicy());
+      setReadonly("");
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 403) setReadonly(error.detail);
+      else setMsg(t("보관 설정을 읽지 못했습니다"));
+    }
+  };
+  useEffect(() => {
+    void loadPolicy();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 창을 열 때 한 번
+  }, []);
+
+  const retention = status?.local.retention;
+  const shared = status?.shared;
+
+  const change = async (key: keyof BackupPolicyValues, value: number) => {
+    if (!view || busy) return;
+    const next = { ...view.policy, [key]: value };
+    setBusy(true);
+    setMsg("");
+    try {
+      const dry = await api.saveBackupPolicy({ ...next, version: view.version, dry_run: true });
+      let token: string | null = null;
+      if (dry.preview.delete_count > 0 && dry.preview.blocked === "clock_skew") {
+        // 시계 문제가 남아 있으면 지울 대상을 확정할 수 없다 — 서버도 저장을 거절한다(늘리는 값은 된다).
+        setMsg(t("시계가 맞지 않던 백업이 남아 있어 지금은 남기는 양을 줄일 수 없습니다"));
+        await loadPolicy();
+        return;
+      }
+      if (dry.preview.delete_count > 0) {
+        if (!window.confirm(confirmText(dry.preview))) {
+          setMsg(t("바꾸지 않았습니다"));
+          return;
+        }
+        token = dry.preview.confirm_token;
+      }
+      const saved = await api.saveBackupPolicy({ ...next, version: view.version, confirm_token: token });
+      setMsg(saved.preview.delete_count ? `저장했습니다 · 오래된 백업 ${saved.preview.delete_count}세트를 정리했습니다` : t("저장했습니다"));
+      await loadPolicy();
+      onRefresh();
+    } catch (error) {
+      const code = error instanceof HttpError ? (error.info?.code as string | undefined) : undefined;
+      if (code === "version_conflict" || code === "confirm_required") await loadPolicy();
+      setMsg(
+        code === "confirm_required"
+          ? t("그사이 백업이 늘어 지울 것이 바뀌었습니다 — 다시 골라 주세요")
+          : error instanceof HttpError ? error.detail : String(error),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const backupNow = async () => {
+    setBusy(true);
+    setMsg(t("백업하는 중"));
+    try {
+      const result = await api.backupNow();
+      setMsg(result.ok ? t("지금 상태를 백업했습니다") : t("백업할 데이터가 아직 없습니다"));
+      onRefresh();
+    } catch (error) {
+      setMsg(`${t("백업하지 못했습니다")}: ${error instanceof HttpError ? error.detail : String(error)}`);
+      onRefresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const select = (key: keyof BackupPolicyValues, unit: string) => {
+    const current = view?.policy[key];
+    const options = [...(view?.choices[key] ?? [])];
+    if (current != null && !options.includes(current)) options.unshift(current); // 환경변수 값 등 목록 밖이면 그 값도 한 칸
+    return (
+      <select
+        className="settings-select"
+        aria-label={key}
+        value={current ?? ""}
+        disabled={!view || busy || !!readonly}
+        onChange={(event) => void change(key, Number(event.target.value))}
+      >
+        {options.map((value) => (
+          <option key={value} value={value}>{value}{unit}</option>
+        ))}
+      </select>
+    );
+  };
+
+  const policy = view?.policy;
+  const slots = policy ? policy.recent + policy.daily_days + policy.weekly_weeks : 0;
+  const estimate = retention?.latest_set_bytes ? retention.latest_set_bytes * slots : null;
+  const warnings = backupWarnings(retention);
+
+  return (
+    <section className="settings-section settings-backup">
+      <h4>{t("백업")}</h4>
+      <p className="settings-backup-status" aria-live="polite">
+        {retention ? (
+          <>
+            {t("백업")} <b>{retention.set_count}{t("세트")}</b>
+            {" · "}{t("가장 오래된 것")} {day(retention.oldest_created_at)}
+            {" · "}{formatBytes(retention.total_bytes || 0)}
+          </>
+        ) : (
+          <>{t("백업")} <b>{status?.local.set_count ?? "—"}{t("세트")}</b></>
+        )}
+        <br />
+        {t("서버 복제")} <b>{shared ? t(BACKUP_STATE_LABELS[shared.state] || shared.state) : t("확인 중")}</b>
+      </p>
+      {warnings.map((warning) => (
+        <p key={warning} className="settings-backup-warn">⚠ {t(warning)}</p>
+      ))}
+
+      <div className="settings-backup-label">{t("사진 찍는 때")}</div>
+      <div className="settings-backup-line">
+        {t("바뀐 뒤")} {select("quiet_minutes", FIELDS[0].unit)} {t("조용하면 · 최소")} {select("min_interval_minutes", FIELDS[1].unit)} {t("간격")}
+      </div>
+      <div className="settings-backup-label">{t("남기는 양")}</div>
+      <div className="settings-backup-line">
+        {t("최근")} {select("recent", FIELDS[2].unit)} {t("· 날마다 1장")} {select("daily_days", FIELDS[3].unit)} {t("· 주마다 1장")} {select("weekly_weeks", FIELDS[4].unit)}
+      </div>
+      <p className="settings-hint">
+        {readonly
+          || (estimate ? `${t("이대로면 최대 약")} ${formatBytes(estimate)}` : t("백업이 쌓이면 예상 용량이 보입니다"))}
+      </p>
+
+      <div className="settings-row">
+        <button className="settings-action" onClick={() => void backupNow()} disabled={busy}>
+          {t("지금 백업")}
+        </button>
+      </div>
+      {msg && <p className="manage-msg">{msg}</p>}
+      <SettingsDescription summary={t("작업이 조용해지면 이 PC 에 사진을 찍어 두고, 오래된 것은 고른 양만큼만 남깁니다.")}>
+        <p>{t("백업은 이 PC 의 허브 DB(생성물 기록·캔버스·편집 사본·코멘트)를 통째로 찍습니다. 그림·영상 파일은 들어가지 않습니다.")}</p>
+        <p>{t("남기는 양을 줄이면 지워질 백업을 먼저 보여 주고 물어봅니다. 시계가 맞지 않거나 설정을 읽지 못하면 아무것도 지우지 않습니다.")}</p>
+      </SettingsDescription>
+      {children}
+    </section>
+  );
+}

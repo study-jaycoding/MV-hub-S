@@ -36,12 +36,15 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import { ShortcutsWindow } from "./ShortcutsWindow";
 import {
   AppearanceSettingsSection,
+  AssetTransferLine,
   BACKUP_STATE_LABELS,
+  DbFileTransfer,
   DownloadLocationSection,
   MetadataContinuitySection,
   ReleaseUpdateSettingsSection,
   ResolveScriptSettingsSection,
 } from "./settings/SettingsSections";
+import { BackupSection, backupSummary } from "./settings/BackupSection";
 import { SettingsFold } from "./settings/SettingsFold";
 import { CanvasArchiveSection } from "./settings/CanvasArchiveSection";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
@@ -137,6 +140,12 @@ export function SettingsPanel({
   const [slackSummary, setSlackSummary] = useState("");
   const [comfySummary, setComfySummary] = useState("");
   const [unresolvedSummary, setUnresolvedSummary] = useState("");
+  // 백업 현황 — 창을 열 때, [지금 백업]·보관 양을 바꾼 뒤 다시 읽는다.
+  const refreshBackupContinuity = () => {
+    api.backupContinuity().then(setBackupContinuity).catch(() => {
+      setDbMsg("백업 상태를 확인하지 못했습니다.");
+    });
+  };
 
   useEffect(() => {
     downloadDirName().then(setDlDir).catch(() => {});
@@ -185,9 +194,7 @@ export function SettingsPanel({
     }).catch(() => {
       setReleaseUpdateMsg("업데이트 상태를 확인하지 못했습니다.");
     });
-    api.backupContinuity().then(setBackupContinuity).catch(() => {
-      setDbMsg("백업 상태를 확인하지 못했습니다.");
-    });
+    refreshBackupContinuity();
     api.serverBackups()
       .then((result) => {
         const target = selectCurrentServerBackup(result.backups);
@@ -510,7 +517,7 @@ export function SettingsPanel({
       return;
     }
     setServerBackupsLoading(true);
-    setDbMsg("서버 메타데이터 목록을 확인하는 중…");
+    setDbMsg("서버 백업 목록을 확인하는 중");
     try {
       const result = await api.serverBackups();
       const versions = result.backups.filter((item) => item.kind === "set");
@@ -532,7 +539,7 @@ export function SettingsPanel({
         `${device}에서 만든 ${when} 메타데이터를 적용합니다.\n현재 로컬 데이터는 먼저 안전하게 보관되며, 적용 후 재로그인합니다.\n계속할까요?` + unsavedNote(),
       )
     ) {
-      setDbMsg("메타데이터 동기화를 취소했습니다.");
+      setDbMsg("서버 백업 가져오기를 취소했습니다.");
       return false;
     }
     setDbBusy(true);
@@ -552,20 +559,20 @@ export function SettingsPanel({
 
   const syncMetadata = async () => {
     setServerBackupsLoading(true);
-    setDbMsg("서버의 최신 메타데이터를 확인하는 중…");
+    setDbMsg("서버의 최신 백업을 확인하는 중");
     try {
       const result = await api.serverBackups();
       const backup = selectCurrentServerBackup(result.backups);
       setMetadataSyncTarget(backup);
       setMetadataSyncTargetState(backup ? "ready" : "empty");
       if (!backup) {
-        setDbMsg("서버에 적용할 메타데이터 백업이 없습니다.");
+        setDbMsg("서버에 가져올 백업이 없습니다.");
         return;
       }
       await serverRestore(backup);
     } catch (error) {
       setMetadataSyncTargetState("error");
-      setDbMsg("메타데이터 동기화 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+      setDbMsg("서버 백업 가져오기 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
     } finally {
       setServerBackupsLoading(false);
     }
@@ -606,7 +613,7 @@ export function SettingsPanel({
   const sharedBackup = backupContinuity?.shared;
   const dataSummary = dataFoldSummary(historyImport, [dbMsg, reinspectMsg, syncMsg, hfMsg], [
     sceneStoreReady() ? t("캔버스 {n}개").replace("{n}", String(listScenes(null).length)) : "",
-    backupContinuity?.local.set_count != null ? t("로컬 백업 {n}세트").replace("{n}", String(backupContinuity.local.set_count)) : "",
+    backupSummary(backupContinuity),
     sharedBackup ? `${t("서버")} ${BACKUP_STATE_LABELS[sharedBackup.state] || sharedBackup.state}` : "",
   ]);
   const resolveSummary = resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.message || "";
@@ -655,25 +662,35 @@ export function SettingsPanel({
               </section>
             </SettingsFold>
 
+            {/* 시안 2판(저장 통합 설계 §4-5): ② 백업 · ③ 전송 · ④ 점검. ① 자동 저장은 편집 합류(4단계) 뒤에 연다. */}
             <SettingsFold title={t("자료 관리")} summary={dataSummary}>
-              <CanvasArchiveSection />
-
-              <MetadataContinuitySection
-                dbBusy={dbBusy}
-                dbMsg={dbMsg}
-                backupContinuity={backupContinuity}
-                serverBackups={serverBackups}
-                serverBackupsLoading={serverBackupsLoading}
-                metadataSyncTarget={metadataSyncTarget}
-                metadataSyncTargetState={metadataSyncTargetState}
-                onSyncMetadata={syncMetadata}
-                onLoadServerBackups={loadServerBackups}
-                onServerRestore={serverRestore}
-                onImportDb={importDb}
-              />
+              <BackupSection status={backupContinuity} onRefresh={refreshBackupContinuity}>
+                <MetadataContinuitySection
+                  dbBusy={dbBusy}
+                  dbMsg={dbMsg}
+                  serverBackups={serverBackups}
+                  serverBackupsLoading={serverBackupsLoading}
+                  metadataSyncTarget={metadataSyncTarget}
+                  metadataSyncTargetState={metadataSyncTargetState}
+                  onSyncMetadata={syncMetadata}
+                  onLoadServerBackups={loadServerBackups}
+                  onServerRestore={serverRestore}
+                />
+                <div className="settings-subgroup">
+                  <h5>{t("파일로 챙기기")}</h5>
+                  <CanvasArchiveSection />
+                  <DbFileTransfer dbBusy={dbBusy} onImportDb={importDb} />
+                </div>
+              </BackupSection>
 
               <section className="settings-section">
-                <h4>{t("생성물 재점검")}</h4>
+                <h4>{t("전송")}</h4>
+                <AssetTransferLine />
+                <SettingsDescription summary={t("레퍼런스 파일을 서버로 보내는 줄입니다. 보낼 것이 없으면 비어 있습니다.")} />
+              </section>
+
+              <section className="settings-section">
+                <h4>{t("점검")}</h4>
                 <button className="settings-action" onClick={reinspectGenerations} disabled={!!reinspectMsg}>
                   {reinspectMsg || t("생성물 재점검")}
                 </button>

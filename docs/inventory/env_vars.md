@@ -37,7 +37,7 @@
 | `CONTENT_HUB_BACKUP_CHANGE_DEBOUNCE` | `"300"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_DIR` | `""` `DATA_DIR / "backups"` | `backend/app/services/backup.py` `tools/backup_replicate.py` `tools/server_console/backup.py` | — |
 | `CONTENT_HUB_BACKUP_INTERVAL` | `str(24 * 3600)` | `backend/app/services/backup.py` | — |
-| `CONTENT_HUB_BACKUP_KEEP` | `"7"` | `backend/app/services/backup.py` | — |
+| `CONTENT_HUB_BACKUP_KEEP` | `"7" if AUTH_ENABLED else "8"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_MIN_INTERVAL` | `"900"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_POLL_INTERVAL` | `"30"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_REPLICA_DIR` | `""` | `backend/app/services/operational_health.py` `tools/backup_replicate.py` `tools/server_console/backup.py` `tools/server_move_easy.py` | — |

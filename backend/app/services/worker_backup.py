@@ -501,7 +501,21 @@ def queue_backup_set(
     *,
     account_email: str | None = None,
 ) -> str | None:
-    """검증된 로컬 백업에서 전송 전용 content·trash 사본을 원자적으로 staging한다."""
+    """검증된 로컬 백업에서 전송 전용 content·trash 사본을 원자적으로 staging한다.
+    복사·대조하는 동안 그 세트를 붙잡아(backup.hold_set) 로컬 회전이 지우지 않게 한다."""
+    from .backup import hold_set
+
+    if not (account_email or active_account.account_key()):
+        return None
+    with hold_set(Path(content_backup).resolve()):
+        return _queue_backup_set_held(content_backup, account_email=account_email)
+
+
+def _queue_backup_set_held(
+    content_backup: Path,
+    *,
+    account_email: str | None = None,
+) -> str | None:
     email = account_email or active_account.account_key()
     if not email:
         return None

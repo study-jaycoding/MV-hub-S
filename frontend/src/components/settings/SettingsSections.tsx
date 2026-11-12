@@ -6,7 +6,7 @@ import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { fsaSupported } from "../../lib/downloadDir";
 import { fmtBackupWhen } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import type { AssetTransferSummary, BackupContinuityStatus, ServerBackupVersion } from "../../lib/assetsApi";
+import type { AssetTransferSummary, ServerBackupVersion } from "../../lib/assetsApi";
 import {
   startResolvePythonInstall,
   type ResolveConnectionStatus,
@@ -284,10 +284,11 @@ export const BACKUP_STATE_LABELS: Record<string, string> = {
   server_update_required: "서버 업데이트 필요",
 };
 
+// 설정 '자료 관리' ② 백업의 하위 칸 '다른 PC·서버에서 가져오기' — 옛 '메타데이터' 칸. [서버 백업 가져오기] = 옛
+//  [메타데이터 동기화](하는 일·확인·재로그인 그대로, 저장 통합 설계 §4-5 Jay 확정 — 이름만 쉽게).
 export function MetadataContinuitySection({
   dbBusy,
   dbMsg,
-  backupContinuity,
   serverBackups,
   serverBackupsLoading,
   metadataSyncTarget,
@@ -295,11 +296,9 @@ export function MetadataContinuitySection({
   onSyncMetadata,
   onLoadServerBackups,
   onServerRestore,
-  onImportDb,
 }: {
   dbBusy: boolean;
   dbMsg: string;
-  backupContinuity: BackupContinuityStatus | null;
   serverBackups: ServerBackupVersion[] | null;
   serverBackupsLoading: boolean;
   metadataSyncTarget: ServerBackupVersion | null;
@@ -307,61 +306,37 @@ export function MetadataContinuitySection({
   onSyncMetadata: () => void;
   onLoadServerBackups: () => void;
   onServerRestore: (backup: ServerBackupVersion) => void;
-  onImportDb: (file: File | null | undefined) => void;
 }) {
   const t = useT();
-  const apiPaused = !!useSyncExternalStore(subscribeApiPause, getApiPause);
-  const stateLabels = BACKUP_STATE_LABELS;
-  const shared = backupContinuity?.shared;
-  const lastSuccess = shared?.last_success_at
-    ? fmtBackupWhen(shared.last_success_at)
-    : "아직 없음";
   const formatBytes = (size: number) =>
     size >= 1024 * 1024
       ? `${(size / 1024 / 1024).toFixed(1)} MB`
       : `${Math.max(1, Math.round(size / 1024))} KB`;
   const syncTargetText = metadataSyncTargetState === "loading"
-    ? "동기화 대상 확인 중…"
+    ? "가져올 백업을 확인하는 중"
     : metadataSyncTargetState === "error"
-      ? "동기화 대상을 확인하지 못했습니다."
+      ? "가져올 백업을 확인하지 못했습니다."
       : metadataSyncTargetState === "empty" || !metadataSyncTarget
-        ? "동기화할 서버 메타데이터가 없습니다."
-        : `동기화 대상: ${metadataSyncTarget.device?.device_name || "알 수 없는 PC"} · ${
+        ? "가져올 서버 백업이 없습니다."
+        : `가져올 것: ${metadataSyncTarget.device?.device_name || "알 수 없는 PC"} · ${
           fmtBackupWhen(metadataSyncTarget.created_at, metadataSyncTarget.mtime)
         } · 앱 ${metadataSyncTarget.app_version || "—"}`;
   return (
-    <section className="settings-section">
-      <h4>{t("메타데이터")}</h4>
-      <AssetTransferLine />
+    <div className="settings-subgroup">
+      <h5>{t("다른 PC·서버에서 가져오기")}</h5>
       <div className="settings-row">
         <button
           className="settings-action metadata-sync-primary"
           onClick={onSyncMetadata}
           disabled={dbBusy || serverBackupsLoading}
         >
-          {dbBusy ? "동기화 중…" : serverBackupsLoading ? "확인 중…" : "메타데이터 동기화"}
+          {dbBusy ? t("가져오는 중") : serverBackupsLoading ? t("확인 중") : t("서버 백업 가져오기")}
         </button>
       </div>
-      {/* 실시간 정보(동기화 대상·백업 상태)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
-      <SettingsDescription
-        summary={
-          <>
-            {syncTargetText}
-            <br />
-            <span aria-live="polite">
-              로컬 백업 <b>{backupContinuity?.local.set_count ?? "—"}세트</b>
-              {backupContinuity?.local.latest_file_count
-                ? ` · 최신 ${backupContinuity.local.latest_file_count}개 DB 구성`
-                : ""}
-              {" · "}공유 서버 <b>{shared ? (stateLabels[shared.state] || shared.state) : "확인 중"}</b>
-              {shared?.pending ? ` · 대기 ${shared.pending}건` : ""}
-              {shared ? ` · 마지막 성공 ${lastSuccess}` : ""}
-            </span>
-          </>
-        }
-      >
+      {/* 실시간 정보(가져올 대상)는 접기 밖 캡션에 상시 표시(Jay 규칙). 백업 수·서버 복제 상태는 위 백업 칸 상태 줄에. */}
+      <SettingsDescription summary={syncTargetText}>
         <p>{t("자동 백업은 서버로 올리기만 하며 로컬 작업을 자동으로 덮어쓰지 않습니다.")}</p>
-        <p>{t("동기화 전 백업 날짜와 PC를 확인하며, 적용 전 현재 DB를 안전하게 보관합니다.")}</p>
+        <p>{t("가져오기 전 백업 날짜와 PC를 확인하며, 적용 전 현재 DB를 안전하게 보관합니다.")}</p>
         <button className="settings-action ghost" onClick={onLoadServerBackups} disabled={dbBusy || serverBackupsLoading}>
           {serverBackupsLoading ? "확인 중…" : serverBackups === null ? "백업 버전 선택" : "백업 목록 닫기"}
         </button>
@@ -407,42 +382,55 @@ export function MetadataContinuitySection({
             )}
           </div>
         )}
-        <details className="settings-details">
-          <summary style={{ cursor: "pointer" }}>서버 없이 파일로 직접 주고받기 (고급)</summary>
-          <a
-            className="settings-action"
-            // 링크는 fetch 관문을 지나지 않는다 — 다른 탭 로그아웃 뒤 멈춘 동안엔 주소를 떼어 우클릭 '새 탭에서 열기'로도 못 연다(Jay 결정 4B·E9)
-            href={apiPaused ? undefined : "/api/db/export"}
-            download="MV-hub-mydb.db"
-            aria-disabled={apiPaused || undefined}
-            onClick={() => {
-              if (apiPaused) flashMsg(API_PAUSED_MESSAGE);
-            }}
-          >
-            내 DB 내보내기
-          </a>
-          <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
-            {dbBusy ? "가져오는 중…" : "DB 가져오기 (통째 교체)"}
-            <input
-              type="file"
-              accept=".db,application/octet-stream"
-              style={{ display: "none" }}
-              disabled={dbBusy}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                onImportDb(file);
-              }}
-            />
-          </label>
-          <p>
-            ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
-            작업자=1PC라 한 번에 한 PC에서만 쓰세요.
-          </p>
-        </details>
       </SettingsDescription>
       {dbMsg && <p className="manage-msg">{dbMsg}</p>}
-    </section>
+    </div>
+  );
+}
+
+// '파일로 챙기기' 의 DB 파일 주고받기 — 옛 '메타데이터' 칸의 고급 접기를 그대로 옮겼다(동작 같음).
+export function DbFileTransfer({
+  dbBusy,
+  onImportDb,
+}: {
+  dbBusy: boolean;
+  onImportDb: (file: File | null | undefined) => void;
+}) {
+  const apiPaused = !!useSyncExternalStore(subscribeApiPause, getApiPause);
+  return (
+    <details className="settings-details">
+      <summary style={{ cursor: "pointer" }}>서버 없이 파일로 직접 주고받기 (고급)</summary>
+      <a
+        className="settings-action"
+        // 링크는 fetch 관문을 지나지 않는다 — 다른 탭 로그아웃 뒤 멈춘 동안엔 주소를 떼어 우클릭 '새 탭에서 열기'로도 못 연다(Jay 결정 4B·E9)
+        href={apiPaused ? undefined : "/api/db/export"}
+        download="MV-hub-mydb.db"
+        aria-disabled={apiPaused || undefined}
+        onClick={() => {
+          if (apiPaused) flashMsg(API_PAUSED_MESSAGE);
+        }}
+      >
+        내 DB 내보내기
+      </a>
+      <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
+        {dbBusy ? "가져오는 중…" : "DB 가져오기 (통째 교체)"}
+        <input
+          type="file"
+          accept=".db,application/octet-stream"
+          style={{ display: "none" }}
+          disabled={dbBusy}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            onImportDb(file);
+          }}
+        />
+      </label>
+      <p>
+        ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
+        작업자=1PC라 한 번에 한 PC에서만 쓰세요.
+      </p>
+    </details>
   );
 }
 
