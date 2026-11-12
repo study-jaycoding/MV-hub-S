@@ -620,12 +620,16 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         setNotice("이 대화는 지워졌어요 — 새 대화로 다시 보내 주세요");
         return false;
       }
+      if (isHttpStatus(e, 409) && conversationId && current?.fork_state) { // 시작 전 포크가 거절됨 — 안내·잠금을 새 상태로
+        const id = conversationId;
+        agentChatApi.conversation(id).then((r) => { if (!stale() && currentId.current === id) setCurrent(r.conversation); }, () => {});
+      }
       fail(e);
       return false;
     } finally {
       if (!stale()) setSending(false);
     }
-  }, [choice, conversationId, fail, follow, forget]);
+  }, [choice, conversationId, current, fail, follow, forget]);
 
   const cancel = useCallback(async () => {
     if (!turn || TERMINAL_TURN.has(turn.status)) return;
@@ -650,28 +654,33 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   // 계획 카드가 새로 보이면 견적을 한 번 묻는다(무료 조회). 실패해도 카드·실행은 그대로 — '확인하지 못했어요'로 보인다.
   useEffect(() => {
     for (const m of messages) {
-      if (m.kind !== "plan" || m.estimate || estimating.current.has(m.plan.plan_id)) continue;
+      // 포크 전 계획(plan.forked)은 묻지 않는다 — 이 대화에서 실행·견적할 수 없다(포크 설계 2-4)
+      if (m.kind !== "plan" || m.plan.forked || m.estimate || estimating.current.has(m.plan.plan_id)) continue;
       const planId = m.plan.plan_id;
+      const conversation = currentId.current;
+      if (!conversation) continue; // 대화 id 를 받은 뒤에 묻는다(허브가 계획을 만든 대화와 대조)
       estimating.current.add(planId);
       const stale = ticket();
       const put = (credits: number | null) => {
         if (stale()) return;
         setMessages((list) => list.map((x) => (x.kind === "plan" && x.plan.plan_id === planId ? { ...x, estimate: { credits } } : x)));
       };
-      agentChatApi.estimatePlan(planId).then((r) => put(typeof r.total_credits === "number" ? r.total_credits : null), () => put(null));
+      agentChatApi.estimatePlan(planId, conversation).then((r) => put(typeof r.total_credits === "number" ? r.total_credits : null), () => put(null));
     }
     // ticket 은 매번 새로 만드는 표라 넣지 않는다
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
+  }, [messages, conversationId]);
 
-  /** [실행] — 사람만 누른다. 허브의 앱 입구가 계획을 다시 읽어 확인한 뒤 낸다(두 번 눌러도 한 번만 나간다 — 허브의 선점). */
+  /** [실행] — 사람만 누른다. 허브의 앱 입구가 계획을 다시 읽어 확인한 뒤 낸다(두 번 눌러도 한 번만 나간다 — 허브의 선점).
+   *  지금 대화 id 는 누르는 순간의 참조로(닫힌 콜백의 옛 id 가 아니라 — 포크 설계 Codex 2차 P2). */
   const executePlan = useCallback(async (planId: string) => {
-    if (executing.current.has(planId)) return;
+    const conversation = currentId.current;
+    if (executing.current.has(planId) || !conversation) return;
     executing.current.add(planId);
     setExec(planId, { state: "running" });
     const stale = ticket();
     try {
-      const plan = await agentChatApi.executePlan(planId);
+      const plan = await agentChatApi.executePlan(planId, conversation);
       if (stale()) return;
       // 200 이어도 접수됐다는 뜻은 아니다 — submitted 만 '보냈어요', attention(거절·접수 불명확)은 따로 알린다
       if (plan.status === "submitted") setExec(planId, { state: "done" }, plan);
@@ -700,12 +709,16 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         // 보낸 뒤 이 창에서 바꾼 줄 — 지운 줄은 빼고, 고친 줄은 지금 화면 값(목록에 없었으면 받은 요약)을 지킨다(늦게 온 옛 조회가 덮지 않게)
         setConversations((prev) => {
           const kept = new Map((prev ?? []).map((c) => [c.id, c]));
-          return r.conversations.flatMap((c) => {
+          const listed = new Set(r.conversations.map((c) => c.id));
+          // 보낸 뒤 이 창에서 받은 요약 중 지우지 않았고 응답에 없는 줄(방금 만든 포크 등)은 맨 앞에 붙인다(포크 설계 2-4)
+          const fresh = [...changedAt.current].flatMap(([id, change]) => (
+            change.seq > sentAt && !change.deleted && change.summary && !listed.has(id) ? [kept.get(id) ?? change.summary] : []));
+          return [...fresh, ...r.conversations.flatMap((c) => {
             const change = changedAt.current.get(c.id);
             if (!change || change.seq <= sentAt) return [c];
             if (change.deleted) return [];
             return [kept.get(c.id) ?? { ...c, ...(change.summary ?? {}) }];
-          });
+          })];
         });
         setTruncated(!!r.truncated);
       }
@@ -744,6 +757,41 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       return null;
     }
   }, [fail, forget]);
+
+  /** 포크(docs/status/MVAgent_포크_2026-11-12.md 2-4) — 원래 대화마다 요청 번호 하나(응답을 잃고 다시 눌러도 같은 포크), 누르는 중엔
+   *  다시 못 누름. 받은 요약을 목록 맨 위에 넣고 '이 창에서 바꾼 줄'로 남긴다. 계정이 바뀌면 버리고, 그사이 화면이 바뀌었으면
+   *  (다른 대화·새 대화) 목록에만 넣는다. 돌려주는 것 = 연 포크 id(못 열었으면 null). */
+  const forkRequests = useRef(new Map<string, string>());
+  const forkingNow = useRef(false); // 같은 렌더에서 두 번 불려도 하나만 — 상태(forking)는 다음 렌더에야 바뀐다(포크 독립 리뷰 P2)
+  const [forking, setForking] = useState(false);
+  const forkConversation = useCallback(async (sourceId: string): Promise<string | null> => {
+    if (forkingNow.current || busy.current) return null;
+    forkingNow.current = true;
+    const requestId = forkRequests.current.get(sourceId) ?? crypto.randomUUID();
+    forkRequests.current.set(sourceId, requestId);
+    setForking(true);
+    const account = getAccountNamespace();
+    const stale = ticket();
+    try {
+      const r = await agentChatApi.forkConversation(sourceId, requestId);
+      forkRequests.current.delete(sourceId);
+      if (getAccountNamespace() !== account) return null;
+      touch(r.conversation.id, { summary: r.conversation });
+      setConversations((list) => (list ? [r.conversation, ...list.filter((c) => c.id !== r.conversation.id)] : [r.conversation]));
+      if (stale()) return null; // 그사이 다른 대화를 열었거나 새 대화를 시작했다 — 자동으로 열지 않는다
+      await openConversation(r.conversation.id);
+      return r.conversation.id;
+    } catch (e) {
+      if (isHttpStatus(e, 400, 404, 409, 413, 422)) forkRequests.current.delete(sourceId); // 허브가 거절 — 다음엔 새 번호
+      if (getAccountNamespace() === account) setError(errorDetail(e));
+      return null;
+    } finally {
+      forkingNow.current = false;
+      setForking(false);
+    }
+    // ticket·touch 는 매번 새로 만드는 표·함수라 넣지 않는다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openConversation]);
 
   /** 옆 칸의 '새 창에서 열기' — 새 창이 받을 요청을 적는다(창을 여는 것은 부르는 쪽의 onPopOut). */
   const requestOpenInWindow = useCallback((id: string) => {
@@ -793,7 +841,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
-    conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan,
+    conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
     // Claude 연결 — 허브가 연결 경로를 알 때만 안내(옛 허브는 엔진 사유만)
     connect: {

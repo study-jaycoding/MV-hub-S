@@ -64,6 +64,7 @@ export interface AgentPlan {
   items?: { model?: string | null; prompt?: string | null; params?: Record<string, string | number> | null;
     state?: string | null; generation_id?: string | null }[];
   workspace?: unknown;
+  forked?: boolean; // 포크로 복사한 카드 — 이 대화에서 실행·견적하지 않는다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
 }
 /** 계획 항목 하나의 상태 — 허브가 새로 읽은 값. generation_status 가 없으면 '확인 못 함'(앞 값 보존), missing = 결과 없음. */
 export interface AgentPlanItemState {
@@ -152,6 +153,10 @@ export interface AgentConversationSummary {
   archived?: boolean;
   unread?: boolean;
   unread_rev?: number; // 읽지 않음이 바뀔 때마다 오르는 번호 — 자동 읽음은 본 번호와 같을 때만 끈다
+  // 포크(docs/status/MVAgent_포크_2026-11-12.md 2-4) — 옛 허브는 없음
+  can_fork?: boolean;
+  fork_block?: "codex" | "not_resumable" | "forked_unstarted" | "no_session" | null;
+  fork_state?: "ready" | "source_changed" | "source_gone" | null; // 아직 갈라지지 않은 포크만
 }
 export interface AgentConversationPatch {
   title?: string;
@@ -277,11 +282,17 @@ export const agentChatApi = {
     panelFetch<{ events: AgentEvent[]; status: AgentTurnStatus; last_seq: number; more?: boolean }>(`/turns/${id(turnId)}/events?after=${after}`, { signal }),
   cancel: (turnId: string) => panelFetch<{ status: AgentTurnStatus }>(`/turns/${id(turnId)}/cancel`, { method: "POST" }),
   // snapshot = 진행 사건과 같은 규칙으로 넣는 스냅샷(허브가 못 읽으면 없음 — 제출 결과는 그대로)
-  executePlan: (planId: string) =>
-    panelFetch<AgentPlan & { snapshot?: AgentPlanSnapshot }>(`/plans/${id(planId)}/execute`, { method: "POST" }),
+  // 실행·견적은 지금 보는 대화 id 를 싣는다 — 허브가 계획을 만든 대화와 대조(포크 카드로 원래 계획을 실행하지 않게)
+  executePlan: (planId: string, conversationId: string) =>
+    panelFetch<AgentPlan & { snapshot?: AgentPlanSnapshot }>(`/plans/${id(planId)}/execute`,
+      { method: "POST", body: jsonBody({ conversation_id: conversationId }) }),
+  forkConversation: (conversationId: string, requestId: string) =>
+    panelFetch<{ conversation: AgentConversationSummary }>(`/conversations/${id(conversationId)}/fork`,
+      { method: "POST", body: jsonBody({ request_id: requestId }) }),
   // 캐시 없이 지금 Claude 상태 + 새 엔진 목록(연결 안내 화면이 2초마다)
   claudeStatus: () => panelFetch<ClaudeStatus>("/claude"),
   openClaudeLogin,
   // 견적(무료 조회) — total_credits 가 null 이면 확인하지 못한 것(0 이 아니다)
-  estimatePlan: (planId: string) => panelFetch<{ total_credits: number | null }>(`/plans/${id(planId)}/estimate`, { method: "POST" }),
+  estimatePlan: (planId: string, conversationId: string) => panelFetch<{ total_credits: number | null }>(`/plans/${id(planId)}/estimate`,
+    { method: "POST", body: jsonBody({ conversation_id: conversationId }) }),
 };

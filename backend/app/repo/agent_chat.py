@@ -64,13 +64,20 @@ _NEW_COLUMNS = {
     "project_override": "TEXT",  # NULL = 첫 차례 화면의 프로젝트, '' = 프로젝트 없음
     "cli_home": "TEXT",  # 세션을 띄운 때의 Claude 자격 폴더·작업 폴더 — 삭제 때 그 세션 파일만 찾는 근거
     "cli_cwd": "TEXT",
+    # 포크(docs/status/MVAgent_포크_2026-11-12.md 2-1) — 원래 세션·누른 때 원래의 마지막 차례·원래 대화·포크 요청 번호
+    "fork_session": "TEXT",
+    "fork_turn": "TEXT",
+    "fork_from": "TEXT",
+    "fork_request": "TEXT",
 }
+FORK_MAX_TURNS, FORK_MAX_EVENTS = 500, 20_000
 # 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-3) — 차례 표. NULL = 붙인 것 없음, 넣는 모양은 {"workspace", "items"} 하나
 _NEW_TURN_COLUMNS = {"attachments": "TEXT"}
 _PROJECT = ("CASE WHEN c.project_override IS NULL THEN (SELECT json_extract(t.context,'$.project') FROM agent_chat_turn t "
             "WHERE t.conversation_id=c.id AND json_valid(t.context) AND json_type(t.context,'$.project')='text' "
             "ORDER BY t.created_at, t.rowid LIMIT 1) WHEN c.project_override='' THEN NULL ELSE c.project_override END")
 _SUMMARY = ("SELECT c.id,c.title,c.engine,c.model,c.effort,c.updated_at,c.resumable,c.pinned,c.archived,c.unread,c.unread_rev,"
+            " c.cli_session_id AS _sid, c.fork_session AS _fsid, c.fork_turn AS _fturn, c.fork_from AS _ffrom,"
             f" {_PROJECT} AS project FROM agent_chat_conversation c")
 _opened: set[str] = set()
 _opened_lock = threading.Lock()
@@ -78,6 +85,10 @@ _opened_lock = threading.Lock()
 
 class Busy(Exception):
     """이 신원에 진행 중인 차례가 이미 있다."""
+
+
+class ForkRefused(Exception):
+    """포크할 수 없는 대화 — args[0] = codex · no_session · too_long · request_mismatch."""
 
 
 @contextlib.contextmanager
@@ -111,6 +122,9 @@ def open_db(path: Path) -> Path:
                     for name, decl in columns.items():
                         if name not in have:
                             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                # 칸을 더한 뒤에 — _SCHEMA 에 두면 옛 파일에서 '그런 칸 없음'으로 멈춘다(포크 설계 Codex 3차 P2)
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_chat_fork_request ON agent_chat_conversation(fork_request) "
+                             "WHERE fork_request IS NOT NULL")
                 for (turn_id,) in conn.execute("SELECT id FROM agent_chat_turn WHERE status IN ('running','cancelling')").fetchall():
                     _finish(conn, turn_id, "interrupted", "restart", None)
                 conn.execute("COMMIT")
@@ -172,6 +186,8 @@ def restore_snapshot(path, conversation_id, event_limit) -> dict | None:
             row = conn.execute("SELECT * FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()
             if not row:
                 return None
+            fork = _fork_fields(conn, row["engine"], row["resumable"], row["cli_session_id"], row["fork_session"], row["fork_turn"],
+                                row["fork_from"])
             turns = [dict(t) for t in conn.execute(
                 "SELECT id,status,text,reason,created_at,ended_at,attachments FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
                 (conversation_id,)).fetchall()]
@@ -181,7 +197,7 @@ def restore_snapshot(path, conversation_id, event_limit) -> dict | None:
                     "SELECT seq,kind,payload FROM agent_chat_event WHERE turn_id=? ORDER BY seq LIMIT ?", (turn["id"], event_limit)).fetchall()]
         finally:
             conn.execute("COMMIT")
-    return {**dict(row), "resumable": bool(row["resumable"]), "turns": turns}
+    return {**dict(row), "resumable": bool(row["resumable"]), **fork, "turns": turns}
 
 
 def finish_turn(path, turn_id, status, *, reason=None, error=None) -> bool:
@@ -214,8 +230,39 @@ def get_conversation(path, conversation_id) -> dict | None:
     return {**dict(row), "mcp_entry": json.loads(row["mcp_entry"]), "resumable": bool(row["resumable"])}
 
 
-def _summary(row) -> dict:
-    return {**dict(row), **{key: bool(row[key]) for key in ("resumable", "pinned", "archived", "unread")}}
+def _fork_state(conn, fork_session, fork_turn, fork_from) -> str:
+    """아직 갈라지지 않은 포크가 누른 때 그대로 시작할 수 있나 — 첫 차례 확인(라우터)과 요약이 같이 쓴다(포크 설계 2-2).
+    ready = 원래가 있고 세션·마지막 차례(끝난 상태 모두 — 진행 중은 신원 전체 검사로 막힘)가 누른 때와 같음."""
+    source = conn.execute("SELECT cli_session_id FROM agent_chat_conversation WHERE id=?", (fork_from,)).fetchone()
+    if not source:
+        return "source_gone"
+    last = conn.execute("SELECT id FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                        (fork_from,)).fetchone()
+    return "ready" if source[0] == fork_session and last is not None and last[0] == fork_turn else "source_changed"
+
+
+def _fork_fields(conn, engine, resumable, sid, fork_session, fork_turn, fork_from) -> dict:
+    """화면이 포크 메뉴·안내를 정하는 값 — can_fork·fork_block(codex·not_resumable·forked_unstarted·no_session)·fork_state."""
+    out = {"can_fork": False, "fork_block": None, "fork_state": None}
+    if not sid and fork_session and fork_from:
+        out["fork_state"] = _fork_state(conn, fork_session, fork_turn, fork_from)
+    if engine != "claude":
+        out["fork_block"] = "codex"
+    elif not resumable:
+        out["fork_block"] = "not_resumable"
+    elif not sid:
+        out["fork_block"] = "forked_unstarted" if fork_session else "no_session"
+    else:
+        out["can_fork"] = True
+    return out
+
+
+def _summary(row, conn=None) -> dict:
+    data = {key: row[key] for key in row.keys() if not key.startswith("_")}  # 세션 id 등 안쪽 칸은 내보내지 않는다
+    data.update({key: bool(row[key]) for key in ("resumable", "pinned", "archived", "unread")})
+    if conn is not None:
+        data.update(_fork_fields(conn, row["engine"], row["resumable"], row["_sid"], row["_fsid"], row["_fturn"], row["_ffrom"]))
+    return data
 
 
 def list_conversations(path, limit=500) -> list[dict]:
@@ -223,13 +270,107 @@ def list_conversations(path, limit=500) -> list[dict]:
     칸 서랍이 묶는다(없으면 null). 보관 대화도 싣는다(화면이 '보관함'으로 묶음)."""
     with connect(path) as conn:
         rows = conn.execute(_SUMMARY + " ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?", (limit,)).fetchall()
-    return [_summary(row) for row in rows]
+        return [_summary(row, conn) for row in rows]
 
 
 def conversation_summary(path, conversation_id) -> dict | None:
     with connect(path) as conn:
         row = conn.execute(_SUMMARY + " WHERE c.id=?", (conversation_id,)).fetchone()
-    return _summary(row) if row else None
+        return _summary(row, conn) if row else None
+
+
+def fork_state_for(path, conversation_id) -> str | None:
+    """포크의 첫 차례 전 확인 — 갈라지지 않은 포크면 ready·source_changed·source_gone, 그 밖은 None."""
+    with connect(path) as conn:
+        row = conn.execute("SELECT cli_session_id,fork_session,fork_turn,fork_from FROM agent_chat_conversation WHERE id=?",
+                           (conversation_id,)).fetchone()
+        if not row or row["cli_session_id"] or not row["fork_session"] or not row["fork_from"]:
+            return None
+        return _fork_state(conn, row["fork_session"], row["fork_turn"], row["fork_from"])
+
+
+def find_fork(path, request_id) -> dict | None:
+    """같은 포크 요청 번호로 이미 만든 포크 — {id, fork_from} 또는 None(중복 방지·커밋 여부 확인)."""
+    with connect(path) as conn:
+        row = conn.execute("SELECT id,fork_from FROM agent_chat_conversation WHERE fork_request=?", (request_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def fork_precheck(path, source_id) -> None:
+    """연결을 발급하기 전 빠른 확인 — 없음(LookupError)·Codex·세션 없음·바쁨·너무 긺. 거래 안에서 다시 본다."""
+    with connect(path) as conn:
+        _fork_check(conn, source_id)
+
+
+def _fork_check(conn, source_id):
+    source = conn.execute("SELECT * FROM agent_chat_conversation WHERE id=?", (source_id,)).fetchone()
+    if not source:
+        raise LookupError(source_id)
+    if source["engine"] != "claude":
+        raise ForkRefused("codex")
+    if not source["cli_session_id"] or not source["resumable"]:
+        raise ForkRefused("no_session")
+    if conn.execute("SELECT 1 FROM agent_chat_turn WHERE status IN ('running','cancelling') LIMIT 1").fetchone():
+        raise Busy()
+    turns, events = conn.execute(
+        "SELECT COUNT(*), (SELECT COUNT(*) FROM agent_chat_event e JOIN agent_chat_turn t ON t.id=e.turn_id WHERE t.conversation_id=?) "
+        "FROM agent_chat_turn WHERE conversation_id=?", (source_id, source_id)).fetchone()
+    if turns > FORK_MAX_TURNS or events > FORK_MAX_EVENTS:
+        raise ForkRefused("too_long")
+    return source
+
+
+def fork_conversation(path, source_id, *, request_id, client_id, mcp_entry, still_current=None) -> dict:
+    """포크(설계 2-1) — 한 IMMEDIATE 거래로 새 대화 행 + 끝난 차례·사건 복사(INSERT…SELECT, 임시 표로 id 대응).
+    계획 묶음은 복사하지 않고 plan 사건에 plan.forked=true. 같은 request_id 가 거래 안에서 보이면 그 포크를 그대로 준다
+    (다른 원래 대화면 ForkRefused('request_mismatch')). still_current 는 커밋 직전에 불러 신원이 바뀌었으면 되돌린다.
+    돌려주는 것 = 새 대화 요약."""
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            found = conn.execute("SELECT id,fork_from FROM agent_chat_conversation WHERE fork_request=?", (request_id,)).fetchone()
+            if found:
+                conn.execute("ROLLBACK")
+                if found["fork_from"] != source_id:
+                    raise ForkRefused("request_mismatch")
+                return conversation_summary(path, found["id"])
+            source = _fork_check(conn, source_id)
+            turns = conn.execute("SELECT id FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
+                                 (source_id,)).fetchall()
+            new_id = str(uuid.uuid4())
+            title = f"{source['title']} (포크)"[:80]
+            conn.execute(
+                "INSERT INTO agent_chat_conversation(id,engine,model,effort,client_id,mcp_entry,title,cli_home,cli_cwd,project_override,"
+                "fork_session,fork_turn,fork_from,fork_request) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (new_id, source["engine"], source["model"], source["effort"], client_id, json.dumps(mcp_entry, ensure_ascii=False), title,
+                 source["cli_home"], source["cli_cwd"], source["project_override"], source["cli_session_id"],
+                 turns[-1]["id"] if turns else None, source_id, request_id))
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS fork_map(old TEXT PRIMARY KEY, new TEXT NOT NULL, key TEXT NOT NULL)")
+            conn.execute("DELETE FROM fork_map")
+            conn.executemany("INSERT INTO fork_map(old,new,key) VALUES(?,?,?)",
+                             [(row["id"], str(uuid.uuid4()), f"fork-{uuid.uuid4().hex}") for row in turns])
+            conn.execute(
+                "INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context,reason,created_at,ended_at,attachments) "
+                "SELECT m.new, ?, m.key, t.status, t.text, t.context, t.reason, t.created_at, t.ended_at, t.attachments "
+                "FROM agent_chat_turn t JOIN fork_map m ON m.old=t.id ORDER BY t.created_at, t.rowid", (new_id,))
+            conn.execute(
+                "INSERT INTO agent_chat_event(turn_id,seq,kind,payload,created_at) "
+                "SELECT m.new, e.seq, e.kind, CASE WHEN e.kind='plan' AND json_valid(e.payload) AND json_type(e.payload,'$.plan')='object' "
+                "THEN json_set(e.payload,'$.plan.forked',json('true')) ELSE e.payload END, e.created_at "
+                "FROM agent_chat_event e JOIN fork_map m ON m.old=e.turn_id")
+            conn.execute("DELETE FROM fork_map")
+            if still_current:
+                still_current()  # 발급·복사 사이 계정·허브가 바뀌었으면 옛 신원 기록에 커밋하지 않는다(포크 독립 리뷰 P2)
+            conn.execute("COMMIT")
+        except (ForkRefused, LookupError, Busy):
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+        except Exception:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+    return conversation_summary(path, new_id)
 
 
 def patch_conversation(path, conversation_id, fields: dict, seen_rev: int | None = None) -> dict | None:

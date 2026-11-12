@@ -1230,12 +1230,54 @@ def _settle_recovery_record(
         ) from exc
 
 
+_FOLDER_IDS_BUDGET = 1.0  # 초 — 첫 이동 전 빈 목록 훑기의 상한. 넘으면 '못 읽음'(사본 치우기만 꺼짐, 평소 길은 그대로)
+
+
+def _folder_ids(folder: Any, deadline: float) -> set[str]:
+    """folder 아래 모든 빈 고유 ID — 첫 이동이 새로 만든 빈(사본)만 가려내려고(11-12). 읽기 실패·시간 초과는 _Unknown."""
+    found: set[str] = set()
+    for child in _strict_list(folder.GetSubFolderList):
+        if time.monotonic() > deadline:
+            raise _Unknown("빈 목록 훑기가 시간 상한을 넘었습니다")
+        found.add(_uid(child))
+        found |= _folder_ids(child, deadline)
+    return found
+
+
+def _originals_home(parent: Any, tails: dict[str, Any]) -> bool:
+    """기록한 꼬리가 모두 부모에 같은 고유 ID·같은 하위 트리로 있다."""
+    home = {uid: folder for uid, _identity, folder in _children_of(parent) if uid in tails}
+    return home.keys() == tails.keys() and all(_subtree(folder) == tails[uid] for uid, folder in home.items())
+
+
+def _seen(folder: Any) -> list[list[str]] | str:
+    """자식 Bin [고유 ID, 이름 identity] — 복구 기록에 남길 '본 것'. 못 읽으면 그 오류 글."""
+    try:
+        return [[uid, identity] for uid, identity, _folder in _children_of(folder)]
+    except _Unknown as exc:
+        return str(exc)
+
+
+def _note_after_restore(
+    record_path: Path, record: dict[str, Any], failure: BaseException, recovery: BaseException, staging: Any, parent: Any
+) -> None:
+    """되돌리기가 처음 상태를 확인하지 못하고 멈출 때 본 것을 복구 기록에 더한다 — 다음 실패의 원인을 가리려고(11-12).
+    덧붙이는 단서라 무엇이 실패해도 결과(멈춤·leftover)는 같다."""
+    try:
+        record["after_restore"] = {"failure": str(failure), "recovery": str(recovery), "staging": _seen(staging), "parent": _seen(parent)}
+        _write_recovery_record(record_path, record)
+    except Exception:  # noqa: BLE001 - 단서를 못 남겨도 멈춤은 그대로다
+        pass
+
+
 def _restore_after_failed_move(
-    media_pool: Any, root: Any, parent: Any, record: dict[str, Any], guard: Any
+    media_pool: Any, root: Any, parent: Any, record: dict[str, Any], guard: Any, before: set[str] | None = None
 ) -> None:
     """임시 Bin 안의 꼬리를 부모로 되돌리고, 이번에 만든(기록한) 빈 Bin 과 임시 Bin 을 지운 뒤 처음 상태인지 새로 조회해 확인한다.
     확인되지 않으면 _MoveFailed. 프로젝트가 바뀌면 _ProjectChanged 를 그대로 올린다(되돌리기를 이어 가지 않는다).
-    지우는 것은 기록한 고유 ID 의 빈 Bin 뿐이다 — 사람이 넣은 Bin 은 비어 있어도 지우지 않고 멈춘다(Codex 구현 리뷰 P1)."""
+    지우는 것은 기록한 고유 ID 의 빈 Bin 뿐이다 — 사람이 넣은 Bin 은 비어 있어도 지우지 않고 멈춘다(Codex 구현 리뷰 P1).
+    예외 하나: before(첫 이동 단계 실패 때만 받는 첫 이동 전 빈 ID)가 있으면, 첫 이동이 빈을 두 벌로 남긴 사본(그때 없던 ID·꼬리
+    이름과 하나씩·빈 Bin·원본은 부모에 그대로)만 지운다 — 하나라도 아니면 아무것도 지우지 않고 멈춘다(11-12 mv test 흔적)."""
     tails = record["tails"]
     created = set(record.get("created") or [])
     found = [child for uid, _identity, child in _children_of(root) if uid == record["staging_uid"]]
@@ -1246,8 +1288,18 @@ def _restore_after_failed_move(
             guard()
             if not media_pool.MoveFolders(back, parent):
                 raise _MoveFailed("Bin 을 원래 자리로 되돌리지 못했습니다")
-        for uid, _identity, child in _children_of(staging):
-            if uid not in created or _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList):
+        rest = _children_of(staging)
+        foreign = [(uid, identity, child) for uid, identity, child in rest if uid not in created]
+        if foreign and (
+            before is None
+            or any(uid in before or _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList) for uid, _identity, child in foreign)
+            or Counter(identity for _uid_, identity, _child in foreign)
+            != Counter(_folder_identity(tree["folders"][uid][1]) for uid, tree in tails.items())
+            or not _originals_home(parent, tails)
+        ):
+            raise _MoveFailed("정렬용 임시 Bin 에 이번에 만들지 않았거나 비어 있지 않은 Bin 이 남았습니다")
+        for _uid_, _identity, child in rest:
+            if _strict_list(child.GetSubFolderList) or _strict_list(child.GetClipList):  # 지우기 바로 전 — 그사이 들어온 것은 지우지 않는다
                 raise _MoveFailed("정렬용 임시 Bin 에 이번에 만들지 않았거나 비어 있지 않은 Bin 이 남았습니다")
             guard()
             if not media_pool.DeleteFolders([child]):
@@ -1373,13 +1425,19 @@ def _sort_by_moving_bins(
         raise stop("정렬용 임시 Bin 을 만든 결과가 맞지 않습니다(루트의 새 Bin 을 확인하세요)")
     record["staging_uid"], _staging_identity, staging = added[0]
     stage("staging_created")
+    try:  # 첫 이동 전 미디어 풀의 모든 빈 ID — guard 앞(훑는 동안 확인이 낡지 않게). 못 읽거나 상한을 넘으면 사본 치우기만 끈다.
+        before: set[str] | None = _folder_ids(root, time.monotonic() + _FOLDER_IDS_BUDGET)
+    except Exception:  # noqa: BLE001 - 평소 길은 그대로 간다
+        before = None
     try:
         guard()
         moved = media_pool.MoveFolders([folder for _uid_, _identity, folder in tail], staging)
-        inside = [uid for uid, _identity, _folder in _children_of(staging)]
-        left = [uid for uid, _identity, _folder in _children_of(parent)]
-        if not moved or left != record["prefix"] or sorted(inside) != sorted(record["tail_order"]):
+        inside = _children_of(staging)
+        left = _children_of(parent)
+        if not moved or [row[0] for row in left] != record["prefix"] or sorted(row[0] for row in inside) != sorted(record["tail_order"]):
+            record["first_move"] = {"returned": bool(moved), "staging": [list(row[:2]) for row in inside], "parent": [list(row[:2]) for row in left]}
             raise _MoveFailed("Bin 을 정렬용 공간으로 옮긴 결과가 맞지 않습니다")
+        before = None  # 첫 이동은 맞았다 — 뒤 단계의 실패에는 사본 치우기를 쓰지 않는다(Codex 합의 1차 P2)
         stage("moved_out")
 
         for name in new_names:
@@ -1417,8 +1475,10 @@ def _sort_by_moving_bins(
             leftover,
         ) from changed
     except Exception as failure:  # noqa: BLE001 - 어느 단계의 실패든 되돌리기와 그 확인으로 간다.
+        restored = False
         try:
-            _restore_after_failed_move(media_pool, root, parent, record, guard)
+            _restore_after_failed_move(media_pool, root, parent, record, guard, before)
+            restored = True
             record_path.unlink()
         except _ProjectChanged as changed:
             raise _ProjectChanged(
@@ -1428,6 +1488,8 @@ def _sort_by_moving_bins(
                 leftover,
             ) from failure
         except Exception as recovery:  # noqa: BLE001 - 원래 실패와 되돌리기 실패를 함께 보고한다.
+            if not restored:  # 되돌리기가 처음 상태를 확인하지 못했다(기록 지우기만 실패한 것은 아님) — 본 것을 기록에 더한다
+                _note_after_restore(record_path, record, failure, recovery, staging, parent)
             raise _RebuildRecoveryNeeded(
                 f"Resolve Bin 정렬이 실패했고({failure}) 처음 상태로 되돌린 것을 확인하지 못했습니다({recovery}). 가져오기를"
                 f" 멈췄습니다 — 임시 Bin '{record['staging']}' 의 Bin 을 원래 자리로 옮기거나 백업({record['backup']})을 불러오세요",
@@ -2421,24 +2483,6 @@ def _panel_bin_by_id(root, bin_id):
                  if path[0] == MEDIA_POOL_ROOT and _uid(folder) == bin_id), None)
 
 
-def _panel_drop_empty_bin(pool, folder, named, guard):
-    """비게 된 컷 빈만 지운다 — 이름 경로로 찾은 그 빈이고, 지우기 직전 다시 읽어 지금 빈이 아니고 클립·하위 빈이 없을 때."""
-    try:
-        gone = _uid(folder)
-        if named is None or _uid(named) != gone:
-            return False
-        guard()
-        # 실제 DeleteFolders 는 클립이 든 빈도 지운다 — 비었는지는 여기서만 지킨다. 읽기 실패(_Unknown)는 '비었음'이 아니다.
-        if _uid(pool.GetCurrentFolder()) == gone or _strict_list(folder.GetClipList) or _strict_list(folder.GetSubFolderList):
-            return False
-        guard()
-        if not pool.DeleteFolders([folder]):
-            return False
-        return all(_uid(child) != gone for child, _ in _panel_walk(pool.GetRootFolder()))
-    except _Unknown:
-        return False
-
-
 def _panel_settle(pool, root, payload, guard):
     """앞 에피소드 컷 빈을 자식 하나로 한 번에 정리한다(Jay 11-12 '쓴 것은 빼고 Del 키처럼') — 컷마다 자식 둘을 띄우던 것을 대신한다.
     판정(표식·소유·파일)을 빈마다 먼저 끝내고, 지우기는 빈마다 _panel_delete_many(20개 묶음마다 guard·바로 전 사용 재확인),
@@ -2523,7 +2567,7 @@ def _panel_settle(pool, root, payload, guard):
             done["used"] = [gen for gen in dict.fromkeys(done["used"]) if gen][:200]
 
     # 비게 된 빈 — DeleteFolders 는 든 것까지 지운다. 여러 빈을 확인한 뒤 한 번에 지우면 앞 빈 확인 뒤 사람이 넣은 클립까지 지우므로
-    # 빈마다 바로 전에 확인하고 그 빈만 지운다(지금 unstage delete_empty 와 같은 보호, 독립 리뷰 P1).
+    # 빈마다 바로 전에 확인하고 그 빈만 지운다(독립 리뷰 P1).
     # 지울 때마다 리졸브가 지금 빈을 부모로 옮긴다(실측) — 그래서 단계 시작 때 지금 빈(끝에 되돌릴 빈)과 단계 중 한 번이라도
     # 지금 빈이었던 빈은 끝까지 지우지 않는다(합의 6·7차). 되돌리기는 끝에 한 번.
     attempted = []
@@ -2693,7 +2737,7 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                     "details": "정렬 복구 기록 경로를 확인하지 못했습니다"}
         guard()
         _settle_recovery_record(payload, root, project_id, _path_identity((MEDIA_POOL_ROOT, label)))
-        target = named = _folder_at_path(root, tuple(parts))
+        target = _folder_at_path(root, tuple(parts))
         if operation == "prestage":
             return {**result, **_panel_prestage(pool, root, payload, project_id, guard)}
         if operation == "rename":
@@ -2712,10 +2756,8 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                 return {**result, "state": "ok", "items": items, "removed": 0, "deferred": len(items), "import_records": [],
                         "unexpected_imports": 0, "capped": bool(payload.get("capped")), "bin_id": "", "bin_path": "/".join(parts)}
             stage = _panel_stage(pool, target, payload, project_id, guard)
-            done = {**result, **stage, "capped": bool(payload.get("capped")), "bin_id": _uid(target), "bin_path": "/".join(parts)}
-            if operation == "unstage" and payload.get("delete_empty"):
-                done["bin_deleted"] = _panel_drop_empty_bin(pool, target, named, guard)
-            return done
+            # 빈 지우기는 settle 만 한다 — 옛 unstage delete_empty 는 빈마다 다빈치 지금 빈을 옮긴 채 두어 사람이 있던 빈까지 지웠다(11-12)
+            return {**result, **stage, "capped": bool(payload.get("capped")), "bin_id": _uid(target), "bin_path": "/".join(parts)}
         if operation == "target":
             keep = bool(payload.get("keep_current"))
             # keep_current(실시간 새 컷) — 첫 쓰기 전에 사람이 보던 지금 빈을 적어 두고, 끝나면(정렬만 실패한 때도) 되돌린다

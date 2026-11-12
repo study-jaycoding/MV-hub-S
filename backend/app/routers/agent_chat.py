@@ -13,6 +13,7 @@ import re
 from typing import Annotated, Literal
 from uuid import UUID
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import AfterValidator, Field, StrictBool, StrictInt, field_validator, model_validator
 
@@ -25,6 +26,7 @@ from ..repo import mcp_v2 as mcp_store
 from ..services import agent_chat as chat
 from ..services import agent_chat_claude as claude
 from ..services.agent_chat import EFFORTS, MODELS, Identity, service
+from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_browser_request
 from . import _proxy, mcp, mcp_v2
 
@@ -196,7 +198,10 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
     """대화 지우기(되돌릴 수 없음) — 신원 차례 잠금 안에서 한 트랜잭션으로 기록을 지우고, 커밋 뒤 그 대화의 Claude 세션 파일
     (확인된 한 개만)·칸 MCP 설정 파일을 지운다. session_file 로 결과를 알린다(설계 2-5). 만든 그림·계획은 그대로."""
     _, identity = panel
-    async with _turn_lock(identity):
+    async with _turn_lock(identity):  # 새 차례 시작도 이 잠금 안 — 확인과 지우기 사이에 가르기가 시작되지 않는다
+        source = await asyncio.to_thread(chat_store.get_conversation, identity.db_file(), str(conversation_id))
+        if source and service.forking_from(source["cli_session_id"]):
+            raise HTTPException(409, "포크한 대화가 이 대화에서 가르는 중이에요. 끝난 뒤 지워 주세요.")
         try:
             row = await asyncio.to_thread(chat_store.delete_conversation, identity.db_file(), str(conversation_id))
         except chat_store.Busy as exc:
@@ -216,6 +221,72 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
     return {"deleted": True, "session_file": session_file}
 
 
+class ForkIn(StrictModel):
+    request_id: UUID  # 응답을 잃고 다시 눌러도 같은 포크(설계 2-1)
+
+
+_FORK_REFUSED = {"codex": (409, "Codex 대화는 포크할 수 없어요."),
+                 "no_session": (409, "이어 갈 세션이 없어 포크할 수 없어요 · 먼저 한 번 대화해 주세요."),
+                 "too_long": (413, "대화가 너무 길어 포크할 수 없어요."),
+                 "request_mismatch": (409, "다른 대화에 쓴 포크 요청이에요 · 다시 눌러 주세요.")}
+
+
+def _fork_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, chat_store.ForkRefused):
+        status, message = _FORK_REFUSED.get(exc.args[0] if exc.args else "", (409, "포크할 수 없어요."))
+        return HTTPException(status, message)
+    if isinstance(exc, chat_store.Busy):
+        return HTTPException(409, "답을 받는 중에는 포크할 수 없어요.")
+    return HTTPException(404, "대화를 찾을 수 없습니다.")
+
+
+@router.post("/conversations/{conversation_id}/fork")
+async def fork_conversation(conversation_id: UUID, body: ForkIn, request: Request, panel=Depends(_panel)):
+    """포크(docs/status/MVAgent_포크_2026-11-12.md 2-1) — 신원 차례 잠금 안에서 같은 요청 번호 조회 → 확인 → 새 칸 연결 발급 →
+    한 거래 복사. 복사는 버리지 않는 작업 스레드로 하고, 실패하면 커밋됐는지(같은 요청 번호 조회)로 연결 회수 여부를 정한다."""
+    ctx, identity = panel
+    source, request_id = str(conversation_id), str(body.request_id)
+    async with _turn_lock(identity):
+        path = await asyncio.to_thread(identity.db_file)
+        found = await asyncio.to_thread(chat_store.find_fork, path, request_id)  # 원래 존재·바쁨보다 먼저(Codex 2차 P2)
+        if found:
+            if found["fork_from"] != source:
+                raise _fork_error(chat_store.ForkRefused("request_mismatch"))
+            return {"conversation": await asyncio.to_thread(chat_store.conversation_summary, path, found["id"])}
+        try:
+            await asyncio.to_thread(chat_store.fork_precheck, path, source)
+        except (chat_store.ForkRefused, chat_store.Busy, LookupError) as exc:
+            raise _fork_error(exc) from exc
+        setup = await mcp.setup(request, identity=None)
+
+        def work():
+            # 발급·복사·회수를 한 작업 스레드에서 — 요청이 발급 중에 취소돼도 이 스레드가 끝까지 정리한다(포크 독립 리뷰 P2)
+            client_id, entry = mcp_v2.issue_panel_client(ctx, setup)
+            try:
+                return chat_store.fork_conversation(path, source, request_id=request_id, client_id=client_id, mcp_entry=entry,
+                                                    still_current=lambda: mcp_v2._still_current(ctx))
+            except BaseException:
+                # 커밋 여부는 반환값이 아니라 같은 요청 번호로 본다(Codex 3차 P2)
+                made = chat_store.find_fork(path, request_id)
+                if not made or made.get("fork_from") != source:
+                    mcp_store.revoke(client_id, ctx.owner, norm_email(ctx.account["email"]))
+                raise
+
+        try:
+            # anyio 취소(미들웨어 작업 묶음)는 await 마다 다시 와서 to_thread_non_abandon 의 기다림이 헛돌며 작업 스레드를 굶긴다(실측 2분)
+            #  — 막아 두고 작업이 끝난 뒤 바깥 취소를 그대로 받는다
+            with anyio.CancelScope(shield=True):
+                summary = await to_thread_non_abandon(work)
+        except ValueError as exc:
+            raise HTTPException(503, mcp_v2._setup_error_message(exc)) from exc
+        except HTTPException as exc:  # 발급·커밋 직전 신원 확인
+            raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED) from exc
+        except (chat_store.ForkRefused, chat_store.Busy, LookupError) as exc:
+            raise _fork_error(exc) from exc
+    await _still(ctx)
+    return {"conversation": summary}
+
+
 @router.get("/conversations/{conversation_id}")
 async def conversation(conversation_id: UUID, panel=Depends(_panel)):
     ctx, identity = panel
@@ -225,7 +296,8 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
         found = chat_store.restore_snapshot(identity.db_file(), str(conversation_id), chat.EVENT_PAGE)
         if not found:
             return None
-        public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable")}
+        public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable",
+                                              "can_fork", "fork_block", "fork_state")}
         public.update({key: bool(found.get(key)) for key in ("pinned", "archived", "unread")}, unread_rev=found.get("unread_rev") or 0)
         return {"conversation": public, "turns": found["turns"]}
 
@@ -394,6 +466,12 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
             raise HTTPException(409, "엔진을 바꾸면 새 대화로 시작하세요.")
         if not conv["resumable"]:
             raise HTTPException(409, "이 대화는 이어 갈 수 없어요 · 새 대화로 시작하세요.")
+        # 아직 갈라지지 않은 포크 — 원래가 누른 때 그대로일 때만(포크 설계 2-2, 요약의 fork_state 와 같은 판정)
+        state = await asyncio.to_thread(chat_store.fork_state_for, path, conv["id"])
+        if state == "source_changed":
+            raise HTTPException(409, "원래 대화가 포크한 뒤 이어져서 그 시점으로 가를 수 없어요 · 다시 포크하세요.")
+        if state == "source_gone":
+            raise HTTPException(409, "원래 대화가 지워져 이 포크를 이어 갈 수 없어요 · 지우고 다시 포크하세요.")
     else:
         setup = await mcp.setup(request, identity=None)
         try:
@@ -453,10 +531,14 @@ def _panel_client(ctx, identity: Identity, client_id: str) -> dict | None:
     return client
 
 
-async def _bound_plan(ctx, identity: Identity, plan_id: str) -> None:
-    """허브가 MCP 응답에서 직접 묶어 둔 계획만 — 그 칸 연결(실행권 없는 패널 연결)을 ctx 에 싣는다."""
+class PlanActIn(StrictModel):
+    conversation_id: UUID  # 화면이 지금 보는 대화 — 묶음의 대화와 같아야 한다(포크 설계 2-1, 없거나 null 이면 422)
+
+
+async def _bound_plan(ctx, identity: Identity, plan_id: str, conversation_id: str) -> None:
+    """허브가 MCP 응답에서 직접 묶어 둔 계획만, 그리고 그 계획을 만든 대화에서만 — 그 칸 연결(실행권 없는 패널 연결)을 ctx 에 싣는다."""
     binding = await asyncio.to_thread(chat_store.binding_for, identity.db_file(), plan_id)
-    if not binding:
+    if not binding or binding["conversation_id"] != conversation_id:  # 포크한 대화의 옛 계획 카드로 원래 계획을 실행하지 않게
         raise HTTPException(404, "이 칸에서 만든 계획이 아닙니다.")
     client = await asyncio.to_thread(_panel_client, ctx, identity, binding["client_id"])
     if not client:
@@ -466,19 +548,19 @@ async def _bound_plan(ctx, identity: Identity, plan_id: str) -> None:
 
 
 @router.post("/plans/{plan_id}/estimate")
-async def estimate_plan(plan_id: UUID, panel=Depends(_panel)):
+async def estimate_plan(plan_id: UUID, body: PlanActIn, panel=Depends(_panel)):
     """계획 카드의 견적(무료 조회 — 생성·실행하지 않는다)."""
     ctx, identity = panel
-    await _bound_plan(ctx, identity, str(plan_id))
+    await _bound_plan(ctx, identity, str(plan_id), str(body.conversation_id))
     return await mcp_v2._estimate_plan(ctx, str(plan_id))
 
 
 @router.post("/plans/{plan_id}/execute")
-async def execute_plan(plan_id: UUID, panel=Depends(_panel)):
-    """사람이 칸의 [실행] 을 눌렀을 때 — 허브가 MCP 응답에서 직접 묶어 둔 계획만 그 칸 연결로 실행한다.
+async def execute_plan(plan_id: UUID, body: PlanActIn, panel=Depends(_panel)):
+    """사람이 칸의 [실행] 을 눌렀을 때 — 허브가 MCP 응답에서 직접 묶어 둔 계획만, 그 계획을 만든 대화에서만 그 칸 연결로 실행한다.
     응답에 계획 스냅샷(observed_at)을 싣는다 — 화면은 진행 사건과 같은 규칙으로만 넣는다(실패하면 없음, 제출 결과는 그대로)."""
     ctx, identity = panel
-    await _bound_plan(ctx, identity, str(plan_id))
+    await _bound_plan(ctx, identity, str(plan_id), str(body.conversation_id))
     plan = await mcp_v2.submit_plan(ctx, str(plan_id))
     snapshot = await mcp_v2.panel_snapshot(ctx, str(plan_id), service.turn_for_client(ctx.client["id"]))
     return {**plan, "snapshot": snapshot} if snapshot else plan

@@ -172,6 +172,9 @@ describe("Ask Agent 옆 칸", () => {
     act(() => { run.click(); run.click(); });
     await flush();
     expect(calls.filter((c) => c.path === "/plans/p1/execute").map((c) => c.method)).toEqual(["POST"]);
+    // 실행·견적은 지금 대화 id 를 싣는다(포크 카드로 원래 계획을 실행하지 않게 — docs/status/MVAgent_포크_2026-11-12.md 2-1)
+    expect([calls.find((c) => c.path === "/plans/p1/execute")!.body, calls.find((c) => c.path === "/plans/p1/estimate")!.body])
+      .toEqual([{ conversation_id: "c1" }, { conversation_id: "c1" }]);
     expect(host.querySelector(".agent-plan-sent")!.textContent).toBe("생성을 보냈어요"); // 접수일 뿐 완료가 아니다
     expect(texts(".agent-plan-tile")).toEqual(["접수됨"]); // 항목 상태가 없는 응답 — 완료·미제출이라 단정하지 않는다
     expect(host.querySelector(".agent-plan-run")).toBeNull();
@@ -1018,11 +1021,111 @@ describe("MV Agent 서랍 메뉴", () => {
   const patches = () => calls.filter((c) => c.method === "PATCH").map((c) => [c.path, c.body]);
   const groupTitles = () => [...host.querySelectorAll(".agent-drawer-ghead")].map((g) => g.textContent);
 
+  it("포크 — 허브가 막은 대화는 흐리고 까닭 · F·누르면 요청 번호 하나로 한 번 · 목록 맨 위·그 대화를 엶 · 시작 전 안내 · 포크 전 계획은 보기만(견적 안 함)", async () => {
+    const forkPlan = { plan_id: "p9", title: "고양이 계획", status: "draft", items: [{ model: "m", prompt: "고양이" }], forked: true };
+    list = [{ id: "c1", title: "고양이", ...({ can_fork: true } as object) }, { id: "c3", title: "새", engine: "codex", ...({ can_fork: false, fork_block: "codex" } as object) }];
+    let forkState = "ready";
+    const base = route;
+    route = (c) => {
+      if (c.path === "/conversations/c1/fork" && c.method === "POST") {
+        const made = { id: "f1", title: "고양이 (포크)", ...({ can_fork: false, fork_block: "forked_unstarted", fork_state: "ready" } as object) };
+        list = [made, ...list]; // 허브 목록에도 맨 앞(새로 만든 대화)
+        return json({ conversation: full(made) });
+      }
+      if (c.path === "/conversations/f1" && c.method === "GET") {
+        return json({ conversation: full({ id: "f1", title: "고양이 (포크)", ...({ fork_state: forkState } as object) }),
+          turns: [{ id: "t1", status: "done", text: "고양이 계획해", events: [{ seq: 1, kind: "plan", plan: forkPlan }] }] });
+      }
+      if (c.path === "/conversations/f1" && c.method === "PATCH") return json({ conversation: full({ id: "f1", title: "고양이 (포크)" }) });
+      return base(c);
+    };
+    await render();
+    await openDrawer();
+    openMenu("새");
+    expect([mi("포크").disabled, mi("포크").title]).toEqual([true, "Codex 대화는 포크할 수 없어요"]);
+    key({ code: "KeyF", key: "f" }); // 메뉴는 닫히고 아무것도 하지 않는다
+    expect([calls.filter((c) => c.path.endsWith("/fork")), host.querySelector(".agent-row-menu")]).toEqual([[], null]);
+    openMenu("고양이");
+    expect(mi("포크").title).toBe("지금까지를 복사한 새 대화 — 이후는 원래와 따로");
+    key({ code: "KeyF", key: "f" });
+    await flush();
+    const forks = calls.filter((c) => c.path === "/conversations/c1/fork");
+    expect(forks.length).toBe(1);
+    expect(typeof (forks[0].body as { request_id: string }).request_id).toBe("string");
+    expect(host.querySelector(".agent-title-btn")!.textContent).toContain("고양이 (포크)"); // 그 대화를 열었다
+    expect(host.querySelector(".agent-fork-note")!.textContent).toBe("포크한 대화예요 · 첫 말을 보내면 이 시점에서 갈라져요");
+    expect([texts(".agent-plan-tag"), host.querySelector(".agent-plan-run"), host.querySelector(".agent-plan-cost")]).toEqual([["계획", "포크 전"], null, null]);
+    expect(calls.filter((c) => c.path.includes("/estimate"))).toEqual([]); // 포크 전 계획은 견적을 묻지 않는다
+    act(() => button("대화 목록")!.click());
+    await flush();
+    expect(texts(".agent-drawer-item span")[0]).toBe("고양이 (포크)");
+    act(() => button("대화 목록")!.click());
+    forkState = "source_changed"; // 다시 열면 시작할 수 없음 — 안내·보내기 잠금
+    act(() => button("새 대화")!.click());
+    await openDrawer();
+    act(() => row("고양이 (포크)").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
+    await flush();
+    expect(host.querySelector(".agent-fork-note.agent-error")!.textContent).toContain("이 포크는 시작할 수 없어요");
+    type("이어서");
+    expect(host.querySelector<HTMLButtonElement>('.agent-send[aria-label="보내기"]')!.disabled).toBe(true);
+  });
+
+  it("포크 — 응답을 잃으면 같은 요청 번호로 다시 · 한 렌더에서 두 번 눌러도 요청 하나 · 받는 중엔 포크 항목 잠금 · 그사이 새 대화면 열지 않고 늦은 목록에도 맨 위", async () => {
+    list = [{ id: "c1", title: "고양이", ...({ can_fork: true } as object) }];
+    const made = { id: "f1", title: "고양이 (포크)", ...({ can_fork: false, fork_block: "forked_unstarted", fork_state: "ready" } as object) };
+    const answer = deferred<Response>();
+    let lose = true;
+    let hold: Promise<Response> | null = null;
+    const base = route;
+    route = (c) => {
+      if (c.path === "/conversations/c1/fork" && c.method === "POST") {
+        if (lose) { lose = false; throw new TypeError("Failed to fetch"); } // 응답을 잃음 — 허브가 만들었는지 모른다
+        return answer.promise;
+      }
+      if (c.path === "/conversations/f1" && c.method === "GET") return json({ conversation: full(made), turns: [] });
+      if (c.path === "/conversations" && c.method === "GET" && hold) return hold;
+      return base(c);
+    };
+    const lists = () => calls.filter((c) => c.path === "/conversations" && c.method === "GET").length;
+    await render();
+    await openDrawer();
+    openMenu("고양이");
+    act(() => mi("포크").click());
+    await flush();
+    await openDrawer();
+    openMenu("고양이");
+    const press = mi("포크");
+    act(() => { press.click(); press.click(); }); // 같은 렌더에서 두 번
+    await flush();
+    const forks = calls.filter((c) => c.path === "/conversations/c1/fork");
+    expect(forks.length).toBe(2); // 잃은 하나 + 이번 하나
+    expect((forks[1].body as { request_id: string }).request_id).toBe((forks[0].body as { request_id: string }).request_id);
+    const late = deferred<Response>();
+    hold = late.promise;
+    const before = lists();
+    await openDrawer(); // 포크 답보다 먼저 보낸 목록 조회 — 늦게 온다
+    expect(lists()).toBe(before + 1);
+    openMenu("고양이");
+    expect(mi("포크").disabled).toBe(true); // 받는 중엔 포크 항목 잠금
+    key({ code: "Escape", key: "Escape" });
+    hold = new Promise<Response>(() => {}); // 이 뒤의 조회는 답하지 않는다 — 화면이 지금 가진 목록을 본다
+    act(() => button("새 대화")!.click()); // 기다리는 사이 다른 화면으로
+    await flush();
+    answer.resolve(json({ conversation: full(made) }));
+    await flush();
+    expect(calls.filter((c) => c.path === "/conversations/f1" && c.method === "GET")).toEqual([]); // 자동으로 열지 않았다
+    expect(host.querySelector(".agent-title-btn")?.textContent ?? "").not.toContain("고양이 (포크)");
+    late.resolve(json({ conversations: list.map(full) })); // f1 없는 늦은 목록
+    await flush();
+    await openDrawer();
+    expect(texts(".agent-drawer-item span")[0]).toBe("고양이 (포크)");
+  });
+
   it("⋯·우클릭으로 메뉴 — 항목·단축키(event.code, 수정키·반복·조합 무시)·Esc 는 한 겹씩", async () => {
     await render({ onPopOut: () => {} });
     await openDrawer();
     openMenu("고양이");
-    expect(items()).toEqual(["새 창에서 열기", "고정P", "읽지 않음으로 표시U", "이름 바꾸기R", "프로젝트로 옮기기", "보관A", "삭제D"]);
+    expect(items()).toEqual(["새 창에서 열기", "고정P", "읽지 않음으로 표시U", "이름 바꾸기R", "포크F", "프로젝트로 옮기기", "보관A", "삭제D"]);
     key({ code: "KeyP", key: "p", ctrlKey: true });
     key({ code: "KeyP", key: "p", repeat: true });
     key({ code: "KeyP", key: "ㅔ", isComposing: true });
@@ -1411,7 +1514,7 @@ describe("MV Agent 서랍 메뉴", () => {
     await open("고양이");
     expect(titleBtn()!.textContent).toBe("고양이");
     act(() => titleBtn()!.click());
-    expect(items()).toEqual(["새 창에서 열기", "고정P", "이름 바꾸기R", "프로젝트로 옮기기", "보관A", "삭제D"]);
+    expect(items()).toEqual(["새 창에서 열기", "고정P", "이름 바꾸기R", "포크F", "프로젝트로 옮기기", "보관A", "삭제D"]);
     act(() => titleBtn()!.click()); // 다시 누르면 닫힘
     expect(host.querySelector(".agent-row-menu")).toBeNull();
     act(() => titleBtn()!.click());

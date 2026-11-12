@@ -274,7 +274,8 @@ it("같은 에피소드 안 컷 이동·에피소드로 돌아오기는 지우�
   expect(mocks.stage).toHaveBeenCalledTimes(3);
 });
 
-it("다른 에피소드: 새 target 먼저, 그 뒤 앞 에피소드 컷 빈 전부를 settle 한 번 · 쓴 것은 그 뒤 NAS 로", async () => {
+// AUTO-CLEANUP-OFF — 아래 표식이 붙은 시험은 자동 지우기(Jay 11-12 끔)용이다. 스위치를 다시 켜면 되살리고, 정리 단계에서 지운다.
+it.skip("다른 에피소드: 새 target 먼저, 그 뒤 앞 에피소드 컷 빈 전부를 settle 한 번 · 쓴 것은 그 뒤 NAS 로", async () => {
   mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
     .mockResolvedValueOnce({ ...destination, bin_id: "epT", bins: { "T/C1": "t1" }, episode_bin_id: "epT" });
   mocks.settle.mockResolvedValue({ state: "ok", resolve_project_id: "r", removed: 3, bins: {
@@ -293,7 +294,7 @@ it("다른 에피소드: 새 target 먼저, 그 뒤 앞 에피소드 컷 빈 전
   expect(mocks.settle.mock.invocationCallOrder[0]).toBeLessThan(mocks.adopt.mock.invocationCallOrder[0]); // 안 쓴 것을 지운 뒤 쓴 것을 NAS 로
 });
 
-it("앞 에피소드 settle 전에 그 에피소드를 다시 고르면(A→B→A) 지우지 않음 · settle 도는 중에 다시 고르면 그 target 은 settle 뒤에", async () => {
+it.skip("앞 에피소드 settle 전에 그 에피소드를 다시 고르면(A→B→A) 지우지 않음 · settle 도는 중에 다시 고르면 그 target 은 settle 뒤에", async () => {
   mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   await render(false);
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
@@ -316,7 +317,7 @@ it("앞 에피소드 settle 전에 그 에피소드를 다시 고르면(A→B→
   expect(mocks.target.mock.calls.at(-1)![0]).toMatchObject({ folder_path: "S", create_paths: ["S/C2", "S/C10"] });
 });
 
-it("다른 에피소드(빈 표 없음): 새 컷을 먼저 띄운 뒤 앞 컷 정리 — 기다리는 사이 A 를 다시 고르면 A 는 안 지움", async () => {
+it.skip("다른 에피소드(빈 표 없음): 새 컷을 먼저 띄운 뒤 앞 컷 정리 — 기다리는 사이 A 를 다시 고르면 A 는 안 지움", async () => {
   await render(false); await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
   const held = deferred<typeof destination>();
   mocks.currentBin.mockReturnValueOnce(held.promise).mockResolvedValue({ ...destination, bin_id: "elsewhere" });
@@ -329,7 +330,7 @@ it("다른 에피소드(빈 표 없음): 새 컷을 먼저 띄운 뒤 앞 컷 �
   expect(mocks.unstage.mock.calls.map(call => [call[0].folder_path, call[0].delete_empty])).toEqual([["T/C1", undefined]]); // 빈 표가 없으면 빈은 안 지운다
 });
 
-it("새 target 이 실패하면 앞 에피소드는 미뤄 두었다가 [맞추기]로 맞춘 뒤 정리", async () => {
+it.skip("새 target 이 실패하면 앞 에피소드는 미뤄 두었다가 [맞추기]로 맞춘 뒤 정리", async () => {
   mocks.currentBin.mockImplementation(async (_ctx: unknown, _project: string, folder: string) =>
     ({ ...destination, bin_id: "elsewhere", target_bin_id: ({ "S/C2": "b2", "S/C10": "b10" } as Record<string, string>)[folder] ?? "ep" }));
   mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
@@ -343,7 +344,7 @@ it("새 target 이 실패하면 앞 에피소드는 미뤄 두었다가 [맞추�
   expect(mocks.settle.mock.calls.map(call => call[0].bins.map((bin: { bin_id: string }) => bin.bin_id))).toEqual([["b2", "b10"]]);
 });
 
-it("낡은 B 작업은 그사이 C 를 골랐으면 정리하지 않고, C 의 target 뒤에 앞 에피소드를 정리", async () => {
+it.skip("낡은 B 작업은 그사이 C 를 골랐으면 정리하지 않고, C 의 target 뒤에 앞 에피소드를 정리", async () => {
   mocks.currentBin.mockImplementation(async (_ctx: unknown, _project: string, folder: string) =>
     ({ ...destination, bin_id: "elsewhere", target_bin_id: ({ "S/C2": "b2", "S/C10": "b10" } as Record<string, string>)[folder] ?? "x" }));
   mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
@@ -396,7 +397,7 @@ it("따라온 선택은 늦게 고르더라도 target 으로 바뀌지 않음(�
   expect(mocks.target).toHaveBeenCalledTimes(2);
 });
 
-it("프로젝트를 바꿔 선택이 풀리면 앞 에피소드를 settle 로 정리(다빈치가 들어가 있는 빈은 리졸브 쪽이 남김)", async () => {
+it.skip("프로젝트를 바꿔 선택이 풀리면 앞 에피소드를 settle 로 정리(다빈치가 들어가 있는 빈은 리졸브 쪽이 남김)", async () => {
   mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   mocks.settle.mockResolvedValue({ state: "ok", resolve_project_id: "r", bins: { "S/C2": { state: "current" }, "S/C10": { state: "ok", removed: 1, bin_deleted: true, used: [] } } });
   await render(false);
@@ -415,28 +416,28 @@ const switchEpisodes = async () => {
   await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
 };
 
-it("settle 이 다른 다빈치 프로젝트로 답하면 쓴 것 NAS 옮기기도 안 함", async () => {
+it.skip("settle 이 다른 다빈치 프로젝트로 답하면 쓴 것 NAS 옮기기도 안 함", async () => {
   mocks.settle.mockResolvedValueOnce({ state: "project_changed", resolve_project_id: "other", bins: settleUsed });
   await switchEpisodes();
   expect(mocks.settle).toHaveBeenCalledTimes(1);
   expect(mocks.adopt).not.toHaveBeenCalled();
 });
 
-it("settle 이 ok 가 아니면 알림", async () => {
+it.skip("settle 이 ok 가 아니면 알림", async () => {
   mocks.settle.mockResolvedValueOnce({ state: "unavailable", details: "x" });
   await switchEpisodes();
   expect(control.failures.some(line => line.includes("앞 컷 정리를 확인하지 못했습니다"))).toBe(true);
   expect(mocks.adopt).not.toHaveBeenCalled();
 });
 
-it("settle 이 정리 뒤 다빈치 지금 빈을 못 되돌렸으면(restore_failed) 알리고 쓴 것 옮기기는 이어 감", async () => {
+it.skip("settle 이 정리 뒤 다빈치 지금 빈을 못 되돌렸으면(restore_failed) 알리고 쓴 것 옮기기는 이어 감", async () => {
   mocks.settle.mockResolvedValueOnce({ state: "restore_failed", resolve_project_id: "r", bins: settleUsed });
   await switchEpisodes();
   expect(control.failures).toContain("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다");
   expect(mocks.adopt.mock.calls.map(call => call[0].gen_id)).toEqual(["g", "h"]);
 });
 
-it("쓴 것 NAS 옮기기 하나가 실패해도 다음 것은 옮김", async () => {
+it.skip("쓴 것 NAS 옮기기 하나가 실패해도 다음 것은 옮김", async () => {
   mocks.settle.mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", bins: settleUsed });
   mocks.adopt.mockResolvedValueOnce({ state: "replace_failed" }).mockResolvedValueOnce({ state: "in_bin" });
   await switchEpisodes();
@@ -727,13 +728,37 @@ it("미리 캐시: 기다린 뒤 선택이 그사이 받은 ID 는 다시 묻지
   expect(mocks.cache.mock.calls.map(([body]) => body.gen_ids)).toEqual([["g"]]); // 미리 받기는 다시 안 묻는다
 });
 
-it("다시 열 때 저장된 에피소드의 컷 빈은 inventory 정리에서 건너뛰고 빈은 안 지움", async () => {
+it.skip("다시 열 때 저장된 에피소드의 컷 빈은 inventory 정리에서 건너뛰고 빈은 안 지움 — AUTO-CLEANUP-OFF", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
   const row = { resolve_project_id: "r", project_id: "p", bin_path: "x", item_id: "i", gen_id: "g", usage: 0 };
   mocks.inventory.mockResolvedValue({ ...destination, more: false, items: [
     { ...row, folder_path: "S/C2", bin_id: "b2" }, { ...row, folder_path: "S2/C1", bin_id: "s2" }, { ...row, folder_path: "T/C1", bin_id: "t1" }] });
   await render(false); await flush();
   expect(mocks.unstage.mock.calls.map(call => [call[0].bin_id, call[0].inventory_cleanup, call[0].delete_empty])).toEqual([["s2", true, undefined], ["t1", true, undefined]]);
+});
+
+it("자동 지우기 끔(Jay 11-12): 에피소드를 옮겨도·프로젝트를 풀어도·[맞추기] 뒤에도 settle·unstage 없음", async () => {
+  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
+    .mockResolvedValue({ ...destination, bins: { "T/C1": "t1" }, episode_bin_id: "epT" });
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
+  await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
+  await act(async () => control.align()); await flush();
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  await act(async () => control.selectFolder("", "", "", [])); await flush();
+  expect(mocks.settle).not.toHaveBeenCalled();
+  expect(mocks.unstage).not.toHaveBeenCalled();
+  expect(mocks.target.mock.calls.length).toBeGreaterThan(2); // 빈 맞추기는 그대로 돈다
+});
+
+it("자동 지우기 끔(Jay 11-12): 다시 열 때 안 쓴 것은 안 지우고 쓴 것은 그대로 NAS 로", async () => {
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "", cut: "" }));
+  const row = { resolve_project_id: "r", project_id: "p", bin_path: "x", item_id: "i", gen_id: "g" };
+  mocks.inventory.mockResolvedValue({ ...destination, more: false, items: [
+    { ...row, folder_path: "T/C1", bin_id: "t1", usage: 0 }, { ...row, folder_path: "S2/C1", bin_id: "s2", item_id: "i2", gen_id: "g2", usage: 1 }] });
+  await render(false); await flush();
+  expect(mocks.unstage).not.toHaveBeenCalled();
+  expect(mocks.adopt.mock.calls.map(([body]) => [body.gen_id, body.item_ids])).toEqual([["g2", ["i2"]]]);
 });
 
 it("501개 inventory 끝 쪽 used까지 처리, 복구는 prepare 생략", async () => {

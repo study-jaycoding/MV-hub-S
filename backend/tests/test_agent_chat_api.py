@@ -171,12 +171,17 @@ def test_turn_plan_card_and_human_execute_once(hub, monkeypatch):
 
     monkeypatch.setattr(api.cli_bridge, "estimate_cost", estimate_cost)
     monkeypatch.setattr(gen_requests, "create_gen_request", no_submit)  # 견적 동안 제출 경로를 지킨다
-    estimated = client.post(f"/api/agent-chat/plans/{plan_id}/estimate", headers=headers)
+    here = {"conversation_id": body["conversation_id"]}  # 실행·견적은 지금 대화 id 를 꼭 싣는다(포크 설계 2-1)
+    assert client.post(f"/api/agent-chat/plans/{plan_id}/estimate", headers=headers).status_code == 422
+    assert client.post(f"/api/agent-chat/plans/{plan_id}/estimate", headers=headers, json={"conversation_id": None}).status_code == 422
+    assert client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers,
+                       json={"conversation_id": str(uuid4())}).status_code == 404  # 다른 대화(포크 카드)에서는 실행 안 됨
+    estimated = client.post(f"/api/agent-chat/plans/{plan_id}/estimate", headers=headers, json=here)
     assert estimated.status_code == 200 and estimated.json()["total_credits"] == 3  # 카드의 견적(무료 조회)
     assert mcp_store.client_by_id(profiles[-1]["client_id"])["can_execute"] == 0
     monkeypatch.setattr(gen_requests, "create_gen_request", submit)
     for _ in range(2):
-        executed = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers)
+        executed = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers, json=here)
         assert executed.status_code == 200, executed.text
         assert executed.json()["status"] == "submitted"
         # 사람 [실행] 응답에도 진행 사건과 같은 규칙의 스냅샷(가짜 생성 id 라 생성 상태는 결과 없음)
@@ -229,7 +234,8 @@ def test_agent_executes_this_conversations_plan_while_turn_runs(hub, monkeypatch
     assert first[0]["items"][0]["state"] == "submitted" and first[0]["items"][0]["generation_id"] == "generation-1"
     assert "title" not in first[0] and "prompt" not in first[0]["items"][0]  # 카드(plan 사건)와 따로 — 상태만
     # 이미 보낸 계획에 사람 [실행]·AI 재실행이 와도 제출은 한 번(동시에 선점하러 만나는 경우는 아래 race 시험)
-    assert client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers).status_code == 200
+    assert client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers,
+                       json={"conversation_id": body["conversation_id"]}).status_code == 200
     assert adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id}).status_code == 200
     assert len(calls) == 1
     # 기다림도 스냅샷을 남기고 순서 번호는 늘어난다 · 캔버스 도구는 칸에서 허용(없는 씬이라 404)
@@ -277,7 +283,8 @@ def test_human_and_agent_execute_race_on_claim_submits_once(hub, monkeypatch):
     results = {}
     threads = [
         threading.Thread(target=lambda: results.setdefault(
-            "human", client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers))),
+            "human", client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers,
+                                 json={"conversation_id": body["conversation_id"]}))),
         threading.Thread(target=lambda: results.setdefault(
             "agent", adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id}))),
     ]
@@ -354,7 +361,7 @@ def test_agent_execute_survives_snapshot_failure(hub, monkeypatch):
     ran = adapter_action(client, secret, "execute_generation_plan", {"plan_id": plan_id})
     assert ran.status_code == 200 and ran.json()["status"] == "submitted" and len(calls) == 1
     assert _progress(client, headers, body["turn_id"]) == []
-    human = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers)
+    human = client.post(f"/api/agent-chat/plans/{plan_id}/execute", headers=headers, json={"conversation_id": body["conversation_id"]})
     assert human.status_code == 200 and "snapshot" not in human.json()
     client.post(f"/api/agent-chat/turns/{body['turn_id']}/cancel", headers=headers)
     wait_status(client, headers, body["turn_id"], ("cancelled",))
@@ -369,7 +376,8 @@ def test_idempotent_resend_and_foreign_plan_rejected(hub):
     second = start_turn(client, headers, idempotency_key=key)
     assert second.status_code == 200 and second.json()["turn_id"] == first["turn_id"]
     assert len(profiles) == 1  # 다시 보내도 연결을 또 발급하지 않는다
-    assert client.post(f"/api/agent-chat/plans/{uuid4()}/execute", headers=headers).status_code == 404
+    assert client.post(f"/api/agent-chat/plans/{uuid4()}/execute", headers=headers,
+                       json={"conversation_id": first["conversation_id"]}).status_code == 404
     listing = client.get("/api/agent-chat/conversations", headers=headers).json()["conversations"]
     assert [row["id"] for row in listing] == [first["conversation_id"]]
     detail = client.get(f"/api/agent-chat/conversations/{first['conversation_id']}", headers=headers).json()

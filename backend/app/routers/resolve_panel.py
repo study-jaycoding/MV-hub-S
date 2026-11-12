@@ -102,8 +102,7 @@ class SettleIn(PanelIn):
 
 class UnstageIn(PanelIn):
     bin_id: str = Field(min_length=1, max_length=200)
-    inventory_cleanup: bool = False
-    delete_empty: bool = False  # 다른 에피소드로 옮길 때 — 비게 된 컷 빈까지 지운다
+    inventory_cleanup: bool = False  # 빈 지우기는 settle 만 — 옛 delete_empty 는 없앴다(보내도 모르는 필드로 무시)
 
 
 async def _project_read(request, project_id):
@@ -248,8 +247,6 @@ async def _operate(operation, body, request, ctx):
             payload["bin_id"] = body.bin_id
         if operation == "unstage":
             payload["bin_id"] = body.bin_id
-            # 빈 지우기는 이 창이 target 으로 받은 그 컷의 빈만 — 에피소드·프로젝트 빈·모르는 ID 는 항목 정리만 한다.
-            payload["delete_empty"] = body.delete_empty and not body.inventory_cleanup and panel.cut_bin(body.bin_id, body.window, body.project_id, body.folder_path)
         payload["same_file_ids"] = list(panel._same_files.get((*panel.context_key(ctx), body.window, body.project_id, body.folder_path), set()))
     elif operation in {"prestage", "rename"}:
         source_root, manifest_root = await asyncio.to_thread(resolve_transfer.resolve_transfer_roots, body.project_id)
@@ -363,8 +360,6 @@ async def _operate(operation, body, request, ctx):
                 panel.forget_project(body.project_id)
             if operation == "target" and "bins" in result:
                 panel.remember_episode(body.window, body.project_id, result["bins"], result.get("episode_bin_id", ""), body.episode_path)
-            if operation == "unstage" and result.get("bin_deleted"):
-                panel.forget_bin(body.bin_id)
             if operation == "settle":
                 ids = {row["folder_path"]: row["bin_id"] for row in payload["bins"]}
                 for path, done in (result.get("bins") or {}).items():

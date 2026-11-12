@@ -73,6 +73,8 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
   const where = workspaceLabel(plan.workspace);
   const running = exec?.state === "running";
   const sent = exec?.state === "done" || isSent(progress);
+  // 포크로 복사한 카드 — 이 대화에서 실행·견적하지 않고, 새 소식이 오지 않아 도는 표시도 없다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
+  const forked = !!plan.forked;
   const [fetched, setFetched] = useState<Record<string, Generation | null>>({}); // null = 못 읽음
 
   const rows = items.map((_, index) => {
@@ -116,7 +118,8 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
 
   return (
     <section className="agent-plan" aria-label={t("계획")}>
-      <h4 className="agent-plan-title"><span className="agent-plan-tag">{t("계획")}</span>{plan.title || t("이름 없는 계획")}</h4>
+      <h4 className="agent-plan-title"><span className="agent-plan-tag">{t("계획")}</span>
+        {forked && <span className="agent-plan-tag forked">{t("포크 전")}</span>}{plan.title || t("이름 없는 계획")}</h4>
       {sent && (
         <>
           <p className={`agent-plan-sent${settled ? " is-settled" : ""}`} role="status">
@@ -139,7 +142,7 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
               return (
                 <div key={r.index} className={`agent-plan-tile is-${r.kind === "done" ? "nothumb" : r.kind}`} role="img"
                   aria-label={`${r.index + 1}: ${text}`}>
-                  {(r.kind === "making" || r.kind === "sending") && <span className="agent-plan-spin" aria-hidden="true" />}
+                  {!forked && (r.kind === "making" || r.kind === "sending") && <span className="agent-plan-spin" aria-hidden="true" />}
                   <span>{text}</span>
                 </div>
               );
@@ -165,14 +168,18 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
       )}
       {/* 저장 위치·예상 크레딧 한 줄 */}
       <p className="agent-plan-meta">
-        {where && <><span className="agent-plan-where">{t("저장 위치")} <b>{where}</b></span><span className="agent-plan-dot" aria-hidden="true">·</span></>}
-        <span className="agent-plan-cost">
-          {!estimate ? t("예상 크레딧 확인 중")
-            : estimate.credits === null ? <>{t("예상 크레딧")} {t("확인하지 못했어요")}</>
-            : <>{t("예상 크레딧")} <b>{estimate.credits}</b></>}
-        </span>
+        {where && <><span className="agent-plan-where">{t("저장 위치")} <b>{where}</b></span>{!forked && <span className="agent-plan-dot" aria-hidden="true">·</span>}</>}
+        {!forked && (
+          <span className="agent-plan-cost">
+            {!estimate ? t("예상 크레딧 확인 중")
+              : estimate.credits === null ? <>{t("예상 크레딧")} {t("확인하지 못했어요")}</>
+              : <>{t("예상 크레딧")} <b>{estimate.credits}</b></>}
+          </span>
+        )}
       </p>
-      {sent ? (
+      {forked ? (
+        <p className="agent-plan-meta agent-plan-forked">{t("포크 전 상태 · 결과는 라이브러리에서 확인하세요")}</p>
+      ) : sent ? (
         exec?.state === "failed" && <p className="agent-plan-fail" role="alert">{exec.message}</p>
       ) : (
         <>
