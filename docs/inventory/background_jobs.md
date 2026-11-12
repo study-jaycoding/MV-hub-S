@@ -95,6 +95,7 @@
 | `backend/app/services/media_preservation.py` | `_claim_and_process_non_abandon` | create_task | `process()` |
 | `backend/app/services/remote_realtime.py` | `RemoteRealtimeBridge._consume` | create_task | `websocket.recv()` |
 | `backend/app/services/remote_realtime.py` | `RemoteRealtimeBridge.start` | create_task | `self._run() (name=remote-realtime-bridge)` |
+| `backend/app/services/resolve_panel.py` | `cache` | create_task | `worker()` |
 | `backend/app/services/resolve_panel_installer.py` | `start_background_install` | Thread | `run_startup_install (name=resolve-panel-install)` |
 | `backend/app/services/resolve_queue.py` | `run_non_abandon` | create_task | `coro` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor._start_process` | create_task | `self._read_selections(self._process) (name=resolve-selection-reader)` |
