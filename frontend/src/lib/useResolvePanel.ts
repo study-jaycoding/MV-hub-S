@@ -56,6 +56,7 @@ const under = (path: string, base: string) => !!base && (path === base || path.s
 const sameEpisode = (a: Selection | null, b: Selection | null) => !!a && !!b && a.project_id === b.project_id
   && (a.episode ? a.episode === b.episode : a.folder_path === b.folder_path);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const cacheKey = (ctx: PanelSelection["ctx"], project_id: string, gen_id: string) => `${contextKey(ctx)}\n${project_id}\n${gen_id}`;
 const createWindowId = (): string => typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
   ? crypto.randomUUID() : `panel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`;
 
@@ -84,6 +85,8 @@ export function useResolvePanel() {
   const [davinci, setDavinci] = useState(""); // 열린 다빈치 프로젝트 ID — 선택이 없어도 2초 current-bin 으로 안다
   const davinciRef = useRef("");
   const [here, setHere] = useState(""); // 다빈치 지금 빈이 이 에피소드의 아는 빈이면 그 MV 폴더(트리의 다빈치 표)
+  const cachedIds = useRef(new Set<string>()); // 이 PC 캐시에 받은 것으로 확인된(cached) 생성물 — 미리 받기가 다시 묻지 않는다
+  const precacheRun = useRef(0); // 미리 받기 판 — 새 판이 오면 옛 판은 다음 확인에서 끝난다
   const autoTried = useRef(""); // 자동 빈 만들기가 실패한 활성 컷 묶음 — 같은 묶음으로는 다시 자동으로 부르지 않는다
   const autoBusy = useRef(false);
   const autoNext = useRef<string[] | null>(null); // 진행 중에 바뀐 활성 컷 — 끝나면 이어서
@@ -388,6 +391,7 @@ export function useResolvePanel() {
     gens = [...gens].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id)).slice(0, 200);
     for (const gen_ids of cacheBatches(gens.map(gen => gen.id))) {
       const cached = await panel.cache({ ...selection, gen_ids });
+      for (const item of cached.items || []) if (item.state === "cached") cachedIds.current.add(cacheKey(selection.ctx, selection.project_id, item.gen_id));
       if (!valid(selection) || selected.current !== selection) return false;
       if (cached.state) check(cached as { state: string });
       const failed = cached.items.filter(item => item.state !== "cached");
@@ -492,6 +496,36 @@ export function useResolvePanel() {
     });
   };
   const syncCuts = useCallback((cuts: string[]) => syncRef.current(cuts), []);
+  // 미리 캐시(11-12 띄움 속도) — 에피소드를 고르면 그 컷들의 원본을 이 PC 로 미리 받아 둔다(리졸브 호출 0). cuts = [컷 경로, 생성물 ID들][], 고른 컷 먼저.
+  //  선택의 일이 먼저: 요청마다 쓰기 대기열이 빌 때까지 기다린다. 새 선택의 cache·target 은 허브에서 seq 를 올려 이 요청을 파일 사이에서 멈춘다.
+  //  한 판은 시작 때의 프로젝트·에피소드·계정 문맥·목록에 묶인다. seq 는 지금 선택의 것(정리용 순번이 선택을 stale 로 만들지 않게).
+  //  cached 로 확인된 것만 다시 묻지 않고, 받다 멈춘 컷은 같은 판이면 한 번 더. 실패는 알리지 않는다(컷 빈에 들어갈 때 다시 받는다).
+  const precache = useCallback((project_id: string, episode: string, cuts: Array<[string, string[]]>) => {
+    const run = ++precacheRun.current, ctx = context.current;
+    const live = () => {
+      const now = selected.current;
+      return run === precacheRun.current && ctx && now && valid(now) && contextKey(now.ctx) === contextKey(ctx)
+        && now.project_id === project_id && now.episode === episode ? now : null;
+    };
+    void (async () => {
+      for (const [folder_path, ids] of cuts) {
+        for (let tries = 0; tries < 2; tries++) {
+          const rest = ids.filter(id => ctx && !cachedIds.current.has(cacheKey(ctx, project_id, id)));
+          if (!rest.length) break;
+          for (const gen_ids of cacheBatches(rest)) {
+            // 쓰기 대기열이 빌 때까지 — 기다리는 사이 새 선택의 일이 뒤에 붙었으면 그것까지 기다린다(Codex 독립 리뷰)
+            for (let waited = queue.current; ; waited = queue.current) { await waited; if (waited === queue.current) break; }
+            const now = live();
+            if (!now) return;
+            const result = await panel.cache({ ctx: now.ctx, project_id, folder_path, window: now.window, seq: now.seq, gen_ids });
+            for (const item of result.items || []) if (item.state === "cached") cachedIds.current.add(cacheKey(now.ctx, project_id, item.gen_id));
+            if (!live()) return;
+          }
+        }
+      }
+    })().catch(() => { /* 미리 받기는 덤 — 실패해도 컷 빈에 들어갈 때 다시 받는다 */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const retry = () => {
     adopted.current.clear(); failedAdoptions.current.clear(); recovered.current = ""; setFailures([]);
     setRecoveryRun(value => value + 1);
@@ -547,7 +581,9 @@ export function useResolvePanel() {
           }
         });
       }
-      if (mounted) timer = setTimeout(() => void poll(), 2000);
+      // 따라갈 빈 표가 있으면 0.7초, 없으면 2초 — 자식 프로세스(~0.17초)를 따라갈 것이 있을 때만 자주 띄운다(11-12 띄움 속도)
+      const now = selected.current;
+      if (mounted) timer = setTimeout(() => void poll(), now && valid(now) && episodeOf(now) ? 700 : 2000);
     };
     void poll();
     return () => { mounted = false; clearTimeout(timer); };
@@ -604,6 +640,6 @@ export function useResolvePanel() {
 
   return { config, needsLogin, authReady, identity, target, current, notice, stage, moved, counts, failures, follow, nas, davinci, here,
     canRetry: failures.some(failure => !failure.includes(t(RECOVERY_PENDING))),
-    authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts,
+    authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache,
     onAuthed: () => { setNeedsLogin(false); resetAuth(); } };
 }

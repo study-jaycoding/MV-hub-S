@@ -525,6 +525,202 @@ class PanelStagingTests(unittest.TestCase):
             self.assertEqual(result["import_records"], [])
             name.assert_not_called(); stamp.assert_not_called(); delete.assert_not_called()
 
+    # ── 띄움 속도 1단계(11-12) — 묶어 띄우기 ──
+    def videos(self, *names):
+        rows = []
+        for name in names:
+            path = self.media / f"{name}.mp4"
+            path.write_bytes(b"video")
+            rows.append({"gen_id": f"g{name}", "path": str(path), "label": f"Jay · {name}"})
+        return rows
+
+    def test_stage_batches_one_import_and_stamps_before_names(self):
+        items = self.videos("1", "2", "3")
+        events = []
+        real_set, real_stamp = FakeClip.SetClipProperty, FakeClip.SetThirdPartyMetadata
+        def named(clip, key, value):
+            events.append("name"); return real_set(clip, key, value)
+        def stamped(clip, key, value=None):
+            events.append("stamp"); return real_stamp(clip, key, value)
+        with mock.patch.object(FakeClip, "SetClipProperty", named), mock.patch.object(FakeClip, "SetThirdPartyMetadata", stamped):
+            result = self.run_op("stage", items=items)
+        self.assertEqual([row["state"] for row in result["items"]], ["staged"] * 3)
+        self.assertEqual(self.pool.import_calls, [[row["path"] for row in items]])  # 영상은 한 호출
+        self.assertLess(max(i for i, kind in enumerate(events) if kind == "stamp"), min(i for i, kind in enumerate(events) if kind == "name"))
+        self.assertEqual(sorted(clip.name for clip in self.folder.clips), ["Jay · 1", "Jay · 2", "Jay · 3"])
+        self.assertEqual(self.run_op("stage", items=items)["items"], [{"gen_id": row["gen_id"], "state": "present"} for row in items])
+
+    def test_stage_batch_name_failure_removes_only_that_clip(self):
+        items = self.videos("1", "2")
+        real_set = FakeClip.SetClipProperty
+        def named(clip, key, value):
+            return False if clip.path.endswith("2.mp4") else real_set(clip, key, value)
+        with mock.patch.object(FakeClip, "SetClipProperty", named):
+            result = self.run_op("stage", items=items)
+        self.assertEqual([row["state"] for row in result["items"]], ["staged", "import_failed"])
+        self.assertEqual([Path(clip.path).name for clip in self.folder.clips], ["1.mp4"])
+        self.assertEqual(result["import_records"], [])
+
+    def test_stage_batch_never_touches_clips_it_did_not_get_back(self):
+        items = self.videos("1")
+        human = FakeClip(items[0]["path"])  # 사람이 그사이 같은 파일을 가져왔고 우리 ImportMedia 는 아무것도 돌려주지 않음
+        def import_media(paths):
+            self.folder.clips.append(human)
+            return []
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=import_media):
+            result = self.run_op("stage", items=items)
+        self.assertEqual((result["items"][0]["state"], result["unexpected_imports"], result["import_records"]), ("import_failed", 0, []))
+        self.assertIn(human, self.folder.clips)
+        self.assertEqual((human.third_party_metadata, human.name), ({}, "1.mp4"))
+
+    def test_stage_batch_bin_switched_during_import_keeps_clips_and_records_unowned(self):
+        items = self.videos("1", "2")
+        other = self.pool.AddSubFolder(self.pool.root, "Human")
+        real = FakeMediaPool.ImportMedia
+        def switch_then_import(paths):
+            self.pool.current = other  # 확인과 가져오기 사이에 사람이 다른 빈으로
+            return real(self.pool, paths)
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=switch_then_import), mock.patch.object(self.pool, "DeleteClips") as delete:
+            result = self.run_op("stage", items=items)
+        self.assertEqual([row["state"] for row in result["items"]], ["import_failed"] * 2)
+        delete.assert_not_called()  # 리졸브가 사람 클립을 돌려줬을 수 있어 지우지 않는다
+        self.assertEqual((len(other.clips), self.folder.clips), (2, []))
+        self.assertEqual([clip.third_party_metadata for clip in other.clips], [{}, {}])
+        records = result["import_records"]
+        self.assertEqual(sorted(row["gen_id"] for row in records), ["g1", "g2"])
+        self.assertEqual({(row["bin_id"], row["owned"]) for row in records}, {(other.unique_id, False)})
+        # 그 기록만으로는 다음 띄움이 이어받지 않는다 — 클립이 목적 빈에 와도 사람 클립 취급
+        self.folder.clips.append(other.clips.pop(0))
+        self.pool.current = self.folder
+        again = self.run_op("stage", items=items[:1], import_records=records)
+        self.assertEqual(again["items"][0]["state"], "same_file_exists")
+        self.assertEqual(self.folder.clips[0].third_party_metadata, {})
+
+    def test_stage_batch_owned_record_wins_over_unowned_for_same_generation(self):
+        items = self.videos("1")
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False), mock.patch.object(self.pool, "DeleteClips", return_value=False):
+            failed = self.run_op("stage", items=items)
+        owned = failed["import_records"][0]
+        unowned = {**owned, "item_id": "clip-other", "owned": False}
+        result = self.run_op("stage", items=items, import_records=[unowned, owned])
+        self.assertEqual(result["items"][0]["state"], "staged")  # owned:false 를 먼저 걸러 보통 기록으로 이어받는다
+
+    def test_stage_batch_rechecks_bin_between_stills(self):
+        stills = []
+        for name in ("a", "b"):
+            path = self.media / f"{name}.png"
+            path.write_bytes(b"image")
+            stills.append({"gen_id": name, "path": str(path), "label": name})
+        other = self.pool.AddSubFolder(self.pool.root, "Human")
+        real = FakeMediaPool.ImportMedia
+        def import_then_switch(paths):
+            clips = real(self.pool, paths)
+            self.pool.current = other  # 첫 스틸 뒤 사람이 다른 빈으로
+            return clips
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=import_then_switch):
+            result = self.run_op("stage", items=stills)
+        self.assertEqual(([row["state"] for row in result["items"]], result["deferred"]), (["staged", "deferred"], 1))
+        self.assertEqual((self.pool.import_calls, other.clips), ([[stills[0]["path"]]], []))
+
+    def test_stage_batch_error_before_stamps_records_new_clips(self):
+        items = self.videos("1", "2")
+        with mock.patch.object(resolve_bridge, "_panel_stamp", side_effect=resolve_bridge.ResolveBridgeError("바뀜", code="project_changed")):
+            result = self.run_op("stage", items=items)
+        self.assertEqual((result["state"], result["code"]), ("unavailable", "project_changed"))
+        self.assertEqual(sorted(row["gen_id"] for row in result["import_records"]), ["g1", "g2"])
+        self.assertEqual({row["item_id"] for row in result["import_records"]}, {clip.unique_id for clip in self.folder.clips})
+        self.assertNotIn("owned", result["import_records"][0])  # 짝짓기·목적 빈 확인을 끝낸 것 — 다음 띄움이 이어받는다
+        self.assertEqual([row["state"] for row in self.run_op("stage", items=items, import_records=result["import_records"])["items"]], ["staged"] * 2)
+        # 표식 안의 일반 오류는 지금처럼 '표식 실패 → 그 클립 지우기'(일반 예외의 leftover 는 짝짓기 전 실패 시험이 본다)
+        self.folder.clips.clear()
+        with mock.patch.object(resolve_bridge, "_panel_stamp", side_effect=resolve_bridge._Unknown("읽기 실패")):
+            swallowed = self.run_op("stage", items=items)
+        self.assertEqual(([row["state"] for row in swallowed["items"]], self.folder.clips), (["import_failed"] * 2, []))
+
+    def test_stage_batch_error_before_matching_records_unowned(self):
+        items = self.videos("1", "2")
+        reads = []
+        real = FakeFolder.GetClipList
+        def flaky(folder):
+            reads.append(folder)
+            if len(self.pool.import_calls) and folder is self.folder:
+                raise RuntimeError("목록 읽기 실패")
+            return real(folder)
+        with mock.patch.object(FakeFolder, "GetClipList", flaky):
+            result = self.run_op("stage", items=items)
+        self.assertEqual(result["state"], "unavailable")
+        records = result["import_records"]
+        self.assertEqual((len(records), {row["owned"] for row in records}, {row["gen_id"] for row in records}), (2, {False}, {""}))
+        for key in ("account", "hub_key", "resolve_project_id", "project_id", "gen_id", "item_id"):
+            self.assertIn(key, records[0])  # 저장·정리가 바로 읽는 칸은 늘 있다
+        again = self.run_op("stage", items=items, import_records=records)
+        self.assertEqual([row["state"] for row in again["items"]], ["same_file_exists"] * 2)  # 소유 미확인은 이어받지 않는다
+        self.assertEqual([clip.third_party_metadata for clip in self.folder.clips], [{}, {}])
+
+    def test_stage_batch_unreadable_id_does_not_block_other_clips(self):
+        items = self.videos("1", "2")
+        real = FakeMediaPool.ImportMedia
+        def import_media(paths):
+            clips = real(self.pool, paths)
+            clips[0].GetUniqueId = mock.Mock(side_effect=RuntimeError("ID 읽기 실패"))  # 첫 클립 ID 만 못 읽는다
+            return clips
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=import_media):
+            result = self.run_op("stage", items=items)
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual(([row["state"] for row in result["items"]], result["unexpected_imports"]), (["import_failed", "staged"], 1))
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=import_media), \
+                mock.patch.object(resolve_bridge, "_panel_stamp", side_effect=resolve_bridge.ResolveBridgeError("바뀜", code="project_changed")):
+            self.folder.clips.clear()
+            broke = self.run_op("stage", items=items)
+        self.assertEqual([row["gen_id"] for row in broke["import_records"]], ["g2"])  # 읽힌 클립은 기록이 남는다
+
+    def test_stage_batch_unreadable_id_before_import_stops_without_touching_human_clip(self):
+        items = self.videos("1")
+        human = FakeClip(items[0]["path"])  # 처음 목록 뒤에 사람이 같은 파일을 넣었고, 가져오기 직전 ID 읽기만 한 번 실패
+        human.GetUniqueId = mock.Mock(side_effect=[RuntimeError("잠깐 실패"), "human-id", "human-id", "human-id"])
+        real_current = FakeMediaPool.GetCurrentFolder
+        def current():
+            if human not in self.folder.clips:
+                self.folder.clips.append(human)
+            return real_current(self.pool)
+        with mock.patch.object(self.pool, "GetCurrentFolder", side_effect=current), \
+                mock.patch.object(self.pool, "ImportMedia", return_value=[human]) as imports, mock.patch.object(self.pool, "DeleteClips") as delete:
+            result = self.run_op("stage", items=items)
+        self.assertEqual(result["state"], "unavailable")
+        imports.assert_not_called(); delete.assert_not_called()
+        self.assertEqual((human.third_party_metadata, human.name), ({}, "1.mp4"))
+
+    def test_stage_batch_twin_follows_record_resume_leader(self):
+        items = self.videos("1")
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False), mock.patch.object(self.pool, "DeleteClips", return_value=False):
+            record = self.run_op("stage", items=items)["import_records"][0]  # 이어받을 클립이 빈에 남음
+        twin = {**items[0], "gen_id": "twin", "label": "twin"}
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False):
+            failed = self.run_op("stage", items=[twin, items[0]], import_records=[record])
+        self.assertEqual([row["state"] for row in failed["items"]], ["import_failed", "import_failed"])  # 대표(이어받기)가 지워졌으면 둘째도
+        self.folder.clips.clear()
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False), mock.patch.object(self.pool, "DeleteClips", return_value=False):
+            record = self.run_op("stage", items=items)["import_records"][0]
+        ok = self.run_op("stage", items=[twin, items[0]], import_records=[record])
+        self.assertEqual([row["state"] for row in ok["items"]], ["same_file_exists", "staged"])
+
+    def test_stage_batch_same_path_imports_once_and_follows_leader(self):
+        first, = self.videos("1")
+        still = self.media / "s.png"
+        still.write_bytes(b"image")
+        middle = {"gen_id": "still", "path": str(still), "label": "still"}
+        twin = {**first, "gen_id": "twin", "label": "twin"}
+        result = self.run_op("stage", items=[first, middle, twin])  # 영상·스틸·영상 — 묶음이 달라도 같은 경로는 한 번
+        self.assertEqual([row["state"] for row in result["items"]], ["staged", "staged", "same_file_exists"])
+        self.assertEqual(self.pool.import_calls, [[first["path"]], [str(still)]])
+        self.folder.clips.clear()
+        with mock.patch.object(FakeClip, "SetThirdPartyMetadata", return_value=False):
+            failed = self.run_op("stage", items=[first, twin])
+        self.assertEqual([row["state"] for row in failed["items"]], ["import_failed", "import_failed"])  # 대표가 지워졌으면 둘째도 성공 아님
+        self.pool.current = self.pool.root
+        held = self.run_op("stage", items=[first, twin])
+        self.assertEqual(([row["state"] for row in held["items"]], held["deferred"]), (["deferred", "deferred"], 2))
+
 
 class FakeFolder:
     _next_id = 0

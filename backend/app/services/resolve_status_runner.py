@@ -512,6 +512,17 @@ def run_resolve_project_open_isolated(
         )
 
 
+# 패널 읽기(current-bin 8초·inventory 20초 제한)만 — 패널 자식이 리졸브 프로젝트를 읽은 지 10초 안이면 켜짐 확인(0.38초, 11-12 실측)을
+#  건너뛴다. 쓰기는 늘 확인한다(쓰기 자식은 시간 제한이 없어 리졸브가 막 꺼진 뒤 건너뛰면 잠금을 쥔 채 오래 기다린다 — Codex).
+_PANEL_ALIVE_SECONDS = 10.0
+_panel_alive_at: float | None = None
+
+
+def _note_panel_alive(result: dict[str, Any] | None) -> None:
+    global _panel_alive_at
+    _panel_alive_at = time.monotonic() if result and result.get("resolve_project_id") else None
+
+
 def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) -> dict[str, Any]:
     """패널도 같은 변경 잠금을 쓴다 — 대기는 30초, 시작한 변경 자식은 끝까지 기다린다."""
     reading = payload["operation"] in {"current-bin", "inventory"}
@@ -524,7 +535,8 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                     rejected = before_start()
                     if rejected:
                         return rejected
-                if _resolve_is_closed():
+                recent = reading and _panel_alive_at is not None and time.monotonic() - _panel_alive_at < _PANEL_ALIVE_SECONDS
+                if not recent and _resolve_is_closed():
                     return {"state": "unavailable", "details": NOT_RUNNING_MESSAGE}
                 try:
                     interpreter, _status, failure = _select_interpreter()
@@ -543,8 +555,10 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                         input_text=json.dumps(payload, ensure_ascii=True),
                     )
                 except (OSError, subprocess.SubprocessError) as exc:
+                    _note_panel_alive(None)
                     return {"state": failed_state, "details": str(exc)}
                 result = _parse_result(completed.stdout, "MVHUB_RESOLVE_PANEL=")
+                _note_panel_alive(result)
                 return result or {"state": failed_state,
                                   "details": _tail_text(completed.stderr) or "자식 실행 결과를 확인하지 못했습니다"}
         if reading or time.monotonic() >= deadline:

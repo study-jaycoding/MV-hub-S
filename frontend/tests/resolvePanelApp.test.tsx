@@ -458,6 +458,81 @@ it("느린 target 사이 목록 갱신으로 선택 객체만 바뀌어도 새 �
   expect(mocks.target.mock.calls.at(-1)![0]).toMatchObject({ keep_current: true, create_paths: ["S/C2", "S/C10", "S/C40"] });
 });
 
+it("띄움 속도: 빈 표가 있으면 다빈치 빈 읽기를 0.7초마다, 없으면 2초마다", async () => {
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "", cut: "" }));
+  await render();
+  const reads = () => mocks.currentBin.mock.calls.length;
+  let before = reads();
+  await tick(800);
+  expect(reads()).toBe(before); // 빈 표 없음 — 2초 간격
+  await tick(1300);
+  expect(reads()).toBe(before + 1);
+  mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
+  await act(async () => row("S")!.click()); await flush();
+  await tick(2100); // 앞 간격(2초) 지나고 새 간격으로
+  before = reads();
+  await tick(800);
+  expect(reads()).toBe(before + 1); // 빈 표 있음 — 0.7초 간격
+});
+
+it("미리 캐시: 선택의 target 뒤에 에피소드 컷 원본을 받아 둠(지금 선택 seq) · 받은 것은 다시 안 물음 · stage·리졸브 쓰기 0", async () => {
+  const g10 = { ...gen, id: "g10", folder_path: "S/C10" } as Generation;
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, g10], reload: mocks.listReload, startedAt: 1 });
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
+  const held = deferred<unknown>();
+  mocks.target.mockImplementationOnce(() => held.promise);
+  await render();
+  expect(mocks.cache).not.toHaveBeenCalled(); // 선택의 target 이 대기열에 있는 동안은 미리 받지 않는다
+  await act(async () => held.resolve({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })); await flush();
+  expect(mocks.cache.mock.calls.map(([body]) => [body.folder_path, body.gen_ids])).toEqual([["S/C2", ["g"]], ["S/C10", ["g10"]]]); // MV 컷 순서
+  expect(mocks.cache.mock.calls.every(([body]) => body.seq === mocks.target.mock.calls[0][0].seq)).toBe(true);
+  expect(mocks.stage).not.toHaveBeenCalled();
+  const count = mocks.cache.mock.calls.length;
+  await act(async () => row("S")!.querySelector<HTMLElement>(".folder-tree-fold")!.click()); await flush();
+  await act(async () => row("S/C2")!.click()); await flush(); // 같은 에피소드 컷 — 그 컷 받기는 선택이 하고, 미리 받기는 다시 안 묻는다
+  expect(mocks.cache.mock.calls.slice(count).map(([body]) => body.folder_path)).toEqual(["S/C2"]);
+});
+
+it("미리 캐시: 받는 중 에피소드를 바꾸면 옛 판은 남은 컷을 묻지 않음", async () => {
+  const g10 = { ...gen, id: "g10", folder_path: "S/C10" } as Generation;
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, g10], reload: mocks.listReload, startedAt: 1 });
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
+  const first = deferred<unknown>();
+  mocks.cache.mockImplementationOnce(() => first.promise);
+  mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
+  await render();
+  expect(mocks.cache.mock.calls.map(([body]) => body.folder_path)).toEqual(["S/C2"]); // 첫 컷을 받는 중
+  await act(async () => row("T")!.click()); await flush();
+  await act(async () => first.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.cache.mock.calls.map(([body]) => body.folder_path)).toEqual(["S/C2"]); // S/C10 은 묻지 않는다
+});
+
+it("미리 캐시: 기다리는 사이 뒤에 붙은 선택의 일(다시 띄우기)이 먼저", async () => {
+  await render(false);
+  const held = deferred<unknown>();
+  mocks.target.mockImplementationOnce(() => held.promise);
+  await act(async () => { void control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"]); }); await flush();
+  await act(async () => { control.precache("p", "S", [["S/C2", ["g", "g2"]], ["S/C10", ["g10"]]]); }); await flush();
+  await act(async () => { control.retry(); }); await flush(); // 미리 받기가 기다리는 사이 선택의 다시 띄우기가 대기열 뒤에
+  await act(async () => held.resolve({ ...destination, bin_id: "b2", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })); await flush();
+  expect(mocks.cache.mock.calls.map(([body]) => body.gen_ids)).toEqual([["g"], ["g"], ["g2"], ["g10"]]); // 선택·다시 띄우기 → 미리 받기
+});
+
+it("미리 캐시: 거르기로 목록이 비면 옛 판도 끝남", async () => {
+  const g10 = { ...gen, id: "g10", folder_path: "S/C10" } as Generation;
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, g10], reload: mocks.listReload, startedAt: 1 });
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
+  const first = deferred<unknown>();
+  mocks.cache.mockImplementationOnce(() => first.promise);
+  mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
+  await render();
+  expect(mocks.cache.mock.calls.map(([body]) => body.folder_path)).toEqual(["S/C2"]);
+  mocks.generations.mockReturnValue({ state: "ok", gens: [], reload: mocks.listReload, startedAt: 2 }); // 같은 에피소드, 목록이 빔
+  await act(async () => root.render(<ResolvePanelApp />)); await flush();
+  await act(async () => first.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.cache.mock.calls.map(([body]) => body.folder_path)).toEqual(["S/C2"]); // 옛 판의 S/C10 은 묻지 않는다
+});
+
 it("다시 열 때 저장된 에피소드의 컷 빈은 inventory 정리에서 건너뛰고 빈은 안 지움", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
   const row = { resolve_project_id: "r", project_id: "p", bin_path: "x", item_id: "i", gen_id: "g", usage: 0 };

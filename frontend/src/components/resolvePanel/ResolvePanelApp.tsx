@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { WorkspaceContext } from "../../types";
+import type { Generation, WorkspaceContext } from "../../types";
 import { LoginScreen } from "../LoginScreen";
 import { findFolder, useEditGenerations, useEditProjects } from "../../lib/useEditSequence";
 import type { FolderCountTreeNode } from "../../lib/folderTreeModel";
@@ -164,6 +164,23 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
     if (ready && episode && chosen.current === folderKey) panel.syncCuts(cutPaths);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutsKey, ready, folderKey, panel.syncCuts]);
+  // 미리 캐시(11-12 띄움 속도) — 에피소드 컷들의 거르기 통과 원본을 컷마다 띄움과 같은 범위(오래된 200개)로, 고른 컷 먼저
+  const precacheList = useMemo(() => {
+    if (!episode) return [];
+    const byCut = new Map<string, Generation[]>();
+    for (const gen of list.gens) if (gen.folder_path && (!pass || pass(gen))) byCut.set(gen.folder_path, [...byCut.get(gen.folder_path) || [], gen]);
+    const order = cut ? [cut, ...cutPaths.filter(path => path !== cut)] : cutPaths;
+    return order.map((path): [string, string[]] => [path, [...byCut.get(path) || []]
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id)).slice(0, 200).map(gen => gen.id)])
+      .filter(([, ids]) => ids.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episode, cut, cutsKey, list.gens, ui.filter]);
+  const precacheKey = JSON.stringify(precacheList);
+  useEffect(() => {
+    // 목록이 비어도 부른다 — 새 판(빈 목록)이 옛 판(옛 거르기·목록)을 끝낸다(Codex 독립 리뷰)
+    if (ready && episode && chosen.current === folderKey) panel.precache(selection.project, episode, precacheList);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [precacheKey, ready, folderKey, panel.precache]);
   // 다빈치에서 컷 빈에 들어가면 그 컷으로, 에피소드 빈으로 돌아오면 컷 선택을 풀고 따라간다
   useEffect(() => {
     const follow = panel.follow;

@@ -2102,64 +2102,146 @@ def _panel_record_matches(clip, record, payload, resolve_project_id):
             and (not mark.get("staged_by") or (mark.get("staged_by") == payload.get("hub_key") and mark.get("item_id") == _uid(clip))))
 
 
+def _panel_import_record(payload, resolve_project_id, gen_id, item_id, bin_id, local_path, *, owned=True):
+    """띄움 복구 기록 — 라우터가 저장(파일 이름 = item_id)하고 다음 띄움이 이어받는다. 칸은 늘 다 채운다(모르는 gen 은 빈 글자).
+    소유 미확인(owned=False)은 진단용 — 다음 띄움이 이어받지 않는다(그 기록만으로 표식·이름·지우기 0)."""
+    row = {"account": payload["account"], "hub_key": payload["hub_key"], "resolve_project_id": resolve_project_id,
+           "project_id": payload["project_id"], "gen_id": gen_id, "item_id": item_id, "bin_id": bin_id, "local_path": local_path}
+    return row if owned else {**row, "owned": False}
+
+
 def _panel_stage(pool, target, payload, resolve_project_id, guard):
-    wanted = {row["gen_id"] for row in payload.get("items", [])}
-    results, recovery, removed, deferred, unexpected = [], [], 0, 0, 0
-    clips = _strict_list(target.GetClipList)
-    for clip in clips:
+    """컷 빈에 띄우기 — 빠진 것을 먼저 다 고른 뒤 묶음으로 가져오고(영상은 한 호출) 표식 → 이름 순서로 한다(11-12 띄움 속도).
+    리졸브는 미디어 풀이 바뀐 뒤 첫 클립 속성 읽기에 0.1~0.2초를 써서 항목마다 가져오기·읽기·이름을 번갈아 하지 않는다.
+    다루는 클립은 이번 ImportMedia 가 돌려준 것뿐이다 — 그사이 사람이 가져온 클립은 짝짓기·표식·지우기 대상이 아니다."""
+    items = payload.get("items", [])
+    wanted = {row["gen_id"] for row in items}
+    removed, unexpected = 0, 0
+    for clip in _strict_list(target.GetClipList):
         mark = _panel_raw_mark(clip)
         if not payload.get("capped") and mark.get("project_id") == payload["project_id"] and mark.get("generation_id") not in wanted:
             if _panel_owned(clip, payload) and _panel_delete(pool, target, clip, guard, owned=payload):
                 removed += 1
-    for item in payload.get("items", []):
-        if item["gen_id"] in payload.get("same_file_ids", []):
-            results.append({"gen_id": item["gen_id"], "state": "same_file_exists"})
+    rows = [(clip, _panel_raw_mark(clip), _clip_file_path(clip)) for clip in _strict_list(target.GetClipList)] if items else []
+    records = [row for row in payload.get("import_records", []) if row.get("owned", True)]  # 소유 미확인 기록은 고르기 전에 거른다
+    def known_id(clip):
+        try:
+            return _uid(clip)
+        except _Unknown:
+            return ""
+
+    states, ready, fresh, leader, twins, pending = {}, [], [], {}, {}, []  # ready = (항목, 클립, 클립 ID) 표식·이름 할 것
+    for item in items:
+        gen, path = item["gen_id"], _normal_path(item["path"])
+        if gen in payload.get("same_file_ids", []):
+            states[gen] = "same_file_exists"
             continue
-        clips = _strict_list(target.GetClipList)
-        present = any((mark := _panel_raw_mark(clip)).get("generation_id") == item["gen_id"]
-                      and mark.get("project_id") == payload["project_id"]
-                      and (_panel_owned(clip, payload) or (not mark.get("staged_by") and not _panel_under(_clip_file_path(clip), payload["media_root"])))
-                      for clip in clips)
-        if present:
-            results.append({"gen_id": item["gen_id"], "state": "present"})
+        if any(mark.get("generation_id") == gen and mark.get("project_id") == payload["project_id"]
+               and (_panel_owned(clip, payload) or (not mark.get("staged_by") and not _panel_under(clip_path, payload["media_root"])))
+               for clip, mark, clip_path in rows):
+            states[gen] = "present"
             continue
-        record = next((row for row in payload.get("import_records", []) if row.get("gen_id") == item["gen_id"]), None)
-        clip = next((row for row in clips if record and _uid(row) == record["item_id"]), None)
-        if clip is not None:
-            if not _panel_record_matches(clip, record, payload, resolve_project_id) or _panel_usage(clip) != 0:
-                results.append({"gen_id": item["gen_id"], "state": "conflict"})
-                continue
+        record = next((row for row in records if row.get("gen_id") == gen), None)
+        clip = next((row for row, _mark, _path in rows if record and _uid(row) == record["item_id"]), None)
+        if clip is None:
+            pending.append(item)
+        elif _panel_record_matches(clip, record, payload, resolve_project_id) and _panel_usage(clip) == 0:
+            ready.append((item, clip, record["item_id"]))
+            leader.setdefault(path, gen)  # 기록으로 이어받는 것도 그 경로의 대표 — 같은 경로 둘째는 이 결과를 따른다
         else:
-            # 사람 항목이나 복제본을 같은 파일이라는 이유로 넘겨받지 않는다.
-            if any(_normal_path(_clip_file_path(row)) == _normal_path(item["path"])
-                   and _panel_raw_mark(row).get("staged_by") in {None, payload["hub_key"]} for row in clips):
-                results.append({"gen_id": item["gen_id"], "state": "same_file_exists"})
-                continue
+            states[gen] = "conflict"
+    for item in pending:
+        gen, path = item["gen_id"], _normal_path(item["path"])
+        if path in leader:
+            twins[gen] = leader[path]  # 같은 경로 둘째 — 대표 하나만 가져오고(묶음이 달라도) 대표의 최종 결과를 따른다(아래)
+        # 사람 항목이나 복제본을 같은 파일이라는 이유로 넘겨받지 않는다.
+        elif any(_normal_path(clip_path) == path and mark.get("staged_by") in {None, payload["hub_key"]} for _clip, mark, clip_path in rows):
+            states[gen] = "same_file_exists"
+        else:
+            leader[path] = gen
+            fresh.append(item)
+
+    recovery, unchecked, settled, attempted, good = [], set(), set(), set(), {}  # unchecked = 돌려받았지만 짝짓기·목적 빈 확인을 못 끝낸 클립 ID
+    try:
+        by_path = {_normal_path(item["path"]): item for item in fresh}
+        for group in _import_groups([item["path"] for item in fresh]):
+            # 묶음마다 — 스틸을 한 건씩 넣는 사이 사람이 빈을 옮기면 그 뒤 것은 가져오지 않는다(아래에서 deferred)
             guard()
             if _uid(pool.GetCurrentFolder()) != _uid(target):
-                deferred += 1
-                results.append({"gen_id": item["gen_id"], "state": "deferred"})
-                continue
-            before = {_uid(row) for row in clips}
+                break
+            # 가져오기 전 ID 는 완전해야 한다 — 하나라도 못 읽으면 가져오지 않는다(못 읽은 사람 클립을 '새 클립'으로 오인하지 않게)
+            before = {_uid(clip) for clip in _strict_list(target.GetClipList)}
             guard()
-            imported = _import_media_items(pool, [item["path"]])
-            if len(imported) != 1 or not _uid(imported[0]) or _uid(imported[0]) in before or _normal_path(_clip_file_path(imported[0])) != _normal_path(item["path"]):
-                if len(imported) != 1 or _normal_path(_clip_file_path(imported[0])) != _normal_path(item["path"]):
-                    unexpected += len({_uid(clip) for clip in imported if _uid(clip) and _uid(clip) not in before})
-                results.append({"gen_id": item["gen_id"], "state": "import_failed"})
-                continue
-            clip = imported[0]
-        try:
-            guard()
-            clip.SetClipProperty("Clip Name", item["label"])
-            good = clip.GetClipProperty("Clip Name") == item["label"] and _panel_stamp(clip, item["gen_id"], payload["project_id"], guard, hub_key=payload["hub_key"])
-        except Exception:
-            good = False
-        results.append({"gen_id": item["gen_id"], "state": "staged" if good else "import_failed"})
-        if not good and not _panel_delete(pool, target, clip, guard):
-            recovery.append({"account": payload["account"], "hub_key": payload["hub_key"],
-                             "resolve_project_id": resolve_project_id, "project_id": payload["project_id"],
-                             "gen_id": item["gen_id"], "item_id": _uid(clip), "bin_id": _uid(target), "local_path": item["path"]})
+            imported = [(clip, known_id(clip)) for clip in _import_media_items(pool, group)]  # ID 는 한 번만 읽는다
+            unexpected += sum(1 for _clip, clip_id in imported if not clip_id)  # ID 를 못 읽은 클립은 기록 없이 세기만
+            returned = [(clip, clip_id) for clip, clip_id in imported if clip_id and clip_id not in before]
+            unchecked.update(clip_id for _clip, clip_id in returned)
+            attempted.update(_normal_path(path) for path in group)
+            inside = {known_id(clip) for clip in _strict_list(target.GetClipList)}
+            found = {}
+            for clip, clip_id in returned:
+                found.setdefault(_normal_path(_clip_file_path(clip)), []).append((clip, clip_id))
+            for path in map(_normal_path, group):
+                item, hits = by_path[path], found.pop(path, [])
+                if len(hits) == 1 and hits[0][1] in inside:
+                    ready.append((item, *hits[0]))
+                elif len(hits) == 1:
+                    # 그사이 지금 빈이 바뀌어 다른 빈에 들어갔다 — 리졸브가 그 빈의 사람 클립을 돌려줬을 수 있어 지우지 않고 소유 미확인 기록만
+                    states[item["gen_id"]] = "import_failed"
+                    home = pool.GetCurrentFolder()
+                    here = home is not None and hits[0][1] in {known_id(row) for row in _strict_list(home.GetClipList)}
+                    recovery.append(_panel_import_record(payload, resolve_project_id, item["gen_id"], hits[0][1],
+                                                         known_id(home) if here else "", item["path"], owned=False))
+                else:
+                    states[item["gen_id"]] = "import_failed"  # 못 돌려받았거나 모호 — 모호한 클립은 손대지 않는다
+                    unexpected += len(hits)
+                unchecked.difference_update(clip_id for _clip, clip_id in hits)
+            for hits in found.values():  # 짝 없는 돌려받은 클립 — 손대지 않는다(지금과 같음)
+                unexpected += len(hits)
+                unchecked.difference_update(clip_id for _clip, clip_id in hits)
+        for item in fresh:
+            if _normal_path(item["path"]) not in attempted:
+                states[item["gen_id"]] = "deferred"
+        for item, clip, clip_id in ready:  # 표식을 먼저 모두 — 이름 바꾸기 도중 끊겨도 내 항목으로 찾는다
+            try:
+                good[clip_id] = _panel_stamp(clip, item["gen_id"], payload["project_id"], guard, hub_key=payload["hub_key"])
+            except Exception as exc:
+                if getattr(exc, "code", "") == "project_changed":
+                    raise
+                good[clip_id] = False
+        for item, clip, clip_id in ready:  # 이름은 맨 뒤 — 클립은 이미 미디어 풀에 있고 이름은 한 개에 ~0.1초(11-12 실측)
+            if good[clip_id]:
+                guard()
+                try:
+                    clip.SetClipProperty("Clip Name", item["label"])
+                except Exception:  # noqa: BLE001 - 아래 되읽기로 판정한다
+                    pass
+        for item, clip, clip_id in ready:
+            try:
+                named = good[clip_id] and clip.GetClipProperty("Clip Name") == item["label"]
+            except Exception:  # noqa: BLE001
+                named = False
+            states[item["gen_id"]] = "staged" if named else "import_failed"
+            if not named and not _panel_delete(pool, target, clip, guard):
+                recovery.append(_panel_import_record(payload, resolve_project_id, item["gen_id"], clip_id, known_id(target), item["path"]))
+            settled.add(clip_id)
+    except Exception as exc:
+        # 가져온 뒤 다 끝내기 전에 끊겼다 — 표식이 안 붙은 이번 클립을 복구 기록으로 결과에 싣는다(라우터는 상태와 상관없이 저장한다).
+        #  짝짓기·목적 빈 확인을 끝낸 것은 일반 기록, 못 끝낸 것은 소유 미확인. panel_operation 은 ResolveBridgeError 의 leftover 만 싣는다.
+        stamped = {key for key, value in good.items() if value}
+        leftover = recovery + [
+            _panel_import_record(payload, resolve_project_id, item["gen_id"], clip_id, known_id(target), item["path"])
+            for item, _clip, clip_id in ready if clip_id not in stamped | settled
+        ] + [_panel_import_record(payload, resolve_project_id, "", clip_id, "", "", owned=False) for clip_id in unchecked]
+        error = exc if isinstance(exc, ResolveBridgeError) else ResolveBridgeError(str(exc) or type(exc).__name__)
+        error.leftover = {**getattr(error, "leftover", {}), "import_records": leftover}
+        if error is exc:
+            raise
+        raise error from exc
+    for gen, first in twins.items():
+        states[gen] = "same_file_exists" if states[first] == "staged" else states[first]
+    results = [{"gen_id": item["gen_id"], "state": states[item["gen_id"]]} for item in items]
+    deferred = sum(1 for row in results if row["state"] == "deferred")
     return {"state": "ok", "items": results, "removed": removed, "deferred": deferred, "import_records": recovery, "unexpected_imports": unexpected}
 
 

@@ -955,6 +955,40 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(result["state"], state)
             probe.assert_not_called()
 
+    def test_recent_read_skips_closed_check_writes_always_check(self):
+        ok = SimpleNamespace(stdout=worker.RESULT_PREFIX + '{"state":"ok","resolve_project_id":"r"}', stderr="", returncode=0)
+        crash = SimpleNamespace(stdout="", stderr="crashed", returncode=1)
+        clock = [100.0]
+        self.addCleanup(setattr, runner, "_panel_alive_at", None)
+        runner._panel_alive_at = None
+        with patch.object(runner, "_resolve_is_closed", return_value=False) as closed, patch.object(runner, "_select_interpreter", return_value=("python", {}, "")), \
+                patch.object(runner, "_run_child", return_value=ok) as child, patch.object(runner.time, "monotonic", side_effect=lambda: clock[0]):
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            self.assertEqual(closed.call_count, 1)  # 처음은 확인
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            runner.run_resolve_panel_isolated({"operation": "inventory"})
+            self.assertEqual(closed.call_count, 1)  # 10초 안 읽기는 건너뜀
+            runner.run_resolve_panel_isolated({"operation": "stage"})
+            self.assertEqual(closed.call_count, 2)  # 쓰기는 늘 확인
+            clock[0] += 11
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            self.assertEqual(closed.call_count, 3)  # 10초가 지나면 다시
+            child.return_value = crash
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})  # 건너뛴 채 실패 → 기억을 지운다
+            child.return_value = ok
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            self.assertEqual(closed.call_count, 4)
+            child.side_effect = runner.subprocess.TimeoutExpired("python", 8)
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})  # 건너뛴 채 시간 초과 → 기억을 지운다
+            child.side_effect = None
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            self.assertEqual(closed.call_count, 5)
+            child.return_value = SimpleNamespace(stdout=worker.RESULT_PREFIX + '{"state":"unavailable"}', stderr="", returncode=0)
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})  # 프로젝트 ID 없는 결과도 기억을 지운다
+            child.return_value = ok
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            self.assertEqual(closed.call_count, 6)
+
     def test_child_crash_is_unknown_for_adopt(self):
         with patch.object(runner, "_resolve_is_closed", return_value=False), patch.object(runner, "_select_interpreter", return_value=("python", {}, "")), patch.object(runner, "_run_child", return_value=SimpleNamespace(stdout="", stderr="crashed", returncode=1)):
             self.assertEqual(runner.run_resolve_panel_isolated({"operation": "adopt"})["state"], "unknown")
