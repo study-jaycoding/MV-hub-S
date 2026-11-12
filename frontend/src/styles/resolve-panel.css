@@ -13,7 +13,8 @@
 .resolve-panel .rp-save-saving, .resolve-panel .rp-save:disabled { background: #8fa83a; border-left-color: #7a9030; color: #10120c; opacity: 1; cursor: default; }
 .resolve-panel .rp-save-done { background: #2e3a1a; color: var(--accent, #c4e84a); border-left-color: #5d7322; }
 .resolve-panel .rp-save-blocked { background: #3a2424; color: #ff9b8f; border-left-color: #7a3a33; }
-.rp-save-spin { width: 22px; height: 22px; border: 3px solid rgba(16, 18, 12, .3); border-top-color: #10120c; border-radius: 50%; animation: rp-save-spin .9s linear infinite; }
+/* 계단식(steps) — 부드러운 무한 회전은 화면을 초당 60번 다시 합친다(idleCssAnimations 시험 규칙) */
+.rp-save-spin { width: 22px; height: 22px; border: 3px solid rgba(16, 18, 12, .3); border-top-color: #10120c; border-radius: 50%; animation: rp-save-spin .9s steps(8) infinite; }
 @keyframes rp-save-spin { to { transform: rotate(360deg); } }
 .resolve-panel-status.bad { color: #ff9b8f; }
 .rp-save-list { margin-top: 6px; padding: 6px 8px; background: #1f2023; border-radius: 4px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
