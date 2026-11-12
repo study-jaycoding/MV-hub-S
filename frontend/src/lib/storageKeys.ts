@@ -32,6 +32,7 @@ export const STORAGE_KEYS = {
   // 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md) — 서랍 폭(px) · 새 창에서 열기 요청{account,identity,id,nonce,at}과
   // 처리한 요청 번호(새 창만 받고, 요청 키는 지우지 않는다) · 지운 대화 알림{account,id,at}(다른 창이 그 대화를 비운다)
   agentDrawerWidth: "mvhub.agentPanel.drawerWidth",
+  agentInfoOpen: "mvhub.agentPanel.infoOpen", // 머리글 정보 칸을 열어 둔 채인지(true) — 정보 단추를 다시 누를 때까지 떠 있다(Jay 11-12)
   agentPanelOpenRequest: "mvhub.agentPanel.openRequest",
   agentPanelOpenDone: "mvhub.agentPanel.openDone",
   agentPanelDeleted: "mvhub.agentPanel.deleted",

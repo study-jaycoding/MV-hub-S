@@ -111,7 +111,9 @@ describe("Ask Agent 옆 칸", () => {
     };
     await mount();
     expect(panel().textContent).toContain("지금 보는 화면을 같이 보면서 일해요");
+    act(() => button("정보")!.click()); // 지금 화면은 머리글 정보 칸에
     expect(panel().textContent).toContain("워크스페이스 › e001");
+    act(() => button("정보")!.click());
     type("고양이 컷 4장");
     enter();
     await flush();
@@ -283,32 +285,47 @@ describe("Ask Agent 옆 칸", () => {
     expect(texts(".agent-plan-tile")).toEqual(["완료 — 라이브러리에서 확인", "만드는 중"]); // 썸네일 줄 곳이 없으면 글
     expect(host.querySelector(".agent-plan-title")!.textContent).toBe("계획고양이 컷 4장"); // 진행은 제목·프롬프트를 안 덮는다
     expect(texts(".agent-plan-items li")).toEqual(["1Nano Banana 2고양이 1", "2Nano Banana 2고양이 2"]);
+    act(() => button("정보")!.click()); // 정보 칸 '이 대화에서 만든 것' = 끝난 g1 만
+    expect([host.querySelectorAll(".agent-info-grid .agent-sent-tile").length, host.querySelector(".agent-info-count")!.textContent]).toEqual([1, "1"]);
   });
 
-  it("'지금 화면' 칩 — × 로 빼면 다음 차례에 빈 문맥, [＋ 지금 화면] 으로 다시, 새 대화는 붙은 채 시작", async () => {
+  it("정보 칸 — 정보 단추로만 열고 닫음(바깥 누름·Esc 에 안 닫힘·다시 올려도 열린 채) · 지금 화면 스위치로 빈 문맥·회색 점·안내문 · 새 대화는 다시 켜짐 · 입력칸엔 지금 화면 칩 없음", async () => {
     route = (c) => {
       if (c.path === "/session") return session();
       if (c.path === "/turns") return started(`t${turnCalls().length}`, "c1");
       return json({ events: [{ seq: 1, kind: "text", text: "네" }], status: "done", last_seq: 1 });
     };
     await mount();
-    const remove = button("지금 화면 정보 빼기")!;
-    expect(remove.textContent).toBe("×"); // 평소엔 투명 — 올리거나 키보드 초점에서 보인다(CSS)
-    act(() => remove.click());
-    expect(host.querySelector(".agent-context")).toBeNull();
-    expect(button("지금 화면 정보 다시 붙이기")!.textContent).toBe("＋ 지금 화면");
+    expect([host.querySelector(".agent-context"), host.querySelector(".agent-chips"), host.querySelector(".agent-info")]).toEqual([null, null, null]);
+    const info = () => button("정보")!;
+    act(() => info().click());
+    expect([info().getAttribute("aria-pressed"), host.querySelector(".agent-info dd")!.textContent]).toEqual(["true", "워크스페이스 › e001"]);
+    act(() => { document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(host.querySelector(".agent-info")).not.toBeNull(); // 정보 단추를 다시 누를 때까지 떠 있다
+    expect(localStorage.getItem("mvhub.agentPanel.infoOpen")).toBe("true");
+    const sw = () => host.querySelector<HTMLButtonElement>('.agent-info [role="switch"]')!;
+    act(() => sw().click());
+    expect([sw().getAttribute("aria-checked"), !!host.querySelector(".agent-info-dot"), input().placeholder])
+      .toEqual(["false", true, "지금 화면 없이 물어보세요 — 어디인지는 직접 알려 주세요"]);
     type("여기에 생성해");
     enter();
     await flush();
     expect(turnCalls()[0].body!.context).toEqual({});
-    act(() => button("지금 화면 정보 다시 붙이기")!.click());
+    act(() => sw().click());
     type("e001 에 생성해");
     enter();
     await flush();
     expect(turnCalls()[1].body!.context).toEqual({ tab: "my", folder: "e001" });
-    act(() => button("지금 화면 정보 빼기")!.click());
+    act(() => sw().click());
     act(() => button("새 대화")!.click());
-    expect(host.querySelector(".agent-context")!.textContent).toContain("워크스페이스 › e001");
+    expect([sw().getAttribute("aria-checked"), host.querySelector(".agent-info-dot")]).toEqual(["true", null]);
+    act(() => root.unmount()); // 칸을 다시 올려도 열린 채(기억)
+    root = createRoot(host);
+    await mount();
+    expect(host.querySelector(".agent-info")).not.toBeNull();
+    act(() => info().click());
+    expect([host.querySelector(".agent-info"), localStorage.getItem("mvhub.agentPanel.infoOpen")]).toEqual([null, "false"]);
   });
 
   it("보내는 중에는 새 대화·지난 대화·모델 단추가 잠겨 허브에서 시작한 차례를 놓치지 않는다", async () => {
@@ -775,13 +792,13 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
 
     // 옆 칸 머리 = 왼쪽 [대화 목록][옆 칸 닫기] · 오른쪽 [새 대화][새 창으로 띄우기](시안 A안)
     const heads = () => [...panel().querySelectorAll(".agent-head button")].map((b) => b.getAttribute("aria-label"));
-    expect(heads()).toEqual(["대화 목록", "옆 칸 닫기", "새 대화", "새 창으로 띄우기"]);
+    expect(heads()).toEqual(["대화 목록", "옆 칸 닫기", "새 대화", "정보", "새 창으로 띄우기"]);
     act(() => button("새 창으로 띄우기")!.click());
     expect(popped).toBe(1);
     render(true);
     await flush();
     expect([panel().classList.contains("popout"), host.querySelector(".agent-resize")]).toEqual([true, null]);
-    expect(heads()).toEqual(["대화 목록", "옆 칸으로 붙이기", "새 대화"]);
+    expect(heads()).toEqual(["대화 목록", "옆 칸으로 붙이기", "새 대화", "정보"]);
     act(() => button("옆 칸으로 붙이기")!.click());
     expect(docked).toBe(1);
   });
@@ -1514,6 +1531,10 @@ describe("MV Agent 끌어다 넣기", () => {
     expect(chipNames()).toEqual(["프롬프트 g2"]);
     const sent = host.querySelector(".agent-user-wrap .agent-sent")!;
     expect(sent.querySelectorAll(".agent-sent-tile img")).toHaveLength(1);
+    act(() => button("정보")!.click()); // 정보 칸의 '붙였던 자료'
+    expect(texts(".agent-info-list li")).toEqual(["프롬프트 g1생성물"]);
+    expect(texts(".agent-info-empty")).toEqual(["아직 없어요"]); // 이 대화에서 만든 것 없음
+    act(() => button("정보")!.click());
 
     // 복원 — 앱 카드에 없는 생성물만 묶음 조회 한 번
     route = (c) => {

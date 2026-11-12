@@ -185,6 +185,13 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const [menu, setMenu] = useState<"model" | null>(null); // 모델·생각 깊이·속도 한 메뉴(Aside 처럼)
   const [drawer, setDrawer] = useState(false); // ≡ 대화 서랍
   const [headNote, setHeadNote] = useState<string | null>(null); // 머리글 메뉴로 지운 결과(세션 파일) — 새 대화를 시작하면 지운다
+  // 정보 칸 — 지금 화면·이 대화 결과물·붙였던 자료. 정보 단추를 다시 누를 때까지 떠 있다(바깥 누름·Esc 로 안 닫힘, 기억함 — Jay 11-12)
+  const [infoOpen, setInfoOpen] = useState(() => loadJSON<unknown>(STORAGE_KEYS.agentInfoOpen) === true);
+  const toggleInfo = () => {
+    const next = !infoOpen;
+    setInfoOpen(next);
+    saveJSON(STORAGE_KEYS.agentInfoOpen, next);
+  };
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
@@ -314,7 +321,12 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   // 내 말 위 썸네일 — 앱이 읽은 카드에 없는 생성물만 묶음 조회 한 번(대화가 바뀌었으면 버림, 설계 2-5)
   const sentGenIds = Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "user" && m.attachments
     ? m.attachments.flatMap((a) => (a.kind === "generation" ? [a.id] : [])) : []))));
-  const missingSentKey = sentGenIds.filter((id) => !findGeneration?.(id) && !(id in genCache)).join(",");
+  // 정보 칸 — 이 대화 계획 카드에서 끝난 생성물 · 내 말에 붙였던 자료(중복 없이)
+  const madeIds = Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "plan" && m.progress
+    ? Object.values(m.progress.items).flatMap((it) => (it.generation_id && it.generation_status === "done" ? [it.generation_id] : [])) : []))));
+  const attachedBefore = Array.from(new Map(chat.messages.flatMap((m) => (m.kind === "user" && m.attachments
+    ? m.attachments.map((a) => [attachKey(a), a] as const) : []))).values());
+  const missingSentKey = Array.from(new Set([...sentGenIds, ...madeIds])).filter((id) => !findGeneration?.(id) && !(id in genCache)).join(",");
   const conversationRef = useRef(chat.conversationId);
   conversationRef.current = chat.conversationId;
   // 대화·공간(계정)이 바뀌면 다시 본다 — 같은 미조회 id 를 가진 다른 대화로 옮겨도 그 대화의 조회가 시작되게(독립 리뷰 P2)
@@ -469,6 +481,11 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             title={t("새 대화")} aria-label={t("새 대화")}>
             <NewChatIcon />
           </button>
+          <button type="button" className={`agent-ic agent-info-btn${infoOpen ? " on" : ""}`} onClick={toggleInfo} aria-pressed={infoOpen}
+            title={screenOn ? t("정보") : t("정보 · 지금 화면을 안 보내는 중")} aria-label={t("정보")}>
+            <InfoIcon />
+            {!screenOn && <span className="agent-info-dot" aria-hidden="true" />}
+          </button>
           {!popout && onPopOut && (
             <button type="button" className="agent-ic" onClick={onPopOut} title={t("새 창으로 띄우기")} aria-label={t("새 창으로 띄우기")}>
               <PopOutIcon />
@@ -476,6 +493,53 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           )}
         </div>
       </header>
+
+      {infoOpen && (
+        <section className="agent-info" aria-label={t("정보")}>
+          <div className="agent-info-sec">
+            <h4>
+              {t("지금 화면")}
+              <span className="agent-info-switch">
+                {t("AI 에게 보내기")}
+                <button type="button" role="switch" aria-checked={screenOn} className={`agent-switch${screenOn ? " on" : ""}`}
+                  onClick={() => setScreenOn((on) => !on)} aria-label={t("지금 화면 AI 에게 보내기")} />
+              </span>
+            </h4>
+            <dl className="agent-info-rows">
+              <dt>{t("화면")}</dt><dd>{contextLabel}</dd>
+              <dt>{t("공간")}</dt>
+              <dd>{context.workspace?.name || (context.workspace?.scope === "personal" ? t("개인") : context.workspace?.scope === "team" ? t("팀") : t("확인 중"))}</dd>
+              {context.project && <><dt>{t("프로젝트")}</dt><dd>{projectName?.(context.project) ?? context.project}</dd></>}
+              {context.folder && <><dt>{t("폴더")}</dt><dd>{context.folder}</dd></>}
+              <dt>{t("고른 카드")}</dt><dd>{`${context.selected_ids?.length ?? 0}${t("장")}`}</dd>
+              {(context.tab === "compose" || context.scene) && <><dt>{t("열린 씬")}</dt><dd>{context.scene?.name ?? t("없음")}</dd></>}
+            </dl>
+            <p className="agent-info-note">{screenOn ? t("보내면 AI 가 '여기·이 폴더'를 이 위치로 알아들어요.")
+              : t("안 보내는 중 — '여기'라고 하면 AI 가 어디인지 먼저 물어요.")}</p>
+          </div>
+          <div className="agent-info-sec">
+            <h4>{t("이 대화에서 만든 것")}{madeIds.length > 0 && <span className="agent-info-count">{madeIds.length}</span>}</h4>
+            {madeIds.length ? (
+              <div className="agent-info-grid">
+                {madeIds.map((id) => <SentAttachment key={id} item={{ kind: "generation", id }} genOf={genOf} onPreview={onPreview} />)}
+              </div>
+            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
+          </div>
+          <div className="agent-info-sec">
+            <h4>{t("붙였던 자료")}</h4>
+            {attachedBefore.length ? (
+              <ul className="agent-info-list">
+                {attachedBefore.map((a) => (
+                  <li key={attachKey(a)}>
+                    <span>{a.name ?? (a.kind === "generation" ? t("생성물") : lastSegment(a.path))}</span>
+                    <small>{a.kind === "generation" ? t("생성물") : a.kind === "asset" ? t("레퍼런스") : t("폴더")}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
+          </div>
+        </section>
+      )}
 
       {drawer && (
         <AgentDrawer conversations={chat.conversations} currentId={chat.conversationId} running={chat.running}
@@ -530,23 +594,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       {attachNote && <p className="agent-notice" role="status">{attachNote}</p>}
 
       <form className="agent-composer" onSubmit={submit}>
-        <div className="agent-chips">
-          {screenOn ? (
-            <div className="agent-context">
-              <span className="agent-context-mark" aria-hidden="true">⬡</span>
-              <span className="agent-context-text">
-                <b>MV Hub</b>
-                <small>{contextLabel}</small>
-              </span>
-              {/* Aside 처럼 올리면(키보드 초점도) 보인다 — 빼면 다음 메시지부터 지금 화면 정보를 안 보낸다(앱 동작 도구 설계 A4) */}
-              <button type="button" className="agent-context-x" onClick={() => setScreenOn(false)}
-                title={t("지금 화면 정보 빼기")} aria-label={t("지금 화면 정보 빼기")}>×</button>
-            </div>
-          ) : (
-            <button type="button" className="agent-context-add" onClick={() => setScreenOn(true)} aria-label={t("지금 화면 정보 다시 붙이기")}>
-              ＋ {t("지금 화면")}
-            </button>
-          )}
+        {/* 지금 화면은 머리글 정보 칸으로 옮겼다(docs/status/MVAgent_정보칸_2026-11-12.md) — 입력칸에는 고칠 계획·붙인 자료 칩만 */}
+        {(revising || chips.length > 0) && <div className="agent-chips">
           {revising && (
             <div className="agent-context agent-revise">
               <span className="agent-context-mark" aria-hidden="true"><PencilIcon /></span>
@@ -572,10 +621,11 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
                 title={t("붙인 자료 빼기")} aria-label={t("붙인 자료 빼기")}>×</button>
             </div>
           ))}
-        </div>
+        </div>}
         <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect}
           placeholder={needsConnect ? t("Claude 를 연결하면 쓸 수 있어요")
             : revising ? t("어떻게 고칠지 적어 주세요 — 예: 바나나만, 9:16 으로")
+            : !screenOn ? t("지금 화면 없이 물어보세요 — 어디인지는 직접 알려 주세요")
             : t("Agent 에게 일을 맡기거나 물어보세요")}
           aria-label={t("Agent 에게 보낼 말")}
           onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
@@ -1338,6 +1388,16 @@ function NewChatIcon() {
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
       <path d="M17.6 3.6a2 2 0 0 1 2.8 2.8L12 14.8l-3.6.8.8-3.6Z" />
+    </svg>
+  );
+}
+
+/** 정보(목록) — Claude 앱 오른쪽 정보 칸 단추처럼 */
+function InfoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={1.7}
+      strokeLinecap="round" aria-hidden="true">
+      <path d="M4 6h2M4 12h2M4 18h2M10 6h10M10 12h10M10 18h6" />
     </svg>
   );
 }
