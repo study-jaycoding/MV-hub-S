@@ -20,6 +20,9 @@ interface EpisodeBins { project_id: string; episode: string; bins: Record<string
 // 미리 캐시·미리 띄우기의 컷 = [컷 경로, 생성물 ID(거르기 통과·오래된 200개), 200 을 넘어 잘렸나]
 export type PrecacheCut = [string, string[], boolean?];
 export interface PanelFollow { project: string; episode: string; cut: string; n: number }
+// [저장] 칸의 상태(C안, Jay 11-12) — saving 의 step = 지금 단계 · done 의 at = 저장 시각(3초 뒤 idle) · blocked = 저장 안 됨(bins = 검사에 걸린 빈)
+export type SaveBin = { path: string; count?: number; in_use: boolean; mine: boolean };
+export type SaveState = { phase: "idle" } | { phase: "saving"; step: string } | { phase: "done"; at: number } | { phase: "blocked"; bins: SaveBin[] };
 // 패널을 닫았다 열어도 남는 선택 — 다빈치 프로젝트마다 따로(Jay 11-12) + 마지막 것. 다시 열 때 inventory 정리가 그 에피소드 컷 빈은 건드리지 않는다
 export const PANEL_SELECTION_KEY = "mvhub.resolvePanel.selection";
 export interface SavedSelection { project: string; episode: string; cut: string }
@@ -96,6 +99,13 @@ export function useResolvePanel() {
   const prestageDeferred = useRef(false); // 앞 미리 띄우기가 건너뛴(deferred) 컷을 남겼다 — 에피소드 빈으로 돌아와 머물면 한 번 다시
   const episodeDwell = useRef(0); // 다빈치 지금 빈이 에피소드 빈인 따라가기 읽기가 몇 번 이어졌나(스쳐 지나가기엔 다시 띄우지 않게)
   const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>({ phase: "idle" });
+  // 저장됨은 3초 보이고 기본으로(C안 ③)
+  useEffect(() => {
+    if (saveState.phase !== "done") return;
+    const timer = setTimeout(() => setSaveState(state => (state.phase === "done" ? { phase: "idle" } : state)), 3000);
+    return () => clearTimeout(timer);
+  }, [saveState]);
   const autoTried = useRef(""); // 자동 빈 만들기가 실패한 활성 컷 묶음 — 같은 묶음으로는 다시 자동으로 부르지 않는다
   const autoBusy = useRef(false);
   const autoNext = useRef<string[] | null>(null); // 진행 중에 바뀐 활성 컷 — 끝나면 이어서
@@ -606,8 +616,9 @@ export function useResolvePanel() {
     const ctx = context.current;
     if (saving || !ctx?.writer || !hasResolveBridge(window.mvhubResolve) || !project_id) return;
     precacheRun.current++; // 진행 중인 미리 띄우기·이름 뒤따르기를 멈춘다(대기열의 조각 하나까지 기다림)
-    setSaving(true); setNotice(t("저장 중"));
+    setSaving(true); setNotice(t("저장 중")); setSaveState({ phase: "saving", step: t("확인 중") });
     const rev = revision.current;
+    let ended = false; // 끝 상태(저장됨·막힘)를 적었나 — 못 적고 끝나면(예외) 막힘
     void enqueue(async () => {
       try {
         let after: [string, string] | undefined, fixed = "";
@@ -627,14 +638,17 @@ export function useResolvePanel() {
           episode: "", cuts: [], via: "", resolveProject: fixed, window: windowId, seq: ++sequence.current, revision: rev });
         let moved = 0, cleaned = 0;
         const failed: string[] = [], unused = new Map<string, Selection>();
+        const toMove = all.filter(item => item.resolve_project_id === fixed && ["recover", "adopt"].includes(inventoryAction(item))).length;
         for (const item of all) {
           if (item.resolve_project_id !== fixed) continue;
           const action = inventoryAction(item);
           if (action === "recover" || action === "adopt") {
+            setSaveState({ phase: "saving", step: `NAS ${moved + failed.length + 1}/${toMove}` });
             try { await adoptOne(pinned(item), item.gen_id, fixed, item.bin_id, [item.item_id], item.recovery, true); moved++; }
             catch (error) { failed.push(errorText(error)); }
           } else if (action === "unstage") unused.set(item.bin_id, pinned(item));
         }
+        if (unused.size) setSaveState({ phase: "saving", step: t("정리") });
         for (const [bin_id, selection] of unused) {
           const removed = await panel.unstage({ ...writer(selection), bin_id }) as StageResult;
           check(removed);
@@ -644,17 +658,26 @@ export function useResolvePanel() {
         if (failed.length) { // 쓴 클립이 이 PC 경로인 채 저장되지 않게 — NAS 로 다 옮기지 못하면 저장하지 않는다
           setFailures(list => [...new Set([...list, ...failed])]);
           setNotice(t("저장하지 않았습니다") + ` — ${t("NAS로 못 옮긴 것")} ${failed.length}`);
+          ended = true; setSaveState({ phase: "blocked", bins: [] });
           return;
         }
+        setSaveState({ phase: "saving", step: t("검사") });
         const saved = await panel.save({ ctx, project_id, folder_path: folder_path || project_id, window: windowId, expect_project: fixed });
         check(saved);
-        if (saved.state === "ok") setNotice(`${t("저장했습니다 — 이 저장 시점의 검사 통과")} · ${t("NAS로 옮김")} ${moved} · ${t("정리")} ${cleaned}`);
-        else if (saved.state === "not_clean" && saved.not_clean) {
+        ended = true;
+        if (saved.state === "ok") {
+          setNotice(`${t("저장했습니다 — 이 저장 시점의 검사 통과")} · ${t("NAS로 옮김")} ${moved} · ${t("정리")} ${cleaned}`);
+          setSaveState({ phase: "done", at: Date.now() });
+        } else if (saved.state === "not_clean" && saved.not_clean) {
           const left = saved.not_clean;
           setNotice(`${t("이 PC 클립이 남아 저장하지 않았습니다")} — ${t("내 것")} ${left.mine} · ${t("다른 허브")} ${left.other} · ${t("쓰는 중")} ${left.in_use}`);
-          setFailures(list => [...new Set([...list, ...left.bins.map(row => `${row.path}${row.count ? ` (${row.count})` : ""} — ${row.mine ? t("다시 저장하면 풀릴 수 있음") : t("다빈치에서 직접 확인")}${row.in_use ? " · " + t("쓰는 중") : ""}`)])]);
-        } else setNotice(t("저장하지 않았습니다") + ": " + panelFailure(saved.state));
+          setSaveState({ phase: "blocked", bins: left.bins }); // 걸린 빈은 [저장] 칸 옆 목록에(C안 ④) — 알림 목록에 또 넣지 않는다
+        } else {
+          setNotice(t("저장하지 않았습니다") + ": " + panelFailure(saved.state));
+          setSaveState({ phase: "blocked", bins: [] });
+        }
       } finally {
+        if (!ended) setSaveState({ phase: "blocked", bins: [] }); // 예외로 끝남(확인 실패·프로젝트 바뀜 등) — 이유는 알림에
         setSaving(false);
         const last = lastPrecache.current;
         if (last) precache(last.project_id, last.episode, last.cuts); // 다시 미리 띄운다(딜레이 0 유지)
@@ -784,6 +807,6 @@ export function useResolvePanel() {
 
   return { config, needsLogin, authReady, identity, target, current, notice, stage, moved, counts, failures, follow, nas, davinci, here,
     canRetry: failures.some(failure => !failure.includes(t(RECOVERY_PENDING))),
-    authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache, saveProject, saving,
+    authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache, saveProject, saving, saveState,
     onAuthed: () => { setNeedsLogin(false); resetAuth(); } };
 }
