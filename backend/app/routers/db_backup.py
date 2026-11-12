@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
 import time
@@ -177,10 +178,32 @@ def _normalise_set_manifest(raw: str) -> dict:
         raise BackupSetValidationError("manifest too large")
     try:
         value = json.loads(raw)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise BackupSetValidationError("invalid manifest json") from exc
     if not isinstance(value, dict):
         raise BackupSetValidationError("manifest must be object")
+    if type(value.get('format_version')) is int and value['format_version'] == 3:
+        try:
+            value = backup_manifest.read_json_v3(raw.encode('utf-8'))
+            backup_manifest.validate_v3(value)
+            if any(info['state'] == 'present' and info['size'] >
+                   (upload_limits.MIB if role == 'asset_mounts' else _MAX_BYTES)
+                   for role, info in value['roles'].items()):
+                raise BackupTooLargeError('backup member too large')
+            legacy = {key: item for key, item in value.items() if key in {
+                'format', 'format_version', 'backup_set_id', 'created_at', 'local_stamp',
+                'schema_version', 'app_version', 'device', 'parent_backup_set_id', 'summary', 'roles'}}
+            legacy['format_version'] = 1
+            legacy['roles'] = {role: {key: info[key] for key in ('size', 'sha256')}
+                               for role, info in value['roles'].items()
+                               if role in {'content', 'trash'} and info['state'] == 'present'}
+            if _normalise_set_manifest(json.dumps(legacy)) != legacy:
+                raise ValueError('invalid backup metadata')
+        except BackupTooLargeError:
+            raise
+        except (ValueError, TypeError, KeyError) as exc:
+            raise BackupSetValidationError(str(exc)) from exc
+        return value
     try:
         backup_manifest.check_version(value)
     except (ValueError, TypeError, AttributeError) as exc:
@@ -274,11 +297,17 @@ def _set_root(d: Path) -> Path:
 
 def _read_stored_manifest(folder: Path) -> dict | None:
     try:
-        value = json.loads((folder / "manifest.json").read_text("utf-8"))
-    except (OSError, ValueError, TypeError):
+        raw = (folder / "manifest.json").read_text("utf-8")
+        value = json.loads(raw)
+    except (OSError, ValueError, TypeError, RecursionError):
         return None
     if not isinstance(value, dict):
         return None
+    if value.get('format_version') == 3:
+        try:
+            return _normalise_set_manifest(raw)
+        except (ValueError, TypeError, KeyError):
+            return None
     try:
         backup_manifest.check_version(value)
     except (ValueError, TypeError):
@@ -329,14 +358,20 @@ def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count:
     stored = _read_stored_manifest(folder)
     if stored != manifest:
         return None
-    if manifest.get('format_version') == backup_manifest.VERSION:
-        try:
-            backup_manifest.verify_files(manifest, {role: folder / f'{role}.db' for role in manifest['roles']})
-        except (OSError, ValueError, sqlite3.Error):
-            return None
+    try:
+        paths = backup_manifest.worker_paths(manifest, folder, check_present=True)
+        if manifest.get('format_version') == 3:
+            backup_manifest.verify_files_v3(manifest, paths)
+        elif manifest.get('format_version') == backup_manifest.VERSION:
+            backup_manifest.verify_files(manifest, paths)
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        return None
     files: dict[str, dict[str, object]] = {}
-    for role, expected in manifest["roles"].items():
-        path = folder / f"{role}.db"
+    for role, path in paths.items():
+        expected = manifest['roles'][role]
+        if manifest.get('format_version') == 3:
+            files[role] = {key: expected[key] for key in ('size', 'sha256')}
+            continue  # verify_files_v3 just checked these exact bytes.
         try:
             size = path.stat().st_size
         except OSError:
@@ -354,9 +389,9 @@ def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count:
         "count": count,
         "conflict": bool(server_meta.get("conflict")),
         "is_current": _read_head(folder.parent) == manifest["backup_set_id"],
-        **({'format_version': backup_manifest.VERSION,
+        **({'format_version': manifest['format_version'],
             'manifest_sha256': backup_manifest.manifest_digest(manifest)}
-           if manifest.get('format_version') == backup_manifest.VERSION else {}),
+           if manifest.get('format_version') in {2, 3} else {}),
     }
 
 
@@ -414,6 +449,13 @@ def _store_backup_set(
     sources: dict[str, BinaryIO],
 ) -> dict:
     """한 계정의 DB 세트를 임시 폴더에서 모두 검증한 뒤 디렉터리 단위로 공개한다."""
+    if manifest.get('format_version') == 3:
+        try:
+            backup_manifest.validate_v3(manifest)
+            if set(sources) != set(backup_manifest.worker_paths(manifest, d)):
+                raise ValueError('uploaded roles differ')
+        except (ValueError, TypeError, KeyError) as exc:
+            raise BackupSetValidationError(str(exc)) from exc
     with _dir_lock(d):
         root = _set_root(d)
         root.mkdir(parents=True, exist_ok=True)
@@ -443,25 +485,37 @@ def _store_backup_set(
         previous: Path | None = None
         try:
             for role, source in sources.items():
-                path = staged / f"{role}.db"
+                path = staged / backup_manifest.WORKER_FILENAMES[role]
                 with path.open("xb") as target:
                     size = upload_limits.copy_stream_limited(
                         source,
                         target,
-                        max_bytes=_MAX_BYTES,
+                        max_bytes=upload_limits.MIB if role == 'asset_mounts' else _MAX_BYTES,
                         chunk_bytes=_CHUNK_BYTES,
                     )
                 expected = manifest["roles"][role]
                 if size != expected["size"] or _sha256(path) != expected["sha256"]:
                     raise BackupSetValidationError("uploaded file integrity mismatch")
-                if role == "content":
-                    validate_hub_db(path, require_integrity=True)
-                else:
-                    _validate_trash_db(path)
-            if manifest.get('format_version') == backup_manifest.VERSION:
+                if manifest.get('format_version') == 3 and role not in {'content', 'trash'}:
+                    continue  # All typed members are verified together before publication.
                 try:
-                    backup_manifest.verify_files(manifest, {role: staged / f'{role}.db' for role in sources})
+                    if role == "content":
+                        validate_hub_db(path, require_integrity=True)
+                    else:
+                        _validate_trash_db(path)
+                except sqlite3.Error as exc:
+                    if manifest.get('format_version') != 3:
+                        raise
+                    raise BackupSetValidationError('invalid backup database') from exc
+            if manifest.get('format_version') in {2, 3}:
+                try:
+                    verify = backup_manifest.verify_files_v3 if manifest['format_version'] == 3 else backup_manifest.verify_files
+                    verify(manifest, backup_manifest.worker_paths(manifest, staged))
                 except (ValueError, sqlite3.Error) as exc:
+                    raise BackupSetValidationError('backup metadata verification failed') from exc
+                except (TypeError, KeyError, OSError) as exc:
+                    if manifest.get('format_version') != 3:
+                        raise
                     raise BackupSetValidationError('backup metadata verification failed') from exc
             atomic_write_text(
                 staged / "manifest.json",
@@ -535,33 +589,57 @@ async def upload_backup_set(
     manifest: str = Form(...),
     content: UploadFile = File(...),
     trash: UploadFile | None = File(None),
+    agent_chat: UploadFile | None = None,
+    asset_mounts: UploadFile | None = None,
 ):
     """작업자 개인 content·trash 세트를 계정별로 멱등 저장하고 명시적 ACK를 반환한다."""
     acc = _acct(request)
     try:
         parsed = _normalise_set_manifest(manifest)
-        if (parsed['format_version'] == backup_manifest.VERSION
+        if (parsed['format_version'] in {2, 3}
                 and parsed['account_scope_digest'] != backup_manifest.account_digest(slug(acc['email']))):
             raise BackupSetValidationError('backup account scope mismatch')
+    except BackupTooLargeError as exc:
+        raise HTTPException(status_code=413, detail='백업 파일이 허용 용량을 초과했습니다') from exc
     except BackupSetValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     uploads: dict[str, UploadFile] = {"content": content}
     if trash is not None:
         uploads["trash"] = trash
-    if set(uploads) != set(parsed["roles"]):
+    is_v3 = parsed['format_version'] == 3
+    if is_v3:
+        if agent_chat is not None:
+            uploads['agent_chat'] = agent_chat
+        if asset_mounts is not None:
+            uploads['asset_mounts'] = asset_mounts
+        if request is not None:
+            form = await request.form()
+            names = [key for key, _ in form.multi_items()]
+            if len(names) != len(set(names)) or set(names) != {'manifest', *uploads}:
+                raise HTTPException(status_code=400, detail='중복되거나 알 수 없는 백업 구성원입니다')
+    elif agent_chat is not None or asset_mounts is not None:
+        raise HTTPException(status_code=400, detail='지원하지 않는 백업 구성원입니다')
+    expected_roles = set(backup_manifest.worker_paths(parsed, Path('.')))
+    if set(uploads) != expected_roles:
         raise HTTPException(status_code=400, detail="manifest와 업로드 파일 역할이 다릅니다")
+    total_limit = _MAX_BYTES * (3 if is_v3 else 2) + (upload_limits.MIB if is_v3 else 0)
     try:
         upload_limits.validate_upload_batch(
             uploads.values(),
-            max_files=2,
-            max_file_bytes=_MAX_BYTES,
-            max_total_bytes=_MAX_BYTES * 2,
+            max_files=4 if is_v3 else 2,
+            max_file_bytes=max(_MAX_BYTES, upload_limits.MIB) if is_v3 else _MAX_BYTES,
+            max_total_bytes=total_limit,
         )
+        for role, upload in uploads.items():
+            upload_limits.validate_upload_batch(
+                [upload], max_files=1,
+                max_file_bytes=upload_limits.MIB if role == 'asset_mounts' else _MAX_BYTES,
+                max_total_bytes=total_limit)
     except upload_limits.UploadLimitExceeded as exc:
         raise HTTPException(
             status_code=413,
             detail="백업 세트가 허용 용량을 초과했습니다",
-            headers=upload_limits.limit_headers(_MAX_BYTES * 2),
+            headers=upload_limits.limit_headers(total_limit),
         ) from exc
     for role, upload in uploads.items():
         actual = upload.size
@@ -614,11 +692,12 @@ def list_backups(request: Request):
             continue
         try:
             st = content.stat()
-            total = sum(
-                (folder / f"{role}.db").stat().st_size
-                for role in manifest.get("roles", {})
-            )
-        except OSError:
+            paths = backup_manifest.worker_paths(manifest, folder, check_present=True)
+            sizes = {role: path.stat().st_size for role, path in paths.items()}
+            if any(size != manifest['roles'][role]['size'] for role, size in sizes.items()):
+                continue
+            total = sum(sizes.values())
+        except (OSError, ValueError, TypeError, KeyError):
             continue
         out.append(
             {
@@ -627,7 +706,7 @@ def list_backups(request: Request):
                 "size": total,
                 "mtime": int(_server_meta(folder).get("received_at") or st.st_mtime),
                 "kind": "set",
-                "roles": sorted(manifest.get("roles", {})),
+                "roles": sorted(paths),
                 "created_at": manifest.get("created_at"),
                 "app_version": manifest.get("app_version"),
                 "schema_version": manifest.get("schema_version"),
@@ -688,8 +767,8 @@ def _download_set_response(d: Path, backup_set_id: str | None = None) -> FileRes
         try:
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
                 bundle.write(folder / "manifest.json", "manifest.json")
-                for role in sorted(manifest["roles"]):
-                    bundle.write(folder / f"{role}.db", f"{role}.db")
+                for role, path in sorted(backup_manifest.worker_paths(manifest, folder, check_present=True).items()):
+                    bundle.write(path, backup_manifest.WORKER_FILENAMES[role])
         except BaseException:
             archive.unlink(missing_ok=True)
             raise
@@ -706,21 +785,66 @@ def download_latest(request: Request):
     """내 계정의 가장 최근 백업을 내려준다(복원용)."""
     acc = _acct(request)
     d = _dir(acc["email"])
-    candidates: list[Path] = list(d.glob("*.db"))
-    candidates.extend(
-        folder / "content.db"
-        for folder in _valid_set_dirs(_set_root(d))
-        if (folder / "content.db").is_file()
-    )
-    stamped: list[tuple[float, Path]] = []
-    for path in candidates:
+    def refuse():
+        return HTTPException(status_code=409, detail='전체 백업을 복원할 수 있는 앱 업데이트가 필요합니다')
+
+    with _dir_lock(d):
+        stamped: list[tuple[float, Path, bool]] = []
         try:
-            stamped.append((path.stat().st_mtime, path))
-        except OSError:
-            continue
-    if not stamped:
-        raise HTTPException(status_code=404, detail="이 계정의 서버 백업이 없습니다")
-    latest = max(stamped, key=lambda item: item[0])[1]
+            try:
+                entries = list(d.iterdir())
+            except FileNotFoundError:
+                entries = []
+            for path in entries:
+                if path.suffix.lower() != '.db':
+                    continue
+                try:
+                    info = path.stat()
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise refuse()
+                stamped.append((info.st_mtime, path, False))
+            root = _set_root(d)
+            try:
+                root_info = root.stat()
+            except FileNotFoundError:
+                folders = []
+            else:
+                if not stat.S_ISDIR(root_info.st_mode):
+                    raise refuse()
+                try:
+                    folders = list(root.iterdir())
+                except FileNotFoundError:
+                    folders = []
+            for folder in folders:
+                if not _SET_ID_RE.fullmatch(folder.name):
+                    continue  # .upload/.replace folders are not published sets.
+                try:
+                    info = folder.stat()
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISDIR(info.st_mode):
+                    continue
+                content = folder / 'content.db'
+                try:
+                    content_info = content.stat()
+                except FileNotFoundError:
+                    stamped.append((info.st_mtime, content, True))
+                else:
+                    if not stat.S_ISREG(content_info.st_mode):
+                        raise refuse()
+                    stamped.append((content_info.st_mtime, content, False))
+        except OSError as exc:
+            raise refuse() from exc
+        if not stamped:
+            raise HTTPException(status_code=404, detail="이 계정의 서버 백업이 없습니다")
+        _, latest, missing = max(stamped, key=lambda item: item[0])
+        if latest.parent.parent == root:
+            manifest = _read_stored_manifest(latest.parent)
+            if (missing or manifest is None or manifest.get('format') != _SET_FORMAT
+                    or manifest.get('format_version') not in {1, 2}):
+                raise refuse()
     return FileResponse(
         latest,
         filename="MV-hub-restore.db",

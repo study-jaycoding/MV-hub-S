@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import stat
 
 from .. import schema_compat
 from . import trash_transfer
@@ -33,6 +34,8 @@ _COMMON_FIELDS = {'format', 'format_version', 'set_id', 'account_scope_digest',
 _WORKER_FIELDS = {'backup_set_id', 'created_at', 'local_stamp', 'schema_version',
                   'app_version', 'device', 'parent_backup_set_id', 'summary'}
 _JSON_MAX_BYTES = 1024 * 1024
+WORKER_FILENAMES = {'content': 'content.db', 'trash': 'trash.db',
+                    'agent_chat': 'agent_chat.db', 'asset_mounts': 'asset_mounts.json'}
 _AGENT_BASELINE = {
     'agent_chat_conversation': {'id', 'engine', 'model', 'effort', 'cli_session_id', 'client_id',
                                 'mcp_entry', 'title', 'resumable', 'created_at', 'updated_at'},
@@ -53,6 +56,25 @@ def manifest_digest(value: dict) -> str:
 
 def account_digest(account_slug: str) -> str:
     return hashlib.sha256(account_slug.encode('utf-8')).hexdigest()
+
+
+def worker_paths(value: dict, folder: Path, *, check_present: bool = False) -> dict[str, Path]:
+    """Fixed names after version-specific manifest validation; absent roles have no file."""
+    paths = {role: folder / WORKER_FILENAMES[role] for role, info in value['roles'].items()
+             if value.get('format_version') != 3 or info['state'] == 'present'}
+    if check_present and value.get('format_version') == 3:
+        actual = set()
+        for role, name in WORKER_FILENAMES.items():
+            try:
+                mode = (folder / name).stat().st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(mode):
+                raise ValueError('stored backup member is not a file')
+            actual.add(role)
+        if actual != set(paths):
+            raise ValueError('stored backup members differ')
+    return paths
 
 
 def file_digest(path: Path) -> str:

@@ -301,7 +301,8 @@ def _v3_set(tmp_path, *, local=False):
     }
     if not local:
         manifest.update(created_at=_CAPTURE, local_stamp='20261113_000000', schema_version=0,
-                        app_version='fixture', device={}, parent_backup_set_id=None, summary={})
+                        app_version='fixture', device={}, parent_backup_set_id=None,
+                        summary={key: 0 for key in db_backup._SUMMARY_KEYS})
     return backup_manifest.seal(manifest), paths
 
 
@@ -534,22 +535,13 @@ def test_v3_pinned_pair_remains_verified(enabled_db, tmp_path, monkeypatch):
         backup_manifest.verify_files_v3(backup_manifest.seal(value), paths)
 
 
-def test_v3_remains_rejected_by_current_consumers(worker_store, monkeypatch):
-    from test_backup_replicate import _module
+def test_v3_remains_rejected_by_unmigrated_consumers(worker_store, monkeypatch):
     assert backup_manifest.VERSION == worker_backup._FORMAT_VERSION == 2
     value, paths = _v3_set(worker_store / 'v3')
     backup_manifest.verify_files_v3(value, paths)
     with pytest.raises(ValueError, match='version'):
         backup_manifest.check_version(value)
-    with pytest.raises(db_backup.BackupSetValidationError, match='version'):
-        db_backup._normalise_set_manifest(json.dumps(value))
-    folder = worker_store / value['backup_set_id']
-    folder.mkdir()
-    (folder / 'manifest.json').write_text(backup_manifest.canonical(value), encoding='utf-8')
-    assert db_backup._read_stored_manifest(folder) is None
-    replicate = _module()
-    monkeypatch.setattr(replicate, '_sqlite_valid', lambda _: pytest.fail('v3 must fail before SQLite inspection'))
-    assert replicate._set_manifest(folder) is None
+    assert db_backup._normalise_set_manifest(json.dumps(value)) == value
     local, _ = _v3_set(worker_store / 'local-v3', local=True)
     local_content = worker_store / 'local-v3' / 'content.db'
     backup_manifest.local_path(local_content).write_text(backup_manifest.canonical(local), encoding='utf-8')

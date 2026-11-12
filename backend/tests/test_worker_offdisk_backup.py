@@ -216,6 +216,259 @@ def _queued(worker_store: Path) -> tuple[str, Path, dict]:
     return backup_set_id, stage, manifest
 
 
+def _server_v3_fixture(tmp_path, *, absent=()):
+    # Local import avoids a collection-time cycle: the contract tests also reuse worker_store.
+    from test_backup_manifest_contract import _v3_set, _CAPTURE
+    value, paths = _v3_set(tmp_path)
+    for role in absent:
+        value['roles'][role] = {'state': 'absent', 'captured_at': _CAPTURE}
+        paths.pop(role)
+    value['consistency_roles'] = sorted(paths)
+    value['account_scope_digest'] = backup_manifest.account_digest(active_account.slug('artist@example.com'))
+    return backup_manifest.seal(value), paths
+
+
+def _store_v3(directory, value, paths):
+    return db_backup._store_backup_set(directory, value,
+                                      {role: io.BytesIO(path.read_bytes()) for role, path in paths.items()})
+
+
+@pytest.mark.parametrize('absent', [(), ('agent_chat',), ('trash', 'agent_chat', 'asset_mounts')])
+def test_server_v3_roundtrip_full_ack_stat_list_and_zip(tmp_path, monkeypatch, absent):
+    value, paths = _server_v3_fixture(tmp_path / 'source', absent=absent)
+    directory = tmp_path / 'server'
+    parsed = db_backup._normalise_set_manifest(backup_manifest.canonical(value))
+    ack = _store_v3(directory, parsed, paths)
+    assert ack['format_version'] == 3 and ack['accepted'] is True
+    assert set(ack['files']) == set(paths)
+    assert ack['manifest_sha256'] == backup_manifest.manifest_digest(value)
+    assert _store_v3(directory, parsed, paths)['duplicate'] is True
+    folder = directory / 'sets' / value['backup_set_id']
+    assert db_backup._read_stored_manifest(folder) == value
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: directory)
+    original = backup_manifest.verify_files_v3
+    calls = []
+    def verify(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(backup_manifest, 'verify_files_v3', verify)
+    listed = db_backup.list_backups(None)['backups'][0]
+    assert calls == []  # Listing is metadata/stat admission, not a whole-DB hash pass.
+    assert listed['role_metadata'] == value['roles']
+    assert listed['roles'] == sorted(paths)
+    assert listed['size'] == sum(path.stat().st_size for path in paths.values())
+    monkeypatch.setattr(db_backup, 'DATA_DIR', tmp_path)
+    response = db_backup._download_set_response(directory, value['backup_set_id'])
+    assert calls
+    with zipfile.ZipFile(response.path) as bundle:
+        assert set(bundle.namelist()) == {'manifest.json', *(backup_manifest.WORKER_FILENAMES[r] for r in paths)}
+        for role, path in paths.items():
+            assert bundle.read(backup_manifest.WORKER_FILENAMES[role]) == path.read_bytes()
+    asyncio.run(response.background())
+    assert db_backup.activate_backup_set(value['backup_set_id'], None)['ok'] is True
+    with pytest.raises(HTTPException) as error:
+        db_backup.download_latest(None)
+    assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize('damage', ['absent_file', 'same_size_tamper', 'size_mismatch'])
+def test_server_v3_selection_rechecks_all_known_members(tmp_path, monkeypatch, damage):
+    value, paths = _server_v3_fixture(tmp_path / 'source', absent=('agent_chat',) if damage == 'absent_file' else ())
+    directory = tmp_path / 'server'
+    _store_v3(directory, value, paths)
+    folder = directory / 'sets' / value['backup_set_id']
+    if damage == 'absent_file':
+        (folder / 'agent_chat.db').write_bytes(b'unexpected')
+    elif damage == 'same_size_tamper':
+        json_file = folder / 'asset_mounts.json'
+        json_file.write_bytes(json_file.read_bytes().replace(b'old', b'new'))
+    else:
+        (folder / 'asset_mounts.json').write_bytes(b'{}')
+    assert db_backup._ack_for_stored_set(folder, value, duplicate=True, count=1) is None
+    with pytest.raises(HTTPException) as error:
+        db_backup._select_valid_set(directory, value['backup_set_id'])
+    assert error.value.status_code == 404
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: directory)
+    rows = db_backup.list_backups(None)['backups']
+    assert bool(rows) == (damage == 'same_size_tamper')
+
+
+@pytest.mark.parametrize('damage', ['missing', 'unreadable', 'invalid', 'v3'])
+def test_single_latest_never_falls_back_from_newer_set(tmp_path, monkeypatch, damage):
+    directory = tmp_path / 'server'
+    directory.mkdir()
+    old = directory / '20261112_000000_deadbeef.db'
+    old.write_bytes(b'older')
+    value, paths = _server_v3_fixture(tmp_path / 'source')
+    _store_v3(directory, value, paths)
+    folder = directory / 'sets' / value['backup_set_id']
+    os.utime(old, (1, 1))
+    metadata = folder / 'manifest.json'
+    if damage == 'missing': metadata.unlink()
+    elif damage == 'invalid': metadata.write_text('{', encoding='utf-8')
+    elif damage == 'unreadable':
+        original = Path.read_text
+        def read(path, *args, **kwargs):
+            if path == metadata: raise PermissionError('fixture')
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: directory)
+    with pytest.raises(HTTPException) as error:
+        db_backup.download_latest(None)
+    assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize('damage', ['missing_content', 'content_directory', 'content_stat',
+                                 'folder_stat', 'root_stat', 'root_list', 'account_list'])
+def test_single_latest_refuses_unrankable_sets(tmp_path, monkeypatch, damage):
+    directory = tmp_path / 'server'
+    value, paths = _server_v3_fixture(tmp_path / 'source')
+    _store_v3(directory, value, paths)
+    old = directory / 'older.db'
+    old.write_bytes(b'older')
+    os.utime(old, (1, 1))
+    root = directory / 'sets'
+    folder = root / value['backup_set_id']
+    content = folder / 'content.db'
+    if damage in {'missing_content', 'content_directory'}:
+        content.unlink()
+        if damage == 'content_directory':
+            content.mkdir()
+    elif damage.endswith('_stat'):
+        target = {'content_stat': content, 'folder_stat': folder, 'root_stat': root}[damage]
+        original = Path.stat
+        def denied(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError('fixture stat')
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'stat', denied)
+    else:
+        target = root if damage == 'root_list' else directory
+        original = Path.iterdir
+        def denied(path):
+            if path == target:
+                raise PermissionError('fixture enumeration')
+            return original(path)
+        monkeypatch.setattr(Path, 'iterdir', denied)
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: directory)
+    with pytest.raises(HTTPException) as error:
+        db_backup.download_latest(None)
+    assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize('version', [1, 2, 3])
+@pytest.mark.parametrize('newer_legacy', [False, True])
+def test_single_latest_preserves_legacy_selection(worker_store, tmp_path, monkeypatch, version, newer_legacy):
+    if version == 3:
+        value, paths = _server_v3_fixture(tmp_path / 'source')
+    else:
+        _, stage, value = _queued(worker_store)
+        paths = {role: stage / backup_manifest.WORKER_FILENAMES[role] for role in value['roles']}
+        if version == 1:
+            value = _server_manifest(paths['content'].read_bytes(), paths['trash'].read_bytes())
+    directory = tmp_path / 'server'
+    db_backup._store_backup_set(directory, value, {r: io.BytesIO(p.read_bytes()) for r, p in paths.items()})
+    content = directory / 'sets' / value['backup_set_id'] / 'content.db'
+    old = directory / 'legacy.DB'
+    old.write_bytes(b'legacy')
+    os.utime(content, (10, 10))
+    os.utime(old, (20, 20) if newer_legacy else (1, 1))
+    # Unpublished staging folders never participate, even when malformed.
+    (directory / 'sets' / '.upload-fixture').mkdir()
+    (directory / 'sets' / '.replace-fixture').mkdir()
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: directory)
+    if version == 3 and not newer_legacy:
+        with pytest.raises(HTTPException) as error:
+            db_backup.download_latest(None)
+        assert error.value.status_code == 409
+    else:
+        assert db_backup.download_latest(None).path == (old if newer_legacy else content)
+
+
+def test_single_latest_newer_legacy_beats_missing_content_set(tmp_path, monkeypatch):
+    directory = tmp_path / 'server'
+    folder = directory / 'sets' / ('a' * 64)
+    folder.mkdir(parents=True)
+    legacy = directory / 'legacy.db'
+    legacy.write_bytes(b'newer legacy backup')
+    os.utime(folder, (10, 10))
+    os.utime(legacy, (20, 20))
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: directory)
+    assert db_backup.download_latest(None).path == legacy
+
+
+@pytest.mark.parametrize('version', [2, 3])
+@pytest.mark.parametrize('failure', [OSError, TypeError, KeyError])
+def test_server_verification_preserves_v2_exception_boundary(worker_store, tmp_path, monkeypatch, version, failure):
+    if version == 2:
+        _, stage, value = _queued(worker_store)
+        paths = {role: stage / backup_manifest.WORKER_FILENAMES[role] for role in value['roles']}
+    else:
+        value, paths = _server_v3_fixture(tmp_path / 'source')
+    def fail(*args, **kwargs):
+        raise failure('fixture verification')
+    monkeypatch.setattr(backup_manifest, 'verify_files_v3' if version == 3 else 'verify_files', fail)
+    directory = tmp_path / 'server'
+    with pytest.raises(db_backup.BackupSetValidationError if version == 3 else failure):
+        db_backup._store_backup_set(directory, value, {r: io.BytesIO(p.read_bytes()) for r, p in paths.items()})
+    assert not (directory / 'sets' / value['backup_set_id']).exists()
+
+
+@pytest.mark.parametrize('mark', ['head', 'server'])
+def test_server_v3_publish_marks_can_finish_on_retry(tmp_path, monkeypatch, mark):
+    value, paths = _server_v3_fixture(tmp_path / 'source')
+    directory = tmp_path / 'server'
+    name = '_write_head' if mark == 'head' else '_write_server_meta'
+    original = getattr(db_backup, name)
+    monkeypatch.setattr(db_backup, name, lambda *a, **k: (_ for _ in ()).throw(OSError('fixture')))
+    with pytest.raises(OSError):
+        _store_v3(directory, value, paths)
+    folder = directory / 'sets' / value['backup_set_id']
+    backup_manifest.verify_files_v3(value, backup_manifest.worker_paths(value, folder, check_present=True))
+    assert not (folder / 'server.json').exists()
+    monkeypatch.setattr(db_backup, name, original)
+    ack = _store_v3(directory, value, paths)
+    assert ack['accepted'] is True and ack['duplicate'] is True and ack['is_current'] is True
+    assert (folder / 'server.json').is_file()
+
+
+def test_server_v3_different_manifest_never_replaces_same_folder(tmp_path):
+    value, paths = _server_v3_fixture(tmp_path / 'source')
+    directory = tmp_path / 'server'
+    _store_v3(directory, value, paths)
+    folder = directory / 'sets' / value['backup_set_id']
+    other = dict(value, created_at='2026-11-14T00:00:00+00:00')
+    other = backup_manifest.seal(other)
+    metadata = folder / 'manifest.json'
+    metadata.write_text(backup_manifest.canonical(other), encoding='utf-8')
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    with pytest.raises(db_backup.BackupSetValidationError, match='collision'):
+        _store_v3(directory, value, paths)
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+
+
+@pytest.mark.parametrize('damage', ['bytes', 'outer_metadata', 'sources'])
+def test_server_v3_invalid_upload_publishes_nothing(tmp_path, damage):
+    value, paths = _server_v3_fixture(tmp_path / 'source')
+    directory = tmp_path / 'server'
+    if damage == 'bytes': paths['asset_mounts'].write_bytes(b'{"mounts":[]}')
+    elif damage == 'outer_metadata':
+        value['device'] = {'device_id': 'not valid'}
+        with pytest.raises(db_backup.BackupSetValidationError):
+            db_backup._normalise_set_manifest(backup_manifest.canonical(backup_manifest.seal(value)))
+        return
+    else: paths.pop('asset_mounts')
+    with pytest.raises(db_backup.BackupSetValidationError):
+        _store_v3(directory, value, paths)
+    assert not (directory / 'sets' / value['backup_set_id']).exists()
+
+
 def test_queue_is_atomic_deduplicated_and_strips_secrets(worker_store: Path):
     backup_set_id, stage, manifest = _queued(worker_store)
 

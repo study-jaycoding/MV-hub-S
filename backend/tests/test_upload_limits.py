@@ -16,6 +16,11 @@ from app.routers import assets, comfy, db_transfer
 from app.services import upload_limits
 
 
+def test_backup_set_raw_limit_allows_three_databases_and_bounded_json():
+    assert upload_limits.UPLOAD_REQUEST_LIMITS['/api/db-backup/sets'] == (
+        3 * upload_limits.DB_UPLOAD_FILE_MAX_BYTES + upload_limits.MIB + upload_limits._MULTIPART_OVERHEAD_BYTES)
+
+
 async def _call_middleware(
     *,
     path: str = "/api/assets/upload",

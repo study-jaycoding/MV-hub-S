@@ -268,6 +268,90 @@ def _backup_set(root: Path) -> tuple[Path, dict]:
     return folder, manifest
 
 
+def _v3_server_set(root: Path, *, absent=()):
+    from test_worker_offdisk_backup import _server_v3_fixture
+    from app.services import backup_manifest
+    import shutil
+    value, paths = _server_v3_fixture(root / 'input', absent=absent)
+    folder = root / 'artist' / 'sets' / value['backup_set_id']
+    folder.mkdir(parents=True)
+    for role, path in paths.items():
+        shutil.copyfile(path, folder / backup_manifest.WORKER_FILENAMES[role])
+    (folder / 'manifest.json').write_text(backup_manifest.canonical(value), encoding='utf-8')
+    return folder, value
+
+
+@pytest.mark.parametrize('absent', [(), ('agent_chat', 'asset_mounts')])
+def test_v3_server_set_nas_full_roundtrip_and_pruning(tmp_path, monkeypatch, absent):
+    from app.services import backup_manifest
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    source_root = tmp_path / 'source'
+    source, value = _v3_server_set(source_root, absent=absent)
+    assert replicate._set_manifest(source) == value
+    paths = backup_manifest.worker_paths(value, source, check_present=True)
+    assert all(replicate._is_our_set_file(source_root, path) for path in paths.values())
+    dest = tmp_path / 'replica/artist/sets' / source.name
+    assert replicate.copy_set(source, dest) == 'copied'
+    assert replicate.copy_set(source, dest) == 'skip'
+    assert replicate._set_manifest(dest) == value
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == {p.name: p.read_bytes() for p in source.iterdir()}
+    monkeypatch.setattr(replicate, 'KEEP_PER_DIR', 0)
+    assert replicate.prune_set_root(dest.parent, {dest.name}) == 0
+    assert replicate.prune_set_root(dest.parent, set()) == 1
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize('stage', ['.setpart-fixture', '.setold-fixture'])
+def test_v3_agent_nas_leftovers_are_owned(tmp_path, stage):
+    replicate = _module()
+    path = tmp_path / 'artist/sets' / stage / 'agent_chat.db'
+    assert replicate._is_our_set_file(tmp_path, path)
+
+
+@pytest.mark.parametrize('damage', ['absent_file', 'absent_directory', 'stat_error', 'json_tamper'])
+def test_v3_nas_rejects_hidden_or_unreadable_members(tmp_path, monkeypatch, damage):
+    replicate = _module()
+    source, value = _v3_server_set(tmp_path, absent=('agent_chat',))
+    agent = source / 'agent_chat.db'
+    if damage == 'absent_file': agent.write_bytes(b'unexpected')
+    elif damage == 'absent_directory': agent.mkdir()
+    elif damage == 'json_tamper':
+        path = source / 'asset_mounts.json'
+        path.write_bytes(path.read_bytes().replace(b'old', b'new'))
+    else:
+        original = Path.stat
+        def stat(path, *args, **kwargs):
+            if path == agent: raise PermissionError('fixture')
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'stat', stat)
+    assert replicate._set_manifest(source) is None
+
+
+@pytest.mark.parametrize('damage', ['copy', 'staged'])
+def test_v3_nas_copy_failure_preserves_existing_copy(tmp_path, monkeypatch, damage):
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    source, _ = _v3_server_set(tmp_path / 'source')
+    dest = tmp_path / 'replica' / source.name
+    assert replicate.copy_set(source, dest) == 'copied'
+    before = {p.name: p.read_bytes() for p in dest.iterdir()}
+    original_manifest = replicate._set_manifest
+    monkeypatch.setattr(replicate, '_set_manifest', lambda folder, **kw:
+                        None if folder == dest else original_manifest(folder, **kw))
+    original_copy = replicate.shutil.copyfile
+    def copy(src, dst, **kwargs):
+        if damage == 'copy' and Path(src).name == 'agent_chat.db': raise OSError('fixture NAS outage')
+        result = original_copy(src, dst, **kwargs)
+        if damage == 'staged' and Path(src).name == 'asset_mounts.json':
+            Path(dst).write_bytes(Path(dst).read_bytes() + b' ')
+        return result
+    monkeypatch.setattr(replicate.shutil, 'copyfile', copy)
+    assert replicate.copy_set(source, dest) == 'fail'
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == before
+    assert not list(dest.parent.glob('.setpart-*'))
+
+
 def test_backup_set_is_replicated_with_manifest_as_one_publish(tmp_path, monkeypatch):
     replicate = _module()
     monkeypatch.setattr(replicate, "log", lambda _message: None)

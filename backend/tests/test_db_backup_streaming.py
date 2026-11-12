@@ -6,14 +6,20 @@ import tempfile
 import threading
 import time
 import unittest
+import json
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fastapi import HTTPException
+import pytest
+from fastapi import HTTPException, FastAPI
+from fastapi.testclient import TestClient
 
 from app.routers import db_backup, db_transfer
+from app.services import backup_manifest, upload_limits
+from test_worker_offdisk_backup import worker_store
 
 
 class GuardedStream(io.BytesIO):
@@ -23,6 +29,113 @@ class GuardedStream(io.BytesIO):
         if size < 0 or size > db_backup._CHUNK_BYTES:
             raise AssertionError("백업 스트림을 청크보다 크게 읽었습니다")
         return super().read(size)
+
+
+@pytest.fixture
+def v3_receiver(tmp_path, monkeypatch):
+    from test_worker_offdisk_backup import _server_v3_fixture
+    value, paths = _server_v3_fixture(tmp_path / 'source')
+    monkeypatch.setattr(db_backup, '_acct', lambda _: {'email': 'artist@example.com'})
+    monkeypatch.setattr(db_backup, '_dir', lambda _: tmp_path / 'server')
+    app = FastAPI()
+    app.include_router(db_backup.router)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client, value, paths
+
+
+def _v3_files(paths):
+    return [(role, (backup_manifest.WORKER_FILENAMES[role], path.read_bytes())) for role, path in paths.items()]
+
+
+def test_v3_route_accepts_all_typed_files(v3_receiver, tmp_path):
+    client, value, paths = v3_receiver
+    response = client.post('/api/db-backup/sets', data={'manifest': backup_manifest.canonical(value)}, files=_v3_files(paths))
+    assert response.status_code == 200, response.text
+    assert set(response.json()['files']) == set(paths)
+    folder = tmp_path / 'server/sets' / value['backup_set_id']
+    assert (folder / 'asset_mounts.json').read_bytes() == paths['asset_mounts'].read_bytes()
+
+
+@pytest.mark.parametrize('damage', ['malformed', 'missing_table'])
+def test_v3_trash_invalid_sqlite_is_400(v3_receiver, tmp_path, damage):
+    client, value, paths = v3_receiver
+    if damage == 'malformed':
+        paths['trash'].write_bytes(b'this is not a SQLite database')
+    else:
+        with sqlite3.connect(paths['trash']) as conn:
+            conn.execute('DROP TABLE trashed')
+    value['roles']['trash'].update(size=paths['trash'].stat().st_size,
+                                   sha256=backup_manifest.file_digest(paths['trash']))
+    value = backup_manifest.seal(value)
+    response = client.post('/api/db-backup/sets', data={'manifest': backup_manifest.canonical(value)},
+                           files=_v3_files(paths))
+    assert response.status_code == 400, response.text
+    assert 'accepted' not in response.json()
+    assert not (tmp_path / 'server/sets' / value['backup_set_id']).exists()
+
+
+@pytest.mark.parametrize('damage', ['duplicate', 'unknown', 'unknown_text', 'duplicate_manifest', 'absent', 'account', 'bytes'])
+def test_v3_route_rejects_ambiguous_or_invalid_parts(v3_receiver, tmp_path, damage):
+    client, value, paths = v3_receiver
+    files = _v3_files(paths)
+    data = {}
+    if damage == 'duplicate': files.append(files[-1])
+    elif damage == 'unknown': files.append(('unknown', ('unknown.db', b'unknown')))
+    elif damage == 'unknown_text': data['unknown'] = 'unexpected'
+    elif damage == 'absent':
+        value['roles']['agent_chat'] = {'state': 'absent', 'captured_at': value['captured_at']}
+        value['consistency_roles'].remove('agent_chat')
+    elif damage == 'account': value['account_scope_digest'] = '0' * 64
+    elif damage == 'bytes': files[-1] = ('asset_mounts', ('asset_mounts.json', b'{}'))
+    value = backup_manifest.seal(value)
+    data['manifest'] = backup_manifest.canonical(value)
+    if damage == 'duplicate_manifest': files.append(('manifest', (None, data['manifest'])))
+    response = client.post('/api/db-backup/sets', data=data, files=files)
+    assert response.status_code == 400, response.text
+    assert not (tmp_path / 'server/sets' / value['backup_set_id']).exists()
+
+
+def test_v3_route_json_limit_and_database_limit_are_separate(v3_receiver, monkeypatch):
+    client, value, paths = v3_receiver
+    role = value['roles']['asset_mounts']
+    role['size'] = upload_limits.MIB + 1
+    value = backup_manifest.seal(value)
+    response = client.post('/api/db-backup/sets', data={'manifest': backup_manifest.canonical(value)}, files=_v3_files(paths))
+    assert response.status_code == 413
+    role['size'] = paths['asset_mounts'].stat().st_size
+    value = backup_manifest.seal(value)
+    monkeypatch.setattr(db_backup, '_MAX_BYTES', 100)
+    response = client.post('/api/db-backup/sets', data={'manifest': backup_manifest.canonical(value)}, files=_v3_files(paths))
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize('extra', ['agent_chat', 'asset_mounts'])
+def test_v2_route_still_rejects_new_members(v3_receiver, worker_store, tmp_path, extra):
+    from test_worker_offdisk_backup import _queued
+    client, _, _ = v3_receiver
+    _, stage, value = _queued(worker_store)
+    paths = {role: stage / backup_manifest.WORKER_FILENAMES[role] for role in value['roles']}
+    files = _v3_files(paths)
+    files.append((extra, (backup_manifest.WORKER_FILENAMES[extra], b'{}')))
+    response = client.post('/api/db-backup/sets', data={'manifest': backup_manifest.canonical(value)}, files=files)
+    assert response.status_code == 400, response.text
+    assert not (tmp_path / 'server/sets' / value['backup_set_id']).exists()
+
+
+@pytest.mark.parametrize('parser', ['server', 'nas'])
+def test_deep_manifest_parse_failure_is_closed(tmp_path, monkeypatch, parser):
+    def too_deep(*args, **kwargs):
+        raise RecursionError('fixture nesting')
+    if parser == 'server':
+        monkeypatch.setattr(db_backup.json, 'loads', too_deep)
+        with pytest.raises(db_backup.BackupSetValidationError):
+            db_backup._normalise_set_manifest('{}')
+    else:
+        from test_backup_replicate import _module
+        replicate = _module()
+        (tmp_path / 'manifest.json').write_text('{}', encoding='utf-8')
+        monkeypatch.setattr(replicate.json, 'loads', too_deep)
+        assert replicate._set_manifest(tmp_path) is None
 
 
 class BackupStreamingTests(unittest.TestCase):

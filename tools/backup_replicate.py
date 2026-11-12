@@ -242,7 +242,7 @@ def _is_our_set_file(root: Path, path: Path) -> bool:
     """세트 파일 구조 검사(해시는 안 함 — [저장] 20초 안에 NAS 를 훑어야 한다): 정확히
     db-backups/<slug>/sets/<64hex|.setpart-*|.setold-*>/{content|trash}.db 이고, 완성 세트면 manifest 의 형식·ID·역할이 맞는다."""
     parts = path.relative_to(root).parts
-    if len(parts) != 4 or parts[1] != "sets" or path.name not in ("content.db", "trash.db"):
+    if len(parts) != 4 or parts[1] != "sets" or path.name not in backup_manifest.WORKER_FILENAMES.values():
         return False
     folder = parts[2]
     if folder.startswith((".setpart-", ".setold-")):
@@ -250,11 +250,20 @@ def _is_our_set_file(root: Path, path: Path) -> bool:
     if not _SET_ID_RE.fullmatch(folder):
         return False
     try:
-        manifest = json.loads((path.parent / "manifest.json").read_text("utf-8"))
-    except (OSError, ValueError):
+        raw = (path.parent / "manifest.json").read_bytes()
+        manifest = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError, RecursionError):
         return False
     if not isinstance(manifest, dict):  # [] · null 도 남의 것으로(오류 대신)
         return False
+    if manifest.get('format_version') == 3:
+        try:
+            manifest = backup_manifest.read_json_v3(raw)
+            backup_manifest.validate_v3(manifest)
+            return (manifest['backup_set_id'] == folder
+                    and path.name in {p.name for p in backup_manifest.worker_paths(manifest, path.parent).values()})
+        except (ValueError, TypeError, KeyError):
+            return False
     roles = manifest.get("roles")
     return (
         manifest.get("format") == "mvhub-worker-backup-set"
@@ -324,11 +333,24 @@ def _sha256(path: Path) -> str:
 
 def _set_manifest(folder: Path, *, expected_id: str | None = None) -> dict | None:
     try:
-        value = json.loads((folder / "manifest.json").read_text("utf-8"))
-    except (OSError, ValueError, TypeError):
+        raw = (folder / "manifest.json").read_bytes()
+        value = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError, TypeError, RecursionError):
         return None
     if not isinstance(value, dict) or value.get("format") != "mvhub-worker-backup-set":
         return None
+    if value.get('format_version') == 3:
+        try:
+            value = backup_manifest.read_json_v3(raw)
+            backup_manifest.validate_v3(value)
+            paths = backup_manifest.worker_paths(value, folder, check_present=True)
+            backup_manifest.verify_files_v3(value, paths)
+            if any(not _sqlite_valid(path) for role, path in paths.items() if role in {'content', 'trash'}):
+                return None
+            backup_set_id = expected_id or folder.name
+            return value if value['backup_set_id'] == backup_set_id and _SET_ID_RE.fullmatch(backup_set_id) else None
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            return None
     try:
         backup_manifest.check_version(value)
         if value['format_version'] == backup_manifest.VERSION:
@@ -371,8 +393,8 @@ def copy_set(src: Path, dest: Path) -> str:
     previous: Path | None = None
     try:
         staged.mkdir()
-        for role in manifest["roles"]:
-            shutil.copyfile(src / f"{role}.db", staged / f"{role}.db")
+        for role, path in backup_manifest.worker_paths(manifest, src).items():
+            shutil.copyfile(path, staged / backup_manifest.WORKER_FILENAMES[role])
         shutil.copyfile(src / "manifest.json", staged / "manifest.json")
         if _set_manifest(staged, expected_id=manifest["backup_set_id"]) != manifest:
             raise OSError("staged set validation failed")

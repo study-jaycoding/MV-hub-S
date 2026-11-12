@@ -68,7 +68,7 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/comfy/run": COMFY_UPLOAD_TOTAL_MAX_BYTES + _COMFY_FORM_OVERHEAD_BYTES,
     "/api/db/import": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db-backup": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
-    "/api/db-backup/sets": DB_UPLOAD_FILE_MAX_BYTES * 2 + _MULTIPART_OVERHEAD_BYTES,
+    "/api/db-backup/sets": DB_UPLOAD_FILE_MAX_BYTES * 3 + MIB + _MULTIPART_OVERHEAD_BYTES,
     # 에셋 대장 도우미 결과(JSON, 파일 10만 개 상한) — 파싱 전에 막는다(Codex P0). 실측 1,352개 = 약 0.3MB.
     "/api/asset-registry/helper/result": 32 * MIB,
     # 결과물 스냅샷(docs/NAS_RESULTS.md) — 줄마다 번호 칸이 더 있어 같은 상한이면 충분(실측 1,948개 ≈ 0.5MB).
