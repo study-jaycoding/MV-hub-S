@@ -562,7 +562,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(identity["account"]), 16)
         self.assertEqual({r.path for r in route.router.routes}, {
             "/api/resolve/panel/" + name for name in ("identity", "cache", "prepare", "target", "current-bin", "adopt", "stage", "unstage", "inventory",
-                                                      "prestage", "rename", "save")})
+                                                      "prestage", "rename", "save", "settle")})
 
     async def test_target_and_adopt_share_current_project_name_and_recovery_identity(self):
         self.gen["project_name"] = "옛 이름"
@@ -770,6 +770,45 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01", "C010")))
         self.assertNotIn(c010, panel._cut_bins)
         self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01")))
+
+    async def test_settle_route_only_this_window_cut_bins(self):
+        first = await route.post_target(self.episode(), self.request)
+        c010, c020, ep_s01 = first["bins"]["S01/C010"], first["bins"]["S01/C020"], first["episode_bin_id"]
+        def settle(bins, **kwargs):
+            body = route.SettleIn(ctx=self.ctx, project_id="p", folder_path="S01", window="test-window",
+                                  bins=[route.SettleBin(folder_path=path, bin_id=bin_id) for path, bin_id in bins], **kwargs)
+            return route.post_settle(body, self.request)
+        # 지금 에피소드(A)의 컷 빈은 지우지 않는다
+        self.assertEqual((await settle([("S01/C010", c010)]))["bins"]["S01/C010"]["state"], "current_episode")
+        # target A → target B → settle(A 빈) = A 를 지움 · 같은 빈 두 번·에피소드 빈·모르는 ID 는 빼고 돌려줌
+        await route.post_target(self.episode(seq=2, folder_path="S02", episode_path="S02", create_paths=["S02/C010"]), self.request)
+        seen = []
+        with patch.object(runner, "run_resolve_panel_isolated", side_effect=lambda p, before_start=None: (seen.append(p), self.child(p, before_start))[1]):
+            done = await settle([("S01/C010", c010), ("S01/C010b", c010), ("S01", ep_s01), ("S01/C030", "없는-빈"), ("S01/C020", c020)],
+                                expect_project=self.project.unique_id)
+        self.assertEqual({path: row["state"] for path, row in done["bins"].items()},
+                         {"S01/C010": "ok", "S01/C010b": "duplicate", "S01": "episode", "S01/C030": "not_seen", "S01/C020": "ok"})
+        self.assertEqual(([row["bin_id"] for row in seen[-1]["bins"]], seen[-1]["expect_project"]), ([c010, c020], self.project.unique_id))
+        self.assertTrue(done["bins"]["S01/C010"]["bin_deleted"])
+        self.assertNotIn(c010, panel._cut_bins)
+        self.assertIsNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01", "C010")))
+        self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01")))
+        # A → B → A 뒤의 settle(A 빈) = current_episode
+        third = await route.post_target(self.episode(seq=3), self.request)
+        again = third["bins"]["S01/C020"]
+        self.assertEqual((await settle([("S01/C020", again)]))["bins"]["S01/C020"]["state"], "current_episode")
+        # payload 를 만든 뒤 잠금 안 확인 전에 target 이 그 빈을 지금 에피소드로 기억하면 — 자식 입력에서 빠지고 current_episode
+        await route.post_target(self.episode(seq=4, folder_path="S02", episode_path="S02", create_paths=["S02/C010"]), self.request)
+        inputs = []
+        def sneaky(payload, before_start=None):
+            panel.remember_episode("test-window", "p", {"S01/C020": again})
+            rejected = before_start() if before_start else None
+            inputs.append([row["bin_id"] for row in payload["bins"]])
+            return rejected or bridge.panel_operation(payload, resolve=self.resolve)
+        with patch.object(runner, "run_resolve_panel_isolated", side_effect=sneaky):
+            raced = await settle([("S01/C020", again)])
+        self.assertEqual((inputs, raced["bins"]["S01/C020"]["state"]), ([[]], "current_episode"))
+        self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01", "C020")))
 
     async def test_keep_current_rules_expect_project_and_forget_after_rebuild(self):
         for bad in [{"keep_current": True, "create_paths": [], "create": True}, {"keep_current": True, "folder_path": "S01/C010"}]:

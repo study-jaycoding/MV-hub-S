@@ -310,6 +310,226 @@ class PanelStagingTests(unittest.TestCase):
                 self.assertIs(result["bin_deleted"], False, path)
         self.assertEqual(len(person.clips) + len(used.clips) + len(sub.children), 3)
 
+    # ── 앞 에피소드 컷 빈 한 번에 정리(settle, 11-12) ──
+    def settle_bins(self, *names):
+        """S 에피소드 컷 빈들 — target 으로 만들고 내 클립 하나씩 띄운 뒤 다빈치는 루트로."""
+        folders = {}
+        for name in names:
+            self.assertEqual(self.run_op("target", folder_path=f"S/{name}")["state"], "ok")
+            folders[name] = self.pool.current
+            self.assertEqual(self.run_op("stage", folder_path=f"S/{name}")["items"][0]["state"], "staged")
+        self.pool.current = self.pool.root
+        return folders
+
+    def settle(self, folders, **kwargs):
+        return self.run_op("settle", folder_path="S", bins=[{"folder_path": f"S/{name}", "bin_id": folder.unique_id}
+                                                             for name, folder in folders.items()], **kwargs)
+
+    def test_settle_clears_unused_and_empty_bins_at_once(self):
+        folders = self.settle_bins("A", "U", "P", "N", "R")
+        folders["U"].clips[-1].usage = "1"  # 타임라인에 쓴 것
+        person = FakeClip(str(self.path))
+        folders["P"].clips.append(person)  # 사람이 넣은 항목
+        folders["N"].clips[-1].usage = "1"
+        self.pool.current = folders["N"]  # 다빈치가 들어가 있는 빈 — 쓴 것이 있어도 used 를 돌려주지 않는다
+        folders["R"].name = "사람이 바꾼 이름"
+        deletes = []
+        real_folders, real_clips = FakeMediaPool.DeleteFolders, FakeMediaPool.DeleteClips
+        def delete_folders(batch):
+            deletes.append(list(batch))
+            parent = self.pool._parent_of(batch[0])
+            done = real_folders(self.pool, batch)
+            self.pool.current = parent  # 실제 리졸브처럼 지금 빈이 지운 빈의 부모로 옮겨 간다(11-12 실측)
+            return done
+        def delete_clips(batch):
+            done = real_clips(self.pool, batch)
+            for clip in batch:
+                clip.unique_id = ""  # 실제 리졸브처럼 지운 클립은 ID 를 못 읽는다(11-12 실측)
+            return done
+        with mock.patch.object(self.pool, "DeleteFolders", side_effect=delete_folders), \
+                mock.patch.object(self.pool, "DeleteClips", side_effect=delete_clips):
+            result = self.settle({**folders, "X": FakeFolder("없음")})
+        self.assertIs(self.pool.current, folders["N"])  # 사람이 보던 빈으로 되돌림
+        bins = result["bins"]
+        self.assertEqual(bins["S/A"], {"state": "ok", "removed": 1, "bin_deleted": True, "used": []})
+        self.assertEqual(bins["S/U"], {"state": "ok", "removed": 0, "bin_deleted": False, "used": ["g"]})
+        self.assertEqual(bins["S/P"], {"state": "ok", "removed": 1, "bin_deleted": False, "used": []})
+        self.assertEqual((bins["S/N"], bins["S/R"], bins["S/X"]), ({"state": "current"}, {"state": "renamed"}, {"state": "not_seen"}))
+        self.assertEqual((result["state"], result["removed"], deletes), ("ok", 2, [[folders["A"]]]))  # 빈 지우기는 한 번에
+        self.assertIsNone(self.bin("S", "A"))
+        self.assertEqual((len(folders["U"].clips), folders["P"].clips, len(folders["N"].clips), len(folders["R"].clips)), (1, [person], 1, 1))
+        self.assertIsNotNone(self.bin("S"))  # 에피소드 빈은 남긴다
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_settle_reports_when_current_bin_cannot_be_restored(self):
+        folders = self.settle_bins("A")
+        real = FakeMediaPool.DeleteFolders
+        def delete_folders(batch):
+            done = real(self.pool, batch)
+            self.pool.current = self.pool.root  # 지금 빈이 옮겨 갔는데
+            return done
+        with mock.patch.object(self.pool, "DeleteFolders", side_effect=delete_folders), \
+                mock.patch.object(self.pool, "SetCurrentFolder", return_value=False):  # 되돌리기가 안 된다
+            self.pool.current = self.bin("S")
+            result = self.settle(folders)
+        self.assertEqual((result["state"], result["bins"]["S/A"]["bin_deleted"], result["removed"]), ("restore_failed", True, 1))
+
+    def test_settle_restores_whatever_delete_folders_and_tree_walk_do(self):
+        episode = self.bin("S")
+        def moving_delete(returned=None, after=None):
+            real = FakeMediaPool.DeleteFolders
+            def delete_folders(batch):
+                done = real(self.pool, batch)
+                self.pool.current = self.pool.root  # 지금 빈이 옮겨 갔다
+                if after:
+                    after()
+                return done if returned is None else returned
+            return mock.patch.object(self.pool, "DeleteFolders", side_effect=delete_folders)
+        # DeleteFolders 가 False 를 돌려줘도 되돌린다
+        folders = self.settle_bins("A")
+        self.pool.current = episode
+        with moving_delete(returned=False):
+            self.assertEqual(self.settle(folders)["bins"]["S/A"]["bin_deleted"], True)
+        self.assertIs(self.pool.current, episode)
+        # 지운 뒤 트리 훑기가 실패해도 되돌리기는 먼저 했다 — 못 훑으면 지웠다고 하지 않는다
+        folders = self.settle_bins("B")
+        self.pool.current = episode
+        real_walk = resolve_bridge._panel_walk
+        def walk(folder, parts=()):
+            if folder is self.pool.root and not parts and self.bin("S", "B") is None:
+                raise resolve_bridge._Unknown("트리 읽기 실패")  # 지운 뒤 미디어 풀 전체 훑기가 실패
+            return real_walk(folder, parts)
+        with moving_delete(), mock.patch.object(resolve_bridge, "_panel_walk", side_effect=walk):
+            walked = self.settle(folders)
+        self.assertIs(self.pool.current, episode)
+        self.assertEqual((walked["state"], walked["bins"]["S/B"]["bin_deleted"]), ("ok", False))
+        # 빈을 지운 뒤 되돌리기 전에 프로젝트가 바뀌면 다른 프로젝트의 빈을 고르지 않고 멈춘다
+        folders = self.settle_bins("C")
+        self.pool.current = episode
+        other = FakeProject(self.pool)
+        other.unique_id = "resolve-project-2"
+        def switch():
+            self.manager.project = other
+        with moving_delete(after=switch), mock.patch.object(self.pool, "SetCurrentFolder", side_effect=AssertionError("고르면 안 됨")):
+            stopped = self.settle(folders)
+        self.assertEqual(stopped["code"], "project_changed")
+
+    def test_settle_rechecks_name_and_emptiness_right_before_deleting(self):
+        folders = self.settle_bins("A", "B")
+        real_owned = resolve_bridge._panel_owned
+        def owned(clip, payload):
+            if clip in folders["B"].clips:
+                folders["A"].name = "사람이 바꾼 이름"  # B 를 판정하는 사이 A 의 이름이 바뀌었다
+            return real_owned(clip, payload)
+        with mock.patch.object(resolve_bridge, "_panel_owned", side_effect=owned):
+            result = self.settle(folders)
+        self.assertEqual((result["bins"]["S/A"], result["bins"]["S/B"]["bin_deleted"]), ({"state": "renamed"}, True))
+        self.assertEqual(len(folders["A"].clips), 1)  # 이름이 바뀐 빈은 클립도 안 지운다
+        # 클립을 지운 뒤 그 빈의 마지막 확인 전에 사람이 클립을 넣으면 그 빈은 지우지 않는다
+        folders = self.settle_bins("C")
+        clip, person = folders["C"].clips[-1], FakeClip(str(self.path))
+        reads = iter([[clip], [], [], [person]])  # 판정 · 지운 뒤 셈 · 남은 것 · 빈 지우기 바로 전 확인
+        with mock.patch.object(folders["C"], "GetClipList", side_effect=lambda: next(reads)), \
+                mock.patch.object(self.pool, "DeleteFolders", side_effect=AssertionError("지우면 안 됨")):
+            late = self.settle(folders)
+        self.assertEqual((late["bins"]["S/C"]["removed"], late["bins"]["S/C"]["bin_deleted"]), (1, False))
+        self.assertIsNotNone(self.bin("S", "C"))
+
+    def test_settle_never_deletes_a_bin_that_was_current_during_the_stage(self):
+        episode = self.bin("S")
+        def moving_delete(first_to=None):
+            real = FakeMediaPool.DeleteFolders
+            calls = []
+            def delete_folders(batch):
+                calls.append(batch[0].name)
+                done = real(self.pool, batch)
+                # 실제 리졸브처럼 지금 빈이 부모로 — 첫 번째에는 그 직후 사람이 다른 빈(first_to)을 열었다
+                self.pool.current = first_to if first_to is not None and len(calls) == 1 else episode
+                return done
+            return calls, mock.patch.object(self.pool, "DeleteFolders", side_effect=delete_folders)
+        # 빈 지우기 단계 시작 때 사람이 뒤 순서 빈 X 에 있다 — 앞 빈을 지우며 지금 빈이 부모로 옮겨도 X 는 남고 되돌리기 ok
+        folders = self.settle_bins("A", "X")
+        real_many = resolve_bridge._panel_delete_many
+        def delete_many(pool, folder, clips, guard):
+            done = real_many(pool, folder, clips, guard)
+            if folder is folders["X"]:
+                self.pool.current = folders["X"]  # 클립을 지우는 사이 사람이 X 를 열었다
+            return done
+        calls, deleting = moving_delete()
+        with deleting, mock.patch.object(resolve_bridge, "_panel_delete_many", side_effect=delete_many):
+            result = self.settle(folders)
+        self.assertEqual((calls, result["state"], result["bins"]["S/X"]["bin_deleted"]), (["A"], "ok", False))
+        self.assertIs(self.pool.current, folders["X"])
+        # 단계 중 첫 빈을 지운 뒤 사람이 뒤 순서 빈 Y 를 열었다 — 다음 빈을 지우며 다시 부모로 끌려 나가도 Y 는 남는다
+        folders = self.settle_bins("B", "D", "Y")
+        self.pool.current = episode
+        calls, deleting = moving_delete(first_to=folders["Y"])
+        with deleting:
+            result = self.settle(folders)
+        self.assertEqual((calls, result["bins"]["S/Y"]["bin_deleted"]), (["B", "D"], False))
+        self.assertIsNotNone(self.bin("S", "Y"))
+
+    def test_settle_bin_moved_outside_mv_hub_is_not_counted_deleted(self):
+        folders = self.settle_bins("A")
+        outside = FakeMediaPool.AddSubFolder(self.pool, self.pool.root, "사람 빈")
+        def move_out(batch):
+            parent = self.pool._parent_of(batch[0])
+            parent.children.remove(batch[0])
+            outside.children.append(batch[0])  # 지우기는 실패했고 그사이 사람이 MV Hub 밖으로 옮겼다
+            return False
+        with mock.patch.object(self.pool, "DeleteFolders", side_effect=move_out):
+            result = self.settle(folders)
+        self.assertIs(result["bins"]["S/A"]["bin_deleted"], False)
+
+    def test_settle_rechecks_usage_before_each_batch(self):
+        folders = self.settle_bins("A")
+        clip = folders["A"].clips[-1]
+        reads = {"n": 0}
+        original = FakeClip.GetClipProperty
+        def usage(target, key=None):
+            if key == "Usage" and target is clip:
+                reads["n"] += 1
+                if reads["n"] > 1:  # 고른 뒤, 그 묶음을 지우기 전에 사람이 타임라인에 넣었다
+                    return "1"
+            return original(target, key)
+        with mock.patch.object(FakeClip, "GetClipProperty", usage):
+            result = self.settle(folders)
+        self.assertEqual(result["bins"]["S/A"], {"state": "ok", "removed": 0, "bin_deleted": False, "used": ["g"]})  # 남고 그 뒤 NAS 로
+        self.assertIn(clip, folders["A"].clips)
+
+    def test_settle_stops_when_project_changes_mid_way(self):
+        folders = self.settle_bins("A", "B", "C")
+        real = resolve_bridge._panel_delete_many
+        calls = []
+        def delete_many(pool, folder, clips, guard):
+            calls.append(folder)
+            if len(calls) == 2:
+                other = FakeProject(self.pool)
+                other.unique_id = "resolve-project-2"
+                self.manager.project = other  # 둘째 빈을 지우는 사이 사람이 프로젝트를 바꿨다
+            return real(pool, folder, clips, guard)
+        with mock.patch.object(resolve_bridge, "_panel_delete_many", side_effect=delete_many):
+            result = self.settle(folders)
+        self.assertEqual(result["code"], "project_changed")
+        self.assertEqual((len(folders["A"].clips), len(folders["B"].clips), len(folders["C"].clips)), (0, 1, 1))  # 셋째는 손대지 않음
+        self.assertIsNotNone(self.bin("S", "A"))  # 빈 지우기 전에 멈췄다
+
+    def test_settle_read_failures(self):
+        folders = self.settle_bins("A", "B")
+        with mock.patch.object(self.pool, "GetCurrentFolder", return_value=None):
+            self.assertEqual(self.settle(folders)["state"], "unavailable")  # 지금 빈을 모르면 지우기 0
+        self.assertEqual((len(folders["A"].clips), len(folders["B"].clips)), (1, 1))
+        with mock.patch.object(folders["A"], "GetClipList", return_value=None):
+            result = self.settle(folders)
+        self.assertEqual(result["bins"]["S/A"], {"state": "unreadable"})  # 그 빈만 손대지 않고 나머지는 계속
+        self.assertEqual((result["bins"]["S/B"]["removed"], result["bins"]["S/B"]["bin_deleted"]), (1, True))
+        self.assertEqual(len(folders["A"].clips), 1)
+        reads = iter([[folders["A"].clips[-1]], None])  # 판정은 읽히고 지운 뒤 되읽기가 실패
+        with mock.patch.object(folders["A"], "GetClipList", side_effect=lambda: next(reads)), \
+                mock.patch.object(self.pool, "DeleteFolders", side_effect=AssertionError("지우면 안 됨")):
+            failed = self.settle({"A": folders["A"]})
+        self.assertEqual(failed["bins"]["S/A"]["state"], "unverified")
+
     def test_unstage_only_unused_owned_and_not_capped(self):
         clip = self.staged()
         duplicate = FakeClip(clip.path)

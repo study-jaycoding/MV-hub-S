@@ -50,5 +50,8 @@ it("에피소드 빈 표·따라가기 bin_id·빈 지우기를 본문으로 전
   expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1" });
   await resolvePanelApi.unstage({ ...selection, folder_path: "S/C1", bin_id: "b1", delete_empty: true });
   expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1", delete_empty: true });
+  await resolvePanelApi.settle({ ...selection, bins: [{ folder_path: "S/C1", bin_id: "b1" }] }); // 앞 에피소드 컷 빈 한 번에
+  expect(vi.mocked(jsonFetch).mock.calls.at(-1)![0]).toBe("/api/resolve/panel/settle");
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ folder_path: "S", bins: [{ folder_path: "S/C1", bin_id: "b1" }] });
   expect(["busy", "unavailable", "active_bin"].map(panelFailure)).toEqual(["확인 중 — 리졸브가 바쁨", "리졸브에 연결하지 못했습니다", "지금 쓰는 빈이라 남겼습니다"]);
 });

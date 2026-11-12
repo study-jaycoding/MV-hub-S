@@ -146,7 +146,7 @@ export function useResolvePanel() {
     davinciRef.current = id; setDavinci(id);
   };
   // 응답이 고를 때와 다른 다빈치 프로젝트에서 왔다(또는 리졸브 쪽이 쓰기 전에 거절) — 버리고 프로젝트 전환으로 다룬다
-  const sameDavinci = (selection: Selection, result: TargetResult) => {
+  const sameDavinci = (selection: Selection, result: Pick<TargetResult, "state" | "resolve_project_id">) => {
     const moved = result.state === "project_changed"
       || (!!selection.resolveProject && !!result.resolve_project_id && result.resolve_project_id !== selection.resolveProject);
     if (moved) noteDavinci(result.resolve_project_id);
@@ -359,27 +359,29 @@ export function useResolvePanel() {
     return true;
   };
   // 다른 에피소드로 옮긴 뒤 앞 에피소드의 컷 빈 정리(Jay 결정 2) — 새 target 뒤에 돈다(사람이 앞 컷 빈 안에 있으면 지금 빈을 지우게 되므로).
-  //  컷마다 오래 걸리므로 그 에피소드를 다시 골랐는지(A→B→A)는 컷마다 본다.
+  //  컷 빈 전부를 settle 한 번에(Jay 11-12 '하나씩 지워져 느리다') — 쓰인 것·사람 것·다빈치가 들어가 있는 빈·이름 바뀐 빈은 리졸브 쪽이 남긴다.
+  //  도는 중에 그 에피소드를 다시 고르면 그 선택의 target·미리 띄우기가 대기열에서 이 뒤에 돌아 다시 채운다.
   const settleEpisode = async (previous: Selection) => {
     const ep = episodeOf(previous);
     if (!ep) return settle(previous); // 빈 표가 없으면(다시 연 뒤 등) 지금처럼 앞 컷만 — 빈은 지우지 않는다
-    for (const [path, bin_id] of Object.entries(ep.bins)) {
+    const bins = Object.entries(ep.bins).filter(([, bin_id]) => bin_id).map(([folder_path, bin_id]) => ({ folder_path, bin_id }));
+    if (bins.length) {
       if (!valid(previous) || sameEpisode(selected.current, previous)) return;
-      const cut = { ...previous, folder_path: path };
-      const result = await panel.currentBin(previous.ctx, previous.project_id, path);
+      const result = await panel.settle({ ...writer(previous), folder_path: previous.episode || previous.folder_path, bins });
       if (!valid(previous)) return;
       check(result);
-      if (!sameDavinci(previous, result)) return; // 다른 다빈치 프로젝트의 같은 이름 빈은 정리하지 않는다
-      // 이름이 바뀌었거나 이미 지운 빈, 또는 다빈치가 지금 그 빈 안(새 target 실패·프로젝트 바꿈) — 손대지 않는다
-      if (result.state === "ok" && (result.target_bin_id !== bin_id || result.bin_id === bin_id)) continue;
-      if (result.state !== "ok" || result.used === undefined) throw new Error(t("앞 컷 정리를 확인하지 못했습니다") + ": " + panelFailure(result.state));
-      try { for (const id of result.used) await adoptOne(cut, id, result.resolve_project_id!, bin_id); }
-      catch (error) { setFailures(list => [...new Set([...list, errorText(error)])]); continue; } // 쓴 것을 못 옮긴 컷은 정리하지 않는다
-      if (!valid(previous) || sameEpisode(selected.current, previous)) return;
-      const removed = await panel.unstage({ ...writer(cut), bin_id, delete_empty: true });
-      check(removed);
-      if (!sameDavinci(previous, removed)) return;
-      if (!["ok", "not_seen"].includes(removed.state)) throw new Error(t("앞 컷 정리를 확인하지 못했습니다") + ": " + panelFailure(removed.state));
+      if (!sameDavinci(previous, result)) return; // 다른 다빈치 프로젝트면 쓰지 않았다
+      // restore_failed = 정리는 끝났는데 빈을 지운 뒤 다빈치 지금 빈을 되돌리지 못했다 — 알리고 쓴 것 옮기기는 이어 간다
+      if (result.state === "restore_failed") setFailures(list => [...new Set([...list, t("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다")])]);
+      else if (result.state !== "ok") throw new Error(t("앞 컷 정리를 확인하지 못했습니다") + ": " + panelFailure(result.state));
+      // 쓰인 것은 지우지 않았다 — 그 뒤 NAS 로(실패는 알림에 모으고 다음 항목)
+      for (const { folder_path, bin_id } of bins) {
+        for (const id of result.bins?.[folder_path]?.used || []) {
+          if (!valid(previous) || sameEpisode(selected.current, previous)) return;
+          try { await adoptOne({ ...previous, folder_path }, id, result.resolve_project_id!, bin_id); }
+          catch (error) { setFailures(list => [...new Set([...list, errorText(error)])]); }
+        }
+      }
     }
     if (episodes.current.get(episodeKey(previous)) === ep) episodes.current.delete(episodeKey(previous));
   };

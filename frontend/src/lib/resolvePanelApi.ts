@@ -38,6 +38,9 @@ export interface SaveResult extends Omit<TargetResult, "state"> {
   state: TargetState | "not_clean" | "scan_failed" | "save_failed";
   not_clean?: { mine: number; other: number; in_use: number; bins: { path: string; count?: number; in_use: boolean; mine: boolean }[] };
 }
+// 앞 에피소드 컷 빈 한 번에 정리 — 빈마다 결과(지운 수·빈 지움·쓰인 생성물 = 그 뒤 NAS 로), 건너뛴 빈은 state 만
+export interface SettleBinResult { state: string; removed?: number; bin_deleted?: boolean; used?: string[] }
+export interface SettleResult extends Omit<TargetResult, "bins"> { bins?: Record<string, SettleBinResult>; removed?: number }
 export const contextKey = (ctx: PanelContext | null) => ctx ? JSON.stringify([ctx.instance, ctx.account, ctx.epoch]) : "";
 const post = <T,>(path: string, body: unknown) => jsonFetch<T>(`/api/resolve/panel/${path}`, { method: "POST", body: JSON.stringify(body) });
 export const resolvePanelApi = {
@@ -53,6 +56,7 @@ export const resolvePanelApi = {
   prestage: (body: PanelSelection & { window: string; episode_bin_id: string; cuts: PanelCut[] }) => post<PrestageResult>("prestage", body),
   rename: (body: PanelSelection & { window: string; cuts: PanelCut[]; limit?: number; after?: [number, number] }) => post<RenameResult>("rename", body),
   save: (body: PanelSelection & { window: string; expect_project: string }) => post<SaveResult>("save", body),
+  settle: (body: PanelSelection & { window: string; bins: { folder_path: string; bin_id: string }[] }) => post<SettleResult>("settle", body),
 };
 
 export function hasResolveBridge(bridge: ResolveDragBridge | undefined): bridge is ResolveDragBridge {

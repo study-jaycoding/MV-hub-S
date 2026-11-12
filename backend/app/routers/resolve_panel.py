@@ -89,6 +89,17 @@ class SaveIn(PanelIn):
     expect_project: str = Field(min_length=1, max_length=200)  # [저장]이 inventory 에서 고정한 다빈치 프로젝트 — 없으면 저장하지 않는다
 
 
+class SettleBin(BaseModel):
+    folder_path: str = Field(min_length=1, max_length=2000)
+    bin_id: str = Field(min_length=1, max_length=200)
+
+
+class SettleIn(PanelIn):
+    """앞 에피소드 컷 빈 한 번에 정리 — 이 창이 target 으로 받은 컷 빈만 지운다."""
+    window: str = Field(min_length=1, max_length=80)
+    bins: list[SettleBin] = Field(min_length=1, max_length=200)
+
+
 class UnstageIn(PanelIn):
     bin_id: str = Field(min_length=1, max_length=200)
     inventory_cleanup: bool = False
@@ -265,6 +276,36 @@ async def _operate(operation, body, request, ctx):
                            labels={gen["id"]: panel.item_label(gen) for _cut, gens in cuts for gen in gens})
     elif operation == "save":
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path}
+    elif operation == "settle":
+        source_root, manifest_root = await asyncio.to_thread(resolve_transfer.resolve_transfer_roots, body.project_id)
+        panel.validate_media_root(source_root)
+        settle_skipped, seen = {}, set()
+        payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
+                   "manifest_root": str(manifest_root), "bins": []}
+        for row in body.bins:
+            if row.bin_id in seen:
+                settle_skipped[row.folder_path] = {"state": "duplicate"}  # 같은 빈은 한 번만(이름 다듬기로 두 컷이 한 빈)
+                continue
+            seen.add(row.bin_id)
+            payload["bins"].append({"folder_path": row.folder_path, "bin_id": row.bin_id})
+
+        def settle_filter():
+            # 이 창이 받은 그 컷 빈만 · 에피소드 빈·지금 에피소드 컷 빈은 빼기 — 쓰기 잠금 안(자식 띄우기 직전)에서도 다시 부른다
+            kept = []
+            for row in payload["bins"]:
+                if row["bin_id"] in panel._episode_roots:
+                    settle_skipped[row["folder_path"]] = {"state": "episode"}
+                elif row["bin_id"] in panel._episode_bins:
+                    settle_skipped[row["folder_path"]] = {"state": "current_episode"}
+                elif not panel.cut_bin(row["bin_id"], body.window, body.project_id, row["folder_path"]):
+                    settle_skipped[row["folder_path"]] = {"state": "not_seen"}
+                else:
+                    kept.append(row)
+            payload["bins"] = kept
+
+        settle_filter()
+        if not payload["bins"]:
+            return {"state": "ok", "bins": settle_skipped, "removed": 0}
     else:
         # 경로 검사는 리졸브 호출 전에 — 에피소드 밖·프로젝트 전체 빈을 만들지 않는다.
         if body.create_paths and (not body.create or not panel.episode_scope_ok(body.episode_path, body.folder_path, body.create_paths)):
@@ -290,7 +331,7 @@ async def _operate(operation, body, request, ctx):
     if not payload["project_name"] and ready:
         payload["project_name"] = ready["project_name"]
     payload.update(_base_payload(operation, ctx))
-    if operation in {"target", "stage", "unstage", "prestage", "rename", "save"} and body.expect_project:
+    if operation in {"target", "stage", "unstage", "prestage", "rename", "save", "settle"} and body.expect_project:
         payload["expect_project"] = body.expect_project
 
     def before_write():
@@ -301,6 +342,10 @@ async def _operate(operation, body, request, ctx):
             return {"state": "stale"}
         if operation == "stage" and panel.stale(ctx, body.seq, channel, body.window):
             return {"state": "stale"}
+        if operation == "settle":
+            settle_filter()  # 그사이 잠금을 먼저 잡은 target 이 막 기억한 빈은 지우지 않는다(runner 는 이 뒤에 payload 를 넘긴다)
+            if not payload["bins"]:
+                return {"state": "ok", "bins": {}, "removed": 0}
         return None
 
     async def write():
@@ -320,6 +365,13 @@ async def _operate(operation, body, request, ctx):
                 panel.remember_episode(body.window, body.project_id, result["bins"], result.get("episode_bin_id", ""), body.episode_path)
             if operation == "unstage" and result.get("bin_deleted"):
                 panel.forget_bin(body.bin_id)
+            if operation == "settle":
+                ids = {row["folder_path"]: row["bin_id"] for row in payload["bins"]}
+                for path, done in (result.get("bins") or {}).items():
+                    if done.get("bin_deleted") and path in ids:
+                        panel.forget_bin(ids[path])
+                if result.get("state") in {"ok", "restore_failed"}:
+                    result["bins"] = {**settle_skipped, **(result.get("bins") or {})}
             if operation == "prestage":
                 # 컷마다 같은 파일 기억 · 복구 기록 저장(멈춘 조각의 leftover 포함) · 끝난 생성물의 옛 기록 지우기
                 done_cuts = result.get("cuts") or {}
@@ -394,7 +446,7 @@ async def _request(operation, body, request, ctx):
                     async with integration._tracked_resolve_transfer() if operation not in {"current-bin", "inventory"} else nullcontext():
                         if operation not in {"current-bin", "inventory"}:
                             await asyncio.to_thread(integration._reject_if_update_in_progress)
-                        if operation in {"target", "stage", "unstage", "prepare", "adopt", "prestage", "rename", "save"}:
+                        if operation in {"target", "stage", "unstage", "prepare", "adopt", "prestage", "rename", "save", "settle"}:
                             async with panel.mutation_scope():
                                 panel.check_context(ctx, request)
                                 if generation is None or generation != panel.owner_generation(ctx, body.window):
@@ -416,7 +468,7 @@ async def _request(operation, body, request, ctx):
             raise HTTPException(400, str(exc)) from exc
 
     # 보호 핸들·고정 계정·장부 기록까지 한 단위로 끝낸 뒤 요청 취소를 전파한다.
-    if operation in {"prepare", "stage", "unstage", "adopt", "target", "prestage", "rename", "save"}:
+    if operation in {"prepare", "stage", "unstage", "adopt", "target", "prestage", "rename", "save", "settle"}:
         key = ("request", operation, *panel.context_key(ctx), body.model_dump_json())
         return await resolve_queue.run_non_abandon(panel.joined(key, execute))
     return await resolve_queue.run_non_abandon(execute())
@@ -488,6 +540,11 @@ async def post_stage(body: StageIn, request: Request):
 @router.post("/unstage")
 async def post_unstage(body: UnstageIn, request: Request):
     return await _request("unstage", body, request, body.ctx.model_dump())
+
+
+@router.post("/settle")
+async def post_settle(body: SettleIn, request: Request):
+    return await _request("settle", body, request, body.ctx.model_dump())
 
 
 @router.post("/adopt")

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Generation } from "../src/types";
 const mocks = vi.hoisted(() => ({
   config: vi.fn(), me: vi.fn(), identity: vi.fn(), cache: vi.fn(), prepare: vi.fn(), target: vi.fn(), currentBin: vi.fn(), adopt: vi.fn(), stage: vi.fn(), unstage: vi.fn(), inventory: vi.fn(),
-  prestage: vi.fn(), rename: vi.fn(), save: vi.fn(),
+  prestage: vi.fn(), rename: vi.fn(), save: vi.fn(), settle: vi.fn(),
   projects: vi.fn(), generations: vi.fn(), login: vi.fn(), token: "", pause: (() => {}) as () => void,
   editCard: vi.fn(), setTags: vi.fn(), review: vi.fn(), listReload: vi.fn(), countsReload: vi.fn(),
   live: null as null | ((message: { type?: string; status?: string }) => void),
@@ -26,7 +26,7 @@ vi.mock("../src/lib/http", () => ({ jsonFetch: vi.fn(), getAuthToken: () => mock
 vi.mock("../src/lib/resolvePanelApi", async importOriginal => ({
   ...await importOriginal<typeof import("../src/lib/resolvePanelApi")>(),
   resolvePanelApi: { identity: mocks.identity, cache: mocks.cache, prepare: mocks.prepare, target: mocks.target, currentBin: mocks.currentBin, adopt: mocks.adopt, stage: mocks.stage, unstage: mocks.unstage, inventory: mocks.inventory,
-    prestage: mocks.prestage, rename: mocks.rename, save: mocks.save },
+    prestage: mocks.prestage, rename: mocks.rename, save: mocks.save, settle: mocks.settle },
 }));
 vi.mock("../src/lib/useEditSequence", async importOriginal => ({
   ...await importOriginal<typeof import("../src/lib/useEditSequence")>(), useEditProjects: mocks.projects, useEditGenerations: mocks.generations }));
@@ -64,6 +64,7 @@ beforeEach(() => {
   mocks.target.mockResolvedValue(destination); mocks.currentBin.mockResolvedValue(destination); mocks.adopt.mockResolvedValue({ state: "in_bin" });
   mocks.prestage.mockResolvedValue({ state: "ok", resolve_project_id: "r", cuts: {} }); mocks.rename.mockResolvedValue({ state: "ok", resolve_project_id: "r", named: 0, remaining: 0 });
   mocks.save.mockResolvedValue({ state: "ok", resolve_project_id: "r" });
+  mocks.settle.mockResolvedValue({ state: "ok", resolve_project_id: "r", bins: {}, removed: 0 });
   mocks.projects.mockReturnValue({ projectsState: "ok", projects: [{ id: "p", name: "영화" }], reloadCounts: mocks.countsReload, tree: { state: "ready", roots: [{ path: "S", name: "S",
     count: 4, reviewCounts: { final: 1, held: 2, shared: 4 }, children: [ // 위 폴더 수 = 아래 컷의 합(실제 트리처럼)
     { path: "S/C10", name: "C10", count: 1, reviewCounts: { final: 0, held: 1 } },
@@ -237,37 +238,50 @@ it("같은 에피소드 안 컷 이동·에피소드로 돌아오기는 지우�
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
   await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
   expect(mocks.unstage).not.toHaveBeenCalled();
+  expect(mocks.settle).not.toHaveBeenCalled();
   expect(mocks.stage).toHaveBeenCalledTimes(3);
 });
 
-it("다른 에피소드: 새 target 먼저, 그 뒤 앞 에피소드 컷마다 쓴 것 옮기고 비면 빈까지 지움", async () => {
-  const bins: Record<string, string> = { "S/C2": "b2", "S/C10": "b10", "T/C1": "t1" };
-  mocks.currentBin.mockImplementation(async (_ctx: unknown, _project: string, folder: string) =>
-    ({ ...destination, bin_id: "elsewhere", target_bin_id: bins[folder] ?? "ep", used: folder === "S/C2" ? ["g"] : [] }));
+it("다른 에피소드: 새 target 먼저, 그 뒤 앞 에피소드 컷 빈 전부를 settle 한 번 · 쓴 것은 그 뒤 NAS 로", async () => {
   mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
     .mockResolvedValueOnce({ ...destination, bin_id: "epT", bins: { "T/C1": "t1" }, episode_bin_id: "epT" });
+  mocks.settle.mockResolvedValue({ state: "ok", resolve_project_id: "r", removed: 3, bins: {
+    "S/C2": { state: "ok", removed: 1, bin_deleted: false, used: ["g"] }, "S/C10": { state: "ok", removed: 2, bin_deleted: true, used: [] } } });
   await render(false);
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
   expect(mocks.target.mock.calls[0][0]).toMatchObject({ episode_path: "S", create_paths: ["S/C2", "S/C10"] });
   expect(mocks.stage).not.toHaveBeenCalled();
   await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
-  expect(mocks.unstage.mock.calls.map(call => [call[0].folder_path, call[0].bin_id, call[0].delete_empty])).toEqual([["S/C2", "b2", true], ["S/C10", "b10", true]]);
-  const settleRead = mocks.currentBin.mock.calls.findIndex(call => call[2] === "S/C2");
-  expect(mocks.target.mock.invocationCallOrder[1]).toBeLessThan(mocks.currentBin.mock.invocationCallOrder[settleRead]);
-  expect(mocks.adopt.mock.invocationCallOrder[0]).toBeLessThan(mocks.unstage.mock.invocationCallOrder[0]); // 쓴 것을 NAS 로 옮긴 뒤 정리
+  expect(mocks.settle).toHaveBeenCalledTimes(1);
+  expect(mocks.settle.mock.calls[0][0]).toMatchObject({ folder_path: "S", bins: [{ folder_path: "S/C2", bin_id: "b2" }, { folder_path: "S/C10", bin_id: "b10" }] });
+  expect(mocks.unstage).not.toHaveBeenCalled(); // 컷마다 지우지 않는다
+  expect(mocks.currentBin.mock.calls.filter(call => call[2] === "S/C2" || call[2] === "S/C10")).toEqual([]); // 컷마다 읽지도 않는다
+  expect(mocks.target.mock.invocationCallOrder[1]).toBeLessThan(mocks.settle.mock.invocationCallOrder[0]);
+  expect(mocks.adopt.mock.calls.map(call => [call[0].folder_path, call[0].gen_id, call[0].bin_id])).toEqual([["S/C2", "g", "b2"]]);
+  expect(mocks.settle.mock.invocationCallOrder[0]).toBeLessThan(mocks.adopt.mock.invocationCallOrder[0]); // 안 쓴 것을 지운 뒤 쓴 것을 NAS 로
 });
 
-it("앞 에피소드 정리 중에 그 에피소드를 다시 고르면(A→B→A) 남은 컷은 지우지 않음", async () => {
-  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
-    .mockResolvedValue({ ...destination, bins: { "T/C1": "t1" }, episode_bin_id: "epT" });
+it("앞 에피소드 settle 전에 그 에피소드를 다시 고르면(A→B→A) 지우지 않음 · settle 도는 중에 다시 고르면 그 target 은 settle 뒤에", async () => {
+  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   await render(false);
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
-  const held = deferred<typeof destination>();
-  mocks.currentBin.mockReturnValueOnce(held.promise);
+  const heldTarget = deferred<typeof destination>();
+  mocks.target.mockReturnValueOnce(heldTarget.promise);
   await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
-  await act(async () => held.resolve({ ...destination, target_bin_id: "b2" })); await flush();
-  expect(mocks.unstage.mock.calls.filter(call => call[0].bin_id === "b2" || call[0].bin_id === "b10")).toEqual([]);
+  await act(async () => heldTarget.resolve({ ...destination, bins: { "T/C1": "t1" }, episode_bin_id: "epT" })); await flush();
+  expect(mocks.settle.mock.calls.filter(call => call[0].folder_path === "S")).toEqual([]);
+  // settle 이 도는 사이 다시 고르면 — 그 선택의 target 은 대기열에서 settle 이 끝난 뒤 돈다(지운 빈을 다시 만든다)
+  const heldSettle = deferred<{ state: string; resolve_project_id: string; bins: Record<string, unknown> }>();
+  mocks.settle.mockReturnValueOnce(heldSettle.promise);
+  await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
+  expect(mocks.settle.mock.calls.at(-1)![0]).toMatchObject({ folder_path: "S" });
+  const targets = mocks.target.mock.calls.length;
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
+  expect(mocks.target.mock.calls.length).toBe(targets);
+  await act(async () => heldSettle.resolve({ state: "ok", resolve_project_id: "r", bins: {} })); await flush();
+  expect(mocks.target.mock.calls.length).toBe(targets + 1);
+  expect(mocks.target.mock.calls.at(-1)![0]).toMatchObject({ folder_path: "S", create_paths: ["S/C2", "S/C10"] });
 });
 
 it("다른 에피소드(빈 표 없음): 새 컷을 먼저 띄운 뒤 앞 컷 정리 — 기다리는 사이 A 를 다시 고르면 A 는 안 지움", async () => {
@@ -292,9 +306,9 @@ it("새 target 이 실패하면 앞 에피소드는 미뤄 두었다가 [맞추�
   await render(false);
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
   await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
-  expect(mocks.unstage).not.toHaveBeenCalled();
+  expect(mocks.settle).not.toHaveBeenCalled();
   await act(async () => control.align()); await flush();
-  expect(mocks.unstage.mock.calls.map(call => call[0].bin_id)).toEqual(["b2", "b10"]);
+  expect(mocks.settle.mock.calls.map(call => call[0].bins.map((bin: { bin_id: string }) => bin.bin_id))).toEqual([["b2", "b10"]]);
 });
 
 it("낡은 B 작업은 그사이 C 를 골랐으면 정리하지 않고, C 의 target 뒤에 앞 에피소드를 정리", async () => {
@@ -309,8 +323,8 @@ it("낡은 B 작업은 그사이 C 를 골랐으면 정리하지 않고, C 의 t
   await act(async () => control.selectFolder("p", "V", "V/C1", [])); await flush();
   await act(async () => held.resolve({ ...destination, items: [] })); await flush();
   const targetV = mocks.target.mock.calls.findIndex(call => call[0].folder_path === "V/C1");
-  expect(mocks.unstage.mock.calls.map(call => call[0].bin_id).slice(0, 2)).toEqual(["b2", "b10"]);
-  expect(mocks.target.mock.invocationCallOrder[targetV]).toBeLessThan(mocks.unstage.mock.invocationCallOrder[0]);
+  expect(mocks.settle.mock.calls.map(call => call[0].bins.map((bin: { bin_id: string }) => bin.bin_id))).toEqual([["b2", "b10"]]);
+  expect(mocks.target.mock.invocationCallOrder[targetV]).toBeLessThan(mocks.settle.mock.invocationCallOrder[0]);
 });
 
 it("다빈치 빈 읽기를 기다리는 사이 목록 갱신으로 선택 객체가 바뀌어도 따라가기를 놓치지 않음", async () => {
@@ -350,14 +364,52 @@ it("따라온 선택은 늦게 고르더라도 target 으로 바뀌지 않음(�
   expect(mocks.target).toHaveBeenCalledTimes(2);
 });
 
-it("프로젝트를 바꿔 선택이 풀리면 정리하되 다빈치가 들어가 있는 컷 빈은 남김", async () => {
+it("프로젝트를 바꿔 선택이 풀리면 앞 에피소드를 settle 로 정리(다빈치가 들어가 있는 빈은 리졸브 쪽이 남김)", async () => {
   mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
-  mocks.currentBin.mockImplementation(async (_ctx: unknown, _project: string, folder: string) =>
-    ({ ...destination, bin_id: "b2", target_bin_id: ({ "S/C2": "b2", "S/C10": "b10" } as Record<string, string>)[folder] }));
+  mocks.settle.mockResolvedValue({ state: "ok", resolve_project_id: "r", bins: { "S/C2": { state: "current" }, "S/C10": { state: "ok", removed: 1, bin_deleted: true, used: [] } } });
   await render(false);
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
   await act(async () => control.selectFolder("", "", "", [])); await flush();
-  expect(mocks.unstage.mock.calls.map(call => [call[0].bin_id, call[0].delete_empty])).toEqual([["b10", true]]);
+  expect(mocks.settle.mock.calls.map(call => call[0].bins.map((bin: { bin_id: string }) => bin.bin_id))).toEqual([["b2", "b10"]]);
+  expect(mocks.unstage).not.toHaveBeenCalled();
+});
+
+const settleUsed = { "S/C2": { state: "ok", used: ["g"] }, "S/C10": { state: "ok", used: ["h"] } };
+const switchEpisodes = async () => {
+  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
+    .mockResolvedValueOnce({ ...destination, bins: { "T/C1": "t1" }, episode_bin_id: "epT" });
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
+  await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
+};
+
+it("settle 이 다른 다빈치 프로젝트로 답하면 쓴 것 NAS 옮기기도 안 함", async () => {
+  mocks.settle.mockResolvedValueOnce({ state: "project_changed", resolve_project_id: "other", bins: settleUsed });
+  await switchEpisodes();
+  expect(mocks.settle).toHaveBeenCalledTimes(1);
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
+it("settle 이 ok 가 아니면 알림", async () => {
+  mocks.settle.mockResolvedValueOnce({ state: "unavailable", details: "x" });
+  await switchEpisodes();
+  expect(control.failures.some(line => line.includes("앞 컷 정리를 확인하지 못했습니다"))).toBe(true);
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
+it("settle 이 정리 뒤 다빈치 지금 빈을 못 되돌렸으면(restore_failed) 알리고 쓴 것 옮기기는 이어 감", async () => {
+  mocks.settle.mockResolvedValueOnce({ state: "restore_failed", resolve_project_id: "r", bins: settleUsed });
+  await switchEpisodes();
+  expect(control.failures).toContain("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다");
+  expect(mocks.adopt.mock.calls.map(call => call[0].gen_id)).toEqual(["g", "h"]);
+});
+
+it("쓴 것 NAS 옮기기 하나가 실패해도 다음 것은 옮김", async () => {
+  mocks.settle.mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", bins: settleUsed });
+  mocks.adopt.mockResolvedValueOnce({ state: "replace_failed" }).mockResolvedValueOnce({ state: "in_bin" });
+  await switchEpisodes();
+  expect(mocks.adopt.mock.calls.map(call => [call[0].gen_id, call[0].bin_id])).toEqual([["g", "b2"], ["h", "b10"]]);
+  expect(control.failures.length).toBeGreaterThan(0);
 });
 
 it("실시간: 새로 활성이 된 컷은 keep_current target 한 번 · 실패면 같은 묶음 재시도 없음 · /ws 알림은 1초 묶어 다시 읽기", async () => {

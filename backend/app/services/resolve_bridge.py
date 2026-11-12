@@ -2439,6 +2439,135 @@ def _panel_drop_empty_bin(pool, folder, named, guard):
         return False
 
 
+def _panel_settle(pool, root, payload, guard):
+    """앞 에피소드 컷 빈을 자식 하나로 한 번에 정리한다(Jay 11-12 '쓴 것은 빼고 Del 키처럼') — 컷마다 자식 둘을 띄우던 것을 대신한다.
+    판정(표식·소유·파일)을 빈마다 먼저 끝내고, 지우기는 빈마다 _panel_delete_many(20개 묶음마다 guard·바로 전 사용 재확인),
+    비게 된 빈은 빈마다 바로 전 확인 뒤 하나씩 DeleteFolders. 빈을 클립째 지우지 않는다 — DeleteFolders 는 클립이 든 빈도 지워 사용 확인을 건너뛴다.
+    건너뛴 빈(not_seen·renamed·current·unreadable)은 used 를 돌려주지 않는다(그 빈은 adopt 도 하지 않는다).
+    빈마다 잡는 예외는 읽기 실패(_Unknown)만 — 프로젝트 바뀜(guard)은 그 자리에서 멈춘다."""
+    def here():
+        """(지금 빈 ID, 그 빈 객체) — 한 번 읽은 같은 객체에서. 못 읽으면 ("", None)."""
+        guard()  # 프로젝트 바뀜은 아래에서 삼키지 않는다
+        try:
+            folder = pool.GetCurrentFolder()
+            return _uid(folder), folder
+        except Exception:  # noqa: BLE001 - 지금 빈 읽기 실패 = 모름
+            return "", None
+
+    label = _folder_name(str(payload.get("project_name") or ""), payload["project_id"])
+
+    def named_ok(path, bin_id):
+        # 이름 경로로 찾은 빈이 그 ID 그대로인가 — 사람이 이름을 바꿨으면 손대지 않는다(읽기 실패는 _Unknown 으로 올라간다)
+        named = _folder_at_path(root, (MEDIA_POOL_ROOT, label, *[_folder_name(part, "미분류") for part in _folder_parts(path)]))
+        return named is not None and _uid(named) == bin_id
+
+    now, _standing = here()
+    if not now:  # 지금 빈을 모르면 사람이 들어가 있는 빈을 가릴 수 없다
+        return {"state": "unavailable", "details": "다빈치 지금 빈을 읽지 못했습니다"}
+    hub = _folder_at_path(root, (MEDIA_POOL_ROOT,))
+    try:
+        by_id = {_uid(folder): folder for folder, _parts in (_panel_walk(hub) if hub is not None else ())}
+    except _Unknown:
+        return {"state": "unavailable", "details": "MV Hub 빈 목록을 읽지 못했습니다"}
+    bins, plan = {}, []
+    for row in payload.get("bins", []):
+        path, bin_id = row["folder_path"], row["bin_id"]
+        folder = by_id.get(bin_id)
+        if folder is None:
+            bins[path] = {"state": "not_seen"}
+            continue
+        try:
+            if not named_ok(path, bin_id):
+                bins[path] = {"state": "renamed"}
+                continue
+            if bin_id == now:
+                bins[path] = {"state": "current"}
+                continue
+            doomed, used = [], []
+            for clip in _strict_list(folder.GetClipList):
+                mark = _panel_raw_mark(clip)
+                if mark.get("project_id") != payload["project_id"] or not _panel_owned(clip, payload):
+                    continue
+                usage = _panel_usage(clip)
+                if usage == 0:
+                    doomed.append((clip, mark, _uid(clip)))  # 지운 클립은 ID 를 못 읽는다(11-12 실측) — 지우기 전에 적어 둔다
+                elif usage:
+                    used.append(mark.get("generation_id"))
+        except _Unknown:
+            bins[path] = {"state": "unreadable"}
+            continue
+        bins[path] = {"state": "ok", "removed": 0, "bin_deleted": False, "used": used}
+        plan.append((path, folder, bin_id, doomed))
+    if plan:
+        now, _standing = here()
+        if not now:  # 아직 아무것도 지우지 않았다
+            return {"state": "unavailable", "details": "다빈치 지금 빈을 읽지 못했습니다"}
+    maybe_empty = []
+    for path, folder, bin_id, doomed in plan:
+        if bin_id == now:
+            bins[path] = {"state": "current"}
+            continue
+        try:
+            if not named_ok(path, bin_id):  # 다른 빈을 판정하는 사이 이름이 바뀌었다
+                bins[path] = {"state": "renamed"}
+                continue
+            bins[path]["removed"] = _panel_delete_many(pool, folder, [clip for clip, _mark, _clip_id in doomed], guard) if doomed else 0
+            left = {_uid(clip) for clip in _strict_list(folder.GetClipList)}
+            # 고른 뒤 타임라인에 들어가 남은 후보도 쓰인 것(그 뒤 adopt) — 사용 값을 못 읽은 것은 남기기만 한다
+            bins[path]["used"] += [mark.get("generation_id") for clip, mark, clip_id in doomed if clip_id in left and (_panel_usage(clip) or 0) > 0]
+            maybe_empty.append((path, folder, bin_id))
+        except _Unknown:
+            bins[path]["state"] = "unverified"
+    for done in bins.values():
+        if "used" in done:
+            done["used"] = [gen for gen in dict.fromkeys(done["used"]) if gen][:200]
+
+    # 비게 된 빈 — DeleteFolders 는 든 것까지 지운다. 여러 빈을 확인한 뒤 한 번에 지우면 앞 빈 확인 뒤 사람이 넣은 클립까지 지우므로
+    # 빈마다 바로 전에 확인하고 그 빈만 지운다(지금 unstage delete_empty 와 같은 보호, 독립 리뷰 P1).
+    # 지울 때마다 리졸브가 지금 빈을 부모로 옮긴다(실측) — 그래서 단계 시작 때 지금 빈(끝에 되돌릴 빈)과 단계 중 한 번이라도
+    # 지금 빈이었던 빈은 끝까지 지우지 않는다(합의 6·7차). 되돌리기는 끝에 한 번.
+    attempted = []
+    now, standing = here() if maybe_empty else ("", None)
+    kept_bins = {now}
+    for path, folder, bin_id in (maybe_empty if now else []):
+        try:  # 이름 경로 그대로·클립 0·하위 빈 0 — 읽기 실패는 '비었음'이 아니다
+            if bin_id in kept_bins or not named_ok(path, bin_id) or _strict_list(folder.GetClipList) or _strict_list(folder.GetSubFolderList):
+                continue
+        except _Unknown:
+            continue
+        current, _folder = here()  # guard + 지금 빈 — 사람이 들어가 있는 빈은 안 지운다
+        kept_bins.add(current)
+        if not current or bin_id in kept_bins:
+            continue
+        try:
+            pool.DeleteFolders([folder])
+        except Exception:  # noqa: BLE001 - 아래 훑기로 판정한다
+            pass
+        attempted.append((path, bin_id))
+    if attempted:
+        # DeleteFolders 는 다빈치 지금 빈을 지운 빈의 부모로 옮긴다(11-12 mv test 실측) — 결과·예외와 상관없이 사람이 보던 빈으로 되돌린다
+        guard()  # 그사이 프로젝트가 바뀌었으면 다른 프로젝트의 빈을 고르지 않고 멈춘다
+        try:
+            if _uid(pool.GetCurrentFolder()) != now:
+                pool.SetCurrentFolder(standing)
+        except Exception:  # noqa: BLE001 - 아래 되읽기로 판정한다
+            pass
+        try:
+            restore_failed = _uid(pool.GetCurrentFolder()) != now
+        except Exception:  # noqa: BLE001
+            restore_failed = True
+        try:  # 미디어 풀 전체에서 — 사람이 그사이 MV Hub 밖으로 옮긴 빈을 지웠다고 세지 않는다(독립 리뷰 3차 P2)
+            alive = {_uid(folder) for folder, _parts in _panel_walk(root)}
+        except _Unknown:
+            alive = None  # 못 훑으면 지웠다고 하지 않는다(빈 기억을 남기는 쪽)
+        for path, bin_id in attempted:
+            bins[path]["bin_deleted"] = alive is not None and bin_id not in alive
+        if restore_failed:
+            return {"state": "restore_failed", "bins": bins, "removed": sum(done.get("removed", 0) for done in bins.values()),
+                    "details": "다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다"}
+    return {"state": "ok", "bins": bins, "removed": sum(done.get("removed", 0) for done in bins.values())}
+
+
 # 패널이 정렬 오류로 삼키지 않고 멈출 것 — 프로젝트가 바뀌었거나 빈 순서 복구가 먼저다(보내기와 같음)
 _PANEL_STOP_CODES = frozenset({"project_changed", "rebuild_recovery_needed", "rebuild_recovery_pending"})
 
@@ -2507,7 +2636,7 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
         if operation == "adopt" and project_id != payload.get("resolve_project_id"):
             return {"state": "project_changed", "details": "Resolve 프로젝트가 바뀌었습니다"}
         # 화면이 본 다빈치 프로젝트와 다르면 쓰기 0(복구 기록 정리도 쓰기라 그보다 먼저)
-        if operation in {"target", "stage", "unstage", "prestage", "rename", "save"} and payload.get("expect_project") and payload["expect_project"] != project_id:
+        if operation in {"target", "stage", "unstage", "prestage", "rename", "save", "settle"} and payload.get("expect_project") and payload["expect_project"] != project_id:
             return {"state": "project_changed", "code": "project_changed", "resolve_project_id": project_id,
                     "resolve_project_name": project_name, "details": "Resolve 프로젝트가 바뀌었습니다"}
 
@@ -2569,6 +2698,8 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
             return {**result, **_panel_prestage(pool, root, payload, project_id, guard)}
         if operation == "rename":
             return {**result, **_panel_rename(root, payload, guard)}
+        if operation == "settle":
+            return {**result, **_panel_settle(pool, root, payload, guard)}
         # 따라가기 stage 도 ID 로 찾는다 — 이름 경로로 찾으면 이름이 같은 다른 빈에 넣을 수 있다. 못 찾으면 경로로 대신하지 않는다.
         if operation == "unstage" or (operation == "stage" and payload.get("bin_id")):
             target = _panel_bin_by_id(root, payload.get("bin_id"))
