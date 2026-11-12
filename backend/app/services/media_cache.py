@@ -24,7 +24,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from .. import db
@@ -576,8 +576,10 @@ async def _cache_http_url_result(
     *,
     negative_thumb_cache: bool = False,
     enforce_preserved_quota: bool = False,
+    before_download: Optional[Callable[[], None]] = None,
 ) -> MediaCacheResult:
-    """검증·락·다운로드 공용 구현. max_bytes=None이면 영구 미디어 기본 상한을 쓴다."""
+    """검증·락·다운로드 공용 구현. max_bytes=None이면 영구 미디어 기본 상한을 쓴다.
+    before_download: 락을 잡고 완성 파일 확인을 지난 뒤 실제 받기 직전에만 부른다 — 예외는 받기 없이 그대로 올린다."""
     db.require_share_operation_epoch()
     target = _local_path(rel)
     if _is_complete_file(target):
@@ -597,6 +599,8 @@ async def _cache_http_url_result(
             # 같은 URL의 앞선 동시 요청이 영구 실패를 기록했으면 락 대기 후 재다운로드하지 않는다.
             if negative_thumb_cache and _thumb_failure_active(rel):
                 return MediaCacheResult(None, "permanent", error_code="negative_cache")
+            if before_download is not None:
+                before_download()  # 호출자 확인(예: 리졸브 패널 계정·선택) — 락을 기다린 뒤라 아래 try 의 실패 변환 밖에서
             try:
                 with db.share_operation_write():
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -662,7 +666,7 @@ async def _cache_http_url(
     return result.path
 
 
-async def cache_url(url: Optional[str]) -> Optional[str]:
+async def cache_url(url: Optional[str], *, before_download: Optional[Callable[[], None]] = None) -> Optional[str]:
     """보존용 원격 URL 을 로컬로 내려받고 /media 상대경로 반환. 이미 로컬이거나 실패 시 처리.
 
     - url 이 비었거나 이미 /media/.. 면 그대로(또는 None).
@@ -676,10 +680,10 @@ async def cache_url(url: Optional[str]) -> Optional[str]:
     if not url.startswith(("http://", "https://")):
         return None
 
-    return (await cache_url_result(url)).path
+    return (await cache_url_result(url, before_download=before_download)).path
 
 
-async def cache_url_result(url: Optional[str]) -> MediaCacheResult:
+async def cache_url_result(url: Optional[str], *, before_download: Optional[Callable[[], None]] = None) -> MediaCacheResult:
     """보존 작업용 상세 결과. 호출부가 용량·영구·일시 실패를 구분해 상태/재시도를 남긴다."""
     if not url:
         return MediaCacheResult(None, "skipped", error_code="missing_url")
@@ -700,6 +704,7 @@ async def cache_url_result(url: Optional[str]) -> MediaCacheResult:
         url,
         local_rel_for(url),
         enforce_preserved_quota=True,
+        before_download=before_download,
     )
 
 

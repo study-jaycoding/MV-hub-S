@@ -11,11 +11,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from .. import active_account, config, repo
-from . import export_names, project_folders, resolve_transfer as transfer
+from . import export_names, project_folders, resolve_queue, resolve_transfer as transfer
 from .worker_backup import device_identity
 
 INSTANCE = uuid.uuid4().hex
 _prepare_lock = asyncio.Lock()
+_CACHE_PARALLEL = 3  # 이 PC 로 받아 두기 동시 수 — 요청당 일꾼 수이자 패널 cache 전체 상한(Jay 11-12, 보수적 값·실측 전)
+_CACHE_SLOTS = asyncio.Semaphore(_CACHE_PARALLEL)
+_source_locks: dict[str, list] = {}  # 원본 주소 → [잠금, 쓰는 수] — 같은 주소의 다른 생성물은 패널에서 먼저 줄 세운다
 _inflight: dict[tuple, asyncio.Future] = {}
 _prepared: dict[tuple, dict] = {}
 _sequences: dict[tuple, int] = {}
@@ -179,7 +182,10 @@ async def stage_items(ctx, generations, request=None):
         check_context(ctx, request)
         async with _prepare_lock:
             check_context(ctx, request)
-            path = await transfer._cached_source(generation_asset(gen))
+            asset = generation_asset(gen)
+            async with _source_turn(asset):  # 받아 두기와 같은 주소 차례 — cache 가 media_cache 잠금 안에서 이 받기를 기다리지 않게
+                check_context(ctx, request)  # 차례를 기다린 사이 계정이 바뀌었을 수 있다
+                path = await transfer._cached_source(asset, before_download=lambda: check_context(ctx, request))
         if not _panel_under(str(path), str(config.MEDIA_DIR)) or not Path(path).is_file():
             raise transfer.ResolveTransferError("이 PC 원본 경로를 확인하지 못했습니다")
         items.append({"gen_id": gen["id"], "path": str(path), "label": item_label(gen)})
@@ -188,6 +194,10 @@ async def stage_items(ctx, generations, request=None):
 
 class AccountChanged(RuntimeError):
     pass
+
+
+class _Stale(Exception):
+    """cache 받기 직전 확인에서 새 선택이 와 있음 — 그 생성물은 시작하지 않는다(패널 안 표시)."""
 
 
 def identity(request=None) -> dict:
@@ -283,32 +293,108 @@ def generation_asset(gen: dict) -> dict:
     return asset
 
 
-async def cache(ctx: dict, seq: int, generations: list[dict], *, window: str = "", request=None) -> dict:
-    results = []
-    for gen in generations:
-        check_context(ctx, request)
-        if stale(ctx, seq, "cache", window):
-            break
+def _already_local(asset: dict) -> bool:
+    """이 PC /media 에 이미 있는 원본 — transfer._cached_source 의 첫 갈래와 같은 조건(safe_join·일반 파일·크기 > 0)."""
+    file_path = str(asset.get("file_path") or "")
+    if not file_path.startswith("/media/"):
+        return False
+    local = transfer.safe_join(transfer.MEDIA_DIR, file_path.removeprefix("/media/"))
+    return local is not None and local.is_file() and local.stat().st_size > 0
 
+
+@asynccontextmanager
+async def _source_turn(asset: dict):
+    """같은 원본 주소(_cached_source 가 처음 받으려는 http 주소)는 한 번에 하나 — 자리를 잡기 전에 기다린다.
+    media_cache 의 주소 잠금 안에서 기다리면 그사이 계정·선택이 바뀌어도 다시 보지 않고 받기 시작하므로(독립 리뷰 1차 P2),
+    여기서 차례를 받고 자리를 잡은 뒤 다시 확인한다. 쓰는 수가 0 이 되면 지워 쌓이지 않게."""
+    key = next((value for value in (str(asset.get("file_path") or ""), str(asset.get("source_url") or ""))
+                if value.startswith(("http://", "https://"))), "")
+    if not key:
+        yield
+        return
+    entry = _source_locks.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if not entry[1] and _source_locks.get(key) is entry:
+            del _source_locks[key]
+
+
+async def cache(ctx: dict, seq: int, generations: list[dict], *, window: str = "", request=None) -> dict:
+    """이 PC 로 받아 두기 — 요청당 일꾼 _CACHE_PARALLEL 개가 목록 순서대로 하나씩 집고, 패널 cache 전체 동시 수도 같은 상한(Jay 11-12).
+    받기는 _prepare_lock 밖(NAS 복사·띄움 준비는 그 잠금) — 같은 파일 중복은 media_cache 주소 잠금이 막는다.
+    자리는 joined 주인 안에서만 잡고 잡은 뒤 다시 확인한다 · 이미 이 PC 에 있는 파일은 자리를 기다리지 않는다.
+    멈춤은 '새로 집지 않기'뿐 — 일꾼을 취소하지 않는다(취소하면 스레드 다운로드는 남고 자리·잠금만 먼저 풀린다).
+    새 선택이 seq 를 올리면 새로 시작하지 않고, 받던 것은 끝까지(캐시에 남고 결과에 들어간다). 오류는 모든 일꾼이 끝난 뒤 첫 것."""
+    results: list[dict | None] = [None] * len(generations)
+    cursor = iter(range(len(generations)))  # 일꾼들이 나눠 집는 다음 순번(이벤트 루프 하나라 겹치지 않는다)
+    failure: list[BaseException] = []
+
+    async def fetch(gen):
         async def one():
-            async with _prepare_lock:
+            check_context(ctx, request)
+            if stale(ctx, seq, "cache", window):
+                return None
+            try:
+                asset = generation_asset(gen)
+                if _already_local(asset):
+                    return {"gen_id": gen["id"], "state": "cached"}
+            except Exception as exc:  # noqa: BLE001 - 생성물마다 실패를 따로 남긴다
+                return {"gen_id": gen["id"], "state": "failed", "error": str(exc)}
+            def recheck():  # media_cache 주소 잠금 안·실제 받기 직전 — 패널 밖 기능이 같은 주소를 받던 것을 기다린 뒤에도 다시 본다
+                check_context(ctx, request)
+                if stale(ctx, seq, "cache", window):
+                    raise _Stale
+
+            async with _source_turn(asset), _CACHE_SLOTS:  # 같은 주소 차례 → 자리 → 다시 확인 → 받기
                 check_context(ctx, request)
                 if stale(ctx, seq, "cache", window):
                     return None
                 try:
-                    await transfer._cached_source(generation_asset(gen))
+                    await transfer._cached_source(asset, before_download=recheck)
                     return {"gen_id": gen["id"], "state": "cached"}
-                except Exception as exc:
+                except _Stale:
+                    return None
+                except AccountChanged:  # RuntimeError 계열이라 아래 생성물별 실패보다 먼저
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 생성물마다 실패를 따로 남긴다
                     return {"gen_id": gen["id"], "state": "failed", "error": str(exc)}
 
         key = ("cache", *prepared_key(ctx, gen["project_id"], gen["folder_path"], gen["id"]))
         result = await joined(key, one)
         check_context(ctx, request)
-        if result is None and not stale(ctx, seq, "cache", window):
+        # 앞 요청의 주인이 그 요청의 stale 로 멈췄다(None) — 이 요청이 유효한 동안 다시(주인이 바뀌어 또 멈출 수 있다, 독립 리뷰 1차 P2).
+        #  None 은 다른 요청이 낡았다는 뜻이라 요청 수만큼에서 끝난다.
+        while result is None and not stale(ctx, seq, "cache", window):
             result = await joined(key, one)
-        if result is not None:
-            results.append(result)
-    return {"items": results}
+            check_context(ctx, request)
+        return result
+
+    async def worker():
+        for index in cursor:
+            if failure:
+                return
+            try:
+                check_context(ctx, request)
+                if stale(ctx, seq, "cache", window):
+                    return
+                results[index] = await fetch(generations[index])
+            except Exception as exc:  # noqa: BLE001 - 계정 바뀜 등: 적어 두고 끝, 다른 일꾼은 새로 안 집는다
+                failure.append(exc)
+                return
+
+    workers = [asyncio.create_task(worker()) for _ in range(min(_CACHE_PARALLEL, len(generations)))]
+
+    async def wait_all():
+        return await asyncio.gather(*workers, return_exceptions=True)
+
+    await resolve_queue.run_non_abandon(wait_all())  # 바깥이 취소돼도 받던 것이 끝날 때까지 자리를 쥔 채 기다린다
+    if failure:
+        raise failure[0]
+    return {"items": [row for row in results if row is not None]}
 
 
 async def prepare(ctx: dict, gen: dict, *, request=None) -> dict:
@@ -328,8 +414,10 @@ async def prepare(ctx: dict, gen: dict, *, request=None) -> dict:
                 ident = export_names.Ident(gen["project_id"], gen.get("project_name"), gen.get("job_id"), gen["id"], gen.get("creator_name"))
                 ext = project_folders.export_ext(str(asset.get("source_url") or asset.get("file_path") or ""), asset["type"])
                 check_context(ctx, request)
-                await transfer.prepare_generation_files(item, asset, source_root, str(gen.get("job_id") or gen["id"]),
-                                                        ext, export_names.Books(source_root), ident, guard=lambda: check_context(ctx, request))
+                async with _source_turn(asset):  # 원본 받기가 들어 있다 — 받아 두기와 같은 주소 차례
+                    check_context(ctx, request)  # 차례를 기다린 사이 계정이 바뀌었을 수 있다(받기 직전은 guard 가 다시 본다)
+                    await transfer.prepare_generation_files(item, asset, source_root, str(gen.get("job_id") or gen["id"]),
+                                                            ext, export_names.Books(source_root), ident, guard=lambda: check_context(ctx, request))
                 check_context(ctx, request)
                 _prepared[key] = {"item": item, "source_root": str(source_root), "manifest_root": str(manifest_root),
                                   "project_name": gen.get("project_name") or "", "created_at": transfer._utc_now()}

@@ -676,7 +676,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         first = await self._transfer([generation], "gone-1")
         (self.media / generation["assets"][0]["file_path"].removeprefix("/media/")).unlink()
 
-        async def no_source(_asset):
+        async def no_source(_asset, **_):
             raise AssertionError("이미 보낸 파일인데 원본을 찾았다")
 
         with mock.patch.object(resolve_transfer, "_cached_source", side_effect=no_source):
@@ -861,7 +861,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         cached_rel = "/media/ff/fresh.mp4"
         cached = self.media / cached_rel.removeprefix("/media/")
 
-        async def fake_cache(url: str):
+        async def fake_cache(url: str, **_):
             self.assertIn("token=secret", url)
             cached.parent.mkdir(parents=True, exist_ok=True)
             cached.write_bytes(b"fresh-video")

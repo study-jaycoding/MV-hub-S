@@ -205,6 +205,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         panel._inflight.clear()
         panel._sequences.clear()
         panel._prepare_lock = asyncio.Lock()
+        panel._CACHE_SLOTS = asyncio.Semaphore(panel._CACHE_PARALLEL)  # 시험마다 새 이벤트 루프 — 잠금처럼 새로
+        panel._source_locks.clear()
         panel.write_lock = asyncio.Lock()
         self.pool = FakeMediaPool()
         self.project = FakeProject(self.pool)
@@ -410,25 +412,28 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a, b)
         self.assertEqual(count, 1)
 
+    def remote(self, *ids):
+        # 이 PC 에 아직 없는 원본 — 받기 길(자리·_cached_source)을 탄다
+        return [dict(self.gen, id=gen_id, assets=[{"type": "video", "file_path": f"/media/remote_{gen_id}.mp4"}]) for gen_id in ids]
+
     async def test_new_cache_sequence_skips_unstarted_items(self):
-        started, finish = asyncio.Event(), asyncio.Event()
-        generations = [dict(self.gen, id="a"), dict(self.gen, id="b")]
+        finish = asyncio.Event()
         seen = []
 
-        async def slow(asset):
-            seen.append(asset)
-            started.set()
+        async def slow(asset, **_):
+            seen.append(asset["file_path"])
             await finish.wait()
 
         panel.note_sequence(self.ctx, 1, "cache")
         with patch.object(transfer, "_cached_source", side_effect=slow):
-            task = asyncio.create_task(panel.cache(self.ctx, 1, generations))
-            await started.wait()
-            panel.note_sequence(self.ctx, 2, "cache")
+            task = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("a", "b", "c", "d", "e")))
+            await asyncio.sleep(0.03)
+            self.assertEqual(len(seen), 3)  # 동시 3개까지
+            panel.note_sequence(self.ctx, 2, "cache")  # 새 선택 — 시작 안 한 d·e 는 시작하지 않는다
             finish.set()
             result = await task
-        self.assertEqual(len(seen), 1)
-        self.assertEqual([item["gen_id"] for item in result["items"]], ["a"])
+        self.assertEqual(len(seen), 3)
+        self.assertEqual([item["gen_id"] for item in result["items"]], ["a", "b", "c"])  # 받던 것은 끝까지·결과에 든다
 
     async def test_request_cancel_keeps_activity_until_adopt_ledger_finishes(self):
         await self.place()
@@ -473,7 +478,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                     panel.check_context(ctx)
 
     async def test_account_change_during_download_prevents_nas_copy(self):
-        async def change(asset):
+        async def change(asset, **_):
             panel.INSTANCE = "new-hub"
             return self.media / "clip.mp4"
 
@@ -483,7 +488,9 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(panel._prepared, {})
 
     async def test_cache_failure_is_per_item_and_does_not_touch_roots(self):
-        with patch.object(transfer, "_cached_source", AsyncMock(side_effect=OSError("missing"))):
+        missing = self.remote("g")[0]
+        with patch.object(integration, "_authorized_generations", AsyncMock(return_value=("p", [missing]))), \
+                patch.object(transfer, "_cached_source", AsyncMock(side_effect=OSError("missing"))):
             result = await route.post_cache(self.body(route.CacheIn, seq=1, gen_ids=["g"]), self.request)
         self.assertEqual(result["items"][0]["state"], "failed")
         transfer.resolve_transfer_roots.assert_not_called()
@@ -520,20 +527,264 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cache_requests_for_same_item_join(self):
         started, finish = asyncio.Event(), asyncio.Event()
+        gen = self.remote("g")[0]
 
-        async def slow(asset):
+        async def slow(asset, **_):
             started.set()
             await finish.wait()
 
         with patch.object(transfer, "_cached_source", side_effect=slow) as cache:
-            first = asyncio.create_task(panel.cache(self.ctx, 1, [self.gen]))
+            first = asyncio.create_task(panel.cache(self.ctx, 1, [gen]))
             await started.wait()
-            second = asyncio.create_task(panel.cache(self.ctx, 1, [self.gen]))
+            second = asyncio.create_task(panel.cache(self.ctx, 1, [gen]))
             await asyncio.sleep(0.03)
+            self.assertEqual(panel._CACHE_SLOTS._value, 2)  # 합류한 요청은 자리를 안 잡는다
             finish.set()
             a, b = await asyncio.gather(first, second)
             self.assertEqual(cache.call_count, 1)
+            self.assertTrue(callable(cache.call_args.kwargs["before_download"]))  # 받기 직전 확인 칸을 넘긴다
         self.assertEqual(a, b)
+
+    async def test_cache_parallel_limit_order_local_fast_path_and_prepare_lock_free(self):
+        active, peak, gates = set(), [0], {}
+
+        async def slow(asset, **_):
+            name = asset["file_path"]
+            if name == "/media/clip.mp4":  # 이미 이 PC 에 있는 원본(stage_items 도 이 함수를 부른다)
+                return self.media / "clip.mp4"
+            active.add(name); peak[0] = max(peak[0], len(active))
+            gates.setdefault(name, asyncio.Event())
+            await gates[name].wait()
+            active.discard(name)
+
+        with patch.object(transfer, "_cached_source", side_effect=slow):
+            first = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("a", "b", "c", "d")))
+            second = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("x", "y")))  # 다른 요청이 겹쳐도
+            await asyncio.sleep(0.03)
+            self.assertEqual(len(active), 3)  # cache 전체 동시 3개
+            # 자리가 다 차도 이미 이 PC 에 있는 파일은 바로 · 받기는 _prepare_lock 을 안 쥐어 띄움 준비가 기다리지 않는다
+            local = await asyncio.wait_for(panel.cache(self.ctx, 1, [self.gen]), 1)
+            self.assertEqual(local["items"], [{"gen_id": "g", "state": "cached"}])
+            self.assertFalse(panel._prepare_lock.locked())
+            items = await asyncio.wait_for(panel.stage_items(self.ctx, [self.gen]), 1)
+            self.assertEqual(items[0]["gen_id"], "g")
+            for _ in range(4):  # 늦게 시작한 것부터 끝내도 결과는 요청 순서
+                for name in sorted(active, reverse=True):
+                    gates[name].set()
+                await asyncio.sleep(0.02)
+            a, b = await asyncio.gather(first, second)
+        self.assertEqual(peak[0], 3)
+        self.assertEqual([row["gen_id"] for row in a["items"]], ["a", "b", "c", "d"])
+        self.assertEqual([row["gen_id"] for row in b["items"]], ["x", "y"])
+
+    async def test_cache_waiting_for_slot_rechecks_sequence_and_retries_after_old_owner(self):
+        finish = asyncio.Event()
+        seen = []
+
+        async def slow(asset, **_):
+            seen.append(asset["file_path"])
+            await finish.wait()
+
+        panel.note_sequence(self.ctx, 1, "cache", "w1")
+        with patch.object(transfer, "_cached_source", side_effect=slow):
+            busy = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("a", "b", "c"), window="w1"))
+            await asyncio.sleep(0.02)
+            waiting = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("d"), window="w1"))  # 자리를 기다린다
+            await asyncio.sleep(0.02)
+            panel.note_sequence(self.ctx, 2, "cache", "w1")  # 기다리는 사이 새 선택
+            finish.set()
+            await busy
+            self.assertEqual((await waiting)["items"], [])
+        self.assertNotIn("/media/remote_d.mp4", seen)  # 자리를 잡은 뒤 다시 보고 시작하지 않았다
+
+    async def test_cache_joined_followers_retry_while_valid_even_if_new_owner_goes_stale(self):
+        # 창 셋(w1·w2·w3)이 같은 생성물 e 에 합류 — 주인 w1 이 자리를 기다리다 낡고, 다시 주인이 된 w2 도 낡아도 유효한 w3 은 받는다
+        gates = {name: asyncio.Event() for name in ("x", "y", "z")}
+        seen = []
+
+        async def slow(asset, **_):
+            name = asset["file_path"].split("_")[-1].split(".")[0]
+            seen.append(name)
+            if name in gates:
+                await gates[name].wait()
+
+        for window in ("w1", "w2", "w3", "busy"):
+            panel.note_sequence(self.ctx, 1, "cache", window)
+        with patch.object(transfer, "_cached_source", side_effect=slow):
+            busy = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("x", "y", "z"), window="busy"))  # 자리 셋을 다 쓴다
+            await asyncio.sleep(0.02)
+            owners = [asyncio.create_task(panel.cache(self.ctx, 1, self.remote("e"), window=window)) for window in ("w1", "w2", "w3")]
+            await asyncio.sleep(0.02)
+            self.assertEqual(seen, ["x", "y", "z"])  # e 는 아직 자리를 기다린다(w2·w3 은 w1 에 합류)
+            panel.note_sequence(self.ctx, 2, "cache", "w1")  # 주인 w1 과 합류자 w2 가 자리를 기다리는 사이 낡았다
+            panel.note_sequence(self.ctx, 2, "cache", "w2")
+            for gate in gates.values():
+                gate.set()
+            results = await asyncio.gather(busy, *owners)
+        self.assertEqual([row["items"] for row in results[1:]], [[], [], [{"gen_id": "e", "state": "cached"}]])
+        self.assertEqual(seen.count("e"), 1)
+        # 다시 주인이 된 요청도 낡아 None 을 또 돌려줘도, 이 요청이 유효한 동안은 계속 다시 한다(한 번만 하고 빠지지 않는다)
+        real, calls = panel.joined, []
+
+        async def twice_none(key, work):
+            calls.append(key)
+            return None if len(calls) <= 2 else await real(key, work)
+
+        with patch.object(transfer, "_cached_source", side_effect=slow), patch.object(panel, "joined", side_effect=twice_none):
+            again = await panel.cache(self.ctx, 1, self.remote("f"), window="w3")
+        self.assertEqual((len(calls), again["items"]), (3, [{"gen_id": "f", "state": "cached"}]))
+
+    async def test_cache_same_source_for_different_generations_rechecks_before_second_download(self):
+        # 서로 다른 생성물이 같은 원본 주소 — 앞 받기가 실패하는 사이 새 선택이 오면 뒤의 것은 받기를 시작하지 않는다
+        go = asyncio.Event()
+        calls = []
+
+        async def failing(asset, **_):
+            calls.append(asset["file_path"])
+            await go.wait()
+            raise OSError("CDN 오류")
+
+        same = [dict(self.gen, id=gen_id, assets=[{"type": "video", "file_path": "https://cdn.test/same.mp4"}]) for gen_id in ("a", "b")]
+        panel.note_sequence(self.ctx, 1, "cache")
+        with patch.object(transfer, "_cached_source", side_effect=failing):
+            task = asyncio.create_task(panel.cache(self.ctx, 1, same))
+            await asyncio.sleep(0.02)
+            self.assertEqual(len(calls), 1)  # b 는 같은 주소 차례를 기다린다(자리는 안 잡음)
+            self.assertEqual(panel._CACHE_SLOTS._value, 2)
+            panel.note_sequence(self.ctx, 2, "cache")
+            go.set()
+            result = await task
+        self.assertEqual(len(calls), 1)  # 차례를 받은 뒤 다시 보고 시작하지 않았다
+        self.assertEqual(result["items"], [{"gen_id": "a", "state": "failed", "error": "CDN 오류"}])
+        self.assertEqual(panel._source_locks, {})  # 다 쓴 차례 잠금은 지운다
+        # 띄움 준비(stage_items)가 같은 주소를 받는 중이어도 같다 — 그쪽도 같은 차례를 써서 cache 는 받는 쪽 잠금 안에서 기다리지 않는다
+        go.clear(); calls.clear()
+        panel.note_sequence(self.ctx, 3, "cache")
+        with patch.object(transfer, "_cached_source", side_effect=failing):
+            staging = asyncio.create_task(panel.stage_items(self.ctx, [dict(same[0], id="s")]))
+            await asyncio.sleep(0.02)
+            task = asyncio.create_task(panel.cache(self.ctx, 3, [same[1]]))
+            await asyncio.sleep(0.02)
+            self.assertEqual((len(calls), panel._CACHE_SLOTS._value), (1, 3))  # cache 는 차례를 기다리고 자리는 안 잡음
+            panel.note_sequence(self.ctx, 4, "cache")
+            go.set()
+            with self.assertRaises(OSError):
+                await staging
+            self.assertEqual((await task)["items"], [])
+        self.assertEqual(len(calls), 1)
+        # 반대 방향 — cache 가 받는 중에 stage_items 가 차례를 기다리다 계정이 바뀌면 받기를 시작하지 않는다(리뷰 3차 P3)
+        go.clear(); calls.clear()
+        panel.note_sequence(self.ctx, 5, "cache")
+        with patch.object(panel, "INSTANCE", panel.INSTANCE), patch.object(transfer, "_cached_source", side_effect=failing):
+            task = asyncio.create_task(panel.cache(self.ctx, 5, [same[0]]))
+            await asyncio.sleep(0.02)
+            staging = asyncio.create_task(panel.stage_items(self.ctx, [dict(same[1], id="s")]))
+            await asyncio.sleep(0.02)
+            panel.INSTANCE = "new-hub"
+            go.set()
+            with self.assertRaises(panel.AccountChanged):
+                await staging
+            with self.assertRaises(panel.AccountChanged):
+                await task
+        self.assertEqual(len(calls), 1)
+
+    async def test_cache_rechecks_inside_media_cache_lock_when_other_feature_downloads_same_url(self):
+        # 패널 밖 기능(라이브러리 등)이 media_cache 로 같은 주소를 받는 중 — cache 는 그 잠금 안에서 기다렸다가 받기 직전에 다시 본다
+        import threading
+        from app.services import media_cache
+        url = "https://cdn.test/shared.mp4"
+        gen = [dict(self.gen, id="a", assets=[{"type": "video", "file_path": url}])]
+
+        async def scenario(change):
+            started, release, downloads = threading.Event(), threading.Event(), []
+
+            def blocked(link, target, *args):
+                downloads.append(link)
+                started.set()
+                release.wait(5)
+                raise OSError("CDN 오류")
+
+            with patch.object(media_cache, "MEDIA_DIR", self.media), patch.object(media_cache, "_download", side_effect=blocked), \
+                    patch.object(media_cache, "_wait_for_complete_file", AsyncMock(return_value=False)):
+                other = asyncio.create_task(media_cache.cache_url(url))
+                await asyncio.to_thread(started.wait, 5)
+                task = asyncio.create_task(panel.cache(self.ctx, 1, gen))
+                await asyncio.sleep(0.05)
+                self.assertEqual(downloads, [url])  # cache 는 media_cache 잠금에서 기다리는 중
+                change()
+                release.set()
+                self.assertIsNone(await other)
+                outcome = await asyncio.gather(task, return_exceptions=True)
+            return outcome[0], downloads
+
+        panel.note_sequence(self.ctx, 1, "cache")
+        result, downloads = await scenario(lambda: panel.note_sequence(self.ctx, 2, "cache"))
+        self.assertEqual((result, downloads), ({"items": []}, [url]))  # 새 선택 — 받기 1번뿐
+        panel._sequences.clear()
+        panel.note_sequence(self.ctx, 1, "cache")
+        with patch.object(panel, "INSTANCE", panel.INSTANCE):
+            result, downloads = await scenario(lambda: setattr(panel, "INSTANCE", "new-hub"))
+        self.assertIsInstance(result, panel.AccountChanged)
+        self.assertEqual(downloads, [url])
+        self.assertEqual((media_cache._LOCKS, media_cache._LOCK_REFS), ({}, {}))
+
+    async def test_cache_account_change_stops_new_work_and_waits_for_running(self):
+        gates = {name: asyncio.Event() for name in ("a", "b", "c")}
+        started = []
+
+        async def slow(asset, **_):
+            name = asset["file_path"].split("_")[-1].split(".")[0]
+            started.append(name)
+            await gates[name].wait()
+
+        with patch.object(panel, "INSTANCE", panel.INSTANCE), patch.object(transfer, "_cached_source", side_effect=slow):
+            task = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("a", "b", "c", "d", "e")))
+            joiner = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("b")))  # 다른 요청이 b 에 합류
+            await asyncio.sleep(0.03)
+            panel.INSTANCE = "new-hub"  # 계정·허브가 바뀌었다
+            gates["a"].set()
+            await asyncio.sleep(0.03)
+            self.assertFalse(task.done())  # 받던 b·c 가 끝나기 전엔 돌려주지 않는다
+            self.assertEqual(panel._CACHE_SLOTS._value, 1)  # 끝난 a 만 자리를 돌려줬다
+            gates["b"].set(); gates["c"].set()
+            with self.assertRaises(panel.AccountChanged):
+                await task
+            joined = await asyncio.gather(joiner, return_exceptions=True)
+        self.assertEqual(started, ["a", "b", "c"])  # 바뀐 뒤 새로 시작 0
+        self.assertNotIsInstance(joined[0], asyncio.CancelledError)  # 합류자는 취소 오류를 받지 않는다
+        self.assertEqual(panel._CACHE_SLOTS._value, 3)
+
+    async def test_cache_other_error_and_outer_cancel_wait_for_running(self):
+        finish = asyncio.Event()
+
+        async def slow(asset, **_):
+            await finish.wait()
+
+        broken = dict(self.remote("z")[0])
+        del broken["project_id"]  # 순번 열쇠를 못 만든다 — 계정 바뀜이 아닌 오류
+        with patch.object(transfer, "_cached_source", side_effect=slow):
+            task = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("a") + [broken] + self.remote("b", "c")))
+            await asyncio.sleep(0.03)
+            self.assertFalse(task.done())  # a 를 받는 중 — 오류는 그 뒤에
+            finish.set()
+            with self.assertRaises(KeyError):
+                await task
+        self.assertEqual(panel._CACHE_SLOTS._value, 3)
+        # 바깥 작업이 취소돼도 받던 것이 끝날 때까지 자리를 쥐고, 합류한 요청은 정상으로 끝난다
+        finish.clear()
+        with patch.object(transfer, "_cached_source", side_effect=slow):
+            outer = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("p", "q")))
+            await asyncio.sleep(0.02)
+            joiner = asyncio.create_task(panel.cache(self.ctx, 1, self.remote("p")))
+            await asyncio.sleep(0.02)
+            outer.cancel()
+            await asyncio.sleep(0.02)
+            self.assertEqual(panel._CACHE_SLOTS._value, 1)  # p·q 가 아직 자리를 쥐고 있다
+            finish.set()
+            self.assertEqual((await joiner)["items"], [{"gen_id": "p", "state": "cached"}])
+            with self.assertRaises(asyncio.CancelledError):
+                await outer
+        self.assertEqual(panel._CACHE_SLOTS._value, 3)
 
     async def test_panel_passes_actual_manifest_root_to_recovery_gate(self):
         ready = await self.place()
