@@ -141,7 +141,7 @@ HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_st
 차례·사건·긴 기다림·취소·계획 대응 `backend/app/services/agent_chat.py`, CLI 찾기·명령·자식 환경·Job `backend/app/services/agent_chat_process.py`
 (루트 런처 import 금지 — 옵션은 0단계 실측값), 출력 해석 `backend/app/services/agent_chat_parse.py`(순수), 신원별 기록 DB `backend/app/repo/agent_chat.py`.
 칸 전용 MCP 연결은 `mcp_v2.issue_panel_client`(실행권 영구 끔 — `repo/mcp_v2.create_client` 도 강제)·`local_setup.write_panel_profile`(전역 설정 안 건드림)·어댑터 `--panel`(도구 6개만).
-화면은 `frontend/src/components/agent-chat/AgentPanel.tsx`(≡ 대화 서랍 포함)·`AgentPlanCard.tsx`·연결 안내 `AgentConnect.tsx`·사용량 원·설정 쪽 `AgentSettings.tsx`·답 글 마크다운 `AgentMarkdown.tsx`(http/https 링크만)·새 창 껍데기 `AgentWindow.tsx`(`?embed=agent` — 지금 화면은 메인 창이 저장소 `mvhub.agentPanel.screen` 에 적는다), 상태 `frontend/src/lib/useAgentChat.ts`, 호출 `frontend/src/lib/agentChatApi.ts`
+화면은 `frontend/src/components/agent-chat/AgentPanel.tsx`(≡ 대화 서랍 포함)·`AgentPlanCard.tsx`·연결 안내 `AgentConnect.tsx`·사용량 원·설정 쪽 `AgentSettings.tsx`·답 글 마크다운 `AgentMarkdown.tsx`(http/https 링크만)·새 창 껍데기 `AgentWindow.tsx`(`?embed=agent` — 지금 화면은 메인 창이 저장소 `mvhub.agentPanel.screen` 에 적는다), 상태 `frontend/src/lib/useAgentChat.ts`, 호출 `frontend/src/lib/agentChatApi.ts`, 화면 동작 실행기(빈 노드·잇기·회색 — 허브가 발급한 동작만, 명령 전후 비교·되돌리기) `frontend/src/lib/agentScreenActions.ts`
 (칸 표 401 은 로그인 만료로 보지 않는다), 모양 `frontend/src/styles/agent-chat.css`, 알약은 `TopBar.tsx`. 시험은 가짜 CLI `backend/tests/agent_chat_fake_cli.py` 로만.
 
 편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
