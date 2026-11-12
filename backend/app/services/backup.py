@@ -131,10 +131,11 @@ class _BackupSet:
     keep_state: str  # "ok" | "missing" | "invalid"
     complete: bool
     mtime_ns: int
+    marked_deleting: bool = False  # 곁파일 필드가 깨졌어도 원시 JSON 에 deleting=true(또는 곁파일을 못 읽음)
 
     @property
     def deleting(self) -> bool:
-        return bool(self.keep and self.keep.get("deleting"))
+        return bool(self.keep and self.keep.get("deleting")) or self.marked_deleting
 
 
 def _keep_path(content: Path) -> Path:
@@ -229,7 +230,9 @@ def _scan_sets(d, *, verify: bool = True) -> list[_BackupSet]:
             continue
         keep, state = _read_keep(content)
         complete = _set_complete(content, keep) if verify else True
-        out.append(_BackupSet(_stamp_of(content), content, keep, state, complete, mtime_ns))
+        # 깨진 곁파일이라도 지우는 중 표식이 보이거나 읽을 수 없으면 목록·최신본·poll 후보에서 뺀다(hold_set 과 같은 판단).
+        marked = state == "invalid" and _raw_deleting(content) is not False
+        out.append(_BackupSet(_stamp_of(content), content, keep, state, complete, mtime_ns, marked))
     return out
 
 
@@ -341,8 +344,12 @@ def _write_registry(d: Path, **fields: object) -> None:
         base = {"policy_version": version} if version else {"policy_unknown": True}
     data = {**base, **fields, "format": _REGISTRY_FORMAT, "format_version": 1,
             "updated_at": datetime.now(timezone.utc).isoformat()}
+    if corrupt:
+        # 깨진 표식을 새로 쓸 때는 늘 done — 등록을 다시 돌려 곁파일 없는 세트를 옛 세트로 등록(→ 지울 후보)하지
+        # 않는다(계약 '표식이 깨졌으면 등록하지 않음'). 곁파일 없는 세트는 미등록으로 남아 지워지지 않는다.
+        data.setdefault("state", "done")
     if "state" not in data or "last_seq" not in data:
-        # 새로(또는 깨진 것을) 쓰는데 상태가 없다 — 곁파일이 하나라도 있으면 등록은 이미 끝났던 것(done, E4),
+        # 새로 쓰는데 상태가 없다(표식이 처음부터 없었음) — 곁파일이 하나라도 있으면 등록은 이미 끝났던 것(done, E4),
         # 없으면 아직 안 한 것(pending). 번호는 곁파일에서.
         keep_seqs = []
         for path in d.glob(f"{_PREFIX}*.keep.json"):

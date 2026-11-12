@@ -856,10 +856,11 @@ def test_hold_refuses_when_sidecar_cannot_be_read(tmp_path):
 def test_poll_falls_back_to_newest_mtime_when_numbered_sets_are_incomplete(tmp_path):
     d = tmp_path / "b"
     make_set(d, NOW - 30, 1, n=9, member_size_ok=False)  # 번호 있는 세트는 불완전
-    late_name_early_mtime = make_set(d, NOW - 900, None, n=8)  # 이름은 뒤인데 mtime 은 이른
-    early_name_late_mtime = make_set(d, NOW - 300, None, n=1)
-    os.utime(late_name_early_mtime, (NOW - 900, NOW - 900))
-    os.utime(early_name_late_mtime, (NOW - 300, NOW - 300))
+    early_name = make_set(d, NOW - 900, None, n=1)  # 이름은 앞
+    late_name = make_set(d, NOW - 300, None, n=2)  # 이름은 뒤
+    os.utime(early_name, (NOW - 300, NOW - 300))  # mtime 은 반대로 — 이름 앞 = 더 새것
+    os.utime(late_name, (NOW - 900, NOW - 900))
+    assert early_name.name < late_name.name and early_name.stat().st_mtime > late_name.stat().st_mtime
     mark_registered(d, 1)
     src = tmp_path / "src.db"
     src.write_bytes(b"s")
@@ -867,6 +868,43 @@ def test_poll_falls_back_to_newest_mtime_when_numbered_sets_are_incomplete(tmp_p
     with mock.patch.object(backup.time, "time", return_value=NOW):
         age, _sig, _needed = backup._read_poll_state(src, d)
     assert age == pytest.approx(300.0, abs=1.0)
+
+
+def test_corrupt_registry_policy_recovery_does_not_register_old_sets(tmp_path, monkeypatch):
+    """깨진 표식·곁파일 없는 세트 → 정책 PUT → 다음 회전에서도 옛 세트가 등록·삭제되지 않는다(재확인 3차 P1)."""
+    d = tmp_path / "b"
+    monkeypatch.setattr(backup, "_backup_dir", lambda: d)
+    monkeypatch.setattr(backup, "AUTH_ENABLED", False)
+    olds = [make_set(d, NOW - (400 + i) * 86400, None, n=i) for i in range(5)]  # 곁파일 없는 옛 세트
+    (d / "backup_keep_registry.json").write_text("{corrupt", "utf-8")
+    small = {**POLICY_888, "recent": 4, "daily_days": 7, "weekly_weeks": 4}
+    preview = backup.update_policy(small, version=0, dry_run=True, now=NOW)["preview"]
+    assert preview["delete_count"] == 0
+    backup.update_policy(small, version=0, now=NOW)
+    registry = json.loads((d / "backup_keep_registry.json").read_text("utf-8"))
+    assert registry["state"] == "done"
+    backup._rotate(d, now=NOW)
+    backup._rotate(d, now=NOW)
+    assert all(p.exists() and not p.with_suffix(".keep.json").exists() for p in olds)
+    assert backup.retention_status(d, now=NOW)["unregistered"] == 5
+
+
+def test_corrupt_deleting_marker_with_content_is_not_listed(tmp_path, monkeypatch):
+    d = tmp_path / "b"
+    good = make_set(d, NOW - 600, 1)
+    marked = make_set(d, NOW - 60, None, n=1,
+                      keep_raw=json.dumps({"format": "mvhub-backup-keep", "seq": "x", "deleting": True}))
+    mark_registered(d, 1)
+    monkeypatch.setattr(backup, "_backup_dir", lambda: d)
+    assert [item["file"] for item in backup.list_backups_info(d)] == [good.name]
+    assert backup.latest_backup_path() == good
+    src = tmp_path / "src.db"
+    src.write_bytes(b"s")
+    os.utime(src, (NOW - 900, NOW - 900))
+    with mock.patch.object(backup.time, "time", return_value=NOW):
+        age, _sig, _needed = backup._read_poll_state(src, d)
+    assert age == pytest.approx(600.0, abs=1.0)
+    assert marked.exists()
 
 
 def test_corrupt_deleting_marker_half_set_is_counted_as_leftover(tmp_path):
