@@ -25,6 +25,7 @@
 `read_context(kind="references", asset_project=..., search="폴더 낱말", offset=0)`은 전체 경로의 공백 구분 낱말을 모두 찾는다.
 응답 `references[].path`와 `next_offset`을 사용하고, `next_offset=null`이면 마지막 페이지다. 페이지 사이 트리가 바뀌면 중복·누락될 수 있다.
 `offset`은 생략하면 전송하지 않는다. 가져오기는 `reference_import`, 명시적 offset 검색은 `reference_search` 기능이 있는 허브가 필요하며 구형 허브에서는 해당 새 호출만 `hub_outdated`다.
+끌어다 붙인 자료는 `read_context(kind="references", generation_ids=[...])`(생성물 id, 8개까지) 또는 `read_context(kind="references", asset_project=..., asset_paths=[...])`(경로 그대로)로 **정확히** 찾는다. 응답 `lookups[]` 의 줄별 `status`(`ok`·`not_found`=그 공간에서 확인 안 됨·`unknown`=확인 못 함)를 보고, 생성물 미디어가 8개를 넘으면 앞 8개와 `more: true`. search·offset·project_id·folder_path·media_type·커서와 함께 쓸 수 없고 `reference_exact` 기능이 있는 허브가 필요하다.
 백엔드 변경도 포함하므로 이 기능은 본체 업데이트가 필요하다. 어댑터 파일만 교체해서 활성화되지 않는다.
 
 ## MCP 파일 독립 업데이트 (개발판, 2026-10-27)
