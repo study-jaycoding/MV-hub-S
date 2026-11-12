@@ -1428,7 +1428,8 @@ def test_result_wait_observes_completion_and_previews_only_once(local, result_pl
     reads, previews = [], []
     def generation(*args):
         reads.append(1)
-        return {**row, "status": "done" if time.monotonic() >= ready_at else "running"}
+        # 첫 조회가 느려도 대기 -> 완료 경로를 빠뜨리지 않는다.
+        return {**row, "status": "running" if len(reads) == 1 else "done"}
     async def thumbnail(src, w):
         previews.append(w)
         return api.FileResponse(path, media_type="image/jpeg")
@@ -1436,10 +1437,9 @@ def test_result_wait_observes_completion_and_previews_only_once(local, result_pl
     monkeypatch.setattr(api.library, "media_thumb", thumbnail)
     before = action(local, "get_plan", {"plan_id": plan["id"]}).json()
     start = time.monotonic()
-    ready_at = start + 0.1
     response = action(local, "get_result", {"plan_id": plan["id"], "wait_seconds": 5})
     elapsed = time.monotonic() - start
-    print(f"MCP wait measurement: {elapsed:.3f}s total, {elapsed - 0.1:.3f}s after ready; one HTTP call; one preview; another item pending")
+    print(f"MCP wait measurement: {elapsed:.3f}s total; one HTTP call; one preview; another item pending")
     assert response.status_code == 200, response.text
     assert response.json()["generation_status"] == "done" and response.json()["media"]
     assert len(reads) == 3 and previews == [1024]
