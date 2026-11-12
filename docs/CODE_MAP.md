@@ -123,6 +123,7 @@ updated: 2026-11-12
 `backend/tests/test_scene_notebook_migration.py`, `backend/tests/test_scene_notebook_integration.py`,
 `frontend/tests/sceneNotebookStore.test.ts`, `frontend/tests/sceneNotebook.test.ts`,
 `frontend/tests/sceneWriter.test.ts`, `frontend/tests/canvasWriterStatus.test.tsx`, `frontend/tests/mcpCanvasTasks.test.tsx`다.
+카메라 위험2의 동일 배경 합성 진단은 `tools/browser_measure/camera_compare.py`다. 고정 사본·빈 격리 DB·headless 브라우저만 사용하며 공식 실측을 대체하지 않는다.
 브라우저 실측은 `tools/browser_measure/canvas_notebook.py`, 실행·증거 검증은 `tools/verify_canvas_notebook_measure.py`,
 도구 단위 시험은 `tools/tests/test_canvas_notebook_measure.py`다. 저장 계약은 [CANVAS_SCENE_STORAGE](CANVAS_SCENE_STORAGE.md)를 따른다.
 백엔드 진입은 `routers/mcp.py`, `routers/mcp_v2.py`, 저장은 `repo/mcp_plans.py`, `repo/mcp_v2.py`,
