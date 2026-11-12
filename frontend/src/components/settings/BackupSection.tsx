@@ -201,13 +201,17 @@ export function BackupSection({
         <p key={warning} className="settings-backup-warn">⚠ {t(warning)}</p>
       ))}
 
+      {/* 좁은 패널에서도 '이름 + 고르는 칸' 묶음 단위로만 줄이 바뀌게 묶는다 */}
       <div className="settings-backup-label">{t("사진 찍는 때")}</div>
       <div className="settings-backup-line">
-        {t("바뀐 뒤")} {select("quiet_minutes", FIELDS[0].unit)} {t("조용하면 · 최소")} {select("min_interval_minutes", FIELDS[1].unit)} {t("간격")}
+        <span className="settings-backup-pick">{t("바뀐 뒤")} {select("quiet_minutes", FIELDS[0].unit)} {t("조용하면")}</span>
+        <span className="settings-backup-pick">{t("최소")} {select("min_interval_minutes", FIELDS[1].unit)} {t("간격")}</span>
       </div>
       <div className="settings-backup-label">{t("남기는 양")}</div>
       <div className="settings-backup-line">
-        {t("최근")} {select("recent", FIELDS[2].unit)} {t("· 날마다 1장")} {select("daily_days", FIELDS[3].unit)} {t("· 주마다 1장")} {select("weekly_weeks", FIELDS[4].unit)}
+        <span className="settings-backup-pick">{t("최근")} {select("recent", FIELDS[2].unit)}</span>
+        <span className="settings-backup-pick">{t("날마다 1장")} {select("daily_days", FIELDS[3].unit)}</span>
+        <span className="settings-backup-pick">{t("주마다 1장")} {select("weekly_weeks", FIELDS[4].unit)}</span>
       </div>
       <p className="settings-hint">
         {readonly
