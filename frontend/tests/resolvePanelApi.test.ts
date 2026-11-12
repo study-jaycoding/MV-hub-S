@@ -42,14 +42,14 @@ it("window claim·목적 빈·inventory cursor를 HTTP로 전달", async () => {
   await resolvePanelApi.inventory(identity, ["bin", "item"]);
   expect(vi.mocked(jsonFetch).mock.calls.at(-1)?.[0]).toContain("after=");
 });
-it("에피소드 빈 표·따라가기 bin_id·빈 지우기를 본문으로 전달, 영어 상태는 한국어로", async () => {
+it("에피소드 빈 표·따라가기 bin_id·정리 표시를 본문으로 전달, 영어 상태는 한국어로", async () => {
   const selection = { ctx: identity, project_id: "p", folder_path: "S", window: "w" };
   await resolvePanelApi.target({ ...selection, seq: 1, create: true, episode_path: "S", create_paths: ["S/C1"] });
   expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ episode_path: "S", create_paths: ["S/C1"] });
   await resolvePanelApi.stage({ ...selection, folder_path: "S/C1", seq: 2, gen_ids: [], bin_id: "b1" });
   expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1" });
-  await resolvePanelApi.unstage({ ...selection, folder_path: "S/C1", bin_id: "b1", delete_empty: true });
-  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1", delete_empty: true });
+  await resolvePanelApi.unstage({ ...selection, folder_path: "S/C1", bin_id: "b1", inventory_cleanup: true }); // 빈 지우기는 settle 만
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ bin_id: "b1", inventory_cleanup: true });
   await resolvePanelApi.settle({ ...selection, bins: [{ folder_path: "S/C1", bin_id: "b1" }] }); // 앞 에피소드 컷 빈 한 번에
   expect(vi.mocked(jsonFetch).mock.calls.at(-1)![0]).toBe("/api/resolve/panel/settle");
   expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ folder_path: "S", bins: [{ folder_path: "S/C1", bin_id: "b1" }] });

@@ -752,24 +752,24 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):  # 200개를 넘으면 자르지 않고 거절
             self.episode(create_paths=[f"S01/C{n}" for n in range(201)])
 
-    async def test_episode_bins_guard_follow_stage_and_delete(self):
+    async def test_episode_bins_guard_follow_stage_and_unstage(self):
         result = await route.post_target(self.episode(), self.request)
         c010, c020 = result["bins"]["S01/C010"], result["bins"]["S01/C020"]
         cut = lambda cls, window="test-window", **kwargs: cls(ctx=self.ctx, project_id="p", folder_path="S01/C010", window=window, **kwargs)
         # 다른 창이 잡아도(claim) 에피소드 기억은 남아 다시 열기의 inventory 정리를 막고, 지울 권한은 넘어가지 않는다
         await route.get_identity(self.request, window="two", claim=True)
         self.assertEqual((await route.post_unstage(cut(route.UnstageIn, "two", bin_id=c010, inventory_cleanup=True), self.request))["state"], "active_bin")
-        kept = await route.post_unstage(cut(route.UnstageIn, "two", bin_id=c010, delete_empty=True), self.request)
-        self.assertEqual((kept["state"], kept.get("bin_deleted", False)), ("ok", False))
+        kept = await route.post_unstage(cut(route.UnstageIn, "two", bin_id=c010, delete_empty=True), self.request)  # 옛 필드는 무시된다
+        self.assertEqual((kept["state"], "bin_deleted" in kept), ("ok", False))
         await route.get_identity(self.request, window="test-window", claim=True)
         # 따라가기 stage 의 bin_id 는 이 창이 받은 그 컷의 빈이어야 한다
         self.assertEqual((await route.post_stage(cut(route.StageIn, seq=1, bin_id=c020), self.request))["state"], "not_seen")
         self.assertEqual((await route.post_stage(cut(route.StageIn, seq=2, bin_id=c010), self.request))["state"], "ok")
+        # unstage 는 빈을 지우지 않는다(옛 delete_empty 입구 없앰 — 빈 지우기는 settle) · 그 컷 빈 기억도 남는다
         done = await route.post_unstage(cut(route.UnstageIn, bin_id=c010, delete_empty=True), self.request)
-        self.assertTrue(done["bin_deleted"])
-        self.assertIsNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01", "C010")))
-        self.assertNotIn(c010, panel._cut_bins)
-        self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01")))
+        self.assertEqual((done["state"], "bin_deleted" in done), ("ok", False))
+        self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01", "C010")))
+        self.assertIn(c010, panel._cut_bins)
 
     async def test_settle_route_only_this_window_cut_bins(self):
         first = await route.post_target(self.episode(), self.request)

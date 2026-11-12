@@ -16,8 +16,8 @@ export interface TargetResult {
   state: TargetState; resolve_project_id?: string; resolve_project_name?: string;
   bin_path?: string; bin_id?: string; details?: unknown;
   used?: string[]; target_bin_id?: string;
-  // 에피소드 target — 컷 경로 → 빈 ID, 에피소드 빈 ID, 못 만든 컷 / unstage(delete_empty) — 비게 된 컷 빈을 지웠다
-  bins?: Record<string, string>; episode_bin_id?: string; bin_create_failed?: string[]; bin_deleted?: boolean;
+  // 에피소드 target — 컷 경로 → 빈 ID, 에피소드 빈 ID, 못 만든 컷
+  bins?: Record<string, string>; episode_bin_id?: string; bin_create_failed?: string[];
   // 빈 순서 맞추기(보내기와 같은 것) — 다시 짓기면 MV Hub/<프로젝트> 빈 ID 가 모두 바뀐다(ids_changed)
   reordered?: boolean; folder_order_backup?: string; order_error?: string; ids_changed?: boolean; code?: string;
 }
@@ -51,7 +51,7 @@ export const resolvePanelApi = {
   currentBin: (ctx: PanelContext, project_id = "", folder_path = "") => jsonFetch<TargetResult>(`/api/resolve/panel/current-bin?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), project_id, folder_path })}`),
   adopt: (body: PanelSelection & { gen_id: string; resolve_project_id: string; bin_id?: string; item_ids?: string[] }) => post<AdoptResult>("adopt", body),
   stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
-  unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean; delete_empty?: boolean }) => post<TargetResult>("unstage", body),
+  unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean }) => post<TargetResult>("unstage", body),
   inventory: (ctx: PanelContext, after?: [string, string]) => jsonFetch<InventoryResult>(`/api/resolve/panel/inventory?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), ...(after ? { after: JSON.stringify(after) } : {}) })}`),
   prestage: (body: PanelSelection & { window: string; episode_bin_id: string; cuts: PanelCut[] }) => post<PrestageResult>("prestage", body),
   rename: (body: PanelSelection & { window: string; cuts: PanelCut[]; limit?: number; after?: [number, number] }) => post<RenameResult>("rename", body),

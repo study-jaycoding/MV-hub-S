@@ -272,43 +272,14 @@ class PanelStagingTests(unittest.TestCase):
         gone = self.run_op("stage", bin_id="folder-없음")  # 그 ID 가 없으면 경로로 대신하지 않는다
         self.assertEqual((gone["deferred"], gone["bin_id"], same_name.clips), (1, "", []))
 
-    def test_unstage_delete_empty_removes_only_emptied_cut_bin(self):
+    def test_unstage_never_deletes_the_bin_even_if_asked(self):
+        # 옛 delete_empty 입구는 없앴다(11-12) — 빈 지우기는 settle 만, unstage 는 항목 정리만
         self.staged()
         self.pool.current = self.pool.root
-        kept = self.run_op("unstage", items=[], bin_id=self.folder.unique_id)  # 플래그 없으면 지금과 같다
-        self.assertEqual((kept["removed"], "bin_deleted" in kept), (1, False))
+        with mock.patch.object(self.pool, "DeleteFolders", side_effect=AssertionError("지우면 안 됨")):
+            result = self.run_op("unstage", items=[], bin_id=self.folder.unique_id, delete_empty=True)
+        self.assertEqual((result["removed"], "bin_deleted" in result), (1, False))
         self.assertIsNotNone(self.bin("S", "C1"))
-        self.pool.current = self.folder  # 다시 띄우고 지금 빈에서 나간 뒤
-        self.staged()
-        self.pool.current = self.pool.root
-        result = self.run_op("unstage", items=[], bin_id=self.folder.unique_id, delete_empty=True)
-        self.assertEqual((result["removed"], result["bin_deleted"]), (1, True))
-        self.assertIsNone(self.bin("S", "C1"))
-        self.assertIsNotNone(self.bin("S"))  # 에피소드 빈은 남긴다
-
-    def test_delete_empty_refuses_unsafe_bins(self):
-        def cut(name):
-            self.assertEqual(self.run_op("target", folder_path=f"S/{name}")["state"], "ok")
-            folder = self.pool.current
-            self.pool.current = self.pool.root
-            return folder
-        person = cut("P")
-        person.clips.append(FakeClip(str(self.path)))  # 사람이 넣은 항목
-        used = cut("U")
-        self.pool.current = used
-        self.assertEqual(self.run_op("stage", folder_path="S/U")["items"][0]["state"], "staged")
-        used.clips[-1].usage = "1"  # 타임라인에 쓴 항목
-        sub = cut("D")
-        FakeMediaPool.AddSubFolder(self.pool, sub, "안쪽")
-        now, other, unreadable = cut("N"), cut("A"), cut("R")
-        cases = [(person, "S/P"), (used, "S/U"), (sub, "S/D"), (now, "S/N"), (other, "S/C1"), (unreadable, "S/R")]
-        with mock.patch.object(self.pool, "DeleteFolders", side_effect=AssertionError("지우면 안 됨")), \
-                mock.patch.object(unreadable, "GetClipList", side_effect=[[], None]):
-            for folder, path in cases:
-                self.pool.current = now if folder is now else self.pool.root  # 다빈치가 보고 있는 빈
-                result = self.run_op("unstage", items=[], folder_path=path, bin_id=folder.unique_id, delete_empty=True)
-                self.assertIs(result["bin_deleted"], False, path)
-        self.assertEqual(len(person.clips) + len(used.clips) + len(sub.children), 3)
 
     # ── 앞 에피소드 컷 빈 한 번에 정리(settle, 11-12) ──
     def settle_bins(self, *names):
@@ -2515,6 +2486,185 @@ class FastBinSortTests(unittest.TestCase):
         self.assertTrue(Path(result["rebuild_recovery_record"]).is_file())
         self.assertEqual(len(self.pool.move_calls), 1)  # 되돌리기를 하지 않았다
         self.assertEqual(other.media_pool.root.children, [])
+
+    # 첫 이동이 빈을 두 벌로 남긴 때(11-12 mv test 흔적) — 원본이 부모에 그대로면 임시 빈의 빈 빈 사본만 치우고 기존 다시 짓기로
+    def _empty_tails(self):
+        self.existing["c0020"].clips.clear()
+        self.existing["c0030"].children.clear()
+
+    def _copy_into(self, folders, target, keep_originals=True):
+        for folder in folders:
+            if not keep_originals:
+                self.pool._parent_of(folder).children.remove(folder)
+            target.children.append(FakeFolder(folder.name))  # 새 ID 사본
+        return True
+
+    def _send_watching_deletes(self):
+        with mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete:
+            result = self._send()
+        return result, delete
+
+    def test_first_move_that_copies_empty_bins_cleans_the_copies_then_falls_back(self):
+        self._empty_tails()
+        self.pool.fail[1] = self._copy_into
+        result = self._send()
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self._names(), ["c0010", "c0020", "c0030", "c0040"])
+        self.assertEqual((self._staging(), self._records()), ([], []))
+        self.assertEqual(len(self.pool.move_calls), 1)  # 돌려놓을 꼬리가 없었다(사본만)
+
+    def test_copy_with_a_clip_stops_without_deleting_any(self):
+        self._empty_tails()
+
+        def copy_last_with_clip(folders, target):
+            self._copy_into(folders, target)
+            target.children[-1].clips.append(self._clip("copied"))
+            return True
+
+        self.pool.fail[1] = copy_last_with_clip
+        result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()
+        self.assertEqual([f.name for f in self._staging()[0].children], ["c0020", "c0030", "c0040"])
+
+    def test_same_bins_in_both_places_with_copies_are_not_deleted(self):
+        self._empty_tails()
+
+        def both(folders, target):
+            target.children.extend(folders)  # 같은 빈(같은 ID)이 두 곳에 보인다
+            self._copy_into(folders, target)
+            return True
+
+        self.pool.fail[1] = both
+        self.pool.fail[2] = lambda folders, target: True  # 되돌리기 이동은 아무것도 안 한다
+        result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()
+
+    def test_bins_that_moved_with_new_ids_are_not_deleted(self):
+        self._empty_tails()
+        self.pool.fail[1] = lambda folders, target: self._copy_into(folders, target, keep_originals=False)
+        result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()  # 원본이 부모에 없다 — 남은 유일한 빈일 수 있다
+        self.assertEqual([f.name for f in self._staging()[0].children], ["c0020", "c0030", "c0040"])
+
+    def test_a_bin_that_existed_before_the_move_is_not_taken_for_a_copy(self):
+        elsewhere = self._add(self._add(self.pool.root, "사람 빈"), "c0020")  # 다른 부모의 같은 이름 빈 빈
+        self._empty_tails()
+
+        def move_then_user_moves_in(folders, target):
+            self.pool.do_move(folders, target)
+            self.pool.do_move([elsewhere], target)  # 사람이 옮겨 넣음 — 첫 이동 전부터 있던 ID
+            self._copy_into(folders[1:], target)  # 나머지 이름은 꼬리와 하나씩 맞게
+            return False
+
+        self.pool.fail[1] = move_then_user_moves_in
+        result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()
+        self.assertIn(elsewhere, self._staging()[0].children)
+
+    def test_names_that_do_not_match_the_tails_one_to_one_stop(self):
+        self._empty_tails()
+        self.pool.fail[1] = lambda folders, target: self._copy_into(folders[:2], target)  # 꼬리 셋 중 둘만 사본
+        result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()
+
+    def test_an_empty_bin_not_named_like_a_tail_stops(self):
+        def move_then_extra(folders, target):
+            self.pool.do_move(folders, target)
+            target.children.append(FakeFolder("사람이 만든 Bin"))
+            return False
+
+        self.pool.fail[1] = move_then_extra
+        result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()
+        self.assertIn("사람이 만든 Bin", [f.name for f in self._staging()[0].children])
+
+    def test_copies_left_by_the_second_move_are_not_deleted(self):
+        self._empty_tails()
+
+        def back_with_copies(folders, target):
+            staging = self.pool._parent_of(folders[0])
+            self.pool.do_move(folders, target)
+            for folder in folders:
+                staging.children.append(FakeFolder(folder.name))  # 원본은 부모로, 임시 빈에 새 ID 사본
+            return False
+
+        self.pool.fail[2] = back_with_copies
+        result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")  # 두 번째 이동 사본은 범위 밖 — 지금처럼 멈춤
+        self.assertEqual(len(self._staging()[0].children), 4)
+
+    def test_unreadable_bin_list_before_the_move_keeps_copies(self):
+        self._empty_tails()
+        self.pool.fail[1] = self._copy_into
+        with mock.patch.object(resolve_bridge, "_folder_ids", side_effect=RuntimeError("API 끊김")):
+            result, delete = self._send_watching_deletes()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        delete.assert_not_called()
+
+    def test_slow_bin_list_turns_copy_cleanup_off_but_sorting_goes_on(self):
+        with mock.patch.object(resolve_bridge, "_FOLDER_IDS_BUDGET", -1.0):  # 이미 상한을 넘김
+            self._assert_sorted_and_clean(self._send())
+        self._assert_old_bins_kept()  # 평소 빠른 길 그대로(옮기기만)
+
+    def test_a_copy_that_fills_up_after_the_check_stops_further_deletes(self):
+        self._empty_tails()
+        self.pool.fail[1] = self._copy_into
+        real, deleted = self.pool.DeleteFolders, []
+
+        def delete_then_fill(folders):
+            deleted.extend(folders)
+            done = real(folders)
+            if len(deleted) == 1:  # 첫 사본을 지운 뒤 다음 사본에 클립이 들어왔다
+                self._staging()[0].children[0].clips.append(self._clip("late"))
+            return done
+
+        with mock.patch.object(self.pool, "DeleteFolders", side_effect=delete_then_fill):
+            result = self._send()
+        self.assertEqual(result["error_code"], "rebuild_recovery_needed")
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(self._names(), ["c0020", "c0030", "c0040"])  # 원본 그대로
+        self.assertTrue(self._records())
+
+    # 되돌리기가 멈추면 본 것을 기록에 남긴다(다음 실패의 원인을 가리려고)
+    def test_stopped_restore_keeps_what_it_saw_in_the_record(self):
+        self._stop_with_tails_in_staging()
+        record = json.loads(self._records()[0].read_text(encoding="utf-8"))
+        first = record["first_move"]
+        self.assertIs(first["returned"], False)
+        self.assertEqual(([name for _uid, name in first["staging"]], first["parent"]), (["c0020", "c0030", "c0040"], []))
+        after = record["after_restore"]
+        self.assertEqual([name for _uid, name in after["staging"]], ["c0020", "c0030", "c0040"])
+        self.assertIn("되돌리지 못했습니다", after["recovery"])
+
+    def _stop_without_notes(self, error):
+        real = resolve_bridge._write_recovery_record
+
+        def no_notes(path, record):
+            if "after_restore" in record:
+                raise error
+            return real(path, record)
+
+        with mock.patch.object(resolve_bridge, "_write_recovery_record", side_effect=no_notes):
+            result = self._stop_with_tails_in_staging()
+        self.assertEqual((result["error_code"], Path(result["rebuild_recovery_record"]).is_file()), ("rebuild_recovery_needed", True))
+        self.assertNotIn("after_restore", json.loads(self._records()[0].read_text(encoding="utf-8")))
+
+    def test_notes_that_cannot_be_written_keep_the_same_stop(self):
+        self._stop_without_notes(OSError("디스크 가득"))
+
+    def test_notes_that_cannot_be_serialized_keep_the_same_stop(self):
+        self._stop_without_notes(TypeError("직렬화 실패"))
+
+    def test_seen_writes_the_read_error_instead_of_failing(self):
+        folder = FakeFolder("x")
+        folder.GetSubFolderList = lambda: None
+        self.assertIsInstance(resolve_bridge._seen(folder), str)
 
 
 class FastBinSortContractTests(unittest.TestCase):
