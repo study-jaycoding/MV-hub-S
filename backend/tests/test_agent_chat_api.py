@@ -128,7 +128,7 @@ def test_guards_header_origin_secret_and_account(hub):
     assert gone.status_code == 401
     assert gone.headers["X-MVHub-Panel-Error"] == "session" and gone.headers["X-MVHub-Auth-State"] == "preserved"
     headers = panel_headers(client)
-    assert client.get("/api/agent-chat/conversations", headers=headers).json() == {"conversations": []}
+    assert client.get("/api/agent-chat/conversations", headers=headers).json() == {"conversations": [], "truncated": False}
     assert client.get("/api/agent-chat/conversations", headers={**headers, "Origin": "http://evil.example"}).status_code == 403
 
 

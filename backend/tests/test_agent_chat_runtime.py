@@ -604,6 +604,7 @@ def test_stop_waits_for_claim_already_inside_gate(stopper, monkeypatch):
     service = chat.AgentChat()
     runtime = bare_turn(service)
     monkeypatch.setattr(chat.store, "set_status", lambda *a, **k: True)
+    monkeypatch.setattr(chat.store, "mark_cancelling", lambda *a, **k: True)  # 취소 표시+사건 한 트랜잭션(서랍 메뉴 독립 리뷰 P1)
     monkeypatch.setattr(chat.store, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(chat.store, "get_turn", lambda *a, **k: {"status": "cancelling"})
     inside, release, order = threading.Event(), threading.Event(), []

@@ -14,7 +14,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import Field
+from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from .. import active_account, config
 from ..deps import expected_account_differs
@@ -138,10 +138,82 @@ async def claude_login(panel=Depends(_panel)):
     return {"opened": True}
 
 
+_LIST_LIMIT = 500  # 서랍 메뉴(설계 docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-2) — 넘치면 truncated, 화면이 "최근 500개만"
+
+
 @router.get("/conversations")
 async def conversations(panel=Depends(_panel)):
     _, identity = panel
-    return {"conversations": await asyncio.to_thread(chat_store.list_conversations, identity.db_file())}
+    rows = await asyncio.to_thread(chat_store.list_conversations, identity.db_file(), _LIST_LIMIT + 1)
+    return {"conversations": rows[:_LIST_LIMIT], "truncated": len(rows) > _LIST_LIMIT}
+
+
+class ConversationPatch(StrictModel):
+    """준 필드만 바꾼다(updated_at 은 그대로). title 1~80자 · 참거짓은 진짜 참거짓만 · seen_rev 는 unread:false 와 함께만 ·
+    project 문자열 = 그 프로젝트, null = 프로젝트 없음, 생략 = 그대로."""
+    title: str | None = None
+    pinned: StrictBool | None = None
+    archived: StrictBool | None = None
+    unread: StrictBool | None = None
+    seen_rev: StrictInt | None = Field(default=None, ge=0)
+    project: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def check(self):
+        given = self.model_fields_set
+        if not given:
+            raise ValueError("바꿀 것을 지정하세요")
+        for name in ("title", "pinned", "archived", "unread", "seen_rev"):
+            if name in given and getattr(self, name) is None:
+                raise ValueError(f"{name} 는 null 일 수 없습니다")
+        if "title" in given and not 1 <= len(self.title.strip()) <= 80:
+            raise ValueError("이름은 1~80자")
+        if "seen_rev" in given and self.unread is not False:
+            raise ValueError("seen_rev 는 unread:false 와 함께만")
+        if self.project is not None and any(ord(ch) < 32 or ord(ch) == 127 for ch in self.project):
+            raise ValueError("프로젝트 값이 올바르지 않습니다")
+        return self
+
+
+@router.patch("/conversations/{conversation_id}")
+async def patch_conversation(conversation_id: UUID, body: ConversationPatch, panel=Depends(_panel)):
+    _, identity = panel
+    given = body.model_fields_set
+    fields = {name: getattr(body, name) for name in ("pinned", "archived", "unread") if name in given}
+    if "title" in given:
+        fields["title"] = body.title.strip()
+    if "project" in given:
+        fields["project_override"] = body.project if body.project is not None else ""
+    row = await asyncio.to_thread(chat_store.patch_conversation, identity.db_file(), str(conversation_id), fields,
+                                  body.seen_rev if "seen_rev" in given else None)
+    if row is None:
+        raise HTTPException(404, "대화를 찾을 수 없습니다.")
+    return {"conversation": row}
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
+    """대화 지우기(되돌릴 수 없음) — 신원 차례 잠금 안에서 한 트랜잭션으로 기록을 지우고, 커밋 뒤 그 대화의 Claude 세션 파일
+    (확인된 한 개만)·칸 MCP 설정 파일을 지운다. session_file 로 결과를 알린다(설계 2-5). 만든 그림·계획은 그대로."""
+    _, identity = panel
+    async with _turn_lock(identity):
+        try:
+            row = await asyncio.to_thread(chat_store.delete_conversation, identity.db_file(), str(conversation_id))
+        except chat_store.Busy as exc:
+            raise HTTPException(409, "이 대화는 아직 일하는 중이에요. 끝난 뒤 지워 주세요.") from exc
+    if row is None:
+        raise HTTPException(404, "대화를 찾을 수 없습니다.")
+    if not row["cli_session_id"]:
+        session_file = "none"
+    elif row["engine"] != "claude":
+        session_file = "codex_kept"
+    else:
+        session_file = await asyncio.to_thread(claude.delete_session_record, row["cli_session_id"], row["cli_home"], row["cli_cwd"])
+    try:
+        (config.AGENT_CHAT_DIR / "mcp" / f"{conversation_id}.json").unlink(missing_ok=True)
+    except OSError:
+        pass  # 칸 폴더의 설정 파일 — 남아도 다시 쓰이지 않는다(대화가 없다)
+    return {"deleted": True, "session_file": session_file}
 
 
 @router.get("/conversations/{conversation_id}")
@@ -149,14 +221,13 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
     ctx, identity = panel
 
     def load():
-        path = identity.db_file()
-        found = chat_store.get_conversation(path, str(conversation_id))
+        # 대화(읽지 않음 포함)·차례·사건을 한 읽기 시점에서(서랍 메뉴 독립 리뷰 P2)
+        found = chat_store.restore_snapshot(identity.db_file(), str(conversation_id), chat.EVENT_PAGE)
         if not found:
             return None
-        turns = [{**turn, "events": chat_store.events_after(path, turn["id"], 0, limit=chat.EVENT_PAGE)}
-                 for turn in chat_store.turns_for(path, found["id"])]
         public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable")}
-        return {"conversation": public, "turns": turns}
+        public.update({key: bool(found.get(key)) for key in ("pinned", "archived", "unread")}, unread_rev=found.get("unread_rev") or 0)
+        return {"conversation": public, "turns": found["turns"]}
 
     result = await asyncio.to_thread(load)  # 사건을 먼저 읽고 그다음 스냅샷 — 복원 스냅샷이 함께 돌려준 사건보다 새롭다(설계 A2-5)
     if result is None:
@@ -255,6 +326,8 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
             path, conversation_id=conv["id"], idempotency_key=body.idempotency_key, text=body.text, context=body.context))
     except chat_store.Busy as exc:
         raise HTTPException(409, "앞 차례가 아직 진행 중입니다.") from exc
+    except LookupError as exc:  # 사이에 지워진 대화(설계 2-5)
+        raise HTTPException(404, "대화를 찾을 수 없습니다.") from exc
     if created:
         await asyncio.to_thread(chat_store.update_conversation, path, conv["id"], model=body.model, effort=body.effort)
         try:
@@ -262,8 +335,8 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
                                text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
                                fast=body.fast)
         except Exception as exc:  # noqa: BLE001 - 실행 전 실패는 그 차례를 끝내고 알린다
-            await asyncio.to_thread(chat_store.set_status, path, turn["id"], "failed", reason="start_failed")
-            await asyncio.to_thread(chat_store.append_event, path, turn["id"], "error", {"message": "AI 프로그램을 시작하지 못했습니다."})
+            await asyncio.to_thread(lambda: chat_store.finish_turn(path, turn["id"], "failed", reason="start_failed",
+                                                                   error="AI 프로그램을 시작하지 못했습니다."))
             raise HTTPException(503, "AI 프로그램을 시작하지 못했습니다.") from exc
     return {"turn_id": turn["id"], "conversation_id": turn["conversation_id"], "status": turn["status"]}
 

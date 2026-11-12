@@ -2,10 +2,13 @@
 //  오른쪽 [새 대화][새 창]) · 대화(또는 Claude 연결 안내) · 입력칸(지금 화면 · [모델 ⌄] [생각 깊이 ⌄] · 보내기). 칸을 닫아도 차례는 허브에서 계속 돈다.
 //  옆에 붙은 동안 왼쪽 끝선을 끌어 폭을 바꾸고, ≡ 는 대화 서랍(프로젝트별·설정), [새 창]은 Assets 같은 별도 창(AgentWindow)으로 뺀다
 //  (Jay 11-10 시안 A안·② — docs/status/MVAgent_서랍_새창_2026-11-10.md).
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
-import { agentChatApi, type AgentContext, type AgentConversationSummary, type AgentEngine, type AgentEngineId } from "../../lib/agentChatApi";
+import {
+  agentChatApi, type AgentContext, type AgentConversationPatch, type AgentConversationSummary, type AgentEngine, type AgentEngineId,
+  type AgentSessionFileResult,
+} from "../../lib/agentChatApi";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { useT } from "../../lib/i18n";
@@ -100,7 +103,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   };
 
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
-  const chat = useAgentChat(screenOn ? context : NO_SCREEN);
+  const chat = useAgentChat(screenOn ? context : NO_SCREEN, { popout }); // 새 창이면 '새 창에서 열기' 요청을 받는다
   const [text, setText] = useState("");
   const [revising, setRevising] = useState<{ title: string } | null>(null); // [고치기] — 입력칸의 '고칠 계획' 칩
   const [menu, setMenu] = useState<"model" | null>(null); // 모델·생각 깊이·속도 한 메뉴(Aside 처럼)
@@ -232,10 +235,13 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
 
       {drawer && (
         <AgentDrawer conversations={chat.conversations} currentId={chat.conversationId} running={chat.running}
-          locked={chat.running || chat.sending} projectName={projectName}
+          locked={chat.running || chat.sending} projectName={projectName} currentProject={context.project} truncated={chat.truncated}
           onNew={startNew}
           onOpen={(id) => { setDrawer(false); setScreenOn(true); setRevising(null); void chat.openConversation(id); }}
-          onClose={closeDrawer} claude={engines.find((e) => e.id === "claude")} />
+          onClose={closeDrawer} onPatch={chat.patchConversation} onDelete={chat.removeConversation}
+          /* 새 창에서 열기 — 옆 칸에서만. 새 창이 받을 요청을 적고 지금 [새 창으로 띄우기] 길을 탄다(옆 칸의 지금 대화는 그대로) */
+          onOpenInWindow={!popout && onPopOut ? (id) => { if (chat.requestOpenInWindow(id)) { setDrawer(false); onPopOut(); } } : undefined}
+          claude={engines.find((e) => e.id === "claude")} />
       )}
 
       <div className="agent-log" ref={logRef} aria-live="polite">
@@ -275,6 +281,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       )}
 
       {chat.error && <p className="agent-error" role="alert">{chat.error}</p>}
+      {chat.notice && <p className="agent-notice" role="status">{chat.notice}</p>}
 
       <form className="agent-composer" onSubmit={submit}>
         <div className="agent-chips">
@@ -428,48 +435,198 @@ function UserMessage({ text, onReuse }: { text: string; onReuse: (text: string) 
   );
 }
 
-/** ≡ 대화 서랍 — [새 대화] · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 점) · 맨 아래 한 줄(Claude · 요금제 / Claude Code 판·새 판).
- *  보내는 중·일하는 중에는 고르기만 잠근다. 설정 칸(새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10).
+// 서랍 넓이(설계 docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-4) — 최소 220 · 최대 = 칸 폭 − 40(칸이 좁으면 최대가 이긴다) · 기본 310
+const DRAWER_BASE_W = 310;
+const DRAWER_MIN_W = 220;
+const clampDrawer = (w: number, panelW: number) => Math.round(Math.min(panelW - 40, Math.max(DRAWER_MIN_W, w)));
+const SESSION_FILE_NOTE: Record<AgentSessionFileResult, string> = {
+  deleted: "지웠어요 · Claude 기억(세션 파일)도 지웠어요",
+  not_found: "지웠어요 · Claude 세션 파일은 확인하지 못해 남겨 뒀어요",
+  failed: "지웠어요 · Claude 세션 파일은 지우지 못했어요",
+  codex_kept: "지웠어요 · Codex 기록은 Codex 폴더에 남아요",
+  none: "지웠어요",
+};
+// sub = 프로젝트 하위 메뉴, side = 펼칠 쪽(오른쪽 자리가 없으면 왼쪽, 둘 다 없으면 아래로 — 좁은 새 창, 독립 리뷰 P2)
+type RowMenu = { id: string; top: number; left: number; sub: boolean; side?: "right" | "left" | "below" };
+const ROW_MENU_W = 232;
+const PIN_GROUP = "__pinned__";
+const ARCHIVE_GROUP = "__archived__"; // 보관함 — 처음엔 접혀 있다
+type RowAct = "pin" | "unread" | "rename" | "archive" | "delete";
+const ROW_KEYS: Record<string, RowAct | undefined> = { KeyP: "pin", KeyU: "unread", KeyR: "rename", KeyA: "archive", KeyD: "delete" };
+
+/** ≡ 대화 서랍 — [새 대화] · 고정됨 · 프로젝트별 대화(고른 것 회색 칸 · 일하는 중 라임 고리 · 읽지 않음 라임 점) · 보관함 ·
+ *  맨 아래 한 줄(Claude · 요금제 / Claude Code 판·새 판). 행마다 ⋯ · 우클릭 메뉴(설계 2-1)와 오른쪽 끝선 넓이 조절(2-4).
+ *  보내는 중·일하는 중에는 고르기와 그 대화의 바꾸는 항목만 잠근다. 설정 칸(새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10).
  *  요금제 = 허브가 Claude Code 설정의 표시 이름(Ultra 등)을 같은 계정일 때만 싣는다(docs/status/MVAgent_서랍아래줄_2026-11-10.md). */
-function AgentDrawer({ conversations, currentId, running, locked, projectName, onNew, onOpen, onClose, claude }: {
+function AgentDrawer({ conversations, currentId, running, locked, projectName, currentProject, truncated, onNew, onOpen, onClose,
+  onPatch, onDelete, onOpenInWindow, claude }: {
   conversations: AgentConversationSummary[] | null;
   currentId: string | null;
   running: boolean;
   locked: boolean;
   projectName?: (id: string) => string | undefined;
+  currentProject?: string;
+  truncated: boolean;
   onNew: () => void;
   onOpen: (id: string) => void;
   onClose: () => void;
+  onPatch: (id: string, body: AgentConversationPatch) => Promise<boolean>;
+  onDelete: (id: string) => Promise<AgentSessionFileResult | null>;
+  onOpenInWindow?: (id: string) => void;
   claude?: AgentEngine;
 }) {
   const t = useT();
-  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set([ARCHIVE_GROUP]));
   const [version, setVersion] = useState<{ current: string | null; latest: string | null; newer: boolean } | null>(null);
+  const [menu, setMenu] = useState<RowMenu | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; text: string } | null>(null);
+  const [confirm, setConfirm] = useState<AgentConversationSummary | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => { // 서랍을 열 때 한 번 — 허브가 최신 판을 6시간 기억한다
     let live = true;
     agentChatApi.claudeVersion().then((v) => { if (live) setVersion(v); }, () => {});
     return () => { live = false; };
   }, []);
-  const noProject = t("프로젝트 없음");
-  // 목록은 최근 순 — 묶음도 가장 최근 대화가 있는 순, '프로젝트 없음'은 맨 아래. 이름을 모르는 프로젝트(지금 공간 밖)는 한 묶음으로
-  const groups: { label: string; items: AgentConversationSummary[] }[] = [];
-  for (const c of conversations ?? []) {
-    const label = c.project ? projectName?.(c.project) ?? t("다른 공간 프로젝트") : noProject;
-    const group = groups.find((g) => g.label === label);
-    if (group) group.items.push(c);
-    else groups.push({ label, items: [c] });
+
+  // ── 넓이 — 고른 폭은 남기고 보이는 폭은 칸 폭에 맞춘다(칸 폭이 바뀌면 다시) ──
+  const [width, setWidth] = useState(() => {
+    const saved = loadJSON<unknown>(STORAGE_KEYS.agentDrawerWidth);
+    return typeof saved === "number" && Number.isFinite(saved) ? saved : DRAWER_BASE_W;
+  });
+  const [panelW, setPanelW] = useState(() => (typeof window === "undefined" ? 520 : window.innerWidth));
+  useLayoutEffect(() => {
+    const panel = navRef.current?.parentElement;
+    if (!panel) return;
+    const measure = () => setPanelW(panel.clientWidth || window.innerWidth);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, []);
+  const shown = clampDrawer(width, panelW);
+  const commitWidth = (next: number) => {
+    const w = clampDrawer(next, panelW);
+    setWidth(w);
+    saveJSON(STORAGE_KEYS.agentDrawerWidth, w);
+  };
+  const drag = useRef<{ id: number; x: number; from: number } | null>(null);
+
+  // ── 겹(Esc 한 번에 한 겹) — 하위 메뉴 → 행 메뉴 → 이름 바꾸기 → 확인 창 → 서랍 ──
+  const menuNow = useRef(menu);
+  menuNow.current = menu;
+  const focusMore = (id: string) => window.requestAnimationFrame(() => navRef.current?.querySelector<HTMLButtonElement>(`[data-more="${id}"]`)?.focus());
+  const closeMenu = useCallback(() => {
+    const open = menuNow.current;
+    setMenu(null);
+    if (open) focusMore(open.id); // Esc·바깥 누름으로 닫으면 ⋯ 로 초점을 돌린다
+  }, []);
+  useEscapeClose(closeMenu, !!menu && !menu.sub);
+  useEscapeClose(() => setMenu((m) => (m ? { ...m, sub: false } : m)), !!menu?.sub);
+  useEscapeClose(() => setRenaming(null), !!renaming);
+  useEscapeClose(() => setConfirm(null), !!confirm);
+  useOutsideMouseDown(menuRef, closeMenu, !!menu);
+
+  const byId = new Map((conversations ?? []).map((c) => [c.id, c]));
+  const target = menu ? byId.get(menu.id) : undefined;
+  const busyRow = (id: string) => locked && id === currentId; // 보내는 중·도는 대화는 바꾸지 않는다
+  const openMenuAt = (id: string, row: DOMRect | null, point?: { x: number; y: number }) => {
+    const nav = navRef.current?.getBoundingClientRect();
+    if (!nav) return;
+    setNote(null);
+    const left = point ? point.x - nav.left : (row ? row.right - nav.left - 232 : 8);
+    const top = point ? point.y - nav.top : (row ? row.bottom - nav.top + 2 : 8);
+    setMenu({ id, left: Math.max(8, Math.min(left, nav.width - 240)), top: Math.max(8, top), sub: false });
+  };
+  useLayoutEffect(() => { // 아래로 넘치면 위로 올린다
+    const el = menuRef.current, nav = navRef.current;
+    if (!el || !nav || !menu) return;
+    const over = el.offsetTop + el.offsetHeight - (nav.clientHeight - 8);
+    if (over > 0) el.style.top = `${Math.max(8, el.offsetTop - over)}px`;
+  }, [menu]);
+
+  const act = async (kind: RowAct | "window", c: AgentConversationSummary) => {
+    setMenu(null);
+    if (kind === "window") return onOpenInWindow?.(c.id);
+    if (busyRow(c.id)) return;
+    if (kind === "pin") return void onPatch(c.id, { pinned: !c.pinned });
+    if (kind === "unread") return void onPatch(c.id, { unread: !c.unread });
+    if (kind === "archive") return void onPatch(c.id, { archived: !c.archived });
+    if (kind === "rename") return setRenaming({ id: c.id, text: c.title ?? "" });
+    setConfirm(c);
+  };
+  // 메뉴가 열린 동안 글자 단축키 — 자판과 무관하게 event.code, 입력·조합·수정키·반복은 무시, 누를 때 잠금을 다시 본다(설계 2-1)
+  const keyAct = useRef({ act, target });
+  keyAct.current = { act, target };
+  const keysOn = !!menu && !menu.sub && !!target;
+  useEffect(() => {
+    if (!keysOn) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.repeat || e.isComposing || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      const kind = ROW_KEYS[e.code];
+      const { act: run, target: row } = keyAct.current;
+      if (!kind || !row) return;
+      e.preventDefault();
+      void run(kind, row);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [keysOn]);
+
+  const saveRename = async () => {
+    if (!renaming) return;
+    const text = renaming.text.trim();
+    if (text.length < 1 || text.length > 80) return; // 허브도 같은 규칙(1~80자)
+    const id = renaming.id;
+    if (await onPatch(id, { title: text })) setRenaming(null);
+  };
+  const doDelete = async () => {
+    const c = confirm;
+    if (!c) return;
+    setConfirm(null);
+    const result = await onDelete(c.id);
+    if (result) setNote(t(SESSION_FILE_NOTE[result]));
+  };
+
+  // 프로젝트로 옮기기 후보 — 지금 화면 프로젝트 · 서랍에 이름이 보이는 프로젝트(id 별) · 없음. 이름 모르는 것은 고를 수 없다
+  const candidates: { id: string; name: string }[] = [];
+  for (const id of [currentProject, ...(conversations ?? []).map((c) => c.project)]) {
+    const name = id ? projectName?.(id) : undefined;
+    if (id && name && !candidates.some((p) => p.id === id)) candidates.push({ id, name });
   }
-  groups.sort((a, b) => Number(a.label === noProject) - Number(b.label === noProject));
-  const fold = (label: string) => setFolded((prev) => {
+
+  const noProject = t("프로젝트 없음");
+  // 고정됨 → 프로젝트 묶음(최근 순, '프로젝트 없음'은 뒤) → 보관함. 이름을 모르는 프로젝트(지금 공간 밖)는 한 묶음으로
+  const pinned = (conversations ?? []).filter((c) => c.pinned && !c.archived);
+  const archived = (conversations ?? []).filter((c) => c.archived);
+  const groups: { key: string; label: string; items: AgentConversationSummary[] }[] = [];
+  if (pinned.length) groups.push({ key: PIN_GROUP, label: t("고정됨"), items: pinned });
+  const byProject: typeof groups = [];
+  for (const c of conversations ?? []) {
+    if (c.pinned || c.archived) continue;
+    const label = c.project ? projectName?.(c.project) ?? t("다른 공간 프로젝트") : noProject;
+    const group = byProject.find((g) => g.label === label);
+    if (group) group.items.push(c);
+    else byProject.push({ key: `p:${label}`, label, items: [c] });
+  }
+  byProject.sort((a, b) => Number(a.label === noProject) - Number(b.label === noProject));
+  groups.push(...byProject);
+  if (archived.length) groups.push({ key: ARCHIVE_GROUP, label: `${t("보관함")} ${archived.length}`, items: archived });
+  const fold = (key: string) => setFolded((prev) => {
     const next = new Set(prev);
-    if (next.has(label)) next.delete(label);
-    else next.add(label);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
     return next;
   });
+
   return (
     <>
       <div className="agent-drawer-dim" onMouseDown={onClose} aria-hidden="true" />
-      <nav className="agent-drawer" aria-label={t("대화 목록")}>
+      <nav className="agent-drawer" aria-label={t("대화 목록")} ref={navRef} style={{ width: shown }}>
         <button type="button" className="agent-drawer-new" onClick={onNew} disabled={locked}>
           <NewChatIcon /><span>{t("새 대화")}</span>
         </button>
@@ -479,25 +636,148 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, o
           ) : groups.length === 0 ? (
             <p className="agent-menu-note">{t("지난 대화가 없어요")}</p>
           ) : groups.map((g) => (
-            <div key={g.label} className="agent-drawer-group">
-              <button type="button" className="agent-drawer-ghead" aria-expanded={!folded.has(g.label)} onClick={() => fold(g.label)}>
-                <span>{g.label}</span><Chevron />
+            <div key={g.key} className={`agent-drawer-group${g.key === ARCHIVE_GROUP ? " archive" : ""}`}>
+              <button type="button" className="agent-drawer-ghead" aria-expanded={!folded.has(g.key)} onClick={() => fold(g.key)}>
+                {g.key === ARCHIVE_GROUP && <ArchiveIcon />}<span>{g.label}</span><Chevron />
               </button>
-              {!folded.has(g.label) && (
+              {!folded.has(g.key) && (
                 <div className="agent-drawer-items">
-                  {g.items.map((c) => (
-                    <button key={c.id} type="button" className={`agent-drawer-item${c.id === currentId ? " on" : ""}`}
-                      disabled={locked} onClick={() => (c.id === currentId ? onClose() : onOpen(c.id))}>
-                      <span>{c.title || t("제목 없음")}</span>
-                      {!c.resumable && <small>{t("이어 가기 불가")}</small>}
-                      {running && c.id === currentId && <i className="agent-drawer-dot" title={t("일하는 중")} />}
-                    </button>
-                  ))}
+                  {g.items.map((c) => (renaming?.id === c.id ? (
+                    <div key={c.id} className="agent-drawer-row on">
+                      <input className="agent-drawer-rename" autoFocus value={renaming.text} maxLength={80} aria-label={t("새 이름")}
+                        onChange={(e) => setRenaming({ id: c.id, text: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void saveRename(); }
+                        }}
+                        onBlur={() => setRenaming(null)} />
+                    </div>
+                  ) : (
+                    <div key={c.id} className={`agent-drawer-row${c.id === currentId ? " on" : ""}${menu?.id === c.id ? " menu" : ""}`}
+                      onContextMenu={(e) => { e.preventDefault(); openMenuAt(c.id, null, { x: e.clientX, y: e.clientY }); }}>
+                      <button type="button" className={`agent-drawer-item${c.id === currentId ? " on" : ""}`}
+                        disabled={locked} onClick={() => (c.id === currentId ? onClose() : onOpen(c.id))}>
+                        {c.pinned && !c.archived && <PinIcon />}
+                        <span>{c.title || t("제목 없음")}</span>
+                        {!c.resumable && <small>{t("이어 가기 불가")}</small>}
+                        {running && c.id === currentId ? <i className="agent-drawer-dot" title={t("일하는 중")} />
+                          : c.unread && <i className="agent-drawer-unread" title={t("읽지 않음")} />}
+                      </button>
+                      <button type="button" className="agent-drawer-more" data-more={c.id} aria-haspopup="menu" aria-expanded={menu?.id === c.id}
+                        title={t("대화 메뉴")} aria-label={t("대화 메뉴")}
+                        onClick={(e) => (menu?.id === c.id ? closeMenu() : openMenuAt(c.id, e.currentTarget.parentElement!.getBoundingClientRect()))}>
+                        <DotsIcon />
+                      </button>
+                    </div>
+                  )))}
                 </div>
               )}
             </div>
           ))}
+          {truncated && <p className="agent-menu-note">{t("최근 500개만 보여요")}</p>}
         </div>
+        {note && <p className="agent-drawer-note" role="status">{note}</p>}
+
+        {menu && target && (
+          <div className={`agent-row-menu${menu.sub && menu.side === "below" ? " stacked" : ""}`} role="menu" aria-label={t("대화 메뉴")} ref={menuRef}
+            style={{ top: menu.top, left: menu.left }}>
+            {onOpenInWindow && (
+              <>
+                <button type="button" role="menuitem" className="agent-row-mi" onClick={() => void act("window", target)}>
+                  <WindowIcon /><span>{t("새 창에서 열기")}</span>
+                </button>
+                <div className="agent-menu-sep" />
+              </>
+            )}
+            <button type="button" role="menuitem" className="agent-row-mi" disabled={busyRow(target.id)} onClick={() => void act("pin", target)}>
+              <PinIcon /><span>{t(target.pinned ? "고정 풀기" : "고정")}</span><kbd>P</kbd>
+            </button>
+            <button type="button" role="menuitem" className="agent-row-mi" disabled={busyRow(target.id)} onClick={() => void act("unread", target)}>
+              <UnreadIcon /><span>{t(target.unread ? "읽음으로 표시" : "읽지 않음으로 표시")}</span><kbd>U</kbd>
+            </button>
+            <button type="button" role="menuitem" className="agent-row-mi" disabled={busyRow(target.id)} onClick={() => void act("rename", target)}>
+              <PenIcon /><span>{t("이름 바꾸기")}</span><kbd>R</kbd>
+            </button>
+            <div className="agent-menu-sep" />
+            <div className="agent-row-sub-wrap">
+              <button type="button" role="menuitem" className={`agent-row-mi${menu.sub ? " on" : ""}`} aria-haspopup="menu" aria-expanded={menu.sub}
+                disabled={busyRow(target.id)} onClick={() => {
+                  // 칸(새 창이면 창) 안에서 오른쪽에 하위 메뉴 자리가 없으면 왼쪽, 그래도 없으면 메뉴 안 아래로
+                  const nav = navRef.current;
+                  const room = nav?.parentElement?.clientWidth || window.innerWidth;
+                  const right = (nav?.offsetLeft ?? 0) + menu.left + ROW_MENU_W;
+                  const side = right + ROW_MENU_W <= room ? "right" : (nav?.offsetLeft ?? 0) + menu.left >= ROW_MENU_W ? "left" : "below";
+                  setMenu({ ...menu, sub: !menu.sub, side });
+                }}>
+                <FolderIcon /><span>{t("프로젝트로 옮기기")}</span><Chevron />
+              </button>
+              {menu.sub && (
+                <div className={`agent-row-sub ${menu.side ?? "right"}`} role="menu" aria-label={t("프로젝트로 옮기기")}>
+                  {candidates.map((p) => (
+                    <button key={p.id} type="button" role="menuitemradio" aria-checked={target.project === p.id} className="agent-row-mi"
+                      onClick={() => { setMenu(null); void onPatch(target.id, { project: p.id }); }}>
+                      <span>{p.id === currentProject ? `${p.name} · ${t("지금 화면")}` : p.name}</span>
+                      {target.project === p.id && <i className="agent-row-check" aria-hidden="true">✓</i>}
+                    </button>
+                  ))}
+                  <button type="button" role="menuitemradio" aria-checked={!target.project} className="agent-row-mi"
+                    onClick={() => { setMenu(null); void onPatch(target.id, { project: null }); }}>
+                    <span>{noProject}</span>{!target.project && <i className="agent-row-check" aria-hidden="true">✓</i>}
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="agent-menu-sep" />
+            <button type="button" role="menuitem" className="agent-row-mi" disabled={busyRow(target.id)} onClick={() => void act("archive", target)}>
+              <ArchiveIcon /><span>{t(target.archived ? "보관 풀기" : "보관")}</span><kbd>A</kbd>
+            </button>
+            <button type="button" role="menuitem" className="agent-row-mi danger" disabled={busyRow(target.id)} onClick={() => void act("delete", target)}>
+              <TrashIcon /><span>{t("삭제")}</span><kbd>D</kbd>
+            </button>
+          </div>
+        )}
+
+        {confirm && (
+          <div className="agent-drawer-confirm" role="dialog" aria-modal="true" aria-label={t("이 대화를 지울까요?")}>
+            <h4>{t("이 대화를 지울까요?")}</h4>
+            <p className="agent-confirm-title">「{confirm.title || t("제목 없음")}」</p>
+            <p>{t("칸 기록과 이 대화의 Claude 기억(세션 파일)이 함께 지워지고 되돌릴 수 없어요. 만든 그림은 라이브러리에 그대로 남아요.")}</p>
+            {confirm.engine === "codex" && <p>{t("Codex 대화는 Codex 기록이 Codex 폴더에 남아요.")}</p>}
+            <div className="agent-confirm-acts">
+              <button type="button" className="agent-confirm-btn" onClick={() => setConfirm(null)}>{t("취소")}</button>
+              <button type="button" className="agent-confirm-btn danger" autoFocus onClick={() => void doDelete()}>{t("삭제")}</button>
+            </div>
+          </div>
+        )}
+
+        <div className="agent-drawer-resize" role="separator" tabIndex={0} aria-orientation="vertical"
+          aria-label={t("대화 목록 너비 조절")} aria-valuemin={Math.min(DRAWER_MIN_W, panelW - 40)} aria-valuemax={panelW - 40} aria-valuenow={shown}
+          title={t("드래그하여 너비 조절 · 더블클릭하여 기본 너비로 복원")}
+          onPointerDown={(e) => {
+            if (e.button !== 0 || !e.isPrimary || drag.current) return;
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            drag.current = { id: e.pointerId, x: e.clientX, from: shown };
+          }}
+          onPointerMove={(e) => {
+            const d = drag.current;
+            if (!d || d.id !== e.pointerId) return;
+            setWidth(clampDrawer(d.from + (e.clientX - d.x), panelW)); // 서랍은 왼쪽에 있어 오른쪽으로 끌면 넓어진다
+          }}
+          onPointerUp={(e) => {
+            const d = drag.current;
+            if (!d || d.id !== e.pointerId) return;
+            drag.current = null;
+            commitWidth(d.from + (e.clientX - d.x));
+          }}
+          onPointerCancel={() => { drag.current = null; }}
+          onDoubleClick={() => commitWidth(DRAWER_BASE_W)}
+          onKeyDown={(e) => {
+            const step = e.key === "ArrowRight" ? 8 : e.key === "ArrowLeft" ? -8 : 0;
+            if (!step) return;
+            e.preventDefault();
+            commitWidth(shown + step);
+          }}
+        />
         <div className="agent-drawer-foot">
           <span className="agent-drawer-plan">
             <span className="agent-co" aria-hidden="true">✳</span>
@@ -609,6 +889,28 @@ function NewChatIcon() {
     </svg>
   );
 }
+
+// 서랍 행 메뉴 아이콘(16px 칸에 14px 선) — 시안 drawer-menu.png
+function MenuGlyph({ children }: { children: ReactNode }) {
+  return (
+    <svg className="agent-row-ic" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth={1.3}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
+  );
+}
+function DotsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <circle cx="3.5" cy="8" r="1.4" fill="currentColor" /><circle cx="8" cy="8" r="1.4" fill="currentColor" /><circle cx="12.5" cy="8" r="1.4" fill="currentColor" />
+    </svg>
+  );
+}
+function WindowIcon() { return <MenuGlyph><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M2 6h12" /></MenuGlyph>; }
+function PinIcon() { return <MenuGlyph><path d="M9.5 2.5l4 4-2 1-2.5 2.5.3 2.5-1.3 1.3-2.4-2.4L2.5 14.5M4.6 7.6l2.3-2.3 1-2" /></MenuGlyph>; }
+function UnreadIcon() { return <MenuGlyph><circle cx="8" cy="8" r="5.2" /><circle cx="8" cy="8" r="2" fill="currentColor" /></MenuGlyph>; }
+function PenIcon() { return <MenuGlyph><path d="M11 2.5a1.4 1.4 0 0 1 2 2L5.3 12.2 2.5 13l.8-2.8Z" /></MenuGlyph>; }
+function FolderIcon() { return <MenuGlyph><path d="M2 4.5c0-.8.6-1.5 1.5-1.5h3l1.5 1.6h4.5c.8 0 1.5.6 1.5 1.5v5.4c0 .8-.7 1.5-1.5 1.5h-9C2.6 13 2 12.3 2 11.5z" /></MenuGlyph>; }
+function ArchiveIcon() { return <MenuGlyph><rect x="2" y="3" width="12" height="3" rx="1" /><path d="M3 6v6c0 .6.4 1 1 1h8c.6 0 1-.4 1-1V6M6.5 8.5h3" /></MenuGlyph>; }
+function TrashIcon() { return <MenuGlyph><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.2c0 .5.5.8 1 .8h3.8c.5 0 .9-.3 1-.8l.6-8.2" /></MenuGlyph>; }
 
 /** 옆 칸 닫기(새 창에서는 옆 칸으로 붙이기) — 오른쪽 칸이 채워진 창(Jay 11-10 시안 — 이미지의 사이드바 단추를 오른쪽 칸으로) */
 function SidePanelIcon() {

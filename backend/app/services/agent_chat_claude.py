@@ -184,6 +184,88 @@ def _work_dir() -> Path:
     return work
 
 
+# ── 대화 삭제 때 그 세션 파일만(설계 docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-5) ──
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_SESSION_PEEK_LINES = 50
+_SESSION_PEEK_BYTES = 4 * 1024 * 1024
+
+
+def _norm(value: str) -> str:
+    return os.path.normcase(os.path.normpath(value))
+
+
+def claude_home(env: dict, cwd: Path) -> str:
+    """차례를 띄우는 바로 그 환경·작업 폴더의 Claude 자격 폴더 — CLAUDE_CONFIG_DIR 이 상대 경로면 자식 작업 폴더 기준
+    (허브 위치 기준인 _credential_dir 와 다르다)."""
+    raw = env.get("CLAUDE_CONFIG_DIR")
+    base = Path(os.path.expanduser(raw)) if raw else Path(env.get("USERPROFILE") or Path.home()) / ".claude"
+    if not base.is_absolute():
+        base = Path(cwd) / base
+    return os.path.normpath(str(base))
+
+
+def _belongs(path: Path, session_id: str, cwd: str) -> bool:
+    """세션 파일 앞 50줄 안에 sessionId 와 작업 폴더(cwd)가 이 칸의 그 세션으로 적힌 줄이 있나."""
+    want = _norm(cwd)
+    read = 0
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for _ in range(_SESSION_PEEK_LINES):
+            line = handle.readline(_SESSION_PEEK_BYTES)
+            if not line:
+                return False
+            read += len(line)
+            if read > _SESSION_PEEK_BYTES:
+                return False
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(row, dict) and row.get("sessionId") == session_id and isinstance(row.get("cwd"), str)
+                    and row["cwd"] and _norm(row["cwd"]) == want):
+                return True
+    return False
+
+
+def delete_session_record(session_id: str | None, home: str | None, cwd: str | None) -> str:
+    """deleted · not_found(근거 없음·이름 후보 0개/여럿·폴더 읽기 오류·내용 확인 실패 — 안 지움) · failed(지우다 실패).
+    <home>/projects/*/<id>.jsonl 이름 후보가 정확히 하나이고, 보통 파일·실제 경로가 projects 안·내용 확인을 통과할 때만."""
+    if not (session_id and _UUID.fullmatch(session_id) and home and cwd):
+        return "not_found"
+    projects = Path(home) / "projects"
+    name = f"{session_id}.jsonl"
+    found: list[Path] = []
+    try:
+        with os.scandir(projects) as entries:
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                candidate = Path(entry.path) / name
+                try:
+                    os.lstat(candidate)
+                except FileNotFoundError:
+                    continue
+                found.append(candidate)
+    except OSError:  # 어느 폴더든 못 읽으면 '하나뿐'을 확정할 수 없다
+        return "not_found"
+    if len(found) != 1:
+        return "not_found"
+    target = found[0]
+    try:
+        if target.is_symlink() or not target.is_file():
+            return "not_found"
+        if Path(os.path.realpath(target)).parent.parent != Path(os.path.realpath(projects)):
+            return "not_found"
+        if not _belongs(target, session_id, cwd):
+            return "not_found"
+    except OSError:
+        return "not_found"
+    try:
+        target.unlink()
+    except OSError:
+        return "failed"
+    return "deleted"
+
+
 def _credential_dir() -> str:
     """Claude 자격이 사는 폴더(자식 환경 기준 — 차례·로그인·상태 확인이 보는 곳)."""
     env = process.child_env()

@@ -11,7 +11,9 @@ import {
   CLAUDE_CHAT_OK,
   ClaudeLoginError,
   type AgentContext,
+  type AgentConversationPatch,
   type AgentConversationSummary,
+  type AgentSessionFileResult,
   type AgentEngine,
   type AgentEngineId,
   type AgentEvent,
@@ -24,8 +26,18 @@ import {
 } from "./agentChatApi";
 import { AGENT_CHAT_CONNECT_FEATURE, hubHasFeature } from "./hubFeatures";
 import { errorDetail, isHttpStatus } from "./http";
-import { loadJSON, saveJSON } from "./storage";
+import { loadJSON, loadString, saveJSON, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+
+// ── 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-1·2-3·2-6) ──
+interface OpenRequest { account: string; identity: string; id: string; nonce: string; at: number }
+const OPEN_REQUEST_TTL = 30_000; // 새 창이 뜰 때는 만든 지 30초 안의 요청만(닫았다 다시 연 창이 지난 요청을 열지 않게)
+function readOpenRequest(): OpenRequest | null {
+  const r = loadJSON<Partial<OpenRequest>>(STORAGE_KEYS.agentPanelOpenRequest);
+  return r && typeof r.account === "string" && typeof r.identity === "string" && typeof r.id === "string"
+    && typeof r.nonce === "string" && typeof r.at === "number" ? (r as OpenRequest) : null;
+}
+const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
 
 export type AgentMessage =
   | { kind: "user"; id: string; text: string }
@@ -163,7 +175,8 @@ const remember = (id: string | null) => saveJSON(STORAGE_KEYS.agentPanelConversa
 //  shortcut: 페이지를 새로 고치면 사라진다 — 새로 고침 뒤 복구가 필요해지면 sessionStorage 로 옮긴다
 let pendingSend: { account: string; sig: string; key: string } | null = null;
 
-export function useAgentChat(context: AgentContext | Record<string, never>) { // 빈 값 = '지금 화면' 칩을 뺐다
+export function useAgentChat(context: AgentContext | Record<string, never>, // 빈 값 = '지금 화면' 칩을 뺐다
+  options: { popout?: boolean } = {}) { // popout = 새 창(?embed=agent) — '새 창에서 열기' 요청을 받는 쪽
   const [session, setSession] = useState<AgentSession | null>(null);
   const [choice, setChoice] = useState<AgentChoice | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -173,6 +186,25 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<AgentConversationSummary[] | null>(null);
+  const [truncated, setTruncated] = useState(false); // 허브가 최근 500개만 실었다
+  const [notice, setNotice] = useState<string | null>(null); // 오류가 아닌 안내(다른 창에서 지워짐 등)
+  const currentId = useRef<string | null>(null); // 저장소 알림·끝남 처리에서 지금 대화를 읽는다(닫힌 값이 아니라)
+  currentId.current = conversationId;
+  const loadingId = useRef<string | null>(null); // 불러오는 중인 대화 — 그 사이 지워지면 늦은 복원 응답을 버린다
+  const pendingRead = useRef<{ id: string; rev: number } | null>(null); // 숨은 창에서 받은 끝남 — 다시 보일 때 읽음
+  const pendingOpen = useRef<OpenRequest | null>(null); // 바쁠 때 온 새 창 열기 요청(최신 하나)
+  // 이 창에서 바꾼 줄 — 순번·지움 여부·마지막으로 받은 요약. 목록 조회를 보낸 뒤 바뀐 줄은 늦게 온 조회 응답이 덮지 않는다
+  //  (독립 리뷰 재확인 P2 두 번: 목록에 아직 없을 때 받은 요약도 남겨 조회 응답과 합친다 — 지움과 구분)
+  const changeSeq = useRef(0);
+  const changedAt = useRef(new Map<string, { seq: number; deleted: boolean; summary?: AgentConversationSummary }>());
+  const touch = (id: string, change: { deleted?: boolean; summary?: AgentConversationSummary }) => {
+    changeSeq.current += 1;
+    const before = changedAt.current.get(id)?.summary;
+    const older = before && change.summary && typeof before.unread_rev === "number" && typeof change.summary.unread_rev === "number"
+      && change.summary.unread_rev < before.unread_rev;
+    changedAt.current.set(id, { seq: changeSeq.current, deleted: !!change.deleted,
+      summary: change.deleted ? undefined : older ? before : change.summary ?? before });
+  };
 
   const contextRef = useRef(context);
   contextRef.current = context;
@@ -212,6 +244,43 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
     setError(errorDetail(e));
   }, [drop]);
 
+  /** 지워진 대화를 이 창에서 비운다 — 지금 보거나 불러오는 중이면 drop(늦은 복원 응답도 버린다), '마지막 대화'는 같은 id 일 때만 비움. */
+  const forget = useCallback((id: string) => {
+    if (currentId.current === id || loadingId.current === id) {
+      drop();
+      loadingId.current = null;
+    }
+    if (remembered() === id) remember(null);
+    if (pendingRead.current?.id === id) pendingRead.current = null;
+    touch(id, { deleted: true });
+    setConversations((list) => (list ? list.filter((c) => c.id !== id) : list));
+  }, [drop]);
+
+  // 허브가 돌려준 요약으로 목록 한 줄 — 읽지 않음 번호가 더 작은(늦게 온 옛) 응답은 버린다(독립 리뷰 P2: 늦은 자동 읽음이 수동 표시를 덮지 않게)
+  const putSummary = (summary: AgentConversationSummary) => {
+    if (changedAt.current.get(summary.id)?.deleted) return; // 지운 대화(id 는 다시 안 쓰임)에 늦게 온 응답 — 지움 표시를 풀지 않는다(독립 리뷰 재확인 3)
+    touch(summary.id, { summary });
+    setConversations((list) => (list ? list.map((c) => {
+      if (c.id !== summary.id) return c;
+      if (typeof c.unread_rev === "number" && typeof summary.unread_rev === "number" && summary.unread_rev < c.unread_rev) return c;
+      return { ...c, ...summary };
+    }) : list));
+  };
+
+  /** 자동 읽음 — 본 번호(seen_rev)가 지금과 같을 때만 허브가 끈다. 창이 숨어 있으면 들고 있다가 다시 보일 때 보낸다.
+   *  답은 보낼 때의 계정·차례 번호가 그대로일 때만 목록에 넣는다. */
+  const markRead = useCallback((id: string, rev: number) => {
+    if (!visible()) {
+      pendingRead.current = { id, rev };
+      return;
+    }
+    pendingRead.current = null;
+    const stale = ticket();
+    agentChatApi.patchConversation(id, { unread: false, seen_rev: rev }).then((r) => { if (!stale()) putSummary(r.conversation); }, () => {});
+    // ticket 은 매번 새로 만드는 표라 넣지 않는다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 차례의 사건을 끝날 때까지 받는다. 답이 없으면(망·허브 재시작) 2초 뒤 다시, 세 번 연달아 안 되면 멈추고 알린다.
   const follow = useCallback(async (turnId: string, after: number) => {
     poll.current?.abort();
@@ -229,12 +298,20 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
         if (r.events.length) setMessages((m) => r.events.reduce((acc, ev) => applyAgentEvent(acc, ev, turnId), m));
         seq = Math.max(seq, r.last_seq);
         setTurn({ id: turnId, status: r.status });
+        // 보고 있는 대화의 끝남 — 그 사건의 읽지 않음 번호로 조건부 읽음(서랍 메뉴 2-3)
+        const ended = [...r.events].reverse().find((ev) => ev.kind === "state" && TERMINAL_TURN.has(ev.status));
+        if (ended?.kind === "state" && typeof ended.unread_rev === "number" && currentId.current) markRead(currentId.current, ended.unread_rev);
         if (TERMINAL_TURN.has(r.status) && !r.more) break; // 끝났어도 남은 사건(계획 카드 등)은 마저 받는다
       } catch (e) {
         if (controller.signal.aborted || stale()) return;
         failures += 1;
         const clientError = e instanceof AccountChangedError || isHttpStatus(e, 400, 401, 403, 404, 409);
         if (clientError || failures >= 3) {
+          if (isHttpStatus(e, 404) && currentId.current) { // 그 사이 지워진 대화
+            forget(currentId.current);
+            setNotice("이 대화는 지워졌어요");
+            break;
+          }
           fail(e);
           break;
         }
@@ -243,19 +320,22 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
     }
     if (poll.current === controller) poll.current = null;
     busy.current = false;
-  }, [fail]);
+  }, [fail, forget, markRead]);
 
   const openConversation = useCallback(async (id: string) => {
     if (busy.current) return; // 보내는 중·진행 중엔 대화를 바꾸지 않는다 — 허브에서 시작한 차례를 놓치지 않게
     drop();
     setError(null);
+    setNotice(null);
     // 불러오는 동안 보내기·전환을 막는다 — 늦게 온 지난 대화가 그사이 보낸 새 차례를 덮지 않게(리뷰 2차)
     busy.current = true;
     setSending(true);
+    loadingId.current = id;
     const stale = ticket();
     try {
       const r = await agentChatApi.conversation(id);
       if (stale()) return;
+      loadingId.current = null;
       let rebuilt: AgentMessage[] = [];
       for (const t of r.turns) {
         rebuilt = [...rebuilt, { kind: "user", id: `${t.id}:user`, text: t.text }];
@@ -263,9 +343,12 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
       }
       setMessages(r.plans ? restorePlans(rebuilt, r.plans) : rebuilt);
       setConversationId(id);
+      currentId.current = id;
       setTitle(r.conversation.title);
       setChoice({ engine: r.conversation.engine, model: r.conversation.model, effort: r.conversation.effort });
       remember(id);
+      // 열었다 = 봤다 — 그때의 번호로 조건부(늦게 닿아도 그 뒤의 차례 끝·수동 표시는 못 지운다), 이미 읽음이면 안 보냄
+      if (r.conversation.unread) markRead(id, r.conversation.unread_rev ?? 0);
       const last = r.turns[r.turns.length - 1];
       if (last && !TERMINAL_TURN.has(last.status)) {
         setTurn({ id: last.id, status: last.status });
@@ -273,7 +356,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
       }
     } catch (e) {
       if (stale()) return;
-      if (isHttpStatus(e, 403, 404)) remember(null); // 지워졌거나 다른 신원의 대화 — 새 대화로 둔다
+      if (loadingId.current === id) loadingId.current = null;
+      if (isHttpStatus(e, 403, 404) && remembered() === id) remember(null); // 지워졌거나 다른 신원의 대화 — 새 대화로 둔다
       fail(e);
     } finally {
       if (!stale()) {
@@ -281,7 +365,19 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
         if (!poll.current) busy.current = false; // 진행 중 차례를 이어 받았으면 follow 가 끝날 때 푼다
       }
     }
-  }, [drop, fail, follow]);
+  }, [drop, fail, follow, markRead]);
+
+  /** 새 창의 열기 요청 — 같은 계정·신원이고 아직 처리 안 한 번호만. 뜰 때(atMount)는 30초 안의 것만. 바쁘면 최신 하나 보류.
+   *  처리 번호는 공유 '처리됨' 키에 적고 요청 키는 지우지 않는다(sessionStorage 는 window.open 이 복사해 줘 다시 연 창이 잊는다). */
+  const takeOpenRequest = useCallback((req: OpenRequest | null, identity: string | undefined, atMount: boolean): boolean => {
+    if (!options.popout || !req || !identity || req.account !== getAccountNamespace() || req.identity !== identity) return false;
+    if (loadString(STORAGE_KEYS.agentPanelOpenDone) === req.nonce) return false;
+    if (atMount && Date.now() - req.at > OPEN_REQUEST_TTL) return false;
+    saveString(STORAGE_KEYS.agentPanelOpenDone, req.nonce);
+    if (busy.current) pendingOpen.current = req;
+    else void openConversation(req.id);
+    return true;
+  }, [openConversation, options.popout]);
 
   // 칸을 열 때: 새 표·엔진 목록 → 지난 모델 고르기 → 마지막 대화가 있으면 이어 붙기. 닫을 때: 긴 기다림만 끊는다(취소하지 않는다).
   // ── Claude 연결(첫 연결 설계 5·9절) — 허브 상태를 보고, 로그인 창이 열린 동안 2초마다 다시 본다(10분까지) ──
@@ -382,6 +478,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
       if (connectSupported && claudeEngine && !claudeEngine.available) {
         void recheck().then((status) => { if (status?.state === "login_window") startWaiting(); });
       }
+      // 새 창은 '새 창에서 열기' 요청이 마지막 대화 복원보다 먼저(서랍 메뉴 2-1)
+      if (takeOpenRequest(readOpenRequest(), s.identity_key, true)) return;
       const last = remembered();
       if (last) void openConversation(last);
     }).catch((e) => { if (!stale()) fail(e); });
@@ -401,6 +499,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
     drop();
     remember(null);
     setError(null);
+    setNotice(null);
   }, [drop]);
 
   /** 모델·생각 깊이를 고른다. 엔진이 바뀌면 새 대화로 시작한다(보내는 중·진행 중엔 엔진을 바꾸지 않는다). */
@@ -444,6 +543,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
       if (pendingSend?.key === key) pendingSend = null; // 받아들인 답을 화면에 붙였다
       setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body }]);
       setConversationId(r.conversation_id);
+      currentId.current = r.conversation_id; // 다시 그리기 전에 끝남이 와도 읽음이 이 대화로 가게
       remember(r.conversation_id);
       setTurn({ id: r.turn_id, status: r.status });
       void follow(r.turn_id, 0);
@@ -451,12 +551,17 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
     } catch (e) {
       if (stale()) return false;
       busy.current = false;
+      if (isHttpStatus(e, 404) && conversationId) { // 다른 창에서 지워진 대화 — 비우고 새 대화로 보내게 안내
+        forget(conversationId);
+        setNotice("이 대화는 지워졌어요 — 새 대화로 다시 보내 주세요");
+        return false;
+      }
       fail(e);
       return false;
     } finally {
       if (!stale()) setSending(false);
     }
-  }, [choice, conversationId, fail, follow]);
+  }, [choice, conversationId, fail, follow, forget]);
 
   const cancel = useCallback(async () => {
     if (!turn || TERMINAL_TURN.has(turn.status)) return;
@@ -519,13 +624,105 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
 
   const loadConversations = useCallback(async () => {
     const stale = ticket();
+    const sentAt = changeSeq.current;
     try {
       const r = await agentChatApi.conversations();
-      if (!stale()) setConversations(r.conversations);
+      if (!stale()) {
+        // 지운 뒤에 보낸 조회에 그 대화가 있으면 허브에 있다는 뜻 — 지움 표시를 푼다(다시 나온 줄의 응답을 putSummary 가 버리지 않게)
+        for (const c of r.conversations) {
+          const change = changedAt.current.get(c.id);
+          if (change?.deleted && change.seq <= sentAt) changedAt.current.set(c.id, { seq: change.seq, deleted: false });
+        }
+        // 보낸 뒤 이 창에서 바꾼 줄 — 지운 줄은 빼고, 고친 줄은 지금 화면 값(목록에 없었으면 받은 요약)을 지킨다(늦게 온 옛 조회가 덮지 않게)
+        setConversations((prev) => {
+          const kept = new Map((prev ?? []).map((c) => [c.id, c]));
+          return r.conversations.flatMap((c) => {
+            const change = changedAt.current.get(c.id);
+            if (!change || change.seq <= sentAt) return [c];
+            if (change.deleted) return [];
+            return [kept.get(c.id) ?? { ...c, ...(change.summary ?? {}) }];
+          });
+        });
+        setTruncated(!!r.truncated);
+      }
     } catch (e) {
       if (!stale()) fail(e);
     }
   }, [fail]);
+
+  // ── 서랍 메뉴 동작(설계 2-1) — 허브가 돌려준 요약으로 목록 한 줄만 바꾼다 ──
+  const patchConversation = useCallback(async (id: string, body: AgentConversationPatch): Promise<boolean> => {
+    try {
+      const r = await agentChatApi.patchConversation(id, body);
+      putSummary(r.conversation);
+      if (id === currentId.current && body.title !== undefined) setTitle(r.conversation.title);
+      return true;
+    } catch (e) {
+      if (isHttpStatus(e, 404)) forget(id);
+      else fail(e);
+      return false;
+    }
+  }, [fail, forget]);
+
+  /** 지우기 — 허브의 세션 파일 정리 결과를 돌려준다(실패면 null). 다른 창에도 알린다. */
+  const removeConversation = useCallback(async (id: string): Promise<AgentSessionFileResult | null> => {
+    try {
+      const r = await agentChatApi.deleteConversation(id);
+      forget(id);
+      saveJSON(STORAGE_KEYS.agentPanelDeleted, { account: getAccountNamespace(), id, at: Date.now() });
+      return r.session_file;
+    } catch (e) {
+      if (isHttpStatus(e, 404)) {
+        forget(id);
+        return "none";
+      }
+      fail(e);
+      return null;
+    }
+  }, [fail, forget]);
+
+  /** 옆 칸의 '새 창에서 열기' — 새 창이 받을 요청을 적는다(창을 여는 것은 부르는 쪽의 onPopOut). */
+  const requestOpenInWindow = useCallback((id: string) => {
+    if (!session?.identity_key) return false;
+    saveJSON(STORAGE_KEYS.agentPanelOpenRequest,
+      { account: getAccountNamespace(), identity: session.identity_key, id, nonce: crypto.randomUUID(), at: Date.now() });
+    return true;
+  }, [session]);
+
+  // 다른 창 알림 — 지운 대화는 비우고, 새 창은 열기 요청을 받는다
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEYS.agentPanelDeleted) {
+        const gone = loadJSON<{ account?: string; id?: string }>(STORAGE_KEYS.agentPanelDeleted);
+        if (!gone || gone.account !== getAccountNamespace() || typeof gone.id !== "string") return;
+        const watching = currentId.current === gone.id || loadingId.current === gone.id;
+        forget(gone.id);
+        if (watching) setNotice("이 대화는 다른 창에서 지워졌어요");
+      } else if (event.key === STORAGE_KEYS.agentPanelOpenRequest) {
+        takeOpenRequest(readOpenRequest(), session?.identity_key, false);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [forget, takeOpenRequest, session]);
+
+  // 숨은 창에서 받은 끝남 — 다시 보이면 그 번호로 읽음(지금 보는 대화일 때만)
+  useEffect(() => {
+    const onVisible = () => {
+      const pending = pendingRead.current;
+      if (pending && visible() && pending.id === currentId.current) markRead(pending.id, pending.rev);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [markRead]);
+
+  // 바쁠 때 온 새 창 열기 요청 — 풀리면 연다
+  useEffect(() => {
+    if (sending || (turn && !TERMINAL_TURN.has(turn.status)) || busy.current || !pendingOpen.current) return;
+    const req = pendingOpen.current;
+    pendingOpen.current = null;
+    void openConversation(req.id);
+  }, [sending, turn, openConversation]);
 
   const running = !!turn && !TERMINAL_TURN.has(turn.status);
   const claudeEngine = session?.engines.find((e) => e.id === "claude");
@@ -533,6 +730,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>) { //
   return {
     session, choice, choose, conversationId, title, messages, turn, running, sending, error,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan,
+    truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
     // Claude 연결 — 허브가 연결 경로를 알 때만 안내(옛 허브는 엔진 사유만)
     connect: {
       supported: connectSupported && !!claudeEngine,

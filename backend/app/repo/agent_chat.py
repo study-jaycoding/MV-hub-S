@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS agent_chat_plan_binding (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
+# 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-5) — 처음 열 때 없는 칸만 더한다
+_NEW_COLUMNS = {
+    "pinned": "INTEGER NOT NULL DEFAULT 0",
+    "archived": "INTEGER NOT NULL DEFAULT 0",
+    "unread": "INTEGER NOT NULL DEFAULT 0",
+    "unread_rev": "INTEGER NOT NULL DEFAULT 0",  # 읽지 않음이 바뀔 때마다 +1 — 늦은 자동 읽음이 뒤의 표시를 못 지우게
+    "project_override": "TEXT",  # NULL = 첫 차례 화면의 프로젝트, '' = 프로젝트 없음
+    "cli_home": "TEXT",  # 세션을 띄운 때의 Claude 자격 폴더·작업 폴더 — 삭제 때 그 세션 파일만 찾는 근거
+    "cli_cwd": "TEXT",
+}
+_PROJECT = ("CASE WHEN c.project_override IS NULL THEN (SELECT json_extract(t.context,'$.project') FROM agent_chat_turn t "
+            "WHERE t.conversation_id=c.id AND json_valid(t.context) AND json_type(t.context,'$.project')='text' "
+            "ORDER BY t.created_at, t.rowid LIMIT 1) WHEN c.project_override='' THEN NULL ELSE c.project_override END")
+_SUMMARY = ("SELECT c.id,c.title,c.engine,c.model,c.effort,c.updated_at,c.resumable,c.pinned,c.archived,c.unread,c.unread_rev,"
+            f" {_PROJECT} AS project FROM agent_chat_conversation c")
 _opened: set[str] = set()
 _opened_lock = threading.Lock()
 
@@ -76,7 +91,9 @@ def connect(path: Path):
 
 
 def open_db(path: Path) -> Path:
-    """처음 여는 파일이면 표를 만들고 앞 프로세스의 진행 중 차례를 끝난 것으로 정리한다(자동 재실행 없음)."""
+    """처음 여는 파일이면 표를 만들고(없는 칸은 더하고) 앞 프로세스의 진행 중 차례를 끝난 것으로 정리한다(자동 재실행 없음).
+    칸 더하기·정리는 한 IMMEDIATE 트랜잭션 — 성공한 뒤에만 _opened 에 넣는다(실패면 다음 열기에 다시).
+    같은 파일을 두 허브가 동시에 쓰는 것은 지원하지 않는다(처음 연 허브가 남은 차례를 끝낸다 — 번갈아 쓰기만)."""
     key = str(path).casefold()
     with _opened_lock:
         if key in _opened:
@@ -84,15 +101,97 @@ def open_db(path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         with connect(path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(_SCHEMA)
-            conn.execute("UPDATE agent_chat_turn SET status='interrupted', reason='restart', ended_at=datetime('now') "
-                         "WHERE status IN ('running','cancelling')")
+            conn.executescript(_SCHEMA)  # 열린 트랜잭션을 커밋해 버리므로 BEGIN 앞에서
+            _tx(conn)
+            try:
+                have = {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}
+                for name, decl in _NEW_COLUMNS.items():
+                    if name not in have:
+                        conn.execute(f"ALTER TABLE agent_chat_conversation ADD COLUMN {name} {decl}")
+                for (turn_id,) in conn.execute("SELECT id FROM agent_chat_turn WHERE status IN ('running','cancelling')").fetchall():
+                    _finish(conn, turn_id, "interrupted", "restart", None)
+                conn.execute("COMMIT")
+            except Exception:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("ROLLBACK")
+                raise
         _opened.add(key)
     return path
 
 
 def _tx(conn):
     conn.execute("BEGIN IMMEDIATE")
+
+
+def _append(conn, turn_id, kind, payload) -> int:
+    seq = conn.execute("SELECT COALESCE(MAX(seq),0)+1 FROM agent_chat_event WHERE turn_id=?", (turn_id,)).fetchone()[0]
+    conn.execute("INSERT INTO agent_chat_event(turn_id,seq,kind,payload) VALUES(?,?,?,?)",
+                 (turn_id, seq, kind, json.dumps(payload, ensure_ascii=False)))
+    return seq
+
+
+def _finish(conn, turn_id, status, reason, error) -> bool:
+    """트랜잭션 안에서 — 진행 중인 차례만 끝 상태로, (있으면) 오류 사건·끝남 사건·그 대화의 unread 를 같이 적는다."""
+    if not conn.execute("UPDATE agent_chat_turn SET status=?, reason=COALESCE(?,reason), ended_at=datetime('now') "
+                        "WHERE id=? AND status IN ('running','cancelling')", (status, reason, turn_id)).rowcount:
+        return False
+    conversation = conn.execute("SELECT conversation_id FROM agent_chat_turn WHERE id=?", (turn_id,)).fetchone()[0]
+    if error:
+        _append(conn, turn_id, "error", {"message": error})
+    conn.execute("UPDATE agent_chat_conversation SET unread=1, unread_rev=unread_rev+1 WHERE id=?", (conversation,))
+    rev = conn.execute("SELECT unread_rev FROM agent_chat_conversation WHERE id=?", (conversation,)).fetchone()
+    _append(conn, turn_id, "state", {"status": status, "unread_rev": rev[0] if rev else 0})
+    return True
+
+
+def mark_cancelling(path, turn_id) -> bool:
+    """취소 요청 — 진행 중(running)일 때만 cancelling 으로 바꾸고 그 사건을 같은 트랜잭션에(독립 리뷰 P1: 따로 쓰면 끝남 뒤에
+    cancelling 사건이 붙거나 지운 차례에 사건이 되살아난다)."""
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            done = bool(conn.execute("UPDATE agent_chat_turn SET status='cancelling' WHERE id=? AND status='running'", (turn_id,)).rowcount)
+            if done:
+                _append(conn, turn_id, "state", {"status": "cancelling"})
+            conn.execute("COMMIT")
+        except Exception:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+    return done
+
+
+def restore_snapshot(path, conversation_id, event_limit) -> dict | None:
+    """대화 복원 — 대화(읽지 않음 포함)·차례·사건을 한 읽기 시점에서(독립 리뷰 P2: 따로 읽으면 끝난 차례와 이전 읽지 않음 값이 같이 온다)."""
+    with connect(path) as conn:
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute("SELECT * FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()
+            if not row:
+                return None
+            turns = [dict(t) for t in conn.execute(
+                "SELECT id,status,text,reason,created_at,ended_at FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
+                (conversation_id,)).fetchall()]
+            for turn in turns:
+                turn["events"] = [{"seq": e["seq"], "kind": e["kind"], **json.loads(e["payload"])} for e in conn.execute(
+                    "SELECT seq,kind,payload FROM agent_chat_event WHERE turn_id=? ORDER BY seq LIMIT ?", (turn["id"], event_limit)).fetchall()]
+        finally:
+            conn.execute("COMMIT")
+    return {**dict(row), "resumable": bool(row["resumable"]), "turns": turns}
+
+
+def finish_turn(path, turn_id, status, *, reason=None, error=None) -> bool:
+    """차례 끝 한 번에(설계 2-5) — 상태·오류 사건·끝남 사건·unread 를 한 트랜잭션. 끝남과 삭제가 겹쳐도 사건이 되살아나지 않는다."""
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            done = _finish(conn, turn_id, status, reason, error)
+            conn.execute("COMMIT")
+        except Exception:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+    return done
 
 
 def create_conversation(path, *, engine, model, effort, client_id, mcp_entry, title) -> dict:
@@ -111,20 +210,87 @@ def get_conversation(path, conversation_id) -> dict | None:
     return {**dict(row), "mcp_entry": json.loads(row["mcp_entry"]), "resumable": bool(row["resumable"])}
 
 
-def list_conversations(path, limit=50) -> list[dict]:
-    # project = 프로젝트를 고른 화면에서 보낸 첫 차례의 지금 화면 project — 칸 서랍이 대화를 프로젝트별로 묶는다(없으면 null)
+def _summary(row) -> dict:
+    return {**dict(row), **{key: bool(row[key]) for key in ("resumable", "pinned", "archived", "unread")}}
+
+
+def list_conversations(path, limit=500) -> list[dict]:
+    """최근 순 limit 개. project = 옮긴 값(빈 글 = 없음) 아니면 프로젝트를 고른 화면에서 보낸 첫 차례의 project —
+    칸 서랍이 묶는다(없으면 null). 보관 대화도 싣는다(화면이 '보관함'으로 묶음)."""
     with connect(path) as conn:
-        rows = conn.execute(
-            "SELECT c.id,c.title,c.engine,c.model,c.effort,c.updated_at,c.resumable,"
-            " (SELECT json_extract(t.context,'$.project') FROM agent_chat_turn t WHERE t.conversation_id=c.id"
-            "  AND json_valid(t.context) AND json_type(t.context,'$.project')='text' ORDER BY t.created_at, t.rowid LIMIT 1) AS project"
-            " FROM agent_chat_conversation c ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?", (limit,)).fetchall()
-    return [{**dict(row), "resumable": bool(row["resumable"])} for row in rows]
+        rows = conn.execute(_SUMMARY + " ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?", (limit,)).fetchall()
+    return [_summary(row) for row in rows]
 
 
-def update_conversation(path, conversation_id, *, model=None, effort=None, cli_session_id=None, resumable=None) -> None:
+def conversation_summary(path, conversation_id) -> dict | None:
+    with connect(path) as conn:
+        row = conn.execute(_SUMMARY + " WHERE c.id=?", (conversation_id,)).fetchone()
+    return _summary(row) if row else None
+
+
+def patch_conversation(path, conversation_id, fields: dict, seen_rev: int | None = None) -> dict | None:
+    """서랍 메뉴 고치기 — updated_at(목록 순서·MCP 넘김 기준)은 바꾸지 않는다. fields 의 열쇠는 title·pinned·archived·
+    project_override·unread. unread=False 에 seen_rev 가 있으면 지금 rev 가 같고 아직 읽지 않음일 때만 끈다(자동 읽음)."""
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            if not conn.execute("SELECT 1 FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone():
+                conn.execute("ROLLBACK")
+                return None
+            plain = [(col, fields[col]) for col in ("title", "pinned", "archived", "project_override") if col in fields]
+            if plain:
+                conn.execute(f"UPDATE agent_chat_conversation SET {','.join(f'{col}=?' for col, _ in plain)} WHERE id=?",
+                             (*[int(v) if isinstance(v, bool) else v for _, v in plain], conversation_id))
+            if fields.get("unread") is True:
+                conn.execute("UPDATE agent_chat_conversation SET unread=1, unread_rev=unread_rev+1 WHERE id=?", (conversation_id,))
+            elif fields.get("unread") is False and seen_rev is None:
+                conn.execute("UPDATE agent_chat_conversation SET unread=0, unread_rev=unread_rev+1 WHERE id=?", (conversation_id,))
+            elif fields.get("unread") is False:
+                conn.execute("UPDATE agent_chat_conversation SET unread=0, unread_rev=unread_rev+1 "
+                             "WHERE id=? AND unread=1 AND unread_rev=?", (conversation_id, seen_rev))
+            conn.execute("COMMIT")
+        except Exception:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+    return conversation_summary(path, conversation_id)
+
+
+def delete_conversation(path, conversation_id) -> dict | None:
+    """한 IMMEDIATE 트랜잭션 — 있는지·도는 차례(Busy)를 보고 사건·계획 묶음·차례·대화를 지운다. 돌려주는 것 = 세션 파일 정리용
+    (engine·cli_session_id·cli_home·cli_cwd). 없으면 None."""
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            row = conn.execute("SELECT engine,cli_session_id,cli_home,cli_cwd FROM agent_chat_conversation WHERE id=?",
+                               (conversation_id,)).fetchone()
+            if not row:
+                conn.execute("ROLLBACK")
+                return None
+            if conn.execute("SELECT 1 FROM agent_chat_turn WHERE conversation_id=? AND status IN ('running','cancelling') LIMIT 1",
+                            (conversation_id,)).fetchone():
+                conn.execute("ROLLBACK")
+                raise Busy()
+            turns = "SELECT id FROM agent_chat_turn WHERE conversation_id=?"
+            conn.execute(f"DELETE FROM agent_chat_event WHERE turn_id IN ({turns})", (conversation_id,))
+            conn.execute(f"DELETE FROM agent_chat_plan_binding WHERE turn_id IN ({turns})", (conversation_id,))
+            conn.execute("DELETE FROM agent_chat_turn WHERE conversation_id=?", (conversation_id,))
+            conn.execute("DELETE FROM agent_chat_conversation WHERE id=?", (conversation_id,))
+            conn.execute("COMMIT")
+        except Busy:
+            raise
+        except Exception:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+    return dict(row)
+
+
+def update_conversation(path, conversation_id, *, model=None, effort=None, cli_session_id=None, resumable=None,
+                        cli_home=None, cli_cwd=None) -> None:
     sets, values = ["updated_at=datetime('now')"], []
-    for column, value in (("model", model), ("effort", effort), ("cli_session_id", cli_session_id)):
+    for column, value in (("model", model), ("effort", effort), ("cli_session_id", cli_session_id),
+                          ("cli_home", cli_home), ("cli_cwd", cli_cwd)):
         if value is not None:
             sets.append(f"{column}=?")
             values.append(value)
@@ -144,6 +310,9 @@ def claim_turn(path, *, conversation_id, idempotency_key, text, context) -> tupl
             if row:
                 conn.execute("COMMIT")
                 return dict(row), False
+            if not conn.execute("SELECT 1 FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone():
+                conn.execute("ROLLBACK")  # 사이에 지워진 대화에 차례를 붙이지 않는다(설계 2-5)
+                raise LookupError(conversation_id)
             tid = str(uuid.uuid4())
             try:
                 conn.execute("INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context) VALUES(?,?,?,?,?,?)",
@@ -287,10 +456,15 @@ def ro_conversations(conn, *, search, limit, before) -> list[dict]:
     if before:
         where.append("(c.updated_at < ? OR (c.updated_at = ? AND c.id < ?))")
         args += [before[0], before[0], before[1]]
+    first = ("(SELECT substr(json_extract(t.context,'$.project'),1,200) FROM agent_chat_turn t WHERE t.conversation_id=c.id"
+             " AND json_valid(t.context) AND json_type(t.context,'$.project')='text' ORDER BY t.created_at, t.rowid LIMIT 1)")
+    # 서랍에서 옮긴 프로젝트를 따른다 — open_db 를 안 거치므로 칸이 없는 옛 파일이면 첫 차례 것만(설계 2-5)
+    moved = "project_override" in {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}
+    project = (f"CASE WHEN c.project_override IS NULL THEN {first} WHEN c.project_override='' THEN NULL "
+               "ELSE substr(c.project_override,1,200) END" if moved else first)
     rows = conn.execute(
         "SELECT c.id,substr(c.title,1,80) AS title,c.engine,c.model,c.updated_at,"
-        " (SELECT substr(json_extract(t.context,'$.project'),1,200) FROM agent_chat_turn t WHERE t.conversation_id=c.id"
-        "  AND json_valid(t.context) AND json_type(t.context,'$.project')='text' ORDER BY t.created_at, t.rowid LIMIT 1) AS project,"
+        f" {project} AS project,"
         " (SELECT COUNT(*) FROM agent_chat_turn t WHERE t.conversation_id=c.id) AS turns"
         " FROM agent_chat_conversation c" + (" WHERE " + " AND ".join(where) if where else "") +
         " ORDER BY c.updated_at DESC, c.id DESC LIMIT ?", (*args, limit + 1)).fetchall()

@@ -826,3 +826,428 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     expect(host.querySelector(".agent-drawer")).toBeNull();
   });
 });
+
+// 서랍 행 메뉴·넓이(docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-1~2-6)
+describe("MV Agent 서랍 메뉴", () => {
+  type Conv = { id: string; title: string; engine?: string; project?: string | null; pinned?: boolean; archived?: boolean; unread?: boolean; unread_rev?: number };
+  let list: Conv[];
+  const full = (c: Conv) => ({ engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true, project: null,
+    pinned: false, archived: false, unread: false, unread_rev: 0, ...c });
+  const width0 = window.innerWidth;
+  beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1600 });
+    list = [{ id: "c1", title: "고양이", project: "p1" }, { id: "c2", title: "강아지", unread: true, unread_rev: 3 }, { id: "c3", title: "새", engine: "codex" }];
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations" && c.method === "GET") return json({ conversations: list.map(full) });
+      if (c.path === "/claude/version") return json({ current: null, latest: null, newer: false });
+      const m = c.path.match(/^\/conversations\/(c\d)$/);
+      if (m && c.method === "PATCH") {
+        const at = list.findIndex((x) => x.id === m[1]);
+        const body = { ...(c.body as Record<string, unknown>) };
+        if (typeof body.title === "string") body.title = body.title.trim();
+        if ("unread" in body) body.unread_rev = (list[at].unread_rev ?? 0) + 1;
+        delete body.seen_rev;
+        list[at] = { ...list[at], ...(body as Partial<Conv>) };
+        return json({ conversation: full(list[at]) });
+      }
+      if (m && c.method === "DELETE") { list = list.filter((x) => x.id !== m[1]); return json({ deleted: true, session_file: "not_found" }); }
+      if (m) return json({ conversation: full(list.find((x) => x.id === m[1])!), turns: [] });
+      return json({ detail: "Not Found" }, 404);
+    };
+  });
+  afterEach(() => Object.defineProperty(window, "innerWidth", { configurable: true, value: width0 }));
+  const render = async (props: Partial<Parameters<typeof AgentPanel>[0]> = {}) => {
+    act(() => root.render(<AgentPanel context={{ tab: "my", project: "p2" }} contextLabel="워크스페이스" onClose={() => {}}
+      projectName={(id) => ({ p1: "뻘뻘뻘", p2: "프롤로그" } as Record<string, string>)[id]} {...props} />));
+    await flush();
+  };
+  const openDrawer = async () => { act(() => button("대화 목록")!.click()); await flush(); };
+  const row = (title: string) => [...host.querySelectorAll<HTMLElement>(".agent-drawer-row")].find((r) => r.textContent?.includes(title))!;
+  const openMenu = (title: string) => act(() => row(title).querySelector<HTMLButtonElement>(".agent-drawer-more")!.click());
+  const items = () => [...host.querySelectorAll(".agent-row-menu > .agent-row-mi, .agent-row-menu .agent-row-sub-wrap > .agent-row-mi")].map((b) => b.textContent);
+  const mi = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".agent-row-mi")].find((b) => b.textContent?.includes(label))!;
+  const key = (init: KeyboardEventInit) => act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })); });
+  const patches = () => calls.filter((c) => c.method === "PATCH").map((c) => [c.path, c.body]);
+  const groupTitles = () => [...host.querySelectorAll(".agent-drawer-ghead")].map((g) => g.textContent);
+
+  it("⋯·우클릭으로 메뉴 — 항목·단축키(event.code, 수정키·반복·조합 무시)·Esc 는 한 겹씩", async () => {
+    await render({ onPopOut: () => {} });
+    await openDrawer();
+    openMenu("고양이");
+    expect(items()).toEqual(["새 창에서 열기", "고정P", "읽지 않음으로 표시U", "이름 바꾸기R", "프로젝트로 옮기기", "보관A", "삭제D"]);
+    key({ code: "KeyP", key: "p", ctrlKey: true });
+    key({ code: "KeyP", key: "p", repeat: true });
+    key({ code: "KeyP", key: "ㅔ", isComposing: true });
+    expect(patches()).toEqual([]);
+    key({ code: "KeyP", key: "ㅔ" }); // 한글 자판에서도 자리로
+    await flush();
+    expect(patches()).toEqual([["/conversations/c1", { pinned: true }]]);
+    expect(groupTitles()[0]).toBe("고정됨");
+    act(() => { row("강아지").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 80 })); });
+    expect(host.querySelector(".agent-row-menu")).not.toBeNull();
+    act(() => mi("프로젝트로 옮기기").click());
+    expect(host.querySelector(".agent-row-sub")).not.toBeNull();
+    key({ key: "Escape" });
+    expect([host.querySelector(".agent-row-sub"), !!host.querySelector(".agent-row-menu")]).toEqual([null, true]); // 하위 메뉴만
+    key({ key: "Escape" });
+    await flush();
+    expect([host.querySelector(".agent-row-menu"), !!host.querySelector(".agent-drawer")]).toEqual([null, true]); // 행 메뉴만
+    key({ key: "Escape" });
+    expect(host.querySelector(".agent-drawer")).toBeNull();
+  });
+
+  it("읽지 않음 점 · 열면 그 번호로 조건부 읽음 · 수동 표시 · 보관함 · 이름 바꾸기 Enter/Esc · 프로젝트 후보는 이름 아는 id 만", async () => {
+    list.push({ id: "c4", title: "모름", project: "p-unknown" });
+    await render();
+    await openDrawer();
+    expect(row("강아지").querySelector(".agent-drawer-unread")).not.toBeNull();
+    expect(row("고양이").querySelector(".agent-drawer-unread")).toBeNull();
+    openMenu("고양이");
+    act(() => mi("프로젝트로 옮기기").click());
+    expect([...host.querySelectorAll(".agent-row-sub .agent-row-mi")].map((b) => b.textContent)).toEqual(["프롤로그 · 지금 화면", "뻘뻘뻘✓", "프로젝트 없음"]);
+    act(() => mi("프롤로그").click());
+    await flush();
+    openMenu("고양이");
+    act(() => mi("프로젝트로 옮기기").click());
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-row-sub .agent-row-mi")].find((b) => b.textContent === "프로젝트 없음")!.click());
+    await flush();
+    openMenu("새");
+    act(() => mi("보관").click());
+    await flush();
+    expect(groupTitles().at(-1)).toBe("보관함 1");
+    expect(row("새")).toBeUndefined(); // 보관함은 처음엔 접힘
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-drawer-ghead")].at(-1)!.click());
+    expect(row("새")).toBeDefined();
+    openMenu("고양이");
+    act(() => mi("이름 바꾸기").click());
+    const field = host.querySelector<HTMLInputElement>(".agent-drawer-rename")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "  검은 고양이  ");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => { field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await flush();
+    openMenu("검은 고양이");
+    act(() => mi("이름 바꾸기").click());
+    key({ key: "Escape" });
+    expect(host.querySelector(".agent-drawer-rename")).toBeNull();
+    expect(patches()).toEqual([
+      ["/conversations/c1", { project: "p2" }], ["/conversations/c1", { project: null }], ["/conversations/c3", { archived: true }],
+      ["/conversations/c1", { title: "검은 고양이" }],
+    ]);
+    act(() => row("강아지").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
+    await flush();
+    expect(patches().at(-1)).toEqual(["/conversations/c2", { unread: false, seen_rev: 3 }]); // 열 때 본 번호로
+    await openDrawer();
+    act(() => row("검은 고양이").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click()); // 이미 읽음 — 안 보냄
+    await flush();
+    expect(patches()).toHaveLength(5);
+  });
+
+  it("삭제 — 확인 창 · 결과 안내 · 지금 대화면 비우고 마지막 대화 기억도 같을 때만 · 다른 창에 알림", async () => {
+    await render();
+    await openDrawer();
+    act(() => row("고양이").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
+    await flush();
+    expect(host.querySelector(".agent-title")!.textContent).toBe("고양이");
+    await openDrawer();
+    openMenu("고양이");
+    act(() => mi("삭제").click());
+    expect(host.querySelector(".agent-drawer-confirm")!.textContent).toContain("되돌릴 수 없어요");
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-confirm-btn")].find((b) => b.textContent === "삭제")!.click());
+    await flush();
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/conversations/c1"]);
+    expect(host.querySelector(".agent-drawer-note")!.textContent).toBe("지웠어요 · Claude 세션 파일은 확인하지 못해 남겨 뒀어요");
+    expect([row("고양이"), host.querySelector(".agent-title")!.textContent]).toEqual([undefined, "새 대화"]);
+    expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.conversation") ?? "null")).toBeNull(); // 지운 id 와 같아서 비움
+    expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.deleted")!)).toMatchObject({ account: "acct:jay@example.com", id: "c1" });
+    openMenu("새");
+    act(() => mi("삭제").click());
+    expect(host.querySelector(".agent-drawer-confirm")!.textContent).toContain("Codex 기록이 Codex 폴더에 남아요");
+  });
+
+  it("다른 창에서 지운 대화 — 보던 대화면 비우고 안내 · 끝남 사건의 번호로 조건부 읽음", async () => {
+    route = ((base) => (c: Call) => {
+      if (c.path === "/turns") return started("t9", "c2");
+      if (c.path === "/turns/t9/events?after=0") return json({ events: [{ seq: 1, kind: "state", status: "done", unread_rev: 7 }], status: "done", last_seq: 1 });
+      return base(c);
+    })(route);
+    await render();
+    type("안녕");
+    enter();
+    await flush();
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ unread: false, seen_rev: 7 }]);
+    localStorage.setItem("mvhub.agentPanel.deleted", JSON.stringify({ account: "acct:jay@example.com", id: "c2", at: Date.now() }));
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.deleted" })); });
+    await flush();
+    expect([host.querySelector(".agent-title")!.textContent, host.querySelector(".agent-notice")!.textContent]).toEqual(["새 대화", "이 대화는 다른 창에서 지워졌어요"]);
+  });
+
+  it("새 창에서 열기 — 옆 칸은 요청을 적고 띄움 · 새 창만 받고(복원보다 먼저) · 처리 번호는 공유 키 · 30초 지난 요청·다른 신원은 무시", async () => {
+    let popped = 0;
+    await render({ onPopOut: () => { popped += 1; } });
+    await openDrawer();
+    openMenu("강아지");
+    act(() => mi("새 창에서 열기").click());
+    const req = JSON.parse(localStorage.getItem("mvhub.agentPanel.openRequest")!);
+    expect([popped, req.id, req.identity, req.account]).toEqual([1, "c2", "id-1", "acct:jay@example.com"]);
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.openRequest" })); }); // 옆 칸은 무시
+    await flush();
+    expect(calls.some((c) => c.path === "/conversations/c2" && c.method === "GET")).toBe(false);
+    localStorage.setItem("mvhub.agentPanel.conversation", JSON.stringify({ account: "acct:jay@example.com", id: "c1" }));
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render({ popout: true });
+    expect([host.querySelector(".agent-title")!.textContent, localStorage.getItem("mvhub.agentPanel.openDone")]).toEqual(["강아지", req.nonce]);
+    act(() => root.unmount()); // 닫았다 다시 연 새 창 — 처리한 요청은 다시 안 연다(마지막 대화 복원)
+    root = createRoot(host);
+    await render({ popout: true });
+    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 열었던 대화가 '마지막 대화'가 됐다
+    localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ ...req, id: "c1", nonce: "n-old", at: Date.now() - 31_000 }));
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render({ popout: true });
+    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 30초 지난 요청은 뜰 때 무시
+    localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ ...req, id: "c1", nonce: "n-other", identity: "id-2", at: Date.now() }));
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.openRequest" })); });
+    await flush();
+    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 다른 신원
+    localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ ...req, id: "c1", nonce: "n-new", at: Date.now() }));
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.openRequest" })); }); // 열린 새 창은 알림으로
+    await flush();
+    expect(host.querySelector(".agent-title")!.textContent).toBe("고양이");
+    expect(localStorage.getItem("mvhub.agentPanel.openRequest")).toContain("n-new"); // 받는 창은 요청 키를 안 지운다
+    await openDrawer();
+    openMenu("고양이");
+    expect(mi("새 창에서 열기")).toBeUndefined(); // 새 창 안에서는 없음
+  });
+
+  it("불러오는 중에 다른 창에서 지우면 늦은 복원 응답을 버린다 · 숨은 창에서 받은 끝남은 다시 보일 때 읽음 · 늦은 옛 읽음 응답은 새 표시를 못 덮는다", async () => {
+    const slow = deferred<Response>();
+    const base = route;
+    route = (c) => (c.path === "/conversations/c2" && c.method === "GET" ? slow.promise : base(c));
+    await render();
+    await openDrawer();
+    act(() => row("강아지").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
+    await flush();
+    localStorage.setItem("mvhub.agentPanel.deleted", JSON.stringify({ account: "acct:jay@example.com", id: "c2", at: Date.now() }));
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.deleted" })); });
+    slow.resolve(json({ conversation: full(list[1]), turns: [] }));
+    await flush();
+    expect([host.querySelector(".agent-title")!.textContent, host.querySelector(".agent-notice")!.textContent]).toEqual(["새 대화", "이 대화는 다른 창에서 지워졌어요"]);
+
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      route = (c) => {
+        if (c.path === "/turns") return started("t7", "c1");
+        if (c.path === "/turns/t7/events?after=0") return json({ events: [{ seq: 1, kind: "state", status: "done", unread_rev: 5 }], status: "done", last_seq: 1 });
+        return base(c);
+      };
+      type("숨은 창");
+      enter();
+      await flush();
+      expect(patches()).toEqual([]); // 숨어 있으면 들고 있는다
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      await flush();
+      expect(patches()).toEqual([["/conversations/c1", { unread: false, seen_rev: 5 }]]);
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+      if (hidden) Object.defineProperty(Document.prototype, "visibilityState", hidden);
+    }
+
+    // 늦은 자동 읽음(옛 번호) 응답이 그 뒤 수동 '읽지 않음'(새 번호)을 덮지 않는다
+    const late = deferred<Response>();
+    route = (c) => (c.method === "PATCH" && c.body && "seen_rev" in c.body ? late.promise : base(c));
+    list[1] = { ...list[1], unread: true, unread_rev: 3 };
+    await openDrawer();
+    act(() => row("강아지").querySelector<HTMLButtonElement>(".agent-drawer-item")!.click()); // 열기 → 자동 읽음(늦게 옴)
+    await flush();
+    await openDrawer();
+    openMenu("강아지");
+    act(() => mi("읽음으로 표시").click()); // 화면이 아직 '읽지 않음'으로 알고 있다 → 수동 읽음(번호 4)
+    await flush();
+    openMenu("강아지");
+    act(() => mi("읽지 않음으로 표시").click()); // 수동 읽지 않음(번호 5)
+    await flush();
+    late.resolve(json({ conversation: full({ ...list[1], unread: false, unread_rev: 4 }) })); // 옛 응답
+    await flush();
+    expect(row("강아지").querySelector(".agent-drawer-unread")).not.toBeNull();
+  });
+
+  it("새 창 — 바쁠 때 온 열기 요청은 최신 하나를 들고 있다가 차례가 끝나면 연다", async () => {
+    const stay = deferred<Response>();
+    const base = route;
+    route = (c) => (c.path === "/turns" ? started("t3", "c3") : c.path === "/turns/t3/events?after=0" ? stay.promise : base(c));
+    await render({ popout: true });
+    type("일해");
+    enter();
+    await flush();
+    for (const [id, nonce] of [["c1", "n1"], ["c2", "n2"]]) {
+      localStorage.setItem("mvhub.agentPanel.openRequest", JSON.stringify({ account: "acct:jay@example.com", identity: "id-1", id, nonce, at: Date.now() }));
+      act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "mvhub.agentPanel.openRequest" })); });
+    }
+    await flush();
+    expect(calls.some((c) => c.method === "GET" && /^\/conversations\/c[12]$/.test(c.path))).toBe(false); // 바쁠 때는 안 바꾼다
+    stay.resolve(json({ events: [{ seq: 1, kind: "state", status: "done" }], status: "done", last_seq: 1 }));
+    await flush();
+    expect(host.querySelector(".agent-title")!.textContent).toBe("강아지"); // 최신(c2)만
+    expect(calls.some((c) => c.method === "GET" && c.path === "/conversations/c1")).toBe(false);
+  });
+
+  it("서랍 넓이 — 끝선을 끌어 바꿔 남기고, 칸 폭이 바뀌면 상한을 다시 맞춘다 · 좁은 칸은 하위 메뉴를 아래로", async () => {
+    const proto = Element.prototype as unknown as Record<string, unknown>;
+    proto.setPointerCapture ??= () => {};
+    proto.releasePointerCapture ??= () => {};
+    proto.hasPointerCapture ??= () => false;
+    class FakePointer extends MouseEvent {
+      pointerId: number; isPrimary: boolean;
+      constructor(type: string, init: MouseEventInit & { pointerId?: number }) { super(type, init); this.pointerId = init.pointerId ?? 1; this.isPrimary = true; }
+    }
+    let observed: (() => void) | null = null;
+    vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { observed = cb; } observe() {} disconnect() {} });
+    await render();
+    await openDrawer();
+    const nav = () => host.querySelector<HTMLElement>(".agent-drawer")!;
+    const handle = host.querySelector<HTMLElement>(".agent-drawer-resize")!;
+    act(() => { handle.dispatchEvent(new FakePointer("pointerdown", { bubbles: true, button: 0, clientX: 100, pointerId: 7 })); });
+    act(() => { handle.dispatchEvent(new FakePointer("pointermove", { bubbles: true, clientX: 160, pointerId: 7 })); });
+    act(() => { handle.dispatchEvent(new FakePointer("pointerup", { bubbles: true, clientX: 160, pointerId: 7 })); });
+    expect([nav().style.width, localStorage.getItem("mvhub.agentPanel.drawerWidth")]).toEqual(["370px", "370"]);
+    const panelEl = host.querySelector<HTMLElement>(".agent-panel")!;
+    Object.defineProperty(panelEl, "clientWidth", { configurable: true, value: 300 });
+    act(() => observed!());
+    expect(nav().style.width).toBe("260px"); // 칸 폭 − 40
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 300 });
+    openMenu("고양이");
+    act(() => mi("프로젝트로 옮기기").click());
+    expect(host.querySelector(".agent-row-sub")!.classList.contains("below")).toBe(true);
+  });
+
+  it("늦게 온 목록 조회는 보낸 뒤 바꾼 줄(표시·지움)을 덮지 않는다 · 좁은 칸·후보 많음 — 아래로 펼친 메뉴는 높이 상한·스크롤", async () => {
+    const base = route;
+    let gets = 0;
+    const slowList = deferred<Response>();
+    route = (c) => {
+      if (c.path === "/conversations" && c.method === "GET") {
+        gets += 1;
+        if (gets === 2) { const old = list.map(full); return slowList.promise.then(() => json({ conversations: old })); } // 보낸 때의 옛 목록
+      }
+      return base(c);
+    };
+    await render();
+    await openDrawer();
+    act(() => button("대화 목록")!.click());
+    await openDrawer(); // 두 번째 조회 — 늦게 온다
+    openMenu("고양이");
+    act(() => mi("읽지 않음으로 표시").click());
+    await flush();
+    openMenu("새");
+    act(() => mi("삭제").click());
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-confirm-btn")].find((b) => b.textContent === "삭제")!.click());
+    await flush();
+    slowList.resolve(json({}));
+    await flush();
+    expect(row("고양이").querySelector(".agent-drawer-unread")).not.toBeNull(); // 수동 표시가 옛 조회에 덮이지 않음
+    expect(row("새")).toBeUndefined(); // 지운 줄이 옛 조회로 되살아나지 않음
+
+    // 고정 PATCH 가 늦는 사이 그 대화를 지움 → 늦은 PATCH 응답 → 지우기 전에 보낸 목록 응답: 지운 줄이 되살아나지 않는다(재확인 3)
+    const slowPatch = deferred<Response>();
+    const slowList2 = deferred<Response>();
+    route = (c) => {
+      if (c.path === "/conversations/c2" && c.method === "PATCH") return slowPatch.promise;
+      if (c.path === "/conversations" && c.method === "GET") { const old = list.map(full); return slowList2.promise.then(() => json({ conversations: old })); }
+      return base(c);
+    };
+    act(() => button("대화 목록")!.click());
+    await openDrawer(); // 조회를 보냄 — 늦게 온다(옛 목록에 강아지가 있다)
+    openMenu("강아지");
+    act(() => mi("고정").click());
+    await flush();
+    openMenu("강아지");
+    act(() => mi("삭제").click());
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-confirm-btn")].find((b) => b.textContent === "삭제")!.click());
+    await flush();
+    expect(row("강아지")).toBeUndefined();
+    slowPatch.resolve(json({ conversation: full({ id: "c2", title: "강아지", pinned: true, unread: true, unread_rev: 3 }) }));
+    await flush();
+    slowList2.resolve(json({}));
+    await flush();
+    expect(row("강아지")).toBeUndefined();
+    route = base;
+    act(() => button("대화 목록")!.click());
+
+    // 목록이 아직 없을 때(첫 조회 중) 받은 요약 — 늦게 온 조회에서 그 대화가 빠지지 않고 요약이 합쳐진다(재확인 2)
+    act(() => root.unmount());
+    root = createRoot(host);
+    list = [{ id: "c1", title: "고양이", unread: true, unread_rev: 4 }];
+    const firstList = deferred<Response>();
+    route = (c) => {
+      if (c.path === "/conversations" && c.method === "GET") { const old = list.map(full); return firstList.promise.then(() => json({ conversations: old })); }
+      if (c.path === "/turns") return started("t8", "c1");
+      if (c.path === "/turns/t8/events?after=0") return json({ events: [{ seq: 1, kind: "state", status: "done", unread_rev: 4 }], status: "done", last_seq: 1 });
+      return base(c);
+    };
+    await render();
+    await openDrawer(); // 첫 조회 — 아직 목록 없음
+    type("마저");
+    enter();
+    await flush(); // 끝남 → 자동 읽음 응답(목록 밖에서 도착)
+    firstList.resolve(json({}));
+    await flush();
+    expect(row("고양이")).toBeDefined();
+    expect(row("고양이").querySelector(".agent-drawer-unread")).toBeNull(); // 받은 요약(읽음)이 합쳐짐
+
+    act(() => button("대화 목록")!.click());
+    route = base;
+    list = Array.from({ length: 14 }, (_, i) => ({ id: `c${i + 1}`, title: `대화${i + 1}`, project: `p${i + 1}` }));
+    act(() => root.render(<AgentPanel context={{ tab: "my" }} contextLabel="워크스페이스" onClose={() => {}}
+      projectName={(id) => `프로젝트 ${id}`} />));
+    await flush();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 300 });
+    await openDrawer();
+    openMenu("대화1");
+    act(() => mi("프로젝트로 옮기기").click());
+    expect(host.querySelectorAll(".agent-row-sub.below .agent-row-mi")).toHaveLength(15); // 후보 14 + 없음
+    expect(host.querySelector(".agent-row-menu")!.classList.contains("stacked")).toBe(true);
+    const css = readFileSync(new NodeURL("../src/styles/agent-chat.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.agent-row-sub\.below \{[^}]*max-height: 200px;[^}]*overflow-y: auto/);
+    expect(css).toMatch(/\.agent-row-menu\.stacked \{ max-height: calc\(100% - 16px\); overflow-y: auto; \}/);
+  });
+
+  it("도는 대화는 바꾸는 항목 잠금 · 목록이 잘렸으면 '최근 500개만' · 서랍 넓이 끌기·더블클릭·저장", async () => {
+    const base = route;
+    route = (c) => (c.path === "/conversations" && c.method === "GET" ? json({ conversations: list.map(full), truncated: true }) : base(c));
+    await render();
+    await openDrawer();
+    expect(host.querySelector(".agent-drawer-list")!.textContent).toContain("최근 500개만 보여요");
+    const nav = () => host.querySelector<HTMLElement>(".agent-drawer")!;
+    const handle = host.querySelector<HTMLElement>(".agent-drawer-resize")!;
+    expect(nav().style.width).toBe("310px");
+    act(() => { handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect([nav().style.width, localStorage.getItem("mvhub.agentPanel.drawerWidth")]).toEqual(["318px", "318"]);
+    act(() => { handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+    expect(nav().style.width).toBe("310px");
+    localStorage.setItem("mvhub.agentPanel.drawerWidth", "5000");
+    act(() => button("대화 목록")!.click());
+    await openDrawer();
+    expect(nav().style.width).toBe("1560px"); // 칸 폭(jsdom 은 창 폭) − 40 이 최대
+    act(() => button("대화 목록")!.click());
+    // 도는 대화 — 그 대화의 바꾸는 항목은 잠그고, 다른 대화는 된다
+    const stay = deferred<Response>();
+    const before = route;
+    route = (c) => (c.path === "/turns" ? started("t5", "c1") : c.path === "/turns/t5/events?after=0" ? stay.promise : before(c));
+    type("계속 일해");
+    enter();
+    await flush();
+    await openDrawer();
+    openMenu("고양이");
+    expect(["고정", "이름 바꾸기", "보관", "삭제"].map((label) => mi(label).disabled)).toEqual([true, true, true, true]);
+    act(() => mi("고정").click());
+    openMenu("강아지");
+    expect(mi("고정").disabled).toBe(false);
+    expect(patches()).toEqual([]);
+  });
+});

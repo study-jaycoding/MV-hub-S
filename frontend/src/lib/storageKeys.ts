@@ -29,6 +29,12 @@ export const STORAGE_KEYS = {
   agentPanelFloat: "mvhub.agentPanel.float", // 별도 창(?embed=agent) 모드 "1"/"0" — 새 창의 [옆 칸으로 붙이기]가 "0" 을 적으면 메인 창이 storage 알림으로 옆 칸을 연다
   agentPanelWidth: "mvhub.agentPanel.width", // 옆에 붙은 칸의 폭(px)
   agentPanelScreen: "mvhub.agentPanel.screen", // 메인 창의 '지금 화면' {context, label, projects} — 새 창이 따라 읽는다
+  // 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md) — 서랍 폭(px) · 새 창에서 열기 요청{account,identity,id,nonce,at}과
+  // 처리한 요청 번호(새 창만 받고, 요청 키는 지우지 않는다) · 지운 대화 알림{account,id,at}(다른 창이 그 대화를 비운다)
+  agentDrawerWidth: "mvhub.agentPanel.drawerWidth",
+  agentPanelOpenRequest: "mvhub.agentPanel.openRequest",
+  agentPanelOpenDone: "mvhub.agentPanel.openDone",
+  agentPanelDeleted: "mvhub.agentPanel.deleted",
   // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
   canvasHandoff: "mvhub.canvasHandoff",
   // GPU 보기 모드 개발 표식(features/canvas/gpu) — "1" 이면 켬, 그 밖은 끔(기본). 이 브라우저만.

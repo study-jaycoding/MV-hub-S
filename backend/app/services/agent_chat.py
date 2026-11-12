@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import secrets
 import threading
 import time
@@ -123,6 +124,9 @@ class _Runtime:
     watch_failed: bool = False
     violation: dict | None = None
     claude_lock: object | None = None  # agent_chat_claude.ClaudeLock — 이 차례 스레드가 잡고 놓는다
+    env: dict | None = None  # Job 에 넘기는 환경 — 띄울 때 한 번 잡는다(설계 2-5 세션 자격 폴더)
+    cli_home: str | None = None  # 그 환경의 Claude 자격 폴더·작업 폴더 — 세션 id 와 함께 대화에 적는다
+    cli_cwd: str | None = None
     session_seen: bool = False
     events: int = 0
     checked_at: float = field(default=0.0)
@@ -218,8 +222,11 @@ class AgentChat:
                                         mcp_entry=conversation["mcp_entry"],
                                         mcp_file=config.AGENT_CHAT_DIR / "mcp" / f"{conversation['id']}.json", work=work,
                                         fast=fast)
+        env = process.child_env()
         runtime = _Runtime(identity, path, turn["id"], conversation["id"], conversation["client_id"], engine, prefix, command,
-                           build_prompt(text, context).encode("utf-8"), bool(resume), still_current)
+                           build_prompt(text, context).encode("utf-8"), bool(resume), still_current, env=env,
+                           cli_home=claude.claude_home(env, work) if engine == "claude" else None,
+                           cli_cwd=os.path.normpath(str(work)) if engine == "claude" else None)
         with self._lock:
             self._runtimes[turn["id"]] = runtime
             self._by_client[conversation["client_id"]] = turn["id"]
@@ -309,7 +316,8 @@ class AgentChat:
                 return
             if event.get("cli_session_id"):
                 runtime.session_seen = True
-                store.update_conversation(runtime.path, runtime.conversation_id, cli_session_id=event["cli_session_id"])
+                store.update_conversation(runtime.path, runtime.conversation_id, cli_session_id=event["cli_session_id"],
+                                          cli_home=runtime.cli_home, cli_cwd=runtime.cli_cwd)
         elif kind == "result":
             if not event.get("ok") and not runtime.stopped():
                 self._emit(runtime, "error", {"message": event.get("message") or "실행하지 못했습니다."})
@@ -335,7 +343,7 @@ class AgentChat:
             job = process.JobProcess()
             with self._lock:  # 띄우기 전에 쥔다 — 띄우다 실패해도 finally 의 회수가 이 Job 을 0개까지 확인한다(리뷰 2차)
                 runtime.job = job
-            job.start(runtime.command, config.AGENT_CHAT_DIR / "work", process.child_env())
+            job.start(runtime.command, config.AGENT_CHAT_DIR / "work", runtime.env if runtime.env is not None else process.child_env())
             if runtime.stopped():  # 띄우는 사이에 취소·시간 초과가 왔다
                 job.terminate()
             else:
@@ -414,8 +422,7 @@ class AgentChat:
                     runtime.claude_lock.release()
                 if runtime.cancelled and status not in ("interrupted",):
                     status = "cancelled"
-                if store.set_status(runtime.path, runtime.turn_id, status, reason=reason):
-                    store.append_event(runtime.path, runtime.turn_id, "state", {"status": status})
+                store.finish_turn(runtime.path, runtime.turn_id, status, reason=reason)  # 상태·끝남 사건·unread 한 번에
                 with self._lock:
                     self._runtimes.pop(runtime.turn_id, None)
                     if self._by_client.get(runtime.client_id) == runtime.turn_id:
@@ -441,15 +448,14 @@ class AgentChat:
             runtime = self._runtimes.get(turn_id)
         if runtime:
             with runtime.emit_lock:  # 칸 실행 선점과 한 구간 — 취소 표시가 먼저면 선점하지 않는다(설계 A2-2c)
-                stopping = runtime.identity == identity and store.set_status(path, turn_id, "cancelling", only_from=("running",))
+                # 상태와 그 사건을 한 트랜잭션 — 끝남(finish_turn)·삭제와 엇갈려도 끝남 뒤에 cancelling 사건이 붙지 않는다
+                stopping = runtime.identity == identity and store.mark_cancelling(path, turn_id)
                 if stopping:
                     runtime.cancelled = True
-                    store.append_event(path, turn_id, "state", {"status": "cancelling"})
             if stopping:
                 self._terminate(runtime)
                 self._notify(turn_id)
-        elif store.set_status(path, turn_id, "cancelled", reason="no_runtime"):
-            store.append_event(path, turn_id, "state", {"status": "cancelled"})  # 이 프로세스에 실행이 없는 남은 줄
+        elif store.finish_turn(path, turn_id, "cancelled", reason="no_runtime"):  # 이 프로세스에 실행이 없는 남은 줄
             self._notify(turn_id)
         turn = store.get_turn(path, turn_id)
         return turn["status"] if turn else "missing"

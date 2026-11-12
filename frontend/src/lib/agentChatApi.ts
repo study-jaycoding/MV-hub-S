@@ -85,7 +85,7 @@ export type AgentEvent = { seq: number } & (
   | { kind: "tool"; name: string; status: "started" | "done" | "failed" }
   | { kind: "plan"; plan: AgentPlan }
   | ({ kind: "plan_progress" } & AgentPlanSnapshot)
-  | { kind: "state"; status: AgentTurnStatus; reason?: string | null }
+  | { kind: "state"; status: AgentTurnStatus; reason?: string | null; unread_rev?: number } // 끝남 사건 = 그 대화의 읽지 않음 번호(서랍 메뉴)
   | { kind: "error"; message: string }
   | { kind: "notice"; text: string } // Claude 알림(예: 빠른 모드를 못 써 표준 모드로)
 );
@@ -143,8 +143,23 @@ export interface AgentConversationSummary {
   effort: string;
   updated_at: string;
   resumable: boolean;
-  project?: string | null; // 대화를 시작한 화면의 프로젝트(첫 차례) — 서랍이 프로젝트별로 묶는다
+  project?: string | null; // 옮긴 프로젝트(없으면 대화를 시작한 화면의 프로젝트) — 서랍이 프로젝트별로 묶는다
+  // 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md) — 옛 허브는 없음
+  pinned?: boolean;
+  archived?: boolean;
+  unread?: boolean;
+  unread_rev?: number; // 읽지 않음이 바뀔 때마다 오르는 번호 — 자동 읽음은 본 번호와 같을 때만 끈다
 }
+export interface AgentConversationPatch {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  unread?: boolean;
+  seen_rev?: number; // unread:false 와 함께 — 있으면 조건부(자동 읽음), 없으면 사람이 고른 것
+  project?: string | null; // null = 프로젝트 없음
+}
+// 삭제 결과 — 세션 파일을 지웠나(deleted) · 확인 못 해 남김(not_found) · 지우다 실패(failed) · Codex 기록은 남음 · 세션 없음
+export type AgentSessionFileResult = "deleted" | "not_found" | "failed" | "codex_kept" | "none";
 export interface AgentTurnRecord {
   id: string;
   status: AgentTurnStatus;
@@ -226,7 +241,12 @@ const id = (value: string) => encodeURIComponent(value);
 
 export const agentChatApi = {
   session: openAgentSession,
-  conversations: () => panelFetch<{ conversations: AgentConversationSummary[] }>("/conversations"),
+  // truncated = 최근 500개만 실었다(서랍이 "최근 500개만 보여요")
+  conversations: () => panelFetch<{ conversations: AgentConversationSummary[]; truncated?: boolean }>("/conversations"),
+  patchConversation: (conversationId: string, body: AgentConversationPatch) =>
+    panelFetch<{ conversation: AgentConversationSummary }>(`/conversations/${id(conversationId)}`, { method: "PATCH", body: jsonBody(body) }),
+  deleteConversation: (conversationId: string) =>
+    panelFetch<{ deleted: boolean; session_file: AgentSessionFileResult }>(`/conversations/${id(conversationId)}`, { method: "DELETE" }),
   // 서랍 아래 줄 — 지금 Claude Code 판·npm 최신 판·새 판 여부(못 읽으면 null)
   claudeVersion: () => panelFetch<{ current: string | null; latest: string | null; newer: boolean }>("/claude/version"),
   // plans = 이 대화에 묶인 계획의 지금 상태(사건 다음에 읽음 — 조건 없이 넣고 기준이 된다). 옛 허브는 없음
