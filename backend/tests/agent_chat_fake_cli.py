@@ -19,7 +19,8 @@ def out(value):
     sys.stdout.flush()
 
 
-def init(tools=ALLOWED, session="S-claude-1"):
+def init(tools=ALLOWED, session=None):
+    session = session or os.environ.get("FAKE_AGENT_SESSION", "S-claude-1")  # 포크 시험 — 차례마다 다른 세션 id
     out({"type": "system", "subtype": "init", "session_id": session, "tools": tools,
          "mcp_servers": [{"name": "mvhub_panel", "status": "connected"}],
          "apiKeySource": os.environ.get("FAKE_AGENT_INIT_AUTH", "none")})
@@ -86,7 +87,9 @@ def main():
             {"type": "tool_use", "id": "t1", "name": "mcp__mvhub_panel__read_context", "input": {}}]}})
         out({"type": "user", "parent_tool_use_id": None, "message": {"content": [{"type": "tool_result", "tool_use_id": "t1"}]}})
         out({"type": "assistant", "parent_tool_use_id": None, "message": {"content": [{"type": "text", "text": "받은 말: " + user}]}})
-        out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
+        out({"type": "result", "subtype": "success", "is_error": False, "session_id": os.environ.get("FAKE_AGENT_SESSION", "S-claude-1")})
+    elif scenario == "claude_fail_before_session":  # 세션 사건 전에 오류로 끝남(포크 첫 차례 재시도 시험)
+        out({"type": "result", "subtype": "error_during_execution", "is_error": True, "errors": ["No conversation found"]})
     elif scenario == "claude_violation":
         init(tools=ALLOWED + ["Bash"])
         time.sleep(30)

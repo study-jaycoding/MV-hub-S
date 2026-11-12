@@ -413,7 +413,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     void chat.loadConversations();
   };
   const startNew = () => { chat.newConversation(); setText(""); setRevising(null); setScreenOn(true); setDrawer(false); };
-  const revise = (title: string) => {
+  // 포크 — 허브가 복사한 새 대화를 만들면 그 대화를 연다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
+  const forkNow = (id: string) => { setDrawer(false); setMenu(null); setRevising(null); setScreenOn(true); void chat.forkConversation(id); };  const revise = (title: string) => {
     setRevising({ title });
     inputRef.current?.focus();
   };
@@ -428,7 +429,9 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const blocked = chat.running || chat.sending;
   // Claude 를 아직 못 쓰면 연결 안내 + 입력칸 잠금(허브의 차례 허용 조건과 같다 — available)
   const needsConnect = chat.connect.supported && !chat.connect.allowed && chat.choice?.engine !== "codex";
-  const locked = needsConnect || !chat.choice;
+  // 아직 갈라지지 않은 포크 — 대화를 열 때 받은 응답 기준(목록 줄이 아니라). 원래가 이어졌거나 지워졌으면 보내기 잠금
+  const forkState = chat.current && chat.current.id === chat.conversationId ? chat.current.fork_state ?? null : null;
+  const locked = needsConnect || !chat.choice || (!!forkState && forkState !== "ready");
   // 머리글 메뉴 — 보고 있는 대화의 요약(목록에 있으면 그것, 없으면 열 때·허브 응답에서 받은 것) · 맨 위 줄은 옆 칸 = 새 창에서 열기, 새 창 = 옆 칸으로 붙이기
   const summary = chat.conversations?.find((c) => c.id === chat.conversationId)
     ?? (chat.current && chat.current.id === chat.conversationId ? chat.current : undefined);
@@ -498,7 +501,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           <AgentTitle id={chat.conversationId} title={chat.title} summary={summary} locked={blocked} top={headTop}
             candidates={projectCandidates(context.project, chat.conversations, projectName)} currentProject={context.project}
             onNeedSummary={() => void chat.loadConversations()} onOpen={() => { setDrawer(false); setMenu(null); }}
-            onPatch={chat.patchConversation} onDelete={chat.removeConversation} onNote={setHeadNote}
+            onPatch={chat.patchConversation} onDelete={chat.removeConversation} onNote={setHeadNote} onFork={forkNow} forking={chat.forking}
             onLeave={() => { chat.newConversation(); setRevising(null); setScreenOn(true); }} />
         </div>
         <div className="agent-head-actions">
@@ -527,7 +530,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           onClose={closeDrawer} onPatch={chat.patchConversation} onDelete={chat.removeConversation}
           /* 새 창에서 열기 — 옆 칸에서만. 새 창이 받을 요청을 적고 지금 [새 창으로 띄우기] 길을 탄다(옆 칸의 지금 대화는 그대로) */
           onOpenInWindow={!popout && onPopOut ? (id) => { if (chat.requestOpenInWindow(id)) { setDrawer(false); onPopOut(); } } : undefined}
-          claude={engines.find((e) => e.id === "claude")} />
+          onFork={forkNow} forking={chat.forking} claude={engines.find((e) => e.id === "claude")} />
       )}
 
       {/* 머리글 아래 = [대화 | 정보 칸]. 정보 칸은 옆에 설 자리가 없을 때만 대화 위에 겹쳐 뜬다(docs/status/MVAgent_정보칸분리_2026-11-12.md) */}
@@ -573,6 +576,12 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       {chat.notice && <p className="agent-notice" role="status">{chat.notice}</p>}
       {headNote && <p className="agent-notice" role="status">{headNote}</p>}
       {attachNote && <p className="agent-notice" role="status">{attachNote}</p>}
+      {forkState && (
+        <p className={`agent-fork-note ${forkState === "ready" ? "agent-notice" : "agent-error"}`} role="status">
+          {forkState === "ready" ? t("포크한 대화예요 · 첫 말을 보내면 이 시점에서 갈라져요")
+            : t("원래 대화가 이어졌거나 지워져 이 포크는 시작할 수 없어요 — 지우고 원래 대화에서 다시 포크하세요")}
+        </p>
+      )}
 
       <form className="agent-composer" onSubmit={submit}>
         {/* 지금 화면은 머리글 정보 칸으로 옮겼다(docs/status/MVAgent_정보칸_2026-11-12.md) — 입력칸에는 고칠 계획·붙인 자료 칩만 */}
@@ -882,8 +891,14 @@ type RowMenu = { id: string; top: number; left: number; sub: boolean; side?: "ri
 const ROW_MENU_W = 232;
 const PIN_GROUP = "__pinned__";
 const ARCHIVE_GROUP = "__archived__"; // 보관함 — 처음엔 접혀 있다
-type RowAct = "pin" | "unread" | "rename" | "archive" | "delete";
-const ROW_KEYS: Record<string, RowAct | undefined> = { KeyP: "pin", KeyU: "unread", KeyR: "rename", KeyA: "archive", KeyD: "delete" };
+type RowAct = "pin" | "unread" | "rename" | "fork" | "archive" | "delete";
+const ROW_KEYS: Record<string, RowAct | undefined> = { KeyP: "pin", KeyU: "unread", KeyR: "rename", KeyF: "fork", KeyA: "archive", KeyD: "delete" };
+// 포크할 수 없는 까닭(허브의 fork_block — docs/status/MVAgent_포크_2026-11-12.md 2-4)
+const FORK_BLOCK: Record<string, string> = {
+  codex: "Codex 대화는 포크할 수 없어요", not_resumable: "이어 갈 수 없는 대화예요",
+  forked_unstarted: "포크한 대화에 먼저 한 번 말해 주세요", no_session: "먼저 한 번 대화해 주세요",
+};
+const canFork = (c?: AgentConversationSummary) => !!c?.can_fork;
 type SubSide = NonNullable<RowMenu["side"]>;
 type MenuTop = { icon: ReactNode; label: string; run: () => void }; // 메뉴 맨 위 한 줄(새 창에서 열기 / 옆 칸으로 붙이기)
 
@@ -923,13 +938,14 @@ function useMenuKeys(enabled: boolean, run: (kind: RowAct) => void) {
 }
 
 /** 대화 메뉴 본문 — 서랍 줄(⋯·우클릭)과 머리글 제목이 같이 쓴다. 바꾸는 항목은 busy 면 잠근다(맨 위 줄은 늘 된다) */
-function ConversationMenu({ target, menuRef, style, sub, side, busy, top, showUnread, candidates, currentProject, onAct, onToggleSub, onProject }: {
+function ConversationMenu({ target, menuRef, style, sub, side, busy, forkLocked, top, showUnread, candidates, currentProject, onAct, onToggleSub, onProject }: {
   target: AgentConversationSummary;
   menuRef: RefObject<HTMLDivElement>;
   style: CSSProperties;
   sub: boolean;
   side?: SubSide;
   busy: boolean;
+  forkLocked?: boolean; // 포크는 이 칸 전체가 쉴 때만(다른 줄이 일해도 잠금)
   top?: MenuTop;
   showUnread: boolean;
   candidates: { id: string; name: string }[];
@@ -958,6 +974,10 @@ function ConversationMenu({ target, menuRef, style, sub, side, busy, top, showUn
       )}
       <button type="button" role="menuitem" className="agent-row-mi" disabled={busy} onClick={() => onAct("rename")}>
         <PenIcon /><span>{t("이름 바꾸기")}</span><kbd>R</kbd>
+      </button>
+      <button type="button" role="menuitem" className="agent-row-mi" disabled={busy || !!forkLocked || !canFork(target)} onClick={() => onAct("fork")}
+        title={canFork(target) ? t("지금까지를 복사한 새 대화 — 이후는 원래와 따로") : t(FORK_BLOCK[target.fork_block ?? ""] ?? "포크할 수 없어요")}>
+        <ForkIcon /><span>{t("포크")}</span><kbd>F</kbd>
       </button>
       <div className="agent-menu-sep" />
       <div className="agent-row-sub-wrap">
@@ -1011,7 +1031,7 @@ function DeleteConfirm({ target, onCancel, onConfirm }: { target: AgentConversat
 /** 머리글 제목 — 대화가 있으면 [제목 ⌄] 단추: 누르면 서랍 줄과 같은 메뉴(읽지 않음은 뺌 — 보고 있는 대화라 바로 읽음),
  *  이름 바꾸기는 제목 자리에서(Enter 저장 · Esc 취소), 보관하면 칸은 새 대화로. 답을 받는 중엔 바꾸는 항목을 잠근다.
  *  (시안 head-menu.png, Jay 11-12 "시안대로 만들고") */
-function AgentTitle({ id, title, summary, locked, top, candidates, currentProject, onNeedSummary, onOpen, onPatch, onDelete, onLeave, onNote }: {
+function AgentTitle({ id, title, summary, locked, top, candidates, currentProject, onNeedSummary, onOpen, onPatch, onDelete, onLeave, onNote, onFork, forking }: {
   id: string | null; // 없으면 아직 보낸 적 없는 새 대화 — 바꿀 것이 없어 단추를 안 보인다
   title: string | null;
   summary?: AgentConversationSummary;
@@ -1025,6 +1045,8 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
   onDelete: (id: string) => Promise<AgentSessionFileResult | null>;
   onLeave: () => void;
   onNote: (text: string) => void;
+  onFork: (id: string) => void;
+  forking?: boolean; // 포크를 받는 중 — 포크 항목만 잠근다(다른 대화로 옮기는 것은 막지 않음)
 }) {
   const t = useT();
   const [menu, setMenu] = useState<{ top: number; left: number; sub: boolean; side?: SubSide } | null>(null);
@@ -1072,6 +1094,7 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
       return void onPatch(summary.id, { archived: archiving }).then((ok) => { if (ok && archiving) onLeave(); });
     }
     if (kind === "rename") return setRenaming(summary.title ?? title ?? "");
+    if (kind === "fork") return void (!forking && canFork(summary) && onFork(summary.id));
     setConfirm(true);
   };
   useMenuKeys(!!menu && !menu.sub && !!summary, act);
@@ -1104,7 +1127,7 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
       )}
       {menu && summary && (
         <ConversationMenu target={summary} menuRef={menuRef} style={{ top: menu.top, left: menu.left }} sub={menu.sub} side={menu.side}
-          busy={locked} top={top && { ...top, run: () => { setMenu(null); top.run(); } }} showUnread={false} candidates={candidates} currentProject={currentProject} onAct={act}
+          busy={locked} forkLocked={forking} top={top && { ...top, run: () => { setMenu(null); top.run(); } }} showUnread={false} candidates={candidates} currentProject={currentProject} onAct={act}
           onToggleSub={() => setMenu((m) => m && { ...m, sub: !m.sub, side: subSide(m.left, panelOf()?.clientWidth || window.innerWidth) })}
           onProject={(project) => { setMenu(null); void onPatch(summary.id, { project }); }} />
       )}
@@ -1118,7 +1141,7 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
  *  보내는 중·일하는 중에는 고르기와 그 대화의 바꾸는 항목만 잠근다. 설정 칸(새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10).
  *  요금제 = 허브가 Claude Code 설정의 표시 이름(Ultra 등)을 같은 계정일 때만 싣는다(docs/status/MVAgent_서랍아래줄_2026-11-10.md). */
 function AgentDrawer({ conversations, currentId, running, locked, projectName, currentProject, truncated, onNew, onOpen, onClose,
-  onPatch, onDelete, onOpenInWindow, claude }: {
+  onPatch, onDelete, onOpenInWindow, onFork, forking, claude }: {
   conversations: AgentConversationSummary[] | null;
   currentId: string | null;
   running: boolean;
@@ -1132,6 +1155,8 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
   onPatch: (id: string, body: AgentConversationPatch) => Promise<boolean>;
   onDelete: (id: string) => Promise<AgentSessionFileResult | null>;
   onOpenInWindow?: (id: string) => void;
+  onFork: (id: string) => void;
+  forking?: boolean;
   claude?: AgentEngine;
 }) {
   const t = useT();
@@ -1214,6 +1239,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
     if (kind === "unread") return void onPatch(c.id, { unread: !c.unread });
     if (kind === "archive") return void onPatch(c.id, { archived: !c.archived });
     if (kind === "rename") return setRenaming({ id: c.id, text: c.title ?? "" });
+    if (kind === "fork") return void (!locked && !forking && canFork(c) && onFork(c.id)); // 포크는 이 칸 전체가 쉴 때만(새 대화를 연다)
     setConfirm(c);
   };
   useMenuKeys(!!menu && !menu.sub && !!target, (kind) => { if (target) void act(kind, target); });
@@ -1315,7 +1341,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
 
         {menu && target && (
           <ConversationMenu target={target} menuRef={menuRef} style={{ top: menu.top, left: menu.left }} sub={menu.sub} side={menu.side}
-            busy={busyRow(target.id)} showUnread candidates={candidates} currentProject={currentProject}
+            busy={busyRow(target.id)} forkLocked={locked || forking} showUnread candidates={candidates} currentProject={currentProject}
             top={onOpenInWindow && { icon: <WindowIcon />, label: t("새 창에서 열기"), run: () => void act("window", target) }}
             onAct={(kind) => void act(kind, target)}
             onToggleSub={() => {
@@ -1532,6 +1558,7 @@ function WindowIcon() { return <MenuGlyph><rect x="2" y="3" width="12" height="1
 function PinIcon() { return <MenuGlyph><path d="M9.5 2.5l4 4-2 1-2.5 2.5.3 2.5-1.3 1.3-2.4-2.4L2.5 14.5M4.6 7.6l2.3-2.3 1-2" /></MenuGlyph>; }
 function UnreadIcon() { return <MenuGlyph><circle cx="8" cy="8" r="5.2" /><circle cx="8" cy="8" r="2" fill="currentColor" /></MenuGlyph>; }
 function PenIcon() { return <MenuGlyph><path d="M11 2.5a1.4 1.4 0 0 1 2 2L5.3 12.2 2.5 13l.8-2.8Z" /></MenuGlyph>; }
+function ForkIcon() { return <MenuGlyph><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="11.5" cy="3.5" r="1.5" /><circle cx="8" cy="12.5" r="1.5" /><path d="M4.5 5v1.5c0 1.1.9 2 2 2h3c1.1 0 2-.9 2-2V5M8 8.5V11" /></MenuGlyph>; }
 function FolderIcon() { return <MenuGlyph><path d="M2 4.5c0-.8.6-1.5 1.5-1.5h3l1.5 1.6h4.5c.8 0 1.5.6 1.5 1.5v5.4c0 .8-.7 1.5-1.5 1.5h-9C2.6 13 2 12.3 2 11.5z" /></MenuGlyph>; }
 function ArchiveIcon() { return <MenuGlyph><rect x="2" y="3" width="12" height="3" rx="1" /><path d="M3 6v6c0 .6.4 1 1 1h8c.6 0 1-.4 1-1V6M6.5 8.5h3" /></MenuGlyph>; }
 function TrashIcon() { return <MenuGlyph><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.2c0 .5.5.8 1 .8h3.8c.5 0 .9-.3 1-.8l.6-8.2" /></MenuGlyph>; }
