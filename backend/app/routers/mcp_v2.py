@@ -378,9 +378,15 @@ class ReadIn(StrictModel):
     cursor_id: str | None = Field(default=None, min_length=1, max_length=200)
     conversation_id: UUID | None = None
     chat_cursor: str | None = Field(default=None, min_length=1, max_length=400)
+    # 정확히 찾기(설계 docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-4) — 끌어다 붙인 자료를 목록 검색 없이 id·경로 그대로
+    generation_ids: list[Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")]] | None = Field(
+        default=None, min_length=1, max_length=8)
+    asset_paths: list[Annotated[str, Field(min_length=1, max_length=1000)]] | None = Field(default=None, min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def check_cursor(self):
+        if self.generation_ids is not None or self.asset_paths is not None:
+            self._check_exact()
         if self.offset is not None and (self.kind != "references" or not self.asset_project):
             raise ValueError("offset은 에셋 참고 자료 검색에만 사용할 수 있습니다")
         if (self.cursor_ts is None) != (self.cursor_id is None):
@@ -393,6 +399,25 @@ class ReadIn(StrictModel):
         if chat and (self.limit > 50 or self.workspace_scope is not None or self.workspace_id is not None):
             raise ValueError("대화 기록은 공간 없이, 한 번에 50개까지 조회합니다")
         return self
+
+    def _check_exact(self):
+        """정확 모드 규칙 — 새 입력이 있을 때만(기존 search/limit/offset 호출은 그대로). limit 은 받되 쓰지 않는다(어댑터가 늘 20 을 보냄)."""
+        if self.kind != "references":
+            raise ValueError("generation_ids·asset_paths 는 kind='references' 에만 쓸 수 있습니다")
+        if self.generation_ids is not None and self.asset_paths is not None:
+            raise ValueError("generation_ids 와 asset_paths 는 함께 쓸 수 없습니다")
+        values = self.generation_ids if self.generation_ids is not None else self.asset_paths
+        if len(set(values)) != len(values):
+            raise ValueError("같은 항목을 두 번 지정했습니다")
+        if any(re.search(r"[\x00-\x1f\x7f]", value) for value in values):
+            raise ValueError("경로에 제어 글자를 쓸 수 없습니다")
+        if any(value is not None for value in (self.search, self.offset, self.project_id, self.folder_path, self.media_type,
+                                               self.cursor_ts, self.cursor_id)):
+            raise ValueError("정확히 찾기는 search·offset·project_id·folder_path·media_type·커서와 함께 쓸 수 없습니다")
+        if self.generation_ids is not None and self.asset_project is not None:
+            raise ValueError("generation_ids 는 asset_project 와 함께 쓸 수 없습니다")
+        if self.asset_paths is not None and not self.asset_project:
+            raise ValueError("asset_paths 는 asset_project 와 함께 지정하세요")
 
 
 def _matches(row, workspace):
@@ -553,7 +578,63 @@ def _generation_reference(row, asset):
     return reference, mcp.digest(store.encode(identity))
 
 
+_EXACT_MEDIA = 8  # 생성물당 핸들 — 계획 항목의 reference_ids 상한과 같게, 넘으면 more(9번째부터 고르는 입력은 없음)
+_MEDIA_TYPES = ("image", "video", "audio")
+
+
+def _exact_references(ctx, ws, args):
+    """정확히 찾기(설계 2-4) — 생성물 id·어셋 경로 그대로 핸들을 발급한다. 다른 공간 생성물은 없는 것과 같이 not_found
+    (존재를 드러내지 않음), 어셋은 다 읽은 스냅샷에서만 not_found 이고 아니면 unknown. 긴 조회 뒤 발급 전 신원(어셋은 권한도)을 다시 본다."""
+    references, lookups = [], []
+    if args.generation_ids is not None:
+        found = []
+        for gen_id in args.generation_ids:
+            try:
+                row = library.get_generation(gen_id, _internal(ctx, "/api/generations/" + gen_id))
+            except HTTPException as exc:
+                if exc.status_code in (401, 403):
+                    raise
+                found.append((gen_id, None, "not_found" if exc.status_code == 404 else "unknown"))
+                continue
+            except Exception:  # noqa: BLE001 - 작업자 허브가 팀 항목을 공유 서버에 묻다 끊기거나 늦으면 그 줄만 확인 못 함
+                found.append((gen_id, None, "unknown"))
+                continue
+            ok = isinstance(row, dict) and _matches(row, ws)
+            found.append((gen_id, row if ok else None, "ok" if ok else "not_found"))
+        _still_current(ctx)  # 신원이 바뀌었으면 403 그대로 — not_found 로 바꾸지 않는다
+        for gen_id, row, status in found:
+            if row is None:
+                lookups.append({"generation_id": gen_id, "status": status, "count": 0})
+                continue
+            media = [asset for asset in row.get("assets", []) if asset.get("type") in _MEDIA_TYPES]
+            for index, asset in enumerate(media[:_EXACT_MEDIA]):
+                ref, version = _generation_reference(row, asset)
+                rid = store.save_reference(ctx.client, {"kind": "generation", "id": row["id"], "asset_id": asset["id"],
+                                                        "workspace": _workspace_identity(ws)}, version, ref)
+                references.append({"id": rid, "name": ref["name"], "type": ref["type"], "source_gen_id": row["id"], "asset_index": index})
+            line = {"generation_id": gen_id, "status": "ok", "count": min(len(media), _EXACT_MEDIA)}
+            if len(media) > _EXACT_MEDIA:
+                line["more"] = True
+            lookups.append(line)
+        return {"references": references, "lookups": lookups}
+    _directory, snapshot = _asset_tree_snapshot(ctx, ws, args.asset_project)
+    nodes = {node.get("path"): node for node in _flatten(snapshot.children)}
+    _still_current(ctx)  # 긴 읽기는 뒤의 발급을 허락하지 않는다(가져오기와 같은 규칙)
+    _authorize_asset_project(ctx, ws, args.asset_project)
+    for path in args.asset_paths:
+        node = nodes.get(path)
+        if node and node.get("version") and node.get("type") in _MEDIA_TYPES:
+            references.append(_issue_asset_reference(ctx, ws, args.asset_project, node))
+            lookups.append({"path": path, "status": "ok", "count": 1})
+        else:  # 미디어가 아닌 파일은 확실히 없음, 그 밖(없음·판 없음)은 다 읽은 스냅샷에서만 not_found(독립 리뷰 P2)
+            sure = snapshot.complete or (node is not None and node.get("type") not in _MEDIA_TYPES)
+            lookups.append({"path": path, "status": "not_found" if sure else "unknown", "count": 0})
+    return {"references": references, "lookups": lookups}
+
+
 def _issue_references(ctx, ws, args):
+    if args.generation_ids is not None or args.asset_paths is not None:
+        return _exact_references(ctx, ws, args)
     result = []
     if args.asset_project:
         offset, matched, more = args.offset or 0, 0, False

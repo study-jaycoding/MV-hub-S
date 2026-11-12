@@ -160,12 +160,21 @@ export interface AgentConversationPatch {
 }
 // 삭제 결과 — 세션 파일을 지웠나(deleted) · 확인 못 해 남김(not_found) · 지우다 실패(failed) · Codex 기록은 남음 · 세션 없음
 export type AgentSessionFileResult = "deleted" | "not_found" | "failed" | "codex_kept" | "none";
+// 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-2) — 정확한 식별자만. name 은 화면 표시용(허브도 정리만 함)
+export type AgentAttachment =
+  | { kind: "generation"; id: string; name?: string }
+  | { kind: "asset"; project: string; path: string; name?: string }
+  | { kind: "folder"; project_id: string; path: string; name?: string };
+export interface AgentAttachWorkspace { scope: "personal" | "team"; id: string | null }
+export interface AgentAttachments { workspace: AgentAttachWorkspace; items: AgentAttachment[] }
+
 export interface AgentTurnRecord {
   id: string;
   status: AgentTurnStatus;
   text: string;
   created_at: string;
   events: AgentEvent[];
+  attachments?: AgentAttachments | null; // 그 차례에 붙인 자료(없으면 null)
 }
 export interface AgentTurnRequest {
   idempotency_key: string;
@@ -176,6 +185,8 @@ export interface AgentTurnRequest {
   fast?: boolean; // 빠른 모드 — Opus 만(허브가 다시 검사), Claude 추가 사용 크레딧
   text: string;
   context: AgentContext | Record<string, never>; // 빈 값 = 입력칸의 '지금 화면' 칩을 뺐다(허브가 '어디인지 묻는다' 안내)
+  attachments?: AgentAttachment[]; // 붙인 자료(최대 8) — 있으면 attach_workspace 도 함께
+  attach_workspace?: AgentAttachWorkspace;
 }
 
 let session: AgentSession | null = null;

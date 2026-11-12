@@ -3,14 +3,22 @@
 //  옆에 붙은 동안 왼쪽 끝선을 끌어 폭을 바꾸고, ≡ 는 대화 서랍(프로젝트별·설정), [새 창]은 Assets 같은 별도 창(AgentWindow)으로 뺀다
 //  (Jay 11-10 시안 A안·② — docs/status/MVAgent_서랍_새창_2026-11-10.md).
 import {
-  useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent,
-  type ReactNode, type RefObject,
+  useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject,
 } from "react";
+import { api } from "../../api";
+import { getAccountNamespace } from "../../lib/accountScope";
+import { assetThumbUrl } from "../../lib/assetUrls";
+import { DRAG_TYPES } from "../../lib/dragTypes";
+import { thumbOf } from "../../lib/media";
+import { parseSceneFolderDrag } from "../../lib/sceneSet";
+import { parseSpotlightAssetItems } from "../../lib/spotlightAssetRefs";
+import { useDragEndReset } from "../../lib/useDragEndReset";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
 import {
-  agentChatApi, type AgentContext, type AgentConversationPatch, type AgentConversationSummary, type AgentEngine, type AgentEngineId,
-  type AgentSessionFileResult,
+  agentChatApi, type AgentAttachment, type AgentAttachWorkspace, type AgentContext, type AgentConversationPatch, type AgentConversationSummary,
+  type AgentEngine, type AgentEngineId, type AgentSessionFileResult,
 } from "../../lib/agentChatApi";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
@@ -59,6 +67,71 @@ const TOOL: Record<string, string> = {
   add_to_canvas: "캔버스에 놓기",
 };
 const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
+
+// ── 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-1) — 생성물·어셋 레퍼런스·프로젝트 폴더를 칸에 놓으면 입력칸 위 칩 ──
+const ATTACH_MAX = 8; // 계획 항목의 reference_ids 상한과 같게
+const ATTACH_TYPES: readonly string[] = [DRAG_TYPES.asset, DRAG_TYPES.generationList, DRAG_TYPES.generation, DRAG_TYPES.folder];
+const CONTROL = /[\u0000-\u001f\u007f]/;
+const GEN_ID = /^[A-Za-z0-9_.:-]{1,80}$/;
+/** 받는 형식만 — 그 밖(OS 파일만·글자)은 손대지 않는다(받지 않는 것에 preventDefault 하지 않음 — lib/media.ts) */
+const acceptsDrag = (dt: DataTransfer | null) => !!dt && Array.from(dt.types ?? []).some((type) => ATTACH_TYPES.includes(type));
+const isIdent = (value: unknown, max: number): value is string =>
+  typeof value === "string" && value.length >= 1 && value.length <= max && !CONTROL.test(value);
+/** 표시 이름 — 거절하지 않고 정리(제어 글자 → 공백, 120자). 이름 하나 때문에 차례가 막히지 않게(Claude 합의 P1) */
+const cleanName = (value: string | null | undefined) => (value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120).trim() || undefined;
+const lastSegment = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+const attachKey = (item: AgentAttachment) => (item.kind === "generation" ? `g:${item.id}`
+  : item.kind === "asset" ? `a:${item.project}\u0000${item.path}` : `f:${item.project_id}\u0000${item.path}`);
+// uid = 칩 하나하나의 번호 — 보낸 묶음만 지울 때 같은 자료를 다시 붙인 새 칩은 남긴다(독립 리뷰 P2). key 는 중복 막기용
+type AttachChip = { uid: number; key: string; item: AgentAttachment; project?: string; pending?: boolean; thumb?: string | null };
+type DropChip = Omit<AttachChip, "uid">;
+
+/** 놓은 끌기 값 → 붙일 칩과 버린 개수. 캔버스와 같은 순서(어셋 → 생성물 묶음·한 개 → 폴더). 어셋은 끌기 값만 쓴다 —
+ *  localStorage 저장값으로 넓히지 않는다(같은 끌기임을 증명할 표가 없어 저장 실패 때 지난 선택이 섞인다, Codex 2차 P1). */
+function readDrop(dt: DataTransfer): { chips: DropChip[]; dropped: number } {
+  const chips: DropChip[] = [];
+  let dropped = 0;
+  const rawAsset = dt.getData(DRAG_TYPES.asset);
+  if (rawAsset) {
+    let total = 0;
+    try {
+      const parsed = JSON.parse(rawAsset);
+      total = Array.isArray(parsed) ? parsed.length : 1;
+    } catch { /* parseSpotlightAssetItems 도 빈 목록 */ }
+    const items = parseSpotlightAssetItems(rawAsset);
+    dropped += Math.max(0, total - items.length);
+    for (const asset of items) {
+      if (!isIdent(asset.project, 200) || !isIdent(asset.path, 1000)) {
+        dropped += 1;
+        continue;
+      }
+      const item: AgentAttachment = { kind: "asset", project: asset.project, path: asset.path, name: cleanName(asset.name || lastSegment(asset.path)) };
+      chips.push({ key: attachKey(item), item, thumb: asset.type === "audio" ? null : assetThumbUrl(asset.project, asset.path, 256) });
+    }
+    return { chips, dropped };
+  }
+  const rawGen = dt.getData(DRAG_TYPES.generationList) || dt.getData(DRAG_TYPES.generation);
+  if (rawGen) {
+    for (const id of rawGen.split(",").map((part) => part.trim()).filter(Boolean)) {
+      if (!GEN_ID.test(id)) {
+        dropped += 1;
+        continue;
+      }
+      const item: AgentAttachment = { kind: "generation", id };
+      chips.push({ key: attachKey(item), item, pending: true }); // 조회 전에도 바로 넣는다 — 상한·중복·보내기에 든다(Claude 합의 3차 P2)
+    }
+    return { chips, dropped };
+  }
+  const rawFolder = dt.getData(DRAG_TYPES.folder);
+  if (rawFolder) {
+    const folder = parseSceneFolderDrag(rawFolder);
+    // 파서는 projectId 길이·제어 글자를 안 본다 — 그대로 보내면 허브가 차례 전체를 422 로 막는다(Codex 4차 P2)
+    if (!folder || !isIdent(folder.projectId, 200) || !isIdent(folder.path, 500)) return { chips, dropped: 1 };
+    const item: AgentAttachment = { kind: "folder", project_id: folder.projectId, path: folder.path, name: cleanName(lastSegment(folder.path)) };
+    chips.push({ key: attachKey(item), item, project: cleanName(folder.projectName) });
+  }
+  return { chips, dropped };
+}
 
 type ToolMessage = Extract<AgentMessage, { kind: "tool" }>;
 type Row = AgentMessage | { kind: "tools"; id: string; tools: ToolMessage[] };
@@ -127,13 +200,159 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   }, [chat.messages, chat.connect.state]);
   useEffect(() => { if (chat.conversationId) setHeadNote(null); }, [chat.conversationId]); // 다른 대화를 열거나 새로 보내면 지운 안내는 끝
 
+  // ── 끌어다 넣기(설계 2-1) — 칩은 앱의 지금 공간에 묶인다(대화에 묶이지 않음) ──
+  const [chips, setChips] = useState<AttachChip[]>([]);
+  const chipsRef = useRef(chips);
+  chipsRef.current = chips;
+  const [attachNote, setAttachNote] = useState<string | null>(null);
+  const [dropping, setDropping] = useState<"ok" | "blocked" | null>(null);
+  const dragDepth = useRef(0);
+  const chipEpoch = useRef(0); // 칩을 비울 때마다 올린다 — 그 전에 시작한 생성물 조회의 늦은 답을 버린다(Codex 4차 P1)
+  const chipSeq = useRef(0);
+  const [genCache, setGenCache] = useState<Record<string, Generation | null>>({}); // 칩·내 말 썸네일용(null = 못 읽음)
+  const requestedSent = useRef(new Set<string>()); // 복원 썸네일 묶음 조회 — `대화:id`
+  const ws = context.workspace; // '지금 화면' 칩을 뺐어도 칸은 앱 공간을 안다
+  const attachWs: AgentAttachWorkspace | null = ws?.scope === "personal" ? { scope: "personal", id: null }
+    : ws?.scope === "team" && ws.id ? { scope: "team", id: ws.id } : null; // 미확정(unknown)·공간 정보 없음 = 받지 않음
+  // 계정까지 넣는다 — 같은 개인 공간끼리 계정만 바뀌어도 비운다(독립 리뷰 P1)
+  const wsKey = `${getAccountNamespace()}|${attachWs ? `${attachWs.scope}:${attachWs.id ?? ""}` : ""}`;
+  const attachWsRef = useRef(attachWs);
+  attachWsRef.current = attachWs;
+  const wsKeyRef = useRef(wsKey);
+  useEffect(() => { // 공간(scope·id)·계정이 바뀌면 칩·캐시·조회를 비운다 — 팀 이름만 채워지는 것은 바뀜이 아니다
+    if (wsKeyRef.current === wsKey) return;
+    wsKeyRef.current = wsKey;
+    chipEpoch.current += 1;
+    setGenCache({});
+    requestedSent.current.clear();
+    if (chipsRef.current.length) {
+      setChips([]);
+      setAttachNote(t("공간이 바뀌어 붙인 자료를 비웠어요"));
+    }
+  }, [wsKey, t]);
+  const genOf = (id: string) => findGeneration?.(id) ?? genCache[id] ?? undefined;
+  const removeChip = (uid: number) => {
+    setChips((now) => now.filter((c) => c.uid !== uid));
+    setAttachNote(null);
+  };
+  /** 생성물 칩 채우기 — 조회 시작 때 계정·공간·비움 세대를 잡고, 답이 올 때 셋이 그대로일 때만 넣는다(성공이든 실패든) */
+  const resolveGeneration = (uid: number, id: string) => {
+    const at = { epoch: chipEpoch.current, ws: wsKeyRef.current, account: getAccountNamespace() };
+    const apply = (gen: Generation | null) => {
+      if (at.epoch !== chipEpoch.current || at.ws !== wsKeyRef.current || at.account !== getAccountNamespace()) return;
+      if (gen) setGenCache((m) => ({ ...m, [id]: gen }));
+      const space = attachWsRef.current;
+      if (gen && space && (gen.workspace_scope !== space.scope || (gen.workspace_id || null) !== space.id)) {
+        setChips((now) => now.filter((c) => c.uid !== uid)); // 공간 지정 없는 씬의 카드 등 — 붙였다가 나중에 '확인 안 됨'을 듣지 않게
+        setAttachNote(t("다른 공간의 생성물이에요"));
+        return;
+      }
+      setChips((now) => now.map((c) => (c.uid !== uid ? c : {
+        ...c, pending: false,
+        ...(gen ? { item: { kind: "generation" as const, id, name: cleanName(gen.prompt) }, thumb: thumbOf(gen, 256) } : {}),
+      })));
+    };
+    const known = findGeneration?.(id) ?? genCache[id];
+    if (known) return apply(known);
+    api.getGeneration(id).then(apply, () => apply(null)); // 못 읽으면 회색 칩 — AI 의 정확히 찾기가 확인한다
+  };
+  const addChips = (incoming: DropChip[], dropped: number) => {
+    const now = chipsRef.current;
+    const seen = new Set(now.map((c) => c.key));
+    const fresh = incoming.filter((c) => (seen.has(c.key) ? false : (seen.add(c.key), true)));
+    const taken: AttachChip[] = fresh.slice(0, Math.max(0, ATTACH_MAX - now.length)).map((c) => ({ ...c, uid: (chipSeq.current += 1) }));
+    const notes = [
+      ...(dropped ? [t("{n}개는 붙일 수 없어 뺐어요").replace("{n}", String(dropped))] : []),
+      ...(fresh.length > taken.length ? [t("8개까지 붙일 수 있어요")] : []),
+    ];
+    setAttachNote(notes.join(" · ") || null);
+    if (!taken.length) return;
+    const next = [...now, ...taken];
+    chipsRef.current = next;
+    setChips(next);
+    for (const c of taken) if (c.item.kind === "generation") resolveGeneration(c.uid, c.item.id);
+  };
+  const endDropping = useCallback(() => {
+    dragDepth.current = 0;
+    setDropping(null);
+  }, []);
+  useDragEndReset(dropping !== null, endDropping); // 받는 쪽 위에서 취소하면 dragleave 가 안 온다
+  useEffect(() => {
+    if (!dropping) return;
+    window.addEventListener("blur", endDropping);
+    return () => window.removeEventListener("blur", endDropping);
+  }, [dropping, endDropping]);
+  const dropHandlers = {
+    onDragEnter: (event: DragEvent<HTMLElement>) => {
+      if (!acceptsDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDropping(attachWs ? "ok" : "blocked");
+    },
+    onDragOver: (event: DragEvent<HTMLElement>) => {
+      if (!acceptsDrag(event.dataTransfer)) return;
+      event.preventDefault(); // 받지 않는 상태에서도 — 입력칸 기본 동작(영상 주소 글자)을 막는다(Claude 합의 2차 P2)
+      event.dataTransfer.dropEffect = attachWs ? "copy" : "none";
+    },
+    onDragLeave: (event: DragEvent<HTMLElement>) => {
+      if (!acceptsDrag(event.dataTransfer)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (!dragDepth.current) setDropping(null);
+    },
+    onDrop: (event: DragEvent<HTMLElement>) => {
+      if (!acceptsDrag(event.dataTransfer)) return;
+      event.preventDefault(); // 입력칸 위에 놓아도 글자가 들어가지 않게
+      endDropping();
+      if (!attachWs) {
+        setAttachNote(t("공간을 확인한 뒤 다시 끌어 주세요"));
+        return;
+      }
+      const { chips: incoming, dropped } = readDrop(event.dataTransfer);
+      addChips(incoming, dropped);
+    },
+  };
+  // 내 말 위 썸네일 — 앱이 읽은 카드에 없는 생성물만 묶음 조회 한 번(대화가 바뀌었으면 버림, 설계 2-5)
+  const sentGenIds = Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "user" && m.attachments
+    ? m.attachments.flatMap((a) => (a.kind === "generation" ? [a.id] : [])) : []))));
+  const missingSentKey = sentGenIds.filter((id) => !findGeneration?.(id) && !(id in genCache)).join(",");
+  const conversationRef = useRef(chat.conversationId);
+  conversationRef.current = chat.conversationId;
+  // 대화·공간(계정)이 바뀌면 다시 본다 — 같은 미조회 id 를 가진 다른 대화로 옮겨도 그 대화의 조회가 시작되게(독립 리뷰 P2)
+  const sentLookupKey = `${chat.conversationId ?? ""}|${wsKey}|${missingSentKey}`;
+  useEffect(() => {
+    const conversation = conversationRef.current ?? "";
+    const ids = missingSentKey ? missingSentKey.split(",").filter((id) => !requestedSent.current.has(`${conversation}:${id}`)) : [];
+    if (!ids.length) return;
+    ids.forEach((id) => requestedSent.current.add(`${conversation}:${id}`));
+    const at = { conversation: conversationRef.current, account: getAccountNamespace(), epoch: chipEpoch.current, ws: wsKeyRef.current };
+    const fill = (items: Record<string, Generation>) => {
+      if (conversationRef.current !== at.conversation || getAccountNamespace() !== at.account || chipEpoch.current !== at.epoch
+        || wsKeyRef.current !== at.ws) {
+        ids.forEach((id) => requestedSent.current.delete(`${conversation}:${id}`)); // 다시 열면 다시 묻는다
+        return;
+      }
+      setGenCache((m) => ({ ...m, ...Object.fromEntries(ids.map((id) => [id, items[id] ?? null])) }));
+    };
+    api.getGenerationsBatch(ids).then((r) => fill(r.items), () => fill({}));
+    // missingSentKey 는 sentLookupKey 안에 있다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sentLookupKey]);
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     // 칩이 있으면 AI 에게는 지금까지와 같은 문장으로 — 고칠 내용을 써야 보낸다(빈 문장 전송 막음)
     const body = revising && text.trim()
       ? `${t("「{title}」 계획을 이렇게 고쳐 주세요").replace("{title}", revising.title || t("계획"))}: ${text.trim()}`
       : text;
-    if (await chat.send(body)) {
+    // 보내는 순간의 칩 묶음 — 성공하면 그 묶음만 뺀다(보내는 사이 붙인 칩은 남는다, Codex 1차 P1 5)
+    const batch = attachWs ? chipsRef.current : [];
+    const attach = batch.length && attachWs ? { workspace: attachWs, items: batch.map((c) => c.item) } : null;
+    if (await chat.send(body, attach)) {
+      if (batch.length) {
+        const sent = new Set(batch.map((c) => c.uid));
+        setChips((now) => now.filter((c) => !sent.has(c.uid)));
+        setAttachNote(null);
+      }
       setText("");
       setRevising(null);
       chat.connect.dismissConnected();
@@ -184,7 +403,14 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     };
 
   return (
-    <aside className={`agent-panel${popout ? " popout" : ""}${chat.running ? " is-running" : ""}`} aria-label="MV Agent">
+    <aside className={`agent-panel${popout ? " popout" : ""}${chat.running ? " is-running" : ""}`} aria-label="MV Agent" {...dropHandlers}>
+      {dropping && (
+        <div className={`agent-drop${dropping === "blocked" ? " blocked" : ""}`} aria-hidden="true">
+          <span className="agent-drop-ic">{dropping === "blocked" ? "!" : "＋"}</span>
+          <b>{dropping === "blocked" ? t("공간을 확인한 뒤 다시 끌어 주세요") : t("놓으면 대화에 붙어요")}</b>
+          {dropping === "ok" && <small>{t("생성물 · 레퍼런스 · 폴더")}<br />{t("한 번에 8개까지")}</small>}
+        </div>
+      )}
       {!popout && (
         <div className="agent-resize" role="separator" tabIndex={0} aria-orientation="vertical"
           aria-label={t("MV Agent 칸 너비 조절")} aria-valuemin={MIN_W} aria-valuemax={maxWidth()} aria-valuenow={clampWidth(width)}
@@ -279,7 +505,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         )}
         {groupTools(chat.messages).map((r) => (r.kind === "tools" ? <ToolGroup key={r.id} tools={r.tools} /> : (
           <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={reuse}
-            findGeneration={findGeneration} onPreview={onPreview} />
+            findGeneration={findGeneration} genOf={genOf} onPreview={onPreview} />
         )))}
         {needsConnect && (
           <AgentConnect state={chat.connect.state} version={chat.connect.version} loginWindowEnabled={chat.connect.loginWindowEnabled}
@@ -301,6 +527,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       {chat.error && <p className="agent-error" role="alert">{chat.error}</p>}
       {chat.notice && <p className="agent-notice" role="status">{chat.notice}</p>}
       {headNote && <p className="agent-notice" role="status">{headNote}</p>}
+      {attachNote && <p className="agent-notice" role="status">{attachNote}</p>}
 
       <form className="agent-composer" onSubmit={submit}>
         <div className="agent-chips">
@@ -331,6 +558,20 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
                 title={t("고치기 취소")} aria-label={t("고치기 취소")}>×</button>
             </div>
           )}
+          {chips.map((c) => (
+            <div key={c.uid} className={`agent-context agent-attach${c.pending ? " pending" : ""}`}>
+              <span className="agent-attach-thumb" aria-hidden="true">
+                {c.thumb ? <img src={c.thumb} alt="" loading="lazy" /> : c.item.kind === "folder" ? <FolderIcon /> : null}
+              </span>
+              <span className="agent-context-text">
+                <b>{c.item.name ?? (c.item.kind === "generation" ? t("생성물") : lastSegment(c.item.path))}</b>
+                <small>{c.item.kind === "generation" ? (c.pending ? t("생성물 · 확인 중") : t("생성물"))
+                  : c.item.kind === "asset" ? t("레퍼런스") : `${t("폴더")}${c.project ? ` · ${c.project}` : ""}`}</small>
+              </span>
+              <button type="button" className="agent-context-x" onClick={() => removeChip(c.uid)}
+                title={t("붙인 자료 빼기")} aria-label={t("붙인 자료 빼기")}>×</button>
+            </div>
+          ))}
         </div>
         <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect}
           placeholder={needsConnect ? t("Claude 를 연결하면 쓸 수 있어요")
@@ -372,17 +613,18 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   );
 }
 
-function Message({ message: m, onExecute, onRevise, onReuse, findGeneration, onPreview }: {
+function Message({ message: m, onExecute, onRevise, onReuse, findGeneration, genOf, onPreview }: {
   message: AgentMessage;
   onExecute: (planId: string) => void;
   onRevise: (title: string) => void;
   onReuse: (text: string) => void;
   findGeneration?: (id: string) => Generation | undefined;
+  genOf: (id: string) => Generation | undefined; // 붙인 생성물 썸네일 — 앱 카드 또는 칸이 읽어 둔 것
   onPreview?: (target: PreviewTarget) => void;
 }) {
   switch (m.kind) {
     case "user":
-      return <UserMessage text={m.text} onReuse={onReuse} />;
+      return <UserMessage text={m.text} attachments={m.attachments} genOf={genOf} onPreview={onPreview} onReuse={onReuse} />;
     case "assistant":
       return <div className="agent-msg agent-assistant"><AgentMarkdown text={m.text} /></div>;
     case "tool":
@@ -430,7 +672,13 @@ function ToolGroup({ tools }: { tools: ToolMessage[] }) {
 }
 
 /** 내 말 — 올리면 [복사][고쳐 보내기](Aside Copy · Edit message). 고쳐 보내기는 입력칸에 다시 채울 뿐 바로 보내지 않는다. */
-function UserMessage({ text, onReuse }: { text: string; onReuse: (text: string) => void }) {
+function UserMessage({ text, attachments, genOf, onPreview, onReuse }: {
+  text: string;
+  attachments?: AgentAttachment[];
+  genOf: (id: string) => Generation | undefined;
+  onPreview?: (target: PreviewTarget) => void;
+  onReuse: (text: string) => void;
+}) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -441,6 +689,11 @@ function UserMessage({ text, onReuse }: { text: string; onReuse: (text: string) 
   };
   return (
     <div className="agent-user-wrap">
+      {attachments?.length ? (
+        <div className="agent-sent" aria-label={t("붙인 자료")}>
+          {attachments.map((a) => <SentAttachment key={attachKey(a)} item={a} genOf={genOf} onPreview={onPreview} />)}
+        </div>
+      ) : null}
       <div className="agent-msg agent-user">{text}</div>
       <div className="agent-user-acts">
         <button type="button" className="agent-mini" onClick={copy} title={copied ? t("복사했어요") : t("복사")} aria-label={t("복사")}>
@@ -452,6 +705,39 @@ function UserMessage({ text, onReuse }: { text: string; onReuse: (text: string) 
       </div>
     </div>
   );
+}
+
+/** 내 말 위 붙인 자료 하나 — 생성물은 누르면 기존 크게 보기, 어셋은 썸네일(못 그리면 빈 칸), 폴더는 이름 칩(설계 2-5) */
+function SentAttachment({ item, genOf, onPreview }: {
+  item: AgentAttachment;
+  genOf: (id: string) => Generation | undefined;
+  onPreview?: (target: PreviewTarget) => void;
+}) {
+  const t = useT();
+  const [broken, setBroken] = useState(false);
+  if (item.kind === "folder") {
+    return <span className="agent-sent-folder" title={item.path}><FolderIcon /><span>{item.name ?? lastSegment(item.path)}</span></span>;
+  }
+  if (item.kind === "asset") {
+    return (
+      <span className="agent-sent-tile" title={item.path}>
+        {!broken && <img src={assetThumbUrl(item.project, item.path, 256)} alt="" loading="lazy" onError={() => setBroken(true)} />}
+      </span>
+    );
+  }
+  const gen = genOf(item.id);
+  const thumb = gen ? thumbOf(gen, 256) : null;
+  const asset = gen?.assets?.[0];
+  if (gen && asset && onPreview) {
+    return (
+      <button type="button" className="agent-sent-tile" title={item.name ?? t("생성물")} aria-label={t("붙인 생성물 크게 보기")}
+        onClick={() => onPreview({ url: asset.file_path, type: asset.type, name: gen.prompt.slice(0, 50) || t("(제목 없음)"), genId: gen.id,
+          thumb: thumbOf(gen, 512) })}>
+        {thumb && <img src={thumb} alt="" loading="lazy" />}
+      </button>
+    );
+  }
+  return <span className="agent-sent-tile" title={item.name ?? t("생성물")}>{thumb && <img src={thumb} alt="" loading="lazy" />}</span>;
 }
 
 // 서랍 넓이(설계 docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-4) — 최소 220 · 최대 = 칸 폭 − 40(칸이 좁으면 최대가 이긴다) · 기본 310

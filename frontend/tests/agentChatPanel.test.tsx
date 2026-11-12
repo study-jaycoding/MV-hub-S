@@ -1310,3 +1310,247 @@ describe("MV Agent 서랍 메뉴", () => {
     expect(host.querySelector(".agent-row-menu")).toBeNull();
   });
 });
+
+// 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-1·2-5)
+describe("MV Agent 끌어다 넣기", () => {
+  const PERSONAL = { scope: "personal", id: null, name: "개인" };
+  const ASSET = "application/x-ch-asset", GEN = "application/x-ch-gen", GENLIST = "application/x-ch-genlist", FOLDER = "application/x-ch-project-folder";
+  const gen = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, prompt: `프롬프트 ${id}`, model: "m", status: "done", created_at: "2026-11-12T00:00:00", workspace_scope: "personal", workspace_id: null,
+    assets: [{ id: `${id}-a`, type: "image", file_path: `/media/${id}.png` }], ...extra,
+  });
+  let gens: Record<string, unknown>;
+  beforeEach(() => {
+    gens = { g1: gen("g1"), g2: gen("g2") };
+    route = (c) => {
+      if (c.path === "/session") return session();
+      const one = c.path.match(/^\/api\/generations\/([^/?]+)$/);
+      if (one && one[1] !== "batch") return gens[one[1]] ? json(gens[one[1]]) : json({ detail: "generation 없음" }, 404);
+      if (c.path === "/api/generations/batch") {
+        const ids = (c.body?.gen_ids as string[]) ?? [];
+        return json({ items: Object.fromEntries(ids.filter((id) => gens[id]).map((id) => [id, gens[id]])), materials: {}, missing: [] });
+      }
+      if (c.path === "/turns" && c.method === "POST") return started("t9", "c9");
+      if (c.path === "/turns/t9/events?after=0") return json({ events: [{ seq: 1, kind: "state", status: "done" }], status: "done", last_seq: 1 });
+      return json({ detail: "Not Found" }, 404);
+    };
+  });
+  const render = async (workspace: unknown = PERSONAL) => {
+    act(() => root.render(<AgentPanel context={{ tab: "my", workspace } as never} contextLabel="개인" onClose={() => {}} />));
+    await flush();
+  };
+  const fire = (type: string, data: Record<string, string>, target: Element = panel()) => {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { types: Object.keys(data), getData: (k: string) => data[k] ?? "", dropEffect: "none" } });
+    act(() => { target.dispatchEvent(event); });
+    return event as Event & { dataTransfer: { dropEffect: string } };
+  };
+  const drop = async (data: Record<string, string>, target?: Element) => {
+    fire("dragenter", data, target);
+    const event = fire("drop", data, target);
+    await flush();
+    return event;
+  };
+  const chipNames = () => texts(".agent-attach .agent-context-text b");
+  const notice = () => host.querySelector(".agent-notice")?.textContent ?? null;
+
+  it("받는 형식에만 덮개 · 어셋은 끌기 값만(저장값으로 넓히지 않음)·필드 검사 · 생성물 묶음·폴더 · 중복·8개 상한 · 입력칸 위 놓기는 기본 동작 막음", async () => {
+    await render();
+    const files = fire("dragenter", { Files: "" });
+    expect([files.defaultPrevented, host.querySelector(".agent-drop")]).toEqual([false, null]); // OS 파일만 = 손대지 않음
+    fire("dragenter", { [ASSET]: "[]" });
+    expect(host.querySelector(".agent-drop")!.textContent).toContain("놓으면 대화에 붙어요");
+    const over = fire("dragover", { [ASSET]: "[]" });
+    expect([over.defaultPrevented, over.dataTransfer.dropEffect]).toEqual([true, "copy"]);
+    fire("dragleave", { [ASSET]: "[]" });
+    expect(host.querySelector(".agent-drop")).toBeNull();
+
+    localStorage.setItem("mvhub.assetsDrag", JSON.stringify([{ project: "p", path: "stale.png", name: "stale.png", type: "image" }]));
+    await drop({ [ASSET]: JSON.stringify([
+      { project: "my-assets", path: "e001/apple.png", name: "apple\npng", type: "image" },
+      { project: "my-assets", path: "bad\npath.png", name: "x", type: "image" },
+      { project: "my-assets", path: "doc.txt", name: "doc", type: "text" },
+    ]) });
+    expect(chipNames()).toEqual(["apple png"]);
+    expect(notice()).toBe("2개는 붙일 수 없어 뺐어요");
+    await drop({ [GENLIST]: "g1,g2,bad id", [GEN]: "g1" });
+    expect(chipNames()).toEqual(["apple png", "프롬프트 g1", "프롬프트 g2"]);
+    const projectId = "x".repeat(201);
+    await drop({ [FOLDER]: JSON.stringify({ projectId, path: "e001" }) });
+    expect(notice()).toBe("1개는 붙일 수 없어 뺐어요");
+    await drop({ [FOLDER]: JSON.stringify({ projectId: "p1", projectName: "뻘뻘뻘", path: "e001/c0010" }) });
+    expect(host.querySelector(".agent-attach:last-child small")!.textContent).toBe("폴더 · 뻘뻘뻘");
+    await drop({ [GEN]: "g1" });
+    expect(chipNames()).toHaveLength(4); // 같은 것은 하나로
+    gens = { ...gens, ...Object.fromEntries(["g3", "g4", "g5", "g6", "g7"].map((id) => [id, gen(id)])) };
+    await drop({ [GENLIST]: "g3,g4,g5,g6,g7" });
+    expect([chipNames().length, notice()]).toEqual([8, "8개까지 붙일 수 있어요"]);
+    const onInput = await drop({ [GEN]: "g9" }, input());
+    expect(onInput.defaultPrevented).toBe(true);
+  });
+
+  it("공간 미확정이면 받지 않고 안내(기본 동작은 막음) · 공간(scope·id)이 바뀌면 비움(팀 이름만 채워지면 그대로) · 다른 공간 생성물 거절 · 늦은 조회 응답은 비운 칩을 못 살림", async () => {
+    await render({ scope: "unknown", id: null, name: null });
+    fire("dragenter", { [GEN]: "g1" });
+    expect(host.querySelector(".agent-drop.blocked")!.textContent).toContain("공간을 확인한 뒤 다시 끌어 주세요");
+    expect(fire("dragover", { [GEN]: "g1" }).dataTransfer.dropEffect).toBe("none");
+    const refused = await drop({ [GEN]: "g1" });
+    expect([refused.defaultPrevented, chipNames(), notice()]).toEqual([true, [], "공간을 확인한 뒤 다시 끌어 주세요"]);
+
+    await render({ scope: "team", id: "team-a", name: null });
+    gens.g1 = gen("g1", { workspace_scope: "team", workspace_id: "team-a" });
+    gens.g2 = gen("g2"); // 개인 공간 생성물
+    await drop({ [GENLIST]: "g1,g2" });
+    expect([chipNames(), notice()]).toEqual([["프롬프트 g1"], "다른 공간의 생성물이에요"]);
+    await render({ scope: "team", id: "team-a", name: "팀 A" });
+    expect(chipNames()).toEqual(["프롬프트 g1"]);
+    await render({ scope: "personal", id: null, name: "개인" });
+    expect([chipNames(), notice()]).toEqual([[], "공간이 바뀌어 붙인 자료를 비웠어요"]);
+
+    const late = deferred<Response>();
+    const base = route;
+    route = (c) => (c.path === "/api/generations/g3" ? late.promise : base(c));
+    await drop({ [GEN]: "g3" });
+    expect(host.querySelector(".agent-attach.pending")).not.toBeNull();
+    await render({ scope: "team", id: "team-b", name: null }); // 기다리는 사이 공간이 바뀌어 비움
+    late.resolve(json(gen("g3", { workspace_scope: "team", workspace_id: "team-b" })));
+    await flush();
+    expect(chipNames()).toEqual([]);
+    const lateFail = deferred<Response>();
+    route = (c) => (c.path === "/api/generations/g4" ? lateFail.promise : base(c));
+    await drop({ [GEN]: "g4" });
+    await render({ scope: "personal", id: null, name: "개인" }); // 실패 답(회색 칩)도 비운 뒤에는 못 들어온다
+    lateFail.resolve(json({ detail: "boom" }, 500));
+    await flush();
+    expect(texts(".agent-attach")).toEqual([]);
+    // 같은 개인 공간끼리 계정만 바뀌어도 비운다(독립 리뷰 P1)
+    route = base;
+    await drop({ [GEN]: "g2" }); // 개인 공간 생성물(g1 은 위에서 팀 공간으로 바꿈)
+    expect(chipNames()).toHaveLength(1);
+    sessionStorage.setItem("ch.accountScope", "other@example.com");
+    try {
+      await render({ scope: "personal", id: null, name: "개인" });
+      expect([chipNames(), notice()]).toEqual([[], "공간이 바뀌어 붙인 자료를 비웠어요"]);
+    } finally {
+      sessionStorage.setItem("ch.accountScope", "jay@example.com");
+    }
+  });
+
+  it("보낸 묶음만 칩 번호로 지움(보내는 사이 ×로 뺐다 다시 붙인 같은 자료는 남음) · 같은 미조회 생성물을 가진 다른 대화로 옮기면 그 대화의 조회를 새로 하고 늦은 앞 답은 버림", async () => {
+    await render();
+    await drop({ [GEN]: "g1" });
+    const slow = deferred<Response>();
+    const base = route;
+    route = (c) => (c.path === "/turns" && c.method === "POST" ? slow.promise : base(c));
+    type("이걸로");
+    enter();
+    await flush();
+    act(() => host.querySelector<HTMLButtonElement>(".agent-attach .agent-context-x")!.click());
+    await drop({ [GEN]: "g1" }); // 보내는 사이 같은 자료를 다시 붙임 — 새 칩
+    slow.resolve(started("t9", "c9"));
+    await flush();
+    expect(chipNames()).toEqual(["프롬프트 g1"]);
+
+    const convo = (id: string) => ({ conversation: { id, title: `대화 ${id}`, engine: "claude", model: "opus", effort: "medium", updated_at: "",
+      resumable: true, pinned: false, archived: false, unread: false, unread_rev: 0 },
+      turns: [{ id: `t-${id}`, status: "done", text: "봐 줘", created_at: "", events: [],
+        attachments: { workspace: { scope: "personal", id: null }, items: [{ kind: "generation", id: "g8" }] } }] });
+    gens.g8 = gen("g8");
+    const firstBatch = deferred<Response>();
+    let batches = 0;
+    route = (c) => {
+      if (c.path === "/conversations" && c.method === "GET") {
+        return json({ conversations: ["cA", "cB"].map((id) => ({ ...convo(id).conversation, project: null })) });
+      }
+      if (c.path === "/conversations/cA" || c.path === "/conversations/cB") return json(convo(c.path.split("/").pop()!));
+      if (c.path === "/api/generations/batch") {
+        batches += 1;
+        if (batches === 1) return firstBatch.promise;
+      }
+      return base(c);
+    };
+    act(() => root.unmount());
+    root = createRoot(host);
+    localStorage.setItem("mvhub.agentPanel.conversation", JSON.stringify({ account: "acct:jay@example.com", id: "cA" }));
+    await render();
+    expect(batches).toBe(1); // cA 의 조회가 아직 안 끝남
+    act(() => button("대화 목록")!.click());
+    await flush();
+    act(() => [...host.querySelectorAll<HTMLElement>(".agent-drawer-row")].find((r) => r.textContent?.includes("대화 cB"))!
+      .querySelector<HTMLButtonElement>(".agent-drawer-item")!.click());
+    await flush();
+    expect(batches).toBe(2); // 같은 g8 이라도 cB 의 조회를 새로 한다
+    expect(host.querySelector(".agent-user-wrap .agent-sent .agent-sent-tile img")).not.toBeNull();
+    firstBatch.resolve(json({ items: {}, materials: {}, missing: ["g8"] })); // 늦은 cA 답(못 찾음) — 버린다
+    await flush();
+    expect(host.querySelector(".agent-user-wrap .agent-sent .agent-sent-tile img")).not.toBeNull();
+  });
+
+  it("보낼 때 묶음을 고정해 싣고 성공하면 그 묶음만 비움(보내는 사이 붙인 칩은 남음) · 서명에 붙인 자료 · 내 말 위 썸네일 · 복원 썸네일은 묶음 조회 한 번", async () => {
+    await render();
+    await drop({ [GEN]: "g1" });
+    await drop({ [FOLDER]: JSON.stringify({ projectId: "p1", projectName: "뻘뻘뻘", path: "e001/c0010" }) });
+    const slow = deferred<Response>();
+    const base = route;
+    let fail = true;
+    route = (c) => (c.path === "/turns" && c.method === "POST" ? (fail ? json({ detail: "boom" }, 500) : slow.promise) : base(c));
+    type("이걸로 만들어");
+    enter();
+    await flush();
+    const firstKey = turnCalls()[0].body!.idempotency_key;
+    expect(turnCalls()[0].body).toMatchObject({
+      attachments: [{ kind: "generation", id: "g1", name: "프롬프트 g1" }, { kind: "folder", project_id: "p1", path: "e001/c0010", name: "c0010" }],
+      attach_workspace: { scope: "personal", id: null },
+    });
+    expect(chipNames()).toHaveLength(2); // 실패 = 그대로
+    act(() => host.querySelectorAll<HTMLButtonElement>(".agent-attach .agent-context-x")[1].click()); // 폴더 빼기
+    fail = false;
+    enter(); // 같은 글·다른 붙인 자료 = 새 열쇠
+    await flush();
+    expect(turnCalls()[1].body!.idempotency_key).not.toBe(firstKey);
+    await drop({ [GEN]: "g2" }); // 보내는 사이 붙임
+    slow.resolve(started("t9", "c9"));
+    await flush();
+    expect(chipNames()).toEqual(["프롬프트 g2"]);
+    const sent = host.querySelector(".agent-user-wrap .agent-sent")!;
+    expect(sent.querySelectorAll(".agent-sent-tile img")).toHaveLength(1);
+
+    // 복원 — 앱 카드에 없는 생성물만 묶음 조회 한 번
+    route = (c) => {
+      if (c.path === "/conversations/c5") {
+        return json({ conversation: { id: "c5", title: "붙인 대화", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true,
+          pinned: false, archived: false, unread: false, unread_rev: 0 },
+          turns: [{ id: "t5", status: "done", text: "봐 줘", created_at: "", events: [],
+            attachments: { workspace: { scope: "personal", id: null }, items: [{ kind: "generation", id: "g7" }, { kind: "asset", project: "a", path: "x.png" }] } }] });
+      }
+      return base(c);
+    };
+    gens.g7 = gen("g7");
+    act(() => root.unmount());
+    root = createRoot(host);
+    localStorage.setItem("mvhub.agentPanel.conversation", JSON.stringify({ account: "acct:jay@example.com", id: "c5" }));
+    await render();
+    const batches = calls.filter((c) => c.path === "/api/generations/batch");
+    expect(batches.map((c) => c.body!.gen_ids)).toEqual([["g7"]]);
+    expect(host.querySelectorAll(".agent-user-wrap .agent-sent .agent-sent-tile")).toHaveLength(2);
+
+    // 늦은 복원 묶음 조회 — 그 사이 새 대화로 바뀌어도 오류 없이 버린다(한 번만 물음)
+    const slowBatch = deferred<Response>();
+    const restoring = route;
+    route = (c) => (c.path === "/api/generations/batch" && (c.body?.gen_ids as string[])?.includes("g8") ? slowBatch.promise : restoring(c));
+    gens.g8 = gen("g8");
+    route = ((prev) => (c: Call) => (c.path === "/conversations/c5" ? json({ conversation: { id: "c5", title: "붙인 대화", engine: "claude", model: "opus",
+      effort: "medium", updated_at: "", resumable: true, pinned: false, archived: false, unread: false, unread_rev: 0 },
+      turns: [{ id: "t5", status: "done", text: "봐 줘", created_at: "", events: [],
+        attachments: { workspace: { scope: "personal", id: null }, items: [{ kind: "generation", id: "g8" }] } }] }) : prev(c)))(route);
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render();
+    act(() => button("새 대화")!.click());
+    await flush();
+    slowBatch.resolve(json({ items: { g8: gens.g8 }, materials: {}, missing: [] }));
+    await flush();
+    const before = calls.filter((c) => c.path === "/api/generations/batch" && (c.body?.gen_ids as string[]).includes("g8")).length;
+    expect(before).toBe(1);
+  });
+});

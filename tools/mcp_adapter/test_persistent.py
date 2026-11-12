@@ -28,7 +28,7 @@ import server as adapter
 
 # conversation(Codex) 연결의 지침·도구 목록 지문 — 2026-10-30 힉스필드 표시 기본 때는 바뀌지 않게 고정(옛 값 978d500d…, 2026.10.28.1),
 # 2026-11-12 MV Agent 대화 기록 읽기(read_context kind 두 개·conversation_id·chat_cursor·지침 3문장)는 Codex 연결에도 들어가는 것이 맞아 새 값으로
-CONVERSATION_SURFACE_SHA256 = "380693e93d0bbfcaa9b7b364e3d89b9fc6bafd3d144e82a4edc968df1b5174f1"
+CONVERSATION_SURFACE_SHA256 = "a7bda54ff62d12ec4d1c2d5e2b031010ba48130b1e9eb4c7170737b48c160b87"  # 11-12 read_context 정확히 찾기 입력·설명
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -388,6 +388,31 @@ class PersistentTests(unittest.TestCase):
                 self.assertEqual(refused.structured_content["error"]["code"], "hub_outdated")
                 self.assertEqual(len(self.http.calls), before)
                 self.assertFalse((await client.call_tool("read_context", {"kind": "workspaces"})).is_error)  # 기존 조회는 그대로
+        anyio.run(exercise)
+
+    def test_exact_reference_inputs_pass_through_and_need_new_hub(self):
+        # 끌어다 붙인 자료 정확히 찾기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-4) — 인자 전달, reference_exact 없는 허브는 hub_outdated
+        config, _ = self.profile()
+        async def exercise():
+            async with Client(StdioServerParameters(**config)) as client:
+                found = await client.call_tool("read_context", {"kind": "references", "generation_ids": ["gen-1", "gen-2"]})
+                self.assertFalse(found.is_error)
+                args = self.http.calls[-1][1]["args"]
+                self.assertEqual((args["kind"], args["generation_ids"], "asset_paths" in args), ("references", ["gen-1", "gen-2"], False))
+                assets = await client.call_tool("read_context", {"kind": "references", "asset_project": "my-assets",
+                                                                 "asset_paths": ["e001/apple.png"]})
+                self.assertFalse(assets.is_error)
+                self.assertEqual(self.http.calls[-1][1]["args"]["asset_paths"], ["e001/apple.png"])
+                too_many = await client.call_tool("read_context", {"kind": "references", "generation_ids": [f"g{i}" for i in range(9)]})
+                self.assertTrue(too_many.is_error)
+            self.http.features = sorted(HUB_FEATURES - {"reference_exact"})
+            async with Client(StdioServerParameters(**config)) as client:
+                before = len(self.http.calls)
+                refused = await client.call_tool("read_context", {"kind": "references", "generation_ids": ["gen-1"]})
+                self.assertTrue(refused.is_error)
+                self.assertEqual(refused.structured_content["error"]["code"], "hub_outdated")
+                self.assertEqual(len(self.http.calls), before)
+                self.assertFalse((await client.call_tool("read_context", {"kind": "references"})).is_error)  # 기존 조회는 그대로
         anyio.run(exercise)
 
     def test_wrong_hub_never_receives_profile_credential(self):

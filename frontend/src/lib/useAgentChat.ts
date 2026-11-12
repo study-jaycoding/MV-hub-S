@@ -10,6 +10,8 @@ import {
   agentChatApi,
   CLAUDE_CHAT_OK,
   ClaudeLoginError,
+  type AgentAttachment,
+  type AgentAttachments,
   type AgentContext,
   type AgentConversationPatch,
   type AgentConversationSummary,
@@ -40,7 +42,7 @@ function readOpenRequest(): OpenRequest | null {
 const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
 
 export type AgentMessage =
-  | { kind: "user"; id: string; text: string }
+  | { kind: "user"; id: string; text: string; attachments?: AgentAttachment[] } // attachments = 그 말과 함께 붙인 자료
   | { kind: "assistant"; id: string; text: string; open: boolean } // open = 아직 조각을 받는 덩어리
   | { kind: "tool"; id: string; name: string; status: "started" | "done" | "failed" }
   | { kind: "plan"; id: string; plan: AgentPlan; exec?: { state: "running" | "done" | "failed"; message?: string };
@@ -342,7 +344,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       loadingId.current = null;
       let rebuilt: AgentMessage[] = [];
       for (const t of r.turns) {
-        rebuilt = [...rebuilt, { kind: "user", id: `${t.id}:user`, text: t.text }];
+        const attached = t.attachments?.items?.length ? { attachments: t.attachments.items } : {};
+        rebuilt = [...rebuilt, { kind: "user", id: `${t.id}:user`, text: t.text, ...attached }];
         rebuilt = t.events.reduce((acc, ev) => applyAgentEvent(acc, ev, t.id), rebuilt);
       }
       setMessages(r.plans ? restorePlans(rebuilt, r.plans) : rebuilt);
@@ -517,8 +520,9 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     saveJSON(STORAGE_KEYS.agentPanelModel, { engine: fixed.engine, model: fixed.model, effort: fixed.effort });
   }, [choice, conversationId, messages.length, newConversation]);
 
-  /** 보낸다. 받아들였으면 true(입력칸을 비운다). 보내는 중·진행 중이면 아무것도 하지 않는다. */
-  const send = useCallback(async (text: string): Promise<boolean> => {
+  /** 보낸다. 받아들였으면 true(입력칸을 비운다). 보내는 중·진행 중이면 아무것도 하지 않는다.
+   *  attach = 이 말과 함께 붙인 자료(보내는 순간의 묶음 — 성공하면 부르는 쪽이 그 묶음만 비운다, 설계 2-1). */
+  const send = useCallback(async (text: string, attach: AgentAttachments | null = null): Promise<boolean> => {
     const body = text.trim();
     if (!body || !choice || busy.current) return false;
     busy.current = true;
@@ -527,8 +531,10 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     const stale = ticket();
     const account = getAccountNamespace();
     const fast = !!choice.fast && choice.engine === "claude" && choice.model === "opus";
-    // 같은 요청인가 = 계정·대화·모델·깊이·빠른 모드·글·화면 정보가 모두 같은가(허브는 같은 열쇠면 내용 비교 없이 그 차례를 돌려준다)
-    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, fast, body, contextRef.current]);
+    const attached = attach?.items.length ? attach : null;
+    // 같은 요청인가 = 계정·대화·모델·깊이·빠른 모드·글·화면 정보·붙인 자료(와 그 공간)가 모두 같은가(허브는 같은 열쇠면 내용 비교 없이 그 차례를 돌려준다)
+    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, fast, body, contextRef.current,
+      attached && { workspace: { scope: attached.workspace.scope, id: attached.workspace.id ?? null }, items: attached.items }]);
     const key = pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID();
     pendingSend = { account, sig, key }; // 받아들인 답을 화면에 붙이면 지운다
     const rememberedAtSend = remembered();
@@ -538,6 +544,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         ...(conversationId ? { conversation_id: conversationId } : {}),
         engine: choice.engine, model: choice.model, effort: choice.effort, fast,
         text: body, context: contextRef.current,
+        ...(attached ? { attachments: attached.items, attach_workspace: attached.workspace } : {}),
       });
       if (stale()) {
         // 칸을 닫는 등 화면이 바뀐 뒤 온 접수 답 — 허브는 받아들였다. 같은 계정이고 그사이 사람이 다른 대화를 고르지 않았으면
@@ -546,7 +553,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         return false;
       }
       if (pendingSend?.key === key) pendingSend = null; // 받아들인 답을 화면에 붙였다
-      setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body }]);
+      setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body, ...(attached ? { attachments: attached.items } : {}) }]);
       setConversationId(r.conversation_id);
       currentId.current = r.conversation_id; // 다시 그리기 전에 끝남이 와도 읽음이 이 대화로 가게
       remember(r.conversation_id);

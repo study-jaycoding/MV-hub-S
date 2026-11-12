@@ -65,6 +65,8 @@ _NEW_COLUMNS = {
     "cli_home": "TEXT",  # 세션을 띄운 때의 Claude 자격 폴더·작업 폴더 — 삭제 때 그 세션 파일만 찾는 근거
     "cli_cwd": "TEXT",
 }
+# 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-3) — 차례 표. NULL = 붙인 것 없음, 넣는 모양은 {"workspace", "items"} 하나
+_NEW_TURN_COLUMNS = {"attachments": "TEXT"}
 _PROJECT = ("CASE WHEN c.project_override IS NULL THEN (SELECT json_extract(t.context,'$.project') FROM agent_chat_turn t "
             "WHERE t.conversation_id=c.id AND json_valid(t.context) AND json_type(t.context,'$.project')='text' "
             "ORDER BY t.created_at, t.rowid LIMIT 1) WHEN c.project_override='' THEN NULL ELSE c.project_override END")
@@ -104,10 +106,11 @@ def open_db(path: Path) -> Path:
             conn.executescript(_SCHEMA)  # 열린 트랜잭션을 커밋해 버리므로 BEGIN 앞에서
             _tx(conn)
             try:
-                have = {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}
-                for name, decl in _NEW_COLUMNS.items():
-                    if name not in have:
-                        conn.execute(f"ALTER TABLE agent_chat_conversation ADD COLUMN {name} {decl}")
+                for table, columns in (("agent_chat_conversation", _NEW_COLUMNS), ("agent_chat_turn", _NEW_TURN_COLUMNS)):
+                    have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                    for name, decl in columns.items():
+                        if name not in have:
+                            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
                 for (turn_id,) in conn.execute("SELECT id FROM agent_chat_turn WHERE status IN ('running','cancelling')").fetchall():
                     _finish(conn, turn_id, "interrupted", "restart", None)
                 conn.execute("COMMIT")
@@ -170,9 +173,10 @@ def restore_snapshot(path, conversation_id, event_limit) -> dict | None:
             if not row:
                 return None
             turns = [dict(t) for t in conn.execute(
-                "SELECT id,status,text,reason,created_at,ended_at FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
+                "SELECT id,status,text,reason,created_at,ended_at,attachments FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
                 (conversation_id,)).fetchall()]
             for turn in turns:
+                turn["attachments"] = read_attachments(turn["attachments"])
                 turn["events"] = [{"seq": e["seq"], "kind": e["kind"], **json.loads(e["payload"])} for e in conn.execute(
                     "SELECT seq,kind,payload FROM agent_chat_event WHERE turn_id=? ORDER BY seq LIMIT ?", (turn["id"], event_limit)).fetchall()]
         finally:
@@ -301,7 +305,38 @@ def update_conversation(path, conversation_id, *, model=None, effort=None, cli_s
         conn.execute(f"UPDATE agent_chat_conversation SET {','.join(sets)} WHERE id=?", (*values, conversation_id))
 
 
-def claim_turn(path, *, conversation_id, idempotency_key, text, context) -> tuple[dict, bool]:
+_ATTACH_FIELDS = {"generation": ("id",), "asset": ("project", "path"), "folder": ("project_id", "path")}
+
+
+def _attachment_ok(item) -> bool:
+    if not isinstance(item, dict) or not isinstance(item.get("kind"), str):  # kind 가 목록 등이면 사전 조회가 TypeError(재확인 P2)
+        return False
+    need = _ATTACH_FIELDS.get(item["kind"])
+    return bool(need) and all(isinstance(item.get(key), str) and item[key] for key in need) and (
+        item.get("name") is None or isinstance(item.get("name"), str))
+
+
+def _space_ok(space) -> bool:
+    """개인 = id 가 None, 팀 = 비지 않은 문자열 id."""
+    if not isinstance(space, dict):
+        return False
+    if space.get("scope") == "personal":
+        return space.get("id") is None
+    return space.get("scope") == "team" and isinstance(space.get("id"), str) and bool(space["id"])
+
+
+def read_attachments(raw) -> dict | None:
+    """저장한 붙인 자료 — NULL·깨진 JSON·모양이 다르면(공간·항목 하나라도) 없음(None). 화면이 깨진 항목을 받지 않게(독립 리뷰 P2)."""
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list) or not value["items"] or not _space_ok(value.get("workspace")):
+        return None
+    return value if all(_attachment_ok(item) for item in value["items"]) else None
+
+
+def claim_turn(path, *, conversation_id, idempotency_key, text, context, attachments=None) -> tuple[dict, bool]:
     """같은 열쇠면 그 차례를 그대로(새로 실행하지 않음), 진행 중 차례가 있으면 Busy. 원자적으로 선점한다."""
     with connect(path) as conn:
         _tx(conn)
@@ -315,8 +350,10 @@ def claim_turn(path, *, conversation_id, idempotency_key, text, context) -> tupl
                 raise LookupError(conversation_id)
             tid = str(uuid.uuid4())
             try:
-                conn.execute("INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context) VALUES(?,?,?,?,?,?)",
-                             (tid, conversation_id, idempotency_key, "running", text, json.dumps(context, ensure_ascii=False)))
+                conn.execute("INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context,attachments) "
+                             "VALUES(?,?,?,?,?,?,?)",
+                             (tid, conversation_id, idempotency_key, "running", text, json.dumps(context, ensure_ascii=False),
+                              json.dumps(attachments, ensure_ascii=False) if attachments else None))
             except sqlite3.IntegrityError as exc:
                 conn.execute("ROLLBACK")
                 raise Busy() from exc

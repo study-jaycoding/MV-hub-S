@@ -132,6 +132,8 @@ export function FilterSidebar({
           onDropToFolder={onDropToFolder}
           onDropToUnassigned={onDropToUnassigned}
           onFolderAction={onFolderAction}
+          // 폴더 줄을 끌어 MV Agent 칸에 붙인다(캔버스 사이드바와 같은 끌기 값 — docs/status/MVAgent_끌어다넣기_2026-11-12.md 3절 J1 b)
+          enableFolderDrag
         />
       </div>
 

@@ -112,6 +112,16 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("agent_chat_read", manifest["requires"]["hub_features"])
         self.assertTrue(update.compatibility(manifest, self.bundle))
 
+    def test_real_adapter_with_reference_exact_needs_application_update(self):
+        # 11-12 끌어다 붙인 자료 정확히 찾기 — 다른 표식은 다 있고 reference_exact 만 없는 옛 본체에는 단독 설치되지 않는다
+        old = ('{"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search", '
+               '"agent_chat_read"}')
+        (self.bundle / "server.py").write_bytes(payload(features=old))
+        baseline = {name: (self.bundle / name).read_bytes() for name in update.BASELINE}
+        manifest = update.build_manifest("3" * 40, (HERE / "server.py").read_bytes(), baseline)
+        self.assertIn("reference_exact", manifest["requires"]["hub_features"])
+        self.assertTrue(update.compatibility(manifest, self.bundle))
+
     def test_version_directory_is_immutable_and_extra_files_are_rejected(self):
         manifest, files = self.candidate()
         update.stage_version(self.release, manifest, files)

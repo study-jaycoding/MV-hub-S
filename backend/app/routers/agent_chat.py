@@ -10,11 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import Field, StrictBool, StrictInt, model_validator
+from pydantic import AfterValidator, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from .. import active_account, config
 from ..deps import expected_account_differs
@@ -263,6 +263,63 @@ async def _plan_snapshots(ctx, identity: Identity, conversation_id: str) -> list
     return out
 
 
+# ── 끌어다 넣기(설계 docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-2) — 정확한 식별자만. 허브는 조회하지 않는다(AI 의 정확히 찾기가 확인) ──
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _no_control(value: str) -> str:
+    if _CONTROL.search(value):
+        raise ValueError("제어 글자를 쓸 수 없습니다")
+    return value
+
+
+def _ident(max_length: int):
+    return Annotated[str, Field(min_length=1, max_length=max_length), AfterValidator(_no_control)]
+
+
+class _AttachBase(StrictModel):
+    name: str | None = None  # 화면 표시용 — 거절하지 않고 정리(줄바꿈 등 제어 글자 → 공백, 120자)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _clean_name(cls, value):
+        if not isinstance(value, str):
+            return value
+        return _CONTROL.sub(" ", value).strip()[:120].strip() or None
+
+
+class AttachGeneration(_AttachBase):
+    kind: Literal["generation"]
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
+
+
+class AttachAsset(_AttachBase):
+    kind: Literal["asset"]
+    project: _ident(200)
+    path: _ident(1000)
+
+
+class AttachFolder(_AttachBase):
+    kind: Literal["folder"]
+    project_id: _ident(200)
+    path: _ident(500)  # MCP read_context 의 folder_path 상한과 같게
+
+
+class AttachWorkspace(StrictModel):
+    scope: Literal["personal", "team"]
+    id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _check(self):
+        if (self.scope == "team") != (self.id is not None):
+            raise ValueError("팀 공간은 id 가, 개인 공간은 id 없이")
+        return self
+
+
+def _attach_key(item) -> tuple:
+    return (item.kind, getattr(item, "id", None), getattr(item, "project", None), getattr(item, "project_id", None), getattr(item, "path", None))
+
+
 class TurnIn(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     conversation_id: UUID | None = None
@@ -272,6 +329,29 @@ class TurnIn(StrictModel):
     fast: bool = False  # 빠른 모드 — Opus 만, 매 차례 켬/끔을 CLI 에 적는다(Claude 추가 사용 크레딧)
     text: str = Field(min_length=1, max_length=8000)
     context: dict = Field(default_factory=dict)
+    attachments: list[Annotated[AttachGeneration | AttachAsset | AttachFolder, Field(discriminator="kind")]] = Field(
+        default_factory=list, max_length=8)
+    attach_workspace: AttachWorkspace | None = None
+
+    @model_validator(mode="after")
+    def _check_attachments(self):
+        if bool(self.attachments) != (self.attach_workspace is not None):
+            raise ValueError("붙인 자료와 그 공간은 함께 보내세요")
+        keys = [_attach_key(item) for item in self.attachments]
+        if len(set(keys)) != len(keys):
+            raise ValueError("같은 자료를 두 번 붙였습니다")
+        screen = self.context.get("workspace")
+        if self.attach_workspace and isinstance(screen, dict) and (
+                screen.get("scope"), screen.get("id") or None) != (self.attach_workspace.scope, self.attach_workspace.id):
+            raise ValueError("붙인 자료의 공간이 지금 화면과 다릅니다")
+        return self
+
+    def stored_attachments(self) -> dict | None:
+        """저장·프롬프트에 쓰는 한 모양 — {"workspace": {scope, id}, "items": [...]}(핸들 없음)."""
+        if not self.attachments:
+            return None
+        return {"workspace": self.attach_workspace.model_dump(),
+                "items": [item.model_dump(exclude_none=True) for item in self.attachments]}
 
 
 @router.post("/turns")
@@ -323,7 +403,8 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
             title=" ".join(body.text.split())[:40]))
     try:
         turn, created = await asyncio.to_thread(lambda: chat_store.claim_turn(
-            path, conversation_id=conv["id"], idempotency_key=body.idempotency_key, text=body.text, context=body.context))
+            path, conversation_id=conv["id"], idempotency_key=body.idempotency_key, text=body.text, context=body.context,
+            attachments=body.stored_attachments()))
     except chat_store.Busy as exc:
         raise HTTPException(409, "앞 차례가 아직 진행 중입니다.") from exc
     except LookupError as exc:  # 사이에 지워진 대화(설계 2-5)
@@ -333,7 +414,7 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         try:
             service.start_turn(identity, conversation=conv, turn=turn, model=body.model, effort=body.effort,
                                text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
-                               fast=body.fast)
+                               fast=body.fast, attachments=body.stored_attachments())
         except Exception as exc:  # noqa: BLE001 - 실행 전 실패는 그 차례를 끝내고 알린다
             await asyncio.to_thread(lambda: chat_store.finish_turn(path, turn["id"], "failed", reason="start_failed",
                                                                    error="AI 프로그램을 시작하지 못했습니다."))
