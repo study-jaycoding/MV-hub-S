@@ -121,6 +121,19 @@ class PanelStagingTests(unittest.TestCase):
             return folder
         return mock.patch.object(self.pool, "AddSubFolder", side_effect=add)
 
+    def duplicate_add(self, name):
+        made = {}
+        real = FakeMediaPool.AddSubFolder
+        def add(parent, requested):
+            folder = real(self.pool, parent, requested)
+            if requested == name:
+                made["winner"] = folder
+                folder = real(self.pool, parent, requested + " copy")
+                made["copy"] = folder
+            self.pool.current = folder
+            return folder
+        return mock.patch.object(self.pool, "AddSubFolder", side_effect=add), made
+
     def bin(self, *names):
         return resolve_bridge._folder_at_path(self.pool.root, ("MV Hub", "Film", *names))
 
@@ -143,52 +156,76 @@ class PanelStagingTests(unittest.TestCase):
     def episode_op(self, **kwargs):
         return self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C10", "E1/C20", "E1/C30"], **kwargs)
 
-    def test_episode_target_resorts_like_send(self):
-        self.run_op("target", folder_path="E1/C30")  # 컷을 하나씩 눌러 만든 빈이 앞에 남은 자리(이미지 3)
-        self.run_op("target", folder_path="E1/C10")
-        saved = self.manager.saved
-        result = self.episode_op()
-        self.assertEqual([folder.name for folder in self.bin("E1").children], ["C10", "C20", "C30"])
-        self.assertTrue(result["reordered"])
-        self.assertGreater(self.manager.saved, saved)  # 보내기처럼 저장·DRP 백업 뒤 정렬
-        self.assertTrue(Path(result["folder_order_backup"]).is_file())
-        self.assertTrue(result["ids_changed"])  # 시험 가짜는 빠른 길(판)이 없어 다시 짓기 — 빈 ID 가 바뀐다
-        self.assertEqual(result["bins"], {f"E1/{name}": self.bin("E1", name).unique_id for name in ("C10", "C20", "C30")})
-        self.assertIs(self.pool.current, self.bin("E1"))
-        saved = self.manager.saved
-        again = self.episode_op()  # 순서가 맞으면 저장·백업 없음
-        self.assertEqual((again["reordered"], again["ids_changed"], again["order_error"], self.manager.saved), (False, False, "", saved))
-
-    def test_episode_target_failure_after_rebuild_still_returns_new_ids(self):
+    def test_episode_target_preserves_existing_bins_clips_and_ids(self):
         self.run_op("target", folder_path="E1/C30")
-        self.run_op("target", folder_path="E1/C10")  # 다음 episode_op 가 다시 짓기를 한다
+        old = self.bin("E1", "C30")
+        old_id = old.unique_id
+        clip = FakeClip(str(self.path))
+        old.clips.append(clip)
+        child = FakeMediaPool.AddSubFolder(self.pool, old, "Notes")
+        child_id = child.unique_id
+        nested_clip = FakeClip(str(self.path))
+        child.clips.append(nested_clip)
+        before = {folder.unique_id for folder, _ in resolve_bridge._panel_walk(self.bin())}
+        with mock.patch.object(self.manager, "SaveProject", wraps=self.manager.SaveProject) as save, \
+                mock.patch.object(self.manager, "ExportProject", wraps=self.manager.ExportProject) as export, \
+                mock.patch.object(self.pool, "MoveFolders", wraps=self.pool.MoveFolders) as move_folders, \
+                mock.patch.object(self.pool, "MoveClips", wraps=self.pool.MoveClips) as move_clips, \
+                mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete:
+            result = self.episode_op()
+            self.assertEqual(result["state"], "ok")
+            self.assertIs(self.bin("E1", "C30"), old)
+            self.assertEqual((old.unique_id, old.clips, old.children), (old_id, [clip], [child]))
+            self.assertEqual((child.unique_id, child.clips), (child_id, [nested_clip]))
+            self.assertTrue(before <= {folder.unique_id for folder, _ in resolve_bridge._panel_walk(self.bin())})
+            self.assertEqual([folder.name for folder in self.bin("E1").children], ["C30", "C10", "C20"])
+            self.assertEqual((result["reordered"], result["ids_changed"], result["folder_order_backup"], result["order_error"]), (False, False, "", ""))
+            self.assertEqual(result["bins"], {f"E1/{name}": self.bin("E1", name).unique_id for name in ("C10", "C20", "C30")})
+            self.assertIs(self.pool.current, self.bin("E1"))
+            with mock.patch.object(self.pool, "AddSubFolder", wraps=self.pool.AddSubFolder) as add:
+                again = self.episode_op()
+            add.assert_not_called()
+            self.assertEqual(again["bins"], result["bins"])
+            for operation in (save, export, move_folders, move_clips, delete):
+                operation.assert_not_called()
+
+    def test_episode_target_creates_shuffled_paths_in_natural_order(self):
+        with mock.patch.object(self.pool, "AddSubFolder", wraps=self.pool.AddSubFolder) as add:
+            result = self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C30", "E1/C20", "E1/C2", "E1/C10"])
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual([folder.name for folder in self.bin("E1").children], ["C2", "C10", "C20", "C30"])
+        self.assertEqual([call.args[1] for call in add.call_args_list], ["E1", "C2", "C10", "C20", "C30"])
+
+    def test_episode_target_selection_failure_still_returns_preserved_ids(self):
+        self.run_op("target", folder_path="E1/C30")
+        self.run_op("target", folder_path="E1/C10")
         with mock.patch.object(self.pool, "SetCurrentFolder", return_value=False):
             failed = self.episode_op()
-        self.assertEqual((failed["state"], failed["ids_changed"]), ("unavailable", True))  # Codex P2 — 옛 빈 ID 를 버리게
+        self.assertEqual((failed["state"], failed["ids_changed"]), ("unavailable", False))
         self.assertEqual(failed["bins"], {f"E1/{name}": self.bin("E1", name).unique_id for name in ("C10", "C20", "C30")})
         self.run_op("target", folder_path="E2/C30")
         self.run_op("target", folder_path="E2/C10")
         real = resolve_bridge._destination_folder
-        def dest(pool, root, parts, guard=None):
+        def dest(pool, root, parts, guard=None, *, cleanup_duplicate=True):
             if parts[-1] == "C99":
                 raise RuntimeError("빈 만들기 실패")
-            return real(pool, root, parts, guard)
+            return real(pool, root, parts, guard, cleanup_duplicate=cleanup_duplicate)
         with mock.patch.object(resolve_bridge, "_destination_folder", side_effect=dest):
             boom = self.run_op("target", folder_path="E2/C99", episode_path="E2", create_paths=["E2/C10", "E2/C20", "E2/C30"])
-        self.assertEqual((boom["state"], boom["ids_changed"], sorted(boom["bins"])), ("unavailable", True, ["E2/C10", "E2/C20", "E2/C30"]))
+        self.assertEqual((boom["state"], boom["ids_changed"], sorted(boom["bins"])), ("unavailable", False, ["E2/C10", "E2/C20", "E2/C30"]))
 
-    def test_failure_inside_bins_helper_after_rebuild_invalidates_ids(self):
+    def test_failure_inside_bins_helper_after_creation_invalidates_ids(self):
         self.run_op("target", folder_path="E1/C30")
-        self.run_op("target", folder_path="E1/C10")  # 다음 에피소드 target 은 다시 짓는다
+        self.run_op("target", folder_path="E1/C10")
         real = resolve_bridge._panel_walk
-        def walk(folder, parts=()):  # 다시 짓기가 끝난 뒤 도우미의 마지막 트리 훑기에서 예외
+        def walk(folder, parts=()):  # 생성이 끝난 뒤 도우미의 마지막 트리 훑기에서 예외
             if folder is not self.pool.root and len(parts) == 0 and self.bin("E1", "C20") is not None:
                 raise RuntimeError("트리 읽기 실패")
             return real(folder, parts)
         with mock.patch.object(resolve_bridge, "_panel_walk", side_effect=walk):
             result = self.episode_op()
         self.assertEqual((result["state"], result["ids_changed"], "bins" in result), ("unavailable", True, False))  # Codex P2(3차)
-        self.assertEqual([folder.name for folder in self.bin("E1").children], ["C10", "C20", "C30"])
+        self.assertEqual([folder.name for folder in self.bin("E1").children], ["C30", "C10", "C20"])
 
     def test_keep_current_restores_current_bin(self):
         self.pool.current = self.folder  # 사람이 S/C1 을 보는 중
@@ -198,17 +235,18 @@ class PanelStagingTests(unittest.TestCase):
         self.assertIs(self.pool.current, self.folder)
         self.assertEqual(sorted(result["bins"]), ["S/C1", "S/C2"])
 
-    def test_keep_current_restores_by_path_after_rebuild(self):
+    def test_keep_current_restores_original_id_after_adding_missing_cut(self):
         self.run_op("target", folder_path="S/C3")
-        old = self.pool.current  # 사람이 S/C3 을 보는 중 — C2 가 사이에 들어가 다시 짓기
-        result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2", "S/C3"], keep_current=True)
+        old = self.pool.current
+        with self.selecting_add():
+            result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2", "S/C3"], keep_current=True)
         now = self.bin("S", "C3")
-        self.assertEqual((result["state"], result["ids_changed"], result["bin_id"]), ("ok", True, now.unique_id))
-        self.assertIsNot(now, old)
+        self.assertEqual((result["state"], result["ids_changed"], result["bin_id"]), ("ok", False, old.unique_id))
+        self.assertIs(now, old)
         self.assertIs(self.pool.current, now)
 
-    def test_keep_current_restore_error_after_rebuild_still_returns_new_ids(self):
-        self.run_op("target", folder_path="S/C3")  # 다음 keep_current 가 C2 를 사이에 넣으며 다시 짓는다
+    def test_keep_current_restore_error_after_creation_still_returns_bins(self):
+        self.run_op("target", folder_path="S/C3")
         real = resolve_bridge._panel_restore_current
         calls = []
         def restore(*args):
@@ -218,7 +256,7 @@ class PanelStagingTests(unittest.TestCase):
             return real(*args)
         with mock.patch.object(resolve_bridge, "_panel_restore_current", side_effect=restore):
             result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2", "S/C3"], keep_current=True)
-        self.assertEqual((result["state"], result["ids_changed"]), ("unavailable", True))  # Codex P2(2차) — 옛 빈 ID 를 버리게
+        self.assertEqual((result["state"], result["ids_changed"]), ("unavailable", False))
         self.assertEqual(sorted(result["bins"]), ["S/C1", "S/C2", "S/C3"])
         self.assertEqual(len(calls), 2)  # 실패 길에서도 한 번 더 되돌려 본다
         self.assertIs(self.pool.current, self.bin("S", "C3"))
@@ -252,15 +290,158 @@ class PanelStagingTests(unittest.TestCase):
         self.assertEqual(self.pool.import_calls, [])
         self.assertEqual(self.run_op("target", expect_project=self.project.unique_id)["state"], "ok")
 
-    def test_order_failure_falls_back_but_stop_codes_halt(self):
-        with mock.patch.object(resolve_bridge, "_reconcile_folder_tree", side_effect=resolve_bridge.ResolveBridgeError("정렬 실패")):
+    def test_episode_target_skips_reconcile_but_recovery_gate_still_halts(self):
+        with mock.patch.object(resolve_bridge, "_reconcile_folder_tree", side_effect=AssertionError("패널 정렬 금지")) as reconcile:
             result = self.episode_op()
-        self.assertEqual((result["state"], result["order_error"], sorted(result["bins"])), ("ok", "정렬 실패", ["E1/C10", "E1/C20", "E1/C30"]))
-        stop = resolve_bridge.ResolveBridgeError("복구 먼저", code="rebuild_recovery_needed")
-        with mock.patch.object(resolve_bridge, "_reconcile_folder_tree", side_effect=stop):
+        reconcile.assert_not_called()
+        self.assertEqual((result["state"], result["order_error"], sorted(result["bins"])), ("ok", "", ["E1/C10", "E1/C20", "E1/C30"]))
+        stop = resolve_bridge.ResolveBridgeError("복구 먼저", code="rebuild_recovery_pending")
+        with mock.patch.object(resolve_bridge, "_settle_recovery_record", side_effect=stop), \
+                mock.patch.object(self.pool, "AddSubFolder", wraps=self.pool.AddSubFolder) as add:
             halted = self.run_op("target", folder_path="E2", episode_path="E2", create_paths=["E2/C10"])
-        self.assertEqual(halted["code"], "rebuild_recovery_needed")
-        self.assertIsNone(self.bin("E2", "C10"))  # 멈췄으면 하나씩 만들기로 넘어가지 않는다
+        add.assert_not_called()
+        self.assertEqual(halted["code"], "rebuild_recovery_pending")
+        self.assertIsNone(self.bin("E2", "C10"))
+
+    def test_episode_target_stops_after_project_changes_during_creation(self):
+        other_pool = FakeMediaPool()
+        other_project = FakeProject(other_pool)
+        other_project.unique_id = "resolve-project-2"
+        real = self.pool.AddSubFolder
+        def add(parent, name):
+            folder = real(parent, name)
+            if name == "C10":
+                self.manager.project = other_project
+            return folder
+        with mock.patch.object(self.pool, "AddSubFolder", side_effect=add) as create:
+            result = self.episode_op()
+        self.assertEqual((result["state"], result["code"]), ("unavailable", "project_changed"))
+        self.assertEqual([call.args[1] for call in create.call_args_list], ["E1", "C10"])
+        self.assertIsNotNone(self.bin("E1", "C10"))
+        self.assertIsNone(self.bin("E1", "C20"))
+        self.assertEqual((other_pool.root.children, self.manager.saved), ([], 0))
+
+    def test_episode_target_keeps_unsettled_prior_recovery_record_and_writes_no_bins(self):
+        folder = Path(self.payload["manifest_root"]) / ".mvhub" / "resolve-recovery"
+        identity = resolve_bridge._path_identity(("MV Hub", "Film"))
+        path = resolve_bridge._recovery_record_path(folder, self.project.unique_id, identity)
+        record = {"schema": resolve_bridge._RECOVERY_SCHEMA, "project_id": self.project.unique_id,
+                  "managed_identity": list(identity), "parent_uid": self.bin("S").unique_id,
+                  "staging": "__MVHUB_SORT_prior", "backup": str(Path(self.tmp.name) / "prior.drp"),
+                  "prefix": [], "tail_order": [], "desired": [], "parent_clips": {}, "tails": {}, "root_children": []}
+        resolve_bridge._write_recovery_record(path, record)
+        with mock.patch.object(self.pool, "AddSubFolder", wraps=self.pool.AddSubFolder) as add:
+            result = self.episode_op()
+        self.assertEqual((result["state"], result["code"]), ("rebuild_recovery_pending", "rebuild_recovery_pending"))
+        add.assert_not_called()
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), record)
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_episode_cut_name_race_reports_failure_without_deleting_copy(self):
+        adding, made = self.duplicate_add("C20")
+        with adding as add, mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete:
+            result = self.episode_op()
+            self.assertEqual((result["state"], result["bin_create_failed"]), ("ok", ["E1/C20"]))
+            self.assertNotIn("E1/C20", result["bins"])
+            self.assertNotIn(made["copy"].unique_id, result["bins"].values())
+            self.assertEqual(self.bin("E1").children.count(made["copy"]), 1)
+            add.reset_mock()
+            again = self.episode_op()
+            add.assert_not_called()
+            self.assertEqual((again["bin_create_failed"], again["bins"]["E1/C20"]), ([], made["winner"].unique_id))
+            self.assertEqual(self.bin("E1").children.count(made["copy"]), 1)
+            delete.assert_not_called()
+
+    def test_single_target_name_race_is_not_ok_and_keeps_current_copy(self):
+        adding, made = self.duplicate_add("C99")
+        with adding as add, mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete:
+            result = self.run_op("target", folder_path="S/C99")
+            self.assertNotEqual(result["state"], "ok")
+            self.assertNotEqual(result.get("bin_id"), made["copy"].unique_id)
+            self.assertIs(self.pool.current, made["copy"])
+            add.reset_mock()
+            again = self.run_op("target", folder_path="S/C99")
+            add.assert_not_called()
+            self.assertEqual((again["state"], again["bin_id"]), ("ok", made["winner"].unique_id))
+            self.assertEqual(self.bin("S").children.count(made["copy"]), 1)
+            delete.assert_not_called()
+
+    def test_managed_root_name_race_stops_without_deleting_copy(self):
+        adding, made = self.duplicate_add("OtherFilm")
+        with adding as add, mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete:
+            result = self.run_op("target", project_name="OtherFilm", folder_path="E1", episode_path="E1", create_paths=["E1/C10"])
+            self.assertEqual((result["state"], result["ids_changed"]), ("unavailable", True))
+            self.assertNotEqual(result.get("bin_id"), made["copy"].unique_id)
+            self.assertEqual(made["winner"].children, [])
+            self.assertIs(self.pool.current, made["copy"])
+            self.assertEqual(add.call_count, 1)
+            add.reset_mock()
+            again = self.run_op("target", project_name="OtherFilm", folder_path="", episode_path="", create_paths=[""])
+            add.assert_not_called()
+            self.assertEqual((again["state"], again["bin_id"]), ("ok", made["winner"].unique_id))
+            managed = resolve_bridge._folder_at_path(self.pool.root, ("MV Hub",))
+            self.assertEqual(managed.children.count(made["copy"]), 1)
+            delete.assert_not_called()
+
+    def test_cut_name_race_with_keep_current_restores_original_id(self):
+        standing, standing_id = self.folder, self.folder.unique_id
+        adding, made = self.duplicate_add("C20")
+        selected = []
+        real = self.pool.SetCurrentFolder
+        def select(folder):
+            selected.append((self.pool.current, folder))
+            return real(folder)
+        with adding as add, mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete, \
+                mock.patch.object(self.pool, "SetCurrentFolder", side_effect=select):
+            result = self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C20"], keep_current=True)
+            self.assertEqual((result["state"], result["bin_id"], result["bin_create_failed"], result["bins"]),
+                             ("ok", standing_id, ["E1/C20"], {}))
+            self.assertEqual(selected, [(made["copy"], standing)])
+            self.assertIs(self.pool.current, standing)
+            self.assertEqual(self.pool.current.unique_id, standing_id)
+            self.assertEqual(self.bin("E1").children.count(made["copy"]), 1)
+            add.reset_mock()
+            again = self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C20"], keep_current=True)
+            add.assert_not_called()
+            self.assertEqual((again["bin_id"], again["bin_create_failed"], again["bins"]["E1/C20"]),
+                             (standing_id, [], made["winner"].unique_id))
+            self.assertIs(self.pool.current, standing)
+            self.assertEqual(self.bin("E1").children.count(made["copy"]), 1)
+            delete.assert_not_called()
+
+    def test_managed_root_name_race_with_keep_current_restores_original_id(self):
+        standing, standing_id = self.folder, self.folder.unique_id
+        adding, made = self.duplicate_add("OtherFilm")
+        selected = []
+        real = self.pool.SetCurrentFolder
+        def select(folder):
+            selected.append((self.pool.current, folder))
+            return real(folder)
+        with adding as add, mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete, \
+                mock.patch.object(self.pool, "SetCurrentFolder", side_effect=select):
+            result = self.run_op("target", project_name="OtherFilm", folder_path="E1", episode_path="E1", create_paths=["E1/C10"], keep_current=True)
+            self.assertEqual((result["state"], result["ids_changed"]), ("unavailable", True))
+            self.assertNotEqual(result.get("bin_id"), made["copy"].unique_id)
+            self.assertEqual(selected, [(made["copy"], standing)])
+            self.assertIs(self.pool.current, standing)
+            self.assertEqual(self.pool.current.unique_id, standing_id)
+            self.assertEqual(made["winner"].children, [])
+            add.reset_mock()
+            again = self.run_op("target", project_name="OtherFilm", folder_path="", episode_path="", create_paths=[""], keep_current=True)
+            add.assert_not_called()
+            self.assertEqual((again["state"], again["bin_id"], again["bins"][""]), ("ok", standing_id, made["winner"].unique_id))
+            self.assertIs(self.pool.current, standing)
+            managed = resolve_bridge._folder_at_path(self.pool.root, ("MV Hub",))
+            self.assertEqual(managed.children.count(made["copy"]), 1)
+            delete.assert_not_called()
+
+    def test_non_panel_destination_still_cleans_duplicate_by_default(self):
+        adding, made = self.duplicate_add("C99")
+        with adding, mock.patch.object(self.pool, "DeleteFolders", wraps=self.pool.DeleteFolders) as delete:
+            folder = resolve_bridge._destination_folder(self.pool, self.pool.root, ["MV Hub", "Film", "S", "C99"])
+        self.assertIs(folder, made["winner"])
+        delete.assert_called_once_with([made["copy"]])
+        self.assertNotIn(made["copy"], self.bin("S").children)
 
     def test_follow_stage_uses_bin_id_not_name(self):
         self.folder.name = "사람이 바꾼 이름"
@@ -1065,7 +1246,7 @@ class PanelStagingTests(unittest.TestCase):
         self.assertEqual(self.manager.saved, saved)
 
     def test_failure_inside_bins_helper_with_keep_current_is_not_ok(self):
-        self.run_op("target", folder_path="S/C3")  # 다음 keep_current 가 C2 를 사이에 넣으며 다시 짓는다
+        self.run_op("target", folder_path="S/C3")
         real = resolve_bridge._panel_walk
         def walk(folder, parts=()):
             if folder is not self.pool.root and len(parts) == 0 and self.bin("S", "C2") is not None:

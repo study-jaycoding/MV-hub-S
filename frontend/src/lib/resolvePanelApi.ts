@@ -18,7 +18,7 @@ export interface TargetResult {
   used?: string[]; target_bin_id?: string;
   // 에피소드 target — 컷 경로 → 빈 ID, 에피소드 빈 ID, 못 만든 컷
   bins?: Record<string, string>; episode_bin_id?: string; bin_create_failed?: string[];
-  // 빈 순서 맞추기(보내기와 같은 것) — 다시 짓기면 MV Hub/<프로젝트> 빈 ID 가 모두 바뀐다(ids_changed)
+  // 패널 target은 기존 빈을 보존하고 없는 빈만 추가 — 정렬·백업 필드는 호환용, ids_changed는 보수적 무효화
   reordered?: boolean; folder_order_backup?: string; order_error?: string; ids_changed?: boolean; code?: string;
 }
 export interface StageResult extends TargetResult { items?: { gen_id: string; state: string }[]; removed?: number; deferred?: number; capped?: boolean; unexpected_imports?: number }
