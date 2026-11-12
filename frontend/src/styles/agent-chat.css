@@ -38,8 +38,9 @@
   flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
   height: 59px; padding: 0 12px 0 8px; border-bottom: 1px solid transparent;
 }
-.agent-head-left { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.agent-title { display: block; min-width: 0; margin-left: 6px; color: var(--text); font-size: 15px; font-weight: 700; }
+.agent-head-left { display: flex; flex: 1; align-items: center; gap: 2px; min-width: 0; }
+/* 제목 칸이 남는 폭을 다 써야 흐림이 넘칠 때만 끝에 걸린다(글자 폭만 차지하면 짧은 제목의 끝 글자도 흐려진다) */
+.agent-title { display: block; flex: 1; min-width: 0; margin-left: 6px; color: var(--text); font-size: 15px; font-weight: 700; }
 /* 긴 제목은 끝을 흐리게 자른다(글자 끝 '...' 금지) */
 .agent-title span { display: block; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
 .agent-chevron { flex: none; color: var(--muted); }
