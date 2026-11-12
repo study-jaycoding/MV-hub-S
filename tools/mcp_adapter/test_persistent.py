@@ -195,6 +195,25 @@ class PersistentTests(unittest.TestCase):
         self.assertIn("card_text를 사용자에게 별도 텍스트로 안내", plain)
         self.assertIn("card_text를 답에 옮겨 쓰거나 인용하지 말고", adapter.PANEL_INSTRUCTIONS)
 
+    def test_screen_action_only_on_the_panel_connection(self):
+        # 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-4) — 칸 연결에만, 이름·값을 그대로 허브 screen_action 으로
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url, "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+        async def exercise():
+            with patch("server.profile_settings", return_value=credential):
+                panel = adapter.create_server(self.url, "isolated-profile", "native", panel=True)
+                plain = adapter.create_server(self.url, "isolated-profile", "native")
+                names = {tool.name for tool in await plain.list_tools()}
+                described = next(tool.description for tool in await panel.list_tools() if tool.name == "screen_action")
+                await panel.call_tool("screen_action", {"name": "canvas.read_selection", "args": {"scene_id": "s1"}})
+                return names, described
+        names, described = anyio.run(exercise)
+        self.assertNotIn("screen_action", names)
+        self.assertIn("회색(비활성)", described)
+        self.assertIn("같은 동작을 자동으로 다시 내지 마세요", described)
+        path, body = self.http.calls[-1][:2]
+        self.assertEqual((path, body), ("/api/mcp/v2/client/action",
+                                        {"method": "screen_action", "args": {"name": "canvas.read_selection", "args": {"scene_id": "s1"}}}))
+
     def test_attachment_boundary_and_bad_hosts(self):
         path, env = self.attachment()
         with patch.dict(os.environ, env):

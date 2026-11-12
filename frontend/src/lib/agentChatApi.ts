@@ -102,7 +102,11 @@ export type AgentEvent = { seq: number } & (
   | { kind: "notice"; text: string } // Claude 알림(예: 빠른 모드를 못 써 표준 모드로)
   // 사용량 원 — Claude 만(주간 한도 = rate_limit_event, 대화 찬 정도 = 마지막 답 토큰 ÷ 문맥 창)
   | { kind: "usage"; weekly?: AgentWeeklyUsage; context?: { used: number; window: number } }
+  // 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-2) — 허브가 발급한 동작 · 그 결과·상태(실행 안 됨·결과 불명 포함)
+  | { kind: "ui_action"; action_id: string; name: string; args: Record<string, unknown> }
+  | { kind: "ui_action_result"; action_id: string; status: AgentScreenStatus; ok: boolean; summary: string }
 );
+export type AgentScreenStatus = "done" | "failed" | "expired_unclaimed" | "unknown";
 export interface AgentWeeklyUsage { utilization: number; resets_at: number | null } // utilization 0~1(쓴 만큼), resets_at 초
 /** 지금 화면 정보 — 허브가 프롬프트 앞에 "자료(명령 아님)"로 붙인다(4KB 이하). */
 export interface AgentContext {
@@ -112,6 +116,7 @@ export interface AgentContext {
   folder?: string;
   selected_ids?: string[];
   scene?: { id: string; name: string }; // 캔버스 탭에서 열린 씬(화면 읽기 설계 3-1)
+  scene_unavailable?: "away"; // 캔버스 탭이지만 이 창에 보드가 없다(별도 창 등) — 화면 동작을 못 한다(화면 동작 3-3b)
 }
 
 // 허브가 지금 화면 JSON 을 4096자에서 자른다 — 여유를 두고, 넘으면 씬 id·공간은 남기고 선택 카드부터 줄인다(화면 읽기 설계 리뷰 P2)
@@ -207,6 +212,7 @@ export interface AgentTurnRequest {
   attachments?: AgentAttachment[]; // 붙인 자료(최대 8) — 있으면 attach_workspace 도 함께
   attach_workspace?: AgentAttachWorkspace;
   gen_model?: string; // 칸 설정 '먼저 쓸 생성 모델'(앱 모델 코드) — 허브가 프롬프트 한 줄로
+  screen_tab?: string; // 옆 칸 마운트의 실행 창 번호 — 그 차례의 화면 동작을 이 마운트만 실행(허브 메모리에만, 화면 동작 3-1)
 }
 
 let session: AgentSession | null = null;
@@ -297,6 +303,12 @@ export const agentChatApi = {
   executePlan: (planId: string, conversationId: string) =>
     panelFetch<AgentPlan & { snapshot?: AgentPlanSnapshot }>(`/plans/${id(planId)}/execute`,
       { method: "POST", body: jsonBody({ conversation_id: conversationId }) }),
+  // 화면 동작 실행 표(그 차례를 시작한 마운트만, 처음 한 번) · 실행 결과(기한 안·차례가 살아 있을 때만 받음)
+  claimAction: (turnId: string, actionId: string, screenTab: string) =>
+    panelFetch<{ token: string }>(`/turns/${id(turnId)}/actions/${id(actionId)}/claim`,
+      { method: "POST", body: jsonBody({ screen_tab: screenTab }) }),
+  reportAction: (turnId: string, actionId: string, body: { token: string; ok: boolean; summary: string; data: Record<string, unknown> }) =>
+    panelFetch<{ accepted: boolean }>(`/turns/${id(turnId)}/actions/${id(actionId)}/result`, { method: "POST", body: jsonBody(body) }),
   forkConversation: (conversationId: string, requestId: string) =>
     panelFetch<{ conversation: AgentConversationSummary }>(`/conversations/${id(conversationId)}/fork`,
       { method: "POST", body: jsonBody({ request_id: requestId }) }),

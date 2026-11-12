@@ -496,6 +496,19 @@
 .agent-panel .cn-text { border: 0; background: transparent; color: var(--muted); font-size: 12.5px; text-decoration: underline; }
 .agent-panel .cn-note { font-size: 12px !important; color: var(--muted2) !important; }
 .agent-panel .cn-warn { color: #f5c542 !important; }
+/* 화면 동작 '한 일' 카드(docs/status/MVAgent_화면동작_2026-11-12.md 3-3) — 한 줄 요약 + [되돌리기], 실패·불명은 색으로만 가름 */
+.agent-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0; padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: 10px; background: rgba(255, 255, 255, 0.025); font-size: 13px; color: var(--text); }
+.agent-action-mark { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); }
+.agent-action.is-ok .agent-action-mark { background: var(--accent); color: var(--accent-ink); }
+.agent-action.is-failed .agent-action-mark { background: #f06a6a; }
+.agent-action.is-unknown .agent-action-mark { background: #f5c542; }
+.agent-action-text { flex: 1; min-width: 0; }
+.agent-action-undo { flex: none; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--border2); background: transparent;
+  color: var(--text); font-size: 12px; font-weight: 600; }
+.agent-action-undo:hover { background: rgba(255, 255, 255, 0.06); }
+.agent-action-note { flex-basis: 100%; color: var(--muted2); font-size: 12px; }
+
 /* 설치 중엔 손 설치 안내를 접어 둔다 */
 .agent-panel .cn-more { align-self: stretch; text-align: left; font-size: 12.5px; color: var(--muted); }
 .agent-panel .cn-more summary { cursor: pointer; color: var(--muted2); text-align: center; }

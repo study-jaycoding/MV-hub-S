@@ -1477,7 +1477,103 @@ _LIBRARY_READ_METHODS = frozenset({
 # MV Agent 칸 연결이 허브에서 부를 수 있는 동작 — 어댑터의 패널 모드·CLI 허용 목록과 별개로 허브도 막는다.
 # 실행은 can_execute=0 그대로 두고 칸 실행 문(_panel_execute)으로만 — get_result·show_results·get_generation 은 그림을 CLI 로 보내 뺀다.
 _PANEL_METHODS = frozenset({"read_context", "prepare_generation_plan", "estimate_plan", "get_plan",
-                            "execute_generation_plan", "wait_results", "add_to_canvas"})
+                            "execute_generation_plan", "wait_results", "add_to_canvas", "screen_action"})
+
+
+# ── 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-1) — 허브가 모양·한도·대상을 보고 실행 표를 발급, 옆 칸이 실행 ──
+_SceneId = Annotated[str, Field(min_length=1, max_length=100)]
+_CardId = Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class _SceneArgs(StrictModel):
+    scene_id: _SceneId
+
+
+class _NodeIn(StrictModel):
+    kind: Literal["generation", "text"]
+    text: str | None = Field(None, max_length=2000)
+
+
+class _CreateArgs(_SceneArgs):
+    nodes: list[_NodeIn] = Field(min_length=1, max_length=5)
+
+
+class _ConnectArgs(_SceneArgs):
+    pairs: list[tuple[_CardId, _CardId]] = Field(min_length=1, max_length=10)
+
+
+class _HiddenArgs(StrictModel):
+    generation_ids: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(min_length=1, max_length=50)
+    hidden: StrictBool
+
+
+_SCREEN_ARGS = {"canvas.read_selection": _SceneArgs, "canvas.create_nodes": _CreateArgs, "canvas.connect": _ConnectArgs,
+                "library.set_hidden": _HiddenArgs}
+
+
+class ScreenActionIn(StrictModel):
+    name: Literal["canvas.read_selection", "canvas.create_nodes", "canvas.connect", "library.set_hidden"]
+    args: dict
+
+
+def _owner_uid(ctx):
+    """이 연결의 신원이 만든 생성물의 만든 이 값 — 조회 성공만으로 소유를 믿지 않는다(_result_once 와 같은 출처)."""
+    return account_actor_uid(_internal(ctx, "/api/generations")) if config.AUTH_ENABLED else ctx.account.get("creator_uid")
+
+
+async def _owned_generation_ids(ctx, workspace, ids):
+    """차례에 고정한 공간에서 이 신원의 내 생성물만 남긴다 — 나머지는 건너뜀 목록(없음·남의 것·다른 공간 구별 없이)."""
+    if not isinstance(workspace, dict) or workspace.get("scope") not in ("personal", "team"):
+        return [], list(dict.fromkeys(ids))
+    ws = await asyncio.to_thread(_request_workspace, ctx, workspace["scope"], workspace.get("id") or None)
+    owner = await asyncio.to_thread(_owner_uid, ctx)
+    keep, skipped = [], []
+    for gid in dict.fromkeys(ids):
+        try:
+            row = await asyncio.to_thread(_generation_row, ctx, gid)
+        except HTTPException:
+            skipped.append(gid)
+            continue
+        (keep if owner and row.get("creator_uid") == owner and _matches(row, ws) else skipped).append(gid)
+    return keep, skipped
+
+
+async def _panel_screen_action(ctx, turn, body: ScreenActionIn):
+    if turn is None:
+        raise HTTPException(409, "MV Agent 칸에 진행 중인 차례가 없어 화면을 바꾸지 않았습니다.")
+    if not turn.screen_tab:
+        raise HTTPException(409, "화면 동작은 옆 칸이 열린 MV Hub 화면에서만 할 수 있어요(새 창·화면 정보를 뺀 차례는 안 돼요).")
+    try:
+        args = _SCREEN_ARGS[body.name].model_validate(body.args)
+    except ValidationError as exc:
+        raise HTTPException(422, "화면 동작의 값이 올바르지 않아요.") from exc
+    skipped: list[str] = []
+    if body.name.startswith("canvas."):
+        if not turn.screen_scene:
+            raise HTTPException(409, "캔버스가 이 창에 없어요 — 캔버스를 별도 창에 띄웠다면 본창으로 돌려 주세요.")
+        if args.scene_id != turn.screen_scene:
+            raise HTTPException(409, "사용자가 지금 보고 있는 캔버스 씬이 아니에요.")
+        payload = args.model_dump(exclude_none=True)
+        payload.pop("scene_id", None)
+        payload = {"scene_id": args.scene_id, **payload}
+        cost = len(args.nodes) if body.name == "canvas.create_nodes" else len(args.pairs) if body.name == "canvas.connect" else 0
+    else:
+        keep, skipped = await _owned_generation_ids(ctx, turn.screen_workspace, args.generation_ids)
+        if not keep:
+            return {"status": "skipped", "ok": False, "summary": "바꿀 수 있는 내 생성물이 없어요", "data": {}, "skipped": skipped}
+        payload, cost = {"generation_ids": keep, "hidden": args.hidden}, len(keep)
+    if body.name == "canvas.connect":
+        payload["pairs"] = [list(pair) for pair in args.pairs]
+    try:
+        action = await asyncio.to_thread(agent_chat.service.issue_action, turn, ctx.client["id"], body.name, payload, cost)
+    except agent_chat.TurnGone as exc:
+        raise HTTPException(409, "MV Agent 칸의 차례가 끝나 화면을 바꾸지 않았습니다.") from exc
+    except agent_chat.ScreenLimit as exc:
+        raise HTTPException(409, f"한 차례에 할 수 있는 양({exc.args[0]})을 넘었어요 — 다음 말에서 이어 해 주세요.") from exc
+    if not await asyncio.to_thread(action.settled.wait, agent_chat.SCREEN_ACTION_SECONDS):
+        await asyncio.to_thread(agent_chat.service.expire_action, turn, action)  # 기한 — 결과와 먼저 온 하나(잠금 안)
+    result = action.result or {"status": "unknown", "ok": False, "summary": agent_chat.SCREEN_STATUS_TEXT["unknown"], "data": {}}
+    return {**result, "skipped": skipped}
 
 
 async def _panel_execute(ctx, plan_id, turn):
@@ -1504,6 +1600,10 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
         turn = agent_chat.service.turn_for_client(ctx.client["id"]) if panel else None
         if body.method == "read_context":
             return await _read(ctx, ReadIn.model_validate(body.args))
+        if body.method == "screen_action":
+            if not panel:
+                raise HTTPException(403, "화면 동작은 MV Agent 칸 연결에서만 쓸 수 있습니다.")
+            return await _panel_screen_action(ctx, turn, ScreenActionIn.model_validate(body.args))
         if body.method == "prepare_generation_plan":
             data = PlanIn.model_validate(body.args)
             items = [item.model_dump() for item in data.items]

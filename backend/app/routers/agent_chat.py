@@ -409,6 +409,8 @@ class TurnIn(StrictModel):
     attachments: list[Annotated[AttachGeneration | AttachAsset | AttachFolder, Field(discriminator="kind")]] = Field(
         default_factory=list, max_length=8)
     attach_workspace: AttachWorkspace | None = None
+    # 화면 동작의 실행 창 번호(옆 칸 마운트마다 새로) — 허브 메모리의 그 차례에만 고정, 기록·사건에 안 남긴다(화면 동작 설계 3-1)
+    screen_tab: UUID | None = None
 
     @model_validator(mode="after")
     def _check_attachments(self):
@@ -429,6 +431,51 @@ class TurnIn(StrictModel):
             return None
         return {"workspace": self.attach_workspace.model_dump(),
                 "items": [item.model_dump(exclude_none=True) for item in self.attachments]}
+
+
+class ClaimIn(StrictModel):
+    screen_tab: UUID
+
+
+class ActionResultIn(StrictModel):
+    token: str = Field(min_length=16, max_length=100)
+    ok: StrictBool
+    summary: str = Field(max_length=300)
+    data: dict = Field(default_factory=dict)
+
+    @field_validator("data")
+    @classmethod
+    def _small(cls, value):
+        if len(json.dumps(value, ensure_ascii=False)) > 4096:
+            raise ValueError("결과 자료가 너무 큽니다")
+        return value
+
+
+_ACTION_ID = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+
+
+@router.post("/turns/{turn_id}/actions/{action_id}/claim")
+async def claim_action(turn_id: UUID, action_id: _ACTION_ID, body: ClaimIn, panel=Depends(_panel)):
+    """화면 동작 실행 표 — 그 차례를 시작한 칸 마운트(screen_tab)만, 처음 한 번(docs/status/MVAgent_화면동작_2026-11-12.md 3-2)."""
+    _, identity = panel
+    try:
+        token = await asyncio.to_thread(service.claim_action, identity, str(turn_id), action_id, str(body.screen_tab))
+    except LookupError as exc:
+        raise HTTPException(404, "그 화면 동작을 찾을 수 없어요.") from exc
+    except PermissionError as exc:
+        raise HTTPException(403, "이 칸이 시작한 차례가 아니에요.") from exc
+    except chat.ActionClosed as exc:
+        raise HTTPException(409, "이미 처리됐거나 기한이 지난 화면 동작이에요.") from exc
+    return {"token": token}
+
+
+@router.post("/turns/{turn_id}/actions/{action_id}/result")
+async def action_result(turn_id: UUID, action_id: _ACTION_ID, body: ActionResultIn, panel=Depends(_panel)):
+    """실행한 칸의 결과 — 기한 안·차례가 살아 있을 때만 받는다(아니면 accepted=false, 칸 카드는 칸이 이미 그렸다)."""
+    _, identity = panel
+    accepted = await asyncio.to_thread(service.finish_action, identity, str(turn_id), action_id, body.token, body.ok,
+                                       body.summary, body.data)
+    return {"accepted": accepted}
 
 
 @router.post("/turns")
@@ -497,7 +544,8 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         try:
             service.start_turn(identity, conversation=conv, turn=turn, model=body.model, effort=body.effort,
                                text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
-                               fast=body.fast, attachments=body.stored_attachments(), gen_model=body.gen_model)
+                               fast=body.fast, attachments=body.stored_attachments(), gen_model=body.gen_model,
+                               screen_tab=str(body.screen_tab) if body.screen_tab else None)
         except Exception as exc:  # noqa: BLE001 - 실행 전 실패는 그 차례를 끝내고 알린다
             await asyncio.to_thread(lambda: chat_store.finish_turn(path, turn["id"], "failed", reason="start_failed",
                                                                    error="AI 프로그램을 시작하지 못했습니다."))

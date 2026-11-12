@@ -28,6 +28,7 @@ import type { CanvasDocumentPort, CanvasTarget } from "../../features/canvas/api
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 import { inBoardFolder, matchesBoardFilters } from "../../lib/boardFilters";
 import type { ReviewAction } from "../../lib/generationReview";
+import type { SceneScreenHandle } from "../../lib/agentScreenActions";
 import type { GradeMode } from "../../lib/gradeStep";
 import {
   assetVersionsSnapshot,
@@ -464,6 +465,8 @@ interface Props {
     selection: () => CanvasSelection; // 지금 고른 카드·그룹 — 휠 클릭으로 여는 캔버스 창에 넘긴다
     comfyPlanRunning: () => boolean; // Comfy 를 앞세운 연결 생성이 도는 중 — 이 창이 뒤 단계를 이어 가야 해 캔버스를 다른 창으로 못 넘긴다
   } | null>;
+  // MV Agent 화면 동작이 쓰는 손잡이(docs/status/MVAgent_화면동작_2026-11-12.md 3-3b) — 이 보드가 붙어 있는 동안만 채운다
+  screenRef?: MutableRefObject<SceneScreenHandle | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (
     cardId: string,
@@ -583,6 +586,7 @@ export function SceneBoard({
   onVariantDelete,
   onSelectionGens,
   actionRef,
+  screenRef,
   onGenerateCard,
   onCanvasRecoveryCandidates,
   onCanvasRecoveryClaim,
@@ -2211,8 +2215,22 @@ export function SceneBoard({
         selection: () => ({ sceneId: cardsSceneId, cardIds: [...selected], groupIds: [...selectedGroupIds] }),
         comfyPlanRunning,
       };
+    if (screenRef)
+      screenRef.current = {
+        sceneId: cardsSceneId,
+        commit: commitDocument, // 세션 실행점이 보기 모드를 한 번 더 거절한다
+        snapshot: () => ({ cards: cardsRef.current, edges: edgesRef.current, groups: groupsRef.current }),
+        viewCenter: () => {
+          const rect = scrollRef.current?.getBoundingClientRect();
+          return rect ? toCanvas(rect.left + rect.width / 2, rect.top + rect.height / 2) : { x: 200, y: 200 };
+        },
+        canEdit: () => !(gpuFlag && !gpuEditRef.current) && !switchingRef.current,
+        selectCards: (ids) => setSelected(new Set(ids)),
+        selectedCardIds: () => [...selectedRef.current],
+      };
     return () => {
       if (actionRef) actionRef.current = null;
+      if (screenRef) screenRef.current = null;
     };
   });
 

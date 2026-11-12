@@ -8,7 +8,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentPanel } from "../src/components/agent-chat/AgentPanel";
+import type { CanvasInputCommand } from "../src/features/canvas/api";
+import { applyCanvasEdit, type CanvasEditCommand } from "../src/features/canvas/edits";
 import type { AgentEvent } from "../src/lib/agentChatApi";
+import type { ScreenHost } from "../src/lib/agentScreenActions";
+import type { SceneCard, SceneEdge, SceneGroup } from "../src/lib/scenes";
+import { getAccountNamespace } from "../src/lib/accountScope";
+import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { getAuthToken, setAuthToken } from "../src/lib/http";
 import { applyAgentEvent, type AgentMessage } from "../src/lib/useAgentChat";
 
@@ -1821,5 +1827,197 @@ describe("MV Agent 끌어다 넣기", () => {
     await flush();
     const before = calls.filter((c) => c.path === "/api/generations/batch" && (c.body?.gen_ids as string[]).includes("g8")).length;
     expect(before).toBe(1);
+  });
+});
+
+// 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md) — 이 마운트가 보낸 차례의 사건만 claim·실행, 영수증 카드·되돌리기, 복원·새 창은 실행 안 함
+describe("MV Agent 화면 동작", () => {
+  const SCENE_CONTEXT = { tab: "compose", workspace: { scope: "personal", id: null, name: "내 공간" }, scene: { id: "s1", name: "씬" } };
+  function board(sceneId: string | null = "s1") {
+    let doc: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] } = { cards: [], edges: [], groups: [] };
+    const handle = sceneId ? {
+      sceneId,
+      commit: (command: CanvasInputCommand) => {
+        const next = applyCanvasEdit(doc, command as CanvasEditCommand, {});
+        if (!next) return false;
+        doc = next.snapshot;
+        return true;
+      },
+      snapshot: () => doc, viewCenter: () => ({ x: 300, y: 200 }), canEdit: () => true,
+      selectCards: () => {}, selectedCardIds: () => [] as string[],
+    } : null;
+    return { host: { scene: () => handle } as ScreenHost, doc: () => doc };
+  }
+  const action = (seq: number, id: string, nodes = [{ kind: "text", text: "제목" }]) =>
+    ({ seq, kind: "ui_action", action_id: id, name: "canvas.create_nodes", args: { scene_id: "s1", nodes } });
+  async function render(host: ScreenHost, props: Partial<Parameters<typeof AgentPanel>[0]> = {}) {
+    act(() => root.render(<AgentPanel context={SCENE_CONTEXT} contextLabel="캔버스 › 씬" onClose={() => {}} screen={host} {...props} />));
+    await flush();
+  }
+
+  it("보낸 차례의 동작 — 실행 창 번호로 claim → 실행 → 영수증 카드(되돌리기) → 결과 보고 · 허브 결과 사건은 카드를 겹치지 않음 · 되돌리기 한 번", async () => {
+    const fake = board();
+    let tab = "";
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns" && c.method === "POST") { tab = c.body?.screen_tab as string; return started(); }
+      if (c.path === "/turns/t1/events?after=0") return json({ events: [action(1, "a".repeat(32))], status: "running", last_seq: 1 });
+      if (c.path === `/turns/t1/actions/${"a".repeat(32)}/claim`) return json({ token: "tok-123456789012345" });
+      if (c.path === `/turns/t1/actions/${"a".repeat(32)}/result`) return json({ accepted: true });
+      if (c.path === "/turns/t1/events?after=1") {
+        return json({ events: [{ seq: 2, kind: "ui_action_result", action_id: "a".repeat(32), status: "done", ok: true, summary: "새 노드 1개 만듦" },
+          { seq: 3, kind: "state", status: "done" }], status: "done", last_seq: 3 });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    await render(fake.host);
+    type("제목 노드 하나 만들어");
+    enter();
+    await flush(20);
+    expect(tab).toMatch(/^[0-9a-f-]{36}$/); // 이 마운트의 실행 창 번호
+    const claim = calls.find((c) => c.path.endsWith("/claim"))!;
+    expect(claim.body).toEqual({ screen_tab: tab });
+    expect(fake.doc().cards.map((card) => [card.kind, card.text])).toEqual([["text", "제목"]]);
+    expect(calls.find((c) => c.path.endsWith("/result"))!.body).toMatchObject({ token: "tok-123456789012345", ok: true, summary: "새 노드 1개 만듦" });
+    expect(texts(".agent-action-text")).toEqual(["새 노드 1개 만듦"]); // 허브 사건은 같은 동작이면 카드를 더 만들지 않는다
+    act(() => host.querySelector<HTMLButtonElement>(".agent-action-undo")!.click());
+    expect(fake.doc().cards).toEqual([]);
+    expect([host.querySelector(".agent-action-undo"), texts(".agent-action-text")[0]]).toEqual([null, "새 노드 1개 만듦 · 되돌림"]);
+  });
+
+  it("캔버스가 이 창에 없으면 씬을 빼고 'away' 를 싣는다 · claim 이 거절되면 실행하지 않는다 · 실행 안 됨은 허브 사건으로 카드", async () => {
+    const fake = board(null);
+    let context: Record<string, unknown> = {};
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns" && c.method === "POST") { context = c.body?.context as Record<string, unknown>; return started(); }
+      if (c.path === "/turns/t1/events?after=0") {
+        return json({ events: [action(1, "b".repeat(32)), { seq: 2, kind: "ui_action_result", action_id: "b".repeat(32), status: "expired_unclaimed", ok: false,
+          summary: "화면에서 실행되지 않았어요 — 옆 칸이 받지 못했어요" }, { seq: 3, kind: "state", status: "done" }], status: "done", last_seq: 3 });
+      }
+      if (c.path.endsWith("/claim")) return json({ detail: "기한이 지났어요" }, 409);
+      return json({ detail: "Not Found" }, 404);
+    };
+    await render(fake.host);
+    type("노드 만들어");
+    enter();
+    await flush(20);
+    expect([context.scene, context.scene_unavailable, context.tab]).toEqual([undefined, "away", "compose"]);
+    expect(calls.some((c) => c.path.endsWith("/result"))).toBe(false); // claim 거절 = 실행 안 함
+    expect(texts(".agent-action-text")).toEqual(["화면에서 실행되지 않았어요 — 옆 칸이 받지 못했어요"]);
+    expect(host.querySelector(".agent-action.is-unknown .agent-action-undo")).toBeNull();
+  });
+
+  it("claim 답이 늦어 허브의 상태 카드가 먼저 와도 칸 영수증이 그 자리를 대신한다(카드 하나) · '지금 화면'을 빼면 실행 창 번호도 안 싣는다", async () => {
+    const fake = board();
+    const claim = deferred<Response>();
+    const aid = "e".repeat(32);
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns" && c.method === "POST") return started();
+      if (c.path === "/turns/t1/events?after=0") {
+        return json({ events: [action(1, aid), { seq: 2, kind: "ui_action_result", action_id: aid, status: "unknown", ok: false,
+          summary: "결과를 확인하지 못했어요 — 화면에서 확인해 주세요" }, { seq: 3, kind: "state", status: "done" }], status: "done", last_seq: 3 });
+      }
+      if (c.path === `/turns/t1/actions/${aid}/claim`) return claim.promise;
+      if (c.path === `/turns/t1/actions/${aid}/result`) return json({ accepted: false });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await render(fake.host);
+    type("노드 만들어");
+    enter();
+    await flush(10);
+    expect(texts(".agent-action-text")).toEqual(["결과를 확인하지 못했어요 — 화면에서 확인해 주세요"]);
+    claim.resolve(json({ token: "tok-123456789012345" }));
+    await flush(10);
+    expect(texts(".agent-action-text")).toEqual(["새 노드 1개 만듦"]); // 같은 자리, 하나
+    expect(host.querySelector(".agent-action-undo")).not.toBeNull();
+    // '지금 화면' 칩을 빼고 보내면 실행 창 번호가 없다
+    act(() => root.unmount());
+    root = createRoot(host);
+    route = (c) => (c.path === "/session" ? session() : c.path === "/turns" && c.method === "POST" ? started("t2", "c2")
+      : c.path.startsWith("/turns/t2/events") ? json({ events: [], status: "done", last_seq: 0 }) : json({ detail: "Not Found" }, 404));
+    await render(fake.host);
+    act(() => button("정보")!.click());
+    act(() => button("지금 화면 AI 에게 보내기")!.click()); // 정보 칸의 'AI 에게 보내기' 끔
+    expect(button("지금 화면 AI 에게 보내기")!.getAttribute("aria-checked")).toBe("false");
+    act(() => button("정보")!.click());
+    type("그냥 물어볼게");
+    enter();
+    await flush(10);
+    const sent = calls.filter((c) => c.path === "/turns" && c.method === "POST").pop()!;
+    expect([sent.body?.context, sent.body?.screen_tab]).toEqual([{}, undefined]);
+  });
+
+  it("claim 답을 기다리는 사이 새 대화로 바꾸면 실행하지 않고 그렇다고 보고 · 보드가 떨어지면 실행기가 실패 카드", async () => {
+    let attached = true;
+    const fake = board();
+    const host: ScreenHost = { scene: () => (attached ? fake.host.scene() : null) };
+    const claims = [deferred<Response>(), deferred<Response>()];
+    let turnNo = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns" && c.method === "POST") { turnNo += 1; return started(`t${turnNo}`, `c${turnNo}`); }
+      const m = c.path.match(/^\/turns\/(t\d)\/events\?after=0$/);
+      if (m) return json({ events: [action(1, (m[1] === "t1" ? "f" : "a").repeat(32)), { seq: 2, kind: "state", status: "done" }], status: "done", last_seq: 2 });
+      if (c.path.endsWith("/claim")) return claims[c.path.includes("/t1/") ? 0 : 1].promise;
+      if (c.path.endsWith("/result")) return json({ accepted: true });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await render(host);
+    type("노드 만들어");
+    enter();
+    await flush(10);
+    act(() => button("새 대화")!.click()); // 차례는 끝났고 claim 답은 아직
+    await flush();
+    claims[0].resolve(json({ token: "tok-aaaaaaaaaaaaaaaa" }));
+    await flush(10);
+    expect(fake.doc().cards).toEqual([]); // 실행하지 않았다
+    expect(calls.find((c) => c.path === `/turns/t1/actions/${"f".repeat(32)}/result`)!.body).toMatchObject({ ok: false, summary: "화면이 바뀌어 실행하지 않았어요" });
+    // 다음 차례 — claim 을 기다리는 사이 보드가 떨어짐(캔버스를 별도 창으로)
+    type("다시 만들어");
+    enter();
+    await flush(10);
+    attached = false;
+    claims[1].resolve(json({ token: "tok-bbbbbbbbbbbbbbbb" }));
+    await flush(10);
+    expect(fake.doc().cards).toEqual([]);
+    expect(texts(".agent-action-text")).toEqual(["그 씬을 이 창의 캔버스에서 열어 주세요"]);
+    expect(calls.find((c) => c.path === `/turns/t2/actions/${"a".repeat(32)}/result`)!.body).toMatchObject({ ok: false });
+  });
+
+  it("복원한 대화의 동작·새 창은 실행하지 않는다", async () => {
+    const fake = board();
+    localStorage.setItem(STORAGE_KEYS.agentPanelConversation, JSON.stringify({ account: getAccountNamespace(), id: "c1" }));
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations/c1") {
+        return json({ conversation: { id: "c1", title: "옛 대화", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true },
+          turns: [{ id: "t0", status: "running", text: "만들어", events: [action(1, "c".repeat(32))] }] });
+      }
+      if (c.path === "/turns/t0/events?after=1") return new Promise<Response>(() => {}); // 진짜처럼 다음 사건을 기다린다
+      if (c.path.startsWith("/turns/t0/events")) return json({ events: [action(1, "c".repeat(32))], status: "running", last_seq: 1 });
+      if (c.path === "/conversations" && c.method === "GET") return json({ conversations: [] });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await render(fake.host);
+    await flush(10);
+    expect(calls.some((c) => c.path === "/conversations/c1")).toBe(true); // 마지막 대화를 복원했고, 진행 중 차례를 이어 받았다
+    expect(calls.some((c) => c.path.startsWith("/turns/t0/events"))).toBe(true);
+    expect(calls.some((c) => c.path.endsWith("/claim"))).toBe(false); // 같은 마운트라도 직접 보낸 차례가 아니면 실행하지 않는다
+    // 새 창(popout) — 실행 창 번호를 싣지 않는다
+    act(() => root.unmount());
+    root = createRoot(host);
+    route = (c) => (c.path === "/session" ? session() : c.path === "/turns" && c.method === "POST" ? started("t9", "c9")
+      : c.path.startsWith("/turns/t9/events") ? json({ events: [action(1, "d".repeat(32))], status: "done", last_seq: 1 }) : json({ detail: "Not Found" }, 404));
+    localStorage.clear();
+    sessionStorage.setItem("ch.accountScope", "jay@example.com");
+    await render(fake.host, { popout: true });
+    type("만들어");
+    enter();
+    await flush(20);
+    const sent = calls.filter((c) => c.path === "/turns" && c.method === "POST").pop()!;
+    expect(sent.body?.screen_tab).toBeUndefined();
+    expect(calls.some((c) => c.path.endsWith("/claim"))).toBe(false);
   });
 });

@@ -345,9 +345,10 @@ class SetupTests(unittest.TestCase):
                     return {tool.name for tool in (await client.list_tools()).tools}
 
         # 요리 2-A(앱 동작 도구 설계 A3): 실행·기다림·캔버스까지 — 그림을 CLI 로 보내는 get_result·show_results·get_generation 은 없다
+        #  화면 동작 screen_action 은 칸 연결에만(docs/status/MVAgent_화면동작_2026-11-12.md 3-4)
         self.assertEqual(anyio.run(tool_names),
                          {"check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan",
-                          "execute_generation_plan", "wait_results", "add_to_canvas"})
+                          "execute_generation_plan", "wait_results", "add_to_canvas", "screen_action"})
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -62,8 +63,12 @@ GUIDE = (
     "그림·URL·경로는 나열하지 않는다(칸의 계획 카드가 결과를 보인다). 실패·접수 불명확 항목은 다시 내지 말고 사용자에게 묻는다.\n"
     "- 캔버스는 사용자가 말했을 때만 read_context(kind='scenes')로 씬을 확인해 add_to_canvas 를 부른다.\n"
     "- '지금 화면'의 scene 은 사용자가 보고 있는 캔버스 씬이다 — '여기·이 씬'은 그 씬이다. 노드를 놓을 때는 read_context(kind='scenes') "
-    "목록에서 같은 id 를 확인해 add_to_canvas 의 scene_id 로 쓴다. 빈 노드 만들기·잇기 같은 화면 동작은 아직 없다 — "
-    "생성이 끝난 결과를 노드로 놓는 것만 된다.\n"
+    "목록에서 같은 id 를 확인해 add_to_canvas 의 scene_id 로 쓴다.\n"
+    "- 화면 동작은 screen_action 하나다 — 빈 노드 만들기(canvas.create_nodes: 생성 카드·글 카드, 잇지 않음)·잇기(canvas.connect: "
+    "명시한 쌍만)·고른 카드 읽기(canvas.read_selection)·내 생성물 회색(비활성)으로 바꾸기/풀기(library.set_hidden, 이 브라우저 기준). "
+    "캔버스 동작은 '지금 화면'의 scene 이 그 씬일 때만 그 scene_id 로 하고, 잇기 전엔 먼저 canvas.read_selection 으로 고른 카드를 확인한다. "
+    "scene_unavailable 이 'away' 면 캔버스가 별도 창에 떠 있어 못 한다 — 본창으로 돌려 달라고 한다. 회색은 read_context(kind='generations') "
+    "로 찾은 내 생성물 id 로만. 결과는 칸에 '한 일' 카드로 보이니 한 줄로만 말하고, 성공이 아니면(실패·실행 안 됨·결과 불명) 그 상태를 말로 알린다.\n"
     "- '붙인 자료'가 있으면 먼저 read_context(kind='references') 를 붙인 자료의 workspace_scope·workspace_id 그대로 불러 핸들을 받는다 — "
     "생성물은 generation_ids 한 번, 어셋은 프로젝트마다 asset_project+asset_paths 한 번. 받은 id 를 prepare_generation_plan 의 "
     "reference_ids 에 쓴다(목록을 뒤지지 않는다). 폴더는 read_context(kind='references', project_id, folder_path) 로 연다 — "
@@ -139,6 +144,12 @@ class _Runtime:
     cli_cwd: str | None = None
     session_seen: bool = False
     fork_source: str | None = None  # 아직 갈라지지 않은 포크의 첫 차례 — 원래 세션 id(이 id 가 시작 사건으로 오면 가르기 실패)
+    # 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-1) — 차례 시작 때 고정. screen_tab 은 메모리에만(사건·기록·복원에 없음)
+    screen_tab: str | None = None
+    screen_workspace: dict | None = None
+    screen_scene: str | None = None
+    actions: dict = field(default_factory=dict)  # action_id → _Action
+    action_used: dict = field(default_factory=dict)  # 이름 → 이 차례에 쓴 양(한도)
     events: int = 0
     checked_at: float = field(default=0.0)
     done: threading.Event = field(default_factory=threading.Event)
@@ -154,6 +165,36 @@ class _Runtime:
 
 class TurnGone(Exception):
     """칸 실행 선점 직전 — 그 차례가 멈췄거나 끝났거나 같은 대화의 새 차례로 바뀌었다."""
+
+
+# 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md) — 허브가 발급하고, 그 차례를 시작한 옆 칸 하나가 claim 해 실행한다
+SCREEN_ACTION_SECONDS = 30.0
+SCREEN_LIMITS = {"canvas.create_nodes": 10, "canvas.connect": 20, "library.set_hidden": 100}  # 한 차례 누적(쪼개기 우회 막기)
+SCREEN_STATUS_TEXT = {
+    "expired_unclaimed": "화면에서 실행되지 않았어요 — 옆 칸이 받지 못했어요",
+    "unknown": "결과를 확인하지 못했어요 — 화면에서 확인해 주세요",
+    "closed": "차례가 끝나 화면 동작을 마치지 못했어요",
+}
+
+
+class ScreenLimit(Exception):
+    """한 차례 누적 한도를 넘는다 — args[0] = 한도."""
+
+
+class ActionClosed(Exception):
+    """이미 claim 됐거나 끝났거나 기한이 지난 동작."""
+
+
+@dataclass
+class _Action:
+    action_id: str
+    name: str
+    args: dict
+    deadline: float  # monotonic
+    state: str = "pending"  # pending → claimed → done·failed / expired_unclaimed·unknown / closed(차례 끝)
+    token: str | None = None
+    result: dict | None = None
+    settled: threading.Event = field(default_factory=threading.Event)
 
 
 def _stop(runtime: _Runtime, flag: str, value: object = True) -> None:
@@ -226,7 +267,7 @@ class AgentChat:
     # ── 차례 ──
     def start_turn(self, identity: Identity, *, conversation: dict, turn: dict, model: str, effort: str,
                    text: str, context: dict, still_current: Callable[[], None], fast: bool = False,
-                   attachments: dict | None = None, gen_model: str | None = None) -> None:
+                   attachments: dict | None = None, gen_model: str | None = None, screen_tab: str | None = None) -> None:
         if self._closing:
             raise RuntimeError("허브가 종료 중입니다.")
         path = identity.db_file()
@@ -248,6 +289,11 @@ class AgentChat:
                            build_prompt(text, context, attachments, gen_model).encode("utf-8"), bool(resume), still_current, env=env,
                            cli_home=claude.claude_home(env, work) if engine == "claude" else None,
                            cli_cwd=os.path.normpath(str(work)) if engine == "claude" else None, fork_source=fork_source)
+        if screen_tab and context:  # 그 차례를 시작한 옆 칸 마운트·그때 화면의 공간·열린 씬을 고정한다(화면 정보를 뺀 차례는 안 함, 3-1)
+            scene = context.get("scene") if isinstance(context.get("scene"), dict) else {}
+            runtime.screen_tab = screen_tab
+            runtime.screen_workspace = context.get("workspace") if isinstance(context.get("workspace"), dict) else None
+            runtime.screen_scene = scene.get("id") if isinstance(scene.get("id"), str) and scene.get("id") else None
         with self._lock:
             self._runtimes[turn["id"]] = runtime
             self._by_client[conversation["client_id"]] = turn["id"]
@@ -447,6 +493,7 @@ class AgentChat:
             timer.cancel()
             with runtime.emit_lock:  # 감시 스레드가 내보내는 중이면 끝나길 기다린 뒤 끝 표시 — 이후 조각은 버린다
                 runtime.done.set()
+                self._close_actions(runtime)  # 기다리던 화면 동작은 닫고(사건 없음) MCP 대기를 풀어 준다
             watcher.join(10)
             reaped = self._reap(runtime)
             if reaped:
@@ -531,6 +578,86 @@ class AgentChat:
         갈라진 뒤의 차례는 자기 세션을 이어 가므로 해당하지 않는다(포크 독립 리뷰 2차 P2)."""
         with self._lock:
             return bool(session_id) and any(r.fork_source == session_id for r in self._runtimes.values())
+
+    # ── 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-1·3-2·3-3b) ──
+    def issue_action(self, runtime: _Runtime, client_id: str, name: str, args: dict, cost: int) -> _Action:
+        """작업 스레드에서만 — 차례 잠금(emit_lock) 안에서 그 연결의 지금 차례인지·누적 한도를 다시 보고 기록·사건을 낸다(claim_gate 와 같은 무늬)."""
+        with runtime.emit_lock:
+            with self._lock:
+                current = self._by_client.get(client_id) == runtime.turn_id and self._runtimes.get(runtime.turn_id) is runtime
+            if not current or runtime.stopped() or runtime.done.is_set():
+                raise TurnGone
+            limit = SCREEN_LIMITS.get(name)
+            used = runtime.action_used.get(name, 0)
+            if limit is not None and used + cost > limit:
+                raise ScreenLimit(limit)
+            runtime.action_used[name] = used + cost
+            action = _Action(secrets.token_hex(16), name, args, time.monotonic() + SCREEN_ACTION_SECONDS)
+            runtime.actions[action.action_id] = action
+            self._emit(runtime, "ui_action", {"action_id": action.action_id, "name": name, "args": args})
+        return action  # 기한은 기다리는 MCP 호출이 expire_action 으로 정한다(claim·결과도 기한을 스스로 본다)
+
+    def _owned_runtime(self, identity: Identity, turn_id: str) -> _Runtime | None:
+        with self._lock:
+            runtime = self._runtimes.get(turn_id)
+        return runtime if runtime and runtime.identity.key() == identity.key() else None
+
+    def claim_action(self, identity: Identity, turn_id: str, action_id: str, screen_tab: str) -> str:
+        """실행 자격 = 그 차례를 시작한 칸 마운트(screen_tab) — 처음 한 번만 실행 표를 준다. 없음 LookupError · 다른 칸 PermissionError ·
+        이미 claim·끝·기한 지남 ActionClosed."""
+        runtime = self._owned_runtime(identity, turn_id)
+        if runtime is None:
+            raise LookupError(turn_id)
+        with runtime.emit_lock:
+            action = runtime.actions.get(action_id)
+            if action is None:
+                raise LookupError(action_id)
+            if not runtime.screen_tab or not hmac.compare_digest(runtime.screen_tab.encode(), screen_tab.encode()):
+                raise PermissionError
+            if action.state != "pending" or runtime.stopped() or runtime.done.is_set() or time.monotonic() > action.deadline:
+                raise ActionClosed  # 멈춘(취소된) 차례의 동작은 실행하지 않는다
+            action.state, action.token = "claimed", secrets.token_urlsafe(24)
+            return action.token
+
+    def finish_action(self, identity: Identity, turn_id: str, action_id: str, token: str, ok: bool, summary: str, data: dict) -> bool:
+        """표를 받은 칸의 결과 — 기한 안·차례가 살아 있을 때만 받는다(타이머가 늦어도 실제 기한을 넘긴 결과는 성공으로 받지 않음)."""
+        runtime = self._owned_runtime(identity, turn_id)
+        if runtime is None:
+            return False
+        with runtime.emit_lock:
+            action = runtime.actions.get(action_id)
+            if action is None or action.state != "claimed" or not action.token \
+                    or not hmac.compare_digest(action.token.encode(), token.encode()):
+                return False
+            if runtime.stopped() or runtime.done.is_set() or time.monotonic() > action.deadline:
+                return False  # 취소·멈춤이 이 잠금에서 먼저 정해졌으면 결과를 받지 않는다(남은 동작은 차례 끝에 닫힘, 독립 리뷰 P1)
+            action.state = "done" if ok else "failed"
+            action.result = {"status": action.state, "ok": ok, "summary": summary, "data": data}
+            self._emit(runtime, "ui_action_result", {"action_id": action_id, "status": action.state, "ok": ok, "summary": summary})
+            action.settled.set()
+            return True
+
+    def expire_action(self, runtime: _Runtime, action: _Action) -> None:
+        """기한 — claim 없으면 실행 안 됨, claim 뒤 답 없으면 결과 불명. 결과 도착과 만료는 이 잠금에서 먼저 온 하나로 정해진다.
+        기다리던 MCP 호출이 기한에 부른다(그 호출이 사라져도 claim·결과는 기한을 스스로 보고, 남은 것은 차례 끝에 닫힌다)."""
+        with runtime.emit_lock:
+            if action.state not in ("pending", "claimed"):
+                return
+            action.state = "expired_unclaimed" if action.state == "pending" else "unknown"
+            action.result = {"status": action.state, "ok": False, "summary": SCREEN_STATUS_TEXT[action.state], "data": {}}
+            if not runtime.done.is_set() and not runtime.stopped():  # 끝났거나 멈춘(취소) 차례에는 사건을 내지 않는다(결과 거절과 같은 정책)
+                self._emit(runtime, "ui_action_result",
+                           {"action_id": action.action_id, "status": action.state, "ok": False, "summary": SCREEN_STATUS_TEXT[action.state]})
+            action.settled.set()
+
+    @staticmethod
+    def _close_actions(runtime: _Runtime) -> None:
+        """emit_lock 안에서(차례 끝) — 남은 동작을 닫고 기다리던 MCP 호출을 풀어 준다. 사건은 내지 않는다."""
+        for action in runtime.actions.values():
+            if action.state in ("pending", "claimed"):
+                action.state = "closed"
+                action.result = {"status": "closed", "ok": False, "summary": SCREEN_STATUS_TEXT["closed"], "data": {}}
+                action.settled.set()
 
     def is_live(self, turn_id: str) -> bool:
         """이 허브 프로세스에 그 차례의 실행이 있는가 — 앞 프로세스가 남긴 'running' 은 거짓(MCP 읽기의 live 표시)."""
