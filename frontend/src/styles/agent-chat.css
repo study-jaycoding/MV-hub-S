@@ -376,8 +376,58 @@
 }
 .agent-input::placeholder { color: var(--muted2); }
 .agent-input:focus { outline: none; }
-.agent-composer-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.agent-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .agent-model-wrap { position: relative; }
+/* 입력칸 아래 칩 — [모델 ⌄][깊이 ⌄][사용량 원](docs/status/MVAgent_모델설정사용량_2026-11-12.md · 시안 model-settings.png).
+   평소 글자만, 올리거나 열면 바탕과 ⌄ */
+.agent-foot-chips { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.agent-chip .agent-chevron { opacity: 0; }
+.agent-chip:hover:not(:disabled) .agent-chevron, .agent-chip[aria-expanded="true"] .agent-chevron { opacity: 1; }
+.agent-effort-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: 15px; background: transparent; color: var(--muted); font-size: 13px;
+}
+.agent-effort-btn:hover:not(:disabled), .agent-effort-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+.agent-chip:active, .agent-usage:active, .agent-model-row:active { transform: none; } /* 공통 button:active 의 1px 내려감 없이 */
+.agent-model-co { position: relative; }
+.agent-model-row.on { background: rgba(255, 255, 255, 0.06); }
+.agent-model-row .agent-chevron { margin-left: auto; transform: rotate(-90deg); }
+.agent-model-plan { color: var(--muted); font-size: 11.5px; }
+.agent-model-sub { left: calc(100% + 4px); top: -6px; min-width: 170px; width: 180px; background: #2b2b2b; }
+.agent-model-sub.inline { position: static; min-width: 0; width: auto; max-height: none; margin: 0 0 2px; padding: 0 0 0 14px; border: 0; background: transparent; box-shadow: none; }
+.agent-effort-menu { left: 0; bottom: calc(100% + 8px); min-width: 210px; width: 220px; background: #2b2b2b; }
+.agent-fast-row { cursor: default; }
+.agent-fast-row small { color: var(--muted); font-size: 11px; }
+.agent-usage { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 15px; background: transparent; }
+.agent-usage:hover, .agent-usage.open { background: rgba(255, 255, 255, 0.06); }
+.agent-usage-track { fill: none; stroke: #4a4a4a; stroke-width: 2.4; }
+.agent-usage-fill { fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; }
+.agent-usage-pop { left: 0; bottom: calc(100% + 8px); width: 250px; padding: 12px 14px; background: #2b2b2b; font-size: 12.5px; color: #cfcfcf; }
+.agent-usage-row { display: flex; align-items: baseline; gap: 8px; color: #cfcfcf; font-size: 12.5px; }
+.agent-usage-row b { color: #f0f0f0; font-size: 14px; }
+.agent-usage-bar { height: 5px; margin: 6px 0 6px; overflow: hidden; border-radius: 3px; background: #3c3c3c; }
+.agent-usage-bar i { display: block; height: 100%; background: var(--accent); color: var(--accent-ink); } /* 글자 없는 막대 — 라임 바탕 규칙 */
+.agent-usage-note { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.agent-usage-pop .agent-menu-sep { margin: 10px 0; }
+/* 설정 쪽 — 칸 안을 덮는다(← · Esc 로 돌아감) */
+.agent-settings { position: absolute; inset: 0; z-index: 9; display: flex; flex-direction: column; background: var(--panel); }
+.agent-settings-head { display: flex; flex: none; align-items: center; gap: 8px; height: 58px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+.agent-settings-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.agent-settings-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 14px 16px 20px; }
+.agent-settings-grp h4 { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.agent-settings-card { border: 1px solid var(--border); border-radius: 12px; background: #2e2e2e; }
+.agent-settings-usage { padding: 12px; }
+.agent-settings-line { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-top: 1px solid var(--border); font-size: 13px; }
+.agent-settings-line:first-child { border-top: 0; }
+.agent-settings-t { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-settings-t small { color: var(--muted); font-size: 11.5px; }
+.agent-settings-t .ok { color: var(--accent); }
+.agent-settings-t .warn { color: #f5c542; }
+.agent-settings-logo { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: #2a2f2b; color: #cfcfcf; font-size: 14px; }
+.agent-settings-logo.claude { background: #3a2a24; color: #d97757; }
+.agent-settings-sel { flex: none; max-width: 48%; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: #3a3a3a; color: var(--text); font: inherit; font-size: 12.5px; }
+.agent-settings-btn { flex: none; height: 28px; padding: 0 12px; border: 1px solid var(--border2); border-radius: 8px; background: transparent; color: var(--text); font-size: 12.5px; }
+.agent-settings-btn:hover { background: rgba(255, 255, 255, 0.06); }
 /* 모델 단추 — 모델 이름 + 흐린 생각 깊이 + ⌄ (Aside 'GPT-6.1 Sol High ⌄') */
 .agent-model-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px;
@@ -386,7 +436,7 @@
 .agent-model-btn:hover:not(:disabled), .agent-model-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.06); }
 .agent-model-effort { color: var(--muted); font-weight: 400; }
 /* 모델 메뉴 — 찾기 칸 · 회사별 모델 · 생각 깊이 · 속도(Aside 모델 메뉴) */
-.agent-model-menu { right: 0; bottom: calc(100% + 8px); width: 280px; max-height: min(560px, 70vh); background: #2b2b2b; }
+.agent-model-menu { left: 0; bottom: calc(100% + 8px); width: 260px; max-height: none; overflow: visible; background: #2b2b2b; } /* 옆 하위 메뉴가 잘리지 않게 */
 .agent-model-search {
   width: 100%; height: 32px; margin-bottom: 4px; padding: 0 10px; border: 0; border-radius: 8px;
   background: #3a3a3a; color: var(--text); font: inherit; font-size: 13px;

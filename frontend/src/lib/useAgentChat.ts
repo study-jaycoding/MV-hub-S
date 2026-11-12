@@ -24,6 +24,7 @@ import {
   type AgentPlanSnapshot,
   type AgentSession,
   type AgentTurnStatus,
+  type AgentWeeklyUsage,
   type ClaudeStatus,
 } from "./agentChatApi";
 import { AGENT_CHAT_CONNECT_FEATURE, hubHasFeature } from "./hubFeatures";
@@ -154,6 +155,34 @@ export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent, tur
   }
 }
 
+// ── 칸 설정·사용량(docs/status/MVAgent_모델설정사용량_2026-11-12.md) ──
+/** 새 대화 모델·생각 깊이(없으면 마지막에 쓴 것), 먼저 쓸 생성 모델(앱 모델 코드) — 이 브라우저에 남긴다 */
+export interface AgentDefaults { model?: { engine: AgentEngineId; model: string }; effort?: string; gen_model?: string }
+const GEN_MODEL_RE = /^[A-Za-z0-9_.:-]{1,100}$/; // 허브 TurnIn.gen_model 과 같은 글자
+export function readDefaults(): AgentDefaults {
+  const d = loadJSON<AgentDefaults>(STORAGE_KEYS.agentDefaults);
+  if (!d || typeof d !== "object") return {};
+  return {
+    ...(d.model && typeof d.model.engine === "string" && typeof d.model.model === "string" ? { model: d.model } : {}),
+    ...(typeof d.effort === "string" ? { effort: d.effort } : {}),
+    ...(typeof d.gen_model === "string" && GEN_MODEL_RE.test(d.gen_model) ? { gen_model: d.gen_model } : {}),
+  };
+}
+/** 새 대화의 모델 — 설정이 있으면 그것을 지금 쓸 수 있는 것으로 맞춘다(못 쓰면 pickChoice 가 쓸 수 있는 것으로) */
+function withDefaults(engines: AgentEngine[], c: AgentChoice | null, d: AgentDefaults): AgentChoice | null {
+  if (!d.model && !d.effort) return c;
+  const base = d.model ? { engine: d.model.engine, model: d.model.model, effort: d.effort ?? c?.effort ?? "medium" }
+    : c && { ...c, effort: d.effort ?? c.effort };
+  return base ? pickChoice(engines, base) : c;
+}
+/** 사용량 원 — 지금 대화가 찬 정도(그 대화의 마지막 답)와 Claude 주간 한도(계정별 마지막 값) */
+export interface AgentUsage { context?: { used: number; window: number }; weekly?: AgentWeeklyUsage & { at: number; account: string } }
+function savedWeekly(): AgentUsage["weekly"] {
+  const s = loadJSON<{ account?: string; weekly?: AgentWeeklyUsage; at?: number }>(STORAGE_KEYS.agentUsage);
+  return s?.account === getAccountNamespace() && s.weekly && typeof s.weekly.utilization === "number" && typeof s.at === "number"
+    ? { ...s.weekly, at: s.at, account: s.account } : undefined;
+}
+
 function pickChoice(engines: AgentEngine[], saved: AgentChoice | null): AgentChoice | null {
   const usable = (e?: AgentEngine) => !!e?.available && e.models.length > 0;
   const preferred = engines.find((e) => e.id === saved?.engine);
@@ -191,6 +220,22 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const [conversations, setConversations] = useState<AgentConversationSummary[] | null>(null);
   const [truncated, setTruncated] = useState(false); // 허브가 최근 500개만 실었다
   const [notice, setNotice] = useState<string | null>(null); // 오류가 아닌 안내(다른 창에서 지워짐 등)
+  const [usage, setUsage] = useState<AgentUsage>(() => ({ weekly: savedWeekly() }));
+  // 사건 속 사용량 — 대화 찬 정도는 마지막 값, 주간은 지금 받은 사건(live)만(복원한 옛 차례 값이 새 값을 덮지 않게)
+  const noteUsage = (events: AgentEvent[], live: boolean) => {
+    let context: AgentUsage["context"];
+    let weekly: AgentWeeklyUsage | undefined;
+    for (const ev of events) {
+      if (ev.kind !== "usage") continue;
+      if (ev.context) context = ev.context;
+      if (ev.weekly && live) weekly = ev.weekly;
+    }
+    if (!context && !weekly) return;
+    const account = getAccountNamespace();
+    const at = Date.now();
+    if (weekly) saveJSON(STORAGE_KEYS.agentUsage, { account, weekly, at });
+    setUsage((u) => ({ context: context ?? u.context, weekly: weekly ? { ...weekly, at, account } : u.weekly }));
+  };
   const currentId = useRef<string | null>(null); // 저장소 알림·끝남 처리에서 지금 대화를 읽는다(닫힌 값이 아니라)
   currentId.current = conversationId;
   const loadingId = useRef<string | null>(null); // 불러오는 중인 대화 — 그 사이 지워지면 늦은 복원 응답을 버린다
@@ -236,6 +281,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     setMessages([]);
     setTurn(null);
     setSending(false);
+    setUsage((u) => ({ weekly: u.weekly })); // 대화 찬 정도는 그 대화의 것
   }, []);
 
   const fail = useCallback((e: unknown) => {
@@ -302,6 +348,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         if (controller.signal.aborted || stale()) return;
         failures = 0;
         if (r.events.length) setMessages((m) => r.events.reduce((acc, ev) => applyAgentEvent(acc, ev, turnId), m));
+        noteUsage(r.events, true);
         seq = Math.max(seq, r.last_seq);
         setTurn({ id: turnId, status: r.status });
         // 보고 있는 대화의 끝남 — 그 사건의 읽지 않음 번호로 조건부 읽음(서랍 메뉴 2-3)
@@ -349,6 +396,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         rebuilt = t.events.reduce((acc, ev) => applyAgentEvent(acc, ev, t.id), rebuilt);
       }
       setMessages(r.plans ? restorePlans(rebuilt, r.plans) : rebuilt);
+      noteUsage(r.turns.flatMap((t) => t.events), false);
       setConversationId(id);
       currentId.current = id;
       setTitle(r.conversation.title);
@@ -479,7 +527,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     agentChatApi.session().then((s) => {
       if (stale()) return;
       setSession(s);
-      setChoice(pickChoice(s.engines, loadJSON<AgentChoice>(STORAGE_KEYS.agentPanelModel)));
+      // 처음 = 새 대화(마지막 대화를 열면 그 대화의 모델로 바뀐다) — 칸 설정의 새 대화 모델·깊이를 얹는다
+      setChoice(withDefaults(s.engines, pickChoice(s.engines, loadJSON<AgentChoice>(STORAGE_KEYS.agentPanelModel)), readDefaults()));
       const claudeEngine = s.engines.find((e) => e.id === "claude");
       lastClaudeState.current = claudeEngine?.state ?? null;
       // Claude 를 못 쓰면 연결 안내에 필요한 지금 상태(스위치 포함)를 받는다 — 로그인 창이 열려 있으면 기다림부터
@@ -508,7 +557,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     remember(null);
     setError(null);
     setNotice(null);
-  }, [drop]);
+    if (session) setChoice((c) => withDefaults(session.engines, c, readDefaults())); // 칸 설정의 새 대화 모델·깊이
+  }, [drop, session]);
 
   /** 모델·생각 깊이를 고른다. 엔진이 바뀌면 새 대화로 시작한다(보내는 중·진행 중엔 엔진을 바꾸지 않는다). */
   const choose = useCallback((next: AgentChoice) => {
@@ -532,9 +582,10 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     const account = getAccountNamespace();
     const fast = !!choice.fast && choice.engine === "claude" && choice.model === "opus";
     const attached = attach?.items.length ? attach : null;
-    // 같은 요청인가 = 계정·대화·모델·깊이·빠른 모드·글·화면 정보·붙인 자료(와 그 공간)가 모두 같은가(허브는 같은 열쇠면 내용 비교 없이 그 차례를 돌려준다)
+    const genModel = readDefaults().gen_model; // 칸 설정 '먼저 쓸 생성 모델'
+    // 같은 요청인가 = 계정·대화·모델·깊이·빠른 모드·글·화면 정보·붙인 자료(와 그 공간)·먼저 쓸 생성 모델이 모두 같은가(허브는 같은 열쇠면 내용 비교 없이 그 차례를 돌려준다)
     const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, fast, body, contextRef.current,
-      attached && { workspace: { scope: attached.workspace.scope, id: attached.workspace.id ?? null }, items: attached.items }]);
+      attached && { workspace: { scope: attached.workspace.scope, id: attached.workspace.id ?? null }, items: attached.items }, genModel ?? null]);
     const key = pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID();
     pendingSend = { account, sig, key }; // 받아들인 답을 화면에 붙이면 지운다
     const rememberedAtSend = remembered();
@@ -545,6 +596,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         engine: choice.engine, model: choice.model, effort: choice.effort, fast,
         text: body, context: contextRef.current,
         ...(attached ? { attachments: attached.items, attach_workspace: attached.workspace } : {}),
+        ...(genModel ? { gen_model: genModel } : {}),
       });
       if (stale()) {
         // 칸을 닫는 등 화면이 바뀐 뒤 온 접수 답 — 허브는 받아들였다. 같은 계정이고 그사이 사람이 다른 대화를 고르지 않았으면
@@ -740,7 +792,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeEngine = session?.engines.find((e) => e.id === "claude");
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
-    session, choice, choose, conversationId, title, current, messages, turn, running, sending, error,
+    session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
     // Claude 연결 — 허브가 연결 경로를 알 때만 안내(옛 허브는 엔진 사유만)

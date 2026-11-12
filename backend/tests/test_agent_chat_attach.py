@@ -66,6 +66,27 @@ def test_attachments_are_stored_restored_and_reach_the_prompt_as_json(hub, monke
     assert any(e.get("kind") == "text" and e.get("text", "").endswith("고양이") for e in events)
 
 
+@pytest.mark.parametrize("bad", ["", "bad model", "a\nb", "x" * 101, "모델"])
+def test_turn_rejects_bad_gen_model(hub, bad):  # noqa: F811
+    client, _, _ = hub
+    assert start_turn(client, panel_headers(client), context=CONTEXT, gen_model=bad).status_code == 422
+
+
+def test_gen_model_reaches_the_prompt_as_one_line(hub, monkeypatch):  # noqa: F811
+    """칸 설정 '먼저 쓸 생성 모델'(docs/status/MVAgent_모델설정사용량_2026-11-12.md) — 코드 하나가 프롬프트 한 줄로만."""
+    client, _, _ = hub
+    monkeypatch.setenv("FAKE_AGENT_SCENARIO", "claude_ok")
+    prompts = []
+    real = chat.build_prompt
+    monkeypatch.setattr(chat, "build_prompt", lambda *args: prompts.append(real(*args)) or prompts[-1])
+    headers = panel_headers(client)
+    response = start_turn(client, headers, text="사과 그려", context=CONTEXT, gen_model="nano_banana_flash")
+    assert response.status_code == 200, response.text
+    wait_status(client, headers, response.json()["turn_id"], {"done"})
+    assert "[칸 설정 — 먼저 쓸 생성 모델]\nnano_banana_flash — " in prompts[0] and prompts[0].endswith("[사용자]\n사과 그려")
+    assert "먼저 쓸 생성 모델" not in chat.build_prompt("말", {"tab": "my"})
+
+
 def test_same_key_resend_returns_stored_turn_and_no_attachments_stay_null(hub):  # noqa: F811
     client, _, service = hub
     headers = panel_headers(client)

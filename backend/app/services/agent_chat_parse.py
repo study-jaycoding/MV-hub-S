@@ -35,11 +35,28 @@ def _load(line: str | bytes) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _count(value: object) -> int:
+    return value if type(value) is int and 0 <= value < 2 ** 53 else 0
+
+
+def _weekly(data: dict) -> dict | None:
+    """rate_limit_event → 주간 한도(0단계 원본 실측: rate_limit_info.unifiedWindows.seven_day = {utilization 0~1, resetsAt 초})."""
+    info = data.get("rate_limit_info")
+    windows = info.get("unifiedWindows") if isinstance(info, dict) else None
+    week = windows.get("seven_day") if isinstance(windows, dict) else None
+    used = week.get("utilization") if isinstance(week, dict) else None
+    if type(used) not in (int, float) or used != used:  # NaN 도 거른다
+        return None
+    resets = week.get("resetsAt")
+    return {"utilization": min(max(float(used), 0.0), 1.0), "resets_at": resets if type(resets) is int and 0 < resets < 2 ** 40 else None}
+
+
 class ClaudeParser:
     """`claude -p --output-format stream-json --verbose --include-partial-messages` 한 줄씩."""
 
     def __init__(self) -> None:
         self.tools: dict[str, str] = {}
+        self.context = 0  # 마지막 assistant 줄의 입력+캐시+출력 토큰 = 지금 대화가 문맥 창을 채운 양
 
     def feed(self, line: str | bytes) -> list[dict]:
         data = _load(line)
@@ -69,7 +86,14 @@ class ClaudeParser:
             if event.get("type") == "content_block_delta" and delta.get("type") == "text_delta" and delta.get("text"):
                 return [{"kind": "text_delta", "text": _text(delta.get("text"))}]
             return []
+        if kind == "rate_limit_event":
+            weekly = _weekly(data)
+            return [{"kind": "usage", "weekly": weekly}] if weekly else []
         if kind == "assistant":
+            usage = (data.get("message") or {}).get("usage")
+            if isinstance(usage, dict):
+                used = sum(_count(usage.get(key)) for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+                self.context = used or self.context
             out = []
             for block in (data.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict):
@@ -96,6 +120,10 @@ class ClaudeParser:
             if not ok:
                 errors = data.get("errors") if isinstance(data.get("errors"), list) else []
                 event["message"] = _text(errors[0] if errors else data.get("result") or data.get("subtype") or "실행 실패")
+            models = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
+            window = max((_count(m.get("contextWindow")) for m in models.values() if isinstance(m, dict)), default=0)
+            if self.context and window:  # 사용량 원(입력칸) — 결과 앞에 둔다
+                return [{"kind": "usage", "context": {"used": min(self.context, window), "window": window}}, event]
             return [event]
         return []
 

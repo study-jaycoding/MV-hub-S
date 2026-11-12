@@ -59,6 +59,34 @@ def test_claude_error_result_subagent_and_garbage_are_safe():
     assert result == [{"kind": "result", "ok": False, "cli_session_id": "S2", "message": "로그인 필요"}]
 
 
+def test_claude_usage_weekly_and_context():
+    """사용량 원(docs/status/MVAgent_모델설정사용량_2026-11-12.md) — 0단계 원본 실측 모양 그대로."""
+    parser = ClaudeParser()
+    events = feed(parser, [
+        {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1794319200, "rateLimitType": "seven_day",
+                                                         "unifiedWindows": {"seven_day": {"utilization": 0.45, "resetsAt": 1794319200}}}},
+        {"type": "assistant", "parent_tool_use_id": None, "message": {"usage": {"input_tokens": 2, "cache_creation_input_tokens": 956,
+                                                                                "cache_read_input_tokens": 3512, "output_tokens": 24}, "content": []}},
+        {"type": "assistant", "parent_tool_use_id": None, "message": {"usage": {"input_tokens": 2, "cache_creation_input_tokens": 100,
+                                                                                "cache_read_input_tokens": 4468, "output_tokens": 8}, "content": []}},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": "S1",
+         "modelUsage": {"claude-haiku-5-5": {"contextWindow": 1000000, "inputTokens": 1443}, "x": "bad"}},
+    ])
+    assert events[0] == {"kind": "usage", "weekly": {"utilization": 0.45, "resets_at": 1794319200}}
+    assert events[1] == {"kind": "usage", "context": {"used": 4578, "window": 1000000}}  # 마지막 assistant 줄만
+    assert events[2]["kind"] == "result"
+    # 모양이 다르면 사용량을 만들지 않는다(결과는 그대로)
+    odd = ClaudeParser()
+    assert feed(odd, [{"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {"seven_day": {"utilization": "45%"}}}},
+                      {"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {"seven_day": {"utilization": True}}}},
+                      {"type": "rate_limit_event", "rate_limit_info": None}]) == []
+    clipped = feed(odd, [{"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {"seven_day": {"utilization": 1.7, "resetsAt": "soon"}}}}])
+    assert clipped == [{"kind": "usage", "weekly": {"utilization": 1.0, "resets_at": None}}]
+    no_window = feed(odd, [{"type": "assistant", "parent_tool_use_id": None, "message": {"usage": {"input_tokens": 9}, "content": []}},
+                           {"type": "result", "subtype": "success", "is_error": False, "session_id": "S"}])
+    assert [e["kind"] for e in no_window] == ["result"]
+
+
 def test_codex_items_and_turn_end():
     events = feed(CodexParser(), [
         {"type": "thread.started", "thread_id": "T1"},

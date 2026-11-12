@@ -34,6 +34,8 @@ export const STORAGE_KEYS = {
   agentDrawerWidth: "mvhub.agentPanel.drawerWidth",
   agentInfoOpen: "mvhub.agentPanel.infoOpen", // 머리글 정보 칸을 열어 둔 채인지(true) — 정보 단추를 다시 누를 때까지 떠 있다(Jay 11-12)
   agentInfoFold: "mvhub.agentPanel.infoFold", // 정보 칸에서 접어 둔 카드 이름들(screen·made·attached)
+  agentUsage: "mvhub.agentPanel.usage", // Claude 주간 한도 마지막 값 {account, weekly, at} — 계정이 같을 때만 보인다
+  agentDefaults: "mvhub.agentPanel.defaults", // 칸 설정 — 새 대화 모델·생각 깊이, 먼저 쓸 생성 모델(gen_model)
   agentPanelOpenRequest: "mvhub.agentPanel.openRequest",
   agentPanelOpenDone: "mvhub.agentPanel.openDone",
   agentPanelDeleted: "mvhub.agentPanel.deleted",

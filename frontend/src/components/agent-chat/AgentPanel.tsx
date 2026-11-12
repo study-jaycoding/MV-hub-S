@@ -28,6 +28,7 @@ import { STORAGE_KEYS } from "../../lib/storageKeys";
 import type { Generation, PreviewTarget } from "../../types";
 import { AgentConnect } from "./AgentConnect";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentSettings, UsagePop, UsageRing } from "./AgentSettings";
 import { AgentPlanCard } from "./AgentPlanCard";
 
 interface Props {
@@ -209,7 +210,9 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const chat = useAgentChat(screenOn ? context : NO_SCREEN, { popout }); // 새 창이면 '새 창에서 열기' 요청을 받는다
   const [text, setText] = useState("");
   const [revising, setRevising] = useState<{ title: string } | null>(null); // [고치기] — 입력칸의 '고칠 계획' 칩
-  const [menu, setMenu] = useState<"model" | null>(null); // 모델·생각 깊이·속도 한 메뉴(Aside 처럼)
+  // 입력칸 아래 칩 메뉴 — 모델(회사별 하위 메뉴·설정) · 생각 깊이(빠른 모드) · 사용량(docs/status/MVAgent_모델설정사용량_2026-11-12.md)
+  const [menu, setMenu] = useState<"model" | "effort" | "usage" | null>(null);
+  const [settings, setSettings] = useState(false); // 설정 쪽(칸 안을 덮는다)
   const [drawer, setDrawer] = useState(false); // ≡ 대화 서랍
   const [headNote, setHeadNote] = useState<string | null>(null); // 머리글 메뉴로 지운 결과(세션 파일) — 새 대화를 시작하면 지운다
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -217,8 +220,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const modelRef = useRef<HTMLDivElement>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const closeDrawer = useCallback(() => setDrawer(false), []);
+  const closeSettings = useCallback(() => setSettings(false), []);
   useEscapeClose(closeMenu, menu !== null);
   useEscapeClose(closeDrawer, drawer && menu === null);
+  useEscapeClose(closeSettings, settings && !drawer && menu === null);
   useOutsideMouseDown(modelRef, closeMenu, menu !== null);
 
   useEffect(() => {
@@ -606,20 +611,42 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           aria-label={t("Agent 에게 보낼 말")}
           onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
         <div className="agent-composer-foot">
-          {/* 모델 이름 + 생각 깊이(흐리게) 한 단추 — Aside 'GPT-6.1 Sol High ⌄' 처럼 */}
-          <div className="agent-model-wrap" ref={modelRef}>
-            <button type="button" className="agent-model-btn" disabled={!chat.choice || blocked}
-              onClick={() => setMenu(menu === "model" ? null : "model")} aria-haspopup="true" aria-expanded={menu === "model"}
-              aria-label={t("모델 고르기")}>
-              <span className="agent-co" aria-hidden="true">{chat.choice?.engine === "codex" ? "◎" : "✳"}</span>
-              <span>{modelLabel}</span>
-              {chat.choice && <span className="agent-model-effort">{t(EFFORT[chat.choice.effort] ?? chat.choice.effort)}</span>}
-              {chat.choice?.fast && <span className="agent-fast-mark">{t("빠름")}</span>}
-              <Chevron />
-            </button>
-            {menu === "model" && chat.choice && (
-              <ModelMenu engines={engines} choice={chat.choice}
-                onChoose={(next) => { chat.choose(next); setMenu(null); }} />
+          {/* [모델 ⌄][깊이 ⌄][사용량 원] — 평소 글자만, 올리면 바탕·⌄(시안 model-settings.png ①②) */}
+          <div className="agent-foot-chips" ref={modelRef}>
+            <div className="agent-model-wrap">
+              <button type="button" className="agent-chip agent-model-btn" disabled={!chat.choice || blocked}
+                onClick={() => setMenu(menu === "model" ? null : "model")} aria-haspopup="true" aria-expanded={menu === "model"}
+                aria-label={t("모델 고르기")}>
+                <span className="agent-co" aria-hidden="true">{chat.choice?.engine === "codex" ? "◎" : "✳"}</span>
+                <span>{modelLabel}</span>
+                <Chevron />
+              </button>
+              {menu === "model" && chat.choice && (
+                <ModelMenu engines={engines} choice={chat.choice}
+                  onChoose={(next) => { chat.choose(next); setMenu(null); }}
+                  onSettings={() => { setMenu(null); setSettings(true); }} />
+              )}
+            </div>
+            {chat.choice && (
+              <div className="agent-model-wrap">
+                <button type="button" className="agent-chip agent-effort-btn" disabled={blocked}
+                  onClick={() => setMenu(menu === "effort" ? null : "effort")} aria-haspopup="true" aria-expanded={menu === "effort"}
+                  aria-label={t("생각 깊이 고르기")}>
+                  <span>{t(EFFORT[chat.choice.effort] ?? chat.choice.effort)}</span>
+                  {chat.choice.fast && <span className="agent-fast-mark">{t("빠름")}</span>}
+                  <Chevron />
+                </button>
+                {menu === "effort" && engine && (
+                  <EffortMenu engine={engine} choice={chat.choice}
+                    onChoose={(next) => { chat.choose(next); setMenu(null); }} onFast={(fast) => chat.choose({ ...chat.choice!, fast })} />
+                )}
+              </div>
+            )}
+            {chat.choice?.engine === "claude" && (
+              <div className="agent-model-wrap">
+                <UsageRing usage={chat.usage} open={menu === "usage"} onToggle={() => setMenu(menu === "usage" ? null : "usage")} />
+                {menu === "usage" && <UsagePop usage={chat.usage} />}
+              </div>
             )}
           </div>
           {chat.running ? (
@@ -680,6 +707,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         </section>
       )}
       </div>
+      {settings && (
+        <AgentSettings engines={engines} usage={chat.usage} onBack={closeSettings}
+          onConnectClaude={() => { setSettings(false); void chat.connect.connect(); }} />
+      )}
     </aside>
   );
 }
@@ -1339,78 +1370,114 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
   );
 }
 
-/** [모델 ⌄] 한 메뉴(Aside 모델 메뉴처럼) — 모델 찾기 · 회사별 모델(못 쓰는 회사는 머리에 까닭, 고를 수 없음) ·
- *  생각 깊이 · 속도(Opus 만 빠름 — Claude 추가 사용 크레딧). 하나 고르면 닫힌다. 다른 회사 모델을 고르면 새 대화(useAgentChat). */
-function ModelMenu({ engines, choice, onChoose }: {
+/** [모델 ⌄] 메뉴(Claude 앱처럼) — 모델 찾기 · 회사 줄(올리거나 누르면·→ 옆에 그 회사 모델) · 설정.
+ *  찾기에 글을 쓰면 회사 줄 대신 맞는 모델이 바로 나온다. 못 쓰는 회사는 줄에 까닭, 모델은 고를 수 없다.
+ *  하나 고르면 닫힌다. 다른 회사 모델을 고르면 새 대화(useAgentChat). 칸이 좁아 옆에 펼 자리가 없으면 줄 아래로 편다. */
+function ModelMenu({ engines, choice, onChoose, onSettings }: {
   engines: AgentEngine[];
   choice: AgentChoice;
   onChoose: (next: AgentChoice) => void;
+  onSettings: () => void;
 }) {
   const t = useT();
   const [query, setQuery] = useState("");
+  const [sub, setSub] = useState<AgentEngineId | null>(null);
+  const [inline, setInline] = useState(true);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    const panel = el?.closest(".agent-panel")?.getBoundingClientRect();
+    if (el && panel && panel.width > 0) setInline(el.getBoundingClientRect().right + 170 > panel.right);
+  }, []);
   const q = query.trim().toLowerCase();
-  const current = engines.find((e) => e.id === choice.engine);
   const effortFor = (e: AgentEngine) => e.efforts.includes(choice.effort) ? choice.effort : e.efforts.includes("medium") ? "medium" : e.efforts[0] ?? "medium";
-  const groups = engines.map((e) => ({ e, models: e.models.filter((m) => !q || `${GROUP[e.id] ?? e.id} ${m.label}`.toLowerCase().includes(q)) }))
-    .filter((g) => g.models.length > 0);
-  const fastShown = choice.engine === "claude" && choice.model === FAST_MODEL;
   const check = <span className="agent-model-check" aria-hidden="true">✓</span>;
+  const item = (e: AgentEngine, m: { id: string; label: string }) => {
+    const on = choice.engine === e.id && choice.model === m.id;
+    return (
+      <button key={`${e.id}:${m.id}`} type="button" className={`agent-model-item${on ? " on" : ""}`} disabled={!e.available} aria-pressed={on}
+        onClick={() => onChoose(e.id === choice.engine ? { ...choice, model: m.id } : { engine: e.id, model: m.id, effort: effortFor(e), fast: false })}>
+        <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? "◎" : "✳"}</span>
+        <span className="agent-model-name">{m.label}</span>
+        {on && check}
+      </button>
+    );
+  };
+  const found = q ? engines.flatMap((e) => e.models.filter((m) => `${GROUP[e.id] ?? e.id} ${m.label}`.toLowerCase().includes(q)).map((m) => item(e, m))) : [];
   return (
-    <div className="agent-menu agent-model-menu" role="dialog" aria-label={t("모델 고르기")}>
+    <div className="agent-menu agent-model-menu" role="dialog" aria-label={t("모델 고르기")} ref={menuRef}>
       <input className="agent-model-search" value={query} onChange={(event) => setQuery(event.target.value)} autoFocus
         placeholder={t("모델 찾기")} aria-label={t("모델 찾기")} />
-      {groups.length === 0 && <p className="agent-menu-note">{t("맞는 모델이 없어요")}</p>}
-      {groups.map(({ e, models }) => (
-        <div key={e.id} className="agent-model-group" role="group" aria-label={GROUP[e.id] ?? e.id}>
-          <div className="agent-model-group-head">
-            {GROUP[e.id] ?? e.id}
-            {!e.available && <span className="agent-model-reason">{e.reason || t("쓸 수 없음")}</span>}
-          </div>
-          {models.map((m) => {
-            const on = choice.engine === e.id && choice.model === m.id;
-            return (
-              <button key={m.id} type="button" className={`agent-model-item${on ? " on" : ""}`} disabled={!e.available} aria-pressed={on}
-                onClick={() => onChoose(e.id === choice.engine ? { ...choice, model: m.id } : { engine: e.id, model: m.id, effort: effortFor(e), fast: false })}>
-                <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? "◎" : "✳"}</span>
-                <span className="agent-model-name">{m.label}</span>
-                {on && check}
-              </button>
-            );
-          })}
+      {q ? (found.length ? found : <p className="agent-menu-note">{t("맞는 모델이 없어요")}</p>) : engines.map((e) => (
+        <div key={e.id} className="agent-model-co" onMouseEnter={() => setSub(e.id)}>
+          <button type="button" className={`agent-model-item agent-model-row${sub === e.id ? " on" : ""}`} aria-haspopup="true" aria-expanded={sub === e.id}
+            onClick={() => setSub(sub === e.id ? null : e.id)}
+            onKeyDown={(event) => { if (event.key === "ArrowRight") { event.preventDefault(); setSub(e.id); } }}>
+            <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? "◎" : "✳"}</span>
+            <span className="agent-model-name">{GROUP[e.id] ?? e.id}</span>
+            {e.available
+              ? e.subscription && <span className="agent-model-plan">{`${e.subscription} ${t("구독")}`}</span>
+              : <span className="agent-model-reason">{e.reason || t("쓸 수 없음")}</span>}
+            <Chevron />
+          </button>
+          {sub === e.id && (
+            <div className={`agent-menu agent-model-sub${inline ? " inline" : ""}`} role="group" aria-label={GROUP[e.id] ?? e.id}>
+              {e.models.map((m) => item(e, m))}
+            </div>
+          )}
         </div>
       ))}
-      {current && (
-        <>
-          <div className="agent-menu-sep" />
-          <div className="agent-model-group-head">{t("생각 깊이")}</div>
-          <div role="radiogroup" aria-label={t("생각 깊이")}>
-            {current.efforts.map((level) => (
-              <button key={level} type="button" role="radio" aria-checked={choice.effort === level}
-                className={`agent-model-item${choice.effort === level ? " on" : ""}`} onClick={() => onChoose({ ...choice, effort: level })}>
-                <span className="agent-model-name">{t(EFFORT[level] ?? level)}</span>
-                {choice.effort === level && check}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      <div className="agent-menu-sep" />
+      <button type="button" className="agent-model-item" onClick={onSettings}>
+        <span className="agent-model-ic" aria-hidden="true"><GearIcon /></span>
+        <span className="agent-model-name">{t("설정")}</span>
+      </button>
+    </div>
+  );
+}
+
+/** [깊이 ⌄] 메뉴 — 생각 깊이(엔진이 아는 것) · 빠른 모드(Opus 만 — Claude 추가 사용 크레딧, 칸을 열 때마다 꺼짐). 깊이를 고르면 닫힌다 */
+function EffortMenu({ engine, choice, onChoose, onFast }: {
+  engine: AgentEngine;
+  choice: AgentChoice;
+  onChoose: (next: AgentChoice) => void;
+  onFast: (fast: boolean) => void;
+}) {
+  const t = useT();
+  const fastShown = choice.engine === "claude" && choice.model === FAST_MODEL;
+  return (
+    <div className="agent-menu agent-effort-menu" role="dialog" aria-label={t("생각 깊이 고르기")}>
+      <div className="agent-model-group-head">{t("생각 깊이")}</div>
+      <div role="radiogroup" aria-label={t("생각 깊이")}>
+        {engine.efforts.map((level) => (
+          <button key={level} type="button" role="radio" aria-checked={choice.effort === level}
+            className={`agent-model-item${choice.effort === level ? " on" : ""}`} onClick={() => onChoose({ ...choice, effort: level })}>
+            <span className="agent-model-name">{t(EFFORT[level] ?? level)}</span>
+            {choice.effort === level && <span className="agent-model-check" aria-hidden="true">✓</span>}
+          </button>
+        ))}
+      </div>
       {fastShown && (
         <>
           <div className="agent-menu-sep" />
-          <div className="agent-model-group-head">{t("속도")}</div>
-          <div role="radiogroup" aria-label={t("속도")}>
-            {[false, true].map((fast) => (
-              <button key={String(fast)} type="button" role="radio" aria-checked={!!choice.fast === fast}
-                className={`agent-model-item${!!choice.fast === fast ? " on" : ""}`} onClick={() => onChoose({ ...choice, fast })}>
-                <span className="agent-model-name">{fast ? t("빠름") : t("기본")}</span>
-                {!!choice.fast === fast && check}
-              </button>
-            ))}
+          <div className="agent-model-group-head">{t("옵션")}</div>
+          <div className="agent-model-item agent-fast-row">
+            <span className="agent-model-name">{t("빠른 모드")} <small>{t("추가 크레딧")}</small></span>
+            <button type="button" role="switch" aria-checked={!!choice.fast} className={`agent-switch${choice.fast ? " on" : ""}`}
+              onClick={() => onFast(!choice.fast)} aria-label={t("빠른 모드")} />
           </div>
-          <p className="agent-menu-note">{t("빠름은 Claude 추가 사용 크레딧이 들어요 · 칸을 열 때마다 꺼짐")}</p>
+          <p className="agent-menu-note">{t("빠른 모드는 Claude 추가 사용 크레딧이 들어요 · 칸을 열 때마다 꺼짐")}</p>
         </>
       )}
     </div>
+  );
+}
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="2.3" />
+      <path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M3.6 12.4l1.3-1.3M11.1 4.9l1.3-1.3" />
+    </svg>
   );
 }
 function Chevron() {

@@ -327,6 +327,8 @@ class TurnIn(StrictModel):
     model: str = Field(min_length=1, max_length=40)
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     fast: bool = False  # 빠른 모드 — Opus 만, 매 차례 켬/끔을 CLI 에 적는다(Claude 추가 사용 크레딧)
+    # 칸 설정 '먼저 쓸 생성 모델'(앱 모델 코드) — 프롬프트 한 줄로만 쓴다(docs/status/MVAgent_모델설정사용량_2026-11-12.md)
+    gen_model: str | None = Field(None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:-]+$")
     text: str = Field(min_length=1, max_length=8000)
     context: dict = Field(default_factory=dict)
     attachments: list[Annotated[AttachGeneration | AttachAsset | AttachFolder, Field(discriminator="kind")]] = Field(
@@ -414,7 +416,7 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         try:
             service.start_turn(identity, conversation=conv, turn=turn, model=body.model, effort=body.effort,
                                text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
-                               fast=body.fast, attachments=body.stored_attachments())
+                               fast=body.fast, attachments=body.stored_attachments(), gen_model=body.gen_model)
         except Exception as exc:  # noqa: BLE001 - 실행 전 실패는 그 차례를 끝내고 알린다
             await asyncio.to_thread(lambda: chat_store.finish_turn(path, turn["id"], "failed", reason="start_failed",
                                                                    error="AI 프로그램을 시작하지 못했습니다."))

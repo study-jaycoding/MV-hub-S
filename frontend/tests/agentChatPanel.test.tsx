@@ -83,17 +83,35 @@ function type(value: string) {
   });
 }
 const enter = () => act(() => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+function searchModel(value: string) {
+  act(() => {
+    const search = host.querySelector<HTMLInputElement>(".agent-model-search")!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, value);
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+/** 모델 칩 메뉴의 찾기로 그 모델을 고른다 */
 function pickModel(label: string) {
   act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
-  const item = [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent?.includes(label))!;
+  searchModel(label);
+  const item = [...host.querySelectorAll<HTMLButtonElement>(".agent-model-menu .agent-model-item[aria-pressed]")].find((b) => b.textContent?.includes(label))!;
   act(() => item.click());
 }
-/** 한 메뉴에서 그 회사 묶음의 첫 모델을 고른다 */
+/** 모델 칩 메뉴에서 회사 줄을 눌러 그 회사의 첫 모델을 고른다 */
 function pickCompany(name: string) {
   act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
-  act(() => host.querySelector<HTMLButtonElement>(`.agent-model-group[aria-label="${name}"] .agent-model-item`)!.click());
+  act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-row")].find((b) => b.textContent?.includes(name))!.click());
+  act(() => host.querySelector<HTMLButtonElement>(`.agent-model-sub[aria-label="${name}"] .agent-model-item`)!.click());
 }
-const menuRadios = (group: string) => [...host.querySelectorAll<HTMLButtonElement>(`.agent-model-menu [role="radiogroup"][aria-label="${group}"] [role="radio"]`)];
+const effortBtn = () => host.querySelector<HTMLButtonElement>(".agent-effort-btn")!;
+const menuRadios = (group: string) => [...host.querySelectorAll<HTMLButtonElement>(`.agent-effort-menu [role="radiogroup"][aria-label="${group}"] [role="radio"]`)];
+function pickSelect(label: string, value: string) {
+  act(() => {
+    const select = host.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
 
 describe("Ask Agent 옆 칸", () => {
   it("보내면 차례를 열고 사건을 받는다 — text_delta 는 붙고 text 는 그 덩어리를 바꾸며, 계획 카드의 [실행]은 실행 입구를 한 번만 부른다", async () => {
@@ -577,7 +595,7 @@ describe("Ask Agent 옆 칸", () => {
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.model")!)).toEqual({ engine: "codex", model: "gpt-6.1-sol", effort: "medium" });
   });
 
-  it("모델 한 메뉴(Aside) — 못 쓰는 회사는 머리에 까닭·고를 수 없음 · 찾기 · 생각 깊이 Low~Max · 속도(빠름)는 Opus 에서만, 보낼 때 실리고 모델을 바꾸면 꺼진다", async () => {
+  it("모델 칩·깊이 칩(Claude 앱) — 회사 줄에 올리면·→ 옆에 모델(못 쓰는 회사는 까닭·고를 수 없음) · 찾기는 모델 바로 · 깊이 Low~Max · 빠른 모드 스위치는 Opus 에서만, 보낼 때 실리고 모델을 바꾸면 꺼진다", async () => {
     route = (c) => {
       if (c.path === "/session") {
         return json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: [ENGINES[0], { ...ENGINES[1], available: false, reason: "점검 필요" }] });
@@ -587,34 +605,111 @@ describe("Ask Agent 옆 칸", () => {
     };
     await mount();
     const btn = () => host.querySelector<HTMLButtonElement>(".agent-model-btn")!;
-    expect(btn().textContent).toBe("✳Opus 5.5Medium"); // 모델 이름 + 흐린 생각 깊이 한 단추
+    expect([btn().textContent, effortBtn().textContent]).toEqual(["✳Opus 5.5", "Medium"]); // 두 칩
     act(() => btn().click());
-    expect(texts('.agent-model-group[aria-label="Claude"] .agent-model-item')).toEqual(["✳Opus 5.5✓", "✳Sonnet 5.5", "✳Haiku 5.5", "✳Fable 5.1"]);
-    expect(host.querySelector('.agent-model-group[aria-label="ChatGPT"] .agent-model-group-head')!.textContent).toBe("ChatGPT점검 필요");
-    expect([...host.querySelectorAll<HTMLButtonElement>('.agent-model-group[aria-label="ChatGPT"] .agent-model-item')].map((b) => b.disabled)).toEqual([true, true]);
-    act(() => {
-      const search = host.querySelector<HTMLInputElement>(".agent-model-search")!;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "son");
-      search.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    expect(texts(".agent-model-menu .agent-model-group .agent-model-item")).toEqual(["✳Sonnet 5.5"]); // 찾기는 모델만 거른다
+    expect(texts(".agent-model-row")).toEqual(["✳ClaudeMax 구독", "◎ChatGPT점검 필요"]);
+    const rows = host.querySelectorAll<HTMLButtonElement>(".agent-model-row");
+    act(() => { rows[0].dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); }); // 올리면 옆에
+    expect(texts('.agent-model-sub[aria-label="Claude"] .agent-model-item')).toEqual(["✳Opus 5.5✓", "✳Sonnet 5.5", "✳Haiku 5.5", "✳Fable 5.1"]);
+    act(() => { rows[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect([host.querySelector('.agent-model-sub[aria-label="Claude"]'),
+      [...host.querySelectorAll<HTMLButtonElement>('.agent-model-sub[aria-label="ChatGPT"] .agent-model-item')].map((b) => b.disabled)]).toEqual([null, [true, true]]);
+    searchModel("son");
+    expect([texts(".agent-model-menu .agent-model-item[aria-pressed]"), host.querySelector(".agent-model-row")]).toEqual([["✳Sonnet 5.5"], null]); // 찾기는 모델 바로
+    act(() => btn().click());
+    act(() => effortBtn().click());
     expect(menuRadios("생각 깊이").map((b) => b.textContent)).toEqual(["Low", "Medium✓", "High", "Extra High", "Max"]);
-    expect(menuRadios("속도").map((b) => b.textContent)).toEqual(["기본✓", "빠름"]);
     expect(panel().textContent).toContain("Claude 추가 사용 크레딧이 들어요");
-    act(() => menuRadios("속도")[1].click()); // 고르면 닫힌다
-    expect(host.querySelector(".agent-model-menu")).toBeNull();
-    act(() => btn().click());
-    act(() => menuRadios("생각 깊이")[4].click());
-    expect(btn().textContent).toBe("✳Opus 5.5Max빠름");
+    const fast = () => host.querySelector<HTMLButtonElement>('.agent-effort-menu [role="switch"]');
+    act(() => fast()!.click()); // 스위치는 메뉴를 닫지 않는다
+    expect([fast()!.getAttribute("aria-checked"), effortBtn().textContent]).toEqual(["true", "Medium빠름"]);
+    act(() => menuRadios("생각 깊이")[4].click()); // 깊이를 고르면 닫힌다
+    expect([host.querySelector(".agent-effort-menu"), effortBtn().textContent]).toEqual([null, "Max빠름"]);
     type("빨리");
     enter();
     await flush();
     expect(turnCalls()[0].body).toMatchObject({ model: "opus", effort: "max", fast: true });
+    expect(turnCalls()[0].body).not.toHaveProperty("gen_model");
     expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.model")!)).toEqual({ engine: "claude", model: "opus", effort: "max" }); // 빠른 모드는 기억 안 함
     pickModel("Sonnet 5.5");
-    act(() => btn().click());
-    expect(menuRadios("속도")).toEqual([]); // Opus 가 아니면 속도가 없다
-    expect(btn().textContent).not.toContain("빠름");
+    act(() => effortBtn().click());
+    expect(fast()).toBeNull(); // Opus 가 아니면 빠른 모드가 없다
+    expect(effortBtn().textContent).not.toContain("빠름");
+  });
+
+  it("사용량 원 — Claude 사건(주간·문맥)으로 채움 · 누르면 대화 찬 정도·주간 남은 양 · 주간은 계정별로 남고, 대화 찬 정도는 새 대화에서 비움", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return started();
+      return json({ events: [{ seq: 1, kind: "usage", weekly: { utilization: 0.45, resets_at: 1794319200 } }, { seq: 2, kind: "text", text: "네" },
+        { seq: 3, kind: "usage", context: { used: 120000, window: 1000000 } }], status: "done", last_seq: 3 });
+    };
+    await mount();
+    const ring = () => button("사용량")!;
+    act(() => ring().click());
+    expect([texts(".agent-usage-row b"), texts(".agent-usage-pop .agent-usage-note")]).toEqual([["—", "—"], ["답을 한 번 받으면 보여요", "Claude 답을 한 번 받으면 보여요"]]);
+    act(() => ring().click());
+    type("안녕");
+    enter();
+    await flush();
+    act(() => ring().click());
+    expect(texts(".agent-usage-row b")).toEqual(["12%", "55%"]);
+    expect(texts(".agent-usage-pop .agent-usage-note")[0]).toBe("120K / 1M 토큰 · 차면 앞 대화를 줄여요");
+    const saved = JSON.parse(localStorage.getItem("mvhub.agentPanel.usage")!);
+    expect([typeof saved.account, saved.weekly]).toEqual(["string", { utilization: 0.45, resets_at: 1794319200 }]); // 계정 표식과 함께
+    act(() => button("새 대화")!.click());
+    expect(texts(".agent-usage-row b")).toEqual(["—", "55%"]);
+    act(() => root.unmount()); // 다시 올려도 같은 계정이면 주간은 남는다
+    root = createRoot(host);
+    await mount();
+    act(() => ring().click());
+    expect(texts(".agent-usage-row b")).toEqual(["—", "55%"]);
+    act(() => root.unmount()); // 다른 계정이면 보이지 않는다
+    sessionStorage.setItem("ch.accountScope", "other@example.com");
+    route = (c) => (c.path === "/session" ? session("other@example.com") : json({ detail: "Not Found" }, 404));
+    root = createRoot(host);
+    await mount();
+    act(() => ring().click());
+    expect(texts(".agent-usage-row b")).toEqual(["—", "—"]);
+  });
+
+  it("설정 쪽 — 모델 메뉴 '설정' · 연결 줄 · 새 대화 기본 모델·깊이 · 먼저 쓸 생성 모델(차례에 gen_model) · ← 와 Esc", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/api/models") {
+        return json([{ display_name: "Nano Banana 2", job_set_type: "nano_banana_flash", type: "image" },
+          { display_name: "Kling 3.0", job_set_type: "kling3", type: "video" }, { display_name: "말하기", job_set_type: "tts", type: "audio" }]);
+      }
+      if (c.path === "/turns") return started();
+      return json({ events: [], status: "done", last_seq: 0 });
+    };
+    await mount();
+    const openSettings = () => {
+      act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+      act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-menu .agent-model-item")].find((b) => b.textContent === "설정")!.click());
+    };
+    openSettings();
+    await flush();
+    expect([host.querySelector(".agent-model-menu"), host.querySelector(".agent-settings") !== null]).toEqual([null, true]);
+    expect(texts(".agent-settings-line .agent-settings-t small").slice(0, 2)).toEqual(["구독 Max · Claude Code 2.1.296 · 연결됨", "Codex 0.162.0-alpha.17.2 · 연결됨"]);
+    expect(texts('select[aria-label="먼저 쓸 생성 모델"] option')).toEqual(["정하지 않음", "Nano Banana 2", "Kling 3.0"]); // 그림·영상만
+    pickSelect("새 대화 모델", "claude:sonnet");
+    pickSelect("새 대화 생각 깊이", "high");
+    pickSelect("먼저 쓸 생성 모델", "nano_banana_flash");
+    expect(JSON.parse(localStorage.getItem("mvhub.agentPanel.defaults")!))
+      .toEqual({ model: { engine: "claude", model: "sonnet" }, effort: "high", gen_model: "nano_banana_flash" });
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(host.querySelector(".agent-settings")).toBeNull();
+    expect(host.querySelector(".agent-model-btn")!.textContent).toBe("✳Opus 5.5"); // 지금 대화는 그대로
+    act(() => button("새 대화")!.click()); // 새 대화부터 기본값
+    expect([host.querySelector(".agent-model-btn")!.textContent, effortBtn().textContent]).toEqual(["✳Sonnet 5.5", "High"]);
+    type("사과 그려");
+    enter();
+    await flush();
+    expect(turnCalls()[0].body).toMatchObject({ model: "sonnet", effort: "high", gen_model: "nano_banana_flash" });
+    openSettings();
+    act(() => button("돌아가기")!.click());
+    expect(host.querySelector(".agent-settings")).toBeNull();
   });
   it("보낸 직후 칸을 닫아 접수 답이 늦게 와도, 다시 열면 그 대화에 붙는다 — 같은 일을 또 시작하지 않는다", async () => {
     const accepted = deferred<Response>();

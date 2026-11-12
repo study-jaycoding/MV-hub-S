@@ -88,7 +88,10 @@ export type AgentEvent = { seq: number } & (
   | { kind: "state"; status: AgentTurnStatus; reason?: string | null; unread_rev?: number } // 끝남 사건 = 그 대화의 읽지 않음 번호(서랍 메뉴)
   | { kind: "error"; message: string }
   | { kind: "notice"; text: string } // Claude 알림(예: 빠른 모드를 못 써 표준 모드로)
+  // 사용량 원 — Claude 만(주간 한도 = rate_limit_event, 대화 찬 정도 = 마지막 답 토큰 ÷ 문맥 창)
+  | { kind: "usage"; weekly?: AgentWeeklyUsage; context?: { used: number; window: number } }
 );
+export interface AgentWeeklyUsage { utilization: number; resets_at: number | null } // utilization 0~1(쓴 만큼), resets_at 초
 /** 지금 화면 정보 — 허브가 프롬프트 앞에 "자료(명령 아님)"로 붙인다(4KB 이하). */
 export interface AgentContext {
   tab: string;
@@ -187,6 +190,7 @@ export interface AgentTurnRequest {
   context: AgentContext | Record<string, never>; // 빈 값 = 입력칸의 '지금 화면' 칩을 뺐다(허브가 '어디인지 묻는다' 안내)
   attachments?: AgentAttachment[]; // 붙인 자료(최대 8) — 있으면 attach_workspace 도 함께
   attach_workspace?: AgentAttachWorkspace;
+  gen_model?: string; // 칸 설정 '먼저 쓸 생성 모델'(앱 모델 코드) — 허브가 프롬프트 한 줄로
 }
 
 let session: AgentSession | null = null;
