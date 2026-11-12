@@ -26,6 +26,7 @@ class PanelIn(BaseModel):
     window: str = Field(default="", max_length=80)
     project_id: str = Field(min_length=1, max_length=200)
     folder_path: str = Field(min_length=1, max_length=2000)
+    expect_project: str = Field(default="", max_length=200)  # 화면이 본 다빈치 프로젝트 — 쓰기 전에 자식이 대조한다
 
 
 class CacheIn(PanelIn):
@@ -45,6 +46,7 @@ class TargetIn(PanelIn):
     # 에피소드를 고르면 생성물 있는 컷 빈을 한 번에 만든다 — 200개를 넘으면 자르지 않고 거절한다.
     episode_path: str = Field(default="", max_length=2000)
     create_paths: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(default_factory=list, max_length=200)
+    keep_current: bool = False  # 실시간 새 컷 — 만들고 줄 세운 뒤 사람이 보던 지금 빈으로 되돌린다
 
 
 class AdoptIn(PrepareIn):
@@ -215,6 +217,8 @@ async def _operate(operation, body, request, ctx):
         # 경로 검사는 리졸브 호출 전에 — 에피소드 밖·프로젝트 전체 빈을 만들지 않는다.
         if body.create_paths and (not body.create or not panel.episode_scope_ok(body.episode_path, body.folder_path, body.create_paths)):
             raise HTTPException(400, "에피소드 밖 빈은 만들 수 없습니다")
+        if body.keep_current and (not body.create_paths or body.folder_path != body.episode_path):
+            raise HTTPException(400, "지금 빈을 지키는 빈 만들기는 에피소드 단위로만 합니다")
         if panel.stale(ctx, body.seq, "target", body.window):
             return {"state": "stale"}
         await asyncio.to_thread(projects._require_project_read, request, body.project_id)
@@ -228,12 +232,14 @@ async def _operate(operation, body, request, ctx):
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
                    "manifest_root": str(manifest_root), "create": body.create}
         if body.create_paths:
-            payload.update(episode_path=body.episode_path, create_paths=body.create_paths)
+            payload.update(episode_path=body.episode_path, create_paths=body.create_paths, keep_current=body.keep_current)
 
     payload["project_name"] = await asyncio.to_thread(panel.project_name, ctx, body.project_id)
     if not payload["project_name"] and ready:
         payload["project_name"] = ready["project_name"]
     payload.update(_base_payload(operation, ctx))
+    if operation in {"target", "stage", "unstage"} and body.expect_project:
+        payload["expect_project"] = body.expect_project
 
     def before_write():
         panel.check_context(ctx, request)
@@ -250,10 +256,16 @@ async def _operate(operation, body, request, ctx):
         async with monitor.suspended():
             result = await asyncio.to_thread(runner.run_resolve_panel_isolated, payload, before_start=before_write)
             panel.check_context(ctx, request)
-            if operation == "target" and result.get("state") == "ok":
+            # keep_current 의 bin_id 는 되돌린 사람의 지금 빈이다 — 패널이 고른 빈으로 기억하지 않는다
+            if operation == "target" and result.get("state") == "ok" and not body.keep_current:
                 panel.remember_bin(result.get("bin_id", ""))
-                if "bins" in result:
-                    panel.remember_episode(body.window, body.project_id, result["bins"])
+            # 다시 짓기(느린 길)는 그 MV 프로젝트의 빈 ID 를 모두 바꾼다 — 끝난 상태와 상관없이 옛 ID 기억을 버린다
+            #  (도중에 멈춘 프로젝트 바뀜·복구 대기도 바뀌었을 수 있다고 본다).
+            if operation == "target" and body.create_paths and (
+                    result.get("ids_changed") or result.get("code") in {"project_changed", "rebuild_recovery_needed", "rebuild_recovery_pending"}):
+                panel.forget_project(body.project_id)
+            if operation == "target" and "bins" in result:
+                panel.remember_episode(body.window, body.project_id, result["bins"])
             if operation == "unstage" and result.get("bin_deleted"):
                 panel.forget_bin(body.bin_id)
             if operation in {"stage", "unstage"}:

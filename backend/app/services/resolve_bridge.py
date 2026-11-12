@@ -2187,6 +2187,59 @@ def _panel_drop_empty_bin(pool, folder, named, guard):
         return False
 
 
+# 패널이 정렬 오류로 삼키지 않고 멈출 것 — 프로젝트가 바뀌었거나 빈 순서 복구가 먼저다(보내기와 같음)
+_PANEL_STOP_CODES = frozenset({"project_changed", "rebuild_recovery_needed", "rebuild_recovery_pending"})
+
+
+def _panel_episode_bins(manager, project, pool, root, payload, label, resolve, started):
+    """에피소드 컷 빈 — 보내기의 _reconcile_folder_tree 로 없는 빈을 만들고 자연 정렬(순서가 깨졌을 때만 저장·DRP 백업).
+    다시 짓기(느린 길)는 MV Hub/<프로젝트> 아래 빈 ID 를 모두 바꾼다 — 전후 ID 를 견줘 ids_changed 로 알린다."""
+    sguard = lambda: _assert_still_current(manager, started)  # noqa: E731 - 정렬 쪽이 _ProjectChanged 로 알아본다
+    managed_root = _destination_folder(pool, root, [MEDIA_POOL_ROOT, label], sguard)
+    before = {_uid(folder) for folder, _ in _panel_walk(managed_root)}
+    reordered, backup, order_error = False, "", ""
+    try:
+        reordered, backup = _reconcile_folder_tree(
+            payload, manager, project, pool, root, managed_root,
+            {tuple(_folder_parts(path)) for path in payload["create_paths"]}, sguard, resolve=resolve, project_label=label)
+    except Exception as exc:  # noqa: BLE001 - 정렬만 실패하면 빈은 하나씩 만든다(보내기와 같음)
+        if getattr(exc, "code", "") in _PANEL_STOP_CODES:
+            raise
+        order_error = str(exc)
+    bins, failed = {}, []
+    for path in payload["create_paths"]:
+        parts = [MEDIA_POOL_ROOT, label, *[_folder_name(part, "미분류") for part in _folder_parts(path)]]
+        folder = _folder_at_path(root, tuple(parts))
+        if folder is None:
+            try:
+                folder = _destination_folder(pool, root, parts, sguard)
+            except Exception as exc:  # noqa: BLE001 - 한 컷 실패가 나머지와 지금 빈 맞추기를 막지 않는다
+                if getattr(exc, "code", "") in _PANEL_STOP_CODES:
+                    raise
+                failed.append(path)
+                continue
+        bins[path] = _uid(folder)
+    ids_changed = bool(before - {_uid(folder) for folder, _ in _panel_walk(managed_root)})
+    return {"bins": bins, "bin_create_failed": failed, "reordered": bool(reordered), "folder_order_backup": backup,
+            "order_error": order_error, "ids_changed": ids_changed}
+
+
+def _panel_restore_current(pool, root, start_id, start_path, ids_changed, label, guard):
+    """keep_current — 처음 지금 빈으로 되돌리고 되읽는다. 경로로 찾기는 다시 짓기로 ID 가 바뀌었을 때 MV Hub/<프로젝트> 안에서만
+    (ID 가 그대로인데 못 찾으면 이름만 같은 다른 빈을 고르지 않는다)."""
+    folder = root if _uid(root) == start_id else next((item for item, _ in _panel_walk(root) if _uid(item) == start_id), None)
+    managed = [_folder_identity(MEDIA_POOL_ROOT), _folder_identity(label)]
+    if folder is None and ids_changed and start_path and [_folder_identity(part) for part in start_path[:2]] == managed:
+        folder = _folder_at_path(root, tuple(start_path))
+    if folder is None:
+        return None
+    guard()
+    if not pool.SetCurrentFolder(folder):
+        return None
+    current = pool.GetCurrentFolder()
+    return folder if current is not None and _uid(current) == _uid(folder) else None
+
+
 def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str, Any]:
     """패널 소유 항목만 다룬다 — 읽기와 저장 없는 미리 띄우기를 구분한다."""
     operation = payload["operation"]
@@ -2201,6 +2254,10 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
             return {"state": "unavailable", "details": "Resolve 프로젝트 ID를 확인하지 못했습니다"}
         if operation == "adopt" and project_id != payload.get("resolve_project_id"):
             return {"state": "project_changed", "details": "Resolve 프로젝트가 바뀌었습니다"}
+        # 화면이 본 다빈치 프로젝트와 다르면 쓰기 0(복구 기록 정리도 쓰기라 그보다 먼저)
+        if operation in {"target", "stage", "unstage"} and payload.get("expect_project") and payload["expect_project"] != project_id:
+            return {"state": "project_changed", "code": "project_changed", "resolve_project_id": project_id,
+                    "resolve_project_name": project_name, "details": "Resolve 프로젝트가 바뀌었습니다"}
 
         def guard():
             current = manager.GetCurrentProject()
@@ -2261,34 +2318,55 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                 done["bin_deleted"] = _panel_drop_empty_bin(pool, target, named, guard)
             return done
         if operation == "target":
-            bins, failed = {}, []
-            if payload.get("create") and payload.get("create_paths"):
-                # 에피소드의 컷 빈을 자식 한 번으로 — 만들 때마다 지금 빈이 바뀌므로 끝에서 folder_path 빈으로 되돌린다.
-                for path in payload["create_paths"]:
-                    try:
-                        bins[path] = _uid(_destination_folder(pool, root, [MEDIA_POOL_ROOT, label, *_folder_parts(path)], guard))
-                    except Exception as exc:  # noqa: BLE001 - 한 컷 실패가 나머지와 지금 빈 맞추기를 막지 않는다.
-                        if getattr(exc, "code", "") == "project_changed":
-                            raise
-                        failed.append(path)
-                target = target or _folder_at_path(root, tuple(parts))
-            if target is None:
-                if not payload.get("create"):
-                    return {**result, "state": "missing", "bin_path": "/".join(parts), "bin_id": ""}
-                target = _destination_folder(pool, root, parts, guard)
-            guard()
-            if not pool.SetCurrentFolder(target):
-                return {**result, "state": "unavailable", "details": "지금 빈 선택에 실패했습니다"}
-            current = pool.GetCurrentFolder()
-            guard()
-            if not _uid(target) or _uid(current) != _uid(target):
-                return {**result, "state": "unavailable", "details": "지금 빈을 되읽어 확인하지 못했습니다"}
-            done = {**result, "state": "ok", "bin_path": "/".join(parts), "bin_id": _uid(target)}
-            if "create_paths" in payload:
-                episode = _folder_at_path(root, (MEDIA_POOL_ROOT, label, *[
-                    _folder_name(part, "미분류") for part in _folder_parts(payload.get("episode_path", ""))]))
-                done.update(bins=bins, bin_create_failed=failed, episode_bin_id=_uid(episode) if episode is not None else "")
-            return done
+            keep = bool(payload.get("keep_current"))
+            # keep_current(실시간 새 컷) — 첫 쓰기 전에 사람이 보던 지금 빈을 적어 두고, 끝나면(정렬만 실패한 때도) 되돌린다
+            start = pool.GetCurrentFolder() if keep else None
+            start_id = _uid(start) if keep else ""
+            start_path = _folder_path_from_root(root, start) if keep else None
+            episode_bins: dict[str, Any] = {}
+            # 빈을 만들거나 다시 지은 뒤의 실패(되돌리기·에피소드 찾기·지금 빈 맞추기)에도 새 빈 표·ids_changed 를 돌려준다
+            #  — 패널·서버가 옛 빈 ID 를 버리게. 멈춤 코드(프로젝트 바뀜·복구 대기)는 그대로 올린다.
+            try:
+                if payload.get("create") and payload.get("create_paths"):
+                    episode_bins = _panel_episode_bins(manager, project, pool, root, payload, label, resolve, (project_id, project_name))
+                restored = _panel_restore_current(pool, root, start_id, start_path, episode_bins.get("ids_changed", False), label, guard) if keep else None
+                if "create_paths" in payload:
+                    episode = _folder_at_path(root, (MEDIA_POOL_ROOT, label, *[
+                        _folder_name(part, "미분류") for part in _folder_parts(payload.get("episode_path", ""))]))
+                    episode_bins = {"bins": {}, "bin_create_failed": [], **episode_bins,
+                                    "episode_bin_id": _uid(episode) if episode is not None else ""}
+                if keep:
+                    if restored is None:
+                        return {**result, **episode_bins, "state": "restore_failed", "bin_id": "",
+                                "details": "다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다"}
+                    return {**result, **episode_bins, "state": "ok", "bin_id": _uid(restored),
+                            "bin_path": "/".join(_folder_path_from_root(root, restored) or ())}
+                if episode_bins:  # 다시 짓기는 빈 객체를 새로 만든다 — 앞서 찾은 목적 빈은 지워졌을 수 있어 다시 찾는다
+                    target = _folder_at_path(root, tuple(parts))
+                if target is None:
+                    if not payload.get("create"):
+                        return {**result, **episode_bins, "state": "missing", "bin_path": "/".join(parts), "bin_id": ""}
+                    target = _destination_folder(pool, root, parts, guard)
+                guard()
+                if not pool.SetCurrentFolder(target):
+                    return {**result, **episode_bins, "state": "unavailable", "details": "지금 빈 선택에 실패했습니다"}
+                current = pool.GetCurrentFolder()
+                guard()
+                if not _uid(target) or _uid(current) != _uid(target):
+                    return {**result, **episode_bins, "state": "unavailable", "details": "지금 빈을 되읽어 확인하지 못했습니다"}
+            except Exception as exc:
+                stop = getattr(exc, "code", "") in _PANEL_STOP_CODES
+                if keep and not stop:
+                    try:  # 같은 프로젝트에서 되돌릴 수 있는 실패 — 되돌려 두고 성공으로는 돌려주지 않는다
+                        _panel_restore_current(pool, root, start_id, start_path, episode_bins.get("ids_changed", False), label, guard)
+                    except Exception:  # noqa: BLE001 - 원래 오류를 덮지 않는다
+                        pass
+                if stop or not (episode_bins or (payload.get("create") and payload.get("create_paths"))):
+                    raise
+                if not episode_bins:  # 빈 만들기·정렬 도우미 안에서 실패 — 다시 지었는지 모르면 다시 지었다고 본다(옛 빈 ID 버리기가 안전 쪽)
+                    episode_bins = {"ids_changed": True}
+                return {**result, **episode_bins, "state": "unavailable", "details": str(exc)[:200] or "지금 빈 선택에 실패했습니다"}
+            return {**result, **episode_bins, "state": "ok", "bin_path": "/".join(parts), "bin_id": _uid(target)}
 
         if "records" in payload:
             records = payload["records"]

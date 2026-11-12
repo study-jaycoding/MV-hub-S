@@ -769,6 +769,31 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(c010, panel._cut_bins)
         self.assertIsNotNone(bridge._folder_at_path(self.pool.root, ("MV Hub", "영화", "S01")))
 
+    async def test_keep_current_rules_expect_project_and_forget_after_rebuild(self):
+        for bad in [{"keep_current": True, "create_paths": [], "create": True}, {"keep_current": True, "folder_path": "S01/C010"}]:
+            with self.assertRaises(HTTPException, msg=str(bad)):
+                await route.post_target(self.episode(**bad), self.request)
+        self.assertEqual(self.pool.root.children, [])  # 리졸브 호출 0
+        first = await route.post_target(self.episode(), self.request)
+        owner = panel._owner["bin_id"]
+        self.assertEqual(owner, first["bin_id"])
+        panel._cut_bins["old-other"] = ("w", "q", "Q/C1")  # 다른 MV 프로젝트 기억은 남는다
+        seen = []
+        rebuilt = {"bins": {"S01/C010": "new-10", "S01/C020": "new-20"}, "bin_create_failed": [], "reordered": True,
+                   "folder_order_backup": "", "order_error": "", "ids_changed": True}
+        with patch.object(bridge, "_panel_episode_bins", return_value=rebuilt), \
+                patch.object(runner, "run_resolve_panel_isolated", side_effect=lambda p, before_start=None: (seen.append(p), self.child(p, before_start))[1]):
+            kept = await route.post_target(self.episode(seq=2, keep_current=True, expect_project=self.project.unique_id), self.request)
+        self.assertEqual((kept["state"], seen[-1]["keep_current"], seen[-1]["expect_project"]), ("ok", True, self.project.unique_id))
+        # 다시 짓기 = 이 프로젝트의 옛 빈 ID 를 버리고 새 bins 만 · keep_current 의 bin_id(사람의 지금 빈)는 패널 빈으로 기억 안 함
+        self.assertEqual({key: value[1:] for key, value in panel._cut_bins.items()},
+                         {"old-other": ("q", "Q/C1"), "new-10": ("p", "S01/C010"), "new-20": ("p", "S01/C020")})
+        self.assertEqual(panel._episode_bins, {"new-10", "new-20"})
+        self.assertEqual(panel._owner["bin_id"], "")
+        with patch.object(runner, "run_resolve_panel_isolated", side_effect=lambda p, before_start=None: (seen.append(p), self.child(p, before_start))[1]):
+            moved = await route.post_stage(self.body(route.StageIn, seq=1, gen_ids=[], expect_project="다른 프로젝트"), self.request)
+        self.assertEqual((moved["state"], seen[-1]["expect_project"]), ("project_changed", "다른 프로젝트"))
+
     async def test_adopt_crash_after_replace_and_restart_uses_disk_ready(self):
         await self.place()
         clip = self.pool.current.clips[0]

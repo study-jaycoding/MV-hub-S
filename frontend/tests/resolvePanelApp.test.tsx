@@ -7,7 +7,9 @@ const mocks = vi.hoisted(() => ({
   config: vi.fn(), me: vi.fn(), identity: vi.fn(), cache: vi.fn(), prepare: vi.fn(), target: vi.fn(), currentBin: vi.fn(), adopt: vi.fn(), stage: vi.fn(), unstage: vi.fn(), inventory: vi.fn(),
   projects: vi.fn(), generations: vi.fn(), login: vi.fn(), token: "", pause: (() => {}) as () => void,
   editCard: vi.fn(), setTags: vi.fn(), review: vi.fn(), listReload: vi.fn(), countsReload: vi.fn(),
+  live: null as null | ((message: { type?: string; status?: string }) => void),
 }));
+vi.mock("../src/lib/progressSocket", () => ({ connectProgress: (onMessage: (message: { type?: string; status?: string }) => void) => { mocks.live = onMessage; return () => { mocks.live = null; }; } }));
 vi.mock("../src/api", () => ({ api: { authConfig: mocks.config, me: mocks.me, myFinalizeRoles: vi.fn(async () => ({ project_ids: [] })),
   thumbOrRaw: (path: string) => path, assetThumbUrl: (path: string) => path } }));
 // 썸네일 칸의 라이브러리 카드와 앱 저장 훅은 각자 시험이 있다 — 여기서는 패널이 그것을 그대로 연결하는지만 본다.
@@ -58,7 +60,8 @@ beforeEach(() => {
   mocks.unstage.mockResolvedValue({ state: "ok" });
   mocks.inventory.mockResolvedValue({ ...destination, items: [], more: false });
   mocks.target.mockResolvedValue(destination); mocks.currentBin.mockResolvedValue(destination); mocks.adopt.mockResolvedValue({ state: "in_bin" });
-  mocks.projects.mockReturnValue({ projectsState: "ok", projects: [{ id: "p", name: "영화" }], reloadCounts: mocks.countsReload, tree: { state: "ready", roots: [{ path: "S", name: "S", children: [
+  mocks.projects.mockReturnValue({ projectsState: "ok", projects: [{ id: "p", name: "영화" }], reloadCounts: mocks.countsReload, tree: { state: "ready", roots: [{ path: "S", name: "S",
+    count: 4, reviewCounts: { final: 1, held: 2, shared: 4 }, children: [ // 위 폴더 수 = 아래 컷의 합(실제 트리처럼)
     { path: "S/C10", name: "C10", count: 1, reviewCounts: { final: 0, held: 1 } },
     { path: "S/C2", name: "C2", count: 3, reviewCounts: { final: 1, held: 1 } },
     { path: "S/C30", name: "C30", count: 0 },
@@ -87,20 +90,52 @@ it("트리·상태·전체 워크스페이스, 오른쪽 = 미디어 풀 보기 
   expect(mocks.target.mock.calls[0][0]).toMatchObject({ create: true, folder_path: "S/C2", episode_path: "S", create_paths: ["S/C2", "S/C10"] });
 });
 
-it("에피소드 이름 = target 한 번·stage 없음·타일 / 화살표 = 펼치기만", async () => {
+const row = (path: string) => host.querySelector<HTMLButtonElement>(`button.folder-tree-row[title="${path}"]`);
+
+it("MV 폴더 트리: 누르기 = 고르기(에피소드 target 한 번·stage 없음·타일) · 폴더 아이콘·두 번 누르기 = 펴고 접기만 · 위 폴더 표시", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "", cut: "" }));
   await render();
   expect(mocks.target).not.toHaveBeenCalled();
-  const chevron = host.querySelector<HTMLButtonElement>('[aria-label="T 폴더 펼치기"]')!;
-  await act(async () => chevron.click()); await flush();
-  expect(host.textContent).toContain("C1");
-  expect(mocks.target).not.toHaveBeenCalled();
-  const name = [...host.querySelectorAll<HTMLButtonElement>(".rp-name")].find(button => button.textContent === "T")!;
-  await act(async () => name.click()); await flush();
+  expect(row("T/C1")).toBeNull();
+  await act(async () => row("T")!.click()); await flush(); // 접힌 에피소드를 한 번 누르기 = 고르기만, 펼치지 않는다(Codex P2)
+  expect(row("T/C1")).toBeNull();
   expect(mocks.target).toHaveBeenCalledTimes(1);
-  expect(mocks.target.mock.calls[0][0]).toMatchObject({ create: true, folder_path: "T", episode_path: "T", create_paths: ["T/C1"] });
+  expect(mocks.target.mock.calls[0][0]).toMatchObject({ create: true, folder_path: "T", episode_path: "T", create_paths: ["T/C1"], expect_project: "r" });
   expect(mocks.stage).not.toHaveBeenCalled();
   expect([...host.querySelectorAll(".rp-tile")].map(tile => tile.textContent)).toEqual(["C12"]);
+  expect(row("T")!.className).toContain("selected");
+  await act(async () => row("T")!.querySelector<HTMLElement>(".folder-tree-fold")!.click()); await flush(); // 폴더 아이콘 = 펴기만
+  expect(row("T/C1")).not.toBeNull();
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  // 두 번 누르기 — 고른 에피소드를 다시 누르는 것은 아무것도 안 하고, 더블클릭은 접기만
+  await act(async () => { row("T")!.click(); row("T")!.click(); row("T")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); }); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  expect(row("T/C1")).toBeNull();
+  expect(row("S")!.textContent).toContain("★"); // 위 폴더에도 최종 표시(아래 컷의 합)
+});
+
+it("맨 위 프로젝트 단추 → 목록 → 고르면 그 프로젝트 · 맨 아래 프로젝트 줄 없음 · 사이드바 닫기·넓이 손잡이", async () => {
+  mocks.projects.mockImplementation(({ projectId }: { projectId: string | null }) => ({ projectsState: "ok", reloadCounts: mocks.countsReload,
+    projects: [{ id: "p", name: "영화" }, { id: "q", name: "블룸메이커" }],
+    tree: projectId === "q" ? { state: "ready", roots: [{ path: "B", name: "B", count: 1, children: [{ path: "B/C1", name: "C1", count: 1 }] }] }
+      : { state: "ready", roots: [{ path: "S", name: "S", count: 4, children: [{ path: "S/C2", name: "C2", count: 3 }, { path: "S/C10", name: "C10", count: 1 }] }] } }));
+  await render();
+  expect(host.querySelector(".rp-project")!.textContent).toContain("영화");
+  expect(host.querySelector(".rp-menu")).toBeNull();
+  expect(host.querySelector('[role="separator"]')).not.toBeNull(); // 넓이 손잡이
+  await act(async () => (host.querySelector(".rp-project") as HTMLButtonElement).click()); await flush();
+  const items = [...host.querySelectorAll<HTMLButtonElement>(".rp-item")];
+  expect(items.map(item => item.querySelector(".rp-pname")!.textContent)).toEqual(["영화", "블룸메이커"]);
+  await act(async () => items[1].click()); await flush();
+  expect(host.querySelector(".rp-menu")).toBeNull();
+  expect(host.querySelector(".rp-project")!.textContent).toContain("블룸메이커");
+  expect(row("B")).not.toBeNull();
+  // 닫기 — 오른쪽 머리줄의 끝선 단추, 닫아도 다시 여는 단추가 남는다
+  const toggle = () => host.querySelector<HTMLButtonElement>(".side-edge-toggle")!;
+  await act(async () => toggle().click()); await flush();
+  expect(host.querySelector(".rp-side")).toBeNull();
+  await act(async () => toggle().click()); await flush();
+  expect(host.querySelector(".rp-side")).not.toBeNull();
 });
 
 it("다빈치에서 컷 빈에 들어가면 그 컷으로 — target 없이 bin_id 로 한 번 · 에피소드 빈으로 오면 선택만 풀고 · 다른 빈은 무시", async () => {
@@ -117,7 +152,8 @@ it("다빈치에서 컷 빈에 들어가면 그 컷으로 — target 없이 bin_
   expect(mocks.stage).toHaveBeenCalledTimes(1);
   expect(mocks.stage.mock.calls[0][0]).toMatchObject({ folder_path: "S/C2", bin_id: "b2" });
   expect(host.querySelector('[aria-label="보기 방식"]')).not.toBeNull();
-  expect(host.querySelector(".rp-cut.selected")!.textContent).toContain("C2");
+  expect(row("S/C2")!.className).toContain("selected");
+  expect(row("S/C2")!.className).not.toContain("viewed-resolve"); // 다빈치 위치 = 고른 곳이면 라임 그대로(다빈치 표는 다를 때만)
   await tick(6000);
   expect(mocks.stage).toHaveBeenCalledTimes(1); // 빈 ID 가 바뀔 때 한 번만
   davinci = "epS"; await tick(2000); await tick(10);
@@ -130,7 +166,7 @@ it("다빈치에서 컷 빈에 들어가면 그 컷으로 — target 없이 bin_
 
 it("다리 없음: 컷·거르기·시간 경과에도 여덟 API 0", async () => {
   delete window.mvhubResolve; await render(); await tick(16_000);
-  await act(async () => (host.querySelector(".rp-cut") as HTMLButtonElement).click()); await flush();
+  await act(async () => row("S/C10")!.click()); await flush();
   for (const fn of [mocks.cache, mocks.target, mocks.stage, mocks.unstage, mocks.inventory, mocks.prepare, mocks.adopt, mocks.currentBin]) expect(fn).not.toHaveBeenCalled();
   expect(mocks.identity.mock.calls.every(call => call[1] === false)).toBe(true);
   expect(host.textContent).toContain("리졸브의 MV Hub 창에서만 끌어 넣을 수 있습니다");
@@ -212,7 +248,8 @@ it("다른 에피소드: 새 target 먼저, 그 뒤 앞 에피소드 컷마다 �
   expect(mocks.stage).not.toHaveBeenCalled();
   await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
   expect(mocks.unstage.mock.calls.map(call => [call[0].folder_path, call[0].bin_id, call[0].delete_empty])).toEqual([["S/C2", "b2", true], ["S/C10", "b10", true]]);
-  expect(mocks.target.mock.invocationCallOrder[1]).toBeLessThan(mocks.currentBin.mock.invocationCallOrder[0]);
+  const settleRead = mocks.currentBin.mock.calls.findIndex(call => call[2] === "S/C2");
+  expect(mocks.target.mock.invocationCallOrder[1]).toBeLessThan(mocks.currentBin.mock.invocationCallOrder[settleRead]);
   expect(mocks.adopt.mock.invocationCallOrder[0]).toBeLessThan(mocks.unstage.mock.invocationCallOrder[0]); // 쓴 것을 NAS 로 옮긴 뒤 정리
 });
 
@@ -234,7 +271,8 @@ it("다른 에피소드(빈 표 없음): 새 컷을 먼저 띄운 뒤 앞 컷 �
   const held = deferred<typeof destination>();
   mocks.currentBin.mockReturnValueOnce(held.promise).mockResolvedValue({ ...destination, bin_id: "elsewhere" });
   await act(async () => control.selectFolder("p", "T", "T/C1", [])); await flush();
-  expect(mocks.stage.mock.invocationCallOrder[1]).toBeLessThan(mocks.currentBin.mock.invocationCallOrder[0]); // 새 컷 먼저
+  const settleRead = mocks.currentBin.mock.calls.findIndex(call => call[2] === "S/C2");
+  expect(mocks.stage.mock.invocationCallOrder[1]).toBeLessThan(mocks.currentBin.mock.invocationCallOrder[settleRead]); // 새 컷 먼저
   await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
   await act(async () => held.resolve({ ...destination, bin_id: "elsewhere" })); await flush();
   expect(mocks.stage).toHaveBeenCalledTimes(3);
@@ -318,18 +356,106 @@ it("프로젝트를 바꿔 선택이 풀리면 정리하되 다빈치가 들어�
   expect(mocks.unstage.mock.calls.map(call => [call[0].bin_id, call[0].delete_empty])).toEqual([["b10", true]]);
 });
 
-it("에피소드를 다시 누르면 지금 트리의 컷 목록으로 target(그사이 생긴 컷 빈도)", async () => {
+it("실시간: 새로 활성이 된 컷은 keep_current target 한 번 · 실패면 같은 묶음 재시도 없음 · /ws 알림은 1초 묶어 다시 읽기", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
+  mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   await render();
-  expect(mocks.target.mock.calls[0][0].create_paths).toEqual(["S/C2", "S/C10"]);
-  const tree = mocks.projects.mock.results[0].value.tree;
-  mocks.projects.mockReturnValue({ ...mocks.projects.mock.results[0].value, tree: { ...tree, roots: [{ ...tree.roots[0],
-    children: [...tree.roots[0].children, { path: "S/C40", name: "C40", count: 2 }] }, tree.roots[1]] } });
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  const base = mocks.projects.mock.results[0].value;
+  mocks.projects.mockReturnValue({ ...base, tree: { ...base.tree, roots: [{ ...base.tree.roots[0],
+    children: [...base.tree.roots[0].children, { path: "S/C40", name: "C40", count: 2 }] }, base.tree.roots[1]] } });
+  mocks.target.mockResolvedValueOnce({ state: "unavailable", resolve_project_id: "r", details: "정렬 실패" });
   await act(async () => root.render(<ResolvePanelApp />)); await flush();
-  const name = [...host.querySelectorAll<HTMLButtonElement>(".rp-name")].find(button => button.textContent === "S")!;
-  await act(async () => name.click()); await flush();
   expect(mocks.target).toHaveBeenCalledTimes(2);
-  expect(mocks.target.mock.calls[1][0].create_paths).toEqual(["S/C2", "S/C10", "S/C40"]);
+  expect(mocks.target.mock.calls[1][0]).toMatchObject({ keep_current: true, folder_path: "S", episode_path: "S",
+    create_paths: ["S/C2", "S/C10", "S/C40"], expect_project: "r" });
+  expect(host.textContent).toContain("새 컷 빈을 만들지 못했습니다");
+  await act(async () => root.render(<ResolvePanelApp />)); await flush(); await tick(16_000);
+  expect(mocks.target).toHaveBeenCalledTimes(2); // 같은 묶음 — /ws·15초가 와도 다시 안 부름(실패마다 저장·백업이 되풀이되지 않게)
+  mocks.listReload.mockClear(); mocks.countsReload.mockClear();
+  await act(async () => { mocks.live!({ type: "synced" }); mocks.live!({ status: "done" }); });
+  await tick(900);
+  expect(mocks.listReload).not.toHaveBeenCalled();
+  await tick(200);
+  expect(mocks.listReload).toHaveBeenCalled(); expect(mocks.countsReload).toHaveBeenCalledTimes(1);
+});
+
+it("다빈치 프로젝트별 기억: 바뀌면 그 프로젝트 선택으로 · 앞 프로젝트 정리 안 함 · 처음 보는 프로젝트는 빈 선택 · 쓰기마다 expect_project", async () => {
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ last: { project: "p", episode: "S", cut: "S/C2" },
+    byDavinci: { r: { project: "p", episode: "S", cut: "S/C2" }, r2: { project: "p", episode: "T", cut: "T/C1" } } }));
+  let davinci = "r";
+  mocks.currentBin.mockImplementation(async () => ({ ...destination, resolve_project_id: davinci }));
+  mocks.target.mockImplementation(async (body: { folder_path: string }) => ({ ...destination, resolve_project_id: davinci, bin_path: "MV Hub/영화/" + body.folder_path }));
+  mocks.stage.mockImplementation(async () => ({ ...destination, resolve_project_id: davinci, items: [] }));
+  await render();
+  expect(mocks.target.mock.calls[0][0]).toMatchObject({ folder_path: "S/C2", expect_project: "r" });
+  expect(mocks.stage.mock.calls[0][0].expect_project).toBe("r");
+  davinci = "r2"; await tick(2000); await tick(10);
+  expect(mocks.target.mock.calls.at(-1)![0]).toMatchObject({ folder_path: "T/C1", expect_project: "r2" });
+  expect(mocks.unstage).not.toHaveBeenCalled(); // 다른 다빈치 프로젝트의 같은 이름 빈은 정리하지 않는다
+  expect(row("T/C1")!.className).toContain("selected");
+  const before = mocks.target.mock.calls.length;
+  davinci = "r3"; await tick(2000); await tick(10);
+  expect(mocks.target.mock.calls.length).toBe(before); // 처음 보는 프로젝트 — 묻지 않고 빈을 만들지 않는다
+  expect(host.textContent).toContain("왼쪽에서 에피소드나 컷을 고르세요");
+});
+
+it("다시 짓기(ids_changed) 뒤 옛 빈 ID 로 stage 하지 않음 · 다른 다빈치 프로젝트에서 온 응답은 버림", async () => {
+  await render(false);
+  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "T/C1": "t1" }, episode_bin_id: "epT" })
+    .mockResolvedValueOnce({ ...destination, bin_id: "b2", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })
+    // 실시간 새 컷(C40) 빈 만들기가 순서를 맞추며 다시 지었다 — 빈 ID 가 모두 바뀌었고 bin_id 는 되돌린 사람의 지금 빈
+    .mockResolvedValueOnce({ ...destination, bin_id: "person", bins: { "S/C2": "n2", "S/C10": "n10", "S/C40": "n40" }, episode_bin_id: "nS", ids_changed: true });
+  await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush();
+  expect(mocks.stage.mock.calls.at(-1)![0].bin_id).toBe("b2");
+  await act(async () => control.syncCuts(["S/C2", "S/C10", "S/C40"])); await flush();
+  expect(mocks.target.mock.calls.at(-1)![0]).toMatchObject({ keep_current: true, create_paths: ["S/C2", "S/C10", "S/C40"] });
+  await act(async () => control.updateSet([gen])); await flush();
+  expect(mocks.stage.mock.calls.at(-1)![0].bin_id).toBe("n2");
+  await act(async () => control.selectFolder("p", "T", "T/C1", [])); await flush();
+  expect(mocks.stage.mock.calls.at(-1)![0].bin_id).toBeUndefined(); // T 의 옛 빈 ID(t1)는 버렸다
+  mocks.target.mockResolvedValueOnce({ state: "project_changed", resolve_project_id: "r2" });
+  const staged = mocks.stage.mock.calls.length;
+  await act(async () => control.selectFolder("p", "S", "S/C10", [])); await flush();
+  expect(mocks.stage.mock.calls.length).toBe(staged);
+  expect(control.davinci).toBe("r2");
+});
+
+it("선택이 바뀐 사이에 온 다시 짓기 응답도 옛 빈 ID 를 버림 · 일부 빈만 못 만든 실시간 묶음은 재시도 없음(Codex P2)", async () => {
+  await render(false);
+  let release!: (value: unknown) => void;
+  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "T/C1": "t1" }, episode_bin_id: "epT" })
+    .mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
+  await act(async () => { void control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"]); }); await flush();
+  await act(async () => { void control.selectFolder("p", "T", "T/C1", []); }); await flush(); // S 의 target 을 기다리는 사이 T 로
+  await act(async () => release({ ...destination, bin_id: "b2", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS", ids_changed: true }));
+  await flush();
+  expect(mocks.stage.mock.calls.at(-1)![0].bin_id).toBeUndefined(); // 버린 응답이어도 T 의 옛 빈 ID(t1)로 stage 하지 않는다
+  mocks.target.mockResolvedValueOnce({ ...destination, bins: { "T/C1": "n1" }, episode_bin_id: "nT" })
+    .mockResolvedValueOnce({ ...destination, bin_id: "person", bins: { "T/C1": "n1" }, episode_bin_id: "nT", bin_create_failed: ["T/C5"] });
+  await act(async () => control.selectFolder("p", "T", "", [], false, ["T/C1"])); await flush();
+  const before = mocks.target.mock.calls.length;
+  await act(async () => control.syncCuts(["T/C1", "T/C5"])); await flush();
+  expect(mocks.target.mock.calls.length).toBe(before + 1);
+  await act(async () => control.syncCuts(["T/C1", "T/C5"])); await flush();
+  expect(mocks.target.mock.calls.length).toBe(before + 1); // ok 라도 일부 빈을 못 만들었으면 같은 묶음 재시도 없음
+});
+
+it("느린 target 사이 목록 갱신으로 선택 객체만 바뀌어도 새 빈 표를 지킴 — 그 뒤 실시간 빈 만들기가 돈다(Codex P2 2차)", async () => {
+  await render(false);
+  let release!: (value: unknown) => void;
+  mocks.target.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  await act(async () => { void control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"]); }); await flush();
+  await act(async () => { control.updateSet([gen]); }); await flush(); // 같은 컷, 새 선택 객체
+  await act(async () => release({ ...destination, bin_id: "b2", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS", ids_changed: true }));
+  await flush();
+  expect(mocks.stage.mock.calls.at(-1)![0].bin_id).toBe("b2");
+  const before = mocks.target.mock.calls.length;
+  await act(async () => control.syncCuts(["S/C2", "S/C10", "S/C40"])); await flush();
+  expect(mocks.target.mock.calls.length).toBe(before + 1);
+  expect(mocks.target.mock.calls.at(-1)![0]).toMatchObject({ keep_current: true, create_paths: ["S/C2", "S/C10", "S/C40"] });
 });
 
 it("다시 열 때 저장된 에피소드의 컷 빈은 inventory 정리에서 건너뛰고 빈은 안 지움", async () => {

@@ -52,15 +52,19 @@ export function useEditGenerations({
   projectId,
   seq,
   allWorkspaces = false,
+  wholeProject = false,
 }: {
   authKey: string; // 계정·서버 — 바뀌면 받던 응답을 버린다
   workspace: WorkspaceContext;
   projectId: string | null;
   seq: string | null;
   allWorkspaces?: boolean;
+  // 폴더 없이 프로젝트 전체(상한 그대로) — 리졸브 패널이 한 번 받아 두고 폴더를 바꿀 때 다시 받지 않는다. 편집 탭은 안 쓴다.
+  wholeProject?: boolean;
 }): EditList & { reload: () => void; reloadIds: (ids: string[]) => void } {
-  const ready = !!projectId && !!seq && (allWorkspaces || editWorkspaceReady(workspace));
-  const ctx = JSON.stringify([authKey, workspaceViewKey(workspace), allWorkspaces, projectId, seq]);
+  const ready = !!projectId && (!!seq || wholeProject) && (allWorkspaces || editWorkspaceReady(workspace));
+  const folder = wholeProject ? null : seq; // 프로젝트 전체면 폴더가 바뀌어도 다시 받지 않는다
+  const ctx = JSON.stringify([authKey, workspaceViewKey(workspace), allWorkspaces, projectId, folder, wholeProject]);
   const [held, setHeld] = useState<{ ctx: string } & EditList>({ ctx: "", ...EMPTY_LIST });
   const [nonce, requestFull] = useReducer((n: number) => n + 1, 0);
   const [batchNonce, requestBatch] = useReducer((n: number) => n + 1, 0);
@@ -106,7 +110,7 @@ export function useEditGenerations({
     void (async () => {
       const query: GenQuery = {
         tab: "team", ...(allWorkspaces ? {} : sharedWorkspaceFilter(workspaceRef.current)),
-        project_id: projectId!, folder_path: seq!,
+        project_id: projectId!, ...(folder === null ? {} : { folder_path: folder }),
       };
       const retired = Symbol("retired edit read");
       // 재시도는 같은 run 안에서 제한한다 — reload()로 시작하면 상한이 초기화된다.
@@ -173,7 +177,7 @@ export function useEditGenerations({
       clearTimeout(retryTimer);
       finishWait?.();
     };
-  }, [ctx, ready, projectId, seq, allWorkspaces, nonce, records]);
+  }, [ctx, ready, projectId, folder, allWorkspaces, nonce, records]);
 
   useEffect(() => {
     if (!ready || !partialCapability.current.supported || fullPending.current || held.ctx !== ctx || held.state === "error" || !held.startedAt || batch.current || !pending.current.ids.size) return;

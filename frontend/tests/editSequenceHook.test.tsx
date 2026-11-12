@@ -50,9 +50,9 @@ function deferred<T>() {
 }
 const flush = () => act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
 
-function ListHarness(props: { seq: string | null; workspace?: WorkspaceContext; all?: boolean }) {
+function ListHarness(props: { seq: string | null; workspace?: WorkspaceContext; all?: boolean; whole?: boolean }) {
   list = useEditGenerations({
-    authKey: "auth", workspace: props.workspace ?? TEAM, projectId: "p1", seq: props.seq, allWorkspaces: props.all,
+    authKey: "auth", workspace: props.workspace ?? TEAM, projectId: "p1", seq: props.seq, allWorkspaces: props.all, wholeProject: props.whole,
   });
   return null;
 }
@@ -104,6 +104,28 @@ it.each(["invalidate", "clear", "reject", "evicted"])("retries_full_read_after_r
   expect(mocks.list).toHaveBeenCalledTimes(2);
   expect(list.state).toBe("ok");
   expect(list.gens.map(g => g.id)).toEqual(["fresh"]);
+});
+
+// 리졸브 패널(Jay 2026-11-12) — 프로젝트 전체를 한 번 받아 두고 폴더를 바꿀 때 다시 받지 않는다. 편집 탭(wholeProject 없음)은 그대로.
+it("whole_project_reads_once_without_folder_and_edit_tab_still_needs_seq", async () => {
+  mocks.list.mockResolvedValue([row("a"), { ...row("b"), folder_path: "e020/c2" }]);
+  render(<ListHarness seq="" whole all />);
+  await flush();
+  expect(mocks.list).toHaveBeenCalledTimes(1);
+  expect(mocks.list.mock.calls[0][0]).toEqual({ tab: "team", project_id: "p1" }); // 폴더 없이 프로젝트 전체
+  expect(list.state).toBe("ok");
+  expect(list.gens.map(g => g.id)).toEqual(["a", "b"]);
+  render(<ListHarness seq="e020" whole all />); // 폴더가 바뀌어도 다시 받지 않는다
+  await flush();
+  expect(mocks.list).toHaveBeenCalledTimes(1);
+  mocks.list.mockClear();
+  render(<ListHarness seq="" all />); // wholeProject 없이는 폴더가 있어야 받는다(편집 탭 그대로)
+  await flush();
+  expect(mocks.list).not.toHaveBeenCalled();
+  expect(list.state).toBe("idle");
+  render(<ListHarness seq="e070" all />);
+  await flush();
+  expect(mocks.list.mock.calls[0][0]).toMatchObject({ folder_path: "e070" });
 });
 
 it("ignores_missing_and_empty_ids_without_retrying_or_error", async () => {

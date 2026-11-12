@@ -93,6 +93,14 @@ def forget_bin(bin_id):
     _episode_bins.discard(bin_id)
 
 
+def forget_project(project_id):
+    """다시 짓기로 그 MV 프로젝트의 빈 ID 가 바뀌었다 — 옛 ID 기억을 버린다(지우기·따라가기를 막는 쪽으로 안전)."""
+    for bin_id in [key for key, value in _cut_bins.items() if value[1] == project_id]:
+        _cut_bins.pop(bin_id, None)
+    _episode_bins.clear()
+    _owner["bin_id"] = ""
+
+
 def episode_scope_ok(episode_path, folder_path, create_paths):
     """만들 컷 빈은 에피소드보다 깊은 경로만 — 조각 단위로 견줘 e02 와 e020 을 섞지 않는다. 빈 에피소드 = 프로젝트 전체라 거절."""
     from .resolve_bridge import _folder_parts

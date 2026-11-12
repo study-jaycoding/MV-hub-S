@@ -15,23 +15,23 @@
 .resolve-panel-body { display: flex; flex: 1; min-height: 0; }
 .resolve-panel-loading { padding: 24px; }
 
-/* 왼쪽 — 빈 트리와 아래 거르기(폭·여백·점 크기 = MV 사이드바 값, Jay 2026-11-12) */
-.rp-side { width: 200px; flex: 0 0 200px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #333438; }
-.rp-bins { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
-.rp-bin { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; background: transparent; color: #c9c9cc; padding: 4px 8px; text-align: left; white-space: nowrap; }
-.rp-bin:hover { background: #2a2b2f; }
-.rp-bin.rp-project { color: #e6e6e8; }
-.rp-bin.selected { background: #141517; color: #fff; }
-.rp-bin.rp-empty { color: #5e5f64; }
-.rp-chev { width: 10px; flex: none; color: #8a8b90; }
-/* 에피소드 줄 — 화살표(펼치기만)와 이름(컷 빈 만들기)이 따로 누르는 단추 */
-.rp-folder button { border: 0; background: transparent; color: inherit; padding: 0; text-align: left; }
-.rp-folder .rp-name { flex: 0 1 auto; min-width: 0; overflow: hidden; }
-.rp-folder .rp-name:hover { color: #fff; }
-.rp-count { margin-left: auto; color: #7d7e83; font-size: 11px; }
-.rp-count b { color: #e3b341; font-weight: 400; }
-.rp-bin.selected .rp-count { color: var(--accent, #c4e84a); }
+/* 왼쪽 — 프로젝트 고르기 · MV 공용 폴더 트리 · 아래 거르기(폭·여백·점 크기 = MV 사이드바 값, Jay 2026-11-12).
+   폭은 앱 사이드바와 같은 손잡이(ResizableSidebar 의 --sidebar-w) */
+.rp-side { width: var(--sidebar-w, 200px); flex: 0 0 var(--sidebar-w, 200px); display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #333438; }
+.rp-bins { flex: 1; min-height: 0; overflow: auto; padding: 2px 0 6px; }
 .rp-side .sidebar-foot-toggle { flex: none; }
+.rp-picker { position: relative; flex: none; padding: 8px 10px 6px; border-bottom: 1px solid #333438; }
+.rp-picker-label { font-size: 11px; color: #7d7e83; margin: 0 0 4px 2px; }
+.rp-project { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #f0f0f2; font-size: 16px; font-weight: 700; text-align: left; }
+.rp-project:hover, .rp-project.open { background: #26272b; border-color: #3a3b40; }
+.rp-pname { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
+.rp-pcount { color: #8a8b90; font-size: 12px; font-weight: 400; }
+.rp-caret { color: #8a8b90; font-size: 12px; }
+.rp-menu { position: absolute; left: 10px; right: 10px; top: calc(100% - 2px); z-index: 5; max-height: 60vh; overflow: auto; background: #26272b; border: 1px solid #3a3b40; border-radius: 8px; padding: 4px; box-shadow: 0 10px 28px rgba(0, 0, 0, .55); }
+.rp-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px; background: transparent; color: #d4d4d6; font-size: 13px; text-align: left; }
+.rp-item:hover { background: #2e2f34; }
+.rp-item.on { color: #fff; }
+.rp-item b { color: var(--accent, #c4e84a); font-weight: 400; }
 .rp-filter { flex: none; max-height: 45%; overflow: auto; padding: 4px 14px 14px; }
 .rp-filter h4 { margin: 18px 0 10px; }
 .rp-filter .color-dots { gap: 9px; }
@@ -41,6 +41,10 @@
 .rp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .rp-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .rp-view > .ed-pool { flex: 1; min-height: 0; }
+/* 사이드바 끝선 단추 — 앱은 선 위 가운데에 반쯤 걸치지만 패널은 오른쪽 칸이 넘침을 잘라 반이 가려졌다(Jay 11-12 이미지 1).
+   열린 동그라미를 칸 안쪽에 두고 제목을 그만큼 민다 */
+.rp-view .ed-pool-head .side-edge-toggle.open { left: 6px; }
+.rp-view .ed-pool-head { padding-left: 36px; }
 .rp-note, .rp-empty-note { margin: 10px; line-height: 1.6; }
 .rp-alerts { flex: none; max-height: 30%; overflow: auto; padding: 0 10px; overflow-wrap: anywhere; }
 .rp-alerts p { line-height: 1.6; margin: 6px 0; }
@@ -57,4 +61,3 @@
 .rp-tile b { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
 .rp-tile i { font-style: normal; color: #7d7e83; font-size: 11px; }
 .rp-ficon { width: 16px; height: 12px; flex: none; border-radius: 2px; background: #8a8b90; }
-@media (max-width: 460px) { .rp-side { width: 144px; flex-basis: 144px; } }

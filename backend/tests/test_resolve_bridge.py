@@ -140,6 +140,128 @@ class PanelStagingTests(unittest.TestCase):
         self.assertEqual((result["state"], sorted(result["bins"]), result["bin_create_failed"]), ("ok", ["E1/C10", "E1/C30"], ["E1/C20"]))
         self.assertIs(self.pool.current, self.bin("E1", "C10"))
 
+    def episode_op(self, **kwargs):
+        return self.run_op("target", folder_path="E1", episode_path="E1", create_paths=["E1/C10", "E1/C20", "E1/C30"], **kwargs)
+
+    def test_episode_target_resorts_like_send(self):
+        self.run_op("target", folder_path="E1/C30")  # 컷을 하나씩 눌러 만든 빈이 앞에 남은 자리(이미지 3)
+        self.run_op("target", folder_path="E1/C10")
+        saved = self.manager.saved
+        result = self.episode_op()
+        self.assertEqual([folder.name for folder in self.bin("E1").children], ["C10", "C20", "C30"])
+        self.assertTrue(result["reordered"])
+        self.assertGreater(self.manager.saved, saved)  # 보내기처럼 저장·DRP 백업 뒤 정렬
+        self.assertTrue(Path(result["folder_order_backup"]).is_file())
+        self.assertTrue(result["ids_changed"])  # 시험 가짜는 빠른 길(판)이 없어 다시 짓기 — 빈 ID 가 바뀐다
+        self.assertEqual(result["bins"], {f"E1/{name}": self.bin("E1", name).unique_id for name in ("C10", "C20", "C30")})
+        self.assertIs(self.pool.current, self.bin("E1"))
+        saved = self.manager.saved
+        again = self.episode_op()  # 순서가 맞으면 저장·백업 없음
+        self.assertEqual((again["reordered"], again["ids_changed"], again["order_error"], self.manager.saved), (False, False, "", saved))
+
+    def test_episode_target_failure_after_rebuild_still_returns_new_ids(self):
+        self.run_op("target", folder_path="E1/C30")
+        self.run_op("target", folder_path="E1/C10")  # 다음 episode_op 가 다시 짓기를 한다
+        with mock.patch.object(self.pool, "SetCurrentFolder", return_value=False):
+            failed = self.episode_op()
+        self.assertEqual((failed["state"], failed["ids_changed"]), ("unavailable", True))  # Codex P2 — 옛 빈 ID 를 버리게
+        self.assertEqual(failed["bins"], {f"E1/{name}": self.bin("E1", name).unique_id for name in ("C10", "C20", "C30")})
+        self.run_op("target", folder_path="E2/C30")
+        self.run_op("target", folder_path="E2/C10")
+        real = resolve_bridge._destination_folder
+        def dest(pool, root, parts, guard=None):
+            if parts[-1] == "C99":
+                raise RuntimeError("빈 만들기 실패")
+            return real(pool, root, parts, guard)
+        with mock.patch.object(resolve_bridge, "_destination_folder", side_effect=dest):
+            boom = self.run_op("target", folder_path="E2/C99", episode_path="E2", create_paths=["E2/C10", "E2/C20", "E2/C30"])
+        self.assertEqual((boom["state"], boom["ids_changed"], sorted(boom["bins"])), ("unavailable", True, ["E2/C10", "E2/C20", "E2/C30"]))
+
+    def test_failure_inside_bins_helper_after_rebuild_invalidates_ids(self):
+        self.run_op("target", folder_path="E1/C30")
+        self.run_op("target", folder_path="E1/C10")  # 다음 에피소드 target 은 다시 짓는다
+        real = resolve_bridge._panel_walk
+        def walk(folder, parts=()):  # 다시 짓기가 끝난 뒤 도우미의 마지막 트리 훑기에서 예외
+            if folder is not self.pool.root and len(parts) == 0 and self.bin("E1", "C20") is not None:
+                raise RuntimeError("트리 읽기 실패")
+            return real(folder, parts)
+        with mock.patch.object(resolve_bridge, "_panel_walk", side_effect=walk):
+            result = self.episode_op()
+        self.assertEqual((result["state"], result["ids_changed"], "bins" in result), ("unavailable", True, False))  # Codex P2(3차)
+        self.assertEqual([folder.name for folder in self.bin("E1").children], ["C10", "C20", "C30"])
+
+    def test_keep_current_restores_current_bin(self):
+        self.pool.current = self.folder  # 사람이 S/C1 을 보는 중
+        with self.selecting_add():
+            result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2"], keep_current=True)
+        self.assertEqual((result["state"], result["bin_id"], result["ids_changed"]), ("ok", self.folder.unique_id, False))
+        self.assertIs(self.pool.current, self.folder)
+        self.assertEqual(sorted(result["bins"]), ["S/C1", "S/C2"])
+
+    def test_keep_current_restores_by_path_after_rebuild(self):
+        self.run_op("target", folder_path="S/C3")
+        old = self.pool.current  # 사람이 S/C3 을 보는 중 — C2 가 사이에 들어가 다시 짓기
+        result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2", "S/C3"], keep_current=True)
+        now = self.bin("S", "C3")
+        self.assertEqual((result["state"], result["ids_changed"], result["bin_id"]), ("ok", True, now.unique_id))
+        self.assertIsNot(now, old)
+        self.assertIs(self.pool.current, now)
+
+    def test_keep_current_restore_error_after_rebuild_still_returns_new_ids(self):
+        self.run_op("target", folder_path="S/C3")  # 다음 keep_current 가 C2 를 사이에 넣으며 다시 짓는다
+        real = resolve_bridge._panel_restore_current
+        calls = []
+        def restore(*args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise RuntimeError("되돌리기 읽기 실패")
+            return real(*args)
+        with mock.patch.object(resolve_bridge, "_panel_restore_current", side_effect=restore):
+            result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2", "S/C3"], keep_current=True)
+        self.assertEqual((result["state"], result["ids_changed"]), ("unavailable", True))  # Codex P2(2차) — 옛 빈 ID 를 버리게
+        self.assertEqual(sorted(result["bins"]), ["S/C1", "S/C2", "S/C3"])
+        self.assertEqual(len(calls), 2)  # 실패 길에서도 한 번 더 되돌려 본다
+        self.assertIs(self.pool.current, self.bin("S", "C3"))
+
+    def test_keep_current_restore_failure_is_not_ok(self):
+        self.pool.current = self.folder
+        with mock.patch.object(self.pool, "SetCurrentFolder", return_value=False):
+            result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2"], keep_current=True)
+        self.assertEqual(result["state"], "restore_failed")
+
+    def test_keep_current_does_not_pick_same_name_bin(self):
+        mine = FakeMediaPool.AddSubFolder(self.pool, self.pool.root, "Mine")
+        self.pool.current = mine
+        real = FakeMediaPool.AddSubFolder
+        def add(parent, name):
+            if mine in self.pool.root.children:  # 그사이 사람이 Mine 을 지우고 같은 이름으로 다시 만들었다
+                self.pool.root.children.remove(mine)
+                real(self.pool, self.pool.root, "Mine")
+            return real(self.pool, parent, name)
+        with mock.patch.object(self.pool, "AddSubFolder", side_effect=add):
+            result = self.run_op("target", folder_path="S", episode_path="S", create_paths=["S/C1", "S/C2"], keep_current=True)
+        self.assertEqual(result["state"], "restore_failed")
+
+    def test_expect_project_mismatch_writes_nothing(self):
+        with mock.patch.object(resolve_bridge, "_settle_recovery_record", side_effect=AssertionError("쓰기")), \
+                mock.patch.object(self.pool, "AddSubFolder", side_effect=AssertionError("쓰기")):
+            for operation in ("target", "stage", "unstage"):
+                result = self.run_op(operation, expect_project="다른 프로젝트", bin_id=self.folder.unique_id,
+                                     folder_path="E1", episode_path="E1", create_paths=["E1/C10"])
+                self.assertEqual((result["state"], result["resolve_project_id"]), ("project_changed", self.project.unique_id), operation)
+        self.assertEqual(self.pool.import_calls, [])
+        self.assertEqual(self.run_op("target", expect_project=self.project.unique_id)["state"], "ok")
+
+    def test_order_failure_falls_back_but_stop_codes_halt(self):
+        with mock.patch.object(resolve_bridge, "_reconcile_folder_tree", side_effect=resolve_bridge.ResolveBridgeError("정렬 실패")):
+            result = self.episode_op()
+        self.assertEqual((result["state"], result["order_error"], sorted(result["bins"])), ("ok", "정렬 실패", ["E1/C10", "E1/C20", "E1/C30"]))
+        stop = resolve_bridge.ResolveBridgeError("복구 먼저", code="rebuild_recovery_needed")
+        with mock.patch.object(resolve_bridge, "_reconcile_folder_tree", side_effect=stop):
+            halted = self.run_op("target", folder_path="E2", episode_path="E2", create_paths=["E2/C10"])
+        self.assertEqual(halted["code"], "rebuild_recovery_needed")
+        self.assertIsNone(self.bin("E2", "C10"))  # 멈췄으면 하나씩 만들기로 넘어가지 않는다
+
     def test_follow_stage_uses_bin_id_not_name(self):
         self.folder.name = "사람이 바꾼 이름"
         same_name = FakeMediaPool.AddSubFolder(self.pool, self.bin("S"), "C1")  # 이름 경로로는 이 빈이 잡힌다

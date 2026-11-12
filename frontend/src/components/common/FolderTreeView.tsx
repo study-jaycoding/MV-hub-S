@@ -18,10 +18,11 @@ const SIDE_MARK_TITLE = {
   gen: "새 생성이 들어갈 기본 위치 — 재생성은 원본 폴더로, 씬의 Set 에 이어 만든 것은 그 Set 의 폴더로 갑니다",
   dv: "다빈치 확인 위치 — 생성 목적지는 변경하지 않습니다",
 } as const;
-export function SideMark({ kind }: { kind: RowTone }) {
+// title = 쓰는 곳이 표의 뜻을 바꿀 때(리졸브 패널 — 고른 폴더·다빈치 위치). 안 주면 위 글.
+export function SideMark({ kind, title }: { kind: RowTone; title?: string }) {
   const t = useT();
   return (
-    <span className={"side-mark " + kind} role="img" title={t(SIDE_MARK_TITLE[kind])}>
+    <span className={"side-mark " + kind} role="img" title={title ?? t(SIDE_MARK_TITLE[kind])}>
       <svg viewBox="0 0 16 16" aria-hidden="true">
         {kind === "see" && <>
           <path d="M1.2 8S3.8 3.2 8 3.2 14.8 8 14.8 8 12.2 12.8 8 12.8 1.2 8 1.2 8Z" fill="none" stroke="currentColor" strokeWidth="1.6" />
@@ -92,7 +93,10 @@ export function FolderTreeView({
   onContextMenu,
   scroll = false,
   className = "",
+  markTitles,
 }: {
+  // 줄 표(라임·파랑·빨강) 설명 글을 바꾼다 — 리졸브 패널은 '생성 위치'가 아니라 '고른 폴더'·'다빈치 위치'다. 안 주면 지금 글 그대로.
+  markTitles?: Partial<Record<RowTone, string>>;
   nodes: FolderTreeItem[];
   selectedPath?: string;
   viewedPath?: string; // 외부 확인 위치 — 생성 목적지(selectedPath)와 독립
@@ -142,6 +146,7 @@ export function FolderTreeView({
           isDisabled={isDisabled}
           onRowKeyDown={onRowKeyDown}
           onContextMenu={onContextMenu}
+          markTitles={markTitles}
         />
       ))}
     </div>
@@ -166,7 +171,9 @@ function FolderTreeRow({
   isDisabled,
   onRowKeyDown,
   onContextMenu,
+  markTitles,
 }: {
+  markTitles?: Partial<Record<RowTone, string>>;
   node: FolderTreeItem;
   depth: number;
   theme: FolderTreeTheme;
@@ -369,11 +376,11 @@ function FolderTreeRow({
             {Array.from({ length: barCount }, (_, i) => <i key={i} />)}
           </span>
         ) : (
-          <span className="folder-tree-slot">{leadMark && <SideMark kind={leadMark} />}</span>
+          <span className="folder-tree-slot">{leadMark && <SideMark kind={leadMark} title={markTitles?.[leadMark]} />}</span>
         )}
         <span className="folder-tree-name">{node.name}</span>
-        {(base || hasChildren) && leadMark && <SideMark kind={leadMark} />}
-        {otherMark && <SideMark kind={otherMark} />}
+        {(base || hasChildren) && leadMark && <SideMark kind={leadMark} title={markTitles?.[leadMark]} />}
+        {otherMark && <SideMark kind={otherMark} title={markTitles?.[otherMark]} />}
         {node.virtual && <span className="folder-tree-nodisk">{t("폴더 없음")}</span>}
         <span className="folder-tree-fill" />
         {(node.newCount || 0) > 0 && (
@@ -410,6 +417,7 @@ function FolderTreeRow({
               isDisabled={isDisabled}
               onRowKeyDown={onRowKeyDown}
               onContextMenu={onContextMenu}
+              markTitles={markTitles}
             />
           ))}
         </div>

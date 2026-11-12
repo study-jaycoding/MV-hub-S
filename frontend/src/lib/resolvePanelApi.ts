@@ -10,13 +10,16 @@ export interface ResolveDragBridge {
   startDrag(path: string, opts: { protocol: number }): boolean;
 }
 declare global { interface Window { mvhubResolve?: ResolveDragBridge } }
-export type TargetState = "ok" | "missing" | "stale" | "busy" | "rebuild_recovery_pending" | "unavailable" | "account_changed" | "other_window" | "active_bin" | "not_seen";
+export type TargetState = "ok" | "missing" | "stale" | "busy" | "rebuild_recovery_pending" | "unavailable" | "account_changed" | "other_window" | "active_bin" | "not_seen"
+  | "project_changed" | "restore_failed";
 export interface TargetResult {
   state: TargetState; resolve_project_id?: string; resolve_project_name?: string;
   bin_path?: string; bin_id?: string; details?: unknown;
   used?: string[]; target_bin_id?: string;
   // 에피소드 target — 컷 경로 → 빈 ID, 에피소드 빈 ID, 못 만든 컷 / unstage(delete_empty) — 비게 된 컷 빈을 지웠다
   bins?: Record<string, string>; episode_bin_id?: string; bin_create_failed?: string[]; bin_deleted?: boolean;
+  // 빈 순서 맞추기(보내기와 같은 것) — 다시 짓기면 MV Hub/<프로젝트> 빈 ID 가 모두 바뀐다(ids_changed)
+  reordered?: boolean; folder_order_backup?: string; order_error?: string; ids_changed?: boolean; code?: string;
 }
 export interface StageResult extends TargetResult { items?: { gen_id: string; state: string }[]; removed?: number; deferred?: number; capped?: boolean; unexpected_imports?: number }
 export interface InventoryItem { resolve_project_id: string; project_id: string; folder_path: string; bin_id: string; bin_path: string; item_id: string; gen_id: string; usage?: number | null; recovery?: boolean }
@@ -24,14 +27,15 @@ export interface InventoryResult extends TargetResult { items?: InventoryItem[];
 export type AdoptState = "in_bin" | "stamp_failed" | "save_failed" | "ledger_failed" | "conflict" | "elsewhere" | "not_seen" | "not_prepared" | "project_changed" | "busy" | "unknown" | "account_changed" | "rebuild_recovery_pending" | "replace_failed" | "other_window";
 export interface AdoptResult { state: AdoptState; details?: unknown }
 export interface PrepareResult { gen_id: string; state: "prepared" | "failed" | "account_changed" | "other_window"; path?: string; error?: string }
-export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string }
+// expect_project = 화면이 본 다빈치 프로젝트 — 쓰기 전에 리졸브 쪽이 대조한다(다르면 쓰기 0)
+export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string; expect_project?: string }
 export const contextKey = (ctx: PanelContext | null) => ctx ? JSON.stringify([ctx.instance, ctx.account, ctx.epoch]) : "";
 const post = <T,>(path: string, body: unknown) => jsonFetch<T>(`/api/resolve/panel/${path}`, { method: "POST", body: JSON.stringify(body) });
 export const resolvePanelApi = {
   identity: (window = "", claim = false) => jsonFetch<PanelIdentity>(`/api/resolve/panel/identity?${new URLSearchParams({ window, claim: String(claim) })}`),
   cache: (body: PanelSelection & { window: string; seq: number; gen_ids: string[] }) => post<{ state?: "account_changed"; items: { gen_id: string; state: "cached" | "failed"; error?: string }[] }>("cache", body),
   prepare: (body: PanelSelection & { gen_id: string }) => post<PrepareResult>("prepare", body),
-  target: (body: PanelSelection & { window: string; seq: number; create: boolean; episode_path?: string; create_paths?: string[] }) => post<TargetResult>("target", body),
+  target: (body: PanelSelection & { window: string; seq: number; create: boolean; episode_path?: string; create_paths?: string[]; keep_current?: boolean }) => post<TargetResult>("target", body),
   currentBin: (ctx: PanelContext, project_id = "", folder_path = "") => jsonFetch<TargetResult>(`/api/resolve/panel/current-bin?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), project_id, folder_path })}`),
   adopt: (body: PanelSelection & { gen_id: string; resolve_project_id: string; bin_id?: string; item_ids?: string[] }) => post<AdoptResult>("adopt", body),
   stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
@@ -98,6 +102,7 @@ export function panelFailure(state: string): string {
     import_failed: "가져오기를 확인하지 못했습니다", conflict: "표시 충돌", not_seen: "항목을 찾지 못했습니다",
     project_changed: "프로젝트가 바뀜", busy: "확인 중 — 리졸브가 바쁨", unknown: "확인 못 함",
     unavailable: "리졸브에 연결하지 못했습니다", active_bin: "지금 쓰는 빈이라 남겼습니다",
+    restore_failed: "다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다",
     rebuild_recovery_pending: RECOVERY_PENDING, not_prepared: "준비 기록을 찾지 못했습니다",
   };
   return t(labels[state] || "확인 못 함");
