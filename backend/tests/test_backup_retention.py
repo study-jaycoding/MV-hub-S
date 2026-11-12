@@ -677,6 +677,146 @@ def test_poll_reads_saved_intervals_and_loop_uses_them(tmp_path):
     assert seen and seen[-1].get("intervals") == (60.0, 300.0)
 
 
+# ── 독립 리뷰 1차(Codex 01a1cec0) 지적 시험 ─────────────────────────────────────
+def test_policy_change_deletes_only_confirmed_sets_even_if_a_hold_is_released(tmp_path, monkeypatch):
+    d = tmp_path / "b"
+    monkeypatch.setattr(backup, "_backup_dir", lambda: d)
+    monkeypatch.setattr(backup, "AUTH_ENABLED", False)
+    far = NOW - 400 * 86400
+    sets = [make_set(d, far + i * 60, i + 1, n=i) for i in range(10)]
+    mark_registered(d, 10)
+    small = {**POLICY_888, "recent": 4, "daily_days": 7, "weekly_weeks": 4}
+    with backup.hold_set(sets[0]):  # 1번이 사용 중이어도 미리보기는 '풀리면 지울 대상'으로 1번까지 센다
+        preview = backup.update_policy(small, version=0, dry_run=True, now=NOW)["preview"]
+    assert preview["delete_count"] == 6
+    # 회전은 확인한 집합(only) 밖을 지우지 않는다
+    summary = backup._rotate(d, policy={**small, "recent": 1}, now=NOW, only={sets[0].name[12:-3]})
+    assert summary["deleted"] == 1 and not sets[0].exists() and all(p.exists() for p in sets[1:])
+
+
+def test_resume_ignores_field_broken_deleting_sidecar_and_hold_refuses_it(tmp_path):
+    d = tmp_path / "b"
+    broken = make_set(d, NOW - 400 * 86400, None,
+                      keep_raw=json.dumps({"format": "mvhub-backup-keep", "seq": "x", "deleting": True}))
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    with pytest.raises(FileNotFoundError):
+        with backup.hold_set(broken):
+            pass
+    backup._rotate(d, policy={**POLICY_888, "recent": 1, "daily_days": 7, "weekly_weeks": 4}, now=NOW)
+    assert broken.exists() and (d / f"content_trash_{broken.name[12:-3]}.db").exists()
+
+
+def test_corrupt_registry_and_missing_policy_file_is_unknown_not_default(tmp_path):
+    d = tmp_path / "b"
+    old = make_set(d, NOW - 400 * 86400, 1)
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    backup._write_policy(d, POLICY_888, 2)
+    (d / "backup_policy.json").unlink()
+    (d / "backup_keep_registry.json").write_text('{"state": "done", "last_seq": "x"}', "utf-8")  # 필드 깨짐
+    assert backup.read_policy(d)[2] == "invalid"
+    assert backup._rotate(d, now=NOW)["blocked"] == "policy_invalid" and old.exists()
+    backup._next_seq(d)  # 새 번호 발급이 깨진 표식을 고쳐 써도 '저장 이력 모름'을 지키고
+    registry = json.loads((d / "backup_keep_registry.json").read_text("utf-8"))
+    assert registry["policy_unknown"] is True and backup.read_policy(d)[2] == "invalid"
+    backup._write_policy(d, POLICY_888, 3)  # 다시 저장하면 풀린다
+    assert backup.read_policy(d)[2] == "saved"
+
+
+def test_wal_cleanup_leaves_failed_and_half_sets_alone(tmp_path):
+    d = tmp_path / "b"
+    half = make_set(d, NOW - 3 * 86400, 1)
+    half.unlink()  # 대표 파일만 잃은 반쪽 세트
+    (d / f"{half.name}-wal").write_bytes(b"w")
+    junk = d / "content_hub_20000101_000000_000001.db-shm"  # 곁파일도 짝 DB 도 없는 옛 부산물
+    junk.write_bytes(b"s")
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    backup._rotate(d, now=NOW)
+    assert (d / f"{half.name}-wal").exists() and not junk.exists()
+
+
+def test_damaged_manifest_and_undecodable_files_do_not_stop_rotation(tmp_path):
+    d = tmp_path / "b"
+    bad_manifest = make_set(d, NOW - 401 * 86400, 1)
+    bad_manifest.with_suffix(".manifest.json").write_text("[]", "utf-8")
+    bad_bytes = make_set(d, NOW - 402 * 86400, 2, n=1)
+    bad_bytes.with_suffix(".keep.json").write_bytes(b"\xff\xfe\x00broken")
+    old = make_set(d, NOW - 400 * 86400, 3, n=2)
+    make_set(d, NOW - 10, 4, n=3)
+    mark_registered(d, 4)
+    (d / "backup_policy.json").write_bytes(b"\xff\xfe")
+    assert backup.read_policy(d)[2] == "invalid"
+    (d / "backup_policy.json").unlink()
+    backup._rotate(d, policy={**POLICY_888, "recent": 1, "daily_days": 7, "weekly_weeks": 4}, now=NOW)
+    assert bad_manifest.exists() and bad_bytes.exists() and not old.exists()
+    status = backup.retention_status(d, now=NOW)
+    assert status["incomplete"] == 1 and status["sidecar_invalid"] == 1
+
+
+def test_poll_skips_incomplete_unnumbered_newest_and_matches_list_on_duplicates(tmp_path):
+    d = tmp_path / "b"
+    good = make_set(d, NOW - 600, None, n=1)
+    make_set(d, NOW - 60, None, n=2, member_size_ok=False)  # 번호 없는 불완전 최신
+    src = tmp_path / "src.db"
+    src.write_bytes(b"s")
+    os.utime(src, (NOW - 900, NOW - 900))
+    with mock.patch.object(backup.time, "time", return_value=NOW):
+        age, _sig, _needed = backup._read_poll_state(src, d)
+    assert age == pytest.approx(600.0, abs=1.0)
+    e = tmp_path / "c"
+    make_set(e, NOW - 600, 1)
+    make_set(e, NOW - 300, 2, n=1)
+    make_set(e, NOW - 60, 2, n=2, member_size_ok=False)  # 완성·불완전이 같은 번호
+    mark_registered(e, 2)
+    listed = backup.list_backups_info(e)[0]["file"]
+    with mock.patch.object(backup.time, "time", return_value=NOW):
+        age2, _s, _n = backup._read_poll_state(src, e)
+    newest = next(p for p in e.glob("content_hub_*.db") if p.name == listed)
+    assert age2 == pytest.approx(NOW - newest.stat().st_mtime, abs=1.0)
+
+
+def test_disk_full_on_first_run_writes_no_registration(live_db):
+    live_db.mkdir(parents=True, exist_ok=True)
+    legacy = make_set(live_db, NOW - 3600, None, manifest=False)
+    with mock.patch.object(backup.shutil, "disk_usage", return_value=mock.Mock(free=1)), \
+            pytest.raises(backup.BackupDiskFull):
+        backup.backup_now()
+    assert not (live_db / "backup_keep_registry.json").exists()
+    assert not legacy.with_suffix(".keep.json").exists()
+
+
+def test_repeated_resume_failure_keeps_failure_count(tmp_path):
+    d = tmp_path / "b"
+    victim = make_set(d, NOW - 400 * 86400, 1)
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    trash = d / f"content_trash_{victim.name[12:-3]}.db"
+    real_unlink = Path.unlink
+
+    def locked(self, *args, **kwargs):
+        if self == trash:
+            raise PermissionError("locked")
+        return real_unlink(self, *args, **kwargs)
+
+    small = {**POLICY_888, "recent": 1, "daily_days": 7, "weekly_weeks": 4}
+    with mock.patch.object(Path, "unlink", locked):
+        assert backup._rotate(d, policy=small, now=NOW)["failed"] == 1
+        assert backup._rotate(d, policy=small, now=NOW)["failed"] == 1  # 이어 지우기도 실패 — 수가 0 으로 덮이지 않음
+    assert backup.retention_status(d, now=NOW)["delete_failed"] == 1
+
+
+def test_leftovers_count_sets_without_sidecar_too(tmp_path):
+    d = tmp_path / "b"
+    lost = make_set(d, NOW - 3600, None)  # 공개 직전 실패 — 부속 DB·manifest 만 남고 곁파일 없음
+    lost.unlink()
+    make_set(d, NOW - 10, 2, n=1)
+    mark_registered(d, 2)
+    status = backup.retention_status(d, now=NOW)
+    assert status["leftovers"] == 1 and status["leftover_bytes"] > 0
+
+
 # ── manual · hold ────────────────────────────────────────────────────────────
 def test_manual_backup_reason_and_hold_blocks_deletion(live_db):
     manual = backup.backup_now(reason="manual")

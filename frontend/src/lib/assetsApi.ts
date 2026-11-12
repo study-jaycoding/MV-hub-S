@@ -450,7 +450,12 @@ export const assetsApi = {
   backupPolicy: () => jsonFetch<BackupPolicyView>("/api/db/backup-policy"),
   // 줄이는 값이면 서버가 409 confirm_required(미리보기 포함)로 돌려준다 — dry_run 으로 먼저 묻고 토큰을 싣는다.
   saveBackupPolicy: (body: BackupPolicyValues & { version: number; dry_run?: boolean; confirm_token?: string | null }) =>
-    jsonFetch<{ saved: boolean; version: number; preview: BackupPolicyPreview }>("/api/db/backup-policy", {
+    jsonFetch<{
+      saved: boolean;
+      version: number;
+      preview: BackupPolicyPreview;
+      applied?: { deleted: number; failed: number; blocked: string | null };
+    }>("/api/db/backup-policy", {
       method: "PUT",
       body: jsonBody(body),
     }),

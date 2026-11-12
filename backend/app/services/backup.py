@@ -161,7 +161,7 @@ def _read_keep(content: Path) -> tuple[dict | None, str]:
         raw = path.read_text("utf-8")
     except FileNotFoundError:
         return None, "missing"
-    except OSError:
+    except (OSError, ValueError):  # ValueError = UnicodeDecodeError(글자가 깨진 파일)
         return None, "invalid"
     try:
         data = json.loads(raw)
@@ -200,7 +200,7 @@ def _set_complete(content: Path, keep: dict | None = None) -> bool:
                 return False
             return content.is_file()
         data = json.loads(manifest.read_text("utf-8"))
-        roles = data.get("roles")
+        roles = data.get("roles") if isinstance(data, dict) else None
         if not isinstance(roles, dict) or "content" not in roles:
             return False
         stamp = _stamp_of(content)
@@ -212,7 +212,7 @@ def _set_complete(content: Path, keep: dict | None = None) -> bool:
             if not member.is_file() or member.stat().st_size != info.get("size"):
                 return False
         return True
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError, TypeError):  # 깨진 manifest = 불완전(보존), 회전은 계속
         return False
 
 
@@ -245,7 +245,7 @@ def _live_sets(sets: list[_BackupSet]) -> tuple[list[_BackupSet], bool]:
     이름순으로 그 앞에 둔다 — 등록된 세트가 하나라도 있으면 최신본은 늘 번호가 가장 큰 세트다(옛 세트 하나
     때문에 시계 보호가 꺼지지 않게). 두 번째 값 = 번호로 정렬한 세트가 있나."""
     live = [s for s in sets if s.complete and not s.deleting]
-    dup = _duplicate_seqs(live)
+    dup = _duplicate_seqs(sets)  # 완성 여부와 무관하게 — poll(완성 대조 전)·회전과 같은 기준
     numbered = sorted(
         (s for s in live if s.keep_state == "ok" and s.keep and s.keep["seq"] not in dup),
         key=lambda s: s.keep["seq"],  # type: ignore[index]
@@ -265,7 +265,7 @@ def _captured_at(s: _BackupSet) -> datetime:
 
 def _legacy_captured_at(content: Path) -> str:
     """도입 등록 때 옛 세트의 촬영 시각 — manifest captured_at, 없으면 이름(UTC 스탬프), 없으면 mtime."""
-    with contextlib.suppress(OSError, ValueError, TypeError):
+    with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
         manifest = backup_manifest.local_path(content)
         if manifest.is_file():
             parsed = _parse_utc(json.loads(manifest.read_text("utf-8")).get("captured_at"))
@@ -294,13 +294,22 @@ def _read_registry(d: Path) -> tuple[dict | None, bool]:
         raw = (d / _REGISTRY_NAME).read_text("utf-8")
     except FileNotFoundError:
         return None, False
+    except ValueError:  # UnicodeDecodeError — 글자가 깨진 표식
+        return None, True
     except OSError as exc:
         raise RegistryUnreadable(exc.errno, f"backup registry unreadable: {exc}") from exc
     try:
         data = json.loads(raw)
     except ValueError:
         return None, True
-    return (data, False) if isinstance(data, dict) else (None, True)
+    if (
+        not isinstance(data, dict)
+        or data.get("state") not in (None, "pending", "done")
+        or any(key in data and (type(data[key]) is not int or data[key] < 0) for key in ("last_seq", "policy_version"))
+        or ("policy_unknown" in data and not isinstance(data["policy_unknown"], bool))
+    ):
+        return None, True
+    return data, False
 
 
 def _policy_file_version(d: Path) -> int:
@@ -313,11 +322,13 @@ def _policy_file_version(d: Path) -> int:
 
 def _write_registry(d: Path, **fields: object) -> None:
     """등록 표식(state·last_seq·policy_version)을 합쳐 원자적으로 쓴다. 깨진 표식은 새로 쓰되 policy_version 은
-    정책 파일의 판 번호로 채운다(파일이 사라질 때의 보호가 조용히 꺼지지 않게)."""
+    정책 파일의 판 번호로 채우고, 그것도 없으면 '저장 이력 모름'(policy_unknown)으로 남긴다 — 저장한 적 없음(0)으로
+    덮어 기본값으로 줄이는 일이 없게(PUT 으로 다시 저장하면 풀림)."""
     current, corrupt = _read_registry(d)
     base = dict(current or {})
     if corrupt:
-        base = {"policy_version": _policy_file_version(d)}
+        version = _policy_file_version(d)
+        base = {"policy_version": version} if version else {"policy_unknown": True}
     data = {**base, **fields, "format": _REGISTRY_FORMAT, "format_version": 1,
             "updated_at": datetime.now(timezone.utc).isoformat()}
     atomic_write_text(d / _REGISTRY_NAME, json.dumps(data, sort_keys=True))
@@ -422,8 +433,7 @@ def hold_set(content: Path) -> Iterator[None]:
     없으면 FileNotFoundError — 회전은 같은 잠금 안에서 붙잡힘을 보고 지우는 중 표식을 적는다."""
     key = _use_key(content)
     with _IN_USE_LOCK:
-        keep, _state = _read_keep(Path(content))
-        if not Path(content).is_file() or (keep and keep.get("deleting")):
+        if not Path(content).is_file() or _raw_deleting(Path(content)):
             raise FileNotFoundError(str(content))
         _IN_USE[key] = _IN_USE.get(key, 0) + 1
     try:
@@ -440,6 +450,13 @@ def hold_set(content: Path) -> Iterator[None]:
 def _held(content: Path) -> bool:
     with _IN_USE_LOCK:
         return _use_key(content) in _IN_USE
+
+
+def _raw_deleting(content: Path) -> bool:
+    """곁파일에 deleting=true 가 적혔나 — 다른 필드가 깨졌어도(붙잡기는 이 경우도 거절한다)."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        return json.loads(_keep_path(content).read_text("utf-8")).get("deleting") is True
+    return False
 
 
 # ── 정책(허브·계정별 — 백업 폴더 안 파일) ─────────────────────────────────────
@@ -470,10 +487,12 @@ def _validate_policy(values: dict) -> dict:
 
 
 def _saved_policy_version(d: Path) -> int | None:
-    """등록 표식에 남긴 '저장한 정책 판 번호'(없으면 0). 표식을 못 읽으면 None(모름 → invalid 쪽)."""
+    """등록 표식에 남긴 '저장한 정책 판 번호'(없으면 0). 표식을 못 읽거나 깨졌거나 저장 이력을 모르면 None(→ invalid)."""
     try:
-        registry, _corrupt = _read_registry(d)
+        registry, corrupt = _read_registry(d)
     except OSError:
+        return None
+    if corrupt or (registry and registry.get("policy_unknown") is True):
         return None
     version = registry.get("policy_version") if registry else None
     return version if type(version) is int and version > 0 else 0
@@ -493,7 +512,7 @@ def read_policy(d: Path) -> tuple[dict, int, str]:
         if saved == 0:
             return default_policy(), 0, "default"
         return default_policy(), saved or 0, "invalid"
-    except OSError:
+    except (OSError, ValueError):  # ValueError = 글자가 깨진 파일
         return default_policy(), saved or 0, "invalid"
     try:
         data = json.loads(raw)
@@ -514,7 +533,7 @@ def _write_policy(d: Path, values: dict, version: int) -> None:
     atomic_write_text(d / _POLICY_NAME, json.dumps(
         {"format": _POLICY_FORMAT, "format_version": 1, "policy_version": version, **values},
         ensure_ascii=False, sort_keys=True))
-    _write_registry(d, policy_version=version)
+    _write_registry(d, policy_version=version, policy_unknown=False)
 
 
 # 주기 루프가 이벤트 루프에서 파일을 읽지 않도록, 백업 폴더 상태를 읽는 스레드 호출(_read_poll_state)이
@@ -581,7 +600,7 @@ def _retention_plan(
     지울 수 있는 세트(완성·지우는 중 아님·보호 아님)만 센다 — 시계가 틀렸던 구간의 세트가 최근 N 밖으로 밀려
     지워지면 쌍이 사라지고, 그 세트가 불완전·보호라 영영 안 지워져도 앞 세트들을 묶지 않는다.
 
-    ignore_block = 정책 미리보기용 '막힘·쌍 보호가 모두 풀리면 지울 대상'."""
+    ignore_block = 정책 미리보기용 '막힘·쌍 보호·사용 중 보호가 모두 풀리면 지울 대상'."""
     sets = _scan_sets(d) if sets is None else sets
     dup = _duplicate_seqs(sets)
     registered = [s for s in sets if s.keep_state == "ok" and s.keep and s.keep["seq"] not in dup]
@@ -603,9 +622,10 @@ def _retention_plan(
             inverted.add(s.stamp)
         if deletable(s):
             earliest_later = captured if earliest_later is None or captured < earliest_later else earliest_later
+    # ignore_block 이면 일시적인 보호(사용 중·쌍)도 풀린 것으로 본다 — 미리보기가 '나중에 지울 대상'까지 보이게.
     cands = [
         s for s in registered
-        if deletable(s) and not _held(s.content) and (ignore_block or s.stamp not in inverted)
+        if deletable(s) and (ignore_block or (not _held(s.content) and s.stamp not in inverted))
     ]
     keep_stamps = _select_keep(cands, policy, now) if cands else set()
     keep = [s for s in cands if s.stamp in keep_stamps]
@@ -654,12 +674,22 @@ def _delete_set(s: _BackupSet) -> bool | None:
     return _finish_delete(s.content.parent, s.stamp)
 
 
-def _resume_deletions(d: Path) -> None:
-    """지우다 멈춘 세트(곁파일 deleting=true)를 대표 DB 가 없어도 이어 지운다."""
+def _resume_deletions(d: Path) -> int:
+    """지우다 멈춘 세트(**정상** 곁파일 deleting=true)를 대표 DB 가 없어도 이어 지운다. 깨진 곁파일은 손대지 않고,
+    붙잡힌(사용 중) 세트는 건너뛴다(붙잡기 확인을 hold_set 과 같은 잠금 안에서). 돌려주는 값 = 못 지운 세트 수."""
+    failed = 0
     for path in d.glob(f"{_PREFIX}*.keep.json"):
-        with contextlib.suppress(OSError, ValueError, AttributeError):
-            if json.loads(path.read_text("utf-8")).get("deleting") is True:
-                _finish_delete(d, path.name[len(_PREFIX):-len(".keep.json")])
+        stamp = path.name[len(_PREFIX):-len(".keep.json")]
+        content = d / f"{_PREFIX}{stamp}.db"
+        keep, state = _read_keep(content)
+        if state != "ok" or not keep or keep.get("deleting") is not True:
+            continue
+        with _IN_USE_LOCK:
+            if _use_key(content) in _IN_USE:
+                continue
+        if not _finish_delete(d, stamp):
+            failed += 1
+    return failed
 
 
 # 백업 폴더별 마지막 회전의 막힌 이유·못 지운 세트 수·마지막 실패(상태 표시용, 프로세스 메모리).
@@ -731,14 +761,13 @@ def _read_poll_state(
         # 목록은 poll당 정확히 한 번만 순회한다(_scan_sets). 곁파일 번호가 다 있으면 번호가 가장 큰
         # 세트가 최신이다 — 시계가 뒤로 간 뒤에도 옛 세트의 미래 mtime 에 속지 않게. 아니면 지금처럼 mtime.
         live, by_seq = _live_sets(_scan_sets(backup_dir, verify=False))
-        if live and by_seq:
-            # 곁파일만 읽은 목록에서 가장 새 것부터 그 세트만 완성 대조(보통 하나) — 목록·최신본과 같은 기준.
-            for candidate in reversed(live):
-                if _set_complete(candidate.content, candidate.keep):
-                    newest_mtime_ns = candidate.mtime_ns
-                    break
-        elif live:
-            newest_mtime_ns = max(s.mtime_ns for s in live)
+        # 곁파일만 읽은 목록에서 가장 새 것부터 그 세트만 완성 대조(보통 하나) — 목록·최신본과 같은 기준.
+        # 번호 있는 세트가 없으면 지금처럼 mtime 이 큰 것부터(불완전한 세트를 기준으로 백업을 미루지 않게).
+        candidates = reversed(live) if by_seq else sorted(live, key=lambda s: s.mtime_ns, reverse=True)
+        for candidate in candidates:
+            if _set_complete(candidate.content, candidate.keep):
+                newest_mtime_ns = candidate.mtime_ns
+                break
         if newest_mtime_ns is not None and newest_mtime_ns / 1_000_000_000 > time.time() + _CLOCK_SKEW_SECONDS:
             # 기준 세트가 미래(시계가 뒤로 감) — 나이 0·변경 없음으로 멈추지 않게 '백업 없음'처럼 다시 찍는다.
             # 새 세트는 번호가 더 커서 다음 poll 부터 기준이 된다. 지우기 보류는 회전 쪽(clock_skew) 몫.
@@ -817,17 +846,24 @@ def list_backups_info(backup_dir: Path | None = None) -> list[dict]:
     return out
 
 
-def _rotate(backup_dir: Path, *, policy: dict | None = None, now: float | None = None) -> dict:
+def _rotate(
+    backup_dir: Path,
+    *,
+    policy: dict | None = None,
+    now: float | None = None,
+    only: set[str] | None = None,
+) -> dict:
     """보관 규칙대로 솎는다(호출자가 _BACKUP_LOCK 을 쥔다 — 시험은 직접 부른다).
 
-    도입 등록 → 지우다 멈춘 세트 이어 지우기 → 계획(읽기) → 지우는 중 표식 → 구성원 → 곁파일.
-    하나라도 못 지우면 거기서 멈춘다(그 세트는 표식이 남아 목록에서 빠지고 다음 회전이 잇는다)."""
+    도입 등록 → 지우다 멈춘 세트 이어 지우기 → 계획(읽기) → 지우는 중 표식 → 구성원 → 곁파일. 한 세트를 못 지우면
+    그 세트만 표식이 남아 목록에서 빠지고 다음 회전이 잇는다. only = 정책을 바꾸며 확인받은 세트 — 그 밖은 지우지 않는다
+    (확인과 회전 사이에 붙잡기가 풀려도 확인한 것보다 많이 지우지 않게)."""
     d = backup_dir
-    summary = {"deleted": 0, "blocked": None}
+    summary = {"deleted": 0, "blocked": None, "failed": 0}
     if not d.is_dir():
         return summary
     _ensure_registered(d)
-    _resume_deletions(d)
+    summary["failed"] = _resume_deletions(d)
     if policy is None:
         policy, _version, source = read_policy(d)
     else:
@@ -835,8 +871,8 @@ def _rotate(backup_dir: Path, *, policy: dict | None = None, now: float | None =
     plan = _retention_plan(d, policy, time.time() if now is None else now, policy_source=source)
     _LAST_BLOCKED[str(d)] = plan.blocked
     summary["blocked"] = plan.blocked
-    summary["failed"] = 0
-    for victim in plan.delete:
+    victims = plan.delete if only is None else [s for s in plan.delete if s.stamp in only]
+    for victim in victims:
         result = _delete_set(victim)
         if result is None:
             continue  # 사용 중 — 다음 회전에
@@ -847,16 +883,27 @@ def _rotate(backup_dir: Path, *, policy: dict | None = None, now: float | None =
             continue
         summary["deleted"] += 1
     _LAST_DELETE_FAILED[str(d)] = summary["failed"]
-    # 검증·조회가 백업본(WAL 헤더)을 열 때 생긴 -wal/-shm 부산물 청소 — 회전이 .db 만 지워
-    # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것과
-    # 회전으로 방금 .db 가 사라진 것 모두 여기서 정리된다. 열려 있으면 unlink 가 거부되므로
-    # 사용 중 파일을 지울 위험은 없다(suppress).
-    for side in (*d.glob("*.db-wal"), *d.glob("*.db-shm")):
-        base = d / side.name.rsplit("-", 1)[0]
-        if not base.is_file():
+    # 검증·조회가 백업본(WAL 헤더)을 열 때 생긴 -wal/-shm 부산물 청소 — 옛 회전이 .db 만 지워
+    # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것만 지운다. 곁파일이 있는
+    # 세트(지우다 멈춘 세트·대표 파일만 잃은 반쪽 세트)는 건드리지 않는다 — 세트 지우기는 _finish_delete 만 한다.
+    # 열려 있으면 unlink 가 거부되므로 사용 중 파일을 지울 위험은 없다(suppress).
+    with contextlib.suppress(OSError):
+        kept = {path.name[len(_PREFIX):-len(".keep.json")] for path in d.glob(f"{_PREFIX}*.keep.json")}
+        for side in (*d.glob("*.db-wal"), *d.glob("*.db-shm")):
+            base_name = side.name.rsplit("-", 1)[0]
+            if (d / base_name).is_file() or _side_stamp(base_name) in kept:
+                continue
             with contextlib.suppress(OSError):
                 side.unlink()
     return summary
+
+
+def _side_stamp(db_name: str) -> str | None:
+    """세트 구성원 DB 이름에서 stamp — content_hub_/content_trash_/manage_hub_ 가 아니면 None."""
+    for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX):
+        if db_name.startswith(prefix) and db_name.endswith(".db"):
+            return db_name[len(prefix):-3]
+    return None
 
 
 # 주기 백업과 관리자 수동 백업(POST /api/backup)이 겹칠 수 있어 파일 작업을 직렬화.
@@ -956,9 +1003,10 @@ def _backup_now_for_scope(
         content_dest = d / f"{_PREFIX}{stamp}.db"
         keep_written = False
         try:
-            # 도입 등록을 새 세트보다 먼저 — 등록이 끝나기 전에는 새 세트가 생기지 않는다(E4).
-            _ensure_registered(d)
+            # 디스크 확인을 가장 먼저(아무것도 쓰기 전) → 도입 등록을 새 세트보다 먼저 — 등록이 끝나기 전에는 새 세트가
+            # 생기지 않는다(E4).
             _check_disk_space(d, sources)
+            _ensure_registered(d)
             capture = _snapshot_database_set(sources, snapshots)
             for label, _, tmp, expected_table in snapshots:
                 if label == "content":
@@ -1052,21 +1100,25 @@ def retention_status(backup_dir: Path | None = None, *, now: float | None = None
             reasons[s.keep["reason"]] += 1
     latest_bytes = _files_bytes(live[-1]) if live else 0
     slots = int(policy["recent"]) + int(policy["daily_days"]) + int(policy["weekly_weeks"])
-    # 대표 파일 없는 반쪽 세트(곁파일만 남음·지우는 중 아님) — 자동으로 치우지 않으므로 수와 용량을 보인다.
+    # 대표 파일 없는 반쪽 세트 — 알려진 구성원(부속 DB·manifest·곁파일)을 stamp 로 모아, 대표 파일이 없고 지우는 중이
+    # 아닌 것. 자동으로 치우지 않으므로 수와 용량을 보인다(곁파일 없는 잔재 — 공개 직전 실패 — 도 센다).
     leftovers = 0
     leftover_bytes = 0
     with contextlib.suppress(OSError):
         published = {s.stamp for s in sets}
-        for keep in backup_dir.glob(f"{_PREFIX}*.keep.json"):
-            stamp = keep.name[len(_PREFIX):-len(".keep.json")]
-            if stamp in published:
-                continue
-            with contextlib.suppress(OSError, ValueError, AttributeError):
-                if json.loads(keep.read_text("utf-8")).get("deleting") is not True:
-                    leftovers += 1
-                    for member in (*_set_members(backup_dir, stamp), keep):
-                        with contextlib.suppress(OSError):
-                            leftover_bytes += member.stat().st_size
+        stamps: set[str] = set()
+        for pattern, cut, tail in ((f"{_TRASH_PREFIX}*.db", len(_TRASH_PREFIX), ".db"),
+                                   (f"{_MANAGE_PREFIX}*.db", len(_MANAGE_PREFIX), ".db"),
+                                   (f"{_PREFIX}*.manifest.json", len(_PREFIX), ".manifest.json"),
+                                   (f"{_PREFIX}*.keep.json", len(_PREFIX), ".keep.json")):
+            stamps.update(path.name[cut:-len(tail)] for path in backup_dir.glob(pattern))
+        for stamp in sorted(stamps - published):
+            if _raw_deleting(backup_dir / f"{_PREFIX}{stamp}.db"):
+                continue  # 이어 지우기 몫
+            leftovers += 1
+            for member in (*_set_members(backup_dir, stamp), _keep_path(backup_dir / f"{_PREFIX}{stamp}.db")):
+                with contextlib.suppress(OSError):
+                    leftover_bytes += member.stat().st_size
     return {
         "policy": {**policy, "version": version, "source": source},
         "set_count": len(live),
@@ -1171,7 +1223,8 @@ def update_policy(
         backup_dir.mkdir(parents=True, exist_ok=True)
         _write_policy(backup_dir, clean, current_version + 1)
         _POLICY_INTERVALS[str(backup_dir)] = _intervals_from(clean, "saved")
-        applied = _rotate(backup_dir, policy=clean, now=when)
+        # 확인받은 세트 안에서만 지운다 — 확인과 회전 사이에 붙잡기가 풀려도 확인한 것보다 많이 지우지 않게.
+        applied = _rotate(backup_dir, policy=clean, now=when, only={s.stamp for s in plan.delete})
     return {"saved": True, "policy": clean, "version": current_version + 1, "preview": preview, "applied": applied}
 
 

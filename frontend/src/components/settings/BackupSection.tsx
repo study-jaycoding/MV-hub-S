@@ -104,9 +104,19 @@ export function BackupSection({
   const retention = status?.local.retention;
   const shared = status?.shared;
 
+  // 지금 값이 목록 밖(환경변수 등)이면 서버가 받지 않으므로, 고르지 않은 칸은 그 값 이상인 가장 가까운 허용값으로
+  //  맞춰 보낸다(늘어나는 쪽 — 줄어드는 경우는 미리보기·확인이 걸린다).
+  const fit = (field: keyof BackupPolicyValues, current: number): number => {
+    const choices = view?.choices[field] ?? [];
+    if (!choices.length || choices.includes(current)) return current;
+    return choices.find((choice) => choice >= current) ?? choices[choices.length - 1];
+  };
+
   const change = async (key: keyof BackupPolicyValues, value: number) => {
     if (!view || busy) return;
-    const next = { ...view.policy, [key]: value };
+    const next = Object.fromEntries(
+      FIELDS.map(({ key: field }) => [field, field === key ? value : fit(field, view.policy[field])]),
+    ) as unknown as BackupPolicyValues;
     setBusy(true);
     setMsg("");
     try {
@@ -126,7 +136,16 @@ export function BackupSection({
         token = dry.preview.confirm_token;
       }
       const saved = await api.saveBackupPolicy({ ...next, version: view.version, confirm_token: token });
-      setMsg(saved.preview.delete_count ? `저장했습니다 · 오래된 백업 ${saved.preview.delete_count}세트를 정리했습니다` : t("저장했습니다"));
+      // 실제로 지운 수(applied) — 미리보기 수와 다를 수 있다(쌍 보호·사용 중·못 지운 세트는 다음 정리 때).
+      const deleted = saved.applied?.deleted ?? 0;
+      const failed = saved.applied?.failed ?? 0;
+      const later = Math.max(0, saved.preview.delete_count - deleted - failed);
+      setMsg([
+        t("저장했습니다"),
+        deleted ? `오래된 백업 ${deleted}세트를 정리했습니다` : "",
+        failed ? `${failed}세트는 지우지 못했습니다(다음에 다시)` : "",
+        later ? `${later}세트는 다음 정리 때 지웁니다` : "",
+      ].filter(Boolean).join(" · "));
       await loadPolicy();
       onRefresh();
     } catch (error) {

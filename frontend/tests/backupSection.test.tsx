@@ -174,6 +174,34 @@ describe("백업 칸", () => {
     expect(host.textContent).toContain("지금은 남기는 양을 줄일 수 없습니다");
   });
 
+  it("목록 밖 값이 여럿이면 고르지 않은 칸은 그 이상인 가장 가까운 허용값으로 맞춰 보낸다", async () => {
+    api.backupPolicy.mockReset().mockResolvedValue({
+      policy: { ...POLICY, quiet_minutes: 2, recent: 7 }, version: 0, source: "default", choices: CHOICES,
+    });
+    api.saveBackupPolicy
+      .mockResolvedValueOnce({ saved: false, version: 0, preview: { delete_count: 0, confirm_token: null } })
+      .mockResolvedValueOnce({ saved: true, version: 1, preview: { delete_count: 0 }, applied: { deleted: 0, failed: 0, blocked: null } });
+    await mount();
+    expect([...select("recent").options].map((o) => o.value)).toEqual(["7", "4", "8", "16"]); // 지금 값도 한 칸
+    await choose("daily_days", 30);
+    expect(api.saveBackupPolicy.mock.calls[0][0]).toEqual({
+      ...POLICY, quiet_minutes: 5, recent: 8, daily_days: 30, version: 0, dry_run: true,
+    });
+  });
+
+  it("저장 메시지는 미리보기 수가 아니라 실제로 지운 수(applied)", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const preview = { delete_count: 6, delete_bytes: MB, confirm_token: "t", blocked: "inverted" };
+    api.saveBackupPolicy
+      .mockResolvedValueOnce({ saved: false, version: 1, preview })
+      .mockResolvedValueOnce({ saved: true, version: 2, preview, applied: { deleted: 2, failed: 1, blocked: null } });
+    await mount();
+    await choose("recent", 4);
+    expect(host.querySelector(".settings-backup .manage-msg")!.textContent).toBe(
+      "저장했습니다 · 오래된 백업 2세트를 정리했습니다 · 1세트는 지우지 못했습니다(다음에 다시) · 3세트는 다음 정리 때 지웁니다",
+    );
+  });
+
   it("그사이 대상이 바뀌면(409 confirm_required) 다시 읽고 다시 고르라고 알린다", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     api.saveBackupPolicy
