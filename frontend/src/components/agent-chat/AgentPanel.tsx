@@ -18,7 +18,7 @@ import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
 import {
   agentChatApi, type AgentAttachment, type AgentAttachWorkspace, type AgentContext, type AgentConversationPatch, type AgentConversationSummary,
-  type AgentEngine, type AgentEngineId, type AgentSessionFileResult,
+  type AgentEngine, type AgentEngineId, type AgentSessionFileResult, type ClaudeVersionInfo,
 } from "../../lib/agentChatApi";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
@@ -556,7 +556,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             findGeneration={findGeneration} genOf={genOf} onPreview={onPreview} />
         )))}
         {needsConnect && (
-          <AgentConnect state={chat.connect.state} version={chat.connect.version} loginWindowEnabled={chat.connect.loginWindowEnabled}
+          <AgentConnect state={chat.connect.state} version={chat.connect.version} install={chat.connect.install}
+            loginWindowEnabled={chat.connect.loginWindowEnabled}
             waiting={chat.connect.waiting} note={chat.connect.note} onConnect={() => void chat.connect.connect()}
             onRecheck={() => void chat.connect.recheck()} onStopWaiting={chat.connect.stopWaiting} />
         )}
@@ -1161,7 +1162,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
 }) {
   const t = useT();
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set([ARCHIVE_GROUP]));
-  const [version, setVersion] = useState<{ current: string | null; latest: string | null; newer: boolean } | null>(null);
+  const [version, setVersion] = useState<ClaudeVersionInfo | null>(null);
   const [menu, setMenu] = useState<RowMenu | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; text: string } | null>(null);
   const [confirm, setConfirm] = useState<AgentConversationSummary | null>(null);
@@ -1388,11 +1389,15 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
             {claude?.available ? <>Claude{claude.subscription && <small> · {claude.subscription}</small>}</> : t("Claude 연결 안 됨")}
           </span>
           {/* 지금 쓰는 판(v2.1.296) — 업데이트하면 올라간다. 새 판이 있으면 라임 글자 + 알림(Jay 11-10 "새 판 대신 앞에 v만").
-              [업데이트] 단추는 docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 설계·검토 뒤 이 자리에 */}
+              옆의 회색 글 = 설치 방식만(공식·npm — 판과 같은 실행 파일). [업데이트] 단추·'자동 업데이트' 같은 보장 문구는 두지 않는다
+              (docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-2) */}
           {version?.current && (
             <span className={`agent-drawer-ver${version.newer ? " new" : ""}`}
               title={version.newer && version.latest ? `v${version.latest} ${t("이 나왔어요")}` : t("Claude Code 판")}>
               v{version.current}
+              {(version.method === "official" || version.method === "npm") && (
+                <small>{version.method === "official" ? t("공식 설치") : t("npm 설치")}</small>
+              )}
             </span>
           )}
         </div>

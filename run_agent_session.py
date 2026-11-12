@@ -184,6 +184,11 @@ def _configure_api():
     kernel32.TerminateProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
     return kernel32
 
 
@@ -1375,6 +1380,352 @@ def ensure_desktop_shortcut(desktop: Path | None = None) -> str:
     return outcome
 
 
+# ── Claude Code 공식 설치 보장 ──────────────────────────────────────────────
+# MV Hub 를 켤 때(승인된 부팅 뒤) 공식 Claude Code 가 없거나 안 돌면 공식 설치를 한다(Jay 11-10·11-12,
+# docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3 7판). 허브는 이 파일을 import 하지 않고 표식만
+# 읽는다 — 표식 경로·상태 이름은 backend/app/services/agent_chat_process.py 와 같게 둔다(시험이 맞춘다).
+# 설치 프로세스는 이 실행기가 쥔 설치 전용 Job 안에서만 돈다: 실행기가 끝나면 설치도 끝나고 표식은 started 로
+# 남아 다음 켜짐에 바로 다시 한다. 실제 공식 설치기가 중간에 끊겼을 때 남는 상태는 미확인이다.
+
+CLAUDE_INSTALL_SCRIPT = "$ProgressPreference='SilentlyContinue'; irm https://claude.ai/install.ps1 | iex"
+CLAUDE_INSTALL_TIMEOUT = 15 * 60
+CLAUDE_INSTALL_RETRY_AFTER_FAIL = 24 * 3600
+CLAUDE_VERSION_TIMEOUT = 20.0
+CLAUDE_VERSION_CAP = 4096
+CLAUDE_SKIP_REASONS = ("service_account", "not_interactive", "elevated", "token_unknown")
+
+
+class JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", wintypes.DWORD),
+        ("TotalProcesses", wintypes.DWORD),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("TotalTerminatedProcesses", wintypes.DWORD),
+    ]
+
+
+def _official_claude() -> Path:
+    return Path(os.environ.get("USERPROFILE") or Path.home()) / ".local" / "bin" / "claude.exe"
+
+
+def _claude_marker_path() -> Path:
+    return _mvhub_local_dir() / "claude-install.json"
+
+
+def _claude_version(prefix: list[str], timeout: float = CLAUDE_VERSION_TIMEOUT,
+                    cap: int = CLAUDE_VERSION_CAP) -> str | None:
+    """정확한 경로로 `--version` — 종료 0 이고 첫 낱말이 숫자.숫자.숫자일 때만 판. 출력은 읽는 동안 cap 까지만 받는다."""
+    try:
+        proc = subprocess.Popen([*prefix, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except OSError:
+        return None
+    out: list[bytes] = []
+    reader = threading.Thread(target=lambda: out.append(proc.stdout.read(cap + 1)), daemon=True)
+    began = time.monotonic()
+    reader.start()
+    reader.join(timeout)
+    try:
+        if reader.is_alive() or len(out[0]) > cap:
+            return None
+        code = proc.wait(max(0.0, timeout - (time.monotonic() - began)))
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(5)
+        if not reader.is_alive():  # 읽는 스레드가 쥔 채로 닫으면 닫기가 멈춘다
+            proc.stdout.close()
+    words = out[0].decode("utf-8", "replace").split()
+    return words[0] if code == 0 and words and re.fullmatch(r"\d+\.\d+\.\d+", words[0]) else None
+
+
+def _claude_token_problem() -> str | None:
+    """설치는 대화형 일반 사용자 토큰에서만 — 서비스 계정·대화형 아님·상승 토큰(UAC 를 끈 관리자 포함)이면 그 까닭.
+    조회가 하나라도 실패하면 token_unknown(원격 설치 스크립트를 모르는 권한으로 돌리지 않는다)."""
+    if os.name != "nt":
+        return "token_unknown"
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+        advapi32.CheckTokenMembership.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL)]
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            return "token_unknown"
+        try:
+            size = wintypes.DWORD()
+            advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser — 크기만 묻는다
+            buffer = ctypes.create_string_buffer(max(size.value, 1))
+            text = wintypes.LPWSTR()
+            if not size.value or not advapi32.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)) \
+                    or not advapi32.ConvertSidToStringSidW(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0],
+                                                           ctypes.byref(text)):
+                return "token_unknown"
+            user = text.value
+            kernel32.LocalFree(text)
+            elevated = wintypes.DWORD()  # TokenElevation(20).TokenIsElevated
+            if not advapi32.GetTokenInformation(token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated),
+                                                ctypes.byref(size)):
+                return "token_unknown"
+        finally:
+            kernel32.CloseHandle(token)
+        interactive, member = ctypes.c_void_p(), wintypes.BOOL()
+        if not advapi32.ConvertStringSidToSidW("S-1-5-4", ctypes.byref(interactive)):
+            return "token_unknown"
+        try:
+            if not advapi32.CheckTokenMembership(None, interactive, ctypes.byref(member)):
+                return "token_unknown"
+        finally:
+            kernel32.LocalFree(interactive)
+    except (OSError, AttributeError, ValueError):
+        return "token_unknown"
+    return _classify_token(user, bool(member.value), bool(elevated.value))
+
+
+def _classify_token(user_sid: str | None, interactive: bool, elevated: bool) -> str | None:
+    if not user_sid:
+        return "token_unknown"
+    if user_sid in {"S-1-5-18", "S-1-5-19", "S-1-5-20"}:  # SYSTEM·LocalService·NetworkService
+        return "service_account"
+    if not interactive:
+        return "not_interactive"
+    return "elevated" if elevated else None
+
+
+@contextlib.contextmanager
+def _claude_install_lock():
+    """사용자 프로필의 파일 잠금 — 같은 프로필을 쓰는 다른 Windows 세션·여러 실행기도 막힌다. 못 잡으면 False."""
+    path = _mvhub_local_dir() / "claude-install.lock"
+    try:
+        import msvcrt
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stream = open(path, "a+b")
+    except (ImportError, OSError):
+        yield False
+        return
+    try:
+        stream.seek(0)
+        try:
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            stream.seek(0)
+            with contextlib.suppress(OSError):
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        stream.close()
+
+
+def _read_claude_marker() -> dict:
+    try:
+        value = json.loads(_claude_marker_path().read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_claude_marker(value: dict) -> bool:
+    path = _claude_marker_path()
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp.write_text(json.dumps(value), encoding="utf-8")
+        os.replace(temp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _set_claude_status(status: str, **fields) -> bool:
+    """상태·시각·종료 코드·판·까닭만 — 설치 출력 원문은 남기지 않는다. 건너뜀(last_skip)은 따로 둔다."""
+    keep = {key: value for key, value in _read_claude_marker().items() if key == "last_skip"}
+    return _write_claude_marker({**keep, "status": status, "at": int(time.time()), **fields})
+
+
+def _claude_install_eligible() -> bool:
+    """릴리스 설치(.git 없음·open_link.py·설치 표식)·공유 서버 아님·끄는 스위치 없음. 토큰은 잠금 안에서 본다."""
+    root = _install_root()
+    return (os.name == "nt"
+            and os.environ.get("CONTENT_HUB_AUTH", "0").strip().lower() not in {"1", "true", "yes", "on"}
+            and os.environ.get("MVHUB_CLAUDE_INSTALL", "").strip() != "0"
+            and not (root / ".git").exists() and (root / "open_link.py").is_file()
+            and (root / ".install-activation.json").is_file())
+
+
+def _claude_install_decision() -> str:
+    """install | ready | recent_failure | 건너뛴 까닭(CLAUDE_SKIP_REASONS). 중단된 started 는 바로 다시 한다."""
+    if _claude_version([str(_official_claude())]):
+        return "ready"
+    marker = _read_claude_marker()
+    at = marker.get("at")
+    if marker.get("status") == "failed" and isinstance(at, (int, float)) \
+            and 0 <= time.time() - at < CLAUDE_INSTALL_RETRY_AFTER_FAIL:
+        return "recent_failure"
+    return _claude_token_problem() or "install"
+
+
+def _claude_install_command() -> tuple[str, str]:
+    powershell = str(Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    return powershell, subprocess.list2cmdline(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", CLAUDE_INSTALL_SCRIPT])
+
+
+CLAUDE_JOB_CHECK_SECONDS = 10.0  # 끝남을 한 번 기다리는 길이 — 확인할 때까지 되풀이한다
+
+
+def _job_empty(kernel32, job, wait: float = CLAUDE_JOB_CHECK_SECONDS) -> bool:
+    accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+    deadline = time.monotonic() + wait
+    while kernel32.QueryInformationJobObject(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+        if accounting.ActiveProcesses == 0:
+            return True
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.1)
+    return False  # 조회 실패 = 확인 못 함
+
+
+def _hold_until_empty(kernel32, job) -> None:
+    """Job 안 프로세스가 0개임을 확인할 때까지 끄고 기다린다 — 확인 못 한 채 돌아가면 부르는 쪽이 파일 잠금을 놓아 다른 실행기가
+    겹쳐 설치할 수 있다(설치 독립 리뷰 P1). 실행기가 끝나면 Job 핸들이 닫혀 커널이 모두 끈다."""
+    while True:
+        kernel32.TerminateJobObject(job, 1)
+        if _job_empty(kernel32, job):
+            return
+        time.sleep(1.0)
+
+
+def _end_process(kernel32, handle) -> None:
+    """Job 에 넣지 못한(멈춘 채인) 설치 프로세스 — 끝났음을 확인할 때까지 끈다. 재개하지 않았으니 자식은 없다."""
+    while True:
+        kernel32.TerminateProcess(handle, 1)
+        if kernel32.WaitForSingleObject(handle, int(CLAUDE_JOB_CHECK_SECONDS * 1000)) == 0:
+            return
+        time.sleep(1.0)
+
+
+def _drive_claude_installer(kernel32, job, info, application: str, line: str, workdir: Path,
+                            timeout: float) -> tuple[int | None, str | None]:
+    limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    # 닫히면 모두 끔만 — run_guarded 의 탈출 허용(BREAKAWAY_OK)은 넣지 않는다(Codex v3 2차 P2).
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                                            ctypes.byref(limits), ctypes.sizeof(limits)):
+        return None, "job"
+    startup = STARTUPINFOW(cb=ctypes.sizeof(STARTUPINFOW))
+    if not kernel32.CreateProcessW(application, ctypes.create_unicode_buffer(line), None, None, False,
+                                   CREATE_SUSPENDED | CREATE_NO_WINDOW, None, str(workdir),
+                                   ctypes.byref(startup), ctypes.byref(info)):
+        return None, "start"
+    if not kernel32.AssignProcessToJobObject(job, info.hProcess):
+        _end_process(kernel32, info.hProcess)
+        return None, "job"
+    if kernel32.ResumeThread(info.hThread) == 0xFFFFFFFF:
+        _end_process(kernel32, info.hProcess)  # Job 안이라 아래 _hold_until_empty 도 한 번 더 본다
+        return None, "start"
+    if kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) != 0:
+        return None, "timeout"
+    code = wintypes.DWORD(1)
+    if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+        return None, "start"
+    return int(code.value), None
+
+
+def _run_claude_installer(command: tuple[str, str] | None = None, timeout: float = CLAUDE_INSTALL_TIMEOUT,
+                          kernel32=None) -> tuple[int | None, str | None]:
+    """설치 전용 Job 안에서 멈춘 채 생성 → 배정 → 재개. (종료 코드, 문제) — 문제는 job·start·timeout.
+    창 없음·핸들 상속 없음(출력은 버린다)·작업 폴더는 %LOCALAPPDATA%\\MVHub(설치 폴더를 붙잡지 않게)."""
+    kernel32 = kernel32 or _configure_api()
+    application, line = command or _claude_install_command()
+    workdir = _mvhub_local_dir()
+    workdir.mkdir(parents=True, exist_ok=True)
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None, "job"
+    info = PROCESS_INFORMATION()
+    try:
+        result = _drive_claude_installer(kernel32, job, info, application, line, workdir, timeout)
+        # 남은 손자까지 끄고 0개를 확인한 뒤에야 돌려준다 — 부르는 쪽은 결과 판정까지 파일 잠금을 쥔다.
+        _hold_until_empty(kernel32, job)
+        return result
+    finally:
+        kernel32.CloseHandle(job)  # 예외로 빠져도 닫히면 모두 끔
+        for handle in (info.hThread, info.hProcess):
+            if handle:
+                kernel32.CloseHandle(handle)
+
+
+def ensure_claude_official(run=None) -> str:
+    """결과 낱말: off·busy·ready·recent_failure·건너뛴 까닭·marker_failed·ok·failed. 앱 기동과 무관하게 배경에서 돈다."""
+    if not _claude_install_eligible():
+        return "off"
+    with _claude_install_lock() as held:
+        if not held:
+            return "busy"  # 잠금을 못 잡은 실행기는 표식을 아예 쓰지 않는다
+        if not _claude_install_eligible():  # 잠금 안에서 자격도 다시(설치 독립 리뷰 P2)
+            return "off"
+        decision = _claude_install_decision()
+        if decision in CLAUDE_SKIP_REASONS:
+            marker = _read_claude_marker()
+            _write_claude_marker({**marker, "last_skip": {"reason": decision, "at": int(time.time())}})
+            return decision
+        if decision != "install":
+            return decision
+        if not _set_claude_status("started"):
+            return "marker_failed"
+        exit_code, problem = (run or _run_claude_installer)()
+        version = _claude_version([str(_official_claude())]) if problem is None and exit_code == 0 else None
+        if version:
+            _set_claude_status("ok", exit_code=0, version=version)
+            return "ok"
+        _set_claude_status("failed", exit_code=exit_code,
+                           reason=problem or ("exit" if exit_code != 0 else "version_check"))
+        return "failed"
+
+
+def _claude_install_quietly() -> None:
+    try:
+        ensure_claude_official()
+    except Exception as exc:  # 배경 확인이 실행기를 흔들지 않게 — 잠금·Job 은 with·finally 가 놓는다
+        print(f"[info] Claude Code install check stopped: {type(exc).__name__}")
+
+
+def _claude_install_after_commit(nonce: str, sleep=time.sleep) -> None:
+    while (outcome := _update_boot_outcome(nonce)) is None:
+        sleep(5)
+    if outcome:
+        _claude_install_quietly()
+
+
+def _start_claude_install() -> None:
+    """승인된 부팅 뒤에만 — 업데이트 부팅은 그 설치가 committed 된 뒤, 롤백·대체면 하지 않는다. 앱 기동은 기다리지 않는다."""
+    if os.environ.get("MVHUB_ACTIVATION_CONTROL", ""):
+        nonce = os.environ.get("MVHUB_EXECUTION_NONCE", "")
+        if nonce:
+            threading.Thread(target=_claude_install_after_commit, args=(nonce,),
+                             name="claude-install-after-commit", daemon=True).start()
+    elif _boot_would_be_accepted():
+        threading.Thread(target=_claude_install_quietly, name="claude-install", daemon=True).start()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MV Hub agent process-tree guard")
     parser.add_argument("script", nargs="?", type=Path)
@@ -1434,6 +1785,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
         _start_open_link_registration(port)
+        _start_claude_install()
         _close_stale_launcher_shells(script)
         ensure_desktop_shortcut()
         return run_guarded(script)

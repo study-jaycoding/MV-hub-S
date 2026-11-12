@@ -500,6 +500,15 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     }, 2000);
   }, [recheck, stopWaiting]);
 
+  // 실행기가 Claude Code 를 설치하는 중이면 3초마다 다시 본다 — 끝나면(running 아님) 멈추고 화면이 그 단계로 넘어간다.
+  //  로그인 창 기다림(2초·10분)과 따로다. 칸을 닫으면 정리로 멈춘다(설치 설계 2-v3-1b).
+  const installing = claude?.install?.state === "running";
+  useEffect(() => {
+    if (!installing) return;
+    const timer = window.setInterval(() => { if (!claudeInFlight.current) void recheck(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, [installing, recheck]);
+
   /** [Claude 연결] — 허브가 보이는 로그인 창을 연다(스위치가 꺼졌거나 열 수 없으면 터미널 안내로). */
   const connect = useCallback(async () => {
     setLoginNote(null);
@@ -850,6 +859,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       version: claude?.version ?? claudeEngine?.version ?? null,
       allowed: !!claudeEngine?.available,
       loginWindowEnabled: !!claude?.login_window_enabled,
+      install: claude?.install ?? null,
       waiting, note: loginNote, connected,
       recheck, connect, stopWaiting, dismissConnected: () => setConnected(null),
     },

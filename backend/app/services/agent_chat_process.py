@@ -51,6 +51,64 @@ def official_claude() -> Path:
     return Path(os.environ.get("USERPROFILE") or Path.home()) / ".local" / "bin" / "claude.exe"
 
 
+# 실행기(run_agent_session.py)가 남기는 공식 설치 표식 — 허브는 읽기만 한다. 경로·상태 이름은 그쪽과 같게 둔다(시험이 맞춘다).
+#  (docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b)
+INSTALL_RUNNING_SECONDS = 20 * 60  # 실행기 설치 시한 15분 + 여유 — 실행기가 죽어 started 로 남아도 그 뒤엔 설치 중이 아니다
+INSTALL_SKIP_REASONS = frozenset({"service_account", "not_interactive", "elevated", "token_unknown"})
+INSTALL_FAIL_REASONS = frozenset({"exit", "timeout", "job", "start", "version_check"})
+
+
+def install_marker() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    return base / "MVHub" / "claude-install.json"
+
+
+def read_install_marker() -> dict | None:
+    """표식 원본(못 읽으면 None) — 엔진 캐시는 보이는 값이 아니라 이 원본이 바뀌었는지로도 버린다(성공 ok 도 바뀜이다)."""
+    try:
+        data = json.loads(install_marker().read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def claude_install(now: float | None = None, data: dict | None = None) -> dict | None:
+    """{state: running|failed|skipped, at, reason} 또는 None. 건너뜀은 설치 상태 시각보다 새로울 때만(옛 건너뜀이 뒤 설치를 가리지 않게)."""
+    data = read_install_marker() if data is None else data
+    if not data:
+        return None
+    now = time.time() if now is None else now
+    stamp = lambda value: value if isinstance(value, (int, float)) and not isinstance(value, bool) else None  # noqa: E731
+    status, at = data.get("status"), stamp(data.get("at"))
+    if status == "started" and at is not None and 0 <= now - at < INSTALL_RUNNING_SECONDS:
+        return {"state": "running", "at": int(at), "reason": None}
+    skip = data.get("last_skip") if isinstance(data.get("last_skip"), dict) else {}
+    skipped_at = stamp(skip.get("at"))
+    if skipped_at is not None and skip.get("reason") in INSTALL_SKIP_REASONS and (at is None or skipped_at > at):
+        return {"state": "skipped", "at": int(skipped_at), "reason": skip["reason"]}
+    if status == "failed" and at is not None:
+        reason = data.get("reason")
+        return {"state": "failed", "at": int(at), "reason": reason if reason in INSTALL_FAIL_REASONS else None}
+    return None
+
+
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return False
+
+
+def install_method(prefix: list[str] | None) -> str:
+    """허브가 고른 실행 파일의 설치 방식 — official·npm·other·none(판과 같은 파일로 센다)."""
+    if not prefix:
+        return "none"
+    if _same_file(prefix[0], official_claude()):
+        return "official"
+    tail = [part.casefold() for part in Path(prefix[0]).parts[-5:]]
+    return "npm" if tail == ["node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"] else "other"
+
+
 def _claude_candidates() -> list[list[str]]:
     found, out = shutil.which("claude"), []
     if found:
@@ -63,7 +121,10 @@ def _claude_candidates() -> list[list[str]]:
             if native.is_file():
                 out.append([str(native)])
     official = official_claude()
-    if official.is_file() and all(Path(c[0]).resolve() != official.resolve() for c in out):
+    if (claude_install() or {}).get("state") == "running":
+        # 실행기가 공식 설치를 하는 중 — 공식 파일은 판 비교용 --version 까지 띄우지 않는다. PATH 로 찾은 것도 실제 경로로 비교해 뺀다.
+        return [c for c in out if not _same_file(c[0], official)]
+    if official.is_file() and all(not _same_file(c[0], official) for c in out):
         out.append([str(official)])
     return out
 

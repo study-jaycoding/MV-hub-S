@@ -34,13 +34,24 @@ export interface AgentEngine {
   models: { id: string; label: string }[];
   efforts: string[];
 }
+/** MV Hub 실행기의 Claude Code 공식 설치(허브가 표식을 읽어 준다 — docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b).
+ *  running = 설치 중(20분 안) · failed = 마지막 설치 실패 · skipped = 건너뜀(reason: elevated·not_interactive·service_account·token_unknown). */
+export interface ClaudeInstall { state: "running" | "failed" | "skipped"; at: number; reason: string | null }
 export interface ClaudeStatus {
   state: ClaudeState;
   version: string | null;
   subscription: string | null;
   login_window: boolean; // 이 PC 에 로그인 창이 열려 있나
   login_window_enabled: boolean; // 허브 스위치 — 꺼져 있으면 [Claude 연결] 대신 터미널 안내
+  install?: ClaudeInstall | null; // 옛 허브는 없음
   engines: AgentEngine[];
+}
+/** 서랍 아래 줄 — method = 허브가 고른 실행 파일의 설치 방식(판과 같은 파일). 옛 허브는 method 없음. */
+export interface ClaudeVersionInfo {
+  current: string | null;
+  latest: string | null;
+  newer: boolean;
+  method?: "official" | "npm" | "other" | "none";
 }
 /** [Claude 연결]을 허브가 거절한 까닭(허브 머리 X-MVHub-Claude-Error) — login_window_disabled·breakaway_denied 면 터미널 안내로. */
 export class ClaudeLoginError extends Error {
@@ -268,7 +279,7 @@ export const agentChatApi = {
   deleteConversation: (conversationId: string) =>
     panelFetch<{ deleted: boolean; session_file: AgentSessionFileResult }>(`/conversations/${id(conversationId)}`, { method: "DELETE" }),
   // 서랍 아래 줄 — 지금 Claude Code 판·npm 최신 판·새 판 여부(못 읽으면 null)
-  claudeVersion: () => panelFetch<{ current: string | null; latest: string | null; newer: boolean }>("/claude/version"),
+  claudeVersion: () => panelFetch<ClaudeVersionInfo>("/claude/version"),
   // plans = 이 대화에 묶인 계획의 지금 상태(사건 다음에 읽음 — 조건 없이 넣고 기준이 된다). 옛 허브는 없음
   conversation: (conversationId: string) =>
     panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[]; plans?: AgentPlanSnapshot[] }>(

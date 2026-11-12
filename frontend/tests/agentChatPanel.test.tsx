@@ -947,7 +947,7 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
           { id: "c4", title: "사과", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true, project: "p1" },
         ] });
       }
-      if (c.path === "/claude/version") return json({ current: "2.1.296", latest: "2.1.322", newer: true });
+      if (c.path === "/claude/version") return json({ current: "2.1.296", latest: "2.1.322", newer: true, method: "official" });
       if (c.path === "/conversations/c2") {
         return json({ conversation: { id: "c2", title: "딸기와 바나나", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: true }, turns: [] });
       }
@@ -965,8 +965,9 @@ describe("MV Agent 칸 폭·서랍·새 창", () => {
     ]);
     expect(host.querySelector(".agent-drawer")!.textContent).not.toMatch(/설정|구독|새 대화 모델|칸 위치/); // 설정 칸은 뺐다(Jay 11-10)
     // 맨 아래 한 줄 — Claude · 요금제(허브가 싣는 표시 이름) / 지금 쓰는 판(v + 번호), 새 판이 있으면 라임 + 알림 글
-    expect([texts(".agent-drawer-plan")[0], texts(".agent-drawer-ver.new")[0]]).toEqual(["✳Claude · Max", "v2.1.296"]);
+    expect([texts(".agent-drawer-plan")[0], texts(".agent-drawer-ver.new")[0]]).toEqual(["✳Claude · Max", "v2.1.296공식 설치"]);
     expect(host.querySelector(".agent-drawer-ver")!.getAttribute("title")).toBe("v2.1.322 이 나왔어요");
+    expect(host.querySelector(".agent-drawer")!.textContent).not.toMatch(/자동 업데이트|업데이트$/); // 설치 방식만 — 보장 문구 없음
     act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-drawer-item")][0].click());
     await flush();
     expect([host.querySelector(".agent-drawer"), host.querySelector(".agent-head-left")!.textContent]).toEqual([null, "딸기와 바나나"]);

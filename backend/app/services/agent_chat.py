@@ -170,7 +170,7 @@ class AgentChat:
         self._runtimes: dict[str, _Runtime] = {}
         self._by_client: dict[str, str] = {}
         self._waiters: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
-        self._engines: tuple[float, list[dict]] | None = None
+        self._engines: tuple[float, list[dict], tuple] | None = None  # (시각, 줄, 그때의 설치 표식 원본·보이는 상태)
         self._closing = False
 
     # ── 칸 비밀값(다른 웹페이지의 위조 요청을 막는 표 — 권한 자체는 신원) ──
@@ -193,8 +193,14 @@ class AgentChat:
     def engines(self, refresh: bool = False) -> list[dict]:
         """화면 표시용(잠깐 캐시 — refresh 면 새로). 실제 실행 허용은 차례마다 engine_problem 으로 다시 본다.
         Claude 는 상태(state)·구독 표시 이름도 싣는다 — 화면이 연결 안내를 고른다. available = 대화 허용 조건(CHAT_OK)."""
+        # 실행기의 공식 설치 표식 — 설치 중이면 캐시를 쓰지 않고, 표식 원본(성공 ok 포함)이나 보이는 상태(20분 만료)가 바뀌면
+        #  캐시를 버린다(설치 설계 2-v3-1b, 설치 독립 리뷰 P2)
+        raw = process.read_install_marker()
+        install = process.claude_install(data=raw)
+        stamp = (json.dumps(raw, sort_keys=True, default=str), install)
         with self._lock:
-            if not refresh and self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS:
+            if not refresh and self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS \
+                    and self._engines[2] == stamp and (install or {}).get("state") != "running":
                 return self._engines[1]
         result = []
         for engine in ("claude", "codex"):
@@ -204,13 +210,14 @@ class AgentChat:
                 state = claude.claude_state(prefix)
                 ok = state["state"] in claude.CHAT_OK
                 row.update(available=ok, version=state["version"] or "", state=state["state"], subscription=state["subscription"],
-                           reason=None if ok else claude.MESSAGES.get(state["state"], claude.MESSAGES["unknown"]))
+                           reason=None if ok else claude.MESSAGES.get(state["state"], claude.MESSAGES["unknown"]),
+                           install=install, method=process.install_method(prefix))
             else:
                 reason = process.engine_problem(engine, prefix)
                 row.update(available=reason is None, version=process.cli_version(prefix) if prefix else "", reason=reason)
             result.append(row)
         with self._lock:
-            self._engines = (time.monotonic(), result)
+            self._engines = (time.monotonic(), result, stamp)
         return result
 
     def engine_problem(self, engine: str) -> str | None:

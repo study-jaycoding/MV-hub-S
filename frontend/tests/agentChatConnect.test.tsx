@@ -24,11 +24,11 @@ const claudeEngine = (state: string, available = false, subscription: string | n
 const CODEX = { id: "codex", available: false, version: "", reason: "점검 필요", models: [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol" }], efforts: ["low", "medium", "high"] };
 const session = (state: string, available = false) =>
   json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: [claudeEngine(state, available), CODEX] });
-const status = (state: string, opts: { enabled?: boolean; window?: boolean; subscription?: string | null } = {}) => {
+const status = (state: string, opts: { enabled?: boolean; window?: boolean; subscription?: string | null; install?: unknown } = {}) => {
   const ok = state === "ready" || state === "subscription_unknown";
   return json({
     state, version: "2.1.296", subscription: opts.subscription ?? null, login_window: !!opts.window,
-    login_window_enabled: !!opts.enabled, engines: [claudeEngine(state, ok, opts.subscription ?? null), CODEX],
+    login_window_enabled: !!opts.enabled, install: opts.install ?? null, engines: [claudeEngine(state, ok, opts.subscription ?? null), CODEX],
   });
 };
 
@@ -251,6 +251,95 @@ describe("MV Agent 칸 — Claude 연결 안내", () => {
     act(() => buttonText("다시 확인")!.click());
     await flush();
     expect(calls.filter((c) => c.path === "/claude").length).toBe(polls + 1);
+  });
+
+  it("MV Hub 가 설치하는 중이면 기다림(손 설치는 접음) · 3초마다 다시 보고 끝나면 다음 단계로 · 그 뒤엔 멈춤", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let phase: "installing" | "done" = "installing";
+    route = (c) => {
+      if (c.path === "/session") return session("not_installed");
+      if (c.path === "/claude") {
+        return phase === "installing" ? status("not_installed", { install: { state: "running", at: 1, reason: null } })
+          : status("not_logged_in", { enabled: true });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    expect(panel().textContent).toContain("MV Hub 가 Claude Code 를 설치하는 중이에요");
+    const more = host.querySelector<HTMLDetailsElement>(".cn-more")!;
+    expect([more.open, more.querySelector("summary")!.textContent]).toEqual([false, "직접 설치하려면"]); // 겹쳐 설치하지 않게 접어 둔다
+    expect(input().disabled).toBe(true);
+    const polls = () => calls.filter((c) => c.path === "/claude").length;
+    const before = polls();
+    await act(async () => { vi.advanceTimersByTime(3000); });
+    await flush();
+    expect(polls()).toBe(before + 1);
+    phase = "done";
+    await act(async () => { vi.advanceTimersByTime(3000); });
+    await flush();
+    expect(panel().textContent).toContain("Claude 를 연결하세요"); // 설치가 끝나 저절로 로그인 단계로
+    const after = polls();
+    await act(async () => { vi.advanceTimersByTime(9000); });
+    await flush();
+    expect(polls()).toBe(after); // 설치 중이 아니면 3초 확인을 멈춘다
+  });
+
+  it("설치 중 확인은 칸을 닫으면 멈춘다", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    route = (c) => {
+      if (c.path === "/session") return session("not_installed");
+      if (c.path === "/claude") return status("not_installed", { install: { state: "running", at: 1, reason: null } });
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    act(() => root.unmount());
+    root = createRoot(host);
+    const before = calls.filter((c) => c.path === "/claude").length;
+    await act(async () => { vi.advanceTimersByTime(9000); });
+    expect(calls.filter((c) => c.path === "/claude").length).toBe(before);
+  });
+
+  it("자동 설치 실패·건너뜀은 까닭 한 줄 + 손 설치 안내 · 확인 못 함 화면에도 그 줄", async () => {
+    for (const [state, install, line] of [
+      ["not_installed", { state: "failed", at: 1, reason: "timeout" }, "자동 설치가 안 됐어요 — 아래처럼 직접 설치해 주세요"],
+      ["not_installed", { state: "skipped", at: 1, reason: "elevated" }, "관리자 권한으로 켠 MV Hub 라 자동 설치를 건너뛰었어요 — 아래처럼 직접 설치해 주세요"],
+      ["unknown", { state: "failed", at: 1, reason: "version_check" }, "자동 설치가 안 됐어요 — 아래처럼 직접 설치해 주세요"],
+    ] as const) {
+      route = (c) => {
+        if (c.path === "/session") return session(state);
+        if (c.path === "/claude") return status(state, { install });
+        return json({ detail: "Not Found" }, 404);
+      };
+      act(() => root.unmount());
+      root = createRoot(host);
+      await mount();
+      expect([state, host.querySelector(".cn [role=status].cn-note")?.textContent]).toEqual([state, line]);
+      // 그 줄이 말한 손 설치 안내가 같은 화면에 있다(확인 못 함 화면 포함) · [다시 확인]은 하나
+      expect(host.querySelector(".cn-code span")!.textContent).toBe("irm https://claude.ai/install.ps1 | iex");
+      expect([...host.querySelectorAll("button")].filter((b) => b.textContent === "다시 확인")).toHaveLength(1);
+    }
+  });
+
+  it("설치 중이다가 실패로 끝나면 3초 확인을 멈추고 실패 줄 + 손 설치 안내", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let failed = false;
+    route = (c) => {
+      if (c.path === "/session") return session("not_installed");
+      if (c.path === "/claude") {
+        return status("not_installed", { install: failed ? { state: "failed", at: 2, reason: "exit" } : { state: "running", at: 1, reason: null } });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    failed = true;
+    await act(async () => { vi.advanceTimersByTime(3000); });
+    await flush();
+    expect(panel().textContent).toContain("자동 설치가 안 됐어요");
+    expect(host.querySelector(".cn-more")).toBeNull();
+    const after = calls.filter((c) => c.path === "/claude").length;
+    await act(async () => { vi.advanceTimersByTime(9000); });
+    await flush();
+    expect(calls.filter((c) => c.path === "/claude").length).toBe(after);
   });
 
   it("구독 종류를 모르면 대화는 열려 있다(허브와 같은 허용 조건) · 옛 허브(연결 표식 없음)는 안내 없이 엔진 사유만", async () => {

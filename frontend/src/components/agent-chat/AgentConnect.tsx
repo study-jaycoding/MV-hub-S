@@ -1,8 +1,9 @@
 // MV Agent 칸의 Claude 연결 안내(첫 연결 설계 3·6·9절 · 시안 ask-agent-connect1/2.png). 상태마다 한 장면:
-//  설치 안내(B — 앱은 설치를 실행하지 않는다) · 업데이트 · 확인 못 함 · 연결(로그인 창 스위치가 켜졌을 때만 [Claude 연결],
-//  꺼졌거나 창을 열 수 없으면 터미널 안내) · 구독 아님 · 구독 없음 · 로그인 창 열림(기다림).
+//  설치(MV Hub 실행기가 공식 설치를 돌린다 — 설치 중이면 기다림·손 설치는 접음, 실패·건너뜀이면 그 줄 + 손 설치 안내 —
+//  docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b) · 업데이트 · 확인 못 함 · 연결(로그인 창 스위치가 켜졌을 때만
+//  [Claude 연결], 꺼졌거나 창을 열 수 없으면 터미널 안내) · 구독 아님 · 구독 없음 · 로그인 창 열림(기다림).
 import { useState } from "react";
-import type { ClaudeState } from "../../lib/agentChatApi";
+import type { ClaudeInstall, ClaudeState } from "../../lib/agentChatApi";
 import { useT } from "../../lib/i18n";
 
 export const INSTALL_COMMAND = "irm https://claude.ai/install.ps1 | iex"; // 공식 문서(code.claude.com/docs/en/setup) PowerShell
@@ -12,6 +13,7 @@ const LOGIN_COMMAND = "claude auth login";
 interface Props {
   state: ClaudeState | null;
   version: string | null;
+  install?: ClaudeInstall | null; // 실행기의 공식 설치 표식(허브가 읽어 준다) — 옛 허브는 없음
   loginWindowEnabled: boolean;
   waiting: boolean;
   note: "terminal" | "expired" | "unfinished" | null;
@@ -61,23 +63,65 @@ function Terminal({ onRecheck }: { onRecheck: () => void }) {
   );
 }
 
-export function AgentConnect({ state, version, loginWindowEnabled, waiting, note, onConnect, onRecheck, onStopWaiting }: Props) {
+// 실행기가 건너뛴 까닭(표식 last_skip.reason) — 손 설치 안내 위에 한 줄
+const SKIP_TEXT: Record<string, string> = {
+  elevated: "관리자 권한으로 켠 MV Hub 라 자동 설치를 건너뛰었어요",
+  not_interactive: "이 Windows 로그인에서는 자동 설치를 하지 않아요",
+  service_account: "이 Windows 로그인에서는 자동 설치를 하지 않아요",
+  token_unknown: "권한을 확인하지 못해 자동 설치를 건너뛰었어요",
+};
+
+function InstallNote({ install }: { install?: ClaudeInstall | null }) {
+  const t = useT();
+  if (install?.state === "failed") return <p className="cn-note cn-warn" role="status">{t("자동 설치가 안 됐어요 — 아래처럼 직접 설치해 주세요")}</p>;
+  if (install?.state !== "skipped") return null;
+  return <p className="cn-note" role="status">{t(SKIP_TEXT[install.reason ?? ""] ?? "자동 설치를 건너뛰었어요")} — {t("아래처럼 직접 설치해 주세요")}</p>;
+}
+
+function ManualInstall({ onRecheck }: { onRecheck: () => void }) {
+  const t = useT();
+  return (
+    <>
+      <ol className="cn-list">
+        <li><b>PowerShell</b> {t("을 열어요(시작 메뉴에서 검색)")}</li>
+        <li>{t("아래 명령을 붙여 넣고 Enter")}</li>
+      </ol>
+      <CopyLine command={INSTALL_COMMAND} />
+      <ol className="cn-list" start={3}><li>{t("끝나면 [다시 확인]")}</li></ol>
+      <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button>
+    </>
+  );
+}
+
+export function AgentConnect({ state, version, install, loginWindowEnabled, waiting, note, onConnect, onRecheck, onStopWaiting }: Props) {
   const t = useT();
   const terminal = !loginWindowEnabled || note === "terminal";
   const body = (() => {
     switch (state) {
       case "not_installed":
+        if (install?.state === "running") {
+          // 설치 중 — 칸이 3초마다 다시 보고 끝나면 다음 단계로 넘어간다. 손 설치는 접어 둔다(겹쳐 설치하지 않게)
+          return (
+            <>
+              <h3>{t("MV Hub 가 Claude Code 를 설치하는 중이에요")}</h3>
+              <p>{t("끝나면 저절로 이어져요. MV Hub 를 닫으면 설치가 멈추고, 다음에 켤 때 다시 해요.")}</p>
+              <ol className="cn-steps">
+                <li className="now wait"><span className="d" aria-hidden="true" />{t("Claude Code 설치")}<small>{t("설치하는 중")}</small></li>
+                <li><span className="d" aria-hidden="true">2</span>{t("Claude 로그인")}</li>
+              </ol>
+              <details className="cn-more">
+                <summary>{t("직접 설치하려면")}</summary>
+                <ManualInstall onRecheck={onRecheck} />
+              </details>
+            </>
+          );
+        }
         return (
           <>
             <h3>{t("이 PC 에 Claude Code 가 없어요")}</h3>
+            <InstallNote install={install} />
             <p>{t("아래 순서로 설치하면 이어서 연결해요.")}</p>
-            <ol className="cn-list">
-              <li><b>PowerShell</b> {t("을 열어요(시작 메뉴에서 검색)")}</li>
-              <li>{t("아래 명령을 붙여 넣고 Enter")}</li>
-            </ol>
-            <CopyLine command={INSTALL_COMMAND} />
-            <ol className="cn-list" start={3}><li>{t("끝나면 [다시 확인]")}</li></ol>
-            <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button>
+            <ManualInstall onRecheck={onRecheck} />
           </>
         );
       case "outdated":
@@ -126,14 +170,18 @@ export function AgentConnect({ state, version, loginWindowEnabled, waiting, note
           </>
         );
       }
-      default: // unknown·window_record·null
+      default: { // unknown·window_record·null
+        // 공식 파일은 있으나 안 돌고 자동 설치가 실패·건너뜀 — 그 줄이 말한 손 설치로 바로 이어 준다(설치 독립 리뷰 P2)
+        const manual = state !== "window_record" && (install?.state === "failed" || install?.state === "skipped");
         return (
           <>
             <h3>{t("Claude 상태를 확인하지 못했어요")}</h3>
             {state === "window_record" && <p>{t("열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요.")}</p>}
-            <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button>
+            {state !== "window_record" && <InstallNote install={install} />}
+            {manual ? <ManualInstall onRecheck={onRecheck} /> : <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button>}
           </>
         );
+      }
     }
   })();
   return (

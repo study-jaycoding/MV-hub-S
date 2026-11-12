@@ -109,6 +109,7 @@
 .agent-drawer-plan small { color: var(--muted); font-size: 12.5px; font-weight: 500; }
 .agent-drawer-ver { flex: none; color: var(--muted2); font-size: 12px; }
 .agent-drawer-ver.new { color: var(--accent); font-weight: 600; }
+.agent-drawer-ver small { margin-left: 6px; color: var(--muted2); font-size: 11.5px; font-weight: 400; } /* 설치 방식(공식·npm)만 — 보장 문구 없음 */
 .agent-drawer-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 3.5px solid var(--accent); box-sizing: border-box; box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
 
 /* 서랍 행 메뉴·넓이(docs/status/MVAgent_서랍메뉴_2026-11-12.md, 시안 drawer-menu.png) — 행 = [대화 열기][⋯] 두 형제 단추 */
@@ -495,6 +496,10 @@
 .agent-panel .cn-text { border: 0; background: transparent; color: var(--muted); font-size: 12.5px; text-decoration: underline; }
 .agent-panel .cn-note { font-size: 12px !important; color: var(--muted2) !important; }
 .agent-panel .cn-warn { color: #f5c542 !important; }
+/* 설치 중엔 손 설치 안내를 접어 둔다 */
+.agent-panel .cn-more { align-self: stretch; text-align: left; font-size: 12.5px; color: var(--muted); }
+.agent-panel .cn-more summary { cursor: pointer; color: var(--muted2); text-align: center; }
+.agent-panel .cn-more[open] > :not(summary) { margin-top: 8px; }
 .agent-panel .cn-code { align-self: stretch; display: flex; align-items: center; gap: 8px; padding: 9px 10px 9px 12px; border: 1px solid var(--border2);
   border-radius: 10px; background: #0c0d10; font-family: Consolas, monospace; font-size: 12.5px; color: var(--text); text-align: left; }
 .agent-panel .cn-code span { flex: 1; overflow-wrap: anywhere; }

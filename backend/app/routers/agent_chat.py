@@ -101,6 +101,7 @@ async def claude_status(panel=Depends(_panel)):
     row = next(item for item in engines if item["id"] == "claude")
     return {"state": row["state"], "version": row["version"] or None, "subscription": row["subscription"],
             "login_window": await asyncio.to_thread(_window_open), "login_window_enabled": config.AGENT_CHAT_LOGIN_WINDOW,
+            "install": row.get("install"),  # 실행기의 공식 설치 — running·failed·skipped·없음(설치 설계 2-v3-1b)
             "engines": engines}
 
 
@@ -111,11 +112,13 @@ _CLAUDE_ERROR = "X-MVHub-Claude-Error"
 async def claude_version(panel=Depends(_panel)):
     """서랍 아래 줄 — 지금 판(엔진 캐시, exe 를 새로 띄우지 않음)·npm 최신 판·새 판 여부(docs/status/MVAgent_서랍아래줄_2026-11-10.md)."""
     engines = await asyncio.to_thread(service.engines)
-    current = next((item["version"] for item in engines if item["id"] == "claude"), "") or None
+    row = next((item for item in engines if item["id"] == "claude"), {})
+    current = row.get("version") or None
     latest = await asyncio.to_thread(claude.latest_version)
     strict = re.compile(r"\d+\.\d+\.\d+")
     newer = bool(current and latest and strict.fullmatch(current) and tuple(map(int, latest.split("."))) > tuple(map(int, current.split("."))))
-    return {"current": current, "latest": latest, "newer": newer}
+    # 설치 방식은 판과 같은 실행 파일로 센 값(official·npm·other·none) — 보장 문구 없이 방식만(설치 설계 2-v3-2)
+    return {"current": current, "latest": latest, "newer": newer, "method": row.get("method", "none")}
 
 
 @router.post("/claude/login")
