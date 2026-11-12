@@ -97,10 +97,22 @@ def connect(path: Path):
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
-        conn.execute("PRAGMA synchronous=NORMAL")  # WAL 이라 커밋마다 디스크 동기화는 필요 없다(칸 기록 — 잃어도 화면 기록일 뿐)
+        conn.execute("PRAGMA synchronous=FULL")  # 연결을 유지해도 사건별 COMMIT의 디스크 동기화를 보장한다.
         yield conn
     finally:
         conn.close()
+
+
+@contextlib.contextmanager
+def keep_connection(path: Path):
+    """출력을 받는 동안 마지막 연결 종료의 checkpoint가 사건마다 반복되지 않게 한다."""
+    with connect(path) as conn:
+        cursor = conn.execute("SELECT rootpage FROM sqlite_schema LIMIT 1")
+        try:
+            cursor.fetchall()
+        finally:
+            cursor.close()
+        yield  # 읽기 거래나 공유할 연결 객체는 남기지 않는다.
 
 
 def open_db(path: Path) -> Path:

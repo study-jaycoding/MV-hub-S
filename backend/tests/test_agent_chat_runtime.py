@@ -1,12 +1,15 @@
 """Ask Agent 칸 기록·실행기·차례 — 가짜 CLI(agent_chat_fake_cli.py)로만. 진짜 Claude·Codex·과금 없음."""
 import asyncio
+import contextlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -46,6 +49,39 @@ def runtime(tmp_path, monkeypatch):
     service.shutdown()
 
 
+@pytest.fixture
+def connection_lifetime(runtime, monkeypatch):
+    """기존 종료/취소 시험에서 보유 연결이 reap보다 먼저 끝나고 실행 스레드도 끝나는지 본다."""
+    service, _, _ = runtime
+    real_keep, real_reap = store.keep_connection, service._reap
+    records = []
+
+    @contextlib.contextmanager
+    def keep(path):
+        entry = {"path": path, "thread": threading.current_thread(), "closed": False, "reaped": False}
+        records.append(entry)
+        try:
+            with real_keep(path):
+                yield
+        finally:
+            entry["closed"] = True  # 본문이 실패해도 실제 context의 정리를 먼저 거친다.
+
+    def reap(turn):
+        entry = next(item for item in records if item["thread"] is threading.current_thread())
+        assert entry["closed"] and entry["path"] == turn.path
+        entry["reaped"] = True
+        return real_reap(turn)
+
+    monkeypatch.setattr(store, "keep_connection", keep)
+    monkeypatch.setattr(service, "_reap", reap)
+    yield
+    assert records
+    for entry in records:
+        entry["thread"].join(10)
+        assert not entry["thread"].is_alive()
+        assert entry["closed"] and entry["reaped"]
+
+
 def start(service, identity, monkeypatch, scenario, *, engine="claude", conv=None, still=lambda: None, text="고양이 그려 줘"):
     monkeypatch.setenv("FAKE_AGENT_SCENARIO", scenario)
     path = identity.db_file()
@@ -78,6 +114,103 @@ def wait_file(path, timeout=20):
 
 
 # ── 기록 ──
+def test_keep_connection_keeps_wal_without_holding_a_read_transaction(tmp_path, monkeypatch):
+    path = store.open_db(tmp_path / "keep.db")
+    conv = store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="c", mcp_entry={}, title="t")
+    turn, _ = store.claim_turn(path, conversation_id=conv["id"], idempotency_key="keep-key", text="a", context={})
+    real_connect, opened, write_modes, closed = sqlite3.connect, [], [], []
+
+    class Connection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.lstrip().split()[0].upper() in {"INSERT", "UPDATE", "DELETE"}:
+                write_modes.append(super().execute("PRAGMA synchronous").fetchone()[0])
+            return super().execute(sql, *args, **kwargs)
+
+        def close(self):
+            closed.append((self, threading.get_ident()))
+            super().close()
+
+    def tracked(*args, **kwargs):
+        conn = real_connect(*args, **kwargs, factory=Connection)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracked)
+    owner = threading.get_ident()
+    with store.keep_connection(path) as exposed:
+        keeper = opened[0]
+        assert exposed is None and not keeper.in_transaction
+        observed = []
+        service = chat.AgentChat()
+        monkeypatch.setattr(service, "_notify", lambda turn_id: observed.extend(store.events_after(path, turn_id)))
+        service._emit(SimpleNamespace(path=path, turn_id=turn["id"], events=0), "text", {"text": "committed"})
+        assert observed[-1]["text"] == "committed"  # 별도 연결로 읽은 알림 시점에 저장돼 있다.
+        assert Path(str(path) + "-wal").exists()
+        with contextlib.closing(real_connect(path, isolation_level=None, timeout=0)) as check:
+            assert check.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+        assert not keeper.in_transaction
+        assert store.mark_cancelling(path, turn["id"])
+        assert store.finish_turn(path, turn["id"], "cancelled")
+    assert write_modes and set(write_modes) == {2}
+    assert (keeper, owner) in closed
+    with pytest.raises(sqlite3.ProgrammingError):
+        keeper.execute("SELECT 1")
+
+
+@windows
+@pytest.mark.parametrize("failure", ["connect", "read", "close"])
+def test_keep_connection_failure_uses_existing_turn_cleanup(runtime, monkeypatch, failure):
+    service, identity, _ = runtime
+    real_connect, real_start = sqlite3.connect, process.JobProcess.start
+    owners, connections, jobs, closed = [], [], [], []
+
+    class Connection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if failure == "read" and sql.lstrip().upper().startswith("SELECT"):
+                raise sqlite3.OperationalError("injected keep read failure")
+            return super().execute(sql, *args, **kwargs)
+
+        def close(self):
+            super().close()
+            closed.append(threading.current_thread())
+            if failure == "close":
+                raise sqlite3.OperationalError("injected keep close failure")
+
+    def connect(*args, **kwargs):
+        if threading.current_thread().name.startswith("agent-chat-") and not owners:
+            owners.append(threading.current_thread())
+            if failure == "connect":
+                raise sqlite3.OperationalError("injected keep connect failure")
+            conn = real_connect(*args, **kwargs, factory=Connection)
+            connections.append(conn)
+            return conn
+        return real_connect(*args, **kwargs)
+
+    def job_start(job, *args, **kwargs):
+        jobs.append(job)
+        return real_start(job, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    monkeypatch.setattr(process.JobProcess, "start", job_start)
+    path, _, turn = start(service, identity, monkeypatch, "claude_ok")
+    assert finish(path, turn["id"])["status"] == "failed"
+    assert len(owners) == 1
+    owners[0].join(10)
+    assert not owners[0].is_alive()
+    assert turn["id"] not in service._runtimes
+    assert store.events_after(path, turn["id"])[-1]["kind"] == "state"
+    if failure == "connect":
+        assert not connections and not closed
+    else:
+        assert closed == owners
+        with pytest.raises(sqlite3.ProgrammingError):
+            connections[0].execute("PRAGMA synchronous")
+    if failure == "close":
+        assert len(jobs) == 1 and jobs[0].closed and jobs[0].proc.poll() is not None
+    else:
+        assert not jobs
+
+
 def test_store_claim_is_idempotent_single_active_and_recovers(tmp_path):
     path = store.open_db(tmp_path / "x.db")
     conv = store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="c", mcp_entry={}, title="t")
@@ -194,7 +327,7 @@ def test_extra_tool_stops_turn_before_any_text(runtime, monkeypatch):
 
 
 @windows
-def test_cancel_reaps_whole_tree_and_blocks_until_reaped(runtime, monkeypatch):
+def test_cancel_reaps_whole_tree_and_blocks_until_reaped(runtime, monkeypatch, connection_lifetime):
     service, identity, tmp = runtime
     path, conv, turn = start(service, identity, monkeypatch, "claude_slow")
     grandchild = wait_file(tmp / "grandchild.pid")
@@ -207,7 +340,7 @@ def test_cancel_reaps_whole_tree_and_blocks_until_reaped(runtime, monkeypatch):
 
 
 @windows
-def test_timeout_and_shutdown_reap(runtime, monkeypatch):
+def test_timeout_and_shutdown_reap(runtime, monkeypatch, connection_lifetime):
     service, identity, tmp = runtime
     monkeypatch.setattr(chat, "TURN_TIMEOUT", 3.0)
     path, _, turn = start(service, identity, monkeypatch, "claude_slow")
@@ -218,7 +351,7 @@ def test_timeout_and_shutdown_reap(runtime, monkeypatch):
 
 
 @windows
-def test_identity_change_interrupts_turn(runtime, monkeypatch):
+def test_identity_change_interrupts_turn(runtime, monkeypatch, connection_lifetime):
     service, identity, _ = runtime
     def changed():
         raise RuntimeError("account switched")
@@ -276,7 +409,7 @@ def test_unverified_codex_version_is_refused_even_when_resuming(runtime, monkeyp
 
 
 @windows
-def test_cancel_while_starting_never_leaves_cli_running(runtime, monkeypatch):
+def test_cancel_while_starting_never_leaves_cli_running(runtime, monkeypatch, connection_lifetime):
     service, identity, tmp = runtime
     real = process.JobProcess
     started = threading.Event()
@@ -297,7 +430,7 @@ def test_cancel_while_starting_never_leaves_cli_running(runtime, monkeypatch):
 
 
 @windows
-def test_unreaped_tree_keeps_turn_open_until_reaped(runtime, monkeypatch):
+def test_unreaped_tree_keeps_turn_open_until_reaped(runtime, monkeypatch, connection_lifetime):
     service, identity, tmp = runtime
     real_reap = process.JobProcess.reap
     attempts = []
@@ -350,7 +483,7 @@ def test_parent_exit_with_orphan_holding_stdout_is_reaped(runtime, monkeypatch):
 
 
 @windows
-def test_event_flood_and_huge_line_are_bounded(runtime, monkeypatch):
+def test_event_flood_and_huge_line_are_bounded(runtime, monkeypatch, connection_lifetime):
     service, identity, _ = runtime
     path, _, turn = start(service, identity, monkeypatch, "flood")
     done = finish(path, turn["id"])
@@ -362,7 +495,7 @@ def test_event_flood_and_huge_line_are_bounded(runtime, monkeypatch):
 
 
 @windows
-def test_short_delta_shows_up_while_cli_is_quiet(runtime, monkeypatch):
+def test_short_delta_shows_up_while_cli_is_quiet(runtime, monkeypatch, connection_lifetime):
     service, identity, _ = runtime
     path, _, turn = start(service, identity, monkeypatch, "pause_after_delta")
     deadline = time.monotonic() + 15
@@ -377,7 +510,7 @@ def test_short_delta_shows_up_while_cli_is_quiet(runtime, monkeypatch):
 
 
 @windows
-def test_watcher_failure_stops_turn_instead_of_leaving_cli(runtime, monkeypatch):
+def test_watcher_failure_stops_turn_instead_of_leaving_cli(runtime, monkeypatch, connection_lifetime):
     service, identity, _ = runtime
     real_append = store.append_event
 
@@ -396,7 +529,7 @@ def test_watcher_failure_stops_turn_instead_of_leaving_cli(runtime, monkeypatch)
 
 
 @windows
-def test_state_is_last_even_when_watcher_flush_is_slow(runtime, monkeypatch):
+def test_state_is_last_even_when_watcher_flush_is_slow(runtime, monkeypatch, connection_lifetime):
     service, identity, _ = runtime
 
     def slow_still():
@@ -514,7 +647,7 @@ def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):
 
 
 @windows
-def test_start_failure_after_spawn_keeps_job_and_reaps(runtime, monkeypatch):
+def test_start_failure_after_spawn_keeps_job_and_reaps(runtime, monkeypatch, connection_lifetime):
     """띄운 뒤 시작 단계에서 예외가 나도(재개 실패·스레드 실패 등) 실행기가 Job 을 쥐고 0개까지 회수한다(리뷰 2차 P1)."""
     service, identity, _ = runtime
     real_start, seen = process.JobProcess.start, []

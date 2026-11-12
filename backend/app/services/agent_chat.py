@@ -405,41 +405,42 @@ class AgentChat:
         watcher = threading.Thread(target=self._watch, args=(runtime,), daemon=True)
         watcher.start()
         try:
-            problem = engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
-            if problem:
-                raise EngineUnavailable(problem)
-            if runtime.engine == "claude":  # 같은 Claude 자격을 쓰는 허브들과 줄 서기 — 이 스레드가 잡고 회수 확인 뒤 놓는다
-                lock = claude.ClaudeLock("turn")
-                lock.acquire()  # Busy → 아래에서 차례 실패로
-                runtime.claude_lock = lock
-            job = process.JobProcess()
-            with self._lock:  # 띄우기 전에 쥔다 — 띄우다 실패해도 finally 의 회수가 이 Job 을 0개까지 확인한다(리뷰 2차)
-                runtime.job = job
-            job.start(runtime.command, config.AGENT_CHAT_DIR / "work", runtime.env if runtime.env is not None else process.child_env())
-            if runtime.stopped():  # 띄우는 사이에 취소·시간 초과가 왔다
-                job.terminate()
-            else:
-                job.feed(runtime.stdin)
-            parser = parser_for(runtime.engine)
-            for raw in job.lines():
-                for event in parser.feed(raw):
-                    kind = event.pop("kind")
-                    if kind == "text_delta":
-                        if not runtime.stopped():
-                            with runtime.emit_lock:
-                                if not runtime.pending:
-                                    runtime.pending_since = time.monotonic()
-                                runtime.pending.append(event["text"])
-                                if sum(map(len, runtime.pending)) >= _DELTA_FLUSH_CHARS:
-                                    self._flush(runtime)
-                        continue
-                    with runtime.emit_lock:  # 앞의 조각을 먼저 내보내고 이 사건을 — 감시 스레드와 순서가 섞이지 않게
-                        self._flush(runtime)
-                        self._handle(runtime, kind, event, job)
-                        if kind == "result":
-                            got_result = True
-                            status = "done" if event.get("ok") else "failed"
-            self._flush(runtime)
+            with store.keep_connection(runtime.path):
+                problem = engine_problem(runtime.engine, runtime.prefix)  # 실행 직전에 다시(이어 가기도)
+                if problem:
+                    raise EngineUnavailable(problem)
+                if runtime.engine == "claude":  # 같은 Claude 자격을 쓰는 허브들과 줄 서기 — 이 스레드가 잡고 회수 확인 뒤 놓는다
+                    lock = claude.ClaudeLock("turn")
+                    lock.acquire()  # Busy → 아래에서 차례 실패로
+                    runtime.claude_lock = lock
+                job = process.JobProcess()
+                with self._lock:  # 띄우기 전에 쥔다 — 띄우다 실패해도 finally 의 회수가 이 Job 을 0개까지 확인한다(리뷰 2차)
+                    runtime.job = job
+                job.start(runtime.command, config.AGENT_CHAT_DIR / "work", runtime.env if runtime.env is not None else process.child_env())
+                if runtime.stopped():  # 띄우는 사이에 취소·시간 초과가 왔다
+                    job.terminate()
+                else:
+                    job.feed(runtime.stdin)
+                parser = parser_for(runtime.engine)
+                for raw in job.lines():
+                    for event in parser.feed(raw):
+                        kind = event.pop("kind")
+                        if kind == "text_delta":
+                            if not runtime.stopped():
+                                with runtime.emit_lock:
+                                    if not runtime.pending:
+                                        runtime.pending_since = time.monotonic()
+                                    runtime.pending.append(event["text"])
+                                    if sum(map(len, runtime.pending)) >= _DELTA_FLUSH_CHARS:
+                                        self._flush(runtime)
+                            continue
+                        with runtime.emit_lock:  # 앞의 조각을 먼저 내보내고 이 사건을 — 감시 스레드와 순서가 섞이지 않게
+                            self._flush(runtime)
+                            self._handle(runtime, kind, event, job)
+                            if kind == "result":
+                                got_result = True
+                                status = "done" if event.get("ok") else "failed"
+                self._flush(runtime)
             job.proc.wait(30)
             if runtime.violation and runtime.violation.get("what") == "auth":
                 status, reason = "failed", "auth_not_subscription"
