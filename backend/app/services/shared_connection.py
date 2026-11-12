@@ -24,6 +24,9 @@ from .. import repo
 from ..config import AUTH_ENABLED
 from ..shared_server_config import DEFAULT_SHARED_URL, K_URL
 
+# 로컬 계정 자동 연결만 생략하는 중계 표식이며 인증 증명이 아니다.
+HUB_RELAY_HEADER = "X-MVHub-Relayed"
+
 # app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
 # 최근에 쓴 공유 서버 주소 목록(JSON 배열, 최신순). 서버 이사·IP 변경으로 로그인 화면에
 # 갇혔을 때 되돌아갈 후보를 보여주는 '탈출구'용 — 주소만 담는다(토큰·이메일 금지).

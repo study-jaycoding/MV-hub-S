@@ -37,7 +37,7 @@ from ..services import agent_chat
 from ..services.agent_signals import agent_signals
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
-from ..services.shared_connection import is_shared_team_server
+from ..services.shared_connection import HUB_RELAY_HEADER, is_shared_team_server
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -161,6 +161,8 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 def _activate_local_agent(request: Request, email: str) -> None:
     """test_dev에서 브라우저 로그인 계정을 로컬 에이전트가 이어받도록 깨운다."""
+    if request.headers.get(HUB_RELAY_HEADER) == "1":
+        return
     if AUTH_ENABLED and os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
         from ..services.request_guards import is_loopback_request
         if is_loopback_request(request) and repo.get_setting("mcp_active_account") != norm_email(email):

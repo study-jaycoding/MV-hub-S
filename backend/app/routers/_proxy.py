@@ -50,6 +50,7 @@ from ..mutation_notify import (
 # 기존 내부 사용명 유지용이고, base_url/token 은 테스트가 이 모듈 속성으로 패치한다.
 # 고정 연결·is_shared_team_server 도 같은 객체를 다시 내보낸다(서비스가 라우터를 import 하지 않게).
 from ..services.shared_connection import (  # noqa: E402
+    HUB_RELAY_HEADER,
     K_TOKEN as _K_TOKEN,
     PINNED_CONNECTION as _PINNED_CONNECTION,
     base_url as _stored_base_url,
@@ -271,6 +272,7 @@ def raw_request(
     req.add_header("Content-Type", "application/json")
     # 공유 서버가 압축을 주면 받는다 — 스트리밍·미디어 경로는 이 함수를 쓰지 않는다.
     req.add_header("Accept-Encoding", _PROXY_ACCEPT_ENCODING)
+    req.add_header(HUB_RELAY_HEADER, "1")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     if super_token:
@@ -744,6 +746,7 @@ async def _forward(request: Request) -> Response:
         url = base_url() + path + (("?" + qs) if qs else "")
         tok = token()
         req = urllib.request.Request(url, data=body if body else None, method=method)
+        req.add_header(HUB_RELAY_HEADER, "1")
         if ctype:
             req.add_header("Content-Type", ctype)
         if client_id:

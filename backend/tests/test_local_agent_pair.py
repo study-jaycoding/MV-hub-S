@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import os
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
-from app import db
+from app import active_account, db, repo
 from app import main as main_module
+from app.deps import SESSION_COOKIE
 from app.main import app
-from app.routers import ingest
+from app.routers import auth as auth_router, ingest
 from app.services import local_agent_pair
 
 
@@ -148,3 +149,150 @@ def test_http_login_pairs_agent_and_logout_unpairs_it():
         else:
             os.environ["CONTENT_HUB_NO_PROXY"] = old_no_proxy
         db.flush_pool()
+
+
+@pytest.fixture
+def auth_clients(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "auth.db"))
+    monkeypatch.setenv("CONTENT_HUB_NO_PROXY", "1")
+    monkeypatch.setattr(main_module, "AUTH_ENABLED", True)
+    monkeypatch.setattr(auth_router, "AUTH_ENABLED", True)
+    monkeypatch.setattr(ingest, "LOCAL_AGENT_PAIR_SECRET", "pair-key")
+    monkeypatch.setattr(local_agent_pair, "LOCAL_AGENT_PAIR_SECRET", "pair-key")
+    signal = Mock()
+    monkeypatch.setattr(auth_router.agent_signals, "signal", signal)
+    monkeypatch.setattr(ingest.agent_signals, "touch", Mock())
+    db.flush_pool()
+    db.init_db()
+    local_agent_pair.clear(_request())
+    direct = TestClient(app, base_url="http://127.0.0.1:8012", client=("127.0.0.1", 50000))
+    relayed = TestClient(app, base_url="http://127.0.0.1:8012", client=("127.0.0.1", 50001))
+    try:
+        yield direct, relayed, signal
+    finally:
+        direct.close()
+        relayed.close()
+        local_agent_pair.clear(_request())
+        db.flush_pool()
+
+
+@pytest.fixture
+def paired_auth(auth_clients):
+    direct, relayed, signal = auth_clients
+    account_a = {"email": "a@example.test", "password": "test-password"}
+    account_b = {"email": "b@example.test", "password": "test-password"}
+    response = direct.post("/api/auth/access", json=account_a)
+    assert response.status_code == 200 and response.json()["token"]
+    assert local_agent_pair.active_email() == account_a["email"]
+    assert repo.get_setting("mcp_active_account") == account_a["email"]
+    repo.register(**account_b)
+    repo.set_account_status(account_b["email"], "approved")
+    signal.reset_mock()
+    return direct, relayed, signal, account_a, account_b
+
+
+@pytest.mark.parametrize("endpoint", ["login", "access", "me"])
+def test_relayed_auth_preserves_direct_pair_and_mcp_account(paired_auth, endpoint):
+    direct, relayed, signal, account_a, account_b = paired_auth
+    before = active_account.account_epoch()
+    headers = {"X-MVHub-Relayed": "1"}
+    if endpoint == "me":
+        account = repo.get_account(account_b["email"])
+        token = auth_router.auth.make_token(account_b["email"], pwd_stamp=account["password_changed_at"])
+        headers["Authorization"] = f"Bearer {token}"
+        response = relayed.get("/api/auth/me", headers=headers)
+        assert response.status_code == 200
+        cookie_matches = relayed.cookies.get(SESSION_COOKIE) == token
+        assert cookie_matches
+        account = response.json()
+    else:
+        response = relayed.post(f"/api/auth/{endpoint}", json=account_b, headers=headers)
+        account = response.json()["account"]
+        assert response.json()["token"]
+        cookie_matches = relayed.cookies.get(SESSION_COOKIE) == response.json()["token"]
+        assert cookie_matches
+    assert response.status_code == 200
+    assert account["email"] == account_b["email"]
+    assert local_agent_pair.active_email() == account_a["email"]
+    assert repo.get_setting("mcp_active_account") == account_a["email"]
+    signal.assert_not_called()
+    assert active_account.account_epoch() == before + (endpoint != "me")
+    paired = direct.post("/api/agent/local-pair-token", json={"secret": "pair-key"})
+    assert paired.status_code == 200 and paired.json()["email"] == account_a["email"]
+    assert direct.post("/api/agent/local-pair-token", json={"secret": "wrong"}, headers=headers).status_code == 403
+
+
+@pytest.mark.parametrize("marker", [None, "0", "true", "11"])
+def test_direct_and_nonexact_relay_markers_still_switch_accounts(paired_auth, marker):
+    direct, _, signal, account_a, _ = paired_auth
+    account_c = repo.register("c@example.test", "test-password")
+    repo.set_account_status(account_c["email"], "approved")
+    token = auth_router.auth.make_token(account_c["email"], pwd_stamp=account_c["password_changed_at"])
+    headers = {"Authorization": f"Bearer {token}"}
+    if marker is not None:
+        headers["X-MVHub-Relayed"] = marker
+    before = active_account.account_epoch()
+    response = direct.get("/api/auth/me", headers=headers)
+    assert response.status_code == 200 and response.json()["email"] == account_c["email"]
+    assert local_agent_pair.active_email() == account_c["email"]
+    assert repo.get_setting("mcp_active_account") == account_c["email"]
+    signal.assert_called_once_with(account_a["email"], "pair-change")
+    assert active_account.account_epoch() == before + 1
+
+
+@pytest.mark.parametrize("scenario", ["wrong-login", "wrong-access", "pending-login", "pending-access", "missing-me"])
+def test_relay_marker_does_not_bypass_authentication_or_approval(paired_auth, scenario):
+    _, relayed, signal, account_a, account_b = paired_auth
+    before = active_account.account_epoch()
+    headers = {"X-MVHub-Relayed": "1"}
+    if scenario == "missing-me":
+        response = relayed.get("/api/auth/me", headers=headers)
+        assert response.status_code == 401
+    else:
+        state, endpoint = scenario.split("-")
+        credentials = dict(account_b)
+        if state == "wrong":
+            credentials["password"] = "incorrect"
+        else:
+            repo.set_account_status(account_b["email"], "pending")
+        response = relayed.post(f"/api/auth/{endpoint}", json=credentials, headers=headers)
+        expected = 401 if state == "wrong" else (403 if endpoint == "login" else 200)
+        assert response.status_code == expected
+        if scenario == "pending-access":
+            assert response.json()["pending"] is True and response.json()["token"] is None
+    assert not relayed.cookies.get(SESSION_COOKIE)
+    assert local_agent_pair.active_email() == account_a["email"]
+    assert repo.get_setting("mcp_active_account") == account_a["email"]
+    signal.assert_not_called()
+    assert active_account.account_epoch() == before
+
+
+@pytest.mark.parametrize("marker", [None, "1"])
+def test_first_access_keeps_auto_approval_and_only_direct_pairing(auth_clients, marker):
+    direct, relayed, signal = auth_clients
+    client = direct if marker is None else relayed
+    headers = {} if marker is None else {"X-MVHub-Relayed": marker}
+    before = active_account.account_epoch()
+    response = client.post("/api/auth/access", json={"email": "first@example.test", "password": "test-password"}, headers=headers)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["account"]["status"] == "approved" and result["pending"] is False
+    assert result["token"]
+    cookie_matches = client.cookies.get(SESSION_COOKIE) == result["token"]
+    assert cookie_matches
+    expected = "first@example.test" if marker is None else None
+    assert local_agent_pair.active_email() == expected
+    assert repo.get_setting("mcp_active_account") == expected
+    signal.assert_not_called()
+    assert active_account.account_epoch() == before + 1
+
+
+def test_direct_logout_keeps_pair_clear_even_with_relay_marker(paired_auth):
+    direct, _, signal, account_a, _ = paired_auth
+    before = active_account.account_epoch()
+    response = direct.post("/api/auth/logout", headers={"X-MVHub-Relayed": "1"})
+    assert response.status_code == 200
+    assert local_agent_pair.active_email() is None
+    assert not direct.cookies.get(SESSION_COOKIE)
+    signal.assert_called_once_with(account_a["email"], "pair-change")
+    assert active_account.account_epoch() == before + 1

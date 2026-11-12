@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
+import json
 import threading
 from unittest import mock
 
@@ -14,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app import main as main_app
-from app.routers import _proxy
+from app.routers import _proxy, mcp_v2, publish
 
 
 class _AuthProbeHandler(BaseHTTPRequestHandler):
@@ -341,3 +344,67 @@ def test_real_http_401_clears_token_only_after_me_401(auth_probe_server):
 
     assert raised.value.headers == {_proxy.AUTH_STATE_HEADER: _proxy.AUTH_STATE_INVALID}
     assert stored["shared_server_token"] is None
+
+
+@pytest.fixture
+def captured_upstream(monkeypatch):
+    requests = []
+    class Reply(io.BytesIO):
+        status = 200
+        def __init__(self):
+            super().__init__(b'{"email":"member@example.test"}')
+            self.headers = Message()
+            self.headers["Content-Type"] = "application/json"
+    def open_request(request, *, timeout):
+        requests.append((request, timeout))
+        return Reply()
+    monkeypatch.setattr(_proxy, "_open", open_request)
+    monkeypatch.setattr(_proxy, "base_url", lambda: "http://server.test")
+    monkeypatch.setattr(_proxy, "token", lambda: "test-session-token")
+    return requests
+
+
+def _assert_own_relay_marker(request):
+    values = [value for name, value in request.header_items() if name.lower() == "x-mvhub-relayed"]
+    assert values == ["1"]
+
+
+@pytest.mark.parametrize("caller", ["raw_request", "publish", "probe", "mcp"])
+def test_common_auth_callers_mark_actual_upstream_request(captured_upstream, caller):
+    if caller == "raw_request":
+        result = _proxy.raw_request("POST", "http://server.test/api/auth/login", token="test-session-token", body={"email": "member@example.test"})
+        assert result == (200, {"email": "member@example.test"})
+    elif caller == "publish":
+        result = publish._http_json("POST", "http://server.test/api/auth/access", token="test-session-token", body={"email": "member@example.test"})
+        assert result == (200, {"email": "member@example.test"})
+    elif caller == "probe":
+        assert _proxy._probe_token_state("test-session-token") == "valid"
+    else:
+        assert mcp_v2._upstream_me("http://server.test", "test-session-token") == {"email": "member@example.test"}
+    assert len(captured_upstream) == 1
+    request, timeout = captured_upstream[0]
+    assert request.get_header("Authorization") == "Bearer test-session-token"
+    if caller in ("raw_request", "publish"):
+        assert request.get_method() == "POST"
+        assert json.loads(request.data) == {"email": "member@example.test"}
+        assert timeout == 60
+    else:
+        assert request.get_method() == "GET" and request.full_url == "http://server.test/api/auth/me"
+        assert request.data is None
+        assert timeout == (_proxy._AUTH_PROBE_TIMEOUT_SECONDS if caller == "probe" else 5)
+    _assert_own_relay_marker(request)
+
+
+@pytest.mark.parametrize("incoming_marker", [None, "0", "true", "11", "1"])
+def test_forward_uses_own_marker_instead_of_browser_header(captured_upstream, incoming_marker):
+    request = _request("/api/auth/me")
+    if incoming_marker is not None:
+        request.scope["headers"] = [(b"x-mvhub-relayed", incoming_marker.encode())]
+    assert not request.url.path.startswith(_proxy._STREAM_PREFIX)
+    response = asyncio.run(_proxy._forward(request))
+    assert response.status_code == 200 and json.loads(response.body) == {"email": "member@example.test"}
+    assert len(captured_upstream) == 1
+    upstream, timeout = captured_upstream[0]
+    assert upstream.full_url == "http://server.test/api/auth/me" and timeout == 120
+    assert upstream.get_header("Authorization") == "Bearer test-session-token"
+    _assert_own_relay_marker(upstream)
