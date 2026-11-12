@@ -328,6 +328,41 @@ describe("Ask Agent 옆 칸", () => {
     expect([host.querySelector(".agent-info"), localStorage.getItem("mvhub.agentPanel.infoOpen")]).toEqual([null, "false"]);
   });
 
+  it("정보 칸 분리 — 자리가 있으면 대화 옆 칸(붙은 칸 = 대화 폭 + 정보 칸), 좁으면 겹쳐 뜸 · 카드 머리로 접고 기억", async () => {
+    const before = window.innerWidth;
+    const setWindow = (w: number) => act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: w });
+      window.dispatchEvent(new Event("resize"));
+    });
+    const agentW = () => document.documentElement.style.getPropertyValue("--agent-w");
+    try {
+      setWindow(1600);
+      await mount();
+      expect(agentW()).toBe("520px");
+      act(() => button("정보")!.click());
+      // 대화(.agent-main) 옆에 서고, 붙은 칸은 정보 칸 폭만큼 넓어진다(대화 520 그대로)
+      expect([host.querySelector(".agent-body > .agent-main + .agent-info.side") !== null, agentW()]).toEqual([true, "806px"]);
+      setWindow(1000); // 앱 본문을 320 남기고는 못 넓힘 → 대화 폭 그대로, 정보 칸은 겹쳐 뜬다
+      expect([host.querySelector(".agent-info")!.className, agentW()]).toEqual(["agent-info over", "500px"]);
+      setWindow(1600);
+      const fold = (title: string) => [...host.querySelectorAll<HTMLButtonElement>(".agent-info-fold")].find((b) => b.textContent?.startsWith(title))!;
+      act(() => fold("이 대화에서 만든 것").click());
+      expect([fold("이 대화에서 만든 것").getAttribute("aria-expanded"), texts(".agent-info-empty")]).toEqual(["false", ["아직 없어요"]]);
+      expect(localStorage.getItem("mvhub.agentPanel.infoFold")).toBe('["made"]');
+      act(() => fold("지금 화면").click()); // 접어도 보내기 스위치는 머리에 남는다
+      expect([host.querySelector(".agent-info dl"), host.querySelector('.agent-info [role="switch"]') !== null]).toEqual([null, true]);
+      act(() => root.unmount()); // 다시 올려도 접은 채(기억)
+      root = createRoot(host);
+      await mount();
+      expect([fold("지금 화면").getAttribute("aria-expanded"), fold("이 대화에서 만든 것").getAttribute("aria-expanded"),
+        fold("붙였던 자료").getAttribute("aria-expanded")]).toEqual(["false", "false", "true"]);
+      act(() => button("정보")!.click());
+      expect([host.querySelector(".agent-info"), agentW()]).toEqual([null, "520px"]); // 닫으면 원래 폭
+    } finally {
+      setWindow(before);
+    }
+  });
+
   it("보내는 중에는 새 대화·지난 대화·모델 단추가 잠겨 허브에서 시작한 차례를 놓치지 않는다", async () => {
     const gate = deferred<Response>();
     route = (c) => {

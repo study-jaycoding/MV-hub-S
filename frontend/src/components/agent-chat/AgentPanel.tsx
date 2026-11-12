@@ -49,6 +49,11 @@ const BASE_W = 520;
 const MIN_W = 380;
 const maxWidth = () => Math.max(MIN_W, Math.floor(window.innerWidth / 2));
 const clampWidth = (w: number) => Math.max(MIN_W, Math.min(maxWidth(), Math.round(w)));
+// 정보 칸 — 대화 오른쪽 옆 칸(docs/status/MVAgent_정보칸분리_2026-11-12.md). 붙은 칸은 열 때 이 폭만큼 넓어지되 앱 본문은 APP_MIN 을 남긴다
+const INFO_W = 286;
+const APP_MIN = 320;
+const INFO_CARDS = ["screen", "made", "attached"] as const;
+type InfoCard = (typeof INFO_CARDS)[number];
 const showWidth = (w: number) => document.documentElement.style.setProperty("--agent-w", `${w}px`);
 
 const GROUP: Record<AgentEngineId, string> = { claude: "Claude", codex: "ChatGPT" };
@@ -148,22 +153,44 @@ function groupTools(messages: AgentMessage[]): Row[] {
 
 export function AgentPanel({ context, contextLabel, onClose, popout = false, onPopOut, onDock, projectName, findGeneration, onPreview }: Props) {
   const t = useT();
+  // 정보 칸 — 지금 화면·이 대화 결과물·붙였던 자료. 정보 단추를 다시 누를 때까지 떠 있다(바깥 누름·Esc 로 안 닫힘, 기억함 — Jay 11-12)
+  const [infoOpen, setInfoOpen] = useState(() => loadJSON<unknown>(STORAGE_KEYS.agentInfoOpen) === true);
+  const toggleInfo = () => {
+    const next = !infoOpen;
+    setInfoOpen(next);
+    saveJSON(STORAGE_KEYS.agentInfoOpen, next);
+  };
+  const [infoFold, setInfoFold] = useState<InfoCard[]>(() => {
+    const saved = loadJSON<unknown>(STORAGE_KEYS.agentInfoFold);
+    return Array.isArray(saved) ? INFO_CARDS.filter((c) => saved.includes(c)) : [];
+  });
+  const foldCard = (card: InfoCard) => {
+    const next = infoFold.includes(card) ? infoFold.filter((c) => c !== card) : [...infoFold, card];
+    setInfoFold(next);
+    saveJSON(STORAGE_KEYS.agentInfoFold, next);
+  };
 
-  // 옆 칸 폭 — 고른 폭은 남기고, 보이는 폭은 지금 창 폭의 절반까지(창을 줄였다 키우면 고른 폭으로 돌아간다 — ResizableSidebar 와 같다)
+  // 옆 칸 폭 — 고른 폭은 남기고, 보이는 폭은 지금 창 폭의 절반까지(창을 줄였다 키우면 고른 폭으로 돌아간다 — ResizableSidebar 와 같다).
+  // 고른 폭(width)은 대화 폭이다 — 정보 칸을 옆에 세울 자리가 있으면 붙은 칸은 그만큼 더 넓게 보인다
   const [width, setWidth] = useState(() => {
     const saved = loadJSON<unknown>(STORAGE_KEYS.agentPanelWidth);
     return typeof saved === "number" && Number.isFinite(saved) ? saved : BASE_W;
   });
+  const [winW, setWinW] = useState(() => window.innerWidth);
+  // 정보 칸이 대화 옆에 설 자리 — 붙은 칸은 앱 본문을 APP_MIN 남기고 넓어질 수 있을 때, 새 창은 창이 대화 최소 폭 + 정보 칸보다 넓을 때. 없으면 겹쳐 뜬다
+  const infoRoom = (chatW: number, ww: number) => (popout ? ww - INFO_W >= MIN_W : chatW + INFO_W <= ww - APP_MIN);
+  const shown = (chatW: number) => (infoOpen && !popout && infoRoom(chatW, window.innerWidth) ? chatW + INFO_W : chatW);
+  const infoSide = infoRoom(clampWidth(width), winW);
   useLayoutEffect(() => {
-    const apply = () => showWidth(clampWidth(width));
+    const apply = () => { setWinW(window.innerWidth); showWidth(shown(clampWidth(width))); };
     apply();
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
-  }, [width]);
+  }, [width, infoOpen]); // eslint-disable-line react-hooks/exhaustive-deps -- shown 은 width·infoOpen·popout 만 읽는다
   const commitWidth = (next: number) => {
     next = clampWidth(next);
     setWidth(next);
-    showWidth(next);
+    showWidth(shown(next));
     saveJSON(STORAGE_KEYS.agentPanelWidth, next);
   };
   // 끄는 동안은 :root 변수만 바꾼다(앱을 다시 그리지 않는다) — 놓을 때 한 번 남긴다
@@ -175,7 +202,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     event.currentTarget.classList.remove("resizing");
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (keep && d.now !== d.from) commitWidth(d.now);
-    else showWidth(clampWidth(width));
+    else showWidth(shown(clampWidth(width)));
   };
 
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
@@ -185,13 +212,6 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const [menu, setMenu] = useState<"model" | null>(null); // 모델·생각 깊이·속도 한 메뉴(Aside 처럼)
   const [drawer, setDrawer] = useState(false); // ≡ 대화 서랍
   const [headNote, setHeadNote] = useState<string | null>(null); // 머리글 메뉴로 지운 결과(세션 파일) — 새 대화를 시작하면 지운다
-  // 정보 칸 — 지금 화면·이 대화 결과물·붙였던 자료. 정보 단추를 다시 누를 때까지 떠 있다(바깥 누름·Esc 로 안 닫힘, 기억함 — Jay 11-12)
-  const [infoOpen, setInfoOpen] = useState(() => loadJSON<unknown>(STORAGE_KEYS.agentInfoOpen) === true);
-  const toggleInfo = () => {
-    const next = !infoOpen;
-    setInfoOpen(next);
-    saveJSON(STORAGE_KEYS.agentInfoOpen, next);
-  };
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
@@ -439,7 +459,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             const d = drag.current;
             if (!d || d.id !== event.pointerId) return;
             d.now = clampWidth(d.from - (event.clientX - d.x)); // 칸이 오른쪽에 있어 왼쪽으로 끌면 넓어진다
-            showWidth(d.now);
+            showWidth(shown(d.now));
           }}
           onPointerUp={(event) => endDrag(event, true)}
           onPointerCancel={(event) => endDrag(event, false)}
@@ -494,53 +514,6 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         </div>
       </header>
 
-      {infoOpen && (
-        <section className="agent-info" aria-label={t("정보")}>
-          <div className="agent-info-sec">
-            <h4>
-              {t("지금 화면")}
-              <span className="agent-info-switch">
-                {t("AI 에게 보내기")}
-                <button type="button" role="switch" aria-checked={screenOn} className={`agent-switch${screenOn ? " on" : ""}`}
-                  onClick={() => setScreenOn((on) => !on)} aria-label={t("지금 화면 AI 에게 보내기")} />
-              </span>
-            </h4>
-            <dl className="agent-info-rows">
-              <dt>{t("화면")}</dt><dd>{contextLabel}</dd>
-              <dt>{t("공간")}</dt>
-              <dd>{context.workspace?.name || (context.workspace?.scope === "personal" ? t("개인") : context.workspace?.scope === "team" ? t("팀") : t("확인 중"))}</dd>
-              {context.project && <><dt>{t("프로젝트")}</dt><dd>{projectName?.(context.project) ?? context.project}</dd></>}
-              {context.folder && <><dt>{t("폴더")}</dt><dd>{context.folder}</dd></>}
-              <dt>{t("고른 카드")}</dt><dd>{`${context.selected_ids?.length ?? 0}${t("장")}`}</dd>
-              {(context.tab === "compose" || context.scene) && <><dt>{t("열린 씬")}</dt><dd>{context.scene?.name ?? t("없음")}</dd></>}
-            </dl>
-            <p className="agent-info-note">{screenOn ? t("보내면 AI 가 '여기·이 폴더'를 이 위치로 알아들어요.")
-              : t("안 보내는 중 — '여기'라고 하면 AI 가 어디인지 먼저 물어요.")}</p>
-          </div>
-          <div className="agent-info-sec">
-            <h4>{t("이 대화에서 만든 것")}{madeIds.length > 0 && <span className="agent-info-count">{madeIds.length}</span>}</h4>
-            {madeIds.length ? (
-              <div className="agent-info-grid">
-                {madeIds.map((id) => <SentAttachment key={id} item={{ kind: "generation", id }} genOf={genOf} onPreview={onPreview} />)}
-              </div>
-            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
-          </div>
-          <div className="agent-info-sec">
-            <h4>{t("붙였던 자료")}</h4>
-            {attachedBefore.length ? (
-              <ul className="agent-info-list">
-                {attachedBefore.map((a) => (
-                  <li key={attachKey(a)}>
-                    <span>{a.name ?? (a.kind === "generation" ? t("생성물") : lastSegment(a.path))}</span>
-                    <small>{a.kind === "generation" ? t("생성물") : a.kind === "asset" ? t("레퍼런스") : t("폴더")}</small>
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
-          </div>
-        </section>
-      )}
-
       {drawer && (
         <AgentDrawer conversations={chat.conversations} currentId={chat.conversationId} running={chat.running}
           locked={chat.running || chat.sending} projectName={projectName} currentProject={context.project} truncated={chat.truncated}
@@ -552,6 +525,9 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           claude={engines.find((e) => e.id === "claude")} />
       )}
 
+      {/* 머리글 아래 = [대화 | 정보 칸]. 정보 칸은 옆에 설 자리가 없을 때만 대화 위에 겹쳐 뜬다(docs/status/MVAgent_정보칸분리_2026-11-12.md) */}
+      <div className="agent-body">
+      <div className="agent-main">
       <div className="agent-log" ref={logRef} aria-live="polite">
         {chat.connect.connected && (
           <div className="cn-done" role="status">
@@ -659,7 +635,71 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           )}
         </div>
       </form>
+      </div>
+      {infoOpen && (
+        <section className={`agent-info ${infoSide ? "side" : "over"}`} aria-label={t("정보")}>
+          <InfoCardBox title={t("지금 화면")} folded={infoFold.includes("screen")} onFold={() => foldCard("screen")}
+            extra={(
+              <span className="agent-info-switch">
+                {t("AI 에게 보내기")}
+                <button type="button" role="switch" aria-checked={screenOn} className={`agent-switch${screenOn ? " on" : ""}`}
+                  onClick={() => setScreenOn((on) => !on)} aria-label={t("지금 화면 AI 에게 보내기")} />
+              </span>
+            )}>
+            <dl className="agent-info-rows">
+              <dt>{t("화면")}</dt><dd>{contextLabel}</dd>
+              <dt>{t("공간")}</dt>
+              <dd>{context.workspace?.name || (context.workspace?.scope === "personal" ? t("개인") : context.workspace?.scope === "team" ? t("팀") : t("확인 중"))}</dd>
+              {context.project && <><dt>{t("프로젝트")}</dt><dd>{projectName?.(context.project) ?? context.project}</dd></>}
+              {context.folder && <><dt>{t("폴더")}</dt><dd>{context.folder}</dd></>}
+              <dt>{t("고른 카드")}</dt><dd>{`${context.selected_ids?.length ?? 0}${t("장")}`}</dd>
+              {(context.tab === "compose" || context.scene) && <><dt>{t("열린 씬")}</dt><dd>{context.scene?.name ?? t("없음")}</dd></>}
+            </dl>
+            <p className="agent-info-note">{screenOn ? t("보내면 AI 가 '여기·이 폴더'를 이 위치로 알아들어요.")
+              : t("안 보내는 중 — '여기'라고 하면 AI 가 어디인지 먼저 물어요.")}</p>
+          </InfoCardBox>
+          <InfoCardBox title={t("이 대화에서 만든 것")} count={madeIds.length} folded={infoFold.includes("made")} onFold={() => foldCard("made")}>
+            {madeIds.length ? (
+              <div className="agent-info-grid">
+                {madeIds.map((id) => <SentAttachment key={id} item={{ kind: "generation", id }} genOf={genOf} onPreview={onPreview} />)}
+              </div>
+            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
+          </InfoCardBox>
+          <InfoCardBox title={t("붙였던 자료")} count={attachedBefore.length} folded={infoFold.includes("attached")} onFold={() => foldCard("attached")}>
+            {attachedBefore.length ? (
+              <ul className="agent-info-list">
+                {attachedBefore.map((a) => (
+                  <li key={attachKey(a)}>
+                    <span>{a.name ?? (a.kind === "generation" ? t("생성물") : lastSegment(a.path))}</span>
+                    <small>{a.kind === "generation" ? t("생성물") : a.kind === "asset" ? t("레퍼런스") : t("폴더")}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
+          </InfoCardBox>
+        </section>
+      )}
+      </div>
     </aside>
+  );
+}
+
+/** 정보 칸 카드 하나 — 머리(제목·개수·⌄)를 누르면 접힌다. extra(보내기 스위치)는 접어도 머리에 남는다 */
+function InfoCardBox({ title, count, folded, onFold, extra, children }: {
+  title: string; count?: number; folded: boolean; onFold: () => void; extra?: ReactNode; children: ReactNode;
+}) {
+  return (
+    <div className={`agent-info-sec${folded ? " folded" : ""}`}>
+      <h4>
+        <button type="button" className="agent-info-fold" aria-expanded={!folded} onClick={onFold}>
+          <span>{title}</span>
+          {count ? <span className="agent-info-count">{count}</span> : null}
+          <Chevron />
+        </button>
+        {extra}
+      </h4>
+      {!folded && children}
+    </div>
   );
 }
 
