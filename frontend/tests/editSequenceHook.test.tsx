@@ -56,8 +56,8 @@ function ListHarness(props: { seq: string | null; workspace?: WorkspaceContext; 
   });
   return null;
 }
-function TreeHarness({ workspace = TEAM }: { workspace?: WorkspaceContext }) {
-  tree = useEditProjects({ authKey: "auth", workspace, projectId: "p1" });
+function TreeHarness({ workspace = TEAM, creator }: { workspace?: WorkspaceContext; creator?: string }) {
+  tree = useEditProjects({ authKey: "auth", workspace, projectId: "p1", creatorUid: creator });
   return null;
 }
 const render = (node: React.ReactNode) => act(() => root.render(node));
@@ -652,7 +652,7 @@ it("폴더 — 최종·보류 개수와 새 항목(+N)이 트리에 실리고, �
   render(<TreeHarness />);
   await flush();
   await flush();
-  expect(mocks.counts).toHaveBeenCalledWith(["p1"], "team");
+  expect(mocks.counts).toHaveBeenCalledWith(["p1"], "team", undefined); // 생성자 거르기 없음
   expect(mocks.fresh).toHaveBeenCalledWith("2026-10-01 00:00:00", expect.any(String));
   const seq = () => tree.tree.roots[0];
   const cut = (name: string) => seq().children!.find((node) => node.name === name)!;
@@ -696,6 +696,35 @@ it("폴더 — 숫자만 다시 받을 때는 트리를 치우지도 디스크�
   expect(count().count).toBe(5); // 실패하면 마지막 숫자를 둔다
   expect(mocks.folder).toHaveBeenCalledTimes(1);
   expect(mocks.projects).toHaveBeenCalledTimes(1);
+});
+
+it("폴더 — 생성자를 넘기면 그 사람 숫자만 받고, 바꾸면 숫자만 다시 받는다(디스크·트리는 그대로, 늦게 온 옛 생성자 숫자는 버림)", async () => {
+  mocks.projects.mockResolvedValue({ projects: [{ id: "p1", name: "P" }], unassigned: 0 });
+  mocks.links.mockResolvedValue({ links: {} });
+  mocks.counts.mockImplementation(async (_ids: string[], _tab: string, creator?: string) =>
+    ({ counts: { p1: { "e070/c1": creator === "u-a" ? 3 : creator === "u-b" ? 7 : 10 } } }));
+  render(<TreeHarness />);
+  await flush(); await flush();
+  const count = () => tree.tree.roots[0].children![0].count;
+  expect((mocks.counts.mock.calls.at(-1) as unknown[])[2]).toBeUndefined(); // 편집 탭처럼 안 넘기면 지금과 같다
+  expect(count()).toBe(10);
+  render(<TreeHarness creator="u-a" />);
+  await flush();
+  expect((mocks.counts.mock.calls.at(-1) as unknown[]).slice(1)).toEqual(["team", "u-a"]);
+  expect(count()).toBe(3);
+  expect(tree.tree.state).toBe("ready");
+  // u-b 로 바꾼 뒤 u-c 로 — 먼저 떠난 u-b 숫자가 늦게 와도 u-c 숫자를 덮지 않는다
+  const slow = deferred<unknown>();
+  mocks.counts.mockReturnValueOnce(slow.promise);
+  render(<TreeHarness creator="u-b" />);
+  mocks.counts.mockResolvedValueOnce({ counts: { p1: { "e070/c1": 1 } } });
+  render(<TreeHarness creator="u-c" />);
+  await flush();
+  expect(count()).toBe(1);
+  slow.resolve({ counts: { p1: { "e070/c1": 7 } } });
+  await flush();
+  expect(count()).toBe(1);
+  expect(mocks.projects).toHaveBeenCalledTimes(1); // 목록·트리는 다시 받지 않았다
 });
 
 it("폴더 — 트리를 처음 받는 사이에 먼저 도착한 '숫자만 다시 받기'의 숫자를 늦게 끝난 트리 조회가 덮지 않는다", async () => {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Generation, WorkspaceContext } from "../../types";
 import { LoginScreen } from "../LoginScreen";
 import { findFolder, useEditGenerations, useEditProjects } from "../../lib/useEditSequence";
+import { useLibraryCreators } from "../../lib/useLibraryCreators";
 import type { FolderCountTreeNode } from "../../lib/folderTreeModel";
 import { useT } from "../../lib/i18n";
 import { BRIDGE_MISSING, bridgeCompatible, hasResolveBridge, PROTOCOL_MISMATCH } from "../../lib/resolvePanelApi";
@@ -108,7 +109,11 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   // 사람이 고른 것만 그 다빈치 프로젝트 몫으로 저장한다(다빈치 프로젝트를 바꿔 꺼낸 것은 다시 적지 않는다)
   const choose = (next: SavedSelection) => { setSelection(next); saveSelection(panel.davinci, next); };
   // team+id일 때만 프로젝트가 제한된다 — 'unknown'은 workspace_id 없는 전체 목록이다.
-  const projects = useEditProjects({ authKey: panel.authKey, workspace: ALL_WORKSPACES, projectId: selection.project || null });
+  //  생성자를 고르면 폴더 숫자도 그 사람 것만(본 앱 라이브러리 사이드바와 같음, Jay 11-12) — creator_uid 없는 카드의 이름 키(name:)는 서버에 못 넘긴다
+  const creatorUid = ui.filter.creator && !ui.filter.creator.startsWith("name:") ? ui.filter.creator : undefined;
+  const projects = useEditProjects({ authKey: panel.authKey, workspace: ALL_WORKSPACES, projectId: selection.project || null, creatorUid });
+  // 생성자 목록 = 프로젝트 전체 서버 집계(본 앱과 같음) — 받은 카드로 세면 고른 컷 사람만 나온다
+  const teamCreators = useLibraryCreators({ tab: "team", projectId: selection.project || undefined, ready: !!selection.project });
   // 프로젝트 전체를 한 번 받아 두고 폴더를 바꿀 때는 다시 받지 않는다 — 2,000 상한을 넘으면(capped) 에피소드마다 받는다
   const whole = useEditGenerations({ authKey: panel.authKey, workspace: ALL_WORKSPACES, projectId: selection.project || null,
     seq: "", allWorkspaces: true, wholeProject: true });
@@ -196,10 +201,11 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const { reload: reloadWhole } = whole;
   const { reload: reloadPart } = part;
   const { reloadCounts } = projects;
+  const { reload: reloadCreators } = teamCreators;
   useEffect(() => {
     const refresh = (force = false) => {
       if (!force && (document.visibilityState === "hidden" || Date.now() - lastRefresh.current < 3000)) return;
-      lastRefresh.current = Date.now(); reloadWhole(); reloadPart(); reloadCounts();
+      lastRefresh.current = Date.now(); reloadWhole(); reloadPart(); reloadCounts(); void reloadCreators();
     };
     let live: ReturnType<typeof setTimeout> | undefined;
     const off = connectProgress(message => {
@@ -211,13 +217,24 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
     const focus = () => refresh();
     window.addEventListener("focus", focus);
     return () => { off(); clearTimeout(live); window.clearInterval(timer); window.removeEventListener("focus", focus); };
-  }, [reloadWhole, reloadPart, reloadCounts]);
+  }, [reloadWhole, reloadPart, reloadCounts, reloadCreators]);
 
   const scopeGens = useMemo(() => (cut ? cutGens : episode ? list.gens.filter(gen => (gen.folder_path || "").startsWith(episode + "/")) : list.gens),
     [cut, cutGens, episode, list.gens]);
   const facets = useMemo(() => poolFacets(scopeGens), [scopeGens]);
+  // 서버 집계를 받기 전·못 받으면 받은 카드로 센 목록(지금까지와 같음)
+  const serverCreators = !teamCreators.error && !(teamCreators.loading && !teamCreators.creators.length);
+  const creators = useMemo(() => (serverCreators
+    ? teamCreators.creators.map(creator => ({ key: creator.uid, name: creator.name || "", count: creator.count, mine: creator.is_mine }))
+    : facets.creators), [serverCreators, teamCreators.creators, facets.creators]);
   const filterCount = ui.filter.colors.length + ui.filter.autoTags.length + (ui.filter.final ? 1 : 0) + (ui.filter.creator ? 1 : 0);
   const changeFilter = (patch: Partial<PoolFilter>) => patchUi({ filter: { ...ui.filter, ...patch } });
+  // 고른 생성자가 프로젝트 목록에서 사라지면(공유 해제·프로젝트 바꿈) 빈 거르기에 갇히지 않게 푼다(본 앱 CreatorSection 과 같음)
+  useEffect(() => {
+    if (serverCreators && !teamCreators.loading && ui.filter.creator && !teamCreators.creators.some(creator => creator.uid === ui.filter.creator)) {
+      setUi(prev => ({ ...prev, filter: { ...prev.filter, creator: null } }));
+    }
+  }, [serverCreators, teamCreators.loading, teamCreators.creators, ui.filter.creator]);
   // 카드 표 — 편집 탭의 'V1 - 선택 카드' 자리: 이번 창에서 NAS 로 바꿔 끼운 것(라임) · 타임라인에 쓴 것 · 빈에 띄운 것
   const poolItems = useMemo<PoolItem[]>(() => {
     const staged = new Set((panel.stage?.items || []).filter(item => ["staged", "present"].includes(item.state)).map(item => item.gen_id));
@@ -287,8 +304,8 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
               <button type="button" className="auto-tag-name" onClick={() => changeFilter({ autoTags: on ? ui.filter.autoTags.filter(item => item !== tag) : [...ui.filter.autoTags, tag] })}>{tag}</button>
             </span>; })}
           </div></section>
-          {facets.creators.length > 0 && <section><h4>{t("생성자")}</h4>
-            {facets.creators.map(creator => <div key={creator.key} className={"creator-row" + (ui.filter.creator === creator.key ? " on" : "")}>
+          {creators.length > 0 && <section><h4>{t("생성자")}</h4>
+            {creators.map(creator => <div key={creator.key} className={"creator-row" + (ui.filter.creator === creator.key ? " on" : "")}>
               <button type="button" className="creator-pick" onClick={() => changeFilter({ creator: ui.filter.creator === creator.key ? null : creator.key })}>
                 <span className="creator-dot" style={{ background: creator.mine ? "var(--accent)" : "#4ade80" }} />
                 <span className="creator-name">{creator.name || (creator.mine ? t("나") : t("팀원"))}</span><span className="creator-count">{creator.count}</span>

@@ -258,9 +258,9 @@ interface TreeData {
 }
 const EMPTY_DATA: TreeData = { state: "idle", disk: [], counts: null, review: null, countsRun: 0, complete: false, note: null };
 
-// 공유 & 리뷰 사이드바와 같은 조회 — 폴더별 개수와 상태별(최종·보류) 개수가 한 응답에 온다.
-const fetchFolderCounts = (projectId: string) =>
-  api.projectFolderCountsBatch([projectId], "team").then(
+// 공유 & 리뷰 사이드바와 같은 조회 — 폴더별 개수와 상태별(최종·보류) 개수가 한 응답에 온다. creatorUid = 그 사람 것만 센다.
+const fetchFolderCounts = (projectId: string, creatorUid?: string) =>
+  api.projectFolderCountsBatch([projectId], "team", creatorUid).then(
     (r) => ({ counts: r.counts?.[projectId] ?? {}, review: r.review_counts?.[projectId] ?? null }),
     () => null,
   );
@@ -269,10 +269,12 @@ export function useEditProjects({
   authKey,
   workspace,
   projectId,
+  creatorUid,
 }: {
   authKey: string;
   workspace: WorkspaceContext;
   projectId: string | null;
+  creatorUid?: string; // 리졸브 패널의 생성자 거르기 — 폴더 숫자를 그 사람 것만(편집 탭은 안 넘긴다)
 }): {
   projects: Project[];
   projectsState: "loading" | "ok" | "error";
@@ -320,6 +322,9 @@ export function useEditProjects({
   // 개수 조회의 순번 — 트리 조회와 '숫자만 다시 받기'가 같이 쓴다. 숫자는 더 뒤에 떠난 조회의 것만 덮는다: 늦게 온 옛 응답도,
   //  트리를 처음 받는 사이에 먼저 도착한 '다시 받기'의 숫자를 덮는 트리 조회도 막는다(Codex 코드 리뷰).
   const countRun = useRef(0);
+  // 생성자는 숫자만 바꾼다 — 트리 조회를 다시 일으키지 않게 ref 로 읽는다(바뀌면 아래 효과가 숫자만 다시 받는다)
+  const creatorRef = useRef(creatorUid);
+  creatorRef.current = creatorUid;
 
   useEffect(() => {
     if (!projectId || !listOk) return;
@@ -329,7 +334,7 @@ export function useEditProjects({
     void (async () => {
       const [folder, counted] = await Promise.all([
         isLinked ? api.projectFolder(projectId).catch(() => null) : Promise.resolve(undefined),
-        fetchFolderCounts(projectId),
+        fetchFolderCounts(projectId, creatorRef.current),
       ]);
       if (!alive) return;
       const disk = folder?.tree && !folder.error ? visibleProjectFolderRoots(folder.tree) : [];
@@ -379,7 +384,7 @@ export function useEditProjects({
     live.current.loadFresh();
     if (!pid) return;
     const run = ++countRun.current;
-    void fetchFolderCounts(pid).then((counted) => {
+    void fetchFolderCounts(pid, creatorRef.current).then((counted) => {
       // 실패하면 마지막으로 받은 숫자를 그대로 둔다. 문맥이 바뀌었거나 더 뒤에 떠난 조회의 숫자가 이미 있으면 버린다.
       //  트리를 받는 중(loading)이어도 적어 둔다 — 그 트리 조회가 끝날 때 이 숫자를 지킨다.
       if (!counted) return;
@@ -387,6 +392,13 @@ export function useEditProjects({
         ? { ...prev, ...counted, countsRun: run } : prev));
     });
   }, []);
+  // 생성자를 바꾸면 숫자만 다시 받는다(디스크 폴더는 그대로 · 늦게 온 옛 생성자 숫자는 순번이 버린다)
+  const countedCreator = useRef(creatorUid);
+  useEffect(() => {
+    if (countedCreator.current === creatorUid) return;
+    countedCreator.current = creatorUid;
+    reloadCounts();
+  }, [creatorUid, reloadCounts]);
 
   // 확인(카드 클릭)할 때마다 스토어가 바뀐다 — 그 자리에서 +N 이 줄어든다.
   const seenVersion = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);

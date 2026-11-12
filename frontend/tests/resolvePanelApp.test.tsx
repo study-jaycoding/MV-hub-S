@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Generation } from "../src/types";
 const mocks = vi.hoisted(() => ({
   config: vi.fn(), me: vi.fn(), identity: vi.fn(), cache: vi.fn(), prepare: vi.fn(), target: vi.fn(), currentBin: vi.fn(), adopt: vi.fn(), stage: vi.fn(), unstage: vi.fn(), inventory: vi.fn(),
-  prestage: vi.fn(), rename: vi.fn(), save: vi.fn(), settle: vi.fn(),
+  prestage: vi.fn(), rename: vi.fn(), save: vi.fn(), settle: vi.fn(), creators: vi.fn(), creatorsReload: vi.fn(),
   projects: vi.fn(), generations: vi.fn(), login: vi.fn(), token: "", pause: (() => {}) as () => void,
   editCard: vi.fn(), setTags: vi.fn(), review: vi.fn(), listReload: vi.fn(), countsReload: vi.fn(),
   live: null as null | ((message: { type?: string; status?: string }) => void),
@@ -28,6 +28,7 @@ vi.mock("../src/lib/resolvePanelApi", async importOriginal => ({
   resolvePanelApi: { identity: mocks.identity, cache: mocks.cache, prepare: mocks.prepare, target: mocks.target, currentBin: mocks.currentBin, adopt: mocks.adopt, stage: mocks.stage, unstage: mocks.unstage, inventory: mocks.inventory,
     prestage: mocks.prestage, rename: mocks.rename, save: mocks.save, settle: mocks.settle },
 }));
+vi.mock("../src/lib/useLibraryCreators", () => ({ useLibraryCreators: mocks.creators }));
 vi.mock("../src/lib/useEditSequence", async importOriginal => ({
   ...await importOriginal<typeof import("../src/lib/useEditSequence")>(), useEditProjects: mocks.projects, useEditGenerations: mocks.generations }));
 vi.mock("../src/components/LoginScreen", () => ({ LoginScreen: (props: unknown) => { mocks.login(props); return <div>LoginScreen</div>; } }));
@@ -65,6 +66,8 @@ beforeEach(() => {
   mocks.prestage.mockResolvedValue({ state: "ok", resolve_project_id: "r", cuts: {} }); mocks.rename.mockResolvedValue({ state: "ok", resolve_project_id: "r", named: 0, remaining: 0 });
   mocks.save.mockResolvedValue({ state: "ok", resolve_project_id: "r" });
   mocks.settle.mockResolvedValue({ state: "ok", resolve_project_id: "r", bins: {}, removed: 0 });
+  // 기본 = 서버 생성자 집계를 못 받음 → 받은 카드로 센 목록(지금까지와 같음)
+  mocks.creators.mockReturnValue({ creators: [], loading: false, error: "failed", reload: mocks.creatorsReload });
   mocks.projects.mockReturnValue({ projectsState: "ok", projects: [{ id: "p", name: "영화" }], reloadCounts: mocks.countsReload, tree: { state: "ready", roots: [{ path: "S", name: "S",
     count: 4, reviewCounts: { final: 1, held: 2, shared: 4 }, children: [ // 위 폴더 수 = 아래 컷의 합(실제 트리처럼)
     { path: "S/C10", name: "C10", count: 1, reviewCounts: { final: 0, held: 1 } },
@@ -96,6 +99,35 @@ it("트리·상태·전체 워크스페이스, 오른쪽 = 미디어 풀 보기 
 });
 
 const row = (path: string) => host.querySelector<HTMLButtonElement>(`button.folder-tree-row[title="${path}"]`);
+
+it("생성자 거르기: 목록은 프로젝트 전체 서버 집계 · 고르면 트리 숫자 조회에 그 사람 uid · 목록에서 사라지면 풂 · 못 받으면 카드 집계(이름 키는 안 넘김)", async () => {
+  const both = [{ uid: "u-jay", name: "제이", count: 3, is_mine: true }, { uid: "u-riv", name: "리버", count: 335, is_mine: false }];
+  mocks.creators.mockReturnValue({ creators: both, loading: false, error: null, reload: mocks.creatorsReload });
+  await render();
+  expect(mocks.creators.mock.calls.at(-1)![0]).toMatchObject({ tab: "team", projectId: "p", ready: true });
+  const foot = () => host.querySelector<HTMLButtonElement>(".sidebar-foot-toggle")!;
+  await act(async () => foot().click()); await flush();
+  const names = () => [...host.querySelectorAll(".creator-name")].map(name => name.textContent);
+  const pick = (name: string) => [...host.querySelectorAll<HTMLButtonElement>(".creator-pick")].find(button => button.textContent?.includes(name))!;
+  expect(names()).toEqual(["제이", "리버"]); // 고른 컷의 카드(Jay 하나)만이 아니라 프로젝트 전체
+  expect(mocks.projects.mock.calls.at(-1)![0].creatorUid).toBeUndefined();
+  await act(async () => pick("리버").click()); await flush();
+  expect(mocks.projects.mock.calls.at(-1)![0].creatorUid).toBe("u-riv"); // 폴더 숫자도 그 사람 것만
+  // 공유 해제 등으로 목록에서 사라지면 선택을 풀어 빈 거르기에 갇히지 않는다
+  mocks.creators.mockReturnValue({ creators: [both[0]], loading: false, error: null, reload: mocks.creatorsReload });
+  await act(async () => { foot().click(); }); await flush();
+  await act(async () => { foot().click(); }); await flush();
+  expect(mocks.projects.mock.calls.at(-1)![0].creatorUid).toBeUndefined();
+  expect(host.querySelector(".creator-row.on")).toBeNull();
+  // 서버 집계를 못 받으면 받은 카드로 센 목록 — creator_uid 없는 카드의 이름 키는 트리 조회에 넘기지 않는다
+  mocks.creators.mockReturnValue({ creators: [], loading: false, error: "failed", reload: mocks.creatorsReload });
+  await act(async () => { foot().click(); }); await flush();
+  await act(async () => { foot().click(); }); await flush();
+  expect(names()).toEqual(["Jay"]);
+  await act(async () => pick("Jay").click()); await flush();
+  expect(host.querySelector(".creator-row.on")).not.toBeNull();
+  expect(mocks.projects.mock.calls.at(-1)![0].creatorUid).toBeUndefined();
+});
 
 it("MV 폴더 트리: 누르기 = 고르기(에피소드 target 한 번·stage 없음·타일) · 폴더 아이콘·두 번 누르기 = 펴고 접기만 · 위 폴더 표시", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "", cut: "" }));
