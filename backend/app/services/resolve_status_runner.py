@@ -136,9 +136,10 @@ def _no_interpreter_message(failure: str) -> str:
     )
 
 
-def _timeout_message() -> str:
+def _timeout_message(seconds: float | None = None) -> str:
+    seconds = _STATUS_TIMEOUT_SECONDS if seconds is None else seconds
     return (
-        f"DaVinci Resolve가 {_STATUS_TIMEOUT_SECONDS:g}초 안에 응답하지 않았습니다. "
+        f"DaVinci Resolve가 {seconds:g}초 안에 응답하지 않았습니다. "
         "작업을 저장하고 Resolve를 다시 실행하세요"
     )
 
@@ -195,6 +196,9 @@ def _run_child(
     child_env["PYTHONIOENCODING"] = "utf-8"
     # 폴백 인터프리터가 앱 폴더에 다른 버전 바이트코드 캐시를 쌓지 않게 한다.
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if module == "app.services.resolve_probe":
+        # None 응답 재시도(한 번 약4초)가 8초 검사 예산을 소진하지 않게 한다. 쓰기 재시도는 유지.
+        child_env["CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS"] = "1"
     return subprocess.run(
         [interpreter, "-m", module],
         cwd=_BACKEND_DIR,
@@ -540,7 +544,9 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                     return {"state": "unavailable", "details": NOT_RUNNING_MESSAGE}
                 try:
                     interpreter, _status, failure = _select_interpreter()
-                except (subprocess.TimeoutExpired, ResolveLaunching) as exc:
+                except subprocess.TimeoutExpired:
+                    return {"state": "unavailable", "details": _timeout_message()}
+                except ResolveLaunching as exc:
                     return {"state": "unavailable", "details": str(exc)}
                 if not interpreter:
                     return {"state": "unavailable", "details": _no_interpreter_message(failure)}
@@ -554,6 +560,9 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                         timeout=(20 if payload["operation"] == "inventory" else 8) if reading else None,
                         input_text=json.dumps(payload, ensure_ascii=True),
                     )
+                except subprocess.TimeoutExpired:
+                    _note_panel_alive(None)
+                    return {"state": failed_state, "details": _timeout_message(20 if payload["operation"] == "inventory" else 8)}
                 except (OSError, subprocess.SubprocessError) as exc:
                     _note_panel_alive(None)
                     return {"state": failed_state, "details": str(exc)}

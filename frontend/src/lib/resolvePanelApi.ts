@@ -21,9 +21,10 @@ export interface TargetResult {
   // 패널 target은 기존 빈을 보존하고 없는 빈만 추가 — 정렬·백업 필드는 호환용, ids_changed는 보수적 무효화
   reordered?: boolean; folder_order_backup?: string; order_error?: string; ids_changed?: boolean; code?: string;
 }
-export interface StageResult extends TargetResult { items?: { gen_id: string; state: string }[]; removed?: number; deferred?: number; capped?: boolean; unexpected_imports?: number }
+export interface DragItem { path: string; item_id: string; preview_url: string }
+export interface StageResult extends TargetResult { items?: { gen_id: string; state: string }[]; removed?: number; deferred?: number; capped?: boolean; unexpected_imports?: number; drag_items?: Record<string, DragItem> }
 export interface InventoryItem { resolve_project_id: string; project_id: string; folder_path: string; bin_id: string; bin_path: string; item_id: string; gen_id: string; usage?: number | null; recovery?: boolean }
-export interface InventoryResult extends TargetResult { items?: InventoryItem[]; more?: boolean; after?: [string, string]; other_owner?: number; needs_attention?: number; active_bin_id?: string }
+export interface InventoryResult extends TargetResult { items?: InventoryItem[]; more?: boolean; after?: [string, string]; other_owner?: number; needs_attention?: number; active_bin_id?: string; unmanaged_local?: number }
 export type AdoptState = "in_bin" | "stamp_failed" | "save_failed" | "ledger_failed" | "conflict" | "elsewhere" | "not_seen" | "not_prepared" | "project_changed" | "busy" | "unknown" | "account_changed" | "rebuild_recovery_pending" | "replace_failed" | "other_window";
 export interface AdoptResult { state: AdoptState; details?: unknown }
 export interface PrepareResult { gen_id: string; state: "prepared" | "failed" | "account_changed" | "other_window"; path?: string; error?: string }
@@ -45,7 +46,7 @@ export const contextKey = (ctx: PanelContext | null) => ctx ? JSON.stringify([ct
 const post = <T,>(path: string, body: unknown) => jsonFetch<T>(`/api/resolve/panel/${path}`, { method: "POST", body: JSON.stringify(body) });
 export const resolvePanelApi = {
   identity: (window = "", claim = false) => jsonFetch<PanelIdentity>(`/api/resolve/panel/identity?${new URLSearchParams({ window, claim: String(claim) })}`),
-  cache: (body: PanelSelection & { window: string; seq: number; gen_ids: string[] }) => post<{ state?: "account_changed"; items: { gen_id: string; state: "cached" | "failed"; error?: string }[] }>("cache", body),
+  cache: (body: PanelSelection & { window: string; seq: number; gen_ids: string[] }) => post<{ state?: "account_changed"; items: { gen_id: string; state: "cached" | "failed"; error?: string; preview_url?: string }[] }>("cache", body),
   prepare: (body: PanelSelection & { gen_id: string }) => post<PrepareResult>("prepare", body),
   target: (body: PanelSelection & { window: string; seq: number; create: boolean; episode_path?: string; create_paths?: string[]; keep_current?: boolean }) => post<TargetResult>("target", body),
   currentBin: (ctx: PanelContext, project_id = "", folder_path = "") => jsonFetch<TargetResult>(`/api/resolve/panel/current-bin?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), project_id, folder_path })}`),

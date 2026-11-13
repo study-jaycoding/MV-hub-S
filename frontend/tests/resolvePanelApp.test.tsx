@@ -256,9 +256,152 @@ it("같은 컷 집합 변경은 stage만 다시, target 반복 없음", async ()
   expect(mocks.stage.mock.calls[1][0].gen_ids).toEqual([]);
 });
 
-it("used는 prepare 다음 adopt 한 번, 반복 폴링 중복 없음", async () => {
+it("네이티브 끌기는 준비된 로컬 항목만 동기로 시작하고 미준비·낡은 확인·저장 중 거절", async () => {
+  const drag = window.mvhubResolve!.startDrag;
+  await render(false);
+  await act(async () => control.startNativeDrag("g"));
+  expect(drag).not.toHaveBeenCalled();
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/g.mp4", item_id: "i", preview_url: "/media/g.mp4" } } });
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  const requests = [mocks.cache, mocks.stage, mocks.prepare, mocks.adopt].map(fn => fn.mock.calls.length);
+  await act(async () => control.startNativeDrag("g"));
+  expect(drag).toHaveBeenCalledWith("C:/cache/g.mp4", { protocol: 1 });
+  expect([mocks.cache, mocks.stage, mocks.prepare, mocks.adopt].map(fn => fn.mock.calls.length)).toEqual(requests);
+  vi.setSystemTime(Date.now() + 2100);
+  await act(async () => control.startNativeDrag("g"));
+  expect(drag).toHaveBeenCalledTimes(1);
+  await tick(2000);
+  const held = deferred<{ state: string }>(); mocks.save.mockReturnValueOnce(held.promise);
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  await act(async () => control.startNativeDrag("g"));
+  expect(drag).toHaveBeenCalledTimes(1);
+  expect(control.dragItems).toEqual({});
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/refreshed.mp4", item_id: "new-item", preview_url: "/media/g.mp4" } } });
+  await act(async () => held.resolve({ state: "ok" })); await flush();
+  expect(control.dragItems.g.item_id).toBe("new-item");
+  await act(async () => control.startNativeDrag("g"));
+  expect(drag).toHaveBeenLastCalledWith("C:/cache/refreshed.mp4", { protocol: 1 });
+});
+
+it("정상 2초 폴링 사이에도 최근 5초 연결 확인으로 끌 수 있고 더 낡으면 차단", async () => {
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/g.mp4", item_id: "i", preview_url: "/media/g.mp4" } } });
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  const held = deferred<Record<string, unknown>>(); mocks.currentBin.mockReturnValueOnce(held.promise);
+  await tick(3500);
+  await act(async () => control.startNativeDrag("g"));
+  expect(window.mvhubResolve!.startDrag).toHaveBeenCalledTimes(1);
+  await tick(2100);
+  await act(async () => control.startNativeDrag("g"));
+  expect(window.mvhubResolve!.startDrag).toHaveBeenCalledTimes(1);
+  await act(async () => held.resolve(destination)); await flush();
+});
+
+it("느린 stage가 선택 변경 뒤 도착해도 옛 로컬 준비를 재사용하지 않음", async () => {
+  await render(false);
+  const held = deferred<Record<string, unknown>>(); mocks.stage.mockReturnValueOnce(held.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  await act(async () => control.selectFolder("", "", "", []));
+  await act(async () => held.resolve({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/old.mp4", item_id: "old", preview_url: "/media/old.mp4" } } })); await flush();
+  expect(control.dragItems).toEqual({});
+  await act(async () => control.startNativeDrag("g"));
+  expect(window.mvhubResolve!.startDrag).not.toHaveBeenCalled();
+});
+
+it("소유 불명 로컬 드롭은 미사용 항목 정리·새 NAS 전환 전에 저장을 막음", async () => {
+  await render(false);
+  mocks.inventory.mockResolvedValue({ ...destination, unmanaged_local: 1, more: false, items: [
+    { resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: "i", gen_id: "g", usage: 0 }] });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(mocks.unstage).not.toHaveBeenCalled(); expect(mocks.prepare).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
+  expect(control.saveState.phase).toBe("blocked");
+});
+
+it("저장이 막히면 새 로컬 항목을 자동으로 만들거나 복구 대기 항목을 재준비하지 않음", async () => {
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  const staged = mocks.stage.mock.calls.length;
+  mocks.save.mockResolvedValueOnce({ state: "save_failed" });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(control.saveState.phase).toBe("blocked");
+  expect(mocks.stage.mock.calls.length).toBe(staged);
+  expect(control.dragItems).toEqual({});
+  await act(async () => control.startNativeDrag("g"));
+  expect(control.notice).toContain("다시 저장");
+});
+
+it("저장 후 낡은 끌기 정보는 버리고 이미 받은 로컬 미리보기는 유지", async () => {
+  mocks.cache.mockResolvedValue({ items: [{ gen_id: "g", state: "cached", preview_url: "/media/kept.mp4" }] });
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/g.mp4", item_id: "i", preview_url: "/media/kept.mp4" } } });
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  expect(control.previews.g).toBe("/media/kept.mp4");
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/g.mp4", item_id: "refreshed-item", preview_url: "/media/kept.mp4" } } });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(control.dragItems.g.item_id).toBe("refreshed-item"); expect(control.previews.g).toBe("/media/kept.mp4");
+  await act(async () => control.startNativeDrag("g"));
+  expect(window.mvhubResolve!.startDrag).toHaveBeenCalledWith("C:/cache/g.mp4", { protocol: 1 });
+});
+
+it("선택이 바뀐 뒤 끝난 cache는 새 미리보기에 섞이지 않음", async () => {
+  await render(false);
+  const held = deferred<{ items: { gen_id: string; state: string; preview_url: string }[] }>();
+  mocks.cache.mockReturnValueOnce(held.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  await act(async () => control.selectFolder("", "", "", []));
+  await act(async () => held.resolve({ items: [{ gen_id: "g", state: "cached", preview_url: "/media/old.mp4" }] })); await flush();
+  expect(control.previews).toEqual({});
+});
+
+it("영상 카드에는 준비된 로컬 미리보기 URL과 네이티브 끌기를 연결, 미준비 원격 원본은 비움", async () => {
+  localStorage.setItem("mvhub.resolvePanel.ui", JSON.stringify({ pool: { view: "thumb", size: 130, sort: "new" } }));
+  const videoGen = { ...gen, assets: [{ type: "video", file_path: "https://remote.invalid/g.mp4", thumbnail_path: "/media/thumb.png" }] } as Generation;
+  mocks.generations.mockReturnValue({ state: "ok", gens: [videoGen], reload: mocks.listReload, startedAt: 1 });
+  const held = deferred<Record<string, unknown>>(); mocks.stage.mockReturnValueOnce(held.promise);
+  await render();
+  expect(mocks.editCard.mock.lastCall![0].item.gen.assets[0].file_path).toBe("");
+  await act(async () => held.resolve({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/g.mp4", item_id: "i", preview_url: "/media/g.mp4" } } })); await flush();
+  const props = mocks.editCard.mock.lastCall![0];
+  expect(props.item.gen.assets[0].file_path).toBe("/media/g.mp4");
+  await act(async () => props.onNativeDrag("g"));
+  expect(window.mvhubResolve!.startDrag).toHaveBeenCalledWith("C:/cache/g.mp4", { protocol: 1 });
+});
+
+it("메타데이터 보기에서도 로컬 영상 호버 재생·이탈 정지·끌기 정지", async () => {
+  const videoGen = { ...gen, assets: [{ type: "video", file_path: "https://remote.invalid/g.mp4", thumbnail_path: "/media/thumb.png" }] } as Generation;
+  mocks.generations.mockReturnValue({ state: "ok", gens: [videoGen], reload: mocks.listReload, startedAt: 1 });
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "staged" }],
+    drag_items: { g: { path: "C:/cache/g.mp4", item_id: "i", preview_url: "/media/g.mp4" } } });
+  const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+  const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  try {
+    await render();
+    const video = host.querySelector("video")!;
+    expect(video.getAttribute("src")).toBe("/media/g.mp4");
+    await act(async () => video.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(play).toHaveBeenCalled(); expect(video.muted).toBe(true);
+    await act(async () => video.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })));
+    expect(pause).toHaveBeenCalled(); expect(video.currentTime).toBe(0);
+    const before = pause.mock.calls.length;
+    await act(async () => host.querySelector(".ed-prow-meta")!.dispatchEvent(new Event("dragstart", { bubbles: true, cancelable: true })));
+    expect(pause.mock.calls.length).toBeGreaterThan(before);
+    expect(window.mvhubResolve!.startDrag).toHaveBeenCalledWith("C:/cache/g.mp4", { protocol: 1 });
+  } finally { play.mockRestore(); pause.mockRestore(); }
+});
+
+it("used 감지는 NAS 전환 없이 표시만, 명시적 저장에서 prepare 다음 adopt", async () => {
   mocks.currentBin.mockResolvedValue({ ...destination, used: ["g"] });
   await render(false); await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush(); await tick(6000);
+  expect(mocks.prepare).not.toHaveBeenCalled(); expect(mocks.adopt).not.toHaveBeenCalled();
+  mocks.inventory.mockResolvedValue({ ...destination, items: [{ resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: "i", gen_id: "g", usage: 1 }], more: false });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
   expect(mocks.prepare).toHaveBeenCalledTimes(1); expect(mocks.adopt).toHaveBeenCalledTimes(1);
   expect(mocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(mocks.adopt.mock.invocationCallOrder[0]);
 });
@@ -779,14 +922,16 @@ it("자동 지우기 끔(Jay 11-12): 에피소드를 옮겨도·프로젝트를 
   expect(mocks.target.mock.calls.length).toBeGreaterThan(2); // 빈 맞추기는 그대로 돈다
 });
 
-it("자동 지우기 끔(Jay 11-12): 다시 열 때 안 쓴 것은 안 지우고 쓴 것은 그대로 NAS 로", async () => {
+it("재열기는 새 NAS 전환·자동 삭제 없이 중단된 복구만 이어감", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "", cut: "" }));
   const row = { resolve_project_id: "r", project_id: "p", bin_path: "x", item_id: "i", gen_id: "g" };
   mocks.inventory.mockResolvedValue({ ...destination, more: false, items: [
-    { ...row, folder_path: "T/C1", bin_id: "t1", usage: 0 }, { ...row, folder_path: "S2/C1", bin_id: "s2", item_id: "i2", gen_id: "g2", usage: 1 }] });
+    { ...row, folder_path: "T/C1", bin_id: "t1", usage: 0 }, { ...row, folder_path: "S2/C1", bin_id: "s2", item_id: "i2", gen_id: "g2", usage: 1 },
+    { ...row, folder_path: "S2/C1", bin_id: "s2", item_id: "i3", gen_id: "g3", usage: 1, recovery: true }] });
   await render(false); await flush();
   expect(mocks.unstage).not.toHaveBeenCalled();
-  expect(mocks.adopt.mock.calls.map(([body]) => [body.gen_id, body.item_ids])).toEqual([["g2", ["i2"]]]);
+  expect(mocks.adopt.mock.calls.map(([body]) => [body.gen_id, body.item_ids])).toEqual([["g3", ["i3"]]]);
+  expect(mocks.prepare).not.toHaveBeenCalled();
 });
 
 it("501개 inventory 끝 쪽 used까지 처리, 복구는 prepare 생략", async () => {
@@ -823,7 +968,7 @@ it("15초 재조회는 목록과 수만 새로 읽음", async () => {
 });
 
 it("복구 대기는 자동 재시도·다시 단추 없음", async () => {
-  mocks.currentBin.mockResolvedValue({ ...destination, used: ["g"] });
+  mocks.inventory.mockResolvedValue({ ...destination, items: [{ resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: "i", gen_id: "g", recovery: true }], more: false });
   mocks.adopt.mockResolvedValue({ state: "rebuild_recovery_pending" });
   await render(); await tick(6000);
   expect(mocks.adopt).toHaveBeenCalledTimes(1);
@@ -832,7 +977,7 @@ it("복구 대기는 자동 재시도·다시 단추 없음", async () => {
 });
 
 it("실패한 adopt는 수동 다시 뒤에만 재시도", async () => {
-  mocks.currentBin.mockResolvedValue({ ...destination, used: ["g"] });
+  mocks.inventory.mockResolvedValue({ ...destination, items: [{ resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: "i", gen_id: "g", recovery: true }], more: false });
   mocks.adopt.mockResolvedValueOnce({ state: "replace_failed" });
   await render(false); await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush(); await tick(6000);
   expect(mocks.adopt).toHaveBeenCalledTimes(1);

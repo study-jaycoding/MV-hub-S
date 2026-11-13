@@ -29,6 +29,29 @@ class ResolveStatusRunnerTests(unittest.TestCase):
         resolve_status_runner._working_interpreter = None
         resolve_status_runner._last_selection = None
 
+    def test_only_status_probe_limits_connection_attempts_in_child_environment(self):
+        with mock.patch.dict(resolve_status_runner.os.environ, {"CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS": "3"}), \
+                mock.patch.object(resolve_status_runner.subprocess, "run", return_value=_completed()) as run:
+            resolve_status_runner._run_child("python", "app.services.resolve_probe", timeout=8)
+            self.assertEqual(run.call_args.kwargs["env"]["CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS"], "1")
+            self.assertEqual(resolve_status_runner.os.environ["CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS"], "3")
+            resolve_status_runner._run_child("python", "app.services.resolve_panel_worker", timeout=None)
+            self.assertEqual(run.call_args.kwargs["env"]["CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS"], "3")
+            self.assertIsNone(run.call_args.kwargs["timeout"])
+
+    def test_panel_read_timeout_uses_actual_limit_without_command_details(self):
+        for operation, seconds in (("current-bin", 8), ("inventory", 20)):
+            with self.subTest(operation=operation), \
+                    mock.patch.object(resolve_status_runner, "resolve_mutation_slot") as slot, \
+                    mock.patch.object(resolve_status_runner, "_resolve_is_closed", return_value=False), \
+                    mock.patch.object(resolve_status_runner, "_select_interpreter", return_value=(sys.executable, {}, "")), \
+                    mock.patch.object(resolve_status_runner, "_run_child", side_effect=subprocess.TimeoutExpired(["private-command"], seconds)):
+                slot.return_value.__enter__.return_value = True
+                result = resolve_status_runner.run_resolve_panel_isolated({"operation": operation})
+                self.assertEqual(result["state"], "unavailable")
+                self.assertIn(f"{seconds}초", result["details"])
+                self.assertNotIn("private-command", result["details"])
+
     def test_timeout_returns_actionable_unavailable_status(self):
         with (
             mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=True),

@@ -58,6 +58,7 @@ export function EditCard({
   actions,
   tagging,
   onTagging,
+  onNativeDrag,
 }: {
   item: PoolItem;
   picked: boolean; // 풀에서 고른 카드(듀얼 뷰어의 소스)
@@ -65,6 +66,7 @@ export function EditCard({
   actions: PoolCardActions;
   tagging: boolean; // T 로 태그를 고치는 중(한 번에 한 장 — 풀이 쥔다)
   onTagging: (on: boolean) => void;
+  onNativeDrag?: (id: string) => void;
 }) {
   const t = useT();
   const base = poolMark(item, t);
@@ -84,7 +86,12 @@ export function EditCard({
     <div role="button" tabIndex={0} className={"ed-card" + (picked ? " ed-picked" : "") + (item.resolve ? " ed-dv" : "") + (item.timeline ? " ed-tlsel" : "") + (item.off ? " ed-off" : "")}
       {...handlers} onKeyDown={press}
       // 라이브러리 카드는 HTML 끌기(프롬프트 재사용)다 — 풀의 끌기(타임라인에 넣기)는 마우스 끌기라 HTML 끌기가 시작되면 멈춘다
-      onDragStart={(event) => event.preventDefault()}>
+      draggable={!!onNativeDrag}
+      onDragStart={(event) => {
+        event.preventDefault();
+        if (onNativeDrag) event.currentTarget.querySelectorAll("video").forEach(video => video.pause());
+        onNativeDrag?.(item.gen.id);
+      }}>
       {/* 넣은 카드 = 라이브러리의 '선택'과 같은 굵은 상태색 테두리(selected) */}
       <GenerationCard gen={item.gen} tab="team" layout="grid" selected={item.track !== null} mark={mark ?? undefined} wheelMenu
         editingField={tagging ? "tag" : null} onRequestEdit={(_, field) => onTagging(field === "tag")} onEditDone={() => onTagging(false)}

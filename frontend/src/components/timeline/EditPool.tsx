@@ -19,6 +19,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../../lib/windowDrag";
 import { SidebarEdgeToggle } from "../common/SidebarEdgeToggle";
+import { MediaThumbnail } from "../MediaThumbnail";
 import { EditCard, NO_CARD_ACTIONS, poolMark, type PoolCardActions, type PoolItem } from "./EditCard";
 
 export type { PoolItem };
@@ -122,9 +123,11 @@ export function EditPool({
   cardActions = NO_CARD_ACTIONS,
   pass = null,
   viewOnly = false,
+  onNativeDrag,
 }: {
   // 리졸브 패널(Jay 2026-11-12) — 보기만: 카드 누르기·끌기·끌어 고르기 상자·더블클릭·우클릭·편집 탭 안내 글을 끈다
   viewOnly?: boolean;
+  onNativeDrag?: (id: string) => void;
   // 왼쪽 아래 '컬러 · 전역 태그 · 생성자'로 거르기(poolFilterPass) — 검색과 같이 보여 주는 카드만 거른다. null = 거르지 않음
   pass?: ((gen: Generation) => boolean) | null;
   // 왼쪽 폴더 목록 여닫기(Jay 2026-10-13 — 공유 탭 도구 줄의 '필터 사이드바 닫기'와 같은 단추·같은 자리 관계: 사이드바 바로 옆 줄의 첫 단추).
@@ -319,7 +322,15 @@ export function EditPool({
     const active = document.activeElement;
     if (active instanceof HTMLInputElement && event.currentTarget.contains(active)) active.blur();
   };
-  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLElement> & { "data-id": string } => viewOnly ? { "data-id": item.gen.id } : ({
+  const handlersOf = (item: PoolItem): HTMLAttributes<HTMLElement> & { "data-id": string } => viewOnly ? {
+    "data-id": item.gen.id,
+    draggable: !!onNativeDrag,
+    onDragStart: event => {
+      event.preventDefault();
+      event.currentTarget.querySelectorAll("video").forEach(video => video.pause());
+      onNativeDrag?.(item.gen.id);
+    },
+  } : ({
     "data-id": item.gen.id, // 끌어서 고르기가 이 값으로 카드를 찾는다
     title: t("끌기 = 타임라인에 넣기 · 더블클릭 = 크게 보기 · 우클릭 = 폴더 창 · 휠 클릭 = 넣을 트랙 고르기 · Ctrl+클릭 = 여러 장 고르기"),
     onClick: (event) => {
@@ -488,7 +499,7 @@ export function EditPool({
           {marqueeBox}
           {shown.map((item) => (
             <EditCard key={item.gen.id} item={{ ...item, gen: withTags(item.gen) }} picked={picked.includes(item.gen.id)}
-              handlers={handlersOf(item)} actions={actions} tagging={tagging === item.gen.id}
+              handlers={handlersOf(item)} actions={actions} tagging={tagging === item.gen.id} onNativeDrag={onNativeDrag}
               onTagging={(on) => setTagging((now) => (on ? item.gen.id : now === item.gen.id ? null : now))} />
           ))}
         </div>
@@ -506,8 +517,18 @@ export function EditPool({
             const marked = !!poolMark(item, t) || !!item.resolve; // 넣은 트랙·소스 판 표 또는 다빈치 표
             return (
               <button key={item.gen.id} type="button" className={rowClass(item, "meta")} {...handlersOf(item)}>
-                <span className="ed-pthumb" style={{ width: stacked ? "100%" : ui.size }}>
-                  {thumb && <img src={thumb} alt="" loading="lazy" draggable={false} />}
+                <span className="ed-pthumb" style={{ width: stacked ? "100%" : ui.size }}
+                  onMouseEnter={onNativeDrag ? event => {
+                    const video = event.currentTarget.querySelector("video");
+                    if (video) { video.muted = true; void video.play().catch(() => {}); }
+                  } : undefined}
+                  onMouseLeave={onNativeDrag ? event => {
+                    const video = event.currentTarget.querySelector("video");
+                    if (video) { video.pause(); video.currentTime = 0; }
+                  } : undefined}>
+                  {onNativeDrag && item.gen.assets[0].type === "video"
+                    ? <MediaThumbnail thumb={thumb} isVideo src={item.gen.assets[0].file_path} alt="" fallback={null} />
+                    : thumb && <img src={thumb} alt="" loading="lazy" draggable={false} />}
                   {colorMark(item)}
                   {item.gen.assets[0].type === "video" && <i>▶</i>}
                 </span>

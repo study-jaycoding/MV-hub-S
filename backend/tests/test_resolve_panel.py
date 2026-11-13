@@ -264,9 +264,19 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
         return ready
 
+    def test_cached_preview_only_exposes_real_media_files_with_encoded_urls(self):
+        video = self.media / "한 글#%.mp4"
+        video.write_bytes(b"video")
+        self.assertEqual(panel._cached_item("g", video)["preview_url"], "/media/%ED%95%9C%20%EA%B8%80%23%25.mp4")
+        outside = self.root / "outside.mp4"
+        outside.write_bytes(b"outside")
+        for path in (outside, self.media / ".." / "outside.mp4", self.media, self.media / "missing.mp4"):
+            with self.subTest(path=str(path)):
+                self.assertNotIn("preview_url", panel._cached_item("g", path))
+
     async def test_cache_local_only_and_prepare_without_manifest_catalog(self):
         result = await route.post_cache(self.body(route.CacheIn, seq=1, gen_ids=["g"]), self.request)
-        self.assertEqual(result["items"], [{"gen_id": "g", "state": "cached"}])
+        self.assertEqual(result["items"], [{"gen_id": "g", "state": "cached", "preview_url": "/media/clip.mp4"}])
         transfer.resolve_transfer_roots.assert_not_called()
         self.assertFalse(self.render.exists())
         ready = await self.prepare()
@@ -564,7 +574,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(active), 3)  # cache 전체 동시 3개
             # 자리가 다 차도 이미 이 PC 에 있는 파일은 바로 · 받기는 _prepare_lock 을 안 쥐어 띄움 준비가 기다리지 않는다
             local = await asyncio.wait_for(panel.cache(self.ctx, 1, [self.gen]), 1)
-            self.assertEqual(local["items"], [{"gen_id": "g", "state": "cached"}])
+            self.assertEqual(local["items"], [{"gen_id": "g", "state": "cached", "preview_url": "/media/clip.mp4"}])
             self.assertFalse(panel._prepare_lock.locked())
             items = await asyncio.wait_for(panel.stage_items(self.ctx, [self.gen]), 1)
             self.assertEqual(items[0]["gen_id"], "g")

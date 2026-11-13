@@ -21,6 +21,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 
@@ -2101,13 +2102,19 @@ def _panel_walk(folder, parts=()):
 
 def _panel_inventory(root, payload, resolve_project_id):
     items, other_owner, needs_attention = [], 0, 0
+    unmanaged_local = 0
     counts = {}
-    for folder, parts in _panel_walk(root):
-        if not parts or parts[0] != MEDIA_POOL_ROOT:
-            continue
+    for folder, parts in [(root, ()), *_panel_walk(root)]:
         for clip in _strict_list(folder.GetClipList):
+            if not parts or parts[0] != MEDIA_POOL_ROOT:
+                if _panel_under(_clip_file_path(clip), payload.get("media_root", "")):
+                    unmanaged_local += 1
+                continue
             mark = _panel_raw_mark(clip)
-            if _panel_owned(clip, payload):
+            owned = _panel_owned(clip, payload)
+            if not owned and _panel_under(_clip_file_path(clip), payload.get("media_root", "")):
+                unmanaged_local += 1
+            if owned:
                 items.append({"resolve_project_id": resolve_project_id, "bin_id": _uid(folder),
                               "bin_path": "/".join(parts), "item_id": _uid(clip),
                               "gen_id": mark["generation_id"], "project_id": mark["project_id"],
@@ -2133,7 +2140,8 @@ def _panel_inventory(root, payload, resolve_project_id):
     page = items[:500]
     return {"items": page, "more": len(items) > 500,
             "after": [page[-1]["bin_path"], page[-1]["item_id"]] if page else None,
-            "other_owner": other_owner, "needs_attention": needs_attention, "project_counts": counts}
+            "other_owner": other_owner, "needs_attention": needs_attention, "project_counts": counts,
+            "unmanaged_local": unmanaged_local}
 
 
 def _panel_delete(pool, folder, clip, guard, *, owned=None):
@@ -2219,8 +2227,10 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard, *, via=None, 
         if gen in payload.get("same_file_ids", []):
             states[gen] = "same_file_exists"
             continue
+        # 에피소드 미리 띄우기는 NAS 항목을 재사용한다. 선택한 컷만 다음 끌기용 로컬 항목을 준비한다.
         if any(mark.get("generation_id") == gen and mark.get("project_id") == payload["project_id"]
-               and (_panel_owned(clip, payload) or (not mark.get("staged_by") and not _panel_under(clip_path, payload["media_root"])))
+               and (_panel_owned(clip, payload) or (not rename and not mark.get("staged_by")
+                    and not _panel_under(clip_path, payload["media_root"])))
                for clip, mark, clip_path in rows):
             states[gen] = "present"
             continue
@@ -2343,7 +2353,30 @@ def _panel_stage(pool, target, payload, resolve_project_id, guard, *, via=None, 
         states[gen] = "same_file_exists" if states[first] == "staged" else states[first]
     results = [{"gen_id": item["gen_id"], "state": states[item["gen_id"]]} for item in items]
     deferred = sum(1 for row in results if row["state"] == "deferred")
-    return {"state": "ok", "items": results, "removed": removed, "deferred": deferred, "import_records": recovery, "unexpected_imports": unexpected}
+    drag_items = {}
+    try:
+        guard()
+        candidates = []
+        for clip in _strict_list(target.GetClipList):
+            mark = _panel_raw_mark(clip)
+            if mark.get("project_id") == payload["project_id"] and _panel_owned(clip, payload):
+                candidates.append((clip, mark))
+        for item in results:
+            matches = [clip for clip, mark in candidates if mark.get("generation_id") == item["gen_id"]]
+            if item["state"] in {"staged", "present"} and len(matches) == 1:
+                clip = matches[0]
+                raw_path = _clip_file_path(clip)  # Resolve가 가진 표기를 유지한다. 다른 표기는 별도 항목으로 가져올 수 있다.
+                relative = Path(raw_path).resolve().relative_to(Path(payload["media_root"]).resolve())
+                drag_items[item["gen_id"]] = {"path": raw_path, "item_id": _uid(clip),
+                                               "preview_url": "/media/" + quote(relative.as_posix(), safe="/")}
+        guard()
+    except ResolveBridgeError as exc:
+        exc.leftover = {**getattr(exc, "leftover", {}), "import_records": recovery}
+        raise
+    except Exception:  # 끌기 부가 정보 읽기 실패는 이미 끝낸 띄움과 복구 기록을 버릴 이유가 아니다.
+        drag_items = {}
+    return {"state": "ok", "items": results, "removed": removed, "deferred": deferred, "import_records": recovery,
+            "unexpected_imports": unexpected, "drag_items": drag_items}
 
 
 def _panel_prestage(pool, root, payload, resolve_project_id, guard):

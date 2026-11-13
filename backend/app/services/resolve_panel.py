@@ -9,6 +9,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from .. import active_account, config, repo
 from . import export_names, project_folders, resolve_queue, resolve_transfer as transfer
@@ -323,6 +324,20 @@ async def _source_turn(asset: dict):
             del _source_locks[key]
 
 
+def _cached_item(gen_id: str, path: Path | None) -> dict:
+    result = {"gen_id": gen_id, "state": "cached"}
+    if path is None:
+        return result
+    try:
+        path = Path(path).resolve(strict=True)
+        relative = path.relative_to(config.MEDIA_DIR.resolve())
+        if path.is_file() and path.stat().st_size > 0:
+            result["preview_url"] = "/media/" + quote(relative.as_posix(), safe="/")
+    except (OSError, ValueError):
+        pass  # 미리보기 경로를 증명하지 못했어도 기존 다운로드 결과는 바꾸지 않는다.
+    return result
+
+
 async def cache(ctx: dict, seq: int, generations: list[dict], *, window: str = "", request=None) -> dict:
     """이 PC 로 받아 두기 — 요청당 일꾼 _CACHE_PARALLEL 개가 목록 순서대로 하나씩 집고, 패널 cache 전체 동시 수도 같은 상한(Jay 11-12).
     받기는 _prepare_lock 밖(NAS 복사·띄움 준비는 그 잠금) — 같은 파일 중복은 media_cache 주소 잠금이 막는다.
@@ -341,7 +356,8 @@ async def cache(ctx: dict, seq: int, generations: list[dict], *, window: str = "
             try:
                 asset = generation_asset(gen)
                 if _already_local(asset):
-                    return {"gen_id": gen["id"], "state": "cached"}
+                    local = transfer.safe_join(config.MEDIA_DIR, asset["file_path"].removeprefix("/media/"))
+                    return _cached_item(gen["id"], local)
             except Exception as exc:  # noqa: BLE001 - 생성물마다 실패를 따로 남긴다
                 return {"gen_id": gen["id"], "state": "failed", "error": str(exc)}
             def recheck():  # media_cache 주소 잠금 안·실제 받기 직전 — 패널 밖 기능이 같은 주소를 받던 것을 기다린 뒤에도 다시 본다
@@ -354,8 +370,8 @@ async def cache(ctx: dict, seq: int, generations: list[dict], *, window: str = "
                 if stale(ctx, seq, "cache", window):
                     return None
                 try:
-                    await transfer._cached_source(asset, before_download=recheck)
-                    return {"gen_id": gen["id"], "state": "cached"}
+                    local = await transfer._cached_source(asset, before_download=recheck)
+                    return _cached_item(gen["id"], local)
                 except _Stale:
                     return None
                 except AccountChanged:  # RuntimeError 계열이라 아래 생성물별 실패보다 먼저

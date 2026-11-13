@@ -72,6 +72,7 @@
 .rp-view .ed-card .card-cm, .rp-view .ed-card .thumb-overlay, .rp-view .ed-card .card-drag-grip { display: none; }
 .rp-view .ed-card .card-sf { pointer-events: none; }
 .rp-view .ed-card, .rp-view .ed-prow { cursor: default; }
+.rp-view .ed-card[draggable="true"], .rp-view .ed-prow[draggable="true"] { cursor: grab; }
 /* 에피소드만 고른 때 — 컷 폴더 타일 */
 .rp-tiles { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 8px 12px 12px; align-content: start; }
 .rp-tile { display: flex; align-items: center; gap: 7px; padding: 8px 9px; border: 1px solid #333438; border-radius: 6px; background: #26272b; color: #d4d4d6; text-align: left; }

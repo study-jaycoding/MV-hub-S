@@ -93,6 +93,71 @@ class PanelStagingTests(unittest.TestCase):
         self.assertEqual(len(self.pool.import_calls), 1)
         self.assertEqual(self.manager.saved, 0)
 
+    def test_drag_ready_requires_one_owned_local_item(self):
+        result = self.run_op("stage")
+        clip = self.folder.clips[-1]
+        self.assertEqual(result["drag_items"]["g"], {
+            "path": clip.path, "item_id": clip.unique_id, "preview_url": "/media/one.png"})
+        self.assertEqual(self.run_op("stage")["drag_items"], result["drag_items"])
+        duplicate = FakeClip(str(self.path))
+        resolve_bridge._panel_stamp(duplicate, "g", "p", lambda: None, hub_key="hub")
+        self.folder.clips.append(duplicate)
+        self.assertEqual(self.run_op("stage")["drag_items"], {})
+
+    def test_unowned_local_drop_blocks_inventory_without_taking_ownership(self):
+        original = self.staged()
+        dropped = FakeClip(str(self.path))
+        dropped.usage = "1"
+        self.pool.root.clips.append(dropped)
+        with mock.patch.object(dropped, "GetThirdPartyMetadata", side_effect=AssertionError("풀 밖 항목의 표식 조회 금지")) as metadata:
+            inventory = self.run_op("inventory")
+            metadata.assert_not_called()
+        self.assertEqual(inventory["unmanaged_local"], 1)
+        self.assertEqual([item["item_id"] for item in inventory["items"]], [original.unique_id])
+        self.assertEqual(dropped.third_party_metadata, {})
+        self.assertTrue(self.path.is_file())
+
+    def test_drag_keeps_resolve_path_spelling(self):
+        clip = self.staged()
+        clip.path = str(self.media) + "/./one.png"
+        result = self.run_op("stage")
+        self.assertEqual(result["drag_items"]["g"]["path"], clip.path)
+        self.assertEqual(result["drag_items"]["g"]["preview_url"], "/media/one.png")
+
+    def test_drag_info_failure_preserves_completed_stage_result(self):
+        with mock.patch.object(resolve_bridge, "quote", side_effect=ValueError("preview read failed")):
+            result = self.run_op("stage")
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual(result["items"], [{"gen_id": "g", "state": "staged"}])
+        self.assertEqual(result["drag_items"], {})
+        self.assertEqual(len(self.folder.clips), 1)
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_local_drag_restarts_beside_preserved_used_nas_item(self):
+        nas_path = Path(self.tmp.name) / "nas.png"
+        nas_path.write_bytes(b"image")
+        nas = FakeClip(str(nas_path))
+        nas.usage = "1"
+        resolve_bridge.stamp_and_verify(nas, "g", "p")
+        self.folder.clips.append(nas)
+        original_id = nas.unique_id
+        prestage = resolve_bridge._panel_stage(self.pool, self.folder, self.payload, self.project.unique_id,
+                                               lambda: None, rename=False)
+        self.assertEqual(prestage["items"], [{"gen_id": "g", "state": "present"}])
+        self.assertEqual(prestage["drag_items"], {})
+        self.assertEqual((len(self.folder.clips), self.pool.import_calls), (1, []))
+        result = self.run_op("stage")
+        local = self.folder.clips[-1]
+        self.assertEqual(result["items"], [{"gen_id": "g", "state": "staged"}])
+        self.assertEqual(result["drag_items"]["g"]["item_id"], local.unique_id)
+        self.assertIs(self.folder.clips[0], nas)
+        self.assertEqual((nas.unique_id, nas.path, nas.usage), (original_id, str(nas_path), "1"))
+        self.assertEqual(self.run_op("stage")["items"], [{"gen_id": "g", "state": "present"}])
+        self.assertEqual(len(self.folder.clips), 2)
+        inventory = self.run_op("inventory")
+        self.assertEqual([(row["item_id"], row["usage"]) for row in inventory["items"]], [(local.unique_id, 0)])
+        self.assertEqual(self.manager.saved, 0)
+
     def test_missing_bin_defers_without_creating(self):
         def add_and_select(parent, name):
             # 실제 리졸브처럼 새 빈이 지금 빈이 된다(11-11 mv test 실측).

@@ -248,10 +248,11 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const poolItems = useMemo<PoolItem[]>(() => {
     const staged = new Set((panel.stage?.items || []).filter(item => ["staged", "present"].includes(item.state)).map(item => item.gen_id));
     const used = new Set(panel.current?.used || []);
-    return cutGens.map(gen => ({ gen, track: null, showing: false,
+    return cutGens.map(gen => ({ gen: { ...gen, assets: gen.assets.map((asset, index) => index === 0
+      ? { ...asset, file_path: panel.previews[gen.id] || panel.dragItems[gen.id]?.preview_url || "" } : asset) }, track: null, showing: false,
       note: panel.nas.has(gen.id) ? { label: t("쓰임 · NAS"), lead: true } : used.has(gen.id) ? { label: t("쓰임") }
         : staged.has(gen.id) ? { label: t("띄움") } : undefined }));
-  }, [cutGens, panel.stage, panel.current, panel.nas, t]);
+  }, [cutGens, panel.stage, panel.current, panel.nas, panel.dragItems, panel.previews, t]);
   const poolUi = useMemo(() => ({ ...POOL_UI, ...ui.pool }), [ui.pool]);
   // 트리 — 고른 곳의 위 폴더까지만 펼쳐 둔다(고른 폴더 자신은 펼치지 않는다 — 한 번 누르기는 고르기만, 두 번 누르기·폴더 아이콘 = 펴고 접기)
   const [expanded, setExpanded] = useState(() => new Set(ancestors(parentOf(cut || episode))));
@@ -345,7 +346,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
               ui={poolUi} onUi={patch => { const { view, size, sort } = { ...ui.pool, ...patch }; patchUi({ pool: { ...ui.pool, view, size, sort } }); }}
               authKey={panel.authKey} listState={list.state} listStartedAt={list.startedAt} notice={null} pass={pass}
               onPick={noop} onPickMany={noop} onOpen={noop} onCompare={noop} resolve={NO_SEND} onClearPicked={noop} onMenu={noop}
-              onFolder={noop} onCardDrag={noop} sideOpen={sideShown} onToggleSide={toggleSide} />
+              onFolder={noop} onCardDrag={noop} onNativeDrag={panel.startNativeDrag} sideOpen={sideShown} onToggleSide={toggleSide} />
             : episode ? <EpisodeTiles title={lastName(episode)} cuts={cutNodes} sideOpen={sideShown} onToggleSide={toggleSide}
                 onCut={path => choose({ project: selection.project, episode, cut: path })} />
               : <>
