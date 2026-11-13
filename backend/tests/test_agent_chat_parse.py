@@ -3,6 +3,8 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from app.services.agent_chat_parse import CLAUDE_ALLOWED, ClaudeParser, CodexParser, MAX_LINE
 
 
@@ -111,6 +113,34 @@ def test_codex_violations_and_failure_message():
     ])
     assert [event["kind"] for event in events if event["kind"] == "violation"] == ["violation", "violation"]
     assert events[-1] == {"kind": "result", "ok": False, "cli_session_id": "", "message": "Reconnecting... 5/5"}
+
+
+@pytest.mark.parametrize("kind", ["item.started", "item.updated", "item.completed"])
+@pytest.mark.parametrize("itype", ["command_execution", "file_change", "web_search", "collab_tool_call", "image_view", None])
+def test_codex_rejects_disallowed_types_at_every_item_event(kind, itype):
+    events = feed(CodexParser(), [{"type": kind, "item": {"type": itype}}])
+    assert events and events[0]["kind"] == "violation"
+
+
+@pytest.mark.parametrize("kind", ["item.started", "item.updated", "item.completed"])
+@pytest.mark.parametrize("server,tool", [("other", "check_connection"), ("mvhub_panel", "unknown")])
+def test_codex_checks_tool_identity_at_every_item_event(kind, server, tool):
+    events = feed(CodexParser(), [{"type": kind, "item": {"type": "mcp_tool_call", "server": server, "tool": tool}}])
+    assert events[0]["kind"] == "violation"
+
+
+@pytest.mark.parametrize("kind", ["item.started", "item.updated", "item.completed"])
+@pytest.mark.parametrize("itype", ["agent_message", "reasoning", "todo_list", "error", "mcp_tool_call"])
+def test_codex_allows_known_items_without_duplicate_updated_output(kind, itype):
+    events = feed(CodexParser(), [{"type": kind, "item": {"type": itype, "text": "answer", "server": "mvhub_panel",
+                                                         "tool": "check_connection", "status": "completed"}}])
+    assert not any(e["kind"] == "violation" for e in events)
+    if kind == "item.updated":
+        assert events == []
+
+
+def test_codex_unknown_item_event_is_violation():
+    assert feed(CodexParser(), [{"type": "item.future", "item": {"type": "reasoning"}}])[0]["kind"] == "violation"
 
 
 def _frozenset_assign(path: Path, name: str) -> set[str]:

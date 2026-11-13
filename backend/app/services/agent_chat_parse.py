@@ -150,7 +150,9 @@ class CodexParser:
         if kind == "turn.failed":
             message = (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else None
             return [{"kind": "result", "ok": False, "cli_session_id": "", "message": _text(message or self.last_error or "실행 실패")}]
-        if kind not in ("item.started", "item.completed"):
+        if isinstance(kind, str) and kind.startswith("item.") and kind not in ("item.started", "item.updated", "item.completed"):
+            return [{"kind": "violation", "what": "event", "detail": [kind]}]
+        if kind not in ("item.started", "item.updated", "item.completed"):
             return []
         item = data.get("item") if isinstance(data.get("item"), dict) else {}
         itype = item.get("type")
@@ -160,11 +162,13 @@ class CodexParser:
             out = []
             if item.get("server") != PANEL_SERVER or item.get("tool") not in PANEL_TOOLS:
                 out.append({"kind": "violation", "what": "tool", "detail": [f"{item.get('server')}.{item.get('tool')}"]})
+            if kind == "item.updated":
+                return out
             status = "started" if kind == "item.started" else ("done" if item.get("status") == "completed" else "failed")
             out.append({"kind": "tool", "name": _text(item.get("tool")), "status": status})
             return out
-        if itype in ("command_execution", "file_change", "web_search", "collab_tool_call"):
-            return [{"kind": "violation", "what": itype, "detail": []}]
+        if itype not in ("agent_message", "reasoning", "todo_list", "error"):
+            return [{"kind": "violation", "what": itype or "unknown", "detail": [itype]}]
         if itype == "error" and kind == "item.completed":
             self.last_error = _text(item.get("message"))
         return []

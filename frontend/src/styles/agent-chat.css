@@ -436,6 +436,8 @@
 .agent-settings-sel { flex: none; max-width: 48%; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: #3a3a3a; color: var(--text); font: inherit; font-size: 12.5px; }
 .agent-settings-btn { flex: none; height: 28px; padding: 0 12px; border: 1px solid var(--border2); border-radius: 8px; background: transparent; color: var(--text); font-size: 12.5px; }
 .agent-settings-btn:hover { background: rgba(255, 255, 255, 0.06); }
+.agent-settings-btn:disabled { opacity: 0.6; cursor: wait; }
+.agent-settings-t .agent-codex-error { color: #f5c542; }
 /* 모델 단추 — 모델 이름 + 흐린 생각 깊이 + ⌄ (Aside 'GPT-6.1 Sol High ⌄') */
 .agent-model-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px;

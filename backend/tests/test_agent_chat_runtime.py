@@ -18,6 +18,7 @@ from app import config
 from app.repo import agent_chat as store
 from app.services import agent_chat as chat
 from app.services import agent_chat_process as process
+from app.services import agent_chat_codex as codex
 from app.services.agent_chat_parse import CLAUDE_ALLOWED
 
 FAKE = Path(__file__).with_name("agent_chat_fake_cli.py")
@@ -41,7 +42,8 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
-    monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
+    codex._write("codex_enabled.json", {"version": "0.162.0-alpha.17.2", "policy": codex.CODEX_POLICY,
+                                        "at": "2026-11-14T00:00:00+00:00"})
     monkeypatch.setenv("FAKE_AGENT_PIDFILE", str(tmp_path / "grandchild.pid"))
     service = chat.AgentChat()
     identity = chat.Identity("a" * 32, str(tmp_path / "hub.db"), "jay@example.test")
@@ -629,15 +631,17 @@ def test_api_key_source_in_init_stops_turn(runtime, monkeypatch):
     assert store.get_conversation(path, store.get_turn(path, turn["id"])["conversation_id"])["cli_session_id"] in (None, "")
 
 
-def test_codex_locked_until_isolation_checked(monkeypatch):
-    """Jay 11-09 'Claude 먼저' — 실사용 기본값은 Codex 잠금(판·로그인 확인 전에 바로 거절, 프로세스도 안 띄운다)."""
+def test_codex_locked_until_enabled(monkeypatch, tmp_path):
+    """표식이 없으면 판·로그인 확인 전에 거절한다."""
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     monkeypatch.setattr(process, "cli_version", lambda prefix: pytest.fail("잠긴 Codex 는 판 확인도 하지 않는다"))
-    assert process.CODEX_LOCK and process.engine_problem("codex", [sys.executable, str(FAKE)]) == process.CODEX_LOCK
+    assert process.engine_problem("codex", [sys.executable, str(FAKE)]) == codex.DISABLED
 
 
 def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):
-    monkeypatch.setattr(process, "CODEX_LOCK", None)
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    codex._write("codex_enabled.json", {"version": "0.162.0-alpha.17.2", "policy": codex.CODEX_POLICY,
+                                        "at": "2026-11-14T00:00:00+00:00"})
     monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아"), ("none", "로그인되어 있지 않")):
         monkeypatch.setenv("FAKE_AGENT_AUTH", auth)

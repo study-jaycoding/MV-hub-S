@@ -24,9 +24,6 @@ _STRIP = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "ELECTRON_RUN_AS
 _STRIP_PREFIX = ("CLAUDE_CODE_", "ANTHROPIC_")  # ANTHROPIC_* 는 전부 — 키·제공자 전환 변수가 늘어도 막히게(첫 연결 설계 4절)
 # 0단계를 통과한 Codex 판 — 새 판은 기본으로 켜지는 기능(연결 앱 등)이 늘 수 있어 다시 점검하기 전엔 잠근다.
 CODEX_VERIFIED = frozenset({"0.162.0-alpha.17.2"})
-# Jay 11-09 "Claude 먼저": 0단계에 남은 Codex 격리 확인(훅 대조 시험·허용 밖 도구 3개)을 마칠 때까지 Codex 를 잠근다.
-# 확인을 마치고 합의하면 None 으로 바꾼다(설계 문서 6-1·8절 6번).
-CODEX_LOCK: str | None = "점검 필요 — 격리 확인(훅 대조·남은 도구)이 끝나지 않았습니다"
 CODEX_FEATURES_OFF = ("apps", "multi_agent", "image_generation", "unified_exec", "shell_tool", "plugins", "remote_plugin",
                       "goals", "sleep_tool", "tool_suggest", "browser_use", "computer_use", "hooks",
                       "skill_mcp_dependency_install", "skill_search", "view_image")
@@ -182,7 +179,7 @@ def _status_output(prefix: list[str], args: list[str]) -> str:
                               creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    return done.stdout or "" if done.returncode == 0 else ""
+    return "\n".join(part for part in (done.stdout, done.stderr) if part) if done.returncode == 0 else ""
 
 
 def auth_problem(prefix: list[str]) -> str | None:
@@ -198,16 +195,8 @@ def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
     Claude 는 여기서 보지 않는다 — agent_chat.engine_problem → agent_chat_claude.claude_problem(화면과 같은 상태 판정 하나)."""
     if engine != "codex":
         raise ValueError("Claude 판정은 agent_chat.engine_problem 으로")
-    if not prefix:
-        return "이 PC 에 설치되어 있지 않습니다"
-    if CODEX_LOCK:
-        return CODEX_LOCK
-    version = cli_version(prefix)
-    if not version:
-        return "판을 확인하지 못했습니다"
-    if version not in CODEX_VERIFIED:
-        return f"점검 필요 — 확인하지 않은 판입니다({version})"
-    return auth_problem(prefix)
+    from . import agent_chat_codex
+    return agent_chat_codex.state(prefix)["reason"]
 
 
 def _toml_literal(value: str) -> str:

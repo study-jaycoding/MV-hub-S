@@ -34,7 +34,7 @@ function deferred<T>() {
 const ENGINES = [
   { id: "claude", available: true, version: "2.1.296", reason: null, state: "ready", subscription: "Max", efforts: ["low", "medium", "high", "xhigh", "max"],
     models: [{ id: "opus", label: "Opus 5.5" }, { id: "sonnet", label: "Sonnet 5.5" }, { id: "haiku", label: "Haiku 5.5" }, { id: "fable", label: "Fable 5.1" }] },
-  { id: "codex", available: true, version: "0.162.0-alpha.17.2", reason: null, efforts: ["low", "medium", "high"],
+  { id: "codex", enabled: true, available: true, version: "0.162.0-alpha.17.2", reason: null, efforts: ["low", "medium", "high"],
     models: [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol" }, { id: "gpt-6-astra", label: "GPT-6 Astra" }] },
 ];
 const session = (email = "jay@example.com", secret = "s1", identity = "id-1") =>
@@ -120,6 +120,52 @@ function pickSelect(label: string, value: string) {
 }
 
 describe("Ask Agent 옆 칸", () => {
+  it("설정 Codex 연결 — 확인 중·실패 사유·다시 연결·끄기와 엔진 목록 갱신", async () => {
+    let enabled = false;
+    const engines = () => ENGINES.map((e) => e.id === "codex"
+      ? { ...e, enabled, available: enabled, reason: enabled ? null : "설정에서 [연결]을 눌러 켜요" } : e);
+    const checking = deferred<Response>();
+    let attempts = 0;
+    route = (c) => {
+      if (c.path === "/session") return json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines: engines() });
+      if (c.path === "/codex/enable") {
+        attempts += 1;
+        if (attempts === 1) return checking.promise;
+        enabled = true;
+        return json({ engines: engines() });
+      }
+      if (c.path === "/codex/disable") {
+        enabled = false;
+        return json({ engines: engines() });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+    await mount();
+    act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent === "설정")!.click());
+    expect(host.textContent).toContain("꺼짐 · 설정에서 [연결]을 눌러 켜요");
+    act(() => button("Codex 연결")!.click());
+    await flush();
+    expect(button("Codex 연결")!.disabled).toBe(true);
+    expect(host.textContent).toContain("확인하는 중");
+    checking.resolve(json({ detail: "연결 점검을 통과하지 못했어요" }, 409));
+    await flush();
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain("연결 점검을 통과하지 못했어요");
+    expect(button("Codex 연결")!.disabled).toBe(false);
+    act(() => button("Codex 연결")!.click());
+    await flush();
+    expect(host.textContent).toContain("이 PC 에서 켬");
+    expect(button("Codex 끄기")).not.toBeNull();
+    expect(host.querySelector(".agent-codex-error")).toBeNull();
+    act(() => button("Codex 끄기")!.click());
+    await flush();
+    expect(host.textContent).toContain("꺼짐 · 설정에서 [연결]을 눌러 켜요");
+    expect(button("Codex 연결")).not.toBeNull();
+    expect(calls.filter((c) => c.path.startsWith("/codex/")).map((c) => [c.path, c.method])).toEqual([
+      ["/codex/enable", "POST"], ["/codex/enable", "POST"], ["/codex/disable", "POST"],
+    ]);
+  });
+
   const restoredHistory = () => ({
     conversation: { id: "restored-1", title: "복원한 작업", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: false, restored_from: "backup-1" },
     turns: [{ id: "old-turn", status: "running", text: "옛 요청", created_at: "", attachments: { items: [{ kind: "generation", id: "old-attachment" }] }, events: [
@@ -885,7 +931,7 @@ describe("Ask Agent 옆 칸", () => {
     openSettings();
     await flush();
     expect([host.querySelector(".agent-model-menu"), host.querySelector(".agent-settings") !== null]).toEqual([null, true]);
-    expect(texts(".agent-settings-line .agent-settings-t small").slice(0, 2)).toEqual(["구독 Max · Claude Code 2.1.296 · 연결됨", "Codex 0.162.0-alpha.17.2 · 연결됨"]);
+    expect(texts(".agent-settings-line .agent-settings-t small").slice(0, 2)).toEqual(["구독 Max · Claude Code 2.1.296 · 연결됨", "Codex 0.162.0-alpha.17.2 · 이 PC 에서 켬 · 연결됨"]);
     expect(texts('select[aria-label="먼저 쓸 생성 모델"] option')).toEqual(["정하지 않음", "Nano Banana 2", "Kling 3.0"]); // 그림·영상만
     pickSelect("새 대화 모델", "claude:sonnet");
     pickSelect("새 대화 생각 깊이", "high");

@@ -27,6 +27,7 @@ export const CLAUDE_CHAT_OK: ReadonlySet<string> = new Set(["ready", "subscripti
 export interface AgentEngine {
   id: AgentEngineId;
   available: boolean;
+  enabled?: boolean; // Codex: 이 PC의 판·격리 정책에 맞는 활성화 표식
   version?: string | null;
   reason?: string | null; // 못 쓰는 까닭(예: Codex '점검 필요')
   state?: ClaudeState; // Claude 만
@@ -295,6 +296,8 @@ const id = (value: string) => encodeURIComponent(value);
 
 export const agentChatApi = {
   session: openAgentSession,
+  setCodexEnabled: (enabled: boolean) => panelFetch<{ engines: AgentEngine[] }>(
+    `/codex/${enabled ? "enable" : "disable"}`, { method: "POST" }),
   // truncated = 최근 500개만 실었다(서랍이 "최근 500개만 보여요")
   conversations: () => panelFetch<{ conversations: AgentConversationSummary[]; truncated?: boolean }>("/conversations"),
   patchConversation: (conversationId: string, body: AgentConversationPatch) =>

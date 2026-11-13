@@ -26,6 +26,7 @@ from ..repo import agent_chat as chat_store
 from ..repo import mcp_v2 as mcp_store
 from ..services import agent_chat as chat
 from ..services import agent_chat_claude as claude
+from ..services import agent_chat_codex as codex
 from ..services.agent_chat import EFFORTS, MODELS, Identity, service
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_browser_request
@@ -154,6 +155,37 @@ async def claude_login(panel=Depends(_panel)):
                             headers={_CLAUDE_ERROR: "spawn_failed"}) from exc
     await asyncio.to_thread(service.engines, True)  # 캐시 비움
     return {"opened": True}
+
+
+@router.post("/codex/enable")
+async def codex_enable(panel=Depends(_panel)):
+    """이 PC에서 Codex 연결 점검을 통과한 뒤 활성화한다(MV 생성 없음)."""
+    ctx, _ = panel
+    try:
+        with anyio.CancelScope(shield=True):
+            await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx))
+    except codex.CodexError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, "Codex 연결 표식을 저장하지 못했어요") from exc
+    finally:
+        engines = await asyncio.to_thread(service.engines, True)
+    return {"engines": engines}
+
+
+@router.post("/codex/disable")
+async def codex_disable(panel=Depends(_panel)):
+    """이 PC의 다음 Codex 차례를 막고 진행 중 점검의 활성화 token을 취소한다."""
+    try:
+        with anyio.CancelScope(shield=True):
+            await to_thread_non_abandon(codex.disable)
+    except codex.Busy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, "Codex 연결 표식을 지우지 못했어요") from exc
+    finally:
+        engines = await asyncio.to_thread(service.engines, True)
+    return {"engines": engines}
 
 
 _LIST_LIMIT = 500  # 서랍 메뉴(설계 docs/status/MVAgent_서랍메뉴_2026-11-12.md 2-2) — 넘치면 truncated, 화면이 "최근 500개만"

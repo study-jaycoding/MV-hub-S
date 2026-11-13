@@ -26,6 +26,7 @@ from typing import Callable
 from .. import active_account, config, db
 from ..repo import agent_chat as store
 from . import agent_chat_claude as claude
+from . import agent_chat_codex as codex
 from . import agent_chat_process as process
 from .agent_chat_parse import parser_for
 from .shared_connection import is_shared_team_server
@@ -279,7 +280,7 @@ class AgentChat:
         #  캐시를 버린다(설치 설계 2-v3-1b, 설치 독립 리뷰 P2)
         raw = process.read_install_marker()
         install = process.claude_install(data=raw)
-        stamp = (json.dumps(raw, sort_keys=True, default=str), install)
+        stamp = (json.dumps(raw, sort_keys=True, default=str), install, json.dumps(codex.marker(), sort_keys=True))
         with self._lock:
             if not refresh and self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS \
                     and self._engines[2] == stamp and (install or {}).get("state") != "running":
@@ -295,8 +296,8 @@ class AgentChat:
                            reason=None if ok else claude.MESSAGES.get(state["state"], claude.MESSAGES["unknown"]),
                            install=install, method=process.install_method(prefix))
             else:
-                reason = process.engine_problem(engine, prefix)
-                row.update(available=reason is None, version=process.cli_version(prefix) if prefix else "", reason=reason)
+                state = codex.state(prefix)
+                row.update(available=state["reason"] is None, **state)
             result.append(row)
         with self._lock:
             self._engines = (time.monotonic(), result, stamp)

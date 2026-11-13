@@ -72,7 +72,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.11.12.4"
+ADAPTER_VERSION = "2026.11.14.1"
 MCP_UPDATE_API = 1
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
                 "agent_chat_read", "reference_exact"}
@@ -1180,7 +1180,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         return present(broker.action("execute_generation_plan", {"plan_id": plan_id}))
 
     if profile:
-        if native and apps is None:
+        if native and apps is None and not panel:
             server.resource(RESULT_UI_URI, name="mvhub_result", title="MV Hub 생성 결과",
                             mime_type="text/html;profile=mcp-app", meta={"ui": {"prefersBorder": False}})(result_ui)
 

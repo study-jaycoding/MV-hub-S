@@ -533,6 +533,32 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeSeq = useRef(0); // 가장 나중에 보낸 확인만 반영 — 늦게 온 옛 답이 '연결됨'을 덮지 않게
   const claudeInFlight = useRef(false); // 2초 확인은 앞 확인이 끝나야 다음을 보낸다
   const mounted = useRef(true); // 닫힌 칸엔 답·타이머가 쓰지 않는다
+  const codexInFlight = useRef(false);
+  const [codexBusy, setCodexBusy] = useState(false);
+  const [codexError, setCodexError] = useState<string | null>(null);
+
+  const setCodexEnabled = useCallback(async (enabled: boolean) => {
+    if (codexInFlight.current) return;
+    const account = getAccountNamespace();
+    const current = () => mounted.current && account === getAccountNamespace();
+    codexInFlight.current = true;
+    setCodexBusy(true);
+    setCodexError(null);
+    try {
+      const result = await agentChatApi.setCodexEnabled(enabled);
+      if (!current()) return;
+      setSession((s) => s ? { ...s, engines: result.engines } : s);
+      setChoice((c) => c ?? pickChoice(result.engines, null));
+    } catch (e) {
+      if (current()) {
+        setCodexError(errorDetail(e));
+        if (e instanceof AccountChangedError) fail(e);
+      }
+    } finally {
+      codexInFlight.current = false;
+      if (mounted.current) setCodexBusy(false);
+    }
+  }, [fail]);
 
   const stopWaiting = useCallback(() => {
     if (claudeTimer.current !== null) window.clearInterval(claudeTimer.current);
@@ -994,6 +1020,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
+    codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled },
     restoreReference, restoreSource, newFromRestored, removeRestoreSource,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking, undoAction,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,

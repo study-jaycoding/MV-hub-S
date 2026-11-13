@@ -19,6 +19,7 @@ from app.repo import mcp_v2 as mcp_store
 from app.routers import _proxy, agent_chat as router, auth as auth_router, gen_requests, mcp as mcp_router, mcp_v2 as api
 from app.services import agent_chat as chat
 from app.services import agent_chat_process as process
+from app.services import agent_chat_codex as codex
 
 FAKE = Path(__file__).with_name("agent_chat_fake_cli.py")
 EMAIL = "panel@example.test"
@@ -39,7 +40,8 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
     monkeypatch.setattr(process, "cli_version", lambda prefix: "2.1.296" if "--fake-engine=claude" in prefix else "0.162.0-alpha.17.2")
-    monkeypatch.setattr(process, "CODEX_LOCK", None)  # Codex 경로도 시험한다(실사용 기본은 잠금 — 따로 시험)
+    codex._write("codex_enabled.json", {"version": "0.162.0-alpha.17.2", "policy": codex.CODEX_POLICY,
+                                        "at": "2026-11-14T00:00:00+00:00"})
     service = chat.AgentChat()
     monkeypatch.setattr(chat, "service", service)
     monkeypatch.setattr(router, "service", service)
@@ -80,6 +82,45 @@ def hub(tmp_path, monkeypatch):
         yield client, profiles, service
     service.shutdown()
     db.flush_pool()
+
+
+@pytest.mark.parametrize("raw", [None, "broken json"])
+def test_codex_disabled_engine_apis_do_not_run_status_processes(hub, monkeypatch, raw):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    codex.disable()
+    if raw is not None:
+        codex._path("codex_enabled.json").write_text(raw, encoding="utf-8")
+    monkeypatch.setattr(chat.claude, "claude_state", lambda prefix: {"state": "ready", "version": "2.1.296", "subscription": "Max"})
+    monkeypatch.setattr(process, "cli_version", lambda prefix: pytest.fail("disabled listing ran --version"))
+    monkeypatch.setattr(process, "auth_problem", lambda prefix: pytest.fail("disabled listing ran login status"))
+    monkeypatch.setattr(router, "_window_open", lambda: False)
+    for response in (client.post("/api/agent-chat/session", headers=HEADERS), client.get("/api/agent-chat/claude", headers=headers)):
+        assert response.status_code == 200, response.text
+        row = next(e for e in response.json()["engines"] if e["id"] == "codex")
+        assert not row["enabled"] and not row["available"]
+
+
+def test_codex_enable_disable_api_requires_panel_and_returns_engines(hub, monkeypatch):
+    from test_agent_chat_codex_unlock import FakeJob
+    client, _, _ = hub
+    headers = panel_headers(client)
+    monkeypatch.setattr(process, "JobProcess", FakeJob)
+    monkeypatch.setenv("FAKE_AGENT_SCENARIO", "codex_probe_ok")
+    for action in ("enable", "disable"):
+        assert client.post(f"/api/agent-chat/codex/{action}", headers=HEADERS).status_code == 401
+    for action, expected in (("disable", False), ("enable", True), ("disable", False)):
+        response = client.post(f"/api/agent-chat/codex/{action}", headers=headers)
+        assert response.status_code == 200, response.text
+        row = next(e for e in response.json()["engines"] if e["id"] == "codex")
+        assert row["enabled"] is expected and row["available"] is expected
+    monkeypatch.setenv("FAKE_AGENT_SCENARIO", "codex_probe_wrong_nonce")
+    response = client.post("/api/agent-chat/codex/enable", headers=headers)
+    assert response.status_code == 409 and "점검" in response.json()["detail"]
+    assert codex.marker() is None
+    with codex._lock("codex_probe.lock"):
+        response = client.post("/api/agent-chat/codex/enable", headers=headers)
+        assert response.status_code == 409
 
 
 def panel_headers(client):

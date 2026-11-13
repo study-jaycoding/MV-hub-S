@@ -71,11 +71,14 @@ export function UsagePop({ usage }: { usage: AgentUsage }) {
 }
 
 /** 설정 쪽 — 칸 안을 덮는다(← 와 Esc 로 돌아감, Esc 는 칸이 건다) */
-export function AgentSettings({ engines, usage, onBack, onConnectClaude }: {
+export function AgentSettings({ engines, usage, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
   engines: AgentEngine[];
   usage: AgentUsage;
   onBack: () => void;
   onConnectClaude: () => void; // 지금의 Claude 연결 흐름(대화 칸의 연결 안내)으로
+  onSetCodexEnabled: (enabled: boolean) => void;
+  codexBusy: boolean;
+  codexError: string | null;
 }) {
   const t = useT();
   const [d, setD] = useState<AgentDefaults>(() => readDefaults());
@@ -120,8 +123,14 @@ export function AgentSettings({ engines, usage, onBack, onConnectClaude }: {
               <span className="agent-settings-logo" aria-hidden="true">◎</span>
               <span className="agent-settings-t">ChatGPT (Codex)<small>
                 {codex?.version ? `Codex ${codex.version} · ` : ""}
+                {codex?.enabled ? t("이 PC 에서 켬") : t("꺼짐")}{" · "}
                 {codex?.available ? <span className="ok">{t("연결됨")}</span> : <span className="warn">{codex?.reason || t("쓸 수 없음")}</span>}
-              </small></span>
+              </small>{codexError && <small className="agent-codex-error" role="alert">{codexError}</small>}</span>
+              <button type="button" className="agent-settings-btn" disabled={codexBusy}
+                aria-label={codex?.enabled ? t("Codex 끄기") : t("Codex 연결")}
+                onClick={() => onSetCodexEnabled(!codex?.enabled)}>
+                {codexBusy ? t("확인하는 중") : codex?.enabled ? t("끄기") : t("연결")}
+              </button>
             </div>
           </div>
         </div>

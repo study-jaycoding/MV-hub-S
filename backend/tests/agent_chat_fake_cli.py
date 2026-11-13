@@ -74,11 +74,29 @@ def main():
         print(json.dumps({**data, "email": "secret@example.test", "orgId": "org-SECRET"}))
         sys.exit(code)
     if args[-2:] == ["login", "status"] or (len(args) >= 2 and args[0:2] == ["login", "status"]):  # Codex 모양
-        print({"subscription": "Logged in using ChatGPT", "api_key": "Logged in using an API key"}.get(auth, "Not logged in"))
+        print({"subscription": "Logged in using ChatGPT", "api_key": "Logged in using an API key"}.get(auth, "Not logged in"), file=sys.stderr)
         return
     prompt = sys.stdin.buffer.read().decode("utf-8")
     user = prompt.rsplit("[사용자]\n", 1)[-1].strip()
     scenario = os.environ.get("FAKE_AGENT_SCENARIO", "claude_ok")
+    if scenario.startswith("codex_probe_"):
+        import tomllib
+        setting = next(value for value in args if value.startswith("mcp_servers.mvhub_panel.args="))
+        nonce = tomllib.loads("args=" + setting.split("=", 1)[1])["args"][-1]
+        if scenario == "codex_probe_timeout":
+            time.sleep(120)
+        out({"type": "thread.started", "thread_id": "probe-fake"})
+        if scenario in ("codex_probe_violation", "codex_probe_unknown"):
+            out({"type": "item.updated", "item": {"type": "command_execution" if scenario.endswith("violation") else "image_view"}})
+        count = 0 if scenario == "codex_probe_zero" else 2 if scenario == "codex_probe_two" else 1
+        for _ in range(count):
+            out({"type": "item.completed", "item": {"type": "mcp_tool_call", "server": "mvhub_panel",
+                 "tool": "check_connection", "status": "completed"}})
+        text = "" if scenario == "codex_probe_missing_nonce" else "wrong nonce" if scenario == "codex_probe_wrong_nonce" else nonce
+        out({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
+        if scenario != "codex_probe_no_result":
+            out({"type": "turn.failed" if scenario == "codex_probe_failed" else "turn.completed"})
+        return
     if scenario == "claude_ok":
         init()
         for piece in ("받은 ", "말: "):

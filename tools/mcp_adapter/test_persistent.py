@@ -179,6 +179,19 @@ class PersistentTests(unittest.TestCase):
                 self.assertEqual(len(await legacy.list_tools()), 7)
         anyio.run(exercise)
 
+    def test_panel_has_no_resources_or_templates_compared_with_native(self):
+        credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url,
+                      "hub_id": self.http.hub_id, "client_id": str(uuid4())}
+
+        async def exercise():
+            with patch("server.profile_settings", return_value=credential):
+                native = adapter.create_server(self.url, "isolated-profile", "native")
+                panel = adapter.create_server(self.url, "isolated-profile", "native", panel=True)
+                self.assertTrue(await native.list_resources())
+                self.assertEqual(await panel.list_resources(), [])
+                self.assertEqual(await panel.list_resource_templates(), [])
+        anyio.run(exercise)
+
     def test_panel_plan_description_keeps_card_text_out_of_the_answer(self):
         # 칸 모드(docs/status/MVAgent_작은것3_2026-11-12.md) — 계획 카드 글을 답에 '>' 로 되풀이하지 않게. 일반 연결 설명은 그대로
         credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url, "hub_id": self.http.hub_id, "client_id": str(uuid4())}
