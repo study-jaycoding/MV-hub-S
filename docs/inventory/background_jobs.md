@@ -66,6 +66,7 @@
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Thread | `copy_context().run` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Timer | `self._timeout` |
 | `backend/app/services/agent_chat.py` | `AgentChat.start_turn` | Thread | `copy_context().run` |
+| `backend/app/services/agent_chat_codex.py` | `_probe` | Timer | `timeout` |
 | `backend/app/services/agent_chat_process.py` | `JobProcess.feed` | Thread | `write` |
 | `backend/app/services/agent_chat_process.py` | `JobProcess.start` | Thread | `self._drain_stderr` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |
