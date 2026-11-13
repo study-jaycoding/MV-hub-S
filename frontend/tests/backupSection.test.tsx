@@ -95,6 +95,15 @@ async function mount(current = status(), onRefresh = vi.fn()) {
 }
 
 describe("백업 칸", () => {
+  it.each([
+    ["agent_chat_busy", "대화 기록을 복원 중"],
+    ["agent_chat_unreadable", "대화 기록을 읽지 못해"],
+    ["asset_mounts_invalid", "폴더 등록 자료를 읽지 못해"],
+    ["backup_scope_changed", "백업 중 계정 자료가 바뀌어"],
+    ["share_database_changed", "백업 중 계정 자료가 바뀌어"],
+  ])("integration: %s 경고를 기존 줄에 표시", (code, message) => {
+    expect(backupWarnings(retention({ last_error: { code, at: "2026-11-13T00:00:00Z" } })).join(" ")).toContain(message);
+  });
   it("상태 줄 — 세트 수·가장 오래된 날·용량·서버 복제, 고른 값의 예상 최대 용량", async () => {
     await mount();
     const text = host.querySelector(".settings-backup-status")!.textContent!;

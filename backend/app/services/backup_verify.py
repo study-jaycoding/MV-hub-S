@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import sqlite3
+import stat
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +42,82 @@ BACKUP_SET_MEMBERS: dict[str, dict[str, Any]] = {
         "reconcile_tables": ("team_generation_fact",),
     },
 }
+
+RESTORED_V3_NAMES = {**{role: spec['restored_name'] for role, spec in BACKUP_SET_MEMBERS.items()},
+                     'agent_chat': 'agent_chat.db', 'asset_mounts': 'asset_mounts.json'}
+
+
+def restored_v3_paths(root: Path, manifest: dict, *, empty: bool = False) -> dict[str, Path]:
+    from . import backup_manifest
+    from .isolated_env import _local_path
+
+    backup_manifest.validate_v3(manifest, local=True)
+    root = _local_path(root)
+    # Check every fixed path before reading any member, including absent roles.
+    all_paths = {role: _local_path(root / 'db' / name) for role, name in RESTORED_V3_NAMES.items()}
+    if any(not path.is_relative_to(root) for path in all_paths.values()):
+        raise ValueError('restore member outside root')
+    present = {role for role, info in manifest['roles'].items() if info['state'] == 'present'}
+    for role, path in all_paths.items():
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            if not empty and role in present:
+                raise ValueError('restored member missing')
+        else:
+            if empty:
+                raise FileExistsError(path)
+            if role not in present or not stat.S_ISREG(mode):
+                raise ValueError('unexpected restored member')
+        for suffix in ('-wal', '-shm', '-journal'):
+            side = _local_path(Path(str(path) + suffix))
+            try:
+                side.stat()
+            except FileNotFoundError:
+                continue
+            raise ValueError('restored member residue')
+    return {role: all_paths[role] for role in present}
+
+
+def _verify_restore_v3(content: Path, root: Path, manifest: dict) -> dict[str, Any]:
+    from . import backup_manifest
+
+    sources = backup_manifest.local_paths(content, manifest, check_present=True)
+    destinations = restored_v3_paths(root, manifest, empty=True)
+    source_info = {role: inspect_sqlite_database(path, required_tables=set(BACKUP_SET_MEMBERS[role]['required_tables']))
+                   for role, path in sources.items() if role in BACKUP_SET_MEMBERS}
+    created: list[Path] = []
+    try:
+        for role, source in sources.items():
+            target = destinations[role]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('xb') as output:
+                created.append(target)
+                with source.open('rb') as stream:
+                    shutil.copyfileobj(stream, output)
+        backup_manifest.verify_files_v3(manifest, destinations, local=True)
+        files = {}
+        for role, path in destinations.items():
+            info = {'backup': str(sources[role]), 'restored': str(path),
+                    'backup_bytes': sources[role].stat().st_size, 'restored_bytes': path.stat().st_size,
+                    'source_unchanged': True}
+            if role in source_info:
+                restored = inspect_sqlite_database(path, required_tables=set(BACKUP_SET_MEMBERS[role]['required_tables']))
+                if (source_info[role]['schema_sha256'] != restored['schema_sha256']
+                        or source_info[role]['table_counts'] != restored['table_counts']):
+                    raise ValueError('restored structure or rows differ')
+                info.update(schema_sha256=restored['schema_sha256'], table_count=len(restored['tables']),
+                            reconcile_counts={table: restored['table_counts'][table]
+                                              for table in BACKUP_SET_MEMBERS[role]['reconcile_tables']}, index_rebuilt=[])
+            files[role] = info
+        backup_manifest.verify_files_v3(manifest, sources, local=True)
+    except BaseException:
+        for path in reversed(created):
+            path.unlink(missing_ok=True)
+        raise
+    return {'ok': True, 'mode': 'database_set', 'stamp': content.name[len('content_hub_'):-3],
+            'restored_data_dir': str(root), 'files': files, 'manifest': manifest,
+            'consistency_kind': manifest['consistency_kind']}
 
 
 def _sqlite_read_uri(path: Path, *, immutable: bool) -> str:
@@ -87,6 +165,7 @@ def create_sqlite_snapshot(
 def snapshot_database_set(
     sources: list[tuple[str, Path, str, str | None]],
     snapshots: list[tuple[str, Path, Path, str | None]],
+    *, capture_times: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """첨부 DB를 한 연결의 읽기 트랜잭션에서 연 뒤 각각 온라인 백업한다.
 
@@ -129,9 +208,15 @@ def snapshot_database_set(
         src_conn.execute("BEGIN")
         try:
             # 각 DB의 스냅샷 경계를 가능한 한 가깝게 잡는다. DB 간 동일 시점 보장은 아니다.
-            for alias in aliases.values():
+            for role, alias in aliases.items():
                 src_conn.execute(f"SELECT name FROM {alias}.sqlite_master LIMIT 1").fetchone()
+                if capture_times is not None:
+                    capture_times[role] = datetime.now(timezone.utc).isoformat()
             captured_at = datetime.now(timezone.utc).isoformat()
+            if capture_times is not None:
+                captured_at = capture_times['content']
+                if pinned_pair:
+                    capture_times['trash'] = captured_at
             if barrier.in_transaction:
                 barrier.execute("ROLLBACK")
             for label, _, tmp, _ in snapshots:
@@ -403,14 +488,16 @@ def read_table_counts(path: Path, tables: tuple[str, ...]) -> dict[str, int]:
         return _table_counts(conn, list(tables))
 
 
-def verify_restore_set(content_backup: Path, restored_data_dir: Path) -> dict[str, Any]:
+def verify_restore_set(content_backup: Path, restored_data_dir: Path, *, allow_v3: bool = False) -> dict[str, Any]:
     """같은 시각의 content·trash·manage 백업을 격리 데이터 폴더에 함께 복원한다.
 
     세 대상 파일을 모두 사전 검사해 하나라도 이미 존재하면 아무것도 쓰지 않는다. 복원 중
     오류가 나면 이 호출이 만든 파일만 회수해 부분 세트를 정상 복원으로 오인하지 않게 한다.
     """
     from . import backup_manifest
-    manifest = backup_manifest.read_local(content_backup)
+    manifest = backup_manifest.read_local(content_backup, allow_v3=allow_v3)
+    if manifest and manifest['format_version'] == 3:
+        return _verify_restore_v3(content_backup, restored_data_dir, manifest)
     stamp, backup_paths = discover_backup_set(content_backup)
     if manifest and set(manifest['roles']) != set(backup_paths):
         raise ValueError('backup manifest members differ')

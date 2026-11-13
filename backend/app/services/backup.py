@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 import logging
@@ -44,6 +45,9 @@ from .sqlite_db import read_only_uri, validate_hub_db
 from .backup_verify import snapshot_database_set as _snapshot_database_set
 from . import backup_manifest
 from .atomic_io import atomic_write_text
+
+CAPTURE_VERSION = 2
+_AGENT_PATH_CACHE: dict[tuple[str, int, str], tuple[str, Path | None]] = {}
 
 _backup_log = logging.getLogger("mvhub.backup")
 
@@ -201,6 +205,9 @@ def _set_complete(content: Path, keep: dict | None = None) -> bool:
                 return False
             return content.is_file()
         data = json.loads(manifest.read_text("utf-8"))
+        if isinstance(data, dict) and data.get('format_version') == 3:
+            backup_manifest.read_local(content, allow_v3=True)
+            return True
         roles = data.get("roles") if isinstance(data, dict) else None
         if not isinstance(roles, dict) or "content" not in roles:
             return False
@@ -213,7 +220,7 @@ def _set_complete(content: Path, keep: dict | None = None) -> bool:
             if not member.is_file() or member.stat().st_size != info.get("size"):
                 return False
         return True
-    except (OSError, ValueError, AttributeError, TypeError):  # 깨진 manifest = 불완전(보존), 회전은 계속
+    except (OSError, ValueError, AttributeError, TypeError, sqlite3.Error):  # 불완전 세트 보존
         return False
 
 
@@ -677,10 +684,11 @@ def _set_members(d: Path, stamp: str) -> list[Path]:
     """지울 때의 구성원 순서 — 만들 때(대표 파일 마지막 공개)의 반대: 콘텐츠 대표 파일 먼저 → 부속 DB →
     manifest → -wal/-shm. 대표 파일이 잠겨 못 지우면 세트가 통째로 남는다. 곁파일은 따로 마지막."""
     content = d / f"{_PREFIX}{stamp}.db"
-    dbs = [d / f"{_TRASH_PREFIX}{stamp}.db", d / f"{_MANAGE_PREFIX}{stamp}.db"]
-    members = [content, *dbs, backup_manifest.local_path(content)]
+    paths = backup_manifest.local_paths(content)
+    dbs = [path for role, path in paths.items() if role != 'content' and path.suffix == '.db']
+    members = [content, *dbs, paths['asset_mounts'], backup_manifest.local_path(content)]
     for db_path in (content, *dbs):
-        members += [Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")]
+        members += [Path(str(db_path) + suffix) for suffix in ('-wal', '-shm', '-journal')]
     return members
 
 
@@ -772,12 +780,23 @@ def _db_change_signature(src: Path | None = None) -> tuple[tuple[str, int, int],
     content = src or get_db_path()
     trash = content.parent / "content_hub_trash.db"
     result: list[tuple[str, int, int]] = []
-    for label, path in (
+    inputs = [
         ("content", content),
         ("content-wal", Path(str(content) + "-wal")),
         ("trash", trash),
         ("trash-wal", Path(str(trash) + "-wal")),
-    ):
+    ]
+    if _v3_capture_enabled():
+        from . import asset_mounts
+        manage = content.parent / 'manage_hub.db'
+        if not manage.is_file():
+            manage = MANAGE_DB_PATH
+        inputs.extend([('manage', manage), ('manage-wal', Path(str(manage) + '-wal')),
+                       ('asset_mounts', asset_mounts.mounts_file(active_account.account_key()))])
+        agent = _poll_agent_path(content)
+        if agent is not None:
+            inputs.extend([('agent_chat', agent), ('agent_chat-wal', Path(str(agent) + '-wal'))])
+    for label, path in inputs:
         try:
             stat = path.stat()
         except OSError:
@@ -865,9 +884,12 @@ def list_backups_info(backup_dir: Path | None = None) -> list[dict]:
         st = p.stat()
         stamp = item.stamp
         related = [p]
+        manifest = json.loads(backup_manifest.local_path(p).read_text('utf-8')) if backup_manifest.local_path(p).is_file() else None
+        if manifest and manifest.get('format_version') == 3:
+            related = list(backup_manifest.local_paths(p, manifest).values())
         for prefix in (_TRASH_PREFIX, _MANAGE_PREFIX):
             candidate = p.parent / f"{prefix}{stamp}.db"
-            if candidate.is_file():
+            if candidate.is_file() and candidate not in related:
                 related.append(candidate)
         manifest_path = backup_manifest.local_path(p)
         if manifest_path.is_file():
@@ -945,6 +967,8 @@ def _member_stamps(d: Path) -> set[str]:
     for pattern, cut, tail in ((f"{_PREFIX}*.db", len(_PREFIX), ".db"),
                                (f"{_TRASH_PREFIX}*.db", len(_TRASH_PREFIX), ".db"),
                                (f"{_MANAGE_PREFIX}*.db", len(_MANAGE_PREFIX), ".db"),
+                               ('agent_chat_*.db', len('agent_chat_'), '.db'),
+                               ('asset_mounts_*.json', len('asset_mounts_'), '.json'),
                                (f"{_PREFIX}*.manifest.json", len(_PREFIX), ".manifest.json"),
                                (f"{_PREFIX}*.keep.json", len(_PREFIX), ".keep.json")):
         stamps.update(path.name[cut:-len(tail)] for path in d.glob(pattern))
@@ -953,7 +977,7 @@ def _member_stamps(d: Path) -> set[str]:
 
 def _side_stamp(db_name: str) -> str | None:
     """세트 구성원 DB 이름에서 stamp — content_hub_/content_trash_/manage_hub_ 가 아니면 None."""
-    for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX):
+    for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX, 'agent_chat_'):
         if db_name.startswith(prefix) and db_name.endswith(".db"):
             return db_name[len(prefix):-3]
     return None
@@ -969,7 +993,7 @@ def _cleanup_stale_tmp(d: Path) -> None:
     """크래시가 남긴 임시 백업 잔재 청소 — 이 모듈이 만든 이름만, 1일 이상 묵은 것만.
     (락 안에서 호출 — 지금 만들고 있는 tmp 를 지울 일이 없다.)"""
     cutoff = time.time() - 86400.0
-    for p in d.glob(f".*.db{_TMP_MARK}*"):
+    for p in (*d.glob(f".*.db{_TMP_MARK}*"), *d.glob(f".asset_mounts_*.json{_TMP_MARK}*")):
         with contextlib.suppress(OSError):
             if p.stat().st_mtime < cutoff:
                 p.unlink()
@@ -1016,6 +1040,202 @@ def _check_disk_space(d: Path, sources: list[tuple[str, Path, str, str | None]])
         raise BackupDiskFull(errno.ENOSPC, "backup disk full")
 
 
+def _v3_capture_enabled() -> bool:
+    return CAPTURE_VERSION == 3 and not AUTH_ENABLED and bool(active_account.account_key())
+
+
+def _env_fingerprint() -> str:
+    return hashlib.sha256((os.environ.get('CONTENT_HUB_AUTH_SECRET') or '').encode()).hexdigest()
+
+
+def _agent_path(source: Path, content: Path, email: str, *, immutable: bool, secret: str | None) -> Path | None:
+    from . import agent_chat, auth
+
+    if not secret:
+        with contextlib.closing(sqlite3.connect(read_only_uri(content, immutable=immutable), uri=True)) as conn:
+            row = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()
+            secret = row[0] if row else None
+    if not secret:
+        return None
+    return agent_chat.Identity(auth.hub_id_for(secret, source), str(source.resolve()), email).file_path()
+
+
+def _poll_agent_path(source: Path) -> Path | None:
+    from .. import db
+
+    if db.maintenance_active():
+        return None
+    try:
+        with db.pinned_share_operation():
+            secret = os.environ.get('CONTENT_HUB_AUTH_SECRET')
+            epoch = db.pool_epoch()
+            fingerprint = hashlib.sha256((secret or '').encode()).hexdigest()
+            key = (str(source.resolve()), epoch, fingerprint)
+            email = active_account.account_key() or ''
+            cached = _AGENT_PATH_CACHE.get(key)
+            if cached is not None and cached[0] == email:
+                return cached[1]
+            with db.share_operation_write():
+                journal = Path(str(source) + '-journal')
+                if journal.exists() and journal.stat().st_size:
+                    return None
+                path = _agent_path(source, source, email, immutable=False, secret=secret)
+            db.require_share_operation_epoch()
+            if fingerprint != _env_fingerprint():
+                return None
+        _AGENT_PATH_CACHE[key] = (email, path)
+        return path
+    except (OSError, ValueError, sqlite3.Error, db.DatabaseEpochChanged):
+        return None
+
+
+class BackupCaptureError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def _backup_v3_for_scope(src: Path, d: Path, stamp: str | None, reason: str) -> Path:
+    from .. import db
+    from ..repo import agent_chat as agent_store
+    from . import asset_mounts
+
+    snapshots: list[tuple[str, Path, Path, str | None]] = []
+    try:
+        with db.pinned_share_operation():
+            email = active_account.account_key() or ''
+            secret = os.environ.get('CONTENT_HUB_AUTH_SECRET')
+            epoch = db.pool_epoch()
+            fingerprint = hashlib.sha256((secret or '').encode()).hexdigest()
+            with _BACKUP_LOCK:
+                db.require_share_operation_epoch()
+                if fingerprint != _env_fingerprint():
+                    raise BackupCaptureError('backup_scope_changed')
+                d.mkdir(parents=True, exist_ok=True)
+                _cleanup_stale_tmp(d)
+                stamp = stamp or datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
+                content_dest = d / f'{_PREFIX}{stamp}.db'
+                destinations = backup_manifest.local_paths(content_dest)
+                if any(p.exists() for p in (*destinations.values(), backup_manifest.local_path(content_dest), _keep_path(content_dest))):
+                    raise FileExistsError('backup stamp already exists')
+                sources = [('content', src, _PREFIX, None)]
+                manage = src.parent / 'manage_hub.db'
+                if not manage.is_file():
+                    manage = MANAGE_DB_PATH
+                for role, path, table in (('trash', src.parent / 'content_hub_trash.db', 'trashed'),
+                                          ('manage', manage, 'team_generation_fact')):
+                    try:
+                        mode = path.stat().st_mode
+                    except FileNotFoundError:
+                        continue
+                    if not stat.S_ISREG(mode):
+                        raise BackupCaptureError('backup_source_unreadable')
+                    sources.append((role, path, _ROLE_PREFIX[role], table))
+
+                def temporary(role: str, table: str | None = None) -> Path:
+                    target = destinations[role]
+                    path = target.with_name('.' + target.name + _TMP_MARK + uuid4().hex[:8])
+                    snapshots.append((role, target, path, table))
+                    return path
+
+                for role, _source, _prefix, table in sources:
+                    temporary(role, table)
+                _check_disk_space(d, sources)
+                _ensure_registered(d)
+                times: dict[str, str] = {}
+                with db.share_operation_write():
+                    capture = _snapshot_database_set(sources, snapshots, capture_times=times)
+                db.require_share_operation_epoch()
+                role_paths = {role: tmp for role, _, tmp, _ in snapshots}
+                for role, _, tmp, table in snapshots:
+                    if role == 'content':
+                        validate_hub_db(tmp, require_integrity=True)
+                    else:
+                        _validate_sidecar(tmp, table or '')
+                roles = {role: {'state': 'present', 'captured_at': times[role],
+                                **backup_manifest.role_info(path, role)} for role, path in role_paths.items()}
+                for role in ('trash', 'manage'):
+                    roles.setdefault(role, {'state': 'absent', 'captured_at': capture['captured_at']})
+                agent = _agent_path(src, role_paths['content'], email, immutable=True, secret=secret)
+                _AGENT_PATH_CACHE[(str(src.resolve()), epoch, fingerprint)] = (email, agent)
+                roles['agent_chat'] = {'state': 'absent', 'captured_at': capture['captured_at']}
+                if agent is not None:
+                    try:
+                        captured = datetime.now(timezone.utc).isoformat()
+                        try:
+                            mode = agent.stat().st_mode
+                        except FileNotFoundError:
+                            mode = None
+                        roles['agent_chat']['captured_at'] = captured
+                        if mode is not None:
+                            if not stat.S_ISREG(mode):
+                                raise ValueError('not a file')
+                            _check_disk_space(d, [*sources, ('agent_chat', agent, '', None)])
+                            tmp = temporary('agent_chat')
+                            with agent_store.connect(agent, readonly=True) as conn:
+                                conn.execute('BEGIN')
+                                conn.execute('SELECT name FROM sqlite_master LIMIT 1').fetchone()
+                                captured = datetime.now(timezone.utc).isoformat()
+                                with contextlib.closing(sqlite3.connect(tmp)) as dest:
+                                    conn.backup(dest)
+                            backup_manifest._verify_agent(tmp)
+                            role_paths['agent_chat'] = tmp
+                            roles['agent_chat'] = {'state': 'present', 'captured_at': captured,
+                                                   'size': tmp.stat().st_size, 'sha256': backup_manifest.file_digest(tmp)}
+                    except agent_store.StaleRequest as exc:
+                        raise BackupCaptureError('agent_chat_busy') from exc
+                    except (OSError, ValueError, sqlite3.Error) as exc:
+                        if isinstance(exc, BackupDiskFull):
+                            raise
+                        raise BackupCaptureError('agent_chat_unreadable') from exc
+                db.require_share_operation_epoch()
+                try:
+                    mounts = asset_mounts.mounts_file(email)
+                    raw, captured = asset_mounts.capture_bytes(mounts)
+                    roles['asset_mounts'] = {'state': 'absent', 'captured_at': captured}
+                    if raw is not None:
+                        _check_disk_space(d, [*sources, ('asset_mounts', mounts, '', None),
+                                              *([('agent_chat', agent, '', None)] if agent else [])])
+                        tmp = temporary('asset_mounts')
+                        tmp.write_bytes(raw)
+                        role_paths['asset_mounts'] = tmp
+                        roles['asset_mounts'] = {'state': 'present', 'captured_at': captured,
+                                                'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+                    manifest = backup_manifest.seal({
+                        'format': backup_manifest.LOCAL_FORMAT, 'format_version': 3,
+                        'payload_version': backup_manifest.PAYLOAD_VERSION,
+                        'account_scope_digest': backup_manifest.account_digest(active_account.slug(email)),
+                        **capture, 'roles': roles,
+                        'consistency_roles': (['content', 'trash'] if capture['consistency_kind'] == backup_manifest.PINNED
+                                              else sorted(role_paths)),
+                    })
+                    backup_manifest.verify_files_v3(manifest, role_paths, local=True)
+                except (OSError, ValueError) as exc:
+                    if isinstance(exc, BackupDiskFull):
+                        raise
+                    raise BackupCaptureError('asset_mounts_invalid') from exc
+                with db.share_operation_write():
+                    if fingerprint != _env_fingerprint():
+                        raise BackupCaptureError('backup_scope_changed')
+                    atomic_write_text(backup_manifest.local_path(content_dest), backup_manifest.canonical(manifest))
+                    _write_keep(content_dest, _keep_record(_next_seq(d), capture['captured_at'], reason, manifest['set_id']))
+                    for role, dest, tmp, _ in sorted(snapshots, key=lambda item: item[0] == 'content'):
+                        os.replace(tmp, dest)
+        # The pin's exit check must succeed before retention can delete anything.
+        with _BACKUP_LOCK:
+            _rotate(d)
+        _LAST_ERROR.pop(str(d), None)
+        return content_dest
+    except BaseException as exc:
+        for _, _, tmp, _ in snapshots:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        _LAST_ERROR[str(d)] = {'code': ('disk_full' if isinstance(exc, BackupDiskFull)
+                                      else getattr(exc, 'code', type(exc).__name__)),
+                               'at': datetime.now(timezone.utc).isoformat()}
+        raise
+
+
 def _backup_now_for_scope(
     src: Path,
     backup_dir: Path,
@@ -1027,6 +1247,8 @@ def _backup_now_for_scope(
         raise ValueError(f"unknown backup reason: {reason}")
     if not src.exists():
         return None
+    if _v3_capture_enabled():
+        return _backup_v3_for_scope(src, backup_dir, stamp, reason)
     with _BACKUP_LOCK:
         d = backup_dir
         d.mkdir(parents=True, exist_ok=True)
@@ -1162,6 +1384,8 @@ def retention_status(backup_dir: Path | None = None, *, now: float | None = None
         stamps: set[str] = set()
         for pattern, cut, tail in ((f"{_TRASH_PREFIX}*.db", len(_TRASH_PREFIX), ".db"),
                                    (f"{_MANAGE_PREFIX}*.db", len(_MANAGE_PREFIX), ".db"),
+                                   ('agent_chat_*.db', len('agent_chat_'), '.db'),
+                                   ('asset_mounts_*.json', len('asset_mounts_'), '.json'),
                                    (f"{_PREFIX}*.manifest.json", len(_PREFIX), ".manifest.json"),
                                    (f"{_PREFIX}*.keep.json", len(_PREFIX), ".keep.json")):
             stamps.update(path.name[cut:-len(tail)] for path in backup_dir.glob(pattern))
@@ -1289,6 +1513,11 @@ def _completed_backup_info(path: Path) -> tuple[int, int | None]:
         size = path.stat().st_size
     except OSError:
         return 1, None
+    with contextlib.suppress(OSError, ValueError, TypeError):
+        manifest = json.loads(backup_manifest.local_path(path).read_text('utf-8'))
+        if isinstance(manifest, dict) and manifest.get('format_version') == 3:
+            members = backup_manifest.local_paths(path, manifest)
+            return len(members), sum(member.stat().st_size for member in members.values())
     stamp = path.name[len(_PREFIX):-3]
     related = [path]
     for prefix in (_TRASH_PREFIX, _MANAGE_PREFIX):
@@ -1359,30 +1588,18 @@ class PeriodicBackup:
         # NAS 파일 조회는 한 동기 helper로 묶어 poll당 to_thread 한 번만 사용한다.
         scope = _capture_backup_scope()
         src, backup_dir, _account_key = scope
-        age, signature, backup_needed = await asyncio.to_thread(
-            _read_poll_state,
-            src,
-            backup_dir,
-        )
+        age, signature, backup_needed = await self._poll(scope)
         # 시작 백업: 최근 백업이 충분히 새것이면 생략(재기동 난립 방지).
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
             await self._backup_once(scope)
             # 성공·실패 뒤의 최신 백업 시각을 다시 읽어 기존 시작 시점 판단을 보존한다.
-            age, signature, backup_needed = await asyncio.to_thread(
-                _read_poll_state,
-                src,
-                backup_dir,
-            )
+            age, signature, backup_needed = await self._poll(scope)
         changed_at = time.monotonic() if backup_needed else None
         while True:
             await asyncio.sleep(min(60.0, BACKUP_POLL_INTERVAL))
             current_scope = _capture_backup_scope()
             src, backup_dir, _account_key = current_scope
-            age, current_signature, current_backup_needed = await asyncio.to_thread(
-                _read_poll_state,
-                src,
-                backup_dir,
-            )
+            age, current_signature, current_backup_needed = await self._poll(current_scope)
             now = time.monotonic()
             if current_scope != scope:
                 # 계정 전환 시 이전 계정의 dirty 시각을 버리고, 방금 읽은 새 계정 상태를
@@ -1412,6 +1629,16 @@ class PeriodicBackup:
                     # 초기화 전이거나 제거된 DB는 성공이 아니지만, 사라진 대상의 dirty를
                     # 무한히 유지할 이유도 없다. DB가 생기면 새 서명이 다시 변경을 알린다.
                     changed_at = None
+
+    async def _poll(self, scope):
+        src, backup_dir, account_key = scope
+        if CAPTURE_VERSION != 3 or AUTH_ENABLED or not account_key:
+            return await asyncio.to_thread(_read_poll_state, src, backup_dir)
+        token = active_account.set_override(account_key)
+        try:
+            return await asyncio.to_thread(_read_poll_state, src, backup_dir)
+        finally:
+            active_account.reset_override(token)
 
     async def _backup_once(
         self,

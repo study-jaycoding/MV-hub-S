@@ -36,6 +36,9 @@ _WORKER_FIELDS = {'backup_set_id', 'created_at', 'local_stamp', 'schema_version'
 _JSON_MAX_BYTES = 1024 * 1024
 WORKER_FILENAMES = {'content': 'content.db', 'trash': 'trash.db',
                     'agent_chat': 'agent_chat.db', 'asset_mounts': 'asset_mounts.json'}
+LOCAL_NAMES = {'content': ('content_hub_', '.db'), 'trash': ('content_trash_', '.db'),
+               'manage': ('manage_hub_', '.db'), 'agent_chat': ('agent_chat_', '.db'),
+               'asset_mounts': ('asset_mounts_', '.json')}
 _AGENT_BASELINE = {
     'agent_chat_conversation': {'id', 'engine', 'model', 'effort', 'cli_session_id', 'client_id',
                                 'mcp_entry', 'title', 'resumable', 'created_at', 'updated_at'},
@@ -339,13 +342,49 @@ def local_path(content: Path) -> Path:
     return content.with_suffix('.manifest.json')
 
 
-def read_local(content: Path) -> dict | None:
+def local_paths(content: Path, value: dict | None = None, *, check_present: bool = False) -> dict[str, Path]:
+    stamp = content.name[len('content_hub_'):-3]
+    paths = {role: content.parent / f'{prefix}{stamp}{suffix}'
+             for role, (prefix, suffix) in LOCAL_NAMES.items()}
+    if value is None:
+        return paths
+    roles = {role for role, info in value['roles'].items()
+             if value['format_version'] != 3 or info['state'] == 'present'}
+    if check_present:
+        actual = set()
+        for role, path in paths.items():
+            if role not in roles and path.suffix == '.db':
+                for suffix in ('-wal', '-shm', '-journal'):
+                    try:
+                        Path(str(path) + suffix).stat()
+                    except FileNotFoundError:
+                        continue
+                    raise ValueError('absent backup member residue')
+            try:
+                mode = path.stat().st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(mode):
+                raise ValueError('local backup member is not a file')
+            actual.add(role)
+        if actual != roles:
+            raise ValueError('backup manifest members differ')
+    return {role: paths[role] for role in roles}
+
+
+def read_local(content: Path, *, allow_v3: bool = False) -> dict | None:
     path = local_path(content)
     if not path.exists():
         return None
     if path.stat().st_size > 64 * 1024:
         raise ValueError('backup manifest too large')
     value = json.loads(path.read_text('utf-8'))
+    if allow_v3 and isinstance(value, dict) and value.get('format_version') == 3:
+        value = read_json_v3(path.read_bytes())
+        validate_v3(value, local=True)
+        paths = local_paths(content, value, check_present=True)
+        verify_files_v3(value, paths, local=True)
+        return value
     validate(value, local=True)
     stamp = content.name[len('content_hub_'):-3]
     prefixes = {'content': 'content_hub_', 'trash': 'content_trash_', 'manage': 'manage_hub_'}

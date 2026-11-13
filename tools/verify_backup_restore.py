@@ -69,10 +69,11 @@ def main() -> int:
                     if args.restored_dir
                     else temp_dir / "restored-data"
                 )
-                report = verify_restore_set(args.backup_set, restored_data_dir)
+                report = verify_restore_set(args.backup_set, restored_data_dir, allow_v3=True)
                 report["isolated_server"] = verify_restored_set_runtime(
                     restored_data_dir,
                     timeout_seconds=args.server_timeout,
+                    manifest=report.get('manifest'),
                 )
                 report["restored_kept"] = bool(args.restored_dir)
             else:

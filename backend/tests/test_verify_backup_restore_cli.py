@@ -59,3 +59,14 @@ def test_single_database_mode_has_no_isolated_server(cli, monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["verify_backup_restore.py", "--backup", str(backup)])
     monkeypatch.setattr(cli, "verify_restore_drill", lambda *a, **k: {"ok": True})
     assert cli.main() == 0
+
+
+def test_consumers_cli_forwards_verified_manifest_only(cli, monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    manifest = {'format_version': 3, 'synthetic': True}
+    monkeypatch.setattr(sys, 'argv', ['verify_backup_restore.py', '--backup-set', str(tmp_path / 'content_hub_test.db')])
+    monkeypatch.setattr(cli, 'verify_restore_set', lambda *a, **kw: {'ok': True, 'manifest': manifest})
+    runtime = Mock(return_value={'ok': True, 'process_stopped': True})
+    monkeypatch.setattr(cli, 'verify_restored_set_runtime', runtime)
+    assert cli.main() == 0
+    assert runtime.call_args.kwargs['manifest'] is manifest

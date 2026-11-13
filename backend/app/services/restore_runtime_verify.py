@@ -128,6 +128,7 @@ def verify_restored_set_runtime(
     restored_data_dir: Path,
     *,
     timeout_seconds: float = 60.0,
+    manifest: dict | None = None,
 ) -> dict[str, Any]:
     """복원 세트로 격리 서버를 띄워 ready·로그인·핵심 수를 실제 확인한다."""
     restored_data_dir = _local_path(restored_data_dir)
@@ -137,6 +138,18 @@ def verify_restored_set_runtime(
         label: _local_path(db_dir / str(spec["restored_name"]))
         for label, spec in BACKUP_SET_MEMBERS.items()
     }
+    extra_hashes = {}
+    restored_roles = None
+    if manifest is not None and manifest.get('format_version') == 3:
+        from . import backup_manifest
+        from .backup_verify import restored_v3_paths
+
+        members = restored_v3_paths(restored_data_dir, manifest)
+        backup_manifest.verify_files_v3(manifest, members, local=True)
+        restored_roles = sorted(members)
+        extra_hashes = {path: backup_manifest.file_digest(path) for role, path in members.items()
+                        if role not in BACKUP_SET_MEMBERS}
+        paths = {role: path for role, path in members.items() if role in BACKUP_SET_MEMBERS}
     for label, path in paths.items():
         inspect_sqlite_database(
             path,
@@ -298,7 +311,10 @@ def verify_restored_set_runtime(
             "격리 로그인용 account·creator 외의 부트스트랩 변화가 감지되었습니다: "
             f"before={before_bootstrap}, after={after_bootstrap}"
         )
-    return {
+    for path, digest in extra_hashes.items():
+        if backup_manifest.file_digest(_local_path(path)) != digest:
+            raise ValueError('restored Agent/JSON changed during boot')
+    result = {
         "ok": True,
         "ready": True,
         "ready_checks": ready_payload.get("checks") if ready_payload else {},
@@ -310,3 +326,8 @@ def verify_restored_set_runtime(
         "process_stopped": process_stopped,
         "log": str(log_path),
     }
+    if restored_roles is not None:
+        result.update(restored_roles=restored_roles,
+                      initialized_roles=sorted(set(BACKUP_SET_MEMBERS) - set(paths)),
+                      extra_members_check='bytes_only_not_agent_or_mount_access')
+    return result

@@ -46,7 +46,7 @@ from rotate_text_log import rotate_text_log
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / 'backend') not in sys.path:
     sys.path.insert(0, str(ROOT / 'backend'))
-from app.services import backup_manifest
+from app.services import backup as local_backup, backup_manifest
 DATA_DIR = ROOT / "backend" / "data"
 TARGET_FILE = Path(__file__).resolve().parent / "backup_replica_target.txt"
 LOG = ROOT / "logs" / "backup_replicate.log"
@@ -234,8 +234,26 @@ def _accepts_existing(target: Path, entries: list[Path]) -> bool:
                 continue
             if sub == "db-backups" and _is_our_set_file(root, path):
                 continue
+            if sub == 'backups' and _is_our_local_agent(path):
+                continue
             return False
     return True
+
+
+def _is_our_local_agent(path: Path) -> bool:
+    if not re.fullmatch(r'agent_chat_\d{8}_\d{6}(?:_\d{6})?\.db', path.name):
+        return False
+    if path.parent.name.startswith('.localpart-'):
+        return True
+    content = path.with_name('content_hub_' + path.name[len('agent_chat_'):])
+    try:
+        value = backup_manifest.read_json_v3(backup_manifest.local_path(content).read_bytes())
+        backup_manifest.validate_v3(value, local=True)
+        keep, state = local_backup._read_keep(content)
+        deleting = (state == 'ok' and keep['deleting'] and keep['set_id'] == value['set_id'])
+        return path in backup_manifest.local_paths(content, value, check_present=not deleting).values()
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
 
 
 def _is_our_set_file(root: Path, path: Path) -> bool:
@@ -446,16 +464,14 @@ def copy_one(src: Path, dest: Path) -> str:
 
 
 def _local_members(content: Path) -> list[Path]:
-    stamp = content.name[len('content_hub_'):-3]
-    return [content.parent / f'{prefix}{stamp}.db'
-            for prefix in ('content_hub_', 'content_trash_', 'manage_hub_')]
+    return list(backup_manifest.local_paths(content).values())
 
 
 def copy_local_set(src: Path, dest: Path) -> str:
     """Keep the flat layout; publish metadata before the representative content."""
     staged = dest.parent / f'.localpart-{uuid.uuid4().hex}'
     try:
-        manifest = backup_manifest.read_local(src)
+        manifest = backup_manifest.read_local(src, allow_v3=True)
         if manifest is None:
             raise ValueError('local manifest missing')
         members = [path for path in _local_members(src) if path.is_file()]
@@ -465,7 +481,7 @@ def copy_local_set(src: Path, dest: Path) -> str:
             raise ValueError('unexpected destination member')
         if dest.exists():
             try:
-                if backup_manifest.read_local(dest) == manifest:
+                if backup_manifest.read_local(dest, allow_v3=True) == manifest:
                     return 'skip'
             except (ValueError, OSError, sqlite3.Error):
                 pass
@@ -473,14 +489,14 @@ def copy_local_set(src: Path, dest: Path) -> str:
         for path in members:
             shutil.copy2(path, staged / path.name)
         shutil.copyfile(backup_manifest.local_path(src), backup_manifest.local_path(staged / src.name))
-        if backup_manifest.read_local(staged / src.name) != manifest:
+        if backup_manifest.read_local(staged / src.name, allow_v3=True) != manifest:
             raise ValueError('local replica metadata mismatch')
         for path in members:
             if path != src:
                 os.replace(staged / path.name, dest.parent / path.name)
         os.replace(backup_manifest.local_path(staged / src.name), backup_manifest.local_path(dest))
         os.replace(staged / src.name, dest)
-        if backup_manifest.read_local(dest) != manifest:
+        if backup_manifest.read_local(dest, allow_v3=True) != manifest:
             raise ValueError('published local replica metadata mismatch')
         return 'copied'
     except (OSError, ValueError, sqlite3.Error):
@@ -553,6 +569,21 @@ def prune_dir(d: Path, protected: set[str]) -> int:
     retained = {path.name for path in files[:KEEP_PER_DIR]} | protected
     removed = 0
     visited: set[Path] = set()
+    # Only our durable deletion intent permits dismantling an incomplete set.
+    for marker in d.glob('content_hub_*.keep.json'):
+        content = marker.with_name(marker.name[:-len('.keep.json')] + '.db')
+        if not _OWNED_SINGLE_DB_RE.fullmatch(content.name):
+            continue
+        keep, state = local_backup._read_keep(content)
+        if state != 'ok' or not keep['deleting']:
+            continue
+        members = _local_members(content)
+        visited.update(members)
+        if any(path.name in protected for path in members):
+            continue
+        before = sum(path.exists() for path in members)
+        local_backup._finish_delete(d, local_backup._stamp_of(content))
+        removed += before - sum(path.exists() for path in members)
     for old in files[KEEP_PER_DIR:]:
         if old in visited or old.name in protected:
             continue
@@ -564,17 +595,23 @@ def prune_dir(d: Path, protected: set[str]) -> int:
         if content.name.startswith('content_hub_') and metadata.is_file():
             members = [path for path in _local_members(content) if path.exists()]
             visited.update(members)
+            try:
+                manifest = backup_manifest.read_local(content, allow_v3=True)
+            except (OSError, ValueError, sqlite3.Error):
+                continue  # Never dismantle an incomplete or damaged set.
             if any(path.name in retained for path in members):
                 continue
-            for path in members:
-                try:
-                    path.unlink()
-                    removed += 1
-                except OSError:
-                    break
-            else:
-                with contextlib.suppress(OSError):
-                    metadata.unlink()
+            if local_backup._read_keep(content)[1] != 'missing':
+                continue  # Do not overwrite unknown retention metadata.
+            try:
+                local_backup._write_keep(content, {
+                    **local_backup._keep_record(1, manifest['captured_at'], 'auto', manifest['set_id']),
+                    'deleting': True,
+                })
+            except OSError:
+                continue
+            local_backup._finish_delete(d, local_backup._stamp_of(content))
+            removed += sum(not path.exists() for path in members)
             continue
         try:
             old.unlink()
@@ -655,33 +692,46 @@ def main() -> int:
             seen_any_source = True
             local_members: set[Path] = set()
             if sub == 'backups':
-                for metadata in source.rglob('content_hub_*.manifest.json'):
-                    if 'pre-dev2-baseline' in metadata.relative_to(source).parts:
+                contents = {p.with_name(p.name[:-len('.manifest.json')] + '.db')
+                            for p in source.rglob('content_hub_*.manifest.json')}
+                for keep in source.rglob('content_hub_*.keep.json'):
+                    try:
+                        expected = json.loads(keep.read_text('utf-8')).get('manifest', True)
+                    except (OSError, ValueError, AttributeError):
+                        expected = True
+                    if expected:
+                        contents.add(keep.with_name(keep.name[:-len('.keep.json')] + '.db'))
+                for prefix, suffix in (('agent_chat_', '.db'), ('asset_mounts_', '.json')):
+                    for member in source.rglob(prefix + '*' + suffix):
+                        contents.add(member.with_name('content_hub_' + member.name[len(prefix):-len(suffix)] + '.db'))
+                for src in sorted(contents):
+                    if 'pre-dev2-baseline' in src.relative_to(source).parts:
                         continue
-                    src = metadata.with_name(metadata.name[:-len('.manifest.json')] + '.db')
                     if not _OWNED_SINGLE_DB_RE.fullmatch(src.name):
                         continue
                     members = _local_members(src)
                     local_members.update(members)
+                    dest = target / sub / src.relative_to(source)
+                    dirs.add(dest.parent)
+                    protected_by_dir.setdefault(dest.parent, set()).update(path.name for path in members)
                     try:
                         src.stat()
                     except FileNotFoundError:
                         # content가 마지막 공개 표식이다. 먼저 쓰인 metadata/sidecar는
                         # 아직 완성본이 아니며 단일 DB 복제에도 섞지 않는다.
                         continue
-                    dest = target / sub / src.relative_to(source)
                     result = copy_local_set(src, dest)
                     copied += result == 'copied'
                     skipped += result == 'skip'
                     failed += result == 'fail'
-                    dirs.add(dest.parent)
-                    protected_by_dir.setdefault(dest.parent, set()).update(path.name for path in members)
             for src in source.rglob("*.db"):
                 # These are local conversion safeguards, not off-disk backup sets.
                 if 'pre-dev2-baseline' in src.relative_to(source).parts:
                     continue
                 if src in local_members:
                     continue
+                if sub == 'backups' and src.name.startswith('agent_chat_'):
+                    continue  # Agent snapshots are never standalone legacy backups.
                 # 새 작업자 백업은 manifest와 함께 디렉터리 단위로 아래에서 복제한다.
                 if sub == "db-backups" and "sets" in src.relative_to(source).parts:
                     continue

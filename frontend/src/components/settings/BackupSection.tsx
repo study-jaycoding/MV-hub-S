@@ -38,6 +38,10 @@ export function backupWarnings(retention: BackupRetentionStatus | undefined): st
   if (retention.delete_failed > 0) out.push(`오래된 백업 ${retention.delete_failed}세트를 지우지 못했습니다(다음에 다시)`);
   if (retention.last_error?.code === "disk_full") out.push("디스크가 부족해 백업하지 못했습니다");
   else if (retention.last_error?.code === "registry_unreadable") out.push("백업 폴더의 기록을 읽지 못해 백업하지 못했습니다 — 폴더 권한·연결을 확인해 주세요");
+  else if (retention.last_error?.code === "agent_chat_busy") out.push("대화 기록을 복원 중이어서 백업하지 못했습니다 — 잠시 뒤 다시 시도합니다");
+  else if (retention.last_error?.code === "agent_chat_unreadable") out.push("대화 기록을 읽지 못해 백업하지 못했습니다 — 기존 백업은 그대로 남아 있습니다");
+  else if (retention.last_error?.code === "asset_mounts_invalid") out.push("폴더 등록 자료를 읽지 못해 백업하지 못했습니다 — 기존 백업은 그대로 남아 있습니다");
+  else if (retention.last_error?.code === "backup_scope_changed" || retention.last_error?.code === "share_database_changed") out.push("백업 중 계정 자료가 바뀌어 완료하지 못했습니다 — 다시 시도해 주세요");
   else if (retention.last_error) out.push(`마지막 백업 실패(${retention.last_error.code})`);
   return out;
 }

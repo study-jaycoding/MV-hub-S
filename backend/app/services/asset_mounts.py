@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -148,6 +150,24 @@ def _write_unlocked(path: Path, mounts: list[Mount]) -> None:
 def load(path: Path) -> list[Mount]:
     with _file_lock(path):
         return _read_unlocked(path)
+
+
+def capture_bytes(path: Path) -> tuple[bytes | None, str]:
+    """Keep original bounded bytes; only stat FileNotFound means absent."""
+    from .backup_manifest import _JSON_MAX_BYTES, read_json_v3
+
+    with _file_lock(path):
+        captured = datetime.now(timezone.utc).isoformat()
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            return None, captured
+        if not stat.S_ISREG(mode):
+            raise ValueError('asset_mounts_invalid')
+        with path.open('rb') as stream:
+            raw = stream.read(_JSON_MAX_BYTES + 1)
+        read_json_v3(raw)
+        return raw, captured
 
 
 def save(path: Path, mounts: list[Mount]) -> None:

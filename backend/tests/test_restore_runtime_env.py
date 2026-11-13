@@ -5,6 +5,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 import pytest
+from test_backup_v3_local import local, capture, extras
 
 PREP = Path(__file__).resolve().parents[2]
 
@@ -121,3 +122,89 @@ def test_database_or_log_link_is_rejected_before_inspection_open_and_spawn(tmp_p
     module.inspect_sqlite_database.assert_not_called()
     opened.assert_not_called()
     popen.assert_not_called()
+
+
+@pytest.fixture
+def v3_restored(local):
+    from app import db
+    from app.services import backup_verify
+    local[0].unlink()
+    db.init_db()
+    extras(local)
+    content = capture(local)
+    root = local[2] / 'restored'
+    report = backup_verify.verify_restore_set(content, root, allow_v3=True)
+    return root, report['manifest']
+
+
+@pytest.mark.parametrize('fault', ['seal', 'missing', 'tamper', 'absent', 'residue', 'link'])
+def test_consumers_runtime_rejects_bad_v3_before_spawn(v3_restored, monkeypatch, fault):
+    from app.services import restore_runtime_verify as runtime
+    root, manifest = v3_restored
+    if fault == 'seal':
+        manifest['set_id'] = '0' * 64
+    elif fault == 'missing':
+        (root / 'db' / 'agent_chat.db').unlink()
+    elif fault == 'tamper':
+        (root / 'db' / 'asset_mounts.json').write_bytes(b'{"mounts":[]}')
+    elif fault == 'absent':
+        (root / 'db' / 'manage_hub.db').write_bytes(b'unexpected')
+    elif fault == 'residue':
+        (root / 'db' / 'agent_chat.db-wal').write_bytes(b'')
+    else:
+        from app.services import isolated_env
+        original = isolated_env._local_path
+        def reject(path):
+            if path.name == 'asset_mounts.json':
+                raise ValueError('fixture-reparse')
+            return original(path)
+        monkeypatch.setattr(isolated_env, '_local_path', reject)
+    popen = Mock()
+    monkeypatch.setattr(runtime.subprocess, 'Popen', popen)
+    with pytest.raises((ValueError, OSError)):
+        runtime.verify_restored_set_runtime(root, manifest=manifest)
+    popen.assert_not_called()
+
+
+def test_consumers_runtime_checks_extra_bytes_after_boot(v3_restored, monkeypatch):
+    from app.services import restore_runtime_verify as runtime
+    root, manifest = v3_restored
+    process = SimpleNamespace(stopped=False)
+    process.poll = lambda: 0 if process.stopped else None
+    monkeypatch.setattr(runtime.subprocess, 'Popen', Mock(return_value=process))
+    monkeypatch.setattr(runtime, '_stop_test_process', lambda p: setattr(p, 'stopped', True))
+    def response(base, path, **kwargs):
+        if path == '/api/ready':
+            return 200, {'checks': {r: 'ok' for r in ('content', 'trash', 'manage')}}
+        (root / 'db' / 'asset_mounts.json').write_bytes(b'{"mounts":[]}')
+        return 200, {'token': 'synthetic-only'}
+    monkeypatch.setattr(runtime, '_local_json_request', response)
+    def after(path, tables):
+        result = runtime.read_table_counts(path, tables)
+        if tables == ('account', 'creator'):
+            result = {key: value + 1 for key, value in result.items()}
+        return result
+    monkeypatch.setattr(runtime, '_read_counts_after_shutdown', after)
+    with pytest.raises(ValueError, match='changed during boot'):
+        runtime.verify_restored_set_runtime(root, manifest=manifest)
+    assert process.stopped
+
+
+@pytest.mark.parametrize('with_extras', [False, True])
+def test_consumers_runtime_v3_absent_boots_ready_and_reaps_child(local, with_extras):
+    from app import db
+    from app.services import backup_verify, restore_runtime_verify
+    local[0].unlink()
+    db.init_db()
+    if with_extras:
+        extras(local)
+    content = capture(local)
+    root = local[2] / 'real-boot'
+    report = backup_verify.verify_restore_set(content, root, allow_v3=True)
+    result = restore_runtime_verify.verify_restored_set_runtime(root, manifest=report['manifest'], timeout_seconds=45)
+    assert result['ready_checks'] == {'content': 'ok', 'trash': 'ok', 'manage': 'ok'}
+    assert result['temporary_bootstrap_deltas'] == {'account': 1, 'creator': 1}
+    assert result['restored_roles'] == (['agent_chat', 'asset_mounts', 'content'] if with_extras else ['content'])
+    assert result['initialized_roles'] == ['manage', 'trash']
+    assert set(result['reconcile_counts']) == {'content'}
+    assert result['process_stopped']
