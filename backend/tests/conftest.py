@@ -30,6 +30,29 @@ def block_live_slack(monkeypatch):
     monkeypatch.setattr(slack_client, '_slack_api', blocked)
     return original
 
+@pytest.fixture(autouse=True)
+def resolve_children_isolated_in_tests(monkeypatch):
+    """Resolve 자식 실행의 시험 격리.
+
+    · 제품의 변경 문 이름(Local\\MVHub_Resolve_Mutation)을 시험이 쥐지 않는다 — 실행 중인 실제 앱과 서로 막지 않게 시험 프로세스마다의 이름으로 바꾼다.
+    · resolve_status_runner 의 자식 실행은 subprocess.run 으로 보낸다 — 기존 시험이 subprocess.run 대역으로 자식을 흉내 낸다.
+      호출마다의 Job(win_job.run_in_job)은 그것을 직접 부르는 시험(test_resolve_mutation_gate)이 본다.
+    """
+    import subprocess
+    from app.services import resolve_status_runner, win_job
+    monkeypatch.setattr(win_job, 'RESOLVE_MUTATION_MUTEX', f'Local\\MVHub_Test_Mutation_{os.getpid()}')
+
+    def plain(args, *, input_text=None, timeout=None, kill_on_close=True, **popen):
+        return subprocess.run(args, check=False, capture_output=True, input=input_text, timeout=timeout, **popen)
+
+    monkeypatch.setattr(resolve_status_runner, 'run_in_job', plain)
+    # 라이브러리 연결 자동화는 시험에서 자식 프로세스로 띄우지 않는다 — 진짜 자식은 실제 Resolve 창을 다루는 PowerShell 을 돌린다.
+    # 기존 시험이 _run_automation 을 대역으로 바꿔 쓰므로, 그 함수를 같은 프로세스에서 부른다(부를 때의 값 — 대역이 적용된다).
+    from app.services import resolve_library_dialog
+    monkeypatch.setattr(resolve_library_dialog, '_run_automation_exclusively',
+                        lambda path, name: resolve_library_dialog._run_automation(path, name))
+
+
 # 격리 — 부모(셸·배포 게이트·도구)가 넘긴 CONTENT_HUB_* 는 **전부 버리고** 시험용 값만 다시 짠다.
 # config·app.db 가 import 시점에 값을 굳히므로 어떤 테스트 모듈보다 먼저(conftest 로드 시점에) 한다.
 #

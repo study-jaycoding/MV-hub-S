@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import hashlib
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,10 +16,13 @@ from typing import Any
 
 from .path_safety import unc_for_drive
 from .resolve_diagnostics import resolve_environment_snapshot
+from . import win_job
+from .resolve_mutation_guard import MUTATION_BUSY_EXIT
 from .resolve_status_runner import resolve_mutation_slot, run_resolve_library_list_isolated
 
 
 _RESULT_PREFIX = "MVHUB_RESOLVE_LIBRARY="
+CONNECT_RESULT_PREFIX = "MVHUB_LIBRARY_CONNECT="  # 자동화 자식(resolve_library_connect_worker)이 허브에 돌려주는 결과 줄
 _DIALOG_LOCK = threading.Lock()
 
 
@@ -563,6 +568,53 @@ def _run_automation(library_path: Path, library_name: str) -> dict[str, Any]:
     raise ResolveLibraryDialogError(detail)
 
 
+def _run_automation_exclusively(library_path: Path, library_name: str) -> dict[str, Any]:
+    """자동화(Resolve 를 바꾼다)를 다른 프로세스의 Resolve 변경·선택 읽기와 겹치지 않게 돌린다.
+
+    자동화는 문지기를 거친 자식(resolve_library_connect_worker)이 돌린다 — 그 자식이 도는 동안 변경 문(이름 붙은 뮤텍스)을 쥐고,
+    제한 시간·뒷정리도 그 자식이 집행한다. 허브가 죽어도 자식은 끝까지 돌며 문을 쥐고 있다(다른 가져오기 자식과 같은 규칙).
+    """
+    # 창 표시는 예전(허브가 PowerShell 을 직접 띄움)과 같게 — 허브에 콘솔이 있으면 자식도 그 콘솔을 쓰고, 없으면 자식도 콘솔 없이 뜬다
+    has_console = bool(ctypes.windll.kernel32.GetConsoleWindow()) if os.name == "nt" else True
+    try:
+        completed = win_job.run_in_job(
+            [sys.executable, "-m", "app.services.resolve_mutation_guard", "app.services.resolve_library_connect_worker"],
+            input_text=json.dumps({"path": str(library_path), "name": library_name}, ensure_ascii=True),
+            timeout=None,  # 80초 제한은 자식이 집행한다(_run_automation)
+            # 끝내지 않는 Job 이어야 한다 — 자동화는 Resolve 가 꺼져 있으면 Resolve 를 켜므로 Resolve 가 이 Job 의 구성원이 된다.
+            # 여기에 timeout 을 주거나 kill_on_close 를 켜면 트리 종료가 사용자의 Resolve 까지 끝낸다.
+            kill_on_close=False,
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"},
+            text=True, encoding="utf-8", errors="replace",
+            creationflags=0 if has_console else getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except win_job.ChildOutcomeUnknown as exc:
+        raise ResolveLibraryDialogError("Resolve 연결 창 자동화의 결과를 확인하지 못했습니다. Resolve 의 Project Manager 에서 확인하세요.") from exc
+    except win_job.PreviousChildUnconfirmed as exc:
+        raise ResolveLibraryDialogError(
+            "앞서 실행한 Resolve 확인 프로세스가 아직 끝나지 않아 연결 창을 열지 않았습니다. 잠시 뒤 다시 시도하고, 계속되면 MV Hub 를 다시 시작하세요."
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ResolveLibraryDialogError("Windows 자동화 도구를 실행하지 못했습니다.") from exc
+    if completed.returncode == MUTATION_BUSY_EXIT:
+        raise ResolveLibraryDialogError("다른 MV Hub 작업이 아직 DaVinci Resolve 를 바꾸는 중입니다. 끝난 뒤 다시 시도해 주세요.")
+    outcome = None
+    for line in reversed((completed.stdout or "").splitlines()):
+        if line.startswith(CONNECT_RESULT_PREFIX):
+            try:
+                outcome = json.loads(line[len(CONNECT_RESULT_PREFIX):])
+            except json.JSONDecodeError:
+                outcome = None
+            break
+    if isinstance(outcome, dict) and outcome.get("ok") is True and isinstance(outcome.get("result"), dict):
+        return outcome["result"]
+    if isinstance(outcome, dict) and outcome.get("ok") is False:
+        raise ResolveLibraryDialogError(str(outcome.get("message") or "Resolve 연결 창을 열지 못했습니다."))
+    detail = (completed.stderr or "").strip()[-2000:]
+    raise ResolveLibraryDialogError(f"Resolve 연결 창 자동화의 결과를 읽을 수 없습니다. {detail}".strip())
+
+
 def open_library_connect_dialog(library_path: Path, project_name: str) -> dict[str, Any]:
     """검증된 Disk Project Library를 Resolve Connect 창에 입력하고 Connect 를 누른다.
 
@@ -588,7 +640,7 @@ def open_library_connect_dialog(library_path: Path, project_name: str) -> dict[s
                 return _connected_result(registered, root, already=True)
             library_name = library_name_for_project(project_name, root)
             try:
-                _run_automation(root, library_name)
+                _run_automation_exclusively(root, library_name)
                 failure: ResolveLibraryDialogError | None = None
             except ResolveLibraryDialogError as exc:
                 failure = exc

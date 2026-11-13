@@ -23,11 +23,20 @@ from typing import Any
 from .resolve_bridge import resolve_process_running
 from .resolve_import_worker import RESULT_PREFIX as IMPORT_RESULT_PREFIX
 from .resolve_library_list_worker import RESULT_PREFIX as LIBRARY_LIST_RESULT_PREFIX
+from .resolve_mutation_guard import MUTATION_BUSY_EXIT
 from .resolve_project_open_worker import RESULT_PREFIX as PROJECT_OPEN_RESULT_PREFIX
 from .resolve_probe import RESULT_PREFIX
 from .resolve_python_registry import parse_python_version, registry_python_installations
 from .resolve_timeline import new_result as new_timeline_result
 from .resolve_timeline_worker import RESULT_PREFIX as TIMELINE_RESULT_PREFIX
+from .win_job import ChildOutcomeUnknown, PreviousChildUnconfirmed, run_in_job
+
+# 다른 프로세스의 변경 자식이 아직 Resolve 를 바꾸는 중(죽은 허브가 남긴 가져오기·같은 PC 의 다른 MV Hub) — 겹치지 않게 시작하지 않았다.
+# 그 변경이 멈춘 채 끝나지 않으면 이 답이 계속된다 — 그 프로세스가 끝나야 풀린다(안내에 방법을 적는다).
+BUSY_ELSEWHERE_MESSAGE = (
+    "다른 MV Hub 작업이 아직 DaVinci Resolve 를 바꾸는 중입니다. 끝난 뒤 다시 시도해 주세요. "
+    "계속 이 안내가 나오면 MV Hub 를 모두 닫았다가 다시 열어 주세요."
+)
 
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -136,7 +145,23 @@ def _no_interpreter_message(failure: str) -> str:
     )
 
 
-def _timeout_message(seconds: float | None = None) -> str:
+PREVIOUS_CHILD_MESSAGE = (
+    "앞서 실행한 Resolve 확인 프로세스가 아직 끝나지 않아 새로 실행하지 않았습니다. "
+    "잠시 뒤 다시 시도하고, 계속되면 MV Hub 를 다시 시작하세요"
+)
+
+
+class _PreviousChildStillEnding(subprocess.TimeoutExpired):
+    """앞선 자식 트리의 종료를 확인하지 못해 검사를 띄우지 않았다 — 인터프리터 문제가 아니므로 다음 후보로 돌지 않고,
+    '응답 없음'과 같은 길(호출자의 TimeoutExpired 처리)로 원인을 알린다. 허브를 다시 시작하면 조회 자식은 OS 가 끝낸다."""
+
+    def __str__(self) -> str:
+        return PREVIOUS_CHILD_MESSAGE
+
+
+def _timeout_message(seconds: float | None = None, *, exc: BaseException | None = None) -> str:
+    if isinstance(exc, _PreviousChildStillEnding):
+        return PREVIOUS_CHILD_MESSAGE
     seconds = _STATUS_TIMEOUT_SECONDS if seconds is None else seconds
     return (
         f"DaVinci Resolve가 {seconds:g}초 안에 응답하지 않았습니다. "
@@ -188,8 +213,17 @@ def _candidate_interpreters() -> list[str]:
 
 
 def _run_child(
-    interpreter: str, module: str, *, timeout: float | None, input_text: str | None = None
+    interpreter: str, module: str, *, timeout: float | None, input_text: str | None = None, mutation: bool = False
 ) -> subprocess.CompletedProcess[str]:
+    """Resolve 자식을 돌린다. mutation = Resolve 를 바꾸는 자식(가져오기·타임라인·프로젝트 열기·패널 변경).
+
+    자식 트리는 호출마다의 Job 이 소유한다(win_job.run_in_job) — 제한 시간을 넘기면 직접 자식만이 아니라 트리째 끝내고 확인한다.
+    · 바꾸는 자식은 문지기(resolve_mutation_guard)를 거쳐 돈다 — 사는 동안 이름 붙은 뮤텍스를 쥐어, 다른 프로세스(죽은 허브가 남긴
+      변경 자식·같은 PC 의 다른 허브)의 변경·선택 읽기와 겹치지 않는다. 이미 진행 중이면 대상은 시작하지 않고 MUTATION_BUSY_EXIT 로 끝난다.
+      허브가 죽어도 끝까지 돈다(도중에 끊으면 프로젝트가 반쯤 바뀐 채 남는다) — 제한 시간 때만 끝낸다.
+    · 읽기만 하는 자식(상태 조회·목록·패널 읽기)은 허브가 죽으면 OS 가 끝낸다.
+    Job 을 만들거나 넣지 못하면 OSError — 호출자가 '실행할 수 없음'으로 답한다(Job 없이 조용히 돌리지 않는다).
+    """
     # 레지스트리에 등록된 Python 만 실행하며 환경은 기존 probe 와 동일하게 상속한다.
     # 같은 Windows 사용자 계정 안이 신뢰 경계라 레지스트리 조작 방어는 하지 않는다.
     child_env = os.environ.copy()
@@ -199,19 +233,12 @@ def _run_child(
     if module == "app.services.resolve_probe":
         # None 응답 재시도(한 번 약4초)가 8초 검사 예산을 소진하지 않게 한다. 쓰기 재시도는 유지.
         child_env["CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS"] = "1"
-    return subprocess.run(
-        [interpreter, "-m", module],
-        cwd=_BACKEND_DIR,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        input=input_text,
-        env=child_env,
-        timeout=timeout,
+    args = [interpreter, "-m", "app.services.resolve_mutation_guard", module] if mutation else [interpreter, "-m", module]
+    options: dict[str, Any] = dict(
+        cwd=_BACKEND_DIR, text=True, encoding="utf-8", errors="replace", env=child_env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    return run_in_job(args, input_text=input_text, timeout=timeout, kill_on_close=not mutation, **options)
 
 
 def _parse_result(stdout: str, prefix: str) -> dict[str, Any] | None:
@@ -255,6 +282,8 @@ def _probe_with(interpreter: str) -> tuple[dict[str, Any] | None, str]:
         )
     except subprocess.TimeoutExpired:
         raise
+    except PreviousChildUnconfirmed as exc:
+        raise _PreviousChildStillEnding(interpreter, 0) from exc  # 후보를 돌아 'Python 없음'으로 오진하지 않는다
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"{interpreter}: 실행 실패({exc})"
     result = _parse_result(completed.stdout, RESULT_PREFIX)
@@ -312,8 +341,8 @@ def resolve_connection_status_bounded() -> dict[str, Any]:
         )
     try:
         _interpreter, result, failure = _select_interpreter()
-    except subprocess.TimeoutExpired:
-        return _unavailable(_timeout_message())
+    except subprocess.TimeoutExpired as exc:
+        return _unavailable(_timeout_message(exc=exc))
     except ResolveLaunching:
         return _unavailable(LAUNCHING_MESSAGE, status="starting")
     if result is not None:
@@ -331,8 +360,8 @@ def resolve_compatible_interpreter() -> tuple[str | None, str]:
         return None, "DaVinci Resolve가 실행 중이지 않습니다"
     try:
         interpreter, _result, failure = _select_interpreter()
-    except subprocess.TimeoutExpired:
-        return None, _timeout_message()
+    except subprocess.TimeoutExpired as exc:
+        return None, _timeout_message(exc=exc)
     except ResolveLaunching:
         return None, LAUNCHING_MESSAGE
     return interpreter, failure
@@ -400,8 +429,8 @@ def _run_import_child(
     with resolve_mutation_slot():
         try:
             interpreter, _status, failure = _select_interpreter()
-        except subprocess.TimeoutExpired:
-            return _timeout_message(), "api_unavailable"
+        except subprocess.TimeoutExpired as exc:
+            return _timeout_message(exc=exc), "api_unavailable"
         except ResolveLaunching:
             return LAUNCHING_MESSAGE, "launching"
         if interpreter is None:
@@ -412,9 +441,19 @@ def _run_import_child(
                 module,
                 timeout=None,
                 input_text=json.dumps(payload, ensure_ascii=True),
+                mutation=True,
             )
+        except PreviousChildUnconfirmed:
+            # 인터프리터 선택이 재사용돼 검사를 건너뛴 경우 여기서 처음 만난다 — 시작하지 않았다. 검사에서 만났을 때와 같은 답.
+            return PREVIOUS_CHILD_MESSAGE, "api_unavailable"
+        except ChildOutcomeUnknown as exc:
+            # 자식은 시작됐고 결과만 못 받았다 — 이미 무언가 했을 수 있다. '실행하지 못함'(spawn_failed)으로 답하면 화면이
+            # '만들지 못했다'로 보여 다시 보내게 된다 → 결과 없이 죽은 자식과 같은 '확인 필요'로 답한다.
+            return f"Resolve {label} 결과를 확인하지 못했습니다: {exc}", "child_crashed"
         except (OSError, subprocess.SubprocessError) as exc:
             return f"Resolve {label} 프로세스를 실행할 수 없습니다: {exc}", "spawn_failed"
+        if completed.returncode == MUTATION_BUSY_EXIT:
+            return BUSY_ELSEWHERE_MESSAGE, "resolve_busy"  # 대상은 시작하지 않았다 — 부수효과 없음
         result = _parse_result(completed.stdout, prefix)
         if result is None:
             detail = (
@@ -478,9 +517,9 @@ def run_resolve_project_open_isolated(
             )
         try:
             interpreter, _status, failure = _select_interpreter(launch_id=launch_id)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             return _project_open_unavailable(
-                _timeout_message(), error_code="api_unavailable"
+                _timeout_message(exc=exc), error_code="api_unavailable"
             )
         except ResolveLaunching:
             # 다른 화면·탭이 켠 Resolve 가 아직 켜지는 중 — 기다리면 풀린다(라우트가 503).
@@ -495,17 +534,27 @@ def run_resolve_project_open_isolated(
                 "app.services.resolve_project_open_worker",
                 timeout=120,
                 input_text=json.dumps(payload, ensure_ascii=True),
+                mutation=True,
             )
         except subprocess.TimeoutExpired:
             return _project_open_unavailable(
                 "Resolve 프로젝트가 120초 안에 열리지 않았습니다.",
                 error_code="open_timeout",
             )
+        except PreviousChildUnconfirmed:
+            return _project_open_unavailable(PREVIOUS_CHILD_MESSAGE, error_code="api_unavailable")  # 시작하지 않았다
+        except ChildOutcomeUnknown as exc:
+            return _project_open_unavailable(
+                f"Resolve 프로젝트 열기 결과를 확인하지 못했습니다: {exc}",
+                error_code="child_crashed",  # 시작된 뒤 결과만 못 받았다 — 실행하지 못한 것(spawn_failed)이 아니다
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             return _project_open_unavailable(
                 f"Resolve 프로젝트 열기 프로세스를 실행할 수 없습니다: {exc}",
                 error_code="spawn_failed",
             )
+        if completed.returncode == MUTATION_BUSY_EXIT:
+            return _project_open_unavailable(BUSY_ELSEWHERE_MESSAGE, error_code="resolve_busy")
         result = _parse_result(completed.stdout, PROJECT_OPEN_RESULT_PREFIX)
         if result is not None:
             return result
@@ -544,8 +593,8 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                     return {"state": "unavailable", "details": NOT_RUNNING_MESSAGE}
                 try:
                     interpreter, _status, failure = _select_interpreter()
-                except subprocess.TimeoutExpired:
-                    return {"state": "unavailable", "details": _timeout_message()}
+                except subprocess.TimeoutExpired as exc:
+                    return {"state": "unavailable", "details": _timeout_message(exc=exc)}
                 except ResolveLaunching as exc:
                     return {"state": "unavailable", "details": str(exc)}
                 if not interpreter:
@@ -559,13 +608,19 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                         interpreter, "app.services.resolve_panel_worker",
                         timeout=(20 if payload["operation"] == "inventory" else 8) if reading else None,
                         input_text=json.dumps(payload, ensure_ascii=True),
+                        mutation=not reading,
                     )
                 except subprocess.TimeoutExpired:
                     _note_panel_alive(None)
                     return {"state": failed_state, "details": _timeout_message(20 if payload["operation"] == "inventory" else 8)}
+                except PreviousChildUnconfirmed:
+                    _note_panel_alive(None)
+                    return {"state": "unavailable", "details": PREVIOUS_CHILD_MESSAGE}  # 시작하지 않았다 — adopt 도 '결과 확인 필요'가 아니다
                 except (OSError, subprocess.SubprocessError) as exc:
                     _note_panel_alive(None)
                     return {"state": failed_state, "details": str(exc)}
+                if completed.returncode == MUTATION_BUSY_EXIT:
+                    return {"state": "busy"}  # 다른 프로세스의 변경이 진행 중 — 이 변경은 시작하지 않았다
                 result = _parse_result(completed.stdout, "MVHUB_RESOLVE_PANEL=")
                 _note_panel_alive(result)
                 return result or {"state": failed_state,
@@ -602,6 +657,8 @@ def run_resolve_library_list_isolated() -> dict[str, Any]:
         )
     except subprocess.TimeoutExpired:
         return _library_list_failed("list_timeout")
+    except PreviousChildUnconfirmed:
+        return _library_list_failed("api_unavailable")
     except (OSError, subprocess.SubprocessError):
         return _library_list_failed("spawn_failed")
     result = _parse_result(completed.stdout, LIBRARY_LIST_RESULT_PREFIX)

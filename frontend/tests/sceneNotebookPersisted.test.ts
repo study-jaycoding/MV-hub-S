@@ -314,6 +314,134 @@ describe("sceneBackup — 카메라만 바꾼 확정·바깥에서 시작한 공
     expect(sync).toHaveBeenCalledTimes(3);
   });
 
+  // 재시도가 '동기화 중'에 걸려 밀렸다 실행되는 경로 — 밀린 재시도도 실행 직전에 계정·길을 다시 본다(새 변경의 한 번 더와 섞이지 않는다).
+  const retryQueuedBehindRunningSync = async () => {
+    outside(retry); // 30초 재시도가 걸린다
+    await vi.advanceTimersByTimeAsync(27_000);
+    let finish = (_: never) => {};
+    sync.mockImplementationOnce(() => new Promise<never>((resolve) => { finish = resolve; })); // 오래 걸리는 동기화
+    edit("edited");
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500); // 내용 저장의 동기화가 시작돼 도는 중
+    expect(sync).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000); // 재시도 타이머가 돈다 — 동기화 중이라 밀린다
+    expect(sync).toHaveBeenCalledTimes(1);
+    return () => finish(ok);
+  };
+
+  it("동기화 중에 밀린 재시도 — 끝나기 전에 공책 기능이 꺼지면 실행되지 않는다(공책 요청·옛 백업 PUT 0)", async () => {
+    const finish = await retryQueuedBehindRunningSync();
+    setHubFeatures([]);
+    finish();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+  });
+
+  it("동기화 중에 밀린 재시도 — 끝나기 전에 계정이 바뀌면 실행되지 않는다", async () => {
+    const finish = await retryQueuedBehindRunningSync();
+    setAccountScope("other@test");
+    finish();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+  });
+
+  it("동기화 중에 밀린 재시도 — 계정·기능이 그대로면 끝난 뒤 한 번 돈다", async () => {
+    const finish = await retryQueuedBehindRunningSync();
+    finish();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
+  it("동기화 중에 재시도와 새 변경이 함께 밀리면 새 변경의 한 번 더가 돈다(재시도 조건으로 새 변경을 버리지 않는다) — 한 번만", async () => {
+    const finish = await retryQueuedBehindRunningSync();
+    edit("edited again"); // 동기화 중 새 내용 — 2초 뒤 예약이 돌아 '한 번 더'로 밀린다
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(sync).toHaveBeenCalledTimes(1);
+    finish();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
+  // 진행 중 동기화가 실패(retry)로 끝나는 경우 — 그 도중 들어온 새 변경은 재시도가 맡고, 그 재시도는 조건 없이 돈다.
+  const syncFailsWhileRunning = async (newChange: boolean) => {
+    let finish = (_: never) => {};
+    sync.mockImplementationOnce(() => new Promise<never>((resolve) => { finish = resolve; }));
+    edit("edited");
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500); // 동기화가 도는 중
+    expect(sync).toHaveBeenCalledTimes(1);
+    if (newChange) {
+      edit("edited again"); // 도는 중 새 내용 — 2초 뒤 예약이 '한 번 더'로 밀린다
+      await settleSceneStoreForTest();
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(sync).toHaveBeenCalledTimes(1);
+    }
+    finish(retry as never); // 실패로 끝남 → 30초 재시도
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sync).toHaveBeenCalledTimes(1);
+  };
+
+  it("실패한 동기화 도중 새 변경이 있었으면, 기한 전에 공책 기능이 꺼져도 그 변경의 동기화는 돈다(옛 백업 길로 정상 동기화)", async () => {
+    await syncFailsWhileRunning(true);
+    setHubFeatures([]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(http.jsonFetch).toHaveBeenCalled(); // 재시도 조건에 묶여 사라지지 않았다 — 공책이 꺼진 허브의 정상 동기화(옛 백업)
+    expect(sync).toHaveBeenCalledTimes(1);
+    // 뒷정리 — 옛 백업 길의 실패가 건 재시도를 돌려 비운다(가짜 타이머를 해제하면 모듈의 타이머 손잡이만 남아 다음 시험의 재시도가 안 걸린다)
+    setHubFeatures(["scene_writer_v1"]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
+  it("실패한 동기화 도중 새 변경이 없었으면, 기한 전에 공책 기능이 꺼질 때 아무것도 시작하지 않는다", async () => {
+    await syncFailsWhileRunning(false);
+    setHubFeatures([]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("걸려 있던 재시도와 다른 길의 동기화가 실패하면, 그 재시도가 조건 없이 돌아 실패한 변경을 다시 보낸다", async () => {
+    outside(retry); // 공책 길의 30초 재시도가 걸린다
+    setHubFeatures([]); // 기한 전에 공책 기능이 꺼졌다
+    edit("edited");
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500); // 옛 백업 길의 정상 동기화가 돌고 실패한다 — 타이머가 이미 있어 새로 걸지 않는다
+    const sent = vi.mocked(http.jsonFetch).mock.calls.length;
+    expect(sent).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(28_000); // 걸려 있던 타이머의 기한 — 공책 조건은 이제 안 맞지만, 실패한 변경의 재시도는 돌아야 한다
+    expect(vi.mocked(http.jsonFetch).mock.calls.length).toBeGreaterThan(sent);
+    // 뒷정리 — 옛 백업 길의 실패가 건 재시도를 돌려 비운다
+    setHubFeatures(["scene_writer_v1"]);
+    await vi.advanceTimersByTimeAsync(31_000);
+  });
+
+  it("걸려 있던 재시도와 같은 길의 동기화가 또 실패한 것만으로는 그 재시도가 조건을 잃지 않는다(기능이 꺼지면 아무것도 시작하지 않는다)", async () => {
+    outside(retry); // 공책 길의 30초 재시도가 걸린다
+    sync.mockResolvedValue(retry as never);
+    edit("edited");
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500); // 같은 공책 길의 동기화가 돌고 실패한다 — 타이머는 이미 있다(같은 조건)
+    expect(sync).toHaveBeenCalledTimes(1);
+    setHubFeatures([]);
+    await vi.advanceTimersByTimeAsync(28_000); // 타이머의 기한 — 공책 조건이 안 맞으니 옛 백업 길로 들어가지 않는다
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+  });
+
+  it("실패한 동기화 도중 새 변경이 있었고 기능이 그대로면, 30초 재시도 한 번이 둘 다 맡는다(중복 없음)", async () => {
+    await syncFailsWhileRunning(true);
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(sync).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sync).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
   it("자기 동기화와 같은 진행 중 요청을 공유한 retry 는 재시도 하나", async () => {
     sync.mockImplementationOnce(async () => { outside(retry); return retry as never; }); // 결과 알림은 자기 syncNow 가 기다리는 동안 온다
     edit("edited");

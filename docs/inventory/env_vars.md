@@ -191,7 +191,8 @@
 | `MVHUB_LIBRARY_PATH` | `backend/app/services/resolve_library_dialog.py` |
 | `MVHUB_RESOLVE_EXE` | `backend/app/services/resolve_library_dialog.py` |
 | `MVHUB_RESULT_PREFIX` | `backend/app/services/resolve_library_dialog.py` |
-| `PYTHONDONTWRITEBYTECODE` | `tools/run_https_soak.ps1` `tools/server_console/main.py` |
+| `PYTHONDONTWRITEBYTECODE` | `backend/app/services/resolve_library_dialog.py` `tools/run_https_soak.ps1` `tools/server_console/main.py` |
+| `PYTHONIOENCODING` | `backend/app/services/resolve_library_dialog.py` `task_launch.bat` |
 
 ## Windows 가 주는 변수 (제품 설정 아님)
 

@@ -1,7 +1,7 @@
 """DaVinci Resolve Media Pool 선택을 읽는 장기 실행 자식 프로세스.
 
 fusionscript는 ABI 불일치가 부모 서버까지 죽일 수 있어 이 프로세스 안에서만 불러온다.
-선택이 실제로 바뀔 때만 stdout JSONL 한 줄을 내보내고, UI나 별도 창은 만들지 않는다.
+선택이 실제로 바뀔 때만 stdout JSONL 한 줄을 내보내고(그 밖에는 살아 있다는 신호 줄만), UI나 별도 창은 만들지 않는다.
 """
 
 from __future__ import annotations
@@ -122,18 +122,56 @@ def serialize_selection(payload: dict[str, Any]) -> str:
             bounded = {"selected_count": payload.get("selected_count", 0), "selections": [], "truncated": True}
 
 
-def main() -> int:
+class _NoGate:
+    def acquire(self, wait_seconds: float = 0.0) -> bool:
+        return True
+
+    def release(self) -> None:
+        pass
+
+
+# 살아 있다는 신호 — 바퀴를 돌 때마다(문을 쥐지 않은 자리에서) 이 간격으로 한 줄 낸다. 부모(선택 감시)는 이 줄이 끊기면
+# (= Resolve 호출이 돌아오지 않는다 — 그동안 변경 문을 쥐고 있다) 작업자를 Job 째 끝낸다. 작업자 안의 스레드로 감시하지 않는 이유:
+# 네이티브 호출이 GIL 을 쥔 채 멈추면 같은 프로세스의 파이썬 스레드는 돌지 못한다(Codex 실측).
+BEAT_LINE = "MVHUB_RESOLVE_BEAT"
+BEAT_SECONDS = 2.0
+
+
+def main(gate: Any = None) -> int:
+    """gate = Resolve 변경과 겹치지 않게 쥐는 문(win_job.NamedMutex). Resolve 를 건드리는 동안만 쥔다 — 다른 프로세스(다른 허브·죽은 허브가
+    남긴 변경 자식)가 Resolve 를 바꾸는 중이면 그 바퀴는 읽지 않고, 읽는 중에는 변경이 시작되지 않는다. 같은 허브의 변경은 부모가
+    이 작업자를 먼저 거둔다(쥔 채 끝나면 OS 가 푼다). 쥔 채 멈추면 신호(BEAT_LINE)가 끊겨 부모가 끝낸다."""
+    gate = gate or _NoGate()
+    try:
+        if not gate.acquire(2.0):
+            return 2  # 변경이 진행 중 — 부모가 백오프 뒤 다시 띄운다
+    except OSError:
+        return 2
     try:
         resolve = _connect_resolve()
     except Exception:  # noqa: BLE001 - 부모가 백오프 후 새 호환 자식을 띄운다.
         return 2
+    finally:
+        gate.release()
     previous: tuple[str, ...] | None = None
     no_manager_count = 0
+    last_beat = float("-inf")
     while True:
+        if time.monotonic() - last_beat >= BEAT_SECONDS:
+            print(BEAT_LINE, flush=True)
+            last_beat = time.monotonic()
+        try:
+            if not gate.acquire(0.0):
+                time.sleep(max(0.5, POLL_SECONDS))  # 다른 프로세스가 Resolve 를 바꾸는 중 — 이 바퀴는 읽지 않는다
+                continue
+        except OSError:
+            return 3
         try:
             fingerprint, payload = selected_snapshot(resolve, previous=previous)
         except Exception:  # noqa: BLE001 - 연결이 끊기면 부모가 새로 probe한다.
             return 3
+        finally:
+            gate.release()
         if fingerprint != previous:
             print(
                 serialize_selection(payload),
@@ -174,4 +212,10 @@ def _exit_when_stdin_closes(stream: Any = None, leave: Any = os._exit) -> thread
 
 if __name__ == "__main__":
     _exit_when_stdin_closes()  # Resolve 연결보다 먼저 — 연결이 오래 걸리는 사이 부모가 죽어도 끝난다
-    raise SystemExit(main())
+    from . import win_job
+
+    try:
+        _gate: Any = win_job.resolve_mutation_gate()
+    except OSError:
+        raise SystemExit(2)  # 문을 만들 수 없으면 읽지 않는다 — 부모가 백오프 뒤 다시 띄운다
+    raise SystemExit(main(_gate))

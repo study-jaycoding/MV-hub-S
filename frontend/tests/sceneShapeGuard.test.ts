@@ -17,8 +17,10 @@ import {
   type SceneGroup,
 } from "../src/lib/scenes";
 import {
+  delaySceneStoreWritesForTest,
   failSceneStoreWritesForTest,
   readSceneStoreForClose,
+  sceneStoreLoadForTest,
   sceneNotebookTransaction,
   settleSceneStoreForTest,
   writeSceneStoreAsOtherWindowForTest,
@@ -170,6 +172,29 @@ describe("씬 저장 입구 모양 검사", () => {
     expect(listPersistedScenes(null)[0].edges).toEqual(edges); // 다른 창이 고친 그대로
     expect(listPersistedScenes(null)[0].name).toBe("p2");
     expect(listScenes(null)[0].edges).toEqual(edges); // 화면 값도 다시 계산돼 버린 연산이 빠진다
+    expect(refused).toEqual(["p2"]);
+  });
+
+  // 실패한 저장 뒤 다시 합쳐진 연산(sceneStore.compactPending)도 한 연산으로 판정된다 — 접수 때 합쳐진 연산(위 시험의 한 패치)과 같은 결과:
+  //  합쳐진 입력 가운데 하나가 틀린 항목을 늘리면 그 연산 전체를 버리고 고친 내용을 지킨다(이름 편집만 살리지 않는다).
+  it("실패한 저장 뒤 합쳐진 연산이 재생 모양 검사에 걸리면 접수 때 합쳐진 연산처럼 통째로 버린다", async () => {
+    saveScenes(null, [{ ...healthy("p2"), edges: cardEdges }]);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    failSceneStoreWritesForTest(true);
+    delaySceneStoreWritesForTest(10);
+    updateScene(null, "p2", { name: "이 창 편집" });
+    const attempt = settleSceneStoreForTest(); // 이름 편집이 저장으로 떠난다(실패할 것)
+    await Promise.resolve();
+    expect(updateScene(null, "p2", { edges: cardEdges }).ok).toBe(true); // 떠난 사이 — 따로 연산(접수 3 → 3)
+    expect(await attempt).toBe(false); // 실패 → 두 연산이 다시 하나로
+    expect(sceneStoreLoadForTest().pending).toBe(1);
+    delaySceneStoreWritesForTest(0);
+    failSceneStoreWritesForTest(false);
+    writeSceneStoreAsOtherWindowForTest(fixP2);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(listPersistedScenes(null)[0].edges).toEqual(edges); // 다른 창이 고친 그대로
+    expect(listPersistedScenes(null)[0].name).toBe("p2"); // 합쳐진 연산 전체가 빠졌다
+    expect(listScenes(null)[0].edges).toEqual(edges);
     expect(refused).toEqual(["p2"]);
   });
 

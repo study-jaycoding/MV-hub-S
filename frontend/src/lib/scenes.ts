@@ -638,6 +638,7 @@ function writeScenePatch(
   const out = commit((all) => apply(all, stored), {
     merge: {
       slot: patchSlot(cameraSlot, key, sceneId),
+      family: `${key}\u0000${sceneId}`, // 내용·카메라 패치는 같은 apply·join — 실패한 저장 뒤 대기열을 줄일 때 서로 합칠 수 있다
       patch: stored,
       join: (previous, next) => ({ ...previous, ...next }),
       replay: (all, fields) => {

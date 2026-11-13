@@ -52,6 +52,55 @@ class ResolveStatusRunnerTests(unittest.TestCase):
                 self.assertIn(f"{seconds}초", result["details"])
                 self.assertNotIn("private-command", result["details"])
 
+    def test_panel_interpreter_timeout_uses_status_message_without_command_details(self):
+        with (
+            mock.patch.object(resolve_status_runner, "_resolve_is_closed", return_value=False),
+            mock.patch.object(resolve_status_runner, "_select_interpreter", side_effect=subprocess.TimeoutExpired(["private-command"], 8)),
+            mock.patch.object(resolve_status_runner, "_run_child") as child,
+        ):
+            result = resolve_status_runner.run_resolve_panel_isolated({"operation": "inventory"})
+        self.assertEqual(result, {"state": "unavailable", "details": resolve_status_runner._timeout_message()})
+        self.assertIn("8초", result["details"])
+        self.assertNotIn("private-command", result["details"])
+        child.assert_not_called()
+
+    def test_unconfirmed_probe_blocks_panel_and_project_open_without_fallback(self):
+        for action in ("panel", "project"):
+            with self.subTest(action=action), \
+                    mock.patch.object(resolve_status_runner, "_resolve_is_closed", return_value=False), \
+                    mock.patch.object(resolve_status_runner, "_candidate_interpreters", return_value=["py-a", "py-b"]), \
+                    mock.patch.object(resolve_status_runner, "_last_selection", None), \
+                    mock.patch.object(resolve_status_runner, "run_in_job", side_effect=resolve_status_runner.PreviousChildUnconfirmed("blocked")) as run:
+                if action == "panel":
+                    result = resolve_status_runner.run_resolve_panel_isolated({"operation": "adopt"})
+                    self.assertEqual(result, {"state": "unavailable", "details": resolve_status_runner.PREVIOUS_CHILD_MESSAGE})
+                else:
+                    result = resolve_status_runner.run_resolve_project_open_isolated({"library_names": ["L"]})
+                    self.assertEqual(result["error_code"], "api_unavailable")
+                    self.assertEqual(result["error"], resolve_status_runner.PREVIOUS_CHILD_MESSAGE)
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0], ["py-a", "-m", "app.services.resolve_probe"])
+
+    def test_cached_interpreter_keeps_panel_unstarted_and_unknown_outcomes_distinct(self):
+        for error, state in (
+            (resolve_status_runner.PreviousChildUnconfirmed("blocked"), "unavailable"),
+            (resolve_status_runner.ChildOutcomeUnknown("pipe broken"), "unknown"),
+        ):
+            with self.subTest(state=state), \
+                    mock.patch.object(resolve_status_runner, "_resolve_is_closed", return_value=False), \
+                    mock.patch.object(resolve_status_runner, "_last_selection", (resolve_status_runner.time.monotonic(), "py", {}, "")), \
+                    mock.patch.object(resolve_status_runner, "_candidate_interpreters") as candidates, \
+                    mock.patch.object(resolve_status_runner, "run_in_job", side_effect=error) as run:
+                result = resolve_status_runner.run_resolve_panel_isolated({"operation": "adopt"})
+                self.assertEqual(result["state"], state)
+                if state == "unavailable":
+                    self.assertEqual(result["details"], resolve_status_runner.PREVIOUS_CHILD_MESSAGE)
+                else:
+                    self.assertIn("pipe broken", result["details"])
+                candidates.assert_not_called()
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0][-1], "app.services.resolve_panel_worker")
+
     def test_timeout_returns_actionable_unavailable_status(self):
         with (
             mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=True),
@@ -346,6 +395,7 @@ class ResolveProjectOpenRunnerTests(unittest.TestCase):
             "app.services.resolve_project_open_worker",
             timeout=120,
             input_text=json.dumps(payload, ensure_ascii=True),
+            mutation=True,  # 프로젝트 열기는 Resolve 를 바꾼다 — 문지기(resolve_mutation_guard)를 거친다
         )
 
     def test_project_open_failure_does_not_include_import_counters(self):

@@ -532,7 +532,10 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `resolve_probe.py` | 연결 상태 검사 자식 프로세스 진입점(`-m`, §2.6) | `resolve_status_runner` |
 | `resolve_import_worker.py` | 가져오기 자식 프로세스 진입점(§2.6) + `AttemptJournal` | `resolve_status_runner` |
 | `resolve_selection_monitor.py`(547줄) | 선택 감시 자식의 수명·WS 전달·일시정지 컨텍스트(켜기 창 중에도 멈춤 — `_held()`) | `main`·`resolve_integration`·`routers/assets` |
-| `resolve_selection_worker.py` | Media Pool 선택을 읽는 장기 자식(JSONL 1줄, §2.6) | `resolve_selection_monitor` |
+| `resolve_selection_worker.py` | Media Pool 선택을 읽는 장기 자식(JSONL 1줄, §2.6) — 부모의 stdin 파이프가 닫히면 스스로 끝남 | `resolve_selection_monitor` |
+| `win_job.py` | Windows Job Object — 자식 트리를 통째로 소유·종료·종료 확인(남은 프로세스 수), kill_on_close=True 일 때 핸들이 닫히면 OS 가 정리. 자식은 멈춘 채 만들어 넣는다. 호출마다의 Job 으로 자식을 돌리는 `run_in_job`(제한 시간 때 트리째 종료 · 종료 미확인 트리는 붙들어 두고 다음 호출이 재확인 · 실행 뒤 통신 오류는 `ChildOutcomeUnknown`)과 소유로 판정하는 이름 붙은 뮤텍스(`NamedMutex`·Resolve 변경 문)도 여기 | `resolve_selection_monitor`·`resolve_status_runner`·`resolve_mutation_guard`·`resolve_selection_worker`·`resolve_library_dialog` |
+| `resolve_library_connect_worker.py` | 라이브러리 연결 자동화(PowerShell)를 돌리는 자식 — 문지기를 거쳐 떠서 도는 동안 변경 문을 쥐고, 80초 제한·뒷정리를 허브 대신 집행한다(허브가 죽어도 유지) | `resolve_library_dialog._run_automation_exclusively` |
+| `resolve_mutation_guard.py` | Resolve 를 바꾸는 자식의 문지기(`-m … <모듈>`) — 사는 동안 변경 문(이름 붙은 뮤텍스)을 쥐어 다른 프로세스의 변경·선택 읽기와 겹치지 않게, 2초 안에 못 쥐면 대상을 시작하지 않고 종료 코드 75 | `resolve_status_runner._run_child` |
 | `resolve_queue.py`(33줄) | 큐 v3 잔재 중 남은 `run_non_abandon` 하나뿐 | `resolve_integration`·`selection_monitor` |
 | `resolve_lock.py` | 기기 락 파일 경로·host_id·프로세스 생성시각 | `resolve_integration` |
 | `resolve_transfer_gate.py` | 릴리스 업데이트 ↔ 전송 프로세스 간 상호 배제(핸들 락) | `resolve_integration`·`import_worker`·`resolve_transfer` |

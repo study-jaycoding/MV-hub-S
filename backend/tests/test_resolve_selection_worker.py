@@ -17,6 +17,7 @@ from unittest import mock
 from app.services import resolve_selection_worker
 from app.services.resolve_bridge import MVHUB_METADATA_KEY, mvhub_clip_metadata
 from app.services.resolve_selection_worker import selected_snapshot
+from tests.test_win_job import owned_tree
 
 
 class FakeClip:
@@ -295,10 +296,9 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
         self.assertEqual(clip.media_id_calls, 3)
         self.assertEqual(clip.file_path_calls, 1)
         self.assertEqual(clip.metadata_calls, 1)
-        output.assert_called_once()
-        self.assertTrue(
-            output.call_args.args[0].startswith(resolve_selection_worker.RESULT_PREFIX)
-        )
+        lines = [call.args[0] for call in output.call_args_list if call.args[0] != resolve_selection_worker.BEAT_LINE]
+        self.assertEqual(len(lines), 1)  # 신호 줄을 빼면 선택 줄은 바뀐 때 한 번뿐
+        self.assertTrue(lines[0].startswith(resolve_selection_worker.RESULT_PREFIX))
         self.assertEqual(sleep.call_args_list, [mock.call(0.05)] * 3)
 
     def test_missing_manager_keeps_twenty_attempts_and_half_second_waits(self):
@@ -320,7 +320,7 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
 
         self.assertEqual(result, 4)
         self.assertEqual(sleep.call_args_list, [mock.call(0.5)] * 19)
-        output.assert_called_once()
+        self.assertEqual(len([call for call in output.call_args_list if call.args[0] != resolve_selection_worker.BEAT_LINE]), 1)
 
     def test_missing_project_waits_at_least_half_a_second(self):
         resolve = FakeResolve([])
@@ -343,6 +343,89 @@ class ResolveSelectionWorkerTests(unittest.TestCase):
                         resolve_selection_worker.main()
 
                 sleep.assert_called_once_with(expected_wait)
+
+    def test_reads_only_while_holding_the_gate_and_skips_a_round_when_resolve_is_being_changed(self):
+        """문(변경과의 프로세스 사이 배제)을 쥔 동안만 Resolve 를 건드린다. 못 쥐면 그 바퀴는 읽지 않고 0.5초 쉰다."""
+        events: list[str] = []
+        answers = iter([True, False, True])  # 연결 · 첫 바퀴(변경 중) · 둘째 바퀴
+
+        class Gate:
+            def acquire(self, wait_seconds=0.0):
+                got = next(answers)
+                events.append(f"acquire({wait_seconds})={got}")
+                return got
+
+            def release(self):
+                events.append("release")
+
+        resolve = FakeResolve([FakeClip("media-1", "clip.mp4")])
+        with (
+            mock.patch.object(resolve_selection_worker, "_connect_resolve", side_effect=lambda: events.append("connect") or resolve),
+            mock.patch.object(resolve_selection_worker, "selected_snapshot", side_effect=lambda *_a, **_k: events.append("read") or (("x",), {"selected_count": 0})),
+            mock.patch.object(resolve_selection_worker, "POLL_SECONDS", 0.05),
+            mock.patch.object(resolve_selection_worker.time, "sleep", side_effect=[None, StopIteration]) as sleep,
+            mock.patch("builtins.print"),
+        ):
+            with self.assertRaises(StopIteration):
+                resolve_selection_worker.main(Gate())
+        self.assertEqual(events, ["acquire(2.0)=True", "connect", "release", "acquire(0.0)=False", "acquire(0.0)=True", "read", "release"])
+        self.assertEqual(sleep.call_args_list, [mock.call(0.5), mock.call(0.05)])
+
+    def test_gate_is_released_when_reading_fails_and_never_read_without_it(self):
+        released: list[int] = []
+        gate = mock.Mock()
+        gate.acquire.return_value = True
+        gate.release.side_effect = lambda: released.append(1)
+        with (
+            mock.patch.object(resolve_selection_worker, "_connect_resolve", return_value=FakeResolve([])),
+            mock.patch.object(resolve_selection_worker, "selected_snapshot", side_effect=RuntimeError("resolve gone")),
+        ):
+            self.assertEqual(resolve_selection_worker.main(gate), 3)
+        self.assertEqual(len(released), 2, "연결 뒤 한 번, 읽기 실패 뒤 한 번")
+        busy = mock.Mock()
+        busy.acquire.return_value = False
+        with mock.patch.object(resolve_selection_worker, "_connect_resolve") as connect:
+            self.assertEqual(resolve_selection_worker.main(busy), 2)
+        connect.assert_not_called()  # 변경이 진행 중이면 연결조차 하지 않는다
+        broken = mock.Mock()
+        broken.acquire.side_effect = OSError("wait failed")
+        with mock.patch.object(resolve_selection_worker, "_connect_resolve") as connect:
+            self.assertEqual(resolve_selection_worker.main(broken), 2)
+        connect.assert_not_called()  # 문을 판정할 수 없으면 읽지 않는다
+
+    def test_beats_every_two_seconds_between_rounds_never_while_holding_the_gate(self):
+        """살아 있다는 신호 — 바퀴 사이(문을 쥐지 않은 자리)에서 2초마다 한 줄. 다른 프로세스가 Resolve 를 바꾸는 중이라 읽지 않는 바퀴에도 낸다
+        (부모가 '멈춤'으로 오인해 끝내지 않게). 연결·읽기 도중(문을 쥔 동안)에는 내지 않는다 — 거기서 멈추면 신호가 끊겨야 한다."""
+        events: list[str] = []
+        clock = [0.0]
+        answers = iter([True, True, False, False, True])  # 연결 · 바퀴1 · 바퀴2·3(변경 중) · 바퀴4
+        naps = iter([None, None, None, StopIteration])
+
+        class Gate:
+            def acquire(self, wait_seconds=0.0):
+                got = next(answers)
+                events.append("hold" if got else "busy")
+                return got
+
+            def release(self):
+                events.append("release")
+
+        def nap(_seconds):
+            clock[0] += 1.5
+            if next(naps) is StopIteration:
+                raise StopIteration
+
+        with (
+            mock.patch.object(resolve_selection_worker, "_connect_resolve", return_value=FakeResolve([])),
+            mock.patch.object(resolve_selection_worker, "selected_snapshot", return_value=(("x",), {"selected_count": 0})),
+            mock.patch.object(resolve_selection_worker.time, "sleep", side_effect=nap),
+            mock.patch.object(resolve_selection_worker.time, "monotonic", side_effect=lambda: clock[0]),
+            mock.patch("builtins.print", side_effect=lambda line, **_k: events.append("beat") if line == resolve_selection_worker.BEAT_LINE else None),
+        ):
+            with self.assertRaises(StopIteration):
+                resolve_selection_worker.main(Gate())
+        # t=0 신호 → 바퀴1 읽기 · t=1.5 바퀴2(변경 중, 2초 전이라 신호 없음) · t=3.0 신호 → 바퀴3(변경 중) · t=4.5 바퀴4 읽기
+        self.assertEqual(events, ["hold", "release", "beat", "hold", "release", "busy", "beat", "busy", "hold", "release"])
 
     def test_poll_interval_defaults_to_fifty_ms_with_same_lower_bound(self):
         variable = "CONTENT_HUB_RESOLVE_SELECTION_POLL_SECONDS"
@@ -407,30 +490,29 @@ class ParentStdinWatchTests(unittest.TestCase):
             "print(os.getpid(), int(p.stdout.readline()), flush=True)\n"
             "time.sleep(60)\n"
         )
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        process = subprocess.Popen([sys.executable, "-c", hub, child], stdout=subprocess.PIPE, creationflags=flags)
-        hub_pid = worker_pid = 0
-        # 시작이 멈추면(PID 를 못 받으면) 20초 뒤 가짜 허브를 끊어 readline 이 돌아오게 한다 — 그때는 아래 변환에서 실패하고 finally 가 정리한다
-        watchdog = threading.Timer(20, process.kill)
-        watchdog.start()
-        try:
-            started = process.stdout.readline().split()
-            watchdog.cancel()
-            self.assertEqual(len(started), 2, "가짜 허브가 20초 안에 자식을 띄우지 못했다")
-            hub_pid, worker_pid = map(int, started)
+        with owned_tree([sys.executable, "-c", hub, child], 20) as tree:
+            self.assertEqual(len(tree.started), 2, "가짜 허브가 20초 안에 자식을 띄우지 못했다")
+            hub_pid, worker_pid = map(int, tree.started)
             self.assertTrue(_pid_alive(worker_pid))
             _kill(hub_pid)  # 실행기 뒤의 진짜 허브 파이썬 — 종료 정리(lifespan)가 돌지 않는 죽음
             deadline = time.monotonic() + 10
             while _pid_alive(worker_pid) and time.monotonic() < deadline:
                 time.sleep(0.1)
             self.assertFalse(_pid_alive(worker_pid), "허브가 죽었는데 작업자가 남았다")
-        finally:
-            watchdog.cancel()
-            for pid in (worker_pid, hub_pid, process.pid):
-                if pid and _pid_alive(pid):
-                    _kill(pid)
-            process.stdout.close()
-            process.wait(10)
+
+    @unittest.skipUnless(os.name == "nt", "Job Object 는 Windows 전용")
+    def test_a_tree_that_never_reports_is_cut_off_at_the_limit_and_leaves_nothing(self):
+        """시험 도우미 자체 — PID 를 알리기 전에 멈춘 트리(stdout 을 물려받은 후손 포함)도 제한 시간에 통째로 끊기고 남는 프로세스가 없다."""
+        stuck = (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"  # stdout 을 물려받은 후손
+            "time.sleep(120)\n"  # PID 를 끝내 알리지 않는다
+        )
+        began = time.monotonic()
+        with owned_tree([sys.executable, "-c", stuck], 3) as tree:
+            self.assertEqual(tree.started, [])
+            self.assertLess(time.monotonic() - began, 10)
+        self.assertEqual(tree.left, 0)
 
 
 def _pid_alive(pid: int) -> bool:

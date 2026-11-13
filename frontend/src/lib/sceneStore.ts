@@ -90,6 +90,9 @@ interface PendingOp {
   /** 같은 slot 의 다음 연산을 여기에 합칠 수 있다(applySceneOp 의 merge). */
   slot?: string;
   absorb?: (patch: unknown) => void;
+  /** 같은 family 의 이웃 연산끼리는 slot 이 달라도 입력을 합칠 수 있다(compactPending) — peek 는 지금까지 합친 입력. */
+  family?: string;
+  peek?: () => unknown;
   /** 저장으로 떠났다 — 이 뒤로는 합치지 않는다(이미 계산해 쓴 뒤에 합치면 그 입력이 사라진다). */
   flying?: boolean;
   /** 메인 창이 넘겨받았다(markSceneWritesHanded) — 이미 출발한 실행도 재생하지 않는다. */
@@ -664,6 +667,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
         op.poisoned = false; // 이번 재생의 판정은 버린다 — 다음 시도가 그때의 내용으로 다시 본다
         if (!op.aside) op.waiters.splice(0).forEach((fn) => fn(false)); // 표시된 연산은 충돌로 옮겨 저장된 뒤에 답한다
       }
+      compactPending();
       flushListener?.(false);
       scheduleRetry();
       return false;
@@ -717,6 +721,29 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     if (pending.length) scheduleFlush(); // 도중에 들어온 연산
     return true;
   });
+}
+
+/**
+ * 실패한 저장이 되돌려 놓은 대기열을 줄인다 — 저장으로 떠난 사이(flying) 들어온 입력은 그 연산에 합쳐지지 못해 새 연산이 됐다.
+ * 저장소가 오래 막혀 '실패하는 저장 도중 새 입력'이 되풀이되면 그 연산들이 쌓여 대기 상한(PENDING_MAX)에 닿는다. 실패가 확정돼
+ * 떠남 표시가 풀린 지금, **이웃한** 같은 family(같은 대상의 같은 종류 입력 — 같은 씬의 내용·카메라 패치)끼리만 원래 순서대로 합친다:
+ * 뒤 입력을 앞 연산에 absorb 하면 차례로 재생한 것과 같다(SceneOpMerge 의 계약). slot 이 다르면(내용 + 카메라) 카메라가 아닌 쪽 slot 을
+ * 따른다 — 내용이 섞인 확정은 '카메라만'이 아니다. 확정 전용·인계·넘김·비켜 둔 연산과 임대 세대가 다른 연산, 다른 대상은 건너지 않는다
+ * (그 사이의 순서를 바꾸지 않는다). 기다리던 쪽(waiters·durable)은 합쳐진 연산을 따라간다.
+ */
+function compactPending(): void {
+  const plain = (op: PendingOp) => !!op.absorb && !!op.peek && !!op.family && !op.flying && !op.aside && !op.handed && !op.handover && !op.confirmedOnly;
+  const out: PendingOp[] = [];
+  for (const op of pending) {
+    const host = out[out.length - 1];
+    if (host && plain(host) && plain(op) && host.family === op.family && host.leaseGenerations === op.leaseGenerations) {
+      host.absorb!(op.peek!());
+      if (host.slot !== op.slot && host.slot?.startsWith(CAMERA_SLOT_PREFIX)) host.slot = op.slot;
+      host.waiters.push(...op.waiters.splice(0));
+      if (op.durable?.length) (host.durable ??= []).push(...op.durable.splice(0));
+    } else out.push(op);
+  }
+  pending = out;
 }
 
 function rebaseWorking(): void {
@@ -779,6 +806,9 @@ function scheduleFlush(): void {
   });
 }
 
+/** 시험 전용 — 실패 뒤 대기 연산 수를 확인한다. */
+export const sceneStoreLoadForTest = (): { pending: number } => ({ pending: pending.length });
+
 const RETRY_MIN_MS = 2_000;
 const RETRY_MAX_MS = 60_000;
 let retryDelayMs = RETRY_MIN_MS;
@@ -821,6 +851,8 @@ const PENDING_MAX = 200;
 export interface SceneOpMerge<P> {
   /** 같은 대상·같은 종류를 가리키는 이름(예: 어느 버킷의 어느 씬 갱신). */
   slot: string;
+  /** slot 이 달라도 같은 replay·join 으로 입력을 합칠 수 있는 묶음(예: 같은 씬의 내용 패치와 카메라 패치). 실패한 저장 뒤 대기열을 줄일 때만 쓴다. */
+  family?: string;
   patch: P;
   join: (previous: P, next: P) => P;
   /** 합친 입력으로 저장소 내용을 고친다 — mutate 와 같은 일을, 주어진 입력으로. */
@@ -937,6 +969,8 @@ export function applySceneOp<T, P = never>(
       waiters: [],
       mutate: (all) => merge.replay(all, patch),
       slot: merge.slot,
+      family: merge.family,
+      peek: () => patch,
       absorb: (next) => {
         patch = merge.join(patch, next as P);
       },

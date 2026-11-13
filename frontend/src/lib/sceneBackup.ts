@@ -337,6 +337,8 @@ function enterScope(): string {
     externalSeq = new Map();
     holdNoticeShown = false;
     rerun = false;
+    rerunRetry = null;
+    retryForNewChange = false;
     if (timer) clearTimeout(timer);
     timer = null;
     if (maxWaitTimer) clearTimeout(maxWaitTimer);
@@ -431,10 +433,23 @@ async function ensureServerMeta(scope: string): Promise<Map<string, string> | nu
   }
 }
 
-async function syncNow(): Promise<void> {
+/** 실패 재시도가 실어 오는 조건 — 재시도는 그것을 건 회차와 같은 계정·같은 길(공책 회차였으면 공책 기능이 켜져 있을 때)에서만 돈다. */
+interface RetryGuard { scope: string; viaNotebook: boolean }
+const retryStillValid = (guard: RetryGuard): boolean => ns() === guard.scope && (!guard.viaNotebook || hubHasFeature(SCENE_WRITER_FEATURE));
+// 동기화 중에 온 '재시도' — 끝난 뒤 **실행 직전에** 조건을 다시 본다. 새 변경의 rerun(조건 없음)과 섞지 않는다: 섞으면 재시도가
+//  조건을 잃고, 그사이 공책 기능이 꺼졌을 때 옛 백업 길을 시작한다(Codex 상의 2 — N1).
+let rerunRetry: RetryGuard | null = null;
+// 걸려 있는 재시도 타이머가 '실패한 회차 도중 들어온 새 변경'도 맡았다 — 그러면 그 재시도는 조건 없이(정상 동기화로) 돈다.
+let retryForNewChange = false;
+// 걸려 있는 재시도 타이머의 조건(타이머가 있을 때만 뜻이 있다) — 다른 조건의 회차가 실패했을 때 그 타이머가 이 실패도 맡게 할지 가린다.
+let retryTimerGuard: RetryGuard | null = null;
+
+async function syncNow(retry?: RetryGuard): Promise<void> {
+  if (retry && !retryStillValid(retry)) return; // 타이머가 돌 때·밀렸다 실행될 때 모두 여기서 본다
   if (importing) return; // 가져오기가 끝나면 스스로 schedule() 한다 — 예약 타이머가 끼어들지 못하게
   if (syncing) {
-    rerun = true;
+    if (retry) rerunRetry = retry;
+    else rerun = true;
     return;
   }
   syncing = true;
@@ -697,18 +712,29 @@ async function syncNow(): Promise<void> {
     syncSettled = null;
     if (ns() === scope && failed) {
       serverHash = null; // 실패 후엔 메타 재조회(부분 반영 가능성)
+      // 이 회차 도중 들어온 새 변경(rerun)은 걸리는(또는 이미 걸린) 재시도가 맡는다 — 그 재시도는 조건 없이 돌아야 한다. 재시도의 조건에
+      //  묶어 두면, 기한 전에 공책 기능이 꺼졌을 때 재시도와 함께 정상 변경의 동기화까지 사라진다(Codex 계약 검토).
+      if (rerun) {
+        rerun = false;
+        retryForNewChange = true;
+      }
+      rerunRetry = null; // 밀려 있던 재시도는 이 재시도와 같은 일이다
       if (!retryTimer) {
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          // 돌 때 다시 본다 — 그사이 계정이 바뀌었거나, 공책 회차였는데 공책 기능이 꺼졌으면(syncNow 가 옛 백업 PUT 으로 들어간다)
-          //  이 재시도로는 아무것도 시작하지 않는다. 옛 백업 회차의 재시도는 그대로 돈다.
-          if (ns() !== scope || (viaNotebook && !hubHasFeature(SCENE_WRITER_FEATURE))) return;
-          void syncNow();
-        }, RETRY_MS);
+        retryTimerGuard = { scope, viaNotebook };
+        retryTimer = setTimeout(() => fireRetry({ scope, viaNotebook }), RETRY_MS);
+      } else if (retryTimerGuard && (retryTimerGuard.scope !== scope || retryTimerGuard.viaNotebook !== viaNotebook)) {
+        // 이미 걸린 재시도는 다른 조건(예: 공책 길)의 것이다 — 그 조건이 이제 맞지 않으면 그 재시도는 아무것도 하지 않아,
+        //  방금 실패한 이 회차(다른 길의 정상 동기화)의 재시도가 사라진다. 그 재시도가 조건 없이 돌게 한다(독립 리뷰).
+        retryForNewChange = true;
       }
     } else if (rerun) {
       rerun = false;
+      rerunRetry = null; // 조건 없는 새 변경의 한 번 더가 재시도까지 맡는다
       void syncNow();
+    } else if (rerunRetry) {
+      const guard = rerunRetry;
+      rerunRetry = null;
+      void syncNow(guard);
     }
   }
 }
@@ -721,15 +747,22 @@ function onNotebookSyncResult(result: NotebookSyncResult, account: string): void
   if (result.status === "ready") {
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
+    retryForNewChange = false; // 방금 성공한 공책 동기화가 그 새 변경까지 실어 갔다
     if (!syncing) recountOverLimit();
     return;
   }
   if (result.status !== "retry" || syncing || retryTimer) return;
-  retryTimer = setTimeout(() => {
-    retryTimer = null;
-    // 돌 때도 다시 본다 — 공책 기능이 꺼졌으면 syncNow 가 옛 백업 PUT 으로 들어가므로 이 재시도로는 아무것도 시작하지 않는다(Codex 6차)
-    if (hubHasFeature(SCENE_WRITER_FEATURE) && ns() === account) void syncNow();
-  }, RETRY_MS);
+  // 돌 때도 다시 본다 — 공책 기능이 꺼졌으면 syncNow 가 옛 백업 PUT 으로 들어가므로 이 재시도로는 아무것도 시작하지 않는다(Codex 6차)
+  retryTimerGuard = { scope: account, viaNotebook: true };
+  retryTimer = setTimeout(() => fireRetry({ scope: account, viaNotebook: true }), RETRY_MS);
+}
+
+/** 재시도 타이머가 돌 때 — 걸려 있는 동안 '새 변경'을 맡았으면 조건 없는 정상 동기화로, 아니면 건 회차의 조건(계정·길)이 그대로일 때만 돈다. */
+function fireRetry(guard: RetryGuard): void {
+  retryTimer = null;
+  const forNewChange = retryForNewChange;
+  retryForNewChange = false;
+  void syncNow(forNewChange ? undefined : guard);
 }
 
 function schedule(): void {

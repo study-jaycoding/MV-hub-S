@@ -9,10 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
 import {
-  applySceneOp, delaySceneStoreWritesForTest, failSceneStoreWritesForTest, markSceneWritesHanded, setSceneWriteGate,
+  applySceneOp, delaySceneStoreWritesForTest, failSceneStoreWritesForTest, markSceneWritesHanded, sceneStoreLoadForTest, setSceneLeaseGeneration, setSceneWriteGate,
   settleSceneStoreForTest, writeSceneStoreAsOtherWindowForTest, writeScenesStore,
 } from "../src/lib/sceneStore";
-import { listPersistedScenes, subscribeScenesPersisted, updateScene, updateSceneCamera, type Scene, type ScenesByProject } from "../src/lib/scenes";
+import { listPersistedScenes, pendingSceneWritesConfirmed, subscribeScenesPersisted, updateScene, updateSceneCamera, type Scene, type ScenesByProject } from "../src/lib/scenes";
 import { joinSceneNotebook, setSceneNotebookTokenProvider, subscribeNotebookSyncResult, syncSceneNotebook } from "../src/lib/sceneNotebook";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -21,7 +21,7 @@ type Row = { id: string; data: string; deleted_at: string | null; base: { histor
 class MiniHub {
   history = "h1"; book = "book1"; rows = new Map<string, Row>(); order: string[] = []; rev = 1; uploads = 0; failUploads = false;
   hold: Promise<void> | null = null;
-  cardPuts: any[] = []; links: any[] = []; failCards = false; // 카드-생성물 소속(/api/scenes/cards)
+  cardPuts: any[] = []; links = new Map<string, any>(); failCards = false; // 카드-생성물 소속(/api/scenes/cards)
   save(s: Scene) {
     const data = JSON.stringify(s), prior = this.rows.get(s.id);
     const row: Row = { id: s.id, data, deleted_at: null, base: { history_id: this.history, rev: (prior?.base.rev ?? 0) + 1, hash: hash(data) } };
@@ -29,10 +29,15 @@ class MiniHub {
   }
   handle(path: string, body: any, method?: string): any {
     if (path.startsWith("/api/scenes/cards")) {
-      if (method !== "PUT") return { items: this.links };
+      if (method !== "PUT") return { items: [...this.links.values()] };
       this.cardPuts.push(body);
       if (this.failCards) throw new TypeError("network down");
-      this.links.push(...body.backfill, ...body.added, ...body.explicit); // 받은 소속을 기억한다 — 다시 읽어도 같은 백필을 또 보내지 않게
+      // 서버(repo/scene_cards)와 같은 규칙 — 소속 키마다 한 줄. backfill·added = 없을 때만 넣는다(뺀 표시를 풀지 않는다) ·
+      //  explicit = 넣거나 뺀 표시를 푼다 · removed = 뺀 표시(줄은 남는다).
+      const keyOf = (l: { scene_id: string; card_id: string; generation_id: string }) => `${l.scene_id}\u0000${l.card_id}\u0000${l.generation_id}`;
+      for (const l of [...(body.backfill ?? []), ...(body.added ?? [])]) if (!this.links.has(keyOf(l))) this.links.set(keyOf(l), { ...l, removed_at: null });
+      for (const l of body.explicit ?? []) this.links.set(keyOf(l), { ...l, removed_at: null });
+      for (const l of body.removed ?? []) this.links.set(keyOf(l), { ...l, removed_at: "2026-11-12T00:00:00Z" });
       return { ok: true };
     }
     if (path.includes("notebook?")) return { notebook_id: this.book, history_id: this.history, items: [...this.rows.values()], order: { ids: this.order, rev: this.rev, history_id: this.history } };
@@ -194,6 +199,166 @@ describe("확정 통지의 '카메라만' 표시(cameraOnly)", () => {
     expect([saved()?.name, saved()?.camera]).toEqual(["saving", cam(6)]);
   });
 
+  // ── 실패한 저장이 되풀이될 때(저장으로 떠난 사이 새 입력) 대기 연산이 쌓이지 않는다(L2) ──
+  it("실패하는 저장 도중 편집·카메라가 들어오기를 250번 되풀이해도 대기 연산이 쌓이지 않고, 복구 뒤 마지막 값이 남는다", async () => {
+    failSceneStoreWritesForTest(true);
+    delaySceneStoreWritesForTest(2);
+    updateScene(null, "s", { name: "start" });
+    let most = 0;
+    const refused: number[] = [];
+    for (let i = 1; i <= 250; i++) {
+      const attempt = settleSceneStoreForTest(); // 대기 연산이 저장으로 떠난다(실패할 것)
+      await Promise.resolve();
+      if (!updateScene(null, "s", { name: `edit ${i}` }).ok) refused.push(i); // 떠난 연산엔 못 합친다 — 새 연산
+      if (!updateSceneCamera(null, "s", cam(i)).ok) refused.push(-i);
+      expect(await attempt).toBe(false);
+      most = Math.max(most, sceneStoreLoadForTest().pending);
+    }
+    expect(refused).toEqual([]);
+    expect(most).toBeLessThanOrEqual(2); // 실패가 확정되면 이웃한 같은 씬 패치를 다시 하나로 — 합치지 않으면 250개 넘게 쌓여 200 에서 거절된다
+    delaySceneStoreWritesForTest(0);
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect([saved()?.name, saved()?.camera]).toEqual(["edit 250", cam(250)]);
+    expect(infos).toEqual([false]);
+  }, 30_000);
+
+  it("실패 뒤 합쳐진 연산을 기다리던 쪽(끝까지 기다리는 약속)은 복구된 저장에 함께 답을 받는다", async () => {
+    failSceneStoreWritesForTest(true);
+    delaySceneStoreWritesForTest(10);
+    updateScene(null, "s", { name: "first" });
+    const attempt = settleSceneStoreForTest();
+    await Promise.resolve();
+    updateScene(null, "s", { name: "second" }); // 떠난 연산 뒤 — 새 연산
+    const durable = pendingSceneWritesConfirmed(); // 두 연산 모두를 끝까지 기다린다
+    let answered: boolean | null = null;
+    void durable.then((ok) => { answered = ok; });
+    expect(await attempt).toBe(false);
+    expect(sceneStoreLoadForTest().pending).toBe(1); // 합쳐졌다
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(answered).toBeNull(); // 일시 실패에는 답하지 않는다
+    delaySceneStoreWritesForTest(0);
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(await durable).toBe(true);
+    expect(saved()?.name).toBe("second");
+  });
+
+  it("실패 뒤 줄이기는 경계를 넘지 않는다 — 다른 씬·확정 전용 연산이 사이에 있으면 그대로 두고 순서대로 재생한다", async () => {
+    failSceneStoreWritesForTest(true);
+    updateScene(null, "s", { name: "s1" });
+    updateScene(null, "t", { name: "t1" });
+    updateScene(null, "s", { name: "s2", camera: cam(1) });
+    applySceneOp((all: ScenesByProject) => { all[bucket] = (all[bucket] ?? []).map((x) => (x.id === "s" ? { ...x, name: "confirmed only" } : x)); return { write: true, value: null }; }, { confirmedOnly: true });
+    updateSceneCamera(null, "s", cam(2));
+    updateScene(null, "s", { name: "s3" });
+    expect(await settleSceneStoreForTest()).toBe(false);
+    // s1 | t1 | s2 | (확정 전용) | 카메라+s3 → 맨 뒤 둘만 이웃한 같은 씬 패치
+    expect(sceneStoreLoadForTest().pending).toBe(5);
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect([saved()?.name, saved()?.camera, saved("t")?.name]).toEqual(["s3", cam(2), "t1"]);
+    expect(infos).toEqual([false]);
+  });
+
+  it("실패 뒤 줄이기는 확정 전용 연산을 합치지 않는다 — 같은 대상의 합칠 수 있는 꼴이어도", async () => {
+    failSceneStoreWritesForTest(true);
+    const patchOp = (name: string, confirmedOnly: boolean) => applySceneOp(
+      (all: ScenesByProject) => { all[bucket] = (all[bucket] ?? []).map((x) => (x.id === "s" ? { ...x, name } : x)); return { write: true, value: null }; },
+      { confirmedOnly, merge: {
+        slot: `test\u0000${confirmedOnly ? "confirmed" : "plain"}`, family: "test-family", patch: { name },
+        join: (a: { name: string }, b: { name: string }) => ({ ...a, ...b }),
+        replay: (all: ScenesByProject, p: { name: string }) => { all[bucket] = (all[bucket] ?? []).map((x) => (x.id === "s" ? { ...x, ...p } : x)); },
+      } },
+    );
+    patchOp("plain 1", false);
+    patchOp("confirmed only", true);
+    patchOp("plain 2", false);
+    expect(await settleSceneStoreForTest()).toBe(false);
+    expect(sceneStoreLoadForTest().pending).toBe(3); // 확정 전용을 사이에 두고 아무것도 합쳐지지 않는다
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(saved()?.name).toBe("plain 2");
+  });
+
+  it.each(["lease", "handover"] as const)("실패 뒤 줄이기는 %s 경계를 넘지 않고 같은 쪽 이웃만 합친다", async (boundary) => {
+    failSceneStoreWritesForTest(true);
+    setSceneLeaseGeneration("local", "first");
+    const patchOp = (name: string, handover = false) => applySceneOp(
+      (all: ScenesByProject) => { all[bucket] = all[bucket].map((s) => s.id === "s" ? { ...s, name } : s); return { write: true, value: null }; },
+      { handover, merge: {
+        slot: `boundary\u0000${name}`, family: "boundary-family", patch: { name },
+        join: (a: { name: string }, b: { name: string }) => ({ ...a, ...b }),
+        replay: (all: ScenesByProject, patch: { name: string }) => { all[bucket] = all[bucket].map((s) => s.id === "s" ? { ...s, ...patch } : s); },
+      } },
+    );
+    patchOp("first");
+    if (boundary === "lease") setSceneLeaseGeneration("local", "second");
+    patchOp("boundary", boundary === "handover");
+    patchOp("last");
+    const durable = pendingSceneWritesConfirmed();
+    expect(await settleSceneStoreForTest()).toBe(false);
+    expect(sceneStoreLoadForTest().pending).toBe(boundary === "lease" ? 2 : 3);
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(await durable).toBe(true);
+    expect(saved()?.name).toBe("last");
+  });
+
+  it("실패 뒤 카메라 연산에 내용이 합쳐지면 그 묶음은 '카메라만'이 아니다(내용 슬롯을 따른다)", async () => {
+    failSceneStoreWritesForTest(true);
+    delaySceneStoreWritesForTest(10);
+    updateSceneCamera(null, "s", cam(1));
+    const attempt = settleSceneStoreForTest();
+    await Promise.resolve();
+    updateScene(null, "s", { name: "content after camera" }); // 떠난 카메라 뒤 — 새 내용 연산
+    expect(await attempt).toBe(false);
+    expect(sceneStoreLoadForTest().pending).toBe(1); // 카메라 + 내용이 한 연산으로
+    delaySceneStoreWritesForTest(0);
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(infos).toEqual([false]);
+    expect([saved()?.name, saved()?.camera]).toEqual(["content after camera", cam(1)]);
+  });
+
+  it("실패 뒤 카메라 연산끼리만 합쳐진 묶음은 복구 때 여전히 '카메라만'", async () => {
+    failSceneStoreWritesForTest(true);
+    delaySceneStoreWritesForTest(10);
+    updateSceneCamera(null, "s", cam(1));
+    const attempt = settleSceneStoreForTest();
+    await Promise.resolve();
+    updateSceneCamera(null, "s", cam(2)); // 떠난 카메라 뒤 — 새 카메라 연산
+    expect(await attempt).toBe(false);
+    expect(sceneStoreLoadForTest().pending).toBe(1);
+    delaySceneStoreWritesForTest(0);
+    failSceneStoreWritesForTest(false);
+    expect(await settleSceneStoreForTest()).toBe(true);
+    expect(infos).toEqual([true]);
+    expect(saved()?.camera).toEqual(cam(2));
+  });
+
+  it.each([["성공으로", false], ["실패로", true]])(
+    "앞 저장이 %s 끝나도, 도는 동안 들어온 입력은 따로 재촉하지 않아도(자동 예약만으로) 저장된다",
+    async (_name, firstFails) => {
+      delaySceneStoreWritesForTest(30);
+      if (firstFails) failSceneStoreWritesForTest(true);
+      updateScene(null, "s", { name: "first" });
+      await Promise.resolve();
+      await Promise.resolve(); // 첫 저장이 출발
+      for (let i = 1; i <= 50; i++) {
+        updateScene(null, "s", { name: `edit ${i}` });
+        await Promise.resolve();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200)); // 첫 저장과 기다리던 저장이 끝난다(실패 경우 둘 다 실패)
+      failSceneStoreWritesForTest(false);
+      delaySceneStoreWritesForTest(0);
+      // settleSceneStoreForTest 를 부르지 않는다 — 그 함수는 저장을 직접 건다. 여기서는 '끝난 뒤 다음 저장'·'실패 뒤 재시도 타이머'만 본다.
+      await vi.waitFor(() => expect(saved()?.name).toBe("edit 50"), { timeout: 6000, interval: 50 });
+      expect(sceneStoreLoadForTest().pending).toBe(0);
+    },
+    10_000,
+  );
+
   it("확정 전용·인계 연산이 섞이면 거짓", async () => {
     updateSceneCamera(null, "s", cam(2));
     applySceneOp((all: ScenesByProject) => { all[bucket] = [scene("s", "confirmed only"), scene("t")]; return { write: true, value: null }; }, { confirmedOnly: true });
@@ -294,7 +459,7 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
     expect(hub.cardPuts.flatMap((body) => body.backfill.map((l: { card_id: string; generation_id: string }) => `${l.card_id}:${l.generation_id}`))).toEqual(["rc:g9"]);
     const before = hub.cardPuts.length;
     hub.failCards = true;
-    await markCardGenerationsRemoved("r", "rc", ["g0"]); // 사용자가 비움 — 실패 → 30초 재시도
+    await markCardGenerationsRemoved("r", "rc", ["g9"]); // 사용자가 그 생성물을 카드에서 뺌(허브에 있는 연결) — 실패 → 30초 재시도
     expect(hub.cardPuts).toHaveLength(before + 1);
     hub.failCards = false;
     updateSceneCamera(null, "r", cam(4));
@@ -306,7 +471,15 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
     await vi.advanceTimersByTimeAsync(2_000);
     const sent = hub.cardPuts.slice(before + 1);
     expect(sent).toHaveLength(1); // 기한에 한 번
-    expect(sent[0].removed).toEqual([expect.objectContaining({ scene_id: "r", card_id: "rc", generation_id: "g0" })]);
+    expect(sent[0].removed).toEqual([expect.objectContaining({ scene_id: "r", card_id: "rc", generation_id: "g9" })]);
+    expect([...hub.links.values()]).toEqual([expect.objectContaining({ card_id: "rc", generation_id: "g9", removed_at: expect.any(String) })]); // 허브에 뺀 표시
+    // 다시 읽고 내용 저장으로 훑어도 그 연결이 되살아나지 않는다(뺀 표시는 백필이 풀지 못한다)
+    await refreshSceneCardLinks();
+    updateScene(null, "r", { name: "renamed" });
+    await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hub.cardPuts.slice(before + 2).flatMap((body) => body.backfill)).toEqual([]);
+    expect([...hub.links.values()][0].removed_at).not.toBeNull();
   });
 });
 

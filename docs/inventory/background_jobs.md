@@ -99,6 +99,7 @@
 | `backend/app/services/resolve_panel_installer.py` | `start_background_install` | Thread | `run_startup_install (name=resolve-panel-install)` |
 | `backend/app/services/resolve_queue.py` | `run_non_abandon` | create_task | `coro` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor._start_process` | create_task | `self._read_selections(self._process) (name=resolve-selection-reader)` |
+| `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor._start_process` | create_task | `self._watch_silence(self._process) (name=resolve-selection-silence)` |
 | `backend/app/services/resolve_selection_monitor.py` | `ResolveSelectionMonitor.start` | create_task | `self._run() (name=resolve-selection-monitor)` |
 | `backend/app/services/resolve_selection_worker.py` | `_exit_when_stdin_closes` | Thread | `watch (name=parent-stdin-watch)` |
 | `backend/app/services/result_probe.py` | `PeriodicResultProbe.start` | create_task | `self._run() (name=result-probe)` |
@@ -106,6 +107,10 @@
 | `backend/app/services/slack_notify.py` | `SlackNotifier.start` | create_task | `self._run() (name=slack-notifier)` |
 | `backend/app/services/syncer.py` | `PeriodicSync.start` | create_task | `self._run() (name=periodic-sync)` |
 | `backend/app/services/temp_sweeper.py` | `PeriodicSweeper.start` | create_task | `self._run() (name=temp-sweeper)` |
+| `backend/app/services/win_job.py` | `_Pump.__init__` | Thread | `self._read (name=resolve-child-stderr)` |
+| `backend/app/services/win_job.py` | `_Pump.__init__` | Thread | `self._read (name=resolve-child-stdout)` |
+| `backend/app/services/win_job.py` | `_Pump.__init__` | Thread | `self._write (name=resolve-child-stdin)` |
+| `backend/app/services/win_job.py` | `_adopt` | Thread | `work (name=resolve-child-adopt)` |
 | `backend/app/services/windows_drag.py` | `_run_worker` | Thread | `commands` |
 | `backend/app/services/windows_drag.py` | `_run_worker` | Thread | `watch_owner` |
 | `backend/app/services/windows_drag.py` | `drag_files` | Thread | `read_messages` |

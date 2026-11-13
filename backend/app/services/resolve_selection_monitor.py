@@ -26,26 +26,48 @@ from .resolve_queue import run_non_abandon
 from .resolve_selection_worker import MAX_SELECTIONS, RESULT_PREFIX
 from .resolve_status_runner import launch_window_active, resolve_compatible_interpreter
 from .resolve_transfer import manifest_generation_entries, manifest_source_roots
+from .win_job import CREATE_SUSPENDED, new_process_job as _new_job
 
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _CLIENT_CHECK_SECONDS = 1.0
 _INDEX_REUSE_SECONDS = 60.0
 _RESTART_DELAYS = (2.0, 5.0, 30.0)
+_JOB_ATTR = "_mvhub_job"  # 자식 프로세스 객체에 붙여 두는 Job(win_job.ProcessJob) — 등록 전·후·종료 미확인 어느 상태든 자식과 함께 다닌다
+_TRIED_ATTR = "_mvhub_reap_timed_out"  # 통째 종료를 보냈는데 기한 안에 끝나지 않은 자식 — 다음부터는 기다리지 않고 한 번만 묻는다
+_UNADOPTED_ATTR = "_mvhub_unadopted"  # Job 에 넣지 못해 직접 끝냈는데 끝난 것을 확인 못 한 자식(한 줄도 돌지 않았다) — 기다리지 않고 한 번만 본다
+_SELF_EXIT_SECONDS = 0.5  # stdin 을 닫은 뒤 스스로 끝날 유예
+_REAP_SECONDS = 5.0  # Job 종료 확인 단계의 기한(유예 포함) — 넘기면 종료 미확인(성공으로 돌아가지 않는다). 그 뒤 asyncio 정리는 따로 최대 1초
+_DISCARD_SECONDS = 2.0  # Job 에 넣지 못한 자식을 끝낸 뒤 끝난 것을 확인하는 기한
+_REAP_POLL_SECONDS = 0.05
+# 작업자가 이만큼 한 줄도 내지 않으면(신호는 2초마다 — resolve_selection_worker.BEAT_SECONDS) Resolve 호출에 멈춘 것으로 보고 Job 째
+# 끝낸다 — 멈춘 작업자는 변경 문을 쥔 채라 다른 프로세스(다른 허브)의 Resolve 변경이 끝없이 '바쁨'이 된다. 처음 연결도 이 안에 끝나야 한다.
+# shortcut: 15초는 정한 값이지 정상 연결 시간을 잰 값이 아니다 — 정상 연결이 되풀이해 끊기는 것이 관측되면 늘린다
+_WORKER_SILENT_SECONDS = 15.0
 _log = logging.getLogger("mvhub.resolve_selection")
+
+
+async def _drain(stream: asyncio.StreamReader) -> None:
+    """끝난 자식이 남긴 출력을 EOF 까지 읽어 버린다."""
+    while await stream.read(65536):
+        pass
 
 
 class ResolveSelectionMonitor:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
         self._process: asyncio.subprocess.Process | None = None
-        self._unconfirmed: asyncio.subprocess.Process | None = None  # 회수했지만 진짜 작업자 종료(stdout EOF)를 확인하지 못한 자식
+        self._unconfirmed: asyncio.subprocess.Process | None = None  # 회수했지만 작업자 트리의 종료를 확인하지 못한 자식
+        self._unconfirmed_logged: asyncio.subprocess.Process | None = None  # 그 오류를 이미 로그에 남긴 자식(반복 로그 방지)
         self._reader_task: asyncio.Task[None] | None = None
+        self._silence_task: asyncio.Task[None] | None = None
+        self._silence_reaped = False  # 침묵 감시가 작업자를 끝냈다 — 다음 재시작 앞에 백오프 한 번(멈춘 Resolve 에 곧바로 다시 붙지 않게)
         self._process_lock = asyncio.Lock()
         self._selection_ready = asyncio.Event()
         self._selection_revision = 0
         self._process_epoch = 0
         self._worker_had_snapshot = False
+        self._last_output = 0.0  # 작업자가 마지막으로 줄을 낸(또는 뜬) 시각(time.monotonic)
         self._latest_line: tuple[int, bytes] | None = None
         self._reader_closed = True
         self._pause_count = 0
@@ -76,15 +98,25 @@ class ResolveSelectionMonitor:
             task.cancel()
 
         async def finish() -> None:
+            # 회수 오류가 주 오류다 — 감시 태스크가 다른 오류로 끝났어도 그것은 기록만 하고 회수 오류를 올린다. 태스크 참조는 어느 경우든 비운다.
+            reap_error: BaseException | None = None
             try:
                 await self._stop_process()
-            finally:
-                # 자식 종료를 확인하지 못해 회수가 예외로 끝나도 감시 태스크는 거둔다(취소만 된 채 남지 않게)
+            except BaseException as error:  # noqa: BLE001 - 아래에서 다시 올린다
+                reap_error = error
+            try:
                 if task:
-                    with contextlib.suppress(asyncio.CancelledError):
+                    try:
                         await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:  # noqa: BLE001
+                        _log.exception("Resolve 선택 감시 태스크가 오류로 끝났습니다")
+            finally:
                 if self._task is task:
                     self._task = None
+            if reap_error is not None:
+                raise reap_error
 
         # 종료 요청 자체가 취소돼도 자식과 감시 태스크의 회수를 마친다.
         await run_non_abandon(finish())
@@ -104,6 +136,8 @@ class ResolveSelectionMonitor:
 
     def _held(self) -> bool:
         """멈춰 있어야 하나 — 변경 작업 중(suspended)이거나 앱이 Resolve 를 켜는 중(켜기 창, Codex P1)."""
+        # 다른 프로세스의 변경(죽은 허브가 남긴 가져오기·같은 PC 의 다른 MV Hub)과의 배제는 작업자 자신이 한다 — 읽는 동안만 쥐는
+        # 이름 붙은 뮤텍스(resolve_selection_worker.main 의 gate). 여기서 주기적으로 엿보지 않는다(엿보는 사이의 겹침이 남는다).
         return bool(self._pause_count) or launch_window_active()
 
     async def _stop_process(self) -> None:
@@ -129,6 +163,11 @@ class ResolveSelectionMonitor:
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await reader
+        silence, self._silence_task = self._silence_task, None
+        if silence and silence is not asyncio.current_task():  # 침묵 감시가 스스로 부른 회수면 자기를 기다리지 않는다
+            silence.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await silence
         if process is not None:
             try:
                 await self._terminate_process(process)
@@ -146,6 +185,47 @@ class ResolveSelectionMonitor:
         if stdin is not None:
             with contextlib.suppress(Exception):
                 stdin.close()
+        job = getattr(process, _JOB_ATTR, None)
+        if job is not None:
+            # Job 이 트리를 소유한다 — 종료를 OS 에 묻는다(직접 자식의 returncode·stdout 파이프에 기대지 않는다: 실행기 뒤의 진짜 작업자,
+            # 파이프를 물려받은 후손, 읽기 오류와 무관). 스스로 끝날 짧은 유예 → Job 통째 종료 → 남은 수 0 확인. 전체 기한을 넘기면
+            # 성공으로 돌아가지 않는다(TimeoutError) — 호출자가 '종료 미확인'으로 붙들고 잠금은 풀린다. 다음 회수 때 다시 묻는다.
+            loop = asyncio.get_running_loop()
+            if getattr(process, _TRIED_ATTR, False):
+                # 이미 통째 종료를 보내고 기한을 넘긴 자식 — 다시 기다리지 않고 한 번만 묻는다. 감시 루프·Resolve 변경 요청이 다시 올 때마다
+                # 잠금을 쥔 채 기한만큼 또 기다리지 않게(별도 Claude 계약 검토).
+                if job.active():
+                    raise TimeoutError("Resolve 선택 작업자가 아직 끝나지 않았습니다")
+            else:
+                deadline = loop.time() + _REAP_SECONDS
+                grace = loop.time() + _SELF_EXIT_SECONDS
+                while job.active() and loop.time() < grace:
+                    await asyncio.sleep(_REAP_POLL_SECONDS)
+                if job.active():
+                    job.terminate()
+                    while job.active():
+                        if loop.time() >= deadline:
+                            setattr(process, _TRIED_ATTR, True)
+                            raise TimeoutError("Resolve 선택 작업자가 기한 안에 끝나지 않았습니다")
+                        await asyncio.sleep(_REAP_POLL_SECONDS)
+            setattr(process, _JOB_ATTR, None)
+            job.close()
+            # 트리는 끝났다(위에서 확인). 남은 것은 자원 정리다 — 자식이 남긴 출력을 비워 파이프를 닫고(읽기가 멈춘 가득 찬 버퍼면
+            # asyncio 의 wait 가 파이프가 닫힐 때까지 끝나지 않는다) 직접 자식을 거둔다. 둘 다 짧은 기한 — 종료 근거는 Job 이지 이 단계가 아니다.
+            stdout = getattr(process, "stdout", None)
+            if stdout is not None:
+                with contextlib.suppress(asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(_drain(stdout), timeout=1.0)
+            with contextlib.suppress(asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            return
+        if getattr(process, _UNADOPTED_ATTR, False):
+            # Job 에 넣지 못한 자식 — 멈춘 채 만들어져 한 줄도 돌지 않았고 후손도 없다. 직접 자식이 끝났는지만 한 번 본다(기한 없는 대기 없음).
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    process.kill()
+                raise TimeoutError("Job 에 넣지 못한 Resolve 선택 작업자가 아직 끝나지 않았습니다")
+            return
         if process.returncode is None and stdin is not None:
             # 스스로 끝날 짧은 틈(기존 강제 종료 앞에 더한 유예) — Resolve 호출에 멈춰 EOF 를 못 보면 아래 강제 종료로 넘어간다.
             with contextlib.suppress(asyncio.TimeoutError):
@@ -175,11 +255,38 @@ class ResolveSelectionMonitor:
             # 한 단위로 마친다. 호출자는 이 단위가 끝난 뒤에 취소를 전파한다.
             self._process = await self._launch_process()
             if self._process is not None:
+                self._last_output = time.monotonic()
                 self._reader_closed = False
                 self._selection_ready.clear()
                 self._reader_task = asyncio.create_task(
                     self._read_selections(self._process), name="resolve-selection-reader"
                 )
+                self._silence_task = asyncio.create_task(
+                    self._watch_silence(self._process), name="resolve-selection-silence"
+                )
+
+    async def _watch_silence(self, process: asyncio.subprocess.Process) -> None:
+        """작업자의 줄이 기한 넘게 끊기면 끝낸다 — 감시 루프와 따로 돈다(루프가 앞 선택의 DB·NAS 조회를 기다리는 동안에도 본다).
+
+        이 태스크는 자기가 지키는 작업자만 끝낸다: 잠금을 쥔 뒤 아직 그 작업자인지 다시 본다(이미 바뀌었으면 손대지 않는다).
+        다시 띄우는 것은 감시 루프가 한다(작업자가 없어진 것을 보고).
+        """
+        never = asyncio.Event()  # 틱용 — 아무도 켜지 않는다. 직접 자식의 종료(process.wait)로는 물러나지 않는다: 실행기만 끝나고 진짜 작업자가 남을 수 있다
+        while self._process is process:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(never.wait(), timeout=min(1.0, _WORKER_SILENT_SECONDS / 4))
+            if time.monotonic() - self._last_output <= _WORKER_SILENT_SECONDS:
+                continue
+            async with self._process_lock:
+                if self._process is not process:
+                    return
+                _log.warning("Resolve 선택 작업자가 %.0f초 넘게 응답이 없어 끝냅니다", _WORKER_SILENT_SECONDS)
+                self._silence_reaped = True  # 감시 루프가 다시 띄우기 전에 한 번 백오프한다
+                try:
+                    await self._close_process()
+                except Exception:  # noqa: BLE001 - 종료 미확인은 _close_process 가 붙들었다. 감시 루프의 다음 회수가 다시 확인한다.
+                    _log.exception("응답 없는 Resolve 선택 작업자의 종료를 확인하지 못했습니다")
+            return
 
     async def _launch_process(self) -> asyncio.subprocess.Process | None:
         interpreter, _failure = await asyncio.to_thread(resolve_compatible_interpreter)
@@ -188,18 +295,35 @@ class ResolveSelectionMonitor:
         child_env = os.environ.copy()
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        process = await asyncio.create_subprocess_exec(
-            interpreter,
-            "-m",
-            "app.services.resolve_selection_worker",
-            cwd=str(_BACKEND_DIR),
-            env=child_env,
-            stdin=asyncio.subprocess.PIPE,  # 쓰지 않는다 — 허브가 죽으면 닫혀 자식이 스스로 끝나는 신호(작업자 _exit_when_stdin_closes)
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            limit=1024 * 1024,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        # 자식 트리를 소유할 Job — 멈춘 채 만들어 Job 에 넣은 뒤 풀어야 후손이 밖에 남지 않는다. Windows 에서 Job 을 못 만들면 여기서
+        # 예외로 끝난다(자식을 띄우지 않는다 — 감시 루프가 백오프 뒤 다시 시도). Windows 가 아니면 None(Job 없는 길 — 개발·시험용).
+        # '허브가 죽으면 OS 가 트리를 끝낸다'는 보장은 **Job 에 넣은 뒤부터**다: 만든 직후~넣기 전에 허브가 죽으면 자식은 멈춘 채
+        # (한 줄도 돌지 않고) 남는다 — Resolve 를 건드리지 않으며 세션 Job 이 있으면 세션이 끝날 때 정리된다.
+        job = _new_job()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                interpreter,
+                "-m",
+                "app.services.resolve_selection_worker",
+                cwd=str(_BACKEND_DIR),
+                env=child_env,
+                stdin=asyncio.subprocess.PIPE,  # 쓰지 않는다 — 허브가 죽으면 닫혀 자식이 스스로 끝나는 신호(작업자 _exit_when_stdin_closes)
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                limit=1024 * 1024,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | (CREATE_SUSPENDED if job is not None else 0),
+            )
+        except BaseException:
+            if job is not None:
+                job.close()  # 자식을 못 만들었다 — 빈 Job 핸들을 남기지 않는다
+            raise
+        if job is not None:
+            try:
+                job.adopt_suspended(process.pid)
+            except BaseException:
+                await self._discard_unadopted(process, job)
+                raise
+            setattr(process, _JOB_ATTR, job)
         # 인터프리터 probe 중 suspend/stop이 들어온 경쟁 구간을 닫는다. 대입 전이라
         # _stop_process가 볼 수 없었던 자식은 여기서 직접 회수한다.
         if self._held() or self._stopping:
@@ -212,6 +336,34 @@ class ResolveSelectionMonitor:
         self._priming = True
         self._worker_had_snapshot = False
         return process
+
+    async def _discard_unadopted(self, process: asyncio.subprocess.Process, job: Any) -> None:
+        """만들었지만 Job 에 넣거나 풀지 못한 자식을 버린다 — 넣기·풀기 어느 단계에서 실패했든 한 길로.
+
+        · 풀기 실패(Job 안에서 멈춘 채): Job 이 그 자식을 소유한다 — 평소의 Job 회수 길(통째 종료 → 남은 수 0 확인, 기한 있음)로 보낸다.
+          확인하지 못하면 Job 을 붙인 채 종료 미확인으로 붙든다(다음부터는 Job 에 한 번만 묻는다).
+        · 넣기 실패(Job 밖에서 멈춘 채) 또는 어느 쪽인지 물을 수 없음: 직접 끝내고 끝난 것을 기한 안에 확인한다. 확인하지 못하면
+          '넣지 못한 자식' 표시를 달아 붙든다 — 다음 회수는 기다리지 않고 한 번만 본다(Job 없는 길의 기한 없는 대기로 가지 않는다).
+        """
+        try:
+            in_job = job.active() > 0
+        except OSError:
+            in_job = False
+        if in_job:
+            setattr(process, _JOB_ATTR, job)
+            try:
+                await self._terminate_process(process)
+            except BaseException:  # 기한 초과·취소 — 끝났는지 모른다
+                self._unconfirmed = process
+            return
+        job.close()
+        with contextlib.suppress(ProcessLookupError, OSError):
+            process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_DISCARD_SECONDS)
+        except BaseException:  # 기한 초과·취소 — 끝났는지 모른다
+            setattr(process, _UNADOPTED_ATTR, True)
+            self._unconfirmed = process
 
     @staticmethod
     def _account_snapshot_locked() -> tuple[str, str | None, dict[str, Any] | None]:
@@ -436,6 +588,7 @@ class ResolveSelectionMonitor:
         try:
             assert process.stdout is not None
             while raw := await process.stdout.readline():
+                self._last_output = time.monotonic()  # 신호 줄(BEAT_LINE)도 여기서 센다 — 선택 줄이 아니라 아래에서 버려진다
                 if self._parse_line(raw) is None:
                     continue
                 # 합치기 전에 기준선을 소비해야 직후 들어온 실제 첫 선택을 잃지 않는다.
@@ -523,7 +676,12 @@ class ResolveSelectionMonitor:
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - 보조 감시 실패가 서버 수명을 끝내면 안 된다.
-            _log.exception("Resolve 선택 감시 자식의 종료를 확인하지 못했습니다")
+            # 같은 자식에 대해서는 한 번만 남긴다 — 루프가 바퀴마다 다시 물어도 같은 오류가 끝없이 쌓이지 않게
+            if self._unconfirmed is not self._unconfirmed_logged:
+                self._unconfirmed_logged = self._unconfirmed
+                _log.exception("Resolve 선택 감시 자식의 종료를 확인하지 못했습니다 — 확인될 때까지 Resolve 변경과 새 감시 자식을 막습니다")
+        else:
+            self._unconfirmed_logged = None
 
     async def _run(self) -> None:
         restart_index = 0
@@ -533,10 +691,18 @@ class ResolveSelectionMonitor:
                 await self._reap()
                 self._last_selection_key = None
                 restart_index = 0
+                self._silence_reaped = False
                 await asyncio.sleep(_CLIENT_CHECK_SECONDS)
                 continue
             if self._process is None or self._process.returncode is not None:
                 await self._reap()
+                if self._silence_reaped:
+                    # 침묵 감시가 끝낸 뒤다 — 루프가 선택 처리에 묶여 있다 돌아오면 아래의 '읽기 닫힘' 백오프를 지나지 않으므로 여기서 한 번 쉰다
+                    self._silence_reaped = False
+                    delay = _RESTART_DELAYS[min(restart_index, len(_RESTART_DELAYS) - 1)]
+                    restart_index += 1
+                    await asyncio.sleep(delay)
+                    continue
                 try:
                     await run_non_abandon(self._start_process())
                 except asyncio.CancelledError:
@@ -566,6 +732,7 @@ class ResolveSelectionMonitor:
                 self._worker_had_snapshot = False
             if self._reader_closed:
                 await self._reap()
+                self._silence_reaped = False  # 여기서 쉰다 — 두 번 쉬지 않는다
                 delay = _RESTART_DELAYS[min(restart_index, len(_RESTART_DELAYS) - 1)]
                 restart_index += 1
                 await asyncio.sleep(delay)
@@ -583,6 +750,7 @@ class ResolveSelectionMonitor:
                 _log.exception("Resolve 선택 신호 처리 중 오류가 발생했습니다")
                 self._last_selection_key = None
                 await self._reap()
+                self._silence_reaped = False  # 여기서 쉰다 — 두 번 쉬지 않는다
                 delay = _RESTART_DELAYS[min(restart_index, len(_RESTART_DELAYS) - 1)]
                 restart_index += 1
                 await asyncio.sleep(delay)

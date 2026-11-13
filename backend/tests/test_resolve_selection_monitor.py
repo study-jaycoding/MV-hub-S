@@ -15,6 +15,18 @@ from app.services.resolve_selection_monitor import ResolveSelectionMonitor
 from app.services.resolve_selection_worker import RESULT_PREFIX
 
 
+_NO_JOB = mock.patch.object(resolve_selection_monitor, "_new_job", return_value=None)
+
+
+def setUpModule():
+    # 대역 프로세스에는 OS 프로세스가 없다 — 기본은 Job 없는 길로 본다. Job 길은 아래 JobReapTests(대역 Job)와 test_win_job(실제 프로세스)이 본다.
+    _NO_JOB.start()
+
+
+def tearDownModule():
+    _NO_JOB.stop()
+
+
 def selection_line(value: str, count: int = 1) -> bytes:
     return (RESULT_PREFIX + json.dumps({"selected_count": count, "file_path": value}) + "\n").encode()
 
@@ -588,6 +600,125 @@ class ResolveSelectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 process.finish()
                 await asyncio.wait_for(monitor.stop(), 2)
 
+    async def test_a_worker_that_goes_silent_is_ended_while_one_that_only_beats_is_kept(self):
+        """작업자가 기한 넘게 한 줄도 내지 않으면(= Resolve 호출에 멈춤 — 변경 문을 쥔 채) 부모가 끝낸다. 선택이 안 바뀌어 신호 줄만 내는
+        작업자는 두고, 신호 줄은 선택으로 치지 않는다."""
+        process = ControlledProcess()
+        with (
+            mock.patch.object(resolve_selection_monitor, "_WORKER_SILENT_SECONDS", 1.5),
+            mock.patch.object(resolve_selection_monitor, "_RESTART_DELAYS", (0.01,)),
+        ):
+            async with self.running_monitor(process) as monitor:
+                await asyncio.wait_for(process.stdout.reading.wait(), 1)
+                revision = monitor._selection_revision
+                watch = monitor._silence_task
+                waited: list[int] = []
+                real_wait = process.wait
+
+                async def counted_wait():
+                    waited.append(1)
+                    return await real_wait()
+
+                process.wait = counted_wait
+                await asyncio.sleep(1.2)  # 아직 한 줄도 없다(처음 연결 중) — 기한은 뜬 때부터 센다
+                self.assertFalse(process.terminated.is_set(), "막 뜬 작업자를 곧바로 끝내지 않는다")
+                for _beat in range(6):  # 3초 동안 신호만 — 기한(1.5초)의 두 배
+                    process.stdout.feed_data(b"MVHUB_RESOLVE_BEAT\n")
+                    await asyncio.sleep(0.5)
+                self.assertFalse(process.terminated.is_set(), "신호를 내는 작업자는 끝내지 않는다")
+                self.assertEqual(monitor._selection_revision, revision, "신호 줄은 선택이 아니다")
+                self.assertEqual(waited, [], "침묵 감시는 틱마다 직접 자식의 종료를 기다리지 않는다(취소된 기다림이 쌓이지 않는다)")
+                await asyncio.wait_for(process.terminated.wait(), 5)  # 신호가 끊겼다
+                await asyncio.wait_for(asyncio.shield(watch), 2)  # 침묵 감시가 회수를 끝까지 마쳤다(회수 도중 자기 자신을 취소하지 않는다)
+
+    async def test_silence_is_noticed_even_while_the_loop_is_busy_mapping_an_earlier_selection(self):
+        """감시 루프가 앞 선택의 DB·NAS 조회에 붙잡혀 있어도(그동안 작업자의 다음 Resolve 읽기가 문을 쥔 채 멈췄다) 침묵 감시는 따로 돌아 끝낸다."""
+        import threading
+        process = ControlledProcess()
+        release = threading.Event()
+        with (
+            mock.patch.object(resolve_selection_monitor, "_WORKER_SILENT_SECONDS", 1.5),
+            mock.patch.object(resolve_selection_monitor, "_RESTART_DELAYS", (0.01,)),
+        ):
+            async with self.running_monitor(process) as monitor:
+                with mock.patch.object(monitor, "_resolve_selections", side_effect=lambda _payload: release.wait(20) and None) as mapping:
+                    try:
+                        await asyncio.wait_for(process.stdout.reading.wait(), 1)
+                        process.stdout.feed_data(selection_line("baseline"))
+                        process.stdout.feed_data(selection_line("a"))
+                        await asyncio.wait_for(process.terminated.wait(), 6)
+                        mapping.assert_called_once()  # 조회는 아직 안 끝났다 — 루프는 그 안에 있다
+                    finally:
+                        release.set()
+
+    async def test_silence_reap_works_after_only_the_launcher_exited_and_restart_waits_for_the_backoff(self):
+        await self._silence_reap_then_restart(mapping_fails=False)
+
+    async def test_silence_reap_followed_by_a_failed_mapping_still_backs_off_only_once(self):
+        """침묵 회수 뒤 그 조회가 오류로 끝나도 백오프는 한 번이다 — 오류 분기의 백오프와 침묵 표시의 백오프를 겹쳐 쉬지 않는다(겹치면 1초 + 5초)."""
+        await self._silence_reap_then_restart(mapping_fails=True)
+
+    async def _silence_reap_then_restart(self, mapping_fails: bool):
+        """직접 자식(실행기)만 끝나고 진짜 작업자는 남아 멈춘 경우 — 감시 루프가 앞 선택의 조회에 묶여 있어도 침묵 감시가 끝낸다(직접 자식의
+        종료로 물러나지 않는다). 그렇게 끝낸 뒤에는 루프가 돌아와도 곧바로 다시 띄우지 않고 백오프를 한 번 한 뒤 띄운다."""
+        import threading
+        process = ControlledProcess()
+        release = threading.Event()
+
+        def blocked(_payload):
+            release.wait(20)
+            if mapping_fails:
+                raise OSError("nas gone")
+
+        with (
+            mock.patch.object(resolve_selection_monitor, "_WORKER_SILENT_SECONDS", 1.5),
+            mock.patch.object(resolve_selection_monitor, "_RESTART_DELAYS", (1.0, 5.0)),
+        ):
+            async with self.running_monitor(process) as monitor:
+                spawn = resolve_selection_monitor.asyncio.create_subprocess_exec
+                with mock.patch.object(monitor, "_resolve_selections", side_effect=blocked) as mapping:
+                    try:
+                        await asyncio.wait_for(process.stdout.reading.wait(), 1)
+                        process.stdout.feed_data(selection_line("baseline"))
+                        process.stdout.feed_data(selection_line("a"))
+                        for _ in range(100):  # 루프가 조회에 들어갈 때까지
+                            if mapping.called:
+                                break
+                            await asyncio.sleep(0.02)
+                        process.returncode = 0  # 실행기만 끝났다 — stdout 은 아직 열려 있다(진짜 작업자가 쥐고 있다)
+                        process.exited.set()
+                        for _ in range(250):  # 침묵 감시가 회수에 들어갈 때까지(최대 5초)
+                            if monitor._process is None:
+                                break
+                            await asyncio.sleep(0.02)
+                        self.assertIsNone(monitor._process, "루프가 묶여 있어도, 직접 자식이 이미 끝났어도 침묵 감시가 회수한다")
+                        self.assertEqual(spawn.call_count, 1)
+                    finally:
+                        process.stdout.feed_eof()  # 트리가 끝났다(단언이 실패해도 닫는다 — 뒷정리가 EOF 를 기다리며 멈추지 않게)
+                        release.set()
+                    await asyncio.sleep(0.4)
+                    self.assertEqual(spawn.call_count, 1, "돌아온 루프가 곧바로 다시 띄우지 않는다(백오프 1초)")
+                    for _ in range(150):
+                        if spawn.call_count >= 2:
+                            break
+                        await asyncio.sleep(0.02)
+                    self.assertGreaterEqual(spawn.call_count, 2, "백오프 한 번(1초) 뒤에는 다시 띄운다 — 두 번 쉬지 않는다")
+
+    async def test_silence_watch_leaves_a_worker_that_was_replaced_while_it_waited_for_the_lock(self):
+        """침묵 감시는 자기가 지키던 작업자만 끝낸다 — 잠금을 기다리는 사이 작업자가 바뀌었으면 새 작업자에 손대지 않는다."""
+        monitor = ResolveSelectionMonitor()
+        old, new = ControlledProcess(), ControlledProcess()
+        monitor._process, monitor._last_output = old, 0.0
+        with mock.patch.object(resolve_selection_monitor, "_WORKER_SILENT_SECONDS", 0.2):
+            await monitor._process_lock.acquire()
+            watch = asyncio.create_task(monitor._watch_silence(old))
+            await asyncio.sleep(0.3)  # 침묵을 보고 잠금을 기다린다
+            monitor._process = new
+            monitor._process_lock.release()
+            await asyncio.wait_for(watch, 2)
+        self.assertIs(monitor._process, new)
+        self.assertFalse(new.terminated.is_set() or old.terminated.is_set())
+
     async def test_concurrent_suspend_waits_for_reader_cancellation(self):
         process = ControlledProcess()
         process.stdout.release_cancel.clear()
@@ -720,6 +851,269 @@ class ResolveSelectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pending, [])
 
 
+class FakeJob:
+    """win_job.ProcessJob 대역 — 남은 프로세스 수를 시험이 정한다."""
+
+    def __init__(self):
+        self.alive = 1
+        self.adopted: list[int] = []
+        self.terminated = 0
+        self.closed = 0
+        self.die_on_terminate = True
+        self.fail_adopt: BaseException | None = None
+        self.fail_active: BaseException | None = None
+
+    def adopt_suspended(self, pid):
+        if self.fail_adopt:
+            raise self.fail_adopt
+        self.adopted.append(pid)
+
+    def active(self):
+        if self.fail_active:
+            raise self.fail_active
+        return self.alive
+
+    def terminate(self):
+        self.terminated += 1
+        if self.die_on_terminate:
+            self.alive = 0
+
+    def close(self):
+        self.closed += 1
+
+
+class JobReapTests(unittest.IsolatedAsyncioTestCase):
+    """Job 이 자식 트리를 소유할 때의 회수 — 종료는 Job 에 묻고, 직접 자식의 returncode·stdout 에 기대지 않는다."""
+
+    def setUp(self):
+        self.job = FakeJob()
+        self.process = ControlledProcess()
+        self.process.pid = 4242
+        self.process.stdin = FakeStdin()
+        self.spawn = mock.AsyncMock(return_value=self.process)
+        self.monitor = ResolveSelectionMonitor()
+        patches = (
+            mock.patch.object(resolve_selection_monitor, "resolve_compatible_interpreter", return_value=("fake-python", None)),
+            mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=self.spawn),
+            mock.patch.object(resolve_selection_monitor, "_new_job", return_value=self.job),
+            mock.patch.object(resolve_selection_monitor, "_SELF_EXIT_SECONDS", 0.1),
+            mock.patch.object(resolve_selection_monitor, "_REAP_SECONDS", 0.4),
+            mock.patch.object(resolve_selection_monitor, "_REAP_POLL_SECONDS", 0.01),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    async def enter_suspended(self) -> list[bool]:
+        entered: list[bool] = []
+        async with self.monitor.suspended():
+            entered.append(True)
+        return entered
+
+    async def test_child_is_created_suspended_then_adopted_into_the_job(self):
+        await self.monitor._start_process()
+        flags = self.spawn.call_args.kwargs["creationflags"]
+        self.assertTrue(flags & resolve_selection_monitor.CREATE_SUSPENDED, "멈춘 채 만들어야 후손이 Job 밖에 남지 않는다")
+        self.assertEqual(self.job.adopted, [4242])
+        self.assertIs(getattr(self.process, resolve_selection_monitor._JOB_ATTR), self.job)
+
+    async def test_adopt_failure_kills_the_still_suspended_child_and_raises(self):
+        self.job.fail_adopt = OSError("assign failed")
+        self.job.alive = 0  # 넣기 실패 — 자식은 Job 밖에 있다
+        with self.assertRaises(OSError):
+            await self.monitor._start_process()
+        self.assertEqual(self.process.returncode, 0)  # kill 됨(대역의 kill = 종료) — 끝난 것을 기다려 확인한 뒤 올린다
+        self.assertTrue(self.process.exited.is_set())
+        self.assertEqual(self.job.closed, 1)
+        self.assertIsNone(self.monitor._process)
+        self.assertIsNone(self.monitor._unconfirmed)
+
+    async def test_job_creation_failure_on_windows_spawns_nothing_and_can_retry(self):
+        """Job 을 못 만들면 자식을 띄우지 않는다(Job 없는 길로 내려가지 않는다) — 잠금은 풀리고 다음 시도는 다시 할 수 있다."""
+        with mock.patch.object(resolve_selection_monitor, "_new_job", side_effect=OSError("CreateJobObject failed")):
+            with self.assertRaises(OSError):
+                await self.monitor._start_process()
+        self.assertEqual(self.spawn.await_count, 0)
+        self.assertFalse(self.monitor._process_lock.locked())
+        self.assertIsNone(self.monitor._process)
+        await self.monitor._start_process()  # 다음 시도(Job 을 만들 수 있게 된 뒤)
+        self.assertEqual(self.spawn.await_count, 1)
+        self.assertEqual(self.job.adopted, [4242])
+
+    async def test_spawn_failure_closes_the_empty_job(self):
+        self.spawn.side_effect = OSError("spawn failed")
+        with self.assertRaises(OSError):
+            await self.monitor._start_process()
+        self.assertEqual(self.job.closed, 1)
+
+    async def test_resume_failure_inside_the_job_is_reaped_through_the_job(self):
+        """풀기 실패 — 자식은 Job 안에서 멈춘 채다. Job 회수 길(통째 종료 → 남은 수 0 확인)로 끝내고, 직접 kill 에 기대지 않는다."""
+        self.job.fail_adopt = OSError("resume failed")  # Job 에는 들어갔다(alive = 1)
+        original = self.job.terminate
+        self.job.terminate = lambda: (original(), self.process.finish())[0]
+        with self.assertRaises(OSError):
+            await self.monitor._start_process()
+        self.assertEqual((self.job.terminated, self.job.closed), (1, 1))
+        self.assertIsNone(self.monitor._unconfirmed)
+        self.assertIsNone(self.monitor._process)
+
+    async def test_resume_failure_inside_the_job_that_does_not_die_is_kept_with_its_job_and_asked_once_later(self):
+        self.job.fail_adopt = OSError("resume failed")
+        self.job.die_on_terminate = False
+        with self.assertRaises(OSError):
+            await self.monitor._start_process()
+        self.assertIs(self.monitor._unconfirmed, self.process)
+        self.assertIs(getattr(self.process, resolve_selection_monitor._JOB_ATTR), self.job, "Job 을 붙인 채 붙든다 — 다음 확인도 Job 에 묻는다")
+        self.assertEqual(self.job.closed, 0)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with self.assertRaises(TimeoutError):
+            await self.enter_suspended()  # 두 번째 회수 — 기한만큼 또 기다리지 않는다
+        self.assertLess(loop.time() - began, 0.2)
+        self.job.alive = 0
+        self.process.finish()
+        self.assertEqual(await self.enter_suspended(), [True])
+        self.assertIsNone(self.monitor._unconfirmed)
+
+    async def test_adopt_failure_with_a_child_that_does_not_die_in_time_keeps_it_and_later_checks_never_wait_unbounded(self):
+        """넣기 실패 뒤 끝내라고 했는데 기한 안에 끝난 것이 확인되지 않으면 그 자식을 붙든다 — kill 자체가 실패해도 Job 은 닫는다.
+        그 뒤의 회수(suspended·stop)는 기다리지 않고 한 번만 보고 실패한다(Job 없는 길의 기한 없는 대기로 가지 않는다). 끝나면 회복한다."""
+        for kill in (lambda: None, mock.Mock(side_effect=OSError("access denied"))):
+            with self.subTest(kill=kill):
+                job = FakeJob()
+                job.fail_adopt = OSError("assign failed")
+                job.alive = 0  # Job 밖
+                process = ControlledProcess()
+                process.pid = 4343
+                process.stdin = FakeStdin()
+                process.kill = kill  # 끝내라는 요청이 듣지 않는다
+                monitor = ResolveSelectionMonitor()
+                with (
+                    mock.patch.object(resolve_selection_monitor, "_new_job", return_value=job),
+                    mock.patch.object(resolve_selection_monitor.asyncio, "create_subprocess_exec", new=mock.AsyncMock(return_value=process)),
+                    mock.patch.object(resolve_selection_monitor, "_DISCARD_SECONDS", 0.1),
+                ):
+                    with self.assertRaises(OSError):
+                        await monitor._start_process()
+                    self.assertIs(monitor._unconfirmed, process)
+                    self.assertEqual(job.closed, 1)
+                    self.assertFalse(monitor._process_lock.locked())
+                    await monitor._start_process()  # 종료 미확인 — 새 자식 0
+                    self.assertIsNone(monitor._process)
+                    loop = asyncio.get_running_loop()
+                    for again in ("suspended", "stop"):
+                        began = loop.time()
+                        with self.subTest(again=again), self.assertRaises(TimeoutError):
+                            if again == "suspended":
+                                async with monitor.suspended():
+                                    self.fail("종료 미확인인데 본문에 들어갔다")
+                            else:
+                                await monitor.stop()
+                        self.assertLess(loop.time() - began, 0.5, "기다리지 않고 한 번만 본다")
+                        self.assertIs(monitor._unconfirmed, process)
+                    process.finish()  # 나중에 실제로 끝났다
+                    async with monitor.suspended():
+                        pass
+                    self.assertIsNone(monitor._unconfirmed)
+
+    async def test_self_exit_after_stdin_close_needs_no_job_terminate(self):
+        await self.monitor._start_process()
+
+        def exits_a_little_later():
+            asyncio.get_running_loop().call_later(0.03, lambda: (setattr(self.job, "alive", 0), self.process.finish()))
+
+        self.process.stdin.on_close = exits_a_little_later  # stdin 이 닫힌 뒤 조금 있다 스스로 끝난다(유예 안)
+        self.assertEqual(await self.enter_suspended(), [True])
+        self.assertEqual(self.process.stdin.closed, 1)
+        self.assertEqual(self.job.terminated, 0, "유예 안에 스스로 끝난 트리를 강제로 끝내지 않는다")
+        self.assertEqual(self.job.closed, 1)
+
+    async def test_stuck_tree_is_terminated_as_a_whole_without_trusting_returncode_or_stdout(self):
+        await self.monitor._start_process()
+        # 직접 자식(실행기)은 끝난 것처럼 보이고 stdout 은 읽기 오류 — 그래도 Job 에 프로세스가 남아 있으면 끝난 것이 아니다
+        self.process.returncode = 0
+        self.process.exited.set()
+        self.process.stdout.set_exception(OSError("pipe read failed"))
+        self.assertEqual(await self.enter_suspended(), [True])
+        self.assertEqual(self.job.terminated, 1)
+        self.assertFalse(self.process.terminated.is_set(), "직접 자식만 끝내는 terminate 를 쓰지 않는다")
+        self.assertIsNone(self.monitor._unconfirmed)
+
+    async def test_deadline_without_confirmation_fails_keeps_child_releases_lock_and_recovers_later(self):
+        await self.monitor._start_process()
+        self.job.die_on_terminate = False  # 끝내라고 했는데도 남아 있다
+        started = asyncio.get_running_loop().time()
+        with self.assertRaises(TimeoutError):
+            await self.enter_suspended()
+        self.assertLess(asyncio.get_running_loop().time() - started, 2.0, "기한 안에 명시적 실패로 끝난다")
+        self.assertIs(self.monitor._unconfirmed, self.process)
+        self.assertFalse(self.monitor._process_lock.locked(), "실패해도 잠금을 쥔 채 남지 않는다")
+        self.assertEqual(self.monitor._pause_count, 0)
+        await self.monitor._start_process()  # 종료 미확인 — 새 자식 0
+        self.assertEqual(self.spawn.await_count, 1)
+        self.job.alive = 0  # 나중에 실제로 끝났다 — 다음 회수가 다시 물어 회복한다
+        self.assertEqual(await self.enter_suspended(), [True])
+        self.assertIsNone(self.monitor._unconfirmed)
+        self.assertEqual(self.job.closed, 1)
+
+    async def test_after_a_timeout_later_checks_ask_once_without_waiting_and_the_loop_logs_once(self):
+        await self.monitor._start_process()
+        self.job.die_on_terminate = False
+        with self.assertRaises(TimeoutError):
+            await self.enter_suspended()
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with self.assertRaises(TimeoutError):
+            await self.enter_suspended()  # 다시 온 Resolve 변경 요청 — 기한만큼 또 기다리지 않는다
+        self.assertLess(loop.time() - began, 0.2)
+        self.assertEqual(self.job.terminated, 1, "통째 종료를 다시 보내지 않는다")
+        with (
+            mock.patch.object(resolve_selection_monitor.manager, "stats", new=mock.AsyncMock(return_value={"connections": 1})),
+            mock.patch.object(resolve_selection_monitor, "_RESTART_DELAYS", (0.01,)),
+            self.assertLogs("mvhub.resolve_selection", level="ERROR") as logs,
+        ):
+            self.monitor.start()
+            await asyncio.sleep(0.3)  # 감시 루프가 여러 바퀴 다시 묻는다
+            self.assertFalse(self.monitor._task.done())
+            self.assertEqual(self.spawn.await_count, 1)
+        self.assertEqual(sum("종료를 확인하지 못했습니다" in line for line in logs.output), 1, "같은 자식의 오류는 한 번만 남긴다")
+        self.job.alive = 0  # 끝났다 — 루프의 다음 물음이 회복한다
+        self.monitor._stopping = True
+        await self.monitor.stop()
+        self.assertIsNone(self.monitor._unconfirmed)
+
+    async def test_job_query_failure_is_not_exit_proof(self):
+        await self.monitor._start_process()
+        self.job.fail_active = OSError("query failed")
+        with self.assertRaises(OSError):
+            await self.enter_suspended()
+        self.assertIs(self.monitor._unconfirmed, self.process)
+        self.assertEqual(self.job.closed, 0)
+
+    async def test_just_spawned_unregistered_child_is_reaped_through_its_job_too(self):
+        release = asyncio.Event()
+        spawned = asyncio.Event()
+
+        async def slow_spawn(*_args, **_kwargs):
+            spawned.set()
+            await release.wait()
+            return self.process
+
+        self.spawn.side_effect = slow_spawn
+        self.job.die_on_terminate = False
+        starting = asyncio.create_task(self.monitor._start_process())
+        await asyncio.wait_for(spawned.wait(), 2)
+        suspending = asyncio.create_task(self.enter_suspended())
+        await asyncio.sleep(0.02)
+        release.set()
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(starting, 3)
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(suspending, 3)
+        self.assertIs(self.monitor._unconfirmed, self.process)
+        self.assertEqual(self.job.adopted, [4242])
+
+
 class FakeStdin:
     def __init__(self, on_close=None):
         self.closed = 0
@@ -748,6 +1142,22 @@ class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(monitor._stop_process(), 2)
         self.assertEqual(process.stdin.closed, 1)
         self.assertFalse(process.terminated.is_set(), "스스로 끝난 자식에 terminate 를 보낼 필요가 없다")
+        self.assertEqual(process.returncode, 0)
+
+    async def test_child_that_exits_a_moment_after_stdin_close_is_given_the_grace_and_not_terminated(self):
+        """Job 없는 길 — stdin 이 닫힌 뒤 조금 있다 스스로 끝나는 자식은 유예(0.5초) 안에 끝나므로 terminate 를 보내지 않는다."""
+        process = ControlledProcess()
+        process.stdin = FakeStdin(lambda: asyncio.get_running_loop().call_later(0.05, process.finish))
+        await asyncio.wait_for(ResolveSelectionMonitor._terminate_process(process), 2)
+        self.assertFalse(process.terminated.is_set())
+        self.assertEqual(process.returncode, 0)
+
+    async def test_child_that_ignores_terminate_is_killed_after_the_wait(self):
+        """Job 없는 길 — terminate 를 보내도 2초 안에 안 끝나면 kill 로 끝내고 돌아온다."""
+        process = ControlledProcess()
+        process.exit_on_terminate = False  # terminate 무시 — kill(대역에서는 종료)만 듣는다
+        await asyncio.wait_for(ResolveSelectionMonitor._terminate_process(process), 5)
+        self.assertTrue(process.terminated.is_set())
         self.assertEqual(process.returncode, 0)
 
     async def test_child_stuck_after_stdin_close_is_terminated_and_awaited(self):
@@ -876,6 +1286,38 @@ class ParentStdinCloseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(entered, [])
             self.assertIs(monitor._unconfirmed, process)
             self.assertEqual(monitor._pause_count, 0)
+
+    async def test_stop_raises_the_reap_error_even_when_the_monitor_task_failed_too(self):
+        """회수 오류와 감시 태스크 오류가 함께 나면 회수 오류를 올리고, 태스크 오류는 기록만, 태스크 참조는 비운다."""
+        process = ControlledProcess()
+        process.stdin = FakeStdin()
+        process.returncode = 0
+        process.stdout.set_exception(OSError("pipe read failed"))
+        monitor = ResolveSelectionMonitor()
+        monitor._process = process
+
+        async def broken():
+            raise ValueError("monitor loop crashed")
+
+        monitor._task = asyncio.create_task(broken())
+        await asyncio.sleep(0)
+        with self.assertLogs("mvhub.resolve_selection", level="ERROR") as logs, self.assertRaises(OSError):
+            await monitor.stop()
+        self.assertTrue(any("감시 태스크가 오류로" in line for line in logs.output))
+        self.assertIsNone(monitor._task)
+        self.assertIs(monitor._unconfirmed, process)
+
+    async def test_stop_swallows_a_monitor_task_error_when_reap_succeeded(self):
+        monitor = ResolveSelectionMonitor()
+
+        async def broken():
+            raise ValueError("monitor loop crashed")
+
+        monitor._task = asyncio.create_task(broken())
+        await asyncio.sleep(0)
+        with self.assertLogs("mvhub.resolve_selection", level="ERROR"):
+            await monitor.stop()  # 회수할 자식이 없다 — 태스크 오류만으로 종료를 실패시키지 않는다
+        self.assertIsNone(monitor._task)
 
     async def test_suspend_body_waits_for_worker_pipe_after_launcher_exit(self):
         """suspended 본문은 실행기가 끝난 뒤에도 작업자 파이프가 닫히기 전에는 시작하지 않는다."""
