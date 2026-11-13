@@ -1122,6 +1122,7 @@ def share_capabilities():
     from ..repo import share_commands as commands
     with db.get_connection() as conn:
         return {"share_command": 1, "receipt_replay": True, "content_schema": 2,
+                "backup_set_format": 3,
                 "comment_drawings": 1,  # publish-bundle-v2 를 받는다(C3 사전 확인)
                 "asset_comment_drawings": 1,  # /api/assets/comments-v2 를 받는다(어셋 그림 §3.2 — 화면의 [편집] 표시 조건)
                 "db_generation": commands.database_generation(conn)}

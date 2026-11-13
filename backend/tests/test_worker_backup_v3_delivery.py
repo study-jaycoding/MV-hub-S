@@ -1,0 +1,478 @@
+"""P2 delivery uses synthetic local snapshots and an isolated real receiver."""
+from __future__ import annotations
+
+import json
+import asyncio
+import io
+import socket
+import sqlite3
+import threading
+import time
+import urllib.error
+from contextlib import closing
+from types import SimpleNamespace
+
+import pytest
+import uvicorn
+from fastapi import FastAPI, Request
+
+from app import active_account
+from app.routers import db_backup
+from app.services import backup, backup_manifest, worker_backup
+from test_backup_v3_local import local, extras, capture
+from test_trash_transfer import enabled_db
+
+REAL_UPLOAD = worker_backup._multipart_set_upload
+
+
+@pytest.fixture
+def delivery_store(local, monkeypatch):
+    root = local[2]
+    monkeypatch.setattr(worker_backup, "STATE_DB", root / "delivery.db")
+    monkeypatch.setattr(worker_backup, "OUTBOX_DIR", root / "outbox")
+    monkeypatch.setattr(worker_backup, "DEVICE_IDENTITY_PATH", root / "device.json")
+    monkeypatch.setattr(worker_backup, "_STATE_SCHEMA_READY", set())
+    monkeypatch.setattr(worker_backup.shared_connection, "token", lambda: "synthetic-token")
+    monkeypatch.setattr(worker_backup.shared_connection, "base_url", lambda: "http://unused.invalid")
+    monkeypatch.setattr(worker_backup, "_multipart_set_upload", lambda *a, **k: pytest.fail("unexpected upload"))
+    return local
+
+
+def queued(local):
+    content = capture(local)
+    set_id = worker_backup.queue_backup_set(content)
+    assert set_id
+    stage = worker_backup._stage_dir(active_account.slug(active_account.account_key()), set_id)
+    manifest = json.loads((stage / "manifest.json").read_text("utf-8"))
+    return content, stage, manifest
+
+
+@pytest.mark.parametrize("role", ["agent_chat", "asset_mounts"])
+@pytest.mark.parametrize("fault", ["corrupt", "missing"])
+def test_queue_v3_rechecks_extra_files_before_duplicate_return(delivery_store, role, fault):
+    extras(delivery_store)
+    content, stage, _ = queued(delivery_store)
+    manifest = backup_manifest.read_local(content, allow_v3=True)
+    path = backup_manifest.local_paths(content, manifest)[role]
+    if fault == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"broken")
+    with pytest.raises((ValueError, OSError)):
+        worker_backup.queue_backup_set(content)
+    assert stage.is_dir()
+
+
+@pytest.mark.parametrize("role", ["agent_chat", "asset_mounts"])
+def test_delivery_staged_extra_change_blocks_upload(delivery_store, role):
+    extras(delivery_store)
+    _, stage, _ = queued(delivery_store)
+    (stage / backup_manifest.WORKER_FILENAMES[role]).write_bytes(b"changed after staging")
+    assert worker_backup.drain_one() == {"state": "failed", "error_code": "staging_invalid"}
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute("SELECT status,last_error_code FROM worker_backup_outbox").fetchone()[:] == (
+            "pending", "staging_invalid")
+    assert stage.is_dir()
+
+
+@pytest.mark.parametrize('status,body,error,delay', [
+    (200, b'{}', 'server_update_required', 3600),
+    (200, b'{"backup_set_format":2}', 'server_update_required', 3600),
+    (200, b'{"backup_set_format":-1}', 'server_update_required', 3600),
+    (404, b'', 'server_update_required', 3600),
+    (405, b'', 'server_update_required', 3600),
+    (401, b'', 'login_required', 300),
+    (403, b'', 'capability_unknown', 60),
+    (500, b'', 'capability_unknown', 60),
+    (200, b'[3]', 'capability_unknown', 60),
+    (200, b'{', 'capability_unknown', 60),
+    (200, b'{"backup_set_format":"3"}', 'capability_unknown', 60),
+    (200, b'{"backup_set_format":3.0}', 'capability_unknown', 60),
+    (200, b'{"backup_set_format":true}', 'capability_unknown', 60),
+    (200, b'{"backup_set_format":null}', 'capability_unknown', 60),
+    (200, b'{"backup_set_format":[]}', 'capability_unknown', 60),
+    (200, b' ' * 65537, 'capability_unknown', 60),
+    (0, b'', 'network_unavailable', 60),
+    (-1, b'', 'network_unavailable', 60),
+], ids=['missing', 'v2', 'negative', '404', '405', '401', '403', '500', 'array', 'broken',
+        'string', 'float', 'bool', 'null', 'list', 'oversized', 'offline', 'timeout'])
+def test_negotiation_failure_preserves_whole_set(delivery_store, monkeypatch, status, body, error, delay):
+    extras(delivery_store)
+    _, stage, _ = queued(delivery_store)
+    before = {p.name: p.read_bytes() for p in stage.iterdir()}
+    requests = []
+    def open_request(request, *, timeout):
+        requests.append(request)
+        assert request.get_method() == 'GET'
+        assert request.full_url == 'http://unused.invalid/api/share/capabilities'
+        assert request.get_header('Authorization') == 'Bearer synthetic-token'
+        assert timeout == 10
+        if status == 0:
+            raise urllib.error.URLError('offline')
+        if status == -1:
+            raise TimeoutError()
+        if status >= 400:
+            raise urllib.error.HTTPError(request.full_url, status, 'synthetic', {}, io.BytesIO(body))
+        response = io.BytesIO(body)
+        response.status = status
+        return response
+    monkeypatch.setattr(worker_backup.urllib.request, 'urlopen', open_request)
+    start = time.time()
+    result = worker_backup.drain_one()
+    assert result['error_code'] == error
+    assert result['state'] == (error if error in {'server_update_required', 'login_required'} else 'failed')
+    assert result['format_version'] == 3
+    assert len(requests) == 1
+    with closing(worker_backup._connect()) as conn:
+        row = conn.execute('SELECT * FROM worker_backup_outbox').fetchone()
+        assert row['status'] == 'pending' and row['last_error_code'] == error
+        assert start + delay <= row['next_retry_ts'] <= time.time() + delay
+    assert {p.name: p.read_bytes() for p in stage.iterdir()} == before
+
+
+@pytest.mark.parametrize('version', [3, 4])
+def test_negotiation_accepts_explicit_integer_support(monkeypatch, version):
+    def response(*args, **kwargs):
+        stream = io.BytesIO(json.dumps({'backup_set_format': version}).encode())
+        stream.status = 200
+        return stream
+    monkeypatch.setattr(worker_backup.urllib.request, 'urlopen', response)
+    assert worker_backup._capability_error('http://unused.invalid', 'synthetic') is None
+
+
+def test_negotiation_no_token_does_not_probe(delivery_store, monkeypatch):
+    _, stage, _ = queued(delivery_store)
+    monkeypatch.setattr(worker_backup.shared_connection, 'token', lambda: None)
+    monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: pytest.fail('probe without token'))
+    assert worker_backup.drain_one()['state'] == 'login_required'
+    assert stage.is_dir()
+
+
+@pytest.fixture
+def receiver(delivery_store, monkeypatch):
+    app = FastAPI()
+    app.include_router(db_backup.router)
+    state = SimpleNamespace(capability=3, requests=[], raw=[], account=active_account.account_key())
+    monkeypatch.setattr(db_backup, 'DATA_DIR', delivery_store[2] / 'server')
+    monkeypatch.setattr(db_backup, '_store_slots', asyncio.Semaphore(4))
+    @app.middleware('http')
+    async def identity(request: Request, call_next):
+        assert request.headers.get('authorization') == 'Bearer synthetic-token'
+        state.requests.append((request.method, request.url.path))
+        request.state.account = {'email': state.account}
+        if request.method == 'POST':
+            state.raw.append(await request.body())
+        return await call_next(request)
+    @app.get('/api/share/capabilities')
+    def capabilities():
+        return {} if state.capability is None else {'backup_set_format': state.capability}
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level='error', access_log=False, lifespan='off'))
+    thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not server.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert server.started
+        monkeypatch.setattr(worker_backup.shared_connection, 'base_url', lambda: f'http://127.0.0.1:{port}')
+        monkeypatch.setattr(worker_backup, '_multipart_set_upload', REAL_UPLOAD)
+        yield state
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        sock.close()
+        assert not thread.is_alive(), 'loopback receiver was not reclaimed'
+
+
+@pytest.mark.parametrize('mode', ['absent', 'extras', 'pinned'])
+def test_delivery_real_multipart_router_roundtrip(delivery_store, receiver, mode, request, monkeypatch):
+    if mode == 'pinned':
+        from app import manage_db
+        delivery_store = (request.getfixturevalue('enabled_db'), delivery_store[1], delivery_store[2])
+        manage = delivery_store[2] / 'manage_hub.db'
+        monkeypatch.setattr(backup, 'MANAGE_DB_PATH', manage)
+        manage_db.init_manage_db(manage)
+    if mode == 'extras':
+        extras(delivery_store)
+    content = capture(delivery_store)
+    local_manifest = backup_manifest.read_local(content, allow_v3=True)
+    if mode == 'pinned':
+        assert local_manifest['consistency_kind'] == backup_manifest.PINNED
+        assert local_manifest['consistency_roles'] == ['content', 'trash']
+        assert local_manifest['roles']['manage']['state'] == 'present'
+    local_paths = backup_manifest.local_paths(content, local_manifest)
+    set_id = worker_backup.queue_backup_set(content)
+    stage = worker_backup._stage_dir(active_account.slug(active_account.account_key()), set_id)
+    manifest = json.loads((stage / 'manifest.json').read_text('utf-8'))
+    assert manifest['consistency_kind'] == local_manifest['consistency_kind']
+    assert manifest['consistency_roles'] == local_manifest['consistency_roles']
+    for role, info in manifest['roles'].items():
+        assert info['state'] == local_manifest['roles'][role]['state']
+        assert info['captured_at'] == local_manifest['roles'][role]['captured_at']
+    paths = backup_manifest.worker_paths(manifest, stage, check_present=True)
+    sent_bytes = {role: path.read_bytes() for role, path in paths.items()}
+    assert set(manifest['roles']) == {'content', 'trash', 'agent_chat', 'asset_mounts'}
+    for role in ('agent_chat', 'asset_mounts'):
+        if role in paths:
+            assert sent_bytes[role] == local_paths[role].read_bytes()
+    with closing(sqlite3.connect(stage / 'content.db')) as conn:
+        assert conn.execute("SELECT 1 FROM app_setting WHERE key='auth_secret'").fetchone() is None
+    # The real receiver stores once before the worker's retry, exercising duplicate ACK too.
+    url = worker_backup.shared_connection.base_url() + '/api/db-backup/sets'
+    status, first = REAL_UPLOAD(url, 'synthetic-token', manifest, paths, timeout=5)
+    assert status == 200 and first['accepted'] and not first['duplicate']
+    result = worker_backup.drain_one()
+    assert result['state'] == 'success' and result['is_current'] and not result['conflict']
+    assert not stage.exists()
+    folder = db_backup._dir(receiver.account) / 'sets' / set_id
+    assert {role: (folder / backup_manifest.WORKER_FILENAMES[role]).read_bytes() for role in paths} == sent_bytes
+    assert len(db_backup._valid_set_dirs(folder.parent)) == 1
+    for role in paths:
+        assert f'name="{role}"; filename="{backup_manifest.WORKER_FILENAMES[role]}"'.encode() in receiver.raw[-1]
+    assert b'name="manage"' not in receiver.raw[-1]
+    assert worker_backup.status_snapshot()['unsent_roles'] == []
+
+
+def test_negotiation_updated_server_rechecked_and_delivered(delivery_store, receiver):
+    receiver.capability = None
+    _, stage, _ = queued(delivery_store)
+    assert worker_backup.drain_one()['state'] == 'server_update_required'
+    assert receiver.requests == [('GET', '/api/share/capabilities')]
+    receiver.capability = 3
+    worker_backup.retry_pending()
+    assert worker_backup.drain_one()['state'] == 'success'
+    assert receiver.requests == [('GET', '/api/share/capabilities'), ('GET', '/api/share/capabilities'),
+                                 ('POST', '/api/db-backup/sets')]
+    assert not stage.exists()
+
+
+def ack_for(manifest):
+    return {'accepted': True, 'backup_set_id': manifest['backup_set_id'], 'format_version': 3,
+            'manifest_sha256': backup_manifest.manifest_digest(manifest),
+            'files': {role: {key: info[key] for key in ('size', 'sha256')}
+                      for role, info in manifest['roles'].items() if info['state'] == 'present'}}
+
+
+@pytest.mark.parametrize('fault', ['accepted', 'id', 'version', 'bool_version', 'digest', 'missing', 'absent', 'hash', 'size', 'size_type'])
+def test_delivery_bad_ack_preserves_staging(delivery_store, monkeypatch, fault):
+    extras(delivery_store)
+    _, stage, manifest = queued(delivery_store)
+    ack = ack_for(manifest)
+    if fault == 'accepted': ack['accepted'] = 1
+    elif fault == 'id': ack['backup_set_id'] = '0' * 64
+    elif fault == 'version': ack['format_version'] = 2
+    elif fault == 'bool_version': ack['format_version'] = True
+    elif fault == 'digest': ack['manifest_sha256'] = '0' * 64
+    elif fault == 'missing': del ack['files']['agent_chat']
+    elif fault == 'absent': ack['files']['trash'] = ack['files']['content']
+    elif fault == 'hash': ack['files']['content']['sha256'] = '0' * 64
+    elif fault == 'size': ack['files']['content']['size'] += 1
+    elif fault == 'size_type': ack['files']['content']['size'] = str(ack['files']['content']['size'])
+    monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: None)
+    monkeypatch.setattr(worker_backup, '_multipart_set_upload', lambda *a, **k: (200, ack))
+    assert worker_backup.drain_one()['error_code'] == 'ack_mismatch'
+    assert stage.exists() and worker_backup.status_snapshot()['pending'] == 1
+
+
+@pytest.mark.parametrize('status,expected', [(400, 'server_rejected'), (413, 'server_rejected'), (500, 'server_rejected'),
+                                           (404, 'server_update_required'), (405, 'server_update_required'), (401, 'login_required')])
+def test_delivery_upload_failure_keeps_whole_set(delivery_store, monkeypatch, status, expected):
+    _, stage, _ = queued(delivery_store)
+    monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: None)
+    monkeypatch.setattr(worker_backup, '_multipart_set_upload', lambda *a, **k: (status, {}))
+    result = worker_backup.drain_one()
+    assert result['error_code'] == expected and stage.exists()
+    if status in {404, 405}:
+        assert result['format_version'] == 3
+
+
+def test_queue_capture_times_do_not_make_duplicate_transfers(delivery_store):
+    extras(delivery_store)
+    _, stage, first = queued(delivery_store)
+    content = capture(delivery_store, '20261113_010101_000003')
+    metadata = backup_manifest.read_local(content, allow_v3=True)
+    metadata['captured_at'] = '2026-11-13T23:00:00+00:00'
+    for info in metadata['roles'].values():
+        info['captured_at'] = metadata['captured_at']
+    backup_manifest.local_path(content).write_text(backup_manifest.canonical(backup_manifest.seal(metadata)), encoding='utf-8')
+    assert worker_backup.queue_backup_set(content) == first['backup_set_id']
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM worker_backup_outbox').fetchone()[0] == 1
+    assert json.loads((stage / 'manifest.json').read_text('utf-8')) == first
+
+
+def test_queue_v2_key_and_fast_path_unchanged_v3_separate(delivery_store, monkeypatch):
+    monkeypatch.setattr(backup, 'CAPTURE_VERSION', 2)
+    _, _, v2 = queued(delivery_store)
+    expected = {key: v2[key] for key in ('format_version', 'roles', 'consistency_kind', 'consistency_roles')}
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute('SELECT roles_json FROM worker_backup_outbox').fetchone()[0] == backup_manifest.canonical(expected)
+    monkeypatch.setattr(backup, 'CAPTURE_VERSION', 3)
+    content = capture(delivery_store, '20261113_010101_000003')
+    v3_id = worker_backup.queue_backup_set(content)
+    assert v3_id != v2['backup_set_id']
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM worker_backup_outbox').fetchone()[0] == 2
+    monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: pytest.fail('v2 must not probe'))
+    monkeypatch.setattr(worker_backup, '_multipart_set_upload', lambda *a, **k: (404, {}))
+    assert worker_backup.drain_one()['format_version'] == 2
+
+
+@pytest.mark.parametrize('meaningful', ['none', 'agent', 'mounts'])
+def test_queue_extra_only_accounts_and_wire_summary(delivery_store, meaningful):
+    agent, mounts = extras(delivery_store)
+    with closing(sqlite3.connect(delivery_store[0])) as conn, conn:
+        conn.execute('DELETE FROM generation')
+    if meaningful != 'mounts':
+        mounts.write_bytes(b'{"mounts":[]}')
+    if meaningful == 'agent':
+        with closing(sqlite3.connect(agent)) as conn, conn:
+            conn.execute("INSERT INTO agent_chat_conversation(id) VALUES('conversation')")
+    content = capture(delivery_store)
+    set_id = worker_backup.queue_backup_set(content)
+    if meaningful == 'none':
+        assert set_id is None
+        assert worker_backup.status_snapshot()['state'] == 'waiting_for_data'
+        assert not list(worker_backup.OUTBOX_DIR.rglob('manifest.json'))
+    else:
+        stage = worker_backup._stage_dir(active_account.slug(active_account.account_key()), set_id)
+        manifest = json.loads((stage / 'manifest.json').read_text('utf-8'))
+        assert manifest['summary']['meaningful_records'] == 0
+        assert set(manifest['summary']) == db_backup._SUMMARY_KEYS
+        assert db_backup._normalise_set_manifest(json.dumps(manifest)) == manifest
+
+
+@pytest.mark.parametrize('fault', ['scope', 'absent_file', 'copy_change'])
+def test_queue_invalid_source_never_publishes(delivery_store, monkeypatch, fault):
+    extras(delivery_store)
+    content = capture(delivery_store)
+    metadata = backup_manifest.read_local(content, allow_v3=True)
+    if fault == 'scope':
+        metadata['account_scope_digest'] = '0' * 64
+        backup_manifest.local_path(content).write_text(backup_manifest.canonical(backup_manifest.seal(metadata)), encoding='utf-8')
+    elif fault == 'absent_file':
+        backup_manifest.local_paths(content)['trash'].write_bytes(b'unexpected')
+    else:
+        copyfile = worker_backup.shutil.copyfile
+        def changing_copy(src, dst):
+            result = copyfile(src, dst)
+            if dst.name == 'asset_mounts.json':
+                dst.write_bytes(b'{"mounts":[]}')
+            return result
+        monkeypatch.setattr(worker_backup.shutil, 'copyfile', changing_copy)
+    with pytest.raises(ValueError):
+        worker_backup.queue_backup_set(content)
+    assert not list(worker_backup.OUTBOX_DIR.rglob('manifest.json'))
+    assert content.is_file()
+
+
+def test_queue_pending_limit_and_restore_keep_whole_sets(delivery_store, monkeypatch):
+    monkeypatch.setattr(worker_backup, '_MAX_PENDING_PER_ACCOUNT', 1)
+    _, first_stage, _ = queued(delivery_store)
+    # An older v3 is not specially protected from a newer v2 under the existing cap.
+    monkeypatch.setattr(backup, 'CAPTURE_VERSION', 2)
+    with closing(sqlite3.connect(delivery_store[0])) as conn, conn:
+        conn.execute("INSERT INTO generation VALUES('second')")
+    content = capture(delivery_store, '20261113_010101_000003')
+    second = worker_backup.queue_backup_set(content)
+    second_stage = worker_backup._stage_dir(active_account.slug(active_account.account_key()), second)
+    assert not first_stage.exists() and second_stage.is_dir()
+    with closing(worker_backup._connect()) as conn:
+        assert [r[0] for r in conn.execute('SELECT status FROM worker_backup_outbox ORDER BY created_at')] == ['superseded', 'pending']
+    worker_backup.adopt_restored_backup('f' * 64, account_email=active_account.account_key())
+    assert not second_stage.exists()
+    assert worker_backup.status_snapshot()['unsent_roles'] == []
+    assert worker_backup._lineage_parent(active_account.slug(active_account.account_key())) == 'f' * 64
+
+
+@pytest.mark.parametrize('version,status,other,expected', [
+    (1, 'pending', False, ['trash']), (2, 'running', False, ['trash']),
+    (3, 'pending', False, []), (2, 'done', False, []),
+    (2, 'superseded', False, []), (2, 'pending', True, []),
+])
+def test_status_excluded_rows_cannot_add_roles(delivery_store, version, status, other, expected):
+    account = 'other' if other else active_account.slug(active_account.account_key())
+    roles = {'trash': {'state': 'absent'}, 'unknown': {'state': 'present'}}
+    metadata = roles if version == 1 else {'format_version': version, 'roles': roles}
+    with closing(worker_backup._connect()) as conn, conn:
+        conn.execute('INSERT INTO worker_backup_outbox(backup_set_id,account_slug,created_at,local_stamp,roles_json,status) VALUES(?,?,?,?,?,?)',
+                     ('1' * 64, account, '2026-11-13', 'synthetic', json.dumps(metadata), status))
+    assert worker_backup.status_snapshot()['unsent_roles'] == expected
+
+
+def test_queue_delivery_missing_parent_is_stored_as_conflict(delivery_store, receiver):
+    _, _, first = queued(delivery_store)
+    assert worker_backup.drain_one()['state'] == 'success'
+    # The next parent's upload fails, while its child becomes due first.
+    with closing(sqlite3.connect(delivery_store[0])) as conn, conn:
+        conn.execute("INSERT INTO generation VALUES('second')")
+    second = worker_backup.queue_backup_set(capture(delivery_store, '20261113_010101_000003'))
+    with closing(worker_backup._connect()) as conn, conn:
+        conn.execute('UPDATE worker_backup_outbox SET next_retry_ts=? WHERE backup_set_id=?', (time.time() + 3600, second))
+    with closing(sqlite3.connect(delivery_store[0])) as conn, conn:
+        conn.execute("INSERT INTO generation VALUES('third')")
+    third = worker_backup.queue_backup_set(capture(delivery_store, '20261113_010101_000004'))
+    result = worker_backup.drain_one()
+    assert result['state'] == 'success' and result['backup_set_id'] == third
+    assert result['conflict'] and not result['is_current']
+    assert db_backup._read_head(db_backup._dir(receiver.account) / 'sets') == first['backup_set_id']
+
+
+def test_status_only_pending_present_roles_of_current_account(delivery_store):
+    extras(delivery_store)
+    _, _, manifest = queued(delivery_store)
+    account = active_account.slug(active_account.account_key())
+    with closing(worker_backup._connect()) as conn, conn:
+        def add(index, owner, status, metadata):
+            conn.execute('INSERT INTO worker_backup_outbox(backup_set_id,account_slug,created_at,local_stamp,roles_json,status) VALUES(?,?,?,?,?,?)',
+                         (f'{index:064x}', owner, '2026-11-13', 'synthetic', json.dumps(metadata), status))
+        add(1, account, 'running', {'content': {}, 'trash': {}})  # legacy v1
+        add(2, 'other-account', 'pending', {'format_version': 3, 'roles': {'trash': {'state': 'present'}}})
+        add(3, account, 'done', {'format_version': 2, 'roles': {'unknown': {}}})
+        add(4, account, 'superseded', {'format_version': 2, 'roles': {'unknown': {}}})
+        add(5, account, 'pending', None)
+        add(6, account, 'pending', {'format_version': 2, 'roles': {'unknown': {}}})
+    state = worker_backup.status_snapshot()
+    assert state['state'] == 'uploading'
+    assert state['unsent_roles'] == ['content', 'trash', 'agent_chat', 'asset_mounts']
+    assert manifest['backup_set_id'] not in json.dumps(state) and account not in json.dumps(state)
+    with closing(worker_backup._connect()) as conn, conn:
+        conn.execute("UPDATE worker_backup_outbox SET status='done' WHERE account_slug=?", (account,))
+    assert worker_backup.status_snapshot()['unsent_roles'] == []
+    with active_account.pinned_account_scope(('', None)):
+        assert worker_backup.status_snapshot()['unsent_roles'] == []
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'cancel'])
+def test_delivery_parent_budget_and_interrupted_claim_recovery(delivery_store, monkeypatch, failure):
+    queued(delivery_store)
+    child = SimpleNamespace(returncode=None)
+    async def communicate():
+        worker_backup._claim_due()
+        return b'', b''
+    child.communicate = communicate
+    async def create(*a, **k):
+        return child
+    async def wait(awaitable, *, timeout):
+        assert timeout == worker_backup.UPLOAD_TIMEOUT + 25
+        await awaitable
+        raise TimeoutError() if failure == 'timeout' else asyncio.CancelledError()
+    terminated = []
+    async def terminate(process):
+        terminated.append(process)
+        process.returncode = -1
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', create)
+    monkeypatch.setattr(asyncio, 'wait_for', wait)
+    monkeypatch.setattr(worker_backup, '_terminate_process', terminate)
+    runner = worker_backup.PeriodicWorkerBackupUpload()
+    if failure == 'cancel':
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(runner.run_now())
+    else:
+        assert asyncio.run(runner.run_now()) == {'state': 'failed', 'error_code': 'timeout'}
+    assert terminated == [child] and runner._process is None
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute('SELECT status,last_error_code FROM worker_backup_outbox').fetchone()[:] == ('pending', 'interrupted')

@@ -1497,6 +1497,10 @@ def test_new_worker_with_old_server_keeps_set_pending_and_uses_legacy_compatibil
     monkeypatch.setattr(db_transfer, "_capture_backup_admission", lambda: ((email, "synthetic-uid"), "http://synthetic.invalid", "synthetic-token"))
     monkeypatch.setattr(db_transfer, "backup_now", lambda: source)
 
+    # P2 requires explicit source version as well as the drained backlog version.
+    from test_backup_admission_account_pin import seal_local_v2
+    seal_local_v2(source, email)
+
     def queue(path, *, account_email=None):
         assert path == source and account_email == email
         return "a" * 64
@@ -1511,7 +1515,7 @@ def test_new_worker_with_old_server_keeps_set_pending_and_uses_legacy_compatibil
     async def old_server_result(*, expected_account_key=None, expected_backup_set_id=None):
         assert expected_account_key == hashlib.sha256(active_account.slug(email).encode("utf-8")).hexdigest()
         assert expected_backup_set_id == "a" * 64
-        return {"state": "server_update_required", "error_code": "server_update_required"}
+        return {"state": "server_update_required", "error_code": "server_update_required", "format_version": 2}
 
     monkeypatch.setattr(db_transfer.periodic_worker_backup, "run_now", old_server_result)
 

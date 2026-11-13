@@ -212,16 +212,24 @@ def test_compatibility_default_capture_stays_v2():
     assert backup.CAPTURE_VERSION == 2
 
 
-def test_compatibility_v3_local_is_rejected_by_existing_worker(local, monkeypatch):
+def test_compatibility_v3_worker_requires_server_capability(local, monkeypatch):
     from app.services import worker_backup
     extras(local)
     content = capture(local)
     monkeypatch.setattr(worker_backup, "OUTBOX_DIR", local[2] / "outbox")
     monkeypatch.setattr(worker_backup, "STATE_DB", local[2] / "delivery.db")
+    monkeypatch.setattr(worker_backup, "DEVICE_IDENTITY_PATH", local[2] / "device.json")
     monkeypatch.setattr(worker_backup, "_multipart_set_upload", lambda *a, **k: pytest.fail("must not send"))
-    with pytest.raises(ValueError, match="version"):
-        worker_backup.queue_backup_set(content)
-    assert not list((local[2] / "outbox").rglob("manifest.json"))
+    monkeypatch.setattr(worker_backup.shared_connection, "token", lambda: "synthetic")
+    monkeypatch.setattr(worker_backup.shared_connection, "base_url", lambda: "http://unused.invalid")
+    monkeypatch.setattr(worker_backup, "_capability_error", lambda *a: "server_update_required")
+    # P2 opens local v3 staging; unsupported servers still receive no files.
+    assert worker_backup.queue_backup_set(content)
+    assert worker_backup.drain_one() == {
+        "state": "server_update_required", "error_code": "server_update_required", "format_version": 3,
+    }
+    assert len(list((local[2] / "outbox").rglob("manifest.json"))) == 1
+    assert worker_backup.status_snapshot()["pending"] == 1
 
 
 def replica_module(local, monkeypatch):
@@ -517,7 +525,8 @@ def test_consumers_replica_resumes_own_interrupted_deletion(local, monkeypatch, 
     root = local[2] / 'replica'
     dest = root / 'backups' / content.name
     members = backup_manifest.local_paths(dest, backup_manifest.read_local(dest, allow_v3=True))
-    blocked = next(path for role, path in members.items() if role != 'content')
+    # Block the first existing sidecar in deletion order, not the order of a set-derived dict.
+    blocked = members['trash' if version == 2 else 'agent_chat']
     original_unlink = Path.unlink
 
     def unlink(path, *args, **kwargs):

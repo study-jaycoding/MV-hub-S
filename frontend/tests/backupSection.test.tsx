@@ -95,6 +95,32 @@ async function mount(current = status(), onRefresh = vi.fn()) {
 }
 
 describe("백업 칸", () => {
+  it.each(["server_update_required", "failed", "login_required"])("status: %s에 미전송 구성원을 표시", async (state) => {
+    const current = status();
+    current.shared = { ...current.shared, state, pending: 1, unsent_roles: ["content", "trash", "agent_chat", "asset_mounts"] };
+    await mount(current);
+    const warning = host.querySelector(".settings-backup-warn")!;
+    expect(warning.textContent).toContain("서버에 안 간 것: 작업 기록(생성물·캔버스·편집) · 휴지통 · MV Agent 대화 · 폴더 등록");
+    expect(warning.textContent).toContain("앱이 실행 중이면 자동으로 다시 확인합니다");
+    expect(warning.textContent).not.toContain("1시간");
+    expect(warning.textContent).not.toMatch(/[…\.]\s*$/);
+    expect(warning.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it.each(["pending", "uploading", "success"])("status: %s에는 추가 경고가 없음", async (state) => {
+    const current = status();
+    current.shared = { ...current.shared, state, unsent_roles: ["agent_chat"] };
+    await mount(current);
+    expect(host.textContent).not.toContain("서버에 안 간 것");
+  });
+
+  it.each([undefined, []])("status: 구응답·빈 배열은 미전송 경고가 없음 (%s)", async (unsent_roles) => {
+    const current = status();
+    current.shared = { ...current.shared, state: "failed", unsent_roles };
+    await mount(current);
+    expect(host.textContent).not.toContain("서버에 안 간 것");
+  });
+
   it.each([
     ["agent_chat_busy", "대화 기록을 복원 중"],
     ["agent_chat_unreadable", "대화 기록을 읽지 못해"],

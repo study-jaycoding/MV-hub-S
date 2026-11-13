@@ -119,6 +119,7 @@ export interface BackupContinuityStatus {
     pending: number;
     failed: number;
     oldest_pending_at?: string | null;
+    unsent_roles?: ("content" | "trash" | "agent_chat" | "asset_mounts")[];
     last_attempt_at: string | null;
     last_success_at: string | null;
     last_error_code: string | null;

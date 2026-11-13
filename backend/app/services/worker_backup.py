@@ -78,6 +78,7 @@ _MAX_PENDING_PER_ACCOUNT = max(
 _HISTORY_KEEP_PER_ACCOUNT = 100
 _FORMAT = "mvhub-worker-backup-set"
 _FORMAT_VERSION = backup_manifest.VERSION
+_CAPABILITY_TIMEOUT = 10.0
 _SET_ID_RE = re.compile(r"[0-9a-f]{64}")
 _PREFIX = "content_hub_"
 _TRASH_PREFIX = "content_trash_"
@@ -248,8 +249,18 @@ def _source_signature(content: Path, trash: Path) -> str | None:
                 "sqlite_header": header.hex(),
             }
         metadata_path = backup_manifest.local_path(content)
-        metadata_digest = backup_manifest.file_digest(metadata_path) if metadata_path.is_file() else None
-    except OSError:
+        metadata_digest = None
+        if metadata_path.is_file():
+            with metadata_path.open('rb') as stream:
+                raw = stream.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                return None
+            metadata = json.loads(raw)
+            # The cheap signature does not cover Agent/JSON: v3 must pass the full local check.
+            if not isinstance(metadata, dict) or metadata.get('format_version') == 3:
+                return None
+            metadata_digest = hashlib.sha256(raw).hexdigest()
+    except (OSError, ValueError, RecursionError):
         return None
     return json.dumps(
         {
@@ -501,7 +512,7 @@ def queue_backup_set(
     *,
     account_email: str | None = None,
 ) -> str | None:
-    """검증된 로컬 백업에서 전송 전용 content·trash 사본을 원자적으로 staging한다.
+    """검증된 로컬 백업에서 해당 판의 전체 작업자 사본을 원자적으로 staging한다.
     복사·대조하는 동안 그 세트를 붙잡아(backup.hold_set) 로컬 회전이 지우지 않게 한다."""
     from .backup import hold_set
 
@@ -535,7 +546,9 @@ def _queue_backup_set_held(
     temp = account_root / f".stage-{secrets.token_hex(8)}"
     temp.mkdir(exist_ok=False)
     try:
-        local_manifest = backup_manifest.read_local(content_backup)
+        local_manifest = backup_manifest.read_local(content_backup, allow_v3=True)
+        is_v3 = local_manifest is not None and local_manifest['format_version'] == 3
+        version = 3 if is_v3 else _FORMAT_VERSION
         if local_manifest and local_manifest['account_scope_digest'] != account_key_digest(account_slug):
             raise ValueError('backup account scope mismatch')
         content = temp / "content.db"
@@ -553,24 +566,46 @@ def _queue_backup_set_held(
             _validate_trash(trash)
             role_paths["trash"] = trash
         if local_manifest:
-            if set(role_paths) != set(local_manifest['roles']) & {'content', 'trash'}:
+            expected_roles = {role for role, info in local_manifest['roles'].items()
+                              if not is_v3 or info['state'] == 'present'}
+            if set(role_paths) != expected_roles & {'content', 'trash'}:
                 raise ValueError('local backup members differ')
             if 'trash' in role_paths and backup_manifest.file_digest(role_paths['trash']) != local_manifest['roles']['trash']['sha256']:
                 raise ValueError('local backup changed during copy')
 
         roles = {role: {**_role_info(path), 'schema': backup_manifest.schema_info(path, role)}
                  for role, path in sorted(role_paths.items())}
+        if is_v3:
+            local_paths = backup_manifest.local_paths(content_backup, local_manifest, check_present=True)
+            for role in ('agent_chat', 'asset_mounts'):
+                if role in local_paths:
+                    path = temp / backup_manifest.WORKER_FILENAMES[role]
+                    shutil.copyfile(local_paths[role], path)
+                    if _sha256(path) != local_manifest['roles'][role]['sha256']:
+                        raise ValueError('local backup changed during copy')
+                    role_paths[role] = path
+                    roles[role] = _role_info(path)
+            roles = {role: {**info, **roles.get(role, {})}
+                     for role, info in local_manifest['roles'].items() if role != 'manage'}
         capture = {
             'captured_at': local_manifest['captured_at'] if local_manifest else None,
             'consistency_kind': local_manifest['consistency_kind'] if local_manifest else backup_manifest.UNKNOWN,
             'consistency_roles': local_manifest['consistency_roles'] if local_manifest else [],
         }
         if capture['consistency_kind'] == backup_manifest.INDEPENDENT:
-            capture['consistency_roles'] = sorted(roles)
+            capture['consistency_roles'] = sorted(role_paths)
         summary = metadata_summary(content, role_paths.get("trash"))
+        extra_records = 0
+        if is_v3:
+            # Copies match the validated local hashes; a count read failure is not an empty account.
+            if 'agent_chat' in role_paths:
+                with contextlib.closing(sqlite3.connect(read_only_uri(role_paths['agent_chat'], immutable=True), uri=True)) as conn:
+                    extra_records += _table_count(conn, 'agent_chat_conversation')
+            if 'asset_mounts' in role_paths:
+                extra_records += len(backup_manifest.read_json_v3(role_paths['asset_mounts'].read_bytes())['mounts'])
         # 새 PC 로그인 직후 만들어지는 스키마/기본 작업자뿐인 DB가 서버 최신본처럼 올라가면
         # 기존 작업을 찾기 어려워진다. 의미 있는 개인 기록이 생기기 전에는 자동 전송하지 않는다.
-        if summary["meaningful_records"] <= 0:
+        if summary["meaningful_records"] <= 0 and extra_records <= 0:
             shutil.rmtree(temp)
             now = _utc_now()
             with contextlib.closing(_connect()) as conn, conn:
@@ -591,8 +626,8 @@ def _queue_backup_set_held(
         )
         device = device_identity()
         parent_backup_set_id = _lineage_parent(account_slug)
-        roles_json = backup_manifest.canonical({
-            'format_version': _FORMAT_VERSION, 'roles': roles,
+        roles_json = _transfer_key({
+            'format_version': version, 'roles': roles,
             'consistency_kind': capture['consistency_kind'], 'consistency_roles': capture['consistency_roles'],
         })
         # 같은 PC에서 DB 파일의 수정 시각만 달라진 경우에는 새 세트를 만들지 않는다.
@@ -618,7 +653,7 @@ def _queue_backup_set_held(
             return backup_set_id
         manifest = backup_manifest.seal({
             "format": _FORMAT,
-            "format_version": _FORMAT_VERSION,
+            "format_version": version,
             'payload_version': backup_manifest.PAYLOAD_VERSION,
             'account_scope_digest': account_key_digest(account_slug),
             **capture,
@@ -631,7 +666,8 @@ def _queue_backup_set_held(
             "summary": summary,
             "roles": roles,
         })
-        backup_manifest.verify_files(manifest, role_paths, expected_account_digest=account_key_digest(account_slug))
+        verify = backup_manifest.verify_files_v3 if is_v3 else backup_manifest.verify_files
+        verify(manifest, role_paths, expected_account_digest=account_key_digest(account_slug))
         backup_set_id = manifest['backup_set_id']
         atomic_write_text(
             temp / "manifest.json",
@@ -906,8 +942,49 @@ def _claim_due() -> dict[str, Any] | None:
 def _safe_json(raw: bytes) -> Any:
     try:
         return json.loads(raw.decode("utf-8") or "null")
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
+
+
+def _transfer_key(manifest: dict[str, Any]) -> str:
+    roles = manifest['roles']
+    if manifest['format_version'] == 3:
+        roles = {role: {key: value for key, value in info.items() if key != 'captured_at'}
+                 for role, info in roles.items()}
+    return backup_manifest.canonical({
+        'format_version': manifest['format_version'], 'roles': roles,
+        'consistency_kind': manifest['consistency_kind'],
+        'consistency_roles': manifest['consistency_roles'],
+    })
+
+
+def _capability_error(server: str, token: str) -> str | None:
+    request = urllib.request.Request(f'{server}/api/share/capabilities', method='GET')
+    request.add_header('Authorization', f'Bearer {token}')
+    try:
+        try:
+            with urllib.request.urlopen(request, timeout=_CAPABILITY_TIMEOUT) as response:
+                status = response.status
+                raw = response.read(64 * 1024 + 1)
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.close()
+            raw = b''
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return 'network_unavailable'
+    if status == 401:
+        return 'login_required'
+    if status in {404, 405}:
+        return 'server_update_required'
+    value = _safe_json(raw) if len(raw) <= 64 * 1024 else None
+    if status != 200 or not isinstance(value, dict):
+        return 'capability_unknown'
+    if 'backup_set_format' not in value:
+        return 'server_update_required'
+    version = value['backup_set_format']
+    if type(version) is not int:
+        return 'capability_unknown'
+    return None if version >= 3 else 'server_update_required'
 
 
 def _multipart_set_upload(
@@ -937,7 +1014,7 @@ def _multipart_set_upload(
     for role in sorted(role_paths):
         header = (
             b"--" + boundary_bytes + b"\r\n"
-            + f'Content-Disposition: form-data; name="{role}"; filename="{role}.db"\r\n'.encode("ascii")
+            + f'Content-Disposition: form-data; name="{role}"; filename="{backup_manifest.WORKER_FILENAMES[role]}"\r\n'.encode("ascii")
             + b"Content-Type: application/octet-stream\r\n\r\n"
         )
         parts.append((header, role_paths[role]))
@@ -982,19 +1059,23 @@ def _verify_ack(
         or response['format_version'] != manifest.get('format_version', 1)
     ):
         return False
-    if manifest.get('format_version') == backup_manifest.VERSION and (
-        response.get('format_version') != backup_manifest.VERSION
+    if manifest.get('format_version') in {backup_manifest.VERSION, 3} and (
+        response.get('format_version') != manifest['format_version']
         or response.get('manifest_sha256') != backup_manifest.manifest_digest(manifest)
     ):
         return False
     files = response.get("files")
-    if not isinstance(files, dict) or set(files) != set(manifest["roles"]):
+    roles = {role: info for role, info in manifest['roles'].items()
+             if manifest.get('format_version') != 3 or info['state'] == 'present'}
+    if not isinstance(files, dict) or set(files) != set(roles):
         return False
-    for role, expected in manifest["roles"].items():
+    for role, expected in roles.items():
         actual = files.get(role)
         if not isinstance(actual, dict):
             return False
         if actual.get("sha256") != expected["sha256"]:
+            return False
+        if manifest.get('format_version') == 3 and type(actual.get('size')) is not int:
             return False
         try:
             if int(actual.get("size") or -1) != int(expected["size"]):
@@ -1071,30 +1152,31 @@ def drain_one() -> dict[str, Any]:
     stage = _stage_dir(row["account_slug"], row["backup_set_id"])
     try:
         manifest = json.loads((stage / "manifest.json").read_text("utf-8"))
-        backup_manifest.check_version(manifest)
+        is_v3 = isinstance(manifest, dict) and manifest.get('format_version') == 3
+        if is_v3:
+            manifest = backup_manifest.read_json_v3((stage / 'manifest.json').read_bytes())
+            backup_manifest.validate_v3(manifest)
+        else:
+            backup_manifest.check_version(manifest)
         queued_roles = json.loads(row['roles_json'])
         if not isinstance(queued_roles, dict):
             raise ValueError('invalid queued metadata')
         queued_version = queued_roles.get('format_version', 1)
         if manifest['format_version'] != queued_version:
             raise ValueError('staged manifest version changed')
-        if queued_version == backup_manifest.VERSION and queued_roles != {
-            'format_version': queued_version, 'roles': manifest['roles'],
-            'consistency_kind': manifest['consistency_kind'],
-            'consistency_roles': manifest['consistency_roles'],
-        }:
+        if queued_version in {backup_manifest.VERSION, 3} and backup_manifest.canonical(queued_roles) != _transfer_key(manifest):
             raise ValueError('staged metadata changed')
         if (
             not isinstance(manifest, dict)
             or manifest.get("backup_set_id") != row["backup_set_id"]
             or manifest.get("format") != _FORMAT
-            or manifest.get("format_version") not in {1, _FORMAT_VERSION}
+            or manifest.get("format_version") not in {1, _FORMAT_VERSION, 3}
         ):
             raise ValueError("invalid manifest")
         roles = manifest.get("roles")
-        if not isinstance(roles, dict) or "content" not in roles or not set(roles) <= {"content", "trash"}:
+        if not isinstance(roles, dict) or "content" not in roles or (not is_v3 and not set(roles) <= {"content", "trash"}):
             raise ValueError("invalid roles")
-        role_paths = {role: stage / f"{role}.db" for role in roles}
+        role_paths = backup_manifest.worker_paths(manifest, stage, check_present=True)
         for role, path in role_paths.items():
             expected = roles[role]
             if (
@@ -1110,7 +1192,10 @@ def drain_one() -> dict[str, Any]:
         if manifest['format_version'] == backup_manifest.VERSION:
             backup_manifest.verify_files(manifest, role_paths,
                                          expected_account_digest=account_key_digest(row['account_slug']))
-    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        elif is_v3:
+            backup_manifest.verify_files_v3(manifest, role_paths,
+                                            expected_account_digest=account_key_digest(row['account_slug']))
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, RecursionError):
         _mark_failure(row, "staging_invalid")
         return {"state": "failed", "error_code": "staging_invalid"}
 
@@ -1120,6 +1205,12 @@ def drain_one() -> dict[str, Any]:
         _mark_failure(row, "login_required")
         return {"state": "login_required", "error_code": "login_required"}
     server = shared_connection.base_url()
+    if is_v3:
+        error = _capability_error(server, token)
+        if error:
+            _mark_failure(row, error)
+            return {'state': error if error in {'login_required', 'server_update_required'} else 'failed',
+                    'error_code': error, 'format_version': 3}
     try:
         status, response = _multipart_set_upload(
             f"{server}/api/db-backup/sets",
@@ -1136,7 +1227,8 @@ def drain_one() -> dict[str, Any]:
         return {"state": "login_required", "error_code": "login_required"}
     if status in {404, 405}:
         _mark_failure(row, "server_update_required")
-        return {"state": "server_update_required", "error_code": "server_update_required"}
+        return {"state": "server_update_required", "error_code": "server_update_required",
+                "format_version": manifest['format_version']}
     if not (200 <= status < 300):
         _mark_failure(row, "server_rejected")
         return {"state": "failed", "error_code": "server_rejected"}
@@ -1165,6 +1257,7 @@ def status_snapshot() -> dict[str, Any]:
             "last_attempt_at": None,
             "last_success_at": None,
             "last_error_code": "login_required",
+            "unsent_roles": [],
         }
     with contextlib.closing(_connect()) as conn, conn:
         counts = conn.execute(
@@ -1180,6 +1273,23 @@ def status_snapshot() -> dict[str, Any]:
             "SELECT * FROM worker_backup_delivery_state WHERE account_slug=?",
             (account_slug,),
         ).fetchone()
+        queued = conn.execute(
+            "SELECT roles_json FROM worker_backup_outbox WHERE account_slug=? AND status IN ('pending','running')",
+            (account_slug,),
+        ).fetchall()
+    unsent = set()
+    for queued_row in queued:
+        try:
+            value = json.loads(queued_row['roles_json'])
+            version = value.get('format_version', 1)
+            roles = value.get('roles', value) if version == 1 else value['roles']
+            if type(version) is not int or version not in {1, 2, 3} or not isinstance(roles, dict):
+                continue
+            for role, info in roles.items():
+                if isinstance(info, dict) and (version != 3 or info.get('state') == 'present'):
+                    unsent.add(role)
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            continue
     pending = int((counts["pending"] if counts else 0) or 0)
     running = int((counts["running"] if counts else 0) or 0)
     failed = int((counts["failed"] if counts else 0) or 0)
@@ -1208,6 +1318,7 @@ def status_snapshot() -> dict[str, Any]:
         "last_attempt_at": state["last_attempt_at"] if state else None,
         "last_success_at": last_success,
         "last_error_code": last_error,
+        "unsent_roles": [role for role in backup_manifest.WORKER_FILENAMES if role in unsent],
     }
 
 
@@ -1336,7 +1447,7 @@ class PeriodicWorkerBackupUpload:
             self._process = process
             try:
                 stdout, _ = await asyncio.wait_for(
-                    process.communicate(), timeout=UPLOAD_TIMEOUT + 15
+                    process.communicate(), timeout=UPLOAD_TIMEOUT + _CAPABILITY_TIMEOUT + 15
                 )
             except asyncio.CancelledError:
                 await _terminate_process(process)

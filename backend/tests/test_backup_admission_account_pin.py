@@ -73,9 +73,20 @@ def rows():
         return {name: [tuple(row) for row in conn.execute(f"SELECT * FROM {name} ORDER BY 1")] for name in ("worker_backup_outbox", "worker_backup_delivery_state")}
 
 
+def seal_local_v2(path, account_email=A):
+    manifest = backup_manifest.seal({
+        'format': backup_manifest.LOCAL_FORMAT, 'format_version': 2, 'payload_version': 1,
+        'account_scope_digest': digest(account_email), 'captured_at': None,
+        'consistency_kind': backup_manifest.UNKNOWN, 'consistency_roles': [],
+        'roles': {'content': backup_manifest.role_info(path, 'content')},
+    })
+    backup_manifest.local_path(path).write_text(backup_manifest.canonical(manifest), encoding='utf-8')
+
+
 @pytest.mark.parametrize("switch_at", ("backup", "queue", "retry", "run"))
 @pytest.mark.parametrize("legacy", (False, True))
 def test_manual_route_uses_one_pinned_owner_and_connection_pair(store, monkeypatch, switch_at, legacy):
+    seal_local_v2(store.source)  # P2 manual compatibility requires an identified legacy source.
     observed = []
 
     def stage(name):
@@ -100,7 +111,7 @@ def test_manual_route_uses_one_pinned_owner_and_connection_pair(store, monkeypat
     async def run(**kwargs):
         stage("run")
         assert kwargs == {"expected_account_key": digest(A), "expected_backup_set_id": "a" * 64}
-        return {"state": "server_update_required" if legacy else "success"}
+        return {"state": "server_update_required" if legacy else "success", "format_version": 2}
 
     legacy_call = Mock(return_value=(200, {"count": 4}))
     monkeypatch.setattr(db_transfer, "backup_now", backup)
@@ -141,6 +152,22 @@ def test_actual_queue_after_switch_never_stages_a_under_b(store, monkeypatch):
     assert run.call_args.kwargs == {"expected_account_key": digest(A), "expected_backup_set_id": row["backup_set_id"]}
     assert result["state"] == "account_changed" and result["ok"] is False
     store.upload.assert_not_called()
+
+
+@pytest.mark.parametrize("requested,drained", [(3, 2), (2, 3), (3, 3), (2, None), (None, 2), ('missing', 2)])
+def test_delivery_manual_never_downgrades_v3_or_unknown_version(store, monkeypatch, requested, drained):
+    monkeypatch.setattr(db_transfer, "backup_now", lambda: store.source)
+    monkeypatch.setattr(backup_manifest, "read_local", lambda *a, **k: None if requested == 'missing' else {"format_version": requested})
+    monkeypatch.setattr(db_transfer, "queue_backup_set", lambda *a, **k: "a" * 64)
+    monkeypatch.setattr(db_transfer, "retry_pending", lambda **k: 1)
+    monkeypatch.setattr(db_transfer.periodic_worker_backup, "run_now", AsyncMock(return_value={
+        "state": "server_update_required", "format_version": drained,
+    }))
+    legacy = Mock(return_value=(200, {"count": 1}))
+    monkeypatch.setattr(db_transfer, "_legacy_server_backup", legacy)
+    result = asyncio.run(db_transfer.server_backup(store.request))
+    legacy.assert_not_called()
+    assert result["ok"] is False and result["legacy_content_saved"] is False
 
 
 @pytest.mark.parametrize("case", ("different_account", "blank", "wrong_set_owner", "missing_set"))
@@ -557,6 +584,7 @@ def test_manual_route_captures_none_token_once_and_forwards_it_to_actual_legacy(
         conn.execute("INSERT INTO app_setting VALUES('shared_server_token','synthetic-secret')")
         conn.commit()
     before = store.source.read_bytes()
+    seal_local_v2(store.source)
 
     def backup():
         active_account.set_active(B, "uid-b")
@@ -573,7 +601,7 @@ def test_manual_route_captures_none_token_once_and_forwards_it_to_actual_legacy(
         return 200, {"count": 3}
 
     monkeypatch.setattr(db_transfer, "backup_now", backup)
-    run = AsyncMock(return_value={"state": "server_update_required"})
+    run = AsyncMock(return_value={"state": "server_update_required", "format_version": 2})
     monkeypatch.setattr(db_transfer.periodic_worker_backup, "run_now", run)
     legacy_upload = Mock(side_effect=upload)
     monkeypatch.setattr(db_transfer, "_multipart_upload", legacy_upload)

@@ -104,6 +104,18 @@ def test_capability_and_state_read_the_same_database_generation(generation, monk
     state = http_call(share.inspect_state, authority(request()), generation)
     capability = routes.share_capabilities()
     assert capability["db_generation"] == state["db_generation"]
+    assert type(capability['backup_set_format']) is int and capability['backup_set_format'] == 3
+
+
+@pytest.mark.parametrize('remote', [{}, {'backup_set_format': 2}, {'backup_set_format': 3}])
+def test_backup_negotiation_proxy_does_not_advertise_local_support(monkeypatch, remote):
+    from app.routers import share as routes
+    monkeypatch.setattr(routes._proxy, 'proxying', lambda: True)
+    def proxy(method, path):
+        assert (method, path) == ('GET', '/api/share/capabilities')
+        return remote
+    monkeypatch.setattr(routes._proxy, 'proxy_json', proxy)
+    assert routes.share_capabilities() == remote
 
 
 @pytest.mark.parametrize("existing,modern", [(False, True), (True, True), (False, False), (True, False)])

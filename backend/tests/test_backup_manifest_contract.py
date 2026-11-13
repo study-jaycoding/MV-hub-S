@@ -645,11 +645,18 @@ def test_v3_remains_rejected_by_unmigrated_consumers(worker_store, monkeypatch):
     for role, path in paths.items():
         shutil.copyfile(path, stage / (f'{role}.json' if role == 'asset_mounts' else f'{role}.db'))
     (stage / 'manifest.json').write_text(backup_manifest.canonical(value), encoding='utf-8')
-    queued_roles = {key: value[key] for key in ('format_version', 'roles', 'consistency_kind', 'consistency_roles')}
+    queued_roles = worker_backup._transfer_key(value)
     with closing(worker_backup._connect()) as conn, conn:
         conn.execute('INSERT INTO worker_backup_outbox(backup_set_id,account_slug,created_at,local_stamp,roles_json) '
                      'VALUES(?,?,?,?,?)', (value['backup_set_id'], account_slug, value['created_at'],
-                                           value['local_stamp'], backup_manifest.canonical(queued_roles)))
+                                           value['local_stamp'], queued_roles))
     monkeypatch.setattr(worker_backup, '_multipart_set_upload', lambda *a, **kw: pytest.fail('v3 must not upload'))
-    assert worker_backup.drain_one() == {'state': 'failed', 'error_code': 'staging_invalid'}
+    monkeypatch.setattr(worker_backup.shared_connection, 'token', lambda: 'synthetic')
+    monkeypatch.setattr(worker_backup.shared_connection, 'base_url', lambda: 'http://unused.invalid')
+    monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: 'server_update_required')
+    # P2 replaces the old staging rejection with a verified v3 capability boundary.
+    assert worker_backup.drain_one() == {
+        'state': 'server_update_required', 'error_code': 'server_update_required', 'format_version': 3,
+    }
     assert stage.exists()
+    assert worker_backup.status_snapshot()['pending'] == 1

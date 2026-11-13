@@ -950,6 +950,8 @@ async def server_backup(request: Request):
             path = await asyncio.to_thread(backup_now)
             if path is None:
                 raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
+            local_manifest = await asyncio.to_thread(backup_manifest.read_local, path, allow_v3=True)
+            requested_version = local_manifest.get('format_version') if local_manifest is not None else None
             backup_set_id = await asyncio.to_thread(queue_backup_set, path, account_email=pin[0] or None)
             if not backup_set_id:
                 raise HTTPException(
@@ -980,7 +982,10 @@ async def server_backup(request: Request):
                 "count": 0,
                 "legacy_content_saved": False,
             }
-        if result.get("state") == "server_update_required":
+        drained_version = result.get('format_version')
+        if (result.get("state") == "server_update_required"
+                and type(requested_version) is int and requested_version in {1, 2}
+                and type(drained_version) is int and drained_version in {1, 2}):
             status, body = await asyncio.to_thread(
                 _legacy_server_backup, path, server_url=server_url, token=token,
             )

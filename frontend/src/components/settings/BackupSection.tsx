@@ -70,6 +70,13 @@ const FIELDS: { key: keyof BackupPolicyValues; unit: string }[] = [
   { key: "weekly_weeks", unit: "주" },
 ];
 
+const BACKUP_ROLE_LABELS = {
+  content: "작업 기록(생성물·캔버스·편집)",
+  trash: "휴지통",
+  agent_chat: "MV Agent 대화",
+  asset_mounts: "폴더 등록",
+};
+
 function confirmText(preview: BackupPolicyPreview): string {
   const period = preview.delete_oldest_at
     ? ` (${day(preview.delete_oldest_at)} ~ ${day(preview.delete_newest_at)})`
@@ -240,6 +247,16 @@ export function BackupSection({
         <br />
         {t("서버 복제")} <b>{shared ? t(BACKUP_STATE_LABELS[shared.state] || shared.state) : t("확인 중")}</b>
       </p>
+      {shared && ["server_update_required", "failed", "login_required"].includes(shared.state)
+        && !!shared.unsent_roles?.length && (
+        <p className="settings-backup-warn" aria-live="polite">
+          ⚠ {t(shared.state === "server_update_required"
+            ? "공유 서버가 이 백업을 아직 받지 못하는 버전입니다"
+            : shared.state === "login_required" ? "로그인하면 보냅니다" : "서버 전송을 다시 시도합니다")}
+          {" · "}{t("서버에 안 간 것")}: {shared.unsent_roles.map((role) => t(BACKUP_ROLE_LABELS[role])).join(" · ")}
+          {" · "}{t("앱이 실행 중이면 자동으로 다시 확인합니다")}
+        </p>
+      )}
       {warnings.map((warning) => (
         <p key={warning} className="settings-backup-warn">⚠ {t(warning)}</p>
       ))}
