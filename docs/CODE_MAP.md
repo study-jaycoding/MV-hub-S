@@ -553,9 +553,9 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 
 | 파일 | 한 줄 책임 | 주 진입점 |
 |---|---|---|
-| `backup.py`(522줄) | DB 세트 자동 백업(ATTACH 다중 DB 온라인 스냅샷)·회전·주기 워커 | `main`·`db_transfer`·`operational_health` |
+| `backup.py` | DB 세트 자동 백업·회전·주기 워커. 생산판 2 유지, 합성 시험의 명시 v3는 계정/복원 세대 고정·Agent/폴더 원문 촬영·present 구성원 소비를 사용한다. 경계 시험: `backend/tests/test_backup_v3_local.py` | `main`·`db_transfer`·`operational_health` |
 | `backup_verify.py` | 백업 복원 훈련(별도 파일 복원 후 무결성·FK·행수). `allow_index_drift`+`rebuild_drifted_indexes` — 다른 SQLite 엔진이 만든 **계산식 색인 어긋남만** 쓰기 가능한 사본(복원·설치 staged)에서 다시 만들고 엄격 재검사(2026-10-01, 옛 서버 3.45 → 새 PC 3.49) | `restore_runtime_verify`·tools |
-| `restore_runtime_verify.py` | 복원 사본으로 격리 서버 기동·로그인·행수 검증(읽기 전용·대장 끔·로그는 사본 안) | tools 전용(`server_move`·`verify_backup_restore`) |
+| `restore_runtime_verify.py` | 복원 사본으로 격리 서버 기동·로그인·행수 검증(읽기 전용·대장 끔·로그는 사본 안). 명시 v3 manifest는 고정 5경로·present/absent·부팅 전 검증과 Agent/JSON 부팅 후 해시를 대조한다. Agent 대화 접근·폴더 연결 기능검사는 아니다 | tools 전용(`server_move`·`verify_backup_restore`) |
 | `worker_backup.py` | 작업자 개인 DB 백업 세트의 공유 서버 자동 전달(별도 프로세스, §2.6). 정제 후 실제 바이트의 manifest를 생산하고 ACK의 정확한 manifest digest를 확인 | `main`·`comfy`·`db_transfer` |
 | `db_scrub.py` | 전송/테스트 스냅샷용 비밀값 정제 프로파일 2종 | `db_transfer`·`test_snapshot`·`worker_backup` |
 | `test_snapshot.py` | 서버형 테스트용 다중 SQLite 스냅샷 ZIP 생성·검증·설치 | `main`·`db_transfer`·tools |
