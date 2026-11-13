@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { emptyEditDoc, keepClipDurs, type EditDoc } from "./editTimeline";
 import { createEditArchive, knownDocEquals, MAX_ARCHIVE_BYTES, parseEditArchive, utf8Bytes, type ArchiveTarget } from "./editArchive";
-import { captureEditBackupGuard, editBackupActive, loadEditBackup, noteEditBackupSynced, restoreEditBackup, subscribeEditBackup } from "./editDocBackup";
+import { confirmEditBackupGeneration, noteEmptyEditBackup, captureEditBackupGuard, editBackupActive, loadEditBackup, noteEditBackupSynced, restoreEditBackup, subscribeEditBackup } from "./editDocBackup";
 import { getAccountScope } from "./accountScope";
 import {
   clearUndo,
@@ -299,8 +299,9 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
         const listing = await loadEditBackup(key);
         const raw = listing.head?.data;
         if (disposed || !authorized() || !isArchiveSnapshotCurrent(snapshot)) return;
+        if (!(await confirmEditBackupGeneration(key, listing.restore_generation)) || disposed || !authorized() || !isArchiveSnapshotCurrent(snapshot)) return;
         checked = true;
-        if (typeof raw !== "string") return;
+        if (typeof raw !== "string") { noteEmptyEditBackup(key, listing.restore_generation); return; }
         const candidate = backupCandidate(raw, target);
         const read = readEditRaw(key);
         if (!candidate || read.kind !== "ok" || read.raw !== null || !isArchiveSnapshotCurrent(snapshot)) return;
@@ -308,7 +309,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
         const check = readEditRaw(key);
         if (check.kind !== "ok" || check.raw !== raw) { retryRead(); return; }
         finishRestore(candidate, raw, false);
-        noteEditBackupSynced(key, raw); // 로컬에 쓰고 다시 읽어 확인한 head — 복구 직후 편집도 이 판에 잇는다
+        noteEditBackupSynced(key, raw, listing.restore_generation); // 로컬에 쓰고 다시 읽어 확인한 head — 복구 직후 편집도 이 판에 잇는다
         flashRef.current(t("DB 백업에서 편집을 복구했습니다."));
       } catch {
         if (!disposed) retry = setTimeout(() => { void recover(); }, 30_000);
@@ -320,7 +321,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
   }, [key, target?.projectId, target?.seq, captureArchiveSnapshot, isArchiveSnapshotCurrent, finishRestore, retryRead]);
 
   const replaceFromBackup = useCallback(async (raw: string, expected: ArchiveSnapshot, baseRevision: number | null,
-    context: ArchiveTarget, adopt = false, copyHash?: string): Promise<RestoreOutcome> => {
+    context: ArchiveTarget, adopt = false, copyHash?: string, restoreGeneration?: string): Promise<RestoreOutcome> => {
     if (!isArchiveSnapshotCurrent(expected) || !expected.key || expected.readError || expected.conflict || pendingEditRestore(expected.key)) return "stopped";
     const candidate = backupCandidate(raw, context);
     if (!candidate) return "failed";
@@ -329,7 +330,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
     const authorized = captureEditBackupGuard();
     try {
       const result = await restoreEditBackup(expected.key, baseRevision, copyHash ? { copy_hash: copyHash } : { data: raw },
-        expected.dirty ? expected.docRaw : expected.raw, adopt ? "pre_adopt" : "pre_restore");
+        expected.dirty ? expected.docRaw : expected.raw, adopt ? "pre_adopt" : "pre_restore", restoreGeneration);
       if (!authorized() || result.status === "conflict" || !isArchiveSnapshotCurrent(expected)) return "stopped";
       const read = readEditRaw(expected.key);
       if (read.kind !== "ok" || read.raw !== expected.raw || !isArchiveSnapshotCurrent(expected)) { pull(true); return "stopped"; }
@@ -339,7 +340,7 @@ export function useEditDoc(key: string | null, flash: (message: string) => void,
       const check = readEditRaw(expected.key);
       if (check.kind !== "ok" || check.raw !== restoredRaw) { retryRead(); return "uncertain"; }
       finishRestore(candidate, restoredRaw);
-      noteEditBackupSynced(expected.key, restoredRaw); // 응답이 아니라 로컬 적용을 확인한 뒤 — 복원 직후 편집도 복원한 판에 잇는다
+      noteEditBackupSynced(expected.key, restoredRaw, result.restore_generation); // 응답이 아니라 로컬 적용을 확인한 뒤 — 복원 직후 편집도 복원한 판에 잇는다
       return "saved";
     } catch { return "uncertain"; }
   }, [finishRestore, isArchiveSnapshotCurrent, pull, retryRead]);

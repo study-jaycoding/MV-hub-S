@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from ..db import get_connection
+from .share_commands import database_generation, require_restore_generation
 
 __all__ = ["get_edit_backup", "save_edit_backup", "restore_edit_backup"]
 MAX_EDIT_BYTES = 1024 * 1024
@@ -99,6 +100,7 @@ def get_edit_backup(owner: str, doc_key: str, *, include_data: bool = False,
     if not 0 <= offset or not 1 <= limit <= 100:
         raise ValueError("백업 목록 범위가 올바르지 않습니다")
     with get_connection() as conn:
+        conn.execute('BEGIN')
         head = _head(conn, owner, doc_key)
         # 목록에는 원문을 싣지 않는다. 큰 사본이 많아도 한 응답이 전체 문서를 적재하지 않는다.
         copies = conn.execute(
@@ -107,7 +109,7 @@ def get_edit_backup(owner: str, doc_key: str, *, include_data: bool = False,
             (owner, doc_key, limit, offset),
         ).fetchall()
         count = conn.execute("SELECT COUNT(*) FROM edit_doc_copy WHERE owner=? AND doc_key=?", (owner, doc_key)).fetchone()[0]
-        result = {"head": _meta(head, include_data and not copy_hash), "copies": [dict(row) for row in copies], "total_copies": count}
+        result = {"restore_generation": database_generation(conn), "head": _meta(head, include_data and not copy_hash), "copies": [dict(row) for row in copies], "total_copies": count}
         if copy_hash is not None:
             row = conn.execute("SELECT data_hash,kind,created_at,data FROM edit_doc_copy WHERE owner=? AND doc_key=? AND data_hash=?",
                                (owner, doc_key, copy_hash)).fetchone()
@@ -117,13 +119,14 @@ def get_edit_backup(owner: str, doc_key: str, *, include_data: bool = False,
         return result
 
 
-def save_edit_backup(owner: str, doc_key: str, data: str, base_revision: int | None) -> dict[str, Any]:
+def save_edit_backup(owner: str, doc_key: str, data: str, base_revision: int | None, *, restore_generation: str | None = None) -> dict[str, Any]:
     _key(doc_key)
     _revision(base_revision)
     digest = _document(data)
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            require_restore_generation(conn, restore_generation)
             current = _head(conn, owner, doc_key)
             if current is not None and current["data"] == data:
                 status = "same"
@@ -140,7 +143,7 @@ def save_edit_backup(owner: str, doc_key: str, data: str, base_revision: int | N
                 _copy(conn, owner, doc_key, data, digest, "conflict")
                 _trim_conflicts(conn, owner, doc_key, digest)
                 status = "conflict"
-            result = {"status": status, "head": _meta(_head(conn, owner, doc_key))}
+            result = {"status": status, "head": _meta(_head(conn, owner, doc_key)), "restore_generation": restore_generation}
             if status == "conflict":
                 result["copy_hash"] = digest
             conn.execute("COMMIT")
@@ -152,7 +155,7 @@ def save_edit_backup(owner: str, doc_key: str, data: str, base_revision: int | N
 
 def restore_edit_backup(owner: str, doc_key: str, base_revision: int | None, *,
                         data: str | None = None, copy_hash: str | None = None,
-                        local_raw: str | None = None, kind: str = "pre_restore") -> dict[str, Any]:
+                        local_raw: str | None = None, kind: str = "pre_restore", restore_generation: str | None = None) -> dict[str, Any]:
     _key(doc_key)
     _revision(base_revision)
     if (data is None) == (copy_hash is None) or kind not in ("pre_restore", "pre_adopt"):
@@ -163,6 +166,7 @@ def restore_edit_backup(owner: str, doc_key: str, base_revision: int | None, *,
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            require_restore_generation(conn, restore_generation)
             if copy_hash is not None:
                 source = conn.execute("SELECT data FROM edit_doc_copy WHERE owner=? AND doc_key=? AND data_hash=?",
                                       (owner, doc_key, copy_hash)).fetchone()
@@ -174,7 +178,7 @@ def restore_edit_backup(owner: str, doc_key: str, base_revision: int | None, *,
             same = current is not None and current["data"] == data
             if not same and (current["revision"] if current else None) != base_revision:
                 conn.execute("COMMIT")
-                return {"status": "conflict", "head": _meta(current)}
+                return {"status": "conflict", "head": _meta(current), "restore_generation": restore_generation}
             if local_raw is not None and local_raw != data and (current is None or local_raw != current["data"]):
                 _copy(conn, owner, doc_key, local_raw, local_hash, "local_preserve")
             if not same:
@@ -187,7 +191,7 @@ def restore_edit_backup(owner: str, doc_key: str, base_revision: int | None, *,
                     "data_hash=excluded.data_hash,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
                     (owner, doc_key, revision, data, digest),
                 )
-            result = {"status": "same" if same else "saved", "head": _meta(_head(conn, owner, doc_key)), "data": data}
+            result = {"status": "same" if same else "saved", "head": _meta(_head(conn, owner, doc_key)), "data": data, "restore_generation": restore_generation}
             conn.execute("COMMIT")
             return result
         except Exception:

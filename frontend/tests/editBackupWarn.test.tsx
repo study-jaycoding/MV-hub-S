@@ -43,6 +43,7 @@ it("실패·충돌·읽을 수 없음·1 MiB 초과에만 경고(상태가 열�
     expect([quiet, warn]).toEqual([quiet, null]);
   }
   const shown: Record<string, string> = {
+    recovery: "기록 시점이 달라 자동 백업 보류 · 이 브라우저 편집은 남아 있음",
     conflict: "자동 백업 멈춤 · 다른 편집은 사본으로 보존", error: "DB 백업 실패 · 연결 후 다시 시도",
     invalid: "읽을 수 없는 원문 · DB 백업 안 됨", too_big: "1 MiB 초과 · DB 백업 안 됨",
   };

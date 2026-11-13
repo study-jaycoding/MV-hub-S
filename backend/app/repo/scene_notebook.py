@@ -12,6 +12,7 @@ from copy import deepcopy
 
 from .. import config
 from ..db import get_connection, register_init_hook
+from .share_commands import database_generation, require_restore_generation
 from .scenes_backup import MAX_SCENE_BYTES, MAX_SCENE_UPSERTS, MAX_SCENE_DELETES, MAX_SYNC_TOTAL_BYTES, _hash, _fork_copy
 from ..services.scene_writer import WriterConflict, enabled as scene_writer_enabled
 
@@ -155,7 +156,7 @@ def notebook(owner, project=''):
         rows = conn.execute('SELECT * FROM scene_backup WHERE owner_uid=? AND project_id=? ORDER BY scene_id',
                             (owner, project)).fetchall()
         order = conn.execute('SELECT * FROM scene_tab_order WHERE owner_uid=? AND project_id=?', (owner, project)).fetchone()
-        return {'notebook_id': book[0] if book else None, 'history_id': history(conn),
+        return {'restore_generation': database_generation(conn), 'notebook_id': book[0] if book else None, 'history_id': history(conn),
                 'items': [{'id': r['scene_id'], 'name': r['name'], 'data': r['data'], 'deleted_at': r['deleted_at'],
                            'base': version(conn, r)} for r in rows],
                 'order': {'ids': json.loads(order['ids_json']) if order else [r['scene_id'] for r in rows if not r['deleted_at']],
@@ -205,6 +206,7 @@ def start(owner, lease_id, body):
     if len({i['id'] for i in items}) != len(items):
         raise ValueError('duplicate scene id')
     with transaction() as conn:
+        restore_generation = require_restore_generation(conn, body.get('restore_generation'))
         attempt = conn.execute('SELECT * FROM scene_start_attempt WHERE owner_uid=? AND attempt_id=?', (owner, attempt_id)).fetchone()
         if attempt and attempt['status'] == 'committed' and attempt['history_id'] == history(conn):
             return json.loads(attempt['result_json'])
@@ -231,7 +233,7 @@ def start(owner, lease_id, body):
         if len(staged) > expected:
             raise ValueError('start count exceeded')
         if not body.get('commit'):
-            return {'status': 'staging', 'received_count': len(staged), 'attempt_id': attempt_id}
+            return {'status': 'staging', 'received_count': len(staged), 'attempt_id': attempt_id, 'restore_generation': restore_generation}
         if len(staged) != expected:
             raise WriterConflict('start_incomplete')
         live = conn.execute('SELECT * FROM scene_backup WHERE owner_uid=? AND deleted_at IS NULL', (owner,)).fetchall()
@@ -259,7 +261,7 @@ def start(owner, lease_id, body):
         conn.execute("UPDATE mcp_canvas_task SET status='cancelled',cancel_reason='scene_hidden' WHERE owner_uid=? AND status='pending' "
                      "AND NOT EXISTS(SELECT 1 FROM scene_backup s WHERE s.owner_uid=mcp_canvas_task.owner_uid "
                      "AND s.project_id='' AND s.scene_id=mcp_canvas_task.scene_id AND s.deleted_at IS NULL)", (owner,))
-        result = {'status': 'committed', 'attempt_id': attempt_id, 'notebook_id': started(conn, owner)[0], 'history_id': history(conn)}
+        result = {'status': 'committed', 'attempt_id': attempt_id, 'notebook_id': started(conn, owner)[0], 'history_id': history(conn), 'restore_generation': restore_generation}
         conn.execute("UPDATE scene_start_attempt SET status='committed',result_json=? WHERE owner_uid=? AND attempt_id=?",
                      (encode(result), owner, attempt_id))
         conn.execute('DELETE FROM scene_start_item WHERE owner_uid=? AND attempt_id=?', (owner, attempt_id))
@@ -287,6 +289,7 @@ def sync(owner, project, payload, *, conn=None, receipt_payload=None):
         raise ValueError('request_id required')
     request_hash = _hash(encode({k: v for k, v in (receipt_payload if receipt_payload is not None else payload).items() if k != 'token'}))
     with (nullcontext(conn) if conn is not None else transaction()) as conn:
+        restore_generation = require_restore_generation(conn, payload.get('restore_generation'))
         if not started(conn, owner):
             raise WriterConflict('notebook_not_started')
         normalize_legacy(conn, owner)
@@ -364,7 +367,7 @@ def sync(owner, project, payload, *, conn=None, receipt_payload=None):
                     conn.execute("UPDATE mcp_canvas_task SET status='done',cancel_reason=NULL WHERE id=?", (task_id,))
                     done.append(task_id)
         order_row = conn.execute('SELECT rev FROM scene_tab_order WHERE owner_uid=? AND project_id=?', (owner, project)).fetchone()
-        result = {'results': results, 'deletes': delete_results, 'mcp_done': done, 'history_id': history(conn),
+        result = {'restore_generation': restore_generation, 'results': results, 'deletes': delete_results, 'mcp_done': done, 'history_id': history(conn),
                   'order': {'ids': merged, 'rev': order_row[0], 'history_id': history(conn)}}
         conn.execute('INSERT INTO scene_request_receipt VALUES(?,?,?,?,?,?)',
                      (owner, project, request_id, history(conn), request_hash, encode(result)))
@@ -390,6 +393,9 @@ def close_sync(owner, project, payload, pending_requests, pending_order_base=Non
         final_order.get(key) == pending_order_base.get(key) for key in ('history_id', 'rev')))
     latest_order = None
     with transaction() as conn:
+        require_restore_generation(conn, payload.get('restore_generation'))
+        for pending in pending_requests:
+            require_restore_generation(conn, pending.get('restore_generation'))
         for pending in pending_requests:
             if pending.get('project_id', '') != project or pending.get('token') not in (None, payload.get('token')):
                 raise ValueError('pending request scope mismatch')

@@ -8,10 +8,12 @@ import { useT } from "../../lib/i18n";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { useEditDoc } from "../../lib/useEditDoc";
+import { downloadText } from "../../lib/download";
 
 // 백업 경고(2026-10-23) — '저장·백업 안내'를 없애면서 실패·충돌이 보일 곳까지 사라졌다(Codex 묶음 검토 R2). 안내 글은 다시 넣지 않고
 //  잃을 수 있는 상태에만 경고 하나 — 화면 위 알림 줄에 '백업 보기'(DB 백업 보기·복원)와 함께(Jay 2026-10-24 — 전엔 막대의 알약). 연결 대기(off)·정상은 조용하다.
 const WARN: Partial<Record<BackupState, string>> = {
+  recovery: "기록 시점이 달라 자동 백업 보류 · 이 브라우저 편집은 남아 있음",
   conflict: "자동 백업 멈춤 · 다른 편집은 사본으로 보존", error: "DB 백업 실패 · 연결 후 다시 시도",
   invalid: "읽을 수 없는 원문 · DB 백업 안 됨", too_big: "1 MiB 초과 · DB 백업 안 됨",
 };
@@ -26,6 +28,7 @@ export function EditBackupPanel({ docKey, target, edit, onClose }: {
   docKey: string; target: ArchiveTarget; edit: Omit<ReturnType<typeof useEditDoc>, "applyEdit">; onClose: () => void;
 }) {
   const t = useT();
+  const recovery = useSyncExternalStore(subscribeEditBackup, () => getEditBackupStatus(docKey).state) === "recovery";
   const modal = useRef<HTMLDivElement>(null);
   useModalFocus(modal);
   useEscapeClose(onClose);
@@ -70,7 +73,7 @@ export function EditBackupPanel({ docKey, target, edit, onClose }: {
     if (raw == null) return;
     const version = epoch.current;
     setBusy(true); setMessage("");
-    const result = await live.current.replaceFromBackup(raw, snapshot, listing.head?.revision ?? null, target, adopt, adopt ? undefined : selected?.copyHash);
+    const result = await live.current.replaceFromBackup(raw, snapshot, listing.head?.revision ?? null, target, adopt, adopt ? undefined : selected?.copyHash, listing.restore_generation);
     if (epoch.current !== version) return;
     setBusy(false);
     setMessage(t(result === "saved" ? "직전 편집을 사본으로 보존하고 복원했습니다."
@@ -85,6 +88,7 @@ export function EditBackupPanel({ docKey, target, edit, onClose }: {
     <div ref={modal} className="gradestep-modal ed-export ed-import" role="dialog" aria-modal="true" aria-label={t("DB 백업 보기·복원")}>
       <div className="gradestep-title">{t("DB 백업 보기·복원")}</div>
       <div className="gradestep-body">
+        {recovery && <p role="alert" style={{ color: "var(--warning, #c86f20)" }}>{t("허브와 기록 시점이 달라 자동 백업을 멈췄습니다. 이 브라우저의 편집은 남아 있습니다. 아래에서 하나를 고르기 전까지 허브로 보내지 않습니다.")}</p>}
         <p>{target.projectId} / {target.seq}</p>
         <p>{t("다른 편집 창을 닫고 복원하세요. 복원 직전의 현재 편집과 DB 백업은 사본으로 보존됩니다. 원본 미디어는 포함되지 않습니다.")}</p>
         <div role="group" aria-label={t("복원할 백업")}>
@@ -100,15 +104,21 @@ export function EditBackupPanel({ docKey, target, edit, onClose }: {
         </div>
         <button type="button" className="ed-link" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>{t("이전")}</button>{" "}
         <button type="button" className="ed-link" disabled={busy || !listing || offset + 20 >= listing.total_copies} onClick={() => setOffset(offset + 20)}>{t("다음")}</button>
-        <p role="status">{busy ? t("불러오는 중…") : message}</p>
+        <p role="status">{busy ? t("불러오는 중…").replace(/(?:…|\.\.\.)$/, "") : message}</p>
       </div>
       <div className="gradestep-actions">
         <button type="button" className="gradestep-btn cancel" onClick={onClose}>{t("닫기")}</button>
         <button type="button" className="gradestep-btn" disabled={busy} onClick={() => setRefresh(refresh + 1)}>{t("목록 다시 읽기")}</button>
         <button type="button" className="gradestep-btn" disabled={busy || !listing || edit.readError || !edit.hasValidDoc || edit.restorePending}
-          onClick={() => { void apply(true); }}>{t("현재 편집을 DB 백업으로 채택")}</button>
+          onClick={() => { void apply(true); }}>{t(recovery ? "이 브라우저 문서를 허브에 반영" : "현재 편집을 DB 백업으로 채택")}</button>
         <button type="button" className="gradestep-btn confirm" disabled={busy || !selected || !listing || edit.readError || edit.restorePending}
-          onClick={() => { void apply(false); }}>{t("선택한 백업 복원")}</button>
+          onClick={() => { void apply(false); }}>{t(recovery ? "허브 문서 가져오기" : "선택한 백업 복원")}</button>
+        {recovery && <button type="button" className="gradestep-btn" disabled={busy || edit.readError} onClick={() => {
+          const snapshot = live.current.captureArchiveSnapshot(true);
+          if (!snapshot || !captureEditBackupGuard()()) return;
+          const raw = snapshot.dirty ? snapshot.docRaw : snapshot.raw;
+          if (raw !== null) downloadText("mvhub-edit-recovery.json", raw, "application/json");
+        }}>{t("원문 내보내고 보류")}</button>}
       </div>
     </div>
   </>, document.body);

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from typing import Any, Optional
 
 from ..db import get_connection
+from .share_commands import require_restore_generation
 
 __all__ = [
     "MAX_SCENE_BYTES",
@@ -35,12 +37,12 @@ def _hash(data: str) -> str:
 
 
 def list_scene_backups(
-    owner_uid: str, project_id: str = "", include_data: bool = False
+    owner_uid: str, project_id: str = "", include_data: bool = False, *, conn=None
 ) -> list[dict[str, Any]]:
     """내 백업 목록. 기본은 메타만(id/name/updated_at/data_hash) — 클라가 변경분 대조에 쓴다.
     include_data=True 는 복구용 전체 응답(메타 후 N번 GET 대신 한 번에 — 부분 복구 방지)."""
     cols = "scene_id, name, updated_at, data_hash" + (", data" if include_data else "")
-    with get_connection() as conn:
+    with (nullcontext(conn) if conn is not None else get_connection()) as conn:
         rows = conn.execute(
             f"SELECT {cols} FROM scene_backup WHERE owner_uid=? AND project_id=? "
             f"AND deleted_at IS NULL ORDER BY updated_at DESC",
@@ -109,6 +111,7 @@ def sync_scene_backups(
     deleted_ids: list[str],
     delete_bases: Optional[dict[str, str]] = None,
     fork_avoid: Optional[list[str]] = None,
+    *, restore_generation: str | None = None,
 ) -> dict[str, Any]:
     """변경분 upsert + 삭제 미러를 한 트랜잭션으로. 검증 실패는 ValueError(라우터가 400 변환).
     data 는 JSON 원문 그대로 보관하되 파싱·id 일치·크기만 검증(이중 데이터 불일치 방지).
@@ -137,6 +140,7 @@ def sync_scene_backups(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            require_restore_generation(conn, restore_generation)
             for u in upserts:
                 sid = str(u["id"])
                 data = u.get("data")
@@ -203,4 +207,4 @@ def sync_scene_backups(
         except Exception:
             conn.execute("ROLLBACK")
             raise
-    return {"saved": saved, "deleted": deleted, "results": results, "kept": kept}
+    return {"saved": saved, "deleted": deleted, "results": results, "kept": kept, "restore_generation": restore_generation}

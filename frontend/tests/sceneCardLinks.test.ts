@@ -3,6 +3,7 @@
 //   ① 화면에서 사라진 소속을 자동으로 지우지 않는다(다른 브라우저가 방금 담은 걸 죽이는 사고).
 //   ② 서버가 '뺐음'으로 표시한 소속을 백필이 되살리지 않는다.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { performance } from "node:perf_hooks";
 
 // vitest node 환경 스텁 — localStorage + window(online 리스너용). sceneBackup.test.ts 와 동일.
 const mem = new Map<string, string>();
@@ -23,11 +24,20 @@ if (!(globalThis as Record<string, unknown>).addEventListener) {
 
 type Call = { url: string; init?: RequestInit };
 let calls: Call[] = [];
+let adopted = true;
+vi.mock("../src/lib/sceneNotebook", async (original) => ({
+  ...await original<typeof import("../src/lib/sceneNotebook")>(),
+  mirrorSceneGenerations: () => {
+    const generations = new Map<string, string>();
+    generations.get = () => adopted ? "restore-1" : undefined;
+    return generations;
+  },
+}));
 let getLinks: () => Promise<{ items: unknown[] }>;
 let putFails = false;
 let putError: Error | null = null; // 허브가 돌려준 오류 그대로(예: 제품의 HttpError 409)
 vi.mock("../src/lib/http", () => ({
-  jsonFetch: (url: string, init?: RequestInit) => {
+  jsonFetch: async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     if (init?.method === "PUT") {
       if (putError) return Promise.reject(putError);
@@ -36,9 +46,9 @@ vi.mock("../src/lib/http", () => ({
       const body = JSON.parse(String(init.body));
       const total = new Set([...(body.added || []), ...(body.backfill || [])].map((l: object) => JSON.stringify(l))).size
         + (body.explicit || []).length + (body.removed || []).length;
-      return total > 2000 ? Promise.reject(new Error("422 한 요청 상한 초과")) : Promise.resolve({ ok: true });
+      return total > 2000 ? Promise.reject(new Error("422 한 요청 상한 초과")) : Promise.resolve({ ok: true, restore_generation: "restore-1" });
     }
-    return getLinks();
+    return { restore_generation: "restore-1", ...await getLinks() };
   },
 }));
 
@@ -70,17 +80,103 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     calls = [];
+    adopted = true;
     mem.clear();
     putFails = false;
     putError = null;
     acctSeq += 1;
     localStorage.setItem("ch.activeAccount", `user${acctSeq}@test`);
     getLinks = () => Promise.resolve({ items: [] });
+    localStorage.setItem(`mvhub.cardRecovery:acct:user${acctSeq}@test`, JSON.stringify({ generation: "restore-1", candidates: [] }));
   });
 
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("clean upgrade excludes server memberships from recovery candidates", async () => {
+    const { scenes, links } = await boot();
+    const recoveryKey = `mvhub.cardRecovery:acct:user${acctSeq}@test`;
+    localStorage.removeItem(recoveryKey);
+    scenes.saveScenes(null, [sceneWith("s", "c", ["known"])]);
+    getLinks = () => Promise.resolve({ items: [{ scene_id: "s", card_id: "c", generation_id: "known", removed_at: null }] });
+    links.initSceneCardLinks(); await vi.advanceTimersByTimeAsync(2500);
+    expect(JSON.parse(localStorage.getItem(recoveryKey)!).candidates).toEqual([]);
+    expect(puts()).toHaveLength(0);
+    scenes.saveScenes(null, [sceneWith("s", "c", ["known", "new"])]);
+    await (await import("../src/lib/sceneStore")).settleSceneStoreForTest();
+    links.initSceneCardLinks(); await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().map(addedKeys)).toEqual([["c:new"]]);
+  });
+
+  it("3000 held memberships use bounded recovery reads and finish within two seconds", async () => {
+    const { scenes, links } = await boot();
+    const recoveryKey = `mvhub.cardRecovery:acct:user${acctSeq}@test`;
+    const held = Array.from({ length: 3000 }, (_, i) => `g${i}`);
+    localStorage.setItem(recoveryKey, JSON.stringify({ generation: "restore-1", candidates: [{
+      generation: null, removals: [], revives: [], backfill: held.map((generation_id) => ({ scene_id: "s", card_id: "c", generation_id })),
+    }] }));
+    scenes.saveScenes(null, [sceneWith("s", "c", [...held, "new"])]);
+    await (await import("../src/lib/sceneStore")).settleSceneStoreForTest();
+    const reads = vi.spyOn(localStorage, "getItem");
+    const started = performance.now();
+    links.initSceneCardLinks(); await vi.advanceTimersByTimeAsync(2500);
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(reads.mock.calls.filter(([key]) => key === recoveryKey).length).toBeLessThan(30);
+    expect(puts().map(addedKeys)).toEqual([["c:new"]]);
+  });
+
+  it("unknown generation isolates an old revive and prevents automatic backfill", async () => {
+    adopted = false;
+    const { scenes, links } = await boot();
+    const scope = `acct:user${acctSeq}@test`;
+    localStorage.setItem(`ch.sceneCardRevives.v1.${encodeURIComponent(scope)}`, JSON.stringify([{ scene_id: "s", card_id: "c", generation_id: "g" }]));
+    scenes.saveScenes(null, [sceneWith("s", "c", ["g"])]);
+    getLinks = () => Promise.resolve({ items: [], restore_generation: "restore-2" });
+    links.initSceneCardLinks(); await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(0);
+    expect(links.serverCardLinks()).toEqual([]);
+  });
+
+  it("an adopted legacy scene backfills only cards added after its old scan was isolated", async () => {
+    const { scenes, links } = await boot();
+    localStorage.removeItem(`mvhub.cardRecovery:acct:user${acctSeq}@test`);
+    scenes.saveScenes(null, [sceneWith("s", "c", ["old"])]);
+    links.initSceneCardLinks(); await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(0);
+    scenes.saveScenes(null, [sceneWith("s", "c", ["old", "new"])]);
+    await (await import("../src/lib/sceneStore")).settleSceneStoreForTest();
+    expect(links.localCardLinks().map((link) => link.generation_id)).toEqual(["old", "new"]);
+    links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().map(addedKeys)).toEqual([["c:new"]]);
+  });
+
+  it("a generation change after PUT preserves the sent queue until isolation", async () => {
+    const { scenes, links } = await boot();
+    scenes.saveScenes(null, [sceneWith("s", "c", ["g"])]);
+    let reads = 0;
+    getLinks = () => Promise.resolve({ items: [], restore_generation: ++reads > 1 ? "restore-2" : "restore-1" });
+    await links.markCardGenerationsRemoved("s", "c", ["g"]);
+    const queue = localStorage.getItem(`ch.sceneCardRemovals.v1.${encodeURIComponent(`acct:user${acctSeq}@test`)}`);
+    expect(JSON.parse(queue!)).toHaveLength(1);
+    expect(JSON.parse(queue!)[0]).toMatchObject({ restore_generation: "restore-1", intent_id: expect.any(String) });
+  });
+
+  it("a queue storage failure does not discard a new explicit removal held in memory", async () => {
+    const { scenes, links } = await boot();
+    scenes.saveScenes(null, [sceneWith("s", "c", ["g"])]);
+    const original = localStorage.setItem;
+    const spy = vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      if (key.startsWith("ch.sceneCardRemovals")) throw Error("quota");
+      original.call(localStorage, key, value);
+    });
+    try {
+      await links.markCardGenerationsRemoved("s", "c", ["g"]);
+      expect(puts().flatMap((call) => putBody(call).removed)).toEqual([{ scene_id: "s", card_id: "c", generation_id: "g" }]);
+    } finally { spy.mockRestore(); }
   });
 
   // 81회차 F-A-02: 카드 소속 요청도 씬 백업과 같은 계정 확인 헤더를 싣는다. 409 를 받으면 제거 의도·백필을 그대로 두고 다시 보낸다.

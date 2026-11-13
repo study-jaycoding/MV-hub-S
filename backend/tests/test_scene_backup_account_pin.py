@@ -10,6 +10,7 @@
 """
 
 from __future__ import annotations
+from test_scene_notebook import restore_generation
 
 import json
 from types import SimpleNamespace
@@ -63,12 +64,12 @@ def _scene(sid: str, name: str = "씬") -> str:
 
 
 def _sync(request, upserts=(), deleted=()):
-    body = scenes.SceneSyncIn(upserts=[scenes.SceneUpsertIn(id=sid, data=_scene(sid)) for sid in upserts], deleted_ids=list(deleted))
+    body = scenes.SceneSyncIn(upserts=[scenes.SceneUpsertIn(id=sid, data=_scene(sid)) for sid in upserts], deleted_ids=list(deleted), restore_generation=restore_generation())
     return scenes.sync_scene_backups(body, request)
 
 
 def _cards(request, added=()):
-    body = scenes.CardLinkSyncIn(backfill=[scenes.CardLinkIn(scene_id="s", card_id="c", generation_id=g) for g in added])
+    body = scenes.CardLinkSyncIn(backfill=[scenes.CardLinkIn(scene_id="s", card_id="c", generation_id=g) for g in added], restore_generation=restore_generation())
     return scenes.sync_scene_card_links(body, request)
 
 

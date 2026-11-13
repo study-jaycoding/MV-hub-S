@@ -7,13 +7,14 @@ import { readEditRaw, subscribeEditRaw } from "./editTimelineStore";
 import { getApiPause, getAuthToken, jsonFetch, withRequestTimeout } from "./http";
 import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import { utf8Bytes } from "./editArchive";
+import { sha256Js } from "./editShare";
 
 const API = "/api/edit-docs/backup";
 const MAX_BYTES = 1024 * 1024;
 export interface BackupMeta { revision: number; data_hash: string; updated_at: string; bytes: number; data?: string }
 export interface BackupCopy { data_hash: string; kind: string; created_at: string; bytes: number; data?: string }
-export interface BackupListing { head: BackupMeta | null; copies: BackupCopy[]; total_copies: number; copy?: BackupCopy }
-export type BackupState = "off" | "idle" | "pending" | "saving" | "saved" | "conflict" | "error" | "invalid" | "too_big";
+export interface BackupListing { restore_generation: string; head: BackupMeta | null; copies: BackupCopy[]; total_copies: number; copy?: BackupCopy }
+export type BackupState = "off" | "idle" | "pending" | "saving" | "saved" | "conflict" | "error" | "invalid" | "too_big" | "recovery";
 export interface EditBackupStatus { state: BackupState; updatedAt?: string; preservedAt?: string; skipped: number }
 interface Entry {
   raw: string; revision: number | null; checked: boolean; acceptedRaw?: string; uncertainRaw?: string; syncedRaw?: string; epoch: number;
@@ -29,6 +30,39 @@ let idle: EditBackupStatus = { state: "idle", skipped: 0 };
 const restoring = new Map<string, BackupSession | null>();
 let skipped = 0;
 let stopListeners: (() => void) | null = null;
+interface Recovery { generation?: string; rawHash?: string | null; blocked?: boolean; originals?: { raw: string; generation?: string; revision?: number | null; uncertainRaw?: string }[] }
+const recoveryKey = (id: string, account = getAccountNamespace()) => `mvhub.editRecovery:${JSON.stringify([account, id])}`;
+const validGeneration = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200;
+function recovery(id: string): Recovery {
+  const value = JSON.parse(localStorage.getItem(recoveryKey(id)) ?? "{}");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_recovery_record");
+  return value as Recovery;
+}
+function saveRecovery(id: string, value: Recovery) {
+  const text = JSON.stringify(value), key = recoveryKey(id);
+  localStorage.setItem(key, text);
+  if (localStorage.getItem(key) !== text) throw new Error("recovery_write_failed");
+}
+function holdRecovery(id: string, entry: Entry, sentRaw?: string) {
+  status(entry, "recovery");
+  const before = recovery(id), originals = before.originals ?? [];
+  if (before.blocked && sentRaw === undefined) return;
+  if (!before.blocked) originals.push({ raw: entry.raw, generation: before.generation, revision: entry.revision, uncertainRaw: entry.uncertainRaw });
+  if (sentRaw !== undefined && !originals.some((item) => item.raw === sentRaw && item.generation === before.generation)) originals.push({ raw: sentRaw, generation: before.generation, revision: entry.revision });
+  saveRecovery(id, { ...before, blocked: true, originals });
+}
+export function readEditRecoveryCandidates(): { docKey: string; originals: NonNullable<Recovery["originals"]> }[] {
+  const prefix = `mvhub.editRecovery:[${JSON.stringify(getAccountNamespace())},`;
+  const result: { docKey: string; originals: NonNullable<Recovery["originals"]> }[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key?.startsWith(prefix)) continue;
+    const [, id] = JSON.parse(key.slice("mvhub.editRecovery:".length)) as string[];
+    const value = recovery(id);
+    if (value.blocked) result.push({ docKey: id, originals: value.originals ?? [] });
+  }
+  return result;
+}
 export const subscribeEditBackup = (fn: () => void): (() => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
 const notify = () => listeners.forEach((fn) => fn());
 export function editBackupDocKey(key: string): string | null {
@@ -75,6 +109,7 @@ function remember(key: string, raw: string | null, source: "write" | "read") {
   if (id === null) return;
   let entry = entries.get(id);
   if (entry?.raw === raw) return;
+  const previousRaw = entry?.raw ?? null;
   if (!entry) {
     // 처음이 write(이 탭이 새로 만든 문서)면 이어받을 원문이 없다
     entry = { raw, revision: null, checked: false, epoch: 0, conflict: false, inFlight: false,
@@ -89,6 +124,11 @@ function remember(key: string, raw: string | null, source: "write" | "read") {
   }
   if (!validRaw(raw)) { status(entry, "invalid"); recountSkipped(); return; }
   if (utf8Bytes(raw) > MAX_BYTES) { status(entry, "too_big"); recountSkipped(); return; }
+  try {
+    const prior = recovery(id);
+    if (entry.status.state === "recovery" || prior.blocked) { holdRecovery(id, entry); return; }
+    if (source === "write" && prior.generation && prior.rawHash === (previousRaw === null ? null : sha256Js(new TextEncoder().encode(previousRaw)))) saveRecovery(id, { ...prior, rawHash: sha256Js(new TextEncoder().encode(raw)) });
+  } catch { status(entry, "recovery"); return; }
   status(entry, entry.conflict ? "conflict" : "pending");
   recountSkipped();
   schedule(id, entry);
@@ -104,23 +144,44 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export async function loadEditBackup(key: string, offset = 0, copyHash?: string): Promise<BackupListing> {
   const id = editBackupDocKey(key);
   if (id === null) throw new Error("편집 백업 대상을 확인하세요.");
-  return request(`${API}?doc_key=${encodeURIComponent(id)}&include_data=1&offset=${offset}&limit=20${copyHash ? `&copy_hash=${encodeURIComponent(copyHash)}` : ""}`);
+  const listing = await request<BackupListing>(`${API}?doc_key=${encodeURIComponent(id)}&include_data=1&offset=${offset}&limit=20${copyHash ? `&copy_hash=${encodeURIComponent(copyHash)}` : ""}`);
+  if (!validGeneration(listing.restore_generation)) throw new Error("invalid_restore_generation");
+  return listing;
+}
+export async function confirmEditBackupGeneration(key: string, expected: string): Promise<boolean> {
+  return validGeneration(expected) && (await loadEditBackup(key)).restore_generation === expected;
+}
+export function noteEmptyEditBackup(key: string, restoreGeneration: string) {
+  const id = editBackupDocKey(key), read = readEditRaw(key);
+  if (id === null || !editBackupActive() || !validGeneration(restoreGeneration) || read.kind !== "ok" || read.raw !== null) return;
+  const prior = recovery(id);
+  if (!prior.blocked) saveRecovery(id, { ...prior, generation: restoreGeneration, rawHash: null });
 }
 async function send(id: string, entry: Entry) {
   const captured = session;
-  if (!current(captured) || restoring.has(id) || entry.inFlight || !validRaw(entry.raw) || utf8Bytes(entry.raw) > MAX_BYTES) return;
+  if (!current(captured) || entry.status.state === "recovery" || restoring.has(id) || entry.inFlight || !validRaw(entry.raw) || utf8Bytes(entry.raw) > MAX_BYTES) return;
   entry.inFlight = true;
   const epoch = entry.epoch;
   const raw = entry.raw;
   let failed = false;
   let putAttempted = false;
+  let restoreGeneration: string;
   status(entry, "saving");
   try {
     const uncertainRaw = entry.uncertainRaw;
     const confirmUncertain = uncertainRaw !== undefined && uncertainRaw !== raw;
-    if (!entry.checked || confirmUncertain) {
+    {
       const listing = await request<BackupListing>(`${API}?doc_key=${encodeURIComponent(id)}&include_data=1&limit=1`);
       if (!current(captured) || entry.epoch !== epoch || entry.raw !== raw) return;
+      if (!validGeneration(listing.restore_generation)) throw new Error("invalid_restore_generation");
+      restoreGeneration = listing.restore_generation;
+      const saved = recovery(id);
+      if (saved.blocked || (saved.generation && (saved.generation !== listing.restore_generation || saved.rawHash !== sha256Js(new TextEncoder().encode(raw)))) ||
+          (!saved.generation && (entry.syncedRaw === undefined || listing.head?.data !== entry.syncedRaw || entry.epoch !== 0 || entry.uncertainRaw !== undefined))) {
+        holdRecovery(id, entry); return;
+      }
+      if (!saved.generation) saveRecovery(id, { ...saved, generation: listing.restore_generation, rawHash: sha256Js(new TextEncoder().encode(raw)) });
+      if (!entry.checked || confirmUncertain) {
       entry.checked = true;
       if (confirmUncertain) {
         entry.uncertainRaw = undefined;
@@ -139,13 +200,19 @@ async function send(id: string, entry: Entry) {
         status(entry, "saved", { updatedAt: listing.head.updated_at });
         return;
       }
+      }
     }
     if (entry.acceptedRaw === raw) { status(entry, entry.conflict ? "conflict" : "saved"); return; }
     putAttempted = true;
-    const response = await request<{ status: "saved" | "same" | "conflict"; head: BackupMeta }>(API, {
-      method: "PUT", body: JSON.stringify({ doc_key: id, data: raw, base_revision: entry.revision }),
+    const response = await request<{ restore_generation: string; status: "saved" | "same" | "conflict"; head: BackupMeta }>(API, {
+      method: "PUT", body: JSON.stringify({ doc_key: id, data: raw, base_revision: entry.revision, restore_generation: restoreGeneration }),
     });
     if (!current(captured) || entry.epoch !== epoch) return;
+    const confirmed = await request<BackupListing>(`${API}?doc_key=${encodeURIComponent(id)}&include_data=1&limit=1`);
+    if (!current(captured) || entry.epoch !== epoch) return;
+    if (response.restore_generation !== restoreGeneration || confirmed.restore_generation !== restoreGeneration || recovery(id).generation !== restoreGeneration || recovery(id).blocked) {
+      holdRecovery(id, entry, raw); return;
+    }
     entry.uncertainRaw = undefined;
     entry.acceptedRaw = raw;
     entry.conflict = response.status === "conflict";
@@ -160,6 +227,7 @@ async function send(id: string, entry: Entry) {
   } catch {
     // 연결 실패는 이 탭이 확인한 판 번호를 무효화하지 않는다. 재시도도 서버의 비교·저장 검사를 거친다.
     if (current(captured) && entry.epoch === epoch) {
+      if ((entry.status.state as BackupState) === "recovery") return;
       failed = true;
       if (putAttempted) entry.uncertainRaw = raw;
       status(entry, "error");
@@ -174,21 +242,30 @@ export function retryEditBackups() {
 }
 // 복원·자동 복구가 로컬 쓰기와 다시 읽기까지 확인한 원문(서버 head 와 같다) — useEditDoc 이 finishRestore 직후 부른다.
 //  복원 응답만으로는 적지 않는다: 응답을 기다리는 사이 편집해 로컬 적용이 멈추면 그 편집이 복원본을 덮게 된다(Codex 설계 검토 P1).
-export function noteEditBackupSynced(key: string, raw: string) {
+export function noteEditBackupSynced(key: string, raw: string, restoreGeneration?: string) {
   const id = editBackupDocKey(key);
   const entry = id === null ? undefined : entries.get(id);
   if (!editBackupActive() || !entry || entry.raw !== raw) return;
+  if (restoreGeneration !== undefined) {
+    if (!validGeneration(restoreGeneration)) return;
+    try { saveRecovery(id!, { generation: restoreGeneration, rawHash: sha256Js(new TextEncoder().encode(raw)), blocked: false }); }
+    catch { status(entry, "recovery"); return; }
+    status(entry, "pending");
+  }
   entry.syncedRaw = raw;
 }
 
 // 성공 응답을 확인한 뒤에만 호출부가 로컬에 쓴다. 응답 불명은 읽어서 확인하고도 로컬은 유지한다.
 export async function restoreEditBackup(key: string, baseRevision: number | null, source: { data: string } | { copy_hash: string },
-  localRaw: string | null, kind: "pre_restore" | "pre_adopt" = "pre_restore") {
+  localRaw: string | null, kind: "pre_restore" | "pre_adopt" = "pre_restore", restoreGeneration?: string) {
   const id = editBackupDocKey(key);
   if (id === null) throw new Error("편집 백업 대상을 확인하세요.");
+  if (!validGeneration(restoreGeneration)) throw new Error("목록을 다시 읽어 주세요.");
   const entry = entries.get(id);
   // 시작된 자동 백업이 있으면 그 응답을 먼저 끝내고 목록을 다시 고르게 한다.
   if (entry?.inFlight || restoring.has(id)) throw new Error("백업 중입니다. 잠시 뒤 목록을 다시 읽어 주세요.");
+  const priorRecovery = recovery(id), priorRaw = entry?.raw, priorEpoch = entry?.epoch;
+  let heldRecovery: string | undefined;
   const captured = session;
   restoring.set(id, captured);
   if (entry?.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
@@ -205,12 +282,23 @@ export async function restoreEditBackup(key: string, baseRevision: number | null
   if (entry) forget(entry);
   let serverUnchanged = false;
   try {
-    const result = await request<{ status: "saved" | "same" | "conflict"; head: BackupMeta | null; data?: string }>(`${API}/restore`, {
-      method: "POST", body: JSON.stringify({ doc_key: id, base_revision: baseRevision, source, local_raw: localRaw, kind }),
+    if (entry) { holdRecovery(id, entry); heldRecovery = JSON.stringify(recovery(id)); }
+    const result = await request<{ restore_generation: string; status: "saved" | "same" | "conflict"; head: BackupMeta | null; data?: string }>(`${API}/restore`, {
+      method: "POST", body: JSON.stringify({ doc_key: id, base_revision: baseRevision, source, local_raw: localRaw, kind, restore_generation: restoreGeneration }),
     });
     if (!current(captured)) throw new Error("계정이 바뀌어 복원 응답을 적용하지 않았습니다.");
+    if (result.restore_generation !== restoreGeneration || !(await confirmEditBackupGeneration(key, restoreGeneration))) {
+      if (entry) holdRecovery(id, entry);
+      throw new Error("허브와 기록 시점이 달라 목록을 다시 읽어야 합니다.");
+    }
     serverUnchanged = result.status === "conflict";
     const latest = entries.get(id);
+    if (serverUnchanged && latest === entry && heldRecovery === JSON.stringify(recovery(id))) {
+      const restored = { ...priorRecovery };
+      if (!restored.blocked && latest && latest.epoch === priorEpoch && priorRaw !== undefined && restored.rawHash === sha256Js(new TextEncoder().encode(priorRaw))) restored.rawHash = sha256Js(new TextEncoder().encode(latest.raw));
+      saveRecovery(id, restored);
+      if (latest) status(latest, restored.blocked ? "recovery" : latest.conflict ? "conflict" : "pending");
+    }
     if (latest) {
       latest.epoch += 1; latest.checked = false; latest.revision = null; latest.acceptedRaw = undefined;
       if (serverUnchanged && previous && latest === entry && latest.syncedRaw === undefined) {

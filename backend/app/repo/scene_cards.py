@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+from contextlib import nullcontext
 
 from ..db import get_connection
+from .share_commands import require_restore_generation
 
 __all__ = [
     "MAX_SCENE_CARD_LINKS",
@@ -49,7 +51,7 @@ def _clean(items: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
 
 
 def list_scene_card_links(
-    owner_uid: str, scene_id: Optional[str] = None
+    owner_uid: str, scene_id: Optional[str] = None, *, conn=None
 ) -> list[dict[str, Any]]:
     """내 카드 소속. scene_id 를 주면 그 씬만(씬 열 때), 없으면 전부(백필 대조용).
 
@@ -67,7 +69,7 @@ def list_scene_card_links(
         sql += " AND s.scene_id=?"
         args.append(scene_id)
     sql += " ORDER BY s.created_at, s.rowid"
-    with get_connection() as conn:
+    with (nullcontext(conn) if conn is not None else get_connection()) as conn:
         rows = conn.execute(sql, args).fetchall()
     return [
         {
@@ -85,7 +87,8 @@ def sync_scene_card_links(
     added: list[dict[str, Any]],
     removed: list[dict[str, Any]],
     explicit: Optional[list[dict[str, Any]]] = None,
-) -> dict[str, int]:
+    *, restore_generation: str | None = None,
+) -> dict[str, Any]:
     """담김/뺌/부활을 한 트랜잭션으로 반영. 검증 실패는 ValueError(라우터가 400 변환).
 
     added = 자동 백필(구클라의 'added' 포함) — 새 행만 만들고 기존 tombstone 은 못 건드린다.
@@ -103,6 +106,7 @@ def sync_scene_card_links(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            require_restore_generation(conn, restore_generation)
             # 항목별 execute 를 executemany 로(R6 1-E — 최대 2,000 호출→3). ★SQL 3종은
             # 계약상 절대 합치지 않는다: add=IGNORE(백필은 tombstone 못 건드림) /
             # explicit=해제 / removed=기록.
@@ -137,4 +141,4 @@ def sync_scene_card_links(
         except Exception:
             conn.execute("ROLLBACK")
             raise
-    return {"added": len(add) + len(exp), "removed": len(rem)}
+    return {"added": len(add) + len(exp), "removed": len(rem), "restore_generation": restore_generation}

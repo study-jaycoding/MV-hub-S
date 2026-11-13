@@ -2,7 +2,7 @@
 import {
   notebookKey as key, sceneNotebookTransaction,
   holdNotebookWrites, newSceneIntentId,
-  readSceneStoreForClose,
+  readSceneStoreForClose, readConfirmedTexts, readConfirmedNotebookJoin, sceneStoreHasPending,
   type SceneBase, type SceneIntent, type SceneOrderBase, type SceneOrderState,
 } from "./sceneStore";
 import { makeLocalNotebookCopy, readStoredScene, type Scene, type ScenesByProject } from "./scenes";
@@ -25,7 +25,7 @@ export interface NotebookBucket {
   states: Record<string, NotebookSceneState>;
   order: SceneOrderState;
 }
-export interface NotebookJoin { notebookId: string; history: string }
+export interface NotebookJoin { notebookId: string; history: string; restoreGeneration?: string }
 export interface NotebookProgress { id: string; [field: string]: unknown }
 export interface NotebookSnapshot {
   buckets: Record<string, NotebookBucket>;
@@ -34,6 +34,87 @@ export interface NotebookSnapshot {
   writing: NotebookProgress | null;
 }
 export interface NotebookArchive { notebookId: string; scenes: ScenesByProject; conflicts?: SceneAbsorbConflict[] }
+export interface RestoreArchive extends NotebookArchive { id: string; createdAt: string; fromGeneration: string | null; toGeneration: string; controls: Record<string, unknown> }
+export const validRestoreGeneration = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200;
+export function mirrorSceneGenerations(): Map<string, string> {
+  try {
+    const account = getAccountNamespace();
+    const value = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as { generation?: unknown; blockedIds?: unknown; raws?: Record<string, string | null> } | null;
+    const result = new Map<string, string>();
+    if (!value || !validRestoreGeneration(value.generation) || !Array.isArray(value.blockedIds)) return result;
+    const blocked = new Set(value.blockedIds), texts = new Map(readConfirmedTexts(`${account}::_none`).map((scene) => [scene.id, scene.text]));
+    for (const [id, hash] of Object.entries(value.raws ?? {})) {
+      const text = texts.get(id);
+      if (!blocked.has(id) && hash === (text === undefined ? null : sha256Js(new TextEncoder().encode(text)))) result.set(id, value.generation);
+    }
+    return result;
+  } catch { return new Map(); }
+}
+export function notebookRestoreGeneration(account: string): string | null {
+  if (account !== getAccountNamespace()) return null;
+  const joined = readConfirmedNotebookJoin(account);
+  return joined?.restoreGeneration ?? null;
+}
+export function readRestoreArchives(account: string) {
+  const name = key("nr", account);
+  return sceneNotebookTransaction([name], (_all, meta) => ({ changed: false, value: (meta[name] as RestoreArchive[] | undefined) ?? [] }), () => account === getAccountNamespace());
+}
+
+async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean) {
+  const hadPending = pendingAtStart || sceneStoreHasPending();
+  const release = holdNotebookWrites(account);
+  try {
+    const archiveKey = key("nr", account);
+    return await sceneNotebookTransaction([archiveKey, key("ns", account), key("nw", account)], (all, meta) => {
+      const joined = meta[key("nj", account)] as NotebookJoin | undefined;
+      const staleProgress = [meta[key("ns", account)], meta[key("nw", account)]].some((value) => value && (value as NotebookProgress).restoreGeneration !== book.restore_generation);
+      if (joined?.restoreGeneration === book.restore_generation && !staleProgress) return { changed: false, value: false };
+      const before = shownScenes(all, account);
+      const scenes = Object.fromEntries(Object.entries(all).filter(([bucket]) => belongs(bucket, account)));
+      const conflicts = ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => belongs(item.bucket, account));
+      const bucket = `${account}::_none`, incoming = hubBucket(book);
+      const hasIntent = Object.entries(meta).some(([name, value]) => {
+        if (!/^\["(?:d|r|ob)",/.test(name)) return false;
+        const [kind, scope] = JSON.parse(name) as string[];
+        return belongs(scope, account) && !!value && (kind !== "ob" || !!(value as SceneOrderState).dirty);
+      });
+      const localScenes = scenes[bucket] ?? [];
+      const unordered = book.notebook_id === null || book.order.rev === 0;
+      const incomingById = new Map(incoming.scenes.map((scene) => [scene.id, scene]));
+      const sameScenes = unordered
+        ? localScenes.length === incoming.scenes.length && new Set(localScenes.map((scene) => scene.id)).size === localScenes.length &&
+          localScenes.every((scene) => equal(scene, incomingById.get(scene.id)))
+        : equal(localScenes, incoming.scenes);
+      const cleanUpgrade = !joined?.restoreGeneration && !hadPending && !sceneStoreHasPending() && !hasIntent && !conflicts.length && !book.skipped?.length &&
+        !meta[key("ns", account)] && !meta[key("nw", account)] &&
+        Object.entries(scenes).every(([name, items]) => name === bucket || !items.length) && sameScenes;
+      if (cleanUpgrade) {
+        for (const row of book.items) meta[key("b", bucket, row.id)] = fromBase(row.base);
+        meta[key("ob", bucket)] = { base: incoming.order, dirty: unordered ? newSceneIntentId() : null } satisfies SceneOrderState;
+        meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation } satisfies NotebookJoin;
+        return { changed: true, value: false };
+      }
+      const controls: Meta = {};
+      for (const [name, value] of Object.entries(meta)) {
+        if (!/^\["(?:b|d|r|ob|ns|nw|nj)",/.test(name)) continue;
+        const [, scope] = JSON.parse(name) as string[];
+        if (scope === account || belongs(scope, account)) { controls[name] = value; delete meta[name]; }
+      }
+      if (Object.values(scenes).some((items) => items.length) || conflicts.length || Object.keys(controls).length) {
+        const archive: RestoreArchive = { id: newSceneIntentId(), createdAt: new Date().toISOString(), notebookId: joined?.notebookId ?? "",
+          fromGeneration: joined?.restoreGeneration ?? null, toGeneration: book.restore_generation, scenes, conflicts, controls };
+        meta[archiveKey] = [...((meta[archiveKey] as RestoreArchive[] | undefined) ?? []), archive];
+      }
+      meta.conflicts = ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => !belongs(item.bucket, account));
+      for (const bucket of Object.keys(scenes)) delete all[bucket];
+      all[bucket] = incoming.scenes;
+      for (const row of book.items) meta[key("b", bucket, row.id)] = fromBase(row.base);
+      meta[key("ob", bucket)] = { base: incoming.order, dirty: null } satisfies SceneOrderState;
+      meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation } satisfies NotebookJoin;
+      return { changed: true, value: before !== shownScenes(all, account), notify: conflicts.length > 0 };
+    }, guard);
+  } finally { release(); }
+}
 export interface NotebookHubBucket {
   scenes: Scene[];
   bases: Record<string, SceneBase>;
@@ -163,15 +244,15 @@ export function applyNotebookOrder(bucket: string, expectedIds: string[], expect
 
 /** 합류 표시는 계정당 한 번이다. 공책/history가 바뀌어도 이 연산을 다시 쓰지 않는다.
  * 호출자는 합류 동안 편집을 잠근다(3단계). 저장 큐 앞의 pending도 보관본에 포함된다. */
-export async function joinSceneNotebook(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean): Promise<boolean> {
-  return (await joinSceneNotebookDetailed(account, notebookId, history, buckets, guard)).joined;
+export async function joinSceneNotebook(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean, restoreGeneration?: string): Promise<boolean> {
+  return (await joinSceneNotebookDetailed(account, notebookId, history, buckets, guard, restoreGeneration)).joined;
 }
 /** 이 계정의 보이는 씬 목록(빈 버킷 제외, 버킷 이름순) — 합류 전후 비교용 */
 function shownScenes(all: ScenesByProject, account: string): string {
   return JSON.stringify(Object.entries(all).filter(([bucket, scenes]) => belongs(bucket, account) && scenes.length).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 /** 합류 + 그 트랜잭션 안에서 본 화면 변화(합류 성공이 곧 화면 변화는 아니다 — 같은 내용이면 false) */
-async function joinSceneNotebookDetailed(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean): Promise<{ joined: boolean; visible: boolean }> {
+async function joinSceneNotebookDetailed(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean, restoreGeneration?: string): Promise<{ joined: boolean; visible: boolean }> {
   const input = structuredClone(buckets);
   const none = { joined: false, visible: false };
   // 서버 응답 해석은 3단계. 경계를 잘못 넘긴 입력은 부분 적용하지 않는다.
@@ -200,7 +281,7 @@ async function joinSceneNotebookDetailed(account: string, notebookId: string, hi
       for (const scene of value.scenes) meta[key("b", bucket, scene.id)] = value.bases[scene.id];
       meta[key("ob", bucket)] = { base: value.order, dirty: null } satisfies SceneOrderState;
     }
-    meta[key("nj", account)] = { notebookId, history } satisfies NotebookJoin;
+    meta[key("nj", account)] = { notebookId, history, ...(restoreGeneration ? { restoreGeneration } : {}) } satisfies NotebookJoin;
     const conflictsChanged = (meta.conflicts as SceneAbsorbConflict[]).length !== conflicts.length;
     // 씬 차이 없이 충돌 목록만 바뀌어도 화면(충돌 탭)이 알아야 한다 — 저장소의 바깥 알림은 씬 차이가 있을 때만 돈다
     return { value: { joined: true, visible: shownScenes(all, account) !== shownBefore }, changed: true, notify: conflictsChanged };
@@ -274,11 +355,11 @@ export function setSceneNotebookTokenProvider(provider: () => NotebookToken | nu
 }
 type WireBase = { history_id: string; rev: number; hash: string };
 type HubRow = { id: string; data: string; deleted_at: string | null; base: WireBase };
-type HubBook = { notebook_id: string | null; history_id: string; items: HubRow[]; order: { ids: string[]; rev: number; history_id: string }; skipped?: string[]; hasLiveRows?: boolean };
+type HubBook = { restore_generation: string; notebook_id: string | null; history_id: string; items: HubRow[]; order: { ids: string[]; rev: number; history_id: string }; skipped?: string[]; hasLiveRows?: boolean };
 type Upload = { id: string; name: string; data: string; base: WireBase | null; revive?: boolean; intent_id?: string };
 type Delete = { id: string; intent_id: string; base: WireBase | null };
-type Payload = { request_id: string; project_id: string; upserts: Upload[]; deletes: Delete[]; order?: HubBook["order"]; mcp_complete?: string[] };
-type Receipt = { history_id: string; order: HubBook["order"]; results: { id: string; status: "saved" | "same" | "copied" | "too_big"; target_id: string | null; base?: WireBase }[]; deletes: { id: string; status: "deleted" | "kept"; base: WireBase | null; intent_id: string }[]; mcp_done?: string[] };
+type Payload = { restore_generation?: string; request_id: string; project_id: string; upserts: Upload[]; deletes: Delete[]; order?: HubBook["order"]; mcp_complete?: string[] };
+type Receipt = { restore_generation: string; history_id: string; order: HubBook["order"]; results: { id: string; status: "saved" | "same" | "copied" | "too_big"; target_id: string | null; base?: WireBase }[]; deletes: { id: string; status: "deleted" | "kept"; base: WireBase | null; intent_id: string }[]; mcp_done?: string[] };
 // 서버의 pending 작업이 재전달의 원장이다. 이 큐는 이미 저장된 씬에도 same 확인을 요청한다.
 const mcpCompletions = new Map<string, { account: string; sceneId: string; confirmed: boolean }>();
 export async function completeNotebookMcpTask(account: string, sceneId: string, taskId: string): Promise<boolean> {
@@ -302,9 +383,9 @@ function uploadRequests(upserts: Upload[]): Payload[] {
   });
 }
 interface PendingWrite extends NotebookProgress {
-  history: string; notebookId: string; frozen: NotebookBucket; requests: Payload[]; tooBig: string[]; orderCanAdvance: boolean;
+  restoreGeneration: string; history: string; notebookId: string; frozen: NotebookBucket; requests: Payload[]; tooBig: string[]; orderCanAdvance: boolean;
 }
-interface PendingStart extends NotebookProgress { history: string; generation: string; scenes: Scene[] }
+interface PendingStart extends NotebookProgress { restoreGeneration: string; history: string; generation: string; scenes: Scene[] }
 const emptyBucket = (): NotebookBucket => ({ scenes: [], states: {}, order: emptyOrder() });
 const fromBase = (base: WireBase): SceneBase => ({ history: base.history_id, rev: base.rev, hash: base.hash });
 const toBase = (base: SceneBase | null): WireBase | null => base && ({ history_id: base.history, rev: base.rev, hash: base.hash });
@@ -318,13 +399,15 @@ export function buildSceneNotebookClose(lease: NotebookToken): string | null {
   if (current?.token !== lease.token || current.generation !== lease.generation || current.account !== lease.account) return null;
   const snapshot = readSceneStoreForClose();
   if (!snapshot || !snapshot.meta[key("nj", lease.account)]) return null;
+  const restoreGeneration = (snapshot.meta[key("nj", lease.account)] as NotebookJoin).restoreGeneration;
+  if (!validRestoreGeneration(restoreGeneration)) return null;
   const bucket = `${lease.account}::_none`, scenes = snapshot.scenes[bucket] ?? [];
   const order = (snapshot.meta[key("ob", bucket)] as SceneOrderState | undefined) ?? emptyOrder();
   if (!order.base) return null;
   const pending = snapshot.meta[key("nw", lease.account)] as PendingWrite | undefined;
-  if (pending && pending.history !== order.base.history) return null;
+  if (pending && (pending.history !== order.base.history || pending.restoreGeneration !== restoreGeneration || pending.requests.some((r) => r.restore_generation !== restoreGeneration))) return null;
   const pendingIds = new Set(pending?.requests.flatMap((r) => [...r.upserts, ...r.deletes].map((item) => item.id)) ?? []);
-  const payload: Payload = { request_id: newSceneIntentId(), project_id: "", upserts: [], deletes: [] };
+  const payload: Payload = { restore_generation: restoreGeneration, request_id: newSceneIntentId(), project_id: "", upserts: [], deletes: [] };
   for (const scene of scenes) {
     if (scene.localNotebookCopy === "upload_failed") continue;
     const state = stateOf(snapshot.scenes, snapshot.meta, bucket, scene.id), text = state.text!;
@@ -425,7 +508,7 @@ function validBase(base: WireBase | undefined, history: string): base is WireBas
   return !!base && base.history_id === history && Number.isInteger(base.rev) && base.rev >= 0 && typeof base.hash === "string";
 }
 function parseBook(value: HubBook): HubBook {
-  if (!value || typeof value.history_id !== "string" || !(value.notebook_id === null || typeof value.notebook_id === "string") ||
+  if (!value || !validRestoreGeneration(value.restore_generation) || typeof value.history_id !== "string" || !(value.notebook_id === null || typeof value.notebook_id === "string") ||
       !Array.isArray(value.items) || !value.order || !Array.isArray(value.order.ids) ||
       value.order.history_id !== value.history_id || !Number.isInteger(value.order.rev)) throw new Error("invalid_notebook");
   const ids = new Set<string>();
@@ -526,10 +609,18 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
     if (!result.ok) throw new Error("local_store_failed");
     check(); return result.value;
   };
+  const pendingAtStart = sceneStoreHasPending();
   try {
     for (let round = 0; round < 3; round++) {
       try {
         let local = await snapshot();
+        let book = await getBook();
+        if (local.joined?.restoreGeneration !== book.restore_generation || [local.starting, local.writing].some((value) => value && value.restoreGeneration !== book.restore_generation)) {
+          const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart);
+          if (!adopted.ok) throw new Error("local_store_failed");
+          mcpCompletions.clear();
+          return { status: "ready", changed: true, visibleChanged: adopted.value };
+        }
         const reduced = (local.buckets[bucket]?.scenes ?? []).filter((s) => s.localNotebookCopy === "upload_failed" && bytes(JSON.stringify(s)) <= SCENE_LIMIT);
         if (reduced.length) {
           const cleared = await sceneNotebookTransaction([], (all) => {
@@ -543,8 +634,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
           if (cleared.ok && cleared.value) visibleChanged = true; // 사본 표식을 거뒀다(뒤에 네트워크가 실패해도 이미 확정)
           local = await snapshot();
         }
-        let book = await getBook();
-        if (!local.joined || !book.notebook_id) {
+        if (!local.joined || !book.notebook_id || local.starting) {
           let releaseHold: (() => void) | undefined;
           try {
             local = await snapshot();
@@ -558,12 +648,12 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
                 return { status: "local_only", changed, visibleChanged, reason: "start_too_big", sceneIds: oversizedIds };
               }
               let progress = local.starting as PendingStart | null;
-              if (!progress || progress.history !== book.history_id || progress.generation !== lease.generation || !equal(progress.scenes, scenes)) {
-                const next: PendingStart = { id: newSceneIntentId(), history: book.history_id, generation: lease.generation, scenes };
+              if (!progress || progress.restoreGeneration !== book.restore_generation || progress.history !== book.history_id || progress.generation !== lease.generation || !equal(progress.scenes, scenes)) {
+                const next: PendingStart = { restoreGeneration: book.restore_generation, id: newSceneIntentId(), history: book.history_id, generation: lease.generation, scenes };
                 if (!(await writeNotebookProgress(account, "start", progress, next, guard))) throw new Error("local_store_failed");
                 progress = next;
               }
-              const start = { token: lease.token, attempt_id: progress.id, project_id: "", expected_count: scenes.length, order: scenes.map((s) => s.id) };
+              const start = { restore_generation: book.restore_generation, token: lease.token, attempt_id: progress.id, project_id: "", expected_count: scenes.length, order: scenes.map((s) => s.id) };
               try {
                 for (const upserts of batches(scenes.map((s) => ({ id: s.id, name: s.name, data: JSON.stringify(s) })))) {
                   await request("notebook/start", { ...start, upserts, commit: false });
@@ -592,7 +682,9 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
                 }
                 if (code !== "notebook_already_started") throw error;
               }
-              book = await getBook();
+              const confirmed = await getBook();
+              if (confirmed.restore_generation !== book.restore_generation) continue;
+              book = confirmed;
             }
             if (!book.notebook_id) throw new Error("notebook_not_started");
             if (!local.joined) {
@@ -606,13 +698,26 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               return { status: "ready", changed, visibleChanged };
             }
             const progress = (await snapshot()).starting;
+            // Zero-item start establishes the first order; retain the clean browser order even after a lost start reply.
+            if (local.joined.notebookId === "" && progress?.history === book.history_id && progress.generation === lease.generation &&
+                Array.isArray(progress.scenes) && progress.scenes.length === 0) {
+              const advanced = await sceneNotebookTransaction([key("ns", account)], (_all, meta) => {
+                const order = meta[key("ob", bucket)] as SceneOrderState | undefined;
+                if ((meta[key("nj", account)] as NotebookJoin | undefined)?.restoreGeneration !== book.restore_generation ||
+                    !equal(meta[key("ns", account)], progress) || !order?.dirty || order.base?.history !== book.history_id ||
+                    order.base.rev + 1 !== book.order.rev) return { changed: false, value: null };
+                meta[key("ob", bucket)] = { ...order, base: { history: book.history_id, rev: book.order.rev } } satisfies SceneOrderState;
+                return { changed: true, value: null };
+              }, guard);
+              if (!advanced.ok) throw new Error("local_store_failed");
+            }
             if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
             local = await snapshot(); // 합류했던 프로필은 보관/합류를 다시 하지 않고 기존 판으로 맞춘다.
           } finally { releaseHold?.(); }
         }
         if (!book.notebook_id) throw new Error("notebook_missing");
         let pending = local.writing as PendingWrite | null;
-        if (pending && (pending.history !== book.history_id || pending.notebookId !== book.notebook_id)) {
+        if (pending && (pending.restoreGeneration !== book.restore_generation || pending.history !== book.history_id || pending.notebookId !== book.notebook_id)) {
           if (!(await writeNotebookProgress(account, "write", pending, null, guard))) throw new Error("local_store_failed");
           pending = null;
         }
@@ -657,7 +762,8 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             if (equal((await snapshot()).buckets[bucket] ?? emptyBucket(), frozen)) return { status: "ready", changed, visibleChanged };
             continue;
           }
-          pending = { id: newSceneIntentId(), history: book.history_id, notebookId: book.notebook_id, frozen, requests, tooBig,
+          requests.forEach((r) => { r.restore_generation = book.restore_generation; });
+          pending = { restoreGeneration: book.restore_generation, id: newSceneIntentId(), history: book.history_id, notebookId: book.notebook_id, frozen, requests, tooBig,
             orderCanAdvance: equal(frozen.order.base, { history: book.history_id, rev: book.order.rev }),
           };
           if (!(await writeNotebookProgress(account, "write", null, pending, guard))) throw new Error("local_store_failed");
@@ -675,7 +781,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             pending = next;
           }
           const receipt = await request<Receipt>("backup", { ...payload, token: lease.token }, "PUT");
-          if (receipt.history_id !== pending.history || !receipt.order || receipt.order.history_id !== receipt.history_id || !Number.isInteger(receipt.order.rev) || !Array.isArray(receipt.results) || !Array.isArray(receipt.deletes) ||
+          if (receipt.restore_generation !== pending.restoreGeneration || receipt.history_id !== pending.history || !receipt.order || receipt.order.history_id !== receipt.history_id || !Number.isInteger(receipt.order.rev) || !Array.isArray(receipt.results) || !Array.isArray(receipt.deletes) ||
               receipt.results.length !== payload.upserts.length || receipt.deletes.length !== payload.deletes.length ||
               receipt.results.some((r, i) => r.id !== payload.upserts[i].id || !["saved", "same", "copied", "too_big"].includes(r.status) ||
                 (r.status !== "too_big" && (!r.target_id || !validBase(r.base, receipt.history_id)))) ||
@@ -683,12 +789,10 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
           receipts.push(receipt);
           if (receipt.mcp_done && (!Array.isArray(receipt.mcp_done) || receipt.mcp_done.some((id) => !payload.mcp_complete?.includes(id) || !payload.upserts.some((up) =>
             (JSON.parse(up.data) as Scene).mcpAttachmentReceipts?.includes(id) && receipt.results.some((r) => r.id === up.id && r.target_id === up.id && ["saved", "same"].includes(r.status)))))) throw new Error("invalid_mcp_receipt");
-          for (const id of receipt.mcp_done ?? []) {
-            const name = JSON.stringify([account, id]), completion = mcpCompletions.get(name);
-            if (completion) { completion.confirmed = true; mcpCompletions.delete(name); }
-          }
+
         }
         const received = await getBook();
+        if (received.restore_generation !== pending.restoreGeneration) continue;
         if (received.history_id !== pending.history || received.notebook_id !== pending.notebookId) continue;
         const results = new Map(receipts.flatMap((r) => r.results).map((r) => [r.id, r]));
         const receivedRows = new Map(received.items.map((row) => [row.id, row]));
@@ -713,7 +817,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         type Applied = { state: "retry" | "changed" | "ready"; visible: boolean };
         const retry: Applied = { state: "retry", visible: false };
         const applied = await sceneNotebookTransaction([key("nw", account)], (all, meta) => {
-          if (!equal(meta[key("nw", account)], work)) return { value: retry, changed: false };
+          if ((meta[key("nj", account)] as NotebookJoin | undefined)?.restoreGeneration !== work.restoreGeneration || !equal(meta[key("nw", account)], work)) return { value: retry, changed: false };
           const ids = new Set([...Object.keys(work.frozen.states), ...(all[bucket] ?? []).map((s) => s.id)]);
           const stable = equal((all[bucket] ?? []).map((s) => s.id), work.frozen.scenes.map((s) => s.id)) &&
             equal(meta[key("ob", bucket)] ?? emptyOrder(), work.frozen.order) && [...ids].every((id) =>
@@ -785,6 +889,10 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
           return { value: { state: modified ? "changed" : "ready", visible } satisfies Applied, changed: true };
         }, guard);
         if (!applied.ok) throw new Error("local_store_failed");
+        for (const receipt of receipts) for (const id of receipt.mcp_done ?? []) {
+          const name = JSON.stringify([account, id]), completion = mcpCompletions.get(name);
+          if (completion) { completion.confirmed = true; mcpCompletions.delete(name); }
+        }
         if (applied.value.state === "retry") continue;
         changed ||= applied.value.state === "changed";
         visibleChanged ||= applied.value.visible;

@@ -1070,10 +1070,16 @@ export const workingBucketLength = (key: string): number => {
 /** 저장소에 확정된 값만. DB 미러·복구 판정은 이것을 본다. */
 export const readConfirmedBucket = (key: string): Scene[] => copiesOf(confirmed, key);
 
+/** 카드 전송의 세대 확인은 미확정 편집을 재생하지 않고 확정된 합류 기록만 읽는다. */
+export function readConfirmedNotebookJoin(account: string): { restoreGeneration?: string } | null {
+  if (!hubHasFeature("scene_writer_v1") || !ready || baselineStale || !confirmedNotebookMeta || notebookWriteHolds.size) return null;
+  const joined = confirmedNotebookMeta[notebookKey("nj", account)] as { restoreGeneration?: string } | undefined;
+  return joined ? { restoreGeneration: joined.restoreGeneration } : null;
+}
 /** 닫기 전송 전용: 확인된 판 위에 아직 IDB에 못 쓴 동기 편집과 같은 의도 id를 재생한다.
  * 성공 응답/영속화로 취급하지 않는다. 표식 꺼짐·다른 창의 재읽기 중에는 쓰지 않는다. */
 export function readSceneStoreForClose(): { scenes: ScenesByProject; meta: StoreValues } | null {
-  if (!hubHasFeature("scene_writer_v1") || !ready || baselineStale || !confirmedNotebookMeta) return null;
+  if (!hubHasFeature("scene_writer_v1") || !ready || baselineStale || !confirmedNotebookMeta || notebookWriteHolds.size) return null;
   const all = { ...confirmed }, meta = { ...confirmedNotebookMeta };
   try {
     for (const op of pending) {

@@ -1,4 +1,6 @@
 """Isolated v2 contracts; generation submission is mocked, never paid CLI calls."""
+from test_scene_notebook import restore_generation
+
 import asyncio
 import hashlib
 import json
@@ -611,7 +613,7 @@ def test_accepted_scene_delete_cancels_pending_attachment(local):
     _scene_row(client, "stays")
     store.add_canvas_task(client, plan["id"], "gone", ["g1"])
     store.add_canvas_task(client, plan["id"], "stays", ["g1"])
-    result = repo.sync_scene_backups(client["owner_uid"], "", [], ["gone"])
+    result = repo.sync_scene_backups(client["owner_uid"], "", [], ["gone"], restore_generation=restore_generation())
     assert result["deleted"] == 1
     assert [task["scene_id"] for task in store.canvas_tasks(client["owner_uid"], client["account_email"], workspace)] == ["stays"]
 
@@ -623,7 +625,7 @@ def test_conflicting_scene_delete_preserves_attachment(local):
     client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
     _scene_row(client, "busy")
     store.add_canvas_task(client, plan["id"], "busy", ["g1"])
-    result = repo.sync_scene_backups(client["owner_uid"], "", [], ["busy"], delete_bases={"busy": "stale-hash"})
+    result = repo.sync_scene_backups(client["owner_uid"], "", [], ["busy"], delete_bases={"busy": "stale-hash"}, restore_generation=restore_generation())
     assert result["kept"] == ["busy"]
     assert len(store.canvas_tasks(client["owner_uid"], client["account_email"], {"scope": "personal"})) == 1
 
@@ -675,7 +677,7 @@ def test_explicit_canvas_attachment_scoped_and_idempotent(local, monkeypatch):
     action(local, "execute_generation_plan", {"plan_id": plan["id"]})
     owner = local[2]["creator_uid"] or "acct:" + local[2]["email"]
     repo.sync_scene_backups(owner, "", [{"id": "personal-scene", "name": "mine", "data": '{"id":"personal-scene"}'},
-        {"id": "team-scene", "name": "team", "data": '{"id":"team-scene","workspace":{"id":"other-team"}}'}], [])
+        {"id": "team-scene", "name": "team", "data": '{"id":"team-scene","workspace":{"id":"other-team"}}'}], [], restore_generation=restore_generation())
     assert action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "team-scene"}).status_code == 404
     first = action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "personal-scene"}).json()
     second = action(local, "add_to_canvas", {"plan_id": plan["id"], "scene_id": "personal-scene"}).json()
@@ -1228,7 +1230,7 @@ def test_unassigned_scenes_are_visible_from_every_workspace_like_the_app(local, 
         {"id": "bom-id", "name": "BOM", "data": '{"id":"bom-id","workspace":{"id":"\\ufeff"}}'},  # 앱 trim 은 BOM 도 자른다
         {"id": "team-a-scene", "name": "a", "data": '{"id":"team-a-scene","workspace":{"scope":"team","id":" team-a "}}'},
         {"id": "team-b-scene", "name": "b", "data": '{"id":"team-b-scene","workspace":{"id":"team-b"}}'},
-        {"id": "bk_free", "name": "씬 7 (옛 창 사본)", "data": '{"id":"bk_free","backupForkOf":{"id":"free","sum":"s"}}'}], [])
+        {"id": "bk_free", "name": "씬 7 (옛 창 사본)", "data": '{"id":"bk_free","backupForkOf":{"id":"free","sum":"s"}}'}], [], restore_generation=restore_generation())
 
     def listed(scope, workspace_id=None):
         response = action(local, "read_context", {"kind": "scenes", "workspace_scope": scope, "workspace_id": workspace_id})
@@ -1261,7 +1263,7 @@ def test_unassigned_scenes_are_visible_from_every_workspace_like_the_app(local, 
         assert local[0].post(url, headers=APP_HEADERS, json={"workspace": {"scope": "team", "id": "team-a"}}).status_code == 200
     # 목록 확인 뒤 씬이 다른 팀으로 지정되면 쓰기 잠금 안 확인이 막는다(라우터 목록과 같은 규칙)
     client = store.client_for_secret(api.mcp.digest(local[1]["codex"]["secret"]))
-    repo.sync_scene_backups(owner, "", [{"id": "free", "name": "씬 7", "data": '{"id":"free","workspace":{"id":"team-b"}}'}], [])
+    repo.sync_scene_backups(owner, "", [{"id": "free", "name": "씬 7", "data": '{"id":"free","workspace":{"id":"team-b"}}'}], [], restore_generation=restore_generation())
     with pytest.raises(LookupError):
         store.add_canvas_task(client, plan["id"], "free", ["generation-team-a"], {"scope": "team", "id": "team-a"})
 
@@ -1297,7 +1299,7 @@ def test_account_plans_remain_independent_across_workspaces(local, team_access, 
     assert calls == ["team-a", "team-b"]
     owner = local[2]["creator_uid"] or "acct:" + local[2]["email"]
     repo.sync_scene_backups(owner, "", [{"id": "scene-a", "name": "a", "data":
-        '{"id":"scene-a","workspace":{"scope":"team","id":"team-a"}}'}], [])
+        '{"id":"scene-a","workspace":{"scope":"team","id":"team-a"}}'}], [], restore_generation=restore_generation())
     attached = action(local, "add_to_canvas", {"plan_id": plans[0]["id"], "scene_id": "scene-a"})
     assert attached.status_code == 200 and attached.json()["workspace"]["id"] == "team-a"
     assert action(local, "add_to_canvas", {"plan_id": plans[1]["id"], "scene_id": "scene-a"}).status_code == 404
