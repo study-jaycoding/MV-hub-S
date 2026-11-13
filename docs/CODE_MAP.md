@@ -124,6 +124,7 @@ updated: 2026-11-13
 `frontend/tests/sceneNotebookStore.test.ts`, `frontend/tests/sceneNotebook.test.ts`,
 `frontend/tests/sceneWriter.test.ts`, `frontend/tests/canvasWriterStatus.test.tsx`, `frontend/tests/mcpCanvasTasks.test.tsx`다.
 카메라 위험2의 동일 배경 합성 진단은 `tools/browser_measure/camera_compare.py`다. 고정 사본·빈 격리 DB·headless 브라우저만 사용하며 공식 실측을 대체하지 않는다.
+보관한 원장면의 재검사 실행기는 `tools/browser_measure/camera_original.py`, 경계 시험은 `tools/tests/test_camera_original.py`다. 세 고정 소스·새 격리 폴더·소유 프로세스로 원래65회와 판정기를 재사용한다. 실행 허용 범위와 환경 한계는 [카메라 후속 기록](status/카메라_후속진단_2026-11-12.md)을 따른다.
 브라우저 실측은 `tools/browser_measure/canvas_notebook.py`, 실행·증거 검증은 `tools/verify_canvas_notebook_measure.py`,
 도구 단위 시험은 `tools/tests/test_canvas_notebook_measure.py`다. 저장 계약은 [CANVAS_SCENE_STORAGE](CANVAS_SCENE_STORAGE.md)를 따른다.
 백엔드 진입은 `routers/mcp.py`, `routers/mcp_v2.py`, 저장은 `repo/mcp_plans.py`, `repo/mcp_v2.py`,
