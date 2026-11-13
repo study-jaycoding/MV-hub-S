@@ -26,6 +26,11 @@ import time
 import types
 from urllib.parse import unquote, urlsplit
 
+if __package__:
+    from . import camera_ab_check as ab
+else:
+    import camera_ab_check as ab
+
 REPO = Path(__file__).resolve().parents[2]
 HOME = REPO.parent / "work/cam-save-handoff"
 SOURCES = {
@@ -209,14 +214,27 @@ def scene_summary(data: bytes) -> dict:
             "edges": len(scene.get("edges", [])), "groups": len(scene.get("groups", [])), "url_schemes": dict(schemes)}
 
 
-def prepare(work: Path, home: Path = HOME) -> None:
-    inputs = read_inputs(home)
+def prepare(work: Path, home: Path | None = None, experiment: Path | None = None) -> None:
+    home = (home or HOME).resolve()
     work = work.resolve()
-    if work.parent != home.resolve() or not work.name.startswith("run-"):
+    if work.parent != home or not work.name.startswith("run-ab-" if experiment else "run-"):
         raise ValueError("new run must be a direct run-* child of the retained folder")
+    if work.exists():
+        raise FileExistsError("run folder already exists")
+    spec_bytes = experiment.read_bytes() if experiment else None
+    spec = ab.loads(spec_bytes) if experiment else None
+    source_evidence = ab.source_check(spec, git) if experiment else None
+    inputs = read_inputs(home)
     work.mkdir()  # No reuse, overwrite or removal.
     meta = {"format": MARKER, "sources": SOURCES, "inputs": INPUTS, "files": {}, "source_hashes": {},
             "patches": {}, "scenes": {}, "packages": {}, "static_resources": {}, "tool": sha(Path(__file__).read_bytes())}
+    if spec is not None:
+        meta.update(format=ab.FORMAT, sources=spec["sources"], home=str(home), contract=ab.CONTRACT,
+                    experiment_sha256=sha(ab.canonical(spec)), source_evidence=source_evidence,
+                    reviewed_tools={"camera_original.py": meta["tool"],
+                                    "camera_ab_check.py": sha(Path(ab.__file__).read_bytes())})
+        (work / "experiment.json").write_bytes(spec_bytes)
+        meta["files"]["experiment.json"] = sha(spec_bytes)
     for folder in ("anchor", "measure"):
         (work / folder).mkdir()
     for name, content in inputs.items():
@@ -234,7 +252,7 @@ def prepare(work: Path, home: Path = HOME) -> None:
         if name.endswith(".json"):
             meta["scenes"][name] = scene_summary(content)
     patches = patch_definitions(inputs["measure/build_r2diag.py"].decode("utf-8"))
-    for variant, revision in SOURCES.items():
+    for variant, revision in meta["sources"].items():
         root = work / "measure" / variant
         extract_archive(git("archive", "--format=tar", revision), root)
         files = [p for p in root.rglob("*") if p.is_file()]
@@ -270,14 +288,32 @@ def prepare(work: Path, home: Path = HOME) -> None:
     for name in inputs:
         if (work / name).is_file():
             meta["files"][name] = sha((work / name).read_bytes())
-    save(work / "order.json", schedule(inputs["measure/risk_diag.py"].decode("utf-8")))
+    rows = schedule(inputs["measure/risk_diag.py"].decode("utf-8"), 10 if spec is not None else 5)
+    if spec is not None:
+        # Compare against the retained loop as well as the independent fixed contract.
+        rows = [{**r, "src": "src_o" if r["src"] == "src_pred" else r["src"],
+                 "key": r["key"].replace("src_pred", "src_o"), "tag": r["mode"] + "10"}
+                for r in rows if r["mode"] != "judge"]
+        ab.require(rows == ab.order(), "AB order differs from retained loop")
+    save(work / "order.json", rows)
     meta["files"]["order.json"] = sha((work / "order.json").read_bytes())
     save(work / "manifest.json", meta)
 
 
 def validate(work: Path) -> dict:
-    meta = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
-    if meta.get("format") != MARKER or meta.get("sources") != SOURCES or meta.get("inputs") != INPUTS:
+    meta = ab.read(work / "manifest.json")
+    if meta.get("format") == ab.FORMAT:
+        spec = ab.read(work / "experiment.json")
+        ab.spec_check(spec)
+        ab.require(work.resolve().parent == Path(meta["home"]).resolve() and work.name.startswith("run-ab-"), "AB run escaped retained home")
+        ab.require(meta["contract"] == ab.CONTRACT and meta["experiment_sha256"] == sha(ab.canonical(spec)), "experiment contract changed")
+        ab.require(meta["sources"] == spec["sources"] and meta["inputs"] == INPUTS, "AB sources/inputs changed")
+        ab.require(meta["source_evidence"] == ab.source_check(spec, git), "AB source evidence changed")
+        ab.require(meta["reviewed_tools"] == {"camera_original.py": sha(Path(__file__).read_bytes()),
+                                             "camera_ab_check.py": sha(Path(ab.__file__).read_bytes())}, "reviewed tools changed")
+        ab.require(ab.read(work / "order.json") == ab.order(), "AB order changed")
+        ab.require({"experiment.json", "order.json", *INPUTS.keys()} - {"measure/build_r2diag.py"} <= meta["files"].keys(), "incomplete manifest")
+    elif meta.get("format") != MARKER or meta.get("sources") != SOURCES or meta.get("inputs") != INPUTS:
         raise ValueError("not the fixed original experiment")
     if meta["tool"] != sha(Path(__file__).read_bytes()):
         raise ValueError("execution tool changed since prepare")
@@ -590,7 +626,7 @@ def smoke(work: Path) -> None:
         child = work / behavior
         child.mkdir()
         result = run_owned([sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve()),
-                            "smoke-worker", "--run", str(child), "--row", behavior],
+                            "smoke-worker", "--home", str(HOME.resolve()), "--run", str(child), "--row", behavior],
                            child / "worker.log", 30 if behavior == "timeout" else 60)
         evidence = json.loads((child / "smoke.json").read_text(encoding="utf-8"))
         if evidence["canary_hits"] or not all(evidence["checks"].values()):
@@ -604,7 +640,7 @@ def smoke(work: Path) -> None:
 
 
 async def worker(work: Path, row: dict, output: Path) -> None:
-    validate(work)
+    meta = validate(work)
     order = json.loads((work / "order.json").read_text(encoding="utf-8"))
     if row not in order or output.resolve().parent not in (work / "pilot", work / "measurement"):
         raise ValueError("worker row/output is not in the fixed experiment")
@@ -636,6 +672,8 @@ loafError:!!p?.loafErr,blockedWS:window.__blockedWS||0}; })()""")
         evidence["renderer"] = await page.eval("""(() => {const c=document.createElement('canvas'),g=c.getContext('webgl2');
 if(!g)return null;const e=g.getExtension('WEBGL_debug_renderer_info');return e?g.getParameter(e.UNMASKED_RENDERER_WEBGL):g.getParameter(g.RENDERER);})()""")
         evidence["phase"] = await page.eval(rd.PHASE)
+        if meta.get("format") == ab.FORMAT:
+            evidence["browser_version"] = await page.send("Browser.getVersion")
 
     current = []
 
@@ -675,29 +713,44 @@ if(!g)return null;const e=g.getExtension('WEBGL_debug_renderer_info');return e?g
 
 
 def series(work: Path, pilot: bool) -> None:
-    validate(work)
+    meta = validate(work)
+    is_ab = meta.get("format") == ab.FORMAT
+    if is_ab:
+        ab.require(Path(meta["home"]).resolve() == HOME.resolve(), "CLI home differs from prepared home")
     destination = work / ("pilot" if pilot else "measurement")
     if not pilot:
         gate = json.loads((work / "pilot/complete.json").read_text(encoding="utf-8"))
         if gate.get("status") != "ready":
             raise ValueError("pilot is not ready")
+        if is_ab:
+            ab.require(type(gate.get("rows")) is int and gate["rows"] == 12, "AB pilot must contain twelve rows")
     else:
         smoke(work / "safety-smoke")
+    if is_ab:
+        ab.check_smoke(work, meta)
     destination.mkdir()
     order = json.loads((work / "order.json").read_text(encoding="utf-8"))
     if pilot:
         order = [r for r in order if r["round"] == 1]
-    aggregates = {tag: {} for *_rest, tag in MODES}
+    aggregates = {m + "10": {} for m in ab.ROUNDS} if is_ab else {tag: {} for *_rest, tag in MODES}
+    environment = None
+    if is_ab and not pilot:
+        _, environment, _ = ab.read_series(work, "pilot", [r for r in ab.order() if r["round"] == 1])
     for number, row in enumerate(order):
         output = destination / f"row-{number:03}.json"
         command = [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve()), "worker",
-                   "--run", str(work), "--row", json.dumps(row), "--output", str(output)]
+                   "--home", str(HOME.resolve()), "--run", str(work), "--row", json.dumps(row), "--output", str(output)]
         owned = run_owned(command, destination / f"row-{number:03}.log", 300, work / "measure/src_n")
         if owned.get("exit_code") != 0 or owned["status"] != "exited":
             raise RuntimeError("worker failed; series retained and stopped")
         result = json.loads(output.read_text(encoding="utf-8"))
         if result["status"] != "measured":
             raise RuntimeError("incomplete row")
+        if is_ab:
+            ab.job_check(owned)
+            actual = ab.row_check(result, row)
+            ab.require(environment is None or actual == environment, "measurement environment changed")
+            environment = actual
         aggregates[row["tag"]].setdefault(row["key"], []).append(result["measurement"])
         if pilot:
             obs = result["evidence"]["observations"]
@@ -710,6 +763,8 @@ def series(work: Path, pilot: bool) -> None:
         save(destination / f"rd_{tag}.json", rows)
     if pilot:
         save(destination / "complete.json", {"status": "ready", "rows": len(order)})
+    elif is_ab:
+        finish_ab(work, meta)
     else:
         checker = work / "measure/check_risk_measure2.py"
         # The unchanged checker resolves input JSON beside __file__.
@@ -734,20 +789,54 @@ def series(work: Path, pilot: bool) -> None:
             raise SystemExit(result["exit_code"])
 
 
+def finish_ab(work: Path, meta: dict) -> None:
+    destination = work / "measurement"
+    outcome = run_owned([sys.executable, "-B", "-X", "utf8", str(Path(ab.__file__).resolve()),
+                         "--run", str(work)], destination / "checker.log", 120)
+    try:
+        result = ab.read(destination / "ab-verdict.json")
+        code = ab.EXIT_CODES[result["status"]]
+        ab.require(outcome["status"] == "exited" and type(outcome["exit_code"]) is int and outcome["exit_code"] == code
+                   and type(outcome["active_after"]) is int and outcome["active_after"] == 0 and outcome["cleanup_errors"] == []
+                   and "error_type" not in outcome and result["format"] == ab.FORMAT, "checker outcome mismatch")
+        if code != 2:
+            ab.require(result["experiment_sha256"] == meta["experiment_sha256"] and result["sources"] == meta["sources"], "checker target mismatch")
+            ab.require(result == ab.check(work), "checker result differs from evidence")
+    except Exception as exc:
+        raise RuntimeError("AB checker infrastructure did not complete") from exc
+    if code == 2:
+        raise SystemExit(2)
+    save(destination / "complete.json", {"status": result["status"], "rows": 120,
+                                        "checker": meta["reviewed_tools"]["camera_ab_check.py"]})
+    if code:
+        raise SystemExit(code)
+
+
 def main() -> None:
+    global HOME
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("prepare", "pilot", "measure", "worker", "smoke", "smoke-worker"))
     parser.add_argument("--run", required=True, type=Path)
+    parser.add_argument("--home", required=True, type=Path)
+    parser.add_argument("--experiment", type=Path)
     parser.add_argument("--row")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    HOME = args.home.resolve(strict=True)
+    if args.experiment is not None and args.action != "prepare":
+        raise ValueError("experiment is only accepted by prepare")
     if args.action in ("worker", "smoke-worker") and os.environ.get("CAMERA_ORIGINAL_WORKER") != "1":
         raise ValueError("internal workers must be launched by the owned Job supervisor")
+    if args.action == "smoke-worker":
+        child = args.run.resolve()
+        run = child.parent.parent if child.parent.name == "safety-smoke" else child.parent
+        if run.parent != HOME or not run.name.startswith("run-") or child.name != args.row or args.row not in ("normal", "error", "timeout"):
+            raise ValueError("smoke worker escaped retained folder")
     if args.action in ("pilot", "measure", "worker"):
         if args.run.resolve().parent != HOME.resolve() or not args.run.name.startswith("run-"):
             raise ValueError("run is outside the retained folder")
     if args.action == "prepare":
-        prepare(args.run)
+        prepare(args.run, HOME, args.experiment)
     elif args.action == "smoke":
         smoke(args.run)
     elif args.action == "smoke-worker":

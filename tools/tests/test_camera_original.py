@@ -3,6 +3,7 @@ import ast
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
@@ -15,8 +16,16 @@ from browser_measure import camera_original as camera
 
 
 @pytest.fixture
-def original():
-    data = (camera.HOME / "measure/risk_diag.py").read_bytes()
+def retained_home():
+    value = os.environ.get("CAMERA_TEST_RETAINED_HOME")
+    if not value:
+        pytest.skip("set CAMERA_TEST_RETAINED_HOME for retained script checks (no scene reads)")
+    return Path(value).resolve(strict=True)
+
+
+@pytest.fixture
+def original(retained_home):
+    data = (retained_home / "measure/risk_diag.py").read_bytes()
     assert camera.sha(data) == camera.INPUTS["measure/risk_diag.py"]
     return data.decode("utf-8")
 
@@ -45,11 +54,28 @@ def test_original_65_order_and_alternating_source_sequence(original):
         camera.schedule(original.replace("list(reversed(SRCS))", "SRCS"))
 
 
-def test_actual_observation_definitions_apply_and_reverse_all_three_fixed_sources():
-    builder = (camera.HOME / "measure/build_r2diag.py").read_bytes()
+def test_original_constants_schedule_and_checker_branch_unchanged():
+    before = ast.parse(camera.git("show", "1406c244:tools/browser_measure/camera_original.py").decode("utf-8"))
+    after = ast.parse(Path(camera.__file__).read_text(encoding="utf-8"))
+    for name in ("SOURCES", "MODES", "MARKER", "schedule"):
+        def find(tree):
+            return next(n for n in tree.body if getattr(n, "name", None) == name
+                        or isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in n.targets))
+        assert ast.dump(find(before)) == ast.dump(find(after))
+    def checker_branch(tree):
+        series = next(n for n in tree.body if getattr(n, "name", None) == "series")
+        branch = series.body[-1]
+        while len(branch.orelse) == 1 and isinstance(branch.orelse[0], ast.If):
+            branch = branch.orelse[0]
+        return ast.dump(ast.Module(body=branch.orelse, type_ignores=[]))
+    assert checker_branch(before) == checker_branch(after)
+
+
+def test_actual_observation_definitions_apply_and_reverse_all_three_fixed_sources(retained_home):
+    builder = (retained_home / "measure/build_r2diag.py").read_bytes()
     assert camera.sha(builder) == camera.INPUTS["measure/build_r2diag.py"]
     patches = camera.patch_definitions(builder.decode("utf-8"))
-    for name, revision in camera.SOURCES.items():
+    for name, revision in [*camera.SOURCES.items(), ("current_baseline", "1406c244")]:
         selected = patches[:1] if name == "src_pred" else patches
         for rel in dict.fromkeys(p[1] for p in selected):
             source = camera.git("show", f"{revision}:{rel}").decode("utf-8").replace("\r\n", "\n")
@@ -367,10 +393,8 @@ def test_pilot_preserves_lock_after_gpu_entry_but_rejects_missing_draw(tmp_path,
     ("bake", 2060, "blocked-origin", 0), ("bake", 2060, "disabled-other", 0),
     ("bake", 2060, "disabled-background", 1),
 ])
-def test_worker_checks_actual_retained_count_and_request_boundaries(tmp_path, monkeypatch, mode, stored_cards, request_kind, blocked_ws):
-    data = (camera.HOME / "measure/scene_2000.json").read_bytes()
-    assert len(data) == 3976525
-    assert camera.sha(data) == camera.INPUTS["measure/scene_2000.json"]
+def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monkeypatch, mode, stored_cards, request_kind, blocked_ws):
+    data = json.dumps({"cards": [{}] * 2060, "edges": [{}] * 1785, "groups": [{}] * 160}).encode()
     summary = camera.scene_summary(data)
     assert (summary["cards"], summary["edges"], summary["groups"]) == (2060, 1785, 160)
     row = {"mode": mode, "round": 1, "src": "src_n", "flag": "1", "rate": 4, "key": "src_n|gpu1|x4", "tag": mode + "5"}
