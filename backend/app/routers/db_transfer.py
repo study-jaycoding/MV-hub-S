@@ -17,6 +17,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
 import time
@@ -158,7 +159,7 @@ def _require_local_when_open(request: Request) -> None:
 
 
 def _post_install_security_init(path: Path, *, new_secret: str | None = None,
-                                restore_id: str | None = None, email: str = "") -> None:
+                                restore_id: str | None = None, email: str | None = None) -> None:
     """교체된 새 DB 의 보안 초기화(R7 0-B, 코덱스 P1) — 비밀 키 제거·auth_secret 재생성·
     전 계정 password_changed_at 회전을 '한 SQLite 트랜잭션'으로. 실패는 그대로 올려
     호출부의 파일 보상 롤백이 돌게 한다 — 종전 best-effort 는 가져온 사람의 토큰·서명키가
@@ -167,6 +168,9 @@ def _post_install_security_init(path: Path, *, new_secret: str | None = None,
     경로 직접 연결만. ★CONTENT_HUB_AUTH_SECRET 환경변수 배포에선 DB auth_secret 교체가
     토큰을 무효화하지 못하므로 password_changed_at 회전이 필수 방어선.
     역할 제거=로컬 캐시(shared_server_roles)만 — account.global_role 은 복원 데이터라 불가침."""
+    restore_id = restore_id or secrets.token_hex(16)
+    if email is None:
+        email = "" if AUTH_ENABLED else norm_email(active_account.account_key())
     conn = sqlite3.connect(str(path), timeout=10)
     try:
         trash_transfer.configure_connection(conn)
@@ -186,11 +190,10 @@ def _post_install_security_init(path: Path, *, new_secret: str | None = None,
         )
         conn.execute("INSERT INTO app_setting(key,value) VALUES('share_db_generation',?) "
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (secrets.token_hex(16),))
-        if restore_id is not None:
-            conn.execute("UPDATE mcp_client SET revoked_at=COALESCE(revoked_at,datetime('now'))")
-            conn.execute("INSERT INTO app_setting(key,value) VALUES(?,?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                         (asset_mounts.restore_key(email), json.dumps({"id": restore_id, "confirmed": []})))
+        conn.execute("UPDATE mcp_client SET revoked_at=COALESCE(revoked_at,datetime('now'))")
+        conn.execute("INSERT INTO app_setting(key,value) VALUES(?,?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (asset_mounts.restore_key(email), json.dumps({"id": restore_id, "confirmed": []})))
         conn.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -229,6 +232,10 @@ class _RestoreTarget:
     agent_path: Path | None = None
     mounts_path: Path | None = None
     agent_dir: Path | None = None
+    agent_email: str = ""
+    shared_server: bool = False
+    db_epoch: int = 0
+    account_epoch: int = 0
 
 
 def _restore_target_changed() -> HTTPException:
@@ -263,7 +270,20 @@ def _strict_read_pointer() -> dict:
     return pointer
 
 
-def _capture_restore_target(*, path: Path | None = None, full: bool = False) -> _RestoreTarget:
+def _restore_file_exists(path: Path) -> bool:
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise HTTPException(503, "복원 대상 파일을 읽을 수 없습니다") from exc
+    if not stat.S_ISREG(mode):
+        raise HTTPException(409, "복원 대상이 일반 파일이 아닙니다")
+    return True
+
+
+def _capture_restore_target(*, path: Path | None = None, full: bool = False,
+                            agent_email: str = "", pool_epoch: int | None = None) -> _RestoreTarget:
     """접수 목적지만 보관한다. 서버 주소·토큰은 이 스냅샷에 넣지 않는다."""
     with active_account.transition_lock:
         email, uid = "", None
@@ -284,20 +304,24 @@ def _capture_restore_target(*, path: Path | None = None, full: bool = False) -> 
             if norm_email(live_email) != email or live_uid != uid:
                 raise _restore_target_changed()
         resolved = (db.get_db_path() if path is None else path).resolve()
-        old_identity, agent_path, mounts_path, env_digest = None, None, None, None
-        if full:
+        shared_server = _proxy.is_shared_team_server()
+        agent_email = "" if shared_server else norm_email(agent_email if AUTH_ENABLED else email)
+        env_secret = os.environ.get("CONTENT_HUB_AUTH_SECRET") or ""
+        env_digest = hashlib.sha256(env_secret.encode()).hexdigest()
+        old_identity, agent_path = None, None
+        if full and agent_email:
             from ..services.agent_chat import Identity
-            env_secret = os.environ.get("CONTENT_HUB_AUTH_SECRET") or ""
-            env_digest = hashlib.sha256(env_secret.encode()).hexdigest()
             secret = env_secret
-            if not secret and resolved.is_file():
-                with contextlib.closing(sqlite3.connect(read_only_uri(resolved), uri=True)) as conn:
-                    row = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()
-                    secret = row[0] if row else None
+            if not secret and _restore_file_exists(resolved):
+                try:
+                    with contextlib.closing(sqlite3.connect(read_only_uri(resolved), uri=True)) as conn:
+                        row = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()
+                        secret = row[0] if row else None
+                except sqlite3.Error as exc:
+                    raise HTTPException(503, "복원 전 허브 신원을 읽을 수 없습니다") from exc
             if secret:
-                old_identity = Identity(auth.hub_id_for(secret, resolved), str(resolved), email)
+                old_identity = Identity(auth.hub_id_for(secret, resolved), str(resolved), agent_email)
                 agent_path = old_identity.file_path().resolve()
-            mounts_path = asset_mounts.mounts_file(email).resolve()
         return _RestoreTarget(
             path=resolved,
             auth_enabled=AUTH_ENABLED,
@@ -306,12 +330,15 @@ def _capture_restore_target(*, path: Path | None = None, full: bool = False) -> 
             email=email,
             uid=uid,
             full=full, secret_env_digest=env_digest, old_identity=old_identity,
-            agent_path=agent_path, mounts_path=mounts_path,
-            agent_dir=config.AGENT_CHAT_DIR.resolve() if full else None,
+            agent_path=agent_path, mounts_path=asset_mounts.mounts_file(email).resolve(),
+            agent_dir=config.AGENT_CHAT_DIR.resolve(), agent_email=agent_email,
+            shared_server=shared_server,
+            db_epoch=db.pool_epoch() if pool_epoch is None else pool_epoch,
+            account_epoch=active_account.account_epoch(),
         )
 
 
-def _capture_restore_target_nowait() -> _RestoreTarget:
+def _capture_restore_target_nowait(*, agent_email: str = "") -> _RestoreTarget:
     """async import의 첫 await 전 접수를 유지하되 전환 락을 기다리지는 않는다."""
     if not active_account.transition_lock.acquire(blocking=False):
         raise HTTPException(
@@ -319,14 +346,26 @@ def _capture_restore_target_nowait() -> _RestoreTarget:
             detail="다른 DB 요청이 진행 중이라 복원을 잠시 뒤에 다시 시도하세요",
         )
     try:
-        return _capture_restore_target()
+        state = db.pool_state_nowait()
+        if state is None or state[1]:
+            raise HTTPException(503, "다른 DB 요청이 진행 중이라 복원을 잠시 뒤에 다시 시도하세요")
+        return _capture_restore_target(agent_email=agent_email, pool_epoch=state[0])
     finally:
         active_account.transition_lock.release()
 
 
 def _check_restore_target(expected: _RestoreTarget | None, *, path: Path | None = None) -> None:
-    if expected is not None and _capture_restore_target(path=path, full=expected.full) != expected:
+    if expected is not None and _capture_restore_target(
+            path=path, full=expected.full, agent_email=expected.agent_email) != expected:
         raise _restore_target_changed()
+
+
+def _complete_restore_target(expected: _RestoreTarget) -> _RestoreTarget:
+    with active_account.transition_lock:
+        _check_restore_target(expected)
+        completed = _capture_restore_target(full=True, agent_email=expected.agent_email)
+        _check_restore_target(expected)
+        return completed
 
 
 def _install_db(
@@ -348,8 +387,9 @@ def _install_db(
     extra_stages: dict[str, Path] = {}
     extra_targets: dict[str, Path] = {}
     new_secret, restore_id, final_identity = None, None, None
+    legacy_agent = None
+    from ..services import agent_chat
     if full_set is not None:
-        from ..services import agent_chat
         if expected is None or not expected.full or expected.auth_enabled or expected.account_auth_enabled or not expected.email:
             raise HTTPException(status_code=400, detail="전체 복원은 로그인된 로컬 허브에서만 가능합니다")
         _check_restore_target(expected)
@@ -363,12 +403,18 @@ def _install_db(
             auth.hub_id_for(os.environ.get("CONTENT_HUB_AUTH_SECRET") or new_secret, expected.path),
             str(expected.path), expected.email)
         extra_targets = {"agent_chat": final_identity.file_path().resolve(), "asset_mounts": expected.mounts_path}
+    elif expected is not None and expected.full and expected.agent_email:
+        _check_restore_target(expected)
+        new_secret, restore_id = secrets.token_hex(32), secrets.token_hex(16)
+        final_identity = agent_chat.Identity(
+            auth.hub_id_for(os.environ.get("CONTENT_HUB_AUTH_SECRET") or new_secret, expected.path),
+            str(expected.path), expected.agent_email)
     try:
         # ★계정 전환과의 상호배제(코덱스 재확인 P1) — 게이트는 DB 연결만 막으므로
         # set_active 가 그 사이 끼면 경로·포인터 판정이 어긋난다. transition_lock 을
         # 게이트보다 먼저 잡는다(전환은 게이트를 안 잡아 락 순서 역전 없음).
         with contextlib.ExitStack() as gates:
-            if full_set is not None:
+            if final_identity is not None:
                 identities = tuple(item for item in (expected.old_identity, final_identity) if item is not None)
                 gates.enter_context(agent_chat.service.restore_guard(identities, timeout=5.0))
             gates.enter_context(active_account.transition_lock)
@@ -390,6 +436,18 @@ def _install_db(
             # 대상 path 와 이후 단계가 보는 활성 DB 가 달라질 수 있다.
             path = db.get_db_path()
             _check_restore_target(expected, path=path)
+            if full_set is None and final_identity is not None:
+                final_path = final_identity.file_path().resolve()
+                old_path = expected.agent_path
+                reserved = {path.resolve(), (path.parent / "content_hub_trash.db").resolve(), expected.mounts_path}
+                if final_path in reserved or old_path in reserved:
+                    raise HTTPException(409, "Agent 복원 경로가 다른 구성원과 겹칩니다")
+                final_exists = _restore_file_exists(final_path)
+                if final_exists and final_path != old_path:
+                    raise HTTPException(409, "새 신원의 Agent 기록이 이미 존재합니다")
+                if old_path is not None and _restore_file_exists(old_path):
+                    legacy_agent = old_path
+                    extra_targets["agent_chat"] = final_path
             path.parent.mkdir(parents=True, exist_ok=True)
             trash_path = path.parent / "content_hub_trash.db"
             if not restore_trash_set and trash_path.is_file():
@@ -422,7 +480,7 @@ def _install_db(
             targets = [path]
             if restore_trash_set:
                 targets.append(trash_path)
-            if full_set is not None:
+            if full_set is not None or legacy_agent is not None:
                 targets.extend(extra_targets.values())
                 if expected.agent_path is not None and expected.agent_path not in targets:
                     targets.append(expected.agent_path)
@@ -476,9 +534,20 @@ def _install_db(
                     if role in full_set.paths:
                         extra_stages[role] = target.with_name(f".{target.name}.restore-{secrets.token_hex(8)}.tmp")
                         shutil.copy2(full_set.paths[role], extra_stages[role])
+            elif legacy_agent is not None:
+                original = next(backup for current, backup, existed in originals if current == legacy_agent)
+                target = extra_targets["agent_chat"]
+                extra_stages["agent_chat"] = target.with_name(f".{target.name}.restore-{secrets.token_hex(8)}.tmp")
+                shutil.copy2(original, extra_stages["agent_chat"])
             # Recheck the actual local copies, not just the earlier source path.
             # A source replaced while waiting must never install a future schema.
             try:
+                if legacy_agent is not None:
+                    prepared = extra_stages["agent_chat"]
+                    if (prepared.stat().st_size != original.stat().st_size
+                            or backup_manifest.file_digest(prepared) != backup_manifest.file_digest(original)):
+                        raise ValueError("Agent restore copy differs")
+                    backup_manifest._verify_agent(prepared)
                 if full_set is not None:
                     staged_paths = {"content": staged, **extra_stages}
                     if trash_tmp is not None:
@@ -517,9 +586,9 @@ def _install_db(
                 db.init_db(path, scene_restore=True)  # 복원 세대·공책 확정도 보상 롤백 경계 안
                 # ★보안 초기화·활성 계정 해제도 이 보상 롤백 경계 안(R7 0-B, 코덱스 P1)
                 # — 하나라도 실패하면 성공 응답 없이 기존 파일 세트로 되돌린다.
-                if full_set is not None:
+                if full_set is not None or final_identity is not None:
                     _post_install_security_init(path, new_secret=new_secret, restore_id=restore_id, email=expected.email)
-                    if "agent_chat" in full_set.paths:
+                    if "agent_chat" in extra_stages:
                         from ..repo import agent_chat as agent_store
                         agent_store.adopt_restored(extra_targets["agent_chat"], restore_id)
                 else:
@@ -858,7 +927,9 @@ async def import_db(request: Request, file: UploadFile = File(...)):
         ) from exc
 
     # 첫 await 전에 접수 계정을 확정한다. 경로/포인터만 읽고 DB 연결은 열지 않는다.
-    expected = _capture_restore_target_nowait()
+    account = getattr(getattr(request, "state", None), "account", None) or {}
+    expected = _capture_restore_target_nowait(agent_email=norm_email(account.get("email")))
+    expected = await to_thread_non_abandon(_complete_restore_target, expected)
     # 전체 파일을 bytes로 복제하지 않고 1MiB씩 임시파일로 옮긴 뒤 검증한다. 난수 이름으로
     # 동시 가져오기 충돌을 막고, 성공·실패 어느 경로에서도 finally로 정리한다.
     tmp = Path(tempfile.gettempdir()) / f"mvhub-import-{secrets.token_hex(8)}.db"
