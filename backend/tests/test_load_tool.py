@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))  # load_test_100 이 함수 안에서 smoke_env 를 import 한다(단독 실행)
 SPEC = importlib.util.spec_from_file_location(
     "load_test_100",
     ROOT / "tools" / "load_test_100.py",

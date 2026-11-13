@@ -36,6 +36,7 @@ class AssetWorkspaceScopeTests(unittest.TestCase):
             patch.object(assets.repo, "list_projects", side_effect=fake_list_projects),
             patch.object(assets, "MANAGE_ENABLED", True),
             patch.object(assets, "AUTH_ENABLED", False),  # read_all 경로(가장 넓은 가시성)
+            patch.object(assets, "_restore_state", return_value=None),  # 복원 확인 대기 없음(빈 DB 를 읽지 않게)
         ]
         for p in self.patches:
             p.start()

@@ -274,6 +274,7 @@ class ControllerHookTests(unittest.TestCase):
             return {"t": "end", "complete": True, "read": 1}, [{"path": "a.mp4"}], [], ""
 
         with patch.object(ctl, "_scan_project", fake_scan), patch.object(ctl, "_run_child", fake_child), \
+                patch.object(ctl, "_results_root", lambda pid, root: root), \
                 patch.object(ctl, "_apply_results",  # 실제 서버 저장과 같은 모양(빈 {} 는 P1 을 숨겼다)
                              lambda pid, root, files: applied.append((pid, root, files)) or {"applied": True, "files": len(files)}):
             self.state = "ok"
@@ -298,6 +299,8 @@ class HelperUploadTests(unittest.TestCase):
         self.pid = f"nr-{time.time_ns()}"
         svc.leases._lease = None
         for p in (
+            # app.main 은 AUTH_ENABLED 를 import 때 복사한다 — 앞 시험이 켜 둔 채 처음 불러오면 401 이 났다(순서 의존).
+            patch("app.main.AUTH_ENABLED", False),
             patch.object(svc, "ASSET_REGISTRY_ENABLED", True),
             patch.object(api, "pm_projects", return_value=[(self.pid, "P", UNC)]),
             patch.object(api, "canonical_unc", return_value=UNC),

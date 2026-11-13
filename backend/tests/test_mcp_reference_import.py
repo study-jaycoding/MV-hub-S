@@ -34,6 +34,14 @@ def test_client_dependency_closes_scopes_in_request_context(monkeypatch, depende
             variable.reset(token)
             events.append("closed")
     monkeypatch.setattr(api, "_capture", lambda *_args: ctx)
+    def identity(value):
+        assert value is ctx
+        return SimpleNamespace(file_path=lambda: "chat-file")
+    monkeypatch.setattr(api, "_chat_identity", identity)
+    def admitted(path):  # 대화 기록 입장 검사는 이 연결의 계정·연결을 고정하기 전에 한다
+        assert path == "chat-file" and account.get(None) != ctx.pin and connection.get(None) is None
+        events.append("admitted")
+    monkeypatch.setattr(api.agent_chat.store, "check_current", admitted)
     monkeypatch.setattr(api.active_account, "pinned_account_scope", lambda value: pinned(account, value))
     monkeypatch.setattr(api._proxy, "pinned_connection", lambda value: pinned(connection, value))
     def current(value):
@@ -51,7 +59,8 @@ def test_client_dependency_closes_scopes_in_request_context(monkeypatch, depende
         else:
             await generator.aclose()
         assert account.get(None) is None and connection.get(None) is None
-        assert events == ["checked", "client", "closed", "closed"]
+        # 닫힘 셋 = 연결 고정 · 이 연결의 계정 고정 · 요청 세대(request_scope)의 계정 고정
+        assert events == ["admitted", "checked", "client", "closed", "closed", "closed"]
     asyncio.run(exercise())
 
 

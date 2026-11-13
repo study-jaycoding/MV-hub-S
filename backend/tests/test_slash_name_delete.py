@@ -54,7 +54,10 @@ class SlashNameDeleteTests(unittest.TestCase):
                     mock.patch.object(assets.asset_watcher, "unwatch"):
                 res = client.delete(f"/api/assets/mounts/{raw}")
                 self.assertEqual(res.status_code, 200, res.text)
-                remove.assert_called_once_with("mounts.json", name=name, owner="u1")
+                remove.assert_called_once()
+                # 복원·위치 인자(conn·location·restore_id)는 다른 시험 몫 — 여기선 이름이 온전히 닿는지만 본다.
+                call = remove.call_args
+                self.assertEqual((call.args, call.kwargs["name"], call.kwargs["owner"]), (("mounts.json",), name, "u1"))
 
 
 if __name__ == "__main__":
