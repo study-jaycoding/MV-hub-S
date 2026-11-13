@@ -16,6 +16,7 @@ import os
 import secrets
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from .. import db
@@ -107,8 +108,13 @@ def get_secret() -> str:
 
 def hub_id() -> str:
     """이 허브(DB 경로)의 MCP 식별자 — routers/mcp_v2 등록과 업데이트 복구 기록이 같은 값을 쓴다."""
-    path = str(db.get_db_path().resolve()).casefold()
-    return hmac.new(get_secret().encode(), ("mcp-hub-id\0" + path).encode(), hashlib.sha256).hexdigest()
+    return hub_id_for(get_secret(), db.get_db_path())
+
+
+def hub_id_for(secret: str, path: Path) -> str:
+    """복원할 보안 키로도 DB를 열지 않고 같은 허브 신원을 계산한다."""
+    normalized = str(Path(path).resolve()).casefold()
+    return hmac.new(secret.encode(), ("mcp-hub-id\0" + normalized).encode(), hashlib.sha256).hexdigest()
 
 
 # ── 비밀번호 해시 ────────────────────────────────────────────────────────────

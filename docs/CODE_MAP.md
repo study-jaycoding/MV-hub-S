@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-12
+updated: 2026-11-13
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -144,6 +144,12 @@ HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_st
 칸 전용 MCP 연결은 `mcp_v2.issue_panel_client`(실행권 영구 끔 — `repo/mcp_v2.create_client` 도 강제)·`local_setup.write_panel_profile`(전역 설정 안 건드림)·어댑터 `--panel`(도구 6개만).
 화면은 `frontend/src/components/agent-chat/AgentPanel.tsx`(≡ 대화 서랍 포함)·`AgentPlanCard.tsx`·연결 안내 `AgentConnect.tsx`·사용량 원·설정 쪽 `AgentSettings.tsx`·답 글 마크다운 `AgentMarkdown.tsx`(http/https 링크만)·새 창 껍데기 `AgentWindow.tsx`(`?embed=agent` — 지금 화면은 메인 창이 저장소 `mvhub.agentPanel.screen` 에 적는다), 상태 `frontend/src/lib/useAgentChat.ts`, 호출 `frontend/src/lib/agentChatApi.ts`, 화면 동작 실행기(빈 노드·잇기·회색 — 허브가 발급한 동작만, 명령 전후 비교·되돌리기) `frontend/src/lib/agentScreenActions.ts`
 (칸 표 401 은 로그인 만료로 보지 않는다), 모양 `frontend/src/styles/agent-chat.css`, 알약은 `TopBar.tsx`. 시험은 가짜 CLI `backend/tests/agent_chat_fake_cli.py` 로만.
+
+v3 전체 서버 백업의 로컬 복원은 [클라이언트 복원 계약](status/저장통합_1B_클라이언트복원_2026-11-13.md)을 따른다. `routers/db_transfer.py`가 네 역할 검증·다중 파일 원상복구를,
+`services/agent_chat.py`·`repo/agent_chat.py`가 요청 세대·연결 배수·복원 기록의 열람 전용 채택을 맡는다. 옛 계획/생성물은 `repo/mcp_v2.py`의 로컬 참조 판정으로만 표시한다.
+`services/asset_mounts.py`의 content 표식은 폴더 이름과 확인한 경로를 묶으며 `routers/assets.py`·`services/asset_destination.py`가 조회·최종 파일 확정에서 지킨다.
+화면은 기존 Agent 패널과 `frontend/src/components/assets/MountManager.tsx`를 재사용한다. 경계 시험은 `backend/tests/test_agent_chat_restore.py`, `backend/tests/test_asset_restore_paths.py`,
+`backend/tests/test_db_restore_account_boundary.py`, `frontend/tests/assetRestore.test.tsx`다. 생산 manifest 판은 아직2이며 새 백업 생산·송신 활성화는 별도다.
 
 편집 탭의 소스 클립·테이프 재생은 [useSourcePane.ts](../frontend/src/components/timeline/useSourcePane.ts),
 MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_picture.py)다.

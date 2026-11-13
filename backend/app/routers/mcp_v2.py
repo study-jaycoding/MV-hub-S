@@ -100,8 +100,10 @@ def _capture(request, client_secret=None):
     pin = active_account.capture_account_pin()
     with active_account.pinned_account_scope(pin):
         path, identity = get_db_path().resolve(), _required_hub_id()
-        store.recover_interrupted_plans(str(path).casefold())  # 이 프로세스에서 이 DB 를 처음 볼 때 한 번(앞 프로세스가 남긴 'executing')
         client = store.client_for_secret(mcp.digest(client_secret)) if client_secret else None
+        email = norm_email((client or {}).get("account_email") or pin[0] or (current_account(request) or {}).get("email"))
+        if email:
+            agent_chat.store.check_current(agent_chat.Identity(identity, str(path), email).file_path())
         if client_secret and (not client or client["revoked_at"] or not hmac.compare_digest(client["hub_id"], identity)):
             raise HTTPException(403, "MCP 연결이 해제되었거나 허브가 바뀌었습니다. 앱에서 다시 연결하세요.")
         upstream = None
@@ -137,10 +139,13 @@ def _capture(request, client_secret=None):
         if client and (client["account_email"] != norm_email(account["email"]) or client["owner_uid"] != owner
                        or client["password_stamp"] != account.get("password_changed_at")):
             raise HTTPException(403, "계정 또는 비밀번호가 바뀌었습니다. 앱에서 다시 연결하세요.")
+        agent_chat.store.check_current(agent_chat.Identity(identity, str(path), norm_email(account["email"])).file_path())
+        store.recover_interrupted_plans(str(path).casefold())
         return Context(request, pin, path, account, owner, identity, upstream, client)
 
 
 def _still_current(ctx):
+    agent_chat.store.check_current(_chat_identity(ctx).file_path())
     # Inspect the machine pointer, not this request's ContextVar override.
     with active_account.transition_lock:
         key_token = active_account.set_override(None)
@@ -175,11 +180,13 @@ async def _app_context(request: Request, _headers=Depends(mcp.app_headers)):
 
 @contextlib.asynccontextmanager
 async def _client_scope(request: Request, secret: str):
-    ctx = await asyncio.to_thread(_capture, request, secret)
-    with active_account.pinned_account_scope(ctx.pin), _proxy.pinned_connection(ctx.upstream):
-        await asyncio.to_thread(_still_current, ctx)
-        await asyncio.to_thread(store.touch_client, ctx.client["id"])
-        yield ctx
+    async with agent_chat.request_scope():
+        ctx = await asyncio.to_thread(_capture, request, secret)
+        agent_chat.store.check_current(_chat_identity(ctx).file_path())
+        with active_account.pinned_account_scope(ctx.pin), _proxy.pinned_connection(ctx.upstream):
+            await asyncio.to_thread(_still_current, ctx)
+            await asyncio.to_thread(store.touch_client, ctx.client["id"])
+            yield ctx
 
 
 async def _client_context(request: Request, secret=Depends(mcp.client_guard)):
@@ -753,6 +760,7 @@ async def _read_chats(ctx, args):
     if result is None:
         raise HTTPException(404, "대화를 찾을 수 없습니다.")
     await asyncio.to_thread(_still_current, ctx)  # 읽는 사이 해제·계정이 바뀌었으면 넘기지 않는다
+    agent_chat.store.check_current(path)
     return result
 
 

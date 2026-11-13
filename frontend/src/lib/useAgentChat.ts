@@ -15,6 +15,7 @@ import {
   type AgentContext,
   type AgentConversationPatch,
   type AgentConversationSummary,
+  type AgentRestoreReference,
   type AgentSessionFileResult,
   type AgentEngine,
   type AgentEngineId,
@@ -212,8 +213,9 @@ const remember = (id: string | null) => saveJSON(STORAGE_KEYS.agentPanelConversa
 
 // 받아들였는지 모르는 채 실패한 마지막 보내기. 계정·대화·모델·글·화면 정보가 모두 같은 요청을 다시 보내면 같은 열쇠 —
 //  허브가 이미 받은 차례면 그 차례를, 못 받았으면 새로 시작한다(어느 쪽이든 두 번 돌지 않는다). 칸을 닫았다 열어도 남는다(모듈 변수).
+//  복원 참고 초안은 편집 재시도에도 같은 열쇠를 쓰고, 실제 저장된 대화를 열어 어느 글이 접수됐는지 확인한다.
 //  shortcut: 페이지를 새로 고치면 사라진다 — 새로 고침 뒤 복구가 필요해지면 sessionStorage 로 옮긴다
-let pendingSend: { account: string; sig: string; key: string } | null = null;
+let pendingSend: { account: string; sig: string; key: string; sourceId?: string; identity?: string; mixed?: boolean } | null = null;
 
 export function useAgentChat(context: AgentContext | Record<string, never>, // 빈 값 = '지금 화면' 칩을 뺐다
   // popout = 새 창(?embed=agent) — '새 창에서 열기' 요청을 받는 쪽 · screen = 이 창의 캔버스 손잡이(옆 칸만, 화면 동작 실행)
@@ -223,6 +225,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
   const [current, setCurrent] = useState<AgentConversationSummary | null>(null); // 보고 있는 대화의 요약(머리글 메뉴 — 열 때·허브 응답마다)
+  const [restoreReference, setRestoreReference] = useState<AgentRestoreReference | null>(null);
+  const [restoreSource, setRestoreSource] = useState<(AgentRestoreReference & { title: string; account: string }) | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [turn, setTurn] = useState<{ id: string; status: AgentTurnStatus } | null>(null);
   const [sending, setSending] = useState(false);
@@ -346,6 +350,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     setConversationId(null);
     setTitle(null);
     setCurrent(null);
+    setRestoreReference(null);
+    setRestoreSource(null);
     setMessages([]);
     setTurn(null);
     setSending(false);
@@ -370,6 +376,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     }
     if (remembered() === id) remember(null);
     if (pendingRead.current?.id === id) pendingRead.current = null;
+    setRestoreSource((s) => s?.source_conversation_id === id ? null : s);
     touch(id, { deleted: true });
     setConversations((list) => (list ? list.filter((c) => c.id !== id) : list));
   }, [drop]);
@@ -464,7 +471,15 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         rebuilt = [...rebuilt, { kind: "user", id: `${t.id}:user`, text: t.text, ...attached }];
         rebuilt = t.events.reduce((acc, ev) => applyAgentEvent(acc, ev, t.id), rebuilt);
       }
-      setMessages(r.plans ? restorePlans(rebuilt, r.plans) : rebuilt);
+      if (r.conversation.restored_from) {
+        const references = new Map((r.references ?? []).map((p) => [p.plan_id, p]));
+        rebuilt = rebuilt.map((m) => m.kind === "plan" ? {
+          ...m, plan: { ...m.plan, restored_reference: references.get(m.plan.plan_id)
+            ?? { plan_id: m.plan.plan_id, status: "unchecked", generations: [] } },
+        } : m);
+      }
+      setMessages(r.conversation.restored_from ? rebuilt : r.plans ? restorePlans(rebuilt, r.plans) : rebuilt);
+      setRestoreReference(r.conversation.restored_from ? r.restore_reference ?? null : null);
       noteUsage(r.turns.flatMap((t) => t.events), false);
       setConversationId(id);
       currentId.current = id;
@@ -475,15 +490,17 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       // 열었다 = 봤다 — 그때의 번호로 조건부(늦게 닿아도 그 뒤의 차례 끝·수동 표시는 못 지운다), 이미 읽음이면 안 보냄
       if (r.conversation.unread) markRead(id, r.conversation.unread_rev ?? 0);
       const last = r.turns[r.turns.length - 1];
-      if (last && !TERMINAL_TURN.has(last.status)) {
+      if (!r.conversation.restored_from && last && !TERMINAL_TURN.has(last.status)) {
         setTurn({ id: last.id, status: last.status });
         void follow(last.id, last.events.length ? last.events[last.events.length - 1].seq : 0);
       }
+      return true;
     } catch (e) {
       if (stale()) return;
       if (loadingId.current === id) loadingId.current = null;
       if (isHttpStatus(e, 403, 404) && remembered() === id) remember(null); // 지워졌거나 다른 신원의 대화 — 새 대화로 둔다
       fail(e);
+      if (!(e instanceof AccountChangedError)) return false;
     } finally {
       if (!stale()) {
         setSending(false);
@@ -638,6 +655,16 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     if (session) setChoice((c) => withDefaults(session.engines, c, readDefaults())); // 칸 설정의 새 대화 모델·깊이
   }, [drop, session]);
 
+  const removeRestoreSource = useCallback(() => setRestoreSource(null), []);
+  const newFromRestored = useCallback(() => {
+    if (busy.current || !current?.restored_from || !restoreReference) return false;
+    const source = { ...restoreReference, title: title ?? "", account: getAccountNamespace() };
+    newConversation();
+    pendingSend = null; // 명시적으로 만든 새 초안은 앞 초안의 접수 회수가 아니다.
+    setRestoreSource(source);
+    return true;
+  }, [current, restoreReference, title, newConversation]);
+
   /** 모델·생각 깊이를 고른다. 엔진이 바뀌면 새 대화로 시작한다(보내는 중·진행 중엔 엔진을 바꾸지 않는다). */
   const choose = useCallback((next: AgentChoice) => {
     if (choice && next.engine !== choice.engine && busy.current) return;
@@ -652,7 +679,12 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
    *  attach = 이 말과 함께 붙인 자료(보내는 순간의 묶음 — 성공하면 부르는 쪽이 그 묶음만 비운다, 설계 2-1). */
   const send = useCallback(async (text: string, attach: AgentAttachments | null = null): Promise<boolean> => {
     const body = text.trim();
-    if (!body || !choice || busy.current) return false;
+    if (!body || !choice || busy.current || current?.restored_from) return false;
+    if (restoreSource && restoreSource.account !== getAccountNamespace()) {
+      removeRestoreSource();
+      setError(ACCOUNT_CHANGED_MESSAGE);
+      return false;
+    }
     busy.current = true;
     setSending(true);
     setError(null);
@@ -671,15 +703,28 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       ctx = away;
     }
     // 같은 요청인가 = 계정·대화·모델·깊이·빠른 모드·글·화면 정보·붙인 자료(와 그 공간)·먼저 쓸 생성 모델이 모두 같은가(허브는 같은 열쇠면 내용 비교 없이 그 차례를 돌려준다)
-    const sig = JSON.stringify([conversationId, choice.engine, choice.model, choice.effort, fast, body, ctx,
+    const sourceId = !conversationId ? restoreSource?.source_conversation_id : undefined;
+    const sig = JSON.stringify([conversationId, sourceId, choice.engine, choice.model, choice.effort, fast, body, ctx,
       attached && { workspace: { scope: attached.workspace.scope, id: attached.workspace.id ?? null }, items: attached.items }, genModel ?? null]);
-    const key = pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID();
-    pendingSend = { account, sig, key }; // 받아들인 답을 화면에 붙이면 지운다
+    const retry = sourceId && pendingSend?.account === account && pendingSend.sourceId === sourceId ? pendingSend : null;
+    if (retry && (!session?.identity_key || retry.identity !== session.identity_key)) {
+      busy.current = false;
+      setSending(false);
+      removeRestoreSource();
+      pendingSend = null;
+      setError(ACCOUNT_CHANGED_MESSAGE);
+      return false;
+    }
+    const adopt = !!retry && (retry.mixed || retry.sig !== sig);
+    const key = retry?.key ?? (pendingSend?.account === account && pendingSend.sig === sig ? pendingSend.key : crypto.randomUUID());
+    // 편집본과 늦게 도착한 원문도 같은 key로 선점한다. 어느 글이 접수됐는지는 저장된 대화로 확인한다.
+    pendingSend = retry && adopt ? { ...retry, mixed: true } : { account, sig, key, sourceId, identity: session?.identity_key };
     const rememberedAtSend = remembered();
     try {
       const r = await agentChatApi.startTurn({
         idempotency_key: key,
         ...(conversationId ? { conversation_id: conversationId } : {}),
+        ...(sourceId ? { source_conversation_id: sourceId } : {}),
         engine: choice.engine, model: choice.model, effort: choice.effort, fast,
         text: body, context: ctx,
         ...(attached ? { attachments: attached.items, attach_workspace: attached.workspace } : {}),
@@ -693,7 +738,19 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         if (getAccountNamespace() === account && remembered() === rememberedAtSend) remember(r.conversation_id);
         return false;
       }
+      if (adopt) {
+        busy.current = false;
+        const adopted = await openConversation(r.conversation_id);
+        if (adopted) {
+          if (pendingSend?.key === key) pendingSend = null;
+          setNotice("접수된 대화를 불러왔습니다. 작성 내용은 남겨 두었습니다.");
+        } else if (adopted === false) {
+          setRestoreSource(restoreSource); // 조회 실패 때도 같은 참고·key로만 접수를 회수한다.
+        }
+        return false;
+      }
       if (pendingSend?.key === key) pendingSend = null; // 받아들인 답을 화면에 붙였다
+      setRestoreSource(null);
       setMessages((m) => [...m, { kind: "user", id: `${r.turn_id}:user`, text: body, ...(attached ? { attachments: attached.items } : {}) }]);
       setConversationId(r.conversation_id);
       currentId.current = r.conversation_id; // 다시 그리기 전에 끝남이 와도 읽음이 이 대화로 가게
@@ -705,6 +762,11 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     } catch (e) {
       if (stale()) return false;
       busy.current = false;
+      if (isHttpStatus(e, 404) && sourceId) {
+        setRestoreSource(null);
+        setNotice("참고 기록을 찾을 수 없어요 — 작성한 말은 남겨 두었어요");
+        return false;
+      }
       if (isHttpStatus(e, 404) && conversationId) { // 다른 창에서 지워진 대화 — 비우고 새 대화로 보내게 안내
         forget(conversationId);
         setNotice("이 대화는 지워졌어요 — 새 대화로 다시 보내 주세요");
@@ -719,7 +781,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     } finally {
       if (!stale()) setSending(false);
     }
-  }, [choice, conversationId, current, fail, follow, forget]);
+  }, [choice, conversationId, current, restoreSource, removeRestoreSource, session, openConversation, fail, follow, forget]);
 
   const cancel = useCallback(async () => {
     if (!turn || TERMINAL_TURN.has(turn.status)) return;
@@ -745,7 +807,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   useEffect(() => {
     for (const m of messages) {
       // 포크 전 계획(plan.forked)은 묻지 않는다 — 이 대화에서 실행·견적할 수 없다(포크 설계 2-4)
-      if (m.kind !== "plan" || m.plan.forked || m.estimate || estimating.current.has(m.plan.plan_id)) continue;
+      if (m.kind !== "plan" || m.plan.forked || m.plan.restored_reference || m.estimate || estimating.current.has(m.plan.plan_id)) continue;
       const planId = m.plan.plan_id;
       const conversation = currentId.current;
       if (!conversation) continue; // 대화 id 를 받은 뒤에 묻는다(허브가 계획을 만든 대화와 대조)
@@ -766,6 +828,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const executePlan = useCallback(async (planId: string) => {
     const conversation = currentId.current;
     if (executing.current.has(planId) || !conversation) return;
+    if (messagesRef.current.some((m) => m.kind === "plan" && m.plan.plan_id === planId && m.plan.restored_reference)) return;
     executing.current.add(planId);
     setExec(planId, { state: "running" });
     const stale = ticket();
@@ -931,6 +994,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
+    restoreReference, restoreSource, newFromRestored, removeRestoreSource,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking, undoAction,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
     // Claude 연결 — 허브가 연결 경로를 알 때만 안내(옛 허브는 엔진 사유만)

@@ -67,6 +67,20 @@ export interface AgentSession {
   engines: AgentEngine[];
 }
 export type AgentTurnStatus = "running" | "cancelling" | "cancelled" | "done" | "failed" | "interrupted";
+export type AgentReferenceStatus = "available" | "missing" | "unchecked";
+export interface AgentRestoredPlan {
+  plan_id: string;
+  status: AgentReferenceStatus;
+  generations: { id: string; status: AgentReferenceStatus }[];
+}
+export interface AgentRestoreReference {
+  source_conversation_id: string;
+  turns: { you: string; answer: string }[];
+  included_turns: number;
+  earlier_turns: number;
+  truncated: boolean;
+  note: string;
+}
 export interface AgentPlan {
   plan_id: string;
   title?: string | null;
@@ -76,6 +90,7 @@ export interface AgentPlan {
     state?: string | null; generation_id?: string | null }[];
   workspace?: unknown;
   forked?: boolean; // 포크로 복사한 카드 — 이 대화에서 실행·견적하지 않는다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
+  restored_reference?: AgentRestoredPlan;
 }
 /** 계획 항목 하나의 상태 — 허브가 새로 읽은 값. generation_status 가 없으면 '확인 못 함'(앞 값 보존), missing = 결과 없음. */
 export interface AgentPlanItemState {
@@ -163,6 +178,7 @@ export interface AgentConversationSummary {
   effort: string;
   updated_at: string;
   resumable: boolean;
+  restored_from?: string | null;
   project?: string | null; // 옮긴 프로젝트(없으면 대화를 시작한 화면의 프로젝트) — 서랍이 프로젝트별로 묶는다
   // 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md) — 옛 허브는 없음
   pinned?: boolean;
@@ -203,6 +219,7 @@ export interface AgentTurnRecord {
 export interface AgentTurnRequest {
   idempotency_key: string;
   conversation_id?: string;
+  source_conversation_id?: string;
   engine: AgentEngineId;
   model: string;
   effort: string;
@@ -288,7 +305,8 @@ export const agentChatApi = {
   claudeVersion: () => panelFetch<ClaudeVersionInfo>("/claude/version"),
   // plans = 이 대화에 묶인 계획의 지금 상태(사건 다음에 읽음 — 조건 없이 넣고 기준이 된다). 옛 허브는 없음
   conversation: (conversationId: string) =>
-    panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[]; plans?: AgentPlanSnapshot[] }>(
+    panelFetch<{ conversation: AgentConversationSummary; turns: AgentTurnRecord[]; plans?: AgentPlanSnapshot[];
+      restore_reference?: AgentRestoreReference; references?: AgentRestoredPlan[] }>(
       `/conversations/${id(conversationId)}`),
   startTurn: (body: AgentTurnRequest) =>
     panelFetch<{ turn_id: string; conversation_id: string; status: AgentTurnStatus }>("/turns", { method: "POST", body: jsonBody(body) }),

@@ -1,6 +1,7 @@
 """어셋 파일 감시 등록·합본 캐시 무효화 회귀 테스트."""
 
 import asyncio
+import os
 import sys
 import tempfile
 import unittest
@@ -447,6 +448,8 @@ class AssetWatcherTests(unittest.TestCase):
     def test_manual_mount_replacement_and_delete_unregister_watcher(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
+            from app import db
+            content = db.init_db(root / "content.db")
             first = root / "first"
             second = root / "second"
             first.mkdir()
@@ -462,6 +465,7 @@ class AssetWatcherTests(unittest.TestCase):
             registration_id = asset_watcher.manual_registration_id("owner", "demo")
 
             with (
+                patch.dict(os.environ, {"CONTENT_HUB_DB": str(content)}),
                 patch.object(assets, "_mounts_file", return_value=mounts_file),
                 patch.object(assets, "actor_id", return_value="owner"),
                 patch.object(assets, "_auto_project_mounts", return_value=[]),

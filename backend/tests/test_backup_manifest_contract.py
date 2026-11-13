@@ -52,6 +52,77 @@ def test_staged_v2_cannot_be_downgraded_before_delivery(worker_store, monkeypatc
     assert stage.exists()
 
 
+@pytest.mark.parametrize('absent', [(), ('agent_chat',), ('asset_mounts',), ('agent_chat', 'asset_mounts'),
+                                   ('trash', 'agent_chat', 'asset_mounts')])
+def test_full_restore_zip_accepts_exact_present_members(tmp_path, absent):
+    value, paths = _v3_set(tmp_path / 'source')
+    for role in absent:
+        value['roles'][role] = {'state': 'absent', 'captured_at': _CAPTURE}
+    value['consistency_roles'] = sorted(set(paths) - set(absent))
+    value = backup_manifest.seal(value)
+    archive = tmp_path / 'set.zip'
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        bundle.writestr('manifest.json', backup_manifest.canonical(value))
+        for role, path in paths.items():
+            if role not in absent:
+                bundle.write(path, backup_manifest.WORKER_FILENAMES[role])
+    result = db_transfer._extract_backup_set(archive, tmp_path / 'output')
+    assert set(result.paths) == set(paths) - set(absent)
+    assert result.manifest == value
+
+
+@pytest.mark.parametrize('fault', ['duplicate', 'path', 'missing', 'absent_extra', 'manifest_large',
+                                   'duplicate_json', 'nonfinite_json', 'member_size', 'total_size',
+                                   'wrong_hash', 'agent_structure', 'mount_structure', 'future', 'b1'])
+def test_full_restore_zip_rejects_malformed_members(tmp_path, monkeypatch, fault):
+    value, paths = _v3_set(tmp_path / 'source')
+    if fault == 'absent_extra':
+        value['roles']['agent_chat'] = {'state': 'absent', 'captured_at': _CAPTURE}
+        value['consistency_roles'].remove('agent_chat')
+    elif fault == 'wrong_hash': value['roles']['agent_chat']['sha256'] = '0' * 64
+    elif fault == 'agent_structure':
+        with closing(sqlite3.connect(paths['agent_chat'])) as conn:
+            conn.execute('DROP TABLE agent_chat_event')
+        value = _refresh_v3_member(value, paths, 'agent_chat')
+    elif fault == 'mount_structure':
+        paths['asset_mounts'].write_bytes(b'{"mounts":[{"name":"bad"}]}')
+        value = _refresh_v3_member(value, paths, 'asset_mounts')
+    elif fault == 'future': value['format_version'] = 4
+    elif fault == 'b1': value.update(consistency_kind=backup_manifest.PINNED, consistency_roles=['content', 'trash'])
+    elif fault == 'member_size': monkeypatch.setattr(db_transfer.upload_limits, 'DB_UPLOAD_FILE_MAX_BYTES', 1)
+    elif fault == 'total_size': monkeypatch.setattr(db_transfer, '_BACKUP_UNPACKED_MAX_BYTES', 1)
+    raw = backup_manifest.canonical(backup_manifest.seal(value))
+    if fault == 'duplicate_json': raw = raw.replace('"format_version":3', '"format_version":3,"format_version":3')
+    elif fault == 'nonfinite_json': raw = raw.replace('"format_version":3', '"format_version":NaN')
+    elif fault == 'manifest_large': raw += ' ' * (64 * 1024)
+    archive = tmp_path / 'invalid.zip'
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        bundle.writestr('manifest.json', raw)
+        for role, path in paths.items():
+            if fault == 'missing' and role == 'agent_chat': continue
+            bundle.write(path, backup_manifest.WORKER_FILENAMES[role])
+        if fault == 'path': bundle.writestr('../outside.db', b'bad')
+        elif fault == 'duplicate':
+            with pytest.warns(UserWarning, match='Duplicate name'):
+                bundle.writestr('manifest.json', raw)
+    with pytest.raises(HTTPException) as error:
+        db_transfer._extract_backup_set(archive, tmp_path / 'output')
+    assert error.value.status_code == 400
+    assert not (tmp_path / 'outside.db').exists()
+
+
+def test_restore_download_is_bounded_and_cleans_partial_file(tmp_path, monkeypatch):
+    stream = io.BytesIO(b'0123456789')
+    stream.status = 200
+    monkeypatch.setattr(db_transfer.urllib.request, 'urlopen', lambda *args, **kwargs: stream)
+    monkeypatch.setattr(db_transfer, '_BACKUP_DOWNLOAD_MAX_BYTES', 8)
+    target = tmp_path / 'partial.zip'
+    with pytest.raises(HTTPException) as error:
+        db_transfer._download_to('http://fixture.invalid/backup', None, target)
+    assert error.value.status_code == 413
+    assert not target.exists()
+
+
 def test_legacy_pending_set_keeps_legacy_ack_compatibility(worker_store, monkeypatch):
     set_id, stage, manifest = _queued(worker_store)
     legacy = {key: item for key, item in manifest.items() if key not in {
@@ -555,10 +626,16 @@ def test_v3_remains_rejected_by_unmigrated_consumers(worker_store, monkeypatch):
             for role in members:
                 bundle.write(paths[role], f'{role}.json' if role == 'asset_mounts' else f'{role}.db')
         destination = worker_store / f'restore-v3-{label}'
-        with pytest.raises(HTTPException) as error:
-            db_transfer._extract_backup_set(archive, destination)
-        assert error.value.status_code == 400
-        assert not list(destination.iterdir())
+        if label == 'partial':
+            with pytest.raises(HTTPException) as error:
+                db_transfer._extract_backup_set(archive, destination)
+            assert error.value.status_code == 400
+            assert not list(destination.iterdir())
+        else:
+            extracted = db_transfer._extract_backup_set(archive, destination)
+            assert extracted.manifest == value
+            assert {role: path.read_bytes() for role, path in extracted.paths.items()} == {
+                role: path.read_bytes() for role, path in paths.items()}
     account_slug = active_account.slug('artist@example.com')
     value['account_scope_digest'] = worker_backup.account_key_digest(account_slug)
     value = backup_manifest.seal(value)

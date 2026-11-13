@@ -225,14 +225,18 @@ export const assetsApi = {
 
   // 외부 폴더 등록(마운트) — 임의 경로 폴더에 이름을 붙여 프로젝트처럼 추가
   assetMounts: (workspaceId?: string) =>
-    jsonFetch<{ mounts: AssetMount[] }>(`/api/assets/mounts${workspaceQuery(workspaceId)}`),
-  addAssetMount: (name: string, path: string) =>
+    jsonFetch<{ mounts: AssetMount[]; restore_id?: string | null; restore_invalid?: boolean }>(`/api/assets/mounts${workspaceQuery(workspaceId)}`),
+  addAssetMount: (name: string, path: string, restoreId?: string) =>
     jsonFetch<{ mounts: AssetMount[] }>("/api/assets/mounts", {
       method: "POST",
-      body: jsonBody({ name, path }),
+      body: jsonBody({ name, path, ...(restoreId ? { restore_id: restoreId } : {}) }),
     }),
-  delAssetMount: (name: string) =>
-    jsonFetch<{ mounts: AssetMount[] }>(`/api/assets/mounts/${pathPart(name)}`, {
+  confirmAssetMount: (name: string, path: string, restoreId: string) =>
+    jsonFetch<{ mounts: AssetMount[] }>("/api/assets/mounts/confirm", {
+      method: "POST", body: jsonBody({ name, path, restore_id: restoreId }),
+    }),
+  delAssetMount: (name: string, restored?: { path: string; restore_id: string }) =>
+    jsonFetch<{ mounts: AssetMount[] }>(`/api/assets/mounts/${pathPart(name)}${restored ? `?${new URLSearchParams(restored)}` : ""}`, {
       method: "DELETE",
     }),
 

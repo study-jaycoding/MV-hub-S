@@ -21,6 +21,10 @@ from fastapi import HTTPException, Request, UploadFile
 
 from app import active_account, config, db, db_paths
 from app.routers import db_transfer
+from app.services import backup_manifest, asset_mounts, auth, agent_chat
+from app.repo import agent_chat as agent_store
+
+_EXTRACT_BACKUP_SET = db_transfer._extract_backup_set
 
 
 ROUTES = ("import", "version", "latest_set", "legacy")
@@ -764,3 +768,355 @@ def test_cold_cache_with_paired_override_still_validates_machine_pointer(hub, mo
         target = db_transfer._capture_restore_target()
     assert target.email == ACCOUNT_A and target.uid == "uid-a"
     assert len(reads) == 2  # strict disk read + cold machine cache fill, even with both overrides.
+
+
+@pytest.fixture
+def full_restore(hub, monkeypatch):
+    from test_backup_manifest_contract import _v3_set
+    import zipfile
+
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", hub.root / "agent")
+    monkeypatch.delenv("CONTENT_HUB_AUTH_SECRET", raising=False)
+    monkeypatch.setattr(db_transfer, "_extract_backup_set", _EXTRACT_BACKUP_SET)
+    with closing(sqlite3.connect(hub.paths["a"])) as conn:
+        conn.execute("INSERT INTO app_setting(key,value) VALUES('auth_secret','old-synthetic-key')")
+        conn.commit()
+    manifest, paths = _v3_set(hub.root / "source-set")
+    shutil.copy2(hub.seed, paths["content"])
+    with closing(sqlite3.connect(paths["content"])) as conn:
+        conn.execute("INSERT INTO mcp_client(id,secret_hash,hub_id,owner_uid,account_email,password_stamp,workspace,name) "
+                     "VALUES('old-client','fake-hash','old-hub','uid-a',?,'','personal','restored')", (ACCOUNT_A,))
+        conn.commit()
+    manifest["roles"]["content"].update(backup_manifest.role_info(paths["content"], "content"))
+    manifest["account_scope_digest"] = backup_manifest.account_digest(active_account.slug(ACCOUNT_A))
+    with closing(sqlite3.connect(paths["agent_chat"])) as conn:
+        conn.execute("INSERT INTO agent_chat_conversation VALUES('record','claude','fake','high','old-cli','old-client',"
+                     "'old-entry','Past work',1,'yesterday','yesterday')")
+        conn.commit()
+    manifest["roles"]["agent_chat"].update(size=paths["agent_chat"].stat().st_size,
+                                           sha256=backup_manifest.file_digest(paths["agent_chat"]))
+    old = db_transfer._capture_restore_target(full=True)
+    agent_store.create_conversation(old.old_identity.db_file(), engine="claude", model="fake", effort="high",
+                                   client_id="local", mcp_entry="{}", title="Original")
+    old.mounts_path.write_bytes(b'{"mounts":[{"name":"local","path":"original"}]}')
+    trash = old.path.parent / "content_hub_trash.db"
+    shutil.copy2(paths["trash"], trash)
+    manage = hub.root / "manage_hub.db"
+    manage.write_bytes(b"PC management stays unchanged")
+    state = SimpleNamespace(hub=hub, manifest=manifest, paths=paths, old=old, trash=trash, manage=manage)
+
+    def archive_at(destination):
+        value = backup_manifest.seal(state.manifest)
+        with zipfile.ZipFile(destination, "w") as bundle:
+            bundle.writestr("manifest.json", backup_manifest.canonical(value))
+            for role, item in value["roles"].items():
+                if item["state"] == "present":
+                    bundle.write(paths[role], backup_manifest.WORKER_FILENAMES[role])
+        return value
+
+    def download(url, token, destination):
+        archive_at(destination)
+        return 200
+
+    state.archive_at = archive_at
+    monkeypatch.setattr(db_transfer, "_download_to", download)
+    yield state
+
+
+@pytest.mark.parametrize("versioned", [False, True])
+@pytest.mark.parametrize("fixed_secret", [False, True])
+def test_full_server_restore_installs_all_roles_and_revokes_credentials(full_restore, monkeypatch, versioned, fixed_secret):
+    state = full_restore
+    if fixed_secret:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    old_bytes = state.old.agent_path.read_bytes()
+    raw_json = state.paths["asset_mounts"].read_bytes()
+    request = state.hub.request
+    selected_id = backup_manifest.seal(state.manifest)["backup_set_id"]
+    result = (db_transfer.server_restore_version(selected_id, request) if versioned
+              else db_transfer.server_restore(request))
+    assert result["ok"] and result["agent_history_restored"] and result["mounts_confirmation_required"]
+    assert result["restored_roles"] == dict.fromkeys(state.paths, "present")
+    assert state.old.mounts_path.read_bytes() == raw_json
+    assert state.manage.read_bytes() == b"PC management stays unchanged"
+    assert not active_account._POINTER.exists()
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    current = db_transfer._capture_restore_target(full=True)
+    assert current.agent_path.is_file()
+    assert (current.agent_path == state.old.agent_path) is fixed_secret
+    if not fixed_secret:
+        assert state.old.agent_path.read_bytes() == old_bytes
+    with closing(sqlite3.connect(current.agent_path)) as conn:
+        row = conn.execute("SELECT resumable,cli_session_id,client_id,mcp_entry,restored_from FROM agent_chat_conversation").fetchone()
+        assert row[:4] == (0, None, "", "{}")
+        assert row[4]
+    with closing(sqlite3.connect(current.path)) as conn:
+        assert conn.execute("SELECT revoked_at FROM mcp_client WHERE id='old-client'").fetchone()[0]
+        value = json.loads(conn.execute("SELECT value FROM app_setting WHERE key=?",
+                                       (asset_mounts.restore_key(ACCOUNT_A),)).fetchone()[0])
+        assert value == {"id": row[4], "confirmed": []}
+
+
+@pytest.mark.parametrize("stage", ["content", "trash", "agent_chat", "asset_mounts", "schema", "security", "adopt", "logout"])
+@pytest.mark.parametrize("fixed_secret", [False, True])
+def test_full_restore_failure_rolls_back_every_member(full_restore, monkeypatch, stage, fixed_secret):
+    state = full_restore
+    if fixed_secret:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    originals = {path: path.read_bytes() for path in (state.old.path, state.trash, state.old.agent_path,
+                                                     state.old.mounts_path, active_account._POINTER, state.manage)}
+    original_replace = db_transfer.os.replace
+    count = 0
+
+    def failing_replace(source, target):
+        nonlocal count
+        if ".restore-" in str(source):
+            count += 1
+            if stage == ("content", "trash", "agent_chat", "asset_mounts")[count - 1]:
+                raise OSError("synthetic replacement failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(db_transfer.os, "replace", failing_replace)
+    failing = Mock(side_effect=RuntimeError("synthetic post-install failure"))
+    if stage == "schema": monkeypatch.setattr(db, "init_db", failing)
+    elif stage == "security": monkeypatch.setattr(db_transfer, "_post_install_security_init", failing)
+    elif stage == "adopt": monkeypatch.setattr(agent_store, "adopt_restored", failing)
+    elif stage == "logout":
+        clear = db_transfer._strict_clear_active
+        def fail_after_clear():
+            clear()
+            raise RuntimeError("synthetic logout failure")
+        monkeypatch.setattr(db_transfer, "_strict_clear_active", fail_after_clear)
+    with pytest.raises((OSError, RuntimeError)):
+        db_transfer.server_restore(state.hub.request)
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert active_account.account_key() == ACCOUNT_A
+    assert set(config.AGENT_CHAT_DIR.glob("*.db")) - set(config.AGENT_CHAT_DIR.glob("*.bak-*.db")) == {state.old.agent_path}
+    assert leftover_restore_stages(state.hub.root) == []
+
+
+@pytest.mark.parametrize("fixed_secret", [False, True])
+def test_full_restore_explicit_absent_preserves_backups(full_restore, monkeypatch, fixed_secret):
+    state = full_restore
+    if fixed_secret:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    originals = {path: path.read_bytes() for path in (state.trash, state.old.agent_path, state.old.mounts_path)}
+    for role in ("trash", "agent_chat", "asset_mounts"):
+        state.manifest["roles"][role] = {"state": "absent", "captured_at": state.manifest["captured_at"]}
+    state.manifest["consistency_roles"] = ["content"]
+    result = db_transfer.server_restore(state.hub.request)
+    assert not result["agent_history_restored"]
+    assert not state.trash.exists() and not state.old.mounts_path.exists()
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    assert not db_transfer._capture_restore_target(full=True).agent_path.exists()
+    for path, raw in originals.items():
+        assert any(backup.read_bytes() == raw for backup in path.parent.glob(f"{path.stem}.bak-*{path.suffix}"))
+
+
+@pytest.mark.parametrize("change", ["account_digest", "env_secret", "agent_dir", "mount_dir"])
+def test_full_restore_rejects_changed_scope_before_replacing(full_restore, monkeypatch, change):
+    state = full_restore
+    before = state.old.path.read_bytes()
+    original = db_transfer._extract_backup_set
+    if change == "account_digest":
+        state.manifest["account_scope_digest"] = "0" * 64
+    else:
+        def extract(*args):
+            result = original(*args)
+            if change == "env_secret": monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "changed-synthetic-key")
+            elif change == "agent_dir": monkeypatch.setattr(config, "AGENT_CHAT_DIR", state.hub.root / "other-agent")
+            else: monkeypatch.setattr(asset_mounts, "mounts_file", lambda email=None: state.hub.root / "other-mounts.json")
+            return result
+        monkeypatch.setattr(db_transfer, "_extract_backup_set", extract)
+    with pytest.raises(HTTPException) as error:
+        db_transfer.server_restore(state.hub.request)
+    assert error.value.status_code == (400 if change == "account_digest" else 409)
+    assert state.old.path.read_bytes() == before
+    assert active_account.account_key() == ACCOUNT_A
+
+
+def test_full_restore_new_account_without_secret_is_supported(full_restore):
+    state = full_restore
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        conn.execute("DELETE FROM app_setting WHERE key='auth_secret'")
+        conn.commit()
+    assert db_transfer._capture_restore_target(full=True).old_identity is None
+    assert db_transfer.server_restore(state.hub.request)["ok"]
+
+
+@pytest.mark.parametrize("busy", ["issuance", "runtime"])
+def test_full_restore_agent_busy_is_noop(full_restore, busy):
+    state = full_restore
+    key = agent_store.path_key(state.old.agent_path)
+    before = (dict(agent_store._epochs), set(agent_store._gates), set(agent_store._opened),
+              state.old.path.read_bytes(), state.old.agent_path.read_bytes(), active_account._POINTER.read_bytes())
+    if busy == "issuance":
+        agent_chat.service._issuing[key] = 1
+    else:
+        agent_chat.service._runtimes["synthetic-busy"] = SimpleNamespace(path=state.old.agent_path)
+    try:
+        with pytest.raises(HTTPException) as error:
+            db_transfer.server_restore(state.hub.request)
+        assert error.value.status_code == 409
+        assert before == (dict(agent_store._epochs), set(agent_store._gates), set(agent_store._opened),
+                          state.old.path.read_bytes(), state.old.agent_path.read_bytes(), active_account._POINTER.read_bytes())
+        assert not list(state.hub.root.rglob("*.bak-*"))
+    finally:
+        agent_chat.service._issuing.pop(key, None)
+        agent_chat.service._runtimes.pop("synthetic-busy", None)
+
+
+@pytest.mark.parametrize("role", ["content", "trash", "agent_chat", "asset_mounts"])
+def test_full_restore_rechecks_actual_staged_bytes(full_restore, monkeypatch, role):
+    state = full_restore
+    before = {path: path.read_bytes() for path in (state.old.path, state.trash, state.old.agent_path, state.old.mounts_path)}
+    original = shutil.copy2
+    role_name = {"content": state.old.path.name, "trash": state.trash.name,
+                 "asset_mounts": "asset_mounts.json"}.get(role)
+
+    def tamper(source, target, *args, **kwargs):
+        result = original(source, target, *args, **kwargs)
+        if ".restore-" in str(target) and ((role_name and role_name in target.name) or
+                                         (role == "agent_chat" and target.parent == config.AGENT_CHAT_DIR)):
+            with target.open("ab") as stream:
+                stream.write(b"changed-after-validation")
+        return result
+
+    monkeypatch.setattr(shutil, "copy2", tamper)
+    with pytest.raises(HTTPException) as error:
+        db_transfer.server_restore(state.hub.request)
+    assert error.value.status_code == 400
+    assert before == {path: path.read_bytes() for path in before}
+    assert active_account.account_key() == ACCOUNT_A
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_set_preserves_existing_agent_and_mount_bytes(full_restore, monkeypatch, version):
+    import zipfile
+    state = full_restore
+    before = (state.old.agent_path.read_bytes(), state.old.mounts_path.read_bytes())
+    manifest = dict(state.manifest, format_version=version)
+    manifest["roles"] = {role: {key: value for key, value in item.items() if key not in {"state", "captured_at"}}
+                         for role, item in manifest["roles"].items() if role in {"content", "trash"}}
+    if version == 1:
+        manifest = {key: manifest[key] for key in ("format", "format_version", "roles")}
+        for item in manifest["roles"].values(): item.pop("schema")
+    else:
+        manifest["consistency_roles"] = ["content", "trash"]
+        manifest = backup_manifest.seal(manifest)
+
+    def download(url, token, destination):
+        with zipfile.ZipFile(destination, "w") as bundle:
+            bundle.writestr("manifest.json", backup_manifest.canonical(manifest))
+            for role in manifest["roles"]: bundle.write(state.paths[role], f"{role}.db")
+        return 200
+
+    monkeypatch.setattr(db_transfer, "_download_to", download)
+    assert db_transfer.server_restore(state.hub.request)["ok"]
+    assert before == (state.old.agent_path.read_bytes(), state.old.mounts_path.read_bytes())
+
+
+def test_full_restore_reports_failed_rollback_and_keeps_original_backups(full_restore, monkeypatch):
+    state = full_restore
+    original = db_transfer.os.replace
+    raw = state.old.path.read_bytes()
+    pointer = active_account._POINTER.read_bytes()
+    original_mounts = state.old.mounts_path.read_bytes()
+    def replace(source, target):
+        if ".rollback-" in str(source) and target == state.old.path:
+            raise OSError("synthetic rollback failure")
+        return original(source, target)
+    monkeypatch.setattr(db_transfer.os, "replace", replace)
+    clear = db_transfer._strict_clear_active
+    def fail_after_clear():
+        clear()
+        raise RuntimeError("synthetic logout failure")
+    monkeypatch.setattr(db_transfer, "_strict_clear_active", fail_after_clear)
+    with pytest.raises(HTTPException) as error:
+        db_transfer.server_restore(state.hub.request)
+    assert error.value.status_code == 500 and "되돌리지 못" in error.value.detail
+    assert any(path.read_bytes() == raw for path in state.old.path.parent.glob("content_hub.bak-*.db"))
+    assert active_account._POINTER.read_bytes() == pointer
+    assert state.old.mounts_path.read_bytes() == original_mounts
+
+
+def test_full_restore_rejects_auth_server_or_logged_out_target(full_restore, monkeypatch):
+    state = full_restore
+    archive = state.hub.root / "full.zip"
+    state.archive_at(archive)
+    bundle = _EXTRACT_BACKUP_SET(archive, state.hub.root / "extracted")
+    before = state.old.path.read_bytes()
+    monkeypatch.setattr(db_transfer, "AUTH_ENABLED", True)
+    with pytest.raises(HTTPException) as error:
+        db_transfer._install_backup_set(bundle, db_transfer._capture_restore_target(full=True))
+    assert error.value.status_code == 400
+    monkeypatch.setattr(db_transfer, "AUTH_ENABLED", False)
+    active_account.clear_active()
+    with pytest.raises(HTTPException) as error:
+        db_transfer._install_backup_set(bundle, db_transfer._capture_restore_target(full=True))
+    assert error.value.status_code == 400
+    assert state.old.path.read_bytes() == before
+
+
+def test_full_restore_rejects_different_selected_version(full_restore):
+    state = full_restore
+    before = state.old.path.read_bytes()
+    with pytest.raises(HTTPException) as error:
+        db_transfer.server_restore_version("0" * 64, state.hub.request)
+    assert error.value.status_code == 400
+    assert state.old.path.read_bytes() == before
+    state.hub.adopt.assert_not_called()
+    state.hub.activate.assert_not_called()
+
+
+@pytest.mark.parametrize("versioned", [False, True])
+def test_full_restore_http_entry_returns_relogin_and_restored_members(full_restore, versioned):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    app.include_router(db_transfer.router)
+    state = full_restore
+    selected_id = backup_manifest.seal(state.manifest)["backup_set_id"]
+    route = "/api/db/server-restore" + (f"/{selected_id}" if versioned else "")
+    with TestClient(app, client=("127.0.0.1", 50321)) as client:
+        response = client.post(route)
+    assert response.status_code == 200, response.text
+    assert response.json()["relogin_required"]
+    assert response.json()["restored_roles"]["agent_chat"] == "present"
+    assert not active_account._POINTER.exists()
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    final = db_transfer._capture_restore_target(full=True)
+    assert agent_store.get_conversation(final.agent_path, "record")["restored_from"]
+
+
+def test_full_restore_drain_timeout_never_replaces_open_agent_file(full_restore, monkeypatch):
+    state = full_restore
+    original = agent_chat.service.restore_guard
+    monkeypatch.setattr(agent_chat.service, "restore_guard", lambda identities, **kwargs: original(identities, timeout=0.01))
+    before = (state.old.path.read_bytes(), state.old.agent_path.read_bytes(), state.old.mounts_path.read_bytes())
+    with agent_store.connect(state.old.agent_path):
+        with pytest.raises(HTTPException) as error:
+            db_transfer.server_restore(state.hub.request)
+        assert error.value.status_code == 503
+        assert before == (state.old.path.read_bytes(), state.old.agent_path.read_bytes(), state.old.mounts_path.read_bytes())
+        assert not list(state.hub.root.rglob("*.bak-*"))
+    assert agent_store.path_key(state.old.agent_path) not in agent_store._gates
+
+
+def test_full_restore_rollback_reinstates_original_absence(full_restore, monkeypatch):
+    state = full_restore
+    state.trash.unlink()
+    state.old.agent_path.unlink()
+    state.old.mounts_path.unlink()
+    before = state.old.path.read_bytes()
+    clear = db_transfer._strict_clear_active
+    def fail_after_clear():
+        clear()
+        raise RuntimeError("synthetic logout failure")
+    monkeypatch.setattr(db_transfer, "_strict_clear_active", fail_after_clear)
+    with pytest.raises(RuntimeError):
+        db_transfer.server_restore(state.hub.request)
+    assert state.old.path.read_bytes() == before
+    assert not state.trash.exists() and not state.old.agent_path.exists() and not state.old.mounts_path.exists()
+    assert not list(config.AGENT_CHAT_DIR.glob("*.db"))
+    assert active_account.account_key() == ACCOUNT_A

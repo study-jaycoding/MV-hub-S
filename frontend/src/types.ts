@@ -520,6 +520,7 @@ export interface AssetMount {
   path: string;
   exists?: boolean;
   auto?: boolean; // PM 프로젝트 설정에서 자동으로 노출된 읽기 전용 마운트
+  restore_state?: "pending" | "confirmed" | "failed";
 }
 
 // 분리 창 파일별 메타데이터(소스/태그/코멘트/컬러)

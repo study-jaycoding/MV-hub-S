@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .. import active_account, config, db, rbac
 from ..repo import asset_sync as ledger
-from . import asset_io, asset_mounts, asset_tree, shared_connection
+from . import asset_io, asset_mounts, asset_paths, asset_tree, shared_connection
 from .path_safety import safe_join
 
 
@@ -58,12 +58,15 @@ def register(conn, *, path, file_path, digest, size, media_type, owner, destinat
 
 
 def _current_root(conn, row):
+    state = asset_mounts.restore_state(conn)
+    internal = row["project_name"] in (*asset_paths.INTERNAL_FOLDERS, asset_paths.COMBINED_INTERNAL_PROJECT)
+    if not internal and not asset_mounts.allowed(state, row["project_name"], row["root_path"]):
+        return None
     if row["destination_kind"] == "manual":
-        key = active_account.account_key()
-        mounts_file = active_account.account_dir(key) / "asset_mounts.json" if key else config.DATA_DIR / "asset_mounts.json"
-        for mount in asset_mounts.load(mounts_file):
+        for mount in asset_mounts.load(asset_mounts.mounts_file()):
             if (mount["name"] == row["project_name"]
-                    and mount.get("owner", "") in (row["owner_uid"], config.DEFAULT_WORKER_ID, "")):
+                    and (state is not None or mount.get("owner", "") in (row["owner_uid"], config.DEFAULT_WORKER_ID, ""))
+                    and asset_mounts.allowed(state, mount["name"], mount["path"])):
                 return os.path.normpath(str(Path(mount["path"]).expanduser()))
     elif row["destination_kind"] == "project":
         if config.AUTH_ENABLED:
@@ -81,6 +84,18 @@ def _current_root(conn, row):
     elif row["destination_kind"] == "internal":
         return os.path.normpath(str(config.ASSETS_ROOT / row["project_name"]))
     return None
+
+
+def _root_matches(row):
+    with db.get_connection() as conn:
+        current = _current_root(conn, row)
+        restored = asset_mounts.restore_state(conn) is not None
+    if current is None:
+        return False
+    if restored:
+        # Resolve physical path proofs after releasing content admission (NAS can be slow).
+        current = asset_mounts.canonical_path(current)
+    return asset_mounts.normalized_path(current) == asset_mounts.normalized_path(row["root_path"])
 
 
 def process_one():
@@ -105,9 +120,8 @@ def process_one():
                          (token, now + 600, row["sync_id"]))
         error = None
         try:
-            with db.get_connection() as conn:
-                if _current_root(conn, row) != row["root_path"]:
-                    raise ValueError("asset_destination_changed")
+            if not _root_matches(row):
+                raise ValueError("asset_destination_changed")
             root = Path(row["root_path"])
             destination = safe_join(root, row["relative_dir"])
             if destination is None or not destination.is_dir():
@@ -134,22 +148,23 @@ def process_one():
                     target = safe_join(root, row["relative_dir"] + "/" + name if row["relative_dir"] else name)
                     if target is None:
                         raise ValueError("unsafe_asset_destination")
+                    if not _root_matches(row):
+                        raise ValueError("asset_destination_changed")
                     with db.get_connection() as conn:
-                        if _current_root(conn, row) != row["root_path"]:
-                            raise ValueError("asset_destination_changed")
                         changed = conn.execute("UPDATE asset_destination_outbox SET target_name=? WHERE sync_id=? AND lease_token=?",
                                                (name, row["sync_id"], token)).rowcount
                     if not changed or shared_connection.base_url() != origin:
                         raise ValueError("asset_destination_changed")
                     try:
-                        try:
-                            os.link(stage, target)
-                        except FileExistsError:
-                            raise
-                        except OSError:
-                            if os.name != "nt":
+                        with db.share_operation_write():
+                            try:
+                                os.link(stage, target)
+                            except FileExistsError:
                                 raise
-                            os.rename(stage, target)
+                            except OSError:
+                                if os.name != "nt":
+                                    raise
+                                os.rename(stage, target)
                         break
                     except FileExistsError:
                         if target.stat().st_size == size and asset_io.sha256_file(target) == row["sha256"]:

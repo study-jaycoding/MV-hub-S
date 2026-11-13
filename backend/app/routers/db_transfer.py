@@ -63,6 +63,8 @@ from ..services.worker_backup import (
     status_snapshot as worker_backup_status,
 )
 from ..services import backup_manifest
+from ..services import asset_mounts, auth
+from ..services.sqlite_db import read_only_uri
 from ..services.test_snapshot import (
     SNAPSHOT_EXPORT_ENV,
     SNAPSHOT_TOKEN_ENV,
@@ -73,6 +75,9 @@ from ..services.test_snapshot import (
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
 _BACKUP_SET_ID_RE = re.compile(r"[0-9a-f]{64}")
+# Three SQLite members, one bounded JSON, manifest and ZIP framing.
+_BACKUP_DOWNLOAD_MAX_BYTES = 3 * upload_limits.DB_UPLOAD_FILE_MAX_BYTES + 2 * 1024 * 1024
+_BACKUP_UNPACKED_MAX_BYTES = 3 * upload_limits.DB_UPLOAD_FILE_MAX_BYTES + 1024 * 1024 + 64 * 1024
 
 _snapshot_token_lock = threading.Lock()
 _snapshot_token_in_progress: str | None = None
@@ -152,7 +157,8 @@ def _require_local_when_open(request: Request) -> None:
 # 프로파일과 정책을 한곳에서 관리). 이 모듈의 _SESSION_KEYS/_strip_session 이름은 유지.
 
 
-def _post_install_security_init(path: Path) -> None:
+def _post_install_security_init(path: Path, *, new_secret: str | None = None,
+                                restore_id: str | None = None, email: str = "") -> None:
     """교체된 새 DB 의 보안 초기화(R7 0-B, 코덱스 P1) — 비밀 키 제거·auth_secret 재생성·
     전 계정 password_changed_at 회전을 '한 SQLite 트랜잭션'으로. 실패는 그대로 올려
     호출부의 파일 보상 롤백이 돌게 한다 — 종전 best-effort 는 가져온 사람의 토큰·서명키가
@@ -172,7 +178,7 @@ def _post_install_security_init(path: Path) -> None:
         conn.execute(
             "INSERT INTO app_setting(key, value) VALUES('auth_secret', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (secrets.token_hex(32),),
+            (new_secret or secrets.token_hex(32),),
         )
         # 전 계정 세션 스탬프 회전 — 이전 발급 토큰 전부 무효(account 는 직전 init_db 가 보장).
         conn.execute(
@@ -180,6 +186,11 @@ def _post_install_security_init(path: Path) -> None:
         )
         conn.execute("INSERT INTO app_setting(key,value) VALUES('share_db_generation',?) "
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (secrets.token_hex(16),))
+        if restore_id is not None:
+            conn.execute("UPDATE mcp_client SET revoked_at=COALESCE(revoked_at,datetime('now'))")
+            conn.execute("INSERT INTO app_setting(key,value) VALUES(?,?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (asset_mounts.restore_key(email), json.dumps({"id": restore_id, "confirmed": []})))
         conn.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -212,6 +223,12 @@ class _RestoreTarget:
     configured_db: str | None
     email: str
     uid: str | None
+    full: bool = False
+    secret_env_digest: str | None = None
+    old_identity: object = None
+    agent_path: Path | None = None
+    mounts_path: Path | None = None
+    agent_dir: Path | None = None
 
 
 def _restore_target_changed() -> HTTPException:
@@ -246,7 +263,7 @@ def _strict_read_pointer() -> dict:
     return pointer
 
 
-def _capture_restore_target(*, path: Path | None = None) -> _RestoreTarget:
+def _capture_restore_target(*, path: Path | None = None, full: bool = False) -> _RestoreTarget:
     """접수 목적지만 보관한다. 서버 주소·토큰은 이 스냅샷에 넣지 않는다."""
     with active_account.transition_lock:
         email, uid = "", None
@@ -266,13 +283,31 @@ def _capture_restore_target(*, path: Path | None = None) -> _RestoreTarget:
                 raise _restore_target_changed()
             if norm_email(live_email) != email or live_uid != uid:
                 raise _restore_target_changed()
+        resolved = (db.get_db_path() if path is None else path).resolve()
+        old_identity, agent_path, mounts_path, env_digest = None, None, None, None
+        if full:
+            from ..services.agent_chat import Identity
+            env_secret = os.environ.get("CONTENT_HUB_AUTH_SECRET") or ""
+            env_digest = hashlib.sha256(env_secret.encode()).hexdigest()
+            secret = env_secret
+            if not secret and resolved.is_file():
+                with contextlib.closing(sqlite3.connect(read_only_uri(resolved), uri=True)) as conn:
+                    row = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()
+                    secret = row[0] if row else None
+            if secret:
+                old_identity = Identity(auth.hub_id_for(secret, resolved), str(resolved), email)
+                agent_path = old_identity.file_path().resolve()
+            mounts_path = asset_mounts.mounts_file(email).resolve()
         return _RestoreTarget(
-            path=(db.get_db_path() if path is None else path).resolve(),
+            path=resolved,
             auth_enabled=AUTH_ENABLED,
             account_auth_enabled=config.AUTH_ENABLED,
             configured_db=os.environ.get("CONTENT_HUB_DB"),
             email=email,
             uid=uid,
+            full=full, secret_env_digest=env_digest, old_identity=old_identity,
+            agent_path=agent_path, mounts_path=mounts_path,
+            agent_dir=config.AGENT_CHAT_DIR.resolve() if full else None,
         )
 
 
@@ -290,7 +325,7 @@ def _capture_restore_target_nowait() -> _RestoreTarget:
 
 
 def _check_restore_target(expected: _RestoreTarget | None, *, path: Path | None = None) -> None:
-    if expected is not None and _capture_restore_target(path=path) != expected:
+    if expected is not None and _capture_restore_target(path=path, full=expected.full) != expected:
         raise _restore_target_changed()
 
 
@@ -300,6 +335,7 @@ def _install_db(
     trash_tmp: Path | None = None,
     restore_trash_set: bool = False,
     expected: _RestoreTarget | None = None,
+    full_set: _FullBackupSet | None = None,
 ) -> dict:
     """검증 끝난 DB를 현재 활성 DB로 교체하고 재로그인을 강제한다.
 
@@ -309,11 +345,33 @@ def _install_db(
     originals: list[tuple[Path, Path | None, bool]] = []
     staged: Path | None = None
     staged_trash: Path | None = None
+    extra_stages: dict[str, Path] = {}
+    extra_targets: dict[str, Path] = {}
+    new_secret, restore_id, final_identity = None, None, None
+    if full_set is not None:
+        from ..services import agent_chat
+        if expected is None or not expected.full or expected.auth_enabled or expected.account_auth_enabled or not expected.email:
+            raise HTTPException(status_code=400, detail="전체 복원은 로그인된 로컬 허브에서만 가능합니다")
+        _check_restore_target(expected)
+        try:
+            backup_manifest.verify_files_v3(full_set.manifest, full_set.paths,
+                expected_account_digest=backup_manifest.account_digest(active_account.slug(expected.email)))
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            raise HTTPException(status_code=400, detail="백업 구성원 또는 계정이 일치하지 않습니다") from exc
+        new_secret, restore_id = secrets.token_hex(32), secrets.token_hex(16)
+        final_identity = agent_chat.Identity(
+            auth.hub_id_for(os.environ.get("CONTENT_HUB_AUTH_SECRET") or new_secret, expected.path),
+            str(expected.path), expected.email)
+        extra_targets = {"agent_chat": final_identity.file_path().resolve(), "asset_mounts": expected.mounts_path}
     try:
         # ★계정 전환과의 상호배제(코덱스 재확인 P1) — 게이트는 DB 연결만 막으므로
         # set_active 가 그 사이 끼면 경로·포인터 판정이 어긋난다. transition_lock 을
         # 게이트보다 먼저 잡는다(전환은 게이트를 안 잡아 락 순서 역전 없음).
-        with active_account.transition_lock, contextlib.ExitStack() as gates:
+        with contextlib.ExitStack() as gates:
+            if full_set is not None:
+                identities = tuple(item for item in (expected.old_identity, final_identity) if item is not None)
+                gates.enter_context(agent_chat.service.restore_guard(identities, timeout=5.0))
+            gates.enter_context(active_account.transition_lock)
             _check_restore_target(expected)
             try:
                 validate_db_compatibility(tmp, "content")
@@ -325,6 +383,8 @@ def _install_db(
             except HubDbValidationError as exc:
                 _raise_validation_error(exc)
             gates.enter_context(db.maintenance_gate())
+            if full_set is not None:
+                gates.enter_context(asset_mounts._file_lock(expected.mounts_path))
             # ★대상 경로·포인터 스냅샷도 게이트 '안'에서 확정(R7 0-B, 코덱스 P1) —
             # 게이트 전에 읽으면 계정 전환(set_active — 게이트 비참여)이 겹칠 때 설치
             # 대상 path 와 이후 단계가 보는 활성 DB 가 달라질 수 있다.
@@ -362,18 +422,28 @@ def _install_db(
             targets = [path]
             if restore_trash_set:
                 targets.append(trash_path)
+            if full_set is not None:
+                targets.extend(extra_targets.values())
+                if expected.agent_path is not None and expected.agent_path not in targets:
+                    targets.append(expected.agent_path)
             for current in targets:
+                current.parent.mkdir(parents=True, exist_ok=True)
                 existed = current.is_file()
+                if current.exists() and not existed:
+                    raise HTTPException(status_code=409, detail="복원 대상이 일반 파일이 아닙니다")
                 backup_copy: Path | None = None
                 if not existed:
                     originals.append((current, None, False))
                     continue
                 try:
-                    conn = sqlite3.connect(str(current))
-                    try:
-                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    finally:
-                        conn.close()
+                    if current != extra_targets.get("asset_mounts"):
+                        conn = sqlite3.connect(str(current))
+                        try:
+                            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                            if checkpoint and checkpoint[0]:
+                                raise sqlite3.OperationalError("database checkpoint busy")
+                        finally:
+                            conn.close()
                 except Exception as exc:  # noqa: BLE001
                     raise HTTPException(
                         status_code=500,
@@ -383,7 +453,7 @@ def _install_db(
                 # "현재 DB 를 .bak 으로 백업한다"는 약속이 거짓이 되고(백업 없음) 가져온 DB 가 불량이면 원본을
                 # 복구할 길이 없었다. 디스크 가득·권한 등으로 백업 못 하면 원본을 지키려 교체를 안 한다.
                 backup_copy = current.with_name(
-                    f"{current.stem}.bak-{int(time.time())}-{secrets.token_hex(4)}.db"
+                    f"{current.stem}.bak-{int(time.time())}-{secrets.token_hex(4)}{current.suffix}"
                 )
                 try:
                     shutil.copy2(current, backup_copy)
@@ -401,9 +471,20 @@ def _install_db(
             shutil.copy2(tmp, staged)
             if restore_trash_set and trash_tmp is not None:
                 shutil.copy2(trash_tmp, staged_trash)
+            if full_set is not None:
+                for role, target in extra_targets.items():
+                    if role in full_set.paths:
+                        extra_stages[role] = target.with_name(f".{target.name}.restore-{secrets.token_hex(8)}.tmp")
+                        shutil.copy2(full_set.paths[role], extra_stages[role])
             # Recheck the actual local copies, not just the earlier source path.
             # A source replaced while waiting must never install a future schema.
             try:
+                if full_set is not None:
+                    staged_paths = {"content": staged, **extra_stages}
+                    if trash_tmp is not None:
+                        staged_paths["trash"] = staged_trash
+                    backup_manifest.verify_files_v3(full_set.manifest, staged_paths,
+                        expected_account_digest=backup_manifest.account_digest(active_account.slug(expected.email)))
                 validate_db_compatibility(staged, "content")
                 if restore_trash_set and trash_tmp is not None:
                     validate_db_compatibility(staged_trash, "trash")
@@ -412,9 +493,13 @@ def _install_db(
                 raise HTTPException(status_code=400, detail="휴지통 이동 기록과 일치하는 DB 백업 세트가 필요합니다") from exc
             except HubDbValidationError as exc:
                 _raise_validation_error(exc)
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                raise HTTPException(status_code=400, detail="설치 준비 파일의 원문 검증에 실패했습니다") from exc
             # checkpoint 뒤 모든 SQLite 핸들이 닫힌 상태에서만 sidecar 를 지운다. Windows 는 열린
             # -wal/-shm 을 unlink 하지 못하므로 파일 교체보다 먼저 이 순서를 지켜야 한다.
             for current in targets:
+                if current == extra_targets.get("asset_mounts"):
+                    continue
                 for suf in ("-wal", "-shm"):
                     Path(str(current) + suf).unlink(missing_ok=True)
             try:
@@ -424,30 +509,46 @@ def _install_db(
                         trash_path.unlink(missing_ok=True)
                     else:
                         os.replace(staged_trash, trash_path)
+                for role, target in extra_targets.items():
+                    if role in extra_stages:
+                        os.replace(extra_stages[role], target)
+                    else:
+                        target.unlink(missing_ok=True)
                 db.init_db(path, scene_restore=True)  # 복원 세대·공책 확정도 보상 롤백 경계 안
                 # ★보안 초기화·활성 계정 해제도 이 보상 롤백 경계 안(R7 0-B, 코덱스 P1)
                 # — 하나라도 실패하면 성공 응답 없이 기존 파일 세트로 되돌린다.
-                _post_install_security_init(path)
+                if full_set is not None:
+                    _post_install_security_init(path, new_secret=new_secret, restore_id=restore_id, email=expected.email)
+                    if "agent_chat" in full_set.paths:
+                        from ..repo import agent_chat as agent_store
+                        agent_store.adopt_restored(extra_targets["agent_chat"], restore_id)
+                else:
+                    _post_install_security_init(path)
                 if not AUTH_ENABLED:
                     _strict_clear_active()
             except BaseException as original_error:
                 # init_db가 풀 핸들을 만들었을 수 있으므로 원본 되돌리기 전에 다시 모두 닫는다.
                 db.flush_pool()
+                rollback_errors = []
                 try:
                     for current, backup_copy, existed in originals:
-                        for suf in ("-wal", "-shm"):
-                            Path(str(current) + suf).unlink(missing_ok=True)
-                        if existed and backup_copy is not None:
-                            rollback_stage = current.with_name(
-                                f".{current.name}.rollback-{secrets.token_hex(8)}.tmp"
-                            )
-                            try:
-                                shutil.copy2(backup_copy, rollback_stage)
-                                os.replace(rollback_stage, current)
-                            finally:
-                                rollback_stage.unlink(missing_ok=True)
-                        else:
-                            current.unlink(missing_ok=True)
+                        try:
+                            if current != extra_targets.get("asset_mounts"):
+                                for suf in ("-wal", "-shm"):
+                                    Path(str(current) + suf).unlink(missing_ok=True)
+                            if existed and backup_copy is not None:
+                                rollback_stage = current.with_name(
+                                    f".{current.name}.rollback-{secrets.token_hex(8)}.tmp"
+                                )
+                                try:
+                                    shutil.copy2(backup_copy, rollback_stage)
+                                    os.replace(rollback_stage, current)
+                                finally:
+                                    rollback_stage.unlink(missing_ok=True)
+                            else:
+                                current.unlink(missing_ok=True)
+                        except Exception as rollback_error:
+                            rollback_errors.append(rollback_error)
                     if not AUTH_ENABLED:
                         # 포인터 원상 복구 — clear_active 가 지운 뒤의 실패에서도 원래
                         # 로그인 상태로 돌아간다(없었으면 없던 상태 유지).
@@ -457,6 +558,8 @@ def _install_db(
                             active_account._POINTER.unlink(missing_ok=True)
                         active_account._cache[0] = False  # 다음 조회가 파일에서 재로드
                         active_account.bump_account_epoch()
+                    if rollback_errors:
+                        raise rollback_errors[0]
                 except Exception as rollback_error:  # noqa: BLE001
                     logging.getLogger(__name__).error(
                         "DB 가져오기 실패 후 자동 롤백도 실패 — 수동 복구 필요(백업 .bak 파일 확인)",
@@ -487,6 +590,9 @@ def _install_db(
             detail="다른 DB 요청이 진행 중이라 복원을 잠시 뒤에 다시 시도하세요",
         ) from exc
     finally:
+        for extra_stage in extra_stages.values():
+            with contextlib.suppress(OSError):
+                extra_stage.unlink(missing_ok=True)
         if staged is not None:
             with contextlib.suppress(OSError):
                 staged.unlink(missing_ok=True)
@@ -494,7 +600,11 @@ def _install_db(
             with contextlib.suppress(OSError):
                 staged_trash.unlink(missing_ok=True)
     # (보안 초기화·활성 계정 해제·캐시 초기화는 게이트 안에서 이미 완료 — R7 0-B)
-    return {"ok": True, "relogin_required": True}
+    result = {"ok": True, "relogin_required": True}
+    if full_set is not None:
+        result.update(restored_roles={role: item["state"] for role, item in full_set.manifest["roles"].items()},
+                      agent_history_restored="agent_chat" in full_set.paths, mounts_confirmation_required=True)
+    return result
 
 
 def _multipart_upload(url: str, token: str | None, source: Path) -> tuple[int, object]:
@@ -536,11 +646,16 @@ def _download_to(url: str, token: str | None, dst: Path) -> int:
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             with open(dst, "wb") as f:
-                shutil.copyfileobj(r, f)
+                upload_limits.copy_stream_limited(r, f, max_bytes=_BACKUP_DOWNLOAD_MAX_BYTES)
             return r.status
+    except upload_limits.UploadLimitExceeded as exc:
+        dst.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail="서버 백업 다운로드 크기 제한을 초과했습니다") from exc
     except urllib.error.HTTPError as e:
         return e.code
     except (urllib.error.URLError, TimeoutError, OSError) as e:
+        with contextlib.suppress(OSError):
+            dst.unlink(missing_ok=True)
         raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
 
 
@@ -552,77 +667,102 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _extract_backup_set(archive: Path, destination: Path) -> tuple[Path, Path | None]:
+@dataclass(frozen=True)
+class _FullBackupSet:
+    manifest: dict
+    paths: dict[str, Path]
+
+
+def _extract_backup_set(archive: Path, destination: Path) -> tuple[Path, Path | None] | _FullBackupSet:
     """서버 ZIP의 역할·크기·해시·SQLite 무결성을 확인하고 안전한 고정 이름만 푼다."""
     destination.mkdir(parents=True, exist_ok=True)
     try:
+        if archive.stat().st_size > _BACKUP_DOWNLOAD_MAX_BYTES:
+            raise ValueError("archive too large")
         with zipfile.ZipFile(archive, "r") as bundle:
             infos = bundle.infolist()
             names = [info.filename for info in infos]
             if len(names) != len(set(names)) or "manifest.json" not in names:
                 raise ValueError("invalid archive entries")
-            if not set(names) <= {"manifest.json", "content.db", "trash.db"}:
+            if not set(names) <= {"manifest.json", *backup_manifest.WORKER_FILENAMES.values()}:
                 raise ValueError("unexpected archive entry")
+            if sum(info.file_size for info in infos) > _BACKUP_UNPACKED_MAX_BYTES:
+                raise ValueError("archive expanded size too large")
             manifest_info = bundle.getinfo("manifest.json")
             if manifest_info.file_size > 64 * 1024:
                 raise ValueError("manifest too large")
-            manifest = json.loads(bundle.read(manifest_info).decode("utf-8"))
-            backup_manifest.check_version(manifest)
-            if (
-                not isinstance(manifest, dict)
-                or manifest.get("format") != "mvhub-worker-backup-set"
-                or manifest.get("format_version") not in {1, backup_manifest.VERSION}
-            ):
-                raise ValueError("unsupported backup set")
-            if manifest['format_version'] == backup_manifest.VERSION:
-                backup_manifest.validate(manifest)
+            manifest = backup_manifest.read_json_v3(bundle.read(manifest_info))
+            full = isinstance(manifest, dict) and manifest.get("format_version") == 3
+            if full:
+                backup_manifest.validate_v3(manifest)
+            else:
+                backup_manifest.check_version(manifest)
+                if manifest.get("format") != backup_manifest.WORKER_FORMAT:
+                    raise ValueError("unsupported backup set")
+                if manifest['format_version'] == backup_manifest.VERSION:
+                    backup_manifest.validate(manifest)
             roles = manifest.get("roles")
-            if not isinstance(roles, dict) or "content" not in roles or not set(roles) <= {
-                "content",
-                "trash",
-            }:
+            if not isinstance(roles, dict) or "content" not in roles or (not full and not set(roles) <= {"content", "trash"}):
                 raise ValueError("invalid backup roles")
-            if set(names) - {"manifest.json"} != {f"{role}.db" for role in roles}:
+            present = {role: info for role, info in roles.items() if not full or info["state"] == "present"}
+            if set(names) - {"manifest.json"} != {backup_manifest.WORKER_FILENAMES[role] for role in present}:
                 raise ValueError("archive roles differ")
             extracted: dict[str, Path] = {}
-            for role, expected in roles.items():
+            for role, expected in present.items():
                 if not isinstance(expected, dict):
                     raise ValueError("invalid role metadata")
-                info = bundle.getinfo(f"{role}.db")
-                expected_size = int(expected.get("size") or -1)
+                info = bundle.getinfo(backup_manifest.WORKER_FILENAMES[role])
+                limit = 1024 * 1024 if role == "asset_mounts" else upload_limits.DB_UPLOAD_FILE_MAX_BYTES
+                expected_size = expected.get("size")
                 if (
-                    expected_size < 0
-                    or expected_size > upload_limits.DB_UPLOAD_FILE_MAX_BYTES
+                    type(expected_size) is not int or expected_size <= 0
+                    or expected_size > limit
                     or info.file_size != expected_size
                 ):
                     raise ValueError("invalid role size")
-                path = destination / f"{role}.db"
+                path = destination / info.filename
                 with bundle.open(info, "r") as source, path.open("xb") as target:
                     actual_size = upload_limits.copy_stream_limited(
                         source,
                         target,
-                        max_bytes=upload_limits.DB_UPLOAD_FILE_MAX_BYTES,
+                        max_bytes=limit,
                     )
                 digest = _file_sha256(path)
                 if actual_size != expected_size or digest != expected.get("sha256"):
                     raise ValueError("role integrity mismatch")
                 extracted[role] = path
-            if manifest['format_version'] == backup_manifest.VERSION:
+            if full:
+                backup_manifest.verify_files_v3(manifest, extracted)
+            elif manifest['format_version'] == backup_manifest.VERSION:
                 backup_manifest.verify_files(manifest, extracted)
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile, upload_limits.UploadLimitExceeded) as exc:
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, zipfile.BadZipFile,
+            HubDbValidationError, upload_limits.UploadLimitExceeded) as exc:
         raise HTTPException(status_code=400, detail="서버 백업 세트가 손상되었거나 형식이 다릅니다") from exc
 
-    validate_hub_db(extracted["content"], require_integrity=True)
-    if "trash" in extracted:
-        validate_db_compatibility(extracted["trash"], "trash")
-        with contextlib.closing(sqlite3.connect(str(extracted["trash"]))) as conn:
-            result = conn.execute("PRAGMA quick_check").fetchone()
-            table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trashed'"
-            ).fetchone()
-            if not result or result[0] != "ok" or not table:
-                raise HTTPException(status_code=400, detail="서버 휴지통 백업이 손상되었습니다")
-    return extracted["content"], extracted.get("trash")
+    try:
+        validate_hub_db(extracted["content"], require_integrity=True)
+        if "trash" in extracted:
+            validate_db_compatibility(extracted["trash"], "trash")
+            with contextlib.closing(sqlite3.connect(read_only_uri(extracted["trash"], immutable=True), uri=True)) as conn:
+                result = conn.execute("PRAGMA quick_check").fetchone()
+                table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trashed'"
+                ).fetchone()
+                if not result or result[0] != "ok" or not table:
+                    raise ValueError("invalid trash backup")
+    except (ValueError, sqlite3.Error, OSError) as exc:
+        raise HTTPException(status_code=400, detail="서버 백업 DB가 손상되었거나 형식이 다릅니다") from exc
+    return _FullBackupSet(manifest, extracted) if full else (extracted["content"], extracted.get("trash"))
+
+
+def _install_backup_set(bundle, expected: _RestoreTarget, *, backup_set_id: str | None = None) -> dict:
+    if isinstance(bundle, _FullBackupSet):
+        if backup_set_id is not None and bundle.manifest["backup_set_id"] != backup_set_id:
+            raise HTTPException(status_code=400, detail="선택한 백업과 받은 백업이 일치하지 않습니다")
+        return _install_db(bundle.paths["content"], trash_tmp=bundle.paths.get("trash"),
+                           restore_trash_set=True, expected=expected, full_set=bundle)
+    content, trash = bundle
+    return _install_db(content, trash_tmp=trash, restore_trash_set=True, expected=expected)
 
 
 def _raise_validation_error(exc: HubDbValidationError, *, downloaded: bool = False) -> None:
@@ -971,7 +1111,7 @@ def server_restore_version(backup_set_id: str, request: Request):
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
 
     with active_account.transition_lock:
-        expected = _capture_restore_target()
+        expected = _capture_restore_target(full=True)
         account_email = active_account.account_key()
         server_url = _proxy.base_url()
         token = _proxy.token()
@@ -990,10 +1130,8 @@ def server_restore_version(backup_set_id: str, request: Request):
         )
     try:
         with tempfile.TemporaryDirectory(prefix="mvhub-restore-set-") as temp_dir:
-            content, trash = _extract_backup_set(archive, Path(temp_dir))
-            result = _install_db(
-                content, trash_tmp=trash, restore_trash_set=True, expected=expected
-            )
+            result = _install_backup_set(_extract_backup_set(archive, Path(temp_dir)), expected,
+                                         backup_set_id=backup_set_id)
     finally:
         archive.unlink(missing_ok=True)
 
@@ -1030,7 +1168,7 @@ def server_restore(request: Request):
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
     with active_account.transition_lock:
-        expected = _capture_restore_target()
+        expected = _capture_restore_target(full=True)
         server_url = _proxy.base_url()
         token = _proxy.token()
     archive = Path(tempfile.gettempdir()) / f"mvhub-srvrestore-{secrets.token_hex(8)}.zip"
@@ -1040,13 +1178,7 @@ def server_restore(request: Request):
     if status == 200:
         try:
             with tempfile.TemporaryDirectory(prefix="mvhub-restore-set-") as temp_dir:
-                content, trash = _extract_backup_set(archive, Path(temp_dir))
-                return _install_db(
-                    content,
-                    trash_tmp=trash,
-                    restore_trash_set=True,
-                    expected=expected,
-                )
+                return _install_backup_set(_extract_backup_set(archive, Path(temp_dir)), expected)
         finally:
             archive.unlink(missing_ok=True)
     archive.unlink(missing_ok=True)

@@ -63,9 +63,9 @@
 | `backend/app/routers/comfy.py` | `collect_unresolved_run` | Thread | `_collect_run_worker` |
 | `backend/app/routers/gen_requests.py` | `_release_claim_on_abort` | create_task | `release_claim(acc["email"], realtime_scope(acc), rid, agent_id)` |
 | `backend/app/routers/mcp_v2.py` | `submit_plan` | ensure_future | `asyncio.to_thread(_claim, gate, ctx.client, plan_id, plan["workspace"]…` |
-| `backend/app/services/agent_chat.py` | `AgentChat._run` | Thread | `self._watch` |
+| `backend/app/services/agent_chat.py` | `AgentChat._run` | Thread | `copy_context().run` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Timer | `self._timeout` |
-| `backend/app/services/agent_chat.py` | `AgentChat.start_turn` | Thread | `self._run` |
+| `backend/app/services/agent_chat.py` | `AgentChat.start_turn` | Thread | `copy_context().run` |
 | `backend/app/services/agent_chat_process.py` | `JobProcess.feed` | Thread | `write` |
 | `backend/app/services/agent_chat_process.py` | `JobProcess.start` | Thread | `self._drain_stderr` |
 | `backend/app/services/asset_registry.py` | `AssetRegistryController.request_scan` | create_task | `self._run(project_ids, mode)` |

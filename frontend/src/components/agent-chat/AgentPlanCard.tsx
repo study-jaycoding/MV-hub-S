@@ -75,6 +75,8 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
   const sent = exec?.state === "done" || isSent(progress);
   // 포크로 복사한 카드 — 이 대화에서 실행·견적하지 않고, 새 소식이 오지 않아 도는 표시도 없다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
   const forked = !!plan.forked;
+  const restored = plan.restored_reference;
+  const readOnly = forked || !!restored;
   const [fetched, setFetched] = useState<Record<string, Generation | null>>({}); // null = 못 읽음
 
   const rows = items.map((_, index) => {
@@ -87,7 +89,7 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
   // 완료로 확인됐는데 앱이 읽은 목록에 없으면(다른 폴더) 항목마다 한 번만 읽어 썸네일을 얻는다 —
   //  다른 항목 응답이 먼저 와도 진행 중 조회를 버리거나 다시 내지 않는다(독립 리뷰 P2)
   const requested = useRef(new Set<string>());
-  const missingThumbs = rows.filter((r) => r.kind === "done" && r.genId && !r.gen && !(r.genId in fetched)).map((r) => r.genId as string);
+  const missingThumbs = restored ? [] : rows.filter((r) => r.kind === "done" && r.genId && !r.gen && !(r.genId in fetched)).map((r) => r.genId as string);
   const missingKey = missingThumbs.join(",");
   useEffect(() => {
     for (const id of missingKey ? missingKey.split(",") : []) {
@@ -119,8 +121,13 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
   return (
     <section className="agent-plan" aria-label={t("계획")}>
       <h4 className="agent-plan-title"><span className="agent-plan-tag">{t("계획")}</span>
+        {restored && <span className="agent-plan-tag forked">{t("복원 기록")}</span>}
         {forked && <span className="agent-plan-tag forked">{t("포크 전")}</span>}{plan.title || t("이름 없는 계획")}</h4>
-      {sent && (
+      {restored && <div className="agent-plan-meta" role="status">
+        <p>{t("계획 자료")}: {t(restored.status === "available" ? "자료 확인됨" : restored.status === "missing" ? "자료 없음" : "확인 전")}</p>
+        {restored.generations.map((g, i) => <p key={g.id}>{t("생성물")} {i + 1}: {t(g.status === "available" ? "자료 확인됨" : g.status === "missing" ? "자료 없음" : "확인 전")}</p>)}
+      </div>}
+      {sent && !restored && (
         <>
           <p className={`agent-plan-sent${settled ? " is-settled" : ""}`} role="status">
             {settled ? `${t("끝났어요")} · ${summary}` : t("생성을 보냈어요")}
@@ -168,8 +175,8 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
       )}
       {/* 저장 위치·예상 크레딧 한 줄 */}
       <p className="agent-plan-meta">
-        {where && <><span className="agent-plan-where">{t("저장 위치")} <b>{where}</b></span>{!forked && <span className="agent-plan-dot" aria-hidden="true">·</span>}</>}
-        {!forked && (
+        {where && <><span className="agent-plan-where">{t("저장 위치")} <b>{where}</b></span>{!readOnly && <span className="agent-plan-dot" aria-hidden="true">·</span>}</>}
+        {!readOnly && (
           <span className="agent-plan-cost">
             {!estimate ? t("예상 크레딧 확인 중")
               : estimate.credits === null ? <>{t("예상 크레딧")} {t("확인하지 못했어요")}</>
@@ -177,7 +184,9 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
           </span>
         )}
       </p>
-      {forked ? (
+      {restored ? (
+        <p className="agent-plan-meta agent-plan-forked">{t("복원한 계획은 열람만 할 수 있어요. 새 작업은 새 대화에서 요청하세요.")}</p>
+      ) : forked ? (
         <p className="agent-plan-meta agent-plan-forked">{t("포크 전 상태 · 결과는 라이브러리에서 확인하세요")}</p>
       ) : sent ? (
         exec?.state === "failed" && <p className="agent-plan-fail" role="alert">{exec.message}</p>

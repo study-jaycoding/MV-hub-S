@@ -128,6 +128,28 @@ def create_plan(client, title, items, workspace=None):
     return get_plan(client, plan_id)
 
 
+def restored_reference(account_email, client_id, plan_id):
+    """폐기된 연결을 되살리지 않는 로컬 확인. 같은 계정·바인딩 연결·계획만 읽는다."""
+    result = {"plan_id": plan_id, "status": "missing", "generations": []}
+    with get_connection() as conn:
+        row = conn.execute("SELECT workspace,items FROM mcp_generation_plan WHERE id=? AND client_id=? AND account_email=?",
+                           (plan_id, client_id, account_email)).fetchone()
+        if row is None:
+            return result
+        result["status"] = "available"
+        workspace, items = json.loads(row["workspace"]), json.loads(row["items"])
+        for index, item in enumerate(items):
+            generation_id = item.get("generation_id")
+            if not generation_id:
+                continue
+            state = "unchecked"
+            if index < 100 and workspace.get("scope") == "personal":
+                found = conn.execute("SELECT 1 FROM generation WHERE id=? AND workspace_scope='personal'", (generation_id,)).fetchone()
+                state = "available" if found else "missing"
+            result["generations"].append({"id": generation_id, "status": state})
+    return result
+
+
 def get_plan(client, plan_id):
     with get_connection() as conn:
         row = conn.execute(

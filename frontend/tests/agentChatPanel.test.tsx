@@ -120,6 +120,191 @@ function pickSelect(label: string, value: string) {
 }
 
 describe("Ask Agent 옆 칸", () => {
+  const restoredHistory = () => ({
+    conversation: { id: "restored-1", title: "복원한 작업", engine: "claude", model: "opus", effort: "medium", updated_at: "", resumable: false, restored_from: "backup-1" },
+    turns: [{ id: "old-turn", status: "running", text: "옛 요청", created_at: "", attachments: { items: [{ kind: "generation", id: "old-attachment" }] }, events: [
+      { seq: 1, kind: "plan", plan: PLAN },
+      { seq: 2, kind: "plan_progress", plan_id: "p1", observed_at: "9", plan_status: "submitted", items: [{ index: 0, state: "submitted", generation_id: "g-old", generation_status: "done" }] },
+    ] }],
+    plans: [], references: [{ plan_id: "p1", status: "missing", generations: [{ id: "g-old", status: "unchecked" }] }],
+    restore_reference: { source_conversation_id: "restored-1", turns: [{ you: "옛 요청", answer: "옛 답" }], included_turns: 1, earlier_turns: 3, truncated: true, note: "참고 자료" },
+  });
+  const openRestored = async () => {
+    localStorage.setItem(STORAGE_KEYS.agentPanelConversation, JSON.stringify({ account: getAccountNamespace(), id: "restored-1" }));
+    await mount();
+  };
+  const useRestored = () => act(() => [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "이 기록으로 새 대화")!.click());
+
+  it("복원 기록은 옛 실행·견적·폴링을 멈추고, 새 대화 버튼 뒤 별도 전송에서만 참고 ID를 보낸다", async () => {
+    route = (c) => c.path === "/session" ? session()
+      : c.path === "/conversations/restored-1" ? json(restoredHistory())
+      : c.path === "/turns" ? started("new-turn", "new-chat")
+      : c.path.startsWith("/turns/new-turn/events") ? json({ events: [], status: "done", last_seq: 0 })
+      : json({ detail: "Not Found" }, 404);
+    await openRestored();
+    expect(input().disabled).toBe(true);
+    expect(button("고쳐 보내기")).toBeNull();
+    expect(host.textContent).toContain("자료 없음");
+    expect(host.textContent).toContain("확인 전");
+    expect(host.querySelector(".agent-plan-sent, .agent-plan-run")).toBeNull();
+    expect(calls.some((c) => c.path.startsWith("/plans/") || c.path.startsWith("/turns/old-turn"))).toBe(false);
+    act(() => button("정보")!.click());
+    expect(host.querySelector(".agent-info-grid")).toBeNull();
+    expect(host.textContent).toContain("복원 기록의 자료 상태는 계획 카드에서 확인하세요");
+    expect(calls.some((c) => c.path.includes("/generations/"))).toBe(false);
+    expect(host.querySelector(".agent-sent img")).toBeNull();
+    useRestored();
+    await flush();
+    expect(input().disabled).toBe(false);
+    expect(turnCalls()).toHaveLength(0);
+    expect(host.textContent).toContain("1턴 포함 · 3턴 제외 · 긴 글 일부 생략");
+    expect(host.textContent).toContain("도구·계획·첨부 제외");
+    pickModel("GPT-6.1 Sol");
+    expect(host.textContent).toContain("보낼 모델: codex · GPT-6.1 Sol");
+    type("지금 할 일"); enter(); await flush();
+    expect(turnCalls()).toHaveLength(1);
+    expect(turnCalls()[0].body).toMatchObject({ text: "지금 할 일", source_conversation_id: "restored-1", engine: "codex" });
+    expect(turnCalls()[0].body).not.toHaveProperty("conversation_id");
+    expect(button("참고 기록 빼기")).toBeNull();
+  });
+
+  it("참고 전송 실패는 작성 내용을 보존하고 재시도에 같은 열쇠를 쓰며, 404면 참고만 제거한다", async () => {
+    let sendStatus = 500;
+    route = (c) => c.path === "/session" ? session()
+      : c.path === "/conversations/restored-1" ? json(restoredHistory())
+      : c.path === "/turns" ? json({ detail: "시험 실패" }, sendStatus) : json({}, 404);
+    await openRestored(); useRestored(); await flush();
+    type("이 내용은 남겨 주세요"); enter(); await flush();
+    expect(input().value).toBe("이 내용은 남겨 주세요");
+    expect(button("참고 기록 빼기")).toBeTruthy();
+    enter(); await flush();
+    expect(turnCalls()[1].body?.idempotency_key).toBe(turnCalls()[0].body?.idempotency_key);
+    sendStatus = 404; enter(); await flush();
+    expect(button("참고 기록 빼기")).toBeNull();
+    expect(input().value).toBe("이 내용은 남겨 주세요");
+    expect(host.textContent).toContain("참고 기록을 찾을 수 없어요");
+  });
+
+  it.each([500, 503, "network"])("복원 초안의 접수 불명(%s) 뒤 편집 재전송은 같은 key로 저장된 대화를 채택한다", async (failure) => {
+    let attempt = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations/restored-1") return json(restoredHistory());
+      if (c.path === "/turns") {
+        attempt += 1;
+        if (attempt === 1) return failure === "network" ? Promise.reject(new TypeError("Failed to fetch")) : json({ detail: "접수 답 실패" }, failure);
+        return json({ turn_id: attempt === 2 ? "accepted-turn" : "next-turn", conversation_id: "accepted-chat", status: "failed" });
+      }
+      if (c.path === "/conversations/accepted-chat") return json({
+        conversation: { id: "accepted-chat", title: "접수된 대화", engine: "claude", model: "opus", effort: "medium", resumable: true },
+        turns: [{ id: "accepted-turn", status: "failed", text: "먼저 보낸 글", events: [] }],
+      });
+      return json({ events: [], status: "failed", last_seq: 0 });
+    };
+    await openRestored(); useRestored(); await flush();
+    type("먼저 보낸 글"); enter(); await flush();
+    type("수정한 초안"); enter(); await flush();
+    expect(turnCalls()).toHaveLength(2);
+    expect(turnCalls()[1].body!.idempotency_key).toBe(turnCalls()[0].body!.idempotency_key);
+    expect(input().value).toBe("수정한 초안");
+    expect(texts(".agent-user-wrap").join(" ")).toContain("먼저 보낸 글");
+    expect(texts(".agent-user-wrap").join(" ")).not.toContain("수정한 초안");
+    expect(host.textContent).toContain("접수된 대화를 불러왔습니다. 작성 내용은 남겨 두었습니다.");
+    enter(); await flush();
+    expect(turnCalls()[2].body).toMatchObject({ conversation_id: "accepted-chat", text: "수정한 초안" });
+    expect(turnCalls()[2].body).not.toHaveProperty("source_conversation_id");
+    expect(turnCalls()[2].body!.idempotency_key).not.toBe(turnCalls()[0].body!.idempotency_key);
+  });
+
+  it("복원 초안이 다른 글로 한 번이라도 재전송되면 원래 글로 돌아와도 실제 저장된 글을 채택한다", async () => {
+    let attempt = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations/restored-1") return json(restoredHistory());
+      if (c.path === "/turns") return ++attempt < 3 ? Promise.reject(new TypeError("Failed to fetch"))
+        : json({ turn_id: "accepted-turn", conversation_id: "accepted-chat", status: "failed" });
+      if (c.path === "/conversations/accepted-chat") return json({
+        conversation: { id: "accepted-chat", title: "접수된 편집본", engine: "claude", model: "opus", effort: "medium", resumable: true },
+        turns: [{ id: "accepted-turn", status: "failed", text: "편집본이 먼저 저장됨", events: [] }],
+      });
+      return json({}, 404);
+    };
+    await openRestored(); useRestored(); await flush();
+    type("원래 글"); enter(); await flush();
+    type("편집본이 먼저 저장됨"); enter(); await flush();
+    type("원래 글"); enter(); await flush();
+    expect(new Set(turnCalls().map((c) => c.body!.idempotency_key)).size).toBe(1);
+    expect(texts(".agent-user-wrap").join(" ")).toContain("편집본이 먼저 저장됨");
+    expect(texts(".agent-user-wrap").join(" ")).not.toContain("원래 글");
+    expect(input().value).toBe("원래 글");
+  });
+
+  it("복원 재시도의 대화 조회 실패는 참고와 key를 보존하고, 새 초안을 명시하면 옛 key를 재사용하지 않는다", async () => {
+    let attempt = 0;
+    let reads = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations/restored-1") return json(restoredHistory());
+      if (c.path === "/turns") return ++attempt === 1 ? json({ detail: "접수 답 실패" }, 500)
+        : json({ turn_id: "accepted-turn", conversation_id: "accepted-chat", status: "failed" });
+      if (c.path === "/conversations/accepted-chat") return ++reads === 1 ? json({ detail: "대화 조회 실패" }, 500) : json({
+        conversation: { id: "accepted-chat", title: "접수된 대화", engine: "claude", model: "opus", effort: "medium", resumable: true },
+        turns: [{ id: "accepted-turn", status: "failed", text: "원래 글", events: [] }],
+      });
+      return json({}, 404);
+    };
+    await openRestored(); useRestored(); await flush();
+    type("원래 글"); enter(); await flush();
+    type("남길 편집본"); enter(); await flush();
+    expect(button("참고 기록 빼기")).not.toBeNull();
+    expect(input().value).toBe("남길 편집본");
+    enter(); await flush();
+    expect(new Set(turnCalls().map((c) => c.body!.idempotency_key)).size).toBe(1);
+    expect(host.textContent).toContain("접수된 대화를 불러왔습니다");
+    const oldKey = turnCalls()[0].body!.idempotency_key;
+    act(() => root.unmount()); root = createRoot(host);
+    await openRestored(); useRestored(); await flush();
+    type("명시한 새 초안"); enter(); await flush();
+    expect(turnCalls().at(-1)!.body!.idempotency_key).not.toBe(oldKey);
+  });
+
+  it("복원 초안은 화면 문맥만 바뀌어도 같은 key이고, 허브 신원이 바뀌면 재발급 뒤 전송하지 않는다", async () => {
+    let attempt = 0;
+    let changed = false;
+    route = (c) => {
+      if (c.path === "/session") return session("jay@example.com", changed ? "s2" : "s1", changed ? "id-2" : "id-1");
+      if (c.path === "/conversations/restored-1") return json(restoredHistory());
+      if (c.path === "/turns") {
+        if (++attempt === 1) return Promise.reject(new TypeError("Failed to fetch"));
+        changed = true;
+        return json({ detail: "패널 만료" }, 401, { "X-MVHub-Panel-Error": "session" });
+      }
+      return json({}, 404);
+    };
+    await openRestored(); useRestored(); await flush();
+    type("유지할 글"); enter(); await flush();
+    act(() => root.render(<AgentPanel context={{ tab: "my", folder: "e002" }} contextLabel="다른 폴더" onClose={() => {}} />));
+    await flush(); enter(); await flush();
+    expect(turnCalls()).toHaveLength(2);
+    expect(turnCalls()[1].body!.idempotency_key).toBe(turnCalls()[0].body!.idempotency_key);
+    expect(turnCalls().every((c) => c.headers["X-MVHub-Panel"] !== "s2")).toBe(true);
+    expect(input().value).toBe("유지할 글");
+    expect(button("참고 기록 빼기")).toBeNull();
+  });
+
+  it("복원 참조 조회에서 빠진 계획도 확인 전이며 공간 전환은 보내기 전 참고를 제거한다", async () => {
+    route = (c) => c.path === "/session" ? session()
+      : c.path === "/conversations/restored-1" ? json({ ...restoredHistory(), references: [] }) : json({}, 404);
+    await openRestored();
+    expect(host.textContent).toContain("계획 자료: 확인 전");
+    useRestored(); await flush(); type("남길 초안");
+    act(() => root.render(<AgentPanel context={{ tab: "my", workspace: { scope: "team", id: "other-team" } }} contextLabel="다른 팀" onClose={() => {}} />));
+    await flush();
+    expect(button("참고 기록 빼기")).toBeNull();
+    expect(input().value).toBe("남길 초안");
+    expect(turnCalls()).toHaveLength(0);
+  });
+
   it("보내면 차례를 열고 사건을 받는다 — text_delta 는 붙고 text 는 그 덩어리를 바꾸며, 계획 카드의 [실행]은 실행 입구를 한 번만 부른다", async () => {
     const rest = deferred<Response>();
     route = (c) => {

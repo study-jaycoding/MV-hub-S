@@ -87,6 +87,9 @@ def test_account_switch_and_aba_keep_header_and_files_on_the_same_pin(env, monke
     original = ("a@example.test", "uid-a")
     current = [original]
     data = folder / "data"
+    from app import db
+    content = db.init_db(folder / "content.db")
+    monkeypatch.setenv("CONTENT_HUB_DB", str(content))
     monkeypatch.setattr(active_account.config, "AUTH_ENABLED", False)
     monkeypatch.setattr(active_account.config, "DATA_DIR", data)
     monkeypatch.setattr(active_account, "_read_pointer", lambda: {"email": current[0][0], "uid": current[0][1]})

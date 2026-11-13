@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,12 @@ from starlette.datastructures import UploadFile
 
 from app.routers import assets
 from app.services import asset_io, asset_mounts
+
+
+@pytest.fixture(autouse=True)
+def ordinary_mount_state(monkeypatch):
+    # These disk unit tests mock the mount database; restore integration has its own real DB fixture.
+    monkeypatch.setattr(assets, "_restore_state", lambda: None)
 
 
 class _ChunkUpload:
@@ -527,8 +534,7 @@ class AssetIoTests(unittest.TestCase):
             failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))
             with (
                 patch.object(assets, "ASSETS_ROOT", root),
-                # AIO-2 계약 변경: 라우터는 검색과 확정을 분리하지 않고 이 함수 한 번에 위임한다.
-                patch.object(asset_io, "find_or_commit_media", side_effect=RuntimeError("hash failed")),
+                patch.object(asset_io, "find_same_media", side_effect=RuntimeError("hash failed")),
                 self.assertRaises(RuntimeError),
             ):
                 asyncio.run(

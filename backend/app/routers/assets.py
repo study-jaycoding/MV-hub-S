@@ -39,7 +39,6 @@ from ..repo import asset_registry as _registry_repo
 from ..config import (
     ASSETS_ROOT,
     AUTH_ENABLED,
-    DATA_DIR,
     DEFAULT_PROJECT,
     DEFAULT_WORKER_ID,
     MANAGE_ENABLED,
@@ -92,10 +91,7 @@ def _mounts_file() -> Path:
     ★DB·마이그레이션과 동일하게 계정 키=이메일(account_key)을 써야 같은 폴더를 가리킨다.
     (예전엔 uid 를 써서 DB 는 email 폴더, 마운트는 uid 폴더로 갈려 로그인 후 마운트가 사라졌다.)
     로그인하면 data/db/acct/<email-slug>/asset_mounts.json, 미로그인/단독이면 레거시 위치."""
-    from ..active_account import account_dir, account_key
-
-    key = account_key()
-    return (account_dir(key) / "asset_mounts.json") if key else (DATA_DIR / "asset_mounts.json")
+    return asset_mounts.mounts_file()
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 router.include_router(assets_metadata.router)
@@ -167,9 +163,29 @@ def _commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
     os.link(하드링크)로 '없을 때만 생성'을 원자화해 동일 이름 동시 업로드 race 를 막는다.
     하드링크 불가 파일시스템은 O_EXCL 로 최종 이름을 선점한 뒤 replace 로 폴백."""
     try:
-        return asset_io.commit_unique_tmp(tmp, dest_dir, raw_name)
+        from ..db import share_operation_write
+        with share_operation_write():
+            return asset_io.commit_unique_tmp(tmp, dest_dir, raw_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _find_or_commit_media(tmp, dest, name, digest, kind, size):
+    """Keep hashing outside the restore gate; only final file changes hold it."""
+    from .. import db
+    try:
+        dest = dest.resolve()
+        key = (os.path.normcase(str(dest)), digest, kind, size)
+        with asset_io._media_commit_lock(key):
+            existing = asset_io.find_same_media(dest, digest, kind, size)
+            if existing is not None:
+                db.require_share_operation_epoch()
+                return existing, True
+            return _commit_unique_tmp(tmp, dest, name), False
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _validate_upload_batch(files: list[UploadFile]) -> None:
@@ -208,7 +224,17 @@ def _validate_upload_batch(files: list[UploadFile]) -> None:
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
     """그 계정(owner)이 등록한 마운트만 — 각자 자기 것만 본다."""
-    return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID)
+    from .. import db
+    with db.pinned_share_operation():
+        # Admit the content connection before the file lock, including legacy owner migration.
+        with get_connection() as conn:
+            restored = asset_mounts.restore_state(conn) is not None
+            return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID, restored=restored)
+
+
+def _restore_state():
+    with get_connection() as conn:
+        return asset_mounts.restore_state(conn)
 
 
 # 마운트 경로 해석 TTL 캐시 — 응답 없는 SMB 공유의 resolve()/is_dir() 는 요청마다 수 초~
@@ -257,10 +283,20 @@ def _resolve_mount_path(raw: str) -> Optional[Path]:
         pending.set()
 
 
+def _allowed_mount(state, mount) -> bool:
+    if state is None:
+        return True
+    if not any(pair["name"] == mount["name"] for pair in state["confirmed"]):
+        return False
+    resolved = _resolve_mount_path(mount["path"])
+    return asset_mounts.allowed(state, mount["name"], resolved or mount["path"])
+
+
 def _mount_dir(name: str, owner: str) -> Optional[Path]:
     """등록 이름 → 실제 폴더(그 계정 소유 안에서만 해석 — 남의 마운트엔 접근 못 함)."""
+    state = _restore_state()
     for m in _owner_mounts(owner):
-        if m["name"] == name:
+        if m["name"] == name and _allowed_mount(state, m):
             return _resolve_mount_path(m["path"])
     return None
 
@@ -321,8 +357,9 @@ def _auto_project_mounts(
 
 
 def _auto_mount_dir(name: str, request: Request) -> Optional[tuple[Path, str]]:
+    state = _restore_state()
     for m in _auto_project_mounts(request):
-        if m["name"] == name:
+        if m["name"] == name and _allowed_mount(state, m):
             directory = _resolve_mount_path(m["path"])
             if directory is not None:
                 return directory, m["project_id"]
@@ -344,20 +381,23 @@ def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bo
     if project in _INTERNAL_FOLDERS:
         cand = (ASSETS_ROOT / project).resolve()
         return (cand, False, asset_watcher.manual_registration_id(owner, project)) if cand.is_dir() else None
+    state = _restore_state()
+    if state is not None and not any(p["name"] == project for p in state["confirmed"]):
+        return None
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
     if md:
-        return md, False, asset_watcher.manual_registration_id(owner, project)
+        return (md, False, asset_watcher.manual_registration_id(owner, project)) if asset_mounts.allowed(state, project, md) else None
     auto = _auto_mount_dir(project, request)
     if auto:
         directory, project_id = auto
-        return directory, True, asset_watcher.auto_registration_id(project_id)
+        return (directory, True, asset_watcher.auto_registration_id(project_id)) if asset_mounts.allowed(state, project, directory) else None
     cand = (ASSETS_ROOT / project).resolve()
     try:
         cand.relative_to(ASSETS_ROOT)
     except ValueError:
         return None
-    if not cand.is_dir():
+    if not asset_mounts.allowed(state, project, cand) or not cand.is_dir():
         return None
     return cand, False, asset_watcher.manual_registration_id(owner, project)
 
@@ -743,23 +783,32 @@ def list_projects(
 class MountIn(BaseModel):
     name: str
     path: str
+    restore_id: Optional[str] = None
+
+
+class MountConfirmIn(MountIn):
+    restore_id: str
 
 
 def _mounts_payload(request: Request, workspace_id: Optional[str] = None) -> dict:
     """마운트 목록 응답(수동 + 프로젝트 자동, 이름 중복 제거) — GET/POST/DELETE 공통.
     셋이 같은 스키마를 돌려줘야 등록/삭제 직후와 새로고침 목록이 어긋나지 않는다
     (auto 폴더가 사라졌다 되살아나 보이는 현상 방지)."""
-    manual = [
-        {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None}
-        for m in _owner_mounts(actor_id(request))
-    ]
-    names = {m["name"] for m in manual}
-    auto = [
-        {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None, "auto": True}
-        for m in _auto_project_mounts(request, workspace_id)
-        if m["name"] not in names
-    ]
-    return {"mounts": manual + auto}
+    state = _restore_state()
+    manual = _owner_mounts(actor_id(request))
+    identities = {(m["name"], asset_mounts.normalized_path(m["path"])) for m in manual}
+    auto = [{**m, "auto": True} for m in _auto_project_mounts(request, workspace_id)
+            if (m["name"], asset_mounts.normalized_path(m["path"])) not in identities]
+    mounts = []
+    for mount in [*manual, *auto]:
+        exists = _resolve_mount_path(mount["path"]) is not None
+        confirmed = _allowed_mount(state, mount)
+        mounts.append({"name": mount["name"], "path": mount["path"], "exists": exists,
+                       **({"auto": True} if mount.get("auto") else {}),
+                       **({"restore_state": "pending" if not confirmed else "confirmed" if exists else "failed"}
+                          if state is not None else {})})
+    return {"mounts": mounts, "restore_id": state["id"] if state else None,
+            "restore_invalid": bool(state and state.get("invalid"))}
 
 
 @router.get("/mounts", dependencies=[Depends(_require_local_assets)])
@@ -774,7 +823,12 @@ def add_mount(body: MountIn, request: Request):
     """외부 폴더 등록 — **내(actor_id) 개인 목록**에 추가. 같은 이름이 내 목록에 있으면 경로 갱신.
     다른 계정이 같은 이름을 써도 충돌하지 않는다(계정별 네임스페이스). 원격의 임의 등록은
     _require_mount_manager(로그인 필요)로 막는다 — 자기 마운트 범위만 열람 가능."""
-    owner = actor_id(request)
+    from .. import db
+    with db.pinned_share_operation():
+        return _add_mount(body, request)
+
+
+def _checked_mount_path(body: MountIn) -> tuple[str, Path]:
     name = body.name.strip()
     # 사용자가 경로를 따옴표째 붙여넣어도 처리
     path = body.path.strip().strip('"').strip("'")
@@ -786,25 +840,83 @@ def add_mount(body: MountIn, request: Request):
     if not p.is_dir():
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
     p = Path(str(path_comparison_key(p)))  # 저장·비교는 보통 형태로
+    return name, p
+
+
+def _confirm_mount(body: MountIn, request: Request, *, register: bool):
+    owner = actor_id(request)
+    state = _restore_state()
+    if state is not None and state.get("invalid"):
+        raise HTTPException(400, "복원된 폴더 확인 정보가 손상되었습니다. 백업을 다시 복원하세요.")
+    if ((state is not None and body.restore_id != state["id"])
+            or (state is None and (body.restore_id or not register))):
+        raise HTTPException(409, "복원 또는 폴더 정보가 바뀌었습니다. 목록을 새로고침하고 다시 확인하세요.")
+    name, p = _checked_mount_path(body)
+    manual, source_location = True, None
+    if not register:
+        # Resolve candidate aliases before admitting a transaction (a disconnected NAS can be slow).
+        def same_candidate(m):
+            try:
+                return m["name"] == name and asset_mounts.canonical_path(m["path"]) == asset_mounts.normalized_path(p)
+            except (OSError, ValueError):
+                return False
+        candidate = next((m for m in asset_mounts.load(_mounts_file()) if same_candidate(m)), None)
+        manual = candidate is not None
+        source_location = candidate["path"] if candidate else None
+        if not manual:
+            auto = any(same_candidate(m) for m in _auto_project_mounts(request))
+            fallback = safe_join(ASSETS_ROOT, name)
+            if not auto and (fallback is None or asset_mounts.normalized_path(fallback) != asset_mounts.normalized_path(p)):
+                raise HTTPException(409, "폴더 정보가 바뀌었습니다. 목록을 새로고침하고 다시 확인하세요.")
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            asset_mounts.confirm(conn, _mounts_file(), name=name, location=str(p), owner=owner,
+                                 restore_id=body.restore_id, register=register, manual=manual, source_location=source_location)
+        except ValueError as exc:
+            if str(exc) == "asset_restore_invalid":
+                raise HTTPException(400, "복원된 폴더 확인 정보가 손상되었습니다. 백업을 다시 복원하세요.") from exc
+            raise HTTPException(409, "복원 또는 폴더 정보가 바뀌었습니다. 목록을 새로고침하고 다시 확인하세요.") from exc
+    with _MOUNT_PATH_LOCK:
+        _MOUNT_PATH_CACHE.clear()
+
+
+def _add_mount(body: MountIn, request: Request):
+    owner = actor_id(request)
+    name = body.name.strip()
     # 내 항목 중 같은 이름만 교체(남의 마운트는 그대로 보존).
     previous = next((m for m in _owner_mounts(owner) if m["name"] == name), None)
-    asset_mounts.upsert(_mounts_file(), name=name, location=str(p), owner=owner)
-    if previous and os.path.normcase(
-        os.path.normpath(previous["path"])
-    ) != os.path.normcase(str(p)):
+    _confirm_mount(body, request, register=True)
+    if previous and asset_mounts.normalized_path(previous["path"]) != asset_mounts.normalized_path(body.path):
         asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
     with _MOUNT_PATH_LOCK:  # 방금 검증한 경로가 실패로 캐시돼 있으면(복구 직후 재등록) 즉시 무효화
         _MOUNT_PATH_CACHE.clear()
     return _mounts_payload(request)
 
 
+@router.post("/mounts/confirm", dependencies=[Depends(_require_mount_manager)])
+def confirm_mount(body: MountConfirmIn, request: Request):
+    from .. import db
+    with db.pinned_share_operation():
+        _confirm_mount(body, request, register=False)
+        asset_watcher.unwatch(asset_watcher.manual_registration_id(actor_id(request), body.name.strip()))
+        return _mounts_payload(request)
+
+
 @router.delete("/mounts/{name:path}", dependencies=[Depends(_require_mount_manager)])  # 이름의 '/' 도 받는다(서버셋 설계 ①)
-def del_mount(name: str, request: Request):
+def del_mount(name: str, request: Request, path: Optional[str] = None, restore_id: Optional[str] = None):
     """등록된 외부 폴더 해제 — **내 것만** 지운다(남의 등록엔 영향 없음). 원본 폴더는 안 건드림."""
-    owner = actor_id(request)
-    asset_mounts.remove(_mounts_file(), name=name, owner=owner)
-    asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
-    return _mounts_payload(request)
+    from .. import db
+    with db.pinned_share_operation():
+        owner = actor_id(request)
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                asset_mounts.remove(_mounts_file(), name=name, owner=owner, conn=conn, location=path, restore_id=restore_id)
+            except ValueError as exc:
+                raise HTTPException(409, "복원 또는 폴더 정보가 바뀌었습니다. 목록을 새로고침하고 다시 해제하세요.") from exc
+        asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
+        return _mounts_payload(request)
 
 
 @router.get("/tree", dependencies=[Depends(_require_local_assets)])
@@ -1101,8 +1213,11 @@ async def _queue_folder_upload(request, project, relative_dir, files):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     def admission():
         from ..deps import require_project_role
-        manual = next((m for m in _owner_mounts(actor_id(request)) if m["name"] == project), None)
-        auto = None if manual else next((m for m in _auto_project_mounts(request) if m["name"] == project), None)
+        state = _restore_state()
+        manual = next((m for m in _owner_mounts(actor_id(request)) if m["name"] == project
+                       and _allowed_mount(state, m)), None)
+        auto = None if manual else next((m for m in _auto_project_mounts(request) if m["name"] == project
+                                        and _allowed_mount(state, m)), None)
         mount = manual or auto
         if mount:
             if auto:
@@ -1110,12 +1225,14 @@ async def _queue_folder_upload(request, project, relative_dir, files):
             root = Path(mount["path"]).expanduser()
             if not root.is_absolute():
                 raise HTTPException(status_code=400, detail="대상 폴더 절대 경로가 필요합니다")
+            if state is not None:
+                root = Path(str(path_comparison_key(_resolve_mount_path(str(root)) or root)))
             return {"kind": "manual" if manual else "project", "root_path": os.path.normpath(str(root)),
                     "project_id": mount.get("project_id", ""), "project_name": project, "relative_dir": relative_dir}
         if not project or asset_destination.validate_relative(project) != project or "/" in project:
             raise HTTPException(status_code=404, detail="프로젝트 없음")
         local_root = safe_join(ASSETS_ROOT, project)
-        if local_root is None or not local_root.is_dir():
+        if local_root is None or not asset_mounts.allowed(state, project, local_root) or not local_root.is_dir():
             raise HTTPException(status_code=404, detail="프로젝트 없음")
         return {"kind": "internal", "root_path": os.path.normpath(str(local_root)),
                 "project_name": project, "relative_dir": relative_dir}
@@ -1142,7 +1259,7 @@ async def _queue_folder_upload(request, project, relative_dir, files):
                 skipped.append(name)
                 continue
             def commit():
-                path, _ = asset_io.find_or_commit_media(tmp, local, name, digest, media_type, size)
+                path, _ = _find_or_commit_media(tmp, local, name, digest, media_type, size)
                 file_path = f"asset:{_PROMPT_IMPORT_PROJECT}|{path.name}"
                 try:
                     with get_connection() as conn:
@@ -1217,7 +1334,7 @@ def _commit_capture_and_sync(tmp,cap_dir,name,digest,size,project,proj_dir,reque
 
 
 def _commit_import_and_sync(tmp,dest,name,digest,media_type,size,request,target_project_id):
-    target,reused=asset_io.find_or_commit_media(tmp,dest,name,digest,media_type,size)
+    target,reused=_find_or_commit_media(tmp,dest,name,digest,media_type,size)
     info=_register_import_sync(request,target,f"asset:{_PROMPT_IMPORT_PROJECT}|{target.name}",digest,size,media_type,target_project_id)
     return target,reused,info
 
@@ -1336,17 +1453,24 @@ def _commit_capture_with_discard_token(
     · reuse → 옛 토큰 무효화 + 파일 실존 검증(discard 가 pop→검사→unlink 를 같은 락
       안에서 다 하므로, 여기서 보인 파일은 이후 옛 토큰으로 절대 지워지지 않는다).
       이미 지워졌으면 사라진 경로 응답 대신 409 로 재시도를 유도한다."""
-    with _capture_discard_lock:
-        target, reused = asset_io.find_or_commit_media(tmp, cap_dir, name, digest, "image", size)
-        rel = target.relative_to(proj_dir).as_posix()
-        if reused:
-            # project 이름이 달라도 같은 물리 폴더를 가리킬 수 있다. 논리 토큰이 아니라 파일 키로
-            # 옛 정리 권한을 없애야 다른 별칭에서 재사용한 파일을 먼저 올린 쪽이 지우지 못한다.
-            _invalidate_capture_discard_tokens(target)
-            if not target.exists():
-                raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
-            return target, True, None
-        return target, False, _issue_capture_discard_token(project, rel, target, digest)
+    from ..db import share_operation_write
+    try:
+        cap_dir = cap_dir.resolve()
+        key = (os.path.normcase(str(cap_dir)), digest, "image", size)
+        with asset_io._media_commit_lock(key):
+            existing = asset_io.find_same_media(cap_dir, digest, "image", size)
+            # Admission precedes the discard lock; no DB/gate wait while holding it.
+            with share_operation_write(), _capture_discard_lock:
+                target = existing or asset_io.commit_unique_tmp(tmp, cap_dir, name)
+                rel = target.relative_to(proj_dir).as_posix()
+                if existing is not None:
+                    _invalidate_capture_discard_tokens(target)
+                    if not target.exists():
+                        raise HTTPException(status_code=409, detail="캡처가 방금 정리되었습니다 — 다시 시도하세요")
+                    return target, True, None
+                return target, False, _issue_capture_discard_token(project, rel, target, digest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _issue_capture_discard_token(project: str, rel: str, target: Path, digest: str) -> str:
@@ -1384,47 +1508,57 @@ def discard_capture(body: CaptureDiscardIn, request: Request):
     require_local_machine_request(
         request, "캡처 정리는 해당 작업자 PC에서만 실행할 수 있습니다"
     )
+    from .. import db
+    with db.pinned_share_operation():
+        return _discard_capture(body, request)
+
+
+def _discard_capture(body: CaptureDiscardIn, request: Request):
+    from .. import db
     now = time.monotonic()
-    # pop→참조검사→unlink 전체를 한 락 안에서 — reuse 확정(_finalize_reused_capture)과
-    # 원자화해 'reused 로 고른 직후 파일이 사라지는' 경합을 닫는다(코덱스 BLOCK).
-    # 락 안의 sqlite 1건 조회는 짧고(로컬 파일 DB) capture 업로드는 드물어 병목 아님.
     with _capture_discard_lock:
-        entry = _capture_discard_tokens.pop(body.token, None)
-        if entry is None or entry[4] < now:
+        entry = _capture_discard_tokens.get(body.token)
+    if entry is None or entry[4] < now:
+        raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
+    project, rel, committed_key, committed_sha = entry[0], entry[1], entry[2], entry[3]
+    proj_dir = _safe_project_dir(project, request)
+    target = _safe_resolve(proj_dir, rel) if proj_dir else None
+    if not proj_dir or target is None:
+        raise HTTPException(status_code=400, detail="잘못된 경로")
+    if _capture_path_key(target) != committed_key:
+        raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
+    if target.exists() and _sha256_file(target) != committed_sha:
+        raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
+    with get_connection() as conn:
+        row = conn.execute("SELECT 1 FROM reference WHERE file_path = ? LIMIT 1", (f"asset:{project}|{rel}",)).fetchone()
+        managed = conn.execute("SELECT 1 FROM asset_sync_outbox o JOIN asset_location l ON l.location_id=o.local_location_id WHERE l.original_file_path=? AND o.project_id<>'' AND o.state IN ('queued','uploading','retrying','ready') LIMIT 1", (f"asset:{project}|{rel}",)).fetchone()
+    with db.share_operation_write(), _capture_discard_lock:
+        # A reuse between the checks and unlink invalidates this token under the same lock.
+        if _capture_discard_tokens.pop(body.token, None) != entry:
             raise HTTPException(status_code=404, detail="정리 토큰이 없거나 만료되었습니다")
-        project, rel, committed_key, committed_sha = entry[0], entry[1], entry[2], entry[3]
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM reference WHERE file_path = ? LIMIT 1",
-                (f"asset:{project}|{rel}",),
-            ).fetchone()
-            managed = conn.execute("SELECT 1 FROM asset_sync_outbox o JOIN asset_location l ON l.location_id=o.local_location_id WHERE l.original_file_path=? AND o.project_id<>'' AND o.state IN ('queued','uploading','retrying','ready') LIMIT 1",(f"asset:{project}|{rel}",)).fetchone()
-            if managed:
-                raise HTTPException(status_code=409,detail="서버 보관이 예약된 자료라 로컬 캐시를 유지합니다")
-            conn.execute("UPDATE asset_location SET state='missing' WHERE original_file_path=? AND kind='local'",(f"asset:{project}|{rel}",))
+        if managed:
+            raise HTTPException(status_code=409, detail="서버 보관이 예약된 자료라 로컬 캐시를 유지합니다")
         if row:
             raise HTTPException(status_code=409, detail="생성물이 참조하는 파일이라 지우지 않습니다")
-        proj_dir = _safe_project_dir(project, request)
-        target = _safe_resolve(proj_dir, rel) if proj_dir else None
-        if not proj_dir or target is None:  # 토큰은 서버 발급이라 정상경로지만 이중 방어
-            raise HTTPException(status_code=400, detail="잘못된 경로")
-        # ★올릴 때의 그 파일이 맞을 때만 지운다 — 그 사이 프로젝트 폴더 설정이 바뀌었거나
-        #  같은 자리를 다른 파일이 차지했으면 지우지 않고 보류한다(Codex 2026-09-28).
-        if _capture_path_key(target) != committed_key:
-            raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
         # 이미 없으면 정리 목적은 달성됐다. 파일이 있을 때만 지문을 확인해 같은 자리에 생긴
         # 다른 파일을 지우지 않는다. 토큰은 위에서 pop 했으므로 이 성공도 1회용이다.
         if target.exists():
-            if _sha256_file(target) != committed_sha:
-                raise HTTPException(status_code=409, detail="그때 올린 파일이 아니라 지우지 않습니다")
             try:
                 target.unlink(missing_ok=True)
             except OSError:
                 raise HTTPException(status_code=409, detail="파일을 지우지 못했습니다")
         # 한계: 업로드 재사용 없이 다른 project 별칭으로 직접 참조한 경우 exact logical 조회는
         # 그 별칭을 못 본다. 완전 차단은 reference 에 물리경로 색인을 추가하는 별도 DB 작업이다.
-    asset_tree.invalidate_project_tree(proj_dir)
-    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
+    try:
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            with _capture_discard_lock:
+                # A new capture may recreate this path after unlink; keep its ready location.
+                if not target.exists():
+                    conn.execute("UPDATE asset_location SET state='missing' WHERE original_file_path=? AND kind='local'", (f"asset:{project}|{rel}",))
+    finally:
+        asset_tree.invalidate_project_tree(proj_dir)
+        asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"ok": True}
 
 
@@ -1533,8 +1667,9 @@ def locate_legacy_assets(body: LocateIn, request: Request):
     # 후보를 **물리 경로로 묶어** 같은 파일이 두 번 세어지지 않게 한다 — 같은 폴더를 두 이름·두
     # 깊이로 등록하면(`뻘뻘뻘`=…/10_ai, `뻘뻘뻘_RnD`=…/10_ai/assets) 한 그림이 두 곳에서
     # 찾히는데, 그걸 '여럿'으로 세면 도리어 아무것도 못 고친다.
-    manual_mounts = _owner_mounts(owner)
-    auto_mounts = _auto_project_mounts(request)
+    restore = _restore_state()
+    manual_mounts = [m for m in _owner_mounts(owner) if _allowed_mount(restore, m)]
+    auto_mounts = [m for m in _auto_project_mounts(request) if _allowed_mount(restore, m)]
     mounts = [
         m
         for m in [*manual_mounts, *auto_mounts]
@@ -1621,6 +1756,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             scoped_mounts = []
         scoped: list[tuple[str, Path]] = []
         for mount in scoped_mounts:
+            if not _allowed_mount(restore, mount):
+                continue
             # 이름이 아니라 **공간에 등록된 실제 폴더**를 훑는다. 이 PC 는 같은 이름의 개인 등록을
             # 먼저 보므로, 이름으로 좁히면 공간 밖 폴더를 훑게 된다(Codex 2026-09-28).
             space_dir = _resolve_mount_path(mount["path"])
@@ -1763,6 +1900,8 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             continue
         project, rest = asset_paths.real_meta_key(project, rest)
         internal = project in _INTERNAL_FOLDERS
+        if restore is not None and not internal and project_dir_of(project) is None:
+            continue
         info: dict[str, Any] = {"rest": rest, "internal": internal, "open": None,
                                 "id": (body.registry_ids.get(token) or "").strip()}
         fp = _valid_fingerprint(body.fingerprints.get(token))
@@ -1869,6 +2008,11 @@ def locate_legacy_assets(body: LocateIn, request: Request):
             continue
         old_project, rest = asset_paths.real_meta_key(old_project, rest)
         internal = old_project in _INTERNAL_FOLDERS
+        if restore is not None and not internal and project_dir_of(old_project) is None:
+            unresolved.append(token)
+            note(token, incomplete)
+            held_why[token] = {"why": "restore_confirmation_required", "count": 0, "projects": []}
+            continue
         # render 폴더 안을 가리키는 참조에는 '서버에 없음'을 말하지 않는다 — PM 프로젝트는 render 를 훑지 않는다.
         # '레퍼런스 찾기' 단추는 render 까지 훑으므로 말한다.
         judgeable = can_judge and (

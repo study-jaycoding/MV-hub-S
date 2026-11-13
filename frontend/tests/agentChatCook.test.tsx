@@ -113,6 +113,17 @@ const flush = async () => {
 const tiles = () => [...host.querySelectorAll(".agent-plan-tile")].map((el) => el.textContent);
 
 describe("보낸 계획 카드", () => {
+  it.each(["available", "missing", "unchecked"] as const)("복원한 계획의 %s 참조는 옛 완료 캐시·사건으로 덮지 않고 실행하지 않는다", async (status) => {
+    const progress = applyPlanSnapshot(card(), snap("1", [sub(0, "done"), sub(1, "done")])).progress;
+    act(() => root.render(<AgentPlanCard plan={{ ...PLAN, restored_reference: {
+      plan_id: "p1", status, generations: [{ id: "g0", status }],
+    } }} progress={progress} exec={{ state: "done" }} onExecute={vi.fn()} onRevise={vi.fn()} findGeneration={gen} />));
+    await flush();
+    expect(host.textContent).toContain(status === "available" ? "자료 확인됨" : status === "missing" ? "자료 없음" : "확인 전");
+    expect(host.querySelector(".agent-plan-sent, .agent-plan-tiles, .agent-plan-run, .agent-plan-fix, .agent-plan-cost")).toBeNull();
+    expect(fetched.some((p) => p.includes("/generations/"))).toBe(false);
+  });
+
   it("완료 썸네일 세 경로 — 앱이 읽은 카드 / getGeneration 한 번 / 못 읽으면 글 · 누르면 크게 보기", async () => {
     const four = { ...PLAN, items: [0, 1, 2, 3].map((i) => ({ model: "M", prompt: `고양이 ${i}` })) };
     const progress = applyPlanSnapshot({ kind: "plan", id: "x", plan: four }, snap("1", [sub(0, "done"), sub(1, "done"), sub(2, "done"), sub(3, "running")])).progress;

@@ -212,6 +212,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const [screenOn, setScreenOn] = useState(true); // 기억하지 않는다 — 새 대화·지난 대화 열기마다 다시 붙는다
   // 새 창이면 '새 창에서 열기' 요청을 받는다 · 옆 칸이면 이 창의 캔버스 손잡이로 화면 동작을 실행한다(새 창은 실행하지 않음)
   const chat = useAgentChat(screenOn ? context : NO_SCREEN, { popout, screen: popout ? undefined : screen });
+  const restored = !!chat.current?.restored_from;
   const [text, setText] = useState("");
   const [revising, setRevising] = useState<{ title: string } | null>(null); // [고치기] — 입력칸의 '고칠 계획' 칩
   // 입력칸 아래 칩 메뉴 — 모델(회사별 하위 메뉴·설정) · 생각 깊이(빠른 모드) · 사용량(docs/status/MVAgent_모델설정사용량_2026-11-12.md)
@@ -258,6 +259,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   useEffect(() => { // 공간(scope·id)·계정이 바뀌면 칩·캐시·조회를 비운다 — 팀 이름만 채워지는 것은 바뀜이 아니다
     if (wsKeyRef.current === wsKey) return;
     wsKeyRef.current = wsKey;
+    chat.removeRestoreSource();
     chipEpoch.current += 1;
     setGenCache({});
     requestedSent.current.clear();
@@ -265,7 +267,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       setChips([]);
       setAttachNote(t("공간이 바뀌어 붙인 자료를 비웠어요"));
     }
-  }, [wsKey, t]);
+  }, [wsKey, t, chat.removeRestoreSource]);
   const genOf = (id: string) => findGeneration?.(id) ?? genCache[id] ?? undefined;
   const removeChip = (uid: number) => {
     setChips((now) => now.filter((c) => c.uid !== uid));
@@ -348,10 +350,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     },
   };
   // 내 말 위 썸네일 — 앱이 읽은 카드에 없는 생성물만 묶음 조회 한 번(대화가 바뀌었으면 버림, 설계 2-5)
-  const sentGenIds = Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "user" && m.attachments
+  const sentGenIds = restored ? [] : Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "user" && m.attachments
     ? m.attachments.flatMap((a) => (a.kind === "generation" ? [a.id] : [])) : []))));
   // 정보 칸 — 이 대화 계획 카드에서 끝난 생성물 · 내 말에 붙였던 자료(중복 없이)
-  const madeIds = Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "plan" && m.progress
+  const madeIds = restored ? [] : Array.from(new Set(chat.messages.flatMap((m) => (m.kind === "plan" && m.progress
     ? Object.values(m.progress.items).flatMap((it) => (it.generation_id && it.generation_status === "done" ? [it.generation_id] : [])) : []))));
   const attachedBefore = Array.from(new Map(chat.messages.flatMap((m) => (m.kind === "user" && m.attachments
     ? m.attachments.map((a) => [attachKey(a), a] as const) : []))).values());
@@ -417,6 +419,12 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     void chat.loadConversations();
   };
   const startNew = () => { chat.newConversation(); setText(""); setRevising(null); setScreenOn(true); setDrawer(false); };
+  const startFromRestored = () => {
+    if (!chat.newFromRestored()) return;
+    setRevising(null);
+    setDrawer(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
   // 포크 — 허브가 복사한 새 대화를 만들면 그 대화를 연다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
   const forkNow = (id: string) => { setDrawer(false); setMenu(null); setRevising(null); setScreenOn(true); void chat.forkConversation(id); };  const revise = (title: string) => {
     setRevising({ title });
@@ -435,7 +443,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const needsConnect = chat.connect.supported && !chat.connect.allowed && chat.choice?.engine !== "codex";
   // 아직 갈라지지 않은 포크 — 대화를 열 때 받은 응답 기준(목록 줄이 아니라). 원래가 이어졌거나 지워졌으면 보내기 잠금
   const forkState = chat.current && chat.current.id === chat.conversationId ? chat.current.fork_state ?? null : null;
-  const locked = needsConnect || !chat.choice || (!!forkState && forkState !== "ready");
+  const locked = restored || needsConnect || !chat.choice || (!!forkState && forkState !== "ready");
   // 머리글 메뉴 — 보고 있는 대화의 요약(목록에 있으면 그것, 없으면 열 때·허브 응답에서 받은 것) · 맨 위 줄은 옆 칸 = 새 창에서 열기, 새 창 = 옆 칸으로 붙이기
   const summary = chat.conversations?.find((c) => c.id === chat.conversationId)
     ?? (chat.current && chat.current.id === chat.conversationId ? chat.current : undefined);
@@ -556,7 +564,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           </div>
         )}
         {groupTools(chat.messages).map((r) => (r.kind === "tools" ? <ToolGroup key={r.id} tools={r.tools} /> : (
-          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={reuse} onUndo={chat.undoAction}
+          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={restored ? undefined : reuse} onUndo={chat.undoAction} readOnly={restored}
             findGeneration={findGeneration} genOf={genOf} onPreview={onPreview} />
         )))}
         {needsConnect && (
@@ -581,7 +589,15 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       {chat.notice && <p className="agent-notice" role="status">{chat.notice}</p>}
       {headNote && <p className="agent-notice" role="status">{headNote}</p>}
       {attachNote && <p className="agent-notice" role="status">{attachNote}</p>}
-      {forkState && (
+      {restored && <div className="agent-fork-note agent-notice" role="status">
+        <p>{t("복원한 기록이에요 · 열람 전용 — 이어 쓰기·계획 실행·포크는 할 수 없어요")}</p>
+        <button type="button" className="agent-action-undo" disabled={blocked || !chat.restoreReference}
+          onClick={startFromRestored}>{t("이 기록으로 새 대화")}</button>
+      </div>}
+      {chat.restoreSource && <p className="agent-notice" role="status">
+        {t("과거 기록은 참고 자료로만 전달돼요. 지금 할 일을 적고 보내 주세요.")} {t("보낼 모델")}: {engine?.id} · {modelLabel}
+      </p>}
+      {forkState && !restored && (
         <p className={`agent-fork-note ${forkState === "ready" ? "agent-notice" : "agent-error"}`} role="status">
           {forkState === "ready" ? t("포크한 대화예요 · 첫 말을 보내면 이 시점에서 갈라져요")
             : t("원래 대화가 이어졌거나 지워져 이 포크는 시작할 수 없어요 — 지우고 원래 대화에서 다시 포크하세요")}
@@ -590,7 +606,16 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
 
       <form className="agent-composer" onSubmit={submit}>
         {/* 지금 화면은 머리글 정보 칸으로 옮겼다(docs/status/MVAgent_정보칸_2026-11-12.md) — 입력칸에는 고칠 계획·붙인 자료 칩만 */}
-        {(revising || chips.length > 0) && <div className="agent-chips">
+        {(chat.restoreSource || revising || chips.length > 0) && <div className="agent-chips">
+          {chat.restoreSource && <div className="agent-context">
+            <span className="agent-context-text">
+              <b>{t("참고 기록")}: {chat.restoreSource.title || t("제목 없음")}</b>
+              <small>{chat.restoreSource.included_turns}{t("턴 포함")} · {chat.restoreSource.earlier_turns}{t("턴 제외")}{chat.restoreSource.truncated ? ` · ${t("긴 글 일부 생략")}` : ""}</small>
+              <small>{t("내 말·답변만 포함 · 도구·계획·첨부 제외")}</small>
+            </span>
+            <button type="button" className="agent-context-x" disabled={blocked} onClick={chat.removeRestoreSource}
+              aria-label={t("참고 기록 빼기")}>×</button>
+          </div>}
           {revising && (
             <div className="agent-context agent-revise">
               <span className="agent-context-mark" aria-hidden="true"><PencilIcon /></span>
@@ -618,8 +643,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             </div>
           ))}
         </div>}
-        <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect}
-          placeholder={needsConnect ? t("Claude 를 연결하면 쓸 수 있어요")
+        <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect || restored}
+          placeholder={restored ? t("복원한 기록은 열람만 할 수 있어요")
+            : needsConnect ? t("Claude 를 연결하면 쓸 수 있어요")
+            : chat.restoreSource ? t("이 기록을 참고해 지금 할 일을 적어 주세요")
             : revising ? t("어떻게 고칠지 적어 주세요 — 예: 바나나만, 9:16 으로")
             : !screenOn ? t("지금 화면 없이 물어보세요 — 어디인지는 직접 알려 주세요")
             : t("Agent 에게 일을 맡기거나 물어보세요")}
@@ -705,7 +732,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
               <div className="agent-info-grid">
                 {madeIds.map((id) => <SentAttachment key={id} item={{ kind: "generation", id }} genOf={genOf} onPreview={onPreview} />)}
               </div>
-            ) : <p className="agent-info-empty">{t("아직 없어요")}</p>}
+            ) : <p className="agent-info-empty">{t(restored ? "복원 기록의 자료 상태는 계획 카드에서 확인하세요" : "아직 없어요")}</p>}
           </InfoCardBox>
           <InfoCardBox title={t("붙였던 자료")} count={attachedBefore.length} folded={infoFold.includes("attached")} onFold={() => foldCard("attached")}>
             {attachedBefore.length ? (
@@ -749,19 +776,20 @@ function InfoCardBox({ title, count, folded, onFold, extra, children }: {
   );
 }
 
-function Message({ message: m, onExecute, onRevise, onReuse, onUndo, findGeneration, genOf, onPreview }: {
+function Message({ message: m, onExecute, onRevise, onReuse, onUndo, findGeneration, genOf, onPreview, readOnly }: {
   message: AgentMessage;
   onExecute: (planId: string) => void;
   onUndo: (actionId: string) => void;
   onRevise: (title: string) => void;
-  onReuse: (text: string) => void;
+  onReuse?: (text: string) => void;
+  readOnly?: boolean;
   findGeneration?: (id: string) => Generation | undefined;
   genOf: (id: string) => Generation | undefined; // 붙인 생성물 썸네일 — 앱 카드 또는 칸이 읽어 둔 것
   onPreview?: (target: PreviewTarget) => void;
 }) {
   switch (m.kind) {
     case "user":
-      return <UserMessage text={m.text} attachments={m.attachments} genOf={genOf} onPreview={onPreview} onReuse={onReuse} />;
+      return <UserMessage text={m.text} attachments={m.attachments} genOf={genOf} onPreview={onPreview} onReuse={onReuse} readOnly={readOnly} />;
     case "assistant":
       return <div className="agent-msg agent-assistant"><AgentMarkdown text={m.text} /></div>;
     case "tool":
@@ -774,7 +802,7 @@ function Message({ message: m, onExecute, onRevise, onReuse, onUndo, findGenerat
     case "error":
       return <div className="agent-msg agent-msg-error" role="alert">{m.message}</div>;
     case "action":
-      return <ActionCard card={m} onUndo={onUndo} />;
+      return <ActionCard card={readOnly ? { ...m, undo: undefined } : m} onUndo={onUndo} />;
   }
 }
 
@@ -825,12 +853,13 @@ function ToolGroup({ tools }: { tools: ToolMessage[] }) {
 }
 
 /** 내 말 — 올리면 [복사][고쳐 보내기](Aside Copy · Edit message). 고쳐 보내기는 입력칸에 다시 채울 뿐 바로 보내지 않는다. */
-function UserMessage({ text, attachments, genOf, onPreview, onReuse }: {
+function UserMessage({ text, attachments, genOf, onPreview, onReuse, readOnly }: {
   text: string;
   attachments?: AgentAttachment[];
   genOf: (id: string) => Generation | undefined;
   onPreview?: (target: PreviewTarget) => void;
-  onReuse: (text: string) => void;
+  onReuse?: (text: string) => void;
+  readOnly?: boolean;
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
@@ -844,7 +873,9 @@ function UserMessage({ text, attachments, genOf, onPreview, onReuse }: {
     <div className="agent-user-wrap">
       {attachments?.length ? (
         <div className="agent-sent" aria-label={t("붙인 자료")}>
-          {attachments.map((a, i) => <SentAttachment key={attachKey(a)} item={a} num={i + 1} genOf={genOf} onPreview={onPreview} />)}
+          {attachments.map((a, i) => readOnly
+            ? <span key={attachKey(a)} className="agent-sent-chip">{i + 1}. {a.name ?? (a.kind === "generation" ? t("생성물") : lastSegment(a.path))}</span>
+            : <SentAttachment key={attachKey(a)} item={a} num={i + 1} genOf={genOf} onPreview={onPreview} />)}
         </div>
       ) : null}
       <div className="agent-msg agent-user">{text}</div>
@@ -852,9 +883,9 @@ function UserMessage({ text, attachments, genOf, onPreview, onReuse }: {
         <button type="button" className="agent-mini" onClick={copy} title={copied ? t("복사했어요") : t("복사")} aria-label={t("복사")}>
           {copied ? <span aria-hidden="true">✓</span> : <CopyIcon />}
         </button>
-        <button type="button" className="agent-mini" onClick={() => onReuse(text)} title={t("고쳐 보내기")} aria-label={t("고쳐 보내기")}>
+        {onReuse && <button type="button" className="agent-mini" onClick={() => onReuse(text)} title={t("고쳐 보내기")} aria-label={t("고쳐 보내기")}>
           <PencilIcon />
-        </button>
+        </button>}
       </div>
     </div>
   );
@@ -917,10 +948,11 @@ type RowAct = "pin" | "unread" | "rename" | "fork" | "archive" | "delete";
 const ROW_KEYS: Record<string, RowAct | undefined> = { KeyP: "pin", KeyU: "unread", KeyR: "rename", KeyF: "fork", KeyA: "archive", KeyD: "delete" };
 // 포크할 수 없는 까닭(허브의 fork_block — docs/status/MVAgent_포크_2026-11-12.md 2-4)
 const FORK_BLOCK: Record<string, string> = {
+  restored: "복원한 기록은 포크할 수 없어요",
   codex: "Codex 대화는 포크할 수 없어요", not_resumable: "이어 갈 수 없는 대화예요",
   forked_unstarted: "포크한 대화에 먼저 한 번 말해 주세요", no_session: "먼저 한 번 대화해 주세요",
 };
-const canFork = (c?: AgentConversationSummary) => !!c?.can_fork;
+const canFork = (c?: AgentConversationSummary) => !c?.restored_from && !!c?.can_fork;
 type SubSide = NonNullable<RowMenu["side"]>;
 type MenuTop = { icon: ReactNode; label: string; run: () => void }; // 메뉴 맨 위 한 줄(새 창에서 열기 / 옆 칸으로 붙이기)
 
@@ -1040,8 +1072,9 @@ function DeleteConfirm({ target, onCancel, onConfirm }: { target: AgentConversat
     <div className="agent-drawer-confirm" role="dialog" aria-modal="true" aria-label={t("이 대화를 지울까요?")}>
       <h4>{t("이 대화를 지울까요?")}</h4>
       <p className="agent-confirm-title">「{target.title || t("제목 없음")}」</p>
-      <p>{t("칸 기록과 이 대화의 Claude 기억(세션 파일)이 함께 지워지고 되돌릴 수 없어요. 만든 그림은 라이브러리에 그대로 남아요.")}</p>
-      {target.engine === "codex" && <p>{t("Codex 대화는 Codex 기록이 Codex 폴더에 남아요.")}</p>}
+      <p>{t(target.restored_from ? "복원한 칸 기록만 지워집니다. 원래 CLI 세션 파일과 라이브러리 자료는 그대로 남아요."
+        : "칸 기록과 이 대화의 Claude 기억(세션 파일)이 함께 지워지고 되돌릴 수 없어요. 만든 그림은 라이브러리에 그대로 남아요.")}</p>
+      {!target.restored_from && target.engine === "codex" && <p>{t("Codex 대화는 Codex 기록이 Codex 폴더에 남아요.")}</p>}
       <div className="agent-confirm-acts">
         <button type="button" className="agent-confirm-btn" onClick={onCancel}>{t("취소")}</button>
         <button type="button" className="agent-confirm-btn danger" autoFocus onClick={onConfirm}>{t("삭제")}</button>
@@ -1342,7 +1375,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
                         disabled={locked} onClick={() => (c.id === currentId ? onClose() : onOpen(c.id))}>
                         {c.pinned && !c.archived && <PinIcon />}
                         <span>{c.title || t("제목 없음")}</span>
-                        {!c.resumable && <small>{t("이어 가기 불가")}</small>}
+                        {c.restored_from ? <small>{t("복원 기록")}</small> : !c.resumable && <small>{t("이어 가기 불가")}</small>}
                         {running && c.id === currentId ? <i className="agent-drawer-dot" title={t("일하는 중")} />
                           : c.unread && <i className="agent-drawer-unread" title={t("읽지 않음")} />}
                       </button>

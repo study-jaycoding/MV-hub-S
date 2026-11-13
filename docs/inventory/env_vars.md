@@ -33,7 +33,7 @@
 | `CONTENT_HUB_ASSET_TREE_CACHE_TTL` | `"30"` | `backend/app/services/asset_tree.py` | — |
 | `CONTENT_HUB_ASSET_UPLOAD_TOTAL_MAX_BYTES` | `1024 * MIB` | `backend/app/services/upload_limits.py` | — |
 | `CONTENT_HUB_AUTH` | `"0"` `'0'` | `backend/app/config.py` `run_agent_session.py` | `MV_agent.bat` `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
-| `CONTENT_HUB_AUTH_SECRET` | — | `backend/app/services/auth.py` | — |
+| `CONTENT_HUB_AUTH_SECRET` | — | `backend/app/routers/db_transfer.py` `backend/app/services/auth.py` | — |
 | `CONTENT_HUB_BACKUP_CHANGE_DEBOUNCE` | `"300"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_DIR` | `""` `DATA_DIR / "backups"` | `backend/app/services/backup.py` `tools/backup_replicate.py` `tools/server_console/backup.py` | — |
 | `CONTENT_HUB_BACKUP_INTERVAL` | `str(24 * 3600)` | `backend/app/services/backup.py` | — |

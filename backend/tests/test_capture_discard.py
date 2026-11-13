@@ -53,7 +53,7 @@ def captures_root(tmp_path, monkeypatch: pytest.MonkeyPatch):
 def _fake_db(monkeypatch: pytest.MonkeyPatch, referenced_paths: list[str]):
     @contextmanager
     def fake_connection():
-        conn = sqlite3.connect(":memory:")
+        conn = sqlite3.connect(":memory:", isolation_level=None)
         conn.execute("CREATE TABLE reference (file_path TEXT)")
         from app.db_asset_sync import DDL
         conn.executescript(DDL)
@@ -139,15 +139,18 @@ def test_commit_capture_token_bookkeeping_is_atomic_with_discard(
     f = cap_dir / "capture-x.png"
     f.write_bytes(b"png")
     # 신규 커밋 경로 — 토큰이 같은 임계구역에서 발급된다
-    monkeypatch.setattr(assets.asset_io, "find_or_commit_media", lambda *a, **k: (f, False))
+    part = cap_dir / ".capture.part"
+    part.write_bytes(b"png")
+    monkeypatch.setattr(assets.asset_io, "find_same_media", lambda *a, **k: None)
+    monkeypatch.setattr(assets.asset_io, "commit_unique_tmp", lambda *a, **k: f)
     target, reused, token = assets._commit_capture_with_discard_token(
-        f, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
+        part, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
     )
     assert (target, reused) == (f, False) and token
     # 이어서 reuse — 방금 발급된 신규 토큰을 무효화하고 실존을 검증한다
-    monkeypatch.setattr(assets.asset_io, "find_or_commit_media", lambda *a, **k: (f, True))
+    monkeypatch.setattr(assets.asset_io, "find_same_media", lambda *a, **k: f)
     assert assets._commit_capture_with_discard_token(
-        f, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
+        part, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
     ) == (
         f,
         True,
@@ -161,7 +164,7 @@ def test_commit_capture_token_bookkeeping_is_atomic_with_discard(
     f.unlink()
     with pytest.raises(HTTPException) as exc:
         assets._commit_capture_with_discard_token(
-        f, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
+        part, cap_dir, "capture-x.png", "digest", 3, "proj", captures_root
     )
     assert exc.value.status_code == 409
 

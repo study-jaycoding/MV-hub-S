@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -31,6 +32,7 @@ from ..services.request_guards import require_loopback_browser_request
 from . import _proxy, mcp, mcp_v2
 
 router = APIRouter(prefix="/api/agent-chat", tags=["agent-chat"])
+_log = logging.getLogger(__name__)
 _EXPECT = "x-mvhub-expect-account"
 _PANEL = "x-mvhub-panel"
 _MAX_CONTEXT = 4096
@@ -61,30 +63,41 @@ async def _captured(request: Request):
 
 
 async def _panel(request: Request):
-    secret_identity = service.session_identity(request.headers.get(_PANEL))
-    if secret_identity is None:  # 신원 확인 전에 먼저 본다 — 표 없는 요청에 공유 서버 확인을 쓰지 않게
-        require_loopback_browser_request(request, "MV Agent 칸은 이 PC 의 앱에서만 쓸 수 있습니다.")
-        raise HTTPException(401, "칸 연결이 끝났습니다. 다시 여세요.", headers=_SESSION_GONE)
-    ctx, identity = await _captured(request)
-    if identity != secret_identity:
-        raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED)
-    with active_account.pinned_account_scope(ctx.pin), _proxy.pinned_connection(ctx.upstream):
-        yield ctx, identity
+    async with chat.request_scope():
+        secret_identity = service.session_identity(request.headers.get(_PANEL))
+        if secret_identity is None:  # 표 없는 요청에 공유 서버 확인을 쓰지 않는다.
+            require_loopback_browser_request(request, "MV Agent 칸은 이 PC 의 앱에서만 쓸 수 있습니다.")
+            raise HTTPException(401, "칸 연결이 끝났습니다. 다시 여세요.", headers=_SESSION_GONE)
+        try:
+            ctx, identity = await _captured(request)
+        except HTTPException:
+            chat_store.check_current(secret_identity.file_path())
+            raise
+        if identity != secret_identity:
+            raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED)
+        chat_store.check_current(identity.file_path())
+        with active_account.pinned_account_scope(ctx.pin), _proxy.pinned_connection(ctx.upstream):
+            yield ctx, identity
 
 
 async def _still(ctx) -> None:
+    chat_store.check_current(_identity(ctx).file_path())
     try:
         await asyncio.to_thread(mcp_v2._still_current, ctx)
+    except chat_store.StaleRequest:
+        raise
     except HTTPException as exc:
         raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED) from exc
 
 
 @router.post("/session")
 async def session(request: Request):
-    ctx, identity = await _captured(request)
-    engines = await asyncio.to_thread(service.engines)
-    return {"secret": service.issue_session(identity), "account_email": identity.email, "identity_key": identity.key(),
-            "engines": engines}
+    async with chat.request_scope():
+        ctx, identity = await _captured(request)
+        engines = await asyncio.to_thread(service.engines)
+        chat_store.check_current(identity.file_path())
+        return {"secret": service.issue_session(identity), "account_email": identity.email, "identity_key": identity.key(),
+                "engines": engines}
 
 
 def _window_open() -> bool:
@@ -211,14 +224,15 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
             raise HTTPException(409, "이 대화는 아직 일하는 중이에요. 끝난 뒤 지워 주세요.") from exc
     if row is None:
         raise HTTPException(404, "대화를 찾을 수 없습니다.")
-    if not row["cli_session_id"]:
+    if row.get("restored_from") or not row["cli_session_id"]:
         session_file = "none"
     elif row["engine"] != "claude":
         session_file = "codex_kept"
     else:
         session_file = await asyncio.to_thread(claude.delete_session_record, row["cli_session_id"], row["cli_home"], row["cli_cwd"])
     try:
-        (config.AGENT_CHAT_DIR / "mcp" / f"{conversation_id}.json").unlink(missing_ok=True)
+        if not row.get("restored_from"):
+            (config.AGENT_CHAT_DIR / "mcp" / f"{conversation_id}.json").unlink(missing_ok=True)
     except OSError:
         pass  # 칸 폴더의 설정 파일 — 남아도 다시 쓰이지 않는다(대화가 없다)
     return {"deleted": True, "session_file": session_file}
@@ -263,6 +277,10 @@ async def fork_conversation(conversation_id: UUID, body: ForkIn, request: Reques
         setup = await mcp.setup(request, identity=None)
 
         def work():
+            with service.issuance(identity):
+                return issue_and_fork()
+
+        def issue_and_fork():
             # 발급·복사·회수를 한 작업 스레드에서 — 요청이 발급 중에 취소돼도 이 스레드가 끝까지 정리한다(포크 독립 리뷰 P2)
             client_id, entry = mcp_v2.issue_panel_client(ctx, setup)
             try:
@@ -283,6 +301,8 @@ async def fork_conversation(conversation_id: UUID, body: ForkIn, request: Reques
         except ValueError as exc:
             raise HTTPException(503, mcp_v2._setup_error_message(exc)) from exc
         except HTTPException as exc:  # 발급·커밋 직전 신원 확인
+            if isinstance(exc, chat_store.StaleRequest):
+                raise
             raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED) from exc
         except (chat_store.ForkRefused, chat_store.Busy, LookupError) as exc:
             raise _fork_error(exc) from exc
@@ -300,16 +320,36 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
         if not found:
             return None
         public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable",
-                                              "can_fork", "fork_block", "fork_state")}
+                                              "can_fork", "fork_block", "fork_state", "restored_from")}
         public.update({key: bool(found.get(key)) for key in ("pinned", "archived", "unread")}, unread_rev=found.get("unread_rev") or 0)
         return {"conversation": public, "turns": found["turns"]}
 
     result = await asyncio.to_thread(load)  # 사건을 먼저 읽고 그다음 스냅샷 — 복원 스냅샷이 함께 돌려준 사건보다 새롭다(설계 A2-5)
     if result is None:
         raise HTTPException(404, "대화를 찾을 수 없습니다.")
-    result["plans"] = await _plan_snapshots(ctx, identity, str(conversation_id))
+    if result["conversation"]["restored_from"]:
+        result["plans"] = []
+        result["restore_reference"] = await asyncio.to_thread(chat.restored_reference, identity.file_path(), str(conversation_id))
+        result["references"] = await asyncio.to_thread(_restored_references, identity, str(conversation_id))
+    else:
+        result["plans"] = await _plan_snapshots(ctx, identity, str(conversation_id))
     await _still(ctx)  # 읽는 사이 계정이 바뀌었으면 넘기지 않는다
     return result
+
+
+def _restored_references(identity, conversation_id):
+    with chat_store.connect_readonly(identity.file_path()):
+        bindings = chat_store.bindings_for_conversation(identity.file_path(), conversation_id, limit=100)
+        out = []
+        for index, binding in enumerate(bindings):
+            row = {"plan_id": binding["plan_id"], "status": "unchecked", "generations": []}
+            if index < 20:
+                try:
+                    row = mcp_store.restored_reference(identity.email, binding["client_id"], binding["plan_id"])
+                except Exception:  # 확인 실패는 '없음'으로 바꾸지 않는다.
+                    pass
+            out.append(row)
+        return out
 
 
 _RESTORE_SECONDS = 15.0
@@ -398,6 +438,7 @@ def _attach_key(item) -> tuple:
 class TurnIn(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     conversation_id: UUID | None = None
+    source_conversation_id: UUID | None = None
     engine: Literal["claude", "codex"]
     model: str = Field(min_length=1, max_length=40)
     effort: Literal["low", "medium", "high", "xhigh", "max"]
@@ -414,6 +455,8 @@ class TurnIn(StrictModel):
 
     @model_validator(mode="after")
     def _check_attachments(self):
+        if self.source_conversation_id and self.conversation_id:
+            raise ValueError("참고 기록은 새 대화에서만 지정하세요")
         if bool(self.attachments) != (self.attach_workspace is not None):
             raise ValueError("붙인 자료와 그 공간은 함께 보내세요")
         keys = [_attach_key(item) for item in self.attachments]
@@ -512,6 +555,8 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         conv = await asyncio.to_thread(chat_store.get_conversation, path, str(body.conversation_id))
         if not conv:
             raise HTTPException(404, "대화를 찾을 수 없습니다.")
+        if conv.get("restored_from"):
+            raise HTTPException(409, "복원한 기록은 읽기 전용입니다. 새 대화로 시작하세요.")
         if conv["engine"] != body.engine:
             raise HTTPException(409, "엔진을 바꾸면 새 대화로 시작하세요.")
         if not conv["resumable"]:
@@ -523,34 +568,63 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         if state == "source_gone":
             raise HTTPException(409, "원래 대화가 지워져 이 포크를 이어 갈 수 없어요 · 지우고 다시 포크하세요.")
     else:
-        setup = await mcp.setup(request, identity=None)
-        try:
-            client_id, entry = await asyncio.to_thread(mcp_v2.issue_panel_client, ctx, setup)
-        except ValueError as exc:
-            raise HTTPException(503, mcp_v2._setup_error_message(exc)) from exc
-        conv = await asyncio.to_thread(lambda: chat_store.create_conversation(
-            path, engine=body.engine, model=body.model, effort=body.effort, client_id=client_id, mcp_entry=entry,
-            title=" ".join(body.text.split())[:40]))
+        conv = None
+    reference = (await asyncio.to_thread(chat.restored_reference, path, str(body.source_conversation_id))
+                 if body.source_conversation_id else None)
+    setup = await mcp.setup(request, identity=None) if conv is None else None
+
+    def work():
+        with service.issuance(identity):
+            current = conv
+            cid = current["id"] if current is not None else str(uuid4())
+            client_id = None
+            try:
+                new_conversation = None
+                if current is None:
+                    client_id, entry = mcp_v2.issue_panel_client(ctx, setup)
+                    mcp_v2._still_current(ctx)
+                    new_conversation = dict(engine=body.engine, model=body.model, effort=body.effort, client_id=client_id,
+                                            mcp_entry=entry, title=" ".join(body.text.split())[:40], source_reference=reference)
+                turn, created = chat_store.claim_turn(
+                    path, conversation_id=cid, idempotency_key=body.idempotency_key, text=body.text, context=body.context,
+                    attachments=body.stored_attachments(), new_conversation=new_conversation)
+                if current is None:
+                    if not created:
+                        mcp_store.revoke(client_id, ctx.owner, norm_email(ctx.account["email"]))
+                    current = chat_store.get_conversation(path, turn["conversation_id"])
+            except BaseException:
+                if client_id is not None:
+                    try:
+                        # 커밋 뒤 조회만 실패했으면 같은 요청으로 회수할 차례와 발급을 보존한다.
+                        made = chat_store.turn_by_key(path, body.idempotency_key)
+                        if not made or made["conversation_id"] != cid:
+                            mcp_store.revoke(client_id, ctx.owner, norm_email(ctx.account["email"]))
+                    except Exception:
+                        _log.error("Agent first-turn credential cleanup could not be confirmed")
+                raise
+            if created:
+                chat_store.update_conversation(path, current["id"], model=body.model, effort=body.effort)
+                try:
+                    service.start_turn(identity, conversation=current, turn=turn, model=body.model, effort=body.effort,
+                                       text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
+                                       fast=body.fast, attachments=body.stored_attachments(), gen_model=body.gen_model,
+                                       screen_tab=str(body.screen_tab) if body.screen_tab else None)
+                except chat_store.StaleRequest:
+                    raise
+                except Exception as exc:
+                    chat_store.finish_turn(path, turn["id"], "failed", reason="start_failed", error="AI 프로그램을 시작하지 못했습니다.")
+                    raise HTTPException(503, "AI 프로그램을 시작하지 못했습니다.") from exc
+            return {"turn_id": turn["id"], "conversation_id": turn["conversation_id"], "status": turn["status"]}
+
     try:
-        turn, created = await asyncio.to_thread(lambda: chat_store.claim_turn(
-            path, conversation_id=conv["id"], idempotency_key=body.idempotency_key, text=body.text, context=body.context,
-            attachments=body.stored_attachments()))
+        with anyio.CancelScope(shield=True):
+            return await to_thread_non_abandon(work)
+    except ValueError as exc:
+        raise HTTPException(503, mcp_v2._setup_error_message(exc)) from exc
     except chat_store.Busy as exc:
         raise HTTPException(409, "앞 차례가 아직 진행 중입니다.") from exc
-    except LookupError as exc:  # 사이에 지워진 대화(설계 2-5)
+    except LookupError as exc:
         raise HTTPException(404, "대화를 찾을 수 없습니다.") from exc
-    if created:
-        await asyncio.to_thread(chat_store.update_conversation, path, conv["id"], model=body.model, effort=body.effort)
-        try:
-            service.start_turn(identity, conversation=conv, turn=turn, model=body.model, effort=body.effort,
-                               text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
-                               fast=body.fast, attachments=body.stored_attachments(), gen_model=body.gen_model,
-                               screen_tab=str(body.screen_tab) if body.screen_tab else None)
-        except Exception as exc:  # noqa: BLE001 - 실행 전 실패는 그 차례를 끝내고 알린다
-            await asyncio.to_thread(lambda: chat_store.finish_turn(path, turn["id"], "failed", reason="start_failed",
-                                                                   error="AI 프로그램을 시작하지 못했습니다."))
-            raise HTTPException(503, "AI 프로그램을 시작하지 못했습니다.") from exc
-    return {"turn_id": turn["id"], "conversation_id": turn["conversation_id"], "status": turn["status"]}
 
 
 @router.get("/turns/{turn_id}/events")
@@ -588,6 +662,9 @@ class PlanActIn(StrictModel):
 
 async def _bound_plan(ctx, identity: Identity, plan_id: str, conversation_id: str) -> None:
     """허브가 MCP 응답에서 직접 묶어 둔 계획만, 그리고 그 계획을 만든 대화에서만 — 그 칸 연결(실행권 없는 패널 연결)을 ctx 에 싣는다."""
+    conversation = await asyncio.to_thread(chat_store.get_conversation, identity.db_file(), conversation_id)
+    if conversation and conversation.get("restored_from"):
+        raise HTTPException(409, "복원한 기록의 계획은 실행하거나 견적을 조회할 수 없습니다.")
     binding = await asyncio.to_thread(chat_store.binding_for, identity.db_file(), plan_id)
     if not binding or binding["conversation_id"] != conversation_id:  # 포크한 대화의 옛 계획 카드로 원래 계획을 실행하지 않게
         raise HTTPException(404, "이 칸에서 만든 계획이 아닙니다.")
