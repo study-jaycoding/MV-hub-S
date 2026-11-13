@@ -1,6 +1,7 @@
 """캔버스 생성 연결의 재시작 복구·계정 격리·멱등 계약."""
 
 from __future__ import annotations
+from test_scene_notebook import restore_generation
 
 import asyncio
 import concurrent.futures
@@ -421,7 +422,7 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             "u-artist",
             [{"scene_id": "scene-a", "card_id": "card-a", "generation_id": old_id}],
             [],
-        )
+         restore_generation=restore_generation())
         self.assertNotIn(
             old_id,
             repo.list_canvas_generation_candidates("artist@example.com", owner_uid="u-artist"),
@@ -571,7 +572,7 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                     "generation_id": linked["generation_id"],
                 }
             ],
-        )
+         restore_generation=restore_generation())
 
         def history(scene_id, scope="scene", email="artist@example.com", owner="u-artist"):
             page = repo.list_card_generation_history(email, owner, scene_id, scope=scope)
@@ -640,7 +641,7 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                 for gen_id in made
             ],
             [],
-        )
+         restore_generation=restore_generation())
 
         seen = []
         cursor = None
@@ -685,7 +686,7 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                 for card in cards
             ],
             [],
-        )
+         restore_generation=restore_generation())
 
         seen = []
         cursor = None

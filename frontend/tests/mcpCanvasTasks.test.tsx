@@ -161,14 +161,14 @@ it("notebook completion: saved response lost, same retry, deleted card never rea
   const base = () => ({ history_id: "h", rev, hash: digest(data) });
   const order = { ids: ["s1"], rev: 1, history_id: "h" };
   await writeScenesStore({ [bucket]: [] });
-  await joinSceneNotebook("a", "book", "h", { [bucket]: { scenes: clone(io.saved), bases: { s1: { history: "h", rev, hash: digest(data) } }, order: { history: "h", rev: 1 } } });
+  await joinSceneNotebook("a", "book", "h", { [bucket]: { scenes: clone(io.saved), bases: { s1: { history: "h", rev, hash: digest(data) } }, order: { history: "h", rev: 1 } } }, undefined, "restore-1");
   setSceneNotebookTokenProvider(() => ({ account: "a", token: "lease", generation: "gen" }));
   io.confirm.mockImplementation((fn: () => unknown) => { const value = fn(); io.saved = clone(io.working); return { value, confirmed: writeScenesStore({ [bucket]: clone(io.saved) }).then(() => true) }; });
   const statuses: string[] = [], ids: string[] = [];
   let lost = true, completed = false;
   io.http.mockImplementation(async (url: string, init?: RequestInit) => {
     if (url.includes("canvas-tasks?")) return { tasks: [task] }; // Deliberately replay a stale pending task too.
-    if (url.includes("/notebook?")) return { notebook_id: "book", history_id: "h", order, items: [{ id: "s1", data, base: base(), deleted_at: null }] };
+    if (url.includes("/notebook?")) return { restore_generation: "restore-1", notebook_id: "book", history_id: "h", order, items: [{ id: "s1", data, base: base(), deleted_at: null }] };
     if (url.endsWith("/backup")) {
       const body = JSON.parse(String(init?.body)); ids.push(body.request_id);
       const results = body.upserts.map((up: { id: string; data: string }) => {
@@ -179,7 +179,7 @@ it("notebook completion: saved response lost, same retry, deleted card never rea
       const done = (body.mcp_complete ?? []).filter((id: string) => JSON.parse(data).mcpAttachmentReceipts?.includes(id));
       completed ||= done.includes(task.id);
       if (lost && done.length) { lost = false; throw new Error("lost PUT reply"); }
-      return { history_id: "h", results, deletes: [], order, mcp_done: done };
+      return { restore_generation: "restore-1", history_id: "h", results, deletes: [], order, mcp_done: done };
     }
     throw new Error(`unexpected ${url}`);
   });

@@ -13,7 +13,9 @@
 //  · 계정 전환 레이스: 모든 await 뒤 scope 재검사(sceneBackup 과 같은 규칙).
 //  · 팀 서버로 가지 않는다 — 개인 편집물(백엔드 _proxy._LOCAL_PREFIXES '/api/scenes').
 import { getAccountNamespace } from "./accountScope";
-import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
+import { EXPECT_ACCOUNT_HEADER, hubHasFeature } from "./hubFeatures";
+import { notebookRestoreGeneration, mirrorSceneGenerations, SCENE_WRITER_FEATURE, validRestoreGeneration } from "./sceneNotebook";
+import { newSceneIntentId } from "./sceneStore";
 import { jsonFetch } from "./http";
 import { listPersistedScenes, subscribeScenesPersisted, variantIds } from "./scenes";
 
@@ -28,6 +30,8 @@ export interface CardLink {
   card_id: string;
   generation_id: string;
   removed_at?: string | null;
+  restore_generation?: string;
+  intent_id?: string;
 }
 
 const ns = getAccountNamespace;
@@ -51,28 +55,70 @@ let pendingRevives: CardLink[] = [];
 // 제거·부활 의도가 바뀔 때마다 +1 — 그보다 먼저 시작된 GET 응답은 낡은 것이므로 폐기하고
 // 다시 읽는다(제거 직후 도착한 옛 응답이 지운 생성물을 화면에 되살리던 레이스 — 합의 C-3a).
 let mutationEpoch = 0;
+let loadedGeneration: string | null = null;
+function sceneGenerationSnapshot(): (id: string) => string | null {
+  if (hubHasFeature(SCENE_WRITER_FEATURE)) {
+    const generation = notebookRestoreGeneration(ns());
+    return () => generation;
+  }
+  const generations = mirrorSceneGenerations();
+  return (id) => generations.get(id) ?? null;
+}
+const recoveryKey = (scope: string) => `mvhub.cardRecovery:${scope}`;
+interface CardRecovery { generation: string; candidates: { removals: CardLink[]; revives: CardLink[]; backfill: CardLink[] }[] }
+export function readCardRecovery(): CardRecovery | null {
+  const raw = localStorage.getItem(recoveryKey(ns()));
+  if (!raw) return null;
+  const value = JSON.parse(raw) as CardRecovery;
+  if (!validRestoreGeneration(value.generation) || !Array.isArray(value.candidates)) throw new Error("invalid_card_recovery");
+  return value;
+}
+function prepareGeneration(scope: string, generation: string, serverItems: CardLink[]) {
+  if (ns() !== scope || !validRestoreGeneration(generation)) throw new Error("invalid_card_generation");
+  const prior = readCardRecovery(), removals = readIntentList(pendingKey(scope), true), revives = readIntentList(revivesKey(scope), true);
+  const stale = (link: CardLink) => link.restore_generation !== generation || !link.intent_id;
+  const present = new Set(serverItems.map(keyOf));
+  const candidate = { removals: removals.filter(stale), revives: revives.filter(stale),
+    backfill: prior?.generation === generation ? [] : localCardLinks().filter((link) => !present.has(keyOf(link))) };
+  if (prior?.generation !== generation || candidate.removals.length || candidate.revives.length) {
+    const candidates = [...(prior?.candidates ?? [])];
+    if (candidate.removals.length || candidate.revives.length || candidate.backfill.length) candidates.push(candidate);
+    const archived = JSON.stringify({ generation, candidates } satisfies CardRecovery);
+    localStorage.setItem(recoveryKey(scope), archived);
+    if (localStorage.getItem(recoveryKey(scope)) !== archived) throw new Error("card_recovery_write_failed");
+    localStorage.setItem(pendingKey(scope), JSON.stringify(removals.filter((link) => !stale(link))));
+    localStorage.setItem(revivesKey(scope), JSON.stringify(revives.filter((link) => !stale(link))));
+    unsavedIntents.delete(pendingKey(scope)); unsavedIntents.delete(revivesKey(scope));
+  }
+  pendingRemovals = removals.filter((link) => !stale(link)); pendingRevives = revives.filter((link) => !stale(link));
+  loadedGeneration = generation;
+}
 
 const pendingKey = (scope: string) => `ch.sceneCardRemovals.v1.${encodeURIComponent(scope)}`;
 const revivesKey = (scope: string) => `ch.sceneCardRevives.v1.${encodeURIComponent(scope)}`;
+const unsavedIntents = new Map<string, CardLink[]>();
 
-function readIntentList(storageKey: string): CardLink[] {
+function readIntentList(storageKey: string, strict = false): CardLink[] {
   try {
     const raw = JSON.parse(localStorage.getItem(storageKey) || "[]");
-    if (!Array.isArray(raw)) return [];
+    if (!Array.isArray(raw)) { if (strict) throw new Error("invalid_card_queue"); return []; }
     const dedup = new Map<string, CardLink>();
     for (const item of raw) {
-      if (!item || typeof item !== "object") continue;
+      if (!item || typeof item !== "object") { if (strict) throw new Error("invalid_card_intent"); continue; }
       const link = item as Partial<CardLink>;
-      if (!link.scene_id || !link.card_id || !link.generation_id) continue;
+      if (!link.scene_id || !link.card_id || !link.generation_id) { if (strict) throw new Error("invalid_card_intent"); continue; }
       const clean = {
         scene_id: String(link.scene_id),
         card_id: String(link.card_id),
         generation_id: String(link.generation_id),
+        restore_generation: link.restore_generation, intent_id: link.intent_id,
       };
       dedup.set(keyOf(clean), clean);
     }
+    for (const link of unsavedIntents.get(storageKey) ?? []) dedup.set(keyOf(link), link);
     return [...dedup.values()];
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
@@ -81,8 +127,10 @@ function writeIntentList(storageKey: string, links: CardLink[]): void {
   try {
     if (links.length) localStorage.setItem(storageKey, JSON.stringify(links));
     else localStorage.removeItem(storageKey);
+    unsavedIntents.delete(storageKey);
   } catch {
     // 저장공간이 막힌 환경도 현재 세션 메모리 대기열로는 계속 재시도한다.
+    unsavedIntents.set(storageKey, links);
   }
 }
 
@@ -92,7 +140,8 @@ const readRevives = (scope: string) => readIntentList(revivesKey(scope));
 function enqueueRemovals(scope: string, links: CardLink[]): void {
   const merged = new Map(readPending(scope).map((link) => [keyOf(link), link]));
   const incoming = new Set(links.map(keyOf));
-  for (const link of links) merged.set(keyOf(link), link);
+  const sceneGeneration = sceneGenerationSnapshot();
+  for (const link of links) merged.set(keyOf(link), { ...link, restore_generation: sceneGeneration(link.scene_id) ?? undefined, intent_id: newSceneIntentId() });
   pendingRemovals = [...merged.values()];
   writeIntentList(pendingKey(scope), pendingRemovals);
   // 반대 의도 상쇄 — 같은 소속의 대기 중 부활은 이 제거가 대체한다(마지막 의도가 이긴다).
@@ -104,7 +153,8 @@ function enqueueRemovals(scope: string, links: CardLink[]): void {
 function enqueueRevives(scope: string, links: CardLink[]): void {
   const merged = new Map(readRevives(scope).map((link) => [keyOf(link), link]));
   const incoming = new Set(links.map(keyOf));
-  for (const link of links) merged.set(keyOf(link), link);
+  const sceneGeneration = sceneGenerationSnapshot();
+  for (const link of links) merged.set(keyOf(link), { ...link, restore_generation: sceneGeneration(link.scene_id) ?? undefined, intent_id: newSceneIntentId() });
   pendingRevives = [...merged.values()];
   writeIntentList(revivesKey(scope), pendingRevives);
   pendingRemovals = readPending(scope).filter((link) => !incoming.has(keyOf(link)));
@@ -113,15 +163,15 @@ function enqueueRevives(scope: string, links: CardLink[]): void {
 }
 
 function clearSentRemovals(scope: string, links: CardLink[]): void {
-  const sent = new Set(links.map(keyOf));
-  const remaining = readPending(scope).filter((link) => !sent.has(keyOf(link)));
+  const sent = new Set(links.map((link) => JSON.stringify([keyOf(link), link.intent_id])));
+  const remaining = readPending(scope).filter((link) => !sent.has(JSON.stringify([keyOf(link), link.intent_id])));
   writeIntentList(pendingKey(scope), remaining);
   if (curScope === scope) pendingRemovals = remaining;
 }
 
 function clearSentRevives(scope: string, links: CardLink[]): void {
-  const sent = new Set(links.map(keyOf));
-  const remaining = readRevives(scope).filter((link) => !sent.has(keyOf(link)));
+  const sent = new Set(links.map((link) => JSON.stringify([keyOf(link), link.intent_id])));
+  const remaining = readRevives(scope).filter((link) => !sent.has(JSON.stringify([keyOf(link), link.intent_id])));
   writeIntentList(revivesKey(scope), remaining);
   if (curScope === scope) pendingRevives = remaining;
 }
@@ -178,6 +228,7 @@ function enterScope(): string {
   if (curScope !== s) {
     curScope = s;
     known = null;
+    loadedGeneration = null;
     serverLinks = [];
     loadPromise = null;
     rerun = false;
@@ -230,7 +281,9 @@ function load(scope: string, force: boolean): Promise<boolean> {
     let items: CardLink[];
     try {
       // 이 탭의 계정을 싣는다 — 허브가 고정한 계정과 다르면 409(sceneBackup 과 같다, 81회차 F-A-02)
-      const r = await jsonFetch<{ items: CardLink[] }>(API, { headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
+      const r = await jsonFetch<{ restore_generation: string; items: CardLink[] }>(API, { headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
+      if (ns() !== scope) return false;
+      prepareGeneration(scope, r.restore_generation, r.items || []);
       items = r.items || [];
     } catch {
       return false; // 오프라인·미로그인(401)·구백엔드 — 판정 미상. known 을 비워두면 백필이 안 돈다
@@ -264,7 +317,9 @@ export function refreshSceneCardLinks(): Promise<boolean> {
 
 /** 마지막으로 읽은 서버 소속 + 아직 못 보낸 내 의도(제거·부활) 오버레이(합치기용). */
 export function serverCardLinks(sceneId?: string): CardLink[] {
-  const adjusted = overlayPendingIntents(serverLinks);
+  if (curScope !== ns()) return [];
+  const sceneGeneration = sceneGenerationSnapshot();
+  const adjusted = overlayPendingIntents(serverLinks).filter((link) => loadedGeneration !== null && sceneGeneration(link.scene_id) === loadedGeneration);
   return sceneId ? adjusted.filter((l) => l.scene_id === sceneId) : adjusted;
 }
 
@@ -362,7 +417,16 @@ async function send(
     chunk = { backfill: [], explicit: [], removed: [] };
     used = 0;
     // 409(그사이 계정 바뀜)는 다른 실패처럼 대기열을 그대로 두고 재시도한다
-    await jsonFetch(API, { method: "PUT", headers: { [EXPECT_ACCOUNT_HEADER]: scope }, body: JSON.stringify(body) });
+    const generation = loadedGeneration;
+    const sceneGeneration = sceneGenerationSnapshot();
+    if (!validRestoreGeneration(generation) || ns() !== scope || [...body.backfill, ...body.explicit, ...body.removed].some((link) => sceneGeneration(link.scene_id) !== generation)) throw new Error("card_generation_changed");
+    const reply = await jsonFetch<{ restore_generation: string }>(API, { method: "PUT", headers: { [EXPECT_ACCOUNT_HEADER]: scope }, body: JSON.stringify({ ...body, restore_generation: generation }) });
+    if (ns() !== scope) throw new Error("account_changed");
+    const confirmed = await jsonFetch<{ restore_generation: string }>(API, { headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
+    if (ns() !== scope || reply.restore_generation !== generation || confirmed.restore_generation !== generation || readCardRecovery()?.generation !== generation) {
+      if (ns() === scope) { loadedGeneration = null; known = null; }
+      throw new Error("card_generation_changed");
+    }
   };
   const items: [keyof typeof chunk, CardLink, number][] = [
     ...removed.map((l): [keyof typeof chunk, CardLink, number] => ["removed", l, 1]),
@@ -386,10 +450,12 @@ async function pushNew(): Promise<void> {
   pushing = true;
   try {
     const scope = enterScope();
+    if (!(await load(scope, true)) || ns() !== scope) { scheduleRetry(); return; }
     // 사용자의 명시 의도(제거·부활)가 자동 백필보다 항상 먼저다. 실패하면 로컬 대기열을 지우지 않아
     // 온라인 복귀·앱 재시작 뒤에도 재시도된다. 추가와 같은 직렬화 안에서 보내 race로 되살아나지 않는다.
-    const removals = [...pendingRemovals];
-    const revives = [...pendingRevives];
+    let sceneGeneration = sceneGenerationSnapshot();
+    const removals = pendingRemovals.filter((link) => link.restore_generation === loadedGeneration && sceneGeneration(link.scene_id) === loadedGeneration);
+    const revives = pendingRevives.filter((link) => link.restore_generation === loadedGeneration && sceneGeneration(link.scene_id) === loadedGeneration);
     if (removals.length || revives.length) {
       try {
         await send(scope, [], revives, removals);
@@ -413,10 +479,14 @@ async function pushNew(): Promise<void> {
     // 수락한 제거·부활 의도를 다시 덮어씌운다. 그래야 바로 뒤의 자동 추가가 이를 무르지 않는다.
     if (removals.length) applyRemovedToLoadedState(removals);
     if (revives.length) applyRevivedToLoadedState(revives);
+    sceneGeneration = sceneGenerationSnapshot();
+    const held = new Set(readCardRecovery()?.candidates.flatMap((candidate) => candidate.backfill.map(keyOf)) ?? []);
     const fresh: CardLink[] = [];
     const seen = new Set<string>();
     for (const link of localCardLinks()) {
+      if (!loadedGeneration || sceneGeneration(link.scene_id) !== loadedGeneration) continue;
       const k = keyOf(link);
+      if (held.has(k)) continue;
       if (known.has(k) || seen.has(k)) continue;
       seen.add(k);
       fresh.push(link);

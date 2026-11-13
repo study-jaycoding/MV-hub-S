@@ -4,7 +4,10 @@
 // 이쪽은 **백업·복원**이다 — 버킷(계정)·씬 id 를 그대로 싣고, 가져올 때 지금 것을 덮지 않고 합친다.
 // 저장소가 막혔을 때 사용자가 작업을 건질 유일한 길이므로, 내보내기는 아직 확정 안 된 편집까지 싣는다.
 import { getAccountNamespace } from "./accountScope";
-import type { NotebookArchive } from "./sceneNotebook";
+import { readRestoreArchives, notebookRestoreGeneration, SCENE_WRITER_FEATURE, type NotebookArchive, type RestoreArchive } from "./sceneNotebook";
+import { hubHasFeature } from "./hubFeatures";
+import { readEditRecoveryCandidates } from "./editDocBackup";
+import { resumeImportedMirror, type MirrorRecovery } from "./sceneBackup";
 import { downloadText } from "./download";
 import { sameSceneContent, sceneBodySum, type SceneAbsorbConflict } from "./sceneAbsorb";
 import { reviveCardGenerations } from "./sceneCardLinks";
@@ -17,10 +20,37 @@ import {
   type SceneMigrationInfo,
   type SceneStoreDump,
 } from "./sceneStore";
-import { readStoredScene, uid, variantIds, type Scene, type ScenesByProject } from "./scenes";
+import { readStoredScene, listPersistedSceneTexts, uid, variantIds, type Scene, type ScenesByProject } from "./scenes";
 
 export const SCENE_ARCHIVE_FORMAT = "mvhub-scenes-full";
 export const SCENE_ARCHIVE_VERSION = 1;
+export interface StorageRecovery {
+  account: string; canvases: RestoreArchive[]; mirror: MirrorRecovery | null;
+  edits: ReturnType<typeof readEditRecoveryCandidates>;
+  cards: { candidates: { removals: unknown[]; revives: unknown[]; backfill: unknown[] }[] } | null;
+}
+export async function readStorageRecovery(): Promise<StorageRecovery> {
+  const account = getAccountNamespace(), archives = await readRestoreArchives(account);
+  if (!archives.ok || account !== getAccountNamespace()) throw new Error("보관본을 읽지 못했습니다.");
+  const mirror = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as StorageRecovery["mirror"];
+  const cards = JSON.parse(localStorage.getItem(`mvhub.cardRecovery:${account}`) ?? "null") as StorageRecovery["cards"];
+  return { account, canvases: archives.value, mirror, cards, edits: readEditRecoveryCandidates() };
+}
+export function downloadStorageRecovery(recovery: StorageRecovery) {
+  if (recovery.account !== getAccountNamespace()) throw new Error("계정이 바뀌었습니다. 보관본을 다시 읽어 주세요.");
+  const buckets: ScenesByProject = {};
+  for (const archive of recovery.canvases) for (const [bucket, scenes] of Object.entries(archive.scenes)) {
+    if (bucket.startsWith(`${recovery.account}::`)) buckets[bucket] = [...(buckets[bucket] ?? []), ...scenes];
+  }
+  const own = `${recovery.account}::_none`;
+  for (const original of recovery.mirror?.originals ?? []) {
+    buckets[own] = [...(buckets[own] ?? []), ...original.scenes.map((scene) => JSON.parse(scene.text) as Scene)];
+  }
+  downloadText("mvhub-storage-recovery.json", JSON.stringify({
+    format: SCENE_ARCHIVE_FORMAT, schemaVersion: SCENE_ARCHIVE_VERSION, exportedAt: new Date().toISOString(), buckets,
+    conflicts: recovery.canvases.flatMap((archive) => archive.conflicts ?? []), recovery,
+  }), "application/json");
+}
 
 /** 합류 때 한 번 보관한 원본. 현재 버킷을 섞지 않으며 기존 전체 가져오기가 읽는 형식이다. */
 export function downloadNotebookArchive(archive: NotebookArchive): void {
@@ -175,18 +205,32 @@ export function mergeArchiveBucket(local: Scene[], incoming: Scene[]): SceneBuck
 export async function importSceneArchiveText(text: string): Promise<{ added: number; recovered: number }> {
   if (!sceneStoreReady()) throw new Error("캔버스 저장소가 아직 열리지 않았습니다.");
   const dump = parseSceneArchive(text);
+  const account = getAccountNamespace(), notebook = hubHasFeature(SCENE_WRITER_FEATURE);
+  const mirrorKey = `mvhub.mirrorRecovery:${account}`;
+  const mirror = notebook ? null : JSON.parse(localStorage.getItem(mirrorKey) ?? "null") as MirrorRecovery | null;
+  const generation = notebook ? notebookRestoreGeneration(account) : mirror?.generation;
   // 지금 계정의 버킷에 id 그대로 되돌아온 씬(사본 아님) — 아래에서 그 결과 카드의 소속을 되살린다
   const mine = `${getAccountNamespace()}::`;
   const restored: Scene[] = [];
+  const selected = new Map<string, Scene>();
   const out = await mergeSceneStoreDump(dump, (local, incoming, bucket) => {
     const merged = mergeArchiveBucket(local, incoming);
     if (bucket.startsWith(mine)) {
       const had = new Set(local.map((scene) => scene.id));
       restored.push(...merged.next.filter((scene) => !had.has(scene.id) && !scene.recoveredFrom));
+      for (const scene of merged.next) {
+        if (!had.has(scene.id) || incoming.some((item) => item.id === scene.id && sameSceneContent(scene, item))) selected.set(scene.id, scene);
+      }
     }
     return merged;
   });
   if (!out) throw new Error("가져온 캔버스를 저장하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
+  if (account !== getAccountNamespace()) throw new Error("계정이 바뀌어 전송을 보류했습니다.");
+  if (!notebook && generation && mirror) {
+    const confirmed = listPersistedSceneTexts(null).filter((scene) => selected.has(scene.id));
+    if (confirmed.length !== selected.size || confirmed.some((scene) => !sameSceneContent(selected.get(scene.id)!, JSON.parse(scene.text) as Scene))) throw new Error("가져오는 동안 문서가 바뀌어 전송을 보류했습니다.");
+    await resumeImportedMirror(account, generation, new Map(confirmed.map((scene) => [scene.id, scene.text])));
+  }
   // 파일로 되살린 씬의 결과 카드는 사용자가 되살린 것이다 — DB 에 남은 빼기 기록(같은 씬·카드 id)이 다시 빼지 않게 Undo 와 같은 명시적
   //  되살리기로 보낸다(Codex 43회차: 워크플로 교체로 뺀 뒤 씬을 지우고 파일에서 되살리면 그 결과가 카드에서 다시 빠졌다). 사본([사본] — 새 씬 id)과
   //  다른 계정의 버킷은 해당 없다(빼기 기록이 걸리지 않거나, 이 계정의 일이 아니다).

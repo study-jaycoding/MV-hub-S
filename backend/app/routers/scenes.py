@@ -16,6 +16,8 @@ from .. import active_account, config, repo
 from ..deps import actor_id, current_account, expected_account_differs
 from ..emailnorm import norm_email
 from ..repo import scene_notebook
+from ..db import get_connection
+from ..repo.share_commands import database_generation, RestoreGenerationConflict
 from ..services.scene_writer import writer, enabled, WriterConflict
 
 router = APIRouter(prefix="/api/scenes", tags=["scenes"])
@@ -72,6 +74,7 @@ class SceneOrderIn(BaseModel):
 
 
 class SceneSyncIn(BaseModel):
+    restore_generation: Optional[str] = Field(default=None, min_length=1, max_length=200)
     token: Optional[str] = Field(default=None, max_length=200)
     request_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
     deletes: list[SceneDeleteIn] = Field(default_factory=list, max_length=500)
@@ -93,6 +96,7 @@ class CardLinkIn(BaseModel):
 
 
 class CardLinkSyncIn(BaseModel):
+    restore_generation: Optional[str] = Field(default=None, min_length=1, max_length=200)
     added: list[CardLinkIn] = []     # [구클라] 자동 백필 — backfill 로 해석(tombstone 해제 불가)
     backfill: list[CardLinkIn] = []  # 자동 스캔 — 새 행만, 제거 표시를 절대 해제하지 않음
     explicit: list[CardLinkIn] = []  # 사용자 의도(undo 부활 등) — 제거 표시 해제 허용
@@ -103,9 +107,10 @@ class CardLinkSyncIn(BaseModel):
 def list_scene_backups(request: Request, project_id: str = "", include_data: bool = False):
     """내 백업 목록 — 기본 메타만(변경분 대조), include_data=1 은 복구용 전체."""
     with _account_scope(request):
-        return {
-            "items": repo.list_scene_backups(actor_id(request), project_id, include_data)
-        }
+        with get_connection() as conn:
+            conn.execute('BEGIN')
+            return {"items": repo.list_scene_backups(actor_id(request), project_id, include_data, conn=conn),
+                    "restore_generation": database_generation(conn)}
 
 
 @router.put("/backup")
@@ -129,8 +134,9 @@ def sync_scene_backups(body: SceneSyncIn, request: Request):
                 body.deleted_ids,
                 body.delete_bases,
                 body.fork_avoid,
+                restore_generation=body.restore_generation,
             )
-        except WriterConflict as e:
+        except (WriterConflict, RestoreGenerationConflict) as e:
             raise HTTPException(status_code=409, detail=e.code)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -203,13 +209,14 @@ def close_notebook(body: SceneCloseIn, request: Request, response: Response):
                     body.pending_order_base.model_dump() if body.pending_order_base else None)
             response.headers['X-MVHub-Scene-Writer-Changed'] = '1'
             return {'ok': True, **result, 'released': True}
-        except WriterConflict as exc:
+        except (WriterConflict, RestoreGenerationConflict) as exc:
             raise HTTPException(409, exc.code)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
 
 class StartIn(BaseModel):
+    restore_generation: Optional[str] = Field(default=None, min_length=1, max_length=200)
     token: str = Field(min_length=1, max_length=200)
     attempt_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(default='', max_length=200)
@@ -234,7 +241,7 @@ def start_notebook(body: StartIn, request: Request):
         except scene_notebook.StartTooBig as exc:
             raise HTTPException(413, {'code': 'start_too_big', 'scene_ids': exc.ids, 'local_edit_only': True},
                                 headers={'X-MVHub-Scene-Writer-Changed': '1'})
-        except WriterConflict as exc:
+        except (WriterConflict, RestoreGenerationConflict) as exc:
             raise HTTPException(409, exc.code)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
@@ -244,7 +251,10 @@ def start_notebook(body: StartIn, request: Request):
 def list_scene_card_links(request: Request, scene_id: str = ""):
     """카드 소속 — scene_id 를 주면 그 씬만(씬 열 때), 없으면 전부(백필 대조용)."""
     with _account_scope(request):
-        return {"items": repo.list_scene_card_links(actor_id(request), scene_id or None)}
+        with get_connection() as conn:
+            conn.execute('BEGIN')
+            return {"items": repo.list_scene_card_links(actor_id(request), scene_id or None, conn=conn),
+                    "restore_generation": database_generation(conn)}
 
 
 @router.put("/cards")
@@ -257,7 +267,10 @@ def sync_scene_card_links(body: CardLinkSyncIn, request: Request):
                 [a.model_dump() for a in [*body.added, *body.backfill]],
                 [r.model_dump() for r in body.removed],
                 explicit=[e.model_dump() for e in body.explicit],
+                restore_generation=body.restore_generation,
             )
+        except RestoreGenerationConflict as e:
+            raise HTTPException(status_code=409, detail=e.code)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **res}

@@ -8,6 +8,8 @@
   · owner 스코프 격리
 """
 
+from test_scene_notebook import restore_generation
+
 import os
 import tempfile
 import unittest
@@ -45,28 +47,28 @@ class SceneCardLinkTests(unittest.TestCase):
     def test_add_is_idempotent(self):
         """백필은 여러 번 돌 수 있다(앱을 여러 번 켜거나 재시도). 몇 번을 보내도 한 줄이어야 한다."""
         rows = [_link("s1", "c1", "g1"), _link("s1", "c1", "g2")]
-        self.assertEqual(repo.sync_scene_card_links("u1", rows, []), {"added": 2, "removed": 0})
-        repo.sync_scene_card_links("u1", rows, [])
+        self.assertEqual(repo.sync_scene_card_links("u1", rows, [], restore_generation=restore_generation()), {"added": 2, "removed": 0, "restore_generation": restore_generation()})
+        repo.sync_scene_card_links("u1", rows, [], restore_generation=restore_generation())
         self.assertEqual(self._keys(), [("s1", "c1", "g1"), ("s1", "c1", "g2")])
 
     def test_duplicate_inside_one_request_collapses(self):
         self.assertEqual(
-            repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")] * 3, []),
-            {"added": 1, "removed": 0},
+            repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")] * 3, [], restore_generation=restore_generation()),
+            {"added": 1, "removed": 0, "restore_generation": restore_generation()},
         )
         self.assertEqual(len(self._keys()), 1)
 
     def test_remove_marks_instead_of_deleting(self):
         """행을 지우면 아직 모르는 브라우저가 자기 로컬 목록으로 되살린다 — 흔적이 남아야 한다."""
-        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
-        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")])
+        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())
+        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")], restore_generation=restore_generation())
         items = repo.list_scene_card_links("u1")
         self.assertEqual(len(items), 1)
         self.assertIsNotNone(items[0]["removed_at"])
 
     def test_remove_unknown_link_still_recorded(self):
         """이 브라우저엔 없던 소속을 뺀 경우 — 그래도 '뺐다'가 남아야 다른 브라우저가 안 되살린다."""
-        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "gX")])
+        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "gX")], restore_generation=restore_generation())
         items = repo.list_scene_card_links("u1")
         self.assertEqual(len(items), 1)
         self.assertIsNotNone(items[0]["removed_at"])
@@ -76,16 +78,16 @@ class SceneCardLinkTests(unittest.TestCase):
 
         낡은 로컬 목록을 가진 브라우저 A 의 자동 백필이, 브라우저 B 가 그 사이 뺀 것을
         되살리면 안 된다 — 제거 의도가 항상 이긴다."""
-        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
-        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")])
-        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])  # 자동 백필
+        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())
+        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")], restore_generation=restore_generation())
+        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())  # 자동 백필
         self.assertIsNotNone(repo.list_scene_card_links("u1")[0]["removed_at"])
 
     def test_explicit_readd_clears_removed_mark(self):
         """뺐다가 도로 넣는 '사용자 의도'(undo 부활 등)만 표시를 푼다."""
-        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
-        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")])
-        repo.sync_scene_card_links("u1", [], [], explicit=[_link("s1", "c1", "g1")])
+        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())
+        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")], restore_generation=restore_generation())
+        repo.sync_scene_card_links("u1", [], [], explicit=[_link("s1", "c1", "g1")], restore_generation=restore_generation())
         self.assertIsNone(repo.list_scene_card_links("u1")[0]["removed_at"])
 
     def test_identity_remap_preserves_tombstone(self):
@@ -96,10 +98,10 @@ class SceneCardLinkTests(unittest.TestCase):
         from app.repo import identity
 
         old, new = "acct:a@b.c", "user_new"
-        repo.sync_scene_card_links(old, [_link("s1", "c1", "g1")], [])
-        repo.sync_scene_card_links(old, [], [_link("s1", "c1", "g1")])  # acct: 쪽 제거 표시
-        repo.sync_scene_card_links(new, [_link("s1", "c1", "g1")], [])  # user_ 쪽 활성
-        repo.sync_scene_card_links(old, [_link("s2", "c2", "g2")], [])  # 비충돌 — 그대로 이관
+        repo.sync_scene_card_links(old, [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())
+        repo.sync_scene_card_links(old, [], [_link("s1", "c1", "g1")], restore_generation=restore_generation())  # acct: 쪽 제거 표시
+        repo.sync_scene_card_links(new, [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())  # user_ 쪽 활성
+        repo.sync_scene_card_links(old, [_link("s2", "c2", "g2")], [], restore_generation=restore_generation())  # 비충돌 — 그대로 이관
         with db.get_connection() as conn:
             identity.remap_creator_uid(conn, old, new)
         self.assertEqual(repo.list_scene_card_links(old), [])  # 옛 신원 행 정리
@@ -114,25 +116,25 @@ class SceneCardLinkTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             repo.sync_scene_card_links(
                 "u1", [_link("s1", "c1", "g1")], [_link("s1", "c1", "g1")]
-            )
+            , restore_generation=restore_generation())
 
     def test_incomplete_link_ignored(self):
         repo.sync_scene_card_links(
             "u1",
             [{"scene_id": "s1", "card_id": "", "generation_id": "g1"}, _link("s1", "c1", "g1")],
             [],
-        )
+         restore_generation=restore_generation())
         self.assertEqual(self._keys(), [("s1", "c1", "g1")])
 
     def test_scene_filter(self):
         repo.sync_scene_card_links(
             "u1", [_link("s1", "c1", "g1"), _link("s2", "c9", "g9")], []
-        )
+        , restore_generation=restore_generation())
         self.assertEqual(self._keys(scene="s2"), [("s2", "c9", "g9")])
 
     def test_owner_isolation(self):
         """개인 편집물 — 남의 소속이 내 씬에 섞이면 안 된다."""
-        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
+        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [], restore_generation=restore_generation())
         self.assertEqual(self._keys("u2"), [])
 
     def test_trashed_generation_excluded_but_unknown_kept(self):
@@ -156,14 +158,14 @@ class SceneCardLinkTests(unittest.TestCase):
                 _link("s1", "c1", "g_elsewhere"),  # 다른 설치본에서 만든 것
             ],
             [],
-        )
+         restore_generation=restore_generation())
         got = {k[2] for k in self._keys()}
         self.assertEqual(got, {"g_live", "g_elsewhere"})
 
     def test_request_limit(self):
         rows = [_link("s1", "c1", f"g{i}") for i in range(repo.MAX_SCENE_CARD_LINKS + 1)]
         with self.assertRaises(ValueError):
-            repo.sync_scene_card_links("u1", rows, [])
+            repo.sync_scene_card_links("u1", rows, [], restore_generation=restore_generation())
 
 
 class SceneCardLinkRouteTests(unittest.TestCase):
@@ -197,7 +199,7 @@ class SceneCardLinkRouteTests(unittest.TestCase):
     def test_put_then_get_roundtrip(self):
         r = self.client.put(
             "/api/scenes/cards",
-            json={"added": [_link("s1", "c1", "g1"), _link("s1", "c1", "g1")], "removed": []},
+            json={**{"added": [_link("s1", "c1", "g1"), _link("s1", "c1", "g1")], "removed": []}, 'restore_generation': restore_generation()},
         )
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["added"], 1)  # 같은 요청 안 중복은 접힌다
@@ -207,7 +209,7 @@ class SceneCardLinkRouteTests(unittest.TestCase):
         self.assertIsNone(items[0]["removed_at"])
 
         r = self.client.put(
-            "/api/scenes/cards", json={"added": [], "removed": [_link("s1", "c1", "g1")]}
+            "/api/scenes/cards", json={**{"added": [], "removed": [_link("s1", "c1", "g1")]}, 'restore_generation': restore_generation()}
         )
         self.assertEqual(r.status_code, 200, r.text)
         items = self.client.get("/api/scenes/cards", params={"scene_id": "s1"}).json()["items"]
@@ -220,7 +222,7 @@ class SceneCardLinkRouteTests(unittest.TestCase):
     def test_conflicting_lists_are_400(self):
         r = self.client.put(
             "/api/scenes/cards",
-            json={"added": [_link("s1", "c1", "g1")], "removed": [_link("s1", "c1", "g1")]},
+            json={**{"added": [_link("s1", "c1", "g1")], "removed": [_link("s1", "c1", "g1")]}, 'restore_generation': restore_generation()},
         )
         self.assertEqual(r.status_code, 400, r.text)
 

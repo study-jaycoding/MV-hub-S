@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, StrictInt
 from .. import active_account, config, repo
 from ..deps import EXPECT_ACCOUNT_HEADER, current_account, expected_account_differs
 from ..emailnorm import norm_email
+from ..repo.share_commands import RestoreGenerationConflict
 
 router = APIRouter(prefix="/api/edit-docs", tags=["edit-docs"])
 
@@ -25,6 +26,8 @@ def _owner(request: Request):
         # email은 creator_uid 연결 전후에도 같다. 신원 리맵에서 유일한 복구 사본을 지우지 않는다.
         try:
             yield owner or "local"
+        except RestoreGenerationConflict as exc:
+            raise HTTPException(409, exc.code) from exc
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:
@@ -32,6 +35,7 @@ def _owner(request: Request):
 
 
 class BackupIn(BaseModel):
+    restore_generation: str | None = Field(default=None, min_length=1, max_length=200)
     doc_key: str = Field(min_length=1, max_length=4096)
     data: str = Field(max_length=1024 * 1024)
     base_revision: StrictInt | None = Field(ge=1)
@@ -43,6 +47,7 @@ class RestoreSource(BaseModel):
 
 
 class RestoreIn(BaseModel):
+    restore_generation: str | None = Field(default=None, min_length=1, max_length=200)
     doc_key: str = Field(min_length=1, max_length=4096)
     base_revision: StrictInt | None = Field(ge=1)
     source: RestoreSource
@@ -61,11 +66,12 @@ def get_backup(request: Request, doc_key: str = Query(min_length=1, max_length=4
 @router.put("/backup")
 def put_backup(body: BackupIn, request: Request):
     with _owner(request) as owner:
-        return repo.save_edit_backup(owner, body.doc_key, body.data, body.base_revision)
+        return repo.save_edit_backup(owner, body.doc_key, body.data, body.base_revision, restore_generation=body.restore_generation)
 
 
 @router.post("/backup/restore")
 def restore_backup(body: RestoreIn, request: Request):
     with _owner(request) as owner:
         return repo.restore_edit_backup(owner, body.doc_key, body.base_revision, data=body.source.data,
-                                        copy_hash=body.source.copy_hash, local_raw=body.local_raw, kind=body.kind)
+                                        copy_hash=body.source.copy_hash, local_raw=body.local_raw, kind=body.kind,
+                                        restore_generation=body.restore_generation)

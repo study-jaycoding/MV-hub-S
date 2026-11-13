@@ -1,6 +1,7 @@
 // 캔버스 씬 DB 백업 — 미러·복구의 안전 불변식 고정(코덱스 P1 반영분).
 //  핵심: 복구 판정이 끝나기 전(또는 실패·손상 시) sync 가 서버 백업을 지우지 않는다.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sha256Js } from "../src/lib/editShare";
 
 // vitest node 환경 스텁 — localStorage + window(online 리스너용).
 const mem = new Map<string, string>();
@@ -29,16 +30,16 @@ let getMeta: () => Promise<{ items: unknown[] }>; // GET ?project_id=
 let getFull: () => Promise<{ items: unknown[] }>; // GET ?project_id=&include_data=1
 let putReply: (body: { upserts: { id: string; data: string; base_hash?: string }[] }) => unknown = () => ({ ok: true }); // 옛 허브 꼴(결과 칸 없음)
 vi.mock("../src/lib/http", () => ({
-  jsonFetch: (url: string, init?: RequestInit) => {
+  jsonFetch: async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     if (init?.method === "PUT") {
       // 실제 서버(repo/scenes_backup.py)와 같게: 씬 하나라도 상한을 넘으면 그 요청 전체를 거절한다.
       const body = JSON.parse(String(init.body)) as { upserts: { id: string; data: string }[] };
       const tooBig = body.upserts.some((u) => new TextEncoder().encode(u.data).byteLength > SERVER_MAX_SCENE_BYTES);
-      return tooBig ? Promise.reject(new Error("400 씬이 너무 큼")) : Promise.resolve(putReply(body));
+      return tooBig ? Promise.reject(new Error("400 씬이 너무 큼")) : Promise.resolve(putReply(body)).then((reply) => ({ restore_generation: "restore-1", ...(reply as object) }));
     }
-    if (url.includes("include_data")) return getFull();
-    return getMeta();
+    if (url.includes("include_data")) return { restore_generation: "restore-1", ...await getFull() };
+    return { restore_generation: "restore-1", ...await getMeta() };
   },
 }));
 
@@ -48,14 +49,23 @@ const puts = () => calls.filter((c) => c.init?.method === "PUT");
 const putBody = (c: Call) => JSON.parse(String(c.init?.body));
 
 let acctSeq = 0;
-async function boot() {
+async function boot(currentGeneration = true) {
   vi.resetModules(); // 모듈 상태(scope·lastPushed·타이머 플래그) 초기화
   const scenes = await import("../src/lib/scenes");
   const backup = await import("../src/lib/sceneBackup");
   // 쓰기는 화면 값에 먼저 반영되고 저장소 확정은 뒤따른다. 복구 판정·미러는 **확정본**을 보므로,
   // "이미 저장돼 있던 상태"를 만들려면 확정까지 기다린다(settle).
   const store = await import("../src/lib/sceneStore");
-  return { scenes, backup, settle: store.settleSceneStoreForTest };
+  const init = async () => {
+    await store.settleSceneStoreForTest();
+    const { getAccountNamespace } = await import("../src/lib/accountScope");
+    const key = `mvhub.mirrorRecovery:${getAccountNamespace()}`;
+    if (currentGeneration && !localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({
+      generation: "restore-1", blockedIds: [], originals: [], raws: Object.fromEntries(scenes.listPersistedSceneTexts(null).map((s) => [s.id, sha256Js(new TextEncoder().encode(s.text))])),
+    }));
+    return backup.initSceneBackup();
+  };
+  return { scenes, backup: { ...backup, initSceneBackup: init }, settle: store.settleSceneStoreForTest };
 }
 
 function sceneJson(id: string, name = "씬") {
@@ -81,6 +91,95 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("unknown generation keeps an old mirror locally instead of filling an empty restored hub", async () => {
+    const { scenes, backup, settle } = await boot(false);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("old"))]); await settle();
+    getFull = () => Promise.resolve({ items: [], restore_generation: "restore-2" });
+    getMeta = () => Promise.resolve({ items: [], restore_generation: "restore-2" });
+    await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(0);
+    expect(scenes.listScenes(null)[0].id).toBe("old");
+  });
+
+  it("generationless matching mirror isolates its ledger without holding the scene and sends the next edit", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, raw = sceneJson("s");
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    localStorage.setItem(`mvhub.sceneBackupBase:${scope}:s`, JSON.stringify({ b: "old-base" }));
+    const row = { id: "s", data: raw, data_hash: sha256Js(new TextEncoder().encode(raw)) };
+    getFull = () => Promise.resolve({ items: [row] });
+    getMeta = () => Promise.resolve({ items: [row] });
+    await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    expect(backup.readMirrorRecovery()).toMatchObject({ blockedIds: [], raws: { s: sha256Js(new TextEncoder().encode(raw)) }, originals: [{ scenes: [], ledger: [["s", { b: "old-base" }]] }] });
+    expect(puts()).toHaveLength(0);
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s", "next edit"))]); await settle();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(1);
+    expect(putBody(puts()[0]).upserts[0].data).toContain("next edit");
+  });
+
+  it("clean mirror provenance stores hashes without copying every scene original", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot(false);
+    const values = Array.from({ length: 12 }, (_, i) => JSON.parse(sceneJson(`s${i}`, "large".repeat(20000))));
+    scenes.saveScenes(null, values); await settle();
+    const rows = scenes.listPersistedSceneTexts(null).map((scene) => ({ id: scene.id, data: scene.text, data_hash: sha256Js(new TextEncoder().encode(scene.text)) }));
+    getFull = () => Promise.resolve({ items: rows }); getMeta = () => Promise.resolve({ items: rows });
+    await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    const record = backup.readMirrorRecovery()!;
+    expect(record.blockedIds).toEqual([]); expect(record.originals).toEqual([]);
+    expect(Object.values(record.raws).every((hash) => typeof hash === "string" && hash.length === 64)).toBe(true);
+    expect(JSON.stringify(record).length).toBeLessThan(2000);
+    expect(puts()).toHaveLength(0);
+  });
+
+  it("offline startup preserves same-generation local edit provenance until reconnect", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot();
+    const raw = sceneJson("s");
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    localStorage.setItem(`mvhub.sceneBackupBase:acct:user${acctSeq}@test:s`, JSON.stringify({ b: sha256Js(new TextEncoder().encode(raw)) }));
+    getFull = () => Promise.reject(Error("offline"));
+    await backup.initSceneBackup();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s", "offline edit"))]); await settle();
+    expect(backup.readMirrorRecovery()?.raws.s).toBe(sha256Js(new TextEncoder().encode(sceneJson("s", "offline edit"))));
+    await vi.advanceTimersByTimeAsync(2500);
+    getFull = () => Promise.resolve({ items: [{ id: "s", data: raw, data_hash: sha256Js(new TextEncoder().encode(raw)) }] });
+    getMeta = () => Promise.resolve({ items: [{ id: "s", data_hash: sha256Js(new TextEncoder().encode(raw)) }] });
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(backup.readMirrorRecovery()?.blockedIds).toEqual([]);
+    expect(puts()).toHaveLength(1);
+    expect(putBody(puts()[0]).upserts[0].data).toContain("offline edit");
+  });
+
+  it("explicit full import resumes only the chosen scene and abandons its old fork ledger", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, raw = sceneJson("old");
+    scenes.saveScenes(null, [JSON.parse(raw), JSON.parse(sceneJson("held"))]); await settle();
+    localStorage.setItem(`mvhub.sceneBackupBase:${scope}:old`, JSON.stringify({ fork: { id: "old-fork", b: "old-base" } }));
+    await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(0);
+    const archive = await import("../src/lib/sceneArchive");
+    await archive.importSceneArchiveText(JSON.stringify({ format: archive.SCENE_ARCHIVE_FORMAT, schemaVersion: 1, buckets: { [`${scope}::_none`]: [JSON.parse(raw)] }, conflicts: [] }));
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().flatMap((call) => putBody(call).upserts.map((row: { id: string }) => row.id))).toEqual(["old"]);
+    expect(backup.readMirrorRecovery()?.blockedIds).toEqual(["held"]);
+    expect(backup.readMirrorRecovery()?.originals[0].ledger[0][1]).toMatchObject({ fork: { id: "old-fork" } });
+  });
+
+  it("unproven text from another tab is kept as a visible recovery candidate", async () => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`;
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s", "unproven"))]); await settle();
+    localStorage.setItem(`mvhub.mirrorRecovery:${scope}`, JSON.stringify({ generation: "restore-1", blockedIds: [], originals: [], raws: { s: sha256Js(new TextEncoder().encode(sceneJson("s", "confirmed"))) } }));
+    await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    expect(puts()).toHaveLength(0);
+    expect(backup.readMirrorRecovery()?.blockedIds).toContain("s");
+    expect(backup.readMirrorRecovery()?.originals[0].scenes[0].text).toContain("unproven");
   });
 
   // 81회차 F-A-02: 다른 브라우저 프로필에서 계정을 바꾸면 옛 화면의 자동 백업이 새 계정 DB 에 쓰였다 — 모든 백업 요청에 이 탭의 계정을
@@ -295,16 +394,18 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
     getMeta = () => Promise.resolve({ items: [{ id: "other", data_hash: "h" }] });
     getFull = () => Promise.resolve({ items: [{ id: "other", data: sceneJson("other") }] });
     let release: (() => void) | null = null;
-    getFull = () =>
-      new Promise((res) => {
-        release = () => res({ items: [{ id: "other", data: sceneJson("other") }] });
-      });
     const { scenes, backup, settle } = await boot();
     scenes.saveScenes(null, [JSON.parse(sceneJson("mine"))]); // 버킷 있음 → 자동 복구는 'clean'
     await settle();
     await backup.initSceneBackup();
     await vi.advanceTimersByTimeAsync(2500); // 'mine' 업로드 — 'other' 는 안 지운다(본 적 없음)
     const before = calls.length;
+    getFull = () => new Promise((res) => {
+      release = () => {
+        getFull = () => Promise.resolve({ items: [{ id: "other", data: sceneJson("other") }] });
+        res({ items: [{ id: "other", data: sceneJson("other") }] });
+      };
+    });
 
     const job = backup.importFromBackup(); // 응답을 붙잡아 둔다
     scenes.saveScenes(null, [JSON.parse(sceneJson("mine", "가져오는 중 편집"))]); // 디바운스 예약
@@ -609,6 +710,10 @@ describe("sceneBackup — 판(1A)", () => {
   async function receiveFromOtherTab(scenes: typeof import("../src/lib/scenes"), settle: () => Promise<boolean>, list: [string, string][]) {
     const store = await import("../src/lib/sceneStore");
     const texts = list.map(([id, name]) => ({ id, text: sceneJson(id, name) }));
+    const recoveryKey = `mvhub.mirrorRecovery:acct:user${acctSeq}@test`;
+    const proof = JSON.parse(localStorage.getItem(recoveryKey)!);
+    for (const scene of texts) proof.raws[scene.id] = sha256Js(new TextEncoder().encode(scene.text));
+    localStorage.setItem(recoveryKey, JSON.stringify(proof));
     for (const s of texts) localStorage.setItem(ledgerKey(s.id), JSON.stringify({ b: fakeHex(s.text) }));
     getMeta = () => Promise.resolve({ items: texts.map((s) => ({ id: s.id, data_hash: fakeHex(s.text) })) });
     store.writeSceneStoreAsOtherWindowForTest((all) => {

@@ -6,6 +6,11 @@ from app.repo import scene_notebook as store, scenes_backup as legacy
 from app.services.scene_writer import WriterConflict
 
 
+def restore_generation():
+    with db.get_connection() as conn:
+        return conn.execute("SELECT value FROM app_setting WHERE key='share_db_generation'").fetchone()[0]
+
+
 @pytest.fixture
 def notebook_db(tmp_path, monkeypatch):
     monkeypatch.setenv('CONTENT_HUB_DB', str(tmp_path / 'notebook.db'))
@@ -25,7 +30,7 @@ def scene(sid='s', name='X', **extra):
 
 def seed(owner='u', items=None, attempt='a', lease='lease'):
     items = [scene()] if items is None else items
-    return store.start(owner, lease, {'attempt_id': attempt, 'expected_count': len(items),
+    return store.start(owner, lease, {'restore_generation': restore_generation(), 'attempt_id': attempt, 'expected_count': len(items),
                                      'upserts': items, 'order': [i['id'] for i in items], 'commit': True})
 
 
@@ -34,7 +39,7 @@ def base(sid='s', owner='u'):
 
 
 def push(request_id, **kwargs):
-    return store.sync('u', '', {'request_id': request_id, **kwargs})
+    return store.sync('u', '', {'restore_generation': restore_generation(), 'request_id': request_id, **kwargs})
 
 
 def test_delete_intent_retry_revive_and_late_delete(notebook_db):
@@ -83,8 +88,8 @@ def test_atomic_rollback_includes_scene_and_delete(notebook_db):
 
 
 def test_start_staging_crash_empty_browser_and_commit_retry(notebook_db):
-    legacy.sync_scene_backups('u', '', [scene('old')], [])
-    store.start('u', 'gone', {'attempt_id': 'partial', 'expected_count': 2, 'upserts': [scene()], 'order': ['s','s2']})
+    legacy.sync_scene_backups('u', '', [scene('old')], [], restore_generation=restore_generation())
+    store.start('u', 'gone', {**{'attempt_id': 'partial', 'expected_count': 2, 'upserts': [scene()], 'order': ['s','s2']}, 'restore_generation': restore_generation()})
     assert [r['id'] for r in legacy.list_scene_backups('u')] == ['old']
     result = seed(items=[], attempt='empty', lease='next')
     assert [r['id'] for r in store.notebook('u')['items']] == ['old']
@@ -95,7 +100,7 @@ def test_start_staging_crash_empty_browser_and_commit_retry(notebook_db):
 
 
 def test_start_archives_same_id_and_all_old_rows(notebook_db):
-    legacy.sync_scene_backups('u', '', [scene(name='old'), scene('hidden')], [])
+    legacy.sync_scene_backups('u', '', [scene(name='old'), scene('hidden')], [], restore_generation=restore_generation())
     seed()
     with db.get_connection() as conn:
         archived = conn.execute("SELECT scene_id,data FROM scene_archive WHERE reason='before_start'").fetchall()
@@ -104,7 +109,7 @@ def test_start_archives_same_id_and_all_old_rows(notebook_db):
 
 
 def test_start_oversize_never_publishes_partial(notebook_db):
-    legacy.sync_scene_backups('u', '', [scene('old')], [])
+    legacy.sync_scene_backups('u', '', [scene('old')], [], restore_generation=restore_generation())
     with pytest.raises(store.StartTooBig):
         seed(items=[scene(), scene('huge', padding='x' * store.MAX_SCENE_BYTES)])
     assert not store.is_started('u')
@@ -127,7 +132,7 @@ def test_order_conflict_keeps_server_order_and_appends_new(notebook_db):
 
 
 def test_restore_old_rows_establishes_book_and_invalidates_receipts(notebook_db):
-    legacy.sync_scene_backups('u', '', [scene()], [])
+    legacy.sync_scene_backups('u', '', [scene()], [], restore_generation=restore_generation())
     old = store.notebook('u')['history_id']
     with store.transaction() as conn:
         store.restore_history(conn)
@@ -170,7 +175,7 @@ def test_cleanup_removes_book_first_and_archive_last(notebook_db):
 
 
 def test_restore_init_is_gated_but_started_book_is_always_fenced(notebook_db, monkeypatch):
-    legacy.sync_scene_backups('u', '', [scene()], [])
+    legacy.sync_scene_backups('u', '', [scene()], [], restore_generation=restore_generation())
     monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '0')
     db.init_db(scene_restore=True)
     assert not store.is_started('u')
@@ -194,7 +199,7 @@ def test_repeated_empty_remap_keeps_history(notebook_db):
 def test_backup_summary_separates_retained_bodies(notebook_db):
     from app.services.worker_backup import metadata_summary
     seed()
-    legacy.sync_scene_backups('u', '', [scene(name='Y')], [])
+    legacy.sync_scene_backups('u', '', [scene(name='Y')], [], restore_generation=restore_generation())
     push('delete', deletes=[{'id': 's', 'intent_id': 'd', 'base': base()}])
     summary = metadata_summary(db.get_db_path(), include_retained=True)
     assert summary['canvases'] == 1  # normalized X copy is live
@@ -205,11 +210,11 @@ def test_receipts_bounded_per_owner_and_lost_response_retry_retained(notebook_db
     monkeypatch.setattr(store, 'MAX_REQUEST_RECEIPTS', 2)
     seed()
     seed(owner='other')
-    store.sync('other', '', {'request_id': 'keep'})
+    store.sync('other', '', {**{'request_id': 'keep'}, 'restore_generation': restore_generation()})
     push('old')
     payload = {'upserts': [{**scene(name='Y'), 'base': base()}]}
     response = push('lost-response', **payload)
-    store.sync('u', 'project', {'request_id': 'new'})
+    store.sync('u', 'project', {**{'request_id': 'new'}, 'restore_generation': restore_generation()})
     assert push('lost-response', **payload) == response
     with db.get_connection() as conn:
         rows = {(r['owner_uid'], r['request_id']) for r in conn.execute('SELECT * FROM scene_request_receipt')}
@@ -229,15 +234,15 @@ def test_already_deleted_response_can_revive_without_lookup(notebook_db):
 
 def test_start_chunk_snapshot_and_attempt_fences(notebook_db):
     body = {'attempt_id': 'a', 'expected_count': 2, 'order': ['s', 't'], 'upserts': [scene()]}
-    store.start('u', 'lease', body)
+    store.start('u', 'lease', {**body, 'restore_generation': restore_generation()})
     with pytest.raises(WriterConflict, match='start_snapshot_changed'):
-        store.start('u', 'lease', {**body, 'upserts': [scene(name='changed')]})
+        store.start('u', 'lease', {**{**body, 'upserts': [scene(name='changed')]}, 'restore_generation': restore_generation()})
     for changed in ({'expected_count': 3}, {'order': ['t', 's']}, {'project_id': 'new'}):
         with pytest.raises(WriterConflict, match='start_attempt_changed'):
-            store.start('u', 'lease', {**body, **changed, 'upserts': [scene('t')]})
+            store.start('u', 'lease', {**{**body, **changed, 'upserts': [scene('t')]}, 'restore_generation': restore_generation()})
     with pytest.raises(WriterConflict, match='start_attempt_changed'):
-        store.start('u', 'new-lease', body)
-    result = store.start('u', 'lease', {**body, 'upserts': [scene('t')], 'commit': True})
+        store.start('u', 'new-lease', {**body, 'restore_generation': restore_generation()})
+    result = store.start('u', 'lease', {**{**body, 'upserts': [scene('t')], 'commit': True}, 'restore_generation': restore_generation()})
     assert result['status'] == 'committed'
     assert len(store.notebook('u')['items']) == 2
 
@@ -282,14 +287,14 @@ def test_existing_edited_fork_is_not_overwritten_by_remap(notebook_db):
 
 def test_server_created_copy_is_in_tab_order(notebook_db):
     seed()
-    legacy.sync_scene_backups('u', '', [scene(name='Y')], [])
+    legacy.sync_scene_backups('u', '', [scene(name='Y')], [], restore_generation=restore_generation())
     state = store.notebook('u')
     assert len(state['order']['ids']) == 2
     assert set(state['order']['ids']) == {r['id'] for r in state['items']}
 
 
 def test_remap_legacy_source_without_order_adds_copy_tab(notebook_db):
-    legacy.sync_scene_backups('old', '', [scene(name='incoming')], [])
+    legacy.sync_scene_backups('old', '', [scene(name='incoming')], [], restore_generation=restore_generation())
     seed(owner='new')
     with store.transaction() as conn:
         store.remap(conn, 'old', 'new')

@@ -1,3 +1,4 @@
+from test_scene_notebook import restore_generation
 import json
 import sqlite3
 import pytest
@@ -24,8 +25,8 @@ def test_additive_migration_is_idempotent_and_preserves_old_keys():
 
 def test_public_sql_x_y_delete_preserves_both_preimages(notebook_db):
     seed()
-    legacy.sync_scene_backups('u', '', [scene(name='Y')], [])
-    legacy.sync_scene_backups('u', '', [], ['s'])
+    legacy.sync_scene_backups('u', '', [scene(name='Y')], [], restore_generation=restore_generation())
+    legacy.sync_scene_backups('u', '', [], ['s'], restore_generation=restore_generation())
     with db.get_connection() as conn:
         saved = conn.execute('SELECT reason,data FROM scene_archive ORDER BY reason').fetchall()
         assert [(r['reason'], json.loads(r['data'])['name']) for r in saved] == [
@@ -36,7 +37,7 @@ def test_public_sql_x_y_delete_preserves_both_preimages(notebook_db):
 
 def test_old_hub_normalized_on_start_without_read_request(notebook_db):
     seed()
-    legacy.sync_scene_backups('u', '', [scene(name='Y')], [])
+    legacy.sync_scene_backups('u', '', [scene(name='Y')], [], restore_generation=restore_generation())
     db.init_db()
     with db.get_connection() as conn:
         row = store.row_for(conn, 'u', '', 's')
@@ -50,7 +51,7 @@ def test_legacy_edit_of_tombstone_is_revived(notebook_db):
     seed()
     with db.get_connection() as conn:
         conn.execute("UPDATE scene_backup SET deleted_at='deleted',rev=rev+1 WHERE scene_id='s'")
-    legacy.sync_scene_backups('u', '', [scene(name='old-edit')], [])
+    legacy.sync_scene_backups('u', '', [scene(name='old-edit')], [], restore_generation=restore_generation())
     db.init_db()
     with db.get_connection() as conn:
         assert store.row_for(conn, 'u', '', 's')['deleted_at'] is None
@@ -68,11 +69,11 @@ def test_schema_marker_error_names_configured_schema(notebook_db, monkeypatch):
 
 def test_delete_dedupe_does_not_collide_across_restored_history(notebook_db):
     seed()
-    legacy.sync_scene_backups('u', '', [], ['s'])
+    legacy.sync_scene_backups('u', '', [], ['s'], restore_generation=restore_generation())
     with store.transaction() as conn:
         store.restore_history(conn)
-    legacy.sync_scene_backups('u', '', [scene()], [])
-    legacy.sync_scene_backups('u', '', [], ['s'])
+    legacy.sync_scene_backups('u', '', [scene()], [], restore_generation=restore_generation())
+    legacy.sync_scene_backups('u', '', [], ['s'], restore_generation=restore_generation())
     with db.get_connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM scene_archive WHERE reason='legacy_delete'").fetchone()[0] == 2
 
@@ -154,7 +155,7 @@ def test_account_switch_normalizes_target_before_publishing_pointer(notebook_db,
     from app import active_account
     from app.routers import publish
     seed()
-    legacy.sync_scene_backups('u', '', [scene(name='Y')], [])
+    legacy.sync_scene_backups('u', '', [scene(name='Y')], [], restore_generation=restore_generation())
     target = notebook_db / 'notebook.db'
     other = notebook_db / 'other.db'
     db.init_db(other)

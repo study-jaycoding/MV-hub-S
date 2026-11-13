@@ -26,6 +26,7 @@ import { restoreCanvasDocuments } from "../features/canvas/api";
 //    바뀐 것 없는 옛 창(지문 == b, 서버 ≠ b)은 올리지 않는다. 그 밖엔 base_hash 를 실어 올리고, 서버가 그사이 바뀌었으면 허브가 덮지 않고
 //    사본 행으로 받는다(갈래 — 그 뒤 이 씬의 편집은 그 사본 행으로 미러). 설계: docs/status/결정일곱_설계_2026-10-15.md 1A.
 import { jsonFetch } from "./http";
+import { sha256Js } from "./editShare";
 import { getAccountNamespace } from "./accountScope";
 import { hubHasFeature, EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import {
@@ -37,7 +38,7 @@ import {
   type Scene,
 } from "./scenes";
 import { subscribeSceneStoreExternal } from "./sceneStore";
-import { subscribeNotebookSyncResult, syncSceneNotebook, SCENE_WRITER_FEATURE, type NotebookSyncResult } from "./sceneNotebook";
+import { subscribeNotebookSyncResult, syncSceneNotebook, SCENE_WRITER_FEATURE, validRestoreGeneration, mirrorSceneGenerations, type NotebookSyncResult } from "./sceneNotebook";
 import { withoutComfyRuns } from "./comfyRunState";
 
 const API = "/api/scenes/backup";
@@ -57,6 +58,68 @@ const exceedsSceneLimit = (data: string): boolean =>
   data.length > MAX_SCENE_BYTES || (data.length * 3 > MAX_SCENE_BYTES && utf8.encode(data).byteLength > MAX_SCENE_BYTES);
 
 const ns = getAccountNamespace;
+export interface MirrorRecovery {
+  generation: string;
+  blockedIds: string[];
+  raws: Record<string, string | null>; // SHA-256 출처 지문. 원문은 보류된 씬만 originals에 보존한다.
+  originals: { generation: string | null; scenes: { id: string; text: string }[]; ledger: [string, LedgerEntry][] }[];
+}
+const mirrorRecoveryKey = (scope: string) => `mvhub.mirrorRecovery:${scope}`;
+function saveMirrorRecovery(scope: string, value: MirrorRecovery) {
+  const text = JSON.stringify(value), key = mirrorRecoveryKey(scope);
+  localStorage.setItem(key, text);
+  if (localStorage.getItem(key) !== text) throw new Error("mirror_recovery_write_failed");
+}
+export function readMirrorRecovery(scope = ns()): MirrorRecovery | null {
+  if (scope !== ns()) return null;
+  const raw = localStorage.getItem(mirrorRecoveryKey(scope));
+  if (!raw) return null;
+  const value = JSON.parse(raw) as MirrorRecovery;
+  if (!validRestoreGeneration(value.generation) || !Array.isArray(value.blockedIds) || !Array.isArray(value.originals) || !value.raws || typeof value.raws !== "object") throw new Error("invalid_mirror_recovery");
+  return value;
+}
+async function checkMirrorGeneration(scope: string): Promise<string> {
+  const response = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(`${API}?project_id=&include_data=1`, asAccount(scope));
+  if (scope !== ns() || !validRestoreGeneration(response.restore_generation) || !Array.isArray(response.items)) throw new Error("invalid_mirror_generation");
+  const prior = readMirrorRecovery(scope);
+  const scenes = listPersistedSceneTexts(null).map(({ id, text }) => ({ id, text }));
+  const hashes = new Map(scenes.map((scene) => [scene.id, sha256Js(new TextEncoder().encode(scene.text))]));
+  if (prior?.generation === response.restore_generation) {
+    const blocked = new Set(prior.blockedIds);
+    const unproven = new Set([...new Set([...Object.keys(prior.raws), ...hashes.keys()])].filter((id) => !blocked.has(id) && (prior.raws[id] ?? null) !== (hashes.get(id) ?? null)));
+    if (unproven.size) {
+      prior.originals.push({ generation: prior.generation, scenes: scenes.filter((scene) => unproven.has(scene.id)), ledger: [...loadLedger(scope, true)].filter(([id]) => unproven.has(id)) });
+      prior.blockedIds.push(...unproven);
+      saveMirrorRecovery(scope, prior);
+    }
+    return prior.generation;
+  }
+  const oldLedger = loadLedger(scope, true), rows = new Map(response.items.map((row) => [row.id, row]));
+  const blocked = new Set(scenes.filter((scene) => prior || oldLedger.get(scene.id)?.fork || rows.get(scene.id)?.data !== scene.text).map((scene) => scene.id));
+  for (const id of oldLedger.keys()) if (!hashes.has(id)) blocked.add(id);
+  const originals = [...(prior?.originals ?? [])];
+  if (blocked.size || oldLedger.size) originals.push({ generation: prior?.generation ?? null, scenes: scenes.filter((scene) => blocked.has(scene.id)), ledger: [...oldLedger] });
+  const record: MirrorRecovery = { generation: response.restore_generation, blockedIds: [...new Set([...blocked, ...oldLedger.keys()])], originals, raws: Object.fromEntries(hashes) };
+  // 옛 장부 보관이 확인된 다음에만 제거하고, 깨끗한 씬의 현재 기준판을 새로 적는다.
+  saveMirrorRecovery(scope, record);
+  for (const id of oldLedger.keys()) {
+    localStorage.removeItem(ledgerKey(scope, id));
+    if (localStorage.getItem(ledgerKey(scope, id)) !== null) throw new Error("mirror_ledger_clear_failed");
+    if (curScope === scope) ledger.delete(id);
+  }
+  for (const scene of scenes) if (!blocked.has(scene.id)) {
+    const entry = { b: rows.get(scene.id)?.data_hash || hashes.get(scene.id)! };
+    const encoded = JSON.stringify(entry);
+    localStorage.setItem(ledgerKey(scope, scene.id), encoded);
+    if (localStorage.getItem(ledgerKey(scope, scene.id)) !== encoded) throw new Error("mirror_ledger_write_failed");
+    if (curScope === scope) ledger.set(scene.id, entry);
+  }
+  record.blockedIds = [...blocked];
+  saveMirrorRecovery(scope, record);
+  serverHash = null; lastPushed.clear();
+  for (const scene of scenes) if (!blocked.has(scene.id)) lastPushed.set(scene.id, scene.text);
+  return response.restore_generation;
+}
 // 작업을 시작할 때 잡은 이 탭의 계정을 싣는다 — 허브가 고정한 계정과 다르면(다른 브라우저 프로필에서 계정을 바꿈) 409 로 아무것도
 //  읽고 쓰지 않는다(81회차 F-A-02). 409 는 다른 실패처럼 재시도로 넘어가 로컬 씬·미전송 변경은 그대로다.
 const asAccount = (scope: string) => ({ headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
@@ -111,30 +174,59 @@ const noteSeenTexts = (): void => {
   knownText = new Map(listPersistedSceneTexts(null).map((s) => [s.id, s.text]));
 };
 
-function readLedgerEntry(scope: string, id: string): LedgerEntry | null {
+function readLedgerEntry(scope: string, id: string, strict = false): LedgerEntry | null {
   try {
     const raw = localStorage.getItem(ledgerKey(scope, id));
     const value = raw ? (JSON.parse(raw) as LedgerEntry) : null;
-    return value && typeof value === "object" ? value : null;
-  } catch {
+    if (raw && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error("invalid_mirror_ledger");
+    return value;
+  } catch (error) {
+    if (strict) throw error;
     return null;
   }
 }
 
-function loadLedger(scope: string): Map<string, LedgerEntry> {
+function loadLedger(scope: string, strict = false): Map<string, LedgerEntry> {
   const out = new Map<string, LedgerEntry>();
   try {
     const prefix = `${LEDGER_PREFIX}${scope}:`;
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (!key?.startsWith(prefix)) continue;
-      const entry = readLedgerEntry(scope, key.slice(prefix.length));
+      const entry = readLedgerEntry(scope, key.slice(prefix.length), strict);
       if (entry) out.set(key.slice(prefix.length), entry);
     }
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     /* 못 읽으면 빈 장부 — '모름'(사본 쪽)으로 가지 덮어쓰기 쪽으로 새지 않는다 */
   }
   return out;
+}
+
+/** 전체 가져오기로 선택하고 로컬 확정을 확인한 씬만 현재 허브 기준으로 재개한다. */
+export async function resumeImportedMirror(scope: string, generation: string, selected: Map<string, string>): Promise<void> {
+  if (importing) throw new Error("다른 가져오기가 끝난 뒤 다시 시도해 주세요.");
+  importing = true;
+  try {
+    await syncIdle;
+    const response = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(`${API}?project_id=&include_data=1`, asAccount(scope));
+    const record = readMirrorRecovery(scope);
+    if (ns() !== scope || response.restore_generation !== generation || record?.generation !== generation) throw new Error("허브와 기록 시점이 달라 전송을 보류했습니다.");
+    const current = new Map(listPersistedSceneTexts(null).map((scene) => [scene.id, scene.text]));
+    for (const [id, text] of selected) {
+      if (current.get(id) !== text) throw new Error("가져오는 동안 문서가 바뀌어 전송을 보류했습니다.");
+      const base = response.items.find((row) => row.id === id)?.data_hash;
+      const entry = base ? { b: base } : null;
+      if (entry) localStorage.setItem(ledgerKey(scope, id), JSON.stringify(entry));
+      else localStorage.removeItem(ledgerKey(scope, id));
+      if (JSON.stringify(readLedgerEntry(scope, id, true)) !== JSON.stringify(entry)) throw new Error("가져온 자료의 기준판 저장에 실패했습니다.");
+      if (curScope === scope) { if (entry) ledger.set(id, entry); else ledger.delete(id); lastPushed.delete(id); received.delete(id); }
+      record.raws[id] = sha256Js(new TextEncoder().encode(text));
+      record.blockedIds = record.blockedIds.filter((blocked) => blocked !== id);
+    }
+    saveMirrorRecovery(scope, record);
+    serverHash = null;
+  } finally { importing = false; schedule(); }
 }
 
 // 이 탭의 판을 바꾸고 그 씬 항목만 저장한다. 쓰기 실패(용량)는 삼킨다. 범위가 바뀌었으면 아무것도 안 한다.
@@ -354,15 +446,18 @@ function enterScope(): string {
 function ensureInit(scope: string): Promise<InitResult> {
   if (initPromise) return initPromise;
   const p: Promise<InitResult> = (async () => {
+    let restoreGeneration: string;
+    try { restoreGeneration = await checkMirrorGeneration(scope); } catch { return "retry"; }
     // ★확정본으로 판정한다 — 화면 값의 아직 확정 안 된 버킷 때문에 복구를 건너뛰면, 그 뒤 빈 확정본을
     //  기준으로 서버 백업을 지우는 길이 열린다(Codex).
     if (hasPersistedSceneBucket(null)) return "clean";
     let items: BackupRow[];
     try {
-      const r = await jsonFetch<{ items: BackupRow[] }>(
+      const r = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(
         `${API}?project_id=&include_data=1`,
         asAccount(scope),
       );
+      if (r.restore_generation !== restoreGeneration || ns() !== scope) return "retry";
       items = r.items || [];
     } catch {
       return "retry"; // 오프라인·미로그인(401)·구백엔드 — 판정 미상(sync 차단, 백오프 재판정)
@@ -421,11 +516,12 @@ const forkIds = (): Set<string> => new Set([...ledger.values()].flatMap((entry) 
 async function ensureServerMeta(scope: string): Promise<Map<string, string> | null> {
   if (serverHash) return serverHash;
   try {
-    const r = await jsonFetch<{ items: { id: string; data_hash: string }[] }>(
+    const r = await jsonFetch<{ restore_generation: string; items: { id: string; data_hash: string }[] }>(
       `${API}?project_id=`,
       asAccount(scope),
     );
     if (ns() !== scope) return null; // 계정 전환 중 응답 — 다른 계정 메타를 캐시하지 않는다
+    if (r.restore_generation !== readMirrorRecovery(scope)?.generation) return null;
     serverHash = new Map(r.items.map((it) => [it.id, it.data_hash]));
     return serverHash;
   } catch {
@@ -469,6 +565,7 @@ async function syncNow(retry?: RetryGuard): Promise<void> {
       }
       return;
     }
+    const restoreGeneration = await checkMirrorGeneration(scope);
     const init = await ensureInit(scope);
     if (init === "retry") {
       failed = true; // 판정 미상(미로그인 등) — 백오프로 재판정
@@ -486,6 +583,7 @@ async function syncNow(retry?: RetryGuard): Promise<void> {
     //  저장되지도 않은 삭제가 서버 백업에 반영된다(Codex).
     //  씬은 저장소가 기억해 둔 글자를 그대로 받는다 — 확정 때마다 전부를 다시 글자로 바꾸지 않는다.
     const local = listPersistedSceneTexts(null);
+    const generations = mirrorSceneGenerations();
     // ★모든 씬의 글자와 판을 첫 await 전에 한 쌍으로 고정한다 — 앞 씬의 지문을 기다리는 사이 다른 탭에서 받은 뒤 씬의 새 판을
     //  옛 글자에 붙이면 서버의 새 내용을 덮는다(Codex E1 · 1A 리뷰 #1). 아래 지움 계산도 이 판을 쓴다.
     const frozen = new Map(ledger);
@@ -498,6 +596,7 @@ async function syncNow(retry?: RetryGuard): Promise<void> {
     let heldNoHash = 0;
     const localIds = new Set(local.map((s) => s.id));
     for (const s of local) {
+      if (generations.get(s.id) !== restoreGeneration) continue;
       const data = s.text;
       let entry = frozen.get(s.id);
       if (entry?.fork && localIds.has(entry.fork.id)) {
@@ -600,7 +699,8 @@ async function syncNow(retry?: RetryGuard): Promise<void> {
     const fresh = upserts.filter((u) => nowText.get(u.localId) === u.text);
     if (fresh.length < upserts.length) rerun = true;
     upserts.splice(0, upserts.length, ...fresh);
-    const allDeleted = [...deleteOf.keys()].filter((id) => !nowText.has(deleteOf.get(id)!)); // 그사이 되살아난 씬은 지우지 않는다
+    const currentGenerations = mirrorSceneGenerations();
+    const allDeleted = [...deleteOf.keys()].filter((id) => !nowText.has(deleteOf.get(id)!) && currentGenerations.get(deleteOf.get(id)!) === restoreGeneration);
     // 이 브라우저의 사본 씬(bk_)과 그 원본 — 허브의 사본 자리는 올리는 행 id 에서만 나오므로 그 행의 사본만 피하라고 알린다(전부 보내면
     //  자동 복구로 사본이 2,000개를 넘을 때 상한에 걸려 백업이 멈췄다, Codex 63회차). 원본을 모르면 늘 보낸다.
     const forksOf = new Map<string, string[]>(); // 원본 행 id → 그 사본 씬들
@@ -646,10 +746,11 @@ async function syncNow(retry?: RetryGuard): Promise<void> {
       const chunk = upChunks[i] || [];
       const dels = delChunks[i] || [];
       const seqAtSend = new Map(chunk.map((u) => [u.localId, externalSeq.get(u.localId) ?? 0]));
-      const res = await jsonFetch<{ results?: { id: string; status: string; target_id: string; hash: string | null }[]; kept?: string[] }>(`${API}`, {
+      const res = await jsonFetch<{ restore_generation: string; results?: { id: string; status: string; target_id: string; hash: string | null }[]; kept?: string[] }>(`${API}`, {
         method: "PUT",
         ...asAccount(scope),
         body: JSON.stringify({
+          restore_generation: restoreGeneration,
           project_id: "",
           upserts: chunk.map(({ id, name, data, base_hash }) => ({ id, name, data, base_hash })),
           deleted_ids: dels,
@@ -659,6 +760,8 @@ async function syncNow(retry?: RetryGuard): Promise<void> {
         }),
       });
       if (ns() !== scope) return; // 응답 후 상태 반영도 같은 scope 일 때만
+      const confirmedGeneration = await checkMirrorGeneration(scope);
+      if (ns() !== scope || res.restore_generation !== restoreGeneration || confirmedGeneration !== restoreGeneration) return;
       const results = new Map((res?.results ?? []).map((r) => [r.id, r]));
       for (const u of chunk) {
         const r = results.get(u.id);
@@ -816,11 +919,12 @@ async function runImport(): Promise<number> {
   // (syncIdle 은 sync 마다 새로 만들어진다). importing=true 라 새 sync 는 더 들어오지 않는다.
   while (syncing) await syncIdle;
   const scope = enterScope();
-  const r = await jsonFetch<{ items: BackupRow[] }>(
+  const r = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(
     `${API}?project_id=&include_data=1`,
     asAccount(scope),
   );
   if (ns() !== scope) return 0;
+  if (!validRestoreGeneration(r.restore_generation) || (await checkMirrorGeneration(scope)) !== r.restore_generation || ns() !== scope) throw new Error("허브와 기록 시점이 달라 목록을 다시 읽어 주세요.");
   // 자동 복구와 같은 전 행 검증 — 하나라도 손상이면 부분 적용 없이 전체 포기.
   //  이 탭 씬의 갈래 사본 행은 가져오지 않는다 — 두 로컬 씬이 같은 행을 미러하게 된다(Codex C3).
   const mine = forkIds();
@@ -871,6 +975,20 @@ export async function initSceneBackup(): Promise<boolean> {
       //  공책 동기화(내용 저장·숨김·넘기기·기존 예약·재시도)가 씬 전체 비교로 함께 싣는다. 크기 상한 표시는 그 동기화·다음 내용 확정 때 다시 센다.
       if (cameraOnly && hubHasFeature(SCENE_WRITER_FEATURE)) return;
       if (ns() === curScope) {
+        if (!hubHasFeature(SCENE_WRITER_FEATURE)) {
+          try {
+            const record = readMirrorRecovery();
+            if (record) {
+              const after = new Map(listPersistedSceneTexts(null).map((scene) => [scene.id, scene.text]));
+              const blocked = new Set(record.blockedIds);
+              for (const id of new Set([...knownText.keys(), ...after.keys()])) {
+                const before = knownText.get(id), next = after.get(id);
+                if ((record.raws[id] ?? null) === (before === undefined ? null : sha256Js(new TextEncoder().encode(before))) && !blocked.has(id)) record.raws[id] = next === undefined ? null : sha256Js(new TextEncoder().encode(next));
+              }
+              saveMirrorRecovery(ns(), record);
+            }
+          } catch { /* 출처 저장 실패는 기존 확인값을 유지해 다음 전송을 보류한다. */ }
+        }
         noteSeenTexts();
         recountOverLimit();
       }

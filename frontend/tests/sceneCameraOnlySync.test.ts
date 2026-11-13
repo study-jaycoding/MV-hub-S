@@ -29,7 +29,7 @@ class MiniHub {
   }
   handle(path: string, body: any, method?: string): any {
     if (path.startsWith("/api/scenes/cards")) {
-      if (method !== "PUT") return { items: [...this.links.values()] };
+      if (method !== "PUT") return { restore_generation: "restore-1", items: [...this.links.values()] };
       this.cardPuts.push(body);
       if (this.failCards) throw new TypeError("network down");
       // 서버(repo/scene_cards)와 같은 규칙 — 소속 키마다 한 줄. backfill·added = 없을 때만 넣는다(뺀 표시를 풀지 않는다) ·
@@ -38,9 +38,9 @@ class MiniHub {
       for (const l of [...(body.backfill ?? []), ...(body.added ?? [])]) if (!this.links.has(keyOf(l))) this.links.set(keyOf(l), { ...l, removed_at: null });
       for (const l of body.explicit ?? []) this.links.set(keyOf(l), { ...l, removed_at: null });
       for (const l of body.removed ?? []) this.links.set(keyOf(l), { ...l, removed_at: "2026-11-12T00:00:00Z" });
-      return { ok: true };
+      return { ok: true, restore_generation: "restore-1" };
     }
-    if (path.includes("notebook?")) return { notebook_id: this.book, history_id: this.history, items: [...this.rows.values()], order: { ids: this.order, rev: this.rev, history_id: this.history } };
+    if (path.includes("notebook?")) return { restore_generation: "restore-1", notebook_id: this.book, history_id: this.history, items: [...this.rows.values()], order: { ids: this.order, rev: this.rev, history_id: this.history } };
     if (path.endsWith("/backup")) {
       this.uploads++;
       if (this.failUploads) throw new TypeError("network down");
@@ -49,7 +49,7 @@ class MiniHub {
         const saved = old && old.base.hash === hash(up.data) ? old : this.save(JSON.parse(up.data));
         return { id: up.id, status: saved === old ? "same" : "saved", target_id: saved.id, base: saved.base };
       });
-      return { history_id: this.history, results, deletes: [], order: { ids: this.order, rev: this.rev, history_id: this.history }, mcp_done: [] };
+      return { restore_generation: "restore-1", history_id: this.history, results, deletes: [], order: { ids: this.order, rev: this.rev, history_id: this.history }, mcp_done: [] };
     }
     throw new Error(`unexpected ${path}`);
   }
@@ -418,6 +418,12 @@ describe("확정 통지의 '카메라만' 표시(cameraOnly)", () => {
 });
 
 describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예약하지 않는다", () => {
+  async function adoptCurrentScenes() {
+    setHubFeatures(["scene_writer_v1"]);
+    const scenes = listPersistedScenes(null);
+    await joinSceneNotebook("local", hub.book, hub.history, { [bucket]: { scenes, bases: Object.fromEntries(scenes.map((s) => [s.id, { history: hub.history, rev: 1, hash: hash(JSON.stringify(s)) }])), order: { history: hub.history, rev: 1 } } }, undefined, "restore-1");
+    localStorage.setItem("mvhub.cardRecovery:local", JSON.stringify({ generation: "restore-1", candidates: [] }));
+  }
   it("카메라만 → 2초 뒤 훑기 없음(걸려 있던 실패 재시도는 기한에 그대로) · 내용 확정 → 2초 뒤 훑기", async () => {
     hub = new MiniHub();
     await writeScenesStore({ [bucket]: [{ ...scene("s"), cards: [{ id: "c1", kind: "generation", x: 0, y: 0, genIds: ["g1"] }] } as unknown as Scene] });
@@ -425,6 +431,7 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const keys = (body: any) => body.backfill.map((l: { card_id: string; generation_id: string }) => `${l.card_id}:${l.generation_id}`);
     const { initSceneCardLinks } = await import("../src/lib/sceneCardLinks");
+    await adoptCurrentScenes();
     hub.failCards = true;
     initSceneCardLinks();
     await vi.advanceTimersByTimeAsync(2500); // 첫 백필 실패 → 30초 재시도가 걸린다
@@ -453,6 +460,7 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
     await settleSceneStoreForTest();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { initSceneCardLinks, markCardGenerationsRemoved, refreshSceneCardLinks } = await import("../src/lib/sceneCardLinks");
+    await adoptCurrentScenes();
     initSceneCardLinks();
     await refreshSceneCardLinks(); // 이 시험의 허브로 서버 소속을 다시 읽는다(앞 시험이 읽어 둔 것을 버린다)
     await vi.advanceTimersByTimeAsync(5000); // 이 씬의 첫 백필(rc:g9)이 끝나게
@@ -495,7 +503,7 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
     await joinSceneNotebook("local", hub.book, hub.history, { [bucket]: {
       scenes: [a], bases: { a: { history: hub.history, rev: hub.rows.get("a")!.base.rev, hash: hub.rows.get("a")!.base.hash } },
       order: { history: hub.history, rev: hub.rev },
-    } });
+    } }, undefined, "restore-1");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const { initSceneBackup } = await import("../src/lib/sceneBackup");
@@ -533,7 +541,7 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
     await joinSceneNotebook("local", hub.book, hub.history, { [bucket]: {
       scenes: [a], bases: { a: { history: hub.history, rev: hub.rows.get("a")!.base.rev, hash: hub.rows.get("a")!.base.hash } },
       order: { history: hub.history, rev: hub.rev },
-    } });
+    } }, undefined, "restore-1");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { initSceneBackup } = await import("../src/lib/sceneBackup");
     await initSceneBackup();

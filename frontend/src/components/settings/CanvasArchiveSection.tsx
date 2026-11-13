@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
-import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText } from "../../lib/sceneArchive";
+import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, downloadStorageRecovery, type StorageRecovery } from "../../lib/sceneArchive";
+import { subscribeEditBackup } from "../../lib/editDocBackup";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { hubHasFeature } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, type NotebookArchive } from "../../lib/sceneNotebook";
@@ -21,7 +22,24 @@ export function CanvasArchiveSection() {
   const otherTab = useCanvasFollower();
   const writer = useSceneWriter();
   const [archive, setArchive] = useState<NotebookArchive | null>(null);
+  const [archiveAccount, setArchiveAccount] = useState("");
   const account = getAccountNamespace();
+  const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setRecovery(null);
+    const read = () => {
+      if (!sceneStoreReady()) return;
+      void readStorageRecovery().then((value) => {
+        if (alive && value.account === account && account === getAccountNamespace()) setRecovery(value);
+      }).catch(() => { if (alive) setMsg("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다."); });
+    };
+    read();
+    const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read);
+    window.addEventListener("storage", read);
+    window.addEventListener("focus", read);
+    return () => { alive = false; offScene(); offEdit(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
+  }, [account, writer.mode]);
   useEffect(() => {
     let alive = true;
     setArchive(null);
@@ -29,7 +47,7 @@ export function CanvasArchiveSection() {
       const snapshot = await readSceneNotebook(account);
       if (!snapshot.ok || !snapshot.value.joined) return;
       const result = await readNotebookArchive(account, snapshot.value.joined.notebookId);
-      if (alive && account === getAccountNamespace() && result.ok) setArchive(result.value);
+      if (alive && account === getAccountNamespace() && result.ok) { setArchive(result.value); setArchiveAccount(account); }
     })();
     return () => { alive = false; };
   }, [account, writer.mode]);
@@ -54,19 +72,35 @@ export function CanvasArchiveSection() {
   const importAll = (file: File) =>
     run(async () => {
       const { added, recovered } = await importSceneArchiveText(await file.text());
+      const currentRecovery = await readStorageRecovery();
+      if (currentRecovery.account === account && account === getAccountNamespace()) setRecovery(currentRecovery);
       if (!added && !recovered) return "파일의 캔버스가 이미 모두 있습니다 — 더한 것이 없습니다.";
       return (
         `캔버스 ${added}개를 가져왔습니다` +
         (recovered ? ` · 내용이 다른 ${recovered}개는 '[사본]' 탭으로 따로 두었습니다.` : ".")
       );
     });
+  const ownRecovery = recovery?.account === account ? recovery : null;
+  const blockedMirrorIds = new Set(ownRecovery?.mirror?.blockedIds ?? []);
+  const canvasCount = (ownRecovery?.canvases.length ?? 0) + (ownRecovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
+  const editCount = ownRecovery?.edits.length ?? 0;
+  const cardCount = ownRecovery?.cards?.candidates.reduce((n, c) => n + c.removals.length + c.revives.length + c.backfill.length, 0) ?? 0;
 
   return (
     <div className="settings-subblock">
       <h6>캔버스 자료</h6>
-      {archive && <div className="settings-row">
+      {!!(canvasCount + editCount + cardCount) && ownRecovery && <div className="settings-subblock" style={{ borderColor: "var(--warning, #c86f20)" }}>
+        <h6>{t("복원 전에 남겨 둔 것")}</h6>
+        <p role="status" style={{ color: "var(--warning, #c86f20)" }}>{t("허브와 이 브라우저의 기록 시점이 다릅니다. 허브가 백업에서 되살려졌거나, 업데이트 전 자료일 수 있습니다. 이 브라우저에 있던 내용은 지우지 않고 아래에 보관했고, 자동으로 다시 보내지 않습니다.")}</p>
+        <p>{t("캔버스 보관본 {canvasCount}개 · 편집 문서 {editCount}개 · 카드 정리 대기 {cardCount}개").replace("{canvasCount}", String(canvasCount)).replace("{editCount}", String(editCount)).replace("{cardCount}", String(cardCount))}</p>
+        <div className="settings-row">
+          <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
+          <button className="settings-action" disabled={busy || floating} onClick={() => fileRef.current?.click()}>{t("전체 가져오기로 되살리기")}</button>
+        </div>
+      </div>}
+      {archive && archiveAccount === account && <div className="settings-row">
         <span>{t("허브로 바꾸기 전 이 브라우저 캔버스 {count}개 — 합치지 않고 따로 남겨 둔 것").replace("{count}", String(Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)))}</span>
-        <button className="settings-action" disabled={busy} onClick={() => downloadNotebookArchive(archive)}>{t("내려받기")}</button>
+        <button className="settings-action" disabled={busy} onClick={() => { if (archiveAccount === getAccountNamespace()) downloadNotebookArchive(archive); }}>{t("내려받기")}</button>
       </div>}
       <div className="settings-row">
         <button className="settings-action" onClick={exportAll} disabled={busy}>

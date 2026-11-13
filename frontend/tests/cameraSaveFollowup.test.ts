@@ -60,7 +60,7 @@ describe("R2 저장소 바깥 알림 — 씬이 실제로 달라진 확정에만
     await settleSceneStoreForTest();
     const seen = vi.fn();
     const off = subscribeSceneStoreExternal(seen);
-    expect(await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [], bases: {}, order: { history: "h", rev: 1 } } })).toBe(true);
+    expect(await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [], bases: {}, order: { history: "h", rev: 1 } } }, undefined, "restore-1")).toBe(true);
     await settleSceneStoreForTest();
     expect(sceneStoreConflicts()).toEqual([]);
     expect(seen).toHaveBeenCalled();
@@ -107,12 +107,12 @@ describe("R4 지문 기억", () => {
     fake = { rows: [{ id: "s", data, deleted_at: null, base: { history_id: "h", rev: 1, hash: digest(data) } }] };
     const http = await import("../src/lib/http");
     const spy = vi.spyOn(http, "jsonFetch").mockImplementation(async (path: string) => {
-      if (path.includes("notebook?")) return structuredClone({ notebook_id: "book", history_id: "h", items: fake.rows, order: { ids: ["s"], rev: 1, history_id: "h" } }) as never;
+      if (path.includes("notebook?")) return structuredClone({ restore_generation: "restore-1", notebook_id: "book", history_id: "h", items: fake.rows, order: { ids: ["s"], rev: 1, history_id: "h" } }) as never;
       if (path.endsWith("/writer")) return { ok: true } as never;
       throw new Error(`unexpected ${path}`);
     });
     await writeScenesStore({ [bucket]: [] });
-    await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [JSON.parse(data)], bases: { s: { history: "h", rev: 1, hash: digest(data) } }, order: { history: "h", rev: 1 } } });
+    await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [JSON.parse(data)], bases: { s: { history: "h", rev: 1, hash: digest(data) } }, order: { history: "h", rev: 1 } } }, undefined, "restore-1");
     await syncSceneNotebook();
     const first = sha.calls.filter((t) => t === data).length;
     expect(first).toBe(1); // 행 대조·로컬 지문이 같은 글자 — 한 번만 계산
@@ -132,11 +132,11 @@ describe("R4 지문 기억", () => {
     const digest = createHash("sha256").update(data).digest("hex");
     const http = await import("../src/lib/http");
     const spy = vi.spyOn(http, "jsonFetch").mockImplementation(async (path: string) => {
-      if (path.includes("notebook?")) return structuredClone({ notebook_id: "book", history_id: "h", items: [{ id: "s", data, deleted_at: null, base: { history_id: "h", rev: 1, hash: digest } }], order: { ids: ["s"], rev: 1, history_id: "h" } }) as never;
+      if (path.includes("notebook?")) return structuredClone({ restore_generation: "restore-1", notebook_id: "book", history_id: "h", items: [{ id: "s", data, deleted_at: null, base: { history_id: "h", rev: 1, hash: digest } }], order: { ids: ["s"], rev: 1, history_id: "h" } }) as never;
       return { ok: true } as never;
     });
     await writeScenesStore({ [bucket]: [] });
-    await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [JSON.parse(data)], bases: { s: { history: "h", rev: 1, hash: digest } }, order: { history: "h", rev: 1 } } });
+    await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [JSON.parse(data)], bases: { s: { history: "h", rev: 1, hash: digest } }, order: { history: "h", rev: 1 } } }, undefined, "restore-1");
     let release!: () => void;
     sha.gate = new Promise<void>((resolve) => { release = resolve; });
     const run = syncSceneNotebook();
@@ -153,11 +153,11 @@ describe("R4 지문 기억", () => {
     const data = JSON.stringify(scene("s"));
     const http = await import("../src/lib/http");
     const spy = vi.spyOn(http, "jsonFetch").mockImplementation(async (path: string) => {
-      if (path.includes("notebook?")) return structuredClone({ notebook_id: "book", history_id: "h", items: [{ id: "s", data, deleted_at: null, base: { history_id: "h", rev: 1, hash: "0".repeat(64) } }], order: { ids: ["s"], rev: 1, history_id: "h" } }) as never;
+      if (path.includes("notebook?")) return structuredClone({ restore_generation: "restore-1", notebook_id: "book", history_id: "h", items: [{ id: "s", data, deleted_at: null, base: { history_id: "h", rev: 1, hash: "0".repeat(64) } }], order: { ids: ["s"], rev: 1, history_id: "h" } }) as never;
       return { ok: true } as never;
     });
     await writeScenesStore({ [bucket]: [] });
-    await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [JSON.parse(data)], bases: { s: { history: "h", rev: 1, hash: "x" } }, order: { history: "h", rev: 1 } } });
+    await joinSceneNotebook("local", "book", "h", { [bucket]: { scenes: [JSON.parse(data)], bases: { s: { history: "h", rev: 1, hash: "x" } }, order: { history: "h", rev: 1 } } }, undefined, "restore-1");
     const r = await syncSceneNotebook();
     expect(r.status).toBe("retry");
     expect(r.reason).toBe("invalid_notebook_hash");

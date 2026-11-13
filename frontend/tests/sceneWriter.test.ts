@@ -52,7 +52,7 @@ describe("hub scene writer", () => {
     await joinSceneNotebook("local", "book", "history", { "local::_none": {
       scenes: initial, bases: Object.fromEntries(initial.map(scene => [scene.id, { history: "history", rev: 1,
         hash: createHash("sha256").update(JSON.stringify(scene)).digest("hex") }])), order: { history: "history", rev: 1 },
-    } });
+    } }, undefined, "restore-1");
     const h = harness(); h.account("local");
     setSceneNotebookTokenProvider(() => h.client.token());
     h.client.configure(true); await h.client.refresh();

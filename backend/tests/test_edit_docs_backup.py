@@ -1,5 +1,7 @@
 """실제 SQLite에서 계정별 최신본 CAS·복구 사본·HTTP 경계를 검증한다."""
 
+from test_scene_notebook import restore_generation
+
 import hashlib
 import json
 import sqlite3
@@ -45,15 +47,15 @@ def database(tmp_path, monkeypatch):
 
 
 def test_head_cas_and_conflict_copies(database):
-    first = repo.save_edit_backup(OWNER, KEY, raw("one"), None)
+    first = repo.save_edit_backup(OWNER, KEY, raw("one"), None, restore_generation=restore_generation())
     assert first["status"] == "saved" and first["head"]["revision"] == 1
-    assert repo.save_edit_backup(OWNER, KEY, raw("one"), None)["status"] == "same"
-    assert repo.save_edit_backup(OWNER, KEY, raw("two"), 1)["head"]["revision"] == 2
+    assert repo.save_edit_backup(OWNER, KEY, raw("one"), None, restore_generation=restore_generation())["status"] == "same"
+    assert repo.save_edit_backup(OWNER, KEY, raw("two"), 1, restore_generation=restore_generation())["head"]["revision"] == 2
     for index in range(8):
-        result = repo.save_edit_backup(OWNER, KEY, raw(index), 1)
+        result = repo.save_edit_backup(OWNER, KEY, raw(index), 1, restore_generation=restore_generation())
         assert result["status"] == "conflict"
         assert result["head"]["revision"] == 2
-    repo.save_edit_backup(OWNER, KEY, raw(0), None)
+    repo.save_edit_backup(OWNER, KEY, raw(0), None, restore_generation=restore_generation())
     listing = repo.get_edit_backup(OWNER, KEY, include_data=True)
     assert listing["head"]["data"] == raw("two")
     assert listing["total_copies"] == 8
@@ -70,12 +72,12 @@ def test_head_cas_and_conflict_copies(database):
 
 
 def test_concurrent_same_base_has_one_winner_and_one_preserved_copy(database):
-    repo.save_edit_backup(OWNER, KEY, raw("base"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("base"), None, restore_generation=restore_generation())
     barrier = Barrier(2)
 
     def save(label):
         barrier.wait(timeout=5)
-        return label, repo.save_edit_backup(OWNER, KEY, raw(label), 1)
+        return label, repo.save_edit_backup(OWNER, KEY, raw(label), 1, restore_generation=restore_generation())
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(save, ("left", "right")))
@@ -109,13 +111,13 @@ def insert_copy(path, data, kind, created_at, owner=OWNER, key=KEY):
 
 
 def test_conflict_copies_capped_at_20_per_document_and_current_always_kept(database):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     for owner, key in (("b@example.com", KEY), (OWNER, KEY + ":other")):  # 다른 계정·다른 문서는 그대로
-        repo.save_edit_backup(owner, key, raw("head"), None)
+        repo.save_edit_backup(owner, key, raw("head"), None, restore_generation=restore_generation())
         for index in range(3):
-            repo.save_edit_backup(owner, key, raw(f"o{index}"), None)
+            repo.save_edit_backup(owner, key, raw(f"o{index}"), None, restore_generation=restore_generation())
     for index in range(25):
-        result = repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None)
+        result = repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None, restore_generation=restore_generation())
         assert result["status"] == "conflict" and result["copy_hash"] in kinds(database)  # 응답이 보존했다는 사본은 늘 있다
     assert conflicts(database) == 20 and set(kinds(database).values()) == {"conflict"}
     assert conflicts(database, "b@example.com") == 3 and conflicts(database, key=KEY + ":other") == 3
@@ -124,61 +126,61 @@ def test_conflict_copies_capped_at_20_per_document_and_current_always_kept(datab
 
 @pytest.mark.parametrize("kind", EXPLICIT)
 def test_explicit_preserve_upgrades_existing_conflict_copy_and_survives_cap(database, kind):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     x = raw("x")
-    assert repo.save_edit_backup(OWNER, KEY, x, None)["status"] == "conflict"
+    assert repo.save_edit_backup(OWNER, KEY, x, None, restore_generation=restore_generation())["status"] == "conflict"
     if kind == "local_preserve":
-        repo.restore_edit_backup(OWNER, KEY, 1, data=raw("restored"), local_raw=x)
+        repo.restore_edit_backup(OWNER, KEY, 1, data=raw("restored"), local_raw=x, restore_generation=restore_generation())
     else:  # head 를 X 로 만든 뒤 복원·채택 직전 head 보존
-        assert repo.save_edit_backup(OWNER, KEY, x, 1)["status"] == "saved"
-        repo.restore_edit_backup(OWNER, KEY, 2, data=raw("restored"), kind=kind)
+        assert repo.save_edit_backup(OWNER, KEY, x, 1, restore_generation=restore_generation())["status"] == "saved"
+        repo.restore_edit_backup(OWNER, KEY, 2, data=raw("restored"), kind=kind, restore_generation=restore_generation())
     assert kinds(database)[digest(x)] == kind
     for index in range(25):
-        repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None)
+        repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None, restore_generation=restore_generation())
     assert kinds(database)[digest(x)] == kind and conflicts(database) == 20
-    assert repo.save_edit_backup(OWNER, KEY, x, None)["status"] == "conflict"  # 충돌로 다시 와도 내리지 않는다
+    assert repo.save_edit_backup(OWNER, KEY, x, None, restore_generation=restore_generation())["status"] == "conflict"  # 충돌로 다시 와도 내리지 않는다
     assert kinds(database)[digest(x)] == kind
 
 
 @pytest.mark.parametrize("kind", EXPLICIT)
 def test_conflict_put_of_explicit_copy_keeps_all_20_conflicts(database, kind):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     explicit = raw("explicit")
     insert_copy(database, explicit, kind, "2026-01-01T00:00:00.000Z")
     for index in range(20):
         insert_copy(database, raw(f"c{index:02d}"), "conflict", f"2026-02-01T00:00:{index:02d}.000Z")
-    result = repo.save_edit_backup(OWNER, KEY, explicit, None)
+    result = repo.save_edit_backup(OWNER, KEY, explicit, None, restore_generation=restore_generation())
     assert result["status"] == "conflict" and result["copy_hash"] == digest(explicit)
     state = kinds(database)
     assert state[digest(explicit)] == kind and conflicts(database) == 20
 
 
 def test_legacy_conflicts_resend_oldest_keeps_it_plus_latest_19_and_trimmed_hash_returns_as_new(database):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     for index in range(25):  # 상한 전 운영으로 쌓인 25개(시각이 다르다)
         insert_copy(database, raw(f"old{index:02d}"), "conflict", f"2026-01-01T00:00:{index:02d}.000Z")
-    result = repo.save_edit_backup(OWNER, KEY, raw("old00"), None)
+    result = repo.save_edit_backup(OWNER, KEY, raw("old00"), None, restore_generation=restore_generation())
     assert result["status"] == "conflict" and result["copy_hash"] == digest(raw("old00"))
     assert set(kinds(database)) == {digest(raw("old00"))} | {digest(raw(f"old{index:02d}")) for index in range(6, 25)}
-    assert repo.save_edit_backup(OWNER, KEY, raw("old01"), None)["status"] == "conflict"  # 지워진 원문이 다시 오면 새 사본
+    assert repo.save_edit_backup(OWNER, KEY, raw("old01"), None, restore_generation=restore_generation())["status"] == "conflict"  # 지워진 원문이 다시 오면 새 사본
     state = kinds(database)
     assert digest(raw("old01")) in state and len(state) == 20 and digest(raw("old00")) not in state
 
 
 def test_same_time_conflicts_are_trimmed_in_list_order(database):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     hashes = []
     for index in range(25):
         data = raw(f"same{index}")
         insert_copy(database, data, "conflict", "2026-01-01T00:00:00.000Z")
         hashes.append(digest(data))
-    repo.save_edit_backup(OWNER, KEY, raw("new"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("new"), None, restore_generation=restore_generation())
     expected = [digest(raw("new"))] + sorted(hashes, reverse=True)[:19]
     assert [row["data_hash"] for row in repo.get_edit_backup(OWNER, KEY, limit=100)["copies"]] == expected
 
 
 def test_trim_failure_rolls_back_deletion_copy_and_head(database, monkeypatch):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     for index in range(20):
         insert_copy(database, raw(f"c{index:02d}"), "conflict", f"2026-01-01T00:00:{index:02d}.000Z")
     before = repo.get_edit_backup(OWNER, KEY, include_data=True, limit=100)
@@ -190,44 +192,44 @@ def test_trim_failure_rolls_back_deletion_copy_and_head(database, monkeypatch):
 
     monkeypatch.setattr(store, "_trim_conflicts", fail_after_trim)
     with pytest.raises(sqlite3.OperationalError):
-        repo.save_edit_backup(OWNER, KEY, raw("x"), None)
+        repo.save_edit_backup(OWNER, KEY, raw("x"), None, restore_generation=restore_generation())
     assert repo.get_edit_backup(OWNER, KEY, include_data=True, limit=100) == before
 
 
 def test_restore_of_trimmed_copy_writes_nothing(database):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
     insert_copy(database, raw("oldest"), "conflict", "2026-01-01T00:00:00.000Z")
     for index in range(20):
-        repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None)
+        repo.save_edit_backup(OWNER, KEY, raw(f"c{index}"), None, restore_generation=restore_generation())
     assert digest(raw("oldest")) not in kinds(database)
     before = repo.get_edit_backup(OWNER, KEY, include_data=True)
     with pytest.raises(LookupError):
-        repo.restore_edit_backup(OWNER, KEY, 1, copy_hash=digest(raw("oldest")), local_raw=raw("local"))
+        repo.restore_edit_backup(OWNER, KEY, 1, copy_hash=digest(raw("oldest")), local_raw=raw("local"), restore_generation=restore_generation())
     assert repo.get_edit_backup(OWNER, KEY, include_data=True) == before
 
 
 def test_restore_preserves_both_versions_and_retry_local_raw(database):
-    repo.save_edit_backup(OWNER, KEY, raw("old"), None)
-    repo.save_edit_backup(OWNER, KEY, raw("saved copy"), None)
-    result = repo.restore_edit_backup(OWNER, KEY, 1, copy_hash=digest(raw("saved copy")), local_raw="broken local JSON")
+    repo.save_edit_backup(OWNER, KEY, raw("old"), None, restore_generation=restore_generation())
+    repo.save_edit_backup(OWNER, KEY, raw("saved copy"), None, restore_generation=restore_generation())
+    result = repo.restore_edit_backup(OWNER, KEY, 1, copy_hash=digest(raw("saved copy")), local_raw="broken local JSON", restore_generation=restore_generation())
     assert result["status"] == "saved" and result["head"]["revision"] == 2
     # 응답 유실 재시도는 버전을 올리지 않되 또 다른 로컬 원문도 남긴다.
-    retry = repo.restore_edit_backup(OWNER, KEY, 1, data=raw("saved copy"), local_raw=raw("another local"))
+    retry = repo.restore_edit_backup(OWNER, KEY, 1, data=raw("saved copy"), local_raw=raw("another local"), restore_generation=restore_generation())
     assert retry["status"] == "same" and retry["head"]["revision"] == 2
-    repo.save_edit_backup(OWNER, KEY, raw("later edit"), 2)
+    repo.save_edit_backup(OWNER, KEY, raw("later edit"), 2, restore_generation=restore_generation())
     state = repo.get_edit_backup(OWNER, KEY, include_data=True)
     assert state["head"]["data"] == raw("later edit")
     assert {row["data_hash"] for row in state["copies"]} == {digest(data) for data in (raw("old"), raw("saved copy"), "broken local JSON", raw("another local"))}
     before = state
-    assert repo.restore_edit_backup(OWNER, KEY, 1, data=raw("stale restore"), local_raw=raw("local"))["status"] == "conflict"
+    assert repo.restore_edit_backup(OWNER, KEY, 1, data=raw("stale restore"), local_raw=raw("local"), restore_generation=restore_generation())["status"] == "conflict"
     assert repo.get_edit_backup(OWNER, KEY, include_data=True) == before
     with pytest.raises(ValueError):
-        repo.restore_edit_backup(OWNER, KEY, 3, copy_hash=digest("broken local JSON"))
+        repo.restore_edit_backup(OWNER, KEY, 3, copy_hash=digest("broken local JSON"), restore_generation=restore_generation())
     assert repo.get_edit_backup(OWNER, KEY, include_data=True) == before
 
 
 def test_restore_failure_rolls_back_preservation_and_head(database, monkeypatch):
-    repo.save_edit_backup(OWNER, KEY, raw("old"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("old"), None, restore_generation=restore_generation())
     before = repo.get_edit_backup(OWNER, KEY, include_data=True)
     original = store._copy
 
@@ -237,21 +239,21 @@ def test_restore_failure_rolls_back_preservation_and_head(database, monkeypatch)
 
     monkeypatch.setattr(store, "_copy", fail_after_insert)
     with pytest.raises(sqlite3.OperationalError):
-        repo.restore_edit_backup(OWNER, KEY, 1, data=raw("restore"), local_raw=raw("local"))
+        repo.restore_edit_backup(OWNER, KEY, 1, data=raw("restore"), local_raw=raw("local"), restore_generation=restore_generation())
     assert repo.get_edit_backup(OWNER, KEY, include_data=True) == before
 
 
 @pytest.mark.parametrize("data", ['{}', '[]', '{"v":true,"clips":[]}', '{"v":4,"clips":[]}', '{"v":2.0,"clips":[]}', '{"v":1,"clips":{}}', '{"v":1,"v":1,"clips":[]}', '{"v":1,"clips":[],"x":NaN}', '{"v":1,"clips":[{"x":1,"x":2}]}', '{"v":1,"clips":[],' ])
 def test_invalid_document_rejected_without_writes(database, data):
     with pytest.raises(ValueError):
-        repo.save_edit_backup(OWNER, KEY, data, None)
+        repo.save_edit_backup(OWNER, KEY, data, None, restore_generation=restore_generation())
     assert repo.get_edit_backup(OWNER, KEY)["head"] is None
 
 
 def test_speed_document_v2_is_kept_verbatim(database):
     # 속도를 쓴 편집 문서(v 2, 2026-10-23)도 백업한다 — 원문 그대로
     data = '{"v":2,"clips":[{"cut":"s/c1","gen":"g","track":1,"speed":1.5}],"tracksOff":[],"tracksLocked":[]}'
-    assert repo.save_edit_backup(OWNER, KEY, data, None)["status"] == "saved"
+    assert repo.save_edit_backup(OWNER, KEY, data, None, restore_generation=restore_generation())["status"] == "saved"
     assert repo.get_edit_backup(OWNER, KEY, include_data=True)["head"]["data"] == data
 
 
@@ -259,24 +261,24 @@ def test_repeat_slot_document_v3_is_kept_verbatim(database):
     # 같은 컷을 컷 사이에 한 번 더 놓은 편집 문서(v 3·slot·자리 열쇠 '폴더//ID', 2026-10-23)도 백업한다 — 원문 그대로
     data = ('{"v":3,"clips":[{"cut":"s/c1","gen":"g","track":1},{"cut":"s/c1","slot":"abc123","gen":"g","track":1,"speed":2}],'
             '"tracksOff":[],"tracksLocked":[],"cutOrder":["s/c1","s/c2","s/c1//abc123"]}')
-    assert repo.save_edit_backup(OWNER, KEY, data, None)["status"] == "saved"
+    assert repo.save_edit_backup(OWNER, KEY, data, None, restore_generation=restore_generation())["status"] == "saved"
     assert repo.get_edit_backup(OWNER, KEY, include_data=True)["head"]["data"] == data
 
 
 def test_byte_boundary_is_utf8_not_characters(database):
     base = raw("")
     exact = raw("x" * (store.MAX_EDIT_BYTES - len(base.encode("utf-8"))))
-    assert repo.save_edit_backup(OWNER, KEY, exact, None)["status"] == "saved"
+    assert repo.save_edit_backup(OWNER, KEY, exact, None, restore_generation=restore_generation())["status"] == "saved"
     with pytest.raises(ValueError):
-        repo.save_edit_backup(OWNER, KEY, exact + " ", 1)
+        repo.save_edit_backup(OWNER, KEY, exact + " ", 1, restore_generation=restore_generation())
     with pytest.raises(ValueError):
-        repo.save_edit_backup(OWNER, KEY, raw("한" * 400000), 1)
+        repo.save_edit_backup(OWNER, KEY, raw("한" * 400000), 1, restore_generation=restore_generation())
     assert repo.get_edit_backup(OWNER, KEY)["head"]["bytes"] == store.MAX_EDIT_BYTES
 
 
 def test_database_snapshot_includes_both_tables_and_reinit_preserves_data(database, tmp_path, monkeypatch):
-    repo.save_edit_backup(OWNER, KEY, raw("head"), None)
-    repo.save_edit_backup(OWNER, KEY, raw("conflict"), None)
+    repo.save_edit_backup(OWNER, KEY, raw("head"), None, restore_generation=restore_generation())
+    repo.save_edit_backup(OWNER, KEY, raw("conflict"), None, restore_generation=restore_generation())
     monkeypatch.setattr(backup_service, "MANAGE_DB_PATH", tmp_path / "unused-manage.db")
     backup = backup_service._backup_now_for_scope(database, tmp_path / "backups")
     assert backup is not None
@@ -320,26 +322,26 @@ def client(database, monkeypatch):
 
 def test_http_header_validation_and_restore_contract(client):
     body = {"doc_key": KEY, "data": raw("one"), "base_revision": None}
-    assert client.put("/api/edit-docs/backup", json=body).status_code == 409
-    assert client.put("/api/edit-docs/backup", json=body, headers={HEADER: "acct:other@example.com"}).status_code == 409
+    assert client.put("/api/edit-docs/backup", json={**body, 'restore_generation': restore_generation()}).status_code == 409
+    assert client.put("/api/edit-docs/backup", json={**body, 'restore_generation': restore_generation()}, headers={HEADER: "acct:other@example.com"}).status_code == 409
     headers = {HEADER: "local"}
-    assert client.put("/api/edit-docs/backup", json=body, headers=headers).json()["status"] == "saved"
+    assert client.put("/api/edit-docs/backup", json={**body, 'restore_generation': restore_generation()}, headers=headers).json()["status"] == "saved"
     assert client.get("/api/edit-docs/backup", params={"doc_key": KEY}).status_code == 409
-    assert client.put("/api/edit-docs/backup", json={**body, "base_revision": True}, headers=headers).status_code == 422
-    assert client.put("/api/edit-docs/backup", json={**body, "data": "bad"}, headers=headers).status_code == 400
+    assert client.put("/api/edit-docs/backup", json={**{**body, "base_revision": True}, 'restore_generation': restore_generation()}, headers=headers).status_code == 422
+    assert client.put("/api/edit-docs/backup", json={**{**body, "data": "bad"}, 'restore_generation': restore_generation()}, headers=headers).status_code == 400
     restore = {"doc_key": KEY, "base_revision": 1, "source": {"copy_hash": "0" * 64}}
-    assert client.post("/api/edit-docs/backup/restore", json=restore, headers=headers).status_code == 404
+    assert client.post("/api/edit-docs/backup/restore", json={**restore, 'restore_generation': restore_generation()}, headers=headers).status_code == 404
     restore["source"] = {"data": raw("two")}
-    assert client.post("/api/edit-docs/backup/restore", json=restore, headers=headers).json()["head"]["revision"] == 2
+    assert client.post("/api/edit-docs/backup/restore", json={**restore, 'restore_generation': restore_generation()}, headers=headers).json()["head"]["revision"] == 2
     restore["source"] = {"data": raw("two"), "copy_hash": "0" * 64}
-    assert client.post("/api/edit-docs/backup/restore", json=restore, headers=headers).status_code == 400
+    assert client.post("/api/edit-docs/backup/restore", json={**restore, 'restore_generation': restore_generation()}, headers=headers).status_code == 400
     assert _proxy.is_local_path("/api/edit-docs/backup")
 
 
 def test_auth_owner_stays_email_when_creator_identity_changes(database, monkeypatch):
     monkeypatch.setattr(config, "AUTH_ENABLED", True)
     request = SimpleNamespace(state=SimpleNamespace(account={"email": OWNER.upper(), "creator_uid": None}), headers={HEADER: f"acct:{OWNER}"})
-    body = edit_docs.BackupIn(doc_key=KEY, data=raw("one"), base_revision=None)
+    body = edit_docs.BackupIn(restore_generation=restore_generation(), doc_key=KEY, data=raw("one"), base_revision=None)
     assert edit_docs.put_backup(body, request)["status"] == "saved"
     request.state.account["creator_uid"] = "linked-creator"
     body.data, body.base_revision = raw("two"), 1
@@ -361,13 +363,13 @@ def test_account_switch_after_header_check_stays_in_pinned_database(tmp_path, mo
         active_account.set_active(OWNER, None)
         original = repo.save_edit_backup
 
-        def switch(*args):
+        def switch(*args, **kwargs):
             active_account.set_active("b@example.com", None)
-            return original(*args)
+            return original(*args, **kwargs)
 
         monkeypatch.setattr(repo, "save_edit_backup", switch)
         request = SimpleNamespace(state=SimpleNamespace(account=None), headers={HEADER: f"acct:{OWNER}"})
-        assert edit_docs.put_backup(edit_docs.BackupIn(doc_key=KEY, data=raw("a"), base_revision=None), request)["status"] == "saved"
+        assert edit_docs.put_backup(edit_docs.BackupIn(restore_generation=restore_generation(), doc_key=KEY, data=raw("a"), base_revision=None), request)["status"] == "saved"
         assert active_account.account_key() == "b@example.com"
         assert repo.get_edit_backup(OWNER, KEY)["head"] is None
         with active_account.pinned_account_scope((OWNER, None)):
