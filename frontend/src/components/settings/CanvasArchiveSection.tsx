@@ -11,6 +11,39 @@ import { sceneStoreReady } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
 
+/** '복원 전에 남겨 둔 것' 기록 — 펼친 칸과 접힌 '자료 관리' 제목 줄이 같이 읽는다. [기록, 바꾸기, 읽기 실패]. */
+export function useStorageRecovery() {
+  const writer = useSceneWriter();
+  const account = getAccountNamespace();
+  const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setRecovery(null);
+    const read = () => {
+      if (!sceneStoreReady()) return;
+      void readStorageRecovery().then((value) => {
+        if (alive && value.account === account && account === getAccountNamespace()) setRecovery(value);
+      }).catch(() => { if (alive) setFailed(true); });
+    };
+    read();
+    const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read);
+    window.addEventListener("storage", read);
+    window.addEventListener("focus", read);
+    return () => { alive = false; offScene(); offEdit(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
+  }, [account, writer.mode]);
+  return [recovery?.account === account ? recovery : null, setRecovery, failed] as const;
+}
+
+/** 보류 개수 — 캔버스 보관본(미러는 아직 막힌 씬·장부가 있는 것만) · 편집 문서 · 카드 정리 대기. */
+export function heldRecoveryCounts(recovery: StorageRecovery | null) {
+  const blockedMirrorIds = new Set(recovery?.mirror?.blockedIds ?? []);
+  const canvas = (recovery?.canvases.length ?? 0) + (recovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
+  const edit = recovery?.edits.length ?? 0;
+  const card = recovery?.cards?.candidates.reduce((n, c) => n + c.removals.length + c.revives.length + c.backfill.length, 0) ?? 0;
+  return { canvas, edit, card, total: canvas + edit + card };
+}
+
 // 캔버스 전체를 파일 하나로 내려받고, 그 파일에서 다시 가져온다(백업·PC 옮기기·저장소가 막혔을 때 건지기).
 // 씬 하나를 주고받는 캔버스의 [저장]/[불러오기]와 다르다 — 이쪽은 계정·씬 id 를 그대로 싣고, 가져올 때 합친다.
 export function CanvasArchiveSection() {
@@ -24,22 +57,8 @@ export function CanvasArchiveSection() {
   const [archive, setArchive] = useState<NotebookArchive | null>(null);
   const [archiveAccount, setArchiveAccount] = useState("");
   const account = getAccountNamespace();
-  const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
-  useEffect(() => {
-    let alive = true;
-    setRecovery(null);
-    const read = () => {
-      if (!sceneStoreReady()) return;
-      void readStorageRecovery().then((value) => {
-        if (alive && value.account === account && account === getAccountNamespace()) setRecovery(value);
-      }).catch(() => { if (alive) setMsg("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다."); });
-    };
-    read();
-    const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read);
-    window.addEventListener("storage", read);
-    window.addEventListener("focus", read);
-    return () => { alive = false; offScene(); offEdit(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
-  }, [account, writer.mode]);
+  const [ownRecovery, setRecovery, recoveryFailed] = useStorageRecovery();
+  useEffect(() => { if (recoveryFailed) setMsg("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다."); }, [recoveryFailed]);
   useEffect(() => {
     let alive = true;
     setArchive(null);
@@ -80,11 +99,7 @@ export function CanvasArchiveSection() {
         (recovered ? ` · 내용이 다른 ${recovered}개는 '[사본]' 탭으로 따로 두었습니다.` : ".")
       );
     });
-  const ownRecovery = recovery?.account === account ? recovery : null;
-  const blockedMirrorIds = new Set(ownRecovery?.mirror?.blockedIds ?? []);
-  const canvasCount = (ownRecovery?.canvases.length ?? 0) + (ownRecovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
-  const editCount = ownRecovery?.edits.length ?? 0;
-  const cardCount = ownRecovery?.cards?.candidates.reduce((n, c) => n + c.removals.length + c.revives.length + c.backfill.length, 0) ?? 0;
+  const { canvas: canvasCount, edit: editCount, card: cardCount } = heldRecoveryCounts(ownRecovery);
 
   return (
     <div className="settings-subblock">

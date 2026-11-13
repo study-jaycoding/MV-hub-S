@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { CanvasArchiveSection } from "../src/components/settings/CanvasArchiveSection";
+import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "../src/components/settings/CanvasArchiveSection";
 import { downloadStorageRecovery, readStorageRecovery } from "../src/lib/sceneArchive";
 import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose } from "../src/lib/sceneNotebook";
 import { abortSceneStoreWritesForTest, applySceneOp, holdNotebookWrites, readWorkingBucket, setSceneWriteGate, settleSceneStoreForTest, writeScenesStore, sceneNotebookTransaction } from "../src/lib/sceneStore";
@@ -100,6 +100,21 @@ it("recovery UI shows counts and exports originals with control data; another ac
   expect(() => downloadStorageRecovery(captured)).toThrow("계정");
   await act(async () => root!.render(<CanvasArchiveSection />));
   expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
+});
+function HeldProbe() {
+  const [recovery] = useStorageRecovery();
+  return <i data-held={heldRecoveryCounts(recovery).total} />;
+}
+it("the folded settings line reads the same held count as the recovery group, only for this account", async () => {
+  await changed(); await syncSceneNotebook();
+  localStorage.setItem('mvhub.editRecovery:["local","doc"]', JSON.stringify({ blocked: true, originals: [{ raw: "original" }] }));
+  localStorage.setItem("mvhub.cardRecovery:local", JSON.stringify({ generation: "new", candidates: [{ removals: [{ id: "old" }], revives: [], backfill: [] }] }));
+  root = createRoot(host); await act(async () => root!.render(<><CanvasArchiveSection /><HeldProbe /></>));
+  expect(host.textContent).toContain("캔버스 보관본 1개 · 편집 문서 1개 · 카드 정리 대기 1개");
+  expect(host.querySelector("i")!.dataset.held).toBe("3");
+  setAccountScope("other@example.com");
+  await act(async () => root!.render(<><CanvasArchiveSection /><HeldProbe /></>));
+  expect(host.querySelector("i")!.dataset.held).toBe("0");
 });
 it("recovery UI stays hidden when there are no pending candidates", async () => {
   root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));

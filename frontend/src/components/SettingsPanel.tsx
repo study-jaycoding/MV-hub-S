@@ -46,7 +46,7 @@ import {
 } from "./settings/SettingsSections";
 import { BackupSection, backupSummary } from "./settings/BackupSection";
 import { SettingsFold } from "./settings/SettingsFold";
-import { CanvasArchiveSection } from "./settings/CanvasArchiveSection";
+import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "./settings/CanvasArchiveSection";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 import { ComfyUnresolvedRunsSection } from "./settings/ComfyUnresolvedRunsSection";
 import { SettingsDescription } from "./settings/SettingsDescription";
@@ -84,6 +84,11 @@ export function dataFoldSummary(history: HistoryImportStatus | null, progress: s
   return [historyText, ...progress, ...rest].filter(Boolean).join(" · ");
 }
 
+/** 자료 관리 접힌 줄 조각 — '복원 보류 N'(주황)은 시안 2판 자리인 백업 세트 뒤·서버 상태 앞. 보류 0 이면 뺀다. */
+export function dataFoldParts(lead: string, held: number, shared: string): (string | { held: number })[] {
+  return [lead, held > 0 ? { held } : "", shared].filter((part) => part !== "");
+}
+
 export function SettingsPanel({
   onClose,
   onImported,
@@ -94,6 +99,7 @@ export function SettingsPanel({
   onOpenMcp?: () => void;
 }) {
   const t = useT();
+  const [heldRecovery] = useStorageRecovery(); // 접힌 '자료 관리' 줄의 '복원 보류 N' — 펼친 칸과 같은 기록·같은 셈
   const [accent, setAccent] = useState(loadAccent());
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
@@ -611,11 +617,15 @@ export function SettingsPanel({
     ? `${t("선택된 폴더")}: ${dlDir}`
     : fsaSupported() ? t("다운로드 폴더 지정 안 됨") : t("현재 접속에서는 다운로드 폴더를 직접 지정할 수 없습니다.");
   const sharedBackup = backupContinuity?.shared;
-  const dataSummary = dataFoldSummary(historyImport, [dbMsg, reinspectMsg, syncMsg, hfMsg], [
+  const dataLead = dataFoldSummary(historyImport, [dbMsg, reinspectMsg, syncMsg, hfMsg], [
     sceneStoreReady() ? t("캔버스 {n}개").replace("{n}", String(listScenes(null).length)) : "",
     backupSummary(backupContinuity),
-    sharedBackup ? `${t("서버")} ${BACKUP_STATE_LABELS[sharedBackup.state] || sharedBackup.state}` : "",
   ]);
+  const sharedText = sharedBackup ? `${t("서버")} ${BACKUP_STATE_LABELS[sharedBackup.state] || sharedBackup.state}` : "";
+  const dataSummary = <>{dataFoldParts(dataLead, heldRecoveryCounts(heldRecovery).total, sharedText).map((part, i) => (
+    <span key={i}>{i ? " · " : ""}{typeof part === "string" ? part
+      : <b style={{ color: "var(--warning, #c86f20)" }}>{t("복원 보류 {n}").replace("{n}", String(part.held))}</b>}</span>
+  ))}</>;
   const resolveSummary = resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.message || "";
 
   return (

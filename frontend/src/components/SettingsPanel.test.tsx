@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dataFoldSummary } from './SettingsPanel';
+import { dataFoldParts, dataFoldSummary } from './SettingsPanel';
 
 // 접힌 '자료 관리' 묶음 제목 밑 줄 — 진행·결과는 접어 둬도 보여야 한다(Jay 규칙 "실시간 정보는 접기 밖", 배포 전 검토 Claude 2)
 describe('settings data fold summary', () => {
@@ -15,5 +15,10 @@ describe('settings data fold summary', () => {
   });
   it('never ends with an ellipsis', () => {
     expect(dataFoldSummary({ state: 'running', received: 1 } as never, [], [])).not.toMatch(/(…|\.\.\.)$/);
+  });
+  it("puts '복원 보류 N' after the backup sets and before the server state, and drops it at zero", () => {
+    expect(dataFoldParts('캔버스 3개 · 백업 8세트', 3, '서버 정상')).toEqual(['캔버스 3개 · 백업 8세트', { held: 3 }, '서버 정상']);
+    expect(dataFoldParts('캔버스 3개', 0, '서버 정상')).toEqual(['캔버스 3개', '서버 정상']);
+    expect(dataFoldParts('', 2, '')).toEqual([{ held: 2 }]);
   });
 });
