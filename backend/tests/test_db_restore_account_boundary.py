@@ -223,7 +223,7 @@ def test_switch_rejects_before_flush_or_target_writes(hub, monkeypatch, route, f
 @pytest.mark.parametrize("auth", (False, True))
 @pytest.mark.parametrize("fixed", (False, True))
 @pytest.mark.parametrize("switch_accounts", (False, True))
-def test_unchanged_or_aba_target_preserves_restore_contract(
+def test_unchanged_target_restores_but_account_epoch_change_rejects(
     hub, monkeypatch, route, auth, fixed, switch_accounts
 ):
     monkeypatch.setattr(config, "AUTH_ENABLED", auth)
@@ -239,6 +239,15 @@ def test_unchanged_or_aba_target_preserves_restore_contract(
         if not auth:
             active_account.set_active("  RESTORE-A@example.invalid  ", "uid-a")
 
+    if switch_accounts:
+        before = target.read_bytes()
+        with pytest.raises(HTTPException) as caught:
+            invoke(hub, monkeypatch, route, switch)
+        assert caught.value.status_code == 409
+        assert target.read_bytes() == before
+        assert not list(hub.root.rglob("*.bak-*"))
+        assert_no_restore_temp(hub)
+        return
     result = invoke(hub, monkeypatch, route, switch)
     assert result["ok"] and result["relogin_required"]
     assert marker(target) == "restored"
@@ -1067,6 +1076,500 @@ def test_full_restore_rejects_different_selected_version(full_restore):
     assert state.old.path.read_bytes() == before
     state.hub.adopt.assert_not_called()
     state.hub.activate.assert_not_called()
+
+
+@pytest.fixture
+def legacy_restore(full_restore, monkeypatch):
+    """Use real v1/v2 archives and single-file inputs, never an upstream server."""
+    import zipfile
+    state = full_restore
+    state.hub.seed = state.paths["content"]
+
+    def restore(route="latest_set", version=2, change=lambda: None):
+        if route in {"import", "legacy"}:
+            return invoke(state.hub, monkeypatch, route, change)
+        manifest = dict(state.manifest, format_version=version)
+        manifest["roles"] = {
+            role: {k: v for k, v in backup_manifest.role_info(state.paths[role], role).items()}
+            for role in ("content", "trash")
+        }
+        if version == 1:
+            manifest = {k: manifest[k] for k in ("format", "format_version", "roles")}
+            for item in manifest["roles"].values():
+                item.pop("schema")
+        else:
+            manifest["consistency_roles"] = ["content", "trash"]
+            manifest = backup_manifest.seal(manifest)
+
+        def download(url, token, destination):
+            change()
+            with zipfile.ZipFile(destination, "w") as bundle:
+                bundle.writestr("manifest.json", backup_manifest.canonical(manifest))
+                for role in manifest["roles"]:
+                    bundle.write(state.paths[role], f"{role}.db")
+            return 200
+
+        monkeypatch.setattr(db_transfer, "_download_to", download)
+        if route == "version":
+            return db_transfer.server_restore_version(manifest.get("backup_set_id", "a" * 64), state.hub.request)
+        return db_transfer.server_restore(state.hub.request)
+
+    state.restore = restore
+    return state
+
+
+@pytest.mark.parametrize("route,version", [(r, v) for r in ("version", "latest_set") for v in (1, 2)]
+                         + [("legacy", 2), ("import", 2)])
+@pytest.mark.parametrize("fixed", [False, True])
+def test_legacy_followup_mcp_revokes_every_entry(legacy_restore, monkeypatch, route, version, fixed):
+    state = legacy_restore
+    if fixed:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    with closing(sqlite3.connect(state.paths["content"])) as conn:
+        for client_id, stamp in (("other-client", None), ("already-revoked", "2000-01-01")):
+            conn.execute("INSERT INTO mcp_client(id,secret_hash,hub_id,owner_uid,account_email,password_stamp,workspace,name,revoked_at) "
+                         "VALUES(?,?,'other-hub','other-owner',?,'','personal','other',?)",
+                         (client_id, client_id + "-hash", ACCOUNT_B, stamp))
+        conn.commit()
+    assert state.restore(route, version)["ok"]
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mcp_client WHERE revoked_at IS NULL").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM mcp_client").fetchone() == (3,)
+        assert conn.execute("SELECT revoked_at FROM mcp_client WHERE id='already-revoked'").fetchone() == ("2000-01-01",)
+
+
+@pytest.mark.parametrize("prior", [None, {"id": "v3", "confirmed": []},
+                                  {"id": "past", "confirmed": [{"name": "local", "path": "C:\\old"}]}, "broken"])
+def test_legacy_followup_mounts_resets_without_writing_json(legacy_restore, prior):
+    state = legacy_restore
+    if prior is not None:
+        with closing(sqlite3.connect(state.paths["content"])) as conn:
+            conn.execute("INSERT INTO app_setting VALUES(?,?)", (asset_mounts.restore_key(ACCOUNT_A), json.dumps(prior)))
+            conn.commit()
+    before = state.old.mounts_path.read_bytes()
+    state.restore()
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        value = asset_mounts.restore_state(conn, ACCOUNT_A)
+    assert value and value["id"] and value["id"] not in {"past", "v3"} and value["confirmed"] == []
+    assert not asset_mounts.allowed(value, "local", "C:\\old")
+    assert state.old.mounts_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("change", ["env", "agent_dir", "mounts", "db_epoch", "account_epoch", "server_mode"])
+def test_legacy_followup_admission_rejects_changed_snapshot(legacy_restore, monkeypatch, route, change):
+    state = legacy_restore
+    before = state.old.path.read_bytes()
+
+    def alter():
+        if change == "env":
+            monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "different-synthetic-key")
+        elif change == "agent_dir":
+            monkeypatch.setattr(config, "AGENT_CHAT_DIR", state.hub.root / "another-agent")
+        elif change == "mounts":
+            monkeypatch.setattr(asset_mounts, "mounts_file", lambda email=None: state.hub.root / "other.json")
+        elif change == "db_epoch":
+            db.flush_pool()
+        elif change == "server_mode":
+            monkeypatch.setattr(db_transfer._proxy, "is_shared_team_server", lambda: True)
+        else:
+            active_account.bump_account_epoch()
+
+    with pytest.raises(HTTPException) as caught:
+        state.restore(route, change=alter)
+    assert caught.value.status_code == 409
+    assert state.old.path.read_bytes() == before
+    assert not list(state.hub.root.rglob("*.bak-*"))
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+@pytest.mark.parametrize("route", ROUTES)
+def test_legacy_followup_agent_adopts_original(legacy_restore, monkeypatch, fixed, route):
+    state = legacy_restore
+    if fixed:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    before = state.old.agent_path.read_bytes()
+    state.restore(route)
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    current = db_transfer._capture_restore_target(full=True)
+    assert current.agent_path.is_file()
+    with closing(sqlite3.connect(current.agent_path)) as conn:
+        rows = conn.execute("SELECT title,resumable,cli_session_id,client_id,mcp_entry,restored_from FROM agent_chat_conversation").fetchall()
+    assert len(rows) == 1 and rows[0][:5] == ("Original", 0, None, "", "{}")
+    assert rows[0][5]
+    if not fixed:
+        assert state.old.agent_path.read_bytes() == before
+    assert any(p.read_bytes() == before for p in state.old.agent_path.parent.glob(f"{state.old.agent_path.stem}.bak-*.db"))
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_legacy_followup_agent_auth_on_uses_requester_only(legacy_restore, monkeypatch, shared):
+    state = legacy_restore
+    monkeypatch.setattr(config, "AUTH_ENABLED", True)
+    monkeypatch.setattr(db_transfer, "AUTH_ENABLED", True)
+    monkeypatch.setenv("CONTENT_HUB_DB", str(state.old.path))
+    monkeypatch.setattr(db_transfer._proxy, "is_shared_team_server", lambda: shared)
+    state.hub.request.state.account = {"email": ACCOUNT_A, "status": "approved", "global_role": "admin"}
+    other = agent_chat.Identity(state.old.old_identity.hub, str(state.old.path), ACCOUNT_B).db_file()
+    original, foreign = state.old.agent_path.read_bytes(), other.read_bytes()
+    state.restore("import")
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        assert asset_mounts.restore_state(conn, "")["confirmed"] == []
+        secret = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()[0]
+    final = agent_chat.Identity(auth.hub_id_for(secret, state.old.path), str(state.old.path), ACCOUNT_A).file_path()
+    assert other.read_bytes() == foreign and state.old.agent_path.read_bytes() == original
+    if shared:
+        assert not final.exists()
+        assert not list(state.old.agent_path.parent.glob("*.bak-*"))
+    else:
+        assert final.is_file()
+        with closing(sqlite3.connect(final)) as conn:
+            assert conn.execute("SELECT restored_from FROM agent_chat_conversation").fetchone()[0]
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+@pytest.mark.parametrize("stage", ["content", "trash", "agent", "schema", "security", "adopt", "logout"])
+def test_legacy_followup_rollback_every_stage(legacy_restore, monkeypatch, fixed, stage):
+    state = legacy_restore
+    if fixed:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    before = {p: p.read_bytes() for p in (state.old.path, state.trash, state.old.agent_path,
+                                         state.old.mounts_path, state.manage, active_account._POINTER)}
+    original_replace = db_transfer.os.replace
+
+    def replace(source, target):
+        role = "content" if target == state.old.path else "trash" if target == state.trash else "agent"
+        if ".restore-" in str(source) and stage == role:
+            raise OSError("synthetic install failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(db_transfer.os, "replace", replace)
+    failure = Mock(side_effect=RuntimeError("synthetic init failure"))
+    if stage == "schema": monkeypatch.setattr(db, "init_db", failure)
+    elif stage == "security": monkeypatch.setattr(db_transfer, "_post_install_security_init", failure)
+    elif stage == "adopt": monkeypatch.setattr(agent_store, "adopt_restored", failure)
+    elif stage == "logout":
+        clear = db_transfer._strict_clear_active
+        def logout():
+            clear()
+            failure()
+        monkeypatch.setattr(db_transfer, "_strict_clear_active", logout)
+    with pytest.raises((OSError, RuntimeError)):
+        state.restore()
+    assert before == {p: p.read_bytes() for p in before}
+    assert not leftover_restore_stages(state.hub.root)
+    assert {p for p in config.AGENT_CHAT_DIR.glob("*.db") if ".bak-" not in p.name} == {state.old.agent_path}
+
+
+@pytest.mark.parametrize("mode", ["auth", "logout"])
+@pytest.mark.parametrize("fixed", [False, True])
+def test_legacy_followup_mcp_import_modes_reject_old_secret(legacy_restore, monkeypatch, mode, fixed):
+    from app.routers import mcp, mcp_v2, agent_chat as chat_router
+    state = legacy_restore
+    monkeypatch.setenv("CONTENT_HUB_DB", str(state.old.path))
+    if fixed:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    if mode == "auth":
+        monkeypatch.setattr(config, "AUTH_ENABLED", True)
+        monkeypatch.setattr(db_transfer, "AUTH_ENABLED", True)
+        state.hub.request.state.account = {"email": ACCOUNT_A}
+    else:
+        active_account.clear_active()
+    with closing(sqlite3.connect(state.paths["content"])) as conn:
+        conn.execute("UPDATE mcp_client SET secret_hash=?,hub_id=?,name=?",
+                     (mcp.digest("synthetic-restored-secret"), state.old.old_identity.hub, mcp_v2.PANEL_CLIENT))
+        conn.commit()
+    state.restore("import")
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        assert asset_mounts.restore_state(conn, "")["confirmed"] == []
+        assert conn.execute("SELECT revoked_at FROM mcp_client").fetchone()[0]
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    upstream = Mock(side_effect=AssertionError("No upstream call for revoked credentials"))
+    monkeypatch.setattr(mcp_v2, "_upstream_me", upstream)
+    with pytest.raises(HTTPException) as caught:
+        mcp_v2._capture(state.hub.request, "synthetic-restored-secret")
+    assert caught.value.status_code == 403
+    assert chat_router._panel_client(SimpleNamespace(hub=state.old.old_identity.hub),
+                                      state.old.old_identity, "old-client") is None
+    upstream.assert_not_called()
+
+
+def test_legacy_followup_mounts_requires_current_confirmation(legacy_restore, monkeypatch):
+    from app.routers import assets
+    state = legacy_restore
+    location = state.hub.root / "folder"
+    location.mkdir()
+    raw = json.dumps({"mounts": [{"name": "local", "path": str(location), "owner": "old"}]}).encode()
+    state.old.mounts_path.write_bytes(raw)
+    state.restore()
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    monkeypatch.setattr(assets, "actor_id", lambda request: "me")
+    monkeypatch.setattr(assets, "_auto_project_mounts", lambda *a, **k: [{"name": "local", "path": str(location)}])
+    assert assets._safe_project_dir("local", state.hub.request) is None
+    assert state.old.mounts_path.read_bytes() == raw
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        restore_id = asset_mounts.restore_state(conn, ACCOUNT_A)["id"]
+        with pytest.raises(ValueError, match="asset_restore_changed"):
+            asset_mounts.confirm(conn, state.old.mounts_path, name="local", location=str(location),
+                                 owner="me", restore_id="old")
+        asset_mounts.confirm(conn, state.old.mounts_path, name="local", location=str(location),
+                             owner="me", restore_id=restore_id)
+    assets._MOUNT_PATH_CACHE.clear()
+    assert asset_mounts.normalized_path(assets._safe_project_dir("local", state.hub.request)) == asset_mounts.normalized_path(location)
+
+
+@pytest.mark.parametrize("missing", ["file", "secret", "logged_out"])
+def test_legacy_followup_agent_absence_never_creates_or_deletes_history(legacy_restore, missing):
+    state = legacy_restore
+    if missing == "file":
+        state.old.agent_path.unlink()
+    elif missing == "secret":
+        with closing(sqlite3.connect(state.old.path)) as conn:
+            conn.execute("DELETE FROM app_setting WHERE key='auth_secret'")
+            conn.commit()
+    else:
+        active_account.clear_active()
+    before = {p: p.read_bytes() for p in config.AGENT_CHAT_DIR.glob("*.db")}
+    state.restore("import")
+    assert before == {p: p.read_bytes() for p in config.AGENT_CHAT_DIR.glob("*.db")}
+
+
+@pytest.mark.parametrize("problem", ["directory", "denied", "corrupt", "future_version"])
+def test_legacy_followup_agent_invalid_source_rejects(legacy_restore, monkeypatch, problem):
+    state = legacy_restore
+    if problem == "directory":
+        state.old.agent_path.unlink()
+        state.old.agent_path.mkdir()
+    elif problem == "corrupt":
+        state.old.agent_path.write_bytes(b"not SQLite")
+    elif problem == "future_version":
+        with closing(sqlite3.connect(state.old.agent_path)) as conn:
+            conn.execute("PRAGMA user_version=99")
+    else:
+        original_stat = type(state.old.agent_path).stat
+        def denied(path, *args, **kwargs):
+            if path == state.old.agent_path:
+                raise PermissionError("synthetic denied")
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(type(state.old.agent_path), "stat", denied)
+    before = state.old.path.read_bytes()
+    with pytest.raises(HTTPException) as caught:
+        state.restore()
+    assert caught.value.status_code in {400, 409, 500, 503}
+    assert state.old.path.read_bytes() == before
+    assert not leftover_restore_stages(state.hub.root)
+
+
+@pytest.mark.parametrize("busy", ["runtime", "issuance"])
+@pytest.mark.parametrize("which", ["old", "final"])
+def test_legacy_followup_rollback_busy_has_no_side_effect(legacy_restore, monkeypatch, busy, which):
+    state = legacy_restore
+    original_hex = db_transfer.secrets.token_hex
+    monkeypatch.setattr(db_transfer.secrets, "token_hex", lambda n: "future-key" if n == 32 else original_hex(n))
+    final = agent_chat.Identity(auth.hub_id_for("future-key", state.old.path), str(state.old.path), ACCOUNT_A)
+    path = state.old.agent_path if which == "old" else final.file_path()
+    key = agent_store.path_key(path)
+    before = (dict(agent_store._epochs), set(agent_store._gates), set(agent_store._opened), state.old.path.read_bytes())
+    if busy == "runtime":
+        agent_chat.service._runtimes["legacy-busy"] = SimpleNamespace(path=path)
+    else:
+        agent_chat.service._issuing[key] = 1
+    try:
+        with pytest.raises(HTTPException) as caught:
+            state.restore()
+        assert caught.value.status_code == 409
+        assert before == (dict(agent_store._epochs), set(agent_store._gates), set(agent_store._opened), state.old.path.read_bytes())
+        assert not list(state.hub.root.rglob("*.bak-*"))
+    finally:
+        agent_chat.service._runtimes.pop("legacy-busy", None)
+        agent_chat.service._issuing.pop(key, None)
+
+
+def test_legacy_followup_rollback_drain_failure_is_no_install(legacy_restore, monkeypatch):
+    state = legacy_restore
+    before = state.old.path.read_bytes()
+    monkeypatch.setattr(agent_store, "drain_connections", Mock(side_effect=agent_store.StaleRequest()))
+    with pytest.raises(HTTPException) as caught:
+        state.restore()
+    assert caught.value.status_code == 503
+    assert state.old.path.read_bytes() == before
+    assert not list(state.hub.root.rglob("*.bak-*"))
+    assert agent_store.path_key(state.old.agent_path) not in agent_store._gates
+
+
+@pytest.mark.parametrize("problem", ["backup", "tamper"])
+def test_legacy_followup_rollback_preparation_failure_is_no_install(legacy_restore, monkeypatch, problem):
+    state = legacy_restore
+    before = {p: p.read_bytes() for p in (state.old.path, state.old.agent_path)}
+    copy = shutil.copy2
+    def fail(source, target, *args, **kwargs):
+        if problem == "backup" and source == state.old.agent_path and ".bak-" in target.name:
+            raise OSError("synthetic backup failure")
+        result = copy(source, target, *args, **kwargs)
+        if problem == "tamper" and target.parent == config.AGENT_CHAT_DIR and ".restore-" in target.name:
+            with target.open("ab") as stream:
+                stream.write(b"tampered")
+        return result
+    monkeypatch.setattr(shutil, "copy2", fail)
+    with pytest.raises(HTTPException) as caught:
+        state.restore()
+    assert caught.value.status_code == (500 if problem == "backup" else 400)
+    assert before == {p: p.read_bytes() for p in before}
+    assert not leftover_restore_stages(state.hub.root)
+
+
+def test_legacy_followup_rollback_failed_compensation_keeps_backups(legacy_restore, monkeypatch):
+    state = legacy_restore
+    before = state.old.path.read_bytes()
+    replace = db_transfer.os.replace
+    def fail(source, target):
+        if ".rollback-" in str(source) and target == state.old.path:
+            raise OSError("synthetic rollback failure")
+        return replace(source, target)
+    monkeypatch.setattr(db_transfer.os, "replace", fail)
+    monkeypatch.setattr(agent_store, "adopt_restored", Mock(side_effect=RuntimeError("synthetic adopt failure")))
+    with pytest.raises(HTTPException) as caught:
+        state.restore()
+    assert caught.value.status_code == 500 and "되돌리지 못" in caught.value.detail
+    assert any(p.read_bytes() == before for p in state.old.path.parent.glob(f"{state.old.path.stem}.bak-*.db"))
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+@pytest.mark.parametrize("fail_adopt", [False, True])
+def test_legacy_followup_agent_wal_snapshot_and_consumer_guards(legacy_restore, monkeypatch, fixed, fail_adopt):
+    from app.routers import agent_chat as chat_router
+    state = legacy_restore
+    if fixed:
+        monkeypatch.setenv("CONTENT_HUB_AUTH_SECRET", "old-synthetic-key")
+    with closing(sqlite3.connect(state.old.agent_path)) as conn:
+        conversation_id = conn.execute("SELECT id FROM agent_chat_conversation").fetchone()[0]
+    ready, release = threading.Event(), threading.Event()
+    errors = []
+
+    def writer():
+        try:
+            with agent_store.connect(state.old.agent_path) as conn:
+                conn.execute("PRAGMA wal_autocheckpoint=0")
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context) "
+                             "VALUES('wal-turn',?,'wal-key','done','WAL question','{}')", (conversation_id,))
+                conn.execute("INSERT INTO agent_chat_event VALUES('wal-turn',1,'text',?,datetime('now'))",
+                             (json.dumps({"text": "WAL answer"}),))
+                conn.execute("INSERT INTO agent_chat_plan_binding(plan_id,turn_id,client_id) VALUES('wal-plan','wal-turn','local')")
+                conn.execute("COMMIT")
+                ready.set()
+                assert release.wait(5)
+        except BaseException as exc:
+            errors.append(exc)
+            ready.set()
+
+    worker = threading.Thread(target=writer)
+    worker.start()
+    assert ready.wait(3) and not errors
+    assert state.old.agent_path.with_name(state.old.agent_path.name + "-wal").stat().st_size > 0
+    drain = agent_store.drain_connections
+    def drain_and_release(keys, timeout):
+        release.set()
+        drain(keys, timeout)
+    monkeypatch.setattr(agent_store, "drain_connections", drain_and_release)
+    if fail_adopt:
+        monkeypatch.setattr(agent_store, "adopt_restored", Mock(side_effect=RuntimeError("synthetic adopt failure")))
+    try:
+        with agent_store.request_scope():
+            if fail_adopt:
+                with pytest.raises(RuntimeError, match="synthetic adopt"):
+                    state.restore()
+            else:
+                state.restore()
+            with pytest.raises(agent_store.StaleRequest):
+                agent_store.get_conversation(state.old.agent_path, conversation_id)
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive() and not errors
+    active_account.set_active(ACCOUNT_A, "uid-a")
+    current = db_transfer._capture_restore_target(full=True)
+    path = state.old.agent_path if fail_adopt else current.agent_path
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT text FROM agent_chat_turn WHERE id='wal-turn'").fetchone() == ("WAL question",)
+        assert conn.execute("SELECT client_id FROM agent_chat_plan_binding WHERE plan_id='wal-plan'").fetchone() == ("local",)
+        assert json.loads(conn.execute("SELECT payload FROM agent_chat_event WHERE turn_id='wal-turn'").fetchone()[0])["text"] == "WAL answer"
+    if fail_adopt:
+        assert agent_store.get_conversation(path, conversation_id)["resumable"]
+        return
+    conv = agent_store.get_conversation(path, conversation_id)
+    assert conv["restored_from"] and not conv["resumable"]
+    with pytest.raises(agent_store.ForkRefused, match="restored"):
+        agent_store.fork_precheck(path, conversation_id)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(chat_router._bound_plan(SimpleNamespace(), current.old_identity, "wal-plan", conversation_id))
+    assert caught.value.status_code == 409
+    prefix = Mock(side_effect=AssertionError("Must not launch old CLI"))
+    monkeypatch.setattr(agent_chat.process, "engine_prefix", prefix)
+    with pytest.raises(agent_store.StaleRequest):
+        agent_chat.service.start_turn(current.old_identity, conversation=conv, turn={}, model="fake", effort="high",
+                                      text="blocked", context={}, still_current=lambda: None)
+    prefix.assert_not_called()
+    assert agent_chat.restored_reference(path, conversation_id)["turns"] == [{"you": "WAL question", "answer": "WAL answer"}]
+
+
+@pytest.mark.parametrize("state", [None, (0, True)])
+def test_legacy_followup_admission_nowait_never_opens_sqlite(legacy_restore, monkeypatch, state):
+    monkeypatch.setattr(db, "pool_state_nowait", lambda: state)
+    connect = Mock(side_effect=AssertionError("SQLite on event loop"))
+    monkeypatch.setattr(db_transfer.sqlite3, "connect", connect)
+    with pytest.raises(HTTPException) as caught:
+        db_transfer._capture_restore_target_nowait()
+    assert caught.value.status_code == 503
+    connect.assert_not_called()
+
+
+def test_legacy_followup_admission_import_reads_identity_in_worker(legacy_restore, monkeypatch):
+    state = legacy_restore
+    event_thread = threading.get_ident()
+    capture = db_transfer._capture_restore_target
+    threads = []
+    def checked_capture(**kwargs):
+        if kwargs.get("full"):
+            threads.append(threading.get_ident())
+            assert threads[-1] != event_thread
+        return capture(**kwargs)
+    monkeypatch.setattr(db_transfer, "_capture_restore_target", checked_capture)
+    state.restore("import")
+    assert threads
+
+
+def test_legacy_followup_rollback_security_transaction_is_atomic(legacy_restore):
+    state = legacy_restore
+    path = state.paths["content"]
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TRIGGER deny_restore BEFORE INSERT ON app_setting "
+                     "WHEN NEW.key LIKE 'asset_mount_restore:%' BEGIN SELECT RAISE(ABORT,'synthetic denied'); END")
+        conn.commit()
+        before = conn.execute("SELECT key,value FROM app_setting ORDER BY key").fetchall()
+    with pytest.raises(sqlite3.IntegrityError, match="synthetic denied"):
+        db_transfer._post_install_security_init(path)
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT key,value FROM app_setting ORDER BY key").fetchall() == before
+        assert conn.execute("SELECT revoked_at FROM mcp_client").fetchone() == (None,)
+
+
+@pytest.mark.parametrize("target", ["existing", "content", "trash", "mounts"])
+def test_legacy_followup_agent_target_collision_is_noop(legacy_restore, monkeypatch, target):
+    state = legacy_restore
+    destinations = {"content": state.old.path, "trash": state.trash, "mounts": state.old.mounts_path,
+                    "existing": state.hub.root / "agent" / "foreign.db"}
+    if target == "existing":
+        destinations[target].write_bytes(b"foreign history")
+    file_path = agent_chat.Identity.file_path
+    monkeypatch.setattr(agent_chat.Identity, "file_path", lambda ident:
+                        file_path(ident) if ident.hub == state.old.old_identity.hub else destinations[target])
+    before = {p: p.read_bytes() for p in (state.old.path, state.old.agent_path, destinations[target])}
+    with pytest.raises(HTTPException) as caught:
+        state.restore()
+    assert caught.value.status_code == 409
+    assert before == {p: p.read_bytes() for p in before}
+    assert not list(state.hub.root.rglob("*.bak-*"))
 
 
 @pytest.mark.parametrize("versioned", [False, True])
