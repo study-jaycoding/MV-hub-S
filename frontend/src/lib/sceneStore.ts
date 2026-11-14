@@ -495,7 +495,7 @@ async function storeTx(
         meta[key] = got.result;
         if (--waiting === 0) afterMeta(); // 메타를 전부 읽은 뒤 같은 트랜잭션에서 이어 간다
       };
-      got.onerror = () => reject(got.error);
+      got.onerror = () => giveUp(got.error);
     }
   });
 }

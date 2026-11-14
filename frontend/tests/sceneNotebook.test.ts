@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, readRestoreArchives, joinSceneNotebook, completeNotebookMcpTask, buildSceneNotebookClose, notebookRestoreGeneration, writeNotebookProgress, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
-import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest } from "../src/lib/sceneStore";
+import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest, initSceneStore } from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const scene = (id = "s", name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
@@ -140,6 +140,57 @@ it("archive reads reject an unready or replaced invalid store and do not refresh
   try { expect(await readRestoreArchives("local")).toEqual({ ok: false }); }
   finally { replaceSceneStoreForTest({ [bucket]: confirmed }); }
 });
+it.each(["boot", "readonly", "readwrite"])("metadata get failure explicitly aborts without writes (%s)", async (path) => {
+  const error = new Error("metadata get failed");
+  let failGet = path === "boot";
+  const put = vi.fn(), remove = vi.fn(), abort = vi.fn();
+  // 요청 실패 뒤 브라우저의 자동 중단에 기대지 않고 adapter가 명시적으로 abort하는지 본다.
+  const database = { close: vi.fn(), transaction: vi.fn((_store: string, _mode: IDBTransactionMode) => {
+    let aborted = false;
+    const tx: { oncomplete?: () => void; onabort?: () => void; error: Error; abort: () => void; commit: () => void; objectStore: () => unknown } = {
+      error: new Error("transaction aborted"),
+      abort: () => { abort(); aborted = true; queueMicrotask(() => tx.onabort?.()); },
+      commit: () => { queueMicrotask(() => { if (!aborted) tx.oncomplete?.(); }); },
+      objectStore: () => ({
+        get: (key: string) => request(key === "layout" ? 2 : undefined, key),
+        getAllKeys: () => request([]), getAll: () => request([]), put, delete: remove,
+      }),
+    };
+    function request(result: unknown, key?: string) {
+      const req: { result: unknown; error?: Error; onsuccess?: () => void; onerror?: () => void } = { result };
+      queueMicrotask(() => {
+        if (aborted) return;
+        if (failGet && key === "layout") { failGet = false; req.error = error; req.onerror?.(); }
+        else req.onsuccess?.();
+      });
+      return req;
+    }
+    return tx;
+  }) };
+  vi.stubGlobal("indexedDB", { open: () => {
+    const req: { result: typeof database; onsuccess?: () => void } = { result: database };
+    queueMicrotask(() => req.onsuccess?.());
+    return req;
+  } });
+  vi.stubGlobal("IDBKeyRange", { bound: () => ({}) });
+  const opened = await initSceneStore(() => null, { state: "committed", generation: "test" }, () => true);
+  if (path === "boot") expect(opened).toEqual({ kind: "failed", error: error.message });
+  else {
+    expect(opened.kind).toBe("ready");
+    put.mockClear(); remove.mockClear(); abort.mockClear(); database.transaction.mockClear();
+    failGet = true;
+    const decide = vi.fn(() => ({ changed: true, value: null }));
+    const result = path === "readonly"
+      ? await readSceneStoreMeta(notebookKey("nr", "local"), () => true)
+      : await sceneNotebookTransaction([notebookKey("nr", "local")], decide);
+    expect(result).toEqual({ ok: false });
+    expect(database.transaction.mock.calls[0][1]).toBe(path);
+    expect(decide).not.toHaveBeenCalled();
+  }
+  expect(put).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(abort).toHaveBeenCalledTimes(1);
+}, 15_000);
 it("clean generationless notebook adopts without archive and saves the next edit", async () => {
   await joined([scene("a"), scene("b")], null);
   fake.calls = [];
