@@ -65,6 +65,14 @@ function sceneGenerationSnapshot(): (id: string) => string | null {
   return (id) => generations.get(id) ?? null;
 }
 const recoveryKey = (scope: string) => `mvhub.cardRecovery:${scope}`;
+const recoverySubs = new Set<() => void>();
+function notifyCardRecovery() {
+  recoverySubs.forEach((fn) => { try { fn(); } catch { /* 구독 오류가 저장 결과를 바꾸지 않는다. */ } });
+}
+export function subscribeCardRecovery(fn: () => void): () => void {
+  recoverySubs.add(fn);
+  return () => { recoverySubs.delete(fn); };
+}
 interface CardRecovery { generation: string; candidates: { removals: CardLink[]; revives: CardLink[]; backfill: CardLink[] }[] }
 export function readCardRecovery(): CardRecovery | null {
   const raw = localStorage.getItem(recoveryKey(ns()));
@@ -85,7 +93,11 @@ function prepareGeneration(scope: string, generation: string, serverItems: CardL
     if (candidate.removals.length || candidate.revives.length || candidate.backfill.length) candidates.push(candidate);
     const archived = JSON.stringify({ generation, candidates } satisfies CardRecovery);
     localStorage.setItem(recoveryKey(scope), archived);
-    if (localStorage.getItem(recoveryKey(scope)) !== archived) throw new Error("card_recovery_write_failed");
+    let saved: string | null;
+    try { saved = localStorage.getItem(recoveryKey(scope)); }
+    catch (error) { notifyCardRecovery(); throw error; }
+    if (saved !== archived) throw new Error("card_recovery_write_failed");
+    notifyCardRecovery();
     localStorage.setItem(pendingKey(scope), JSON.stringify(removals.filter((link) => !stale(link))));
     localStorage.setItem(revivesKey(scope), JSON.stringify(revives.filter((link) => !stale(link))));
     unsavedIntents.delete(pendingKey(scope)); unsavedIntents.delete(revivesKey(scope));

@@ -28,6 +28,7 @@ vi.mock("../src/lib/sceneBackup", () => ({
   subscribeSceneBackupForked: () => () => {},
 }));
 vi.mock("../src/lib/sceneCardLinks", async original => ({
+  subscribeCardRecovery: () => () => {},
   initSceneCardLinks: () => {},
   mergeCardLinksIntoScenes: (await original<typeof import("../src/lib/sceneCardLinks")>()).mergeCardLinksIntoScenes,
   serverCardLinks: () => cardLinks.items,

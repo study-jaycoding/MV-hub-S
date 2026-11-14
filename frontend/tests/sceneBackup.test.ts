@@ -145,17 +145,52 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       expect(backup.readMirrorRecovery()).toMatchObject({ generation: "restore-1", blockedIds: path === "resume" ? [] : ["s"] });
     } finally { read.mockRestore(); parse.mockRestore(); off(); }
   });
+  it.each(["keys", "content", "array order"])("mirror recovery compares nested content rather than object key order: %s", async (change) => {
+    const { backup } = await boot();
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`;
+    const original = { generation: null, scenes: [{ id: "s", text: "one" }, { id: "t", text: "two" }], ledger: [["s", { b: "base", fork: true }]] };
+    const record = { generation: "restore-1", blockedIds: [], originals: [original], raws: {} };
+    const prior = { ...record, originals: [{
+      ledger: [["s", { fork: true, b: change === "content" ? "other" : "base" }]],
+      scenes: original.scenes.map(({ id, text }) => ({ text, id })), generation: null,
+    }] };
+    if (change === "array order") prior.originals[0].scenes.reverse();
+    const text = JSON.stringify(record);
+    localStorage.setItem(key, text);
+    const getItem = localStorage.getItem.bind(localStorage);
+    let first = true;
+    const read = vi.spyOn(localStorage, "getItem").mockImplementation((name) => {
+      const value = getItem(name);
+      if (name === key && first) {
+        first = false;
+        // Another writer stores an equivalent key order (or a real change) before the comparison.
+        localStorage.setItem(key, JSON.stringify(prior));
+      }
+      return value;
+    });
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      await backup.resumeImportedMirror(scope, "restore-1", new Map());
+      expect(notify).toHaveBeenCalledTimes(change === "keys" ? 0 : 1);
+      expect(localStorage.getItem(key)).toBe(text);
+      expect(puts()).toHaveLength(0);
+    } finally { read.mockRestore(); off(); }
+  });
+
   it("mirror provenance edits update raws without a recovery view notification", async () => {
     const { scenes, backup, settle } = await boot();
     scenes.saveScenes(null, [JSON.parse(sceneJson("s"))]); await settle();
     await backup.initSceneBackup();
     const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    const read = vi.spyOn(localStorage, "getItem"), parse = vi.spyOn(JSON, "parse");
     try {
       const raw = sceneJson("s", "edited");
       scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+      expect(read.mock.calls.filter(([key]) => key.startsWith("mvhub.mirrorRecovery:")).length).toBe(2);
+      expect(parse.mock.calls.filter(([text]) => typeof text === "string" && text.includes('"blockedIds"')).length).toBe(1);
       expect(backup.readMirrorRecovery()?.raws.s).toBe(sha256Js(new TextEncoder().encode(raw)));
       expect(notify).not.toHaveBeenCalled();
-    } finally { off(); }
+    } finally { read.mockRestore(); parse.mockRestore(); off(); }
   });
   it.each([false, true])("an unreadable pre-write comparison still saves recovery (confirmation fails: %s)", async (confirmationFails) => {
     const { scenes, backup, settle } = await boot(false);
@@ -178,6 +213,24 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       if (confirmationFails) await expect(resumed).rejects.toThrow("confirmation unreadable");
       else await expect(resumed).resolves.toBeUndefined();
       expect(JSON.parse(getItem(key)!)).toMatchObject({ blockedIds: [], raws: { s: sha256Js(new TextEncoder().encode(raw)) } });
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(puts()).toHaveLength(0);
+    } finally { read.mockRestore(); off(); }
+  });
+  it("generation adoption continues after an unreadable comparison", async () => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`, raw = sceneJson("s");
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    const getItem = localStorage.getItem.bind(localStorage);
+    let reads = 0;
+    const read = vi.spyOn(localStorage, "getItem").mockImplementation((name) => {
+      if (name === key && ++reads === 2) throw new Error("comparison unreadable");
+      return getItem(name);
+    });
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      await backup.initSceneBackup();
+      expect(JSON.parse(getItem(key)!)).toMatchObject({ generation: "restore-1", blockedIds: ["s"] });
       expect(notify).toHaveBeenCalledTimes(1);
       expect(puts()).toHaveLength(0);
     } finally { read.mockRestore(); off(); }

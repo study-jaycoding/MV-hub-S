@@ -75,11 +75,18 @@ function notifyMirrorRecovery() {
     try { fn(); } catch { /* 화면 알림 실패가 이미 확인된 저장을 실패로 바꾸지 않는다. */ }
   });
 }
+function sortRecoveryKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortRecoveryKeys);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sortRecoveryKeys(item)]));
+  }
+  return value;
+}
 function mirrorRecoveryView(text: string | null): string | null {
   if (text === null) return null;
   try {
     const { generation, blockedIds, originals } = JSON.parse(text);
-    return JSON.stringify({ generation, blockedIds, originals });
+    return JSON.stringify(sortRecoveryKeys({ generation, blockedIds, originals }));
   } catch { return text; }
 }
 function saveMirrorRecovery(scope: string, value: MirrorRecovery, notify = true) {
@@ -128,7 +135,10 @@ async function checkMirrorGeneration(scope: string): Promise<string> {
   const record: MirrorRecovery = { generation: response.restore_generation, blockedIds: [...new Set([...blocked, ...oldLedger.keys()])], originals, raws: Object.fromEntries(hashes) };
   // 옛 장부 보관이 확인된 다음에만 제거하고, 깨끗한 씬의 현재 기준판을 새로 적는다.
   const notify = mirrorRecoverySubs.size > 0;
-  const previousRecovery = notify ? localStorage.getItem(mirrorRecoveryKey(scope)) : null;
+  let previousRecovery: string | null | undefined;
+  if (notify) {
+    try { previousRecovery = localStorage.getItem(mirrorRecoveryKey(scope)); } catch { /* 비교 불가여도 보호 기록 저장을 계속한다. */ }
+  }
   try {
     saveMirrorRecovery(scope, record, false);
     for (const id of oldLedger.keys()) {
@@ -149,7 +159,7 @@ async function checkMirrorGeneration(scope: string): Promise<string> {
     // 확인 읽기가 실패해도 원래 오류는 유지하고, 남았을 수 있는 보호 기록을 알린다.
     if (notify) {
       let changed = true;
-      try { changed = mirrorRecoveryView(localStorage.getItem(mirrorRecoveryKey(scope))) !== mirrorRecoveryView(previousRecovery); } catch { /* 확인 불가면 보수적으로 알린다. */ }
+      try { changed = previousRecovery === undefined || mirrorRecoveryView(localStorage.getItem(mirrorRecoveryKey(scope))) !== mirrorRecoveryView(previousRecovery); } catch { /* 확인 불가면 보수적으로 알린다. */ }
       if (changed) notifyMirrorRecovery();
     }
   }
@@ -1011,7 +1021,7 @@ function advanceMirrorProvenance(scope: string, before: Map<string, string>): vo
         const prev = before.get(id), next = after.get(id);
         if ((record.raws[id] ?? null) === (prev === undefined ? null : sha256Js(new TextEncoder().encode(prev))) && !blocked.has(id)) record.raws[id] = next === undefined ? null : sha256Js(new TextEncoder().encode(next));
       }
-      saveMirrorRecovery(scope, record);
+      saveMirrorRecovery(scope, record, false); // raws만 바뀌므로 화면용 비교·알림은 필요 없다.
     }
   } catch { /* 출처 저장 실패는 기존 확인값을 유지해 다음 전송을 보류한다. */ }
 }

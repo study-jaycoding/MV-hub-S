@@ -99,7 +99,8 @@ export function SettingsPanel({
   onOpenMcp?: () => void;
 }) {
   const t = useT();
-  const [heldRecovery, , recoveryFailed] = useStorageRecovery(); // 접힌 줄도 같은 기록·실패 상태를 보여 준다.
+  const recoveryState = useStorageRecovery();
+  const [heldRecovery, , recoveryFailed] = recoveryState; // 접힌 줄과 펼친 칸이 한 번 읽은 결과를 같이 쓴다.
   const [accent, setAccent] = useState(loadAccent());
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
@@ -688,7 +689,7 @@ export function SettingsPanel({
                 />
                 <div className="settings-subgroup">
                   <h5>{t("파일로 챙기기")}</h5>
-                  <CanvasArchiveSection />
+                  <CanvasArchiveSection recoveryState={recoveryState} />
                   <DbFileTransfer dbBusy={dbBusy} onImportDb={importDb} />
                 </div>
               </BackupSection>

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
 import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, downloadStorageRecovery, redundantMirrorHoldIds, type StorageRecovery } from "../../lib/sceneArchive";
 import { subscribeEditBackup } from "../../lib/editDocBackup";
 import { subscribeMirrorRecovery } from "../../lib/sceneBackup";
+import { subscribeCardRecovery } from "../../lib/sceneCardLinks";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { hubHasFeature, subscribeHubFeatures } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestoreArchiveContent, type NotebookArchive } from "../../lib/sceneNotebook";
@@ -16,59 +17,74 @@ import { SettingsDescription } from "./SettingsDescription";
 export function useStorageRecovery() {
   const writer = useSceneWriter();
   const account = getAccountNamespace();
+  const [, updateAccount] = useReducer((value: number) => value + 1, 0);
   const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
   const [failedAccount, setFailedAccount] = useState<string | null>(null);
   const refresh = useRef<() => Promise<void> | undefined>(() => undefined);
+  const pendingRefresh = useRef(new Set<() => void>());
+  // 같은 계정의 mode 전환에는 대기를 넘기고, 계정 변경·화면 해제 때만 정리한다.
+  useEffect(() => {
+    const waiters = pendingRefresh.current;
+    return () => { waiters.forEach((resolve) => resolve()); waiters.clear(); };
+  }, [account]);
   useEffect(() => {
     let alive = true;
-    let readVersion = 0;
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     let refreshPending = false;
-    let readyRetryMs = 250;
     let inFlight: Promise<void> | undefined;
+    const refreshWaiters = pendingRefresh.current;
+    const cancelRefresh = () => { refreshWaiters.forEach((resolve) => resolve()); refreshWaiters.clear(); };
     setRecovery((previous) => previous?.account === account ? previous : null);
     setFailedAccount((previous) => previous === account ? previous : null);
     const read = () => {
-      if (!sceneStoreReady()) { refreshPending = true; return; }
-      const version = ++readVersion;
+      // 초기 준비 완료는 저장소 알림으로 온다. 열리지 않은 창을 계속 확인하지 않는다.
+      if (!sceneStoreReady()) { refreshPending = false; cancelRefresh(); return; }
+      const waiters = [...refreshWaiters];
       inFlight = readStorageRecovery().then((value) => {
-        if (alive && version === readVersion && account === getAccountNamespace()) {
+        if (alive && account === getAccountNamespace()) {
           setRecovery(value.account === account && account === getAccountNamespace() ? value : null);
           setFailedAccount(null);
         }
-      }).catch(() => { if (alive && version === readVersion && account === getAccountNamespace()) setFailedAccount(account); }).finally(() => {
+      }).catch(() => { if (alive && account === getAccountNamespace()) setFailedAccount(account); }).finally(() => {
         inFlight = undefined;
+        if (alive && account !== getAccountNamespace()) refreshPending = true;
+        if (alive) for (const resolve of waiters) { refreshWaiters.delete(resolve); resolve(); }
         if (refreshPending && refreshTimer === undefined) { refreshPending = false; scheduleRead(); }
       });
       return inFlight;
     };
     const scheduleRead = () => {
-      if (!alive || account !== getAccountNamespace()) return;
+      if (!alive) return;
+      const accountChanged = account !== getAccountNamespace();
+      if (accountChanged) {
+        cancelRefresh();
+        updateAccount();
+        // 렌더 전에 원래 계정으로 돌아오면 effect는 유지되므로 다음 읽기도 남긴다.
+        refreshPending = true;
+      }
       if (refreshTimer !== undefined || inFlight) { refreshPending = true; return inFlight; }
-      const result = read();
-      const delay = result ? 250 : readyRetryMs;
-      readyRetryMs = result ? 250 : Math.min(readyRetryMs * 2, 2000);
+      const result = accountChanged ? undefined : read();
+      if (!result && !accountChanged) return;
       refreshTimer = setTimeout(() => {
         refreshTimer = undefined;
         if (refreshPending) { refreshPending = false; scheduleRead(); }
-      }, delay);
+      }, 250);
       return result;
     };
-    // 진행 중인 읽기는 끝까지 반영하고, 그사이의 알림은 다음 읽기 하나로 합친다.
-    refresh.current = () => {
+    // 같은 effect 안에서 읽기 하나씩 진행한다. 교체된 effect의 늦은 결과는 alive로 버린다.
+    refresh.current = () => new Promise<void>((resolve) => {
+      refreshWaiters.add(resolve);
       clearTimeout(refreshTimer); refreshTimer = undefined; refreshPending = false;
-      const previousRead = inFlight;
-      const nextRead = scheduleRead();
-      // 앞 읽기의 finally가 시작한 후속 읽기까지 기다린다.
-      return previousRead ? previousRead.then(() => inFlight) : nextRead;
-    };
+      scheduleRead();
+    });
     scheduleRead();
     const offScene = subscribeSceneSaveState(scheduleRead), offEdit = subscribeEditBackup(scheduleRead), offFeatures = subscribeHubFeatures(scheduleRead);
     const offPersisted = subscribeScenesPersisted(scheduleRead), offExternal = subscribeSceneStoreExternal(scheduleRead);
     const offMirror = subscribeMirrorRecovery(scheduleRead);
+    const offCard = subscribeCardRecovery(scheduleRead);
     window.addEventListener("storage", scheduleRead);
     window.addEventListener("focus", scheduleRead);
-    return () => { alive = false; refresh.current = () => undefined; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
+    return () => { alive = false; refresh.current = () => undefined; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
   }, [account, writer.mode]);
   return [recovery?.account === account ? recovery : null, () => refresh.current(), failedAccount === account] as const;
 }
@@ -85,7 +101,16 @@ export function heldRecoveryCounts(recovery: StorageRecovery | null) {
 
 // 캔버스 전체를 파일 하나로 내려받고, 그 파일에서 다시 가져온다(백업·PC 옮기기·저장소가 막혔을 때 건지기).
 // 씬 하나를 주고받는 캔버스의 [저장]/[불러오기]와 다르다 — 이쪽은 계정·씬 id 를 그대로 싣고, 가져올 때 합친다.
-export function CanvasArchiveSection() {
+export function CanvasArchiveSection({ recoveryState }: { recoveryState?: ReturnType<typeof useStorageRecovery> } = {}) {
+  return recoveryState ? <CanvasArchiveContent recoveryState={recoveryState} /> : <StandaloneCanvasArchiveSection />;
+}
+
+function StandaloneCanvasArchiveSection() {
+  const recoveryState = useStorageRecovery();
+  return <CanvasArchiveContent recoveryState={recoveryState} />;
+}
+
+function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typeof useStorageRecovery> }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -96,7 +121,7 @@ export function CanvasArchiveSection() {
   const [archive, setArchive] = useState<NotebookArchive | null>(null);
   const [archiveAccount, setArchiveAccount] = useState("");
   const account = getAccountNamespace();
-  const [ownRecovery, refreshRecovery, recoveryFailed] = useStorageRecovery();
+  const [ownRecovery, refreshRecovery, recoveryFailed] = recoveryState;
   useEffect(() => {
     let alive = true;
     setArchive(null);

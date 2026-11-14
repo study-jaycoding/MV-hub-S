@@ -96,6 +96,41 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["success", "throw", "ignored", "unconfirmed"])("card recovery notifies a saved record even if confirmation throws: %s", async (kind) => {
+    const { links } = await boot();
+    const recoveryKey = `mvhub.cardRecovery:acct:user${acctSeq}@test`;
+    localStorage.removeItem(recoveryKey);
+    const seen: unknown[] = [];
+    const offThrow = links.subscribeCardRecovery(() => { throw Error("listener failed"); });
+    const off = links.subscribeCardRecovery(() => { seen.push(JSON.parse(mem.get(recoveryKey)!)); });
+    const write = localStorage.setItem, read = localStorage.getItem;
+    vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === recoveryKey && kind === "throw") throw Error("quota");
+      if (key !== recoveryKey || kind !== "ignored") write(key, value);
+    });
+    vi.spyOn(localStorage, "getItem").mockImplementation((key) => {
+      if (key === recoveryKey && kind === "unconfirmed" && mem.has(key)) throw Error("read failed");
+      return read(key);
+    });
+    const ok = await links.refreshSceneCardLinks();
+    expect(ok).toBe(kind === "success");
+    expect(seen).toEqual(kind === "success" || kind === "unconfirmed" ? [{ generation: "restore-1", candidates: [] }] : []);
+    if (kind === "unconfirmed") {
+      vi.mocked(localStorage.getItem).mockImplementation(read);
+      expect(await links.refreshSceneCardLinks()).toBe(true);
+      expect(seen).toHaveLength(1);
+    }
+    if (ok) {
+      await links.refreshSceneCardLinks();
+      expect(seen).toHaveLength(1);
+      off(); offThrow();
+      localStorage.removeItem(recoveryKey);
+      await links.refreshSceneCardLinks();
+      expect(seen).toHaveLength(1);
+    } else { off(); offThrow(); }
+    expect(puts()).toHaveLength(0);
+  });
+
   it("clean upgrade excludes server memberships from recovery candidates", async () => {
     const { scenes, links } = await boot();
     const recoveryKey = `mvhub.cardRecovery:acct:user${acctSeq}@test`;

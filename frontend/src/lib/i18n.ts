@@ -7,6 +7,8 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.": "Couldn't read the archive. This browser's data was kept.",
+  "보관본 읽기 실패": "Archive read failed",
   "가져오기가 어긋난 항목": "Unexpected imported items:",
   "개 — 손대지 않았습니다": " — left untouched",
   "리졸브 상태": "Resolve status",
