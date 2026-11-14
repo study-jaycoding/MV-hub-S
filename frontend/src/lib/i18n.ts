@@ -162,6 +162,11 @@ const EN: Record<string, string> = {
   "목록 다시 읽기": "Reload list",
   "현재 편집을 DB 백업으로 채택": "Use current edit as database backup",
   "선택한 백업 복원": "Restore selected backup",
+  "허브와 기록 시점이 달라 자동 백업을 멈췄습니다. 이 브라우저의 편집은 남아 있습니다. 아래에서 하나를 고르기 전까지 허브로 보내지 않습니다.":
+    "Automatic backup paused because this browser and the hub have different save points. Your edits in this browser are kept. Nothing is sent to the hub until you choose an option below.",
+  "이 브라우저 문서를 허브에 반영": "Apply this browser's document to the hub",
+  "허브 문서 가져오기": "Load the hub's document",
+  "원문 내보내고 보류": "Export the raw document and hold",
   "DB 백업에서 편집을 복구했습니다.": "Recovered the edit from its database backup.",
   "타임라인 편집은 이 브라우저의 현재 계정에 저장됩니다. PC의 DB 백업에는 포함되지 않습니다.": "Timeline edits are stored for the current account in this browser. They are not included in the PC's database backup.",
   "편집 메뉴의 파일 보관으로 별도 사본을 만드세요. 브라우저 자료를 지우거나 다른 PC로 옮길 때는 보관한 파일에서 복원해야 합니다.": "Save a separate copy using the edit menu's archive command. Restore that file after clearing browser data or moving to another PC.",
