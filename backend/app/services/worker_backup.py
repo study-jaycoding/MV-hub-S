@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -522,6 +523,16 @@ def queue_backup_set(
         return _queue_backup_set_held(content_backup, account_email=account_email)
 
 
+def _check_manifestless_members(content_backup: Path) -> None:
+    paths = backup_manifest.local_paths(content_backup)
+    for role in ('agent_chat', 'asset_mounts'):
+        try:
+            paths[role].stat()
+        except FileNotFoundError:
+            continue
+        raise ValueError('local backup manifest missing')
+
+
 def _queue_backup_set_held(
     content_backup: Path,
     *,
@@ -536,17 +547,25 @@ def _queue_backup_set_held(
     stamp = _stamp_from_content(content_backup)
     account_slug = active_account.slug(email)
     trash_source = content_backup.parent / f"{_TRASH_PREFIX}{stamp}.db"
-    source_signature = _source_signature(content_backup, trash_source)
-    duplicate = _prechecked_duplicate(account_slug, stamp, source_signature)
-    if duplicate is not None:
-        return duplicate
-
-    account_root = OUTBOX_DIR / account_slug
-    account_root.mkdir(parents=True, exist_ok=True)
-    temp = account_root / f".stage-{secrets.token_hex(8)}"
-    temp.mkdir(exist_ok=False)
+    temp = None
     try:
+        try:
+            backup_manifest.local_path(content_backup).stat()
+        except FileNotFoundError:
+            _check_manifestless_members(content_backup)
+        source_signature = _source_signature(content_backup, trash_source)
+        duplicate = _prechecked_duplicate(account_slug, stamp, source_signature)
+        if duplicate is not None:
+            return duplicate
+
+        account_root = OUTBOX_DIR / account_slug
+        account_root.mkdir(parents=True, exist_ok=True)
+        candidate = account_root / f".stage-{secrets.token_hex(8)}"
+        candidate.mkdir(exist_ok=False)
+        temp = candidate
         local_manifest = backup_manifest.read_local(content_backup, allow_v3=True)
+        if local_manifest is None:  # The manifest can disappear after the duplicate precheck.
+            _check_manifestless_members(content_backup)
         is_v3 = local_manifest is not None and local_manifest['format_version'] == 3
         version = 3 if is_v3 else _FORMAT_VERSION
         if local_manifest and local_manifest['account_scope_digest'] != account_key_digest(account_slug):
@@ -743,8 +762,9 @@ def _queue_backup_set_held(
         )
         return backup_set_id
     except BaseException:
-        with contextlib.suppress(OSError):
-            shutil.rmtree(temp)
+        if temp is not None:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(temp)
         record_queue_failure("staging_failed", account_email=email)
         log_event(_log, "worker_backup_queue_failed", level=logging.ERROR, exc_info=True)
         raise
@@ -958,19 +978,27 @@ def _transfer_key(manifest: dict[str, Any]) -> str:
     })
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
 def _capability_error(server: str, token: str) -> str | None:
-    request = urllib.request.Request(f'{server}/api/share/capabilities', method='GET')
-    request.add_header('Authorization', f'Bearer {token}')
     try:
+        request = urllib.request.Request(f'{server}/api/share/capabilities', method='GET')
+        request.add_header('Authorization', f'Bearer {token}')
         try:
-            with urllib.request.urlopen(request, timeout=_CAPABILITY_TIMEOUT) as response:
+            with _opener.open(request, timeout=_CAPABILITY_TIMEOUT) as response:
                 status = response.status
                 raw = response.read(64 * 1024 + 1)
         except urllib.error.HTTPError as exc:
             status = exc.code
             exc.close()
             raw = b''
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError):
         return 'network_unavailable'
     if status == 401:
         return 'login_required'
@@ -1035,15 +1063,19 @@ def _multipart_set_upload(
                 yield b"\r\n"
         yield suffix
 
-    request = urllib.request.Request(url, data=chunks(), method="POST")
-    request.add_header("Authorization", f"Bearer {token}")
-    request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    request.add_header("Content-Length", str(content_length))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        request = urllib.request.Request(url, data=chunks(), method="POST")
+        request.add_header("Authorization", f"Bearer {token}")
+        request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        request.add_header("Content-Length", str(content_length))
+        with _opener.open(request, timeout=timeout) as response:
             return response.status, _safe_json(response.read())
     except urllib.error.HTTPError as exc:
-        return exc.code, _safe_json(exc.read())
+        exc.close()
+        return exc.code, None
+    except ValueError as exc:
+        # Only request construction and I/O errors belong to the network retry boundary.
+        raise urllib.error.URLError('invalid backup request') from exc
 
 
 def _verify_ack(
@@ -1219,7 +1251,7 @@ def drain_one() -> dict[str, Any]:
             role_paths,
             timeout=UPLOAD_TIMEOUT,
         )
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
         _mark_failure(row, "network_unavailable")
         return {"state": "failed", "error_code": "network_unavailable"}
     if status == 401:

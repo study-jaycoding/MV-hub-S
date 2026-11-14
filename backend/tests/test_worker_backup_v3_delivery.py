@@ -4,12 +4,15 @@ from __future__ import annotations
 import json
 import asyncio
 import io
+import http.client
 import socket
 import sqlite3
 import threading
 import time
 import urllib.error
 from contextlib import closing
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -116,7 +119,7 @@ def test_negotiation_failure_preserves_whole_set(delivery_store, monkeypatch, st
         response = io.BytesIO(body)
         response.status = status
         return response
-    monkeypatch.setattr(worker_backup.urllib.request, 'urlopen', open_request)
+    monkeypatch.setattr(worker_backup._opener, 'open', open_request)
     start = time.time()
     result = worker_backup.drain_one()
     assert result['error_code'] == error
@@ -136,7 +139,7 @@ def test_negotiation_accepts_explicit_integer_support(monkeypatch, version):
         stream = io.BytesIO(json.dumps({'backup_set_format': version}).encode())
         stream.status = 200
         return stream
-    monkeypatch.setattr(worker_backup.urllib.request, 'urlopen', response)
+    monkeypatch.setattr(worker_backup._opener, 'open', response)
     assert worker_backup._capability_error('http://unused.invalid', 'synthetic') is None
 
 
@@ -476,3 +479,301 @@ def test_delivery_parent_budget_and_interrupted_claim_recovery(delivery_store, m
     assert terminated == [child] and runner._process is None
     with closing(worker_backup._connect()) as conn:
         assert conn.execute('SELECT status,last_error_code FROM worker_backup_outbox').fetchone()[:] == ('pending', 'interrupted')
+
+
+@pytest.fixture
+def redirect_receiver(monkeypatch):
+    state = SimpleNamespace(status=302, method='GET', target='', requests=[])
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state.requests.append((self.server.server_port, self.command, self.path))
+            if self.path == '/target':
+                body = b'{"backup_set_format":3}'
+                self.send_response(200)
+            elif self.command == state.method:
+                body = b''
+                self.send_response(state.status)
+                self.send_header('Location', state.target)
+            else:
+                body = b'{"backup_set_format":3}'
+                self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            self.do_GET()
+
+        def log_message(self, *args):
+            pass
+
+    servers = [ThreadingHTTPServer(('127.0.0.1', 0), Handler) for _ in range(2)]
+    threads = [threading.Thread(target=s.serve_forever, kwargs={'poll_interval': .01}) for s in servers]
+    monkeypatch.setenv('no_proxy', 'localhost,127.0.0.1')
+    for thread in threads:
+        thread.start()
+    state.origin = f'http://127.0.0.1:{servers[0].server_port}'
+    state.other = f'http://localhost:{servers[1].server_port}'
+    try:
+        yield state
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+
+@pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+@pytest.mark.parametrize('destination', ['same', 'other'])
+def test_a_prep_l1_redirect_never_sends_followup(delivery_store, redirect_receiver, monkeypatch,
+                                               status, method, destination):
+    _, stage, _ = queued(delivery_store)
+    before = {p.name: p.read_bytes() for p in stage.iterdir()}
+    state = redirect_receiver
+    state.status, state.method = status, method
+    state.target = (state.origin if destination == 'same' else state.other) + '/target'
+    monkeypatch.setattr(worker_backup.shared_connection, 'base_url', lambda: state.origin)
+    monkeypatch.setattr(worker_backup, '_multipart_set_upload', REAL_UPLOAD)
+    result = worker_backup.drain_one()
+    assert not [r for r in state.requests if r[2] == '/target']
+    assert [(method, path) for _, method, path in state.requests] == (
+        [('GET', '/api/share/capabilities')] if method == 'GET' else
+        [('GET', '/api/share/capabilities'), ('POST', '/api/db-backup/sets')])
+    error = 'capability_unknown' if method == 'GET' else 'server_rejected'
+    assert result['error_code'] == error
+    with closing(worker_backup._connect()) as conn:
+        row = conn.execute('SELECT status,last_error_code,next_retry_ts FROM worker_backup_outbox').fetchone()
+        assert tuple(row[:2]) == ('pending', error) and row[2] > time.time()
+    assert {p.name: p.read_bytes() for p in stage.iterdir()} == before
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+@pytest.mark.parametrize('status', [302, 401, 404, 405, 500])
+def test_a_prep_l1_http_error_keeps_code_without_reading_body(delivery_store, monkeypatch, method, status):
+    queued(delivery_store)
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda *a, **k: pytest.fail('unexpected DNS lookup'))
+
+    class Unreadable(io.BytesIO):
+        def read(self, *args):
+            pytest.fail('HTTP error body must not be read')
+
+    body = Unreadable()
+    def open_request(request, *args, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, status, 'synthetic', {}, body)
+    monkeypatch.setattr(worker_backup._opener, 'open', open_request)
+    if method == 'POST':
+        monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: None)
+        monkeypatch.setattr(worker_backup, '_multipart_set_upload', REAL_UPLOAD)
+    result = worker_backup.drain_one()
+    expected = {401: 'login_required', 404: 'server_update_required', 405: 'server_update_required'}.get(
+        status, 'capability_unknown' if method == 'GET' else 'server_rejected')
+    assert result['error_code'] == expected and body.closed
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+@pytest.mark.parametrize('fault', ['request', 'bad_status', 'open_value', 'read'])
+def test_a_prep_l2_network_boundary_keeps_backoff(delivery_store, monkeypatch, method, fault):
+    extras(delivery_store)
+    _, stage, _ = queued(delivery_store)
+    before = {p.name: p.read_bytes() for p in stage.iterdir()}
+    now = [time.time()]
+    monkeypatch.setattr(worker_backup.time, 'time', lambda: now[0])
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda *a, **k: pytest.fail('unexpected DNS lookup'))
+    streams = []
+    calls = []
+
+    class Incomplete(io.BytesIO):
+        status = 200
+        def read(self, *args):
+            calls.append('read')
+            raise http.client.IncompleteRead(b'synthetic', 10)
+
+    def open_request(request, *args, **kwargs):
+        calls.append('open')
+        if fault == 'bad_status':
+            raise http.client.BadStatusLine('synthetic')
+        if fault == 'open_value':
+            raise ValueError('synthetic URL')
+        stream = Incomplete()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr(worker_backup._opener, 'open', open_request)
+    if fault == 'request':
+        def invalid_request(*args, **kwargs):
+            calls.append('request')
+            raise ValueError('synthetic URL')
+        monkeypatch.setattr(worker_backup.urllib.request, 'Request', invalid_request)
+    if method == 'POST':
+        monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: None)
+        monkeypatch.setattr(worker_backup, '_multipart_set_upload', REAL_UPLOAD)
+    for attempt, delay in [(1, 60), (2, 240), (8, 3600)]:
+        with closing(worker_backup._connect()) as conn, conn:
+            conn.execute('UPDATE worker_backup_outbox SET attempts=?', (attempt - 1,))
+        result = worker_backup.drain_one()
+        assert result['state'] == 'failed' and result['error_code'] == 'network_unavailable'
+        with closing(worker_backup._connect()) as conn:
+            row = conn.execute('SELECT attempts,status,last_error_code,next_retry_ts FROM worker_backup_outbox').fetchone()
+        assert tuple(row) == (attempt, 'pending', 'network_unavailable', now[0] + delay)
+        assert not worker_backup.has_due_backup()
+        assert worker_backup.drain_one() == {'state': 'idle'}
+        now[0] += delay
+    expected_calls = ['request'] if fault == 'request' else ['open', 'read'] if fault == 'read' else ['open']
+    assert calls == expected_calls * 3
+    assert all(stream.closed for stream in streams)
+    assert {p.name: p.read_bytes() for p in stage.iterdir()} == before
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+def test_a_prep_l2_parent_preserves_handled_child_failure(delivery_store, monkeypatch, capsys, method):
+    _, stage, _ = queued(delivery_store)
+    now = time.time()
+    monkeypatch.setattr(worker_backup.time, 'time', lambda: now)
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda *a, **k: pytest.fail('unexpected DNS lookup'))
+    calls = []
+    def open_request(request, *args, **kwargs):
+        calls.append(request.get_method())
+        raise http.client.BadStatusLine('synthetic')
+    monkeypatch.setattr(worker_backup._opener, 'open', open_request)
+    if method == 'POST':
+        monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: None)
+        monkeypatch.setattr(worker_backup, '_multipart_set_upload', REAL_UPLOAD)
+    capsys.readouterr()
+    child = SimpleNamespace(returncode=None)
+    async def communicate():
+        child.returncode = worker_backup._main(['--drain-one'])
+        return capsys.readouterr().out.encode(), b''
+    child.communicate = communicate
+    async def create(*args, **kwargs):
+        return child
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', create)
+    result = asyncio.run(worker_backup.PeriodicWorkerBackupUpload().run_now())
+    assert calls == [method]
+    assert child.returncode == 1 and result['error_code'] == 'network_unavailable'
+    with closing(worker_backup._connect()) as conn:
+        assert tuple(conn.execute('SELECT status,last_error_code,next_retry_ts FROM worker_backup_outbox').fetchone()) == (
+            'pending', 'network_unavailable', now + 60)
+    assert stage.is_dir()
+
+
+def test_a_prep_l2_local_multipart_value_error_is_not_network(delivery_store, monkeypatch):
+    _, stage, manifest = queued(delivery_store)
+    monkeypatch.setitem(backup_manifest.WORKER_FILENAMES, 'content', '\u2603.db')
+    with pytest.raises(UnicodeEncodeError):
+        REAL_UPLOAD('http://unused.invalid', 'synthetic', manifest,
+                    {'content': stage / 'content.db'}, timeout=1)
+
+
+@pytest.mark.parametrize('role', ['agent_chat', 'asset_mounts', 'both'])
+@pytest.mark.parametrize('fault', ['file', 'directory', 'denied'])
+def test_a_prep_l8_orphaned_members_never_queue(delivery_store, monkeypatch, role, fault):
+    extras(delivery_store)
+    content = capture(delivery_store)
+    backup_manifest.local_path(content).unlink()
+    paths = backup_manifest.local_paths(content)
+    selected = {'agent_chat', 'asset_mounts'} if role == 'both' else {role}
+    for key in ('agent_chat', 'asset_mounts'):
+        if key not in selected or fault != 'file':
+            paths[key].unlink()
+        if key in selected and fault == 'directory':
+            paths[key].mkdir()
+    if fault == 'denied':
+        original_stat = Path.stat
+        def denied(path, *args, **kwargs):
+            if path in [paths[key] for key in selected]:
+                raise PermissionError('synthetic')
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'stat', denied)
+    for _ in range(2):
+        with pytest.raises((ValueError, OSError)):
+            worker_backup.queue_backup_set(content)
+        assert worker_backup.status_snapshot()['last_error_code'] == 'staging_failed'
+        assert worker_backup.drain_one() == {'state': 'idle'}
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM worker_backup_outbox').fetchone()[0] == 0
+        assert conn.execute('SELECT COUNT(*) FROM worker_backup_source_state').fetchone()[0] == 0
+    assert not list(worker_backup.OUTBOX_DIR.rglob('manifest.json'))
+    assert not list(worker_backup.OUTBOX_DIR.rglob('.stage-*'))
+    assert content.is_file()
+
+
+@pytest.mark.parametrize('role', ['agent_chat', 'asset_mounts'])
+def test_a_prep_l8_orphan_bypasses_cached_legacy_duplicate(delivery_store, monkeypatch, role):
+    monkeypatch.setattr(backup, 'CAPTURE_VERSION', 2)
+    content = capture(delivery_store)
+    backup_manifest.local_path(content).unlink()
+    set_id = worker_backup.queue_backup_set(content)
+    paths = backup_manifest.local_paths(content)
+    paths[role].write_bytes(b'synthetic orphan')
+    with pytest.raises(ValueError):
+        worker_backup.queue_backup_set(content)
+    assert worker_backup.status_snapshot()['last_error_code'] == 'staging_failed'
+    with closing(worker_backup._connect()) as conn:
+        assert [row[0] for row in conn.execute('SELECT backup_set_id FROM worker_backup_outbox')] == [set_id]
+
+
+def test_a_prep_l8_manifest_disappearing_at_read_is_rejected(delivery_store, monkeypatch):
+    extras(delivery_store)
+    content = capture(delivery_store)
+    read_local = backup_manifest.read_local
+    def vanished(path, **kwargs):
+        backup_manifest.local_path(path).unlink()
+        return read_local(path, **kwargs)
+    monkeypatch.setattr(backup_manifest, 'read_local', vanished)
+    with pytest.raises(ValueError):
+        worker_backup.queue_backup_set(content)
+    assert worker_backup.status_snapshot()['last_error_code'] == 'staging_failed'
+    assert worker_backup.drain_one() == {'state': 'idle'}
+
+
+def test_a_prep_l8_true_legacy_keeps_fast_path_and_upload(delivery_store, monkeypatch):
+    monkeypatch.setattr(backup, 'CAPTURE_VERSION', 2)
+    content = capture(delivery_store)
+    backup_manifest.local_path(content).unlink()
+    other = content.with_name('content_hub_20261113_010101_999999.db')
+    backup_manifest.local_paths(other)['agent_chat'].write_bytes(b'other capture')
+    set_id = worker_backup.queue_backup_set(content)
+    stage = worker_backup._stage_dir(active_account.slug(active_account.account_key()), set_id)
+    manifest = json.loads((stage / 'manifest.json').read_text('utf-8'))
+    assert manifest['format_version'] == 2
+    with monkeypatch.context() as fast:
+        fast.setattr(worker_backup.shutil, 'copyfile', lambda *a: pytest.fail('duplicate copied'))
+        fast.setattr(backup_manifest, 'file_digest', lambda *a: pytest.fail('duplicate hashed'))
+        assert worker_backup.queue_backup_set(content) == set_id
+    monkeypatch.setattr(worker_backup, '_capability_error', lambda *a: pytest.fail('legacy probe'))
+    ack = {'accepted': True, 'backup_set_id': set_id, 'format_version': 2,
+           'manifest_sha256': backup_manifest.manifest_digest(manifest), 'files': manifest['roles']}
+    monkeypatch.setattr(worker_backup, '_multipart_set_upload', lambda *a, **k: (200, ack))
+    assert worker_backup.drain_one()['state'] == 'success'
+
+
+def test_a_prep_l8_stage_collision_keeps_existing_directory(delivery_store, monkeypatch):
+    content = capture(delivery_store)
+    stage = worker_backup.OUTBOX_DIR / active_account.slug(active_account.account_key()) / '.stage-existing'
+    stage.mkdir(parents=True)
+    sentinel = stage / 'owned-by-another-attempt'
+    sentinel.write_bytes(b'keep')
+    monkeypatch.setattr(worker_backup.secrets, 'token_hex', lambda size: 'existing')
+    with pytest.raises(FileExistsError):
+        worker_backup.queue_backup_set(content)
+    assert sentinel.read_bytes() == b'keep'
+
+
+def test_a_prep_l8_unreadable_manifest_is_not_legacy(delivery_store, monkeypatch):
+    content = capture(delivery_store)
+    metadata = backup_manifest.local_path(content)
+    original_stat = Path.stat
+    def denied(path, *args, **kwargs):
+        if path == metadata:
+            raise PermissionError('synthetic')
+        return original_stat(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', denied)
+    with pytest.raises(PermissionError):
+        worker_backup.queue_backup_set(content)
+    assert worker_backup.status_snapshot()['last_error_code'] == 'staging_failed'
+    assert worker_backup.drain_one() == {'state': 'idle'}

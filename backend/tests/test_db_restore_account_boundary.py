@@ -1418,6 +1418,53 @@ def test_legacy_followup_rollback_preparation_failure_is_no_install(legacy_resto
     assert not leftover_restore_stages(state.hub.root)
 
 
+@pytest.mark.parametrize('fixed', [False, True])
+@pytest.mark.parametrize('route', ROUTES)
+def test_a_prep_n2_disappeared_agent_rejects_before_install(legacy_restore, monkeypatch, fixed, route):
+    state = legacy_restore
+    if fixed:
+        monkeypatch.setenv('CONTENT_HUB_AUTH_SECRET', 'old-synthetic-key')
+    pointer = active_account._POINTER.read_bytes()
+    mounts = state.old.mounts_path.read_bytes()
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        before = list(conn.iterdump())
+    trash = state.trash.read_bytes()
+    flush = db.flush_pool
+    removed = []
+    def disappear():
+        flush()
+        assert state.old.agent_path.is_file()
+        state.old.agent_path.unlink()
+        removed.append(state.old.agent_path)
+    monkeypatch.setattr(db, 'flush_pool', disappear)
+    replace = Mock(side_effect=AssertionError('must not replace'))
+    security = Mock(side_effect=AssertionError('must not reset security'))
+    adopt = Mock(side_effect=AssertionError('must not adopt Agent'))
+    clear = Mock(side_effect=AssertionError('must not clear account'))
+    monkeypatch.setattr(db_transfer.os, 'replace', replace)
+    monkeypatch.setattr(db_transfer, '_post_install_security_init', security)
+    monkeypatch.setattr(agent_store, 'adopt_restored', adopt)
+    monkeypatch.setattr(db_transfer, '_strict_clear_active', clear)
+    with pytest.raises(HTTPException) as caught:
+        try:
+            state.restore(route)
+        finally:
+            monkeypatch.setattr(db, 'flush_pool', flush)
+    assert caught.value.status_code == 409
+    assert caught.value.detail == '복원 준비 중 Agent 기록 파일이 변경되었습니다. 다시 시도하세요'
+    assert removed == [state.old.agent_path]
+    for operation in (replace, security, adopt, clear):
+        operation.assert_not_called()
+    assert active_account._POINTER.read_bytes() == pointer
+    assert state.old.mounts_path.read_bytes() == mounts
+    with closing(sqlite3.connect(state.old.path)) as conn:
+        assert list(conn.iterdump()) == before
+    assert state.trash.read_bytes() == trash
+    assert not state.old.agent_path.exists()
+    assert not list(config.AGENT_CHAT_DIR.glob('*.db'))
+    assert not leftover_restore_stages(state.hub.root)
+
+
 def test_legacy_followup_rollback_failed_compensation_keeps_backups(legacy_restore, monkeypatch):
     state = legacy_restore
     before = state.old.path.read_bytes()

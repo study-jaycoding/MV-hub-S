@@ -536,6 +536,11 @@ def _install_db(
                         shutil.copy2(full_set.paths[role], extra_stages[role])
             elif legacy_agent is not None:
                 original = next(backup for current, backup, existed in originals if current == legacy_agent)
+                if original is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="복원 준비 중 Agent 기록 파일이 변경되었습니다. 다시 시도하세요",
+                    )
                 target = extra_targets["agent_chat"]
                 extra_stages["agent_chat"] = target.with_name(f".{target.name}.restore-{secrets.token_hex(8)}.tmp")
                 shutil.copy2(original, extra_stages["agent_chat"])
