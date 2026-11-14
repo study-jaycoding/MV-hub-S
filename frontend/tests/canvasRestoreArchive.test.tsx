@@ -134,6 +134,36 @@ async function confirmReadFailure() {
     else await new Promise((resolve) => setTimeout(resolve, 260));
   });
 }
+it("two account round trips rejected by the archive guard retry without showing failure", async () => {
+  const transaction = sceneStore.sceneNotebookTransaction;
+  const account = vi.spyOn(accountScope, "getAccountNamespace").mockReturnValue("local");
+  const guardResults: boolean[] = [];
+  const tx = vi.spyOn(sceneStore, "sceneNotebookTransaction").mockImplementation((keys, decide, stillCurrent) =>
+    transaction(keys, decide, () => {
+      if (guardResults.length >= 2) return stillCurrent!();
+      account.mockReturnValue("acct:other@test");
+      try {
+        const current = stillCurrent!();
+        guardResults.push(current);
+        return current;
+      } finally { account.mockReturnValue("local"); }
+    }));
+  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives");
+  const failures: boolean[] = [];
+  function Probe() { const [, , failed] = useStorageRecovery(); failures.push(failed); return <i data-failed={failed} />; }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(guardResults).toEqual([false, false]);
+    expect(archives).toHaveBeenCalledTimes(2);
+    expect(failures).not.toContain(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(archives).toHaveBeenCalledTimes(3);
+    expect(await archives.mock.results[2].value).toMatchObject({ ok: true, value: [] });
+    expect(failures).not.toContain(true);
+  } finally { archives.mockRestore(); tx.mockRestore(); account.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it.each([false, true])("recovery confirms a general failure only once before showing it (retry succeeds: %s)", async (succeeds) => {
   const recovery = await readStorageRecovery();
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("read failed"));

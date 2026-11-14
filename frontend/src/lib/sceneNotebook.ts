@@ -64,9 +64,15 @@ export function notebookRestoreGeneration(account: string): string | null {
   const joined = readConfirmedNotebookJoin(account);
   return joined?.restoreGeneration ?? null;
 }
-export function readRestoreArchives(account: string) {
+export async function readRestoreArchives(account: string): Promise<{ ok: true; value: RestoreArchive[] } | { ok: false; stale?: true }> {
   const name = key("nr", account);
-  return sceneNotebookTransaction([name], (_all, meta) => ({ changed: false, value: (meta[name] as RestoreArchive[] | undefined) ?? [] }), () => account === getAccountNamespace());
+  let stale = false;
+  const result = await sceneNotebookTransaction([name], (_all, meta) => ({ changed: false, value: (meta[name] as RestoreArchive[] | undefined) ?? [] }), () => {
+    const current = account === getAccountNamespace();
+    if (!current) stale = true;
+    return current;
+  });
+  return stale ? { ok: false, stale: true } : result;
 }
 
 async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean) {

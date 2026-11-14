@@ -54,7 +54,7 @@ export function useStorageRecovery() {
         if (!alive) return;
         if (error instanceof Error && error.message === RECOVERY_ACCOUNT_CHANGED) { retryRead = true; refreshPending = true; }
         else if (account === getAccountNamespace()) {
-          // 계정 왕복의 guard 실패일 수 있어 한 번만 재확인하고, 연속 실패는 표시한다.
+          // 일시 실패일 수 있어 한 번만 다시 읽고 연속 실패는 표시한다.
           if (++readFailures === 1) { retryRead = true; refreshPending = true; }
           else setFailedAccount(account);
         } else { retryRead = true; refreshPending = true; }
@@ -91,16 +91,17 @@ export function useStorageRecovery() {
       scheduleRead();
     });
     scheduleRead();
-    const offScene = subscribeSceneSaveState(scheduleRead), offEdit = subscribeEditBackup(scheduleRead), offFeatures = subscribeHubFeatures(scheduleRead);
+    const onChange = () => { void scheduleRead(); };
+    const offScene = subscribeSceneSaveState(onChange), offEdit = subscribeEditBackup(onChange), offFeatures = subscribeHubFeatures(onChange);
     const offPersisted = subscribeScenesPersisted(({ cameraOnly, notebookMetaOnly }) => {
       // 카메라·공책 내부 정리만 한 확정은 보관본이나 카메라를 뺀 보류 판정을 바꾸지 않는다.
-      if (!cameraOnly && !notebookMetaOnly) scheduleRead();
-    }), offExternal = subscribeSceneStoreExternal(scheduleRead);
-    const offMirror = subscribeMirrorRecovery(scheduleRead);
-    const offCard = subscribeCardRecovery(scheduleRead);
-    window.addEventListener("storage", scheduleRead);
-    window.addEventListener("focus", scheduleRead);
-    return () => { alive = false; refresh.current = () => Promise.resolve(); clearTimeout(refreshTimer); refreshTimer = undefined; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
+      if (!cameraOnly && !notebookMetaOnly) onChange();
+    }), offExternal = subscribeSceneStoreExternal(onChange);
+    const offMirror = subscribeMirrorRecovery(onChange);
+    const offCard = subscribeCardRecovery(onChange);
+    window.addEventListener("storage", onChange);
+    window.addEventListener("focus", onChange);
+    return () => { alive = false; refresh.current = () => Promise.resolve(); clearTimeout(refreshTimer); refreshTimer = undefined; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", onChange); window.removeEventListener("focus", onChange); };
   }, [account, writer.mode, accountTick]);
   const ownRecovery = recovery?.account === account ? recovery : null, failed = failedAccount === account;
   return useMemo(() => [ownRecovery, refreshRecovery, failed] as const, [ownRecovery, refreshRecovery, failed]);

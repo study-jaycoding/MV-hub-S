@@ -35,7 +35,7 @@ export async function readStorageRecovery(expected?: string): Promise<StorageRec
   if (expected !== undefined && expected !== account) throw new Error(RECOVERY_ACCOUNT_CHANGED);
   const archives = await readRestoreArchives(account);
   if (account !== getAccountNamespace()) throw new Error(RECOVERY_ACCOUNT_CHANGED);
-  if (!archives.ok) throw new Error("보관본을 읽지 못했습니다.");
+  if (!archives.ok) throw new Error(archives.stale ? RECOVERY_ACCOUNT_CHANGED : "보관본을 읽지 못했습니다.");
   const mirror = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as StorageRecovery["mirror"];
   const cards = JSON.parse(localStorage.getItem(`mvhub.cardRecovery:${account}`) ?? "null") as StorageRecovery["cards"];
   return { account, canvases: archives.value, mirror, cards, edits: readEditRecoveryCandidates() };
