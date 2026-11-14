@@ -64,9 +64,9 @@ export function notebookRestoreGeneration(account: string): string | null {
   const joined = readConfirmedNotebookJoin(account);
   return joined?.restoreGeneration ?? null;
 }
-export async function readRestoreArchives(account: string): Promise<{ ok: true; value: RestoreArchive[] } | { ok: false; stale?: true }> {
+export async function readRestoreArchives(account: string): Promise<{ ok: true; value: RestoreArchive[]; fresh: boolean } | { ok: false; stale?: true }> {
   const result = await readSceneStoreMeta(key("nr", account), () => account === getAccountNamespace());
-  return result.ok ? { ok: true, value: (result.value as RestoreArchive[] | undefined) ?? [] } : result;
+  return result.ok ? { ok: true, value: (result.value as RestoreArchive[] | undefined) ?? [], fresh: result.fresh } : result;
 }
 
 async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean) {

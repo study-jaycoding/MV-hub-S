@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { emptyEditDoc, insertClip } from "../src/lib/editTimeline";
 import { useEditDoc } from "../src/lib/useEditDoc";
 import { editDocKey, keepUnsavedEditDoc, noteEditRaw, readEditRaw, writeEditRaw } from "../src/lib/editTimelineStore";
-import { getEditBackupStatus, loadEditBackup, retryEditBackups, startEditDocBackup, stopEditDocBackup } from "../src/lib/editDocBackup";
+import { getEditBackupStatus, loadEditBackup, retryEditBackups, startEditDocBackup, stopEditDocBackup, readEditRecoveryCandidates } from "../src/lib/editDocBackup";
 import { getApiPause, jsonFetch, setApiPause, setAuthToken } from "../src/lib/http";
 import { setAccountScope } from "../src/lib/accountScope";
 import { EditBackupPanel } from "../src/components/timeline/EditBackupPanel";
@@ -57,6 +57,13 @@ function startKnownBackup() {
 }
 const puts = () => request.mock.calls.filter(([, init]) => init?.method === "PUT");
 const recoveryRecordKey = () => `mvhub.editRecovery:${JSON.stringify(["local", key.slice("mvhub.editDoc:local:".length)])}`;
+it("recovery candidates use the explicitly selected account", () => {
+  for (const account of ["local", "acct:other@test"]) {
+    localStorage.setItem(`mvhub.editRecovery:${JSON.stringify([account, "doc"])}`, JSON.stringify({ blocked: true, originals: [{ raw: account }] }));
+  }
+  expect(readEditRecoveryCandidates("acct:other@test")).toEqual([{ docKey: "doc", originals: [{ raw: "acct:other@test" }] }]);
+  expect(readEditRecoveryCandidates()).toEqual([{ docKey: "doc", originals: [{ raw: "local" }] }]);
+});
 it("backup panel uses the English loading dictionary key without trailing ellipsis", async () => {
   const language = getLang();
   let finish!: (value: unknown) => void;

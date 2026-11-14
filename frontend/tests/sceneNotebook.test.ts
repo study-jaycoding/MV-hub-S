@@ -113,13 +113,13 @@ it("archive reads follow queued metadata writes and return detached values witho
   const reading = readRestoreArchives("local");
   expect((await write).ok).toBe(true);
   const result = await reading;
-  expect(result).toEqual({ ok: true, value: [archive] });
+  expect(result).toEqual({ ok: true, value: [archive], fresh: true });
   if (!result.ok) throw Error("archive read failed");
   result.value[0].scenes[bucket][0].name = "changed outside store";
   const starts = sceneStoreLoadForTest().txStarts;
   failSceneStoreWritesForTest(true);
   try {
-    expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [archive] });
+    expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [archive], fresh: true });
     expect(sceneStoreLoadForTest().txStarts).toBe(starts);
   } finally { failSceneStoreWritesForTest(false); }
 });
@@ -134,13 +134,13 @@ it("archive reads reject an unready or replaced invalid store and do not refresh
   await joined();
   const confirmed = readConfirmedBucket(bucket);
   replaceSceneStoreForTest({ [bucket]: [scene("other")] });
-  expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [] });
+  expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [], fresh: false });
   expect(readConfirmedBucket(bucket)).toEqual(confirmed);
   replaceSceneStoreForTest(null);
   try { expect(await readRestoreArchives("local")).toEqual({ ok: false }); }
   finally { replaceSceneStoreForTest({ [bucket]: confirmed }); }
 });
-it.each(["boot", "readonly", "readwrite"])("metadata get failure explicitly aborts without writes (%s)", async (path) => {
+it.each(["boot", "readonly", "readwrite", "missing version"])("metadata requests handle missing versions and abort get failures without writes (%s)", async (path) => {
   const error = new Error("metadata get failed");
   let failGet = path === "boot";
   const put = vi.fn(), remove = vi.fn(), abort = vi.fn();
@@ -174,6 +174,13 @@ it.each(["boot", "readonly", "readwrite"])("metadata get failure explicitly abor
   } });
   vi.stubGlobal("IDBKeyRange", { bound: () => ({}) });
   const opened = await initSceneStore(() => null, { state: "committed", generation: "test" }, () => true);
+  if (path === "missing version") {
+    expect(opened.kind).toBe("ready");
+    expect(await readSceneStoreMeta(notebookKey("nr", "local"), () => true)).toEqual({ ok: true, value: undefined, fresh: true });
+    expect(database.transaction.mock.calls.at(-1)?.[1]).toBe("readonly");
+    expect(put).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled(); expect(abort).not.toHaveBeenCalled();
+    return;
+  }
   if (path === "boot") expect(opened).toEqual({ kind: "failed", error: error.message });
   else {
     expect(opened.kind).toBe("ready");

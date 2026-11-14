@@ -25,7 +25,7 @@ import { readStoredScene, listPersistedScenes, listPersistedSceneTexts, uid, var
 export const SCENE_ARCHIVE_FORMAT = "mvhub-scenes-full";
 export const SCENE_ARCHIVE_VERSION = 1;
 export interface StorageRecovery {
-  account: string; canvases: RestoreArchive[]; mirror: MirrorRecovery | null;
+  account: string; baseFresh: boolean; canvases: RestoreArchive[]; mirror: MirrorRecovery | null;
   edits: ReturnType<typeof readEditRecoveryCandidates>;
   cards: { candidates: { removals: unknown[]; revives: unknown[]; backfill: unknown[] }[] } | null;
 }
@@ -33,18 +33,19 @@ export const RECOVERY_ACCOUNT_CHANGED = "계정이 바뀌어 보관본을 다시
 export async function readStorageRecovery(expected?: string): Promise<StorageRecovery> {
   const account = getAccountNamespace();
   if (expected !== undefined && expected !== account) throw new Error(RECOVERY_ACCOUNT_CHANGED);
-  const edits = readEditRecoveryCandidates(); // 현재 계정으로 읽는 자료는 await 전에 잡아 계정이 섞이지 않게 한다.
   const archives = await readRestoreArchives(account);
   if (!archives.ok) throw new Error(archives.stale ? RECOVERY_ACCOUNT_CHANGED : "보관본을 읽지 못했습니다.");
+  const edits = readEditRecoveryCandidates(account);
   const mirror = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as StorageRecovery["mirror"];
   const cards = JSON.parse(localStorage.getItem(`mvhub.cardRecovery:${account}`) ?? "null") as StorageRecovery["cards"];
-  return { account, canvases: archives.value, mirror, cards, edits };
+  return { account, baseFresh: archives.fresh, canvases: archives.value, mirror, cards, edits };
 }
 
 /** 표시에서만 제외한다. 여러 세대 중 고유 원문·장부가 하나라도 있으면 보류를 유지한다. */
 export function redundantMirrorHoldIds(recovery: StorageRecovery | null): Set<string> {
   const redundant = new Set<string>();
-  if (!recovery?.mirror || recovery.account !== getAccountNamespace() || !sceneStoreReady() || !hubFeaturesKnown() || !hubHasFeature(SCENE_WRITER_FEATURE)) return redundant;
+  // 확정본이 저장소보다 낡았으면 같은 내용인지 확인할 수 없으므로 보류를 숨기지 않는다.
+  if (!recovery?.baseFresh || !recovery.mirror || recovery.account !== getAccountNamespace() || !sceneStoreReady() || !hubFeaturesKnown() || !hubHasFeature(SCENE_WRITER_FEATURE)) return redundant;
   const current = new Map(listPersistedScenes(null).map((scene) => [scene.id, scene]));
   const matched = new Set<string>();
   for (const id of recovery.mirror.blockedIds) if (current.has(id)) redundant.add(id);

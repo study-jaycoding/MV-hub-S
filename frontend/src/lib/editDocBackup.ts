@@ -33,8 +33,8 @@ let stopListeners: (() => void) | null = null;
 interface Recovery { generation?: string; rawHash?: string | null; blocked?: boolean; originals?: { raw: string; generation?: string; revision?: number | null; uncertainRaw?: string }[] }
 const recoveryKey = (id: string, account = getAccountNamespace()) => `mvhub.editRecovery:${JSON.stringify([account, id])}`;
 const validGeneration = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200;
-function recovery(id: string): Recovery {
-  const value = JSON.parse(localStorage.getItem(recoveryKey(id)) ?? "{}");
+function recovery(id: string, account = getAccountNamespace()): Recovery {
+  const value = JSON.parse(localStorage.getItem(recoveryKey(id, account)) ?? "{}");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_recovery_record");
   return value as Recovery;
 }
@@ -51,14 +51,14 @@ function holdRecovery(id: string, entry: Entry, sentRaw?: string) {
   if (sentRaw !== undefined && !originals.some((item) => item.raw === sentRaw && item.generation === before.generation)) originals.push({ raw: sentRaw, generation: before.generation, revision: entry.revision });
   saveRecovery(id, { ...before, blocked: true, originals });
 }
-export function readEditRecoveryCandidates(): { docKey: string; originals: NonNullable<Recovery["originals"]> }[] {
-  const prefix = `mvhub.editRecovery:[${JSON.stringify(getAccountNamespace())},`;
+export function readEditRecoveryCandidates(account = getAccountNamespace()): { docKey: string; originals: NonNullable<Recovery["originals"]> }[] {
+  const prefix = `mvhub.editRecovery:[${JSON.stringify(account)},`;
   const result: { docKey: string; originals: NonNullable<Recovery["originals"]> }[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key?.startsWith(prefix)) continue;
     const [, id] = JSON.parse(key.slice("mvhub.editRecovery:".length)) as string[];
-    const value = recovery(id);
+    const value = recovery(id, account);
     if (value.blocked) result.push({ docKey: id, originals: value.originals ?? [] });
   }
   return result;

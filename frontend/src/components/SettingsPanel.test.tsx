@@ -24,7 +24,7 @@ describe('settings data fold summary', () => {
     expect(dataFoldParts('', 2, '')).toEqual([{ held: 2 }]);
   });
   it('omits empty legacy archives but keeps control-only recovery in the folded line', () => {
-    const recovery: StorageRecovery = { account: 'local', mirror: null, edits: [], cards: null,
+    const recovery: StorageRecovery = { account: 'local', baseFresh: true, mirror: null, edits: [], cards: null,
       canvases: [{ id: 'empty', createdAt: '2026-11-14', notebookId: '', fromGeneration: null, toGeneration: 'new',
         scenes: { 'local::_none': [] }, conflicts: [], controls: { '["ns","local"]': undefined } }] };
     expect(dataFoldParts('캔버스 3개', heldRecoveryCounts(recovery).total, '서버 정상')).toEqual(['캔버스 3개', '서버 정상']);

@@ -1234,7 +1234,7 @@ it("recovery account error uses the human-readable constant", async () => {
 });
 it("deferred recovery rejects a changed expected account before reading archives", async () => {
   const expected = accountScope.getAccountNamespace();
-  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockResolvedValue({ ok: true, value: [] });
+  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockResolvedValue({ ok: true, value: [], fresh: true });
   try {
     const pending = Promise.resolve().then(() => readStorageRecovery(expected));
     setAccountScope("other@test");
@@ -1244,12 +1244,53 @@ it("deferred recovery rejects a changed expected account before reading archives
     expect(archives).toHaveBeenCalledWith("acct:other@test");
   } finally { archives.mockRestore(); setAccountScope(null); }
 }, 15_000);
+it("focus keeps real mirror holds after an external refresh fails, then external refresh restores freshness", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let recovery: Awaited<ReturnType<typeof readStorageRecovery>> | null = null;
+  function Probe() { [recovery] = useStorageRecovery(); return null; }
+  const hold = (name: string) => localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({
+    generation: "new", blockedIds: ["a"], raws: {},
+    originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a", name)) }], ledger: [] }],
+  }));
+  try {
+    hold("a");
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    expect([...redundantMirrorHoldIds(recovery)]).toEqual(["a"]);
+    sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a", "B")]; });
+    const clone = vi.spyOn(globalThis, "structuredClone").mockImplementationOnce(() => { throw Error("external read failed"); });
+    try { expect(await sceneStore.refreshSceneStoreForTest()).toBe(false); }
+    finally { clone.mockRestore(); }
+    expect(sceneStore.readConfirmedBucket(bucket)[0].name).toBe("a");
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
+    expect([...redundantMirrorHoldIds(recovery)]).toEqual([]);
+    expect(recovery).toMatchObject({ baseFresh: false });
+    hold("B");
+    await act(async () => {
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(recovery).toMatchObject({ baseFresh: true });
+    expect([...redundantMirrorHoldIds(recovery)]).toEqual(["a"]);
+  } finally { vi.useRealTimers(); }
+}, 15_000);
+it("recovery reads edit candidates after archives finish", async () => {
+  const key = 'mvhub.editRecovery:["local","doc"]';
+  localStorage.setItem(key, JSON.stringify({ blocked: true, originals: [{ raw: "before" }] }));
+  const readArchives = sceneNotebook.readRestoreArchives;
+  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockImplementation(async (account) => {
+    const result = await readArchives(account);
+    localStorage.setItem(key, JSON.stringify({ blocked: true, originals: [{ raw: "after" }] }));
+    return result;
+  });
+  try { expect((await readStorageRecovery()).edits).toEqual([{ docKey: "doc", originals: [{ raw: "after" }] }]); }
+  finally { archives.mockRestore(); }
+});
 it("recovery avoids the redundant account check after metadata guards", async () => {
   const account = vi.spyOn(accountScope, "getAccountNamespace");
   try {
     expect((await readStorageRecovery("local")).account).toBe("local");
-    // 시작·메타 읽기 전후·편집 문서 계정 조회만(보관 후보 없는 경우).
-    expect(account).toHaveBeenCalledTimes(4);
+    // 시작·메타 읽기 전후만 확인하고, 나머지는 잡아 둔 계정으로 읽는다.
+    expect(account).toHaveBeenCalledTimes(3);
   } finally { account.mockRestore(); }
 });
 it("recovery keeps all parts in the captured account when it changes after the metadata guard", async () => {
