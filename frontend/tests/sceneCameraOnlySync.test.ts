@@ -560,12 +560,13 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
       expect(hub.uploads).toBe(uploads); // 카메라만 — 백업이 공책 동기화를 예약하지 않는다
       hub.failUploads = true;
       const hidden = syncSceneNotebook({ fresh: true }); // 숨김 처리기가 부르는 그 호출
-      await vi.advanceTimersByTimeAsync(1000);
+      // 실패 결과를 먼저 받는다 — 재시도 30초는 이 결과를 받는 순간부터다. 전엔 1초 먼저 전진해, 실패가 그 전에 끝나면
+      //  기한(+30초)과 검사 시점(+1+29초)이 겹쳐 가짜 타이머가 정상 재시도를 그 자리에서 돌렸다(가끔 실패).
       expect((await hidden).status).toBe("retry");
       expect(JSON.parse(hub.rows.get("a")!.data).camera).toBeUndefined();
       hub.failUploads = false;
       await vi.advanceTimersByTimeAsync(29_000);
-      expect(JSON.parse(hub.rows.get("a")!.data).camera).toBeUndefined(); // 기한 전
+      expect(JSON.parse(hub.rows.get("a")!.data).camera).toBeUndefined(); // 실패 뒤 29초 — 기한(30초) 전
       await vi.advanceTimersByTimeAsync(2_000);
       expect(JSON.parse(hub.rows.get("a")!.data).camera).toEqual(cam(3));
     } finally {
