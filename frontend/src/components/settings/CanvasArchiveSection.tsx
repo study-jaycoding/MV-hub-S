@@ -20,24 +20,29 @@ export function useStorageRecovery() {
   useEffect(() => {
     let alive = true;
     let readVersion = 0;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     setRecovery(null);
     setFailed(false);
     const read = () => {
       if (!sceneStoreReady()) return;
       const version = ++readVersion;
       void readStorageRecovery().then((value) => {
-        if (alive && version === readVersion && value.account === account && account === getAccountNamespace()) {
-          setRecovery(value);
+        if (alive && version === readVersion) {
+          if (value.account === account && account === getAccountNamespace()) setRecovery(value);
           setFailed(false);
         }
       }).catch(() => { if (alive && version === readVersion) setFailed(true); });
     };
+    const scheduleRead = () => {
+      if (refreshTimer !== undefined) return;
+      refreshTimer = setTimeout(() => { refreshTimer = undefined; read(); }, 250);
+    };
     read();
     const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read), offFeatures = subscribeHubFeatures(read);
-    const offPersisted = subscribeScenesPersisted(read), offExternal = subscribeSceneStoreExternal(read);
+    const offPersisted = subscribeScenesPersisted(scheduleRead), offExternal = subscribeSceneStoreExternal(scheduleRead);
     window.addEventListener("storage", read);
     window.addEventListener("focus", read);
-    return () => { alive = false; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
+    return () => { alive = false; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
   }, [account, writer.mode]);
   return [recovery?.account === account ? recovery : null, setRecovery, failed] as const;
 }
