@@ -126,6 +126,20 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       expect(notify).toHaveBeenCalledTimes(1);
     } finally { off(); offThrow(); }
   });
+  it("identical recovery text skips comparison parsing on resave", async () => {
+    const { backup } = await boot();
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`;
+    const text = JSON.stringify({ generation: "restore-1", blockedIds: [], originals: [], raws: {} });
+    localStorage.setItem(key, text);
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      await backup.resumeImportedMirror(scope, "restore-1", new Map());
+      expect(notify).not.toHaveBeenCalled();
+      expect(localStorage.getItem(key)).toBe(text);
+      expect(parse.mock.calls.filter(([raw]) => raw === text)).toHaveLength(1); // readMirrorRecovery only
+    } finally { parse.mockRestore(); off(); }
+  });
   it.each([["resume", false], ["resume", true], ["adopt", false], ["adopt", true]] as const)("recovery comparison work follows subscribers (%s, subscribed: %s)", async (path, subscribed) => {
     const { scenes, backup, settle } = await boot(false);
     const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`, raw = sceneJson("s");
@@ -316,11 +330,13 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       return getItem(name);
     });
     const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    const parse = vi.spyOn(JSON, "parse");
     try {
       await backup.initSceneBackup();
       expect(localStorage.getItem(key)).toBe(final);
       expect(notify).not.toHaveBeenCalled();
-    } finally { read.mockRestore(); off(); }
+      expect(parse.mock.calls.filter(([raw]) => raw === final)).toHaveLength(0);
+    } finally { read.mockRestore(); parse.mockRestore(); off(); }
   });
 
   it.each([

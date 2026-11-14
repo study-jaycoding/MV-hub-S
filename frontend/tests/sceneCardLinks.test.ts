@@ -131,6 +131,37 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     expect(puts()).toHaveLength(0);
   });
 
+  it.each(["success", "removals", "revives"])("card recovery notifies after pending writes even on failure: %s", async (failure) => {
+    const { links } = await boot();
+    const scope = `acct:user${acctSeq}@test`, recoveryKey = `mvhub.cardRecovery:${scope}`;
+    const removalsKey = `ch.sceneCardRemovals.v1.${encodeURIComponent(scope)}`;
+    const revivesKey = `ch.sceneCardRevives.v1.${encodeURIComponent(scope)}`;
+    const stale = JSON.stringify([{ scene_id: "s", card_id: "c", generation_id: "old" }]);
+    localStorage.setItem(removalsKey, stale); localStorage.setItem(revivesKey, stale);
+    const error = new Error("pending quota"), events: string[] = [];
+    const snapshots: (string | null)[][] = [];
+    const write = localStorage.setItem;
+    const writes = vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      const kind = key === removalsKey ? "removals" : key === revivesKey ? "revives" : "archive";
+      events.push(kind);
+      if (kind === failure) throw error;
+      write(key, value);
+    });
+    const offThrow = links.subscribeCardRecovery(() => { throw new Error("listener failed"); });
+    const off = links.subscribeCardRecovery(() => {
+      events.push("notify");
+      snapshots.push([localStorage.getItem(removalsKey), localStorage.getItem(revivesKey)]);
+    });
+    try {
+      expect(await links.refreshSceneCardLinks()).toBe(failure === "success");
+      expect(events).toEqual(failure === "removals" ? ["archive", "removals", "notify"] : ["archive", "removals", "revives", "notify"]);
+      expect(snapshots).toEqual([[failure === "removals" ? stale : "[]", failure === "success" ? "[]" : stale]]);
+      expect(JSON.parse(localStorage.getItem(recoveryKey)!).candidates).toHaveLength(1);
+      expect(writes.mock.results.filter((result) => result.type === "throw").map((result) => result.value)).toEqual(failure === "success" ? [] : [error]);
+      expect(puts()).toHaveLength(0);
+    } finally { off(); offThrow(); writes.mockRestore(); }
+  });
+
   it("clean upgrade excludes server memberships from recovery candidates", async () => {
     const { scenes, links } = await boot();
     const recoveryKey = `mvhub.cardRecovery:acct:user${acctSeq}@test`;

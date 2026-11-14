@@ -29,9 +29,11 @@ export interface StorageRecovery {
   edits: ReturnType<typeof readEditRecoveryCandidates>;
   cards: { candidates: { removals: unknown[]; revives: unknown[]; backfill: unknown[] }[] } | null;
 }
+export const RECOVERY_ACCOUNT_CHANGED = "recovery_account_changed";
 export async function readStorageRecovery(): Promise<StorageRecovery> {
   const account = getAccountNamespace(), archives = await readRestoreArchives(account);
-  if (!archives.ok || account !== getAccountNamespace()) throw new Error("보관본을 읽지 못했습니다.");
+  if (account !== getAccountNamespace()) throw new Error(RECOVERY_ACCOUNT_CHANGED);
+  if (!archives.ok) throw new Error("보관본을 읽지 못했습니다.");
   const mirror = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as StorageRecovery["mirror"];
   const cards = JSON.parse(localStorage.getItem(`mvhub.cardRecovery:${account}`) ?? "null") as StorageRecovery["cards"];
   return { account, canvases: archives.value, mirror, cards, edits: readEditRecoveryCandidates() };

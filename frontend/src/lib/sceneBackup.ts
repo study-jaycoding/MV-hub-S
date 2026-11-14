@@ -100,7 +100,7 @@ function saveMirrorRecovery(scope: string, value: MirrorRecovery, notify = true)
   let saved: string | null;
   try { saved = localStorage.getItem(key); }
   catch (error) { if (notify) notifyMirrorRecovery(); throw error; }
-  if (notify && (previous === undefined || mirrorRecoveryView(previous) !== mirrorRecoveryView(saved))) notifyMirrorRecovery();
+  if (notify && (previous === undefined || (previous !== saved && mirrorRecoveryView(previous) !== mirrorRecoveryView(saved)))) notifyMirrorRecovery();
   if (saved !== text) throw new Error("mirror_recovery_write_failed");
 }
 export function readMirrorRecovery(scope = ns()): MirrorRecovery | null {
@@ -159,7 +159,12 @@ async function checkMirrorGeneration(scope: string): Promise<string> {
     // 확인 읽기가 실패해도 원래 오류는 유지하고, 남았을 수 있는 보호 기록을 알린다.
     if (notify) {
       let changed = true;
-      try { changed = previousRecovery === undefined || mirrorRecoveryView(localStorage.getItem(mirrorRecoveryKey(scope))) !== mirrorRecoveryView(previousRecovery); } catch { /* 확인 불가면 보수적으로 알린다. */ }
+      try {
+        if (previousRecovery !== undefined) {
+          const saved = localStorage.getItem(mirrorRecoveryKey(scope));
+          changed = saved !== previousRecovery && mirrorRecoveryView(saved) !== mirrorRecoveryView(previousRecovery);
+        }
+      } catch { /* 확인 불가면 보수적으로 알린다. */ }
       if (changed) notifyMirrorRecovery();
     }
   }

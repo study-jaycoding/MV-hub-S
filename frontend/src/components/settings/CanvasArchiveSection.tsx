@@ -1,6 +1,6 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
-import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, downloadStorageRecovery, redundantMirrorHoldIds, type StorageRecovery } from "../../lib/sceneArchive";
+import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, RECOVERY_ACCOUNT_CHANGED, downloadStorageRecovery, redundantMirrorHoldIds, type StorageRecovery } from "../../lib/sceneArchive";
 import { subscribeEditBackup } from "../../lib/editDocBackup";
 import { subscribeMirrorRecovery } from "../../lib/sceneBackup";
 import { subscribeCardRecovery } from "../../lib/sceneCardLinks";
@@ -21,6 +21,7 @@ export function useStorageRecovery() {
   const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
   const [failedAccount, setFailedAccount] = useState<string | null>(null);
   const refresh = useRef<() => Promise<void> | undefined>(() => undefined);
+  const refreshRecovery = useCallback(() => refresh.current(), []);
   const pendingRefresh = useRef(new Set<() => void>());
   // 같은 계정의 mode 전환에는 대기를 넘기고, 계정 변경·화면 해제 때만 정리한다.
   useEffect(() => {
@@ -40,15 +41,21 @@ export function useStorageRecovery() {
       // 초기 준비 완료는 저장소 알림으로 온다. 열리지 않은 창을 계속 확인하지 않는다.
       if (!sceneStoreReady()) { refreshPending = false; cancelRefresh(); return; }
       const waiters = [...refreshWaiters];
+      let accountChanged = false;
       inFlight = readStorageRecovery().then((value) => {
         if (alive && account === getAccountNamespace()) {
-          setRecovery(value.account === account && account === getAccountNamespace() ? value : null);
+          // 현재 effect 계정으로 시작하며, 읽는 동안 계정이 바뀌면 readStorageRecovery가 던진다.
+          setRecovery(value);
           setFailedAccount(null);
         }
-      }).catch(() => { if (alive && account === getAccountNamespace()) setFailedAccount(account); }).finally(() => {
+      }).catch((error) => {
+        if (!alive) return;
+        if (error instanceof Error && error.message === RECOVERY_ACCOUNT_CHANGED) { accountChanged = true; refreshPending = true; }
+        else if (account === getAccountNamespace()) setFailedAccount(account);
+      }).finally(() => {
         inFlight = undefined;
         if (alive && account !== getAccountNamespace()) refreshPending = true;
-        if (alive) for (const resolve of waiters) { refreshWaiters.delete(resolve); resolve(); }
+        if (alive && !accountChanged) for (const resolve of waiters) { refreshWaiters.delete(resolve); resolve(); }
         if (refreshPending && refreshTimer === undefined) { refreshPending = false; scheduleRead(); }
       });
       return inFlight;
@@ -79,14 +86,18 @@ export function useStorageRecovery() {
     });
     scheduleRead();
     const offScene = subscribeSceneSaveState(scheduleRead), offEdit = subscribeEditBackup(scheduleRead), offFeatures = subscribeHubFeatures(scheduleRead);
-    const offPersisted = subscribeScenesPersisted(scheduleRead), offExternal = subscribeSceneStoreExternal(scheduleRead);
+    const offPersisted = subscribeScenesPersisted(({ cameraOnly, notebookMetaOnly }) => {
+      // 카메라·공책 내부 정리만 한 확정은 보관본이나 카메라를 뺀 보류 판정을 바꾸지 않는다.
+      if (!cameraOnly && !notebookMetaOnly) scheduleRead();
+    }), offExternal = subscribeSceneStoreExternal(scheduleRead);
     const offMirror = subscribeMirrorRecovery(scheduleRead);
     const offCard = subscribeCardRecovery(scheduleRead);
     window.addEventListener("storage", scheduleRead);
     window.addEventListener("focus", scheduleRead);
     return () => { alive = false; refresh.current = () => undefined; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
   }, [account, writer.mode]);
-  return [recovery?.account === account ? recovery : null, () => refresh.current(), failedAccount === account] as const;
+  const ownRecovery = recovery?.account === account ? recovery : null, failed = failedAccount === account;
+  return useMemo(() => [ownRecovery, refreshRecovery, failed] as const, [ownRecovery, refreshRecovery, failed]);
 }
 
 /** 보류 개수 — 캔버스 보관본(미러는 아직 막힌 씬·장부가 있는 것만) · 편집 문서 · 카드 정리 대기. */

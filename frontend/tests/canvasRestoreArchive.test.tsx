@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "../src/components/settings/CanvasArchiveSection";
 import { downloadStorageRecovery, readStorageRecovery, redundantMirrorHoldIds } from "../src/lib/sceneArchive";
 import * as sceneArchive from "../src/lib/sceneArchive";
+import * as sceneNotebook from "../src/lib/sceneNotebook";
 import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose, type RestoreArchive } from "../src/lib/sceneNotebook";
 import { abortSceneStoreWritesForTest, applySceneOp, holdNotebookWrites, readWorkingBucket, setSceneWriteGate, settleSceneStoreForTest, writeScenesStore, sceneNotebookTransaction } from "../src/lib/sceneStore";
 import { setAccountScope } from "../src/lib/accountScope";
@@ -235,6 +236,34 @@ it.each(["success", "failure", "unmount"])("manual refresh waits for the queued 
     expect(completed).toBe(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(read).toHaveBeenCalledTimes(outcome === "unmount" ? 1 : 2);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("manual refresh waits through an account-change discard for the replacement read", async () => {
+  const initial = await readStorageRecovery();
+  const reads: { resolve: (value: typeof initial) => void; reject: (reason: Error) => void }[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  let refresh!: () => Promise<void> | undefined;
+  function Probe() { [, refresh] = useStorageRecovery(); return null; }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    await act(async () => reads[0].resolve(initial));
+    let completed = false;
+    const pending = Promise.resolve(refresh()).then(() => { completed = true; });
+    expect(reads).toHaveLength(2);
+    await act(async () => {
+      setAccountScope("other@test");
+      reads[1].reject(new Error(sceneArchive.RECOVERY_ACCOUNT_CHANGED));
+      setAccountScope(null);
+    });
+    expect(completed).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(reads).toHaveLength(3);
+    expect(completed).toBe(false);
+    await act(async () => { reads[2].resolve(initial); await pending; });
+    expect(completed).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(reads).toHaveLength(3);
   } finally { read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it.each(["success", "failure"])("manual refresh survives writer mode changes until the new read %s", async (outcome) => {
@@ -828,6 +857,40 @@ it("account change clears the previous recovery error while the new read is pend
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
   } finally { read.mockRestore(); }
 }, 15_000);
+it.each([
+  [true, false, 0], [false, true, 0], [false, false, 1],
+] as const)("persisted recovery reads respect cameraOnly=%s notebookMetaOnly=%s", async (cameraOnly, notebookMetaOnly, expected) => {
+  const recovery = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
+  let persisted!: Parameters<typeof scenes.subscribeScenesPersisted>[0];
+  const subscription = vi.spyOn(scenes, "subscribeScenesPersisted").mockImplementation((fn) => { persisted = fn; return () => {}; });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    read.mockClear();
+    await act(async () => { persisted({ cameraOnly, notebookMetaOnly }); await vi.advanceTimersByTimeAsync(500); });
+    expect(read).toHaveBeenCalledTimes(expected);
+  } finally { read.mockRestore(); subscription.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("recovery refresh and unchanged tuple stay stable across renders", async () => {
+  const recovery = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
+  let state!: ReturnType<typeof useStorageRecovery>;
+  function Probe() { state = useStorageRecovery(); return null; }
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    const first = state;
+    await act(async () => root!.render(<Probe />));
+    expect(state[1]).toBe(first[1]);
+    expect(state).toBe(first);
+    read.mockRejectedValueOnce(new Error("read failed"));
+    await act(async () => { await first[1](); });
+    expect(state[1]).toBe(first[1]);
+    expect(state).not.toBe(first);
+    expect(state[2]).toBe(true);
+  } finally { read.mockRestore(); }
+}, 15_000);
 it("scene notification bursts share a bounded recovery read and cancel it on unmount", async () => {
   const recovery = await readStorageRecovery();
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
@@ -872,7 +935,7 @@ it("scene notification bursts share a bounded recovery read and cancel it on unm
     expect(read).toHaveBeenCalledTimes(3);
   } finally { read.mockRestore(); offPersisted.mockRestore(); offExternal.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it.each([false, true])("a latest foreign recovery response clears only the read error (other message: %s)", async (otherMessage) => {
+it.each([false, true])("a successful recovery response clears only the read error (other message: %s)", async (otherMessage) => {
   const recovery = await readStorageRecovery();
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("read failed"));
   const exportAll = vi.spyOn(sceneArchive, "downloadSceneArchive").mockResolvedValue(2);
@@ -886,23 +949,45 @@ it.each([false, true])("a latest foreign recovery response clears only the read 
       await act(async () => button!.click());
       expect(host.textContent).toContain("캔버스 2개를 파일로 내려받았습니다.");
     }
-    read.mockResolvedValue({ ...recovery, account: "acct:other@test", cards: { candidates: [{ removals: [{ id: "foreign" }], revives: [], backfill: [] }] } });
+    read.mockResolvedValue(recovery);
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "0", failed: "false" });
     expect(host.textContent).not.toContain("보관본을 읽지 못했습니다.");
     if (otherMessage) expect(host.textContent).toContain("캔버스 2개를 파일로 내려받았습니다.");
   } finally { read.mockRestore(); exportAll.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it("a foreign recovery response discards the previously displayed recovery", async () => {
-  const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "old" }], revives: [], backfill: [] }] } };
+it.each([false, true])("recovery read distinguishes an account change from storage failure (changed: %s)", async (changed) => {
+  let finish!: (value: Awaited<ReturnType<typeof readRestoreArchives>>) => void;
+  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  try {
+    const result = readStorageRecovery();
+    if (changed) setAccountScope("other@test");
+    finish({ ok: false });
+    await expect(result).rejects.toThrow(changed ? "recovery_account_changed" : "보관본을 읽지 못했습니다.");
+  } finally { archives.mockRestore(); setAccountScope(null); }
+}, 15_000);
+it("an account-change recovery error retries without showing failure after an account round trip", async () => {
+  const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "own" }], revives: [], backfill: [] }] } };
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
     expect(host.querySelector("i")?.dataset.held).toBe("1");
-    read.mockResolvedValue({ ...recovery, account: "acct:other@test" });
-    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    read.mockImplementationOnce(async () => {
+      setAccountScope("other@test");
+      const error = new Error("recovery_account_changed");
+      setAccountScope(null);
+      throw error;
+    });
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "false" });
+    read.mockResolvedValue({ ...recovery, cards: null });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(3);
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "0", failed: "false" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(read).toHaveBeenCalledTimes(3);
   } finally { read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("an unchanged import clears recovery read failure through the hook", async () => {

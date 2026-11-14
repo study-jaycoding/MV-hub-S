@@ -97,10 +97,11 @@ function prepareGeneration(scope: string, generation: string, serverItems: CardL
     try { saved = localStorage.getItem(recoveryKey(scope)); }
     catch (error) { notifyCardRecovery(); throw error; }
     if (saved !== archived) throw new Error("card_recovery_write_failed");
-    notifyCardRecovery();
-    localStorage.setItem(pendingKey(scope), JSON.stringify(removals.filter((link) => !stale(link))));
-    localStorage.setItem(revivesKey(scope), JSON.stringify(revives.filter((link) => !stale(link))));
-    unsavedIntents.delete(pendingKey(scope)); unsavedIntents.delete(revivesKey(scope));
+    try {
+      localStorage.setItem(pendingKey(scope), JSON.stringify(removals.filter((link) => !stale(link))));
+      localStorage.setItem(revivesKey(scope), JSON.stringify(revives.filter((link) => !stale(link))));
+      unsavedIntents.delete(pendingKey(scope)); unsavedIntents.delete(revivesKey(scope));
+    } finally { notifyCardRecovery(); }
   }
   pendingRemovals = removals.filter((link) => !stale(link)); pendingRevives = revives.filter((link) => !stale(link));
   loadedGeneration = generation;
