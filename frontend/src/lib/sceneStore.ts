@@ -553,6 +553,7 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
       if (fresh) { // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
         externalReadFailed = false;
         metaReadFailed = false;
+        metaRecoverySignalUsed = false;
         metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
         metaRecoveryNextAt = 0;
         if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
@@ -564,7 +565,8 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
   return read().then(async (result) => {
     // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
     // 회복은 다른 창 알림과 같이 pending도 확정해 추가 읽기를 부를 수 있지만 다음 읽기는 fresh라 멈춘다.
-    if (result.ok && !result.fresh && await refreshFromStore()) return read();
+    if (result.ok && !result.fresh && await refreshFromStore()) result = await read();
+    if (result.ok && !result.fresh) scheduleMetaRecovery();
     return result;
   });
 }
@@ -1540,6 +1542,7 @@ let externalReadFailed = false;
 const META_RECOVERY_NOTIFY_MS = 5_000;
 const META_RECOVERY_MAX_MS = 60_000;
 let metaReadFailed = false;
+let metaRecoverySignalUsed = false;
 let metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
 let metaRecoveryNextAt = 0;
 let metaRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1563,6 +1566,7 @@ function scheduleMetaRecovery(): void {
   if (metaRecoveryTimer !== undefined) return;
   metaRecoveryTimer = setTimeout(() => {
     metaRecoveryTimer = undefined;
+    metaRecoverySignalUsed = false;
     if (metaReadFailed) notifySceneStoreRecovery();
   }, Math.max(0, metaRecoveryNextAt - performance.now()));
 }
@@ -1579,7 +1583,13 @@ function clearExternalReadFailed(): void {
   if (externalReadFailed) {
     externalReadFailed = false;
     notifySceneStoreRecovery();
-  } else if (metaReadFailed) scheduleMetaRecovery();
+  } else if (metaReadFailed) {
+    // 메타만 계속 실패해도 쓰기마다 읽지 않도록, 타이머 간격마다 성공 신호는 한 번만 앞당긴다.
+    if (!metaRecoverySignalUsed) {
+      metaRecoverySignalUsed = true;
+      notifySceneStoreRecovery();
+    } else scheduleMetaRecovery();
+  }
 }
 
 /** 이 창이 한 편집이 아닌 이유로 씬이 바뀌었다(다른 창의 저장·옛 창 흡수·충돌 정리) — 목록을 다시 읽어야 한다. */
@@ -1872,6 +1882,7 @@ export function resetSceneStoreForTest(): void {
   staleSubs.clear();
   externalReadFailed = false;
   metaReadFailed = false;
+  metaRecoverySignalUsed = false;
   metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
   metaRecoveryNextAt = 0;
   if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);

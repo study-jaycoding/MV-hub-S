@@ -1387,7 +1387,7 @@ it.each(["refresh", "camera"])("recovery after metadata failure clears the warni
     expect(notifications).toEqual(via === "camera" ? [{ cameraOnly: true, notebookMetaOnly: false }] : []);
   } finally { off(); clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it.each(["quiet", "camera", "refresh"])("metadata recovery backs off and recovers without another signal (%s)", async (via) => {
+it.each(["quiet", "quiet-camera", "camera", "refresh"])("metadata recovery bounds timer and success signals per interval (%s)", async (via) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   const read = vi.spyOn(sceneArchive, "readStorageRecovery");
   const readMeta = sceneStore.readSceneStoreMeta;
@@ -1410,9 +1410,22 @@ it.each(["quiet", "camera", "refresh"])("metadata recovery backs off and recover
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     const intervals = via === "quiet" ? [5000] : [5000, 10_000, 20_000, 40_000, 60_000, 60_000];
     if (firstFailureAt === undefined) throw Error("failure was not exercised");
-    let deadline = firstFailureAt, writes = 0;
-    for (const [index, interval] of intervals.entries()) {
-      deadline += interval;
+    let deadline = firstFailureAt, writes = 0, notifications = 0;
+    let delay = 5000;
+    for (const interval of intervals) {
+      if (via === "camera" || via === "refresh") {
+        const signaledAt = performance.now();
+        await act(async () => {
+          if (via === "camera") expect(scenes.updateSceneCamera(null, "a", { z: 2, x: ++writes, y: 0 }).ok).toBe(true);
+          else expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+          await vi.advanceTimersByTimeAsync(250);
+        });
+        notifications++;
+        expect(stale).toHaveBeenCalledTimes(notifications);
+        expect(read).toHaveBeenCalledTimes(3 + notifications);
+        delay = Math.min(delay * 2, 60_000);
+        deadline = signaledAt + delay;
+      } else deadline += interval;
       while (performance.now() < deadline - 1) {
         await act(async () => {
           if (via === "camera") expect(scenes.updateSceneCamera(null, "a", { z: 2, x: ++writes, y: 0 }).ok).toBe(true);
@@ -1420,36 +1433,79 @@ it.each(["quiet", "camera", "refresh"])("metadata recovery backs off and recover
           await vi.advanceTimersByTimeAsync(Math.min(1000, deadline - 1 - performance.now()));
         });
       }
-      expect(stale).toHaveBeenCalledTimes(index);
-      expect(read).toHaveBeenCalledTimes(3 + index);
+      expect(stale).toHaveBeenCalledTimes(notifications);
+      expect(read).toHaveBeenCalledTimes(3 + notifications);
       await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-      expect(stale).toHaveBeenCalledTimes(index + 1);
-      expect(read).toHaveBeenCalledTimes(4 + index);
+      notifications++;
+      delay = Math.min(delay * 2, 60_000);
+      expect(stale).toHaveBeenCalledTimes(notifications);
+      expect(read).toHaveBeenCalledTimes(3 + notifications);
       expect(host.querySelector("i")?.dataset).toMatchObject({ failed: "true", held: "1" });
     }
     if (via === "camera") {
       expect(sceneStore.sceneStoreLoadForTest().pending).toBe(0);
       expect(scenes.listPersistedScenes(null).find((s) => s.id === "a")?.camera?.x).toBe(writes);
     }
-    // 확인 읽기도 실패한 뒤 정상화: 쓰기·focus 없이 다음 예약만으로 회복한다.
+    // 60초까지 늘어난 뒤 첫 성공은 다음 타이머를 기다리지 않는다. 신호가 없어도 예약은 남는다.
     fail = false;
-    await act(async () => { await vi.advanceTimersByTimeAsync(via === "quiet" ? 10_000 : 60_000); });
-    expect(stale).toHaveBeenCalledTimes(intervals.length + 1);
-    expect(read).toHaveBeenCalledTimes(4 + intervals.length);
+    await act(async () => {
+      if (via === "camera" || via === "quiet-camera") scenes.updateSceneCamera(null, "a", { z: 2, x: ++writes, y: 0 });
+      if (via === "refresh") expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      await vi.advanceTimersByTimeAsync(via === "quiet" ? 10_000 : 250);
+    });
+    notifications++;
+    expect(stale).toHaveBeenCalledTimes(notifications);
+    expect(read).toHaveBeenCalledTimes(3 + notifications);
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
     expect(host.querySelector("i")?.dataset.held).toBe("0");
     await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
-    expect(read).toHaveBeenCalledTimes(4 + intervals.length);
+    expect(read).toHaveBeenCalledTimes(3 + notifications);
     // 최신 성공은 늘어난 간격도 5초로 초기화한다.
     fail = true;
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
     fail = false;
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-    expect(stale).toHaveBeenCalledTimes(intervals.length + 2);
+    expect(stale).toHaveBeenCalledTimes(notifications + 1);
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
-    expect(read).toHaveBeenCalledTimes(7 + intervals.length);
+    expect(read).toHaveBeenCalledTimes(6 + notifications);
   } finally { off(); meta.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
+it("nonfresh metadata retries a failed refresh without another signal", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] }] }));
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery"), copy = structuredClone;
+  let fail = false;
+  const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+    if (fail && value?.id === "a") throw Error("scene refresh unavailable");
+    return copy(value);
+  });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a"), scene("b")]; });
+    fail = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+    expect(host.querySelector("i")?.dataset.held).toBe("1");
+    expect((await read.mock.results.at(-1)!.value).baseFresh).toBe(false);
+    fail = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(host.querySelector("i")?.dataset.held).toBe("0");
+    expect((await read.mock.results.at(-1)!.value).baseFresh).toBe(true);
+  } finally { clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("a second nonfresh metadata read also schedules recovery", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const stale = vi.fn(), off = sceneStore.subscribeSceneStoreStale(stale);
+  try {
+    const timers = vi.getTimerCount();
+    const change = () => sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a"), scene("b")]; });
+    change();
+    let checks = 0;
+    expect(await sceneStore.readSceneStoreMeta("version", () => { if (++checks === 3) change(); return true; })).toMatchObject({ ok: true, fresh: false });
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(stale).toHaveBeenCalledTimes(1);
+  } finally { off(); vi.useRealTimers(); }
+});
 it("metadata recovery timer stops without subscribers", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   try {
@@ -1470,13 +1526,13 @@ it.each(["fresh", "reset"])("pending metadata recovery timer is cleared by %s", 
     expect(await sceneStore.readSceneStoreMeta("version", () => { throw Error("metadata failed"); })).toEqual({ ok: false });
     expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
     expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
-    expect(stale).not.toHaveBeenCalled();
+    expect(stale).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(timers + 1);
     if (via === "fresh") expect(await sceneStore.readSceneStoreMeta("version", () => true)).toMatchObject({ ok: true, fresh: true });
     else sceneStore.resetSceneStoreForTest();
     expect(vi.getTimerCount()).toBe(timers);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(stale).not.toHaveBeenCalled();
+    expect(stale).toHaveBeenCalledTimes(1);
   } finally { off(); vi.useRealTimers(); }
 }, 15_000);
 it.each(["same", "content", "camera", "order", "delete", "version"])("reconnected metadata recovery announces replacement even with unchanged scenes (%s)", async (change) => {
