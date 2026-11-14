@@ -1387,8 +1387,8 @@ it.each(["refresh", "camera"])("recovery after metadata failure clears the warni
     expect(notifications).toEqual(via === "camera" ? [{ cameraOnly: true, notebookMetaOnly: false }] : []);
   } finally { off(); clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it("persistent metadata-only failure gets one recovery notification across successful camera saves", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+it.each(["camera", "refresh"])("persistent metadata-only failure limits notifications but retries recovery after the interval (%s)", async (via) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   const read = vi.spyOn(sceneArchive, "readStorageRecovery");
   const readMeta = sceneStore.readSceneStoreMeta;
   let fail = false;
@@ -1414,22 +1414,37 @@ it("persistent metadata-only failure gets one recovery notification across succe
     expect(stale).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(4);
     fail = false;
-    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+    // 첫 회복 알림(t=1000) 뒤 4999ms에는 아직 묶고, 5000ms부터 다시 확인한다.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+    });
+    expect(stale).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      if (via === "refresh") expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      else expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 4, y: 4 }).ok).toBe(true);
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(stale).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(5);
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
     // 최신 메타 읽기 성공 후에는 새 실패에 대한 회복 알림이 다시 가능하다.
     fail = true;
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
     fail = false;
     await act(async () => {
-      scenes.updateSceneCamera(null, "a", { z: 2, x: 4, y: 4 });
+      scenes.updateSceneCamera(null, "a", { z: 2, x: 5, y: 5 });
       await vi.advanceTimersByTimeAsync(1000);
     });
-    expect(stale).toHaveBeenCalledTimes(2);
+    expect(stale).toHaveBeenCalledTimes(3);
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
     expect(read).toHaveBeenCalledTimes(8);
   } finally { off(); meta.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it.each(["same", "content", "camera", "order", "delete", "version"])("reconnected metadata recovery only announces external changes (%s)", async (change) => {
+it.each(["same", "content", "camera", "order", "delete", "version"])("reconnected metadata recovery announces replacement even with unchanged scenes (%s)", async (change) => {
   const version = await sceneStore.readSceneStoreMeta("version", () => true);
   if (!version.ok || typeof version.value !== "number") throw Error("missing version");
   const restored = [scene("a"), scene("b")];
@@ -1444,9 +1459,40 @@ it.each(["same", "content", "camera", "order", "delete", "version"])("reconnecte
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
     expect((await read.mock.results[0].value).baseFresh).toBe(true);
-    expect(external).toHaveBeenCalledTimes(change === "same" ? 0 : 1);
+    expect(external).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(read).toHaveBeenCalledTimes(change === "same" ? 1 : 2);
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally { off(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("a mounted recovery hook sees archive-only replacement with unchanged version and scenes", async () => {
+  const version = await sceneStore.readSceneStoreMeta("version", () => true);
+  if (!version.ok) throw Error("missing version");
+  const current = sceneStore.readConfirmedBucket(bucket);
+  const archive: RestoreArchive = { id: "new-archive", createdAt: "2026-11-15", notebookId: "book", fromGeneration: "old",
+    toGeneration: "new", scenes: { [bucket]: [scene("held")] }, conflicts: [], controls: {} };
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const external = vi.fn(), off = sceneStore.subscribeSceneStoreExternal(external);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset.held).toBe("0");
+    // 연결 끊김 표시 뒤 메모리 키를 새 배치로 심는다. 판·버전은 같고 nr만 달라진다.
+    sceneStore.replaceSceneStoreForTest(null);
+    sceneStore.seedLegacyLayoutForTest({}, {
+      layout: 2, version: version.value,
+      [JSON.stringify(["o", bucket])]: current.map((s) => s.id),
+      ...Object.fromEntries(current.map((s) => [JSON.stringify(["s", bucket, s.id]), s])),
+      [sceneStore.notebookKey("nr", "local")]: [archive],
+    });
+    await act(async () => {
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(host.querySelector("i")?.dataset.held).toBe("1");
+    expect(external).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect((await read.mock.results[1].value).canvases).toEqual([archive]);
+    expect(sceneStore.readConfirmedBucket(bucket)).toEqual(current);
   } finally { off(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("pending refresh failure notifies stale once even when save failure is already reported", async () => {

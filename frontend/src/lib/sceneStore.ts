@@ -542,23 +542,25 @@ function enqueueTx<T>(run: () => Promise<T>): Promise<T> {
 /** 메타는 읽기만 한다. 비교 기준이 낡았으면 큐 밖에서 회복을 기다린 뒤 한 번 더 읽는다. */
 export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Promise<{ ok: true; value: unknown; fresh: boolean } | { ok: false; stale?: true }> {
   const read = (): ReturnType<typeof readSceneStoreMeta> => enqueueTx(async () => {
-    if (!ready) { metaReadFailure ??= "unnotified"; return { ok: false }; }
+    if (!ready) { metaReadFailed = true; return { ok: false }; }
     try {
       if (!stillCurrent()) return { ok: false, stale: true };
-      if (!(await ensureDb())) { metaReadFailure ??= "unnotified"; return { ok: false }; }
+      if (!(await ensureDb())) { metaReadFailed = true; return { ok: false }; }
       const { meta } = await readStore([K_LAYOUT, K_VERSION, key], () => false);
       if (!stillCurrent()) return { ok: false, stale: true };
       assertKnownLayout(meta);
       const fresh = !baselineStale && ((meta[K_VERSION] as number | undefined) ?? 0) === confirmedVersion;
       if (fresh) { // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
         externalReadFailed = false;
-        metaReadFailure = undefined;
+        metaReadFailed = false;
+        metaRecoveryNotifiedAt = -Infinity;
       }
       return { ok: true, value: meta[key], fresh };
-    } catch { metaReadFailure ??= "unnotified"; return { ok: false }; }
+    } catch { metaReadFailed = true; return { ok: false }; }
   });
   return read().then(async (result) => {
     // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
+    // 회복은 다른 창 알림과 같이 pending도 확정해 추가 읽기를 부를 수 있지만 다음 읽기는 fresh라 멈춘다.
     if (result.ok && !result.fresh && await refreshFromStore()) return read();
     return result;
   });
@@ -1531,8 +1533,10 @@ let channel: BroadcastChannel | null = null;
 const externalSubs = new Set<() => void>();
 const staleSubs = new Set<() => void>();
 let externalReadFailed = false;
-// 메타 읽기가 실제로 회복되기 전에는 쓰기 성공으로 재확인을 한 번만 요청한다.
-let metaReadFailure: "unnotified" | "notified" | undefined;
+// 메타 읽기만 계속 실패해도 성공한 쓰기마다 읽지 않고, 정상화 확인은 주기적으로 허용한다.
+const META_RECOVERY_NOTIFY_MS = 5_000;
+let metaReadFailed = false;
+let metaRecoveryNotifiedAt = -Infinity;
 const oldTabSubs = new Set<() => void>();
 
 /** 저장소 읽기 실패·회복 — 씬 변경 알림과 분리해 보관본의 비교 기준만 다시 확인한다. */
@@ -1546,9 +1550,10 @@ function notifySceneStoreStale(): void {
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 읽기 실패 결과를 바꾸지 않는다. */ } });
 }
 function clearExternalReadFailed(): void {
-  if (!externalReadFailed && metaReadFailure !== "unnotified") return;
+  const now = performance.now();
+  if (!externalReadFailed && (!metaReadFailed || now - metaRecoveryNotifiedAt < META_RECOVERY_NOTIFY_MS)) return;
   externalReadFailed = false;
-  if (metaReadFailure === "unnotified") metaReadFailure = "notified";
+  if (metaReadFailed) metaRecoveryNotifiedAt = now;
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 회복 결과를 바꾸지 않는다. */ } });
 }
 
@@ -1647,21 +1652,13 @@ function refreshFromStore(): Promise<boolean> {
       if (conflictsChanged) externalSubs.forEach((fn) => fn());
       return true;
     }
-    const version = (meta[K_VERSION] as number | undefined) ?? 0;
-    let changed = conflictsChanged || version !== confirmedVersion;
-    if (!changed) {
-      // 재연결 복사본은 참조가 다르므로 diff 후보의 저장 내용까지 비교한다.
-      const before = new Map(diffScenes({}, confirmed).puts);
-      const delta = diffScenes(confirmed, scenes);
-      changed = delta.deletes.length > 0 || delta.puts.some(([key, value]) => JSON.stringify(before.get(key)) !== JSON.stringify(value));
-    }
     confirmed = scenes;
     confirmedNotebookMeta = null;
-    confirmedVersion = version;
+    confirmedVersion = (meta[K_VERSION] as number | undefined) ?? 0;
     baselineStale = false;
     rebaseWorking();
     clearExternalReadFailed();
-    if (changed) externalSubs.forEach((fn) => fn());
+    externalSubs.forEach((fn) => fn());
     return true;
   });
 }
@@ -1849,7 +1846,8 @@ export function resetSceneStoreForTest(): void {
   externalSubs.clear();
   staleSubs.clear();
   externalReadFailed = false;
-  metaReadFailure = undefined;
+  metaReadFailed = false;
+  metaRecoveryNotifiedAt = -Infinity;
   db?.close();
   db = null;
   memory = null;
