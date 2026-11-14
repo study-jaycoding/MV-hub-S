@@ -11,12 +11,13 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 162개.
+제품 환경변수 163개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
 | `BACKEND` | — | `frontend/vite.config.ts` | `test_dev.bat` `tools/dev_hub.py` |
-| `CAMERA_ORIGINAL_WORKER` | — | `tools/browser_measure/camera_original.py` | `tools/browser_measure/camera_original.py` |
+| `CAMERA_ORIGINAL_WORKER` | `"1"` | `tools/browser_measure/camera_original.py` `tools/tests/test_camera_ab_check.py` | `tools/browser_measure/camera_original.py` |
+| `CAMERA_TEST_RETAINED_HOME` | — | `tools/tests/test_camera_original.py` | — |
 | `CLAUDE_CODE_SESSION_ID` | `""` | `tools/mcp_adapter/server.py` | — |
 | `CLAUDE_CONFIG_DIR` | — | `tools/mcp_adapter/local_setup.py` | — |
 | `CODEX_HOME` | — | `tools/mcp_adapter/local_setup.py` | — |
