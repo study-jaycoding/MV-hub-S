@@ -561,7 +561,7 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
     // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
     // 회복은 다른 창 알림과 같이 pending도 확정해 추가 읽기를 부를 수 있지만 다음 읽기는 fresh라 멈춘다.
     if (result.ok && !result.fresh && await refreshFromStore()) result = await read();
-    if (result.ok && !result.fresh) {
+    if (result.ok && !result.fresh && staleSubs.size) {
       scheduleMetaRecovery();
       metaReadStale = true; // 바깥 재조회 알림을 기다리되, 알림이 없으면 타이머로 확인한다.
     }
