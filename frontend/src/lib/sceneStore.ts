@@ -542,15 +542,17 @@ function enqueueTx<T>(run: () => Promise<T>): Promise<T> {
 /** 메타는 읽기만 한다. 비교 기준이 낡았으면 큐 밖에서 회복을 기다린 뒤 한 번 더 읽는다. */
 export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Promise<{ ok: true; value: unknown; fresh: boolean } | { ok: false; stale?: true }> {
   const read = (): ReturnType<typeof readSceneStoreMeta> => enqueueTx(async () => {
-    if (!ready) return { ok: false };
+    if (!ready) { externalReadFailed = true; return { ok: false }; }
     try {
       if (!stillCurrent()) return { ok: false, stale: true };
-      if (!(await ensureDb())) return { ok: false };
+      if (!(await ensureDb())) { externalReadFailed = true; return { ok: false }; }
       const { meta } = await readStore([K_LAYOUT, K_VERSION, key], () => false);
       if (!stillCurrent()) return { ok: false, stale: true };
       assertKnownLayout(meta);
-      return { ok: true, value: meta[key], fresh: !baselineStale && ((meta[K_VERSION] as number | undefined) ?? 0) === confirmedVersion };
-    } catch { return { ok: false }; }
+      const fresh = !baselineStale && ((meta[K_VERSION] as number | undefined) ?? 0) === confirmedVersion;
+      if (fresh) externalReadFailed = false; // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
+      return { ok: true, value: meta[key], fresh };
+    } catch { externalReadFailed = true; return { ok: false }; }
   });
   return read().then(async (result) => {
     // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
@@ -699,7 +701,6 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     if (notebookMeta) confirmedNotebookMeta = notebookMeta;
     confirmedVersion = liveVersion;
     baselineStale = false;
-    externalReadFailed = false;
     pending = pending.filter((op) => !batch.includes(op));
     retryDelayMs = RETRY_MIN_MS;
     if (retryTimer !== undefined) {
@@ -742,6 +743,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
     }
     for (const refusal of shapeRefusals) shapeListener?.(refusal);
     if (pending.length) scheduleFlush(); // 도중에 들어온 연산
+    clearExternalReadFailed();
     return true;
   });
 }
@@ -1528,7 +1530,7 @@ const staleSubs = new Set<() => void>();
 let externalReadFailed = false;
 const oldTabSubs = new Set<() => void>();
 
-/** 바깥 재조회 실패 — 씬 변경 알림과 분리해 보관본의 비교 기준만 다시 확인한다. */
+/** 저장소 읽기 실패·회복 — 씬 변경 알림과 분리해 보관본의 비교 기준만 다시 확인한다. */
 export function subscribeSceneStoreStale(fn: () => void): () => void {
   staleSubs.add(fn);
   return () => { staleSubs.delete(fn); };
@@ -1537,6 +1539,11 @@ function notifySceneStoreStale(): void {
   if (externalReadFailed) return;
   externalReadFailed = true;
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 읽기 실패 결과를 바꾸지 않는다. */ } });
+}
+function clearExternalReadFailed(): void {
+  if (!externalReadFailed) return;
+  externalReadFailed = false;
+  staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 회복 결과를 바꾸지 않는다. */ } });
 }
 
 /** 이 창이 한 편집이 아닌 이유로 씬이 바뀌었다(다른 창의 저장·옛 창 흡수·충돌 정리) — 목록을 다시 읽어야 한다. */
@@ -1625,12 +1632,12 @@ function refreshFromStore(): Promise<boolean> {
       notifySceneStoreStale();
       return false; // 못 읽었다(또는 알아보지 못하는 저장소다) — 지금 값을 그대로 둔다
     }
-    externalReadFailed = false;
     const { meta, scenes } = read;
     const conflicts = (meta[K_CONFLICTS] as SceneAbsorbConflict[] | undefined) ?? [];
     const conflictsChanged = conflicts.length !== conflictList.length;
     conflictList = conflicts;
     if (!scenes) {
+      clearExternalReadFailed();
       if (conflictsChanged) externalSubs.forEach((fn) => fn());
       return true;
     }
@@ -1639,6 +1646,7 @@ function refreshFromStore(): Promise<boolean> {
     confirmedVersion = (meta[K_VERSION] as number | undefined) ?? 0;
     baselineStale = false;
     rebaseWorking();
+    clearExternalReadFailed();
     externalSubs.forEach((fn) => fn());
     return true;
   });

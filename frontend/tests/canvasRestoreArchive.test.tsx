@@ -1290,8 +1290,11 @@ it("failed external refresh invalidates recovery once without focus and rearms a
       expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
       await vi.advanceTimersByTimeAsync(250);
     });
-    expect(read).toHaveBeenCalledTimes(4);
+    // 회복 알림과 실제 씬 변경 알림이 함께 왔을 때의 후속 읽기까지 포함한다.
+    expect(read).toHaveBeenCalledTimes(5);
     expect([...redundantMirrorHoldIds(recovery)]).toEqual([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(5);
   } finally { clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("failed recovery reads retain originals but stop hiding holds from the first failure", async () => {
@@ -1321,6 +1324,68 @@ it("failed recovery reads retain originals but stop hiding holds from the first 
     expect(host.textContent).toContain("보관본을 읽지 못했습니다.");
     expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
   } finally { clone.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("a fresh metadata read rearms stale notification after a same-version failure", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] }] }));
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const copy = structuredClone;
+  let failScene = false;
+  const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+    if (failScene && value?.id === "a") throw Error("scene read failed");
+    return copy(value);
+  });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    clone.mockImplementationOnce(() => { throw Error("temporary same-version failure"); });
+    await act(async () => {
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect((await read.mock.results[1].value).baseFresh).toBe(true);
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("0");
+    sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a", "changed elsewhere")]; });
+    failScene = true;
+    await act(async () => {
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("1");
+    expect(read).toHaveBeenCalledTimes(3);
+  } finally { clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["refresh", "camera"])("recovery after metadata failure clears the warning without scene changes (%s)", async (via) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] }] }));
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const copy = structuredClone;
+  let fail = false;
+  const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+    if (fail) throw Error("metadata unavailable");
+    return copy(value);
+  });
+  const notifications: sceneStore.SceneFlushInfo[] = [];
+  const off = scenes.subscribeScenesPersisted((info) => notifications.push(info));
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    fail = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+    expect(host.querySelector("i")?.getAttribute("data-failed")).toBe("true");
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("1");
+    expect(read).toHaveBeenCalledTimes(3);
+    fail = false;
+    await act(async () => {
+      if (via === "refresh") expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      else expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 3, y: 4 }).ok).toBe(true);
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(host.querySelector("i")?.getAttribute("data-failed")).toBe("false");
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("0");
+    expect(read).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(notifications).toEqual(via === "camera" ? [{ cameraOnly: true, notebookMetaOnly: false }] : []);
+  } finally { off(); clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("pending refresh failure notifies stale once even when save failure is already reported", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
