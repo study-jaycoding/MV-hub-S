@@ -53,11 +53,14 @@ export function useStorageRecovery() {
       }).catch((error) => {
         if (!alive) return;
         if (error instanceof Error && error.message === RECOVERY_ACCOUNT_CHANGED) { retryRead = true; refreshPending = true; }
-        else if (account === getAccountNamespace()) {
-          // 일시 실패일 수 있어 한 번만 다시 읽고 연속 실패는 표시한다.
-          if (++readFailures === 1) { retryRead = true; refreshPending = true; }
-          else setFailedAccount(account);
-        } else { retryRead = true; refreshPending = true; }
+        else {
+          setRecovery((previous) => previous?.baseFresh ? { ...previous, baseFresh: false } : previous);
+          if (account === getAccountNamespace()) {
+            // 일시 실패일 수 있어 한 번만 다시 읽고 연속 실패는 표시한다.
+            if (++readFailures === 1) { retryRead = true; refreshPending = true; }
+            else setFailedAccount(account);
+          } else { retryRead = true; refreshPending = true; }
+        }
       }).finally(() => {
         inFlight = undefined;
         if (alive && account !== getAccountNamespace()) refreshPending = true;

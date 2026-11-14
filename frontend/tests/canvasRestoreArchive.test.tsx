@@ -1294,6 +1294,51 @@ it("failed external refresh invalidates recovery once without focus and rearms a
     expect([...redundantMirrorHoldIds(recovery)]).toEqual([]);
   } finally { clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
+it("failed recovery reads retain originals but stop hiding holds from the first failure", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const raw = JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] }] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", raw);
+  const copy = structuredClone;
+  let fail = false;
+  const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+    if (fail) throw Error("store unavailable");
+    return copy(value);
+  });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("0");
+    sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a", "changed elsewhere")]; });
+    fail = true;
+    await act(async () => {
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("1");
+    expect(host.querySelector("i")?.getAttribute("data-failed")).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe("1");
+    expect(host.querySelector("i")?.getAttribute("data-failed")).toBe("true");
+    expect(host.textContent).toContain("보관본을 읽지 못했습니다.");
+    expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
+  } finally { clone.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("pending refresh failure notifies stale once even when save failure is already reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const stale = vi.fn(), saved = vi.fn();
+  const offStale = sceneStore.subscribeSceneStoreStale(stale), offSave = scenes.subscribeSceneSaveState(saved);
+  try {
+    sceneStore.failSceneStoreWritesForTest(true);
+    await act(async () => { expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 3, y: 4 }).ok).toBe(true); });
+    expect(sceneStore.sceneStoreLoadForTest().pending).toBe(1);
+    expect(saved).toHaveBeenLastCalledWith(true);
+    saved.mockClear();
+    expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+    expect(stale).toHaveBeenCalledTimes(1);
+    expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+    expect(stale).toHaveBeenCalledTimes(1);
+    expect(saved).not.toHaveBeenCalled();
+  } finally { sceneStore.failSceneStoreWritesForTest(false); offStale(); offSave(); vi.useRealTimers(); }
+}, 15_000);
 it.each([false, true])("reconnected recovery refreshes automatically without a read loop (failure: %s)", async (initialFailure) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] }] }));
@@ -1305,11 +1350,19 @@ it.each([false, true])("reconnected recovery refreshes automatically without a r
     if (fail && value?.id === "a") throw Error("reconnected read failed");
     return copy(value);
   });
+  const visibleCounts: number[] = [];
+  function Probe() {
+    const [recovery] = useStorageRecovery();
+    visibleCounts.push(heldRecoveryCounts(recovery).total);
+    return <i data-held={heldRecoveryCounts(recovery).total} />;
+  }
   try {
-    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    if (!initialFailure) expect((await read.mock.results[0].value).baseFresh).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(read).toHaveBeenCalledTimes(2);
     expect(host.querySelector("i")?.getAttribute("data-held")).toBe(initialFailure ? "1" : "0");
+    if (!initialFailure) expect(visibleCounts).not.toContain(1);
     if (initialFailure) {
       await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
       expect(read).toHaveBeenCalledTimes(2);
@@ -1332,7 +1385,7 @@ it("stale recovery flushes pending camera edits once and later camera saves do n
     sceneStore.failSceneStoreWritesForTest(false);
     sceneStore.replaceSceneStoreForTest({ [bucket]: [scene("a"), scene("b")] });
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
-    expect((await read.mock.results[0].value).baseFresh).toBe(false);
+    expect((await read.mock.results[0].value).baseFresh).toBe(true);
     expect(sceneStore.sceneStoreLoadForTest().pending).toBe(0);
     expect(scenes.listPersistedScenes(null).find((s) => s.id === "a")?.camera).toEqual({ z: 2, x: 3, y: 4 });
     expect(notifications).toEqual([{ cameraOnly: false, notebookMetaOnly: false }]);

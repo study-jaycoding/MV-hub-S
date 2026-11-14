@@ -129,13 +129,20 @@ it.each([1, 2])("metadata read marks a stale guard before/after reading (check %
   expect(await readSceneStoreMeta(notebookKey("nr", "local"), () => ++checks !== failAt)).toEqual({ ok: false, stale: true });
   expect(checks).toBe(failAt);
 });
-it("archive reads reject an unready or replaced invalid store and do not refresh confirmed scenes", async () => {
+it.each([3, 4])("metadata recovery rechecks the account on its second read (check %s)", async (failAt) => {
+  await joined();
+  replaceSceneStoreForTest({ [bucket]: [scene("other")] });
+  let checks = 0;
+  expect(await readSceneStoreMeta(notebookKey("nr", "local"), () => ++checks !== failAt)).toEqual({ ok: false, stale: true });
+  expect(checks).toBe(failAt);
+});
+it("archive reads reject an unready or invalid store and await recovery of a replaced store", async () => {
   expect(await readRestoreArchives("local")).toEqual({ ok: false });
   await joined();
   const confirmed = readConfirmedBucket(bucket);
   replaceSceneStoreForTest({ [bucket]: [scene("other")] });
-  expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [], fresh: false });
-  expect(readConfirmedBucket(bucket)).toEqual(confirmed);
+  expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [], fresh: true });
+  expect(readConfirmedBucket(bucket)).toEqual([scene("other")]);
   replaceSceneStoreForTest(null);
   try { expect(await readRestoreArchives("local")).toEqual({ ok: false }); }
   finally { replaceSceneStoreForTest({ [bucket]: confirmed }); }

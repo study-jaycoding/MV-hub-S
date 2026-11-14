@@ -539,9 +539,9 @@ function enqueueTx<T>(run: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** 메타는 읽기만 한다. 비교 기준이 낡았을 때만 큐 밖에서 기존 재조회를 예약한다. */
+/** 메타는 읽기만 한다. 비교 기준이 낡았으면 큐 밖에서 회복을 기다린 뒤 한 번 더 읽는다. */
 export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Promise<{ ok: true; value: unknown; fresh: boolean } | { ok: false; stale?: true }> {
-  const reading: ReturnType<typeof readSceneStoreMeta> = enqueueTx(async () => {
+  const read = (): ReturnType<typeof readSceneStoreMeta> => enqueueTx(async () => {
     if (!ready) return { ok: false };
     try {
       if (!stillCurrent()) return { ok: false, stale: true };
@@ -552,9 +552,9 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
       return { ok: true, value: meta[key], fresh: !baselineStale && ((meta[K_VERSION] as number | undefined) ?? 0) === confirmedVersion };
     } catch { return { ok: false }; }
   });
-  return reading.then((result) => {
-    // 메타 읽기의 큐를 벗어난 뒤에만 회복을 예약한다. 최신이면 밀린 편집을 건드리지 않는다.
-    if (result.ok && !result.fresh) void refreshFromStore();
+  return read().then(async (result) => {
+    // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
+    if (result.ok && !result.fresh && await refreshFromStore()) return read();
     return result;
   });
 }
@@ -1605,7 +1605,10 @@ function refreshFromStore(): Promise<boolean> {
       () => {
         conflictList = conflicts;
       },
-    );
+    ).then((ok) => {
+      if (!ok) notifySceneStoreStale();
+      return ok;
+    });
   }
   return enqueueTx(async () => {
     if (!ready) return false;
