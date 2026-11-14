@@ -205,7 +205,7 @@ function loadLedger(scope: string, strict = false): Map<string, LedgerEntry> {
 
 /** 전체 가져오기로 선택하고 로컬 확정을 확인한 씬만 현재 허브 기준으로 재개한다. */
 export async function resumeImportedMirror(scope: string, generation: string, selected: Map<string, string>): Promise<void> {
-  if (!hubFeaturesKnown()) throw new Error("허브 기능을 아직 확인하지 못했습니다");
+  if (!hubFeaturesKnown()) throw new Error("허브 기능을 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
   if (importing) throw new Error("다른 가져오기가 끝난 뒤 다시 시도해 주세요.");
   importing = true;
   try {
