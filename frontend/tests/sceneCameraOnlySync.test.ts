@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
 import {
-  applySceneOp, delaySceneStoreWritesForTest, failSceneStoreWritesForTest, markSceneWritesHanded, sceneStoreLoadForTest, setSceneLeaseGeneration, setSceneWriteGate,
+  applySceneOp, delaySceneStoreWritesForTest, failSceneStoreWritesForTest, initSceneStore, markSceneWritesHanded, sceneStoreLoadForTest, setSceneLeaseGeneration, setSceneWriteGate,
   settleSceneStoreForTest, writeSceneStoreAsOtherWindowForTest, writeScenesStore,
 } from "../src/lib/sceneStore";
 import { listPersistedScenes, pendingSceneWritesConfirmed, subscribeScenesPersisted, updateScene, updateSceneCamera, type Scene, type ScenesByProject } from "../src/lib/scenes";
@@ -337,8 +337,27 @@ describe("확정 통지의 '카메라만' 표시(cameraOnly)", () => {
     expect(saved()?.camera).toEqual(cam(2));
   });
 
+  it("N2: 느린 저장 중 입력 1,000개의 예약을 합치고 마지막 내용·카메라를 자동 저장한다", async () => {
+    delaySceneStoreWritesForTest(40);
+    const before = sceneStoreLoadForTest().txStarts;
+    updateScene(null, "s", { name: "edit 0" });
+    await Promise.resolve();
+    await Promise.resolve();
+    for (let i = 1; i <= 1000; i++) {
+      updateScene(null, "s", { name: `edit ${i}`, camera: cam(i) });
+      await Promise.resolve();
+    }
+    delaySceneStoreWritesForTest(0);
+    // 강제 settle 없이 예약된 작업이 빠지는 것까지 기다린다(빈 예약도 txStarts 에 잡힌다).
+    await vi.waitFor(() => {
+      expect([saved()?.name, saved()?.camera]).toEqual(["edit 1000", cam(1000)]);
+      expect(sceneStoreLoadForTest().pending).toBe(0);
+    }, { timeout: 6000, interval: 50 });
+    expect(sceneStoreLoadForTest().txStarts - before).toBeLessThanOrEqual(3);
+  }, 10_000);
+
   it.each([["성공으로", false], ["실패로", true]])(
-    "앞 저장이 %s 끝나도, 도는 동안 들어온 입력은 따로 재촉하지 않아도(자동 예약만으로) 저장된다",
+    "N2: 앞 저장이 %s 끝나도, 도는 동안 들어온 입력은 따로 재촉하지 않아도(자동 예약만으로) 저장된다",
     async (_name, firstFails) => {
       delaySceneStoreWritesForTest(30);
       if (firstFails) failSceneStoreWritesForTest(true);
@@ -346,18 +365,43 @@ describe("확정 통지의 '카메라만' 표시(cameraOnly)", () => {
       await Promise.resolve();
       await Promise.resolve(); // 첫 저장이 출발
       for (let i = 1; i <= 50; i++) {
-        updateScene(null, "s", { name: `edit ${i}` });
+        updateScene(null, "s", { name: `edit ${i}`, camera: cam(i) });
         await Promise.resolve();
       }
       await new Promise((resolve) => setTimeout(resolve, 200)); // 첫 저장과 기다리던 저장이 끝난다(실패 경우 둘 다 실패)
       failSceneStoreWritesForTest(false);
       delaySceneStoreWritesForTest(0);
       // settleSceneStoreForTest 를 부르지 않는다 — 그 함수는 저장을 직접 건다. 여기서는 '끝난 뒤 다음 저장'·'실패 뒤 재시도 타이머'만 본다.
-      await vi.waitFor(() => expect(saved()?.name).toBe("edit 50"), { timeout: 6000, interval: 50 });
+      await vi.waitFor(() => expect([saved()?.name, saved()?.camera]).toEqual(["edit 50", cam(50)]), { timeout: 6000, interval: 50 });
       expect(sceneStoreLoadForTest().pending).toBe(0);
+      updateScene(null, "s", { name: "after success", camera: cam(51) });
+      await vi.waitFor(() => {
+        expect([saved()?.name, saved()?.camera]).toEqual(["after success", cam(51)]);
+        expect(sceneStoreLoadForTest().pending).toBe(0);
+      }, { timeout: 6000, interval: 50 });
     },
     10_000,
   );
+
+  it("N2: ready 조기 반환 뒤에도 새 입력이 일반 저장을 다시 예약한다", async () => {
+    const before = sceneStoreLoadForTest().txStarts;
+    // 표식 쓰기 실패가 ready 를 내리기 직전에 입력을 접수한다. 예약된 일반 저장은 그 뒤 실행된다.
+    const result = await initSceneStore(() => null, null, () => {
+      expect(updateScene(null, "s", { name: "before ready failure", camera: cam(1) }).ok).toBe(true);
+      return false;
+    });
+    expect(result.kind).toBe("failed");
+    // saved()는 jsdom의 메모리 저장소를 다시 열므로, 조기 반환 확인 전에는 읽지 않는다.
+    await vi.waitFor(() => expect(sceneStoreLoadForTest()).toEqual({ txStarts: before + 1, pending: 1 }),
+      { timeout: 1000, interval: 10 });
+    expect(infos).toEqual([]);
+    expect(updateScene(null, "s", { name: "after ready failure", camera: cam(2) }).ok).toBe(true);
+    await vi.waitFor(() => {
+      expect([saved()?.name, saved()?.camera]).toEqual(["after ready failure", cam(2)]);
+      expect(sceneStoreLoadForTest().pending).toBe(0);
+    }, { timeout: 1000, interval: 10 });
+    expect(sceneStoreLoadForTest().txStarts).toBe(before + 2);
+  }, 5000);
 
   it("확정 전용·인계 연산이 섞이면 거짓", async () => {
     updateSceneCamera(null, "s", cam(2));
