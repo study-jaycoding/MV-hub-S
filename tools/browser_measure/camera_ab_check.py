@@ -13,7 +13,7 @@ import statistics
 FORMAT = "camera-ab-c-120-v1"
 CONTRACT = "26d1189607e2b6e9582cb443c0b9e4bbd3667ba5d7db738ef438c66edfb53c7c"
 N2_FORMAT = "camera-ab-n2-v1"
-N2_CONTRACT = "a239c459e3e191c9cfc5854d88b61a122ff03ec468a6ef01ba24851c995297f3"
+N2_CONTRACT = "9b70b4633eca67b5237addbaee4c480d72de50f4222febfe6b355a91bab00106"
 N2_BASE = "f97292234ac3493d2c0129b275c33dbec3c51a5a"
 N2_ROUNDS = {"ops": 10, "switch": 10}
 N2_PRODUCTS = ("frontend/src/lib/sceneStore.ts",)

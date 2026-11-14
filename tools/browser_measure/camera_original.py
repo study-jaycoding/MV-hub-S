@@ -24,6 +24,8 @@ import tarfile
 import threading
 import time
 import types
+import urllib.request
+import uuid
 from urllib.parse import unquote, urlsplit
 
 if __package__:
@@ -640,6 +642,65 @@ def smoke(work: Path) -> None:
                                    "tool": sha(Path(__file__).read_bytes())})
 
 
+def n2_open_page(base_open, current, evidence, seeded):
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    async def open_page(stack, hub, work, flag, scenes, active):
+        url = hub.url
+        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", url)
+        ab.require(current and hub is current[-1] and match and int(match[1]) <= 65535
+                   and int(match[1]) not in (5173, 8012), "seed target is not the owned loopback hub")
+        ids = [scene["id"] for scene in scenes]
+        ab.require(ids and len(ids) == len(set(ids)), "seed scene IDs must be nonempty and unique")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+        def call(path, body=None):
+            ab.require(current and hub is current[-1] and hub.url == url, "seed hub changed")
+            request = urllib.request.Request(url + "/api/scenes/" + path,
+                data=None if body is None else json.dumps(body, allow_nan=False).encode("utf-8"),
+                headers={"Content-Type": "application/json",
+                         "X-MVHub-Expect-Account": f"acct:{hub.shared.email.lower()}"},
+                method="GET" if body is None else "POST")
+            with opener.open(request, timeout=60) as response:
+                ab.require(response.status == 200, "seed request failed")
+                result = ab.loads(response.read())
+            ab.require(isinstance(result, dict), "invalid seed response")
+            return result
+
+        book = call("notebook?project_id=")
+        generation = book.get("restore_generation")
+        ab.require(book["notebook_id"] is None and isinstance(generation, str) and 1 <= len(generation) <= 200,
+                   "seed notebook must be unstarted with a restore generation")
+        token = call("writer", {"action": "claim", "browser_id": "camera-original-seed", "tab_id": "camera-original-seed"}).get("token")
+        ab.require(isinstance(token, str) and 1 <= len(token) <= 200, "seed writer claim failed")
+        try:
+            start = {"restore_generation": generation, "token": token, "attempt_id": uuid.uuid4().hex,
+                     "project_id": "", "expected_count": len(scenes), "order": ids}
+            for i in range(0, len(scenes), 200):
+                call("notebook/start", {**start, "commit": False, "upserts": [
+                    {"id": scene["id"], "name": scene["name"], "data": json.dumps(scene, allow_nan=False)}
+                    for scene in scenes[i:i + 200]]})
+            committed = call("notebook/start", {**start, "commit": True, "upserts": []})
+            notebook_id = committed.get("notebook_id")
+            ab.require(committed.get("status") == "committed" and isinstance(notebook_id, str) and notebook_id,
+                       "seed start was not committed")
+        finally:
+            ab.require(call("writer", {"action": "release", "token": token})["writer"] is None,
+                       "seed writer was not released")
+        confirmed = call("notebook?project_id=")
+        live_ids = [item["id"] for item in confirmed["items"] if item["deleted_at"] is None]
+        ab.require(confirmed["notebook_id"] == notebook_id and confirmed["restore_generation"] == generation
+                   and len(live_ids) == len(ids) and set(live_ids) == set(ids) and confirmed["order"]["ids"] == ids,
+                   "seed notebook differs from requested scenes")
+        seeded.update(notebook_id=notebook_id, restore_generation=generation, ids=ids)
+        evidence["seed"] = {"scenes": len(scenes), "cards": [len(scene["cards"]) for scene in scenes], "notebook_started": True}
+        return await base_open(stack, hub, work, flag, [], active)
+
+    return open_page
+
+
 async def worker(work: Path, row: dict, output: Path) -> None:
     meta = validate(work)
     order = json.loads((work / "order.json").read_text(encoding="utf-8"))
@@ -653,6 +714,7 @@ async def worker(work: Path, row: dict, output: Path) -> None:
         raise ValueError("H/S helpers are not fixed src_n")
     evidence = {"requests": collections.Counter(), "runtime_errors": 0, "static_errors": 0, "processes": []}
     base_env, base_hub, base_page = cn.servers.server_env, cn.Hub, rd.rm.ImgPage
+    seeded = {}
 
     def env(parent, name, port, data):
         result = base_env(clean_env(parent), name, port, data)
@@ -664,7 +726,26 @@ async def worker(work: Path, row: dict, output: Path) -> None:
     async def collect(page):
         hub = current[0]
         bucket = f"acct:{hub.shared.email.lower()}::_none"
-        stored = cn.scene_rows(await page.eval(cn.READ_STORE), bucket)
+        entries = await page.eval(cn.READ_STORE)
+        stored = cn.scene_rows(entries, bucket)
+        if meta.get("format") == ab.N2_FORMAT:
+            values = dict(entries)
+            account = f"acct:{hub.shared.email.lower()}"
+            archives = values.get(json.dumps(["nr", account], ensure_ascii=False, separators=(",", ":")), [])
+            joined = values.get(json.dumps(["nj", account], ensure_ascii=False, separators=(",", ":")))
+            stored_ids = [scene["id"] for scene in stored]
+            empty_archives = isinstance(archives, list) and all(
+                isinstance(archive, dict) and isinstance(archive.get("scenes"), dict)
+                and all(scenes == [] for scenes in archive["scenes"].values())
+                and archive.get("conflicts") == []
+                and isinstance(archive.get("controls"), dict) and not archive["controls"]
+                for archive in archives)
+            ab.require(seeded and empty_archives and isinstance(joined, dict)
+                       and joined.get("notebookId") == seeded["notebook_id"]
+                       and joined.get("restoreGeneration") == seeded["restore_generation"]
+                       and len(stored_ids) == len(seeded["ids"]) and set(stored_ids) == set(seeded["ids"]),
+                       "seeded notebook was not adopted without archived data")
+            evidence["seed"]["empty_archives"] = len(archives)
         evidence["stored_cards"] = sorted(len(sc.get("cards", [])) for sc in stored)
         evidence["observations"] = await page.eval("""(() => { const p=window.__p,g=window.__gd;
 return {raf:p?.raf?.length,draw:g?.draw?.length,tick:g?.tick?.length,cam:g?.cam?.length,
@@ -690,7 +771,11 @@ if(!g)return null;const e=g.getExtension('WEBGL_debug_renderer_info');return e?g
 
     cn.servers.server_env, cn.Hub = env, Hub
     result = {"row": row, "status": "incomplete", "evidence": evidence}
+    base_open = None
     try:
+        if meta.get("format") == ab.N2_FORMAT:
+            base_open = rd.open_page
+            rd.open_page = n2_open_page(base_open, current, evidence, seeded)
         result["measurement"] = await getattr(rd, row["mode"])(row["src"], row["flag"], row["rate"])
         expected = [2060] if row["mode"] in ("bake", "ops") else [412, 412] if row["mode"] == "switch" else [412]
         observation = evidence.get("observations", {})
@@ -706,6 +791,8 @@ if(!g)return null;const e=g.getExtension('WEBGL_debug_renderer_info');return e?g
     except Exception as exc:
         result["error_type"] = type(exc).__name__
     finally:
+        if base_open is not None:
+            rd.open_page = base_open
         result["jpeg_hashes"] = [sha(__import__("base64").b64decode(x)) for x in rd.rm.fake_jpegs()]
         result["versions"] = {"python": sys.version, **{p: importlib.import_module(p).__version__ for p in ("PIL", "websockets")}}
         save(output, result)
