@@ -557,8 +557,10 @@ type TxStep = (live: ScenesByProject, current: StoreValues) => TxStepResult;
  * 아직 확정 안 된 내 편집을 흡수가 추월하지 않는다.
  * @returns 트랜잭션이 끝났는가
  */
-function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void, fromHub = false): Promise<boolean> {
+function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void, fromHub = false, onStart?: () => void): Promise<boolean> {
   return enqueueTx(async () => {
+    onStart?.();
+    txStartsForTest += 1;
     const notebook = fromHub || hubHasFeature("scene_writer_v1");
     const stepIntent = notebook ? newSceneIntentId() : "";
     if (!ready) return false;
@@ -802,12 +804,20 @@ function scheduleFlush(): void {
   //  저장이 영영 출발하지 않았다.)
   void Promise.resolve().then(() => {
     flushScheduled = false;
-    if (pending.length) void runStoreTx();
+    if (pending.length) queuePlainFlush();
   });
 }
 
-/** 시험 전용 — 실패 뒤 대기 연산 수를 확인한다. */
-export const sceneStoreLoadForTest = (): { pending: number } => ({ pending: pending.length });
+// 자동 일반 저장의 대기 예약만 합친다. 실행 시작 때 표시를 내려, 도중의 입력은 다음 저장을 예약할 수 있게 한다.
+let plainFlushWaiting = false;
+let txStartsForTest = 0;
+/** 시험 전용 — runStoreTx 실행 시작 수(IDB 트랜잭션 수가 아님)·대기 연산 수. */
+export const sceneStoreLoadForTest = (): { txStarts: number; pending: number } => ({ txStarts: txStartsForTest, pending: pending.length });
+function queuePlainFlush(): void {
+  if (plainFlushWaiting) return;
+  plainFlushWaiting = true;
+  void runStoreTx(undefined, undefined, undefined, false, () => { plainFlushWaiting = false; });
+}
 
 const RETRY_MIN_MS = 2_000;
 const RETRY_MAX_MS = 60_000;
@@ -817,7 +827,7 @@ function scheduleRetry(): void {
   if (retryTimer !== undefined) return;
   retryTimer = setTimeout(() => {
     retryTimer = undefined;
-    if (pending.length) void runStoreTx();
+    if (pending.length) queuePlainFlush();
   }, retryDelayMs);
   retryDelayMs = Math.min(retryDelayMs * 2, RETRY_MAX_MS); // 간격을 늘린다 — 막힌 저장소를 두드리지 않는다
 }
@@ -1789,6 +1799,8 @@ export function resetSceneStoreForTest(): void {
   captureStack = [];
   captureFailed = [];
   flushScheduled = false;
+  plainFlushWaiting = false;
+  txStartsForTest = 0;
   if (retryTimer !== undefined) clearTimeout(retryTimer);
   retryTimer = undefined;
   retryDelayMs = RETRY_MIN_MS;
