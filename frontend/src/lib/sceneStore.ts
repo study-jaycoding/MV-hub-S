@@ -552,13 +552,7 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
       const fresh = !baselineStale && ((meta[K_VERSION] as number | undefined) ?? 0) === confirmedVersion;
       if (fresh) { // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
         externalReadFailed = false;
-        metaReadFailed = false;
-        metaReadStale = false;
-        metaRecoverySignalUsed = false;
-        metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
-        metaRecoveryNextAt = 0;
-        if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
-        metaRecoveryTimer = undefined;
+        resetMetaRecovery();
       }
       return { ok: true, value: meta[key], fresh };
     } catch { metaReadStale = false; scheduleMetaRecovery(); return { ok: false }; }
@@ -1556,7 +1550,19 @@ const oldTabSubs = new Set<() => void>();
 /** 저장소 읽기 실패·회복 — 씬 변경 알림과 분리해 보관본의 비교 기준만 다시 확인한다. */
 export function subscribeSceneStoreStale(fn: () => void): () => void {
   staleSubs.add(fn);
-  return () => { staleSubs.delete(fn); };
+  return () => {
+    staleSubs.delete(fn);
+    if (!staleSubs.size) resetMetaRecovery();
+  };
+}
+function resetMetaRecovery(): void {
+  metaReadFailed = false;
+  metaReadStale = false;
+  metaRecoverySignalUsed = false;
+  metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
+  metaRecoveryNextAt = 0;
+  if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
+  metaRecoveryTimer = undefined;
 }
 function notifySceneStoreStale(): void {
   if (externalReadFailed) return;
@@ -1564,6 +1570,7 @@ function notifySceneStoreStale(): void {
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 읽기 실패 결과를 바꾸지 않는다. */ } });
 }
 function scheduleMetaRecovery(): void {
+  if (!staleSubs.size) return; // 다시 구독하면 훅의 첫 읽기가 회복 필요 여부를 새로 판정한다.
   if (!metaReadFailed) {
     metaReadFailed = true;
     metaRecoveryNextAt = performance.now() + metaRecoveryDelay;
@@ -1886,13 +1893,7 @@ export function resetSceneStoreForTest(): void {
   externalSubs.clear();
   staleSubs.clear();
   externalReadFailed = false;
-  metaReadFailed = false;
-  metaReadStale = false;
-  metaRecoverySignalUsed = false;
-  metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
-  metaRecoveryNextAt = 0;
-  if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
-  metaRecoveryTimer = undefined;
+  resetMetaRecovery();
   db?.close();
   db = null;
   memory = null;

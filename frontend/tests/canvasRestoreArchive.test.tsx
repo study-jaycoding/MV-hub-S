@@ -1564,18 +1564,50 @@ it("a real metadata failure after a nonfresh read allows immediate camera recove
     expect(read).toHaveBeenCalledTimes(3);
   } finally { meta.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it("metadata recovery timer stops without subscribers", async () => {
+it("metadata recovery does not schedule without subscribers", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   try {
     const timers = vi.getTimerCount();
     const fail = vi.fn(() => { throw Error("metadata unavailable"); });
     expect(await sceneStore.readSceneStoreMeta("version", fail)).toEqual({ ok: false });
-    expect(vi.getTimerCount()).toBe(timers + 1);
+    expect(vi.getTimerCount()).toBe(timers);
     await vi.advanceTimersByTimeAsync(125_000);
     expect(vi.getTimerCount()).toBe(timers);
     expect(fail).toHaveBeenCalledTimes(1);
   } finally { vi.useRealTimers(); }
 });
+it("last metadata recovery unsubscribe clears retries while camera writes continue", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const first = vi.fn(), last = vi.fn(), external = vi.fn();
+  const offFirst = sceneStore.subscribeSceneStoreStale(first), offLast = sceneStore.subscribeSceneStoreStale(last);
+  const offExternal = sceneStore.subscribeSceneStoreExternal(external);
+  try {
+    const timers = vi.getTimerCount();
+    expect(await sceneStore.readSceneStoreMeta("version", () => { throw Error("metadata unavailable"); })).toEqual({ ok: false });
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    offFirst();
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    offLast();
+    expect(vi.getTimerCount()).toBe(timers);
+    for (let x = 1; x <= 3; x++) {
+      expect(scenes.updateSceneCamera(null, "a", { z: 2, x, y: 0 }).ok).toBe(true);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(vi.getTimerCount()).toBe(timers);
+    }
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(vi.getTimerCount()).toBe(timers);
+    expect(first).not.toHaveBeenCalled();
+    expect(last).not.toHaveBeenCalled();
+    sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a"), scene("b")]; });
+    expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+    expect(external).toHaveBeenCalledTimes(1);
+    root = createRoot(host);
+    await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(125_000); });
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+  } finally { offFirst(); offLast(); offExternal(); vi.useRealTimers(); }
+}, 15_000);
 it.each(["fresh", "reset"])("pending metadata recovery timer is cleared by %s", async (via) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   const stale = vi.fn(), off = sceneStore.subscribeSceneStoreStale(stale);
