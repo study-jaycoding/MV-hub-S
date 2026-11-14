@@ -1244,7 +1244,7 @@ it("deferred recovery rejects a changed expected account before reading archives
     expect(archives).toHaveBeenCalledWith("acct:other@test");
   } finally { archives.mockRestore(); setAccountScope(null); }
 }, 15_000);
-it("focus keeps real mirror holds after an external refresh fails, then external refresh restores freshness", async () => {
+it("failed external refresh invalidates recovery once without focus and rearms after success", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let recovery: Awaited<ReturnType<typeof readStorageRecovery>> | null = null;
   function Probe() { [recovery] = useStorageRecovery(); return null; }
@@ -1252,18 +1252,31 @@ it("focus keeps real mirror holds after an external refresh fails, then external
     generation: "new", blockedIds: ["a"], raws: {},
     originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a", name)) }], ledger: [] }],
   }));
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const copy = structuredClone;
+  let fail = false;
+  const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+    if (fail && value?.id === "a") throw Error("external read failed");
+    return copy(value);
+  });
   try {
     hold("a");
     root = createRoot(host); await act(async () => root!.render(<Probe />));
     expect([...redundantMirrorHoldIds(recovery)]).toEqual(["a"]);
     sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a", "B")]; });
-    const clone = vi.spyOn(globalThis, "structuredClone").mockImplementationOnce(() => { throw Error("external read failed"); });
-    try { expect(await sceneStore.refreshSceneStoreForTest()).toBe(false); }
-    finally { clone.mockRestore(); }
+    fail = true;
+    await act(async () => { expect(await sceneStore.refreshSceneStoreForTest()).toBe(false); });
     expect(sceneStore.readConfirmedBucket(bucket)[0].name).toBe("a");
-    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect([...redundantMirrorHoldIds(recovery)]).toEqual([]);
     expect(recovery).toMatchObject({ baseFresh: false });
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      for (let i = 0; i < 3; i++) expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    fail = false;
     hold("B");
     await act(async () => {
       expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
@@ -1271,7 +1284,69 @@ it("focus keeps real mirror holds after an external refresh fails, then external
     });
     expect(recovery).toMatchObject({ baseFresh: true });
     expect([...redundantMirrorHoldIds(recovery)]).toEqual(["a"]);
-  } finally { vi.useRealTimers(); }
+    sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a", "C")]; });
+    fail = true;
+    await act(async () => {
+      expect(await sceneStore.refreshSceneStoreForTest()).toBe(false);
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(read).toHaveBeenCalledTimes(4);
+    expect([...redundantMirrorHoldIds(recovery)]).toEqual([]);
+  } finally { clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each([false, true])("reconnected recovery refreshes automatically without a read loop (failure: %s)", async (initialFailure) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [{ scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] }] }));
+  sceneStore.replaceSceneStoreForTest({ [bucket]: [scene("a")] });
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const copy = structuredClone;
+  let fail = initialFailure;
+  const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+    if (fail && value?.id === "a") throw Error("reconnected read failed");
+    return copy(value);
+  });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("i")?.getAttribute("data-held")).toBe(initialFailure ? "1" : "0");
+    if (initialFailure) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(read).toHaveBeenCalledTimes(2);
+      fail = false;
+      await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+      expect(read).toHaveBeenCalledTimes(4);
+      expect(host.querySelector("i")?.getAttribute("data-held")).toBe("0");
+    }
+  } finally { clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("stale recovery flushes pending camera edits once and later camera saves do not reread", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const notifications: sceneStore.SceneFlushInfo[] = [];
+  const off = scenes.subscribeScenesPersisted((info) => notifications.push(info));
+  try {
+    sceneStore.failSceneStoreWritesForTest(true);
+    await act(async () => { expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 3, y: 4 }).ok).toBe(true); });
+    expect(sceneStore.sceneStoreLoadForTest().pending).toBe(1);
+    sceneStore.failSceneStoreWritesForTest(false);
+    sceneStore.replaceSceneStoreForTest({ [bucket]: [scene("a"), scene("b")] });
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect((await read.mock.results[0].value).baseFresh).toBe(false);
+    expect(sceneStore.sceneStoreLoadForTest().pending).toBe(0);
+    expect(scenes.listPersistedScenes(null).find((s) => s.id === "a")?.camera).toEqual({ z: 2, x: 3, y: 4 });
+    expect(notifications).toEqual([{ cameraOnly: false, notebookMetaOnly: false }]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        expect(scenes.updateSceneCamera(null, "a", { z: 2, x: i, y: i }).ok).toBe(true);
+        await vi.advanceTimersByTimeAsync(250);
+      });
+    }
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(notifications.slice(1)).toEqual(Array.from({ length: 5 }, () => ({ cameraOnly: true, notebookMetaOnly: false })));
+  } finally { sceneStore.failSceneStoreWritesForTest(false); off(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("recovery reads edit candidates after archives finish", async () => {
   const key = 'mvhub.editRecovery:["local","doc"]';

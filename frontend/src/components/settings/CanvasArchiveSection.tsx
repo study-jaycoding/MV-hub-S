@@ -9,7 +9,7 @@ import { hubHasFeature, subscribeHubFeatures } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestoreArchiveContent, type NotebookArchive } from "../../lib/sceneNotebook";
 import { useSceneWriter } from "../../lib/sceneWriter";
 import { useT } from "../../lib/i18n";
-import { sceneStoreReady, subscribeSceneStoreExternal } from "../../lib/sceneStore";
+import { sceneStoreReady, subscribeSceneStoreExternal, subscribeSceneStoreStale } from "../../lib/sceneStore";
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState, subscribeScenesPersisted } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
 
@@ -96,11 +96,12 @@ export function useStorageRecovery() {
       // 카메라·공책 내부 정리만 한 확정은 보관본이나 카메라를 뺀 보류 판정을 바꾸지 않는다.
       if (!cameraOnly && !notebookMetaOnly) onChange();
     }), offExternal = subscribeSceneStoreExternal(onChange);
+    const offStale = subscribeSceneStoreStale(onChange);
     const offMirror = subscribeMirrorRecovery(onChange);
     const offCard = subscribeCardRecovery(onChange);
     window.addEventListener("storage", onChange);
     window.addEventListener("focus", onChange);
-    return () => { alive = false; refresh.current = () => Promise.resolve(); clearTimeout(refreshTimer); refreshTimer = undefined; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", onChange); window.removeEventListener("focus", onChange); };
+    return () => { alive = false; refresh.current = () => Promise.resolve(); clearTimeout(refreshTimer); refreshTimer = undefined; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offStale(); offMirror(); offCard(); window.removeEventListener("storage", onChange); window.removeEventListener("focus", onChange); };
   }, [account, writer.mode, accountTick]);
   const ownRecovery = recovery?.account === account ? recovery : null, failed = failedAccount === account;
   return useMemo(() => [ownRecovery, refreshRecovery, failed] as const, [ownRecovery, refreshRecovery, failed]);
