@@ -5,7 +5,7 @@
 // 저장소가 막혔을 때 사용자가 작업을 건질 유일한 길이므로, 내보내기는 아직 확정 안 된 편집까지 싣는다.
 import { getAccountNamespace } from "./accountScope";
 import { readRestoreArchives, notebookRestoreGeneration, SCENE_WRITER_FEATURE, type NotebookArchive, type RestoreArchive } from "./sceneNotebook";
-import { hubHasFeature } from "./hubFeatures";
+import { hubHasFeature, hubFeaturesKnown } from "./hubFeatures";
 import { readEditRecoveryCandidates } from "./editDocBackup";
 import { resumeImportedMirror, type MirrorRecovery } from "./sceneBackup";
 import { downloadText } from "./download";
@@ -205,6 +205,7 @@ export function mergeArchiveBucket(local: Scene[], incoming: Scene[]): SceneBuck
 export async function importSceneArchiveText(text: string): Promise<{ added: number; recovered: number }> {
   if (!sceneStoreReady()) throw new Error("캔버스 저장소가 아직 열리지 않았습니다.");
   const dump = parseSceneArchive(text);
+  if (!hubFeaturesKnown()) throw new Error("허브 기능을 아직 확인하지 못했습니다");
   const account = getAccountNamespace(), notebook = hubHasFeature(SCENE_WRITER_FEATURE);
   const mirrorKey = `mvhub.mirrorRecovery:${account}`;
   const mirror = notebook ? null : JSON.parse(localStorage.getItem(mirrorKey) ?? "null") as MirrorRecovery | null;

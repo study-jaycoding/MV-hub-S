@@ -4,6 +4,7 @@
 // 그리고 둘 다 되풀이해도 탭이 끝없이 늘지 않아야 한다(같은 파일을 두 번·옛 창이 계속 고침).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setAccountScope } from "../src/lib/accountScope";
+import { setHubFeatures } from "../src/lib/hubFeatures";
 
 // 카드 소속의 명시적 되살리기(네트워크로 나간다) — 가져오기가 무엇을 되살리라고 하는지만 본다
 const revive = vi.hoisted(() => vi.fn());
@@ -96,6 +97,7 @@ it("허브 전 사본 내려받기는 현재 캔버스를 섞지 않고 전체 �
 });
 
 beforeEach(() => {
+  setHubFeatures([]); // 정상 설정 응답을 받은 옛 허브
   (globalThis as { localStorage?: Storage }).localStorage = storageMock();
   (globalThis as { sessionStorage?: Storage }).sessionStorage = storageMock();
   saveString(STORAGE_KEYS.activeAccount, ACCOUNT);
@@ -107,6 +109,35 @@ afterEach(() => {
 });
 
 describe("캔버스 전체 내보내기·가져오기", () => {
+  it.each([false, true])("기능 미확인이면 병합 전에 거절하고 저장소·카드 소속을 그대로 둔다 (미러 기록 %s)", async (hasMirror) => {
+    vi.resetModules();
+    const scope = await import("../src/lib/accountScope");
+    scope.setAccountScope(ACCOUNT);
+    const store = await import("../src/lib/sceneStore");
+    const scenes = await import("../src/lib/scenes");
+    const archive = await import("../src/lib/sceneArchive");
+    await store.initSceneStore(() => null, null, () => true);
+    scenes.saveScenes(null, [mk("existing")]);
+    await store.settleSceneStoreForTest();
+    const key = `mvhub.mirrorRecovery:acct:${ACCOUNT}`;
+    if (hasMirror) localStorage.setItem(key, JSON.stringify({ generation: "r1", blockedIds: [], originals: [], raws: {} }));
+    const mirrorBefore = localStorage.getItem(key);
+    const before = await store.dumpSceneStore();
+    const persistedBefore = structuredClone(scenes.listPersistedScenes(null));
+    revive.mockClear();
+    const text = JSON.stringify({ format: SCENE_ARCHIVE_FORMAT, schemaVersion: 1, buckets: {
+      [BUCKET]: [{ ...mk("back"), cards: [{ id: "c", kind: "generation", x: 0, y: 0, genIds: ["g"], genId: "g" }] }],
+    } });
+    const result = await archive.importSceneArchiveText(text).catch((error: unknown) => error);
+    expect(scenes.listPersistedScenes(null)).toEqual(persistedBefore);
+    expect(await store.dumpSceneStore()).toEqual(before);
+    expect(localStorage.getItem(key)).toBe(mirrorBefore);
+    expect(revive).not.toHaveBeenCalled();
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe("허브 기능을 아직 확인하지 못했습니다");
+    await expect(archive.importSceneArchiveText("{{")).rejects.toThrow(/JSON/);
+  });
+
   it("내보낸 파일을 빈 저장소에 가져오면 계정·씬 id 그대로 돌아온다", async () => {
     saveScenes(null, [mk("s1"), mk("s2")]);
     await settleSceneStoreForTest();
