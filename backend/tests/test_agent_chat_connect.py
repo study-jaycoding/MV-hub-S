@@ -115,8 +115,7 @@ def test_chat_allowed_only_for_ready_or_unknown_plan(monkeypatch):
         monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
         assert (claude.claude_problem(CLAUDE) is None) is ok, auth
         assert (chat.engine_problem("claude", CLAUDE) is None) is ok, auth
-    with pytest.raises(ValueError):
-        process.engine_problem("claude", CLAUDE)  # Claude 판정은 한 곳(서비스 → 상태 판정)만
+    assert not hasattr(process, "engine_problem")  # 차례 판정은 한 곳(서비스 → 엔진별 상태 판정)만
 
 
 def test_state_and_engines_never_carry_email_org_or_path(monkeypatch):

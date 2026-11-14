@@ -85,10 +85,13 @@ GUIDE = (
 
 
 def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
-    """이 엔진으로 차례를 시작해도 되나(None = 된다) — Claude 는 화면(입력칸 잠금)과 같은 상태 판정 하나, Codex 는 판·잠금·로그인."""
+    """이 엔진으로 차례를 시작해도 되나(None = 된다) — 차례마다 실행 직전에 다시 본다(이어 가기 포함).
+    Claude 는 화면(입력칸 잠금)과 같은 상태 판정 하나, Codex 는 PC 표식·판·작업 폴더·로그인(agent_chat_codex.state — 엔진 목록과 같은 판정)."""
     if engine == "claude":
         return claude.claude_problem(prefix)
-    return process.engine_problem(engine, prefix)
+    if engine == "codex":
+        return codex.state(prefix)["reason"]
+    raise ValueError(f"모르는 엔진입니다: {engine}")
 
 
 def enabled() -> bool:

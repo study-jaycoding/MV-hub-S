@@ -636,7 +636,7 @@ def test_codex_locked_until_enabled(monkeypatch, tmp_path):
     """표식이 없으면 판·로그인 확인 전에 거절한다."""
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     monkeypatch.setattr(process, "cli_version", lambda prefix: pytest.fail("잠긴 Codex 는 판 확인도 하지 않는다"))
-    assert process.engine_problem("codex", [sys.executable, str(FAKE)]) == codex.DISABLED
+    assert chat.engine_problem("codex", [sys.executable, str(FAKE)]) == codex.DISABLED
 
 
 def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):

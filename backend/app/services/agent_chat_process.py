@@ -190,15 +190,6 @@ def auth_problem(prefix: list[str]) -> str | None:
     return "구독 로그인이 아닙니다(API 키 방식은 쓰지 않습니다)" if "Logged in" in text else "로그인되어 있지 않습니다"
 
 
-def engine_problem(engine: str, prefix: list[str] | None) -> str | None:
-    """Codex 를 지금 써도 되나 — 차례마다 실행 직전에 다시 본다(이어 가기 포함). None 이면 된다.
-    Claude 는 여기서 보지 않는다 — agent_chat.engine_problem → agent_chat_claude.claude_problem(화면과 같은 상태 판정 하나)."""
-    if engine != "codex":
-        raise ValueError("Claude 판정은 agent_chat.engine_problem 으로")
-    from . import agent_chat_codex
-    return agent_chat_codex.state(prefix)["reason"]
-
-
 def _toml_literal(value: str) -> str:
     if "'" in value or "\n" in value:
         raise ValueError("MCP 실행 경로에 쓸 수 없는 글자가 있습니다.")

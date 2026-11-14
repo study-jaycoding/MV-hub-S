@@ -100,7 +100,7 @@ def test_disabled_never_checks_cli_even_for_engine_listing(isolated, monkeypatch
     monkeypatch.setattr(process, "auth_problem", lambda prefix: pytest.fail("CLI login ran while disabled"))
     monkeypatch.setattr(chat.claude, "claude_state", lambda prefix: {"state": "ready", "version": "2.1.296", "subscription": "Max"})
     monkeypatch.setattr(process, "read_install_marker", lambda: None)
-    assert process.engine_problem("codex", ["fake"]) == codex.DISABLED
+    assert chat.engine_problem("codex", ["fake"]) == codex.DISABLED
     row = next(row for row in chat.AgentChat().engines(refresh=True) if row["id"] == "codex")
     assert row["enabled"] is False and row["available"] is False and row["version"] == ""
 
@@ -109,7 +109,7 @@ def test_disabled_never_checks_cli_even_for_engine_listing(isolated, monkeypatch
 def test_changed_version_or_policy_stays_locked(isolated, monkeypatch, changes):
     codex._write("codex_enabled.json", saved(**changes))
     monkeypatch.setattr(process, "auth_problem", lambda prefix: pytest.fail("stale marker must not check login"))
-    assert "다시 연결" in process.engine_problem("codex", ["fake"])
+    assert "다시 연결" in chat.engine_problem("codex", ["fake"])
     assert codex.state(["fake"])["enabled"] is False
 
 
@@ -127,7 +127,7 @@ def test_work_instructions_block_enable_and_turn(isolated, monkeypatch, name, di
         codex.enable(MODEL)
     assert codex.marker() is None and not (isolated / "codex_pending.json").exists()
     codex._write("codex_enabled.json", saved())
-    assert "작업 폴더" in process.engine_problem("codex", ["fake"])
+    assert "작업 폴더" in chat.engine_problem("codex", ["fake"])
     assert not FakeJob.instances
 
 
@@ -150,7 +150,7 @@ def test_success_uses_panel_command_and_disable_removes_marker(isolated):
     codex.enable(MODEL)
     assert codex.marker()["policy"] == codex.CODEX_POLICY
     assert codex.state(["fake"])["enabled"] is True
-    assert process.engine_problem("codex", ["fake"]) is None
+    assert chat.engine_problem("codex", ["fake"]) is None
     job = FakeJob.instances[0]
     assert job.closed and job.cwd == isolated / "work"
     assert job.command[job.command.index("--sandbox") + 1] == "read-only"
