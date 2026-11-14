@@ -7,6 +7,7 @@
 // 창과 같다. iframe 을 새로 만들면 '앱을 다시 켠 것'이다.
 import { describeSceneMigration, exportSceneArchiveText, importSceneArchiveText } from "../src/lib/sceneArchive";
 import { bootSceneStore } from "../src/lib/sceneBoot";
+import { setHubFeatures } from "../src/lib/hubFeatures";
 import {
   confirmSceneWrite,
   createScene,
@@ -409,6 +410,7 @@ async function main() {
   );
 
   // ── 8. 전체 내보내기·가져오기 ──
+  setHubFeatures([]); // 허브 없는 로컬 계정 = '기능 없음 확인'. 표식이 없으면 가져오기가 병합 전에 거절한다
   const tExport = performance.now();
   const text = await exportSceneArchiveText();
   const exportMs = performance.now() - tExport;
