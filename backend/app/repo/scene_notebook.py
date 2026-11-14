@@ -12,7 +12,7 @@ from copy import deepcopy
 
 from .. import config
 from ..db import get_connection, register_init_hook
-from .share_commands import database_generation, require_restore_generation
+from .restore_generation import database_generation, require_restore_generation
 from .scenes_backup import MAX_SCENE_BYTES, MAX_SCENE_UPSERTS, MAX_SCENE_DELETES, MAX_SYNC_TOTAL_BYTES, _hash, _fork_copy
 from ..services.scene_writer import WriterConflict, enabled as scene_writer_enabled
 

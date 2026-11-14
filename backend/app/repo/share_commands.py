@@ -3,32 +3,11 @@ import hashlib
 import json
 
 from . import share
+from .restore_generation import RestoreGenerationConflict, database_generation, require_restore_generation  # noqa: F401 — 기존 호출자용 다시 내보내기
 
 
 def request_hash(command):
     return hashlib.sha256(json.dumps(command, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
-
-
-def database_generation(conn):
-    row = conn.execute("SELECT value FROM app_setting WHERE key='share_db_generation'").fetchone()
-    return row[0] if row else None
-
-
-class RestoreGenerationConflict(Exception):
-    def __init__(self, code):
-        self.code = code
-        super().__init__(code)
-
-
-def require_restore_generation(conn, supplied):
-    current = database_generation(conn)
-    if not isinstance(current, str) or not current or len(current) > 200:
-        raise RuntimeError('restore generation is unavailable')
-    if supplied is None:
-        raise RestoreGenerationConflict('restore_generation_required')
-    if supplied != current:
-        raise RestoreGenerationConflict('restore_generation_changed')
-    return current
 
 
 def state(conn, target_id):

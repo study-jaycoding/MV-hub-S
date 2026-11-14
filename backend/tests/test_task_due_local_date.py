@@ -22,6 +22,10 @@ from app.repo import manage
 
 BACKEND = Path(__file__).resolve().parents[1]
 _CHILD = "MVHUB_DUE_TZ_CHILD"
+if os.environ.get(_CHILD):
+    # conftest 가 CONTENT_HUB_* 를 모두 버리면 config.py 가 TZ 를 KST-9 로 되돌린다. SQLite 의 localtime 이
+    # 파이썬 CRT 와 시간대 기억을 같이 쓰지 않는 런타임(sqlite.org 공식 DLL)도 같은 시간대를 보게, 첫 사용 전에 다시 맞춘다.
+    os.environ["TZ"] = os.environ[_CHILD]
 
 
 @unittest.skipUnless(os.environ.get(_CHILD), "자식 프로세스에서만 돈다")
@@ -78,7 +82,7 @@ class DueDateLocalTodayTests(unittest.TestCase):
         for _ in range(2):
             # UTC 12시 이후엔 UTC+12(지역이 다음 날), 전엔 UTC-12(지역이 전날) — 늘 날짜가 갈린다.
             tz = "AAA-12" if datetime.now(timezone.utc).hour >= 12 else "AAA+12"
-            env = {**os.environ, "TZ": tz, "CONTENT_HUB_TZ": tz, _CHILD: "1"}
+            env = {**os.environ, "TZ": tz, "CONTENT_HUB_TZ": tz, _CHILD: tz}
             out = subprocess.run(
                 [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/" + node],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, cwd=str(BACKEND),

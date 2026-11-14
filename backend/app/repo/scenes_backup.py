@@ -15,7 +15,7 @@ from contextlib import nullcontext
 from typing import Any, Optional
 
 from ..db import get_connection
-from .share_commands import require_restore_generation
+from .restore_generation import require_restore_generation
 
 __all__ = [
     "MAX_SCENE_BYTES",

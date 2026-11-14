@@ -17,7 +17,7 @@ from ..deps import actor_id, current_account, expected_account_differs
 from ..emailnorm import norm_email
 from ..repo import scene_notebook
 from ..db import get_connection
-from ..repo.share_commands import database_generation, RestoreGenerationConflict
+from ..repo.restore_generation import database_generation, RestoreGenerationConflict
 from ..services.scene_writer import writer, enabled, WriterConflict
 
 router = APIRouter(prefix="/api/scenes", tags=["scenes"])

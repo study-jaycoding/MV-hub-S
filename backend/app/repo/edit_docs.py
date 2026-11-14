@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from ..db import get_connection
-from .share_commands import database_generation, require_restore_generation
+from .restore_generation import database_generation, require_restore_generation
 
 __all__ = ["get_edit_backup", "save_edit_backup", "restore_edit_backup"]
 MAX_EDIT_BYTES = 1024 * 1024
