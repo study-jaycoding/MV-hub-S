@@ -1123,6 +1123,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `editResolveExport.ts` | 순수 | 편집 탭의 타임라인 Resolve 보내기 — 지금 배치를 프레임 단위 계획(`mvhub.edit-timeline` v1: 클립·소리·북마크·인/아웃, 절대 시각을 한 번씩 반올림)으로 옮긴다 · 타임라인 이름. 받는 쪽은 `services/resolve_timeline.py` 의 `validate_plan` — 계획의 칸을 바꾸면 두 곳을 같이 |
 | `editArchive.ts` | 순수 | 타임라인 보관·복구 JSON 봉투·외부 파일 검사(알 수 없는 필드/대상/크기·트랙·시간 상한)·작업본/직전 파일 만들기·문서 의미 비교 |
 | `editDocBackup.ts` | 상태·IO | 성공 저장·수용한 원문 구독, 탭별 버전 기준·자동 백업·충돌 사본·재시도·계정 전환 응답 차단 |
+| `useEditDocBackup.ts` | 훅 | 로그인이 갖춰지고 `edit_doc_backup_v1` 이 오면(늦게 와도) 편집 문서 백업을 켜고, 표식이 빠지거나 계정이 바뀌면 끈다(App 이 부름) |
 | `editShare.ts` | 순수 | 편집 공유의 스냅샷(보이는 것 한 줄)·서버와 같은 검사·'ASCII 로 감싼 길이'·받은 것을 조각마다 자리 하나로(`shareLayout`)·재생용 빈 꼬리(`withTail`) |
 | `cleanFeedProtocol.ts` | 순수 | 클린 피드 전용 창의 앱 ↔ 허브 ↔ 피드 글과 규칙 — 표본(`time` 칸 — 글의 `t` 는 종류)·피드 시계(`feedClock`: 재생 = playing·moving·재동기됨이고 표본 0.5초(`HOLD_MS`) 안 — 그 사이 외삽, 넘으면 그 자리에 선다·limit 안)·표본 비교(`newerSample`)·키 길(`feedKeyRoute`)·탭 id·open 순번 · 대기 WS 주소·하위 프로토콜(`standbySocketUrl`·`STANDBY_PROTOCOL`·`isStandbyToken`) |
 | `editTimelineStore.ts` | 저장 | 편집 문서 localStorage 읽기/쓰기(접근 오류 구분·손상 원문은 `.bad`로 보존)·불확실 복원의 키별 보존·되돌리기 스택·마지막 시퀀스·화면 설정(`EditUi`) |
