@@ -481,12 +481,13 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
     await vi.advanceTimersByTimeAsync(2500); // 첫 백필 실패 → 30초 재시도가 걸린다
     expect(hub.cardPuts).toHaveLength(1);
     hub.failCards = false;
+    await vi.advanceTimersByTimeAsync(15_000); // 첫 실패 뒤 약 15~17.5초 — 카메라 변경을 기한 한참 전으로 옮겨, 기한이 미뤄지면 아래에서 잡힌다
     updateSceneCamera(null, "s", cam(2));
     await settleSceneStoreForTest();
     await vi.advanceTimersByTimeAsync(5000);
     expect(hub.cardPuts).toHaveLength(1); // 카메라만 — 훑기 예약 없음
-    await vi.advanceTimersByTimeAsync(25_000);
-    expect(hub.cardPuts).toHaveLength(2); // 걸려 있던 재시도는 기한에 돈다
+    await vi.advanceTimersByTimeAsync(10_500); // 시작 뒤 33초 = 첫 실패(≤2.5초) 뒤 30초 넘김. 카메라 변경 시점으로 미뤄졌다면(≈47.5초) 아직 1
+    expect(hub.cardPuts).toHaveLength(2); // 걸려 있던 재시도는 처음 기한에 그대로 돈다
     expect(keys(hub.cardPuts[1])).toEqual(["c1:g1"]);
     updateScene(null, "s", { cards: [{ id: "c1", kind: "generation", x: 0, y: 0, genIds: ["g1", "g2"] }] as unknown as Scene["cards"] });
     await settleSceneStoreForTest();
