@@ -1,6 +1,6 @@
 // 허브 공책 저장과 맞추기. 임대 획득·화면 흐름은 호출자가 맡는다.
 import {
-  notebookKey as key, sceneNotebookTransaction,
+  notebookKey as key, sceneNotebookTransaction, readSceneStoreMeta,
   holdNotebookWrites, newSceneIntentId,
   readSceneStoreForClose, readConfirmedTexts, readConfirmedNotebookJoin, sceneStoreHasPending,
   type SceneBase, type SceneIntent, type SceneOrderBase, type SceneOrderState,
@@ -65,14 +65,8 @@ export function notebookRestoreGeneration(account: string): string | null {
   return joined?.restoreGeneration ?? null;
 }
 export async function readRestoreArchives(account: string): Promise<{ ok: true; value: RestoreArchive[] } | { ok: false; stale?: true }> {
-  const name = key("nr", account);
-  let stale = false;
-  const result = await sceneNotebookTransaction([name], (_all, meta) => ({ changed: false, value: (meta[name] as RestoreArchive[] | undefined) ?? [] }), () => {
-    const current = account === getAccountNamespace();
-    if (!current) stale = true;
-    return current;
-  });
-  return stale ? { ok: false, stale: true } : result;
+  const result = await readSceneStoreMeta(key("nr", account), () => account === getAccountNamespace());
+  return result.ok ? { ok: true, value: (result.value as RestoreArchive[] | undefined) ?? [] } : result;
 }
 
 async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean) {

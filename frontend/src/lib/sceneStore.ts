@@ -539,6 +539,21 @@ function enqueueTx<T>(run: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** 앞선 저장 뒤의 메타만 읽는다. pending 편집·확정본·저장 알림은 건드리지 않는다. */
+export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Promise<{ ok: true; value: unknown } | { ok: false; stale?: true }> {
+  return enqueueTx(async () => {
+    if (!ready) return { ok: false };
+    try {
+      if (!stillCurrent()) return { ok: false, stale: true };
+      if (!(await ensureDb())) return { ok: false };
+      const { meta } = await readStore([K_LAYOUT, key], () => false);
+      if (!stillCurrent()) return { ok: false, stale: true };
+      assertKnownLayout(meta);
+      return { ok: true, value: meta[key] };
+    } catch { return { ok: false }; }
+  });
+}
+
 interface TxStepResult {
   /** 씬 내용을 바꿨는가. */
   changed: boolean;

@@ -135,11 +135,11 @@ async function confirmReadFailure() {
   });
 }
 it("two account round trips rejected by the archive guard retry without showing failure", async () => {
-  const transaction = sceneStore.sceneNotebookTransaction;
+  const readMeta = sceneStore.readSceneStoreMeta;
   const account = vi.spyOn(accountScope, "getAccountNamespace").mockReturnValue("local");
   const guardResults: boolean[] = [];
-  const tx = vi.spyOn(sceneStore, "sceneNotebookTransaction").mockImplementation((keys, decide, stillCurrent) =>
-    transaction(keys, decide, () => {
+  const tx = vi.spyOn(sceneStore, "readSceneStoreMeta").mockImplementation((key, stillCurrent) =>
+    readMeta(key, () => {
       if (guardResults.length >= 2) return stillCurrent!();
       account.mockReturnValue("acct:other@test");
       try {
@@ -239,6 +239,47 @@ it.each(["success", "failure"])("writer mode retains a read failure while waitin
     expect(host.querySelector("i")?.dataset.failed).toBe(String(outcome === "failure"));
   } finally { read.mockRestore(); ready.mockRestore(); writer.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
+it("archive reads with pending camera edits do not trigger another recovery read", async () => {
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const notifications: sceneStore.SceneFlushInfo[] = [];
+  const off = scenes.subscribeScenesPersisted((info) => notifications.push(info));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 3, y: 4 }).ok).toBe(true);
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(scenes.listPersistedScenes(null).find((s) => s.id === "a")?.camera).toEqual({ z: 2, x: 3, y: 4 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(notifications).toEqual([{ notebookMetaOnly: false, cameraOnly: true }]);
+  } finally { off(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("manual refresh waits for the 250ms window and then the fresh result", async () => {
+  const initial = await readStorageRecovery();
+  let finish!: (value: typeof initial) => void;
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValueOnce(initial)
+    .mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  let refresh!: () => Promise<void>;
+  function Probe() { [, refresh] = useStorageRecovery(); return null; }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    let done = false;
+    const pending = refresh().then(() => { done = true; });
+    await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(done).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(done).toBe(false);
+    await act(async () => { finish(initial); await pending; });
+    expect(done).toBe(true);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it("initial read and synchronous save notification share a window; manual refresh consumes queued notifications", async () => {
   const value = await readStorageRecovery();
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(value);
@@ -255,15 +296,15 @@ it("initial read and synchronous save notification share a window; manual refres
     expect(read).toHaveBeenCalledTimes(2);
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(100); });
     await act(async () => host.querySelector("button")!.click());
-    expect(read).toHaveBeenCalledTimes(3);
-    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
     expect(read).toHaveBeenCalledTimes(3);
     await act(async () => host.querySelector("button")!.click());
-    expect(read).toHaveBeenCalledTimes(4);
+    expect(read).toHaveBeenCalledTimes(3);
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(249); });
-    expect(read).toHaveBeenCalledTimes(4);
+    expect(read).toHaveBeenCalledTimes(3);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(read).toHaveBeenCalledTimes(5);
+    expect(read).toHaveBeenCalledTimes(4);
   } finally { subscribe.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 });
 it("recovery keeps automatic read starts at least 250ms apart with 300ms reads", async () => {
@@ -301,7 +342,7 @@ it("recovery serializes a synchronous notification inside the read", async () =>
   try {
     root = createRoot(host); await act(async () => root!.render(<Probe />));
     let pending!: Promise<void> | undefined;
-    await act(async () => { pending = refresh(); });
+    await act(async () => { pending = refresh(); await vi.advanceTimersByTimeAsync(250); });
     expect(peak).toBe(1);
     expect(read).toHaveBeenCalledTimes(2);
     expect(read).toHaveBeenLastCalledWith(initial.account);
@@ -357,6 +398,7 @@ it.each(["success", "failure", "unmount"])("manual refresh waits for the queued 
       await Promise.all([first, second]);
       expect(read).toHaveBeenCalledTimes(1);
     } else {
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
       expect(read).toHaveBeenCalledTimes(2);
       expect(completed).toBe(0);
       await act(async () => {
@@ -393,7 +435,7 @@ it.each(["success", "failure"])("manual refresh waits through the first general 
     await act(async () => reads[0].resolve(initial));
     let completed = false;
     const pending = Promise.resolve(refresh()).then(() => { completed = true; });
-    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     await act(async () => reads[1].reject(new Error("first read failed")));
     expect(completed).toBe(false);
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
@@ -429,7 +471,7 @@ it.each(["success", "failure"])("manual refresh waits through a discarded read %
     await act(async () => reads[0].resolve(initial));
     let completed = false;
     const pending = refresh().then(() => { completed = true; });
-    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     // then/catch의 계정 검사에서만 다른 계정이고 finally 전에는 원래 계정으로 돌아온다.
     account.mockReturnValueOnce("acct:other@test");
     await act(async () => {
@@ -458,7 +500,7 @@ it("manual refresh waits through an account-change discard for the replacement r
     await act(async () => reads[0].resolve(initial));
     let completed = false;
     const pending = Promise.resolve(refresh()).then(() => { completed = true; });
-    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(reads).toHaveLength(2);
     await act(async () => {
       setAccountScope("other@test");
@@ -489,7 +531,7 @@ it.each(["success", "failure"])("manual refresh survives writer mode changes unt
     await act(async () => reads[0].resolve(initial));
     let done = false;
     const result = Promise.resolve(refresh()).then(() => { done = true; });
-    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(reads).toHaveLength(2);
     writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
     await act(async () => root!.render(<Probe />));
@@ -552,7 +594,7 @@ it.each(["idle", "inflight", "unmount"])("manual refresh ends when its queued re
     ready.mockReturnValue(false);
     let done = false;
     const refreshed = Promise.resolve(refresh()).then(() => { done = true; });
-    await act(async () => { if (path === "inflight") resolves[0](initial); });
+    await act(async () => { if (path === "inflight") { resolves[0](initial); await vi.advanceTimersByTimeAsync(250); } });
     expect(done).toBe(true);
     const before = resolves.length;
     if (path === "unmount") { await act(async () => root!.unmount()); root = undefined; }
@@ -1248,6 +1290,7 @@ it("an unchanged import clears recovery read failure through the hook", async ()
     const input = host.querySelector('input[type="file"]')!;
     Object.defineProperty(input, "files", { value: [{ text: async () => "archive" }] });
     await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
     expect(importArchive).toHaveBeenCalledWith("archive");
     expect(host.textContent).toContain("파일의 캔버스가 이미 모두 있습니다");
     expect(host.textContent).not.toContain("보관본을 읽지 못했습니다.");
@@ -1392,6 +1435,7 @@ it("full import resumes the held mirror and hides the orange group without delet
   const recovery = await readStorageRecovery();
   expect(recovery.mirror?.blockedIds).toEqual([]);
   expect(recovery.mirror?.originals).toEqual([original]);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
   expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
   expect(request.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
 });

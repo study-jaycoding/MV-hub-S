@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, readRestoreArchives, joinSceneNotebook, completeNotebookMcpTask, buildSceneNotebookClose, notebookRestoreGeneration, writeNotebookProgress, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
-import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction } from "../src/lib/sceneStore";
+import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest } from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const scene = (id = "s", name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
@@ -104,6 +104,41 @@ it("generation lookup reads confirmed join without replaying pending scene opera
   const before = replays;
   for (let i = 0; i < 100; i++) expect(notebookRestoreGeneration("local")).toBe("restore-1");
   expect(replays).toBe(before);
+});
+it("archive reads follow queued metadata writes and return detached values without writing", async () => {
+  await joined();
+  const name = notebookKey("nr", "local");
+  const archive = { id: "held", notebookId: "book1", scenes: { [bucket]: [scene()] }, controls: {}, createdAt: "now", fromGeneration: "old", toGeneration: "new" };
+  const write = sceneNotebookTransaction([name], (_all, meta) => { meta[name] = [archive]; return { changed: true, value: null }; });
+  const reading = readRestoreArchives("local");
+  expect((await write).ok).toBe(true);
+  const result = await reading;
+  expect(result).toEqual({ ok: true, value: [archive] });
+  if (!result.ok) throw Error("archive read failed");
+  result.value[0].scenes[bucket][0].name = "changed outside store";
+  const starts = sceneStoreLoadForTest().txStarts;
+  failSceneStoreWritesForTest(true);
+  try {
+    expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [archive] });
+    expect(sceneStoreLoadForTest().txStarts).toBe(starts);
+  } finally { failSceneStoreWritesForTest(false); }
+});
+it.each([1, 2])("metadata read marks a stale guard before/after reading (check %s)", async (failAt) => {
+  await joined();
+  let checks = 0;
+  expect(await readSceneStoreMeta(notebookKey("nr", "local"), () => ++checks !== failAt)).toEqual({ ok: false, stale: true });
+  expect(checks).toBe(failAt);
+});
+it("archive reads reject an unready or replaced invalid store and do not refresh confirmed scenes", async () => {
+  expect(await readRestoreArchives("local")).toEqual({ ok: false });
+  await joined();
+  const confirmed = readConfirmedBucket(bucket);
+  replaceSceneStoreForTest({ [bucket]: [scene("other")] });
+  expect(await readRestoreArchives("local")).toEqual({ ok: true, value: [] });
+  expect(readConfirmedBucket(bucket)).toEqual(confirmed);
+  replaceSceneStoreForTest(null);
+  try { expect(await readRestoreArchives("local")).toEqual({ ok: false }); }
+  finally { replaceSceneStoreForTest({ [bucket]: confirmed }); }
 });
 it("clean generationless notebook adopts without archive and saves the next edit", async () => {
   await joined([scene("a"), scene("b")], null);

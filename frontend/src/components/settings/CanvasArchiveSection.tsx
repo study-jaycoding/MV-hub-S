@@ -62,7 +62,7 @@ export function useStorageRecovery() {
         inFlight = undefined;
         if (alive && account !== getAccountNamespace()) refreshPending = true;
         if (alive && !retryRead) for (const resolve of waiters) { refreshWaiters.delete(resolve); resolve(); }
-        // 같은 effect의 자동 읽기는 시작 때 건 250ms 창이 끝나야 바로 잇는다(명시적 읽기는 예외).
+        // 같은 effect의 다음 읽기는 시작 때 건 250ms 창이 끝나야 바로 잇는다.
         if (refreshPending && refreshTimer === undefined) { refreshPending = false; scheduleRead(); }
       });
       return inFlight;
@@ -87,7 +87,6 @@ export function useStorageRecovery() {
     // 같은 effect 안에서 읽기 하나씩 진행한다. 교체된 effect의 늦은 결과는 alive로 버린다.
     refresh.current = () => new Promise<void>((resolve) => {
       refreshWaiters.add(resolve);
-      clearTimeout(refreshTimer); refreshTimer = undefined; refreshPending = false;
       scheduleRead();
     });
     scheduleRead();
