@@ -636,7 +636,7 @@ it("account mismatch adopts the actual account despite continuous notifications 
     expect(read).toHaveBeenCalledTimes(reads);
   } finally { account.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it("account round trip before a queued render keeps the pending notification", async () => {
+it("account round trip before a queued render does not poll and keeps the pending notification", async () => {
   const initial = await readStorageRecovery();
   const account = vi.spyOn(accountScope, "getAccountNamespace").mockReturnValue("local");
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(initial);
@@ -647,8 +647,12 @@ it("account round trip before a queued render keeps the pending notification", a
     read.mockResolvedValue({ ...initial, edits: [{}] } as typeof initial);
     act(() => {
       account.mockReturnValue("acct:other@test");
-      window.dispatchEvent(new Event("focus"));
+      for (let i = 0; i < 3; i++) window.dispatchEvent(new Event("focus"));
+      const checks = account.mock.calls.length;
+      // 같은 React 배치 안에서 렌더를 미룬 채 계정 B로 1초를 보낸다.
       vi.advanceTimersByTime(1000);
+      expect(account).toHaveBeenCalledTimes(checks);
+      expect(read).toHaveBeenCalledTimes(1);
       account.mockReturnValue("local"); // React flushes the queued render only after this batch.
     });
     expect(read).toHaveBeenCalledTimes(1);

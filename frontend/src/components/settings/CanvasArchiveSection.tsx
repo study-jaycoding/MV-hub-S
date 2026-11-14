@@ -17,7 +17,7 @@ import { SettingsDescription } from "./SettingsDescription";
 export function useStorageRecovery() {
   const writer = useSceneWriter();
   const account = getAccountNamespace();
-  const [, updateAccount] = useReducer((value: number) => value + 1, 0);
+  const [accountTick, updateAccount] = useReducer((value: number) => value + 1, 0);
   const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
   const [failedAccount, setFailedAccount] = useState<string | null>(null);
   const refresh = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -69,16 +69,15 @@ export function useStorageRecovery() {
     };
     const scheduleRead = () => {
       if (!alive) return;
-      const accountChanged = account !== getAccountNamespace();
-      if (accountChanged) {
+      if (account !== getAccountNamespace()) {
         cancelRefresh();
+        // 렌더 전에 원래 계정으로 돌아와도 accountTick이 바뀌어 새 effect가 다시 읽는다.
         updateAccount();
-        // 렌더 전에 원래 계정으로 돌아오면 effect는 유지되므로 다음 읽기도 남긴다.
-        refreshPending = true;
+        return;
       }
       if (refreshTimer !== undefined || inFlight) { refreshPending = true; return inFlight; }
-      const result = accountChanged ? undefined : read();
-      if (!result && !accountChanged) return;
+      const result = read();
+      if (!result) return;
       refreshTimer = setTimeout(() => {
         refreshTimer = undefined;
         if (refreshPending) { refreshPending = false; scheduleRead(); }
@@ -102,7 +101,7 @@ export function useStorageRecovery() {
     window.addEventListener("storage", scheduleRead);
     window.addEventListener("focus", scheduleRead);
     return () => { alive = false; refresh.current = () => Promise.resolve(); clearTimeout(refreshTimer); refreshTimer = undefined; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
-  }, [account, writer.mode]);
+  }, [account, writer.mode, accountTick]);
   const ownRecovery = recovery?.account === account ? recovery : null, failed = failedAccount === account;
   return useMemo(() => [ownRecovery, refreshRecovery, failed] as const, [ownRecovery, refreshRecovery, failed]);
 }
@@ -123,6 +122,7 @@ export function CanvasArchiveSection({ recoveryState }: { recoveryState?: Return
   return recoveryState ? <CanvasArchiveContent recoveryState={recoveryState} /> : <StandaloneCanvasArchiveSection />;
 }
 
+// 설정 창은 접힌 제목 줄과 같은 recoveryState를 넘기고, 단독 렌더(시험·다른 화면)는 스스로 읽는다.
 function StandaloneCanvasArchiveSection() {
   const recoveryState = useStorageRecovery();
   return <CanvasArchiveContent recoveryState={recoveryState} />;

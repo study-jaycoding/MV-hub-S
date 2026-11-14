@@ -283,6 +283,7 @@ export async function resumeImportedMirror(scope: string, generation: string, se
 }
 
 // 이 탭의 판을 바꾸고 그 씬 항목만 저장한다. 쓰기 실패(용량)는 삼킨다. 범위가 바뀌었으면 아무것도 안 한다.
+// 판 장부 쓰기는 보관 알림을 보내지 않는다 — 보관 읽기는 미러 기록만 본다.
 function setLedger(scope: string, id: string, entry: LedgerEntry | null): void {
   if (ns() !== scope) return;
   if (entry && (entry.b || entry.fork)) ledger.set(id, entry);
