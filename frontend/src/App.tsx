@@ -6,7 +6,7 @@ import { prepareRegenerateSubmission, runSubmission } from "./features/generatio
 import { canFinishDraft } from "./lib/seedanceDraft";
 import { useDraftRequests } from "./lib/useDraftRequests";
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
-import { cloneElement, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { cloneElement, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
 // 씬 카드가 선택되지 않았을 때의 트레이 바인딩 refs — 렌더마다 같은 참조여야 한다(아래 trayBinding 주석).
 const EMPTY_SCENE_REFS: SceneRef[] = [];
@@ -108,8 +108,8 @@ import { useGenerationUtilityActions } from "./lib/useGenerationUtilityActions";
 import { useResolveTransferActions } from "./lib/useResolveTransferActions";
 import type { NoticeLine } from "./lib/useStateNotices";
 import { useHubAuth } from "./lib/useHubAuth";
-import { startEditDocBackup } from "./lib/editDocBackup";
-import { AGENT_CHAT_FEATURE, hubHasFeature, subscribeHubFeatures } from "./lib/hubFeatures";
+import { useEditDocBackup } from "./lib/useEditDocBackup";
+import { AGENT_CHAT_FEATURE, hubHasFeature } from "./lib/hubFeatures";
 import { buildAgentContext } from "./lib/agentChatApi";
 import type { SceneScreenHandle, ScreenHost } from "./lib/agentScreenActions";
 import { useAppToast } from "./lib/useAppToast";
@@ -499,11 +499,7 @@ export default function App() {
     setAccount,
     sharedSrv,
   } = useHubAuth();
-  const editBackupEnabled = useSyncExternalStore(subscribeHubFeatures, () => hubHasFeature("edit_doc_backup_v1"));
-  useEffect(() => {
-    if (authPending || !authReady || !hubAccount || apiPause || !editBackupEnabled) return;
-    return startEditDocBackup();
-  }, [authPending, authReady, hubAccount?.email, apiPause, editBackupEnabled]);
+  useEditDocBackup({ authPending, authReady, hubAccount, apiPause });
   // 그룹 사용 모델 정책 — (공간, 로그인 이메일, 서버)가 바뀔 때만 다시 조회. 생성 창·캔버스 모델 노드·제출 가드가 함께 읽는다.
   useEffect(() => {
     configureModelPolicy({
