@@ -33,12 +33,12 @@ export const RECOVERY_ACCOUNT_CHANGED = "계정이 바뀌어 보관본을 다시
 export async function readStorageRecovery(expected?: string): Promise<StorageRecovery> {
   const account = getAccountNamespace();
   if (expected !== undefined && expected !== account) throw new Error(RECOVERY_ACCOUNT_CHANGED);
+  const edits = readEditRecoveryCandidates(); // 현재 계정으로 읽는 자료는 await 전에 잡아 계정이 섞이지 않게 한다.
   const archives = await readRestoreArchives(account);
-  if (account !== getAccountNamespace()) throw new Error(RECOVERY_ACCOUNT_CHANGED);
   if (!archives.ok) throw new Error(archives.stale ? RECOVERY_ACCOUNT_CHANGED : "보관본을 읽지 못했습니다.");
   const mirror = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as StorageRecovery["mirror"];
   const cards = JSON.parse(localStorage.getItem(`mvhub.cardRecovery:${account}`) ?? "null") as StorageRecovery["cards"];
-  return { account, canvases: archives.value, mirror, cards, edits: readEditRecoveryCandidates() };
+  return { account, canvases: archives.value, mirror, cards, edits };
 }
 
 /** 표시에서만 제외한다. 여러 세대 중 고유 원문·장부가 하나라도 있으면 보류를 유지한다. */

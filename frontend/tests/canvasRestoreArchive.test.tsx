@@ -1244,13 +1244,43 @@ it("deferred recovery rejects a changed expected account before reading archives
     expect(archives).toHaveBeenCalledWith("acct:other@test");
   } finally { archives.mockRestore(); setAccountScope(null); }
 }, 15_000);
+it("recovery avoids the redundant account check after metadata guards", async () => {
+  const account = vi.spyOn(accountScope, "getAccountNamespace");
+  try {
+    expect((await readStorageRecovery("local")).account).toBe("local");
+    // 시작·메타 읽기 전후·편집 문서 계정 조회만(보관 후보 없는 경우).
+    expect(account).toHaveBeenCalledTimes(4);
+  } finally { account.mockRestore(); }
+});
+it("recovery keeps all parts in the captured account when it changes after the metadata guard", async () => {
+  for (const account of ["local", "acct:other@test"]) {
+    localStorage.setItem(`mvhub.mirrorRecovery:${account}`, JSON.stringify({ generation: account, blockedIds: [], originals: [] }));
+    localStorage.setItem(`mvhub.cardRecovery:${account}`, JSON.stringify({ candidates: [{ removals: [account], revives: [], backfill: [] }] }));
+    localStorage.setItem(`mvhub.editRecovery:${JSON.stringify([account, "doc"])}`, JSON.stringify({ blocked: true, originals: [{ raw: account }] }));
+  }
+  const readArchives = sceneNotebook.readRestoreArchives;
+  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockImplementation(async (account) => {
+    const result = await readArchives(account);
+    setAccountScope("other@test");
+    return result;
+  });
+  try {
+    const result = await readStorageRecovery("local");
+    expect(accountScope.getAccountNamespace()).toBe("acct:other@test");
+    expect(result).toMatchObject({
+      account: "local", canvases: [], mirror: { generation: "local" },
+      cards: { candidates: [{ removals: ["local"], revives: [], backfill: [] }] },
+      edits: [{ docKey: "doc", originals: [{ raw: "local" }] }],
+    });
+  } finally { archives.mockRestore(); setAccountScope(null); }
+});
 it.each([false, true])("recovery read distinguishes an account change from storage failure (changed: %s)", async (changed) => {
   let finish!: (value: Awaited<ReturnType<typeof readRestoreArchives>>) => void;
   const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   try {
     const result = readStorageRecovery();
     if (changed) setAccountScope("other@test");
-    finish({ ok: false });
+    finish(changed ? { ok: false, stale: true } : { ok: false });
     await expect(result).rejects.toThrow(changed ? sceneArchive.RECOVERY_ACCOUNT_CHANGED : "보관본을 읽지 못했습니다.");
   } finally { archives.mockRestore(); setAccountScope(null); }
 }, 15_000);
