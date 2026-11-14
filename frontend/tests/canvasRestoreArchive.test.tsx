@@ -1387,7 +1387,7 @@ it.each(["refresh", "camera"])("recovery after metadata failure clears the warni
     expect(notifications).toEqual(via === "camera" ? [{ cameraOnly: true, notebookMetaOnly: false }] : []);
   } finally { off(); clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
-it.each(["camera", "refresh"])("persistent metadata-only failure limits notifications but retries recovery after the interval (%s)", async (via) => {
+it.each(["camera", "refresh", "still-failed"])("persistent metadata-only failure delivers the trailing recovery without more events (%s)", async (via) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   const read = vi.spyOn(sceneArchive, "readStorageRecovery");
   const readMeta = sceneStore.readSceneStoreMeta;
@@ -1413,23 +1413,28 @@ it.each(["camera", "refresh"])("persistent metadata-only failure limits notifica
     }
     expect(stale).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(4);
-    fail = false;
-    // 첫 회복 알림(t=1000) 뒤 4999ms에는 아직 묶고, 5000ms부터 다시 확인한다.
+    fail = via === "still-failed";
+    // 첫 알림(t=1000) 뒤 4999ms의 마지막 성공은 창 끝에서 추가 이벤트 없이 전달된다.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1999);
-      expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      if (via === "refresh") expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+      else expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 4, y: 4 }).ok).toBe(true);
     });
     expect(stale).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(4);
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-      if (via === "refresh") expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
-      else expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 4, y: 4 }).ok).toBe(true);
-      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(251);
     });
     expect(stale).toHaveBeenCalledTimes(2);
     expect(read).toHaveBeenCalledTimes(5);
+    if (via === "still-failed") {
+      expect(host.querySelector("i")?.dataset.failed).toBe("true");
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(stale).toHaveBeenCalledTimes(2);
+      expect(read).toHaveBeenCalledTimes(5);
+      return;
+    }
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
     // 최신 메타 읽기 성공 후에는 새 실패에 대한 회복 알림이 다시 가능하다.
     fail = true;
@@ -1443,6 +1448,23 @@ it.each(["camera", "refresh"])("persistent metadata-only failure limits notifica
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
     expect(read).toHaveBeenCalledTimes(8);
   } finally { off(); meta.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["fresh", "reset"])("pending metadata recovery timer is cleared by %s", async (via) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const stale = vi.fn(), off = sceneStore.subscribeSceneStoreStale(stale);
+  try {
+    const timers = vi.getTimerCount();
+    expect(await sceneStore.readSceneStoreMeta("version", () => { throw Error("metadata failed"); })).toEqual({ ok: false });
+    expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+    expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+    expect(stale).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    if (via === "fresh") expect(await sceneStore.readSceneStoreMeta("version", () => true)).toMatchObject({ ok: true, fresh: true });
+    else sceneStore.resetSceneStoreForTest();
+    expect(vi.getTimerCount()).toBe(timers);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(stale).toHaveBeenCalledTimes(1);
+  } finally { off(); vi.useRealTimers(); }
 }, 15_000);
 it.each(["same", "content", "camera", "order", "delete", "version"])("reconnected metadata recovery announces replacement even with unchanged scenes (%s)", async (change) => {
   const version = await sceneStore.readSceneStoreMeta("version", () => true);

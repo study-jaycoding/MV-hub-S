@@ -554,6 +554,8 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
         externalReadFailed = false;
         metaReadFailed = false;
         metaRecoveryNotifiedAt = -Infinity;
+        if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
+        metaRecoveryTimer = undefined;
       }
       return { ok: true, value: meta[key], fresh };
     } catch { metaReadFailed = true; return { ok: false }; }
@@ -1537,6 +1539,7 @@ let externalReadFailed = false;
 const META_RECOVERY_NOTIFY_MS = 5_000;
 let metaReadFailed = false;
 let metaRecoveryNotifiedAt = -Infinity;
+let metaRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 const oldTabSubs = new Set<() => void>();
 
 /** 저장소 읽기 실패·회복 — 씬 변경 알림과 분리해 보관본의 비교 기준만 다시 확인한다. */
@@ -1551,7 +1554,20 @@ function notifySceneStoreStale(): void {
 }
 function clearExternalReadFailed(): void {
   const now = performance.now();
-  if (!externalReadFailed && (!metaReadFailed || now - metaRecoveryNotifiedAt < META_RECOVERY_NOTIFY_MS)) return;
+  if (!externalReadFailed && !metaReadFailed) return;
+  const remaining = META_RECOVERY_NOTIFY_MS - (now - metaRecoveryNotifiedAt);
+  if (!externalReadFailed && remaining > 0) {
+    // 창 안의 마지막 성공도 버리지 않고, 추가 성공이 없어도 끝에서 한 번 재확인한다.
+    if (metaRecoveryTimer === undefined) metaRecoveryTimer = setTimeout(() => {
+      metaRecoveryTimer = undefined;
+      if (!metaReadFailed) return;
+      metaRecoveryNotifiedAt = performance.now();
+      staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 다른 구독자를 막지 않는다. */ } });
+    }, remaining);
+    return;
+  }
+  if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
+  metaRecoveryTimer = undefined;
   externalReadFailed = false;
   if (metaReadFailed) metaRecoveryNotifiedAt = now;
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 회복 결과를 바꾸지 않는다. */ } });
@@ -1848,6 +1864,8 @@ export function resetSceneStoreForTest(): void {
   externalReadFailed = false;
   metaReadFailed = false;
   metaRecoveryNotifiedAt = -Infinity;
+  if (metaRecoveryTimer !== undefined) clearTimeout(metaRecoveryTimer);
+  metaRecoveryTimer = undefined;
   db?.close();
   db = null;
   memory = null;
