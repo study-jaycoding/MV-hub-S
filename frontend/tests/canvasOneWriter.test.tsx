@@ -215,6 +215,8 @@ describe("쓰기 입구 — 떠 있는 동안 원래 창은 씬을 쓰지 않는
 
   it("백업 복구가 거절되면 복구했다고 알리지 않는다", async () => {
     vi.resetModules();
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures([]); // 정상 설정 응답을 받은 옛 허브
     const store = await import("../src/lib/sceneStore");
     const data = await import("../src/lib/scenes");
     await store.initSceneStore(() => null, null, () => true);

@@ -51,6 +51,8 @@ const putBody = (c: Call) => JSON.parse(String(c.init?.body));
 let acctSeq = 0;
 async function boot(currentGeneration = true) {
   vi.resetModules(); // 모듈 상태(scope·lastPushed·타이머 플래그) 초기화
+  const { setHubFeatures } = await import("../src/lib/hubFeatures");
+  setHubFeatures([]); // 정상 설정 응답을 받은 옛 허브
   const scenes = await import("../src/lib/scenes");
   const backup = await import("../src/lib/sceneBackup");
   // 쓰기는 화면 값에 먼저 반영되고 저장소 확정은 뒤따른다. 복구 판정·미러는 **확정본**을 보므로,

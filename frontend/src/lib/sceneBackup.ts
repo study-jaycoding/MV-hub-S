@@ -28,7 +28,7 @@ import { restoreCanvasDocuments } from "../features/canvas/api";
 import { jsonFetch } from "./http";
 import { sha256Js } from "./editShare";
 import { getAccountNamespace } from "./accountScope";
-import { hubHasFeature, EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
+import { hubHasFeature, hubFeaturesKnown, waitForHubFeatures, EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
 import {
   confirmSceneWrite,
   hasPersistedSceneBucket,
@@ -205,6 +205,7 @@ function loadLedger(scope: string, strict = false): Map<string, LedgerEntry> {
 
 /** 전체 가져오기로 선택하고 로컬 확정을 확인한 씬만 현재 허브 기준으로 재개한다. */
 export async function resumeImportedMirror(scope: string, generation: string, selected: Map<string, string>): Promise<void> {
+  if (!hubFeaturesKnown()) throw new Error("허브 기능을 아직 확인하지 못했습니다");
   if (importing) throw new Error("다른 가져오기가 끝난 뒤 다시 시도해 주세요.");
   importing = true;
   try {
@@ -286,7 +287,7 @@ export function subscribeSceneBackupForked(fn: (names: string[]) => void): () =>
 
 // 다른 탭이 저장한 확정본을 받았다 — 받은 글자의 지문을 기억하고, 그 씬의 장부를 **새로 읽어** 같은 지문이면 승계한다(Codex D1).
 async function onExternalScenes(): Promise<void> {
-  if (hubHasFeature(SCENE_WRITER_FEATURE)) { schedule(); return; }
+  if (!hubFeaturesKnown() || hubHasFeature(SCENE_WRITER_FEATURE)) { schedule(); return; }
   const scope = ns();
   if (scope !== curScope) return;
   const changed: { id: string; text: string }[] = [];
@@ -320,7 +321,7 @@ async function onExternalScenes(): Promise<void> {
 
 // 다른 탭이 장부를 고쳤다(뒤늦게 온 백업 확인) — 그 값이 이 탭이 받은 내용의 지문과 같을 때만 승계한다(Codex E1).
 function onLedgerStorage(event: StorageEvent): void {
-  if (hubHasFeature(SCENE_WRITER_FEATURE)) return;
+  if (!hubFeaturesKnown() || hubHasFeature(SCENE_WRITER_FEATURE)) return;
   const scope = curScope;
   if (!scope || !event.key?.startsWith(`${LEDGER_PREFIX}${scope}:`) || !event.newValue) return;
   const id = event.key.slice(`${LEDGER_PREFIX}${scope}:`.length);
@@ -541,6 +542,7 @@ let retryForNewChange = false;
 let retryTimerGuard: RetryGuard | null = null;
 
 async function syncNow(retry?: RetryGuard): Promise<void> {
+  if (!hubFeaturesKnown()) await waitForHubFeatures();
   if (retry && !retryStillValid(retry)) return; // 타이머가 돌 때·밀렸다 실행될 때 모두 여기서 본다
   if (importing) return; // 가져오기가 끝나면 스스로 schedule() 한다 — 예약 타이머가 끼어들지 못하게
   if (syncing) {
@@ -888,7 +890,7 @@ function schedule(): void {
 
 /** DB 백업에만 있고 이 브라우저엔 없는 씬 수. 0 이면 가져올 게 없다(UI 노출 판단용). */
 export async function countBackupOnlyScenes(): Promise<number> {
-  if (hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
+  if (!hubFeaturesKnown() || hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
   const scope = enterScope();
   try {
     const r = await jsonFetch<{ items: { id: string }[] }>(`${API}?project_id=`, asAccount(scope));
@@ -903,7 +905,7 @@ export async function countBackupOnlyScenes(): Promise<number> {
 
 /** DB 백업에만 있는 씬을 이 브라우저로 가져온다. 반환 = 실제로 더한 개수. */
 export async function importFromBackup(): Promise<number> {
-  if (hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
+  if (!hubFeaturesKnown() || hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
   if (importing) return 0; // 연타 방지
   importing = true;
   try {
@@ -918,6 +920,7 @@ async function runImport(): Promise<number> {
   // 이미 시작된 sync 는 끝까지 기다린다. rerun 으로 곧바로 다음 sync 가 시작될 수 있어 반복 확인한다
   // (syncIdle 은 sync 마다 새로 만들어진다). importing=true 라 새 sync 는 더 들어오지 않는다.
   while (syncing) await syncIdle;
+  if (!hubFeaturesKnown() || hubHasFeature(SCENE_WRITER_FEATURE)) return 0;
   const scope = enterScope();
   const r = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(
     `${API}?project_id=&include_data=1`,
@@ -961,6 +964,21 @@ async function runImport(): Promise<number> {
   return added.length;
 }
 
+function advanceMirrorProvenance(scope: string, before: Map<string, string>): void {
+  try {
+    const record = readMirrorRecovery(scope);
+    if (record) {
+      const after = new Map(listPersistedSceneTexts(null).map((scene) => [scene.id, scene.text]));
+      const blocked = new Set(record.blockedIds);
+      for (const id of new Set([...before.keys(), ...after.keys()])) {
+        const prev = before.get(id), next = after.get(id);
+        if ((record.raws[id] ?? null) === (prev === undefined ? null : sha256Js(new TextEncoder().encode(prev))) && !blocked.has(id)) record.raws[id] = next === undefined ? null : sha256Js(new TextEncoder().encode(next));
+      }
+      saveMirrorRecovery(scope, record);
+    }
+  } catch { /* 출처 저장 실패는 기존 확인값을 유지해 다음 전송을 보류한다. */ }
+}
+
 // 부팅 배선 + 복구 — useSceneCoordination 이 마운트마다 호출(내부는 scope 당 1회).
 // 반환: 이번 호출로 복구가 일어났는지(호출부가 씬 목록 재읽기·알림).
 let installed = false;
@@ -975,19 +993,8 @@ export async function initSceneBackup(): Promise<boolean> {
       //  공책 동기화(내용 저장·숨김·넘기기·기존 예약·재시도)가 씬 전체 비교로 함께 싣는다. 크기 상한 표시는 그 동기화·다음 내용 확정 때 다시 센다.
       if (cameraOnly && hubHasFeature(SCENE_WRITER_FEATURE)) return;
       if (ns() === curScope) {
-        if (!hubHasFeature(SCENE_WRITER_FEATURE)) {
-          try {
-            const record = readMirrorRecovery();
-            if (record) {
-              const after = new Map(listPersistedSceneTexts(null).map((scene) => [scene.id, scene.text]));
-              const blocked = new Set(record.blockedIds);
-              for (const id of new Set([...knownText.keys(), ...after.keys()])) {
-                const before = knownText.get(id), next = after.get(id);
-                if ((record.raws[id] ?? null) === (before === undefined ? null : sha256Js(new TextEncoder().encode(before))) && !blocked.has(id)) record.raws[id] = next === undefined ? null : sha256Js(new TextEncoder().encode(next));
-              }
-              saveMirrorRecovery(ns(), record);
-            }
-          } catch { /* 출처 저장 실패는 기존 확인값을 유지해 다음 전송을 보류한다. */ }
+        if (hubFeaturesKnown() && !hubHasFeature(SCENE_WRITER_FEATURE)) {
+          advanceMirrorProvenance(ns(), knownText);
         }
         noteSeenTexts();
         recountOverLimit();
@@ -999,12 +1006,18 @@ export async function initSceneBackup(): Promise<boolean> {
     window.addEventListener("storage", onLedgerStorage); // 다른 탭이 장부를 고쳤다 — 받은 내용과 같으면 승계(1A)
     window.addEventListener("online", () => void syncNow());
   }
+  const waiting = !hubFeaturesKnown()
+    ? { scope: ns(), texts: new Map(listPersistedSceneTexts(null).map((scene) => [scene.id, scene.text])) }
+    : null;
+  if (waiting) await waitForHubFeatures();
   const scope = enterScope();
   if (hubHasFeature(SCENE_WRITER_FEATURE)) {
     const result = await syncSceneNotebook();
     schedule();
     return result.changed;
   }
+  // 기능 대기 중 확정된 정상 편집도 대기 전 지문과 이어질 때만 승계한다.
+  if (waiting?.scope === scope) advanceMirrorProvenance(scope, waiting.texts);
   const res = await ensureInit(scope);
   // 복구 여부와 무관하게 초기 reconcile 1회 — 배포 전부터 있던(수정 안 한) 씬도 미러되게(코덱스 P1).
   // 실패(미로그인 401 포함)는 30s 백오프가 이어받아 로그인 후 자연 회복된다.

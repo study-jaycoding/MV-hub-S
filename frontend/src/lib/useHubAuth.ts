@@ -12,8 +12,8 @@ import { useCustomEvent } from "./useCustomEvent";
 import { confirmLeaveUnsaved, reloadNow, setLeaving, unloadHeld, unsavedPlaces } from "./unloadGuard";
 import { loggedOutKind } from "./otherTabLogout";
 import type { Account, AuthConfig } from "../types";
-import { forgetAuthToken, getApiPause, HttpError, setApiPause, subscribeApiPause } from "./http";
-import { setHubFeatures } from "./hubFeatures";
+import { forgetAuthToken, getApiPause, HttpError, jsonFetch, setApiPause, subscribeApiPause, withRequestTimeout } from "./http";
+import { hubFeaturesKnown, setHubFeatures, subscribeHubFeatures } from "./hubFeatures";
 import { sceneWriterAccountChanged } from "./sceneWriter";
 
 const FINALIZE_ROLES_RETRY_MS = 30_000;
@@ -157,9 +157,44 @@ export function useHubAuth() {
   }, []);
 
   useEffect(() => {
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let active: AbortController | null = null;
+    let retryDelay = 5000;
+    const stopRetry = () => {
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      retryTimer = null;
+      active?.abort();
+    };
+    const offFeatures = subscribeHubFeatures(() => { if (hubFeaturesKnown()) stopRetry(); });
+    function scheduleFeatureRetry() {
+      if (stopped || hubFeaturesKnown() || retryTimer !== null || active) return;
+      retryTimer = setTimeout(() => { retryTimer = null; void retryFeatures(); }, retryDelay);
+    }
+    async function retryFeatures() {
+      if (stopped || hubFeaturesKnown()) return;
+      const controller = new AbortController();
+      active = controller;
+      try {
+        const cfg = await withRequestTimeout((signal) => {
+          const abort = () => controller.abort();
+          signal.addEventListener("abort", abort, { once: true });
+          return jsonFetch<AuthConfig>("/api/auth/config", { signal: controller.signal })
+            .finally(() => signal.removeEventListener("abort", abort));
+        }, 10000, "허브 기능 확인 시간이 초과됐습니다");
+        // 재조회는 기능만 복구한다. 이미 진행한 로그인·계정 상태를 다시 바꾸지 않는다.
+        if (!stopped && !hubFeaturesKnown() && !controller.signal.aborted) setHubFeatures(cfg.features);
+      } catch { /* 미확인 상태를 유지하고 다음 간격에 다시 확인한다. */ }
+      finally {
+        active = null;
+        retryDelay = Math.min(retryDelay * 2, 30000);
+        scheduleFeatureRetry();
+      }
+    }
     api
       .authConfig()
       .then((cfg) => {
+        if (stopped) return;
         setAuthConfig(cfg);
         setHubFeatures(cfg.features); // 허브 기능 표식 — 생성·Comfy 재전송 여부(Jay 결정 2A)
         if (cfg.auth_enabled && getAuthToken()) {
@@ -182,21 +217,18 @@ export function useHubAuth() {
         }
       })
       .catch(() => {
+        if (stopped) return;
         setAuthConfig({ auth_enabled: false, has_accounts: false });
         setAuthChecked(true);
+        scheduleFeatureRetry();
       });
-  }, []);
-
-  // 부팅 워치독 — 설정 조회(authConfig)나 토큰 검증(me)이 영영 settle 되지 않으면
-  // (서버가 TCP 만 받고 응답을 안 주는 행 상태 등) App 이 `authPending → return null` 에
-  // 갇혀 영구 백지가 된다. 10초 안에 못 끝나면 보수적 폴백으로 화면을 진행시킨다 —
-  // 늦게라도 실제 응답이 오면 상태가 그대로 갱신되므로 폴백은 일시적이다.
-  useEffect(() => {
+    // 화면은 진행시키되, 미확인을 옛 허브로 취급해 백업 미러를 열지 않는다.
     const timer = window.setTimeout(() => {
       setAuthConfig((cfg) => cfg ?? { auth_enabled: false, has_accounts: false });
       setAuthChecked(true);
+      scheduleFeatureRetry();
     }, 10000);
-    return () => window.clearTimeout(timer);
+    return () => { stopped = true; window.clearTimeout(timer); stopRetry(); offFeatures(); };
   }, []);
 
   useEffect(() => {

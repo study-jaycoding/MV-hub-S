@@ -1,6 +1,11 @@
-// 허브가 GET /api/auth/config 의 features 로 알린 기능 표식. 없거나 못 읽으면 빈 목록 — 그 기능을 쓰지 않는다.
+// 허브가 GET /api/auth/config 의 정상 응답으로 알린 기능 표식. 미확인과 확인된 빈 목록은 구분한다.
 //  request_retry_v1 = 생성·Comfy 요청을 답이 없을 때 같은 요청표로 한 번 더 보내도 되는 허브(계정 확인 + run_key 장부, Jay 결정 2A).
 let features = new Set<string>();
+let known = false;
+let resolveKnown!: () => void;
+const ready = new Promise<void>((resolve) => { resolveKnown = resolve; });
+export const hubFeaturesKnown = (): boolean => known;
+export const waitForHubFeatures = (): Promise<void> => ready;
 const listeners = new Set<() => void>();
 export function subscribeHubFeatures(fn: () => void): () => void {
   listeners.add(fn);
@@ -9,6 +14,8 @@ export function subscribeHubFeatures(fn: () => void): () => void {
 
 export function setHubFeatures(list: unknown): void {
   features = new Set(Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []);
+  known = true;
+  resolveKnown();
   listeners.forEach((fn) => fn());
 }
 
