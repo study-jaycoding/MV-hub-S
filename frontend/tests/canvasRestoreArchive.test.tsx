@@ -1387,6 +1387,68 @@ it.each(["refresh", "camera"])("recovery after metadata failure clears the warni
     expect(notifications).toEqual(via === "camera" ? [{ cameraOnly: true, notebookMetaOnly: false }] : []);
   } finally { off(); clone.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
+it("persistent metadata-only failure gets one recovery notification across successful camera saves", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const readMeta = sceneStore.readSceneStoreMeta;
+  let fail = false;
+  const meta = vi.spyOn(sceneStore, "readSceneStoreMeta").mockImplementation((key, current) => readMeta(key, () => {
+    if (fail) throw Error("metadata-only read failure");
+    return current();
+  }));
+  const stale = vi.fn(), off = sceneStore.subscribeSceneStoreStale(stale);
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    fail = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    for (let i = 1; i <= 3; i++) {
+      await act(async () => {
+        expect(scenes.updateSceneCamera(null, "a", { z: 2, x: i, y: i }).ok).toBe(true);
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(sceneStore.sceneStoreLoadForTest().pending).toBe(0);
+      expect(scenes.listPersistedScenes(null).find((s) => s.id === "a")?.camera?.x).toBe(i);
+    }
+    expect(stale).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(4);
+    fail = false;
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    // 최신 메타 읽기 성공 후에는 새 실패에 대한 회복 알림이 다시 가능하다.
+    fail = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1000); });
+    fail = false;
+    await act(async () => {
+      scenes.updateSceneCamera(null, "a", { z: 2, x: 4, y: 4 });
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(stale).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    expect(read).toHaveBeenCalledTimes(8);
+  } finally { off(); meta.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["same", "content", "camera", "order", "delete", "version"])("reconnected metadata recovery only announces external changes (%s)", async (change) => {
+  const version = await sceneStore.readSceneStoreMeta("version", () => true);
+  if (!version.ok || typeof version.value !== "number") throw Error("missing version");
+  const restored = [scene("a"), scene("b")];
+  if (change === "content") restored[0].name = "changed";
+  if (change === "camera") restored[0].camera = { z: 2, x: 3, y: 4 };
+  if (change === "order") restored.reverse();
+  if (change === "delete") restored.pop();
+  sceneStore.replaceSceneStoreForTest({ [bucket]: restored }, version.value + (change === "version" ? 1 : 0));
+  const external = vi.fn(), off = sceneStore.subscribeSceneStoreExternal(external);
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect((await read.mock.results[0].value).baseFresh).toBe(true);
+    expect(external).toHaveBeenCalledTimes(change === "same" ? 0 : 1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(change === "same" ? 1 : 2);
+  } finally { off(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it("pending refresh failure notifies stale once even when save failure is already reported", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const stale = vi.fn(), saved = vi.fn();

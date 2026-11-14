@@ -542,17 +542,20 @@ function enqueueTx<T>(run: () => Promise<T>): Promise<T> {
 /** 메타는 읽기만 한다. 비교 기준이 낡았으면 큐 밖에서 회복을 기다린 뒤 한 번 더 읽는다. */
 export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Promise<{ ok: true; value: unknown; fresh: boolean } | { ok: false; stale?: true }> {
   const read = (): ReturnType<typeof readSceneStoreMeta> => enqueueTx(async () => {
-    if (!ready) { externalReadFailed = true; return { ok: false }; }
+    if (!ready) { metaReadFailure ??= "unnotified"; return { ok: false }; }
     try {
       if (!stillCurrent()) return { ok: false, stale: true };
-      if (!(await ensureDb())) { externalReadFailed = true; return { ok: false }; }
+      if (!(await ensureDb())) { metaReadFailure ??= "unnotified"; return { ok: false }; }
       const { meta } = await readStore([K_LAYOUT, K_VERSION, key], () => false);
       if (!stillCurrent()) return { ok: false, stale: true };
       assertKnownLayout(meta);
       const fresh = !baselineStale && ((meta[K_VERSION] as number | undefined) ?? 0) === confirmedVersion;
-      if (fresh) externalReadFailed = false; // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
+      if (fresh) { // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
+        externalReadFailed = false;
+        metaReadFailure = undefined;
+      }
       return { ok: true, value: meta[key], fresh };
-    } catch { externalReadFailed = true; return { ok: false }; }
+    } catch { metaReadFailure ??= "unnotified"; return { ok: false }; }
   });
   return read().then(async (result) => {
     // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
@@ -1528,6 +1531,8 @@ let channel: BroadcastChannel | null = null;
 const externalSubs = new Set<() => void>();
 const staleSubs = new Set<() => void>();
 let externalReadFailed = false;
+// 메타 읽기가 실제로 회복되기 전에는 쓰기 성공으로 재확인을 한 번만 요청한다.
+let metaReadFailure: "unnotified" | "notified" | undefined;
 const oldTabSubs = new Set<() => void>();
 
 /** 저장소 읽기 실패·회복 — 씬 변경 알림과 분리해 보관본의 비교 기준만 다시 확인한다. */
@@ -1541,8 +1546,9 @@ function notifySceneStoreStale(): void {
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 읽기 실패 결과를 바꾸지 않는다. */ } });
 }
 function clearExternalReadFailed(): void {
-  if (!externalReadFailed) return;
+  if (!externalReadFailed && metaReadFailure !== "unnotified") return;
   externalReadFailed = false;
+  if (metaReadFailure === "unnotified") metaReadFailure = "notified";
   staleSubs.forEach((fn) => { try { fn(); } catch { /* 구독자 오류로 회복 결과를 바꾸지 않는다. */ } });
 }
 
@@ -1641,13 +1647,21 @@ function refreshFromStore(): Promise<boolean> {
       if (conflictsChanged) externalSubs.forEach((fn) => fn());
       return true;
     }
+    const version = (meta[K_VERSION] as number | undefined) ?? 0;
+    let changed = conflictsChanged || version !== confirmedVersion;
+    if (!changed) {
+      // 재연결 복사본은 참조가 다르므로 diff 후보의 저장 내용까지 비교한다.
+      const before = new Map(diffScenes({}, confirmed).puts);
+      const delta = diffScenes(confirmed, scenes);
+      changed = delta.deletes.length > 0 || delta.puts.some(([key, value]) => JSON.stringify(before.get(key)) !== JSON.stringify(value));
+    }
     confirmed = scenes;
     confirmedNotebookMeta = null;
-    confirmedVersion = (meta[K_VERSION] as number | undefined) ?? 0;
+    confirmedVersion = version;
     baselineStale = false;
     rebaseWorking();
     clearExternalReadFailed();
-    externalSubs.forEach((fn) => fn());
+    if (changed) externalSubs.forEach((fn) => fn());
     return true;
   });
 }
@@ -1835,6 +1849,7 @@ export function resetSceneStoreForTest(): void {
   externalSubs.clear();
   staleSubs.clear();
   externalReadFailed = false;
+  metaReadFailure = undefined;
   db?.close();
   db = null;
   memory = null;
