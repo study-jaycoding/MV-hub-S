@@ -126,6 +126,83 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       expect(notify).toHaveBeenCalledTimes(1);
     } finally { off(); offThrow(); }
   });
+  it.each([["resume", false], ["resume", true], ["adopt", false], ["adopt", true]] as const)("recovery comparison work follows subscribers (%s, subscribed: %s)", async (path, subscribed) => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`, raw = sceneJson("s");
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    localStorage.setItem(key, JSON.stringify({ generation: path === "resume" ? "restore-1" : "old", blockedIds: ["s"], originals: [], raws: {} }));
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    if (!subscribed) off();
+    const read = vi.spyOn(localStorage, "getItem"), parse = vi.spyOn(JSON, "parse");
+    try {
+      if (path === "resume") await backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]));
+      else await backup.initSceneBackup();
+      const recoveryReads = read.mock.calls.filter(([name]) => name === key).length;
+      const recoveryParses = parse.mock.calls.filter(([text]) => typeof text === "string" && text.includes('"blockedIds"')).length;
+      expect(recoveryReads).toBe(path === "resume" ? (subscribed ? 3 : 2) : (subscribed ? 5 : 3));
+      expect(recoveryParses).toBe(subscribed ? 3 : 1);
+      expect(notify).toHaveBeenCalledTimes(subscribed ? 1 : 0);
+      expect(backup.readMirrorRecovery()).toMatchObject({ generation: "restore-1", blockedIds: path === "resume" ? [] : ["s"] });
+    } finally { read.mockRestore(); parse.mockRestore(); off(); }
+  });
+  it("mirror provenance edits update raws without a recovery view notification", async () => {
+    const { scenes, backup, settle } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s"))]); await settle();
+    await backup.initSceneBackup();
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      const raw = sceneJson("s", "edited");
+      scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+      expect(backup.readMirrorRecovery()?.raws.s).toBe(sha256Js(new TextEncoder().encode(raw)));
+      expect(notify).not.toHaveBeenCalled();
+    } finally { off(); }
+  });
+  it.each([false, true])("an unreadable pre-write comparison still saves recovery (confirmation fails: %s)", async (confirmationFails) => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`, raw = sceneJson("s");
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    localStorage.setItem(key, JSON.stringify({ generation: "restore-1", blockedIds: ["s"], originals: [], raws: {} }));
+    const getItem = localStorage.getItem.bind(localStorage);
+    let reads = 0;
+    const read = vi.spyOn(localStorage, "getItem").mockImplementation((name) => {
+      if (name === key) {
+        reads++;
+        if (reads === 2) throw new Error("comparison unreadable");
+        if (reads === 3 && confirmationFails) throw new Error("confirmation unreadable");
+      }
+      return getItem(name);
+    });
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      const resumed = backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]));
+      if (confirmationFails) await expect(resumed).rejects.toThrow("confirmation unreadable");
+      else await expect(resumed).resolves.toBeUndefined();
+      expect(JSON.parse(getItem(key)!)).toMatchObject({ blockedIds: [], raws: { s: sha256Js(new TextEncoder().encode(raw)) } });
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(puts()).toHaveLength(0);
+    } finally { read.mockRestore(); off(); }
+  });
+  it.each([["resume", false], ["adopt", false], ["adopt", true]] as const)("a stored record with an unreadable confirmation notifies once (%s, persistent: %s)", async (path, persistent) => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`, raw = sceneJson("s");
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    if (path === "resume") localStorage.setItem(key, JSON.stringify({ generation: "restore-1", blockedIds: ["s"], originals: [], raws: {} }));
+    const setItem = localStorage.setItem.bind(localStorage), getItem = localStorage.getItem.bind(localStorage);
+    let failRead = false;
+    const write = vi.spyOn(localStorage, "setItem").mockImplementation((name, value) => { setItem(name, value); if (name === key) failRead = true; });
+    const read = vi.spyOn(localStorage, "getItem").mockImplementation((name) => {
+      if (name === key && failRead) { failRead = persistent; throw new Error("confirmation unreadable"); }
+      return getItem(name);
+    });
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      if (path === "resume") await expect(backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]))).rejects.toThrow("confirmation unreadable");
+      else await backup.initSceneBackup();
+      expect(getItem(key)).not.toBeNull();
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(puts()).toHaveLength(0);
+    } finally { read.mockRestore(); write.mockRestore(); off(); }
+  });
 
   it.each([false, true])("generation adoption notifies only its final hold state (old ledger: %s)", async (hasLedger) => {
     const { scenes, backup, settle } = await boot(false);
@@ -310,10 +387,14 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
     const scope = `acct:user${acctSeq}@test`;
     scenes.saveScenes(null, [JSON.parse(sceneJson("s", "unproven"))]); await settle();
     localStorage.setItem(`mvhub.mirrorRecovery:${scope}`, JSON.stringify({ generation: "restore-1", blockedIds: [], originals: [], raws: { s: sha256Js(new TextEncoder().encode(sceneJson("s", "confirmed"))) } }));
-    await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
-    expect(puts()).toHaveLength(0);
-    expect(backup.readMirrorRecovery()?.blockedIds).toContain("s");
-    expect(backup.readMirrorRecovery()?.originals[0].scenes[0].text).toContain("unproven");
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+      expect(puts()).toHaveLength(0);
+      expect(backup.readMirrorRecovery()?.blockedIds).toContain("s");
+      expect(backup.readMirrorRecovery()?.originals[0].scenes[0].text).toContain("unproven");
+      expect(notify).toHaveBeenCalledTimes(1);
+    } finally { off(); }
   });
 
   // 81회차 F-A-02: 다른 브라우저 프로필에서 계정을 바꾸면 옛 화면의 자동 백업이 새 계정 DB 에 쓰였다 — 모든 백업 요청에 이 탭의 계정을

@@ -31,4 +31,9 @@ describe('settings data fold summary', () => {
     recovery.canvases.push({ ...recovery.canvases[0], id: 'progress', controls: { '["ns","local"]': { id: 'start' } } });
     expect(dataFoldParts('캔버스 3개', heldRecoveryCounts(recovery).total, '서버 정상')).toEqual(['캔버스 3개', { held: 1 }, '서버 정상']);
   });
+  it('keeps the last held count alongside a read failure, even when the count is zero', () => {
+    expect(dataFoldParts('캔버스 3개', 2, '서버 정상', true)).toEqual(['캔버스 3개', { held: 2 }, { failed: true }, '서버 정상']);
+    expect(dataFoldParts('', 0, '', true)).toEqual([{ failed: true }]);
+    expect(dataFoldParts('', 0, '', false)).toEqual([]);
+  });
 });

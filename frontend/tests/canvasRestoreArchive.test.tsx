@@ -129,6 +129,33 @@ it("writer mode changes retain this account recovery through a failed read but n
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "0", failed: "false" });
   } finally { read.mockRestore(); writer.mockRestore(); }
 });
+it.each(["success", "failure"])("writer mode retains a read failure while waiting for readiness and the next %s", async (outcome) => {
+  const initial = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("initial read failed"));
+  const ready = vi.spyOn(sceneStore, "sceneStoreReady").mockReturnValue(true);
+  const writer = vi.spyOn(sceneWriter, "useSceneWriter").mockReturnValue({ mode: "disabled", handed: false, localCount: 0 });
+  let resolve!: (value: typeof initial) => void, reject!: (reason: Error) => void;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    ready.mockReturnValue(false);
+    read.mockImplementation(() => new Promise((yes, no) => { resolve = yes; reject = no; }));
+    writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
+    await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    expect(read).toHaveBeenCalledTimes(1);
+    ready.mockReturnValue(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    await act(async () => {
+      if (outcome === "success") resolve(initial);
+      else reject(new Error("next read failed"));
+    });
+    expect(host.querySelector("i")?.dataset.failed).toBe(String(outcome === "failure"));
+  } finally { read.mockRestore(); ready.mockRestore(); writer.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it("initial read and synchronous save notification share a window; manual refresh consumes queued notifications", async () => {
   const value = await readStorageRecovery();
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(value);
@@ -156,6 +183,45 @@ it("initial read and synchronous save notification share a window; manual refres
     expect(read).toHaveBeenCalledTimes(5);
   } finally { subscribe.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 });
+it.each(["success", "failure", "unmount"])("manual refresh waits for the queued read: %s", async (outcome) => {
+  const initial = await readStorageRecovery();
+  const latest = { ...initial, cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
+  const reads: { resolve: (value: typeof initial) => void; reject: (reason: Error) => void }[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  let refresh!: () => Promise<void> | undefined;
+  function RefreshProbe() {
+    const [recovery, refreshRecovery, failed] = useStorageRecovery();
+    refresh = refreshRecovery;
+    return <i data-held={heldRecoveryCounts(recovery).total} data-failed={failed} />;
+  }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<RefreshProbe />));
+    let completed = 0;
+    const first = Promise.resolve(refresh()).then(() => { completed++; });
+    const second = Promise.resolve(refresh()).then(() => { completed++; });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(completed).toBe(0);
+    if (outcome === "unmount") { await act(async () => root!.unmount()); root = undefined; }
+    await act(async () => reads[0].resolve(initial));
+    if (outcome === "unmount") {
+      await Promise.all([first, second]);
+      expect(read).toHaveBeenCalledTimes(1);
+    } else {
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(completed).toBe(0);
+      await act(async () => {
+        if (outcome === "success") reads[1].resolve(latest);
+        else reads[1].reject(new Error("fresh read failed"));
+        await Promise.all([first, second]);
+      });
+      expect(host.querySelector("i")?.dataset).toMatchObject({ held: outcome === "success" ? "1" : "0", failed: String(outcome === "failure") });
+    }
+    expect(completed).toBe(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(outcome === "unmount" ? 1 : 2);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it("account switch never renders the previous account read failure", async () => {
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("account A failed"));
   const rendered: boolean[] = [];
@@ -299,15 +365,42 @@ it.each(["persisted", "external"])("held counts follow %s scene notifications wi
     expect(offExternal).toHaveBeenCalledTimes(2);
   } finally { persisted.mockRestore(); external.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
+it("slow recovery reads run one at a time and apply progress before the queued read completes", async () => {
+  const initial = await readStorageRecovery();
+  const one = { ...initial, cards: { candidates: [{ removals: [{ id: "one" }], revives: [], backfill: [] }] } };
+  const two = { ...one, cards: { candidates: [{ removals: [{ id: "one" }, { id: "two" }], revives: [], backfill: [] }] } };
+  const resolves: ((value: typeof initial) => void)[] = [];
+  let active = 0, peak = 0;
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => {
+    peak = Math.max(peak, ++active);
+    return new Promise<typeof initial>((resolve) => resolves.push(resolve)).finally(() => { active--; });
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    for (let n = 0; n < 6; n++) await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => resolves[0](one));
+    expect(host.querySelector("i")?.dataset.held).toBe("1");
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => resolves[1](two));
+    expect(host.querySelector("i")?.dataset.held).toBe("2");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(peak).toBe(1);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it.each(["success", "failure"])("recovery ignores a stale read %s after the latest response", async (staleResult) => {
   const initial = await readStorageRecovery();
   const latest = { ...initial, cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
   const reads: { resolve: (value: typeof initial) => void; reject: (reason: Error) => void }[] = [];
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  const writer = vi.spyOn(sceneWriter, "useSceneWriter").mockReturnValue({ mode: "disabled", handed: false, localCount: 0 });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
-    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
+    writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
+    await act(async () => root!.render(<HeldProbe />));
     expect(reads).toHaveLength(2);
     await act(async () => reads[1].resolve(latest));
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "false" });
@@ -321,7 +414,7 @@ it.each(["success", "failure"])("recovery ignores a stale read %s after the late
     expect(reads).toHaveLength(3);
     await act(async () => reads[2].reject(new Error("current failure")));
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "true" });
-  } finally { read.mockRestore(); vi.useRealTimers(); }
+  } finally { read.mockRestore(); writer.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it.each(["success", "failure"])("a not-ready notification preserves the pending recovery read %s", async (result) => {
   const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };

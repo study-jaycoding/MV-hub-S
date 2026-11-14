@@ -25,21 +25,26 @@ export function useStorageRecovery() {
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     let refreshPending = false;
     let readyRetryMs = 250;
+    let inFlight: Promise<void> | undefined;
     setRecovery((previous) => previous?.account === account ? previous : null);
-    setFailedAccount(null);
+    setFailedAccount((previous) => previous === account ? previous : null);
     const read = () => {
       if (!sceneStoreReady()) { refreshPending = true; return; }
       const version = ++readVersion;
-      return readStorageRecovery().then((value) => {
+      inFlight = readStorageRecovery().then((value) => {
         if (alive && version === readVersion && account === getAccountNamespace()) {
           setRecovery(value.account === account && account === getAccountNamespace() ? value : null);
           setFailedAccount(null);
         }
-      }).catch(() => { if (alive && version === readVersion && account === getAccountNamespace()) setFailedAccount(account); });
+      }).catch(() => { if (alive && version === readVersion && account === getAccountNamespace()) setFailedAccount(account); }).finally(() => {
+        inFlight = undefined;
+        if (refreshPending && refreshTimer === undefined) { refreshPending = false; scheduleRead(); }
+      });
+      return inFlight;
     };
     const scheduleRead = () => {
       if (!alive || account !== getAccountNamespace()) return;
-      if (refreshTimer !== undefined) { refreshPending = true; return; }
+      if (refreshTimer !== undefined || inFlight) { refreshPending = true; return inFlight; }
       const result = read();
       const delay = result ? 250 : readyRetryMs;
       readyRetryMs = result ? 250 : Math.min(readyRetryMs * 2, 2000);
@@ -49,10 +54,13 @@ export function useStorageRecovery() {
       }, delay);
       return result;
     };
-    // 알림은 250ms마다 최대 한 번, 사용자의 다시 읽기는 즉시 실행하고 밀린 알림을 소비한다.
+    // 진행 중인 읽기는 끝까지 반영하고, 그사이의 알림은 다음 읽기 하나로 합친다.
     refresh.current = () => {
       clearTimeout(refreshTimer); refreshTimer = undefined; refreshPending = false;
-      return scheduleRead();
+      const previousRead = inFlight;
+      const nextRead = scheduleRead();
+      // 앞 읽기의 finally가 시작한 후속 읽기까지 기다린다.
+      return previousRead ? previousRead.then(() => inFlight) : nextRead;
     };
     scheduleRead();
     const offScene = subscribeSceneSaveState(scheduleRead), offEdit = subscribeEditBackup(scheduleRead), offFeatures = subscribeHubFeatures(scheduleRead);

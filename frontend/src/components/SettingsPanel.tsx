@@ -85,8 +85,8 @@ export function dataFoldSummary(history: HistoryImportStatus | null, progress: s
 }
 
 /** 자료 관리 접힌 줄 조각 — '복원 보류 N'(주황)은 시안 2판 자리인 백업 세트 뒤·서버 상태 앞. 보류 0 이면 뺀다. */
-export function dataFoldParts(lead: string, held: number, shared: string): (string | { held: number })[] {
-  return [lead, held > 0 ? { held } : "", shared].filter((part) => part !== "");
+export function dataFoldParts(lead: string, held: number, shared: string, failed = false): (string | { held: number } | { failed: boolean })[] {
+  return [lead, held > 0 ? { held } : "", failed ? { failed: true } : "", shared].filter((part) => part !== "");
 }
 
 export function SettingsPanel({
@@ -99,7 +99,7 @@ export function SettingsPanel({
   onOpenMcp?: () => void;
 }) {
   const t = useT();
-  const [heldRecovery] = useStorageRecovery(); // 접힌 '자료 관리' 줄의 '복원 보류 N' — 펼친 칸과 같은 기록·같은 셈
+  const [heldRecovery, , recoveryFailed] = useStorageRecovery(); // 접힌 줄도 같은 기록·실패 상태를 보여 준다.
   const [accent, setAccent] = useState(loadAccent());
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
@@ -622,9 +622,9 @@ export function SettingsPanel({
     backupSummary(backupContinuity),
   ]);
   const sharedText = sharedBackup ? `${t("서버")} ${BACKUP_STATE_LABELS[sharedBackup.state] || sharedBackup.state}` : "";
-  const dataSummary = <>{dataFoldParts(dataLead, heldRecoveryCounts(heldRecovery).total, sharedText).map((part, i) => (
+  const dataSummary = <>{dataFoldParts(dataLead, heldRecoveryCounts(heldRecovery).total, sharedText, recoveryFailed).map((part, i) => (
     <span key={i}>{i ? " · " : ""}{typeof part === "string" ? part
-      : <b style={{ color: "var(--warning, #c86f20)" }}>{t("복원 보류 {n}").replace("{n}", String(part.held))}</b>}</span>
+      : <b style={{ color: "var(--warning, #c86f20)" }}>{"held" in part ? t("복원 보류 {n}").replace("{n}", String(part.held)) : t("보관본 읽기 실패")}</b>}</span>
   ))}</>;
   const resolveSummary = resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.message || "";
 
