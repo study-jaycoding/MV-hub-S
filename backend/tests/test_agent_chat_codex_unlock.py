@@ -18,6 +18,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 FAKE = Path(__file__).with_name("agent_chat_fake_cli.py")
 VERSION = "0.162.0-alpha.17.2"
 MODEL = "gpt-6.1-sol"
+REAL_WORK_PROBLEM = codex.work_problem  # 작업 폴더 검사 시험만 실제 함수를 쓴다(나머지는 임시 폴더의 실제 위 폴더를 읽지 않게)
 
 
 def saved(**changes):
@@ -84,6 +85,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "JobProcess", FakeJob)
     monkeypatch.setenv("FAKE_AGENT_SCENARIO", "codex_probe_ok")
     monkeypatch.setattr(codex, "REAP_RETRY_SECONDS", 0.005)
+    monkeypatch.setattr(codex, "work_problem", lambda: None)
     FakeJob.instances = []
     return config.AGENT_CHAT_DIR
 
@@ -115,7 +117,8 @@ def test_changed_version_or_policy_stays_locked(isolated, monkeypatch, changes):
     ("AGENTS.md", False, False), ("AGENTS.override.md", False, False), (".codex", True, False),
     (".git", True, False), (".git", False, False), (".git", True, True), (".git", False, True),
 ])
-def test_work_instructions_block_enable_and_turn(isolated, name, directory, parent):
+def test_work_instructions_block_enable_and_turn(isolated, monkeypatch, name, directory, parent):
+    monkeypatch.setattr(codex, "work_problem", REAL_WORK_PROBLEM)
     work = isolated / "work"
     work.mkdir(parents=True)
     target = (isolated if parent else work) / name

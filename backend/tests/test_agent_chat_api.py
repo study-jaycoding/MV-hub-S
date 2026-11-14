@@ -42,6 +42,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "cli_version", lambda prefix: "2.1.296" if "--fake-engine=claude" in prefix else "0.162.0-alpha.17.2")
     codex._write("codex_enabled.json", {"version": "0.162.0-alpha.17.2", "policy": codex.CODEX_POLICY,
                                         "at": "2026-11-14T00:00:00+00:00"})
+    monkeypatch.setattr(codex, "work_problem", lambda: None)  # 임시 폴더의 실제 위 폴더(.git)를 읽지 않게 — 검사 자체는 unlock 시험
     service = chat.AgentChat()
     monkeypatch.setattr(chat, "service", service)
     monkeypatch.setattr(router, "service", service)

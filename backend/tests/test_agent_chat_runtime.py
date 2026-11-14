@@ -44,6 +44,7 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "engine_prefix", lambda engine: [sys.executable, str(FAKE), f"--fake-engine={engine}"])
     codex._write("codex_enabled.json", {"version": "0.162.0-alpha.17.2", "policy": codex.CODEX_POLICY,
                                         "at": "2026-11-14T00:00:00+00:00"})
+    monkeypatch.setattr(codex, "work_problem", lambda: None)  # 임시 폴더의 실제 위 폴더(.git)를 읽지 않게 — 검사 자체는 unlock 시험
     monkeypatch.setenv("FAKE_AGENT_PIDFILE", str(tmp_path / "grandchild.pid"))
     service = chat.AgentChat()
     identity = chat.Identity("a" * 32, str(tmp_path / "hub.db"), "jay@example.test")
@@ -642,6 +643,7 @@ def test_engine_problem_checks_login_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
     codex._write("codex_enabled.json", {"version": "0.162.0-alpha.17.2", "policy": codex.CODEX_POLICY,
                                         "at": "2026-11-14T00:00:00+00:00"})
+    monkeypatch.setattr(codex, "work_problem", lambda: None)
     monkeypatch.setattr(config, "AGENT_CHAT_CLAUDE_DIR", tmp_path / "claude")
     for auth, expected in (("subscription", None), ("api_key", "구독 로그인이 아"), ("none", "로그인되어 있지 않")):
         monkeypatch.setenv("FAKE_AGENT_AUTH", auth)
