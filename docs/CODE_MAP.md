@@ -12,7 +12,7 @@ updated: 2026-11-14
 
 # CODE_MAP — 파일 단위 코드 지도
 
-복원 세대 보호(1C-1): `backend/app/repo/share_commands.py`의 공통 검사 → `scene_notebook.py`·`scenes_backup.py`·`scene_cards.py`·`edit_docs.py`의 트랜잭션, `backend/app/routers/scenes.py`·`edit_docs.py`의 요청·응답 계약. `backend/tests/test_restore_generation.py`가 일곱 쓰기 입구·읽기 일관성·격리 복원·동시성을 검증한다.
+복원 세대 보호(1C-1): `backend/app/repo/restore_generation.py`의 공통 검사(다른 repo 를 import 하지 않는 잎 — `share_commands.py`가 다시 내보냄, import 순환 방지) → `scene_notebook.py`·`scenes_backup.py`·`scene_cards.py`·`edit_docs.py`의 트랜잭션, `backend/app/routers/scenes.py`·`edit_docs.py`의 요청·응답 계약. `backend/tests/test_restore_generation.py`가 일곱 쓰기 입구·읽기 일관성·격리 복원·동시성을 검증한다.
 
 브라우저 보존·재개: `frontend/src/lib/sceneNotebook.ts`(공책 원자 보관·채택), `sceneBackup.ts`(미러 원문·장부와 명시적 가져오기 재개), `sceneCardLinks.ts`(옛 카드 의도 격리), `editDocBackup.ts`·`useEditDoc.ts`(편집 보류·재개), `sceneArchive.ts`(계정별 보관본 모음·내보내기). 화면은 `CanvasArchiveSection.tsx`·`EditBackupPanel.tsx`, 새 보관·계정 표시 시험은 `frontend/tests/canvasRestoreArchive.test.tsx`다. [계약 정본](status/저장통합_1C_복원세대_2026-11-13.md).
 
