@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 163개.
+제품 환경변수 166개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -149,6 +149,8 @@
 | `CONTENT_HUB_WORKER_NAME` | `"나"` | `backend/app/config.py` | — |
 | `DEV` | — | `frontend/src/lib/sceneStore.ts` | — |
 | `HOME` | `None` | `tools/server_console/main.py` | `MV_console.bat` |
+| `HTTPS_PROXY` | `"http://127.0.0.1:1"` | `tools/tests/test_camera_original.py` | — |
+| `HTTP_PROXY` | `"http://127.0.0.1:1"` | `tools/tests/test_camera_original.py` | — |
 | `MVHUB_ACTIVATION_CONTROL` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` `run_agent_session.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_ACTIVATION_ROOT` | `""` `''` | `backend/app/services/release_update.py` `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
 | `MVHUB_APP_BROWSER` | `""` | `run_agent_session.py` | — |
@@ -168,6 +170,7 @@
 | `MVHUB_SESSION_GUARDED` | `None` | `run_agent_session.py` `tools/workroom.py` | `run_agent_session.py` |
 | `MVHUB_SESSION_TOKEN` | `(표시 안 함)` | `agent_push.py` | — |
 | `MVHUB_UPDATE_STATE_DIR` | `str(Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempd…` | `backend/app/services/release_update.py` | — |
+| `NO_PROXY` | `""` | `tools/tests/test_camera_original.py` | — |
 | `NUMBER_OF_PROCESSORS` | — | `tools/server_console/install.py` | — |
 | `PM_TEST_SNAPSHOT_TOKEN` | — | `tools/refresh_pm_test_data.py` | — |
 | `PORT` | — | `tools/server_console/install.py` | `MV_agent.bat` `MV_server.bat` `MV_watchdog.bat` `register_autostart.bat` `restart_server_task.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
