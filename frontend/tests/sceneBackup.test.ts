@@ -105,6 +105,138 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
     expect(scenes.listScenes(null)[0].id).toBe("old");
   });
 
+  it("mirror recovery notifies after confirmed changes and stops after unsubscribe", async () => {
+    const { scenes, backup, settle } = await boot();
+    const raw = sceneJson("s"), scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`;
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    const record = JSON.stringify({ generation: "restore-1", blockedIds: ["s"], originals: [], raws: {} });
+    localStorage.setItem(key, record);
+    const offThrow = backup.subscribeMirrorRecovery(() => { throw new Error("view failed"); });
+    const observed: string[] = [];
+    const notify = vi.fn(() => { observed.push(localStorage.getItem(key)!); });
+    const off = backup.subscribeMirrorRecovery(notify);
+    try {
+      await backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]));
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(observed[0]).blockedIds).toEqual([]);
+      await backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]));
+      expect(notify).toHaveBeenCalledTimes(1);
+      off(); localStorage.setItem(key, record);
+      await backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]));
+      expect(notify).toHaveBeenCalledTimes(1);
+    } finally { off(); offThrow(); }
+  });
+
+  it.each([false, true])("generation adoption notifies only its final hold state (old ledger: %s)", async (hasLedger) => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, raw = sceneJson("s"), key = `mvhub.sceneBackupBase:${scope}:s`;
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    if (hasLedger) localStorage.setItem(key, JSON.stringify({ b: "old-base" }));
+    const row = { id: "s", data: raw, data_hash: sha256Js(new TextEncoder().encode(raw)) };
+    getFull = () => Promise.resolve({ items: [row] }); getMeta = getFull;
+    const observed: { blockedIds: string[]; ledger: string | null }[] = [];
+    const off = backup.subscribeMirrorRecovery(() => {
+      observed.push({ blockedIds: backup.readMirrorRecovery()!.blockedIds, ledger: localStorage.getItem(key) });
+    });
+    try {
+      await backup.initSceneBackup();
+      expect(observed).toEqual([{ blockedIds: [], ledger: JSON.stringify({ b: row.data_hash }) }]);
+      observed.length = 0;
+      await backup.importFromBackup();
+      expect(observed).toEqual([]);
+    } finally { off(); }
+  });
+
+  it.each(["throws", "ignored"])("mirror recovery does not notify when storage write is %s", async (failure) => {
+    const { scenes, backup, settle } = await boot();
+    const raw = sceneJson("s"), scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`;
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    const record = JSON.stringify({ generation: "restore-1", blockedIds: ["s"], originals: [], raws: {} });
+    localStorage.setItem(key, record);
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    const setItem = localStorage.setItem.bind(localStorage);
+    const write = vi.spyOn(localStorage, "setItem").mockImplementation((name, value) => {
+      if (name !== key) return setItem(name, value);
+      if (failure === "throws") throw new Error("write failed");
+    });
+    try {
+      await expect(backup.resumeImportedMirror(scope, "restore-1", new Map([["s", raw]]))).rejects.toThrow();
+      expect(notify).not.toHaveBeenCalled();
+      expect(localStorage.getItem(key)).toBe(record);
+    } finally { write.mockRestore(); off(); }
+  });
+
+  it("generation adoption does not notify when its final record equals the record before its writes", async () => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, raw = sceneJson("s"), key = `mvhub.mirrorRecovery:${scope}`;
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    localStorage.setItem(`mvhub.sceneBackupBase:${scope}:s`, JSON.stringify({ b: "old-base" }));
+    const hash = sha256Js(new TextEncoder().encode(raw));
+    const final = JSON.stringify({ generation: "restore-1", blockedIds: [], originals: [{ generation: null, scenes: [], ledger: [["s", { b: "old-base" }]] }], raws: { s: hash } });
+    getFull = () => Promise.resolve({ items: [{ id: "s", data: raw, data_hash: hash }] });
+    const getItem = localStorage.getItem.bind(localStorage);
+    let firstRead = true;
+    const read = vi.spyOn(localStorage, "getItem").mockImplementation((name) => {
+      if (name === key && firstRead) {
+        firstRead = false;
+        // Another tab finishes adoption after this tab reads its old (absent) record.
+        localStorage.setItem(key, final);
+        return null;
+      }
+      return getItem(name);
+    });
+    const notify = vi.fn(), off = backup.subscribeMirrorRecovery(notify);
+    try {
+      await backup.initSceneBackup();
+      expect(localStorage.getItem(key)).toBe(final);
+      expect(notify).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); off(); }
+  });
+
+  it.each([
+    ["archive", "mirror_recovery_write_failed"],
+    ["clear", "mirror_ledger_clear_failed"],
+    ["ledger", "mirror_ledger_write_failed"],
+    ["final", "mirror_recovery_write_failed"],
+  ])("generation adoption reports saved protection once after %s failure and preserves the error", async (stage, error) => {
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, raw = sceneJson("s");
+    const ledgerKey = `mvhub.sceneBackupBase:${scope}:s`, recoveryKey = `mvhub.mirrorRecovery:${scope}`;
+    const oldLedger = JSON.stringify({ b: "old-base" });
+    scenes.saveScenes(null, [JSON.parse(raw)]); await settle();
+    localStorage.setItem(ledgerKey, oldLedger);
+    getFull = () => Promise.resolve({ items: [{ id: "s", data: raw, data_hash: "current" }] });
+    const observed: string[] = [];
+    const off = backup.subscribeMirrorRecovery(() => { observed.push(localStorage.getItem(recoveryKey)!); });
+    const offThrow = backup.subscribeMirrorRecovery(() => { throw new Error("view failed"); });
+    const setItem = localStorage.setItem.bind(localStorage), removeItem = localStorage.removeItem.bind(localStorage);
+    let recoveryWrites = 0;
+    const write = vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === recoveryKey) {
+        recoveryWrites++;
+        if (stage === "archive" || (stage === "final" && recoveryWrites === 2)) return;
+      }
+      if (stage === "ledger" && key === ledgerKey) return;
+      setItem(key, value);
+    });
+    const remove = vi.spyOn(localStorage, "removeItem").mockImplementation((key) => {
+      if (stage !== "clear" || key !== ledgerKey) removeItem(key);
+    });
+    try {
+      await expect(backup.importFromBackup()).rejects.toThrow(error);
+      expect(observed).toHaveLength(stage === "archive" ? 0 : 1);
+      if (stage === "archive") {
+        expect(localStorage.getItem(recoveryKey)).toBeNull();
+        expect(localStorage.getItem(ledgerKey)).toBe(oldLedger);
+      } else {
+        expect(observed[0]).toBe(localStorage.getItem(recoveryKey));
+        expect(JSON.parse(observed[0])).toMatchObject({ blockedIds: ["s"], originals: [{ ledger: [["s", { b: "old-base" }]] }] });
+      }
+      expect(scenes.listScenes(null)).toEqual([JSON.parse(raw)]);
+      expect(puts()).toHaveLength(0);
+    } finally { write.mockRestore(); remove.mockRestore(); off(); offThrow(); }
+  });
+
   it("generationless matching mirror isolates its ledger without holding the scene and sends the next edit", async () => {
     vi.stubGlobal("crypto", {});
     const { scenes, backup, settle } = await boot(false);

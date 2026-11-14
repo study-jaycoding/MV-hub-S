@@ -21,6 +21,7 @@ vi.mock("../src/lib/sceneBackup", () => ({
   countBackupOnlyScenes: async () => backupState.only,
   importFromBackup: backupState.imported,
   subscribeSceneRestore: () => () => {},
+  subscribeMirrorRecovery: () => () => {},
   subscribeSceneBackupSkipped: () => () => {},
   subscribeSceneBackupSkippedIds: () => () => {},
   getSceneBackupSkippedIds: () => EMPTY_SKIPPED,

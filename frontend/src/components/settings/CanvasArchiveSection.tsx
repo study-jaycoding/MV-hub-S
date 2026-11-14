@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
 import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, downloadStorageRecovery, redundantMirrorHoldIds, type StorageRecovery } from "../../lib/sceneArchive";
 import { subscribeEditBackup } from "../../lib/editDocBackup";
+import { subscribeMirrorRecovery } from "../../lib/sceneBackup";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { hubHasFeature, subscribeHubFeatures } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestoreArchiveContent, type NotebookArchive } from "../../lib/sceneNotebook";
@@ -11,40 +12,57 @@ import { sceneStoreReady, subscribeSceneStoreExternal } from "../../lib/sceneSto
 import { isSceneSaveFailing, listScenes, subscribeSceneSaveState, subscribeScenesPersisted } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
 
-/** '복원 전에 남겨 둔 것' 기록 — 펼친 칸과 접힌 '자료 관리' 제목 줄이 같이 읽는다. [기록, 바꾸기, 읽기 실패]. */
+/** '복원 전에 남겨 둔 것' 기록 — 펼친 칸과 접힌 '자료 관리' 제목 줄이 같이 읽는다. [기록, 다시 읽기, 읽기 실패]. */
 export function useStorageRecovery() {
   const writer = useSceneWriter();
   const account = getAccountNamespace();
   const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failedAccount, setFailedAccount] = useState<string | null>(null);
+  const refresh = useRef<() => Promise<void> | undefined>(() => undefined);
   useEffect(() => {
     let alive = true;
     let readVersion = 0;
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-    setRecovery(null);
-    setFailed(false);
+    let refreshPending = false;
+    let readyRetryMs = 250;
+    setRecovery((previous) => previous?.account === account ? previous : null);
+    setFailedAccount(null);
     const read = () => {
-      if (!sceneStoreReady()) return;
+      if (!sceneStoreReady()) { refreshPending = true; return; }
       const version = ++readVersion;
-      void readStorageRecovery().then((value) => {
-        if (alive && version === readVersion) {
-          if (value.account === account && account === getAccountNamespace()) setRecovery(value);
-          setFailed(false);
+      return readStorageRecovery().then((value) => {
+        if (alive && version === readVersion && account === getAccountNamespace()) {
+          setRecovery(value.account === account && account === getAccountNamespace() ? value : null);
+          setFailedAccount(null);
         }
-      }).catch(() => { if (alive && version === readVersion) setFailed(true); });
+      }).catch(() => { if (alive && version === readVersion && account === getAccountNamespace()) setFailedAccount(account); });
     };
     const scheduleRead = () => {
-      if (refreshTimer !== undefined) return;
-      refreshTimer = setTimeout(() => { refreshTimer = undefined; read(); }, 250);
+      if (!alive || account !== getAccountNamespace()) return;
+      if (refreshTimer !== undefined) { refreshPending = true; return; }
+      const result = read();
+      const delay = result ? 250 : readyRetryMs;
+      readyRetryMs = result ? 250 : Math.min(readyRetryMs * 2, 2000);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        if (refreshPending) { refreshPending = false; scheduleRead(); }
+      }, delay);
+      return result;
     };
-    read();
-    const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read), offFeatures = subscribeHubFeatures(read);
+    // 알림은 250ms마다 최대 한 번, 사용자의 다시 읽기는 즉시 실행하고 밀린 알림을 소비한다.
+    refresh.current = () => {
+      clearTimeout(refreshTimer); refreshTimer = undefined; refreshPending = false;
+      return scheduleRead();
+    };
+    scheduleRead();
+    const offScene = subscribeSceneSaveState(scheduleRead), offEdit = subscribeEditBackup(scheduleRead), offFeatures = subscribeHubFeatures(scheduleRead);
     const offPersisted = subscribeScenesPersisted(scheduleRead), offExternal = subscribeSceneStoreExternal(scheduleRead);
-    window.addEventListener("storage", read);
-    window.addEventListener("focus", read);
-    return () => { alive = false; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
+    const offMirror = subscribeMirrorRecovery(scheduleRead);
+    window.addEventListener("storage", scheduleRead);
+    window.addEventListener("focus", scheduleRead);
+    return () => { alive = false; refresh.current = () => undefined; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
   }, [account, writer.mode]);
-  return [recovery?.account === account ? recovery : null, setRecovery, failed] as const;
+  return [recovery?.account === account ? recovery : null, () => refresh.current(), failedAccount === account] as const;
 }
 
 /** 보류 개수 — 캔버스 보관본(미러는 아직 막힌 씬·장부가 있는 것만) · 편집 문서 · 카드 정리 대기. */
@@ -70,11 +88,7 @@ export function CanvasArchiveSection() {
   const [archive, setArchive] = useState<NotebookArchive | null>(null);
   const [archiveAccount, setArchiveAccount] = useState("");
   const account = getAccountNamespace();
-  const [ownRecovery, setRecovery, recoveryFailed] = useStorageRecovery();
-  useEffect(() => {
-    const readError = "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.";
-    setMsg((previous) => recoveryFailed ? readError : previous === readError ? "" : previous);
-  }, [recoveryFailed]);
+  const [ownRecovery, refreshRecovery, recoveryFailed] = useStorageRecovery();
   useEffect(() => {
     let alive = true;
     setArchive(null);
@@ -107,8 +121,7 @@ export function CanvasArchiveSection() {
   const importAll = (file: File) =>
     run(async () => {
       const { added, recovered } = await importSceneArchiveText(await file.text());
-      const currentRecovery = await readStorageRecovery();
-      if (currentRecovery.account === account && account === getAccountNamespace()) setRecovery(currentRecovery);
+      if (account === getAccountNamespace()) await refreshRecovery();
       if (!added && !recovered) return "파일의 캔버스가 이미 모두 있습니다 — 더한 것이 없습니다.";
       return (
         `캔버스 ${added}개를 가져왔습니다` +
@@ -120,6 +133,7 @@ export function CanvasArchiveSection() {
   return (
     <div className="settings-subblock">
       <h6>캔버스 자료</h6>
+      {recoveryFailed && <p role="status" className="settings-hint" style={{ color: "var(--warning, #c86f20)" }}>{t("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.")}</p>}
       {!!(canvasCount + editCount + cardCount) && ownRecovery && <div className="settings-subblock" style={{ borderColor: "var(--warning, #c86f20)" }}>
         <h6>{t("복원 전에 남겨 둔 것")}</h6>
         <p role="status" style={{ color: "var(--warning, #c86f20)" }}>{t("허브와 이 브라우저의 기록 시점이 다릅니다. 허브가 백업에서 되살려졌거나, 업데이트 전 자료일 수 있습니다. 이 브라우저에 있던 내용은 지우지 않고 아래에 보관했고, 자동으로 다시 보내지 않습니다.")}</p>

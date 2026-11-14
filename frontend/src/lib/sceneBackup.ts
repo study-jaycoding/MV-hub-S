@@ -65,10 +65,23 @@ export interface MirrorRecovery {
   originals: { generation: string | null; scenes: { id: string; text: string }[]; ledger: [string, LedgerEntry][] }[];
 }
 const mirrorRecoveryKey = (scope: string) => `mvhub.mirrorRecovery:${scope}`;
-function saveMirrorRecovery(scope: string, value: MirrorRecovery) {
+const mirrorRecoverySubs = new Set<() => void>();
+export function subscribeMirrorRecovery(fn: () => void): () => void {
+  mirrorRecoverySubs.add(fn);
+  return () => mirrorRecoverySubs.delete(fn);
+}
+function notifyMirrorRecovery() {
+  mirrorRecoverySubs.forEach((fn) => {
+    try { fn(); } catch { /* 화면 알림 실패가 이미 확인된 저장을 실패로 바꾸지 않는다. */ }
+  });
+}
+function saveMirrorRecovery(scope: string, value: MirrorRecovery, notify = true) {
   const text = JSON.stringify(value), key = mirrorRecoveryKey(scope);
+  const changed = localStorage.getItem(key) !== text;
   localStorage.setItem(key, text);
   if (localStorage.getItem(key) !== text) throw new Error("mirror_recovery_write_failed");
+  if (changed && notify) notifyMirrorRecovery();
+  return text;
 }
 export function readMirrorRecovery(scope = ns()): MirrorRecovery | null {
   if (scope !== ns()) return null;
@@ -101,21 +114,27 @@ async function checkMirrorGeneration(scope: string): Promise<string> {
   if (blocked.size || oldLedger.size) originals.push({ generation: prior?.generation ?? null, scenes: scenes.filter((scene) => blocked.has(scene.id)), ledger: [...oldLedger] });
   const record: MirrorRecovery = { generation: response.restore_generation, blockedIds: [...new Set([...blocked, ...oldLedger.keys()])], originals, raws: Object.fromEntries(hashes) };
   // 옛 장부 보관이 확인된 다음에만 제거하고, 깨끗한 씬의 현재 기준판을 새로 적는다.
-  saveMirrorRecovery(scope, record);
-  for (const id of oldLedger.keys()) {
-    localStorage.removeItem(ledgerKey(scope, id));
-    if (localStorage.getItem(ledgerKey(scope, id)) !== null) throw new Error("mirror_ledger_clear_failed");
-    if (curScope === scope) ledger.delete(id);
+  const previousRecovery = localStorage.getItem(mirrorRecoveryKey(scope));
+  let savedRecovery = saveMirrorRecovery(scope, record, false);
+  try {
+    for (const id of oldLedger.keys()) {
+      localStorage.removeItem(ledgerKey(scope, id));
+      if (localStorage.getItem(ledgerKey(scope, id)) !== null) throw new Error("mirror_ledger_clear_failed");
+      if (curScope === scope) ledger.delete(id);
+    }
+    for (const scene of scenes) if (!blocked.has(scene.id)) {
+      const entry = { b: rows.get(scene.id)?.data_hash || hashes.get(scene.id)! };
+      const encoded = JSON.stringify(entry);
+      localStorage.setItem(ledgerKey(scope, scene.id), encoded);
+      if (localStorage.getItem(ledgerKey(scope, scene.id)) !== encoded) throw new Error("mirror_ledger_write_failed");
+      if (curScope === scope) ledger.set(scene.id, entry);
+    }
+    record.blockedIds = [...blocked];
+    savedRecovery = saveMirrorRecovery(scope, record, false);
+  } finally {
+    // 후속 정리가 실패해도 이미 저장된 보호 기록은 화면에 한 번 알린다.
+    if (savedRecovery !== previousRecovery) notifyMirrorRecovery();
   }
-  for (const scene of scenes) if (!blocked.has(scene.id)) {
-    const entry = { b: rows.get(scene.id)?.data_hash || hashes.get(scene.id)! };
-    const encoded = JSON.stringify(entry);
-    localStorage.setItem(ledgerKey(scope, scene.id), encoded);
-    if (localStorage.getItem(ledgerKey(scope, scene.id)) !== encoded) throw new Error("mirror_ledger_write_failed");
-    if (curScope === scope) ledger.set(scene.id, entry);
-  }
-  record.blockedIds = [...blocked];
-  saveMirrorRecovery(scope, record);
   serverHash = null; lastPushed.clear();
   for (const scene of scenes) if (!blocked.has(scene.id)) lastPushed.set(scene.id, scene.text);
   return response.restore_generation;

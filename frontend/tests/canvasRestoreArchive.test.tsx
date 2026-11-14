@@ -9,10 +9,13 @@ import * as sceneArchive from "../src/lib/sceneArchive";
 import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose, type RestoreArchive } from "../src/lib/sceneNotebook";
 import { abortSceneStoreWritesForTest, applySceneOp, holdNotebookWrites, readWorkingBucket, setSceneWriteGate, settleSceneStoreForTest, writeScenesStore, sceneNotebookTransaction } from "../src/lib/sceneStore";
 import { setAccountScope } from "../src/lib/accountScope";
+import * as accountScope from "../src/lib/accountScope";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import * as hubFeatures from "../src/lib/hubFeatures";
 import * as sceneStore from "../src/lib/sceneStore";
 import * as scenes from "../src/lib/scenes";
+import * as sceneBackup from "../src/lib/sceneBackup";
+import * as sceneWriter from "../src/lib/sceneWriter";
 import type { Scene } from "../src/lib/scenes";
 
 const request = vi.hoisted(() => vi.fn());
@@ -109,6 +112,69 @@ function HeldProbe() {
   const [recovery, , failed] = useStorageRecovery();
   return <i data-held={heldRecoveryCounts(recovery).total} data-failed={failed} />;
 }
+it("writer mode changes retain this account recovery through a failed read but never expose it to another account", async () => {
+  const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
+  const writer = vi.spyOn(sceneWriter, "useSceneWriter").mockReturnValue({ mode: "disabled", handed: false, localCount: 0 });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset.held).toBe("1");
+    read.mockRejectedValue(new Error("read failed"));
+    writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
+    await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "true" });
+    setAccountScope("other@test");
+    read.mockImplementation(() => new Promise(() => {}));
+    await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "0", failed: "false" });
+  } finally { read.mockRestore(); writer.mockRestore(); }
+});
+it("initial read and synchronous save notification share a window; manual refresh consumes queued notifications", async () => {
+  const value = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(value);
+  const subscribe = vi.spyOn(scenes, "subscribeSceneSaveState").mockImplementation((fn) => { fn(true); return () => {}; });
+  function RefreshProbe() {
+    const [, refresh] = useStorageRecovery();
+    return <button onClick={() => void refresh()}>refresh</button>;
+  }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<RefreshProbe />));
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(100); });
+    await act(async () => host.querySelector("button")!.click());
+    expect(read).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(3);
+    await act(async () => host.querySelector("button")!.click());
+    expect(read).toHaveBeenCalledTimes(4);
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(249); });
+    expect(read).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(read).toHaveBeenCalledTimes(5);
+  } finally { subscribe.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+});
+it("account switch never renders the previous account read failure", async () => {
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("account A failed"));
+  const rendered: boolean[] = [];
+  function Probe() {
+    const [, , failed] = useStorageRecovery();
+    rendered.push(failed);
+    return null;
+  }
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    expect(rendered.at(-1)).toBe(true);
+    read.mockImplementation(() => new Promise(() => {}));
+    rendered.length = 0;
+    setAccountScope("other@test");
+    await act(async () => root!.render(<Probe />));
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(rendered.every((failed) => !failed)).toBe(true);
+  } finally { read.mockRestore(); }
+});
 it.each([
   ["same", 0], ["camera", 0], ["all generations match", 0], ["different", 1],
   ["missing", 1], ["ledger elsewhere", 2], ["mixed", 1], ["older differs", 2],
@@ -175,6 +241,8 @@ it.each([false, true])("an id without its own original does not expose recovery 
 });
 
 it("redundant holds leave folded count zero and originals downloadable, then feature change restores the warning", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
   const original = { generation: "old", scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] };
   const raw = JSON.stringify({ generation: "new", blockedIds: ["a"], raws: {}, originals: [original] });
   localStorage.setItem("mvhub.mirrorRecovery:local", raw);
@@ -188,9 +256,10 @@ it("redundant holds leave folded count zero and originals downloadable, then fea
   expect(exported.recovery.mirror).toEqual(JSON.parse(raw));
   expect(exported.buckets[bucket]).toEqual([scene("a")]);
   expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
-  await act(async () => setHubFeatures([]));
+  await act(async () => { setHubFeatures([]); await vi.advanceTimersByTimeAsync(250); });
   expect(host.querySelector("i")?.dataset.held).toBe("1");
   expect(host.textContent).toContain("복원 전에 남겨 둔 것");
+  } finally { vi.useRealTimers(); }
 });
 it.each(["persisted", "external"])("held counts follow %s scene notifications without reopening settings", async (notification) => {
   const original = { generation: "old", scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] };
@@ -235,9 +304,10 @@ it.each(["success", "failure"])("recovery ignores a stale read %s after the late
   const latest = { ...initial, cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
   const reads: { resolve: (value: typeof initial) => void; reject: (reason: Error) => void }[] = [];
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
-    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
     expect(reads).toHaveLength(2);
     await act(async () => reads[1].resolve(latest));
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "false" });
@@ -247,10 +317,11 @@ it.each(["success", "failure"])("recovery ignores a stale read %s after the late
     });
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "false" });
     await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(reads).toHaveLength(3);
     await act(async () => reads[2].reject(new Error("current failure")));
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "true" });
-  } finally { read.mockRestore(); }
+  } finally { read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it.each(["success", "failure"])("a not-ready notification preserves the pending recovery read %s", async (result) => {
   const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
@@ -258,10 +329,11 @@ it.each(["success", "failure"])("a not-ready notification preserves the pending 
   const pending = new Promise<typeof recovery>((ok, fail) => { resolve = ok; reject = fail; });
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockReturnValue(pending);
   const ready = vi.spyOn(sceneStore, "sceneStoreReady").mockReturnValue(true);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
     ready.mockReturnValue(false);
-    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
     expect(read).toHaveBeenCalledTimes(1);
     ready.mockReturnValue(true);
     await act(async () => {
@@ -269,7 +341,63 @@ it.each(["success", "failure"])("a not-ready notification preserves the pending 
       else reject(new Error("pending failure"));
     });
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: result === "success" ? "1" : "0", failed: result === "failure" ? "true" : "false" });
-  } finally { read.mockRestore(); ready.mockRestore(); }
+  } finally { read.mockRestore(); ready.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("recovery waits for readiness without losing the last notification and stops polling on unmount", async () => {
+  const recovery = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
+  const ready = vi.spyOn(sceneStore, "sceneStoreReady").mockReturnValue(false);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect(ready).toHaveBeenCalledTimes(1);
+    for (const [n, delay] of [250, 500, 1000, 2000, 2000].entries()) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay - 1); });
+      expect(ready).toHaveBeenCalledTimes(n + 1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(ready).toHaveBeenCalledTimes(n + 2);
+    }
+    expect(read).not.toHaveBeenCalled();
+    ready.mockReturnValue(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(249); });
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+    expect(read).toHaveBeenCalledTimes(2);
+    ready.mockReturnValue(false);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    act(() => root!.unmount()); root = undefined;
+    ready.mockClear().mockReturnValue(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+    expect(ready).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally { read.mockRestore(); ready.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["success", "failure", "notification"])("an old account effect ignores %s before another render", async (kind) => {
+  const recovery = await readStorageRecovery();
+  const account = vi.spyOn(accountScope, "getAccountNamespace").mockReturnValue("local");
+  let resolve!: (value: typeof recovery) => void, reject!: (error: Error) => void;
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((ok, fail) => { resolve = ok; reject = fail; }));
+  let renders = 0;
+  function Probe() { renders++; return <HeldProbe />; }
+  const writer = vi.spyOn(sceneWriter, "useSceneWriter");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    const beforeRenders = renders, beforeHooks = writer.mock.calls.length;
+    account.mockReturnValue("acct:other@test");
+    await act(async () => {
+      if (kind === "success") resolve(recovery);
+      else if (kind === "failure") reject(new Error("account changed"));
+      else { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); }
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledTimes(beforeHooks);
+    expect(renders).toBe(beforeRenders);
+  } finally { account.mockRestore(); read.mockRestore(); writer.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it.each(["none", "export success", "export failure"])("recovery retry clears its error and preserves %s message", async (otherMessage) => {
   const recovery = await readStorageRecovery();
@@ -277,6 +405,7 @@ it.each(["none", "export success", "export failure"])("recovery retry clears its
   const exportAll = vi.spyOn(sceneArchive, "downloadSceneArchive");
   const readError = "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.";
   const exportMessage = otherMessage === "export success" ? "캔버스 2개를 파일로 내려받았습니다." : "내보내기 실패";
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
@@ -288,13 +417,17 @@ it.each(["none", "export success", "export failure"])("recovery retry clears its
       expect(button).toBeDefined();
       await act(async () => button!.click());
       expect(host.textContent).toContain(exportMessage);
+      expect([...host.querySelectorAll('[role="status"]')].some((node) => node.textContent === readError)).toBe(true);
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      expect(host.textContent).toContain(readError);
+      expect(host.textContent).toContain(exportMessage);
     }
     read.mockResolvedValue(recovery);
-    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
     expect(host.querySelector("i")?.dataset.failed).toBe("false");
     expect(host.textContent).not.toContain(readError);
     if (otherMessage !== "none") expect(host.textContent).toContain(exportMessage);
-  } finally { read.mockRestore(); exportAll.mockRestore(); }
+  } finally { read.mockRestore(); exportAll.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("account change clears the previous recovery error while the new read is pending", async () => {
   const recovery = { ...await readStorageRecovery(), account: "acct:other@test" };
@@ -328,28 +461,45 @@ it("scene notification bursts share a bounded recovery read and cancel it on unm
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
     expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    read.mockClear();
+    await act(async () => external());
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockClear();
     for (let n = 0; n < 5; n++) {
       await act(async () => { persisted(); external(); await vi.advanceTimersByTimeAsync(49); });
     }
     expect(read).toHaveBeenCalledTimes(1);
     await act(async () => { persisted(); await vi.advanceTimersByTimeAsync(5); });
     expect(read).toHaveBeenCalledTimes(2);
-    await act(async () => { external(); await vi.advanceTimersByTimeAsync(250); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); external(); });
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(249); });
     expect(read).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    read.mockClear();
+    await act(async () => { external(); await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(1);
     await act(async () => { window.dispatchEvent(new Event("focus")); });
-    expect(read).toHaveBeenCalledTimes(4);
+    expect(read).toHaveBeenCalledTimes(2);
     await act(async () => { window.dispatchEvent(new Event("storage")); });
-    expect(read).toHaveBeenCalledTimes(5);
-    external();
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(3);
+    await act(async () => { external(); persisted(); });
+    expect(read).toHaveBeenCalledTimes(3);
     act(() => root!.unmount()); root = undefined;
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-    expect(read).toHaveBeenCalledTimes(5);
+    expect(read).toHaveBeenCalledTimes(3);
   } finally { read.mockRestore(); offPersisted.mockRestore(); offExternal.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it.each([false, true])("a latest foreign recovery response clears only the read error (other message: %s)", async (otherMessage) => {
   const recovery = await readStorageRecovery();
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("read failed"));
   const exportAll = vi.spyOn(sceneArchive, "downloadSceneArchive").mockResolvedValue(2);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
@@ -360,11 +510,68 @@ it.each([false, true])("a latest foreign recovery response clears only the read 
       expect(host.textContent).toContain("캔버스 2개를 파일로 내려받았습니다.");
     }
     read.mockResolvedValue({ ...recovery, account: "acct:other@test", cards: { candidates: [{ removals: [{ id: "foreign" }], revives: [], backfill: [] }] } });
-    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "0", failed: "false" });
     expect(host.textContent).not.toContain("보관본을 읽지 못했습니다.");
     if (otherMessage) expect(host.textContent).toContain("캔버스 2개를 파일로 내려받았습니다.");
-  } finally { read.mockRestore(); exportAll.mockRestore(); }
+  } finally { read.mockRestore(); exportAll.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("a foreign recovery response discards the previously displayed recovery", async () => {
+  const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "old" }], revives: [], backfill: [] }] } };
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    expect(host.querySelector("i")?.dataset.held).toBe("1");
+    read.mockResolvedValue({ ...recovery, account: "acct:other@test" });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "0", failed: "false" });
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("an unchanged import clears recovery read failure through the hook", async () => {
+  const recovery = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("read failed"));
+  const importArchive = vi.spyOn(sceneArchive, "importSceneArchiveText").mockResolvedValue({ added: 0, recovered: 0 });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
+    expect(host.textContent).toContain("보관본을 읽지 못했습니다.");
+    read.mockResolvedValue(recovery);
+    const input = host.querySelector('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [{ text: async () => "archive" }] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(importArchive).toHaveBeenCalledWith("archive");
+    expect(host.textContent).toContain("파일의 캔버스가 이미 모두 있습니다");
+    expect(host.textContent).not.toContain("보관본을 읽지 못했습니다.");
+  } finally { read.mockRestore(); importArchive.mockRestore(); }
+}, 15_000);
+it.each(["same-window", "storage"])("%s mirror changes refresh two recovery views with one read per view per window", async (source) => {
+  setHubFeatures([]);
+  const original = { generation: "old", scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] };
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["a"], originals: [original], raws: {} }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  const persisted = vi.spyOn(scenes, "subscribeScenesPersisted").mockReturnValue(() => {});
+  try {
+    root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><HeldProbe /></>));
+    expect([...host.querySelectorAll("i")].map((node) => node.dataset.held)).toEqual(["1", "1"]);
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      if (source === "same-window") await sceneBackup.resumeImportedMirror("local", "new", new Map([["a", JSON.stringify(scene("a"))]]));
+      else {
+        const key = "mvhub.mirrorRecovery:local", oldValue = localStorage.getItem(key)!;
+        const newValue = JSON.stringify({ ...JSON.parse(oldValue), blockedIds: [] });
+        localStorage.setItem(key, newValue);
+        for (let n = 0; n < 10; n++) window.dispatchEvent(new StorageEvent("storage", { key, oldValue, newValue, storageArea: localStorage }));
+      }
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(sceneBackup.readMirrorRecovery()?.blockedIds).toEqual([]);
+    expect([...host.querySelectorAll("i")].map((node) => node.dataset.held)).toEqual(["0", "0"]);
+    expect(read).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(read).toHaveBeenCalledTimes(4);
+  } finally { read.mockRestore(); persisted.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("the folded settings line reads the same held count as the recovery group, only for this account", async () => {
   await changed(); await syncSceneNotebook();
