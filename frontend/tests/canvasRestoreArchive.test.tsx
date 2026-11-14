@@ -1506,6 +1506,64 @@ it("a second nonfresh metadata read also schedules recovery", async () => {
     expect(stale).toHaveBeenCalledTimes(1);
   } finally { off(); vi.useRealTimers(); }
 });
+it("nonfresh metadata waits for external recovery without an extra camera success signal", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const stale = vi.fn(), off = sceneStore.subscribeSceneStoreStale(stale);
+  let offExternal = () => {};
+  try {
+    const timers = vi.getTimerCount();
+    const change = () => sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a"), scene("b")]; });
+    change();
+    let checks = 0;
+    expect(await sceneStore.readSceneStoreMeta("version", () => { if (++checks === 3) change(); return true; })).toMatchObject({ ok: true, fresh: false });
+    expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 3, y: 4 }).ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(sceneStore.sceneStoreLoadForTest().pending).toBe(0);
+    expect(stale).not.toHaveBeenCalled();
+    let nextRead: ReturnType<typeof sceneStore.readSceneStoreMeta> | undefined;
+    offExternal = sceneStore.subscribeSceneStoreExternal(() => { nextRead = sceneStore.readSceneStoreMeta("version", () => true); });
+    change();
+    expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+    expect(nextRead).toBeDefined();
+    expect(await nextRead).toMatchObject({ ok: true, fresh: true });
+    expect(vi.getTimerCount()).toBe(timers);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(stale).not.toHaveBeenCalled();
+  } finally { offExternal(); off(); vi.useRealTimers(); }
+}, 15_000);
+it("a real metadata failure after a nonfresh read allows immediate camera recovery", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const readMeta = sceneStore.readSceneStoreMeta;
+  const change = () => sceneStore.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("a"), scene("b")]; });
+  change();
+  let checks = 0;
+  expect(await readMeta("version", () => { if (++checks === 3) change(); return true; })).toMatchObject({ ok: true, fresh: false });
+  // 씬 재조회는 성공했지만 보관본은 아직 최신으로 읽지 않은 상태에서 메타 접근이 막힌다.
+  expect(await sceneStore.refreshSceneStoreForTest()).toBe(true);
+  let fail = true;
+  const meta = vi.spyOn(sceneStore, "readSceneStoreMeta").mockImplementation((key, current) => readMeta(key, () => {
+    if (fail) throw Error("metadata unavailable");
+    return current();
+  }));
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery");
+  try {
+    root = createRoot(host);
+    await act(async () => root!.render(<HeldProbe />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    expect(read).toHaveBeenCalledTimes(2);
+    fail = false;
+    await act(async () => {
+      expect(scenes.updateSceneCamera(null, "a", { z: 2, x: 3, y: 4 }).ok).toBe(true);
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    expect(read).toHaveBeenCalledTimes(3);
+    expect((await read.mock.results.at(-1)!.value).baseFresh).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(read).toHaveBeenCalledTimes(3);
+  } finally { meta.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it("metadata recovery timer stops without subscribers", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   try {

@@ -542,10 +542,10 @@ function enqueueTx<T>(run: () => Promise<T>): Promise<T> {
 /** 메타는 읽기만 한다. 비교 기준이 낡았으면 큐 밖에서 회복을 기다린 뒤 한 번 더 읽는다. */
 export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Promise<{ ok: true; value: unknown; fresh: boolean } | { ok: false; stale?: true }> {
   const read = (): ReturnType<typeof readSceneStoreMeta> => enqueueTx(async () => {
-    if (!ready) { scheduleMetaRecovery(); return { ok: false }; }
+    if (!ready) { metaReadStale = false; scheduleMetaRecovery(); return { ok: false }; }
     try {
       if (!stillCurrent()) return { ok: false, stale: true };
-      if (!(await ensureDb())) { scheduleMetaRecovery(); return { ok: false }; }
+      if (!(await ensureDb())) { metaReadStale = false; scheduleMetaRecovery(); return { ok: false }; }
       const { meta } = await readStore([K_LAYOUT, K_VERSION, key], () => false);
       if (!stillCurrent()) return { ok: false, stale: true };
       assertKnownLayout(meta);
@@ -553,6 +553,7 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
       if (fresh) { // 호출자는 이 정상 읽기 결과를 받으므로 별도 알림은 필요 없다.
         externalReadFailed = false;
         metaReadFailed = false;
+        metaReadStale = false;
         metaRecoverySignalUsed = false;
         metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
         metaRecoveryNextAt = 0;
@@ -560,13 +561,16 @@ export function readSceneStoreMeta(key: string, stillCurrent: () => boolean): Pr
         metaRecoveryTimer = undefined;
       }
       return { ok: true, value: meta[key], fresh };
-    } catch { scheduleMetaRecovery(); return { ok: false }; }
+    } catch { metaReadStale = false; scheduleMetaRecovery(); return { ok: false }; }
   });
   return read().then(async (result) => {
     // 큐 밖에서만 기다리며, 두 번째 읽기는 다시 회복하지 않아 반복을 막는다.
     // 회복은 다른 창 알림과 같이 pending도 확정해 추가 읽기를 부를 수 있지만 다음 읽기는 fresh라 멈춘다.
     if (result.ok && !result.fresh && await refreshFromStore()) result = await read();
-    if (result.ok && !result.fresh) scheduleMetaRecovery();
+    if (result.ok && !result.fresh) {
+      scheduleMetaRecovery();
+      metaReadStale = true; // 바깥 재조회 알림을 기다리되, 알림이 없으면 타이머로 확인한다.
+    }
     return result;
   });
 }
@@ -1541,7 +1545,8 @@ let externalReadFailed = false;
 // 실패와 성공 신호가 같은 예약을 쓰며, 지속 실패의 재확인 비용은 점차 줄인다.
 const META_RECOVERY_NOTIFY_MS = 5_000;
 const META_RECOVERY_MAX_MS = 60_000;
-let metaReadFailed = false;
+let metaReadFailed = false; // 읽기 실패 또는 최신 아님 — 둘 다 재확인 대상이다.
+let metaReadStale = false;
 let metaRecoverySignalUsed = false;
 let metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
 let metaRecoveryNextAt = 0;
@@ -1585,7 +1590,7 @@ function clearExternalReadFailed(): void {
     notifySceneStoreRecovery();
   } else if (metaReadFailed) {
     // 메타만 계속 실패해도 쓰기마다 읽지 않도록, 타이머 간격마다 성공 신호는 한 번만 앞당긴다.
-    if (!metaRecoverySignalUsed) {
+    if (!metaReadStale && !metaRecoverySignalUsed) {
       metaRecoverySignalUsed = true;
       notifySceneStoreRecovery();
     } else scheduleMetaRecovery();
@@ -1882,6 +1887,7 @@ export function resetSceneStoreForTest(): void {
   staleSubs.clear();
   externalReadFailed = false;
   metaReadFailed = false;
+  metaReadStale = false;
   metaRecoverySignalUsed = false;
   metaRecoveryDelay = META_RECOVERY_NOTIFY_MS;
   metaRecoveryNextAt = 0;
