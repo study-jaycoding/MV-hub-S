@@ -12,6 +12,11 @@ import statistics
 
 FORMAT = "camera-ab-c-120-v1"
 CONTRACT = "26d1189607e2b6e9582cb443c0b9e4bbd3667ba5d7db738ef438c66edfb53c7c"
+N2_FORMAT = "camera-ab-n2-v1"
+N2_CONTRACT = "a239c459e3e191c9cfc5854d88b61a122ff03ec468a6ef01ba24851c995297f3"
+N2_BASE = "f97292234ac3493d2c0129b275c33dbec3c51a5a"
+N2_ROUNDS = {"ops": 10, "switch": 10}
+N2_PRODUCTS = ("frontend/src/lib/sceneStore.ts",)
 HELPER_REVISION = "d971883c9356d95d68613dee7973693116004f9a"
 PRODUCTS = (
     "frontend/src/lib/sceneStore.ts", "frontend/src/lib/useSceneViewport.ts",
@@ -60,15 +65,28 @@ def read(path):
     return loads(path.read_bytes())
 
 
+def rounds_for(format_):
+    require(format_ in (FORMAT, N2_FORMAT), "unknown experiment format")
+    return N2_ROUNDS if format_ == N2_FORMAT else ROUNDS
+
+
+def contract_for(format_):
+    rounds_for(format_)
+    return N2_CONTRACT if format_ == N2_FORMAT else CONTRACT
+
+
 def spec_check(spec):
     require(isinstance(spec, dict) and set(spec) == {
         "format", "sources", "d_commit", "source_diff_sha256", "rounds", "order", "criteria"}, "experiment fields")
-    require(spec["format"] == FORMAT and spec["order"] == "original-alternating-v1", "experiment format/order")
-    require(canonical(spec["rounds"]) == canonical(ROUNDS) and canonical(spec["criteria"]) == canonical(LIMITS), "fixed experiment constants")
+    rounds = rounds_for(spec["format"])
+    require(spec["order"] == "original-alternating-v1", "experiment format/order")
+    require(canonical(spec["rounds"]) == canonical(rounds) and canonical(spec["criteria"]) == canonical(LIMITS), "fixed experiment constants")
     require(isinstance(spec["sources"], dict) and set(spec["sources"]) == {"src_o", "src_n"}, "two sources required")
     for revision in [*spec["sources"].values(), spec["d_commit"]]:
         require(isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision), "full commit SHA required")
     require(isinstance(spec["source_diff_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", spec["source_diff_sha256"]), "patch SHA256 required")
+    if spec["format"] == N2_FORMAT:
+        require(spec["sources"]["src_o"] == N2_BASE, "fixed N2 baseline required")
 
 
 def source_check(spec, git):
@@ -80,13 +98,14 @@ def source_check(spec, git):
     git("merge-base", "--is-ancestor", spec["d_commit"], base)
     raw = git("diff", "--no-ext-diff", "--no-textconv", "--raw", "--no-abbrev", "--no-renames", "-z", base, target, "--")
     fields = raw.decode("utf-8").rstrip("\0").split("\0")
-    require(len(fields) == 6, "exactly three product changes required")
+    products = N2_PRODUCTS if spec["format"] == N2_FORMAT else PRODUCTS
+    require(len(fields) == 2 * len(products), "exact product changes required")
     paths = []
     for header, path in zip(fields[::2], fields[1::2]):
         mode_before, mode_after, _before, _after, status = header.split()
         require(mode_before == ":100644" and mode_after == "100644" and status == "M", "only regular file content changes allowed")
         paths.append(path)
-    require(set(paths) == set(PRODUCTS), "unexpected product change")
+    require(set(paths) == set(products), "unexpected product change")
     patch = git("diff", "--no-ext-diff", "--no-textconv", "--binary", base, target, "--")
     require(digest(patch) == spec["source_diff_sha256"], "unreviewed source patch")
     helpers = {}
@@ -98,10 +117,10 @@ def source_check(spec, git):
     return {"sources": spec["sources"], "d_commit": spec["d_commit"], "diff": digest(patch), "helpers": helpers}
 
 
-def order():
+def order(format_=FORMAT):
     return [dict(mode=mode, round=r, src=src, flag=flag, rate=rate,
                  key=f"{src}|gpu{flag}|x{rate}", tag=mode + "10")
-            for mode in ROUNDS for r in range(1, 11)
+            for mode in rounds_for(format_) for r in range(1, 11)
             for src in (("src_o", "src_n") if r % 2 else ("src_n", "src_o"))
             for flag in (("0", "1") if mode == "switch" else ("1",))
             for rate in ((1, 4) if mode == "switch" else (4,))]
@@ -208,17 +227,22 @@ def summary(values):
     return {"values": values, "total": sum(values), "median": statistics.median(values)}
 
 
-def judge(rows):
-    require(len(rows) == 120, "120 rows required")
+def index_rows(rows, format_):
+    expected_rows = order(format_)
+    require(len(rows) == len(expected_rows), f"{len(expected_rows)} rows required")
     indexed, environment = {}, None
-    for expected, result in zip(order(), rows):
+    for expected, result in zip(expected_rows, rows):
         actual = row_check(result, expected)
         require(environment is None or actual == environment, "measurement environment changed")
         environment = actual
         indexed[(expected["mode"], expected["src"], expected["round"], expected["flag"], expected["rate"])] = result
     def selected(mode, src, flag="1", rate=4):
         return [indexed[(mode, src, r, flag, rate)] for r in range(1, 11)]
-    metrics, supplemental, locks, bake = {}, {}, {}, {}
+    return indexed, selected
+
+
+def performance(indexed, selected):
+    metrics, supplemental = {}, {}
     for mode in ("ops", "switch"):
         totals = {}
         for src in ("src_o", "src_n"):
@@ -241,6 +265,13 @@ def judge(rows):
                             "idb_started_relative_to_switch_ms": [r["measurement"]["idb"] for r in group],
                         }
         metrics[mode] = metric(totals["src_o"], totals["src_n"], LIMITS[mode + "_max_total_delta"])
+    return metrics, supplemental
+
+
+def judge(rows):
+    indexed, selected = index_rows(rows, FORMAT)
+    metrics, supplemental = performance(indexed, selected)
+    locks, bake = {}, {}
     for mode, rate in (("bake", 4), ("ops", 4), ("switch", 1), ("switch", 4)):
         b, t = (sum(locked(r) for r in selected(mode, src, rate=rate)) for src in ("src_o", "src_n"))
         locks[f"{mode}|gpu1|x{rate}"] = {"B": b, "T": t, "rows_per_source": 10, "passed": t <= b + 1 and t <= 2}
@@ -258,6 +289,43 @@ def judge(rows):
         notes.append("low_out: historical signal not exercised (both zero)")
     return {"status": "not-passed" if reasons else "passed", "metrics": metrics, "locks": locks,
             "bake": bake, "supplemental": supplemental, "reasons": reasons, "notes": notes}
+
+
+def judge_n2(rows):
+    indexed, selected = index_rows(rows, N2_FORMAT)
+    metrics, supplemental = performance(indexed, selected)
+    locks, exclusions = {}, {}
+    for mode, flag, rate in (("ops", "1", 4), ("switch", "0", 1), ("switch", "0", 4),
+                             ("switch", "1", 1), ("switch", "1", 4)):
+        key = f"{mode}|gpu{flag}|x{rate}"
+        groups = [selected(mode, src, flag, rate) for src in ("src_o", "src_n")]
+        if flag == "1":
+            b, t = (sum(locked(r) for r in group) for group in groups)
+            locks[key] = {"B": b, "T": t, "rows_per_source": 10, "passed": t <= b + 1 and t <= 2}
+        pairs = []
+        for b, t in zip(*groups):
+            values, reasons = {}, {}
+            for label, row in (("B", b), ("T", t)):
+                m = row["measurement"]
+                values[label] = sum(m["ops"][op]["gaps33"] for op in OPS) if mode == "ops" else m["after_switch_2s_gaps33"]
+                phases = {k: v for k, v in m.items() if k in ("start", "end", "phase")}
+                phases["evidence.phase"] = row["evidence"]["phase"]
+                reasons[label] = {k: v["lock"] for k, v in phases.items() if v["lock"]}
+            pairs.append({"round": b["row"]["round"], **values, "locks": reasons,
+                          "excluded": bool(reasons["B"] or reasons["T"])})
+        kept = [p for p in pairs if not p["excluded"]]
+        exclusions[key] = {"pairs": pairs, "remaining_pairs": len(kept),
+                           "before": {s: sum(p[s] for p in pairs) for s in ("B", "T")},
+                           "after": {s: sum(p[s] for p in kept) for s in ("B", "T")}}
+    supplemental["lock_excluded_descriptive_only"] = exclusions
+    reasons = [key for key, value in {**metrics, **locks}.items() if not value["passed"]]
+    notes = ["bake/judge: not measured; actual app and other devices: not verified",
+             "contract pass is not equivalence or overall safety; lock-inclusive neutral failure rate is unmeasured",
+             "failure alone does not establish N2 regression; lock-excluded results do not affect the verdict"]
+    if all(supplemental[src + "|ops"]["low_out"]["gaps33"]["total"] == 0 for src in ("src_o", "src_n")):
+        notes.append("low_out: historical signal not exercised (both zero)")
+    return {"status": "not-passed" if reasons else "passed", "metrics": metrics, "locks": locks,
+            "supplemental": supplemental, "reasons": reasons, "notes": notes}
 
 
 def read_series(work, folder, expected, environment=None):
@@ -313,19 +381,20 @@ def check(work):
     else:
         import camera_original as camera
     meta = camera.validate(work)
-    require(meta["format"] == FORMAT, "not an AB experiment")
+    expected = order(meta["format"])
+    pilot = [r for r in expected if r["round"] == 1]
     evidence = check_smoke(work, meta)
     gate = read(work / "pilot/complete.json")
-    require(gate["status"] == "ready" and gate["rows"] == 12, "pilot incomplete")
-    _, environment, hashes = read_series(work, "pilot", [r for r in order() if r["round"] == 1])
+    require(gate["status"] == "ready" and type(gate["rows"]) is int and gate["rows"] == len(pilot), "pilot incomplete")
+    _, environment, hashes = read_series(work, "pilot", pilot)
     evidence.update(hashes)
-    rows, _, hashes = read_series(work, "measurement", order(), environment)
+    rows, _, hashes = read_series(work, "measurement", expected, environment)
     evidence.update(hashes)
-    result = judge(rows)
+    result = judge_n2(rows) if meta["format"] == N2_FORMAT else judge(rows)
     for name in ("manifest.json", "experiment.json", "order.json", "safety-smoke/complete.json", "pilot/complete.json"):
         evidence[name] = digest((work / name).read_bytes())
     evidence["checker"] = digest(Path(__file__).read_bytes())
-    return {"format": FORMAT, "experiment_sha256": meta["experiment_sha256"], "sources": meta["sources"], **result, "evidence": evidence}
+    return {"format": meta["format"], "experiment_sha256": meta["experiment_sha256"], "sources": meta["sources"], **result, "evidence": evidence}
 
 
 def main(argv=None):
@@ -333,10 +402,14 @@ def main(argv=None):
     parser.add_argument("--run", required=True, type=Path)
     args = parser.parse_args(argv)
     work = args.run.resolve(strict=True)
+    format_ = FORMAT
     try:
+        declared = read(work / "manifest.json").get("format")
+        if declared in (FORMAT, N2_FORMAT):
+            format_ = declared
         result = check(work)
     except Exception as exc:
-        result = {"format": FORMAT, "status": "incomplete",
+        result = {"format": format_, "status": "incomplete",
                   "reasons": [str(exc) if isinstance(exc, ValueError) else type(exc).__name__]}
     with (work / "measurement/ab-verdict.json").open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False)

@@ -385,6 +385,7 @@ def test_pilot_preserves_lock_after_gpu_entry_but_rejects_missing_draw(tmp_path,
     assert (tmp_path / "pilot/row-000.json").is_file()
 
 
+@pytest.mark.parametrize("format_", [camera.MARKER, camera.ab.FORMAT, camera.ab.N2_FORMAT])
 @pytest.mark.parametrize("mode,stored_cards,request_kind,blocked_ws", [
     ("bake", 2060, None, 0), ("ops", 2060, None, 0),
     ("bake", 2000, None, 0), ("ops", 2000, None, 0),
@@ -393,7 +394,7 @@ def test_pilot_preserves_lock_after_gpu_entry_but_rejects_missing_draw(tmp_path,
     ("bake", 2060, "blocked-origin", 0), ("bake", 2060, "disabled-other", 0),
     ("bake", 2060, "disabled-background", 1),
 ])
-def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monkeypatch, mode, stored_cards, request_kind, blocked_ws):
+def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monkeypatch, mode, stored_cards, request_kind, blocked_ws, format_):
     data = json.dumps({"cards": [{}] * 2060, "edges": [{}] * 1785, "groups": [{}] * 160}).encode()
     summary = camera.scene_summary(data)
     assert (summary["cards"], summary["edges"], summary["groups"]) == (2060, 1785, 160)
@@ -406,7 +407,7 @@ def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monk
         def __init__(self):
             self.url, self.isolation = "http://127.0.0.1:12345", {}
             self.proc = types.SimpleNamespace(pid=1)
-            self.shared = types.SimpleNamespace(url="http://127.0.0.1:12346", proc=types.SimpleNamespace(pid=2))
+            self.shared = types.SimpleNamespace(url="http://127.0.0.1:12346", proc=types.SimpleNamespace(pid=2), email="synthetic@example.test")
         def start(self, **_kwargs):
             pass
 
@@ -414,12 +415,28 @@ def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monk
                                servers=types.SimpleNamespace(server_env=lambda *args: {}))
     rd = types.SimpleNamespace(am=types.SimpleNamespace(cn=cn),
                                rm=types.SimpleNamespace(ImgPage=object, fake_jpegs=lambda: []))
+    collected = []
+    browser_calls = []
+    cn.READ_STORE, rd.PHASE = "synthetic store", "synthetic phase"
+    cn.scene_rows = lambda *_args: [{"cards": [{}] * stored_cards}]
+
+    class Page:
+        async def eval(self, script):
+            if "return {raf:" in script:
+                return {"raf": 1, "loafSupported": True, "blockedWS": blocked_ws}
+            return "synthetic"
+
+        async def send(self, method):
+            browser_calls.append(method)
+            return {k: "synthetic" for k in ("product", "revision", "jsVersion", "protocolVersion")}
 
     async def measurement(src, _flag, _rate):
         cn.Hub().start(checkout=tmp_path / "measure" / src)
+        await collected[0](Page())
         return {"synthetic": True}
 
     def observed_page(_base, _origins, _url, evidence, _collect):
+        collected.append(_collect)
         evidence.update(stored_cards=[stored_cards], observations={"raf": 1, "loafSupported": True, "blockedWS": blocked_ws})
         if request_kind:
             evidence["requests"][request_kind] += 1
@@ -428,7 +445,7 @@ def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monk
     setattr(rd, mode, measurement)
     original_import = camera.importlib.import_module
     monkeypatch.setattr(camera.importlib, "import_module", lambda name: rd if name == "risk_diag" else original_import(name))
-    monkeypatch.setattr(camera, "validate", lambda work: {})
+    monkeypatch.setattr(camera, "validate", lambda work: {"format": format_})
     monkeypatch.setattr(camera, "guarded_page", observed_page)
     monkeypatch.setattr(sys, "path", list(sys.path))
     if stored_cards == summary["cards"] and request_kind in (None, "disabled-background") and not blocked_ws:
@@ -438,6 +455,8 @@ def test_worker_checks_contract_card_count_and_request_boundaries(tmp_path, monk
         with pytest.raises(RuntimeError, match="round incomplete"):
             asyncio.run(camera.worker(tmp_path, row, output))
         assert json.loads(output.read_text())["status"] == "incomplete"
+    assert browser_calls == ([] if format_ == camera.MARKER else ["Browser.getVersion"])
+    assert ("browser_version" in json.loads(output.read_text())["evidence"]) == (format_ != camera.MARKER)
 
 
 @pytest.mark.parametrize("path,method,expected", [

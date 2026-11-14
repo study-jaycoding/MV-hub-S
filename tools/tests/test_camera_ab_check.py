@@ -12,22 +12,23 @@ from browser_measure import camera_original as camera
 from test_camera_original import original, retained_home  # retained scripts only
 
 
-def spec():
-    return {"format": ab.FORMAT, "sources": {"src_o": "a" * 40, "src_n": "b" * 40},
+def spec(format_=ab.FORMAT):
+    return {"format": format_, "sources": {"src_o": ab.N2_BASE if format_ == ab.N2_FORMAT else "a" * 40, "src_n": "b" * 40},
             "d_commit": "c" * 40, "source_diff_sha256": ab.digest(b"approved patch"),
-            "rounds": dict(ab.ROUNDS), "order": "original-alternating-v1", "criteria": dict(ab.LIMITS)}
+            "rounds": dict(ab.rounds_for(format_)), "order": "original-alternating-v1", "criteria": dict(ab.LIMITS)}
 
 
-def git_source(*args):
+def git_source(*args, format_=ab.FORMAT):
     if args[0] == "rev-parse":
         return args[-1].split("^")[0].encode()
     if args[0] == "rev-list":
-        return ("b" * 40 + " " + "a" * 40).encode()
+        return ("b" * 40 + " " + spec(format_)["sources"]["src_o"]).encode()
     if args[0] == "merge-base":
         return b""
     if args[0] == "diff":
         if "--raw" in args:
-            return b"".join((f":100644 100644 {'1' * 40} {'2' * 40} M\0{p}\0").encode() for p in ab.PRODUCTS)
+            return b"".join((f":100644 100644 {'1' * 40} {'2' * 40} M\0{p}\0").encode()
+                            for p in (ab.N2_PRODUCTS if format_ == ab.N2_FORMAT else ab.PRODUCTS))
         return b"approved patch"
     if args[0] == "show":
         return args[1].split(":", 1)[1].encode()
@@ -60,8 +61,8 @@ def sample(row):
             "versions": {k: "fixed" for k in ("python", "PIL", "websockets")}, "jpeg_hashes": ["d" * 64] * 32}
 
 
-def rows():
-    return [sample(r) for r in ab.order()]
+def rows(format_=ab.FORMAT):
+    return [sample(r) for r in ab.order(format_)]
 
 
 def job():
@@ -295,18 +296,19 @@ def test_raw_series_audit(tmp_path, failure):
 
 
 @pytest.fixture
-def prepared(tmp_path, monkeypatch, original):
+def prepared(tmp_path, monkeypatch, original, request):
+    format_ = getattr(request, "param", ab.FORMAT)
     home = tmp_path / "retained"
     home.mkdir()
     run = home / "run-ab-synthetic"
     experiment = tmp_path / "experiment.json"
-    rewrite(experiment, spec())
+    rewrite(experiment, spec(format_))
     inputs = {name: b"synthetic" for name in camera.INPUTS}
     inputs.update({"measure/scene.json": b'{"cards":[]}', "measure/scene_2000.json": b'{"cards":[]}',
                    "measure/risk_diag.py": original.encode(), "anchor/anchor_measure.py": b'SRC = HERE / "src"'})
     monkeypatch.setattr(camera, "HOME", home)
     monkeypatch.setattr(camera, "read_inputs", lambda selected: inputs if selected == home else pytest.fail("wrong home"))
-    monkeypatch.setattr(camera, "git", lambda *args: b"archive" if args[0] == "archive" else git_source(*args))
+    monkeypatch.setattr(camera, "git", lambda *args: b"archive" if args[0] == "archive" else git_source(*args, format_=format_))
     patches = [(f"p{i}", ab.PRODUCTS[i % 3], 1, f"before{i}", f"after{i}") for i in range(8)]
     monkeypatch.setattr(camera, "patch_definitions", lambda text: patches)
     keys = ("CONTENT_HUB_AGENT_CHAT", "CONTENT_HUB_AGENT_CHAT_DIR", "CONTENT_HUB_DATA", "CONTENT_HUB_DB",
@@ -483,9 +485,10 @@ def measured(prepared):
                                          "checks": dict.fromkeys(ab.SMOKE_CHECKS, True)})
         camera.save(dest / "worker.job.json", {**job(), "status": "timeout" if behavior == "timeout" else "exited",
                                               "exit_code": 2 if behavior == "error" else 0})
-    write_series(prepared, "pilot", [sample(r) for r in ab.order() if r["round"] == 1])
-    camera.save(prepared / "pilot/complete.json", {"status": "ready", "rows": 12})
-    write_series(prepared, "measurement", rows())
+    pilot = [sample(r) for r in ab.order(meta["format"]) if r["round"] == 1]
+    write_series(prepared, "pilot", pilot)
+    camera.save(prepared / "pilot/complete.json", {"status": "ready", "rows": len(pilot)})
+    write_series(prepared, "measurement", rows(meta["format"]))
     return prepared
 
 
@@ -546,3 +549,296 @@ def test_runner_requires_consistent_checker_result(measured, monkeypatch, failur
     else: camera.finish_ab(measured, meta)
     complete = measured / "measurement/complete.json"
     assert complete.exists() == (failure in (None, "not-passed"))
+
+
+def test_n2_fixed_order_matches_retained_loops(original):
+    expected = [{**r, "src": r["src"].replace("src_pred", "src_o"),
+                 "key": r["key"].replace("src_pred", "src_o"), "tag": r["mode"] + "10"}
+                for r in camera.schedule(original, 10) if r["mode"] in ("ops", "switch")]
+    assert ab.order(ab.N2_FORMAT) == expected
+    assert len(expected) == 100
+    assert len([r for r in expected if r["round"] == 1]) == 10
+    assert [r["mode"] for r in expected] == ["ops"] * 20 + ["switch"] * 80
+    for mode in ("ops", "switch"):
+        for round_ in range(1, 11):
+            group = [r for r in expected if r["mode"] == mode and r["round"] == round_]
+            assert [s for s, _ in itertools.groupby(r["src"] for r in group)] == (
+                ["src_o", "src_n"] if round_ % 2 else ["src_n", "src_o"])
+            if mode == "switch":
+                assert [(r["flag"], r["rate"]) for r in group[:4]] == [("0", 1), ("0", 4), ("1", 1), ("1", 4)]
+
+
+def test_c_order_and_verdicts_keep_fixed_baseline_output():
+    # Captured from f9729223's checker with these synthetic rows, including every output field.
+    assert ab.digest(ab.canonical(ab.order())) == "795930c524dbb37e4f4d3a8a202732552214c8c51f3e33ab64d784f9fd585d38"
+    records = rows()
+    assert ab.digest(ab.canonical(ab.judge(records))) == "1a697f4b11bdd0d31d5decacd70910d79d2fda98bf1345949b7debef6ed9c0dc"
+    records[1]["measurement"]["bakes"] = 1
+    records[21]["measurement"]["ops"]["mid_in"]["gaps33"] = 68
+    assert ab.digest(ab.canonical(ab.judge(records))) == "d28617475b0b8c382a787b97d21a0c6ecb1291f8fff869fd56e900b9ea63e684"
+
+
+@pytest.mark.parametrize("mutation", [None, "format", "extra", "missing", "third", "baseline", "short-sha",
+                                     "round", "bake", "bool", "float", "alpha", "order", "hash"])
+def test_n2_spec_is_fixed(mutation):
+    s = spec(ab.N2_FORMAT)
+    if mutation == "format": s["format"] = "unknown"
+    elif mutation == "extra": s["extra"] = 1
+    elif mutation == "missing": del s["criteria"]
+    elif mutation == "third": s["sources"]["src_q"] = "d" * 40
+    elif mutation == "baseline": s["sources"]["src_o"] = "a" * 40
+    elif mutation == "short-sha": s["sources"]["src_n"] = "abcdef"
+    elif mutation == "round": s["rounds"]["ops"] = 11
+    elif mutation == "bake": s["rounds"]["bake"] = 10
+    elif mutation == "bool": s["criteria"]["lock_max_delta"] = True
+    elif mutation == "float": s["rounds"]["switch"] = 10.0
+    elif mutation == "alpha": s["criteria"]["alpha"] = 0.1
+    elif mutation == "order": s["order"] = "shuffle"
+    elif mutation == "hash": s["source_diff_sha256"] = "bad"
+    if mutation:
+        with pytest.raises(ValueError): ab.spec_check(s)
+    else:
+        ab.spec_check(s)
+        assert ab.contract_for(s["format"]) == ab.N2_CONTRACT
+
+
+@pytest.mark.parametrize("failure", [None, "parent", "merge", "ancestor", "not-commit", "other-file", "added",
+                                    "deleted", "mode", "rename", "extra-file", "same-file-unapproved", "patch", "helper"])
+def test_n2_source_checks_exact_patch_not_only_path(failure):
+    def git(*args):
+        value = git_source(*args, format_=ab.N2_FORMAT)
+        if args[0] == "rev-list" and failure == "parent": return value.replace(ab.N2_BASE.encode(), b"d" * 40)
+        if args[0] == "rev-list" and failure == "merge": return value + b" " + b"e" * 40
+        if args[0] == "merge-base" and failure == "ancestor": raise ValueError("not ancestor")
+        if args[0] == "rev-parse" and failure == "not-commit": return b"wrong"
+        if args[0] == "diff" and "--raw" in args:
+            if failure == "other-file": return value.replace(ab.N2_PRODUCTS[0].encode(), ab.PRODUCTS[1].encode())
+            if failure == "added": return value.replace(b":100644", b":000000", 1).replace(b" M\0", b" A\0")
+            if failure == "deleted": return value.replace(b" M\0", b" D\0")
+            if failure == "mode": return value.replace(b":100644 100644", b":100644 100755")
+            if failure == "rename": return value.replace(b" M\0", b" R100\0")
+            if failure == "extra-file": return value + value.replace(ab.N2_PRODUCTS[0].encode(), b"extra.py")
+        if args[0] == "diff" and "--binary" in args and failure in ("patch", "same-file-unapproved"):
+            return value + b"\nadditional sceneStore change outside reviewed N2 patch"
+        if args[0] == "show" and failure == "helper" and args[1].startswith("b" * 40): return b"drift"
+        return value
+    if failure:
+        with pytest.raises(ValueError): ab.source_check(spec(ab.N2_FORMAT), git)
+    else:
+        result = ab.source_check(spec(ab.N2_FORMAT), git)
+        assert result["diff"] == ab.digest(b"approved patch") and len(result["helpers"]) == 5
+
+
+def n2_values(records, mode, diffs):
+    for r in records:
+        row, m = r["row"], r["measurement"]
+        if row["mode"] != mode or (mode == "switch" and (row["flag"], row["rate"]) != ("1", 4)):
+            continue
+        d = diffs[row["round"] - 1]
+        value = max(0, d if row["src"] == "src_n" else -d)
+        if mode == "ops": m["ops"]["mid_in"]["gaps33"] = value
+        else: m["after_switch_2s_gaps33"] = value
+
+
+@pytest.mark.parametrize("mode,delta,passed", [("ops", 20, True), ("ops", 21, False), ("switch", 15, True), ("switch", 16, False)])
+def test_n2_totals_use_ten_round_pairs(mode, delta, passed):
+    records = rows(ab.N2_FORMAT)
+    n2_values(records, mode, [delta] + [0] * 9)
+    result = ab.judge_n2(records)
+    assert result["metrics"][mode]["delta"] == delta
+    assert result["metrics"][mode]["hits"] == 512
+    assert result["metrics"][mode]["passed"] is passed
+
+
+@pytest.mark.parametrize("diffs,hits", [([0] * 10, 1024), ([1] * 10, 1),
+    ([(-1 if (50 >> i) & 1 else 1) * 2**i for i in range(10)], 51),
+    ([(-1 if (51 >> i) & 1 else 1) * 2**i for i in range(10)], 52)])
+def test_n2_sign_enumeration_boundaries(diffs, hits):
+    records = rows(ab.N2_FORMAT)
+    n2_values(records, "ops", diffs)
+    result = ab.judge_n2(records)["metrics"]["ops"]
+    assert result["hits"] == hits and result["permutations"] == 1024
+    assert result["passed"] == (hits >= 52 and sum(diffs) <= 20)
+
+
+@pytest.mark.parametrize("locks", [0, 1, 2, 3])
+def test_n2_locks_count_rows_not_fields_and_exclude_pairs_only_in_supplement(locks):
+    records = rows(ab.N2_FORMAT)
+    for r in records:
+        row = r["row"]
+        if row["mode"] == "ops" and row["round"] <= locks:
+            r["measurement"]["start"]["lock"] = "start slow"
+            r["measurement"]["end"]["lock"] = "end slow"
+            r["evidence"]["phase"]["lock"] = "final slow"
+    result = ab.judge_n2(records)
+    gate = result["locks"]["ops|gpu1|x4"]
+    assert gate == {"B": locks, "T": locks, "rows_per_source": 10, "passed": locks <= 2}
+    assert len(result["metrics"]["ops"]["B"]) == 10
+    extra = result["supplemental"]["lock_excluded_descriptive_only"]["ops|gpu1|x4"]
+    assert extra["remaining_pairs"] == 10 - locks
+    if locks:
+        assert len(extra["pairs"][0]["locks"]["T"]) == 3
+
+
+@pytest.mark.parametrize("mode", ["ops", "switch"])
+def test_n2_one_candidate_lock_with_large_delay_fails_frames_not_locks(mode):
+    records = rows(ab.N2_FORMAT)
+    n2_values(records, mode, [68] + [0] * 9)
+    r = next(r for r in records if r["row"]["mode"] == mode and r["row"]["src"] == "src_n"
+             and r["row"]["round"] == 1 and r["row"]["flag"] == "1" and r["row"]["rate"] == 4)
+    r["evidence"]["phase"] = phase(None, "slow")
+    result = ab.judge_n2(records)
+    assert result["status"] == "not-passed" and result["reasons"] == [mode]
+    assert all(gate["passed"] for gate in result["locks"].values())
+    assert result["metrics"][mode]["T_total"] == 68
+    extra = result["supplemental"]["lock_excluded_descriptive_only"]
+    affected = extra[f"{mode}|gpu1|x4"]
+    assert affected["remaining_pairs"] == 9 and affected["before"] == {"B": 0, "T": 68}
+    assert affected["after"] == {"B": 0, "T": 0}
+    assert affected["pairs"][0] == {"round": 1, "B": 0, "T": 68,
+        "locks": {"B": {}, "T": {"evidence.phase": "slow"}}, "excluded": True}
+    assert all(v["remaining_pairs"] == 10 for k, v in extra.items() if k != f"{mode}|gpu1|x4")
+
+
+@pytest.mark.parametrize("failure", ["99", "101", "duplicate", "reorder", "missing-browser", "version", "phase", "gpu0lock", "gpu-not-entered", "gpu-exit",
+                                    "bool", "negative", "missing", "nan", "infinity"])
+def test_n2_invalid_rows_are_incomplete(failure):
+    records = rows(ab.N2_FORMAT)
+    r = records[0]
+    if failure == "99": records.pop()
+    elif failure == "101": records.append(records[0])
+    elif failure == "duplicate": records[1] = records[0]
+    elif failure == "reorder": records[0], records[1] = records[1], records[0]
+    elif failure == "missing-browser": del r["evidence"]["browser_version"]
+    elif failure == "version": r["versions"]["python"] = "changed"
+    elif failure == "phase": del r["measurement"]["start"]
+    elif failure == "gpu0lock": records[20]["evidence"]["phase"]["lock"] = "slow"
+    elif failure == "gpu-not-entered": r["evidence"]["observations"]["draw"] = 0
+    elif failure == "gpu-exit": r["measurement"]["end"]["gpu"] = None
+    elif failure == "missing": del r["measurement"]["ops"]["low_out"]["gaps33"]
+    else: r["measurement"]["ops"]["low_out"]["gaps33"] = {"bool": True, "negative": -1, "nan": float("nan"), "infinity": float("inf")}[failure]
+    with pytest.raises((ValueError, KeyError)): ab.judge_n2(records)
+
+
+@pytest.mark.parametrize("prepared", [ab.N2_FORMAT], indirect=True)
+@pytest.mark.parametrize("performance_failure", [False, True])
+def test_n2_prepare_pilot_measure_home_and_no_early_performance_stop(prepared, monkeypatch, performance_failure):
+    meta = camera.validate(prepared)
+    assert meta["format"] == ab.N2_FORMAT and meta["contract"] == ab.N2_CONTRACT
+    assert meta["sources"] == spec(ab.N2_FORMAT)["sources"]
+    assert ab.read(prepared / "order.json") == ab.order(ab.N2_FORMAT)
+    commands = []
+    monkeypatch.setattr(camera, "smoke", lambda path: None)
+    monkeypatch.setattr(ab, "check_smoke", lambda *args: {})
+    def owned(command, logfile, _timeout, _root):
+        commands.append(command)
+        assert command[command.index("--home") + 1] == str(prepared.parent)
+        row = json.loads(command[command.index("--row") + 1])
+        result = sample(row)
+        if performance_failure and row["mode"] == "ops" and row["src"] == "src_n":
+            result["measurement"]["ops"]["mid_in"]["gaps33"] = 100
+        camera.save(Path(command[-1]), result)
+        camera.save(logfile.with_suffix(".job.json"), job())
+        return job()
+    monkeypatch.setattr(camera, "run_owned", owned)
+    monkeypatch.setattr(camera, "finish_ab", lambda *args: None)
+    camera.series(prepared, True)
+    assert ab.read(prepared / "pilot/complete.json") == {"status": "ready", "rows": 10}
+    camera.series(prepared, False)
+    assert len(commands) == 110
+    records, _, _ = ab.read_series(prepared, "measurement", ab.order(ab.N2_FORMAT))
+    assert ab.judge_n2(records)["status"] == ("not-passed" if performance_failure else "passed")
+
+
+@pytest.mark.parametrize("prepared", [ab.N2_FORMAT], indirect=True)
+@pytest.mark.parametrize("failure", [None, "pilot9", "pilot11", "pilot-env", "missing-browser", "job", "cleanup", "aggregate", "missing-row", "extra-row", "duplicate", "exception"])
+def test_n2_checker_exit_and_invalid_evidence(measured, monkeypatch, failure):
+    dest = measured / "measurement"
+    if failure in ("pilot9", "pilot11"):
+        rewrite(measured / "pilot/complete.json", {"status": "ready", "rows": int(failure[5:])})
+    elif failure in ("pilot-env", "missing-browser", "duplicate"):
+        r = ab.read(dest / "row-000.json")
+        if failure == "pilot-env": r["evidence"]["browser_version"]["revision"] = "changed"
+        elif failure == "missing-browser": del r["evidence"]["browser_version"]
+        else: r = ab.read(dest / "row-001.json")
+        rewrite(dest / "row-000.json", r)
+    elif failure == "job": rewrite(dest / "row-000.job.json", {**job(), "exit_code": 1})
+    elif failure == "cleanup": rewrite(dest / "row-000.job.json", {**job(), "active_after": 1})
+    elif failure == "aggregate": rewrite(dest / "rd_ops10.json", {})
+    elif failure == "missing-row": (dest / "row-000.json").rename(dest / "missing.json")
+    elif failure == "extra-row": camera.save(dest / "row-100.json", rows(ab.N2_FORMAT)[0])
+    elif failure == "exception": monkeypatch.setattr(ab, "check", lambda *args: (_ for _ in ()).throw(RuntimeError("synthetic")))
+    assert ab.main(["--run", str(measured)]) == (2 if failure else 0)
+    result = ab.read(dest / "ab-verdict.json")
+    assert result["format"] == ab.N2_FORMAT and result["status"] == ("incomplete" if failure else "passed")
+    if not failure:
+        assert "bake" not in result and len(result["locks"]) == 3
+        assert "bake/judge: not measured" in result["notes"][0]
+    assert not (dest / "complete.json").exists()
+
+
+@pytest.mark.parametrize("prepared", [ab.N2_FORMAT], indirect=True)
+@pytest.mark.parametrize("failure", [None, "not-passed", "mismatch", "exception", "incomplete", "cleanup", "tampered", "format"])
+def test_n2_finish_requires_consistent_result_before_complete(measured, monkeypatch, failure):
+    if failure == "not-passed":
+        path = measured / "measurement/row-001.json"
+        record = ab.read(path)
+        record["measurement"]["ops"]["mid_in"]["gaps33"] = 68
+        rewrite(path, record)
+        path = measured / "measurement/rd_ops10.json"
+        aggregate = ab.read(path)
+        aggregate[record["row"]["key"]][0] = record["measurement"]
+        rewrite(path, aggregate)
+        assert ab.main(["--run", str(measured)]) == 1
+    def owned(*args):
+        result = ab.check(measured)
+        code = ab.EXIT_CODES[result["status"]]
+        if failure == "exception": raise RuntimeError("synthetic checker crash")
+        if failure == "incomplete": result, code = {"format": ab.N2_FORMAT, "status": "incomplete"}, 2
+        if failure == "tampered": result["metrics"]["ops"]["T_total"] = 999
+        if failure == "format": result["format"] = ab.FORMAT
+        if failure != "not-passed": camera.save(measured / "measurement/ab-verdict.json", result)
+        return {**job(), "exit_code": 1 if failure == "mismatch" else code,
+                "cleanup_errors": ["close"] if failure == "cleanup" else []}
+    monkeypatch.setattr(camera, "run_owned", owned)
+    meta = camera.validate(measured)
+    if failure in ("not-passed", "incomplete"):
+        with pytest.raises(SystemExit) as exc: camera.finish_ab(measured, meta)
+        assert exc.value.code == (1 if failure == "not-passed" else 2)
+    elif failure:
+        with pytest.raises(RuntimeError): camera.finish_ab(measured, meta)
+    else: camera.finish_ab(measured, meta)
+    complete = measured / "measurement/complete.json"
+    assert complete.exists() == (failure in (None, "not-passed"))
+    if complete.exists():
+        assert ab.read(complete)["rows"] == 100
+        assert ab.read(complete)["status"] == ("not-passed" if failure else "passed")
+
+
+@pytest.mark.parametrize("prepared", [ab.N2_FORMAT], indirect=True)
+@pytest.mark.parametrize("changed", ["format", "order", "tool", "contract", "source", "experiment"])
+def test_n2_manifest_cannot_change_format_order_tools_or_source(prepared, changed):
+    meta = ab.read(prepared / "manifest.json")
+    if changed == "format": meta["format"] = ab.FORMAT
+    elif changed == "order": rewrite(prepared / "order.json", ab.order(ab.N2_FORMAT)[::-1])
+    elif changed == "tool": meta["reviewed_tools"]["camera_ab_check.py"] = "0" * 64
+    elif changed == "contract": meta["contract"] = ab.CONTRACT
+    elif changed == "source": (prepared / "measure/src_n/frontend/src/lib/sceneStore.ts").write_text("drift")
+    else:
+        changed_spec = spec(ab.N2_FORMAT)
+        changed_spec["source_diff_sha256"] = "0" * 64
+        rewrite(prepared / "experiment.json", changed_spec)
+    rewrite(prepared / "manifest.json", meta)
+    with pytest.raises(ValueError): camera.validate(prepared)
+
+
+def test_n2_no_unlocked_pairs_is_descriptive_not_an_alternate_test():
+    records = rows(ab.N2_FORMAT)
+    for r in records:
+        if r["row"]["mode"] == "ops":
+            r["evidence"]["phase"]["lock"] = "slow"
+    result = ab.judge_n2(records)
+    extra = result["supplemental"]["lock_excluded_descriptive_only"]["ops|gpu1|x4"]
+    assert extra["remaining_pairs"] == 0 and extra["after"] == {"B": 0, "T": 0}
+    assert result["status"] == "not-passed" and result["reasons"] == ["ops|gpu1|x4"]
+    assert result["metrics"]["ops"]["hits"] == 1024

@@ -229,7 +229,7 @@ def prepare(work: Path, home: Path | None = None, experiment: Path | None = None
     meta = {"format": MARKER, "sources": SOURCES, "inputs": INPUTS, "files": {}, "source_hashes": {},
             "patches": {}, "scenes": {}, "packages": {}, "static_resources": {}, "tool": sha(Path(__file__).read_bytes())}
     if spec is not None:
-        meta.update(format=ab.FORMAT, sources=spec["sources"], home=str(home), contract=ab.CONTRACT,
+        meta.update(format=spec["format"], sources=spec["sources"], home=str(home), contract=ab.contract_for(spec["format"]),
                     experiment_sha256=sha(ab.canonical(spec)), source_evidence=source_evidence,
                     reviewed_tools={"camera_original.py": meta["tool"],
                                     "camera_ab_check.py": sha(Path(ab.__file__).read_bytes())})
@@ -293,8 +293,8 @@ def prepare(work: Path, home: Path | None = None, experiment: Path | None = None
         # Compare against the retained loop as well as the independent fixed contract.
         rows = [{**r, "src": "src_o" if r["src"] == "src_pred" else r["src"],
                  "key": r["key"].replace("src_pred", "src_o"), "tag": r["mode"] + "10"}
-                for r in rows if r["mode"] != "judge"]
-        ab.require(rows == ab.order(), "AB order differs from retained loop")
+                for r in rows if r["mode"] in ab.rounds_for(spec["format"])]
+        ab.require(rows == ab.order(spec["format"]), "AB order differs from retained loop")
     save(work / "order.json", rows)
     meta["files"]["order.json"] = sha((work / "order.json").read_bytes())
     save(work / "manifest.json", meta)
@@ -302,16 +302,17 @@ def prepare(work: Path, home: Path | None = None, experiment: Path | None = None
 
 def validate(work: Path) -> dict:
     meta = ab.read(work / "manifest.json")
-    if meta.get("format") == ab.FORMAT:
+    if meta.get("format") in (ab.FORMAT, ab.N2_FORMAT):
         spec = ab.read(work / "experiment.json")
         ab.spec_check(spec)
         ab.require(work.resolve().parent == Path(meta["home"]).resolve() and work.name.startswith("run-ab-"), "AB run escaped retained home")
-        ab.require(meta["contract"] == ab.CONTRACT and meta["experiment_sha256"] == sha(ab.canonical(spec)), "experiment contract changed")
+        ab.require(meta["format"] == spec["format"] and meta["contract"] == ab.contract_for(spec["format"])
+                   and meta["experiment_sha256"] == sha(ab.canonical(spec)), "experiment contract changed")
         ab.require(meta["sources"] == spec["sources"] and meta["inputs"] == INPUTS, "AB sources/inputs changed")
         ab.require(meta["source_evidence"] == ab.source_check(spec, git), "AB source evidence changed")
         ab.require(meta["reviewed_tools"] == {"camera_original.py": sha(Path(__file__).read_bytes()),
                                              "camera_ab_check.py": sha(Path(ab.__file__).read_bytes())}, "reviewed tools changed")
-        ab.require(ab.read(work / "order.json") == ab.order(), "AB order changed")
+        ab.require(ab.canonical(ab.read(work / "order.json")) == ab.canonical(ab.order(spec["format"])), "AB order changed")
         ab.require({"experiment.json", "order.json", *INPUTS.keys()} - {"measure/build_r2diag.py"} <= meta["files"].keys(), "incomplete manifest")
     elif meta.get("format") != MARKER or meta.get("sources") != SOURCES or meta.get("inputs") != INPUTS:
         raise ValueError("not the fixed original experiment")
@@ -672,7 +673,7 @@ loafError:!!p?.loafErr,blockedWS:window.__blockedWS||0}; })()""")
         evidence["renderer"] = await page.eval("""(() => {const c=document.createElement('canvas'),g=c.getContext('webgl2');
 if(!g)return null;const e=g.getExtension('WEBGL_debug_renderer_info');return e?g.getParameter(e.UNMASKED_RENDERER_WEBGL):g.getParameter(g.RENDERER);})()""")
         evidence["phase"] = await page.eval(rd.PHASE)
-        if meta.get("format") == ab.FORMAT:
+        if meta.get("format") in (ab.FORMAT, ab.N2_FORMAT):
             evidence["browser_version"] = await page.send("Browser.getVersion")
 
     current = []
@@ -714,16 +715,17 @@ if(!g)return null;const e=g.getExtension('WEBGL_debug_renderer_info');return e?g
 
 def series(work: Path, pilot: bool) -> None:
     meta = validate(work)
-    is_ab = meta.get("format") == ab.FORMAT
+    is_ab = meta.get("format") in (ab.FORMAT, ab.N2_FORMAT)
     if is_ab:
         ab.require(Path(meta["home"]).resolve() == HOME.resolve(), "CLI home differs from prepared home")
+        pilot_order = [r for r in ab.order(meta["format"]) if r["round"] == 1]
     destination = work / ("pilot" if pilot else "measurement")
     if not pilot:
         gate = json.loads((work / "pilot/complete.json").read_text(encoding="utf-8"))
         if gate.get("status") != "ready":
             raise ValueError("pilot is not ready")
         if is_ab:
-            ab.require(type(gate.get("rows")) is int and gate["rows"] == 12, "AB pilot must contain twelve rows")
+            ab.require(type(gate.get("rows")) is int and gate["rows"] == len(pilot_order), "AB pilot row count mismatch")
     else:
         smoke(work / "safety-smoke")
     if is_ab:
@@ -732,10 +734,10 @@ def series(work: Path, pilot: bool) -> None:
     order = json.loads((work / "order.json").read_text(encoding="utf-8"))
     if pilot:
         order = [r for r in order if r["round"] == 1]
-    aggregates = {m + "10": {} for m in ab.ROUNDS} if is_ab else {tag: {} for *_rest, tag in MODES}
+    aggregates = {m + "10": {} for m in ab.rounds_for(meta["format"])} if is_ab else {tag: {} for *_rest, tag in MODES}
     environment = None
     if is_ab and not pilot:
-        _, environment, _ = ab.read_series(work, "pilot", [r for r in ab.order() if r["round"] == 1])
+        _, environment, _ = ab.read_series(work, "pilot", pilot_order)
     for number, row in enumerate(order):
         output = destination / f"row-{number:03}.json"
         command = [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve()), "worker",
@@ -798,7 +800,7 @@ def finish_ab(work: Path, meta: dict) -> None:
         code = ab.EXIT_CODES[result["status"]]
         ab.require(outcome["status"] == "exited" and type(outcome["exit_code"]) is int and outcome["exit_code"] == code
                    and type(outcome["active_after"]) is int and outcome["active_after"] == 0 and outcome["cleanup_errors"] == []
-                   and "error_type" not in outcome and result["format"] == ab.FORMAT, "checker outcome mismatch")
+                   and "error_type" not in outcome and result["format"] == meta["format"], "checker outcome mismatch")
         if code != 2:
             ab.require(result["experiment_sha256"] == meta["experiment_sha256"] and result["sources"] == meta["sources"], "checker target mismatch")
             ab.require(result == ab.check(work), "checker result differs from evidence")
@@ -806,7 +808,7 @@ def finish_ab(work: Path, meta: dict) -> None:
         raise RuntimeError("AB checker infrastructure did not complete") from exc
     if code == 2:
         raise SystemExit(2)
-    save(destination / "complete.json", {"status": result["status"], "rows": 120,
+    save(destination / "complete.json", {"status": result["status"], "rows": len(ab.order(meta["format"])),
                                         "checker": meta["reviewed_tools"]["camera_ab_check.py"]})
     if code:
         raise SystemExit(code)

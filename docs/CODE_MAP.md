@@ -131,6 +131,8 @@ updated: 2026-11-14
 보관한 원장면의 재검사 실행기는 `tools/browser_measure/camera_original.py`, 경계 시험은 `tools/tests/test_camera_original.py`다. 세 고정 소스·새 격리 폴더·소유 프로세스로 원래65회와 판정기를 재사용한다. 실행 허용 범위와 환경 한계는 [카메라 후속 기록](status/카메라_후속진단_2026-11-12.md)을 따른다.
 
 같은 실행기의 `prepare --experiment`는 별도 형식 `camera-ab-c-120-v1`을 만들며 모든 단계에서 `--home`을 명시한다. 고정 명세·원천·120행 원자료·Job·집계를 검사하는 표준 라이브러리 판정기는 `tools/browser_measure/camera_ab_check.py`, 합성 경계 시험은 `tools/tests/test_camera_ab_check.py`다. 원래65행의 원천·순서·판정은 유지하며, 장면 사본 실행 전 독립 리뷰를 마친 도구 지문과 사전 고정한 판정 기준을 사용한다.
+
+N2 단독 형식 `camera-ab-n2-v1`도 같은 실행기·판정기·시험에서 다룬다. 고정 X2와 `sceneStore.ts` 한 파일 수정 후보를 비교하며 ops·switch 본측정 100행·예비 10행이다. 잠긴 행은 주 판정 10쌍에 포함하고, 잠금 제외 결과는 위치·이유·원값·남은 짝 수·전후 합계를 보조 출력으로만 남긴다. bake·judge는 측정하지 않으며 기존 두 형식의 판정은 유지한다.
 브라우저 실측은 `tools/browser_measure/canvas_notebook.py`, 실행·증거 검증은 `tools/verify_canvas_notebook_measure.py`,
 도구 단위 시험은 `tools/tests/test_canvas_notebook_measure.py`다. 저장 계약은 [CANVAS_SCENE_STORAGE](CANVAS_SCENE_STORAGE.md)를 따른다.
 백엔드 진입은 `routers/mcp.py`, `routers/mcp_v2.py`, 저장은 `repo/mcp_plans.py`, `repo/mcp_v2.py`,
