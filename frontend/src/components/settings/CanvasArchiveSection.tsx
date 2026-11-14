@@ -20,7 +20,7 @@ export function useStorageRecovery() {
   const [, updateAccount] = useReducer((value: number) => value + 1, 0);
   const [recovery, setRecovery] = useState<StorageRecovery | null>(null);
   const [failedAccount, setFailedAccount] = useState<string | null>(null);
-  const refresh = useRef<() => Promise<void> | undefined>(() => undefined);
+  const refresh = useRef<() => Promise<void>>(() => Promise.resolve());
   const refreshRecovery = useCallback(() => refresh.current(), []);
   const pendingRefresh = useRef(new Set<() => void>());
   // 같은 계정의 mode 전환에는 대기를 넘기고, 계정 변경·화면 해제 때만 정리한다.
@@ -33,6 +33,7 @@ export function useStorageRecovery() {
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     let refreshPending = false;
     let inFlight: Promise<void> | undefined;
+    let readFailures = 0;
     const refreshWaiters = pendingRefresh.current;
     const cancelRefresh = () => { refreshWaiters.forEach((resolve) => resolve()); refreshWaiters.clear(); };
     setRecovery((previous) => previous?.account === account ? previous : null);
@@ -41,21 +42,27 @@ export function useStorageRecovery() {
       // 초기 준비 완료는 저장소 알림으로 온다. 열리지 않은 창을 계속 확인하지 않는다.
       if (!sceneStoreReady()) { refreshPending = false; cancelRefresh(); return; }
       const waiters = [...refreshWaiters];
-      let accountChanged = false;
-      inFlight = readStorageRecovery().then((value) => {
+      let retryRead = false;
+      inFlight = Promise.resolve().then(() => readStorageRecovery(account)).then((value) => {
         if (alive && account === getAccountNamespace()) {
           // 현재 effect 계정으로 시작하며, 읽는 동안 계정이 바뀌면 readStorageRecovery가 던진다.
           setRecovery(value);
+          readFailures = 0;
           setFailedAccount(null);
-        }
+        } else if (alive) { retryRead = true; refreshPending = true; }
       }).catch((error) => {
         if (!alive) return;
-        if (error instanceof Error && error.message === RECOVERY_ACCOUNT_CHANGED) { accountChanged = true; refreshPending = true; }
-        else if (account === getAccountNamespace()) setFailedAccount(account);
+        if (error instanceof Error && error.message === RECOVERY_ACCOUNT_CHANGED) { retryRead = true; refreshPending = true; }
+        else if (account === getAccountNamespace()) {
+          // 계정 왕복의 guard 실패일 수 있어 한 번만 재확인하고, 연속 실패는 표시한다.
+          if (++readFailures === 1) { retryRead = true; refreshPending = true; }
+          else setFailedAccount(account);
+        } else { retryRead = true; refreshPending = true; }
       }).finally(() => {
         inFlight = undefined;
         if (alive && account !== getAccountNamespace()) refreshPending = true;
-        if (alive && !accountChanged) for (const resolve of waiters) { refreshWaiters.delete(resolve); resolve(); }
+        if (alive && !retryRead) for (const resolve of waiters) { refreshWaiters.delete(resolve); resolve(); }
+        // 같은 effect의 자동 읽기는 시작 때 건 250ms 창이 끝나야 바로 잇는다(명시적 읽기는 예외).
         if (refreshPending && refreshTimer === undefined) { refreshPending = false; scheduleRead(); }
       });
       return inFlight;
@@ -94,7 +101,7 @@ export function useStorageRecovery() {
     const offCard = subscribeCardRecovery(scheduleRead);
     window.addEventListener("storage", scheduleRead);
     window.addEventListener("focus", scheduleRead);
-    return () => { alive = false; refresh.current = () => undefined; clearTimeout(refreshTimer); offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
+    return () => { alive = false; refresh.current = () => Promise.resolve(); clearTimeout(refreshTimer); refreshTimer = undefined; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); offMirror(); offCard(); window.removeEventListener("storage", scheduleRead); window.removeEventListener("focus", scheduleRead); };
   }, [account, writer.mode]);
   const ownRecovery = recovery?.account === account ? recovery : null, failed = failedAccount === account;
   return useMemo(() => [ownRecovery, refreshRecovery, failed] as const, [ownRecovery, refreshRecovery, failed]);

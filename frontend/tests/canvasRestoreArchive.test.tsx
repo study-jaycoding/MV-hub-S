@@ -128,6 +128,41 @@ function HeldProbe() {
   const [recovery, , failed] = useStorageRecovery();
   return <i data-held={heldRecoveryCounts(recovery).total} data-failed={failed} />;
 }
+async function confirmReadFailure() {
+  await act(async () => {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(250);
+    else await new Promise((resolve) => setTimeout(resolve, 260));
+  });
+}
+it.each([false, true])("recovery confirms a general failure only once before showing it (retry succeeds: %s)", async (succeeds) => {
+  const recovery = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("read failed"));
+  if (succeeds) read.mockRejectedValueOnce(new Error("temporary guard failure")).mockResolvedValue(recovery);
+  const failures: boolean[] = [];
+  function Probe() { const [, , failed] = useStorageRecovery(); failures.push(failed); return <i data-failed={failed} />; }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(failures).not.toContain(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("i")?.dataset.failed).toBe(String(!succeeds));
+    if (succeeds) expect(failures).not.toContain(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(read).toHaveBeenCalledTimes(2);
+    read.mockResolvedValue(recovery);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    read.mockRejectedValueOnce(new Error("new first failure"));
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(5);
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
 it("writer mode changes retain this account recovery through a failed read but never expose it to another account", async () => {
   const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
   const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(recovery);
@@ -138,6 +173,7 @@ it("writer mode changes retain this account recovery through a failed read but n
     read.mockRejectedValue(new Error("read failed"));
     writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
     await act(async () => root!.render(<HeldProbe />));
+    await confirmReadFailure();
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "true" });
     setAccountScope("other@test");
     read.mockImplementation(() => new Promise(() => {}));
@@ -154,16 +190,17 @@ it.each(["success", "failure"])("writer mode retains a read failure while waitin
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    await confirmReadFailure();
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     ready.mockReturnValue(false);
     read.mockImplementation(() => new Promise((yes, no) => { resolve = yes; reject = no; }));
     writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
     await act(async () => root!.render(<HeldProbe />));
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
     ready.mockReturnValue(true);
     await act(async () => { window.dispatchEvent(new Event("focus")); });
-    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(3);
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     await act(async () => {
       if (outcome === "success") resolve(initial);
@@ -199,6 +236,72 @@ it("initial read and synchronous save notification share a window; manual refres
     expect(read).toHaveBeenCalledTimes(5);
   } finally { subscribe.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 });
+it("recovery keeps automatic read starts at least 250ms apart with 300ms reads", async () => {
+  const initial = await readStorageRecovery();
+  const starts: number[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => {
+    starts.push(Date.now());
+    return new Promise((resolve) => setTimeout(() => resolve(initial), 300));
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    for (let i = 0; i < 24; i++) {
+      await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(50); });
+    }
+    expect(starts).toHaveLength(5);
+    for (let i = 1; i < starts.length; i++) expect(starts[i] - starts[i - 1]).toBeGreaterThanOrEqual(250);
+    await act(async () => root!.unmount()); root = undefined;
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(starts).toHaveLength(5);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it("recovery serializes a synchronous notification inside the read", async () => {
+  const initial = await readStorageRecovery();
+  let active = 0, peak = 0, notify = true;
+  const finishes: (() => void)[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValueOnce(initial).mockImplementation(() => {
+    peak = Math.max(peak, ++active);
+    if (notify) { notify = false; window.dispatchEvent(new Event("focus")); }
+    return new Promise((resolve) => finishes.push(() => { active--; resolve(initial); }));
+  });
+  let refresh!: () => Promise<void> | undefined;
+  function Probe() { [, refresh] = useStorageRecovery(); return null; }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    let pending!: Promise<void> | undefined;
+    await act(async () => { pending = refresh(); });
+    expect(peak).toBe(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenLastCalledWith(initial.account);
+    await act(async () => { finishes.shift()!(); await pending; });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(read).toHaveBeenCalledTimes(3);
+    await act(async () => finishes.shift()!());
+    expect(peak).toBe(1);
+    expect(active).toBe(0);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["before effect", "after unmount"])("recovery refresh returns a resolved promise %s", async (phase) => {
+  const initial = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockResolvedValue(initial);
+  let refresh!: () => Promise<void> | undefined;
+  let beforeEffect: Promise<void> | undefined, captured = false;
+  function Probe() {
+    [, refresh] = useStorageRecovery();
+    if (!captured) { captured = true; beforeEffect = refresh(); }
+    return null;
+  }
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    await act(async () => root!.unmount()); root = undefined;
+    const result = phase === "before effect" ? beforeEffect : refresh();
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBeUndefined();
+    expect(read).toHaveBeenCalledTimes(1);
+  } finally { read.mockRestore(); }
+}, 15_000);
 it.each(["success", "failure", "unmount"])("manual refresh waits for the queued read: %s", async (outcome) => {
   const initial = await readStorageRecovery();
   const latest = { ...initial, cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
@@ -229,14 +332,89 @@ it.each(["success", "failure", "unmount"])("manual refresh waits for the queued 
       await act(async () => {
         if (outcome === "success") reads[1].resolve(latest);
         else reads[1].reject(new Error("fresh read failed"));
-        await Promise.all([first, second]);
+        if (outcome === "success") await Promise.all([first, second]);
       });
+      if (outcome === "failure") {
+        expect(completed).toBe(0);
+        expect(host.querySelector("i")?.dataset.failed).toBe("false");
+        await confirmReadFailure();
+        await act(async () => { reads[2].reject(new Error("confirmed read failure")); await Promise.all([first, second]); });
+      }
       expect(host.querySelector("i")?.dataset).toMatchObject({ held: outcome === "success" ? "1" : "0", failed: String(outcome === "failure") });
     }
     expect(completed).toBe(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(read).toHaveBeenCalledTimes(outcome === "unmount" ? 1 : 2);
+    expect(read).toHaveBeenCalledTimes(outcome === "unmount" ? 1 : outcome === "failure" ? 3 : 2);
   } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["success", "failure"])("manual refresh waits through the first general failure until retry %s", async (outcome) => {
+  const initial = await readStorageRecovery();
+  const reads: { resolve: (value: typeof initial) => void; reject: (reason: Error) => void }[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  let refresh!: () => Promise<void> | undefined;
+  function Probe() {
+    const [, refreshRecovery, failed] = useStorageRecovery();
+    refresh = refreshRecovery;
+    return <i data-failed={failed} />;
+  }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    await act(async () => reads[0].resolve(initial));
+    let completed = false;
+    const pending = Promise.resolve(refresh()).then(() => { completed = true; });
+    await act(async () => {});
+    await act(async () => reads[1].reject(new Error("first read failed")));
+    expect(completed).toBe(false);
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(reads).toHaveLength(3);
+    expect(completed).toBe(false);
+    await act(async () => {
+      if (outcome === "success") reads[2].resolve(initial);
+      else reads[2].reject(new Error("confirmed read failure"));
+      await pending;
+    });
+    expect(completed).toBe(true);
+    expect(host.querySelector("i")?.dataset.failed).toBe(String(outcome === "failure"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(reads).toHaveLength(3);
+  } finally { read.mockRestore(); vi.useRealTimers(); }
+}, 15_000);
+it.each(["success", "failure"])("manual refresh waits through a discarded read %s after an account round trip", async (outcome) => {
+  const initial = await readStorageRecovery();
+  const latest = { ...initial, cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
+  const account = vi.spyOn(accountScope, "getAccountNamespace").mockReturnValue(initial.account);
+  const reads: { resolve: (value: typeof initial) => void; reject: (error: Error) => void }[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  let refresh!: () => Promise<void>;
+  function Probe() {
+    const [recovery, refreshRecovery] = useStorageRecovery();
+    refresh = refreshRecovery;
+    return <i data-held={heldRecoveryCounts(recovery).total} />;
+  }
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<Probe />));
+    await act(async () => reads[0].resolve(initial));
+    let completed = false;
+    const pending = refresh().then(() => { completed = true; });
+    await act(async () => {});
+    // then/catch의 계정 검사에서만 다른 계정이고 finally 전에는 원래 계정으로 돌아온다.
+    account.mockReturnValueOnce("acct:other@test");
+    await act(async () => {
+      if (outcome === "success") reads[1].resolve(latest);
+      else reads[1].reject(new Error("discarded general failure"));
+    });
+    expect(host.querySelector("i")?.dataset.held).toBe("0");
+    expect(completed).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(reads).toHaveLength(3);
+    expect(completed).toBe(false);
+    await act(async () => { reads[2].resolve(latest); await pending; });
+    expect(completed).toBe(true);
+    expect(host.querySelector("i")?.dataset.held).toBe("1");
+  } finally { account.mockRestore(); read.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
 it("manual refresh waits through an account-change discard for the replacement read", async () => {
   const initial = await readStorageRecovery();
@@ -250,6 +428,7 @@ it("manual refresh waits through an account-change discard for the replacement r
     await act(async () => reads[0].resolve(initial));
     let completed = false;
     const pending = Promise.resolve(refresh()).then(() => { completed = true; });
+    await act(async () => {});
     expect(reads).toHaveLength(2);
     await act(async () => {
       setAccountScope("other@test");
@@ -280,6 +459,7 @@ it.each(["success", "failure"])("manual refresh survives writer mode changes unt
     await act(async () => reads[0].resolve(initial));
     let done = false;
     const result = Promise.resolve(refresh()).then(() => { done = true; });
+    await act(async () => {});
     expect(reads).toHaveLength(2);
     writer.mockReturnValue({ mode: "local_only", handed: false, localCount: 0 });
     await act(async () => root!.render(<Probe />));
@@ -290,8 +470,13 @@ it.each(["success", "failure"])("manual refresh survives writer mode changes unt
     await act(async () => {
       if (outcome === "success") reads[2].resolve(initial);
       else reads[2].reject(new Error("new read failed"));
-      await result;
+      if (outcome === "success") await result;
     });
+    if (outcome === "failure") {
+      expect(done).toBe(false);
+      await confirmReadFailure();
+      await act(async () => { reads[3].reject(new Error("confirmed new read failure")); await result; });
+    }
     expect(done).toBe(true);
   } finally { read.mockRestore(); writer.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
@@ -317,6 +502,7 @@ it("manual refresh cancels while not ready and later waits only for an actual re
     expect(read).not.toHaveBeenCalled();
     done = false;
     const actual = Promise.resolve(refresh()).then(() => { done = true; });
+    await act(async () => {});
     expect(read).toHaveBeenCalledTimes(1);
     expect(done).toBe(false);
     await act(async () => { resolve(initial); await actual; });
@@ -409,12 +595,14 @@ it("SettingsPanel shares one recovery read between its summary and archive secti
     read.mockRejectedValue(new Error("shared read failed"));
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
     expect(read).toHaveBeenCalledTimes(2);
+    await confirmReadFailure();
+    expect(read).toHaveBeenCalledTimes(3);
     expect(document.body.textContent).toContain("보관본 읽기 실패");
     expect(document.body.textContent).toContain("보관본을 읽지 못했습니다.");
     expect(document.body.textContent).toContain("복원 보류 1");
     read.mockResolvedValue(initial);
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(250); });
-    expect(read).toHaveBeenCalledTimes(3);
+    expect(read).toHaveBeenCalledTimes(4);
     expect(document.body.textContent).not.toContain("복원 보류 1");
     expect(document.body.textContent).not.toContain("카드 정리 대기 1개");
     expect(document.body.textContent).not.toContain("보관본 읽기 실패");
@@ -540,6 +728,7 @@ it("account switch never renders the previous account read failure", async () =>
   }
   try {
     root = createRoot(host); await act(async () => root!.render(<Probe />));
+    await confirmReadFailure();
     expect(rendered.at(-1)).toBe(true);
     read.mockImplementation(() => new Promise(() => {}));
     rendered.length = 0;
@@ -721,6 +910,9 @@ it.each(["success", "failure"])("recovery ignores a stale read %s after the late
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(reads).toHaveLength(3);
     await act(async () => reads[2].reject(new Error("current failure")));
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    await confirmReadFailure();
+    await act(async () => reads[3].reject(new Error("confirmed current failure")));
     expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "true" });
   } finally { read.mockRestore(); writer.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
@@ -814,6 +1006,7 @@ it.each(["none", "export success", "export failure"])("recovery retry clears its
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    await confirmReadFailure();
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     expect(host.textContent).toContain(readError);
     if (otherMessage !== "none") {
@@ -841,6 +1034,7 @@ it("account change clears the previous recovery error while the new read is pend
   const readError = "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.";
   try {
     root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    await confirmReadFailure();
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     expect(host.textContent).toContain(readError);
     let resolve!: (value: typeof recovery) => void;
@@ -884,8 +1078,9 @@ it("recovery refresh and unchanged tuple stay stable across renders", async () =
     await act(async () => root!.render(<Probe />));
     expect(state[1]).toBe(first[1]);
     expect(state).toBe(first);
-    read.mockRejectedValueOnce(new Error("read failed"));
+    read.mockRejectedValue(new Error("read failed"));
     await act(async () => { await first[1](); });
+    await confirmReadFailure();
     expect(state[1]).toBe(first[1]);
     expect(state).not.toBe(first);
     expect(state[2]).toBe(true);
@@ -942,6 +1137,7 @@ it.each([false, true])("a successful recovery response clears only the read erro
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    await confirmReadFailure();
     expect(host.querySelector("i")?.dataset.failed).toBe("true");
     if (otherMessage) {
       const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "전체 내보내기");
@@ -956,6 +1152,22 @@ it.each([false, true])("a successful recovery response clears only the read erro
     if (otherMessage) expect(host.textContent).toContain("캔버스 2개를 파일로 내려받았습니다.");
   } finally { read.mockRestore(); exportAll.mockRestore(); vi.useRealTimers(); }
 }, 15_000);
+it("recovery account error uses the human-readable constant", async () => {
+  await expect(readStorageRecovery("acct:other@test")).rejects.toMatchObject({ message: sceneArchive.RECOVERY_ACCOUNT_CHANGED });
+  expect(sceneArchive.RECOVERY_ACCOUNT_CHANGED).toBe("계정이 바뀌어 보관본을 다시 읽어야 합니다.");
+});
+it("deferred recovery rejects a changed expected account before reading archives", async () => {
+  const expected = accountScope.getAccountNamespace();
+  const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockResolvedValue({ ok: true, value: [] });
+  try {
+    const pending = Promise.resolve().then(() => readStorageRecovery(expected));
+    setAccountScope("other@test");
+    await expect(pending).rejects.toThrow(sceneArchive.RECOVERY_ACCOUNT_CHANGED);
+    expect(archives).not.toHaveBeenCalled();
+    await expect(readStorageRecovery()).resolves.toMatchObject({ account: "acct:other@test" });
+    expect(archives).toHaveBeenCalledWith("acct:other@test");
+  } finally { archives.mockRestore(); setAccountScope(null); }
+}, 15_000);
 it.each([false, true])("recovery read distinguishes an account change from storage failure (changed: %s)", async (changed) => {
   let finish!: (value: Awaited<ReturnType<typeof readRestoreArchives>>) => void;
   const archives = vi.spyOn(sceneNotebook, "readRestoreArchives").mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -963,7 +1175,7 @@ it.each([false, true])("recovery read distinguishes an account change from stora
     const result = readStorageRecovery();
     if (changed) setAccountScope("other@test");
     finish({ ok: false });
-    await expect(result).rejects.toThrow(changed ? "recovery_account_changed" : "보관본을 읽지 못했습니다.");
+    await expect(result).rejects.toThrow(changed ? sceneArchive.RECOVERY_ACCOUNT_CHANGED : "보관본을 읽지 못했습니다.");
   } finally { archives.mockRestore(); setAccountScope(null); }
 }, 15_000);
 it("an account-change recovery error retries without showing failure after an account round trip", async () => {
@@ -976,7 +1188,7 @@ it("an account-change recovery error retries without showing failure after an ac
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     read.mockImplementationOnce(async () => {
       setAccountScope("other@test");
-      const error = new Error("recovery_account_changed");
+      const error = new Error(sceneArchive.RECOVERY_ACCOUNT_CHANGED);
       setAccountScope(null);
       throw error;
     });
@@ -996,6 +1208,7 @@ it("an unchanged import clears recovery read failure through the hook", async ()
   const importArchive = vi.spyOn(sceneArchive, "importSceneArchiveText").mockResolvedValue({ added: 0, recovered: 0 });
   try {
     root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
+    await confirmReadFailure();
     expect(host.textContent).toContain("보관본을 읽지 못했습니다.");
     read.mockResolvedValue(recovery);
     const input = host.querySelector('input[type="file"]')!;

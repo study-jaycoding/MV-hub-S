@@ -102,7 +102,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     localStorage.removeItem(recoveryKey);
     const seen: unknown[] = [];
     const offThrow = links.subscribeCardRecovery(() => { throw Error("listener failed"); });
-    const off = links.subscribeCardRecovery(() => { seen.push(JSON.parse(mem.get(recoveryKey)!)); });
+    const off = links.subscribeCardRecovery(() => { seen.push(JSON.parse(mem.get(recoveryKey) ?? "null")); });
     const write = localStorage.setItem, read = localStorage.getItem;
     vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
       if (key === recoveryKey && kind === "throw") throw Error("quota");
@@ -114,7 +114,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     });
     const ok = await links.refreshSceneCardLinks();
     expect(ok).toBe(kind === "success");
-    expect(seen).toEqual(kind === "success" || kind === "unconfirmed" ? [{ generation: "restore-1", candidates: [] }] : []);
+    expect(seen).toEqual(kind === "success" || kind === "unconfirmed" ? [{ generation: "restore-1", candidates: [] }] : kind === "ignored" ? [null] : []);
     if (kind === "unconfirmed") {
       vi.mocked(localStorage.getItem).mockImplementation(read);
       expect(await links.refreshSceneCardLinks()).toBe(true);

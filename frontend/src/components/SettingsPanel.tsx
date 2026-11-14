@@ -84,7 +84,7 @@ export function dataFoldSummary(history: HistoryImportStatus | null, progress: s
   return [historyText, ...progress, ...rest].filter(Boolean).join(" · ");
 }
 
-/** 자료 관리 접힌 줄 조각 — '복원 보류 N'(주황)은 시안 2판 자리인 백업 세트 뒤·서버 상태 앞. 보류 0 이면 뺀다. */
+/** 자료 관리 접힌 줄 조각 — '복원 보류 N'(주황)은 시안 2판 자리인 백업 세트 뒤·서버 상태 앞. 보류 0 이면 뺀다. failed면 보류 뒤에 '보관본 읽기 실패'를 둔다. */
 export function dataFoldParts(lead: string, held: number, shared: string, failed = false): (string | { held: number } | { failed: boolean })[] {
   return [lead, held > 0 ? { held } : "", failed ? { failed: true } : "", shared].filter((part) => part !== "");
 }

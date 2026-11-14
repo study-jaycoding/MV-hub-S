@@ -96,7 +96,7 @@ function prepareGeneration(scope: string, generation: string, serverItems: CardL
     let saved: string | null;
     try { saved = localStorage.getItem(recoveryKey(scope)); }
     catch (error) { notifyCardRecovery(); throw error; }
-    if (saved !== archived) throw new Error("card_recovery_write_failed");
+    if (saved !== archived) { notifyCardRecovery(); throw new Error("card_recovery_write_failed"); }
     try {
       localStorage.setItem(pendingKey(scope), JSON.stringify(removals.filter((link) => !stale(link))));
       localStorage.setItem(revivesKey(scope), JSON.stringify(revives.filter((link) => !stale(link))));
