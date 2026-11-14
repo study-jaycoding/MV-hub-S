@@ -5,12 +5,14 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "../src/components/settings/CanvasArchiveSection";
 import { downloadStorageRecovery, readStorageRecovery, redundantMirrorHoldIds } from "../src/lib/sceneArchive";
+import * as sceneArchive from "../src/lib/sceneArchive";
 import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose, type RestoreArchive } from "../src/lib/sceneNotebook";
 import { abortSceneStoreWritesForTest, applySceneOp, holdNotebookWrites, readWorkingBucket, setSceneWriteGate, settleSceneStoreForTest, writeScenesStore, sceneNotebookTransaction } from "../src/lib/sceneStore";
 import { setAccountScope } from "../src/lib/accountScope";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import * as hubFeatures from "../src/lib/hubFeatures";
 import * as sceneStore from "../src/lib/sceneStore";
+import * as scenes from "../src/lib/scenes";
 import type { Scene } from "../src/lib/scenes";
 
 const request = vi.hoisted(() => vi.fn());
@@ -104,8 +106,8 @@ it("recovery UI shows counts and exports originals with control data; another ac
   expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
 });
 function HeldProbe() {
-  const [recovery] = useStorageRecovery();
-  return <i data-held={heldRecoveryCounts(recovery).total} />;
+  const [recovery, , failed] = useStorageRecovery();
+  return <i data-held={heldRecoveryCounts(recovery).total} data-failed={failed} />;
 }
 it.each([
   ["same", 0], ["camera", 0], ["all generations match", 0], ["different", 1],
@@ -190,6 +192,130 @@ it("redundant holds leave folded count zero and originals downloadable, then fea
   expect(host.querySelector("i")?.dataset.held).toBe("1");
   expect(host.textContent).toContain("복원 전에 남겨 둔 것");
 });
+it.each(["persisted", "external"])("held counts follow %s scene notifications without reopening settings", async (notification) => {
+  const original = { generation: "old", scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] };
+  const raw = JSON.stringify({ generation: "new", blockedIds: ["a"], raws: {}, originals: [original] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", raw);
+  // Each notification must refresh independently, even when the other channel is silent.
+  const offPersisted = vi.fn(), offExternal = vi.fn();
+  const subscribePersisted = scenes.subscribeScenesPersisted, subscribeExternal = sceneStore.subscribeSceneStoreExternal;
+  const persisted = vi.spyOn(scenes, "subscribeScenesPersisted").mockImplementation((fn) => {
+    const off = notification === "persisted" ? subscribePersisted(fn) : () => {};
+    return () => { off(); offPersisted(); };
+  });
+  const external = vi.spyOn(sceneStore, "subscribeSceneStoreExternal").mockImplementation((fn) => {
+    const off = notification === "external" ? subscribeExternal(fn) : () => {};
+    return () => { off(); offExternal(); };
+  });
+  try {
+    root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    expect(host.querySelector("i")?.dataset.held).toBe("0");
+    for (const [name, held] of [["changed", "1"], ["a", "0"]]) {
+      await act(async () => {
+        const result = await sceneNotebookTransaction([], (all) => {
+          all[bucket] = [scene("a", name), scene("b")];
+          return { changed: true, value: null };
+        });
+        expect(result.ok).toBe(true);
+        await settleSceneStoreForTest();
+      });
+      expect(host.querySelector("i")?.dataset.held).toBe(held);
+      expect(host.textContent?.includes("복원 전에 남겨 둔 것")).toBe(held === "1");
+      expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
+    }
+    act(() => root!.unmount()); root = undefined;
+    expect(offPersisted).toHaveBeenCalledTimes(2);
+    expect(offExternal).toHaveBeenCalledTimes(2);
+  } finally { persisted.mockRestore(); external.mockRestore(); }
+}, 15_000);
+it.each(["success", "failure"])("recovery ignores a stale read %s after the latest response", async (staleResult) => {
+  const initial = await readStorageRecovery();
+  const latest = { ...initial, cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
+  const reads: { resolve: (value: typeof initial) => void; reject: (reason: Error) => void }[] = [];
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(reads).toHaveLength(2);
+    await act(async () => reads[1].resolve(latest));
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "false" });
+    await act(async () => {
+      if (staleResult === "success") reads[0].resolve(initial);
+      else reads[0].reject(new Error("stale failure"));
+    });
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "false" });
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(reads).toHaveLength(3);
+    await act(async () => reads[2].reject(new Error("current failure")));
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: "1", failed: "true" });
+  } finally { read.mockRestore(); }
+}, 15_000);
+it.each(["success", "failure"])("a not-ready notification preserves the pending recovery read %s", async (result) => {
+  const recovery = { ...await readStorageRecovery(), cards: { candidates: [{ removals: [{ id: "held" }], revives: [], backfill: [] }] } };
+  let resolve!: (value: typeof recovery) => void, reject!: (reason: Error) => void;
+  const pending = new Promise<typeof recovery>((ok, fail) => { resolve = ok; reject = fail; });
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockReturnValue(pending);
+  const ready = vi.spyOn(sceneStore, "sceneStoreReady").mockReturnValue(true);
+  try {
+    root = createRoot(host); await act(async () => root!.render(<HeldProbe />));
+    ready.mockReturnValue(false);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(read).toHaveBeenCalledTimes(1);
+    ready.mockReturnValue(true);
+    await act(async () => {
+      if (result === "success") resolve(recovery);
+      else reject(new Error("pending failure"));
+    });
+    expect(host.querySelector("i")?.dataset).toMatchObject({ held: result === "success" ? "1" : "0", failed: result === "failure" ? "true" : "false" });
+  } finally { read.mockRestore(); ready.mockRestore(); }
+}, 15_000);
+it.each(["none", "export success", "export failure"])("recovery retry clears its error and preserves %s message", async (otherMessage) => {
+  const recovery = await readStorageRecovery();
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("read failed"));
+  const exportAll = vi.spyOn(sceneArchive, "downloadSceneArchive");
+  const readError = "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.";
+  const exportMessage = otherMessage === "export success" ? "캔버스 2개를 파일로 내려받았습니다." : "내보내기 실패";
+  try {
+    root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    expect(host.textContent).toContain(readError);
+    if (otherMessage !== "none") {
+      if (otherMessage === "export success") exportAll.mockResolvedValue(2);
+      else exportAll.mockRejectedValue(new Error(exportMessage));
+      const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "전체 내보내기");
+      expect(button).toBeDefined();
+      await act(async () => button!.click());
+      expect(host.textContent).toContain(exportMessage);
+    }
+    read.mockResolvedValue(recovery);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    expect(host.textContent).not.toContain(readError);
+    if (otherMessage !== "none") expect(host.textContent).toContain(exportMessage);
+  } finally { read.mockRestore(); exportAll.mockRestore(); }
+}, 15_000);
+it("account change clears the previous recovery error while the new read is pending", async () => {
+  const recovery = { ...await readStorageRecovery(), account: "acct:other@test" };
+  const read = vi.spyOn(sceneArchive, "readStorageRecovery").mockRejectedValue(new Error("account A read failed"));
+  const readError = "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.";
+  try {
+    root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+    expect(host.querySelector("i")?.dataset.failed).toBe("true");
+    expect(host.textContent).toContain(readError);
+    let resolve!: (value: typeof recovery) => void;
+    const pending = new Promise<typeof recovery>((done) => { resolve = done; });
+    read.mockClear().mockReturnValue(pending);
+    await act(async () => {
+      setAccountScope("other@test");
+      root!.render(<><HeldProbe /><CanvasArchiveSection /></>);
+    });
+    expect(read).toHaveBeenCalled();
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+    expect(host.textContent).not.toContain(readError);
+    await act(async () => resolve(recovery));
+    expect(host.querySelector("i")?.dataset.failed).toBe("false");
+  } finally { read.mockRestore(); }
+}, 15_000);
 it("the folded settings line reads the same held count as the recovery group, only for this account", async () => {
   await changed(); await syncSceneNotebook();
   localStorage.setItem('mvhub.editRecovery:["local","doc"]', JSON.stringify({ blocked: true, originals: [{ raw: "original" }] }));

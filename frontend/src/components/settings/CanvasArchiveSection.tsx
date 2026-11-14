@@ -7,8 +7,8 @@ import { hubHasFeature, subscribeHubFeatures } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestoreArchiveContent, type NotebookArchive } from "../../lib/sceneNotebook";
 import { useSceneWriter } from "../../lib/sceneWriter";
 import { useT } from "../../lib/i18n";
-import { sceneStoreReady } from "../../lib/sceneStore";
-import { isSceneSaveFailing, listScenes, subscribeSceneSaveState } from "../../lib/scenes";
+import { sceneStoreReady, subscribeSceneStoreExternal } from "../../lib/sceneStore";
+import { isSceneSaveFailing, listScenes, subscribeSceneSaveState, subscribeScenesPersisted } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
 
 /** '복원 전에 남겨 둔 것' 기록 — 펼친 칸과 접힌 '자료 관리' 제목 줄이 같이 읽는다. [기록, 바꾸기, 읽기 실패]. */
@@ -19,18 +19,25 @@ export function useStorageRecovery() {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
+    let readVersion = 0;
     setRecovery(null);
+    setFailed(false);
     const read = () => {
       if (!sceneStoreReady()) return;
+      const version = ++readVersion;
       void readStorageRecovery().then((value) => {
-        if (alive && value.account === account && account === getAccountNamespace()) setRecovery(value);
-      }).catch(() => { if (alive) setFailed(true); });
+        if (alive && version === readVersion && value.account === account && account === getAccountNamespace()) {
+          setRecovery(value);
+          setFailed(false);
+        }
+      }).catch(() => { if (alive && version === readVersion) setFailed(true); });
     };
     read();
     const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read), offFeatures = subscribeHubFeatures(read);
+    const offPersisted = subscribeScenesPersisted(read), offExternal = subscribeSceneStoreExternal(read);
     window.addEventListener("storage", read);
     window.addEventListener("focus", read);
-    return () => { alive = false; offScene(); offEdit(); offFeatures(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
+    return () => { alive = false; offScene(); offEdit(); offFeatures(); offPersisted(); offExternal(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
   }, [account, writer.mode]);
   return [recovery?.account === account ? recovery : null, setRecovery, failed] as const;
 }
@@ -59,7 +66,10 @@ export function CanvasArchiveSection() {
   const [archiveAccount, setArchiveAccount] = useState("");
   const account = getAccountNamespace();
   const [ownRecovery, setRecovery, recoveryFailed] = useStorageRecovery();
-  useEffect(() => { if (recoveryFailed) setMsg("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다."); }, [recoveryFailed]);
+  useEffect(() => {
+    const readError = "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.";
+    setMsg((previous) => recoveryFailed ? readError : previous === readError ? "" : previous);
+  }, [recoveryFailed]);
   useEffect(() => {
     let alive = true;
     setArchive(null);
