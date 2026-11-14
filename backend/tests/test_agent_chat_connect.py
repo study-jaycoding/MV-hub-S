@@ -17,6 +17,7 @@ import pytest
 from app import config
 from app.services import agent_chat as chat
 from app.services import agent_chat_claude as claude
+from app.services import agent_chat_codex as codex
 from app.services import agent_chat_parse as parse
 from app.services import agent_chat_process as process
 
@@ -233,7 +234,7 @@ def test_engine_cache_follows_install_marker(monkeypatch):
     service = chat.AgentChat()
     states = []
     monkeypatch.setattr(claude, "claude_state", lambda prefix: states.append(1) or {"state": "not_installed", "version": None, "subscription": None})
-    monkeypatch.setattr(process, "engine_problem", lambda engine, prefix: "점검 필요")
+    monkeypatch.setattr(codex, "state", lambda prefix: {"enabled": False, "version": "", "reason": "점검 필요"})
     first = service.engines()
     assert first[0]["install"] is None and first[0]["method"] in {"official", "npm", "other", "none"}
     service.engines()
@@ -259,7 +260,7 @@ def test_engine_cache_drops_when_running_expires(monkeypatch):
     service = chat.AgentChat()
     states = []
     monkeypatch.setattr(claude, "claude_state", lambda prefix: states.append(1) or {"state": "not_installed", "version": None, "subscription": None})
-    monkeypatch.setattr(process, "engine_problem", lambda engine, prefix: "점검 필요")
+    monkeypatch.setattr(codex, "state", lambda prefix: {"enabled": False, "version": "", "reason": "점검 필요"})
     began = time.time()
     _marker({"status": "started", "at": began})
     clock = [began]
