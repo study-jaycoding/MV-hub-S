@@ -35,6 +35,15 @@ export interface NotebookSnapshot {
 }
 export interface NotebookArchive { notebookId: string; scenes: ScenesByProject; conflicts?: SceneAbsorbConflict[] }
 export interface RestoreArchive extends NotebookArchive { id: string; createdAt: string; fromGeneration: string | null; toGeneration: string; controls: Record<string, unknown> }
+export function hasRestoreArchiveContent(archive: Pick<RestoreArchive, "scenes" | "conflicts" | "controls">): boolean {
+  // 형태를 확인할 수 없는 보관본은 빈 것으로 숨기지 않는다.
+  if (!archive || typeof archive !== "object" || Array.isArray(archive)) return true;
+  if (!archive.scenes || typeof archive.scenes !== "object" || Array.isArray(archive.scenes) ||
+    !archive.controls || typeof archive.controls !== "object" || Array.isArray(archive.controls)) return true;
+  if (archive.conflicts !== undefined && !Array.isArray(archive.conflicts)) return true;
+  return Object.values(archive.scenes).some((scenes) => !Array.isArray(scenes) || scenes.length > 0) || !!archive.conflicts?.length ||
+    Object.values(archive.controls).some((value) => value !== undefined);
+}
 export const validRestoreGeneration = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200;
 export function mirrorSceneGenerations(): Map<string, string> {
   try {
@@ -96,11 +105,12 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       }
       const controls: Meta = {};
       for (const [name, value] of Object.entries(meta)) {
+        if (value === undefined) continue; // 없는 ns/nw도 조회 결과에는 키가 있다. 보관·삭제할 자료가 아니다.
         if (!/^\["(?:b|d|r|ob|ns|nw|nj)",/.test(name)) continue;
         const [, scope] = JSON.parse(name) as string[];
         if (scope === account || belongs(scope, account)) { controls[name] = value; delete meta[name]; }
       }
-      if (Object.values(scenes).some((items) => items.length) || conflicts.length || Object.keys(controls).length) {
+      if (hasRestoreArchiveContent({ scenes, conflicts, controls })) {
         const archive: RestoreArchive = { id: newSceneIntentId(), createdAt: new Date().toISOString(), notebookId: joined?.notebookId ?? "",
           fromGeneration: joined?.restoreGeneration ?? null, toGeneration: book.restore_generation, scenes, conflicts, controls };
         meta[archiveKey] = [...((meta[archiveKey] as RestoreArchive[] | undefined) ?? []), archive];

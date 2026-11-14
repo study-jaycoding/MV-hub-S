@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "../src/components/settings/CanvasArchiveSection";
 import { downloadStorageRecovery, readStorageRecovery } from "../src/lib/sceneArchive";
-import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose } from "../src/lib/sceneNotebook";
+import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose, type RestoreArchive } from "../src/lib/sceneNotebook";
 import { abortSceneStoreWritesForTest, applySceneOp, holdNotebookWrites, readWorkingBucket, setSceneWriteGate, settleSceneStoreForTest, writeScenesStore, sceneNotebookTransaction } from "../src/lib/sceneStore";
 import { setAccountScope } from "../src/lib/accountScope";
 import { setHubFeatures } from "../src/lib/hubFeatures";
@@ -119,6 +119,51 @@ it("the folded settings line reads the same held count as the recovery group, on
 it("recovery UI stays hidden when there are no pending candidates", async () => {
   root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
   expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
+});
+it.each([false, true])("legacy empty archives stay readable/exportable but do not count (with real control: %s)", async (hasProgress) => {
+  const empty: RestoreArchive = { id: "empty", createdAt: "2026-11-14", notebookId: "", fromGeneration: null,
+    toGeneration: "new", scenes: { [bucket]: [] }, conflicts: [], controls: { '["ns","local"]': undefined, '["nw","local"]': undefined } };
+  const archives = [empty, { ...empty, id: "json-empty", controls: {} }];
+  if (hasProgress) archives.push({ ...empty, id: "progress", controls: { '["ns","local"]': { id: "old-start" } } });
+  const archiveKey = '["nr","local"]';
+  expect((await sceneNotebookTransaction([archiveKey], (_all, meta) => {
+    meta[archiveKey] = archives;
+    return { changed: true, value: null };
+  })).ok).toBe(true);
+  const before = await readRestoreArchives("local");
+  const recovery = await readStorageRecovery();
+  expect(recovery.canvases).toEqual(archives);
+  expect(heldRecoveryCounts(recovery)).toEqual({ canvas: hasProgress ? 1 : 0, edit: 0, card: 0, total: hasProgress ? 1 : 0 });
+  root = createRoot(host); await act(async () => root!.render(<><CanvasArchiveSection /><HeldProbe /></>));
+  expect(host.querySelector("i")!.dataset.held).toBe(hasProgress ? "1" : "0");
+  expect(host.textContent?.includes("복원 전에 남겨 둔 것")).toBe(hasProgress);
+  downloadStorageRecovery(recovery);
+  expect(JSON.parse(download.mock.calls[0][1]).recovery.canvases).toEqual(JSON.parse(JSON.stringify(archives)));
+  expect(await readRestoreArchives("local")).toEqual(before);
+});
+it.each(["scene", "conflict", "control", "null-control"])("held recovery keeps an archive containing only %s", (kind) => {
+  const archive: RestoreArchive = { id: "held", createdAt: "2026-11-14", notebookId: "", fromGeneration: null,
+    toGeneration: "new", scenes: { [bucket]: kind === "scene" ? [scene("s")] : [] },
+    conflicts: kind === "conflict" ? [{ bucket, sceneId: "s", mine: scene("s"), theirs: null }] : [],
+    controls: kind === "control" ? { '["ns","local"]': { id: "start" } } : kind === "null-control" ? { '["ns","local"]': null } : {} };
+  expect(heldRecoveryCounts({ account: "local", canvases: [archive], mirror: null, edits: [], cards: null }).canvas).toBe(1);
+});
+it.each([
+  ["missing scenes", { controls: {} }],
+  ["missing controls", { scenes: {} }],
+  ["null archive", null],
+  ["null scenes", { scenes: null, controls: {} }],
+  ["null controls", { scenes: {}, controls: null }],
+  ["array scenes", { scenes: [], controls: {} }],
+  ["array controls", { scenes: {}, controls: [] }],
+  ["number scenes", { scenes: 0, controls: {} }],
+  ["boolean controls", { scenes: {}, controls: false }],
+  ["invalid bucket", { scenes: { [bucket]: null }, controls: {} }],
+  ["null conflicts", { scenes: {}, controls: {}, conflicts: null }],
+  ["object conflicts", { scenes: {}, controls: {}, conflicts: {} }],
+])("held recovery conservatively counts malformed archive: %s", (_name, value) => {
+  const archive = value as unknown as RestoreArchive;
+  expect(heldRecoveryCounts({ account: "local", canvases: [archive], mirror: null, edits: [], cards: null }).canvas).toBe(1);
 });
 it("clean upgrade and ledger-only isolation do not show a recovery group", async () => {
   const scenes = [scene("a"), scene("b")];

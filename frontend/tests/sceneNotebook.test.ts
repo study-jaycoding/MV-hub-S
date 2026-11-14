@@ -116,6 +116,23 @@ it("clean generationless notebook adopts without archive and saves the next edit
   await syncSceneNotebook();
   expect(JSON.parse(fake.rows.get("a")!.data).name).toBe("next edit");
 });
+it.each([false, true])("first join archives only present control data (start progress: %s)", async (hasProgress) => {
+  await writeScenesStore({ [bucket]: [] });
+  fake.book = "book1";
+  fake.save(scene("hub-only"));
+  const progress = { id: "old-start", restoreGeneration: "old", expected_count: 1 };
+  if (hasProgress) expect(await writeNotebookProgress("local", "start", null, progress)).toBe(true);
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket).map((s) => s.id)).toEqual(["hub-only"]);
+  expect(await state()).toMatchObject({ joined: { notebookId: "book1", restoreGeneration: fake.restoreGeneration }, starting: null, writing: null });
+  const archives = await readRestoreArchives("local");
+  expect(archives.ok).toBe(true);
+  if (!archives.ok) throw Error("archive read failed");
+  expect(archives.value).toHaveLength(hasProgress ? 1 : 0);
+  if (hasProgress) expect(archives.value[0].controls).toEqual({ '["ns","local"]': progress });
+  expect(fake.calls.every((call) => !call.body)).toBe(true);
+});
 it.each(["unstarted", "unstarted with order", "orderless", "lost start reply", "newer hub order"])("clean first notebook preserves order intent without archives: %s", async (mode) => {
   await joined([scene("b"), scene("a")], null);
   await sceneNotebookTransaction([], (_all, meta) => { delete meta['["nj","local"]']; return { changed: true, value: null }; });

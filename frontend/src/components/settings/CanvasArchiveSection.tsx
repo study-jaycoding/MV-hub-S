@@ -4,7 +4,7 @@ import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, 
 import { subscribeEditBackup } from "../../lib/editDocBackup";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { hubHasFeature } from "../../lib/hubFeatures";
-import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, type NotebookArchive } from "../../lib/sceneNotebook";
+import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestoreArchiveContent, type NotebookArchive } from "../../lib/sceneNotebook";
 import { useSceneWriter } from "../../lib/sceneWriter";
 import { useT } from "../../lib/i18n";
 import { sceneStoreReady } from "../../lib/sceneStore";
@@ -38,7 +38,7 @@ export function useStorageRecovery() {
 /** 보류 개수 — 캔버스 보관본(미러는 아직 막힌 씬·장부가 있는 것만) · 편집 문서 · 카드 정리 대기. */
 export function heldRecoveryCounts(recovery: StorageRecovery | null) {
   const blockedMirrorIds = new Set(recovery?.mirror?.blockedIds ?? []);
-  const canvas = (recovery?.canvases.length ?? 0) + (recovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
+  const canvas = (recovery?.canvases.filter(hasRestoreArchiveContent).length ?? 0) + (recovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
   const edit = recovery?.edits.length ?? 0;
   const card = recovery?.cards?.candidates.reduce((n, c) => n + c.removals.length + c.revives.length + c.backfill.length, 0) ?? 0;
   return { canvas, edit, card, total: canvas + edit + card };
