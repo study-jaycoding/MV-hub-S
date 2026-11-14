@@ -20,7 +20,7 @@ import {
   type SceneMigrationInfo,
   type SceneStoreDump,
 } from "./sceneStore";
-import { readStoredScene, listPersistedSceneTexts, uid, variantIds, type Scene, type ScenesByProject } from "./scenes";
+import { readStoredScene, listPersistedScenes, listPersistedSceneTexts, uid, variantIds, type Scene, type ScenesByProject } from "./scenes";
 
 export const SCENE_ARCHIVE_FORMAT = "mvhub-scenes-full";
 export const SCENE_ARCHIVE_VERSION = 1;
@@ -36,6 +36,37 @@ export async function readStorageRecovery(): Promise<StorageRecovery> {
   const cards = JSON.parse(localStorage.getItem(`mvhub.cardRecovery:${account}`) ?? "null") as StorageRecovery["cards"];
   return { account, canvases: archives.value, mirror, cards, edits: readEditRecoveryCandidates() };
 }
+
+/** 표시에서만 제외한다. 여러 세대 중 고유 원문·장부가 하나라도 있으면 보류를 유지한다. */
+export function redundantMirrorHoldIds(recovery: StorageRecovery | null): Set<string> {
+  const redundant = new Set<string>();
+  if (!recovery?.mirror || recovery.account !== getAccountNamespace() || !sceneStoreReady() || !hubFeaturesKnown() || !hubHasFeature(SCENE_WRITER_FEATURE)) return redundant;
+  const current = new Map(listPersistedScenes(null).map((scene) => [scene.id, scene]));
+  const matched = new Set<string>();
+  for (const id of recovery.mirror.blockedIds) if (current.has(id)) redundant.add(id);
+  for (const original of recovery.mirror.originals) {
+    if (!original || !Array.isArray(original.scenes) || !Array.isArray(original.ledger)) return new Set();
+    for (const entry of original.ledger) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string") return new Set();
+      redundant.delete(entry[0]);
+    }
+    for (const row of original.scenes) {
+      if (!row || typeof row.id !== "string" || typeof row.text !== "string") return new Set();
+      if (!redundant.has(row.id)) continue;
+      try {
+        const stored = JSON.parse(row.text) as Scene, now = current.get(row.id)!;
+        // sameSceneContent는 실행 기록을 제외하므로 그 두 필드의 차이도 따로 지킨다.
+        if (!stored || stored.id !== row.id || !sameSceneContent({ ...stored, camera: undefined }, { ...now, camera: undefined })
+          || JSON.stringify(stored.comfyRuns) !== JSON.stringify(now.comfyRuns)
+          || JSON.stringify(stored.comfyCardRuns) !== JSON.stringify(now.comfyCardRuns)) redundant.delete(row.id);
+        else matched.add(row.id);
+      } catch { redundant.delete(row.id); }
+    }
+  }
+  for (const id of redundant) if (!matched.has(id)) redundant.delete(id);
+  return redundant;
+}
+
 export function downloadStorageRecovery(recovery: StorageRecovery) {
   if (recovery.account !== getAccountNamespace()) throw new Error("계정이 바뀌었습니다. 보관본을 다시 읽어 주세요.");
   const buckets: ScenesByProject = {};

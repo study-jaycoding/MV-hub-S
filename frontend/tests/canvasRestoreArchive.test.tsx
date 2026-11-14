@@ -4,11 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "../src/components/settings/CanvasArchiveSection";
-import { downloadStorageRecovery, readStorageRecovery } from "../src/lib/sceneArchive";
+import { downloadStorageRecovery, readStorageRecovery, redundantMirrorHoldIds } from "../src/lib/sceneArchive";
 import { joinSceneNotebook, readRestoreArchives, readSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook, writeNotebookProgress, buildSceneNotebookClose, type RestoreArchive } from "../src/lib/sceneNotebook";
 import { abortSceneStoreWritesForTest, applySceneOp, holdNotebookWrites, readWorkingBucket, setSceneWriteGate, settleSceneStoreForTest, writeScenesStore, sceneNotebookTransaction } from "../src/lib/sceneStore";
 import { setAccountScope } from "../src/lib/accountScope";
 import { setHubFeatures } from "../src/lib/hubFeatures";
+import * as hubFeatures from "../src/lib/hubFeatures";
+import * as sceneStore from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
 
 const request = vi.hoisted(() => vi.fn());
@@ -105,6 +107,89 @@ function HeldProbe() {
   const [recovery] = useStorageRecovery();
   return <i data-held={heldRecoveryCounts(recovery).total} />;
 }
+it.each([
+  ["same", 0], ["camera", 0], ["all generations match", 0], ["different", 1],
+  ["missing", 1], ["ledger elsewhere", 2], ["mixed", 1], ["older differs", 2],
+  ["broken JSON", 1], ["wrong body id", 1], ["execution record", 1], ["comfyRuns only", 1],
+  ["legacy", 1], ["unknown", 1], ["other account", 1], ["not ready", 1], ["working copy only", 1],
+])("redundant mirror hold: %s", async (kind, expected) => {
+  const original = { generation: "old", scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] as [string, { b: string }][] };
+  const originals = [original];
+  const blockedIds = ["a"];
+  if (kind === "camera") original.scenes[0].text = JSON.stringify({ ...scene("a"), camera: { x: 20, y: 30, z: 2 } });
+  if (kind === "different") original.scenes[0].text = JSON.stringify(scene("a", "unique"));
+  if (kind === "missing") { original.scenes[0] = { id: "gone", text: JSON.stringify(scene("gone")) }; blockedIds[0] = "gone"; }
+  if (kind === "mixed") { original.scenes.push({ id: "gone", text: JSON.stringify(scene("gone")) }); blockedIds.push("gone"); }
+  if (kind === "ledger elsewhere") originals.push({ generation: "older", scenes: [], ledger: [["a", { b: "old-base" }]] });
+  if (kind === "older differs" || kind === "all generations match") originals.push({ generation: "older", scenes: [{ id: "a", text: JSON.stringify(scene("a", kind === "older differs" ? "unique" : "a")) }], ledger: [] });
+  if (kind === "broken JSON") original.scenes[0].text = "{";
+  if (kind === "wrong body id") original.scenes[0].text = JSON.stringify(scene("b"));
+  if (kind === "execution record") original.scenes[0].text = JSON.stringify({ ...scene("a"), comfyCardRuns: { c: { groupId: "g", groupSeq: 1 } } });
+  if (kind === "comfyRuns only") original.scenes[0].text = JSON.stringify({ ...scene("a"), comfyRuns: [{ version: 1, attemptId: "attempt", runGroupId: "g", groupSeq: 1, copyIndex: 0, cardId: "c", originHubId: "h", originDeviceId: "d", localState: "submitted", configFp: "cfg", inputFp: "input" }] });
+  if (kind === "working copy only") original.scenes[0].text = JSON.stringify(scene("a", "pending"));
+  const raw = JSON.stringify({ generation: "new", blockedIds, raws: {}, originals });
+  localStorage.setItem("mvhub.mirrorRecovery:local", raw);
+  const recovery = await readStorageRecovery();
+  if (kind === "working copy only") {
+    abortSceneStoreWritesForTest(true);
+    applySceneOp((all) => { all[bucket] = [scene("a", "pending")]; return { write: true, value: null }; });
+    expect(readWorkingBucket(bucket)[0].name).toBe("pending");
+  }
+  if (kind === "legacy") setHubFeatures([]);
+  if (kind === "other account") {
+    await writeScenesStore({ [bucket]: [scene("a")], "acct:other@test::_none": [scene("a")] });
+    setAccountScope("other@test");
+  }
+  const unknown = kind === "unknown" ? vi.spyOn(hubFeatures, "hubFeaturesKnown").mockReturnValue(false) : null;
+  const notReady = kind === "not ready" ? vi.spyOn(sceneStore, "sceneStoreReady").mockReturnValue(false) : null;
+  try {
+    expect(heldRecoveryCounts(recovery).canvas).toBe(expected);
+    expect(recovery.mirror).toEqual(JSON.parse(raw));
+    expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
+  } finally { unknown?.mockRestore(); notReady?.mockRestore(); }
+});
+
+it.each([
+  ["legacy", "resolved"], ["notebook", "resolved"], ["legacy", "ledger"], ["notebook", "ledger"],
+])("no extra recovery download for %s hub with only %s originals", async (hub, kind) => {
+  setHubFeatures(hub === "notebook" ? ["scene_writer_v1"] : []);
+  const original = { generation: "old", scenes: kind === "resolved" ? [{ id: "a", text: JSON.stringify(scene("a")) }] : [], ledger: kind === "ledger" ? [["a", { b: "old" }]] : [] };
+  const raw = JSON.stringify({ generation: "new", blockedIds: [], raws: {}, originals: [original] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", raw);
+  root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
+  expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
+  expect(host.textContent).not.toContain("보관본 내려받기");
+  expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
+});
+
+it.each([false, true])("an id without its own original does not expose recovery download (other original: %s)", async (hasOtherOriginal) => {
+  const original = { generation: "old", scenes: hasOtherOriginal ? [{ id: "b", text: JSON.stringify(scene("b")) }] : [], ledger: [] };
+  const raw = JSON.stringify({ generation: "new", blockedIds: ["a"], raws: {}, originals: [original] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", raw);
+  root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
+  expect(host.textContent).not.toContain("보관본 내려받기");
+  expect(redundantMirrorHoldIds(await readStorageRecovery()).size).toBe(0);
+  expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
+});
+
+it("redundant holds leave folded count zero and originals downloadable, then feature change restores the warning", async () => {
+  const original = { generation: "old", scenes: [{ id: "a", text: JSON.stringify(scene("a")) }], ledger: [] };
+  const raw = JSON.stringify({ generation: "new", blockedIds: ["a"], raws: {}, originals: [original] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", raw);
+  root = createRoot(host); await act(async () => root!.render(<><HeldProbe /><CanvasArchiveSection /></>));
+  expect(host.querySelector("i")?.dataset.held).toBe("0");
+  expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
+  const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "보관본 내려받기");
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+  const exported = JSON.parse(download.mock.calls.at(-1)![1]);
+  expect(exported.recovery.mirror).toEqual(JSON.parse(raw));
+  expect(exported.buckets[bucket]).toEqual([scene("a")]);
+  expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBe(raw);
+  await act(async () => setHubFeatures([]));
+  expect(host.querySelector("i")?.dataset.held).toBe("1");
+  expect(host.textContent).toContain("복원 전에 남겨 둔 것");
+});
 it("the folded settings line reads the same held count as the recovery group, only for this account", async () => {
   await changed(); await syncSceneNotebook();
   localStorage.setItem('mvhub.editRecovery:["local","doc"]', JSON.stringify({ blocked: true, originals: [{ raw: "original" }] }));

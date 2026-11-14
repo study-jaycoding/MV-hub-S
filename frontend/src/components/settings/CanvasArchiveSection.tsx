@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
-import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, downloadStorageRecovery, type StorageRecovery } from "../../lib/sceneArchive";
+import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, downloadStorageRecovery, redundantMirrorHoldIds, type StorageRecovery } from "../../lib/sceneArchive";
 import { subscribeEditBackup } from "../../lib/editDocBackup";
 import { getAccountNamespace } from "../../lib/accountScope";
-import { hubHasFeature } from "../../lib/hubFeatures";
+import { hubHasFeature, subscribeHubFeatures } from "../../lib/hubFeatures";
 import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestoreArchiveContent, type NotebookArchive } from "../../lib/sceneNotebook";
 import { useSceneWriter } from "../../lib/sceneWriter";
 import { useT } from "../../lib/i18n";
@@ -27,10 +27,10 @@ export function useStorageRecovery() {
       }).catch(() => { if (alive) setFailed(true); });
     };
     read();
-    const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read);
+    const offScene = subscribeSceneSaveState(read), offEdit = subscribeEditBackup(read), offFeatures = subscribeHubFeatures(read);
     window.addEventListener("storage", read);
     window.addEventListener("focus", read);
-    return () => { alive = false; offScene(); offEdit(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
+    return () => { alive = false; offScene(); offEdit(); offFeatures(); window.removeEventListener("storage", read); window.removeEventListener("focus", read); };
   }, [account, writer.mode]);
   return [recovery?.account === account ? recovery : null, setRecovery, failed] as const;
 }
@@ -38,6 +38,7 @@ export function useStorageRecovery() {
 /** 보류 개수 — 캔버스 보관본(미러는 아직 막힌 씬·장부가 있는 것만) · 편집 문서 · 카드 정리 대기. */
 export function heldRecoveryCounts(recovery: StorageRecovery | null) {
   const blockedMirrorIds = new Set(recovery?.mirror?.blockedIds ?? []);
+  for (const id of redundantMirrorHoldIds(recovery)) blockedMirrorIds.delete(id);
   const canvas = (recovery?.canvases.filter(hasRestoreArchiveContent).length ?? 0) + (recovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
   const edit = recovery?.edits.length ?? 0;
   const card = recovery?.cards?.candidates.reduce((n, c) => n + c.removals.length + c.revives.length + c.backfill.length, 0) ?? 0;
@@ -112,6 +113,9 @@ export function CanvasArchiveSection() {
           <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
           <button className="settings-action" disabled={busy || floating} onClick={() => fileRef.current?.click()}>{t("전체 가져오기로 되살리기")}</button>
         </div>
+      </div>}
+      {!(canvasCount + editCount + cardCount) && !!ownRecovery?.mirror?.originals.length && redundantMirrorHoldIds(ownRecovery).size > 0 && <div className="settings-row">
+        <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
       </div>}
       {archive && archiveAccount === account && <div className="settings-row">
         <span>{t("허브로 바꾸기 전 이 브라우저 캔버스 {count}개 — 합치지 않고 따로 남겨 둔 것").replace("{count}", String(Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)))}</span>
