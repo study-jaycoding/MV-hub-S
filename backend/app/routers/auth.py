@@ -218,7 +218,7 @@ def auth_config():
         #  asset_comment_drawings_v1 = 어셋(파일) 코멘트 그림(/api/assets/comments-v2·그림 조회)을 아는 허브.
         #  agent_chat_v1 = MV Agent 칸(이 PC 의 Claude Code·Codex) 라우터가 붙은 로컬 허브.
         #  agent_chat_connect_v1 = 칸의 Claude 연결 경로(/api/agent-chat/claude)를 아는 허브 — 없으면 화면은 엔진 사유만 보인다.
-        #  scene_writer_v1 = 허브 공책(브라우저 사이 한 곳 저장·임대) — 로컬 허브 기본 켬, CONTENT_HUB_SCENE_WRITER=0 이면 끔.
+        #  scene_writer_v1 = 허브 공책(브라우저 사이 한 곳 저장·임대) — 로컬 허브에서 CONTENT_HUB_SCENE_WRITER=1 일 때만 켬(이번 릴리스 기본 끔).
         "features": ["request_retry_v1", "edit_doc_backup_v1", "audio-models-v1", "video-voice-v1", "comfy_canvas_runs_v1",
                      "comment_drawings_v1", "asset_comment_drawings_v1"]
                     + (["agent_chat_v1", "agent_chat_connect_v1"] if agent_chat.enabled() else [])

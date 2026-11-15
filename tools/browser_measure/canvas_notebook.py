@@ -116,7 +116,9 @@ def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | 
         validate_shared_url(shared_url)
         env["CONTENT_HUB_SHARED_URL"] = shared_url
     env["CONTENT_HUB_FRONTEND_DIST"] = str(checkout / "frontend" / "dist")
-    return env  # 허브 공책은 운영 기본 켬 그대로 잰다(server_env 가 부모의 CONTENT_HUB_* 를 뺀다)
+    # 허브 공책 전용 실측 — 운영 기본은 끔(=1 일 때만 켬)이라 명시적으로 켠다(server_env 가 부모의 CONTENT_HUB_* 를 뺀 뒤).
+    env["CONTENT_HUB_SCENE_WRITER"] = "1"
+    return env
 
 
 def validate_shared_url(url: str) -> None:

@@ -45,19 +45,34 @@ export function hasRestoreArchiveContent(archive: Pick<RestoreArchive, "scenes" 
     Object.values(archive.controls).some((value) => value !== undefined);
 }
 export const validRestoreGeneration = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200;
+// 미러 세대 지도의 지문 기억 — 씬마다 [글자, 지문] 하나. 미러 동기화 한 번에 두 번·카드 연결 읽기마다 모든 씬을 다시 해싱하던 것을
+//  같은 글자면 다시 쓴다(같은 글자 = 같은 지문). 지금 확정본에 없는·바뀐 글자는 부를 때마다 버린다. sceneBackup 의 provenanceHash 와
+//  같은 까닭이지만 sceneBackup 이 이 모듈을 가져오므로(순환 금지) 따로 둔다(docs/status/배포후보_공책기본끔_2026-11-15.md).
+const generationHashes = new Map<string, [string, string]>();
+let generationHashesAccount = "";
 export function mirrorSceneGenerations(): Map<string, string> {
   try {
     const account = getAccountNamespace();
+    // 다른 계정의 글자를 쥐고 있지 않는다 — 계정이 바뀌거나 기록이 없으면 먼저 비운다(독립 리뷰 01a1de12).
+    if (account !== generationHashesAccount) { generationHashes.clear(); generationHashesAccount = account; }
     const value = JSON.parse(localStorage.getItem(`mvhub.mirrorRecovery:${account}`) ?? "null") as { generation?: unknown; blockedIds?: unknown; raws?: Record<string, string | null> } | null;
     const result = new Map<string, string>();
-    if (!value || !validRestoreGeneration(value.generation) || !Array.isArray(value.blockedIds)) return result;
+    if (!value || !validRestoreGeneration(value.generation) || !Array.isArray(value.blockedIds)) { generationHashes.clear(); return result; }
     const blocked = new Set(value.blockedIds), texts = new Map(readConfirmedTexts(`${account}::_none`).map((scene) => [scene.id, scene.text]));
+    for (const [id, [text]] of generationHashes) if (texts.get(id) !== text) generationHashes.delete(id);
+    const hashOf = (id: string, text: string): string => {
+      const kept = generationHashes.get(id);
+      if (kept && kept[0] === text) return kept[1];
+      const hash = sha256Js(new TextEncoder().encode(text));
+      generationHashes.set(id, [text, hash]);
+      return hash;
+    };
     for (const [id, hash] of Object.entries(value.raws ?? {})) {
       const text = texts.get(id);
-      if (!blocked.has(id) && hash === (text === undefined ? null : sha256Js(new TextEncoder().encode(text)))) result.set(id, value.generation);
+      if (!blocked.has(id) && hash === (text === undefined ? null : hashOf(id, text))) result.set(id, value.generation);
     }
     return result;
-  } catch { return new Map(); }
+  } catch { generationHashes.clear(); return new Map(); }
 }
 export function notebookRestoreGeneration(account: string): string | null {
   if (account !== getAccountNamespace()) return null;

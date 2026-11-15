@@ -63,6 +63,9 @@ export interface MirrorRecovery {
   blockedIds: string[];
   raws: Record<string, string | null>; // SHA-256 출처 지문. 원문은 보류된 씬만 originals에 보존한다.
   originals: { generation: string | null; scenes: { id: string; text: string }[]; ledger: [string, LedgerEntry][] }[];
+  // 5MiB 를 넘어 원문을 originals 에 복사하지 않고 보류만 한 씬(원문은 IndexedDB 의 그 씬). 화면이 이 보류를 따로 보인다.
+  //  옛 기록에는 없다 — 원문 없는 옛 보류 ID 는 지금처럼 세지 않는다(docs/status/배포후보_공책기본끔_2026-11-15.md).
+  uncopied?: string[];
 }
 const mirrorRecoveryKey = (scope: string) => `mvhub.mirrorRecovery:${scope}`;
 const mirrorRecoverySubs = new Set<() => void>();
@@ -111,18 +114,34 @@ export function readMirrorRecovery(scope = ns()): MirrorRecovery | null {
   if (!validRestoreGeneration(value.generation) || !Array.isArray(value.blockedIds) || !Array.isArray(value.originals) || !value.raws || typeof value.raws !== "object") throw new Error("invalid_mirror_recovery");
   return value;
 }
+// 보류한 씬 중 원문을 localStorage 보류 기록에 복사할 것 — 5MiB 초과 씬은 빼고 보류(blockedIds)만 한다.
+//  그 원문은 IndexedDB 의 씬 자체로 남고, localStorage 한도를 넘기면 기록 저장이 실패해 계정의 미러 동기화 전체가
+//  재시도에 묶인다(docs/status/배포후보_공책기본끔_2026-11-15.md). 보류는 그대로라 줄여도 명시적 재개 전엔 보내지 않는다.
+function heldOriginals(scenes: { id: string; text: string }[], held: Set<string>): { id: string; text: string }[] {
+  return scenes.filter((scene) => held.has(scene.id) && !exceedsSceneLimit(scene.text));
+}
+// 원문 없이 보류한 씬 표식 — 앞서 적은 것 중 아직 보류인 것은 남기고(원문을 새로 복사한 씬은 뺀다) 이번에 원문을 뺀 씬을 더한다.
+function uncopiedHeld(prior: string[] | undefined, held: Set<string>, scenes: { id: string; text: string }[], copied: { id: string }[]): string[] {
+  const copiedIds = new Set(copied.map(({ id }) => id));
+  const now = scenes.filter((scene) => held.has(scene.id) && !copiedIds.has(scene.id)).map(({ id }) => id);
+  return [...new Set([...(prior ?? []).filter((id) => held.has(id) && !copiedIds.has(id)), ...now])];
+}
 async function checkMirrorGeneration(scope: string): Promise<string> {
   const response = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(`${API}?project_id=&include_data=1`, asAccount(scope));
   if (scope !== ns() || !validRestoreGeneration(response.restore_generation) || !Array.isArray(response.items)) throw new Error("invalid_mirror_generation");
   const prior = readMirrorRecovery(scope);
   const scenes = listPersistedSceneTexts(null).map(({ id, text }) => ({ id, text }));
-  const hashes = new Map(scenes.map((scene) => [scene.id, sha256Js(new TextEncoder().encode(scene.text))]));
+  // 같은 글자는 씬별 지문 기억으로 — 동기화 앞뒤마다 모든 씬을 다시 해싱하지 않는다(값은 같다).
+  const hashes = new Map(scenes.map((scene) => [scene.id, provenanceHash(scene.id, scene.text)]));
   if (prior?.generation === response.restore_generation) {
     const blocked = new Set(prior.blockedIds);
     const unproven = new Set([...new Set([...Object.keys(prior.raws), ...hashes.keys()])].filter((id) => !blocked.has(id) && (prior.raws[id] ?? null) !== (hashes.get(id) ?? null)));
     if (unproven.size) {
-      prior.originals.push({ generation: prior.generation, scenes: scenes.filter((scene) => unproven.has(scene.id)), ledger: [...loadLedger(scope, true)].filter(([id]) => unproven.has(id)) });
+      const copied = heldOriginals(scenes, unproven), ledgerHeld = [...loadLedger(scope, true)].filter(([id]) => unproven.has(id));
+      if (copied.length || ledgerHeld.length) prior.originals.push({ generation: prior.generation, scenes: copied, ledger: ledgerHeld });
       prior.blockedIds.push(...unproven);
+      const uncopied = uncopiedHeld(prior.uncopied, new Set(prior.blockedIds), scenes.filter(({ id }) => unproven.has(id)), copied);
+      if (uncopied.length) prior.uncopied = uncopied; else delete prior.uncopied;
       saveMirrorRecovery(scope, prior);
     }
     return prior.generation;
@@ -131,8 +150,11 @@ async function checkMirrorGeneration(scope: string): Promise<string> {
   const blocked = new Set(scenes.filter((scene) => prior || oldLedger.get(scene.id)?.fork || rows.get(scene.id)?.data !== scene.text).map((scene) => scene.id));
   for (const id of oldLedger.keys()) if (!hashes.has(id)) blocked.add(id);
   const originals = [...(prior?.originals ?? [])];
-  if (blocked.size || oldLedger.size) originals.push({ generation: prior?.generation ?? null, scenes: scenes.filter((scene) => blocked.has(scene.id)), ledger: [...oldLedger] });
+  const copied = heldOriginals(scenes, blocked);
+  if (copied.length || oldLedger.size) originals.push({ generation: prior?.generation ?? null, scenes: copied, ledger: [...oldLedger] });
   const record: MirrorRecovery = { generation: response.restore_generation, blockedIds: [...new Set([...blocked, ...oldLedger.keys()])], originals, raws: Object.fromEntries(hashes) };
+  const uncopied = uncopiedHeld(prior?.uncopied, blocked, scenes, copied);
+  if (uncopied.length) record.uncopied = uncopied;
   // 옛 장부 보관이 확인된 다음에만 제거하고, 깨끗한 씬의 현재 기준판을 새로 적는다.
   const notify = mirrorRecoverySubs.size > 0;
   let previousRecovery: string | null | undefined;

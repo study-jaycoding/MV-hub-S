@@ -222,7 +222,7 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       const seen = () => hashed.filter((text) => [a, b, one, two].includes(text));
       hashed.length = 0;
       scenes.saveScenes(null, [JSON.parse(one), JSON.parse(b)]); await settle();
-      expect(seen()).toEqual([a, one]); // 안 바뀐 b 는 해싱하지 않는다
+      expect(seen()).toEqual([one]); // 안 바뀐 b 는 해싱하지 않고, 이전 글자(a)는 첫 동기화 판정이 남긴 기억에서(2026-11-15 공책 기본 끔 기록)
       hashed.length = 0;
       scenes.saveScenes(null, [JSON.parse(two), JSON.parse(b)]); await settle();
       expect(seen()).toEqual([two]); // 이전 글자(one)의 지문은 기억에서
@@ -234,6 +234,147 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       scenes.saveScenes(null, [JSON.parse(two), JSON.parse(b)]); await settle();
       expect(seen()).toEqual([two]);
       expect(backup.readMirrorRecovery()?.raws.a).toBe(real.sha256Js(new TextEncoder().encode(two)));
+    } finally { vi.doUnmock("../src/lib/editShare"); }
+  });
+  it("mirror first contact holds oversize scenes without copying their text and keeps sending matching scenes", async () => {
+    vi.stubGlobal("crypto", {});
+    const { scenes, backup, settle } = await boot(false);
+    const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`;
+    const big = "x".repeat(5 * 1024 * 1024 + 16);
+    const all = (overrides: Record<string, unknown> = {}) => ["same", "diff", "hugeNew", "hugeOld"].map((id) =>
+      (overrides[id] ?? JSON.parse(sceneJson(id, id.startsWith("huge") ? big : id === "diff" ? "local" : "씬"))) as object);
+    scenes.saveScenes(null, all() as never); await settle();
+    const text = (id: string) => scenes.listPersistedSceneTexts(null).find((s) => s.id === id)!.text;
+    const row = (id: string, data: string) => ({ id, data, data_hash: sha256Js(new TextEncoder().encode(data)) });
+    const rows = [row("same", text("same")), row("diff", sceneJson("diff", "hub")), row("hugeOld", sceneJson("hugeOld", "small old copy"))];
+    getFull = () => Promise.resolve({ items: rows }); getMeta = () => Promise.resolve({ items: rows });
+    // 브라우저 localStorage 한도 흉내 — 4M 글자를 넘는 값은 거부한다.
+    const realSet = localStorage.setItem;
+    (localStorage as { setItem: (k: string, v: string) => void }).setItem = (k, v) => {
+      if (String(v).length > 4_000_000) throw new DOMException("quota", "QuotaExceededError");
+      realSet(k, v);
+    };
+    const sentIds = () => puts().flatMap((c) => (putBody(c).upserts as { id: string }[]).map((u) => u.id));
+    try {
+      await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+      const record = backup.readMirrorRecovery()!;
+      expect(new Set(record.blockedIds)).toEqual(new Set(["diff", "hugeNew", "hugeOld"]));
+      expect(record.originals.flatMap((o) => o.scenes.map((s) => s.id))).toEqual(["diff"]); // 큰 원문은 복사하지 않는다
+      expect(new Set(record.uncopied)).toEqual(new Set(["hugeNew", "hugeOld"])); // 화면이 따로 보일 표식
+      expect(localStorage.getItem(key)!.length).toBeLessThan(100_000);
+      expect(scenes.listScenes(null).map((s) => s.id).sort()).toEqual(["diff", "hugeNew", "hugeOld", "same"]);
+      // 같은 씬의 다음 편집은 올라가고, 보류한 씬은 가지 않는다
+      calls = [];
+      scenes.saveScenes(null, all({ same: JSON.parse(sceneJson("same", "edited")) }) as never); await settle(); await vi.advanceTimersByTimeAsync(2500);
+      expect(sentIds()).toContain("same");
+      expect(sentIds().filter((id) => id !== "same")).toEqual([]);
+      // 큰 씬을 5MiB 이하로 줄여도 명시적 재개 전에는 보내지 않는다
+      calls = [];
+      const shrunk = JSON.parse(sceneJson("hugeNew", "shrunk"));
+      scenes.saveScenes(null, all({ same: JSON.parse(sceneJson("same", "edited")), hugeNew: shrunk }) as never); await settle(); await vi.advanceTimersByTimeAsync(2500);
+      expect(sentIds()).not.toContain("hugeNew");
+      expect(new Set(backup.readMirrorRecovery()!.blockedIds)).toEqual(new Set(["diff", "hugeNew", "hugeOld"]));
+      // 같은 세대에서 지문이 끊긴 큰 씬도 원문을 복사하지 않고 보류만 한다(124행 분기)
+      const prior = backup.readMirrorRecovery()!;
+      scenes.saveScenes(null, all({ same: JSON.parse(sceneJson("same", big)), hugeNew: shrunk }) as never); await settle();
+      localStorage.setItem(key, JSON.stringify({ ...prior, raws: { ...backup.readMirrorRecovery()!.raws, same: "not-this-text" } }));
+      calls = [];
+      await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+      const after = backup.readMirrorRecovery()!;
+      expect(after.blockedIds).toContain("same");
+      expect(after.originals.flatMap((o) => o.scenes.map((s) => s.id))).toEqual(["diff"]);
+      expect(new Set(after.uncopied)).toEqual(new Set(["hugeNew", "hugeOld", "same"]));
+      expect(localStorage.getItem(key)!.length).toBeLessThan(100_000);
+      expect(sentIds()).toEqual([]);
+    } finally { (localStorage as { setItem: typeof realSet }).setItem = realSet; }
+  });
+  it("mirror holds survive a reload and resume only through an explicit archive import", async () => {
+    vi.stubGlobal("crypto", {});
+    let ctx = await boot(false);
+    const big = "x".repeat(5 * 1024 * 1024 + 16);
+    ctx.scenes.saveScenes(null, [JSON.parse(sceneJson("keep")), JSON.parse(sceneJson("huge", big))]); await ctx.settle();
+    const keepText = ctx.scenes.listPersistedSceneTexts(null).find((s) => s.id === "keep")!.text;
+    const rows = [{ id: "keep", data: keepText, data_hash: sha256Js(new TextEncoder().encode(keepText)) }];
+    getFull = () => Promise.resolve({ items: rows }); getMeta = () => Promise.resolve({ items: rows });
+    await ctx.backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    expect(ctx.backup.readMirrorRecovery()!.blockedIds).toEqual(["huge"]);
+    // 다시 부팅: localStorage 는 남고 저장소는 같은 씬(줄인 큰 씬)으로 다시 연다
+    const shrunk = sceneJson("huge", "shrunk after update");
+    ctx = await boot(false);
+    ctx.scenes.saveScenes(null, [JSON.parse(keepText), JSON.parse(shrunk)]); await ctx.settle();
+    calls = [];
+    await ctx.backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+    const sent = () => puts().flatMap((c) => (putBody(c).upserts as { id: string }[]).map((u) => u.id));
+    expect(sent()).not.toContain("huge");
+    expect(ctx.backup.readMirrorRecovery()!.blockedIds).toEqual(["huge"]);
+    expect(ctx.backup.readMirrorRecovery()!.uncopied).toEqual(["huge"]);
+    expect(ctx.backup.readMirrorRecovery()!.originals.flatMap((o) => o.scenes.map((s) => s.id))).toEqual([]);
+    // 명시적 재개: 전체 내보내기 파일을 다시 가져오면 보류가 풀려 다음 동기화에 올라간다
+    const archive = await import("../src/lib/sceneArchive");
+    const file = await archive.exportSceneArchiveText();
+    await archive.importSceneArchiveText(file);
+    expect(ctx.backup.readMirrorRecovery()!.blockedIds).toEqual([]);
+    calls = [];
+    ctx.scenes.saveScenes(null, [JSON.parse(keepText), JSON.parse(sceneJson("huge", "edited after resume"))]); await ctx.settle(); await vi.advanceTimersByTimeAsync(2500);
+    expect(sent()).toContain("huge");
+  });
+  it("a mirror sync with unchanged scenes hashes no scene text, and both hash memories drop deleted scenes", async () => {
+    vi.stubGlobal("crypto", {});
+    const real = await vi.importActual<typeof import("../src/lib/editShare")>("../src/lib/editShare");
+    const hashed: string[] = [];
+    vi.doMock("../src/lib/editShare", () => ({ ...real, sha256Js: (bytes: Uint8Array) => {
+      hashed.push(new TextDecoder().decode(bytes));
+      return real.sha256Js(bytes);
+    } }));
+    try {
+      const { scenes, backup, settle } = await boot(false);
+      const notebook = await import("../src/lib/sceneNotebook");
+      scenes.saveScenes(null, ["a", "b", "c"].map((id) => JSON.parse(sceneJson(id)))); await settle();
+      const texts = new Map(scenes.listPersistedSceneTexts(null).map((s) => [s.id, s.text]));
+      const rows = [...texts].map(([id, data]) => ({ id, data, data_hash: real.sha256Js(new TextEncoder().encode(data)) }));
+      getFull = () => Promise.resolve({ items: rows }); getMeta = () => Promise.resolve({ items: rows });
+      await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500);
+      const raws = backup.readMirrorRecovery()!.raws, generations = notebook.mirrorSceneGenerations();
+      const sceneTexts = new Set(texts.values());
+      hashed.length = 0;
+      await backup.initSceneBackup(); await vi.advanceTimersByTimeAsync(2500); // 씬을 바꾸지 않은 두 번째 동기화
+      expect(hashed.filter((t) => sceneTexts.has(t))).toEqual([]);
+      expect(backup.readMirrorRecovery()!.raws).toEqual(raws);
+      expect(notebook.mirrorSceneGenerations()).toEqual(generations);
+      // 지운 씬의 기억은 버린다 — 같은 글자로 다시 만들면 두 기억 모두 새로 계산한다
+      scenes.saveScenes(null, ["a", "c"].map((id) => JSON.parse(texts.get(id)!))); await settle(); await vi.advanceTimersByTimeAsync(2500);
+      notebook.mirrorSceneGenerations();
+      hashed.length = 0;
+      scenes.saveScenes(null, ["a", "b", "c"].map((id) => JSON.parse(texts.get(id)!))); await settle(); await vi.advanceTimersByTimeAsync(2500);
+      notebook.mirrorSceneGenerations();
+      expect(hashed.filter((t) => t === texts.get("b")).length).toBeGreaterThanOrEqual(2);
+    } finally { vi.doUnmock("../src/lib/editShare"); }
+  });
+  it("the mirror generation hash memory is dropped when the account changes or has no mirror record", async () => {
+    const real = await vi.importActual<typeof import("../src/lib/editShare")>("../src/lib/editShare");
+    const hashed: string[] = [];
+    vi.doMock("../src/lib/editShare", () => ({ ...real, sha256Js: (bytes: Uint8Array) => {
+      hashed.push(new TextDecoder().decode(bytes));
+      return real.sha256Js(bytes);
+    } }));
+    try {
+      const { scenes, settle } = await boot(false);
+      const notebook = await import("../src/lib/sceneNotebook");
+      const { getAccountNamespace } = await import("../src/lib/accountScope");
+      const setAccountScope = (email: string) => { localStorage.setItem("ch.activeAccount", email); expect(getAccountNamespace()).toBe(`acct:${email}`); };
+      scenes.saveScenes(null, [JSON.parse(sceneJson("a"))]); await settle();
+      const text = scenes.listPersistedSceneTexts(null)[0].text, scope = `acct:user${acctSeq}@test`;
+      localStorage.setItem(`mvhub.mirrorRecovery:${scope}`, JSON.stringify({ generation: "restore-1", blockedIds: [], originals: [], raws: { a: real.sha256Js(new TextEncoder().encode(text)) } }));
+      expect(notebook.mirrorSceneGenerations().get("a")).toBe("restore-1");
+      hashed.length = 0;
+      notebook.mirrorSceneGenerations();
+      expect(hashed.filter((t) => t === text)).toEqual([]); // 기억에서
+      setAccountScope(`other${acctSeq}@test`); // 미러 기록이 없는 계정 — 기억을 비운다
+      expect(notebook.mirrorSceneGenerations().size).toBe(0);
+      setAccountScope(`user${acctSeq}@test`);
+      hashed.length = 0;
+      expect(notebook.mirrorSceneGenerations().get("a")).toBe("restore-1");
+      expect(hashed.filter((t) => t === text).length).toBe(1); // 비웠으니 다시 계산했다
     } finally { vi.doUnmock("../src/lib/editShare"); }
   });
   it.each([false, true])("an unreadable pre-write comparison still saves recovery (confirmation fails: %s)", async (confirmationFails) => {

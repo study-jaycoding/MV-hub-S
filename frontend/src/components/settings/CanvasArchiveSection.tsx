@@ -115,9 +115,14 @@ export function heldRecoveryCounts(recovery: StorageRecovery | null) {
   const blockedMirrorIds = new Set(recovery?.mirror?.blockedIds ?? []);
   for (const id of redundantMirrorHoldIds(recovery)) blockedMirrorIds.delete(id);
   const canvas = (recovery?.canvases.filter(hasRestoreArchiveContent).length ?? 0) + (recovery?.mirror?.originals.filter((item) => item.scenes.some(({ id }) => blockedMirrorIds.has(id)) || item.ledger.some(([id]) => blockedMirrorIds.has(id))).length ?? 0);
+  // 원문 없이 보류만 한 씬 — 5MiB 를 넘어 원문을 보류 기록에 복사하지 않은 씬(캔버스에 그대로 있고, 기록의 uncopied 표식). 줄여도 자동
+  //  백업이 다시 시작되지 않으므로 따로 센다(docs/status/배포후보_공책기본끔_2026-11-15.md). 표식 없는 옛 기록의 원문 없는 보류는 지금처럼 세지 않는다.
+  //  원문이나 장부가 보관 묶음에 있는 ID 는 위 canvas 가 이미 센다 — 두 번 세지 않는다(독립 리뷰 01a1de12).
+  const mentioned = new Set((recovery?.mirror?.originals ?? []).flatMap((item) => [...item.scenes.map(({ id }) => id), ...item.ledger.map(([id]) => id)]));
+  const textless = new Set((recovery?.mirror?.uncopied ?? []).filter((id) => blockedMirrorIds.has(id) && !mentioned.has(id))).size;
   const edit = recovery?.edits.length ?? 0;
   const card = recovery?.cards?.candidates.reduce((n, c) => n + c.removals.length + c.revives.length + c.backfill.length, 0) ?? 0;
-  return { canvas, edit, card, total: canvas + edit + card };
+  return { canvas, edit, card, textless, total: canvas + edit + card + textless };
 }
 
 // 캔버스 전체를 파일 하나로 내려받고, 그 파일에서 다시 가져온다(백업·PC 옮기기·저장소가 막혔을 때 건지기).
@@ -183,22 +188,23 @@ function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typ
         (recovered ? ` · 내용이 다른 ${recovered}개는 '[사본]' 탭으로 따로 두었습니다.` : ".")
       );
     });
-  const { canvas: canvasCount, edit: editCount, card: cardCount } = heldRecoveryCounts(ownRecovery);
+  const { canvas: canvasCount, edit: editCount, card: cardCount, textless: textlessCount } = heldRecoveryCounts(ownRecovery);
 
   return (
     <div className="settings-subblock">
       <h6>캔버스 자료</h6>
       {recoveryFailed && <p role="status" className="settings-hint" style={{ color: "var(--warning, #c86f20)" }}>{t("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.")}</p>}
-      {!!(canvasCount + editCount + cardCount) && ownRecovery && <div className="settings-subblock" style={{ borderColor: "var(--warning, #c86f20)" }}>
+      {!!(canvasCount + editCount + cardCount + textlessCount) && ownRecovery && <div className="settings-subblock" style={{ borderColor: "var(--warning, #c86f20)" }}>
         <h6>{t("복원 전에 남겨 둔 것")}</h6>
         <p role="status" style={{ color: "var(--warning, #c86f20)" }}>{t("허브와 이 브라우저의 기록 시점이 다릅니다. 허브가 백업에서 되살려졌거나, 업데이트 전 자료일 수 있습니다. 이 브라우저에 있던 내용은 지우지 않고 아래에 보관했고, 자동으로 다시 보내지 않습니다.")}</p>
         <p>{t("캔버스 보관본 {canvasCount}개 · 편집 문서 {editCount}개 · 카드 정리 대기 {cardCount}개").replace("{canvasCount}", String(canvasCount)).replace("{editCount}", String(editCount)).replace("{cardCount}", String(cardCount))}</p>
+        {textlessCount > 0 && <p data-held-textless={textlessCount}>{t("캔버스에 그대로 있지만 자동 백업을 멈춘 씬 {count}개 — 전체 내보내기 뒤 전체 가져오기로 다시 보냅니다").replace("{count}", String(textlessCount))}</p>}
         <div className="settings-row">
           <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
           <button className="settings-action" disabled={busy || floating} onClick={() => fileRef.current?.click()}>{t("전체 가져오기로 되살리기")}</button>
         </div>
       </div>}
-      {!(canvasCount + editCount + cardCount) && !!ownRecovery?.mirror?.originals.length && redundantMirrorHoldIds(ownRecovery).size > 0 && <div className="settings-row">
+      {!(canvasCount + editCount + cardCount + textlessCount) && !!ownRecovery?.mirror?.originals.length && redundantMirrorHoldIds(ownRecovery).size > 0 && <div className="settings-row">
         <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
       </div>}
       {archive && archiveAccount === account && <div className="settings-row">

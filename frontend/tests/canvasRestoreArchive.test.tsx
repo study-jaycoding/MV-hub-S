@@ -124,6 +124,37 @@ it("recovery UI shows counts and exports originals with control data; another ac
   await act(async () => root!.render(<CanvasArchiveSection />));
   expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
 });
+it("a mirror hold without a copied original (large scene) stays visible after shrinking until it is resumed", async () => {
+  // 공책 없는 허브의 미러 경로 — 5MiB 를 넘어 원문을 보류 기록에 복사하지 않은 씬은 blockedIds 와 uncopied 표식에만 있다.
+  setHubFeatures([]);
+  await writeScenesStore({ [bucket]: [scene("a"), scene("huge", "줄인 큰 씬")] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["huge"], raws: {}, originals: [], uncopied: ["huge"] }));
+  expect(heldRecoveryCounts(await readStorageRecovery())).toMatchObject({ canvas: 0, textless: 1, total: 1 });
+  root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
+  expect(host.textContent).toContain("복원 전에 남겨 둔 것");
+  expect(host.querySelector("[data-held-textless]")?.textContent).toBe("캔버스에 그대로 있지만 자동 백업을 멈춘 씬 1개 — 전체 내보내기 뒤 전체 가져오기로 다시 보냅니다");
+  // 가져오기로 재개되면(보류 해제) 사라진다 — 표식이 남아 있어도 보류가 아니면 세지 않는다
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: [], raws: {}, originals: [], uncopied: ["huge"] }));
+  act(() => root!.unmount()); root = createRoot(host); await act(async () => root!.render(<CanvasArchiveSection />));
+  expect(host.textContent).not.toContain("자동 백업을 멈춘 씬");
+  expect(host.textContent).not.toContain("복원 전에 남겨 둔 것");
+});
+it("a large held scene whose old ledger is archived counts once, not as both an archive and a textless hold", async () => {
+  setHubFeatures([]);
+  await writeScenesStore({ [bucket]: [scene("huge", "큰 씬")] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["huge"], raws: {},
+    originals: [{ generation: null, scenes: [], ledger: [["huge", { b: "old-base" }]] }], uncopied: ["huge"] }));
+  expect(heldRecoveryCounts(await readStorageRecovery())).toMatchObject({ canvas: 1, textless: 0, total: 1 });
+});
+it.each(["with originals", "legacy hold without original"])("holds without the uncopied marker keep the textless count at zero (%s)", async (kind) => {
+  setHubFeatures([]);
+  await writeScenesStore({ [bucket]: [scene("a"), scene("b")] });
+  const record = kind === "with originals"
+    ? { generation: "new", blockedIds: ["a", "gone"], raws: {}, originals: [{ generation: null, scenes: [{ id: "a", text: JSON.stringify(scene("a", "before")) }], ledger: [["gone", { b: "old-base" }]] }] }
+    : { generation: "new", blockedIds: ["b"], raws: {}, originals: [] }; // 옛 빈 기록 — 지금처럼 세지 않는다
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify(record));
+  expect(heldRecoveryCounts(await readStorageRecovery())).toMatchObject(kind === "with originals" ? { canvas: 1, textless: 0, total: 1 } : { canvas: 0, textless: 0, total: 0 });
+});
 function HeldProbe() {
   const [recovery, , failed] = useStorageRecovery();
   return <i data-held={heldRecoveryCounts(recovery).total} data-failed={failed} />;
@@ -1906,7 +1937,7 @@ it.each([false, true])("legacy empty archives stay readable/exportable but do no
   const before = await readRestoreArchives("local");
   const recovery = await readStorageRecovery();
   expect(recovery.canvases).toEqual(archives);
-  expect(heldRecoveryCounts(recovery)).toEqual({ canvas: hasProgress ? 1 : 0, edit: 0, card: 0, total: hasProgress ? 1 : 0 });
+  expect(heldRecoveryCounts(recovery)).toEqual({ canvas: hasProgress ? 1 : 0, edit: 0, card: 0, textless: 0, total: hasProgress ? 1 : 0 });
   root = createRoot(host); await act(async () => root!.render(<><CanvasArchiveSection /><HeldProbe /></>));
   expect(host.querySelector("i")!.dataset.held).toBe(hasProgress ? "1" : "0");
   expect(host.textContent?.includes("복원 전에 남겨 둔 것")).toBe(hasProgress);

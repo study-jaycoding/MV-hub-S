@@ -138,7 +138,7 @@ def test_server_environment_uses_existing_isolation_builder(tmp_path, monkeypatc
     assert env["CONTENT_HUB_DB"] == str(tmp_path / "db" / "content_hub.db")
     assert "CONTENT_HUB_WORKER_BACKUP_STATE_DB" not in env
     assert env["CONTENT_HUB_SHARED_URL"] == "http://127.0.0.1:9"
-    assert "CONTENT_HUB_SCENE_WRITER" not in env  # 바깥에서 끈 값이 새지 않고 운영 기본(켬)으로 잰다
+    assert env["CONTENT_HUB_SCENE_WRITER"] == "1"  # 바깥에서 끈 값이 새지 않고, 운영 기본(끔)과 달리 공책을 명시적으로 켜서 잰다
     assert env["CONTENT_HUB_AUTH"] == "0"
 
 
