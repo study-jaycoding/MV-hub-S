@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-14
+updated: 2026-11-15
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -1400,7 +1400,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 
 | 파일 | 한 줄 책임 | 호출 사슬 |
 |---|---|---|
-| `tools/backup_replicate.py`(약 600줄) | 서버 자동백업+팀원 업로드백업을 UNC 경로로 매일 복제(폴더당 30개 보존, 우리 이름 규칙만 정리) · 결과에 위치 지문 · `--probe` 는 관리자 창 [저장] 전 위치 확인 | → `tools/rotate_text_log.py` |
+| `tools/backup_replicate.py`(약 600줄) | 서버 자동백업+팀원 업로드백업을 UNC 경로로 매일 복제(서버 자동백업은 세트 단위 시간축 보관 — 최근 7 + 날마다 14 + 주마다 8, 원본에 남은 세트 보호 · 팀원 업로드·짝 없는 단독 DB 는 폴더당 30개 · 우리 이름 규칙만 정리) · 결과에 위치 지문 · `--probe` 는 관리자 창 [저장] 전 위치 확인 | → `tools/rotate_text_log.py` |
 | `tools/rotate_text_log.py`(48줄) | 핸들 열리기 전 텍스트 로그 세대 회전 | 다수 스크립트 공용 |
 | `tools/verify_backup_restore.py`(134줄) | 백업→복원 실측 훈련(운영DB 비접촉) | → backend `backup_verify`·`restore_runtime_verify` |
 | `tools/cleanup_workspace_registry.py`(119줄) | 워크스페이스 등록부 유령행 미리보기/`--apply` 삭제 | |
