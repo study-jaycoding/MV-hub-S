@@ -2,7 +2,7 @@ import type { Generation } from "../types";
 import { jsonBody, jsonFetch } from "./http";
 
 export interface ResolvePanelPluginStatus {
-  state: "not_installed" | "up_to_date" | "outdated" | "newer_installed" | "damaged" | "foreign" | "no_resolve" | "busy" | "deferred" | "permission_denied";
+  state: "not_installed" | "up_to_date" | "outdated" | "newer_installed" | "damaged" | "foreign" | "no_resolve" | "busy" | "deferred" | "permission_denied" | "release_disabled";
   path: string;
   installed_version?: string | null;
   bundled_version?: string | null;

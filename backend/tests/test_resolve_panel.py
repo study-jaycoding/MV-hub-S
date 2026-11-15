@@ -20,6 +20,8 @@ from app.services import resolve_bridge as bridge, resolve_panel as panel, resol
 from app.services import resolve_transfer as transfer, resolve_panel_worker as worker
 from tests.test_resolve_bridge import FakeClip, FakeMediaPool, FakeProject, FakeProjectManager, FakeResolve
 
+REAL_AUTHORIZED_GENERATIONS = integration._authorized_generations
+
 
 class BridgeTests(unittest.TestCase):
     def setUp(self):
@@ -263,6 +265,243 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.pool.current.clips.append(clip)
         bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
         return ready
+
+    async def deferred_pair(self):
+        await self.place()
+        other = {**self.gen, "id": "h"}
+        integration._authorized_generations.side_effect = lambda ids, request, **kwargs: (
+            "p", [self.gen if ident == "g" else other for ident in ids])
+        await route.post_prepare(self.body(route.PrepareIn, gen_id="h"), self.request)
+        clip = FakeClip(str(self.media / "clip.mp4"))
+        self.pool.current.clips.append(clip)
+        bridge._panel_stamp(clip, "h", "p", lambda: None, hub_key=panel.hub_key())
+        return clip
+
+    async def deferred_adopt(self, gen_id):
+        return await route.post_adopt(self.body(route.AdoptIn, gen_id=gen_id,
+            resolve_project_id=self.project.unique_id, defer_save=True), self.request)
+
+    async def final_save(self):
+        return await route.post_save(self.body(route.SaveIn, expect_project=self.project.unique_id), self.request)
+
+    async def test_deferred_adopt_partial_failure_never_saves_or_commits_recovery(self):
+        second = await self.deferred_pair()
+        with patch.object(panel, "record_adoption", wraps=panel.record_adoption) as ledger:
+            self.assertEqual((await self.deferred_adopt("g"))["state"], "in_bin")
+            second.ReplaceClip = Mock(return_value=False)
+            self.assertEqual((await self.deferred_adopt("h"))["state"], "replace_failed")
+            self.assertEqual(self.manager.saved, 0)
+            self.assertEqual(len(panel.records("adopt", self.ctx)), 2)
+            ledger.assert_not_called()
+            # 재시작 후 자동 복구도 저장 유예를 이어받는다.
+            panel._prepared.clear()
+            self.assertEqual((await self.adopt())["state"], "in_bin")
+            self.assertEqual(self.manager.saved, 0)
+            ledger.assert_not_called()
+
+    async def test_deferred_adopt_success_commits_only_after_final_save(self):
+        await self.deferred_pair()
+        for ident in ("g", "h"):
+            self.assertEqual((await self.deferred_adopt(ident))["state"], "in_bin")
+        self.assertEqual(self.manager.saved, 0)
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 2)
+        with patch.object(panel, "record_adoption", wraps=panel.record_adoption) as ledger:
+            self.manager.save_result = False
+            self.assertEqual((await self.final_save())["state"], "save_failed")
+            ledger.assert_not_called()
+            self.assertEqual(len(panel.records("adopt", self.ctx)), 2)
+            self.manager.saved = 0
+            self.manager.save_result = True
+            self.assertEqual((await self.final_save())["state"], "ok")
+            self.assertEqual(self.manager.saved, 1)
+            self.assertEqual(ledger.call_count, 2)
+            self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_inventory_batches_projects_and_generations_and_filters_permissions(self):
+        rows = [{"project_id": pid, "gen_id": ident, "item_id": ident} for pid, ident in
+                (("p", "g"), ("p", "h"), ("hidden", "secret"), ("p", "g"))]
+        async def batch(ids, request, **kwargs):
+            return "p", [{**self.gen, "id": ident} for ident in ids if ident == "g"]
+        with patch.object(route, "_inventory", AsyncMock(return_value={"state": "ok", "items": rows,
+                "project_counts": {"p": {"other_owner": 2, "needs_attention": 1}, "hidden": {"other_owner": 9, "needs_attention": 9}}})), \
+                patch.object(route._proxy, "proxying", return_value=True), \
+                patch.object(integration, "_authorized_generations", AsyncMock(side_effect=batch)) as generations:
+            result = await route._operate("inventory", {}, self.request, self.ctx)
+        self.assertEqual([row["gen_id"] for row in result["items"]], ["g", "g"])
+        self.assertEqual(result["other_owner"], 2)
+        route._proxy.proxy_json.assert_called_once_with("GET", "/api/projects?tab=team")
+        generations.assert_awaited_once_with(["g", "h"], self.request, visible_only=True)
+
+    async def test_inventory_remote_failure_is_not_retried_for_each_row(self):
+        rows = [{"project_id": "p", "gen_id": str(i)} for i in range(501)]
+        with patch.object(route, "_inventory", AsyncMock(return_value={"state": "ok", "items": rows})), \
+                patch.object(integration, "_authorized_generations", AsyncMock(side_effect=HTTPException(502, "offline"))) as generations:
+            with self.assertRaises(HTTPException):
+                await route._operate("inventory", {}, self.request, self.ctx)
+        self.assertEqual(generations.await_count, 1)
+
+    async def test_release_disabled_blocks_panel_identity_and_operations(self):
+        installer = integration.resolve_panel_installer
+        with patch.object(installer.release_update, "install_mode", return_value="release"), \
+                patch.object(panel, "window_identity", AsyncMock()) as identity:
+            for invoke in (lambda: route.get_identity(self.request), self.target,
+                           lambda: route.get_inventory(self.request, self.ctx["instance"], self.ctx["account"], self.ctx["epoch"])):
+                with self.assertRaises(HTTPException) as error:
+                    await invoke()
+                self.assertEqual(error.exception.status_code, 403)
+            identity.assert_not_called()
+            runner.run_resolve_panel_isolated.assert_not_called()
+
+    async def test_inventory_visible_batch_keeps_allowed_rows_and_never_fetches_hidden_local(self):
+        # 기존 전송 함수의 실제 구현으로 inventory 전용 필터를 검증한다.
+        hidden = {**self.gen, "id": "hidden"}
+        with patch.object(integration.repo, "get_generations_batch", return_value={"g": self.gen, "hidden": hidden}), \
+                patch.object(integration, "batch_view_member_projects", return_value=set()), \
+                patch.object(integration, "can_view_generation_with_member_projects", side_effect=lambda req, gen, members: gen["id"] != "hidden"), \
+                patch.object(route._proxy, "proxying", return_value=True), \
+                patch.object(route._proxy, "proxy_json", return_value={"items": {"remote": {**self.gen, "id": "remote"}}}) as remote:
+            _, gens = await REAL_AUTHORIZED_GENERATIONS(["g", "hidden", "remote", "missing"], self.request, visible_only=True)
+        self.assertEqual([gen["id"] for gen in gens], ["g", "remote"])
+        remote.assert_called_once_with("POST", "/api/generations/batch", body={"gen_ids": ["remote", "missing"]})
+
+    async def test_inventory_chunks_at_500_and_project_list_failure_stops_immediately(self):
+        rows = [{"project_id": "p", "gen_id": str(i)} for i in range(501)]
+        with patch.object(route, "_inventory", AsyncMock(return_value={"state": "ok", "items": rows})), \
+                patch.object(route._proxy, "proxying", return_value=True):
+            await route._operate("inventory", {}, self.request, self.ctx)
+            self.assertEqual([len(call.args[0]) for call in integration._authorized_generations.await_args_list], [500, 1])
+            route._proxy.proxy_json.assert_called_once()
+            integration._authorized_generations.reset_mock()
+            route._proxy.proxy_json.reset_mock()
+            route._proxy.proxy_json.side_effect = HTTPException(502, "offline")
+            with self.assertRaises(HTTPException):
+                await route._operate("inventory", {}, self.request, self.ctx)
+            route._proxy.proxy_json.assert_called_once()
+            integration._authorized_generations.assert_not_awaited()
+
+    async def test_deferred_save_ledger_failure_keeps_recovery_for_retry(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        with patch.object(transfer, "save_manifest", side_effect=OSError("ledger offline")):
+            result = await self.final_save()
+            self.assertEqual(result["state"], "ledger_failed")
+            self.assertTrue(result["project_saved"])
+        self.assertEqual(self.manager.saved, 1)
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+        panel._prepared.clear()
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_save_without_recovery_does_not_require_unrelated_clip_identity(self):
+        clip = FakeClip(str(self.render / "unrelated.mp4"))
+        clip.GetUniqueId = Mock(side_effect=RuntimeError("no identity"))
+        self.pool.root.clips.append(clip)
+        self.assertEqual((await self.final_save())["state"], "ok")
+        clip.GetUniqueId.assert_not_called()
+
+    async def test_review_deleted_failed_clip_reaches_save_through_inventory_and_adopt(self):
+        second = await self.deferred_pair()
+        self.assertEqual((await self.deferred_adopt("g"))["state"], "in_bin")
+        second.ReplaceClip = Mock(return_value=False)
+        self.assertEqual((await self.deferred_adopt("h"))["state"], "replace_failed")
+        self.pool.current.clips.remove(second)
+        inventory = await route.get_inventory(self.request, self.ctx["instance"], self.ctx["account"], self.ctx["epoch"])
+        self.assertEqual({row["gen_id"] for row in inventory["items"]}, {"g", "h"})
+        for row in inventory["items"]:
+            result = await route.post_adopt(self.body(route.AdoptIn, gen_id=row["gen_id"],
+                resolve_project_id=self.project.unique_id, bin_id=row["bin_id"], item_ids=[row["item_id"]], defer_save=True), self.request)
+            # 화면도 명시적으로 부재가 확인된 항목만 건너뛰고 최종 save로 진행한다.
+            self.assertTrue(result["state"] == "in_bin" or
+                (result["state"] == "not_seen" and row["item_id"] in result.get("missing_record_ids", [])))
+        self.assertEqual([row["gen_id"] for row in panel.records("adopt", self.ctx)], ["g"])
+        self.assertEqual(self.manager.saved, 0)
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(self.manager.saved, 1)
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_review_empty_inventory_does_not_request_offline_project_list(self):
+        with patch.object(route._proxy, "proxying", return_value=True), \
+                patch.object(route._proxy, "proxy_json", side_effect=HTTPException(502, "offline")) as remote:
+            result = await route._operate("inventory", {}, self.request, self.ctx)
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual(result["items"], [])
+        remote.assert_not_called()
+
+    async def test_review_unmarked_unreadable_id_allows_save_but_keeps_unproven_missing_record(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        record = panel.records("adopt", self.ctx)[0]
+        panel.save_record("adopt", {**record, "item_id": "unproven"})
+        clip = FakeClip(str(self.render / "unrelated.mp4"))
+        clip.GetUniqueId = Mock(side_effect=RuntimeError("no identity"))
+        self.pool.root.clips.append(clip)
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(self.manager.saved, 1)
+        self.assertEqual([row["item_id"] for row in panel.records("adopt", self.ctx)], ["unproven"])
+
+    async def test_review_unmarked_unreadable_id_does_not_bypass_local_path_check(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        clip = FakeClip(str(self.media / "clip.mp4"))
+        clip.GetUniqueId = Mock(side_effect=RuntimeError("no identity"))
+        self.pool.root.clips.append(clip)
+        self.assertEqual((await self.final_save())["state"], "not_clean")
+        self.assertEqual(self.manager.saved, 0)
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+
+    async def test_review_save_commits_all_authorized_mv_projects_once_checked(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        record = panel.records("adopt", self.ctx)[0]
+        for project_id, gen_id in (("q", "q1"), ("q", "q2"), ("r", "r1"), ("r", "r2")):
+            other = FakeClip(record["nas_path"])
+            bridge._panel_stamp(other, gen_id, project_id, lambda: None)
+            self.pool.current.clips.append(other)
+            ready = {**record["ready"], "item": {**record["ready"]["item"], "generation_id": gen_id}}
+            panel.save_record("adopt", {**record, "item_id": other.unique_id,
+                "project_id": project_id, "gen_id": gen_id, "ready": ready})
+        def permission(request, project_id):
+            if project_id == "r":
+                raise HTTPException(403, "denied")
+        with patch.object(route.projects, "_require_project_read", side_effect=permission) as permission_check, \
+                patch.object(panel, "record_adoption", wraps=panel.record_adoption) as ledger:
+            self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(self.manager.saved, 1)
+        self.assertCountEqual([call.args[1] for call in permission_check.call_args_list], ["p", "q", "r"])
+        self.assertCountEqual([call.args[1:3] for call in ledger.call_args_list], [("p", "g"), ("q", "q1"), ("q", "q2")])
+        self.assertEqual([row["project_id"] for row in panel.records("adopt", self.ctx)], ["r", "r"])
+
+    async def test_review_save_other_project_permission_error_preserves_records_without_saving(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        record = panel.records("adopt", self.ctx)[0]
+        panel.save_record("adopt", {**record, "item_id": "q-item", "project_id": "q"})
+        def permission(request, project_id):
+            if project_id == "q":
+                raise HTTPException(502, "offline")
+        with patch.object(route.projects, "_require_project_read", side_effect=permission), \
+                patch.object(panel, "record_adoption", wraps=panel.record_adoption) as ledger:
+            with self.assertRaises(HTTPException) as error:
+                await self.final_save()
+            self.assertEqual(error.exception.status_code, 502)
+            ledger.assert_not_called()
+        self.assertEqual(self.manager.saved, 0)
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 2)
+
+    async def test_review_conflict_preserves_clip_and_relink_allows_save(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        record = panel.records("adopt", self.ctx)[0]
+        clip = self.pool.current.clips[0]
+        clip.path = str(self.render / "someone-else.mp4")
+        self.assertEqual((await self.deferred_adopt("g"))["state"], "conflict")
+        self.assertEqual(clip.path, str(self.render / "someone-else.mp4"))
+        self.assertEqual(self.manager.saved, 0)
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+        clip.path = record["local_path"]  # 안내에 따라 사용자가 원래 파일로 다시 연결
+        self.assertEqual((await self.deferred_adopt("g"))["state"], "in_bin")
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
 
     def test_cached_preview_only_exposes_real_media_files_with_encoded_urls(self):
         video = self.media / "한 글#%.mp4"

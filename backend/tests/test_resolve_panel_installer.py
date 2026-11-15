@@ -248,8 +248,25 @@ class InstallerTests(unittest.TestCase):
 
 
 class StartupAndApiTests(unittest.TestCase):
+    def test_release_disabled_blocks_status_manual_and_background_without_writes(self):
+        with patch.object(installer.release_update, "install_mode", return_value="release"), \
+                patch.object(installer, "_run") as run, patch.object(installer, "write_hub_json") as write, \
+                patch.object(installer.threading, "Thread") as thread:
+            self.assertEqual(installer.resolve_panel_plugin_status()["state"], "release_disabled")
+            self.assertEqual(installer.install_resolve_panel_plugin()["state"], "release_disabled")
+            self.assertEqual(route.post_resolve_panel_plugin_install(self.request())["state"], "release_disabled")
+            installer.run_startup_install()
+            installer.start_background_install()
+            run.assert_not_called(); write.assert_not_called(); thread.assert_not_called()
+
+    def test_development_and_release_opt_in_keep_installer_available(self):
+        with patch.object(installer.release_update, "install_mode", return_value="development"), \
+                patch.object(installer, "_run", return_value={"state": "up_to_date"}) as run:
+            self.assertEqual(installer.install_resolve_panel_plugin()["state"], "up_to_date")
+            run.assert_called_once()
+
     def test_startup_conditions_and_errors_never_escape(self):
-        with patch.object(installer.platform, "system", return_value="Windows") as system, patch.object(installer.config, "AUTH_ENABLED", False), patch.object(installer.config, "PORT", 8010), patch.object(installer.release_update, "install_mode", return_value="release") as mode, patch.dict(os.environ, {}, clear=True), patch.object(installer, "write_hub_json") as write, patch.object(installer, "install_resolve_panel_plugin") as install:
+        with patch.object(installer, "RESOLVE_PANEL_RELEASE_ENABLED", True), patch.object(installer.platform, "system", return_value="Windows") as system, patch.object(installer.config, "AUTH_ENABLED", False), patch.object(installer.config, "PORT", 8010), patch.object(installer.release_update, "install_mode", return_value="release") as mode, patch.dict(os.environ, {}, clear=True), patch.object(installer, "write_hub_json") as write, patch.object(installer, "install_resolve_panel_plugin") as install:
             installer.run_startup_install(); write.assert_called_once(); install.assert_called_once_with(automatic=True, programdata=None)
             for key, value in (("CONTENT_HUB_DATA", "isolated"), ("CONTENT_HUB_DB", "")):
                 with patch.dict(os.environ, {key: value}): installer.run_startup_install()

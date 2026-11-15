@@ -20,6 +20,8 @@ from .. import config
 from . import release_update
 
 PLUGIN_ID = "com.mvhub.resolve"
+RESOLVE_PANEL_RELEASE_ENABLED = False  # 실제 Resolve 필수 실측 통과 뒤에만 켠다.
+RELEASE_DISABLED_REASON = "실제 Resolve 실측 전이므로 이 릴리스에서 패널이 꺼져 있습니다"
 SUPPORT = Path("Blackmagic Design/DaVinci Resolve/Support")
 log = logging.getLogger(__name__)
 
@@ -30,6 +32,10 @@ class ResolvePanelInstallError(RuntimeError):
 
 class InstallBusy(ResolvePanelInstallError):
     pass
+
+
+def release_disabled() -> bool:
+    return not RESOLVE_PANEL_RELEASE_ENABLED and release_update.install_mode() == "release"
 
 
 def bundled_plugin_path() -> Path:
@@ -335,16 +341,20 @@ def _run(*, install=False, automatic=False, programdata=None, source_path=None) 
 
 
 def resolve_panel_plugin_status(*, programdata=None, source_path=None) -> dict:
+    if release_disabled():
+        return {"state": "release_disabled", "path": "", "reason": RELEASE_DISABLED_REASON}
     return _run(programdata=programdata, source_path=source_path)
 
 
 def install_resolve_panel_plugin(*, automatic=False, programdata=None, source_path=None) -> dict:
+    if release_disabled():
+        return resolve_panel_plugin_status()
     return _run(install=True, automatic=automatic, programdata=programdata, source_path=source_path)
 
 
 def run_startup_install(*, programdata=None, localappdata=None) -> None:
     try:
-        if (platform.system() != "Windows" or config.AUTH_ENABLED or release_update.install_mode() != "release"
+        if (release_disabled() or platform.system() != "Windows" or config.AUTH_ENABLED or release_update.install_mode() != "release"
                 or "CONTENT_HUB_DATA" in os.environ or "CONTENT_HUB_DB" in os.environ or config.PORT != 8010):
             return
         write_hub_json("http://127.0.0.1:8010", localappdata)
@@ -355,6 +365,8 @@ def run_startup_install(*, programdata=None, localappdata=None) -> None:
 
 def start_background_install() -> None:
     try:
+        if release_disabled():
+            return
         threading.Thread(target=run_startup_install, name="resolve-panel-install", daemon=True).start()
     except Exception:
         log.exception("리졸브 패널 설치 스레드를 시작하지 못했습니다")

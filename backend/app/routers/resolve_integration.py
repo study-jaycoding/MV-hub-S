@@ -175,6 +175,8 @@ def get_resolve_panel_plugin(request: Request):
 @router.post("/panel-plugin/install")
 def post_resolve_panel_plugin_install(request: Request):
     _require_local_resolve(request)
+    if resolve_panel_installer.release_disabled():
+        return resolve_panel_installer.resolve_panel_plugin_status()
     try:
         origin = request.headers.get("origin", "")
         if resolve_panel_installer.hub_origin(origin) is None:
@@ -234,7 +236,7 @@ def _clean_gen_ids(gen_ids: list[str]) -> list[str]:
     return ids
 
 
-async def _authorized_generations(ids: list[str], request: Request) -> tuple[str, list[dict]]:
+async def _authorized_generations(ids: list[str], request: Request, *, visible_only=False) -> tuple[str, list[dict]]:
     """보낼 생성물을 권한과 함께 읽어 (프로젝트 id, 입력 순서의 생성물)로 돌려준다 — 원본 전송과 타임라인 보내기가 같이 쓴다."""
     # 최대 500건 판정 배치화(R7 2-D) — 종전엔 ID 마다 로컬 단건 DB 조회(이벤트 루프 위)
     # 와 원격 단건 GET 을 순차 반복했다. 로컬 1회+멤버십 1회+원격 batch 1회로 줄이고
@@ -249,11 +251,15 @@ async def _authorized_generations(ids: list[str], request: Request) -> tuple[str
     # 로컬 권한 판정을 원격 batch '전'에(코덱스 P2 — 오류 우선순위 동등성): 종전 단건
     # 순차는 [열람불가 로컬, 원격 missing] 에서 즉시 404 였다 — 원격 장애(401/502)가
     # 먼저 나지 않게 입력 순서로 로컬 실패를 먼저 확정한다.
+    hidden = set()
     for gen_id in ids:
         gen = local_gens.get(gen_id)
         if gen and not can_view_generation_with_member_projects(
             request, gen, member_projects
         ):
+            if visible_only:
+                hidden.add(gen_id)
+                continue
             raise HTTPException(status_code=404, detail="generation 없음")
     missing = [gen_id for gen_id in ids if gen_id not in local_gens]
     remote_cards: dict[str, dict] = {}
@@ -273,6 +279,8 @@ async def _authorized_generations(ids: list[str], request: Request) -> tuple[str
             }
     generations = []
     for gen_id in ids:  # 입력 순서 재조립 — 첫 실패가 단건 경로와 같은 404 를 낸다
+        if gen_id in hidden:
+            continue
         gen = local_gens.get(gen_id)
         if gen:
             generations.append(gen)  # 권한은 위에서 원격 호출 전에 이미 판정
@@ -281,9 +289,13 @@ async def _authorized_generations(ids: list[str], request: Request) -> tuple[str
         if card is not None:
             generations.append(card)
             continue
+        if visible_only:
+            continue
         raise HTTPException(
             status_code=404, detail=f"생성물을 찾을 수 없습니다: {gen_id}"
         )
+    if visible_only:  # inventory는 프로젝트를 섞어 읽고 항목별 권한·프로젝트를 거른다.
+        return "", generations
     project_ids = {str(gen.get("project_id") or "") for gen in generations}
     if "" in project_ids:
         raise HTTPException(status_code=400, detail="프로젝트에 배정된 생성물만 전송할 수 있습니다")

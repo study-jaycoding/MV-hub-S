@@ -441,6 +441,7 @@ function PanelPluginLine({ status, busy, error, onInstall }: {
   const deferred = status?.last_attempt && ["deferred", "permission_denied"].includes(status.last_attempt.state)
     && ["outdated", "not_installed"].includes(status.state) ? status.last_attempt : null;
   const state = deferred?.state || status?.state;
+  if (state === "release_disabled") return null;
   const changedDate = status?.changed_at ? new Date(status.changed_at) : null;
   const changedAt = changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toLocaleString() : status?.changed_at;
   let message = t("설치 상태를 확인 중입니다");

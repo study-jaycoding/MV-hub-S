@@ -26,7 +26,7 @@ export interface StageResult extends TargetResult { items?: { gen_id: string; st
 export interface InventoryItem { resolve_project_id: string; project_id: string; folder_path: string; bin_id: string; bin_path: string; item_id: string; gen_id: string; usage?: number | null; recovery?: boolean }
 export interface InventoryResult extends TargetResult { items?: InventoryItem[]; more?: boolean; after?: [string, string]; other_owner?: number; needs_attention?: number; active_bin_id?: string; unmanaged_local?: number }
 export type AdoptState = "in_bin" | "stamp_failed" | "save_failed" | "ledger_failed" | "conflict" | "elsewhere" | "not_seen" | "not_prepared" | "project_changed" | "busy" | "unknown" | "account_changed" | "rebuild_recovery_pending" | "replace_failed" | "other_window";
-export interface AdoptResult { state: AdoptState; details?: unknown }
+export interface AdoptResult { state: AdoptState; details?: unknown; missing_record_ids?: string[] }
 export interface PrepareResult { gen_id: string; state: "prepared" | "failed" | "account_changed" | "other_window"; path?: string; error?: string }
 // expect_project = 화면이 본 다빈치 프로젝트 — 쓰기 전에 리졸브 쪽이 대조한다(다르면 쓰기 0)
 export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string; expect_project?: string }
@@ -36,7 +36,8 @@ export interface PrestageResult extends TargetResult { cuts?: Record<string, Sta
 export interface RenameResult extends TargetResult { named?: number; failed?: number; remaining?: number; after?: [number, number] | null }
 // [저장] — not_clean = 이 PC 클립·패널 표식이 남아 저장하지 않음(내 허브 것 = 다시 저장하면 풀릴 수 있음, 다른 허브 것 = 다빈치에서 직접 지워야 함)
 export interface SaveResult extends Omit<TargetResult, "state"> {
-  state: TargetState | "not_clean" | "scan_failed" | "save_failed";
+  state: TargetState | "not_clean" | "scan_failed" | "save_failed" | "ledger_failed";
+  project_saved?: boolean;
   not_clean?: { mine: number; other: number; in_use: number; bins: { path: string; count?: number; in_use: boolean; mine: boolean }[] };
 }
 // 앞 에피소드 컷 빈 한 번에 정리 — 빈마다 결과(지운 수·빈 지움·쓰인 생성물 = 그 뒤 NAS 로), 건너뛴 빈은 state 만
@@ -50,7 +51,7 @@ export const resolvePanelApi = {
   prepare: (body: PanelSelection & { gen_id: string }) => post<PrepareResult>("prepare", body),
   target: (body: PanelSelection & { window: string; seq: number; create: boolean; episode_path?: string; create_paths?: string[]; keep_current?: boolean }) => post<TargetResult>("target", body),
   currentBin: (ctx: PanelContext, project_id = "", folder_path = "") => jsonFetch<TargetResult>(`/api/resolve/panel/current-bin?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), project_id, folder_path })}`),
-  adopt: (body: PanelSelection & { gen_id: string; resolve_project_id: string; bin_id?: string; item_ids?: string[] }) => post<AdoptResult>("adopt", body),
+  adopt: (body: PanelSelection & { gen_id: string; resolve_project_id: string; bin_id?: string; item_ids?: string[]; defer_save?: boolean }) => post<AdoptResult>("adopt", body),
   stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
   unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean }) => post<TargetResult>("unstage", body),
   inventory: (ctx: PanelContext, after?: [string, string]) => jsonFetch<InventoryResult>(`/api/resolve/panel/inventory?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), ...(after ? { after: JSON.stringify(after) } : {}) })}`),
@@ -116,7 +117,9 @@ export function panelFailure(state: string): string {
   const labels: Record<string, string> = {
     replace_failed: "원본 바꿔 끼우기를 확인하지 못했습니다", stamp_failed: "클립 표시를 확인하지 못했습니다",
     save_failed: "프로젝트 저장을 확인하지 못했습니다", ledger_failed: "전송 장부를 기록하지 못했습니다",
-    import_failed: "가져오기를 확인하지 못했습니다", conflict: "표시 충돌", not_seen: "항목을 찾지 못했습니다",
+    import_failed: "가져오기를 확인하지 못했습니다",
+    conflict: "클립 경로나 표시 충돌 — 다빈치에서 원래 파일로 다시 연결해 주세요. 사용하지 않는 클립은 미디어 풀에서 제거한 뒤 다시 저장해 주세요",
+    not_seen: "항목을 찾지 못했습니다",
     project_changed: "프로젝트가 바뀜", busy: "확인 중 — 리졸브가 바쁨", unknown: "확인 못 함",
     unavailable: "리졸브에 연결하지 못했습니다", active_bin: "지금 쓰는 빈이라 남겼습니다",
     restore_failed: "다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다",

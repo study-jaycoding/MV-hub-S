@@ -42,6 +42,72 @@ const identity = { instance: "hub", account: "account", epoch: 1, protocol: { mi
 const destination = { state: "ok", resolve_project_id: "r", bin_id: "bin", bin_path: "MV Hub/영화/S/C2", target_bin_id: "bin", used: [] as string[] };
 const gen = { id: "g", folder_path: "S/C2", status: "done", creator_name: "Jay", model: "Model", created_at: "2026-11-11", params: { duration: 5 }, prompt: "clay fish",
   assets: [{ type: "image", file_path: "/media/image.png", thumbnail_path: "/media/thumb.png" }], is_final: true } as Generation;
+
+it.each([false, true])("저장 전환은 모두 유예하고 뒤 항목 실패=%s일 때 최종 저장을 건너뜀", async fail => {
+  await render(false);
+  mocks.inventory.mockResolvedValue({ ...destination, more: false, items: ["g", "h"].map(gen_id => ({
+    resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: gen_id, gen_id, usage: 1,
+  })) });
+  mocks.adopt.mockImplementation(async body => ({ state: fail && body.gen_id === "h" ? "replace_failed" : "in_bin" }));
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(mocks.adopt).toHaveBeenCalledTimes(2);
+  for (const [body] of mocks.adopt.mock.calls) expect(body.defer_save).toBe(true);
+  expect(mocks.save).toHaveBeenCalledTimes(fail ? 0 : 1);
+  expect(control.saveState.phase).toBe(fail ? "blocked" : "done");
+});
+
+it("최종 저장 뒤 장부 실패는 저장 성공과 기록 재시도를 구분한다", async () => {
+  await render(false);
+  mocks.save.mockResolvedValue({ state: "ledger_failed", project_saved: true });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(control.notice).toContain("프로젝트는 저장했습니다");
+  expect(control.notice).toContain("다시 저장");
+  expect(control.notice).not.toContain("저장하지 않았습니다");
+  expect(control.saveState.phase).toBe("blocked");
+});
+
+it("실패 클립 삭제 뒤 확인된 부재는 중복 복구 행까지 건너뛰어 최종 저장한다", async () => {
+  await render(false);
+  mocks.inventory.mockResolvedValue({ ...destination, more: false, items: ["g", "h1", "h2"].map(item_id => ({
+    resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id,
+    gen_id: item_id === "g" ? "g" : "h", recovery: true,
+  })) });
+  mocks.adopt.mockImplementation(async body => ({ state: body.gen_id === "g" ? "in_bin" : "replace_failed" }));
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(mocks.save).not.toHaveBeenCalled();
+  mocks.adopt.mockClear();
+  mocks.adopt.mockImplementation(async body => body.gen_id === "g" ? { state: "in_bin" } :
+    { state: "not_seen", missing_record_ids: ["h1", "h2"] });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(mocks.adopt).toHaveBeenCalledTimes(2);
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(control.saveState.phase).toBe("done");
+  expect(control.notice).toContain("NAS로 옮김 1");
+});
+
+it.each([undefined, ["other"]])("부재 증거 %j가 요청 항목과 맞지 않으면 저장하지 않는다", async missing_record_ids => {
+  await render(false);
+  mocks.inventory.mockResolvedValue({ ...destination, more: false, items: [{
+    resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: "i", gen_id: "g", recovery: true,
+  }] });
+  mocks.adopt.mockResolvedValue({ state: "not_seen", missing_record_ids });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(control.saveState.phase).toBe("blocked");
+});
+
+it("충돌은 저장을 막고 원래 파일 재연결과 미사용 클립 제거 후 재시도를 안내한다", async () => {
+  await render(false);
+  mocks.inventory.mockResolvedValue({ ...destination, more: false, items: [{
+    resolve_project_id: "r", project_id: "p", folder_path: "S/C2", bin_id: "bin", item_id: "i", gen_id: "g", recovery: true,
+  }] });
+  mocks.adopt.mockResolvedValue({ state: "conflict" });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(control.failures.join(" ")).toContain("원래 파일로 다시 연결");
+  expect(control.failures.join(" ")).toContain("사용하지 않는 클립");
+  expect(control.failures.join(" ")).toContain("다시 저장");
+});
 let root: Root, host: HTMLDivElement;
 let control: ReturnType<typeof useResolvePanel>;
 function Harness() { control = useResolvePanel(); return null; }

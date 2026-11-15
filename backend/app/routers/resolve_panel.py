@@ -16,6 +16,11 @@ from . import _proxy, projects, resolve_integration as integration
 router = APIRouter(prefix="/api/resolve/panel", tags=["resolve"])
 
 
+def _require_panel_enabled():
+    if integration.resolve_panel_installer.release_disabled():
+        raise HTTPException(403, integration.resolve_panel_installer.RELEASE_DISABLED_REASON)
+
+
 class Context(BaseModel):
     instance: str = Field(min_length=1, max_length=100)
     account: str = Field(min_length=1, max_length=100)
@@ -54,6 +59,7 @@ class AdoptIn(PrepareIn):
     resolve_project_id: str = Field(min_length=1, max_length=200)
     bin_id: str | None = None
     item_ids: list[str] = Field(default_factory=list, max_length=500)
+    defer_save: bool = False
 
 
 class StageIn(PanelIn):
@@ -105,11 +111,13 @@ class UnstageIn(PanelIn):
     inventory_cleanup: bool = False  # 빈 지우기는 settle 만 — 옛 delete_empty 는 없앴다(보내도 모르는 필드로 무시)
 
 
-async def _project_read(request, project_id):
+async def _project_read(request, project_id, visible_projects=None):
     await asyncio.to_thread(projects._require_project_read, request, project_id)
     if _proxy.proxying():
-        visible = await asyncio.to_thread(_proxy.proxy_json, "GET", "/api/projects?tab=team")
-        if not any(row.get("id") == project_id for row in visible.get("projects", [])):
+        if visible_projects is None:
+            visible = await asyncio.to_thread(_proxy.proxy_json, "GET", "/api/projects?tab=team")
+            visible_projects = {row.get("id") for row in visible.get("projects", [])}
+        if project_id not in visible_projects:
             raise HTTPException(403, "프로젝트 권한이 없습니다")
 
 
@@ -156,24 +164,33 @@ async def _operate(operation, body, request, ctx):
             return result
         visible = []
         rows = result.get("items", [])
+        counts_by_project = result.pop("project_counts", {})
+        visible_projects = None
+        if (rows or counts_by_project) and _proxy.proxying():
+            projects_result = await asyncio.to_thread(_proxy.proxy_json, "GET", "/api/projects?tab=team")
+            visible_projects = {row.get("id") for row in projects_result.get("projects", [])}
+        allowed = set()
+        for project_id in dict.fromkeys([row["project_id"] for row in rows] + list(counts_by_project)):
+            try:
+                await _project_read(request, project_id, visible_projects)
+                allowed.add(project_id)
+            except HTTPException as exc:
+                if exc.status_code not in {403, 404}:
+                    raise
+        ids = list(dict.fromkeys(row["gen_id"] for row in rows if row["project_id"] in allowed))
+        generations = {}
+        for start in range(0, len(ids), 500):
+            _, batch = await integration._authorized_generations(ids[start:start + 500], request, visible_only=True)
+            generations.update((gen["id"], gen) for gen in batch)
         for row in rows:
-            try:
-                await _project_read(request, row["project_id"])
-                # 폴더는 빈 이름에서 추측하지 않고 권한을 확인한 생성물에서 읽는다.
-                _, generations = await integration._authorized_generations([row["gen_id"]], request)
-                gen = next((gen for gen in generations if gen["id"] == row["gen_id"] and gen["project_id"] == row["project_id"]), None)
-                if gen:
-                    visible.append({**row, "folder_path": gen["folder_path"], "recovery": "ready" in row})
-            except HTTPException:
-                continue
+            gen = generations.get(row["gen_id"])
+            if row["project_id"] in allowed and gen and gen["project_id"] == row["project_id"]:
+                visible.append({**row, "folder_path": gen["folder_path"], "recovery": "ready" in row})
         counts = {"other_owner": 0, "needs_attention": 0}
-        for project_id, values in result.pop("project_counts", {}).items():
-            try:
-                await _project_read(request, project_id)
+        for project_id, values in counts_by_project.items():
+            if project_id in allowed:
                 for key in counts:
                     counts[key] += values[key]
-            except HTTPException:
-                continue
         return {**result, **counts, "items": visible, "active_bin_id": panel._owner["bin_id"]}
     if operation == "current-bin":
         if monitor._held():
@@ -195,6 +212,7 @@ async def _operate(operation, body, request, ctx):
         await _authorized(body, request, [body.gen_id])
         recovery = [row for row in panel.records("adopt", ctx, body.resolve_project_id)
                     if row["gen_id"] == body.gen_id and row["project_id"] == body.project_id]
+        defer_save = body.defer_save or any(row.get("defer_save") for row in recovery)
         ready = panel.prepared(ctx, body.project_id, body.folder_path, body.gen_id)
         if ready is None and recovery:
             ready = recovery[0]["ready"]
@@ -202,7 +220,7 @@ async def _operate(operation, body, request, ctx):
             return {"state": "not_prepared", "details": {}}
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
                    "gen_id": body.gen_id, "resolve_project_id": body.resolve_project_id,
-                   "manifest_root": ready["manifest_root"], "path": ready["item"]["local_path"]}
+                   "manifest_root": ready["manifest_root"], "path": ready["item"]["local_path"], "defer_save": defer_save}
         after = None
         candidates = []
         while True:
@@ -226,6 +244,7 @@ async def _operate(operation, body, request, ctx):
                                  "local_path": row["path"], "nas_path": ready["item"]["local_path"], "ready": ready})
         panel.check_context(ctx, request)
         for row in recovery:
+            row["defer_save"] = defer_save
             await asyncio.to_thread(panel.save_record, "adopt", row)
         payload["records"] = recovery
     elif operation in {"stage", "unstage"}:
@@ -272,7 +291,20 @@ async def _operate(operation, body, request, ctx):
             payload.update(bin_ids=[cut.bin_id for cut, _gens in cuts], limit=body.limit, after=body.after,
                            labels={gen["id"]: panel.item_label(gen) for _cut, gens in cuts for gen in gens})
     elif operation == "save":
-        payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path}
+        recovery = panel.records("adopt", ctx, body.expect_project)
+        allowed = {body.project_id}  # 선택한 프로젝트는 위에서 이미 권한을 확인했다.
+        for project_id in dict.fromkeys(row["project_id"] for row in recovery):
+            if project_id in allowed:
+                continue
+            try:
+                await _project_read(request, project_id)
+                allowed.add(project_id)
+            except HTTPException as exc:
+                if exc.status_code not in {403, 404}:
+                    raise
+        recovery = [row for row in recovery if row["project_id"] in allowed]
+        payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
+                   "recovery_records": recovery}
     elif operation == "settle":
         source_root, manifest_root = await asyncio.to_thread(resolve_transfer.resolve_transfer_roots, body.project_id)
         panel.validate_media_root(source_root)
@@ -397,7 +429,8 @@ async def _operate(operation, body, request, ctx):
                     payload["records"] = [row for row in recovery if row["item_id"] not in missing]
                     for row in replacements:
                         record = {**row, "account": ctx["account"], "hub_key": payload["hub_key"],
-                                  "local_path": row["path"], "nas_path": ready["item"]["local_path"], "ready": ready}
+                                  "local_path": row["path"], "nas_path": ready["item"]["local_path"], "ready": ready,
+                                  "defer_save": defer_save}
                         panel.check_context(ctx, request)
                         await asyncio.to_thread(panel.save_record, "adopt", record)
                         recovery.append(record)
@@ -406,10 +439,22 @@ async def _operate(operation, body, request, ctx):
                     panel.check_context(ctx, request)
                     result["missing_record_ids"] = list(missing | set(result.get("missing_record_ids", [])))
                     await asyncio.to_thread(panel.remove_records, "adopt", [row for row in recovery if row["item_id"] in result["missing_record_ids"]])
-            if operation == "adopt" and result.get("state") == "in_bin":
+            if operation == "adopt" and result.get("state") == "in_bin" and not defer_save:
                 result = await panel.record_adoption(ctx, body.project_id, body.gen_id, {**ready, "project_name": payload["project_name"]}, result, request=request)
                 if result.get("state") == "in_bin":
                     await asyncio.to_thread(panel.remove_records, "adopt", recovery)
+            if operation == "save" and result.get("state") == "ok":
+                saved = result.pop("saved_adoptions", {})
+                missing = set(result.pop("missing_record_ids", []))
+                for row in recovery:
+                    if row["item_id"] in saved:
+                        recorded = await panel.record_adoption(ctx, row["project_id"], row["gen_id"], row["ready"],
+                            {**result, "state": "in_bin", "bin_path": saved[row["item_id"]]}, request=request)
+                        if recorded.get("state") != "in_bin":
+                            return {**result, "state": "ledger_failed", "project_saved": True, "details": recorded.get("details", "")}
+                    elif row["item_id"] not in missing:
+                        continue
+                    await asyncio.to_thread(panel.remove_records, "adopt", [row])
             return result
 
     key = (operation, *panel.context_key(ctx), body.project_id, body.folder_path,
@@ -419,6 +464,7 @@ async def _operate(operation, body, request, ctx):
 
 async def _request(operation, body, request, ctx):
     integration._require_local_resolve(request)
+    _require_panel_enabled()
 
     async def execute():
         try:
@@ -472,6 +518,7 @@ async def _request(operation, body, request, ctx):
 @router.get("/identity")
 async def get_identity(request: Request, window: str = "", claim: bool = False):
     integration._require_local_resolve(request)
+    _require_panel_enabled()
     if len(window) > 80 or (claim and not window):
         raise HTTPException(400, "창 ID를 확인하세요")
     try:

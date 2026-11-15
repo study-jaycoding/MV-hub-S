@@ -2479,6 +2479,9 @@ def _panel_save_scan(root, payload):
     '경로가 원래 없음'(타임라인·합성 클립)은 속성 dict 를 정상으로 받았고 경로가 빈 값이며 MV 표식이 없을 때만."""
     counts = {"mine": 0, "other": 0, "in_use": 0}
     bins = {}  # 빈 경로 → 그 빈에 남은 것(빈마다 한 줄 — 사람이 다빈치에서 찾아 지울 수 있게)
+    records = {row["item_id"]: row for row in payload.get("recovery_records", [])}
+    seen, adopted = set(), {}
+    ids_complete = True
     try:
         for folder, parts in [(root, ()), *_panel_walk(root)]:
             for clip in _strict_list(folder.GetClipList):
@@ -2492,6 +2495,21 @@ def _panel_save_scan(root, payload):
                     mark = {}
                 mark = mark if isinstance(mark, dict) else {}
                 path = str(props.get("File Path") or "")
+                if records:
+                    try:
+                        item_id = _uid(clip)
+                    except _Unknown:
+                        if raw:
+                            raise
+                        # 무표식 항목도 경로는 검사하되, ID를 못 읽었으면 기록의 부재는 확정하지 않는다.
+                        ids_complete = False
+                        item_id = ""
+                    seen.add(item_id)
+                    record = records.get(item_id)
+                    if (record and _panel_record_matches(clip, record, payload, payload["expect_project"])
+                            and _normal_path(path) == _normal_path(record["nas_path"])
+                            and mark.get("generation_id") == record["gen_id"] and mark.get("project_id") == record["project_id"]):
+                        adopted[item_id] = "/".join(parts) or "Master"
                 if mark and not path:
                     raise _Unknown("MV 표식 클립의 경로가 비었습니다")
                 local = bool(path) and _panel_under(path, payload["media_root"])
@@ -2509,7 +2527,7 @@ def _panel_save_scan(root, payload):
         return {"state": "scan_failed", "details": str(exc) or type(exc).__name__}
     if counts["mine"] or counts["other"]:
         return {"state": "not_clean", "not_clean": {**counts, "bins": list(bins.values())[:5]}}
-    return {"state": "clean"}
+    return {"state": "clean", "saved_adoptions": adopted, "missing_record_ids": list(records.keys() - seen) if ids_complete else []}
 
 
 def _panel_bin_by_id(root, bin_id):
@@ -2750,7 +2768,7 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
             now = manager.GetCurrentProject()
             if not now or _project_identity(now)[0] != payload["expect_project"]:
                 return {**result, "state": "project_changed", "code": "project_changed", "details": "Resolve 프로젝트가 바뀌었습니다"}
-            return {**result, "state": "ok" if manager.SaveProject() else "save_failed"}
+            return {**result, **scan, "state": "ok" if manager.SaveProject() else "save_failed"}
 
         label = _folder_name(str(payload.get("project_name") or ""), payload["project_id"])
         parts = [MEDIA_POOL_ROOT, label, *[
@@ -2872,12 +2890,13 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                 if not _panel_stamp(clip, payload["gen_id"], payload["project_id"], guard):
                     return {**result, "state": "stamp_failed", "remaining": len(candidates) - index}
             guard()
-            try:
-                saved = manager.SaveProject()
-            except Exception:
-                saved = False
-            if not saved:
-                return {**result, "state": "save_failed"}
+            if not payload.get("defer_save"):
+                try:
+                    saved = manager.SaveProject()
+                except Exception:
+                    saved = False
+                if not saved:
+                    return {**result, "state": "save_failed"}
             return {**result, "state": "in_bin", "bin_path": "/".join(candidates[0][2]),
                     "details": {"clip_ids": [_uid(clip) for clip, _, _ in candidates]}}
 

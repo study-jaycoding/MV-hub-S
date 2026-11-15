@@ -288,11 +288,13 @@ export function useResolvePanel() {
       if (ready.state !== "prepared") throw new Error(id + ": " + (ready.error || ready.state));
     }
     if (!valid(selection)) return;
-    const result = await panel.adopt({ ...selection, gen_id: id, resolve_project_id: project, bin_id: bin, item_ids: itemIds });
+    const result = await panel.adopt({ ...selection, gen_id: id, resolve_project_id: project, bin_id: bin, item_ids: itemIds, defer_save: force });
     if (!valid(selection)) return;
     check(result);
+    if (force && result.state === "not_seen" && itemIds?.length && itemIds.every(item => result.missing_record_ids?.includes(item))) return result;
     if (result.state !== "in_bin") throw new Error(itemName(id) + ": " + panelFailure(result.state));
     adopted.current.add(key); setMoved(value => value + 1); setNas(previous => new Set(previous).add(id));
+    return result;
     } catch (error) { failedAdoptions.current.set(key, errorText(error)); throw error; }
   };
   const settle = async (selection: Selection) => {
@@ -662,13 +664,18 @@ export function useResolvePanel() {
           episode: "", cuts: [], via: "", resolveProject: fixed, window: windowId, seq: ++sequence.current, revision: rev });
         let moved = 0, cleaned = 0;
         const failed: string[] = [], unused = new Map<string, Selection>();
+        const missing = new Set<string>();
         const toMove = all.filter(item => item.resolve_project_id === fixed && ["recover", "adopt"].includes(inventoryAction(item))).length;
         for (const item of all) {
-          if (item.resolve_project_id !== fixed) continue;
+          if (item.resolve_project_id !== fixed || missing.has(item.item_id)) continue;
           const action = inventoryAction(item);
           if (action === "recover" || action === "adopt") {
             setSaveState({ phase: "saving", step: `NAS ${moved + failed.length + 1}/${toMove}` });
-            try { await adoptOne(pinned(item), item.gen_id, fixed, item.bin_id, [item.item_id], item.recovery, true); moved++; }
+            try {
+              const result = await adoptOne(pinned(item), item.gen_id, fixed, item.bin_id, [item.item_id], item.recovery, true);
+              for (const id of result?.missing_record_ids || []) missing.add(id);
+              if (result?.state === "in_bin") moved++;
+            }
             catch (error) { failed.push(errorText(error)); }
           } else if (action === "unstage") unused.set(item.bin_id, pinned(item));
         }
@@ -693,6 +700,9 @@ export function useResolvePanel() {
           savedOk = true; savedProject = fixed;
           setNotice(`${t("저장했습니다 — 이 저장 시점의 검사 통과")} · ${t("NAS로 옮김")} ${moved} · ${t("정리")} ${cleaned}`);
           setSaveState({ phase: "done", at: Date.now() });
+        } else if (saved.project_saved) {
+          setNotice(t("프로젝트는 저장했습니다 — 전환 기록을 마치지 못했습니다. 다시 저장해 주세요"));
+          setSaveState({ phase: "blocked", bins: [] });
         } else if (saved.state === "not_clean" && saved.not_clean) {
           const left = saved.not_clean;
           setNotice(`${t("이 PC 클립이 남아 저장하지 않았습니다")} — ${t("내 것")} ${left.mine} · ${t("다른 허브")} ${left.other} · ${t("쓰는 중")} ${left.in_use}`);

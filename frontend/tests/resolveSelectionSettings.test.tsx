@@ -89,6 +89,14 @@ it.each(["outdated", "not_installed", "newer_installed", "up_to_date"] as const)
   if (state === "newer_installed") expect(text).toContain("더 새 판 1.1.0");
 });
 
+it("릴리스에서 꺼진 패널은 설정 설치 줄을 표시하지 않는다", async () => {
+  const { ResolveScriptSettingsSection } = await import("../src/components/settings/SettingsSections");
+  act(() => view.root.render(<ResolveScriptSettingsSection selectionFollow={false} onSelectionFollowChange={() => {}}
+    status={null} connection={null} diagnostics={null} connectionBusy={false} busy={false} msg="" onInstall={() => {}} onRefreshConnection={() => {}}
+    panelPlugin={{ state: "release_disabled", path: "", reason: "실측 전" }} onInstallPanelPlugin={() => {}} />));
+  expect(view.container.querySelector(".settings-resolve-panel-plugin")).toBeNull();
+});
+
 it.each(["2026-11-11T01:02:03Z", "unreadable-date"])("설치 시각 %s는 지역 형식 또는 원문", async changedAt => {
   const { ResolveScriptSettingsSection } = await import("../src/components/settings/SettingsSections");
   const plugin: ResolvePanelPluginStatus = { state: "up_to_date", path: "temporary/plugin", changed_at: changedAt };
