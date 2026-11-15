@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { URL as NodeURL } from "node:url";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -78,6 +80,17 @@ it.each(["cleanup_failed", "ledger_failed"])("저장 후 %s와 복구 기록 정
   expect(control.notice).not.toContain("...");
   expect(panelFailure("cleanup_failed")).toContain("복구 기록 정리");
   expect(control.saveState.phase).toBe("blocked");
+});
+
+it("공통 검사의 복구 기록 정리 실패 안내는 '다시 저장' 없이 원인만 — 저장 안내는 [저장] 마무리에서만(재확인 4차 낮음)", () => {
+  expect(panelFailure("cleanup_pending")).toContain("복구 기록");
+  expect(panelFailure("cleanup_pending")).not.toContain("다시 저장");
+  expect(panelFailure("cleanup_pending")).not.toMatch(/(\.\.\.|…)/);
+  // 공통 check() 는 settle·stage·prestage·adopt 어디서나 불려 문맥을 모른다 — 저장용 문구를 쓰지 않는다
+  const source = readFileSync(new NodeURL("../src/lib/useResolvePanel.ts", import.meta.url), "utf8");
+  const check = source.slice(source.indexOf("const check = "), source.indexOf("const itemName = "));
+  expect(check).toContain('panelFailure("cleanup_pending")');
+  expect(check).not.toContain('panelFailure("cleanup_failed")');
 });
 
 it("실패 클립 삭제 뒤 확인된 부재는 중복 복구 행까지 건너뛰어 최종 저장한다", async () => {

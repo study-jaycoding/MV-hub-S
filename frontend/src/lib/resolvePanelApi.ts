@@ -119,6 +119,8 @@ export function panelFailure(state: string): string {
     replace_failed: "원본 바꿔 끼우기를 확인하지 못했습니다", stamp_failed: "클립 표시를 확인하지 못했습니다",
     save_failed: "프로젝트 저장을 확인하지 못했습니다", ledger_failed: "전송 장부를 기록하지 못했습니다",
     cleanup_failed: "복구 기록 정리를 마치지 못했습니다. 다시 저장해 주세요",
+    // 저장과 무관한 장면(컷 옮기기·받아 두기)의 정리 실패 — '다시 저장' 안내는 [저장] 마무리에서만
+    cleanup_pending: "복구 기록 파일을 정리하지 못했습니다 — 파일이 잠겨 있거나 권한이 없을 수 있습니다",
     import_failed: "가져오기를 확인하지 못했습니다",
     conflict: "클립 경로나 표시 충돌 — 다빈치에서 원래 파일로 다시 연결해 주세요. 사용하지 않는 클립은 미디어 풀에서 제거한 뒤 다시 저장해 주세요",
     not_seen: "항목을 찾지 못했습니다",

@@ -269,7 +269,7 @@ export function useResolvePanel() {
       if (context.current) { context.current = { ...context.current, writer: false }; setIdentity(context.current); }
       throw new Error(t("다른 MV 창이 리졸브를 맡고 있습니다"));
     }
-    if (result.cleanup_failed) setNotice(panelFailure("cleanup_failed"));
+    if (result.cleanup_failed) setNotice(panelFailure("cleanup_pending")); // 문맥을 모르는 공통 검사 — 저장 안내는 [저장] 마무리가 덮어쓴다
   };
   const itemName = (id: string) => {
     const gen = generations.current.find(item => item.id === id);
