@@ -11,6 +11,28 @@ import serve
 
 
 class ServeConfigTests(unittest.TestCase):
+    def test_tls_only_with_auth_and_proxy_headers_disabled(self):
+        for auth, cert, key in [('0', 'cert', 'key'), ('0', 'cert', ''), ('1', 'cert', 'key'), ('1', '', '')]:
+            output = StringIO()
+            with (mock.patch.dict(os.environ, {'CONTENT_HUB_AUTH': auth, 'CONTENT_HUB_SSL_CERTFILE': cert,
+                                              'CONTENT_HUB_SSL_KEYFILE': key}),
+                  mock.patch.object(serve, '_make_socket', return_value=mock.Mock()),
+                  mock.patch.object(serve, '_run_server'),
+                  mock.patch.object(serve.uvicorn, 'Config') as config,
+                  mock.patch.object(serve.uvicorn, 'Server', return_value=mock.Mock(started=True)),
+                  redirect_stdout(output)):
+                serve.main()
+            options = config.call_args.kwargs
+            if auth == '1' and cert:
+                self.assertEqual(options['ssl_certfile'], cert)
+                self.assertIs(options['proxy_headers'], False)
+            else:
+                self.assertIsNone(options['ssl_certfile'])
+                self.assertIsNone(options['ssl_keyfile'])
+                self.assertNotIn('proxy_headers', options)
+            if auth == '0':
+                self.assertIn('AUTH off', output.getvalue())
+
     def test_native_publication_is_after_listen_and_shutdown_keeps_file(self):
         from app.services import open_link
         order = []

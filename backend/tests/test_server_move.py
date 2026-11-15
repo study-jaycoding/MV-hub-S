@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
 import importlib.util
 import json
 import sqlite3

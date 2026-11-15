@@ -31,10 +31,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +46,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 from rotate_text_log import rotate_text_log
+import server_tls
 
 ROOT = Path(__file__).resolve().parent.parent  # 저장소 루트(MV_server.bat 위치)
 EXPECTED_SERVE_PATH = (ROOT / "backend" / "serve.py").resolve()
@@ -182,7 +185,7 @@ class ProbeTracker:
                 should_alert=should_alert,
             )
 
-        if status == "port_hijacked":
+        if status in {"port_hijacked", "tls_error"}:
             # HTTP 응답은 왔지만 우리 서버라고 확정할 수 없다. dead 누적을
             # 끊어 자동 종료로 절대 흐르지 않게 하고, 시작 유예 중에도 ALERT 는 즉시 남긴다.
             self.fails = 0
@@ -191,7 +194,7 @@ class ProbeTracker:
             self.busy_alerted = False
             self.maintenance_alerted = False
             return ProbeDecision(
-                "port_hijacked",
+                status,
                 previous_fails,
                 previous_busy,
                 previous_maintenance,
@@ -305,7 +308,7 @@ def _ready_response_status(response) -> tuple[str, str]:
 
 
 def check_ready(url: str, timeout: float) -> tuple[str, str]:
-    """('ok'|'busy'|'maintenance'|'dead'|'port_hijacked', 사유).
+    """('ok'|'busy'|'maintenance'|'dead'|'port_hijacked'|'tls_error', 사유).
 
     ★'busy'와 'dead'를 구분한다 — HTTP 응답이 온 비-200(503 등)은 프로세스가 살아서
     응답 중이라는 증거다(예: 대량 삭제로 DB 검사가 잠시 타임아웃). 이걸 사망과 똑같이
@@ -313,14 +316,27 @@ def check_ready(url: str, timeout: float) -> tuple[str, str]:
     연결거부/타임아웃처럼 응답 자체가 없는 것만 'dead' 로 개입 카운트에 넣는다.
     """
     try:
+        config = server_tls.read_config()
+        if config.state == 'error':
+            raise server_tls.TLSConfigError(config.error)
+        if config.state == 'on':
+            port = urllib.parse.urlsplit(url).port
+            if port is None:
+                raise server_tls.TLSConfigError('TLS probe requires an explicit port')
+            url = f'https://127.0.0.1:{port}/api/ready'
         req = urllib.request.Request(url, headers={"User-Agent": "mvhub-watchdog"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        open_request = server_tls.opener(config).open if config.state == 'on' else urllib.request.urlopen
+        with open_request(req, timeout=timeout) as r:
             if r.status == 200:
                 return _ready_response_status(r)
             return "busy", f"HTTP {r.status}"
     except urllib.error.HTTPError as e:
         return _http_error_status(e)
+    except (server_tls.TLSConfigError, ssl.SSLCertVerificationError):
+        return 'tls_error', 'TLS configuration or certificate verification failed'
     except Exception as e:  # noqa: BLE001 — 연결거부/타임아웃 등 무응답
+        if isinstance(getattr(e, 'reason', None), ssl.SSLCertVerificationError):
+            return 'tls_error', 'TLS certificate verification failed'
         return "dead", f"{type(e).__name__}: {e}"
 
 
@@ -592,12 +608,15 @@ def main() -> int:
     kills: list[float] = []  # 개입 시각 기록(폭풍 판정)
     pause_until = 0.0
     hold_alerted = False   # "포트 뺏김" ALERT 는 상태 지속 중 1회만(매분 스팸 방지)
+    tls_alerted = False
     startup_deadline = time.monotonic() + max(0.0, args.startup_grace)
     target_alerted = False
     identity_alerted = False
 
     while True:
         status, reason = check_ready(url, args.timeout)
+        if status != 'tls_error':
+            tls_alerted = False
         if status in {"busy", "maintenance"}:
             # 503 등의 응답을 보낸 LISTEN 소유자가 우리 serve.py 인지 저비용으로
             # 확인한다. 다르거나 조회할 수 없으면 busy/dead 어느 쪽으로도 단정하지 않는다.
@@ -649,16 +668,29 @@ def main() -> int:
                     alert.write_text(msg + "\n", encoding="utf-8")
                 except OSError:
                     pass
+        elif status == 'tls_error':
+            if decision.observable:
+                log(args, f"tls_error — 자동 개입 보류 ({reason})")
+                if not tls_alerted:
+                    tls_alerted = True
+                    alert = _log_path(args).with_name("watchdog_ALERT.txt")
+                    msg = (f"{datetime.now():%Y-%m-%d %H:%M:%S} tls_error — TLS 설정 또는 인증서 검증 실패 "
+                           f"({reason}). 자동 종료하지 않으므로 인증서·유효기간·SAN과 TLS 설정을 확인하세요.")
+                    log(args, "★ALERT★ " + msg)
+                    try:
+                        alert.write_text(msg + "\n", encoding="utf-8")
+                    except OSError:
+                        pass
         elif status == "port_hijacked":
             # 200 본문이 우리 ready 계약이 아니거나 busy 포트 주인을 입증할 수 없다.
             # 정상/사망 둘 다로 오판하지 않고 사람에게만 즉시 알린다.
             if decision.observable:
-                log(args, f"port_hijacked — 자동 개입 보류 ({reason})")
+                log(args, f"{status} — 자동 개입 보류 ({reason})")
                 if not hold_alerted:
                     hold_alerted = True
                     alert = _log_path(args).with_name("watchdog_ALERT.txt")
                     msg = (
-                        f"{datetime.now():%Y-%m-%d %H:%M:%S} port_hijacked — 포트 "
+                        f"{datetime.now():%Y-%m-%d %H:%M:%S} {status} — 포트 "
                         f"{args.port}의 응답/점유자가 MV Hub ready 계약과 프로세스 정체성을 "
                         f"확신할 수 없습니다({reason}). 자동 종료하지 않으므로 점유자를 "
                         "직접 확인하세요."

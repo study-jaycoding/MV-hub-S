@@ -1830,6 +1830,9 @@ class App:
                       ).pack(fill="x", pady=(8, 0))
 
     def _show_address_page(self) -> None:
+        if self.inst.tls_state == 'error':
+            self.address_now.configure(text='TLS 설정 오류 — 인증서 설정을 확인하세요')
+            return
         scheme = "https" if self.inst.tls else "http"
         urls = [f"{scheme}://{ip}:{self.inst.port}  ({alias})" for alias, ip in (self.addresses or [])]
         self.address_now.configure(text="\n".join(urls) if urls else
@@ -2587,6 +2590,10 @@ class App:
 
     def _show_address(self) -> None:
         """NIC 별 주소(작업 스레드가 조회)와 포트·프로토콜. 서버가 그 포트로 답했을 때만 '확인'으로 본다."""
+        if self.inst.tls_state == 'error':
+            self.copy_text = ''
+            self.addr_label.configure(text='TLS 설정 오류 — 인증서 설정을 확인하세요')
+            return
         scheme = "https" if self.inst.tls else "http"
         ready = self.status.ready if self.status is not None else None
         if ready is not None and status.is_mvhub(ready):

@@ -70,8 +70,12 @@ APPLY_ENV = (
     "CONTENT_HUB_MEDIA_PRESERVATION_MAX_ATTEMPTS",
     "CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS",
 )
-# 옛 서버에 이것이 있었다면 표준 배치가 아니다 — 이 도구로 옮기지 않고 수동 절차로(경로·TLS 를 새 PC 에서 다시 정해야 한다).
-REFUSE_ENV = ("CONTENT_HUB_DATA", "CONTENT_HUB_DB", "CONTENT_HUB_SSL_CERTFILE", "CONTENT_HUB_SSL_KEYFILE")
+# 데이터 경로 덮어쓰기는 표준 배치가 아니므로 수동 절차로 옮긴다.
+REFUSE_ENV = ("CONTENT_HUB_DATA", "CONTENT_HUB_DB")
+
+import server_tls
+
+TLS_MOVE_MESSAGE = 'TLS 서버 이전은 새 PC 에서 새 인증서 발급·배포가 필요합니다 — 개인키를 복사하지 않습니다'
 
 _say = sm._say
 
@@ -211,12 +215,15 @@ def write_pause(db: Path, value: str | None, *, attempts: int = 20) -> None:
             time.sleep(0.5)
 
 
-def wait_ready(port: int, timeout: float = 180.0) -> bool:
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def wait_ready(port: int, timeout: float = 180.0, *, rehearsal: bool = False) -> bool:
+    config = server_tls.read_config() if not rehearsal else None
+    scheme = config.scheme if config else 'http'
+    opener = server_tls.opener(config) if config else urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), server_tls.NoRedirect())
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with opener.open(f"http://127.0.0.1:{port}/api/ready", timeout=5) as response:
+            with opener.open(f"{scheme}://127.0.0.1:{port}/api/ready", timeout=5) as response:
                 if response.status == 200:
                     return True
         except OSError:
@@ -339,11 +346,16 @@ def _save_state(path: Path, state: dict[str, Any], phase: str) -> None:
 
 def cmd_out(args: argparse.Namespace) -> int:
     _require_windows_admin()
+    if server_tls.read_config().state != 'off':
+        raise MoveError(TLS_MOVE_MESSAGE)
     if not str(ROOT).isascii():
         raise MoveError(f"저장소 경로에 영문 외 글자가 있어 되돌리기 bat 을 만들 수 없습니다: {ROOT}")
-    # 예약 서버(SYSTEM)는 기계 변수, 이 창은 사용자 변수까지 본다 — 어느 쪽이든 경로·TLS 를 바꿨으면 이 창이 고르는 DB 가
+    # 예약 서버(SYSTEM)는 기계 변수, 이 창은 사용자 변수까지 본다 — 어느 쪽이든 데이터 경로를 바꿨으면 이 창이 고르는 DB 가
     # 실제 서버 DB 와 다를 수 있다. 표준 배치만 이 길로 옮긴다.
-    refused = [name for name in REFUSE_ENV if machine_env().get(name) or os.environ.get(name)]
+    machine = machine_env()
+    if machine.get('CONTENT_HUB_SSL_CERTFILE') or machine.get('CONTENT_HUB_SSL_KEYFILE'):
+        raise MoveError(TLS_MOVE_MESSAGE)
+    refused = [name for name in REFUSE_ENV if machine.get(name) or os.environ.get(name)]
     if refused:
         raise MoveError(
             "이 서버(또는 이 창)에 " + ", ".join(refused) + " 가 설정돼 있습니다 — 표준 배치가 아니라 수동 절차로 옮기세요"
@@ -542,6 +554,7 @@ def write_machine_settings(
     """옛 서버 PC 의 설정을 담고, manifest 에 넣어 새 PC 가 크기·SHA 로 대조하게 한다."""
     networks = network_snapshot()
     replica = REPLICA_PATH
+    tls = server_tls.read_config()
     settings = {
         "format": 1,
         "created_at": _utc_now(),
@@ -549,7 +562,8 @@ def write_machine_settings(
         "machine_env": machine_env(),
         "backup_replica_target": replica.read_text(encoding="utf-8").strip() if replica.is_file() else None,
         "network": networks,
-        "server_url": f"http://{networks[0]['IPv4']}:{port}" if networks else None,
+        "server_url": f"{tls.scheme}://{networks[0]['IPv4']}:{port}" if networks else None,
+        "server_tls": tls.state,
         "port": port,
         "time_zone": time_zone(),
         "python": sys.version.split()[0],
@@ -699,6 +713,9 @@ def precheck_in(
     resume: 이 이사 폴더로 설치까지 마친 뒤 멈췄던 재실행 — 설치 쪽 점검(지난 기록·예약 작업·폴더 충돌)은 건너뛴다."""
     problems: list[str] = []
     old_env = settings.get("machine_env") or {}
+    if (settings.get('server_tls', 'off') != 'off' or server_tls.read_config().state != 'off'
+            or old_env.get('CONTENT_HUB_SSL_CERTFILE') or old_env.get('CONTENT_HUB_SSL_KEYFILE')):
+        problems.append(TLS_MOVE_MESSAGE)
     here_env = machine_env()
     for name in REFUSE_ENV:
         if old_env.get(name):
@@ -977,6 +994,7 @@ def rehearsal_env(rehearsal_dir: Path, port: int) -> dict[str, str]:
     env.update(
         {
             "CONTENT_HUB_DATA": str(rehearsal_dir),
+            "MVHUB_SERVER_TLS_DIR": str(rehearsal_dir / 'server-tls'),
             "CONTENT_HUB_MEDIA": str(rehearsal_dir / "media"),
             "CONTENT_HUB_SHARED": str(rehearsal_dir / "shared"),
             "CONTENT_HUB_ASSETS_DIR": str(rehearsal_dir / "assets"),
@@ -1007,7 +1025,7 @@ def start_rehearsal_server(rehearsal_dir: Path, port: int) -> None:
         creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
     )
     try:
-        ready = wait_ready(port, timeout=REHEARSAL_READY_SECONDS)
+        ready = wait_ready(port, timeout=REHEARSAL_READY_SECONDS, rehearsal=True)
     except BaseException:  # 기다리는 중 Ctrl+C 등 — 띄운 창(감독기·서버)을 남기지 않는다
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
         raise

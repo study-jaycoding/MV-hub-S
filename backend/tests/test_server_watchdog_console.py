@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
+from test_server_tls import certificates, install_certificate, tls_server  # noqa: F401
+import pytest
 import io
 import json
 import importlib.util
@@ -24,16 +27,85 @@ def _module():
     return module
 
 
+def test_tls_health_and_verification_errors(certificates, tls_dir):
+    watchdog = _module()
+    pair = certificates('trusted')
+    install_certificate(tls_dir, pair)
+    with tls_server(pair) as (port, _):
+        assert watchdog.check_ready(f'http://127.0.0.1:{port}/api/ready', 2)[0] == 'ok'
+        assert watchdog.check_ready(f'http://unresolvable.invalid:{port}/custom', 2)[0] == 'ok'
+    with tls_server(certificates('other')) as (port, _):
+        assert watchdog.check_ready(f'http://127.0.0.1:{port}/api/ready', 2)[0] == 'tls_error'
+    wrong = certificates('wrong', san='DNS:wrong-name')
+    install_certificate(tls_dir, wrong)
+    with tls_server(wrong) as (port, _):
+        assert watchdog.check_ready(f'http://127.0.0.1:{port}/api/ready', 2)[0] == 'tls_error'
+
+
+def test_tls_disconnect_stays_dead(certificates, tls_dir):
+    watchdog = _module()
+    install_certificate(tls_dir, certificates('trusted'))
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        def drop():
+            peer, _ = listener.accept()
+            peer.close()
+        thread = threading.Thread(target=drop, daemon=True)
+        thread.start()
+        assert watchdog.check_ready(f'https://127.0.0.1:{port}/api/ready', 2)[0] == 'dead'
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+def test_wrapped_verification_error_is_not_connection_death(monkeypatch):
+    import ssl
+    watchdog = _module()
+    for error, expected in [(ssl.SSLCertVerificationError('expired'), 'tls_error'),
+                            (ssl.SSLEOFError('closed'), 'dead'), (ssl.SSLZeroReturnError('closed'), 'dead')]:
+        def fail(*args, **kwargs):
+            raise urllib.error.URLError(error)
+        monkeypatch.setattr(watchdog.urllib.request, 'urlopen', fail)
+        assert watchdog.check_ready('http://127.0.0.1:1/api/ready', 1)[0] == expected
+
+
+def test_configuration_error_keeps_watchdog_running_without_kills(tmp_path, monkeypatch, tls_dir):
+    watchdog = _module()
+    (tls_dir / 'server.pem').write_text('broken')
+    monkeypatch.setattr(watchdog, '_port_owner_targets', lambda *a: pytest.fail('TLS error must not inspect or kill processes'))
+    monkeypatch.setattr(sys, 'argv', ['watchdog', '--port', '1', '--interval', '0.001',
+                                    '--startup-grace', '0', '--max-probes', '3', '--log', str(tmp_path / 'watchdog.log')])
+    watchdog.main()
+    log = (tmp_path / 'watchdog.log').read_text(encoding='utf-8')
+    assert 'tls_error' in log and '3회 확인' in log
+    assert log.count('★ALERT★') == 1
+    assert '인증서·유효기간·SAN' in log and '점유자를' not in log
+    tracker = watchdog.ProbeTracker(armed=True, fails=100)
+    decision = _observe(watchdog, tracker, 'tls_error')
+    assert not decision.should_intervene and tracker.fails == 0
+
+
+def test_tls_alert_is_independent_of_port_alert(tmp_path, monkeypatch):
+    watchdog = _module()
+    states = iter(['port_hijacked', 'tls_error', 'tls_error', 'port_hijacked', 'tls_error'])
+    monkeypatch.setattr(watchdog, 'check_ready', lambda *a: (next(states), 'test'))
+    monkeypatch.setattr(watchdog, 'find_target_pids', lambda *a: pytest.fail('must not kill'))
+    monkeypatch.setattr(watchdog.time, 'sleep', lambda *a: None)
+    monkeypatch.setattr(sys, 'argv', ['watchdog', '--port', '1', '--startup-grace', '0',
+                                    '--max-probes', '5', '--log', str(tmp_path / 'watchdog.log')])
+    assert watchdog.main() == 0
+    log = (tmp_path / 'watchdog.log').read_text(encoding='utf-8')
+    alerts = [line for line in log.splitlines() if '★ALERT★' in line]
+    assert len(alerts) == 3
+    assert sum('tls_error' in line for line in alerts) == 2
+
+
 def _isolated_port() -> int:
     """운영/개발 포트를 피한 워치독 실측 전용 포트."""
-    for port in range(18091, 18191):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
-            try:
-                candidate.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-            return port
-    raise AssertionError("no isolated watchdog test port is available")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        return candidate.getsockname()[1]
 
 
 class _StrictCp949:

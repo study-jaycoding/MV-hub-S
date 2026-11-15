@@ -6,6 +6,7 @@ import msvcrt
 import os
 import re
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import names
+import server_tls
 from .install import Installation
 
 _READ_TAIL_BYTES = 2_000_000
@@ -35,22 +37,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def read_ready(port: int, timeout: float = 3.0, tls: bool = False) -> Ready:
     """이 PC 의 서버에 /api/ready 를 묻는다(인증 없는 읽기). 프록시·리다이렉트를 쓰지 않는다."""
-    handlers: list = [urllib.request.ProxyHandler({}), _NoRedirect]
-    if tls:
-        import ssl
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE  # 127.0.0.1 의 준비 상태만 읽고 아무것도 보내지 않는다
-        handlers.append(urllib.request.HTTPSHandler(context=context))
-    opener = urllib.request.build_opener(*handlers)
-    scheme = "https" if tls else "http"
     try:
+        config = server_tls.read_config()
+        if tls and config.state != 'on':
+            raise server_tls.TLSConfigError('server_tls_configuration_changed')
+        opener = server_tls.opener(config)
+        scheme = config.scheme
         with opener.open(f"{scheme}://127.0.0.1:{port}/api/ready", timeout=timeout) as response:
             return Ready(response.status, _json_or_none(response.read(65536)), "")
     except urllib.error.HTTPError as exc:
         return Ready(exc.code, _json_or_none(exc.read(65536)), "")
+    except server_tls.TLSConfigError:
+        return Ready(None, None, 'tls_config_error')
     except (urllib.error.URLError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return Ready(None, None, 'tls_config_error')
         if isinstance(reason, ConnectionRefusedError):
             return Ready(None, None, "refused")
         if isinstance(reason, (socket.timeout, TimeoutError)):

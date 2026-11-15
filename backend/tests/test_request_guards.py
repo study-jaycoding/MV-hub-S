@@ -48,6 +48,28 @@ def test_non_browser_clients_without_context_headers_pass():
     _local_ok({"host": "127.0.0.1:8010"})  # urllib 기본형
 
 
+def test_tls_uvicorn_preserves_remote_client_and_scheme_with_forged_headers():
+    import asyncio
+    import uvicorn
+    observed = []
+
+    async def application(scope, receive, send):
+        request = Request(scope)
+        observed.append((request.client.host, request.url.scheme))
+        with pytest.raises(HTTPException) as error:
+            rg.require_local_machine_request(request, 'no')
+        assert error.value.status_code == 403
+
+    config = uvicorn.Config(application, proxy_headers=False, lifespan='off', log_config=None)
+    config.load()
+    scope = {'type': 'http', 'method': 'GET', 'path': '/', 'root_path': '', 'query_string': b'',
+             'scheme': 'https', 'server': ('127.0.0.1', 12345), 'client': ('192.0.2.30', 5000),
+             'headers': [(b'host', b'localhost'), (b'x-forwarded-for', b'127.0.0.1'),
+                         (b'x-forwarded-proto', b'http')]}
+    asyncio.run(config.loaded_app(scope, None, None))
+    assert observed == [('192.0.2.30', 'https')]
+
+
 def test_local_host_header_forms_pass():
     for host in ("localhost:8010", "127.0.0.1:8010", "192.168.10.5:8010", "DESKTOP-X:8010"):
         _local_ok({"host": host})

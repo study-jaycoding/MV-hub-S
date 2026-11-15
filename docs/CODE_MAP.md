@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -1325,6 +1325,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `MV_watchdog.bat`(50줄) | 워치독 재시작 루프 | → `tools/server_watchdog.py` |
 | `tools/server_supervisor.py`(99줄) | serve.py 크래시 감독, 지수백오프, storm 시 ALERT | |
 | `tools/server_watchdog.py`(792줄) | `/api/ready` 폴링, 행(hang) 감지 시 serve.py 만 kill | → `tools/rotate_text_log.py` |
+| `tools/server_tls.py` | 서버 전용 TLS 상태·공개 인증서 신뢰·준비 확인 CLI. 조회자는 개인키를 열지 않음 | → Python `ssl`, `urllib` |
 | `tools/stop_local_hub_on_port.ps1`(195줄) | 포트 점유 프로세스가 이 설치의 serve.py 인지 절대경로/토큰 검증 후 종료 | |
 
 **서버 자동시작·복구 — 서버 PC, 최초 1회 또는 장애 시**

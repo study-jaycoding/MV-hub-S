@@ -119,8 +119,8 @@ def common_refusals(inst: Installation, kind: str, tasks: dict | None, traces: l
                     unresolved: list[str] | None) -> list[str]:
     """서버 제어·이사 종류 공통 거절. 자동시작 재등록만 '작업 없음'을 허용한다(그것을 고치는 동작)."""
     reasons = [_PROBLEMS[p] for p in inst.problems if p in _PROBLEMS]
-    if inst.tls:
-        reasons.append("서버가 https(인증서)로 설정돼 있어 관리 창이 서버 신원을 확인하지 못합니다 — 수동 절차(SERVER_RECOVERY.md)로")
+    if inst.tls_state == 'error' or 'tls_config_error' in inst.problems:
+        reasons.append('TLS 설정 오류 — 인증서 설정을 확인하세요')
     if tasks is None:
         reasons.append("예약 작업 상태를 확인하지 못했습니다")
     else:
@@ -362,7 +362,9 @@ def start_sequence(inst: Installation, runner: Runner, job_id: str, say: Say) ->
     write_off(inst, "starting", job_id)
     try:
         tasks = _states(runner)
-        ready = status.read_ready(inst.port)
+        ready = status.read_ready(inst.port, tls=inst.tls)
+        if ready.error == 'tls_config_error':
+            raise PowerError('TLS 설정 오류 — 서버를 종료하지 않았습니다')
         if ready.code == 200 and _state(tasks, names.TASK_SERVER) == "Running":
             try:
                 server_api.verify_server(inst, runner)
@@ -395,7 +397,7 @@ def start_sequence(inst: Installation, runner: Runner, job_id: str, say: Say) ->
         _wait_tasks(runner, _running, "예약 작업이 둘 다 실행되지 않습니다")
         say(f"[3/4] 서버 응답 기다림(최대 {int(READY_WAIT)}초)")
         deadline = time.monotonic() + READY_WAIT
-        while status.read_ready(inst.port).code != 200:
+        while status.read_ready(inst.port, tls=inst.tls).code != 200:
             if time.monotonic() > deadline:
                 raise PowerError(f"{int(READY_WAIT)}초 안에 서버가 준비되지 않았습니다 — logs\\server_console.log 를 확인하세요")
             time.sleep(3.0)

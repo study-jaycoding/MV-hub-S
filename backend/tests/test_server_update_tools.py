@@ -1,4 +1,5 @@
 """Server update helper: verifier interpreter provisioning (temporary files only)."""
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
 import importlib
 import os
 from pathlib import Path

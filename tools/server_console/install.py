@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import names
+import server_tls
 from .main import STAGES, first_line_path as _first_line_path
 
 # 코드가 든 트리(루트 또는 관리 창 stage)와 서버 설치 루트는 다르다(2단계 설계 3판) — 기록·잠금·Python·데이터는
@@ -130,7 +131,8 @@ class Installation:
     port_known: bool       # False = 기계 환경변수에 없어 기본값 8010 으로 추정
     python: Path | None    # .mvhub-runtime\python.txt 가 가리키는 검증된 Python
     problems: tuple[str, ...]
-    tls: bool = False      # 기계 환경변수에 인증서가 있으면 https 로 묻는다
+    tls: bool = False      # 서버 전용 설정에서 확인한 전송 방식
+    tls_state: str = 'off'
 
     @property
     def logs(self) -> Path:
@@ -159,10 +161,13 @@ def resolve_installation(root: Path | None = None) -> Installation:
     log_dir = Path(machine_env("CONTENT_HUB_LOG_DIR") or data / "logs")
     port_text = machine_env("PORT")
     port_known = port_text.isdigit() and 0 < int(port_text) < 65536
+    tls = server_tls.read_config()
+    if tls.state == 'error':
+        problems.append('tls_config_error')
     return Installation(root=root, data_dir=data, log_dir=log_dir, content_db=content_db,
                         port=int(port_text) if port_known else names.DEFAULT_PORT,
                         port_known=port_known, python=python, problems=tuple(problems),
-                        tls=bool(machine_env("CONTENT_HUB_SSL_CERTFILE")))
+                        tls=tls.state == 'on', tls_state=tls.state)
 
 
 def trusted_git() -> Path | None:
@@ -187,7 +192,7 @@ def node_dir(inst: Installation) -> Path | None:
 
 
 def child_env(inst: Installation) -> dict[str, str]:
-    """관리자 자식 프로세스에 줄 환경을 새로 만든다. 넘겨받은 PATH·PYEXE·MVHUB_*·CONTENT_HUB_* 는 쓰지 않는다."""
+    """관리자 자식 환경을 새로 만든다. 격리 TLS 경로 외의 상속 제품 변수·PATH 는 쓰지 않는다."""
     win = windows_dir()
     system32 = win / "System32"
     path = [system32, win, system32 / "Wbem", system32 / "WindowsPowerShell" / "v1.0"]
@@ -219,6 +224,9 @@ def child_env(inst: Installation) -> dict[str, str]:
     env["TEMP"] = env["TMP"] = temp if temp and Path(temp).is_dir() else str(win / "Temp")
     if inst.python:
         env["PYEXE"] = str(inst.python)  # run_py.bat 이 사용자 PATH 대신 검증된 Python 을 쓰게
+    tls_dir = os.environ.get('MVHUB_SERVER_TLS_DIR', '').strip()
+    if tls_dir:
+        env['MVHUB_SERVER_TLS_DIR'] = tls_dir
     return env
 
 
