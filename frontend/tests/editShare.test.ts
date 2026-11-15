@@ -117,6 +117,13 @@ describe("검사·크기 — 서버와 같다", () => {
       const want = [...new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       expect([n, sha256Js(bytes)]).toEqual([n, want]);
     }
+    // 바이트 길이 0~200 전부(꼬리 64·128 바이트 경계) · 버퍼 중간을 가리키는 배열 · 수 MB 무작위 — 빠르게 다시 쓴 판도 같은 값(2026-11-15)
+    const subtleHex = async (data: Uint8Array) => [...new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", data.slice()))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const noise = new Uint8Array(3 * 1024 * 1024 + 37);
+    for (let at = 0; at < noise.length; at += 65536) globalThis.crypto.getRandomValues(noise.subarray(at, Math.min(at + 65536, noise.length)));
+    for (let n = 0; n <= 200; n++) expect([n, sha256Js(noise.subarray(0, n))]).toEqual([n, await subtleHex(noise.subarray(0, n))]);
+    for (const [from, to] of [[1, 2], [3, 70], [61, 190], [1001, 1001 + 64 * 9 + 55]]) expect(sha256Js(noise.subarray(from, to))).toBe(await subtleHex(noise.subarray(from, to)));
+    expect(sha256Js(noise)).toBe(await subtleHex(noise));
     vi.stubGlobal("crypto", {});
     try {
       expect(await sha256Hex("abc")).toBe(vectors[1][1]);

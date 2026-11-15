@@ -152,28 +152,38 @@ const K = Uint32Array.of(
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 );
 const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
-// FIPS 180-4 SHA-256 — sha256Hex 의 보안 문맥 밖 대신(같은 값인지는 시험이 표준 값·crypto.subtle 과 견준다)
+// FIPS 180-4 SHA-256 — sha256Hex 의 보안 문맥 밖 대신이자 씬·편집 확정의 동기 지문(같은 값인지는 시험이 표준 값·crypto.subtle 과 견준다).
+//  안쪽 반복마다 배열을 새로 만들어 맞바꾸던 판은 큰 씬 하나에 50ms 넘게 걸렸다(2026-11-15 실측) — 지역 변수로 돌리고,
+//  온 블록은 원본에서 바로 읽고 꼬리(마지막 조각 + 0x80 + 비트 길이)만 새 버퍼로 만든다.
 export function sha256Js(bytes: Uint8Array): string {
-  const words = ((bytes.length + 9 + 63) >> 6) << 4; // 64바이트 블록 × 16 낱말
-  const m = new Uint32Array(words);
-  bytes.forEach((byte, i) => { m[i >> 2] |= byte << (24 - (i & 3) * 8); });
-  m[bytes.length >> 2] |= 0x80 << (24 - (bytes.length & 3) * 8);
-  m[words - 2] = Math.floor(bytes.length / 0x20000000); // 비트 길이의 위 32비트
-  m[words - 1] = bytes.length * 8; // 아래 32비트(Uint32Array 가 2^32 로 자른다)
-  const h = Uint32Array.of(0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19);
+  const length = bytes.length;
+  const whole = Math.floor(length / 64); // 원본에서 바로 읽는 64바이트 블록 수(비트 시프트는 2GiB 에서 음수가 된다)
+  const rest = length - whole * 64;
+  const tail = new Uint8Array(rest + 9 > 64 ? 128 : 64);
+  tail.set(bytes.subarray(whole * 64));
+  tail[rest] = 0x80;
+  const tailView = new DataView(tail.buffer);
+  tailView.setUint32(tail.length - 8, Math.floor(length / 0x20000000)); // 비트 길이의 위 32비트
+  tailView.setUint32(tail.length - 4, (length * 8) >>> 0); // 아래 32비트
   const w = new Uint32Array(64);
-  for (let at = 0; at < words; at += 16) {
-    for (let t = 0; t < 64; t++) {
-      w[t] = t < 16 ? m[at + t]
-        : w[t - 16] + (rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >>> 3)) + w[t - 7] + (rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >>> 10));
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a, h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const block = (view: DataView, at: number) => {
+    for (let t = 0; t < 16; t++) w[t] = view.getUint32(at + (t << 2));
+    for (let t = 16; t < 64; t++) {
+      const x = w[t - 15], y = w[t - 2];
+      w[t] = w[t - 16] + (rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3)) + w[t - 7] + (rotr(y, 17) ^ rotr(y, 19) ^ (y >>> 10));
     }
-    let [a, b, c, d, e, f, g, k] = h;
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, k = h7;
     for (let t = 0; t < 64; t++) {
-      const t1 = (k + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[t] + w[t]) >>> 0;
-      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
-      [k, g, f, e, d, c, b, a] = [g, f, e, (d + t1) >>> 0, c, b, a, (t1 + t2) >>> 0];
+      const t1 = (k + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[t] + w[t]) | 0;
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      k = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
     }
-    [a, b, c, d, e, f, g, k].forEach((value, i) => { h[i] += value; });
-  }
-  return [...h].map((value) => value.toString(16).padStart(8, "0")).join("");
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+    h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + k) | 0;
+  };
+  const source = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = 0; at < whole * 64; at += 64) block(source, at);
+  for (let at = 0; at < tail.length; at += 64) block(tailView, at);
+  return [h0, h1, h2, h3, h4, h5, h6, h7].map((value) => (value >>> 0).toString(16).padStart(8, "0")).join("");
 }
