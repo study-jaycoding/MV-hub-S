@@ -108,7 +108,8 @@ def validate_checkout(path: Path) -> Path:
     return path
 
 
-def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | None = None) -> dict[str, str]:
+def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | None = None,
+             writer: bool = True) -> dict[str, str]:
     if port in FORBIDDEN_PORTS or not 1024 <= port <= 65535:
         raise ValueError("unsafe measurement port")
     env = servers.server_env(os.environ, "H", port, data.resolve())
@@ -117,7 +118,8 @@ def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | 
         env["CONTENT_HUB_SHARED_URL"] = shared_url
     env["CONTENT_HUB_FRONTEND_DIST"] = str(checkout / "frontend" / "dist")
     # 허브 공책 전용 실측 — 운영 기본은 끔(=1 일 때만 켬)이라 명시적으로 켠다(server_env 가 부모의 CONTENT_HUB_* 를 뺀 뒤).
-    env["CONTENT_HUB_SCENE_WRITER"] = "1"
+    # 끔은 첫 브라우저 전에 미러를 채우는 준비 단계에서만 쓴다(seed_mirror).
+    env["CONTENT_HUB_SCENE_WRITER"] = "1" if writer else "0"
     return env
 
 
@@ -337,7 +339,7 @@ class Hub:
             raise RuntimeError("owned S did not validate the ephemeral admin token")
         return shared
 
-    def start(self, checkout: Path = REPO, *, legacy: bool = False) -> None:
+    def start(self, checkout: Path = REPO, *, legacy: bool = False, writer: bool = True) -> None:
         if self.proc is not None:
             raise RuntimeError("owned server already running")
         self.shared.start()
@@ -346,7 +348,7 @@ class Hub:
         self.log = (self.work / ("old-server.log" if legacy else "server.log")).open("a", encoding="utf-8")
         command = [sys.executable, "-c", controlled_launcher(checkout, self.control_token)] if self.control_token and not legacy else [sys.executable, str(checkout / "backend" / "serve.py")]
         self.proc = subprocess.Popen(command,
-            cwd=checkout / "backend", env=make_env(data, self.port, checkout, shared_url=self.shared.url),
+            cwd=checkout / "backend", env=make_env(data, self.port, checkout, shared_url=self.shared.url, writer=writer),
             stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
@@ -360,8 +362,8 @@ class Hub:
                               "shared_auth_enabled": True, "ephemeral_admin": True, "token_verified": True}
             if health.get("cli_available") is not False:
                 raise RuntimeError("hub CLI isolation failed")
-            if not legacy and "scene_writer_v1" not in self.request("/api/auth/config")[1].get("features", []):
-                raise RuntimeError("isolated scene_writer_v1 feature missing")
+            if not legacy and ("scene_writer_v1" in self.request("/api/auth/config")[1].get("features", [])) != writer:
+                raise RuntimeError("isolated scene_writer_v1 feature state differs from the requested writer mode")
         except BaseException:
             self.stop()
             raise
@@ -383,7 +385,8 @@ class Hub:
 class Measurement:
     def __init__(self, case: str, work: Path):
         self.case, self.work, self.hub = case, work, Hub(work, controls=case == "lease_races")
-        self.bucket = f"acct:{self.hub.shared.email.lower()}::_none"
+        self.account = f"acct:{self.hub.shared.email.lower()}"
+        self.bucket = f"{self.account}::_none"
         self.report = {"format": "mvhub-canvas-notebook-measure-v1", "case": case,
             "profiles": [str(work / "chrome-a"), str(work / "chrome-b")], "checks": {}, "errors": [],
             "forbidden_requests": [], "machine": platform.node(), "platform": platform.platform(),
@@ -439,15 +442,43 @@ class Measurement:
         raise RuntimeError("durable browser scene condition timed out")
 
     async def synced(self, page: Page, timeout: float = 20) -> dict:
+        # Same scenes alone also matches a mirror-only hub: require a started notebook and the browser's join record of
+        # this restore generation. nj.notebookId stays "" for a browser that joined the mirror before start (sceneNotebook.ts).
+        join_key = json.dumps(["nj", self.account], separators=(",", ":"))
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             _, book = self.hub.request("/api/scenes/notebook")
-            local = await self.local(page)
+            entries = await page.eval(READ_STORE)
+            local = scene_rows(entries, self.bucket)
+            joined = dict(entries).get(join_key) or {}
             remote = [json.loads(row["data"]) for row in book.get("items", []) if not row.get("deleted_at")]
-            if local and {s["id"]: s for s in local} == {s["id"]: s for s in remote}:
+            if (local and book.get("notebook_id") and joined.get("notebookId") in ("", book["notebook_id"])
+                    and joined.get("restoreGeneration") == book.get("restore_generation")
+                    and {s["id"]: s for s in local} == {s["id"]: s for s in remote}):
                 return book
             await asyncio.sleep(0.1)
         raise RuntimeError("browser and hub did not converge")
+
+    async def seed_mirror(self, seeds: list[dict]) -> None:
+        """First join adopts the hub mirror (a different local canvas is archived and replaced).
+
+        Start the hub writer-off, seed the mirror as an upgraded member's hub has it, then restart with the writer on."""
+        self.hub.start(writer=False)
+        status, current = self.hub.request("/api/scenes/backup?include_data=true")
+        if status != 200:
+            raise RuntimeError("writer-off mirror read failed")
+        upserts = [{"id": s["id"], "name": s["name"], "data": json.dumps(s, ensure_ascii=False, separators=(",", ":"))}
+                   for s in seeds]
+        status, _ = self.hub.request("/api/scenes/backup", {"restore_generation": current.get("restore_generation"),
+                                     "project_id": "", "upserts": upserts}, "PUT")
+        if status != 200:
+            raise RuntimeError("writer-off mirror seed failed")
+        ids = sorted(s["id"] for s in seeds)
+        await self.wait_legacy(lambda rows: sorted(r["id"] for r in rows if not r.get("deleted_at")) == ids)
+        self.hub.stop(); self.hub.start()
+        self.report["mirror_seed"] = {"method": "PUT /api/scenes/backup on a writer-off start, then writer-on restart", "scenes": len(seeds)}
+        self.report["limitations"].append("The hub mirror is seeded by a direct PUT on a writer-off start before the first browser opens "
+                                          "(a member upgrading from the mirror path). The empty-mirror first transition is not measured; the writer is opt-in.")
 
     async def rename(self, page: Page, name: str, sid: str = "measure-0", *, enter: bool = True) -> None:
         modern = f"document.querySelector({json.dumps(f'[data-scene-tab="{sid}"] .scene-tab')})"
@@ -575,11 +606,11 @@ class Measurement:
         if self.report["browser_kind"] != "chrome":
             raise RuntimeError("Chrome required, Edge fallback not accepted for this measurement")
         self.report["browser_version"] = browser
-        self.hub.start()
-        self.report["isolation"] = self.hub.isolation
         async with AsyncExitStack() as stack:
             seeds = fixture(performance=self.case == "performance")
             self.report["fixture_sha256"] = hashlib.sha256(json.dumps(seeds, sort_keys=True).encode()).hexdigest()
+            await self.seed_mirror(seeds)
+            self.report["isolation"] = self.hub.isolation
             a = await self.open(stack, "a", seeds)
             await self.synced(a)
             book_initial = self.hub.request("/api/scenes/notebook")[1]
@@ -654,11 +685,13 @@ class Measurement:
             elif self.case == "bootstrap":
                 self.check("first_canvas", [r["id"] for r in book_initial["items"]], [s["id"] for s in seeds])
                 await self.take(b)
-                archive = [v for k, v in await b.eval(READ_STORE) if isinstance(k, str) and k.startswith('["na",')]
-                self.check("archive", bool(archive) and any(s["id"] == "prior-b" for s in archive[0]["scenes"].get(self.bucket, [])), True)
+                # Restore archives: one ["nr", account] list of {scenes: {bucket: [...]}, ...}.
+                archive_key = json.dumps(["nr", self.account], separators=(",", ":"))
+                archive = dict(await b.eval(READ_STORE)).get(archive_key) or []
+                self.check("archive", any(s["id"] == "prior-b" for item in archive for s in item.get("scenes", {}).get(self.bucket, [])), True)
                 self.check("no_merge", any(s["id"] == "prior-b" for s in await self.local(b)), False)
                 await b.goto(self.hub.url, settle=1)
-                after = [v for k, v in await b.eval(READ_STORE) if isinstance(k, str) and k.startswith('["na",')]
+                after = dict(await b.eval(READ_STORE)).get(archive_key) or []
                 self.check("archive_unchanged", after, archive)
 
             elif self.case == "lease_races":
@@ -672,11 +705,15 @@ class Measurement:
                 await self.take(b)
                 code, _ = self.hub.request("/api/scenes/writer", {"action": "release", "token": old_token})
                 self.check("late_release", code, 409)
-                code, _ = self.hub.request("/api/scenes/backup", {"token": old_token, "request_id": "late", "upserts": []}, "PUT")
-                self.check("late_write", code, 409)
+                # Current restore generation, so a 409 can only come from the lease (not a stale-generation refusal).
+                generation = self.hub.request("/api/scenes/notebook")[1]["restore_generation"]
+                code, late_body = self.hub.request("/api/scenes/backup", {"token": old_token, "request_id": "late", "upserts": [],
+                                                   "restore_generation": generation}, "PUT")
+                self.check("late_write", {"status": code, "error": late_body.get("detail")}, {"status": 409, "error": "writer_required"})
                 current_token = await b.eval("window.__measureLeaseTokens.at(-1)")
                 code, epoch = self.hub.request("/api/__measure/account-aba", {})
-                stale, stale_body = self.hub.request("/api/scenes/backup", {"token": current_token, "request_id": "aba-late", "upserts": []}, "PUT")
+                stale, stale_body = self.hub.request("/api/scenes/backup", {"token": current_token, "request_id": "aba-late", "upserts": [],
+                                                     "restore_generation": generation}, "PUT")
                 self.check("account_aba", {"control_status": code, "epoch_advanced": epoch.get("after", 0) >= epoch.get("before", 0) + 2,
                            "started_at_a": epoch.get("account_before") == self.hub.shared.email,
                            "visited_b": epoch.get("account_b") == "measure-b@localhost.invalid",
