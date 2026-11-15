@@ -1,5 +1,5 @@
 ---
-updated: 2026-11-14
+updated: 2026-11-15
 status: active
 ---
 
@@ -73,7 +73,7 @@ MV Hub는 브라우저와 서버 하나로 끝나는 일반 웹앱이 아니다.
 | 프로젝트 imp_cap 보관본·서버 위치 | 공유 서버 DB·명시 Assets 루트 | 서버가 바이트·권한을 확인한 뒤 `imp_cap/표시이름`에 확정. 같은 owner/project/root에서 중복 방지. 서버 원본은 권한 있는 전용 스트리밍 API로 읽고, 로컬 사본은 계정별 캐시. 기존 파일 API의 로컬 소유권을 전역 변경하지 않음 |
 | 자료의 정식 위치 전환 | 서버 ready receipt → 기존 문서 포트 | 내용 ID·역할·생성 당시 입력은 고정하고 위치만 전환. 계정/프로젝트/서버/루트 문맥과 이전 위치를 대조. 씬·Undo는 공개 canvas 포트, 생성 정보·재생성·공유는 읽기 투영을 사용. 이미 접수한 실행 payload는 불변 |
 | 에셋 댓글 등 팀 메타 | 공유 서버 또는 로컬 | `assets` 라우터가 항목 성격에 따라 명시적으로 재분기 |
-| 씬 원본 | 브라우저 IndexedDB | 씬별 확정 저장본. 화면에 남은 미확정 편집과 구분한다([씬 저장 계약](CANVAS_SCENE_STORAGE.md)). ⚠️ 앱 창은 브라우저·설치 경로별 **전용 프로필**로 뜨므로(`run_agent_session.py` `_app_profile_dir`) 한 PC 에도 씬 원본이 여러 벌 존재할 수 있다. 로컬 허브에서는 **허브 공책**(쓰기 임대 `services/scene_writer.py`, 기본 켬·`CONTENT_HUB_SCENE_WRITER=0` 이면 끔)이 이 PC 브라우저들이 맞춰 보는 기준 사본을 계정 DB 에 둔다 |
+| 씬 원본 | 브라우저 IndexedDB | 씬별 확정 저장본. 화면에 남은 미확정 편집과 구분한다([씬 저장 계약](CANVAS_SCENE_STORAGE.md)). ⚠️ 앱 창은 브라우저·설치 경로별 **전용 프로필**로 뜨므로(`run_agent_session.py` `_app_profile_dir`) 한 PC 에도 씬 원본이 여러 벌 존재할 수 있다. 로컬 허브에서는 **허브 공책**(쓰기 임대 `services/scene_writer.py`, 이번 릴리스는 `CONTENT_HUB_SCENE_WRITER=1` 일 때만 켬 — [기본 끔 기록](status/배포후보_공책기본끔_2026-11-15.md))이 이 PC 브라우저들이 맞춰 보는 기준 사본을 계정 DB 에 둔다 |
 | 씬 백업·허브 공책 | 계정별 로컬 SQLite | 본문 `scene_backup` + 공책 머리말·시작 작업·순서·보관본·요청 영수증 `scene_notebook*`. 공유 서버로 보내지 않음. 5MB 넘는 씬은 허브 사본이 안 된다(`sceneBackup.ts`). 삭제 미러는 **이 세션에서 로컬에 있던 씬**만 지운다 — 서버에만 있는 id 는 다른 프로필 것일 수 있어 건드리지 않는다 |
 | 편집 타임라인 문서 | 현재 브라우저의 계정별 localStorage | 프로젝트·시퀀스별 편집 원본. 계정 DB 의 `edit_doc_head`·`edit_doc_copy` 에 2초 묶어 자동 보존·충돌 사본(1MB 넘는 문서는 보내지 않고 화면에 경고, `editDocBackup.ts`). DB 백업에 이 표가 포함되지만 미전송 편집·원본 미디어·Undo는 포함되지 않는다. 파일 보관·복원은 [EDIT_TAB](EDIT_TAB.md) 참조 |
 | 편집 타임라인 Undo | 페이지 실행 중 메모리 | 새로고침하면 지워진다. 문서 파일 복원과 Undo 기록 복원은 다르다 |
