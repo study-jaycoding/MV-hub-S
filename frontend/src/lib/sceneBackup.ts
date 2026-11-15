@@ -220,6 +220,7 @@ let holdNoticeShown = false; // 지문을 못 구해 보류한 안내는 범위�
 // 이 탭이 본 마지막 글자(범위에 들어갈 때·이 탭의 확정·다른 탭에서 받음) — 다른 탭 알림 때 '그 탭이 바꾼 씬'만 가려낸다.
 //  처음 알림에 모든 씬을 받은 것으로 세면 보내던 정상 응답까지 버린다(Codex 1A 3차 P2).
 let knownText = new Map<string, string>();
+let provenanceHashes = new Map<string, [string, string]>(); // 미러 출처 지문 기억 — provenanceHash 참고
 let externalSeq = new Map<string, number>(); // 씬마다 다른 탭에서 받은 횟수 — 보내는 사이 받았는지 응답 때 본다
 // 확정본에 없는 씬(지운 것)은 뺀다 — 남기면 지운 큰 씬의 글자를 범위가 바뀔 때까지 쥐고 있다(Codex 63회차)
 const noteSeenTexts = (): void => {
@@ -347,6 +348,7 @@ async function onExternalScenes(): Promise<void> {
   const persisted = listPersistedSceneTexts(null);
   const present = new Set(persisted.map((s) => s.id));
   for (const id of knownText.keys()) if (!present.has(id)) knownText.delete(id); // 다른 탭이 지운 씬(noteSeenTexts 와 같은 까닭)
+  pruneProvenanceHashes(new Map(persisted.map((s) => [s.id, s.text])));
   recountOverLimit(); // 다른 탭이 저장한 확정본도 크기를 다시 센다(7A·D11)
   for (const s of persisted) {
     // 이 탭이 본 마지막 글자(자기 확정 포함 — noteSeenTexts)와 같으면 다른 탭이 바꾼 씬이 아니다
@@ -478,6 +480,7 @@ function enterScope(): string {
     ledger = hubHasFeature(SCENE_WRITER_FEATURE) ? new Map() : loadLedger(s); // 이 범위의 판 — 여기서 한 번만 읽는다(Codex C1)
     received = new Map();
     knownText = new Map();
+    provenanceHashes = new Map(); // 다른 계정의 큰 글자를 쥐고 있지 않는다
     noteSeenTexts();
     recountOverLimit();
     externalSeq = new Map();
@@ -1017,6 +1020,20 @@ async function runImport(): Promise<number> {
   return added.length;
 }
 
+// 씬마다 직전에 계산한 [글자, 지문] 하나(provenanceHashes) — 다음 확정의 '이전 글자'가 그 글자면 다시 해싱하지 않는다(같은 글자 = 같은 지문).
+//  확정마다 모든 씬을 두 번씩 JS SHA-256 하던 것이 카메라만 바꿔도 멈춘 직후 50~100ms 긴 작업이었다(2026-11-15 실측).
+function provenanceHash(id: string, text: string): string {
+  const kept = provenanceHashes.get(id);
+  if (kept && kept[0] === text) return kept[1];
+  const hash = sha256Js(new TextEncoder().encode(text));
+  provenanceHashes.set(id, [text, hash]);
+  return hash;
+}
+// 지금 확정본과 글자가 다른 기억(지운 씬·다른 탭이 바꾼 씬·맞춰 보기만 한 옛 글자)은 버린다 — 옛 큰 글자를 쥐지 않는다(Codex 리뷰 01a1dd6c).
+function pruneProvenanceHashes(current: Map<string, string>): void {
+  for (const [id, [text]] of provenanceHashes) if (current.get(id) !== text) provenanceHashes.delete(id);
+}
+
 function advanceMirrorProvenance(scope: string, before: Map<string, string>): void {
   try {
     const record = readMirrorRecovery(scope);
@@ -1025,8 +1042,10 @@ function advanceMirrorProvenance(scope: string, before: Map<string, string>): vo
       const blocked = new Set(record.blockedIds);
       for (const id of new Set([...before.keys(), ...after.keys()])) {
         const prev = before.get(id), next = after.get(id);
-        if ((record.raws[id] ?? null) === (prev === undefined ? null : sha256Js(new TextEncoder().encode(prev))) && !blocked.has(id)) record.raws[id] = next === undefined ? null : sha256Js(new TextEncoder().encode(next));
+        if (prev === next) continue; // 글자가 같으면 맞을 때 같은 값을 다시 쓰고 틀리면 그대로 둔다 — 계산해도 raws 는 그대로다
+        if ((record.raws[id] ?? null) === (prev === undefined ? null : provenanceHash(id, prev)) && !blocked.has(id)) record.raws[id] = next === undefined ? null : provenanceHash(id, next);
       }
+      pruneProvenanceHashes(after);
       saveMirrorRecovery(scope, record, false); // raws만 바뀌므로 화면용 비교·알림은 필요 없다.
     }
   } catch { /* 출처 저장 실패는 기존 확인값을 유지해 다음 전송을 보류한다. */ }

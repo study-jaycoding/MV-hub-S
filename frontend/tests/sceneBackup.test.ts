@@ -206,6 +206,36 @@ describe("sceneBackup (DB 미러·복구)", { timeout: 20_000 }, () => {
       expect(notify).not.toHaveBeenCalled();
     } finally { read.mockRestore(); parse.mockRestore(); off(); }
   });
+  it("mirror provenance hashes only changed scenes and reuses the previous hash", async () => {
+    const real = await vi.importActual<typeof import("../src/lib/editShare")>("../src/lib/editShare");
+    const hashed: string[] = [];
+    vi.doMock("../src/lib/editShare", () => ({ ...real, sha256Js: (bytes: Uint8Array) => {
+      hashed.push(new TextDecoder().decode(bytes));
+      return real.sha256Js(bytes);
+    } }));
+    try {
+      const { scenes, backup, settle } = await boot();
+      const a = sceneJson("a"), b = sceneJson("b");
+      scenes.saveScenes(null, [JSON.parse(a), JSON.parse(b)]); await settle();
+      await backup.initSceneBackup();
+      const one = sceneJson("a", "one"), two = sceneJson("a", "two");
+      const seen = () => hashed.filter((text) => [a, b, one, two].includes(text));
+      hashed.length = 0;
+      scenes.saveScenes(null, [JSON.parse(one), JSON.parse(b)]); await settle();
+      expect(seen()).toEqual([a, one]); // 안 바뀐 b 는 해싱하지 않는다
+      hashed.length = 0;
+      scenes.saveScenes(null, [JSON.parse(two), JSON.parse(b)]); await settle();
+      expect(seen()).toEqual([two]); // 이전 글자(one)의 지문은 기억에서
+      expect(backup.readMirrorRecovery()?.raws).toEqual({ a: real.sha256Js(new TextEncoder().encode(two)), b: real.sha256Js(new TextEncoder().encode(b)) });
+      // 지운 씬의 글자는 기억에서 버린다 — 같은 글자로 다시 만들면 새로 계산한다
+      scenes.saveScenes(null, [JSON.parse(b)]); await settle();
+      expect(backup.readMirrorRecovery()?.raws.a).toBeNull();
+      hashed.length = 0;
+      scenes.saveScenes(null, [JSON.parse(two), JSON.parse(b)]); await settle();
+      expect(seen()).toEqual([two]);
+      expect(backup.readMirrorRecovery()?.raws.a).toBe(real.sha256Js(new TextEncoder().encode(two)));
+    } finally { vi.doUnmock("../src/lib/editShare"); }
+  });
   it.each([false, true])("an unreadable pre-write comparison still saves recovery (confirmation fails: %s)", async (confirmationFails) => {
     const { scenes, backup, settle } = await boot(false);
     const scope = `acct:user${acctSeq}@test`, key = `mvhub.mirrorRecovery:${scope}`, raw = sceneJson("s");
