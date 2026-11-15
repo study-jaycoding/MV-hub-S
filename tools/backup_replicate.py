@@ -121,6 +121,8 @@ def _write_status(
         "last_attempt_at": _utc_now(),
         "last_success_at": previous.get("last_success_at") if same_target else None,
         "error_code": error_code,
+        # 정리를 다시 판단한 호출만 counts의 명시 값으로 갱신·해제한다.
+        "retention_blocked": previous.get("retention_blocked") if same_target else None,
         **counts,
     }
     if state == "success":
@@ -551,7 +553,7 @@ def cleanup_parts(target: Path) -> int:
     return removed
 
 
-def prune_dir(d: Path, protected: set[str], *, blocked_reasons: set[str] | None = None) -> int:
+def prune_dir(d: Path, protected: set[str], *, retention_results: dict[Path, str | None] | None = None) -> int:
     """서버 세트는 시간축으로, 작업자 단일 DB는 최신 KEEP_PER_DIR 개로 보관. 반환: 삭제 파일 수.
 
     protected = 원본에 아직 존재하는 파일명 — 지우면 다음 실행이 도로 복사해
@@ -618,10 +620,10 @@ def prune_dir(d: Path, protected: set[str], *, blocked_reasons: set[str] | None 
         except (OSError, ValueError, sqlite3.Error):
             continue
     plan = local_backup._retention_plan(d, SERVER_RETENTION, time.time(), sets=sets)
+    if retention_results is not None:
+        retention_results[d] = plan.blocked
     if plan.blocked:
         log(f"NAS 세트 정리 보류 — {plan.blocked}")
-        if blocked_reasons is not None:
-            blocked_reasons.add(plan.blocked)
     for item in plan.delete:
         members = _local_members(item.content)
         if any(path.name in protected for path in members):
@@ -790,8 +792,8 @@ def main() -> int:
     if not seen_any_source:
         log("원본 백업 폴더 없음 — 건너뜀")
         return 0 if _status("no_source", error_code="source_not_ready") else 1
-    blocked_reasons: set[str] = set()
-    removed = sum(prune_dir(d, protected_by_dir.get(d, set()), blocked_reasons=blocked_reasons)
+    retention_results: dict[Path, str | None] = {}
+    removed = sum(prune_dir(d, protected_by_dir.get(d, set()), retention_results=retention_results)
                   for d in dirs if d.is_dir())
     removed += sum(
         prune_set_root(root, protected_sets.get(root, set()))
@@ -800,6 +802,23 @@ def main() -> int:
     )
     summary = (f"신규 {copied} · 최신유지 {skipped} · 실패 {failed}"
                f" · 정리 {removed}+part {stale}")
+    auto_dirs = {d for d in dirs if d.is_relative_to(target / 'backups')}
+    for d in auto_dirs - retention_results.keys():
+        try:
+            d.stat()
+        except FileNotFoundError:
+            auto_dirs.remove(d)
+        except OSError:
+            pass  # 접근 실패를 폴더 없음으로 보아 이전 경고를 지우지 않는다.
+    retention_results = {d: reason for d, reason in retention_results.items() if d in auto_dirs}
+    retention_fields = {}
+    if retention_results:
+        blocked_reasons = {reason for reason in retention_results.values() if reason}
+        if len(retention_results) != len(auto_dirs):  # 일부 폴더를 못 읽었으면 이전 경고도 보존한다.
+            previous = _read_status()
+            if previous.get('target_id') == tid:
+                blocked_reasons.update(filter(None, str(previous.get('retention_blocked') or '').split(',')))
+        retention_fields['retention_blocked'] = ','.join(sorted(blocked_reasons)) or None
     if failed:
         log("복제 실패 " + summary)
         _status(
@@ -810,7 +829,7 @@ def main() -> int:
             failed=failed,
             removed=removed,
             stale_parts=stale,
-            retention_blocked=','.join(sorted(blocked_reasons)) or None,
+            **retention_fields,
         )
         return 1
     log("복제 완료 " + summary)
@@ -821,7 +840,7 @@ def main() -> int:
         failed=0,
         removed=removed,
         stale_parts=stale,
-        retention_blocked=','.join(sorted(blocked_reasons)) or None,
+        **retention_fields,
     )
     return 0 if status_saved else 1
 

@@ -127,6 +127,111 @@ def test_c3_clock_skew_logs_and_records_retention_pause(tmp_path, monkeypatch):
     assert len(list(dest.glob('content_hub_*.db'))) == 7
 
 
+@pytest.mark.parametrize('stat_denied', [False, True])
+def test_c3_missing_nas_folder_does_not_hold_cleared_pause(tmp_path, monkeypatch, stat_denied):
+    replicate = _module()
+    source = tmp_path / 'source'
+    incomplete = source / 'incomplete'
+    incomplete.mkdir(parents=True)
+    marker = incomplete / 'content_hub_20200101_010101.manifest.json'
+    marker.write_text('{}', encoding='utf-8')
+    _sqlite(source / 'content_hub_20990101_010101.db', 'future')
+    target = tmp_path / 'replica'
+    missing = target / 'backups' / 'incomplete'
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    monkeypatch.setattr(replicate, '_sources', lambda: [('backups', source)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    monkeypatch.setattr(replicate.time, 'time', lambda: datetime(2026, 11, 15, tzinfo=timezone.utc).timestamp())
+    assert replicate.main() == 0
+    assert json.loads(replicate.STATUS_FILE.read_text('utf-8'))['retention_blocked'] == 'clock_skew'
+    assert not missing.exists()
+
+    monkeypatch.setattr(replicate.time, 'time', lambda: datetime(2100, 1, 1, tzinfo=timezone.utc).timestamp())
+    with monkeypatch.context() as fault:
+        if stat_denied:
+            original = Path.stat
+            def stat(path, *args, **kwargs):
+                if path == missing:
+                    raise PermissionError('fixture')
+                return original(path, *args, **kwargs)
+            fault.setattr(Path, 'stat', stat)
+        assert replicate.main() == 0
+    result = json.loads(replicate.STATUS_FILE.read_text('utf-8'))
+    assert result['retention_blocked'] == ('clock_skew' if stat_denied else None)
+    assert marker.read_text('utf-8') == '{}'
+    assert not missing.exists()
+
+
+@pytest.mark.parametrize('stop,expected_state', [
+    ('target_unavailable', 'failed'), ('target_unsafe', 'failed'),
+    ('source_unavailable', 'failed'), ('no_source', 'no_source'),
+    ('empty_source', 'success'), ('prune_unreadable', 'success'), ('partial_prune', 'success'),
+    ('worker_only', 'success'),
+])
+def test_c3_retention_pause_survives_unassessed_run(tmp_path, monkeypatch, stop, expected_state):
+    replicate = _module()
+    source = tmp_path / 'source'
+    source.mkdir()
+    _sqlite(source / 'content_hub_20200101_010101.db', 'old')
+    child = source / 'child'
+    child.mkdir()
+    _sqlite(child / 'content_hub_20200102_010101.db', 'old')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    target = tmp_path / 'replica'
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    monkeypatch.setattr(replicate, '_sources', lambda: [('backups', source)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    tid = replicate.target_id(str(target))
+    assert replicate._write_status('success', target_id=tid, retention_blocked='clock_skew')
+    with monkeypatch.context() as fault:
+        if stop == 'target_unavailable':
+            original = Path.mkdir
+            def mkdir(path, *args, **kwargs):
+                if path == target:
+                    raise PermissionError('fixture')
+                return original(path, *args, **kwargs)
+            fault.setattr(Path, 'mkdir', mkdir)
+        elif stop == 'target_unsafe':
+            fault.setattr(replicate, 'target_overlaps', lambda _: True)
+        elif stop == 'source_unavailable':
+            class BrokenSource(type(source)):
+                def rglob(self, pattern, **kwargs):
+                    raise OSError('fixture')
+            fault.setattr(replicate, '_sources', lambda: [('backups', BrokenSource(source))])
+        elif stop in ('no_source', 'empty_source'):
+            fault.setattr(replicate, '_sources', lambda: [('backups', empty if stop == 'empty_source' else tmp_path / 'missing')])
+        elif stop == 'worker_only':
+            _sqlite(empty / '20200101_010101_deadbeef.db', 'worker')
+            fault.setattr(replicate, '_sources', lambda: [('db-backups', empty)])
+        else:
+            original = Path.glob
+            def glob(path, pattern, **kwargs):
+                if path == target / 'backups' or stop == 'prune_unreadable' and path == target / 'backups' / 'child':
+                    raise PermissionError('fixture')
+                return original(path, pattern, **kwargs)
+            fault.setattr(Path, 'glob', glob)
+        assert replicate.main() == (1 if expected_state == 'failed' else 0)
+    result = json.loads(replicate.STATUS_FILE.read_text('utf-8'))
+    assert result['state'] == expected_state
+    assert result['retention_blocked'] == 'clock_skew'
+    assert replicate.main() == 0
+    assert json.loads(replicate.STATUS_FILE.read_text('utf-8'))['retention_blocked'] is None
+
+
+@pytest.mark.parametrize('target', ['new-target', None])
+def test_c3_retention_pause_is_not_transferred_to_another_target(tmp_path, monkeypatch, target):
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    assert replicate._write_status('success', target_id='old-target', retention_blocked='clock_skew')
+    assert replicate._write_status('failed' if target else 'disabled', target_id=target)
+    assert not json.loads(replicate.STATUS_FILE.read_text('utf-8')).get('retention_blocked')
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows server console')
 @pytest.mark.parametrize('state,reason,old_target,visible', [
     ('success', 'clock_skew', False, True),
