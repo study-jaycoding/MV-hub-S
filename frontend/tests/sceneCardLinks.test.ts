@@ -25,20 +25,17 @@ if (!(globalThis as Record<string, unknown>).addEventListener) {
 type Call = { url: string; init?: RequestInit };
 let calls: Call[] = [];
 let adopted = true;
-vi.mock("../src/lib/sceneNotebook", async (original) => ({
-  ...await original<typeof import("../src/lib/sceneNotebook")>(),
-  mirrorSceneGenerations: () => {
-    const generations = new Map<string, string>();
-    generations.get = () => adopted ? "restore-1" : undefined;
-    return generations;
-  },
-}));
-let getLinks: () => Promise<{ items: unknown[] }>;
+let getLinks: () => Promise<{ items: unknown[]; restore_generation?: string }>;
+let getBook: (() => Promise<unknown>) | null = null;
 let putFails = false;
 let putError: Error | null = null; // 허브가 돌려준 오류 그대로(예: 제품의 HttpError 409)
 vi.mock("../src/lib/http", () => ({
   jsonFetch: async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
+    if (url === "/api/scenes/notebook?project_id=") {
+      if (!getBook) throw new Error("unexpected notebook request");
+      return getBook();
+    }
     if (init?.method === "PUT") {
       if (putError) return Promise.reject(putError);
       if (putFails) return Promise.reject(new Error("offline"));
@@ -46,7 +43,7 @@ vi.mock("../src/lib/http", () => ({
       const body = JSON.parse(String(init.body));
       const total = new Set([...(body.added || []), ...(body.backfill || [])].map((l: object) => JSON.stringify(l))).size
         + (body.explicit || []).length + (body.removed || []).length;
-      return total > 2000 ? Promise.reject(new Error("422 한 요청 상한 초과")) : Promise.resolve({ ok: true, restore_generation: "restore-1" });
+      return total > 2000 ? Promise.reject(new Error("422 한 요청 상한 초과")) : Promise.resolve({ ok: true, restore_generation: body.restore_generation });
     }
     return { restore_generation: "restore-1", ...await getLinks() };
   },
@@ -61,6 +58,13 @@ let acctSeq = 0;
 async function boot() {
   vi.resetModules();
   const scenes = await import("../src/lib/scenes");
+  const notebook = await import("../src/lib/sceneNotebook");
+  // resetModules 뒤의 같은 저장소를 보도록, 캐시되는 부분 모킹 대신 현재 모듈의 미러만 바꾼다.
+  vi.spyOn(notebook, "mirrorSceneGenerations").mockImplementation(() => {
+    const generations = new Map<string, string>();
+    generations.get = () => adopted ? "restore-1" : undefined;
+    return generations;
+  });
   const links = await import("../src/lib/sceneCardLinks");
   return { scenes, links };
 }
@@ -87,6 +91,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     acctSeq += 1;
     localStorage.setItem("ch.activeAccount", `user${acctSeq}@test`);
     getLinks = () => Promise.resolve({ items: [] });
+    getBook = null;
     localStorage.setItem(`mvhub.cardRecovery:acct:user${acctSeq}@test`, JSON.stringify({ generation: "restore-1", candidates: [] }));
   });
 
@@ -204,6 +209,129 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     links.initSceneCardLinks(); await vi.advanceTimersByTimeAsync(2500);
     expect(puts()).toHaveLength(0);
     expect(links.serverCardLinks()).toEqual([]);
+  });
+
+  async function notebookFixture() {
+    const { links } = await boot();
+    const store = await import("../src/lib/sceneStore");
+    const notebook = await import("../src/lib/sceneNotebook");
+    const { setHubFeatures } = await import("../src/lib/hubFeatures");
+    setHubFeatures(["scene_writer_v1"]);
+    const scope = `acct:user${acctSeq}@test`, bucket = `${scope}::_none`;
+    await store.writeScenesStore({ [bucket]: [] });
+    expect(await notebook.joinSceneNotebook(scope, "book", "h", {
+      [bucket]: { scenes: [sceneWith("s", "c", ["removed", "revived"])],
+        bases: { s: { history: "h", rev: 1, hash: "hash" } }, order: { history: "h", rev: 1 } },
+    }, undefined, "restore-1")).toBe(true);
+    expect(store.readConfirmedNotebookJoin(scope)).toEqual({ restoreGeneration: "restore-1" });
+    expect(notebook.notebookRestoreGeneration(scope)).toBe("restore-1");
+    const adoptRestored = async () => {
+      const data = JSON.stringify(sceneWith("s", "c", ["removed", "revived"]));
+      const { sha256Hex } = await import("../src/lib/editShare");
+      const hash = await sha256Hex(data);
+      getBook = async () => ({ restore_generation: "restore-2", notebook_id: "book-2", history_id: "h2",
+        items: [{ id: "s", data, deleted_at: null, base: { history_id: "h2", rev: 1, hash } }],
+        order: { ids: ["s"], rev: 1, history_id: "h2" } });
+      notebook.setSceneNotebookTokenProvider(() => ({ account: scope, token: "token", generation: "lease-1" }));
+      try {
+        expect((await notebook.syncSceneNotebook()).status).toBe("ready");
+        expect(store.readConfirmedNotebookJoin(scope)).toEqual({ restoreGeneration: "restore-2" });
+        expect(notebook.notebookRestoreGeneration(scope)).toBe("restore-2");
+      } finally { notebook.setSceneNotebookTokenProvider(() => null); }
+    };
+    const queue = (kind: string) => JSON.parse(localStorage.getItem(`ch.sceneCard${kind}.v1.${encodeURIComponent(scope)}`) || "[]");
+    return { links, store, notebook, scope, bucket, queue, adoptRestored };
+  }
+
+  it.each([true, false])("late old GET cannot isolate adopted notebook intents (new mutation: %s)", async (mutate) => {
+    const { links, queue, adoptRestored } = await notebookFixture();
+    let finish!: (value: { items: unknown[]; restore_generation: string }) => void;
+    getLinks = () => new Promise((resolve) => { finish = resolve; });
+    const loading = links.refreshSceneCardLinks();
+    await adoptRestored();
+    putFails = true;
+    const removing = mutate ? links.markCardGenerationsRemoved("s", "c", ["removed"]) : Promise.resolve();
+    if (mutate) links.reviveCardGenerations("s", "c", ["revived"]);
+    getLinks = () => Promise.resolve({ items: [], restore_generation: "restore-2" });
+    finish({ items: [], restore_generation: "restore-1" });
+    expect(await loading).toBe(false);
+    await removing;
+    if (mutate) {
+      expect(queue("Removals")).toMatchObject([{ generation_id: "removed", restore_generation: "restore-2" }]);
+      expect(queue("Revives")).toMatchObject([{ generation_id: "revived", restore_generation: "restore-2" }]);
+    }
+    expect(links.readCardRecovery()?.candidates.flatMap((candidate) => [...candidate.removals, ...candidate.revives])).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(links.readCardRecovery()?.candidates.flatMap((candidate) => [...candidate.removals, ...candidate.revives])).toEqual([]);
+  });
+
+  it.each([false, true])("discarded GET resumes pending intents promptly only after a successful reload (offline: %s)", async (offline) => {
+    const { links, queue, adoptRestored } = await notebookFixture();
+    let finish!: (value: { items: unknown[]; restore_generation: string }) => void;
+    getLinks = () => new Promise((resolve) => { finish = resolve; });
+    const loading = links.refreshSceneCardLinks();
+    await adoptRestored();
+    const removing = links.markCardGenerationsRemoved("s", "c", ["removed"]);
+    links.reviveCardGenerations("s", "c", ["revived"]);
+    getLinks = () => offline ? Promise.reject(new Error("offline")) : Promise.resolve({ items: [], restore_generation: "restore-2" });
+    finish({ items: [], restore_generation: "restore-1" });
+    expect(await loading).toBe(false);
+    await removing;
+    await vi.advanceTimersByTimeAsync(10);
+    if (offline) {
+      expect(puts()).toHaveLength(0);
+      expect(queue("Removals")).toHaveLength(1);
+      expect(queue("Revives")).toHaveLength(1);
+    } else {
+      expect(puts()).toHaveLength(1);
+      expect(putBody(puts()[0])).toMatchObject({ restore_generation: "restore-2",
+        removed: [{ generation_id: "removed" }], explicit: [{ generation_id: "revived" }] });
+      expect(queue("Removals")).toEqual([]);
+      expect(queue("Revives")).toEqual([]);
+    }
+    await vi.advanceTimersByTimeAsync(2500);
+    const settledCalls = calls.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toHaveLength(settledCalls);
+    if (!offline) {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(calls).toHaveLength(settledCalls);
+    }
+  });
+
+  it("external notebook save keeps detached-window removal and revive in the current generation", async () => {
+    const { links, store, notebook, scope, bucket, queue } = await notebookFixture();
+    store.writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = all[bucket].map((scene) => ({ ...scene, name: "main window edit" })); });
+    expect(await store.refreshSceneStoreForTest()).toBe(true);
+    // No notebook token: the detached window cannot repair the metadata via notebook sync.
+    const generationAfterRefresh = notebook.notebookRestoreGeneration(scope);
+    putFails = true;
+    await links.markCardGenerationsRemoved("s", "c", ["removed"]);
+    links.reviveCardGenerations("s", "c", ["revived"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await links.refreshSceneCardLinks()).toBe(true);
+    expect(queue("Removals")).toMatchObject([{ generation_id: "removed", restore_generation: "restore-1" }]);
+    expect(queue("Revives")).toMatchObject([{ generation_id: "revived", restore_generation: "restore-1" }]);
+    expect(generationAfterRefresh).toBe("restore-1");
+    expect(links.readCardRecovery()?.candidates).toEqual([]);
+    expect(puts().flatMap((call) => putBody(call).removed)).toContainEqual({ scene_id: "s", card_id: "c", generation_id: "removed" });
+    expect(puts().flatMap((call) => putBody(call).explicit)).toContainEqual({ scene_id: "s", card_id: "c", generation_id: "revived" });
+  });
+
+  it("a valid new generation still isolates genuine pre-restore removal and revive intents", async () => {
+    const { links, queue, adoptRestored } = await notebookFixture();
+    putFails = true;
+    await links.markCardGenerationsRemoved("s", "c", ["removed"]);
+    links.reviveCardGenerations("s", "c", ["revived"]);
+    await vi.advanceTimersByTimeAsync(1);
+    await adoptRestored();
+    getLinks = () => Promise.resolve({ items: [], restore_generation: "restore-2" });
+    expect(await links.refreshSceneCardLinks()).toBe(true);
+    expect(queue("Removals")).toEqual([]);
+    expect(queue("Revives")).toEqual([]);
+    const candidates = links.readCardRecovery()!.candidates;
+    expect(candidates.flatMap((candidate) => candidate.removals)).toMatchObject([{ generation_id: "removed", restore_generation: "restore-1" }]);
+    expect(candidates.flatMap((candidate) => candidate.revives)).toMatchObject([{ generation_id: "revived", restore_generation: "restore-1" }]);
   });
 
   it("an adopted legacy scene backfills only cards added after its old scan was isolated", async () => {

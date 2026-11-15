@@ -418,6 +418,7 @@ async function storeTx(
   notebook = false,
 ): Promise<void> {
   const writing = mode === "readwrite";
+  const notebookPrefixes = notebook ? [...NOTEBOOK_PREFIXES, ...(writing ? [] : ["ns", "nw"])] : [];
   if (writing && delayWritesForTest) await new Promise((resolve) => setTimeout(resolve, delayWritesForTest));
   if (writing && failWritesForTest) throw new Error("scene store write blocked (test)");
   if (memory) {
@@ -425,8 +426,9 @@ async function storeTx(
     const meta: StoreValues = {};
     // 저장소가 돌려주는 값은 호출부 소유다(IDB 는 매번 새 객체를 준다) — 메모리 대체도 같게.
     for (const key of metaKeys) meta[key] = cloneStored(active.get(key));
-    if (notebook) for (const [key, value] of active) if (isNotebookMeta(key)) meta[key] = cloneStored(value);
-    const write = decide(meta, wantScenes(meta) ? assembleScenes(sceneEntries(active)) : null);
+    const readScenes = wantScenes(meta);
+    if (notebook && (writing || readScenes)) for (const [key, value] of active) if (notebookPrefixes.some((kind) => key.startsWith(`["${kind}",`))) meta[key] = cloneStored(value);
+    const write = decide(meta, readScenes ? assembleScenes(sceneEntries(active)) : null);
     if (writing && abortWritesForTest) throw new Error("scene store aborted (test)");
     for (const [key, value] of write.puts) active.set(key, cloneStored(value));
     for (const key of write.deletes) active.delete(key);
@@ -463,13 +465,20 @@ async function storeTx(
     };
     const afterMeta = () => {
       try {
-        if (!wantScenes(meta)) return finish(null);
+        const readScenes = wantScenes(meta);
+        const prefixes = writing || readScenes ? notebookPrefixes : [];
+        if (!readScenes && !prefixes.length) return finish(null);
         // na(허브 전 사본)는 클 수 있다. 씬 조회에 사본/메타 전체를 읽지 않는다.
         const entries: Entries = [];
-        let left = 2;
-        for (const kind of ["o", "s"]) readPrefix(kind, (found) => {
+        let left = prefixes.length + (readScenes ? 2 : 0);
+        const done = () => { if (--left === 0) finish(readScenes ? assembleScenes(entries) : null); };
+        for (const kind of prefixes) readPrefix(kind, (found) => {
+          Object.assign(meta, Object.fromEntries(found));
+          done();
+        });
+        if (readScenes) for (const kind of ["o", "s"]) readPrefix(kind, (found) => {
           entries.push(...found);
-          if (--left === 0) finish(assembleScenes(entries));
+          done();
         });
       } catch (error) {
         giveUp(error);
@@ -483,12 +492,8 @@ async function storeTx(
       values.onsuccess = () => done((keys.result as string[]).map((key, i) => [key, values.result[i]]));
       keys.onerror = values.onerror = () => giveUp(values.error || keys.error);
     };
-    let waiting = metaKeys.length + (notebook ? NOTEBOOK_PREFIXES.length : 0);
+    let waiting = metaKeys.length;
     if (!waiting) return afterMeta();
-    if (notebook) for (const kind of NOTEBOOK_PREFIXES) readPrefix(kind, (entries) => {
-      Object.assign(meta, Object.fromEntries(entries));
-      if (--waiting === 0) afterMeta();
-    });
     for (const key of metaKeys) {
       const got = store.get(key) as IDBRequest<unknown>;
       got.onsuccess = () => {
@@ -504,6 +509,7 @@ async function storeTx(
 async function readStore(
   metaKeys: string[],
   wantScenes: (meta: StoreValues) => boolean,
+  notebook = false,
 ): Promise<{ meta: StoreValues; scenes: ScenesByProject | null }> {
   let out: { meta: StoreValues; scenes: ScenesByProject | null } = { meta: {}, scenes: null };
   await storeTx(
@@ -514,6 +520,7 @@ async function readStore(
       return NO_WRITE;
     },
     "readonly",
+    notebook,
   );
   return out;
 }
@@ -1679,11 +1686,13 @@ function refreshFromStore(): Promise<boolean> {
     if (!ready) return false;
     if (!(await ensureDb())) { notifySceneStoreStale(); return false; }
     // 버전이 그대로면 씬은 읽지 않는다(충돌 목록만 본다).
+    const notebook = hubHasFeature("scene_writer_v1");
     let read: Awaited<ReturnType<typeof readStore>>;
     try {
       read = await readStore(
         [K_VERSION, K_CONFLICTS, K_LAYOUT],
         (found) => baselineStale || ((found[K_VERSION] as number | undefined) ?? 0) !== confirmedVersion,
+        notebook,
       );
       assertKnownLayout(read.meta);
     } catch {
@@ -1700,7 +1709,8 @@ function refreshFromStore(): Promise<boolean> {
       return true;
     }
     confirmed = scenes;
-    confirmedNotebookMeta = null;
+    // 씬과 같은 판의 합류·의도·진행 기록이어야 카드 조작과 닫기 전송에 쓸 수 있다.
+    confirmedNotebookMeta = notebook ? Object.fromEntries(Object.entries(meta).filter(([key]) => isNotebookMeta(key) || /^\["n[sw]",/.test(key))) : null;
     confirmedVersion = (meta[K_VERSION] as number | undefined) ?? 0;
     baselineStale = false;
     rebaseWorking();

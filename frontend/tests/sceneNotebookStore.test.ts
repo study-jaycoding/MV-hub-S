@@ -7,6 +7,7 @@ import {
   settleSceneStoreForTest, unconfirmedSceneWrites, writeSceneStoreAsOtherWindowForTest, writeScenesStore,
   sceneNotebookTransaction, notebookKey, sceneStoreKeysForTest, captureSceneOps,
   absorbLegacyScenes, sceneStoreConflicts,
+  refreshSceneStoreForTest, readConfirmedNotebookJoin, readSceneStoreForClose,
 } from "../src/lib/sceneStore";
 import {
   acknowledgeNotebookIntent, addNotebookSceneIfAbsent, applyNotebookOrder, joinSceneNotebook,
@@ -64,6 +65,62 @@ afterEach(async () => {
   await settleSceneStoreForTest();
   setHubFeatures([]);
   vi.unstubAllGlobals();
+});
+
+it("external refresh keeps notebook joins and pending close requests in the scene snapshot", async () => {
+  await writeScenesStore({ [bucket]: [scene()] });
+  const joined = { notebookId: "book", history: "h", restoreGeneration: "restore-2" };
+  const progress = { requests: [{ request_id: "in-flight", restore_generation: "restore-2" }] };
+  await sceneNotebookTransaction([notebookKey("nw", "local"), notebookKey("ns", "other")], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = joined;
+    meta[notebookKey("nw", "local")] = progress;
+    meta[notebookKey("ns", "other")] = { requestId: "other-window-start" };
+    return { value: true, changed: true };
+  });
+  writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("s", "external")]; });
+  expect(await refreshSceneStoreForTest()).toBe(true);
+  expect(readConfirmedNotebookJoin("local")).toEqual({ restoreGeneration: "restore-2" });
+  const snapshot = readSceneStoreForClose()!;
+  expect(snapshot.scenes[bucket][0].name).toBe("external");
+  expect(snapshot.meta[notebookKey("nw", "local")]).toEqual(progress);
+  expect(snapshot.meta[notebookKey("ns", "other")]).toEqual({ requestId: "other-window-start" });
+});
+
+it("unchanged external version skips notebook payload reads and retains confirmed metadata", async () => {
+  await writeScenesStore({ [bucket]: [scene()] });
+  const keys = ["b", "d", "r", "ob", "nj", "ns", "nw"].map((kind) => notebookKey(kind, "local"));
+  await sceneNotebookTransaction(keys, (_all, meta) => {
+    keys.forEach((key) => { meta[key] = { readMarker: key }; });
+    return { value: true, changed: true };
+  });
+  const before = readSceneStoreForClose()!.meta;
+  const clone = vi.spyOn(globalThis, "structuredClone");
+  try {
+    expect(await refreshSceneStoreForTest()).toBe(true);
+    expect(clone.mock.calls.filter(([value]) => value && typeof value === "object" && "readMarker" in value)).toHaveLength(0);
+    expect(readSceneStoreForClose()!.meta).toEqual(before);
+    writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("s", "external")]; });
+    clone.mockClear();
+    expect(await refreshSceneStoreForTest()).toBe(true);
+    expect(clone.mock.calls.filter(([value]) => value && typeof value === "object" && "readMarker" in value)).toHaveLength(7);
+    expect(readSceneStoreForClose()!.meta).toMatchObject(before);
+  } finally { clone.mockRestore(); }
+});
+
+it("external refresh caches only notebook metadata across subsequent writes", async () => {
+  await writeScenesStore({ [bucket]: [scene()] });
+  expect(await joinSceneNotebook("local", "book", "h", hub(), undefined, "restore-1")).toBe(true);
+  writeSceneStoreAsOtherWindowForTest((all) => { all[bucket] = [scene("hub", "external")]; });
+  expect(await refreshSceneStoreForTest()).toBe(true);
+  const assertNotebookOnly = () => {
+    const keys = Object.keys(readSceneStoreForClose()!.meta);
+    expect(keys).toContain(notebookKey("nj", "local"));
+    expect(keys.filter((key) => !/^\["(?:b|d|r|ob|nj|ns|nw)",/.test(key))).toEqual([]);
+  };
+  assertNotebookOnly();
+  edit((all) => { all[bucket] = [scene("hub", "local edit")]; });
+  await settleSceneStoreForTest();
+  assertNotebookOnly();
 });
 
 describe("c04: 씬과 삭제/되살리기 의도가 한 번에 저장된다", () => {

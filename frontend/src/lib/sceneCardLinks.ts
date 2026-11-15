@@ -282,6 +282,18 @@ function sameLinks(a: CardLink[], b: CardLink[]): boolean {
   });
 }
 
+function reloadAfterMutation(scope: string): void {
+  setTimeout(() => {
+    if (ns() !== scope) return;
+    void load(scope, true).then((ok) => {
+      if (!ok || ns() !== scope || (!pendingRemovals.length && !pendingRevives.length)) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      void pushNew();
+    }, () => {});
+  }, 0);
+}
+
 /**
  * 서버 소속 읽기. 최초 백필은 캐시를 쓰고, 화면 복귀·주기 갱신은 force=true 로 다시 읽는다.
  * 진행 중인 GET은 공유해 느린 서버에서 중복 요청이 쌓이지 않게 한다.
@@ -291,21 +303,25 @@ function load(scope: string, force: boolean): Promise<boolean> {
   if (loadPromise) return loadPromise;
   const p = (async () => {
     const epochAtStart = mutationEpoch;
+    const notebookGenerationAtStart = notebookRestoreGeneration(scope);
     let items: CardLink[];
     try {
       // 이 탭의 계정을 싣는다 — 허브가 고정한 계정과 다르면 409(sceneBackup 과 같다, 81회차 F-A-02)
       const r = await jsonFetch<{ restore_generation: string; items: CardLink[] }>(API, { headers: { [EXPECT_ACCOUNT_HEADER]: scope } });
       if (ns() !== scope) return false;
+      if (epochAtStart !== mutationEpoch || notebookGenerationAtStart !== notebookRestoreGeneration(scope)) {
+        // 격리도 쓰기다 — 조작/공책 채택보다 먼저 출발한 응답은 대기열을 건드리기 전에 버린다.
+        reloadAfterMutation(scope);
+        return false;
+      }
       prepareGeneration(scope, r.restore_generation, r.items || []);
       items = r.items || [];
     } catch {
       return false; // 오프라인·미로그인(401)·구백엔드 — 판정 미상. known 을 비워두면 백필이 안 돈다
     }
-    if (ns() !== scope) return false; // 계정 전환 중 응답 — 폐기
+    if (ns() !== scope) return false; // 복구 알림 구독자가 계정을 바꿨을 수도 있다.
     if (epochAtStart !== mutationEpoch) {
-      // 이 응답은 내 제거/부활 조작(또는 그 전송)보다 먼저 시작됐다 — 낡은 상태이므로 버리고
-      // 다시 읽는다. 안 그러면 방금 지운 생성물이 옛 응답으로 화면에 되살아난다(합의 C-3a).
-      setTimeout(() => void load(scope, true), 0);
+      reloadAfterMutation(scope);
       return false;
     }
     const changed = !sameLinks(serverLinks, items);
