@@ -170,6 +170,23 @@ def test_mirror_is_seeded_on_writer_off_start_then_hub_restarts_with_writer(tmp_
     assert "empty-mirror first transition is not measured" in instance.report["limitations"][-1]
 
 
+def test_first_transition_skips_mirror_seed_and_runs_its_own_flow(tmp_path, monkeypatch):
+    import asyncio
+    instance = measure.Measurement("first_transition", tmp_path)
+    calls = []
+    async def seed(self, seeds):
+        calls.append("seed_mirror")
+    async def first(self, stack, seeds):
+        calls.append(("first_transition", len(seeds)))
+        return self.report
+    monkeypatch.setattr(measure, "find_browser", lambda: "chrome.exe")
+    monkeypatch.setattr(measure.Measurement, "seed_mirror", seed)
+    monkeypatch.setattr(measure.Measurement, "first_transition", first)
+    asyncio.run(instance.run(None))
+    assert calls == [("first_transition", 3)]  # 빈 허브 미러 그대로 — 미러를 채우면 빈 미러 첫 전환을 재지 못한다
+    assert CASES["first_transition"] == {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"}
+
+
 @pytest.mark.parametrize("join, notebook_id, converged", [
     ({"notebookId": "nb", "restoreGeneration": "g1"}, "nb", True),
     ({"notebookId": "", "restoreGeneration": "g1"}, "nb", True),     # 시작 전 미러에 합류한 브라우저(제품이 "" 로 둔다)

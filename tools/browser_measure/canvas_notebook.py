@@ -403,7 +403,7 @@ class Measurement:
             result["evidence"] = {"observed": actual, "criterion": expected}
         self.report["checks"][key] = result
 
-    async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None) -> Page:
+    async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None, *, canvas: bool = True) -> Page:
         page = await stack.enter_async_context(Page(0, self.work / f"chrome-{name}"))
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=MEASURE_SCRIPT)
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=f"""if (location.origin === {json.dumps(self.hub.url)}) {{
@@ -417,7 +417,8 @@ class Measurement:
                 localStorage.setItem('measure-seeded', '1'); }}"""
             await page.send("Page.addScriptToEvaluateOnNewDocument", source=script)
         await page.goto(self.hub.url, settle=0.2)
-        await self.ensure_canvas(page)
+        if canvas:  # first_transition: an emptied canvas has no board yet; it waits for the restore notice instead
+            await self.ensure_canvas(page)
         return page
 
     async def ensure_canvas(self, page: Page) -> None:
@@ -600,6 +601,46 @@ class Measurement:
         if not moved:
             raise RuntimeError("card body did not move before handoff with pointer held")
 
+    async def first_transition(self, stack: AsyncExitStack, seeds: list[dict]) -> dict:
+        """Empty hub mirror: a browser holding local scenes joins the writer-on hub for the first time (the opt-in first transition).
+
+        Its scenes go to the restore archive and the canvas empties; the canvas notice, picker and restore bring them back to the
+        canvas and the started hub notebook (docs/status/공책첫전환복구동선_2026-11-15.md)."""
+        self.hub.start()
+        self.report["isolation"] = self.hub.isolation
+        a = await self.open(stack, "a", seeds, canvas=False)
+        self.report["browser_version"] = await a.eval("navigator.userAgent")
+        ids = sorted(s["id"] for s in seeds)
+        archive_key = json.dumps(["nr", self.account], separators=(",", ":"))
+        archived: list[str] = []
+        end = time.monotonic() + 30
+        while time.monotonic() < end:
+            entries = dict(await a.eval(READ_STORE))
+            archived = sorted(s["id"] for item in entries.get(archive_key) or [] for s in item.get("scenes", {}).get(self.bucket, []))
+            if archived == ids:
+                break
+            await asyncio.sleep(.1)
+        self.check("archived", archived, ids)
+        self.check("canvas_emptied", [s["id"] for s in await self.local(a)], [])
+        shown = await a.wait(f"document.querySelector('.canvas-restore-notice')?.innerText.includes({json.dumps(f'씬 {len(seeds)}개')})", 20)
+        self.check("notice", shown, True)
+        if not shown or not await a.click("document.querySelector('[data-restore-action=\"open\"]')"):
+            raise RuntimeError("canvas restore notice missing")
+        restore = "document.querySelector('.canvas-restore-picker [data-restore-action=\"restore\"]:not([disabled])')"
+        if not await a.wait(restore, 10) or not await a.click(restore):
+            raise RuntimeError("restore picker action missing")
+        restored = await self.wait_local(a, lambda rows: sorted(s["id"] for s in rows) == ids, 20)
+        self.check("restored", sorted(s["id"] for s in restored), ids)
+        book = await self.synced(a, 40)
+        self.check("hub_synced", sorted(row["id"] for row in book["items"] if not row.get("deleted_at")), ids)
+        self.check("notice_cleared", await a.eval("!document.querySelector('.canvas-restore-notice')"), True)
+        try:
+            await a.shot(self.work / "a-final.png")
+        except Exception:
+            pass
+        self.report["forbidden_requests"].extend(r for r in a.mutations if "/api/gen-requests" in "/" + r or "/api/comfy/run" in "/" + r)
+        return self.report
+
     async def run(self, args) -> dict:
         browser = find_browser()
         self.report["browser_kind"] = "chrome" if Path(browser).name.casefold() in {"chrome.exe", "chrome"} else "other"
@@ -609,6 +650,8 @@ class Measurement:
         async with AsyncExitStack() as stack:
             seeds = fixture(performance=self.case == "performance")
             self.report["fixture_sha256"] = hashlib.sha256(json.dumps(seeds, sort_keys=True).encode()).hexdigest()
+            if self.case == "first_transition":
+                return await self.first_transition(stack, seeds)
             await self.seed_mirror(seeds)
             self.report["isolation"] = self.hub.isolation
             a = await self.open(stack, "a", seeds)

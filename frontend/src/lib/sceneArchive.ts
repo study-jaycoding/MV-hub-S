@@ -10,7 +10,7 @@ import { readEditRecoveryCandidates } from "./editDocBackup";
 import { resumeImportedMirror, type MirrorRecovery } from "./sceneBackup";
 import { downloadText } from "./download";
 import { sameSceneContent, sceneBodySum, type SceneAbsorbConflict } from "./sceneAbsorb";
-import { reviveCardGenerations } from "./sceneCardLinks";
+import { queueCardRevivesFor, reviveCardGenerations } from "./sceneCardLinks";
 import {
   dumpSceneStore,
   mergeSceneStoreDump,
@@ -234,6 +234,51 @@ export function mergeArchiveBucket(local: Scene[], incoming: Scene[]): SceneBuck
   return { next: extra.length ? [...local, ...extra] : local, added, recovered };
 }
 
+// ── 첫 공책 전환 복구 동선(docs/status/공책첫전환복구동선_2026-11-15.md) — 보관 묶음(nr)의 이 계정 씬을 지금 캔버스와 견준다 ──
+export type RestoreRowState = "same" | "restored" | "differs" | "absent" | "unreadable";
+export interface RestoreRow { archiveId: string; createdAt: string; bucket: string; scene: Scene; cards: number; state: RestoreRowState }
+const withoutCamera = (scene: Scene): Scene => ({ ...scene, camera: undefined });
+
+/**
+ * 보관 묶음의 이 계정 버킷(`<계정>::…`) 씬마다 한 행(버킷이 다르면 같은 ID 도 다른 행). 상태: 같은 ID·카메라를 뺀 같은 내용 = same ·
+ * 이미 만든 사본(mergeArchiveBucket 과 같은 copyKey) = restored · 같은 ID 다른 내용 = differs · 없음 = absent · 정규화 실패 = unreadable.
+ * differs·absent 만 되살릴 수 있다 — 읽을 수 없는 씬 하나가 가져오기 글 전체를 거절시키지 않게 따로 둔다.
+ */
+export function restoreArchiveRows(account: string, archives: RestoreArchive[], current: Scene[]): RestoreRow[] {
+  const byId = new Map(current.map((scene) => [scene.id, normalized(scene)]));
+  const copies = new Set(current.flatMap((scene) => (scene.recoveredFrom ? [copyKey(scene.recoveredFrom.id, scene.recoveredFrom.sum)] : [])));
+  const rows: RestoreRow[] = [];
+  for (const archive of archives) {
+    for (const [bucket, scenes] of Object.entries(archive.scenes ?? {})) {
+      if (!bucket.startsWith(`${account}::`) || !Array.isArray(scenes)) continue;
+      for (const raw of scenes) {
+        const base = { archiveId: archive.id, createdAt: archive.createdAt, bucket };
+        let read: Scene;
+        try { read = readStoredScene(raw); } catch {
+          const loose = (raw ?? {}) as Partial<Scene>;
+          rows.push({ ...base, scene: { id: String(loose.id ?? ""), name: String(loose.name ?? ""), cards: [], edges: [], created_at: 0 }, cards: 0, state: "unreadable" });
+          continue;
+        }
+        const { comfyRuns: _runs, comfyCardRuns: _owners, ...scene } = read; // 가져오기도 실행 기록은 뺀다(mergeArchiveBucket)
+        const mine = byId.get(scene.id);
+        const state: RestoreRowState = mine && sameSceneContent(withoutCamera(mine), withoutCamera(scene)) ? "same"
+          : copies.has(copyKey(scene.id, sceneBodySum(scene))) ? "restored"
+          : byId.has(scene.id) ? "differs" : "absent";
+        rows.push({ ...base, scene, cards: scene.cards.length, state });
+      }
+    }
+  }
+  return rows;
+}
+
+/** 고른 행을 전체 가져오기 글로 — 지금 캔버스 버킷(`<계정>::_none`)에. 충돌 기록은 싣지 않는다(합류 때 일부러 뺀 충돌을 되살리지 않게). */
+export function restoreArchiveText(account: string, rows: RestoreRow[]): string {
+  return JSON.stringify({
+    format: SCENE_ARCHIVE_FORMAT, schemaVersion: SCENE_ARCHIVE_VERSION, exportedAt: new Date().toISOString(),
+    buckets: { [`${account}::_none`]: rows.map((row) => row.scene) }, conflicts: [],
+  });
+}
+
 /**
  * 파일의 캔버스를 지금 저장소에 합친다(mergeArchiveBucket).
  * @returns added = 더한 씬 수, recovered = 사본으로 따로 둔 씬 수
@@ -262,7 +307,14 @@ export async function importSceneArchiveText(text: string): Promise<{ added: num
     return merged;
   });
   if (!out) throw new Error("가져온 캔버스를 저장하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
-  if (account !== getAccountNamespace()) throw new Error("계정이 바뀌어 전송을 보류했습니다.");
+  if (account !== getAccountNamespace()) {
+    // 저장은 끝났는데 계정이 바뀌었다 — 같은 ID 로 되살아난 씬의 카드 소속은 시작한 계정 대기열에, 그때 읽은 세대로 넣는다(그 계정이 활성일 때
+    //  보낸다). 공책 켬만 — 끔의 미러 재개는 하지 않는다(docs/status/공책첫전환복구동선_2026-11-15.md).
+    if (notebook) queueCardRevivesFor(account, generation ?? null, restored.flatMap((scene) => scene.cards
+      .filter((card) => card.kind === "generation" || card.kind === "comfy")
+      .flatMap((card) => variantIds(card).filter(Boolean).map((generation_id) => ({ scene_id: scene.id, card_id: card.id, generation_id })))));
+    throw new Error("계정이 바뀌어 전송을 보류했습니다.");
+  }
   if (!notebook && generation && mirror) {
     const confirmed = listPersistedSceneTexts(null).filter((scene) => selected.has(scene.id));
     if (confirmed.length !== selected.size || confirmed.some((scene) => !sameSceneContent(selected.get(scene.id)!, JSON.parse(scene.text) as Scene))) throw new Error("가져오는 동안 문서가 바뀌어 전송을 보류했습니다.");

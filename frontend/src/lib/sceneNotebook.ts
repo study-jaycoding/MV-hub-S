@@ -84,12 +84,20 @@ export async function readRestoreArchives(account: string): Promise<{ ok: true; 
   return result.ok ? { ok: true, value: (result.value as RestoreArchive[] | undefined) ?? [], fresh: result.fresh } : result;
 }
 
+const restoreArchivedSubs = new Set<() => void>();
+/** 합류가 보관 묶음(nr)을 새로 적었을 때 — 캔버스 복구 알림이 씬 저장마다 보관함을 읽지 않게(docs/status/공책첫전환복구동선_2026-11-15.md). */
+export function subscribeRestoreArchived(fn: () => void): () => void {
+  restoreArchivedSubs.add(fn);
+  return () => { restoreArchivedSubs.delete(fn); };
+}
 async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean) {
   const hadPending = pendingAtStart || sceneStoreHasPending();
   const release = holdNotebookWrites(account);
+  let archived = false;
   try {
     const archiveKey = key("nr", account);
-    return await sceneNotebookTransaction([archiveKey, key("ns", account), key("nw", account)], (all, meta) => {
+    const result = await sceneNotebookTransaction([archiveKey, key("ns", account), key("nw", account)], (all, meta) => {
+      archived = false; // 다시 도는 거래면 앞 시도의 표시를 지운다
       const joined = meta[key("nj", account)] as NotebookJoin | undefined;
       const staleProgress = [meta[key("ns", account)], meta[key("nw", account)]].some((value) => value && (value as NotebookProgress).restoreGeneration !== book.restore_generation);
       if (joined?.restoreGeneration === book.restore_generation && !staleProgress) return { changed: false, value: false };
@@ -129,6 +137,7 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
         const archive: RestoreArchive = { id: newSceneIntentId(), createdAt: new Date().toISOString(), notebookId: joined?.notebookId ?? "",
           fromGeneration: joined?.restoreGeneration ?? null, toGeneration: book.restore_generation, scenes, conflicts, controls };
         meta[archiveKey] = [...((meta[archiveKey] as RestoreArchive[] | undefined) ?? []), archive];
+        archived = true;
       }
       meta.conflicts = ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => !belongs(item.bucket, account));
       for (const bucket of Object.keys(scenes)) delete all[bucket];
@@ -138,6 +147,8 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation } satisfies NotebookJoin;
       return { changed: true, value: before !== shownScenes(all, account), notify: conflicts.length > 0 };
     }, guard);
+    if (result.ok && archived) for (const fn of [...restoreArchivedSubs]) fn();
+    return result;
   } finally { release(); }
 }
 export interface NotebookHubBucket {

@@ -2063,3 +2063,22 @@
 .scene-tab-menu-sep { height: 1px; margin: 4px; background: var(--border2); }
 .scene-tab-menu .scene-name-input { height: 26px; max-width: none; margin: 2px; padding: 0 9px; border: 1px solid var(--border2); font-size: 12px; font-weight: 800; }
 .scene-tab-menu .scene-name-input:focus { border-color: var(--accent); }
+
+/* 첫 공책 전환 복구 알림 줄·고르기 창(components/scene/CanvasRestoreNotice) — 주황 테두리는 설정의 '복원 전에 남겨 둔 것' 칸과 같은 색 */
+.canvas-restore-notice {
+  display: flex; align-items: center; gap: 10px; margin: 6px 10px 0; padding: 8px 10px;
+  border: 1px solid var(--warning, #c86f20); border-radius: 8px; background: rgba(200, 111, 32, 0.08); font-size: 12px;
+}
+.canvas-restore-notice > span { flex: 1 1 auto; min-width: 0; }
+.canvas-restore-notice > .settings-action { flex: 0 0 auto; width: auto; }
+.canvas-restore-x { flex: 0 0 auto; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.canvas-restore-x:hover { color: var(--text); }
+.canvas-restore-picker { width: min(520px, 92vw); }
+.canvas-restore-group { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 46vh; overflow: auto; }
+.canvas-restore-when { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
+.canvas-restore-when > .settings-action { width: auto; }
+.canvas-restore-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.canvas-restore-row.off { opacity: 0.55; cursor: default; }
+.canvas-restore-name { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.canvas-restore-name > small { color: var(--muted); font-size: 11px; }
+.canvas-restore-tag { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
