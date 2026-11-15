@@ -399,6 +399,154 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.final_save())["state"], "ok")
         clip.GetUniqueId.assert_not_called()
 
+    async def test_review_save_ledger_failure_keeps_q_and_commits_later_p(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        record = panel.records("adopt", self.ctx)[0]
+        other = FakeClip(record["nas_path"])
+        bridge._panel_stamp(other, "q-gen", "q", lambda: None)
+        self.pool.current.clips.append(other)
+        panel.save_record("adopt", {**record, "item_id": other.unique_id, "project_id": "q", "gen_id": "q-gen"})
+        records, save_manifest = panel.records, transfer.save_manifest
+        async def write_manifest(manifest):
+            if manifest["project_id"] == "q":
+                raise PermissionError("Q ledger denied")
+            return await save_manifest(manifest)
+        with patch.object(panel, "records", side_effect=lambda *args, **kwargs:
+                sorted(records(*args, **kwargs), key=lambda row: row["project_id"] != "q")), \
+                patch.object(transfer, "save_manifest", side_effect=write_manifest) as ledger:
+            result = await self.final_save()
+        self.assertEqual(result["state"], "ledger_failed")
+        self.assertTrue(result["project_saved"])
+        self.assertEqual(result["details"], "Q ledger denied")
+        self.assertEqual(self.manager.saved, 1)
+        self.assertEqual([call.args[0]["project_id"] for call in ledger.call_args_list], ["q", "p"])
+        self.assertEqual([row["project_id"] for row in panel.records("adopt", self.ctx)], ["q"])
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_review_save_cleanup_failure_keeps_only_failed_record_and_continues(self):
+        await self.deferred_pair()
+        for ident in ("g", "h"):
+            await self.deferred_adopt(ident)
+        record = panel.records("adopt", self.ctx)[0]
+        panel.save_record("adopt", {**record, "item_id": "missing", "gen_id": "z"})
+        records, remove_records = panel.records, panel.remove_records
+        def remove(kind, rows):
+            if rows[0]["gen_id"] == "g":
+                raise PermissionError("recovery cleanup denied")
+            return remove_records(kind, rows)
+        with patch.object(panel, "records", side_effect=lambda *args, **kwargs:
+                sorted(records(*args, **kwargs), key=lambda row: row["gen_id"])), \
+                patch.object(panel, "remove_records", side_effect=remove):
+            result = await self.final_save()
+        self.assertEqual(result["state"], "cleanup_failed")
+        self.assertTrue(result["cleanup_failed"])
+        self.assertTrue(result["project_saved"])
+        self.assertEqual(result["details"], "recovery cleanup denied")
+        self.assertEqual(self.manager.saved, 1)
+        self.assertEqual([row["gen_id"] for row in panel.records("adopt", self.ctx)], ["g"])
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_review_adopt_missing_cleanup_failure_continues_with_and_without_replacement(self):
+        for replacement in (False, True):
+            with self.subTest(replacement=replacement):
+                await self.place()
+                await self.deferred_adopt("g")
+                old = panel.records("adopt", self.ctx)[0]
+                panel.save_record("adopt", {**old, "item_id": "missing-extra"})
+                self.pool.current.clips.clear()
+                if replacement:
+                    clip = FakeClip(str(self.media / "clip.mp4"))
+                    bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
+                    self.pool.current.clips.append(clip)
+                remove_records = panel.remove_records
+                def remove(kind, rows):
+                    if any(row["item_id"] == old["item_id"] for row in rows):
+                        raise PermissionError("old recovery locked")
+                    return remove_records(kind, rows)
+                # 새 클립은 사전 inventory 뒤 브리지가 발견하는 경로도 거친다.
+                with patch.object(route, "_inventory", AsyncMock(return_value={"state": "ok",
+                        "resolve_project_id": self.project.unique_id, "items": []})), \
+                        patch.object(panel, "remove_records", side_effect=remove):
+                    saved_before = self.manager.saved
+                    result = await self.deferred_adopt("g")
+                    self.assertEqual(result["state"], "in_bin" if replacement else "not_seen")
+                    self.assertTrue(result["cleanup_failed"])
+                    self.assertEqual(set(result["missing_record_ids"]), {old["item_id"], "missing-extra"})
+                    self.assertEqual(self.manager.saved, saved_before)
+                    remaining = {row["item_id"] for row in panel.records("adopt", self.ctx)}
+                    self.assertEqual(remaining, {old["item_id"], clip.unique_id} if replacement else {old["item_id"]})
+                    self.assertEqual((await self.final_save())["state"], "cleanup_failed")
+                self.assertEqual((await self.final_save())["state"], "ok")
+                self.assertEqual(panel.records("adopt", self.ctx), [])
+                self.pool.current.clips.clear()
+
+    async def test_review_save_mixed_ledger_and_cleanup_failures_are_both_reported(self):
+        await self.deferred_pair()
+        for ident in ("g", "h"):
+            await self.deferred_adopt(ident)
+        records, save_manifest = panel.records, transfer.save_manifest
+        async def write_manifest(manifest):
+            if manifest["resolve_import"]["items"][0]["generation_id"] == "g":
+                raise PermissionError("ledger denied")
+            return await save_manifest(manifest)
+        with patch.object(panel, "records", side_effect=lambda *args, **kwargs:
+                sorted(records(*args, **kwargs), key=lambda row: row["gen_id"], reverse=True)), \
+                patch.object(transfer, "save_manifest", side_effect=write_manifest), \
+                patch.object(panel, "remove_records", side_effect=PermissionError("cleanup denied")):
+            result = await self.final_save()
+        self.assertEqual(result["state"], "ledger_failed")
+        self.assertTrue(result["project_saved"])
+        self.assertTrue(result["cleanup_failed"])
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 2)
+
+    async def test_review_single_adopt_cleanup_failure_preserves_success_and_retry(self):
+        await self.place()
+        def remove(kind, rows):
+            if rows:
+                raise PermissionError("cleanup denied")
+        with patch.object(panel, "remove_records", side_effect=remove):
+            result = await self.adopt()
+        self.assertEqual(result["state"], "in_bin")
+        self.assertTrue(result["cleanup_failed"])
+        self.assertEqual(self.manager.saved, 1)
+        self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+        self.assertEqual((await self.final_save())["state"], "ok")
+        self.assertEqual(panel.records("adopt", self.ctx), [])
+
+    async def test_review_import_cleanup_failure_preserves_stage_and_other_cleanup(self):
+        await self.place()
+        record = {"account": self.ctx["account"], "hub_key": panel.hub_key(),
+                  "resolve_project_id": self.project.unique_id, "project_id": "p", "gen_id": "g",
+                  "item_id": self.pool.current.clips[0].unique_id, "local_path": str(self.media / "clip.mp4")}
+        panel.save_record("import", record)
+        panel.save_record("import", {**record, "item_id": "other-old-import"})
+        remove_records = panel.remove_records
+        def remove(kind, rows):
+            if any(row["item_id"] == record["item_id"] for row in rows):
+                raise PermissionError("import cleanup denied")
+            return remove_records(kind, rows)
+        with patch.object(panel, "remove_records", side_effect=remove):
+            result = await route.post_stage(self.body(route.StageIn, seq=1, gen_ids=["g"]), self.request)
+        self.assertEqual(result["state"], "ok")
+        self.assertTrue(result["cleanup_failed"])
+        self.assertEqual(result["items"][0]["state"], "present")
+        self.assertEqual([row["item_id"] for row in panel.records("import", self.ctx)], [record["item_id"]])
+
+    async def test_review_cleanup_propagates_account_change_and_cancellation(self):
+        await self.place()
+        await self.deferred_adopt("g")
+        self.pool.current.clips.clear()
+        for error in (panel.AccountChanged("changed"), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__), patch.object(panel, "remove_records", side_effect=error):
+                with self.assertRaises(type(error)):
+                    await route._operate("adopt", self.body(route.AdoptIn, gen_id="g",
+                        resolve_project_id=self.project.unique_id, defer_save=True), self.request, self.ctx)
+                self.assertEqual(len(panel.records("adopt", self.ctx)), 1)
+                self.assertEqual(self.manager.saved, 0)
+
     async def test_review_deleted_failed_clip_reaches_save_through_inventory_and_adopt(self):
         second = await self.deferred_pair()
         self.assertEqual((await self.deferred_adopt("g"))["state"], "in_bin")

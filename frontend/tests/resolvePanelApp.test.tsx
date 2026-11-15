@@ -35,6 +35,7 @@ vi.mock("../src/components/LoginScreen", () => ({ LoginScreen: (props: unknown) 
 vi.mock("../src/lib/i18n", () => ({ t: (value: string) => value, useT: () => (value: string) => value }));
 import { ResolvePanelApp } from "../src/components/resolvePanel/ResolvePanelApp";
 import { useResolvePanel } from "../src/lib/useResolvePanel";
+import { panelFailure } from "../src/lib/resolvePanelApi";
 import { APP_EVENTS } from "../src/lib/appEvents";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 
@@ -66,6 +67,19 @@ it("최종 저장 뒤 장부 실패는 저장 성공과 기록 재시도를 구�
   expect(control.saveState.phase).toBe("blocked");
 });
 
+it.each(["cleanup_failed", "ledger_failed"])("저장 후 %s와 복구 기록 정리 실패를 구분해 재시도를 안내한다", async state => {
+  await render(false);
+  mocks.save.mockResolvedValue({ state, project_saved: true, cleanup_failed: true });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  expect(control.notice).toContain("프로젝트는 저장했습니다");
+  expect(control.notice).toContain("복구 기록 정리");
+  expect(control.notice).toContain("다시 저장");
+  expect(control.notice.includes("전환 기록")).toBe(state === "ledger_failed");
+  expect(control.notice).not.toContain("...");
+  expect(panelFailure("cleanup_failed")).toContain("복구 기록 정리");
+  expect(control.saveState.phase).toBe("blocked");
+});
+
 it("실패 클립 삭제 뒤 확인된 부재는 중복 복구 행까지 건너뛰어 최종 저장한다", async () => {
   await render(false);
   mocks.inventory.mockResolvedValue({ ...destination, more: false, items: ["g", "h1", "h2"].map(item_id => ({
@@ -77,7 +91,7 @@ it("실패 클립 삭제 뒤 확인된 부재는 중복 복구 행까지 건너�
   expect(mocks.save).not.toHaveBeenCalled();
   mocks.adopt.mockClear();
   mocks.adopt.mockImplementation(async body => body.gen_id === "g" ? { state: "in_bin" } :
-    { state: "not_seen", missing_record_ids: ["h1", "h2"] });
+    { state: "not_seen", missing_record_ids: ["h1", "h2"], cleanup_failed: true });
   await act(async () => control.saveProject("p", "S/C2")); await flush();
   expect(mocks.adopt).toHaveBeenCalledTimes(2);
   expect(mocks.save).toHaveBeenCalledTimes(1);

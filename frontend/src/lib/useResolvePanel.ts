@@ -263,12 +263,13 @@ export function useResolvePanel() {
     queue.current = queue.current.then(async () => { await work(); }).catch(error => setFailures(previous => [...new Set([...previous, errorText(error)])]));
     return queue.current;
   };
-  const check = (result: { state: string; details?: unknown }) => {
+  const check = (result: { state: string; details?: unknown; cleanup_failed?: boolean }) => {
     if (result.state === "account_changed") { clear(); throw new Error(t("계정 문맥을 확인 중입니다")); }
     if (result.state === "other_window") {
       if (context.current) { context.current = { ...context.current, writer: false }; setIdentity(context.current); }
       throw new Error(t("다른 MV 창이 리졸브를 맡고 있습니다"));
     }
+    if (result.cleanup_failed) setNotice(panelFailure("cleanup_failed"));
   };
   const itemName = (id: string) => {
     const gen = generations.current.find(item => item.id === id);
@@ -701,7 +702,10 @@ export function useResolvePanel() {
           setNotice(`${t("저장했습니다 — 이 저장 시점의 검사 통과")} · ${t("NAS로 옮김")} ${moved} · ${t("정리")} ${cleaned}`);
           setSaveState({ phase: "done", at: Date.now() });
         } else if (saved.project_saved) {
-          setNotice(t("프로젝트는 저장했습니다 — 전환 기록을 마치지 못했습니다. 다시 저장해 주세요"));
+          const reason = saved.state === "cleanup_failed" ? panelFailure("cleanup_failed")
+            : saved.cleanup_failed ? t("전환 기록과 복구 기록 정리를 마치지 못했습니다. 다시 저장해 주세요")
+              : t("전환 기록을 마치지 못했습니다. 다시 저장해 주세요");
+          setNotice(t("프로젝트는 저장했습니다") + " — " + reason);
           setSaveState({ phase: "blocked", bins: [] });
         } else if (saved.state === "not_clean" && saved.not_clean) {
           const left = saved.not_clean;

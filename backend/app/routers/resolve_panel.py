@@ -121,6 +121,17 @@ async def _project_read(request, project_id, visible_projects=None):
             raise HTTPException(403, "프로젝트 권한이 없습니다")
 
 
+async def _remove_recovery_records(kind, rows, ctx, request):
+    error = None
+    for row in rows:
+        panel.check_context(ctx, request)
+        try:
+            await asyncio.to_thread(panel.remove_records, kind, [row])
+        except OSError as exc:
+            error = error or str(exc) or type(exc).__name__
+    return error
+
+
 def _base_payload(operation, ctx):
     return {"operation": operation, "hub_key": panel.hub_key(), "media_root": str(config.MEDIA_DIR), "account": ctx["account"]}
 
@@ -410,7 +421,9 @@ async def _operate(operation, body, request, ctx):
                 completed = {row["gen_id"] for done in done_cuts.values() for row in done.get("items", []) if row["state"] in {"staged", "present"}}
                 old = [row for row in panel.records("import", ctx, result.get("resolve_project_id"))
                        if row["project_id"] == body.project_id and row["gen_id"] in completed]
-                await asyncio.to_thread(panel.remove_records, "import", old)
+                cleanup_error = await _remove_recovery_records("import", old, ctx, request)
+                if cleanup_error:
+                    result = {**result, "cleanup_failed": True, "cleanup_details": cleanup_error}
             if operation in {"stage", "unstage"}:
                 same_key = (*panel.context_key(ctx), body.window, body.project_id, body.folder_path)
                 panel._same_files.setdefault(same_key, set()).update(row["gen_id"] for row in result.get("items", []) if row["state"] == "same_file_exists")
@@ -419,10 +432,11 @@ async def _operate(operation, body, request, ctx):
                 completed = {row["gen_id"] for row in result.get("items", []) if row["state"] in {"staged", "present"}}
                 old = [row for row in panel.records("import", ctx, result.get("resolve_project_id"))
                        if row["project_id"] == body.project_id and row["gen_id"] in completed]
-                await asyncio.to_thread(panel.remove_records, "import", old)
+                cleanup_error = await _remove_recovery_records("import", old, ctx, request)
+                if cleanup_error:
+                    result = {**result, "cleanup_failed": True, "cleanup_details": cleanup_error}
             if operation == "adopt":
                 missing = set(result.get("missing_record_ids", []))
-                await asyncio.to_thread(panel.remove_records, "adopt", [row for row in recovery if row["item_id"] in missing])
                 replacements = result.get("adoption_candidates", [])
                 if replacements:
                     # 자식이 새로 찾은 소유 항목도 바꿔 끼우기 전에 먼저 디스크 증거를 남긴다.
@@ -437,24 +451,36 @@ async def _operate(operation, body, request, ctx):
                         payload["records"].append(record)
                     result = await asyncio.to_thread(runner.run_resolve_panel_isolated, payload, before_start=before_write)
                     panel.check_context(ctx, request)
-                    result["missing_record_ids"] = list(missing | set(result.get("missing_record_ids", [])))
-                    await asyncio.to_thread(panel.remove_records, "adopt", [row for row in recovery if row["item_id"] in result["missing_record_ids"]])
+                    missing |= set(result.get("missing_record_ids", []))
+                    result["missing_record_ids"] = list(missing)
             if operation == "adopt" and result.get("state") == "in_bin" and not defer_save:
                 result = await panel.record_adoption(ctx, body.project_id, body.gen_id, {**ready, "project_name": payload["project_name"]}, result, request=request)
-                if result.get("state") == "in_bin":
-                    await asyncio.to_thread(panel.remove_records, "adopt", recovery)
+            if operation == "adopt":
+                completed = result.get("state") == "in_bin" and not defer_save
+                cleanup_error = await _remove_recovery_records("adopt",
+                    [row for row in recovery if completed or row["item_id"] in missing], ctx, request)
+                if cleanup_error:
+                    result = {**result, "cleanup_failed": True, "cleanup_details": cleanup_error}
             if operation == "save" and result.get("state") == "ok":
                 saved = result.pop("saved_adoptions", {})
                 missing = set(result.pop("missing_record_ids", []))
+                ledger_error = cleanup_error = None
                 for row in recovery:
                     if row["item_id"] in saved:
                         recorded = await panel.record_adoption(ctx, row["project_id"], row["gen_id"], row["ready"],
                             {**result, "state": "in_bin", "bin_path": saved[row["item_id"]]}, request=request)
                         if recorded.get("state") != "in_bin":
-                            return {**result, "state": "ledger_failed", "project_saved": True, "details": recorded.get("details", "")}
+                            if ledger_error is None:
+                                ledger_error = recorded.get("details", "")
+                            continue
                     elif row["item_id"] not in missing:
                         continue
-                    await asyncio.to_thread(panel.remove_records, "adopt", [row])
+                    error = await _remove_recovery_records("adopt", [row], ctx, request)
+                    cleanup_error = cleanup_error or error
+                if ledger_error is not None or cleanup_error:
+                    return {**result, "state": "ledger_failed" if ledger_error is not None else "cleanup_failed",
+                            "project_saved": True, "cleanup_failed": bool(cleanup_error),
+                            "details": ledger_error if ledger_error is not None else cleanup_error}
             return result
 
     key = (operation, *panel.context_key(ctx), body.project_id, body.folder_path,
