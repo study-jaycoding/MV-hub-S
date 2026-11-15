@@ -183,6 +183,9 @@ export function CommentPanel<T extends CommentPanelItem>({
   const [overPreview] = useState(() => !embedded && !!document.querySelector(".media-preview"));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
+  // 답글·수정 칸을 연 회차 — 보내는 중 칸의 열쇠에 넣는다. 창 옮기기는 회차를 잇고, 닫았다 다시 연 칸은 같은 코멘트라도 새 회차다(독립 리뷰 M1 재확인).
+  //  이미 열린 칸의 단추를 다시 눌러서는 올리지 않는다 — 같은 입력칸의 열쇠만 바뀌어 창을 옮기면 잠금을 못 이어받았다(독립 리뷰 M2)
+  const [openRound, setOpenRound] = useState(0);
   const [fontPx, setFontPx] = useState<number>(loadFontPx);
   // 비공개로 쓰기 + 같이 보기(내 비공개를 목록에 섞어 표시) — 패널 공통 설정.
   const [writePrivate, setWritePrivate] = useState<boolean>(() => loadFlag(PRIV_KEY, false));
@@ -244,9 +247,12 @@ export function CommentPanel<T extends CommentPanelItem>({
   //  쓴 글이 사라졌다 — 다시 시도하려면 다시 써야 했다. 보내는 동안은 그 칸을 읽기 전용으로 두고 다시 보내지 않는다(전엔 바로 비우는 것이
   //  Enter 연타를 막았다). 성공하면 비우고 done(답글·수정 칸 닫기), 실패하면 글과 칸을 그대로 둔다.
   const sendingRef = useRef(new WeakSet<HTMLInputElement>());
-  // 보내는 중인 칸 이름(c·r·e) → 그 칸을 지금 그린 입력 요소. 떠 있는 창 ↔ 앱 안 옮기기는 입력 요소를 새로 만들고 글만 옮겨,
-  //  요소 단위 잠금만으로는 이어지지 않았다 — 옮긴 칸에서 다시 보내 같은 코멘트가 두 번 저장되고 보낸 글이 남았다(배포 전 리뷰 L4-02).
+  // 보내는 중인 칸(새 글 c · 답글 r:<코멘트> · 수정 e:<코멘트>) → 그 칸을 지금 그린 입력 요소. 떠 있는 창 ↔ 앱 안 옮기기는 입력 요소를
+  //  새로 만들고 글만 옮겨, 요소 단위 잠금만으로는 이어지지 않았다 — 옮긴 칸에서 다시 보내 같은 코멘트가 두 번 저장되고 보낸 글이 남았다
+  //  (배포 전 리뷰 L4-02). 답글·수정은 어느 코멘트의 칸인지까지 본다 — 이름만 보면 A 답글을 보내는 사이 닫고 연 B 답글 칸을 이어받은 칸으로
+  //  잘못 보아 A 가 끝날 때 B 초안을 지웠다(독립 리뷰 M1).
   const sendingFieldRef = useRef(new Map<string, HTMLInputElement>());
+  const fieldKey = (input: HTMLInputElement) => input.dataset.cmtKey || input.name;
   const targetRef = useRef(targetKey);
   targetRef.current = targetKey;
   // 보내지 못한 글이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻는다(Jay 결정 6A, 10-15) — 새 글·답글은 비어 있지 않으면, 고치는 글은
@@ -279,8 +285,8 @@ export function CommentPanel<T extends CommentPanelItem>({
     panel?.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]').forEach((input) => {
       const kept = draftRef.current[input.name];
       if (kept !== undefined) input.value = kept;
-      if (sendingFieldRef.current.has(input.name)) { // 보내는 중에 옮겼다 — 새 칸이 그 전송을 이어받는다(잠금·성공 뒤 비우기)
-        sendingFieldRef.current.set(input.name, input);
+      if (sendingFieldRef.current.has(fieldKey(input))) { // 보내는 중에 옮겼다 — 새 칸이 그 전송을 이어받는다(잠금·성공 뒤 비우기)
+        sendingFieldRef.current.set(fieldKey(input), input);
         sendingRef.current.add(input);
         input.readOnly = true;
       }
@@ -299,7 +305,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   }, [canPip, pipId]);
   const submitFrom = async (input: HTMLInputElement, send: (text: string) => Promise<boolean>, done?: () => void) => {
     const text = input.value;
-    const field = input.name;
+    const field = fieldKey(input);
     if (!text.trim() || sendingRef.current.has(input) || sendingFieldRef.current.has(field)) return;
     const sentFor = targetRef.current;
     sendingRef.current.add(input);
@@ -327,7 +333,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   // [편집] — 쓰던 글을 그림 창으로 넘긴다. 넘긴 뒤에만 비운다(두 번 보내기 방지 — 그림 창이 그 글의 주인이 된다)
   const handOff = (form: HTMLFormElement | null) => {
     const input = form?.elements.namedItem("c") as HTMLInputElement | null;
-    if (!input || !onEditDraw || sendingRef.current.has(input) || sendingFieldRef.current.has(input.name)) return;
+    if (!input || !onEditDraw || sendingRef.current.has(input) || sendingFieldRef.current.has(fieldKey(input))) return;
     if (!onEditDraw(input.value)) return;
     input.value = "";
     syncUnsent();
@@ -377,10 +383,10 @@ export function CommentPanel<T extends CommentPanelItem>({
           {replyToName && <span className="cmt-replyto">↳ {replyToName}</span>}
           <span className="cmt-when">{fmtWhen(c.created_at)}</span>
           <div className="cmt-acts">
-            <button onClick={() => { setReplyingId(c.id); setEditingId(null); }}>답글</button>
+            <button onClick={() => { if (replyingId !== c.id) setOpenRound((n) => n + 1); setReplyingId(c.id); setEditingId(null); }}>답글</button>
             {mine && !lockedByReply && (
               <>
-                <button onClick={() => { setEditingId(c.id); setReplyingId(null); }}>수정</button>
+                <button onClick={() => { if (editingId !== c.id) setOpenRound((n) => n + 1); setEditingId(c.id); setReplyingId(null); }}>수정</button>
                 {!lockedByPrivateChild && (
                   <button onClick={() => onDelete(c.id)}>삭제</button>
                 )}
@@ -411,6 +417,7 @@ export function CommentPanel<T extends CommentPanelItem>({
           >
             <input
               name="e"
+              data-cmt-key={`e:${c.id}:${openRound}`}
               defaultValue={c.text}
               data-original={c.text}
               autoFocus
@@ -433,6 +440,7 @@ export function CommentPanel<T extends CommentPanelItem>({
           >
             <input
               name="r"
+              data-cmt-key={`r:${c.id}:${openRound}`}
               placeholder="답글 작성 ⏎"
               autoFocus
               onKeyDown={(e) => { if (e.key === "Escape") setReplyingId(null); }}

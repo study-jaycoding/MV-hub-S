@@ -120,6 +120,74 @@ it("moving the window while a comment is sending keeps the send lock on the move
   expect(moved.readOnly).toBe(false);
 });
 
+it("a reply sent from another comment's box does not take over a different reply box opened meanwhile, even after moving the window (review M1)", async () => {
+  installPip();
+  let release!: (ok: boolean) => void;
+  const onSend = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+  act(() => root.render(<CommentPanel comments={[item("a", "첫 코멘트"), item("b", "둘째 코멘트")]} label="생성물" myId="me" panelRef={() => {}}
+    pos={{ x: 0, y: 0 }} onHeadMouseDown={() => {}} onClose={() => {}} onSend={onSend} onEdit={async () => true} onDelete={() => {}} pipId="gen" />));
+  const replyBtn = (doc: Document | HTMLElement, id: string) => [...doc.querySelectorAll<HTMLButtonElement>(`[data-comment-id="${id}"] .cmt-acts button`)].find((b) => b.textContent === "답글")!;
+  act(() => replyBtn(host, "a").click());
+  const replyA = host.querySelector<HTMLInputElement>('[data-comment-id="a"] input[name="r"]')!;
+  type(replyA, "A 에 답글");
+  await act(async () => { replyA.form!.requestSubmit(); });
+  expect(onSend).toHaveBeenCalledTimes(1);
+  act(() => replyBtn(host, "b").click()); // 보내는 사이 B 의 답글 칸을 연다(A 칸은 닫힌다)
+  type(host.querySelector<HTMLInputElement>('[data-comment-id="b"] input[name="r"]')!, "B 초안");
+  await act(async () => { popBtn(host)!.click(); });
+  const replyB = pipDoc.body.querySelector<HTMLInputElement>('[data-comment-id="b"] input[name="r"]')!;
+  expect(replyB.value).toBe("B 초안");
+  expect(replyB.readOnly).toBe(false); // A 의 전송을 이어받지 않는다
+  await act(async () => { release(true); });
+  expect(replyB.isConnected).toBe(true); // A 가 끝나도 B 칸은 닫히지 않고
+  expect(replyB.value).toBe("B 초안"); // B 초안도 남는다
+});
+
+it("closing and reopening the same comment's reply box while its reply is sending starts a new box that the old send does not clear (review M1 recheck)", async () => {
+  installPip();
+  let release!: (ok: boolean) => void;
+  const onSend = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+  act(() => root.render(<CommentPanel comments={[item("a", "첫 코멘트")]} label="생성물" myId="me" panelRef={() => {}}
+    pos={{ x: 0, y: 0 }} onHeadMouseDown={() => {}} onClose={() => {}} onSend={onSend} onEdit={async () => true} onDelete={() => {}} pipId="gen" />));
+  const replyBtn = () => [...host.querySelectorAll<HTMLButtonElement>('[data-comment-id="a"] .cmt-acts button')].find((b) => b.textContent === "답글")!;
+  act(() => replyBtn().click());
+  const first = host.querySelector<HTMLInputElement>('[data-comment-id="a"] input[name="r"]')!;
+  type(first, "보낸 답글");
+  await act(async () => { first.form!.requestSubmit(); });
+  act(() => { first.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); }); // 보내는 사이 칸을 닫고
+  expect(host.querySelector('[data-comment-id="a"] input[name="r"]')).toBeNull();
+  act(() => replyBtn().click()); // 같은 코멘트의 답글 칸을 다시 연다
+  type(host.querySelector<HTMLInputElement>('[data-comment-id="a"] input[name="r"]')!, "새 초안");
+  await act(async () => { popBtn(host)!.click(); });
+  const reopened = pipDoc.body.querySelector<HTMLInputElement>('[data-comment-id="a"] input[name="r"]')!;
+  expect(reopened.value).toBe("새 초안");
+  expect(reopened.readOnly).toBe(false);
+  await act(async () => { release(true); });
+  expect(reopened.isConnected).toBe(true);
+  expect(reopened.value).toBe("새 초안");
+});
+
+it("clicking the open reply box's button again keeps the same box, so moving the window still carries the send lock (review M2)", async () => {
+  installPip();
+  let release!: (ok: boolean) => void;
+  const onSend = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+  act(() => root.render(<CommentPanel comments={[item("a", "첫 코멘트")]} label="생성물" myId="me" panelRef={() => {}}
+    pos={{ x: 0, y: 0 }} onHeadMouseDown={() => {}} onClose={() => {}} onSend={onSend} onEdit={async () => true} onDelete={() => {}} pipId="gen" />));
+  const replyBtn = () => [...host.querySelectorAll<HTMLButtonElement>('[data-comment-id="a"] .cmt-acts button')].find((b) => b.textContent === "답글")!;
+  act(() => replyBtn().click());
+  const field = host.querySelector<HTMLInputElement>('[data-comment-id="a"] input[name="r"]')!;
+  type(field, "한 번만 답글");
+  await act(async () => { field.form!.requestSubmit(); });
+  act(() => replyBtn().click()); // 보내는 사이 열린 칸의 [답글]을 또 누른다
+  await act(async () => { popBtn(host)!.click(); });
+  const moved = pipDoc.body.querySelector<HTMLInputElement>('[data-comment-id="a"] input[name="r"]')!;
+  expect(moved.readOnly).toBe(true); // 같은 칸 — 잠금을 이어받는다
+  await act(async () => { moved.form!.requestSubmit(); });
+  expect(onSend).toHaveBeenCalledTimes(1);
+  await act(async () => { release(true); });
+  expect(pipDoc.body.querySelector('[data-comment-id="a"] input[name="r"]')).toBeNull(); // 성공하면 그 칸을 닫는다
+});
+
 it("closing the floating window itself brings the panel back into the app", async () => {
   installPip();
   show([item("a", "모자 색")]);
