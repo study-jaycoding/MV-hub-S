@@ -1214,10 +1214,14 @@ class App:
             when = backup.parse_time(task.get("next_run"))
             self.backup_task.configure(text=f"예약 작업(MVHub BackupCopy) · {'켜짐' if task.get('enabled') else '꺼짐'}"
                                             f" · 다음 {time.strftime('%m-%d %H:%M', time.localtime(when.timestamp())) if when else '모름'}"
-                                            " · 대상에는 최근 30개 보관")
+                                            " · 서버 최근 7·일별 14일·주별 8주 / 작업자 30 · 원본 추가 보호")
         else:
             self.backup_task.configure(text="")
         reasons = [r for r in (view.get("unsupported"), view.get("error")) if r] + backup.task_problems(task)
+        blocked = result.get("retention_blocked")
+        if blocked and target and result.get("target_id") in (None, setting.get("target_id")):
+            hint = " — 서버 시계·미래 이름 세트를 확인하세요" if blocked == "clock_skew" else ""
+            reasons.append(f"세트 정리 멈춤({blocked}){hint}")
         if locked:
             reasons.append("서버 기계 설정값 CONTENT_HUB_BACKUP_REPLICA_DIR 로 정해져 있어 위치는 보기만 합니다")
         self.backup_reasons.configure(text="\n".join(f"· {r}" for r in reasons))

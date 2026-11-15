@@ -19,7 +19,8 @@ r"""DB 백업 원격 복제 — 서버 PC 디스크 밖(NAS/예비 PC)으로 백
 
 복사 규칙: 기존 *.db와 작업자 content·trash 세트를 함께 복제한다. 단일 DB는 .part,
 세트는 숨은 임시 폴더에 쓴 뒤 검증하고 한 번에 교체한다. 시작 시 지난 실행 잔재를
-정리하고 복제본은 폴더당 최신 30개를 유지한다.
+정리한다. 서버 자동 백업은 최근 7세트 + 날마다 14일 + 주마다 8주,
+작업자 업로드는 폴더당 최신 30개를 유지한다. 원본에 남은 세트는 추가로 보호한다.
 복사 실패가 1건이라도 있으면 "복제 실패" 로그 + 종료코드 1 (성공 위장 금지).
 """
 from __future__ import annotations
@@ -52,6 +53,7 @@ TARGET_FILE = Path(__file__).resolve().parent / "backup_replica_target.txt"
 LOG = ROOT / "logs" / "backup_replicate.log"
 STATUS_FILE = DATA_DIR / "backup_replica_status.json"
 KEEP_PER_DIR = 30
+SERVER_RETENTION = {'recent': 7, 'daily_days': 14, 'weekly_weeks': 8}
 LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_KEEP = 3
 _SET_ID_RE = re.compile(r"[0-9a-f]{64}")
@@ -549,15 +551,27 @@ def cleanup_parts(target: Path) -> int:
     return removed
 
 
-def prune_dir(d: Path, protected: set[str]) -> int:
-    """복제본 폴더당 최신 KEEP_PER_DIR 개만 유지. 반환: 삭제 수.
+def prune_dir(d: Path, protected: set[str], *, blocked_reasons: set[str] | None = None) -> int:
+    """서버 세트는 시간축으로, 작업자 단일 DB는 최신 KEEP_PER_DIR 개로 보관. 반환: 삭제 파일 수.
 
     protected = 원본에 아직 존재하는 파일명 — 지우면 다음 실행이 도로 복사해
     '매일 지웠다 복사' 진동이 생기므로(적대 리뷰 P2) 개수와 무관하게 남긴다."""
     stamped: list[tuple[float, Path]] = []
     try:
+        # 대표 DB가 없어도 세트 표식이 남으면 부속 파일을 단독 파일로 지우지 않는다.
+        set_members: set[Path] = set()
+        for prefix, suffix in (
+            ('content_hub_', '.db'), ('content_hub_', '.manifest.json'),
+            ('content_hub_', '.keep.json'), ('agent_chat_', '.db'), ('asset_mounts_', '.json'),
+        ):
+            for anchor in d.glob(prefix + '*' + suffix):
+                stamp = anchor.name[len(prefix):-len(suffix)]
+                content = d / f'content_hub_{stamp}.db'
+                if _OWNED_SINGLE_DB_RE.fullmatch(content.name):
+                    set_members.update(_local_members(content))
         # 우리 이름 규칙의 DB 만 세고 지운다 — 같은 폴더의 남의 *.db 는 건드리지 않는다(2026-10-02).
-        candidates = [path for path in d.glob("*.db") if _OWNED_SINGLE_DB_RE.match(path.name)]
+        candidates = [path for path in d.glob("*.db") if _OWNED_SINGLE_DB_RE.match(path.name)
+                      and path not in set_members]
     except OSError:
         return 0
     for path in candidates:
@@ -566,9 +580,7 @@ def prune_dir(d: Path, protected: set[str]) -> int:
         except OSError:
             continue
     files = [path for _, path in sorted(stamped, key=lambda item: item[0], reverse=True)]
-    retained = {path.name for path in files[:KEEP_PER_DIR]} | protected
     removed = 0
-    visited: set[Path] = set()
     # Only our durable deletion intent permits dismantling an incomplete set.
     for marker in d.glob('content_hub_*.keep.json'):
         content = marker.with_name(marker.name[:-len('.keep.json')] + '.db')
@@ -578,40 +590,47 @@ def prune_dir(d: Path, protected: set[str]) -> int:
         if state != 'ok' or not keep['deleting']:
             continue
         members = _local_members(content)
-        visited.update(members)
         if any(path.name in protected for path in members):
             continue
         before = sum(path.exists() for path in members)
         local_backup._finish_delete(d, local_backup._stamp_of(content))
         removed += before - sum(path.exists() for path in members)
-    for old in files[KEEP_PER_DIR:]:
-        if old in visited or old.name in protected:
+    sets = []
+    # 아래 read_local 전체 검증을 한 번만 수행한다(v3는 _scan_sets에서도 같은 검증을 한다).
+    for seq, item in enumerate(sorted(local_backup._scan_sets(d, verify=False), key=lambda s: s.stamp), 1):
+        if (not _OWNED_SINGLE_DB_RE.fullmatch(item.content.name)
+                or item.keep_state != 'missing'):
+            continue  # Never overwrite unknown metadata.
+        try:
+            manifest = backup_manifest.read_local(item.content, allow_v3=True)
+            members = backup_manifest.local_paths(item.content)
+            if manifest is None and not item.content.is_file():
+                continue
+            if manifest is None and any(members[role].exists() for role in ('agent_chat', 'asset_mounts')):
+                continue  # These roles require a manifest; they cannot be legacy sets.
+            # NAS에는 촬영 번호를 복제하지 않는다. 도입 등록과 같은 이름순 번호를 메모리에서만 쓴다.
+            item.keep = local_backup._keep_record(
+                seq, local_backup._legacy_captured_at(item.content), 'legacy',
+                manifest['set_id'] if manifest else None, manifest=manifest is not None,
+            )
+            item.keep_state = 'ok'
+            sets.append(item)
+        except (OSError, ValueError, sqlite3.Error):
             continue
-        content = old
-        for prefix in ('content_trash_', 'manage_hub_'):
-            if old.name.startswith(prefix):
-                content = old.with_name('content_hub_' + old.name[len(prefix):])
-        metadata = backup_manifest.local_path(content)
-        if content.name.startswith('content_hub_') and metadata.is_file():
-            members = [path for path in _local_members(content) if path.exists()]
-            visited.update(members)
-            try:
-                manifest = backup_manifest.read_local(content, allow_v3=True)
-            except (OSError, ValueError, sqlite3.Error):
-                continue  # Never dismantle an incomplete or damaged set.
-            if any(path.name in retained for path in members):
-                continue
-            if local_backup._read_keep(content)[1] != 'missing':
-                continue  # Do not overwrite unknown retention metadata.
-            try:
-                local_backup._write_keep(content, {
-                    **local_backup._keep_record(1, manifest['captured_at'], 'auto', manifest['set_id']),
-                    'deleting': True,
-                })
-            except OSError:
-                continue
-            local_backup._finish_delete(d, local_backup._stamp_of(content))
-            removed += sum(not path.exists() for path in members)
+    plan = local_backup._retention_plan(d, SERVER_RETENTION, time.time(), sets=sets)
+    if plan.blocked:
+        log(f"NAS 세트 정리 보류 — {plan.blocked}")
+        if blocked_reasons is not None:
+            blocked_reasons.add(plan.blocked)
+    for item in plan.delete:
+        members = _local_members(item.content)
+        if any(path.name in protected for path in members):
+            continue
+        members = [path for path in members if path.exists()]
+        local_backup._delete_set(item)
+        removed += sum(not path.exists() for path in members)
+    for old in files[KEEP_PER_DIR:]:
+        if old.name in protected:
             continue
         try:
             old.unlink()
@@ -771,7 +790,9 @@ def main() -> int:
     if not seen_any_source:
         log("원본 백업 폴더 없음 — 건너뜀")
         return 0 if _status("no_source", error_code="source_not_ready") else 1
-    removed = sum(prune_dir(d, protected_by_dir.get(d, set())) for d in dirs if d.is_dir())
+    blocked_reasons: set[str] = set()
+    removed = sum(prune_dir(d, protected_by_dir.get(d, set()), blocked_reasons=blocked_reasons)
+                  for d in dirs if d.is_dir())
     removed += sum(
         prune_set_root(root, protected_sets.get(root, set()))
         for root in set_roots
@@ -789,6 +810,7 @@ def main() -> int:
             failed=failed,
             removed=removed,
             stale_parts=stale,
+            retention_blocked=','.join(sorted(blocked_reasons)) or None,
         )
         return 1
     log("복제 완료 " + summary)
@@ -799,6 +821,7 @@ def main() -> int:
         failed=0,
         removed=removed,
         stale_parts=stale,
+        retention_blocked=','.join(sorted(blocked_reasons)) or None,
     )
     return 0 if status_saved else 1
 

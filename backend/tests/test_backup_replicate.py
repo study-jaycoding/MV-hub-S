@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 from contextlib import closing
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 
 def _module():
@@ -38,6 +39,133 @@ def _local_set(tmp_path, monkeypatch, stamp='20261018_010101_000001'):
             conn.execute('CREATE TABLE trashed(id TEXT PRIMARY KEY)')
     monkeypatch.setattr(backup, 'MANAGE_DB_PATH', tmp_path / 'no-manage.db')
     return backup._backup_now_for_scope(source, tmp_path / 'backups', stamp)
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_c3_nas_keeps_calendar_sets_after_source_rotation(tmp_path, monkeypatch, legacy):
+    from app.services import backup, backup_manifest
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'log', lambda _: None)
+    now = datetime(2026, 11, 15, 3, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(replicate.time, 'time', lambda: now)
+    template = _local_set(tmp_path, monkeypatch)
+    manifest = backup_manifest.read_local(template)
+    payloads = {role: path.read_bytes() for role, path in backup_manifest.local_paths(template, manifest).items()}
+    dest = tmp_path / 'nas'
+    dest.mkdir()
+    paths = []
+    ages = [day * 86400 for day in range(65, 0, -1)] + [hour * 600 for hour in range(10, 0, -1)]
+    for age in ages:
+        ts = now - age
+        stamp = datetime.fromtimestamp(ts, timezone.utc).strftime('%Y%m%d_%H%M%S')
+        content = dest / f'content_hub_{stamp}.db'
+        members = backup_manifest.local_paths(content, manifest)
+        for role, path in members.items():
+            path.write_bytes(payloads[role])
+            # Copy/restore time is not capture time.
+            os.utime(path, (now, now))
+        if not legacy:
+            value = backup_manifest.seal({**manifest, 'captured_at': datetime.fromtimestamp(ts, timezone.utc).isoformat()})
+            backup_manifest.local_path(content).write_text(backup_manifest.canonical(value), encoding='utf-8')
+        paths.append((content, ts))
+    expected = {p.name for p, _ in paths[-7:]}
+    seen_days, seen_weeks = set(), set()
+    today = datetime.fromtimestamp(now, backup.KEEP_TZ).date()
+    monday = today - timedelta(days=today.weekday())
+    for path, ts in reversed(paths):
+        day = datetime.fromtimestamp(ts, backup.KEEP_TZ).date()
+        week = day - timedelta(days=day.weekday())
+        if (0 <= (today - day).days < 14 and day not in seen_days
+                or 0 <= (monday - week).days < 56 and week not in seen_weeks):
+            expected.add(path.name)
+        seen_days.add(day)
+        seen_weeks.add(week)
+    # Even a single source member protects the entire oldest set, outside all windows.
+    protected = paths[0][0].name.replace('content_hub_', 'content_trash_')
+    expected.add(paths[0][0].name)
+    orphan = dest / 'content_trash_20260101_010101.db'
+    orphan.write_bytes(b'orphan')
+    removed = replicate.prune_dir(dest, {protected})
+    assert {p.name for p in dest.glob('content_hub_*.db')} == expected
+    assert removed == 2 * (len(paths) - len(expected))
+    assert orphan.exists()
+    for content, _ in paths:
+        assert content.with_name(content.name.replace('content_hub_', 'content_trash_')).exists() == (content.name in expected)
+        if not legacy:
+            assert backup_manifest.local_path(content).exists() == (content.name in expected)
+
+
+def test_c3_clock_skew_logs_and_records_retention_pause(tmp_path, monkeypatch):
+    replicate = _module()
+    source = tmp_path / 'source'
+    source.mkdir()
+    future = source / 'content_hub_20990101_010101.db'
+    _sqlite(future, 'future')
+    target = tmp_path / 'replica'
+    dest = target / 'backups'
+    dest.mkdir(parents=True)
+    for day in range(1, 9):
+        _sqlite(dest / f'content_hub_202001{day:02d}_010101.db', 'old')
+    monkeypatch.setattr(replicate, 'ROOT', tmp_path / 'code')
+    monkeypatch.setattr(replicate, '_sources', lambda: [('backups', source)])
+    monkeypatch.setattr(replicate, 'replica_root', lambda: target)
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'LOG', tmp_path / 'replica.log')
+    monkeypatch.setattr(replicate.time, 'time', lambda: datetime(2026, 11, 15, tzinfo=timezone.utc).timestamp())
+
+    assert replicate.main() == 0
+    assert len(list(dest.glob('content_hub_*.db'))) == 9
+    status = json.loads(replicate.STATUS_FILE.read_text('utf-8'))
+    assert status['state'] == 'success'
+    assert status['retention_blocked'] == 'clock_skew'
+    assert 'clock_skew' in replicate.LOG.read_text('utf-8')
+
+    # The next run recomputes the warning and resumes retention when the clock catches up.
+    monkeypatch.setattr(replicate.time, 'time', lambda: datetime(2100, 1, 1, tzinfo=timezone.utc).timestamp())
+    assert replicate.main() == 0
+    assert json.loads(replicate.STATUS_FILE.read_text('utf-8'))['retention_blocked'] is None
+    assert len(list(dest.glob('content_hub_*.db'))) == 7
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows server console')
+@pytest.mark.parametrize('state,reason,old_target,visible', [
+    ('success', 'clock_skew', False, True),
+    ('failed', 'clock_skew', False, True),
+    ('success', None, False, False),
+    ('success', 'clock_skew', True, False),
+    ('success', 'policy_invalid', False, True),
+])
+def test_c3_console_shows_current_retention_pause(tmp_path, monkeypatch, state, reason, old_target, visible):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / 'tools'))
+    from server_console import backup_helper, ui
+    replicate = _module()
+    monkeypatch.setattr(replicate, 'STATUS_FILE', tmp_path / 'status.json')
+    monkeypatch.setattr(replicate, 'configured_target', lambda: (r'\\NAS\backup', 'file'))
+    current_id = replicate.target_id(r'\\NAS\backup')
+    assert replicate._write_status(state, target_id='old' if old_target else current_id,
+                                   retention_blocked=reason)
+    before = replicate.STATUS_FILE.read_bytes()
+    setting = backup_helper.status(replicate)
+    app = SimpleNamespace(status=None, backup_view={'setting': setting}, backup_shown='',
+                          backup_busy=False, drill_busy=False, _backup_card=Mock(), _fill_sets=Mock())
+    for name in ('backup_entry', 'backup_task', 'backup_reasons', 'backup_sets', 'drill_note',
+                 'backup_save', 'backup_run', 'drill_button'):
+        setattr(app, name, Mock())
+    ui.App._show_backup(app)
+    text = app.backup_reasons.configure.call_args.kwargs['text']
+    assert ('세트 정리 멈춤' in text) == visible
+    if visible:
+        assert reason in text
+        if reason == 'clock_skew':
+            assert '서버 시계' in text and '미래 이름' in text
+    nas = next(call.args for call in app._backup_card.call_args_list if call.args[0] == 'nas')
+    assert nas[1] == ('아직 안 함' if old_target else '정상' if state == 'success' else '실패')
+    assert replicate.STATUS_FILE.read_bytes() == before
+    setting['result']['retention_blocked'] = None
+    ui.App._show_backup(app)
+    assert '세트 정리 멈춤' not in app.backup_reasons.configure.call_args.kwargs['text']
 
 
 def test_local_set_replica_preserves_and_verifies_metadata(tmp_path, monkeypatch):
@@ -74,17 +202,16 @@ def test_local_set_prune_keeps_or_removes_all_members(tmp_path, monkeypatch):
     from app.services import backup_manifest
     replicate = _module()
     monkeypatch.setattr(replicate, 'log', lambda _: None)
-    monkeypatch.setattr(replicate, 'KEEP_PER_DIR', 1)
+    monkeypatch.setattr(replicate, 'SERVER_RETENTION', {'recent': 1, 'daily_days': 0, 'weekly_weeks': 0})
     content = _local_set(tmp_path, monkeypatch)
     dest = tmp_path / 'replica' / content.name
     assert replicate.copy_local_set(content, dest) == 'copied'
     trash = dest.with_name(dest.name.replace('content_hub_', 'content_trash_'))
-    # One member remains in the existing newest-N files: retain its entire set.
+    # Retention counts complete sets, regardless of the number of members.
     assert replicate.prune_dir(dest.parent, set()) == 0
     assert all(path.exists() for path in (dest, trash, backup_manifest.local_path(dest)))
-    fresh = dest.parent / '20261018_020202_deadbeef.db'
-    _sqlite(fresh, 'new')
-    os.utime(fresh, (dest.stat().st_mtime + 10, dest.stat().st_mtime + 10))
+    fresh = _local_set(tmp_path, monkeypatch, '20261018_020202_000001')
+    assert replicate.copy_local_set(fresh, dest.parent / fresh.name) == 'copied'
     assert replicate.prune_dir(dest.parent, set()) == 2
     assert not any(path.exists() for path in (dest, trash, backup_manifest.local_path(dest)))
 
@@ -98,6 +225,51 @@ def test_legacy_single_db_rotation_does_not_claim_foreign_metadata(tmp_path, mon
     unrelated.write_text('{}', encoding='utf-8')
     assert replicate.prune_dir(tmp_path, set()) == 1
     assert unrelated.exists()
+
+
+@pytest.mark.parametrize('prefix', ['content_trash_', 'manage_hub_'])
+def test_c3_orphan_roles_keep_latest_30_and_protect_source(tmp_path, prefix):
+    replicate = _module()
+    files = []
+    for index in range(35):
+        path = tmp_path / f'{prefix}20261001_010101_{index:06d}.db'
+        path.write_bytes(b'legacy')
+        os.utime(path, (1000 + index, 1000 + index))
+        files.append(path)
+    assert replicate.prune_dir(tmp_path, {files[0].name}) == 4
+    assert set(tmp_path.glob('*.db')) == {files[0], *files[-30:]}
+
+
+def test_c3_set_members_bypass_single_file_limit(tmp_path, monkeypatch):
+    from app.services import backup_manifest
+    replicate = _module()
+    content = _local_set(tmp_path, monkeypatch)
+    dest = tmp_path / 'replica' / content.name
+    assert replicate.copy_local_set(content, dest) == 'copied'
+    # A content-only legacy backup is also a set under backup._set_complete.
+    legacy = dest.parent / 'content_hub_20200101_010101.db'
+    _sqlite(legacy, 'legacy')
+    before = {p.name: p.read_bytes() for p in dest.parent.iterdir()}
+    monkeypatch.setattr(replicate, 'KEEP_PER_DIR', 0)
+    assert replicate.prune_dir(dest.parent, set()) == 0
+    assert {p.name: p.read_bytes() for p in dest.parent.iterdir()} == before
+    assert backup_manifest.read_local(dest) is not None
+
+
+@pytest.mark.parametrize('anchor', [
+    'content_hub_20200101_010101.manifest.json',
+    'content_hub_20200101_010101.keep.json',
+    'agent_chat_20200101_010101.db',
+    'asset_mounts_20200101_010101.json',
+])
+def test_c3_incomplete_set_members_bypass_single_file_limit(tmp_path, monkeypatch, anchor):
+    replicate = _module()
+    for name in (anchor, 'content_trash_20200101_010101.db', 'manage_hub_20200101_010101.db'):
+        (tmp_path / name).write_bytes(b'incomplete')
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    monkeypatch.setattr(replicate, 'KEEP_PER_DIR', 0)
+    assert replicate.prune_dir(tmp_path, set()) == 0
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
 
 
 def test_main_copies_local_manifest_in_same_unit(tmp_path, monkeypatch):

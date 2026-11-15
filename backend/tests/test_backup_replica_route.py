@@ -81,7 +81,7 @@ def test_target_overlap_with_sources(tmp_path, monkeypatch):
 
 
 def test_prune_only_deletes_our_names(tmp_path, monkeypatch):
-    monkeypatch.setattr(tool, "KEEP_PER_DIR", 1)
+    monkeypatch.setattr(tool, "SERVER_RETENTION", {'recent': 1, 'daily_days': 0, 'weekly_weeks': 0})
     d = tmp_path / "backups"
     d.mkdir()
     for i in range(3):

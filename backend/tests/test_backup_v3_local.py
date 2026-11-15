@@ -252,10 +252,37 @@ def test_consumers_replica_main_and_pruning_keep_whole_sets(local, monkeypatch):
     original = backup_manifest.read_local(content, allow_v3=True)
     assert backup_manifest.read_local(dest, allow_v3=True) == original
     assert not backup._keep_path(dest).exists()
-    monkeypatch.setattr(module, 'KEEP_PER_DIR', 0)
+    monkeypatch.setattr(backup, '_select_keep', lambda *_: set())
     assert module.prune_dir(dest.parent, {content.name}) == 0
     assert module.prune_dir(dest.parent, set()) == 3
     assert not any(p.exists() for p in backup_manifest.local_paths(dest).values())
+
+
+@pytest.mark.parametrize('damage', [None, 'hash', 'missing'])
+def test_c3_nas_prune_validates_v3_once_and_preserves_damage(local, monkeypatch, damage):
+    extras(local)
+    content = capture(local)
+    module = replica_module(local, monkeypatch)
+    dest = local[2] / 'replica' / content.name
+    assert module.copy_local_set(content, dest) == 'copied'
+    mounts = backup_manifest.local_paths(dest)['asset_mounts']
+    if damage == 'hash':
+        mounts.write_bytes(mounts.read_bytes().replace(b'old', b'new'))
+    elif damage == 'missing':
+        mounts.unlink()
+    before = {p.name: p.read_bytes() for p in dest.parent.iterdir()}
+    read = Mock(wraps=backup_manifest.read_local)
+    monkeypatch.setattr(backup_manifest, 'read_local', read)
+    monkeypatch.setattr(backup, '_select_keep', lambda *_: set())
+
+    removed = module.prune_dir(dest.parent, set())
+    assert read.call_count == 1
+    if damage:
+        assert removed == 0
+        assert {p.name: p.read_bytes() for p in dest.parent.iterdir()} == before
+    else:
+        assert removed == 3
+        assert not list(dest.parent.iterdir())
 
 
 def test_consumers_restore_original_bytes_and_reject_absent_residue(local):
@@ -480,7 +507,7 @@ def test_consumers_replica_incomplete_source_protects_existing_copy(local, monke
     dest = local[2] / 'replica' / 'backups' / content.name
     before = {p.name: p.read_bytes() for p in dest.parent.iterdir()}
     content.unlink()
-    monkeypatch.setattr(module, 'KEEP_PER_DIR', 0)
+    monkeypatch.setattr(backup, '_select_keep', lambda *_: set())
     assert module.main() == 0
     assert {p.name: p.read_bytes() for p in dest.parent.iterdir()} == before
 
@@ -534,7 +561,7 @@ def test_consumers_replica_resumes_own_interrupted_deletion(local, monkeypatch, 
             raise PermissionError('synthetic busy member')
         return original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(module, 'KEEP_PER_DIR', 0)
+    monkeypatch.setattr(backup, '_select_keep', lambda *_: set())
     with monkeypatch.context() as patch:
         patch.setattr(Path, 'unlink', unlink)
         assert module.prune_dir(dest.parent, set()) == 1
@@ -555,7 +582,7 @@ def test_consumers_replica_preserves_unmarked_incomplete_destination(local, monk
     dest = local[2] / 'replica' / 'backups' / content.name
     dest.unlink()
     before = {p.name: p.read_bytes() for p in dest.parent.iterdir()}
-    monkeypatch.setattr(module, 'KEEP_PER_DIR', 0)
+    monkeypatch.setattr(backup, '_select_keep', lambda *_: set())
     assert module.prune_dir(dest.parent, set()) == 0
     assert {p.name: p.read_bytes() for p in dest.parent.iterdir()} == before
 

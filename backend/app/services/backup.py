@@ -60,12 +60,12 @@ BACKUP_DIR = Path(
 BACKUP_INTERVAL = float(os.environ.get("CONTENT_HUB_BACKUP_INTERVAL", str(24 * 3600)))
 
 # 보관 기본값 — 최근 N세트(촬영 순서) + 날마다 1세트 D일 + 주마다 1세트 W주. 사용자가 고른 값은
-# 백업 폴더의 backup_policy.json 이 이긴다. 로컬 허브 = 8·14·8(Jay J1, 11-12), AUTH 켜진 프로세스
-# (공유 서버·격리 dev)는 지금과 같은 최근 7개만 — 서버 보관은 서버·NAS 정책과 함께 따로 정한다.
+# 로컬 허브만 backup_policy.json 이 이긴다. 로컬 허브 = 8·14·8(Jay J1, 11-12),
+# AUTH 켜진 프로세스(공유 서버·격리 dev) = 7·14·8(C3, 11-15), 정책 파일은 읽지 않는다.
 # 최소 1: 0 이하를 허용하면 방금 만든 백업까지 회전이 지워 백업 자체가 무의미해진다.
 BACKUP_KEEP = max(1, int(os.environ.get("CONTENT_HUB_BACKUP_KEEP", "7" if AUTH_ENABLED else "8")))
-BACKUP_KEEP_DAILY = 0 if AUTH_ENABLED else 14
-BACKUP_KEEP_WEEKLY = 0 if AUTH_ENABLED else 8
+BACKUP_KEEP_DAILY = 14
+BACKUP_KEEP_WEEKLY = 8
 
 # 시작 시 중복 백업 방지: 가장 최근 백업이 이 시간(초)보다 새것이면 시작 백업 생략.
 # (서버 재기동·개발 리스타트가 잦아도 백업이 난립하지 않게.)

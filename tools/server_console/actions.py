@@ -239,7 +239,8 @@ def plan_backup_run(inst: Installation, view: dict, unresolved_jobs: list[str] |
     if reasons:
         return Refusal(tuple(reasons))
     summary = (f"지금 위치({setting.get('target')})로 백업을 한 번 복사합니다(예약 작업 SYSTEM — 창을 닫아도 계속).",
-               "이번 실행의 결과만 확인해 보여 줍니다. 대상의 오래된 백업은 최근 30개만 남기고 정리됩니다.")
+               "이번 실행의 결과만 확인해 보여 줍니다. 서버 백업은 최근 7세트·일별 14일·주별 8주, "
+               "작업자 백업은 최근 30개를 남깁니다. 원본에 남은 세트는 추가로 보호합니다.")
     return Plan("backup-run", str(inst.root), "server", "", summary, params={"target_id": setting["target_id"]})
 
 

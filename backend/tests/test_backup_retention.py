@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +62,60 @@ def mark_registered(d: Path, last_seq: int = 0) -> None:
 
 def stamps(d: Path) -> list[str]:
     return sorted(p.name[len("content_hub_"):-3] for p in d.glob("content_hub_*.db"))
+
+
+def load_backup_mode(monkeypatch, auth):
+    from app import config
+    monkeypatch.setattr(config, "AUTH_ENABLED", auth)
+    monkeypatch.delenv("CONTENT_HUB_BACKUP_KEEP", raising=False)
+    name = "app.services._c3_backup_test"
+    spec = importlib.util.spec_from_file_location(name, backup.__file__)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("auth,recent", [(True, 7), (False, 8)])
+def test_c3_default_retention_by_auth_mode(monkeypatch, auth, recent):
+    module = load_backup_mode(monkeypatch, auth)
+    policy = module.default_policy()
+    assert (policy["recent"], policy["daily_days"], policy["weekly_weeks"]) == (recent, 14, 8)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_c3_auth_rotation_keeps_exact_calendar_union_and_ignores_policy(tmp_path, monkeypatch, legacy):
+    module = load_backup_mode(monkeypatch, True)
+    paths = []
+    expected = set()
+    seen_days, seen_weeks = set(), set()
+    today = datetime.fromtimestamp(NOW, backup.KEEP_TZ).date()
+    monday = today - timedelta(days=today.weekday())
+    # 60 days × 4 captures; the newest seven span two dates.
+    for seq, age in enumerate(range(240, 0, -1), 1):
+        ts = NOW - age * 6 * 3600
+        path = make_set(tmp_path, ts, None if legacy else seq, manifest=not legacy)
+        paths.append((path, ts))
+    if not legacy:
+        mark_registered(tmp_path, len(paths))
+    for path, ts in reversed(paths):
+        day = datetime.fromtimestamp(ts, backup.KEEP_TZ).date()
+        week = day - timedelta(days=day.weekday())
+        if (0 <= (today - day).days < 14 and day not in seen_days
+                or 0 <= (monday - week).days < 56 and week not in seen_weeks):
+            expected.add(path.name)
+        seen_days.add(day)
+        seen_weeks.add(week)
+    expected.update(path.name for path, _ in paths[-7:])
+    broken = make_set(tmp_path, NOW - 100 * 86400, None, n=1, member_size_ok=False)
+    (tmp_path / "backup_policy.json").write_text("{broken", encoding="utf-8")
+    result = module._rotate(tmp_path, now=NOW)
+    assert result["blocked"] is None
+    assert {p.name for p in tmp_path.glob("content_hub_*.db")} == expected | {broken.name}
+    assert result["deleted"] == len(paths) - len(expected)
+    if legacy:
+        assert all(module._read_keep(path)[0]["reason"] == "legacy"
+                   for path, _ in paths if path.exists())
 
 
 # ── retention ────────────────────────────────────────────────────────────────
