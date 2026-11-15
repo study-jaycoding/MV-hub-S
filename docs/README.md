@@ -14,12 +14,11 @@ updated: 2026-10-28
 CLI 1.2.3·가격/장부·미디어·업데이트 복구 개선은 [10-27 예약 작업 기록](status/hf_improvements_2026-10-27.md)에서 실제 구현·검증·미완료 상태를 확인한다.
 
 Asset ID·로컬 우선·프로젝트 보관/자동 서버 전환: [설계·구현·검증 인계](ASSET_LOCAL_SYNC.md) §12.
-검증 후보29a9의 원본 dev2 반영·재시작은 완료했다. 실제 범위·미해결은 [구조 개편 정본](status/서비스구조_근본진단_2026-10-18.md) §20.79를 따른다. 운영 배포·전체 완료는 남아 있다.
+검증 후보29a9의 원본 dev2 반영·재시작은 당시 완료했다. 이 내용은 과거 이력이며 실제 범위·미해결은 [구조 개편 정본](status/서비스구조_근본진단_2026-10-18.md) §20.79를 따른다. 운영 배포·전체 완료는 남아 있다.
 
-MCP 연동은 `codex/mvhub-mcp` 브랜치의 별도 worktree에서 관리한다. 설계·사용 안내는 그 브랜치의 `docs/MCP_INTEGRATION.md`를 참조한다. dev에는 로컬 AI 연결(MCP 브리지) 구현을 포함하지 않는다. 기존 Higgsfield 수집 기능은 유지한다.
+개발 운영 확장 `dev-centered-2026-10-27-r1`에 따라 기본 개발 위치는 `D:\ClaudeCode\MV-hub-S-dev`의 `dev`다. 상시 통합 작업실 병합 의무는 종료했으며 보관·dev 정렬·실제 훅 등록 결과는 [작업 기록](status/dev_workroom_cleanup_2026-10-27.md)을 따른다.
 
-이 통합 시험실에는 선택한 MCP 사본도 포함한다. 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md),
-현재 시험 범위와 실제 생성 제한은 [WORKROOMS](WORKROOMS.md)를 함께 따른다.
+MCP 어댑터 구현은 현재 main의 `tools/mcp_adapter`에 포함되어 있다. 실제 연결·설정·실행 여부는 따로 확인하며 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md), 실사용 데이터 보호·시험 범위는 [WORKROOMS](WORKROOMS.md)를 함께 따른다.
 
 Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·공유 툴.
 현재 작업 상태는 [CURRENT_STATUS.md](CURRENT_STATUS.md)에서 먼저 확인한다.
@@ -51,7 +50,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 공통 운영 연동·디자인/설명 역할·동적 모델·설계 합의·묶음 리뷰·검증 기준 | [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) |
 | 기능 묶음 PR·수정 영향 재검토·승인 기록 | [PR_GATE.md](PR_GATE.md) |
 | 이 작업실 PR 지침 적용·보존 검증 기록 | [PR 운영 적용 기록](status/PR_운영_적용_2026-10-21.md) |
-| 기능 작업실·통합 시험실·동시 개발과 실행 분리 | [WORKROOMS.md](WORKROOMS.md) |
+| dev 중심 개발·필요한 임시 작업실·동시 작업과 실행 분리 | [WORKROOMS.md](WORKROOMS.md) |
 | 기능 묶음 PR·수정 영향 재검토·승인 기록 | [PR_GATE.md](PR_GATE.md) |
 | 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
 | 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
@@ -185,7 +184,7 @@ YAML의 `status`는 위 표의 **문서 위상**이다. 본문 인계 블록의 
 | 상태 | 문서 |
 |---|---|
 | **문서 색인·갱신 규칙** | [README](README.md)(이 문서) |
-| **에이전트 운영 기준** | [AGENT_WORKFLOW](AGENT_WORKFLOW.md), [WORKROOMS](WORKROOMS.md)(작업실 선택·통합 시험실) |
+| **에이전트 운영 기준** | [AGENT_WORKFLOW](AGENT_WORKFLOW.md), [WORKROOMS](WORKROOMS.md)(dev 중심 개발·임시 검증 작업실) |
 | **코드 탐색 지도** | [CODE_MAP](CODE_MAP.md) |
 | **자동 생성 목록** | [엔드포인트](inventory/endpoints.md), [환경변수](inventory/env_vars.md), [DB 표](inventory/db_tables.md), [백그라운드 작업](inventory/background_jobs.md) |
 | **현황·작업 기준** | [CURRENT_STATUS](CURRENT_STATUS.md), [RISK_REDUCTION_PLAN_2026-08-15](RISK_REDUCTION_PLAN_2026-08-15.md) |
