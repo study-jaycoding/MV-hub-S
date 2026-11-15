@@ -653,6 +653,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 |---|---|---|
 | `scene/SceneBoard.tsx` | 카드·엣지·그룹의 화면 투영, 드래그/마퀴/가위/줌·실측, 선택·실행 훅 배선 | 문서 변환·저장 시점·Undo·gesture 원본은 `useCanvasSession.ts` 내부 소유. UI가 전체 문서 사본이나 저장 모드를 명령으로 넘기지 않음 |
 | `scene/SceneRecoveryPanel.tsx` | 카드 생성물 복구 후보·페이지·선택 표시 | 조회·연결은 `useSceneCardRecovery.ts` |
+| `scene/CanvasRestoreNotice.tsx` | 첫 공책 전환 복구 동선 — 캔버스 탭 알림 줄·보관한 씬 고르기 창·되살리기(공책 켬에서만, 기존 전체 가져오기 규칙 — 저장 뒤 계정 전환은 `sceneArchive` 가 시작 계정 카드 소속 대기열에). 저장 알림을 구독하지 않는다 | `CanvasRestoreNotice`·`RestorePicker`·`restoreRows`. 행 판정은 `sceneArchive.ts` `restoreArchiveRows`, [기록](status/공책첫전환복구동선_2026-11-15.md) |
 | `scene/SceneKeepDialog.tsx` | 워크스페이스 보관 창 — 이름·프로젝트·설명, 같은 이름 보관본의 설명 채우기, 덮어쓰기 확인, 성공 뒤 탭 이름 변경 | 사본·요청은 `sceneKeep.ts` |
 | `scene/SceneKeepWindow.tsx` | 보관함 — 프로젝트 목록·개수·탭 표식, 이미지/리스트 전환, 카드 우클릭 메뉴(열기·삭제), 설명 두 줄·읽기 창 | 보기 선택은 `storageKeys.ts`, 열기는 `sceneKeep.ts` |
 | `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
