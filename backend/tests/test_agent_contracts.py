@@ -2824,7 +2824,7 @@ def test_test_dev_moves_off_windows_excluded_port_ranges():
     launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
     picker = ROOT_DIR / "tools" / "pick_dev_port.ps1"
     assert picker.exists()
-    pick = launcher.index('tools\pick_dev_port.ps1" -Preferred %FRONTEND_PORT%')  # REM 설명이 아니라 실제 호출
+    pick = launcher.index(r'tools\pick_dev_port.ps1" -Preferred %FRONTEND_PORT%')  # REM 설명이 아니라 실제 호출
     assert launcher.index('if not defined FRONTEND_PORT set "FRONTEND_PORT=5173"') < pick
     assert pick < launcher.index('set "FRONTEND_URL=http://127.0.0.1:%FRONTEND_PORT%"')
     assert pick < launcher.index('set "MVHUB_DEV_FRONTEND_PORT=%FRONTEND_PORT%"')
