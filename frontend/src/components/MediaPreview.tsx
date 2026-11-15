@@ -342,7 +342,16 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
   // 막이 있는 창 — 초점을 창(뿌리)에 둔다(lib/keyGate '모달의 초점'). 단추가 아니라 뿌리라 Space·Enter 는 전처럼 아래 리스너가 받는다
   //  (재생/정지). 뒤 격자의 초점 카드는 격자가 따로 쥐고 있어 그대로고, 닫으면 초점은 연 자리(격자)로 돌아간다.
   const boxRef = useRef<HTMLDivElement>(null);
-  useModalFocus(boxRef);
+  // 크게 보기 위에 뜬 어셋 코멘트 창(CommentPanel over-preview)도 이 영역이다 — 빼면 그 창의 Tab 이 크게 보기로 끌려갔다(배포 전 리뷰 L4-03).
+  //  그 창은 키 겹이 아닌 채 뒤를 조작하는 부품이라(lib/keyGate 머리말) 따로 모달로 올리지 않고 여기 뿌리로 넣는다.
+  //  닫힐 때는 뺀다 — 넣은 채 닫히면 코멘트 입력칸에 있던 초점을 연 자리(격자)로 가져갔다(전엔 입력칸에 남았다). 이 정리는 아래
+  //  useModalFocus 의 정리보다 먼저 돈다(효과는 선언 순서대로 걷힌다).
+  const closingRef = useRef(false);
+  useEffect(() => {
+    closingRef.current = false;
+    return () => { closingRef.current = true; };
+  }, []);
+  useModalFocus(() => [boxRef.current, closingRef.current ? null : document.querySelector<HTMLElement>(".cmt-panel.over-preview")]);
   // 메뉴도 막이 있는 겹이다 — 떠 있는 동안 Tab 은 메뉴 안에서 돌고, 닫히면 초점이 연 자리로 돌아간다(키보드로 쓸 수 있게 — Codex 검토 10-22)
   const menuRef = useRef<HTMLDivElement>(null);
   useModalFocus(menuRef, !!menu);
@@ -378,7 +387,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
         //  다시 눌러 보던 장이 처음 것으로 돌아가고, 기록이 한 겹 더 쌓여 Esc 가 두 번 필요했다(2026-10-10 실측 3/3).
         const t = e.target instanceof Element ? e.target : null;
         // 우클릭 메뉴(.preview-menu — body 에 그려진다)의 줄도 이 창 안의 단추다(Enter·Space = 그 줄 실행 — Codex 검토 10-22)
-        if (t?.closest(".media-preview, .preview-menu") && t.closest("button, a, input, textarea, select, audio, [role=button], [contenteditable]")) return;
+        //  위에 뜬 어셋 코멘트 창(.cmt-panel.over-preview)의 단추도 그 창의 것이다(배포 전 리뷰 L4-03)
+        if (t?.closest(".media-preview, .preview-menu, .cmt-panel.over-preview") && t.closest("button, a, input, textarea, select, audio, [role=button], [contenteditable]")) return;
         if (t?.closest("input, textarea, select, [contenteditable]")) return; // 글자 입력(코멘트 패널 등)은 그대로
         e.preventDefault();
         e.stopPropagation();

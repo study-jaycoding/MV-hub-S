@@ -351,7 +351,8 @@ def sync(owner, project, payload, *, conn=None, receipt_payload=None):
             raise ValueError('duplicate order ids')
         order_matches = order and order.get('history_id') == history(conn) and order.get('rev') == (previous['rev'] if previous else 0)
         candidates = requested if order_matches else old_order + requested
-        merged = list(dict.fromkeys(s for s in candidates + live_ids if s in set(live_ids)))
+        live_set = set(live_ids)  # 한 번만 — 후보마다 새로 만들면 쓰기 잠금 안에서 씬 수의 제곱만큼 돈다
+        merged = list(dict.fromkeys(s for s in candidates + live_ids if s in live_set))
         if previous is None or merged != old_order:
             _set_order(conn, owner, project, merged)
         done = []

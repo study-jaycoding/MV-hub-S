@@ -390,13 +390,14 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     // 보내는 순간의 칩 묶음 — 성공하면 그 묶음만 뺀다(보내는 사이 붙인 칩은 남는다, Codex 1차 P1 5)
     const batch = attachWs ? chipsRef.current : [];
     const attach = batch.length && attachWs ? { workspace: attachWs, items: batch.map((c) => c.item) } : null;
+    const typed = text; // 보낸 순간의 글 — 접수를 기다리는 사이 고친 글은 지우지 않는다(입력칸은 보내는 동안 잠기지 않는다)
     if (await chat.send(body, attach)) {
       if (batch.length) {
         const sent = new Set(batch.map((c) => c.uid));
         setChips((now) => now.filter((c) => !sent.has(c.uid)));
         setAttachNote(null);
       }
-      setText("");
+      setText((now) => (now === typed ? "" : now));
       setRevising(null);
       chat.connect.dismissConnected();
     }

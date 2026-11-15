@@ -244,6 +244,9 @@ export function CommentPanel<T extends CommentPanelItem>({
   //  쓴 글이 사라졌다 — 다시 시도하려면 다시 써야 했다. 보내는 동안은 그 칸을 읽기 전용으로 두고 다시 보내지 않는다(전엔 바로 비우는 것이
   //  Enter 연타를 막았다). 성공하면 비우고 done(답글·수정 칸 닫기), 실패하면 글과 칸을 그대로 둔다.
   const sendingRef = useRef(new WeakSet<HTMLInputElement>());
+  // 보내는 중인 칸 이름(c·r·e) → 그 칸을 지금 그린 입력 요소. 떠 있는 창 ↔ 앱 안 옮기기는 입력 요소를 새로 만들고 글만 옮겨,
+  //  요소 단위 잠금만으로는 이어지지 않았다 — 옮긴 칸에서 다시 보내 같은 코멘트가 두 번 저장되고 보낸 글이 남았다(배포 전 리뷰 L4-02).
+  const sendingFieldRef = useRef(new Map<string, HTMLInputElement>());
   const targetRef = useRef(targetKey);
   targetRef.current = targetKey;
   // 보내지 못한 글이 있는 동안 창을 닫거나 새로고침하면 브라우저가 묻는다(Jay 결정 6A, 10-15) — 새 글·답글은 비어 있지 않으면, 고치는 글은
@@ -276,6 +279,11 @@ export function CommentPanel<T extends CommentPanelItem>({
     panel?.querySelectorAll<HTMLInputElement>('input[name="c"], input[name="r"], input[name="e"]').forEach((input) => {
       const kept = draftRef.current[input.name];
       if (kept !== undefined) input.value = kept;
+      if (sendingFieldRef.current.has(input.name)) { // 보내는 중에 옮겼다 — 새 칸이 그 전송을 이어받는다(잠금·성공 뒤 비우기)
+        sendingFieldRef.current.set(input.name, input);
+        sendingRef.current.add(input);
+        input.readOnly = true;
+      }
     });
   }, [pipWin, holdName]);
   // 같은 묶음의 떠 있는 창이 있으면 이어받고(Assets 의 파일 전환), '띄워서 보기'면 연 누름으로 바로 띄운다. 사라질 때 닫기를 예약한다
@@ -291,19 +299,23 @@ export function CommentPanel<T extends CommentPanelItem>({
   }, [canPip, pipId]);
   const submitFrom = async (input: HTMLInputElement, send: (text: string) => Promise<boolean>, done?: () => void) => {
     const text = input.value;
-    if (!text.trim() || sendingRef.current.has(input)) return;
+    const field = input.name;
+    if (!text.trim() || sendingRef.current.has(input) || sendingFieldRef.current.has(field)) return;
     const sentFor = targetRef.current;
     sendingRef.current.add(input);
+    sendingFieldRef.current.set(field, input);
     input.readOnly = true;
     const saved = await send(text).catch(() => false);
-    sendingRef.current.delete(input);
-    input.readOnly = false;
+    const current = sendingFieldRef.current.get(field) ?? input; // 기다리는 사이 창을 옮겼으면 이어받은 칸
+    sendingFieldRef.current.delete(field);
+    const fields = new Set([input, current]);
+    fields.forEach((el) => { sendingRef.current.delete(el); el.readOnly = false; });
     // 실패한 글과 칸은 남긴다. 다만 기다리는 사이 패널이 다른 대상으로 넘어갔으면 치운다 — 남겨 두면 다시 보낼 때 새 대상에 달린다.
     if (!saved && targetRef.current === sentFor) return;
-    input.value = "";
+    fields.forEach((el) => { el.value = ""; });
     syncUnsent(); // 값을 바꿔도 input 이벤트는 오지 않는다
-    // 칸을 닫는 것은 보낸 그 칸이 아직 떠 있을 때만 — 기다리는 사이 닫았다 다시 열었거나 다른 글의 칸을 열었으면 지금 칸은 새 칸이다.
-    if (input.isConnected) done?.();
+    // 칸을 닫는 것은 보낸 그 칸(옮겼으면 이어받은 칸)이 아직 떠 있을 때만 — 기다리는 사이 닫았다 다시 열었거나 다른 글의 칸을 열었으면 지금 칸은 새 칸이다.
+    if (current.isConnected) done?.();
   };
   const submitComment = (input: HTMLInputElement, parentId?: string | null) => {
     // 비공개 코멘트에 단 답글은 무조건 비공개 — 공유로 나가면 팀에겐 부모 없는 답글이 된다.
@@ -315,7 +327,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   // [편집] — 쓰던 글을 그림 창으로 넘긴다. 넘긴 뒤에만 비운다(두 번 보내기 방지 — 그림 창이 그 글의 주인이 된다)
   const handOff = (form: HTMLFormElement | null) => {
     const input = form?.elements.namedItem("c") as HTMLInputElement | null;
-    if (!input || !onEditDraw || sendingRef.current.has(input)) return;
+    if (!input || !onEditDraw || sendingRef.current.has(input) || sendingFieldRef.current.has(input.name)) return;
     if (!onEditDraw(input.value)) return;
     input.value = "";
     syncUnsent();

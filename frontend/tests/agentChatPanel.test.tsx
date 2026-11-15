@@ -714,6 +714,26 @@ describe("Ask Agent 옆 칸", () => {
     expect(input().value).toBe("둘");
   });
 
+  it("접수 응답을 기다리는 동안 고친 글은 응답이 와도 남는다(배포 전 리뷰 L4-01)", async () => {
+    const gates = [deferred<Response>(), deferred<Response>()];
+    let turn = 0;
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/turns") return gates[turn++].promise;
+      return new Promise<Response>(() => {});
+    };
+    await mount();
+    type("하나");
+    enter();
+    await flush(3);
+    type("고친 다음 글");
+    gates[0].resolve(started());
+    await flush();
+    expect(turnCalls()).toHaveLength(1);
+    expect(turnCalls()[0].body!.text).toBe("하나");
+    expect(input().value).toBe("고친 다음 글"); // 전엔 접수 응답이 이 글까지 지웠다
+  });
+
   it("패널 표 401(허브 재시작) → 새 표가 같은 신원(계정·허브·DB)이면 같은 요청(같은 중복 방지 키)을 한 번 다시 보낸다 — 로그인은 그대로", async () => {
     setAuthToken("tok");
     let issued = 0;

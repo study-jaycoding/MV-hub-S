@@ -270,6 +270,38 @@ describe("어셋 Ctrl 카드(실제 어셋 화면이 칸을 등록)", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("위에 뜬 코멘트 창의 키는 그 창의 것 — 입력칸의 Tab 은 크게 보기로 끌려가지 않고 단추의 Enter 는 막히지 않는다(배포 전 리뷰 L4-03)", async () => {
+    await render(<>{view()}<MediaPreview target={ITEMS} onClose={onClose} /></>);
+    key("c");
+    await settle();
+    const panel = host.querySelector<HTMLElement>(".cmt-panel.over-preview")!;
+    const field = panel.querySelector<HTMLInputElement>(".cmt-input input")!;
+    act(() => field.focus());
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    act(() => { field.dispatchEvent(tab); });
+    expect(tab.defaultPrevented).toBe(false); // 전엔 영역 밖으로 보고 가로채 크게 보기로 옮겼다
+    expect(document.activeElement).toBe(field);
+    const button = panel.querySelector<HTMLButtonElement>("button")!;
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    act(() => { button.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(false); // 전엔 크게 보기가 잡는 단계에서 막아 단추가 안 눌렸다
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("코멘트 입력칸에 초점이 있는 채 크게 보기가 닫혀도 초점은 입력칸에 남는다", async () => {
+    await render(<>{view()}</>);
+    const opener = host.querySelector<HTMLButtonElement>("button")!; // 실제 앱처럼 연 자리(뒤 화면)에 초점이 있다 — 닫힐 때 돌려줄 곳
+    act(() => opener.focus());
+    await render(<>{view()}<MediaPreview target={ITEMS} onClose={onClose} /></>);
+    key("c");
+    await settle();
+    const field = host.querySelector<HTMLInputElement>(".cmt-panel.over-preview .cmt-input input")!;
+    act(() => field.focus());
+    await render(<>{view()}</>); // 크게 보기만 닫힌다 — 코멘트 창은 어셋 화면이 쥐고 있다
+    expect(field.isConnected).toBe(true);
+    expect(document.activeElement).toBe(field);
+  });
+
   it("ⓘ — 크게 보기를 닫지 않고 그 파일의 정보를 연다", async () => {
     const onInfo = vi.fn();
     await render(<>{view(onInfo)}<MediaPreview target={ITEMS} onClose={onClose} /></>);

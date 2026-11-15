@@ -99,6 +99,27 @@ it("pops out with the app's styles and the typed text, follows the next target, 
   style.remove();
 });
 
+it("moving the window while a comment is sending keeps the send lock on the moved field and clears it on success (predeploy review L4-02)", async () => {
+  installPip();
+  let release!: (ok: boolean) => void;
+  const onSend = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+  act(() => root.render(<CommentPanel comments={[]} label="생성물" myId="me" panelRef={() => {}} pos={{ x: 0, y: 0 }}
+    onHeadMouseDown={() => {}} onClose={() => {}} onSend={onSend} onEdit={async () => true} onDelete={() => {}} pipId="gen" />));
+  const field = host.querySelector<HTMLInputElement>('.cmt-input input[name="c"]')!;
+  type(field, "한 번만");
+  await act(async () => { field.form!.requestSubmit(); });
+  expect(onSend).toHaveBeenCalledTimes(1);
+  await act(async () => { popBtn(host)!.click(); }); // 보내는 중에 창 밖으로
+  const moved = pipDoc.body.querySelector<HTMLInputElement>('input[name="c"]')!;
+  expect(moved.value).toBe("한 번만");
+  expect(moved.readOnly).toBe(true); // 옮긴 칸도 보내는 중
+  await act(async () => { moved.form!.requestSubmit(); });
+  expect(onSend).toHaveBeenCalledTimes(1); // 전엔 옮긴 칸에서 한 번 더 저장됐다
+  await act(async () => { release(true); });
+  expect(moved.value).toBe(""); // 전엔 보낸 글이 옮긴 칸에 남았다
+  expect(moved.readOnly).toBe(false);
+});
+
 it("closing the floating window itself brings the panel back into the app", async () => {
   installPip();
   show([item("a", "모자 색")]);
