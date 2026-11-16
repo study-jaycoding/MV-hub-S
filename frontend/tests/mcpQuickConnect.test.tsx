@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const calls: { path: string; body?: unknown }[] = [];
-let clients: { id: string; name: string; revoked_at: string | null }[] = [];
+let clients: { id: string; name: string; revoked_at: string | null; last_seen_at?: string | null }[] = [];
 let configureResult: unknown[] = [];
 let onConfigure: () => void = () => { clients = [...clients, { id: "c2", name: "claude", revoked_at: null }]; };
 let failListOnce = false;
@@ -43,7 +43,8 @@ beforeEach(() => {
   failListOnce = false;
   afterRevoke = () => {};
   onConfigure = () => { clients = [...clients, { id: "c2", name: "claude", revoked_at: null }]; };
-  clients = [{ id: "c1", name: "codex", revoked_at: null }, { id: "old", name: "claude", revoked_at: "earlier" }];
+  // c1 = Codex 가 실제로 접속해 응답한 기록이 있는 연결(last_seen_at). 새로 등록한 연결은 응답 기록이 없다
+  clients = [{ id: "c1", name: "codex", revoked_at: null, last_seen_at: "2026-11-16T09:00:00Z" }, { id: "old", name: "claude", revoked_at: "earlier" }];
   configureResult = [
     { client: "codex", status: "configured", message: "" },
     { client: "claude", status: "configured", message: "" },
@@ -77,7 +78,10 @@ it("[한 번에 연결] — 세 앱을 계정 기준·생성 허용으로 한 �
   await flush();
   expect(calls.find((call) => call.path.endsWith("/app/configure"))!.body)
     .toEqual({ clients: ["codex", "claude", "claude_desktop"], scope: "account", allow_execution: true });
-  expect([pill("codex"), pill("claude"), pill("claude_desktop")]).toEqual(["연결됨", "연결됨", "건너뜀"]);
+  // 새로 등록한 Claude Code 는 아직 응답 기록이 없어 '등록됨'(연결됨이라 하지 않는다)
+  expect([pill("codex"), pill("claude"), pill("claude_desktop")]).toEqual(["연결됨", "등록됨", "건너뜀"]);
+  expect(row("claude").textContent).toContain("아직 응답을 확인하지 못했습니다");
+  expect(button("claude").textContent).toBe("해제");
   expect(row("claude_desktop").textContent).toContain("Claude 앱을 끄고 다시 연결하세요");
   expect(button("claude_desktop").textContent).toBe("다시 연결");
   expect(host.querySelector('[role="status"]')!.textContent).toContain("다시 켜야 MV Hub 가 보입니다");
@@ -95,7 +99,7 @@ it("[해제] — 그 앱의 살아 있는 연결만 해제하고 목록을 다�
   await flush();
   expect(calls.filter((call) => call.path.endsWith("/app/configure")).map((call) => call.body))
     .toEqual([{ clients: ["claude"], scope: "account", allow_execution: true }]);
-  expect(pill("claude")).toBe("연결됨");
+  expect(pill("claude")).toBe("등록됨"); // 응답 기록 전
 });
 
 it("[해제] — 다시 등록으로 연결이 바뀐 뒤 목록 읽기가 실패했어도, 지금 목록의 새 연결을 해제한다(Codex 리뷰 #1)", async () => {
@@ -123,7 +127,7 @@ it("[해제] — 해제 뒤에도 살아 있는 연결이 남으면 '해제했�
   await act(async () => button("codex").click());
   await flush();
   expect(host.querySelector('[role="status"]')!.textContent).toContain("해제하지 못한 연결이 남아 있습니다");
-  expect(pill("codex")).toBe("연결됨");
+  expect(pill("codex")).toBe("등록됨"); // 남은 새 연결(응답 기록 없음)
 });
 
 it("수동 등록 필요 — 연결 기록이 있어도 '연결됨'이 아니라 '수동 등록 필요'와 까닭·[설정 복사](Codex 리뷰 #2)", async () => {
@@ -142,6 +146,30 @@ it("수동 등록 필요 — 연결 기록이 있어도 '연결됨'이 아니라
   await flush();
   expect(writeText).toHaveBeenCalledWith(JSON.stringify({ mcpServers: { mvhub: { command: "py" } } }, null, 2));
   expect(host.querySelector('[role="status"]')!.textContent).toContain("설정을 복사했습니다");
+});
+
+it("수동 등록 뒤 창을 다시 열어도 '연결됨'이라 하지 않는다 — 응답 기록이 없으면 '등록됨'(Codex 리뷰 01a1e38d #2)", async () => {
+  configureResult = [{ client: "claude", status: "manual", message: "설정이 다른 프로그램에서 바뀌었습니다.", config: "x" }];
+  await act(async () => root.render(<McpQuickConnect onOpenWindow={() => {}} />));
+  await flush();
+  await act(async () => button("claude").click());
+  await flush();
+  expect(pill("claude")).toBe("수동 등록 필요");
+  act(() => root.unmount()); // 설정 창 닫기 → 다시 열기(수동 등록 결과는 사라진다)
+  root = createRoot(host);
+  const onSummary = vi.fn();
+  await act(async () => root.render(<McpQuickConnect onSummary={onSummary} onOpenWindow={() => {}} />));
+  await flush();
+  expect(pill("claude")).toBe("등록됨");
+  expect(onSummary).toHaveBeenLastCalledWith("등록됨 · Codex · Claude Code");
+});
+
+it("공유 서버의 LAN HTTP 처럼 crypto.randomUUID 가 없어도 깨지지 않는다(Codex 리뷰 01a1e38d #1)", async () => {
+  vi.stubGlobal("crypto", {});
+  await act(async () => root.render(<McpQuickConnect onOpenWindow={() => {}} />));
+  await flush();
+  expect([pill("codex"), pill("claude")]).toEqual(["연결됨", "연결 안 됨"]);
+  expect(calls[0].path).toBe("/api/mcp/v2/app/clients");
 });
 
 it("고급 — [MV·MCP 연결 열기]는 연결 창을 연다(다른 MCP 프로그램·옛 연결·MCP 업데이트)", async () => {
