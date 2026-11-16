@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { Generation, WorkspaceContext } from "../types";
 import { getAccountNamespace } from "./accountScope";
 import { getAuthToken, jsonBody, jsonFetch } from "./http";
+import { mcpTabId } from "./mcpTab";
 import { listPersistedScenes, listScenes, type Scene, type SceneCard } from "./scenes";
 import { sceneStoreReady } from "./sceneStore";
 import { isCanvasFloating } from "./popupWindows";
@@ -67,7 +68,8 @@ export function useMcpCanvasTasks(props: CanvasPorts & { authReady: boolean; aut
   const scopeRef = useRef(scope); scopeRef.current = scope;
   useEffect(() => {
     if (!props.authReady || props.workspace.scope === "unknown") return;
-    const account = getAccountNamespace(), token = getAuthToken(), tab = crypto.randomUUID();
+    // 탭 표시는 LAN HTTP 에도 있는 생성 길로 — crypto.randomUUID 는 보안 환경 전용이라 공유 서버 HTTP 주소에선 이 effect 가 던졌다(Codex 01a1e38d)
+    const account = getAccountNamespace(), token = getAuthToken(), tab = mcpTabId();
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = 15_000;
