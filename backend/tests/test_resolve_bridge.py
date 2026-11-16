@@ -1378,6 +1378,53 @@ class PanelStagingTests(unittest.TestCase):
         self.assertIs(self.pool.current, other)
         self.assertTrue(all(row["state"] == "deferred" for cut in result["cuts"].values() for row in cut["items"]))
 
+    def test_redecide_before_import_back_on_episode_bin_imports_without_borrowing(self):
+        _human, request = self.borrow_fixture()
+        request["cuts"][1]["items"] += self.stills(12)  # 빌리지 않으면 스틸 상한도 없다
+        real = resolve_bridge._panel_stage_prepare
+        def prepare(*args, **kwargs):
+            work = real(*args, **kwargs)
+            self.pool.current = self.bin("E1")  # 준비하는 사이 사람이 에피소드 빈으로 돌아왔다
+            return work
+        with mock.patch.object(resolve_bridge, "_panel_stage_prepare", side_effect=prepare), \
+                mock.patch.object(self.pool, "SetCurrentFolder", side_effect=AssertionError("no borrow")):
+            result = self.run_op("prestage", **request)
+        self.assertEqual(len(self.pool.import_calls), 1 + 12)  # 두 컷 영상 한 묶음 + 스틸 12장 모두
+        self.assertTrue(all(row["state"] == "staged" for cut in result["cuts"].values() for row in cut["items"]))
+        self.assertNotIn("restored", result)
+        self.assertNotIn("restore_failed", result)
+
+    def test_redecide_before_import_left_episode_bin_borrows_only_from_stable_bin(self):
+        human, request = self.borrow_fixture()
+        request["cuts"][1]["items"] += self.stills(12)
+        real = resolve_bridge._panel_stage_prepare
+        calls = []
+        def prepare(*args, **kwargs):
+            work = real(*args, **kwargs)
+            calls.append(1)
+            if len(calls) % len(request["cuts"]) == 0:  # 마지막 컷 준비가 끝난 뒤에만 — 컷별 판단은 모두 '에피소드 빈'이었다
+                self.pool.current = human  # 그 뒤 가져오기 전에 안정된 빈으로 떠났다
+            return work
+        self.pool.current = self.bin("E1")
+        with mock.patch.object(resolve_bridge, "_panel_stage_prepare", side_effect=prepare), \
+                mock.patch.object(self.pool, "SetCurrentFolder", wraps=self.pool.SetCurrentFolder) as select:
+            result = self.run_op("prestage", **request)
+        self.assertEqual([call.args[0].unique_id for call in select.call_args_list], [request["episode_bin_id"], human.unique_id])
+        self.assertIs(self.pool.current, human)
+        self.assertTrue(result["restored"])
+        self.assertEqual(len(self.pool.import_calls), 1 + 10)  # 빌린 창은 스틸 10장까지
+        self.assertEqual(sum(cut["deferred"] for cut in result["cuts"].values()), 2)
+        # borrow 가 꺼져 있으면 같은 상황에서 가져오지도 전환하지도 않는다
+        for cut in request["cuts"]:
+            resolve_bridge._panel_bin_by_id(self.pool.root, cut["bin_id"]).clips.clear()
+        self.pool.import_calls.clear()
+        self.pool.current = self.bin("E1")
+        with mock.patch.object(resolve_bridge, "_panel_stage_prepare", side_effect=prepare), \
+                mock.patch.object(self.pool, "SetCurrentFolder", side_effect=AssertionError("no borrow")):
+            result = self.run_op("prestage", **{**request, "borrow": False})
+        self.assertEqual(self.pool.import_calls, [])
+        self.assertTrue(all(row["state"] == "deferred" for cut in result["cuts"].values() for row in cut["items"]))
+
     def test_borrow_disabled_missing_episode_or_unreadable_current_never_switches(self):
         _human, request = self.borrow_fixture()
         for patch in ({"borrow": False}, {"episode_bin_id": "missing"}, {"borrow_bin_id": "stale"}):
