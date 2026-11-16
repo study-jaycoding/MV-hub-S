@@ -15,7 +15,9 @@ import {
 // folder_path = 고른 컷, 컷을 안 골랐으면 에피소드. cuts = 그 에피소드의 생성물 있는 컷(빈을 만들 것)
 //  via = 다빈치에서 들어간 빈을 따라와 고른 것이면 그 빈 ID — 늦게 처리돼도 target 으로 다빈치를 끌고 오지 않는다
 //  resolveProject = 고를 때 열려 있던 다빈치 프로젝트 ID — 쓰기마다 expect_project 로 실어 리졸브 쪽이 대조한다
-interface Selection extends PanelSelection { seq: number; window: string; revision: number; capped?: boolean; episode: string; cuts: string[]; via: string; resolveProject: string }
+interface Selection extends PanelSelection { ctx: PanelIdentity; seq: number; intent?: number; window: string; revision: number; capped?: boolean; episode: string; cuts: string[]; via: string; resolveProject: string }
+interface PanelJob { run: () => Promise<unknown>; finish: () => void; requiresStable: boolean; afterSave: boolean; live: () => boolean }
+interface SelectionPreparation { intent: number; seq?: number; done: Promise<void>; finish: () => void; timer?: ReturnType<typeof setTimeout> }
 interface EpisodeBins { project_id: string; episode: string; bins: Record<string, string>; episodeBin: string }
 // 미리 캐시·미리 띄우기의 컷 = [컷 경로, 생성물 ID(거르기 통과·오래된 200개), 200 을 넘어 잘렸나]
 export type PrecacheCut = [string, string[], boolean?];
@@ -126,7 +128,17 @@ export function useResolvePanel() {
   const selected = useRef<Selection | null>(null);
   const targetRef = useRef<TargetResult | null>(null);
   const currentRef = useRef<TargetResult | null>(null);
-  const queue = useRef(Promise.resolve());
+  const interactiveJobs = useRef<PanelJob[]>([]);
+  const backgroundJobs = useRef<PanelJob[]>([]);
+  const running = useRef(false);
+  const active = useRef(true);
+  const pollPending = useRef(false);
+  const intentNumber = useRef(0);
+  const intentTarget = useRef<{ intent: number; align: boolean; reason: string; force: boolean; settled?: boolean; done?: Promise<boolean> } | null>(null);
+  const preparation = useRef<SelectionPreparation | null>(null);
+  const backgroundPaused = useRef(false);
+  const quietBin = useRef<{ bin: string; project: string; count: number; at: number } | null>(null);
+  const [selectionPhase, setSelectionPhase] = useState("");
   const adopted = useRef(new Set<string>());
   const failedAdoptions = useRef(new Map<string, string>());
   const generations = useRef<Generation[]>([]);
@@ -135,7 +147,75 @@ export function useResolvePanel() {
   const recovered = useRef("");
   const authEpoch = useRef(0);
 
+  const pump = () => {
+    if (running.current) return;
+    running.current = true;
+    void Promise.resolve().then(async () => {
+      try {
+        while (true) {
+          const stable = quietBin.current;
+          if (backgroundPaused.current && !preparation.current && !interactiveJobs.current.length
+            && document.visibilityState !== "hidden" && stable && stable.count >= 2 && Date.now() - stable.at <= 2000) backgroundPaused.current = false;
+          // 이미 줄에 선 stage도 NAS 버튼을 누른 뒤에는 저장 전체가 끝날 때까지 미룬다.
+          const runnable = (job: PanelJob) => !job.live() || !job.afterSave || !savingRef.current;
+          const first = interactiveJobs.current.findIndex(runnable);
+          const index = backgroundJobs.current.findIndex(job => runnable(job) && (!job.live() || !job.requiresStable || !backgroundPaused.current));
+          const job = first >= 0 ? interactiveJobs.current.splice(first, 1)[0] : index >= 0 ? backgroundJobs.current.splice(index, 1)[0] : undefined;
+          if (!job) break;
+          try { await job.run(); }
+          catch (error) { if (active.current) setFailures(previous => [...new Set([...previous, errorText(error)])]); }
+          finally { job.finish(); }
+        }
+      } finally { running.current = false; }
+    });
+  };
+  const enqueue = (work: () => Promise<unknown>, background = false, requiresStable = background, live?: () => boolean, afterSave = false) => {
+    const ctx = context.current, rev = revision.current;
+    return new Promise<void>(finish => {
+      const job = { run: work, finish, requiresStable, afterSave, live: live || (() => active.current && rev === revision.current
+        && contextKey(ctx) === contextKey(context.current) && ctx?.generation === context.current?.generation) };
+      (background ? backgroundJobs : interactiveJobs).current.push(job);
+      pump();
+    });
+  };
+  const endPreparation = (pending: SelectionPreparation | null) => {
+    if (!pending) return;
+    clearTimeout(pending.timer); pending.finish();
+    if (preparation.current === pending) preparation.current = null;
+    pump();
+  };
+  const beginPreparation = (intent: number, seq?: number) => {
+    const previous = preparation.current;
+    let finish!: () => void;
+    const pending: SelectionPreparation = { intent, seq, done: new Promise<void>(resolve => { finish = resolve; }), finish: () => finish() };
+    preparation.current = pending;
+    endPreparation(previous);
+    if (seq === undefined) pending.timer = setTimeout(() => endPreparation(pending), 5000);
+    return pending;
+  };
+  const interact = () => {
+    backgroundPaused.current = true; quietBin.current = null;
+    const intent = ++intentNumber.current;
+    intentTarget.current = null;
+    readyDrag.current = {}; setDragItems({}); setSelectionPhase("");
+    beginPreparation(intent);
+    return intent;
+  };
+  const resetPreparation = () => {
+    intentNumber.current++; intentTarget.current = null;
+    quietBin.current = null; backgroundPaused.current = false;
+    endPreparation(preparation.current); setSelectionPhase("");
+  };
+  useEffect(() => {
+    active.current = true;
+    const visibility = () => { quietBin.current = null; stableBin.current = null; };
+    document.addEventListener("visibilitychange", visibility);
+    return () => { active.current = false; resetPreparation(); document.removeEventListener("visibilitychange", visibility); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const clear = useCallback(() => {
+    resetPreparation();
     setPreviews({});
     readyDrag.current = {}; setDragItems({}); resolveCheckedAt.current = 0;
     claimed.current = false;
@@ -153,8 +233,11 @@ export function useResolvePanel() {
     authEpoch.current++; clear(); setAuthReady(false); setAuthRun(n => n + 1);
   }, [clear]);
   // 일반 브라우저는 읽기 전용이며, 대기 중 다리가 사라져도 후속 요청을 보내지 않는다.
-  const valid = (selection: Selection) => hasResolveBridge(window.mvhubResolve) && context.current?.writer === true
-    && selection.revision === revision.current && contextKey(context.current) === contextKey(selection.ctx);
+  const valid = (selection: Selection) => active.current && hasResolveBridge(window.mvhubResolve) && context.current?.writer === true
+    && selection.revision === revision.current && contextKey(context.current) === contextKey(selection.ctx)
+    && selection.ctx.generation === context.current.generation;
+  const currentIntent = (selection: Selection) => valid(selection) && selection.intent === intentNumber.current && stillAt(selection);
+  const currentContents = (selection: Selection) => currentIntent(selection) && selection.seq === selected.current?.seq;
   // 지금도 그 자리를 고르고 있다(목록 갱신으로 같은 컷의 선택 객체만 바뀐 것은 같은 자리) — null = 선택을 푼 채
   const stillAt = (selection: Selection | null) => selection
     ? selected.current?.project_id === selection.project_id && selected.current.folder_path === selection.folder_path : !selected.current;
@@ -162,6 +245,7 @@ export function useResolvePanel() {
   const noteDavinci = (id: string | undefined) => {
     if (!id || id === davinciRef.current) return;
     if (davinciRef.current) {
+      resetPreparation();
       precacheRun.current++; fillRun.current = null; stableBin.current = null; setFillProgress(null);
       setPreviews({});
       readyDrag.current = {}; setDragItems({}); resolveCheckedAt.current = 0;
@@ -254,6 +338,7 @@ export function useResolvePanel() {
           if (!mounted || epoch !== authEpoch.current) return;
           claimed.current = true;
         }
+        if (context.current && (context.current.generation !== next.generation || context.current.writer !== next.writer)) resetPreparation();
         context.current = next; checkedAt.current = Date.now(); setIdentity(next);
       } catch (error) {
         if (mounted && epoch === authEpoch.current) { checkedAt.current = 0; setNotice(errorText(error)); }
@@ -265,13 +350,10 @@ export function useResolvePanel() {
   }, [authReady, authRun, clear]);
 
 
-  const enqueue = (work: () => Promise<unknown>) => {
-    queue.current = queue.current.then(async () => { await work(); }).catch(error => setFailures(previous => [...new Set([...previous, errorText(error)])]));
-    return queue.current;
-  };
   const check = (result: { state: string; details?: unknown; cleanup_failed?: boolean }) => {
     if (result.state === "account_changed") { clear(); throw new Error(t("계정 문맥을 확인 중입니다")); }
     if (result.state === "other_window") {
+      resetPreparation();
       if (context.current) { context.current = { ...context.current, writer: false }; setIdentity(context.current); }
       throw new Error(t("다른 MV 창이 리졸브를 맡고 있습니다"));
     }
@@ -378,14 +460,14 @@ export function useResolvePanel() {
   };
   // 돌려주는 값 = 다빈치 지금 빈을 새 목적 빈으로 맞췄다(또는 이미 그 빈 안이다) — 그때만 앞 에피소드를 정리한다
   const alignEpisode = async (selection: Selection, force: boolean, reason = "select") => {
-    if (!valid(selection) || selected.current !== selection) return false;
+    if (!currentIntent(selection)) return false;
     if (viaOf(selection)) { followed(selection.via); return true; }
     if (!selection.cuts.length) return false;
     const ep = episodeOf(selection);
     if (!force && ep?.episodeBin && lastBin.current === ep.episodeBin) { followed(ep.episodeBin); return true; }
     const result = await aim(selection, reason);
     noteTarget(selection, result);
-    if (!valid(selection) || selected.current !== selection) return false;
+    if (!currentIntent(selection)) return false;
     check(result);
     if (!aimed(selection, result)) return false;
     setNotice(t("컷 빈 {count}개 — 다빈치에서 컷 빈에 들어가면 가져옵니다").replace("{count}", String(Object.keys(result.bins || {}).length)));
@@ -427,52 +509,84 @@ export function useResolvePanel() {
       await settleEpisode(old);
     }
   };
-  // 돌려주는 값 = 다빈치 지금 빈을 이 컷 빈으로 맞췄다(또는 이미 그 빈 안이다). 그 뒤 stage 실패는 알림으로만 남긴다.
-  const stageCut = async (selection: Selection, gens: Generation[], align: boolean, reason: string) => {
-    if (!valid(selection) || selected.current !== selection) return false;
-    readyDrag.current = {}; setDragItems({});
-    const capped = selection.capped || gens.length > 200;
-    gens = [...gens].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id)).slice(0, 200);
-    for (const gen_ids of cacheBatches(gens.map(gen => gen.id))) {
-      const cached = await panel.cache({ ...selection, gen_ids });
-      if (!valid(selection) || selected.current !== selection) return false;
-      for (const item of cached.items || []) if (item.state === "cached") cachedIds.current.add(cacheKey(selection.ctx, selection.project_id, item.gen_id));
-      setPreviews(previous => ({ ...previous, ...Object.fromEntries((cached.items || []).filter(item => item.state === "cached"
-        && item.preview_url?.startsWith("/media/")).map(item => [item.gen_id, item.preview_url!])) }));
-      if (cached.state) check(cached as { state: string });
-      const failed = cached.items.filter(item => item.state !== "cached");
-      if (failed.length) throw new Error(failed.map(item => item.gen_id + ": " + item.error).join(", "));
+  // target은 선택 의도로 이어받고 cache·stage는 내용 판까지 대조한다. cache 동안 실행자는 비워 둔다.
+  const stageCut = async (selection: Selection, gens: Generation[], align: boolean, reason: string, background = false, force = false) => {
+    if (!currentContents(selection)) return;
+    const pending = background ? null : beginPreparation(selection.intent!, selection.seq);
+    if (!background) { readyDrag.current = {}; setDragItems({}); setSelectionPhase(""); }
+    try {
+      let targetWork = intentTarget.current;
+      if (!targetWork || targetWork.intent !== selection.intent) {
+        targetWork = { intent: selection.intent!, align, reason, force };
+        intentTarget.current = targetWork;
+      }
+      if (!targetWork.done) {
+        const request = targetWork;
+        if (!request.align) request.done = Promise.resolve(true);
+        else {
+          let moved = false;
+          request.done = enqueue(async () => {
+            if (!currentIntent(selection)) return;
+            const chosen = selected.current!;
+            if (chosen.folder_path === chosen.episode) moved = await alignEpisode(chosen, request.force, request.reason);
+            else {
+              const via = viaOf(chosen), bin = via || binOf(chosen);
+              if (bin && (via || lastBin.current === bin)) { followed(bin); moved = true; }
+              else {
+                const result = await aim(chosen, request.reason);
+                noteTarget(chosen, result);
+                if (!currentIntent(chosen)) return;
+                check(result); moved = aimed(chosen, result);
+              }
+            }
+            if (moved && currentIntent(selection)) await settleLeftovers();
+          }).then(() => { request.settled = true; return moved; });
+        }
+      }
+      if (!await targetWork.done || !currentContents(selection) || selection.folder_path === selection.episode) return;
+      const capped = selection.capped || gens.length > 200;
+      gens = [...gens].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id)).slice(0, 200);
+      if (!background) setSelectionPhase(t("받는 중"));
+      for (const gen_ids of cacheBatches(gens.map(gen => gen.id))) {
+        const cached = await panel.cache({ ...selection, gen_ids });
+        if (!currentContents(selection)) return;
+        for (const item of cached.items || []) if (item.state === "cached") cachedIds.current.add(cacheKey(selection.ctx, selection.project_id, item.gen_id));
+        setPreviews(previous => ({ ...previous, ...Object.fromEntries((cached.items || []).filter(item => item.state === "cached"
+          && item.preview_url?.startsWith("/media/")).map(item => [item.gen_id, item.preview_url!])) }));
+        if (cached.state) check(cached as { state: string });
+        const failed = cached.items.filter(item => item.state !== "cached");
+        if (failed.length) throw new Error(failed.map(item => item.gen_id + ": " + item.error).join(", "));
+      }
+      if (!currentContents(selection)) return;
+      await enqueue(async () => {
+        if (!currentContents(selection)) return;
+        if (!background) setSelectionPhase(t("넣는 중"));
+        const bin = viaOf(selection) || binOf(selection);
+        const result = await panel.stage({ ...writer(selection), reason, capped, gen_ids: gens.map(gen => gen.id), ...(bin ? { bin_id: bin } : {}) });
+        if (!currentContents(selection)) return;
+        check(result);
+        if (!sameDavinci(selection, result)) return;
+        setStage(result);
+        if (result.state === "ok" && result.resolve_project_id === davinciRef.current) {
+          readyDrag.current = result.drag_items || {}; setDragItems(readyDrag.current);
+          resolveCheckedAt.current = Date.now();
+        }
+        const failed = stageSummary(result).failed.map(item => itemName(item.gen_id) + ": " + panelFailure(item.state));
+        if (!["ok", "stale"].includes(result.state)) failed.push(typeof result.details === "string" ? result.details : panelFailure(result.state));
+        if (failed.length) setFailures(previous => [...new Set([...previous, ...failed])]);
+        const deferred = result.deferred || result.items?.some(item => item.state === "deferred");
+        setSelectionPhase(result.state !== "ok" ? panelFailure(result.state) : deferred ? t("선택한 빈에서 가져오기 대기") : "");
+        if (result.bin_path) setNotice(t("리졸브 빈") + ": " + result.bin_path);
+      }, background, background, () => currentContents(selection), true);
+    } catch (error) {
+      if (currentContents(selection)) { setSelectionPhase(""); setFailures(previous => [...new Set([...previous, errorText(error)])]); }
+    } finally {
+      if (currentContents(selection)) setSelectionPhase(phase => phase === t("받는 중") || phase === t("넣는 중") ? "" : phase);
+      endPreparation(pending);
     }
-    const via = viaOf(selection);
-    let bin = via || binOf(selection);
-    // 다빈치에서 이 컷 빈에 들어온 것을 따라왔다 — target 없이 가져온다(그사이 다빈치가 떠났으면 stage 가 보류한다)
-    if (align && bin && (via || lastBin.current === bin)) followed(bin);
-    else if (align) {
-      const result = await aim(selection, reason);
-      noteTarget(selection, result);
-      if (!valid(selection) || selected.current !== selection) return false;
-      check(result);
-      if (!aimed(selection, result)) return false;
-      bin = binOf(selection);
-    }
-    const result = await panel.stage({ ...writer(selection), reason, capped, gen_ids: gens.map(gen => gen.id), ...(bin ? { bin_id: bin } : {}) });
-    if (!valid(selection) || selected.current !== selection) return true;
-    check(result);
-    if (!sameDavinci(selection, result)) return false;
-    setStage(result);
-    if (result.state === "ok" && result.resolve_project_id === davinciRef.current) {
-      readyDrag.current = result.drag_items || {}; setDragItems(readyDrag.current);
-      resolveCheckedAt.current = Date.now();
-    }
-    const failed = stageSummary(result).failed.map(item => itemName(item.gen_id) + ": " + panelFailure(item.state));
-    if (!["ok", "stale"].includes(result.state)) failed.push(typeof result.details === "string" ? result.details : panelFailure(result.state));
-    if (failed.length) setFailures(previous => [...new Set([...previous, ...failed])]);
-    if (result.bin_path) setNotice(t("리졸브 빈") + ": " + result.bin_path);
-    return true;
   };
-  // 에피소드(cut = "")나 컷을 고른다. 같은 에피소드 안에서는 지우지 않는다(Jay 결정 1) — 다른 에피소드면 새 target 뒤에 앞 에피소드를 정리한다(결정 2).
   const selectFolder = useCallback((project_id: string, episode: string, cut: string, gens: Generation[], capped = false, cuts: string[] = []) => {
-    readyDrag.current = {}; setDragItems({});
+    readyDrag.current = {}; setDragItems({}); setSelectionPhase("");
     const previous = selected.current, ctx = context.current;
     if (previous?.project_id !== project_id || previous?.episode !== episode) {
       precacheRun.current++; fillRun.current = null; stableBin.current = null; setFillProgress(null);
@@ -481,37 +595,32 @@ export function useResolvePanel() {
     const folder_path = cut || episode;
     const via = followRef.current?.key === JSON.stringify([project_id, episode, cut]) ? followRef.current.bin : "";
     followRef.current = null;
+    const intent = preparation.current?.seq === undefined && preparation.current ? preparation.current.intent : ++intentNumber.current;
     const selection = ctx && project_id && folder_path
-      ? { ctx, project_id, folder_path, episode, cuts, via, capped, resolveProject: davinciRef.current, window: windowId, seq: ++sequence.current, revision: revision.current } : null;
+      ? { ctx, project_id, folder_path, episode, cuts, via, capped, resolveProject: davinciRef.current, window: windowId, seq: ++sequence.current, revision: revision.current, intent } : null;
     selected.current = selection; setStage(null); autoTried.current = "";
+    intentTarget.current = null;
     if (AUTO_CLEANUP && previous && !sameEpisode(previous, selection)) leftovers.current.push(previous);
-    void enqueue(async () => {
-      // 선택을 풀면(프로젝트 바꿈) 맞출 빈이 없다 — 그때도 다빈치가 들어가 있는 빈은 settleEpisode 가 건너뛴다
-      const moved = !selection || await (cut ? stageCut(selection, gens, true, via ? "follow" : "select") : alignEpisode(selection, !sameEpisode(previous, selection)));
-      if (moved && stillAt(selection)) await settleLeftovers(); // 그사이 또 골랐으면 그 선택이 맞춘 뒤에 정리한다
-    });
+    if (selection) void stageCut(selection, gens, true, via ? "follow" : "select", false, !sameEpisode(previous, selection));
+    else { endPreparation(preparation.current); void enqueue(settleLeftovers); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId]);
   const updateSet = useCallback((gens: Generation[], capped = false) => {
-    readyDrag.current = {}; setDragItems({});
+    readyDrag.current = {}; setDragItems({}); setSelectionPhase("");
     generations.current = gens;
     const selection = selected.current;
-    if (!selection) return;
+    if (!selection || !currentIntent(selection)) return;
     const next = { ...selection, capped, seq: ++sequence.current };
     selected.current = next;
-    void enqueue(() => stageCut(next, gens, false, "update"));
+    void stageCut(next, gens, false, "update");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // [맞추기]·에피소드를 다시 누름 — 에피소드면 지금 트리의 컷 목록(cuts)으로 그사이 생긴 컷 빈도 만든다
   const align = (cuts?: string[]) => {
     if (!selected.current) return;
-    // 사람이 누른 맞추기는 따라온 선택이어도 target 을 낸다
-    const chosen = { ...selected.current, via: "", ...(Array.isArray(cuts) ? { cuts } : {}) };
+    const intent = interact();
+    const chosen = { ...selected.current, intent, via: "", ...(Array.isArray(cuts) ? { cuts } : {}) };
     selected.current = chosen; autoTried.current = "";
-    void enqueue(async () => {
-      const moved = chosen.folder_path === chosen.episode ? await alignEpisode(chosen, true, "align") : await stageCut(chosen, generations.current, true, "align");
-      if (moved && stillAt(chosen)) await settleLeftovers();
-    });
+    void stageCut(chosen, generations.current, true, "align", false, true);
   };
   // 실시간 — 고른 에피소드에 빈 표 없는 활성 컷이 생겼다: 사람이 보던 지금 빈을 지키며 만들고 줄 세운다(target keep_current, 지금 선택의 seq).
   //  busy·stale 이 아닌 실패면 같은 활성 컷 묶음으로는 다시 자동으로 부르지 않는다(실패마다 저장·백업이 되풀이되지 않게).
@@ -526,7 +635,7 @@ export function useResolvePanel() {
     void enqueue(async () => {
       try {
         const now = selected.current;
-        if (!now || !valid(now) || !sameEpisode(now, selection)) return;
+        if (!valid(selection) || !now || !valid(now) || !sameEpisode(now, selection)) return;
         const result = await panel.target({ ...writer(now), reason: "sync", folder_path: now.episode, create: true, episode_path: now.episode,
           create_paths: cuts, keep_current: true });
         noteTarget(now, result); // 돌려준 bin_id 는 되돌린 사람의 지금 빈 — lastBin·목적 빈으로 쓰지 않는다
@@ -548,11 +657,11 @@ export function useResolvePanel() {
         autoNext.current = null;
         if (next) syncRef.current(next);
       }
-    });
+    }, true);
   };
   const syncCuts = useCallback((cuts: string[]) => syncRef.current(cuts), []);
   // 미리 캐시 — 에피소드 컷 순서로 받는다. 고른 컷의 받기·띄우기는 대기열에서 우선한다.
-  //  선택의 일이 먼저: 요청마다 쓰기 대기열이 빌 때까지 기다린다. 새 선택의 cache·target 은 허브에서 seq 를 올려 이 요청을 파일 사이에서 멈춘다.
+  //  선택의 일이 먼저: 최신 선택 준비가 끝나야 다음 받기를 시작한다. 새 선택의 cache·target 은 허브에서 seq 를 올려 이 요청을 파일 사이에서 멈춘다.
   //  한 판은 시작 때의 프로젝트·에피소드·계정 문맥·목록에 묶인다. seq 는 지금 선택의 것(정리용 순번이 선택을 stale 로 만들지 않게).
   //  cached로 확인된 것만 다시 묻지 않는다. 미완료 항목은 같은 판에서 재개하고 진행 줄에 남긴다.
   // 판이 그대로이고 같은 문맥·프로젝트·에피소드를 고르고 있으면 지금 선택(미리 캐시·미리 띄우기·이름 뒤따르기가 같이 쓴다)
@@ -564,7 +673,7 @@ export function useResolvePanel() {
   };
   const toCuts = (ep: EpisodeBins, cuts: PrecacheCut[]): PanelCut[] => cuts.filter(([path, ids]) => ep.bins[path] && ids.length)
     .map(([folder_path, gen_ids, capped]) => ({ folder_path, bin_id: ep.bins[folder_path], gen_ids, ...(capped ? { capped } : {}) }));
-  // 이름 뒤따르기 — 대기열에 작은 작업(10개·읽기 40개)을 이어 넣는다. 이어갈 자리(after)가 남아 있으면 그 자리부터(자리가 앞으로 가는 것이 진전),
+  // 이름 뒤따르기 — 대기열에 작은 작업(5개·읽기 20개)을 이어 넣는다. 이어갈 자리(after)가 남아 있으면 그 자리부터(자리가 앞으로 가는 것이 진전),
   //  끝까지 훑었는데 도중에 못 바꾼 것이 있었으면 처음부터 한 번만 더. 판이 바뀌면 멈춘다.
   const renameStep = (plan: FillRun) => {
     if (plan.renaming || !plan.renameCuts.size) return;
@@ -576,7 +685,7 @@ export function useResolvePanel() {
         const now = runLive(plan.run, plan.ctx, plan.project_id, plan.episode);
         const ep = now && episodeOf(now);
         if (!now || !ep || !toCuts(ep, cuts).length) return;
-        const result = await panel.rename({ ...writer(now), reason: "rename", folder_path: plan.episode, cuts: toCuts(ep, cuts), limit: 10, ...(after ? { after } : {}) });
+        const result = await panel.rename({ ...writer(now), reason: "rename", folder_path: plan.episode, cuts: toCuts(ep, cuts), limit: 5, ...(after ? { after } : {}) });
         if (!runLive(plan.run, plan.ctx, plan.project_id, plan.episode)) return;
         check(result);
         if (!sameDavinci(now, result) || result.state !== "ok") return;
@@ -591,7 +700,7 @@ export function useResolvePanel() {
           else renameStep(plan);
         }
       }
-    });
+    }, true, true, () => !!runLive(plan.run, plan.ctx, plan.project_id, plan.episode));
     step();
   };
   const fillPending = (cut: FillCut) => cut.cut[1].filter(id => !filled(cut.states.get(id)) && (cut.failures.get(id) || 0) < 2);
@@ -689,14 +798,14 @@ export function useResolvePanel() {
             setFailures(list => [...new Set([...list, errorText(error), t("다빈치 지금 빈·클립을 확인해 주세요")])]);
           }
           showFill(plan);
-        });
+        }, true, true, () => !!live());
       };
       const interrupted = new Map<FillCut, Set<string>>();
       for (let pass = 0; pass < 2; pass++) for (const cut of plan.cuts) {
         if (!live()) return;
         // 선택의 cache·target·stage 가 먼저 끝난 뒤 현재 seq 로 받는다.
         for (const batch of cacheBatches(fillPending(cut).filter(id => !cached(id) && (!pass || interrupted.get(cut)?.has(id))))) {
-          for (let waited = queue.current; ; waited = queue.current) { await waited; if (waited === queue.current) break; }
+          while (preparation.current) { await preparation.current.done; if (!live()) return; }
           const now = live();
           if (!now) return;
           const gen_ids = batch.filter(id => !cached(id));
@@ -764,7 +873,7 @@ export function useResolvePanel() {
     setSaving(true); setNotice(t("저장 중")); setSaveState({ phase: "saving", step: t("확인 중") });
     const rev = revision.current;
     const epoch = authEpoch.current, ownerGeneration = ctx.generation;
-    const saveContextValid = () => authEpoch.current === epoch && revision.current === rev
+    const saveContextValid = () => active.current && authEpoch.current === epoch && revision.current === rev
       && contextKey(context.current) === contextKey(ctx) && context.current?.writer === true
       && context.current.generation === ownerGeneration && hasResolveBridge(window.mvhubResolve);
     const checkSaveContext = () => {
@@ -873,7 +982,7 @@ export function useResolvePanel() {
         if (savedOk && saveContextValid()) {
           const now = selected.current;
           if (now && valid(now) && now.resolveProject === savedProject && now.folder_path !== now.episode) {
-            void enqueue(async () => { if (saveContextValid()) await stageCut(now, generations.current, false, "save-refill"); });
+            if (!preparation.current) void stageCut(now, generations.current, false, "save-refill", true);
           }
           if (last) precache(last.project_id, last.episode, last.cuts);
         }
@@ -884,7 +993,11 @@ export function useResolvePanel() {
     adopted.current.clear(); failedAdoptions.current.clear(); recovered.current = ""; setFailures([]);
     setRecoveryRun(value => value + 1);
     const selection = selected.current;
-    if (selection && selection.folder_path !== selection.episode) void enqueue(() => stageCut(selection, generations.current, false, "retry"));
+    if (selection) {
+      const chosen = { ...selection, intent: interact() };
+      selected.current = chosen;
+      void stageCut(chosen, generations.current, chosen.folder_path === chosen.episode, "retry");
+    }
   };
   const takeover = async () => {
     if (!hasResolveBridge(window.mvhubResolve)) return;
@@ -899,14 +1012,16 @@ export function useResolvePanel() {
     let timer: ReturnType<typeof setTimeout>;
     // 선택이 없어도 읽는다 — 열린 다빈치 프로젝트 ID 를 알아야 그 프로젝트의 저장된 선택을 꺼내고, 바뀌면 앞 일을 버린다
     const poll = async () => {
-      if (document.visibilityState !== "hidden" && context.current?.writer && hasResolveBridge(window.mvhubResolve)) {
-        await enqueue(async () => {
+      if (!mounted) return;
+      if (document.visibilityState !== "hidden" && context.current?.writer && hasResolveBridge(window.mvhubResolve) && !pollPending.current) {
+        pollPending.current = true;
+        try { await enqueue(async () => {
           const ctx = context.current;
-          if (!ctx?.writer) return;
+          if (!mounted || !active.current || !ctx?.writer || document.visibilityState === "hidden") return;
           const selection = selected.current && valid(selected.current) ? selected.current : null;
           let result: TargetResult;
           try { result = await panel.currentBin(ctx, selection?.project_id ?? "", selection?.folder_path ?? ""); }
-          catch (error) { stableBin.current = null; throw error; }
+          catch (error) { stableBin.current = null; quietBin.current = null; throw error; }
           if (contextKey(ctx) !== contextKey(context.current) || ctx.generation !== context.current?.generation || !context.current?.writer) { stableBin.current = null; return; }
           check(result);
           if (result.state === "ok") noteDavinci(result.resolve_project_id);
@@ -915,8 +1030,14 @@ export function useResolvePanel() {
             currentRef.current = result; setCurrent(result);
             resolveCheckedAt.current = result.state === "ok" ? Date.now() : 0;
           }
+          const awaitingTarget = intentTarget.current?.align && !intentTarget.current.settled;
+          const changed = !awaitingTarget && stillAt(selection) && result.state === "ok" && !!result.bin_id && result.bin_id !== lastBin.current;
+          if (changed) interact();
           const stable = stableBin.current;
           if (result.state === "ok" && result.bin_id && result.resolve_project_id) {
+            const quiet = quietBin.current;
+            quietBin.current = { bin: result.bin_id, project: result.resolve_project_id, at: Date.now(),
+              count: quiet?.bin === result.bin_id && quiet.project === result.resolve_project_id ? quiet.count + 1 : 1 };
             const count = stable?.project === result.resolve_project_id && stable.bin === result.bin_id && stable.ctx.generation === ctx.generation ? stable.count + 1 : 1;
             stableBin.current = { project: result.resolve_project_id, bin: result.bin_id, count, ctx, at: Date.now() };
             const plan = fillRun.current;
@@ -925,29 +1046,30 @@ export function useResolvePanel() {
               if (plan.blockedBin !== result.bin_id) plan.blockedBin = undefined;
               if (!plan.blockedBin) fillEpisode(plan, result.bin_id);
             }
-          } else stableBin.current = null;
+          } else { stableBin.current = null; quietBin.current = null; }
           // 다빈치에서 빈을 옮겼다(바뀔 때 한 번만) — 이 에피소드의 컷 빈이면 그 컷으로, 에피소드 빈이면 컷 선택을 풀고 따라간다.
           //  bins 밖 빈(사람 빈·다른 에피소드)은 아무것도 하지 않는다.
           //  응답을 기다리는 사이 다른 자리를 골랐으면 반영하지 않는다(다음 읽기가 새 선택으로 다시 본다).
-          if (stillAt(selection) && result.state === "ok" && result.bin_id && result.bin_id !== lastBin.current) {
-            lastBin.current = result.bin_id;
+          if (changed) {
+            lastBin.current = result.bin_id!;
             const ep = episodeOf(selection);
             const owners = ep ? Object.entries(ep.bins).filter(([, id]) => id === result.bin_id) : [];
             const cut = owners.length === 1 ? owners[0][0] : ep && result.bin_id === ep.episodeBin ? "" : null;
             const here = selection.folder_path === selection.episode ? "" : selection.folder_path;
             setHere(ep && cut !== null ? cut || ep.episode : "");
             if (ep && cut !== null && cut !== here) {
-              followRef.current = { key: JSON.stringify([ep.project_id, ep.episode, cut]), bin: result.bin_id };
+              followRef.current = { key: JSON.stringify([ep.project_id, ep.episode, cut]), bin: result.bin_id! };
               setFollow(previous => ({ project: ep.project_id, episode: ep.episode, cut, n: (previous?.n || 0) + 1 }));
             } else if (ep && cut && selected.current) {
               // 이미 고른 컷 빈에 다시 들어왔다(보류됐던 것) — target 없이 한 번 가져온다
-              const now = selected.current;
-              void enqueue(() => stageCut(now, generations.current, false, "reenter"));
-            }
+              const now = { ...selected.current, intent: intentNumber.current };
+              selected.current = now;
+              void stageCut(now, generations.current, false, "reenter");
+            } else endPreparation(preparation.current);
           }
           // 새 NAS 전환은 [저장]에서만 시작한다. 사용 감지는 표시만 갱신한다.
-        });
-      } else stableBin.current = null; // 숨긴 동안의 두 읽기는 연속 관측이 아니다
+        }); } finally { pollPending.current = false; }
+      } else if (document.visibilityState === "hidden") { stableBin.current = null; quietBin.current = null; }
       // 따라갈 빈 표가 있으면 0.7초, 없으면 2초 — 자식 프로세스(~0.17초)를 따라갈 것이 있을 때만 자주 띄운다(11-12 띄움 속도)
       const now = selected.current;
       if (mounted) timer = setTimeout(() => void poll(), now && valid(now) && episodeOf(now) ? 700 : 2000);
@@ -967,9 +1089,9 @@ export function useResolvePanel() {
       let after: [string, string] | undefined;
       const all: InventoryItem[] = [];
       do {
-        if (rev !== revision.current || !context.current?.writer || !hasResolveBridge(window.mvhubResolve)) return;
+        if (!active.current || rev !== revision.current || ctx.generation !== context.current?.generation || !context.current?.writer || !hasResolveBridge(window.mvhubResolve)) return;
         const result = await panel.inventory(ctx, after);
-        if (rev !== revision.current || contextKey(ctx) !== contextKey(context.current)) return;
+        if (!active.current || rev !== revision.current || ctx.generation !== context.current?.generation || contextKey(ctx) !== contextKey(context.current)) return;
         check(result);
         if (result.state !== "ok") { recovered.current = ""; throw new Error(String(result.details || result.state)); }
         noteDavinci(result.resolve_project_id);
@@ -1001,7 +1123,7 @@ export function useResolvePanel() {
         if (!sameDavinci(selection, result)) return;
         if (!["ok", "active_bin", "not_seen"].includes(result.state)) throw new Error(panelFailure(result.state));
       }
-    });
+    }, true, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity?.instance, identity?.account, identity?.epoch, identity?.writer, identity?.generation, recoveryRun]);
 
@@ -1021,6 +1143,6 @@ export function useResolvePanel() {
   };
   return { config, needsLogin, authReady, identity, target, current, notice, stage, moved, counts, failures, follow, nas, davinci, here, dragItems, previews, startNativeDrag,
     canRetry: failures.some(failure => !failure.includes(t(RECOVERY_PENDING))),
-    fillProgress, authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache, saveProject, saving, saveState,
+    selectionPhase, interact, fillProgress, authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache, saveProject, saving, saveState,
     onAuthed: () => { setNeedsLogin(false); resetAuth(); } };
 }

@@ -210,6 +210,7 @@ it("목록이 준비된 첫 순간과 강제 맞추기·재시도·NAS 뒤 채�
   await click("맞추기");
   await click("다시");
   await act(async () => host.querySelector<HTMLButtonElement>(".rp-save")!.click()); await flush();
+  await tick(5000); // 빈 표 없는 2초 간격에서도 두 번의 정상 관측을 기다린다.
   expect(mocks.stage.mock.calls.map(([body]) => body.reason)).toEqual(["select", "align", "retry", "save-refill"]);
   expect(mocks.target.mock.calls.map(([body]) => body.reason)).toEqual(["select", "align"]);
   expect(mocks.save.mock.calls[0][0].reason).toBe("save");
@@ -250,7 +251,7 @@ it("트리·상태·전체 워크스페이스, 오른쪽 = 미디어 풀 보기 
   expect(host.querySelector(".ed-pool-sel")).toBeNull();
   expect(mocks.projects.mock.calls[0][0].workspace.scope).toBe("unknown");
   expect(mocks.generations.mock.calls[0][0].allWorkspaces).toBe(true);
-  expect(mocks.cache.mock.invocationCallOrder[0]).toBeLessThan(mocks.target.mock.invocationCallOrder[0]);
+  expect(mocks.target.mock.invocationCallOrder[0]).toBeLessThan(mocks.cache.mock.invocationCallOrder[0]);
   expect(mocks.target.mock.invocationCallOrder[0]).toBeLessThan(mocks.stage.mock.invocationCallOrder[0]);
   // 컷을 눌러도 같은 target 에 에피소드의 생성물 있는 컷(0개 컷 C30 은 빼고)을 실어 빈 표를 받는다
   expect(mocks.target.mock.calls[0][0]).toMatchObject({ create: true, folder_path: "S/C2", episode_path: "S", create_paths: ["S/C2", "S/C10"] });
@@ -899,7 +900,7 @@ it("미리 캐시: 받는 중 에피소드를 바꾸면 옛 판은 남은 컷을
   expect(mocks.cache.mock.calls.map(([body]) => body.folder_path)).toEqual(["S/C2"]); // S/C10 은 묻지 않는다
 });
 
-it("미리 캐시: 기다리는 사이 뒤에 붙은 선택의 일(다시 띄우기)이 먼저", async () => {
+it("미리 캐시: 취소된 옛 준비 대신 최신 선택 준비(다시 띄우기)가 먼저", async () => {
   await render(false);
   const held = deferred<unknown>();
   mocks.target.mockImplementationOnce(() => held.promise);
@@ -907,7 +908,7 @@ it("미리 캐시: 기다리는 사이 뒤에 붙은 선택의 일(다시 띄우
   await act(async () => { control.precache("p", "S", [["S/C2", ["g", "g2"]], ["S/C10", ["g10"]]]); }); await flush();
   await act(async () => { control.retry(); }); await flush(); // 미리 받기가 기다리는 사이 선택의 다시 띄우기가 대기열 뒤에
   await act(async () => held.resolve({ ...destination, bin_id: "b2", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" })); await flush();
-  expect(mocks.cache.mock.calls.map(([body]) => body.gen_ids)).toEqual([["g"], ["g"], ["g2"], ["g10"]]); // 선택·다시 띄우기 → 미리 받기
+  expect(mocks.cache.mock.calls.map(([body]) => body.gen_ids)).toEqual([["g"], ["g2"], ["g10"]]); // 옛 선택은 취소, 최신 다시 띄우기 → 미리 받기
 });
 
 it("미리 캐시: 거르기로 목록이 비면 옛 판도 끝남", async () => {
@@ -939,7 +940,7 @@ it("미리 띄우기: 다 받으면 컷 빈 표의 컷들을 조각(200개 안�
   expect(mocks.prestage.mock.calls.map(([body]) => body.cuts.map((cut: { folder_path: string; bin_id: string; gen_ids: string[] }) => [cut.folder_path, cut.bin_id, cut.gen_ids.length])))
     .toEqual([[["S/C2", "b2", 30], ["S/C10", "b10", 30]]]); // 두 컷을 한 조각으로
   expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ folder_path: "S", episode_bin_id: "epS", expect_project: "r" });
-  expect(mocks.rename.mock.calls.map(([body]) => [body.limit, body.after])).toEqual([[10, undefined], [10, [0, 10]]]); // 이어갈 자리가 없으면 멈춤
+  expect(mocks.rename.mock.calls.map(([body]) => [body.limit, body.after])).toEqual([[5, undefined], [5, [0, 10]]]); // 이어갈 자리가 없으면 멈춤
   expect(mocks.stage).not.toHaveBeenCalled();
 });
 
@@ -1101,6 +1102,7 @@ it("미리 띄우기가 건너뛴 컷은 다른 컷 빈에 두 번 머물러도 
   await act(async () => control.precache("p", "S", [["S/C10", ["g10"]]])); await flush();
   expect(mocks.prestage).not.toHaveBeenCalled();
   await tick(2000); // 선택 전에 예약한 첫 읽기는 2초 뒤
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush(); // React의 따라가기 전달을 완료
   expect(mocks.prestage).not.toHaveBeenCalled();
   await tick(800);
   expect(mocks.prestage).toHaveBeenCalledTimes(1);
@@ -1191,9 +1193,12 @@ async function selectFillEpisode(bin = "epS") {
 }
 
 it("지금 빈 첫 관측이 한 컷이면 그 컷만 보내고 두 번째 관측 뒤 나머지를 재개한다", async () => {
-  await selectFillEpisode("human");
+  await render(false);
+  mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
   mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
-  await tick(700);
+  mocks.prestage.mockImplementation(async body => successfulPrestage(body));
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush();
+  await tick(2000); // 복원한 선택의 첫 관측 — 외부 빈 이동에 따른 보류와 빌리기 안전 판정을 분리
   await act(async () => control.precache("p", "S", [["S/C2", ["g"]], ["S/C10", ["h"]]])); await flush();
   expect(mocks.prestage.mock.calls.map(([body]) => body.cuts.map((cut: { folder_path: string }) => cut.folder_path))).toEqual([["S/C2"]]);
   expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ borrow: false, reason: "fill" });
@@ -1781,4 +1786,355 @@ it("예상과 다른 가져오기는 손대지 않은 개수로 표시", async (
   mocks.stage.mockResolvedValue({ ...destination, unexpected_imports: 2 });
   await render();
   expect(host.textContent).toContain("가져오기가 어긋난 항목 2개 — 손대지 않았습니다");
+});
+
+
+it("선택 우선: 실행 중 rename 뒤에는 읽기·최신 C 선택, 그 다음 배경 — A·B는 취소", async () => {
+  await selectFillEpisode();
+  const name = deferred<unknown>();
+  mocks.rename.mockReturnValueOnce(name.promise).mockResolvedValue({ ...destination, after: null });
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  expect(mocks.rename).toHaveBeenCalledTimes(1);
+  await tick(700); // 실행 중 rename 뒤에 읽기 하나를 예약
+  const before = mocks.target.mock.calls.length;
+  await act(async () => {
+    control.interact(); control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10", "S/C30"]);
+    control.interact(); control.selectFolder("p", "S", "S/C10", [], false, ["S/C2", "S/C10", "S/C30"]);
+    control.interact(); control.selectFolder("p", "S", "S/C30", [], false, ["S/C2", "S/C10", "S/C30"]);
+  }); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(before);
+  mocks.target.mockImplementation(async () => {
+    mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b30" });
+    return { ...fillDestination, bin_id: "b30" };
+  });
+  await act(async () => name.resolve({ ...destination, after: [0, 5] })); await flush();
+  expect(mocks.target.mock.calls.slice(before).map(([body]) => body.folder_path)).toEqual(["S/C30"]);
+  expect(mocks.stage.mock.calls.map(([body]) => body.folder_path)).toEqual(["S/C30"]);
+  await tick(2100);
+  expect(mocks.rename).toHaveBeenCalledTimes(2);
+  expect(mocks.rename.mock.calls[1][0]).toMatchObject({ limit: 5, after: [0, 5] });
+  expect(mocks.stage.mock.invocationCallOrder[0]).toBeLessThan(mocks.rename.mock.invocationCallOrder[1]);
+});
+
+it("긴 선택 cache는 실행자를 놓지만 배경·미리 받기는 막고, 끝나면 안정 관측 뒤 재개", async () => {
+  await selectFillEpisode();
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  await act(async () => {
+    control.interact(); control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"]);
+    control.precache("p", "S", [["S/C2", ["g"]], ["S/C10", ["h"]]]);
+    control.syncCuts(["S/C2", "S/C10", "S/new"]);
+  }); await flush();
+  const reads = mocks.currentBin.mock.calls.length;
+  await tick(7000);
+  expect(mocks.currentBin.mock.calls.length).toBeGreaterThan(reads);
+  expect(mocks.cache).toHaveBeenCalledTimes(1);
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  expect(control.selectionPhase).toBe("받는 중");
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  expect(mocks.cache.mock.calls.map(([body]) => body.gen_ids)).toEqual([["g"], ["h"]]);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+  expect(control.selectionPhase).toBe("");
+});
+
+it("선택 cache 중 다음 컷 target과 읽기는 진행하고 옛 cache는 반영하지 않음", async () => {
+  await render(false);
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  const next = { ...gen, id: "next", folder_path: "S/C10" };
+  mocks.target.mockResolvedValue({ ...destination, bin_id: "b10" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b10" });
+  await act(async () => { control.interact(); control.selectFolder("p", "S", "S/C10", [next]); }); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(2);
+  expect(mocks.stage.mock.calls.map(([body]) => body.gen_ids)).toEqual([["next"]]);
+  await tick(2000);
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached", preview_url: "/media/old.mp4" }] })); await flush();
+  expect(control.previews.g).toBeUndefined();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+});
+
+it.each(["ids", "capped"])("받는 중 같은 폴더 %s 변경은 옛 stage 0·최신 stage 1, 옛 종료는 새 표식을 못 끔", async changed => {
+  await render(false);
+  const oldCache = deferred<unknown>(), newCache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(oldCache.promise).mockReturnValueOnce(newCache.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  const next = changed === "ids" ? { ...gen, id: "next" } : gen;
+  await act(async () => control.updateSet([next], changed === "capped")); await flush();
+  await act(async () => oldCache.resolve({ items: [{ gen_id: "g", state: "cached", preview_url: "/media/old.mp4" }] })); await flush();
+  expect(mocks.stage).not.toHaveBeenCalled();
+  expect(control.previews).toEqual({});
+  expect(control.selectionPhase).toBe("받는 중");
+  await act(async () => newCache.resolve({ items: [{ gen_id: next.id, state: "cached" }] })); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  expect(mocks.stage.mock.calls[0][0]).toMatchObject({ gen_ids: [next.id], capped: changed === "capped" });
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+});
+
+it("target 중 목록 갱신은 target 결과를 승계하고 최신 내용만 stage", async () => {
+  await render(false);
+  const target = deferred<unknown>();
+  mocks.target.mockReturnValueOnce(target.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush();
+  await act(async () => control.updateSet([{ ...gen, id: "new" }], true)); await flush();
+  await act(async () => target.resolve({ ...fillDestination, bin_id: "b2" })); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  expect(control.target?.bin_id).toBe("b2");
+  expect(mocks.cache.mock.calls.map(([body]) => body.gen_ids)).toEqual([["new"]]);
+  expect(mocks.stage.mock.calls[0][0]).toMatchObject({ bin_id: "b2", gen_ids: ["new"], capped: true });
+});
+
+it("같은 폴더 옛 stage 응답이 새 내용의 드래그·진행 표시를 되살리지 않음", async () => {
+  await render(false);
+  const stage = deferred<unknown>(), cache = deferred<unknown>();
+  mocks.stage.mockReturnValueOnce(stage.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  await act(async () => control.updateSet([{ ...gen, id: "new" }])); await flush();
+  await act(async () => stage.resolve({ ...destination, items: [], drag_items: { g: { path: "old", item_id: "old" } } })); await flush();
+  expect(control.dragItems).toEqual({});
+  expect(control.stage).toBeNull();
+  expect(control.selectionPhase).toBe("받는 중");
+  await act(async () => cache.resolve({ items: [{ gen_id: "new", state: "cached" }] })); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(2);
+});
+
+it.each(["ok", "not_clean"])("저장 %s 중 cache 완료: stage는 저장 뒤 한 번, save-refill 중복 없음", async state => {
+  await render(false);
+  const cache = deferred<unknown>(), inventory = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  mocks.inventory.mockReturnValueOnce(inventory.promise);
+  mocks.save.mockResolvedValue({ ...destination, state });
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  await tick(2500);
+  expect(mocks.stage).not.toHaveBeenCalled();
+  const reads = mocks.currentBin.mock.calls.length;
+  await act(async () => inventory.resolve({ ...destination, items: [], more: false })); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  expect(mocks.stage.mock.calls[0][0].reason).toBe("select");
+  expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(mocks.stage.mock.invocationCallOrder[0]);
+  expect(mocks.currentBin.mock.calls.length).toBeGreaterThanOrEqual(reads);
+});
+
+it.each(["target", "cache"])("선택 %s 실패는 뒤 단계를 막고 단계 표시를 지운다", async operation => {
+  await render(false);
+  if (operation === "target") mocks.target.mockResolvedValue({ state: "unavailable" });
+  else mocks.cache.mockRejectedValueOnce(new Error("cache failed"));
+  await act(async () => { control.interact(); control.selectFolder("p", "S", "S/C2", [gen]); }); await flush();
+  expect(mocks.stage).not.toHaveBeenCalled();
+  if (operation === "target") expect(mocks.cache).not.toHaveBeenCalled();
+  else { expect(control.target?.bin_id).toBe("bin"); expect(control.failures).toContain("cache failed"); }
+  expect(control.selectionPhase).toBe("");
+});
+
+it("받는 중 떠나면 target 재호출 없이 보류 이유를 표시한다", async () => {
+  await render(false);
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "deferred" }], deferred: 1 });
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  expect(control.selectionPhase).toBe("선택한 빈에서 가져오기 대기");
+});
+
+it("표 밖 빈·에피소드 선택은 stage 없이도 두 관측 뒤 배경을 재개", async () => {
+  await selectFillEpisode();
+  await act(async () => { control.interact(); control.selectFolder("p", "S", "", [], false, ["S/C2"]); }); await flush();
+  await act(async () => control.syncCuts(["S/C2", "S/new"])); await flush();
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  await tick(1500);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "person-bin" });
+  await tick(700);
+  await act(async () => control.syncCuts(["S/C2", "S/other"])); await flush();
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+  await tick(700);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(2);
+  expect(mocks.stage).not.toHaveBeenCalled();
+});
+
+it("전달 틈만 5초에 끝나며 A의 시한은 B의 긴 cache를 끝내지 않는다", async () => {
+  await selectFillEpisode();
+  await act(async () => { control.interact(); control.syncCuts(["S/C2", "S/new"]); }); await flush();
+  await tick(4000);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  await act(async () => { control.interact(); control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2"]); }); await flush();
+  await tick(6000);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+});
+
+it("요청 없는 전달 틈은 5초 뒤 재개하고 창 숨김은 새 관측 두 번을 요구", async () => {
+  await selectFillEpisode();
+  await act(async () => { control.interact(); control.syncCuts(["S/C2", "S/new"]); }); await flush();
+  await tick(4900);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await tick(2000);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await tick(700);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  await tick(700);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+});
+
+it.each(["generation", "account", "project"])("cache 중 %s 변경은 옛 단계·표식을 무효로 하고 초기 복구를 막지 않는다", async changed => {
+  await render(false);
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  await act(async () => { control.interact(); control.selectFolder("p", "S", "S/C2", [gen]); }); await flush();
+  if (changed === "project") mocks.currentBin.mockResolvedValue({ ...destination, resolve_project_id: "other" });
+  else mocks.identity.mockResolvedValue({ ...identity, generation: 2, ...(changed === "account" ? { account: "other", epoch: 2 } : {}) });
+  await tick(2500);
+  expect(control.selectionPhase).toBe("");
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached", preview_url: "/media/old.mp4" }] })); await flush();
+  expect(mocks.stage).not.toHaveBeenCalled();
+  expect(control.previews).toEqual({});
+  if (changed !== "project") expect(mocks.inventory.mock.calls.length).toBeGreaterThan(1);
+});
+
+
+it("NAS보다 먼저 대기한 stage도 실행 직전 저장 상태를 보고 저장 뒤로 미룬다", async () => {
+  await selectFillEpisode();
+  mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush();
+  const name = deferred<unknown>();
+  mocks.rename.mockReturnValueOnce(name.promise);
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  await tick(1500);
+  expect(mocks.rename).toHaveBeenCalledTimes(1);
+  await act(async () => control.updateSet([{ ...gen, id: "new" }])); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  mocks.inventory.mockResolvedValue({ ...destination, items: [{
+    project_id: "p", folder_path: "S/C2", resolve_project_id: "r", bin_id: "b2", gen_id: "g", item_id: "i", usage: 1,
+  }], more: false }); // pinned()의 전체 sequence 증가가 선택 내용 판을 무효로 하지 않음
+  await act(async () => control.saveProject("p", "S/C2")); await flush();
+  await act(async () => name.resolve({ ...destination, after: null })); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(2);
+  expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(mocks.stage.mock.invocationCallOrder[1]);
+  expect(mocks.stage.mock.calls[1][0]).toMatchObject({ gen_ids: ["new"], reason: "update" });
+});
+
+it("읽기가 진행 중인 담당 세대 교체에도 current-bin은 하나만 유지", async () => {
+  await render(false);
+  const held = deferred<unknown>();
+  mocks.currentBin.mockReturnValueOnce(held.promise);
+  await tick(2000);
+  const count = mocks.currentBin.mock.calls.length;
+  mocks.identity.mockResolvedValue({ ...identity, generation: 2, writer: false });
+  await tick(1600);
+  mocks.identity.mockResolvedValue({ ...identity, generation: 3, writer: true });
+  await tick(3000);
+  expect(mocks.currentBin).toHaveBeenCalledTimes(count);
+  await act(async () => held.resolve(destination)); await flush();
+  await tick(2500);
+  expect(mocks.currentBin.mock.calls.length).toBeGreaterThan(count);
+});
+
+it("보류 중 읽기 실패는 연속 관측을 끊고, 다음 정상 관측 두 번 뒤 배경 재개", async () => {
+  await selectFillEpisode();
+  await act(async () => { control.interact(); control.selectFolder("p", "S", "", [], false, ["S/C2"]); control.syncCuts(["S/C2", "S/new"]); }); await flush();
+  // target과 같은 epS를 관측해야 이 시험은 외부 빈 이동과 독립이다.
+  mocks.currentBin.mockReset().mockResolvedValueOnce({ ...destination, bin_id: "epS" })
+    .mockRejectedValueOnce(new Error("read failed")).mockResolvedValue({ ...destination, bin_id: "epS" });
+  await tick(1500);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  await tick(700);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  await tick(700);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+});
+
+it("오래된 안정 관측으로 긴 준비가 끝나도 배경을 열지 않고 새 읽기를 기다린다", async () => {
+  await selectFillEpisode();
+  const cache = deferred<unknown>(), read = deferred<unknown>();
+  mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  await act(async () => {
+    control.interact(); control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2"]);
+    control.syncCuts(["S/C2", "S/new"]);
+  }); await flush();
+  await tick(1500); // 최신 관측 두 번
+  mocks.currentBin.mockReturnValueOnce(read.promise);
+  await tick(3000);
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(0);
+  await act(async () => read.resolve({ ...destination, bin_id: "b2" })); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync")).toHaveLength(1);
+});
+
+it("대기하던 sync는 계정이 바뀌면 취소되고 busy 정리 뒤 새 계정 sync가 가능", async () => {
+  await selectFillEpisode();
+  await act(async () => { control.interact(); control.syncCuts(["S/C2", "S/old"]); }); await flush();
+  mocks.identity.mockResolvedValue({ ...identity, account: "other", epoch: 2, generation: 2 });
+  await tick(1600);
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
+  await act(async () => control.syncCuts(["S/C2", "S/new"])); await flush();
+  expect(mocks.target.mock.calls.filter(([body]) => body.reason === "sync").map(([body]) => body.create_paths))
+    .toEqual([["S/C2", "S/new"]]);
+});
+
+it("화면의 실제 새 선택만 보류: 같은 에피소드 다시 누르기는 진행 중 rename을 막지 않음", async () => {
+  mocks.target.mockResolvedValue(fillDestination);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
+  mocks.prestage.mockImplementation(async body => successfulPrestage(body));
+  await render();
+  await act(async () => row("S")!.click()); await flush();
+  await tick(5000);
+  const held = deferred<unknown>();
+  mocks.rename.mockReturnValueOnce(held.promise).mockResolvedValue({ ...destination, after: null });
+  // 새 생성물 목록이 미리 채우기를 다시 시작한다.
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, { ...gen, id: "new" }], reload: mocks.listReload, startedAt: 2 });
+  await render(); await tick(1400);
+  const count = mocks.rename.mock.calls.length;
+  expect(count).toBeGreaterThan(0);
+  await act(async () => row("S")!.click()); await flush();
+  await act(async () => held.resolve({ ...destination, after: [0, 5] })); await flush();
+  expect(mocks.rename.mock.calls.length).toBe(count + 1);
+});
+
+it("화면에서 새 컷 목록을 기다리는 동안 배경은 멈추고, 준비 단계가 상태 줄에 표시", async () => {
+  mocks.target.mockImplementation(async body => {
+    const bin = body.folder_path === "S" ? "epS" : body.folder_path === "S/C10" ? "b10" : "b2";
+    mocks.currentBin.mockResolvedValue({ ...destination, bin_id: bin });
+    return { ...fillDestination, bin_id: bin };
+  });
+  mocks.prestage.mockImplementation(async body => successfulPrestage(body));
+  await render(); await tick(3000);
+  const name = deferred<unknown>();
+  mocks.rename.mockReturnValueOnce(name.promise).mockResolvedValue({ ...destination, after: null });
+  mocks.generations.mockReturnValue({ state: "ok", gens: [gen, { ...gen, id: "new" }], reload: mocks.listReload, startedAt: 2 });
+  await render(); await tick(1400);
+  const names = mocks.rename.mock.calls.length;
+  mocks.generations.mockReturnValue({ state: "loading", gens: [], reload: mocks.listReload, startedAt: 3 });
+  await act(async () => row("S/C10")!.click()); await flush();
+  await act(async () => name.resolve({ ...destination, after: [0, 5] })); await flush();
+  await tick(2100);
+  expect(mocks.rename).toHaveBeenCalledTimes(names);
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  mocks.generations.mockReturnValue({ state: "ok", gens: [{ ...gen, id: "next", folder_path: "S/C10" }], reload: mocks.listReload, startedAt: 3 });
+  await render();
+  expect(host.querySelector(".resolve-panel-status")!.textContent).toContain("받는 중");
+  mocks.stage.mockResolvedValue({ ...destination, bin_id: "b10", deferred: 1 });
+  await act(async () => cache.resolve({ items: [{ gen_id: "next", state: "cached" }] })); await flush();
+  expect(host.querySelector(".resolve-panel-status")!.textContent).toContain("선택한 빈에서 가져오기 대기");
 });
