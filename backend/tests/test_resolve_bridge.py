@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
@@ -758,6 +759,171 @@ class PanelStagingTests(unittest.TestCase):
         self.run_op("unstage", items=[], bin_id=self.folder.unique_id)
         self.assertEqual(self.folder.clips, [duplicate, person])
         self.assertEqual(self.manager.saved, 0)
+
+    def test_unstage_sweep_matches_single_calls_and_walks_root_once(self):
+        hub = self.pool.root.children[0]
+        twin = self.pool.AddSubFolder(self.pool.root, resolve_bridge.MEDIA_POOL_ROOT)
+        outside = self.pool.AddSubFolder(self.pool.root, "Human")
+        folders = [self.folder, hub, twin, outside]
+        changing_ids = set()
+        for folder in folders:
+            for kind in ("unused", "unknown", "used", "changing", "duplicate", "missing", "nas", "foreign", "other_hub"):
+                clip = FakeClip(str(self.path))
+                resolve_bridge._panel_stamp(clip, kind, "q" if kind == "foreign" else "p", lambda: None,
+                                            hub_key="other" if kind == "other_hub" else "hub")
+                if kind == "unknown": clip.usage = ""
+                if kind == "used": clip.usage = "1"
+                if kind == "changing": changing_ids.add(clip.unique_id)
+                if kind == "duplicate": clip.unique_id += "-copy"
+                if kind == "missing": clip.path = str(self.media / "missing.png")
+                if kind == "nas":
+                    nas = Path(self.tmp.name) / "nas.png"
+                    nas.write_bytes(b"image")
+                    clip.path = str(nas)
+                folder.clips.append(clip)
+        rows = [{"bin_id": folder.unique_id, "folder_path": f"S/C{n}"} for n, folder in enumerate(folders)]
+        rows.append({"bin_id": "missing-bin", "folder_path": "S/missing"})
+        original = copy.deepcopy(self.pool)
+        read_property = FakeClip.GetClipProperty
+        def snapshot(folder):
+            return (folder.unique_id, [clip.unique_id for clip in folder.clips], [snapshot(child) for child in folder.children])
+        outcomes = []
+        for batch in (False, True):
+            self.pool = copy.deepcopy(original)
+            self.project.media_pool = self.pool
+            reads = {}
+            def usage(clip, key=None):
+                if key == "Usage" and clip.unique_id in changing_ids:
+                    reads[clip.unique_id] = reads.get(clip.unique_id, 0) + 1
+                    return "0" if reads[clip.unique_id] == 1 else "1"
+                return read_property(clip, key)
+            walk = resolve_bridge._panel_walk
+            roots = []
+            def counted(folder, *args):
+                if folder is self.pool.root: roots.append(folder)
+                yield from walk(folder, *args)
+            with mock.patch.object(FakeClip, "GetClipProperty", usage), \
+                    mock.patch.object(resolve_bridge, "_panel_walk", side_effect=counted), \
+                    mock.patch.object(self.pool, "DeleteFolders", side_effect=AssertionError("no bin deletion")), \
+                    mock.patch.object(self.pool, "SetCurrentFolder", side_effect=AssertionError("no navigation")):
+                if batch:
+                    result = self.run_op("unstage", bins=rows, items=[])
+                    self.assertEqual(len(roots), 1)
+                    results = result["bin_results"]
+                    self.assertEqual(result["removed"], 3)
+                else:
+                    results = [self.run_op("unstage", **row, items=[]) for row in rows]
+            self.assertEqual([row["state"] for row in results], ["ok", "ok", "ok", "not_seen", "not_seen"])
+            outcomes.append((snapshot(self.pool.root), self.pool.current.unique_id,
+                             [row.get("removed", 0) for row in results]))
+        self.assertEqual(outcomes[0], outcomes[1])
+        self.assertEqual(self.manager.saved, 0)
+
+    def test_unstage_sweep_duplicate_id_uses_first_folder(self):
+        clip = self.staged()
+        twin = self.pool.AddSubFolder(self.pool.root.children[0], "duplicate-id")
+        twin.unique_id = self.folder.unique_id
+        twin.clips.append(FakeClip(str(self.path)))
+        result = self.run_op("unstage", bins=[{"bin_id": twin.unique_id, "folder_path": "S/C1"}])
+        self.assertEqual(result["removed"], 1)
+        self.assertNotIn(clip, self.folder.clips)
+        self.assertEqual(len(twin.clips), 1)
+
+    def test_unstage_sweep_isolates_each_read_or_resolve_error(self):
+        folders = [self.folder, self.pool.AddSubFolder(self.pool.root.children[0], "second"),
+                   self.pool.AddSubFolder(self.pool.root.children[0], "third")]
+        rows = [{"bin_id": folder.unique_id, "folder_path": f"S/C{n}", "same_file_ids": [str(n)]}
+                for n, folder in enumerate(folders)]
+        for error in (resolve_bridge._Unknown("unreadable"), RuntimeError("read failed"),
+                      resolve_bridge.ResolveBridgeError("failed", code="resolve_error")):
+            with self.subTest(error=type(error).__name__):
+                error.leftover = {"import_records": [{"item_id": "pending"}]}
+                with mock.patch.object(resolve_bridge, "_panel_stage", side_effect=[
+                    {"state": "ok", "removed": 2, "import_records": [{"item_id": "first"}]}, error,
+                    {"state": "ok", "removed": 1, "import_records": []}]) as stage:
+                    result = self.run_op("unstage", bins=rows)
+                self.assertEqual((result["state"], result["removed"]), ("ok", 3))
+                self.assertEqual([row["state"] for row in result["bin_results"]], ["ok", "unavailable", "ok"])
+                self.assertEqual([record["item_id"] for row in result["bin_results"] for record in row["import_records"]], ["first", "pending"])
+                for n, call in enumerate(stage.call_args_list):
+                    self.assertEqual((call.args[2]["folder_path"], call.args[2]["same_file_ids"], call.args[2]["items"]),
+                                     (rows[n]["folder_path"], [str(n)], []))
+
+    def test_unstage_sweep_stop_codes_preserve_completed_and_pending_records(self):
+        rows = [{"bin_id": self.folder.unique_id, "folder_path": f"S/C{n}"} for n in range(3)]
+        for code in resolve_bridge._PANEL_STOP_CODES:
+            with self.subTest(code=code):
+                error = resolve_bridge.ResolveBridgeError("stop", code=code)
+                error.leftover = {"import_records": [{"item_id": "pending"}]}
+                with mock.patch.object(resolve_bridge, "_panel_stage", side_effect=[
+                    {"state": "ok", "removed": 2, "import_records": [{"item_id": "first"}]}, error]) as stage:
+                    result = self.run_op("unstage", bins=rows)
+                self.assertEqual((result["code"], result["removed"], stage.call_count), (code, 2, 2))
+                self.assertNotEqual(result["state"], "ok")
+                self.assertEqual(result["bin_results"][0]["import_records"], [{"item_id": "first"}])
+                self.assertEqual(result["import_records"], [{"item_id": "pending"}])
+
+    def test_unstage_sweep_second_bin_unreadable_still_cleans_third(self):
+        folders = [self.folder, self.pool.AddSubFolder(self.pool.root.children[0], "second"),
+                   self.pool.AddSubFolder(self.pool.root.children[0], "third")]
+        for folder in folders:
+            clip = FakeClip(str(self.path))
+            resolve_bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key="hub")
+            folder.clips.append(clip)
+        with mock.patch.object(folders[1], "GetClipList", return_value=None):
+            result = self.run_op("unstage", bins=[{"bin_id": folder.unique_id, "folder_path": f"S/C{n}"}
+                                                for n, folder in enumerate(folders)])
+        self.assertEqual((result["state"], result["removed"]), ("ok", 2))
+        self.assertEqual([len(folder.clips) for folder in folders], [0, 1, 0])
+        self.assertEqual([row["state"] for row in result["bin_results"]], ["ok", "unavailable", "ok"])
+        self.assertEqual([row["removed"] for row in result["bin_results"]], [1, 0, 1])
+
+    def test_unstage_sweep_project_switch_before_second_bin_stops(self):
+        self.staged()
+        rows = [{"bin_id": self.folder.unique_id, "folder_path": "S/C1"}] * 3
+        stage = resolve_bridge._panel_stage
+        def switch(*args):
+            result = stage(*args)
+            self.manager.project = None
+            return result
+        with mock.patch.object(resolve_bridge, "_panel_stage", side_effect=switch) as call:
+            result = self.run_op("unstage", bins=rows)
+        self.assertEqual((result["code"], result["removed"], call.call_count), ("project_changed", 1, 1))
+        self.assertEqual(len(result["bin_results"]), 1)
+
+    def test_unstage_sweep_unreadable_tree_or_recovery_pending_never_writes(self):
+        self.staged()
+        rows = [{"bin_id": self.folder.unique_id, "folder_path": "S/C1"}]
+        with mock.patch.object(self.pool.root, "GetSubFolderList", return_value=None), \
+                mock.patch.object(self.pool, "DeleteClips") as delete:
+            self.assertEqual(self.run_op("unstage", bins=rows)["state"], "unavailable")
+            delete.assert_not_called()
+        with mock.patch.object(resolve_bridge, "_settle_recovery_record", side_effect=resolve_bridge.ResolveBridgeError(
+                "pending", code="rebuild_recovery_pending")), mock.patch.object(resolve_bridge, "_panel_unstage_bins") as sweep:
+            self.assertEqual(self.run_op("unstage", bins=rows)["state"], "rebuild_recovery_pending")
+            sweep.assert_not_called()
+
+    def test_project_absence_codes_only_describe_explicit_absence(self):
+        with mock.patch.object(self.resolve, "GetProjectManager", return_value=None):
+            result = self.run_op("current-bin")
+            self.assertEqual((result["state"], result["code"]), ("unavailable", "no_project_manager"))
+            self.assertNotIn("resolve_project_id", result)
+        with mock.patch.object(self.manager, "GetCurrentProject", return_value=None):
+            result = self.run_op("current-bin")
+            self.assertEqual((result["state"], result["code"]), ("unavailable", "no_open_project"))
+            self.assertNotIn("resolve_project_id", result)
+        for target, method, value in ((self.resolve, "GetProjectManager", RuntimeError("API failed")),
+                                       (self.manager, "GetCurrentProject", AttributeError("API failed")),
+                                       (self.project, "GetUniqueId", ""), (self.pool, "GetCurrentFolder", None)):
+            with self.subTest(method=method), mock.patch.object(target, method, **(
+                    {"side_effect": value} if isinstance(value, Exception) else {"return_value": value})):
+                result = self.run_op("current-bin")
+                self.assertEqual(result["state"], "unavailable")
+                self.assertNotIn("code", result)
+        for code in ("api_unavailable", "not_running", "resolve_error"):
+            with mock.patch.object(resolve_bridge, "_connect_resolve", side_effect=resolve_bridge.ResolveBridgeError("failed", code=code)):
+                result = resolve_bridge.panel_operation({**self.payload, "operation": "current-bin"})
+            self.assertEqual(result["code"], code)
 
     def test_usage_unknown_used_or_changed_preserved(self):
         for usage in ("", "bad", "1.0", "-1", None, True, "2"):

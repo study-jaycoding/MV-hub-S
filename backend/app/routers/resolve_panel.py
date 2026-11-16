@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .. import active_account, config, repo
 from ..services import resolve_panel as panel, resolve_queue, resolve_status_runner as runner, resolve_transfer
@@ -109,8 +109,15 @@ class SettleIn(PanelIn):
 
 
 class UnstageIn(PanelIn):
-    bin_id: str = Field(min_length=1, max_length=200)
+    bin_id: str | None = Field(default=None, min_length=1, max_length=200)
+    bins: list[SettleBin] | None = Field(default=None, min_length=1, max_length=200)
     inventory_cleanup: bool = False  # 빈 지우기는 settle 만 — 옛 delete_empty 는 없앴다(보내도 모르는 필드로 무시)
+
+    @model_validator(mode="after")
+    def one_bin_source(self):
+        if (self.bin_id is None) == (self.bins is None):
+            raise ValueError("bin_id 또는 bins 중 하나만 지정하세요")
+        return self
 
 
 async def _project_read(request, project_id, visible_projects=None):
@@ -270,7 +277,7 @@ async def _operate(operation, body, request, ctx):
         # 틀린 ID 면 그 빈의 다른 컷 항목을 '원하지 않는 내 항목'으로 지운다 — 이 창이 받은 그 컷의 빈만.
         if operation == "stage" and body.bin_id and not panel.cut_bin(body.bin_id, body.window, body.project_id, body.folder_path):
             return {"state": "not_seen"}
-        if operation == "unstage" and body.inventory_cleanup and (body.bin_id == panel._owner["bin_id"] or body.bin_id in panel._episode_bins):
+        if operation == "unstage" and body.bins is None and body.inventory_cleanup and (body.bin_id == panel._owner["bin_id"] or body.bin_id in panel._episode_bins):
             return {"state": "active_bin"}
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path,
                    "manifest_root": str(manifest_root), "items": await panel.stage_items(ctx, generations, request),
@@ -278,7 +285,17 @@ async def _operate(operation, body, request, ctx):
         if operation == "stage" and body.bin_id:
             payload["bin_id"] = body.bin_id
         if operation == "unstage":
-            payload["bin_id"] = body.bin_id
+            if body.bins is None:
+                payload["bin_id"] = body.bin_id
+            else:
+                unstage_skipped = []
+                payload["bins"] = []
+                for row in body.bins:
+                    if body.inventory_cleanup and (row.bin_id == panel._owner["bin_id"] or row.bin_id in panel._episode_bins):
+                        unstage_skipped.append({**row.model_dump(), "state": "active_bin", "removed": 0})
+                    else:
+                        payload["bins"].append({**row.model_dump(), "same_file_ids": list(panel._same_files.get(
+                            (*panel.context_key(ctx), body.window, body.project_id, row.folder_path), set()))})
         payload["same_file_ids"] = list(panel._same_files.get((*panel.context_key(ctx), body.window, body.project_id, body.folder_path), set()))
     elif operation in {"prestage", "rename"}:
         source_root, manifest_root = await asyncio.to_thread(resolve_transfer.resolve_transfer_roots, body.project_id)
@@ -428,16 +445,25 @@ async def _operate(operation, body, request, ctx):
                 if cleanup_error:
                     result = {**result, "cleanup_failed": True, "cleanup_details": cleanup_error}
             if operation in {"stage", "unstage"}:
-                same_key = (*panel.context_key(ctx), body.window, body.project_id, body.folder_path)
-                panel._same_files.setdefault(same_key, set()).update(row["gen_id"] for row in result.get("items", []) if row["state"] == "same_file_exists")
-                for row in result.get("import_records", []):
-                    await asyncio.to_thread(panel.save_record, "import", row)
-                completed = {row["gen_id"] for row in result.get("items", []) if row["state"] in {"staged", "present"}}
-                old = [row for row in panel.records("import", ctx, result.get("resolve_project_id"))
-                       if row["project_id"] == body.project_id and row["gen_id"] in completed]
-                cleanup_error = await _remove_recovery_records("import", old, ctx, request)
-                if cleanup_error:
-                    result = {**result, "cleanup_failed": True, "cleanup_details": cleanup_error}
+                batch = operation == "unstage" and body.bins is not None
+                if batch:
+                    # 중단한 빈의 leftover는 최상위, 완료한 빈의 기록은 각 행에 있다.
+                    for row in result.get("import_records", []):
+                        await asyncio.to_thread(panel.save_record, "import", row)
+                    result["bin_results"] = [*result.get("bin_results", []), *unstage_skipped]
+                for done in result["bin_results"] if batch else [result]:
+                    folder = done["folder_path"] if batch else body.folder_path
+                    same_key = (*panel.context_key(ctx), body.window, body.project_id, folder)
+                    panel._same_files.setdefault(same_key, set()).update(row["gen_id"] for row in done.get("items", []) if row["state"] == "same_file_exists")
+                    for row in done.get("import_records", []):
+                        await asyncio.to_thread(panel.save_record, "import", row)
+                    completed = {row["gen_id"] for row in done.get("items", []) if row["state"] in {"staged", "present"}}
+                    old = [row for row in panel.records("import", ctx, result.get("resolve_project_id"))
+                           if row["project_id"] == body.project_id and row["gen_id"] in completed]
+                    cleanup_error = await _remove_recovery_records("import", old, ctx, request)
+                    if cleanup_error:
+                        done.update(cleanup_failed=True, cleanup_details=cleanup_error)
+                        result.update(cleanup_failed=True, cleanup_details=cleanup_error)
             if operation == "adopt":
                 missing = set(result.get("missing_record_ids", []))
                 replacements = result.get("adoption_candidates", [])

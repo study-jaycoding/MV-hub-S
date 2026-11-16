@@ -887,10 +887,119 @@ it("[저장]: 쓴 것은 항목 ID 로 다시 NAS 로(전에 옮긴 생성물도
     await act(async () => control.saveProject("p", "S")); await flush();
   }
   expect(mocks.adopt.mock.calls.map(([body]) => [body.gen_id, body.resolve_project_id, body.item_ids])).toEqual([["g", "r", ["i1"]], ["g", "r", ["i1"]]]);
-  expect(mocks.unstage.mock.calls.at(-1)![0]).toMatchObject({ bin_id: "b10", expect_project: "r" });
+  expect(mocks.unstage.mock.calls.at(-1)![0]).toMatchObject({ bins: [{ bin_id: "b10", folder_path: "S/C10" }], expect_project: "r" });
   expect(mocks.save.mock.calls.map(([body]) => body.expect_project)).toEqual(["r", "r"]);
   expect(control.notice).toContain("저장했습니다 — 이 저장 시점의 검사 통과");
   expect(mocks.prestage.mock.calls.length).toBeGreaterThan(prestaged); // 저장 뒤 다시 미리 띄움
+});
+
+const unusedBins = (count: number, project_id = "p") => Array.from({ length: count }, (_, n) => ({
+  resolve_project_id: "r", project_id, folder_path: `S/C${n}`, bin_id: `b${n}`, item_id: `${project_id}-i${n}`, gen_id: `${project_id}-g${n}`, usage: 0,
+}));
+
+it.each([0, 1, 200, 201])("[NAS] %i빈은 200개 조각으로, 같은 렌더의 두 번 누름도 흐름 하나", async count => {
+  await render(false);
+  const items = unusedBins(count);
+  mocks.inventory.mockClear().mockResolvedValue({ ...destination, items, more: false });
+  mocks.unstage.mockImplementation(async body => ({ state: "ok", resolve_project_id: "r", removed: body.bins.length,
+    bin_results: body.bins.map((row: { bin_id: string }) => ({ ...row, state: "ok", removed: 1 })) }));
+  await act(async () => { control.saveProject("p", "S"); control.saveProject("p", "S"); }); await flush();
+  expect(mocks.inventory).toHaveBeenCalledTimes(1);
+  expect(mocks.unstage.mock.calls.map(([body]) => body.bins.length)).toEqual(count ? count > 200 ? [200, 1] : [count] : []);
+  for (const [body] of mocks.unstage.mock.calls) {
+    expect(body.bin_id).toBeUndefined();
+    expect(body.folder_path).toBe(body.bins[0].folder_path);
+    expect(body.expect_project).toBe("r");
+  }
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(control.notice).toContain(`정리 ${count}`);
+});
+
+it("[NAS] 같은 빈에 섞인 MV 프로젝트도 각각 정리하고 중복 항목은 묶는다", async () => {
+  await render(false);
+  mocks.inventory.mockResolvedValue({ ...destination, items: [...unusedBins(201), ...unusedBins(2, "q"),
+    { ...unusedBins(1)[0], item_id: "duplicate" }], more: false });
+  mocks.unstage.mockImplementation(async body => ({ state: "ok", resolve_project_id: "r", removed: body.project_id === "q" ? 1 : body.bins.length,
+    bin_results: body.bins.map((row: { bin_id: string }, n: number) => ({ ...row, state: n === 1 ? "not_seen" : "ok" })) }));
+  await act(async () => control.saveProject("p", "S")); await flush();
+  expect(mocks.unstage.mock.calls.map(([body]) => [body.project_id, body.bins.length])).toEqual([["p", 200], ["p", 1], ["q", 2]]);
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(control.notice).toContain("정리 202");
+});
+
+it.each([
+  [0, "project_changed", undefined], [0, "unavailable", "project_changed"], [1, "unavailable", "project_changed"],
+  [0, "busy", undefined], [1, "unavailable", undefined], [1, "rebuild_recovery_pending", "rebuild_recovery_pending"],
+  [0, "unavailable", "no_open_project"], [0, "unavailable", "no_project_manager"],
+])("[NAS] 조각 %i의 %s/%s는 뒤 조각·save·다시 채우기를 중단", async (failAt, state, code) => {
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2"])); await flush();
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  const before = [mocks.cache.mock.calls.length, mocks.prestage.mock.calls.length, mocks.stage.mock.calls.length];
+  mocks.inventory.mockResolvedValue({ ...destination, items: unusedBins(401), more: false });
+  let call = 0;
+  mocks.unstage.mockImplementation(async () => call++ === failAt ? { state, code } : { state: "ok", removed: 200 });
+  await act(async () => control.saveProject("p", "S")); await flush();
+  expect(mocks.unstage).toHaveBeenCalledTimes(Number(failAt) + 1);
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(control.saveState.phase).toBe("blocked");
+  expect(control.notice).toContain(panelFailure(String(code === "project_changed" ? code : state)));
+  expect([mocks.cache.mock.calls.length, mocks.prestage.mock.calls.length, mocks.stage.mock.calls.length]).toEqual(before);
+});
+
+it.each(["owner", "generation", "account", "reclaimed"])("[NAS] 늦은 정리 응답 때 %s가 바뀌면 다음 조각·저장 없음", async changed => {
+  await render(false);
+  const held = deferred<unknown>();
+  mocks.inventory.mockResolvedValue({ ...destination, items: unusedBins(201), more: false });
+  mocks.unstage.mockImplementationOnce(() => held.promise);
+  await act(async () => control.saveProject("p", "S")); await flush();
+  expect(mocks.unstage).toHaveBeenCalledTimes(1);
+  mocks.identity.mockResolvedValue({ ...identity, ...(changed === "account" ? { account: "other", epoch: 2 }
+    : { writer: changed === "generation", generation: 2 }) });
+  await tick(1500);
+  if (changed === "reclaimed") {
+    mocks.identity.mockResolvedValue({ ...identity, generation: 3 });
+    await tick(1500);
+  }
+  await act(async () => held.resolve({ state: "ok", resolve_project_id: "r", removed: 200 })); await flush();
+  expect(mocks.unstage).toHaveBeenCalledTimes(1);
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(control.saveState.phase).toBe("blocked");
+  expect(control.notice).toContain(panelFailure(changed === "account" ? "account_changed" : "other_window"));
+});
+
+it("[NAS] 대기열의 앞 작업이 다빈치 revision을 바꾸면 저장 흐름을 시작하지 않는다", async () => {
+  await render(false);
+  await tick(700);
+  const held = deferred<unknown>();
+  mocks.target.mockImplementationOnce(() => held.promise);
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2"])); await flush();
+  mocks.inventory.mockClear();
+  await act(async () => control.saveProject("p", "S")); await flush();
+  expect(mocks.inventory).not.toHaveBeenCalled();
+  await act(async () => held.resolve({ ...destination, resolve_project_id: "other" })); await flush();
+  expect(mocks.inventory).not.toHaveBeenCalled();
+  expect(mocks.unstage).not.toHaveBeenCalled();
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(control.saveState.phase).toBe("blocked");
+  expect(control.notice).toContain(panelFailure("project_changed"));
+});
+
+it.each(["owner", "generation", "account"])("[NAS] 최종 저장 응답 전에 %s가 바뀌면 다시 채우지 않는다", async changed => {
+  await render(false);
+  await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2"])); await flush();
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  const held = deferred<unknown>();
+  mocks.save.mockImplementationOnce(() => held.promise);
+  await act(async () => control.saveProject("p", "S")); await flush();
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  mocks.identity.mockResolvedValue({ ...identity, ...(changed === "account" ? { account: "other", epoch: 2 }
+    : { writer: changed !== "owner", generation: 2 }) });
+  await tick(1500);
+  const before = [mocks.cache.mock.calls.length, mocks.prestage.mock.calls.length, mocks.stage.mock.calls.length];
+  await act(async () => held.resolve({ state: "ok", resolve_project_id: "r" })); await flush();
+  expect([mocks.cache.mock.calls.length, mocks.prestage.mock.calls.length, mocks.stage.mock.calls.length]).toEqual(before);
+  expect(control.saveState.phase).toBe("blocked");
 });
 
 it("[저장]: NAS 로 못 옮기면 저장하지 않음 · not_clean 이면 빈 경로를 알림", async () => {

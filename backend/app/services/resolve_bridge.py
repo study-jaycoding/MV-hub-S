@@ -2689,6 +2689,36 @@ def _panel_bin_by_id(root, bin_id):
                  if path[0] == MEDIA_POOL_ROOT and _uid(folder) == bin_id), None)
 
 
+def _panel_unstage_bins(pool, root, payload, resolve_project_id, guard):
+    guard()
+    by_id = {}
+    for folder, path in _panel_walk(root):
+        if path[0] == MEDIA_POOL_ROOT:
+            by_id.setdefault(_uid(folder), folder)
+    results, removed = [], 0
+    try:
+        for row in payload["bins"]:
+            try:
+                guard()
+                target = by_id.get(row["bin_id"])
+                done = {"state": "not_seen"} if target is None else _panel_stage(
+                    pool, target, {**payload, "folder_path": row["folder_path"], "items": [],
+                                   "same_file_ids": row.get("same_file_ids", [])}, resolve_project_id, guard)
+            except Exception as exc:
+                if getattr(exc, "code", "") in _PANEL_STOP_CODES:
+                    raise
+                done = {"state": "unavailable", "code": getattr(exc, "code", "resolve_error"),
+                        "details": str(exc), **getattr(exc, "leftover", {})}
+            results.append({"removed": 0, **done, "bin_id": row["bin_id"], "folder_path": row["folder_path"]})
+            if done["state"] == "ok":
+                removed += done.get("removed", 0)
+        guard()
+    except ResolveBridgeError as exc:
+        exc.leftover = {**getattr(exc, "leftover", {}), "bin_results": results, "removed": removed}
+        raise
+    return {"state": "ok", "bin_results": results, "removed": removed}
+
+
 def _panel_settle(pool, root, payload, guard):
     """앞 에피소드 컷 빈을 자식 하나로 한 번에 정리한다(Jay 11-12 '쓴 것은 빼고 Del 키처럼') — 컷마다 자식 둘을 띄우던 것을 대신한다.
     판정(표식·소유·파일)을 빈마다 먼저 끝내고, 지우기는 빈마다 _panel_delete_many(20개 묶음마다 guard·바로 전 사용 재확인),
@@ -2867,9 +2897,11 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
     try:
         resolve = resolve or _connect_resolve()
         manager = resolve.GetProjectManager()
-        project = manager.GetCurrentProject() if manager else None
+        if not manager:
+            return {"state": "unavailable", "code": "no_project_manager", "details": "Resolve 프로젝트 매니저가 없습니다"}
+        project = manager.GetCurrentProject()
         if not project:
-            return {"state": "unavailable", "details": "열린 Resolve 프로젝트가 없습니다"}
+            return {"state": "unavailable", "code": "no_open_project", "details": "열린 Resolve 프로젝트가 없습니다"}
         project_id, project_name = _project_identity(project)
         if not project_id:
             return {"state": "unavailable", "details": "Resolve 프로젝트 ID를 확인하지 못했습니다"}
@@ -2933,6 +2965,8 @@ def panel_operation(payload: dict[str, Any], *, resolve: Any = None) -> dict[str
                     "details": "정렬 복구 기록 경로를 확인하지 못했습니다"}
         guard()
         _settle_recovery_record(payload, root, project_id, _path_identity((MEDIA_POOL_ROOT, label)))
+        if operation == "unstage" and "bins" in payload:
+            return {**result, **_panel_unstage_bins(pool, root, payload, project_id, guard)}
         target = _folder_at_path(root, tuple(parts))
         if operation == "prestage":
             return {**result, **_panel_prestage(pool, root, payload, project_id, guard)}
