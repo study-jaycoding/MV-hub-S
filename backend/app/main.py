@@ -613,7 +613,7 @@ async def _application_lifespan(app: FastAPI):
                 _runtime_report_loop(_METRICS_LOG_INTERVAL),
                 name="runtime-metrics-log",
             )
-        if agent_chat_enabled():
+        if agent_chat_enabled() and not READ_ONLY:  # 사본 서버는 사본 밖(실제 칸 폴더)을 건드리지 않는다
             agent_chat.service.start_image_cleanup()
         log_event(_runtime_log, "startup_ready")
         startup_complete = True

@@ -235,7 +235,7 @@ class AgentChat:
         self._engines: tuple[float, list[dict], tuple] | None = None  # (시각, 줄, 그때의 설치 표식 원본·보이는 상태)
         self._closing = False
         self._issuing: dict[str, int] = {}
-        self._image_timer: threading.Timer | None = None
+        self._image_timer: asyncio.TimerHandle | None = None
 
     def cleanup_images(self) -> None:
         """공유 폴더에서 다른 허브의 진행 중 그림은 남긴다(차례 최대 10분)."""
@@ -250,13 +250,14 @@ class AgentChat:
             _log.warning("Agent image cleanup could not be completed")
 
     def start_image_cleanup(self) -> None:
+        """허브 시작(lifespan, 이벤트 루프 안)에서만 — 1시간 넘은 것을 지우고 65분 뒤 한 번 더(시작 때 건너뛴 어린 폴더 회수).
+        스레드 타이머 대신 루프 예약 + 실행기 — lifespan 시험이 threading.Thread 를 가짜로 바꿔도 깨지지 않는다."""
+        loop = asyncio.get_running_loop()
         with self._lock:
             if self._image_timer:
                 self._image_timer.cancel()
             self.cleanup_images()
-            self._image_timer = threading.Timer(_IMAGE_CLEANUP_DELAY, self.cleanup_images)
-            self._image_timer.daemon = True
-            self._image_timer.start()
+            self._image_timer = loop.call_later(_IMAGE_CLEANUP_DELAY, lambda: loop.run_in_executor(None, self.cleanup_images))
 
     @contextlib.contextmanager
     def issuance(self, identity: Identity):

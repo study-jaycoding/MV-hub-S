@@ -295,19 +295,25 @@ def test_cleanup_start_repeat_timer_shutdown_and_age(runtime, monkeypatch):  # n
     active = directory("other-hub-active", 10)
     assert old.exists()  # 생성자에서는 정리하지 않는다
     monkeypatch.setattr(chat, "_IMAGE_CLEANUP_DELAY", 0.15)
-    service.start_image_cleanup()
-    first = service._image_timer
-    assert not old.exists() and young.exists() and active.exists() and first.daemon
-    os.utime(young, (time.time() - 3601, time.time() - 3601))
-    assert first.finished.wait(3)
-    assert not young.exists() and active.exists()
-    service.start_image_cleanup()
-    second = service._image_timer
-    service.start_image_cleanup()
-    assert second.finished.is_set()
-    last = service._image_timer
-    service.shutdown()
-    assert last.finished.is_set()
+
+    async def scenario():  # lifespan 처럼 이벤트 루프 안에서 — 예약은 루프 call_later + 실행기
+        service.start_image_cleanup()
+        assert not old.exists() and young.exists() and active.exists()
+        os.utime(young, (time.time() - 3601, time.time() - 3601))
+        for _ in range(60):  # 예약 정리(0.15초 뒤)를 3초까지 기다린다
+            if not young.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert not young.exists() and active.exists()
+        service.start_image_cleanup()
+        second = service._image_timer
+        service.start_image_cleanup()
+        assert second.cancelled()  # 다시 부르면 앞 예약을 먼저 취소
+        last = service._image_timer
+        service.shutdown()
+        assert last.cancelled()
+
+    asyncio.run(scenario())
 
 
 def test_image_turn_cleans_old_directories(runtime, monkeypatch):  # noqa: F811
