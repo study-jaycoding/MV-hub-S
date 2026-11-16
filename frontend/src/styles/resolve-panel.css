@@ -27,7 +27,7 @@
 .rp-flash button { float: right; color: inherit; background: none; border: 0; }
 .resolve-panel button { font: inherit; cursor: pointer; }
 /* 라임 단추는 이름 붙인 것만(.rp-act) — 오른쪽 칸의 미디어 풀 단추·카드에 번지지 않게 */
-.resolve-panel-warning button, .resolve-panel .rp-act { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
+.resolve-panel .rp-act { color: #10120c; background: var(--accent, #c4e84a); border: 0; border-radius: 4px; padding: 3px 7px; margin-left: 6px; }
 .resolve-panel button:focus-visible, .resolve-panel select:focus-visible, .resolve-panel input:focus-visible { outline: 2px solid var(--accent, #c4e84a); outline-offset: 1px; }
 .resolve-panel-body { display: flex; flex: 1; min-height: 0; }
 .resolve-panel-loading { padding: 24px; }
@@ -67,6 +67,13 @@
 .rp-alerts p { line-height: 1.6; margin: 6px 0; }
 .rp-alerts > .rp-act { margin: 0 0 6px; }
 .rp-foot { flex: none; margin: 0; padding: 6px 10px; border-top: 1px solid #333438; color: #8a8b90; white-space: nowrap; overflow: hidden; }
+/* 지금 빈 = 고른 컷? 한 줄 — 높이 고정(같을 때·다를 때·모를 때 모두 30px)이라 안내가 바뀌어도 위가 안 밀린다 */
+.rp-align { flex: none; height: 30px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-top: 1px solid #333438; color: #7d7e83; white-space: nowrap; overflow: hidden; }
+.rp-align.bad { background: #2a2420; color: #f0c48a; }
+.rp-align-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #5d7322; }
+.rp-align.bad .rp-align-dot { background: #e0a050; }
+.rp-align-text { flex: 1; min-width: 0; overflow: hidden; }
+.resolve-panel .rp-align .rp-act { flex: none; margin-left: 0; }
 /* 카드는 보기 전용 — 호버 단추(T·C·⠿·ⓘ·⤓)는 숨기고 S/★ 는 표시만 */
 .rp-view .ed-card .card-cm, .rp-view .ed-card .thumb-overlay, .rp-view .ed-card .card-drag-grip { display: none; }
 .rp-view .ed-card .card-sf { pointer-events: none; }

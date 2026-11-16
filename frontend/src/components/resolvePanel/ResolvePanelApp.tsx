@@ -280,8 +280,9 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   };
   const total = projects.tree.roots.reduce((sum, node) => sum + (node.count || 0), 0);
 
-  const different = bridgePresent && panel.current?.state === "ok" && panel.target?.state === "ok"
-    && (panel.current.resolve_project_id !== panel.target.resolve_project_id || panel.current.bin_id !== panel.target.bin_id);
+  const compared = bridgePresent && panel.current?.state === "ok" && panel.target?.state === "ok";
+  const different = compared
+    && (panel.current?.resolve_project_id !== panel.target?.resolve_project_id || panel.current?.bin_id !== panel.target?.bin_id);
   const checking = panel.current && panel.current.state !== "ok";
   const sideShown = !ui.pool.sideHidden;
   const toggleSide = () => patchUi({ pool: { ...ui.pool, sideHidden: !ui.pool.sideHidden } });
@@ -311,7 +312,6 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
           {" "}({row.mine ? t("NAS 를 다시 누르면 풀릴 수 있음") : t("다빈치에서 직접 확인")})</div>)}
       </div>}
       {bridgePresent && <p>{t("이 창이 리졸브 미디어 풀의 지금 빈을 고른 컷으로 바꿉니다")}</p>}
-      {different && <div className="resolve-panel-warning">{t("리졸브 지금 빈이 선택한 컷과 다릅니다")}: {lastName(cut || episode)} <button type="button" onClick={() => panel.align(cutPaths)}>{t("맞추기")}</button></div>}
       {bridgePresent && !bridgeCompatible(window.mvhubResolve, panel.identity) && <div className="resolve-panel-warning">{t(PROTOCOL_MISMATCH)}</div>}
     </header>
     <div className="resolve-panel-body">
@@ -377,6 +377,12 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
           {!!panel.stage?.unexpected_imports && <p>{t("가져오기가 어긋난 항목")} {panel.stage.unexpected_imports}{t("개 — 손대지 않았습니다")}</p>}
           {panel.failures.map((failure, index) => <p role="alert" key={index}>{failure}</p>)}
           {panel.canRetry && <button type="button" className="rp-act" onClick={panel.retry}>{t("다시")}</button>}
+        </div>}
+        {/* 지금 빈 = 고른 컷? — 늘 같은 높이로 자리를 잡아 안내가 생겨도 위가 안 밀린다(Jay 11-16 시안) */}
+        {bridgePresent && <div className={"rp-align" + (different ? " bad" : "")} role="status">
+          {compared && <span className="rp-align-dot" aria-hidden="true" />}
+          <span className="rp-align-text">{different ? t("지금 빈이 {cut} 과 다름").replace("{cut}", lastName(cut || episode)) : compared ? t("다빈치 지금 빈 = 선택한 컷") : ""}</span>
+          {different && <button type="button" className="rp-act" onClick={() => panel.align(cutPaths)}>{t("맞추기")}</button>}
         </div>}
         {bridgePresent && <p className="rp-foot">
           {t("띄움")} {panel.stage?.items?.filter(item => ["staged", "present"].includes(item.state)).length || 0} · {t("쓰인 것")} {panel.current?.used ? panel.current.used.length : t("확인 중")} · {t("NAS로 옮김")} {panel.moved} · {t("다른 허브")} {panel.counts.other_owner} · {t("확인 필요")} {panel.counts.needs_attention}
