@@ -43,6 +43,7 @@ Users의 폴더 읽기 권한은 자식에 상속하지 않으며 공개 인증�
 이전 실행이 MVHub 폴더 생성 뒤 ACL 적용에 실패했을 때도 아래 복구 절차를 따른다.
 관리자는 서버·감시기를 정지하고, 이 경로가 연결 지점이 아닌 정상 폴더이며 내용이 신뢰 가능한지
 확인한 뒤 **승격된 PowerShell**에서 해당 폴더에만 다음을 적용한다(`/T`로 재귀 적용하지 않는다).
+`/T`가 없어도 부모의 `/inheritance:r` 및 상속 ACE 변경은 상속을 받는 하위 항목의 유효 권한을 바꿀 수 있으므로, 적용 전후 하위 파일·폴더 권한도 확인한다.
 
 ```powershell
 $tlsParent = Join-Path $env:ProgramData 'MVHub'
@@ -64,6 +65,38 @@ if ($LASTEXITCODE -ne 0) { throw '폴더 ACL 조회 실패' }
 교체 성공 후 `previous.pem`·`previous.key`는 이전 짝의 하드 링크다. 다음 교체 전 관리자가 복구 필요 여부를 확인하고
 두 파일을 명시적으로 정리한다(특히 `previous.key`는 오래 보관하지 않는다). 명령은 기존 previous 파일을 덮어쓰지 않는다.
 유출된 키는 파일을 지워도 이미 복사된 키가 무효화되지 않으므로 클라이언트 신뢰 묶음에서 옛 인증서를 제거해야 한다.
+
+### 관리자용 격리 create/promote 확인
+
+Jay가 **승격된 PowerShell**에서 `D:\ClaudeCode\MV-hub-S-dev`를 현재 위치로 두고 실행한다.
+사용하는 Python은 이 개발 폴더의 `D:\ClaudeCode\MV-hub-S-dev\.venv\Scripts\python.exe`(3.14)다.
+실제 서버·감시기는 실행하지 않으며, 기본 ProgramData 경로 대신 새 임시 폴더에서 실제 ACL 경로만 확인한다.
+`192.0.2.10`은 시험 인증서 SAN용 주소이며 이 주소로 연결하지 않는다(self-check는 루프백 사용).
+
+```powershell
+Set-Location -LiteralPath 'D:\ClaudeCode\MV-hub-S-dev' -ErrorAction Stop
+$savedTlsDir = $env:MVHUB_SERVER_TLS_DIR
+$tlsTrial = Join-Path $env:TEMP ('mvhub-tls-acl-' + [guid]::NewGuid().ToString('N'))
+$tlsPython = Join-Path (Get-Location) '.venv\Scripts\python.exe'
+try {
+    $env:MVHUB_SERVER_TLS_DIR = Join-Path $tlsTrial 'server-tls'
+    & $tlsPython -B tools\server_tls_cert.py create --ip 192.0.2.10
+    if ($LASTEXITCODE -ne 0) { throw '격리 인증서 생성 실패' }
+    & $tlsPython -B tools\server_tls_cert.py promote
+    if ($LASTEXITCODE -ne 0) { throw '격리 인증서 promote 실패' }
+    icacls.exe $env:MVHUB_SERVER_TLS_DIR
+    if ($LASTEXITCODE -ne 0) { throw 'TLS 폴더 ACL 조회 실패' }
+    icacls.exe (Join-Path $env:MVHUB_SERVER_TLS_DIR 'server.key')
+    if ($LASTEXITCODE -ne 0) { throw '개인키 ACL 조회 실패' }
+    icacls.exe (Join-Path $env:MVHUB_SERVER_TLS_DIR 'server.pem')
+    if ($LASTEXITCODE -ne 0) { throw '공개 인증서 ACL 조회 실패' }
+} finally {
+    $env:MVHUB_SERVER_TLS_DIR = $savedTlsDir
+}
+```
+
+개인키는 SYSTEM·Administrators만, 공개 인증서는 추가로 Users 읽기 권한이 있어야 한다.
+결과와 임시 경로를 기록하고, 시험 파일 정리는 경로를 확인한 관리자가 별도로 한다.
 
 ## 힉스필드 조직 사용량 1단계
 
