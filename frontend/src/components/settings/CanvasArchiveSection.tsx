@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { CANVAS_OTHER_TAB, useCanvasFloating, useCanvasFollower } from "../../lib/popupWindows";
-import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, RECOVERY_ACCOUNT_CHANGED, downloadStorageRecovery, redundantMirrorHoldIds, type StorageRecovery } from "../../lib/sceneArchive";
+import { downloadSceneArchive, downloadNotebookArchive, importSceneArchiveText, readStorageRecovery, RECOVERY_ACCOUNT_CHANGED, downloadStorageRecovery, redundantMirrorHoldIds, restoreArchiveRows, type StorageRecovery } from "../../lib/sceneArchive";
+import { markSeen, RestorePicker, selectable } from "../scene/CanvasRestoreNotice";
 import { subscribeEditBackup } from "../../lib/editDocBackup";
 import { subscribeMirrorRecovery } from "../../lib/sceneBackup";
 import { subscribeCardRecovery } from "../../lib/sceneCardLinks";
@@ -10,7 +11,7 @@ import { SCENE_WRITER_FEATURE, readSceneNotebook, readNotebookArchive, hasRestor
 import { useSceneWriter } from "../../lib/sceneWriter";
 import { useT } from "../../lib/i18n";
 import { sceneStoreReady, subscribeSceneStoreExternal, subscribeSceneStoreStale } from "../../lib/sceneStore";
-import { isSceneSaveFailing, listScenes, subscribeSceneSaveState, subscribeScenesPersisted } from "../../lib/scenes";
+import { isSceneSaveFailing, listPersistedScenes, listScenes, subscribeSceneSaveState, subscribeScenesPersisted } from "../../lib/scenes";
 import { SettingsDescription } from "./SettingsDescription";
 
 /** '복원 전에 남겨 둔 것' 기록 — 펼친 칸과 접힌 '자료 관리' 제목 줄이 같이 읽는다. [기록, 다시 읽기, 읽기 실패]. */
@@ -149,6 +150,10 @@ function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typ
   const [archiveAccount, setArchiveAccount] = useState("");
   const account = getAccountNamespace();
   const [ownRecovery, refreshRecovery, recoveryFailed] = recoveryState;
+  // 첫 공책 전환 복구 동선의 다시 찾기 — 공책 켬이고 되살릴 수 있는 보관 씬이 있을 때(docs/status/공책첫전환복구동선_2026-11-15.md)
+  const [pickerAccount, setPickerAccount] = useState<string | null>(null);
+  const restorable = !!ownRecovery && ownRecovery.baseFresh && hubHasFeature(SCENE_WRITER_FEATURE) &&
+    restoreArchiveRows(account, ownRecovery.canvases, listPersistedScenes(null)).some(selectable);
   useEffect(() => {
     let alive = true;
     setArchive(null);
@@ -202,8 +207,11 @@ function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typ
         <div className="settings-row">
           <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
           <button className="settings-action" disabled={busy || floating} onClick={() => fileRef.current?.click()}>{t("전체 가져오기로 되살리기")}</button>
+          {restorable && <button className="settings-action" disabled={busy || floating || ["away", "taking", "giving", "checking", "syncing"].includes(writer.mode)} onClick={() => setPickerAccount(account)}>{t("보관한 씬 고르기")}</button>}
         </div>
       </div>}
+      {pickerAccount === account && ownRecovery && <RestorePicker account={account} archives={ownRecovery.canvases} onClose={() => setPickerAccount(null)}
+        onRestored={(ids) => { markSeen(account, ids, ownRecovery.canvases.map((item) => item.id)); setPickerAccount(null); void refreshRecovery(); }} />}
       {!(canvasCount + editCount + cardCount + textlessCount) && !!ownRecovery?.mirror?.originals.length && redundantMirrorHoldIds(ownRecovery).size > 0 && <div className="settings-row">
         <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
       </div>}

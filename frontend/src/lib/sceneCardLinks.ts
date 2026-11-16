@@ -595,6 +595,25 @@ export function reviveCardGenerations(
   void pushNew();
 }
 
+/**
+ * 가져오기를 시작한 계정(지금 계정이 아닐 수 있다)의 카드 소속 되살리기를 그 계정 대기열에 넣는다 — 로컬 저장 뒤 계정이 바뀐 경우
+ * (sceneArchive.importSceneArchiveText, docs/status/공책첫전환복구동선_2026-11-15.md). 세대는 가져오기를 시작할 때 그 계정에서 읽은 값이다.
+ * 같은 소속의 제거 대기는 enqueueRevives 처럼 상쇄한다. 그 계정이 다시 활성일 때 기존 전송 계기에서 보낸다(pushNew 는 보내기 전 저장소를 다시 읽는다).
+ */
+export function queueCardRevivesFor(scope: string, restoreGeneration: string | null, links: Array<{ scene_id: string; card_id: string; generation_id: string }>): void {
+  if (!links.length) return;
+  if (scope === ns()) { enqueueRevives(enterScope(), links); void pushNew(); return; }
+  const incoming = new Set(links.map(keyOf));
+  const revives = new Map(readRevives(scope).map((link) => [keyOf(link), link]));
+  for (const link of links) revives.set(keyOf(link), { ...link, restore_generation: restoreGeneration ?? undefined, intent_id: newSceneIntentId() });
+  const nextRevives = [...revives.values()];
+  const nextRemovals = readPending(scope).filter((link) => !incoming.has(keyOf(link)));
+  writeIntentList(revivesKey(scope), nextRevives);
+  writeIntentList(pendingKey(scope), nextRemovals);
+  // 계정이 바뀐 직후 아직 enterScope 전이면 모듈 메모리가 그 계정 것이다 — 낡은 제거 대기를 남기지 않게 같이 맞춘다
+  if (curScope === scope) { pendingRevives = nextRevives; pendingRemovals = nextRemovals; mutationEpoch += 1; }
+}
+
 function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {

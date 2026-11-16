@@ -1,4 +1,5 @@
 import { CanvasWriterStatus } from "./components/CanvasWriterStatus";
+import { CanvasRestoreNotice } from "./components/scene/CanvasRestoreNotice";
 import { useSceneWriter } from "./lib/sceneWriter";
 import { getAccountNamespace } from "./lib/accountScope";
 import { captureSubmissionScope, configureOperationContext, watchOperationContext } from "./app/operationContext";
@@ -2817,6 +2818,8 @@ export default function App() {
               />
             )}
           <main className="main">
+            {/* 첫 공책 전환 복구 알림 — 공책 켬·본 창에서만 스스로 그린다(components/scene/CanvasRestoreNotice) */}
+            <CanvasRestoreNotice />
             {/* 구성탭에도 라이브러리 툴바 — 타입/컬러/태그/공유/코멘트 필터(노드 dim) +
                 fill(블랙바↔꽉채우기) + scale(보드 확대)을 히스토리 보드에 그대로 적용. */}
             <LibraryToolbar
