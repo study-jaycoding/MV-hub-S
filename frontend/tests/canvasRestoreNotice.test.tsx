@@ -237,6 +237,11 @@ it("settings re-entry opens the picker with every archive and blocks restore whi
   await flush(8);
   const pick = [...host.querySelectorAll("button")].find((b) => b.textContent === "보관한 씬 고르기") as HTMLButtonElement;
   expect(pick).toBeTruthy();
+  // 설정 시안 v3 — 되살리기 단추는 복원 보류 상자의 [자세히] 안에 있다: 누르기 전엔 숨고, 누르면 보인다(실제 동선)
+  expect(pick.closest("[hidden]")).not.toBeNull();
+  const more = [...host.querySelectorAll("button")].find((b) => b.textContent === "자세히") as HTMLButtonElement;
+  await act(async () => { more.click(); });
+  expect([pick.closest("[hidden]"), more.textContent, more.getAttribute("aria-expanded")]).toEqual([null, "접기", "true"]);
   await act(async () => { pick.click(); });
   expect(document.querySelector(".canvas-restore-picker")?.textContent).toContain("o1");
   expect(document.querySelector(".canvas-restore-picker")?.textContent).toContain("n1");
