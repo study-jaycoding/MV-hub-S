@@ -289,7 +289,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
 
   return <div className="resolve-panel">
     <header className={"resolve-panel-head" + (showSave ? " has-save" : "")}>
-      <strong>MV Hub <span>{t("리졸브")}</span></strong>
+      <strong>MV Resolve</strong>
       {showSave && <button type="button" className={"rp-save rp-save-" + save.phase} disabled={save.phase === "saving"}
         title={t("타임라인에 쓴 클립은 NAS 로 올려 경로를 바꾸고, 안 쓴 클립은 정리한 뒤 다빈치 프로젝트를 저장합니다 — 단축키 저장·자동 저장은 이 단추를 거치지 않습니다")}
         onClick={() => panel.saveProject(selection.project, cut || episode)}>
