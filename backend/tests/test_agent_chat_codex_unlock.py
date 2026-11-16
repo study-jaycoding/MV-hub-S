@@ -19,6 +19,7 @@ FAKE = Path(__file__).with_name("agent_chat_fake_cli.py")
 VERSION = "0.162.0-alpha.17.2"
 MODEL = "gpt-6.1-sol"
 REAL_WORK_PROBLEM = codex.work_problem  # 작업 폴더 검사 시험만 실제 함수를 쓴다(나머지는 임시 폴더의 실제 위 폴더를 읽지 않게)
+REAL_PLAN_NAME = codex.plan_name  # 요금제 조회 시험만 실제 함수 — 나머지는 FakeJob 과 섞이지 않게 None 으로 바꿔 둔다
 
 
 def saved(**changes):
@@ -86,6 +87,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_AGENT_SCENARIO", "codex_probe_ok")
     monkeypatch.setattr(codex, "REAP_RETRY_SECONDS", 0.005)
     monkeypatch.setattr(codex, "work_problem", lambda: None)
+    monkeypatch.setattr(codex, "plan_name", lambda prefix: None)
     FakeJob.instances = []
     return config.AGENT_CHAT_DIR
 
@@ -316,6 +318,53 @@ def test_fake_cli_probe_with_real_job(isolated, monkeypatch):
     monkeypatch.setattr(process, "JobProcess", REAL_JOB)
     codex.enable(MODEL)
     assert codex.marker() is not None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object")
+@pytest.mark.parametrize("plan,expected", [("promax", "Pro Max"), ("plus", "Plus"), ("PRO", "Pro"), ("free", None),
+                                           ("mystery", None), ("apikey", None), ("exit", None)])
+def test_plan_name_reads_official_account_read(tmp_path, monkeypatch, plan, expected):
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setenv("FAKE_CODEX_PLAN", plan)
+    prefix = [sys.executable, str(FAKE), "--fake-engine=codex"]
+    name = REAL_PLAN_NAME(prefix)
+    assert name == expected
+    assert name is None or "@" not in name  # 계정 값(이메일)은 내리지 않는다
+    assert (tmp_path / "agent_chat" / "plan-probe").is_dir() and not (tmp_path / "agent_chat" / "work").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object")
+def test_plan_name_gives_up_on_a_stuck_server(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent_chat")
+    monkeypatch.setattr(codex, "PLAN_TIMEOUT", 1.0)
+    monkeypatch.setenv("FAKE_CODEX_PLAN", "hang")
+    started = time.monotonic()
+    assert REAL_PLAN_NAME([sys.executable, str(FAKE), "--fake-engine=codex"]) is None
+    assert time.monotonic() - started < 20  # 시간 제한으로 끄고 거둔다(멈춘 서버에 매달리지 않음)
+
+
+def test_plan_name_failures_only_hide_the_plan(monkeypatch):
+    class Broken:
+        def __init__(self):
+            raise OSError("no job")
+    monkeypatch.setattr(process, "JobProcess", Broken)
+    assert REAL_PLAN_NAME(["fake"]) is None
+
+
+def test_engine_list_shows_plan_only_when_usable(isolated, monkeypatch):
+    codex._write("codex_enabled.json", saved())
+    monkeypatch.setattr(chat.claude, "claude_state", lambda prefix: {"state": "ready", "version": "2.1.296", "subscription": "Max"})
+    monkeypatch.setattr(process, "read_install_marker", lambda: None)
+    calls = []
+    monkeypatch.setattr(codex, "plan_name", lambda prefix: calls.append(prefix) or "Pro Max")
+    row = next(row for row in chat.AgentChat().engines(refresh=True) if row["id"] == "codex")
+    assert row["available"] is True and row["subscription"] == "Pro Max" and len(calls) == 1
+    assert chat.engine_problem("codex", ["fake"]) is None and len(calls) == 1  # 대화 보낼 때의 판정은 조회하지 않는다
+    monkeypatch.setattr(process, "auth_problem", lambda prefix: "로그인 필요")
+    monkeypatch.setattr(codex, "plan_name", lambda prefix: pytest.fail("unusable codex must not look up the plan"))
+    row = next(row for row in chat.AgentChat().engines(refresh=True) if row["id"] == "codex")
+    assert row["available"] is False and row["subscription"] is None
 
 
 REAL_JOB = process.JobProcess

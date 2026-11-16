@@ -17,7 +17,11 @@ from .agent_chat_parse import CodexParser
 CODEX_POLICY = "2026-11-14"
 PROBE_TIMEOUT = 120.0
 REAP_RETRY_SECONDS = 5.0
+PLAN_TIMEOUT = 15.0
 DISABLED = "설정에서 [연결]을 눌러 켜요"
+# 공식 app-server 의 PlanType(codex-rs/protocol/src/account.rs) 중 알려진 유료 종류만 이름으로 — 그 밖은 표시하지 않는다.
+PLAN_NAMES = {"go": "Go", "plus": "Plus", "pro": "Pro", "prolite": "Pro Lite", "promax": "Pro Max",
+              "team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu"}
 
 
 class CodexError(RuntimeError):
@@ -123,6 +127,51 @@ def state(prefix: list[str] | None) -> dict:
         else:
             result["reason"] = work_problem() or process.auth_problem(prefix)
     return result
+
+
+def plan_name(prefix: list[str]) -> str | None:
+    """구독 종류 표시 이름 — 공식 app-server 의 account/read 만 읽는다(로그인 파일은 열지 않는다, 설계 3-4).
+    실패·무료·모르는 값은 None — 요금제 표시만 빠지고 사용 가능 판정은 그대로다."""
+    from . import agent_chat_process as process
+
+    request = "".join(json.dumps(message) + "\n" for message in (
+        {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "mvhub-plan", "version": "1"}}},
+        {"method": "initialized"},
+        {"id": 2, "method": "account/read", "params": {}},
+    )).encode("utf-8")
+    try:
+        job = process.JobProcess()
+    except (OSError, RuntimeError):
+        return None
+    timer = threading.Timer(PLAN_TIMEOUT, job.terminate)
+    timer.daemon = True
+    plan = None
+    try:
+        timer.start()
+        work = _path("plan-probe")  # Codex 작업 폴더(work)와 따로 — 검사가 보는 폴더를 더럽히지 않게
+        work.mkdir(parents=True, exist_ok=True)
+        job.start([*prefix, "app-server"], work, process.child_env())
+        # stdin 을 닫으면 app-server 가 응답 전에 끝난다(2026-11-16 실측) — 응답을 받을 때까지 열어 둔다.
+        job.proc.stdin.write(request)
+        job.proc.stdin.flush()
+        for raw in job.lines():
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(message, dict) and message.get("id") == 2:
+                result = message.get("result")
+                account = result.get("account") if isinstance(result, dict) else None
+                if isinstance(account, dict) and account.get("type") == "chatgpt":
+                    plan = PLAN_NAMES.get(str(account.get("planType") or "").lower())
+                break
+    except Exception:  # noqa: BLE001 — 표시용 조회라 어떤 실패도 요금제 표시만 뺀다
+        plan = None
+    finally:
+        timer.cancel()
+        if not job.reap():
+            job.reap()  # 못 거두면 한 번 더 — Job 은 닫힐 때 남은 자식을 함께 끈다
+    return plan
 
 
 def _probe(prefix: list[str], model: str, work: Path, nonce: str) -> str | None:

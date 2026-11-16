@@ -76,6 +76,22 @@ def main():
     if args[-2:] == ["login", "status"] or (len(args) >= 2 and args[0:2] == ["login", "status"]):  # Codex 모양
         print({"subscription": "Logged in using ChatGPT", "api_key": "Logged in using an API key"}.get(auth, "Not logged in"), file=sys.stderr)
         return
+    if "app-server" in args:  # Codex 공식 app-server 흉내 — initialize·account/read 만(요금제 = FAKE_CODEX_PLAN)
+        plan = os.environ.get("FAKE_CODEX_PLAN", "free")
+        for line in sys.stdin:
+            message = json.loads(line)
+            if message.get("id") == 1:
+                print(json.dumps({"id": 1, "result": {}}), flush=True)
+            elif message.get("id") == 2:
+                if plan == "exit":
+                    return
+                if plan == "hang":
+                    time.sleep(60)
+                    return
+                account = {"type": "apiKey"} if plan == "apikey" else {
+                    "type": "chatgpt", "planType": plan, "email": "secret@example.test"}
+                print(json.dumps({"id": 2, "result": {"account": account, "requiresOpenaiAuth": True}}), flush=True)
+        return  # 진짜처럼 stdin 이 열려 있는 동안 살아 있다 — 부르는 쪽이 끈다
     prompt = sys.stdin.buffer.read().decode("utf-8")
     user = prompt.rsplit("[사용자]\n", 1)[-1].strip()
     scenario = os.environ.get("FAKE_AGENT_SCENARIO", "claude_ok")
