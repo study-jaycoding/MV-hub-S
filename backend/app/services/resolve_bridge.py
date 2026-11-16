@@ -2278,18 +2278,18 @@ def _panel_stage_import(work):
     return True
 
 
-def _panel_stage_finish(work):
-    pool, target, payload, guard = work["pool"], work["target"], work["payload"], work["guard"]
-    resolve_project_id, via, dest, rename = work["project"], work["via"], work["dest"], work["rename"]
-    items, fresh, states, twins = payload.get("items", []), work["fresh"], work["states"], work["twins"]
+def _panel_stage_match(work):
+    pool, payload, dest = work["pool"], work["payload"], work["dest"]
+    resolve_project_id, fresh, states = work["project"], work["fresh"], work["states"]
     ready, recovery, unchecked = work["ready"], work["recovery"], work["unchecked"]
-    settled, attempted, good, moving = work["settled"], work["attempted"], work["good"], work["moving"]
+    attempted, moving = work["attempted"], work["moving"]
     by_path = {_normal_path(item["path"]): item for item in fresh}
     for group, returned in work["batches"]:
         inside = {_panel_known_id(clip) for clip in _strict_list(dest.GetClipList)}
         found = {}
         for clip, clip_id in returned:
-            found.setdefault(_normal_path(_clip_file_path(clip)), []).append((clip, clip_id))
+            path = work["paths"][clip_id] if "paths" in work else _normal_path(_clip_file_path(clip))
+            found.setdefault(path, []).append((clip, clip_id))
         for path in map(_normal_path, group):
             item, hits = by_path[path], found.pop(path, [])
             if len(hits) == 1 and hits[0][1] in inside:
@@ -2313,11 +2313,31 @@ def _panel_stage_finish(work):
     for item in fresh:
         if _normal_path(item["path"]) not in attempted:
             states[item["gen_id"]] = "deferred"
+    work["batches"].clear()
+
+
+def _panel_stage_finish(work):
+    pool, target, payload, guard = work["pool"], work["target"], work["payload"], work["guard"]
+    resolve_project_id, via, rename = work["project"], work["via"], work["rename"]
+    items, states, twins = payload.get("items", []), work["states"], work["twins"]
+    ready, recovery = work["ready"], work["recovery"]
+    settled, good, moving = work["settled"], work["good"], work["moving"]
+    _panel_stage_match(work)
     if via is not None and moving:
         # 가져오는 자리(에피소드 빈) 안에 있다고 확인된 이번 클립만 옮긴다 — 컷 빈 목록을 되읽어 확인하고, 못 옮긴 것은 사용 0 이면 지운다
         guard()
+        inside = {_uid(clip) for clip in _strict_list(via.GetClipList)}
+        for entry in list(moving):
+            item, clip, clip_id = entry
+            if clip_id not in inside:
+                ready.remove(entry)
+                moving.remove(entry)
+                states[item["gen_id"]] = "import_failed"
+                recovery.append(_panel_import_record(payload, resolve_project_id, item["gen_id"], clip_id, "", item["path"], owned=False))
+                settled.add(clip_id)
         try:
-            pool.MoveClips([clip for _item, clip, _clip_id in moving], target)
+            if moving:
+                pool.MoveClips([clip for _item, clip, _clip_id in moving], target)
         except Exception:  # noqa: BLE001 - 아래 되읽기로 판정한다
             pass
         landed = {_panel_known_id(row) for row in _strict_list(target.GetClipList)}
@@ -2358,6 +2378,9 @@ def _panel_stage_finish(work):
         states[gen] = "same_file_exists" if states[first] == "staged" else states[first]
     results = [{"gen_id": item["gen_id"], "state": states[item["gen_id"]]} for item in items]
     deferred = sum(1 for row in results if row["state"] == "deferred")
+    if not work.get("drag", True):
+        return {"state": "ok", "items": results, "removed": work["removed"], "deferred": deferred,
+                "import_records": recovery, "unexpected_imports": work["unexpected"]}
     drag_items = {}
     try:
         guard()
@@ -2393,8 +2416,9 @@ def _panel_stage_leftover(work):
          for clip_id in work["unchecked"]]
 
 
-def _panel_stage(pool, target, payload, resolve_project_id, guard, *, via=None, rename=True):
+def _panel_stage(pool, target, payload, resolve_project_id, guard, *, via=None, rename=True, drag=True):
     work = _panel_stage_prepare(pool, target, payload, resolve_project_id, guard, via=via, rename=rename)
+    work["drag"] = drag
     try:
         _panel_stage_import(work)
         return _panel_stage_finish(work)
@@ -2412,6 +2436,8 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
     cuts = {}
     borrowed = []
     restoration = {}
+    shared = None
+    needs_borrow = False
 
     def waiting(cut, state):
         rows = [{"gen_id": item["gen_id"], "state": "deferred"} for item in cut.get("items", [])]
@@ -2434,17 +2460,34 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
             elif episode is not None and here == _uid(episode):
                 via = episode
             elif episode is not None and here and payload.get("borrow") and here == payload.get("borrow_bin_id"):
-                part = {**payload, "items": cut.get("items", []), "capped": bool(cut.get("capped")), "same_file_ids": cut.get("same_file_ids", [])}
-                borrowed.append((cut, _panel_stage_prepare(pool, target, part, resolve_project_id, guard, via=episode, rename=False)))
-                continue
+                via = episode
+                needs_borrow = True
             else:
                 cuts[cut["folder_path"]] = waiting(cut, "ok")
                 continue
             part = {**payload, "items": cut.get("items", []), "capped": bool(cut.get("capped")), "same_file_ids": cut.get("same_file_ids", [])}
-            cuts[cut["folder_path"]] = {**_panel_stage(pool, target, part, resolve_project_id, guard, via=via, rename=False), "bin_id": target_id}
+            if via is not None:
+                borrowed.append((cut, _panel_stage_prepare(pool, target, part, resolve_project_id, guard, via=via, rename=False)))
+            else:
+                cuts[cut["folder_path"]] = {**_panel_stage(pool, target, part, resolve_project_id, guard, rename=False, drag=False), "bin_id": target_id}
         start = None
         start_id = ""
-        if any(work["fresh"] for _cut, work in borrowed):
+        if borrowed:
+            # 새 후보만 경로 대표를 정한다. 앞 컷의 present는 뒤 컷의 새 가져오기를 막지 않는다.
+            owners = {}
+            for _cut, work in borrowed:
+                for item in work["fresh"]:
+                    owners.setdefault(_normal_path(item["path"]), (work, item))
+            fresh = [item for _work, item in owners.values()]
+            videos = [item for item in fresh if not _is_still_image(item["path"])]
+            stills = [item for item in fresh if _is_still_image(item["path"])]
+            if needs_borrow:
+                stills = stills[:10]
+            shared = {**borrowed[0][1], "fresh": videos + stills, "batches": [], "unchecked": set(),
+                      "attempted": set(), "ready": [], "recovery": [], "good": {}, "settled": set(), "unexpected": 0}
+        if shared and shared["fresh"] and not needs_borrow:
+            _panel_stage_import(shared)
+        if shared and shared["fresh"] and needs_borrow:
             guard()
             try:
                 start = pool.GetCurrentFolder()
@@ -2457,9 +2500,7 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
                 try:
                     guard()
                     if pool.SetCurrentFolder(episode) and _uid(pool.GetCurrentFolder()) == episode_id:
-                        for _cut, work in borrowed:
-                            if not _panel_stage_import(work):
-                                break
+                        _panel_stage_import(shared)
                 finally:
                     try:
                         guard()
@@ -2477,9 +2518,35 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
                         restoration.update(restore_failed=True, restore_reason=getattr(exc, "code", "") or "read_failed")
             else:
                 restoration["restore_reason"] = "selection_changed"
+        if shared:
+            # 경로 읽기·배분 도중 예외에도 공통 unchecked가 아직 넘기지 않은 ID를 보존한다.
+            borrowed[0][1]["unexpected"] += shared["unexpected"]
+            for group, returned in shared["batches"]:
+                groups = {id(work): [] for _cut, work in borrowed}
+                for path in group:
+                    work, _item = owners[_normal_path(path)]
+                    groups[id(work)].append(path)
+                    work["attempted"].add(_normal_path(path))
+                matches = {id(work): [] for _cut, work in borrowed}
+                for clip, clip_id in returned:
+                    path = _normal_path(_clip_file_path(clip))
+                    owner = owners.get(path)
+                    work = owner[0] if owner else borrowed[0][1]
+                    work.setdefault("paths", {})[clip_id] = path  # 배분 때 읽은 경로를 짝짓기에서 다시 API로 읽지 않는다.
+                    matches[id(work)].append((clip, clip_id))
+                for _cut, work in borrowed:
+                    rows = matches[id(work)]
+                    if not groups[id(work)] and not rows:
+                        continue
+                    work["batches"].append((groups[id(work)], rows))
+                    work["unchecked"].update(clip_id for _clip, clip_id in rows)
+                    shared["unchecked"].difference_update(clip_id for _clip, clip_id in rows)
+            for _cut, work in borrowed:
+                _panel_stage_match(work)
         while borrowed:
             cut, work = borrowed[0]
             guard()
+            work["drag"] = False
             cuts[cut["folder_path"]] = {**_panel_stage_finish(work), "bin_id": _uid(work["target"])}
             borrowed.pop(0)
         if start_id:
@@ -2492,6 +2559,8 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
         earlier = [row for done in cuts.values() for row in done.get("import_records", [])]
         error = exc if isinstance(exc, ResolveBridgeError) else ResolveBridgeError(str(exc) or type(exc).__name__)
         pending = [row for _cut, work in borrowed for row in _panel_stage_leftover(work)]
+        if shared:
+            pending += _panel_stage_leftover(shared)
         error.leftover = {**getattr(error, "leftover", {}), **restoration,
                           "import_records": earlier + pending + getattr(error, "leftover", {}).get("import_records", [])}
         if error is exc:

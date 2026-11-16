@@ -20,7 +20,7 @@ interface EpisodeBins { project_id: string; episode: string; bins: Record<string
 // 미리 캐시·미리 띄우기의 컷 = [컷 경로, 생성물 ID(거르기 통과·오래된 200개), 200 을 넘어 잘렸나]
 export type PrecacheCut = [string, string[], boolean?];
 interface FillCut { cut: PrecacheCut; states: Map<string, string>; failures: Map<string, number> }
-interface FillRun { run: number; ctx: PanelIdentity | null; project_id: string; episode: string; cuts: FillCut[]; busy: boolean; blockedBin?: string }
+interface FillRun { run: number; ctx: PanelIdentity | null; project_id: string; episode: string; cuts: FillCut[]; busy: boolean; receiving?: boolean; blockedBin?: string }
 const filled = (state: string | undefined) => !!state && ["staged", "present", "same_file_exists"].includes(state);
 export interface PanelFollow { project: string; episode: string; cut: string; n: number }
 // [저장] 칸의 상태(C안, Jay 11-12) — saving 의 step = 지금 단계 · done 의 at = 저장 시각(3초 뒤 idle) · blocked = 저장 안 됨(bins = 검사에 걸린 빈)
@@ -102,7 +102,7 @@ export function useResolvePanel() {
   const fillRun = useRef<FillRun | null>(null);
   const stableBin = useRef<{ project: string; bin: string; count: number } | null>(null);
   const savingRef = useRef(false);
-  const [fillProgress, setFillProgress] = useState<{ episode: string; done: number; total: number; active: boolean } | null>(null);
+  const [fillProgress, setFillProgress] = useState<{ episode: string; done: number; total: number; active: boolean; receiving?: { done: number; total: number } } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dragItems, setDragItems] = useState<Record<string, DragItem>>({});
   const [previews, setPreviews] = useState<Record<string, string>>({});
@@ -585,14 +585,17 @@ export function useResolvePanel() {
   const showFill = (plan: FillRun) => {
     if (fillRun.current !== plan || plan.run !== precacheRun.current) return;
     const done = plan.cuts.filter(cut => cut.cut[1].every(id => filled(cut.states.get(id)))).length;
-    setFillProgress(done === plan.cuts.length ? null : { episode: plan.episode, done, total: plan.cuts.length, active: plan.busy });
+    const ids = plan.cuts.flatMap(cut => cut.cut[1]);
+    const receiving = plan.busy && plan.receiving ? { done: ids.filter(id => plan.ctx && cachedIds.current.has(cacheKey(plan.ctx, plan.project_id, id))).length, total: ids.length } : undefined;
+    setFillProgress(done === plan.cuts.length ? null : { episode: plan.episode, done, total: plan.cuts.length, active: plan.busy, ...(receiving ? { receiving } : {}) });
   };
-  // 받기는 대기열 밖, 띄우기는 안에서 — 다음 다운로드가 이미 받은 컷의 표시를 막지 않는다.
+  // 받기를 끝낸 뒤 조각으로 넣는다. 선택의 일은 받기·조각 사이마다 먼저 끝낸다.
   const fillEpisode = (plan: FillRun, retryBin?: string) => {
     if (plan.busy || !runLive(plan.run, plan.ctx, plan.project_id, plan.episode) || !plan.cuts.some(cut => fillPending(cut).length)) return;
     const remaining = () => plan.cuts.filter(cut => !cut.cut[1].every(id => filled(cut.states.get(id)))).length;
-    const before = remaining();
-    plan.busy = true; showFill(plan);
+    const remainingIds = () => plan.cuts.reduce((n, cut) => n + cut.cut[1].filter(id => !filled(cut.states.get(id))).length, 0);
+    const before = remaining(), beforeIds = remainingIds();
+    plan.busy = true; plan.receiving = true; showFill(plan);
     const live = () => runLive(plan.run, plan.ctx, plan.project_id, plan.episode);
     const cached = (id: string) => !!plan.ctx && cachedIds.current.has(cacheKey(plan.ctx, plan.project_id, id));
     void (async () => {
@@ -624,6 +627,7 @@ export function useResolvePanel() {
             if (contextKey(now.ctx) === contextKey(context.current) && now.resolveProject === davinciRef.current
               && (!result.resolve_project_id || result.resolve_project_id === now.resolveProject)
               && result.state !== "account_changed" && result.state !== "project_changed" && result.code !== "project_changed") {
+              if (borrow) stableBin.current = null;
               const alerts = [
                 ...(result.restore_failed ? [t("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다")] : []),
                 ...(["unavailable", "unknown"].includes(result.state) ? [t("다빈치 지금 빈·클립을 확인해 주세요")] : []),
@@ -655,12 +659,11 @@ export function useResolvePanel() {
           showFill(plan);
         });
       };
-      for (let index = 0; index < plan.cuts.length; index++) {
-        const cut = plan.cuts[index];
+      const interrupted = new Map<FillCut, Set<string>>();
+      for (let pass = 0; pass < 2; pass++) for (const cut of plan.cuts) {
         if (!live()) return;
-        if (!fillPending(cut).length) continue;
         // 선택의 cache·target·stage 가 먼저 끝난 뒤 현재 seq 로 받는다.
-        for (const batch of cacheBatches(fillPending(cut).filter(id => !cached(id)))) {
+        for (const batch of cacheBatches(fillPending(cut).filter(id => !cached(id) && (!pass || interrupted.get(cut)?.has(id))))) {
           for (let waited = queue.current; ; waited = queue.current) { await waited; if (waited === queue.current) break; }
           const now = live();
           if (!now) return;
@@ -675,7 +678,11 @@ export function useResolvePanel() {
               const item = returned.get(id);
               if (item?.state === "cached") cachedIds.current.add(cacheKey(now.ctx, plan.project_id, id));
               else if (item || live()?.seq === now.seq) fillFailed(cut, [id], "cache_failed");
-              else cut.states.set(id, "deferred"); // seq 로 중단된 받기는 실패 횟수를 쓰지 않는다
+              else {
+                cut.states.set(id, "deferred"); // seq 중단은 받기 끝에서 한 번 더, 실패 횟수는 그대로
+                if (!interrupted.has(cut)) interrupted.set(cut, new Set());
+                interrupted.get(cut)!.add(id);
+              }
             }
             setPreviews(previous => ({ ...previous, ...Object.fromEntries(result.items.filter(item => item.state === "cached"
               && item.preview_url?.startsWith("/media/")).map(item => [item.gen_id, item.preview_url!])) }));
@@ -683,23 +690,26 @@ export function useResolvePanel() {
             if (!live()) return;
             fillFailed(cut, gen_ids, "cache_failed");
           }
+          showFill(plan);
         }
+      }
+      if (!live()) return;
+      plan.receiving = false; showFill(plan);
+      for (const cut of plan.cuts) {
         if (!live()) return;
         if (fillPending(cut).some(cached)) {
           const count = cut.cut[1].filter(cached).length;
-          if (chunk.length && size + count > 40) await send();
+          if (chunk.length && (size + count > 220 || chunk.length >= 200)) await send();
           chunk.push(cut); size += count;
+          if (size >= 220) await send();
         }
-        const next = plan.cuts[index + 1];
-        // 이미 받은 다음 컷만 묶는다. 다음 파일을 기다리며 첫 조각을 쌓아 두지 않는다.
-        if (!next || !fillPending(next).length || size >= 40 || fillPending(next).some(id => !cached(id))) await send();
       }
       await send();
       if (live()) renameStep(plan.run, plan.ctx, plan.project_id, plan.episode, plan.cuts.map(cut => cut.cut));
     })().catch(error => {
       if (live()) setFailures(list => [...new Set([...list, errorText(error)])]);
     }).finally(() => {
-      if (live() && retryBin && remaining() >= before) plan.blockedBin = retryBin;
+      if (live() && retryBin && remaining() >= before && remainingIds() >= beforeIds) plan.blockedBin = retryBin;
       plan.busy = false; showFill(plan);
     });
   };
