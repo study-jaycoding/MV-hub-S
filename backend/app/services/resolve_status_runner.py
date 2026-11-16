@@ -576,14 +576,48 @@ def _note_panel_alive(result: dict[str, Any] | None) -> None:
     _panel_alive_at = time.monotonic() if result and result.get("resolve_project_id") else None
 
 
+def panel_timing_on() -> bool:
+    return bool(os.environ.get("CONTENT_HUB_PANEL_TIMING_LOG", ""))
+
+
+def note_panel_timing(**fields: Any) -> None:
+    """진단용 — CONTENT_HUB_PANEL_TIMING_LOG 에 경로가 있을 때만 JSONL 한 줄 덧붙인다(없으면 아무것도 안 함).
+    어떤 실패도 삼킨다 — 진단 기록이 패널 결과·원래 예외를 바꾸지 않게."""
+    if not panel_timing_on():
+        return
+    try:
+        with open(os.environ["CONTENT_HUB_PANEL_TIMING_LOG"], "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"t": round(time.time(), 3), **fields}, ensure_ascii=False, default=str) + "\n")
+    except Exception:  # noqa: BLE001 - 위 docstring
+        pass
+
+
+def _elapsed_ms(start: float | None, end: float | None) -> int | None:
+    return round((end - start) * 1000) if start is not None and end is not None else None
+
+
 def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) -> dict[str, Any]:
     """패널도 같은 변경 잠금을 쓴다 — 대기는 30초, 시작한 변경 자식은 끝까지 기다린다."""
+    marks: dict[str, float] = {"start": time.perf_counter()}  # perf_counter — 시험이 monotonic 을 순서대로 흉내 내므로 그 값을 쓰지 않는다
+    result: Any = None
+    try:
+        result = _run_resolve_panel_isolated(payload, before_start=before_start, marks=marks)
+        return result
+    finally:
+        note_panel_timing(where="child", op=payload.get("operation"), ms=_elapsed_ms(marks["start"], time.perf_counter()),
+                          lock_ms=_elapsed_ms(marks["start"], marks.get("lock")),
+                          child_ms=_elapsed_ms(marks.get("child"), marks.get("child_end")),
+                          state=result.get("state") if isinstance(result, dict) else None)
+
+
+def _run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None, marks: dict[str, float]) -> dict[str, Any]:
     reading = payload["operation"] in {"current-bin", "inventory"}
     failed_state = "unknown" if payload["operation"] == "adopt" else "unavailable"
     deadline = time.monotonic() + 30
     while True:
         with resolve_mutation_slot(blocking=False) as acquired:
             if acquired:
+                marks["lock"] = time.perf_counter()
                 if before_start:
                     rejected = before_start()
                     if rejected:
@@ -603,6 +637,7 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                     rejected = before_start()
                     if rejected:
                         return rejected
+                marks["child"] = time.perf_counter()
                 try:
                     completed = _run_child(
                         interpreter, "app.services.resolve_panel_worker",
@@ -619,6 +654,8 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
                 except (OSError, subprocess.SubprocessError) as exc:
                     _note_panel_alive(None)
                     return {"state": failed_state, "details": str(exc)}
+                finally:
+                    marks["child_end"] = time.perf_counter()
                 if completed.returncode == MUTATION_BUSY_EXIT:
                     return {"state": "busy"}  # 다른 프로세스의 변경이 진행 중 — 이 변경은 시작하지 않았다
                 result = _parse_result(completed.stdout, "MVHUB_RESOLVE_PANEL=")
