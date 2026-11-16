@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import gzip
-import http.client
 import io
 import json
 import zlib
 import os
 import shutil
-import socket
 import threading
 import time
 import urllib.error
@@ -85,47 +83,25 @@ def token():
 # 응답 없는 주소(서버 PC 꺼짐)에 붙으면 Windows 는 연결을 21초 붙잡았다(10-02 운영·격리 재현, WinError 10060).
 # 호출마다 준 timeout(5·15·60·120·300초)은 연결 뒤 전송·응답에 그대로 쓰고, **주소 하나에 대한 TCP 연결**만 3초로 끊는다.
 # 이름 해석(DNS)·여러 주소 순회·TLS·프록시 CONNECT 는 기존 timeout 그대로다(Codex 2026-10-03). 전역 소켓 기본값은 안 바꾼다.
-_CONNECT_TIMEOUT_S = 3.0
+from ..services import shared_transport
+
+_SERVER_OPENER = shared_transport.opener()
 
 
-def _fast_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kwargs):
-    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
-        timeout = socket.getdefaulttimeout()  # 기본값 = 프로세스 기본 timeout(None 이면 무제한)
-    connect_timeout = _CONNECT_TIMEOUT_S if timeout is None else min(timeout, _CONNECT_TIMEOUT_S)
-    sock = socket.create_connection(address, connect_timeout, source_address, **kwargs)
-    sock.settimeout(timeout)  # 연결 뒤에는 호출이 준 제한
-    return sock
-
-
-class _FastConnectHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._create_connection = _fast_connect  # super().__init__ 이 기본값을 넣은 뒤에 바꾼다
-
-
-class _FastConnectHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._create_connection = _fast_connect
-
-
-class _FastConnectHTTPHandler(urllib.request.HTTPHandler):
-    def http_open(self, req):
-        return self.do_open(_FastConnectHTTPConnection, req)
-
-
-class _FastConnectHTTPSHandler(urllib.request.HTTPSHandler):
-    def https_open(self, req):
-        return self.do_open(_FastConnectHTTPSConnection, req, context=self._context)
-
-
-# build_opener 는 기본 HTTP/HTTPS 핸들러만 이 둘로 바꾸고 ProxyHandler 등은 그대로 둔다.
-_SERVER_OPENER = urllib.request.build_opener(_FastConnectHTTPHandler, _FastConnectHTTPSHandler)
+class RedirectRefused(OSError):
+    """서버 응답은 받았지만 자격 증명이 있는 리다이렉트는 거절했다."""
 
 
 def _open(req: urllib.request.Request, timeout: float):
     """공유 서버로 가는 요청의 단일 출구(raw_request·다운로드·중계·스트림). 시험은 이 함수를 바꿔 끼운다."""
-    return _SERVER_OPENER.open(req, timeout=timeout)
+    req.full_url = shared_transport.transport_url(req.full_url)
+    try:
+        return _SERVER_OPENER.open(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400 and exc.code != 304:
+            exc.close()
+            raise RedirectRefused("공유 서버가 다른 주소로 보냈습니다") from exc
+        raise
 
 
 # 401의 의미를 브라우저까지 보존한다. `invalid`만 실제 세션 만료이며 `preserved`는

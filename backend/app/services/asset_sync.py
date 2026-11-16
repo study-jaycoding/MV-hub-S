@@ -19,7 +19,7 @@ from .. import active_account, config, db
 from ..deps import expected_account_differs
 from ..emailnorm import norm_email
 from ..repo import asset_sync as ledger
-from . import asset_io, asset_sync_cache, shared_connection
+from . import asset_io, asset_sync_cache, shared_connection, shared_transport
 from .async_tools import to_thread_non_abandon
 from .media_types import ASSET_CONTENT_TYPES, asset_media_type
 from .path_safety import safe_join, asset_storage_context
@@ -276,15 +276,17 @@ def owns_local_content(path, owner_uid, *, digest=None):
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    handler_order = 499  # 공통 차단보다 먼저 기존 동기화 오류 코드를 보존한다.
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise SyncError('asset_server_redirect')
 
 
-_opener = urllib.request.build_opener(_NoRedirect)
+_opener = shared_transport.opener()
+_opener.add_handler(_NoRedirect())
 
 
 def _json_call(origin, token, path, body):
-    req = urllib.request.Request(origin+path,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
+    req = urllib.request.Request(shared_transport.transport_url(origin+path),data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
     with _opener.open(req,timeout=30) as response:
         return json.loads(response.read(1024*1024))
 
@@ -294,7 +296,7 @@ def _upload(origin, token, ticket, row):
     if not path.is_file() or path.stat().st_size != row['bytes'] or asset_io.sha256_file(path) != row['sha256']:
         raise SyncError('asset_local_copy_missing')
     with path.open('rb') as handle:
-        req = urllib.request.Request(origin+'/api/asset-sync/uploads/'+ticket['token'],data=handle,method='PUT',
+        req = urllib.request.Request(shared_transport.transport_url(origin+'/api/asset-sync/uploads/'+ticket['token']),data=handle,method='PUT',
             headers={'Authorization':'Bearer '+token,'Content-Type':'application/octet-stream','Content-Length':str(row['bytes'])})
         with _opener.open(req,timeout=300) as response:
             return json.loads(response.read(1024*1024))

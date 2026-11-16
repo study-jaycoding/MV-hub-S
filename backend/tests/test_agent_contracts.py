@@ -25,9 +25,56 @@ from app.services.test_snapshot import (
 )
 
 
+from test_shared_transport import transport_server
+
+
 AGENT_PATH = Path(__file__).resolve().parents[2] / "agent_push.py"
 REFRESH_TOOL_PATH = Path(__file__).resolve().parents[2] / "tools" / "refresh_pm_test_data.py"
 ROOT_DIR = AGENT_PATH.parent
+
+
+@pytest.mark.parametrize('server', ['http://192.0.2.1:54321', 'http://localhost.attacker.invalid',
+                                  'http://127.0.0.1@attacker.invalid', 'ftp://localhost',
+                                  'http://localhost:bad'])
+def test_agent_refuses_remote_server_before_login(server, monkeypatch):
+    agent = _load_agent()
+    monkeypatch.setattr(agent, '_open_agent_log', lambda: None)
+    monkeypatch.setattr(sys, 'argv', ['agent_push.py', '--server', server, '--pair-secret', 'synthetic'])
+    monkeypatch.setattr(agent, '_cli', lambda: pytest.fail('must refuse before CLI or credentials'))
+    with pytest.raises(SystemExit) as caught:
+        agent.main()
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize('server', ['http://127.0.0.1:54321', 'http://[::1]:54321', 'http://localhost:54321'])
+def test_agent_allows_loopback_server(server):
+    _load_agent()._require_loopback_server(server)
+
+
+def test_agent_loopback_redirect_does_not_leak_credentials():
+    agent = _load_agent()
+    with transport_server() as (target, leaked):
+        with transport_server(status=302, location=target + '/target') as (base, seen):
+            status, _ = agent._http('POST', base + '/login', token='synthetic', body={'pair_secret': 'synthetic'})
+            assert status == 302
+            assert len(seen) == 1 and not leaked
+    with transport_server(body=b'{"ok":true}') as (base, seen):
+        assert agent._http('GET', base + '/health', token='synthetic') == (200, {'ok': True})
+
+
+def test_agent_public_reference_keeps_redirect_but_authenticated_reference_refuses():
+    agent = _load_agent()
+    with transport_server(body=b'public-image') as (target, seen):
+        with transport_server(status=302, location=target + '/image') as (base, _):
+            assert agent._download_ref(base, 'synthetic', base + '/ref', '.png') is None
+            assert not seen
+            path = agent._download_ref(base, 'synthetic', base + '/ref', '.png', auth=False)
+            try:
+                assert Path(path).read_bytes() == b'public-image'
+                assert 'Authorization' not in seen[0][1]
+            finally:
+                if path:
+                    Path(path).unlink()
 
 
 def _load_agent():
@@ -1612,8 +1659,9 @@ def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> 
     )
 
 
-def test_execute_pending_claims_only_current_submit_worker_capacity():
+def test_execute_pending_claims_only_current_submit_worker_capacity(tmp_path, monkeypatch):
     agent = _load_agent()
+    monkeypatch.setattr(agent, '_agent_state_path', lambda: str(tmp_path / 'agent_state.db'))
     request = {"id": "request-1", "model": "model-1", "references": []}
     tracked = {
         "rid": "request-1",
@@ -3052,7 +3100,7 @@ def test_recovery_reason_is_sanitized_in_actual_http_body_and_old_server_can_ign
     response.__enter__.return_value = response
     response.status = 200
     response.read.return_value = response_body
-    with patch.object(agent.urllib.request, "urlopen", return_value=response) as urlopen:
+    with patch.object(agent._LOCAL_OPENER, "open", return_value=response) as urlopen:
         assert agent._require_submission_recovery("http://hub", "token-1", "request-1", raw_reason)
     request = urlopen.call_args.args[0]
     body = agent.json.loads(request.data)
@@ -3097,7 +3145,7 @@ def test_k2_submit_recovery_http_body_masks_url_once_through_real_product_path()
     # Only external process/HTTP IO is replaced: submission, CLI parsing, recovery and
     # HTTP request serialization all run their real implementations.
     with patch.object(agent, "_run_with_tree_kill", side_effect=run_cli) as run, patch.object(
-        agent.urllib.request, "urlopen", return_value=response
+        agent._LOCAL_OPENER, "open", return_value=response
     ) as urlopen:
         result = agent._submit_one(
             "http://hub", "token-1", "higgsfield", "user@example.com",

@@ -492,6 +492,25 @@ class RelocationRouteTests(unittest.TestCase):
                 publish.RelocateIn(url=url, revision=revision), _request()
             )
 
+    def test_switch_uses_transport_probe(self):
+        from app.services import shared_transport
+        from test_shared_transport import transport_server
+        with (
+            transport_server(body=b'{"cli_version":"test"}') as (base, seen),
+            mock.patch.object(server_relocation, 'announcement_source', return_value='D:\\releases'),
+            mock.patch.object(server_relocation, 'read_announcement', return_value=_announcement(url=base)),
+            mock.patch.object(publish, '_probe_shared_health', wraps=publish._probe_shared_health) as probe,
+            mock.patch.object(shared_transport, 'transport_url', wraps=shared_transport.transport_url) as transport,
+            mock.patch.object(publish, '_apply_relocation') as apply,
+            mock.patch.object(publish, '_shared_status', return_value={}),
+        ):
+            result = publish.relocate_shared_server(publish.RelocateIn(url=base, revision=2), _request())
+            self.assertTrue(result['ok'])
+            probe.assert_called_once_with(base)
+            transport.assert_called_once_with(base + '/api/health')
+            apply.assert_called_once()
+            self.assertEqual([r[0] for r in seen], ['/api/health'])
+
     def _assert_untouched(self):
         self.assertEqual(repo.get_setting(publish._K_URL), "http://192.168.1.199:8010")
         self.assertEqual(repo.get_setting(publish._K_TOKEN), "secret-token")

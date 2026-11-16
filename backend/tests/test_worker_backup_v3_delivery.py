@@ -24,6 +24,75 @@ from app.routers import db_backup
 from app.services import backup, backup_manifest, worker_backup
 from test_backup_v3_local import local, extras, capture
 from test_trash_transfer import enabled_db
+from test_shared_transport import certificates, required_tls, transport_server
+
+
+def test_tls_capability_302_refuses_credentials(required_tls):
+    with transport_server() as (target, leaked):
+        with transport_server(required_tls, status=302, location=target + '/target') as (base, seen):
+            assert worker_backup._capability_error(base, 'synthetic') == 'capability_unknown'
+            assert len(seen) == 1 and seen[0][1]['Authorization'] == 'Bearer synthetic'
+            assert not leaked
+
+
+@pytest.mark.parametrize('broken', [False, True])
+def test_real_drain_one_child_uses_shared_tls(delivery_store, required_tls, tmp_path, broken):
+    import os
+    import subprocess
+    import sys
+    from app.services import shared_transport
+    _, stage, manifest = queued(delivery_store)
+    ack = {
+        'backup_set_format': 3, 'accepted': True,
+        'backup_set_id': manifest['backup_set_id'], 'format_version': 3,
+        'manifest_sha256': backup_manifest.manifest_digest(manifest),
+        'files': {role: {'sha256': info['sha256'], 'size': info['size']}
+                  for role, info in manifest['roles'].items() if info['state'] == 'present'},
+    }
+    bundle = required_tls[1]
+    if broken:
+        bundle = tmp_path / 'missing.pem'
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith('CONTENT_HUB_')}
+    env.update({
+        'CONTENT_HUB_DATA': str(tmp_path / 'child-data'),
+        'CONTENT_HUB_DB': str(delivery_store[0]),
+        'CONTENT_HUB_NO_PROXY': '1', 'CONTENT_HUB_AUTH': '0',
+        'CONTENT_HUB_EXTERNAL_RECOVERY': '0', 'PYTHONDONTWRITEBYTECODE': '1',
+        'CONTENT_HUB_WORKER_BACKUP_STATE_DB': str(worker_backup.STATE_DB),
+        'CONTENT_HUB_WORKER_BACKUP_OUTBOX_DIR': str(worker_backup.OUTBOX_DIR),
+    })
+    script = '''
+import json, runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+from app import active_account
+from app.services import shared_transport as t, shared_connection as c
+bundle, base = sys.argv[1:]
+print(json.dumps({'module': str(Path(t.__file__).resolve()), 'default_bundle': str(t.BUNDLE_PATH)}), flush=True)
+sys.argv = ['app.services.worker_backup', '--drain-one']
+with patch.object(t, 'TLS_REQUIRED', True), patch.object(t, 'BUNDLE_PATH', Path(bundle)), \
+     patch.object(c, 'token', return_value='synthetic-child'), patch.object(c, 'base_url', return_value=base), \
+     active_account.pinned_account_scope(('artist@example.invalid', 'artist')):
+    runpy.run_module('app.services.worker_backup', run_name='__main__')
+'''
+    with transport_server(required_tls, body=json.dumps(ack).encode()) as (base, seen):
+        result = subprocess.run([sys.executable, '-B', '-c', script, str(bundle), base],
+                                cwd=str(Path(__file__).resolve().parents[1]), env=env,
+                                capture_output=True, text=True, timeout=30)
+    lines = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+    assert lines[0]['module'] == str(Path(shared_transport.__file__).resolve())
+    assert lines[0]['default_bundle'] == str(Path(shared_transport.__file__).resolve().parents[1] /
+                                               'resources' / 'tls' / 'shared_server.pem')
+    if broken:
+        assert result.returncode == 1, result.stderr
+        assert lines[-1]['error_code'] == 'network_unavailable'
+        assert not seen and stage.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert lines[-1]['state'] == 'success'
+        assert [r[0] for r in seen] == ['/api/share/capabilities', '/api/db-backup/sets']
+        assert all(r[1]['Authorization'] == 'Bearer synthetic-child' for r in seen)
+        assert not stage.exists()
 
 REAL_UPLOAD = worker_backup._multipart_set_upload
 

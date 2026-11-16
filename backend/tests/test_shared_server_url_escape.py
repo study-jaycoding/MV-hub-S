@@ -23,7 +23,18 @@ from fastapi import HTTPException, Request
 
 from app import db, repo
 from app.routers import publish
-from app.services import net_guard
+from test_shared_transport import certificates, required_tls, transport_server
+
+
+def test_probe_uses_tls_and_rejects_redirect(required_tls):
+    with transport_server(required_tls, body=b'{"cli_version":"test"}') as (base, seen):
+        assert publish._probe_shared_health(base)['ok']
+        assert seen[0][0] == '/api/health'
+        assert 'Authorization' not in seen[0][1]
+    with transport_server(required_tls, status=302) as (base, seen):
+        result = publish._probe_shared_health(base)
+        assert not result['ok'] and result['reachable']
+        assert len(seen) == 1
 
 
 def _request(client_host: str = "127.0.0.1", host_header: str | None = None) -> Request:
@@ -139,7 +150,7 @@ class SharedServerUrlEscapeTests(unittest.TestCase):
 
     # ── 2. probe ─────────────────────────────────────────────────────────
     def test_probe_rejects_bad_urls_before_any_network_call(self):
-        with mock.patch.object(publish.net_guard, "guarded_opener") as opener:
+        with mock.patch.object(publish.shared_transport, "opener") as opener:
             for bad in ("ftp://x", "http://", "http://u:p@h", "http://h?q=1", "not-a-url"):
                 with self.assertRaises(HTTPException) as caught:
                     publish.probe_shared_server(publish.ProbeUrlIn(url=bad), _request())
@@ -148,7 +159,7 @@ class SharedServerUrlEscapeTests(unittest.TestCase):
 
     def test_probe_accepts_mv_hub_health_and_reports_version(self):
         with mock.patch.object(
-            publish.net_guard, "guarded_opener", return_value=_opener(_health_response())
+            publish.shared_transport, "opener", return_value=_opener(_health_response())
         ) as opener:
             out = publish.probe_shared_server(
                 publish.ProbeUrlIn(url="http://192.168.1.199:8010/"), _request()
@@ -170,7 +181,7 @@ class SharedServerUrlEscapeTests(unittest.TestCase):
     def test_probe_never_saves_the_address(self):
         repo.set_setting(publish._K_URL, "http://192.168.1.199:8010")
         with mock.patch.object(
-            publish.net_guard, "guarded_opener", return_value=_opener(_health_response())
+            publish.shared_transport, "opener", return_value=_opener(_health_response())
         ):
             publish.probe_shared_server(
                 publish.ProbeUrlIn(url="http://192.168.1.50:8010"), _request()
@@ -187,7 +198,7 @@ class SharedServerUrlEscapeTests(unittest.TestCase):
         ]
         for response in cases:
             with mock.patch.object(
-                publish.net_guard, "guarded_opener", return_value=_opener(response)
+                publish.shared_transport, "opener", return_value=_opener(response)
             ):
                 out = publish.probe_shared_server(
                     publish.ProbeUrlIn(url="http://192.168.1.50:8010"), _request()
@@ -200,11 +211,11 @@ class SharedServerUrlEscapeTests(unittest.TestCase):
         failures = {
             urllib.error.URLError("timed out"): False,  # 연결 자체 실패
             urllib.error.HTTPError("u", 500, "err", None, None): True,
-            net_guard.BlockedURLError("redirect"): True,  # 3xx 추적 금지
+            urllib.error.HTTPError("u", 302, "redirect", None, None): True,  # 3xx 추적 금지
         }
         for error, reachable in failures.items():
             with mock.patch.object(
-                publish.net_guard, "guarded_opener", return_value=_opener(error)
+                publish.shared_transport, "opener", return_value=_opener(error)
             ):
                 out = publish.probe_shared_server(
                     publish.ProbeUrlIn(url="http://192.168.1.50:8010"), _request()

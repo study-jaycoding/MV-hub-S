@@ -16,6 +16,23 @@ from app import db
 from app.repo import asset_sync as ledger, projects, trash
 from app.routers import asset_sync as api
 from app.services import asset_sync as sync
+from test_shared_transport import certificates, required_tls, transport_server
+
+
+def test_asset_json_and_upload_use_shared_tls(required_tls, tmp_path):
+    path = tmp_path / 'asset.bin'
+    path.write_bytes(b'asset')
+    row = {'path': str(path), 'bytes': 5, 'sha256': hashlib.sha256(b'asset').hexdigest()}
+    with transport_server(required_tls) as (base, seen):
+        assert sync._json_call(base, 'synthetic', '/prepare', {}) == {}
+        assert sync._upload(base, 'synthetic', {'token': 'ticket'}, row) == {}
+        assert [r[0] for r in seen] == ['/prepare', '/api/asset-sync/uploads/ticket']
+        assert all(r[1]['Authorization'] == 'Bearer synthetic' for r in seen)
+        assert seen[1][2] == b'asset'
+    with transport_server(required_tls, status=302) as (base, seen):
+        with pytest.raises(sync.SyncError, match='asset_server_redirect'):
+            sync._json_call(base, 'synthetic', '/prepare', {})
+        assert len(seen) == 1
 
 
 PNG = b'\x89PNG\r\n\x1a\n' + b'asset test payload'

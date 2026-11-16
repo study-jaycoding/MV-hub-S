@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import active_account
-from ..services import shared_connection
+from ..services import shared_connection, shared_transport
 from ..services.asset_registry import SCHEDULE_TICK_S
 from ..services.asset_registry_helper import helper
 from ..services.operational_logging import log_event
@@ -59,7 +59,8 @@ def _claim(ctx: tuple[str, str]) -> bool:
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=CLAIM_TIMEOUT_S) as response:
+        request.full_url = shared_transport.transport_url(request.full_url)
+        with shared_transport.cached_opener().open(request, timeout=CLAIM_TIMEOUT_S) as response:
             data = json.loads(response.read() or b"{}")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return False  # 권한 없음·옛 서버(404·405)·꺼짐(503)·연결 실패 — 조용히 다음 틱

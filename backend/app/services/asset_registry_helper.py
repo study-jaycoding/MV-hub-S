@@ -20,7 +20,7 @@ import urllib.request
 from typing import Any, Optional
 
 from ..repo import asset_registry as registry
-from . import shared_connection
+from . import shared_connection, shared_transport
 from .asset_registry import AssetRegistryController
 from .operational_logging import log_event
 from .path_safety import unc_for_drive
@@ -104,7 +104,8 @@ class HelperController(AssetRegistryController):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self._token}")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            req.full_url = shared_transport.transport_url(req.full_url)
+            with shared_transport.cached_opener().open(req, timeout=timeout) as resp:
                 raw = resp.read()
             return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:

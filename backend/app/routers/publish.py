@@ -35,7 +35,7 @@ from ..deps import account_author_uids, actor_id, current_account, final_move_ac
 from ..emailnorm import norm_email
 from ..repo import identity
 from ..repo.share import SHARE_PROJECT_REQUIRED, ShareProjectRequired, project_less_anchors
-from ..services import agent_signals, net_guard, server_relocation
+from ..services import agent_signals, shared_transport, server_relocation
 from ..services.request_guards import require_loopback_browser_request
 from ..services.event_journal import journal_audit_event
 from ..services.share_state_reconciler import kick_share_state_reconciler
@@ -742,18 +742,17 @@ def _probe_shared_health(url: str) -> dict[str, Any]:
     (거대 응답이나 응답하지 않는 호스트가 허브 스레드를 붙잡지 못하게).
     반환: {ok, reachable, server_version, reason}.
     """
-    req = urllib.request.Request(f"{url}/api/health", method="GET")
-    req.add_header("Accept", "application/json")
     try:
-        # 리다이렉트 차단 opener 는 net_guard 단일 출처를 재사용한다. 단 여기서는
-        # assert_public_http_url 을 쓰지 않는다 — 팀 공유 서버는 사설 IP(LAN)가 정상이다.
-        with net_guard.guarded_opener().open(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
+        req = urllib.request.Request(shared_transport.transport_url(f"{url}/api/health"), method="GET")
+        req.add_header("Accept", "application/json")
+        with shared_transport.opener().open(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
             status = resp.status
             content_type = (resp.headers.get_content_type() or "").lower()
             raw = resp.read(_PROBE_MAX_BYTES + 1)
-    except net_guard.BlockedURLError:
-        return _probe_result(False, True, None, "다른 주소로 리다이렉트됩니다(공유 서버 주소가 아닙니다)")
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            exc.close()
+            return _probe_result(False, True, None, "다른 주소로 리다이렉트됩니다(공유 서버 주소가 아닙니다)")
         return _probe_result(False, True, None, f"서버가 응답했지만 상태가 {exc.code} 입니다")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return _probe_result(False, False, None, f"연결할 수 없습니다({exc})")

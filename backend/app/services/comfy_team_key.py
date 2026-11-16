@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..config import AUTH_ENABLED
-from . import shared_connection
+from . import shared_connection, shared_transport
 
 log = logging.getLogger("comfy.team_key")
 
@@ -191,11 +191,11 @@ def _no_proxy() -> bool:
 
 def _http_get(url: str, token: str, timeout: float = _HTTP_TIMEOUT) -> tuple[Optional[int], bytes]:
     """(상태 코드 또는 응답 없음 None, 본문). 시험이 바꿔 끼운다."""
-    request = urllib.request.Request(url, method="GET")
-    request.add_header("Authorization", f"Bearer {token}")
-    request.add_header("Accept", "application/json")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
+        request = urllib.request.Request(shared_transport.transport_url(url), method="GET")
+        request.add_header("Authorization", f"Bearer {token}")
+        request.add_header("Accept", "application/json")
+        opener = shared_transport.cached_opener(proxy=False)
         with opener.open(request, timeout=timeout) as response:
             return response.status, response.read(65536)
     except urllib.error.HTTPError as error:
