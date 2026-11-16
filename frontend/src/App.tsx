@@ -2334,6 +2334,8 @@ export default function App() {
       return (
         <ServerLoginScreen
           url={sharedSrv.url}
+          displayUrl={sharedSrv.display_url}
+          transportError={sharedSrv.transport_error}
           serverName={sharedSrv.server_name}
           urlHistory={sharedSrv.url_history}
           onConnected={onProxyConnected}

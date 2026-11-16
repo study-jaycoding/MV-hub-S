@@ -19,6 +19,7 @@ import json
 import os
 from contextvars import ContextVar
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from .. import repo
 from ..config import AUTH_ENABLED
@@ -57,6 +58,34 @@ K_ELEV_EXPIRES = "shared_server_elev_expires"
 
 def base_url() -> str:
     return (repo.get_setting(K_URL) or DEFAULT_SHARED_URL).rstrip("/")
+
+
+def _shared_server_key(url: str) -> Optional[tuple[str, int, str]]:
+    url = (url or "").strip()
+    if any(character.isspace() or ord(character) < 32 for character in url):
+        return None
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme not in ("http", "https") or not parts.hostname
+                or parts.username is not None or parts.password is not None
+                or parts.query or parts.fragment):
+            return None
+        port = parts.port
+        if port == 0:
+            return None
+        return (parts.hostname.lower(), port if port is not None else
+                (80 if parts.scheme == "http" else 443), parts.path.rstrip("/"))
+    except ValueError:
+        return None
+
+
+def same_shared_server(left: str, right: str) -> bool:
+    """전송 스킴만 바뀐 재입력이 기존 DB 신원을 바꾸지 않게 한다."""
+    left, right = (left or "").strip().rstrip("/"), (right or "").strip().rstrip("/")
+    if left == right:
+        return True  # 기존 주소가 새 검증에 맞지 않아도 동일 주소를 이전으로 만들지 않는다.
+    key = _shared_server_key(left)
+    return key is not None and key == _shared_server_key(right)
 
 
 def token() -> Optional[str]:

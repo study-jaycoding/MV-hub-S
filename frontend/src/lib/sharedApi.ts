@@ -7,7 +7,10 @@ import type { IntentRef } from "./shareConfirm";
 // server_name = 이사 뒤 보여줄 서버 이름(공지의 이름 → 없으면 지금 쓰던 이름 → 없으면 null).
 export interface ServerRelocationInfo {
   current_url: string;
+  current_display_url?: string | null;
   proposed_url: string | null;
+  proposed_display_url?: string | null;
+  transport_error?: string | null;
   revision: number;
   server_name: string | null;
   announced_at: string | null;
@@ -22,6 +25,8 @@ export const sharedApi = {
     jsonFetch<{
       configured: boolean;
       url: string | null;
+      display_url?: string | null;
+      transport_error?: string | null;
       // 관리자가 등록한 '서버' 표시 이름(작업자 화면은 주소 대신 이걸 쓴다).
       // 아래 name 은 로그인한 '사람' 이름 — 다른 값이다.
       server_name: string;
