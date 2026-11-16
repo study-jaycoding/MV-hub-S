@@ -430,11 +430,14 @@ def test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monk
 def test_archive_cleanup_race_preserves_original_failure_and_foreign_file(tmp_path, monkeypatch, capsys):
     import errno
 
-    original_rmdir = Path.rmdir
+    original_rmdir, original_iterdir, original_is_dir = Path.rmdir, Path.iterdir, Path.is_dir
     retained = []
 
+    def is_archive(path):
+        return path.parent == tmp_path / "data" / "db" and path.name.startswith("_before_move_")
+
     def raced_rmdir(path):
-        if path.parent == tmp_path / "data" / "db" and path.name.startswith("_before_move_"):
+        if is_archive(path):
             foreign = path / "external.tmp"
             foreign.write_bytes(b"retain me")
             retained.append(foreign)
@@ -442,6 +445,11 @@ def test_archive_cleanup_race_preserves_original_failure_and_foreign_file(tmp_pa
         return original_rmdir(path)
 
     monkeypatch.setattr(Path, "rmdir", raced_rmdir)
+    # 이 시험이 보는 것은 '빈 폴더 확인 뒤, 지우기 직전에 파일이 끼는' 경쟁이다. 전체 게이트에서는 출처 모를 외부 파일
+    #  (위 `_left` 주석의 대문자 `.tmp` 꼴)이 그 전에 보존 폴더에 끼어, 제품이 안전하게 정리를 건너뛰는 바람에 경쟁에
+    #  닿지 못하고 흔들렸다(2026-11-16 후보 게이트 1회, Codex 진단 01a1e3dd) — 그래서 사전 검사만 '빈 폴더'로 고정한다.
+    monkeypatch.setattr(Path, "iterdir", lambda path: iter(()) if is_archive(path) else original_iterdir(path))
+    monkeypatch.setattr(Path, "is_dir", lambda path, **kwargs: True if is_archive(path) else original_is_dir(path, **kwargs))
     test_rollback_after_a_rebuilt_wal_copy_leaves_no_staged_files(tmp_path, monkeypatch)
     assert len(retained) == 1 and retained[0].read_bytes() == b"retain me"
     assert "archive cleanup race" in capsys.readouterr().out
