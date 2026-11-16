@@ -18,6 +18,12 @@ import backup_replicate as tool  # noqa: E402
 NAS = "\\\\NAS\\backup\\mvhub"
 
 
+def _no_outside_tmp(paths):
+    """전체 시험 중 제품 이름을 '대문자로 + .tmp' 로 바꾼 잠깐 사본이 생긴다(생성 주체 미확정, 백신·색인기 등 외부 프로그램 추정 —
+    11-16 게이트에서 `CONTENT_HUB_…KEEP.JSON.tmp`). 제품이 만드는 이름은 모두 소문자라 이 꼴만 빼고 본다."""
+    return [p for p in paths if not (p.name.endswith(".tmp") and p.name[:-4].isupper())]
+
+
 # ── 복사기 도우미 ──────────────────────────────────────────────────────────────
 
 
@@ -52,17 +58,18 @@ def test_existing_folder_acceptance(tmp_path):
     (ours / "db-backups" / "me" / "sets" / ".setpart-1" / "trash.db").write_bytes(b"x")
     (ours / "db-backups" / "me" / "20261001_031500_abcdef12.db").write_bytes(b"x")
     (ours / tool.MARKER_NAME).write_text("{}")
-    assert tool._accepts_existing(ours, list(ours.iterdir()))
+    assert tool._accepts_existing(ours, _no_outside_tmp(ours.iterdir()))
     (set_dir / "trash.db").write_bytes(b"x")  # manifest 에 없는 역할
-    assert not tool._accepts_existing(ours, list(ours.iterdir()))
+    # 음성 단언도 거른다 — 사본이 끼면 루트 검사에서 바로 거짓이 나와 아래 하위 검사를 시험하지 못한다(Codex 01a1e41c)
+    assert not tool._accepts_existing(ours, _no_outside_tmp(ours.iterdir()))
     (set_dir / "trash.db").unlink()
     fake = ours / "backups" / "sets" / "foreign"
     fake.mkdir(parents=True)
     (fake / "content.db").write_bytes(b"x")  # 'sets' 라는 이름만 같은 남의 구조
-    assert not tool._accepts_existing(ours, list(ours.iterdir()))
+    assert not tool._accepts_existing(ours, _no_outside_tmp(ours.iterdir()))
     (fake / "content.db").unlink()
     (ours / "backups" / "someone_else.db").write_bytes(b"x")
-    assert not tool._accepts_existing(ours, list(ours.iterdir()))
+    assert not tool._accepts_existing(ours, _no_outside_tmp(ours.iterdir()))
     other = tmp_path / "other"
     (other / "photos").mkdir(parents=True)
     assert not tool._accepts_existing(other, list(other.iterdir()))
@@ -92,7 +99,8 @@ def test_prune_only_deletes_our_names(tmp_path, monkeypatch):
     foreign.write_bytes(b"x")
     os.utime(foreign, (1, 1))
     assert tool.prune_dir(d, set()) == 2
-    assert sorted(p.name for p in d.iterdir()) == ["content_hub_20261002_031500.db", "keep_me.db"]
+    # 정리가 쓴 표식(.keep.json)의 대문자 .tmp 사본이 끼었던 자리(11-16 게이트 1회) — _no_outside_tmp 참고
+    assert sorted(p.name for p in _no_outside_tmp(d.iterdir())) == ["content_hub_20261002_031500.db", "keep_me.db"]
 
 
 def test_last_success_carries_only_for_same_target(tmp_path, monkeypatch):
