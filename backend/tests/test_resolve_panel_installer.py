@@ -249,7 +249,8 @@ class InstallerTests(unittest.TestCase):
 
 class StartupAndApiTests(unittest.TestCase):
     def test_release_disabled_blocks_status_manual_and_background_without_writes(self):
-        with patch.object(installer.release_update, "install_mode", return_value="release"), \
+        with patch.object(installer, "RESOLVE_PANEL_RELEASE_ENABLED", False), \
+                patch.object(installer.release_update, "install_mode", return_value="release"), \
                 patch.object(installer, "_run") as run, patch.object(installer, "write_hub_json") as write, \
                 patch.object(installer.threading, "Thread") as thread:
             self.assertEqual(installer.resolve_panel_plugin_status()["state"], "release_disabled")

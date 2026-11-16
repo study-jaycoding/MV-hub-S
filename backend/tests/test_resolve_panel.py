@@ -388,7 +388,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_release_disabled_blocks_panel_identity_and_operations(self):
         installer = integration.resolve_panel_installer
-        with patch.object(installer.release_update, "install_mode", return_value="release"), \
+        with patch.object(installer, "RESOLVE_PANEL_RELEASE_ENABLED", False), \
+                patch.object(installer.release_update, "install_mode", return_value="release"), \
                 patch.object(panel, "window_identity", AsyncMock()) as identity:
             for invoke in (lambda: route.get_identity(self.request), self.target,
                            lambda: route.get_inventory(self.request, self.ctx["instance"], self.ctx["account"], self.ctx["epoch"])):
