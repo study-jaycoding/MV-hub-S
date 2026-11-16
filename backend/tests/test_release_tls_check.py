@@ -55,14 +55,62 @@ def test_declaration(tmp_path, source, valid):
     'del TLS_REQUIRED',
     'del other, TLS_REQUIRED',
     'if (TLS_REQUIRED := True): pass',
+    'del d[k], TLS_REQUIRED',
+    'x[0], TLS_REQUIRED = 1, True',
+    'for d[k], TLS_REQUIRED in v: pass',
+    'f(a), TLS_REQUIRED = 1, True',
+    'for(TLS_REQUIRED, x) in v: pass',
+    'del(TLS_REQUIRED)',
+    'f(TLS_REQUIRED := True)',
+    'd[(TLS_REQUIRED := True)]',
+    'f(TLS_REQUIRED\n:= True)',
+    'f(TLS_REQUIRED',
+    'from m import TLS_REQUIRED',
+    'from m import (x,\n TLS_REQUIRED)',
+    'import x as TLS_REQUIRED',
+    'def TLS_REQUIRED(): pass',
+    'class TLS_REQUIRED: pass',
+    'with c as (TLS_REQUIRED): pass',
+    'print (TLS_REQUIRED, x=1)',  # Documented conservative limit for spaced calls.
 ])
 def test_additional_bindings_rejected(tmp_path, binding):
     result = probe(tmp_path, {TRANSPORT: 'TLS_REQUIRED = False\n' + binding + '\n'})
     assert result.returncode != 0 and 'Invalid TLS_REQUIRED' in result.stderr
 
 
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('binding', [
+    'import ssl\n(TLS_REQUIRED, other) = True, 1',
+    'x = f()\n(TLS_REQUIRED, y) = 1, 2',
+])
+def test_column_zero_binding_rejected(tmp_path, newline, binding):
+    source = ('TLS_REQUIRED = False\n' + binding + '\n').replace('\n', newline)
+    result = probe(tmp_path, {TRANSPORT: source})
+    assert result.returncode != 0 and 'Invalid TLS_REQUIRED' in result.stderr
+
+
 def test_comparisons_still_allowed(tmp_path):
     result = probe(tmp_path, {TRANSPORT: 'TLS_REQUIRED = False\nif TLS_REQUIRED == True: pass\nif TLS_REQUIRED != False: pass\n'})
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('reference', [
+    'build(TLS_REQUIRED, proxy=proxy)',
+    'print(TLS_REQUIRED, file=output)',
+    'build(TLS_REQUIRED=True)',
+    'build(\n TLS_REQUIRED,\n proxy=proxy\n)\ncache[key] = value',
+    'print(TLS_REQUIRED, file=output)\ncache[key] = value',
+    'del d[TLS_REQUIRED]',
+    'del d[\n TLS_REQUIRED\n]',
+    'del d[TLS_REQUIRED], other',
+    'factory()(TLS_REQUIRED, flag=True)',
+    'handlers[key](TLS_REQUIRED, flag=True)',
+    'label = "bracket ( and TLS_REQUIRED := True"',
+    'x = delay * 2 if TLS_REQUIRED else delay',
+    'delete_backup(p) if TLS_REQUIRED else None',
+])
+def test_call_and_subscript_references_allowed(tmp_path, reference):
+    result = probe(tmp_path, {TRANSPORT: 'TLS_REQUIRED = False\n' + reference + '\n'})
     assert result.returncode == 0, result.stderr
 
 

@@ -12,6 +12,8 @@ updated: 2026-11-16
 
 # CODE_MAP — 파일 단위 코드 지도
 
+공유 서버 HTTPS 전환 리허설: `backend/tests/test_shared_tls_rehearsal.py`는 임시 전환 사본·D2 인증서로 실제 서버/허브의 가입·로그인·중계 읽기·WSS·백업 하위 프로세스를 검증하고, 기록용 TCP 앞단에서 평문 하향 요청을 탐지한다. [계약](status/공유서버HTTPS_4묶음_격리리허설_2026-11-16.md).
+
 공유 서버 전송 경계(HTTPS 2묶음): `backend/app/services/shared_transport.py`는 전환 상수·공개 인증서 신뢰·주소 변환·리다이렉트 차단·빠른 TCP 연결을 맡는다. `backend/tests/test_shared_transport.py`는 임시 D2 인증서·실제 loopback TLS로 신뢰·하향 금지·리다이렉트·프록시 정책을 검증한다. [계약](status/공유서버HTTPS_2묶음_통신경계_2026-11-16.md).
 
 복원 세대 보호(1C-1): `backend/app/repo/restore_generation.py`의 공통 검사(다른 repo 를 import 하지 않는 잎 — `share_commands.py`가 다시 내보냄, import 순환 방지) → `scene_notebook.py`·`scenes_backup.py`·`scene_cards.py`·`edit_docs.py`의 트랜잭션, `backend/app/routers/scenes.py`·`edit_docs.py`의 요청·응답 계약. `backend/tests/test_restore_generation.py`가 일곱 쓰기 입구·읽기 일관성·격리 복원·동시성을 검증한다.

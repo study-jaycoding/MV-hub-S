@@ -237,13 +237,34 @@ function Assert-ReleaseArchive {
         }
         $Transport = Read-ArchiveText -Archive $Archive -EntryName 'backend/app/services/shared_transport.py'
         $Declarations = [regex]::Matches($Transport, '(?m)^TLS_REQUIRED[ \t]*=[ \t]*(True|False)[ \t]*(#[^\r\n]*)?\r?$')
-        # Preserve quoted # characters; only an unquoted # starts a line comment.
-        # shortcut: this is not a Python parser (triple-quoted strings/explicit backslash continuations); use a tokenizer if those enter this module.
+        # Mask strings and comments so their brackets and names cannot become binding targets.
+        # shortcut: not a Python parser; triple quotes/backslash continuations and match/case captures are unsupported, f-string expressions are masked; use a tokenizer if needed.
         $BindingText = [regex]::Replace($Transport, '''(?:\\.|[^''\\\r\n])*''|"(?:\\.|[^"\\\r\n])*"|#[^\r\n]*', {
             param($Match)
-            if ($Match.Value.StartsWith('#')) { return '' }
-            return $Match.Value
+            return ' ' * $Match.Length
         })
+        # Walrus binds even inside a call or subscript; inspect it before masking those spans.
+        $HasWalrus = [regex]::IsMatch($BindingText, '\bTLS_REQUIRED\s*:=')
+        $Keywords = '^(?:False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield)$'
+        $BracketStack = [System.Collections.Generic.List[bool]]::new()
+        $BindingChars = $BindingText.ToCharArray()
+        for ($Index = 0; $Index -lt $BindingChars.Length; $Index++) {
+            $Char = $BindingText[$Index]
+            $InsideCall = $BracketStack.Count -gt 0 -and $BracketStack[$BracketStack.Count - 1]
+            if ($Char -eq '(' -or $Char -eq '[') {
+                $Before = $BindingText.Substring(0, $Index)
+                $Word = [regex]::Match($Before, '\w+\z').Value
+                $IsCall = $Before -match '[\w)\]]\z' -and $Word -cnotmatch $Keywords
+                $InsideCall = $InsideCall -or $IsCall
+                $BracketStack.Add($InsideCall)
+            }
+            if ($InsideCall -and $Char -ne "`r" -and $Char -ne "`n") { $BindingChars[$Index] = ' ' }
+            if (($Char -eq ')' -or $Char -eq ']') -and $BracketStack.Count -gt 0) {
+                $BracketStack.RemoveAt($BracketStack.Count - 1)
+            }
+        }
+        # shortcut: spaced calls such as print (TLS_REQUIRED, x=1) fail closed; use a tokenizer if needed.
+        $BindingText = -join $BindingChars
         # Join only explicit parenthesized/list targets, never unrelated physical lines.
         $BindingText = [regex]::Replace($BindingText, '[\(\[][\w(),*\[\] \t\r\n]*[\)\]](?=[ \t]*(?:=(?!=)|in\b))', {
             param($Match)
@@ -251,8 +272,10 @@ function Assert-ReleaseArchive {
         })
         $Assignments = [regex]::Matches($BindingText, '\bTLS_REQUIRED[ \t]*(?::[^=\r\n]+)?[ \t]*(?:[+*/%@&|^\-]|<<|>>|\*\*|//)?=(?!=)')
         $TupleBinding = '(?m)(?:^|[;:])[ \t]*(?=[\w()\[\]* ,\t]*,)[\w()\[\]* ,\t]*\bTLS_REQUIRED\b[\w()\[\]* ,\t]*=(?!=)'
-        $OtherBinding = '\bTLS_REQUIRED[ \t]*:=|\bfor[ \t]+[\w(),*\[\] \t]*\bTLS_REQUIRED\b[\w(),*\[\] \t]*\bin\b|\bas[ \t]+TLS_REQUIRED\b|\bdel[ \t]+[\w(),*\[\] \t]*\bTLS_REQUIRED\b'
-        if ($Declarations.Count -ne 1 -or $Assignments.Count -ne 1 -or
+        $OtherBinding = '\bfor\b[ \t]*[\w(),*\[\] \t]*\bTLS_REQUIRED\b[\w(),*\[\] \t]*\bin\b|\bas\b[ \t]+[([]*[ \t]*TLS_REQUIRED\b|\bdel\b[ \t]*[\w(),*\[\] \t]*\bTLS_REQUIRED\b|\b(?:def|class)[ \t]+TLS_REQUIRED\b'
+        $ImportBinding = '\bimport[ \t]+(?:\([ \t\r\n]*)?(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t\r\n]*)*TLS_REQUIRED\b(?![ \t]+as\b)'
+        if ($Declarations.Count -ne 1 -or $Assignments.Count -ne 1 -or $HasWalrus -or $BracketStack.Count -ne 0 -or
+            [regex]::IsMatch($BindingText, $ImportBinding) -or
             [regex]::IsMatch($BindingText, $TupleBinding) -or [regex]::IsMatch($BindingText, $OtherBinding)) {
             throw 'Invalid TLS_REQUIRED declaration or additional assignment'
         }
