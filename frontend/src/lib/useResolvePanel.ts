@@ -725,12 +725,22 @@ export function useResolvePanel() {
   //  저장할 다빈치 프로젝트는 첫 inventory 결과로 고정하고 모든 쓰기에 싣는다(다르면 쓰기 0). '깨끗함'은 그 저장 시점만 — 단축키·자동 저장은 이 단추를 거치지 않는다.
   const saveProject = (project_id: string, folder_path: string) => {
     const ctx = context.current;
-    if (saving || !ctx?.writer || !hasResolveBridge(window.mvhubResolve) || !project_id) return;
+    if (savingRef.current || !ctx?.writer || !hasResolveBridge(window.mvhubResolve) || !project_id) return;
     readyDrag.current = {}; setDragItems({});
     savingRef.current = true; fillRun.current = null; setFillProgress(null);
     precacheRun.current++; // 진행 중인 미리 띄우기·이름 뒤따르기를 멈춘다(대기열의 조각 하나까지 기다림)
     setSaving(true); setNotice(t("저장 중")); setSaveState({ phase: "saving", step: t("확인 중") });
     const rev = revision.current;
+    const epoch = authEpoch.current, ownerGeneration = ctx.generation;
+    const saveContextValid = () => authEpoch.current === epoch && revision.current === rev
+      && contextKey(context.current) === contextKey(ctx) && context.current?.writer === true
+      && context.current.generation === ownerGeneration && hasResolveBridge(window.mvhubResolve);
+    const checkSaveContext = () => {
+      if (saveContextValid()) return;
+      const reason = authEpoch.current !== epoch || contextKey(context.current) !== contextKey(ctx) ? "account_changed"
+        : !context.current?.writer || context.current.generation !== ownerGeneration ? "other_window" : "project_changed";
+      throw new Error(t("저장하지 않았습니다") + ": " + panelFailure(reason));
+    };
     let ended = false; // 끝 상태(저장됨·막힘)를 적었나 — 못 적고 끝나면(예외) 막힘
     let savedOk = false;
     let savedProject = "";
@@ -739,7 +749,9 @@ export function useResolvePanel() {
         let after: [string, string] | undefined, fixed = "";
         const all: InventoryItem[] = [];
         do {
+          checkSaveContext();
           const result = await panel.inventory(ctx, after);
+          checkSaveContext();
           check(result);
           if (result.state !== "ok") throw new Error(t("저장하지 않았습니다") + ": " + panelFailure(result.state));
           if (result.unmanaged_local) throw new Error(t("저장하지 않았습니다") + ": " + t("소유를 확인하지 못한 로컬 클립이 있습니다 — 다빈치에서 확인해 주세요"));
@@ -753,10 +765,11 @@ export function useResolvePanel() {
         const pinned = (item: { project_id: string; folder_path: string }): Selection => ({ ctx, project_id: item.project_id, folder_path: item.folder_path,
           episode: "", cuts: [], via: "", resolveProject: fixed, window: windowId, seq: ++sequence.current, revision: rev });
         let moved = 0, cleaned = 0;
-        const failed: string[] = [], unused = new Map<string, Selection>();
+        const failed: string[] = [], unused = new Map<string, { bin_id: string; selection: Selection }>();
         const missing = new Set<string>();
         const toMove = all.filter(item => item.resolve_project_id === fixed && ["recover", "adopt"].includes(inventoryAction(item))).length;
         for (const item of all) {
+          checkSaveContext();
           if (item.resolve_project_id !== fixed || missing.has(item.item_id)) continue;
           const action = inventoryAction(item);
           if (action === "recover" || action === "adopt") {
@@ -767,14 +780,25 @@ export function useResolvePanel() {
               if (result?.state === "in_bin") moved++;
             }
             catch (error) { failed.push(errorText(error)); }
-          } else if (action === "unstage") unused.set(item.bin_id, pinned(item));
+          } else if (action === "unstage") unused.set(JSON.stringify([item.project_id, item.bin_id]), { bin_id: item.bin_id, selection: pinned(item) });
         }
         if (unused.size) setSaveState({ phase: "saving", step: t("정리") });
-        for (const [bin_id, selection] of unused) {
-          const removed = await panel.unstage({ ...writer(selection), bin_id }) as StageResult;
+        const groups = new Map<string, { bin_id: string; selection: Selection }[]>();
+        for (const { bin_id, selection } of unused.values()) {
+          const rows = groups.get(selection.project_id) || [];
+          rows.push({ bin_id, selection }); groups.set(selection.project_id, rows);
+        }
+        for (const rows of groups.values()) for (let start = 0; start < rows.length; start += 200) {
+          checkSaveContext();
+          const chunk = rows.slice(start, start + 200);
+          const removed = await panel.unstage({ ...writer(chunk[0].selection),
+            bins: chunk.map(({ bin_id, selection }) => ({ bin_id, folder_path: selection.folder_path })) });
+          checkSaveContext();
           check(removed);
-          if (removed.state === "project_changed" || (removed.resolve_project_id && removed.resolve_project_id !== fixed)) throw new Error(t("저장하지 않았습니다") + ": " + panelFailure("project_changed"));
-          if (removed.state === "ok") cleaned += removed.removed || 0;
+          if (removed.state === "project_changed" || removed.code === "project_changed"
+              || (removed.resolve_project_id && removed.resolve_project_id !== fixed)) throw new Error(t("저장하지 않았습니다") + ": " + panelFailure("project_changed"));
+          if (removed.state !== "ok") throw new Error(t("저장하지 않았습니다") + ": " + panelFailure(removed.state));
+          cleaned += removed.removed || 0;
         }
         if (failed.length) { // 쓴 클립이 이 PC 경로인 채 저장되지 않게 — NAS 로 다 옮기지 못하면 저장하지 않는다
           setFailures(list => [...new Set([...list, ...failed])]);
@@ -782,8 +806,10 @@ export function useResolvePanel() {
           ended = true; setSaveState({ phase: "blocked", bins: [] });
           return;
         }
+        checkSaveContext();
         setSaveState({ phase: "saving", step: t("검사") });
         const saved = await panel.save({ ctx, project_id, folder_path: folder_path || project_id, window: windowId, expect_project: fixed });
+        checkSaveContext();
         check(saved);
         ended = true;
         if (saved.state === "ok") {
@@ -804,15 +830,18 @@ export function useResolvePanel() {
           setNotice(t("저장하지 않았습니다") + ": " + panelFailure(saved.state));
           setSaveState({ phase: "blocked", bins: [] });
         }
+      } catch (error) {
+        setNotice(errorText(error));
+        throw error;
       } finally {
         readyDrag.current = {}; setDragItems({});
         if (!ended) setSaveState({ phase: "blocked", bins: [] }); // 예외로 끝남(확인 실패·프로젝트 바뀜 등) — 이유는 알림에
         savingRef.current = false; setSaving(false);
         const last = lastPrecache.current;
-        if (savedOk) {
+        if (savedOk && saveContextValid()) {
           const now = selected.current;
           if (now && valid(now) && now.resolveProject === savedProject && now.folder_path !== now.episode) {
-            void enqueue(() => stageCut(now, generations.current, false));
+            void enqueue(async () => { if (saveContextValid()) await stageCut(now, generations.current, false); });
           }
           if (last) precache(last.project_id, last.episode, last.cuts);
         }

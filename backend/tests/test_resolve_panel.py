@@ -1386,6 +1386,94 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException):
                 await self.adopt()
 
+    def test_unstage_requires_exactly_one_bin_source_and_caps_batch(self):
+        row = {"bin_id": "b", "folder_path": "S/C"}
+        for values in ({}, {"bin_id": "b", "bins": [row]}, {"bins": []}, {"bins": [row] * 201},
+                       {"bin_id": ""}, {"bins": [{"bin_id": "", "folder_path": "S"}]},
+                       {"bins": [{"bin_id": "b", "folder_path": ""}]}):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                self.body(route.UnstageIn, **values)
+        self.assertEqual(len(self.body(route.UnstageIn, bins=[row] * 200).bins), 200)
+        self.assertEqual(self.body(route.UnstageIn, bin_id="b").bin_id, "b")
+
+    async def test_unstage_batch_roots_permissions_and_per_folder_same_files(self):
+        rows = [{"bin_id": "a", "folder_path": "S/A"}, {"bin_id": "b", "folder_path": "T/B"}]
+        key = (*panel.context_key(self.ctx), "test-window", "p")
+        for n, row in enumerate(rows):
+            panel._same_files[(*key, row["folder_path"])] = {f"g{n}"}
+        saved = {"item_id": "old", "resolve_project_id": self.project.unique_id, "project_id": "p", "gen_id": "g"}
+        with patch.object(panel, "records", return_value=[saved]), \
+                patch.object(panel, "validate_media_root", wraps=panel.validate_media_root) as validate, \
+                patch.object(route, "_project_read", AsyncMock(return_value={"name": "Film"})) as project:
+            runner.run_resolve_panel_isolated.reset_mock()
+            result = await route.post_unstage(self.body(route.UnstageIn, bins=rows), self.request)
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual([row["state"] for row in result["bin_results"]], ["not_seen", "not_seen"])
+        runner.run_resolve_panel_isolated.assert_called_once()
+        payload = runner.run_resolve_panel_isolated.call_args.args[0]
+        self.assertEqual(payload["bins"], [{**row, "same_file_ids": [f"g{n}"]} for n, row in enumerate(rows)])
+        self.assertEqual(payload["import_records"], [saved])
+        self.assertEqual(payload["manifest_root"], str(self.manifests))
+        transfer.resolve_transfer_roots.assert_called_with("p")
+        validate.assert_called_once_with(self.render)
+        project.assert_awaited_once()
+        runner.run_resolve_panel_isolated.reset_mock()
+        with patch.object(route, "_project_read", AsyncMock(side_effect=HTTPException(403, "hidden"))):
+            with self.assertRaises(HTTPException):
+                await route.post_unstage(self.body(route.UnstageIn, bins=rows), self.request)
+        runner.run_resolve_panel_isolated.assert_not_called()
+        with patch.object(panel, "validate_media_root", side_effect=HTTPException(400, "bad root")):
+            with self.assertRaises(HTTPException):
+                await route.post_unstage(self.body(route.UnstageIn, bins=rows), self.request)
+        runner.run_resolve_panel_isolated.assert_not_called()
+
+    async def test_unstage_batch_inventory_skips_only_active_rows_but_nas_cleans_current(self):
+        await self.place()
+        current = self.pool.current
+        episode = self.pool.AddSubFolder(self.pool.root.children[0], "episode")
+        other = self.pool.AddSubFolder(self.pool.root.children[0], "other")
+        for folder in (episode, other):
+            clip = FakeClip(str(self.media / "clip.mp4"))
+            bridge._panel_stamp(clip, "g", "p", lambda: None, hub_key=panel.hub_key())
+            folder.clips.append(clip)
+        panel._episode_bins.add(episode.unique_id)
+        rows = [{"bin_id": folder.unique_id, "folder_path": f"S/{n}"} for n, folder in enumerate((current, episode, other))]
+        result = await route.post_unstage(self.body(route.UnstageIn, bins=rows, inventory_cleanup=True), self.request)
+        self.assertEqual({row["bin_id"]: row["state"] for row in result["bin_results"]},
+                         {current.unique_id: "active_bin", episode.unique_id: "active_bin", other.unique_id: "ok"})
+        self.assertEqual((result["removed"], len(current.clips), len(episode.clips), len(other.clips)), (1, 1, 1, 0))
+        result = await route.post_unstage(self.body(route.UnstageIn, bins=rows, inventory_cleanup=False), self.request)
+        self.assertEqual((result["removed"], len(current.clips), len(episode.clips)), (2, 0, 0))
+        self.assertIs(self.pool.current, current)
+
+    async def test_unstage_batch_postprocesses_every_row_and_stop_leftover_once(self):
+        rows = [{"bin_id": "a", "folder_path": "S/A"}, {"bin_id": "b", "folder_path": "T/B"}]
+        old = [{"item_id": f"old{n}", "project_id": "p", "gen_id": f"g{n}", "resolve_project_id": self.project.unique_id} for n in range(2)]
+        pending = [{**row, "item_id": f"pending{n}"} for n, row in enumerate(old)]
+        pending.append({**old[0], "item_id": "pending-stop"})
+        result = {"state": "unavailable", "code": "project_changed", "removed": 2,
+                  "import_records": [pending[2]], "bin_results": [
+                      {**row, "state": "ok", "removed": 1, "import_records": [pending[n]], "items": [
+                          {"gen_id": f"g{n}", "state": "present"}, {"gen_id": f"same{n}", "state": "same_file_exists"}]}
+                      for n, row in enumerate(rows)]}
+        with patch.object(runner, "run_resolve_panel_isolated", return_value=result), \
+                patch.object(panel, "records", return_value=old), patch.object(panel, "save_record") as save, \
+                patch.object(route, "_remove_recovery_records", AsyncMock(side_effect=["denied", None])) as remove:
+            done = await route.post_unstage(self.body(route.UnstageIn, bins=rows), self.request)
+        self.assertEqual([call.args[1]["item_id"] for call in save.call_args_list], ["pending-stop", "pending0", "pending1"])
+        self.assertEqual([call.args[1] for call in remove.call_args_list], [[old[0]], [old[1]]])
+        self.assertTrue(done["cleanup_failed"])
+        self.assertTrue(done["bin_results"][0]["cleanup_failed"])
+        self.assertEqual(done["code"], "project_changed")
+        for n, row in enumerate(rows):
+            self.assertIn(f"same{n}", panel._same_files[(*panel.context_key(self.ctx), "test-window", "p", row["folder_path"])])
+
+    async def test_current_bin_keeps_project_absence_diagnostic_code(self):
+        for code in ("no_project_manager", "no_open_project"):
+            with patch.object(runner, "run_resolve_panel_isolated", return_value={"state": "unavailable", "code": code}):
+                result = await route.get_current_bin(self.request, self.ctx["instance"], self.ctx["account"], self.ctx["epoch"])
+            self.assertEqual(result, {"state": "unavailable", "code": code})
+
     def episode(self, **kwargs):
         values = {"window": "test-window", "seq": 1, "create": True, "folder_path": "S01", "episode_path": "S01",
                   "create_paths": ["S01/C010", "S01/C020"], **kwargs}
@@ -1731,6 +1819,15 @@ class RunnerTests(unittest.TestCase):
     def test_child_crash_is_unknown_for_adopt(self):
         with patch.object(runner, "_resolve_is_closed", return_value=False), patch.object(runner, "_select_interpreter", return_value=("python", {}, "")), patch.object(runner, "_run_child", return_value=SimpleNamespace(stdout="", stderr="crashed", returncode=1)):
             self.assertEqual(runner.run_resolve_panel_isolated({"operation": "adopt"})["state"], "unknown")
+
+    def test_read_timeout_is_not_a_project_absence_signal(self):
+        with patch.object(runner, "_resolve_is_closed", return_value=False), \
+                patch.object(runner, "_select_interpreter", return_value=("python", {}, "")), \
+                patch.object(runner, "_run_child", side_effect=runner.subprocess.TimeoutExpired("python", 8)):
+            result = runner.run_resolve_panel_isolated({"operation": "current-bin"})
+        self.assertEqual(result["state"], "unavailable")
+        self.assertNotIn(result.get("code"), {"no_project_manager", "no_open_project"})
+        self.assertNotIn("resolve_project_id", result)
 
     def test_pause_during_interpreter_probe_prevents_read_child(self):
         checks = iter([None, {"state": "busy"}])

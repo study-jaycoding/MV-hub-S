@@ -24,6 +24,8 @@ export interface TargetResult {
 }
 export interface DragItem { path: string; item_id: string; preview_url: string }
 export interface StageResult extends TargetResult { items?: { gen_id: string; state: string }[]; removed?: number; deferred?: number; capped?: boolean; unexpected_imports?: number; drag_items?: Record<string, DragItem> }
+export interface UnstageResult extends StageResult { bin_results?: (StageResult & { bin_id: string; folder_path: string })[] }
+type UnstageBins = { bin_id: string; bins?: never } | { bin_id?: never; bins: { bin_id: string; folder_path: string }[] };
 export interface InventoryItem { resolve_project_id: string; project_id: string; folder_path: string; bin_id: string; bin_path: string; item_id: string; gen_id: string; usage?: number | null; recovery?: boolean }
 export interface InventoryResult extends TargetResult { items?: InventoryItem[]; more?: boolean; after?: [string, string]; other_owner?: number; needs_attention?: number; active_bin_id?: string; unmanaged_local?: number }
 export type AdoptState = "in_bin" | "stamp_failed" | "save_failed" | "ledger_failed" | "conflict" | "elsewhere" | "not_seen" | "not_prepared" | "project_changed" | "busy" | "unknown" | "account_changed" | "rebuild_recovery_pending" | "replace_failed" | "other_window";
@@ -54,7 +56,7 @@ export const resolvePanelApi = {
   currentBin: (ctx: PanelContext, project_id = "", folder_path = "") => jsonFetch<TargetResult>(`/api/resolve/panel/current-bin?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), project_id, folder_path })}`),
   adopt: (body: PanelSelection & { gen_id: string; resolve_project_id: string; bin_id?: string; item_ids?: string[]; defer_save?: boolean }) => post<AdoptResult>("adopt", body),
   stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
-  unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean }) => post<TargetResult>("unstage", body),
+  unstage: (body: PanelSelection & UnstageBins & { inventory_cleanup?: boolean }) => post<UnstageResult>("unstage", body),
   inventory: (ctx: PanelContext, after?: [string, string]) => jsonFetch<InventoryResult>(`/api/resolve/panel/inventory?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), ...(after ? { after: JSON.stringify(after) } : {}) })}`),
   prestage: (body: PanelSelection & { window: string; episode_bin_id: string; cuts: PanelCut[]; borrow?: boolean; borrow_bin_id?: string }) => post<PrestageResult>("prestage", body),
   rename: (body: PanelSelection & { window: string; cuts: PanelCut[]; limit?: number; after?: [number, number] }) => post<RenameResult>("rename", body),

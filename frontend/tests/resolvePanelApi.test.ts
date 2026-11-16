@@ -34,6 +34,16 @@ it("stage 상태는 같은 파일·실패·보류를 성공 수와 구분", () =
   ] })).toEqual({ staged: 2, sameFile: 1, deferred: 2, failed: [{ gen_id: "4", state: "conflict" }] });
 });
 it("501개 cache는 500+1", () => expect(cacheBatches(Array.from({ length: 501 }, (_, n) => String(n))).map(batch => batch.length)).toEqual([500, 1]));
+it("묶음 unstage의 행별 경로와 중단 code·앞 결과를 보존한다", async () => {
+  const bins = [{ bin_id: "b1", folder_path: "S/C1" }, { bin_id: "b2", folder_path: "T/C2" }];
+  const response = { state: "unavailable", code: "project_changed", removed: 1,
+    bin_results: [{ ...bins[0], state: "ok", removed: 1 }] };
+  vi.mocked(jsonFetch).mockResolvedValueOnce(response);
+  const result = await resolvePanelApi.unstage({ ctx: identity, project_id: "p", folder_path: "S/C1", window: "w", bins });
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toEqual({
+    ctx: identity, project_id: "p", folder_path: "S/C1", window: "w", bins });
+  expect(result).toEqual(response);
+});
 it("미리 띄우기의 안정 빈 ID와 borrow를 전달한다", async () => {
   await resolvePanelApi.prestage({ ctx: identity, project_id: "p", folder_path: "S", window: "w",
     episode_bin_id: "ep", cuts: [{ folder_path: "S/C1", bin_id: "b", gen_ids: ["g"] }], borrow: true, borrow_bin_id: "human" });
