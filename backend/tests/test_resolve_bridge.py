@@ -3506,8 +3506,109 @@ class ProcessCheckEncodingTests(unittest.TestCase):
             child = "import sys; sys.stdout.buffer.write(b'\\xc1\\xa4\\xba\\xb8: \\xc1\\xf6\\xc1\\xa4')"  # '정보: 지정'(CP949)
             return real_run([sys.executable, "-c", child], **kwargs)
 
-        with mock.patch.object(resolve_bridge.subprocess, "run", run_like_utf8_mode):
+        with mock.patch("ctypes.WinDLL", side_effect=OSError("unavailable")), \
+                mock.patch.object(resolve_bridge.subprocess, "run", run_like_utf8_mode):
             self.assertIs(resolve_bridge._resolve_process_running(), False)
+
+
+@unittest.skipUnless(os.name == "nt", "Toolhelp32 구조체는 Windows 전용")
+class ProcessSnapshotTests(unittest.TestCase):
+    def kernel(self, names):
+        import ctypes
+        rows = iter(names)
+        kernel = mock.Mock()
+        kernel.CreateToolhelp32Snapshot.return_value = 0x123456789  # 64비트 핸들을 자르지 않는다.
+        kernel.CloseHandle.return_value = True
+
+        def walk(_handle, pointer):
+            entry = pointer._obj
+            self.assertEqual(entry.dwSize, ctypes.sizeof(entry))
+            name = next(rows, None)
+            if name is None:
+                ctypes.set_last_error(18)
+                return False
+            entry.szExeFile = name
+            return True
+
+        kernel.Process32FirstW.side_effect = walk
+        kernel.Process32NextW.side_effect = walk
+        return kernel
+
+    def test_names_end_of_list_signatures_and_handle_cleanup(self):
+        import ctypes
+        from ctypes import wintypes
+        for names, expected in [(["rEsOlVe.ExE", "other.exe"], True),
+                                (["other.exe", "Resolve.exe"], True),
+                                (["resolve.exe.bak", "myresolve.exe"], False), ([], False)]:
+            with self.subTest(names=names):
+                kernel = self.kernel(names)
+                with mock.patch("ctypes.WinDLL", return_value=kernel) as load, \
+                        mock.patch.object(resolve_bridge.subprocess, "run") as tasklist:
+                    self.assertIs(resolve_bridge._resolve_process_running(), expected)
+                load.assert_called_once_with("kernel32", use_last_error=True)
+                tasklist.assert_not_called()
+                kernel.CreateToolhelp32Snapshot.assert_called_once_with(2, 0)
+                kernel.CloseHandle.assert_called_once_with(0x123456789)
+                self.assertEqual(kernel.CreateToolhelp32Snapshot.argtypes, [wintypes.DWORD, wintypes.DWORD])
+                self.assertIs(kernel.CreateToolhelp32Snapshot.restype, wintypes.HANDLE)
+                entry_type = kernel.Process32FirstW.argtypes[1]._type_
+                self.assertEqual(kernel.Process32NextW.argtypes, [wintypes.HANDLE, ctypes.POINTER(entry_type)])
+                self.assertIs(kernel.Process32FirstW.restype, wintypes.BOOL)
+                self.assertIs(kernel.Process32NextW.restype, wintypes.BOOL)
+                self.assertEqual(kernel.CloseHandle.argtypes, [wintypes.HANDLE])
+                self.assertIs(kernel.CloseHandle.restype, wintypes.BOOL)
+                if ctypes.sizeof(ctypes.c_void_p) == 8:
+                    self.assertEqual(ctypes.sizeof(entry_type), 568)
+                    self.assertEqual(entry_type.th32DefaultHeapID.offset, 16)
+                    self.assertEqual(entry_type.szExeFile.offset, 44)
+
+    def test_any_snapshot_failure_falls_back_and_preserves_tasklist_tristate(self):
+        import ctypes
+        for failure in ("load", "invalid", "null", "snapshot", "first", "next", "first_error", "next_error", "close"):
+            for expected in (True, False, None):
+                with self.subTest(failure=failure, expected=expected):
+                    kernel = self.kernel(["other.exe"])
+                    ctypes.set_last_error(5)
+                    if failure == "invalid":
+                        kernel.CreateToolhelp32Snapshot.return_value = ctypes.c_void_p(-1).value
+                    elif failure == "null":
+                        kernel.CreateToolhelp32Snapshot.return_value = None
+                    elif failure == "snapshot":
+                        kernel.CreateToolhelp32Snapshot.side_effect = RuntimeError("snapshot")
+                    elif failure in {"first", "next"}:
+                        getattr(kernel, "Process32FirstW" if failure == "first" else "Process32NextW").side_effect = RuntimeError("walk")
+                    elif failure in {"first_error", "next_error"}:
+                        walk = getattr(kernel, "Process32FirstW" if failure == "first_error" else "Process32NextW")
+                        walk.side_effect = None
+                        walk.return_value = False  # ERROR_ACCESS_DENIED는 '없음'이 아니다.
+                    elif failure == "close":
+                        kernel.CloseHandle.return_value = False
+                    with mock.patch("ctypes.WinDLL", return_value=kernel, side_effect=OSError("load") if failure == "load" else None), \
+                            mock.patch.object(resolve_bridge.subprocess, "run") as tasklist:
+                        if expected is None:
+                            tasklist.side_effect = OSError("tasklist")
+                        else:
+                            tasklist.return_value.stdout = '"Resolve.exe","123"' if expected else "no tasks"
+                        self.assertIs(resolve_bridge._resolve_process_running(), expected)
+                    tasklist.assert_called_once_with(
+                        ["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/FO", "CSV", "/NH"],
+                        check=False, capture_output=True, text=True, errors="replace", timeout=2,
+                        creationflags=getattr(resolve_bridge.subprocess, "CREATE_NO_WINDOW", 0))
+                    if failure in {"load", "invalid", "null", "snapshot"}:
+                        kernel.CloseHandle.assert_not_called()
+                    else:
+                        kernel.CloseHandle.assert_called_once_with(0x123456789)
+
+
+class ProcessCheckPlatformTests(unittest.TestCase):
+    def test_non_windows_does_not_load_ctypes_or_run_tasklist(self):
+        with mock.patch.object(resolve_bridge, "os") as platform, \
+                mock.patch("ctypes.WinDLL", create=True) as load, \
+                mock.patch.object(resolve_bridge.subprocess, "run") as tasklist:
+            platform.name = "posix"
+            self.assertIsNone(resolve_bridge._resolve_process_running())
+            load.assert_not_called()
+            tasklist.assert_not_called()
 
 
 if __name__ == "__main__":

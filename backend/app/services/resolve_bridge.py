@@ -180,6 +180,46 @@ def _resolve_process_running() -> bool | None:
     """
     if os.name != "nt":
         return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        for walk in (kernel32.Process32FirstW, kernel32.Process32NextW):
+            walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+            walk.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        handle = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        if handle == ctypes.c_void_p(-1).value or not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            found = kernel32.Process32FirstW(handle, ctypes.byref(entry))
+            while found:
+                if entry.szExeFile.casefold() == "resolve.exe":
+                    return True
+                found = kernel32.Process32NextW(handle, ctypes.byref(entry))
+            if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES만 정상 종료다.
+                raise ctypes.WinError(ctypes.get_last_error())
+            return False
+        finally:
+            if not kernel32.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+    except Exception:  # noqa: BLE001 - 프로세스 조회 실패는 기존 tasklist 판정으로 되돌린다.
+        pass
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         completed = subprocess.run(
