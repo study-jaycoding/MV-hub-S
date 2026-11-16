@@ -20,7 +20,7 @@ from .. import config
 from . import release_update
 
 PLUGIN_ID = "com.mvhub.resolve"
-RESOLVE_PANEL_RELEASE_ENABLED = False  # 실제 Resolve 필수 실측 통과 뒤에만 켠다.
+RESOLVE_PANEL_RELEASE_ENABLED = True  # Jay 가 실제 Resolve 실사용으로 확인하고 켬(2026-11-17) — 문제가 나면 False 로.
 RELEASE_DISABLED_REASON = "실제 Resolve 실측 전이므로 이 릴리스에서 패널이 꺼져 있습니다"
 SUPPORT = Path("Blackmagic Design/DaVinci Resolve/Support")
 log = logging.getLogger(__name__)
