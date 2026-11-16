@@ -193,10 +193,10 @@ export function useResolvePanel() {
     if (seq === undefined) pending.timer = setTimeout(() => endPreparation(pending), 5000);
     return pending;
   };
-  const interact = () => {
+  const interact = (keepTarget = false) => {
     backgroundPaused.current = true; quietBin.current = null;
-    const intent = ++intentNumber.current;
-    intentTarget.current = null;
+    const intent = keepTarget ? intentNumber.current : ++intentNumber.current;
+    if (!keepTarget) intentTarget.current = null;
     readyDrag.current = {}; setDragItems({}); setSelectionPhase("");
     beginPreparation(intent);
     return intent;
@@ -606,10 +606,10 @@ export function useResolvePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId]);
   const updateSet = useCallback((gens: Generation[], capped = false) => {
-    readyDrag.current = {}; setDragItems({}); setSelectionPhase("");
-    generations.current = gens;
     const selection = selected.current;
     if (!selection || !currentIntent(selection)) return;
+    readyDrag.current = {}; setDragItems({}); setSelectionPhase("");
+    generations.current = gens;
     const next = { ...selection, capped, seq: ++sequence.current };
     selected.current = next;
     void stageCut(next, gens, false, "update");
@@ -994,9 +994,12 @@ export function useResolvePanel() {
     setRecoveryRun(value => value + 1);
     const selection = selected.current;
     if (selection) {
-      const chosen = { ...selection, intent: interact() };
+      const target = intentTarget.current;
+      const keepTarget = currentIntent(selection) && !!target && target.intent === selection.intent && target.align && !target.settled;
+      // 아직 끝나지 않은 이동은 이어받고, 옛 내용의 cache·stage만 무효로 한다.
+      const chosen = { ...selection, intent: interact(keepTarget), seq: ++sequence.current };
       selected.current = chosen;
-      void stageCut(chosen, generations.current, chosen.folder_path === chosen.episode, "retry");
+      void stageCut(chosen, generations.current, false, "retry");
     }
   };
   const takeover = async () => {
@@ -1032,7 +1035,18 @@ export function useResolvePanel() {
           }
           const awaitingTarget = intentTarget.current?.align && !intentTarget.current.settled;
           const changed = !awaitingTarget && stillAt(selection) && result.state === "ok" && !!result.bin_id && result.bin_id !== lastBin.current;
-          if (changed) interact();
+          const ep = episodeOf(selection);
+          const owners = ep ? Object.entries(ep.bins).filter(([, id]) => id === result.bin_id) : [];
+          const cut = owners.length === 1 ? owners[0][0] : ep && result.bin_id === ep.episodeBin ? "" : null;
+          const here = selection.folder_path === selection.episode ? "" : selection.folder_path;
+          if (changed) {
+            if (ep && cut !== null && (cut !== here || cut !== "")) interact();
+            else {
+              // 선택 없는 관측은 배경만 보류한다. 진행 중 cache의 준비 표식은 유지한다.
+              backgroundPaused.current = true; quietBin.current = null;
+              readyDrag.current = {}; setDragItems({});
+            }
+          }
           const stable = stableBin.current;
           if (result.state === "ok" && result.bin_id && result.resolve_project_id) {
             const quiet = quietBin.current;
@@ -1052,10 +1066,6 @@ export function useResolvePanel() {
           //  응답을 기다리는 사이 다른 자리를 골랐으면 반영하지 않는다(다음 읽기가 새 선택으로 다시 본다).
           if (changed) {
             lastBin.current = result.bin_id!;
-            const ep = episodeOf(selection);
-            const owners = ep ? Object.entries(ep.bins).filter(([, id]) => id === result.bin_id) : [];
-            const cut = owners.length === 1 ? owners[0][0] : ep && result.bin_id === ep.episodeBin ? "" : null;
-            const here = selection.folder_path === selection.episode ? "" : selection.folder_path;
             setHere(ep && cut !== null ? cut || ep.episode : "");
             if (ep && cut !== null && cut !== here) {
               followRef.current = { key: JSON.stringify([ep.project_id, ep.episode, cut]), bin: result.bin_id! };
@@ -1065,7 +1075,7 @@ export function useResolvePanel() {
               const now = { ...selected.current, intent: intentNumber.current };
               selected.current = now;
               void stageCut(now, generations.current, false, "reenter");
-            } else endPreparation(preparation.current);
+            }
           }
           // 새 NAS 전환은 [저장]에서만 시작한다. 사용 감지는 표시만 갱신한다.
         }); } finally { pollPending.current = false; }

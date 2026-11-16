@@ -1192,7 +1192,7 @@ async function selectFillEpisode(bin = "epS") {
   await tick(2800); // 전송 전에 실제 current-bin 관측을 확보한다.
 }
 
-it("지금 빈 첫 관측이 한 컷이면 그 컷만 보내고 두 번째 관측 뒤 나머지를 재개한다", async () => {
+it("복원한 컷의 첫 관측이면 그 컷만 보내고 두 번째 관측 뒤 나머지를 재개한다", async () => {
   await render(false);
   mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
   mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
@@ -1207,6 +1207,22 @@ it("지금 빈 첫 관측이 한 컷이면 그 컷만 보내고 두 번째 관�
   expect(mocks.prestage.mock.calls[1][0]).toMatchObject({ borrow: true, borrow_bin_id: "b2" });
   expect(mocks.prestage.mock.calls[1][0].cuts.map((cut: { folder_path: string }) => cut.folder_path)).toEqual(["S/C10"]);
   expect(control.fillProgress).toBeNull();
+});
+
+it("에피소드 선택 → 사람 빈 → 컷 빈 첫 관측은 따라가기를 기다리고 두 번째 관측 뒤 채운다", async () => {
+  await selectFillEpisode("human");
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  await tick(700);
+  expect(control.follow).toMatchObject({ episode: "S", cut: "S/C2" });
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]], ["S/C10", ["h"]]])); await flush();
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush();
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  await tick(700);
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  expect(mocks.prestage).toHaveBeenCalledTimes(1);
+  expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ borrow: true, borrow_bin_id: "b2" });
+  expect(mocks.prestage.mock.calls[0][0].cuts.map((cut: { folder_path: string }) => cut.folder_path)).toEqual(["S/C2", "S/C10"]);
 });
 
 it("늦은 캐시 뒤 낡은 관측으로 보내지 않고 다음 관측에서 이어 간다", async () => {
@@ -1888,6 +1904,86 @@ it("target 중 목록 갱신은 target 결과를 승계하고 최신 내용만 s
   expect(mocks.stage.mock.calls[0][0]).toMatchObject({ bin_id: "b2", gen_ids: ["new"], capped: true });
 });
 
+it.each(["queued", "running"])("[다시]는 %s 상태의 같은 자리 target을 이어받고 reenter를 만들지 않는다", async state => {
+  await render(false);
+  const held = deferred<unknown>();
+  mocks.target.mockResolvedValue({ ...fillDestination, bin_id: "b2" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  if (state === "queued") {
+    mocks.inventory.mockReturnValueOnce(held.promise);
+    await act(async () => control.saveProject("p", "S/C2")); await flush();
+  } else mocks.target.mockReturnValueOnce(held.promise);
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10"])); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(state === "queued" ? 0 : 1);
+  await act(async () => control.retry()); await flush();
+  await act(async () => held.resolve(state === "queued" ? { ...destination, items: [], more: false } : { ...fillDestination, bin_id: "b2" })); await flush();
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  expect(mocks.target.mock.calls[0][0]).toMatchObject({ folder_path: "S/C2", reason: "select" });
+  expect(control.target?.bin_id).toBe("b2");
+  expect(mocks.cache).toHaveBeenCalledTimes(1);
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  expect(mocks.stage.mock.calls[0][0]).toMatchObject({ reason: "retry", bin_id: "b2" });
+  await tick(3000);
+  expect(mocks.cache).toHaveBeenCalledTimes(1);
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  expect(control.follow).toBeNull();
+});
+
+it("에피소드에서 [다시]는 사람 빈을 옮기는 target을 보내지 않는다", async () => {
+  await selectFillEpisode("human");
+  mocks.target.mockClear();
+  await act(async () => control.retry()); await flush();
+  await tick(1500);
+  expect(mocks.target).not.toHaveBeenCalled();
+  expect(mocks.stage).not.toHaveBeenCalled();
+  expect(control.selectionPhase).toBe("");
+});
+
+it("[다시]가 대기 중인 에피소드 [맞추기]의 reason·force·컷 목록을 이어받는다", async () => {
+  await selectFillEpisode();
+  const inventory = deferred<unknown>();
+  mocks.inventory.mockReturnValueOnce(inventory.promise);
+  await act(async () => control.saveProject("p", "S")); await flush();
+  mocks.target.mockClear();
+  await act(async () => { control.align(["S/C2", "S/new"]); control.retry(); }); await flush();
+  expect(mocks.target).not.toHaveBeenCalled();
+  await act(async () => inventory.resolve({ ...destination, items: [], more: false })); await flush();
+  // 지금 빈이 이미 에피소드여도 force=true인 [맞추기]는 생략하지 않는다.
+  expect(mocks.target).toHaveBeenCalledTimes(1);
+  expect(mocks.target.mock.calls[0][0]).toMatchObject({ folder_path: "S", reason: "align", create_paths: ["S/C2", "S/new"] });
+  expect(control.target?.bin_id).toBe("epS");
+  expect(mocks.stage).not.toHaveBeenCalled();
+});
+
+it.each(["outside", "no-map", "ambiguous"])("선택을 만들지 않는 %s 관측 뒤 같은 컷의 새 생성물은 stage한다", async kind => {
+  await render(false);
+  mocks.target.mockResolvedValue(kind === "no-map" ? destination : { ...fillDestination, bin_id: "b2",
+    ...(kind === "ambiguous" ? { bins: { "S/C2": "b2", "S/C10": "shared", "S/C30": "shared" } } : {}) });
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen], false, ["S/C2", "S/C10", "S/C30"])); await flush();
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: kind === "ambiguous" ? "shared" : "person-bin" });
+  await tick(2000);
+  expect(control.follow).toBeNull();
+  await act(async () => control.updateSet([{ ...gen, id: "new" }])); await flush();
+  expect(mocks.stage).toHaveBeenCalledTimes(2);
+  expect(mocks.stage.mock.calls[1][0]).toMatchObject({ gen_ids: ["new"], reason: "update" });
+});
+
+it("무시하는 옛 선택의 updateSet은 드래그와 단계 표시를 지우지 않는다", async () => {
+  await render(false);
+  const drag = { g: { path: "cached", item_id: "g" } };
+  mocks.stage.mockResolvedValue({ ...destination, items: [], drag_items: drag, deferred: 1 });
+  await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  // 계정 문맥 변경은 선택을 무효로 하지만 이전 응답의 표시는 보존한다.
+  mocks.identity.mockResolvedValue({ ...identity, writer: false, generation: 2 });
+  await tick(1600);
+  const beforeDrag = control.dragItems, beforePhase = control.selectionPhase;
+  expect(beforeDrag).toEqual(drag);
+  await act(async () => control.updateSet([{ ...gen, id: "ignored" }])); await flush();
+  expect(control.dragItems).toEqual(beforeDrag);
+  expect(control.selectionPhase).toBe(beforePhase);
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+});
+
 it("같은 폴더 옛 stage 응답이 새 내용의 드래그·진행 표시를 되살리지 않음", async () => {
   await render(false);
   const stage = deferred<unknown>(), cache = deferred<unknown>();
@@ -1911,15 +2007,16 @@ it.each(["ok", "not_clean"])("저장 %s 중 cache 완료: stage는 저장 뒤 �
   mocks.inventory.mockReturnValueOnce(inventory.promise);
   mocks.save.mockResolvedValue({ ...destination, state });
   await act(async () => control.saveProject("p", "S/C2")); await flush();
+  const reads = mocks.currentBin.mock.calls.length;
   await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
   await tick(2500);
   expect(mocks.stage).not.toHaveBeenCalled();
-  const reads = mocks.currentBin.mock.calls.length;
+  expect(mocks.currentBin).toHaveBeenCalledTimes(reads);
   await act(async () => inventory.resolve({ ...destination, items: [], more: false })); await flush();
   expect(mocks.stage).toHaveBeenCalledTimes(1);
   expect(mocks.stage.mock.calls[0][0].reason).toBe("select");
   expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(mocks.stage.mock.invocationCallOrder[0]);
-  expect(mocks.currentBin.mock.calls.length).toBeGreaterThanOrEqual(reads);
+  expect(mocks.currentBin.mock.invocationCallOrder[reads]).toBeGreaterThan(mocks.save.mock.invocationCallOrder[0]);
 });
 
 it.each(["target", "cache"])("선택 %s 실패는 뒤 단계를 막고 단계 표시를 지운다", async operation => {
@@ -1939,6 +2036,10 @@ it("받는 중 떠나면 target 재호출 없이 보류 이유를 표시한다",
   mocks.cache.mockReturnValueOnce(cache.promise);
   mocks.stage.mockResolvedValue({ ...destination, items: [{ gen_id: "g", state: "deferred" }], deferred: 1 });
   await act(async () => control.selectFolder("p", "S", "S/C2", [gen])); await flush();
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "person-bin" });
+  await tick(2000);
+  expect(control.current?.bin_id).toBe("person-bin");
+  expect(mocks.stage).not.toHaveBeenCalled();
   await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
   expect(mocks.target).toHaveBeenCalledTimes(1);
   expect(control.selectionPhase).toBe("선택한 빈에서 가져오기 대기");
@@ -2111,7 +2212,7 @@ it("화면의 실제 새 선택만 보류: 같은 에피소드 다시 누르기�
   expect(mocks.rename.mock.calls.length).toBe(count + 1);
 });
 
-it("화면에서 새 컷 목록을 기다리는 동안 배경은 멈추고, 준비 단계가 상태 줄에 표시", async () => {
+it.each(["tree", "tile"])("화면 %s에서 새 컷 목록을 기다리는 동안 배경은 멈추고, 준비 단계가 상태 줄에 표시", async source => {
   mocks.target.mockImplementation(async body => {
     const bin = body.folder_path === "S" ? "epS" : body.folder_path === "S/C10" ? "b10" : "b2";
     mocks.currentBin.mockResolvedValue({ ...destination, bin_id: bin });
@@ -2119,13 +2220,17 @@ it("화면에서 새 컷 목록을 기다리는 동안 배경은 멈추고, 준�
   });
   mocks.prestage.mockImplementation(async body => successfulPrestage(body));
   await render(); await tick(3000);
+  if (source === "tile") {
+    await act(async () => row("S")!.click()); await flush(); await tick(1500);
+  }
   const name = deferred<unknown>();
   mocks.rename.mockReturnValueOnce(name.promise).mockResolvedValue({ ...destination, after: null });
   mocks.generations.mockReturnValue({ state: "ok", gens: [gen, { ...gen, id: "new" }], reload: mocks.listReload, startedAt: 2 });
   await render(); await tick(1400);
   const names = mocks.rename.mock.calls.length;
   mocks.generations.mockReturnValue({ state: "loading", gens: [], reload: mocks.listReload, startedAt: 3 });
-  await act(async () => row("S/C10")!.click()); await flush();
+  const button = source === "tree" ? row("S/C10")! : Array.from(host.querySelectorAll<HTMLButtonElement>(".rp-tile")).find(tile => tile.querySelector("b")?.textContent === "C10")!;
+  await act(async () => button.click()); await flush();
   await act(async () => name.resolve({ ...destination, after: [0, 5] })); await flush();
   await tick(2100);
   expect(mocks.rename).toHaveBeenCalledTimes(names);
@@ -2134,6 +2239,8 @@ it("화면에서 새 컷 목록을 기다리는 동안 배경은 멈추고, 준�
   mocks.generations.mockReturnValue({ state: "ok", gens: [{ ...gen, id: "next", folder_path: "S/C10" }], reload: mocks.listReload, startedAt: 3 });
   await render();
   expect(host.querySelector(".resolve-panel-status")!.textContent).toContain("받는 중");
+  await tick(2100);
+  expect(mocks.rename).toHaveBeenCalledTimes(names);
   mocks.stage.mockResolvedValue({ ...destination, bin_id: "b10", deferred: 1 });
   await act(async () => cache.resolve({ items: [{ gen_id: "next", state: "cached" }] })); await flush();
   expect(host.querySelector(".resolve-panel-status")!.textContent).toContain("선택한 빈에서 가져오기 대기");
