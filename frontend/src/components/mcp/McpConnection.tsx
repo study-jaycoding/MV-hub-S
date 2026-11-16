@@ -11,6 +11,7 @@ import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useT } from "../../lib/i18n";
 import { modelBlockMessage } from "../../lib/modelPolicy";
+import { mcpTabId } from "../../lib/mcpTab";
 import { CANVAS_OTHER_TAB, isCanvasFloating, isCanvasFollower } from "../../lib/popupWindows";
 import { sameSceneContent } from "../../lib/sceneAbsorb";
 import { listPersistedScenes, listScenes, type Scene } from "../../lib/scenes";
@@ -55,8 +56,8 @@ const ITEM_STATE_LABEL: Record<string, string> = {
   uncertain: "접수 여부 확인 필요", rejected: "거절됨",
 };
 
-// 탭 표시용 식별자(비밀값 아님) — 공유 서버의 LAN HTTP 주소에는 crypto.randomUUID 가 없다(보안 환경 전용, Codex 리뷰 01a1e38d #1 과 같은 원인)
-const tabId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+// 탭 표시는 공유 서버의 LAN HTTP 주소에도 있는 생성 길로(crypto.randomUUID 는 보안 환경 전용, Codex 리뷰 01a1e38d)
+const tabId = mcpTabId;
 
 export function mcpSetupConfig(setup: McpSetup, client: "codex" | "claude"): string {
   if (!setup.adapter_exists || !setup.python || !setup.python_exists) return "";

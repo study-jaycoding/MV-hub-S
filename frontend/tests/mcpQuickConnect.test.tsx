@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const calls: { path: string; body?: unknown }[] = [];
+const calls: { path: string; body?: unknown; tab?: string }[] = [];
 let clients: { id: string; name: string; revoked_at: string | null; last_seen_at?: string | null }[] = [];
 let configureResult: unknown[] = [];
 let onConfigure: () => void = () => { clients = [...clients, { id: "c2", name: "claude", revoked_at: null }]; };
@@ -14,8 +14,8 @@ let afterRevoke: () => void = () => {};
 vi.mock("../src/lib/http", () => ({
   getAuthToken: () => "token",
   jsonBody: (value: unknown) => JSON.stringify(value),
-  jsonFetch: vi.fn(async (path: string, init?: { body?: string }) => {
-    calls.push({ path, body: init?.body ? JSON.parse(init.body) : undefined });
+  jsonFetch: vi.fn(async (path: string, init?: { body?: string; headers?: Record<string, string> }) => {
+    calls.push({ path, body: init?.body ? JSON.parse(init.body) : undefined, tab: init?.headers?.["X-MVHub-Tab"] });
     if (path.endsWith("/app/clients")) {
       if (failListOnce) { failListOnce = false; throw new Error("list failed"); }
       return { clients };
@@ -34,6 +34,10 @@ vi.mock("../src/lib/http", () => ({
 }));
 
 import { McpQuickConnect } from "../src/components/mcp/McpQuickConnect";
+import { mcpTabId } from "../src/lib/mcpTab";
+
+// 서버의 탭 표시 검사(routers/mcp.py `_secret`): 32~128자, 영문·숫자·-·_
+const validTab = (value: string | undefined) => !!value && value.length >= 32 && value.length <= 128 && /^[A-Za-z0-9_-]+$/.test(value);
 
 let host: HTMLDivElement;
 let root: Root;
@@ -164,12 +168,25 @@ it("수동 등록 뒤 창을 다시 열어도 '연결됨'이라 하지 않는다
   expect(onSummary).toHaveBeenLastCalledWith("등록됨 · Codex · Claude Code");
 });
 
-it("공유 서버의 LAN HTTP 처럼 crypto.randomUUID 가 없어도 깨지지 않는다(Codex 리뷰 01a1e38d #1)", async () => {
-  vi.stubGlobal("crypto", {});
+it("공유 서버의 LAN HTTP 처럼 crypto.randomUUID 가 없어도 깨지지 않고, 서버가 받는 탭 표시를 싣는다(Codex 리뷰 01a1e38d)", async () => {
+  // LAN HTTP 실제 모습 — randomUUID 는 없고 getRandomValues 는 있다
+  const real = globalThis.crypto;
+  vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
   await act(async () => root.render(<McpQuickConnect onOpenWindow={() => {}} />));
   await flush();
   expect([pill("codex"), pill("claude")]).toEqual(["연결됨", "연결 안 됨"]);
   expect(calls[0].path).toBe("/api/mcp/v2/app/clients");
+  expect(validTab(calls[0].tab)).toBe(true);
+});
+
+it("탭 표시 만들기 — randomUUID·getRandomValues·둘 다 없음 모두 서버 형식(32~128자)", () => {
+  const real = globalThis.crypto;
+  expect(validTab(mcpTabId())).toBe(true);
+  vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
+  const fromRandomValues = mcpTabId();
+  expect([validTab(fromRandomValues), fromRandomValues.length, fromRandomValues === mcpTabId()]).toEqual([true, 32, false]);
+  vi.stubGlobal("crypto", {});
+  expect(validTab(mcpTabId())).toBe(true);
 });
 
 it("고급 — [MV·MCP 연결 열기]는 연결 창을 연다(다른 MCP 프로그램·옛 연결·MCP 업데이트)", async () => {
