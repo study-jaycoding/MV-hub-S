@@ -279,27 +279,28 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const toggleSide = () => patchUi({ pool: { ...ui.pool, sideHidden: !ui.pool.sideHidden } });
 
   // [저장] — 쓴 것 NAS 로·안 쓴 것 정리·깨끗할 때만 저장(Jay 11-12). 단축키·자동 저장은 이 단추를 거치지 않는다. 모양 = C안(머리줄 오른쪽 큰 칸)
+  //  단추 글자는 'NAS'(Jay 11-16 "저장 보다는 nas 라고 적어두자") — 하는 일은 그대로(다빈치 프로젝트 저장 포함)
   const showSave = bridgePresent && !!panel.identity?.writer && !!selection.project;
   const save = panel.saveState;
-  const saveText = save.phase === "saving" ? [t("저장 중"), save.step]
-    : save.phase === "done" ? [t("저장됨"), new Date(save.at).toTimeString().slice(0, 5)]
-      : save.phase === "blocked" ? [save.bins.length ? `${t("남은 빈")} ${save.bins.length}` : t("저장 안 됨"), t("다시 저장")]
-        : [t("저장"), ""];
+  const saveText = save.phase === "saving" ? [t("올리는 중"), save.step]
+    : save.phase === "done" ? [t("NAS 완료"), new Date(save.at).toTimeString().slice(0, 5)]
+      : save.phase === "blocked" ? [save.bins.length ? `${t("남은 빈")} ${save.bins.length}` : t("NAS 안 됨"), t("다시 올리기")]
+        : ["NAS", ""];
 
   return <div className="resolve-panel">
     <header className={"resolve-panel-head" + (showSave ? " has-save" : "")}>
       <strong>MV Hub <span>{t("리졸브")}</span></strong>
       {showSave && <button type="button" className={"rp-save rp-save-" + save.phase} disabled={save.phase === "saving"}
-        title={t("쓴 것은 NAS 로 옮기고 안 쓴 것은 정리한 뒤 저장합니다 — 단축키 저장·자동 저장은 이 단추를 거치지 않습니다")}
+        title={t("타임라인에 쓴 클립은 NAS 로 올려 경로를 바꾸고, 안 쓴 클립은 정리한 뒤 다빈치 프로젝트를 저장합니다 — 단축키 저장·자동 저장은 이 단추를 거치지 않습니다")}
         onClick={() => panel.saveProject(selection.project, cut || episode)}>
         {save.phase === "saving" ? <span className="rp-save-spin" aria-hidden="true" /> : <SaveIcon kind={save.phase} />}
         <b>{saveText[0]}</b>{saveText[1] && <small>{saveText[1]}</small>}
       </button>}
       <div className={"resolve-panel-status" + (save.phase === "blocked" ? " bad" : "")} role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}{panel.fillProgress && <span> · {lastName(panel.fillProgress.episode)} {t(panel.fillProgress.receiving ? "받는 중" : panel.fillProgress.active ? "컷 빈 채우는 중" : "컷 빈")} {panel.fillProgress.receiving?.done ?? panel.fillProgress.done}/{panel.fillProgress.receiving?.total ?? panel.fillProgress.total}{!panel.fillProgress.active && <> · {t("남음")} {panel.fillProgress.total - panel.fillProgress.done}</>}</span>}</>}</div>
-      {/* 검사에 걸린 빈(C안 ④) — 다른 허브 것은 다빈치에서 직접, 내 것은 다시 저장하면 풀릴 수 있음 */}
+      {/* 검사에 걸린 빈(C안 ④) — 다른 허브 것은 다빈치에서 직접, 내 것은 [NAS] 를 다시 누르면 풀릴 수 있음 */}
       {showSave && save.phase === "blocked" && save.bins.length > 0 && <div className="rp-save-list">
         {save.bins.map(row => <div key={row.path}><b>{row.mine ? t("내 것") : t("다른 허브")}</b>{row.path}{row.count ? ` · ${row.count}` : ""}{row.in_use ? ` · ${t("쓰는 중")}` : ""}
-          {" "}({row.mine ? t("다시 저장하면 풀릴 수 있음") : t("다빈치에서 직접 확인")})</div>)}
+          {" "}({row.mine ? t("NAS 를 다시 누르면 풀릴 수 있음") : t("다빈치에서 직접 확인")})</div>)}
       </div>}
       {bridgePresent && <p>{t("이 창이 리졸브 미디어 풀의 지금 빈을 고른 컷으로 바꿉니다")}</p>}
       {different && <div className="resolve-panel-warning">{t("리졸브 지금 빈이 선택한 컷과 다릅니다")}: {lastName(cut || episode)} <button type="button" onClick={() => panel.align(cutPaths)}>{t("맞추기")}</button></div>}

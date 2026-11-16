@@ -952,7 +952,7 @@ it("[저장] 단추: 리졸브 안·쓰기 담당일 때만 보이고 누르면 
   window.mvhubResolve = { protocol: 1, accepts: { min: 1, max: 1 }, startDrag: vi.fn(() => true) };
   await render();
   const button = () => host.querySelector<HTMLButtonElement>(".rp-save")!;
-  expect(button().textContent).toBe("저장");
+  expect(button().textContent).toBe("NAS"); // 단추 글자 = NAS(Jay 11-16), 하는 일은 저장 흐름 그대로
   expect(button().className).toBe("rp-save rp-save-idle");
   expect(host.querySelector(".resolve-panel-head")!.className).toContain("has-save"); // 머리줄 글은 칸만큼 비운다
   // C안 ② 저장 중 — 단계가 작은 줄에, 누를 수 없음
@@ -960,11 +960,11 @@ it("[저장] 단추: 리졸브 안·쓰기 담당일 때만 보이고 누르면 
   mocks.save.mockReturnValueOnce(held.promise);
   await act(async () => button().click()); await flush();
   expect(mocks.save.mock.calls[0][0]).toMatchObject({ project_id: "p", expect_project: "r" });
-  expect([button().className, button().disabled, button().textContent]).toEqual(["rp-save rp-save-saving", true, "저장 중검사"]);
+  expect([button().className, button().disabled, button().textContent]).toEqual(["rp-save rp-save-saving", true, "올리는 중검사"]);
   // ③ 저장됨 — 시각과 함께, 3초 뒤 기본
   await act(async () => held.resolve({ state: "ok", resolve_project_id: "r" })); await flush();
   expect(button().className).toBe("rp-save rp-save-done");
-  expect(button().querySelector("b")!.textContent).toBe("저장됨");
+  expect(button().querySelector("b")!.textContent).toBe("NAS 완료");
   expect(button().querySelector("small")!.textContent).toMatch(/^\d\d:\d\d$/);
   await tick(3000);
   expect(button().className).toBe("rp-save rp-save-idle");
@@ -973,9 +973,9 @@ it("[저장] 단추: 리졸브 안·쓰기 담당일 때만 보이고 누르면 
     bins: [{ path: "MV Hub/영화/S/C2", count: 12, in_use: false, mine: false }, { path: "MV Hub/영화/S/C10", count: 2, in_use: true, mine: true }] } });
   await act(async () => button().click()); await flush();
   expect([button().className, button().querySelector("b")!.textContent, button().querySelector("small")!.textContent])
-    .toEqual(["rp-save rp-save-blocked", "남은 빈 2", "다시 저장"]);
+    .toEqual(["rp-save rp-save-blocked", "남은 빈 2", "다시 올리기"]);
   expect([...host.querySelectorAll(".rp-save-list > div")].map(row => row.textContent)).toEqual([
-    "다른 허브MV Hub/영화/S/C2 · 12 (다빈치에서 직접 확인)", "내 것MV Hub/영화/S/C10 · 2 · 쓰는 중 (다시 저장하면 풀릴 수 있음)"]);
+    "다른 허브MV Hub/영화/S/C2 · 12 (다빈치에서 직접 확인)", "내 것MV Hub/영화/S/C10 · 2 · 쓰는 중 (NAS 를 다시 누르면 풀릴 수 있음)"]);
   expect(host.querySelector(".resolve-panel-status")!.className).toContain("bad");
   await act(async () => button().click()); await flush();
   expect(mocks.save).toHaveBeenCalledTimes(3);
