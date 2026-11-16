@@ -57,8 +57,9 @@ it("저장소 쓰기가 차단돼도 현재 창에서 연동을 해제할 수 �
   expect(settings.loadResolveSelectionFollow()).toBe(false);
 });
 
+// 설치 목록의 MV Resolve 줄(시안 v3, 옛 이름 '리졸브 안 MV 창') — 짧은 상태는 알약, 손볼 까닭은 밑 줄
 it.each([
-  ["up_to_date", "설치됨 1.0.0"], ["outdated", "옛 판"], ["not_installed", "설치 안 됨"],
+  ["up_to_date", "리졸브 안에 여는 MV 창 · 1.0.0"], ["outdated", "옛 판"], ["not_installed", "설치 안 됨"],
   ["deferred", "다음 시작 때 다시 설치"], ["permission_denied", "권한이 없습니다 — 관리자가 폴더 권한을 열어야 합니다"],
   ["busy", "다른 설치가 진행 중"], ["damaged", "망가진 설치 — 보존본"],
   ["newer_installed", "더 새 판 1.0.0 이 깔려 있어 그대로 둡니다"],
@@ -70,10 +71,32 @@ it.each([
     status={null} connection={null} diagnostics={null} connectionBusy={false} busy={false} msg="" onInstall={() => {}} onRefreshConnection={() => {}}
     panelPlugin={plugin} onInstallPanelPlugin={() => {}} />));
   const line = view.container.querySelector(".settings-resolve-panel-plugin")!;
+  expect(line.querySelector(".settings-install-name")!.textContent).toBe("MV Resolve");
   expect(line.textContent).toContain(message);
   expect(line.textContent?.includes("그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다")).toBe(state === "up_to_date");
   expect(line.textContent).not.toContain("...");
   expect(line.querySelector("button")!.disabled).toBe(["busy", "foreign", "no_resolve"].includes(state));
+  // 깔려 있으면 [다시 설치], 아니면 [설치]
+  expect(line.querySelector("button")!.textContent).toBe(["up_to_date", "outdated", "newer_installed", "damaged"].includes(state) ? "다시 설치" : "설치");
+});
+
+it("연결 상자 — 연결되면 프로젝트·프로그램과 [다시 확인]·[Resolve 진단], Script 줄은 설치 상태", async () => {
+  const { ResolveScriptSettingsSection } = await import("../src/components/settings/SettingsSections");
+  const recheck = vi.fn();
+  act(() => view.root.render(<ResolveScriptSettingsSection selectionFollow onSelectionFollowChange={() => {}}
+    status={{ installed: true, up_to_date: true } as never} diagnostics={null} connectionBusy={false} busy={false} msg=""
+    connection={{ status: "connected", connected: true, process_running: true, project_open: true, project_id: "p", project_name: "mv test", message: "연결됨", resolve_product: "DaVinci Resolve Studio", resolve_version: "21.1.1.10" } as never}
+    onInstall={() => {}} onRefreshConnection={() => {}} onRecheckConnection={recheck} />));
+  const box = view.container.querySelector(".settings-conn")!;
+  expect(box.classList.contains("is-on")).toBe(true);
+  expect(box.textContent).toContain("프로젝트 mv test");
+  expect(box.textContent).toContain("프로그램 DaVinci Resolve Studio 21.1.1.10");
+  const recheckButton = [...box.querySelectorAll("button")].find((button) => button.textContent === "다시 확인")!;
+  act(() => recheckButton.click());
+  expect(recheck).toHaveBeenCalledTimes(1);
+  const script = view.container.querySelector('[data-install="script"]')!;
+  expect([script.querySelector(".settings-pill")!.textContent, script.querySelector("button")!.textContent]).toEqual(["설치됨", "다시 설치"]);
+  expect(view.container.querySelector('input[type="checkbox"]')!.getAttribute("role")).toBe("switch");
 });
 
 it.each(["outdated", "not_installed", "newer_installed", "up_to_date"] as const)("%s에서 마지막 실패 대체는 필요한 상태에만", async state => {

@@ -142,6 +142,7 @@ function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typ
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [heldMore, setHeldMore] = useState(false); // 경고 상자의 [자세히] — 긴 설명과 되살리기 단추
   const [failing, setFailing] = useState(isSceneSaveFailing);
   const floating = useCanvasFloating(); // 캔버스가 다른 창에 떠 있는 동안 씬은 그 창만 쓴다 — 가져오기는 저장 입구를 지나지 않아 여기서 막는다
   const otherTab = useCanvasFollower();
@@ -196,18 +197,23 @@ function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typ
   const { canvas: canvasCount, edit: editCount, card: cardCount, textless: textlessCount } = heldRecoveryCounts(ownRecovery);
 
   return (
-    <div className="settings-subblock">
-      <h6>캔버스 자료</h6>
+    <div className="settings-canvas-archive">
       {recoveryFailed && <p role="status" className="settings-hint" style={{ color: "var(--warning, #c86f20)" }}>{t("보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.")}</p>}
-      {!!(canvasCount + editCount + cardCount + textlessCount) && ownRecovery && <div className="settings-subblock" style={{ borderColor: "var(--warning, #c86f20)" }}>
-        <h6>{t("복원 전에 남겨 둔 것")}</h6>
-        <p role="status" style={{ color: "var(--warning, #c86f20)" }}>{t("허브와 이 브라우저의 기록 시점이 다릅니다. 허브가 백업에서 되살려졌거나, 업데이트 전 자료일 수 있습니다. 이 브라우저에 있던 내용은 지우지 않고 아래에 보관했고, 자동으로 다시 보내지 않습니다.")}</p>
-        <p>{t("캔버스 보관본 {canvasCount}개 · 편집 문서 {editCount}개 · 카드 정리 대기 {cardCount}개").replace("{canvasCount}", String(canvasCount)).replace("{editCount}", String(editCount)).replace("{cardCount}", String(cardCount))}</p>
-        {textlessCount > 0 && <p data-held-textless={textlessCount}>{t("캔버스에 그대로 있지만 자동 백업을 멈춘 씬 {count}개 — 전체 내보내기 뒤 전체 가져오기로 다시 보냅니다").replace("{count}", String(textlessCount))}</p>}
+      {/* 복원 보류 경고 상자(Jay 2026-11-16 시안 v3) — 한 줄 설명 + [보관본 내려받기][자세히]. 긴 설명·되살리기 단추는 [자세히] 안 */}
+      {!!(canvasCount + editCount + cardCount + textlessCount) && ownRecovery && <div className="settings-alert">
+        <p className="settings-alert-title">{t("복원 전에 남겨 둔 것")}</p>
+        <p className="settings-alert-desc">{t("캔버스 보관본 {canvasCount}개 · 편집 문서 {editCount}개 · 카드 정리 대기 {cardCount}개").replace("{canvasCount}", String(canvasCount)).replace("{editCount}", String(editCount)).replace("{cardCount}", String(cardCount))} — {t("이 브라우저 기록을 지우지 않고 보관했습니다.")}</p>
+        {textlessCount > 0 && <p className="settings-alert-desc" data-held-textless={textlessCount}>{t("캔버스에 그대로 있지만 자동 백업을 멈춘 씬 {count}개 — 전체 내보내기 뒤 전체 가져오기로 다시 보냅니다").replace("{count}", String(textlessCount))}</p>}
         <div className="settings-row">
           <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
-          <button className="settings-action" disabled={busy || floating} onClick={() => fileRef.current?.click()}>{t("전체 가져오기로 되살리기")}</button>
-          {restorable && <button className="settings-action" disabled={busy || floating || ["away", "taking", "giving", "checking", "syncing"].includes(writer.mode)} onClick={() => setPickerAccount(account)}>{t("보관한 씬 고르기")}</button>}
+          <button type="button" className="settings-action" aria-expanded={heldMore} onClick={() => setHeldMore((open) => !open)}>{t(heldMore ? "접기" : "자세히")}</button>
+        </div>
+        <div className="settings-alert-more" hidden={!heldMore}>
+          <p role="status">{t("허브와 이 브라우저의 기록 시점이 다릅니다. 허브가 백업에서 되살려졌거나, 업데이트 전 자료일 수 있습니다. 이 브라우저에 있던 내용은 지우지 않고 아래에 보관했고, 자동으로 다시 보내지 않습니다.")}</p>
+          <div className="settings-row">
+            <button className="settings-action" disabled={busy || floating} onClick={() => fileRef.current?.click()}>{t("전체 가져오기로 되살리기")}</button>
+            {restorable && <button className="settings-action" disabled={busy || floating || ["away", "taking", "giving", "checking", "syncing"].includes(writer.mode)} onClick={() => setPickerAccount(account)}>{t("보관한 씬 고르기")}</button>}
+          </div>
         </div>
       </div>}
       {pickerAccount === account && ownRecovery && <RestorePicker account={account} archives={ownRecovery.canvases} onClose={() => setPickerAccount(null)}
@@ -215,6 +221,7 @@ function CanvasArchiveContent({ recoveryState }: { recoveryState: ReturnType<typ
       {!(canvasCount + editCount + cardCount + textlessCount) && !!ownRecovery?.mirror?.originals.length && redundantMirrorHoldIds(ownRecovery).size > 0 && <div className="settings-row">
         <button className="settings-action" disabled={busy} onClick={() => void run(async () => { downloadStorageRecovery(ownRecovery); return "보관본을 내려받았습니다."; })}>{t("보관본 내려받기")}</button>
       </div>}
+      <h5 className="settings-mini-title">{t("파일로 주고받기")}</h5>
       {archive && archiveAccount === account && <div className="settings-row">
         <span>{t("허브로 바꾸기 전 이 브라우저 캔버스 {count}개 — 합치지 않고 따로 남겨 둔 것").replace("{count}", String(Object.values(archive.scenes).reduce((n, scenes) => n + scenes.length, 0)))}</span>
         <button className="settings-action" disabled={busy} onClick={() => { if (archiveAccount === getAccountNamespace()) downloadNotebookArchive(archive); }}>{t("내려받기")}</button>

@@ -43,7 +43,9 @@ import {
   MetadataContinuitySection,
   ReleaseUpdateSettingsSection,
   ResolveScriptSettingsSection,
+  ServerBackupSyncButton,
 } from "./settings/SettingsSections";
+import { McpQuickConnect } from "./mcp/McpQuickConnect";
 import { BackupSection, backupSummary } from "./settings/BackupSection";
 import { SettingsFold } from "./settings/SettingsFold";
 import { CanvasArchiveSection, heldRecoveryCounts, useStorageRecovery } from "./settings/CanvasArchiveSection";
@@ -89,11 +91,25 @@ export function dataFoldParts(lead: string, held: number, shared: string, failed
   return [lead, held > 0 ? { held } : "", failed ? { failed: true } : "", shared].filter((part) => part !== "");
 }
 
+// Resolve 연결을 확인하지 못했을 때의 상태 — 처음 확인·다시 확인·진단이 같이 쓴다.
+const RESOLVE_UNKNOWN: ResolveConnectionStatus = {
+  status: "api_unavailable",
+  connected: false,
+  process_running: false,
+  project_open: false,
+  project_id: "",
+  project_name: "",
+  message: "Resolve 연결 상태를 확인하지 못했습니다",
+};
+
 export function SettingsPanel({
   onClose,
   onImported,
   onOpenMcp,
+  anchor,
 }: {
+  /** 연 자리 — 아바타 바로 밑(프로필 메뉴와 같은 자리, AccountMenu 가 잰다). 없으면 CSS 기본 자리 */
+  anchor?: { top: number; right: number } | null;
   onClose: () => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   onOpenMcp?: () => void;
@@ -147,6 +163,8 @@ export function SettingsPanel({
   const [slackSummary, setSlackSummary] = useState("");
   const [comfySummary, setComfySummary] = useState("");
   const [unresolvedSummary, setUnresolvedSummary] = useState("");
+  const [mcpSummary, setMcpSummary] = useState("");
+  const [transferWaiting, setTransferWaiting] = useState<number | null>(null); // 자료 관리 '전송 대기' 숫자
   // 백업 현황 — 창을 열 때, [지금 백업]·보관 양을 바꾼 뒤 다시 읽는다.
   const refreshBackupContinuity = () => {
     api.backupContinuity().then(setBackupContinuity).catch(() => {
@@ -164,17 +182,7 @@ export function SettingsPanel({
     });
     getResolveConnectionStatus()
       .then(setResolveConnection)
-      .catch(() => {
-        setResolveConnection({
-          status: "api_unavailable",
-          connected: false,
-          process_running: false,
-          project_open: false,
-          project_id: "",
-          project_name: "",
-          message: "Resolve 연결 상태를 확인하지 못했습니다",
-        });
-      })
+      .catch(() => setResolveConnection(RESOLVE_UNKNOWN))
       .finally(() => {
         setResolveConnectionBusy(false);
       });
@@ -385,15 +393,19 @@ export function SettingsPanel({
       setResolveConnection(diagnostics.connection);
       setResolveScriptStatus(diagnostics.script);
     } catch {
-      setResolveConnection({
-        status: "api_unavailable",
-        connected: false,
-        process_running: false,
-        project_open: false,
-        project_id: "",
-        project_name: "",
-        message: "Resolve 연결 상태를 확인하지 못했습니다",
-      });
+      setResolveConnection(RESOLVE_UNKNOWN);
+    } finally {
+      setResolveConnectionBusy(false);
+    }
+  };
+
+  // [다시 확인] — 연결 상태만 다시 묻는다(진단보다 가볍다, 시안 v3 연결 상자).
+  const recheckResolveConnection = async () => {
+    setResolveConnectionBusy(true);
+    try {
+      setResolveConnection(await getResolveConnectionStatus());
+    } catch {
+      setResolveConnection(RESOLVE_UNKNOWN);
     } finally {
       setResolveConnectionBusy(false);
     }
@@ -591,19 +603,9 @@ export function SettingsPanel({
   const floatRef = useRef<HTMLDivElement>(null);
   useModalFocus(() => [floatRef.current, document.querySelector<HTMLElement>(".settings-group-flyout:not([hidden])")]);
 
-  // 같은 창 안의 화면(Jay 2026-11-16): 처음(묶음 두 줄 + MV 업데이트) → 묶음을 누르면 그 묶음의 목록, 머리의 ‹ 로 처음으로.
-  const [page, setPage] = useState<"home" | "basic" | "external">("home");
-  const lastPage = useRef<"basic" | "external" | null>(null);
-  const backRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (page !== "home") {
-      lastPage.current = page;
-      backRef.current?.focus();
-    } else if (lastPage.current) {
-      floatRef.current?.querySelector<HTMLElement>(`[data-settings-page="${lastPage.current}"]`)?.focus();
-    }
-  }, [page]);
-  const pageTitle = page === "basic" ? t("기본 설정") : page === "external" ? t("외부 프로그램") : "";
+  // 묶음 두 줄은 그 밑으로 펼친다(Jay 2026-11-16 시안 v3) — 처음엔 둘 다 접혀 안의 항목 이름이 보인다.
+  const [openGroups, setOpenGroups] = useState({ basic: false, external: false });
+  const toggleGroup = (key: "basic" | "external") => setOpenGroups((now) => ({ ...now, [key]: !now[key] }));
 
   const pickAccent = (hex: string) => {
     setAccent(hex);
@@ -641,44 +643,31 @@ export function SettingsPanel({
     <span key={i}>{i ? " · " : ""}{typeof part === "string" ? part
       : <b style={{ color: "var(--warning, #c86f20)" }}>{"held" in part ? t("복원 보류 {n}").replace("{n}", String(part.held)) : t("보관본 읽기 실패")}</b>}</span>
   ))}</>;
-  const resolveSummary = resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.message || "";
+  // DaVinci 줄 밑 상태 — '연결됨 · 프로젝트 · 설치 n/전체'(시안 v3). 패널 플러그인이 릴리스에서 꺼졌으면 전체는 Script 하나.
+  const panelShown = panelPluginStatus?.state !== "release_disabled";
+  const installedCount = (panelShown && panelPluginStatus?.state === "up_to_date" ? 1 : 0) + (resolveScriptStatus?.up_to_date ? 1 : 0);
+  const resolveSummary = [
+    resolveConnectionBusy ? t("확인하는 중") : resolveConnection?.connected ? t("연결됨") : resolveConnection?.message || "",
+    !resolveConnectionBusy && resolveConnection?.connected ? resolveConnection.project_name : "",
+    resolveScriptStatus ? `${t("설치")} ${installedCount}/${panelShown ? 2 : 1}` : "",
+  ].filter(Boolean).join(" · ");
 
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
-      <div ref={floatRef} className="manage-float settings-float" role="dialog" aria-label={t("설정")}>
+      <div ref={floatRef} className="manage-float settings-float" role="dialog" aria-label={t("설정")}
+        style={anchor ? { top: anchor.top, right: anchor.right, maxHeight: `calc(100vh - ${anchor.top + 8}px)` } : undefined}>
         <header className="admin-head">
-          {page === "home" ? (
-            <span className="admin-title">⚙ {t("설정")}</span>
-          ) : (
-            <span className="admin-title settings-page-title">
-              <button ref={backRef} type="button" className="assets-x settings-back" onClick={() => setPage("home")}
-                title={t("뒤로")} aria-label={t("뒤로")}>
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"
-                  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
-              </button>
-              {pageTitle}
-            </span>
-          )}
+          <span className="admin-title">⚙ {t("설정")}</span>
           <button className="assets-x" onClick={onClose} title={t("닫기")}>
             <CloseIcon />
           </button>
         </header>
 
-        {/* 처음엔 두 묶음 + MV 업데이트, 묶음을 누르면 같은 창이 그 목록으로 — 항목은 옆 창(Jay 2026-11-16) */}
+        {/* 묶음 두 줄은 그 밑으로 펼치고 항목은 옆 창, 맨 아래 MV Hub Update(Jay 2026-11-16 시안 v3) */}
         <div className="admin-body">
-          {page === "home" && (
-            <>
-              <SettingsGroup page="basic" title={t("기본 설정")} summary={[t("화면"), t("작업"), t("자료 관리")].join(" · ")}
-                onOpen={() => setPage("basic")} />
-              <SettingsGroup page="external" title={t("외부 프로그램")}
-                summary={["Slack", "ComfyUI", "DaVinci Resolve", ...(onOpenMcp ? ["MCP"] : [])].join(" · ")}
-                onOpen={() => setPage("external")} />
-            </>
-          )}
-
-          {page === "basic" && (
-            <>
+          <SettingsGroup title={t("기본 설정")} summary={[t("화면"), t("작업"), t("자료 관리")].join(" · ")}
+            open={openGroups.basic} onToggle={() => toggleGroup("basic")}>
             <SettingsFold title={t("화면")} summary={appearanceSummary}>
               <AppearanceSettingsSection
                 accent={accent}
@@ -709,51 +698,65 @@ export function SettingsPanel({
               </section>
             </SettingsFold>
 
-            {/* 시안 2판(저장 통합 설계 §4-5): ② 백업 · ③ 전송 · ④ 점검. ① 자동 저장은 편집 합류(4단계) 뒤에 연다. */}
+            {/* 숫자 요약 + 주 단추 둘 → 복원 보류 경고·파일로 주고받기·생성물 점검 → '백업 자동 설정 · 고급' 접기(시안 v3).
+                드문 일(서버 백업 고르기·DB 통째 주고받기·과거 생성물 전체)은 고급에 그대로 있다 — 기능은 빼지 않았다. */}
             <SettingsFold title={t("자료 관리")} summary={dataSummary}>
-              <BackupSection status={backupContinuity} onRefresh={refreshBackupContinuity}>
-                <MetadataContinuitySection
-                  dbBusy={dbBusy}
-                  dbMsg={dbMsg}
-                  serverBackups={serverBackups}
-                  serverBackupsLoading={serverBackupsLoading}
-                  metadataSyncTarget={metadataSyncTarget}
-                  metadataSyncTargetState={metadataSyncTargetState}
-                  onSyncMetadata={syncMetadata}
-                  onLoadServerBackups={loadServerBackups}
-                  onServerRestore={serverRestore}
-                />
-                <div className="settings-subgroup">
-                  <h5>{t("파일로 챙기기")}</h5>
-                  <CanvasArchiveSection recoveryState={recoveryState} />
+              <BackupSection
+                status={backupContinuity}
+                onRefresh={refreshBackupContinuity}
+                held={heldRecoveryCounts(heldRecovery).total}
+                transfer={transferWaiting}
+                actions={<ServerBackupSyncButton dbBusy={dbBusy} loading={serverBackupsLoading} onSync={syncMetadata} />}
+                advanced={<>
+                  <MetadataContinuitySection
+                    dbBusy={dbBusy}
+                    serverBackups={serverBackups}
+                    serverBackupsLoading={serverBackupsLoading}
+                    metadataSyncTarget={metadataSyncTarget}
+                    metadataSyncTargetState={metadataSyncTargetState}
+                    onLoadServerBackups={loadServerBackups}
+                    onServerRestore={serverRestore}
+                  />
                   <DbFileTransfer dbBusy={dbBusy} onImportDb={importDb} />
-                </div>
-              </BackupSection>
+                  <div className="settings-subblock">
+                    <h6>{t("과거 생성물")}</h6>
+                    <button
+                      className={"settings-action" + (historyImport?.state === "running" ? " is-busy" : "")}
+                      onClick={startHistoryImport}
+                      disabled={historyImport?.state === "running"}
+                    >
+                      {historyImport?.state === "running"
+                        ? `가져오는 중 ${historyImport.received}건`
+                        : "과거 생성물 전체 가져오기"}
+                    </button>
+                    <p>{t("과거 생성물 전체 가져오기는 최신 100건 밖의 오래된 결과까지 보충합니다.")}</p>
+                  </div>
+                </>}
+              >
+                {dbMsg && <p className="manage-msg">{dbMsg}</p>}
+                <AssetTransferLine onCount={setTransferWaiting} />
+                <CanvasArchiveSection recoveryState={recoveryState} />
 
-              <section className="settings-section">
-                <h4>{t("전송")}</h4>
-                <AssetTransferLine />
-                <SettingsDescription summary={t("레퍼런스 파일을 서버로 보내는 줄입니다. 보낼 것이 없으면 비어 있습니다.")} />
-              </section>
-
-              <section className="settings-section">
-                <h4>{t("점검")}</h4>
-                <button className="settings-action" onClick={reinspectGenerations} disabled={!!reinspectMsg}>
-                  {reinspectMsg || t("생성물 재점검")}
-                </button>
+                <h5 className="settings-mini-title">{t("생성물 점검")}</h5>
                 <div className="settings-row">
-                  <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
-                    {syncMsg || t("HF 생성물 체크")}
+                  <button className="settings-action" onClick={reinspectGenerations} disabled={!!reinspectMsg}
+                    title={t("최근 결과의 잘못된 상태를 정정합니다.")}>
+                    {reinspectMsg || t("재점검")}
                   </button>
-                  <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
-                    {hfMsg || t("HF 삭제물 체크")}
+                  <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}
+                    title={t("힉스필드에서 직접 만든 최신 결과물을 가져옵니다.")}>
+                    {syncMsg || t("HF 생성물")}
+                  </button>
+                  <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}
+                    title={t("힉스필드에서 지워진 생성물을 허브 휴지통으로 보냅니다.")}>
+                    {hfMsg || t("HF 삭제물")}
                   </button>
                 </div>
                 {/* 실시간 정보(과거 가져오기 진행·결과)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
                 <SettingsDescription
                   summary={
                     historyImport?.state === "running"
-                      ? `과거 생성물 가져오는 중… ${historyImport.received}건`
+                      ? `과거 생성물 가져오는 중 ${historyImport.received}건`
                       : historyImport?.message
                         ? historyImport.message +
                           (historyImport.state === "complete"
@@ -761,28 +764,14 @@ export function SettingsPanel({
                             : "")
                         : t("HF 생성물의 누락·상태·삭제 여부를 한곳에서 확인합니다.")
                   }
-                >
-                  <p>{t("생성물 재점검은 최근 결과의 잘못된 상태를 정정합니다.")}</p>
-                  <p>{t("HF 생성물 체크는 힉스필드에서 직접 만든 최신 결과물을 가져옵니다.")}</p>
-                  <p>{t("HF 삭제물 체크는 힉스필드에서 지워진 생성물을 허브 휴지통으로 보냅니다.")}</p>
-                  <button
-                    className={"settings-action" + (historyImport?.state === "running" ? " is-busy" : "")}
-                    onClick={startHistoryImport}
-                    disabled={historyImport?.state === "running"}
-                  >
-                    {historyImport?.state === "running"
-                      ? `가져오는 중… ${historyImport.received}건`
-                      : "과거 생성물 전체 가져오기"}
-                  </button>
-                  <p>{t("과거 생성물 전체 가져오기는 최신 100건 밖의 오래된 결과까지 보충합니다.")}</p>
-                </SettingsDescription>
-              </section>
+                />
+              </BackupSection>
             </SettingsFold>
-            </>
-          )}
+          </SettingsGroup>
 
-          {page === "external" && (
-            <>
+          <SettingsGroup title={t("외부 프로그램")}
+            summary={["Slack", "ComfyUI", "DaVinci Resolve", ...(onOpenMcp ? ["MCP"] : [])].join(" · ")}
+            open={openGroups.external} onToggle={() => toggleGroup("external")}>
             <SettingsFold title={t("Slack 알림")} summary={slackSummary} hideFirstTitle>
               <SlackNotificationSection onSummary={setSlackSummary} />
             </SettingsFold>
@@ -808,33 +797,24 @@ export function SettingsPanel({
                 msg={resolveScriptMsg}
                 onInstall={installResolveExporter}
                 onRefreshConnection={refreshResolveConnection}
+                onRecheckConnection={recheckResolveConnection}
               />
             </SettingsFold>
 
-            {onOpenMcp && <SettingsFold title={t("MV·MCP 연결")} summary={t("Codex·Claude Code 연결")} hideFirstTitle>
-              <section className="settings-section">
-                <h4>{t("MV·MCP 연결")}</h4>
-                <button className="settings-action" onClick={() => { onClose(); onOpenMcp(); }}>{t("MV·MCP 연결 열기")}</button>
-                {/* 다른 항목과 같은 설명 모양(한 줄 요약 + 더보기) — 전에는 스타일 없는 <p> 라 글자가 크고 밝았다(Jay 2026-10-16) */}
-                <SettingsDescription summary={t("Codex·Claude Code 등록과 생성 실행 허용을 관리합니다.")}>
-                  <p>{t("이 PC의 로컬 앱에서 Codex·Claude Code 등록 안내, 연결 확인과 생성 실행 허용을 관리합니다.")}</p>
-                  <p>{t("한 번 연결하면 LLM이 MV Hub의 자료를 조회하고, 요청한 워크스페이스·폴더에 생성합니다.")}</p>
-                </SettingsDescription>
-              </section>
+            {/* [한 번에 연결] + 앱별 상태(시안 v3). 다른 MCP 프로그램·옛 연결·MCP 업데이트는 고급의 연결 창에 */}
+            {onOpenMcp && <SettingsFold title={t("MV·MCP 연결")} summary={mcpSummary} hideFirstTitle>
+              <McpQuickConnect onSummary={setMcpSummary} onOpenWindow={() => { onClose(); onOpenMcp(); }} />
             </SettingsFold>}
-            </>
-          )}
+          </SettingsGroup>
 
-          {page === "home" && (
-            <ReleaseUpdateSettingsSection
-              status={releaseUpdateStatus}
-              busy={releaseUpdateBusy}
-              msg={releaseUpdateMsg}
-              onRefresh={refreshReleaseUpdate}
-              onUpdate={() => void runReleaseUpdate()}
-              onForceUpdate={() => void runReleaseUpdate(true)}
-            />
-          )}
+          <ReleaseUpdateSettingsSection
+            status={releaseUpdateStatus}
+            busy={releaseUpdateBusy}
+            msg={releaseUpdateMsg}
+            onRefresh={refreshReleaseUpdate}
+            onUpdate={() => void runReleaseUpdate()}
+            onForceUpdate={() => void runReleaseUpdate(true)}
+          />
 
         </div>
       </div>

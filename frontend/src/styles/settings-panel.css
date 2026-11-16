@@ -1,14 +1,25 @@
 /* 설정 창(SettingsPanel)·옆 패널 — 크게 접는 묶음과 단추 모양(Jay 2026-11-06 시안 F). 나머지 설정 규칙은 app-shell.css '설정 패널'.
    styles.css 에서 app-shell.css 뒤에 불러온다 — 같은 우선순위의 기존 .settings-action 규칙을 뒤에서 이긴다. */
 
-/* ── 바깥 묶음 줄(settings/SettingsGroup) — 누르면 같은 창이 그 묶음의 목록으로(Jay 2026-11-16). 제목 밑에 안의 항목 이름 한 줄 ── */
+/* ── 바깥 묶음 줄(settings/SettingsGroup) — 누르면 그 밑으로 항목들이 펼쳐진다(Jay 2026-11-16 시안 v3). 접힌 줄엔 안의 항목 이름 한 줄 ── */
 .settings-group-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; }
 .settings-group-title { font-size: 13.5px; font-weight: 800; line-height: 1.25; }
 .settings-group-summary { font-size: 11.5px; font-weight: 500; line-height: 1.35; color: var(--muted); }
 .settings-group-toggle:hover .settings-group-summary { color: var(--muted); }
-/* 목록 화면 머리 — ‹ 뒤로 + 묶음 이름 */
-.settings-page-title { display: inline-flex; align-items: center; gap: 8px; }
-.settings-back svg { display: block; }
+.settings-group-chevron { flex: none; display: block; transition: transform 0.15s; }
+.settings-group.is-open .settings-group-chevron { transform: rotate(180deg); }
+/* 펼친 항목 상자 — 옅은 바탕 안에 항목 줄들 */
+.settings-group-sub { margin: -4px 0 10px; padding: 4px; border-radius: 10px; background: rgba(255, 255, 255, 0.035); }
+.settings-group-sub[hidden] { display: none; }
+.settings-group-sub .settings-fold { border-bottom: none; }
+.settings-group-sub .settings-fold + .settings-fold { margin-top: 2px; }
+.settings-group-sub .settings-fold-head { padding: 9px 10px; border-radius: 8px; }
+.settings-group-sub .settings-fold-title { font-size: 13px; font-weight: 700; }
+/* 옆 창이 열린 항목 — 상자 안에서 옅은 강조색 바탕 + 왼쪽 강조색 선(시안 v3) */
+.settings-float .settings-group-sub .settings-fold.is-open > .settings-fold-head {
+  width: 100%; margin: 0; padding: 9px 10px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: inset 3px 0 0 var(--accent);
+}
 
 /* ── 목록의 한 줄(settings/SettingsFold) — 제목 + 늘 보이는 상태 한 줄(실시간 정보는 접기 밖) + › — 누르면 옆 창 ── */
 .settings-fold { border-bottom: 1px solid var(--border); }
@@ -43,7 +54,6 @@
 .settings-group-flyout p:not([class]) { margin: 6px 0 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
 .settings-group-flyout .settings-help-content p { margin: 5px 0 0; font-size: inherit; line-height: inherit; color: inherit; }
 .settings-group-flyout .settings-row > span:not([class]) { font-size: 12px; line-height: 1.55; color: var(--muted); }
-.settings-group-flyout .settings-resolve-panel-plugin > p:not([class]) { color: var(--text); font-weight: 700; }
 
 /* ComfyUI 아래 '미회수 실행' — 같은 ComfyUI 일이라 구분선 없이 왼쪽 선으로 묶는다 */
 .settings-section:has(+ .comfy-unresolved) { border-bottom: none; padding-bottom: 6px; }
@@ -73,24 +83,84 @@
 /* MV 업데이트의 [다시 확인] = 새로 고침 아이콘 단추 — 32px 정사각 */
 :is(.settings-float, .settings-group-flyout) .settings-action.release-update-refresh { width: 32px; padding: 0; }
 .release-update-refresh svg { display: block; }
+/* 맨 아래 MV Hub Update(시안 v3) — 제목 없이 넓은 단추 하나. 새 버전이 있으면 라임, 없으면 회색(비활성) */
+.settings-float .settings-update { margin-top: 2px; padding: 12px 0 2px; border-top: 1px solid var(--border); border-bottom: none; }
+.settings-float .settings-action.release-update-action { flex: 1 1 auto; }
+.settings-float .settings-action.release-update-action.is-update-available { background: var(--grad); color: var(--accent-ink); font-weight: 800; }
+/* 작은 단추(설치·연결 목록의 [다시 설치]·[해제]) · 주 단추(라임, [한 번에 연결]) */
+:is(.settings-float, .settings-group-flyout) .settings-action.settings-action-sm { height: 26px; padding: 0 10px; font-size: 11.5px; }
+:is(.settings-float, .settings-group-flyout) .settings-action.settings-action-main { flex: 1 1 auto; background: var(--grad); color: var(--accent-ink); font-weight: 800; }
 
-/* ── 자료 관리 ② 백업(settings/BackupSection, 저장 통합 1-A 시안 2판) — 상태 줄·고르는 칸·하위 칸 ── */
+/* ── 옆 창 안의 공통 조각(시안 v3) — 작은 소제목 · 이끄는 글 · 고급 접기 ── */
+.settings-mini-title { margin: 14px 0 7px; font-size: 12px; font-weight: 700; color: var(--text); }
+.settings-lead { margin: 0 0 10px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.settings-lead b { color: var(--text); font-weight: 700; }
+.settings-adv { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.settings-adv > summary { cursor: pointer; list-style: none; font-size: 12px; font-weight: 700; color: var(--muted); }
+.settings-adv > summary::-webkit-details-marker { display: none; }
+.settings-adv > summary::before { content: "›"; display: inline-block; width: 12px; transition: transform 0.15s; }
+.settings-adv[open] > summary { margin-bottom: 8px; }
+.settings-adv[open] > summary::before { transform: rotate(90deg); }
+.settings-adv-hint { font-weight: 500; color: var(--muted2); }
+.settings-adv p { margin: 6px 0 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+
+/* ── 자료 관리 숫자 요약 · 복원 보류 경고 상자 ── */
+.settings-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0 0 8px; }
+.settings-tile { display: flex; flex-direction: column; gap: 2px; padding: 8px 9px; border-radius: 9px; background: rgba(255, 255, 255, 0.04); }
+.settings-tile-label { font-size: 11px; color: var(--muted); }
+.settings-tile-value { font-size: 16px; font-weight: 800; color: var(--text); }
+.settings-tile-value.is-warn { color: #f5a623; }
+.settings-alert { margin-top: 12px; padding: 9px 10px; border: 1px solid rgba(245, 166, 35, 0.45); border-radius: 10px; background: rgba(245, 166, 35, 0.07); }
+.settings-alert-title { margin: 0 0 3px; font-size: 12px; font-weight: 700; color: #f5a623; }
+.settings-alert-desc { margin: 0 0 6px; font-size: 11.5px; line-height: 1.45; color: #d9b77a; }
+.settings-alert-more[hidden] { display: none; }
+.settings-alert-more p { margin: 8px 0 0; font-size: 11.5px; line-height: 1.5; color: #d9b77a; }
+
+/* ── DaVinci 연결 상자 · 설치/연결 목록 · 상태 알약 ── */
+.settings-conn { margin: 0 0 4px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
+.settings-conn.is-on { border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.settings-conn-head { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; font-weight: 800; color: var(--muted); }
+.settings-conn.is-on .settings-conn-head { color: var(--accent); }
+.settings-conn-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); }
+.settings-conn.is-on .settings-conn-dot { background: var(--accent); }
+.settings-conn-lines { margin: 5px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+.settings-conn-lines b { color: var(--text); font-weight: 700; }
+.settings-conn .settings-row { margin-top: 8px; }
+.settings-install-list { padding: 2px 4px; border-radius: 10px; background: rgba(255, 255, 255, 0.035); }
+.settings-install-row { display: flex; align-items: center; gap: 8px; padding: 9px 6px; }
+.settings-install-row + .settings-install-row { border-top: 1px solid var(--border); }
+.settings-install-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-install-name { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.settings-install-sub { font-size: 11px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+.settings-pill { flex: none; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.settings-pill.is-on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.settings-pill.is-warn { background: rgba(245, 166, 35, 0.14); color: #f5a623; }
+
+/* 실시간 체크 스위치 — 보조기기·시험에는 체크 상자 그대로, 눈에는 스위치 */
+.settings-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 12px; font-weight: 700; color: var(--text); cursor: pointer; }
+.settings-switch input { position: absolute; left: 0; width: 30px; height: 17px; margin: 0; opacity: 0; cursor: pointer; }
+.settings-switch-track { position: relative; flex: none; width: 30px; height: 17px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); transition: background 0.15s; }
+.settings-switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--muted); transition: transform 0.15s, background 0.15s;
+}
+.settings-switch input:checked + .settings-switch-track { background: var(--accent); }
+.settings-switch input:checked + .settings-switch-track::after { transform: translateX(13px); background: var(--accent-ink); }
+.settings-switch input:focus-visible + .settings-switch-track { outline: 1px solid var(--accent); outline-offset: 2px; }
+
+/* ── 자료 관리 백업(settings/BackupSection) — 상태 줄·고르는 칸(고급 접기 안)·하위 칸 ── */
 .settings-backup-status { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
-.settings-backup-status b { color: var(--text); font-weight: 700; }
+.settings-backup-status b { color: var(--text); font-weight: 700; white-space: nowrap; }
 .settings-backup-warn { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: #f5a623; }
 .settings-backup-label { margin: 12px 0 6px; font-size: 11.5px; font-weight: 700; color: var(--muted2); }
 .settings-backup-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .settings-backup-pick { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; margin-right: 8px; }
-/* '파일로 챙기기' 안 DB 파일 접기 — 설명 칸 밖으로 옮겨져 제목이 기본 글자 크기로 커지지 않게 */
-.settings-subgroup .settings-details > summary { margin-top: 10px; font-size: 12px; color: var(--muted); }
 .settings-select {
   height: 28px; padding: 0 6px; border: 1px solid var(--border); border-radius: 9px;
   background: rgba(255,255,255,0.05); color: var(--text); font-size: 12px; font-weight: 600;
 }
 .settings-select:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .settings-select:disabled { opacity: 0.55; }
-/* 하위 칸(다른 PC·서버에서 가져오기 · 파일로 챙기기) — 왼쪽 선으로 묶는다(시안 2판) */
-.settings-subgroup { margin-top: 14px; padding-left: 12px; border-left: 2px solid var(--border); }
-.settings-subgroup > h5 { margin: 0 0 8px; font-size: 12px; font-weight: 700; color: var(--text); }
+/* 고급 접기 안의 작은 칸(서버 백업 고르기·DB 파일·과거 생성물) */
 .settings-subblock { margin-top: 10px; }
 .settings-subblock > h6 { margin: 0 0 6px; font-size: 11.5px; font-weight: 700; color: var(--muted); }
