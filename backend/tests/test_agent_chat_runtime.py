@@ -742,6 +742,7 @@ def test_stop_waits_for_claim_already_inside_gate(stopper, monkeypatch):
     """선점이 먼저 문 안에 있으면 멈춤 표시는 그 선점이 끝날 때까지 기다린다 — 선후가 한 구간에서 정해진다."""
     service = chat.AgentChat()
     runtime = bare_turn(service)
+    monkeypatch.setattr(chat.Identity, "db_file", lambda self: runtime.path)  # 잠금 순서만 보는 시험 — 실제 기록 폴더를 열지 않는다.
     monkeypatch.setattr(chat.store, "set_status", lambda *a, **k: True)
     monkeypatch.setattr(chat.store, "mark_cancelling", lambda *a, **k: True)  # 취소 표시+사건 한 트랜잭션(서랍 메뉴 독립 리뷰 P1)
     monkeypatch.setattr(chat.store, "append_event", lambda *a, **k: None)

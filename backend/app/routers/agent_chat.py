@@ -8,15 +8,19 @@ MCP 와 같은 `mcp_v2._capture`(AUTH off 워커는 공유 서버 로그인까�
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import re
+import warnings
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import AfterValidator, Field, StrictBool, StrictInt, field_validator, model_validator
+from PIL import Image
+from pydantic import AfterValidator, Field, StrictBool, StrictInt, ValidationError, field_validator, model_validator
 
 from .. import active_account, config
 from ..deps import expected_account_differs
@@ -553,9 +557,72 @@ async def action_result(turn_id: UUID, action_id: _ACTION_ID, body: ActionResult
     return {"accepted": accepted}
 
 
+def _checked_images(images, attachments) -> list[tuple[int, str, bytes]]:
+    formats = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP", "image/gif": "GIF"}
+    checked, seen, total = [], set(), 0
+    number = 1
+    try:
+        if not isinstance(images, list) or len(images) > 8:
+            raise ValueError
+        for number, item in enumerate(images, 1):
+            if not isinstance(item, dict) or set(item) != {"index", "media_type", "data"}:
+                raise ValueError
+            index, media, data = item["index"], item["media_type"], item["data"]
+            if type(index) is int and 0 <= index <= 7:
+                number = index + 1
+            if (type(index) is not int or not 0 <= index < len(attachments) or index in seen
+                    or attachments[index].kind == "folder" or not isinstance(media, str) or media not in formats
+                    or not isinstance(data, str) or len(data) > 2_000_004):
+                raise ValueError
+            raw = base64.b64decode(data, validate=True)
+            total += len(raw)
+            if not raw or len(raw) > 1_500_000 or total > 6_000_000:
+                raise ValueError
+            signatures = {"image/jpeg": raw.startswith(b"\xff\xd8\xff"),
+                          "image/png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
+                          "image/gif": raw.startswith((b"GIF87a", b"GIF89a")),
+                          "image/webp": raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"}
+            if not signatures[media]:
+                raise ValueError
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(raw)) as image:
+                    image.verify()
+                with Image.open(io.BytesIO(raw)) as image:
+                    if image.format != formats[media] or not all(0 < side <= 2048 for side in image.size):
+                        raise ValueError
+                    image.load()  # 크기를 본 뒤 픽셀까지 풀어 본다 — verify() 는 압축된 픽셀 손상을 못 잡는다(독립 리뷰 2)
+            seen.add(index)
+            checked.append((index, media, raw))
+    except Exception:
+        # 입력·Pillow 예외의 원문에는 그림이 섞일 수 있어 되돌리지 않는다.
+        raise HTTPException(422, f"{number}번 그림을 보낼 수 없어요") from None
+    return checked
+
+
+async def _read_turn(request: Request):
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 8_400_000:
+            raise HTTPException(413, "보내는 자료가 너무 큽니다.")
+        raw.extend(chunk)
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        raise HTTPException(422, [{"loc": ["body"], "msg": "JSON을 읽을 수 없습니다", "type": "json_invalid"}]) from None
+    images = data.pop("images", []) if isinstance(data, dict) else []
+    try:
+        body = TurnIn.model_validate(data)
+    except ValidationError as exc:
+        raise HTTPException(422, [{"loc": ["body", *error["loc"]], "msg": error["msg"], "type": error["type"]}
+                                  for error in exc.errors(include_input=False, include_context=False)]) from None
+    return body, await asyncio.to_thread(_checked_images, images, body.attachments)
+
+
 @router.post("/turns")
-async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
+async def start_turn(request: Request, panel=Depends(_panel)):
     ctx, identity = panel
+    body, images = await _read_turn(request)
     if body.model not in {row["id"] for row in MODELS[body.engine]}:
         raise HTTPException(422, "모델을 다시 고르세요.")
     if body.effort not in EFFORTS[body.engine]:
@@ -565,10 +632,10 @@ async def start_turn(body: TurnIn, request: Request, panel=Depends(_panel)):
     if len(json.dumps(body.context, ensure_ascii=False)) > _MAX_CONTEXT:
         raise HTTPException(422, "화면 정보가 너무 큽니다.")
     async with _turn_lock(identity):
-        return await _start_turn_locked(body, request, ctx, identity)
+        return await _start_turn_locked(body, request, ctx, identity, images)
 
 
-async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Identity) -> dict:
+async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Identity, images=()) -> dict:
     path = await asyncio.to_thread(identity.db_file)
     existing = await asyncio.to_thread(chat_store.turn_by_key, path, body.idempotency_key)
     if existing:  # 응답을 잃고 다시 보낸 같은 요청 — 새로 실행하지 않는다
@@ -640,7 +707,7 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
                     service.start_turn(identity, conversation=current, turn=turn, model=body.model, effort=body.effort,
                                        text=body.text, context=body.context, still_current=lambda: mcp_v2._still_current(ctx),
                                        fast=body.fast, attachments=body.stored_attachments(), gen_model=body.gen_model,
-                                       screen_tab=str(body.screen_tab) if body.screen_tab else None)
+                                       screen_tab=str(body.screen_tab) if body.screen_tab else None, images=images)
                 except chat_store.StaleRequest:
                     raise
                 except Exception as exc:

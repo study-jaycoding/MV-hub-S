@@ -1879,8 +1879,8 @@ describe("MV Agent 끌어다 넣기", () => {
 
   it("받는 형식에만 덮개 · 어셋은 끌기 값만(저장값으로 넓히지 않음)·필드 검사 · 생성물 묶음·폴더 · 중복·8개 상한 · 입력칸 위 놓기는 기본 동작 막음", async () => {
     await render();
-    const files = fire("dragenter", { Files: "" });
-    expect([files.defaultPrevented, host.querySelector(".agent-drop")]).toEqual([false, null]); // OS 파일만 = 손대지 않음
+    const text = fire("dragenter", { "text/plain": "글자" });
+    expect([text.defaultPrevented, host.querySelector(".agent-drop")]).toEqual([false, null]); // 받지 않는 형식(글자) = 손대지 않음 — OS 파일은 그림 넣기(agentChatImages.test.tsx)
     fire("dragenter", { [ASSET]: "[]" });
     expect(host.querySelector(".agent-drop")!.textContent).toContain("놓으면 대화에 붙어요");
     const over = fire("dragover", { [ASSET]: "[]" });

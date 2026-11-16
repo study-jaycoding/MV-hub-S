@@ -11,7 +11,7 @@ import {
   CLAUDE_CHAT_OK,
   ClaudeLoginError,
   type AgentAttachment,
-  type AgentAttachments,
+  type AgentSendAttachments,
   type AgentContext,
   type AgentConversationPatch,
   type AgentConversationSummary,
@@ -702,8 +702,9 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   }, [choice, conversationId, messages.length, newConversation]);
 
   /** 보낸다. 받아들였으면 true(입력칸을 비운다). 보내는 중·진행 중이면 아무것도 하지 않는다.
-   *  attach = 이 말과 함께 붙인 자료(보내는 순간의 묶음 — 성공하면 부르는 쪽이 그 묶음만 비운다, 설계 2-1). */
-  const send = useCallback(async (text: string, attach: AgentAttachments | null = null): Promise<boolean> => {
+   *  attach = 이 말과 함께 붙인 자료(보내는 순간의 묶음 — 성공하면 부르는 쪽이 그 묶음만 비운다, 설계 2-1).
+   *  attach.images = 그림 칩의 썸네일 — 같은 요청 판정(sig)에는 넣지 않는다(칩 식별자에서 나오므로 같은 칩이면 같은 요청). */
+  const send = useCallback(async (text: string, attach: AgentSendAttachments | null = null): Promise<boolean> => {
     const body = text.trim();
     if (!body || !choice || busy.current || current?.restored_from) return false;
     if (restoreSource && restoreSource.account !== getAccountNamespace()) {
@@ -754,6 +755,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         engine: choice.engine, model: choice.model, effort: choice.effort, fast,
         text: body, context: ctx,
         ...(attached ? { attachments: attached.items, attach_workspace: attached.workspace } : {}),
+        ...(attached?.images?.length ? { images: attached.images } : {}),
         ...(genModel ? { gen_model: genModel } : {}),
         // 화면 정보를 뺀 차례('지금 화면' 칩을 끔)는 실행 창 번호도 싣지 않는다 — 화면 동작 불가(설계 3-1, 독립 리뷰 P2)
         ...(screenTab.current && typeof full.tab === "string" ? { screen_tab: screenTab.current } : {}),
