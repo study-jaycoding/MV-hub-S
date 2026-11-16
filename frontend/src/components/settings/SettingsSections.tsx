@@ -464,15 +464,18 @@ function PanelPluginLine({ status, busy, error, onInstall }: {
     case "no_resolve": pill = t("리졸브 없음"); sub = t("리졸브가 없는 PC"); break;
   }
   const installed = ["up_to_date", "outdated", "newer_installed", "damaged"].includes(state || "");
-  return <div className="settings-install-row settings-resolve-panel-plugin">
-    <div className="settings-install-text">
-      <span className="settings-install-name">MV Resolve</span>
-      <span className="settings-install-sub">{error || sub}</span>
-      {!error && state === "up_to_date" && changedAt && <span className="settings-install-sub">{t("설치 파일을 바꿨습니다")} ({changedAt}) — {t("그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다")}</span>}
+  // 설치 시각 안내는 좁은 글 칸이 아니라 줄 아래 전체 폭에(실제 앱 화면에서 줄이 길게 늘어졌다)
+  return <div className="settings-resolve-panel-plugin">
+    <div className="settings-install-row">
+      <div className="settings-install-text">
+        <span className="settings-install-name">MV Resolve</span>
+        <span className="settings-install-sub">{error || sub}</span>
+      </div>
+      <span className={`settings-pill is-${error ? "warn" : tone}`}>{error ? t("확인 못 함") : pill}</span>
+      {onInstall && <button className="settings-action settings-action-sm" onClick={onInstall}
+        disabled={busy || ["busy", "foreign", "no_resolve"].includes(state || "")}>{busy ? t("설치 중") : t(installed ? "다시 설치" : "설치")}</button>}
     </div>
-    <span className={`settings-pill is-${error ? "warn" : tone}`}>{error ? t("확인 못 함") : pill}</span>
-    {onInstall && <button className="settings-action settings-action-sm" onClick={onInstall}
-      disabled={busy || ["busy", "foreign", "no_resolve"].includes(state || "")}>{busy ? t("설치 중") : t(installed ? "다시 설치" : "설치")}</button>}
+    {!error && state === "up_to_date" && changedAt && <p className="settings-install-note">{t("설치 파일을 바꿨습니다")} ({changedAt}) — {t("그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다")}</p>}
   </div>;
 }
 
@@ -624,7 +627,10 @@ export function ResolveScriptSettingsSection({
           </button>
         </div>
       </div>
-      <p className="settings-hint">{msg || "설치 파일이 바뀌면 리졸브를 다시 켜야 적용됩니다."}</p>
+      {/* MV Resolve 줄에 설치 시각 안내가 있으면 같은 뜻의 공통 안내는 뺀다 */}
+      {(msg || !(panelPlugin?.state === "up_to_date" && panelPlugin.changed_at && !panelPluginError)) && (
+        <p className="settings-hint">{msg || "설치 파일이 바뀌면 리졸브를 다시 켜야 적용됩니다."}</p>
+      )}
 
       <label className="settings-switch">
         <input type="checkbox" role="switch" checked={selectionFollow}

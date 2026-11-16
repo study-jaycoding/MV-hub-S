@@ -11,7 +11,7 @@ const APPS = [
 ] as const;
 type AppKey = (typeof APPS)[number]["key"];
 interface Client { id: string; name: string; revoked_at: string | null }
-interface Registration { client: string; status: "configured" | "manual" | "skipped" | "error"; message: string }
+interface Registration { client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; config?: unknown }
 
 const PILL: Record<string, [string, string]> = {
   on: ["연결됨", "on"],
@@ -35,8 +35,8 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
-  // 일 하나씩 — 끝나면 목록을 다시 읽는다. 그사이 로그인이 바뀌었으면 결과를 버린다.
-  const run = useCallback(async (work: (headers: Record<string, string>) => Promise<string>) => {
+  // 일 하나씩 — 끝나면 목록을 다시 읽는다(일이 함수를 돌려주면 다시 읽은 목록으로 결과 문구를 정한다). 그사이 로그인이 바뀌었으면 결과를 버린다.
+  const run = useCallback(async (work: (headers: Record<string, string>) => Promise<string | ((list: Client[]) => string)>) => {
     if (pending.current) return;
     pending.current = true; setBusy(true); setNote("");
     const token = getAuthToken();
@@ -45,7 +45,7 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
     try {
       const done = await work(headers);
       const list = await jsonFetch<{ clients: Client[] }>("/api/mcp/v2/app/clients", { headers });
-      if (fresh()) { setClients(list.clients); setFailed(false); setNote(done); }
+      if (fresh()) { setClients(list.clients); setFailed(false); setNote(typeof done === "function" ? done(list.clients) : done); }
     } catch {
       if (fresh()) { setFailed(true); setNote("연결 상태를 확인하지 못했습니다. 이 PC 의 MV Hub 로그인을 확인한 뒤 다시 시도하세요."); }
     } finally {
@@ -56,8 +56,11 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
 
   useEffect(() => { void run(async () => ""); }, [run]);
 
-  const active = (app: AppKey) => (clients ?? []).filter((client) => client.name === app && !client.revoked_at);
-  const stateOf = (app: AppKey) => active(app).length ? "on" : results[app]?.status ?? (clients === null ? (failed ? "unknown" : "loading") : "off");
+  const liveOf = (list: Client[], app: AppKey) => list.filter((client) => client.name === app && !client.revoked_at);
+  const active = (app: AppKey) => liveOf(clients ?? [], app);
+  // '수동 등록 필요'는 연결 기록이 남아 있어도 그 앱 설정은 아직 안 쓴 상태다 — '연결됨'보다 앞세운다(Codex 리뷰 01a1e375 #2)
+  const stateOf = (app: AppKey) => results[app]?.status === "manual" ? "manual"
+    : active(app).length ? "on" : results[app]?.status ?? (clients === null ? (failed ? "unknown" : "loading") : "off");
 
   const connect = (apps: AppKey[]) => run(async (headers) => {
     const result = await jsonFetch<{ clients: Registration[] }>("/api/mcp/v2/app/configure", {
@@ -69,13 +72,30 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
       : "등록한 앱이 없습니다. 앱마다 이유를 확인하세요.";
   });
 
+  // 해제는 화면에 남은 목록이 아니라 지금 목록으로 — 다시 등록으로 연결이 바뀐 뒤 목록 읽기가 실패했어도 새 연결까지 해제한다.
+  //  해제 뒤 다시 읽은 목록에 그 앱의 살아 있는 연결이 없을 때만 '해제했습니다'(Codex 리뷰 01a1e375 #1).
   const revoke = (app: AppKey) => run(async (headers) => {
-    for (const client of active(app)) {
+    const latest = await jsonFetch<{ clients: Client[] }>("/api/mcp/v2/app/clients", { headers });
+    for (const client of liveOf(latest.clients, app)) {
       await jsonFetch(`/api/mcp/v2/app/clients/${encodeURIComponent(client.id)}/revoke`, { method: "POST", headers, body: "{}" });
     }
     setResults((previous) => ({ ...previous, [app]: undefined }));
-    return "자료 조회와 생성 권한을 해제했습니다.";
+    return (list: Client[]) => liveOf(list, app).length
+      ? "해제하지 못한 연결이 남아 있습니다. 다시 해제하거나 연결 창(고급)에서 확인하세요."
+      : "자료 조회와 생성 권한을 해제했습니다.";
   });
+
+  // 수동 등록 — 서버가 쓰지 못한 설정을 복사해 그 앱에 직접 넣는다(MCP 창의 'MCP 설정 복사'와 같은 내용)
+  const copyConfig = async (app: AppKey) => {
+    const config = results[app]?.config;
+    const text = typeof config === "string" ? config : JSON.stringify(config, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      setNote("설정을 복사했습니다. 그 앱의 MCP 설정에 붙여 넣은 뒤 앱을 다시 켜세요.");
+    } catch {
+      setNote("자동 복사를 쓸 수 없습니다. 연결 창(고급)에서 설정을 복사하세요.");
+    }
+  };
 
   const connected = APPS.filter((app) => stateOf(app.key) === "on").map((app) => app.label);
   const summary = clients === null ? "" : connected.length ? [t("연결됨"), ...connected].join(" · ") : t("연결 안 됨");
@@ -101,6 +121,8 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
               <span className={`settings-pill is-${tone}`}>{t(label)}</span>
               {state === "on" ? (
                 <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void revoke(app.key)}>{t("해제")}</button>
+              ) : state === "manual" && results[app.key]?.config ? (
+                <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void copyConfig(app.key)}>{t("설정 복사")}</button>
               ) : state !== "loading" ? (
                 <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void connect([app.key])}>
                   {t(state === "off" ? "연결" : "다시 연결")}
