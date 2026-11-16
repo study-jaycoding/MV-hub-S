@@ -248,6 +248,52 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         kwargs.setdefault("window", "test-window")
         return cls(ctx=self.ctx, project_id="p", folder_path="S01/C010", **kwargs)
 
+    async def test_reason_is_bounded_optional_diagnostic_and_does_not_split_joined_requests(self):
+        cases = [(route.StageIn, {"seq": 1}), (route.TargetIn, {"seq": 1}),
+                 (route.PrestageIn, {"episode_bin_id": "ep", "cuts": [{"folder_path": "S/C", "bin_id": "b", "gen_ids": ["g"]}]}),
+                 (route.RenameIn, {"cuts": [{"folder_path": "S/C", "bin_id": "b", "gen_ids": ["g"]}]}),
+                 (route.UnstageIn, {"bin_id": "b"}), (route.AdoptIn, {"gen_id": "g", "resolve_project_id": "r"}),
+                 (route.SaveIn, {"expect_project": "r"}),
+                 (route.SettleIn, {"bins": [{"folder_path": "S/C", "bin_id": "b"}]})]
+        for model, extra in cases:
+            with self.subTest(model=model.__name__):
+                self.assertIsNone(self.body(model, **extra).reason)
+                self.assertEqual(self.body(model, reason="x" * 40, **extra).reason, "x" * 40)
+                with self.assertRaises(ValidationError):
+                    self.body(model, reason="x" * 41, **extra)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def operate(*_args):
+            started.set()
+            await release.wait()
+            return {"state": "ok"}
+
+        with patch.object(route, "_operate", side_effect=operate) as op, \
+                patch.object(runner, "panel_timing_on", return_value=True), \
+                patch.object(runner, "note_panel_timing") as note:
+            first = asyncio.create_task(route.post_stage(self.body(route.StageIn, seq=1, reason="select"), self.request))
+            await started.wait()
+            second = asyncio.create_task(route.post_stage(self.body(route.StageIn, seq=1, reason="retry"), self.request))
+            await asyncio.sleep(0)
+            release.set()
+            self.assertEqual(await asyncio.gather(first, second), [{"state": "ok"}, {"state": "ok"}])
+            self.assertEqual(op.call_count, 1)
+            self.assertEqual(sorted(call.kwargs["reason"] for call in note.call_args_list), ["retry", "select"])
+            self.assertTrue(all(call.kwargs["where"] == "request" for call in note.call_args_list))
+
+    async def test_request_timing_legacy_disabled_and_log_failure_preserve_result(self):
+        body = self.body(route.TargetIn, seq=1, create=True)
+        with patch.object(runner, "panel_timing_on", return_value=True), patch.object(runner, "note_panel_timing") as note:
+            result = await route.post_target(body, self.request)
+            self.assertEqual(result["state"], "ok")
+            self.assertNotIn("reason", note.call_args.kwargs)
+        with patch.object(runner, "panel_timing_on", return_value=False), patch.object(runner, "note_panel_timing") as note:
+            self.assertEqual(await route.post_target(body, self.request), result)
+            note.assert_not_called()
+        with patch.object(runner, "panel_timing_on", return_value=True), \
+                patch.object(runner, "note_panel_timing", side_effect=ValueError("diagnostic")):
+            self.assertEqual(await route.post_target(body, self.request), result)
+
     async def prepare(self):
         return await route.post_prepare(self.body(route.PrepareIn, gen_id="g"), self.request)
 

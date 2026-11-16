@@ -74,8 +74,9 @@ class ResolveStatusRunnerTests(unittest.TestCase):
                 rows = [json.loads(line) for line in stream]
             self.assertEqual(len(rows), 1)
             self.assertEqual({key: rows[0][key] for key in ("where", "op", "state")}, {"where": "child", "op": "prestage", "state": "ok"})
-            for key in ("ms", "lock_ms", "child_ms"):
+            for key in ("ms", "lock_ms", "child_ms", "closed_ms", "select_ms"):
                 self.assertIsInstance(rows[0][key], int)
+            self.assertIsNone(rows[0]["before_ms"])
             with mock.patch.dict(resolve_status_runner.os.environ, {"CONTENT_HUB_PANEL_TIMING_LOG": folder}):  # 폴더 = 쓸 수 없는 경로
                 self.assertEqual(resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})["state"], "ok")
             # 기록이 OSError 밖의 예외로 실패해도 결과는 그대로, 원래 예외도 그대로 올라간다
@@ -85,6 +86,42 @@ class ResolveStatusRunnerTests(unittest.TestCase):
                 with mock.patch.object(resolve_status_runner, "_run_child", side_effect=RuntimeError("original")), \
                         self.assertRaisesRegex(RuntimeError, "original"):
                     resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})
+
+    def test_panel_phase_timing_sums_guards_and_marks_skipped_phases_null(self):
+        runner = resolve_status_runner
+        clock = [0.0]
+
+        def elapsed(seconds, result):
+            clock[0] += seconds
+            return result
+
+        done = _completed('MVHUB_RESOLVE_PANEL={"state":"ok","resolve_project_id":"r"}\n')
+        with mock.patch.object(runner, "_panel_alive_at", None), \
+                mock.patch.object(runner, "resolve_mutation_slot") as slot, \
+                mock.patch.object(runner.time, "perf_counter", side_effect=lambda: clock[0]), \
+                mock.patch.object(runner, "_resolve_is_closed", side_effect=lambda: elapsed(.2, False)), \
+                mock.patch.object(runner, "_select_interpreter", side_effect=lambda: elapsed(.3, (sys.executable, {}, ""))), \
+                mock.patch.object(runner, "_run_child", side_effect=lambda *_a, **_k: elapsed(.5, done)) as child, \
+                mock.patch.object(runner, "note_panel_timing") as note:
+            slot.return_value.__enter__.return_value = True
+            self.assertEqual(runner.run_resolve_panel_isolated({"operation": "stage"}, before_start=lambda: elapsed(.1, None))["state"], "ok")
+            self.assertEqual({key: note.call_args.kwargs[key] for key in ("closed_ms", "select_ms", "before_ms", "child_ms", "ms")},
+                             {"closed_ms": 200, "select_ms": 300, "before_ms": 200, "child_ms": 500, "ms": 1200})
+            runner.run_resolve_panel_isolated({"operation": "current-bin"})
+            self.assertIsNone(note.call_args.kwargs["closed_ms"])  # 최근 살아 있음 읽기
+            self.assertIsNone(note.call_args.kwargs["before_ms"])
+            child.reset_mock()
+            result = runner.run_resolve_panel_isolated({"operation": "stage"}, before_start=lambda: elapsed(.1, {"state": "stale"}))
+            self.assertEqual(result["state"], "stale")
+            self.assertEqual(note.call_args.kwargs["before_ms"], 100)
+            for field in ("closed_ms", "select_ms", "child_ms"):
+                self.assertIsNone(note.call_args.kwargs[field])
+            child.assert_not_called()
+            with mock.patch.object(runner, "_select_interpreter", side_effect=RuntimeError("original")), \
+                    self.assertRaisesRegex(RuntimeError, "original"):
+                runner.run_resolve_panel_isolated({"operation": "stage"})
+            self.assertIsInstance(note.call_args.kwargs["select_ms"], int)
+            self.assertIsNone(note.call_args.kwargs["child_ms"])
 
     def test_panel_interpreter_timeout_uses_status_message_without_command_details(self):
         with (

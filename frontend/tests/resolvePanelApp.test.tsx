@@ -172,6 +172,71 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.clearAllTimers(); vi.useRealTimers(); delete window.mvhubResolve; });
 
+it("같은 목록 loading→ok 10회와 4분 대기는 stage 0, ID·capped 변경은 한 번씩", async () => {
+  await render();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  const list = mocks.generations.mock.results.at(-1)!.value;
+  for (let n = 0; n < 10; n++) {
+    mocks.generations.mockReturnValue({ ...list, state: "loading" }); await render();
+    mocks.generations.mockReturnValue({ ...list, gens: [{ ...gen }] }); await render();
+  }
+  await tick(240_000);
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  const other = { ...gen, id: "h" };
+  mocks.generations.mockReturnValue({ ...list, gens: [other, gen] }); await render();
+  expect(mocks.stage).toHaveBeenCalledTimes(2);
+  mocks.generations.mockReturnValue({ ...list, gens: [gen, other] }); await render();
+  expect(mocks.stage).toHaveBeenCalledTimes(2); // 서버 정렬만 바뀐 경우
+  mocks.generations.mockReturnValue({ ...list }); await render();
+  expect(mocks.stage).toHaveBeenCalledTimes(3);
+  mocks.generations.mockReturnValue({ ...list, state: "capped" }); await render();
+  expect(mocks.stage).toHaveBeenCalledTimes(4);
+  expect(mocks.stage.mock.calls.map(([body]) => body.reason)).toEqual(["select", "update", "update", "update"]);
+  expect(mocks.stage.mock.calls.at(-1)![0].capped).toBe(true);
+});
+
+it("목록이 준비된 첫 순간과 강제 맞추기·재시도·NAS 뒤 채우기를 놓치지 않는다", async () => {
+  const list = { state: "loading", gens: [gen], reload: mocks.listReload, startedAt: 1 };
+  mocks.generations.mockReturnValue(list);
+  await render();
+  expect(mocks.stage).not.toHaveBeenCalled();
+  mocks.generations.mockReturnValue({ ...list, state: "ok" });
+  mocks.stage.mockResolvedValue({ ...destination, deferred: 1, items: [{ gen_id: "g", state: "import_failed" }] });
+  await render();
+  const click = async (name: string) => {
+    const button = [...host.querySelectorAll("button")].find(button => button.textContent === name)!;
+    expect(button).toBeTruthy(); await act(async () => button.click()); await flush();
+  };
+  await click("맞추기");
+  await click("다시");
+  await act(async () => host.querySelector<HTMLButtonElement>(".rp-save")!.click()); await flush();
+  expect(mocks.stage.mock.calls.map(([body]) => body.reason)).toEqual(["select", "align", "retry", "save-refill"]);
+  expect(mocks.target.mock.calls.map(([body]) => body.reason)).toEqual(["select", "align"]);
+  expect(mocks.save.mock.calls[0][0].reason).toBe("save");
+});
+
+it.each(["account", "generation", "writer", "project"])("같은 목록도 %s 문맥이 바뀌면 다시 보낸다", async changed => {
+  localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ last: { project: "p", episode: "S", cut: "S/C2" },
+    byDavinci: { r: { project: "p", episode: "S", cut: "S/C2" }, r2: { project: "p", episode: "S", cut: "S/C2" } } }));
+  await render();
+  expect(mocks.stage).toHaveBeenCalledTimes(1);
+  if (changed === "project") {
+    mocks.currentBin.mockResolvedValue({ ...destination, resolve_project_id: "r2" });
+    mocks.target.mockResolvedValue({ ...destination, resolve_project_id: "r2" });
+    mocks.stage.mockResolvedValue({ ...destination, resolve_project_id: "r2", items: [] });
+  } else {
+    mocks.identity.mockResolvedValue({ ...identity, ...(changed === "account" ? { account: "next", epoch: 2 }
+      : { generation: 2, writer: changed !== "writer" }) });
+  }
+  await tick(3000);
+  if (changed === "writer") {
+    expect(mocks.stage).toHaveBeenCalledTimes(1);
+    mocks.identity.mockResolvedValue({ ...identity, generation: 3 }); await tick(3000);
+  }
+  expect(mocks.stage).toHaveBeenCalledTimes(2);
+  expect(mocks.stage.mock.calls.at(-1)![0].reason).toBe("select");
+});
+
 it("트리·상태·전체 워크스페이스, 오른쪽 = 미디어 풀 보기 전용·카드 표", async () => {
   await render();
   expect(host.textContent).toContain("리졸브 빈: MV Hub/영화/S/C2");
@@ -620,10 +685,12 @@ it("따라온 선택은 늦게 고르더라도 target 으로 바뀌지 않음(�
   await act(async () => control.selectFolder("p", "S", "S/C10", [gen], false, ["S/C2", "S/C10"])); await flush();
   expect(mocks.target).toHaveBeenCalledTimes(1);
   expect(mocks.stage.mock.calls.at(-1)![0]).toMatchObject({ folder_path: "S/C10", bin_id: "b10" });
+  expect(mocks.stage.mock.calls.at(-1)![0].reason).toBe("follow");
   // 보류된 뒤 사람이 그 컷 빈에 다시 들어오면 target 없이 한 번 가져온다(머무는 동안 더 부르지 않음)
   const staged = mocks.stage.mock.calls.length;
   davinci = "b10"; await tick(2000); await tick(10);
   expect(mocks.stage.mock.calls.length).toBe(staged + 1);
+  expect(mocks.stage.mock.calls.at(-1)![0].reason).toBe("reenter");
   expect(mocks.stage.mock.calls.at(-1)![0]).toMatchObject({ folder_path: "S/C10", bin_id: "b10" });
   await tick(4000);
   expect(mocks.stage.mock.calls.length).toBe(staged + 1);
@@ -865,7 +932,10 @@ it("미리 띄우기: 다 받으면 컷 빈 표의 컷들을 조각(200개 안�
   mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   mocks.rename.mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", named: 10, remaining: 1, after: [0, 10] })
     .mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", named: 5, remaining: 0, after: null });
+  mocks.prestage.mockImplementation(async body => successfulPrestage(body));
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
   await render();
+  await tick(2000);
   expect(mocks.prestage.mock.calls.map(([body]) => body.cuts.map((cut: { folder_path: string; bin_id: string; gen_ids: string[] }) => [cut.folder_path, cut.bin_id, cut.gen_ids.length])))
     .toEqual([[["S/C2", "b2", 30], ["S/C10", "b10", 30]]]); // 두 컷을 한 조각으로
   expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ folder_path: "S", episode_bin_id: "epS", expect_project: "r" });
@@ -875,6 +945,7 @@ it("미리 띄우기: 다 받으면 컷 빈 표의 컷들을 조각(200개 안�
 
 it("[저장]: 쓴 것은 항목 ID 로 다시 NAS 로(전에 옮긴 생성물도) · 안 쓴 것 정리 · 고정 프로젝트로 save · 끝나면 다시 미리 띄우기", async () => {
   await render(false);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
   mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
   await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
@@ -890,6 +961,7 @@ it("[저장]: 쓴 것은 항목 ID 로 다시 NAS 로(전에 옮긴 생성물도
   expect(mocks.unstage.mock.calls.at(-1)![0]).toMatchObject({ bins: [{ bin_id: "b10", folder_path: "S/C10" }], expect_project: "r" });
   expect(mocks.save.mock.calls.map(([body]) => body.expect_project)).toEqual(["r", "r"]);
   expect(control.notice).toContain("저장했습니다 — 이 저장 시점의 검사 통과");
+  await tick(2000);
   expect(mocks.prestage.mock.calls.length).toBeGreaterThan(prestaged); // 저장 뒤 다시 미리 띄움
 });
 
@@ -1022,27 +1094,29 @@ it("[저장]: NAS 로 못 옮기면 저장하지 않음 · not_clean 이면 빈 
 
 it("미리 띄우기가 건너뛴 컷은 다른 컷 빈에 두 번 머물러도 재개하고 성공 뒤 멈춘다", async () => {
   mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
-  mocks.prestage.mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", cuts: { "S/C10": { state: "ok", items: [{ gen_id: "g10", state: "deferred" }], deferred: 1 } } })
-    .mockResolvedValue({ state: "ok", resolve_project_id: "r", cuts: { "S/C10": { state: "ok", items: [{ gen_id: "g10", state: "staged" }], deferred: 0 } } });
+  mocks.prestage.mockResolvedValue({ state: "ok", resolve_project_id: "r", cuts: { "S/C10": { state: "ok", items: [{ gen_id: "g10", state: "staged" }], deferred: 0 } } });
   await render(false);
   mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2", "S/C10": "b10" }, episode_bin_id: "epS" });
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10"])); await flush();
   await act(async () => control.precache("p", "S", [["S/C10", ["g10"]]])); await flush();
-  expect(mocks.prestage.mock.calls[0][0].borrow).toBe(false);
+  expect(mocks.prestage).not.toHaveBeenCalled();
   await tick(2000); // 선택 전에 예약한 첫 읽기는 2초 뒤
-  expect(mocks.prestage).toHaveBeenCalledTimes(1);
+  expect(mocks.prestage).not.toHaveBeenCalled();
   await tick(800);
-  expect(mocks.prestage).toHaveBeenCalledTimes(2);
-  expect(mocks.prestage.mock.calls[1][0]).toMatchObject({ borrow: true, borrow_bin_id: "b2" });
+  expect(mocks.prestage).toHaveBeenCalledTimes(1);
+  expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ borrow: true, borrow_bin_id: "b2" });
   await tick(3000);
-  expect(mocks.prestage).toHaveBeenCalledTimes(2);
+  expect(mocks.prestage).toHaveBeenCalledTimes(1);
   expect(control.fillProgress).toBeNull();
 });
 
 it("미리 띄우기는 받은 것만(일부만 받은 컷은 capped) · 이름 뒤따르기는 앞 작업이 멈춘 자리부터", async () => {
   await render(false);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
+  mocks.prestage.mockImplementation(async body => successfulPrestage(body));
   mocks.target.mockResolvedValueOnce({ ...destination, bin_id: "epS", bins: { "S/C2": "b2" }, episode_bin_id: "epS" });
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2"])); await flush();
+  await tick(2000);
   mocks.cache.mockImplementation(async (body: { gen_ids: string[] }) => ({ items: body.gen_ids.map(gen_id => ({ gen_id, state: gen_id === "g2" ? "failed" : "cached" })) }));
   mocks.rename.mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", named: 9, failed: 1, remaining: 2, after: [0, 10] })
     .mockResolvedValueOnce({ state: "ok", resolve_project_id: "r", named: 0, failed: 0, remaining: 1, after: [0, 40] }) // 바꿀 것 없이 자리만 앞으로 = 진전
@@ -1107,13 +1181,106 @@ function successfulPrestage(body: { cuts: { folder_path: string; gen_ids: string
   return { state: "ok", resolve_project_id: "r", cuts: Object.fromEntries(body.cuts.map(cut => [cut.folder_path,
     { state: "ok", deferred: 0, items: cut.gen_ids.map(gen_id => ({ gen_id, state: "staged" })) }])) };
 }
-async function selectFillEpisode() {
+async function selectFillEpisode(bin = "epS") {
   await render(false);
   mocks.target.mockResolvedValue(fillDestination);
-  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "human" });
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: bin });
   mocks.prestage.mockImplementation(async body => successfulPrestage(body));
   await act(async () => control.selectFolder("p", "S", "", [], false, ["S/C2", "S/C10", "S/C30"])); await flush();
+  await tick(2800); // 전송 전에 실제 current-bin 관측을 확보한다.
 }
+
+it("지금 빈 첫 관측이 한 컷이면 그 컷만 보내고 두 번째 관측 뒤 나머지를 재개한다", async () => {
+  await selectFillEpisode("human");
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "b2" });
+  await tick(700);
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]], ["S/C10", ["h"]]])); await flush();
+  expect(mocks.prestage.mock.calls.map(([body]) => body.cuts.map((cut: { folder_path: string }) => cut.folder_path))).toEqual([["S/C2"]]);
+  expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ borrow: false, reason: "fill" });
+  expect(control.fillProgress).toMatchObject({ done: 1, waiting: true });
+  await tick(700);
+  expect(mocks.prestage.mock.calls[1][0]).toMatchObject({ borrow: true, borrow_bin_id: "b2" });
+  expect(mocks.prestage.mock.calls[1][0].cuts.map((cut: { folder_path: string }) => cut.folder_path)).toEqual(["S/C10"]);
+  expect(control.fillProgress).toBeNull();
+});
+
+it("늦은 캐시 뒤 낡은 관측으로 보내지 않고 다음 관측에서 이어 간다", async () => {
+  await selectFillEpisode();
+  const cache = deferred<unknown>(), read = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  mocks.currentBin.mockReturnValueOnce(read.promise);
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  await tick(3000);
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  // 지연된 읽기가 실패하면 관측을 버리고 다음 정상 읽기에서 재개한다.
+  await act(async () => read.resolve({ state: "unavailable" })); await flush();
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  expect(control.fillProgress).toMatchObject({ waiting: true });
+  await tick(700);
+  expect(mocks.prestage).toHaveBeenCalledTimes(1);
+});
+
+it("오래된 관측은 기다리되 읽기 자체가 느려도 같은 빈 두 번의 안정 셈은 유지한다", async () => {
+  await selectFillEpisode("human");
+  vi.setSystemTime(Date.now() + 3000);
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  expect(control.fillProgress).toMatchObject({ waiting: true });
+  const read = deferred<unknown>();
+  mocks.currentBin.mockReturnValueOnce(read.promise);
+  await tick(700); await tick(3000);
+  await act(async () => read.resolve({ ...destination, bin_id: "human" })); await flush();
+  expect(mocks.prestage).toHaveBeenCalledTimes(1);
+  expect(mocks.prestage.mock.calls[0][0]).toMatchObject({ borrow: true, borrow_bin_id: "human" });
+});
+
+it.each(["generation", "account"])("미리 받는 사이 %s가 바뀌면 옛 판의 prestage·rename을 보내지 않는다", async changed => {
+  await selectFillEpisode();
+  const cache = deferred<unknown>();
+  mocks.cache.mockReturnValueOnce(cache.promise);
+  await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
+  mocks.identity.mockResolvedValue({ ...identity, ...(changed === "generation" ? { generation: 2 } : { account: "next" }) });
+  await tick(1600);
+  await act(async () => cache.resolve({ items: [{ gen_id: "g", state: "cached" }] })); await flush();
+  await tick(2000);
+  expect(mocks.prestage).not.toHaveBeenCalled(); expect(mocks.rename).not.toHaveBeenCalled();
+});
+
+it("전부 deferred인 재시도에도 앞서 성공한 이름 정리 대상은 유지한다", async () => {
+  await selectFillEpisode();
+  mocks.prestage.mockResolvedValueOnce({ ...destination, cuts: { "S/C2": { state: "ok", items: [
+    { gen_id: "g", state: "staged" }, { gen_id: "h", state: "deferred" },
+  ] } } }).mockResolvedValue({ ...destination, cuts: { "S/C2": { state: "ok", items: [
+    { gen_id: "g", state: "deferred" }, { gen_id: "h", state: "deferred" },
+  ] } } });
+  mocks.rename.mockResolvedValueOnce({ state: "busy" }).mockResolvedValue({ ...destination, after: null });
+  await act(async () => control.precache("p", "S", [["S/C2", ["g", "h"]]])); await flush();
+  await tick(700);
+  expect(mocks.rename).toHaveBeenCalledTimes(2);
+  for (const [body] of mocks.rename.mock.calls) {
+    expect(body.reason).toBe("rename"); expect(body.cuts).toEqual([{ folder_path: "S/C2", bin_id: "b2", gen_ids: ["g"] }]);
+  }
+  await tick(5000);
+  expect(mocks.rename).toHaveBeenCalledTimes(2);
+});
+
+it("이름 정리 연쇄가 진행 중이면 다음 채우기가 같은 연쇄를 중복 시작하지 않는다", async () => {
+  await selectFillEpisode();
+  const name = deferred<unknown>();
+  mocks.rename.mockReturnValueOnce(name.promise).mockResolvedValueOnce({ ...destination, after: null });
+  mocks.prestage.mockResolvedValueOnce({ ...destination, cuts: { "S/C2": { state: "ok", items: [
+    { gen_id: "g", state: "present" }, { gen_id: "h", state: "deferred" },
+  ] } } }).mockResolvedValue({ ...destination, cuts: { "S/C2": { state: "ok", items: [
+    { gen_id: "g", state: "present" }, { gen_id: "h", state: "deferred" },
+  ] } } });
+  await act(async () => control.precache("p", "S", [["S/C2", ["g", "h"]]])); await flush();
+  await tick(700); // current-bin이 이름 정리 뒤에 대기한다.
+  expect(mocks.rename).toHaveBeenCalledTimes(1);
+  await act(async () => name.resolve({ ...destination, after: [0, 10] })); await flush();
+  await tick(3000);
+  expect(mocks.rename.mock.calls.map(([body]) => body.after)).toEqual([undefined, [0, 10]]);
+});
 
 it("진전 없는 deferred는 같은 빈에서 재시도를 멈추고 다른 빈이 안정되면 한 번 더 보낸다", async () => {
   await selectFillEpisode();
@@ -1123,7 +1290,7 @@ it("진전 없는 deferred는 같은 빈에서 재시도를 멈추고 다른 빈
   await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
   await tick(10_000);
   expect(mocks.prestage).toHaveBeenCalledTimes(2); // 첫 시도 + 안정 구간의 재시도
-  expect(mocks.rename).toHaveBeenCalledTimes(2);
+  expect(mocks.rename).not.toHaveBeenCalled(); // 전부 deferred이면 이름 정리 대상이 없다.
   mocks.currentBin.mockRejectedValueOnce(new Error("read failed"));
   await tick(3000);
   expect(mocks.prestage).toHaveBeenCalledTimes(2); // 다시 읽었다고 같은 빈의 중단을 풀지 않는다
@@ -1131,12 +1298,12 @@ it("진전 없는 deferred는 같은 빈에서 재시도를 멈추고 다른 빈
   await tick(10_000);
   expect(mocks.prestage).toHaveBeenCalledTimes(3);
   expect(mocks.prestage.mock.calls[2][0]).toMatchObject({ borrow: true, borrow_bin_id: "other" });
-  expect(mocks.rename).toHaveBeenCalledTimes(3);
+  expect(mocks.rename).not.toHaveBeenCalled();
   expect(control.fillProgress).toMatchObject({ done: 0, total: 1, active: false });
 });
 
 it("남은 컷이 줄면 같은 안정 구간에서 이어 보내고 진전이 멎으면 멈춘다", async () => {
-  await selectFillEpisode();
+  await selectFillEpisode("human");
   let completed = "";
   mocks.prestage.mockImplementation(async body => ({ state: "ok", resolve_project_id: "r", cuts: Object.fromEntries(
     body.cuts.map((cut: { folder_path: string; gen_ids: string[] }) => [cut.folder_path, { state: "ok",
@@ -1145,7 +1312,7 @@ it("남은 컷이 줄면 같은 안정 구간에서 이어 보내고 진전이 �
   await act(async () => control.precache("p", "S", [["S/C2", ["g"]], ["S/C10", ["g10"]], ["S/C30", ["g30"]]])); await flush();
   const initial = mocks.prestage.mock.calls.length;
   completed = "S/C2";
-  await tick(2800);
+  await tick(1400);
   expect(control.fillProgress).toMatchObject({ done: 1, total: 3 });
   completed = "S/C10";
   await tick(1400);
@@ -1228,17 +1395,19 @@ it.each([219, 220, 221])("합 %s개에서 220까지 한 조각이고 넘으면 �
 
 it("한 개씩 든 201컷도 API의 조각당 200컷 상한을 넘지 않는다", async () => {
   await render(false);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
   const cuts: [string, string[]][] = Array.from({ length: 201 }, (_, n) => [`S/C${n}`, [`g${n}`]]);
   mocks.target.mockResolvedValue({ ...fillDestination, bins: Object.fromEntries(cuts.map(([path], n) => [path, `b${n}`])) });
   mocks.prestage.mockImplementation(async body => successfulPrestage(body));
   await act(async () => control.selectFolder("p", "S", "", [], false, cuts.map(([path]) => path))); await flush();
+  await tick(2000);
   await act(async () => control.precache("p", "S", cuts)); await flush();
   expect(mocks.prestage.mock.calls.map(([body]) => body.cuts.length)).toEqual([200, 1]);
   expect(control.fillProgress).toBeNull();
 });
 
 it("한 컷 스틸 31장은 같은 빈에서 두 번씩 새로 읽고 네 창으로 끝까지 채운다", async () => {
-  await selectFillEpisode();
+  await selectFillEpisode("human");
   await tick(2800);
   const staged = new Set<string>(), reads: number[] = [];
   mocks.prestage.mockImplementation(async body => {
@@ -1281,6 +1450,7 @@ it.each(["select", "save"])("조각 처리 중 %s 요청은 다음 조각보다 
   else await act(async () => control.selectFolder("p", "S", "S/C30", [{ ...gen, id: "chosen", folder_path: "S/C30" }], false, ["S/C2", "S/C10", "S/C30"]));
   await flush();
   await act(async () => held.resolve(successfulPrestage(mocks.prestage.mock.calls[0][0]))); await flush();
+  if (action === "select") await tick(1400); // target 뒤 새 관측으로 다음 조각을 재개한다.
   expect(events).toEqual(action === "save" ? ["first"] : ["first", "selected", "next"]);
   if (action === "save") expect(mocks.rename).not.toHaveBeenCalled();
 });
@@ -1288,6 +1458,7 @@ it.each(["select", "save"])("조각 처리 중 %s 요청은 다음 조각보다 
 it("받기 항목 진행에서 넣기 컷 진행으로 바뀌고 완료하면 사라진다", async () => {
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
   mocks.target.mockResolvedValue(fillDestination);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
   mocks.generations.mockReturnValue({ state: "ok", gens: [gen, { ...gen, id: "g10", folder_path: "S/C10" }], reload: mocks.listReload, startedAt: 1 });
   const received = deferred<unknown>(), placed = deferred<unknown>();
   mocks.cache.mockImplementationOnce(async () => ({ items: [{ gen_id: "g", state: "cached" }] })).mockImplementationOnce(() => received.promise);
@@ -1296,6 +1467,8 @@ it("받기 항목 진행에서 넣기 컷 진행으로 바뀌고 완료하면 �
   expect(host.querySelector('[role="status"]')!.textContent).toContain("S 받는 중 1/2");
   expect(mocks.prestage).not.toHaveBeenCalled();
   await act(async () => received.resolve({ items: [{ gen_id: "g10", state: "cached" }] })); await flush();
+  expect(host.querySelector('[role="status"]')!.textContent).toContain("선택 안정 대기");
+  await tick(2000);
   expect(host.querySelector('[role="status"]')!.textContent).toContain("S 컷 빈 채우는 중 0/2");
   await act(async () => placed.resolve(successfulPrestage(mocks.prestage.mock.calls[0][0]))); await flush();
   expect(host.querySelector('[role="status"]')!.textContent).not.toMatch(/받는 중|채우는 중|남음/);
@@ -1305,9 +1478,11 @@ it("같은 에피소드의 컷 선택과 목록 loading→ok는 진행 중 미�
   localStorage.setItem("mvhub.resolvePanel.selection", JSON.stringify({ project: "p", episode: "S", cut: "" }));
   mocks.generations.mockReturnValue({ state: "ok", gens: [gen, { ...gen, id: "g10", folder_path: "S/C10" }], reload: mocks.listReload, startedAt: 1 });
   mocks.target.mockResolvedValue(fillDestination);
+  mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "epS" });
   const first = deferred<unknown>();
   mocks.prestage.mockImplementationOnce(() => first.promise).mockImplementation(async body => successfulPrestage(body));
   await render();
+  await tick(2000);
   const body = mocks.prestage.mock.calls[0][0];
   await act(async () => row("S")!.querySelector<HTMLElement>(".folder-tree-fold")!.click()); await flush();
   const list = mocks.generations.mock.results.at(-1)!.value;
@@ -1397,7 +1572,7 @@ it("새 판 뒤 늦은 응답은 진행 상태·후속 조각을 되살리지 �
 });
 
 it.each(["hidden", "read_error", "different_bin"])("안정 판정은 %s 이후 두 번 새로 읽어야 유효하다", async reset => {
-  await selectFillEpisode();
+  await selectFillEpisode("human");
   await tick(2000); // human에 안정됨
   if (reset === "hidden") {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
@@ -1409,17 +1584,19 @@ it.each(["hidden", "read_error", "different_bin"])("안정 판정은 %s 이후 �
     mocks.currentBin.mockResolvedValue({ ...destination, bin_id: "other" }); await tick(800);
   }
   await act(async () => control.precache("p", "S", [["S/C2", ["g"]]])); await flush();
-  expect(mocks.prestage.mock.calls.at(-1)![0].borrow).toBe(false);
+  expect(mocks.prestage).not.toHaveBeenCalled();
   await tick(2000);
   await act(async () => control.precache("p", "S", [["S/C10", ["g10"]]])); await flush();
   expect(mocks.prestage.mock.calls.at(-1)![0]).toMatchObject({ borrow: true, borrow_bin_id: reset === "different_bin" ? "other" : "human" });
 });
 
-it("복원 실패를 알리고 다음 조각을 계속하며 자식 응답 유실도 알린다", async () => {
+it("복원 실패 뒤 새 관측으로 다음 조각을 재개하며 자식 응답 유실도 알린다", async () => {
   await selectFillEpisode();
   mocks.prestage.mockImplementationOnce(async body => ({ ...successfulPrestage(body), restore_failed: true, restored: false }))
     .mockResolvedValueOnce({ state: "unavailable", details: "child exited" });
   await act(async () => control.precache("p", "S", [["S/C2", Array.from({ length: 200 }, (_, n) => `a${n}`)], ["S/C10", Array.from({ length: 21 }, (_, n) => `b${n}`)]])); await flush();
+  expect(mocks.prestage).toHaveBeenCalledTimes(1);
+  await tick(700);
   expect(mocks.prestage).toHaveBeenCalledTimes(2);
   expect(control.failures).toContain("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다");
   expect(control.failures).toContain("다빈치 지금 빈·클립을 확인해 주세요");

@@ -30,6 +30,7 @@ class Context(BaseModel):
 
 class PanelIn(BaseModel):
     ctx: Context
+    reason: str | None = Field(default=None, max_length=40)
     window: str = Field(default="", max_length=80)
     project_id: str = Field(min_length=1, max_length=200)
     folder_path: str = Field(min_length=1, max_length=2000)
@@ -514,7 +515,7 @@ async def _operate(operation, body, request, ctx):
             return result
 
     key = (operation, *panel.context_key(ctx), body.project_id, body.folder_path,
-           body.window, body.model_dump_json())
+           body.window, body.model_dump_json(exclude={"reason"}))
     return await panel.joined(key, write)
 
 
@@ -568,7 +569,7 @@ async def _request(operation, body, request, ctx):
     try:
         # 보호 핸들·고정 계정·장부 기록까지 한 단위로 끝낸 뒤 요청 취소를 전파한다.
         if operation in {"prepare", "stage", "unstage", "adopt", "target", "prestage", "rename", "save", "settle"}:
-            key = ("request", operation, *panel.context_key(ctx), body.model_dump_json())
+            key = ("request", operation, *panel.context_key(ctx), body.model_dump_json(exclude={"reason"}))
             result = await resolve_queue.run_non_abandon(panel.joined(key, execute))
         else:
             result = await resolve_queue.run_non_abandon(execute())
@@ -583,6 +584,8 @@ async def _request(operation, body, request, ctx):
                     counts = {"items": len(getattr(body, "gen_ids", None) or []) + sum(len(cut.gen_ids) for cut in cuts),
                               "cuts": len(cuts), "bins": len(getattr(body, "bins", None) or [])}
                     size = {name: count for name, count in counts.items() if count}
+                    if getattr(body, "reason", None) is not None:
+                        size["reason"] = body.reason
                 runner.note_panel_timing(where="request", op=operation, ms=round((time.perf_counter() - started) * 1000),
                                          state=result.get("state") if isinstance(result, dict) else None, **size)
             except Exception:  # noqa: BLE001 - 진단 기록이 요청 결과·원래 예외를 바꾸지 않게
