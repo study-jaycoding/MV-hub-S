@@ -6,6 +6,26 @@ import { adoptAction, bridgeCompatible, cacheBatches, inventoryAction, panelFail
   type AdoptState, type TargetState, type InventoryItem } from "../src/lib/resolvePanelApi";
 const identity = { instance: "hub", account: "a", epoch: 1, protocol: { min: 1, max: 2 } };
 const bridge = { protocol: 1, accepts: { min: 1, max: 1 }, startDrag: vi.fn(() => true) };
+it("모든 패널 쓰기 reason을 그대로 전달하고 옛 요청에는 생략한다", async () => {
+  const selection = { ctx: identity, project_id: "p", folder_path: "S/C1", window: "w", reason: "select" };
+  const cuts = [{ folder_path: "S/C1", bin_id: "b", gen_ids: ["g"] }];
+  const requests = [
+    () => resolvePanelApi.stage({ ...selection, seq: 1, gen_ids: ["g"] }),
+    () => resolvePanelApi.target({ ...selection, seq: 1, create: true }),
+    () => resolvePanelApi.prestage({ ...selection, episode_bin_id: "ep", cuts }),
+    () => resolvePanelApi.rename({ ...selection, cuts }),
+    () => resolvePanelApi.unstage({ ...selection, bin_id: "b" }),
+    () => resolvePanelApi.adopt({ ...selection, gen_id: "g", resolve_project_id: "r" }),
+    () => resolvePanelApi.save({ ...selection, expect_project: "r" }),
+    () => resolvePanelApi.settle({ ...selection, bins: [{ folder_path: "S/C1", bin_id: "b" }] }),
+  ];
+  for (const send of requests) {
+    await send();
+    expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string).reason).toBe("select");
+  }
+  await resolvePanelApi.stage({ ...selection, reason: undefined, seq: 1, gen_ids: [] });
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).not.toHaveProperty("reason");
+});
 it("다리 판은 양쪽 범위를 확인", () => {
   expect(bridgeCompatible(bridge, identity)).toBe(true);
   expect(bridgeCompatible(undefined, identity)).toBe(false);

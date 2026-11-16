@@ -163,16 +163,24 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   // 고른 곳이 바뀔 때만 리졸브에 알린다. 같은 컷을 다시 읽어 생긴 카드는 다시 띄우기만 — 읽는 중(loading)에 선택을 풀지 않는다
   //  (풀면 앞 에피소드 정리가 새 target 보다 먼저 돈다).
   const folderKey = `${selection.project}\n${episode}\n${cut}`;
+  const selectionContext = JSON.stringify([panel.authKey, panel.davinci, panel.identity?.generation, panel.identity?.writer]);
+  const sentContents = useRef("");
+  useEffect(() => { chosen.current = ""; sentContents.current = ""; }, [selectionContext]);
   useEffect(() => {
+    const contents = JSON.stringify([selectionContext, folderKey, ids, list.state === "capped"]);
     if (folderKey !== chosen.current) {
       if (!cut && !episode) { if (chosen.current) { chosen.current = ""; panel.selectFolder("", "", "", []); } return; }
       if (!ready) return;
       chosen.current = folderKey;
+      sentContents.current = contents;
       panel.selectFolder(selection.project, episode, cut, filtered, list.state === "capped", cutPaths);
-    } else if (ready && cut) panel.updateSet(filtered, list.state === "capped");
+    } else if (ready && cut && sentContents.current !== contents) {
+      sentContents.current = contents;
+      panel.updateSet(filtered, list.state === "capped");
+    }
     // 카드 목록 자체의 재생성으로 같은 곳을 다시 고르지 않는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderKey, ids, ready, list.state, panel.selectFolder, panel.updateSet]);
+  }, [selectionContext, folderKey, ids, ready, list.state, panel.selectFolder, panel.updateSet]);
   // 실시간 — 에피소드에 생성물 있는 컷이 새로 생기면 다빈치 빈도 만든다(지금 빈은 지킨다)
   useEffect(() => {
     if (ready && episode && chosen.current === folderKey) panel.syncCuts(cutPaths);
@@ -192,7 +200,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
   const precacheKey = JSON.stringify(precacheList);
   const precacheSent = useRef({ context: "", contents: "" });
   useEffect(() => {
-    const context = JSON.stringify([selection.project, episode, panel.authKey, panel.davinci]);
+    const context = JSON.stringify([selection.project, episode, selectionContext]);
     if (precacheSent.current.context !== context) precacheSent.current = { context, contents: "" };
     // 목록이 비어도 부른다 — 새 판(빈 목록)이 옛 판(옛 거르기·목록)을 끝낸다(Codex 독립 리뷰)
     const contents = JSON.stringify([precacheList, ui.filter]);
@@ -201,7 +209,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
       panel.precache(selection.project, episode, precacheList);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [precacheKey, ready, selection.project, episode, ui.filter, panel.authKey, panel.davinci, panel.precache]);
+  }, [precacheKey, ready, selection.project, episode, ui.filter, selectionContext, panel.precache]);
   // 다빈치에서 컷 빈에 들어가면 그 컷으로, 에피소드 빈으로 돌아오면 컷 선택을 풀고 따라간다
   useEffect(() => {
     const follow = panel.follow;
@@ -296,7 +304,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
         {save.phase === "saving" ? <span className="rp-save-spin" aria-hidden="true" /> : <SaveIcon kind={save.phase} />}
         <b>{saveText[0]}</b>{saveText[1] && <small>{saveText[1]}</small>}
       </button>}
-      <div className={"resolve-panel-status" + (save.phase === "blocked" ? " bad" : "")} role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}{panel.fillProgress && <span> · {lastName(panel.fillProgress.episode)} {t(panel.fillProgress.receiving ? "받는 중" : panel.fillProgress.active ? "컷 빈 채우는 중" : "컷 빈")} {panel.fillProgress.receiving?.done ?? panel.fillProgress.done}/{panel.fillProgress.receiving?.total ?? panel.fillProgress.total}{!panel.fillProgress.active && <> · {t("남음")} {panel.fillProgress.total - panel.fillProgress.done}</>}</span>}</>}</div>
+      <div className={"resolve-panel-status" + (save.phase === "blocked" ? " bad" : "")} role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}{panel.fillProgress && <span> · {lastName(panel.fillProgress.episode)} {t(panel.fillProgress.receiving ? "받는 중" : panel.fillProgress.waiting ? "선택 안정 대기" : panel.fillProgress.active ? "컷 빈 채우는 중" : "컷 빈")} {panel.fillProgress.receiving?.done ?? panel.fillProgress.done}/{panel.fillProgress.receiving?.total ?? panel.fillProgress.total}{!panel.fillProgress.active && <> · {t("남음")} {panel.fillProgress.total - panel.fillProgress.done}</>}</span>}</>}</div>
       {/* 검사에 걸린 빈(C안 ④) — 다른 허브 것은 다빈치에서 직접, 내 것은 [NAS] 를 다시 누르면 풀릴 수 있음 */}
       {showSave && save.phase === "blocked" && save.bins.length > 0 && <div className="rp-save-list">
         {save.bins.map(row => <div key={row.path}><b>{row.mine ? t("내 것") : t("다른 허브")}</b>{row.path}{row.count ? ` · ${row.count}` : ""}{row.in_use ? ` · ${t("쓰는 중")}` : ""}

@@ -32,7 +32,7 @@ export type AdoptState = "in_bin" | "stamp_failed" | "save_failed" | "ledger_fai
 export interface AdoptResult { state: AdoptState; details?: unknown; missing_record_ids?: string[]; cleanup_failed?: boolean; cleanup_details?: string }
 export interface PrepareResult { gen_id: string; state: "prepared" | "failed" | "account_changed" | "other_window"; path?: string; error?: string }
 // expect_project = 화면이 본 다빈치 프로젝트 — 쓰기 전에 리졸브 쪽이 대조한다(다르면 쓰기 0)
-export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string; expect_project?: string }
+export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string; expect_project?: string; reason?: string }
 // 미리 띄우기·이름 뒤따르기의 컷 — 이 창이 target 으로 받은 컷 빈 ID 와 그 컷의 생성물(거르기 통과·오래된 200개)
 export interface PanelCut { folder_path: string; bin_id: string; gen_ids: string[]; capped?: boolean }
 export interface PrestageResult extends TargetResult { cuts?: Record<string, StageResult>; restore_failed?: boolean; restored?: boolean; restore_reason?: string }

@@ -607,10 +607,20 @@ def run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None) ->
         note_panel_timing(where="child", op=payload.get("operation"), ms=_elapsed_ms(marks["start"], time.perf_counter()),
                           lock_ms=_elapsed_ms(marks["start"], marks.get("lock")),
                           child_ms=_elapsed_ms(marks.get("child"), marks.get("child_end")),
+                          closed_ms=_elapsed_ms(0, marks.get("closed")),
+                          select_ms=_elapsed_ms(0, marks.get("select")),
+                          before_ms=_elapsed_ms(0, marks.get("before")),
                           state=result.get("state") if isinstance(result, dict) else None)
 
 
 def _run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None, marks: dict[str, float]) -> dict[str, Any]:
+    def measured(name, call):
+        started = time.perf_counter()
+        try:
+            return call()
+        finally:
+            marks[name] = marks.get(name, 0) + time.perf_counter() - started
+
     reading = payload["operation"] in {"current-bin", "inventory"}
     failed_state = "unknown" if payload["operation"] == "adopt" else "unavailable"
     deadline = time.monotonic() + 30
@@ -619,14 +629,14 @@ def _run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None, m
             if acquired:
                 marks["lock"] = time.perf_counter()
                 if before_start:
-                    rejected = before_start()
+                    rejected = measured("before", before_start)
                     if rejected:
                         return rejected
                 recent = reading and _panel_alive_at is not None and time.monotonic() - _panel_alive_at < _PANEL_ALIVE_SECONDS
-                if not recent and _resolve_is_closed():
+                if not recent and measured("closed", _resolve_is_closed):
                     return {"state": "unavailable", "details": NOT_RUNNING_MESSAGE}
                 try:
-                    interpreter, _status, failure = _select_interpreter()
+                    interpreter, _status, failure = measured("select", _select_interpreter)
                 except subprocess.TimeoutExpired as exc:
                     return {"state": "unavailable", "details": _timeout_message(exc=exc)}
                 except ResolveLaunching as exc:
@@ -634,7 +644,7 @@ def _run_resolve_panel_isolated(payload: dict[str, Any], *, before_start=None, m
                 if not interpreter:
                     return {"state": "unavailable", "details": _no_interpreter_message(failure)}
                 if before_start:
-                    rejected = before_start()
+                    rejected = measured("before", before_start)
                     if rejected:
                         return rejected
                 marks["child"] = time.perf_counter()
