@@ -363,7 +363,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
               onPick={noop} onPickMany={noop} onOpen={noop} onCompare={noop} resolve={NO_SEND} onClearPicked={noop} onMenu={noop}
               onFolder={noop} onCardDrag={noop} onNativeDrag={panel.startNativeDrag} sideOpen={sideShown} onToggleSide={toggleSide} />
             : episode ? <EpisodeTiles title={lastName(episode)} cuts={cutNodes} sideOpen={sideShown} onToggleSide={toggleSide}
-                onCut={path => choose({ project: selection.project, episode, cut: path })} />
+                onCut={path => { if (path !== cut) { panel.interact(); choose({ project: selection.project, episode, cut: path }); } }} />
               : <>
                 <div className="ed-pool-head"><SidebarEdgeToggle open={sideShown} onToggle={toggleSide} title={sideShown ? t("필터 사이드바 닫기") : t("필터 사이드바 열기")} /></div>
                 <p className="rp-empty-note">{t("왼쪽에서 에피소드나 컷을 고르세요")}</p>
