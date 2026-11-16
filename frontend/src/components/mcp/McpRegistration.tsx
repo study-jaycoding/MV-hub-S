@@ -30,7 +30,8 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
   const [busy, setBusy] = useState(false);
   const [tasks, setTasks] = useState<McpCanvasTask[]>([]);
   const [taskNote, setTaskNote] = useState("");
-  const tab = useRef(crypto.randomUUID());
+  // 탭 표시용(비밀값 아님) — 공유 서버의 LAN HTTP 주소에는 crypto.randomUUID 가 없어 그리다 깨졌다(Codex 리뷰 01a1e38d #1 과 같은 원인)
+  const tab = useRef(globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
   const pending = useRef(false);
   const active = useRef(true);
   const scope = JSON.stringify([authReady, authKey]);

@@ -55,6 +55,9 @@ const ITEM_STATE_LABEL: Record<string, string> = {
   uncertain: "접수 여부 확인 필요", rejected: "거절됨",
 };
 
+// 탭 표시용 식별자(비밀값 아님) — 공유 서버의 LAN HTTP 주소에는 crypto.randomUUID 가 없다(보안 환경 전용, Codex 리뷰 01a1e38d #1 과 같은 원인)
+const tabId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 export function mcpSetupConfig(setup: McpSetup, client: "codex" | "claude"): string {
   if (!setup.adapter_exists || !setup.python || !setup.python_exists) return "";
   const args = [...(setup.python_args ?? []), setup.adapter, "--url", setup.url];
@@ -131,7 +134,7 @@ export function McpConnection(props: McpConnectionProps) {
         await call(connection, "/app/check", undefined, abort.signal);
         if (fresh()) setConnectionNote("연결된 앱 탭의 응답을 확인했습니다.");
       } else {
-        const result = await jsonFetch<McpSetup>("/api/mcp/app/setup", { headers: { "X-MVHub-Tab": connection?.tab || crypto.randomUUID() }, signal: abort.signal });
+        const result = await jsonFetch<McpSetup>("/api/mcp/app/setup", { headers: { "X-MVHub-Tab": connection?.tab || tabId() }, signal: abort.signal });
         if (fresh()) {
           setSetup(result);
           setConnectionNote(connection ? "등록 정보를 확인했습니다." : "허브 응답 확인 · 아직 LLM과 연결되지 않았습니다.");
@@ -310,7 +313,7 @@ export function McpConnection(props: McpConnectionProps) {
   async function pair() {
     if (busyRef.current || checkingRef.current || !/^\d{6}$/.test(code)) return;
     busyRef.current = true; setBusy(true); setError("");
-    const next: Connected = { tab: crypto.randomUUID(), key: keyRef.current, token: getAuthToken(), name: "", canExecute: false };
+    const next: Connected = { tab: tabId(), key: keyRef.current, token: getAuthToken(), name: "", canExecute: false };
     try {
       if (!current.current.authReady) throw new Error("로그인 상태를 확인한 뒤 연결하세요.");
       const result = await jsonFetch<{ name: string; client_id: string; can_execute?: boolean }>("/api/mcp/app/pair", { method: "POST", headers: { "X-MVHub-Tab": next.tab }, body: jsonBody({ pair_code: code, allow_execution: true }) });

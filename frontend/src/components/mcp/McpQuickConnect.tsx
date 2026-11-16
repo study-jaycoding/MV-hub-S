@@ -10,11 +10,14 @@ const APPS = [
   { key: "claude_desktop", label: "Claude 데스크톱 채팅", sub: "Claude 앱의 채팅" },
 ] as const;
 type AppKey = (typeof APPS)[number]["key"];
-interface Client { id: string; name: string; revoked_at: string | null }
+interface Client { id: string; name: string; revoked_at: string | null; last_seen_at?: string | null }
+// 탭 표시용 식별자(비밀값 아님) — 공유 서버의 LAN HTTP 주소에는 crypto.randomUUID 가 없다(보안 환경 전용, Codex 리뷰 01a1e38d #1)
+const tabId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 interface Registration { client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; config?: unknown }
 
 const PILL: Record<string, [string, string]> = {
   on: ["연결됨", "on"],
+  registered: ["등록됨", "on"],
   skipped: ["건너뜀", "warn"],
   error: ["실패", "warn"],
   manual: ["수동 등록 필요", "warn"],
@@ -30,7 +33,7 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [note, setNote] = useState("");
-  const tab = useRef(crypto.randomUUID());
+  const tab = useRef(tabId());
   const pending = useRef(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -58,9 +61,12 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
 
   const liveOf = (list: Client[], app: AppKey) => list.filter((client) => client.name === app && !client.revoked_at);
   const active = (app: AppKey) => liveOf(clients ?? [], app);
-  // '수동 등록 필요'는 연결 기록이 남아 있어도 그 앱 설정은 아직 안 쓴 상태다 — '연결됨'보다 앞세운다(Codex 리뷰 01a1e375 #2)
+  // '수동 등록 필요'는 연결 기록이 남아 있어도 그 앱 설정은 아직 안 쓴 상태다 — '연결됨'보다 앞세운다(Codex 리뷰 01a1e375 #2).
+  //  서버 목록은 앱 설정이 실제로 끝났는지 모른다 — 그 앱이 MV Hub 에 접속해 응답한 기록(last_seen_at)이 있어야 '연결됨', 없으면 '등록됨'.
+  //  그래서 창을 다시 열어 수동 등록 결과가 사라져도 '연결됨'이라 하지 않는다(Codex 리뷰 01a1e38d #2).
   const stateOf = (app: AppKey) => results[app]?.status === "manual" ? "manual"
-    : active(app).length ? "on" : results[app]?.status ?? (clients === null ? (failed ? "unknown" : "loading") : "off");
+    : active(app).length ? (active(app).some((client) => client.last_seen_at) ? "on" : "registered")
+    : results[app]?.status ?? (clients === null ? (failed ? "unknown" : "loading") : "off");
 
   const connect = (apps: AppKey[]) => run(async (headers) => {
     const result = await jsonFetch<{ clients: Registration[] }>("/api/mcp/v2/app/configure", {
@@ -97,8 +103,11 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
     }
   };
 
-  const connected = APPS.filter((app) => stateOf(app.key) === "on").map((app) => app.label);
-  const summary = clients === null ? "" : connected.length ? [t("연결됨"), ...connected].join(" · ") : t("연결 안 됨");
+  // 제목 밑 줄 — 등록된 앱 이름. 모두 응답이 확인됐으면 '연결됨', 하나라도 확인 전이면 '등록됨'
+  const linked = APPS.filter((app) => ["on", "registered"].includes(stateOf(app.key)));
+  const allSeen = linked.every((app) => stateOf(app.key) === "on");
+  const summary = clients === null ? "" : linked.length
+    ? [t(allSeen ? "연결됨" : "등록됨"), ...linked.map((app) => app.label)].join(" · ") : t("연결 안 됨");
   useEffect(() => { onSummary?.(summary); }, [summary, onSummary]);
 
   return (
@@ -111,7 +120,8 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
         {APPS.map((app) => {
           const state = stateOf(app.key);
           const [label, tone] = PILL[state] ?? PILL.off;
-          const reason = state !== "on" ? results[app.key]?.message : "";
+          const reason = state === "registered" ? "그 앱에서 아직 응답을 확인하지 못했습니다 — 앱을 다시 켜면 확인됩니다"
+            : state !== "on" ? results[app.key]?.message : "";
           return (
             <div className="settings-install-row" key={app.key} data-app={app.key}>
               <div className="settings-install-text">
@@ -119,7 +129,7 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
                 <span className="settings-install-sub">{reason ? t(reason) : t(app.sub)}</span>
               </div>
               <span className={`settings-pill is-${tone}`}>{t(label)}</span>
-              {state === "on" ? (
+              {state === "on" || state === "registered" ? (
                 <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void revoke(app.key)}>{t("해제")}</button>
               ) : state === "manual" && results[app.key]?.config ? (
                 <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void copyConfig(app.key)}>{t("설정 복사")}</button>

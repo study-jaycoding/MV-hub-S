@@ -20,6 +20,15 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
+it("공유 서버의 LAN HTTP 처럼 crypto.randomUUID 가 없어도 그리고, 등록 요청에 탭 표시를 싣는다", async () => {
+  vi.stubGlobal("crypto", {});
+  io.http.mockResolvedValueOnce({ clients: [] }).mockResolvedValueOnce({ clients: [] });
+  await render();
+  expect(host.textContent).toContain("LLM 프로그램 연결");
+  await click("Codex·Claude 연결 허용");
+  expect(io.http.mock.calls[0][1].headers["X-MVHub-Tab"]).toBeTruthy();
+});
+
 it("명시적인 최초 버튼만 세 클라이언트를 허용하고 등록과 연결 확인을 구분한다", async () => {
   io.http.mockResolvedValueOnce({ clients: [
     { client: "codex", status: "configured", message: "등록됨" }, { client: "claude", status: "error", message: "설정 파일을 확인하세요" },

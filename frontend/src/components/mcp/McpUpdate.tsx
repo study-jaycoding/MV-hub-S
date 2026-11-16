@@ -24,7 +24,8 @@ export function McpUpdate({ authReady, authKey }: { authReady: boolean; authKey:
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [confirm, setConfirm] = useState<"update" | "rollback" | null>(null);
-  const pending = useRef(false), active = useRef(true), tab = useRef(crypto.randomUUID());
+  // 탭 표시용(비밀값 아님) — LAN HTTP 주소에는 crypto.randomUUID 가 없어 그리다 깨졌다(Codex 리뷰 01a1e38d #1 과 같은 원인)
+  const pending = useRef(false), active = useRef(true), tab = useRef(globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
   const scope = JSON.stringify([authReady, authKey]);
   const currentScope = useRef(scope);
   const epoch = useRef(0);
