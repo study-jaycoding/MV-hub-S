@@ -586,10 +586,24 @@ export function SettingsPanel({
   };
 
   useEscapeClose(onClose);
-  // 설정 창과 옆 패널(SettingsGroup — body 에 따로 그려진다)은 한 조작 영역이다: Tab 이 둘 사이를 돌고 뒤 화면으로는 나가지 않는다
-  //  (lib/keyGate '모달의 초점'). 옆 패널은 한 번에 하나만 열린다.
+  // 설정 창과 옆 창(SettingsFold — body 에 따로 그려진다)은 한 조작 영역이다: Tab 이 둘 사이를 돌고 뒤 화면으로는 나가지 않는다
+  //  (lib/keyGate '모달의 초점'). 옆 창은 한 번에 하나만 보이고, 나머지는 숨긴 채 붙어 있다.
   const floatRef = useRef<HTMLDivElement>(null);
-  useModalFocus(() => [floatRef.current, document.querySelector<HTMLElement>(".settings-group-flyout")]);
+  useModalFocus(() => [floatRef.current, document.querySelector<HTMLElement>(".settings-group-flyout:not([hidden])")]);
+
+  // 같은 창 안의 화면(Jay 2026-11-16): 처음(묶음 두 줄 + MV 업데이트) → 묶음을 누르면 그 묶음의 목록, 머리의 ‹ 로 처음으로.
+  const [page, setPage] = useState<"home" | "basic" | "external">("home");
+  const lastPage = useRef<"basic" | "external" | null>(null);
+  const backRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (page !== "home") {
+      lastPage.current = page;
+      backRef.current?.focus();
+    } else if (lastPage.current) {
+      floatRef.current?.querySelector<HTMLElement>(`[data-settings-page="${lastPage.current}"]`)?.focus();
+    }
+  }, [page]);
+  const pageTitle = page === "basic" ? t("기본 설정") : page === "external" ? t("외부 프로그램") : "";
 
   const pickAccent = (hex: string) => {
     setAccent(hex);
@@ -634,15 +648,37 @@ export function SettingsPanel({
       <div className="info-catcher" onMouseDown={onClose} />
       <div ref={floatRef} className="manage-float settings-float" role="dialog" aria-label={t("설정")}>
         <header className="admin-head">
-          <span className="admin-title">⚙ {t("설정")}</span>
+          {page === "home" ? (
+            <span className="admin-title">⚙ {t("설정")}</span>
+          ) : (
+            <span className="admin-title settings-page-title">
+              <button ref={backRef} type="button" className="assets-x settings-back" onClick={() => setPage("home")}
+                title={t("뒤로")} aria-label={t("뒤로")}>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+              </button>
+              {pageTitle}
+            </span>
+          )}
           <button className="assets-x" onClick={onClose} title={t("닫기")}>
             <CloseIcon />
           </button>
         </header>
 
-        {/* 바깥엔 두 묶음 + MV 업데이트만, 옆 패널 안은 처음엔 접힌 큰 묶음(Jay 2026-11-06 시안 F) */}
+        {/* 처음엔 두 묶음 + MV 업데이트, 묶음을 누르면 같은 창이 그 목록으로 — 항목은 옆 창(Jay 2026-11-16) */}
         <div className="admin-body">
-          <SettingsGroup title={t("기본 설정")}>
+          {page === "home" && (
+            <>
+              <SettingsGroup page="basic" title={t("기본 설정")} summary={[t("화면"), t("작업"), t("자료 관리")].join(" · ")}
+                onOpen={() => setPage("basic")} />
+              <SettingsGroup page="external" title={t("외부 프로그램")}
+                summary={["Slack", "ComfyUI", "DaVinci Resolve", ...(onOpenMcp ? ["MCP"] : [])].join(" · ")}
+                onOpen={() => setPage("external")} />
+            </>
+          )}
+
+          {page === "basic" && (
+            <>
             <SettingsFold title={t("화면")} summary={appearanceSummary}>
               <AppearanceSettingsSection
                 accent={accent}
@@ -742,9 +778,11 @@ export function SettingsPanel({
                 </SettingsDescription>
               </section>
             </SettingsFold>
-          </SettingsGroup>
+            </>
+          )}
 
-          <SettingsGroup title={t("외부 프로그램")}>
+          {page === "external" && (
+            <>
             <SettingsFold title={t("Slack 알림")} summary={slackSummary} hideFirstTitle>
               <SlackNotificationSection onSummary={setSlackSummary} />
             </SettingsFold>
@@ -784,16 +822,19 @@ export function SettingsPanel({
                 </SettingsDescription>
               </section>
             </SettingsFold>}
-          </SettingsGroup>
+            </>
+          )}
 
-          <ReleaseUpdateSettingsSection
-            status={releaseUpdateStatus}
-            busy={releaseUpdateBusy}
-            msg={releaseUpdateMsg}
-            onRefresh={refreshReleaseUpdate}
-            onUpdate={() => void runReleaseUpdate()}
-            onForceUpdate={() => void runReleaseUpdate(true)}
-          />
+          {page === "home" && (
+            <ReleaseUpdateSettingsSection
+              status={releaseUpdateStatus}
+              busy={releaseUpdateBusy}
+              msg={releaseUpdateMsg}
+              onRefresh={refreshReleaseUpdate}
+              onUpdate={() => void runReleaseUpdate()}
+              onForceUpdate={() => void runReleaseUpdate(true)}
+            />
+          )}
 
         </div>
       </div>

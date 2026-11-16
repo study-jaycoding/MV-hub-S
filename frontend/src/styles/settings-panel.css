@@ -1,7 +1,16 @@
 /* 설정 창(SettingsPanel)·옆 패널 — 크게 접는 묶음과 단추 모양(Jay 2026-11-06 시안 F). 나머지 설정 규칙은 app-shell.css '설정 패널'.
    styles.css 에서 app-shell.css 뒤에 불러온다 — 같은 우선순위의 기존 .settings-action 규칙을 뒤에서 이긴다. */
 
-/* ── 접는 묶음(settings/SettingsFold) — 제목 + 늘 보이는 상태 한 줄(실시간 정보는 접기 밖) + 아래 화살표 ── */
+/* ── 바깥 묶음 줄(settings/SettingsGroup) — 누르면 같은 창이 그 묶음의 목록으로(Jay 2026-11-16). 제목 밑에 안의 항목 이름 한 줄 ── */
+.settings-group-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; }
+.settings-group-title { font-size: 13.5px; font-weight: 800; line-height: 1.25; }
+.settings-group-summary { font-size: 11.5px; font-weight: 500; line-height: 1.35; color: var(--muted); }
+.settings-group-toggle:hover .settings-group-summary { color: var(--muted); }
+/* 목록 화면 머리 — ‹ 뒤로 + 묶음 이름 */
+.settings-page-title { display: inline-flex; align-items: center; gap: 8px; }
+.settings-back svg { display: block; }
+
+/* ── 목록의 한 줄(settings/SettingsFold) — 제목 + 늘 보이는 상태 한 줄(실시간 정보는 접기 밖) + › — 누르면 옆 창 ── */
 .settings-fold { border-bottom: 1px solid var(--border); }
 .settings-fold:last-child { border-bottom: none; }
 .settings-fold-head {
@@ -18,15 +27,23 @@
   font-size: 11.5px; font-weight: 500; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere;
 }
 .settings-fold-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; }
-.settings-fold-chev { flex: none; color: var(--muted); transition: transform 0.15s; }
+.settings-fold-chev { flex: none; color: var(--muted); font-size: 15px; line-height: 1; }
 .settings-fold-head:hover .settings-fold-title,
 .settings-fold.is-open .settings-fold-title,
 .settings-fold.is-open .settings-fold-chev { color: var(--accent); }
-.settings-fold.is-open .settings-fold-chev { transform: rotate(180deg); }
-.settings-fold-body { padding-bottom: 4px; }
-.settings-fold-body > .settings-section:first-child { padding-top: 2px; }
-.settings-fold-body > .settings-section:last-child { border-bottom: none; }
-.settings-fold.hide-first-title > .settings-fold-body > .settings-section:first-child > h4 { display: none; }
+/* 옆 창이 열린 줄 — 창 양끝까지 옅은 강조색 바탕 + 왼쪽 강조색 선(시안 ③). 설정 창 본문 여백(16px)만큼 넓힌다 */
+.settings-float .settings-fold.is-open > .settings-fold-head {
+  width: calc(100% + 32px); margin: 0 -16px; padding: 13px 18px 13px 13px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 3px 0 0 var(--accent);
+}
+/* 옆 창 — 첫 칸 제목이 옆 창 제목과 같으면 숨긴다(ComfyUI 안의 'ComfyUI' 등) */
+.settings-group-flyout.hide-first-title > .settings-group-content > .settings-section:first-child > h4 { display: none; }
+/* 옆 창 안 글자 — 클래스 없는 문단·줄 안 글이 화면 기본 크기(약 15px)로 커지지 않게 12px 로(Jay 2026-11-16).
+   설명 '더보기' 안 문단은 지금 크기(11px 상속) 그대로 — 같은 우선순위라 아래 규칙이 이긴다. */
+.settings-group-flyout p:not([class]) { margin: 6px 0 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.settings-group-flyout .settings-help-content p { margin: 5px 0 0; font-size: inherit; line-height: inherit; color: inherit; }
+.settings-group-flyout .settings-row > span:not([class]) { font-size: 12px; line-height: 1.55; color: var(--muted); }
+.settings-group-flyout .settings-resolve-panel-plugin > p:not([class]) { color: var(--text); font-weight: 700; }
 
 /* ComfyUI 아래 '미회수 실행' — 같은 ComfyUI 일이라 구분선 없이 왼쪽 선으로 묶는다 */
 .settings-section:has(+ .comfy-unresolved) { border-bottom: none; padding-bottom: 6px; }
