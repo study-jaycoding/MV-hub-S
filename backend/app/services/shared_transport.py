@@ -64,6 +64,8 @@ def transport_url(url: str) -> str:
         raise TLSConfigError("공유 서버 전송 URL의 프로토콜을 지원하지 않습니다")
     if url[:7].lower() == "http://":
         return "https://" + url[7:]
+    if url[:5].lower() == "ws://":
+        return "wss://" + url[5:]
     return url
 
 
@@ -114,5 +116,9 @@ def opener(*, proxy: bool = True) -> urllib.request.OpenerDirector:
 
 
 @lru_cache(maxsize=2)
-def cached_opener(*, proxy: bool = True) -> urllib.request.OpenerDirector:
+def _cached_opener(proxy: bool) -> urllib.request.OpenerDirector:
     return opener(proxy=proxy)
+
+
+def cached_opener(*, proxy: bool = True) -> urllib.request.OpenerDirector:
+    return _cached_opener(bool(proxy))

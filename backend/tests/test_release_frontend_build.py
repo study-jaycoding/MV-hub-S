@@ -169,7 +169,7 @@ def test_release_locked_install_refuses_a_target_with_leftover_packages(tmp_path
 
 def _archive_probe(
     tmp_path: Path, assets: list[str], *, extra: tuple[str, ...] = (),
-    missing: str = "", python: bool = False,
+    missing: str = "", python: bool = False, contents: dict[str, bytes | str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     archive = tmp_path / "fixture.zip"
     required = [
@@ -177,7 +177,7 @@ def _archive_probe(
         "update_release_contract.ps1", "installer-capabilities.json",
         "agent_push.py", "run_agent_session.py", "open_link.py", "hf_cli_version.txt", "mvhub.ico",
         "backend/serve.py", "backend/app/main.py", "backend/app/routers/release_update.py",
-        "backend/app/services/release_update.py", "backend/requirements.txt", "frontend/dist/index.html",
+        "backend/app/services/release_update.py", "backend/app/services/shared_transport.py", "backend/requirements.txt", "frontend/dist/index.html",
         "tools/mcp_adapter/server.py", "tools/mcp_adapter/update.py", "tools/mcp_adapter/local_setup.py", "tools/mcp_adapter/requirements.txt",
         "tools/mcp_adapter/requirements.lock.txt",
     ]
@@ -192,7 +192,10 @@ def _archive_probe(
         target.writestr("VERSION.txt", "test")
         for name in required + list(extra) + ["frontend/dist/assets/" + name for name in assets]:
             if name != missing:
-                target.writestr(name, "fixture")
+                target.writestr(name, (contents or {}).get(name, "TLS_REQUIRED = False\n" if name.endswith('/shared_transport.py') else "fixture"))
+        for name, content in (contents or {}).items():
+            if name not in required + list(extra) and name != missing:
+                target.writestr(name, content)
     harness = tmp_path / "archive-probe.ps1"
     harness.write_text("""param([string]$Source,[string]$ArchivePath)
 $ErrorActionPreference = 'Stop'
@@ -206,7 +209,10 @@ foreach ($name in @('Read-ArchiveText', 'Assert-ReleaseArchive')) {
     . ([scriptblock]::Create($node.Extent.Text))
 }
 $SkipPythonRuntime = SKIP_PYTHON; $SkipNodeRuntime = $true; $SkipHiggsfieldCli = $true
+$timer = [Diagnostics.Stopwatch]::StartNew()
 Assert-ReleaseArchive -ArchivePath $ArchivePath -ExpectedVersion 'test'
+$timer.Stop()
+Write-Output ('VALIDATION_MS=' + $timer.Elapsed.TotalMilliseconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))
 """.replace("SKIP_PYTHON", "$false" if python else "$true"), encoding="utf-8-sig")
     source = Path(__file__).resolve().parents[2] / "release/make_release.ps1"
     return subprocess.run(

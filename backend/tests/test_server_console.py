@@ -104,6 +104,41 @@ def test_console_configuration_error_blocks_credentials_and_address(tmp_path, mo
     assert 'TLS 설정 오류' in view.addr_label.configure.call_args.kwargs['text']
 
 
+@pytest.mark.parametrize('days', [60.0, 59.999, 0.0, -0.001, None])
+@pytest.mark.parametrize('tls_state', ['on', 'off', 'error'])
+def test_console_expiry_both_address_labels(tmp_path, monkeypatch, days, tls_state):
+    from server_console import ui
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    expiry = None if days is None else (datetime(2027, 1, 15, tzinfo=timezone.utc), days)
+    reader = Mock(return_value=expiry)
+    monkeypatch.setattr(ui.server_tls, 'certificate_expiry', reader)
+    view = SimpleNamespace(
+        inst=make_inst(tmp_path, tls=tls_state == 'on', tls_state=tls_state),
+        addr_label=Mock(), address_now=Mock(), status=None, addresses=[('loopback', '127.0.0.1')],
+        address_view={}, location_label=Mock(), url_entry=Mock(), name_entry=Mock(),
+        address_shown=('', ''), address_button=Mock(), address_busy=False,
+    )
+    ui.App._show_address(view)
+    ui.App._show_address_page(view)
+    for label in (view.addr_label, view.address_now):
+        shown = label.configure.call_args.kwargs['text']
+        if tls_state == 'error':
+            assert shown == 'TLS 설정 오류 — 인증서 설정을 확인하세요'
+        elif tls_state == 'off':
+            assert 'http://' in shown and '인증서 만료' not in shown
+        elif days is None:
+            assert '인증서 만료 확인 불가' in shown
+        elif days <= 0:
+            assert 'https://' in shown
+            assert '인증서 만료됨(2027-01-15) — 경고: 인증서 교체 필요' in shown
+            assert '일 남음' not in shown
+        else:
+            assert 'https://' in shown and '인증서 만료 2027-01-15(' in shown
+            assert ('경고' in shown) == (days < 60)
+    assert reader.call_count == (2 if tls_state == 'on' else 0)
+
+
 def test_tls_session_cannot_fall_back_after_configuration_removed(tmp_path, monkeypatch, tls_dir):
     from server_console import server_api
     server = {'port': 1, 'tls': True}
@@ -1238,11 +1273,14 @@ def test_product_code_never_imports_the_console():
              *[p for p in TOOLS.rglob("*.py") if "server_console" not in p.parts]]
     assert len(files) > 50
     for path in files:
+        # Interactive certificate administration reuses console trust/admin helpers; product code cannot import it.
+        if path == TOOLS / 'server_tls_cert.py':
+            continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
             mods = [a.name for a in node.names] if isinstance(node, ast.Import) else \
                 [node.module or "", *[f"{node.module}.{a.name}" for a in node.names]] \
                 if isinstance(node, ast.ImportFrom) else []  # from tools import server_console 도
-            assert not any("server_console" in m for m in mods), path
+            assert not any("server_console" in m or "server_tls_cert" in m for m in mods), path
 
 
 def test_import_scan_catches_aliases():

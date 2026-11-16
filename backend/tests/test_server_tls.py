@@ -1,5 +1,6 @@
 """Real loopback TLS with disposable keys; never reads the machine TLS directory."""
 import io
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -29,12 +30,18 @@ def tls_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def certificates(tmp_path):
-    openssl = shutil.which('openssl') or r'C:\Program Files\Git\usr\bin\openssl.exe'
-    if not Path(openssl).is_file():
+    if os.name == 'nt':
+        from server_console.install import trusted_git
+        git = trusted_git()
+        openssl = git.parent.parent / 'usr/bin/openssl.exe' if git else None
+    else:
+        openssl = shutil.which('openssl')
+    if not openssl or not Path(openssl).is_file():
         pytest.skip('OpenSSL is required to generate disposable D2 test certificates')
 
     def run(*args):
-        result = subprocess.run([openssl, *map(str, args)], cwd=tmp_path, capture_output=True, timeout=20)
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith('OPENSSL_')}
+        result = subprocess.run([openssl, *map(str, args)], cwd=tmp_path, env=env, capture_output=True, timeout=20)
         assert result.returncode == 0, 'OpenSSL certificate generation failed'
 
     def leaf(name, san='IP:127.0.0.1,DNS:localhost', signer=None):
@@ -174,6 +181,7 @@ def test_readers_do_not_open_private_key(certificates, tls_dir, monkeypatch):
     monkeypatch.setattr(ssl.SSLContext, 'load_cert_chain', Mock(side_effect=AssertionError('reader loaded a private key')))
     assert server_tls.read_config().state == 'on'
     assert server_tls.client_context().check_hostname
+    assert server_tls.certificate_expiry(tls_dir / 'server.pem') is not None
     assert opened
 
 
@@ -229,3 +237,35 @@ def test_argument_errors_are_distinct_from_tls_errors(arguments):
     with pytest.raises(SystemExit) as caught:
         server_tls.main(arguments)
     assert caught.value.code == 2
+
+
+@pytest.mark.parametrize('files', [(), ('server.pem',), ('server.key',), ('server.pem', 'server.key')])
+def test_pending_promotion_blocks_every_pair_state(tls_dir, files, monkeypatch):
+    for name in files:
+        (tls_dir / name).write_text('must not be read')
+    (tls_dir / 'promote.pending').write_text('{}')
+    monkeypatch.setattr(server_tls, '_context', Mock(side_effect=AssertionError('pending promotion')))
+    assert server_tls.directory() == tls_dir
+    assert server_tls.read_config().state == 'error'
+
+
+def test_certificate_expiry_real_and_utc_boundaries(certificates, monkeypatch):
+    cert = certificates('expiry')[1]
+    expiry = server_tls.certificate_expiry(cert)
+    assert expiry is not None
+    expires, days = expiry
+    assert expires.tzinfo == timezone.utc and 1 < days <= 2
+    assert server_tls.certificate_expiry(cert, now=expires - timedelta(days=60)) == (expires, 60)
+    assert server_tls.certificate_expiry(cert, now=expires - timedelta(days=60) + timedelta(seconds=1))[1] < 60
+    assert server_tls.certificate_expiry(cert, now=expires + timedelta(seconds=1))[1] < 0
+
+
+@pytest.mark.parametrize('kind', ['missing', 'broken', 'api-missing'])
+def test_certificate_expiry_unknown(tmp_path, monkeypatch, kind):
+    import _ssl
+    cert = tmp_path / 'public.pem'
+    if kind == 'broken':
+        cert.write_text('broken')
+    if kind == 'api-missing':
+        monkeypatch.delattr(_ssl, '_test_decode_cert')
+    assert server_tls.certificate_expiry(cert) is None

@@ -214,8 +214,82 @@ function Assert-ReleaseArchive {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
     try {
-        $Entries = @($Archive.Entries)
+        $Seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($Entry in $Archive.Entries) {
+            if (-not $Seen.Add($Entry.FullName.Replace("\", "/"))) {
+                throw "Release archive contains duplicate path: $($Entry.FullName)"
+            }
+        }
+        $Entries = @($Archive.Entries | Where-Object { -not $_.FullName.Replace("\", "/").EndsWith('/') })
         $Names = @($Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
+        $BundleName = 'backend/app/resources/tls/shared_server.pem'
+        foreach ($Entry in $Entries) {
+            $Name = $Entry.FullName.Replace("\", "/")
+            if ($Name -match '^backend/app/resources/tls/' -and $Name -cne $BundleName) {
+                throw "Unexpected TLS resource: $Name"
+            }
+            if ($Name -match '^(runtime/|tools/mcp_adapter/site-packages/)') { continue }
+            $Reader = [System.IO.StreamReader]::new($Entry.Open(), [Text.Encoding]::GetEncoding(28591), $false)
+            try { $Content = $Reader.ReadToEnd() } finally { $Reader.Dispose() }
+            if ($Content -cmatch '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----') {
+                throw "Release archive contains a private key: $Name"
+            }
+        }
+        $Transport = Read-ArchiveText -Archive $Archive -EntryName 'backend/app/services/shared_transport.py'
+        $Declarations = [regex]::Matches($Transport, '(?m)^TLS_REQUIRED[ \t]*=[ \t]*(True|False)[ \t]*(#[^\r\n]*)?\r?$')
+        # Preserve quoted # characters; only an unquoted # starts a line comment.
+        # shortcut: this is not a Python parser (triple-quoted strings/explicit backslash continuations); use a tokenizer if those enter this module.
+        $BindingText = [regex]::Replace($Transport, '''(?:\\.|[^''\\\r\n])*''|"(?:\\.|[^"\\\r\n])*"|#[^\r\n]*', {
+            param($Match)
+            if ($Match.Value.StartsWith('#')) { return '' }
+            return $Match.Value
+        })
+        # Join only explicit parenthesized/list targets, never unrelated physical lines.
+        $BindingText = [regex]::Replace($BindingText, '[\(\[][\w(),*\[\] \t\r\n]*[\)\]](?=[ \t]*(?:=(?!=)|in\b))', {
+            param($Match)
+            return [regex]::Replace($Match.Value, '\r?\n', ' ')
+        })
+        $Assignments = [regex]::Matches($BindingText, '\bTLS_REQUIRED[ \t]*(?::[^=\r\n]+)?[ \t]*(?:[+*/%@&|^\-]|<<|>>|\*\*|//)?=(?!=)')
+        $TupleBinding = '(?m)(?:^|[;:])[ \t]*(?=[\w()\[\]* ,\t]*,)[\w()\[\]* ,\t]*\bTLS_REQUIRED\b[\w()\[\]* ,\t]*=(?!=)'
+        $OtherBinding = '\bTLS_REQUIRED[ \t]*:=|\bfor[ \t]+[\w(),*\[\] \t]*\bTLS_REQUIRED\b[\w(),*\[\] \t]*\bin\b|\bas[ \t]+TLS_REQUIRED\b|\bdel[ \t]+[\w(),*\[\] \t]*\bTLS_REQUIRED\b'
+        if ($Declarations.Count -ne 1 -or $Assignments.Count -ne 1 -or
+            [regex]::IsMatch($BindingText, $TupleBinding) -or [regex]::IsMatch($BindingText, $OtherBinding)) {
+            throw 'Invalid TLS_REQUIRED declaration or additional assignment'
+        }
+        $HasBundle = $Names -ccontains $BundleName
+        if ($Declarations[0].Groups[1].Value -eq 'True' -and -not $HasBundle) {
+            throw 'TLS_REQUIRED needs a shared server certificate bundle'
+        }
+        if ($HasBundle) {
+            $Pem = Read-ArchiveText -Archive $Archive -EntryName $BundleName
+            $Pattern = '-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END CERTIFICATE-----'
+            $Certificates = [regex]::Matches($Pem, $Pattern)
+            if ($Certificates.Count -eq 0 -or [regex]::Replace($Pem, $Pattern, '').Trim()) {
+                throw 'TLS bundle must contain only CERTIFICATE PEM blocks'
+            }
+            foreach ($Block in $Certificates) {
+                $Der = [Convert]::FromBase64String($Block.Groups[1].Value)
+                $Cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new([byte[]]$Der)
+                try {
+                    if ($Cert.HasPrivateKey -or [Convert]::ToBase64String($Cert.RawData) -cne [Convert]::ToBase64String($Der)) {
+                        throw 'TLS bundle requires raw DER certificates, not PFX/PKCS7'
+                    }
+                    $Constraints = @($Cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
+                    $Eku = @($Cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+                    if ($Constraints.Count -ne 1 -or $Constraints[0].CertificateAuthority) {
+                        throw 'TLS certificate requires BasicConstraints CA:FALSE'
+                    }
+                    if ($Eku.Count -ne 1 -or @($Eku[0].EnhancedKeyUsages | Where-Object { $_.Value -eq '1.3.6.1.5.5.7.3.1' }).Count -eq 0) {
+                        throw 'TLS certificate requires serverAuth EKU'
+                    }
+                    $Now = [DateTime]::UtcNow
+                    if ($Cert.NotBefore.ToUniversalTime() -gt $Now -or $Cert.NotAfter.ToUniversalTime() -le $Now) {
+                        throw 'TLS certificate is not currently valid'
+                    }
+                }
+                finally { $Cert.Dispose() }
+            }
+        }
         $Required = @(
             "VERSION.txt",
             "MV_agent.bat",
