@@ -19,7 +19,7 @@ vi.mock("../src/lib/http", async (orig) => ({
 }));
 
 import { HistoryBoard } from "../src/components/HistoryBoard";
-import { SettingsGroup } from "../src/components/settings/SettingsGroup";
+import { SettingsFold } from "../src/components/settings/SettingsFold";
 import { UpdateProgressOverlay } from "../src/components/UpdateProgressOverlay";
 import { isKeyHandled, markKeyHandled } from "../src/lib/keyHandled";
 import { startReleaseUpdate, type ReleaseUpdateStatus } from "../src/lib/releaseUpdate";
@@ -206,8 +206,9 @@ describe("R9 설정 옆 패널의 높이", () => {
   });
 
   function open(triggerTop: number) {
-    act(() => root.render(<SettingsGroup title="외부 프로그램"><div>내용</div></SettingsGroup>));
-    const trigger = host.querySelector<HTMLButtonElement>(".settings-group-toggle")!;
+    // 옆 창은 목록의 한 줄(SettingsFold)이 연다 — 설정 창 밖에서는 줄 옆에 연다(2026-11-16 같은 창에서 목록, 항목은 옆 창)
+    act(() => root.render(<SettingsFold title="외부 프로그램"><div>내용</div></SettingsFold>));
+    const trigger = host.querySelector<HTMLButtonElement>(".settings-fold-head")!;
     trigger.getBoundingClientRect = () => ({ top: triggerTop, bottom: triggerTop + 30, left: 700, right: 1000, width: 300, height: 30, x: 700, y: triggerTop, toJSON: noop });
     act(() => trigger.click());
     return document.querySelector<HTMLElement>(".settings-group-flyout")!;
