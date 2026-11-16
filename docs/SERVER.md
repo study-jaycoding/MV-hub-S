@@ -5,6 +5,66 @@ status: active
 
 # Content Hub — 서버 운영 가이드
 
+## 공유 서버 HTTPS 인증서 준비·전환
+
+이 절차는 서버 PC 관리자가 공지된 전환 시각에 수행한다. 준비 코드 설치만으로 TLS를 켜지 않는다.
+실사용 전환은 별도 승인·격리 끝단 리허설·전체 배포 게이트 통과 뒤 진행한다.
+
+1. 서버 PC의 승격된 관리자 창에서 해당 설치본 Python으로 `tools\server_tls_cert.py create --ip <서버-IP>`를 실행한다.
+   선택 인자는 `--dns <이름>`, `--days <30~3650>`이며 기본 수명은 825일이다. 신뢰된 Git for Windows의 OpenSSL 3.0 이상이 필요하다.
+   `%PROGRAMDATA%\MVHub\server-tls` 아래 `next.pem`·`next.key`만 만들며 현재 `server.*`는 바꾸지 않는다.
+   `MVHUB_SERVER_TLS_DIR`는 격리 시험용 경로 재정의이며 관리자 권한을 우회하지 않는다.
+2. 출력된 공개 인증서 `next.pem`과 SHA-256 지문을 확인한다. **공개 인증서만** 저장소
+   `backend/app/resources/tls/shared_server.pem`에 넣는다. 개인키는 서버 PC 밖으로 복사하거나 Git·NAS·릴리스에 넣지 않는다.
+   첫 전환에서는 이 인증서와 `TLS_REQUIRED = True`를 같은 후보 릴리스로 준비한다. 후보 준비는 공개 승인이 아니다.
+3. 공지 시각에 **감시기 정지 → `tools\server_tls_cert.py promote` → 서버 재시작 → 감시기 재개** 순서로 진행한다.
+   첫 전환은 표식 제거 뒤 감시기가 기존 HTTP 서버를 죽은 서버로 판단해 재시작할 수 있으므로 감시기를 먼저 정지한다.
+   교체는 재시작 전까지 실행 중 서버가 옛 인증서를 사용하여 감시기의 `tls_error`·업데이트 거절이 발생할 수 있다.
+   서버 TLS 활성화와 승인된 클라이언트 릴리스 공개를 같은 전환 일정에 묶고 대상 PC별 접속·판을 확인한다.
+
+정상 교체는 **옛+새 공개 인증서 묶음 릴리스 → 팀 업데이트 확인 → 위 promote/재시작 절차 → 옛 공개 인증서 제거 릴리스** 순서다.
+유출 때는 옛 인증서를 뺀 릴리스와 서버 교체를 즉시 함께 진행한다. 미업데이트 PC의 접속 중단은 별도로 안내한다.
+관리 창은 만료까지 남은 시간이 60일 미만이면 경고한다. 서버 IP가 바뀌면 새 IP로 발급·배포해야 한다.
+
+`promote.pending`이 남으면 모든 설정 조회가 오류 상태로 멈춘다. 같은 명령을 다시 실행하면 목표 지문과 짝을 확인해
+완료하거나 표식을 보존하고 중단한다. 실행 중인 다른 promote가 있으면 기다린다. 손상된 표식·되돌림 실패를 만났다고
+표식만 지우지 않는다. 관리자에게 파일 상태·목표 공개 지문을 확인받고 복구한다.
+빈 표식·손상된 JSON은 자동 복구하지 않는다. 관리자는 감시기와 서버를 정지한 상태에서
+`server.pem`의 SHA-256 인증서 지문을 `next.pem`·`previous.pem` 및 배포 승인 지문과 비교한다.
+파일 내용 전체의 해시가 아니라 DER 인증서 지문을 비교하고, 해당 개인키와의 짝 및 자체 TLS 확인까지
+통과한 목표 짝을 완성하거나 이전 짝으로 복원한 뒤에만 표식을 제거한다. 상태를 확정할 수 없으면 표식을 보존한다.
+
+TLS 폴더와 기존 항목, 상위 MVHub 폴더의 소유자는 SYSTEM 또는 Administrators여야 한다.
+상위 폴더에 일반 사용자 변경 권한이나 TLS 폴더에 예상 밖 항목이 있으면 자동 수정하지 않고 중단한다.
+Users의 폴더 읽기 권한은 자식에 상속하지 않으며 공개 인증서에만 읽기 권한을 따로 부여한다.
+
+기존 `%PROGRAMDATA%\MVHub`가 ProgramData 기본 권한을 상속한 경우에도 중단하는 것이 정상이다.
+예를 들어 Users의 `(CI)(WD,AD)`나 CREATOR OWNER의 `(IO)` 항목은 그대로 사용하지 않는다.
+이전 실행이 MVHub 폴더 생성 뒤 ACL 적용에 실패했을 때도 아래 복구 절차를 따른다.
+관리자는 서버·감시기를 정지하고, 이 경로가 연결 지점이 아닌 정상 폴더이며 내용이 신뢰 가능한지
+확인한 뒤 **승격된 PowerShell**에서 해당 폴더에만 다음을 적용한다(`/T`로 재귀 적용하지 않는다).
+
+```powershell
+$tlsParent = Join-Path $env:ProgramData 'MVHub'
+icacls.exe $tlsParent /setowner '*S-1-5-32-544'
+if ($LASTEXITCODE -ne 0) { throw '소유권 변경 실패' }
+icacls.exe $tlsParent /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:RX'
+if ($LASTEXITCODE -ne 0) { throw '폴더 ACL 변경 실패' }
+icacls.exe $tlsParent /remove '*S-1-3-0'
+if ($LASTEXITCODE -ne 0) { throw 'CREATOR OWNER 제거 실패' }
+icacls.exe $tlsParent
+if ($LASTEXITCODE -ne 0) { throw '폴더 ACL 조회 실패' }
+(Get-Acl -LiteralPath $tlsParent).Owner
+```
+
+출력에서 SYSTEM·Administrators는 `(OI)(CI)(F)`, Users는 자식 상속 표시 없는 `(RX)`여야 한다.
+`(I)` 상속 항목·CREATOR OWNER·그 밖의 사용자 쓰기/삭제 권한이 남으면 다시 실행하지 말고 관리자가 확인한다.
+소유자는 Administrators여야 한다. 부모 복구는 기존 `server-tls`와 키의 소유권·ACL 검사를 대신하지 않는다.
+
+교체 성공 후 `previous.pem`·`previous.key`는 이전 짝의 하드 링크다. 다음 교체 전 관리자가 복구 필요 여부를 확인하고
+두 파일을 명시적으로 정리한다(특히 `previous.key`는 오래 보관하지 않는다). 명령은 기존 previous 파일을 덮어쓰지 않는다.
+유출된 키는 파일을 지워도 이미 복사된 키가 무효화되지 않으므로 클라이언트 신뢰 묶음에서 옛 인증서를 제거해야 한다.
+
 ## 힉스필드 조직 사용량 1단계
 
 서버 PC 관리 창에서 관리자 로그인 → **힉스필드 키**를 연다. 조직 Owner가 발급한 Usage 키를

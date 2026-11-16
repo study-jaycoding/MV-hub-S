@@ -215,10 +215,22 @@ def test_connect_limit_and_response_timeout(monkeypatch):
 
 
 def test_cached_openers_preserve_proxy_policy():
-    assert transport.cached_opener() is transport.cached_opener()
-    assert transport.cached_opener(proxy=False) is transport.cached_opener(proxy=False)
+    default, direct = transport.cached_opener(), transport.cached_opener(proxy=False)
+    assert default is not direct
+    for _ in range(4):
+        assert transport.cached_opener() is default
+        assert transport.cached_opener(proxy=True) is default
+        assert transport.cached_opener(proxy=False) is direct
     assert not any(isinstance(h, urllib.request.ProxyHandler)
                    for h in transport.cached_opener(proxy=False).handlers)
+
+
+@pytest.mark.parametrize('scheme,expected', [('http', 'https'), ('https', 'https'), ('ws', 'wss'), ('wss', 'wss')])
+def test_transport_schemes(required_tls, monkeypatch, scheme, expected):
+    url = scheme + '://host/a%2Fb?q=1'
+    assert transport.transport_url(url) == expected + '://host/a%2Fb?q=1'
+    monkeypatch.setattr(transport, 'TLS_REQUIRED', False)
+    assert transport.transport_url(url) == url
 
 
 def test_off_https_keeps_stdlib_context(certificates, monkeypatch):

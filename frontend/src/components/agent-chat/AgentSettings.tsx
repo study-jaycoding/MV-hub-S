@@ -19,6 +19,21 @@ const resetText = (sec: number | null) => (sec
   ? new Date(sec * 1000).toLocaleString("ko-KR", { month: "long", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit" })
   : null);
 
+/** ChatGPT(Codex) 표시 아이콘 — Tabler brand-openai 선 아이콘 경로 그대로(MIT). 글자 크기를 따라간다 */
+export function OpenAIIcon({ size = "1em" }: { size?: string | number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: "block", margin: "0 auto" }}>
+      <path d="M11.217 19.384a3.501 3.501 0 0 0 6.783 -1.217v-5.167l-6 -3.35" />
+      <path d="M5.214 15.014a3.501 3.501 0 0 0 4.446 5.266l4.34 -2.534v-6.946" />
+      <path d="M6 7.63c-1.391 -.236 -2.787 .395 -3.534 1.689a3.474 3.474 0 0 0 1.271 4.745l4.263 2.514l6 -3.348" />
+      <path d="M12.783 4.616a3.501 3.501 0 0 0 -6.783 1.217v5.067l6 3.45" />
+      <path d="M18.786 8.986a3.501 3.501 0 0 0 -4.446 -5.266l-4.34 2.534v6.946" />
+      <path d="M18 16.302c1.391 .236 2.787 -.395 3.534 -1.689a3.474 3.474 0 0 0 -1.271 -4.745l-4.308 -2.514l-5.955 3.42" />
+    </svg>
+  );
+}
+
 /** 입력칸 아래 사용량 원 — 지금 대화가 찬 정도. 누르면 사용량 창(UsagePop) */
 export function UsageRing({ usage, open, onToggle }: { usage: AgentUsage; open: boolean; onToggle: () => void }) {
   const t = useT();
@@ -120,7 +135,7 @@ export function AgentSettings({ engines, usage, onBack, onConnectClaude, onSetCo
               {!claude?.available && <button type="button" className="agent-settings-btn" onClick={onConnectClaude}>{t("연결")}</button>}
             </div>
             <div className="agent-settings-line">
-              <span className="agent-settings-logo" aria-hidden="true">◎</span>
+              <span className="agent-settings-logo" aria-hidden="true"><OpenAIIcon size={15} /></span>
               <span className="agent-settings-t">ChatGPT (Codex)<small>
                 {codex?.version ? `Codex ${codex.version} · ` : ""}
                 {codex?.enabled ? t("이 PC 에서 켬") : t("꺼짐")}{" · "}

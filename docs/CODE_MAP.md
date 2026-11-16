@@ -1328,6 +1328,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `tools/server_supervisor.py`(99줄) | serve.py 크래시 감독, 지수백오프, storm 시 ALERT | |
 | `tools/server_watchdog.py`(792줄) | `/api/ready` 폴링, 행(hang) 감지 시 serve.py 만 kill | → `tools/rotate_text_log.py` |
 | `tools/server_tls.py` | 서버 전용 TLS 상태·공개 인증서 신뢰·준비 확인 CLI. 조회자는 개인키를 열지 않음 | → Python `ssl`, `urllib` |
+| `tools/server_tls_cert.py` | 관리자 인증서 준비(next)·반영(promote) 명령. 키 쓰기 전 ACL 확인, 중단 표식·목표 지문 기반 복구 | → `server_tls`, 신뢰 Git OpenSSL, Windows ACL |
 | `tools/stop_local_hub_on_port.ps1`(195줄) | 포트 점유 프로세스가 이 설치의 serve.py 인지 절대경로/토큰 검증 후 종료 | |
 
 **서버 자동시작·복구 — 서버 PC, 최초 1회 또는 장애 시**

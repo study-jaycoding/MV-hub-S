@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -39,7 +40,7 @@ def _context(cert: Path) -> ssl.SSLContext:
     return context
 
 
-def read_config() -> Configuration:
+def directory() -> Path:
     global _override_logged
     override = os.environ.get('MVHUB_SERVER_TLS_DIR', '').strip()
     if override and not _override_logged:
@@ -47,10 +48,23 @@ def read_config() -> Configuration:
         _override_logged = True
     programdata = os.environ.get('PROGRAMDATA', '').strip()
     if not override and not programdata:
-        return Configuration('error', Path(), Path(), 'server_tls_directory_unknown')
-    directory = Path(override) if override else Path(programdata) / 'MVHub/server-tls'
-    cert, key = directory / 'server.pem', directory / 'server.key'
+        raise TLSConfigError('server_tls_directory_unknown')
+    return Path(override) if override else Path(programdata) / 'MVHub/server-tls'
+
+
+def read_config() -> Configuration:
     try:
+        folder = directory()
+    except TLSConfigError as exc:
+        return Configuration('error', Path(), Path(), str(exc))
+    cert, key = folder / 'server.pem', folder / 'server.key'
+    try:
+        try:
+            (folder / 'promote.pending').lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise TLSConfigError('server_tls_promotion_pending')
         present = []
         for path in (cert, key):
             try:
@@ -69,6 +83,19 @@ def read_config() -> Configuration:
         return Configuration('on', cert, key)
     except (OSError, ValueError):
         return Configuration('error', cert, key, 'server_tls_configuration_error')
+
+
+def certificate_expiry(cert: Path, *, now: datetime | None = None) -> tuple[datetime, float] | None:
+    """Return UTC expiry and remaining days, reading only the public certificate."""
+    try:
+        # Private CPython API: display-only on our pinned runtime; absence means unknown.
+        import _ssl
+        decoded = _ssl._test_decode_cert(str(cert))
+        expires = datetime.fromtimestamp(ssl.cert_time_to_seconds(decoded['notAfter']), timezone.utc)
+        remaining = (expires - (now or datetime.now(timezone.utc))).total_seconds() / 86400
+        return expires, remaining
+    except (AttributeError, OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def client_context(config: Configuration | None = None) -> ssl.SSLContext | None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import collections
 import ctypes
 import json
+import math
 import msvcrt
 import os
 import queue
@@ -16,6 +17,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import server_tls
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -78,6 +80,17 @@ class ConsoleTk(tk.Tk):
             messagebox.showerror("MV Hub 서버 관리", f"화면 처리 중 오류가 났습니다.\n{val}\n자세한 내용: logs\\{names.UI_LOG}")
         except tk.TclError:
             pass
+
+
+def _certificate_expiry_label() -> str:
+    expiry = server_tls.certificate_expiry(server_tls.read_config().cert)
+    if expiry is None:
+        return "\n인증서 만료 확인 불가"
+    expires, days = expiry
+    if days <= 0:
+        return f"\n인증서 만료됨({expires:%Y-%m-%d}) — 경고: 인증서 교체 필요"
+    warning = " — 경고: 인증서 교체 필요" if days < 60 else ""
+    return f"\n인증서 만료 {expires:%Y-%m-%d}({math.floor(days)}일 남음){warning}"
 
 
 def _log_ui_error(text: str) -> None:
@@ -1835,8 +1848,8 @@ class App:
             return
         scheme = "https" if self.inst.tls else "http"
         urls = [f"{scheme}://{ip}:{self.inst.port}  ({alias})" for alias, ip in (self.addresses or [])]
-        self.address_now.configure(text="\n".join(urls) if urls else
-                                   ("네트워크 주소 확인 불가" if self.addresses is None else "네트워크 주소 없음"))
+        shown = "\n".join(urls) if urls else ("네트워크 주소 확인 불가" if self.addresses is None else "네트워크 주소 없음")
+        self.address_now.configure(text=shown + (_certificate_expiry_label() if self.inst.tls else ""))
         view = self.address_view or {}
         location = view.get("location") or {}
         current = location.get("announcement") if isinstance(location.get("announcement"), dict) else None
@@ -2610,7 +2623,7 @@ class App:
             shown = f"네트워크 주소 없음 · 포트 {self.inst.port}"
         else:
             shown = " / ".join(f"{url} ({alias})" for url, alias in urls)
-        self.addr_label.configure(text=f"주소 {shown}{note}")
+        self.addr_label.configure(text=f"주소 {shown}{note}" + (_certificate_expiry_label() if self.inst.tls else ""))
 
     def _card(self, key: str, value: str, sub: str, color: str) -> None:
         big, small = self.cards[key]
