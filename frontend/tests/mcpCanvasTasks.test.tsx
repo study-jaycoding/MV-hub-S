@@ -34,6 +34,18 @@ beforeEach(async () => {
 });
 afterEach(async () => { if (root) await act(async () => root!.unmount()); host?.remove(); root = undefined; host = undefined; setHubFeatures([]); setSceneNotebookTokenProvider(() => null); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+it("공유 서버의 LAN HTTP 처럼 crypto.randomUUID 가 없어도 대기 작업을 읽고, 서버 형식(32~128자)의 탭 표시를 싣는다", async () => {
+  const real = (await vi.importActual<{ webcrypto: Crypto }>("node:crypto")).webcrypto;
+  vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) }); // LAN HTTP — randomUUID 없음, getRandomValues 있음
+  io.http.mockResolvedValue({ tasks: [] });
+  function Consumer() { useMcpCanvasTasks({ ...ports, authReady: true, authKey: "a", workspace }); return null; }
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<Consumer />));
+  const [url, init] = io.http.mock.calls[0];
+  expect(String(url)).toContain("/api/mcp/v2/app/canvas-tasks?");
+  expect(init.headers["X-MVHub-Tab"]).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
+});
+
 it("기존 생성물만 붙이고 재전달·동시 요청은 카드 하나와 영수증 하나로 합친다", async () => {
   const results = await Promise.all([attachMcpCanvasTask(task, workspace, ports, () => true), attachMcpCanvasTask(task, workspace, ports, () => true)]);
   expect(results).toEqual([true, true]); expect(io.saved[0].cards).toHaveLength(1);
