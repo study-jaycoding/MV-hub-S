@@ -2437,7 +2437,7 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
     borrowed = []
     restoration = {}
     shared = None
-    needs_borrow = False
+    mode = None  # 가져오기 직전의 지금 빈으로 정한다: "direct"(에피소드 빈) · "borrow" · None(가져오지 않음)
 
     def waiting(cut, state):
         rows = [{"gen_id": item["gen_id"], "state": "deferred"} for item in cut.get("items", [])]
@@ -2461,7 +2461,6 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
                 via = episode
             elif episode is not None and here and payload.get("borrow") and here == payload.get("borrow_bin_id"):
                 via = episode
-                needs_borrow = True
             else:
                 cuts[cut["folder_path"]] = waiting(cut, "ok")
                 continue
@@ -2481,43 +2480,45 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
             fresh = [item for _work, item in owners.values()]
             videos = [item for item in fresh if not _is_still_image(item["path"])]
             stills = [item for item in fresh if _is_still_image(item["path"])]
-            if needs_borrow:
-                stills = stills[:10]
-            shared = {**borrowed[0][1], "fresh": videos + stills, "batches": [], "unchecked": set(),
+            if fresh:
+                # 가져오기 직전의 지금 빈으로 다시 정한다 — 준비하는 사이 에피소드 빈으로 돌아왔으면 빌리지 않고(깜빡임 0),
+                #  에피소드 빈에서 떠났으면 안정된 그 빈일 때만 빌린다. 빌릴 때 되돌릴 바로 그 ID 와 대조한다.
+                guard()
+                try:
+                    start = pool.GetCurrentFolder()
+                    start_id = _uid(start)
+                except Exception:
+                    start_id = ""
+                if start_id and start_id == _uid(episode):
+                    mode = "direct"
+                elif start_id and payload.get("borrow") and start_id == payload.get("borrow_bin_id"):
+                    mode = "borrow"
+                    stills = stills[:10]
+            shared = {**borrowed[0][1], "fresh": videos + stills if mode else [], "batches": [], "unchecked": set(),
                       "attempted": set(), "ready": [], "recovery": [], "good": {}, "settled": set(), "unexpected": 0}
-        if shared and shared["fresh"] and not needs_borrow:
+        if mode == "direct":
             _panel_stage_import(shared)
-        if shared and shared["fresh"] and needs_borrow:
-            guard()
+        elif mode == "borrow":
+            episode_id = _uid(episode)
             try:
-                start = pool.GetCurrentFolder()
-                start_id = _uid(start)
-            except Exception:
-                start_id = ""
-            # 준비 중 사람이 옮겼으면 새 빈을 빌리지 않는다. 복원할 바로 그 ID와 대조한다.
-            if start_id and start_id == payload.get("borrow_bin_id"):
-                episode_id = _uid(episode)
+                guard()
+                if pool.SetCurrentFolder(episode) and _uid(pool.GetCurrentFolder()) == episode_id:
+                    _panel_stage_import(shared)
+            finally:
                 try:
                     guard()
-                    if pool.SetCurrentFolder(episode) and _uid(pool.GetCurrentFolder()) == episode_id:
-                        _panel_stage_import(shared)
-                finally:
-                    try:
+                    current_id = _uid(pool.GetCurrentFolder())
+                    if current_id == episode_id:
                         guard()
-                        current_id = _uid(pool.GetCurrentFolder())
-                        if current_id == episode_id:
-                            guard()
-                            if not pool.SetCurrentFolder(start):
-                                restoration.update(restore_failed=True, restore_reason="set_failed")
-                            elif _uid(pool.GetCurrentFolder()) != start_id:
-                                restoration.update(restore_failed=True, restore_reason="readback_mismatch")
-                        else:
-                            restoration["restore_reason"] = "selection_changed"
-                    except Exception as exc:
-                        # 복원 실패가 원래 예외와 조각 전체의 복구 기록을 덮지 않는다.
-                        restoration.update(restore_failed=True, restore_reason=getattr(exc, "code", "") or "read_failed")
-            else:
-                restoration["restore_reason"] = "selection_changed"
+                        if not pool.SetCurrentFolder(start):
+                            restoration.update(restore_failed=True, restore_reason="set_failed")
+                        elif _uid(pool.GetCurrentFolder()) != start_id:
+                            restoration.update(restore_failed=True, restore_reason="readback_mismatch")
+                    else:
+                        restoration["restore_reason"] = "selection_changed"
+                except Exception as exc:
+                    # 복원 실패가 원래 예외와 조각 전체의 복구 기록을 덮지 않는다.
+                    restoration.update(restore_failed=True, restore_reason=getattr(exc, "code", "") or "read_failed")
         if shared:
             # 경로 읽기·배분 도중 예외에도 공통 unchecked가 아직 넘기지 않은 ID를 보존한다.
             borrowed[0][1]["unexpected"] += shared["unexpected"]
@@ -2549,7 +2550,7 @@ def _panel_prestage(pool, root, payload, resolve_project_id, guard):
             work["drag"] = False
             cuts[cut["folder_path"]] = {**_panel_stage_finish(work), "bin_id": _uid(work["target"])}
             borrowed.pop(0)
-        if start_id:
+        if mode == "borrow" and start_id:
             guard()
             try:
                 restoration["restored"] = _uid(pool.GetCurrentFolder()) == start_id
