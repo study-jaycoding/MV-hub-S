@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useId,
   useRef,
@@ -11,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { CloseIcon } from "../common/ViewIcons";
+import { SettingsGroupOpen } from "./SettingsGroup";
 
 const FLYOUT_GAP = 8;
 const FLYOUT_WIDTH = 330;
@@ -19,7 +21,7 @@ const VIEWPORT_MARGIN = 8;
 // 한 번에 옆 창 하나 — 다른 항목을 누르는 순간 앞 옆 창을 닫아 두 창이 겹치지 않게 한다.
 let closeActiveFlyout: (() => void) | null = null;
 
-// 설정 창 묶음 목록의 한 줄(Jay 2026-11-16 '같은 창에서 목록, 항목은 옆 창') — 누르면 그 항목 칸만 담은 옆 창을 설정 창 옆에 연다.
+// 설정 창 묶음 안의 한 줄(Jay 2026-11-16 시안 v3 '묶음은 밑으로 펼치고 항목은 옆 창') — 누르면 그 항목 칸만 담은 옆 창을 설정 창 옆에 연다.
 //  제목 밑 summary 는 늘 보인다("실시간 정보는 접기 밖" 규칙, Jay 08-20).
 //  옆 창은 숨긴 채 늘 붙여 둔다 — 칸들의 상태 불러오기(Resolve·Comfy·Slack 조회)와 상태 줄(onSummary)이 열기 전에도 돈다.
 //  hideFirstTitle = 옆 창 제목과 같은 첫 칸의 제목(h4)을 숨긴다(ComfyUI 안의 'ComfyUI' 등).
@@ -88,7 +90,13 @@ export function SettingsFold({
     };
   }, [open, updatePosition]);
 
-  // 언마운트(목록을 떠나거나 설정 창을 닫음) 때 조율 등록을 정리해 닫힌 줄로의 호출을 막는다.
+  // 묶음을 접으면 그 안 항목의 옆 창도 닫는다 — 줄은 숨는데 옆 창만 떠 있지 않게.
+  const groupOpen = useContext(SettingsGroupOpen);
+  useEffect(() => {
+    if (!groupOpen && open) closeFlyout();
+  }, [groupOpen, open, closeFlyout]);
+
+  // 언마운트(설정 창을 닫음) 때 조율 등록을 정리해 닫힌 줄로의 호출을 막는다.
   useEffect(() => () => {
     if (closeActiveFlyout === instanceClose.current) closeActiveFlyout = null;
   }, []);

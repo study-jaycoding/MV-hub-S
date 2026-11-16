@@ -1,34 +1,37 @@
-import type { KeyboardEvent } from "react";
+import { createContext, useId, type ReactNode } from "react";
 
-// 설정 창 바깥의 묶음 줄(Jay 2026-11-16 '같은 창에서 목록, 항목은 옆 창') — 누르면 옆 창이 아니라 같은 창이 그 묶음의 목록으로 바뀐다.
-//  목록 화면(머리의 ‹ 뒤로·묶음 이름)과 목록의 각 항목(SettingsFold)은 SettingsPanel 이 그린다.
+/** 묶음이 펼쳐져 있는지 — 안의 항목(SettingsFold)이 읽어, 묶음을 접으면 열려 있던 자기 옆 창을 닫는다. */
+export const SettingsGroupOpen = createContext(true);
+
+// 설정 창 바깥의 묶음 줄(Jay 2026-11-16 시안 v3) — 누르면 그 밑으로 항목들이 펼쳐지고, 항목을 누르면 옆 창.
+//  접힌 줄에는 안의 항목 이름 한 줄. 안의 항목은 접혀 있어도 붙여 둔다(hidden) — 칸들의 상태 조회가 펼치기 전에도 돈다.
 export function SettingsGroup({
   title,
   summary,
-  page,
-  onOpen,
+  open,
+  onToggle,
+  children,
 }: {
   title: string;
   summary?: string;
-  /** 뒤로 왔을 때 초점을 이 줄로 되돌리는 표지 */
-  page: string;
-  onOpen: () => void;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
 }) {
-  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      onOpen();
-    }
-  };
+  const subId = useId();
   return (
-    <section className="settings-group">
-      <button type="button" className="settings-group-toggle" data-settings-page={page} onClick={onOpen} onKeyDown={handleKeyDown}>
+    <section className={"settings-group" + (open ? " is-open" : "")}>
+      <button type="button" className="settings-group-toggle" aria-expanded={open} aria-controls={subId} onClick={onToggle}>
         <span className="settings-group-text">
           <span className="settings-group-title">{title}</span>
-          {summary ? <span className="settings-group-summary">{summary}</span> : null}
+          {!open && summary ? <span className="settings-group-summary">{summary}</span> : null}
         </span>
-        <span className="settings-group-chevron" aria-hidden="true">›</span>
+        <svg className="settings-group-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
       </button>
+      <div id={subId} className="settings-group-sub" hidden={!open}>
+        <SettingsGroupOpen.Provider value={open}>{children}</SettingsGroupOpen.Provider>
+      </div>
     </section>
   );
 }

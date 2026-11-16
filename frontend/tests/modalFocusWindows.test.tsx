@@ -94,7 +94,7 @@ const press = (target: HTMLElement) => {
   act(() => { target.dispatchEvent(new Event("pointerup", { bubbles: true })); });
   act(() => target.click());
 };
-/** 설정 창의 항목을 마우스로 연다 — 묶음 줄을 누르면 같은 창이 목록으로, 목록의 항목을 누르면 옆 창(2026-11-16). 열린 옆 창을 돌려준다. */
+/** 설정 창의 항목을 마우스로 연다 — 묶음 줄을 누르면 그 밑으로 펼치고, 항목을 누르면 옆 창(2026-11-16 시안 v3). 열린 옆 창을 돌려준다. */
 const openSettingsFold = (group: string, fold: string) => {
   press([...document.querySelectorAll<HTMLElement>(".settings-float .settings-group-toggle")].find((item) => item.textContent?.includes(group))!);
   const head = [...document.querySelectorAll<HTMLElement>(".settings-float .settings-fold-head")]
@@ -196,7 +196,7 @@ describe("설정 창 + 옆 패널 + 단축키 창", () => {
   it("옆 패널은 설정 창과 한 영역이다 — Tab 이 둘 사이를 돌고 뒤 화면으로는 나가지 않는다", async () => {
     act(() => root.render(page(<SettingsPanel onClose={noop} onImported={noop} />)));
     await settle();
-    press(float().querySelector<HTMLElement>(".settings-group-toggle")!); // 같은 창이 목록으로
+    press(float().querySelector<HTMLElement>(".settings-group-toggle")!); // 그 밑으로 펼친다
     expect(flyout()).toBeNull();
     press(float().querySelector<HTMLElement>(".settings-fold-head")!); // 목록의 첫 항목 → 옆 창
     expect(flyout()).not.toBeNull();
@@ -384,7 +384,10 @@ describe("상단바", () => {
     await settle();
     const settings = [...document.querySelectorAll<HTMLButtonElement>(".acct-pop button")].find((item) => item.textContent?.includes("Setting"))!;
     expect(settings).toBeDefined();
+    const menuTop = document.querySelector<HTMLElement>(".acct-pop")!.style.top;
     press(settings); await settle();
+    // 설정 창은 프로필 메뉴와 같은 자리(아바타 바로 밑)에 뜬다(Jay 2026-11-16)
+    expect(document.querySelector<HTMLElement>(".settings-float")!.style.top).toBe(menuTop);
     const mcp = [...openSettingsFold("외부 프로그램", "MV·MCP 연결").querySelectorAll<HTMLButtonElement>("button")]
       .find((item) => item.textContent === "MV·MCP 연결 열기")!;
     expect(mcp).toBeDefined();

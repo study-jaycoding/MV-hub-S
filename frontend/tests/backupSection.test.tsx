@@ -130,10 +130,11 @@ describe("백업 칸", () => {
   ])("integration: %s 경고를 기존 줄에 표시", (code, message) => {
     expect(backupWarnings(retention({ last_error: { code, at: "2026-11-13T00:00:00Z" } })).join(" ")).toContain(message);
   });
-  it("상태 줄 — 세트 수·가장 오래된 날·용량·서버 복제, 고른 값의 예상 최대 용량", async () => {
+  it("숫자 요약·상태 줄 — 세트 수(숫자 칸)·가장 오래된 날·용량·서버 복제, 고른 값의 예상 최대 용량", async () => {
     await mount();
+    expect([...host.querySelectorAll(".settings-tile")].map((tile) => tile.textContent))
+      .toEqual(["백업23세트", "복원 보류0", "전송 대기—"]); // 시안 v3 — 복원 보류·전송 대기는 넘겨받은 값(기본 0·모름)
     const text = host.querySelector(".settings-backup-status")!.textContent!;
-    expect(text).toContain("백업 23세트");
     expect(text).toContain("가장 오래된 것 10-02");
     expect(text).toContain("350.0 MB");
     expect(text).toContain("서버 복제 정상");

@@ -1,0 +1,128 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getAuthToken, jsonBody, jsonFetch } from "../../lib/http";
+import { useT } from "../../lib/i18n";
+
+// 설정 옆 창의 MV·MCP 연결(Jay 2026-11-16 시안 v3) — [한 번에 연결] 하나와 앱마다 상태·[해제]/[다시 연결].
+//  등록·목록·해제는 MCP 창(McpRegistration)과 같은 API 다. 옛 6자리 연결·다른 MCP 프로그램·MCP 업데이트는 MCP 창(고급)에 남는다.
+const APPS = [
+  { key: "codex", label: "Codex", sub: "CLI · 앱 · IDE" },
+  { key: "claude", label: "Claude Code", sub: "CLI · IDE · 데스크톱 Code 탭" },
+  { key: "claude_desktop", label: "Claude 데스크톱 채팅", sub: "Claude 앱의 채팅" },
+] as const;
+type AppKey = (typeof APPS)[number]["key"];
+interface Client { id: string; name: string; revoked_at: string | null }
+interface Registration { client: string; status: "configured" | "manual" | "skipped" | "error"; message: string }
+
+const PILL: Record<string, [string, string]> = {
+  on: ["연결됨", "on"],
+  skipped: ["건너뜀", "warn"],
+  error: ["실패", "warn"],
+  manual: ["수동 등록 필요", "warn"],
+  off: ["연결 안 됨", "off"],
+  loading: ["확인 중", "off"],
+  unknown: ["확인 못 함", "off"],
+};
+
+export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text: string) => void; onOpenWindow: () => void }) {
+  const t = useT();
+  const [clients, setClients] = useState<Client[] | null>(null);
+  const [results, setResults] = useState<Partial<Record<AppKey, Registration>>>({});
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [note, setNote] = useState("");
+  const tab = useRef(crypto.randomUUID());
+  const pending = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+
+  // 일 하나씩 — 끝나면 목록을 다시 읽는다. 그사이 로그인이 바뀌었으면 결과를 버린다.
+  const run = useCallback(async (work: (headers: Record<string, string>) => Promise<string>) => {
+    if (pending.current) return;
+    pending.current = true; setBusy(true); setNote("");
+    const token = getAuthToken();
+    const fresh = () => alive.current && token === getAuthToken();
+    const headers = { "X-MVHub-Tab": tab.current };
+    try {
+      const done = await work(headers);
+      const list = await jsonFetch<{ clients: Client[] }>("/api/mcp/v2/app/clients", { headers });
+      if (fresh()) { setClients(list.clients); setFailed(false); setNote(done); }
+    } catch {
+      if (fresh()) { setFailed(true); setNote("연결 상태를 확인하지 못했습니다. 이 PC 의 MV Hub 로그인을 확인한 뒤 다시 시도하세요."); }
+    } finally {
+      pending.current = false;
+      if (alive.current) setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => { void run(async () => ""); }, [run]);
+
+  const active = (app: AppKey) => (clients ?? []).filter((client) => client.name === app && !client.revoked_at);
+  const stateOf = (app: AppKey) => active(app).length ? "on" : results[app]?.status ?? (clients === null ? (failed ? "unknown" : "loading") : "off");
+
+  const connect = (apps: AppKey[]) => run(async (headers) => {
+    const result = await jsonFetch<{ clients: Registration[] }>("/api/mcp/v2/app/configure", {
+      method: "POST", headers, body: jsonBody({ clients: apps, scope: "account", allow_execution: true }),
+    });
+    setResults((previous) => ({ ...previous, ...Object.fromEntries(result.clients.map((row) => [row.client, row])) }));
+    return result.clients.some((row) => row.status === "configured")
+      ? "등록했습니다. 열려 있던 Codex·Claude 는 다시 켜야 MV Hub 가 보입니다."
+      : "등록한 앱이 없습니다. 앱마다 이유를 확인하세요.";
+  });
+
+  const revoke = (app: AppKey) => run(async (headers) => {
+    for (const client of active(app)) {
+      await jsonFetch(`/api/mcp/v2/app/clients/${encodeURIComponent(client.id)}/revoke`, { method: "POST", headers, body: "{}" });
+    }
+    setResults((previous) => ({ ...previous, [app]: undefined }));
+    return "자료 조회와 생성 권한을 해제했습니다.";
+  });
+
+  const connected = APPS.filter((app) => stateOf(app.key) === "on").map((app) => app.label);
+  const summary = clients === null ? "" : connected.length ? [t("연결됨"), ...connected].join(" · ") : t("연결 안 됨");
+  useEffect(() => { onSummary?.(summary); }, [summary, onSummary]);
+
+  return (
+    <section className="settings-section mcp-quick">
+      <h4>{t("MV·MCP 연결")}</h4>
+      <p className="settings-lead">
+        {t("내 PC 의 Codex·Claude 앱에서 MV Hub 자료를 쓰고 생성하게 합니다.")} <b>{t("MV Agent 칸은 이 연결 없이 씁니다.")}</b>
+      </p>
+      <div className="settings-install-list">
+        {APPS.map((app) => {
+          const state = stateOf(app.key);
+          const [label, tone] = PILL[state] ?? PILL.off;
+          const reason = state !== "on" ? results[app.key]?.message : "";
+          return (
+            <div className="settings-install-row" key={app.key} data-app={app.key}>
+              <div className="settings-install-text">
+                <span className="settings-install-name">{app.label}</span>
+                <span className="settings-install-sub">{reason ? t(reason) : t(app.sub)}</span>
+              </div>
+              <span className={`settings-pill is-${tone}`}>{t(label)}</span>
+              {state === "on" ? (
+                <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void revoke(app.key)}>{t("해제")}</button>
+              ) : state !== "loading" ? (
+                <button type="button" className="settings-action settings-action-sm" disabled={busy} onClick={() => void connect([app.key])}>
+                  {t(state === "off" ? "연결" : "다시 연결")}
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="settings-row">
+        <button type="button" className="settings-action settings-action-main" disabled={busy || (clients === null && !failed)}
+          onClick={() => void connect(APPS.map((app) => app.key))}>
+          {t(busy ? "처리 중" : "한 번에 연결")}
+        </button>
+      </div>
+      {note && <p className="settings-hint" role="status">{t(note)}</p>}
+      <p className="settings-hint">{t("이후 생성마다 승인을 묻지 않고, 요청한 생성은 크레딧을 씁니다. 이 PC 의 MV Hub 와 작업자가 켜져 있어야 합니다.")}</p>
+      <details className="settings-adv">
+        <summary>{t("다른 MCP 프로그램 설정 복사 · 고급")}</summary>
+        <p>{t("다른 MCP 프로그램 설정, 저장된 연결 목록, MCP 업데이트, 캔버스 대기 작업은 연결 창에 있습니다.")}</p>
+        <button type="button" className="settings-action" onClick={onOpenWindow}>{t("MV·MCP 연결 열기")}</button>
+      </details>
+    </section>
+  );
+}

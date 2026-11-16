@@ -91,13 +91,24 @@ function confirmText(preview: BackupPolicyPreview): string {
   );
 }
 
+// 자료 관리 옆 창의 뼈대(Jay 2026-11-16 시안 v3): 숫자 요약 → 상태 한 줄 → [지금 백업]+actions → children → '백업 자동 설정 · 고급' 접기(보관 설정 + advanced).
 export function BackupSection({
   status,
   onRefresh,
+  held = 0,
+  transfer = null,
+  actions,
+  advanced,
   children,
 }: {
   status: BackupContinuityStatus | null;
   onRefresh: () => void;
+  /** 복원 보류 수(주황 숫자) */
+  held?: number;
+  /** 전송 대기 수 — 모르면 null */
+  transfer?: number | null;
+  actions?: ReactNode;
+  advanced?: ReactNode;
   children?: ReactNode;
 }) {
   const t = useT();
@@ -231,20 +242,31 @@ export function BackupSection({
   const estimate = retention?.latest_set_bytes ? retention.latest_set_bytes * slots : null;
   const warnings = backupWarnings(retention);
 
+  const sets = retention?.set_count ?? status?.local.set_count;
   return (
     <section className="settings-section settings-backup">
-      <h4>{t("백업")}</h4>
+      <div className="settings-tiles" aria-live="polite">
+        <div className="settings-tile" data-tile="backup">
+          <span className="settings-tile-label">{t("백업")}</span>
+          <span className="settings-tile-value">{sets ?? "—"}{sets != null ? t("세트") : ""}</span>
+        </div>
+        <div className="settings-tile" data-tile="held">
+          <span className="settings-tile-label">{t("복원 보류")}</span>
+          <span className={"settings-tile-value" + (held > 0 ? " is-warn" : "")}>{held}</span>
+        </div>
+        <div className="settings-tile" data-tile="transfer">
+          <span className="settings-tile-label">{t("전송 대기")}</span>
+          <span className="settings-tile-value">{transfer ?? "—"}</span>
+        </div>
+      </div>
       <p className="settings-backup-status" aria-live="polite">
-        {retention ? (
+        {retention && (
           <>
-            {t("백업")} <b>{retention.set_count}{t("세트")}</b>
-            {" · "}{t("가장 오래된 것")} {day(retention.oldest_created_at)}
+            {t("가장 오래된 것")} {day(retention.oldest_created_at)}
             {" · "}{formatBytes(retention.total_bytes || 0)}
+            {" · "}
           </>
-        ) : (
-          <>{t("백업")} <b>{status?.local.set_count ?? "—"}{t("세트")}</b></>
         )}
-        <br />
         {t("서버 복제")} <b>{shared ? t(BACKUP_STATE_LABELS[shared.state] || shared.state) : t("확인 중")}</b>
       </p>
       {shared && ["server_update_required", "failed", "login_required"].includes(shared.state)
@@ -261,34 +283,40 @@ export function BackupSection({
         <p key={warning} className="settings-backup-warn">⚠ {t(warning)}</p>
       ))}
 
-      {/* 좁은 패널에서도 '이름 + 고르는 칸' 묶음 단위로만 줄이 바뀌게 묶는다 */}
-      <div className="settings-backup-label">{t("사진 찍는 때")}</div>
-      <div className="settings-backup-line">
-        <span className="settings-backup-pick">{t("바뀐 뒤")} {select("quiet_minutes", FIELDS[0].unit)} {t("조용하면")}</span>
-        <span className="settings-backup-pick">{t("최소")} {select("min_interval_minutes", FIELDS[1].unit)} {t("간격")}</span>
-      </div>
-      <div className="settings-backup-label">{t("남기는 양")}</div>
-      <div className="settings-backup-line">
-        <span className="settings-backup-pick">{t("최근")} {select("recent", FIELDS[2].unit)}</span>
-        <span className="settings-backup-pick">{t("날마다 1장")} {select("daily_days", FIELDS[3].unit)}</span>
-        <span className="settings-backup-pick">{t("주마다 1장")} {select("weekly_weeks", FIELDS[4].unit)}</span>
-      </div>
-      <p className="settings-hint">
-        {readonly
-          || (estimate ? `${t("이대로면 최대 약")} ${formatBytes(estimate)}` : t("백업이 쌓이면 예상 용량이 보입니다"))}
-      </p>
-
       <div className="settings-row">
         <button className="settings-action" onClick={() => void backupNow()} disabled={busy}>
           {t("지금 백업")}
         </button>
+        {actions}
       </div>
       {msg && <p className="manage-msg">{msg}</p>}
-      <SettingsDescription summary={t("작업이 조용해지면 이 PC 에 사진을 찍어 두고, 오래된 것은 고른 양만큼만 남깁니다.")}>
-        <p>{t("백업은 이 PC 의 허브 DB(생성물 기록·캔버스·편집 사본·코멘트)를 통째로 찍습니다. 그림·영상 파일은 들어가지 않습니다.")}</p>
-        <p>{t("남기는 양을 줄이면 지워질 백업을 먼저 보여 주고 물어봅니다. 시계가 맞지 않거나 설정을 읽지 못하면 아무것도 지우지 않습니다.")}</p>
-      </SettingsDescription>
+
       {children}
+
+      <details className="settings-adv">
+        <summary>{t("백업 자동 설정 · 고급")} <span className="settings-adv-hint">{t("사진 찍는 때 · 남기는 양 · 파일로 직접 주고받기")}</span></summary>
+        {/* 좁은 패널에서도 '이름 + 고르는 칸' 묶음 단위로만 줄이 바뀌게 묶는다 */}
+        <div className="settings-backup-label">{t("사진 찍는 때")}</div>
+        <div className="settings-backup-line">
+          <span className="settings-backup-pick">{t("바뀐 뒤")} {select("quiet_minutes", FIELDS[0].unit)} {t("조용하면")}</span>
+          <span className="settings-backup-pick">{t("최소")} {select("min_interval_minutes", FIELDS[1].unit)} {t("간격")}</span>
+        </div>
+        <div className="settings-backup-label">{t("남기는 양")}</div>
+        <div className="settings-backup-line">
+          <span className="settings-backup-pick">{t("최근")} {select("recent", FIELDS[2].unit)}</span>
+          <span className="settings-backup-pick">{t("날마다 1장")} {select("daily_days", FIELDS[3].unit)}</span>
+          <span className="settings-backup-pick">{t("주마다 1장")} {select("weekly_weeks", FIELDS[4].unit)}</span>
+        </div>
+        <p className="settings-hint">
+          {readonly
+            || (estimate ? `${t("이대로면 최대 약")} ${formatBytes(estimate)}` : t("백업이 쌓이면 예상 용량이 보입니다"))}
+        </p>
+        <SettingsDescription summary={t("작업이 조용해지면 이 PC 에 사진을 찍어 두고, 오래된 것은 고른 양만큼만 남깁니다.")}>
+          <p>{t("백업은 이 PC 의 허브 DB(생성물 기록·캔버스·편집 사본·코멘트)를 통째로 찍습니다. 그림·영상 파일은 들어가지 않습니다.")}</p>
+          <p>{t("남기는 양을 줄이면 지워질 백업을 먼저 보여 주고 물어봅니다. 시계가 맞지 않거나 설정을 읽지 못하면 아무것도 지우지 않습니다.")}</p>
+        </SettingsDescription>
+        {advanced}
+      </details>
     </section>
   );
 }

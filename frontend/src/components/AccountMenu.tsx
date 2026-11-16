@@ -238,8 +238,10 @@ export function AccountMenu({
   useEscapeClose(closeMenuOnEscape, open, true, true);
   // 아바타 버튼 기준 위치. 상단바는 앱 바깥 틀(.app)의 flex 칸이라 본문만 스크롤되고 제자리에
   //  남는다(창 자체는 스크롤되지 않는다 — 실측). 그래서 창 크기만 따라가면 된다.
+  //  설정·내 계정 창도 메뉴와 같은 자리(아바타 바로 밑)에 연다(Jay 2026-11-16) — 전엔 CSS 고정 자리(창 오른쪽 끝)라 아바타와 떨어져 떴다.
+  const anchored = open || manageOpen || settingsOpen;
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!anchored) return;
     const place = () => {
       const r = avatarRef.current?.getBoundingClientRect();
       if (r) setPopPos({ top: Math.round(r.bottom + 8), right: Math.round(window.innerWidth - r.right) });
@@ -247,7 +249,7 @@ export function AccountMenu({
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [open]);
+  }, [anchored]);
   const menuReady = open && popPos !== null;
   useLayoutEffect(() => {
     if (menuReady) popRef.current?.querySelector<HTMLElement>(MENU_ITEMS)?.focus();
@@ -635,7 +637,7 @@ export function AccountMenu({
       )}
 
       {/* 설정·계정 관리도 상단바 밖(body)에서 그린다 — 안에 두면 생성 결과 창의 어두운 막에
-          똑같이 덮인다(2026-09-15 Jay). 두 패널 모두 position:fixed 라 자리는 그대로다. */}
+          똑같이 덮인다(2026-09-15 Jay). 두 패널 모두 position:fixed — 자리는 anchor(아바타 밑, 메뉴와 같은 자리). */}
       {manageOpen && createPortal(
         <ManageAccount
           provider={provider}
@@ -645,12 +647,14 @@ export function AccountMenu({
           plan={activeWs?.plan_type ?? null}
           credits={activeCredits}
           cliVersion={cliVersion}
+          anchor={popPos}
         />,
         document.body,
       )}
 
       {settingsOpen && createPortal(
         <SettingsPanel
+          anchor={popPos}
           onClose={() => setSettingsOpen(false)}
           onImported={onImported}
           onOpenMcp={onOpenMcp ? () => { setOpen(false); avatarRef.current?.focus(); onOpenMcp(); } : undefined}

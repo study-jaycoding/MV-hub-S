@@ -24,7 +24,10 @@ export function ManageAccount({
   plan,
   credits,
   cliVersion,
+  anchor,
 }: {
+  /** 연 자리 — 아바타 바로 밑(프로필 메뉴와 같은 자리, AccountMenu 가 잰다). 없으면 CSS 기본 자리 */
+  anchor?: { top: number; right: number } | null;
   provider: ProviderIdentity | null;
   account?: Account | null;
   onClose: () => void;
@@ -124,7 +127,8 @@ export function ManageAccount({
     <>
       {/* 전체를 가리지 않는 투명 클릭 캐처(바깥 클릭 시 닫힘) — 모달 아닌 플로팅 */}
       <div className="info-catcher" onMouseDown={onClose} />
-      <div ref={floatRef} className="manage-float" role="dialog" aria-label="내 계정">
+      <div ref={floatRef} className="manage-float" role="dialog" aria-label="내 계정"
+        style={anchor ? { top: anchor.top, right: anchor.right, maxHeight: `calc(100vh - ${anchor.top + 8}px)` } : undefined}>
         <header className="admin-head">
           <span className="admin-title">⚙ 내 계정</span>
           <button className="assets-x" onClick={onClose} title="닫기">

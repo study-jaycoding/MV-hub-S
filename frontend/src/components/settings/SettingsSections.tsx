@@ -27,11 +27,15 @@ import { flashMsg } from "../../lib/flash";
 const RESCAN_REFRESH_MS = 5000;
 
 // 공유 서버로 가지 못한 파일 — 다른 PC 에서만 깨져 보이므로 작성자가 알 곳이 여기뿐이다. 보낼 것이 없으면 줄이 없다.
-export function AssetTransferLine() {
+export function AssetTransferLine({ onCount }: { onCount?: (waiting: number | null) => void } = {}) {
   const t = useT();
   const [summary, setSummary] = useState<AssetTransferSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const aliveRef = useRef(true);
+  // 자료 관리 맨 위 '전송 대기' 숫자(시안 v3) — 모르면 null
+  const onCountRef = useRef(onCount);
+  onCountRef.current = onCount;
+  useEffect(() => { onCountRef.current?.(summary ? summary.waiting : null); }, [summary]);
   const load = useCallback(() => {
     api.assetSyncStatus().then((status) => {
       if (aliveRef.current) setSummary(status.summary ?? null);
@@ -53,6 +57,8 @@ export function AssetTransferLine() {
   }, [summary, load]);
   const unsendable = summary?.unsendable ?? 0;
   if (!summary || !(summary.waiting || summary.failed || summary.needs_check || unsendable)) return null;
+  // 대기 수를 위(숫자 칸)에 넘기는 자리에서는 대기만 있을 때 줄을 또 그리지 않는다 — 손볼 것(실패·확인 필요·파일 없음)이 있을 때만
+  if (onCount && !(summary.failed || summary.needs_check || unsendable)) return null;
   const retry = async () => {
     setBusy(true);
     try {
@@ -288,22 +294,18 @@ export const BACKUP_STATE_LABELS: Record<string, string> = {
 //  [메타데이터 동기화](하는 일·확인·재로그인 그대로, 저장 통합 설계 §4-5 Jay 확정 — 이름만 쉽게).
 export function MetadataContinuitySection({
   dbBusy,
-  dbMsg,
   serverBackups,
   serverBackupsLoading,
   metadataSyncTarget,
   metadataSyncTargetState,
-  onSyncMetadata,
   onLoadServerBackups,
   onServerRestore,
 }: {
   dbBusy: boolean;
-  dbMsg: string;
   serverBackups: ServerBackupVersion[] | null;
   serverBackupsLoading: boolean;
   metadataSyncTarget: ServerBackupVersion | null;
   metadataSyncTargetState: "loading" | "ready" | "empty" | "error";
-  onSyncMetadata: () => void;
   onLoadServerBackups: () => void;
   onServerRestore: (backup: ServerBackupVersion) => void;
 }) {
@@ -322,18 +324,9 @@ export function MetadataContinuitySection({
           fmtBackupWhen(metadataSyncTarget.created_at, metadataSyncTarget.mtime)
         } · 앱 ${metadataSyncTarget.app_version || "—"}`;
   return (
-    <div className="settings-subgroup">
-      <h5>{t("다른 PC·서버에서 가져오기")}</h5>
-      <div className="settings-row">
-        <button
-          className="settings-action metadata-sync-primary"
-          onClick={onSyncMetadata}
-          disabled={dbBusy || serverBackupsLoading}
-        >
-          {dbBusy ? t("가져오는 중") : serverBackupsLoading ? t("확인 중") : t("서버 백업 가져오기")}
-        </button>
-      </div>
-      {/* 실시간 정보(가져올 대상)는 접기 밖 캡션에 상시 표시(Jay 규칙). 백업 수·서버 복제 상태는 위 백업 칸 상태 줄에. */}
+    <div className="settings-subblock">
+      <h6>{t("다른 PC·서버 백업 고르기")}</h6>
+      {/* [서버 백업 가져오기] 주 단추는 자료 관리 맨 위 단추 줄에 있다(시안 v3) — 여기는 고를 대상과 버전 목록 */}
       <SettingsDescription summary={syncTargetText}>
         <p>{t("자동 백업은 서버로 올리기만 하며 로컬 작업을 자동으로 덮어쓰지 않습니다.")}</p>
         <p>{t("가져오기 전 백업 날짜와 PC를 확인하며, 적용 전 현재 DB를 안전하게 보관합니다.")}</p>
@@ -383,8 +376,17 @@ export function MetadataContinuitySection({
           </div>
         )}
       </SettingsDescription>
-      {dbMsg && <p className="manage-msg">{dbMsg}</p>}
     </div>
+  );
+}
+
+/** 자료 관리 맨 위의 [서버 백업 가져오기] — 하는 일·확인·재로그인은 옛 [메타데이터 동기화] 그대로(저장 통합 설계 §4-5). */
+export function ServerBackupSyncButton({ dbBusy, loading, onSync }: { dbBusy: boolean; loading: boolean; onSync: () => void }) {
+  const t = useT();
+  return (
+    <button className="settings-action metadata-sync-primary" onClick={onSync} disabled={dbBusy || loading}>
+      {dbBusy ? t("가져오는 중") : loading ? t("확인 중") : t("서버 백업 가져오기")}
+    </button>
   );
 }
 
@@ -398,8 +400,9 @@ export function DbFileTransfer({
 }) {
   const apiPaused = !!useSyncExternalStore(subscribeApiPause, getApiPause);
   return (
-    <details className="settings-details">
-      <summary style={{ cursor: "pointer" }}>서버 없이 파일로 직접 주고받기 (고급)</summary>
+    <div className="settings-subblock">
+      <h6>서버 없이 파일로 직접 주고받기</h6>
+      <div className="settings-row">
       <a
         className="settings-action"
         // 링크는 fetch 관문을 지나지 않는다 — 다른 탭 로그아웃 뒤 멈춘 동안엔 주소를 떼어 우클릭 '새 탭에서 열기'로도 못 연다(Jay 결정 4B·E9)
@@ -413,7 +416,7 @@ export function DbFileTransfer({
         내 DB 내보내기
       </a>
       <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
-        {dbBusy ? "가져오는 중…" : "DB 가져오기 (통째 교체)"}
+        {dbBusy ? "가져오는 중" : "DB 가져오기 (통째 교체)"}
         <input
           type="file"
           accept=".db,application/octet-stream"
@@ -426,11 +429,12 @@ export function DbFileTransfer({
           }}
         />
       </label>
+      </div>
       <p>
         ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
         작업자=1PC라 한 번에 한 PC에서만 쓰세요.
       </p>
-    </details>
+    </div>
   );
 }
 
@@ -444,23 +448,31 @@ function PanelPluginLine({ status, busy, error, onInstall }: {
   if (state === "release_disabled") return null;
   const changedDate = status?.changed_at ? new Date(status.changed_at) : null;
   const changedAt = changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toLocaleString() : status?.changed_at;
-  let message = t("설치 상태를 확인 중입니다");
+  // 상태 알약(짧게) + 밑 줄(평소엔 하는 일, 손볼 일이 있으면 그 까닭) — 설치 목록의 한 줄(Jay 2026-11-16 시안 v3)
+  const description = t("리졸브 안에 여는 MV 창");
+  let pill = t("확인 중"), tone = "off", sub = description;
   switch (state) {
-    case "up_to_date": message = `${t("설치됨")} ${status?.installed_version || ""}`; break;
-    case "outdated": message = t("옛 판"); break;
-    case "not_installed": message = t("설치 안 됨"); break;
-    case "deferred": message = `${t("다음 시작 때 다시 설치")} — ${deferred?.reason || status?.reason || ""}`; break;
-    case "permission_denied": message = `${t("권한이 없습니다 — 관리자가 폴더 권한을 열어야 합니다")} (${status?.path})`; break;
-    case "busy": message = t("다른 설치가 진행 중"); break;
-    case "damaged": message = `${t("망가진 설치 — 보존본")} (${status?.backup_path || status?.path})`; break;
-    case "newer_installed": message = `${t("더 새 판")} ${status?.installed_version} ${t("이 깔려 있어 그대로 둡니다")} (${t("이 앱")} ${status?.bundled_version}) — ${t("설치로 맞추기")}`; break;
-    case "foreign": message = `${t("MV가 깐 것이 아닌 폴더가 있어 손대지 않았습니다")} (${status?.path})`; break;
-    case "no_resolve": message = t("리졸브가 없는 PC"); break;
+    case "up_to_date": pill = t("설치됨"); tone = "on"; sub = [description, status?.installed_version].filter(Boolean).join(" · "); break;
+    case "outdated": pill = t("옛 판"); tone = "warn"; break;
+    case "not_installed": pill = t("설치 안 됨"); break;
+    case "deferred": pill = t("다시 설치 대기"); tone = "warn"; sub = `${t("다음 시작 때 다시 설치")} — ${deferred?.reason || status?.reason || ""}`; break;
+    case "permission_denied": pill = t("권한 없음"); tone = "warn"; sub = `${t("권한이 없습니다 — 관리자가 폴더 권한을 열어야 합니다")} (${status?.path})`; break;
+    case "busy": pill = t("설치 중"); sub = t("다른 설치가 진행 중"); break;
+    case "damaged": pill = t("망가짐"); tone = "warn"; sub = `${t("망가진 설치 — 보존본")} (${status?.backup_path || status?.path})`; break;
+    case "newer_installed": pill = t("더 새 판"); tone = "warn"; sub = `${t("더 새 판")} ${status?.installed_version} ${t("이 깔려 있어 그대로 둡니다")} (${t("이 앱")} ${status?.bundled_version}) — ${t("설치로 맞추기")}`; break;
+    case "foreign": pill = t("손대지 않음"); tone = "warn"; sub = `${t("MV가 깐 것이 아닌 폴더가 있어 손대지 않았습니다")} (${status?.path})`; break;
+    case "no_resolve": pill = t("리졸브 없음"); sub = t("리졸브가 없는 PC"); break;
   }
-  return <div className="settings-resolve-panel-plugin">
-    <p>{t("리졸브 안 MV 창")}: {error || message} {onInstall && <button className="settings-action" onClick={onInstall}
-      disabled={busy || ["busy", "foreign", "no_resolve"].includes(state || "")}>{busy ? t("설치 중") : t("설치")}</button>}</p>
-    {!error && state === "up_to_date" && changedAt && <p className="settings-hint">{t("설치 파일을 바꿨습니다")} ({changedAt}) — {t("그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다")}</p>}
+  const installed = ["up_to_date", "outdated", "newer_installed", "damaged"].includes(state || "");
+  return <div className="settings-install-row settings-resolve-panel-plugin">
+    <div className="settings-install-text">
+      <span className="settings-install-name">MV Resolve</span>
+      <span className="settings-install-sub">{error || sub}</span>
+      {!error && state === "up_to_date" && changedAt && <span className="settings-install-sub">{t("설치 파일을 바꿨습니다")} ({changedAt}) — {t("그 뒤 리졸브를 다시 켜지 않았다면 다시 켜야 적용됩니다")}</span>}
+    </div>
+    <span className={`settings-pill is-${error ? "warn" : tone}`}>{error ? t("확인 못 함") : pill}</span>
+    {onInstall && <button className="settings-action settings-action-sm" onClick={onInstall}
+      disabled={busy || ["busy", "foreign", "no_resolve"].includes(state || "")}>{busy ? t("설치 중") : t(installed ? "다시 설치" : "설치")}</button>}
   </div>;
 }
 
@@ -475,6 +487,7 @@ export function ResolveScriptSettingsSection({
   msg,
   onInstall,
   onRefreshConnection,
+  onRecheckConnection,
   panelPlugin = null,
   panelPluginBusy = false,
   panelPluginError = "",
@@ -490,6 +503,8 @@ export function ResolveScriptSettingsSection({
   msg: string;
   onInstall: () => void;
   onRefreshConnection: () => void;
+  /** 연결 상태만 다시 묻는다(진단보다 가볍다) — 없으면 [다시 확인]을 그리지 않는다 */
+  onRecheckConnection?: () => void;
   panelPlugin?: ResolvePanelPluginStatus | null;
   panelPluginBusy?: boolean;
   panelPluginError?: string;
@@ -531,111 +546,118 @@ export function ResolveScriptSettingsSection({
       : status.installed
         ? `Resolve 도구 업데이트 필요 · ${versionChanges || `${currentVersions} · 최신 파일로 교체 필요`}`
         : "Resolve 가져오기·내보내기 도구가 아직 설치되지 않았습니다."
-    : "설치 상태를 확인하는 중…";
-  // 연결 상태·확인된 프로그램은 접기 밖 캡션에 상시 표시(Jay 요청 — 업데이트 섹션과 같은 패턴).
-  const connectionLine = connectionBusy
-    ? "연결 상태: 확인하는 중…"
-    : connection
-      ? `연결 상태: ${connection.message || "확인하지 못했습니다"}`
-      : null;
-  const programLine =
-    !connectionBusy && connection?.connected && connection.resolve_version
-      ? `확인된 프로그램: ${connection.resolve_product || "DaVinci Resolve"} ${connection.resolve_version}`
-      : null;
+    : "설치 상태를 확인하는 중";
+  // 맨 위 연결 상태 상자(Jay 2026-11-16 시안 v3) — 늘 보인다("실시간 정보는 접기 밖").
+  const connected = !connectionBusy && !!connection?.connected;
+  const connectionWord = connectionBusy ? "확인하는 중" : connected ? "연결됨" : connection?.message || "연결 상태를 아직 모릅니다";
+  const [scriptPill, scriptTone] = !status ? ["확인 중", "off"] : status.up_to_date ? ["설치됨", "on"] : status.installed ? ["업데이트 필요", "warn"] : ["설치 안 됨", "off"];
   return (
     <section className="settings-section">
       <h4>DaVinci Resolve</h4>
-      <PanelPluginLine status={panelPlugin} busy={panelPluginBusy} error={panelPluginError} onInstall={onInstallPanelPlugin} />
-      <label className="settings-resolve-follow">
-        <input type="checkbox" checked={selectionFollow}
+      <div className={"settings-conn" + (connected ? " is-on" : "")} aria-live="polite">
+        <p className="settings-conn-head"><span className="settings-conn-dot" aria-hidden="true" />{connectionWord}</p>
+        {connected && (connection?.project_name || connection?.resolve_version) && (
+          <p className="settings-conn-lines">
+            {connection?.project_name && <>프로젝트 <b>{connection.project_name}</b></>}
+            {connection?.project_name && connection?.resolve_version && <br />}
+            {connection?.resolve_version && <>프로그램 <b>{connection.resolve_product || "DaVinci Resolve"} {connection.resolve_version}</b></>}
+          </p>
+        )}
+        <div className="settings-row">
+          {onRecheckConnection && (
+            <button className="settings-action settings-action-sm" onClick={onRecheckConnection} disabled={connectionBusy}>다시 확인</button>
+          )}
+          <button className="settings-action settings-action-sm" onClick={onRefreshConnection} disabled={connectionBusy}>
+            {connectionBusy ? "확인 중" : "Resolve 진단"}
+          </button>
+        </div>
+      </div>
+      {diagnostics && (
+        <div className={`resolve-diagnostics is-${diagnostics.status}`}>
+          <p className="resolve-diagnostics-summary">{diagnostics.summary}</p>
+          <div className="resolve-diagnostics-list">
+            {diagnostics.checks.map((check) => (
+              <div className="resolve-diagnostic-row" key={check.key}>
+                <span className={`resolve-diagnostic-state is-${check.state}`} aria-hidden="true" />
+                <span className="resolve-diagnostic-label">{check.label}</span>
+                <span className="resolve-diagnostic-message" title={check.detail || undefined}>
+                  {check.message}
+                </span>
+              </div>
+            ))}
+          </div>
+          {!!diagnostics.recommendations.length && (
+            <ul className="resolve-diagnostics-actions">
+              {diagnostics.recommendations.map((recommendation) => (
+                <li key={recommendation}>{recommendation}</li>
+              ))}
+            </ul>
+          )}
+          {diagnostics.connection.status === "python_incompatible" && (
+            <div className="resolve-python-install">
+              <button
+                className="settings-action"
+                onClick={handlePythonInstall}
+                disabled={pythonInstallBusy}
+              >
+                {pythonInstallBusy ? "설치 준비 중" : "Python 자동 설치"}
+              </button>
+              {pythonInstallMsg && (
+                <p className="resolve-python-install-msg">{pythonInstallMsg}</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <h5 className="settings-mini-title">설치</h5>
+      <div className="settings-install-list">
+        <PanelPluginLine status={panelPlugin} busy={panelPluginBusy} error={panelPluginError} onInstall={onInstallPanelPlugin} />
+        <div className="settings-install-row" data-install="script">
+          <div className="settings-install-text">
+            <span className="settings-install-name">Script</span>
+            <span className="settings-install-sub">Resolve 메뉴의 클립 보내기·가져오기</span>
+          </div>
+          <span className={`settings-pill is-${scriptTone}`}>{scriptPill}</span>
+          <button className="settings-action settings-action-sm" onClick={onInstall} disabled={busy}>
+            {busy ? "설치 중" : status?.installed ? "다시 설치" : "설치"}
+          </button>
+        </div>
+      </div>
+      <p className="settings-hint">{msg || "설치 파일이 바뀌면 리졸브를 다시 켜야 적용됩니다."}</p>
+
+      <label className="settings-switch">
+        <input type="checkbox" role="switch" checked={selectionFollow}
           onChange={(event) => onSelectionFollowChange(event.target.checked)}
           aria-describedby="resolve-follow-help" />
+        <span className="settings-switch-track" aria-hidden="true" />
         실시간 체크
       </label>
       <p className="settings-hint" id="resolve-follow-help">
-        체크하면 Resolve에서 선택한 생성물의 캔버스와 결과 창을 자동으로 엽니다.
-        해제하면 이미 열린 생성 결과 창 안에서만 선택을 표시합니다.
+        켜면 Resolve 에서 고른 생성물의 캔버스와 결과 창을 자동으로 엽니다. 끄면 이미 열린 생성 결과 창 안에서만 표시합니다.
       </p>
-      <div className="settings-row">
-        <button className="settings-action" onClick={onRefreshConnection} disabled={connectionBusy}>
-          {connectionBusy ? "진단 중…" : "Resolve 진단"}
-        </button>
-        <button className="settings-action" onClick={onInstall} disabled={busy}>
-          {busy ? "설치 중…" : "Script 설치"}
-        </button>
-      </div>
-      <SettingsDescription
-        summary={
-          connectionLine ? (
-            <>
-              {connectionLine}
-              {programLine && (
-                <>
-                  <br />
-                  {programLine}
-                </>
-              )}
-            </>
-          ) : (
-            "Resolve 연결을 확인하고 도구를 설치합니다."
-          )
-        }
-      >
+
+      <details className="settings-adv">
+        <summary>설치 경로 · 진단 상세</summary>
+        <p>{stateText}</p>
         {diagnostics && (
-          <div className={`resolve-diagnostics is-${diagnostics.status}`}>
-            <p className="resolve-diagnostics-summary">{diagnostics.summary}</p>
-            <div className="resolve-diagnostics-list">
-              {diagnostics.checks.map((check) => (
-                <div className="resolve-diagnostic-row" key={check.key}>
-                  <span className={`resolve-diagnostic-state is-${check.state}`} aria-hidden="true" />
-                  <span className="resolve-diagnostic-label">{check.label}</span>
-                  <span className="resolve-diagnostic-message" title={check.detail || undefined}>
-                    {check.message}
-                  </span>
-                </div>
-              ))}
-            </div>
-            {!!diagnostics.recommendations.length && (
-              <ul className="resolve-diagnostics-actions">
-                {diagnostics.recommendations.map((recommendation) => (
-                  <li key={recommendation}>{recommendation}</li>
-                ))}
-              </ul>
+          <>
+            <p>Windows 계정 · {diagnostics.environment.windows_user}</p>
+            <p>
+              MV Hub Python · {diagnostics.environment.mvhub_python.version} · {diagnostics.environment.mvhub_python.bits}비트
+              <br />{diagnostics.environment.mvhub_python.path}
+            </p>
+            {!!diagnostics.environment.resolve_installations.length && (
+              <p>Resolve · {diagnostics.environment.resolve_installations[0].executable}</p>
             )}
-            {diagnostics.connection.status === "python_incompatible" && (
-              <div className="resolve-python-install">
-                <button
-                  className="settings-action"
-                  onClick={handlePythonInstall}
-                  disabled={pythonInstallBusy}
-                >
-                  {pythonInstallBusy ? "설치 준비 중…" : "Python 자동 설치"}
-                </button>
-                {pythonInstallMsg && (
-                  <p className="resolve-python-install-msg">{pythonInstallMsg}</p>
-                )}
-              </div>
+            {!!diagnostics.environment.api.existing_module_paths.length && (
+              <p>API · {diagnostics.environment.api.existing_module_paths[0]}</p>
             )}
-            <details className="resolve-diagnostics-details">
-              <summary>진단 상세 경로</summary>
-              <p>Windows 계정 · {diagnostics.environment.windows_user}</p>
-              <p>
-                MV Hub Python · {diagnostics.environment.mvhub_python.version} · {diagnostics.environment.mvhub_python.bits}비트
-                <br />{diagnostics.environment.mvhub_python.path}
-              </p>
-              {!!diagnostics.environment.resolve_installations.length && (
-                <p>Resolve · {diagnostics.environment.resolve_installations[0].executable}</p>
-              )}
-              {!!diagnostics.environment.api.existing_module_paths.length && (
-                <p>API · {diagnostics.environment.api.existing_module_paths[0]}</p>
-              )}
-              {diagnostics.environment.api.library_path && (
-                <p>DLL · {diagnostics.environment.api.library_path}</p>
-              )}
-            </details>
-          </div>
+            {diagnostics.environment.api.library_path && (
+              <p>DLL · {diagnostics.environment.api.library_path}</p>
+            )}
+          </>
         )}
-        <p>{msg || stateText}</p>
         {status?.installations?.length
           ? status.installations.map((installation) => (
               <p key={installation.scope} className="resolve-script-path" title={installation.path}>
@@ -659,7 +681,7 @@ export function ResolveScriptSettingsSection({
           설치 후 Resolve를 완전히 종료했다가 다시 실행하세요. 자동 연결은 Resolve 환경설정의
           External scripting using을 Local로 설정해야 합니다.
         </p>
-      </SettingsDescription>
+      </details>
     </section>
   );
 }
@@ -696,28 +718,31 @@ export function ReleaseUpdateSettingsSection({
     updateAvailable && status && dated.test(status.latest_version || "") && dated.test(status.current_version || "")
       && (status.latest_version || "") < (status.current_version || ""),
   );
+  // 서버 문구가 '최신 버전입니다.' 뿐이면 버전 줄에 합친다 — 같은 말을 두 줄로 보이지 않게(시안 v3 '최신 버전입니다 · 판').
+  const serverText = msg || releaseUpdateMessage(status);
+  const upToDateOnly = !updateAvailable && serverText === "최신 버전입니다.";
   const versionText = status
     ? updateAvailable
       ? olderPublic
         ? `현재 ${status.current_version} → 공개본 ${status.latest_version}(지금보다 옛 판)`
-        : `현재 ${status.current_version || "미확인"} → 새 버전 ${status.latest_version}`
-      : `현재 버전 ${status.current_version || "미확인"}`
-    : "버전을 확인하는 중…";
+        : `새 버전 ${status.latest_version} · 지금 ${status.current_version || "미확인"}`
+      : upToDateOnly
+        ? `최신 버전입니다 · ${status.current_version || "미확인"}`
+        : `현재 버전 ${status.current_version || "미확인"}`
+    : "버전을 확인하는 중";
+  // 단추 하나(Jay 2026-11-16 시안 v3): 'MV Hub Update' — 새 버전이 있으면 라임에 그 판, 없으면 회색.
   const actionText = running
     ? status?.state === "restarting"
-      ? `프로그램 다시 시작 중…${pctText}`
-      : `업데이트 중…${pctText}`
-    : !releaseInstall
-      ? "업데이트"
-      : active > 0
+      ? `프로그램 다시 시작 중${pctText}`
+      : `업데이트 중${pctText}`
+    : releaseInstall && active > 0
       ? `${busyText} 완료 후 업데이트`
-      : status?.can_update
-        ? "MV 업데이트"
-        : "최신 버전";
+      : status?.can_update && status.latest_version
+        ? `MV Hub Update · ${status.latest_version}`
+        : "MV Hub Update";
 
   return (
-    <section className="settings-section">
-      <h4>MV 업데이트</h4>
+    <section className="settings-section settings-update">
       <div className="settings-row">
         <button
           className={
@@ -751,10 +776,10 @@ export function ReleaseUpdateSettingsSection({
                 새 후보 v{status.candidate_version} — 관리자 창 업데이트 탭에서 공지하면 설치할 수 있습니다.
               </>
             )}
-            {(msg || releaseUpdateMessage(status)) && (
+            {serverText && !upToDateOnly && (
               <>
                 <br />
-                {msg || releaseUpdateMessage(status)}
+                {serverText}
               </>
             )}
             {releaseInstall && active > 0 && (

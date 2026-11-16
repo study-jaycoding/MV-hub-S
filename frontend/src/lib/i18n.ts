@@ -28,7 +28,7 @@ const EN: Record<string, string> = {
   "넘겨받기": "Take over",
   "앞 컷 정리를 확인하지 못했습니다": "Could not confirm cleanup of the previous cut",
   "다시 확인이 필요합니다": "Please retry verification",
-  "리졸브 안 MV 창": "MV window inside Resolve",
+  "리졸브 안에 여는 MV 창": "MV window inside Resolve",
   "왼쪽에서 컷을 고르세요": "Pick a cut on the left",
   "왼쪽에서 에피소드나 컷을 고르세요": "Pick an episode or a cut on the left",
   "폴더 펼치기": "Expand folder",
