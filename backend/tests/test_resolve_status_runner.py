@@ -52,6 +52,40 @@ class ResolveStatusRunnerTests(unittest.TestCase):
                 self.assertIn(f"{seconds}초", result["details"])
                 self.assertNotIn("private-command", result["details"])
 
+    def test_panel_timing_log_only_when_env_set_and_never_changes_result(self):
+        import os
+        import tempfile
+        done = _completed("MVHUB_RESOLVE_PANEL=" + json.dumps({"state": "ok", "resolve_project_id": "r"}) + "\n")
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(resolve_status_runner, "_panel_alive_at", None), \
+                mock.patch.object(resolve_status_runner, "resolve_mutation_slot") as slot, \
+                mock.patch.object(resolve_status_runner, "_resolve_is_closed", return_value=False), \
+                mock.patch.object(resolve_status_runner, "_select_interpreter", return_value=(sys.executable, {}, "")), \
+                mock.patch.object(resolve_status_runner, "_run_child", return_value=done):
+            slot.return_value.__enter__.return_value = True
+            path = os.path.join(folder, "timing.jsonl")
+            with mock.patch.dict(resolve_status_runner.os.environ, {}):
+                resolve_status_runner.os.environ.pop("CONTENT_HUB_PANEL_TIMING_LOG", None)
+                self.assertEqual(resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})["state"], "ok")
+            self.assertFalse(os.path.exists(path))  # 꺼져 있으면 파일을 만들지 않는다
+            with mock.patch.dict(resolve_status_runner.os.environ, {"CONTENT_HUB_PANEL_TIMING_LOG": path}):
+                self.assertEqual(resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})["state"], "ok")
+            with open(path, encoding="utf-8") as stream:
+                rows = [json.loads(line) for line in stream]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual({key: rows[0][key] for key in ("where", "op", "state")}, {"where": "child", "op": "prestage", "state": "ok"})
+            for key in ("ms", "lock_ms", "child_ms"):
+                self.assertIsInstance(rows[0][key], int)
+            with mock.patch.dict(resolve_status_runner.os.environ, {"CONTENT_HUB_PANEL_TIMING_LOG": folder}):  # 폴더 = 쓸 수 없는 경로
+                self.assertEqual(resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})["state"], "ok")
+            # 기록이 OSError 밖의 예외로 실패해도 결과는 그대로, 원래 예외도 그대로 올라간다
+            with mock.patch.dict(resolve_status_runner.os.environ, {"CONTENT_HUB_PANEL_TIMING_LOG": path}), \
+                    mock.patch("builtins.open", side_effect=ValueError("diagnostic")):
+                self.assertEqual(resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})["state"], "ok")
+                with mock.patch.object(resolve_status_runner, "_run_child", side_effect=RuntimeError("original")), \
+                        self.assertRaisesRegex(RuntimeError, "original"):
+                    resolve_status_runner.run_resolve_panel_isolated({"operation": "prestage"})
+
     def test_panel_interpreter_timeout_uses_status_message_without_command_details(self):
         with (
             mock.patch.object(resolve_status_runner, "_resolve_is_closed", return_value=False),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Annotated
@@ -563,11 +564,29 @@ async def _request(operation, body, request, ctx):
         except resolve_transfer.ResolveTransferError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-    # 보호 핸들·고정 계정·장부 기록까지 한 단위로 끝낸 뒤 요청 취소를 전파한다.
-    if operation in {"prepare", "stage", "unstage", "adopt", "target", "prestage", "rename", "save", "settle"}:
-        key = ("request", operation, *panel.context_key(ctx), body.model_dump_json())
-        return await resolve_queue.run_non_abandon(panel.joined(key, execute))
-    return await resolve_queue.run_non_abandon(execute())
+    started, result = time.perf_counter(), None  # perf_counter — 러너 시험이 monotonic 을 흉내 낸다
+    try:
+        # 보호 핸들·고정 계정·장부 기록까지 한 단위로 끝낸 뒤 요청 취소를 전파한다.
+        if operation in {"prepare", "stage", "unstage", "adopt", "target", "prestage", "rename", "save", "settle"}:
+            key = ("request", operation, *panel.context_key(ctx), body.model_dump_json())
+            result = await resolve_queue.run_non_abandon(panel.joined(key, execute))
+        else:
+            result = await resolve_queue.run_non_abandon(execute())
+        return result
+    finally:
+        # 진단용 시간 기록(CONTENT_HUB_PANEL_TIMING_LOG 가 있을 때만) — 요청 사이 빈 시간은 프런트 대기열·읽기 간격으로 본다(추정)
+        if runner.panel_timing_on():
+            try:
+                size = {}
+                if not isinstance(body, dict):
+                    cuts = getattr(body, "cuts", None) or []
+                    counts = {"items": len(getattr(body, "gen_ids", None) or []) + sum(len(cut.gen_ids) for cut in cuts),
+                              "cuts": len(cuts), "bins": len(getattr(body, "bins", None) or [])}
+                    size = {name: count for name, count in counts.items() if count}
+                runner.note_panel_timing(where="request", op=operation, ms=round((time.perf_counter() - started) * 1000),
+                                         state=result.get("state") if isinstance(result, dict) else None, **size)
+            except Exception:  # noqa: BLE001 - 진단 기록이 요청 결과·원래 예외를 바꾸지 않게
+                pass
 
 
 @router.get("/identity")
