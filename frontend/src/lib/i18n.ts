@@ -7,6 +7,10 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "컷 빈 채우는 중": "Filling shot bins",
+  "컷 빈": "Shot bins",
+  "남음": "Remaining",
+  "다빈치 지금 빈·클립을 확인해 주세요": "Please check the current bin and clips in DaVinci",
   "보관본을 읽지 못했습니다. 이 브라우저의 자료는 유지했습니다.": "Couldn't read the archive. This browser's data was kept.",
   "보관본 읽기 실패": "Archive read failed",
   "가져오기가 어긋난 항목": "Unexpected imported items:",

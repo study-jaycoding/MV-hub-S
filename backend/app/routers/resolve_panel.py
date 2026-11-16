@@ -80,6 +80,8 @@ class PrestageIn(PanelIn):
     """미리 띄우기 조각 — folder_path = 에피소드, 컷마다 이 창이 target 으로 받은 컷 빈 ID."""
     window: str = Field(min_length=1, max_length=80)
     episode_bin_id: str = Field(default="", max_length=200)
+    borrow: bool = False
+    borrow_bin_id: str = Field(default="", max_length=200)
     cuts: list[CutIn] = Field(min_length=1, max_length=200)
 
 
@@ -292,7 +294,8 @@ async def _operate(operation, body, request, ctx):
             cuts.append((cut, gens))
         payload = {"operation": operation, "project_id": body.project_id, "folder_path": body.folder_path, "manifest_root": str(manifest_root)}
         if operation == "prestage":
-            payload.update(episode_bin_id=body.episode_bin_id, import_records=panel.records("import", ctx, include_foreign=True), cuts=[
+            payload.update(episode_bin_id=body.episode_bin_id, borrow=body.borrow, borrow_bin_id=body.borrow_bin_id,
+                           import_records=panel.records("import", ctx, include_foreign=True), cuts=[
                 {"folder_path": cut.folder_path, "bin_id": cut.bin_id, "capped": cut.capped or len(gens) > 200,
                  "items": await panel.stage_items(ctx, gens, request),
                  "same_file_ids": list(panel._same_files.get((*panel.context_key(ctx), body.window, body.project_id, cut.folder_path), set()))}

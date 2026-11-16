@@ -178,24 +178,30 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
     if (ready && episode && chosen.current === folderKey) panel.syncCuts(cutPaths);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutsKey, ready, folderKey, panel.syncCuts]);
-  // 미리 캐시(11-12 띄움 속도) — 에피소드 컷들의 거르기 통과 원본을 컷마다 띄움과 같은 범위(오래된 200개)로, 고른 컷 먼저
+  // 컷 선택은 이 목록의 순서·판을 바꾸지 않는다. 고른 컷은 stageCut이 먼저 받는다.
   const precacheList = useMemo(() => {
     if (!episode) return [];
     const byCut = new Map<string, Generation[]>();
     for (const gen of list.gens) if (gen.folder_path && (!pass || pass(gen))) byCut.set(gen.folder_path, [...byCut.get(gen.folder_path) || [], gen]);
-    const order = cut ? [cut, ...cutPaths.filter(path => path !== cut)] : cutPaths;
-    return order.map((path): PrecacheCut => {
+    return cutPaths.map((path): PrecacheCut => {
       const gens = [...byCut.get(path) || []].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || a.id.localeCompare(b.id));
       return [path, gens.slice(0, 200).map(gen => gen.id), gens.length > 200];
     }).filter(([, ids]) => ids.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episode, cut, cutsKey, list.gens, ui.filter]);
+  }, [episode, cutsKey, list.gens, ui.filter]);
   const precacheKey = JSON.stringify(precacheList);
+  const precacheSent = useRef({ context: "", contents: "" });
   useEffect(() => {
+    const context = JSON.stringify([selection.project, episode, panel.authKey, panel.davinci]);
+    if (precacheSent.current.context !== context) precacheSent.current = { context, contents: "" };
     // 목록이 비어도 부른다 — 새 판(빈 목록)이 옛 판(옛 거르기·목록)을 끝낸다(Codex 독립 리뷰)
-    if (ready && episode && chosen.current === folderKey) panel.precache(selection.project, episode, precacheList);
+    const contents = JSON.stringify([precacheList, ui.filter]);
+    if (ready && episode && chosen.current === folderKey && precacheSent.current.contents !== contents) {
+      precacheSent.current.contents = contents;
+      panel.precache(selection.project, episode, precacheList);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [precacheKey, ready, folderKey, panel.precache]);
+  }, [precacheKey, ready, selection.project, episode, ui.filter, panel.authKey, panel.davinci, panel.precache]);
   // 다빈치에서 컷 빈에 들어가면 그 컷으로, 에피소드 빈으로 돌아오면 컷 선택을 풀고 따라간다
   useEffect(() => {
     const follow = panel.follow;
@@ -289,7 +295,7 @@ function PanelContent({ panel }: { panel: ReturnType<typeof useResolvePanel> }) 
         {save.phase === "saving" ? <span className="rp-save-spin" aria-hidden="true" /> : <SaveIcon kind={save.phase} />}
         <b>{saveText[0]}</b>{saveText[1] && <small>{saveText[1]}</small>}
       </button>}
-      <div className={"resolve-panel-status" + (save.phase === "blocked" ? " bad" : "")} role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}</>}</div>
+      <div className={"resolve-panel-status" + (save.phase === "blocked" ? " bad" : "")} role="status">{!bridgePresent ? t(BRIDGE_MISSING) : <>{panel.notice || `${t("리졸브 빈")}: ${t("확인 중")}`}{checking && <span> · {t("확인 중")}</span>}{panel.fillProgress && <span> · {lastName(panel.fillProgress.episode)} {t(panel.fillProgress.active ? "컷 빈 채우는 중" : "컷 빈")} {panel.fillProgress.done}/{panel.fillProgress.total}{!panel.fillProgress.active && <> · {t("남음")} {panel.fillProgress.total - panel.fillProgress.done}</>}</span>}</>}</div>
       {/* 검사에 걸린 빈(C안 ④) — 다른 허브 것은 다빈치에서 직접, 내 것은 다시 저장하면 풀릴 수 있음 */}
       {showSave && save.phase === "blocked" && save.bins.length > 0 && <div className="rp-save-list">
         {save.bins.map(row => <div key={row.path}><b>{row.mine ? t("내 것") : t("다른 허브")}</b>{row.path}{row.count ? ` · ${row.count}` : ""}{row.in_use ? ` · ${t("쓰는 중")}` : ""}

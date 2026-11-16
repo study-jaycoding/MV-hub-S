@@ -34,6 +34,11 @@ it("stage 상태는 같은 파일·실패·보류를 성공 수와 구분", () =
   ] })).toEqual({ staged: 2, sameFile: 1, deferred: 2, failed: [{ gen_id: "4", state: "conflict" }] });
 });
 it("501개 cache는 500+1", () => expect(cacheBatches(Array.from({ length: 501 }, (_, n) => String(n))).map(batch => batch.length)).toEqual([500, 1]));
+it("미리 띄우기의 안정 빈 ID와 borrow를 전달한다", async () => {
+  await resolvePanelApi.prestage({ ctx: identity, project_id: "p", folder_path: "S", window: "w",
+    episode_bin_id: "ep", cuts: [{ folder_path: "S/C1", bin_id: "b", gen_ids: ["g"] }], borrow: true, borrow_bin_id: "human" });
+  expect(JSON.parse(vi.mocked(jsonFetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ borrow: true, borrow_bin_id: "human" });
+});
 it("window claim·목적 빈·inventory cursor를 HTTP로 전달", async () => {
   await resolvePanelApi.identity("window", true);
   expect(jsonFetch).toHaveBeenLastCalledWith("/api/resolve/panel/identity?window=window&claim=true");

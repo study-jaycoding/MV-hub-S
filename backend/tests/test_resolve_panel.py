@@ -1509,6 +1509,30 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):  # 저장할 프로젝트를 고정하지 않은 저장은 받지 않는다
             route.SaveIn(ctx=self.ctx, project_id="p", folder_path="S01", window="test-window", expect_project="")
 
+    async def test_prestage_borrow_defaults_payload_and_recovery_response(self):
+        made = await route.post_target(self.episode(), self.request)
+        cut = route.CutIn(folder_path="S01/C010", bin_id=made["bins"]["S01/C010"], gen_ids=["g"])
+        body = route.PrestageIn(ctx=self.ctx, project_id="p", folder_path="S01", window="test-window",
+                               episode_bin_id=made["episode_bin_id"], cuts=[cut])
+        self.assertEqual((body.borrow, body.borrow_bin_id), (False, ""))
+        with self.assertRaises(ValidationError):
+            route.PrestageIn(**{**body.model_dump(), "borrow_bin_id": "x" * 201})
+        human = self.pool.AddSubFolder(self.pool.root, "Human")
+        self.pool.current = human
+        seen = []
+        def child(payload, before_start=None):
+            seen.append(payload)
+            return self.child(payload, before_start)
+        with patch.object(runner, "run_resolve_panel_isolated", side_effect=child):
+            skipped = await route.post_prestage(body, self.request)
+            result = await route.post_prestage(body.model_copy(update={"borrow": True, "borrow_bin_id": human.unique_id}), self.request)
+        self.assertEqual((seen[0]["borrow"], seen[0]["borrow_bin_id"]), (False, ""))
+        self.assertEqual((seen[1]["borrow"], seen[1]["borrow_bin_id"]), (True, human.unique_id))
+        self.assertEqual(skipped["cuts"]["S01/C010"]["deferred"], 1)
+        self.assertEqual(result["cuts"]["S01/C010"]["items"][0]["state"], "staged")
+        self.assertTrue(result["restored"])
+        self.assertIs(self.pool.current, human)
+
     async def test_adopt_crash_after_replace_and_restart_uses_disk_ready(self):
         await self.place()
         clip = self.pool.current.clips[0]

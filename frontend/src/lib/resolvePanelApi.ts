@@ -33,7 +33,7 @@ export interface PrepareResult { gen_id: string; state: "prepared" | "failed" | 
 export interface PanelSelection { ctx: PanelContext; project_id: string; folder_path: string; window?: string; expect_project?: string }
 // 미리 띄우기·이름 뒤따르기의 컷 — 이 창이 target 으로 받은 컷 빈 ID 와 그 컷의 생성물(거르기 통과·오래된 200개)
 export interface PanelCut { folder_path: string; bin_id: string; gen_ids: string[]; capped?: boolean }
-export interface PrestageResult extends TargetResult { cuts?: Record<string, StageResult> }
+export interface PrestageResult extends TargetResult { cuts?: Record<string, StageResult>; restore_failed?: boolean; restored?: boolean; restore_reason?: string }
 export interface RenameResult extends TargetResult { named?: number; failed?: number; remaining?: number; after?: [number, number] | null }
 // [저장] — not_clean = 이 PC 클립·패널 표식이 남아 저장하지 않음(내 허브 것 = 다시 저장하면 풀릴 수 있음, 다른 허브 것 = 다빈치에서 직접 지워야 함)
 export interface SaveResult extends Omit<TargetResult, "state"> {
@@ -56,7 +56,7 @@ export const resolvePanelApi = {
   stage: (body: PanelSelection & { window: string; seq: number; gen_ids: string[]; capped?: boolean; bin_id?: string }) => post<StageResult>("stage", body),
   unstage: (body: PanelSelection & { bin_id: string; inventory_cleanup?: boolean }) => post<TargetResult>("unstage", body),
   inventory: (ctx: PanelContext, after?: [string, string]) => jsonFetch<InventoryResult>(`/api/resolve/panel/inventory?${new URLSearchParams({ instance: ctx.instance, account: ctx.account, epoch: String(ctx.epoch), ...(after ? { after: JSON.stringify(after) } : {}) })}`),
-  prestage: (body: PanelSelection & { window: string; episode_bin_id: string; cuts: PanelCut[] }) => post<PrestageResult>("prestage", body),
+  prestage: (body: PanelSelection & { window: string; episode_bin_id: string; cuts: PanelCut[]; borrow?: boolean; borrow_bin_id?: string }) => post<PrestageResult>("prestage", body),
   rename: (body: PanelSelection & { window: string; cuts: PanelCut[]; limit?: number; after?: [number, number] }) => post<RenameResult>("rename", body),
   save: (body: PanelSelection & { window: string; expect_project: string }) => post<SaveResult>("save", body),
   settle: (body: PanelSelection & { window: string; bins: { folder_path: string; bin_id: string }[] }) => post<SettleResult>("settle", body),

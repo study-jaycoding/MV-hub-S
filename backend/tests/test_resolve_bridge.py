@@ -1216,6 +1216,250 @@ class PanelStagingTests(unittest.TestCase):
             result = self.run_op("prestage", folder_path="E1", episode_bin_id=ep, cuts=cuts)
         self.assertEqual((result["state"], [row["gen_id"] for row in result["import_records"]]), ("unavailable", ["g1"]))  # 앞 컷 기록을 잃지 않는다
 
+    def borrow_fixture(self):
+        ep, bins = self.episode_bins()
+        human = self.pool.AddSubFolder(self.pool.root, "Human")
+        self.pool.current = human
+        cuts = [{"folder_path": path, "bin_id": bins[path], "items": self.videos(str(index))}
+                for index, path in enumerate(bins, 1)]
+        return human, {"folder_path": "E1", "episode_bin_id": ep, "borrow": True,
+                       "borrow_bin_id": human.unique_id, "cuts": cuts}
+
+    def test_borrow_imports_only_then_restores_before_properties_and_moves(self):
+        human, request = self.borrow_fixture()
+        still = self.media / "still.png"
+        still.write_bytes(b"image")
+        request["cuts"][0]["items"] += [{"gen_id": "still", "path": str(still), "label": "Still"}]
+        real_property, real_move = FakeClip.GetClipProperty, self.pool.MoveClips
+        def prop(clip, key=None):
+            if self.pool.import_calls:
+                self.assertIs(self.pool.current, human)
+            return real_property(clip, key)
+        def move(clips, target):
+            self.assertIs(self.pool.current, human)
+            return real_move(clips, target)
+        with mock.patch.object(FakeClip, "GetClipProperty", prop), \
+                mock.patch.object(self.pool, "MoveClips", side_effect=move), \
+                mock.patch.object(self.pool, "SetCurrentFolder", wraps=self.pool.SetCurrentFolder) as select, \
+                mock.patch.object(FakeClip, "SetClipProperty", side_effect=AssertionError("rename is separate")):
+            result = self.run_op("prestage", **request)
+        self.assertEqual(result["state"], "ok")
+        self.assertTrue(result["restored"])
+        self.assertNotIn("restore_failed", result)
+        self.assertEqual([args.args[0].unique_id for args in select.call_args_list], [request["episode_bin_id"], human.unique_id])
+        self.assertEqual(len(self.pool.import_calls), 3)  # 영상·스틸·다음 컷 영상
+        self.assertTrue(all(row["state"] == "staged" for cut in result["cuts"].values() for row in cut["items"]))
+        with mock.patch.object(self.pool, "SetCurrentFolder", side_effect=AssertionError("nothing new")):
+            again = self.run_op("prestage", **request)
+        self.assertTrue(all(row["state"] == "present" for cut in again["cuts"].values() for row in cut["items"]))
+
+    def test_borrow_stable_id_is_checked_again_after_preparation(self):
+        human, request = self.borrow_fixture()
+        other = self.pool.AddSubFolder(self.pool.root, "Other")
+        real = resolve_bridge._panel_stage_prepare
+        def prepare(*args, **kwargs):
+            work = real(*args, **kwargs)
+            self.pool.current = other
+            return work
+        with mock.patch.object(resolve_bridge, "_panel_stage_prepare", side_effect=prepare), \
+                mock.patch.object(self.pool, "SetCurrentFolder") as select:
+            result = self.run_op("prestage", **request)
+        select.assert_not_called()
+        self.assertEqual(self.pool.import_calls, [])
+        self.assertIs(self.pool.current, other)
+        self.assertTrue(all(row["state"] == "deferred" for cut in result["cuts"].values() for row in cut["items"]))
+
+    def test_borrow_disabled_missing_episode_or_unreadable_current_never_switches(self):
+        _human, request = self.borrow_fixture()
+        for patch in ({"borrow": False}, {"episode_bin_id": "missing"}, {"borrow_bin_id": "stale"}):
+            with self.subTest(patch=patch), mock.patch.object(self.pool, "SetCurrentFolder") as select:
+                result = self.run_op("prestage", **{**request, **patch})
+                select.assert_not_called()
+                self.assertTrue(all(cut["deferred"] for cut in result["cuts"].values()))
+        with mock.patch.object(self.pool, "GetCurrentFolder", side_effect=RuntimeError("read")), \
+                mock.patch.object(self.pool, "SetCurrentFolder") as select:
+            result = self.run_op("prestage", **request)
+        select.assert_not_called()
+        self.assertEqual(result["state"], "ok")
+
+    def test_borrow_user_switch_during_import_preserves_unowned_and_stops_remaining(self):
+        _human, request = self.borrow_fixture()
+        other = self.pool.AddSubFolder(self.pool.root, "Other")
+        original = self.pool.ImportMedia
+        def moved(paths):
+            self.pool.current = other
+            return original(paths)
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=moved), \
+                mock.patch.object(self.pool, "SetCurrentFolder", wraps=self.pool.SetCurrentFolder) as select, \
+                mock.patch.object(self.pool, "MoveClips") as move, mock.patch.object(self.pool, "DeleteClips") as delete:
+            result = self.run_op("prestage", **request)
+        self.assertEqual(select.call_count, 1)
+        move.assert_not_called(); delete.assert_not_called()
+        self.assertIs(self.pool.current, other)
+        self.assertFalse(result["restored"])
+        first, second = result["cuts"].values()
+        self.assertEqual(first["items"][0]["state"], "import_failed")
+        self.assertFalse(first["import_records"][0]["owned"])
+        self.assertEqual(second["deferred"], 1)
+
+    def test_borrow_restore_failures_report_but_finish_clips(self):
+        human, request = self.borrow_fixture()
+        request["cuts"] = request["cuts"][:1]
+        other = self.pool.AddSubFolder(self.pool.root, "Other")
+        original_select = self.pool.SetCurrentFolder
+        for failure in ("false", "mismatch", "raise", "read"):
+            with self.subTest(failure=failure):
+                self.pool.current = human
+                self.bin("E1", "C10").clips.clear()
+                self.bin("E1").clips.clear()
+                self.pool.import_calls.clear()
+                read_failed = False
+                def current():
+                    nonlocal read_failed
+                    if failure == "read" and self.pool.import_calls and not read_failed:
+                        read_failed = True
+                        raise RuntimeError("restore read")
+                    return self.pool.current
+                def select(folder):
+                    if folder is human:
+                        if failure == "false": return False
+                        if failure == "raise": raise RuntimeError("restore")
+                        if failure == "mismatch": return original_select(other)
+                    return original_select(folder)
+                with mock.patch.object(self.pool, "SetCurrentFolder", side_effect=select), \
+                        mock.patch.object(self.pool, "GetCurrentFolder", side_effect=current):
+                    result = self.run_op("prestage", **request)
+                self.assertEqual(result["state"], "ok")
+                self.assertTrue(result["restore_failed"])
+                self.assertFalse(result["restored"])
+                self.assertEqual(result["cuts"]["E1/C10"]["items"][0]["state"], "staged")
+
+    def test_borrow_later_finish_error_keeps_all_unprocessed_returned_ids(self):
+        human, request = self.borrow_fixture()
+        original = resolve_bridge._panel_stage_finish
+        def finish(work):
+            if work["payload"]["items"][0]["gen_id"] == "g1":
+                raise RuntimeError("before first matching")
+            return original(work)
+        with mock.patch.object(resolve_bridge, "_panel_stage_finish", side_effect=finish):
+            result = self.run_op("prestage", **request)
+        self.assertIs(self.pool.current, human)
+        records = result["import_records"]
+        self.assertEqual({row["item_id"] for row in records}, {clip.unique_id for clip in self.bin("E1").clips})
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(row["owned"] is False for row in records))
+
+    def test_borrow_import_error_and_restore_error_keep_original_error_and_leftover(self):
+        human, request = self.borrow_fixture()
+        original_import, original_select = self.pool.ImportMedia, self.pool.SetCurrentFolder
+        def imports(paths):
+            if self.pool.import_calls:
+                raise resolve_bridge.ResolveBridgeError("original import error", code="original")
+            return original_import(paths)
+        def select(folder):
+            if folder is human: raise RuntimeError("restore error")
+            return original_select(folder)
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=imports), mock.patch.object(self.pool, "SetCurrentFolder", side_effect=select):
+            result = self.run_op("prestage", **request)
+        self.assertEqual((result["code"], result["details"]), ("original", "original import error"))
+        self.assertTrue(result["restore_failed"])
+        self.assertEqual(len(result["import_records"]), 1)
+        self.assertFalse(result["import_records"][0]["owned"])
+
+    def test_borrow_project_switch_never_restores_into_changed_project(self):
+        _human, request = self.borrow_fixture()
+        original = self.pool.ImportMedia
+        def imports(paths):
+            clips = original(paths)
+            self.manager.project = FakeProject(FakeMediaPool())
+            self.manager.project.unique_id = "different-project"
+            return clips
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=imports), \
+                mock.patch.object(self.pool, "SetCurrentFolder", wraps=self.pool.SetCurrentFolder) as select:
+            result = self.run_op("prestage", **request)
+        self.assertEqual(select.call_count, 1)
+        self.assertEqual(result["code"], "project_changed")
+        self.assertEqual(len(result["import_records"]), 1)
+
+    def test_borrow_middle_finish_error_keeps_matched_and_unmatched_records(self):
+        human, request = self.borrow_fixture()
+        third = self.pool.AddSubFolder(self.bin("E1"), "C30")
+        request["cuts"].append({"folder_path": "E1/C30", "bin_id": third.unique_id, "items": self.videos("3")})
+        original = resolve_bridge._panel_stamp
+        def stamp(clip, gen, *args, **kwargs):
+            if gen == "g2":
+                raise resolve_bridge.ResolveBridgeError("stamp interrupted", code="project_changed")
+            return original(clip, gen, *args, **kwargs)
+        with mock.patch.object(resolve_bridge, "_panel_stamp", side_effect=stamp):
+            result = self.run_op("prestage", **request)
+        self.assertIs(self.pool.current, human)
+        records = result["import_records"]
+        self.assertEqual(len(records), 2)
+        self.assertEqual({row["item_id"] for row in records},
+                         {clip.unique_id for folder in (self.bin("E1", "C20"), self.bin("E1")) for clip in folder.clips})
+        self.assertEqual(sorted(row.get("owned", True) for row in records), [False, True])
+
+    def test_borrow_existing_return_and_unreturned_human_clip_are_untouched(self):
+        _human, request = self.borrow_fixture()
+        episode = self.bin("E1")
+        existing = FakeClip(request["cuts"][0]["items"][0]["path"])
+        episode.clips.append(existing)
+        inserted = FakeClip(request["cuts"][1]["items"][0]["path"])
+        def imports(paths):
+            episode.clips.append(inserted)
+            return [existing]
+        with mock.patch.object(self.pool, "ImportMedia", side_effect=imports), \
+                mock.patch.object(self.pool, "MoveClips") as move, mock.patch.object(self.pool, "DeleteClips") as delete:
+            result = self.run_op("prestage", **request)
+        move.assert_not_called(); delete.assert_not_called()
+        self.assertEqual((existing.third_party_metadata, inserted.third_party_metadata), ({}, {}))
+        self.assertTrue(all(row["state"] == "import_failed" for cut in result["cuts"].values() for row in cut["items"]))
+
+    def test_borrow_strict_before_id_failure_restores_without_import(self):
+        human, request = self.borrow_fixture()
+        clip = FakeClip(str(self.path))
+        clip.GetUniqueId = mock.Mock(side_effect=RuntimeError("ID unavailable"))
+        self.bin("E1").clips.append(clip)
+        result = self.run_op("prestage", **request)
+        self.assertEqual(result["state"], "unavailable")
+        self.assertIs(self.pool.current, human)
+        self.assertEqual(self.pool.import_calls, [])
+
+    def test_borrow_move_read_failure_records_last_confirmed_bin(self):
+        _human, request = self.borrow_fixture()
+        target = self.bin("E1", "C10")
+        original = target.GetClipList
+        def clips():
+            if self.pool.import_calls:
+                raise RuntimeError("cannot confirm move")
+            return original()
+        with mock.patch.object(self.pool, "MoveClips", return_value=False), \
+                mock.patch.object(target, "GetClipList", side_effect=clips):
+            result = self.run_op("prestage", **request)
+        matched = next(row for row in result["import_records"] if row["gen_id"] == "g1")
+        self.assertEqual(matched["bin_id"], request["episode_bin_id"])
+        self.assertTrue(matched.get("owned", True))
+
+    def test_borrow_path_twins_capped_and_used_failed_moves(self):
+        _human, request = self.borrow_fixture()
+        item = request["cuts"][0]["items"][0]
+        request["cuts"][0]["items"].append({**item, "gen_id": "twin"})
+        request["cuts"][0]["capped"] = True
+        old = FakeClip(str(self.path))
+        resolve_bridge._panel_stamp(old, "old", "p", lambda: None, hub_key="hub")
+        self.bin("E1", "C10").clips.append(old)
+        def move(clips, target):
+            for clip in clips: clip.usage = "1"
+            return False
+        with mock.patch.object(self.pool, "MoveClips", side_effect=move), mock.patch.object(self.pool, "DeleteClips") as delete:
+            result = self.run_op("prestage", **request)
+        delete.assert_not_called()
+        self.assertIn(old, self.bin("E1", "C10").clips)
+        self.assertEqual(len(self.pool.import_calls), 2)
+        self.assertEqual([row["state"] for row in result["cuts"]["E1/C10"]["items"]], ["import_failed", "import_failed"])
+        self.assertEqual(len(self.bin("E1").clips), 2)
+        self.assertEqual(len(result["cuts"]["E1/C10"]["import_records"]), 1)
+
     def test_rename_rechecks_before_write_and_resumes_from_cursor(self):
         ep, bins = self.episode_bins()
         items = self.videos("1", "2", "3")
