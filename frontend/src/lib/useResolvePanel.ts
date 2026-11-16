@@ -19,6 +19,9 @@ interface Selection extends PanelSelection { seq: number; window: string; revisi
 interface EpisodeBins { project_id: string; episode: string; bins: Record<string, string>; episodeBin: string }
 // 미리 캐시·미리 띄우기의 컷 = [컷 경로, 생성물 ID(거르기 통과·오래된 200개), 200 을 넘어 잘렸나]
 export type PrecacheCut = [string, string[], boolean?];
+interface FillCut { cut: PrecacheCut; states: Map<string, string>; failures: Map<string, number> }
+interface FillRun { run: number; ctx: PanelIdentity | null; project_id: string; episode: string; cuts: FillCut[]; busy: boolean }
+const filled = (state: string | undefined) => !!state && ["staged", "present", "same_file_exists"].includes(state);
 export interface PanelFollow { project: string; episode: string; cut: string; n: number }
 // [저장] 칸의 상태(C안, Jay 11-12) — saving 의 step = 지금 단계 · done 의 at = 저장 시각(3초 뒤 idle) · blocked = 저장 안 됨(bins = 검사에 걸린 빈)
 export type SaveBin = { path: string; count?: number; in_use: boolean; mine: boolean };
@@ -95,9 +98,11 @@ export function useResolvePanel() {
   const [here, setHere] = useState(""); // 다빈치 지금 빈이 이 에피소드의 아는 빈이면 그 MV 폴더(트리의 다빈치 표)
   const cachedIds = useRef(new Set<string>()); // 이 PC 캐시에 받은 것으로 확인된(cached) 생성물 — 미리 받기가 다시 묻지 않는다
   const precacheRun = useRef(0); // 미리 받기 판 — 새 판이 오면 옛 판은 다음 확인에서 끝난다(미리 띄우기·이름 뒤따르기도 같은 판)
-  const lastPrecache = useRef<{ project_id: string; episode: string; cuts: PrecacheCut[] } | null>(null); // 저장 뒤·에피소드 빈 복귀 때 다시 돌릴 목록
-  const prestageDeferred = useRef(false); // 앞 미리 띄우기가 건너뛴(deferred) 컷을 남겼다 — 에피소드 빈으로 돌아와 머물면 한 번 다시
-  const episodeDwell = useRef(0); // 다빈치 지금 빈이 에피소드 빈인 따라가기 읽기가 몇 번 이어졌나(스쳐 지나가기엔 다시 띄우지 않게)
+  const lastPrecache = useRef<{ project_id: string; episode: string; cuts: PrecacheCut[] } | null>(null); // 저장 뒤 다시 돌릴 목록
+  const fillRun = useRef<FillRun | null>(null);
+  const stableBin = useRef<{ project: string; bin: string; count: number } | null>(null);
+  const savingRef = useRef(false);
+  const [fillProgress, setFillProgress] = useState<{ episode: string; done: number; total: number; active: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dragItems, setDragItems] = useState<Record<string, DragItem>>({});
   const [previews, setPreviews] = useState<Record<string, string>>({});
@@ -140,7 +145,7 @@ export function useResolvePanel() {
     adopted.current.clear(); failedAdoptions.current.clear(); recovered.current = "";
     episodes.current.clear(); leftovers.current = []; followRef.current = null; lastBin.current = "";
     davinciRef.current = ""; autoTried.current = ""; autoNext.current = null;
-    precacheRun.current++; lastPrecache.current = null; prestageDeferred.current = false; episodeDwell.current = 0;
+    precacheRun.current++; lastPrecache.current = null; fillRun.current = null; stableBin.current = null; setFillProgress(null);
     setIdentity(null); setTarget(null); setCurrent(null); setStage(null); setMoved(0); setFailures([]); setNotice("");
     setFollow(null); setNas(new Set()); setDavinci(""); setHere("");
   }, []);
@@ -157,6 +162,7 @@ export function useResolvePanel() {
   const noteDavinci = (id: string | undefined) => {
     if (!id || id === davinciRef.current) return;
     if (davinciRef.current) {
+      precacheRun.current++; fillRun.current = null; stableBin.current = null; setFillProgress(null);
       setPreviews({});
       readyDrag.current = {}; setDragItems({}); resolveCheckedAt.current = 0;
       revision.current++;
@@ -465,6 +471,9 @@ export function useResolvePanel() {
   const selectFolder = useCallback((project_id: string, episode: string, cut: string, gens: Generation[], capped = false, cuts: string[] = []) => {
     readyDrag.current = {}; setDragItems({});
     const previous = selected.current, ctx = context.current;
+    if (previous?.project_id !== project_id || previous?.episode !== episode) {
+      precacheRun.current++; fillRun.current = null; stableBin.current = null; setFillProgress(null);
+    }
     generations.current = gens;
     const folder_path = cut || episode;
     const via = followRef.current?.key === JSON.stringify([project_id, episode, cut]) ? followRef.current.bin : "";
@@ -539,14 +548,14 @@ export function useResolvePanel() {
     });
   };
   const syncCuts = useCallback((cuts: string[]) => syncRef.current(cuts), []);
-  // 미리 캐시(11-12 띄움 속도) — 에피소드를 고르면 그 컷들의 원본을 이 PC 로 미리 받아 둔다(리졸브 호출 0). cuts = [컷 경로, 생성물 ID들][], 고른 컷 먼저.
+  // 미리 캐시 — 에피소드 컷 순서로 받는다. 고른 컷의 받기·띄우기는 대기열에서 우선한다.
   //  선택의 일이 먼저: 요청마다 쓰기 대기열이 빌 때까지 기다린다. 새 선택의 cache·target 은 허브에서 seq 를 올려 이 요청을 파일 사이에서 멈춘다.
   //  한 판은 시작 때의 프로젝트·에피소드·계정 문맥·목록에 묶인다. seq 는 지금 선택의 것(정리용 순번이 선택을 stale 로 만들지 않게).
-  //  cached 로 확인된 것만 다시 묻지 않고, 받다 멈춘 컷은 같은 판이면 한 번 더. 실패는 알리지 않는다(컷 빈에 들어갈 때 다시 받는다).
+  //  cached로 확인된 것만 다시 묻지 않는다. 미완료 항목은 같은 판에서 재개하고 진행 줄에 남긴다.
   // 판이 그대로이고 같은 문맥·프로젝트·에피소드를 고르고 있으면 지금 선택(미리 캐시·미리 띄우기·이름 뒤따르기가 같이 쓴다)
   const runLive = (run: number, ctx: PanelSelection["ctx"] | null, project_id: string, episode: string) => {
     const now = selected.current;
-    return run === precacheRun.current && ctx && now && valid(now) && contextKey(now.ctx) === contextKey(ctx)
+    return !savingRef.current && run === precacheRun.current && ctx && now && valid(now) && contextKey(now.ctx) === contextKey(ctx)
       && now.project_id === project_id && now.episode === episode ? now : null;
   };
   const toCuts = (ep: EpisodeBins, cuts: PrecacheCut[]): PanelCut[] => cuts.filter(([path, ids]) => ep.bins[path] && ids.length)
@@ -566,71 +575,130 @@ export function useResolvePanel() {
     if (result.after) renameStep(run, ctx, project_id, episode, cuts, result.after, failed, retried);
     else if (failed && !retried) renameStep(run, ctx, project_id, episode, cuts, undefined, false, true);
   });
-  // 미리 띄우기(11-12 딜레이 0) — 받은 뒤 그 에피소드 컷 빈들을 조각(항목 합 40개 안팎, 컷 하나가 넘으면 그 컷 하나)으로 채운다.
-  //  조각마다 대기열에 하나씩 — 사이마다 판·문맥·에피소드·다빈치 프로젝트를 다시 보고, 다빈치 빈 읽기·띄움·저장이 끼어든다.
-  const prestage = (run: number, ctx: PanelSelection["ctx"] | null, project_id: string, episode: string, cuts: PrecacheCut[]) => {
-    const chunks: PrecacheCut[][] = [];
-    let chunk: PrecacheCut[] = [], size = 0;
-    for (const cut of cuts) {
-      if (chunk.length && size + cut[1].length > 40) { chunks.push(chunk); chunk = []; size = 0; }
-      chunk.push(cut); size += cut[1].length;
+  const fillPending = (cut: FillCut) => cut.cut[1].filter(id => !filled(cut.states.get(id)) && (cut.failures.get(id) || 0) < 2);
+  const fillFailed = (cut: FillCut, ids: string[], state: string) => {
+    for (const id of ids) {
+      cut.states.set(id, state);
+      cut.failures.set(id, (cut.failures.get(id) || 0) + 1);
     }
-    if (chunk.length) chunks.push(chunk);
-    let skipped = false;
-    const step = (index: number): void => void enqueue(async () => {
-      const now = runLive(run, ctx, project_id, episode);
-      const ep = now && episodeOf(now);
-      if (!now || !ep) return;
-      const part = toCuts(ep, chunks[index]);
-      if (part.length) {
-        const result = await panel.prestage({ ...writer(now), folder_path: episode, episode_bin_id: ep.episodeBin, cuts: part });
-        if (!runLive(run, ctx, project_id, episode)) return;
-        check(result);
-        if (!sameDavinci(now, result)) return;
-        if (result.state !== "ok") { setFailures(list => [...new Set([...list, t("미리 띄우지 못했습니다") + ": " + panelFailure(result.state)])]); return; }
-        const done = Object.values(result.cuts || {});
-        if (done.some(cut => cut.deferred)) skipped = true;
-        const failed = done.flatMap(cut => stageSummary(cut).failed.map(item => itemName(item.gen_id) + ": " + panelFailure(item.state)));
-        if (failed.length) setFailures(list => [...new Set([...list, ...failed])]);
-      }
-      if (index + 1 < chunks.length) step(index + 1);
-      else { prestageDeferred.current = skipped; renameStep(run, ctx, project_id, episode, cuts); }
-    });
-    if (chunks.length) step(0);
   };
-  const precache = useCallback((project_id: string, episode: string, cuts: PrecacheCut[]) => {
-    const run = ++precacheRun.current, ctx = context.current;
-    lastPrecache.current = { project_id, episode, cuts };
-    const live = () => runLive(run, ctx, project_id, episode);
+  const showFill = (plan: FillRun) => {
+    if (fillRun.current !== plan || plan.run !== precacheRun.current) return;
+    const done = plan.cuts.filter(cut => cut.cut[1].every(id => filled(cut.states.get(id)))).length;
+    setFillProgress(done === plan.cuts.length ? null : { episode: plan.episode, done, total: plan.cuts.length, active: plan.busy });
+  };
+  // 받기는 대기열 밖, 띄우기는 안에서 — 다음 다운로드가 이미 받은 컷의 표시를 막지 않는다.
+  const fillEpisode = (plan: FillRun) => {
+    if (plan.busy || !runLive(plan.run, plan.ctx, plan.project_id, plan.episode) || !plan.cuts.some(cut => fillPending(cut).length)) return;
+    plan.busy = true; showFill(plan);
+    const live = () => runLive(plan.run, plan.ctx, plan.project_id, plan.episode);
+    const cached = (id: string) => !!plan.ctx && cachedIds.current.has(cacheKey(plan.ctx, plan.project_id, id));
     void (async () => {
-      for (const [folder_path, ids] of cuts) {
-        for (let tries = 0; tries < 2; tries++) {
-          const rest = ids.filter(id => ctx && !cachedIds.current.has(cacheKey(ctx, project_id, id)));
-          if (!rest.length) break;
-          for (const batch of cacheBatches(rest)) {
-            // 쓰기 대기열이 빌 때까지 — 기다리는 사이 새 선택의 일이 뒤에 붙었으면 그것까지 기다린다(Codex 독립 리뷰)
-            for (let waited = queue.current; ; waited = queue.current) { await waited; if (waited === queue.current) break; }
-            const now = live();
-            if (!now) return;
-            const gen_ids = batch.filter(id => !cachedIds.current.has(cacheKey(now.ctx, project_id, id))); // 기다리는 사이 선택이 받은 것은 빼고
-            if (!gen_ids.length) continue;
-            const result = await panel.cache({ ctx: now.ctx, project_id, folder_path, window: now.window, seq: now.seq, gen_ids });
+      let chunk: FillCut[] = [], size = 0;
+      const send = async () => {
+        if (!chunk.length) return;
+        const sending = chunk; chunk = []; size = 0;
+        await enqueue(async () => {
+          const now = live(), ep = now && episodeOf(now);
+          if (!now) return;
+          const parts: PanelCut[] = [];
+          const attempted = new Map<FillCut, string[]>();
+          for (const cut of sending) {
+            const pending = fillPending(cut).filter(cached);
+            if (!pending.length) continue;
+            if (!ep?.bins[cut.cut[0]]) { fillFailed(cut, pending, "not_seen"); continue; }
+            // 완료 항목도 wanted에 포함한다. 재시도 상한으로 제외한 항목은 capped로 삭제에서 보호한다.
+            const gen_ids = cut.cut[1].filter(id => cached(id) && (filled(cut.states.get(id)) || pending.includes(id)));
+            parts.push({ folder_path: cut.cut[0], bin_id: ep.bins[cut.cut[0]], gen_ids, capped: !!cut.cut[2] || gen_ids.length < cut.cut[1].length });
+            attempted.set(cut, gen_ids);
+          }
+          if (!parts.length || !ep) return;
+          const stable = stableBin.current;
+          const borrow = document.visibilityState !== "hidden" && !!stable && stable.count >= 2 && stable.project === now.resolveProject;
+          try {
+            const result = await panel.prestage({ ...writer(now), folder_path: plan.episode, episode_bin_id: ep.episodeBin,
+              cuts: parts, borrow, borrow_bin_id: borrow ? stable!.bin : "" });
             if (!live()) return;
-            setPreviews(previous => ({ ...previous, ...Object.fromEntries((result.items || []).filter(item => item.state === "cached"
+            check(result);
+            if (!sameDavinci(now, result) || !live()) return;
+            if (result.restore_failed) {
+              stableBin.current = null;
+              setFailures(list => [...new Set([...list, t("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다")])]);
+            }
+            if (result.restored === false) stableBin.current = null;
+            if (result.state !== "ok") setFailures(list => [...new Set([...list, t("미리 띄우지 못했습니다") + ": " + panelFailure(result.state),
+              ...(["unavailable", "unknown"].includes(result.state) ? [t("다빈치 지금 빈·클립을 확인해 주세요")] : [])])]);
+            for (const [cut, ids] of attempted) {
+              const done = result.cuts?.[cut.cut[0]];
+              const states = new Map(done?.items?.map(item => [item.gen_id, item.state]));
+              for (const id of ids) {
+                const state = result.state !== "ok" ? result.state : done?.state !== "ok" ? done?.state || "unavailable" : states.get(id) || "import_failed";
+                if (filled(state) || state === "deferred") cut.states.set(id, state);
+                else fillFailed(cut, [id], state);
+              }
+              const failed = stageSummary(done || { state: result.state }).failed;
+              if (failed.length) setFailures(list => [...new Set([...list, ...failed.map(item => itemName(item.gen_id) + ": " + panelFailure(item.state))])]);
+            }
+          } catch (error) {
+            if (!live()) return;
+            for (const [cut, ids] of attempted) fillFailed(cut, ids, "unavailable");
+            stableBin.current = null;
+            setFailures(list => [...new Set([...list, errorText(error), t("다빈치 지금 빈·클립을 확인해 주세요")])]);
+          }
+          showFill(plan);
+        });
+      };
+      for (let index = 0; index < plan.cuts.length; index++) {
+        const cut = plan.cuts[index];
+        if (!live()) return;
+        if (!fillPending(cut).length) continue;
+        // 선택의 cache·target·stage 가 먼저 끝난 뒤 현재 seq 로 받는다.
+        for (const batch of cacheBatches(fillPending(cut).filter(id => !cached(id)))) {
+          for (let waited = queue.current; ; waited = queue.current) { await waited; if (waited === queue.current) break; }
+          const now = live();
+          if (!now) return;
+          const gen_ids = batch.filter(id => !cached(id));
+          if (!gen_ids.length) continue;
+          try {
+            const result = await panel.cache({ ctx: now.ctx, project_id: plan.project_id, folder_path: cut.cut[0], window: now.window, seq: now.seq, gen_ids });
+            if (!live()) return;
+            if (result.state) check(result as { state: string });
+            const returned = new Map(result.items.map(item => [item.gen_id, item]));
+            for (const id of gen_ids) {
+              const item = returned.get(id);
+              if (item?.state === "cached") cachedIds.current.add(cacheKey(now.ctx, plan.project_id, id));
+              else if (item || live()?.seq === now.seq) fillFailed(cut, [id], "cache_failed");
+              else cut.states.set(id, "deferred"); // seq 로 중단된 받기는 실패 횟수를 쓰지 않는다
+            }
+            setPreviews(previous => ({ ...previous, ...Object.fromEntries(result.items.filter(item => item.state === "cached"
               && item.preview_url?.startsWith("/media/")).map(item => [item.gen_id, item.preview_url!])) }));
-            for (const item of result.items || []) if (item.state === "cached") cachedIds.current.add(cacheKey(now.ctx, project_id, item.gen_id));
+          } catch {
             if (!live()) return;
+            fillFailed(cut, gen_ids, "cache_failed");
           }
         }
+        if (!live()) return;
+        if (fillPending(cut).some(cached)) {
+          const count = cut.cut[1].filter(cached).length;
+          if (chunk.length && size + count > 40) await send();
+          chunk.push(cut); size += count;
+        }
+        const next = plan.cuts[index + 1];
+        // 이미 받은 다음 컷만 묶는다. 다음 파일을 기다리며 첫 조각을 쌓아 두지 않는다.
+        if (!next || !fillPending(next).length || size >= 40 || fillPending(next).some(id => !cached(id))) await send();
       }
-      // 받은 것으로 확인된(cached) 것만 미리 띄운다 — 못 받은 것을 띄우기 작업이 받으며 대기열을 붙잡지 않게.
-      //  일부만 받은 컷은 capped 로(띄우기가 못 받은 생성물의 기존 클립을 '원하지 않는 것'으로 지우지 않게)
-      const ready = cuts.map(([path, ids, capped]): PrecacheCut => {
-        const got = ctx ? ids.filter(id => cachedIds.current.has(cacheKey(ctx, project_id, id))) : [];
-        return [path, got, !!capped || got.length < ids.length];
-      });
-      if (live()) prestage(run, ctx, project_id, episode, ready); // 다 받았으면 컷 빈을 미리 채운다
-    })().catch(() => { /* 미리 받기는 덤 — 실패해도 컷 빈에 들어갈 때 다시 받는다 */ });
+      await send();
+      if (live()) renameStep(plan.run, plan.ctx, plan.project_id, plan.episode, plan.cuts.map(cut => cut.cut));
+    })().catch(error => {
+      if (live()) setFailures(list => [...new Set([...list, errorText(error)])]);
+    }).finally(() => { plan.busy = false; showFill(plan); });
+  };
+  const precache = useCallback((project_id: string, episode: string, cuts: PrecacheCut[]) => {
+    const plan: FillRun = { run: ++precacheRun.current, ctx: context.current, project_id, episode, busy: false,
+      cuts: [...new Map(cuts.filter(([, ids]) => ids.length).map(cut => [cut[0], cut])).values()]
+        .map(cut => ({ cut, states: new Map(), failures: new Map() })) };
+    lastPrecache.current = { project_id, episode, cuts };
+    fillRun.current = plan; showFill(plan); fillEpisode(plan);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // [저장](Jay 11-12) — 쓴 것은 NAS 로 옮기고 안 쓴 것은 정리한 뒤, 리졸브 자식이 미디어 풀을 훑어 깨끗할 때만 저장한다. 끝나면 다시 미리 띄운다.
@@ -639,6 +707,7 @@ export function useResolvePanel() {
     const ctx = context.current;
     if (saving || !ctx?.writer || !hasResolveBridge(window.mvhubResolve) || !project_id) return;
     readyDrag.current = {}; setDragItems({});
+    savingRef.current = true; fillRun.current = null; setFillProgress(null);
     precacheRun.current++; // 진행 중인 미리 띄우기·이름 뒤따르기를 멈춘다(대기열의 조각 하나까지 기다림)
     setSaving(true); setNotice(t("저장 중")); setSaveState({ phase: "saving", step: t("확인 중") });
     const rev = revision.current;
@@ -718,7 +787,7 @@ export function useResolvePanel() {
       } finally {
         readyDrag.current = {}; setDragItems({});
         if (!ended) setSaveState({ phase: "blocked", bins: [] }); // 예외로 끝남(확인 실패·프로젝트 바뀜 등) — 이유는 알림에
-        setSaving(false);
+        savingRef.current = false; setSaving(false);
         const last = lastPrecache.current;
         if (savedOk) {
           const now = selected.current;
@@ -754,7 +823,9 @@ export function useResolvePanel() {
           const ctx = context.current;
           if (!ctx?.writer) return;
           const selection = selected.current && valid(selected.current) ? selected.current : null;
-          const result = await panel.currentBin(ctx, selection?.project_id ?? "", selection?.folder_path ?? "");
+          let result: TargetResult;
+          try { result = await panel.currentBin(ctx, selection?.project_id ?? "", selection?.folder_path ?? ""); }
+          catch (error) { stableBin.current = null; throw error; }
           if (contextKey(ctx) !== contextKey(context.current)) return;
           check(result);
           if (result.state === "ok") noteDavinci(result.resolve_project_id);
@@ -763,15 +834,12 @@ export function useResolvePanel() {
             currentRef.current = result; setCurrent(result);
             resolveCheckedAt.current = result.state === "ok" ? Date.now() : 0;
           }
-          // 저장 등으로 미리 띄우기가 건너뛴 컷이 남았으면 — 다빈치가 에피소드 빈에 따라가기 읽기 두 번 연속 머물 때 한 번 다시(스쳐 지나가기엔 안 돎)
-          const epNow = episodeOf(selection);
-          if (epNow && result.state === "ok" && result.bin_id && result.bin_id === epNow.episodeBin) {
-            if (++episodeDwell.current === 2 && prestageDeferred.current && lastPrecache.current) {
-              prestageDeferred.current = false;
-              const last = lastPrecache.current;
-              precache(last.project_id, last.episode, last.cuts);
-            }
-          } else episodeDwell.current = 0;
+          const stable = stableBin.current;
+          if (result.state === "ok" && result.bin_id && result.resolve_project_id) {
+            const count = stable?.project === result.resolve_project_id && stable.bin === result.bin_id ? stable.count + 1 : 1;
+            stableBin.current = { project: result.resolve_project_id, bin: result.bin_id, count };
+            if (count >= 2 && fillRun.current) fillEpisode(fillRun.current);
+          } else stableBin.current = null;
           // 다빈치에서 빈을 옮겼다(바뀔 때 한 번만) — 이 에피소드의 컷 빈이면 그 컷으로, 에피소드 빈이면 컷 선택을 풀고 따라간다.
           //  bins 밖 빈(사람 빈·다른 에피소드)은 아무것도 하지 않는다.
           //  응답을 기다리는 사이 다른 자리를 골랐으면 반영하지 않는다(다음 읽기가 새 선택으로 다시 본다).
@@ -793,7 +861,7 @@ export function useResolvePanel() {
           }
           // 새 NAS 전환은 [저장]에서만 시작한다. 사용 감지는 표시만 갱신한다.
         });
-      }
+      } else stableBin.current = null; // 숨긴 동안의 두 읽기는 연속 관측이 아니다
       // 따라갈 빈 표가 있으면 0.7초, 없으면 2초 — 자식 프로세스(~0.17초)를 따라갈 것이 있을 때만 자주 띄운다(11-12 띄움 속도)
       const now = selected.current;
       if (mounted) timer = setTimeout(() => void poll(), now && valid(now) && episodeOf(now) ? 700 : 2000);
@@ -867,6 +935,6 @@ export function useResolvePanel() {
   };
   return { config, needsLogin, authReady, identity, target, current, notice, stage, moved, counts, failures, follow, nas, davinci, here, dragItems, previews, startNativeDrag,
     canRetry: failures.some(failure => !failure.includes(t(RECOVERY_PENDING))),
-    authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache, saveProject, saving, saveState,
+    fillProgress, authKey: contextKey(identity), selectFolder, updateSet, align, retry, takeover, syncCuts, precache, saveProject, saving, saveState,
     onAuthed: () => { setNeedsLogin(false); resetAuth(); } };
 }
