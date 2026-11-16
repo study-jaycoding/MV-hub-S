@@ -301,6 +301,8 @@ class AgentChat:
             else:
                 state = codex.state(prefix)
                 row.update(available=state["reason"] is None, **state)
+                # 요금제 조회(Codex 한 번 더 띄움)는 목록에서만 — 대화 보낼 때의 state()·engine_problem 에서는 하지 않는다.
+                row["subscription"] = codex.plan_name(prefix) if row["available"] else None
             result.append(row)
         with self._lock:
             self._engines = (time.monotonic(), result, stamp)
