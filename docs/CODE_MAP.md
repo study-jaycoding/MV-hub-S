@@ -122,7 +122,7 @@ updated: 2026-11-16
 
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
 프런트 연결은 `McpRegistration.tsx`, `McpConnection.tsx`, `mcp.css`, `mcpContext.ts`, `mcpPlans.ts`,
-캔버스 요청 처리는 `mcpCanvasTasks.ts`에서 맡는다. 설정 옆 창의 간단한 연결 칸([한 번에 연결]·앱별 상태·해제, 같은 API)은 `McpQuickConnect.tsx`다.
+캔버스 요청 처리는 `mcpCanvasTasks.ts`에서 맡는다. 설정 옆 창의 간단한 연결 칸([한 번에 연결]·앱별 상태·해제, 같은 API)은 `McpQuickConnect.tsx`다. MCP 앱 탭 표시(`X-MVHub-Tab`, 서버 `_secret` 형식 32~128자)는 `lib/mcpTab.ts` 하나로 만든다 — `crypto.randomUUID` 는 LAN HTTP 에 없다.
 
 허브 공책의 SQL·시작/복원/영수증은 `backend/app/repo/scene_notebook.py`, 계정별 메모리 임대는
 `backend/app/services/scene_writer.py`가 맡는다. 프런트 저장 판·합류·맞추기는 `frontend/src/lib/sceneNotebook.ts`,
