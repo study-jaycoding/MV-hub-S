@@ -559,7 +559,7 @@ def test_agent_preserves_streamed_actual_bytes_with_pinned_account(tmp_path):
         captured['body'] = b''.join(request.data)
         return io.BytesIO(json.dumps({'asset_content_id': 'sha256:' + sha}).encode())
 
-    with patch.object(agent.urllib.request, 'urlopen', opened):
+    with patch.object(agent._LOCAL_OPENER, 'open', opened):  # 인증 요청은 리다이렉트 거절 통신기로 나간다
         assert agent._preserve_reference('http://hub', 'fake-token', 'asset:captures|one.png',
                                          str(source), {'sha256': sha, 'bytes': 12},
                                          {'project_id': 'p'}, 'a@example.invalid')
@@ -599,7 +599,8 @@ def test_extensionless_canonical_download_preserves_supported_media(content_type
     agent = _agent()
     response = io.BytesIO(b'media bytes')
     response.headers = {'Content-Type': content_type}
-    with patch.object(agent.urllib.request, 'urlopen', return_value=response):
+    with patch.object(agent.urllib.request, 'urlopen', return_value=response), \
+            patch.object(agent._LOCAL_OPENER, 'open', return_value=response):  # 인증 길은 리다이렉트 거절 통신기
         downloaded = agent._download_ref('http://hub', 'fake-token', 'http://hub/api/asset-sync/files/' + 'a' * 32, '')
     assert downloaded and downloaded.endswith(extension)
     Path(downloaded).unlink()
