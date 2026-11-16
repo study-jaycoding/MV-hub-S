@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAuthToken, jsonBody, jsonFetch } from "../../lib/http";
 import { useT } from "../../lib/i18n";
+import { mcpTabId } from "../../lib/mcpTab";
 
 // 설정 옆 창의 MV·MCP 연결(Jay 2026-11-16 시안 v3) — [한 번에 연결] 하나와 앱마다 상태·[해제]/[다시 연결].
 //  등록·목록·해제는 MCP 창(McpRegistration)과 같은 API 다. 옛 6자리 연결·다른 MCP 프로그램·MCP 업데이트는 MCP 창(고급)에 남는다.
@@ -11,8 +12,6 @@ const APPS = [
 ] as const;
 type AppKey = (typeof APPS)[number]["key"];
 interface Client { id: string; name: string; revoked_at: string | null; last_seen_at?: string | null }
-// 탭 표시용 식별자(비밀값 아님) — 공유 서버의 LAN HTTP 주소에는 crypto.randomUUID 가 없다(보안 환경 전용, Codex 리뷰 01a1e38d #1)
-const tabId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 interface Registration { client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; config?: unknown }
 
 const PILL: Record<string, [string, string]> = {
@@ -33,7 +32,7 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [note, setNote] = useState("");
-  const tab = useRef(tabId());
+  const tab = useRef(mcpTabId()); // LAN HTTP 에도 있는 생성 길로(Codex 리뷰 01a1e38d)
   const pending = useRef(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
