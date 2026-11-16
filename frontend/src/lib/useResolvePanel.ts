@@ -20,7 +20,7 @@ interface EpisodeBins { project_id: string; episode: string; bins: Record<string
 // 미리 캐시·미리 띄우기의 컷 = [컷 경로, 생성물 ID(거르기 통과·오래된 200개), 200 을 넘어 잘렸나]
 export type PrecacheCut = [string, string[], boolean?];
 interface FillCut { cut: PrecacheCut; states: Map<string, string>; failures: Map<string, number> }
-interface FillRun { run: number; ctx: PanelIdentity | null; project_id: string; episode: string; cuts: FillCut[]; busy: boolean }
+interface FillRun { run: number; ctx: PanelIdentity | null; project_id: string; episode: string; cuts: FillCut[]; busy: boolean; blockedBin?: string }
 const filled = (state: string | undefined) => !!state && ["staged", "present", "same_file_exists"].includes(state);
 export interface PanelFollow { project: string; episode: string; cut: string; n: number }
 // [저장] 칸의 상태(C안, Jay 11-12) — saving 의 step = 지금 단계 · done 의 at = 저장 시각(3초 뒤 idle) · blocked = 저장 안 됨(bins = 검사에 걸린 빈)
@@ -588,8 +588,10 @@ export function useResolvePanel() {
     setFillProgress(done === plan.cuts.length ? null : { episode: plan.episode, done, total: plan.cuts.length, active: plan.busy });
   };
   // 받기는 대기열 밖, 띄우기는 안에서 — 다음 다운로드가 이미 받은 컷의 표시를 막지 않는다.
-  const fillEpisode = (plan: FillRun) => {
+  const fillEpisode = (plan: FillRun, retryBin?: string) => {
     if (plan.busy || !runLive(plan.run, plan.ctx, plan.project_id, plan.episode) || !plan.cuts.some(cut => fillPending(cut).length)) return;
+    const remaining = () => plan.cuts.filter(cut => !cut.cut[1].every(id => filled(cut.states.get(id)))).length;
+    const before = remaining();
     plan.busy = true; showFill(plan);
     const live = () => runLive(plan.run, plan.ctx, plan.project_id, plan.episode);
     const cached = (id: string) => !!plan.ctx && cachedIds.current.has(cacheKey(plan.ctx, plan.project_id, id));
@@ -618,16 +620,21 @@ export function useResolvePanel() {
           try {
             const result = await panel.prestage({ ...writer(now), folder_path: plan.episode, episode_bin_id: ep.episodeBin,
               cuts: parts, borrow, borrow_bin_id: borrow ? stable!.bin : "" });
+            // 판이 끝나도 같은 계정·다빈치 프로젝트의 복원/자식 오류는 알려야 한다.
+            if (contextKey(now.ctx) === contextKey(context.current) && now.resolveProject === davinciRef.current
+              && (!result.resolve_project_id || result.resolve_project_id === now.resolveProject)
+              && result.state !== "account_changed" && result.state !== "project_changed" && result.code !== "project_changed") {
+              const alerts = [
+                ...(result.restore_failed ? [t("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다")] : []),
+                ...(["unavailable", "unknown"].includes(result.state) ? [t("다빈치 지금 빈·클립을 확인해 주세요")] : []),
+              ];
+              if (alerts.length) setFailures(list => [...new Set([...list, ...alerts])]);
+            }
             if (!live()) return;
             check(result);
             if (!sameDavinci(now, result) || !live()) return;
-            if (result.restore_failed) {
-              stableBin.current = null;
-              setFailures(list => [...new Set([...list, t("다빈치 지금 빈을 처음 자리로 되돌리지 못했습니다")])]);
-            }
-            if (result.restored === false) stableBin.current = null;
-            if (result.state !== "ok") setFailures(list => [...new Set([...list, t("미리 띄우지 못했습니다") + ": " + panelFailure(result.state),
-              ...(["unavailable", "unknown"].includes(result.state) ? [t("다빈치 지금 빈·클립을 확인해 주세요")] : [])])]);
+            if (result.restore_failed || result.restored === false) stableBin.current = null;
+            if (result.state !== "ok") setFailures(list => [...new Set([...list, t("미리 띄우지 못했습니다") + ": " + panelFailure(result.state)])]);
             for (const [cut, ids] of attempted) {
               const done = result.cuts?.[cut.cut[0]];
               const states = new Map(done?.items?.map(item => [item.gen_id, item.state]));
@@ -691,7 +698,10 @@ export function useResolvePanel() {
       if (live()) renameStep(plan.run, plan.ctx, plan.project_id, plan.episode, plan.cuts.map(cut => cut.cut));
     })().catch(error => {
       if (live()) setFailures(list => [...new Set([...list, errorText(error)])]);
-    }).finally(() => { plan.busy = false; showFill(plan); });
+    }).finally(() => {
+      if (live() && retryBin && remaining() >= before) plan.blockedBin = retryBin;
+      plan.busy = false; showFill(plan);
+    });
   };
   const precache = useCallback((project_id: string, episode: string, cuts: PrecacheCut[]) => {
     const plan: FillRun = { run: ++precacheRun.current, ctx: context.current, project_id, episode, busy: false,
@@ -838,7 +848,12 @@ export function useResolvePanel() {
           if (result.state === "ok" && result.bin_id && result.resolve_project_id) {
             const count = stable?.project === result.resolve_project_id && stable.bin === result.bin_id ? stable.count + 1 : 1;
             stableBin.current = { project: result.resolve_project_id, bin: result.bin_id, count };
-            if (count >= 2 && fillRun.current) fillEpisode(fillRun.current);
+            const plan = fillRun.current;
+            if (plan) {
+              // 읽기 실패·창 숨김만으로 진전 없는 같은 빈의 재시도를 다시 열지 않는다.
+              if (plan.blockedBin !== result.bin_id) plan.blockedBin = undefined;
+              if (count >= 2 && !plan.blockedBin) fillEpisode(plan, result.bin_id);
+            }
           } else stableBin.current = null;
           // 다빈치에서 빈을 옮겼다(바뀔 때 한 번만) — 이 에피소드의 컷 빈이면 그 컷으로, 에피소드 빈이면 컷 선택을 풀고 따라간다.
           //  bins 밖 빈(사람 빈·다른 에피소드)은 아무것도 하지 않는다.
