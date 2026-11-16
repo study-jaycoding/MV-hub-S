@@ -208,6 +208,9 @@ export type AgentAttachment =
   | { kind: "folder"; project_id: string; path: string; name?: string };
 export interface AgentAttachWorkspace { scope: "personal" | "team"; id: string | null }
 export interface AgentAttachments { workspace: AgentAttachWorkspace; items: AgentAttachment[] }
+// 그림 넣기(docs/status/MVAgent_그림넣기_2026-11-16.md 3-2) — 그림 칩의 1024px 썸네일. index = 붙인 자료의 몇 번째(0부터). 허브는 저장하지 않는다
+export interface AgentTurnImage { index: number; media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string }
+export interface AgentSendAttachments extends AgentAttachments { images?: AgentTurnImage[] }
 
 export interface AgentTurnRecord {
   id: string;
@@ -229,6 +232,7 @@ export interface AgentTurnRequest {
   context: AgentContext | Record<string, never>; // 빈 값 = 입력칸의 '지금 화면' 칩을 뺐다(허브가 '어디인지 묻는다' 안내)
   attachments?: AgentAttachment[]; // 붙인 자료(최대 8) — 있으면 attach_workspace 도 함께
   attach_workspace?: AgentAttachWorkspace;
+  images?: AgentTurnImage[]; // 붙인 그림 칩의 썸네일(보낼 때만 — 허브가 CLI 에 그림으로 넘기고 저장하지 않음)
   gen_model?: string; // 칸 설정 '먼저 쓸 생성 모델'(앱 모델 코드) — 허브가 프롬프트 한 줄로
   screen_tab?: string; // 옆 칸 마운트의 실행 창 번호 — 그 차례의 화면 동작을 이 마운트만 실행(허브 메모리에만, 화면 동작 3-1)
 }

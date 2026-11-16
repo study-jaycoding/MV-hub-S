@@ -613,6 +613,8 @@ async def _application_lifespan(app: FastAPI):
                 _runtime_report_loop(_METRICS_LOG_INTERVAL),
                 name="runtime-metrics-log",
             )
+        if agent_chat_enabled():
+            agent_chat.service.start_image_cleanup()
         log_event(_runtime_log, "startup_ready")
         startup_complete = True
         yield

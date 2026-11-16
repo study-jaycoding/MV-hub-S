@@ -77,6 +77,14 @@ def main():
         print({"subscription": "Logged in using ChatGPT", "api_key": "Logged in using an API key"}.get(auth, "Not logged in"), file=sys.stderr)
         return
     prompt = sys.stdin.buffer.read().decode("utf-8")
+    capture = os.environ.get("FAKE_AGENT_INPUT_FILE")
+    if capture:
+        from pathlib import Path
+        images = [Path(args[index + 1]) for index, arg in enumerate(args) if arg == "--image"]
+        Path(capture).write_text(json.dumps({"args": args, "stdin": prompt,
+                                           "images": [{"path": str(path), "size": path.stat().st_size} for path in images]}), encoding="utf-8")
+    if "--input-format" in args:
+        prompt = json.loads(prompt)["message"]["content"][0]["text"]
     user = prompt.rsplit("[사용자]\n", 1)[-1].strip()
     scenario = os.environ.get("FAKE_AGENT_SCENARIO", "claude_ok")
     if scenario.startswith("codex_probe_"):
@@ -142,6 +150,13 @@ def main():
         sys.stdout.write("x" * (2 * 1024 * 1024) + "\n")
         out({"type": "assistant", "parent_tool_use_id": None, "message": {"content": [{"type": "text", "text": "긴 줄 뒤"}]}})
         out({"type": "result", "subtype": "success", "is_error": False, "session_id": "S-claude-1"})
+    elif scenario == "codex_slow":
+        out({"type": "thread.started", "thread_id": "T-codex-1"})
+        out({"type": "turn.started"})
+        grandchild_and_wait()
+    elif scenario == "codex_fail":
+        out({"type": "thread.started", "thread_id": "T-codex-1"})
+        out({"type": "turn.failed", "error": {"message": "가짜 실행 실패"}})
     elif scenario == "codex_ok":
         out({"type": "thread.started", "thread_id": "T-codex-1"})
         out({"type": "turn.started"})

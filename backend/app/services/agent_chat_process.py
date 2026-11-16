@@ -197,7 +197,8 @@ def _toml_literal(value: str) -> str:
 
 
 def build_command(engine: str, prefix: list[str], *, model: str, effort: str, resume: str | None,
-                  mcp_entry: dict, mcp_file: Path, work: Path, fast: bool = False, fork: bool = False) -> list[str]:
+                  mcp_entry: dict, mcp_file: Path, work: Path, fast: bool = False, fork: bool = False,
+                  images=()) -> list[str]:
     if engine == "claude":
         mcp_file.parent.mkdir(parents=True, exist_ok=True)
         mcp_file.write_text(json.dumps({"mcpServers": {PANEL_SERVER: mcp_entry}}, ensure_ascii=False), encoding="utf-8")
@@ -208,7 +209,8 @@ def build_command(engine: str, prefix: list[str], *, model: str, effort: str, re
                    # 빠른 모드는 매 차례 켬/끔을 적는다 — 사용자 설정·이어 가기가 켜 둔 값이 남지 않게(Claude 추가 사용 크레딧이 든다)
                    "--settings", json.dumps({"fastMode": bool(fast)})]
         # 포크의 첫 차례 — 원래 세션을 이어 읽되 새 세션 id 로 가른다(11-12 실측: 원래 파일 그대로·새 파일은 혼자 선다)
-        return command + (["--resume", resume] if resume else []) + (["--fork-session"] if resume and fork else [])
+        return (command + (["--input-format", "stream-json"] if images else [])
+                + (["--resume", resume] if resume else []) + (["--fork-session"] if resume and fork else []))
     server = f"mcp_servers.{PANEL_SERVER}"
     options = ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only",
                "-m", model, "-c", f"model_reasoning_effort={effort}"]
@@ -219,9 +221,10 @@ def build_command(engine: str, prefix: list[str], *, model: str, effort: str, re
                 "-c", f"{server}.args=[{','.join(_toml_literal(str(arg)) for arg in mcp_entry['args'])}]",
                 "-c", f"{server}.enabled_tools={json.dumps(list(PANEL_TOOLS))}",
                 "-c", f'{server}.default_tools_approval_mode="approve"', "-c", f"{server}.tool_timeout_sec=150"]
+    image_args = [part for image in images for part in ("--image", str(image))]
     if resume:
-        return [*prefix, "exec", *options, "resume", resume, "-"]
-    return [*prefix, "exec", *options, "-C", str(work), "-"]
+        return [*prefix, "exec", *options, "resume", *image_args, *(["--"] if images else []), resume, "-"]
+    return [*prefix, "exec", *options, *image_args, "-C", str(work), "-"]
 
 
 class _Basic(ctypes.Structure):

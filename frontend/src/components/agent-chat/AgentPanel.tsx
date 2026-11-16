@@ -3,22 +3,22 @@
 //  옆에 붙은 동안 왼쪽 끝선을 끌어 폭을 바꾸고, ≡ 는 대화 서랍(프로젝트별·설정), [새 창]은 Assets 같은 별도 창(AgentWindow)으로 뺀다
 //  (Jay 11-10 시안 A안·② — docs/status/MVAgent_서랍_새창_2026-11-10.md).
 import {
-  useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent,
+  useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent,
   type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject,
 } from "react";
 import { api } from "../../api";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { assetThumbUrl } from "../../lib/assetUrls";
 import { DRAG_TYPES } from "../../lib/dragTypes";
-import { thumbOf } from "../../lib/media";
+import { dataTransferHasFiles, filesFromDataTransfer, thumbOf } from "../../lib/media";
 import { parseSceneFolderDrag } from "../../lib/sceneSet";
-import { parseSpotlightAssetItems } from "../../lib/spotlightAssetRefs";
+import { notifySpotlightAssetsChanged, parseSpotlightAssetItems, referenceDropTypeFromFile } from "../../lib/spotlightAssetRefs";
 import { useDragEndReset } from "../../lib/useDragEndReset";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
 import {
   agentChatApi, type AgentAttachment, type AgentAttachWorkspace, type AgentContext, type AgentConversationPatch, type AgentConversationSummary,
-  type AgentEngine, type AgentEngineId, type AgentSessionFileResult, type ClaudeVersionInfo,
+  type AgentEngine, type AgentEngineId, type AgentSessionFileResult, type AgentTurnImage, type ClaudeVersionInfo,
 } from "../../lib/agentChatApi";
 import type { ScreenHost } from "../../lib/agentScreenActions";
 import { useEscapeClose } from "../../lib/useEscapeClose";
@@ -82,8 +82,18 @@ const ATTACH_MAX = 8; // 계획 항목의 reference_ids 상한과 같게
 const ATTACH_TYPES: readonly string[] = [DRAG_TYPES.asset, DRAG_TYPES.generationList, DRAG_TYPES.generation, DRAG_TYPES.folder];
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const GEN_ID = /^[A-Za-z0-9_.:-]{1,80}$/;
-/** 받는 형식만 — 그 밖(OS 파일만·글자)은 손대지 않는다(받지 않는 것에 preventDefault 하지 않음 — lib/media.ts) */
-const acceptsDrag = (dt: DataTransfer | null) => !!dt && Array.from(dt.types ?? []).some((type) => ATTACH_TYPES.includes(type));
+const hasAttachType = (dt: DataTransfer) => Array.from(dt.types ?? []).some((type) => ATTACH_TYPES.includes(type));
+/** 받는 형식(앱 끌기 · OS 파일)만 — 그 밖(글자 등)은 손대지 않는다(받지 않는 것에 preventDefault 하지 않음 — lib/media.ts) */
+const acceptsDrag = (dt: DataTransfer | null) => !!dt && (hasAttachType(dt) || dataTransferHasFiles(dt));
+// ── 그림 넣기(docs/status/MVAgent_그림넣기_2026-11-16.md 3-1) — 파일·캡처는 프롬프트와 같은 업로드, 보낼 때 그림 칩의 썸네일을 싣는다 ──
+type Media = "image" | "video" | "audio";
+const mediaOf = (type?: string | null): Media | undefined => (type === "image" || type === "video" || type === "audio" ? type : undefined);
+const INTERNAL_PROJECTS = new Set(["captures", "imports"]); // 업로드 목적지 — 목록·MCP 에선 합본 imp/cap 안의 captures/…(assets.py:375)
+const IMAGE_TYPES: readonly string[] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const IMAGE_MAX = 1_500_000; // 한 장 — 허브 검사와 같은 숫자
+const IMAGES_TOTAL = 6_000_000; // 합계 — 허브 검사와 같은 숫자(Codex 1차 P2-4)
+const IMAGE_WAIT_MS = 10_000;
+type Uploaded = { project: string; path: string; name?: string; type?: string };
 const isIdent = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length >= 1 && value.length <= max && !CONTROL.test(value);
 /** 표시 이름 — 거절하지 않고 정리(제어 글자 → 공백, 120자). 이름 하나 때문에 차례가 막히지 않게(Claude 합의 P1) */
@@ -92,7 +102,9 @@ const lastSegment = (path: string) => path.split("/").filter(Boolean).pop() ?? p
 const attachKey = (item: AgentAttachment) => (item.kind === "generation" ? `g:${item.id}`
   : item.kind === "asset" ? `a:${item.project}\u0000${item.path}` : `f:${item.project_id}\u0000${item.path}`);
 // uid = 칩 하나하나의 번호 — 보낸 묶음만 지울 때 같은 자료를 다시 붙인 새 칩은 남긴다(독립 리뷰 P2). key 는 중복 막기용
-type AttachChip = { uid: number; key: string; item: AgentAttachment; project?: string; pending?: boolean; thumb?: string | null };
+// media = 그림·영상·소리(칩에만 — 보내는 item 에 넣으면 허브의 엄격 모델이 422, 설계 P3-6) · uploading = 올리는 중(item 은 빈 자리)
+type AttachChip = { uid: number; key: string; item: AgentAttachment; project?: string; pending?: boolean; thumb?: string | null;
+  media?: Media; uploading?: boolean };
 type DropChip = Omit<AttachChip, "uid">;
 
 /** 놓은 끌기 값 → 붙일 칩과 버린 개수. 캔버스와 같은 순서(어셋 → 생성물 묶음·한 개 → 폴더). 어셋은 끌기 값만 쓴다 —
@@ -115,7 +127,8 @@ function readDrop(dt: DataTransfer): { chips: DropChip[]; dropped: number } {
         continue;
       }
       const item: AgentAttachment = { kind: "asset", project: asset.project, path: asset.path, name: cleanName(asset.name || lastSegment(asset.path)) };
-      chips.push({ key: attachKey(item), item, thumb: asset.type === "audio" ? null : assetThumbUrl(asset.project, asset.path, 256) });
+      chips.push({ key: attachKey(item), item, media: mediaOf(asset.type),
+        thumb: asset.type === "audio" ? null : assetThumbUrl(asset.project, asset.path, 256) });
     }
     return { chips, dropped };
   }
@@ -140,6 +153,74 @@ function readDrop(dt: DataTransfer): { chips: DropChip[]; dropped: number } {
     chips.push({ key: attachKey(item), item, project: cleanName(folder.projectName) });
   }
   return { chips, dropped };
+}
+
+/** 업로드 응답 → 칩. 내장 폴더(captures·imports)는 합본 imp/cap + 'captures/…' — MCP 어셋 권한·정확히 찾기가 이 이름만 받는다(mcp_v2.py:536) */
+function uploadedChip(r: Uploaded): DropChip | null {
+  const internal = INTERNAL_PROJECTS.has(r.project);
+  const project = internal ? "imp/cap" : r.project;
+  const path = internal ? `${r.project}/${r.path}` : r.path;
+  if (!isIdent(project, 200) || !isIdent(path, 1000)) return null;
+  const media = mediaOf(r.type);
+  const item: AgentAttachment = { kind: "asset", project, path, name: cleanName(r.name || lastSegment(path)) };
+  return { key: attachKey(item), item, media, thumb: media === "audio" ? null : assetThumbUrl(project, path, 256) };
+}
+
+function bytesBase64(bytes: Uint8Array): string {
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+
+/** 보낼 그림(설계 3-1) — 그림 칩마다 줄인 썸네일(어셋 = 1024px, 생성물 = 첫 장)만, 응답 형식으로 media_type, 한 장·합계 상한(붙인 순서),
+ *  모두 10초 안. 못 실은 칩(조회 중 생성물·원본 주소·실패·상한)은 번호(1부터)로 돌려준다 — 칩·식별자는 그대로 간다. */
+async function loadImages(batch: AttachChip[], genOf: (id: string) => Generation | undefined) {
+  const abort = new AbortController();
+  const timer = window.setTimeout(() => abort.abort(), IMAGE_WAIT_MS);
+  try {
+    const rows = await Promise.all(batch.map(async (c): Promise<{ type: AgentTurnImage["media_type"]; bytes: Uint8Array } | "miss" | null> => {
+      const gen = c.item.kind === "generation" ? genOf(c.item.id) : undefined;
+      // 조회 중이거나 조회에 실패해 종류를 모르는 생성물 — 그림인지 모르니 못 실은 것으로 센다(Codex 1차 P2-6 · 독립 리뷰 3)
+      if (c.item.kind === "generation" && (c.pending || !c.media)) return "miss";
+      if (c.media !== "image") return null;
+      const url = c.item.kind === "asset" ? assetThumbUrl(c.item.project, c.item.path, 1024) : gen ? thumbOf(gen, 1024) : null;
+      // 줄인 썸네일 주소만 — 관리 어셋 원본이 오면 허브 크기 검사에 차례 전체가 막힌다(설계 P3-8)
+      if (!url || !/^\/api\/(assets\/thumb|media-thumb)\?/.test(url)) return "miss";
+      try {
+        const res = await fetch(url, { signal: abort.signal });
+        const type = (res.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+        if (!res.ok || !IMAGE_TYPES.includes(type)) return "miss";
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        return bytes.length > 0 && bytes.length <= IMAGE_MAX ? { type: type as AgentTurnImage["media_type"], bytes } : "miss";
+      } catch {
+        return "miss";
+      }
+    }));
+    const images: AgentTurnImage[] = [];
+    const missed: number[] = [];
+    let total = 0;
+    for (const [index, row] of rows.entries()) {
+      if (row === null) continue;
+      if (row === "miss" || total + row.bytes.length > IMAGES_TOTAL) {
+        missed.push(index + 1);
+        continue;
+      }
+      total += row.bytes.length;
+      images.push({ index, media_type: row.type, data: bytesBase64(row.bytes) });
+    }
+    return { images, missed };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** 칩 둘째 줄(시안 A) — 그림이면 'AI 가 봄', 영상·소리는 '자료로만' */
+function chipKind(c: AttachChip, t: (key: string) => string): string {
+  if (c.uploading) return t("올리는 중");
+  if (c.item.kind === "folder") return `${t("폴더")}${c.project ? ` · ${c.project}` : ""}`;
+  if (c.item.kind === "generation" && c.pending) return t("생성물 · 확인 중");
+  const kind = c.item.kind === "generation" ? t("생성물") : c.media === "video" ? t("영상") : c.media === "audio" ? t("오디오") : t("레퍼런스");
+  return `${kind} · ${c.media === "image" ? t("AI 가 봄") : t("자료로만")}`;
 }
 
 type ToolMessage = Extract<AgentMessage, { kind: "tool" }>;
@@ -287,7 +368,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       }
       setChips((now) => now.map((c) => (c.uid !== uid ? c : {
         ...c, pending: false,
-        ...(gen ? { item: { kind: "generation" as const, id, name: cleanName(gen.prompt) }, thumb: thumbOf(gen, 256) } : {}),
+        ...(gen ? { item: { kind: "generation" as const, id, name: cleanName(gen.prompt) }, thumb: thumbOf(gen, 256),
+          media: mediaOf(gen.assets[0]?.type) } : {}),
       })));
     };
     const known = findGeneration?.(id) ?? genCache[id];
@@ -309,6 +391,81 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     chipsRef.current = next;
     setChips(next);
     for (const c of taken) if (c.item.kind === "generation") resolveGeneration(c.uid, c.item.id);
+  };
+  // ── 그림 넣기(설계 3-1) — 프롬프트와 같은 업로드·같은 목적지, 놓거나 붙이는 즉시 회색 칩(8개 상한에 듦) ──
+  const uploadTarget = () => ({ // 프롬프트처럼 서버 보관 예약용(SpotlightPrompt.tsx:231, assets.py:1316)
+    ...(context.project ? { target_project_id: context.project } : {}),
+    ...(attachWs?.scope === "team" && attachWs.id ? { target_workspace_id: attachWs.id } : {}),
+  });
+  /** 회색 칩을 넣고 업로드 — 답이 오면 그 자리를 칩으로 바꾼다. 시작 때 계정·공간·비움 세대를 잡아 셋이 그대로일 때만(파일은 이미 올라감 — 프롬프트와 같음) */
+  const startUpload = (labels: string[], run: () => Promise<Uploaded[]>) => {
+    const at = { epoch: chipEpoch.current, ws: wsKeyRef.current, account: getAccountNamespace() };
+    const holders: AttachChip[] = labels.map((label) => {
+      const uid = (chipSeq.current += 1);
+      return { uid, key: `u:${uid}`, item: { kind: "asset", project: "", path: "", name: cleanName(label) }, pending: true, uploading: true };
+    });
+    const uids = new Set(holders.map((c) => c.uid));
+    chipsRef.current = [...chipsRef.current, ...holders];
+    setChips(chipsRef.current);
+    const settle = (made: DropChip[], note: string | null) => {
+      if (at.epoch !== chipEpoch.current || at.ws !== wsKeyRef.current || at.account !== getAccountNamespace()) return;
+      const seen = new Set(chipsRef.current.filter((c) => !uids.has(c.uid)).map((c) => c.key));
+      const queue = made.filter((c) => (seen.has(c.key) ? false : (seen.add(c.key), true)));
+      chipsRef.current = chipsRef.current.flatMap((c) => {
+        if (!uids.has(c.uid)) return [c];
+        const next = queue.shift();
+        return next ? [{ ...next, uid: c.uid }] : []; // 답이 모자라면(건너뛴 파일) 남은 회색 칩은 뺀다 — 회색 칩은 × 가 없어 자리 순서가 그대로다
+      });
+      setChips(chipsRef.current);
+      if (note) setAttachNote(note);
+    };
+    run().then((items) => {
+      notifySpotlightAssetsChanged(items.map((r) => ({ project: r.project, path: r.path, name: r.name ?? lastSegment(r.path), type: r.type || "image" })));
+      const made = items.flatMap((r) => uploadedChip(r) ?? []);
+      const lost = labels.length - made.length;
+      settle(made, lost > 0 ? t("{n}개는 붙일 수 없어 뺐어요").replace("{n}", String(lost)) : null);
+    }, (err) => settle([], `${t("그림을 올리지 못했어요")} — ${err instanceof Error ? err.message : String(err)}`));
+  };
+  const uploadFiles = (files: File[]) => {
+    const accepted = files.filter((file) => referenceDropTypeFromFile(file));
+    const taken = accepted.slice(0, Math.max(0, ATTACH_MAX - chipsRef.current.length));
+    const notes = [
+      ...(files.length > accepted.length ? [t("{n}개는 붙일 수 없어 뺐어요").replace("{n}", String(files.length - accepted.length))] : []),
+      ...(accepted.length > taken.length ? [t("8개까지 붙일 수 있어요")] : []),
+    ];
+    setAttachNote(notes.join(" · ") || null);
+    if (!taken.length) return;
+    const target = uploadTarget();
+    startUpload(taken.map((file) => file.name), () => api.uploadReferenceFiles(taken, target).then((r) => r.saved || []));
+  };
+  // 길게 누른 Ctrl+V 는 keydown 이 반복될 때마다 붙여넣기가 또 와 같은 그림이 그만큼 올라간다 — 그 키를 뗄 때까지 반복만 막는다(프롬프트와 같음, SpotlightPrompt.tsx:930)
+  const pasteHeld = useRef(false);
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = event.clipboardData?.items;
+    let image: File | null = null;
+    for (let i = 0; items && i < items.length; i += 1) {
+      if (items[i].type.startsWith("image/")) {
+        image = items[i].getAsFile();
+        break;
+      }
+    }
+    if (!image) return; // 글자는 입력칸의 기본 붙여넣기
+    event.preventDefault();
+    pasteHeld.current = true;
+    if (!attachWs) {
+      setAttachNote(t("공간을 확인한 뒤 다시 붙여 주세요"));
+      return;
+    }
+    if (chipsRef.current.length >= ATTACH_MAX) {
+      setAttachNote(t("8개까지 붙일 수 있어요"));
+      return;
+    }
+    const blob = image;
+    const target = uploadTarget();
+    startUpload([t("캡처")], () => api.uploadCapture(blob, target).then((r) => [r]));
+  };
+  const releasePaste = (event?: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!event || event.key.toLowerCase() === "v" || event.key === "Control" || event.key === "Meta") pasteHeld.current = false;
   };
   const endDropping = useCallback(() => {
     dragDepth.current = 0;
@@ -343,6 +500,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       endDropping();
       if (!attachWs) {
         setAttachNote(t("공간을 확인한 뒤 다시 끌어 주세요"));
+        return;
+      }
+      if (!hasAttachType(event.dataTransfer)) { // 앱 끌기 형식이 없고 OS 파일만 — 프롬프트처럼 올려서 붙인다(어셋 탭의 OS 끌기는 x-ch-asset 이 같이 와 위로)
+        uploadFiles(filesFromDataTransfer(event.dataTransfer));
         return;
       }
       const { chips: incoming, dropped } = readDrop(event.dataTransfer);
@@ -381,21 +542,42 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sentLookupKey]);
 
+  const preparing = useRef(false); // 보낼 그림을 받는 중 — 다시 보내기 막음
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
+    if (preparing.current) return;
+    if (chipsRef.current.some((c) => c.uploading)) {
+      setAttachNote(t("올리는 중인 그림이 끝나면 보낼 수 있어요"));
+      return;
+    }
     // 칩이 있으면 AI 에게는 지금까지와 같은 문장으로 — 고칠 내용을 써야 보낸다(빈 문장 전송 막음)
     const body = revising && text.trim()
       ? `${t("「{title}」 계획을 이렇게 고쳐 주세요").replace("{title}", revising.title || t("계획"))}: ${text.trim()}`
       : text;
     // 보내는 순간의 칩 묶음 — 성공하면 그 묶음만 뺀다(보내는 사이 붙인 칩은 남는다, Codex 1차 P1 5)
     const batch = attachWs ? chipsRef.current : [];
-    const attach = batch.length && attachWs ? { workspace: attachWs, items: batch.map((c) => c.item) } : null;
+    let images: AgentTurnImage[] = [];
+    let missed: number[] = [];
+    if (body.trim() && batch.some((c) => c.media === "image" || (c.item.kind === "generation" && (c.pending || !c.media)))) {
+      // 받는 사이 계정·공간·칩 비움·대화가 바뀌면 보내지 않는다(그림 설계 Codex 1차 P2-5) — 글·남은 칩은 그대로
+      const at = { epoch: chipEpoch.current, ws: wsKeyRef.current, account: getAccountNamespace(), conversation: conversationRef.current };
+      preparing.current = true;
+      try {
+        ({ images, missed } = await loadImages(batch, genOf));
+      } finally {
+        preparing.current = false;
+      }
+      if (at.epoch !== chipEpoch.current || at.ws !== wsKeyRef.current || at.account !== getAccountNamespace()
+        || at.conversation !== conversationRef.current) return;
+    }
+    const attach = batch.length && attachWs
+      ? { workspace: attachWs, items: batch.map((c) => c.item), ...(images.length ? { images } : {}) } : null;
     const typed = text; // 보낸 순간의 글 — 접수를 기다리는 사이 고친 글은 지우지 않는다(입력칸은 보내는 동안 잠기지 않는다)
     if (await chat.send(body, attach)) {
       if (batch.length) {
         const sent = new Set(batch.map((c) => c.uid));
         setChips((now) => now.filter((c) => !sent.has(c.uid)));
-        setAttachNote(null);
+        setAttachNote(missed.length ? t("{n}번 그림은 불러오지 못해 AI 가 보지 못했어요").replace("{n}", missed.join("·")) : null);
       }
       setText((now) => (now === typed ? "" : now));
       setRevising(null);
@@ -407,6 +589,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
     if (log) log.scrollTop = log.scrollHeight;
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (pasteHeld.current && event.repeat && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+      event.preventDefault(); // 그림을 붙인 Ctrl+V 를 누른 채 — 반복 붙여넣기 막음
+      return;
+    }
     // 한글 조합 중의 Enter 는 글자 확정이다 — 보내지 않는다
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
@@ -461,7 +647,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         <div className={`agent-drop${dropping === "blocked" ? " blocked" : ""}`} aria-hidden="true">
           <span className="agent-drop-ic">{dropping === "blocked" ? "!" : "＋"}</span>
           <b>{dropping === "blocked" ? t("공간을 확인한 뒤 다시 끌어 주세요") : t("놓으면 대화에 붙어요")}</b>
-          {dropping === "ok" && <small>{t("생성물 · 레퍼런스 · 폴더")}<br />{t("한 번에 8개까지")}</small>}
+          {dropping === "ok" && <small>{t("생성물 · 레퍼런스 · 폴더 · 내 PC 파일")}<br />{t("그림은 AI 가 직접 봐요 · 한 번에 8개까지")}</small>}
         </div>
       )}
       {!popout && (
@@ -631,16 +817,17 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           {chips.map((c, i) => (
             <div key={c.uid} className={`agent-context agent-attach${c.pending ? " pending" : ""}`}>
               <span className="agent-attach-thumb" aria-hidden="true">
-                {c.thumb ? <img src={c.thumb} alt="" loading="lazy" /> : c.item.kind === "folder" ? <FolderIcon /> : null}
+                {c.uploading ? <span className="agent-tool-spin" />
+                  : c.thumb ? <img src={c.thumb} alt="" loading="lazy" /> : c.item.kind === "folder" ? <FolderIcon /> : null}
                 <i className="agent-attach-num">{i + 1}</i>{/* 붙인 순서 = AI 가 받는 순서 — '1번'으로 부른다 */}
               </span>
               <span className="agent-context-text">
                 <b>{c.item.name ?? (c.item.kind === "generation" ? t("생성물") : lastSegment(c.item.path))}</b>
-                <small>{c.item.kind === "generation" ? (c.pending ? t("생성물 · 확인 중") : t("생성물"))
-                  : c.item.kind === "asset" ? t("레퍼런스") : `${t("폴더")}${c.project ? ` · ${c.project}` : ""}`}</small>
+                <small>{chipKind(c, t)}</small>
               </span>
-              <button type="button" className="agent-context-x" onClick={() => removeChip(c.uid)}
-                title={t("붙인 자료 빼기")} aria-label={t("붙인 자료 빼기")}>×</button>
+              {/* 올리는 중엔 빼지 못한다 — 답을 자리 순서로 채우므로, 중간 자리를 빼면 지운 파일이 다른 자리에 붙는다(독립 리뷰 1) */}
+              {!c.uploading && <button type="button" className="agent-context-x" onClick={() => removeChip(c.uid)}
+                title={t("붙인 자료 빼기")} aria-label={t("붙인 자료 빼기")}>×</button>}
             </div>
           ))}
         </div>}
@@ -652,7 +839,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             : !screenOn ? t("지금 화면 없이 물어보세요 — 어디인지는 직접 알려 주세요")
             : t("Agent 에게 일을 맡기거나 물어보세요")}
           aria-label={t("Agent 에게 보낼 말")}
-          onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
+          onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste}
+          onKeyUp={releasePaste} onBlur={() => releasePaste()} />
         <div className="agent-composer-foot">
           {/* [모델 ⌄][깊이 ⌄][사용량 원] — 평소 글자만, 올리면 바탕·⌄(시안 model-settings.png ①②) */}
           <div className="agent-foot-chips" ref={modelRef}>
