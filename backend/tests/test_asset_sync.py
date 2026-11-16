@@ -17,6 +17,7 @@ from app.repo import asset_sync as ledger, projects, trash
 from app.routers import asset_sync as api
 from app.services import asset_sync as sync
 from test_shared_transport import certificates, required_tls, transport_server
+from test_shared_server_url_escape import account_hub
 
 
 def test_asset_json_and_upload_use_shared_tls(required_tls, tmp_path):
@@ -36,6 +37,30 @@ def test_asset_json_and_upload_use_shared_tls(required_tls, tmp_path):
 
 
 PNG = b'\x89PNG\r\n\x1a\n' + b'asset test payload'
+
+
+def test_scheme_login_keeps_target_account_outbox(account_hub, tmp_path):
+    from app import active_account
+    from app.services import shared_connection
+
+    hub = account_hub
+    source = tmp_path / "scheme.png"
+    source.write_bytes(PNG)
+    args = dict(path=source, file_path="asset:captures|scheme.png",
+                digest=hashlib.sha256(PNG).hexdigest(), size=len(PNG), media_type="image",
+                owner_uid="batch3-uid", project_id="p", account_key=hub.b)
+    with active_account.pinned_account_scope((hub.b, "batch3-uid")), db.get_connection() as conn:
+        ledger.register_local(conn, **args, server_origin=shared_connection.base_url())
+    hub.login()
+    with db.get_connection() as conn:
+        ledger.register_local(conn, **args, server_origin=shared_connection.base_url())
+        conn.commit()
+        assert conn.execute("SELECT count(*) FROM asset_sync_outbox").fetchone()[0] == 1
+        row = ledger.claim(conn, "batch3-uid", shared_connection.base_url(), hub.b)
+        assert row is not None and row["server_origin"] == hub.original
+        conn.commit()
+        assert ledger.settle(conn, row, receipt={"location_id": "synthetic-location"})
+        assert ledger.status_rows(conn, "batch3-uid")[0]["state"] == "ready"
 
 
 @pytest.fixture

@@ -431,7 +431,10 @@ def proposal(
     revision = announcement.get("revision")
     if not url or isinstance(revision, bool) or not isinstance(revision, int):
         return None
-    if url == (current_url or "").rstrip("/"):
+    # 이 모듈은 -I 자식에서도 파일로 실행되므로 앱 import는 부모의 판정 경로에만 둔다.
+    from .shared_connection import same_shared_server
+
+    if url == (current_url or "").rstrip("/") or same_shared_server(url, current_url):
         return None
 
     seen_revision = seen.get("revision")

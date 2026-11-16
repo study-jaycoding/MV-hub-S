@@ -295,7 +295,7 @@ export function NotificationCenter({
         ? t("'{name}' 서버가 새 위치로 이동했습니다. 누르면 전환되고 다시 로그인합니다.")
             .replace("{name}", item.serverName)
         : t("공유 서버가 새 주소로 이사했습니다: {url}. 누르면 전환되고 다시 로그인합니다.")
-            .replace("{url}", item.url || "");
+            .replace("{url}", item.displayUrl ?? item.url ?? "");
     }
     if (item.kind === "moved") {
       return item.serverName

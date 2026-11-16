@@ -56,6 +56,8 @@ export interface SharedServerState {
   configured: boolean;
   has_token: boolean;
   url: string | null;
+  display_url?: string | null;
+  transport_error?: string | null;
   // 관리자가 등록한 '서버' 표시 이름 — 작업자 화면은 주소 대신 이걸 보여준다(없으면 주소).
   // 아래 name 은 로그인한 '사람' 이름이다(다른 값).
   server_name: string | null;
@@ -128,6 +130,8 @@ export function useHubAuth() {
           configured: s.configured,
           has_token: s.has_token,
           url: s.url,
+          display_url: s.display_url,
+          transport_error: s.transport_error,
           server_name: s.server_name || null,
           url_history: s.url_history || [],
           email: s.email,

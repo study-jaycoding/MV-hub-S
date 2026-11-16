@@ -14,6 +14,7 @@ from app import db, repo
 from app.routers import _proxy, publish
 from app.routers._telemetry import touch_generation_telemetry
 from app.services import share_state_reconciler as reconciler
+from test_shared_server_url_escape import account_hub
 
 # 계층 경계로 reconciler 는 라우터 의존을 주입받는다(운영은 main.py lifespan 이 담당).
 reconciler.configure_share_state_router_deps(
@@ -64,6 +65,34 @@ def _release(ref: dict) -> None:
     assert repo.release_share_state_intent_claim(
         ref["intent_id"], ref["intent_seq"], ref["claim_token"]
     )
+
+
+def test_scheme_login_keeps_target_account_pending_intent(account_hub, monkeypatch):
+    from app import active_account
+
+    hub = account_hub
+    with active_account.pinned_account_scope((hub.b, "batch3-uid")):
+        local_id = _seed_generation("scheme-local", "scheme-job")
+        ref = repo.prepare_share_state_intent(
+            hub.original, job_anchor="scheme-job", local_id=local_id,
+            operation_kind="publish", desired_shared=True, desired_final=False,
+            base_shared=False, base_final=False,
+        )
+        _release(ref)
+    hub.login()
+    monkeypatch.setattr(reconciler._proxy, "proxying", lambda: True)
+    observed = []
+
+    def observe(origin, token, intent):
+        observed.append((origin, intent["intent_id"]))
+        return {"id": "scheme-job", "job_id": "scheme-job", "shared": True, "is_final": False}
+
+    _patch_observer(monkeypatch, observe)
+    counts = asyncio.run(reconciler.run_share_state_reconciliation_cycle("scheme-worker"))
+    assert counts["claimed"] == counts["converged"] == 1
+    assert observed == [(hub.original, ref["intent_id"])]
+    assert repo.get_share_state_intent(ref["intent_id"])["status"] == "converged"
+    assert repo.get_generation(local_id)["shared"] is True
 
 
 def _patch_observer(monkeypatch, observer) -> None:

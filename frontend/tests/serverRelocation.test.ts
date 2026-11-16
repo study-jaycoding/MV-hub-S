@@ -27,6 +27,17 @@ const info = (overrides: Partial<ServerRelocationInfo> = {}): ServerRelocationIn
 });
 
 describe("공유 서버 이사 알림", () => {
+  it("전송 주소는 본문에만 쓰고 알림 id와 전환 값은 신원으로 유지한다", () => {
+    const original = info({ server_name: null });
+    const display = original.proposed_url!.replace("http:", "https:");
+    const item = serverRelocationNotification({ ...original, proposed_display_url: display }, new MemoryStorage())!;
+    expect(item.text).toContain(display);
+    expect(item.displayUrl).toBe(display);
+    expect(item.url).toBe(original.proposed_url);
+    expect(item.id).toBe(`relocation:${original.revision}:${original.proposed_url}`);
+    expect(item.id).toBe(serverRelocationNotification(original, new MemoryStorage())!.id);
+  });
+
   it("제안이 있고 새 주소가 응답할 때만 알림을 만든다", () => {
     const session = new MemoryStorage();
     expect(serverRelocationNotification(info(), session)).toEqual(

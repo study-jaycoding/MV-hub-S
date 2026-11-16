@@ -147,15 +147,18 @@ def _rl_ok(key: str) -> None:
     _rl_fails.pop(key, None)
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+def _session_cookie_options(request: Request) -> dict:
+    return {"path": "/", "httponly": True, "samesite": "lax",
+            "secure": request.url.scheme == "https"}
+
+
+def _set_session_cookie(response: Response, token: str, request: Request) -> None:
     """세션 쿠키 발급 — /media·/ws(헤더 못 붙임)용. httpOnly(스크립트 접근 차단)·SameSite=Lax."""
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=_COOKIE_MAX_AGE,
-        httponly=True,
-        samesite="lax",
-        path="/",
+        **_session_cookie_options(request),
     )
 
 
@@ -230,7 +233,7 @@ def auth_config():
 
 
 @router.post("/register")
-async def register(body: RegisterIn, response: Response):
+async def register(body: RegisterIn, response: Response, request: Request):
     try:
         acc = await _run_login_work(repo.register, body.email, body.password, body.name)
     except ValueError as e:
@@ -239,7 +242,7 @@ async def register(body: RegisterIn, response: Response):
     # 첫 계정(부트스트랩 관리자)은 즉시 승인 → 바로 토큰 발급(자동 로그인) + 쿠키.
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
-        _set_session_cookie(response, token)
+        _set_session_cookie(response, token, request)
         active_account.bump_account_epoch()  # 토큰을 발급한 로그인 — 클린 피드 세션 등은 끝난다
     return {"account": acc, "token": token}
 
@@ -261,7 +264,7 @@ async def login(body: LoginIn, response: Response, request: Request):
     finally:
         _rl_release(key)
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
-    _set_session_cookie(response, token)  # /media·/ws 용 쿠키 동반 발급
+    _set_session_cookie(response, token, request)  # /media·/ws 용 쿠키 동반 발급
     active_account.bump_account_epoch()  # 같은 계정의 재로그인도 새 토큰이다
     _activate_local_agent(request, acc["email"])
     return {"account": acc, "token": token}
@@ -286,7 +289,7 @@ async def access(body: RegisterIn, response: Response, request: Request):
             if acc["status"] != "approved":  # 승인 전(거부 포함) — 토큰 없이 상태만
                 return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
             token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
-            _set_session_cookie(response, token)
+            _set_session_cookie(response, token, request)
             active_account.bump_account_epoch()
             _activate_local_agent(request, acc["email"])
             return {"account": acc, "token": token, "pending": False}
@@ -300,7 +303,7 @@ async def access(body: RegisterIn, response: Response, request: Request):
     acc = await asyncio.to_thread(repo.get_account, acc["email"]) or acc
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
-        _set_session_cookie(response, token)
+        _set_session_cookie(response, token, request)
         active_account.bump_account_epoch()
         _activate_local_agent(request, acc["email"])
     return {"account": acc, "token": token, "pending": acc["status"] == "pending"}
@@ -316,8 +319,8 @@ def me(request: Request, response: Response):
     # 예전 값이면 브라우저 WebSocket만 403이 된다. /me 부트 검증 때 검증된 토큰을
     # HttpOnly 쿠키로 다시 발급해 두 인증 경로를 항상 같은 상태로 맞춘다.
     token = session_token(request)
-    if token and request.cookies.get(SESSION_COOKIE) != token:
-        _set_session_cookie(response, token)
+    if token and (request.url.scheme == "https" or request.cookies.get(SESSION_COOKIE) != token):
+        _set_session_cookie(response, token, request)
     _activate_local_agent(request, acc["email"])
     return acc
 
@@ -333,7 +336,7 @@ def logout(response: Response, request: Request):
     if previous:
         agent_signals.signal(previous, "pair-change")
     active_account.bump_account_epoch()  # 토큰은 폐기되지 않는다 — 그 토큰으로 연 것들(클린 피드 세션)은 여기서 끝난다
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(SESSION_COOKIE, **_session_cookie_options(request))
     return {"ok": True}
 
 
