@@ -37,7 +37,7 @@
 | `resolve_selection_monitor` | start() | not _proxy.is_shared_team_server() | `backend/app/services/resolve_selection_monitor.py` |
 | `schedule_telemetry_drain` | 호출 | _proxy.is_worker_hub() | `backend/app/routers/_telemetry.py` |
 | `_runtime_report_loop(_METRICS_LOG_INTERVAL) (name=runtime-metrics-log)` | create_task | _METRICS_LOG_INTERVAL > 0 | `backend/app/main.py` |
-| `agent_chat.service.start_image_cleanup` | 호출 | agent_chat_enabled() | `backend/app/routers/agent_chat.py` |
+| `agent_chat.service.start_image_cleanup` | 호출 | agent_chat_enabled() and not READ_ONLY | `backend/app/routers/agent_chat.py` |
 
 ## ② 응답 뒤에 도는 것 (BackgroundTasks)
 
@@ -66,7 +66,6 @@
 | `backend/app/routers/mcp_v2.py` | `submit_plan` | ensure_future | `asyncio.to_thread(_claim, gate, ctx.client, plan_id, plan["workspace"]…` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Thread | `copy_context().run` |
 | `backend/app/services/agent_chat.py` | `AgentChat._run` | Timer | `self._timeout` |
-| `backend/app/services/agent_chat.py` | `AgentChat.start_image_cleanup` | Timer | `self.cleanup_images` |
 | `backend/app/services/agent_chat.py` | `AgentChat.start_turn` | Thread | `copy_context().run` |
 | `backend/app/services/agent_chat_codex.py` | `_probe` | Timer | `timeout` |
 | `backend/app/services/agent_chat_process.py` | `JobProcess.feed` | Thread | `write` |
