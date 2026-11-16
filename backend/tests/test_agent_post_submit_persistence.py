@@ -93,6 +93,7 @@ def harness(tmp_path, monkeypatch):
         return response
 
     monkeypatch.setattr(agent.urllib.request, "urlopen", open_response)
+    monkeypatch.setattr(agent._LOCAL_OPENER, "open", open_response)  # 인증 요청은 리다이렉트 거절 통신기로 나간다
 
     def execute(count=1):
         agent._claim_pending = Mock(side_effect=[(200, requests[:count]), (200, [])])

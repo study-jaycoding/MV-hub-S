@@ -20,7 +20,6 @@
 .rp-save-list { margin-top: 6px; padding: 6px 8px; background: #1f2023; border-radius: 4px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .rp-save-list b { color: #ff9b8f; font-weight: 600; margin-right: 6px; }
 .resolve-panel-head > strong { display: block; font-size: 15px; color: #e6e6e8; }
-.resolve-panel-head > strong span { font-size: 11px; color: #8a8b90; font-weight: 400; margin-left: 6px; }
 .resolve-panel-status { color: var(--accent, #c4e84a); margin-top: 6px; overflow-wrap: anywhere; }
 .resolve-panel-head p { color: #8a8b90; font-size: 11px; line-height: 1.5; margin: 4px 0 0; }
 .resolve-panel-warning, .rp-flash { margin-top: 6px; padding: 6px 7px; background: #1f2023; line-height: 1.5; overflow-wrap: anywhere; }

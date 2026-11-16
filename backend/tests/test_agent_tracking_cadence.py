@@ -57,7 +57,7 @@ def test_wait_event_sends_wait_seconds_but_keeps_the_socket_timeout():
         seen.append((req.full_url, timeout))
         return _Reply(json.dumps({"wake": False, "reason": None}).encode())
 
-    with patch.object(agent.urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(agent._LOCAL_OPENER, "open", side_effect=fake_urlopen):  # 인증 요청은 리다이렉트 거절 통신기
         assert agent._wait_event(SERVER, "t", wait_seconds=7) is None
         assert agent._wait_event(SERVER, "t") is None
     assert seen == [

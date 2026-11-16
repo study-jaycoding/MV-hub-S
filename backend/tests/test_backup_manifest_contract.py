@@ -114,7 +114,10 @@ def test_full_restore_zip_rejects_malformed_members(tmp_path, monkeypatch, fault
 def test_restore_download_is_bounded_and_cleans_partial_file(tmp_path, monkeypatch):
     stream = io.BytesIO(b'0123456789')
     stream.status = 200
-    monkeypatch.setattr(db_transfer.urllib.request, 'urlopen', lambda *args, **kwargs: stream)
+    class FakeOpener:  # db_transfer 는 공유 서버 전송 통신기(shared_transport.cached_opener)로 내려받는다
+        def open(self, *args, **kwargs):
+            return stream
+    monkeypatch.setattr(db_transfer.shared_transport, 'cached_opener', lambda **kwargs: FakeOpener())
     monkeypatch.setattr(db_transfer, '_BACKUP_DOWNLOAD_MAX_BYTES', 8)
     target = tmp_path / 'partial.zip'
     with pytest.raises(HTTPException) as error:
