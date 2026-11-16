@@ -7,6 +7,7 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "받는 중": "Downloading",
   "컷 빈 채우는 중": "Filling shot bins",
   "컷 빈": "Shot bins",
   "남음": "Remaining",
