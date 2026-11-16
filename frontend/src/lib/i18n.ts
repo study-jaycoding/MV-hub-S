@@ -103,6 +103,8 @@ const EN: Record<string, string> = {
   "리졸브에 연결하지 못했습니다": "Could not connect to Resolve",
   "이 창이 리졸브 미디어 풀의 지금 빈을 고른 컷으로 바꿉니다": "This window selects the chosen shot in the Resolve media pool",
   "리졸브 지금 빈이 선택한 컷과 다릅니다": "The current Resolve bin differs from the selected shot",
+  "지금 빈이 {cut} 과 다름": "Current bin differs from {cut}",
+  "다빈치 지금 빈 = 선택한 컷": "Resolve current bin = selected shot",
   "표시 충돌": "Metadata conflict",
   "다른 빈에 있음": "Found in another bin",
   "프로젝트가 바뀜": "Project changed",
