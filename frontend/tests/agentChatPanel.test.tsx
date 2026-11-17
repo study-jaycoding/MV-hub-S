@@ -867,7 +867,8 @@ describe("Ask Agent 옆 칸", () => {
     const btn = () => host.querySelector<HTMLButtonElement>(".agent-model-btn")!;
     expect([btn().textContent, effortBtn().textContent]).toEqual(["✳Opus 5.5", "Medium"]); // 두 칩
     act(() => btn().click());
-    expect(texts(".agent-model-row")).toEqual(["✳ClaudeMax 구독", "◎ChatGPT점검 필요"]);
+    expect(texts(".agent-model-row")).toEqual(["✳ClaudeMax 구독", "ChatGPT미연결"]); // 긴 까닭 대신 한 단어
+    expect(host.querySelectorAll(".agent-model-row")[1].querySelector(".agent-model-ic svg")).not.toBeNull(); // GPT 아이콘
     const rows = host.querySelectorAll<HTMLButtonElement>(".agent-model-row");
     act(() => { rows[0].dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); }); // 올리면 옆에
     expect(texts('.agent-model-sub[aria-label="Claude"] .agent-model-item')).toEqual(["✳Opus 5.5✓", "✳Sonnet 5.5", "✳Haiku 5.5", "✳Fable 5.1"]);

@@ -380,9 +380,12 @@ def _sub_summary(ws: dict[str, Any], today: str, horizon: str, reported: int, un
     anchor = pool["recurring_anchor"] if auto else None
     topup_day = pool["topup_day"]
     start, end = _alloc_window(today, period, anchor, topup_day)
-    usage = credit_plan._usage_index(ws["id"], start)
-    used = sum(float(r["credits"] or 0) for (day, _), r in usage.items() if start <= day <= end)
-    unknown = sum(int(r["unknown"] or 0) for (day, _), r in usage.items() if start <= day <= end)
+    with get_connection() as conn:
+        conn.execute('BEGIN')
+        from .hf_org_usage import CreditUsageSnapshot
+        usage = CreditUsageSnapshot(conn, [ws['id']], credit_plan.day_ms(start), credit_plan.day_ms(credit_plan.after_day(end)))
+    cycle_usage = credit_plan.range_usage(usage, ws['id'], None, start, end)
+    used, unknown = cycle_usage['used'], cycle_usage['unknown_count']
     window_topups = [t for t in view["topups"] if start <= str(t["day"]) <= end]
     topups = {"count": len(window_topups), "credits": int(sum(int(t["credits"] or 0) for t in window_topups))}
     upcoming = _occurrences(today, horizon, period, anchor, topup_day) if auto and amount else []
@@ -413,6 +416,8 @@ def _sub_summary(ws: dict[str, Any], today: str, horizon: str, reported: int, un
         "cycle_end": end,
         "topups_cycle": topups,
         "used_cycle": credit_plan._shown(used),
+        "cycle_usage": credit_plan.usage_metadata(cycle_usage),
+        "used_all_basis": "facts",
         "unknown_cycle": unknown,
         # 이번 할당 주기 계획상 남은 양 = 한 번 충전액 + 이번 주기 추가 할당 − 이번 주기 사용. 충전액을 모르면 None.
         "planned_left": None if amount is None else credit_plan._shown(float(amount) + topups["credits"] - used),
@@ -503,13 +508,16 @@ def console_limits(conn, workspace_ids: list[str], detail: bool = False) -> dict
             "cycle_start": start, "cycle_end": end, "topups_cycle": int(topups or 0), "shared_projects": shared.get(wid, 0),
         }
         if detail:  # 관리 표 한 워크스페이스용(설계 §16) — 서브스페이스 개요 `_sub_summary` 와 같은 계산
-            usage = credit_plan._usage_index(wid, start)
+            from .hf_org_usage import CreditUsageSnapshot
+            usage = CreditUsageSnapshot(conn, [wid], credit_plan.day_ms(start), credit_plan.day_ms(credit_plan.after_day(end)))
+            cycle_usage = credit_plan.range_usage(usage, wid, None, start, end)
             out[wid].update({
                 "topups_count": conn.execute(
                     "SELECT COUNT(*) FROM workspace_credit_topup WHERE workspace_id=? AND day BETWEEN ? AND ?", (wid, start, end)
                 ).fetchone()[0],
-                "used_cycle": credit_plan._shown(sum(float(r["credits"] or 0) for (day, _), r in usage.items() if start <= day <= end)),
-                "unknown_cycle": sum(int(r["unknown"] or 0) for (day, _), r in usage.items() if start <= day <= end),
+                "used_cycle": credit_plan._shown(cycle_usage["used"]),
+                "unknown_cycle": cycle_usage["unknown_count"],
+                "cycle_usage": credit_plan.usage_metadata(cycle_usage),
             })
     return out
 

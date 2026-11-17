@@ -145,6 +145,9 @@ def test_account_deletion_cleans_link_and_queue(linked_world):
         generation = store.generation(conn)
     store.enqueue('cleanup-only', {'account_email': email, 'kind': 'comment', 'slack_team_id': 'TUNIT'}, generation, 1)
     repo.set_account_status(email, 'rejected')
+    # Approved-once accounts are no longer deletable; mimic a legacy account with no approval record.
+    with db.get_connection() as conn:
+        conn.execute('UPDATE account SET approved_at=NULL WHERE email=?', (email,))
     account = repo.get_account(email)
     account_cleanup.delete_cleanup_account(email, status=account['status'], hidden=bool(account['hidden']),
         created_at=account['created_at'], actor_email='admin@unit.test', actor_uid='acct:admin@unit.test')

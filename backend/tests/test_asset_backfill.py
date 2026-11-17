@@ -10,7 +10,19 @@ from app.repo import asset_sync, projects
 from app.services import asset_backfill, shared_connection
 from app.shared_server_config import K_URL
 
+from test_shared_transport import certificates, required_tls, transport_server
+
 SERVER = 'http://server'
+
+
+def test_backfill_uses_shared_tls_and_refuses_redirect(required_tls):
+    with transport_server(required_tls) as (base, seen):
+        assert asset_backfill._post(base, 'synthetic', '/batch', {}) == {}
+        assert seen[0][1]['Authorization'] == 'Bearer synthetic'
+    with transport_server(required_tls, status=302) as (base, seen):
+        with pytest.raises(OSError, match='asset_server_redirect'):
+            asset_backfill._post(base, 'synthetic', '/batch', {})
+        assert len(seen) == 1
 
 
 @pytest.fixture

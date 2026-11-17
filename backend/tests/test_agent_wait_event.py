@@ -23,7 +23,7 @@ class WaitEventBackoffTests(unittest.TestCase):
         self.agent = _load_agent()
 
     def _wait(self, error: urllib.error.HTTPError):
-        with patch.object(self.agent.urllib.request, "urlopen", side_effect=error), \
+        with patch.object(self.agent._LOCAL_OPENER, "open", side_effect=error), \
                 patch.object(self.agent.time, "sleep") as sleep:
             result = self.agent._wait_event("http://127.0.0.1:8010", "token")
         return result, sleep

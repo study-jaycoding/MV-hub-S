@@ -1,4 +1,6 @@
 """Only temporary files and fake child processes; no server/update scripts run."""
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
+from test_server_tls import certificates, install_certificate  # noqa: F401
 import importlib
 import json
 import os
@@ -19,6 +21,31 @@ def module(monkeypatch):
 def compatibility():
     return {'db_schema': {'read_min': 1, 'read_max': 1, 'write_min': 1, 'write_max': 1},
             'reader_protocol': 1, 'writer_protocol': 2, 'supported_components': ['content_core']}
+
+
+@pytest.mark.parametrize('fault', ['auth_off', 'bad_key', 'mismatched_key'])
+def test_tls_activation_refuses_before_spawn(module, tmp_path, monkeypatch, certificates, tls_dir, fault):
+    import ssl
+    install_certificate(tls_dir, certificates('server'))
+    if fault == 'bad_key':
+        (tls_dir / 'server.key').write_text('not a private key')
+    elif fault == 'mismatched_key':
+        (tls_dir / 'server.key').write_bytes(certificates('other')[0].read_bytes())
+    spawned = []
+    monkeypatch.setattr(module.subprocess, 'Popen', lambda *a, **kw: spawned.append(a))
+    with pytest.raises((ValueError, ssl.SSLError)):
+        module.ServerActivation(tmp_path / 'installation', environ={'CONTENT_HUB_AUTH': '0' if fault == 'auth_off' else '1'})
+    assert spawned == []
+
+
+def test_tls_activation_uses_server_only_environment(module, tmp_path, certificates, tls_dir):
+    install_certificate(tls_dir, certificates('server'))
+    env = {'CONTENT_HUB_AUTH': '1', 'CONTENT_HUB_SSL_CERTFILE': 'inherited', 'CONTENT_HUB_SSL_KEYFILE': 'inherited'}
+    manager = module.ServerActivation(tmp_path, environ=env)
+    assert manager.ready_scheme == 'https' and manager.ready_context.check_hostname
+    assert manager.env['CONTENT_HUB_SSL_CERTFILE'] == str(tls_dir / 'server.pem')
+    assert env['CONTENT_HUB_SSL_CERTFILE'] == 'inherited'
+    assert 'tools/server_tls.py' in module.COORDINATOR_TOOLS
 
 
 def row():

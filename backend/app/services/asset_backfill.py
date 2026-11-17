@@ -19,7 +19,7 @@ from typing import Optional
 
 from .. import active_account, config, db
 from ..repo import asset_sync as ledger
-from . import asset_io, asset_paths, shared_connection
+from . import asset_io, asset_paths, shared_connection, shared_transport
 from .path_safety import safe_join
 
 SCAN_BATCH = 50
@@ -43,16 +43,18 @@ class _NoRoom(Exception):
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    handler_order = 499  # 공통 차단보다 먼저 기존 오류 의미를 보존한다.
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise OSError('asset_server_redirect')  # 인증 머리를 다른 주소로 들고 가지 않는다
 
 
-_opener = urllib.request.build_opener(_NoRedirect)
+_opener = shared_transport.opener()
+_opener.add_handler(_NoRedirect())
 
 
 def _post(origin: str, token: str, path: str, body: dict):
     """서버에 직접 묻는다 — 묶음 응답은 커질 수 있어 크기를 자르지 않는다. 실패는 던진다."""
-    request = urllib.request.Request(origin + path, data=json.dumps(body).encode(), method='POST',
+    request = urllib.request.Request(shared_transport.transport_url(origin + path), data=json.dumps(body).encode(), method='POST',
                                      headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
     with _opener.open(request, timeout=REMOTE_TIMEOUT_S) as response:
         return json.loads(response.read())

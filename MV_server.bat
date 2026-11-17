@@ -63,8 +63,11 @@ cd /d "%ROOT%backend" || goto :err
 set "CONTENT_HUB_HOST=%HOST%"
 set "CONTENT_HUB_PORT=%PORT%"
 echo.
-echo [2/2] Starting SHARED server ^(auto-restart^)  http://%HOST%:%PORT%
-echo     same PC: http://127.0.0.1:%PORT%    Login required = %CONTENT_HUB_AUTH%  ^(1=yes^)
+set "SERVER_SCHEME="
+for /f "delims=" %%s in ('""%PYEXE%" -B "%ROOT%tools\server_tls.py" --scheme"') do set "SERVER_SCHEME=%%s"
+if not "%SERVER_SCHEME%"=="http" if not "%SERVER_SCHEME%"=="https" goto :err
+echo [2/2] Starting SHARED server ^(auto-restart^)  %SERVER_SCHEME%://%HOST%:%PORT%
+echo     same PC: %SERVER_SCHEME%://127.0.0.1:%PORT%    Login required = %CONTENT_HUB_AUTH%  ^(1=yes^)
 echo     Stop: Ctrl+C then Y
 echo.
 

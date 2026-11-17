@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from .. import active_account, repo
 from ..config import BACKEND_DIR, DATA_DIR
-from . import server_relocation, shared_connection
+from . import server_relocation, shared_connection, shared_transport
 from .async_tools import to_thread_non_abandon
 from .atomic_io import atomic_write_text
 from . import backup_manifest
@@ -978,17 +978,12 @@ def _transfer_key(manifest: dict[str, Any]) -> str:
     })
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_opener = urllib.request.build_opener(_NoRedirect)
+_opener = shared_transport.opener()
 
 
 def _capability_error(server: str, token: str) -> str | None:
     try:
-        request = urllib.request.Request(f'{server}/api/share/capabilities', method='GET')
+        request = urllib.request.Request(shared_transport.transport_url(f'{server}/api/share/capabilities'), method='GET')
         request.add_header('Authorization', f'Bearer {token}')
         try:
             with _opener.open(request, timeout=_CAPABILITY_TIMEOUT) as response:
@@ -1064,7 +1059,7 @@ def _multipart_set_upload(
         yield suffix
 
     try:
-        request = urllib.request.Request(url, data=chunks(), method="POST")
+        request = urllib.request.Request(shared_transport.transport_url(url), data=chunks(), method="POST")
         request.add_header("Authorization", f"Bearer {token}")
         request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
         request.add_header("Content-Length", str(content_length))

@@ -1,3 +1,4 @@
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
 import os
 import shutil
 import subprocess
@@ -19,6 +20,35 @@ def _read(name: str) -> str:
 
 def _read_updater() -> str:
     return _read("tools/update_git_worker.bat")
+
+
+@pytest.mark.parametrize('code,expected', [(3, 43), (2, 0)])
+def test_restart_probe_only_tls_error_throws(code, expected):
+    script = _read('restart_server_task.ps1')
+    start = script.index('        & $serverPython -B $tlsTool --probe $Port')
+    fragment = script[start:script.index('        Start-Sleep -Seconds 3', start)]
+    # Execute only the probe decision, with a function stub; never run task/process controls.
+    command = (f'function Test-Probe {{ $global:LASTEXITCODE = {code} }}; '
+               '$serverPython = "Test-Probe"; $Port = 1; '
+               'try { ' + fragment + '; exit 0 } catch { '
+               'if ($_.Exception.Message -eq "TLS configuration or certificate verification failed") { exit 43 }; exit 44 }')
+    result = subprocess.run(['powershell', '-NoProfile', '-Command', command], capture_output=True, timeout=15)
+    assert result.returncode == expected, result.stderr
+
+
+@pytest.mark.parametrize('marker_exists', [False, True])
+def test_restart_missing_registered_python_stops_before_controls(tmp_path, marker_exists):
+    script = _read('restart_server_task.ps1')
+    prefix = script[script.index('$ErrorActionPreference'):script.index('function Get-TaskResultText')]
+    assert script.index('function Get-TaskResultText') < script.index('Start-TaskAndWaitRunning -TaskName $serverTask')
+    if marker_exists:
+        runtime = tmp_path / '.mvhub-runtime'
+        runtime.mkdir()
+        (runtime / 'python.txt').write_text(str(tmp_path / 'missing-python.exe'), encoding='utf-8')
+    prefix = prefix.replace('$Root = $PSScriptRoot', "$Root = '" + str(tmp_path).replace("'", "''") + "'")
+    command = 'try { ' + prefix + '; exit 0 } catch { exit 43 }'
+    result = subprocess.run(['powershell', '-NoProfile', '-Command', command], capture_output=True, timeout=15)
+    assert result.returncode == 43, result.stderr
 
 
 def _copy_bootstrap(tools: Path):
@@ -188,7 +218,9 @@ def test_update_routes_server_to_coordinator_and_restart_helper_checks_readiness
     assert "Start-ScheduledTask -TaskName $TaskName" in restart
     assert "Start-TaskAndWaitRunning -TaskName $serverTask" in restart
     assert "Start-TaskAndWaitRunning -TaskName $watchdogTask" in restart
-    assert "/api/ready" in restart
+    assert '$tlsTool --probe $Port' in restart
+    assert '.mvhub-runtime\\python.txt' in restart
+    assert 'Invoke-WebRequest' not in restart
     assert "Get-ScheduledTaskInfo" in restart
     assert "server_console.log" in restart
     assert "watchdog_console.log" in restart

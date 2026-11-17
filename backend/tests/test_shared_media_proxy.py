@@ -12,6 +12,20 @@ from starlette.responses import Response
 from app.routers import _proxy, library
 
 
+def test_server_remote_thumbnail_307_does_not_enter_authenticated_hub_proxy():
+    src = 'https://cdn.example.invalid/image.png'
+    with mock.patch.object(_proxy, 'is_shared_team_server', return_value=True), \
+            mock.patch.object(library, 'assert_public_http_url'):
+        response = asyncio.run(library.media_thumb(src=src, w=512))
+    assert response.status_code == 307 and response.headers['location'] == src
+    async def local(request):
+        return Response(b'local-thumbnail')
+    with mock.patch.object(_proxy, 'proxying', return_value=True), \
+            mock.patch.object(_proxy, '_forward_stream', side_effect=AssertionError('must stay local')):
+        result = asyncio.run(_proxy.data_proxy_middleware(_request('/api/media-thumb', query='src=' + src), local))
+    assert result.body == b'local-thumbnail'
+
+
 def _request(path: str, *, query: str = "", method: str = "GET", headers=None) -> Request:
     raw_headers = [
         (str(k).lower().encode("latin-1"), str(v).encode("latin-1"))

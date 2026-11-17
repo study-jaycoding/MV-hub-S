@@ -20,6 +20,65 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from app.routers import _proxy
+import pytest
+from fastapi import HTTPException
+from test_shared_transport import certificates, required_tls, transport_server
+
+
+@pytest.mark.parametrize('exit_name', ['raw', 'json', 'download', 'bytes', 'forward', 'stream'])
+@pytest.mark.parametrize('failure', ['redirect', 'certificate'])
+def test_all_proxy_exits_reject_redirect_as_502(required_tls, monkeypatch, tmp_path, exit_name, failure):
+    message = '다른 주소' if failure == 'redirect' else '인증서'
+    if failure == 'certificate':
+        monkeypatch.setattr(_proxy.shared_transport, 'BUNDLE_PATH', tmp_path / 'missing.pem')
+    with transport_server(required_tls, status=302) as (base, seen):
+        monkeypatch.setattr(_proxy, 'base_url', lambda: base)
+        monkeypatch.setattr(_proxy, 'token', lambda: 'synthetic')
+        if exit_name in ('forward', 'stream'):
+            req = _request('/api/example')
+            async def receive():
+                return {'type': 'http.request', 'body': b''}
+            req._receive = receive
+            response = asyncio.run(_proxy._forward(req) if exit_name == 'forward' else _proxy._forward_stream(req))
+            assert response.status_code == 502
+            assert message in json.loads(response.body)['detail']
+        else:
+            with pytest.raises(HTTPException) as caught:
+                if exit_name == 'raw':
+                    _proxy.raw_request('GET', base + '/api/example', token='synthetic')
+                elif exit_name == 'json':
+                    _proxy.proxy_json('GET', '/api/example')
+                elif exit_name == 'bytes':
+                    _proxy.proxy_bytes('/api/example')
+                else:
+                    _proxy.stream_download('/api/example', tmp_path / 'download')
+            assert caught.value.status_code == 502
+            assert message in str(caught.value.detail)
+        if failure == 'redirect':
+            assert len(seen) == 1 and seen[0][1]['Authorization'] == 'Bearer synthetic'
+        else:
+            assert not seen
+
+
+def test_transport_keeps_304_etag(required_tls, monkeypatch):
+    with transport_server(required_tls, status=304) as (base, seen):
+        monkeypatch.setattr(_proxy, 'base_url', lambda: base)
+        monkeypatch.setattr(_proxy, 'token', lambda: 'synthetic')
+        response = asyncio.run(_proxy._forward_stream(_request('/media/example')))
+        assert response.status_code == 304
+        assert response.headers['etag'] == '"test-etag"'
+        assert len(seen) == 1
+
+
+def test_redirect_has_distinct_error_without_offline_classification(monkeypatch):
+    import urllib.error
+    import urllib.request
+    error = urllib.error.HTTPError('http://localhost/redirect', 302, 'redirect', {}, None)
+    with patch.object(_proxy._SERVER_OPENER, 'open', side_effect=error):
+        with pytest.raises(_proxy.RedirectRefused) as caught:
+            _proxy._open(urllib.request.Request('http://localhost/redirect'), timeout=3)
+    assert not isinstance(caught.value, urllib.error.URLError)
+    assert not _proxy._timed_out(caught.value)
 
 
 def _request(path: str, method: str = "GET") -> Request:
@@ -85,8 +144,8 @@ class ConnectStepOnlyIsShort(unittest.TestCase):
             calls.append((address, timeout, source_address))
             return sock
 
-        with patch.object(_proxy.socket, "create_connection", side_effect=fake_create):
-            assert _proxy._fast_connect(*args) is sock
+        with patch.object(_proxy.shared_transport.socket, "create_connection", side_effect=fake_create):
+            assert _proxy.shared_transport._fast_connect(*args) is sock
         return calls, sock.timeouts
 
     def test_connect_is_capped_and_call_timeout_is_restored_after(self):
@@ -94,25 +153,25 @@ class ConnectStepOnlyIsShort(unittest.TestCase):
         self.assertEqual(self._connect(("h", 80), 2, None), ([(("h", 80), 2, None)], [2]))
 
     def test_default_timeout_sentinel_follows_process_default(self):
-        with patch.object(_proxy.socket, "getdefaulttimeout", return_value=None):
+        with patch.object(_proxy.shared_transport.socket, "getdefaulttimeout", return_value=None):
             calls, after = self._connect(("h", 80))
         self.assertEqual((calls[0][1], after), (3.0, [None]))  # 연결 3초, 연결 뒤는 기본값(무제한) 그대로
-        with patch.object(_proxy.socket, "getdefaulttimeout", return_value=1.5):
+        with patch.object(_proxy.shared_transport.socket, "getdefaulttimeout", return_value=1.5):
             calls, after = self._connect(("h", 80))
         self.assertEqual((calls[0][1], after), (1.5, [1.5]))
 
     def test_http_and_https_connections_use_it_and_opener_keeps_proxy_handler(self):
-        self.assertIs(_proxy._FastConnectHTTPConnection("example.invalid", 80, timeout=5)._create_connection,
-                      _proxy._fast_connect)
-        self.assertIs(_proxy._FastConnectHTTPSConnection("example.invalid", 443, timeout=5)._create_connection,
-                      _proxy._fast_connect)
+        self.assertIs(_proxy.shared_transport._FastConnectHTTPConnection("example.invalid", 80, timeout=5)._create_connection,
+                      _proxy.shared_transport._fast_connect)
+        self.assertIs(_proxy.shared_transport._FastConnectHTTPSConnection("example.invalid", 443, timeout=5)._create_connection,
+                      _proxy.shared_transport._fast_connect)
         # 기본 urlopen 의 핸들러 구성과 같고 HTTP/HTTPS 만 바뀐다(ProxyHandler 는 프록시 설정이 있을 때만 붙는 것도 같다).
         import urllib.request
 
         ours = {type(h).__name__ for h in _proxy._SERVER_OPENER.handlers}
         default = {type(h).__name__ for h in urllib.request.build_opener().handlers}
-        self.assertEqual(ours - {"_FastConnectHTTPHandler", "_FastConnectHTTPSHandler"},
-                         default - {"HTTPHandler", "HTTPSHandler"})
+        self.assertEqual(ours - {"_FastConnectHTTPHandler", "_FastConnectHTTPSHandler", "_NoRedirect"},
+                         default - {"HTTPHandler", "HTTPSHandler", "HTTPRedirectHandler"})
         self.assertTrue({"_FastConnectHTTPHandler", "_FastConnectHTTPSHandler"} <= ours)
 
     def test_slow_response_after_connect_still_waits_for_the_call_timeout(self):
@@ -136,7 +195,7 @@ class ConnectStepOnlyIsShort(unittest.TestCase):
         thread.start()
         try:
             url = f"http://127.0.0.1:{server.server_address[1]}/x"
-            with patch.object(_proxy, "_CONNECT_TIMEOUT_S", 0.2), \
+            with patch.object(_proxy.shared_transport, "_CONNECT_TIMEOUT_S", 0.2), \
                     patch.dict("os.environ", {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}):
                 status, data = _proxy.raw_request("GET", url, timeout=5)
             self.assertEqual((status, data), (200, {"ok": True}))

@@ -1,5 +1,13 @@
 import asyncio
 import json
+import ssl
+import pytest
+from websockets.asyncio.server import serve
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
+from websockets.datastructures import Headers
+from test_shared_transport import certificates, required_tls
+from app.services import shared_transport
 from types import SimpleNamespace
 
 from app.main import _websocket_session_token
@@ -10,6 +18,33 @@ from app.services.remote_realtime import (
     relay_event,
     websocket_uri,
 )
+
+
+@pytest.mark.parametrize('secure', [False, True])
+@pytest.mark.parametrize('other_host', [False, True])
+def test_real_handshake_redirect_does_not_resend_secrets(required_tls, monkeypatch, secure, other_host):
+    monkeypatch.setattr(shared_transport, 'TLS_REQUIRED', secure)
+    async def scenario():
+        seen = []
+        context = None
+        if secure:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(str(required_tls[1]), str(required_tls[0]))
+        async def redirect(connection, request):
+            seen.append((request.path, request.headers.get('Authorization'), request.headers.get('Cookie')))
+            host = 'localhost' if other_host else '127.0.0.1'
+            port = connection.local_address[1]
+            location = f'{"wss" if secure else "ws"}://{host}:{port}/target'
+            return Response(302, 'Found', Headers({'Location': location}), b'')
+        async def handler(ws):
+            pytest.fail('redirect handshake must not open a websocket')
+        async with serve(handler, '127.0.0.1', 0, ssl=context, process_request=redirect) as server:
+            base = f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}'
+            bridge = RemoteRealtimeBridge(lambda: (base, 'synthetic'), lambda event: None)
+            with pytest.raises(InvalidStatus):
+                await bridge._consume((base, 'synthetic'))
+        assert seen == [('/ws', 'Bearer synthetic', 'ch_session=synthetic')]
+    asyncio.run(scenario())
 
 
 class FakeNotifier:

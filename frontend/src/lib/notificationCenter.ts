@@ -33,6 +33,7 @@ export interface ReleaseNotification {
   created_at: string;
   unread: boolean;
   url?: string; // relocation 전용 — 옮겨 갈 새 공유 서버 주소
+  displayUrl?: string; // 표시만 전송 주소로, id·전환 요청은 url 신원을 유지한다.
   serverName?: string; // relocation 전용 — 그 서버의 표시 이름(없으면 주소로 폴백)
   noticeId?: string; // 서버 관리 업데이트 공지 전용
   noticeRevision?: number;
@@ -155,17 +156,19 @@ export function serverRelocationNotification(
   if (!info || !url || !info.reachable || info.revision <= 0) return null;
   const serverName = (info.server_name || "").trim();
   const id = `relocation:${info.revision}:${url}`;
+  const displayUrl = info.proposed_display_url ?? url;
   return {
     id,
     kind: "relocation",
     version: String(info.revision),
     url,
+    displayUrl,
     serverName,
     // 평소 표기는 이름 — 이름이 없을 때만 주소를 드러낸다. 확인창이 없으므로(클릭=전환)
     // 무슨 일이 일어나는지는 반드시 이 한 줄에 들어 있어야 한다.
     text: serverName
       ? `'${serverName}' 서버가 새 위치로 이동했습니다. ${RELOCATION_ACTION_HINT}`
-      : `공유 서버가 새 주소로 이사했습니다: ${url}. ${RELOCATION_ACTION_HINT}`,
+      : `공유 서버가 새 주소로 이사했습니다: ${displayUrl}. ${RELOCATION_ACTION_HINT}`,
     created_at: info.announced_at || now,
     // ★'나중에'는 이 세션 동안만 기억한다(sessionStorage). 서버의 수락 표식은 실제로
     // 전환했을 때만 기록되므로, 미루면 다음 기동에서 다시 안읽음으로 뜬다.

@@ -20,7 +20,18 @@ from app.routers import registry_helper
 from app.services import asset_registry as svc
 from app.services import asset_registry_helper as helper_mod
 
+from test_shared_transport import certificates, required_tls, transport_server
+
 KST = svc._KST
+
+
+def test_schedule_claim_uses_shared_tls_and_refuses_redirect(required_tls):
+    with transport_server(required_tls, body=b'{"run":true}') as (base, seen):
+        assert registry_helper._claim((base, 'synthetic'))
+        assert seen[0][1]['Authorization'] == 'Bearer synthetic'
+    with transport_server(required_tls, status=302) as (base, seen):
+        assert not registry_helper._claim((base, 'synthetic'))
+        assert len(seen) == 1
 
 
 def at(day: int, hour: int, minute: int = 0, second: int = 0) -> datetime:

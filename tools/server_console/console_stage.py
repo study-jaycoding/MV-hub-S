@@ -22,7 +22,7 @@ from . import names
 from .install import Installation, Runner, child_env, run_command, trusted_git
 from .main import MANIFEST, POINTER, STAGES, StageError, read_pointer, stage_dir, verify_stage_dir
 
-PATHS = ("tools/server_console", "tools/log_viewer.py", "tools/deploy_fence_check.py")
+PATHS = ("tools/server_console", "tools/log_viewer.py", "tools/deploy_fence_check.py", "tools/server_tls.py")
 KEEP_AT_LEAST = 3
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 Say = Callable[[str], None]

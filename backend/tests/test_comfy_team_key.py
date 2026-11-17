@@ -11,6 +11,7 @@ import os
 import threading
 import time
 from unittest.mock import Mock
+from test_shared_transport import certificates, required_tls, transport_server
 
 import pytest
 from fastapi import HTTPException
@@ -26,6 +27,17 @@ ADMIN, MEMBER, PENDING = "boss@x.test", "mate@x.test", "wait@x.test"
 PASSWORD = "secret123"
 KEY = "comfyui-team-key-0123456789abcdef"
 windows_only = pytest.mark.skipif(os.name != "nt", reason="DPAPI 는 Windows 에서만")
+
+
+def test_team_key_tls_ignores_environment_proxy(required_tls, monkeypatch):
+    monkeypatch.setenv('https_proxy', 'http://127.0.0.1:1')
+    monkeypatch.setenv('no_proxy', '')
+    with transport_server(required_tls) as (base, seen):
+        assert svc._http_get(base + '/key', 'synthetic') == (200, b'{}')
+        assert seen[0][1]['Authorization'] == 'Bearer synthetic'
+    with transport_server(required_tls, status=302) as (base, seen):
+        assert svc._http_get(base + '/key', 'synthetic')[0] == 302
+        assert len(seen) == 1
 
 
 # ── 공통 ───────────────────────────────────────────────────────────────────────

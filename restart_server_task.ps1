@@ -7,6 +7,14 @@ $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $serverTask = "MVHub Server"
 $watchdogTask = "MVHub Watchdog"
+$pythonMarker = Join-Path $Root ".mvhub-runtime\python.txt"
+$serverPython = (Get-Content -LiteralPath $pythonMarker -Encoding UTF8 -ErrorAction Stop | Select-Object -First 1).Trim().Trim('"')
+if (-not [System.IO.Path]::IsPathRooted($serverPython) -or -not (Test-Path -LiteralPath $serverPython -PathType Leaf)) {
+    throw "Registered server Python is missing: .mvhub-runtime\python.txt"
+}
+$tlsTool = Join-Path $Root "tools\server_tls.py"
+$scheme = & $serverPython -B $tlsTool --scheme
+if ($LASTEXITCODE -ne 0 -or $scheme -notin @('http', 'https')) { throw "TLS configuration error" }
 
 function Get-TaskResultText([string]$TaskName) {
     try {
@@ -158,11 +166,10 @@ try {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $ready = $false
     while ((Get-Date) -lt $deadline) {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:$Port/api/ready"
-            if ($response.StatusCode -eq 200) { $ready = $true; break }
-        }
-        catch { }
+        & $serverPython -B $tlsTool --probe $Port
+        $probeCode = $LASTEXITCODE
+        if ($probeCode -eq 0) { $ready = $true; break }
+        if ($probeCode -eq 3) { throw "TLS configuration or certificate verification failed" }
         Start-Sleep -Seconds 3
     }
     if (-not $ready) {
@@ -187,7 +194,7 @@ try {
         }
     }
 
-    Write-Host "Server is UP: http://127.0.0.1:$Port" -ForegroundColor Green
+    Write-Host "Server is UP: ${scheme}://127.0.0.1:$Port" -ForegroundColor Green
     Write-Host "${serverTask}: $(Get-TaskResultText $serverTask)"
     Write-Host "${watchdogTask}: $(Get-TaskResultText $watchdogTask)"
     exit 0

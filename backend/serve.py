@@ -110,6 +110,10 @@ def _run_server(server: uvicorn.Server, sockets: list[socket.socket]) -> None:
 def main() -> None:
     ssl_certfile = os.environ.get("CONTENT_HUB_SSL_CERTFILE", "").strip() or None
     ssl_keyfile = os.environ.get("CONTENT_HUB_SSL_KEYFILE", "").strip() or None
+    if os.environ.get("CONTENT_HUB_AUTH", "0").lower() not in ("1", "true", "yes", "on"):
+        if ssl_certfile or ssl_keyfile:
+            print('[serve] AUTH off: ignoring server TLS variables for the local hub')
+        ssl_certfile = ssl_keyfile = None
     if bool(ssl_certfile) != bool(ssl_keyfile):
         raise RuntimeError(
             "HTTPS 사용 시 CONTENT_HUB_SSL_CERTFILE과 CONTENT_HUB_SSL_KEYFILE을 모두 지정해야 합니다."
@@ -146,6 +150,7 @@ def main() -> None:
         ws_ping_interval=None,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
+        **({"proxy_headers": False} if ssl_certfile else {}),
     )
     server = uvicorn.Server(config)
     from app.services import open_link

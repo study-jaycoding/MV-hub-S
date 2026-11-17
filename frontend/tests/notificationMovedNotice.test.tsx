@@ -6,6 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const relocate = vi.fn();
+const reload = vi.fn();
+vi.mock("../src/lib/unloadGuard", () => ({ reloadNow: () => reload() }));
 vi.mock("../src/api", () => ({
   api: {
     notificationComments: vi.fn().mockResolvedValue([]),
@@ -29,12 +31,14 @@ vi.mock("../src/lib/sharedApi", () => ({
 }));
 
 const { NotificationCenter } = await import("../src/components/NotificationCenter");
+const { sharedApi } = await import("../src/lib/sharedApi");
 
 let host: HTMLDivElement, root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   window.localStorage.clear();
   relocate.mockReset();
+  reload.mockReset();
   releaseStatus.mockImplementation(() => Promise.reject(new Error("없음")));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
@@ -84,4 +88,31 @@ it("읽음 처리 뒤 늦게 끝난 조회가 그 알림을 다시 '안읽음'�
   await act(async () => { finishSlow(); });
   await settle();
   expect(movedItem()!.classList.contains("unread")).toBe(false);
+});
+
+it("이전 알림 화면은 HTTPS를 보이고 클릭은 저장 신원으로 전환한다", async () => {
+  const identity = "http://127.0.0.1:18093";
+  vi.mocked(sharedApi.sharedServerRelocation).mockResolvedValueOnce({
+    current_url: "http://127.0.0.1:18091", proposed_url: identity,
+    proposed_display_url: "https://127.0.0.1:18093", revision: 4,
+    server_name: null, announced_at: null, reachable: true, moved: null,
+  });
+  await act(async () => {
+    root.render(<NotificationCenter commentUnreadCount={0} hasUnreadComments={false} onOpenComment={() => {}} onChanged={() => {}} />);
+  });
+  await settle();
+  vi.mocked(sharedApi.sharedServerRelocation).mockResolvedValueOnce({
+    current_url: "http://127.0.0.1:18091", proposed_url: identity,
+    proposed_display_url: "https://127.0.0.1:18093", revision: 4,
+    server_name: null, announced_at: null, reachable: true, moved: null,
+  });
+  await act(async () => { host.querySelector("button")!.click(); });
+  await settle();
+  const item = [...document.querySelectorAll<HTMLButtonElement>(".notification-update")]
+    .find((button) => button.textContent?.includes("https://127.0.0.1:18093"));
+  expect(item).toBeTruthy();
+  await act(async () => { item!.click(); });
+  await settle();
+  expect(relocate).toHaveBeenCalledWith(identity, 4);
+  expect(reload).toHaveBeenCalledOnce();
 });

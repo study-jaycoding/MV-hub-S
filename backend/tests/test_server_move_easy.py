@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
+from test_server_tls import certificates, install_certificate  # noqa: F401
 import argparse
 import importlib.util
 import json
@@ -98,7 +100,7 @@ def easy(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "REHEARSAL_RECORD", tmp_path / "repo" / ".mvhub-runtime" / "server_move_rehearsal.json")
     monkeypatch.setattr(module, "install_readiness", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "old_server_ready", lambda url: False)
-    monkeypatch.setattr(module, "wait_ready", lambda port, timeout=180.0: False)
+    monkeypatch.setattr(module, "wait_ready", lambda port, timeout=180.0, **kwargs: False)
     return module
 
 
@@ -347,6 +349,24 @@ def test_out_refuses_to_overwrite_an_unfinished_record(easy, tmp_path, monkeypat
     assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == "paused"
 
 
+@pytest.mark.parametrize('name', ['CONTENT_HUB_SSL_CERTFILE', 'CONTENT_HUB_SSL_KEYFILE'])
+def test_out_refuses_legacy_machine_tls_before_any_change(easy, tmp_path, monkeypatch, name):
+    monkeypatch.setattr(easy, 'machine_env', lambda: {name: 'legacy-file'})
+    monkeypatch.setattr(easy.sm, 'resolve_data_dir', lambda *a: pytest.fail('must refuse before export'))
+    with pytest.raises(easy.MoveError, match='새 인증서'):
+        easy.cmd_out(_out_args(tmp_path / 'data'))
+    assert not list((tmp_path / 'Desktop').iterdir())
+
+
+def test_old_server_check_stays_http_even_with_local_tls(easy, certificates, tls_dir):
+    from test_server_tls import tls_server
+    old_server_ready = _module().old_server_ready  # easy fixture stubs this network check.
+    install_certificate(tls_dir, certificates('local-only'))
+    with tls_server() as (port, seen):
+        assert old_server_ready(f'http://127.0.0.1:{port}')
+        assert seen == [('/api/ready', None)]
+
+
 def test_out_refuses_path_overrides_before_any_change(easy, tmp_path, monkeypatch):
     """이 창에 CONTENT_HUB_DB 가 있으면 예약 서버와 다른 DB 를 멈추고 내보낼 수 있다 — 아무것도 바꾸기 전에 멈춘다."""
     data = tmp_path / "data"
@@ -362,7 +382,7 @@ def test_out_refuses_path_overrides_before_any_change(easy, tmp_path, monkeypatc
 
 def test_in_precheck_refuses_path_overrides_left_on_the_new_pc(easy, tmp_path, monkeypatch):
     data = tmp_path / "data"
-    monkeypatch.setattr(easy, "machine_env", lambda: {"CONTENT_HUB_SSL_CERTFILE": "C:\\certs\\old.pem"})
+    monkeypatch.setattr(easy, "machine_env", lambda: {"CONTENT_HUB_DATA": "C:\\old-data"})
     monkeypatch.setattr(easy, "task_snapshot", lambda: _tasks(easy, exists=False))
     monkeypatch.setattr(easy.sm, "port_listener_pids", lambda port: ([], True))
     monkeypatch.setattr(easy, "our_processes", lambda: [])
@@ -371,7 +391,33 @@ def test_in_precheck_refuses_path_overrides_left_on_the_new_pc(easy, tmp_path, m
 
     problems = easy.precheck_in(tmp_path / "pkg", {"machine_env": {}}, data, 8010)
 
-    assert len(problems) == 1 and "이 PC 에 CONTENT_HUB_SSL_CERTFILE" in problems[0]
+    assert len(problems) == 1 and "이 PC 에 CONTENT_HUB_DATA" in problems[0]
+
+
+@pytest.mark.parametrize('state', ['on', 'error'])
+def test_tls_source_cannot_export(easy, tmp_path, certificates, tls_dir, state):
+    if state == 'on':
+        install_certificate(tls_dir, certificates('source'))
+    else:
+        (tls_dir / 'server.pem').write_text('invalid')
+    data = tmp_path / 'data'
+    with pytest.raises(easy.MoveError, match='새 인증서'):
+        easy.cmd_out(_out_args(data))
+    assert not data.exists()
+    assert not list((tmp_path / 'Desktop').iterdir())
+
+
+@pytest.mark.parametrize('source,local', [('on', False), ('error', False), ('off', True)])
+def test_tls_move_precheck_blocks_source_or_destination(easy, tmp_path, monkeypatch, tls_dir, source, local):
+    if local:
+        (tls_dir / 'server.pem').write_text('invalid')
+    monkeypatch.setattr(easy, 'task_snapshot', lambda: _tasks(easy, exists=False))
+    monkeypatch.setattr(easy.sm, 'port_listener_pids', lambda port: ([], True))
+    monkeypatch.setattr(easy, 'our_processes', lambda: [])
+    monkeypatch.setattr(easy, 'firewall_allows', lambda port: True)
+    monkeypatch.setattr(easy, 'time_zone', lambda: KST)
+    problems = easy.precheck_in(tmp_path / 'package', {'server_tls': source}, tmp_path / 'data', 12345)
+    assert easy.TLS_MOVE_MESSAGE in problems
 
 
 def test_in_refuses_a_package_without_settings_in_the_manifest(easy, tmp_path):
@@ -951,6 +997,7 @@ def test_rehearsal_server_env_takes_nothing_from_the_parent(easy, tmp_path, monk
     assert env["CONTENT_HUB_EXTERNAL_RECOVERY"] == "0" and env["CONTENT_HUB_ASSET_REGISTRY"] == "0"
     assert "CONTENT_HUB_SOMETHING_ELSE" not in env and "CONTENT_HUB_NO_PROXY" not in env
     assert env["PYEXE"] == sys.executable
+    assert env['MVHUB_SERVER_TLS_DIR'] == str(folder / 'server-tls')
     for name in ("CONTENT_HUB_DATA", "CONTENT_HUB_MEDIA", "CONTENT_HUB_LOG_DIR", "CONTENT_HUB_SERVER_ALERT_PATH"):
         assert env[name].startswith(str(folder)), name
 
@@ -976,7 +1023,7 @@ def test_rehearsal_server_window_is_closed_when_it_never_gets_ready(easy, tmp_pa
     # 기다리는 중 Ctrl+C — 띄운 창을 남기지 않고 그대로 멈춘다
     killed.clear()
 
-    def interrupted(port, timeout=180.0):
+    def interrupted(port, timeout=180.0, **kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(easy, "wait_ready", interrupted)

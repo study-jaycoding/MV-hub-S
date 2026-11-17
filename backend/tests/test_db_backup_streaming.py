@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app.routers import db_backup, db_transfer
 from app.services import backup_manifest, upload_limits
 from test_worker_offdisk_backup import worker_store
+from test_shared_transport import certificates, required_tls, transport_server
 
 
 class GuardedStream(io.BytesIO):
@@ -297,6 +298,22 @@ class BackupRouteLimitTests(unittest.IsolatedAsyncioTestCase):
                     SimpleNamespace(), SimpleNamespace(file=io.BytesIO(b"x"))
                 )
         self.assertEqual(caught.exception.status_code, 413)
+
+
+def test_db_transfer_upload_and_download_use_tls(required_tls, tmp_path):
+    source = tmp_path / 'source.db'
+    source.write_bytes(b'synthetic sqlite bytes')
+    with transport_server(required_tls, body=b'{"ok":true}') as (base, seen):
+        assert db_transfer._multipart_upload(base + '/upload', 'synthetic', source) == (200, {'ok': True})
+        dest = tmp_path / 'download.db'
+        assert db_transfer._download_to(base + '/download', 'synthetic', dest) == 200
+        assert dest.read_bytes() == b'{"ok":true}'
+        assert all(r[1]['Authorization'] == 'Bearer synthetic' for r in seen)
+    with transport_server(required_tls, status=302) as (base, seen):
+        assert db_transfer._multipart_upload(base + '/upload', 'synthetic', source)[0] == 302
+        assert db_transfer._download_to(base + '/download', 'synthetic', tmp_path / 'redirect.db') == 302
+        assert len(seen) == 2
+        assert not (tmp_path / 'redirect.db').exists()
 
 
 class MultipartStreamingTests(unittest.TestCase):

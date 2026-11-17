@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 167개.
+제품 환경변수 168개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -34,7 +34,7 @@
 | `CONTENT_HUB_ASSET_REGISTRY_MIBPS` | `"8,5"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_TREE_CACHE_TTL` | `"30"` | `backend/app/services/asset_tree.py` | — |
 | `CONTENT_HUB_ASSET_UPLOAD_TOTAL_MAX_BYTES` | `1024 * MIB` | `backend/app/services/upload_limits.py` | — |
-| `CONTENT_HUB_AUTH` | `"0"` `'0'` | `backend/app/config.py` `run_agent_session.py` | `MV_agent.bat` `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
+| `CONTENT_HUB_AUTH` | `"0"` `'0'` | `backend/app/config.py` `backend/serve.py` `run_agent_session.py` | `MV_agent.bat` `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_AUTH_SECRET` | — | `backend/app/routers/db_transfer.py` `backend/app/services/auth.py` `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_CHANGE_DEBOUNCE` | `"300"` | `backend/app/services/backup.py` | — |
 | `CONTENT_HUB_BACKUP_DIR` | `""` `DATA_DIR / "backups"` | `backend/app/services/backup.py` `tools/backup_replicate.py` `tools/server_console/backup.py` | — |
@@ -112,7 +112,7 @@
 | `CONTENT_HUB_RESOLVE_SELECTION_POLL_SECONDS` | `"0.05"` | `backend/app/services/resolve_selection_worker.py` | — |
 | `CONTENT_HUB_RESOLVE_STATUS_TIMEOUT_SECONDS` | `"8"` | `backend/app/services/resolve_status_runner.py` | — |
 | `CONTENT_HUB_RESTART_LIMIT` | `"5"` | `tools/server_supervisor.py` | — |
-| `CONTENT_HUB_SCENE_WRITER` | `"0"` `'0'` | `backend/app/services/scene_writer.py` `tools/tests/test_canvas_notebook_measure.py` | — |
+| `CONTENT_HUB_SCENE_WRITER` | `"0"` `"1"` `'0'` | `backend/app/services/scene_writer.py` `tools/tests/test_canvas_notebook_measure.py` | — |
 | `CONTENT_HUB_SERVER_ALERT_PATH` | `""` | `tools/server_supervisor.py` | — |
 | `CONTENT_HUB_SERVER_SYNC` | `"1"` | `backend/app/services/syncer.py` | `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_SERVICE_NAME` | `"mvhub-backend"` | `backend/app/services/operational_logging.py` | — |
@@ -122,7 +122,7 @@
 | `CONTENT_HUB_SLACK_TEST_RECIPIENTS` | `''` | `backend/app/services/slack_client.py` | — |
 | `CONTENT_HUB_SLACK_TEST_SEND` | — | `backend/app/services/slack_client.py` `backend/app/services/slack_notify.py` | — |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `"1000"` | `backend/app/main.py` | — |
-| `CONTENT_HUB_SSL_CERTFILE` | `""` | `backend/serve.py` `tools/server_console/install.py` | — |
+| `CONTENT_HUB_SSL_CERTFILE` | `""` | `backend/serve.py` | — |
 | `CONTENT_HUB_SSL_KEYFILE` | `(표시 안 함)` | `backend/serve.py` | — |
 | `CONTENT_HUB_STABLE_SECONDS` | `"120"` | `tools/server_supervisor.py` | — |
 | `CONTENT_HUB_STUCK_SYNCED_AGE` | `"300"` | `backend/app/services/syncer.py` | — |
@@ -168,6 +168,7 @@
 | `MVHUB_NO_BROWSER` | — | `tools/dev_hub.py` | `update_release_worker.bat` |
 | `MVHUB_OPEN_LINK` | — | `backend/app/routers/open_generation.py` `backend/app/services/open_link.py` | — |
 | `MVHUB_PROCESS_ROLE` | `"unknown"` | `backend/app/services/runtime_activation.py` | `MV_agent.bat` `update_release_worker.bat` |
+| `MVHUB_SERVER_TLS_DIR` | `''` | `tools/server_console/install.py` `tools/server_tls.py` | — |
 | `MVHUB_SESSION_GUARDED` | `None` | `run_agent_session.py` `tools/workroom.py` | `run_agent_session.py` |
 | `MVHUB_SESSION_TOKEN` | `(표시 안 함)` | `agent_push.py` | — |
 | `MVHUB_UPDATE_STATE_DIR` | `str(Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempd…` | `backend/app/services/release_update.py` | — |
@@ -208,7 +209,7 @@
 | `HOMEDRIVE` | `tools/server_console/install.py` |
 | `HOMEPATH` | `tools/server_console/install.py` |
 | `LOCALAPPDATA` | `agent_push.py` `backend/app/config.py` `backend/app/routers/mcp.py` `backend/app/services/agent_chat_process.py` `backend/app/services/clean_feed_window.py` `backend/app/services/open_link.py` `backend/app/services/release_update.py` `open_link.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` `tools/mcp_adapter/update.py` `tools/server_console/install.py` |
-| `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` |
+| `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` `tools/server_tls.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |
 | `TEMP` | `tools/mcp_adapter/server.py` `tools/server_console/install.py` |
 | `USERNAME` | `tools/server_console/install.py` `tools/server_console/jobs.py` |

@@ -18,6 +18,7 @@ from contextlib import contextmanager
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from app.services.install_journal import atomic_json, advance, new_journal, read_journal, rollback_decision
 from install_db_probe import snapshot
+import server_tls
 from app.services.release_contract import compatibility as release_compatibility, document, digest as is_digest
 from qualify_release_artifact import TOOLS as PROBE_TOOLS
 
@@ -28,7 +29,7 @@ SOURCE_PROFILE = 'server-source-v2'
 REQUIRED_SOURCE_INPUTS = frozenset({'backend/app/main.py', 'backend/serve.py', 'backend/schema.sql',
                                     'backend/requirements.lock.txt', 'frontend/package.json',
                                     'frontend/package-lock.json', 'hf_cli_version.txt'})
-COORDINATOR_TOOLS = ('tools/server_activation.py', 'tools/server_release_update.py')
+COORDINATOR_TOOLS = ('tools/server_activation.py', 'tools/server_release_update.py', 'tools/server_tls.py')
 
 
 def qualification_tools(root):
@@ -174,22 +175,21 @@ def validate_runtime_proof(proof, hashes, descriptor):
 
 
 def ready_transport(root, env):
-    cert = str(env.get('CONTENT_HUB_SSL_CERTFILE', '')).strip()
-    key = str(env.get('CONTENT_HUB_SSL_KEYFILE', '')).strip()
-    if bool(cert) != bool(key):
-        raise ValueError('incomplete_server_tls_configuration')
-    if not cert:
+    env.pop('CONTENT_HUB_SSL_CERTFILE', None)
+    env.pop('CONTENT_HUB_SSL_KEYFILE', None)
+    config = server_tls.read_config()
+    if config.state == 'error':
+        raise server_tls.TLSConfigError(config.error)
+    if config.state == 'off':
         return 'http', None
-    for name, raw in (('CONTENT_HUB_SSL_CERTFILE', cert), ('CONTENT_HUB_SSL_KEYFILE', key)):
-        path = Path(raw)
-        path = path if path.is_absolute() else root / 'backend' / path
-        if not path.is_file():
-            raise ValueError('server_tls_file_missing')
-        env[name] = str(path.resolve())
+    if str(env.get('CONTENT_HUB_AUTH', '0')).lower() not in ('1', 'true', 'yes', 'on'):
+        raise server_tls.TLSConfigError('server_tls_requires_auth')
+    cert, key = server_tls.server_files(config)
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    server_context.load_cert_chain(env['CONTENT_HUB_SSL_CERTFILE'], env['CONTENT_HUB_SSL_KEYFILE'], password='')
+    server_context.load_cert_chain(cert, key, password='')
+    env['CONTENT_HUB_SSL_CERTFILE'], env['CONTENT_HUB_SSL_KEYFILE'] = cert, key
     # Trust this explicitly configured certificate, retaining hostname/CERT_REQUIRED.
-    context = ssl.create_default_context(cafile=env['CONTENT_HUB_SSL_CERTFILE'])
+    context = server_tls.client_context(config)
     return 'https', context
 
 

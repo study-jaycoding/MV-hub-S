@@ -1,3 +1,4 @@
+import type { DraftResolution } from "../../lib/seedanceDraft";
 // '생성 결과' 창 — 캔버스 카드에 쌓인 결과를 라이브러리와 같은 격자·툴바·선택 막대로 본다(Jay 2026-10-07: 폴더 창처럼).
 //  데이터(씬의 genData)·선택·캔버스 고유 동작(대표 지정·비활성·다빈치 선택)은 SceneBoard 가 갖고, 여기는 라이브러리 부품을
 //  조립만 한다. 창 껍데기는 '폴더 보기' 창의 모양을 쓰되 .folder-peek 클래스는 달지 않는다 — 그 클래스는 "이 안의 키는
@@ -25,9 +26,10 @@ export interface VariantResolveControls {
 
 // Draft 생성 컨트롤 — App 의 finishDraft·draftRequests 를 SceneBoard 를 거쳐 그대로 전달(캔버스 선택바와 같은 처리).
 export interface VariantDraftControls {
-  finish: (generation: Generation) => void;
-  busy: (generationId: string) => boolean;
-  done: (generationId: string) => boolean;
+  finish: (generation: Generation, resolution: DraftResolution) => void;
+  busy: (generation: Generation, resolution: DraftResolution) => boolean | "uncertain";
+  contextKey?: string;
+  revision?: number;
 }
 
 const noop = () => {};
@@ -326,8 +328,8 @@ export function SceneVariantPopup({
               resolveTransferBusy={actions.variantResolve?.busy}
               resolveTransferPendingCount={actions.variantResolve?.pendingCount}
               onFinishDraft={actions.variantDraft?.finish}
-              draftBusy={selected.some((generation) => !!actions.variantDraft?.busy(generation.id))}
-              draftDone={selected.some((generation) => !!actions.variantDraft?.done(generation.id))}
+              draftBusy={(resolution) => selected.length === 1 ? actions.variantDraft?.busy(selected[0], resolution) ?? false : false}
+              draftContextKey={actions.variantDraft?.contextKey} draftRevision={actions.variantDraft?.revision}
             />
           </div>
         )}

@@ -128,3 +128,32 @@ it("팀 공간이 아니면 Credits 칸만 — Limit·User group 칸이 없다",
   const m = await open({ scope: "personal", id: null, name: null });
   expect(m.limit).toBeNull();
 });
+
+
+it.each(["unassigned", "unlimited"] as const)("새 서버 %s 계정도 내 사용량 진입을 제공한다", async source => {
+  serve(quota({ source, usage_supported: true }));
+  const m = await open(TEAM);
+  expect(m.limit?.textContent).toContain("내 사용량 보기");
+});
+
+it("basis 없는 구서버는 내 사용량 진입과 API 출처를 숨긴다", async () => {
+  serve(quota({ source: "auto", quota: 100, remaining: 90 }));
+  const m = await open(TEAM);
+  expect(m.limit?.textContent).not.toContain("내 사용량 보기");
+  expect(m.limit?.textContent).not.toContain("힉스필드 기준");
+});
+
+it("API와 facts 출처를 몫 source와 구별하고 실제 전액 환불만 안내한다", async () => {
+  serve(quota({ source: "auto", basis: "api", quota: 100, remaining: 90, used: 10, failed_count: 3, failed_refunded_count: 1, collected_at_ms: 100 }));
+  const m = await open(TEAM);
+  expect(m.limit?.textContent).toContain("힉스필드 기준");
+  expect(m.limit?.textContent).toContain("오류 보고 후 전액 환불 1건");
+  expect(m.limit?.textContent).not.toContain("전액 환불 3건");
+});
+
+it("미상 건수만 있을 때 금액에 견적 기호를 붙이지 않는다", async () => {
+  serve(quota({ source: "auto", basis: "api", quota: 100, remaining: 90, used: 10, unknown_count: 3 }));
+  const m = await open(TEAM);
+  expect(m.limitText).toBe("90 / 100");
+  expect(m.limit?.textContent).toContain("사용량 미확인 3건");
+});

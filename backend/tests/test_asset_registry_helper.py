@@ -2,7 +2,6 @@
 설계: docs/ASSET_REGISTRY.md §10(Claude 설계 · Codex 합의). 서버 자리(lease)·결과 검증·도우미 흐름을 본다."""
 
 from __future__ import annotations
-
 import asyncio
 import hashlib
 import subprocess
@@ -23,6 +22,25 @@ from app.routers import asset_registry as api
 from app.services import asset_registry as svc
 from app.services import asset_registry_helper as helper_mod
 from app.services.upload_limits import UPLOAD_REQUEST_LIMITS
+from test_shared_transport import certificates, required_tls, transport_server
+
+
+def test_helper_call_uses_shared_tls_and_refuses_redirect(required_tls):
+    import pytest
+    from app.services import asset_registry_helper as helper_mod
+    helper = helper_mod.HelperController()
+    helper._token = 'synthetic'
+    with transport_server(required_tls) as (base, seen):
+        helper._base = base
+        assert helper._call('GET', '/registry', pinned_ok=True) == {}
+        assert seen[0][1]['Authorization'] == 'Bearer synthetic'
+    with transport_server(required_tls, status=302) as (base, seen):
+        helper._base = base
+        with pytest.raises(helper_mod._ProjectFail, match='302'):
+            helper._call('GET', '/registry', pinned_ok=True)
+        assert len(seen) == 1
+
+
 
 UNC = r"\\nas\share\PROJ"
 

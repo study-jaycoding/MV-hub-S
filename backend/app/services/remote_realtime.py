@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-import websockets
+from websockets.asyncio.client import connect
 
 from ..deps import SESSION_COOKIE
 from ..mutation_notify import (
@@ -28,6 +28,13 @@ from ..mutation_notify import (
     MutationOrigin,
     parse_mutation_origin,
 )
+from . import shared_transport
+
+
+class _NoRedirectConnect(connect):
+    def process_redirect(self, exc):
+        return exc
+
 
 RemoteConfig = tuple[str, str]
 ConfigProvider = Callable[[], Optional[RemoteConfig]]
@@ -145,7 +152,7 @@ class RemoteRealtimeBridge:
         config_provider: ConfigProvider,
         event_handler: EventHandler,
         *,
-        connect_factory: Callable[..., Any] = websockets.connect,
+        connect_factory: Callable[..., Any] = _NoRedirectConnect,
         config_poll_seconds: float = 1.0,
         connected_config_poll_seconds: float = 5.0,
         min_backoff_seconds: float = 1.0,
@@ -283,7 +290,7 @@ class RemoteRealtimeBridge:
 
     async def _consume(self, config: RemoteConfig) -> None:
         base_url, token = config
-        uri = websocket_uri(base_url)
+        uri = websocket_uri(shared_transport.transport_url(base_url))
         # URL 쿼리는 접근 로그에 남을 수 있으므로 금지. Bearer는 새 서버 계약, Cookie는 구버전
         # 서버와의 롤링 배포 호환용이다. 둘 다 헤더라 URL·운영 지표에는 노출되지 않는다.
         headers = {
@@ -292,6 +299,7 @@ class RemoteRealtimeBridge:
         }
         async with self._connect_factory(
             uri,
+            **({"ssl": shared_transport.ssl_context()} if uri.startswith("wss://") else {}),
             additional_headers=headers,
             compression=None,
             open_timeout=8,

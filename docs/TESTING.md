@@ -1050,8 +1050,8 @@ live DB는 이 과정에서 수정되지 않는다. `test_dev_server.bat`은 Vit
 <!-- BEGIN MVHUB POLICY merge-checks 2026-10-15-r14 -->
 ## main 반영 전 체크리스트
 
-아래는 최종 배포 후보의 Gate 6-A다. 기능 작업실에서 통합 시험실로 작은 변경을 가져올 때마다
-전체 게이트를 반복하지 않는다. 통합 전 확인과 위험 변경 예외는 [WORKROOMS](WORKROOMS.md)를 따른다.
+아래는 최종 배포 후보의 Gate 6-A다. 개발 운영 확장 `dev-centered-2026-10-27-r1`에 따라 dev에서 작은 변경을 준비할 때마다
+전체 게이트를 반복하지 않는다. 관련 확인과 위험 변경의 실사용 전 독립 리뷰·검증은 [WORKROOMS](WORKROOMS.md)를 따른다. 최종 검증은 선택한 변경과 승인된 의존성만 포함한 깨끗한 고정 후보에서 하며 필요한 경우 임시 작업실을 사용한다.
 
 1. `CONTENT_HUB_NO_PROXY=1` 격리 환경에서 **백엔드·프런트 전체 자동 테스트** 통과
 2. 프런트 production build(`npm.cmd run build`, 타입체크 포함)와 `npm.cmd run lint:architecture` 통과

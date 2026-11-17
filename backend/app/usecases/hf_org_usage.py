@@ -1,4 +1,4 @@
-"""Phase 1 administrator actions and comparison; existing quota consumers stay untouched."""
+"""Organization administrator actions, comparison and authenticated personal reads."""
 from __future__ import annotations
 
 import json
@@ -8,6 +8,44 @@ from decimal import Decimal
 from ..repo import hf_org_usage as repo
 from ..services import hf_org_usage_collector as worker
 from ..services.hf_org_usage_key import UsageError, hashed, load_key, protect_key, public_key_state
+
+
+def my_usage(workspace_id: str, email: str, range_name: str = 'period', space: str = 'this') -> dict:
+    from ..db import get_connection
+    from ..repo import manage_credit_plan as plan
+    from ..repo.identity import list_workspace_options
+    from ..repo.manage_schema import _ensure_schema
+
+    workspaces = list_workspace_options(member_email=email)
+    if workspace_id not in {w['id'] for w in workspaces}:
+        raise PermissionError('workspace_membership')
+    at = repo.now_ms()
+    today = datetime.fromtimestamp(at/1000, worker.KST).date().isoformat()
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute('BEGIN')
+        settings, groups, members, _, _ = plan._load(conn, workspace_id)
+        anchor = plan._plan_anchor(settings)
+        group = next((g for g in groups if email in members.get(g['id'], set())), None)
+        period_name = 'day' if range_name == 'today' else 'week' if range_name == 'week' else plan._group_period(group) if group else 'month'
+        if range_name == 'previous':
+            today = (date.fromisoformat(plan.period_start(today, period_name, anchor)) - timedelta(days=1)).isoformat()
+        first = plan.day_ms(plan.period_start(today, period_name, anchor))
+        last = plan.day_ms(plan.after_day(plan.period_end(today, period_name, anchor)))
+        ids = [workspace_id] if space == 'this' else sorted({w['id'] for w in workspaces})
+        snapshot = repo.CreditUsageSnapshot(conn, ids, first, last, at=at)
+    parts = [snapshot.total(wid, email, first, last) for wid in ids]
+    result = plan.combine_usage(parts)
+    rows = sorted(result.pop('rows'), key=lambda r: (-r['created_at'], r['workspace_id'], r['row_id']))
+    # Match the existing quota response rounding, after all spaces have been summed.
+    for key in ('used','used_real','used_estimated','refunded'):
+        if result[key] is not None:
+            result[key] = plan._shown(result[key])
+    rows = [dict(row, net=plan._shown(row['net'])) for row in rows]
+    result.update(workspace_id=workspace_id, basis_workspace_id=workspace_id, workspace_ids=ids,
+                  range=range_name, space=space, period_start_ms=first, period_end_ms=last,
+                  rows=rows[:1000], total_count=len(rows), returned_count=min(len(rows), 1000), truncated=len(rows)>1000)
+    return result
 
 
 def period(start=None, end=None, *, at=None) -> tuple[int, int]:
@@ -138,15 +176,9 @@ def _legacy_cents(value) -> int | None:
 
 def _actor_labels(snapshot: dict, org_id: str) -> dict:
     result = {}
-    old = {link["actor_user_id"]: link for link in snapshot["links"]}
     for actor in {row["actor_user_id"] or "" for row in snapshot["rows"]}:
-        matches = [a for a in snapshot["accounts"] if a.get("creator_uid") == actor]
-        link = old.get(actor)
-        valid = (actor and actor != "local" and not actor.startswith("acct:") and len(matches) == 1
-                 and matches[0]["status"] == "approved"
-                 and (not link or link["state"] != "conflict" and
-                      (not link["account_email"] or link["account_email"] == matches[0]["email"])))
-        result[actor] = matches[0]["email"] if valid else "미연결 #" + hashed(org_id + ":" + actor)
+        email, _ = repo.actor_identity(actor, snapshot['accounts'], snapshot['links'])
+        result[actor] = email or "미연결 #" + hashed(org_id + ":" + actor)
     return result
 
 

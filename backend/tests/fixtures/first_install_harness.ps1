@@ -22,6 +22,9 @@ $Needle='[System.Diagnostics.Process]::Start($StartInfo)'
 if ([regex]::Matches($WorkerFunctions, [regex]::Escape($Needle)).Count -ne 2) { throw 'Process boundary changed.' }
 $WorkerFunctions=$WorkerFunctions.Replace($Needle,'(Invoke-FakeProcessStart $StartInfo)')
 Invoke-Expression $WorkerFunctions
+# A script-level line, not a function: load the real retry codes so a scanner lock retries as in production.
+if ($WorkerRaw -notmatch '(?m)^\$script:RetryableMoveCodes = [^\r\n]+') { throw 'Retry code boundary changed.' }
+Invoke-Expression $Matches[0]
 $Template=Join-Path $Tree 'release\MVHub_Install.bat'
 if ((Get-Content $Template -Raw).Contains('__MVHUB_TRUSTED_BOOTSTRAP_BASE64__')) {
     Invoke-Expression (Get-FunctionText (Join-Path $Tree 'release\make_release.ps1') @('Write-TrustedFirstInstaller'))
@@ -66,8 +69,10 @@ function Undo-ComponentSwaps {
     if ($Scenario -ne 'existing_install_restart_failed') { throw 'No rollback allowed in this fresh harness.' }
     Undo-RealComponentSwaps -Components $Components
 }
-function Start-Sleep {}
-function Get-Date { $script:Tick++; return ([DateTime]'2026-10-18T00:00:00Z').AddMinutes($script:Tick) }
+# Real time plus skipped whole seconds: lock retries really wait, the 3-minute ready poll does not.
+function Start-Sleep { param([int]$Seconds,[int]$Milliseconds)
+    if ($Seconds) { $script:SkippedTime+=[TimeSpan]::FromSeconds($Seconds) } else { Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds $Milliseconds } }
+function Get-Date { return [DateTime]::Now.Add($script:SkippedTime) }
 function Invoke-FakeProcessStart {
     param($StartInfo)
     $script:Trace.process_starts++
@@ -140,7 +145,7 @@ if ($Scenario -in @('unknown_file','existing_db','existing_helper')) {
     }
 }
 if ($Scenario -eq 'external_data') {$env:CONTENT_HUB_DB=Join-Path $CaseRoot 'synthetic.db'}
-$script:Tick=0
+$script:SkippedTime=[TimeSpan]::Zero
 $Failure=$null
 try {Install-Package -Latest $Latest -TempRoot $TempRoot} catch {$Failure=$_.Exception.Message; $Stack=$_.ScriptStackTrace}
 $Journal=$null

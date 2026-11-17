@@ -1,9 +1,102 @@
 ---
-updated: 2026-11-15
+updated: 2026-11-17
 status: active
 ---
 
 # Content Hub — 서버 운영 가이드
+
+## 공유 서버 HTTPS 인증서 준비·전환
+
+이 절차는 서버 PC 관리자가 공지된 전환 시각에 수행한다. 준비 코드 설치만으로 TLS를 켜지 않는다.
+실사용 전환은 별도 승인·격리 끝단 리허설·전체 배포 게이트 통과 뒤 진행한다.
+
+1. 서버 PC의 승격된 관리자 창에서 해당 설치본 Python으로 `tools\server_tls_cert.py create --ip <서버-IP>`를 실행한다.
+   선택 인자는 `--dns <이름>`, `--days <30~3650>`이며 기본 수명은 825일이다. 신뢰된 Git for Windows의 OpenSSL 3.0 이상이 필요하다.
+   `%PROGRAMDATA%\MVHub\server-tls` 아래 `next.pem`·`next.key`만 만들며 현재 `server.*`는 바꾸지 않는다.
+   `MVHUB_SERVER_TLS_DIR`는 격리 시험용 경로 재정의이며 관리자 권한을 우회하지 않는다.
+2. 출력된 공개 인증서 `next.pem`과 SHA-256 지문을 확인한다. **공개 인증서만** 저장소
+   `backend/app/resources/tls/shared_server.pem`에 넣는다. 개인키는 서버 PC 밖으로 복사하거나 Git·NAS·릴리스에 넣지 않는다.
+   첫 전환에서는 이 인증서와 `TLS_REQUIRED = True`를 같은 후보 릴리스로 준비한다. 후보 준비는 공개 승인이 아니다.
+3. 공지 시각에 **감시기 정지 → `tools\server_tls_cert.py promote` → 서버 재시작 → 감시기 재개** 순서로 진행한다.
+   첫 전환은 표식 제거 뒤 감시기가 기존 HTTP 서버를 죽은 서버로 판단해 재시작할 수 있으므로 감시기를 먼저 정지한다.
+   교체는 재시작 전까지 실행 중 서버가 옛 인증서를 사용하여 감시기의 `tls_error`·업데이트 거절이 발생할 수 있다.
+   서버 TLS 활성화와 승인된 클라이언트 릴리스 공개를 같은 전환 일정에 묶고 대상 PC별 접속·판을 확인한다.
+
+정상 교체는 **옛+새 공개 인증서 묶음 릴리스 → 팀 업데이트 확인 → 위 promote/재시작 절차 → 옛 공개 인증서 제거 릴리스** 순서다.
+유출 때는 옛 인증서를 뺀 릴리스와 서버 교체를 즉시 함께 진행한다. 미업데이트 PC의 접속 중단은 별도로 안내한다.
+관리 창은 만료까지 남은 시간이 60일 미만이면 경고한다. 서버 IP가 바뀌면 새 IP로 발급·배포해야 한다.
+
+`promote.pending`이 남으면 모든 설정 조회가 오류 상태로 멈춘다. 같은 명령을 다시 실행하면 목표 지문과 짝을 확인해
+완료하거나 표식을 보존하고 중단한다. 실행 중인 다른 promote가 있으면 기다린다. 손상된 표식·되돌림 실패를 만났다고
+표식만 지우지 않는다. 관리자에게 파일 상태·목표 공개 지문을 확인받고 복구한다.
+빈 표식·손상된 JSON은 자동 복구하지 않는다. 관리자는 감시기와 서버를 정지한 상태에서
+`server.pem`의 SHA-256 인증서 지문을 `next.pem`·`previous.pem` 및 배포 승인 지문과 비교한다.
+파일 내용 전체의 해시가 아니라 DER 인증서 지문을 비교하고, 해당 개인키와의 짝 및 자체 TLS 확인까지
+통과한 목표 짝을 완성하거나 이전 짝으로 복원한 뒤에만 표식을 제거한다. 상태를 확정할 수 없으면 표식을 보존한다.
+
+TLS 폴더와 기존 항목, 상위 MVHub 폴더의 소유자는 SYSTEM 또는 Administrators여야 한다.
+상위 폴더에 일반 사용자 변경 권한이나 TLS 폴더에 예상 밖 항목이 있으면 자동 수정하지 않고 중단한다.
+Users의 폴더 읽기 권한은 자식에 상속하지 않으며 공개 인증서에만 읽기 권한을 따로 부여한다.
+
+기존 `%PROGRAMDATA%\MVHub`가 ProgramData 기본 권한을 상속한 경우에도 중단하는 것이 정상이다.
+예를 들어 Users의 `(CI)(WD,AD)`나 CREATOR OWNER의 `(IO)` 항목은 그대로 사용하지 않는다.
+이전 실행이 MVHub 폴더 생성 뒤 ACL 적용에 실패했을 때도 아래 복구 절차를 따른다.
+관리자는 서버·감시기를 정지하고, 이 경로가 연결 지점이 아닌 정상 폴더이며 내용이 신뢰 가능한지
+확인한 뒤 **승격된 PowerShell**에서 해당 폴더에만 다음을 적용한다(`/T`로 재귀 적용하지 않는다).
+`/T`가 없어도 부모의 `/inheritance:r` 및 상속 ACE 변경은 상속을 받는 하위 항목의 유효 권한을 바꿀 수 있으므로, 적용 전후 하위 파일·폴더 권한도 확인한다.
+
+```powershell
+$tlsParent = Join-Path $env:ProgramData 'MVHub'
+icacls.exe $tlsParent /setowner '*S-1-5-32-544'
+if ($LASTEXITCODE -ne 0) { throw '소유권 변경 실패' }
+icacls.exe $tlsParent /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:RX'
+if ($LASTEXITCODE -ne 0) { throw '폴더 ACL 변경 실패' }
+icacls.exe $tlsParent /remove '*S-1-3-0'
+if ($LASTEXITCODE -ne 0) { throw 'CREATOR OWNER 제거 실패' }
+icacls.exe $tlsParent
+if ($LASTEXITCODE -ne 0) { throw '폴더 ACL 조회 실패' }
+(Get-Acl -LiteralPath $tlsParent).Owner
+```
+
+출력에서 SYSTEM·Administrators는 `(OI)(CI)(F)`, Users는 자식 상속 표시 없는 `(RX)`여야 한다.
+`(I)` 상속 항목·CREATOR OWNER·그 밖의 사용자 쓰기/삭제 권한이 남으면 다시 실행하지 말고 관리자가 확인한다.
+소유자는 Administrators여야 한다. 부모 복구는 기존 `server-tls`와 키의 소유권·ACL 검사를 대신하지 않는다.
+
+교체 성공 후 `previous.pem`·`previous.key`는 이전 짝의 하드 링크다. 다음 교체 전 관리자가 복구 필요 여부를 확인하고
+두 파일을 명시적으로 정리한다(특히 `previous.key`는 오래 보관하지 않는다). 명령은 기존 previous 파일을 덮어쓰지 않는다.
+유출된 키는 파일을 지워도 이미 복사된 키가 무효화되지 않으므로 클라이언트 신뢰 묶음에서 옛 인증서를 제거해야 한다.
+
+### 관리자용 격리 create/promote 확인
+
+Jay가 **승격된 PowerShell**에서 `D:\ClaudeCode\MV-hub-S-dev`를 현재 위치로 두고 실행한다.
+사용하는 Python은 이 개발 폴더의 `D:\ClaudeCode\MV-hub-S-dev\.venv\Scripts\python.exe`(3.14)다.
+실제 서버·감시기는 실행하지 않으며, 기본 ProgramData 경로 대신 새 임시 폴더에서 실제 ACL 경로만 확인한다.
+`192.0.2.10`은 시험 인증서 SAN용 주소이며 이 주소로 연결하지 않는다(self-check는 루프백 사용).
+
+```powershell
+Set-Location -LiteralPath 'D:\ClaudeCode\MV-hub-S-dev' -ErrorAction Stop
+$savedTlsDir = $env:MVHUB_SERVER_TLS_DIR
+$tlsTrial = Join-Path $env:TEMP ('mvhub-tls-acl-' + [guid]::NewGuid().ToString('N'))
+$tlsPython = Join-Path (Get-Location) '.venv\Scripts\python.exe'
+try {
+    $env:MVHUB_SERVER_TLS_DIR = Join-Path $tlsTrial 'server-tls'
+    & $tlsPython -B tools\server_tls_cert.py create --ip 192.0.2.10
+    if ($LASTEXITCODE -ne 0) { throw '격리 인증서 생성 실패' }
+    & $tlsPython -B tools\server_tls_cert.py promote
+    if ($LASTEXITCODE -ne 0) { throw '격리 인증서 promote 실패' }
+    icacls.exe $env:MVHUB_SERVER_TLS_DIR
+    if ($LASTEXITCODE -ne 0) { throw 'TLS 폴더 ACL 조회 실패' }
+    icacls.exe (Join-Path $env:MVHUB_SERVER_TLS_DIR 'server.key')
+    if ($LASTEXITCODE -ne 0) { throw '개인키 ACL 조회 실패' }
+    icacls.exe (Join-Path $env:MVHUB_SERVER_TLS_DIR 'server.pem')
+    if ($LASTEXITCODE -ne 0) { throw '공개 인증서 ACL 조회 실패' }
+} finally {
+    $env:MVHUB_SERVER_TLS_DIR = $savedTlsDir
+}
+```
+
+개인키는 SYSTEM·Administrators만, 공개 인증서는 추가로 Users 읽기 권한이 있어야 한다.
+결과와 임시 경로를 기록하고, 시험 파일 정리는 경로를 확인한 관리자가 별도로 한다.
 
 ## 힉스필드 조직 사용량 1단계
 
@@ -513,7 +606,7 @@ bat 이 무조건 덮어쓰므로 **`python serve.py` 직접 실행 때만** 유
 - 관리자 작업(멤버 등급·계정 승인)은 **C0/C1 만**(2겹: 미들웨어 + 역할 검증).
 - 비밀번호는 pbkdf2-sha256(솔트), 세션은 hmac 서명 토큰(stdlib, 새 의존성 0).
 - 프론트: 미로그인 시 로그인/가입 화면이 앱 전체를 가리고, 관리자 창에 계정 승인 섹션이 뜬다.
-- 계정 삭제: **서버 관리 창 → 계정 정리**에서 이력 없는 차단·숨김 계정만 지운다(`/api/admin/account-cleanup`, 서버 PC·관리자만). 승인 상태는 먼저 차단한다. 되돌릴 수 없고, 복구는 삭제 전 DB 백업뿐이다. **이번 릴리스에서는 삭제가 꺼져 있다**(서버가 409 로 거절하고 창은 단추를 끈다 — 차단·숨김만 된다. 삭제와 진행 중 쓰기의 경합 때문, [수용 항목 재검토 수정](status/배포전_수용항목_재검토수정_2026-11-03.md)).
+- 계정 삭제: **서버 관리 창 → 계정 정리**에서 이력 없는 차단·숨김 계정만 지운다(`/api/admin/account-cleanup`, 서버 PC·관리자만). 승인 상태는 먼저 차단한다. 되돌릴 수 없고, 복구는 삭제 전 DB 백업뿐이다. **한 번도 승인된 적 없는 계정만 지운다** — 한 번 승인됐던 계정은 차단 전에 권한 검사를 지난 진행 중 쓰기가 지운 뒤 저장될 수 있어 '승인된 적 있는 계정'으로 막는다(차단·숨김까지만, [계정 정리 삭제 켜기](status/계정정리_삭제켜기_2026-11-17.md), 11-03 경합 기록은 [수용 항목 재검토 수정](status/배포전_수용항목_재검토수정_2026-11-03.md)).
 - **보호 범위**: `/api/*`(인증·헬스 제외) + `/media/*` + `/ws`. 결과물 원본·실시간 채널까지 전부 차단.
   - 인증 전달: API 는 `Authorization: Bearer` 헤더, 미디어·WS 는 **httpOnly 세션 쿠키**(ch_session,
     헤더를 못 붙이는 img 태그·WebSocket 용). 로그인 시 토큰+쿠키 동시 발급, 로그아웃 시 둘 다 폐기.
@@ -646,7 +739,16 @@ DB 준비 실패는 `WARNING`으로 남는다.
   서버 상태 = 정상 / 전환 중 / 시작 중 / 유지보수 중 / 요청 차단 중 / 응답하나 준비 실패 / 응답 없음 / 정지 확인 / 서버 작업 없음 / 확인 불가.
   전환이 끝난 서버(admission `activated`)는 정상이다.
 - **주소**는 네트워크(NIC) 이름과 함께 보이고, 서버가 그 포트로 답했을 때만 확인된 값이다(아니면 '설정값'·'기본값 추정').
-  `CONTENT_HUB_SSL_CERTFILE` 이 있으면 https 로 묻는다.
+  서버 전용 `%PROGRAMDATA%\MVHub\server-tls\server.pem`·`server.key`가 모두 있으면 https 로 묻는다.
+  둘 다 없으면 기존 http이며, 일부 누락·공개 인증서 오류는 'TLS 설정 오류'로 표시하고 로그인·전원 조작을 막는다.
+  상태 조회·관리 창·감시기는 공개 인증서만 읽고 이름 검증을 유지한다. 개인키는 서버 시작 담당만 읽는다.
+  서버 시작은 인증서·키 쌍을 사전 검증하고 AUTH off + TLS 설정은 거절한다. 작업자 로컬 허브는 TLS 환경변수를 무시한다.
+  감시기는 설정·인증서 검증 오류에 서버를 종료하지 않고 재확인한다. 연결 자체의 끊김은 기존 장애 복구 대상으로 센다.
+  재시작 도구는 `.mvhub-runtime\python.txt`의 Python으로 `tools/server_tls.py --probe`를 실행하며 http로 대신하지 않는다.
+  `MVHUB_SERVER_TLS_DIR`는 격리 시험·스모크·이전 연습용 경로 덮어쓰기이며 프로세스당 한 번 로그에 표시한다.
+  덮어쓰기와 `PROGRAMDATA`가 모두 없으면 경로를 추측하지 않고 설정 오류로 처리한다.
+  준비 확인 도구의 종료 코드는 정상 0, 연결·준비 실패 1, 인자 오류 2, TLS 설정·인증서 검증 오류 3이다.
+  TLS 원본 서버의 이전은 새 인증서 발급·배포 절차가 준비될 때까지 막고 개인키를 복사하지 않는다.
 - **로그 탭**은 `mvhub-runtime.jsonl`(회전 포함)과 `logs\server_console.log` 등을 이벤트 종류로 나눠 보인다. 모르는 이벤트도 '전체'에 남긴다.
   회전 직전 끝부분은 놓칠 수 있는 운영 보기다(감사 기록은 DB 의 `audit_event`). 시각은 한국 시각(서버 기록은 UTC)이고, 서버 창의
   연결 열림·닫힘 줄은 세기만 한다. 생성·설정 변경·사용자·접속 탭 위에는 서버 DB 를 읽기 전용으로 읽은 표가 있다(30초마다·서버가 정상일 때만,

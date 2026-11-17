@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
 import json
 import os
 import subprocess
@@ -138,7 +139,7 @@ def test_common_refusals_check_every_task_install_and_tls(tmp_path):
     assert power.common_refusals(inst, "server-stop", None, [], [])
     assert power.common_refusals(inst, "server-stop", good, [("git", "x")], ["c" * 32])
     tls = make_inst(tmp_path, tls=True)
-    assert "https" in power.common_refusals(tls, "server-stop", good, [], [])[0]
+    assert power.common_refusals(tls, "server-stop", good, [], []) == []
 
 
 # ---------- 프로세스 판별 ----------
@@ -189,8 +190,11 @@ class FakeServer:
             monkeypatch.setattr(power, name, value)
         monkeypatch.setattr(server_api, "listeners", lambda port, runner: [self.serve] if self.serve in self.procs else [])
         monkeypatch.setattr(server_api, "verify_server", self.verify)
-        monkeypatch.setattr(status, "read_ready", lambda port, timeout=3.0, tls=False: status.Ready(
-            200 if self.ready else None, {"status": "ready"} if self.ready else None, "" if self.ready else "refused"))
+        def read_ready(port, timeout=3.0, tls=False):
+            assert tls == inst.tls
+            return status.Ready(200 if self.ready else None, {"status": "ready"} if self.ready else None,
+                                "" if self.ready else "refused")
+        monkeypatch.setattr(status, "read_ready", read_ready)
         monkeypatch.setattr(power.time, "sleep", lambda s: None)
         monkeypatch.setattr(power, "TASK_WAIT", 0.5)
         monkeypatch.setattr(power, "PORT_WAIT", 0.5)
@@ -283,8 +287,9 @@ def test_reused_pid_is_not_killed(tmp_path, monkeypatch):
     assert fake.killed == []
 
 
-def test_start_turns_both_on_and_clears_the_record_only_after_identity(tmp_path, monkeypatch):
-    inst = make_inst(tmp_path)
+@pytest.mark.parametrize('tls', [False, True])
+def test_start_turns_both_on_and_clears_the_record_only_after_identity(tmp_path, monkeypatch, tls):
+    inst = make_inst(tmp_path, tls=tls, tls_state='on' if tls else 'off')
     fake = FakeServer(inst, monkeypatch, server="Disabled", watchdog="Disabled", running=False)
     power.write_off(inst, "stopped", "o" * 32)
     alert = inst.logs / "server_ALERT.txt"
@@ -296,12 +301,45 @@ def test_start_turns_both_on_and_clears_the_record_only_after_identity(tmp_path,
     assert order.index(("/Run", "/TN", names.TASK_SERVER)) < order.index(("/Run", "/TN", names.TASK_WATCHDOG))
 
 
-def test_start_when_already_up_only_turns_on_the_missing_watchdog(tmp_path, monkeypatch):
-    inst = make_inst(tmp_path)
+@pytest.mark.parametrize('tls', [False, True])
+def test_start_when_already_up_only_turns_on_the_missing_watchdog(tmp_path, monkeypatch, tls):
+    inst = make_inst(tmp_path, tls=tls, tls_state='on' if tls else 'off')
     fake = FakeServer(inst, monkeypatch, watchdog="Disabled")
     fake.procs.remove(fake.watchdog)
     result = power.start_sequence(inst, None, "j" * 32, lambda line: None)
     assert result["already"] is True and fake.killed == [] and fake.state[names.TASK_WATCHDOG] == "Running"
+
+
+def test_tls_error_does_not_kill_running_server(tmp_path, monkeypatch):
+    inst = make_inst(tmp_path, tls=True, tls_state='on')
+    fake = FakeServer(inst, monkeypatch)
+    monkeypatch.setattr(status, 'read_ready', lambda *a, **kw: status.Ready(None, None, 'tls_config_error'))
+    with pytest.raises(power.PowerError, match='TLS 설정 오류'):
+        power.start_sequence(inst, None, 'j' * 32, lambda line: None)
+    assert fake.killed == [] and fake.calls == []
+
+
+def test_move_wrapper_loads_installation_tls_helper(tmp_path, monkeypatch):
+    from server_console import console_run
+    import server_tls
+    inst = make_inst(tmp_path)
+    tools = inst.root / 'tools'
+    tools.mkdir()
+    (tools / 'server_tls.py').write_text('source = "installation"\n')
+    (tools / 'server_move_easy.py').write_text('import server_tls\ndef main(args):\n    assert server_tls.source == "installation"\n    return 0\n')
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.chdir(tmp_path)
+    for name in ('server_move_easy', 'server_move', 'deploy_fence_check', 'app'):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, 'server_tls', server_tls)
+    monkeypatch.setattr(console_run.moves, 'archives', lambda inst: set())
+    monkeypatch.setattr(console_run, 'tool_args', lambda *args: ('server_move_easy', []))
+    try:
+        assert console_run.run_tool(inst, 'move-out', {}) == (0, {})
+        assert sys.modules['server_tls'].source == 'installation'
+        assert console_run.run_tool(inst, 'move-out', {}) == (0, {})
+    finally:
+        sys.modules.pop('server_move_easy', None)
 
 
 def test_start_failure_keeps_a_start_failed_record(tmp_path, monkeypatch):

@@ -983,35 +983,59 @@ def migrate_legacy_soft_deleted() -> int:
     return sum(1 for gid in ids if trash.move_to_trash(gid))
 
 
-def _reserve_draft_finish(conn, creator_uid, remote_job_id, child_id):
-    """같은 원격 Draft의 과금 의도는 키·캔버스와 무관하게 한 번만 진행한다."""
+def _reserve_draft_finish(conn, creator_uid, remote_job_id, resolution, child_id):
+    """같은 계정·원격 Draft·화질의 미종결 의도만 막는다."""
+    from .trash import _RETIRED_REQUEST_NOTE
+
     requests = conn.execute(
-        "SELECT gen_id, status, terminal_at FROM gen_request WHERE creator_uid=? "
+        "SELECT gen_id, status, terminal_at, error, payload FROM gen_request WHERE creator_uid=? "
         "AND gen_id<>? AND json_valid(payload) AND ("
         "json_extract(payload,'$.params.draft_job_id')=? OR "
         "json_extract(payload,'$._draft_finish_job_id')=?)",
         (creator_uid, child_id, remote_job_id, remote_job_id),
     ).fetchall()
-    confirmed_failed = set()
+    confirmed_terminal = set()
     for row in requests:
-        if row["status"] != "failed" or not row["terminal_at"]:
-            raise DraftFinishConflict(row["gen_id"])
-        confirmed_failed.add(row["gen_id"])
+        payload = json.loads(row["payload"])
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        previous_resolution = params.get("resolution")
+        if previous_resolution is None:
+            previous_resolution = payload.get("_draft_finish_resolution")
+        if previous_resolution is None:
+            previous_resolution = "1080p"
+        if previous_resolution not in ("1080p", "4k"):
+            raise DraftFinishConflict(row["gen_id"], resolution)
+        if previous_resolution != resolution:
+            continue
+        canceled_safely = row["status"] == "canceled" and (
+            payload.get("_draft_finish_release_reason") == "not_submitted"
+            or row["error"] == _RETIRED_REQUEST_NOTE
+        )
+        if not row["terminal_at"] or not (row["status"] in ("done", "failed") or canceled_safely):
+            raise DraftFinishConflict(row["gen_id"], resolution)
+        confirmed_terminal.add(row["gen_id"])
     children = conn.execute(
-        "SELECT id, status FROM generation WHERE creator_uid=? AND id<>? "
+        "SELECT id, status, params FROM generation WHERE creator_uid=? AND id<>? "
         "AND model='seedance_2_5' AND json_valid(params) "
         "AND json_extract(params,'$.draft_job_id')=?",
         (creator_uid, child_id, remote_job_id),
     ).fetchall()
     for row in children:
-        if row["status"] not in ("failed", "nsfw") or row["id"] not in confirmed_failed:
-            raise DraftFinishConflict(row["id"])
-    # Bare preparing 예약끼리는 경쟁하지 않는다. clone에 성공한 의도만 잠근다.
-    # 이 표식은 자식이 삭제돼도 남고, activation 후에는 params.draft_job_id로 이어진다.
+        previous_resolution = json.loads(row["params"]).get("resolution")
+        if previous_resolution is None:
+            previous_resolution = "1080p"
+        if previous_resolution not in ("1080p", "4k"):
+            raise DraftFinishConflict(row["id"], resolution)
+        if previous_resolution != resolution:
+            continue
+        if row["status"] not in ("done", "failed", "nsfw") or row["id"] not in confirmed_terminal:
+            raise DraftFinishConflict(row["id"], resolution)
+    # 빈 preparing 예약은 경쟁하지 않는다. 복제에 성공한 의도만 삭제 뒤에도 잠근다.
     conn.execute(
-        "UPDATE gen_request SET payload=json_set(payload,'$._draft_finish_job_id',?) "
+        "UPDATE gen_request SET payload=json_set(payload,'$._draft_finish_job_id',?, "
+        "'$._draft_finish_resolution',?) "
         "WHERE gen_id=? AND creator_uid=? AND status='preparing' AND json_valid(payload)",
-        (remote_job_id, child_id, creator_uid),
+        (remote_job_id, resolution, child_id, creator_uid),
     )
 
 
@@ -1020,6 +1044,7 @@ def import_generation(
     workspace: Optional[dict[str, Any]] = None,
     generation_id: Optional[str] = None,
     finish_draft: bool = False,
+    finish_resolution: str = "1080p",
 ) -> str:
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history 기록.
 
@@ -1059,12 +1084,12 @@ def import_generation(
             if src["model"] == "seedance_2_5" and source_params.get("draft") is True:
                 source_params["resolution"] = "480p"
             params = (
-                finish_params({**dict(src), "params": source_params})
+                finish_params({**dict(src), "params": source_params}, finish_resolution)
                 if finish_draft else fresh_params(src["model"], source_params)
             )
             child_id = generation_id or new_id()
             if finish_draft:
-                _reserve_draft_finish(conn, my_uid, params["draft_job_id"], child_id)
+                _reserve_draft_finish(conn, my_uid, params["draft_job_id"], finish_resolution, child_id)
             conn.execute(
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "

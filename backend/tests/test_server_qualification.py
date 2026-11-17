@@ -1,4 +1,5 @@
 """Copy-only tests. Fake build/probe/HTTP processes; no network, servers or database opens."""
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
 import ast
 import hashlib
 import importlib
@@ -122,9 +123,9 @@ def fake_probe(command, **kwargs):
 
 
 def seed_tls(tmp_path, monkeypatch):
-    cert=tmp_path/'backend/local.crt';cert.parent.mkdir(parents=True,exist_ok=True);cert.write_text('synthetic cert')
+    cert=Path(os.environ['MVHUB_SERVER_TLS_DIR'])/'server.pem';cert.write_text('synthetic cert')
     key=cert.with_suffix('.key');key.write_text('mock key')
-    context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context=SimpleNamespace(verify_mode=ssl.CERT_REQUIRED,check_hostname=True,verify_flags=0)
     factory=Mock(return_value=context)
     monkeypatch.setattr(ssl,'create_default_context',factory)
     server_context=Mock()
@@ -137,10 +138,10 @@ def test_tls_ready_uses_explicit_certificate_and_https_without_disabling_validat
     cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
     opener=Mock();opener.open.return_value=io.BytesIO(b'{"status":"ready"}')
     monkeypatch.setattr(activation.urllib.request,'build_opener',Mock(return_value=opener))
-    manager=activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_SSL_CERTFILE':'local.crt','CONTENT_HUB_SSL_KEYFILE':'local.key'})
+    manager=activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_AUTH':'1','CONTENT_HUB_SSL_CERTFILE':'ignored','CONTENT_HUB_SSL_KEYFILE':'ignored'})
     manager.ready()
     assert opener.open.call_args.args[0].startswith('https://127.0.0.1:')
-    factory.assert_called_once_with(cafile=str(cert.resolve()))
+    assert factory.call_args_list == [(( ), {'cafile':str(cert.resolve())})] * 2
     assert context.verify_mode==ssl.CERT_REQUIRED and context.check_hostname
     assert manager.env['CONTENT_HUB_SSL_KEYFILE']==str(key.resolve())
     constructor.assert_called_once_with(ssl.PROTOCOL_TLS_SERVER)
@@ -151,14 +152,14 @@ def test_tls_key_chain_must_validate_before_manager_logs_or_process(tmp_path,mon
     cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
     server_context.load_cert_chain.side_effect=ssl.SSLError('synthetic cert/key mismatch')
     with pytest.raises(ssl.SSLError):
-        activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
+        activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_AUTH':'1'})
     assert not (tmp_path/'logs').exists()
 
 
 @pytest.mark.parametrize('damage',['cert_changed','key_changed','cert_missing','key_missing'])
 def test_changed_tls_files_are_rejected_before_journal_or_stop(tmp_path,monkeypatch,damage):
     cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
-    manager=activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
+    manager=activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_AUTH':'1'})
     activation.atomic_json(manager.request,{})
     target=cert if damage.startswith('cert') else key
     if damage.endswith('missing'): target.unlink()
@@ -174,7 +175,7 @@ def test_changed_tls_immediately_before_stop_retains_old_context_and_process(tmp
     stage,target,verifier=seed_stage(tmp_path)
     target=builder.qualify_stage(tmp_path,stage,target,verifier,probe_run=fake_probe)
     cert,key,context,factory,server_context,constructor=seed_tls(tmp_path,monkeypatch)
-    manager=activation.ServerActivation(tmp_path,environ={**os.environ,'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(key)})
+    manager=activation.ServerActivation(tmp_path,environ={**os.environ,'CONTENT_HUB_AUTH':'1'})
     activation.atomic_json(manager.request,{'target':target})
     def ready(current,*,drain=False):
         if drain: key.write_bytes(b'synthetic changed key during drain')
@@ -189,18 +190,22 @@ def test_changed_tls_immediately_before_stop_retains_old_context_and_process(tmp
     assert manager.ready_context is context
 
 
-@pytest.mark.parametrize('values',[{'CONTENT_HUB_SSL_CERTFILE':'x'},{'CONTENT_HUB_SSL_KEYFILE':'x'}])
-def test_incomplete_tls_rejected_before_logs_or_process(tmp_path,values):
-    with pytest.raises(ValueError,match='incomplete_server_tls'):
-        activation.ServerActivation(tmp_path,environ=values)
+@pytest.mark.parametrize('name',['server.pem','server.key'])
+def test_incomplete_tls_rejected_before_logs_or_process(tmp_path,tls_dir,name):
+    (tls_dir/name).write_text('invalid')
+    with pytest.raises(ValueError,match='server_tls_configuration_error'):
+        activation.ServerActivation(tmp_path,environ={'CONTENT_HUB_AUTH':'1'})
     assert not (tmp_path/'logs').exists()
 
 
-def test_http_remains_default_and_bad_certificate_fails_closed(tmp_path):
-    assert activation.ready_transport(tmp_path,{})==('http',None)
-    cert=tmp_path/'bad.pem';cert.write_text('invalid cert')
-    with pytest.raises(ssl.SSLError):
-        activation.ready_transport(tmp_path,{'CONTENT_HUB_SSL_CERTFILE':str(cert),'CONTENT_HUB_SSL_KEYFILE':str(cert)})
+def test_http_remains_default_and_bad_certificate_fails_closed(tmp_path,tls_dir):
+    env={'CONTENT_HUB_SSL_CERTFILE':'inherited','CONTENT_HUB_SSL_KEYFILE':'inherited'}
+    assert activation.ready_transport(tmp_path,env)==('http',None)
+    assert not env
+    (tls_dir/'server.pem').write_text('invalid cert')
+    (tls_dir/'server.key').write_text('invalid key')
+    with pytest.raises(ValueError,match='server_tls_configuration_error'):
+        activation.ready_transport(tmp_path,{'CONTENT_HUB_AUTH':'1'})
 
 
 def test_shared_probe_tools_import_has_no_app_or_optional_runtime_startup(tmp_path):

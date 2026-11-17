@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from test_server_tls import tls_dir  # noqa: F401 -- isolate machine TLS in every test
+from test_server_tls import certificates, install_certificate, tls_server  # noqa: F401
 import ast
 import itertools
 import json
@@ -49,6 +51,100 @@ def fake_runner(outputs: dict[str, tuple[int | None, str]] | None = None, defaul
         return default
     run.calls = calls
     return run
+
+
+def test_console_tls_status_login_and_api(tmp_path, monkeypatch, certificates, tls_dir):
+    from server_console import server_api
+    import ssl
+    pair = certificates('console')
+    install_certificate(tls_dir, pair)
+    with tls_server(pair) as (port, seen):
+        # Neither status nor authenticated API callers may load a private key.
+        monkeypatch.setattr(ssl.SSLContext, 'load_cert_chain', lambda *a, **kw: pytest.fail('reader opened private key'))
+        inst = make_inst(tmp_path, port=port, tls=True, tls_state='on')
+        assert status.read_ready(port, tls=True).code == 200
+        server = {'port': port, 'tls': True}
+        monkeypatch.setattr(server_api, 'verify_server', lambda *a: server)
+        monkeypatch.setattr(server_api, '_recheck', lambda: server)
+        session = server_api.login(inst, fake_runner(), 'admin@test', 'test-password')
+        assert session.token == 'test-token'
+        assert server_api.call(server, 'GET', '/api/ready', session.token)[0] == 200
+        assert server_api.call(server, 'GET', '/redirect', session.token)[0] == 302
+        assert seen[-1] == ('/redirect', 'Bearer test-token')
+        assert not any(path == '/unexpected' for path, _ in seen)
+
+
+def test_status_rejects_different_certificate(certificates, tls_dir):
+    install_certificate(tls_dir, certificates('trusted-status'))
+    with tls_server(certificates('different-status')) as (port, seen):
+        result = status.read_ready(port, tls=True)
+        assert result.error == 'tls_config_error'
+        assert result.code is None
+        assert seen == []
+
+
+def test_console_configuration_error_blocks_credentials_and_address(tmp_path, monkeypatch, tls_dir):
+    from server_console import power, server_api, ui
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    (tls_dir / 'server.pem').write_text('broken')
+    monkeypatch.setattr(install, 'machine_env', lambda name: '')
+    inst = install.resolve_installation(tmp_path)
+    assert inst.tls_state == 'error' and 'tls_config_error' in inst.problems
+    assert any('TLS 설정 오류' in r for r in power.common_refusals(inst, 'server-start', {}, [], []))
+    with pytest.raises(server_api.ServerError, match='TLS 설정 오류'):
+        server_api.verify_server(inst, fake_runner())
+    with pytest.raises(server_api.ServerError, match='TLS 설정 오류'):
+        server_api.call({'port': 1}, 'POST', '/api/auth/login', body={'password': 'must-not-send'})
+    assert status.read_ready(1).error == 'tls_config_error'
+    view = SimpleNamespace(inst=inst, addr_label=Mock(), address_now=Mock(), copy_text='old')
+    ui.App._show_address(view)
+    ui.App._show_address_page(view)
+    assert view.copy_text == ''
+    assert 'TLS 설정 오류' in view.addr_label.configure.call_args.kwargs['text']
+
+
+@pytest.mark.parametrize('days', [60.0, 59.999, 0.0, -0.001, None])
+@pytest.mark.parametrize('tls_state', ['on', 'off', 'error'])
+def test_console_expiry_both_address_labels(tmp_path, monkeypatch, days, tls_state):
+    from server_console import ui
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    expiry = None if days is None else (datetime(2027, 1, 15, tzinfo=timezone.utc), days)
+    reader = Mock(return_value=expiry)
+    monkeypatch.setattr(ui.server_tls, 'certificate_expiry', reader)
+    view = SimpleNamespace(
+        inst=make_inst(tmp_path, tls=tls_state == 'on', tls_state=tls_state),
+        addr_label=Mock(), address_now=Mock(), status=None, addresses=[('loopback', '127.0.0.1')],
+        address_view={}, location_label=Mock(), url_entry=Mock(), name_entry=Mock(),
+        address_shown=('', ''), address_button=Mock(), address_busy=False,
+    )
+    ui.App._show_address(view)
+    ui.App._show_address_page(view)
+    for label in (view.addr_label, view.address_now):
+        shown = label.configure.call_args.kwargs['text']
+        if tls_state == 'error':
+            assert shown == 'TLS 설정 오류 — 인증서 설정을 확인하세요'
+        elif tls_state == 'off':
+            assert 'http://' in shown and '인증서 만료' not in shown
+        elif days is None:
+            assert '인증서 만료 확인 불가' in shown
+        elif days <= 0:
+            assert 'https://' in shown
+            assert '인증서 만료됨(2027-01-15) — 경고: 인증서 교체 필요' in shown
+            assert '일 남음' not in shown
+        else:
+            assert 'https://' in shown and '인증서 만료 2027-01-15(' in shown
+            assert ('경고' in shown) == (days < 60)
+    assert reader.call_count == (2 if tls_state == 'on' else 0)
+
+
+def test_tls_session_cannot_fall_back_after_configuration_removed(tmp_path, monkeypatch, tls_dir):
+    from server_console import server_api
+    server = {'port': 1, 'tls': True}
+    monkeypatch.setattr(server_api, '_recheck', lambda: server)
+    with pytest.raises(server_api.ServerError, match='TLS 설정 오류'):
+        server_api.call(server, 'GET', '/api/ready', 'must-not-send')
 
 
 # ---------- logs ----------
@@ -435,7 +531,9 @@ def test_child_environment_is_rebuilt_not_inherited(tmp_path, monkeypatch):
     assert str(evil) not in env["PATH"] and str(evil) not in env["ComSpec"] and str(evil) not in env["SystemRoot"]
     assert env["ComSpec"].lower().endswith("system32\\cmd.exe")
     assert env["PYEXE"] == str(inst.python)  # run_py.bat 이 사용자 PATH 대신 검증된 Python 을 쓴다
-    assert not [k for k in env if k.startswith("MVHUB_SERVER")] and "CONTENT_HUB_DB" not in env
+    assert [k for k in env if k.startswith("MVHUB_SERVER")] == ['MVHUB_SERVER_TLS_DIR']
+    assert env['MVHUB_SERVER_TLS_DIR'] == os.environ['MVHUB_SERVER_TLS_DIR']
+    assert "CONTENT_HUB_DB" not in env
 
 
 # ---------- actions ----------
@@ -810,7 +908,7 @@ def test_console_check_runs_isolated(tmp_path):
 
 # ---------- 관리 창 전용 stage(2단계 ①) ----------
 
-STAGE_FILES = ("tools/log_viewer.py", "tools/deploy_fence_check.py")
+STAGE_FILES = ("tools/log_viewer.py", "tools/deploy_fence_check.py", "tools/server_tls.py")
 
 
 def _install_tree(tmp_path: Path) -> Path:
@@ -1175,11 +1273,14 @@ def test_product_code_never_imports_the_console():
              *[p for p in TOOLS.rglob("*.py") if "server_console" not in p.parts]]
     assert len(files) > 50
     for path in files:
+        # Interactive certificate administration reuses console trust/admin helpers; product code cannot import it.
+        if path == TOOLS / 'server_tls_cert.py':
+            continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
             mods = [a.name for a in node.names] if isinstance(node, ast.Import) else \
                 [node.module or "", *[f"{node.module}.{a.name}" for a in node.names]] \
                 if isinstance(node, ast.ImportFrom) else []  # from tools import server_console 도
-            assert not any("server_console" in m for m in mods), path
+            assert not any("server_console" in m or "server_tls_cert" in m for m in mods), path
 
 
 def test_import_scan_catches_aliases():
@@ -1515,7 +1616,7 @@ def test_refusal_shows_the_listening_script_short_and_clean(tmp_path, monkeypatc
     assert "serve.py" in text and "\x07" not in text and "D:\\x?" in text and len(text) < 260
 
 
-def test_server_check_needs_the_activation_record_and_no_tls(tmp_path, monkeypatch):
+def test_server_check_needs_the_activation_record_and_accepts_tls(tmp_path, monkeypatch):
     inst, script, build, nonce = _server_inst(tmp_path)
     server_api = _fake_server(monkeypatch, script, build, nonce)
     (inst.logs / "server-activation.json").unlink()
@@ -1523,8 +1624,20 @@ def test_server_check_needs_the_activation_record_and_no_tls(tmp_path, monkeypat
         server_api.verify_server(inst, fake_runner())
     tls, script, build, nonce = _server_inst(tmp_path / "tls", tls=True)
     _fake_server(monkeypatch, script, build, nonce)
-    with pytest.raises(server_api.ServerError, match="https"):
-        server_api.verify_server(tls, fake_runner())
+    assert server_api.verify_server(tls, fake_runner())['tls'] is True
+
+
+def test_verify_tls_server_passes_tls_to_readiness(tmp_path, monkeypatch):
+    inst, script, build, nonce = _server_inst(tmp_path, tls=True, tls_state='on')
+    api = _fake_server(monkeypatch, script, build, nonce)
+    read = status.read_ready
+    seen = []
+    def checked(port, timeout=3.0, tls=False):
+        seen.append(tls)
+        return read(port, timeout, tls)
+    monkeypatch.setattr(status, 'read_ready', checked)
+    assert api.verify_server(inst, fake_runner())['tls'] is True
+    assert seen == [True]
 
 
 def test_legacy_server_without_pointer_is_the_root_serve_py(tmp_path, monkeypatch):

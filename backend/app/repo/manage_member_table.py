@@ -28,7 +28,6 @@ def _real_uid(uid: Optional[str]) -> Optional[str]:
 def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str, Any]:
     """workspace_id 가 있으면 그 워크스페이스 멤버(+그룹 배정만 남은 이메일 · 메인이면 나머지 가입 계정도), 없으면 숨기지 않은 전체 계정.
     with_credit=False 면 그룹 설정 원문(credit)은 주지 않는다(줄의 group_id 는 준다)."""
-    settings = credit_plan.get_settings(workspace_id) if workspace_id else None
     with get_connection() as conn:
         _ensure_schema(conn)
         accounts = {
@@ -107,6 +106,9 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                 active_ids,
             ).fetchall():
                 roles_by_uid.setdefault(r["creator_uid"], {})[r["project_id"]] = rbac.parse_project_roles(r["project_role"])
+    extra_usage_emails = tuple(a['email'] for a in accounts.values()
+                              if not a['hidden'] and (main_row or _real_uid(a['creator_uid']) in roles_by_uid))
+    settings = credit_plan.get_settings(workspace_id, extra_usage_emails=extra_usage_emails) if workspace_id else None
     seen = {r["email"]: r for r in seen_rows}
     linked: dict[str, int] = {}
     for a in accounts.values():
@@ -116,15 +118,7 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
     plans = {norm_email(email): (st or {}).get("plan") for email, st in identity.list_account_statuses().items()}
     usage: dict[str, dict[str, float]] = {}
     if settings:
-        from .. import manage_db  # 지연 import — 다른 DB(manage_hub)
-
-        for u in manage_db.workspace_email_usage(workspace_id, settings["cycle_start"]):
-            if u["day"] < settings["cycle_start"]:
-                continue
-            slot = usage.setdefault(u["email"], {"credits": 0.0, "count": 0, "unknown": 0})
-            slot["credits"] += float(u["credits"] or 0)
-            slot["count"] += int(u["count"] or 0)
-            slot["unknown"] += int(u["unknown"] or 0)
+        usage = {**settings.pop('account_usage', {}), **{m['email']: m['usage'] for m in settings['members']}}
 
     if settings:
         base = list(settings["members"])
@@ -196,9 +190,9 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                 "group_id": m["group_id"],
                 "projects": roles_by_uid.get(uid, {}) if uid else {},
                 "usage": (
-                    {"credits": round(used["credits"], 2), "count": used["count"], "unknown": used["unknown"]}
+                    dict(used)
                     if used
-                    else ({"credits": 0, "count": 0, "unknown": 0} if settings else None)
+                    else None
                 ),
             }
         )
@@ -218,7 +212,7 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
         "groups": [
             {**{k: g[k] for k in ("id", "name", "monthly_limit", "limit_period", "remaining", "member_count", "color")},
              # 서브스페이스 그룹 탭과 같은 칸(이번 기간 사용·몫 합계 — §16). 구서버 설정엔 없을 수 있다.
-             **{k: g.get(k) for k in ("used_period", "unknown_period", "quota_total")}}
+             **{k: g.get(k) for k in ("used_period", "unknown_period", "quota_total", "period_usage", "month_usage")}}
             for g in (settings["groups"] if settings else [])
         ],
         "credit": settings if (settings and with_credit) else None,

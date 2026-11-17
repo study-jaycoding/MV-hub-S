@@ -14,11 +14,15 @@ import { isUpstreamUnreachable } from "../lib/http";
 
 export function ServerLoginScreen({
   url,
+  displayUrl,
+  transportError,
   serverName,
   urlHistory = [],
   onConnected,
 }: {
   url: string | null;
+  displayUrl?: string | null;
+  transportError?: string | null;
   // 관리자가 등록한 서버 이름 — 평소엔 주소 대신 이 이름만 보인다(없으면 주소로 폴백).
   serverName?: string | null;
   urlHistory?: string[];
@@ -104,7 +108,7 @@ export function ServerLoginScreen({
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-brand">⬡ MV Hub</div>
+        <div className="login-brand"><i className="mv-mark full" aria-hidden="true" />MV Hub</div>
         <div className="login-sub">
           {isRegister ? (
             <>
@@ -119,6 +123,7 @@ export function ServerLoginScreen({
           )}
         </div>
 
+        {transportError && <div className="login-error" role="alert">{transportError}</div>}
         <input
           type="email"
           placeholder="이메일"
@@ -167,7 +172,7 @@ export function ServerLoginScreen({
 
         {showServer && (
           <div className="login-server">
-            <div className="login-hint">현재 주소: {url || "(기본값)"}</div>
+            <div className="login-hint">현재 주소: {(displayUrl ?? url) || "(기본값)"}</div>
             <input
               type="text"
               placeholder="http://192.168.1.171:8010"

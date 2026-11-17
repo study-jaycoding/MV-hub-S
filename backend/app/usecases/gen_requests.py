@@ -1502,6 +1502,7 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
             import_kwargs = {"creator_uid": cmd.creator_uid}
             if cmd.regenerate and cmd.regenerate.finish_draft:
                 import_kwargs["finish_draft"] = True
+                import_kwargs["finish_resolution"] = cmd.regenerate.finish_resolution or "1080p"
             if cmd.workspace is not None:
                 import_kwargs["workspace"] = cmd.workspace
             if reservation:

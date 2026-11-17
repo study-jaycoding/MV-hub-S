@@ -70,10 +70,19 @@ def run_tool(inst: install.Installation, kind: str, params: dict) -> tuple[int, 
     """도구를 이 프로세스 안에서. 정상 반환 코드는 그대로, 그 밖의 끝남은 실패(0 으로 바꾸거나 다시 실행하지 않는다)."""
     tools = (inst.root / "tools").resolve()
     sys.path.insert(0, str(tools))
+    # install imports the console's TLS helper; move tools must import their own installation's version.
+    loaded_tls = sys.modules.get('server_tls')
+    if loaded_tls is not None and tools != TOOLS.resolve():
+        origin = Path(getattr(loaded_tls, '__file__', '')).resolve()
+        if origin == (TOOLS / 'server_tls.py').resolve():
+            del sys.modules['server_tls']
+        elif origin != tools / 'server_tls.py':
+            return 1, {'error': '이사 도구 server_tls 모듈의 출처를 확인하지 못했습니다'}
     name, args = tool_args(inst, kind, params)
     tool = __import__(name)
     # 도구와 그 의존(deploy_fence_check·server_move·app.*)은 설치 루트 것이어야 한다(관리 창 stage 와 섞이지 않게).
-    homes = {name: tools, "server_move": tools, "deploy_fence_check": tools, "app": (inst.root / "backend").resolve()}
+    homes = {name: tools, "server_move": tools, "server_tls": tools,
+             "deploy_fence_check": tools, "app": (inst.root / "backend").resolve()}
     for module, home in homes.items():
         loaded = sys.modules.get(module)
         file = getattr(loaded, "__file__", None)

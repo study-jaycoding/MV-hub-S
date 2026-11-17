@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { jsonFetch } from "./http";
 import { connectProgress } from "./progressSocket";
+import type { UsageBasis } from "./creditUsage";
 
-export interface MyCreditQuota {
+export interface MyCreditQuota extends UsageBasis {
+  usage_supported?: boolean;
+  refunded?: number | null;
+  failed_count?: number | null;
+  failed_refunded_count?: number | null;
+  overdue_pending_count?: number;
   workspace_id: string;
   source: "auto" | "override" | "unlimited" | "unassigned" | "unavailable";
   group_id: string | null;

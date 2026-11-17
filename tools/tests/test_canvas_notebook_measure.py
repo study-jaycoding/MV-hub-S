@@ -140,6 +140,79 @@ def test_server_environment_uses_existing_isolation_builder(tmp_path, monkeypatc
     assert env["CONTENT_HUB_SHARED_URL"] == "http://127.0.0.1:9"
     assert env["CONTENT_HUB_SCENE_WRITER"] == "1"  # 바깥에서 끈 값이 새지 않고, 운영 기본(끔)과 달리 공책을 명시적으로 켜서 잰다
     assert env["CONTENT_HUB_AUTH"] == "0"
+    monkeypatch.setenv("CONTENT_HUB_SCENE_WRITER", "1")
+    assert measure.make_env(tmp_path, 8239, writer=False)["CONTENT_HUB_SCENE_WRITER"] == "0"  # 미러 준비 단계만 끔
+
+
+def test_mirror_is_seeded_on_writer_off_start_then_hub_restarts_with_writer(tmp_path, monkeypatch):
+    import asyncio
+    instance = measure.Measurement("bootstrap", tmp_path)
+    seeds = measure.fixture()
+    calls, rows = [], []
+    def request(path, body=None, method=None):
+        calls.append((path, method, body))
+        if method == "PUT":
+            rows.extend({"id": item["id"], "data": item["data"]} for item in body["upserts"])
+            return 200, {"ok": True}
+        return 200, {"restore_generation": "synthetic-generation", "items": list(rows)}
+    monkeypatch.setattr(instance.hub, "request", request)
+    monkeypatch.setattr(instance.hub, "stop", lambda: calls.append(("stop",)))
+    monkeypatch.setattr(instance.hub, "start", lambda **options: calls.append(("start", options)))
+    asyncio.run(instance.seed_mirror(seeds))
+    put = next(body for path, method, body in (c for c in calls if len(c) == 3) if method == "PUT")
+    assert put["restore_generation"] == "synthetic-generation" and put["project_id"] == ""
+    assert [json.loads(item["data"]) for item in put["upserts"]] == seeds  # 브라우저 직렬화와 같은 간결 JSON
+    assert all(item["data"] == json.dumps(seed, separators=(",", ":")) for item, seed in zip(put["upserts"], seeds))
+    assert calls[0] == ("start", {"writer": False})  # 공책 끔으로 먼저 띄운다
+    assert [c[0] for c in calls].index("stop") > max(i for i, c in enumerate(calls) if len(c) == 3 and c[1] == "PUT")
+    assert calls[-2:] == [("stop",), ("start", {})]  # 미러를 채운 뒤에만 공책을 켜고 다시 띄운다
+    assert instance.report["mirror_seed"]["scenes"] == len(seeds)
+    assert "empty-mirror first transition is not measured" in instance.report["limitations"][-1]
+
+
+def test_first_transition_skips_mirror_seed_and_runs_its_own_flow(tmp_path, monkeypatch):
+    import asyncio
+    instance = measure.Measurement("first_transition", tmp_path)
+    calls = []
+    async def seed(self, seeds):
+        calls.append("seed_mirror")
+    async def first(self, stack, seeds):
+        calls.append(("first_transition", len(seeds)))
+        return self.report
+    monkeypatch.setattr(measure, "find_browser", lambda: "chrome.exe")
+    monkeypatch.setattr(measure.Measurement, "seed_mirror", seed)
+    monkeypatch.setattr(measure.Measurement, "first_transition", first)
+    asyncio.run(instance.run(None))
+    assert calls == [("first_transition", 3)]  # 빈 허브 미러 그대로 — 미러를 채우면 빈 미러 첫 전환을 재지 못한다
+    assert CASES["first_transition"] == {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"}
+
+
+@pytest.mark.parametrize("join, notebook_id, converged", [
+    ({"notebookId": "nb", "restoreGeneration": "g1"}, "nb", True),
+    ({"notebookId": "", "restoreGeneration": "g1"}, "nb", True),     # 시작 전 미러에 합류한 브라우저(제품이 "" 로 둔다)
+    (None, "nb", False),                                             # 같은 씬이어도 합류 기록이 없다
+    ({"notebookId": "", "restoreGeneration": "g1"}, None, False),    # 공책이 아직 시작되지 않은 미러
+    ({"notebookId": "other", "restoreGeneration": "g1"}, "nb", False),  # 다른 공책
+    ({"notebookId": "nb", "restoreGeneration": "g0"}, "nb", False),  # 옛 복원 세대
+])
+def test_synced_requires_started_notebook_and_matching_browser_join(tmp_path, monkeypatch, join, notebook_id, converged):
+    import asyncio
+    instance = measure.Measurement("bootstrap", tmp_path)
+    key = lambda parts: json.dumps(parts, separators=(",", ":"))
+    scene = {"id": "a", "name": "a"}
+    entries = [[key(["o", instance.bucket]), ["a"]], [key(["s", instance.bucket, "a"]), scene]]
+    if join is not None:
+        entries.append([key(["nj", instance.account]), join])
+    book = {"notebook_id": notebook_id, "restore_generation": "g1", "items": [{"id": "a", "data": json.dumps(scene), "deleted_at": None}]}
+    monkeypatch.setattr(instance.hub, "request", lambda *_: (200, book))
+    class FakePage:
+        async def eval(self, _script):
+            return entries
+    if converged:
+        assert asyncio.run(instance.synced(FakePage(), timeout=1)) is book
+    else:
+        with pytest.raises(RuntimeError, match="converge"):
+            asyncio.run(instance.synced(FakePage(), timeout=.3))
 
 
 @pytest.mark.parametrize("name", ["MV-hub-S-dev", "MV-hub-S-release", "MV-hub-S", "data_test", "data"])

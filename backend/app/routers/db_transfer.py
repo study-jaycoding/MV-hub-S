@@ -43,7 +43,7 @@ from ..services.db_scrub import scrub_slack_connection, scrub_hf_org_usage_conne
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db, validate_db_compatibility
-from ..services import trash_transfer
+from ..services import shared_transport, trash_transfer
 from ..services import upload_limits
 from ..services.backup import (
     POLICY_CHOICES,
@@ -704,7 +704,8 @@ def _multipart_upload(url: str, token: str | None, source: Path) -> tuple[int, o
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=180) as r:
+        req.full_url = shared_transport.transport_url(req.full_url)
+        with shared_transport.cached_opener().open(req, timeout=180) as r:
             return r.status, json.loads(r.read().decode() or "null")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace")
@@ -718,7 +719,8 @@ def _download_to(url: str, token: str | None, dst: Path) -> int:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=180) as r:
+        req.full_url = shared_transport.transport_url(req.full_url)
+        with shared_transport.cached_opener().open(req, timeout=180) as r:
             with open(dst, "wb") as f:
                 upload_limits.copy_stream_limited(r, f, max_bytes=_BACKUP_DOWNLOAD_MAX_BYTES)
             return r.status

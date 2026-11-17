@@ -7,10 +7,16 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-15
+updated: 2026-11-17
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
+
+조직 사용량 2단계: `backend/app/repo/hf_org_usage.py`의 `CreditUsageSnapshot`이 명시적 공간·개인·기간의 API/facts 기준과 집계 전 견적을 읽는다. `backend/app/hf_org_usage_error.py`는 키/연결 import 없이 공유하는 예외형이다. `backend/app/usecases/hf_org_usage.py`의 본인 조회를 `backend/app/routers/manage_quota.py`가 제공한다. `frontend/src/lib/creditUsage.ts`는 출처·기간 표시 계약, `frontend/src/lib/myUsage.ts`는 문맥별 조회와 늦은 응답 폐기, `frontend/src/components/MyUsageWindow.tsx`는 개인 요약·분류·내역 창, `frontend/src/components/common/UsageBasis.tsx`는 범위별 출처 표시, `frontend/src/styles/my-usage.css`는 그 창의 스타일이다. [계약·검증](status/hf_org_usage_phase2_2026-11-17.md).
+
+공유 서버 HTTPS 전환 리허설: `backend/tests/test_shared_tls_rehearsal.py`는 임시 전환 사본·D2 인증서로 실제 서버/허브의 가입·로그인·중계 읽기·WSS·백업 하위 프로세스를 검증하고, 기록용 TCP 앞단에서 평문 하향 요청을 탐지한다. [계약](status/공유서버HTTPS_4묶음_격리리허설_2026-11-16.md).
+
+공유 서버 전송 경계(HTTPS 2묶음): `backend/app/services/shared_transport.py`는 전환 상수·공개 인증서 신뢰·주소 변환·리다이렉트 차단·빠른 TCP 연결을 맡는다. `backend/tests/test_shared_transport.py`는 임시 D2 인증서·실제 loopback TLS로 신뢰·하향 금지·리다이렉트·프록시 정책을 검증한다. [계약](status/공유서버HTTPS_2묶음_통신경계_2026-11-16.md).
 
 복원 세대 보호(1C-1): `backend/app/repo/restore_generation.py`의 공통 검사(다른 repo 를 import 하지 않는 잎 — `share_commands.py`가 다시 내보냄, import 순환 방지) → `scene_notebook.py`·`scenes_backup.py`·`scene_cards.py`·`edit_docs.py`의 트랜잭션, `backend/app/routers/scenes.py`·`edit_docs.py`의 요청·응답 계약. `backend/tests/test_restore_generation.py`가 일곱 쓰기 입구·읽기 일관성·격리 복원·동시성을 검증한다.
 
@@ -653,7 +659,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 |---|---|---|
 | `scene/SceneBoard.tsx` | 카드·엣지·그룹의 화면 투영, 드래그/마퀴/가위/줌·실측, 선택·실행 훅 배선 | 문서 변환·저장 시점·Undo·gesture 원본은 `useCanvasSession.ts` 내부 소유. UI가 전체 문서 사본이나 저장 모드를 명령으로 넘기지 않음 |
 | `scene/SceneRecoveryPanel.tsx` | 카드 생성물 복구 후보·페이지·선택 표시 | 조회·연결은 `useSceneCardRecovery.ts` |
-| `scene/CanvasRestoreNotice.tsx` | 첫 공책 전환 복구 동선 — 캔버스 탭 알림 줄·보관한 씬 고르기 창·되살리기(공책 켬에서만, 기존 전체 가져오기 규칙 — 저장 뒤 계정 전환은 `sceneArchive` 가 시작 계정 카드 소속 대기열에). 저장 알림을 구독하지 않는다 | `CanvasRestoreNotice`·`RestorePicker`·`restoreRows`. 행 판정은 `sceneArchive.ts` `restoreArchiveRows`, 기록은 dev `docs/status/공책첫전환복구동선_2026-11-15.md`(이 후보엔 [설정 창 추가 기록](status/배포후보_설정창추가_2026-11-16.md)) |
+| `scene/CanvasRestoreNotice.tsx` | 첫 공책 전환 복구 동선 — 캔버스 탭 알림 줄·보관한 씬 고르기 창·되살리기(공책 켬에서만, 기존 전체 가져오기 규칙 — 저장 뒤 계정 전환은 `sceneArchive` 가 시작 계정 카드 소속 대기열에). 저장 알림을 구독하지 않는다 | `CanvasRestoreNotice`·`RestorePicker`·`restoreRows`. 행 판정은 `sceneArchive.ts` `restoreArchiveRows`, [기록](status/공책첫전환복구동선_2026-11-15.md) |
 | `scene/SceneKeepDialog.tsx` | 워크스페이스 보관 창 — 이름·프로젝트·설명, 같은 이름 보관본의 설명 채우기, 덮어쓰기 확인, 성공 뒤 탭 이름 변경 | 사본·요청은 `sceneKeep.ts` |
 | `scene/SceneKeepWindow.tsx` | 보관함 — 프로젝트 목록·개수·탭 표식, 이미지/리스트 전환, 카드 우클릭 메뉴(열기·삭제), 설명 두 줄·읽기 창 | 보기 선택은 `storageKeys.ts`, 열기는 `sceneKeep.ts` |
 | `scene/SceneBoardBoundary.tsx` | 지연 로딩·렌더 실패를 캔버스 영역 안에 가두고 수동 새로고침 안내 표시 | `App.tsx`가 `lazy`·`Suspense`와 함께 조립. 바깥 탭·도구 막대 유지 |
@@ -1325,6 +1331,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `MV_watchdog.bat`(50줄) | 워치독 재시작 루프 | → `tools/server_watchdog.py` |
 | `tools/server_supervisor.py`(99줄) | serve.py 크래시 감독, 지수백오프, storm 시 ALERT | |
 | `tools/server_watchdog.py`(792줄) | `/api/ready` 폴링, 행(hang) 감지 시 serve.py 만 kill | → `tools/rotate_text_log.py` |
+| `tools/server_tls.py` | 서버 전용 TLS 상태·공개 인증서 신뢰·준비 확인 CLI. 조회자는 개인키를 열지 않음 | → Python `ssl`, `urllib` |
+| `tools/server_tls_cert.py` | 관리자 인증서 준비(next)·반영(promote) 명령. 키 쓰기 전 ACL 확인, 중단 표식·목표 지문 기반 복구 | → `server_tls`, 신뢰 Git OpenSSL, Windows ACL |
 | `tools/stop_local_hub_on_port.ps1`(195줄) | 포트 점유 프로세스가 이 설치의 serve.py 인지 절대경로/토큰 검증 후 종료 | |
 
 **서버 자동시작·복구 — 서버 PC, 최초 1회 또는 장애 시**

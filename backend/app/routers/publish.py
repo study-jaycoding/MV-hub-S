@@ -35,7 +35,7 @@ from ..deps import account_author_uids, actor_id, current_account, final_move_ac
 from ..emailnorm import norm_email
 from ..repo import identity
 from ..repo.share import SHARE_PROJECT_REQUIRED, ShareProjectRequired, project_less_anchors
-from ..services import agent_signals, net_guard, server_relocation
+from ..services import agent_signals, shared_transport, server_relocation
 from ..services.request_guards import require_loopback_browser_request
 from ..services.event_journal import journal_audit_event
 from ..services.share_state_reconciler import kick_share_state_reconciler
@@ -96,6 +96,7 @@ from ..services.shared_connection import (  # noqa: E402
     normalize_server_name as _normalize_server_name,
     published_revision as _published_revision,
     relocation_seen as _relocation_seen,
+    same_shared_server,
     server_name as _server_name,
     set_published_revision as _set_published_revision,
     set_relocation_seen as _set_relocation_seen,
@@ -170,7 +171,7 @@ def _server_name_for(url: str) -> str:
 
     로그인 화면에서 옛 주소로 되돌아가는 작업자가 그 서버 이름을 그대로 다시 보게 한다.
     찾지 못하면 빈 값 = 화면은 주소로 폴백한다(이름은 관리자가 다시 등록)."""
-    if (repo.get_setting(_K_URL) or "").strip().rstrip("/") == url:
+    if _effective_url().strip().rstrip("/") == url:
         return _server_name()
     for entry in _url_history_entries():
         if entry["url"] == url:
@@ -191,6 +192,9 @@ def _save_shared_session(
     로컬 로그인/가입에서는 ``_switch_account_db``가 B 계정 override를 건 상태로 호출한다.
     필수 설정 중 하나라도 실패하면 예외를 그대로 전파해 활성 포인터 공개를 막는다.
     """
+    current = _effective_url()  # _switch_account_db 가 잡은 대상 계정 DB의 신원을 우선한다.
+    if same_shared_server(current, url):
+        url = current
     name = account.get("name") or email
     # 서버 표시 이름은 '그 주소에 딸린 값'이다 — 주소를 바꿔 로그인하면 그 주소의 이름으로
     # 갈아끼운다(이력에도 없으면 비운다 → 화면은 주소로 폴백). ★_K_URL 을 덮기 '전에' 읽는다.
@@ -432,6 +436,14 @@ class SetUrlIn(BaseModel):
     name: Optional[str] = None  # 서버 표시 이름(선택) — 비우면 이름 없이 주소만 쓴다
 
 
+def _display_url(url: str) -> tuple[str, Optional[str]]:
+    try:
+        return shared_transport.transport_url(url), None
+    except shared_transport.TLSConfigError:
+        logging.getLogger(__name__).warning("shared_server_tls_config_error", exc_info=True)
+        return url, "공유 서버 인증서 설정 오류 — 관리자에게 알리세요"
+
+
 def _shared_status() -> dict[str, Any]:
     elev_email = repo.get_setting(_K_ELEV_EMAIL)
     try:
@@ -443,9 +455,13 @@ def _shared_status() -> dict[str, Any]:
         _clear_elevation()
         elev_email = None
         elev_expires = 0
+    url = _effective_url()
+    display_url, transport_error = _display_url(url)
     return {
         "configured": True,
-        "url": _effective_url(),
+        "url": url,
+        "display_url": display_url,
+        "transport_error": transport_error,
         # 관리자가 등록한 '서버' 표시 이름 — 작업자 화면은 주소 대신 이걸 보여준다(없으면 주소).
         # 아래 "name" 은 로그인한 '사람' 이름이다(다른 값, 다른 키).
         "server_name": _server_name(),
@@ -712,9 +728,11 @@ def set_shared_url(body: SetUrlIn, request: Request):
     _require_local_shared_connection(request)
     url = _normalize_shared_url(body.url)
     name = _normalize_server_name(body.name)
-    repo.set_setting(_K_URL, url)
-    repo.set_setting(_K_SERVER_NAME, name or None)
-    return _shared_status()
+    with active_account.pinned_account_scope():
+        current = _effective_url()
+        repo.set_setting(_K_URL, current if same_shared_server(current, url) else url)
+        repo.set_setting(_K_SERVER_NAME, name or None)
+        return _shared_status()
 
 
 # 연결 테스트(probe) — 서버가 이사·IP 변경으로 주소가 틀리면 로그인이 실패하고 화면 전체가
@@ -742,18 +760,17 @@ def _probe_shared_health(url: str) -> dict[str, Any]:
     (거대 응답이나 응답하지 않는 호스트가 허브 스레드를 붙잡지 못하게).
     반환: {ok, reachable, server_version, reason}.
     """
-    req = urllib.request.Request(f"{url}/api/health", method="GET")
-    req.add_header("Accept", "application/json")
     try:
-        # 리다이렉트 차단 opener 는 net_guard 단일 출처를 재사용한다. 단 여기서는
-        # assert_public_http_url 을 쓰지 않는다 — 팀 공유 서버는 사설 IP(LAN)가 정상이다.
-        with net_guard.guarded_opener().open(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
+        req = urllib.request.Request(shared_transport.transport_url(f"{url}/api/health"), method="GET")
+        req.add_header("Accept", "application/json")
+        with shared_transport.opener().open(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
             status = resp.status
             content_type = (resp.headers.get_content_type() or "").lower()
             raw = resp.read(_PROBE_MAX_BYTES + 1)
-    except net_guard.BlockedURLError:
-        return _probe_result(False, True, None, "다른 주소로 리다이렉트됩니다(공유 서버 주소가 아닙니다)")
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            exc.close()
+            return _probe_result(False, True, None, "다른 주소로 리다이렉트됩니다(공유 서버 주소가 아닙니다)")
         return _probe_result(False, True, None, f"서버가 응답했지만 상태가 {exc.code} 입니다")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return _probe_result(False, False, None, f"연결할 수 없습니다({exc})")
@@ -827,23 +844,31 @@ def shared_server_relocation(request: Request):
     인지까지 확인한 결과다(B안 probe 재사용 — 무토큰·리다이렉트 금지·JSON·크기 상한).
     """
     _require_local_shared_connection(request)
-    current = _effective_url()
-    proposal = server_relocation.proposal(
-        current, _relocation_seen(), server_relocation.snapshot()
-    )
-    url = _safe_normalized_url(proposal["url"]) if proposal else None
-    if not proposal or not url:
-        return {**_NO_RELOCATION, "current_url": current, "moved": _moved_notice(current)}
-    return {
-        "current_url": current,
-        "proposed_url": url,
-        "revision": proposal["revision"],
-        # 같은 서버가 자리만 옮긴 것이므로, 공지에 이름이 없으면 지금 쓰는 이름을 그대로 쓴다.
-        "server_name": _proposed_server_name(proposal) or None,
-        "announced_at": proposal["announced_at"] or None,
-        "reachable": _probe_shared_health(url)["ok"],
-        "moved": None,
-    }
+    with active_account.pinned_account_scope():
+        current = _effective_url()
+        current_display, current_error = _display_url(current)
+        proposal = server_relocation.proposal(
+            current, _relocation_seen(), server_relocation.snapshot()
+        )
+        url = _safe_normalized_url(proposal["url"]) if proposal else None
+        if not proposal or not url:
+            return {**_NO_RELOCATION, "current_url": current, "moved": _moved_notice(current),
+                    "current_display_url": current_display, "proposed_display_url": None,
+                    "transport_error": current_error}
+        proposed_display, proposed_error = _display_url(url)
+        return {
+            "current_url": current,
+            "current_display_url": current_display,
+            "proposed_url": url,
+            "proposed_display_url": proposed_display,
+            "transport_error": proposed_error or current_error,
+            "revision": proposal["revision"],
+            # 같은 서버가 자리만 옮긴 것이므로, 공지에 이름이 없으면 지금 쓰는 이름을 그대로 쓴다.
+            "server_name": _proposed_server_name(proposal) or None,
+            "announced_at": proposal["announced_at"] or None,
+            "reachable": _probe_shared_health(url)["ok"],
+            "moved": None,
+        }
 
 
 def _moved_notice(current: str) -> Optional[dict[str, Any]]:
@@ -994,6 +1019,8 @@ def _apply_relocation(url: str, revision: int, name: str) -> None:
     계정 DB 에만 쓴 새 주소는 화면에 보이지 않고 같은 데드락이 재발한다.
     """
     with active_account.transition_lock:
+        if same_shared_server(_effective_url(), url):
+            return
         before = {key: repo.get_setting(key) for key in _RELOCATION_ROLLBACK_KEYS}
         try:
             _write_relocation(url, revision, name)

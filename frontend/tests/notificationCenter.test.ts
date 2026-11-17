@@ -6,6 +6,7 @@ import {
   markNotificationListRead,
   mergeReleaseAnnouncementNotifications,
   notificationBadgeText,
+  serverRelocationNotification,
   syncReleaseNotifications,
   unreadNotificationCount,
 } from "../src/lib/notificationCenter";
@@ -33,6 +34,17 @@ const status = (overrides: Partial<ReleaseUpdateStatus> = {}): ReleaseUpdateStat
 });
 
 describe("알림 센터 파생 상태", () => {
+  it("표시 주소가 없는 이전 백엔드도 저장 주소로 알림을 만든다", () => {
+    const url = "http://127.0.0.1:18093";
+    const item = serverRelocationNotification({
+      current_url: "http://127.0.0.1:18091", proposed_url: url,
+      revision: 3, server_name: null, announced_at: null, reachable: true,
+    }, new MemoryStorage())!;
+    expect(item.text).toContain(url);
+    expect(item.url).toBe(url);
+    expect(item.id).toBe(`relocation:3:${url}`);
+  });
+
   // ★2026-09-03(Jay): 릴리스가 올라온 것만으로는 알림을 만들지 않는다. 릴리스마다 전원에게
   //  알림이 가면 업데이트 시점을 일괄로 관리할 수 없다. 알림은 관리자가 공지한 것만.
   it("새 버전이 있어도 관리자가 공지하기 전에는 알림을 만들지 않는다", () => {

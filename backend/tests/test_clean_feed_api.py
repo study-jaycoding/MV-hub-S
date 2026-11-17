@@ -24,6 +24,9 @@ from concurrent.futures import Future
 from unittest.mock import Mock
 
 import pytest
+from test_shared_transport import certificates, required_tls, transport_server
+
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.testclient import TestClient
@@ -40,6 +43,32 @@ from app.services import clean_feed_session as cfs
 from app.services import local_agent_pair, operational_logging, request_guards
 from app.services.clean_feed_session import Hub, Identity, token_sha
 from app.services.clean_feed_window import OpenError, Screen
+
+
+def test_clean_feed_direct_open_uses_tls(accounts, required_tls, monkeypatch):
+    with transport_server(required_tls, body=b'synthetic') as (base, seen):
+        monkeypatch.setattr(_proxy, 'base_url', lambda: base)
+        monkeypatch.setattr(_proxy, 'token', lambda: 'synthetic')
+        async def scenario():
+            local_hub = Hub(FakeWindows(), clock=Clock())
+            sess = _session(_identity(), proxying=True)
+            response = await local_hub._relay(_starlette_request('HEAD'), sess, '/media/ab/x.mp4', cfs._Slot(sess))
+            assert response.status_code == 200
+        run(scenario())
+        assert seen[0][0] == '/media/ab/x.mp4'
+        assert seen[0][1]['Authorization'] == 'Bearer synthetic'
+    with transport_server(required_tls, status=302) as (base, seen):
+        monkeypatch.setattr(_proxy, 'base_url', lambda: base)
+        async def rejected():
+            local_hub = Hub(FakeWindows(), clock=Clock())
+            sess = _session(_identity(), proxying=True)
+            with pytest.raises(HTTPException) as caught:
+                await local_hub._relay(_starlette_request('HEAD'), sess, '/media/ab/x.mp4', cfs._Slot(sess))
+            assert caught.value.status_code == 502
+        run(rejected())
+        assert len(seen) == 1
+
+
 
 ACCOUNT_A = "feed-a@example.invalid"
 ACCOUNT_B = "feed-b@example.invalid"

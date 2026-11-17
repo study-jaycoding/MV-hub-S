@@ -3,7 +3,7 @@
 로그인 전에 포트를 듣는 프로세스가 이 설치의 서버인지 본다(2단계 설계 3판 (1)): 포트 주인 PID 의 실행 파일·
 정확한 serve.py 경로·생성 시각(모두 WMI — 서버 프로세스를 열지 않는다), /api/ready 의 process_id·role·build_id·
 execution_nonce(= server-activation.json), 그리고 다시 조회해 같은 프로세스인지(두 관측의 일치).
-하나라도 확인하지 못하면 로그인하지 않는다. 서버가 TLS 로 설정돼 있으면 이 기능을 끈다(인증서 검증을 풀지 않는다).
+하나라도 확인하지 못하면 로그인하지 않는다. TLS 는 서버 전용 공개 인증서와 이름을 검증한다.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import names, status
+import server_tls
 from .install import Installation, Runner, powershell_exe
 from .jobs import read_json, valid_token
 
@@ -152,8 +153,8 @@ def python_family(python: Path) -> list[Path]:
 
 def verify_server(inst: Installation, runner: Runner) -> dict:
     """확인한 서버 대상(port·pid·created·nonce·build_id). 확인 대상(Plan.params)에 그대로 넣고 실행 직전에 다시 비교한다."""
-    if inst.tls:
-        raise ServerError("서버가 https(인증서)로 설정돼 있어 관리 창 로그인을 쓰지 않습니다 — 웹 관리자 창을 쓰세요")
+    if inst.tls_state == 'error' or 'tls_config_error' in inst.problems:
+        raise ServerError('TLS 설정 오류 — 인증서 설정을 확인하세요')
     script, build_id = expected_server(inst)
     nonce = activation_nonce(inst)
     found = listeners(inst.port, runner)
@@ -174,7 +175,7 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
                           f"({_shown(argv[1])})")
     if not exe or not any(_same_path(exe, python) for python in expected_pythons(inst)):
         raise ServerError(f"{inst.port} 포트를 듣는 프로세스(PID {pid})의 실행 파일이 이 서버의 Python 이 아닙니다({exe or '확인 불가'})")
-    ready = status.read_ready(inst.port)
+    ready = status.read_ready(inst.port, tls=inst.tls)
     payload = ready.payload if isinstance(ready.payload, dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     if not (ready.code == 200 and payload.get("status") == "ready" and runtime.get("process_id") == pid
@@ -184,7 +185,8 @@ def verify_server(inst: Installation, runner: Runner) -> dict:
     # 두 관측(앞의 조회·지금 조회)에서 같은 서버인지 — 같은 PID 의 재사용·포트 주인 교체를 이 사이에서 잡는다.
     if listeners(inst.port, runner) != [found[0]]:
         raise ServerError("확인하는 사이 서버 프로세스가 바뀌었습니다 — 다시 시도하세요")
-    return {"port": inst.port, "pid": pid, "created": created, "nonce": nonce, "build_id": build_id}
+    return {"port": inst.port, "pid": pid, "created": created, "nonce": nonce, "build_id": build_id,
+            **({'tls': True} if inst.tls else {})}
 
 
 def _shown(value: str, limit: int = 160) -> str:
@@ -222,9 +224,16 @@ def call(server: dict, method: str, path: str, token: str = "", body: dict | Non
             raise ServerError("서버를 다시 확인할 수 없어 로그인 정보를 보내지 않았습니다")
         if _recheck() != server:
             raise ServerError("확인했던 서버와 지금 포트의 서버가 다릅니다 — 로그인 정보를 보내지 않았습니다. 다시 시도하세요")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), status._NoRedirect)
+    try:
+        config = server_tls.read_config()
+        if bool(server.get('tls')) != (config.state == 'on'):
+            raise server_tls.TLSConfigError('server_tls_configuration_changed')
+        scheme = config.scheme
+        opener = server_tls.opener(config)
+    except (server_tls.TLSConfigError, OSError) as exc:
+        raise ServerError('TLS 설정 오류 — 로그인 정보를 보내지 않았습니다') from exc
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    request = urllib.request.Request(f"http://127.0.0.1:{int(server['port'])}{path}", data=data, method=method)
+    request = urllib.request.Request(f"{scheme}://127.0.0.1:{int(server['port'])}{path}", data=data, method=method)
     request.add_header("Accept", "application/json")
     if data is not None:
         request.add_header("Content-Type", "application/json")

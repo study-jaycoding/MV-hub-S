@@ -6,8 +6,46 @@ import os
 import tempfile
 import unittest
 
+import pytest
+
 from app import db, repo
 from app.services import shared_connection
+
+
+@pytest.mark.parametrize("left,right,expected", [
+    ("http://HOST:8010/", "https://host:8010", True),
+    ("http://host", "https://host", False),
+    ("http://host", "https://host:80", True),
+    ("http://host:443", "https://host", True),
+    ("http://host:8010/Base/", "https://host:8010/Base", True),
+    ("http://host:8010/Base", "https://host:8010/base", False),
+    ("http://host:8010/a", "https://host:8010/b", False),
+    ("http://host:8010", "https://other:8010", False),
+    ("http://host:8010", "https://host:8011", False),
+    ("http://[::1]:8010", "https://[::1]:8010/", True),
+])
+def test_same_shared_server(left, right, expected):
+    assert shared_connection.same_shared_server(left, right) is expected
+    assert shared_connection.same_shared_server(right, left) is expected
+
+
+@pytest.mark.parametrize("url", [
+    "", "host:8010", "http://", "ftp://host:8010", "http://host:0",
+    "http://host:-1", "http://host:65536", "http://host:bad", "http://[bad",
+    "http://user@host:8010", "http://@host:8010", "http://host:8010?q=1",
+    "http://host:8010#fragment", "http://ho\nst:8010",
+])
+def test_invalid_urls_only_match_identical_values(url):
+    assert shared_connection.same_shared_server(url, url)
+    assert not shared_connection.same_shared_server(url, "https://host:8010")
+
+
+def test_identical_legacy_url_short_circuits_validation(monkeypatch):
+    def unexpected_validation(url):
+        raise AssertionError("identical URL must not need a parsed key")
+
+    monkeypatch.setattr(shared_connection, "_shared_server_key", unexpected_validation)
+    assert shared_connection.same_shared_server(" http://legacy:0/ ", "http://legacy:0")
 
 
 class SharedConnectionContractTests(unittest.TestCase):

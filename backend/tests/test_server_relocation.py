@@ -123,6 +123,17 @@ class AnnouncementParsingTests(unittest.TestCase):
 
 
 class ProposalJudgementTests(unittest.TestCase):
+    def test_identical_rejected_key_keeps_exact_match_fallback(self):
+        url = "http://legacy:0"
+        with mock.patch.object(shared_connection, "same_shared_server", return_value=False):
+            self.assertIsNone(server_relocation.proposal(url + "/", {}, _announcement(url=url)))
+
+    def test_default_http_and_https_ports_propose_a_move(self):
+        for current, proposed in (("http://h", "https://h"), ("https://h", "http://h")):
+            result = server_relocation.proposal(current, {}, _announcement(url=proposed))
+            self.assertIsNotNone(result)
+            self.assertEqual(result["url"], proposed)
+
     """2·3. 제안 판정 — 순수 함수라 DB 없이 고정한다."""
 
     def test_new_revision_on_a_different_address_is_proposed(self):
@@ -407,6 +418,59 @@ class RelocationRouteTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 403)
 
     # ── 조회 ─────────────────────────────────────────────────────────────
+    def test_scheme_only_announcement_never_writes_or_logs_out(self):
+        current = publish._effective_url()
+        url = current.replace("http:", "https:")
+        for revision in (1, 5, 9):
+            shared_connection.set_relocation_seen(5, "http://previous.invalid:8010")
+            announcement = _announcement(url=url, revision=revision)
+            server_relocation.remember(announcement)
+            with (
+                mock.patch.object(repo, "set_setting") as write,
+                mock.patch.object(publish, "_probe_shared_health") as probe,
+                mock.patch.object(publish, "_clear_session_settings") as clear,
+                mock.patch.object(publish, "_detach_active_account") as detach,
+                mock.patch.object(server_relocation, "announcement_source", return_value="synthetic"),
+                mock.patch.object(server_relocation, "read_announcement", return_value=announcement),
+            ):
+                for _ in range(2):
+                    out = publish.shared_server_relocation(_request())
+                    self.assertIsNone(out["proposed_url"])
+                    self.assertIsNone(out["moved"])
+                with self.assertRaises(HTTPException) as caught:
+                    publish.relocate_shared_server(publish.RelocateIn(url=url, revision=revision), _request())
+                self.assertEqual(caught.exception.status_code, 409)
+                publish._apply_relocation(url, revision, "Changed name")
+                write.assert_not_called()
+                probe.assert_not_called()
+                clear.assert_not_called()
+                detach.assert_not_called()
+            self.assertEqual(publish._effective_url(), current)
+            self.assertEqual(shared_connection.relocation_seen()["revision"], 5)
+
+    def test_relocation_display_urls_and_tls_error(self):
+        server_relocation.remember(_announcement())
+        current = publish._effective_url()
+        proposed = _announcement()["url"]
+        for state in ("off", "on", "error"):
+            with (
+                mock.patch.object(publish.shared_transport, "TLS_REQUIRED", state != "off"),
+                mock.patch.object(publish.shared_transport, "ssl_context",
+                                  side_effect=publish.shared_transport.TLSConfigError("broken bundle") if state == "error" else None),
+                mock.patch.object(publish, "_probe_shared_health", return_value={"ok": state != "error"}),
+                mock.patch.object(repo, "set_setting") as write,
+            ):
+                out = publish.shared_server_relocation(_request())
+                self.assertEqual(out["current_url"], current)
+                self.assertEqual(out["proposed_url"], proposed)
+                self.assertEqual(out["current_display_url"], current.replace("http:", "https:") if state == "on" else current)
+                self.assertEqual(out["proposed_display_url"], proposed.replace("http:", "https:") if state == "on" else proposed)
+                self.assertEqual(bool(out["transport_error"]), state == "error")
+                if state == "error":
+                    self.assertEqual(out["transport_error"], "공유 서버 인증서 설정 오류 — 관리자에게 알리세요")
+                    self.assertNotIn("broken bundle", str(out))
+                write.assert_not_called()
+
     def test_status_reports_no_proposal_without_an_announcement(self):
         out = publish.shared_server_relocation(_request())
         self.assertEqual(out["current_url"], "http://192.168.1.199:8010")
@@ -491,6 +555,25 @@ class RelocationRouteTests(unittest.TestCase):
             return publish.relocate_shared_server(
                 publish.RelocateIn(url=url, revision=revision), _request()
             )
+
+    def test_switch_uses_transport_probe(self):
+        from app.services import shared_transport
+        from test_shared_transport import transport_server
+        with (
+            transport_server(body=b'{"cli_version":"test"}') as (base, seen),
+            mock.patch.object(server_relocation, 'announcement_source', return_value='D:\\releases'),
+            mock.patch.object(server_relocation, 'read_announcement', return_value=_announcement(url=base)),
+            mock.patch.object(publish, '_probe_shared_health', wraps=publish._probe_shared_health) as probe,
+            mock.patch.object(shared_transport, 'transport_url', wraps=shared_transport.transport_url) as transport,
+            mock.patch.object(publish, '_apply_relocation') as apply,
+            mock.patch.object(publish, '_shared_status', return_value={}),
+        ):
+            result = publish.relocate_shared_server(publish.RelocateIn(url=base, revision=2), _request())
+            self.assertTrue(result['ok'])
+            probe.assert_called_once_with(base)
+            transport.assert_called_once_with(base + '/api/health')
+            apply.assert_called_once()
+            self.assertEqual([r[0] for r in seen], ['/api/health'])
 
     def _assert_untouched(self):
         self.assertEqual(repo.get_setting(publish._K_URL), "http://192.168.1.199:8010")

@@ -7,6 +7,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceUsageDashboard } from "../src/components/manage/WorkspaceUsageDashboard";
+import { CreditPoolSection } from "../src/components/manage/CreditPoolSection";
+import { setLang } from "../src/lib/i18n";
 
 const mocks = vi.hoisted(() => ({ workspaces: vi.fn(), teamOverview: vi.fn(), teamTimeseries: vi.fn(), creditPlan: vi.fn() }));
 vi.mock("../src/lib/manageApi", () => ({ manageApi: mocks }));
@@ -24,6 +26,7 @@ const OVERVIEW = {
 let root: Root, host: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  setLang("ko");
   Object.values(mocks).forEach((mock) => mock.mockReset());
   mocks.workspaces.mockResolvedValue({ workspaces: [{ id: "a", name: "A", member_count: 1 }] });
   mocks.teamOverview.mockResolvedValue(OVERVIEW);
@@ -41,6 +44,51 @@ const render = async (props: { reloadSignal?: number; consoleOpen?: boolean }) =
   });
   await settle();
 };
+
+it("출처는 크레딧 카드별로 표시하고 기존 생성 분석은 MV 기록으로 유지한다", async () => {
+  mocks.creditPlan.mockResolvedValue({ month: "2026-11", configured: true, my_group: {
+    id: "g", name: "Group", member_count: 2, monthly_limit: 100, quota_total: 200, used_period: 3, used_month: 3,
+    my_used_period: 1, my_quota: 100, my_remaining: 99, my_quota_source: "auto",
+    period_usage: { basis: "mixed", fallback_count: 1 }, my_period_usage: { basis: "api" },
+  } });
+  await act(async () => root.render(<WorkspaceUsageDashboard workspaceId="a" scope="mine" />));
+  await settle();
+  expect(host.querySelector(".credit-card")?.textContent).toContain("힉스필드 기준");
+  expect(host.querySelector(".credit-card")?.textContent).toContain("일부 MV 기록 기준");
+  expect(host.querySelector(".work-source-label")?.textContent).toContain("생성 기록 분석 · 프로젝트·모델 차트는 MV 기록 기준");
+});
+
+it.each(["api", "facts", "mixed", undefined] as const)("풀 머리글과 미확인 안내가 %s 출처를 따른다", async basis => {
+  mocks.creditPlan.mockResolvedValue({ month: "2026-11", configured: true, groups: [], topups: [], history: [], pool: {
+    monthly_topup: 100, used_month: 1.25, unknown_month: 1, balance: 10, balance_seen_at: null,
+    month_start_balance: null, month_start_day: null, month_usage: basis ? { basis, fallback_count: 1 } : undefined,
+  } });
+  await act(async () => root.render(<CreditPoolSection workspaceId="a" scope="all" />));
+  await settle();
+  const header = host.querySelector(".credit-card .usage-card-head")!.textContent!;
+  const text = host.querySelector(".credit-pool-grid")!.textContent!;
+  if (basis) {
+    expect(header).toContain(basis === "api" ? "힉스필드 기준" : basis === "facts" ? "MV 생성 기록 기준" : "일부 MV 기록 기준");
+    expect(header).not.toContain("사용은 팀 기록 장부");
+    expect(text).not.toContain("사용 (팀 기록 장부)");
+  } else {
+    expect(header).toContain("사용은 팀 기록 장부");
+    expect(text).toContain("11월 사용 (팀 기록 장부)");
+  }
+  expect(text).toContain(basis === "api" ? "합계에 안 든 기록 1건" : "미상 1건 제외");
+});
+
+it.each([true, false])("멤버 카드의 출처 안내는 신서버=%s 계약을 따른다", async modern => {
+  mocks.creditPlan.mockResolvedValue({ month: "2026-11", configured: true, my_group: {
+    id: "g", name: "Group", member_count: 1, quota_total: 100, monthly_limit: 100, used_month: 3,
+    my_quota: 100, my_remaining: 97, my_quota_source: "auto", estimated: false,
+    my_period_usage: modern ? { basis: "api" } : undefined,
+  } });
+  await act(async () => root.render(<CreditPoolSection workspaceId="a" scope="mine" />));
+  await settle();
+  expect(host.textContent).toContain(modern ? "사용량 출처는 위 기간별 표시를 따릅니다" : "팀 기록 장부 기준");
+  if (!modern) expect(host.textContent).not.toContain("사용량 출처는 위 기간별 표시를 따릅니다");
+});
 
 it("L3-3 '전체 적용'이 꺼져 있으면 차트 모델을 바꿔도 상단 사용량은 다시 읽지 않는다", async () => {
   await render({});

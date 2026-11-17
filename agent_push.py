@@ -14,8 +14,8 @@
 필요: 이 PC에 higgsfield CLI 설치 + `higgsfield auth login` 완료. Python 3.9+ (표준 라이브러리만).
 
 예시:
-  python agent_push.py --server http://192.168.0.10:8010 --email oz1@millionvolt.com
-  python agent_push.py --server http://192.168.0.10:8010 --email oz1@millionvolt.com --watch 60
+  python agent_push.py --server http://127.0.0.1:8010 --email oz1@millionvolt.com
+  python agent_push.py --server http://127.0.0.1:8010 --email oz1@millionvolt.com --watch 60
 """
 
 from __future__ import annotations
@@ -1220,6 +1220,26 @@ def _cached_cli_version(cli: str) -> str | None:
     return _CLI_INFO_CACHE["version"]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_LOCAL_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _require_loopback_server(server: str) -> None:
+    try:
+        parsed = urlparse(server)
+        valid = (parsed.scheme in ("http", "https") and parsed.hostname in
+                 ("127.0.0.1", "::1", "localhost") and not parsed.username and not parsed.password)
+        parsed.port  # 잘못된 포트 문자열과 범위를 검증한다.
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("--server는 이 PC의 로컬 허브(127.0.0.1, ::1, localhost)여야 합니다")
+
+
 def _http(method: str, url: str, token: str | None = None, body: dict | None = None, timeout: int = 60):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -1227,7 +1247,7 @@ def _http(method: str, url: str, token: str | None = None, body: dict | None = N
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _LOCAL_OPENER.open(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode() or "null")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
@@ -1672,7 +1692,7 @@ def _wait_event(server: str, token: str, timeout: int = 35, wait_seconds: int | 
     req = urllib.request.Request(url, method="GET")
     req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _LOCAL_OPENER.open(req, timeout=timeout) as r:
             d = json.loads(r.read().decode() or "null")
             return d.get("reason") if isinstance(d, dict) and d.get("wake") else None
     except urllib.error.HTTPError as e:
@@ -2862,7 +2882,8 @@ def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int =
     if auth:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        open_request = _LOCAL_OPENER.open if auth else urllib.request.urlopen
+        with open_request(req, timeout=timeout) as r:
             if not suffix:
                 suffix = {
                     "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
@@ -2912,7 +2933,7 @@ def _preserve_reference(server: str, token: str, original: str, path: str,
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
     req.add_header("Content-Length", str(len(prefix) + os.path.getsize(path) + len(ending)))
     try:
-        with urllib.request.urlopen(req, timeout=180) as response:
+        with _LOCAL_OPENER.open(req, timeout=180) as response:
             receipt = json.loads(response.read(65537))
         return receipt.get("asset_content_id") == "sha256:" + digest["sha256"]
     except (OSError, ValueError, urllib.error.URLError):
@@ -3476,6 +3497,16 @@ def _submit_one_attempt(
         created, cli_error = _run_cli_json(cli, *args, timeout=_SUBMIT_TIMEOUT_SECONDS, env=create_env)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
+        # 직접 CLI 거절의 선두만 확정 실패로 인정한다. 인자·부분 응답은 근거가 아니다.
+        error_body = (cli_error or "").partition(" — cmd:")[0]
+        if error_body.startswith("CLI 실패:"):
+            error_body = error_body.removeprefix("CLI 실패:").strip()
+            error_body = error_body.removeprefix("Error:").strip()
+            if (model == "seedance_2_5" and params.get("draft_job_id")
+                    and params.get("draft") is False and created is None
+                    and re.match(r"^Seedance 2\.5 draft has expired(?:$|[\s.!?;:—])", error_body)):
+                _fail(server, token, rid, _sanitize_diagnostic(cli_error).strip()[:700])
+                return None
         # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
         # 자동 fail/재시도하면 이미 결제된 작업을 한 번 더 만들 수 있으므로 수동 복구 상태로 격리한다.
         reason = _sanitize_diagnostic(cli_error or "잡 id를 확인하지 못했습니다").strip()[:700]
@@ -4937,7 +4968,7 @@ def main() -> None:
         sys.stdout = _Tee(sys.stdout, log_sink)
         sys.stderr = _Tee(sys.stderr, log_sink)
     ap = argparse.ArgumentParser(description="Content Hub 로컬 push 에이전트")
-    ap.add_argument("--server", required=True, help="허브 서버 주소 (예: http://192.168.0.10:8010)")
+    ap.add_argument("--server", required=True, help="로컬 허브 주소 (예: http://127.0.0.1:8010)")
     ap.add_argument("--email", help="내 허브 로그인 이메일(로그인 모드에서 필요)")
     ap.add_argument("--password", help="허브 비밀번호(생략 시 안전 입력 프롬프트)")
     ap.add_argument("--token", help="허브 세션 토큰 직접 사용(로그인 생략 — 자동화/테스트용)")
@@ -4955,6 +4986,10 @@ def main() -> None:
     args = ap.parse_args()
 
     server = args.server.rstrip("/")
+    try:
+        _require_loopback_server(server)
+    except ValueError as exc:
+        ap.error(str(exc))
     cli = _cli()
     creds: dict | None = None  # 세션 만료 시 자동 재로그인용(메모리에만 유지, 저장 안 함)
     paired_email: str | None = None

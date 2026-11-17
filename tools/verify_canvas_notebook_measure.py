@@ -21,6 +21,8 @@ CASES = {
     "bootstrap": {"first_canvas", "archive", "archive_unchanged", "no_merge"},
     "performance": {"fixture", "samples", "baseline", "latency", "sync_under_second"},
     "rollback": {"old_checkout", "old_write", "new_recovery", "retained", "overwrite_then_delete_retained", "deleted_original_absent"},
+    # Empty-mirror first transition with the canvas restore flow (docs/status/공책첫전환복구동선_2026-11-15.md).
+    "first_transition": {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"},
 }
 
 

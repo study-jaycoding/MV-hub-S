@@ -29,7 +29,7 @@ import { STORAGE_KEYS } from "../../lib/storageKeys";
 import type { Generation, PreviewTarget } from "../../types";
 import { AgentConnect } from "./AgentConnect";
 import { AgentMarkdown } from "./AgentMarkdown";
-import { AgentSettings, UsagePop, UsageRing } from "./AgentSettings";
+import { AgentSettings, OpenAIIcon, UsagePop, UsageRing } from "./AgentSettings";
 import { AgentPlanCard } from "./AgentPlanCard";
 
 interface Props {
@@ -746,7 +746,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         )}
         {chat.messages.length === 0 && !needsConnect && (
           <div className="agent-empty">
-            <span className="agent-empty-mark" aria-hidden="true">⬡</span>
+            <i className="agent-empty-mark mv-mark" aria-hidden="true" />
             <p>{t("지금 보는 화면을 같이 보면서 일해요")}</p>
           </div>
         )}
@@ -848,7 +848,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
               <button type="button" className="agent-chip agent-model-btn" disabled={!chat.choice || blocked}
                 onClick={() => setMenu(menu === "model" ? null : "model")} aria-haspopup="true" aria-expanded={menu === "model"}
                 aria-label={t("모델 고르기")}>
-                <span className="agent-co" aria-hidden="true">{chat.choice?.engine === "codex" ? "◎" : "✳"}</span>
+                <span className="agent-co" aria-hidden="true">{chat.choice?.engine === "codex" ? <OpenAIIcon /> : "✳"}</span>
                 <span>{modelLabel}</span>
                 <Chevron />
               </button>
@@ -1678,7 +1678,7 @@ function ModelMenu({ engines, choice, onChoose, onSettings }: {
     return (
       <button key={`${e.id}:${m.id}`} type="button" className={`agent-model-item${on ? " on" : ""}`} disabled={!e.available} aria-pressed={on}
         onClick={() => onChoose(e.id === choice.engine ? { ...choice, model: m.id } : { engine: e.id, model: m.id, effort: effortFor(e), fast: false })}>
-        <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? "◎" : "✳"}</span>
+        <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? <OpenAIIcon /> : "✳"}</span>
         <span className="agent-model-name">{m.label}</span>
         {on && check}
       </button>
@@ -1694,11 +1694,11 @@ function ModelMenu({ engines, choice, onChoose, onSettings }: {
           <button type="button" className={`agent-model-item agent-model-row${sub === e.id ? " on" : ""}`} aria-haspopup="true" aria-expanded={sub === e.id}
             onClick={() => setSub(sub === e.id ? null : e.id)}
             onKeyDown={(event) => { if (event.key === "ArrowRight") { event.preventDefault(); setSub(e.id); } }}>
-            <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? "◎" : "✳"}</span>
+            <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? <OpenAIIcon /> : "✳"}</span>
             <span className="agent-model-name">{GROUP[e.id] ?? e.id}</span>
             {e.available
               ? e.subscription && <span className="agent-model-plan">{`${e.subscription} ${t("구독")}`}</span>
-              : <span className="agent-model-reason">{e.reason || t("쓸 수 없음")}</span>}
+              : <span className="agent-model-reason">{e.id === "codex" ? t("미연결") : e.reason || t("쓸 수 없음")}</span>}
             <Chevron />
           </button>
           {sub === e.id && (

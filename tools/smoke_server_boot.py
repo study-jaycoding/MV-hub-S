@@ -64,6 +64,7 @@ def main() -> int:
             python_exe=Path(sys.executable),
             port=port,
         )
+        env['MVHUB_SERVER_TLS_DIR'] = str(temp_path / 'server-tls')
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
             "w", encoding="utf-8"
         ) as stderr:
