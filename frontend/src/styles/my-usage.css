@@ -4,6 +4,12 @@
   width:min(760px,100%); max-height:90vh; overflow:auto; background:var(--panel); color:var(--text,#e8ede3); border:1px solid var(--border,#343b2f); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; }
 .my-usage-window header { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
 .my-usage-window h2 { font-size:16px; font-weight:700; margin:0; white-space:nowrap; }
+.my-usage-titlebar { display:flex; align-items:center; gap:8px; min-width:0; }
+/* 기준·안내 단추 — 계정 메뉴 Credits 옆 '?' 와 같은 모양 */
+.my-usage-help { width:16px; height:16px; padding:0; display:inline-grid; place-items:center; border:1.3px solid var(--muted); border-radius:50%; background:transparent; color:var(--muted); font-size:10px; font-weight:800; line-height:1; }
+.my-usage-help:hover,.my-usage-help[aria-expanded=true] { border-color:var(--text); color:var(--text); }
+.my-usage-help-pop { background:rgba(255,255,255,0.03); border:1px solid var(--border,#343b2f); border-radius:8px; padding:8px 10px; display:flex; flex-direction:column; gap:4px; }
+.my-usage-help-pop p { font-size:12px; color:var(--muted); white-space:pre-line; }
 .my-usage-window p { margin:0; }
 .my-usage-tools { display:flex; align-items:center; gap:6px; }
 .my-usage-seg { display:flex; border:1px solid var(--border2,#3d4536); border-radius:8px; overflow:hidden; }

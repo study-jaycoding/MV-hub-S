@@ -136,6 +136,7 @@ it.each(["unassigned", "unlimited"] as const)("새 서버 %s 계정도 Usage 숫
   const m = await open(TEAM);
   expect(m.usage).not.toBeNull();
   expect(m.usage!.textContent).toBe("—›");
+  expect(m.usage!.getAttribute("aria-label")).toBe("Usage — · 내 사용량 창 열기");
   expect(m.limit?.textContent).not.toContain("내 사용량 보기"); // 옛 단추는 없앴다(Jay 2026-11-17)
 });
 
@@ -171,6 +172,9 @@ it("집계 전 견적이 있으면 Usage 숫자 앞에 ≈, 누르면 메뉴가 
   serve(quota({ source: "auto", basis: "api", quota: 100, remaining: 88, used: 12, estimated_count: 2, used_estimated: 2 }));
   const m = await open(TEAM);
   expect(m.usage!.textContent).toBe("≈ 12›");
+  // 단추 이름에 숫자와 용도가 함께 — 옆 'Usage' 글자와 무관하게 무엇을 여는지 알 수 있다
+  expect(m.usage!.getAttribute("aria-label")).toBe("Usage ≈ 12 · 내 사용량 창 열기");
+  expect(m.usage!.title.split("\n")[0]).toBe("내 사용량 창 열기");
   await act(async () => { m.usage!.click(); });
   expect(document.querySelector(".acct-pop")).toBeNull();
   expect(document.querySelector('[role="dialog"].my-usage-window')).not.toBeNull();

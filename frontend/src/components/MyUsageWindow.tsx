@@ -57,6 +57,7 @@ export function MyUsageWindow({ workspaceId, accountKey, onClose }: { workspaceI
   useModalFocus(ref);
   const [range, setRange] = useState<UsageRange>("period");
   const [space, setSpace] = useState<UsageSpace>("this");
+  const [help, setHelp] = useState(false);
   const { value, error } = useMyUsage(workspaceId, accountKey, range, space);
   const api = value?.basis === "api";
   const period = periodShort(value);
@@ -69,11 +70,12 @@ export function MyUsageWindow({ workspaceId, accountKey, onClose }: { workspaceI
     return { ...g, hits: hits.length, net: hits.reduce((sum, s) => sum + s.net, 0) };
   }).filter(g => g.hits > 0) : [];
   const max = Math.max(1, ...groups.map(g => Math.abs(g.net)));
-  const failedRest = Math.max(0, (value?.failed_count ?? 0) - (value?.failed_refunded_count ?? 0));
+  // 오류 보고가 전액 환불 건수보다 많을 때만 — 그 차이는 '순값이 남은 건수'가 아니다(청구 0 인 오류도 전액 환불에서 빠진다, hf_org_usage.py 의 전액 환불 조건)
+  const failedNote = (value?.failed_count ?? 0) > (value?.failed_refunded_count ?? 0);
   const unknownRest = (value?.unknown_count ?? 0) - (value?.overdue_pending_count ?? 0);
   // 드물게만 생기는 안내 — 있을 때만 표 위 한 줄
   const notes = value ? [
-    failedRest > 0 ? t("순값이 남은 오류 {count}건").replace("{count}", String(failedRest)) : "",
+    failedNote ? t("오류 보고 {count}건 · 순값이 남은 행도 포함").replace("{count}", String(value.failed_count)) : "",
     (value.overdue_pending_count ?? 0) > 0 ? t("오래된 미매칭 {count}건 (60분 초과)").replace("{count}", String(value.overdue_pending_count)) : "",
     unknownRest > 0 ? t("미확인 {count}건").replace("{count}", String(unknownRest)) : "",
     value.truncated ? t("최근 1,000건 표시 · 합계는 전체") : "",
@@ -81,13 +83,21 @@ export function MyUsageWindow({ workspaceId, accountKey, onClose }: { workspaceI
   return createPortal(<div className="my-usage-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
     <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="my-usage-title" className="my-usage-window">
       <header>
-        <h2 id="my-usage-title" title={basisTitle}>{t("내 사용량")}{period && <span className="my-usage-period"> · {period}</span>}</h2>
+        <div className="my-usage-titlebar">
+          <h2 id="my-usage-title" title={basisTitle}>{t("내 사용량")}{period && <span className="my-usage-period"> · {period}</span>}</h2>
+          {/* 기준·수집 시각·동기화 안내 — 평소엔 숨기고(시안), 키보드로도 열 수 있게 단추로 */}
+          {value && <button type="button" className="my-usage-help" aria-label={t("기준과 안내")} aria-expanded={help} aria-controls="my-usage-help" onClick={() => setHelp(v => !v)}>?</button>}
+        </div>
         <div className="my-usage-tools">
           <nav aria-label={t("사용량 기간")} className="my-usage-seg">{RANGES.map(([key, label]) => <button key={key} type="button" aria-pressed={range === key} onClick={() => setRange(key)}>{t(label)}</button>)}</nav>
           <select aria-label={t("조회 공간")} value={space} onChange={e => setSpace(e.target.value as UsageSpace)}><option value="this">{t("이 공간")}</option><option value="all">{t("모든 공간")}</option></select>
           <button type="button" className="my-usage-close" onClick={onClose} aria-label={t("닫기")}>×</button>
         </div>
       </header>
+      {value && help && <div id="my-usage-help" className="my-usage-help-pop" role="note">
+        {basisTitle && <p>{basisTitle}</p>}
+        {api && <p>{t("MV 기록에는 동기화로 가져온 기록도 포함될 수 있습니다")}</p>}
+      </div>}
       {error ? <p role="alert">{t(error === "update" ? "서버 업데이트가 필요합니다" : "사용량을 확인할 수 없습니다")}</p> : !value ? <p role="status">{t("사용량 확인 중")}</p> : api ? <>
         <div className="my-usage-tiles">
           <div><strong>{formatCredits(value.used_real)}</strong><span>{t("실제 사용(환불 뺀 값)")}</span></div>

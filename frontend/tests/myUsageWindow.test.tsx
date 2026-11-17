@@ -50,7 +50,7 @@ it("renders the selected tiles, all source amounts, refunds and pending estimate
   expect(document.body.textContent).toContain("최근 1,000건 표시 · 합계는 전체");
   expect(document.body.textContent).toContain("미확인 2건");
   expect(document.body.textContent).toContain("오래된 미매칭 1건 (60분 초과)");
-  expect(document.body.textContent).toContain("순값이 남은 오류 1건"); // 오류 보고 2 − 전액 환불 1
+  expect(document.body.textContent).toContain("오류 보고 2건 · 순값이 남은 행도 포함"); // 오류 보고 2 > 전액 환불 1
   // 시안: 환불·견적 안내는 칸 설명으로 합친다
   const tiles = document.querySelectorAll(".my-usage-tiles>div");
   expect(tiles[1].className).toBe("good");
@@ -68,6 +68,34 @@ it("renders the selected tiles, all source amounts, refunds and pending estimate
   expect(cells[1][1].querySelector(".my-usage-pill.mv")?.textContent).toBe("MV");
   expect(cells[1][4].textContent).toBe("집계 전");
   expect(vi.mocked(jsonFetch).mock.calls[0][0]).toContain("range=period&space=this");
+});
+
+it("does not call a zero-credit error a remaining-net error", async () => {
+  // 청구·환불·순값이 모두 0 인 오류는 서버의 전액 환불 건수에서 빠진다 — 차이를 '순값이 남은 건수'로 보이면 틀린다
+  vi.mocked(jsonFetch).mockResolvedValue(value({ failed_count: 1, failed_refunded_count: 0, refunded: 0, truncated: false,
+    rows: [{ row_id: "zero", created_at: 100, source: "web", type: "generation", model: "Model", workspace_id: "ws", workspace_name: "WS", status: "failed", state: null, error_code: "provider_error", charged: 0, refunded: 0, net: 0, pending: false }] }));
+  await render();
+  expect(document.body.textContent).toContain("오류 보고 1건 · 순값이 남은 행도 포함");
+  expect(document.body.textContent).not.toContain("순값이 남은 오류");
+  expect(document.querySelectorAll(".my-usage-tiles>div")[1].textContent).toBe("0환불된 크레딧");
+});
+
+it("opens the basis and sync notes from a focusable button", async () => {
+  vi.mocked(jsonFetch).mockResolvedValue(value({ collected_at_ms: 1 }));
+  await render();
+  const help = document.querySelector<HTMLButtonElement>("button.my-usage-help")!;
+  expect(help.getAttribute("aria-label")).toBe("기준과 안내");
+  expect(help.getAttribute("aria-expanded")).toBe("false");
+  expect(document.getElementById("my-usage-help")).toBeNull(); // 평소엔 숨김(시안)
+  help.focus();
+  expect(document.activeElement).toBe(help);
+  await act(async () => { help.click(); });
+  expect(help.getAttribute("aria-expanded")).toBe("true");
+  const note = document.getElementById("my-usage-help")!;
+  expect(note.getAttribute("role")).toBe("note");
+  expect(note.textContent).toContain("힉스필드 기준");
+  expect(note.textContent).toContain("수집 시각");
+  expect(note.textContent).toContain("MV 기록에는 동기화로 가져온 기록도 포함될 수 있습니다");
 });
 
 it("puts the KST period in the title and the basis in its tooltip", async () => {

@@ -341,11 +341,12 @@ export function AccountMenu({
   const usageShown = Boolean(myQuota?.basis) && myQuota?.source !== "unassigned" && myQuota?.source !== "unavailable";
   const usageText = usageShown && myQuota ? `${myQuota.estimated_count > 0 ? "≈ " : ""}${formatCredits(myQuota.used)}` : "—";
   const usageTitle = myQuota?.basis ? [
+    t("내 사용량 창 열기"),
     [usageBasisText(myQuota, t), usagePeriodText(myQuota)].filter(Boolean).join(" · "),
     myQuota.collected_at_ms != null ? `${t("수집 시각")} ${new Date(myQuota.collected_at_ms).toLocaleString()}` : "",
     myQuota.basis === "api" && myQuota.failed_refunded_count ? t("오류 보고 후 전액 환불 {count}건").replace("{count}", String(myQuota.failed_refunded_count)) : "",
     uncertainty,
-  ].filter(Boolean).join("\n") : t("내 사용량");
+  ].filter(Boolean).join("\n") : t("내 사용량 창 열기");
   const gaugeMax = quotaWorkspaceId
     ? poolQuota ? myQuota?.pool_total ?? 0 : personalQuota?.quota ?? 0
     : budgetMax ?? MONTHLY_CREDIT_MAX;
@@ -620,6 +621,7 @@ export function AccountMenu({
                   <span className="acct-limit-label">Usage</span>
                   {usageEntry ? (
                     <button type="button" className="acct-usage-num" title={usageTitle} aria-haspopup="dialog"
+                      aria-label={`Usage ${usageText} · ${t("내 사용량 창 열기")}`}
                       onClick={() => { setOpen(false); avatarRef.current?.focus(); setUsageOpen(true); }}>
                       {usageText}<span className="acct-credits-chev" aria-hidden="true">›</span>
                     </button>
