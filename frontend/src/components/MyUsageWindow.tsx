@@ -75,7 +75,7 @@ export function MyUsageWindow({ workspaceId, accountKey, onClose }: { workspaceI
   const unknownRest = (value?.unknown_count ?? 0) - (value?.overdue_pending_count ?? 0);
   // 드물게만 생기는 안내 — 있을 때만 표 위 한 줄
   const notes = value ? [
-    failedNote ? t("오류 보고 {count}건 · 순값이 남은 행도 포함").replace("{count}", String(value.failed_count)) : "",
+    failedNote ? t("오류 보고 {count}건").replace("{count}", String(value.failed_count)) : "",
     (value.overdue_pending_count ?? 0) > 0 ? t("오래된 미매칭 {count}건 (60분 초과)").replace("{count}", String(value.overdue_pending_count)) : "",
     unknownRest > 0 ? t("미확인 {count}건").replace("{count}", String(unknownRest)) : "",
     value.truncated ? t("최근 1,000건 표시 · 합계는 전체") : "",

@@ -102,7 +102,7 @@ const EN: Record<string, string> = {
   "웹": "Web",
   "차감": "Charge",
   "진행 중": "In progress",
-  "오류 보고 {count}건 · 순값이 남은 행도 포함": "{count} reported errors, including rows with remaining net usage",
+  "오류 보고 {count}건": "{count} reported errors",
   "내 사용량 창 열기": "Open my usage",
   "기준과 안내": "Basis and notes",
   "힉스필드 사용량이 아직 연결되지 않았습니다": "Higgsfield usage isn't connected yet",

@@ -50,7 +50,8 @@ it("renders the selected tiles, all source amounts, refunds and pending estimate
   expect(document.body.textContent).toContain("최근 1,000건 표시 · 합계는 전체");
   expect(document.body.textContent).toContain("미확인 2건");
   expect(document.body.textContent).toContain("오래된 미매칭 1건 (60분 초과)");
-  expect(document.body.textContent).toContain("오류 보고 2건 · 순값이 남은 행도 포함"); // 오류 보고 2 > 전액 환불 1
+  expect(document.body.textContent).toContain("오류 보고 2건"); // 오류 보고 2 > 전액 환불 1
+  expect(document.body.textContent).not.toContain("순값"); // 작업자 화면 내부 용어 금지
   // 시안: 환불·견적 안내는 칸 설명으로 합친다
   const tiles = document.querySelectorAll(".my-usage-tiles>div");
   expect(tiles[1].className).toBe("good");
@@ -75,8 +76,8 @@ it("does not call a zero-credit error a remaining-net error", async () => {
   vi.mocked(jsonFetch).mockResolvedValue(value({ failed_count: 1, failed_refunded_count: 0, refunded: 0, truncated: false,
     rows: [{ row_id: "zero", created_at: 100, source: "web", type: "generation", model: "Model", workspace_id: "ws", workspace_name: "WS", status: "failed", state: null, error_code: "provider_error", charged: 0, refunded: 0, net: 0, pending: false }] }));
   await render();
-  expect(document.body.textContent).toContain("오류 보고 1건 · 순값이 남은 행도 포함");
-  expect(document.body.textContent).not.toContain("순값이 남은 오류");
+  expect(document.body.textContent).toContain("오류 보고 1건");
+  expect(document.body.textContent).not.toContain("순값");
   expect(document.querySelectorAll(".my-usage-tiles>div")[1].textContent).toBe("0환불된 크레딧");
 });
 
