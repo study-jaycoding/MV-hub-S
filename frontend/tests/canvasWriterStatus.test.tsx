@@ -21,13 +21,13 @@ function render(mode = "away", handed = false, localCount = 0, error?: string, f
 describe("canvas writer screens", () => {
   it("keeps the away surface and icon and offers the lime opening button", () => {
     const el = render(); expect(el.querySelector(".canvas-away svg")).not.toBeNull();
-    expect(el.textContent).toContain("캔버스는 다른 브라우저에서 열려 있습니다");
+    expect(el.textContent).toContain("다른 브라우저에서 이 캔버스를 쓰고 있습니다 · 여기서 고치려면 넘겨받으세요");
     expect(el.textContent).toContain("정상적으로 넘기면 그 브라우저의 마지막 편집까지 저장한 뒤 넘어옵니다");
     act(() => el.querySelector("button")!.click()); expect(take).toHaveBeenCalledOnce();
   });
   it("shows a spinner and the receiving text without a second action", () => {
     const el = render("taking"); expect(el.querySelector(".canvas-writer-spinner")).not.toBeNull();
-    expect(el.textContent).toContain("넘겨받는 중"); expect(el.textContent).toContain("다른 브라우저의 마지막 편집을 저장하고 허브 공책을 받고 있습니다"); expect(el.querySelector("button")).toBeNull();
+    expect(el.textContent).toContain("넘겨받는 중"); expect(el.textContent).toContain("다른 브라우저의 마지막 편집을 저장하고 캔버스를 받아 오는 중입니다"); expect(el.querySelector("button")).toBeNull();
   });
   it("distinguishes the donor and counts local only scenes", () => {
     const el = render("away", true, 3); expect(el.textContent).toContain("다른 브라우저로 넘겼습니다");
@@ -36,7 +36,7 @@ describe("canvas writer screens", () => {
   });
   it.each(["checking", "syncing"])("describes %s as a notebook check rather than a browser handoff", (mode) => {
     const el = render(mode);
-    expect(el.textContent).toContain("허브 공책을 맞추는 중");
+    expect(el.textContent).toContain("캔버스를 맞추는 중");
     expect(el.textContent).not.toContain("다른 브라우저의 마지막 편집");
     expect(el.querySelector(".canvas-writer-spinner")).not.toBeNull();
     expect(el.querySelector("button")).toBeNull();
@@ -61,7 +61,7 @@ describe("canvas writer screens", () => {
   it("translates the writer screen and updates it when language changes", () => {
     const el = render("away", false, 2);
     act(() => setLang("en"));
-    expect(el.textContent).toContain("The canvas is open in another browser");
+    expect(el.textContent).toContain("This canvas is in use in another browser · take it over to edit here");
     expect(el.textContent).toContain("A normal handoff saves that browser's latest edits before switching");
     expect(el.textContent).toContain("2 scenes remain only in this browser");
     expect(el.querySelector("button")?.textContent).toBe("Open here");

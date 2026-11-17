@@ -7,6 +7,10 @@ Run with the repository venv, after building frontend/dist:
   python tools/browser_measure/canvas_notebook.py --case performance --baseline-checkout <built-dcb9f49-checkout>
     produces a baseline-only report with 20 identical UI-to-IDB samples, not a contract PASS
   python tools/browser_measure/canvas_notebook.py --case rollback --old-checkout <isolated-checkout>
+  python tools/browser_measure/canvas_notebook.py --case first_transition --old-checkout <built-0123-or-1011-checkout>
+    --transition empty --start-order a
+  # Repeat --transition equal/different/restored_unknown/same_generation/held/limit_exact/limit_over;
+  # repeat --start-order b/simultaneous with different first canvases.
 
 No default/source DB is opened or copied. Artifacts remain in a newly allocated
 temporary directory, printed on exit. Only this process's server/Chrome are stopped.
@@ -117,9 +121,10 @@ def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | 
         validate_shared_url(shared_url)
         env["CONTENT_HUB_SHARED_URL"] = shared_url
     env["CONTENT_HUB_FRONTEND_DIST"] = str(checkout / "frontend" / "dist")
-    # 허브 공책 전용 실측 — 운영 기본은 끔(=1 일 때만 켬)이라 명시적으로 켠다(server_env 가 부모의 CONTENT_HUB_* 를 뺀 뒤).
-    # 끔은 첫 브라우저 전에 미러를 채우는 준비 단계에서만 쓴다(seed_mirror).
-    env["CONTENT_HUB_SCENE_WRITER"] = "1" if writer else "0"
+    # 부모의 값을 지운 뒤 변수 없는 운영 기본을 잰다. 미러 준비 단계만 명시적으로 끈다.
+    env.pop("CONTENT_HUB_SCENE_WRITER", None)
+    if not writer:
+        env["CONTENT_HUB_SCENE_WRITER"] = "0"
     return env
 
 
@@ -148,6 +153,12 @@ def scene_rows(entries: list, bucket: str = BUCKET) -> list[dict]:
     order = values.get(json.dumps(["o", bucket], separators=(",", ":")), [])
     return [values[json.dumps(["s", bucket, sid], separators=(",", ":"))] for sid in order
             if json.dumps(["s", bucket, sid], separators=(",", ":")) in values]
+
+
+def scene_fingerprints(scenes: list[dict]) -> list[dict]:
+    """Include every raw field and preserve order; matching IDs cannot prove preservation."""
+    return [{"id": scene["id"], "sha256": hashlib.sha256(json.dumps(scene, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()} for scene in scenes]
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -403,9 +414,19 @@ class Measurement:
             result["evidence"] = {"observed": actual, "criterion": expected}
         self.report["checks"][key] = result
 
-    async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None, *, canvas: bool = True) -> Page:
+    async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None, *, canvas: bool = True, hold_mirror: bool = False) -> Page:
         page = await stack.enter_async_context(Page(0, self.work / f"chrome-{name}"))
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=MEASURE_SCRIPT)
+        if hold_mirror:
+            script = await page.send("Page.addScriptToEvaluateOnNewDocument", source="""{
+              const original=window.fetch;
+              window.fetch=function(input,init) {
+                const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
+                if(path==='/api/scenes/backup' && init?.method==='PUT') return Promise.reject(new TypeError('measurement holds legacy mirror writes'));
+                return original.apply(this,arguments);
+              };
+            }""")
+            page.mirror_hold_script = script["identifier"]
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=f"""if (location.origin === {json.dumps(self.hub.url)}) {{
             localStorage.setItem('ch.activeAccount', {json.dumps(self.hub.shared.email.lower())}); }}""")
         if seed is not None:
@@ -479,7 +500,7 @@ class Measurement:
         self.hub.stop(); self.hub.start()
         self.report["mirror_seed"] = {"method": "PUT /api/scenes/backup on a writer-off start, then writer-on restart", "scenes": len(seeds)}
         self.report["limitations"].append("The hub mirror is seeded by a direct PUT on a writer-off start before the first browser opens "
-                                          "(a member upgrading from the mirror path). The empty-mirror first transition is not measured; the writer is opt-in.")
+                                          "(a member upgrading from the mirror path). The empty-mirror first transition is not measured in this case.")
 
     async def rename(self, page: Page, name: str, sid: str = "measure-0", *, enter: bool = True) -> None:
         modern = f"document.querySelector({json.dumps(f'[data-scene-tab="{sid}"] .scene-tab')})"
@@ -602,43 +623,179 @@ class Measurement:
             raise RuntimeError("card body did not move before handoff with pointer held")
 
     async def first_transition(self, stack: AsyncExitStack, seeds: list[dict]) -> dict:
-        """Empty hub mirror: a browser holding local scenes joins the writer-on hub for the first time (the opt-in first transition).
-
-        Its scenes go to the restore archive and the canvas empties; the canvas notice, picker and restore bring them back to the
-        canvas and the started hub notebook (docs/status/공책첫전환복구동선_2026-11-15.md)."""
+        """Read an actual old browser store, then upgrade the same owned profiles and origin."""
+        args = self.transition_args
+        checkout = validate_checkout(args.old_checkout) if args.old_checkout else REPO
+        variant, order = args.transition, args.start_order
+        self.report["transition"] = {"variant": variant, "start_order": order, "old_checkout": str(checkout), "fault": args.transition_fault}
+        if variant.startswith("limit_"):
+            size = 5 * 1024 * 1024 + (variant == "limit_over")
+            # JSON.stringify emits non-ASCII literally, just like this compact UTF-8 JSON.
+            seeds[0]["cards"][0]["text"] = ""
+            remaining = size - len(json.dumps(seeds[0], ensure_ascii=False, separators=(",", ":")).encode())
+            seeds[0]["cards"][0]["text"] = "한" * (remaining // 3) + "x" * (remaining % 3)
+        self.hub.start(checkout, legacy=checkout != REPO, writer=False)
+        mirror = seeds if variant in {"equal", "same_generation", "held"} else ([{**seeds[0], "name": "different hub raw", "id": "hub-old"}] if variant in {"different", "restored_unknown"} else [])
+        generation = self.hub.request("/api/scenes/backup?include_data=true")[1].get("restore_generation")
+        if mirror:
+            code, _ = self.hub.request("/api/scenes/backup", {"project_id": "", "restore_generation": generation,
+                "upserts": [{"id": s["id"], "name": s["name"], "data": json.dumps(s, ensure_ascii=False, separators=(",", ":"))} for s in mirror]}, "PUT")
+            if code != 200:
+                raise RuntimeError("old mirror preparation failed")
+        a = await self.open(stack, "a", seeds, hold_mirror=True)
+        b = await self.open(stack, "b", [{**seeds[0], "id": "prior-b", "name": "browser B original"}], hold_mirror=True)
+        await self.wait_local(a, lambda rows: len(rows) == len(seeds))
+        await self.wait_local(b, lambda rows: len(rows) > 0)
+        recovery = f"localStorage.getItem({json.dumps('mvhub.mirrorRecovery:' + self.account)})"
+        if variant in {"same_generation", "held"}:
+            if not await a.wait(f"!!{recovery}", 20):
+                raise RuntimeError("1011 browser's actual mirror generation record required")
+        if variant == "same_generation":
+            await self.rename(a, "1011 untransmitted final edit")
+        if variant == "held":
+            # G1 -> empty restored G2 -> run the old mirror again. Only this stopped, owned DB is changed.
+            self.hub.stop()
+            database = (self.work / "hub" / "db" / "content_hub.db").resolve(strict=True)
+            if self.work.resolve() not in database.parents:
+                raise ValueError("restore injection must stay in the owned measurement directory")
+            with closing(sqlite3.connect(database)) as conn:
+                conn.execute("UPDATE app_setting SET value=? WHERE key='share_db_generation'", ("measure-restored-G2",))
+                conn.execute("DELETE FROM scene_backup")
+                conn.commit()
+            self.hub.start(checkout, legacy=checkout != REPO, writer=False)
+            await a.goto(self.hub.url, settle=.2)
+            if not await a.wait(f"JSON.parse({recovery} || 'null')?.blockedIds?.length > 0", 20):
+                raise RuntimeError("old mirror did not produce an actual G2 blocked record")
+        before = {name: await self.local(page) for name, page in (("a", a), ("b", b))}
+        records = {name: {"scenes": scene_fingerprints(before[name]), "mirrorRecovery": await page.eval(recovery),
+                         "store_sha256": hashlib.sha256(json.dumps(await page.eval(READ_STORE), sort_keys=True).encode()).hexdigest()}
+                   for name, page in (("a", a), ("b", b))}
+        self.report["previous_browser_records"] = records
+        if variant.startswith("limit_"):
+            self.check("size_boundary", len(json.dumps(before["a"][0], ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+                       5 * 1024 * 1024 + (variant == "limit_over"))
+        self.check("previous_browser", {"old_checkout": checkout != REPO, "both_nonempty": all(record["scenes"] for record in records.values())},
+                   {"old_checkout": True, "both_nonempty": True})
+        prior_hub = [json.loads(row["data"]) for row in self.hub.request("/api/scenes/backup?include_data=true")[1]["items"] if not row.get("deleted_at")]
+        self.hub.stop()
+        if variant == "restored_unknown":
+            database = (self.work / "hub" / "db" / "content_hub.db").resolve(strict=True)
+            if self.work.resolve() not in database.parents:
+                raise ValueError("restore injection must stay in the owned measurement directory")
+            with closing(sqlite3.connect(database)) as conn:
+                conn.execute("UPDATE app_setting SET value=? WHERE key='share_db_generation'", ("measure-restored-unknown-G2",))
+                conn.commit()
         self.hub.start()
         self.report["isolation"] = self.hub.isolation
-        a = await self.open(stack, "a", seeds, canvas=False)
+        self.check("default_enabled", "CONTENT_HUB_SCENE_WRITER" not in make_env(self.work / "hub", self.hub.port)
+                   and "scene_writer_v1" in self.hub.request("/api/auth/config")[1]["features"], True)
+        for page in (a, b):
+            await page.send("Page.removeScriptToEvaluateOnNewDocument", identifier=page.mirror_hold_script)
+        await a.goto(self.hub.url, settle=.2)
+        await self.ensure_canvas(a)
         self.report["browser_version"] = await a.eval("navigator.userAgent")
-        ids = sorted(s["id"] for s in seeds)
-        archive_key = json.dumps(["nr", self.account], separators=(",", ":"))
-        archived: list[str] = []
-        end = time.monotonic() + 30
-        while time.monotonic() < end:
-            entries = dict(await a.eval(READ_STORE))
-            archived = sorted(s["id"] for item in entries.get(archive_key) or [] for s in item.get("scenes", {}).get(self.bucket, []))
-            if archived == ids:
-                break
-            await asyncio.sleep(.1)
-        self.check("archived", archived, ids)
-        self.check("canvas_emptied", [s["id"] for s in await self.local(a)], [])
-        shown = await a.wait(f"document.querySelector('.canvas-restore-notice')?.innerText.includes({json.dumps(f'씬 {len(seeds)}개')})", 20)
-        self.check("notice", shown, True)
-        if not shown or not await a.click("document.querySelector('[data-restore-action=\"open\"]')"):
-            raise RuntimeError("canvas restore notice missing")
-        restore = "document.querySelector('.canvas-restore-picker [data-restore-action=\"restore\"]:not([disabled])')"
-        if not await a.wait(restore, 10) or not await a.click(restore):
-            raise RuntimeError("restore picker action missing")
-        restored = await self.wait_local(a, lambda rows: sorted(s["id"] for s in rows) == ids, 20)
-        self.check("restored", sorted(s["id"] for s in restored), ids)
-        book = await self.synced(a, 40)
-        self.check("hub_synced", sorted(row["id"] for row in book["items"] if not row.get("deleted_at")), ids)
-        self.check("notice_cleared", await a.eval("!document.querySelector('.canvas-restore-notice')"), True)
-        try:
-            await a.shot(self.work / "a-final.png")
-        except Exception:
-            pass
-        self.report["forbidden_requests"].extend(r for r in a.mutations if "/api/gen-requests" in "/" + r or "/api/comfy/run" in "/" + r)
+        confirm = "document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')"
+        automatic = variant in {"equal", "held"}
+        if automatic:
+            if variant == "equal":
+                book = await self.synced(a, 40)
+                self.check("before_confirmation", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
+            else:
+                await self.wait_local(a, lambda rows: not rows)
+                book = self.hub.request("/api/scenes/notebook")[1]
+                archives = dict(await a.eval(READ_STORE)).get(json.dumps(["nr", self.account], separators=(",", ":")), [])
+                self.check("before_confirmation", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [scene_fingerprints(before["a"])])
+            self.check("no_upload_before", await a.eval(f"!{confirm}"), True)
+            self.check("confirmation", False, False)
+        else:
+            if not await a.wait(confirm, 30):
+                raise RuntimeError("first-start confirmation missing")
+            await b.goto(self.hub.url, settle=.2)
+            if not await b.wait(confirm, 30):
+                raise RuntimeError("second first-start confirmation missing")
+            self.check("before_confirmation", {name: scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
+                       {name: scene_fingerprints(rows) for name, rows in before.items()})
+            unchanged = self.hub.request("/api/scenes/notebook")[1]
+            network = [row for page in (a, b) for row in await page.eval("window.__measureNetwork")]
+            self.check("no_upload_before", {"not_started": unchanged["notebook_id"] is None,
+                "hub_raw": scene_fingerprints(sorted([json.loads(row["data"]) for row in unchanged["items"] if not row.get("deleted_at")], key=lambda s: s["id"])),
+                "no_writes": not any(row["method"] == "PUT" or row["path"].endswith("/start") for row in network)},
+                {"not_started": True, "hub_raw": scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])), "no_writes": True})
+            selected = b if order == "b" else a
+            if args.transition_fault != "none":
+                # Drop exactly one reply AFTER the owned server processed it; this is not a skipped request.
+                await selected.eval(f"""(() => {{
+                  const original=window.fetch; window.__measureLostReplies=0;
+                  window.fetch=function(input,init) {{
+                    const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
+                    let body; try {{ body=JSON.parse(init?.body || '{{}}'); }} catch {{ body={{}}; }}
+                    return original.apply(this,arguments).then(response => {{
+                      if(!window.__measureLostReplies && path==='/api/scenes/notebook/start' && response.ok &&
+                         Boolean(body.commit)==={str(args.transition_fault == 'lost_commit').lower()}) {{
+                        window.__measureLostReplies++; throw new TypeError('measurement dropped processed reply');
+                      }}
+                      return response;
+                    }});
+                  }};
+                }})()""")
+            if order == "simultaneous":
+                await asyncio.gather(a.click(confirm), b.click(confirm))
+            elif not await selected.click(confirm):
+                raise RuntimeError("confirmation button did not run")
+            self.check("confirmation", True, True)
+            if variant == "limit_over":
+                if not await a.wait("document.body.innerText.includes('5MB')", 20):
+                    raise RuntimeError("oversize local-only notice missing")
+                book = self.hub.request("/api/scenes/notebook")[1]
+            else:
+                book = await self.synced(selected, 40)
+            if args.transition_fault != "none":
+                self.check("response_loss", await selected.eval("window.__measureLostReplies"), 1)
+        not_started = variant in {"held", "limit_over"}
+        rows = [json.loads(row["data"]) for row in book["items"] if not row.get("deleted_at")]
+        by_id = {scene["id"]: scene for scene in rows}
+        ordered = [by_id[sid] for sid in book["order"]["ids"]]
+        if not_started:
+            self.check("selected_raw", scene_fingerprints(await self.local(a)), [] if variant == "held" else scene_fingerprints(before["a"]))
+            self.check("join_generation", book["notebook_id"], None)
+            self.check("other_browser_preserved", scene_fingerprints(await self.local(b)), scene_fingerprints(before["b"]))
+            self.check("no_merge", rows, [])
+        else:
+            candidates = {name: scene_fingerprints(value) for name, value in before.items()}
+            selected_name = "b" if order == "b" else "a"
+            actual = scene_fingerprints(ordered)
+            if order == "simultaneous":
+                selected_name = next((name for name, fingerprints in candidates.items() if fingerprints == actual), "a")
+            self.check("selected_raw", actual, candidates[selected_name])
+            loser_name = "b" if selected_name == "a" else "a"
+            loser = b if loser_name == "b" else a
+            await loser.goto(self.hub.url, settle=.2)
+            await self.ensure_canvas(loser)
+            if await loser.eval(f"!!{confirm}"):
+                await loser.click(confirm)
+            else:
+                await self.take(loser)
+            book = await self.synced(loser, 40)
+            entries = dict(await loser.eval(READ_STORE))
+            joined = entries.get(json.dumps(["nj", self.account], separators=(",", ":")), {})
+            self.check("join_generation", joined.get("restoreGeneration"), book["restore_generation"])
+            archives = entries.get(json.dumps(["nr", self.account], separators=(",", ":")), [])
+            self.check("other_browser_preserved", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [candidates[loser_name]])
+            self.check("no_merge", scene_fingerprints(await self.local(loser)), actual)
+        archived_hub = [row["data"] for row in retained_rows(self.work) if row["reason"] == "before_start"]
+        self.check("before_start", scene_fingerprints(sorted(archived_hub, key=lambda s: s["id"])),
+                   scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if variant not in {"equal", "held", "limit_over"} else [])
+        reconnect = b if not not_started else a
+        old_store = dict(await reconnect.eval(READ_STORE))
+        archive_keys = [key for key in old_store if key.startswith('["nr",') or key.startswith('["na",')]
+        await reconnect.goto(self.hub.url, settle=1)
+        if not not_started:
+            await self.synced(reconnect, 40)
+        new_store = dict(await reconnect.eval(READ_STORE))
+        self.check("reconnect", {key: new_store.get(key) for key in archive_keys}, {key: old_store[key] for key in archive_keys})
+        for label, page in (("a", a), ("b", b)):
+            await page.shot(self.work / f"{label}-final.png")
+            self.report["forbidden_requests"].extend(r for r in page.mutations if "/api/gen-requests" in "/" + r or "/api/comfy/run" in "/" + r)
         return self.report
 
     async def run(self, args) -> dict:
@@ -651,6 +808,7 @@ class Measurement:
             seeds = fixture(performance=self.case == "performance")
             self.report["fixture_sha256"] = hashlib.sha256(json.dumps(seeds, sort_keys=True).encode()).hexdigest()
             if self.case == "first_transition":
+                self.transition_args = args
                 return await self.first_transition(stack, seeds)
             await self.seed_mirror(seeds)
             self.report["isolation"] = self.hub.isolation
@@ -957,7 +1115,16 @@ def main() -> int:
     baseline.add_argument("--baseline-checkout", type=Path)
     parser.add_argument("--max-slowdown", type=float, help="explicit p50/p95 ratio limit; omitted means latency is unverified")
     parser.add_argument("--old-checkout", type=Path)
+    parser.add_argument("--transition", choices=("empty", "different", "restored_unknown", "equal", "same_generation", "held", "limit_exact", "limit_over"), default="empty")
+    parser.add_argument("--start-order", choices=("a", "b", "simultaneous"), default="a")
+    parser.add_argument("--transition-fault", choices=("none", "lost_chunk", "lost_commit"), default="none")
     args = parser.parse_args()
+    if args.case == "first_transition" and not args.old_checkout:
+        parser.error("first_transition requires --old-checkout (built isolated 0123 or 1011 checkout)")
+    if args.transition_fault != "none" and (args.case != "first_transition" or args.transition not in {"empty", "different", "restored_unknown", "same_generation"} or args.start_order == "simultaneous"):
+        parser.error("reply loss requires a first_transition confirmation variant and --start-order a or b")
+    if args.case == "first_transition" and (args.transition in {"equal", "held", "limit_exact", "limit_over"}) and args.start_order != "a":
+        parser.error("equal/held/size boundaries require --start-order a; race order uses empty/different/same_generation")
     if (args.baseline_report or args.baseline_checkout or args.max_slowdown is not None) and args.case != "performance":
         parser.error("baseline and slowdown options require --case performance")
     if args.max_slowdown is not None and (not math.isfinite(args.max_slowdown) or args.max_slowdown <= 0):

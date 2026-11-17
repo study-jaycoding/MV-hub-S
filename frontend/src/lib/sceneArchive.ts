@@ -286,7 +286,7 @@ export function restoreArchiveText(account: string, rows: RestoreRow[]): string 
 export async function importSceneArchiveText(text: string): Promise<{ added: number; recovered: number }> {
   if (!sceneStoreReady()) throw new Error("캔버스 저장소가 아직 열리지 않았습니다.");
   const dump = parseSceneArchive(text);
-  if (!hubFeaturesKnown()) throw new Error("허브 기능을 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
+  if (!hubFeaturesKnown()) throw new Error("캔버스 저장 상태를 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
   const account = getAccountNamespace(), notebook = hubHasFeature(SCENE_WRITER_FEATURE);
   const mirrorKey = `mvhub.mirrorRecovery:${account}`;
   const mirror = notebook ? null : JSON.parse(localStorage.getItem(mirrorKey) ?? "null") as MirrorRecovery | null;

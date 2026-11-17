@@ -197,6 +197,16 @@ describe("sceneBackup — 카메라만 바꾼 확정·바깥에서 시작한 공
     await vi.advanceTimersByTimeAsync(15_000);
     expect(sync).not.toHaveBeenCalled();
   });
+  it("최초 시작 확인 대기는 자동 재시도나 옛 미러 PUT으로 바꾸지 않는다", async () => {
+    sync.mockResolvedValue({ status: "local_only", reason: "start_confirmation", changed: false, visibleChanged: false } as never);
+    edit("local while waiting"); await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(sync).toHaveBeenCalledOnce();
+    outside({ status: "local_only", reason: "start_confirmation", changed: false, visibleChanged: false });
+    await vi.advanceTimersByTimeAsync(65_000);
+    expect(sync).toHaveBeenCalledOnce();
+    expect(http.jsonFetch).not.toHaveBeenCalled();
+  });
 
   it("내용 예약 뒤 카메라만 확정 → 그 예약이 원래 시각(내용 확정 2초 뒤)에 돈다", async () => {
     edit("edited");

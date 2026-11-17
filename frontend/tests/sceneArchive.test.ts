@@ -134,7 +134,7 @@ describe("캔버스 전체 내보내기·가져오기", () => {
     expect(localStorage.getItem(key)).toBe(mirrorBefore);
     expect(revive).not.toHaveBeenCalled();
     expect(result).toBeInstanceOf(Error);
-    expect((result as Error).message).toBe("허브 기능을 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
+    expect((result as Error).message).toBe("캔버스 저장 상태를 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
     await expect(archive.importSceneArchiveText("{{")).rejects.toThrow(/JSON/);
   });
 

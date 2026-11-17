@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canRetryLocalNotebook, SceneWriterClient, type WriterStatus } from "../src/lib/sceneWriter";
 import * as scenes from "../src/lib/scenes";
 import type { NotebookSyncResult } from "../src/lib/sceneNotebook";
+import * as sceneNotebook from "../src/lib/sceneNotebook";
 import { joinSceneNotebook, setSceneNotebookTokenProvider, syncSceneNotebook } from "../src/lib/sceneNotebook";
 import { initSceneStore, resetSceneStoreForTest, setSceneWriteGate, settleSceneStoreForTest } from "../src/lib/sceneStore";
 import { setHubFeatures } from "../src/lib/hubFeatures";
@@ -332,7 +333,7 @@ describe("hub scene writer", () => {
     vi.spyOn(scenes, "listScenes").mockImplementation(() => current);
     h.deps.sync.mockResolvedValueOnce({ status: "local_only", changed: false, reason: "start_too_big", sceneIds: ["large"] });
     await h.client.refresh(); expect(h.client.view.mode).toBe("local_only"); expect(h.client.token()).toBeNull();
-    expect(h.deps.notice).toHaveBeenCalledWith("5MiB 넘는 씬이 있어 허브 공책을 시작하지 못했습니다 — 이 브라우저에서만 편집됩니다: 큰 씬");
+    expect(h.deps.notice).toHaveBeenCalledWith("5MB가 넘는 씬이 있어 다른 브라우저와 같이 쓰지 못합니다 — 이 브라우저에만 저장됩니다: 큰 씬");
     h.calls.length = 0; h.deps.changed.mockClear();
     for (let i = 0; i < 3; i++) {
       current = [{ ...current[0], created_at: i }];
@@ -354,6 +355,36 @@ describe("hub scene writer", () => {
     expect(h.calls.filter(call => call.action === "claim")).toHaveLength(1);
     staging.resolve(ready); await retry; await vi.advanceTimersByTimeAsync(0);
     expect(h.client.view.mode).toBe("writer"); expect(h.calls.filter(call => call.action === "claim")).toHaveLength(1);
+  });
+  it("first-start confirmation releases the lease and cannot be retried by edits, focus, timer or take", async () => {
+    const h = harness(); h.client.configure(true);
+    h.deps.sync.mockResolvedValueOnce({ status: "local_only", changed: false, reason: "start_confirmation" });
+    await h.client.refresh();
+    expect(h.client.view.mode).toBe("local_only"); expect(h.client.token()).toBeNull();
+    expect(h.calls.some((call) => call.action === "release")).toBe(true);
+    h.calls.length = 0;
+    for (let i = 0; i < 3; i++) { h.client.localChanged(); h.client.resume(); await h.client.refresh(); await h.client.take(); }
+    expect(h.calls).toEqual([]); expect(h.deps.sync).toHaveBeenCalledOnce();
+    expect(canRetryLocalNotebook("start_confirmation")).toBe(false);
+  });
+  it.each(["same", "boot", "account epoch", "peer lease"])("first-start approval is bound to the observed server and account epoch: %s", async (change) => {
+    const h = harness(); h.client.configure(true);
+    h.deps.sync.mockResolvedValueOnce({ status: "local_only", changed: false, reason: "start_confirmation" });
+    await h.client.refresh();
+    const approval = { kind: "confirm" as const, id: "offer", account: "A", count: 1, localFingerprint: "local", bookFingerprint: "book" };
+    vi.spyOn(sceneNotebook, "prepareNotebookStart").mockResolvedValue(approval);
+    if (change === "boot") h.setServer({ ...h.server(), boot_id: "restarted" });
+    if (change === "account epoch") h.setServer({ ...h.server(), account_epoch: 3 });
+    if (change === "peer lease") {
+      h.other();
+      const send = h.deps.send.getMockImplementation()!;
+      h.deps.send.mockImplementation(async (account, body) => {
+        if (body.action === "status") h.setServer({ ...h.server(), writer: null, token: undefined });
+        return send(account, body);
+      });
+    }
+    await h.client.startNotebook("offer");
+    expect(h.deps.sync).toHaveBeenLastCalledWith(false, change === "same" ? approval : undefined);
   });
   it("empty notebook retries only when the first local scene appears", async () => {
     const h = harness(); h.client.configure(true);

@@ -90,13 +90,13 @@ export function subscribeRestoreArchived(fn: () => void): () => void {
   restoreArchivedSubs.add(fn);
   return () => { restoreArchivedSubs.delete(fn); };
 }
-async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean) {
+async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean, leaseGeneration: string, approval?: NotebookStartApproval) {
   const hadPending = pendingAtStart || sceneStoreHasPending();
   const release = holdNotebookWrites(account);
   let archived = false;
   try {
     const archiveKey = key("nr", account);
-    const result = await sceneNotebookTransaction([archiveKey, key("ns", account), key("nw", account)], (all, meta) => {
+    const result = await sceneNotebookTransaction<boolean | (NotebookStartOffer & { approved?: true })>([archiveKey, key("ns", account), key("nw", account)], (all, meta) => {
       archived = false; // 다시 도는 거래면 앞 시도의 표시를 지운다
       const joined = meta[key("nj", account)] as NotebookJoin | undefined;
       const staleProgress = [meta[key("ns", account)], meta[key("nw", account)]].some((value) => value && (value as NotebookProgress).restoreGeneration !== book.restore_generation);
@@ -117,7 +117,8 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
         ? localScenes.length === incoming.scenes.length && new Set(localScenes.map((scene) => scene.id)).size === localScenes.length &&
           localScenes.every((scene) => equal(scene, incomingById.get(scene.id)))
         : equal(localScenes, incoming.scenes);
-      const cleanUpgrade = !joined?.restoreGeneration && !hadPending && !sceneStoreHasPending() && !hasIntent && !conflicts.length && !book.skipped?.length &&
+      const restored = knownMirrorRestore(account, book.restore_generation, scenes);
+      const cleanUpgrade = !restored && !joined?.restoreGeneration && !hadPending && !sceneStoreHasPending() && !hasIntent && !conflicts.length && !book.skipped?.length &&
         !meta[key("ns", account)] && !meta[key("nw", account)] &&
         Object.entries(scenes).every(([name, items]) => name === bucket || !items.length) && sameScenes;
       if (cleanUpgrade) {
@@ -125,6 +126,19 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
         meta[key("ob", bucket)] = { base: incoming.order, dirty: unordered ? newSceneIntentId() : null } satisfies SceneOrderState;
         meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation } satisfies NotebookJoin;
         return { changed: true, value: false };
+      }
+      if (!book.notebook_id && !joined?.restoreGeneration && !staleProgress && !restored) {
+        const offer: NotebookStartOffer = { kind: "confirm", id: newSceneIntentId(), account, count: localScenes.length,
+          localFingerprint: startFingerprint(all, meta, account), bookFingerprint: bookFingerprint(book) };
+        const progress = meta[key("ns", account)] as PendingStart | undefined;
+        const confirmed = approval?.account === account && approval.bookFingerprint === offer.bookFingerprint &&
+          approval.localFingerprint === offer.localFingerprint && approval.id === startNotice?.id;
+        const resuming = progress?.generation === leaseGeneration && progress.firstStart?.localFingerprint === offer.localFingerprint &&
+          progress.firstStart.bookFingerprint === offer.bookFingerprint;
+        if (confirmed || resuming) {
+          return { changed: false, value: { ...offer, approved: true } };
+        }
+        return { changed: false, value: offer };
       }
       const controls: Meta = {};
       for (const [name, value] of Object.entries(meta)) {
@@ -288,7 +302,7 @@ function shownScenes(all: ScenesByProject, account: string): string {
   return JSON.stringify(Object.entries(all).filter(([bucket, scenes]) => belongs(bucket, account) && scenes.length).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 /** 합류 + 그 트랜잭션 안에서 본 화면 변화(합류 성공이 곧 화면 변화는 아니다 — 같은 내용이면 false) */
-async function joinSceneNotebookDetailed(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean, restoreGeneration?: string): Promise<{ joined: boolean; visible: boolean }> {
+async function joinSceneNotebookDetailed(account: string, notebookId: string, history: string, buckets: Record<string, NotebookHubBucket>, guard?: () => boolean, restoreGeneration?: string, firstStart = false): Promise<{ joined: boolean; visible: boolean }> {
   const input = structuredClone(buckets);
   const none = { joined: false, visible: false };
   // 서버 응답 해석은 3단계. 경계를 잘못 넘긴 입력은 부분 적용하지 않는다.
@@ -298,7 +312,8 @@ async function joinSceneNotebookDetailed(account: string, notebookId: string, hi
   }
   const archiveKey = key("na", account, notebookId);
   const result = await sceneNotebookTransaction([archiveKey], (all, meta) => {
-    if (meta[key("nj", account)]) return { value: none, changed: false };
+    const joined = meta[key("nj", account)] as NotebookJoin | undefined;
+    if (joined && (!firstStart || joined.restoreGeneration)) return { value: none, changed: false };
     const shownBefore = shownScenes(all, account);
     const conflicts = (meta.conflicts as SceneAbsorbConflict[] | undefined) ?? [];
     if (!meta[archiveKey]) meta[archiveKey] = {
@@ -372,6 +387,69 @@ export interface NotebookSyncResult {
   reason?: string;
   sceneIds?: string[];
 }
+export interface NotebookStartOffer {
+  kind: "confirm"; id: string; account: string; count: number; localFingerprint: string; bookFingerprint: string;
+}
+export type NotebookStartApproval = NotebookStartOffer;
+type NotebookStartNotice = NotebookStartOffer | { kind: "started"; id: string; account: string };
+let startNotice: NotebookStartNotice | null = null;
+const startSubs = new Set<() => void>();
+export const getNotebookStartNotice = () => startNotice;
+export function subscribeNotebookStartNotice(fn: () => void): () => void { startSubs.add(fn); return () => { startSubs.delete(fn); }; }
+function setStartNotice(next: NotebookStartNotice | null) {
+  if (equal(startNotice, next)) return;
+  startNotice = next;
+  for (const fn of [...startSubs]) fn();
+}
+export function dismissNotebookStarted(id: string): void { if (startNotice?.id === id && startNotice.kind === "started") setStartNotice(null); }
+export function invalidateNotebookStart(): void { setStartNotice(null); }
+function knownMirrorRestore(account: string, generation: string, scenes: ScenesByProject): boolean {
+  for (const scene of Object.values(scenes).flat()) {
+    const ledger = localStorage.getItem(`mvhub.sceneBackupBase:${account}:${scene.id}`);
+    if (ledger) {
+      try { if (JSON.parse(ledger).fork) return true; }
+      catch { return true; }
+    }
+  }
+  const raw = localStorage.getItem(`mvhub.mirrorRecovery:${account}`);
+  if (!raw) return false;
+  try {
+    const value = JSON.parse(raw);
+    return (validRestoreGeneration(value.generation) && value.generation !== generation) ||
+      (Array.isArray(value.blockedIds) && value.blockedIds.length > 0) ||
+      (Array.isArray(value.uncopied) && value.uncopied.length > 0);
+  } catch { return true; } // 출처 기록을 읽을 수 없으면 기존 보관·복구 경로로 간다.
+}
+function startFingerprint(all: ScenesByProject, meta: Meta, account: string): string {
+  // ns는 이 고정본의 재시도 영수증이므로 그 자체를 원문 변경으로 세지 않는다.
+  const controls = Object.entries(meta).filter(([name, value]) => {
+    if (value === undefined || !/^\["(?:b|d|r|ob|nw|nj)",/.test(name)) return false;
+    const [, scope] = JSON.parse(name) as string[];
+    return scope === account || belongs(scope, account);
+  });
+  const scenes = Object.entries(all).filter(([bucket]) => belongs(bucket, account)).sort(([a], [b]) => a.localeCompare(b));
+  return sha256Js(new TextEncoder().encode(JSON.stringify([
+    scenes,
+    controls.sort(([a], [b]) => a.localeCompare(b)),
+    ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => belongs(item.bucket, account)),
+    localStorage.getItem(`mvhub.mirrorRecovery:${account}`),
+    scenes.flatMap(([, items]) => items.map((scene) => [scene.id, localStorage.getItem(`mvhub.sceneBackupBase:${account}:${scene.id}`)])),
+  ])));
+}
+const bookFingerprint = (book: HubBook) => sha256Js(new TextEncoder().encode(JSON.stringify(book)));
+/** 확인을 누른 시점의 자료를 대조한 뒤 입력을 확정한다. 허브 판은 임대를 다시 얻은 뒤 또 대조한다. */
+export async function prepareNotebookStart(id: string, settle: () => Promise<boolean>): Promise<NotebookStartApproval | null> {
+  const offer = startNotice;
+  const account = getAccountNamespace(), epoch = providerEpoch;
+  if (offer?.kind !== "confirm" || offer.id !== id || offer.account !== account) return null;
+  const guard = () => startNotice === offer && account === getAccountNamespace() && epoch === providerEpoch && hubHasFeature(SCENE_WRITER_FEATURE);
+  const before = await sceneNotebookTransaction([key("ns", account), key("nw", account)], (all, meta) =>
+    ({ changed: false, value: startFingerprint(all, meta, account) }), guard);
+  if (!before.ok || before.value !== offer.localFingerprint || !guard() || !(await settle()) || !guard()) return null;
+  const after = await sceneNotebookTransaction([key("ns", account), key("nw", account)], (all, meta) =>
+    ({ changed: false, value: startFingerprint(all, meta, account) }), guard);
+  return after.ok && guard() ? { ...offer, localFingerprint: after.value } : null;
+}
 let tokenProvider: () => NotebookToken | null = () => null;
 let providerEpoch = 0;
 let inFlight: Promise<NotebookSyncResult> | null = null;
@@ -386,6 +464,7 @@ export function subscribeNotebookSyncResult(fn: (result: NotebookSyncResult, acc
 export function setSceneNotebookTokenProvider(provider: () => NotebookToken | null): void {
   tokenProvider = provider;
   providerEpoch++;
+  setStartNotice(null);
   mcpCompletions.clear(); // 미완료 작업은 서버 pending 조회가 새 세대에서 다시 접수한다.
   resetHashMemo(getAccountNamespace()); // 계정·쓰기 세대가 바뀌면 지문 기억도 놓는다(다른 계정의 큰 글자를 쥐지 않게)
 }
@@ -421,7 +500,7 @@ function uploadRequests(upserts: Upload[]): Payload[] {
 interface PendingWrite extends NotebookProgress {
   restoreGeneration: string; history: string; notebookId: string; frozen: NotebookBucket; requests: Payload[]; tooBig: string[]; orderCanAdvance: boolean;
 }
-interface PendingStart extends NotebookProgress { restoreGeneration: string; history: string; generation: string; scenes: Scene[] }
+interface PendingStart extends NotebookProgress { restoreGeneration: string; history: string; generation: string; scenes: Scene[]; firstStart?: { localFingerprint: string; bookFingerprint: string } }
 const emptyBucket = (): NotebookBucket => ({ scenes: [], states: {}, order: emptyOrder() });
 const fromBase = (base: WireBase): SceneBase => ({ history: base.history_id, rev: base.rev, hash: base.hash });
 const toBase = (base: SceneBase | null): WireBase | null => base && ({ history_id: base.history, rev: base.rev, hash: base.hash });
@@ -563,7 +642,7 @@ function parseBook(value: HubBook): HubBook {
   }
   const live = new Set(value.items.filter((r) => r.deleted_at === null).map((r) => r.id));
   if (new Set(value.order.ids).size !== value.order.ids.length || value.order.ids.some((id) => !live.has(id)) || live.size !== value.order.ids.length) throw new Error("invalid_order");
-  if (skipped.length) flashMsg(`읽을 수 없는 허브 씬 ${skipped.length}개를 건너뛰었습니다 — 원본은 허브에 남아 있습니다`);
+  if (skipped.length) flashMsg(`읽을 수 없는 캔버스 씬 ${skipped.length}개를 건너뛰었습니다 — 원본은 이 PC 에 남아 있습니다`);
   return { ...value, items: valid, order: { ...value.order, ids: value.order.ids.filter((id) => !skipped.includes(id)) }, skipped, hasLiveRows: live.size > 0 };
 }
 function rowScene(row: HubRow): Scene {
@@ -581,12 +660,12 @@ function hubBucket(book: HubBook): NotebookHubBucket {
 }
 
 /** 동시 호출은 합치되, 넘기기는 settle 뒤의 새 고정본으로 한 번 더 맞춘다. */
-export function syncSceneNotebook(options: { fresh?: boolean } = {}): Promise<NotebookSyncResult> {
+export function syncSceneNotebook(options: { fresh?: boolean; startApproval?: NotebookStartApproval } = {}): Promise<NotebookSyncResult> {
   if (!hubHasFeature(SCENE_WRITER_FEATURE)) return Promise.resolve({ status: "disabled", changed: false, visibleChanged: false });
   if (options.fresh && inFlight) {
     if (freshAfter?.after === inFlight) return freshAfter.promise;
     const after = inFlight;
-    const promise = after.then(() => syncSceneNotebook()).finally(() => {
+    const promise = after.then(() => syncSceneNotebook({ startApproval: options.startApproval })).finally(() => {
       if (freshAfter?.promise === promise) freshAfter = null;
     });
     freshAfter = { after, promise };
@@ -594,13 +673,13 @@ export function syncSceneNotebook(options: { fresh?: boolean } = {}): Promise<No
   }
   if (inFlight) return inFlight;
   const account = getAccountNamespace(); // runNotebookSync 가 같은 틱에 잡는 계정과 같다
-  inFlight = runNotebookSync().then((result) => {
+  inFlight = runNotebookSync(options.startApproval).then((result) => {
     resultListeners.forEach((fn) => fn(result, account));
     return result;
   }).finally(() => { inFlight = null; });
   return inFlight;
 }
-async function runNotebookSync(): Promise<NotebookSyncResult> {
+async function runNotebookSync(approval?: NotebookStartApproval): Promise<NotebookSyncResult> {
   const provided = tokenProvider();
   const lease = provided ? { ...provided } : null;
   const account = getAccountNamespace(), epoch = providerEpoch;
@@ -645,17 +724,34 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
     if (!result.ok) throw new Error("local_store_failed");
     check(); return result.value;
   };
+  const startUnchanged = async (expected: string) => {
+    const result = await sceneNotebookTransaction([key("nw", account)], (all, meta) =>
+      ({ changed: false, value: startFingerprint(all, meta, account) === expected }), guard);
+    if (!result.ok) throw new Error("local_store_failed");
+    check(); return result.value;
+  };
   const pendingAtStart = sceneStoreHasPending();
   try {
     for (let round = 0; round < 3; round++) {
       try {
         let local = await snapshot();
         let book = await getBook();
+        let firstStart: PendingStart["firstStart"];
         if (local.joined?.restoreGeneration !== book.restore_generation || [local.starting, local.writing].some((value) => value && value.restoreGeneration !== book.restore_generation)) {
-          const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart);
+          const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart, lease.generation, approval);
           if (!adopted.ok) throw new Error("local_store_failed");
-          mcpCompletions.clear();
-          return { status: "ready", changed: true, visibleChanged: adopted.value };
+          if (typeof adopted.value === "boolean") {
+            if (startNotice?.account === account) setStartNotice(null);
+            mcpCompletions.clear();
+            return { status: "ready", changed: true, visibleChanged: adopted.value };
+          }
+          if (!adopted.value.approved) {
+            const previous = startNotice;
+            setStartNotice(previous?.kind === "confirm" && previous.account === account &&
+              previous.localFingerprint === adopted.value.localFingerprint && previous.bookFingerprint === adopted.value.bookFingerprint ? previous : adopted.value);
+            return { status: "local_only", reason: "start_confirmation", changed, visibleChanged };
+          }
+          firstStart = { localFingerprint: adopted.value.localFingerprint, bookFingerprint: adopted.value.bookFingerprint };
         }
         const reduced = (local.buckets[bucket]?.scenes ?? []).filter((s) => s.localNotebookCopy === "upload_failed" && bytes(JSON.stringify(s)) <= SCENE_LIMIT);
         if (reduced.length) {
@@ -672,10 +768,12 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
         }
         if (!local.joined || !book.notebook_id || local.starting) {
           let releaseHold: (() => void) | undefined;
+          let startedHere = false;
           try {
             local = await snapshot();
             if (!book.notebook_id) {
-              const scenes = local.joined && book.hasLiveRows ? [] : local.buckets[bucket]?.scenes ?? [];
+              if (firstStart && !(await startUnchanged(firstStart.localFingerprint))) continue;
+              const scenes = local.joined?.restoreGeneration && book.hasLiveRows ? [] : local.buckets[bucket]?.scenes ?? [];
               // 현재 캔버스는 전역 버킷이다. 옛 프로젝트 버킷은 합류 전 사본에 남긴다.
               const oversizedIds = scenes.filter((s) => bytes(JSON.stringify(s)) > SCENE_LIMIT).map((s) => s.id);
               if (oversizedIds.length) {
@@ -685,7 +783,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               }
               let progress = local.starting as PendingStart | null;
               if (!progress || progress.restoreGeneration !== book.restore_generation || progress.history !== book.history_id || progress.generation !== lease.generation || !equal(progress.scenes, scenes)) {
-                const next: PendingStart = { restoreGeneration: book.restore_generation, id: newSceneIntentId(), history: book.history_id, generation: lease.generation, scenes };
+                const next: PendingStart = { restoreGeneration: book.restore_generation, id: newSceneIntentId(), history: book.history_id, generation: lease.generation, scenes, ...(firstStart ? { firstStart } : {}) };
                 if (!(await writeNotebookProgress(account, "start", progress, next, guard))) throw new Error("local_store_failed");
                 progress = next;
               }
@@ -698,12 +796,13 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
                 // 입력을 거둔다. flush가 만든 마지막 편집도 같아야 이 시작본을 확정한다.
                 releaseHold = holdNotebookWrites(account);
                 local = await snapshot();
-                const currentScenes = local.joined && book.hasLiveRows ? [] : local.buckets[bucket]?.scenes ?? [];
-                if (!equal(currentScenes, scenes)) {
+                const currentScenes = local.joined?.restoreGeneration && book.hasLiveRows ? [] : local.buckets[bucket]?.scenes ?? [];
+                if (!equal(currentScenes, scenes) || (firstStart && !(await startUnchanged(firstStart.localFingerprint)))) {
                   await writeNotebookProgress(account, "start", progress, null, guard);
                   continue;
                 }
                 await request("notebook/start", { ...start, upserts: [], commit: true });
+                startedHere = true;
               } catch (error) {
                 const code = errorCode(error);
                 if (["empty_notebook", "start_too_big", "start_attempt_changed", "start_snapshot_changed"].includes(code)) {
@@ -723,14 +822,15 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
               book = confirmed;
             }
             if (!book.notebook_id) throw new Error("notebook_not_started");
-            if (!local.joined) {
+            if (!local.joined?.restoreGeneration) {
               releaseHold ??= holdNotebookWrites(account);
-              const joined = await joinSceneNotebookDetailed(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard);
+              const joined = await joinSceneNotebookDetailed(account, book.notebook_id, book.history_id, { [bucket]: hubBucket(book) }, guard, book.restore_generation, true);
               if (!joined.joined) throw new Error("join_failed");
               changed = true;
               visibleChanged ||= joined.visible; // 같은 내용으로 합류하면 화면 변화 아님
               const progress = (await snapshot()).starting;
               if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
+              setStartNotice(startedHere ? { kind: "started", id: newSceneIntentId(), account } : null);
               return { status: "ready", changed, visibleChanged };
             }
             const progress = (await snapshot()).starting;
@@ -749,6 +849,7 @@ async function runNotebookSync(): Promise<NotebookSyncResult> {
             }
             if (progress) await writeNotebookProgress(account, "start", progress, null, guard);
             local = await snapshot(); // 합류했던 프로필은 보관/합류를 다시 하지 않고 기존 판으로 맞춘다.
+            if (startedHere) setStartNotice({ kind: "started", id: newSceneIntentId(), account });
           } finally { releaseHold?.(); }
         }
         if (!book.notebook_id) throw new Error("notebook_missing");

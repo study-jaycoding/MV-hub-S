@@ -434,19 +434,22 @@ def test_account_epoch_aba_invalidates_http_upload(client):
     assert base() == original
 
 
-def test_auth_feature_is_opt_in_for_local_hub(notebook_db, monkeypatch):
-    # 이번 릴리스는 =1 일 때만 켬(docs/status/배포후보_공책기본끔_2026-11-15.md) — 변수 없음·0·빈 값·오타는 끔.
+def test_auth_feature_is_default_on_for_local_hub(notebook_db, monkeypatch):
+    # 364b0dd4 계약: 정확히 '0'만 끔. 빈 값·오타도 켬.
     from app.routers import auth
     from app.services import scene_writer
     monkeypatch.setattr(auth, 'AUTH_ENABLED', False)
     assert 'scene_writer_v1' in auth.auth_config()['features']  # notebook_db 가 '1' 로 켠 상태
-    for value in (None, '0', '', 'yes', 'true', ' 1'):
+    for value in (None, '1', '0', '', 'yes', 'true', ' 1'):
         if value is None:
-            monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER')  # 운영 기본(변수 없음) = 끔
+            monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER')
         else:
             monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', value)
-        assert not scene_writer.enabled(), value
-        assert 'scene_writer_v1' not in auth.auth_config()['features'], value
+        assert scene_writer.enabled() is (value != '0'), value
+        assert ('scene_writer_v1' in auth.auth_config()['features']) is (value != '0'), value
+        with monkeypatch.context() as auth_on:
+            auth_on.setattr(config, 'AUTH_ENABLED', True)
+            assert not scene_writer.enabled(), value
     monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     assert scene_writer.enabled()
     assert 'scene_writer_v1' in auth.auth_config()['features']

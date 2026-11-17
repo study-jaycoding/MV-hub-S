@@ -18,6 +18,7 @@ import * as sceneWriter from "../src/lib/sceneWriter";
 import * as sceneCardLinks from "../src/lib/sceneCardLinks";
 import { readStoredScene, type Scene } from "../src/lib/scenes";
 import { sceneBodySum } from "../src/lib/sceneAbsorb";
+import { setLang } from "../src/lib/i18n";
 
 const request = vi.hoisted(() => vi.fn());
 const flash = vi.hoisted(() => vi.fn());
@@ -68,6 +69,57 @@ afterEach(async () => {
   vi.restoreAllMocks();
   abortSceneStoreWritesForTest(false); await settleSceneStoreForTest();
   setSceneNotebookTokenProvider(() => null); setSceneWriteGate(() => false); setHubFeatures([]); setAccountScope(null);
+  setLang("ko");
+});
+
+async function firstStartNotice() {
+  await writeScenesStore({ [bucket]: [scene("mine", "local raw")] });
+  await sceneNotebookTransaction([], (_all, meta) => { delete meta[notebookKey("nj", "local")]; return { changed: true, value: null }; });
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  await render(<CanvasRestoreNotice />);
+}
+it("first start shows the exact prompt, folds Later and reopens without a merge picker or uploads", async () => {
+  await firstStartNotice();
+  expect(notice()?.textContent).toContain("이 캔버스를 다른 브라우저에서도 쓸까요?");
+  expect(notice()?.textContent).toContain("지금 보이는 캔버스(씬 1개)가 이 PC 의 어느 브라우저에서 열어도 그대로 보이게 됩니다. 전에 저장돼 있던 캔버스는 따로 보관됩니다.");
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  const button = (label: string) => [...host.querySelectorAll("button")].find((item) => item.textContent === label)!;
+  await act(async () => button("나중에").click());
+  expect(notice()?.textContent).toContain("이 브라우저에만 저장 중");
+  await act(async () => button("다른 브라우저와 같이 쓰기").click());
+  expect(notice()?.textContent).toContain("이 캔버스로 쓰기");
+  expect(readWorkingBucket(bucket)).toEqual([scene("mine", "local raw")]);
+  expect(request.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+it("first start button forwards that offer once, becomes busy, then shows a dismissible success notice", async () => {
+  await firstStartNotice();
+  const offer = sceneNotebook.getNotebookStartNotice()!;
+  let finish!: () => void;
+  const start = vi.spyOn(sceneWriter, "startSceneNotebook").mockImplementation(async () => { await new Promise<void>((resolve) => { finish = resolve; }); });
+  await act(async () => (host.querySelector('[data-notebook-action="start"]') as HTMLButtonElement).click());
+  expect(start).toHaveBeenCalledWith(offer.id);
+  expect((host.querySelector('[data-notebook-action="start"]') as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => finish());
+  // 실제 성공 알림은 공책 거래가 발행한다.
+  request.mockImplementation(async (path, init) => {
+    if (path.endsWith("/start")) return {};
+    const started = request.mock.calls.some(([p, i]) => p.endsWith("/start") && JSON.parse(String(i?.body)).commit);
+    return started ? { ...emptyBook(), notebook_id: "started", items: [{ id: "mine", data: JSON.stringify(scene("mine", "local raw")), deleted_at: null,
+      base: { history_id: "h", rev: 1, hash: hash(JSON.stringify(scene("mine", "local raw"))) } }], order: { ids: ["mine"], rev: 1, history_id: "h" } } : emptyBook();
+  });
+  const approval = await sceneNotebook.prepareNotebookStart(offer.id, async () => true);
+  await act(async () => { await syncSceneNotebook({ startApproval: approval! }); });
+  expect(host.textContent).toContain("이제 이 PC 의 어느 브라우저에서 열어도 같은 캔버스가 보입니다.");
+  await act(async () => [...host.querySelectorAll("button")].find((button) => button.textContent === "닫기")!.click());
+  expect(host.querySelector(".canvas-notebook-start")).toBeNull();
+});
+it("first start follows the i18n dictionary and account isolation", async () => {
+  await firstStartNotice();
+  await act(async () => setLang("en"));
+  expect(notice()?.textContent).toContain("Use this canvas in other browsers?");
+  expect(notice()?.textContent).toContain("1 scenes");
+  setAccountScope("other"); await render(<CanvasRestoreNotice />);
+  expect(host.querySelector(".canvas-notebook-start")).toBeNull();
 });
 
 it("rows: own buckets only, separate rows per bucket, and the five states (camera ignored, copy key like mergeArchiveBucket)", () => {
@@ -98,7 +150,7 @@ it("restore: absent ids keep their id, differing ids become '[사본]', existing
   const rows = restoreArchiveRows("local", archives.value, readWorkingBucket(bucket)).filter((row) => row.state === "differs" || row.state === "absent");
   expect(rows).toHaveLength(3);
   const message = await restoreRows("local", rows);
-  expect(message).toContain("허브 공책에는 이어서 올라갑니다");
+  expect(message).toBe("캔버스에 3개를 되살렸습니다(사본 2개).");
   const now = readWorkingBucket(bucket);
   expect(now.find((s) => s.id === "a")?.name).toBe("a"); // 기존 씬은 그대로
   expect(now.filter((s) => s.name === "[사본] a-old")).toHaveLength(1);
@@ -117,7 +169,7 @@ it("restore refuses without writing when the account changed, the notebook is of
   const rows = restoreArchiveRows("local", archives.value, []);
   await expect(restoreRows("someone-else", rows)).rejects.toThrow("계정이 바뀌었습니다");
   act(() => setHubFeatures([]));
-  await expect(restoreRows("local", rows)).rejects.toThrow("허브 공책이 꺼져");
+  await expect(restoreRows("local", rows)).rejects.toThrow("캔버스가 이 브라우저에만 저장되는 상태라");
   act(() => setHubFeatures(["scene_writer_v1"]));
   vi.spyOn(sceneWriter, "getSceneWriterView").mockReturnValue({ mode: "away", handed: false, localCount: 0 });
   await expect(restoreRows("local", rows)).rejects.toThrow("다른 브라우저가 쓰는 중");
@@ -206,7 +258,7 @@ it("notice does not read the archive on scene saves; a first-transition archive 
   await flush();
   expect(read).toHaveBeenCalled();
   // 이 브라우저는 옛 세대에 합류했던 것이라 묶음에 fromGeneration 이 있다 — '허브 기록이 바뀌어' 문구
-  expect(notice()?.textContent).toContain("허브 기록이 바뀌어 이 브라우저에만 있던 씬");
+  expect(notice()?.textContent).toContain("저장된 캔버스가 백업에서 되돌려져 이 브라우저에만 있던 씬");
 });
 
 it("notice → picker → restore puts the scene on the canvas, hides the notice and reports local vs hub; account change closes the picker", async () => {
@@ -217,7 +269,7 @@ it("notice → picker → restore puts the scene on the canvas, hides the notice
   await act(async () => { (document.querySelector('[data-restore-action="restore"]') as HTMLButtonElement).click(); });
   await flush();
   expect(readWorkingBucket(bucket).some((s) => s.id === "x")).toBe(true);
-  expect(flash).toHaveBeenCalledWith(expect.stringContaining("허브 공책에는 이어서"));
+  expect(flash).toHaveBeenCalledWith("캔버스에 1개를 되살렸습니다.");
   expect(notice()).toBeNull();
   expect(document.querySelector(".canvas-restore-picker")).toBeNull();
   // 계정이 바뀌면 열린 창을 닫는다

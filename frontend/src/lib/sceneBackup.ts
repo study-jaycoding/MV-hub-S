@@ -280,14 +280,14 @@ function loadLedger(scope: string, strict = false): Map<string, LedgerEntry> {
 
 /** 전체 가져오기로 선택하고 로컬 확정을 확인한 씬만 현재 허브 기준으로 재개한다. */
 export async function resumeImportedMirror(scope: string, generation: string, selected: Map<string, string>): Promise<void> {
-  if (!hubFeaturesKnown()) throw new Error("허브 기능을 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
+  if (!hubFeaturesKnown()) throw new Error("캔버스 저장 상태를 아직 확인하지 못했습니다 — 잠시 뒤 다시 시도하세요.");
   if (importing) throw new Error("다른 가져오기가 끝난 뒤 다시 시도해 주세요.");
   importing = true;
   try {
     await syncIdle;
     const response = await jsonFetch<{ restore_generation: string; items: BackupRow[] }>(`${API}?project_id=&include_data=1`, asAccount(scope));
     const record = readMirrorRecovery(scope);
-    if (ns() !== scope || response.restore_generation !== generation || record?.generation !== generation) throw new Error("허브와 기록 시점이 달라 전송을 보류했습니다.");
+    if (ns() !== scope || response.restore_generation !== generation || record?.generation !== generation) throw new Error("저장된 캔버스와 기록 시점이 달라 전송을 보류했습니다.");
     const current = new Map(listPersistedSceneTexts(null).map((scene) => [scene.id, scene.text]));
     for (const [id, text] of selected) {
       if (current.get(id) !== text) throw new Error("가져오는 동안 문서가 바뀌어 전송을 보류했습니다.");
@@ -1005,7 +1005,7 @@ async function runImport(): Promise<number> {
     asAccount(scope),
   );
   if (ns() !== scope) return 0;
-  if (!validRestoreGeneration(r.restore_generation) || (await checkMirrorGeneration(scope)) !== r.restore_generation || ns() !== scope) throw new Error("허브와 기록 시점이 달라 목록을 다시 읽어 주세요.");
+  if (!validRestoreGeneration(r.restore_generation) || (await checkMirrorGeneration(scope)) !== r.restore_generation || ns() !== scope) throw new Error("저장된 캔버스와 기록 시점이 달라 목록을 다시 읽어 주세요.");
   // 자동 복구와 같은 전 행 검증 — 하나라도 손상이면 부분 적용 없이 전체 포기.
   //  이 탭 씬의 갈래 사본 행은 가져오지 않는다 — 두 로컬 씬이 같은 행을 미러하게 된다(Codex C3).
   const mine = forkIds();

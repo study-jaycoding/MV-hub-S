@@ -25,6 +25,9 @@ def report(case="cross_browser"):
         "errors": [], "forbidden_requests": []}
     if case == "performance":
         result["timing"] = {"samples_ms": [10.0] * 20, "sync_ms": 900, "max_slowdown": 1.1, "baseline_ratios": {"p50_ms": 1, "p95_ms": 1}}
+    if case == "first_transition":
+        result["transition"] = {"variant": "empty", "start_order": "a", "old_checkout": "temporary/0123"}
+        result["previous_browser_records"] = {name: {"store_sha256": "a" * 64, "scenes": [{"id": name, "sha256": "b" * 64}], "mirrorRecovery": None} for name in ("a", "b")}
     return result
 
 
@@ -138,7 +141,7 @@ def test_server_environment_uses_existing_isolation_builder(tmp_path, monkeypatc
     assert env["CONTENT_HUB_DB"] == str(tmp_path / "db" / "content_hub.db")
     assert "CONTENT_HUB_WORKER_BACKUP_STATE_DB" not in env
     assert env["CONTENT_HUB_SHARED_URL"] == "http://127.0.0.1:9"
-    assert env["CONTENT_HUB_SCENE_WRITER"] == "1"  # 바깥에서 끈 값이 새지 않고, 운영 기본(끔)과 달리 공책을 명시적으로 켜서 잰다
+    assert "CONTENT_HUB_SCENE_WRITER" not in env  # 부모의 0/1 없이 운영 기본 켬을 잰다
     assert env["CONTENT_HUB_AUTH"] == "0"
     monkeypatch.setenv("CONTENT_HUB_SCENE_WRITER", "1")
     assert measure.make_env(tmp_path, 8239, writer=False)["CONTENT_HUB_SCENE_WRITER"] == "0"  # 미러 준비 단계만 끔
@@ -184,7 +187,73 @@ def test_first_transition_skips_mirror_seed_and_runs_its_own_flow(tmp_path, monk
     monkeypatch.setattr(measure.Measurement, "first_transition", first)
     asyncio.run(instance.run(None))
     assert calls == [("first_transition", 3)]  # 빈 허브 미러 그대로 — 미러를 채우면 빈 미러 첫 전환을 재지 못한다
-    assert CASES["first_transition"] == {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"}
+    assert {"before_confirmation", "previous_browser", "selected_raw", "before_start", "reconnect"} <= CASES["first_transition"]
+
+
+def test_raw_fingerprints_detect_same_id_content_execution_marks_and_order_changes():
+    scenes = [{"id": "a", "cards": [{"text": "원문"}], "edges": [{"from": "c1", "to": "c2"}], "comfyRuns": [{"id": "run"}]}, {"id": "b"}]
+    fingerprints = measure.scene_fingerprints(scenes)
+    assert measure.scene_fingerprints(json.loads(json.dumps(scenes))) == fingerprints
+    for altered in ([{**scenes[0], "cards": [{"text": "다른 원문"}]}, scenes[1]],
+                    [{**scenes[0], "edges": []}, scenes[1]], [{**scenes[0], "comfyRuns": []}, scenes[1]], list(reversed(scenes))):
+        assert measure.scene_fingerprints(altered) != fingerprints
+
+
+@pytest.mark.parametrize("missing", ["store_sha256", "scenes"])
+def test_first_transition_rejects_ids_without_actual_previous_raw_fingerprints(missing):
+    value = report("first_transition")
+    value["previous_browser_records"]["a"].pop(missing)
+    assert verify(value)
+
+
+@pytest.mark.parametrize("variant", ["same_generation", "held"])
+def test_first_transition_requires_actual_previous_generation_record(variant):
+    value = report("first_transition")
+    value["transition"]["variant"] = variant
+    assert verify(value)
+    value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": ["a"] if variant == "held" else []})
+    assert verify(value) == []
+
+
+@pytest.mark.parametrize("variant", ["empty", "different", "restored_unknown", "equal", "same_generation", "held", "limit_exact", "limit_over"])
+def test_first_transition_variants_require_size_or_history_evidence(variant):
+    value = report("first_transition")
+    value["transition"]["variant"] = variant
+    if variant in {"same_generation", "held"}:
+        value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": ["a"] if variant == "held" else []})
+    if variant.startswith("limit_"):
+        assert verify(value)
+        size = 5 * 1024 * 1024 + (variant == "limit_over")
+        value["checks"]["size_boundary"] = {"status": "passed", "actual": size, "expected": size}
+    assert verify(value) == []
+
+
+@pytest.mark.parametrize("fault", ["lost_chunk", "lost_commit"])
+def test_first_transition_reply_loss_must_be_observed(fault):
+    value = report("first_transition")
+    value["transition"]["fault"] = fault
+    assert verify(value)
+    value["checks"]["response_loss"] = {"status": "passed", "actual": 1, "expected": 1}
+    assert verify(value) == []
+
+
+def test_first_transition_cli_requires_an_old_checkout_before_launch(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["canvas_notebook.py", "--case", "first_transition"])
+    with pytest.raises(SystemExit) as error:
+        measure.main()
+    assert error.value.code == 2
+
+
+def test_first_transition_verifier_cli_accepts_complete_evidence_and_rejects_missing_raws(tmp_path):
+    import subprocess
+    evidence = report("first_transition")
+    path = tmp_path / "synthetic-evidence.json"
+    for expected in (0, 1):
+        if expected:
+            del evidence["previous_browser_records"]["a"]["scenes"]
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(TOOLS / "verify_canvas_notebook_measure.py"), str(path)], capture_output=True, text=True)
+        assert result.returncode == expected, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("join, notebook_id, converged", [

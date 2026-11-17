@@ -21,8 +21,8 @@ CASES = {
     "bootstrap": {"first_canvas", "archive", "archive_unchanged", "no_merge"},
     "performance": {"fixture", "samples", "baseline", "latency", "sync_under_second"},
     "rollback": {"old_checkout", "old_write", "new_recovery", "retained", "overwrite_then_delete_retained", "deleted_original_absent"},
-    # Empty-mirror first transition with the canvas restore flow (docs/status/공책첫전환복구동선_2026-11-15.md).
-    "first_transition": {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"},
+    "first_transition": {"previous_browser", "default_enabled", "before_confirmation", "no_upload_before", "confirmation",
+                         "selected_raw", "join_generation", "other_browser_preserved", "no_merge", "before_start", "reconnect"},
 }
 
 
@@ -76,6 +76,46 @@ def verify(report: dict) -> list[str]:
         errors.append("runner errors present")
     if report.get("forbidden_requests"):
         errors.append("generation or external mutation attempted")
+    if case == "first_transition":
+        transition = report.get("transition", {})
+        if not isinstance(transition, dict):
+            transition = {}
+        if not isinstance(transition, dict) or transition.get("variant") not in {
+                "empty", "different", "restored_unknown", "equal", "same_generation", "held", "limit_exact", "limit_over"} or transition.get("start_order") not in {"a", "b", "simultaneous"}:
+            errors.append("explicit first-transition variant and start order required")
+        if transition.get("variant") in {"limit_exact", "limit_over"}:
+            boundary = checks.get("size_boundary")
+            expected_size = 5 * 1024 * 1024 + (transition["variant"] == "limit_over")
+            if not isinstance(boundary, dict) or boundary.get("status") != "passed" or boundary.get("actual") != expected_size:
+                errors.append("measured UTF-8 size boundary required")
+        if transition.get("fault", "none") not in {"none", "lost_chunk", "lost_commit"}:
+            errors.append("unknown first-transition fault")
+        elif transition.get("fault", "none") != "none":
+            response_loss = checks.get("response_loss")
+            if not isinstance(response_loss, dict) or response_loss.get("actual") != 1:
+                errors.append("one processed response must actually be lost")
+        records = report.get("previous_browser_records", {})
+        if not isinstance(records, dict) or set(records) != {"a", "b"}:
+            errors.append("actual previous-browser records for both profiles required")
+        else:
+            for name, record in records.items():
+                def digest(value):
+                    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+                if (not isinstance(record, dict) or not digest(record.get("store_sha256")) or
+                        not isinstance(record.get("scenes"), list) or not record["scenes"] or
+                        any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or not digest(row.get("sha256")) for row in record["scenes"])):
+                    errors.append(f"previous browser {name}: ordered raw fingerprints required")
+            if transition.get("variant") in {"same_generation", "held"}:
+                try:
+                    recovery = json.loads(records["a"].get("mirrorRecovery") or "null")
+                    if not isinstance(recovery, dict) or not recovery.get("generation") or not isinstance(recovery.get("blockedIds"), list):
+                        raise ValueError("mirror record missing")
+                    if transition["variant"] == "held" and not recovery["blockedIds"]:
+                        raise ValueError("actual held record missing")
+                    if transition["variant"] == "same_generation" and recovery["blockedIds"]:
+                        raise ValueError("normal untransmitted edit cannot use held provenance")
+                except (TypeError, ValueError, AttributeError):
+                    errors.append("actual previous-browser generation/held record required")
     if case == "performance":
         timing = report.get("timing", {})
         if not isinstance(timing, dict):
