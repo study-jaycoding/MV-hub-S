@@ -42,6 +42,19 @@ const render = async (props: { reloadSignal?: number; consoleOpen?: boolean }) =
   await settle();
 };
 
+it("출처는 크레딧 카드별로 표시하고 기존 생성 분석은 MV 기록으로 유지한다", async () => {
+  mocks.creditPlan.mockResolvedValue({ month: "2026-11", configured: true, my_group: {
+    id: "g", name: "Group", member_count: 2, monthly_limit: 100, quota_total: 200, used_period: 3, used_month: 3,
+    my_used_period: 1, my_quota: 100, my_remaining: 99, my_quota_source: "auto",
+    period_usage: { basis: "mixed", fallback_count: 1 }, my_period_usage: { basis: "api" },
+  } });
+  await act(async () => root.render(<WorkspaceUsageDashboard workspaceId="a" scope="mine" />));
+  await settle();
+  expect(host.querySelector(".credit-card")?.textContent).toContain("힉스필드 기준");
+  expect(host.querySelector(".credit-card")?.textContent).toContain("일부 MV 기록 기준");
+  expect(host.querySelector(".work-source-label")?.textContent).toContain("생성 기록 분석 · 프로젝트·모델 차트는 MV 기록 기준");
+});
+
 it("L3-3 '전체 적용'이 꺼져 있으면 차트 모델을 바꿔도 상단 사용량은 다시 읽지 않는다", async () => {
   await render({});
   expect(mocks.teamOverview).toHaveBeenCalledTimes(1);

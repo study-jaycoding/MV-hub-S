@@ -1,4 +1,5 @@
 import { formatCredits } from "./formatCredits";
+import type { UsageBasis } from "./creditUsage";
 
 // 크레딧 풀 · 그룹 한도 · 잔액 추이 — 타입과 순수 계산(대시보드 카드·프로젝트 설정 창 공용).
 // 힉스필드가 한도를 강제하고 우리는 보여주기·경고만 한다(Jay 2026-09-10). 서버 계약은
@@ -11,6 +12,7 @@ export interface BalancePoint {
 }
 
 export interface CreditPool {
+  month_usage?: UsageBasis;
   monthly_topup: number | null; // 파생값 — 이 워크스페이스 프로젝트들의 예산 한도(매월) 합
   monthly_topup_source?: "manual" | "derived" | "none"; // 손 입력=manual · 파생=derived · 서브스페이스 서브에 정기 없음=none(§13)
   recurring_auto?: boolean; // 충전 방식 — true=자동(매월 충전일) · false=수동 · 구서버는 없음(=자동)
@@ -69,6 +71,10 @@ export function cycleLabel(view: { month: string; cycle_start?: string; cycle_en
 }
 
 export interface CreditGroupSummary {
+  period_usage?: UsageBasis;
+  month_usage?: UsageBasis;
+  my_period_usage?: UsageBasis;
+  my_month_usage?: UsageBasis;
   id: string;
   name: string;
   monthly_limit: number | null; // **인당** 한도 · null = ∞
@@ -112,6 +118,7 @@ export interface MyModelPolicy {
 }
 
 export interface CreditUnassigned {
+  month_usage?: UsageBasis;
   member_count: number;
   used_month: number;
   unknown_month: number;
@@ -133,6 +140,7 @@ export interface CreditPlanView {
 }
 
 export interface CreditPlanMember {
+  usage?: UsageBasis;
   email: string;
   name: string;
   workspace_role: string | null;

@@ -30,6 +30,8 @@ import {
   workspaceContextOf,
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
+import { MyUsageWindow } from "./MyUsageWindow";
+import { UsageBasis } from "./common/UsageBasis";
 import { SettingsPanel } from "./SettingsPanel";
 import { AccountIcon, SettingIcon, SignOutIcon } from "./common/ViewIcons";
 import { manageApi } from "../lib/manageApi";
@@ -80,6 +82,7 @@ export function AccountMenu({
   const [open, setOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const openManageAccount = () => {
     setOpen(false);
     setManageOpen(true);
@@ -314,7 +317,7 @@ export function AccountMenu({
   }, [activeWsId, fixedMaxWs, open, manageEnabled, workspaceContext.scope]);
   const quotaWorkspaceId = manageEnabled !== false && workspaceContext.scope === "team"
     ? workspaceContext.id || null : null;
-  const quotaState = useMyCreditQuota(quotaWorkspaceId, account?.email || provider?.email || "", open);
+  const quotaState = useMyCreditQuota(quotaWorkspaceId, identityKey, open);
   const myQuota = quotaState.value;
   const personalQuota = hasPersonalQuota(myQuota) ? myQuota : null;
   // 그룹 한도가 없거나(제한 없음) 그룹에 들지 않았으면(미배정) 내 몫이 없다 — 대신 워크스페이스 잔액을 남은
@@ -593,7 +596,7 @@ export function AccountMenu({
                 <span className="acct-limit-label">Limit</span>
                 {personalQuota ? (
                   <span className="acct-limit-val">
-                    <b>{uncertainty ? "≈ " : ""}{formatCredits(personalQuota.remaining)}</b> / {formatCredits(personalQuota.quota)}
+                    <b>{(myQuota?.basis ? myQuota.estimated_count > 0 : uncertainty) ? "≈ " : ""}{formatCredits(personalQuota.remaining)}</b> / {formatCredits(personalQuota.quota)}
                   </span>
                 ) : myQuota?.source === "unlimited" ? (
                   <span className="acct-limit-val acct-limit-inf" aria-label="제한 없음">∞</span>
@@ -606,6 +609,11 @@ export function AccountMenu({
                 <span className="acct-limit-label">User group</span>
                 <span className="acct-limit-val">{groupName}</span>
               </div>
+              {myQuota?.basis && myQuota.source !== "unassigned" && myQuota.source !== "unavailable" && <div className="acct-quota-note">{t("사용")} {myQuota.estimated_count > 0 ? "≈ " : ""}{formatCredits(myQuota.used)}</div>}
+              {myQuota?.basis && <UsageBasis value={myQuota} />}
+              {myQuota?.basis === "api" && !!myQuota.failed_refunded_count && <div className="acct-quota-note">{t("오류 보고 후 전액 환불 {count}건").replace("{count}", String(myQuota.failed_refunded_count))}</div>}
+              {quotaState.loading ? null : !myQuota || myQuota.source === "unavailable" ? <div className="acct-quota-note">{t("확인 불가")}</div> : null}
+              {(myQuota?.usage_supported || myQuota?.basis) && myQuota?.source !== "unavailable" && <button type="button" className="acct-action" onClick={() => { setOpen(false); avatarRef.current?.focus(); setUsageOpen(true); }}>{t("내 사용량 보기")}</button>}
             </div>
           )}
 
@@ -652,6 +660,7 @@ export function AccountMenu({
         document.body,
       )}
 
+      {usageOpen && quotaWorkspaceId && <MyUsageWindow key={requestKey} workspaceId={quotaWorkspaceId} accountKey={identityKey} onClose={() => { setUsageOpen(false); avatarRef.current?.focus(); }} />}
       {settingsOpen && createPortal(
         <SettingsPanel
           anchor={popPos}
