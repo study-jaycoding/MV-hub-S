@@ -47,6 +47,10 @@ function evidenceLine(item: BalanceInterval, spaces: Space[]): string {
   return "";
 }
 
+// 10px 글자 폭 어림(한글·한자 10, 그 밖 5.5 — 실제보다 넉넉히). 빈 곳 폭이 글자 + 10 이상일 때만 글자를 쓰면
+// 쓰인 글자끼리 가운데 사이도 그만큼 벌어져 겹치지 않는다 — 좁은 빈 곳마다 쓰면 '이번 달'에서 겹쳤다(11-18 눈 확인).
+const labelWidth = (label: string) => [...label].reduce((w, c) => w + (c.charCodeAt(0) >= 0x1100 ? 10 : 5.5), 0);
+
 function LedgerChart({ data }: { data: BalanceLedgerResponse }) {
   const points = data.chart_points.slice(0, 1000).filter((p) => p.quality === "reported");
   if (!points.length) return <div className="bl-empty">{t("잔액 확인 없음")}</div>;
@@ -55,12 +59,14 @@ function LedgerChart({ data }: { data: BalanceLedgerResponse }) {
   const x = (at: number) => 35 + (at - data.requested_start_ms) / Math.max(1, data.requested_end_ms - data.requested_start_ms) * 930;
   const y = (c: number) => 105 - (c - low) / Math.max(1, high - low) * 80;
   const markers = data.intervals.filter((i) => i.state === "residual_present" && i.candidate_classification !== "unclassified");
+  const gapLabel = t("잔액 확인 없음"), gapLabelMin = labelWidth(gapLabel) + 10;
   return <div className="bl-chart"><svg viewBox="0 0 1000 155" role="img" aria-label={t("확인한 잔액 변화")}>
     {[25, 65, 105].map((v) => <line key={v} x1="35" x2="965" y1={v} y2={v} className="bl-grid" />)}
     <text x="0" y="20">{money(high)}</text><text x="0" y="120">{money(low)}</text>
     {points.map((p, n) => { const before = points[n - 1]; const gap = before && data.chart_gaps.some((g) => g.start_ms < p.observed_at_ms && g.end_ms > before.observed_at_ms);
-      return <g key={p.observation_id}>{before && <line x1={x(before.observed_at_ms)} y1={y(before.credits_c)} x2={x(p.observed_at_ms)} y2={y(p.credits_c)} className={gap ? "bl-gap" : "bl-line"} />}
-        {gap && <text x={(x(before.observed_at_ms) + x(p.observed_at_ms)) / 2} y="136" textAnchor="middle">{t("잔액 확인 없음")}</text>}
+      const x1 = before ? x(before.observed_at_ms) : 0, x2 = x(p.observed_at_ms);
+      return <g key={p.observation_id}>{before && <line x1={x1} y1={y(before.credits_c)} x2={x2} y2={y(p.credits_c)} className={gap ? "bl-gap" : "bl-line"}>{gap && <title>{gapLabel}</title>}</line>}
+        {gap && x2 - x1 >= gapLabelMin && <text x={(x1 + x2) / 2} y="136" textAnchor="middle">{gapLabel}</text>}
         <circle cx={x(p.observed_at_ms)} cy={y(p.credits_c)} r="2"><title>{formatBalanceAbsolute(p.observed_at_ms)} · {money(p.credits_c)}</title></circle></g>; })}
     {markers.map((i) => { const p: BalanceChartPoint | undefined = points.find((point) => point.observation_id === i.to_observation_id); return p ? <text key={i.to_observation_id} className="bl-marker" x={Math.min(810, x(p.observed_at_ms))} y={Math.max(15, y(p.credits_c) - 9)}>{i.residual_c! > 0 ? "▲" : "▼"} {candidateLabel(i.candidate_classification)} {money(i.residual_c, true)}</text> : null; })}
     <text x="35" y="152">{formatBalanceAbsolute(data.requested_start_ms)}</text><text x="965" y="152" textAnchor="end">{formatBalanceAbsolute(data.requested_end_ms)}</text>
