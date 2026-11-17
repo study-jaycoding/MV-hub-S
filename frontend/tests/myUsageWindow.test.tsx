@@ -14,7 +14,7 @@ let opener: HTMLButtonElement;
 const close = vi.fn();
 function value(patch: Partial<MyUsage> = {}): MyUsage {
   return { workspace_id: "ws", range: "period", space: "this", basis: "api", used: 7, used_real: 5, used_estimated: 2,
-    refunded: 3, generation_count: 2, estimated_count: 1, unknown_count: 2, overdue_pending_count: 1, pending_count: 2,
+    refunded: 3, generation_count: 2, estimated_count: 1, unknown_count: 3, overdue_pending_count: 1, pending_count: 4,
     failed_count: 2, failed_refunded_count: 1, sources: [{ source: "web", net: 6 }, { source: "other", net: -1 }],
     rows: [{ row_id: "refund", created_at: 100, source: "web", type: "generation", model: "Model", workspace_id: "ws", workspace_name: "WS", status: "failed", state: "future_state", error_code: "error", charged: 4, refunded: 3, net: 1, pending: false },
       { row_id: "pending", created_at: 200, source: "mv", type: "generation", model: "Pending Model", workspace_id: "ws", workspace_name: "WS", status: "pending", state: null, error_code: null, charged: null, refunded: null, net: 2, pending: true }],
@@ -50,7 +50,9 @@ it("renders the selected tiles, all source amounts, refunds and pending estimate
   expect(document.body.textContent).toContain("최근 1,000건 표시 · 합계는 전체");
   expect(document.body.textContent).toContain("오류 보고 후 전액 환불 1건");
   expect(document.body.textContent).toContain("미확인 2건");
-  expect(document.body.textContent).toContain("60분 초과 1건");
+  expect(document.body.textContent).toContain("오래된 미매칭 1건 (60분 초과)");
+  expect(document.querySelectorAll(".my-usage-tiles>div")[3].textContent).toBe("1집계 전");
+  expect(document.body.textContent).toContain("집계 전 1건");
   expect(vi.mocked(jsonFetch).mock.calls[0][0]).toContain("range=period&space=this");
 });
 
@@ -61,6 +63,15 @@ it.each(["facts", "unavailable"] as const)("shows %s reasons without API zero ti
   expect(document.querySelector(".my-usage-tiles")).toBeNull();
   expect(document.querySelector("table")).toBeNull();
   expect(document.body.textContent).toContain(basis === "facts" ? "계정 신원 미연결" : "확인 불가");
+});
+
+it("shows zero pending estimates when only old unmatched records remain", async () => {
+  vi.mocked(jsonFetch).mockResolvedValue(value({ estimated_count: 0, used_estimated: 0, pending_count: 1, unknown_count: 1, overdue_pending_count: 1 }));
+  await render();
+  expect(document.querySelectorAll(".my-usage-tiles>div")[3].textContent).toBe("0집계 전");
+  expect(document.body.textContent).toContain("오래된 미매칭 1건 (60분 초과)");
+  expect(document.body.textContent).not.toContain("미확인 1건");
+  expect([...document.querySelectorAll("p")].some(p => p.textContent?.includes("≈"))).toBe(false);
 });
 
 it.each([404, 403, 502])("keeps HTTP %s separate from zero usage", async status => {
@@ -109,5 +120,7 @@ it("uses the existing English dictionary for the new usage screen", async () => 
   expect(document.body.textContent).toContain("Actual usage, net of refunds");
   expect(document.body.textContent).toContain("Higgsfield usage");
   expect(document.body.textContent).toContain("Latest 1,000 rows shown; totals include all rows");
+  expect(document.body.textContent).toContain("1 old unmatched records (over 60 minutes)");
+  expect(document.body.textContent).toContain("2 unconfirmed");
   setLang("ko");
 });

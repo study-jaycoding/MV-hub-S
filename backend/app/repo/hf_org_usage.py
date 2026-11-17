@@ -402,10 +402,13 @@ def refresh_identity_links(org_id: str) -> None:
 
 def actor_identity(actor: str | None, accounts: list[dict], links: list[dict]) -> tuple[str | None, str | None]:
     """Pure identity evidence shared by the administrator and personal read models."""
+    return _actor_identity(actor, [a for a in accounts if a.get('creator_uid') == actor],
+                           next((link for link in links if link['actor_user_id'] == actor), None))
+
+
+def _actor_identity(actor, matches, link):
     if not actor or actor == 'local' or actor.startswith('acct:'):
         return None, 'identity_unlinked'
-    matches = [a for a in accounts if a.get('creator_uid') == actor]
-    link = next((link for link in links if link['actor_user_id'] == actor), None)
     if len(matches) > 1 or link and link['state'] == 'conflict':
         return None, 'identity_conflict'
     if len(matches) != 1 or matches[0]['status'] != 'approved':
@@ -448,7 +451,7 @@ def usage_days(windows: list[dict], start: int, end: int, at: int) -> tuple[list
             gap = True
     if not selected:
         return [], 'missing_day' if start < at else 'future_period'
-    if effective_end - coverage > 3_600_000:
+    if coverage < effective_end and at - coverage > 3_600_000:
         return selected, 'collection_stale'
     return selected, None
 
@@ -518,21 +521,30 @@ class CreditUsageSnapshot:
             self.manage_at = now_ms()
         self.by_actor = {}
         self.by_email = {}
+        accounts_by_actor = {}
+        for account in self.accounts:
+            accounts_by_actor.setdefault(account['creator_uid'], []).append(account)
+        links_by_actor = {link['actor_user_id']: link for link in self.links}
+        actors = set(accounts_by_actor) | set(links_by_actor) | {r['actor_user_id'] for r in self.rows}
+        self.actor_identities = {actor: _actor_identity(actor, accounts_by_actor.get(actor, []), links_by_actor.get(actor))
+                                 for actor in actors}
+        self.identities = {}
+        for account in self.accounts:
+            actor = account['creator_uid']
+            resolved, reason = self.actor_identities[actor]
+            self.identities[account['email']] = (actor, reason if resolved == account['email'] else reason or 'identity_conflict')
         for row in self.rows:
             self.by_actor.setdefault((row['workspace_id'], row['actor_user_id']), []).append(row)
         self.observed_emails = set()
         for _, actor in self.by_actor:
-            email, _ = actor_identity(actor, self.accounts, self.links)
+            email, _ = self.actor_identities[actor]
             if email:
                 self.observed_emails.add(email)
         for fact in self.facts:
             self.by_email.setdefault((fact['workspace_id'], fact['account_email']), []).append(fact)
 
     def identity(self, email):
-        accounts = [a for a in self.accounts if a['email'] == email]
-        actor = accounts[0]['creator_uid'] if len(accounts) == 1 else None
-        resolved, reason = actor_identity(actor, self.accounts, self.links)
-        return actor, reason if resolved == email else reason or 'identity_conflict'
+        return self.identities.get(email, (None, 'identity_unlinked'))
 
     def total(self, workspace_id, email, start, end):
         if (start, end) not in self.ranges or workspace_id not in self.workspace_ids:
@@ -588,7 +600,7 @@ class CreditUsageSnapshot:
                                    workspace_name=r['workspace_name'], status=r['status'], state=r['state'],
                                    error_code=r['error_code'], charged=r['charged_c']/100,
                                    refunded=r['refunded_c']/100, net=r['credits_c']/100, pending=False))
-            pending = unknown = overdue = 0
+            unknown = overdue = 0
             estimated = 0.0
             seen = set()
             for f in facts:
@@ -599,15 +611,16 @@ class CreditUsageSnapshot:
                     continue
                 if job:
                     seen.add(job)
-                owner, owner_reason = self.identity(f['account_email'])
                 observed = self.api_jobs.get(job, set())
+                if email is None and observed:
+                    continue  # Pool API usage already includes observed jobs even when identity is unlinked.
+                owner, owner_reason = self.identity(f['account_email'])
                 if (owner_reason or not job or f['creator_uid'] != owner or observed and observed != {owner}
                         or len(self.job_owners.get(job, set())) != 1 or round(f['time_ms']) > self.at):
                     unknown += 1
                     continue
                 if observed:
                     continue
-                pending += 1
                 amount = f['real_credits'] if f['real_credits'] is not None else f['est_credits']
                 if self.at - round(f['time_ms']) > 3_600_000:
                     overdue += 1
@@ -629,9 +642,9 @@ class CreditUsageSnapshot:
                           failed_count=sum(r['type'] == 'generation' and bool(r['error_code']) for r in rows),
                           fully_refunded_count=sum(fully(r) for r in rows),
                           failed_refunded_count=sum(r['type'] == 'generation' and bool(r['error_code']) and fully(r) for r in rows),
-                          overdue_pending_count=overdue, pending_count=pending, rows=output,
+                          overdue_pending_count=overdue, pending_count=sum(r['pending'] for r in output), rows=output,
                           sources=[dict(source=k, net=v/100) for k,v in sorted(sources.items())],
                           unlinked_api=sum(r['credits_c'] for r in rows
-                                           if actor_identity(r['actor_user_id'], self.accounts, self.links)[1])/100)
+                                           if self.actor_identities[r['actor_user_id']][1])/100)
         self.cache[key] = result
         return result

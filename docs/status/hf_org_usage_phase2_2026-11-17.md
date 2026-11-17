@@ -690,3 +690,93 @@ owner: Codex(3단계 구현) · reviewer: 총괄이 배정할 독립 Claude 세�
 프로젝트 문서: 계약·시험·미확인을 이 문서와 몫 설계에 기록했다. 프로젝트에 종속된 내용이다.
 기억: 없음. 별도 개인 설정·기억은 수정하지 않았다.
 볼트: 없음. 프로젝트를 지워도 남길 별도 기법 후보에 대한 두 모델 합의를 이번 구현에서 진행하지 않았다.
+
+## 독립 리뷰 1차 CHANGES → 반영
+
+owner: Codex(구현 수정) · reviewer: Claude `74b576e2`(사용자가 전달한 독립 리뷰) · status: 검토 요청 · updated: 2026-11-17
+
+대상은 코드 `f7be9bb3`·문서 `261dcc12`에 dev를 합친 `e66748a0`의 작업 트리다. 시작 시 미커밋 변경이 없음을 확인했다. 사용자 요청에 따라 중간 1건·낮음 5건을 모두 반영했으며, 수정분의 독립 재확인/PASS 응답은 아직 받지 않았다. 커밋·push·브랜치 변경·guard 실행/기록 쓰기는 하지 않았다.
+
+### 변경 경로와 판단
+
+| 지적 | 반영 내용 | 시험 (`Q` = `backend/tests/test_hf_org_usage_quota.py`) |
+| --- | --- | --- |
+| 1 중간 | 풀의 API 기관측 job을 신원 검사보다 먼저 건너뛴다. 개인 조회의 소유자 충돌 검사는 유지한다. API 출처에서는 제외 대상을 "API 미매칭 MV 기록 · 사용 합계에 미포함"으로 명시한다. | `Q::test_valid_pool_does_not_add_unlinked_member_facts[1.25]`, `[9]`; 기존 `test_pending_conflicting_actor_and_duplicate_jobs`; 프런트 `workspaceUsageDashboardFetch.test.tsx::풀 머리글과 미확인 안내가 %s 출처를 따른다`의 api 변형 |
+| 2 낮음 | 프로젝트 역할/메인 전체 계정으로 보강되는 이메일을 설정 계산에 전달한다. 설정 멤버와 같은 `CreditUsageSnapshot`으로 계산하며 편집용 `members`에는 추가하지 않는다. 내부 추가 사용량 사전은 응답 전에 꺼내고, 계산값 없는 행을 가짜 0으로 채우지 않는다. | `Q::test_member_table_extra_accounts_share_usage_snapshot[project-api]`, `[project-facts]`, `[main-api]`, `[main-facts]` |
+| 3 낮음 | `pending_count`는 최근 60분 내 금액이 있는 견적 건수와 일치시킨다. 타일도 `estimated_count`를 써서 옛 포괄적인 pending 값과 섞이지 않는다. 오래된 미매칭을 따로 표시하고, 그 외 미확인 수는 `unknown_count - overdue_pending_count`로 표시한다(응답의 기존 unknown 총수는 보존). | `Q::test_pending_count_only_includes_recent_known_estimates`; `frontend/tests/myUsageWindow.test.tsx::renders the selected tiles, all source amounts, refunds and pending estimates`; `shows zero pending estimates when only old unmatched records remain` |
+| 4 낮음 | D2의 짧은 꼬리는 연속 커버 끝과 **지금** 사이가 60분 이내인 경우만 허용한다. 끝난 범위가 완전히 덮이면 현재 시각과 무관하게 API이며, 덜 덮인 과거 범위는 `collection_stale`로 대체한다. | `Q::test_closed_range_requires_complete_coverage_when_not_recent` 7변형(지금까지 60분 정확 경계, 경계 초과, 당일 15시·전일 23:30 종료, 과거 완전 커버); 기존 `test_tail_midnight_and_first_day` |
+| 5 낮음 | 풀 머리글은 api/facts/mixed 출처를 따른다. 출처 없는 구서버의 풀 사용 라벨 `(팀 기록 장부)`·멤버 안내 `팀 기록 장부 기준`을 복원하고, 새 출처 안내는 출처가 있을 때만 표시한다. 새 문구는 기존 i18n 사전에 등록한다. | `frontend/tests/workspaceUsageDashboardFetch.test.tsx::풀 머리글과 미확인 안내가 %s 출처를 따른다` 4변형; `멤버 카드의 출처 안내는 신서버=%s 계약을 따른다` 2변형; 개인 창 영어 사전 시험 |
+| 6 낮음/미확인 | 계정·링크를 actor 사전으로 한 번 묶어 판정하고 이메일 판정도 요청당 저장한다. 행별 `identity`·`unlinked_api`에서 전체 계정/링크 목록을 다시 훑지 않는다. 공통 판정 함수의 충돌·미승인·합성 uid 처리는 유지한다. | `Q::test_indexed_identity_matches_shared_rules`; `Q::test_performance_6000_rows_eight_spaces_query_count`; 기존 `test_identity_never_discloses_other_actor` 5변형 |
+
+1번 고정본은 `b@x.creator_uid=NULL`, API `generation_id=g1`·1.25, 동일 job의 MV 팩트다. 풀은 `used_month=1.25`, `unknown_month=0`, `unlinked_api=1.25`이고 `console_limits(detail=True)`·`_sub_summary`도 `used_cycle=1.25`, `unknown_cycle=0`이다. API에 없는 미연결 job을 하나 더 넣으면 풀 금액은 그대로, unknown만 1이다. 개인의 충돌 기록을 풀 규칙으로 숨기지 않는다.
+
+touched_paths (새 파일 없음):
+
+- `backend/app/repo/hf_org_usage.py`: 풀 중복 방지·견적 수·최근 꼬리·신원 사전.
+- `backend/app/repo/manage_credit_plan.py`: 추가 행의 사용량을 기존 설정 스냅샷에서 계산.
+- `backend/app/repo/manage_member_table.py`: 필요한 추가 이메일 전달·사용량 복사·가짜 0 제거.
+- `backend/tests/test_hf_org_usage_quota.py`: 재현·경계·동일 스냅샷·신원 차등·60계정 성능 고정본.
+- `frontend/src/components/MyUsageWindow.tsx`: 타일 건수와 오래된 미매칭/미확인 분리.
+- `frontend/src/components/manage/CreditPoolSection.tsx`: 출처별/구서버 문구.
+- `frontend/src/lib/i18n.ts`: 새 문구 영어 매핑.
+- `frontend/tests/myUsageWindow.test.tsx`, `frontend/tests/workspaceUsageDashboardFetch.test.tsx`: 개인 창·출처·구서버 회귀.
+- `docs/status/hf_org_usage_phase2_2026-11-17.md`: 이 반영·측정·검증 기록.
+
+### 실행 명령과 결과
+
+Python은 모두 `D:\ClaudeCode\MV-hub-S-dev\.venv\Scripts\python.exe`, 작업 위치는 이 작업실 `backend`다. 환경은 `CONTENT_HUB_NO_PROXY=1`, `PYTHONDONTWRITEBYTECODE=1`이고 각 실행마다 `Join-Path $env:TEMP ('pt_hf2_review_'+[guid]::NewGuid().ToString('N'))` 형태의 새 basetemp를 지정했다. 실데이터·실제 API/CLI·공유 서버를 사용하지 않았다.
+
+```powershell
+$env:CONTENT_HUB_NO_PROXY = '1'
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$testRoot = Join-Path $env:TEMP ('pt_hf2_review_'+[guid]::NewGuid().ToString('N'))
+& 'D:\ClaudeCode\MV-hub-S-dev\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider --basetemp $testRoot `
+  tests/test_hf_org_usage_quota.py tests/test_manage_my_quota.py tests/test_credit_quota_advisory.py `
+  tests/test_credit_plan.py tests/test_manage_member_table.py tests/test_workspace_console.py `
+  tests/test_hf_org_usage_comparison.py tests/test_hf_org_usage_repository.py tests/test_hf_org_usage_identity.py `
+  tests/test_proxy_ownership.py tests/test_schema_compat.py tests/test_manage_edit_conflicts.py tests/test_architecture_boundaries.py
+```
+
+- 관련 묶음: **284 통과·0 실패·0 건너뜀, 하위 시험 13 통과**, 82.22초. 이후 제품 변경 없이 콘솔 직접 소비 검증/1.25 변형과 60명 관리 표 단언을 시험에 보강했다. 최종 `tests/test_hf_org_usage_quota.py` 전체 **62 통과**, 23.43초로 재확인했다. 이전 Q 61개를 대체하므로 서로 다른 관련 백엔드 시험은 **285개**이며, 실행 수를 단순 합산하지 않는다.
+- 수정 전 재현: `Q -k 'closed_range_requires or pending_count_only or valid_pool_does or member_table_extra'`는 **8 실패·3 통과·47 제외**였다. 초기 성능 고정본의 잘못된 link 상태(`linked`)는 실제 스키마의 `verified`로 바로잡았다. 후속 콘솔 시험의 전환 표식 누락 2실패도 고정본에 표식을 넣은 뒤 **2통과**로 재확인했다. 제품/DB 스키마를 시험에 맞춰 바꾸지 않았다.
+
+```powershell
+npm.cmd --prefix D:\ClaudeCode\work\hf-org-usage-p2\frontend test -- --run `
+  tests/myUsageWindow.test.tsx tests/myCreditQuota.test.ts tests/myCreditQuotaHook.test.tsx `
+  tests/accountMenuCredits.test.tsx tests/creditPlan.test.ts tests/memberTable.test.tsx `
+  tests/workspaceUsageDashboardFetch.test.tsx tests/workspaceConsole.test.ts `
+  tests/consoleSubViewReload.test.tsx tests/consoleRolesLock.test.tsx tests/consolePeriodDialog.test.tsx `
+  tests/workspaceConsoleSync.test.tsx tests/workspaceConsoleEditBase.test.tsx --configLoader runner --cache=false
+npm.cmd --prefix D:\ClaudeCode\work\hf-org-usage-p2\frontend run lint:architecture
+npm.cmd --prefix D:\ClaudeCode\work\hf-org-usage-p2\frontend run build -- --configLoader runner
+```
+
+- 프런트: **13파일·170 통과·0 실패·0 건너뜀**, 4.14초. 경계 검사 종료 코드 0, 빌드 종료 코드 0(Vite 5.32초). 기존 500 kB 초과 번들 안내는 남는다. 초기 프런트 명령에는 존재하지 않는 필터 이름이 섞여 실제 8파일·144개만 실행됐고, 위 실제 파일 이름의 명령으로 보완했다.
+- 루트에서 지정 Python의 `tools\gen_inventory.py --check`, `tools\check_code_map.py`: 종료 코드 0. 코드 지도 누락/허구 파일 0. 새 엔드포인트·환경변수·백그라운드 작업·DB/스키마 변경이 없어 생성 목록 수정은 없었다.
+- `git diff --check`: 종료 코드 0. CRLF 정규화 안내는 내용 오류와 구별했다.
+- 사용자 지시로 이번에는 백엔드 전체 시험을 실행하지 않았다. 앞 절의 58분 결과는 이전 구현 시점의 기록이며 이번 수정의 전체 회귀 결과가 아니다.
+
+### 60계정 성능 전후
+
+최종 고정본은 계정 60·연결 60·관리 표의 실제 멤버 60·월 내 API 6,000행·8공간·선택 범위 밖 과거 창이다. 그 뒤 미등록 배정 40개를 더해 SQL 증가 여부도 확인한다. 단건 응답 122,184바이트, 8요청 합계 136,297바이트다.
+
+| 동일 고정본의 실행 | 관리 표 60명 | 배정 40개 추가 후 | 실제 ASGI GET 8개 | 단건 SQL (manage/content) | 8요청 SQL (manage/content) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| HEAD의 기존 `CreditUsageSnapshot` | 0.0397초 | 0.0401초 | 0.2809초 | 69 (12/57) | 552 (96/456) |
+| 수정 `CreditUsageSnapshot` | 0.0360초 | 0.0372초 | 0.2765초 | 69 (12/57) | 552 (96/456) |
+
+기존 스냅샷 비교는 파일을 되돌리지 않고 `git show HEAD:backend/app/repo/hf_org_usage.py`를 메모리 모듈로 읽어, fixture 설정 뒤 pytest hook에서 해당 클래스만 교체한 1개 시험이다(1통과). 현재 관리 표/설정 코드와 새 고정본을 고정한 **스냅샷 구현 비교**이며 전체 이전 커밋과 전체 현재 코드의 벤치마크라고 주장하지 않는다. 두 DB 추적과 ASGI 클라이언트 생성/종료 시간이 포함된 각 1회 표본이므로 이 작은 차이를 성능 향상 보증으로 해석하지 않는다.
+
+기존 코드 전체가 그대로였던 최초 측정도 60계정·60연결·6,000행·8공간에서 단건 0.0291초/배정 추가 후 0.0319초/8요청 0.3006초, SQL 69/552였다. 다만 그 당시 관리 표 등록 멤버는 2명이라 위의 60명 직접 비교와 구분한다. 초기 비교 실행 하나는 pytest fixture 전에 앱을 import해서 콘텐츠 연결 추적이 빠졌으므로(0회) 표에서 제외하고, fixture 이후 클래스 교체로 두 DB 추적 57/456회를 확인한 결과만 채택했다.
+
+실제 EXPLAIN은 snapshot의 `idx_hf_org_workspace_actor`, 후보 job의 `idx_hf_org_generation`→창 PK, 대조 창의 org/start 색인을 유지했다. 새 색인·스키마를 추가하지 않았다. 요청 내 신원 사전은 계정·링크·서로 다른 actor 수만큼 만들며 행에서 읽을 때 계정 수만큼 다시 순회하지 않는다. 전체 집계가 모든 축에서 O(행)이라고 범위를 넓혀 주장하지 않는다.
+
+### 자체 검토와 인계
+
+미연결 API 관측은 풀에서만 우선 제외하고 개인의 상충 소유자 검증을 유지하는지, 추가 사용량 사전이 편집용 멤버/HTTP credit에 노출되지 않는지, 두 DB 관측 시각·반올림 전 합·facts 차등이 유지되는지 확인했다. 60분 정확 경계/초과·과거 완전 커버와 부분 커버·견적 0건/오래된 기록만 있는 화면·출처 없는 구서버를 관련 시험으로 재확인했다. 스키마·`release/compatibility.json`·junction 의존성은 변경하지 않았다.
+
+리뷰어는 1번의 풀/개인 분기와 2번의 내부 추가 사용량 전달, 4번의 현재 시각 기준을 수정분 위주로 재확인하면 된다. 실제 브라우저 시각 확인·수정 후 독립 리뷰·샌드박스 밖 전체 회귀는 미확인이다. graft는 앞서 실행 정책에 차단된 범위를 이번에 재시도하지 않았다.
+
+프로젝트 문서: 리뷰 6건의 반영·시험·성능·미확인을 이 절에 남겼다.
+기억: 없음. 개인 설정/기억 변경은 없다.
+볼트: 없음. 프로젝트를 지워도 유지할 별도 지식 기록 대상은 없다.

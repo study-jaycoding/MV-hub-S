@@ -158,6 +158,52 @@ def test_tail_midnight_and_first_day(usage_world,monkeypatch):
     assert read(start=ms('2026-02-01T00:00:00+09:00'))['basis_reason']=='before_api_start'
 
 
+@pytest.mark.parametrize('minutes_after_end,missing_minutes,expected',[
+    (5,30,'api'), (30,30,'api'), (31,30,'facts'), (60,30,'facts'),
+    (61,30,'facts'), (15*60,30,'facts'), (15*60,0,'api'),
+])
+def test_closed_range_requires_complete_coverage_when_not_recent(usage_world,monkeypatch,minutes_after_end,missing_minutes,expected):
+    end=START+repo.DAY_MS
+    monkeypatch.setattr(repo,'now_ms',lambda:end+minutes_after_end*60000)
+    store_day(end=end-missing_minutes*60000)
+    result=read(end=end)
+    assert result['basis']==expected
+    assert result['basis_reason']==('collection_stale' if expected=='facts' else None)
+
+
+def test_pending_count_only_includes_recent_known_estimates(usage_world):
+    good_days()
+    fact('recent',job='recent',age=60,real_credits=3)
+    fact('old',job='old',age=61)
+    fact('noamount',job='noamount',real_credits=None,est_credits=None)
+    fact('nojob',job=None)
+    result=read()
+    assert result['pending_count']==result['estimated_count']==1
+    assert result['overdue_pending_count']==1 and result['unknown_count']==3
+    assert result['used_estimated']==3
+
+
+def test_indexed_identity_matches_shared_rules(usage_world):
+    with db.get_connection() as conn:
+        for name,actor,status in [('copy','uid-a','approved'),('local','local','approved'),
+                                  ('synthetic','acct:s@x','approved'),('unlinked',None,'approved'),
+                                  ('rejected','uid-r','rejected'),('mismatch','uid-m','approved')]:
+            conn.execute("INSERT INTO account(email,password_hash,status,creator_uid) VALUES(?,'h',?,?)",(name+'@x',status,actor))
+    with manage_db.get_connection() as conn:
+        conn.executemany("INSERT INTO hf_org_identity_link(org_id,actor_user_id,state,account_email) VALUES(?,?,?,?)",
+                         [(ORG,'uid-b','conflict','b@x'),(ORG,'uid-m','stale','other@x')])
+    good_days([api_row('orphan',actor_user_id='orphan')])
+    with db.get_connection() as conn:
+        snapshot=repo.CreditUsageSnapshot(conn,['ws'],START,START+7*repo.DAY_MS)
+    for actor,resolution in snapshot.actor_identities.items():
+        assert resolution==repo.actor_identity(actor,snapshot.accounts,snapshot.links)
+    for account in snapshot.accounts:
+        actor,reason=snapshot.identity(account['email'])
+        assert actor==account['creator_uid']
+        assert reason==repo.actor_identity(actor,snapshot.accounts,snapshot.links)[1]
+    assert snapshot.identity('absent@x')==(None,'identity_unlinked')
+
+
 def test_pending_arrival_cross_space_period_exact_and_overdue(usage_world):
     good_days([api_row(generation_id='arrived')])
     fact('arrived',job='arrived')
@@ -262,12 +308,21 @@ def test_performance_6000_rows_eight_spaces_query_count(usage_world,monkeypatch,
     from contextlib import contextmanager
     spaces=['ws','other',*[f'w{i}' for i in range(6)]]
     with db.get_connection() as conn:
+        for i in range(58):
+            conn.execute('INSERT INTO creator(uid,name) VALUES(?,?)',(f'uid-team{i}',f'Team {i}'))
+            conn.execute("INSERT INTO account(email,password_hash,status,creator_uid) VALUES(?,'h','approved',?)",(f'team{i}@x',f'uid-team{i}'))
+            conn.execute("INSERT INTO workspace_member(workspace_id,account_email,creator_uid,is_available) VALUES('ws',?,?,1)",(f'team{i}@x',f'uid-team{i}'))
+            conn.execute("INSERT INTO workspace_credit_group_member(workspace_id,account_email,group_id) VALUES('ws',?,'g')",(f'team{i}@x',))
         for w in spaces[2:]:
             conn.execute('INSERT INTO workspace_registry(id,name) VALUES(?,?)',(w,w))
             conn.execute("INSERT INTO workspace_member(workspace_id,account_email,is_available) VALUES(?,'a@x',1)",(w,))
+    actors=['uid-a','uid-b',*[f'uid-team{i}' for i in range(58)]]
+    with manage_db.get_connection() as conn:
+        conn.executemany("INSERT INTO hf_org_identity_link(org_id,actor_user_id,state,account_email) VALUES(?,?,'verified',?)",
+                         [(ORG,actor,email) for actor,email in zip(actors,['a@x','b@x',*[f'team{i}@x' for i in range(58)]])])
     for i in range(16):
         start=START-(15-i)*repo.DAY_MS
-        store_day(start,[api_row(f'{i}-{j}',workspace_id=spaces[j%8],actor_user_id='uid-a' if j%2 else 'uid-b',generation_id=f'job-{i}-{j}',credits_c=1) for j in range(375)])
+        store_day(start,[api_row(f'{i}-{j}',workspace_id=spaces[j%8],actor_user_id=actors[(i*375+j)%60],generation_id=f'job-{i}-{j}',credits_c=1) for j in range(375)])
     store_day(START+repo.DAY_MS)
     store_day(START-40*repo.DAY_MS,[api_row('historic',credits_c=999999)])
     original=manage_db.get_connection
@@ -288,6 +343,7 @@ def test_performance_6000_rows_eight_spaces_query_count(usage_world,monkeypatch,
     monkeypatch.setattr(manage_db,'get_connection',traced)
     start=time.perf_counter()
     table=member_table('ws',with_credit=True)
+    assert len(table['rows'])==60
     table_seconds=time.perf_counter()-start
     baseline=len(statements)
     baseline_content=len(content_statements)
@@ -328,7 +384,8 @@ def test_performance_6000_rows_eight_spaces_query_count(usage_world,monkeypatch,
                              ('pending_jobs','SELECT r.generation_id,r.actor_user_id FROM')):
             actual_query=next(q for q in statements if q.startswith(prefix))
             plans[label]=[tuple(r) for r in conn.execute('EXPLAIN QUERY PLAN '+actual_query)]
-    evidence=dict(sql_count=baseline+baseline_content,manage_sql_count=baseline,content_sql_count=baseline_content,
+    evidence=dict(accounts=60,identity_links=60,api_rows=6000,spaces=8,
+                  sql_count=baseline+baseline_content,manage_sql_count=baseline,content_sql_count=baseline_content,
                   table_seconds=round(table_seconds,4),expanded_table_seconds=round(expanded_seconds,4),
                   response_bytes=len(responses[0].content),
                   main_requests=8,main_sql_count=main_sql+main_content_sql,main_manage_sql_count=main_sql,
@@ -422,16 +479,63 @@ def test_facts_group_sums_before_display_rounding(usage_world):
     assert plan.get_settings('ws')['groups'][0]['used_period']==.36
 
 
-def test_valid_pool_does_not_add_unlinked_member_facts(usage_world):
+@pytest.mark.parametrize('fact_amount',[1.25,9])
+def test_valid_pool_does_not_add_unlinked_member_facts(usage_world,fact_amount):
+    from app.repo import workspace_console as console
     for offset in range(-15,2):
-        store_day(START+offset*repo.DAY_MS,[api_row('unlinked',actor_user_id='orphan')] if offset==1 else [])
+        store_day(START+offset*repo.DAY_MS,[api_row('unlinked',actor_user_id='uid-b',generation_id='g1')] if offset==1 else [])
     with db.get_connection() as conn:
         conn.execute("UPDATE account SET creator_uid=NULL WHERE email='b@x'")
-    fact('b',email='b@x',real_credits=9)
+    fact('b',email='b@x',job='g1',real_credits=fact_amount)
     result=plan.plan_view('ws')
     assert result['pool']['month_usage']['basis']=='api' and result['pool']['used_month']==1.25
     assert result['pool']['month_usage']['unlinked_api']==1.25
-    assert result['groups'][0]['period_usage']['basis']=='mixed' and result['groups'][0]['used_period']==9
+    assert result['pool']['unknown_month']==0
+    assert result['groups'][0]['period_usage']['basis']=='mixed' and result['groups'][0]['used_period']==fact_amount
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO workspace_console(workspace_id,tier) VALUES('ws','sub')")
+        conn.execute("INSERT INTO manage_schema_state(key,value) VALUES(?,'complete')",(console._RECURRING_COPY_KEY,))
+        limit=console.console_limits(conn,['ws'],detail=True)['ws']
+    summary=console._sub_summary({'id':'ws','name':'WS'},'2026-11-17','2026-12-17',0,0)
+    for consumer in (limit,summary):
+        assert consumer['used_cycle']==1.25 and consumer['unknown_cycle']==0
+    fact('b-unobserved',email='b@x',job='unobserved',real_credits=4)
+    result=plan.plan_view('ws')
+    assert result['pool']['used_month']==1.25 and result['pool']['unknown_month']==1
+
+
+@pytest.mark.parametrize('basis',['api','facts'])
+@pytest.mark.parametrize('extra_kind',['project','main'])
+def test_member_table_extra_accounts_share_usage_snapshot(usage_world,monkeypatch,basis,extra_kind):
+    for offset in range(-15,2):
+        store_day(START+offset*repo.DAY_MS,[api_row('b',actor_user_id='uid-b',generation_id='g1')] if offset==1 else [])
+    fact('b',email='b@x',job='g1',real_credits=1.25)
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM workspace_member WHERE account_email='b@x'")
+        conn.execute("DELETE FROM workspace_credit_group_member WHERE account_email='b@x'")
+        if extra_kind=='project':
+            conn.execute("INSERT INTO project(id,name,kind,workspace_scope,workspace_id) VALUES('p','P','team','team','ws')")
+            conn.execute("INSERT INTO project_member(project_id,creator_uid,project_role) VALUES('p','uid-b','creator')")
+        else:
+            conn.execute("INSERT INTO workspace_console(workspace_id,tier) VALUES('ws','main')")
+    if basis=='facts':
+        with manage_db.get_connection() as conn:
+            conn.execute('UPDATE hf_org_usage_config SET enabled=0')
+    snapshots=[]
+    original=plan.usage_snapshot
+    def traced(*args,**kwargs):
+        snapshot=original(*args,**kwargs)
+        snapshots.append(snapshot)
+        return snapshot
+    monkeypatch.setattr(plan,'usage_snapshot',traced)
+    table=member_table('ws',with_credit=True)
+    assert len(snapshots)==1
+    usage=next(r['usage'] for r in table['rows'] if r['email']=='b@x')
+    assert usage['credits']==1.25 and usage['basis']==basis
+    assert usage['period_start_ms']==ms('2026-11-01T00:00:00+09:00')
+    assert 'b@x' not in {m['email'] for m in table['credit']['members']}
+    assert 'account_usage' not in table['credit']
+    assert plan.plan_view('ws')['unassigned']['used_month']==usage['credits']
 
 
 def test_old_hub_middleware_relays_new_unknown_route(usage_world,monkeypatch):

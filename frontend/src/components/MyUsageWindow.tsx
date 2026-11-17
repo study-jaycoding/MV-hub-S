@@ -31,12 +31,13 @@ export function MyUsageWindow({ workspaceId, accountKey, onClose }: { workspaceI
         <UsageBasis value={value} />
         {api ? <>
           <div className="my-usage-tiles">
-            {[[t("실제 사용 · 환불 뺀 값"), formatCredits(value.used_real)], [t("환불된 크레딧"), formatCredits(value.refunded)], [t("생성 수"), value.generation_count], [t("집계 전"), value.pending_count]].map(([label, amount]) => <div key={label}><strong>{amount}</strong><span>{label}</span></div>)}
+            {[[t("실제 사용 · 환불 뺀 값"), formatCredits(value.used_real)], [t("환불된 크레딧"), formatCredits(value.refunded)], [t("생성 수"), value.generation_count], [t("집계 전"), value.estimated_count]].map(([label, amount]) => <div key={label}><strong>{amount}</strong><span>{label}</span></div>)}
           </div>
           {value.failed_refunded_count ? <p>{t("오류 보고 후 전액 환불 {count}건").replace("{count}", String(value.failed_refunded_count))}</p> : null}
           {value.failed_count ? <p>{t("오류 보고 {count}건 · 순값이 남은 행도 포함").replace("{count}", String(value.failed_count))}</p> : null}
           {(value.estimated_count ?? 0) > 0 && <p>≈ {formatCredits(value.used_estimated)} · {t("집계 전 {count}건").replace("{count}", String(value.estimated_count))}</p>}
-          {(value.unknown_count ?? 0) > 0 && <p>{t("미확인 {count}건").replace("{count}", String(value.unknown_count))} · {t("60분 초과 {count}건").replace("{count}", String(value.overdue_pending_count))}</p>}
+          {(value.overdue_pending_count ?? 0) > 0 && <p>{t("오래된 미매칭 {count}건 (60분 초과)").replace("{count}", String(value.overdue_pending_count))}</p>}
+          {(value.unknown_count ?? 0) > (value.overdue_pending_count ?? 0) && <p>{t("미확인 {count}건").replace("{count}", String((value.unknown_count ?? 0) - (value.overdue_pending_count ?? 0)))}</p>}
           <section aria-label={t("만든 곳")} className="my-usage-bars">{value.sources.map(s => <div key={s.source}><span>{t(SOURCES[s.source] ?? "기타")}</span><div className="track"><i style={{ width: `${Math.abs(s.net) / max * 100}%` }} /></div><b>{formatCredits(s.net)}</b></div>)}</section>
           <p className="my-usage-note">{t("MV 기록에는 동기화로 가져온 기록도 포함될 수 있습니다")}</p>
           {value.truncated && <p>{t("최근 1,000건 표시 · 합계는 전체")}</p>}

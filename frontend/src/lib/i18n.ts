@@ -54,6 +54,7 @@ const EN: Record<string, string> = {
   "오류 보고 {count}건 · 순값이 남은 행도 포함": "{count} reported errors, including rows with remaining net usage",
   "집계 전 {count}건": "{count} pending collection",
   "미확인 {count}건": "{count} unconfirmed",
+  "오래된 미매칭 {count}건 (60분 초과)": "{count} old unmatched records (over 60 minutes)",
   "60분 초과 {count}건": "{count} older than 60 minutes",
   "만든 곳": "Source",
   "MV에서 만듦 · 기록 기준": "Made in MV, by record",
@@ -64,6 +65,10 @@ const EN: Record<string, string> = {
   "대체 사용 합계": "Fallback usage total",
   "API 내역은 확인할 수 없습니다": "API details unavailable",
   "사용량 출처는 위 기간별 표시를 따릅니다": "Usage follows the basis shown for each period",
+  "잔액은 힉스필드 보고": "Balance reported by Higgsfield",
+  "팀 기록 장부": "Team record ledger",
+  "팀 기록 장부 기준": "Based on the team record ledger",
+  "API 미매칭 MV 기록 {count}건 · 사용 합계에 미포함": "{count} MV records unmatched in the API; not included in usage totals",
   "미연결 API 사용": "Unlinked API usage",
   "생성 기록 분석 · 프로젝트·모델 차트는 MV 기록 기준": "Generation analysis and project/model charts use MV records",
 

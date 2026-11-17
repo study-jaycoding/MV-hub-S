@@ -28,7 +28,6 @@ def _real_uid(uid: Optional[str]) -> Optional[str]:
 def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str, Any]:
     """workspace_id 가 있으면 그 워크스페이스 멤버(+그룹 배정만 남은 이메일 · 메인이면 나머지 가입 계정도), 없으면 숨기지 않은 전체 계정.
     with_credit=False 면 그룹 설정 원문(credit)은 주지 않는다(줄의 group_id 는 준다)."""
-    settings = credit_plan.get_settings(workspace_id) if workspace_id else None
     with get_connection() as conn:
         _ensure_schema(conn)
         accounts = {
@@ -107,6 +106,9 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                 active_ids,
             ).fetchall():
                 roles_by_uid.setdefault(r["creator_uid"], {})[r["project_id"]] = rbac.parse_project_roles(r["project_role"])
+    extra_usage_emails = tuple(a['email'] for a in accounts.values()
+                              if not a['hidden'] and (main_row or _real_uid(a['creator_uid']) in roles_by_uid))
+    settings = credit_plan.get_settings(workspace_id, extra_usage_emails=extra_usage_emails) if workspace_id else None
     seen = {r["email"]: r for r in seen_rows}
     linked: dict[str, int] = {}
     for a in accounts.values():
@@ -116,7 +118,7 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
     plans = {norm_email(email): (st or {}).get("plan") for email, st in identity.list_account_statuses().items()}
     usage: dict[str, dict[str, float]] = {}
     if settings:
-        usage = {m['email']: m['usage'] for m in settings['members']}
+        usage = {**settings.pop('account_usage', {}), **{m['email']: m['usage'] for m in settings['members']}}
 
     if settings:
         base = list(settings["members"])
@@ -190,7 +192,7 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
                 "usage": (
                     dict(used)
                     if used
-                    else ({"credits": 0, "count": 0, "unknown": 0} if settings else None)
+                    else None
                 ),
             }
         )

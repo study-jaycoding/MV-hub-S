@@ -453,12 +453,12 @@ def _group_summary(
 
 
 # ── 설정(매니저) ───────────────────────────────────────────────────────────────
-def get_settings(workspace_id: str) -> dict[str, Any]:
+def get_settings(workspace_id: str, *, extra_usage_emails=()) -> dict[str, Any]:
     """프로젝트 설정 창용 — 플랜·그룹(현재 남은 양 포함)·멤버(이메일 기준, 접근 불가·과거 배정도 포함)·긴급 충전 기록."""
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN")
-        return _get_settings(conn, workspace_id)
+        return _get_settings(conn, workspace_id, extra_usage_emails=extra_usage_emails)
 
 
 def settings_conflict_detail(workspace_id: str, expected_revision: int) -> dict[str, Any]:
@@ -472,7 +472,7 @@ def settings_conflict_detail(workspace_id: str, expected_revision: int) -> dict[
         )
 
 
-def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
+def _get_settings(conn, workspace_id: str, *, extra_usage_emails=()) -> dict[str, Any]:
     """All editable fields share the caller's snapshot; usage lives in a separate DB."""
     today = today_local()
     plan, groups, members, topups, quotas = _load(conn, workspace_id)
@@ -529,7 +529,14 @@ def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
     for email, gid in sorted(assigned.items()):
         if email not in seen:  # 등록부에서 사라진 과거 배정 — 화면에 남겨 전체 교체 때 지워지지 않게(코덱스 P2)
             member_list.append(_member_row(email, None, None, False))
+    account_usage = {}
+    if extra_usage_emails:
+        # Extra table rows share this snapshot without entering the editable member register.
+        listed = {m['email'] for m in member_list}
+        account_usage = {email: _member_row(email, None, None, False)['usage']
+                         for email in extra_usage_emails if email not in listed}
     return {
+        **({'account_usage': account_usage} if extra_usage_emails else {}),
         "workspace_id": workspace_id,
         "month": today[:7],
         "today": today,
