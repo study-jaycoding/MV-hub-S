@@ -873,7 +873,8 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
         conn.execute("BEGIN")
         plan, groups, members, topups, quotas = _load(conn, workspace_id)
         monthly_topup = _monthly_budget(conn, workspace_id) if viewer is None else None
-        ws = _workspace_row(conn, workspace_id)
+        from .hf_balance import balance_snapshot, observed_iso
+        balance = balance_snapshot(conn, [workspace_id])[workspace_id]
         available = {
             r["account_email"]
             for r in conn.execute(
@@ -953,8 +954,9 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             "used_month": _shown(used_month),
             "unknown_month": unknown_month,
             "month_usage": {**usage_metadata(month_usage), "unlinked_api": month_usage.get("unlinked_api")},
-            "balance": ws["credits"] if ws else None,
-            "balance_seen_at": ws["last_seen_at"] if ws else None,
+            "balance": balance['credits'],
+            "balance_seen_at": observed_iso(balance),
+            "balance_meta": balance,
             # 월초 잔액 = 이번 충전 달 첫 관측일의 **첫** 관측값(같은 날 후속 보고로 안 바뀜 — 코덱스 P2). 관측이 없으면 None.
             "month_start_balance": first_in_cycle["first_credits"] if first_in_cycle else None,
             "month_start_day": first_in_cycle["day"] if first_in_cycle else None,
@@ -972,6 +974,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             for t in recent_topups
         ],
         "history": [{"day": h["day"], "credits": h["credits"]} for h in history],
+        "history_basis": "daily_compatibility",
     }
 
 

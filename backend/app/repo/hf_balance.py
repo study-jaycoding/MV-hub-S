@@ -7,7 +7,67 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .. import db_hf_balance
-from ..hf_balance_contract import FIELDS, normalize, payload_hash, validate_batch
+from ..hf_balance_contract import FIELDS, amount, normalize, payload_hash, validate_batch
+
+
+def observed_iso(view):
+    at = view['observed_at_ms']
+    return datetime.fromtimestamp(at / 1000, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z') if at is not None else None
+
+
+def balance_snapshot(conn, workspace_ids, as_of_ms=None):
+    """Public, reporter-free views. Caller owns the content read transaction."""
+    if not conn.in_transaction:
+        conn.execute('BEGIN')
+    at = int(time.time() * 1000) if as_of_ms is None else as_of_ms
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='hf_balance_obs'").fetchone()
+    views = {}
+    for wid in dict.fromkeys(workspace_ids):
+        row = latest(conn, wid) if exists else None
+        view = dict(workspace_id=wid, credits_c=None, credits=None, observation_id=None, source=None,
+                    basis='unavailable', observed_at_ms=None, received_at_ms=None, time_basis='received',
+                    time_quality='unavailable', precision_kind=None, precision_error_c=None,
+                    age_ms=None, stale=True, reason_codes=[])
+        if row and row['basis'] == 'observed':
+            for key in ('credits_c', 'observation_id', 'source', 'basis', 'observed_at_ms', 'received_at_ms',
+                        'time_quality', 'precision_kind', 'precision_error_c'):
+                view[key] = row[key]
+            age = max(0, at - row['observed_at_ms'])
+            view.update(time_basis='agent', age_ms=age, stale=age > 900000)
+            if view['stale']:
+                view['reason_codes'].append('stale_observation')
+            if row['precision_error_c'] is None:
+                view['reason_codes'].append('precision_unknown')
+        elif row:
+            view.update(basis='conflict', time_quality='conflict', reason_codes=['simultaneous_conflict'])
+        else:
+            legacy = conn.execute('SELECT credits,last_seen_at FROM workspace_registry WHERE id=?', (wid,)).fetchone()
+            try:
+                cents = amount(legacy['credits'])[0] if legacy else None
+            except ValueError:
+                cents = None
+            if cents is not None:
+                view.update(credits_c=cents, basis='legacy_snapshot', time_quality='legacy', reason_codes=['legacy_snapshot'])
+                try:
+                    received = datetime.fromisoformat(legacy['last_seen_at'].replace('Z', '+00:00'))
+                    view['received_at_ms'] = int((received if received.tzinfo else received.replace(tzinfo=timezone.utc)).timestamp() * 1000)
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            else:
+                view['reason_codes'] = ['no_observation']
+        view['credits'] = view['credits_c'] / 100 if view['credits_c'] is not None else None
+        views[wid] = view
+    return views
+
+
+def partial_totals(views):
+    views = list(views)
+    unknown = sum(v['credits_c'] is None for v in views)
+    legacy = sum(v['basis'] == 'legacy_snapshot' for v in views)
+    stale = sum(v['basis'] == 'observed' and v['stale'] for v in views)
+    return dict(known_subtotal_c=sum(v['credits_c'] for v in views if v['credits_c'] is not None),
+                unknown_workspace_count=unknown, legacy_workspace_count=legacy, stale_workspace_count=stale,
+                complete=unknown == 0, fresh=unknown == 0 and legacy == 0 and stale == 0)
 
 
 def latest(conn, workspace_id):

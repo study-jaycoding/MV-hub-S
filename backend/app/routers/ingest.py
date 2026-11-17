@@ -295,11 +295,13 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: 
     balance_changes = []
     if account_status:
         if MANAGE_ENABLED and isinstance(account_status.get('balance_report'), dict):
+            from ..services.shared_connection import is_shared_team_server
             changed = repo.record_account_status(
                 acc["email"], account_status,
                 balance_target=_proxy.base_url() if _proxy.proxying() else None,
                 balance_receipt=balance_receipt,
                 balance_changes=balance_changes,
+                balance_receiver='server' if is_shared_team_server() else 'hub',
             )
         else:
             changed = repo.record_account_status(acc["email"], account_status)
@@ -829,6 +831,8 @@ def my_hf_status(request: Request):
     '내 것'을 표시할 때 쓴다. 브라우저는 그 계정 CLI에 직접 접근 못 하므로 이 보고값이 유일한 출처.
     보고 이력 없으면 reported=false(에이전트 미연결 안내)."""
     acc = _agent_acc(request)
+    if _proxy.proxying():
+        return _proxy.proxy_get('/api/account/hf', request)
     st = repo.get_reported_status(acc["email"])
     if not st:
         return {
@@ -839,6 +843,8 @@ def my_hf_status(request: Request):
             "ffmpeg_h264": None,
             "workspaces": [],
         }
+    from ..usecases.hf_balance import account_workspaces
+    workspaces = account_workspaces(acc['email'], st.get('workspaces'))
     return {
         "reported": True,
         "credits": st.get("credits"),
@@ -847,7 +853,7 @@ def my_hf_status(request: Request):
         # 에이전트가 보고한 'Kling 영상 H.264 변환 가능' — 실제 bool 만, 옛 에이전트(보고 없음)는 null(false 와 구분). 안내·통계 전용.
         "ffmpeg_h264": st["ffmpeg_h264"] if isinstance(st.get("ffmpeg_h264"), bool) else None,
         "connected": st.get("connected"),
-        "workspaces": st.get("workspaces") or [],
+        "workspaces": workspaces,
     }
 
 

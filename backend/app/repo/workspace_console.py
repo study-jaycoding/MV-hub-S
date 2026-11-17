@@ -20,6 +20,7 @@ from .console_guard import (
 )
 from .event_journal import _record_audit_event, safe_identity
 from .manage_schema import _ensure_schema
+from .hf_balance import balance_snapshot, observed_iso, partial_totals
 
 _SEED_KEY = "workspace_console_seed_v1"
 _PROJECT_BACKFILL_KEY = "workspace_console_project_backfill_v1"
@@ -400,6 +401,7 @@ def _sub_summary(ws: dict[str, Any], today: str, horizon: str, reported: int, un
         "name": ws["name"],
         "balance": pool["balance"],
         "balance_seen_at": pool["balance_seen_at"],
+        "balance_meta": pool['balance_meta'],
         "first_seen_at": ws.get("first_seen_at"),  # 이 앱이 처음 본 날(힉스필드 생성일 대용)
         "used_all": credit_plan._shown(used_all),
         "monthly_topup": amount,
@@ -477,6 +479,7 @@ def console_limits(conn, workspace_ids: list[str], detail: bool = False) -> dict
     marks = ",".join("?" for _ in ids)
     reg = {r["id"]: r for r in conn.execute(f"SELECT id, name, credits, last_seen_at FROM workspace_registry WHERE id IN ({marks})", ids)}
     names = {wid: r["name"] for wid, r in reg.items()}
+    balances = balance_snapshot(conn, ids)
     plans = {r["workspace_id"]: dict(r) for r in conn.execute(f"SELECT * FROM workspace_credit_plan WHERE workspace_id IN ({marks})", ids)}
     shared = {
         r["workspace_id"]: r["n"]
@@ -501,8 +504,9 @@ def console_limits(conn, workspace_ids: list[str], detail: bool = False) -> dict
             "workspace_id": wid, "workspace_name": names.get(wid), "credits": credits, "period": period, "auto": auto,
             "anchor": anchor, "topup_day": credit_plan._plan_anchor(plan),
             # 서브스페이스 서브 표와 같은 '남은 크레딧 / 할당 크레딧 · 다음 할당일'(§16 후속) — 보고 잔액·다음 충전일(가벼운 계산)
-            "balance": reg[wid]["credits"] if wid in reg else None,
-            "balance_seen_at": reg[wid]["last_seen_at"] if wid in reg else None,
+            "balance": balances[wid]['credits'],
+            "balance_seen_at": observed_iso(balances[wid]),
+            "balance_meta": balances[wid],
             "next_topup_day": (lambda first: first[0] if first else None)(
                 _occurrences(today, "9999-12-31", period, anchor, credit_plan._plan_anchor(plan), limit=1)),
             "cycle_start": start, "cycle_end": end, "topups_cycle": int(topups or 0), "shared_projects": shared.get(wid, 0),
@@ -534,6 +538,7 @@ def overview(backfill_projects: bool = False) -> dict[str, Any]:
     with get_connection() as conn:
         _ensure_schema(conn)
         registry = {r["id"]: r for r in _named_registry(conn)}
+        balances = balance_snapshot(conn, registry)
         console = {
             r["workspace_id"]: dict(r)
             for r in conn.execute("SELECT workspace_id, tier, archived, alloc_base, alloc_base_day, status FROM workspace_console").fetchall()
@@ -576,15 +581,19 @@ def overview(backfill_projects: bool = False) -> dict[str, Any]:
          "status": console[wid]["status"] or "active", "projects": projects_by_ws.get(wid, [])}
         for wid in sorted(sub_ids, key=lambda w: (order_by_ws.get(w, 1 << 30), str(registry[w]["name"]).casefold()))
     ]
+    for sub in subs:
+        sub.update(balance=balances[sub['id']]['credits'], balance_seen_at=observed_iso(balances[sub['id']]),
+                   balance_meta=balances[sub['id']])
     linked = {wid for wid, c in console.items() if c["tier"] == "main" or not c["archived"]}
     pending = [
         {"id": r["id"], "name": r["name"], "reported": reported.get(r["id"], 0), "last_seen_at": r["last_seen_at"],
          "archived": r["id"] in console}
         for r in registry.values() if r["id"] not in linked
     ]
-    main_balance = main_ws["credits"] if main_ws else None
+    main_balance = balances[main_id]['credits'] if main_ws else None
     main_row = console.get(main_id) if main_id else None
     unused = sum(float(s["balance"] or 0) for s in subs)
+    subtotal = partial_totals(balances[wid] for wid in sub_ids)
     if main_row and main_row["alloc_base"] is not None:
         with get_connection() as conn:  # 기준일 뒤 추가 크레딧은 3개월 목록이 아니라 표에서 전부 읽는다
             base_day = main_row["alloc_base_day"]
@@ -601,15 +610,21 @@ def overview(backfill_projects: bool = False) -> dict[str, Any]:
         spent_all = sum(float(s["used_all"]) for s in subs)
         allocation = {"source": "estimate", "base": None, "base_day": None,
                       "allocated": credit_plan._shown(spent_all + unused), "spent": credit_plan._shown(spent_all)}
+    allocation['complete'] = subtotal['complete']
+    allocation['fresh'] = subtotal['fresh']
+    if not subtotal['complete']:
+        allocation.update(spent=None, allocated=None)
     return {
         "today": today,
         "main": None if not main_ws else {
             "id": main_ws["id"], "name": main_ws["name"], "balance": main_balance,
-            "balance_seen_at": main_ws["last_seen_at"], "reported": reported.get(main_ws["id"], 0),
+            "balance_seen_at": observed_iso(balances[main_id]), "balance_meta": balances[main_id],
+            "reported": reported.get(main_ws["id"], 0),
         },
         "main_orphan": {"id": main_id} if main_id and not main_ws else None,
         "subs": subs,
         "totals": {
+            **subtotal,
             # 앞으로 30일 동안 자동으로 나갈 정기 할당 합(주·일 주기는 횟수만큼) — 예정표와 같은 값
             "recurring_30d": credit_plan._shown(sum(float(s["monthly_topup"] or 0) * len(s["upcoming"]) for s in subs)),
             "topups_cycle": sum(s["topups_cycle"]["credits"] for s in subs),

@@ -49,6 +49,8 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
             "SELECT wr.credits, wr.last_seen_at FROM workspace_console wc LEFT JOIN workspace_registry wr ON wr.id=wc.workspace_id "
             "WHERE wc.workspace_id=? AND wc.tier='main'", (workspace_id,)
         ).fetchone() if workspace_id else None
+        from .hf_balance import balance_snapshot, observed_iso
+        main_balance = balance_snapshot(conn, [workspace_id])[workspace_id] if main_row else None
         if main_row:
             # 서브스페이스 메인을 고르면 서브스페이스 메인 화면처럼 연결된 서브 프로젝트를 모두 싣는다(내린 서브 제외 — Jay 2026-09-30)
             scope += [r["workspace_id"] for r in conn.execute(
@@ -219,5 +221,6 @@ def member_table(workspace_id: Optional[str], *, with_credit: bool) -> dict[str,
         "console_limit": workspace_limit,  # 고른 워크스페이스가 서브스페이스 서브면 그 크레딧(§14 크레딧 시트·요약)
         "console_subs": console_subs,  # 메인일 때만(아니면 None) — 프런트가 서브마다 관리 표를 불러 크레딧 시트를 합친다
         # 크레딧 풀(메인 보고 잔액) — 금액이라 크레딧을 볼 수 있을 때만
-        "main_balance": {"credits": main_row["credits"], "seen_at": main_row["last_seen_at"]} if main_row and with_credit else None,
+        "main_balance": {"credits": main_balance['credits'], "seen_at": observed_iso(main_balance),
+                         "balance_meta": main_balance} if main_balance and with_credit else None,
     }

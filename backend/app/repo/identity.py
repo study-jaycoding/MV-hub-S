@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import sqlite3
 from typing import Any, Literal, Optional
@@ -970,7 +971,7 @@ def migrate_all_acct_to_creator_uid() -> int:
     return total
 
 
-def record_account_status(email: str, status: dict[str, Any], *, balance_target=None, balance_receipt=None, balance_changes=None) -> bool:
+def record_account_status(email: str, status: dict[str, Any], *, balance_target=None, balance_receipt=None, balance_changes=None, balance_receiver='hub') -> bool:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
     원본 JSON은 계정 메뉴 하위호환용으로 보존하고, 팀 워크스페이스는 registry/member 테이블에
     정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다.
@@ -992,14 +993,13 @@ def record_account_status(email: str, status: dict[str, Any], *, balance_target=
         if not MANAGE_ENABLED or not isinstance(balance_report, dict):
             return
         from . import hf_balance
-        from ..services import shared_connection
         row = conn.execute("SELECT creator_uid FROM account WHERE email=?", (email,)).fetchone()
         conn.execute('SAVEPOINT balance_report')
         try:
             receipt = hf_balance.store(conn, email, row[0] if row else None,
                                        balance_report.get('version'), balance_report.get('observations'),
                                        target=balance_target, changes=balance_changes,
-                                       receiver='server' if shared_connection.is_shared_team_server() else 'hub')
+                                       receiver=balance_receiver)
         except Exception:
             # A failed observation must not roll back generated jobs/current membership.
             conn.execute('ROLLBACK TO balance_report')
@@ -1205,7 +1205,10 @@ def list_workspace_options(member_email: Optional[str] = None) -> list[dict[str,
                 names.get(r["workspace_id"], "").casefold(),
             )
             order = {r["workspace_id"]: i for i, r in enumerate(sorted(consoles, key=rank))}
-    return [{**dict(row), "console_tier": tiers.get(row["id"]), "console_order": order.get(row["id"])} for row in rows]
+        from .hf_balance import balance_snapshot
+        balances = balance_snapshot(conn, [r['id'] for r in rows])
+    return [{**dict(row), "credits": balances[row['id']]['credits'], "balance_meta": balances[row['id']],
+             "console_tier": tiers.get(row["id"]), "console_order": order.get(row["id"])} for row in rows]
 
 
 def get_registry_workspace(workspace_id: str) -> Optional[dict[str, Any]]:
@@ -1286,33 +1289,35 @@ def list_account_statuses() -> dict[str, Any]:
 
 
 def credit_summary() -> dict[str, Any]:
-    """팀 크레딧 집계 — 각 계정 에이전트가 push 때 보고한 마지막 account_status 기준.
-    생성정보엔 크레딧이 없으므로 이 '마지막 보고값'으로 전체 합계·구성원별을 만든다.
-    **합계는 워크스페이스 풀 단위**로 센다(사람 수만큼 중복해서 더하지 않는다 — 아래 주석)."""
+    """팀 풀은 공통 관측을 한 번씩 합산하고 개인 raw 보고 합계와 구별한다."""
     statuses = list_account_statuses()  # {email: {credits, plan, ...}}
+    reported_ids = {str(w['id']) for st in statuses.values() if isinstance(st, dict)
+                    for w in st.get('workspaces') or [] if isinstance(w, dict) and w.get('id')}
     with get_connection() as conn:
+        conn.execute('BEGIN')
         names = {
             r["email"]: r["name"]
             for r in conn.execute("SELECT email, name FROM account").fetchall()
         }
-        registry = {
-            r["id"]: (None if r["credits"] is None else float(r["credits"]))
-            for r in conn.execute("SELECT id, credits FROM workspace_registry").fetchall()
-        }
+        from .hf_balance import balance_snapshot, partial_totals
+        registry = balance_snapshot(conn, sorted(reported_ids))
     rows: list[dict[str, Any]] = []
     # ★합계는 **워크스페이스 풀 단위**로 센다(2026-09-23). 팀 워크스페이스의 잔액은 한 사람 몫이 아니라
     #  모두가 함께 쓰는 풀이라, 같은 공간을 쓰는 사람 수만큼 더하면 팀 합계가 그 배로 부풀어난다.
-    #  ★풀 값은 **등록부(`workspace_registry`)** 에서 읽는다(Codex 코드 리뷰 2026-09-23): 보고를 계정 순서로
-    #   훑으면 마지막에 훑힌 계정의 **오래된** 잔액이 이길 수 있다. 등록부는 보고가 도착할 때마다 갱신된다.
+    #  계정을 순회한 순서로 오래된 잔액이 이기지 않도록 공간별 공통 관측을 쓴다.
     #  공간 목록을 보고하지 않은 계정(개인 컨텍스트·옛 에이전트)만 그 계정 잔액을 따로 더한다.
-    pools: dict[str, float] = {}
+    pools: dict[str, dict[str, Any]] = {}
     solo_total = 0.0
+    solo_unknown = 0
+    solo_count = 0
     for email, st in statuses.items():
         if not isinstance(st, dict):
             continue
         cr = st.get("credits")
         try:
             crv = float(cr) if cr is not None else None
+            if crv is not None and not math.isfinite(crv):
+                crv = None
         except (TypeError, ValueError):
             crv = None
         reported = [w for w in (st.get("workspaces") or []) if isinstance(w, dict) and w.get("id")]
@@ -1320,9 +1325,13 @@ def credit_summary() -> dict[str, Any]:
             for ws in reported:
                 ws_id = str(ws.get("id") or "")
                 if ws_id:
-                    pools[ws_id] = registry.get(ws_id)  # 값은 등록부에서(없으면 아래에서 버린다)
-        elif crv is not None:
-            solo_total += crv
+                    pools[ws_id] = registry[ws_id]
+        else:
+            solo_count += 1
+            if crv is None:
+                solo_unknown += 1
+            else:
+                solo_total += crv
         rows.append(
             {
                 "email": email,
@@ -1332,8 +1341,11 @@ def credit_summary() -> dict[str, Any]:
             }
         )
     rows.sort(key=lambda r: -(r["credits"] or 0))
-    pool_total = sum(value for value in pools.values() if value is not None)
-    return {"total": round(pool_total + solo_total, 2), "accounts": rows}
+    totals = partial_totals(pools.values())
+    return {"total": round(totals['known_subtotal_c'] / 100 + solo_total, 2), "accounts": rows,
+            "balance_meta": totals, **totals, "total_complete": totals['complete'] and solo_unknown == 0,
+            "total_fresh": totals['fresh'] and solo_count == 0, "solo_unknown_count": solo_unknown,
+            "solo_total": round(solo_total, 2), "solo_basis": "account_report"}
 
 
 def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:

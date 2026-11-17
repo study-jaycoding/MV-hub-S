@@ -50,3 +50,54 @@ def test_history_ingest_does_not_reapply_membership(balance_db,monkeypatch):
     duplicate_tasks=BackgroundTasks()
     route.receive_observations(body,request(),duplicate_tasks)
     assert not duplicate_tasks.tasks
+
+
+def test_balance_and_ledger_permissions_and_private_fields(balance_db,monkeypatch):
+    from app import db
+    monkeypatch.setattr(config,'AUTH_ENABLED',True)
+    monkeypatch.setattr(route._proxy,'proxying',lambda:False)
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO workspace_registry(id,name,credits) VALUES('other','Other',42)")
+        conn.execute("INSERT INTO workspace_member(workspace_id,account_email,is_available) VALUES('ws',?,1)", (EMAIL,))
+    req=request(dict(email=EMAIL,status='approved',global_role='admin'))
+    assert [b['workspace_id'] for b in route.get_balances(req)['balances']]==['ws']
+    assert route.get_balances(req,'other')['balances'][0]['credits']==42
+    req.state.account['global_role']='member'
+    with pytest.raises(HTTPException) as exc: route.get_balances(req,'other')
+    assert exc.value.status_code==403
+    with pytest.raises(HTTPException) as exc: route.get_balance_ledger(req,'ws',limit=100)
+    assert exc.value.status_code==403
+    req.state.account['global_role']='product_manager'
+    assert route.get_balances(req,'other')['balances'][0]['credits']==42
+    with pytest.raises(HTTPException) as exc: route.get_balance_ledger(req,'ws',limit=100)
+    assert exc.value.status_code==403
+    monkeypatch.setattr(config,'AUTH_ENABLED',False)
+    assert route.get_balances(req)['basis']=='unavailable'
+    with pytest.raises(HTTPException) as exc: route.get_balance_ledger(req,'ws',limit=100)
+    assert exc.value.status_code==404
+    monkeypatch.setattr(route._proxy,'proxying',lambda:True)
+    monkeypatch.setattr(route._proxy,'proxy_get',lambda path,request:dict(path=path))
+    assert route.get_balances(req)['path']=='/api/manage/balances'
+    assert route.get_balance_ledger(req,'ws',limit=100)['path']=='/api/manage/console/balance-ledger'
+
+
+def test_balance_get_is_read_only_and_never_collects(balance_db,monkeypatch):
+    import sqlite3
+    from contextlib import contextmanager
+    from app import db
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO workspace_member(workspace_id,account_email,is_available) VALUES('ws',?,1)", (EMAIL,))
+    original=db.get_connection
+    @contextmanager
+    def read_only():
+        with original() as conn:
+            conn.set_authorizer(lambda action,*args: sqlite3.SQLITE_DENY if action in
+                                (sqlite3.SQLITE_INSERT,sqlite3.SQLITE_UPDATE,sqlite3.SQLITE_DELETE,sqlite3.SQLITE_CREATE_TABLE) else sqlite3.SQLITE_OK)
+            try: yield conn
+            finally: conn.set_authorizer(None)
+    monkeypatch.setattr(db,'get_connection',read_only)
+    monkeypatch.setattr(config,'AUTH_ENABLED',True)
+    monkeypatch.setattr(route._proxy,'proxying',lambda:False)
+    monkeypatch.setattr(route,'schedule_telemetry_drain',lambda:pytest.fail('GET scheduled delivery'))
+    answer=route.get_balances(request(dict(email=EMAIL,status='approved',global_role='member')))
+    assert answer['balances'][0]['basis']=='legacy_snapshot'
