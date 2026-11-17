@@ -12,6 +12,15 @@ updated: 2026-11-17
 
 # CODE_MAP — 파일 단위 코드 지도
 
+힉스필드 잔액 기록 1묶음: `backend/app/hf_balance_contract.py`는 금액·정밀도·불변 지문·저장 확인 계약,
+`backend/app/db_hf_balance.py`는 migration 이름표 없는 추가 표와 구조 검사,
+`backend/app/repo/hf_balance.py`는 관측·전달 큐·최신 잔액 선택,
+`backend/app/usecases/hf_balance.py`는 수신·전달 상태 조립,
+`backend/app/services/hf_balance_delivery.py`는 계정·대상·임대를 고정한 전달,
+`backend/app/routers/hf_balance.py`는 역사 관측 전용 수신점이다.
+`agent_push.py`는 workspace-list 관측을 로컬 SQLite에 먼저 보존하고 허브 저장 확인 후에도 원문을 남긴다.
+화면·장부 조회는 후속 묶음이다. [합의 계약](status/hf_balance_ledger_2026-11-17.md).
+
 조직 사용량 2단계: `backend/app/repo/hf_org_usage.py`의 `CreditUsageSnapshot`이 명시적 공간·개인·기간의 API/facts 기준과 집계 전 견적을 읽는다. `backend/app/hf_org_usage_error.py`는 키/연결 import 없이 공유하는 예외형이다. `backend/app/usecases/hf_org_usage.py`의 본인 조회를 `backend/app/routers/manage_quota.py`가 제공한다. `frontend/src/lib/creditUsage.ts`는 출처·기간 표시 계약, `frontend/src/lib/myUsage.ts`는 문맥별 조회와 늦은 응답 폐기, `frontend/src/components/MyUsageWindow.tsx`는 개인 요약·분류·내역 창, `frontend/src/components/common/UsageBasis.tsx`는 범위별 출처 표시, `frontend/src/styles/my-usage.css`는 그 창의 스타일이다. [계약·검증](status/hf_org_usage_phase2_2026-11-17.md).
 
 공유 서버 HTTPS 전환 리허설: `backend/tests/test_shared_tls_rehearsal.py`는 임시 전환 사본·D2 인증서로 실제 서버/허브의 가입·로그인·중계 읽기·WSS·백업 하위 프로세스를 검증하고, 기록용 TCP 앞단에서 평문 하향 요청을 탐지한다. [계약](status/공유서버HTTPS_4묶음_격리리허설_2026-11-16.md).

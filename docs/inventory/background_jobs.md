@@ -36,6 +36,7 @@
 | `remote_realtime_bridge` | start() | _proxy.is_worker_hub() | `backend/app/main.py` |
 | `resolve_selection_monitor` | start() | not _proxy.is_shared_team_server() | `backend/app/services/resolve_selection_monitor.py` |
 | `schedule_telemetry_drain` | 호출 | _proxy.is_worker_hub() | `backend/app/routers/_telemetry.py` |
+| `balance_retry_loop() (name=balance-retry)` | create_task | _proxy.is_worker_hub() and balance_delivery_enabled() | `backend/app/routers/_telemetry.py` |
 | `_runtime_report_loop(_METRICS_LOG_INTERVAL) (name=runtime-metrics-log)` | create_task | _METRICS_LOG_INTERVAL > 0 | `backend/app/main.py` |
 | `agent_chat.service.start_image_cleanup` | 호출 | agent_chat_enabled() and not READ_ONLY | `backend/app/routers/agent_chat.py` |
 
@@ -44,8 +45,9 @@
 | 파일 | 함수 | 대상 |
 | --- | --- | --- |
 | `backend/app/routers/assets.py` | `project_tree` | `thumbs.prewarm_asset_thumbs` |
+| `backend/app/routers/hf_balance.py` | `receive_observations` | `manager.broadcast` |
 | `backend/app/routers/ingest.py` | `ingest_account_report` | `manager.broadcast` |
-| `backend/app/routers/ingest.py` | `ingest` | `manager.broadcast` |
+| `backend/app/routers/ingest.py` | `ingest` | `manager.broadcast` ×2 |
 | `backend/app/routers/library.py` | `_schedule_remote_thumb_prewarm` | `thumbs.prewarm_remote_thumbs` |
 | `backend/app/routers/library.py` | `_stamped_download` | `lambda: tmp.unlink(missing_ok=True)` |
 | `backend/app/routers/library.py` | `download_media` | `lambda: tmp.unlink(missing_ok=True)` |
