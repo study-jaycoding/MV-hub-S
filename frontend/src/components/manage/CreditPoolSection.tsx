@@ -279,7 +279,7 @@ export function CreditPoolSection({
               </span>
             ) : null}
           </div>
-          <span>{view.configured ? `${recurringSchedule ?? `충전일 매월 ${pool?.topup_day ?? 1}일`} · ${pool?.month_usage?.basis ? `${t("잔액은 힉스필드 보고")} · ${usageBasisText(pool.month_usage, t)}` : "잔액은 힉스필드 보고 · 사용은 팀 기록 장부"}` : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
+          <span>{view.configured ? `${recurringSchedule ?? `충전일 매월 ${pool?.topup_day ?? 1}일`} · ${pool?.month_usage?.basis ? t("잔액은 힉스필드 보고 · 사용은 {basis}").replace("{basis}", usageBasisText(pool.month_usage, t)) : "잔액은 힉스필드 보고 · 사용은 팀 기록 장부"}` : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
         </div>
         {pool ? (
           <div className="credit-pool-grid">
@@ -301,7 +301,7 @@ export function CreditPoolSection({
               <UsageBasis value={pool.month_usage} />
               {!!pool.month_usage?.unlinked_api && <small>{t("미연결 API 사용")} {n(pool.month_usage.unlinked_api)}</small>}
               <em>{pool.unknown_month ? pool.month_usage?.basis === "api"
-                ? t("API 미매칭 MV 기록 {count}건 · 사용 합계에 미포함").replace("{count}", String(pool.unknown_month))
+                ? t("합계에 안 든 기록 {count}건").replace("{count}", String(pool.unknown_month))
                 : `미상 ${pool.unknown_month}건 제외 · 미분류 포함` : "미분류 포함"}</em>
             </div>
             <div className="left">

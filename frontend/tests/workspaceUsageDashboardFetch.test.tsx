@@ -75,7 +75,7 @@ it.each(["api", "facts", "mixed", undefined] as const)("풀 머리글과 미확�
     expect(header).toContain("사용은 팀 기록 장부");
     expect(text).toContain("11월 사용 (팀 기록 장부)");
   }
-  expect(text).toContain(basis === "api" ? "API 미매칭 MV 기록 1건 · 사용 합계에 미포함" : "미상 1건 제외");
+  expect(text).toContain(basis === "api" ? "합계에 안 든 기록 1건" : "미상 1건 제외");
 });
 
 it.each([true, false])("멤버 카드의 출처 안내는 신서버=%s 계약을 따른다", async modern => {

@@ -68,7 +68,8 @@ const EN: Record<string, string> = {
   "잔액은 힉스필드 보고": "Balance reported by Higgsfield",
   "팀 기록 장부": "Team record ledger",
   "팀 기록 장부 기준": "Based on the team record ledger",
-  "API 미매칭 MV 기록 {count}건 · 사용 합계에 미포함": "{count} MV records unmatched in the API; not included in usage totals",
+  "잔액은 힉스필드 보고 · 사용은 {basis}": "Balance reported by Higgsfield · usage: {basis}",
+  "합계에 안 든 기록 {count}건": "{count} records not in the total",
   "미연결 API 사용": "Unlinked API usage",
   "생성 기록 분석 · 프로젝트·모델 차트는 MV 기록 기준": "Generation analysis and project/model charts use MV records",
 

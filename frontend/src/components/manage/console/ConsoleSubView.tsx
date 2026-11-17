@@ -407,7 +407,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
           <div><span>잔액(보고)</span><strong>{formatCredits(pool?.balance)}</strong><em>{pool?.balance_seen_at?.slice(5, 16) ?? "보고 없음"}</em></div>
           <div><span>크레딧 / {unit}</span><strong>{sub?.monthly_topup ? formatCredits(sub.monthly_topup) : sub ? "없음" : formatCredits(pool?.monthly_topup)}</strong><em>{sub ? scheduleLabel(sub) : ""}</em></div>
           <div><span>추가 크레딧(이번 주기)</span><strong>{formatCredits(sub?.topups_cycle.credits ?? pool?.topups_month.credits ?? 0)}</strong><em>{sub?.topups_cycle.count ?? pool?.topups_month.count ?? 0}건</em></div>
-          <div><span>이번 주기 사용</span><strong>{formatCredits(sub?.used_cycle ?? pool?.used_month)}</strong><UsageBasis value={sub?.cycle_usage ?? pool?.month_usage} /><em>{cycleText}{(sub?.unknown_cycle ?? pool?.unknown_month) ? ` · 미상 ${sub?.unknown_cycle ?? pool?.unknown_month}건` : ""}</em></div>
+          <div><span>이번 주기 사용</span><strong>{formatCredits(sub?.used_cycle ?? pool?.used_month)}</strong><UsageBasis value={sub?.cycle_usage ?? pool?.month_usage} /><em>{cycleText}{(sub?.unknown_cycle ?? pool?.unknown_month) ? ` · ${(sub?.cycle_usage ?? pool?.month_usage)?.basis === "api" ? "합계에 안 든 기록" : "미상"} ${sub?.unknown_cycle ?? pool?.unknown_month}건` : ""}</em></div>
           <div><span>그룹 할당 크레딧 합계</span><strong>{formatCredits(quotaTotal)}</strong><em>{groups.some((g) => g.quota_total == null) ? "∞ 그룹 제외" : `그룹 ${groups.length}개`}</em></div>
         </div>
       </div>
