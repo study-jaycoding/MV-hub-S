@@ -43,6 +43,8 @@ Codex `01a1e878`(CHANGES 4)와 별도 Claude `dd3bf711`(CHANGES 중간 5·낮음
 
 **정오표(고정 구간 밖, 계약 SHA 무관):** 2절 에이전트 `balance_observation_outbox` 의 `state` CHECK 에는 `'rejected'` 도 들어간다 — 3절 '영구 무효는 rejected 로 원문 보존'이 우선(Claude `dd3bf711` 4차 합의 때 지적, 구현은 이미 반영).
 
+**정오(11-17, 배포 후보 Codex `01a1e856` 차이 리뷰 낮음, 고정 구간 밖·계약 SHA 무관):** 아래 고정 구간 7절의 AC12 시험 이름 2개(`test_schema_compat.py::test_balance_tables_do_not_change_existing_schema_contract`·`test_hf_balance_compatibility.py::test_pinned_legacy_inspector_and_app_reopen_preserve_balances`)는 실제와 다르다. 실제 AC12 시험은 `test_hf_balance_compatibility.py::test_existing_inspector_and_legacy_sql_preserve_additive_tables` 하나다(현재 검사기 + 옛 방식 SQL). '배포 영향' 표 '되돌리기' 칸의 "실제 옛 판으로 시험 — AC12"도 이 범위로 읽는다. 0123·1011 판 검사기의 추가 표 허용은 그 Codex 리뷰가 메모리 실행으로 확인했다. 설치판 롤백 실측은 하지 않았다.
+
 <!-- hf-balance-design:begin -->
 
 ## 배포 영향 (work 세션 요청 2026-11-17 — Jay: 이 작업이 끝나면 합친 배포 후보와 같이 병합)
