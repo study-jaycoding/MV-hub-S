@@ -60,11 +60,10 @@ def strip_transfer_secrets(db_path: Path) -> None:
     c = sqlite3.connect(str(db_path))
     try:
         trash_transfer.configure_connection(c)
-        before = c.total_changes
         c.execute("BEGIN")
         scrub_slack_connection(c)  # Strict errors stay outside the legacy best-effort block.
-        scrub_hf_org_usage_connection(c)
-        scrub_hf_balance_connection(c)
+        compact = scrub_hf_org_usage_connection(c)
+        compact = scrub_hf_balance_connection(c) or compact
         c.execute('SAVEPOINT legacy_secrets')
         try:
             for k in SESSION_KEYS:
@@ -78,7 +77,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
             c.execute('ROLLBACK TO legacy_secrets')
         c.execute('RELEASE legacy_secrets')
         c.execute("COMMIT")
-        _compact_scrubbed_copy(c, changed=c.total_changes > before)
+        _compact_scrubbed_copy(c, changed=compact)
     finally:
         c.close()
 
@@ -98,11 +97,10 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
 
     with closing(sqlite3.connect(str(db_path))) as conn:
         trash_transfer.configure_connection(conn)
-        before = conn.total_changes
         conn.execute("BEGIN")
         scrub_slack_connection(conn)
-        scrub_hf_org_usage_connection(conn)
-        scrub_hf_balance_connection(conn)
+        compact = scrub_hf_org_usage_connection(conn)
+        compact = scrub_hf_balance_connection(conn) or compact
         if _table_exists(conn, "app_setting"):
             for k in SESSION_KEYS:
                 conn.execute("DELETE FROM app_setting WHERE key=?", (k,))
@@ -132,7 +130,7 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
                 )
         conn.execute("COMMIT")
 
-        _compact_scrubbed_copy(conn, changed=conn.total_changes > before)
+        _compact_scrubbed_copy(conn, changed=compact)
 
 
 def _compact_scrubbed_copy(conn: sqlite3.Connection, *, changed: bool = False) -> None:

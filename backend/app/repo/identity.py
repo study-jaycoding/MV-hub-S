@@ -971,7 +971,7 @@ def migrate_all_acct_to_creator_uid() -> int:
     return total
 
 
-def record_account_status(email: str, status: dict[str, Any], *, balance_target=None, balance_receipt=None, balance_changes=None, balance_receiver='hub', balance_reporter_key=None) -> bool:
+def record_account_status(email: str, status: dict[str, Any]) -> bool:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
     원본 JSON은 계정 메뉴 하위호환용으로 보존하고, 팀 워크스페이스는 registry/member 테이블에
     정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다.
@@ -984,41 +984,15 @@ def record_account_status(email: str, status: dict[str, Any], *, balance_target=
     email = norm_email(email)
     if not email or not isinstance(status, dict):
         return False
-    balance_report = status.get("balance_report")
     status = {key: value for key, value in status.items() if key != "balance_report"}
     raw_payload = _json.dumps(status, ensure_ascii=False)
 
-    def store_balance(conn):
-        from ..config import MANAGE_ENABLED
-        if not MANAGE_ENABLED or not isinstance(balance_report, dict):
-            return
-        from . import hf_balance
-        row = conn.execute("SELECT creator_uid FROM account WHERE email=?", (email,)).fetchone()
-        conn.execute('SAVEPOINT balance_report')
-        try:
-            receipt = hf_balance.store(conn, balance_reporter_key or email, row[0] if row else None,
-                                       balance_report.get('version'), balance_report.get('observations'),
-                                       target=balance_target, changes=balance_changes,
-                                       receiver=balance_receiver)
-        except Exception:
-            # A failed observation must not roll back generated jobs/current membership.
-            conn.execute('ROLLBACK TO balance_report')
-            if balance_receipt is not None:
-                balance_receipt.clear()
-            if balance_changes is not None:
-                balance_changes.clear()
-        else:
-            if balance_receipt is not None:
-                balance_receipt.update(receipt)
-        finally:
-            conn.execute('RELEASE balance_report')
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
         # 옛/불완전 보고 — raw 만 저장(기존 멤버십을 전부 unavailable로 만들지 않는다).
         # 비교와 저장을 한 쓰기 잠금 안에서 — 따로 하면 그 사이 끼어든 다른 저장을 '바뀜 없음'으로 오판한다.
         with get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            store_balance(conn)
             row = conn.execute("SELECT value FROM app_setting WHERE key=?", (f"hf_status:{email}",)).fetchone()
             conn.execute(
                 "INSERT INTO app_setting(key, value) VALUES(?,?) "
@@ -1057,7 +1031,6 @@ def record_account_status(email: str, status: dict[str, Any], *, balance_target=
         # 어긋났다. set_setting() 호출 금지(내부 get_connection 중첩) — 같은 conn 직접 UPSERT.
         conn.execute("BEGIN IMMEDIATE")
         before = _visible(conn)
-        store_balance(conn)
         conn.execute(
             "INSERT INTO app_setting(key, value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

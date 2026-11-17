@@ -8,7 +8,7 @@ import time
 from bisect import bisect_left
 from datetime import date, datetime, timedelta, timezone
 
-from .. import db, manage_db
+from .. import db, db_hf_balance, manage_db
 from .hf_org_usage import DAY_MS, today_start, usage_days
 
 KST = timezone(timedelta(hours=9))
@@ -301,6 +301,8 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
             raise ValueError('invalid_cursor') from exc
     with db.get_connection() as conn:
         conn.execute('BEGIN')
+        if error := db_hf_balance.schema_error(conn):
+            raise RuntimeError(error)
         if cursor and delivered_version != _delivered_version(conn, workspace_id, start, after):
             raise AnalysisChanged('analysis_changed')
         preceding = conn.execute("SELECT MAX(observed_at_ms) FROM hf_balance_obs WHERE workspace_id=? "
@@ -316,13 +318,17 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
         plan = conn.execute('SELECT revision FROM workspace_credit_plan WHERE workspace_id=?', (workspace_id,)).fetchone()
         revision = plan[0] if plan else 0
         tiers = {r[0]: r[1] for r in conn.execute('SELECT workspace_id,tier FROM workspace_console WHERE archived=0')}
-        related = {workspace_id} | {r[0] for r in conn.execute(
-            'SELECT DISTINCT p.workspace_id FROM hf_balance_obs t JOIN hf_balance_obs p '
-            'ON p.collection_id=t.collection_id AND p.collector_id=t.collector_id AND p.observed_at_ms=t.observed_at_ms '
-            "WHERE t.workspace_id=? AND t.time_quality='reported' AND p.time_quality='reported' "
-            'AND t.observed_at_ms>=? AND t.observed_at_ms<? AND t.received_at_ms<=? AND p.received_at_ms<=?',
-            (workspace_id, preceding if preceding is not None else start, end, at, at))
-            if tiers.get(r[0]) in ('main', 'sub')}
+        peers = [wid for wid, tier in tiers.items() if tier in ('main', 'sub')]
+        related = {workspace_id}
+        if peers:
+            related.update(r[0] for r in conn.execute(
+                'SELECT DISTINCT p.workspace_id FROM hf_balance_obs t '
+                'JOIN hf_balance_obs p INDEXED BY idx_hf_balance_obs_history '
+                'ON p.collection_id=t.collection_id AND p.collector_id=t.collector_id AND p.observed_at_ms=t.observed_at_ms '
+                "WHERE t.workspace_id=? AND t.time_quality='reported' AND p.time_quality='reported' "
+                f"AND p.workspace_id IN ({','.join('?' for _ in peers)}) "
+                'AND t.observed_at_ms>=? AND t.observed_at_ms<? AND t.received_at_ms<=? AND p.received_at_ms<=?',
+                (workspace_id, *peers, preceding if preceding is not None else start, end, at, at)))
         tiers = {wid: tier for wid, tier in tiers.items() if wid in related}
         chart = [dict(r) for r in conn.execute('WITH ranked AS (SELECT observation_id,observed_at_ms,credits_c,time_quality AS quality, '
                  'ROW_NUMBER() OVER (PARTITION BY (observed_at_ms-?)*500/? ORDER BY credits_c,observation_id) AS lo, '

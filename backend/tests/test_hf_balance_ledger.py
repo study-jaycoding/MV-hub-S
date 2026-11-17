@@ -385,3 +385,60 @@ def test_ledger_get_does_not_write_or_call_external_services(world,monkeypatch):
     monkeypatch.setattr(hf_org_usage_collector,'request_page',lambda *a,**kw:pytest.fail('external API called'))
     monkeypatch.setattr(cli_bridge,'_run',lambda *a,**kw:pytest.fail('CLI called'))
     assert ledger.ledger('ws','2026-11-16','2026-11-17',at=AT)['intervals']
+
+
+def test_related_spaces_use_console_scoped_history_index_without_full_scan(world,monkeypatch):
+    from contextlib import contextmanager
+    seed(world)
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO workspace_console(workspace_id,tier) VALUES('ws','main')")
+        for wid, archived in (('sub',0),('archived',1)):
+            conn.execute('INSERT INTO workspace_registry(id,name) VALUES(?,?)',(wid,wid))
+            conn.execute('INSERT INTO workspace_console(workspace_id,tier,archived) VALUES(?,?,?)',(wid,'sub',archived))
+    statements=[]
+    connect=db.get_connection
+    @contextmanager
+    def traced():
+        with connect() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+    monkeypatch.setattr(db,'get_connection',traced)
+    ledger.ledger('ws','2026-11-16','2026-11-17',at=AT)
+    query=next(sql for sql in statements if sql.startswith('SELECT DISTINCT p.workspace_id'))
+    assert 'p.workspace_id IN (' in query and "'ws'" in query and "'sub'" in query
+    assert 'archived' not in query
+    with connect() as conn:
+        plan=[r[3] for r in conn.execute('EXPLAIN QUERY PLAN '+query)]
+    assert any('SEARCH p USING INDEX idx_hf_balance_obs_history' in detail for detail in plan)
+    assert not any('SCAN ' in detail or 'AUTOMATIC' in detail for detail in plan), plan
+
+
+@pytest.mark.parametrize('damage', [
+    'DROP TABLE hf_balance_obs',
+    'ALTER TABLE hf_balance_obs RENAME COLUMN credits_c TO broken_credits_c',
+    'DROP INDEX idx_hf_balance_obs_history',
+])
+def test_http_ledger_mismatched_balance_schema_returns_retryable_503(world,monkeypatch,damage):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import config
+    from app.routers import hf_balance as route
+    seed(world)
+    with db.get_connection() as conn:
+        conn.execute(damage)
+    monkeypatch.setattr(config,'AUTH_ENABLED',True)
+    monkeypatch.setattr(route._proxy,'proxying',lambda:False)
+    app=FastAPI()
+    @app.middleware('http')
+    async def authenticated(request,call_next):
+        request.state.account=dict(email=EMAIL,status='approved',global_role='admin')
+        return await call_next(request)
+    app.include_router(route.router)
+    with TestClient(app) as client:
+        response=client.get('/api/manage/console/balance-ledger',params=dict(
+            workspace_id='ws',start='2026-11-16',end='2026-11-17'))
+    assert response.status_code==503
+    assert response.json()==dict(detail=dict(code='balance_schema_mismatch',retryable=True))

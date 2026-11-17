@@ -87,10 +87,9 @@ def test_rejected_observation_stops_only_permanent_retry_and_keeps_payload(agent
         assert row['state']==('pending' if retryable else 'rejected')
         assert json.loads(row['payload_json'])==item
         assert row['attempts']==1
+        assert row['last_error_code']=='fixture_rejection'
         if retryable:
             assert row['next_retry_at_ms']>NOW
-        else:
-            assert row['last_error_code']=='fixture_rejection'
     agent._drain_balance_observations(server,'local',EMAIL)
     assert len(sent)==1
     monkeypatch.setattr(agent.time,'time',lambda:(NOW+60000)/1000)
@@ -99,17 +98,20 @@ def test_rejected_observation_stops_only_permanent_retry_and_keeps_payload(agent
 
 
 @pytest.mark.parametrize('code',['hub_not_signed_in','account_mismatch'])
-def test_retryable_http_rejection_backs_off_without_collecting_or_losing_payload(agent,monkeypatch,code):
+@pytest.mark.parametrize('encoded',[False,True])
+def test_retryable_http_rejection_backs_off_without_collecting_or_losing_payload(agent,monkeypatch,code,encoded):
     item=agent._persist_balance_collection('http://localhost',EMAIL,[{'id':'ws','credits':100}],NOW-1,NOW,None)['observations'][0]
     calls=[]
     monkeypatch.setattr(agent,'_cli_json',lambda *a,**k:pytest.fail('retry must not collect again'))
-    monkeypatch.setattr(agent,'_http',lambda *a,**k:(calls.append(k['body']) or (409,{'detail':{'code':code,'retryable':True}})))
+    rejection={'detail':{'code':code,'retryable':True}}
+    monkeypatch.setattr(agent,'_http',lambda *a,**k:(calls.append(k['body']) or (409,json.dumps(rejection) if encoded else rejection)))
     monkeypatch.setattr(agent.time,'time',lambda:NOW/1000)
     agent._drain_balance_observations('http://localhost','local',EMAIL)
     agent._drain_balance_observations('http://localhost','local',EMAIL)
     with agent._state_db() as conn:
         row=dict(conn.execute('SELECT * FROM balance_observation_outbox').fetchone())
         assert row['state']=='pending' and row['next_retry_at_ms']>NOW
+        assert row['last_error_code']==code
         assert json.loads(row['payload_json'])==item
     assert len(calls)==1
 

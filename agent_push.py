@@ -4849,11 +4849,26 @@ def _drain_balance_observations_core(server, token, email):
             conn.execute('UPDATE balance_observation_outbox SET attempts=attempts+1,last_attempt_at_ms=? WHERE server_key=? AND account_email=? AND observation_id=?', (now, *args, row['observation_id']))
     status, receipt = _http('POST', server.rstrip('/')+'/api/ingest/balance-observations', token=token,
                             body={'version': 1, 'account_email': email, 'observations': items})
+    retry_errors = {}
     if status == 200 and _ack_balance_observations(server, email, receipt, {r['observation_id'] for r in rows}):
         acknowledged = {r['observation_id'] for group in ('stored','conflicts') for r in receipt[group]}
         acknowledged.update(r['observation_id'] for r in receipt['rejected'] if r.get('retryable') is not True)
+        retry_errors = {r['observation_id']: str(r.get('code') or 'observation_rejected')[:128]
+                        for r in receipt['rejected'] if r.get('retryable') is True}
         rows = [r for r in rows if r['observation_id'] not in acknowledged]
     unsupported = status in (404,405) or (status == 200 and not isinstance(receipt, dict)) or (status == 200 and receipt.get('version') != 1)
+    error_code = 'unsupported' if unsupported else 'delivery_failed'
+    if status != 200:
+        error_body = receipt
+        if isinstance(error_body, str):
+            try:
+                error_body = json.loads(error_body)
+            except json.JSONDecodeError:
+                error_body = None
+        detail = error_body.get('detail') if isinstance(error_body, dict) else None
+        if (isinstance(detail, dict) and detail.get('retryable') is True
+                and detail.get('code') in ('hub_not_signed_in', 'account_mismatch')):
+            error_code = detail['code']
     if rows:
         print(f'[잔액 보고] {len(rows)}건 전달 대기 — 다음에 다시 시도합니다')
     with _outbox_lock, _state_db() as conn:
@@ -4861,7 +4876,7 @@ def _drain_balance_observations_core(server, token, email):
             streak = row['fail_streak']+1
             conn.execute("UPDATE balance_observation_outbox SET state=?,fail_streak=?,next_retry_at_ms=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=? AND state IN ('pending','unsupported')",
                          ('unsupported' if unsupported else 'pending', streak, now+(600000 if unsupported else min(3600000,1000*2**min(streak,12))),
-                          'unsupported' if unsupported else 'delivery_failed', server.rstrip('/'), email, row['observation_id']))
+                          retry_errors.get(row['observation_id'], error_code), server.rstrip('/'), email, row['observation_id']))
 
 
 def _collect_account_status(cli: str):

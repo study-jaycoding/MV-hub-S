@@ -53,7 +53,7 @@ def test_agent_bearer_local_hub_http_boundary_preserves_rejected_reports(balance
     monkeypatch.setattr(deps,'AUTH_ENABLED',False)
     monkeypatch.setattr(route._proxy,'AUTH_ENABLED',False)
     monkeypatch.setattr(config,'LOCAL_AGENT_PAIR_SECRET','')
-    monkeypatch.setenv('CONTENT_HUB_NO_PROXY','0')
+    monkeypatch.setenv('CONTENT_HUB_NO_PROXY','1' if mode=='standalone' else '0')
     monkeypatch.delenv('CONTENT_HUB_SHARED_URL',raising=False)
     monkeypatch.setattr(route,'schedule_telemetry_drain',lambda:None)
     active=active_account.set_override(EMAIL if mode in ('signed_in','mismatch') else '')
@@ -102,6 +102,131 @@ def test_agent_bearer_local_hub_http_boundary_preserves_rejected_reports(balance
             assert response.json()['detail']['code']==('hub_not_signed_in' if mode=='signed_out' else 'account_mismatch')
     finally:
         active_account.reset_override(active)
+
+
+def test_logout_switches_to_legacy_db_without_ack_and_login_delivers_original(tmp_path,monkeypatch):
+    import json
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import active_account, db, db_paths, repo
+    from app.routers import publish
+    from app.services import hf_balance_delivery
+    from app.usecases.hf_balance import receive
+    from test_agent_contracts import _load_agent
+    from hf_balance_fixtures import NOW
+
+    monkeypatch.delenv('CONTENT_HUB_DB',raising=False)
+    monkeypatch.setattr(config,'DATA_DIR',tmp_path)
+    monkeypatch.setattr(config,'AUTH_ENABLED',False)
+    monkeypatch.setattr(deps,'AUTH_ENABLED',False)
+    monkeypatch.setattr(publish,'AUTH_ENABLED',False)
+    monkeypatch.setattr(route._proxy,'AUTH_ENABLED',False)
+    monkeypatch.setattr(config,'LOCAL_AGENT_PAIR_SECRET','')
+    monkeypatch.setattr(active_account,'_POINTER',tmp_path/'active.json')
+    monkeypatch.setattr(active_account,'_cache',[False,None])
+    monkeypatch.setattr(active_account,'_epoch',[0])
+    legacy=tmp_path/'legacy.db'
+    monkeypatch.setattr(db_paths,'DEFAULT_DB_PATH',legacy)
+    monkeypatch.setattr(db,'DEFAULT_DB_PATH',legacy)
+    monkeypatch.setenv('CONTENT_HUB_NO_PROXY','0')
+    monkeypatch.setattr(route,'schedule_telemetry_drain',lambda:None)
+    agent=_load_agent()
+    monkeypatch.setattr(agent,'_agent_state_path',lambda:str(tmp_path/'agent-logout.db'))
+    monkeypatch.setattr(agent,'_cli_json',lambda *a,**kw:pytest.fail('retry collected again'))
+    marker=active_account.set_override(None)
+    try:
+        active_account.clear_active()
+        db.init_db()
+        active_account.set_active(EMAIL)
+        db.init_db()
+        account_path=db.get_db_path()
+        target='https://server.example.invalid'
+        def login():
+            active_account.set_active(EMAIL)
+            publish._save_shared_session(url=target,email=EMAIL,token='server-session-fixture',
+                                         account=dict(name='Fixture'),clear_elevation=True)
+        login()
+        app=FastAPI()
+        @app.middleware('http')
+        async def loopback(request,call_next):
+            request.scope['client']=('127.0.0.1',12345)
+            return await call_next(request)
+        app.include_router(route.router)
+        app.include_router(publish.router)
+        original=agent._persist_balance_collection('http://localhost',EMAIL,[dict(id='ws',credits=123)],NOW-1,NOW,None)
+        with TestClient(app,base_url='http://localhost') as client:
+            assert client.post('/api/shared-server/logout').status_code==200
+            assert not active_account._POINTER.exists()
+            assert active_account.account_key() is None and db.get_db_path()==legacy
+            assert repo.get_setting('shared_server_url') is None and route._proxy.token() is None
+            responses=[]
+            def send(method,url,*,token,body,**kwargs):
+                assert token=='local'
+                response=client.request(method,'/api/ingest/balance-observations',
+                                        headers={'Authorization':'Bearer local'},json=body)
+                responses.append(response)
+                return response.status_code,response.json()
+            monkeypatch.setattr(agent,'_http',send)
+            agent._drain_balance_observations('http://localhost','local',EMAIL)
+            assert responses[-1].status_code==409
+            assert responses[-1].json()['detail']==dict(code='hub_not_signed_in',retryable=True)
+            for path in (legacy,account_path):
+                with db.get_connection(db_path=path) as conn:
+                    assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==0
+                    assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==0
+                    assert not conn.execute("SELECT 1 FROM app_setting WHERE key='balance_database_id'").fetchone()
+            with agent._state_db() as conn:
+                row=conn.execute('SELECT * FROM balance_observation_outbox').fetchone()
+                assert row['state']=='pending' and row['last_error_code']=='hub_not_signed_in'
+                assert json.loads(row['payload_json'])==original['observations'][0]
+                assert row['next_retry_at_ms']>row['last_attempt_at_ms']
+                conn.execute('UPDATE balance_observation_outbox SET next_retry_at_ms=0')
+            login()
+            agent._drain_balance_observations('http://localhost','local',EMAIL)
+            assert responses[-1].status_code==200
+            assert responses[-1].json()['stored'][0]['observation_id']==original['observations'][0]['observation_id']
+        server_path=tmp_path/'server.db'
+        db.init_db(server_path)
+        monkeypatch.setattr(config,'EXTERNAL_RECOVERY_ENABLED',True)
+        monkeypatch.setattr(config,'READ_ONLY',False)
+        def deliver(body):
+            with monkeypatch.context() as remote:
+                remote.setenv('CONTENT_HUB_DB',str(server_path))
+                return receive(dict(email=EMAIL),EMAIL,body['version'],body['observations'],receiver='server')[0]
+        hf_balance_delivery.drain(deliver,account_key=EMAIL,target=target,current=lambda:(EMAIL,target))
+        with db.get_connection(db_path=server_path) as conn:
+            assert conn.execute('SELECT observation_id FROM hf_balance_obs').fetchone()[0]==original['observations'][0]['observation_id']
+        with db.get_connection() as conn:
+            assert conn.execute('SELECT state FROM hf_balance_outbox').fetchone()[0]=='acked'
+    finally:
+        active_account.reset_override(marker)
+        db.flush_pool()
+
+
+def test_legacy_ingest_ignores_observations_without_ack(balance_db,monkeypatch):
+    import json
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import active_account, db
+    from app.routers import ingest
+    monkeypatch.setattr(config,'AUTH_ENABLED',False)
+    monkeypatch.setattr(deps,'AUTH_ENABLED',False)
+    monkeypatch.setattr(ingest,'AUTH_ENABLED',False)
+    monkeypatch.setenv('CONTENT_HUB_NO_PROXY','1')
+    marker=active_account.set_override('')
+    try:
+        app=FastAPI()
+        app.include_router(ingest.router)
+        with TestClient(app) as client:
+            response=client.post('/api/ingest',headers={'Authorization':'Bearer local'},json=dict(
+                jobs=[],account_status=dict(email=EMAIL,workspaces=[],balance_report=dict(version=1,observations=[observation()]))))
+        assert response.status_code==200 and 'balance_receipt' not in response.json()
+        with db.get_connection() as conn:
+            assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==0
+            raw=conn.execute("SELECT value FROM app_setting WHERE key='hf_status:local'").fetchone()[0]
+            assert 'balance_report' not in json.loads(raw)
+    finally:
+        active_account.reset_override(marker)
 
 
 def test_history_ingest_does_not_reapply_membership(balance_db,monkeypatch):

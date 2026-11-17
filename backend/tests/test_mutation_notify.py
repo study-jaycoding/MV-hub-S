@@ -130,10 +130,9 @@ def _balance_report_domains(monkeypatch, matched):
     request=SimpleNamespace(state=SimpleNamespace())
     monkeypatch.setattr(ingest,'MANAGE_ENABLED',True)
     monkeypatch.setattr(ingest,'_agent_write_acc',lambda _:account)
-    monkeypatch.setattr(ingest,'_validate_balance_sender',lambda *args:account)
     monkeypatch.setattr(ingest._proxy,'proxying',lambda:False)
     def core(*args,notes,**kwargs):
-        notes.update(status_changed=False,identity_changed=False,balance_changed=True)
+        notes.update(status_changed=False,identity_changed=False)
         return IngestOut(inserted=0,updated=0,unchanged=0,skipped=0,errors=0,linked_uid=account['creator_uid'])
     monkeypatch.setattr(ingest,'_ingest_core',core)
     calls=[]
@@ -143,7 +142,7 @@ def _balance_report_domains(monkeypatch, matched):
             raise RuntimeError('result not known')
         return dict(stored=0,rejected=0,inserted=0,matched=matched)
     monkeypatch.setattr(manage,'record_transactions',transactions)
-    ingest.ingest(IngestIn(jobs=[],account_status=dict(email=account['email'],balance_report={'version':1,'observations':[]})),request)
+    ingest.ingest(IngestIn(jobs=[],account_status=dict(email=account['email'])),request)
     assert calls
     return without_unchanged_library(notification_domains('POST','/api/ingest',200),getattr(request.state,'library_unchanged',False))
 

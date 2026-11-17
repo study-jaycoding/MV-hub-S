@@ -20,15 +20,13 @@ def test_agent_hub_server_version_matrix(balance_db,monkeypatch,agent,hub,server
     db.init_db(server_path)
     status={'email':EMAIL,'workspaces':[{'id':'ws','name':'Space','credits':100}]}
     report=module._persist_balance_collection('http://localhost',EMAIL,status['workspaces'],NOW-1,NOW,None) if agent else None
-    if report:
-        status['balance_report']=report
     account={'email':EMAIL,'creator_uid':None}
     target='https://server.invalid:8010'
     receipt={'accepted':True}
     if hub and agent:
         receipt,_=receive(account,EMAIL,1,report['observations'],target=target,receiver='hub')
     else:
-        repo.record_account_status(EMAIL,{key:value for key,value in status.items() if key!='balance_report'})
+        repo.record_account_status(EMAIL,status)
     if agent:
         assert module._ack_balance_observations('http://localhost',EMAIL,receipt)==hub
         with module._state_db() as conn:
@@ -52,7 +50,7 @@ def test_agent_hub_server_version_matrix(balance_db,monkeypatch,agent,hub,server
             remote.setenv('CONTENT_HUB_DB',str(server_path))
             repo.record_account_status(EMAIL,status)
     with sqlite3.connect(server_path) as conn:
-        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==int(agent and server)
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==int(agent and hub and server)
 
 
 def test_existing_inspector_and_legacy_sql_preserve_additive_tables(balance_db):

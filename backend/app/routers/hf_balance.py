@@ -88,3 +88,7 @@ def get_balance_ledger(request: Request, workspace_id: str, start: str | None = 
         raise HTTPException(409, 'analysis_changed') from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        if str(exc) != 'balance_schema_mismatch':
+            raise
+        raise HTTPException(503, dict(code='balance_schema_mismatch', retryable=True)) from exc

@@ -175,10 +175,9 @@ def _post_install_security_init(path: Path, *, new_secret: str | None = None,
     try:
         trash_transfer.configure_connection(conn)
         conn.execute("BEGIN IMMEDIATE")
-        before_scrub = conn.total_changes
         scrub_slack_connection(conn)
-        scrub_hf_org_usage_connection(conn)
-        scrub_hf_balance_connection(conn)
+        compact = scrub_hf_org_usage_connection(conn)
+        compact = scrub_hf_balance_connection(conn) or compact
         for key in _SESSION_KEYS:
             conn.execute("DELETE FROM app_setting WHERE key=?", (key,))
         conn.execute(
@@ -197,7 +196,7 @@ def _post_install_security_init(path: Path, *, new_secret: str | None = None,
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                      (asset_mounts.restore_key(email), json.dumps({"id": restore_id, "confirmed": []})))
         conn.execute("COMMIT")
-        _compact_scrubbed_copy(conn, changed=conn.total_changes > before_scrub)
+        _compact_scrubbed_copy(conn, changed=compact)
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
             conn.execute("ROLLBACK")

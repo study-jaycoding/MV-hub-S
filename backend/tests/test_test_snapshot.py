@@ -436,3 +436,40 @@ def test_balance_scrub_skips_compaction_when_only_unrelated_settings_exist(tmp_p
     db_scrub.scrub_hf_balance(path)
     assert not any('VACUUM' in statement for statement in traces)
     assert not any('wal_checkpoint' in statement for statement in traces)
+
+
+@pytest.mark.parametrize('profile', ['transfer', 'test_snapshot', 'post_install'])
+@pytest.mark.parametrize('balance_data', [False, True])
+def test_copy_scrub_compacts_only_when_hf_data_changes(tmp_path, monkeypatch, profile, balance_data):
+    from app.services import db_scrub
+
+    path = tmp_path / 'session-only.db'
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)')
+        conn.execute('CREATE TABLE account(password_hash TEXT,password_changed_at TEXT)')
+        conn.execute('CREATE TABLE mcp_client(revoked_at TEXT)')
+        conn.execute('INSERT INTO app_setting VALUES(?,?)', ('shared_server_token', 'fake-session'))
+        conn.execute('INSERT INTO app_setting VALUES(?,?)', ('auth_secret', 'fake-secret'))
+        if balance_data:
+            conn.execute('INSERT INTO app_setting VALUES(?,?)',
+                         ('hf_status:x', json.dumps({'balance_report': {'observations': []}})))
+    traces = []
+    original = sqlite3.connect
+    def connect(*args, **kwargs):
+        conn = original(*args, **kwargs)
+        conn.set_trace_callback(traces.append)
+        return conn
+    monkeypatch.setattr(sqlite3, 'connect', connect)
+    if profile == 'transfer':
+        db_scrub.strip_transfer_secrets(path)
+    elif profile == 'test_snapshot':
+        db_scrub.scrub_test_snapshot_db(path, create_test_admin=False)
+    else:
+        db_transfer._post_install_security_init(path, new_secret='replacement-secret', email='')
+    assert any('VACUUM' in statement for statement in traces) is balance_data
+    assert any('wal_checkpoint' in statement for statement in traces) is balance_data
+    assert 'PRAGMA secure_delete=ON' in traces
+    with original(path) as conn:
+        assert conn.execute("SELECT value FROM app_setting WHERE key='shared_server_token'").fetchone() is None
+        secret = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()
+        assert secret == (('replacement-secret',) if profile == 'post_install' else None)

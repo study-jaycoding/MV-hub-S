@@ -54,11 +54,13 @@ def test_replay_does_not_refresh_observation_or_receipt(balance_db):
 def test_metadata_report_preserves_membership_and_does_not_signal_change(balance_db):
     status={'email':EMAIL, 'workspaces':[{'id':'ws','name':'Space','credits':100}],
             'balance_report':{'version':1,'observations':[observation()]}}
-    receipt={}
-    assert repo.record_account_status(EMAIL,status,balance_receipt=receipt)
-    assert receipt['stored']
+    assert repo.record_account_status(EMAIL,status)
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0] == 0
+    assert store(status['balance_report']['observations'])['stored']
     status['balance_report']['observations']=[observation(seq=2,when=NOW+1)]
-    assert not repo.record_account_status(EMAIL,status,balance_receipt={})
+    assert not repo.record_account_status(EMAIL,status)
+    store(status['balance_report']['observations'])
     store([observation(9000,NOW-5000,seq=3)])
     with db.get_connection() as conn:
         assert conn.execute("SELECT is_available FROM workspace_member WHERE workspace_id='ws' AND account_email=?",(EMAIL,)).fetchone()[0] == 1
