@@ -746,7 +746,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         )}
         {chat.messages.length === 0 && !needsConnect && (
           <div className="agent-empty">
-            <span className="agent-empty-mark" aria-hidden="true">⬡</span>
+            <i className="agent-empty-mark mv-mark" aria-hidden="true" />
             <p>{t("지금 보는 화면을 같이 보면서 일해요")}</p>
           </div>
         )}

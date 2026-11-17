@@ -98,7 +98,8 @@ export function TopBar({
         onClick={onOpenAdmin}
         title={t("관리자 — 멤버 등급·프로젝트 관리")}
       >
-        ⬡ MV Hub
+        <i className="mv-mark" aria-hidden="true" />
+        MV Hub
       </button>
 
       <nav className="tabs">

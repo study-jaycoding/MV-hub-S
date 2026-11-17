@@ -102,4 +102,12 @@ select optgroup {
 /* 라임 탭 위에서는 옅은 배경이 안 보인다 — 어두운 바탕에 공간 색 글자로 뒤집는다. */
 .scene-tab-wrap.on .ws-mark-box { background: rgba(0, 0, 0, 0.74); color: hsl(var(--ws-h) 75% 64%); }
 .scene-tab-wrap.on .ws-mark-box.missing { background: rgba(0, 0, 0, 0.74); color: #ff8f80; }
+/* MV 아이콘 표시(docs/status/MV아이콘_머리줄_빈화면_2026-11-17.md) — 앱 아이콘을 실루엣으로, 색은 감싼 글자 색(currentColor).
+   .full = 원래 라임 그림. 크기는 쓰는 곳에서 width·height 로 */
+.mv-mark { display: inline-block; flex: none; width: 1.2em; height: 1.2em; background: url(/icon-96.png) center / contain no-repeat; }
+/* 실루엣은 mask 를 아는 브라우저에서만 — 모르면 회색 네모 대신 원래 그림이 남는다(Codex 리뷰) */
+@supports ((mask-image: url("")) or (-webkit-mask-image: url(""))) {
+  .mv-mark:not(.full) { background: currentColor;
+    -webkit-mask: url(/icon-96.png) center / contain no-repeat; mask: url(/icon-96.png) center / contain no-repeat; }
+}
 /* 저장 위치 안내는 성공 상태가 아니다. 작은 화면에서도 펼친 본문을 읽을 수 있게 한다. */
