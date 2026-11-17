@@ -29,6 +29,10 @@ Codex `01a1e878`(CHANGES 4)와 별도 Claude `dd3bf711`(CHANGES 중간 5·낮음
 
 별도 Claude `dd3bf711` 은 계약 b2ef7b0e 에 동의(VIBE-AGREE), Codex `01a1e878` 은 2건 지적 — 모두 받아들였다. ① **높음**: 금액 일치만으로 공간 지정 account status 의 대상 공간을 확인할 수 없다(binary32 가 같은 다른 공간 반례). 11-17 실측에서 account status 응답 칸은 `credits`·`email`·`subscription_plan_type` 뿐(공간 식별 없음) → **account status 보완을 없애고 관측은 workspace-list 만**, 정밀도는 크기별 binary32 오차 상한(131,072 이상 binary32 수는 floor(0.5+50·ulp) cents, binary32 가 아니면 미확인)으로. ② **중간**: KEPT 분류는 실제 삭제를 막지 못한다 → reporter_uid 는 UID 이력, reporter_key·outbox account_key 는 EMAIL_HISTORY, 관측만 있는 계정·UID NULL 관측 계정 삭제 거부 시험. 계약 SHA 가 바뀌어 양측 재합의.
 
+## 독립 사전 리뷰 반영으로 설계 문구 정정 (2026-11-17)
+
+독립 리뷰어(Claude `b27a4773`, 설계·합의·구현 미참여)의 백엔드 사전 리뷰 두 차례에서 나온 것 중 설계 본문과 어긋나게 된 두 가지를 본문(고정 구간)에 반영했다. ① 관측은 기존 상태 보고(`account_status`)에 싣지 않고 **전용 수신점으로만** 보낸다(같은 관측 이중 전송 제거 — D2·3절). ② 인증을 끈 허브는 격리(NO_PROXY) 모드가 아니면 **언제나 공유 서버 설정됨**으로 보고, 로그아웃·계정 불일치면 저장 없이 재시도 가능한 거부로 에이전트가 원문을 보존한다(실제 로그아웃은 레거시 DB 로 돌아가 서버 주소가 안 보여 '로컬 단독'으로 오판하던 것 — 3절). 허브만 ACK 하는 것은 격리 모드뿐. 계약 블록(goal·criteria·decisions)은 그대로이고 본문 지문만 바뀌어 계약 SHA 가 바뀌므로 양측 재합의.
+
 <!-- hf-balance-design:begin -->
 
 ## 배포 영향 (work 세션 요청 2026-11-17 — Jay: 이 작업이 끝나면 합친 배포 후보와 같이 병합)
@@ -69,7 +73,7 @@ Codex `01a1e878`(CHANGES 4)와 별도 Claude `dd3bf711`(CHANGES 중간 5·낮음
 
 - 새 에이전트는 CLI 호출별 수집 ID와 시작·끝 시각을 만든다. 재전송 때 ID·시각·값을 바꾸지 않는다.
 - 관측 시각은 workspace-list 호출의 시작·끝으로 한다(account-status 숫자는 관측으로 쓰지 않음 — D6 합의 2차). 계정 전환·사이클 캐시 무효화 규칙을 유지한다.
-- 새 메타데이터는 기존 `account_status` 내부의 버전 있는 선택 필드로 싣는다. 구형 금액·공간 필드는 유지한다.
+- 관측은 기존 상태 보고(`account_status`)에 싣지 않고 **전용 수신점으로만** 보낸다(리뷰 반영 — 같은 관측을 두 경로로 보내지 않음). 기존 상태 보고의 금액·공간 필드는 그대로 유지한다.
 - G1의 전체 이력 보존을 위해 에이전트는 허브의 명시적 관측 저장 ACK까지 미전달 자료를 보존한다.
 - 로컬 허브는 관측과 서버 전달 대상을 같은 콘텐츠 DB 트랜잭션으로 저장한다. 기존 최신 상태 outbox와 별도로 `hf_balance_outbox`를 추가한다.
 - 서버에는 관측 전용 수신점을 둔다. 역사 관측 전달은 현재 멤버십·선택 공간·프로젝트 편입을 재적용하지 않는다.
@@ -544,7 +548,7 @@ CLI 결과를 받으면 **허브 요청 전에** 저장합니다. 허브 저장 
 
 ### 관측 원문
 
-기존 `account_status`에 다음 선택 필드를 추가합니다. 다른 필드는 유지합니다.
+관측 원문의 모양은 다음과 같습니다(리뷰 반영: 이 `balance_report` 는 기존 `account_status` 에 싣지 않고 전용 수신점 요청의 `observations` 로만 보냅니다 — 아래 예시는 관측 한 건의 필드 설명용).
 
 ```json
 {
@@ -582,9 +586,7 @@ CLI 결과를 받으면 **허브 요청 전에** 저장합니다. 허브 저장 
 
 ### 에이전트 → 허브
 
-정상 상태 보고는 기존 `POST /api/ingest`를 유지합니다. 최신 수집 관측을 함께 보내고, 새 `IngestOut.balance_receipt`로 저장 결과를 받습니다.
-
-미전달 역사 관측은 아래 전용 수신점으로 재전송합니다.
+정상 상태 보고는 기존 `POST /api/ingest`를 그대로 유지하고 관측은 싣지 않습니다. **새 관측과 미전달 역사 관측 모두** 아래 전용 수신점 한 경로로 보냅니다(리뷰 반영).
 
 ```http
 POST /api/ingest/balance-observations
@@ -598,7 +600,7 @@ POST /api/ingest/balance-observations
 }
 ```
 
-정상 ingest에서는 관측 실패가 생성물 적재 성공을 취소하지 않습니다. 저장된 ID만 ACK하고 나머지는 에이전트에 남깁니다.
+관측 전달 실패는 생성물 적재(정상 ingest)와 무관합니다. 저장된 ID만 ACK하고 나머지는 에이전트에 남깁니다. 허브가 재시도 가능한 거부(`hub_not_signed_in`·`account_mismatch` 등)를 주면 에이전트는 원문을 pending 으로 보존하고 백오프하며 그 거부 코드를 `last_error_code` 에 남깁니다. 영구 무효(형식 위반 등)는 `rejected` 로 원문을 보존하고 재시도하지 않습니다.
 
 ### 허브 저장 ACK
 
@@ -625,7 +627,7 @@ POST /api/ingest/balance-observations
 2. registry 호환 잔액 반영
 3. 공유 서버 연결 모드이면 해당 대상의 전달 큐 저장
 
-로컬 단독 모드에서는 서버 전달을 약속하지 않습니다. `receiver_kind=hub` ACK는 **허브 인수 완료**이며 서버 저장 완료와 구별합니다.
+허브 저장·ACK 만 하고 서버 전달을 약속하지 않는 것은 **격리(NO_PROXY) 모드뿐**입니다. `receiver_kind=hub` ACK는 **허브 인수 완료**이며 서버 저장 완료와 구별합니다.
 
 ### 허브 → 서버
 
@@ -640,7 +642,8 @@ POST /api/ingest/balance-observations
 응답은 같은 형식이며 `receiver_kind="server"`입니다. 서버 저장 ACK가 맞아야 허브 큐를 `acked`로 바꿉니다.
 
 - 한 요청 최대 100관측. 초과는 저장·ACK 없이 거부합니다.
-- **인증(합의 1차):** 허브 수신점은 기존 ingest 와 같은 로컬 에이전트 키 검사(`ingest.py:84`)와 CLI 계정 = 허브 로그인 계정 검사(`ingest.py:139-152`)를 통과해야 하고, 서버 수신점은 인증된 계정과 `account_email` 이 같아야 합니다. 실패하면 아무것도 저장하지 않고 고정 오류로 거부합니다. payload 의 보고자·UID 는 믿지 않습니다.
+- **인증(합의 1차, 리뷰로 구체화):** 허브 수신점은 기존 ingest 와 같은 신원 검사(loopback + CLI 계정 = 허브 로그인 계정)를 통과해야 하고, 로컬 에이전트 키는 **설정됐을 때만** 검사합니다(실제 에이전트는 `--token local`). 서버 수신점은 인증된 계정과 `account_email` 이 같아야 합니다. 실패하면 아무것도 저장하지 않고 고정 오류로 거부합니다. payload 의 보고자·UID 는 믿지 않습니다.
+- **로그아웃·계정 불일치(리뷰 반영):** 인증을 끈 허브는 격리(NO_PROXY) 모드가 아니면 활성 DB 와 상관없이 **언제나 공유 서버 설정됨**으로 봅니다(로그아웃하면 레거시 DB 로 돌아가 서버 주소가 안 보이기 때문). 로그아웃·계정 불일치면 저장하지 않고 재시도 가능한 거부를 돌려 에이전트가 원문을 보존하고, 다시 로그인하면 그 원문이 전달됩니다(J5=B).
 - 본문 최대 256KiB(262144바이트), JSON 파싱 전 바이트 제한 — 기존 제한기 `backend/app/services/upload_limits.py` 의 `UPLOAD_REQUEST_LIMITS` 에 새 수신점을 등록해 413 으로 거부합니다(Content-Length 없음·허위 값·나눠 받기 포함).
 - 역사 관측 수신은 **현재 멤버십·이름·플랜·선택 공간·프로젝트 편입을 수정하지 않습니다.**
 - 서버는 원 관측 시각·허브 수신 시각과 별도로 자기 최초 수신 시각을 저장합니다.
@@ -681,7 +684,7 @@ POST /api/ingest/balance-observations
 |---|---|
 | N / N / N | 두 단계 저장 ACK와 전체 이력 전달 |
 | N / N / O | 에이전트는 허브 ACK 후 보존. 허브는 서버 미지원으로 대기 |
-| N / O / N | 기존 상태 경로는 동작. 구허브는 이력 ACK를 못 주므로 에이전트가 보존 |
+| N / O / N | 기존 상태 경로는 동작. 구허브는 전용 수신점이 없어(404) 에이전트가 미지원으로 보존 |
 | N / O / O | 기존 숫자 경로만 동작. 새 이력은 에이전트에서 대기 |
 | O / N / N | 기존 보고 수용. 관측 시각 미상인 legacy 표시 |
 | O / N / O | 기존 상태 전달 유지. 수집별 이력 보장은 없음 |
@@ -1223,7 +1226,7 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
     {"id": "reanalysis_and_limits", "success": "현재 API 성공본·계획 revision으로 재분석하고 입력 버전을 표시한다. 페이지 중 입력 변경을 감지하며 색인·기간·행 수·응답 크기 제한을 지킨다.", "failure": "과거 결과 불변을 거짓 보장하거나 서로 다른 입력 버전을 섞거나 전체 이력을 무제한 전송한다.", "required": true, "verification": []},
     {"id": "regression_build", "success": "backend 전체·frontend 전체 시험, 구조 검사, 빌드, gen_inventory --check, check_code_map 이 통과한다.", "failure": "하나라도 실패하거나 목록·코드 지도가 낡는다.", "required": true, "verification": []}
   ],
-  "references": [{"path": "docs/status/hf_balance_ledger_2026-11-17.md", "begin": "<!-- hf-balance-design:begin -->", "end": "<!-- hf-balance-design:end -->", "sha256": "942ffb57716be2622b7bf6abcaeded0ed8b9c26ec15172fe34bfc6e13831b189"}],
+  "references": [{"path": "docs/status/hf_balance_ledger_2026-11-17.md", "begin": "<!-- hf-balance-design:begin -->", "end": "<!-- hf-balance-design:end -->", "sha256": "9047521134821ac1b355e3bde2695f1030ac8c890aa4324ed35f07036b23ef0b"}],
   "decisions": [
     {"choice": "잔액은 CLI 관측을 기준점, 조직 API 사용은 그 사이 출금으로 보고 두 관측 사이 차이를 '잔차'로만 표시한다", "why": "공식 API 는 잔액·충전·배분·환불 시각을 주지 않아 사용만으로 잔액을 계산하면 충전·갱신·늦은 환불 때 틀어진다(공식 문서 6쪽, Codex C1)", "alternative": "API 사용 누적으로 잔액 직접 계산 — 입금 쪽을 몰라 틀어짐", "revisit": "힉스필드가 잔액·거래 원장 API 를 공개할 때"},
     {"choice": "수집별 관측을 에이전트·허브에 보존하고 저장 ACK 로 서버까지 전달한다(J5=B)", "why": "Jay 가 서버 장애 중 관측까지 빠짐없이 남기는 B 를 골랐다(2026-11-17)", "alternative": "A+ 도착한 관측만 기록·최신 1행 outbox 유지 — 장애 중 중간 관측 손실", "revisit": "관측 보존량·전달 부하가 문제될 때"},
