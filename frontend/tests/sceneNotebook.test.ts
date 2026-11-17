@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { getNotebookStartNotice, prepareNotebookStart, syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, readRestoreArchives, joinSceneNotebook, completeNotebookMcpTask, buildSceneNotebookClose, notebookRestoreGeneration, writeNotebookProgress, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
-import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest, initSceneStore } from "../src/lib/sceneStore";
+import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest, initSceneStore, resetSceneStoreForTest, seedLegacyLayoutForTest } from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const scene = (id = "s", name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
@@ -131,10 +131,10 @@ it.each(["old generation", "G2 blocked", "held large shrunk", "legacy fork"])("k
   if (kind === "legacy fork") localStorage.setItem("mvhub.sceneBackupBase:local:s", JSON.stringify({ fork: { id: "old-copy" } }));
   else localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: kind === "old generation" ? "G1" : fake.restoreGeneration,
     blockedIds: kind === "old generation" ? [] : ["s"], uncopied: kind === "held large shrunk" ? ["s"] : [], raws: { s: hash(JSON.stringify(original)) }, originals: [] }));
-  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
   expect(readWorkingBucket(bucket)).toEqual([]);
   expect(fake.calls.every((call) => !call.body)).toBe(true);
-  expect(getNotebookStartNotice()).toBeNull();
+  expect(getNotebookStartNotice()).toMatchObject({ kind: "confirm" });
   expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [original] } }] });
   await syncSceneNotebook();
   expect(fake.rows.size).toBe(0);
@@ -149,7 +149,61 @@ it.each(["local", "hub", "restore", "mirror hold"])("confirmation is not reused 
   if (kind === "mirror hold") localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["s"] }));
   const result = await syncSceneNotebook({ startApproval: approval });
   expect(fake.calls.filter((call) => call.path.endsWith("/start"))).toEqual([]);
-  expect(result.status).toBe(kind === "mirror hold" ? "ready" : "local_only");
+  expect(result.status).toBe("local_only");
+});
+it.each(["a", "b"])("held B opens first and waits; %s confirms first and the other browser joins with its original preserved", async (first) => {
+  const originalB = [scene("held", "B old canvas")], originalA = [scene("fresh", "A unsent canvas")];
+  const hub = scene("hub", "saved canvas"); fake.save(hub);
+  const recovery = JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["held"], raws: {} });
+  await writeScenesStore({ [bucket]: originalB }); localStorage.setItem("mvhub.mirrorRecovery:local", recovery);
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ afterRestore: true, hubCount: 1 });
+  expect(fake.book).toBeNull();
+  expect(fake.calls.filter((c) => c.path.endsWith("/start"))).toEqual([]);
+  const frozen = await sceneNotebookTransaction([notebookKey("nr", "local")], (all, meta) =>
+    ({ changed: false, value: { scenes: all, meta } }));
+  if (!frozen.ok) throw Error("profile B read failed");
+  const load = async (profile: typeof frozen.value, mirror: string | null) => {
+    resetSceneStoreForTest(); seedLegacyLayoutForTest(profile.scenes, profile.meta);
+    expect((await initSceneStore(() => null, null, () => true)).kind).toBe("ready"); setSceneWriteGate(() => false);
+    localStorage.removeItem("mvhub.mirrorRecovery:local"); if (mirror) localStorage.setItem("mvhub.mirrorRecovery:local", mirror);
+    setSceneNotebookTokenProvider(() => token);
+  };
+  await load({ scenes: { [bucket]: originalA }, meta: {} }, null);
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(readWorkingBucket(bucket)).toEqual(originalA); expect(fake.book).toBeNull();
+  if (first === "a") {
+    expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+    await load(frozen.value, recovery);
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect(readWorkingBucket(bucket)).toEqual(originalA);
+    const archives = await readRestoreArchives("local");
+    expect(archives.ok && archives.value.some((a) => JSON.stringify(a.scenes[bucket]) === JSON.stringify(originalB))).toBe(true);
+  } else {
+    await load(frozen.value, recovery);
+    expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+    expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+    expect((await state()).joined?.notebookId).toBe(fake.book);
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: originalB } }] });
+    await load({ scenes: { [bucket]: originalA }, meta: {} }, null);
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect(readWorkingBucket(bucket)).toEqual([hub]);
+    expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: originalA } }] });
+  }
+  expect(fake.order).toEqual(first === "a" ? ["fresh"] : ["hub"]);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+});
+it("a new local scene after empty restore needs confirmation for the current canvas", async () => {
+  await writeScenesStore({ [bucket]: [scene("held")] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "old", blockedIds: ["held"] }));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  edit([scene("new")]); await settleSceneStoreForTest();
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ count: 1, hubCount: 0 });
+  expect(getNotebookStartNotice()).not.toHaveProperty("afterRestore");
+  expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+  expect(fake.order).toEqual(["new"]);
 });
 it("confirmation settles active input before selecting the final raw snapshot", async () => {
   await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
@@ -259,7 +313,7 @@ it.each(["local", "project", "held"])("changes during approved staging invalidat
   const result = await syncSceneNotebook({ startApproval: approval });
   expect(fake.book).toBeNull();
   expect(fake.calls.filter((call) => call.path.endsWith("/start") && call.body.commit)).toEqual([]);
-  expect(result.status).toBe(kind === "held" ? "ready" : "local_only");
+  expect(result.status).toBe("local_only");
 });
 it.each(["lease", "account"])("approved start never writes when the owner changes during GET: %s", async (kind) => {
   await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
@@ -502,7 +556,7 @@ it("first join with different local scenes archives them before adopting the hub
 beforeEach(() => {
   const storage = new Map<string, string>();
   vi.stubGlobal("sessionStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
-  vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+  vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
   fake = new FakeHub(); hook = null; setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]);
   token = { account: "local", token: "token", generation: "g1" }; setSceneNotebookTokenProvider(() => token); setSceneWriteGate(() => false);
   vi.stubGlobal("crypto", {});

@@ -157,9 +157,10 @@ function CanvasNotebookStartNotice() {
       </> : <>
         <span><strong>{t("이 캔버스를 다른 브라우저에서도 쓸까요?")}</strong><br />
           {notice.changed && <>{t("캔버스가 바뀌어 다시 확인해 주세요")}<br /></>}
-          {t(notice.count === 0 ? "이 브라우저의 캔버스가 비어 있습니다. 이 PC 에 저장된 캔버스(씬 {count}개)를 불러와 다른 브라우저와 같이 쓸까요?" :
+          {t(notice.afterRestore ? "이 PC 에 저장된 캔버스(씬 {count}개)를 다른 브라우저와 같이 쓸까요? 이 브라우저에 있던 캔버스는 따로 보관했습니다." :
+            notice.count === 0 ? "이 브라우저의 캔버스가 비어 있습니다. 이 PC 에 저장된 캔버스(씬 {count}개)를 불러와 다른 브라우저와 같이 쓸까요?" :
             "지금 보이는 캔버스(씬 {count}개)가 이 PC 의 어느 브라우저에서 열어도 그대로 보이게 됩니다. 전에 저장돼 있던 캔버스는 따로 보관됩니다.")
-            .replace("{count}", String(notice.count === 0 ? notice.hubCount : notice.count))}</span>
+            .replace("{count}", String(notice.afterRestore || notice.count === 0 ? notice.hubCount : notice.count))}</span>
         <button type="button" className="settings-action ghost" disabled={busy} onClick={() => fold(questionKey)}>{t("나중에")}</button>
         <button type="button" className="settings-action canvas-notebook-confirm" data-notebook-action="start" disabled={busy} onClick={() => void start()}>{t(notice.count === 0 ? "불러오기" : "이 캔버스로 쓰기")}</button>
       </>}

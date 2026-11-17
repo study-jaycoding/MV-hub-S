@@ -68,7 +68,7 @@ async function changed() {
 }
 it("archives text, deletion, start and pending control data atomically before empty adoption", async () => {
   await changed();
-  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
   expect(readWorkingBucket(bucket)).toEqual([]);
   const archives = await readRestoreArchives("local");
   expect(archives.ok && archives.value).toHaveLength(1);
@@ -93,7 +93,7 @@ it("archive failure preserves the old text, generation and queues", async () => 
 it("untagged progress is archived even when the join already has the current generation", async () => {
   request.mockResolvedValue({ ...emptyBook(), restore_generation: "old" });
   await writeNotebookProgress("local", "write", null, { id: "untagged", requests: [] });
-  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
   const archives = await readRestoreArchives("local");
   expect(archives.ok && archives.value[0].controls['["nw","local"]']).toMatchObject({ id: "untagged" });
   expect(request.mock.calls.every(([, init]) => init.method === "GET")).toBe(true);

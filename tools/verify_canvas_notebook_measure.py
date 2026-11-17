@@ -88,6 +88,8 @@ def verify(report: dict) -> list[str]:
             expected_size = 5 * 1024 * 1024 + (transition["variant"] == "limit_over")
             if not isinstance(boundary, dict) or boundary.get("status") != "passed" or boundary.get("actual") != expected_size:
                 errors.append("measured UTF-8 size boundary required")
+        if transition.get("variant") == "held" and transition.get("start_order") not in {"a", "b"}:
+            errors.append("held-first requires confirmation order a or b")
         if transition.get("fault", "none") not in {"none", "lost_chunk", "lost_commit"}:
             errors.append("unknown first-transition fault")
         elif transition.get("fault", "none") != "none":
@@ -107,11 +109,19 @@ def verify(report: dict) -> list[str]:
                     errors.append(f"previous browser {name}: ordered raw fingerprints required")
             if transition.get("variant") in {"same_generation", "held"}:
                 try:
-                    recovery = json.loads(records["a"].get("mirrorRecovery") or "null")
+                    recovery = json.loads(records["b" if transition["variant"] == "held" else "a"].get("mirrorRecovery") or "null")
                     if not isinstance(recovery, dict) or not recovery.get("generation") or not isinstance(recovery.get("blockedIds"), list):
                         raise ValueError("mirror record missing")
                     if transition["variant"] == "held" and not recovery["blockedIds"]:
                         raise ValueError("actual held record missing")
+                    if transition["variant"] == "held":
+                        ordinary = json.loads(records["a"].get("mirrorRecovery") or "null")
+                        if not isinstance(ordinary, dict) or ordinary.get("generation") != recovery["generation"] or ordinary.get("blockedIds") != []:
+                            raise ValueError("A must have current unheld provenance")
+                        if checks.get("held_first", {}).get("actual") != ["b", "a"]:
+                            raise ValueError("B must actually open first")
+                        if checks.get("held_archive_before_confirmation", {}).get("actual") != [records["b"].get("scenes")]:
+                            raise ValueError("B original archive before confirmation required")
                     if transition["variant"] == "same_generation" and recovery["blockedIds"]:
                         raise ValueError("normal untransmitted edit cannot use held provenance")
                 except (TypeError, ValueError, AttributeError):

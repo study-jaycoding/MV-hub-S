@@ -11,6 +11,7 @@ Run with the repository venv, after building frontend/dist:
     --transition empty --start-order a
   # Repeat --transition equal/different/restored_unknown/same_generation/held/limit_exact/limit_over;
   # repeat --start-order b/simultaneous with different first canvases.
+  # --transition held always opens held B first; --start-order a/b chooses who confirms first.
 
 No default/source DB is opened or copied. Artifacts remain in a newly allocated
 temporary directory, printed on exit. Only this process's server/Chrome are stopped.
@@ -667,23 +668,30 @@ class Measurement:
                 "upserts": [{"id": s["id"], "name": s["name"], "data": json.dumps(s, ensure_ascii=False, separators=(",", ":"))} for s in mirror]}, "PUT")
             if code != 200:
                 raise RuntimeError("old mirror preparation failed")
-        a = await self.open(stack, "a", seeds, hold_mirror=True)
-        b = await self.open(stack, "b", [{**seeds[-1], "id": "prior-b", "name": "browser B original"}], hold_mirror=True)
+        recovery = f"localStorage.getItem({json.dumps('mvhub.mirrorRecovery:' + self.account)})"
+        b_seed = [{**seeds[-1], "id": "prior-b", "name": "browser B original"}]
+        if variant == "held":
+            b = await self.open(stack, "b", b_seed, hold_mirror=True)
+            await self.wait_local(b, lambda rows: len(rows) > 0)
+            self.hub.restore_fixture("measure-restored-G2", clear=True)
+            self.hub.start(checkout, legacy=checkout != REPO, writer=False)
+            await b.goto(self.hub.url, settle=.2)
+            if not await b.wait(f"JSON.parse({recovery} || 'null')?.generation === 'measure-restored-G2' && JSON.parse({recovery} || 'null')?.blockedIds?.length > 0", 20):
+                raise RuntimeError("old B did not produce an actual G2 blocked record")
+            code, _ = self.hub.request("/api/scenes/backup", {"project_id": "", "restore_generation": "measure-restored-G2",
+                "upserts": [{"id": s["id"], "name": s["name"], "data": json.dumps(s, ensure_ascii=False, separators=(",", ":"))} for s in seeds]}, "PUT")
+            if code != 200:
+                raise RuntimeError("restored G2 mirror preparation failed")
+            a = await self.open(stack, "a", seeds, hold_mirror=True)
+        else:
+            a = await self.open(stack, "a", seeds, hold_mirror=True)
+            b = await self.open(stack, "b", b_seed, hold_mirror=True)
         await self.wait_local(a, lambda rows: len(rows) == len(seeds))
         await self.wait_local(b, lambda rows: len(rows) > 0)
-        recovery = f"localStorage.getItem({json.dumps('mvhub.mirrorRecovery:' + self.account)})"
         if variant in {"same_generation", "held"}:
             if not await a.wait(f"!!{recovery}", 20):
                 raise RuntimeError("1011 browser's actual mirror generation record required")
-        if variant == "same_generation":
             await self.rename(a, "1011 untransmitted final edit")
-        if variant == "held":
-            # G1 -> empty restored G2 -> run the old mirror again to produce real blocked records.
-            self.hub.restore_fixture("measure-restored-G2", clear=True)
-            self.hub.start(checkout, legacy=checkout != REPO, writer=False)
-            await a.goto(self.hub.url, settle=.2)
-            if not await a.wait(f"JSON.parse({recovery} || 'null')?.blockedIds?.length > 0", 20):
-                raise RuntimeError("old mirror did not produce an actual G2 blocked record")
         before = {name: await self.local(page) for name, page in (("a", a), ("b", b))}
         records = {name: {"scenes": scene_fingerprints(before[name]), "mirrorRecovery": await page.eval(recovery),
                          "store_sha256": hashlib.sha256(json.dumps(await page.eval(READ_STORE), sort_keys=True).encode()).hexdigest()}
@@ -704,32 +712,34 @@ class Measurement:
                    and "scene_writer_confirm_v1" in self.hub.request("/api/auth/config")[1]["features"], True)
         for page in (a, b):
             await page.send("Page.removeScriptToEvaluateOnNewDocument", identifier=page.mirror_hold_script)
-        await a.goto(self.hub.url, settle=.2)
-        await self.ensure_canvas(a)
+        opened = []
+        for name, page in (("b", b), ("a", a)) if variant == "held" else (("a", a),):
+            await page.goto(self.hub.url, settle=.2)
+            await self.ensure_canvas(page)
+            opened.append(name)
+            if variant == "held" and not await page.wait("document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')", 30):
+                raise RuntimeError(f"held-first browser {name} confirmation missing")
         self.report["browser_version"] = await a.eval("navigator.userAgent")
         confirm = "document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')"
-        automatic = variant in {"equal", "held"}
+        automatic = variant == "equal"
         if automatic:
-            if variant == "equal":
-                book = await self.synced(a, 40)
-                self.check("before_confirmation", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
-            else:
-                await self.wait_local(a, lambda rows: not rows)
-                book = self.hub.request("/api/scenes/notebook")[1]
-                archives = dict(await a.eval(READ_STORE)).get(json.dumps(["nr", self.account], separators=(",", ":")), [])
-                self.check("before_confirmation", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [scene_fingerprints(before["a"])])
+            book = await self.synced(a, 40)
+            self.check("before_confirmation", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
             self.check("no_upload_before", await a.eval(f"!{confirm}"), True)
             self.check("confirmation", False, False)
         else:
             if not await a.wait(confirm, 30):
                 raise RuntimeError("first-start confirmation missing")
-            # 1011 B already has a real blocked record: its existing adopt path must run AFTER A starts.
-            if variant != "same_generation":
+            if variant not in {"same_generation", "held"}:
                 await b.goto(self.hub.url, settle=.2)
                 if not await b.wait(confirm, 30):
                     raise RuntimeError("second first-start confirmation missing")
             self.check("before_confirmation", {name: scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
-                       {name: scene_fingerprints(rows) for name, rows in before.items()})
+                       {name: scene_fingerprints(prior_hub if variant == "held" and name == "b" else rows) for name, rows in before.items()})
+            if variant == "held":
+                self.check("held_first", opened, ["b", "a"])
+                archives = dict(await b.eval(READ_STORE)).get(json.dumps(["nr", self.account], separators=(",", ":")), [])
+                self.check("held_archive_before_confirmation", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [scene_fingerprints(before["b"])])
             unchanged = self.hub.request("/api/scenes/notebook")[1]
             network = [row for page in (a, b) for row in await page.eval("window.__measureNetwork")]
             self.check("no_upload_before", {"not_started": unchanged["notebook_id"] is None,
@@ -766,12 +776,12 @@ class Measurement:
                 book = await self.synced(selected, 40)
             if args.transition_fault != "none":
                 self.check("response_loss", await selected.eval("window.__measureLostReplies"), 1)
-        not_started = variant in {"held", "limit_over"}
+        not_started = variant == "limit_over"
         rows = [json.loads(row["data"]) for row in book["items"] if not row.get("deleted_at")]
         by_id = {scene["id"]: scene for scene in rows}
         ordered = [by_id[sid] for sid in book["order"]["ids"]]
         if not_started:
-            self.check("selected_raw", scene_fingerprints(await self.local(a)), [] if variant == "held" else scene_fingerprints(before["a"]))
+            self.check("selected_raw", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
             self.check("join_generation", book["notebook_id"], None)
             self.check("other_browser_preserved", scene_fingerprints(await self.local(b)), scene_fingerprints(before["b"]))
             self.check("no_merge", rows, [])
@@ -781,7 +791,7 @@ class Measurement:
             actual = scene_fingerprints(ordered)
             if order == "simultaneous":
                 selected_name = next((name for name, fingerprints in candidates.items() if fingerprints == actual), "a")
-            self.check("selected_raw", actual, candidates[selected_name])
+            self.check("selected_raw", actual, scene_fingerprints(prior_hub) if variant == "held" and selected_name == "b" else candidates[selected_name])
             loser_name = "b" if selected_name == "a" else "a"
             loser = b if loser_name == "b" else a
             await loser.goto(self.hub.url, settle=.2)
@@ -795,11 +805,15 @@ class Measurement:
             joined = entries.get(json.dumps(["nj", self.account], separators=(",", ":")), {})
             self.check("join_generation", joined.get("restoreGeneration"), book["restore_generation"])
             archives = entries.get(json.dumps(["nr", self.account], separators=(",", ":")), [])
-            self.check("other_browser_preserved", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [candidates[loser_name]])
+            archived = [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives]
+            if variant == "held":
+                self.check("other_browser_preserved", archived, candidates[loser_name], candidates[loser_name] in archived)
+            else:
+                self.check("other_browser_preserved", archived, [candidates[loser_name]])
             self.check("no_merge", scene_fingerprints(await self.local(loser)), actual)
         archived_hub = [row["data"] for row in retained_rows(self.work) if row["reason"] == "before_start"]
         self.check("before_start", scene_fingerprints(sorted(archived_hub, key=lambda s: s["id"])),
-                   scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if variant not in {"equal", "held", "limit_over"} else [])
+                   scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if variant not in {"equal", "limit_over"} and not (variant == "held" and order == "b") else [])
         reconnect = b if not not_started else a
         old_store = dict(await reconnect.eval(READ_STORE))
         archive_keys = [key for key in old_store if key.startswith('["nr",') or key.startswith('["na",')]
@@ -1138,8 +1152,8 @@ def main() -> int:
         parser.error("first_transition requires --old-checkout (built isolated 0123 or 1011 checkout)")
     if args.transition_fault != "none" and (args.case != "first_transition" or args.transition not in {"empty", "different", "restored_unknown", "same_generation"} or args.start_order == "simultaneous"):
         parser.error("reply loss requires a first_transition confirmation variant and --start-order a or b")
-    if args.case == "first_transition" and (args.transition in {"equal", "held", "same_generation", "limit_exact", "limit_over"}) and args.start_order != "a":
-        parser.error("equal/held/same_generation/size boundaries require --start-order a; race order uses empty/different")
+    if args.case == "first_transition" and ((args.transition in {"equal", "same_generation", "limit_exact", "limit_over"} and args.start_order != "a") or (args.transition == "held" and args.start_order == "simultaneous")):
+        parser.error("equal/same_generation/size boundaries require a; held opens B first and accepts confirmation order a or b")
     if (args.baseline_report or args.baseline_checkout or args.max_slowdown is not None) and args.case != "performance":
         parser.error("baseline and slowdown options require --case performance")
     if args.max_slowdown is not None and (not math.isfinite(args.max_slowdown) or args.max_slowdown <= 0):

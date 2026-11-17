@@ -162,6 +162,18 @@ it.each(["write", "reopen"])("Later remains usable when session storage is block
     }
   } finally { storage.mockRestore(); }
 });
+it("an archived canvas asks before sharing the saved canvas in Korean and English", async () => {
+  await firstStartNotice();
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["mine"] }));
+  const saved = scene("saved");
+  request.mockResolvedValue({ ...emptyBook(), items: [{ id: saved.id, data: JSON.stringify(saved), deleted_at: null,
+    base: { history_id: "h", rev: 1, hash: hash(JSON.stringify(saved)) } }], order: { ids: [saved.id], rev: 0, history_id: "h" } });
+  await act(async () => { expect((await syncSceneNotebook()).reason).toBe("start_confirmation"); });
+  expect(host.querySelector(".canvas-notebook-start")?.textContent).toContain("이 PC 에 저장된 캔버스(씬 1개)를 다른 브라우저와 같이 쓸까요? 이 브라우저에 있던 캔버스는 따로 보관했습니다.");
+  expect(request.mock.calls.filter(([path]) => path.endsWith("/start"))).toEqual([]);
+  await act(async () => setLang("en"));
+  expect(host.querySelector(".canvas-notebook-start")?.textContent).toContain("This browser's previous canvas has been kept separately.");
+});
 it("Later does not fold the same-looking question on a different account", async () => {
   await firstStartNotice();
   await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "나중에")!.click());
@@ -309,11 +321,11 @@ it("notice does not read the archive on scene saves; a first-transition archive 
   expect(read).not.toHaveBeenCalled();
   // 첫 전환(새 복원 세대) — 로컬 변경이 보관되고 알림이 뜬다
   await writeNotebookProgress("local", "write", null, { id: "old-write", restoreGeneration: "old", requests: [{ restore_generation: "old" }] });
-  expect((await syncSceneNotebook()).status).toBe("ready");
+  await act(async () => { expect((await syncSceneNotebook()).reason).toBe("start_confirmation"); });
   await flush();
   expect(read).toHaveBeenCalled();
   // 이 브라우저는 옛 세대에 합류했던 것이라 묶음에 fromGeneration 이 있다 — '허브 기록이 바뀌어' 문구
-  expect(notice()?.textContent).toContain("저장된 캔버스가 백업에서 되돌려져 이 브라우저에만 있던 씬");
+  expect(host.textContent).toContain("저장된 캔버스가 백업에서 되돌려져 이 브라우저에만 있던 씬");
 });
 
 it("notice → picker → restore puts the scene on the canvas, hides the notice and reports local vs hub; account change closes the picker", async () => {

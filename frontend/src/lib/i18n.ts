@@ -11,6 +11,7 @@ const EN: Record<string, string> = {
   "지금 보이는 캔버스(씬 {count}개)가 이 PC 의 어느 브라우저에서 열어도 그대로 보이게 됩니다. 전에 저장돼 있던 캔버스는 따로 보관됩니다.": "The canvas you see now ({count} scenes) will look the same in any browser on this PC. The previously saved canvas will be kept separately.",
   "이 캔버스로 쓰기": "Use this canvas",
   "불러오기": "Load",
+  "이 PC 에 저장된 캔버스(씬 {count}개)를 다른 브라우저와 같이 쓸까요? 이 브라우저에 있던 캔버스는 따로 보관했습니다.": "Use the canvas saved on this PC ({count} scenes) with other browsers? This browser's previous canvas has been kept separately.",
   "이 브라우저의 캔버스가 비어 있습니다. 이 PC 에 저장된 캔버스(씬 {count}개)를 불러와 다른 브라우저와 같이 쓸까요?": "This browser's canvas is empty. Load the canvas saved on this PC ({count} scenes) and use it with other browsers?",
   "캔버스가 바뀌어 다시 확인해 주세요": "The canvas changed. Please confirm again.",
   "이제 이 PC 의 어느 브라우저에서 열어도 같은 캔버스가 보입니다.": "Any browser on this PC will now show the same canvas.",

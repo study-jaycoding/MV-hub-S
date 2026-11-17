@@ -206,12 +206,21 @@ def test_first_transition_rejects_ids_without_actual_previous_raw_fingerprints(m
     assert verify(value)
 
 
+def held_records(value):
+    records = value['previous_browser_records']
+    records['a']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': []})
+    records['b']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': ['b']})
+    for name, actual in [('held_first', ['b', 'a']), ('held_archive_before_confirmation', [records['b']['scenes']])]:
+        value['checks'][name] = {'status': 'passed', 'actual': actual, 'expected': actual}
+
+
 @pytest.mark.parametrize("variant", ["same_generation", "held"])
 def test_first_transition_requires_actual_previous_generation_record(variant):
     value = report("first_transition")
     value["transition"]["variant"] = variant
     assert verify(value)
-    value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": ["a"] if variant == "held" else []})
+    if variant == 'held': held_records(value)
+    else: value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": []})
     assert verify(value) == []
 
 
@@ -219,13 +228,53 @@ def test_first_transition_requires_actual_previous_generation_record(variant):
 def test_first_transition_variants_require_size_or_history_evidence(variant):
     value = report("first_transition")
     value["transition"]["variant"] = variant
-    if variant in {"same_generation", "held"}:
-        value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": ["a"] if variant == "held" else []})
+    if variant == 'held': held_records(value)
+    if variant == 'same_generation':
+        value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": []})
     if variant.startswith("limit_"):
         assert verify(value)
         size = 5 * 1024 * 1024 + (variant == "limit_over")
         value["checks"]["size_boundary"] = {"status": "passed", "actual": size, "expected": size}
     assert verify(value) == []
+
+
+@pytest.mark.parametrize('broken', ['open_order', 'archive', 'held_on_a', 'generation', 'confirmation_order'])
+def test_held_first_verifier_requires_b_provenance_order_and_preconfirmation_archive(broken):
+    value = report('first_transition'); value['transition'].update(variant='held', start_order='b')
+    held_records(value)
+    assert verify(value) == []
+    if broken == 'open_order':
+        value['checks']['held_first'].update(actual=['a', 'b'], expected=['a', 'b'])
+    if broken == 'archive': del value['checks']['held_archive_before_confirmation']
+    if broken == 'held_on_a':
+        value['previous_browser_records']['a']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': ['a']})
+        value['previous_browser_records']['b']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': []})
+    if broken == 'generation': value['previous_browser_records']['a']['mirrorRecovery'] = json.dumps({'generation': 'G1', 'blockedIds': []})
+    if broken == 'confirmation_order': value['transition']['start_order'] = 'simultaneous'
+    assert verify(value)
+
+
+@pytest.mark.parametrize('order', ['a', 'b'])
+def test_held_first_cli_accepts_b_first_with_either_confirmation_order(tmp_path, monkeypatch, order):
+    async def execute(args):
+        assert args.transition == 'held' and args.start_order == order
+        return 0
+    monkeypatch.setattr(measure, 'execute', execute)
+    monkeypatch.setattr(sys, 'argv', ['canvas_notebook.py', '--case', 'first_transition', '--old-checkout', str(tmp_path), '--transition', 'held', '--start-order', order])
+    assert measure.main() == 0
+
+
+@pytest.mark.parametrize('order', ['a', 'b'])
+def test_held_first_verifier_cli_requires_the_actual_preconfirmation_archive(tmp_path, order):
+    import subprocess
+    value = report('first_transition'); value['transition'].update(variant='held', start_order=order)
+    held_records(value)
+    path = tmp_path / 'held-first.json'
+    for expected in (0, 1):
+        if expected: del value['checks']['held_archive_before_confirmation']
+        path.write_text(json.dumps(value), encoding='utf-8')
+        result = subprocess.run([sys.executable, str(TOOLS / 'verify_canvas_notebook_measure.py'), str(path)], capture_output=True, text=True)
+        assert result.returncode == expected, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("fault", ["lost_chunk", "lost_commit"])
@@ -785,19 +834,23 @@ def test_isolated_restore_route_changes_generation_and_optionally_clears_only_fi
     with pytest.raises(Denied): asyncio.run(scope['restore_generation'](request))
 
 
-def test_same_generation_waits_for_a_before_upgrading_the_blocked_b_browser(tmp_path, monkeypatch):
+@pytest.mark.parametrize('variant,order', [('same_generation', 'a'), ('held', 'a'), ('held', 'b')])
+def test_first_transition_holds_b_until_selection_and_checks_both_confirmation_orders(tmp_path, monkeypatch, variant, order):
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
     instance = measure.Measurement('first_transition', tmp_path)
-    instance.transition_args = SimpleNamespace(old_checkout=tmp_path, transition='same_generation', start_order='a', transition_fault='none')
+    instance.transition_args = SimpleNamespace(old_checkout=tmp_path, transition=variant, start_order=order, transition_fault='none')
     seeds = measure.fixture()
     pages = {name: SimpleNamespace(goto=AsyncMock(), wait=AsyncMock(return_value=True), send=AsyncMock(), mirror_hold_script='hold') for name in ('a', 'b')}
     class Selected(Exception): pass
     async def choose(_selector): raise Selected()
     pages['a'].click = choose
+    pages['b'].click = choose
+    original_b = [{**seeds[-1], 'id': 'prior-b'}]
     async def evaluate(name, script):
-        if script == measure.READ_STORE: return []
+        if script == measure.READ_STORE:
+            return [(json.dumps(['nr', instance.account], separators=(',', ':')), [{'scenes': {instance.bucket: original_b}}])] if variant == 'held' and name == 'b' and pages['b'].goto.await_count >= 2 else []
         if script == 'window.__measureNetwork': return []
         return json.dumps({'generation': 'G1', 'blockedIds': ['prior-b'] if name == 'b' else []})
     for name, page in pages.items():
@@ -805,16 +858,22 @@ def test_same_generation_waits_for_a_before_upgrading_the_blocked_b_browser(tmp_
         page.eval = run_eval
     instance.open = AsyncMock(side_effect=lambda _stack, name, *_a, **_k: pages[name])
     instance.wait_local = AsyncMock(); instance.rename = AsyncMock(); instance.ensure_canvas = AsyncMock()
-    async def local(page): return seeds if page is pages['a'] else [{**seeds[0], 'id': 'prior-b'}]
+    async def local(page):
+        return seeds if page is pages['a'] or (variant == 'held' and pages['b'].goto.await_count >= 2) else original_b
     instance.local = local
     instance.hub.start = Mock(); instance.hub.stop = Mock()
+    instance.hub.restore_fixture = Mock()
     def request(path, *_args):
         if path == '/api/auth/config': return 200, {'features': ['scene_writer_confirm_v1']}
         return 200, {'restore_generation': 'G1', 'notebook_id': None, 'items': [{'data': json.dumps(s)} for s in seeds]}
     instance.hub.request = request
     monkeypatch.setattr(measure, 'validate_checkout', lambda _p: tmp_path)
     with pytest.raises(Selected): asyncio.run(instance.first_transition(None, seeds))
-    assert instance.open.call_args_list[1].args[2][0]['cards'] == seeds[-1]['cards']
-    pages['b'].goto.assert_not_awaited()
+    b_call = next(call for call in instance.open.call_args_list if call.args[1] == 'b')
+    assert b_call.args[2][0]['cards'] == seeds[-1]['cards']
+    if variant == 'same_generation': pages['b'].goto.assert_not_awaited()
+    else:
+        assert instance.report['checks']['held_first']['actual'] == ['b', 'a']
+        assert instance.report['checks']['held_archive_before_confirmation']['status'] == 'passed'
     assert instance.report['checks']['before_confirmation']['status'] == 'passed'
     assert instance.report['checks']['no_upload_before']['status'] == 'passed'

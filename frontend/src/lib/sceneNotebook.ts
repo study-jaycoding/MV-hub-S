@@ -25,7 +25,7 @@ export interface NotebookBucket {
   states: Record<string, NotebookSceneState>;
   order: SceneOrderState;
 }
-export interface NotebookJoin { notebookId: string; history: string; restoreGeneration?: string }
+export interface NotebookJoin { notebookId: string; history: string; restoreGeneration?: string; cleanUpgrade?: true }
 export interface NotebookProgress { id: string; [field: string]: unknown }
 export interface NotebookSnapshot {
   buckets: Record<string, NotebookBucket>;
@@ -100,7 +100,7 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       archived = false; // 다시 도는 거래면 앞 시도의 표시를 지운다
       const joined = meta[key("nj", account)] as NotebookJoin | undefined;
       const staleProgress = [meta[key("ns", account)], meta[key("nw", account)]].some((value) => value && (value as NotebookProgress).restoreGeneration !== book.restore_generation);
-      if (joined?.restoreGeneration === book.restore_generation && !staleProgress) return { changed: false, value: false };
+      if (joined?.restoreGeneration === book.restore_generation && !staleProgress && (joined.notebookId !== "" || joined.cleanUpgrade)) return { changed: false, value: false };
       const before = shownScenes(all, account);
       const scenes = Object.fromEntries(Object.entries(all).filter(([bucket]) => belongs(bucket, account)));
       const conflicts = ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => belongs(item.bucket, account));
@@ -124,11 +124,13 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       if (cleanUpgrade) {
         for (const row of book.items) meta[key("b", bucket, row.id)] = fromBase(row.base);
         meta[key("ob", bucket)] = { base: incoming.order, dirty: unordered ? newSceneIntentId() : null } satisfies SceneOrderState;
-        meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation } satisfies NotebookJoin;
+        meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation, cleanUpgrade: true } satisfies NotebookJoin;
         return { changed: true, value: false };
       }
-      if (!book.notebook_id && !joined?.restoreGeneration && !staleProgress && !restored) {
+      if (!book.notebook_id && !staleProgress &&
+          (joined?.restoreGeneration === book.restore_generation || (!joined?.restoreGeneration && !restored))) {
         const offer: NotebookStartOffer = { kind: "confirm", id: newSceneIntentId(), account, count: localScenes.length, hubCount: incoming.scenes.length,
+          ...(joined?.restoreGeneration && book.hasLiveRows ? { afterRestore: true } : {}),
           provenanceFingerprint: startFingerprint(all, meta, account, true),
           localFingerprint: startFingerprint(all, meta, account), bookFingerprint: bookFingerprint(book) };
         const progress = meta[key("ns", account)] as PendingStart | undefined;
@@ -392,6 +394,7 @@ export interface NotebookSyncResult {
 export interface NotebookStartOffer {
   kind: "confirm"; id: string; account: string; count: number; hubCount: number; provenanceFingerprint: string; localFingerprint: string; bookFingerprint: string;
   changed?: boolean;
+  afterRestore?: true;
 }
 export type NotebookStartApproval = NotebookStartOffer;
 type NotebookStartNotice = NotebookStartOffer | { kind: "started"; id: string; account: string };
@@ -747,12 +750,18 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
         let local = await snapshot();
         let book = await getBook();
         let firstStart: PendingStart["firstStart"];
-        if (local.joined?.restoreGeneration !== book.restore_generation || [local.starting, local.writing].some((value) => value && value.restoreGeneration !== book.restore_generation)) {
+        if (local.joined?.restoreGeneration !== book.restore_generation || (local.joined?.notebookId === "" && !local.joined.cleanUpgrade) ||
+            [local.starting, local.writing].some((value) => value && value.restoreGeneration !== book.restore_generation)) {
           const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart, lease.generation, approval);
           if (!adopted.ok) throw new Error("local_store_failed");
           if (typeof adopted.value === "boolean") {
             if (startNotice?.account === account) setStartNotice(null);
             mcpCompletions.clear();
+            if (!book.notebook_id && !(await snapshot()).joined?.cleanUpgrade) {
+              changed = true;
+              visibleChanged ||= adopted.value;
+              continue;
+            }
             return { status: "ready", changed: true, visibleChanged: adopted.value };
           }
           if (!adopted.value.approved) {
@@ -851,11 +860,18 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
                 Array.isArray(progress.scenes) && progress.scenes.length === 0) {
               const advanced = await sceneNotebookTransaction([key("ns", account)], (_all, meta) => {
                 const order = meta[key("ob", bucket)] as SceneOrderState | undefined;
-                if ((meta[key("nj", account)] as NotebookJoin | undefined)?.restoreGeneration !== book.restore_generation ||
-                    !equal(meta[key("ns", account)], progress) || !order?.dirty || order.base?.history !== book.history_id ||
-                    order.base.rev + 1 !== book.order.rev) return { changed: false, value: null };
-                meta[key("ob", bucket)] = { ...order, base: { history: book.history_id, rev: book.order.rev } } satisfies SceneOrderState;
-                return { changed: true, value: null };
+                const joined = meta[key("nj", account)] as NotebookJoin | undefined;
+                if (joined?.restoreGeneration !== book.restore_generation || !equal(meta[key("ns", account)], progress)) return { changed: false, value: null };
+                let changed = false;
+                if (!joined.cleanUpgrade) {
+                  meta[key("nj", account)] = { ...joined, notebookId: book.notebook_id! } satisfies NotebookJoin;
+                  changed = true;
+                }
+                if (order?.dirty && order.base?.history === book.history_id && order.base.rev + 1 === book.order.rev) {
+                  meta[key("ob", bucket)] = { ...order, base: { history: book.history_id, rev: book.order.rev } } satisfies SceneOrderState;
+                  changed = true;
+                }
+                return { changed, value: null };
               }, guard);
               if (!advanced.ok) throw new Error("local_store_failed");
             }
