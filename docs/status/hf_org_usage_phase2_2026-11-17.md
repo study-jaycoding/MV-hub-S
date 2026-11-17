@@ -780,3 +780,149 @@ npm.cmd --prefix D:\ClaudeCode\work\hf-org-usage-p2\frontend run build -- --conf
 프로젝트 문서: 리뷰 6건의 반영·시험·성능·미확인을 이 절에 남겼다.
 기억: 없음. 개인 설정/기억 변경은 없다.
 볼트: 없음. 프로젝트를 지워도 유지할 별도 지식 기록 대상은 없다.
+
+## 통합(총괄, 2026-11-17)
+
+- 독립 리뷰: 새 Claude 세션 `74b576e2`(opus·Read/Grep/Glob 만) 1차 CHANGES(중간 1·낮음 5) → Codex `01a1e72b` 반영(`25deb397`) → 같은 세션 재확인 PASS(새 낮음 문구 2) → 총괄 문구 수정(`7dfed430`, '사용은 {기준}'·'합계에 안 든 기록 N건' — 내부 용어 빼기).
+- 샌드박스 밖 전체 시험(작업실, `25deb397` 백엔드·`7dfed430` 프런트): 백엔드 11,517 통과·2 실패(`test_backup_retention.py::test_worker_queue_holds_set_while_copying`·`test_windows_drag_worker.py::test_mouse_release_cancels_a_helper_that_never_requests_drop` — 다른 작업과 겹친 시간의 타이밍 흔들림, 두 파일 단독 재실행 85 통과)·프런트 579파일 7,681 통과.
+- 통합 대상: 브랜치 `codex/hf-org-usage-p2` 의 `7dfed430`(dev `f4fa6462` 를 병합한 위). 아래 계약의 시험 기록은 dev 작업 트리에서 받는다.
+
+```vibe-intent
+{
+  "schema": 1,
+  "id": "hf-org-usage-phase2-20261117",
+  "root": "D:/ClaudeCode/MV-hub-S-dev",
+  "owner": {
+    "host": "codex",
+    "session": "01a1e72b-48c6-73d3-8667-1eaa555da3de"
+  },
+  "risk": {
+    "level": "major",
+    "reason": "개인·그룹·관리 표·대시보드의 크레딧 사용액 기준(공유 숫자 계약)을 바꾸고 본인 전용 사용 내역 조회를 새로 더한다(기존 권한은 유지) — 스키마 변경은 없다."
+  },
+  "goal": "공유 서버가 수집한 힉스필드 조직 사용량의 환불 뺀 API 순값(실패를 따로 0 으로 만들지 않음 — API 가 전액 환불한 실패만 0)을 계정 메뉴 사용·남은 몫, 새 '내 사용량' 창(요약·만든 곳·건별 목록, 관리자도 본인 것만), 그룹 합계·관리 표·회원 대시보드의 사용액 기준으로 쓴다. API 에 아직 없는 MV 기록은 60분 동안만 ≈ 견적으로 보이고 넘으면 미확인 건수로 남긴다. 미수집·식별 실패는 기존 MV 기록 계산(facts)으로 대체하고 0 으로 보이지 않으며, 혼합은 mixed 로 표시한다. 그룹 이동은 현재 소속·현재 그룹 기간으로 이어 센다. API 금액을 팩트·로컬 real_credits 에 쓰지 않는다. 제외: 카드 금액(3단계)·1b 텔레메트리·생성 차단·스키마 변경·운영 키 등록·배포.",
+  "touched_paths": [
+    "backend/app/hf_org_usage_error.py",
+    "backend/app/manage_db.py",
+    "backend/app/repo/hf_org_usage.py",
+    "backend/app/repo/manage_credit_plan.py",
+    "backend/app/repo/manage_member_table.py",
+    "backend/app/repo/manage_quota.py",
+    "backend/app/repo/workspace_console.py",
+    "backend/app/routers/manage_quota.py",
+    "backend/app/services/hf_org_usage_key.py",
+    "backend/app/usecases/hf_org_usage.py",
+    "backend/tests/test_hf_org_usage_quota.py",
+    "backend/tests/test_manage_edit_conflicts.py",
+    "backend/tests/test_manage_my_quota.py",
+    "backend/tests/test_proxy_ownership.py",
+    "docs/CODE_MAP.md",
+    "docs/CREDIT_QUOTA_DESIGN.md",
+    "docs/inventory/db_tables.md",
+    "docs/inventory/endpoints.md",
+    "frontend/src/components/AccountMenu.tsx",
+    "frontend/src/components/MyUsageWindow.tsx",
+    "frontend/src/components/common/UsageBasis.tsx",
+    "frontend/src/components/manage/CreditPoolSection.tsx",
+    "frontend/src/components/manage/MemberTable.tsx",
+    "frontend/src/components/manage/WorkspaceUsageDashboard.tsx",
+    "frontend/src/components/manage/console/ConsoleSubView.tsx",
+    "frontend/src/lib/creditPlan.ts",
+    "frontend/src/lib/creditUsage.ts",
+    "frontend/src/lib/i18n.ts",
+    "frontend/src/lib/memberTable.ts",
+    "frontend/src/lib/myCreditQuota.ts",
+    "frontend/src/lib/myUsage.ts",
+    "frontend/src/lib/workspaceConsole.ts",
+    "frontend/src/styles/my-usage.css",
+    "frontend/tests/accountMenuCredits.test.tsx",
+    "frontend/tests/memberTable.test.tsx",
+    "frontend/tests/myUsageWindow.test.tsx",
+    "frontend/tests/workspaceUsageDashboardFetch.test.tsx"
+  ],
+  "criteria": [
+    {
+      "id": "quota",
+      "success": "backend/tests/test_hf_org_usage_quota.py·test_manage_my_quota.py·test_manage_edit_conflicts.py·test_proxy_ownership.py 통과 — API 금액·facts 차등·그룹 이동·범위 일치·basis 대체·꼬리·견적·본인 전용 조회·중계·성능",
+      "failure": "실패",
+      "required": true,
+      "verification": [
+        "b31c93aaaebf4d91a5cd6946f1aed985"
+      ]
+    },
+    {
+      "id": "regress",
+      "success": "기존 몫·관리 표·서브스페이스·조직 사용량 1단계·스키마 호환 시험(test_credit_quota·test_credit_quota_advisory·test_credit_plan·test_manage_member_table·test_workspace_console·test_hf_org_usage_comparison·test_hf_org_usage_repository·test_hf_org_usage_identity·test_hf_org_usage_client·test_hf_org_usage_key_routes·test_hf_org_usage_collector·test_architecture_boundaries·test_schema_compat) 통과 — import 순환 재발 없음 포함",
+      "failure": "실패",
+      "required": true,
+      "verification": [
+        "0702b39562f5444b97418c4ee169c2fb"
+      ]
+    },
+    {
+      "id": "frontend",
+      "success": "프런트 시험(myUsageWindow·accountMenuCredits·memberTable·workspaceUsageDashboardFetch·consoleSubViewReload·myCreditQuota·myCreditQuotaHook·creditPlan·workspaceConsole) 통과 — 출처 표시·0 타일 없음·늦은 응답 폐기·구서버 문구",
+      "failure": "실패",
+      "required": true,
+      "verification": [
+        "5b402202f7084ebf86ba7869fc3c36c1"
+      ]
+    },
+    {
+      "id": "build",
+      "success": "프런트 경계 검사(lint:architecture)와 타입 검사 포함 빌드 통과",
+      "failure": "실패",
+      "required": true,
+      "verification": [
+        "bb4a8427f1bd48b6a5f46af024d0400c"
+      ]
+    },
+    {
+      "id": "inventory",
+      "success": "tools/gen_inventory.py --check 와 tools/check_code_map.py 통과",
+      "failure": "실패",
+      "required": true,
+      "verification": [
+        "9cc9fd294a0f484986585704d29c152b"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "choice": "조직 API 기준 + 범위별 basis 판정(api|facts|mixed|unavailable), 꼬리는 지금 시각 가까운 짧은 구간만, 견적은 60분 표시 유효시간",
+      "why": "Jay 11-17 결정(계정 메뉴·내 사용량 창·관리 화면 함께) + Codex 설계 확정 01a1e71f(C1~C10) — 미수집을 0 으로 보이지 않고 이중 계산·누락을 막는다",
+      "alternative": "api_from 단일 판정·꼬리 2일 무조건 허용(초안 v0.1) — 반례로 기각",
+      "revisit": "API 반영 지연을 실측한 뒤 60분 값, 1b 텔레메트리로 '만든 곳' 정확화"
+    }
+  ],
+  "evidence": {
+    "target": {
+      "kind": "revision",
+      "revision": "7dfed430c79e77d0efcbf270e1fc57b5783a1274"
+    },
+    "consensus": [
+      {
+        "host": "codex",
+        "session": "01a1e71f-0043-7a30-8550-95578e35c03b",
+        "transcript": "C:/Users/FX-PC06/.codex/sessions/2026/11/17/rollout-2026-11-17T10-28-52-01a1e71f-0043-7a30-8550-95578e35c03b.jsonl"
+      },
+      {
+        "host": "claude",
+        "session": "7834ca0a-565b-4f55-8447-415436dd5be5",
+        "transcript": "C:/Users/FX-PC06/.claude/projects/D--ClaudeCode/7834ca0a-565b-4f55-8447-415436dd5be5.jsonl"
+      }
+    ],
+    "design_sessions": [
+      {
+        "host": "claude",
+        "session": "46356923-b93c-41d7-8cae-e4f4ac5ae43a"
+      }
+    ],
+    "review": {
+      "host": "claude",
+      "session": "74b576e2-b481-4203-bfd9-38c2e4b1017f",
+      "transcript": "C:/Users/FX-PC06/.claude/projects/D--ClaudeCode/74b576e2-b481-4203-bfd9-38c2e4b1017f.jsonl"
+    }
+  }
+}
+```
