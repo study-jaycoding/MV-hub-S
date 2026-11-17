@@ -2,13 +2,7 @@
 from hashlib import sha256
 
 from . import comfy_team_key
-
-
-class UsageError(Exception):
-    def __init__(self, code: str, *, retry_after: int = 0):
-        self.code = code
-        self.retry_after = retry_after
-        super().__init__(code)
+from ..hf_org_usage_error import UsageError
 
 
 def protect_key(value: str) -> str:

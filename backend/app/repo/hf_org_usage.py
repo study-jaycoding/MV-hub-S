@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 
 from .. import manage_db
-from ..services.hf_org_usage_key import UsageError
+from ..hf_org_usage_error import UsageError
 
 DAY_MS = 86_400_000
 LEASE_MS = 90_000
@@ -398,3 +398,253 @@ def refresh_identity_links(org_id: str) -> None:
         actors = {r[0] for r in conn.execute("SELECT DISTINCT actor_user_id FROM hf_org_usage_row r "
                   "JOIN hf_org_usage_window w ON w.id=r.window_id WHERE w.org_id=?", (org_id,)) if r[0]}
         reconcile_identity_links(conn, org_id, actors, accounts, now_ms())
+
+
+def actor_identity(actor: str | None, accounts: list[dict], links: list[dict]) -> tuple[str | None, str | None]:
+    """Pure identity evidence shared by the administrator and personal read models."""
+    return _actor_identity(actor, [a for a in accounts if a.get('creator_uid') == actor],
+                           next((link for link in links if link['actor_user_id'] == actor), None))
+
+
+def _actor_identity(actor, matches, link):
+    if not actor or actor == 'local' or actor.startswith('acct:'):
+        return None, 'identity_unlinked'
+    if len(matches) > 1 or link and link['state'] == 'conflict':
+        return None, 'identity_conflict'
+    if len(matches) != 1 or matches[0]['status'] != 'approved':
+        return None, 'identity_unlinked'
+    email = matches[0]['email']
+    if link and link['account_email'] and link['account_email'] != email:
+        return None, 'identity_conflict'
+    return email, None
+
+
+def usage_days(windows: list[dict], start: int, end: int, at: int) -> tuple[list[dict], str | None]:
+    """Only a short, contiguous tail may be missing; an empty success is evidence."""
+    if start < 1769958000000:  # 2026-02-02 KST: February 1 is an incomplete API day.
+        return [], 'before_api_start'
+    days = {w['start_ms']: w for w in windows if w['kind'] == 'day' and w['end_ms'] == w['start_ms'] + DAY_MS}
+    selected = []
+    effective_end = min(end, at)
+    coverage = start
+    gap = False
+    for day in range(start, effective_end, DAY_MS):
+        w = days.get(day)
+        if not w or not w['snapshot_version']:
+            if day == start or day < today_start(at) - DAY_MS:
+                return selected, 'missing_day'
+            gap = True
+            continue
+        if gap:
+            return selected, 'tail_gap'
+        if w.get('contract_version', 1) != 1:
+            return selected, 'contract_mismatch'
+        if not w['success_complete'] or w['actual_start_ms'] != day:
+            return selected, 'incomplete_day'
+        if coverage != day:
+            return selected, 'tail_gap'
+        selected.append(w)
+        coverage = w['actual_end_ms'] or day
+        if coverage < min(w['end_ms'], effective_end):
+            if day < today_start(at) - DAY_MS:
+                return selected, 'unfinished_day'
+            gap = True
+    if not selected:
+        return [], 'missing_day' if start < at else 'future_period'
+    if coverage < effective_end and at - coverage > 3_600_000:
+        return selected, 'collection_stale'
+    return selected, None
+
+
+class CreditUsageSnapshot:
+    """One bounded read snapshot per request; no collection, link writes or persistent cache."""
+
+    def __init__(self, content_conn, workspace_ids: list[str], start: int, end: int, *, at=None, ranges=None):
+        self.at = now_ms() if at is None else at
+        self.accounts = [dict(r) for r in content_conn.execute('SELECT email,creator_uid,status FROM account')]
+        self.content_at = now_ms()
+        self.workspace_ids = workspace_ids
+        self.ranges = set(ranges or [(start, end)])
+        self.cache = {}
+        with manage_db.get_connection() as conn:
+            conn.execute('BEGIN')
+            self.config = read_config(conn)
+            org = self.config['org_id']
+            self.links = [dict(r) for r in conn.execute('SELECT * FROM hf_org_identity_link WHERE org_id=?', (org,))]
+            self.windows = [dict(r) for r in conn.execute(
+                "SELECT * FROM hf_org_usage_window WHERE org_id=? AND kind='day' AND start_ms>=? AND start_ms<?",
+                (org, start, min(end, self.at)))]
+            self.checks = [dict(r) for r in conn.execute(
+                'SELECT * FROM hf_org_usage_check WHERE org_id=? AND start_ms<? AND end_ms>?', (org, end, start))]
+            self.rows = []
+            self.duplicates = []
+            if workspace_ids:
+                spaces = ','.join('?' for _ in workspace_ids)
+                self.rows = [dict(r) for r in conn.execute(
+                    'SELECT r.* FROM hf_org_usage_window w JOIN hf_org_usage_row r ON r.window_id=w.id '
+                    "WHERE w.org_id=? AND w.kind='day' AND w.start_ms>=? AND w.start_ms<? "
+                    f'AND r.workspace_id IN ({spaces})', (org, start, min(end, self.at), *workspace_ids))]
+                self.duplicates = [json.loads(r[0]) for r in conn.execute(
+                    'SELECT json_group_array(w.start_ms) FROM hf_org_usage_row r '
+                    'JOIN hf_org_usage_window w ON w.id=r.window_id '
+                    "WHERE w.org_id=? AND w.kind='day' AND w.start_ms>=? AND w.start_ms<? "
+                    'GROUP BY r.row_id HAVING COUNT(*)>1', (org, start, min(end, self.at)))]
+            self.facts = manage_db.credit_facts(conn, workspace_ids, start, end)
+            self.fact_totals = {(r['workspace_id'], r['account_email'], r['start_ms'], r['end_ms']): r
+                                for r in manage_db.facts_totals(conn, workspace_ids, sorted(self.ranges))}
+            jobs = {f['job_id'] for f in self.facts if f['job_id']} | {r['generation_id'] for r in self.rows if r['generation_id']}
+            self.api_jobs = {}
+            self.fact_jobs = set()
+            self.job_owners = {}
+            # The lookup is bounded by candidate jobs, including cross-space/period observations.
+            ordered = sorted(jobs)
+            for offset in range(0, len(ordered), 800):
+                chunk = ordered[offset:offset + 800]
+                marks = ','.join('?' for _ in chunk)
+                for r in conn.execute(
+                    f'SELECT DISTINCT job_id,account_email,creator_uid FROM team_generation_fact WHERE job_id IN ({marks})', chunk):
+                    self.fact_jobs.add(r['job_id'])
+                    self.job_owners.setdefault(r['job_id'], set()).add((r['account_email'], r['creator_uid']))
+                # Candidate jobs must drive this join, rather than every historical window.
+                for r in conn.execute(
+                    'SELECT r.generation_id,r.actor_user_id FROM hf_org_usage_row r INDEXED BY idx_hf_org_generation '
+                    'CROSS JOIN hf_org_usage_window w ON w.id=r.window_id '
+                    f'WHERE r.generation_id IN ({marks}) AND w.org_id=? '
+                    "AND w.kind='day' AND w.contract_version=1 AND w.success_complete=1 AND w.snapshot_version>0 "
+                    'AND w.end_ms=w.start_ms+? AND w.start_ms<? '
+                    'AND w.actual_start_ms=w.start_ms AND w.actual_end_ms>=MIN(w.end_ms,?) '
+                    'AND w.start_ms>=1769958000000 '
+                    'AND NOT EXISTS(SELECT 1 FROM hf_org_usage_check c WHERE c.org_id=w.org_id '
+                    "AND c.start_ms<w.end_ms AND c.end_ms>w.start_ms AND c.state IN ('mismatch','duplicate'))",
+                    (*chunk, org, DAY_MS, self.at, self.at - 3_600_000)):
+                    self.api_jobs.setdefault(r['generation_id'], set()).add(r['actor_user_id'])
+            self.manage_at = now_ms()
+        self.by_actor = {}
+        self.by_email = {}
+        accounts_by_actor = {}
+        for account in self.accounts:
+            accounts_by_actor.setdefault(account['creator_uid'], []).append(account)
+        links_by_actor = {link['actor_user_id']: link for link in self.links}
+        actors = set(accounts_by_actor) | set(links_by_actor) | {r['actor_user_id'] for r in self.rows}
+        self.actor_identities = {actor: _actor_identity(actor, accounts_by_actor.get(actor, []), links_by_actor.get(actor))
+                                 for actor in actors}
+        self.identities = {}
+        for account in self.accounts:
+            actor = account['creator_uid']
+            resolved, reason = self.actor_identities[actor]
+            self.identities[account['email']] = (actor, reason if resolved == account['email'] else reason or 'identity_conflict')
+        for row in self.rows:
+            self.by_actor.setdefault((row['workspace_id'], row['actor_user_id']), []).append(row)
+        self.observed_emails = set()
+        for _, actor in self.by_actor:
+            email, _ = self.actor_identities[actor]
+            if email:
+                self.observed_emails.add(email)
+        for fact in self.facts:
+            self.by_email.setdefault((fact['workspace_id'], fact['account_email']), []).append(fact)
+
+    def identity(self, email):
+        return self.identities.get(email, (None, 'identity_unlinked'))
+
+    def total(self, workspace_id, email, start, end):
+        if (start, end) not in self.ranges or workspace_id not in self.workspace_ids:
+            raise ValueError('usage range was not loaded')
+        key = (workspace_id, email, start, end)
+        if key in self.cache:
+            return self.cache[key]
+        selected, reason = usage_days(self.windows, start, end, self.at)
+        actor, identity_reason = self.identity(email) if email is not None else (None, None)
+        if not self.config['org_id']:
+            reason = 'not_configured'
+        elif self.config['restore_paused']:
+            reason = 'restore_paused'
+        elif not self.config['enabled']:
+            reason = 'collection_disabled'
+        elif any(sum(start <= day < min(end, self.at) for day in days) > 1 for days in self.duplicates):
+            reason = 'duplicate_row'
+        elif any(c['state'] in ('mismatch', 'duplicate') and c['start_ms'] < end and c['end_ms'] > start for c in self.checks):
+            reason = 'daily_mismatch'
+        reason = reason or identity_reason
+        facts = [f for f in (self.by_email.get((workspace_id, email), []) if email is not None else self.facts)
+                 if f['workspace_id'] == workspace_id and start <= round(f['time_ms']) < end]
+        metadata = dict(basis='facts' if reason else 'api', basis_reason=reason, as_of_ms=self.at,
+                        content_read_at_ms=self.content_at, manage_read_at_ms=self.manage_at,
+                        coverage_end_ms=None if reason else min(selected[-1]['actual_end_ms'], end, self.at),
+                        collected_at_ms=None if reason else selected[-1]['succeeded_at_ms'],
+                        period_start_ms=start, period_end_ms=end)
+        if reason:
+            sums = ([self.fact_totals[key]] if key in self.fact_totals else []) if email is not None else [
+                r for (wid, _, first, last), r in self.fact_totals.items()
+                if wid == workspace_id and (first, last) == (start, end)]
+            totals = {k: sum(r[k] for r in sums) for k in
+                      ('used_real','used_estimated','estimated_count','unknown_count','generation_count')}
+            totals['used'] = totals['used_real'] + totals['used_estimated']
+            result = dict(totals, **metadata, refunded=None, failed_count=None,
+                          fully_refunded_count=None, failed_refunded_count=None, overdue_pending_count=0,
+                          pending_count=0, rows=[], sources=[])
+        else:
+            ids = {w['id'] for w in selected}
+            rows = [r for r in (self.by_actor.get((workspace_id, actor), []) if email is not None else self.rows)
+                    if r['workspace_id'] == workspace_id and r['window_id'] in ids]
+            cents = sum(r['credits_c'] for r in rows)
+            sources = {}
+            output = []
+            for r in rows:
+                source = ('charge' if r['type'] == 'charge' else
+                          'mv' if r['type'] == 'generation' and r['generation_id'] in self.fact_jobs else
+                          'web' if r['type'] == 'generation' and not r['surface'] else
+                          r['surface'] if r['type'] == 'generation' and r['surface'] in ('mcp','claude_code') else 'other')
+                sources[source] = sources.get(source, 0) + r['credits_c']
+                output.append(dict(row_id=r['row_id'], created_at=r['created_at'], source=source, type=r['type'],
+                                   model=r['model_name'] or r['model'], workspace_id=workspace_id,
+                                   workspace_name=r['workspace_name'], status=r['status'], state=r['state'],
+                                   error_code=r['error_code'], charged=r['charged_c']/100,
+                                   refunded=r['refunded_c']/100, net=r['credits_c']/100, pending=False))
+            unknown = overdue = 0
+            estimated = 0.0
+            seen = set()
+            for f in facts:
+                if f['status'] in ('failed', 'nsfw'):
+                    continue
+                job = f['job_id']
+                if job and job in seen:
+                    continue
+                if job:
+                    seen.add(job)
+                observed = self.api_jobs.get(job, set())
+                if email is None and observed:
+                    continue  # Pool API usage already includes observed jobs even when identity is unlinked.
+                owner, owner_reason = self.identity(f['account_email'])
+                if (owner_reason or not job or f['creator_uid'] != owner or observed and observed != {owner}
+                        or len(self.job_owners.get(job, set())) != 1 or round(f['time_ms']) > self.at):
+                    unknown += 1
+                    continue
+                if observed:
+                    continue
+                amount = f['real_credits'] if f['real_credits'] is not None else f['est_credits']
+                if self.at - round(f['time_ms']) > 3_600_000:
+                    overdue += 1
+                    unknown += 1
+                    continue
+                if amount is None:
+                    unknown += 1
+                    continue
+                estimated += float(amount)
+                output.append(dict(row_id='pending:'+f['id'], created_at=round(f['time_ms']), source='mv',
+                                   type='generation', model=f['model'], workspace_id=workspace_id,
+                                   workspace_name=f['workspace_name'], status=f['status'], state=None, error_code=None,
+                                   charged=None, refunded=None, net=float(amount), pending=True))
+            fully = lambda r: r['charged_c'] > 0 and r['charged_c'] == r['refunded_c'] and r['credits_c'] == 0
+            result = dict(**metadata, used_real=cents/100, used_estimated=estimated, used=cents/100+estimated,
+                          estimated_count=sum(r['pending'] for r in output), unknown_count=unknown,
+                          generation_count=sum(r['type'] == 'generation' for r in rows),
+                          refunded=sum(r['refunded_c'] for r in rows)/100,
+                          failed_count=sum(r['type'] == 'generation' and bool(r['error_code']) for r in rows),
+                          fully_refunded_count=sum(fully(r) for r in rows),
+                          failed_refunded_count=sum(r['type'] == 'generation' and bool(r['error_code']) and fully(r) for r in rows),
+                          overdue_pending_count=overdue, pending_count=sum(r['pending'] for r in output), rows=output,
+                          sources=[dict(source=k, net=v/100) for k,v in sorted(sources.items())],
+                          unlinked_api=sum(r['credits_c'] for r in rows
+                                           if self.actor_identities[r['actor_user_id']][1])/100)
+        self.cache[key] = result
+        return result

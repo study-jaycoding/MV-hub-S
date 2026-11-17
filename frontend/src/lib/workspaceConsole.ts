@@ -3,8 +3,11 @@
 import { newGroupId, type CreditPlanSaveBody, type CreditPlanSettings, type LimitPeriod } from "./creditPlan";
 import { formatCredits } from "./formatCredits";
 import type { Planning } from "../components/manage/types";
+import type { UsageBasis } from "./creditUsage";
 
 export interface ConsoleSub {
+  cycle_usage?: UsageBasis;
+  used_all_basis?: "facts";
   id: string;
   name: string;
   balance: number | null; // 에이전트 마지막 보고 잔액
@@ -130,6 +133,7 @@ export const PERIOD_UNIT: Record<LimitPeriod, string> = { month: "월", week: "�
 
 /** 대시보드·관리 표의 서브스페이스 크레딧(설계 §13) — 서버 `console_limit`. 서브스페이스 전환 뒤 연결된 서브의 프로젝트에만 온다. */
 export interface ConsoleLimit {
+  cycle_usage?: UsageBasis;
   workspace_id: string;
   workspace_name: string | null;
   credits: number | null; // 정기 크레딧(한 번 충전액) — 없으면 null

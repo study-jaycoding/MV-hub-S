@@ -3,6 +3,7 @@
 import { stripThousands, type CreditPlanSaveBody, type CreditPlanSettings, type DraftGroup, type LimitPeriod } from "./creditPlan";
 import type { Planning } from "../components/manage/types";
 import type { ConsoleLimit } from "./workspaceConsole";
+import type { UsageBasis } from "./creditUsage";
 
 export interface MemberTableRow {
   email: string;
@@ -19,10 +20,12 @@ export interface MemberTableRow {
   hf_plan: string | null;
   group_id: string | null;
   projects: Record<string, string[]>; // pid → 프로젝트 역할
-  usage: { credits: number; count: number; unknown: number } | null;
+  usage: (UsageBasis & { credits: number; count: number; unknown: number }) | null;
 }
 
 export interface MemberTableGroup {
+  period_usage?: UsageBasis;
+  month_usage?: UsageBasis;
   id: string;
   name: string;
   monthly_limit: number | null; // 인당 한도(2026-09-29)
@@ -70,7 +73,7 @@ export function creditAccessors(table: Pick<MemberTableData, "credit">) {
   const usageOf = (row: MemberTableRow) => {
     const member = row.group_id ? creditMembers.get(row.email) : undefined;
     return member?.used_period != null && row.usage
-      ? { ...row.usage, credits: member.used_period, unknown: member.unknown_period ?? 0 } : row.usage;
+      ? { ...row.usage, ...member.usage, credits: member.used_period, unknown: member.unknown_period ?? 0 } : row.usage;
   };
   return { quotaSupported, quotaOf, unlimitedOf, usageOf };
 }
@@ -129,7 +132,10 @@ export function mainPeople(subs: SubCreditTable[]): MainPerson[] {
       quota: entries.reduce<number | null>((sum, entry) => add(sum, entry.quota), null),
       remaining: entries.reduce<number | null>((sum, entry) => add(sum, entry.remaining), null),
       used: entries.reduce<MemberTableRow["usage"]>((sum, { used }) => used
-        ? { credits: (sum?.credits ?? 0) + used.credits, count: (sum?.count ?? 0) + used.count, unknown: (sum?.unknown ?? 0) + used.unknown }
+        ? { credits: (sum?.credits ?? 0) + used.credits, count: (sum?.count ?? 0) + used.count, unknown: (sum?.unknown ?? 0) + used.unknown,
+          fallback_count: (sum?.fallback_count ?? 0) + (used.basis === "api" ? 0 : used.fallback_count ?? 1),
+          components: [...sum?.components ?? [], used],
+          ...(used.basis || sum?.basis ? { basis: sum && (sum.basis ?? "facts") !== (used.basis ?? "facts") ? "mixed" as const : used.basis ?? sum?.basis } : {}) }
         : sum, null),
       available: entries.some((entry) => entry.row.is_available == null) ? null : entries.every((entry) => entry.row.is_available),
     };

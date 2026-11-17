@@ -68,7 +68,8 @@ def _push(*facts, email="a@x"):
 def test_finite_override_and_exhausted_remaining():
     _group(10000, quotas={"a@x": 4000, "b@x": None})
     _push(_fact("real", real=3900), _fact("estimated", estimated=100))
-    assert my_quota("ws1", " A@X ") == {
+    result = my_quota("ws1", " A@X ")
+    expected = {
         "workspace_id": "ws1", "source": "override", "group_id": "g1", "group_name": "Artists",
         "quota": 4000.0, "used_real": 3900.0, "used_estimated": 100.0,
         "estimated_count": 1, "unknown_count": 0, "used": 4000.0, "remaining": 0.0, "exhausted": True,
@@ -76,6 +77,8 @@ def test_finite_override_and_exhausted_remaining():
         "period_end": "2026-10-01T00:00:00+09:00", "revision": 7, "enforcement": "advisory",
         "pool_total": None,  # 몫이 있는 사람에게는 충전 총량을 주지 않는다
     }
+    assert {key: result[key] for key in expected} == expected
+    assert result['basis'] == 'facts'
 
 
 def test_auto_share_is_the_per_person_limit_and_has_no_carryover():

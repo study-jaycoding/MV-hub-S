@@ -831,6 +831,39 @@ def team_overview(
     }
 
 
+def credit_facts(conn, workspace_ids: list[str], start: int, end: int) -> list[dict[str, Any]]:
+    """Bounded quota facts, including tombstones and NULL/zero amounts, in [start,end)."""
+    if not workspace_ids:
+        return []
+    return [dict(r) for r in conn.execute(
+        "SELECT id,account_email,creator_uid,job_id,workspace_id,workspace_name,model,status,"
+        "real_credits,est_credits,created_at,"
+        "(julianday(created_at)-2440587.5)*86400000 AS time_ms "
+        "FROM team_generation_fact WHERE workspace_scope='team' "
+        f"AND workspace_id IN ({','.join('?' for _ in workspace_ids)}) "
+        "AND julianday(created_at)>=julianday(?/1000.0,'unixepoch') "
+        "AND julianday(created_at)<julianday(?/1000.0,'unixepoch')",
+        (*workspace_ids, start, end))]
+
+
+def facts_totals(conn, workspace_ids: list[str], ranges: list[tuple[int, int]]) -> list[dict[str, Any]]:
+    """Use the legacy SQLite REAL arithmetic for all people/ranges in one query."""
+    if not workspace_ids:
+        return []
+    return [dict(r) for r in conn.execute(
+        f"WITH ranges(start_ms,end_ms) AS (VALUES {','.join('(?,?)' for _ in ranges)}) "
+        "SELECT workspace_id,account_email,start_ms,end_ms,COALESCE(SUM(real_credits),0) AS used_real,"
+        "COALESCE(SUM(CASE WHEN real_credits IS NULL THEN est_credits ELSE 0 END),0) AS used_estimated,"
+        "COUNT(CASE WHEN real_credits IS NULL AND est_credits IS NOT NULL THEN 1 END) AS estimated_count,"
+        "COUNT(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 END) AS unknown_count,"
+        "COUNT(*) AS generation_count FROM ranges JOIN team_generation_fact "
+        "ON julianday(created_at)>=julianday(start_ms/1000.0,'unixepoch') "
+        "AND julianday(created_at)<julianday(end_ms/1000.0,'unixepoch') "
+        f"WHERE workspace_scope='team' AND workspace_id IN ({','.join('?' for _ in workspace_ids)}) "
+        "GROUP BY workspace_id,account_email,start_ms,end_ms",
+        (*[v for pair in ranges for v in pair], *workspace_ids))]
+
+
 def workspace_email_usage(workspace_id: str, day_from: Optional[str] = None) -> list[dict[str, Any]]:
     """워크스페이스의 (날짜 'YYYY-MM-DD' localtime, account_email) 별 크레딧 합·건수·미상 수 — 크레딧 풀·그룹 한도용.
     삭제분(tombstone) 포함(돈은 이미 나갔다), 크레딧 = COALESCE(실제, 견적, 0), 미상 = 둘 다 없음.

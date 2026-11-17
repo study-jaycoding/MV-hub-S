@@ -9,12 +9,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import db, deps, manage_db, rbac
-from app.repo import event_journal, manage, manage_credit_plan as credit, manage_member_table, manage_schema
+from app.repo import event_journal, hf_org_usage, manage, manage_credit_plan as credit, manage_member_table, manage_schema
 from app.routers import manage as routes
 
 
 @pytest.fixture
 def isolated(monkeypatch, tmp_path):
+    # State/rollback comparisons use one observation time for the added usage metadata.
+    at = hf_org_usage.now_ms()
+    monkeypatch.setattr(hf_org_usage, 'now_ms', lambda: at)
     monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "content.db"))
     monkeypatch.setattr(manage_db, "MANAGE_DB_PATH", tmp_path / "usage.db")
     db.flush_pool()

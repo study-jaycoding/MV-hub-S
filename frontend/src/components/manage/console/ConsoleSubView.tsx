@@ -1,3 +1,4 @@
+import { UsageBasis } from "../../common/UsageBasis";
 // 서브(또는 메인 자체) 워크스페이스 — 그룹 · 크레딧 · 참가자. 쓰기는 모두 기존 PUT credit-plan(409 병합 포함).
 import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
@@ -406,7 +407,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
           <div><span>잔액(보고)</span><strong>{formatCredits(pool?.balance)}</strong><em>{pool?.balance_seen_at?.slice(5, 16) ?? "보고 없음"}</em></div>
           <div><span>크레딧 / {unit}</span><strong>{sub?.monthly_topup ? formatCredits(sub.monthly_topup) : sub ? "없음" : formatCredits(pool?.monthly_topup)}</strong><em>{sub ? scheduleLabel(sub) : ""}</em></div>
           <div><span>추가 크레딧(이번 주기)</span><strong>{formatCredits(sub?.topups_cycle.credits ?? pool?.topups_month.credits ?? 0)}</strong><em>{sub?.topups_cycle.count ?? pool?.topups_month.count ?? 0}건</em></div>
-          <div><span>이번 주기 사용</span><strong>{formatCredits(sub?.used_cycle ?? pool?.used_month)}</strong><em>{cycleText}{(sub?.unknown_cycle ?? pool?.unknown_month) ? ` · 미상 ${sub?.unknown_cycle ?? pool?.unknown_month}건` : ""}</em></div>
+          <div><span>이번 주기 사용</span><strong>{formatCredits(sub?.used_cycle ?? pool?.used_month)}</strong><UsageBasis value={sub?.cycle_usage ?? pool?.month_usage} /><em>{cycleText}{(sub?.unknown_cycle ?? pool?.unknown_month) ? ` · ${(sub?.cycle_usage ?? pool?.month_usage)?.basis === "api" ? "합계에 안 든 기록" : "미상"} ${sub?.unknown_cycle ?? pool?.unknown_month}건` : ""}</em></div>
           <div><span>그룹 할당 크레딧 합계</span><strong>{formatCredits(quotaTotal)}</strong><em>{groups.some((g) => g.quota_total == null) ? "∞ 그룹 제외" : `그룹 ${groups.length}개`}</em></div>
         </div>
       </div>
@@ -448,7 +449,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
                   <td>{g.monthly_limit == null ? "∞" : formatCredits(g.monthly_limit)}</td>
                   <td>{periodSuffix(g.limit_period).slice(1)}</td>
                   <td>{g.member_count}</td>
-                  <td>{formatCredits(g.used_period ?? g.used_month)}</td>
+                  <td>{formatCredits(g.used_period ?? g.used_month)}<UsageBasis value={g.period_usage} /></td>
                   <td>{g.remaining == null ? "—" : <span className={`credit-pct tone-${remainingTone(g.remaining, g.quota_total ?? null)}`}>{formatCredits(g.remaining)}</span>}</td>
                 </tr>
               ))}
@@ -553,7 +554,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
                       </PillMenu>
                     </td>
                     <td>{!m.group_id ? "—" : m.quota_effective == null ? "∞" : formatCredits(m.quota_effective)}</td>
-                    <td>{formatCredits(m.used_period)}</td>
+                    <td>{formatCredits(m.used_period)}<UsageBasis value={m.usage} /></td>
                     <td className={m.remaining != null && m.remaining < 0 ? "mtable-over" : ""}>{formatCredits(m.remaining)}</td>
                     <td><span className={`wc-chip${m.is_available ? " ok" : " pend"}`}>{m.is_available ? "확인" : "확인 전"}</span></td>
                   </tr>

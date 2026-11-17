@@ -19,9 +19,8 @@
 **그룹 한도 = 인당 한도(Jay 2026-09-29, docs/CREDIT_QUOTA_DESIGN.md 09-29 절)**:
   내 몫 = 덮어쓴 값 또는 그룹 한도 · 그룹 몫합 = Σ 내 몫 · 그룹 남음 = 몫합 − 이번 기간 그룹 사용(이월 없음).
   (옛 규칙 '한도 ÷ 인원 + 그룹 이월'은 폐기. base_* 는 동결하고 remaining_override 는 받아서 무시한다.)
-사용량은 팩트(`manage_db.workspace_email_usage`, 날짜×이메일) — 삭제분(tombstone)
-포함, 크레딧 = COALESCE(실제, 견적, 0), 미상(둘 다 없음) 건수는 따로 세어 '추정' 표시 근거로 준다.
-날짜는 팩트 created_at 의 localtime(서버 KST).
+기간 사용량은 CreditUsageSnapshot의 API/facts 판정을 공유한다. facts 대체는 삭제분(tombstone)·
+실제 0·NULL일 때만 견적을 쓰는 기존 SQL을 보존한다. workspace_email_usage는 used_all의 기존 팩트 경로다.
 """
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ import json
 import re
 import uuid
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from ..db import get_connection
@@ -98,6 +97,70 @@ def _parse_allowed(raw: Any) -> list[str]:
     return [m for m in data if isinstance(m, str) and m]
 
 Usage = dict[tuple[str, str], dict[str, Any]]  # {(day 'YYYY-MM-DD', email): {credits, count, unknown}}
+
+
+def day_ms(day: str) -> int:
+    return int(datetime.fromisoformat(day).replace(tzinfo=timezone(timedelta(hours=9))).timestamp() * 1000)
+
+
+def after_day(day: str) -> str:
+    return (_d(day) + timedelta(days=1)).isoformat()
+
+
+def usage_snapshot(conn, workspace_id, today, groups, anchor):
+    from .hf_org_usage import CreditUsageSnapshot
+    start = _day_from_for(groups, today, anchor)
+    periods = {'month', *(_group_period(g) for g in groups)}
+    end = max(period_end(today, p, anchor) for p in periods)
+    ranges = [(day_ms(period_start(today, p, anchor)), day_ms(after_day(period_end(today, p, anchor))))
+              for p in periods]
+    return CreditUsageSnapshot(conn, [workspace_id], day_ms(start), day_ms(after_day(end)), ranges=list(set(ranges)))
+
+
+def combine_usage(parts: list[dict]) -> dict[str, Any]:
+    """Add before display rounding; expose each observation's own range and basis."""
+    keys = ('used_real', 'used_estimated', 'used', 'estimated_count', 'unknown_count', 'generation_count',
+            'refunded', 'failed_count', 'fully_refunded_count', 'failed_refunded_count',
+            'overdue_pending_count', 'pending_count')
+    bases = {p['basis'] for p in parts}
+    result = {k: sum(p.get(k) or 0 for p in parts) for k in keys}
+    result.update(basis=next(iter(bases)) if len(bases) == 1 else 'mixed' if bases else 'facts',
+                  basis_reason=next((p['basis_reason'] for p in parts if p.get('basis_reason')), None),
+                  fallback_count=sum(p['basis'] == 'facts' for p in parts),
+                  components=[usage_metadata(p) for p in parts])
+    if result['basis'] == 'api':
+        result['used_real'] = sum(round(p['used_real'] * 100) for p in parts) / 100
+        result['refunded'] = sum(round(p['refunded'] * 100) for p in parts) / 100
+        result['used'] = result['used_real'] + result['used_estimated']
+    for key in ('as_of_ms','content_read_at_ms','manage_read_at_ms','coverage_end_ms','collected_at_ms'):
+        values = [p.get(key) for p in parts]
+        result[key] = min(values) if values and all(v is not None for v in values) else None
+    if result['basis'] != 'api':
+        for key in ('refunded','failed_count','fully_refunded_count','failed_refunded_count'):
+            result[key] = None
+    result['rows'] = [r for p in parts for r in p.get('rows', [])] if result['basis'] == 'api' else []
+    sources = {}
+    for p in parts:
+        for source in p.get('sources', []):
+            sources[source['source']] = sources.get(source['source'], 0) + round(source['net']*100)
+    result['sources'] = [dict(source=k, net=v/100) for k,v in sorted(sources.items())] if result['basis'] == 'api' else []
+    return result
+
+
+def usage_metadata(value):
+    keys = ('basis','basis_reason','as_of_ms','coverage_end_ms','collected_at_ms','content_read_at_ms',
+            'manage_read_at_ms','period_start_ms','period_end_ms','fallback_count')
+    return {k: value[k] for k in keys if k in value}
+
+
+def range_usage(snapshot, workspace_id, emails, start, end):
+    first, last = day_ms(start), day_ms(after_day(end))
+    if emails is None:
+        return snapshot.total(workspace_id, None, first, last)
+    parts = [snapshot.total(workspace_id, email, first, last) for email in sorted(emails)]
+    result = combine_usage(parts)
+    result.update(period_start_ms=first, period_end_ms=last)
+    return result
 
 
 class CreditPlanConflict(Exception):
@@ -170,25 +233,6 @@ def _usage_index(workspace_id: str, day_from: str) -> Usage:
 
     rows = manage_db.workspace_email_usage(workspace_id, day_from)
     return {(r["day"], r["email"]): r for r in rows}
-
-
-def _sum_usage(
-    usage: Usage,
-    emails: set[str],
-    *,
-    day_from: Optional[str] = None,
-) -> tuple[float, int]:
-    """(크레딧 합, 미상 건수) — day_from 이후(포함)."""
-    credits = 0.0
-    unknown = 0
-    for (day, email), r in usage.items():
-        if email not in emails:
-            continue
-        if day_from is not None and day < day_from:
-            continue
-        credits += float(r["credits"] or 0)
-        unknown += int(r["unknown"] or 0)
-    return credits, unknown
 
 
 def _shown(value: float) -> float:
@@ -371,15 +415,17 @@ def _member_quota(
 
 
 def _group_summary(
-    group: dict, emails: set[str], usage: Usage, today: str, anchor: int,
+    group: dict, emails: set[str], usage, today: str, anchor: int,
     quotas: Optional[dict[str, Optional[float]]] = None,
 ) -> dict[str, Any]:
     """그룹 한 줄 — 이번 기간 사용(used_period)·이번 충전 달 사용(used_month)·남은 양(몫 합계 − 이번 기간 사용,
     이월 없음)·미상·몫."""
     period = _group_period(group)
     cur_start = period_start(today, period, anchor)
-    used_month, unknown_month = _sum_usage(usage, emails, day_from=period_start(today, "month", anchor))
-    used_period, unknown_period = _sum_usage(usage, emails, day_from=cur_start)
+    month_usage = range_usage(usage, usage.workspace_ids[0], emails, period_start(today, "month", anchor), period_end(today, "month", anchor))
+    period_usage = range_usage(usage, usage.workspace_ids[0], emails, cur_start, period_end(today, period, anchor))
+    used_month, unknown_month = month_usage['used'], month_usage['unknown_count']
+    used_period, unknown_period = period_usage['used'], period_usage['unknown_count']
     split = _quota_split(group, emails, quotas or {})
     remaining = None if split["quota_total"] is None else split["quota_total"] - used_period
     unknown_since = unknown_period  # 옛 키 이름(unknown_since_base) 유지 — 이제 '이번 기간' 미상이다
@@ -394,6 +440,8 @@ def _group_summary(
         "member_count": len(emails),
         "used_month": _shown(used_month),
         "unknown_month": unknown_month,
+        "month_usage": usage_metadata(month_usage),
+        "period_usage": usage_metadata(period_usage),
         "used_period": _shown(used_period),
         "unknown_period": unknown_period,
         "remaining": None if remaining is None else _shown(remaining),
@@ -405,12 +453,12 @@ def _group_summary(
 
 
 # ── 설정(매니저) ───────────────────────────────────────────────────────────────
-def get_settings(workspace_id: str) -> dict[str, Any]:
+def get_settings(workspace_id: str, *, extra_usage_emails=()) -> dict[str, Any]:
     """프로젝트 설정 창용 — 플랜·그룹(현재 남은 양 포함)·멤버(이메일 기준, 접근 불가·과거 배정도 포함)·긴급 충전 기록."""
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN")
-        return _get_settings(conn, workspace_id)
+        return _get_settings(conn, workspace_id, extra_usage_emails=extra_usage_emails)
 
 
 def settings_conflict_detail(workspace_id: str, expected_revision: int) -> dict[str, Any]:
@@ -424,7 +472,7 @@ def settings_conflict_detail(workspace_id: str, expected_revision: int) -> dict[
         )
 
 
-def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
+def _get_settings(conn, workspace_id: str, *, extra_usage_emails=()) -> dict[str, Any]:
     """All editable fields share the caller's snapshot; usage lives in a separate DB."""
     today = today_local()
     plan, groups, members, topups, quotas = _load(conn, workspace_id)
@@ -441,7 +489,7 @@ def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
     anchor = _plan_anchor(plan)
     recurring = _plan_recurring(plan)
     cycle_start = period_start(today, "month", anchor)
-    usage = _usage_index(workspace_id, _day_from_for(groups, today, anchor))
+    usage = usage_snapshot(conn, workspace_id, today, groups, anchor)
     assigned: dict[str, str] = {}
     for gid, emails in members.items():
         for email in emails:
@@ -453,7 +501,8 @@ def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
         group = group_by_id.get(gid) if gid else None
         effective, source = _member_quota(email, group, members.get(gid, set()) if gid else set(), quotas)
         period = _group_period(group) if group else "month"
-        used, unknown = _sum_usage(usage, {email}, day_from=period_start(today, period, anchor))
+        personal = range_usage(usage, workspace_id, {email}, period_start(today, period, anchor), period_end(today, period, anchor))
+        used, unknown = personal['used'], personal['unknown_count']
         return {
             "email": email,
             "name": name or _email_localpart(email),
@@ -464,6 +513,9 @@ def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
             "quota_effective": None if effective is None else _shown(effective),
             "quota_source": source,
             "used_period": _shown(used),
+            "usage": {**usage_metadata(personal), "credits": _shown(used), "count": personal['generation_count'],
+                      "unknown": unknown, "used_estimated": _shown(personal['used_estimated']),
+                      "estimated_count": personal['estimated_count']},
             "unknown_period": unknown,
             "remaining": None if effective is None else _shown(effective - used),
         }
@@ -477,7 +529,14 @@ def _get_settings(conn, workspace_id: str) -> dict[str, Any]:
     for email, gid in sorted(assigned.items()):
         if email not in seen:  # 등록부에서 사라진 과거 배정 — 화면에 남겨 전체 교체 때 지워지지 않게(코덱스 P2)
             member_list.append(_member_row(email, None, None, False))
+    account_usage = {}
+    if extra_usage_emails:
+        # Extra table rows share this snapshot without entering the editable member register.
+        listed = {m['email'] for m in member_list}
+        account_usage = {email: _member_row(email, None, None, False)['usage']
+                         for email in extra_usage_emails if email not in listed}
     return {
+        **({'account_usage': account_usage} if extra_usage_emails else {}),
         "workspace_id": workspace_id,
         "month": today[:7],
         "today": today,
@@ -811,6 +870,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
     month = today[:7]
     with get_connection() as conn:
         _ensure_schema(conn)
+        conn.execute("BEGIN")
         plan, groups, members, topups, quotas = _load(conn, workspace_id)
         monthly_topup = _monthly_budget(conn, workspace_id) if viewer is None else None
         ws = _workspace_row(conn, workspace_id)
@@ -829,12 +889,12 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
                 (workspace_id,),
             ).fetchall()
         ] if viewer is None else []
+        usage = usage_snapshot(conn, workspace_id, today, groups, _plan_anchor(plan))
     configured = plan is not None or bool(groups)
     anchor = _plan_anchor(plan)
     recurring = _plan_recurring(plan)
     cycle_start = period_start(today, "month", anchor)
     cycle_end = period_end(today, "month", anchor)
-    usage = _usage_index(workspace_id, _day_from_for(groups, today, anchor))
 
     if viewer is not None:
         email = viewer[1]
@@ -846,8 +906,12 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             summary = _group_summary(mine, emails, usage, today, anchor, quotas)
             summary.pop("base_balance", None)
             summary.pop("base_start", None)
-            my_used, my_unknown = _sum_usage(usage, {email}, day_from=cycle_start)
-            my_p, my_p_unknown = _sum_usage(usage, {email}, day_from=period_start(today, summary["limit_period"], anchor))
+            my_month = range_usage(usage, workspace_id, {email}, cycle_start, cycle_end)
+            my_period = range_usage(usage, workspace_id, {email}, period_start(today, summary['limit_period'], anchor), period_end(today, summary['limit_period'], anchor))
+            my_used, my_unknown = my_month['used'], my_month['unknown_count']
+            my_p, my_p_unknown = my_period['used'], my_period['unknown_count']
+            summary['my_month_usage'] = usage_metadata(my_month)
+            summary['my_period_usage'] = usage_metadata(my_period)
             summary["my_used_month"] = _shown(my_used)
             summary["my_unknown_month"] = my_unknown
             summary["my_used_period"] = _shown(my_p)
@@ -862,10 +926,12 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
         return out
 
     assigned_emails = set().union(*members.values()) if members else set()
-    all_emails = {email for (_, email) in usage.keys()} | available
+    all_emails = {f["account_email"] for f in usage.facts} | available | usage.observed_emails
     unassigned_emails = {e for e in all_emails if e not in assigned_emails}
-    un_used, un_unknown = _sum_usage(usage, unassigned_emails, day_from=cycle_start)
-    used_month, unknown_month = _sum_usage(usage, all_emails | assigned_emails, day_from=cycle_start)
+    un_usage = range_usage(usage, workspace_id, unassigned_emails, cycle_start, cycle_end)
+    month_usage = range_usage(usage, workspace_id, None, cycle_start, cycle_end)
+    un_used, un_unknown = un_usage['used'], un_usage['unknown_count']
+    used_month, unknown_month = month_usage['used'], month_usage['unknown_count']
     first_in_cycle = next((h for h in history if h["day"] >= cycle_start), None)
     recent_topups = [t for t in topups if t["day"] >= _months_ago_day(month, 3)]
     return {
@@ -886,6 +952,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             "note": plan["note"] if plan else None,
             "used_month": _shown(used_month),
             "unknown_month": unknown_month,
+            "month_usage": {**usage_metadata(month_usage), "unlinked_api": month_usage.get("unlinked_api")},
             "balance": ws["credits"] if ws else None,
             "balance_seen_at": ws["last_seen_at"] if ws else None,
             # 월초 잔액 = 이번 충전 달 첫 관측일의 **첫** 관측값(같은 날 후속 보고로 안 바뀜 — 코덱스 P2). 관측이 없으면 None.
@@ -898,6 +965,7 @@ def plan_view(workspace_id: str, viewer: Optional[tuple[str, str]] = None) -> di
             "member_count": len([e for e in available if e not in assigned_emails]),
             "used_month": _shown(un_used),
             "unknown_month": un_unknown,
+            "month_usage": usage_metadata(un_usage),
         },
         "topups": [
             {"id": t["id"], "day": t["day"], "credits": int(t["credits"] or 0), "note": t["note"]}
