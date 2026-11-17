@@ -42,6 +42,7 @@ DISABLED_PASSWORD_HASH = "disabled$test-snapshot"
 
 HF_ORG_USAGE_TABLES = ('hf_org_usage_row', 'hf_org_usage_check', 'hf_org_identity_link',
                        'hf_org_usage_window', 'hf_org_usage_collector', 'hf_org_usage_config')
+HF_BALANCE_TABLES = ('hf_balance_outbox', 'hf_balance_obs')
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -62,6 +63,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
         c.execute("BEGIN")
         scrub_slack_connection(c)  # Strict errors stay outside the legacy best-effort block.
         scrub_hf_org_usage_connection(c)
+        scrub_hf_balance_connection(c)
         c.execute('SAVEPOINT legacy_secrets')
         try:
             for k in SESSION_KEYS:
@@ -98,6 +100,7 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
         conn.execute("BEGIN")
         scrub_slack_connection(conn)
         scrub_hf_org_usage_connection(conn)
+        scrub_hf_balance_connection(conn)
         if _table_exists(conn, "app_setting"):
             for k in SESSION_KEYS:
                 conn.execute("DELETE FROM app_setting WHERE key=?", (k,))
@@ -132,7 +135,7 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
 
 def _compact_scrubbed_copy(conn: sqlite3.Connection) -> None:
     # secure_delete clears today's deletes; VACUUM also removes older freelist/overflow residues.
-    if not any(_table_exists(conn, table) for table in HF_ORG_USAGE_TABLES):
+    if not any(_table_exists(conn, table) for table in (*HF_ORG_USAGE_TABLES, *HF_BALANCE_TABLES, 'app_setting', 'account_report_outbox')):
         return
     conn.execute('VACUUM')
     if conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:
@@ -209,6 +212,46 @@ def scrub_hf_org_usage(db_path: Path) -> None:
     with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute('BEGIN IMMEDIATE')
         scrub_hf_org_usage_connection(conn)
+        conn.commit()
+        _compact_scrubbed_copy(conn)
+
+
+def scrub_hf_balance_connection(conn: sqlite3.Connection) -> None:
+    """Copies only: remove both normalized observations and old-hub JSON envelopes."""
+    import json
+    conn.execute('PRAGMA secure_delete=ON')
+    for table in HF_BALANCE_TABLES:
+        if _table_exists(conn, table):
+            conn.execute(f'DELETE FROM {table}')
+            if conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
+                raise RuntimeError('Balance observations remain in copy')
+    def clean(value):
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items() if key != 'balance_report'}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+    for table, column, predicate in (('app_setting','value', "key LIKE 'hf_status:%'"),
+                                      ('account_report_outbox','payload_json','1=1')):
+        if not _table_exists(conn, table):
+            continue
+        for rowid, raw in conn.execute(f'SELECT rowid,{column} FROM {table} WHERE {predicate}').fetchall():
+            if not raw:
+                continue
+            try:
+                value = json.loads(raw)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError('Cannot verify balance cleanup') from exc
+            stripped = clean(value)
+            if stripped != value:
+                conn.execute(f'UPDATE {table} SET {column}=? WHERE rowid=?',
+                             (json.dumps(stripped, ensure_ascii=False), rowid))
+
+
+def scrub_hf_balance(db_path: Path) -> None:
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        scrub_hf_balance_connection(conn)
         conn.commit()
         _compact_scrubbed_copy(conn)
 

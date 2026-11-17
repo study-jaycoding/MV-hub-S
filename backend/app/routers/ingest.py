@@ -105,6 +105,23 @@ def _agent_write_acc(request: Request) -> dict:
     return acc
 
 
+def _validate_balance_sender(request: Request, account: dict, email: str) -> None:
+    from .. import config
+    from ..deps import bearer_token
+    from ..services.request_guards import require_loopback_request
+    if norm_email(account.get('email')) != norm_email(email) or not norm_email(email):
+        raise HTTPException(409, '로그인 계정과 보고 계정이 다릅니다')
+    if not config.AUTH_ENABLED:
+        require_loopback_request(request, '이 PC에서만 보낼 수 있습니다')
+        expected, supplied = _proxy.token(), bearer_token(request)
+        if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+            raise HTTPException(401, '로그인이 필요합니다')
+        if config.LOCAL_AGENT_PAIR_SECRET and not hmac.compare_digest(
+            request.headers.get('X-MVHub-Agent-Key') or '', config.LOCAL_AGENT_PAIR_SECRET
+        ):
+            raise HTTPException(403, '에이전트 연결을 확인하세요')
+
+
 def _mcp_backfill_jobs(
     items: list[dict[str, Any]], fallback_workspace: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -274,10 +291,21 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: 
         pname = (repo.get_provider() or {}).get("name")
         if pname:
             repo.set_creator_name(my_uid, pname)
+    balance_receipt = {}
+    balance_changes = []
     if account_status:
-        changed = repo.record_account_status(acc["email"], account_status)
+        if MANAGE_ENABLED and isinstance(account_status.get('balance_report'), dict):
+            changed = repo.record_account_status(
+                acc["email"], account_status,
+                balance_target=_proxy.base_url() if _proxy.proxying() else None,
+                balance_receipt=balance_receipt,
+                balance_changes=balance_changes,
+            )
+        else:
+            changed = repo.record_account_status(acc["email"], account_status)
         if notes is not None:
             notes["status_changed"] = bool(changed)
+            notes['balance_changed'] = bool(balance_changes)
 
     # 팀 매니징: 적재된 내 생성물을 텔레메트리 outbox 에 dirty 표시(메타만, best-effort).
     # 실제 서버 전송은 ingest 엔드포인트가 공용 백그라운드 drain으로 처리한다.
@@ -290,6 +318,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: 
             pass
 
     return IngestOut(
+        balance_receipt=balance_receipt or None,
         inserted=counts["inserted"],
         updated=counts["updated"],
         unchanged=counts["unchanged"],
@@ -306,13 +335,26 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
     account_status(잔액/플랜)·account_transactions(실제 차감액)를 서버로 전달한다
     (서버가 이메일 일치 검증 + 서버 PM DB 에 집계)."""
     acc = _agent_write_acc(request)
+    notes = {}
+    status = body.account_status
+    if isinstance(status, dict) and 'balance_report' in status:
+        try:
+            _validate_balance_sender(request, acc, status.get('email'))
+        except HTTPException:
+            # No observation ACK, but preserve the legacy jobs/status ingestion contract.
+            status = {key: value for key, value in status.items() if key != 'balance_report'}
     out = _ingest_core(
         acc,
         body.jobs,
         body.creator_uid,
-        body.account_status,
+        status,
         workspace=body.workspace.model_dump(),
+        notes=notes,
     )
+    if not body.jobs and not notes.get('identity_changed') and notes.get('status_changed') is False:
+        request.state.library_unchanged = True
+    if notes.get('balance_changed') and background_tasks is not None:
+        background_tasks.add_task(manager.broadcast, {'type':'credits_changed'}, account_uid=realtime_scope(acc))
     # 에이전트는 최신 목록의 차집합만 보내므로 len(body.jobs)가 아니라 차집합 전 원본 수로
     # 100-window 포화를 판정한다. 옛 에이전트는 필드가 없어 전량 100건을 보낼 때만 감지된다.
     fetched = body.list_fetched if body.list_fetched is not None else len(body.jobs)

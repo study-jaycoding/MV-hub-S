@@ -756,6 +756,7 @@ class AccountReportOut(BaseModel):
 
 
 class IngestOut(BaseModel):
+    balance_receipt: Optional[dict] = None
     inserted: int = 0
     updated: int = 0
     unchanged: int = 0

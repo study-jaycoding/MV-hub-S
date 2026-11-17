@@ -10,6 +10,28 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+
+
+def test_balance_scrub_removes_rows_nested_payloads_and_deleted_pages(tmp_path):
+    from app import db_hf_balance
+    from app.services.db_scrub import scrub_hf_balance
+    path=tmp_path/'copied.db'
+    secret='balance-private-marker-1827'
+    with sqlite3.connect(path) as conn:
+        db_hf_balance.migrate(conn)
+        conn.execute('CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)')
+        conn.execute('CREATE TABLE account_report_outbox(payload_json TEXT)')
+        conn.execute('INSERT INTO app_setting VALUES(?,?)',('hf_status:x',json.dumps({'email':'x','balance_report':{'observations':[secret]}})))
+        conn.execute('INSERT INTO account_report_outbox VALUES(?)',(json.dumps({'account_status':{'balance_report':[secret]}}),))
+        conn.execute('CREATE TABLE old_deleted(value TEXT)')
+        conn.execute('INSERT INTO old_deleted VALUES(?)',(secret*1000,))
+        conn.commit()
+        conn.execute('DELETE FROM old_deleted')
+    scrub_hf_balance(path)
+    assert secret.encode() not in path.read_bytes()
+    with sqlite3.connect(path) as conn:
+        assert json.loads(conn.execute('SELECT value FROM app_setting').fetchone()[0])=={'email':'x'}
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==0
 from starlette.requests import Request
 from starlette.responses import Response
 

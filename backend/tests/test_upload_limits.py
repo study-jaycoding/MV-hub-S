@@ -16,6 +16,17 @@ from app.routers import assets, comfy, db_transfer
 from app.services import upload_limits
 
 
+@pytest.mark.parametrize('content_lengths',[(),('1',),('262145',)])
+def test_balance_observations_body_limit_before_json_parse(content_lengths):
+    path='/api/ingest/balance-observations'
+    limit=upload_limits.UPLOAD_REQUEST_LIMITS[path]
+    assert limit==262144
+    sent,consumed=asyncio.run(_call_middleware(path=path,limited_path=path,limit=limit,
+                              body_chunks=(b'x'*131072,b'x'*131073),content_lengths=content_lengths))
+    assert next(m['status'] for m in sent if m['type']=='http.response.start')==413
+    assert consumed==[]
+
+
 def test_backup_set_raw_limit_allows_three_databases_and_bounded_json():
     assert upload_limits.UPLOAD_REQUEST_LIMITS['/api/db-backup/sets'] == (
         3 * upload_limits.DB_UPLOAD_FILE_MAX_BYTES + upload_limits.MIB + upload_limits._MULTIPART_OVERHEAD_BYTES)
@@ -246,6 +257,7 @@ def test_byte_limit_display_never_rounds_small_values_to_zero(value: int, displa
 
 def test_every_upload_route_has_a_positive_request_limit() -> None:
     assert set(upload_limits.UPLOAD_REQUEST_LIMITS) == {
+        "/api/ingest/balance-observations",
         "/api/mcp/v2/client/references/import",
         "/api/assets/upload",
         "/api/assets/capture",

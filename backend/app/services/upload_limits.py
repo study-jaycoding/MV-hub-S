@@ -56,6 +56,7 @@ DB_UPLOAD_FILE_MAX_BYTES = _positive_env(
 # 브라우저 multipart 경계·파일명·작은 폼 필드가 실제 파일 바이트와 함께 들어온다. 원시 HTTP
 # 본문은 2MiB 여유를 주고, 아래 validate_upload_batch가 파일 합계를 정확히 다시 강제한다.
 UPLOAD_REQUEST_LIMITS: dict[str, int] = {
+    "/api/ingest/balance-observations": 256 * KIB,
     "/api/mcp/v2/client/references/import": REFERENCE_UPLOAD_MAX_BYTES,
     "/api/assets/upload": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/assets/capture": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,

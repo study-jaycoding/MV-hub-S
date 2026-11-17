@@ -119,6 +119,20 @@ def queued(local):
     return content, stage, manifest
 
 
+def test_personal_backup_scrubs_balance_history(delivery_store):
+    from hf_balance_fixtures import seed_balance
+    with sqlite3.connect(delivery_store[0]) as conn:
+        seed_balance(conn)
+    original=delivery_store[0].read_bytes()
+    content,stage,_=queued(delivery_store)
+    with sqlite3.connect(stage/'content.db') as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==0
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==0
+    with sqlite3.connect(content) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==1
+    assert delivery_store[0].read_bytes()==original
+
+
 @pytest.mark.parametrize("role", ["agent_chat", "asset_mounts"])
 @pytest.mark.parametrize("fault", ["corrupt", "missing"])
 def test_queue_v3_rechecks_extra_files_before_duplicate_return(delivery_store, role, fault):

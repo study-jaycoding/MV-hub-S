@@ -39,7 +39,7 @@ from ..emailnorm import norm_email
 from ..repo import identity
 from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
-from ..services.db_scrub import scrub_slack_connection, scrub_hf_org_usage_connection
+from ..services.db_scrub import scrub_slack_connection, scrub_hf_org_usage_connection, scrub_hf_balance_connection, _compact_scrubbed_copy
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db, validate_db_compatibility
@@ -177,6 +177,7 @@ def _post_install_security_init(path: Path, *, new_secret: str | None = None,
         conn.execute("BEGIN IMMEDIATE")
         scrub_slack_connection(conn)
         scrub_hf_org_usage_connection(conn)
+        scrub_hf_balance_connection(conn)
         for key in _SESSION_KEYS:
             conn.execute("DELETE FROM app_setting WHERE key=?", (key,))
         conn.execute(
@@ -195,6 +196,7 @@ def _post_install_security_init(path: Path, *, new_secret: str | None = None,
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                      (asset_mounts.restore_key(email), json.dumps({"id": restore_id, "confirmed": []})))
         conn.execute("COMMIT")
+        _compact_scrubbed_copy(conn)
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
             conn.execute("ROLLBACK")

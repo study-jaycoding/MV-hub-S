@@ -41,6 +41,8 @@ REMOVED_WITH_ACCOUNT = frozenset({
 })
 # _REMAP_PLAN 밖의 이력 칸 — 이메일로 저장한다(정규화해 비교).
 EMAIL_HISTORY = (
+    ("hf_balance_obs", "reporter_key"),
+    ("hf_balance_outbox", "account_key"),
     ("gen_request", "account_email"),
     ("credit_txn", "account_email"),
     ("mcp_client", "account_email"),
@@ -60,6 +62,7 @@ EMAIL_HISTORY = (
 )
 # _REMAP_PLAN 밖의 이력 칸 — uid 모양으로 저장한다(그대로 비교).
 UID_HISTORY = (
+    ("hf_balance_obs", "reporter_uid"),
     ("generation", "worker_id"),
     ("share_command_receipt", "actor_id"),
 )

@@ -629,6 +629,7 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
 # ※ 별도 DB(휴지통 trash.trashed·매니징 manage_hub.db team_generation_fact)는 content DB 스코프 밖이라
 #   이 registry 대상이 아니다(각자 alias 인식·restore rewrite / 별도 관리로 정합).
 _REMAP_EXEMPT: dict[tuple[str, str], str] = {
+    ("hf_balance_obs", "reporter_uid"): "불변 관측 당시 신원 스냅샷 — 접근 권한에 사용하지 않음",
     ("generation", "worker_id"): "PC/워크스테이션 축(사용자 actor 아님) — remap 제외",
     ("account", "creator_uid"): "remap authority/소스 — 이 값 기준으로 acct:<email>→user_ 매핑을 만든다",
     ("generation_event", "actor_uid"): "append-only 장애 이력 actor — 이메일 기반 임시 신원은 저장 전에 비가역 지문화",
@@ -969,7 +970,7 @@ def migrate_all_acct_to_creator_uid() -> int:
     return total
 
 
-def record_account_status(email: str, status: dict[str, Any]) -> bool:
+def record_account_status(email: str, status: dict[str, Any], *, balance_target=None, balance_receipt=None, balance_changes=None) -> bool:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
     원본 JSON은 계정 메뉴 하위호환용으로 보존하고, 팀 워크스페이스는 registry/member 테이블에
     정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다.
@@ -982,13 +983,42 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
     email = norm_email(email)
     if not email or not isinstance(status, dict):
         return False
+    balance_report = status.get("balance_report")
+    status = {key: value for key, value in status.items() if key != "balance_report"}
     raw_payload = _json.dumps(status, ensure_ascii=False)
+
+    def store_balance(conn):
+        from ..config import MANAGE_ENABLED
+        if not MANAGE_ENABLED or not isinstance(balance_report, dict):
+            return
+        from . import hf_balance
+        from ..services import shared_connection
+        row = conn.execute("SELECT creator_uid FROM account WHERE email=?", (email,)).fetchone()
+        conn.execute('SAVEPOINT balance_report')
+        try:
+            receipt = hf_balance.store(conn, email, row[0] if row else None,
+                                       balance_report.get('version'), balance_report.get('observations'),
+                                       target=balance_target, changes=balance_changes,
+                                       receiver='server' if shared_connection.is_shared_team_server() else 'hub')
+        except Exception:
+            # A failed observation must not roll back generated jobs/current membership.
+            conn.execute('ROLLBACK TO balance_report')
+            if balance_receipt is not None:
+                balance_receipt.clear()
+            if balance_changes is not None:
+                balance_changes.clear()
+        else:
+            if balance_receipt is not None:
+                balance_receipt.update(receipt)
+        finally:
+            conn.execute('RELEASE balance_report')
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
         # 옛/불완전 보고 — raw 만 저장(기존 멤버십을 전부 unavailable로 만들지 않는다).
         # 비교와 저장을 한 쓰기 잠금 안에서 — 따로 하면 그 사이 끼어든 다른 저장을 '바뀜 없음'으로 오판한다.
         with get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            store_balance(conn)
             row = conn.execute("SELECT value FROM app_setting WHERE key=?", (f"hf_status:{email}",)).fetchone()
             conn.execute(
                 "INSERT INTO app_setting(key, value) VALUES(?,?) "
@@ -1027,6 +1057,7 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
         # 어긋났다. set_setting() 호출 금지(내부 get_connection 중첩) — 같은 conn 직접 UPSERT.
         conn.execute("BEGIN IMMEDIATE")
         before = _visible(conn)
+        store_balance(conn)
         conn.execute(
             "INSERT INTO app_setting(key, value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1050,13 +1081,18 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
                 continue
             credits = workspace.get("credits")
             try:
-                credits = float(credits) if credits is not None else None
+                from ..hf_balance_contract import amount
+                credits = amount(credits)[0] / 100 if credits is not None else None
             except (TypeError, ValueError):
                 credits = None
+            from . import hf_balance
+            selected = hf_balance.latest(conn, workspace_id)
+            if selected:
+                credits = selected['credits_c'] / 100 if selected.get('credits_c') is not None else None
             conn.execute(
                 "INSERT INTO workspace_registry(id, name, plan_type, credits) VALUES(?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET name=excluded.name, plan_type=excluded.plan_type, "
-                "credits=excluded.credits, last_seen_at=datetime('now')",
+                "credits=COALESCE(excluded.credits,workspace_registry.credits), last_seen_at=datetime('now')",
                 (
                     workspace_id,
                     workspace_name,
@@ -1064,7 +1100,7 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
                     credits,
                 ),
             )
-            if credits is not None:
+            if credits is not None and not selected:
                 # 잔액 일별 관측(대시보드 추이) — 같은 트랜잭션·같은 커넥션. 보고엔 관측 시각이 없어
                 # 서버 수신 시각 기준으로 그날의 마지막 값을 남긴다(에이전트는 매 push 에 현재 상태를 보낸다).
                 conn.execute(
@@ -1074,6 +1110,8 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
                     "credits=excluded.credits, seen_at=excluded.seen_at",  # first_credits 는 그날 첫 값 유지
                     (workspace_id, credits, credits),
                 )
+            if selected:
+                hf_balance.mirror(conn, workspace_id)
             conn.execute(
                 "INSERT INTO workspace_member"
                 "(workspace_id, account_email, creator_uid, user_role, is_selected, is_available) "

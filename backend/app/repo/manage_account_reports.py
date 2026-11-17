@@ -85,7 +85,7 @@ def queue_account_reports(
         try:
             if isinstance(account_status, dict) and account_status:
                 queued_status = _queue_row(
-                    conn, _STATUS_KEY, "status", account_status
+                    conn, _STATUS_KEY, "status", {k: v for k, v in account_status.items() if k != 'balance_report'}
                 )
             for transaction in transactions or []:
                 if _transaction_rejection_reason(transaction):
