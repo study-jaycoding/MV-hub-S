@@ -36,7 +36,7 @@ async function seeded(value = scene()) {
 }
 const hub = (value = scene("hub"), history = "h") => ({ [bucket]: { scenes: [value], bases: { [value.id]: base(1, "hash-1", history) }, order: { history, rev: 1 } } });
 
-beforeEach(() => { setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false); });
+beforeEach(() => { setHubFeatures(["scene_writer_confirm_v1"]); setSceneWriteGate(() => false); });
 it("c13 feature off writes no notebook metadata during edit/delete/undo", async () => {
   setHubFeatures([]);
   await writeScenesStore({ [bucket]: [scene()] });
@@ -379,7 +379,7 @@ describe("c07: 못 올리는 씬을 로컬 사본으로 먼저 보존", () => {
 
 describe("4차①: 분리 창 인계 세대", () => {
   it.each([false, true])("matching or disabled lease does not pre-clone copy bodies (enabled %s)", async (enabled) => {
-    await seeded(); setHubFeatures(enabled ? ["scene_writer_v1"] : []); setSceneLeaseGeneration("local", "same");
+    await seeded(); setHubFeatures(enabled ? ["scene_writer_confirm_v1"] : []); setSceneLeaseGeneration("local", "same");
     const clone = vi.spyOn(globalThis, "structuredClone");
     adoptCanvasSceneWrites([{ bucket, leaseGeneration: enabled ? "same" : "old", changed: [scene("s", "fresh")], created: [], removed: [], order: null }]);
     expect(clone.mock.calls.some(([value]) => value && typeof value === "object" && "id" in value && value.id === "s")).toBe(false);

@@ -131,7 +131,7 @@ export function useRelinkOnWorkspaceChange(workspaceKey: string, relink: () => v
 //  활성 씬도 저장본을 따른다: 지킬 편집이 없고, 지키면 떠 있는 창이 고칠 때마다 '다른 탭에서 변경' 알림이 뜨고 돌아왔을 때 낡은 씬을 그려
 //  다음 편집이 그 창의 작업을 덮는다(2026-10-30, docs/status/캔버스_떠있는창_2026-10-30.md).
 export function useSceneCoordination(flash?: (msg: string) => void, followStore = false) {
-  const notebookEnabled = useSyncExternalStore(subscribeHubFeatures, () => hubHasFeature("scene_writer_v1"));
+  const notebookEnabled = useSyncExternalStore(subscribeHubFeatures, () => hubHasFeature("scene_writer_confirm_v1"));
   const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() => getActiveSceneId(null));
   const followStoreRef = useRef(followStore);
@@ -143,7 +143,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
     else if (followedRef.current) {
       // 공책 맞추기 중 받은 소속은 loaded 알림을 건너뛰었다. 서버 목록이 같으면
       // 다음 조회는 다시 알리지 않으므로, 입력을 다시 열 때 현재 목록으로 한 번 적용한다.
-      if (hubHasFeature("scene_writer_v1")) retryCardLinksRef.current?.();
+      if (hubHasFeature("scene_writer_confirm_v1")) retryCardLinksRef.current?.();
       // 떠 있던 창이 닫혔다 — 저장본과 그 창이 마지막으로 연 씬으로 돌아온다(씬을 고를 때마다 '마지막 연 씬'에 적는다, selectScene)
       setScenes(listScenes(null));
       setActiveSceneId(getActiveSceneId(null));
@@ -444,7 +444,7 @@ export function useSceneCoordination(flash?: (msg: string) => void, followStore 
   };
   // DB 백업에만 있는 씬을 이 브라우저로 가져온다(로컬은 덮지 않는다 — 같은 id 는 로컬 유지).
   const importBackupScenes = async () => {
-    if (hubHasFeature("scene_writer_v1")) return;
+    if (hubHasFeature("scene_writer_confirm_v1")) return;
     try {
       const before = new Set(listScenes(null).map((s) => s.id));
       const added = await importFromBackup();

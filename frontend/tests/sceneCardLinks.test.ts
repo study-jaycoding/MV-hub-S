@@ -216,7 +216,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     const store = await import("../src/lib/sceneStore");
     const notebook = await import("../src/lib/sceneNotebook");
     const { setHubFeatures } = await import("../src/lib/hubFeatures");
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     const scope = `acct:user${acctSeq}@test`, bucket = `${scope}::_none`;
     await store.writeScenesStore({ [bucket]: [] });
     expect(await notebook.joinSceneNotebook(scope, "book", "h", {

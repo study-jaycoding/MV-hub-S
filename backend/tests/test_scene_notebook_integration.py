@@ -16,8 +16,25 @@ def client(notebook_db, monkeypatch):
     monkeypatch.setattr(scenes, 'writer', SceneWriter())
     app = FastAPI()
     app.include_router(scenes.router)
-    with TestClient(app) as client:
+    with TestClient(app, headers={'X-MVHub-Canvas-Protocol': 'confirm-v1'}) as client:
         yield client
+
+
+@pytest.mark.parametrize('close', [False, True])
+def test_stale_before_start_base_gets_409_without_repopulating_or_releasing(client, close):
+    original = scene('old-a')
+    legacy.sync_scene_backups('u', '', [original], [], restore_generation=restore_generation())
+    old_base = base('old-a')
+    seed(items=[scene('chosen-b')])
+    before = store.notebook('u')
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    body = {'restore_generation': restore_generation(), 'token': token, 'request_id': 'stale-a',
+            'upserts': [scene('new-in-batch'), {**original, 'base': old_base}]}
+    response = client.post('/api/scenes/notebook/close', json=body) if close else client.put('/api/scenes/backup', json=body)
+    assert response.status_code == 409, response.text
+    assert response.json()['detail'] == 'notebook_rejoin_required'
+    assert store.notebook('u') == before
+    assert client.post('/api/scenes/writer', json={'action': 'status'}).json()['writer'] is not None
 
 
 def test_http_token_gate_start_retry_and_legacy_get(client, monkeypatch):
@@ -36,6 +53,25 @@ def test_http_token_gate_start_retry_and_legacy_get(client, monkeypatch):
     assert client.put('/api/scenes/backup', json={**{'upserts': [scene()]}, 'restore_generation': restore_generation()}).status_code == 409
     assert client.post('/api/scenes/writer', json={'action': 'release', 'token': lease['token']}).status_code == 200
     assert client.put('/api/scenes/backup', json={**{'token': lease['token'], 'request_id': 'late', 'upserts': [scene()]}, 'restore_generation': restore_generation()}).status_code == 409
+
+
+def test_open_1011_tab_cannot_read_adopt_claim_start_or_close_without_confirmation_protocol(client):
+    seed()
+    lease = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'new', 'tab_id': 'new'}).json()
+    before = store.notebook('u')
+    client.headers.pop('X-MVHub-Canvas-Protocol')
+    calls = [
+        client.get('/api/scenes/notebook'),
+        client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'old', 'tab_id': 'old'}),
+        client.post('/api/scenes/notebook/start', json={'token': lease['token'], 'attempt_id': 'old', 'expected_count': 0, 'commit': True}),
+        client.post('/api/scenes/notebook/close', json={'token': lease['token'], 'request_id': 'old', 'upserts': [scene(name='old')]}),
+        client.put('/api/scenes/backup', json={'token': lease['token'], 'request_id': 'old', 'upserts': [scene(name='old')]}),
+    ]
+    assert [(reply.status_code, reply.json()['detail']) for reply in calls] == [(409, 'canvas_client_update_required')] * len(calls)
+    assert store.notebook('u') == before
+    assert client.get('/api/scenes/backup?include_data=true').status_code == 200
+    # An old unload beacon may release its own token, but cannot read or replace canvas content.
+    assert client.post('/api/scenes/writer', json={'action': 'release', 'token': lease['token']}).status_code == 200
 
 
 def test_flag_off_and_auth_on_keep_legacy_contract(client, monkeypatch):
@@ -434,21 +470,25 @@ def test_account_epoch_aba_invalidates_http_upload(client):
     assert base() == original
 
 
-def test_auth_feature_is_opt_in_for_local_hub(notebook_db, monkeypatch):
-    # 이번 릴리스는 =1 일 때만 켬(docs/status/배포후보_공책기본끔_2026-11-15.md) — 변수 없음·0·빈 값·오타는 끔.
+def test_auth_feature_is_default_on_for_local_hub(notebook_db, monkeypatch):
+    # 364b0dd4 계약: 정확히 '0'만 끔. 빈 값·오타도 켬.
     from app.routers import auth
     from app.services import scene_writer
     monkeypatch.setattr(auth, 'AUTH_ENABLED', False)
-    assert 'scene_writer_v1' in auth.auth_config()['features']  # notebook_db 가 '1' 로 켠 상태
-    for value in (None, '0', '', 'yes', 'true', ' 1'):
+    assert 'scene_writer_confirm_v1' in auth.auth_config()['features']  # notebook_db 가 '1' 로 켠 상태
+    for value in (None, '1', '0', '', 'yes', 'true', ' 1'):
         if value is None:
-            monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER')  # 운영 기본(변수 없음) = 끔
+            monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER')
         else:
             monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', value)
-        assert not scene_writer.enabled(), value
-        assert 'scene_writer_v1' not in auth.auth_config()['features'], value
+        assert scene_writer.enabled() is (value != '0'), value
+        assert ('scene_writer_confirm_v1' in auth.auth_config()['features']) is (value != '0'), value
+        with monkeypatch.context() as auth_on:
+            auth_on.setattr(config, 'AUTH_ENABLED', True)
+            assert not scene_writer.enabled(), value
     monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     assert scene_writer.enabled()
-    assert 'scene_writer_v1' in auth.auth_config()['features']
+    assert 'scene_writer_confirm_v1' in auth.auth_config()['features']
+    assert 'scene_writer_v1' not in auth.auth_config()['features']  # 열린 1011 탭의 코멘트 창 재조회도 옛 전환을 켜지 않는다.
     monkeypatch.setattr(auth, 'AUTH_ENABLED', True)
-    assert 'scene_writer_v1' not in auth.auth_config()['features']
+    assert 'scene_writer_confirm_v1' not in auth.auth_config()['features']

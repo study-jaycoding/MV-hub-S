@@ -26,10 +26,9 @@ class WriterConflict(ValueError):
 
 
 def enabled() -> bool:
-    # 이번 릴리스는 명시적으로 켤 때만(=1, 빈 값·오타는 끔) — 공개판에 공책이 없어 업데이트 직후 첫 공책 전환이 로컬 씬을
-    #  보관·교체하는 것을 피한다(docs/status/배포후보_공책기본끔_2026-11-15.md, 11-10 '기본 켬'을 이번 판에 한해 되돌림).
+    # 로컬 허브 기본 켬. 출처 미확인 최초 시작은 브라우저에서 확인한다(2026-11-17 Jay 결정).
     #  이미 시작된 공책은 이 값과 무관하게 서버가 보호한다(routers/scenes.py `enabled() or is_started`).
-    return not config.AUTH_ENABLED and os.environ.get('CONTENT_HUB_SCENE_WRITER', '0') == '1'
+    return not config.AUTH_ENABLED and os.environ.get('CONTENT_HUB_SCENE_WRITER', '1') != '0'
 
 
 @dataclass

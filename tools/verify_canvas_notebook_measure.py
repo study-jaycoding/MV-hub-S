@@ -21,8 +21,8 @@ CASES = {
     "bootstrap": {"first_canvas", "archive", "archive_unchanged", "no_merge"},
     "performance": {"fixture", "samples", "baseline", "latency", "sync_under_second"},
     "rollback": {"old_checkout", "old_write", "new_recovery", "retained", "overwrite_then_delete_retained", "deleted_original_absent"},
-    # Empty-mirror first transition with the canvas restore flow (docs/status/공책첫전환복구동선_2026-11-15.md).
-    "first_transition": {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"},
+    "first_transition": {"previous_browser", "default_enabled", "before_confirmation", "no_upload_before", "confirmation",
+                         "selected_raw", "join_generation", "other_browser_preserved", "no_merge", "before_start", "reconnect"},
 }
 
 
@@ -76,6 +76,92 @@ def verify(report: dict) -> list[str]:
         errors.append("runner errors present")
     if report.get("forbidden_requests"):
         errors.append("generation or external mutation attempted")
+    if case == "first_transition":
+        transition = report.get("transition", {})
+        if not isinstance(transition, dict):
+            transition = {}
+        if not isinstance(transition, dict) or transition.get("variant") not in {
+                "empty", "different", "restored_unknown", "equal", "same_generation", "held", "limit_exact", "limit_over"} or transition.get("start_order") not in {"a", "b", "simultaneous"}:
+            errors.append("explicit first-transition variant and start order required")
+        if transition.get("variant") in {"limit_exact", "limit_over"}:
+            boundary = checks.get("size_boundary")
+            expected_size = 5 * 1024 * 1024 + (transition["variant"] == "limit_over")
+            if not isinstance(boundary, dict) or boundary.get("status") != "passed" or boundary.get("actual") != expected_size:
+                errors.append("measured UTF-8 size boundary required")
+        if transition.get("variant") == "held" and transition.get("start_order") not in {"a", "b"}:
+            errors.append("held-first requires confirmation order a or b")
+        if transition.get("variant") == "equal" and transition.get("start_order") == "b":
+            records = report.get("previous_browser_records")
+            previous = {}
+            for name in ("a", "b"):
+                record = records.get(name) if isinstance(records, dict) else None
+                scenes = record.get("scenes") if isinstance(record, dict) else None
+                previous[name] = scenes if isinstance(scenes, list) else []
+            start_check = checks.get("interrupted_start")
+            start = start_check.get("actual") if isinstance(start_check, dict) else None
+            attempt = start.get("attempt_id") if isinstance(start, dict) else None
+            if not isinstance(attempt, str) or not attempt:
+                errors.append("actual blocked start attempt required")
+            try:
+                recovery = json.loads(records['b'].get('mirrorRecovery') or 'null')
+                if recovery is not None and (not isinstance(recovery, dict) or not recovery.get('generation') or recovery.get('blockedIds') != [] or recovery.get('uncopied')):
+                    raise ValueError('held B cannot select its original canvas')
+                if previous['a'] == previous['b']:
+                    raise ValueError('B must have an actual offline final edit')
+            except (TypeError, ValueError, KeyError, AttributeError):
+                errors.append("actual unheld offline B provenance required")
+            for name, expected in {
+                "interrupted_clean_upgrade": {"not_started": True, "join_id": "", "awaiting": False,
+                    "based_ids": sorted(row['id'] for row in previous['a'] if isinstance(row, dict) and isinstance(row.get('id'), str))},
+                "interrupted_closed": {"closed": True, "released": True}, "interrupted_no_upload": False,
+                "before_confirmation": previous,
+                "interrupted_start": {"attempt_id": attempt, "expected_count": 0, "upserts": 0, "commit": True, "before_start": True},
+                "interrupted_rejoin_requests": [{"path": "/api/scenes/notebook/start", "method": "POST", "attempt_id": attempt,
+                    "expected_count": 0, "upserts": 0, "commit": True, "status": 409, "code": "notebook_already_started"}],
+                "other_browser_preserved": [previous['a']], "selected_raw": previous['b'], "no_merge": previous['b'],
+            }.items():
+                check = checks.get(name, {})
+                if not isinstance(check, dict) or check.get("status") != "passed" or check.get("actual") != expected:
+                    errors.append(f"{name}: actual interrupted clean-upgrade evidence required")
+        if transition.get("fault", "none") not in {"none", "lost_chunk", "lost_commit"}:
+            errors.append("unknown first-transition fault")
+        elif transition.get("fault", "none") != "none":
+            response_loss = checks.get("response_loss")
+            if not isinstance(response_loss, dict) or response_loss.get("actual") != 1:
+                errors.append("one processed response must actually be lost")
+        records = report.get("previous_browser_records", {})
+        if not isinstance(records, dict) or set(records) != {"a", "b"}:
+            errors.append("actual previous-browser records for both profiles required")
+        else:
+            for name, record in records.items():
+                def digest(value):
+                    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+                if (not isinstance(record, dict) or not digest(record.get("store_sha256")) or
+                        not isinstance(record.get("scenes"), list) or not record["scenes"] or
+                        any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or not digest(row.get("sha256")) for row in record["scenes"])):
+                    errors.append(f"previous browser {name}: ordered raw fingerprints required")
+            if transition.get("variant") in {"same_generation", "held"}:
+                try:
+                    recovery = json.loads(records["b" if transition["variant"] == "held" else "a"].get("mirrorRecovery") or "null")
+                    if not isinstance(recovery, dict) or not recovery.get("generation") or not isinstance(recovery.get("blockedIds"), list):
+                        raise ValueError("mirror record missing")
+                    if transition["variant"] == "held" and not recovery["blockedIds"]:
+                        raise ValueError("actual held record missing")
+                    if transition["variant"] == "held":
+                        ordinary = json.loads(records["a"].get("mirrorRecovery") or "null")
+                        if not isinstance(ordinary, dict) or ordinary.get("generation") != recovery["generation"] or ordinary.get("blockedIds") != []:
+                            raise ValueError("A must have current unheld provenance")
+                        if checks.get("held_first", {}).get("actual") != ["b", "a"]:
+                            raise ValueError("B must actually open first")
+                        if checks.get("held_archive_before_confirmation", {}).get("actual") != [records["b"].get("scenes")]:
+                            raise ValueError("B original archive before confirmation required")
+                        loser = "b" if transition["start_order"] == "a" else "a"
+                        if checks.get("other_browser_preserved", {}).get("actual") != [records[loser].get("scenes")]:
+                            raise ValueError("one original archive without a duplicate received canvas required")
+                    if transition["variant"] == "same_generation" and recovery["blockedIds"]:
+                        raise ValueError("normal untransmitted edit cannot use held provenance")
+                except (TypeError, ValueError, AttributeError):
+                    errors.append("actual previous-browser generation/held record required")
     if case == "performance":
         timing = report.get("timing", {})
         if not isinstance(timing, dict):

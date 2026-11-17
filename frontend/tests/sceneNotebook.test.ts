@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, readRestoreArchives, joinSceneNotebook, completeNotebookMcpTask, buildSceneNotebookClose, notebookRestoreGeneration, writeNotebookProgress, type NotebookToken } from "../src/lib/sceneNotebook";
+import { getNotebookStartNotice, prepareNotebookStart, syncSceneNotebook, subscribeNotebookSyncResult, setSceneNotebookTokenProvider, readSceneNotebook, readNotebookArchive, readRestoreArchives, joinSceneNotebook, completeNotebookMcpTask, buildSceneNotebookClose, notebookRestoreGeneration, writeNotebookProgress, type NotebookToken } from "../src/lib/sceneNotebook";
 import { setHubFeatures } from "../src/lib/hubFeatures";
 import { setAccountScope } from "../src/lib/accountScope";
-import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest, initSceneStore } from "../src/lib/sceneStore";
+import { applySceneOp, readWorkingBucket, writeScenesStore, settleSceneStoreForTest, abortSceneStoreWritesForTest, setSceneWriteGate, subscribeNotebookWriteHold, sceneNotebookTransaction, readSceneStoreMeta, notebookKey, failSceneStoreWritesForTest, replaceSceneStoreForTest, readConfirmedBucket, sceneStoreLoadForTest, initSceneStore, resetSceneStoreForTest, seedLegacyLayoutForTest } from "../src/lib/sceneStore";
 import type { Scene } from "../src/lib/scenes";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const scene = (id = "s", name = id): Scene => ({ id, name, cards: [], edges: [], created_at: 1 });
@@ -17,6 +17,7 @@ vi.mock("../src/lib/http", () => ({ jsonFetch: async (path: string, init?: Reque
 type Base = { history_id: string; rev: number; hash: string };
 type Row = { id: string; data: string; deleted_at: string | null; base: Base };
 class FakeHub {
+  rejectWrites = false;
   restoreGeneration = "restore-1";
   history = "h1"; book: string | null = null; rows = new Map<string, Row>(); order: string[] = []; rev = 1;
   calls: { path: string; body: any }[] = []; receipts = new Map<string, any>(); starts = new Map<string, any>();
@@ -42,9 +43,11 @@ class FakeHub {
       if (staged.rows.size !== body.expected_count) throw { detail: "start_incomplete" };
       if (!body.expected_count && !this.rows.size) throw { detail: "empty_notebook" };
       if (body.expected_count) { this.rows.clear(); this.order = []; for (const s of staged.rows.values()) this.save(JSON.parse(s.data)); this.order = body.order; }
-      this.book = "book1"; return staged.done = { status: "committed", notebook_id: this.book, history_id: this.history };
+      this.book = "book1"; return staged.done = { status: "committed", notebook_id: this.book, history_id: this.history,
+        restore_generation: this.restoreGeneration, attempt_id: body.attempt_id };
     }
     if (path.endsWith("/backup")) {
+      if (this.rejectWrites) throw { status: 409, detail: "notebook_rejoin_required" };
       if (this.receipts.has(body.request_id)) return this.receipts.get(body.request_id);
       const previousOrder = JSON.stringify(this.order), results = [], deletes = [];
       for (const up of body.upserts) {
@@ -87,6 +90,304 @@ it("restore to an empty hub preserves old browser content without bootstrap writ
   expect((await state()).joined).toMatchObject({ restoreGeneration: "restore-2" });
 });
 const state = async () => { const r = await readSceneNotebook("local"); if (!r.ok) throw Error("store"); return r.value; };
+async function approveStart(settle = async () => true) {
+  const notice = getNotebookStartNotice();
+  if (notice?.kind !== "confirm") throw Error("missing confirmation");
+  const approval = await prepareNotebookStart(notice.id, settle);
+  if (!approval) throw Error("approval invalidated");
+  return approval;
+}
+it.each([false, true])("0123 unknown provenance keeps raw scenes/order before confirmation (different mirror: %s)", async (hasMirror) => {
+  const local = [scene("b", "로컬 본문"), { ...scene("a"), cards: [{ id: "card", kind: "text", text: "입력 원문", x: 1, y: 2 }], edges: [] } as Scene];
+  await writeScenesStore({ [bucket]: local, "local::old-project": [scene("old-project")] });
+  if (hasMirror) fake.save(scene("hub", "허브 옛 본문"));
+  const before = JSON.stringify(readWorkingBucket(bucket));
+  for (let i = 0; i < 2; i++) expect(await syncSceneNotebook()).toMatchObject({ status: "local_only", reason: "start_confirmation", visibleChanged: false });
+  expect(JSON.stringify(readWorkingBucket(bucket))).toBe(before);
+  expect(fake.calls.every((call) => !call.body)).toBe(true);
+  expect((await state()).joined).toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  const approval = await approveStart();
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
+  expect(fake.order).toEqual(["b", "a"]);
+  expect(fake.order.map((id) => JSON.parse(fake.rows.get(id)!.data))).toEqual(local);
+  expect((await state()).joined?.restoreGeneration).toBe(fake.restoreGeneration);
+  expect(await readNotebookArchive("local", fake.book!)).toMatchObject({ ok: true, value: { scenes: { "local::old-project": [scene("old-project")] } } });
+  expect(getNotebookStartNotice()?.kind).toBe("started");
+  const writes = fake.calls.filter((call) => call.body).length;
+  await syncSceneNotebook();
+  expect(fake.calls.filter((call) => call.body).length).toBe(writes);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+});
+it("1011 same-generation unsent local edits require confirmation; current generation alone never starts", async () => {
+  await writeScenesStore({ [bucket]: [scene("s", "unsent")] });
+  fake.save(scene("s", "old mirror"));
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: [], raws: { s: hash(JSON.stringify(scene("s", "old mirror"))) }, originals: [] }));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  const approval = await approveStart();
+  await syncSceneNotebook({ startApproval: approval });
+  expect(JSON.parse(fake.rows.get("s")!.data).name).toBe("unsent");
+});
+it.each(["old generation", "G2 blocked", "held large shrunk", "legacy fork"])("known restore keeps adopt/archive and never stages old scenes: %s", async (kind) => {
+  const original = scene("s", "old raw");
+  await writeScenesStore({ [bucket]: [original] });
+  if (kind === "legacy fork") localStorage.setItem("mvhub.sceneBackupBase:local:s", JSON.stringify({ fork: { id: "old-copy" } }));
+  else localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: kind === "old generation" ? "G1" : fake.restoreGeneration,
+    blockedIds: kind === "old generation" ? [] : ["s"], uncopied: kind === "held large shrunk" ? ["s"] : [], raws: { s: hash(JSON.stringify(original)) }, originals: [] }));
+  expect((await syncSceneNotebook()).reason).toBe("empty_notebook");
+  expect(readWorkingBucket(bucket)).toEqual([]);
+  expect(fake.calls.every((call) => !call.body)).toBe(true);
+  expect(getNotebookStartNotice()).toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [original] } }] });
+  await syncSceneNotebook();
+  expect(fake.rows.size).toBe(0);
+  expect(getNotebookStartNotice()).toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [original] } }] });
+});
+it.each(["local", "hub", "restore", "mirror hold"])("confirmation is not reused after waiting data changes: %s", async (kind) => {
+  await writeScenesStore({ [bucket]: [scene()] });
+  await syncSceneNotebook();
+  const approval = await approveStart();
+  if (kind === "local") { edit([scene("s", "changed while waiting")]); await settleSceneStoreForTest(); }
+  if (kind === "hub") fake.save(scene("remote"));
+  if (kind === "restore") fake.restoreGeneration = "G2";
+  if (kind === "mirror hold") localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["s"] }));
+  const result = await syncSceneNotebook({ startApproval: approval });
+  expect(fake.calls.filter((call) => call.path.endsWith("/start"))).toEqual([]);
+  expect(result.status).toBe("local_only");
+});
+it.each(["a", "b"])("held B opens first and waits; %s confirms first and the other browser joins with its original preserved", async (first) => {
+  const originalB = [scene("held", "B old canvas")], originalA = [scene("fresh", "A unsent canvas")];
+  const hub = scene("hub", "saved canvas"); fake.save(hub);
+  const recovery = JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["held"], raws: {} });
+  await writeScenesStore({ [bucket]: originalB }); localStorage.setItem("mvhub.mirrorRecovery:local", recovery);
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ afterRestore: true, hubCount: 1 });
+  expect((await state()).joined).toMatchObject({ notebookId: "", awaitingStart: true });
+  expect(fake.book).toBeNull();
+  expect(fake.calls.filter((c) => c.path.endsWith("/start"))).toEqual([]);
+  const frozen = await sceneNotebookTransaction([notebookKey("nr", "local")], (all, meta) =>
+    ({ changed: false, value: { scenes: all, meta } }));
+  if (!frozen.ok) throw Error("profile B read failed");
+  const load = async (profile: typeof frozen.value, mirror: string | null) => {
+    resetSceneStoreForTest();
+    seedLegacyLayoutForTest(profile.scenes, Object.fromEntries(Object.entries(profile.meta).filter(([key]) => key.startsWith('["') || key === "conflicts")));
+    expect((await initSceneStore(() => null, null, () => true)).kind).toBe("ready"); setSceneWriteGate(() => false);
+    expect(readWorkingBucket(bucket)).toEqual(profile.scenes[bucket]);
+    localStorage.removeItem("mvhub.mirrorRecovery:local"); if (mirror) localStorage.setItem("mvhub.mirrorRecovery:local", mirror);
+    setSceneNotebookTokenProvider(() => token);
+  };
+  await load({ scenes: { [bucket]: originalA }, meta: {} }, null);
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(readWorkingBucket(bucket)).toEqual(originalA); expect(fake.book).toBeNull();
+  if (first === "a") {
+    expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+    await load(frozen.value, recovery);
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect(readWorkingBucket(bucket)).toEqual(originalA);
+    expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: originalB } }] });
+  } else {
+    await load(frozen.value, recovery);
+    expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+    expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+    expect((await state()).joined?.notebookId).toBe(fake.book);
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: originalB } }] });
+    await load({ scenes: { [bucket]: originalA }, meta: {} }, null);
+    expect((await syncSceneNotebook()).status).toBe("ready");
+    expect(readWorkingBucket(bucket)).toEqual([hub]);
+    expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: originalA } }] });
+  }
+  expect(fake.order).toEqual(first === "a" ? ["fresh"] : ["hub"]);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+});
+it("a new local scene after empty restore needs confirmation for the current canvas", async () => {
+  await writeScenesStore({ [bucket]: [scene("held")] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "old", blockedIds: ["held"] }));
+  expect((await syncSceneNotebook()).reason).toBe("empty_notebook");
+  edit([scene("new")]); await settleSceneStoreForTest();
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ count: 1, hubCount: 0 });
+  expect(getNotebookStartNotice()).not.toHaveProperty("afterRestore");
+  expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+  expect(fake.order).toEqual(["new"]);
+  expect((await state()).joined).not.toHaveProperty("awaitingStart");
+});
+it.each(["unchanged", "camera", "edit", "delete", "order", "write", "restore"])("waiting browser joins without archiving the received canvas twice: %s", async (kind) => {
+  const original = scene("held"), received = [scene("hub-a"), scene("hub-b")];
+  await writeScenesStore({ [bucket]: [original] }); received.forEach((s) => fake.save(s));
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: [original.id] }));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect((await state()).joined).toMatchObject({ awaitingStart: true });
+  if (kind === "camera") edit([{ ...received[0], camera: { x: 1, y: 2, z: 0.5 } }, received[1]]);
+  if (kind === "edit") edit([scene("hub-a", "B edited while waiting"), received[1]]);
+  if (kind === "delete") edit([received[1]]);
+  if (kind === "order") edit([...received].reverse());
+  const progress = { id: "queued-write", restoreGeneration: fake.restoreGeneration, requests: [] };
+  if (kind === "write") await writeNotebookProgress("local", "write", null, progress);
+  await settleSceneStoreForTest();
+  const waiting = await state();
+  fake.book = "book1"; fake.rows.clear(); fake.order = []; fake.save(scene("a", "A started canvas"));
+  if (kind === "restore") fake.restoreGeneration = "restore-2";
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("a", "A started canvas")]);
+  const archives = await readRestoreArchives("local"); if (!archives.ok) throw Error("archive read failed");
+  expect(archives.value[0].scenes[bucket]).toEqual([original]);
+  expect(archives.value).toHaveLength(["unchanged", "camera"].includes(kind) ? 1 : 2);
+  if (kind === "write") {
+    expect(archives.value[1].scenes).toEqual({});
+    expect(archives.value[1].controls[notebookKey("nw", "local")]).toEqual(progress);
+  } else if (!["unchanged", "camera"].includes(kind)) {
+    expect(archives.value[1].scenes[bucket]).toEqual(waiting.buckets[bucket].scenes);
+    if (kind === "delete") expect(archives.value[1].controls[notebookKey("d", bucket, "hub-a")]).toBeTruthy();
+    if (kind === "order") expect(archives.value[1].controls[notebookKey("ob", bucket)]).toEqual(waiting.buckets[bucket].order);
+  }
+  expect((await state()).joined).not.toHaveProperty("awaitingStart");
+});
+it("confirmation settles active input before selecting the final raw snapshot", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart(async () => { edit([scene("s", "final input and drag")]); await settleSceneStoreForTest(); return true; });
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
+  expect(JSON.parse(fake.rows.get("s")!.data).name).toBe("final input and drag");
+});
+it("camera and mirror raws changed after the question start once with the latest settled canvas", async () => {
+  await writeScenesStore({ [bucket]: [scene()] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: [], raws: { s: "before" } }));
+  await syncSceneNotebook();
+  const latest = { ...scene(), camera: { x: 300, y: 200, z: 0.5 } };
+  edit([latest]); await settleSceneStoreForTest();
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: [], raws: { s: "after" } }));
+  const approval = await approveStart();
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
+  expect(JSON.parse(fake.rows.get("s")!.data)).toEqual(latest);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+});
+it("provenance changing while input settles cannot be approved", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const notice = getNotebookStartNotice()!;
+  expect(await prepareNotebookStart(notice.id, async () => {
+    localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "G2" })); return true;
+  })).toBeNull();
+});
+it.each(["ledger", "control", "mirror source"])("source changes before the click ask again without reusing approval: %s", async (kind) => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const offer = getNotebookStartNotice()!;
+  if (kind === "ledger") localStorage.setItem("mvhub.sceneBackupBase:local:s", JSON.stringify({ hash: "new-base" }));
+  if (kind === "mirror source") localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration }));
+  if (kind === "control") await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("ob", bucket)] = { base: null, dirty: "new-order" }; return { changed: true, value: null };
+  });
+  expect(await prepareNotebookStart(offer.id, async () => true)).toBeNull();
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ changed: true, count: 1 });
+  expect(getNotebookStartNotice()!.id).not.toBe(offer.id);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start"))).toEqual([]);
+});
+it("a changed hub or generation asks again with the fresh scene count and explanation", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  edit([scene(), scene("added")]); await settleSceneStoreForTest(); fake.restoreGeneration = "G2";
+  expect((await syncSceneNotebook({ startApproval: approval })).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ kind: "confirm", count: 2, changed: true });
+});
+it("empty local confirmation loads the hub scenes without replacing or archiving them", async () => {
+  await writeScenesStore({ [bucket]: [] }); fake.save(scene("hub"));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ count: 0, hubCount: 1 });
+  expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("hub")]);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start")).every((c) => c.body.expected_count === 0)).toBe(true);
+});
+it.each(["settle", "storage", "account"])("failed confirmation preserves local input and never starts: %s", async (failure) => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const notice = getNotebookStartNotice()!;
+  if (failure === "storage") failSceneStoreWritesForTest(true);
+  const approval = await prepareNotebookStart(notice.id, async () => { if (failure === "account") setAccountScope("other"); return failure !== "settle"; });
+  failSceneStoreWritesForTest(false);
+  expect(approval).toBeNull();
+  expect(fake.calls.filter((call) => call.path.endsWith("/start"))).toEqual([]);
+  expect(readWorkingBucket(bucket)).toEqual([scene()]);
+});
+it("another browser starts first: join and archive the losing browser raw snapshot without merging", async () => {
+  const original = [scene("local", "losing browser")];
+  await writeScenesStore({ [bucket]: original }); await syncSceneNotebook();
+  const approval = await approveStart();
+  fake.book = "other-book"; fake.save(scene("remote", "winner"));
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("remote", "winner")]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: original } }] });
+  expect(fake.calls.filter((call) => call.path.endsWith("/start"))).toEqual([]);
+  expect(getNotebookStartNotice()).toBeNull();
+});
+it("approved start reuses a lost chunk attempt, but a different lease requires confirmation again", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  hook = (path) => { if (path.endsWith("/start")) throw Error("chunk reply lost"); };
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("retry");
+  const attempt = (await state()).starting!.id;
+  hook = null;
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((call) => call.path.endsWith("/start")).every((call) => call.body.attempt_id === attempt)).toBe(true);
+  expect((await state()).joined?.restoreGeneration).toBe(fake.restoreGeneration);
+});
+it("approved chunk receipt cannot authorize a new lease", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  hook = (path) => { if (path.endsWith("/start")) throw Error("chunk reply lost"); };
+  await syncSceneNotebook({ startApproval: approval });
+  token = { ...token!, generation: "new lease", token: "new token" }; hook = null; fake.calls = [];
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(fake.calls.every((call) => !call.body)).toBe(true);
+});
+it.each(["local", "project", "held"])("changes during approved staging invalidate that confirmation before commit: %s", async (kind) => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  hook = (path, body) => {
+    if (!path.endsWith("/start") || body.commit) return;
+    hook = null;
+    if (kind === "local") edit([scene("s", "new during staging")]);
+    if (kind === "project") applySceneOp((all) => { all["local::old-project"] = [scene("late")]; return { write: true, value: null }; });
+    if (kind === "held") localStorage.setItem("mvhub.sceneBackupBase:local:s", JSON.stringify({ fork: { id: "held" } }));
+  };
+  const result = await syncSceneNotebook({ startApproval: approval });
+  expect(fake.book).toBeNull();
+  expect(fake.calls.filter((call) => call.path.endsWith("/start") && call.body.commit)).toEqual([]);
+  expect(result.status).toBe("local_only");
+});
+it.each(["lease", "account"])("approved start never writes when the owner changes during GET: %s", async (kind) => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  hook = (path) => { if (path.includes("notebook?")) { hook = null; if (kind === "lease") token = { ...token!, generation: "g2" }; else setAccountScope("other"); } };
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("waiting_token");
+  expect(fake.book).toBeNull(); expect(readWorkingBucket(bucket)).toEqual([scene()]);
+});
+it("approved lost commit reply converges with one notebook, one preserved raw archive and a durable join generation", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  hook = (path, body) => { if (path.endsWith("/start") && body.commit) throw Error("commit reply lost"); };
+  await syncSceneNotebook({ startApproval: approval }); hook = null;
+  await syncSceneNotebook();
+  const archives = await readRestoreArchives("local");
+  expect((await state()).joined?.restoreGeneration).toBe(fake.restoreGeneration);
+  expect(readWorkingBucket(bucket)).toEqual([scene()]);
+  expect(fake.calls.filter((call) => call.path.endsWith("/start") && call.body.commit)).toHaveLength(1);
+  await syncSceneNotebook();
+  expect(await readRestoreArchives("local")).toEqual(archives);
+});
+it.each([0, 1])("approved UTF-8 5MiB boundary and mixed small scene (extra bytes %s)", async (extra) => {
+  const base = scene("large", "");
+  const overhead = new TextEncoder().encode(JSON.stringify(base)).length;
+  const remaining = 5 * 1024 * 1024 - overhead;
+  const large = { ...base, name: "한".repeat(Math.floor(remaining / 3)) + "x".repeat(remaining % 3 + extra) };
+  await writeScenesStore({ [bucket]: [large, scene("small")] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe(extra ? "local_only" : "ready");
+  expect(readWorkingBucket(bucket)).toEqual([large, scene("small")]);
+  if (extra) {
+    expect(fake.calls.filter((call) => call.path.endsWith("/start"))).toEqual([]);
+    expect(fake.calls.some((call) => call.path.endsWith("/writer") && call.body.action === "release")).toBe(true);
+  }
+});
 async function currentLocal(scenes: Scene[]) {
   await writeScenesStore({ [bucket]: [] });
   expect((await syncSceneNotebook()).status).toBe("ready");
@@ -97,6 +398,279 @@ async function joined(scenes = [scene()], generation: string | null = fake.resto
   await joinSceneNotebook("local", fake.book, fake.history, { [bucket]: { scenes,
     bases: Object.fromEntries(scenes.map((s) => [s.id, { history: fake.history, rev: fake.rows.get(s.id)!.base.rev, hash: fake.rows.get(s.id)!.base.hash }])), order: { history: fake.history, rev: fake.rev } } }, undefined, generation ?? undefined);
 }
+it.each([["cleanUpgrade", false], ["1011 adopt", false], ["cleanUpgrade", true], ["1011 adopt", true]] as const)("interrupted %s empty-id join archives A after B starts without merging old base rows (reused ids: %s)", async (kind, reusedIds) => {
+  const original = [scene("old-a"), scene("old-z")], selected = reusedIds ? original.map((s) => ({ ...s, name: `B selected ${s.id}` })) : [scene("chosen-b")];
+  await joined(original, null); fake.book = null;
+  await sceneNotebookTransaction([], (_all, meta) => { delete meta[notebookKey("nj", "local")]; return { changed: true, value: null }; });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  if (kind === "1011 adopt") {
+    await sceneNotebookTransaction([], (_all, meta) => {
+      meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+      return { changed: true, value: null };
+    });
+    edit([scene("old-a", "A unsent edit"), original[1]]); await settleSceneStoreForTest();
+  }
+  const before = readWorkingBucket(bucket);
+  expect((await state()).joined).toMatchObject({ notebookId: "" });
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: selected.length, order: selected.map((s) => s.id),
+    upserts: selected.map((s) => ({ id: s.id, data: JSON.stringify(s) })), commit: true });
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual(selected);
+  expect(fake.order.map((id) => JSON.parse(fake.rows.get(id)!.data))).toEqual(selected);
+  expect(fake.calls.filter((c) => c.body)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: before } }] });
+  expect((await state()).joined?.notebookId).toBe(fake.book);
+  await syncSceneNotebook();
+  expect([...fake.rows.keys()]).toEqual(selected.map((s) => s.id));
+});
+it("interrupted cleanUpgrade zero-start receipt is rejected after B selects an offline edit", async () => {
+  const original = [scene("a"), scene("z")], selected = [scene("a", "B offline final edit"), original[1]];
+  await joined(original, null); fake.book = null;
+  await sceneNotebookTransaction([], (_all, meta) => { delete meta[notebookKey("nj", "local")]; return { changed: true, value: null }; });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("ns", "local")] = { id: "interrupted-a", history: fake.history, restoreGeneration: fake.restoreGeneration,
+      generation: token!.generation, scenes: [] };
+    return { changed: true, value: null };
+  });
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: selected.length, order: selected.map((s) => s.id),
+    upserts: selected.map((s) => ({ id: s.id, data: JSON.stringify(s) })), commit: true });
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((c) => c.body)).toMatchObject([{ body: { attempt_id: "interrupted-a", expected_count: 0, upserts: [], commit: true } }]);
+  expect(readWorkingBucket(bucket)).toEqual(selected);
+  expect(fake.order.map((id) => JSON.parse(fake.rows.get(id)!.data))).toEqual(selected);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: original } }] });
+  expect((await state()).starting).toBeNull();
+});
+it("a lost own-start reply followed by remap conservatively archives once without losing the canvas", async () => {
+  const original = [scene("own")]; await currentLocal(original);
+  hook = (path, body) => {
+    if (path.endsWith("/start") && body.commit) {
+      hook = null; fake.history = "remapped-history"; fake.starts.clear();
+      for (const row of fake.rows.values()) row.base = { ...row.base, history_id: fake.history, rev: row.base.rev + 1 };
+      throw Error("lost commit reply before remap");
+    }
+  };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual(original);
+  expect((await state()).starting).toBeNull();
+  const archives = await readRestoreArchives("local"); if (!archives.ok) throw Error("archive read failed");
+  expect(archives.value).toHaveLength(1);
+  expect(archives.value[0].scenes[bucket]).toEqual(original);
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(await readRestoreArchives("local")).toEqual(archives);
+});
+it.each([[false, false], [false, true], [true, false], [true, true]])("a held browser losing its own zero-start commit reply leaves no empty control archive (legacy marker: %s, reordered: %s)", async (legacy, reordered) => {
+  fake.save(scene("saved-a")); fake.save(scene("saved-b"));
+  await writeScenesStore({ [bucket]: [scene("held")] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["held"] }));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  if (legacy) await sceneNotebookTransaction([], (_all, meta) => {
+    delete (meta[notebookKey("nj", "local")] as { beforeStart?: true }).beforeStart;
+    return { changed: true, value: null };
+  });
+  hook = (path, body) => {
+    if (path.endsWith("/start") && body.commit) {
+      hook = null;
+      if (reordered) { fake.order.reverse(); fake.rev++; }
+      throw Error("lost commit reply");
+    }
+  };
+  expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("held")] } }] });
+  expect((await state()).starting).toBeNull();
+  expect((await state()).joined).toMatchObject({ notebookId: fake.book });
+});
+it("a legacy empty-id profile archives missing base rows after B starts and history is remapped", async () => {
+  const original = [scene("old-a"), scene("old-z")], selected = [scene("chosen-b")];
+  await joined(original);
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    return { changed: true, value: null };
+  });
+  fake.book = null;
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: selected.length, order: selected.map((s) => s.id),
+    upserts: selected.map((s) => ({ id: s.id, data: JSON.stringify(s) })), commit: true });
+  fake.history = "remapped-history";
+  for (const row of fake.rows.values()) row.base = { ...row.base, history_id: fake.history, rev: row.base.rev + 1 };
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual(selected);
+  expect([...fake.rows.keys()]).toEqual(["chosen-b"]);
+  expect(fake.calls.filter((c) => c.body)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: original } }] });
+});
+it.each([false, true])("history remap leaves a legacy empty-id profile on ordinary sync without adoption (edited: %s)", async (edited) => {
+  await joined();
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    return { changed: true, value: null };
+  });
+  if (edited) { edit([scene("s", "offline edit")]); await settleSceneStoreForTest(); }
+  fake.history = "remapped-history";
+  for (const row of fake.rows.values()) row.base = { ...row.base, history_id: fake.history, rev: row.base.rev + 1 };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect(readWorkingBucket(bucket).map((s) => s.name)).toEqual(edited ? ["s", "[old] offline edit"] : ["s"]);
+  expect((await state()).joined?.notebookId).toBe(fake.book);
+});
+it.each([false, true])("a base-free scene created after empty cleanUpgrade is archived when B starts first (legacy unstarted: %s)", async (legacy) => {
+  await writeScenesStore({ [bucket]: [] });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  if (legacy) {
+    await sceneNotebookTransaction([], (_all, meta) => {
+      delete (meta[notebookKey("nj", "local")] as { beforeStart?: true }).beforeStart;
+      return { changed: true, value: null };
+    });
+    expect((await syncSceneNotebook()).reason).toBe("empty_notebook");
+  }
+  edit([scene("x", "A new scene")]); await settleSceneStoreForTest();
+  const profile = await sceneNotebookTransaction([], (all, meta) => ({ changed: false, value: { all, meta } }));
+  if (!profile.ok) throw Error("profile read failed");
+  resetSceneStoreForTest();
+  seedLegacyLayoutForTest(profile.value.all, Object.fromEntries(Object.entries(profile.value.meta).filter(([key]) => key.startsWith('["') || key === "conflicts")));
+  expect((await initSceneStore(() => null, null, () => true)).kind).toBe("ready"); setSceneWriteGate(() => false);
+  expect((await state()).joined).toMatchObject({ notebookId: "", beforeStart: true });
+  fake.book = "B-book"; fake.save(scene("b", "B selected")); fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b", "B selected")]);
+  expect([...fake.rows.keys()]).toEqual(["b"]);
+  expect(fake.calls.filter((c) => c.body)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("x", "A new scene")] } }] });
+});
+it("an uncommitted base-free start does not pass as its own committed notebook when B wins", async () => {
+  await currentLocal([scene("x")]);
+  hook = (path, body) => { if (path.endsWith("/start") && !body.commit) throw Error("lost staged reply"); };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  expect((await state()).starting).not.toBeNull();
+  hook = null;
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: 1, order: ["b"], upserts: [{ id: "b", data: JSON.stringify(scene("b")) }], commit: true });
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b")]);
+  expect([...fake.rows.keys()]).toEqual(["b"]);
+  expect(fake.calls.filter((c) => c.path.endsWith("/backup") || c.body?.upserts?.length)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("x")] } }] });
+});
+it.each(["new lease", "lease change", "wrong receipt"])("a base-free own start lost reply is verified across a new lease: %s", async (kind) => {
+  await currentLocal([scene("x")]);
+  let lost = false;
+  hook = (path, body) => {
+    if (path.endsWith("/start") && body.commit) lost = true;
+    if (lost) throw Error("lost commit and later replies");
+  };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  const pending = (await state()).starting;
+  token = { account: "local", token: "new-token", generation: "g2" };
+  hook = (path, _body, reply) => {
+    if (path.endsWith("/start")) {
+      if (kind === "lease change") token = null;
+      if (kind === "wrong receipt") reply.notebook_id = "wrong-book";
+    }
+  };
+  expect((await syncSceneNotebook()).status).toBe(kind === "lease change" ? "waiting_token" : kind === "wrong receipt" ? "retry" : "ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("x")]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect(fake.starts.size).toBe(1);
+  if (kind !== "new lease") {
+    expect((await state()).starting).toEqual(pending);
+    expect((await state()).joined).toMatchObject({ beforeStart: true });
+  } else {
+    expect((await state()).starting).toBeNull();
+    expect((await state()).joined).toEqual({ notebookId: fake.book, history: fake.history, restoreGeneration: fake.restoreGeneration });
+  }
+});
+it.each([0, 2])("notebook_rejoin_required archives the rejected request and joins B after %s transport retries", async (failures) => {
+  await joined(); edit([scene("s", "A unsent")]); await settleSceneStoreForTest();
+  fake.book = "B-book"; fake.rows.clear(); fake.order = []; fake.save(scene("b", "B selected"));
+  fake.rejectWrites = true;
+  hook = (path) => { if (path.includes("notebook?") && failures-- > 0) throw { status: 503, detail: "offline" }; };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b", "B selected")]);
+  expect((await state()).writing).toBeNull();
+  const archives = await readRestoreArchives("local"); if (!archives.ok) throw Error("archive read failed");
+  expect(archives.value).toHaveLength(1);
+  expect(archives.value[0].scenes[bucket]).toEqual([scene("s", "A unsent")]);
+  expect(archives.value[0].controls[notebookKey("nw", "local")]).toMatchObject({ requests: [{ upserts: [{ id: "s" }] }] });
+  const sends = fake.calls.filter((c) => c.path.endsWith("/backup")).length;
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((c) => c.path.endsWith("/backup"))).toHaveLength(sends);
+  expect([...fake.rows.keys()]).toEqual(["b"]);
+});
+it("a failed rejoin archive keeps the rejected request and local raw for a later safe retry", async () => {
+  await joined(); edit([scene("s", "A unsent")]); await settleSceneStoreForTest();
+  fake.rows.clear(); fake.order = []; fake.save(scene("b")); fake.rejectWrites = true;
+  let gets = 0;
+  hook = (path) => { if (path.includes("notebook?") && ++gets === 2) abortSceneStoreWritesForTest(true); };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  abortSceneStoreWritesForTest(false); hook = null;
+  expect(readWorkingBucket(bucket)).toEqual([scene("s", "A unsent")]);
+  expect((await state()).writing).not.toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b")]);
+  expect((await state()).writing).toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("s", "A unsent")] } }] });
+});
+it("an unexpected second rejoin error returns without looping or discarding local progress", async () => {
+  await joined(); edit([scene("s", "A unsent")]); await settleSceneStoreForTest();
+  fake.rejectWrites = true;
+  let gets = 0;
+  hook = (path) => { if (path.includes("notebook?") && ++gets > 1) throw { status: 409, detail: "notebook_rejoin_required" }; };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  expect(gets).toBe(2);
+  expect((await state()).writing).not.toBeNull();
+  expect(readWorkingBucket(bucket)).toEqual([scene("s", "A unsent")]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+});
+it("an unreadable existing base row does not turn a legacy empty-id join into adoption", async () => {
+  await joined();
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    return { changed: true, value: null };
+  });
+  fake.rows.get("s")!.data = "{}";
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene()]);
+  expect((await state()).joined?.notebookId).toBe(fake.book);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+});
+it("1011 empty join id upgrades only its id and preserves edits, deletion, revival, order and write progress", async () => {
+  await joined([scene("a"), scene("deleted"), scene("revived"), scene("z")]);
+  edit([scene("z"), scene("a", "unsent edit"), scene("revived")]); await settleSceneStoreForTest();
+  fake.save(scene("z", "newer hub edit"));
+  fake.rows.get("deleted")!.deleted_at = "already-deleted";
+  fake.order = fake.order.filter((id) => id !== "deleted");
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    meta[notebookKey("r", bucket, "revived")] = { intentId: "revive", base: null };
+    return { changed: true, value: null };
+  });
+  const frozen = (await state()).buckets[bucket];
+  const progress = { id: "in-flight", restoreGeneration: fake.restoreGeneration, history: fake.history, notebookId: fake.book,
+    frozen, requests: [], tooBig: [], orderCanAdvance: false };
+  await writeNotebookProgress("local", "write", null, progress);
+  const before = await state();
+  let reads = 0;
+  hook = async (path) => {
+    if (path.includes("notebook?") && ++reads >= 2) throw { status: 503, detail: "offline_after_id_upgrade" };
+  };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  expect(await state()).toEqual({ ...before, joined: { ...before.joined!, notebookId: fake.book } });
+  expect(readWorkingBucket(bucket)).toEqual(before.buckets[bucket].scenes);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect(fake.calls.filter((call) => call.path.endsWith("/start"))).toEqual([]);
+  hook = null;
+  await writeNotebookProgress("local", "write", progress, null);
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.rows.get("deleted")!.deleted_at).not.toBeNull();
+  expect(JSON.parse(fake.rows.get("a")!.data).name).toBe("unsent edit");
+  expect(readWorkingBucket(bucket).find((s) => s.id === "z")?.name).toBe("newer hub edit");
+  expect(fake.order).toEqual(["z", "a", "revived"]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+});
 it("generation lookup reads confirmed join without replaying pending scene operations", async () => {
   await joined();
   let replays = 0;
@@ -255,7 +829,7 @@ it.each(["unstarted", "unstarted with order", "orderless", "lost start reply", "
   expect(fake.calls.filter((c) => c.path.endsWith("/backup")).every((c) => !c.body.upserts.length && !c.body.deletes.length)).toBe(true);
   expect(fake.calls.filter((c) => c.path.endsWith("/start")).every((c) => c.body.expected_count === 0)).toBe(true);
 });
-it.each(["hub-only", "local-only"])("first notebook preserves the full local snapshot when the id sets differ: %s", async (side) => {
+it.each(["hub-only", "local-only"])("unknown first notebook keeps the full local snapshot and waits when the id sets differ: %s", async (side) => {
   await joined([scene("same")], null);
   await sceneNotebookTransaction([], (all, meta) => {
     delete meta['["nj","local"]'];
@@ -265,10 +839,11 @@ it.each(["hub-only", "local-only"])("first notebook preserves the full local sna
   fake.book = null; fake.rev = 0;
   if (side === "hub-only") fake.save(scene("bk_old"));
   fake.calls = [];
-  await syncSceneNotebook();
+  const before = structuredClone(readWorkingBucket(bucket));
+  expect(await syncSceneNotebook()).toMatchObject({ status: "local_only", reason: "start_confirmation" });
   const archived = await readRestoreArchives("local");
-  expect(archived.ok && archived.value[0].scenes[bucket].map((s) => s.id)).toEqual(side === "local-only" ? ["same", "local-only"] : ["same"]);
-  expect(readWorkingBucket(bucket).map((s) => s.id)).toEqual(fake.order);
+  expect(archived.ok && archived.value).toEqual([]);
+  expect(readWorkingBucket(bucket)).toEqual(before);
   expect(fake.calls.every((c) => !c.body)).toBe(true);
 });
 it.each(["order", "progress", "generation", "pending"])("matching notebook still archives when %s differs", async (difference) => {
@@ -283,7 +858,7 @@ it.each(["order", "progress", "generation", "pending"])("matching notebook still
 });
 it("first join with different local scenes archives them before adopting the hub", async () => {
   await writeScenesStore({ [bucket]: [scene("local-only")] });
-  fake.save(scene("hub-only")); fake.calls = [];
+  fake.book = "book1"; fake.save(scene("hub-only")); fake.calls = [];
   await syncSceneNotebook();
   const archives = await readRestoreArchives("local");
   expect(archives.ok && archives.value[0].scenes[bucket].map((s) => s.id)).toEqual(["local-only"]);
@@ -293,7 +868,8 @@ it("first join with different local scenes archives them before adopting the hub
 beforeEach(() => {
   const storage = new Map<string, string>();
   vi.stubGlobal("sessionStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
-  fake = new FakeHub(); hook = null; setAccountScope(null); setHubFeatures(["scene_writer_v1"]);
+  vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+  fake = new FakeHub(); hook = null; setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]);
   token = { account: "local", token: "token", generation: "g1" }; setSceneNotebookTokenProvider(() => token); setSceneWriteGate(() => false);
   vi.stubGlobal("crypto", {});
 });
@@ -353,7 +929,7 @@ it("close ignores a stale token, disabled feature and an unjoined profile", asyn
   setHubFeatures([]); expect(buildSceneNotebookClose(token!)).toBeNull();
 });
 it("c13 disabled and missing token perform no IO", async () => {
-  setHubFeatures([]); expect((await syncSceneNotebook()).status).toBe("disabled"); setHubFeatures(["scene_writer_v1"]); token = null;
+  setHubFeatures([]); expect((await syncSceneNotebook()).status).toBe("disabled"); setHubFeatures(["scene_writer_confirm_v1"]); token = null;
   expect((await syncSceneNotebook()).status).toBe("waiting_token"); expect(fake.calls).toEqual([]);
 });
 it("c01 stages current browser before commit and keeps same-id execution fields", async () => {
@@ -426,8 +1002,13 @@ it("empty_notebook retries with a new attempt when a local scene appears", async
   await currentLocal([]); expect(await syncSceneNotebook()).toMatchObject({ status: "local_only", reason: "empty_notebook" });
   expect((await state()).starting).toBeNull(); edit([scene()]); expect((await syncSceneNotebook()).status).toBe("ready");
 });
-it("empty browser takes existing hub rows", async () => {
-  fake.save(scene("hub")); await writeScenesStore({ [bucket]: [] }); expect((await syncSceneNotebook()).status).toBe("ready"); expect(readWorkingBucket(bucket)[0].id).toBe("hub");
+it("empty unknown browser waits before the existing zero-item start uses hub rows", async () => {
+  fake.save(scene("hub")); await writeScenesStore({ [bucket]: [] });
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(readWorkingBucket(bucket)).toEqual([]);
+  const approval = await approveStart();
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
+  expect(readWorkingBucket(bucket)[0].id).toBe("hub");
 });
 it("c07 oversized start releases lease without partial start or lost local data", async () => {
   const huge = { ...scene(), padding: "x".repeat(5 * 1024 * 1024) } as Scene; await currentLocal([huge, scene("small")]);
@@ -570,7 +1151,10 @@ it("lost commit acknowledgement joins the committed notebook without starting tw
   await currentLocal([scene()]); let failures = 0;
   hook = (p, b) => { if ((p.endsWith("/start") && b.commit) || (failures > 0 && p.includes("notebook?"))) { failures++; throw Error("lost"); } };
   expect((await syncSceneNotebook()).status).toBe("retry"); hook = null; expect((await syncSceneNotebook()).status).toBe("ready");
-  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+  const commits = fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit);
+  expect(commits).toHaveLength(2);
+  expect(new Set(commits.map((c) => c.body.attempt_id)).size).toBe(1);
+  expect(fake.starts.size).toBe(1);
 });
 it("changed lease generation restarts an uncommitted staged attempt", async () => {
   await currentLocal([scene()]); let failures = 0;
@@ -737,6 +1321,6 @@ it("visibleChanged: 올리는 동안의 내 편집 — 기준만 승계하고 �
 it("visibleChanged: 동기화가 안 도는 경우(꺼짐·토큰 없음)는 false", async () => {
   setHubFeatures([]);
   expect(await syncSceneNotebook()).toEqual({ status: "disabled", changed: false, visibleChanged: false });
-  setHubFeatures(["scene_writer_v1"]); token = null;
+  setHubFeatures(["scene_writer_confirm_v1"]); token = null;
   expect(await syncSceneNotebook()).toEqual({ status: "waiting_token", changed: false, visibleChanged: false });
 });

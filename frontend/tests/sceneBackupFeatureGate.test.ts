@@ -75,7 +75,7 @@ it("does not read or write the mirror before features, then selects the notebook
   await advance(2000);
   expect(backupRequests()).toHaveLength(0);
   expect(localStorage.getItem("mvhub.mirrorRecovery:local")).toBeNull();
-  features.setHubFeatures(["scene_writer_v1"]);
+  features.setHubFeatures(["scene_writer_confirm_v1"]);
   await pending;
   expect(sync).toHaveBeenCalledTimes(1);
   expect(backupRequests()).toHaveLength(0);
@@ -85,7 +85,7 @@ it("blocks explicit mirror entry points while features are unknown", async () =>
   const { backup } = await boot();
   expect(await backup.countBackupOnlyScenes()).toBe(0);
   expect(await backup.importFromBackup()).toBe(0);
-  await expect(backup.resumeImportedMirror("local", "r1", new Map())).rejects.toThrow("허브 기능");
+  await expect(backup.resumeImportedMirror("local", "r1", new Map())).rejects.toThrow("캔버스 저장 상태");
   expect(backupRequests()).toHaveLength(0);
 });
 
@@ -127,7 +127,7 @@ it.each(["edit", "delete", "mismatch", "blocked", "notebook"])("preserves mirror
   await advance(11000);
   expect(backupRequests()).toHaveLength(0);
   expect(localStorage.getItem(key)).toBe(encoded);
-  features.setHubFeatures(mode === "notebook" ? ["scene_writer_v1"] : []);
+  features.setHubFeatures(mode === "notebook" ? ["scene_writer_confirm_v1"] : []);
   await pending;
   if (mode === "notebook") {
     expect(localStorage.getItem(key)).toBe(encoded);
@@ -180,7 +180,7 @@ it("the watchdog leaves unknown features blocked; a late first response selects 
   expect(state().authPending).toBe(false);
   expect(features.hubFeaturesKnown()).toBe(false);
   expect(backupRequests()).toHaveLength(0);
-  await act(async () => { first.resolve(config(["scene_writer_v1"])); });
+  await act(async () => { first.resolve(config(["scene_writer_confirm_v1"])); });
   await pending;
   await advance(40000);
   expect(configRequests()).toHaveLength(1);
@@ -191,9 +191,9 @@ it("the watchdog leaves unknown features blocked; a late first response selects 
 
 it("a watchdog after a successful first response does not clear notebook features", async () => {
   const { features } = await boot();
-  configRequest = async () => config(["scene_writer_v1"]);
+  configRequest = async () => config(["scene_writer_confirm_v1"]);
   await mountAuth(); await advance(40000);
-  expect(features.hubHasFeature("scene_writer_v1")).toBe(true);
+  expect(features.hubHasFeature("scene_writer_confirm_v1")).toBe(true);
   expect(configRequests()).toHaveLength(1);
 });
 
@@ -256,8 +256,8 @@ it("a late first success aborts an active retry and prevents later retries", asy
   });
   await mountAuth(); await advance(15000);
   expect(calls).toBe(2);
-  await act(async () => { first.resolve(config(["scene_writer_v1"])); });
+  await act(async () => { first.resolve(config(["scene_writer_confirm_v1"])); });
   expect(retrySignal!.aborted).toBe(true);
-  expect(features.hubHasFeature("scene_writer_v1")).toBe(true);
+  expect(features.hubHasFeature("scene_writer_confirm_v1")).toBe(true);
   await advance(60000); expect(calls).toBe(2);
 });

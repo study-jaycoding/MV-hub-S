@@ -222,7 +222,7 @@ describe("씬 저장 입구 모양 검사", () => {
   // Codex 리뷰 P1 — 허브가 고친 판을 들이는 사이에 옛 화면 값(이미 깨짐) 위에서 접수된 편집이 대기에 남은 채 창을 닫으면,
   //  닫기 전송의 재생(readSceneStoreForClose)이 고친 확정본 위에서 0 → 3 을 검사 없이 실었다.
   it("닫기 전송 재생도 같은 판정 — 고친 확정본 위에서 틀린 항목을 늘리는 대기 편집은 싣지 않는다", async () => {
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     saveScenes(null, [{ ...healthy("p2"), edges: cardEdges }]);
     expect(await settleSceneStoreForTest()).toBe(true); // 공책 모드 확정 — 닫기 재생의 기준이 생긴다
     const out = await sceneNotebookTransaction([], (all) => {

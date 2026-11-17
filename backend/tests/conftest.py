@@ -77,7 +77,7 @@ os.environ.update({
     "CONTENT_HUB_NO_PROXY": "1",
     "CONTENT_HUB_DATA": _data_root,
     "CONTENT_HUB_EXTERNAL_RECOVERY": "0",  # 기본 "1" 이면 앱 기동이 CLI 신원 캡처 등 바깥 동작을 시도한다
-    "CONTENT_HUB_SCENE_WRITER": "0",  # 허브 공책은 운영 기본 끔(=1 일 때만 켬) — 시험도 끔 기준, 공책 시험만 스스로 "1"
+    "CONTENT_HUB_SCENE_WRITER": "0",  # 시험 격리는 명시적으로 끔 — 공책 시험만 스스로 켠다(로컬 허브 운영 기본은 켬)
 })
 
 

@@ -63,7 +63,7 @@ def client(notebook_db, monkeypatch):
     app = FastAPI()
     app.include_router(scene_router.router)
     app.include_router(edit_router.router)
-    with TestClient(app, headers={'X-MVHub-Expect-Account': 'local'}) as client:
+    with TestClient(app, headers={'X-MVHub-Expect-Account': 'local', 'X-MVHub-Canvas-Protocol': 'confirm-v1'}) as client:
         yield client
 
 

@@ -25,6 +25,9 @@ def report(case="cross_browser"):
         "errors": [], "forbidden_requests": []}
     if case == "performance":
         result["timing"] = {"samples_ms": [10.0] * 20, "sync_ms": 900, "max_slowdown": 1.1, "baseline_ratios": {"p50_ms": 1, "p95_ms": 1}}
+    if case == "first_transition":
+        result["transition"] = {"variant": "empty", "start_order": "a", "old_checkout": "temporary/0123"}
+        result["previous_browser_records"] = {name: {"store_sha256": "a" * 64, "scenes": [{"id": name, "sha256": "b" * 64}], "mirrorRecovery": None} for name in ("a", "b")}
     return result
 
 
@@ -138,7 +141,7 @@ def test_server_environment_uses_existing_isolation_builder(tmp_path, monkeypatc
     assert env["CONTENT_HUB_DB"] == str(tmp_path / "db" / "content_hub.db")
     assert "CONTENT_HUB_WORKER_BACKUP_STATE_DB" not in env
     assert env["CONTENT_HUB_SHARED_URL"] == "http://127.0.0.1:9"
-    assert env["CONTENT_HUB_SCENE_WRITER"] == "1"  # 바깥에서 끈 값이 새지 않고, 운영 기본(끔)과 달리 공책을 명시적으로 켜서 잰다
+    assert "CONTENT_HUB_SCENE_WRITER" not in env  # 부모의 0/1 없이 운영 기본 켬을 잰다
     assert env["CONTENT_HUB_AUTH"] == "0"
     monkeypatch.setenv("CONTENT_HUB_SCENE_WRITER", "1")
     assert measure.make_env(tmp_path, 8239, writer=False)["CONTENT_HUB_SCENE_WRITER"] == "0"  # 미러 준비 단계만 끔
@@ -184,7 +187,288 @@ def test_first_transition_skips_mirror_seed_and_runs_its_own_flow(tmp_path, monk
     monkeypatch.setattr(measure.Measurement, "first_transition", first)
     asyncio.run(instance.run(None))
     assert calls == [("first_transition", 3)]  # 빈 허브 미러 그대로 — 미러를 채우면 빈 미러 첫 전환을 재지 못한다
-    assert CASES["first_transition"] == {"archived", "canvas_emptied", "notice", "restored", "hub_synced", "notice_cleared"}
+    assert {"before_confirmation", "previous_browser", "selected_raw", "before_start", "reconnect"} <= CASES["first_transition"]
+
+
+def test_raw_fingerprints_detect_same_id_content_execution_marks_and_order_changes():
+    scenes = [{"id": "a", "cards": [{"text": "원문"}], "edges": [{"from": "c1", "to": "c2"}], "comfyRuns": [{"id": "run"}]}, {"id": "b"}]
+    fingerprints = measure.scene_fingerprints(scenes)
+    assert measure.scene_fingerprints(json.loads(json.dumps(scenes))) == fingerprints
+    for altered in ([{**scenes[0], "cards": [{"text": "다른 원문"}]}, scenes[1]],
+                    [{**scenes[0], "edges": []}, scenes[1]], [{**scenes[0], "comfyRuns": []}, scenes[1]], list(reversed(scenes))):
+        assert measure.scene_fingerprints(altered) != fingerprints
+
+
+@pytest.mark.parametrize("missing", ["store_sha256", "scenes"])
+def test_first_transition_rejects_ids_without_actual_previous_raw_fingerprints(missing):
+    value = report("first_transition")
+    value["previous_browser_records"]["a"].pop(missing)
+    assert verify(value)
+
+
+def held_records(value):
+    records = value['previous_browser_records']
+    records['a']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': []})
+    records['b']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': ['b']})
+    for name, actual in [('held_first', ['b', 'a']), ('held_archive_before_confirmation', [records['b']['scenes']])]:
+        value['checks'][name] = {'status': 'passed', 'actual': actual, 'expected': actual}
+    loser = 'b' if value['transition']['start_order'] == 'a' else 'a'
+    archives = [records[loser]['scenes']]
+    value['checks']['other_browser_preserved'] = {'status': 'passed', 'actual': archives, 'expected': archives}
+
+
+@pytest.mark.parametrize('order', ['a', 'b'])
+@pytest.mark.parametrize('broken', ['duplicate', 'boolean', 'missing'])
+def test_held_first_verifier_requires_one_original_archive_without_received_canvas(order, broken):
+    value = report('first_transition'); value['transition'].update(variant='held', start_order=order)
+    held_records(value)
+    assert verify(value) == []
+    check = value['checks']['other_browser_preserved']
+    if broken == 'duplicate':
+        extra = [{'id': 'received', 'sha256': 'c' * 64}]
+        check.update(actual=[*check['actual'], extra], expected=[*check['expected'], extra])
+    elif broken == 'boolean': check.update(actual=True, expected=True)
+    else: del value['checks']['other_browser_preserved']
+    assert verify(value)
+
+
+@pytest.mark.parametrize("variant", ["same_generation", "held"])
+def test_first_transition_requires_actual_previous_generation_record(variant):
+    value = report("first_transition")
+    value["transition"]["variant"] = variant
+    assert verify(value)
+    if variant == 'held': held_records(value)
+    else: value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": []})
+    assert verify(value) == []
+
+
+@pytest.mark.parametrize("variant", ["empty", "different", "restored_unknown", "equal", "same_generation", "held", "limit_exact", "limit_over"])
+def test_first_transition_variants_require_size_or_history_evidence(variant):
+    value = report("first_transition")
+    value["transition"]["variant"] = variant
+    if variant == 'held': held_records(value)
+    if variant == 'same_generation':
+        value["previous_browser_records"]["a"]["mirrorRecovery"] = json.dumps({"generation": "G2", "blockedIds": []})
+    if variant.startswith("limit_"):
+        assert verify(value)
+        size = 5 * 1024 * 1024 + (variant == "limit_over")
+        value["checks"]["size_boundary"] = {"status": "passed", "actual": size, "expected": size}
+    assert verify(value) == []
+
+
+@pytest.mark.parametrize('broken', ['open_order', 'archive', 'held_on_a', 'generation', 'confirmation_order'])
+def test_held_first_verifier_requires_b_provenance_order_and_preconfirmation_archive(broken):
+    value = report('first_transition'); value['transition'].update(variant='held', start_order='b')
+    held_records(value)
+    assert verify(value) == []
+    if broken == 'open_order':
+        value['checks']['held_first'].update(actual=['a', 'b'], expected=['a', 'b'])
+    if broken == 'archive': del value['checks']['held_archive_before_confirmation']
+    if broken == 'held_on_a':
+        value['previous_browser_records']['a']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': ['a']})
+        value['previous_browser_records']['b']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': []})
+    if broken == 'generation': value['previous_browser_records']['a']['mirrorRecovery'] = json.dumps({'generation': 'G1', 'blockedIds': []})
+    if broken == 'confirmation_order': value['transition']['start_order'] = 'simultaneous'
+    assert verify(value)
+
+
+@pytest.mark.parametrize('order', ['a', 'b'])
+@pytest.mark.parametrize('fault', ['none', 'lost_commit'])
+def test_held_first_cli_accepts_b_first_with_either_confirmation_order(tmp_path, monkeypatch, order, fault):
+    async def execute(args):
+        assert args.transition == 'held' and args.start_order == order
+        return 0
+    monkeypatch.setattr(measure, 'execute', execute)
+    monkeypatch.setattr(sys, 'argv', ['canvas_notebook.py', '--case', 'first_transition', '--old-checkout', str(tmp_path), '--transition', 'held', '--start-order', order, '--transition-fault', fault])
+    assert measure.main() == 0
+
+
+@pytest.mark.parametrize('status,detail', [(409, 'notebook_already_started'), (200, None), (409, {'code': 'writer_changed'})])
+def test_measure_network_records_start_receipt_status_body_and_code_without_credentials(status, detail):
+    import subprocess
+    script = "globalThis.window=globalThis; globalThis.location={href:'http://127.0.0.1:9000/'}; globalThis.addEventListener=()=>{};"
+    script += f"globalThis.fetch=async()=>new Response(JSON.stringify({{detail:{json.dumps(detail)}}}),{{status:{status}}});"
+    script += measure.MEASURE_SCRIPT + ';'
+    script += """(async()=>{
+      await fetch('/api/scenes/notebook/start',{method:'POST',body:JSON.stringify({attempt_id:'a',expected_count:0,upserts:[],commit:true,token:'fake-private-token'})});
+      await new Promise(setImmediate); console.log(JSON.stringify(window.__measureNetwork));
+    })();"""
+    result = subprocess.run(['node', '-e', script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    [row] = json.loads(result.stdout)
+    assert {key: row.get(key) for key in ('attempt_id', 'expected_count', 'upserts', 'commit', 'status', 'code')} == {
+        'attempt_id': 'a', 'expected_count': 0, 'upserts': 0, 'commit': True, 'status': status,
+        'code': detail.get('code') if isinstance(detail, dict) else detail}
+    assert 'fake-private-token' not in result.stdout
+
+
+def test_equal_b_cli_selects_interrupted_clean_upgrade_without_starting_a_browser(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    run = AsyncMock(return_value=0)
+    monkeypatch.setattr(measure, 'execute', run)
+    monkeypatch.setattr(sys, 'argv', ['canvas_notebook.py', '--case', 'first_transition', '--old-checkout', str(tmp_path), '--transition', 'equal', '--start-order', 'b'])
+    assert measure.main() == 0
+    assert run.call_args.args[0].start_order == 'b'
+
+
+@pytest.mark.parametrize('broken', ['missing_join', 'missing_close', 'missing_no_upload', 'based_id', 'upload', 'archive', 'union', 'malformed_records',
+    'missing_start', 'missing_requests', 'accepted_start', 'foreign_attempt', 'nonzero_start', 'held_b', 'unchanged_b', 'malformed_start', 'replaced_before_confirmation'])
+def test_interrupted_equal_verifier_requires_close_bases_no_upload_and_original_archive(broken):
+    value = report('first_transition'); value['transition'].update(variant='equal', start_order='b')
+    records = value['previous_browser_records']
+    evidence = {
+        'interrupted_clean_upgrade': {'not_started': True, 'join_id': '', 'awaiting': False, 'based_ids': ['a']},
+        'interrupted_closed': {'closed': True, 'released': True}, 'interrupted_no_upload': False,
+        'before_confirmation': {name: records[name]['scenes'] for name in ('a', 'b')},
+        'interrupted_start': {'attempt_id': 'attempt-a', 'expected_count': 0, 'upserts': 0, 'commit': True, 'before_start': True},
+        'interrupted_rejoin_requests': [{'path': '/api/scenes/notebook/start', 'method': 'POST', 'attempt_id': 'attempt-a',
+            'expected_count': 0, 'upserts': 0, 'commit': True, 'status': 409, 'code': 'notebook_already_started'}],
+        'other_browser_preserved': [records['a']['scenes']], 'selected_raw': records['b']['scenes'], 'no_merge': records['b']['scenes'],
+    }
+    for name, actual in evidence.items(): value['checks'][name] = {'status': 'passed', 'actual': actual, 'expected': actual}
+    assert verify(value) == []
+    if broken.startswith('missing_'):
+        del value['checks'][{'missing_join': 'interrupted_clean_upgrade', 'missing_close': 'interrupted_closed', 'missing_no_upload': 'interrupted_no_upload',
+            'missing_start': 'interrupted_start', 'missing_requests': 'interrupted_rejoin_requests'}[broken]]
+    elif broken == 'based_id': value['checks']['interrupted_clean_upgrade']['actual']['based_ids'] = []
+    elif broken == 'upload': value['checks']['interrupted_no_upload'].update(actual=True, expected=True)
+    elif broken == 'archive': value['checks']['other_browser_preserved'].update(actual=True, expected=True)
+    elif broken == 'union': value['checks']['no_merge'].update(actual=[*records['a']['scenes'], *records['b']['scenes']], expected=[*records['a']['scenes'], *records['b']['scenes']])
+    elif broken in {'accepted_start', 'foreign_attempt', 'nonzero_start'}:
+        request = value['checks']['interrupted_rejoin_requests']['actual'][0]
+        request.update({'status': 200} if broken == 'accepted_start' else {'attempt_id': 'other'} if broken == 'foreign_attempt' else {'expected_count': 3, 'upserts': 3})
+    elif broken == 'held_b': records['b']['mirrorRecovery'] = json.dumps({'generation': 'G1', 'blockedIds': ['b']})
+    elif broken == 'unchanged_b': records['b']['scenes'] = records['a']['scenes']
+    elif broken == 'malformed_start': value['checks']['interrupted_start'] = None
+    elif broken == 'replaced_before_confirmation': value['checks']['before_confirmation']['actual']['b'] = records['a']['scenes']
+    else: value['previous_browser_records'] = None
+    assert verify(value)
+
+
+@pytest.mark.parametrize('fault', ['none', 'missing_before_start', 'missing_pending', 'prestarted', 'changed_b'])
+def test_interrupted_equal_flow_closes_a_before_b_confirmation_and_reopens_the_same_profile(tmp_path, monkeypatch, fault):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    instance = measure.Measurement('first_transition', tmp_path)
+    instance.transition_args = SimpleNamespace(old_checkout=tmp_path, transition='equal', start_order='b', transition_fault='none')
+    seeds = measure.fixture(); original_b = [{**s, 'name': '1011 B untransmitted final edit' if i == 0 else s['name']} for i, s in enumerate(seeds)]
+    selected, closed, events, mirror_reads_held = False, False, [], False
+    pages = {name: SimpleNamespace(goto=AsyncMock(), wait=AsyncMock(return_value=True), send=AsyncMock(), shot=AsyncMock(),
+             mirror_hold_script='hold', mutations=[], proc=Mock()) for name in ('a', 'b', 'reopened-a')}
+    pages['a'].proc.poll.side_effect = lambda: 0 if closed else None
+    async def kill():
+        nonlocal closed
+        closed = True; events.append('closed-a')
+    pages['a']._kill = kill
+    async def choose(_selector):
+        nonlocal selected
+        assert closed
+        selected = True; events.append('confirmed-b'); return True
+    pages['b'].click = choose
+    a_opens = 0
+    async def open_page(_stack, name, seed=None, **_kwargs):
+        nonlocal a_opens
+        if name == 'b': assert seed == seeds, '1011 B must acquire unheld provenance before its final edit'
+        if name == 'a':
+            a_opens += 1
+            if a_opens == 2:
+                assert selected and seed is None
+                events.append('reopened-a'); return pages['reopened-a']
+        return pages[name]
+    instance.open = AsyncMock(side_effect=open_page)
+    async def evaluate(name, script):
+        nonlocal mirror_reads_held
+        if name == 'a' and closed: raise AssertionError('closed A cannot be read')
+        if name == 'b' and script == 'window.__measureHoldMirrorReads = true': mirror_reads_held = True; return True
+        if script == measure.READ_STORE:
+            joined = {'notebookId': 'book' if selected else '', 'restoreGeneration': 'G1', 'beforeStart': True}
+            if fault == 'missing_before_start': joined.pop('beforeStart')
+            entries = [(json.dumps(['nj', instance.account], separators=(',', ':')), joined)]
+            if fault != 'missing_pending': entries.append((json.dumps(['ns', instance.account], separators=(',', ':')), {'id': 'attempt-a'}))
+            entries.extend((json.dumps(['b', instance.bucket, s['id']], separators=(',', ':')), {'hash': 'old'}) for s in seeds)
+            if name == 'reopened-a': entries.append((json.dumps(['nr', instance.account], separators=(',', ':')), [{'scenes': {instance.bucket: seeds}}]))
+            return entries
+        if script == 'window.__measureNetwork':
+            return [{'path': '/api/scenes/notebook/start', 'method': 'POST', 'attempt_id': 'attempt-a', 'expected_count': 0,
+                     'upserts': 0, 'commit': True, 'status': 409, 'code': 'notebook_already_started'}] if name == 'reopened-a' else []
+        if script == 'window.__measureInterruptedStart': return {'attempt_id': 'attempt-a', 'expected_count': 0, 'upserts': [], 'commit': True}
+        if 'mirrorRecovery:' in script: return json.dumps({'generation': 'G1', 'blockedIds': [], 'raws': {}, 'originals': []})
+        if script.startswith('!!document.'): return False
+        if script == 'navigator.userAgent': return 'synthetic Chrome'
+        return None
+    for name, page in pages.items():
+        async def eval_page(script, n=name): return await evaluate(n, script)
+        page.eval = eval_page
+    async def local(page):
+        return seeds if page is pages['a'] or (fault == 'changed_b' and instance.hub.start.call_count > 1) else original_b
+    def book():
+        scenes = original_b if selected else seeds
+        return {'restore_generation': 'G1', 'notebook_id': 'book' if selected or (fault == 'prestarted' and instance.hub.start.call_count > 1) else None,
+                'items': [{'id': s['id'], 'data': json.dumps(s)} for s in scenes], 'order': {'ids': [s['id'] for s in scenes]}}
+    def request(path, *_args):
+        if path == '/api/auth/config': return 200, {'features': ['scene_writer_confirm_v1']}
+        if path == '/api/scenes/writer': return 200, {'writer': None}
+        return 200, book()
+    instance.hub.request = request; instance.hub.start = Mock(); instance.hub.stop = Mock()
+    async def rename(_page, _name): assert mirror_reads_held
+    instance.local = local; instance.wait_local = AsyncMock(); instance.ensure_canvas = AsyncMock(); instance.take = AsyncMock(); instance.rename = AsyncMock(side_effect=rename)
+    async def synced(_page, _timeout): return book()
+    instance.synced = synced
+    monkeypatch.setattr(measure, 'validate_checkout', lambda _p: tmp_path)
+    monkeypatch.setattr(measure, 'retained_rows', lambda _p: [{'reason': 'before_start', 'data': s} for s in seeds])
+    if fault != 'none':
+        with pytest.raises(RuntimeError, match='evidence required|not preserved'):
+            asyncio.run(instance.first_transition(None, seeds))
+        assert not selected
+        return
+    asyncio.run(instance.first_transition(None, seeds))
+    assert events == ['closed-a', 'confirmed-b', 'reopened-a']
+    instance.rename.assert_awaited_once_with(pages['b'], '1011 B untransmitted final edit')
+    assert all(check['status'] == 'passed' for check in instance.report['checks'].values()), instance.report['checks']
+    assert any('window.__measureInterruptedStart' in call.kwargs.get('source', '') for call in pages['a'].send.call_args_list)
+    assert instance.report['checks']['other_browser_preserved']['actual'] == [measure.scene_fingerprints(seeds)]
+
+
+@pytest.mark.parametrize('order', ['a', 'b'])
+def test_held_first_verifier_cli_requires_the_actual_preconfirmation_archive(tmp_path, order):
+    import subprocess
+    value = report('first_transition'); value['transition'].update(variant='held', start_order=order)
+    held_records(value)
+    path = tmp_path / 'held-first.json'
+    for expected in (0, 1):
+        if expected: del value['checks']['held_archive_before_confirmation']
+        path.write_text(json.dumps(value), encoding='utf-8')
+        result = subprocess.run([sys.executable, str(TOOLS / 'verify_canvas_notebook_measure.py'), str(path)], capture_output=True, text=True)
+        assert result.returncode == expected, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("fault", ["lost_chunk", "lost_commit"])
+def test_first_transition_reply_loss_must_be_observed(fault):
+    value = report("first_transition")
+    value["transition"]["fault"] = fault
+    assert verify(value)
+    value["checks"]["response_loss"] = {"status": "passed", "actual": 1, "expected": 1}
+    assert verify(value) == []
+
+
+def test_first_transition_cli_requires_an_old_checkout_before_launch(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["canvas_notebook.py", "--case", "first_transition"])
+    with pytest.raises(SystemExit) as error:
+        measure.main()
+    assert error.value.code == 2
+
+
+def test_first_transition_verifier_cli_accepts_complete_evidence_and_rejects_missing_raws(tmp_path):
+    import subprocess
+    evidence = report("first_transition")
+    path = tmp_path / "synthetic-evidence.json"
+    for expected in (0, 1):
+        if expected:
+            del evidence["previous_browser_records"]["a"]["scenes"]
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(TOOLS / "verify_canvas_notebook_measure.py"), str(path)], capture_output=True, text=True)
+        assert result.returncode == expected, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("join, notebook_id, converged", [
@@ -519,7 +803,8 @@ def test_hub_rejects_foreign_shared_session_before_any_login(tmp_path, monkeypat
         hub.authenticate()
 
 
-def test_open_seeds_account_bucket_before_boot_and_requires_canvas_not_library_chips(tmp_path, monkeypatch):
+@pytest.mark.parametrize('hold_mirror', [False, True])
+def test_open_seeds_account_bucket_before_boot_and_requires_canvas_not_library_chips(tmp_path, monkeypatch, hold_mirror):
     import asyncio
     from types import SimpleNamespace
     events, scripts = [], []
@@ -527,6 +812,7 @@ def test_open_seeds_account_bucket_before_boot_and_requires_canvas_not_library_c
     async def send(method, **kwargs):
         events.append(method)
         scripts.append(kwargs["source"])
+        return {'identifier': 'hold'}
     async def goto(*_args, **_kwargs):
         events.append("goto")
     async def wait(condition, _timeout):
@@ -542,10 +828,19 @@ def test_open_seeds_account_bucket_before_boot_and_requires_canvas_not_library_c
         async def enter_async_context(self, _context):
             return page
     monkeypatch.setattr(measure, "Page", lambda *_: object())
-    asyncio.run(instance.open(Stack(), "a", [{"id": "s"}]))
-    assert "ch.activeAccount" in scripts[1] and instance.hub.shared.email.lower() in scripts[1]
-    assert instance.bucket in scripts[2] and instance.bucket.startswith("acct:")
-    assert events == ["Page.addScriptToEvaluateOnNewDocument"] * 3 + ["goto", "wait", "canvas-menu", "wait"]
+    asyncio.run(instance.open(Stack(), "a", [{"id": "s"}], hold_mirror=hold_mirror))
+    assert "ch.activeAccount" in scripts[1 + hold_mirror] and instance.hub.shared.email.lower() in scripts[1 + hold_mirror]
+    assert instance.bucket in scripts[2 + hold_mirror] and instance.bucket.startswith("acct:")
+    assert events == ["Page.addScriptToEvaluateOnNewDocument"] * (3 + hold_mirror) + ["goto", "wait", "canvas-menu", "wait"]
+    if hold_mirror:
+        import subprocess
+        script = "globalThis.window=globalThis; globalThis.location={href:'http://127.0.0.1:9000/'};let sent=0;globalThis.fetch=async()=>{sent++;return 'sent';};"
+        script += scripts[1] + ";(async()=>{await fetch('/api/scenes/backup');let held=0;"
+        script += "try{await fetch('/api/scenes/backup',{method:'PUT'});}catch{held++;}window.__measureHoldMirrorReads=true;"
+        script += "try{await fetch('/api/scenes/backup');}catch{held++;}console.log(JSON.stringify({sent,held}));})();"
+        result = subprocess.run(['node', '-e', script], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {'sent': 1, 'held': 2}
     assert instance.report["database"]["owner"] == "me"
     assert instance.report["database"]["account_db_switching"] is False
     assert any("401" in line for line in instance.report["limitations"])
@@ -634,6 +929,128 @@ def test_direct_scene_probes_send_the_same_expected_account_as_seeded_browser(tm
     hub.request("/api/scenes/notebook")
     hub.request("/api/scenes/backup", {"token": "synthetic", "upserts": []}, "PUT")
     hub.request("/api/shared-server/status")
-    assert calls[:2] == [(path, {"X-MVHub-Expect-Account": f"acct:{hub.shared.email.lower()}"})
+    assert calls[:2] == [(path, {"X-MVHub-Expect-Account": f"acct:{hub.shared.email.lower()}", "X-MVHub-Canvas-Protocol": "confirm-v1"})
                          for path in ("/api/scenes/notebook", "/api/scenes/backup")]
     assert calls[2][1] == {}
+
+
+def test_large_korean_seed_fits_legacy_storage_and_opens_a_small_scene(tmp_path, monkeypatch):
+    import asyncio
+    import re
+    from contextlib import AsyncExitStack
+    from unittest.mock import AsyncMock
+    scripts = []
+    class FakePage:
+        def __init__(self, *_args): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        async def send(self, _method, **options): scripts.append(options.get('source', ''))
+        async def goto(self, *_args, **_options): pass
+    monkeypatch.setattr(measure, 'Page', FakePage)
+    instance = measure.Measurement('first_transition', tmp_path)
+    instance.ensure_canvas = AsyncMock()
+    seeds = measure.fixture()
+    seeds[0]['cards'][0]['text'] = '한' * (5 * 1024 * 1024 // 3)
+    async def run():
+        async with AsyncExitStack() as stack:
+            await instance.open(stack, 'a', seeds)
+    asyncio.run(run())
+    script = next(s for s in scripts if "setItem('ch.scenes'," in s)
+    stored = json.loads(re.search(r"setItem\('ch.scenes', (.*)\);", script)[1])
+    assert len(stored.encode('utf-16-le')) < 5 * 1024 * 1024
+    assert json.loads(stored)[instance.bucket] == seeds
+    active = json.loads(json.loads(re.search(r"setItem\('ch.scenes.active', (.*)\);", script)[1]))
+    assert active[instance.bucket] == seeds[-1]['id']
+
+
+@pytest.mark.parametrize('clear', [False, True])
+def test_restore_injection_uses_owned_live_server_not_external_sqlite(tmp_path, monkeypatch, clear):
+    hub = measure.Hub(tmp_path, controls=True)
+    calls = []
+    monkeypatch.setattr(hub, 'start', lambda **options: calls.append(('start', options)))
+    monkeypatch.setattr(hub, 'stop', lambda: calls.append(('stop',)))
+    def request(path, body):
+        calls.append((path, body))
+        return 200, {'generation': body['generation'], 'cleared': body['clear']}
+    monkeypatch.setattr(hub, 'request', request)
+    monkeypatch.setattr(measure.sqlite3, 'connect', lambda *_a, **_k: pytest.fail('external SQLite mutation forbidden'))
+    hub.restore_fixture('restored-G2', clear=clear)
+    assert calls == [('stop',), ('start', {'writer': False}),
+        ('/api/__measure/restore-generation', {'generation': 'restored-G2', 'clear': clear}), ('stop',)]
+
+
+@pytest.mark.parametrize('clear', [False, True])
+def test_isolated_restore_route_changes_generation_and_optionally_clears_only_fixture(tmp_path, clear):
+    import ast
+    import asyncio
+    import sqlite3
+    import threading
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    path = tmp_path / 'fixture.db'
+    with sqlite3.connect(path) as conn:
+        conn.executescript("CREATE TABLE app_setting(key TEXT, value TEXT); INSERT INTO app_setting VALUES('share_db_generation','G1'); CREATE TABLE scene_backup(id TEXT); INSERT INTO scene_backup VALUES('prior');")
+    @contextmanager
+    def connection():
+        conn = sqlite3.connect(path)
+        try:
+            with conn: yield conn
+        finally: conn.close()
+    route = next(n for n in ast.parse(measure.controlled_launcher(tmp_path, 'synthetic')).body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'restore_generation')
+    route.decorator_list = []
+    class Denied(Exception): pass
+    scope = {'Request': object, 'HTTPException': Denied, 'active_account': SimpleNamespace(transition_lock=threading.RLock()), 'db': SimpleNamespace(get_connection=connection)}
+    exec(compile(ast.Module(body=[route], type_ignores=[]), 'isolated-restore-unit', 'exec'), scope)
+    async def body(): return {'generation': 'G2', 'clear': clear}
+    request = SimpleNamespace(client=SimpleNamespace(host='127.0.0.1'), headers={'X-Measure-Control': 'synthetic'}, json=body)
+    assert asyncio.run(scope['restore_generation'](request)) == {'generation': 'G2', 'cleared': clear}
+    with sqlite3.connect(path) as conn:
+        assert conn.execute('SELECT value FROM app_setting').fetchone()[0] == 'G2'
+        assert conn.execute('SELECT COUNT(*) FROM scene_backup').fetchone()[0] == (0 if clear else 1)
+    request.headers = {}
+    with pytest.raises(Denied): asyncio.run(scope['restore_generation'](request))
+
+
+@pytest.mark.parametrize('variant,order', [('same_generation', 'a'), ('held', 'a'), ('held', 'b')])
+def test_first_transition_holds_b_until_selection_and_checks_both_confirmation_orders(tmp_path, monkeypatch, variant, order):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    instance = measure.Measurement('first_transition', tmp_path)
+    instance.transition_args = SimpleNamespace(old_checkout=tmp_path, transition=variant, start_order=order, transition_fault='none')
+    seeds = measure.fixture()
+    pages = {name: SimpleNamespace(goto=AsyncMock(), wait=AsyncMock(return_value=True), send=AsyncMock(), mirror_hold_script='hold') for name in ('a', 'b')}
+    class Selected(Exception): pass
+    async def choose(_selector): raise Selected()
+    pages['a'].click = choose
+    pages['b'].click = choose
+    original_b = [{**seeds[-1], 'id': 'prior-b'}]
+    async def evaluate(name, script):
+        if script == measure.READ_STORE:
+            return [(json.dumps(['nr', instance.account], separators=(',', ':')), [{'scenes': {instance.bucket: original_b}}])] if variant == 'held' and name == 'b' and pages['b'].goto.await_count >= 2 else []
+        if script == 'window.__measureNetwork': return []
+        return json.dumps({'generation': 'G1', 'blockedIds': ['prior-b'] if name == 'b' else []})
+    for name, page in pages.items():
+        async def run_eval(script, n=name): return await evaluate(n, script)
+        page.eval = run_eval
+    instance.open = AsyncMock(side_effect=lambda _stack, name, *_a, **_k: pages[name])
+    instance.wait_local = AsyncMock(); instance.rename = AsyncMock(); instance.ensure_canvas = AsyncMock()
+    async def local(page):
+        return seeds if page is pages['a'] or (variant == 'held' and pages['b'].goto.await_count >= 2) else original_b
+    instance.local = local
+    instance.hub.start = Mock(); instance.hub.stop = Mock()
+    instance.hub.restore_fixture = Mock()
+    def request(path, *_args):
+        if path == '/api/auth/config': return 200, {'features': ['scene_writer_confirm_v1']}
+        return 200, {'restore_generation': 'G1', 'notebook_id': None, 'items': [{'data': json.dumps(s)} for s in seeds]}
+    instance.hub.request = request
+    monkeypatch.setattr(measure, 'validate_checkout', lambda _p: tmp_path)
+    with pytest.raises(Selected): asyncio.run(instance.first_transition(None, seeds))
+    b_call = next(call for call in instance.open.call_args_list if call.args[1] == 'b')
+    assert b_call.args[2][0]['cards'] == seeds[-1]['cards']
+    if variant == 'same_generation': pages['b'].goto.assert_not_awaited()
+    else:
+        assert instance.report['checks']['held_first']['actual'] == ['b', 'a']
+        assert instance.report['checks']['held_archive_before_confirmation']['status'] == 'passed'
+    assert instance.report['checks']['before_confirmation']['status'] == 'passed'
+    assert instance.report['checks']['no_upload_before']['status'] == 'passed'

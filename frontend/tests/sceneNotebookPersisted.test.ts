@@ -35,7 +35,7 @@ const progress = (id: string) => ({ id, history: "h", notebookId: "n", requests:
 let infos: boolean[] = [];
 let off = () => {};
 beforeEach(async () => {
-  setHubFeatures(["scene_writer_v1"]);
+  setHubFeatures(["scene_writer_confirm_v1"]);
   setSceneWriteGate(() => false);
   await writeScenesStore({ [bucket]: [scene()] });
   await settleSceneStoreForTest();
@@ -189,13 +189,23 @@ describe("sceneBackup — 카메라만 바꾼 확정·바깥에서 시작한 공
     sync.mockClear();
     http.jsonFetch.mockClear();
   });
-  afterEach(() => { vi.useRealTimers(); setHubFeatures(["scene_writer_v1"]); setAccountScope(null); });
+  afterEach(() => { vi.useRealTimers(); setHubFeatures(["scene_writer_confirm_v1"]); setAccountScope(null); });
 
   it("카메라만 확정 → 15초 동안 공책 동기화 예약 0", async () => {
     updateSceneCamera(null, "s", { z: 2, x: 1, y: 1 });
     await settleSceneStoreForTest();
     await vi.advanceTimersByTimeAsync(15_000);
     expect(sync).not.toHaveBeenCalled();
+  });
+  it("최초 시작 확인 대기는 자동 재시도나 옛 미러 PUT으로 바꾸지 않는다", async () => {
+    sync.mockResolvedValue({ status: "local_only", reason: "start_confirmation", changed: false, visibleChanged: false } as never);
+    edit("local while waiting"); await settleSceneStoreForTest();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(sync).toHaveBeenCalledOnce();
+    outside({ status: "local_only", reason: "start_confirmation", changed: false, visibleChanged: false });
+    await vi.advanceTimersByTimeAsync(65_000);
+    expect(sync).toHaveBeenCalledOnce();
+    expect(http.jsonFetch).not.toHaveBeenCalled();
   });
 
   it("내용 예약 뒤 카메라만 확정 → 그 예약이 원래 시각(내용 확정 2초 뒤)에 돈다", async () => {
@@ -391,7 +401,7 @@ describe("sceneBackup — 카메라만 바꾼 확정·바깥에서 시작한 공
     expect(http.jsonFetch).toHaveBeenCalled(); // 재시도 조건에 묶여 사라지지 않았다 — 공책이 꺼진 허브의 정상 동기화(옛 백업)
     expect(sync).toHaveBeenCalledTimes(1);
     // 뒷정리 — 옛 백업 길의 실패가 건 재시도를 돌려 비운다(가짜 타이머를 해제하면 모듈의 타이머 손잡이만 남아 다음 시험의 재시도가 안 걸린다)
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     await vi.advanceTimersByTimeAsync(31_000);
     expect(sync).toHaveBeenCalledTimes(2);
   });
@@ -415,7 +425,7 @@ describe("sceneBackup — 카메라만 바꾼 확정·바깥에서 시작한 공
     await vi.advanceTimersByTimeAsync(28_000); // 걸려 있던 타이머의 기한 — 공책 조건은 이제 안 맞지만, 실패한 변경의 재시도는 돌아야 한다
     expect(vi.mocked(http.jsonFetch).mock.calls.length).toBeGreaterThan(sent);
     // 뒷정리 — 옛 백업 길의 실패가 건 재시도를 돌려 비운다
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     await vi.advanceTimersByTimeAsync(31_000);
   });
 

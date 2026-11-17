@@ -308,6 +308,11 @@ def sync(owner, project, payload, *, conn=None, receipt_payload=None):
             if len(data.encode('utf-8')) > MAX_SCENE_BYTES:
                 results.append({'id': sid, 'status': 'too_big', 'target_id': None})
                 continue
+            # A different first canvas removed this row; a stale base must not merge it back.
+            if current is None and base and conn.execute(
+                    "SELECT 1 FROM scene_archive WHERE owner_uid=? AND project_id=? AND scene_id=? AND history_id=? AND reason='before_start' LIMIT 1",
+                    (owner, project, sid, history(conn))).fetchone():
+                raise WriterConflict('notebook_rejoin_required')
             # A live same-content retry needs no write; a tombstone needs explicit revival.
             if current and not current['deleted_at'] and current['data_hash'] == incoming:
                 status, saved = 'same', current

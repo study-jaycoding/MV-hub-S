@@ -598,7 +598,7 @@ function runStoreTx(extraReads: string[] = [], step?: TxStep, after?: () => void
   return enqueueTx(async () => {
     onStart?.();
     txStartsForTest += 1;
-    const notebook = fromHub || hubHasFeature("scene_writer_v1");
+    const notebook = fromHub || hubHasFeature("scene_writer_confirm_v1");
     const stepIntent = notebook ? newSceneIntentId() : "";
     if (!ready) return false;
     const batch = pending.slice(); // ★묶음 고정 — 끝난 뒤 이 묶음만 뺀다(도중에 들어온 연산은 남긴다)
@@ -1120,14 +1120,14 @@ export const readConfirmedBucket = (key: string): Scene[] => copiesOf(confirmed,
 
 /** 카드 전송의 세대 확인은 미확정 편집을 재생하지 않고 확정된 합류 기록만 읽는다. */
 export function readConfirmedNotebookJoin(account: string): { restoreGeneration?: string } | null {
-  if (!hubHasFeature("scene_writer_v1") || !ready || baselineStale || !confirmedNotebookMeta || notebookWriteHolds.size) return null;
+  if (!hubHasFeature("scene_writer_confirm_v1") || !ready || baselineStale || !confirmedNotebookMeta || notebookWriteHolds.size) return null;
   const joined = confirmedNotebookMeta[notebookKey("nj", account)] as { restoreGeneration?: string } | undefined;
   return joined ? { restoreGeneration: joined.restoreGeneration } : null;
 }
 /** 닫기 전송 전용: 확인된 판 위에 아직 IDB에 못 쓴 동기 편집과 같은 의도 id를 재생한다.
  * 성공 응답/영속화로 취급하지 않는다. 표식 꺼짐·다른 창의 재읽기 중에는 쓰지 않는다. */
 export function readSceneStoreForClose(): { scenes: ScenesByProject; meta: StoreValues } | null {
-  if (!hubHasFeature("scene_writer_v1") || !ready || baselineStale || !confirmedNotebookMeta || notebookWriteHolds.size) return null;
+  if (!hubHasFeature("scene_writer_confirm_v1") || !ready || baselineStale || !confirmedNotebookMeta || notebookWriteHolds.size) return null;
   const all = { ...confirmed }, meta = { ...confirmedNotebookMeta };
   try {
     for (const op of pending) {
@@ -1686,7 +1686,7 @@ function refreshFromStore(): Promise<boolean> {
     if (!ready) return false;
     if (!(await ensureDb())) { notifySceneStoreStale(); return false; }
     // 버전이 그대로면 씬은 읽지 않는다(충돌 목록만 본다).
-    const notebook = hubHasFeature("scene_writer_v1");
+    const notebook = hubHasFeature("scene_writer_confirm_v1");
     let read: Awaited<ReturnType<typeof readStore>>;
     try {
       read = await readStore(

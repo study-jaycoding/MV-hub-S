@@ -7,6 +7,12 @@ Run with the repository venv, after building frontend/dist:
   python tools/browser_measure/canvas_notebook.py --case performance --baseline-checkout <built-dcb9f49-checkout>
     produces a baseline-only report with 20 identical UI-to-IDB samples, not a contract PASS
   python tools/browser_measure/canvas_notebook.py --case rollback --old-checkout <isolated-checkout>
+  python tools/browser_measure/canvas_notebook.py --case first_transition --old-checkout <built-0123-or-1011-checkout>
+    --transition empty --start-order a
+  # Repeat --transition equal/different/restored_unknown/same_generation/held/limit_exact/limit_over;
+  # repeat --start-order b/simultaneous with different first canvases.
+  # --transition held always opens held B first; --start-order a/b chooses who confirms first.
+  # --transition equal --start-order b closes A after cleanUpgrade, starts B, then reopens A.
 
 No default/source DB is opened or copied. Artifacts remain in a newly allocated
 temporary directory, printed on exit. Only this process's server/Chrome are stopped.
@@ -61,11 +67,17 @@ MEASURE_SCRIPT = """(() => {
     const parsed = new URL(url, location.href), path = parsed.pathname + parsed.search;
     if (!parsed.pathname.startsWith('/api/scenes/')) return original.apply(this, arguments);
     const row = {path, method:init?.method || 'GET', start:performance.timeOrigin+performance.now()};
-    if (typeof init?.body === 'string') { try { row.upserts = JSON.parse(init.body).upserts?.length || 0; } catch {} }
+    if (typeof init?.body === 'string') { try {
+      const body=JSON.parse(init.body); row.upserts=body.upserts?.length || 0;
+      if(parsed.pathname === '/api/scenes/notebook/start') {
+        row.attempt_id=body.attempt_id; row.expected_count=body.expected_count; row.commit=body.commit;
+      }
+    } catch {} }
     window.__measureNetwork.push(row);
     return original.apply(this, arguments).then(response => {
       response.clone().text().then(text => {
         row.end=performance.timeOrigin+performance.now(); row.status=response.status;
+        if(parsed.pathname === '/api/scenes/notebook/start') { try { const detail=JSON.parse(text).detail; row.code=typeof detail === 'string' ? detail : detail?.code; } catch {} }
         if (parsed.pathname === '/api/scenes/writer') { try { const data=JSON.parse(text); if(data.token) window.__measureLeaseTokens.push(data.token); } catch {} }
       }).catch(() => { row.failed=true; });
       return response;
@@ -117,9 +129,10 @@ def make_env(data: Path, port: int, checkout: Path = REPO, *, shared_url: str | 
         validate_shared_url(shared_url)
         env["CONTENT_HUB_SHARED_URL"] = shared_url
     env["CONTENT_HUB_FRONTEND_DIST"] = str(checkout / "frontend" / "dist")
-    # 허브 공책 전용 실측 — 운영 기본은 끔(=1 일 때만 켬)이라 명시적으로 켠다(server_env 가 부모의 CONTENT_HUB_* 를 뺀 뒤).
-    # 끔은 첫 브라우저 전에 미러를 채우는 준비 단계에서만 쓴다(seed_mirror).
-    env["CONTENT_HUB_SCENE_WRITER"] = "1" if writer else "0"
+    # 부모의 값을 지운 뒤 변수 없는 운영 기본을 잰다. 미러 준비 단계만 명시적으로 끈다.
+    env.pop("CONTENT_HUB_SCENE_WRITER", None)
+    if not writer:
+        env["CONTENT_HUB_SCENE_WRITER"] = "0"
     return env
 
 
@@ -148,6 +161,12 @@ def scene_rows(entries: list, bucket: str = BUCKET) -> list[dict]:
     order = values.get(json.dumps(["o", bucket], separators=(",", ":")), [])
     return [values[json.dumps(["s", bucket, sid], separators=(",", ":"))] for sid in order
             if json.dumps(["s", bucket, sid], separators=(",", ":")) in values]
+
+
+def scene_fingerprints(scenes: list[dict]) -> list[dict]:
+    """Include every raw field and preserve order; matching IDs cannot prove preservation."""
+    return [{"id": scene["id"], "sha256": hashlib.sha256(json.dumps(scene, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()} for scene in scenes]
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -184,7 +203,7 @@ def controlled_launcher(checkout: Path, control_token: str) -> str:
     return f"""import runpy, sys
 from fastapi import Request, HTTPException
 from app.main import app
-from app import active_account
+from app import active_account, db
 from app.routers.publish import _switch_account_db
 @app.post('/api/__measure/account-aba')
 async def account_aba(request: Request):
@@ -201,6 +220,19 @@ async def account_aba(request: Request):
         _switch_account_db(original, original_uid)
         return {{'before': before, 'after': active_account.account_epoch(), 'account_before': original,
                  'account_b': middle, 'account': active_account.account_key()}}
+app.router.routes.insert(0, app.router.routes.pop())
+@app.post('/api/__measure/restore-generation')
+async def restore_generation(request: Request):
+    if request.client.host not in ('127.0.0.1', '::1') or request.headers.get('X-Measure-Control') != {control_token!r}:
+        raise HTTPException(403, 'isolated measurement control only')
+    body = await request.json()
+    with active_account.transition_lock, db.get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute("UPDATE app_setting SET value=? WHERE key='share_db_generation'", (body['generation'],))
+        if body.get('clear'):
+            conn.execute('DELETE FROM scene_backup')
+        conn.commit()
+    return {{'generation': body['generation'], 'cleared': bool(body.get('clear'))}}
 app.router.routes.insert(0, app.router.routes.pop())
 sys.argv = [{str(checkout / 'backend' / 'serve.py')!r}]
 runpy.run_path(sys.argv[0], run_name='__main__')
@@ -309,6 +341,7 @@ class Hub:
         headers = {}
         if path.startswith('/api/scenes/'):
             headers['X-MVHub-Expect-Account'] = f'acct:{self.shared.email.lower()}'
+            headers['X-MVHub-Canvas-Protocol'] = 'confirm-v1'
         if path.startswith("/api/__measure/") and self.control_token:
             headers["X-Measure-Control"] = self.control_token
         return isolated_request(self.url, path, body, method, headers)
@@ -362,8 +395,8 @@ class Hub:
                               "shared_auth_enabled": True, "ephemeral_admin": True, "token_verified": True}
             if health.get("cli_available") is not False:
                 raise RuntimeError("hub CLI isolation failed")
-            if not legacy and ("scene_writer_v1" in self.request("/api/auth/config")[1].get("features", [])) != writer:
-                raise RuntimeError("isolated scene_writer_v1 feature state differs from the requested writer mode")
+            if not legacy and ("scene_writer_confirm_v1" in self.request("/api/auth/config")[1].get("features", [])) != writer:
+                raise RuntimeError("isolated scene_writer_confirm_v1 feature state differs from the requested writer mode")
         except BaseException:
             self.stop()
             raise
@@ -381,10 +414,21 @@ class Hub:
             self.log.close()
             self.log = None
 
+    def restore_fixture(self, generation: str, *, clear: bool = False) -> None:
+        # Use the owned server connection; never reopen a forcibly stopped WAL database for mutation.
+        self.stop()
+        self.start(writer=False)
+        try:
+            status, result = self.request('/api/__measure/restore-generation', {'generation': generation, 'clear': clear})
+            if status != 200 or result != {'generation': generation, 'cleared': clear}:
+                raise RuntimeError('owned restore generation injection failed')
+        finally:
+            self.stop()
+
 
 class Measurement:
     def __init__(self, case: str, work: Path):
-        self.case, self.work, self.hub = case, work, Hub(work, controls=case == "lease_races")
+        self.case, self.work, self.hub = case, work, Hub(work, controls=case in {"lease_races", "first_transition"})
         self.account = f"acct:{self.hub.shared.email.lower()}"
         self.bucket = f"{self.account}::_none"
         self.report = {"format": "mvhub-canvas-notebook-measure-v1", "case": case,
@@ -403,16 +447,26 @@ class Measurement:
             result["evidence"] = {"observed": actual, "criterion": expected}
         self.report["checks"][key] = result
 
-    async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None, *, canvas: bool = True) -> Page:
+    async def open(self, stack: AsyncExitStack, name: str, seed: list[dict] | None = None, *, canvas: bool = True, hold_mirror: bool = False) -> Page:
         page = await stack.enter_async_context(Page(0, self.work / f"chrome-{name}"))
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=MEASURE_SCRIPT)
+        if hold_mirror:
+            script = await page.send("Page.addScriptToEvaluateOnNewDocument", source="""{
+              const original=window.fetch;
+              window.fetch=function(input,init) {
+                const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
+                if(path==='/api/scenes/backup' && (init?.method==='PUT' || window.__measureHoldMirrorReads)) return Promise.reject(new TypeError('measurement holds legacy mirror requests'));
+                return original.apply(this,arguments);
+              };
+            }""")
+            page.mirror_hold_script = script["identifier"]
         await page.send("Page.addScriptToEvaluateOnNewDocument", source=f"""if (location.origin === {json.dumps(self.hub.url)}) {{
             localStorage.setItem('ch.activeAccount', {json.dumps(self.hub.shared.email.lower())}); }}""")
         if seed is not None:
             # Seed legacy storage before first app boot, only on our exact origin, once per profile.
             script = f"""if (location.origin === {json.dumps(self.hub.url)} && !localStorage.getItem('measure-seeded')) {{
-                localStorage.setItem('ch.scenes', {json.dumps(json.dumps({self.bucket: seed}))});
-                localStorage.setItem('ch.scenes.active', {json.dumps(json.dumps({self.bucket: seed[0]['id'] if seed else None}))});
+                localStorage.setItem('ch.scenes', {json.dumps(json.dumps({self.bucket: seed}, ensure_ascii=False, separators=(',', ':')))});
+                localStorage.setItem('ch.scenes.active', {json.dumps(json.dumps({self.bucket: seed[-1]['id'] if seed else None}))});
                 localStorage.setItem('ch.lib.filters', '{{"tab":"compose"}}');
                 localStorage.setItem('measure-seeded', '1'); }}"""
             await page.send("Page.addScriptToEvaluateOnNewDocument", source=script)
@@ -479,7 +533,7 @@ class Measurement:
         self.hub.stop(); self.hub.start()
         self.report["mirror_seed"] = {"method": "PUT /api/scenes/backup on a writer-off start, then writer-on restart", "scenes": len(seeds)}
         self.report["limitations"].append("The hub mirror is seeded by a direct PUT on a writer-off start before the first browser opens "
-                                          "(a member upgrading from the mirror path). The empty-mirror first transition is not measured; the writer is opt-in.")
+                                          "(a member upgrading from the mirror path). The empty-mirror first transition is not measured in this case.")
 
     async def rename(self, page: Page, name: str, sid: str = "measure-0", *, enter: bool = True) -> None:
         modern = f"document.querySelector({json.dumps(f'[data-scene-tab="{sid}"] .scene-tab')})"
@@ -602,43 +656,247 @@ class Measurement:
             raise RuntimeError("card body did not move before handoff with pointer held")
 
     async def first_transition(self, stack: AsyncExitStack, seeds: list[dict]) -> dict:
-        """Empty hub mirror: a browser holding local scenes joins the writer-on hub for the first time (the opt-in first transition).
-
-        Its scenes go to the restore archive and the canvas empties; the canvas notice, picker and restore bring them back to the
-        canvas and the started hub notebook (docs/status/공책첫전환복구동선_2026-11-15.md)."""
+        """Read an actual old browser store, then upgrade the same owned profiles and origin."""
+        args = self.transition_args
+        checkout = validate_checkout(args.old_checkout) if args.old_checkout else REPO
+        variant, order = args.transition, args.start_order
+        interrupted = variant == "equal" and order == "b"
+        self.report["transition"] = {"variant": variant, "start_order": order, "old_checkout": str(checkout), "fault": args.transition_fault}
+        if variant.startswith("limit_"):
+            size = 5 * 1024 * 1024 + (variant == "limit_over")
+            # JSON.stringify emits non-ASCII literally, just like this compact UTF-8 JSON.
+            seeds[0]["cards"][0]["text"] = ""
+            remaining = size - len(json.dumps(seeds[0], ensure_ascii=False, separators=(",", ":")).encode())
+            seeds[0]["cards"][0]["text"] = "한" * (remaining // 3) + "x" * (remaining % 3)
+        self.hub.start(checkout, legacy=checkout != REPO, writer=False)
+        mirror = seeds if variant in {"equal", "same_generation", "held"} else ([{**seeds[0], "name": "different hub raw", "id": "hub-old"}] if variant in {"different", "restored_unknown"} else [])
+        generation = self.hub.request("/api/scenes/backup?include_data=true")[1].get("restore_generation")
+        if mirror:
+            code, _ = self.hub.request("/api/scenes/backup", {"project_id": "", "restore_generation": generation,
+                "upserts": [{"id": s["id"], "name": s["name"], "data": json.dumps(s, ensure_ascii=False, separators=(",", ":"))} for s in mirror]}, "PUT")
+            if code != 200:
+                raise RuntimeError("old mirror preparation failed")
+        recovery = f"localStorage.getItem({json.dumps('mvhub.mirrorRecovery:' + self.account)})"
+        b_seed = [{**seeds[-1], "id": "prior-b", "name": "browser B original"}]
+        if variant == "held":
+            b = await self.open(stack, "b", b_seed, hold_mirror=True)
+            await self.wait_local(b, lambda rows: len(rows) > 0)
+            self.hub.restore_fixture("measure-restored-G2", clear=True)
+            self.hub.start(checkout, legacy=checkout != REPO, writer=False)
+            await b.goto(self.hub.url, settle=.2)
+            if not await b.wait(f"JSON.parse({recovery} || 'null')?.generation === 'measure-restored-G2' && JSON.parse({recovery} || 'null')?.blockedIds?.length > 0", 20):
+                raise RuntimeError("old B did not produce an actual G2 blocked record")
+            code, _ = self.hub.request("/api/scenes/backup", {"project_id": "", "restore_generation": "measure-restored-G2",
+                "upserts": [{"id": s["id"], "name": s["name"], "data": json.dumps(s, ensure_ascii=False, separators=(",", ":"))} for s in seeds]}, "PUT")
+            if code != 200:
+                raise RuntimeError("restored G2 mirror preparation failed")
+            a = await self.open(stack, "a", seeds, hold_mirror=True)
+        else:
+            a = await self.open(stack, "a", seeds, hold_mirror=True)
+            b = await self.open(stack, "b", seeds if interrupted else b_seed, hold_mirror=True)
+        await self.wait_local(a, lambda rows: len(rows) == len(seeds))
+        await self.wait_local(b, lambda rows: len(rows) > 0)
+        if interrupted:
+            if generation and not await b.wait(f"JSON.parse({recovery} || 'null')?.generation === {json.dumps(generation)} && JSON.parse({recovery} || 'null')?.blockedIds?.length === 0", 20):
+                raise RuntimeError("interrupted transition requires B's actual unheld old provenance")
+            # Make a real offline final edit after 1011 established provenance; never forge its record.
+            await b.eval("window.__measureHoldMirrorReads = true")
+            await self.rename(b, "1011 B untransmitted final edit")
+        if variant in {"same_generation", "held"}:
+            if not await a.wait(f"!!{recovery}", 20):
+                raise RuntimeError("1011 browser's actual mirror generation record required")
+            await self.rename(a, "1011 untransmitted final edit")
+        before = {name: await self.local(page) for name, page in (("a", a), ("b", b))}
+        records = {name: {"scenes": scene_fingerprints(before[name]), "mirrorRecovery": await page.eval(recovery),
+                         "store_sha256": hashlib.sha256(json.dumps(await page.eval(READ_STORE), sort_keys=True).encode()).hexdigest()}
+                   for name, page in (("a", a), ("b", b))}
+        self.report["previous_browser_records"] = records
+        if variant.startswith("limit_"):
+            self.check("size_boundary", len(json.dumps(before["a"][0], ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+                       5 * 1024 * 1024 + (variant == "limit_over"))
+        self.check("previous_browser", {"old_checkout": checkout != REPO, "both_nonempty": all(record["scenes"] for record in records.values())},
+                   {"old_checkout": True, "both_nonempty": True})
+        prior_hub = [json.loads(row["data"]) for row in self.hub.request("/api/scenes/backup?include_data=true")[1]["items"] if not row.get("deleted_at")]
+        self.hub.stop()
+        if variant == "restored_unknown":
+            self.hub.restore_fixture("measure-restored-unknown-G2")
         self.hub.start()
         self.report["isolation"] = self.hub.isolation
-        a = await self.open(stack, "a", seeds, canvas=False)
+        self.check("default_enabled", "CONTENT_HUB_SCENE_WRITER" not in make_env(self.work / "hub", self.hub.port)
+                   and "scene_writer_confirm_v1" in self.hub.request("/api/auth/config")[1]["features"], True)
+        for page in (a, b):
+            await page.send("Page.removeScriptToEvaluateOnNewDocument", identifier=page.mirror_hold_script)
+        if interrupted:
+            await a.send("Page.addScriptToEvaluateOnNewDocument", source="""{
+              const original=window.fetch;
+              window.fetch=function(input,init) {
+                const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
+                if(path==='/api/scenes/notebook/start') {
+                  window.__measureInterruptedStart=JSON.parse(init?.body || '{}');
+                  return new Promise(() => {});
+                }
+                return original.apply(this,arguments);
+              };
+            }""")
+        opened = []
+        for name, page in (("b", b), ("a", a)) if variant == "held" else (("a", a),):
+            await page.goto(self.hub.url, settle=.2)
+            await self.ensure_canvas(page)
+            opened.append(name)
+            if variant == "held" and not await page.wait("document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')", 30):
+                raise RuntimeError(f"held-first browser {name} confirmation missing")
         self.report["browser_version"] = await a.eval("navigator.userAgent")
-        ids = sorted(s["id"] for s in seeds)
-        archive_key = json.dumps(["nr", self.account], separators=(",", ":"))
-        archived: list[str] = []
-        end = time.monotonic() + 30
-        while time.monotonic() < end:
+        if interrupted:
+            if not await a.wait("window.__measureInterruptedStart?.expected_count === 0", 30):
+                raise RuntimeError("cleanUpgrade did not reach the interrupted zero-item start")
             entries = dict(await a.eval(READ_STORE))
-            archived = sorted(s["id"] for item in entries.get(archive_key) or [] for s in item.get("scenes", {}).get(self.bucket, []))
-            if archived == ids:
-                break
-            await asyncio.sleep(.1)
-        self.check("archived", archived, ids)
-        self.check("canvas_emptied", [s["id"] for s in await self.local(a)], [])
-        shown = await a.wait(f"document.querySelector('.canvas-restore-notice')?.innerText.includes({json.dumps(f'씬 {len(seeds)}개')})", 20)
-        self.check("notice", shown, True)
-        if not shown or not await a.click("document.querySelector('[data-restore-action=\"open\"]')"):
-            raise RuntimeError("canvas restore notice missing")
-        restore = "document.querySelector('.canvas-restore-picker [data-restore-action=\"restore\"]:not([disabled])')"
-        if not await a.wait(restore, 10) or not await a.click(restore):
-            raise RuntimeError("restore picker action missing")
-        restored = await self.wait_local(a, lambda rows: sorted(s["id"] for s in rows) == ids, 20)
-        self.check("restored", sorted(s["id"] for s in restored), ids)
-        book = await self.synced(a, 40)
-        self.check("hub_synced", sorted(row["id"] for row in book["items"] if not row.get("deleted_at")), ids)
-        self.check("notice_cleared", await a.eval("!document.querySelector('.canvas-restore-notice')"), True)
-        try:
-            await a.shot(self.work / "a-final.png")
-        except Exception:
-            pass
-        self.report["forbidden_requests"].extend(r for r in a.mutations if "/api/gen-requests" in "/" + r or "/api/comfy/run" in "/" + r)
+            joined = entries.get(json.dumps(["nj", self.account], separators=(",", ":")), {})
+            based_ids = sorted(json.loads(key)[2] for key, value in entries.items()
+                               if key.startswith('["b",') and json.loads(key)[1] == self.bucket and value)
+            self.check("interrupted_clean_upgrade", {"not_started": self.hub.request("/api/scenes/notebook")[1]["notebook_id"] is None,
+                "join_id": joined.get("notebookId"), "awaiting": bool(joined.get("awaitingStart")), "based_ids": based_ids},
+                {"not_started": True, "join_id": "", "awaiting": False, "based_ids": sorted(s["id"] for s in before["a"])})
+            pending = entries.get(json.dumps(["ns", self.account], separators=(",", ":")), {})
+            blocked = await a.eval("window.__measureInterruptedStart")
+            interrupted_attempt = pending.get("id")
+            self.check("interrupted_start", {"attempt_id": blocked.get("attempt_id"), "expected_count": blocked.get("expected_count"),
+                "upserts": len(blocked.get("upserts", [])), "commit": blocked.get("commit"), "before_start": joined.get("beforeStart") is True},
+                {"attempt_id": interrupted_attempt, "expected_count": 0, "upserts": 0, "commit": True, "before_start": True})
+            if not interrupted_attempt or any(self.report["checks"][name]["status"] != "passed" for name in ("interrupted_clean_upgrade", "interrupted_start")):
+                raise RuntimeError("actual interrupted clean-upgrade evidence required before continuing")
+            paused_a = scene_fingerprints(await self.local(a))
+            paused_network = await a.eval("window.__measureNetwork")
+            await a.send("Page.close")
+            await a._kill()
+            # An uncommitted notebook cannot accept a close delta. Observe release or natural lease expiry.
+            released = False
+            deadline = time.monotonic() + 100
+            while time.monotonic() < deadline:
+                code, status = self.hub.request("/api/scenes/writer", {"action": "status"})
+                if code == 200 and status.get("writer") is None:
+                    released = True
+                    break
+                await asyncio.sleep(1)
+            self.check("interrupted_closed", {"closed": a.proc.poll() is not None, "released": released}, {"closed": True, "released": True})
+            if not released:
+                raise RuntimeError("interrupted A lease did not release or expire")
+            await b.goto(self.hub.url, settle=.2)
+            await self.ensure_canvas(b)
+        confirm = "document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')"
+        automatic = variant == "equal" and not interrupted
+        if automatic:
+            book = await self.synced(a, 40)
+            self.check("before_confirmation", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
+            self.check("no_upload_before", await a.eval(f"!{confirm}"), True)
+            self.check("confirmation", False, False)
+        else:
+            if not await (b if interrupted else a).wait(confirm, 30):
+                raise RuntimeError("first-start confirmation missing")
+            if variant not in {"same_generation", "held"} and not interrupted:
+                await b.goto(self.hub.url, settle=.2)
+                if not await b.wait(confirm, 30):
+                    raise RuntimeError("second first-start confirmation missing")
+            self.check("before_confirmation", {name: paused_a if interrupted and name == "a" else scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
+                       {name: scene_fingerprints(prior_hub if variant == "held" and name == "b" else rows) for name, rows in before.items()})
+            if interrupted and self.report["checks"]["before_confirmation"]["status"] != "passed":
+                raise RuntimeError("B's offline final edit was not preserved before confirmation")
+            if variant == "held":
+                self.check("held_first", opened, ["b", "a"])
+                archives = dict(await b.eval(READ_STORE)).get(json.dumps(["nr", self.account], separators=(",", ":")), [])
+                self.check("held_archive_before_confirmation", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [scene_fingerprints(before["b"])])
+            unchanged = self.hub.request("/api/scenes/notebook")[1]
+            network = paused_network + await b.eval("window.__measureNetwork") if interrupted else [row for page in (a, b) for row in await page.eval("window.__measureNetwork")]
+            self.check("no_upload_before", {"not_started": unchanged["notebook_id"] is None,
+                "hub_raw": scene_fingerprints(sorted([json.loads(row["data"]) for row in unchanged["items"] if not row.get("deleted_at")], key=lambda s: s["id"])),
+                "no_writes": not any(row["method"] == "PUT" or row["path"].endswith("/start") for row in network)},
+                {"not_started": True, "hub_raw": scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])), "no_writes": True})
+            selected = b if order == "b" else a
+            if args.transition_fault != "none":
+                # Drop exactly one reply AFTER the owned server processed it; this is not a skipped request.
+                await selected.eval(f"""(() => {{
+                  const original=window.fetch; window.__measureLostReplies=0;
+                  window.fetch=function(input,init) {{
+                    const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
+                    let body; try {{ body=JSON.parse(init?.body || '{{}}'); }} catch {{ body={{}}; }}
+                    return original.apply(this,arguments).then(response => {{
+                      if(!window.__measureLostReplies && path==='/api/scenes/notebook/start' && response.ok &&
+                         Boolean(body.commit)==={str(args.transition_fault == 'lost_commit').lower()}) {{
+                        window.__measureLostReplies++; throw new TypeError('measurement dropped processed reply');
+                      }}
+                      return response;
+                    }});
+                  }};
+                }})()""")
+            if order == "simultaneous":
+                await asyncio.gather(a.click(confirm), b.click(confirm))
+            elif not await selected.click(confirm):
+                raise RuntimeError("confirmation button did not run")
+            self.check("confirmation", True, True)
+            if variant == "limit_over":
+                if not await a.wait("document.body.innerText.includes('5MB')", 20):
+                    raise RuntimeError("oversize local-only notice missing")
+                book = self.hub.request("/api/scenes/notebook")[1]
+            else:
+                book = await self.synced(selected, 40)
+            if args.transition_fault != "none":
+                self.check("response_loss", await selected.eval("window.__measureLostReplies"), 1)
+        not_started = variant == "limit_over"
+        rows = [json.loads(row["data"]) for row in book["items"] if not row.get("deleted_at")]
+        by_id = {scene["id"]: scene for scene in rows}
+        ordered = [by_id[sid] for sid in book["order"]["ids"]]
+        if not_started:
+            self.check("selected_raw", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
+            self.check("join_generation", book["notebook_id"], None)
+            self.check("other_browser_preserved", scene_fingerprints(await self.local(b)), scene_fingerprints(before["b"]))
+            self.check("no_merge", rows, [])
+        else:
+            candidates = {name: scene_fingerprints(value) for name, value in before.items()}
+            selected_name = "b" if order == "b" else "a"
+            actual = scene_fingerprints(ordered)
+            if order == "simultaneous":
+                selected_name = next((name for name, fingerprints in candidates.items() if fingerprints == actual), "a")
+            self.check("selected_raw", actual, scene_fingerprints(prior_hub) if variant == "held" and selected_name == "b" else candidates[selected_name])
+            loser_name = "b" if selected_name == "a" else "a"
+            if interrupted:
+                a = await self.open(stack, "a") # same owned profile; no seed or synthetic join record
+            loser = b if loser_name == "b" else a
+            if not interrupted:
+                await loser.goto(self.hub.url, settle=.2)
+            await self.ensure_canvas(loser)
+            if await loser.eval(f"!!{confirm}"):
+                await loser.click(confirm)
+            else:
+                await self.take(loser)
+            book = await self.synced(loser, 40)
+            entries = dict(await loser.eval(READ_STORE))
+            joined = entries.get(json.dumps(["nj", self.account], separators=(",", ":")), {})
+            self.check("join_generation", joined.get("restoreGeneration"), book["restore_generation"])
+            archives = entries.get(json.dumps(["nr", self.account], separators=(",", ":")), [])
+            archived = [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives]
+            self.check("other_browser_preserved", archived, [candidates[loser_name]])
+            self.check("no_merge", scene_fingerprints(await self.local(loser)), actual)
+            if interrupted:
+                network = await a.eval("window.__measureNetwork")
+                requests = [{key: row[key] for key in ("path", "method", "attempt_id", "expected_count", "upserts", "commit", "status", "code") if key in row}
+                            for row in network if row["method"] == "PUT" or row["path"].endswith("/start")]
+                expected = [{"path": "/api/scenes/notebook/start", "method": "POST", "attempt_id": interrupted_attempt,
+                    "expected_count": 0, "upserts": 0, "commit": True, "status": 409, "code": "notebook_already_started"}]
+                self.check("interrupted_rejoin_requests", requests, expected)
+                self.check("interrupted_no_upload", requests != expected, False)
+        archived_hub = [row["data"] for row in retained_rows(self.work) if row["reason"] == "before_start"]
+        self.check("before_start", scene_fingerprints(sorted(archived_hub, key=lambda s: s["id"])),
+                   scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if (variant not in {"equal", "limit_over"} or interrupted) and not (variant == "held" and order == "b") else [])
+        reconnect = b if not not_started else a
+        old_store = dict(await reconnect.eval(READ_STORE))
+        archive_keys = [key for key in old_store if key.startswith('["nr",') or key.startswith('["na",')]
+        await reconnect.goto(self.hub.url, settle=1)
+        if not not_started:
+            await self.synced(reconnect, 40)
+        new_store = dict(await reconnect.eval(READ_STORE))
+        self.check("reconnect", {key: new_store.get(key) for key in archive_keys}, {key: old_store[key] for key in archive_keys})
+        for label, page in (("a", a), ("b", b)):
+            await page.shot(self.work / f"{label}-final.png")
+            self.report["forbidden_requests"].extend(r for r in page.mutations if "/api/gen-requests" in "/" + r or "/api/comfy/run" in "/" + r)
         return self.report
 
     async def run(self, args) -> dict:
@@ -651,6 +909,7 @@ class Measurement:
             seeds = fixture(performance=self.case == "performance")
             self.report["fixture_sha256"] = hashlib.sha256(json.dumps(seeds, sort_keys=True).encode()).hexdigest()
             if self.case == "first_transition":
+                self.transition_args = args
                 return await self.first_transition(stack, seeds)
             await self.seed_mirror(seeds)
             self.report["isolation"] = self.hub.isolation
@@ -957,7 +1216,16 @@ def main() -> int:
     baseline.add_argument("--baseline-checkout", type=Path)
     parser.add_argument("--max-slowdown", type=float, help="explicit p50/p95 ratio limit; omitted means latency is unverified")
     parser.add_argument("--old-checkout", type=Path)
+    parser.add_argument("--transition", choices=("empty", "different", "restored_unknown", "equal", "same_generation", "held", "limit_exact", "limit_over"), default="empty")
+    parser.add_argument("--start-order", choices=("a", "b", "simultaneous"), default="a")
+    parser.add_argument("--transition-fault", choices=("none", "lost_chunk", "lost_commit"), default="none")
     args = parser.parse_args()
+    if args.case == "first_transition" and not args.old_checkout:
+        parser.error("first_transition requires --old-checkout (built isolated 0123 or 1011 checkout)")
+    if args.transition_fault != "none" and (args.case != "first_transition" or (args.transition not in {"empty", "different", "restored_unknown", "same_generation"} and not (args.transition == "held" and args.transition_fault == "lost_commit")) or args.start_order == "simultaneous"):
+        parser.error("reply loss requires a first_transition confirmation variant and --start-order a or b")
+    if args.case == "first_transition" and ((args.transition in {"same_generation", "limit_exact", "limit_over"} and args.start_order != "a") or (args.transition in {"held", "equal"} and args.start_order == "simultaneous")):
+        parser.error("same_generation/size boundaries require a; equal/held accept a or b")
     if (args.baseline_report or args.baseline_checkout or args.max_slowdown is not None) and args.case != "performance":
         parser.error("baseline and slowdown options require --case performance")
     if args.max_slowdown is not None and (not math.isfinite(args.max_slowdown) or args.max_slowdown <= 0):

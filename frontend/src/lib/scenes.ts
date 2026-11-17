@@ -739,7 +739,7 @@ export function adoptCanvasSceneWrites(writes: SceneHandover[]): boolean {
     copyIds: [...write.changed, ...write.created].map(() => uid()),
     copies: null as Scene[] | null,
   }));
-  const notebook = hubHasFeature("scene_writer_v1");
+  const notebook = hubHasFeature("scene_writer_confirm_v1");
   // 세대는 저장 관문이 재생 시점에 주입한다. 처음 받았을 때만 검사하면 큐에서 기다리는 동안 낡을 수 있다.
   return commit((all, generations) => {
     for (const write of incoming) {

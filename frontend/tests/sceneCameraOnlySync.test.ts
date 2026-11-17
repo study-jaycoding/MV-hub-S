@@ -463,7 +463,7 @@ describe("확정 통지의 '카메라만' 표시(cameraOnly)", () => {
 
 describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예약하지 않는다", () => {
   async function adoptCurrentScenes() {
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     const scenes = listPersistedScenes(null);
     await joinSceneNotebook("local", hub.book, hub.history, { [bucket]: { scenes, bases: Object.fromEntries(scenes.map((s) => [s.id, { history: hub.history, rev: 1, hash: hash(JSON.stringify(s)) }])), order: { history: hub.history, rev: 1 } } }, undefined, "restore-1");
     localStorage.setItem("mvhub.cardRecovery:local", JSON.stringify({ generation: "restore-1", candidates: [] }));
@@ -539,7 +539,7 @@ describe("카드-생성물 연결 훑기 — 카메라만 바꾼 확정은 예�
 describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 최신 카메라(실제 공책 동기화)", () => {
   it("카메라만 확정은 동기화를 예약하지 않고, 숨김 동기화가 retry 면 30초 뒤 다시 돌아 최신 카메라가 도착한다", async () => {
     hub = new MiniHub();
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     const token = { account: "local", token: "token", generation: "g1" };
     setSceneNotebookTokenProvider(() => token);
     const a = scene("a");
@@ -579,7 +579,7 @@ describe("숨김 동기화 실패 → 백업의 기존 재시도 → 허브에 �
   //  outcomes = 올리기 차례별 결과(붙잡은 첫 올리기, fresh 후속 올리기). 끝난 뒤 30초 재시도가 몇 번 도는지 본다.
   const sharedRound = async (firstFails: boolean, freshFails: boolean | null): Promise<{ afterRound: number; retried: number; byDeadline: number }> => {
     hub = new MiniHub();
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     setSceneNotebookTokenProvider(() => ({ account: "local", token: "token", generation: "g1" }));
     const a = scene("a");
     hub.save(a);

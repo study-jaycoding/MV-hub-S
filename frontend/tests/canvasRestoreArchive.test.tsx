@@ -48,7 +48,7 @@ let root: Root | undefined, host: HTMLDivElement;
 beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear(); sessionStorage.clear(); request.mockReset(); download.mockClear();
-  setAccountScope(null); setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false);
+  setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]); setSceneWriteGate(() => false);
   setSceneNotebookTokenProvider(() => lease);
   await writeScenesStore({ [bucket]: [] });
   const scenes = [scene("a"), scene("b")];
@@ -68,7 +68,7 @@ async function changed() {
 }
 it("archives text, deletion, start and pending control data atomically before empty adoption", async () => {
   await changed();
-  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect((await syncSceneNotebook()).reason).toBe("empty_notebook");
   expect(readWorkingBucket(bucket)).toEqual([]);
   const archives = await readRestoreArchives("local");
   expect(archives.ok && archives.value).toHaveLength(1);
@@ -93,7 +93,7 @@ it("archive failure preserves the old text, generation and queues", async () => 
 it("untagged progress is archived even when the join already has the current generation", async () => {
   request.mockResolvedValue({ ...emptyBook(), restore_generation: "old" });
   await writeNotebookProgress("local", "write", null, { id: "untagged", requests: [] });
-  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect((await syncSceneNotebook()).reason).toBe("empty_notebook");
   const archives = await readRestoreArchives("local");
   expect(archives.ok && archives.value[0].controls['["nw","local"]']).toMatchObject({ id: "untagged" });
   expect(request.mock.calls.every(([, init]) => init.method === "GET")).toBe(true);
@@ -890,7 +890,7 @@ it.each([
 it.each([
   ["legacy", "resolved"], ["notebook", "resolved"], ["legacy", "ledger"], ["notebook", "ledger"],
 ])("no extra recovery download for %s hub with only %s originals", async (hub, kind) => {
-  setHubFeatures(hub === "notebook" ? ["scene_writer_v1"] : []);
+  setHubFeatures(hub === "notebook" ? ["scene_writer_confirm_v1"] : []);
   const original = { generation: "old", scenes: kind === "resolved" ? [{ id: "a", text: JSON.stringify(scene("a")) }] : [], ledger: kind === "ledger" ? [["a", { b: "old" }]] : [] };
   const raw = JSON.stringify({ generation: "new", blockedIds: [], raws: {}, originals: [original] });
   localStorage.setItem("mvhub.mirrorRecovery:local", raw);

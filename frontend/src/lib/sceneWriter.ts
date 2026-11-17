@@ -5,7 +5,7 @@ import { flashMsg } from "./flash";
 import { EXPECT_ACCOUNT_HEADER, hubHasFeature, subscribeHubFeatures } from "./hubFeatures";
 import { getApiPause, jsonFetch, subscribeApiPause } from "./http";
 import { collectCanvasForWriter, flushWriterInput, hasProfileSceneWriter, isCanvasWindow, setHubCanvasPaused, subscribeProfileSceneWriter } from "./popupWindows";
-import { SCENE_WRITER_FEATURE, buildSceneNotebookClose, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
+import { SCENE_WRITER_FEATURE, NOTEBOOK_PROTOCOL_HEADERS, buildSceneNotebookClose, invalidateNotebookStart, prepareNotebookStart, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookStartApproval, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
 import { isNotebookWriteHeld, setAsidePendingWrites, setSceneLeaseGeneration, settleSceneWrites, subscribeNotebookWriteHold } from "./sceneStore";
 import { listScenes, subscribeScenesPersisted } from "./scenes";
 import { t } from "./i18n";
@@ -22,7 +22,7 @@ interface WriterDeps {
   account: () => string;
   eligible: () => boolean;
   send: (account: string, body: Record<string, unknown>) => Promise<WriterStatus>;
-  sync: (fresh?: boolean) => Promise<NotebookSyncResult>;
+  sync: (fresh?: boolean, startApproval?: NotebookStartApproval) => Promise<NotebookSyncResult>;
   settle: () => Promise<boolean>;
   lost: () => void;
   generation: (account: string, value: string | null) => void;
@@ -34,6 +34,7 @@ interface WriterDeps {
 }
 /** 지금의 모든 씬으로 중단 사유 해소를 확인한다. 최초 초과 ID만 보면 이후 추가한 큰 씬을 놓친다. */
 export function canRetryLocalNotebook(reason: string | undefined): boolean {
+  if (reason === "start_confirmation") return false;
   const scenes = listScenes(null);
   if (reason === "empty_notebook") return scenes.length > 0;
   if (reason !== "start_too_big") return true;
@@ -72,6 +73,7 @@ export class SceneWriterClient {
   private mayClaim = true;
   private reconciled = false;
   private needsSync = false;
+  private startApproval: NotebookStartApproval | undefined;
   constructor(private deps: WriterDeps, private browserId: string, private tabId: string) {}
   token = (): NotebookToken | null => this.active && this.deps.eligible() && this.account === this.deps.account() &&
     this.prepared && performance.now() < this.confirmedUntil ? this.lease : null;
@@ -82,6 +84,8 @@ export class SceneWriterClient {
   configure(enabled: boolean) {
     const account = this.deps.account();
     if (this.active === enabled && this.account === account) return;
+    invalidateNotebookStart();
+    this.startApproval = undefined;
     // 해제는 캡처한 계정/토큰으로만 보낸다. 늦은 응답은 새 계정의 상태를 바꾸지 않는다.
     if (this.lease) void this.deps.send(this.account, { action: "release", token: this.lease.token }).catch(() => {});
     this.epoch++;
@@ -129,9 +133,10 @@ export class SceneWriterClient {
     if (this.lease && performance.now() >= this.confirmedUntil) this.uncertain();
   }
   localChanged() {
-    if (this.localStopped && this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) !== false) this.localStopped = false;
+    if (this.localStopped && this.localReason !== "start_confirmation" && this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) !== false) this.localStopped = false;
   }
   private localReady() {
+    if (this.localReason === "start_confirmation" && !this.startApproval) return false;
     if (this.localReason && this.deps.canRetryLocal?.(this.localReason, this.localSceneIds) === false) {
       this.localStopped = true;
       this.show("local_only");
@@ -139,7 +144,7 @@ export class SceneWriterClient {
     }
     return true;
   }
-  private async failedStart(epoch: number, error = t("허브 공책을 맞추지 못했습니다. 전체 내보내기로 작업을 보관한 뒤 다시 시도해 주세요.")) {
+  private async failedStart(epoch: number, error = t("캔버스를 맞추지 못했습니다. 전체 내보내기로 작업을 보관한 뒤 다시 시도해 주세요.")) {
     const token = this.lease?.token;
     this.confirmedUntil = 0;
     if (token) { try { await this.send("release", { token }); } catch { /* 만료가 남아도 원래 토큰으로만 해제한다. */ } }
@@ -160,7 +165,7 @@ export class SceneWriterClient {
     // 이미 쓰던 탭의 일시 실패는 로컬 편집을 유지한다. 최초 맞추기만 유한하게 재시도한다.
     let result: NotebookSyncResult = { status: "retry", changed: false, visibleChanged: false };
     for (let attempt = 0; attempt < (this.reconciled ? 1 : 3); attempt++) {
-      result = await this.deps.sync();
+      result = await this.deps.sync(false, this.startApproval);
       if (!this.valid(epoch)) return;
       if (result.status !== "retry") break;
     }
@@ -183,7 +188,7 @@ export class SceneWriterClient {
       this.localSceneIds = [...(result.sceneIds ?? [])];
       this.localStopped = true;
       this.show("local_only");
-      if (result.reason === "start_too_big") this.deps.notice(t("5MiB 넘는 씬이 있어 허브 공책을 시작하지 못했습니다 — 이 브라우저에서만 편집됩니다: {names}").replace("{names}", this.deps.names(result.sceneIds ?? [])));
+      if (result.reason === "start_too_big") this.deps.notice(t("5MB가 넘는 씬이 있어 다른 브라우저와 같이 쓰지 못합니다 — 이 브라우저에만 저장됩니다: {names}").replace("{names}", this.deps.names(result.sceneIds ?? [])));
     } else if (result.status === "waiting_token") {
       if (["writer_required", "writer_changed", "writer_expired"].includes(result.reason ?? "")) this.lose();
       else if (!this.reconciled) await this.failedStart(epoch);
@@ -318,11 +323,31 @@ export class SceneWriterClient {
     } catch { if (this.valid(epoch)) this.lose(); }
     finally { clearTimeout(timer); }
   }
+  async startNotebook(id: string): Promise<void> {
+    if (!this.active || !this.deps.eligible() || this.taking || this.busy) return;
+    const epoch = this.epoch;
+    const approval = await prepareNotebookStart(id, this.deps.settle);
+    if (!this.valid(epoch)) return;
+    if (!approval) {
+      this.localStopped = false;
+      this.localReason = undefined;
+      await this.refresh();
+      return;
+    }
+    this.startApproval = approval;
+    this.localReason = undefined;
+    try { await this.take(); }
+    finally { this.startApproval = undefined; }
+  }
   async take(): Promise<void> {
     if (!this.active || !this.deps.eligible() || this.taking || this.view.mode === "giving") return;
     if (!this.localReady()) return;
     this.localStopped = false;
     const epoch = ++this.epoch; // 진행 중 조회/맞추기의 늦은 응답도 이 요청을 덮지 못한다.
+    const approvedBoot = this.boot, approvedAccountEpoch = this.accountEpoch;
+    const recheckApproval = (status: WriterStatus) => {
+      if (status.boot_id !== approvedBoot || status.account_epoch !== approvedAccountEpoch || status.writer) this.startApproval = undefined;
+    };
     this.taking = true;
     this.lease = null;
     this.prepared = false;
@@ -333,20 +358,23 @@ export class SceneWriterClient {
     try {
       const request = await this.send("request");
       if (!this.valid(epoch)) return;
+      recheckApproval(request);
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
         if (!this.valid(epoch)) return;
         const status = await beforeDeadline(this.send("status"), deadline);
         if (!this.valid(epoch)) return;
         if (!status || Date.now() >= deadline) break;
+        recheckApproval(status);
         if (!status.writer) {
           const grant = await this.send("claim");
           if (!this.valid(epoch)) return;
+          if (grant.boot_id !== approvedBoot || grant.account_epoch !== approvedAccountEpoch) this.startApproval = undefined;
           this.confirm(grant);
           if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
           if (!this.valid(epoch)) return;
           this.prepared = true;
-          this.pendingNotice = t("넘겨받았습니다");
+          this.pendingNotice = this.startApproval ? undefined : t("넘겨받았습니다");
           await this.reconcile(epoch);
           return;
         }
@@ -356,14 +384,16 @@ export class SceneWriterClient {
       const finalStatus = await beforeDeadline(this.send("status"), Date.now() + 1500);
       if (!this.valid(epoch)) return;
       if (!finalStatus) { await this.failedStart(epoch); return; }
+      recheckApproval(finalStatus);
       const forced = !!finalStatus.writer;
       const grant = await this.send(forced ? "force" : "claim", forced ? { request_id: request.request_id } : {});
       if (!this.valid(epoch)) return;
+      if (grant.boot_id !== approvedBoot || grant.account_epoch !== approvedAccountEpoch) this.startApproval = undefined;
       this.confirm(grant);
       if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
       if (!this.valid(epoch)) return;
       this.prepared = true;
-      this.pendingNotice = forced ? t("강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다") : t("넘겨받았습니다");
+      this.pendingNotice = this.startApproval ? undefined : forced ? t("강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다") : t("넘겨받았습니다");
       await this.reconcile(epoch);
     } catch { if (this.valid(epoch)) this.lose(); }
     finally { if (epoch === this.epoch) this.taking = false; }
@@ -403,6 +433,7 @@ export function sceneWriterAccountChanged(): void {
   client.configure(hubHasFeature(SCENE_WRITER_FEATURE) && !getApiPause());
 }
 export function takeSceneWriter(): void { void client?.take(); }
+export async function startSceneNotebook(id: string): Promise<void> { await client?.startNotebook(id); }
 const GENERATION_KEY = "mvhub.sceneLeaseGeneration";
 
 /** 저장소 부팅 뒤 한 번 연결한다. 분리 창에는 토큰을 넘기지 않는다. */
@@ -460,8 +491,8 @@ export function startSceneWriter(): void {
   client = new SceneWriterClient({
     account: getAccountNamespace,
     eligible: () => hasProfileSceneWriter() && !getApiPause(),
-    send: (account, body) => jsonFetch<WriterStatus>("/api/scenes/writer", { method: "POST", body: JSON.stringify(body), headers: { [EXPECT_ACCOUNT_HEADER]: account }, signal: AbortSignal.timeout(5000) }),
-    sync: (fresh) => syncSceneNotebook({ fresh }),
+    send: (account, body) => jsonFetch<WriterStatus>("/api/scenes/writer", { method: "POST", body: JSON.stringify(body), headers: { ...NOTEBOOK_PROTOCOL_HEADERS, [EXPECT_ACCOUNT_HEADER]: account }, signal: AbortSignal.timeout(5000) }),
+    sync: (fresh, startApproval) => syncSceneNotebook({ fresh, startApproval }),
     settle: async () => {
       if (!(await collectCanvasForWriter(4500))) return false;
       return settleSceneWrites(4500, () => flushWriterInput(flushPending));
@@ -523,7 +554,7 @@ export function startSceneWriter(): void {
     client?.releaseBeacon((body, path, account) => {
       if (getApiPause()) return;
       if (path === "/api/scenes/notebook/close") {
-        void jsonFetch(path, { method: "POST", body, keepalive: true, headers: { [EXPECT_ACCOUNT_HEADER]: account! } }).catch(() => {});
+        void jsonFetch(path, { method: "POST", body, keepalive: true, headers: { ...NOTEBOOK_PROTOCOL_HEADERS, [EXPECT_ACCOUNT_HEADER]: account! } }).catch(() => {});
       } else navigator.sendBeacon?.("/api/scenes/writer", new Blob([body], { type: "application/json" }));
     });
   });
