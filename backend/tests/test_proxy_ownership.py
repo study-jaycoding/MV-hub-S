@@ -68,6 +68,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/db-backup/sets/{backup_set_id}",
         "/api/db-backup/sets/{backup_set_id}/activate",
         "/api/manage/breakdown",
+        "/api/manage/balances",
+        "/api/manage/console/balance-ledger",
         "/api/manage/hf-missing-apply",
         "/api/manage/hf-missing-candidates",
         "/api/manage/matrix",

@@ -43,6 +43,7 @@ _NOTIFY_NO_LIBRARY_CHANGE_PATHS = frozenset(
         "/api/generations/locate",
         "/api/generations/comment-counts",
         "/api/ingest/known-jobs",
+        "/api/ingest/balance-observations",
         "/api/projects/folder-counts/batch",
         "/api/scenes/backup",
         "/api/scenes/writer",

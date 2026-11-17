@@ -602,6 +602,17 @@ def init_db(db_path: Path | None = None, *, scene_restore: bool = False) -> Path
         except BaseException:
             conn.rollback()
             raise
+        from . import db_hf_balance
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            db_hf_balance.migrate(conn)
+            conn.commit()
+        except (RuntimeError, sqlite3.DatabaseError):
+            conn.rollback()
+            logging.getLogger(__name__).warning("Balance writes disabled: balance_schema_mismatch")
+        except BaseException:
+            conn.rollback()
+            raise
         if trash_transfer.enabled(conn):
             trash_transfer.guard_tables(conn, "content")
     finally:

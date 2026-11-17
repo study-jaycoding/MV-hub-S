@@ -4,6 +4,7 @@ import { stripThousands, type CreditPlanSaveBody, type CreditPlanSettings, type 
 import type { Planning } from "../components/manage/types";
 import type { ConsoleLimit } from "./workspaceConsole";
 import type { UsageBasis } from "./creditUsage";
+import type { BalanceMeta } from "../shared/contracts/hfBalance";
 
 export interface MemberTableRow {
   email: string;
@@ -51,7 +52,7 @@ export interface MemberTableData {
   credit: CreditPlanSettings | null; // 그룹 저장에 쓰는 원문 — create_project 가 없으면 null
   caps: { account: boolean; credit: boolean; project_roles: boolean; planning?: boolean };
   console_subs?: string[] | null; // 서브스페이스 메인을 골랐을 때만 — 연결된 서브(서브스페이스 왼쪽 목록 순서). 크레딧 시트는 서브 표 합본
-  main_balance?: { credits: number | null; seen_at: string | null } | null; // 크레딧 풀(메인 보고 잔액) · 크레딧 권한일 때만
+  main_balance?: { credits: number | null; seen_at: string | null; balance_meta?: BalanceMeta } | null; // 크레딧 풀(메인 보고 잔액) · 크레딧 권한일 때만
 }
 
 /** 메인 크레딧 시트 합본의 서브 한 곳 — 그 서브의 관리 표 그대로(실패하면 table=null) */

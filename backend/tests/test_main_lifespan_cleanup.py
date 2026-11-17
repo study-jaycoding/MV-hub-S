@@ -318,12 +318,27 @@ def test_shutdown_failure_attempts_remaining_cleanup_and_reraises_first_error(
     ]
 
 
-def test_normal_lifespan_keeps_existing_startup_and_shutdown_order(tmp_path):
+@pytest.mark.parametrize('balance_worker', [False, True])
+def test_normal_lifespan_keeps_existing_startup_and_shutdown_order(tmp_path, balance_worker):
     events: list[str] = []
 
     async def scenario() -> None:
         with ExitStack() as stack:
             _patch_startup_dependencies(stack, tmp_path, auth_enabled=True)
+            from app.services import hf_balance_delivery
+            stack.enter_context(patch.object(main._proxy, 'is_worker_hub', return_value=balance_worker))
+            stack.enter_context(patch.object(hf_balance_delivery, 'enabled', return_value=balance_worker))
+            stack.enter_context(patch.object(_telemetry, 'schedule_telemetry_drain'))
+            stack.enter_context(patch.object(main, '_start_worker_backup_bootstrap', return_value=None))
+            stack.enter_context(patch.object(main.registry_helper, 'schedule_loop', AsyncMock()))
+            async def retry_loop():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    events.append('stop:balance-retry')
+            stack.enter_context(patch.object(_telemetry, 'balance_retry_loop', retry_loop))
+            stack.enter_context(patch.object(_telemetry, 'wait_for_telemetry_drain',
+                                            side_effect=_async_event(events, 'stop:telemetry-drain')))
             stack.enter_context(
                 patch.object(
                     main.periodic_sync,
@@ -459,6 +474,7 @@ def test_normal_lifespan_keeps_existing_startup_and_shutdown_order(tmp_path):
             )
 
             async with main._application_lifespan(main.app):
+                await asyncio.sleep(0)
                 events.append("ready")
 
     asyncio.run(scenario())
@@ -486,6 +502,7 @@ def test_normal_lifespan_keeps_existing_startup_and_shutdown_order(tmp_path):
         # 생산자 먼저(동기화 → 그 동기화가 시작시킨 이력 보충) → 그다음 텔레메트리 회수.
         "stop:sync",
         "stop:history",
+        *(['stop:balance-retry', 'stop:telemetry-drain'] if balance_worker else []),
         "unbind:telemetry",
         "unbind:history",
         "unbind:agent",

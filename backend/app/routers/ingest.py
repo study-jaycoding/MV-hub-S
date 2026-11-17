@@ -105,6 +105,28 @@ def _agent_write_acc(request: Request) -> dict:
     return acc
 
 
+def _validate_balance_sender(request: Request, account: dict, email: str) -> dict:
+    from .. import config
+    from ..services.request_guards import require_loopback_request
+    email = norm_email(email)
+    if not email:
+        raise HTTPException(409, dict(code='account_mismatch', retryable=True))
+    if not config.AUTH_ENABLED:
+        require_loopback_request(request, '이 PC에서만 보낼 수 있습니다')
+        hub_email = norm_email(active_account.account_key())
+        if _proxy.is_worker_hub() and (not hub_email or not _proxy.token()):
+            raise HTTPException(409, dict(code='hub_not_signed_in', retryable=True))
+        if hub_email and hub_email != email:
+            raise HTTPException(409, dict(code='account_mismatch', retryable=True))
+    elif norm_email(account.get('email')) != email:
+        raise HTTPException(409, dict(code='account_mismatch', retryable=True))
+    if config.LOCAL_AGENT_PAIR_SECRET and not hmac.compare_digest(
+        request.headers.get('X-MVHub-Agent-Key') or '', config.LOCAL_AGENT_PAIR_SECRET
+    ):
+        raise HTTPException(403, dict(code='agent_key_mismatch', retryable=True))
+    return {**account, 'email':email}
+
+
 def _mcp_backfill_jobs(
     items: list[dict[str, Any]], fallback_workspace: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -306,12 +328,14 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
     account_status(잔액/플랜)·account_transactions(실제 차감액)를 서버로 전달한다
     (서버가 이메일 일치 검증 + 서버 PM DB 에 집계)."""
     acc = _agent_write_acc(request)
+    notes = {}
     out = _ingest_core(
         acc,
         body.jobs,
         body.creator_uid,
         body.account_status,
         workspace=body.workspace.model_dump(),
+        notes=notes,
     )
     # 에이전트는 최신 목록의 차집합만 보내므로 len(body.jobs)가 아니라 차집합 전 원본 수로
     # 100-window 포화를 판정한다. 옛 에이전트는 필드가 없어 전량 100건을 보낼 때만 감지된다.
@@ -328,17 +352,22 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
     # 거래 차집합이 비어도, 방금 적재/보강된 생성물로 저장된 미매칭 거래를 다시 평가한다.
     # 신원을 못 정한 사이클은 전체 사용자 범위로 매칭하지 않는다.
     transactions_stored = False
+    transaction_changes = 0
     if MANAGE_ENABLED and out.linked_uid:
+        transaction_changes = None
         try:
             from ..repo import manage as _m
 
             transactions = body.account_transactions or []
             recorded = _m.record_transactions(out.linked_uid, acc.get("email"), transactions)
             transactions_stored = recorded["stored"] + recorded["rejected"] == len(transactions)
+            transaction_changes = recorded.get('inserted', 0) + recorded.get('matched', 0)
             if background_tasks is not None and (recorded.get("inserted", 0) > 0 or recorded.get("matched", 0) > 0):
                 background_tasks.add_task(manager.broadcast, {"type": "credits_changed"}, account_uid=realtime_scope(acc))
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
+    if not body.jobs and not notes.get('identity_changed') and notes.get('status_changed') is False and transaction_changes == 0:
+        request.state.library_unchanged = True
     report_queued = False
     # 프록시(로컬 허브)에서는 대기열에 들어가야 공유 서버까지 간다 — 로컬 저장만으로 성공이라고
     # 답하면 에이전트가 기준을 옮겨 버리고, 전송기는 대기열만 읽으므로 그 구간을 아무도 다시
@@ -787,6 +816,8 @@ def my_hf_status(request: Request):
     '내 것'을 표시할 때 쓴다. 브라우저는 그 계정 CLI에 직접 접근 못 하므로 이 보고값이 유일한 출처.
     보고 이력 없으면 reported=false(에이전트 미연결 안내)."""
     acc = _agent_acc(request)
+    if _proxy.proxying():
+        return _proxy.proxy_get('/api/account/hf', request)
     st = repo.get_reported_status(acc["email"])
     if not st:
         return {
@@ -797,6 +828,8 @@ def my_hf_status(request: Request):
             "ffmpeg_h264": None,
             "workspaces": [],
         }
+    from ..usecases.hf_balance import account_workspaces
+    workspaces = account_workspaces(acc['email'], st.get('workspaces'))
     return {
         "reported": True,
         "credits": st.get("credits"),
@@ -805,7 +838,7 @@ def my_hf_status(request: Request):
         # 에이전트가 보고한 'Kling 영상 H.264 변환 가능' — 실제 bool 만, 옛 에이전트(보고 없음)는 null(false 와 구분). 안내·통계 전용.
         "ffmpeg_h264": st["ffmpeg_h264"] if isinstance(st.get("ffmpeg_h264"), bool) else None,
         "connected": st.get("connected"),
-        "workspaces": st.get("workspaces") or [],
+        "workspaces": workspaces,
     }
 
 

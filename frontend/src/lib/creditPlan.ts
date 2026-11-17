@@ -1,5 +1,6 @@
 import { formatCredits } from "./formatCredits";
 import type { UsageBasis } from "./creditUsage";
+import type { BalanceMeta } from "../shared/contracts/hfBalance";
 
 // 크레딧 풀 · 그룹 한도 · 잔액 추이 — 타입과 순수 계산(대시보드 카드·프로젝트 설정 창 공용).
 // 힉스필드가 한도를 강제하고 우리는 보여주기·경고만 한다(Jay 2026-09-10). 서버 계약은
@@ -24,6 +25,7 @@ export interface CreditPool {
   unknown_month: number; // 크레딧을 모르는 건 수(0원 아님)
   balance: number | null; // 힉스필드 보고 잔액(마지막 동기화)
   balance_seen_at: string | null;
+  balance_meta?: BalanceMeta;
   month_start_balance: number | null; // 이번 달 첫 관측값(계산값 아님)
   month_start_day: string | null;
   topups_month: { count: number; credits: number }; // 이번 달 긴급 충전 합·횟수
@@ -244,8 +246,8 @@ export function dayDiff(from: string, to: string): number {
   return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000);
 }
 
-/** 관측 사이에 잔액이 늘어난 지점 = 충전(관측된 계단). 설정값이 아니라 실제 관측으로만 그린다(코덱스 P2). */
-export function topupSteps(history: BalancePoint[]): { day: string; amount: number }[] {
+/** 확인한 잔액 사이의 증가만 표시한다. 증가 원인은 이 값만으로 확정하지 않는다. */
+export function balanceIncreaseSteps(history: BalancePoint[]): { day: string; amount: number }[] {
   const steps: { day: string; amount: number }[] = [];
   for (let i = 1; i < history.length; i += 1) {
     const delta = history[i].credits - history[i - 1].credits;

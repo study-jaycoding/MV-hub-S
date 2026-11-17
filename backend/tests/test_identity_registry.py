@@ -11,6 +11,28 @@ import unittest
 
 from app import db, repo
 from app.repo import identity, manage
+from hf_balance_fixtures import balance_db
+
+
+def test_balance_reporter_snapshot_survives_identity_remap(balance_db):
+    from app.repo import hf_balance
+    from hf_balance_fixtures import observation, EMAIL, NOW
+    old='acct:'+EMAIL
+    new='user_'+'a'*32
+    with db.get_connection() as conn:
+        conn.execute('INSERT INTO creator(uid,name) VALUES(?,?)',(old,'Before'))
+        conn.execute("INSERT INTO account(email,password_hash,status,creator_uid) VALUES(?,'h','approved',?)",(EMAIL,old))
+        conn.execute("INSERT INTO project(id,name,kind) VALUES('balance-remap','Project','team')")
+        conn.execute("INSERT INTO project_member(project_id,creator_uid,project_role) VALUES('balance-remap',?,'creator')",(old,))
+        item=observation()
+        hf_balance.store(conn,EMAIL,old,1,[item],received_at_ms=NOW)
+        before=dict(conn.execute('SELECT * FROM hf_balance_obs').fetchone())
+    assert identity.set_account_hf_creator(EMAIL,new) is True
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT creator_uid FROM account WHERE email=?',(EMAIL,)).fetchone()[0]==new
+        assert conn.execute("SELECT creator_uid FROM project_member WHERE project_id='balance-remap'").fetchone()[0]==new
+        assert dict(conn.execute('SELECT * FROM hf_balance_obs').fetchone())==before
+        assert before['reporter_uid']==old
 
 # 신원(uid/actor)을 담는 컬럼으로 볼 이름 규칙: *_uid / *_by 접미사 + 알려진 신원 컬럼명.
 #  · *_uid: creator_uid·owner_uid·assignee_uid·tomb_creator_uid …

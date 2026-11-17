@@ -42,6 +42,7 @@ DISABLED_PASSWORD_HASH = "disabled$test-snapshot"
 
 HF_ORG_USAGE_TABLES = ('hf_org_usage_row', 'hf_org_usage_check', 'hf_org_identity_link',
                        'hf_org_usage_window', 'hf_org_usage_collector', 'hf_org_usage_config')
+HF_BALANCE_TABLES = ('hf_balance_outbox', 'hf_balance_obs')
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -61,7 +62,8 @@ def strip_transfer_secrets(db_path: Path) -> None:
         trash_transfer.configure_connection(c)
         c.execute("BEGIN")
         scrub_slack_connection(c)  # Strict errors stay outside the legacy best-effort block.
-        scrub_hf_org_usage_connection(c)
+        compact = scrub_hf_org_usage_connection(c)
+        compact = scrub_hf_balance_connection(c) or compact
         c.execute('SAVEPOINT legacy_secrets')
         try:
             for k in SESSION_KEYS:
@@ -75,7 +77,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
             c.execute('ROLLBACK TO legacy_secrets')
         c.execute('RELEASE legacy_secrets')
         c.execute("COMMIT")
-        _compact_scrubbed_copy(c)
+        _compact_scrubbed_copy(c, changed=compact)
     finally:
         c.close()
 
@@ -97,7 +99,8 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
         trash_transfer.configure_connection(conn)
         conn.execute("BEGIN")
         scrub_slack_connection(conn)
-        scrub_hf_org_usage_connection(conn)
+        compact = scrub_hf_org_usage_connection(conn)
+        compact = scrub_hf_balance_connection(conn) or compact
         if _table_exists(conn, "app_setting"):
             for k in SESSION_KEYS:
                 conn.execute("DELETE FROM app_setting WHERE key=?", (k,))
@@ -127,12 +130,12 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
                 )
         conn.execute("COMMIT")
 
-        _compact_scrubbed_copy(conn)
+        _compact_scrubbed_copy(conn, changed=compact)
 
 
-def _compact_scrubbed_copy(conn: sqlite3.Connection) -> None:
+def _compact_scrubbed_copy(conn: sqlite3.Connection, *, changed: bool = False) -> None:
     # secure_delete clears today's deletes; VACUUM also removes older freelist/overflow residues.
-    if not any(_table_exists(conn, table) for table in HF_ORG_USAGE_TABLES):
+    if not changed:
         return
     conn.execute('VACUUM')
     if conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:
@@ -141,6 +144,7 @@ def _compact_scrubbed_copy(conn: sqlite3.Connection) -> None:
 
 def scrub_slack_connection(conn: sqlite3.Connection) -> None:
     """Strip and verify on the caller's configured connection and transaction."""
+    conn.execute('PRAGMA secure_delete=ON')
     keys = ('slack_bot_config', 'slack_notify_floor', 'slack_notify_generation')
     if _table_exists(conn, 'app_setting'):
         for key in keys:
@@ -194,23 +198,67 @@ def scrub_slack(db_path: Path) -> None:
         conn.commit()
 
 
-def scrub_hf_org_usage_connection(conn: sqlite3.Connection) -> None:
+def scrub_hf_org_usage_connection(conn: sqlite3.Connection) -> bool:
     """Fail closed, including deleted-page bytes. Safe for standalone workroom loading."""
     conn.execute('PRAGMA secure_delete=ON')
+    before = conn.total_changes
     for table in HF_ORG_USAGE_TABLES:
         if _table_exists(conn, table):
             conn.execute(f'DELETE FROM {table}')
             if conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
                 raise RuntimeError('Organization usage remains in snapshot')
+    return conn.total_changes > before
 
 
 def scrub_hf_org_usage(db_path: Path) -> None:
     """Offline copied DB only. No app import: workroom_data loads this file standalone."""
     with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute('BEGIN IMMEDIATE')
-        scrub_hf_org_usage_connection(conn)
+        compact = scrub_hf_org_usage_connection(conn)
         conn.commit()
-        _compact_scrubbed_copy(conn)
+        _compact_scrubbed_copy(conn, changed=compact)
+
+
+def scrub_hf_balance_connection(conn: sqlite3.Connection) -> bool:
+    """Copies only: remove both normalized observations and old-hub JSON envelopes."""
+    import json
+    conn.execute('PRAGMA secure_delete=ON')
+    before = conn.total_changes
+    for table in HF_BALANCE_TABLES:
+        if _table_exists(conn, table):
+            conn.execute(f'DELETE FROM {table}')
+            if conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
+                raise RuntimeError('Balance observations remain in copy')
+    def clean(value):
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items() if key != 'balance_report'}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+    for table, column, predicate in (('app_setting','value', "key LIKE 'hf_status:%'"),
+                                      ('account_report_outbox','payload_json','1=1')):
+        if not _table_exists(conn, table):
+            continue
+        for rowid, raw in conn.execute(f'SELECT rowid,{column} FROM {table} WHERE {predicate}').fetchall():
+            if not raw:
+                continue
+            try:
+                value = json.loads(raw)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError('Cannot verify balance cleanup') from exc
+            stripped = clean(value)
+            if stripped != value:
+                conn.execute(f'UPDATE {table} SET {column}=? WHERE rowid=?',
+                             (json.dumps(stripped, ensure_ascii=False), rowid))
+    return conn.total_changes > before
+
+
+def scrub_hf_balance(db_path: Path) -> None:
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        compact = scrub_hf_balance_connection(conn)
+        conn.commit()
+        _compact_scrubbed_copy(conn, changed=compact)
 
 
 def pause_hf_org_usage_for_restore(db_path: Path) -> bool:

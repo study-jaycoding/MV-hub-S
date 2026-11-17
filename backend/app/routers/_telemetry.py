@@ -14,6 +14,7 @@ import time
 from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..services.operational_logging import log_event
+from ..emailnorm import norm_email
 from ..services.account_report_delivery import drain_remote_account_reports
 from ..services.telemetry_drain import drain_isolated_telemetry, drain_remote_telemetry
 from . import _proxy
@@ -53,7 +54,9 @@ def _drain_once() -> None:
             # 계정 키와 uid를 같은 DB에서 원자 캡처한다. override는 두 outbox 드레인이 모두
             # 끝날 때까지 유지하되 transition_lock은 네트워크 전에 놓아 계정 전환을 막지 않는다.
             with active_account.transition_lock:
-                account_key = active_account.account_key()
+                account_key = norm_email(active_account.account_key())
+                origin, captured_token = _proxy.base_url(), _proxy.token()
+                epoch = active_account.account_epoch()
                 token = active_account.set_override(account_key or "")
                 try:
                     my_uid = repo.get_my_uid()
@@ -63,7 +66,20 @@ def _drain_once() -> None:
             try:
                 # 결과 파일 지문 전달 확인(docs/RESULT_FINGERPRINT.md) — 주소를 한 번 잡아 **그 주소로 보내고**
                 # 그 주소를 기록한다. 응답 때 설정 주소가 달라졌으면 정산하지 않는다.
-                origin = _proxy.base_url()
+                from ..services.hf_balance_delivery import drain as drain_balances
+                from ..services import shared_connection
+                def balance_current():
+                    if active_account.account_epoch() != epoch or shared_connection.token() != captured_token:
+                        return None, None
+                    return norm_email(active_account.account_key()), shared_connection.base_url()
+                try:
+                    with _proxy.pinned_connection((origin, captured_token)):
+                        drain_balances(
+                            lambda payload: _proxy.proxy_json('POST', '/api/ingest/balance-observations', body=payload, base=origin),
+                            account_key=account_key, target=origin, current=balance_current,
+                        )
+                except Exception as exc:
+                    log_event(_logger, 'balance_delivery_failed', level=logging.WARNING, error_type=type(exc).__name__)
                 drain_remote_telemetry(
                     lambda items: _proxy.proxy_json(
                         "POST", "/api/manage/telemetry/push", body={"items": items}, base=origin
@@ -123,6 +139,15 @@ def drain_telemetry() -> bool:
             _drain_in_flight = False
             _drain_state.notify_all()
         raise
+
+
+async def balance_retry_loop() -> None:
+    """Wake queued reports without collecting CLI data or changing sampling cadence."""
+    from ..services.hf_balance_delivery import enabled
+    while True:
+        await asyncio.sleep(60)
+        if enabled():
+            schedule_telemetry_drain()
 
 
 def bind_telemetry_loop(loop: asyncio.AbstractEventLoop) -> None:

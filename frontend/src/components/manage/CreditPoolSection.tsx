@@ -10,6 +10,9 @@ import { useEffect, useState } from "react";
 import { isHttpStatus, isRouteMissing } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { formatCredits } from "../../lib/formatCredits";
+import { formatBalanceTime, timestampMs } from "../../lib/format";
+import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
+import { getAuthToken } from "../../lib/http";
 import { scheduleLabel } from "../../lib/workspaceConsole";
 import {
   autoShareLabel,
@@ -21,7 +24,7 @@ import {
   projectDepletion,
   usagePercentLabel,
   remainingTone,
-  topupSteps,
+  balanceIncreaseSteps,
   usagePercent,
   type BalancePoint,
   type CreditGroupSummary,
@@ -31,11 +34,6 @@ import {
 
 function n(value: number | null | undefined): string {
   return formatCredits(value);
-}
-
-function seenText(iso: string | null): string {
-  if (!iso) return "보고 없음";
-  return `${iso.replace("T", " ").slice(5, 16)} 보고값`;
 }
 
 function monthLabel(month: string): string {
@@ -74,10 +72,11 @@ function BalanceChart({ history, month, cycleStart, topups }: {
   cycleStart?: string; // 이번 충전 달의 시작일(기준일 기준) — 없으면 옛 서버라 1일로 본다
   topups: CreditTopup[];
 }) {
+  const t = useT();
   if (history.length < 2) {
     return (
       <div className="credit-chart-empty">
-        일별 관측이 쌓이는 중입니다 — 에이전트가 보고할 때마다 하루 한 점이 남습니다({history.length}일 기록).
+        {t("일별 잔액 확인이 쌓이는 중입니다 · {count}일 기록").replace("{count}", String(history.length))}
       </div>
     );
   }
@@ -85,7 +84,7 @@ function BalanceChart({ history, month, cycleStart, topups }: {
   const height = 240;
   const pad = { l: 56, r: 24, t: 18, b: 28 };
   const projection = projectDepletion(history);
-  const steps = topupSteps(history);
+  const steps = balanceIncreaseSteps(history);
   const firstDay = history[0].day;
   const lastDay = projection ? projection.depleteDay : history[history.length - 1].day;
   const spanDays = Math.max(1, dayIndex(firstDay, lastDay));
@@ -114,7 +113,7 @@ function BalanceChart({ history, month, cycleStart, topups }: {
       {steps.map((step) => (
         <g key={step.day}>
           <circle cx={x(step.day)} cy={y(history.find((point) => point.day === step.day)!.credits)} r={4} className="dot" />
-          <text x={x(step.day) + 6} y={y(history.find((point) => point.day === step.day)!.credits) - 6}>{`${dayLabel(step.day)} 잔액 증가 +${n(step.amount)}`}</text>
+          <text x={x(step.day) + 6} y={y(history.find((point) => point.day === step.day)!.credits) - 6}>{`${dayLabel(step.day)} ${t("잔액 증가")} +${n(step.amount)}`}</text>
         </g>
       ))}
       {topups
@@ -166,20 +165,23 @@ export function CreditPoolSection({
   const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
+    setView(null); setError(""); setHidden(false);
     if (!workspaceId) {
       setView(null);
       return;
     }
     let active = true;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const current = () => active && account === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken();
     manageApi.creditPlan(workspaceId)
       .then((next) => {
-        if (!active) return;
+        if (!current()) return;
         setView(next);
         setError("");
         setHidden(false);
       })
       .catch((reason) => {
-        if (!active) return;
+        if (!current()) return;
         // 구서버(라우트 없음)·소속 아님(403)은 구역 자체를 숨긴다 — 오류 배너로 대시보드를 어지럽히지 않는다.
         if (isRouteMissing(reason) || isHttpStatus(reason, 403)) {
           setHidden(true);
@@ -299,20 +301,20 @@ export function CreditPoolSection({
               <span>{cycleLabel(view, pool.topup_day)} 사용{!pool.month_usage?.basis && ` (${t("팀 기록 장부")})`}</span>
               <strong>{n(pool.used_month)}</strong>
               <UsageBasis value={pool.month_usage} />
-              {!!pool.month_usage?.unlinked_api && <small>{t("미연결 API 사용")} {n(pool.month_usage.unlinked_api)}</small>}
+              {!!pool.month_usage?.unlinked_api && <small>{t("사람을 연결하지 못한 사용")} {n(pool.month_usage.unlinked_api)}</small>}
               <em>{pool.unknown_month ? pool.month_usage?.basis === "api"
                 ? t("합계에 안 든 기록 {count}건").replace("{count}", String(pool.unknown_month))
                 : `미상 ${pool.unknown_month}건 제외 · 미분류 포함` : "미분류 포함"}</em>
             </div>
             <div className="left">
-              <span>잔액(보고)</span>
+              <span>{t("잔액")}</span>
               <strong>{n(pool.balance)}</strong>
-              <em>{seenText(pool.balance_seen_at)}</em>
+              <em>{t("잔액은 {time}").replace("{time}", formatBalanceTime(pool.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: pool.balance_seen_at ? timestampMs(pool.balance_seen_at) : null }))}</em>
             </div>
             <div>
-              <span>월초 잔액 (관측)</span>
+              <span>{t("월초 확인 잔액")}</span>
               <strong>{n(pool.month_start_balance)}</strong>
-              <em>{pool.month_start_day ? `${dayLabel(pool.month_start_day)} 첫 관측값 · 지난달에서 넘어온 몫` : `${cycleLabel(view, pool.topup_day)} 관측 없음`}</em>
+              <em>{pool.month_start_day ? t("{day} 처음 확인한 잔액 · 지난달에서 넘어온 몫").replace("{day}", dayLabel(pool.month_start_day)) : t("{period} 잔액 확인 없음").replace("{period}", cycleLabel(view, pool.topup_day))}</em>
             </div>
           </div>
         ) : null}
@@ -386,7 +388,7 @@ export function CreditPoolSection({
       <div className="usage-card credit-card usage-chart-card">
         <div className="usage-card-head">
           <div><h3>잔액 추이 · 최근 60일</h3></div>
-          <span>{`관측 ${view.history?.length || 0}일 · 충전일 세로선 · 늘어난 곳=잔액 증가(관측) · 점선=최근 7일 속도 예상`}</span>
+          <span>{t("잔액 확인 {count}일 · 충전일 세로선 · 늘어난 곳=잔액 증가 · 점선=최근 7일 속도 예상").replace("{count}", String(view.history?.length || 0))}</span>
         </div>
         <BalanceChart history={view.history || []} month={view.month} cycleStart={view.cycle_start} topups={topups} />
       </div>

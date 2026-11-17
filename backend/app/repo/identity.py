@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import sqlite3
 from typing import Any, Literal, Optional
@@ -629,6 +630,7 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
 # ※ 별도 DB(휴지통 trash.trashed·매니징 manage_hub.db team_generation_fact)는 content DB 스코프 밖이라
 #   이 registry 대상이 아니다(각자 alias 인식·restore rewrite / 별도 관리로 정합).
 _REMAP_EXEMPT: dict[tuple[str, str], str] = {
+    ("hf_balance_obs", "reporter_uid"): "불변 관측 당시 신원 스냅샷 — 접근 권한에 사용하지 않음",
     ("generation", "worker_id"): "PC/워크스테이션 축(사용자 actor 아님) — remap 제외",
     ("account", "creator_uid"): "remap authority/소스 — 이 값 기준으로 acct:<email>→user_ 매핑을 만든다",
     ("generation_event", "actor_uid"): "append-only 장애 이력 actor — 이메일 기반 임시 신원은 저장 전에 비가역 지문화",
@@ -982,7 +984,9 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
     email = norm_email(email)
     if not email or not isinstance(status, dict):
         return False
+    status = {key: value for key, value in status.items() if key != "balance_report"}
     raw_payload = _json.dumps(status, ensure_ascii=False)
+
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
         # 옛/불완전 보고 — raw 만 저장(기존 멤버십을 전부 unavailable로 만들지 않는다).
@@ -1050,13 +1054,18 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
                 continue
             credits = workspace.get("credits")
             try:
-                credits = float(credits) if credits is not None else None
+                from ..hf_balance_contract import amount
+                credits = amount(credits)[0] / 100 if credits is not None else None
             except (TypeError, ValueError):
                 credits = None
+            from . import hf_balance
+            selected = hf_balance.latest(conn, workspace_id)
+            if selected:
+                credits = selected['credits_c'] / 100 if selected.get('credits_c') is not None else None
             conn.execute(
                 "INSERT INTO workspace_registry(id, name, plan_type, credits) VALUES(?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET name=excluded.name, plan_type=excluded.plan_type, "
-                "credits=excluded.credits, last_seen_at=datetime('now')",
+                "credits=COALESCE(excluded.credits,workspace_registry.credits), last_seen_at=datetime('now')",
                 (
                     workspace_id,
                     workspace_name,
@@ -1064,7 +1073,7 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
                     credits,
                 ),
             )
-            if credits is not None:
+            if credits is not None and not selected:
                 # 잔액 일별 관측(대시보드 추이) — 같은 트랜잭션·같은 커넥션. 보고엔 관측 시각이 없어
                 # 서버 수신 시각 기준으로 그날의 마지막 값을 남긴다(에이전트는 매 push 에 현재 상태를 보낸다).
                 conn.execute(
@@ -1074,6 +1083,8 @@ def record_account_status(email: str, status: dict[str, Any]) -> bool:
                     "credits=excluded.credits, seen_at=excluded.seen_at",  # first_credits 는 그날 첫 값 유지
                     (workspace_id, credits, credits),
                 )
+            if selected:
+                hf_balance.mirror(conn, workspace_id)
             conn.execute(
                 "INSERT INTO workspace_member"
                 "(workspace_id, account_email, creator_uid, user_role, is_selected, is_available) "
@@ -1167,7 +1178,10 @@ def list_workspace_options(member_email: Optional[str] = None) -> list[dict[str,
                 names.get(r["workspace_id"], "").casefold(),
             )
             order = {r["workspace_id"]: i for i, r in enumerate(sorted(consoles, key=rank))}
-    return [{**dict(row), "console_tier": tiers.get(row["id"]), "console_order": order.get(row["id"])} for row in rows]
+        from .hf_balance import balance_snapshot
+        balances = balance_snapshot(conn, [r['id'] for r in rows])
+    return [{**dict(row), "credits": balances[row['id']]['credits'], "balance_meta": balances[row['id']],
+             "console_tier": tiers.get(row["id"]), "console_order": order.get(row["id"])} for row in rows]
 
 
 def get_registry_workspace(workspace_id: str) -> Optional[dict[str, Any]]:
@@ -1248,33 +1262,35 @@ def list_account_statuses() -> dict[str, Any]:
 
 
 def credit_summary() -> dict[str, Any]:
-    """팀 크레딧 집계 — 각 계정 에이전트가 push 때 보고한 마지막 account_status 기준.
-    생성정보엔 크레딧이 없으므로 이 '마지막 보고값'으로 전체 합계·구성원별을 만든다.
-    **합계는 워크스페이스 풀 단위**로 센다(사람 수만큼 중복해서 더하지 않는다 — 아래 주석)."""
+    """팀 풀은 공통 관측을 한 번씩 합산하고 개인 raw 보고 합계와 구별한다."""
     statuses = list_account_statuses()  # {email: {credits, plan, ...}}
+    reported_ids = {str(w['id']) for st in statuses.values() if isinstance(st, dict)
+                    for w in st.get('workspaces') or [] if isinstance(w, dict) and w.get('id')}
     with get_connection() as conn:
+        conn.execute('BEGIN')
         names = {
             r["email"]: r["name"]
             for r in conn.execute("SELECT email, name FROM account").fetchall()
         }
-        registry = {
-            r["id"]: (None if r["credits"] is None else float(r["credits"]))
-            for r in conn.execute("SELECT id, credits FROM workspace_registry").fetchall()
-        }
+        from .hf_balance import balance_snapshot, partial_totals
+        registry = balance_snapshot(conn, sorted(reported_ids))
     rows: list[dict[str, Any]] = []
     # ★합계는 **워크스페이스 풀 단위**로 센다(2026-09-23). 팀 워크스페이스의 잔액은 한 사람 몫이 아니라
     #  모두가 함께 쓰는 풀이라, 같은 공간을 쓰는 사람 수만큼 더하면 팀 합계가 그 배로 부풀어난다.
-    #  ★풀 값은 **등록부(`workspace_registry`)** 에서 읽는다(Codex 코드 리뷰 2026-09-23): 보고를 계정 순서로
-    #   훑으면 마지막에 훑힌 계정의 **오래된** 잔액이 이길 수 있다. 등록부는 보고가 도착할 때마다 갱신된다.
+    #  계정을 순회한 순서로 오래된 잔액이 이기지 않도록 공간별 공통 관측을 쓴다.
     #  공간 목록을 보고하지 않은 계정(개인 컨텍스트·옛 에이전트)만 그 계정 잔액을 따로 더한다.
-    pools: dict[str, float] = {}
+    pools: dict[str, dict[str, Any]] = {}
     solo_total = 0.0
+    solo_unknown = 0
+    solo_count = 0
     for email, st in statuses.items():
         if not isinstance(st, dict):
             continue
         cr = st.get("credits")
         try:
             crv = float(cr) if cr is not None else None
+            if crv is not None and not math.isfinite(crv):
+                crv = None
         except (TypeError, ValueError):
             crv = None
         reported = [w for w in (st.get("workspaces") or []) if isinstance(w, dict) and w.get("id")]
@@ -1282,9 +1298,13 @@ def credit_summary() -> dict[str, Any]:
             for ws in reported:
                 ws_id = str(ws.get("id") or "")
                 if ws_id:
-                    pools[ws_id] = registry.get(ws_id)  # 값은 등록부에서(없으면 아래에서 버린다)
-        elif crv is not None:
-            solo_total += crv
+                    pools[ws_id] = registry[ws_id]
+        else:
+            solo_count += 1
+            if crv is None:
+                solo_unknown += 1
+            else:
+                solo_total += crv
         rows.append(
             {
                 "email": email,
@@ -1294,8 +1314,11 @@ def credit_summary() -> dict[str, Any]:
             }
         )
     rows.sort(key=lambda r: -(r["credits"] or 0))
-    pool_total = sum(value for value in pools.values() if value is not None)
-    return {"total": round(pool_total + solo_total, 2), "accounts": rows}
+    totals = partial_totals(pools.values())
+    return {"total": round(totals['known_subtotal_c'] / 100 + solo_total, 2), "accounts": rows,
+            "balance_meta": totals, **totals, "total_complete": totals['complete'] and solo_unknown == 0,
+            "total_fresh": totals['fresh'] and solo_count == 0, "solo_unknown_count": solo_unknown,
+            "solo_total": round(solo_total, 2), "solo_basis": "account_report"}
 
 
 def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:

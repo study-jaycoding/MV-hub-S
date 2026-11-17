@@ -77,6 +77,39 @@ def test_signup_only_blocked_account_goes_away_with_its_side_rows(world):
     assert repo.get_account(ADMIN) is not None
 
 
+@pytest.mark.parametrize('null_uid',[False,True])
+def test_balance_observation_only_account_is_not_deleted(world,null_uid):
+    from hf_balance_fixtures import observation, NOW
+    from app.repo import hf_balance
+    account=ghost()
+    with db.get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        hf_balance.store(conn,GHOST,None if null_uid else account['creator_uid'],1,[observation()],received_at_ms=NOW+1)
+    assert rows()[GHOST]['verdict']=='blocked'
+    with pytest.raises(cleanup.CleanupRefused):
+        delete()
+
+
+def test_balance_observation_with_null_uid_blocks_by_email(world):
+    test_balance_observation_only_account_is_not_deleted(world,True)
+
+
+def test_balance_observation_uid_alone_blocks_account_cleanup(world):
+    from hf_balance_fixtures import observation, NOW
+    from app.repo import hf_balance
+    account=ghost()
+    with db.get_connection() as conn:
+        hf_balance.store(conn,'different@example.test',account['creator_uid'],1,[observation()],received_at_ms=NOW)
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==0
+        assert conn.execute('SELECT reporter_key FROM hf_balance_obs').fetchone()[0]!=GHOST
+    assert rows()[GHOST]['verdict']=='blocked'
+    with pytest.raises(cleanup.CleanupRefused):
+        delete()
+    with db.get_connection() as conn:
+        conn.execute('UPDATE hf_balance_obs SET reporter_uid=NULL')
+    assert rows()[GHOST]['verdict']=='deletable'
+
+
 def test_other_accounts_rows_are_untouched(world):
     other = ghost(email="other@x.test")
     ghost()

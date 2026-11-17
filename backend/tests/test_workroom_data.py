@@ -51,6 +51,20 @@ def test_snapshot_preserves_source_accounts_and_repeated_edits(tmp_path):
     assert hashlib.sha256(db.read_bytes()).hexdigest() == before
 
 
+def test_workroom_scrubs_balances_without_changing_source(tmp_path):
+    from hf_balance_fixtures import seed_balance
+    path=source(tmp_path)
+    with sqlite3.connect(path) as conn:
+        seed_balance(conn)
+    before=path.read_bytes()
+    runtime=tmp_path/'balance-room'
+    prepare_runtime(runtime,path,REPO)
+    with sqlite3.connect(runtime/'data/db/content_hub.db') as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==0
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==0
+    assert path.read_bytes()==before
+
+
 def test_refuses_existing_or_overlapping_runtime(tmp_path):
     db = source(tmp_path)
     with pytest.raises(ValueError):

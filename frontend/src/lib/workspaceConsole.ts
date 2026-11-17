@@ -4,6 +4,7 @@ import { newGroupId, type CreditPlanSaveBody, type CreditPlanSettings, type Limi
 import { formatCredits } from "./formatCredits";
 import type { Planning } from "../components/manage/types";
 import type { UsageBasis } from "./creditUsage";
+import type { BalanceMeta, BalancePartialTotals } from "../shared/contracts/hfBalance";
 
 export interface ConsoleSub {
   cycle_usage?: UsageBasis;
@@ -12,6 +13,7 @@ export interface ConsoleSub {
   name: string;
   balance: number | null; // 에이전트 마지막 보고 잔액
   balance_seen_at: string | null;
+  balance_meta?: BalanceMeta;
   first_seen_at: string | null; // 이 앱이 처음 본 날(힉스필드 생성일 대용)
   used_all: number; // 전체 기간 사용(우리 기록)
   monthly_topup: number | null; // 정기 크레딧(서브스페이스 전환 뒤엔 손 입력만 · 전환 전엔 비면 프로젝트 월 예산 합)
@@ -47,21 +49,26 @@ export const STATUS_LABEL: Record<ConsoleStatus, string> = { active: "활성", i
 
 export interface ConsoleOverview {
   today: string;
-  main: { id: string; name: string; balance: number | null; balance_seen_at: string | null; reported: number } | null;
+  main: { id: string; name: string; balance: number | null; balance_seen_at: string | null; balance_meta?: BalanceMeta; reported: number } | null;
   subs: ConsoleSub[];
-  totals: { recurring_30d: number; topups_cycle: number; topups_count: number; used_cycle: number; spent_all: number; unused: number };
+  totals: BalancePartialTotals & { recurring_30d: number; topups_cycle: number; topups_count: number; used_cycle: number; spent_all: number; unused: number };
   schedule: { day: string; subs: { id: string; name: string }[]; amount: number; balance_after: number | null }[];
   pending: { id: string; name: string; reported: number; last_seen_at: string | null; archived: boolean }[];
   // 메인은 정해져 있는데 등록부(힉스필드 보고)에서 사라짐 — 메인은 바꿀 수 없으니(Jay 2026-09-30) 지정 선택기 대신 복구 안내. 구서버는 없음.
   main_orphan?: { id: string } | null;
   // 풀 카드 — baseline=힉스필드 값 기준(할당 = 기준값 + 이후 기록·지나간 자동 충전, 사용 = 할당 − 미사용) · estimate=우리 기록 기준
-  allocation: { source: "baseline" | "estimate"; base: number | null; base_day: string | null; allocated: number; spent: number; unused: number };
+  allocation: Pick<BalancePartialTotals, "complete" | "fresh"> & { source: "baseline" | "estimate"; base: number | null; base_day: string | null; allocated: number | null; spent: number | null; unused: number };
   // 크레딧 달력 — 지난 3개월 추가 크레딧 기록 + 앞으로 92일 자동 정기 크레딧(금액·서브 이름만)
   calendar: {
     from: string;
     to: string;
     events: { day: string; kind: "recurring" | "topup"; sub_id: string; name: string; credits: number; topup_id?: string }[];
   };
+}
+
+/** 서버의 세 집합은 서로 겹치지 않는다: 금액 없음, 확인 시각 미상, 오래된 확인. */
+export function balanceUnconfirmedCount(partial?: BalancePartialTotals): number {
+  return (partial?.unknown_workspace_count ?? 0) + (partial?.legacy_workspace_count ?? 0) + (partial?.stale_workspace_count ?? 0);
 }
 
 /** 추가 크레딧 한 건 기록. 서버는 topups 를 **전체 교체**하므로 받은 기록 전부 + 새 한 건을 보낸다(Codex §9).
@@ -148,6 +155,7 @@ export interface ConsoleLimit {
   // 관리 표 한 워크스페이스용 상세(§16) — `/member-table` 최상위에만 온다(대시보드 줄엔 없음)
   balance?: number | null;
   balance_seen_at?: string | null;
+  balance_meta?: BalanceMeta;
   next_topup_day?: string | null;
   topups_count?: number;
   used_cycle?: number;

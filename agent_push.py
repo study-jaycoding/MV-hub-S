@@ -46,7 +46,7 @@ from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from ctypes import wintypes  # Windows 가 아니어도 import 은 된다 — 쓰는 곳은 os.name 으로 가린다
 from datetime import datetime, timedelta, timezone
-from threading import BoundedSemaphore, Event, Lock, RLock, Thread
+from threading import BoundedSemaphore, Event, Lock, RLock, Thread, local
 from urllib.parse import quote, urlencode, urlparse
 
 
@@ -1244,6 +1244,8 @@ def _http(method: str, url: str, token: str | None = None, body: dict | None = N
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
+    if _balance_pair_secret and '/api/ingest' in url:
+        req.add_header('X-MVHub-Agent-Key', _balance_pair_secret)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -2354,8 +2356,39 @@ def _prepare_state_db(conn: sqlite3.Connection) -> None:
           updated_at REAL NOT NULL,
           PRIMARY KEY(server_key, account_email, workspace_id)
         );
+        CREATE TABLE IF NOT EXISTS balance_observation_outbox (
+          server_key TEXT NOT NULL, account_email TEXT NOT NULL, observation_id TEXT NOT NULL,
+          collection_id TEXT NOT NULL, collector_id TEXT NOT NULL, collection_seq INTEGER NOT NULL,
+          payload_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','acked','unsupported','conflict','rejected')),
+          attempts INTEGER NOT NULL DEFAULT 0, fail_streak INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at_ms INTEGER, next_retry_at_ms INTEGER NOT NULL DEFAULT 0,
+          hub_acked_at_ms INTEGER, receiver_database_id TEXT, last_error_code TEXT,
+          PRIMARY KEY(server_key,account_email,observation_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_balance_outbox_due
+        ON balance_observation_outbox(server_key,account_email,state,next_retry_at_ms,created_at_ms);
         """
     )
+    balance_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='balance_observation_outbox'").fetchone()[0]
+    if "'rejected'" not in balance_sql:
+        # SQLite CHECK changes require a table copy; preserve every queued payload atomically.
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            balance_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='balance_observation_outbox'").fetchone()[0]
+            if "'rejected'" not in balance_sql:
+                upgraded_sql = balance_sql.replace("'conflict')", "'conflict','rejected')")
+                if upgraded_sql == balance_sql:
+                    raise RuntimeError('unsupported_balance_outbox_schema')
+                conn.execute(upgraded_sql.replace('balance_observation_outbox', '_balance_observation_outbox_upgrade', 1))
+                conn.execute('INSERT INTO _balance_observation_outbox_upgrade SELECT * FROM balance_observation_outbox')
+                conn.execute('DROP TABLE balance_observation_outbox')
+                conn.execute('ALTER TABLE _balance_observation_outbox_upgrade RENAME TO balance_observation_outbox')
+                conn.execute('CREATE INDEX idx_agent_balance_outbox_due ON balance_observation_outbox(server_key,account_email,state,next_retry_at_ms,created_at_ms)')
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
     scan_columns = {row[1] for row in conn.execute("PRAGMA table_info(txn_scan)")}
     for column in ("pending_cursor", "pending_newest"):
         if column not in scan_columns:
@@ -4394,7 +4427,9 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             return
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
-    acct, workspace = _cycle_collect_account_status(cli)
+    with _balance_collection(server):
+        acct, workspace = _cycle_collect_account_status(cli)
+    _drain_balance_observations(server, token, (acct or {}).get('email'))
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
     # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
@@ -4667,6 +4702,183 @@ def _execute_pending_for_watch_cycle(
         execute_pending(server, token, cli)
 
 
+_balance_context = local()
+_balance_pair_secret = ''
+
+
+@contextlib.contextmanager
+def _balance_collection(server):
+    previous = getattr(_balance_context, 'server', None)
+    _balance_context.server = server
+    try:
+        yield
+    finally:
+        _balance_context.server = previous
+
+
+def _balance_hash(item):
+    import hashlib
+    return hashlib.sha256(json.dumps(item, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':'), allow_nan=False).encode('utf8')).hexdigest()
+
+
+def _balance_cents(value):
+    from decimal import Decimal, ROUND_HALF_UP, localcontext
+    if isinstance(value, bool) or not isinstance(value, (str, float, int)) or len(str(value)) > 80:
+        raise ValueError('invalid_amount')
+    number = Decimal(str(value))
+    if not number.is_finite() or abs(number) > Decimal(9007199254740991)/100:
+        raise ValueError('invalid_amount')
+    with localcontext() as context:
+        context.prec = 100
+        cents = int((number*100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    if abs(cents) > 9007199254740991:
+        raise ValueError('invalid_amount')
+    return cents
+
+
+def _persist_balance_collection(server, email, workspaces, started, observed, cli_version):
+    email = str(email or '').strip().lower()
+    if not email or not server:
+        return None
+    items = []
+    with _outbox_lock, _state_db() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        found = conn.execute("SELECT value FROM meta WHERE key='device_id'").fetchone()
+        collector = found[0] if found else str(uuid.uuid4())
+        conn.execute("INSERT INTO meta(key,value) VALUES('device_id',?) ON CONFLICT DO NOTHING", (collector,))
+        found = conn.execute("SELECT value FROM meta WHERE key='balance_sequence'").fetchone()
+        seq = int(found[0]) + 1 if found else 1
+        conn.execute("INSERT INTO meta(key,value) VALUES('balance_sequence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(seq),))
+        collection = str(uuid.uuid4())
+        for workspace in workspaces:
+            if not isinstance(workspace, dict) or not workspace.get('id'):
+                continue
+            try:
+                cents = _balance_cents(workspace.get('credits'))
+            except (ValueError, ArithmeticError):
+                continue
+            item = dict(observation_id=str(uuid.uuid4()), collection_id=collection, collector_id=collector,
+                        collection_seq=seq, workspace_id=str(workspace['id']), source='workspace_list',
+                        started_at_ms=started, observed_at_ms=observed,
+                        reported_credits=str(workspace['credits']), credits_c=cents, cli_version=cli_version)
+            conn.execute('INSERT INTO balance_observation_outbox(server_key,account_email,observation_id,collection_id,collector_id,collection_seq,payload_json,payload_sha256,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)',
+                         (server.rstrip('/'), email, item['observation_id'], collection, collector, seq,
+                          json.dumps(item, ensure_ascii=False), _balance_hash(item), observed))
+            items.append(item)
+    return {'version': 1, 'observations': items[:100]}
+
+
+def _ack_balance_observations(server, email, receipt, expected=None):
+    try:
+        return _ack_balance_observations_core(server,email,receipt,expected)
+    except Exception:
+        print('[잔액 보고] 저장 확인을 기록하지 못했습니다 — 원문을 유지합니다')
+        return False
+
+
+def _ack_balance_observations_core(server, email, receipt, expected=None):
+    if (not isinstance(receipt, dict) or type(receipt.get('version')) is not int or receipt['version'] != 1
+            or receipt.get('receiver_kind') != 'hub' or not receipt.get('receiver_database_id')):
+        return False
+    email = str(email or '').strip().lower()
+    with _outbox_lock, _state_db() as conn:
+        rows = conn.execute('SELECT * FROM balance_observation_outbox WHERE server_key=? AND account_email=?', (server.rstrip('/'), email)).fetchall()
+        known = {r['observation_id']: r for r in rows}
+        seen, updates = set(), []
+        for group in ('stored', 'conflicts', 'rejected'):
+            if not isinstance(receipt.get(group), list):
+                return False
+            for entry in receipt[group]:
+                if not isinstance(entry, dict):
+                    return False
+                key = entry.get('observation_id')
+                row = known.get(key)
+                if (not row or key in seen or (expected is not None and key not in expected)
+                        or entry.get('payload_sha256') != row['payload_sha256']):
+                    return False
+                if group == 'stored' and type(entry.get('received_at_ms')) is not int:
+                    return False
+                seen.add(key)
+                state = ('acked' if group == 'stored' else 'conflict' if group == 'conflicts'
+                         else 'pending' if entry.get('retryable') is True else 'rejected')
+                code = (None if state == 'acked' else 'observation_conflict' if state == 'conflict'
+                        else str(entry.get('code') or 'observation_rejected')[:128])
+                updates.append((key, state, code))
+        for key, state, code in updates:
+            conn.execute("UPDATE balance_observation_outbox SET state=?,hub_acked_at_ms=?,receiver_database_id=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=? AND state IN ('pending','unsupported')",
+                         (state, int(time.time()*1000) if state == 'acked' else None, receipt['receiver_database_id'],
+                          code, server.rstrip('/'), email, key))
+    return True
+
+
+def _drain_balance_observations(server, token, email):
+    try:
+        return _drain_balance_observations_core(server,token,email)
+    except Exception:
+        print('[잔액 보고] 전달하지 못했습니다 — 원문을 유지하고 다음에 다시 시도합니다')
+        return False
+
+
+def _drain_balance_observations_core(server, token, email):
+    if not email or not os.path.isfile(_agent_state_path()):
+        return
+    email = str(email).strip().lower()
+    now = int(time.time()*1000)
+    with _outbox_lock, _state_db() as conn:
+        args = (server.rstrip('/'), email)
+        gate = conn.execute("SELECT MAX(next_retry_at_ms) FROM balance_observation_outbox WHERE server_key=? AND account_email=? AND state='unsupported'", args).fetchone()[0]
+        if gate and gate > now:
+            return
+        predicate = "server_key=? AND account_email=? AND state IN ('pending','unsupported') AND next_retry_at_ms<=?"
+        recent = conn.execute(f'SELECT * FROM balance_observation_outbox WHERE {predicate} ORDER BY created_at_ms DESC,observation_id LIMIT 50', (*args, now)).fetchall()
+        old = conn.execute(f'SELECT * FROM balance_observation_outbox WHERE {predicate} ORDER BY created_at_ms,observation_id LIMIT 100', (*args, now)).fetchall()
+        rows = list({r['observation_id']: r for r in [*recent, *old]}.values())[:100]
+        if not rows:
+            return
+        items = []
+        selected = []
+        for row in rows:
+            item = json.loads(row['payload_json'])
+            if len(json.dumps({'version':1,'account_email':email,'observations':[*items,item]}).encode()) > 262144:
+                break
+            items.append(item)
+            selected.append(row)
+        rows = selected
+        for row in rows:
+            conn.execute('UPDATE balance_observation_outbox SET attempts=attempts+1,last_attempt_at_ms=? WHERE server_key=? AND account_email=? AND observation_id=?', (now, *args, row['observation_id']))
+    status, receipt = _http('POST', server.rstrip('/')+'/api/ingest/balance-observations', token=token,
+                            body={'version': 1, 'account_email': email, 'observations': items})
+    retry_errors = {}
+    if status == 200 and _ack_balance_observations(server, email, receipt, {r['observation_id'] for r in rows}):
+        acknowledged = {r['observation_id'] for group in ('stored','conflicts') for r in receipt[group]}
+        acknowledged.update(r['observation_id'] for r in receipt['rejected'] if r.get('retryable') is not True)
+        retry_errors = {r['observation_id']: str(r.get('code') or 'observation_rejected')[:128]
+                        for r in receipt['rejected'] if r.get('retryable') is True}
+        rows = [r for r in rows if r['observation_id'] not in acknowledged]
+    unsupported = status in (404,405) or (status == 200 and not isinstance(receipt, dict)) or (status == 200 and receipt.get('version') != 1)
+    error_code = 'unsupported' if unsupported else 'delivery_failed'
+    if status != 200:
+        error_body = receipt
+        if isinstance(error_body, str):
+            try:
+                error_body = json.loads(error_body)
+            except json.JSONDecodeError:
+                error_body = None
+        detail = error_body.get('detail') if isinstance(error_body, dict) else None
+        if (isinstance(detail, dict) and detail.get('retryable') is True
+                and detail.get('code') in ('hub_not_signed_in', 'account_mismatch')):
+            error_code = detail['code']
+    if rows:
+        print(f'[잔액 보고] {len(rows)}건 전달 대기 — 다음에 다시 시도합니다')
+    with _outbox_lock, _state_db() as conn:
+        for row in rows:
+            streak = row['fail_streak']+1
+            conn.execute("UPDATE balance_observation_outbox SET state=?,fail_streak=?,next_retry_at_ms=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=? AND state IN ('pending','unsupported')",
+                         ('unsupported' if unsupported else 'pending', streak, now+(600000 if unsupported else min(3600000,1000*2**min(streak,12))),
+                          retry_errors.get(row['observation_id'], error_code), server.rstrip('/'), email, row['observation_id']))
+
+
 def _collect_account_status(cli: str):
     """CLI 계정 상태 + 워크스페이스 목록 수집 — (acct dict|None, workspace 컨텍스트) 반환.
 
@@ -4676,11 +4888,18 @@ def _collect_account_status(cli: str):
     acct = _cli_json(cli, "account", "status", timeout=60)
     workspace = {"scope": "unknown", "id": None, "name": None}
     if isinstance(acct, dict):
+        acct["cli_version"] = _cached_cli_version(cli)
+        started = int(time.time()*1000)
         ws = _cli_json(cli, "workspace", "list", timeout=60)
+        observed = int(time.time()*1000)
         if isinstance(ws, list):
             acct["workspaces"] = ws
+            try:
+                _persist_balance_collection(getattr(_balance_context, 'server', None), acct.get('email'),
+                                            ws, started, observed, acct.get('cli_version'))
+            except Exception:
+                print('[잔액 보고] 기록을 보존하지 못했습니다 — 저장 공간을 확인하세요')
         workspace = _workspace_context_from_list(ws)
-        acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
         acct["ffmpeg_h264"] = bool(_ffmpeg_h264())  # Kling 영상 변환을 할 수 있는가 — 팀 중 몇 계정에 있는지(안내·통계 전용)
     return acct, workspace
 
@@ -4700,7 +4919,8 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
         # ★주기 보고는 사이클 캐시를 쓰지 않는다(코덱스 P2) — 이 보고의 존재 이유가 '지금'
         # 상태의 최신성이고, 허브 UI 의 워크스페이스 전환은 별도 프로세스라 에이전트 캐시가
         # 감지할 수 없다. fresh 수집이면 600초 주기마다 반드시 실제 상태가 올라간다.
-        acct, _workspace = _collect_account_status(cli)
+        with _balance_collection(server):
+            acct, _workspace = _collect_account_status(cli)
         if not isinstance(acct, dict):
             return False
         status, body = _http(
@@ -4714,6 +4934,7 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
         detail = body.get("detail") if isinstance(body, dict) else body
         print(f"[상태보고] 보류(status={status}): {str(detail)[:200]}")
         return False
+    _drain_balance_observations(server, token, acct.get('email'))
     return True
 
 
@@ -4984,6 +5205,8 @@ def main() -> None:
              "서버로 자동 push 하지 않는다(로컬 허브용: 공유는 '선택 발행'으로만).",
     )
     args = ap.parse_args()
+    global _balance_pair_secret
+    _balance_pair_secret = args.pair_secret or ''
 
     server = args.server.rstrip("/")
     try:
@@ -5093,6 +5316,8 @@ def main() -> None:
                 # 상태가 시작 시점에 박제되므로 주기마다 가볍게 재보고한다(생성물 아님, 메타만).
                 # push 와 무관한 독립 일정(성공=600s, 실패=60s 재시도). no_push(생성 전용)는 기존
                 # 계약대로 서버에 아무것도 올리지 않는다.
+                if not args.no_push:
+                    _drain_balance_observations(server, token, paired_email or cli_email)
                 if not args.no_push and time.monotonic() >= next_status_report:
                     ok = _report_account_status(server, token, cli)
                     next_status_report = time.monotonic() + (

@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { api } from "../src/api";
+import { getConnectionKey, setConnectionKey } from "../src/lib/accountScope";
 
 import {
   formatTelemetryLastSuccess,
@@ -6,6 +11,8 @@ import {
   syncFailedCount,
   syncPendingCount,
   type SyncStatus,
+  useSyncStatus,
+  balanceDeliveryNotices,
 } from "../src/lib/useSyncStatus";
 
 const status = (overrides: Partial<SyncStatus> = {}): SyncStatus => ({
@@ -75,4 +82,42 @@ describe("telemetry sync status", () => {
     expect(syncPendingCount(value)).toBe(5);
     expect(syncFailedCount(value)).toBe(7);
   });
+  it("잔액 전달 대기는 세되 매니징 실패 수에는 섞지 않는다", () => {
+    expect(syncPendingCount(status({pending:2,account_report_pending:3,balance_pending:4}))).toBe(9);
+    expect(syncFailedCount(status({failed:1,balance_failed:2,balance_conflict:1}))).toBe(1);
+  });
+  it("잔액 재시도·옛 서버·내용 불일치를 나누고 오류 코드를 화면에 노출하지 않는다", () => {
+    const notices=balanceDeliveryNotices(status({balance_pending:8,balance_failed:8,balance_unsupported:2,balance_conflict:3,balance_last_error_code:"account_mismatch"}));
+    expect(notices.map((n)=>n.text)).toEqual(["잔액 확인 3건 서버 전달 대기","잔액 확인 2건 서버 업데이트 뒤 전달","잔액 확인 3건 전달 내용을 확인해 주세요"]);
+    expect(notices[0].title).toBe("힉스필드 계정과 허브 로그인 계정이 같은지 확인해 주세요.");
+    expect(JSON.stringify(notices)).not.toContain("account_mismatch");
+    expect(balanceDeliveryNotices(status({balance_pending:2,balance_failed:2,balance_unsupported:2}))).toHaveLength(1);
+    expect(balanceDeliveryNotices(status({balance_pending:1,balance_failed:1,balance_last_error_code:"unexpected_internal_code"}))[0].title).not.toContain("unexpected_internal_code");
+  });
+});
+
+it("서버 문맥이 바뀌면 이전 잔액 전달 상태 응답을 버린다", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);
+  vi.spyOn(document,"visibilityState","get").mockReturnValue("visible");
+  const originalKey=getConnectionKey();
+  let first!: (s:SyncStatus)=>void, second!: (s:SyncStatus)=>void;
+  vi.spyOn(api,"syncStatus").mockReturnValueOnce(new Promise((resolve)=>{ first=resolve; }))
+    .mockReturnValueOnce(new Promise((resolve)=>{ second=resolve; }));
+  const host=document.createElement("div");
+  document.body.appendChild(host);
+  const root=createRoot(host);
+  function View() { const value=useSyncStatus(); return createElement("span",null,value?.balance_pending??"—"); }
+  try {
+    setConnectionKey("balance-server-a");
+    await act(async()=>root.render(createElement(View)));
+    setConnectionKey("balance-server-b");
+    await act(async()=>root.render(createElement(View)));
+    expect(host.textContent).toBe("—");
+    await act(async()=>second(status({balance_pending:4})));
+    await act(async()=>first(status({balance_pending:99})));
+    expect(host.textContent).toBe("4");
+  } finally {
+    act(()=>root.unmount()); host.remove(); setConnectionKey(originalKey);
+    vi.restoreAllMocks(); vi.unstubAllGlobals();
+  }
 });

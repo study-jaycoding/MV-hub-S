@@ -6,26 +6,31 @@ import { useHandleRelease } from "../../../lib/useDragEndReset";
 import { useEffect, useRef, useState } from "react";
 import { acceptDecimal, formatDecimal } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
+import { formatBalanceTime, timestampMs } from "../../../lib/format";
+import { useT } from "../../../lib/i18n";
 import { manageApi } from "../../../lib/manageApi";
 import { paginateUsageItems, USAGE_PAGE_SIZES } from "../../../lib/usagePagination";
 import { UsagePagination } from "../WorkspaceUsageDashboard";
-import { periodSummary, STATUS_LABEL, type ConsoleOverview, type ConsoleStatus, type ConsoleSub } from "../../../lib/workspaceConsole";
+import { balanceUnconfirmedCount, periodSummary, STATUS_LABEL, type ConsoleOverview, type ConsoleStatus, type ConsoleSub } from "../../../lib/workspaceConsole";
 
 export function PoolCard({ data, canEdit, onChanged }: { data: ConsoleOverview; canEdit: boolean; onChanged: () => void }) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const pool = data.main?.balance ?? null;
   const { allocated, spent, unused, source, base, base_day: baseDay } = data.allocation;
   // 막대 = 할당된 크레딧만(사용 | 미사용). 할당 가능은 범례에만 — 힉스필드 'Allocated usage' 와 같은 모양.
-  const pct = (v: number) => (allocated > 0 ? `${(Math.max(v, 0) / allocated) * 100}%` : "0%");
+  const complete = data.allocation.complete !== false && allocated != null && spent != null;
+  const unconfirmed = balanceUnconfirmedCount(data.totals);
+  const pct = (v: number | null) => (allocated != null && allocated > 0 && v != null ? `${(Math.max(v, 0) / allocated) * 100}%` : "0%");
   const allocTile = (
     <>
-      <strong>{formatCredits(allocated)}</strong>
+      <strong>{complete ? formatCredits(allocated) : "—"}</strong>
       <span>할당된 크레딧 {source === "estimate" ? <em>추정 · 눌러서 힉스필드 값 입력</em> : <em className="ok">기준 {baseDay?.slice(5)} {formatCredits(base)}</em>}</span>
     </>
   );
   return (
     <div className="usage-card wc-pool">
-      <div className="wc-pool-head">엔터프라이즈 크레딧 풀 <span>잔액 {data.main?.balance_seen_at?.slice(5, 16) ?? "보고 없음"} 보고값</span></div>
+      <div className="wc-pool-head">엔터프라이즈 크레딧 풀 <span>{t("잔액은 {time}").replace("{time}", formatBalanceTime(data.main?.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: data.main?.balance_seen_at ? timestampMs(data.main.balance_seen_at) : null }))}</span></div>
       <div className="wc-pool-tiles">
         <div><strong>{formatCredits(pool)}</strong><span>크레딧 풀</span></div>
         {canEdit ? <button type="button" className="wc-pool-edit" onClick={() => setEditing(true)} title="힉스필드의 할당된 크레딧 입력">{allocTile}</button> : <div>{allocTile}</div>}
@@ -33,12 +38,12 @@ export function PoolCard({ data, canEdit, onChanged }: { data: ConsoleOverview; 
       </div>
       <div className="wc-pool-usage">
         <div className="wc-pool-title">할당 사용 현황</div>
-        <div className="wc-pool-bar" aria-hidden="true">
+        {complete ? <div className="wc-pool-bar" aria-hidden="true">
           <i className="spent" style={{ width: pct(spent) }} /><i className="unused" style={{ width: pct(unused) }} />
-        </div>
+        </div> : <div className="wc-note">{t("계산할 수 없음")}</div>}
         <div className="wc-pool-legend">
-          <span><i className="spent" /><b>{formatCredits(spent)}</b> 사용</span>
-          <span><i className="unused" /><b>{formatCredits(unused)}</b> 미사용(서브 잔액)</span>
+          <span><i className="spent" /><b>{complete ? formatCredits(spent) : "—"}</b> 사용</span>
+          <span><i className="unused" /><b>{formatCredits(unused)}</b> 미사용(서브 잔액) {unconfirmed > 0 ? <span className="wc-chip" title={t("금액 미확인 {unknown}곳 · 확인 시각 미상 {legacy}곳 · 오래된 확인 {stale}곳").replace("{unknown}", String(data.totals.unknown_workspace_count ?? 0)).replace("{legacy}", String(data.totals.legacy_workspace_count ?? 0)).replace("{stale}", String(data.totals.stale_workspace_count ?? 0))}>{t("확인 안 된 서브 {count}곳").replace("{count}", String(unconfirmed))}</span> : null}</span>
           <span><i className="avail" /><b>{formatCredits(pool)}</b> 할당 가능</span>
         </div>
         <div className="wc-note">{source === "baseline"
@@ -207,7 +212,7 @@ export function SubTable({ data, canEdit, busy, onSelect, onMove, onCredit, onFo
                 {canEdit ? <button type="button" className="wc-credit-plus" disabled={busy} onClick={() => onCredit(s)} aria-label={`${s.name} 크레딧`}>
                   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
                 </button> : null}
-                <b className={s.balance != null && s.balance < 0 ? "mtable-over" : ""}>{formatCredits(s.balance)}</b>
+                <b className={s.balance != null && s.balance < 0 ? "mtable-over" : ""} title={formatBalanceTime(s.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: s.balance_seen_at ? timestampMs(s.balance_seen_at) : null })}>{formatCredits(s.balance)}</b>
                 <span className="wc-alloc"> / {s.monthly_topup ? formatCredits(s.monthly_topup) : "없음"}</span>
               </td>
               <td>{!s.recurring_auto ? <span className="wc-chip">수동</span> : s.monthly_topup && s.next_topup_day ? <><span className="wc-next">Next</span>{s.next_topup_day}</> : "—"}</td>

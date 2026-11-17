@@ -119,3 +119,41 @@ def test_mutation_origin_accepts_only_bounded_safe_identifiers():
     assert parse_mutation_origin(None, "mutation_b-456") is None
     assert parse_mutation_origin("short", "mutation_b-456") is None
     assert parse_mutation_origin("client_a-123", "../invalid") is None
+
+
+def _balance_report_domains(monkeypatch, matched):
+    from types import SimpleNamespace
+    from app.models import IngestIn, IngestOut
+    from app.routers import ingest
+    from app.repo import manage
+    account=dict(email='artist@example.test',creator_uid='user_artist')
+    request=SimpleNamespace(state=SimpleNamespace())
+    monkeypatch.setattr(ingest,'MANAGE_ENABLED',True)
+    monkeypatch.setattr(ingest,'_agent_write_acc',lambda _:account)
+    monkeypatch.setattr(ingest._proxy,'proxying',lambda:False)
+    def core(*args,notes,**kwargs):
+        notes.update(status_changed=False,identity_changed=False)
+        return IngestOut(inserted=0,updated=0,unchanged=0,skipped=0,errors=0,linked_uid=account['creator_uid'])
+    monkeypatch.setattr(ingest,'_ingest_core',core)
+    calls=[]
+    def transactions(*args):
+        calls.append(True)
+        if matched is None:
+            raise RuntimeError('result not known')
+        return dict(stored=0,rejected=0,inserted=0,matched=matched)
+    monkeypatch.setattr(manage,'record_transactions',transactions)
+    ingest.ingest(IngestIn(jobs=[],account_status=dict(email=account['email'])),request)
+    assert calls
+    return without_unchanged_library(notification_domains('POST','/api/ingest',200),getattr(request.state,'library_unchanged',False))
+
+
+def test_balance_metadata_only_report_does_not_signal_library_change(monkeypatch):
+    assert DOMAIN_LIBRARY not in _balance_report_domains(monkeypatch,0)
+
+
+def test_transaction_match_keeps_library_change_signal(monkeypatch):
+    assert DOMAIN_LIBRARY in _balance_report_domains(monkeypatch,1)
+
+
+def test_unknown_transaction_result_keeps_library_change_signal(monkeypatch):
+    assert DOMAIN_LIBRARY in _balance_report_domains(monkeypatch,None)

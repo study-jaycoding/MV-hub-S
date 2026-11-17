@@ -4,6 +4,10 @@ import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCredits } from "../../../lib/formatCredits";
+import { formatBalanceTime, timestampMs } from "../../../lib/format";
+import { useT } from "../../../lib/i18n";
+import { getAccountNamespace, getConnectionKey } from "../../../lib/accountScope";
+import { getAuthToken } from "../../../lib/http";
 import { unknownUsageLabel } from "../../../lib/creditUsage";
 import { manageApi } from "../../../lib/manageApi";
 import {
@@ -263,7 +267,7 @@ export function CreditDialog({ name, sub, today, onClose, onSave, onAdd }: {
   );
 }
 
-export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, conflict, onChanged, reloadSignal = 0 }: {
+export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, conflict, onChanged, reloadSignal = 0, contextKey }: {
   workspaceId: string;
   name: string;
   tier: "main" | "sub";
@@ -273,7 +277,9 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
   conflict: Conflict;
   onChanged: () => void;
   reloadSignal?: number; // 다른 관리자의 변경·30초 안전망 — 명단·그룹·역할을 다시 읽는다(2026-10-03 점검 L3-5)
+  contextKey?: string;
 }) {
+  const t = useT();
   const [pane, setPane] = useState<Pane>("people");
   const [view, setView] = useState<CreditPlanView | null>(null);
   const [settings, setSettings] = useState<CreditPlanSettings | null>(null);
@@ -290,18 +296,33 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
   const [projectId, setProjectId] = useState("");
   const [memberQuery, setMemberQuery] = useState("");
   const [memberFilters, setMemberFilters] = useState<ChipFilters>(emptyChipFilters);
+  const requestSeq = useRef(0);
+  const scopeKey = JSON.stringify([workspaceId, canEdit, contextKey]);
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
 
   const load = useCallback(async () => {
+    const request = ++requestSeq.current;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const current = () => scopeRef.current === scopeKey && request === requestSeq.current && account === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken();
     try {
       const [v, s] = await Promise.all([
         manageApi.creditPlan(workspaceId),
         canEdit ? manageApi.creditPlanSettings(workspaceId) : Promise.resolve(null),
       ]);
+      if (!current()) return;
       setView(v); setSettings(s); setError("");
     } catch (reason) {
+      if (!current()) return;
       setError(`불러오지 못했습니다. ${errorText(reason)}`);
     }
-  }, [workspaceId, canEdit]);
+  }, [workspaceId, canEdit, contextKey, scopeKey]);
+  useEffect(() => {
+    setView(null); setSettings(null); setRoleTable(null); setError("");
+    setEditor(null); setCreditOpen(null); setAddOpen(null); setNotice("");
+    setBusy(false);
+    return () => { requestSeq.current += 1; rolesSeq.current += 1; };
+  }, [workspaceId, canEdit, contextKey]);
   useEffect(() => { void load(); }, [load, reloadSignal]);
   // 마지막에 떠난 조회의 답만 쓴다 — 자동 재조회(reloadSignal)가 저장보다 먼저 떠나 뒤에 도착하면 방금 저장한 역할을 옛 명단으로 덮었다
   //  (조작 규칙 52, Codex 코드 리뷰). 실패도 그 조회가 마지막일 때만 반영한다.
@@ -311,56 +332,68 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
   const [rolesStale, setRolesStale] = useState(false);
   const loadRoles = useCallback(async () => {
     const mine = ++rolesSeq.current;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const current = () => scopeRef.current === scopeKey && mine === rolesSeq.current && account === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken();
     setRolesStale(true);
     try {
       const table = await manageApi.memberTable(workspaceId);
-      if (mine !== rolesSeq.current) return;
+      if (!current()) return;
       setRoleTable(table.caps.project_roles ? table : null);
       setProjectId((cur) => (table.projects.some((p) => p.id === cur) ? cur : table.projects[0]?.id ?? ""));
-    } catch { if (mine === rolesSeq.current) setRoleTable(null); } finally {
-      if (mine === rolesSeq.current) setRolesStale(false);
+    } catch { if (current()) setRoleTable(null); } finally {
+      if (current()) setRolesStale(false);
     }
-  }, [workspaceId]);
+  }, [workspaceId, contextKey, scopeKey]);
   useEffect(() => { if (canEdit) void loadRoles(); }, [canEdit, loadRoles, reloadSignal]);
   const roleRowOf = (email: string) => roleTable?.rows.find((r) => r.email.toLowerCase() === email.toLowerCase());
   const saveRoles = async (name: string, uid: string, next: string[]) => {
     const project = roleTable?.projects.find((p) => p.id === projectId);
     if (!project) return;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const current = () => scopeRef.current === scopeKey && account === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken();
     setBusy(true); setNotice("");
     try {
       if (next.length) await api.setProjectRoles(project.id, uid, next);
       else await api.removeProjectMember(project.id, uid);
-      setNotice(`저장됨 · ${project.name} 역할 (${name})`);
+      if (current()) setNotice(`저장됨 · ${project.name} 역할 (${name})`);
     } catch (reason) {
-      setNotice(`역할을 저장하지 못했습니다. ${errorText(reason)}`);
+      if (current()) setNotice(`역할을 저장하지 못했습니다. ${errorText(reason)}`);
     } finally {
-      setBusy(false);
-      await loadRoles(); // 다시 읽는 동안 역할 알약은 rolesStale 이 잠근다(조작 규칙 52) — 옛 배열로 다음 저장이 나가지 않게
+      if (current()) {
+        setBusy(false);
+        await loadRoles(); // 다시 읽는 동안 역할 알약은 rolesStale 이 잠근다(조작 규칙 52) — 옛 배열로 다음 저장이 나가지 않게
+      }
     }
   };
 
   /** 저장 한 건 — base(편집 창이면 연 순간의 settings, 즉시 동작이면 지금 settings)를 기준으로 보내고(409 면 병합 창), 결과로 화면을 갱신한다. */
   const save = async (label: string, body: (s: CreditPlanSettings) => CreditPlanSaveBody, base = settings) => {
     if (!base) return;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const current = () => scopeRef.current === scopeKey && account === getAccountNamespace() && connection === getConnectionKey() && token === getAuthToken();
     setBusy(true); setNotice("");
     try {
       const saved = await conflict.saveCredit(workspaceId, base, body(base));
+      if (!current()) return;
       setSettings(saved);
       setNotice(`저장됨 · ${label}`);
       onChanged();
       // 저장은 끝났다 — 뒤의 다시 읽기가 실패한 것은 저장 실패가 아니다(조작 규칙 41·50). 같이 묶어 '저장하지 못했습니다'로 알리면 창이 열린
       //  채 남고, 거기서 다시 저장한 추가 크레딧이 새 id 로 한 번 더 기록된다(병합 창이 둘 다 살린다).
       try {
-        setView(await manageApi.creditPlan(workspaceId));
+        const next = await manageApi.creditPlan(workspaceId);
+        if (current()) setView(next);
       } catch (reason) {
+        if (!current()) return;
         setNotice(`저장됨 · ${label} — 화면을 다시 읽지 못했습니다(새로 고치면 맞습니다). ${errorText(reason)}`);
       }
     } catch (reason) {
+      if (!current()) return;
       if (!(reason instanceof ManageEditCancelled)) setNotice(`저장하지 못했습니다. ${errorText(reason)}`);
       await load();
       throw reason;
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
   const quiet = (p: Promise<unknown>) => { void p.catch(() => {}); };
@@ -405,7 +438,7 @@ export function ConsoleSubView({ workspaceId, name, tier, sub, today, canEdit, c
 
       <div className="usage-card credit-card">
         <div className="credit-pool-grid">
-          <div><span>잔액(보고)</span><strong>{formatCredits(pool?.balance)}</strong><em>{pool?.balance_seen_at?.slice(5, 16) ?? "보고 없음"}</em></div>
+          <div><span>잔액</span><strong>{formatCredits(pool?.balance)}</strong><em>{t("잔액은 {time}").replace("{time}", formatBalanceTime(pool?.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: pool?.balance_seen_at ? timestampMs(pool.balance_seen_at) : null }))}</em></div>
           <div><span>크레딧 / {unit}</span><strong>{sub?.monthly_topup ? formatCredits(sub.monthly_topup) : sub ? "없음" : formatCredits(pool?.monthly_topup)}</strong><em>{sub ? scheduleLabel(sub) : ""}</em></div>
           <div><span>추가 크레딧(이번 주기)</span><strong>{formatCredits(sub?.topups_cycle.credits ?? pool?.topups_month.credits ?? 0)}</strong><em>{sub?.topups_cycle.count ?? pool?.topups_month.count ?? 0}건</em></div>
           <div><span>이번 주기 사용</span><strong>{formatCredits(sub?.used_cycle ?? pool?.used_month)}</strong><UsageBasis value={sub?.cycle_usage ?? pool?.month_usage} /><em>{cycleText}{(sub?.unknown_cycle ?? pool?.unknown_month) ? ` · ${unknownUsageLabel(sub?.cycle_usage ?? pool?.month_usage)} ${sub?.unknown_cycle ?? pool?.unknown_month}건` : ""}</em></div>

@@ -94,6 +94,7 @@ from .routers import (
     generation,
     generation_views,
     ingest,
+    hf_balance,
     library,
     members,
     mcp,
@@ -288,6 +289,7 @@ async def _application_lifespan(app: FastAPI):
     remote_realtime_started = False
     resolve_selection_started = False
     telemetry_drain_scheduled = False
+    balance_retry_task = None
     primary_error: BaseException | None = None
     cleanup_error: BaseException | None = None
 
@@ -608,6 +610,10 @@ async def _application_lifespan(app: FastAPI):
 
             schedule_telemetry_drain()
             telemetry_drain_scheduled = True
+            from .services.hf_balance_delivery import enabled as balance_delivery_enabled
+            if balance_delivery_enabled():
+                from .routers._telemetry import balance_retry_loop
+                balance_retry_task = asyncio.create_task(balance_retry_loop(), name='balance-retry')
         if _METRICS_LOG_INTERVAL > 0:
             runtime_report_task = asyncio.create_task(
                 _runtime_report_loop(_METRICS_LOG_INTERVAL),
@@ -715,6 +721,8 @@ async def _application_lifespan(app: FastAPI):
                 await stop_history_imports()
 
             await _attempt_async_cleanup(_stop_history_imports)
+        if balance_retry_task is not None:
+            await _attempt_async_cleanup(lambda: _cancel_background_task(balance_retry_task))
         if telemetry_drain_scheduled or (
             startup_complete and (MANAGE_ENABLED or _proxy.is_worker_hub())
         ):
@@ -819,6 +827,7 @@ app.include_router(notifications.router)
 app.include_router(update_notices.router)
 app.include_router(backup_replica.router)  # 서버 백업 복사 위치(관리자 창 · 공유 서버 탭)
 app.include_router(ingest.router)
+app.include_router(hf_balance.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)
 app.include_router(release_update.router)

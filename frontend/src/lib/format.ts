@@ -1,4 +1,47 @@
 // 공용 포맷 헬퍼 — 여러 컴포넌트에 똑같이 복붙돼 있던 것을 한곳으로 통합.
+import { t } from "./i18n";
+
+type BalanceTime = number | string | null | undefined;
+type BalanceClock = { observed_at_ms?: number | null; received_at_ms?: number | null; basis?: string; time_quality?: string };
+
+function balanceTimestamp(value: BalanceTime): number {
+  return typeof value === "number" ? value : value ? timestampMs(value) : NaN;
+}
+
+export function formatBalanceAbsolute(value: BalanceTime): string {
+  const ms = balanceTimestamp(value);
+  if (!Number.isFinite(ms)) return "—";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(ms);
+  const part = (kind: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === kind)?.value;
+  return `${part("month")}/${part("day")} ${part("hour")}:${part("minute")}`;
+}
+
+export function formatBalanceTime(value: BalanceTime | BalanceClock, now = Date.now()): string {
+  const meta = value != null && typeof value === "object" ? value : null;
+  const received = meta?.basis === "legacy_snapshot";
+  const ms = balanceTimestamp(meta ? received ? meta.received_at_ms : meta.observed_at_ms : value as BalanceTime);
+  if (meta?.basis === "conflict" || meta?.time_quality === "conflict") return t("같은 시각 값이 다름");
+  if (meta?.time_quality && ["future", "reversed"].includes(meta.time_quality)) return t("확인 시각 불확실");
+  if (!Number.isFinite(ms)) return received ? t("확인 시각 미상") : t("잔액 확인 없음");
+  const relative = balanceRelative(ms, now);
+  return received ? t("확인 시각 미상 · {relative} 받음").replace("{relative}", relative)
+    : t("{time} 확인 ({relative})").replace("{time}", formatBalanceAbsolute(ms)).replace("{relative}", relative);
+}
+
+function balanceRelative(ms: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - ms) / 60000);
+  return minutes < 60 ? t("{count}분 전").replace("{count}", String(minutes))
+    : minutes < 1440 ? t("{count}시간 전").replace("{count}", String(Math.floor(minutes / 60)))
+    : t("{count}일 전").replace("{count}", String(Math.floor(minutes / 1440)));
+}
+
+export function formatReportedAt(value: BalanceTime, now = Date.now()): string {
+  const ms = balanceTimestamp(value);
+  return Number.isFinite(ms) ? t("마지막 보고 {time} ({relative})")
+    .replace("{time}", formatBalanceAbsolute(ms)).replace("{relative}", balanceRelative(ms, now)) : "—";
+}
 
 // SQLite datetime('now') 형태("YYYY-MM-DD HH:MM:SS", UTC)를 한글 로캘 월/일 시:분으로.
 export function timestampMs(s: string): number {

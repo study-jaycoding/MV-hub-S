@@ -28,12 +28,12 @@ function quota(over: Partial<MyCreditQuota>): MyCreditQuota {
   };
 }
 
-function serve(myQuota: MyCreditQuota | null) {
+function serve(myQuota: MyCreditQuota | null, workspaces = WORKSPACES) {
   vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
     const url = String(input);
     const body = url.includes("/my-quota") ? myQuota
-      : url.endsWith("/api/workspaces") ? WORKSPACES
-      : url.endsWith("/api/account/hf") ? { reported: true, credits: 40934.34, workspaces: WORKSPACES } // 공유 서버 로그인 = 에이전트 보고값
+      : url.endsWith("/api/workspaces") ? workspaces
+      : url.endsWith("/api/account/hf") ? { reported: true, credits: 40934.34, workspaces } // 공유 서버 로그인 = 에이전트 보고값
       : undefined;
     if (body === undefined || body === null) return Promise.reject(new Error("offline"));
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -42,10 +42,10 @@ function serve(myQuota: MyCreditQuota | null) {
 
 const ACCOUNT = { email: "member-a@example.com", name: "팀원 A", status: "approved", creator_uid: "u1", created_at: "2026-11-01", approved_at: "2026-11-01" };
 
-async function open(context: WorkspaceContext, signedIn = false) {
+async function open(context: WorkspaceContext, signedIn = false, localHub = false) {
   await act(async () => root.render(
     <AccountMenu provider={null} onProviderUpdated={noop} onWorkspaceSwitched={noop} onWorkspaceContextChange={noop}
-      workspaceContext={context} account={signedIn ? ACCOUNT : undefined} />,
+      workspaceContext={context} account={signedIn ? ACCOUNT : undefined} localHub={localHub} />,
   ));
   await act(async () => { host.querySelector<HTMLButtonElement>(".acct-avatar-btn")!.click(); });
   for (let i = 0; i < 4; i++) await act(async () => {}); // 목록·내 몫 조회
@@ -73,6 +73,7 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("한도 있는 그룹: Credits = 워크스페이스 잔액 + 점, Limit = 남은 몫 / 내 한도, User group = 그룹 이름", async () => {
@@ -122,6 +123,56 @@ it("공유 서버 로그인(에이전트 보고값)에서도 두 칸이 그대�
   expect(m.limitText).toBe("∞");
   expect(m.groupText).toBe("Pipeline TD");
   expect(document.querySelector(".acct-pop")!.textContent).not.toContain("에이전트 보고값");
+});
+
+it("잔액 확인 전달 안내는 매니징 실패 경고와 분리하고 옛 서버·내용 불일치를 구별한다", async () => {
+  serve(null);
+  const fetch=globalThis.fetch;
+  vi.stubGlobal("fetch", (input:RequestInfo|URL,init?:RequestInit) => String(input).endsWith("/api/sync-status")
+    ? Promise.resolve(new Response(JSON.stringify({pending:0,failed:0,account_report_pending:0,account_report_failed:0,
+      balance_pending:8,balance_failed:8,balance_unsupported:2,balance_conflict:3,balance_last_error_code:"hub_not_signed_in"}),{status:200}))
+    : fetch(input,init));
+  await open(TEAM,false,true);
+  const pop=document.querySelector(".acct-pop")!;
+  expect(pop.textContent).not.toContain("매니징 동기화");
+  expect(pop.textContent).toContain("잔액 확인 3건 서버 전달 대기");
+  expect(pop.textContent).toContain("잔액 확인 2건 서버 업데이트 뒤 전달");
+  expect(pop.textContent).toContain("잔액 확인 3건 전달 내용을 확인해 주세요");
+  const notice=[...pop.querySelectorAll<HTMLElement>(".acct-sync-warn")].find((n)=>n.textContent==="잔액 확인 3건 서버 전달 대기")!;
+  expect(notice.title).toBe("공유 서버에 로그인하면 다시 전달합니다.");
+  expect(pop.innerHTML).not.toContain("hub_not_signed_in");
+});
+
+it("공유 서버 Credits 숫자에 공통 잔액의 KST 확인 시각을 붙이고 Usage 단추는 유지한다", async () => {
+  const at = Date.parse("2026-11-17T08:41:00Z");
+  vi.spyOn(Date,"now").mockReturnValue(at+180000);
+  serve(quota({ source: "unlimited", basis: "api", pool_total: 60000 }),
+    WORKSPACES.map((w) => ({ ...w, balance_meta: { basis: "observed", credits_c: 12345, observed_at_ms: at, time_quality: "reported" } })));
+  const m = await open(TEAM,true);
+  expect(m.credits!.querySelector<HTMLElement>(".acct-credits-left")!.title).toBe("11/17 17:41 확인 (3분 전)");
+  expect(m.creditsText).toContain("123.45 left");
+  expect(m.usage).not.toBeNull();
+});
+
+it.each(["account","workspace"])("이전 %s의 늦은 잔액 응답을 버린다", async (change) => {
+  let finish!: (value: Response) => void;
+  const pending = new Promise<Response>((resolve) => { finish=resolve; });
+  let calls=0;
+  const response = (credits: number) => new Response(JSON.stringify({reported:true,workspaces:[
+    {...WORKSPACES[0],id:change==="workspace"?"ws2":"ws1",credits},
+  ]}),{status:200,headers:{"Content-Type":"application/json"}});
+  vi.stubGlobal("fetch", (input: RequestInfo|URL) => String(input).endsWith("/api/account/hf")
+    ? ++calls===1 ? pending : Promise.resolve(response(222))
+    : Promise.reject(new Error("offline")));
+  const render = (next: boolean) => root.render(<AccountMenu provider={null} account={next&&change==="account"?{...ACCOUNT,email:"other@example.test"}:ACCOUNT}
+    onProviderUpdated={noop} onWorkspaceSwitched={noop} onWorkspaceContextChange={noop}
+    workspaceContext={next&&change==="workspace"?{...TEAM,id:"ws2"}:TEAM} />);
+  await act(async () => render(false));
+  await act(async () => render(true));
+  await act(async () => { finish(response(111)); });
+  await act(async () => { host.querySelector<HTMLButtonElement>(".acct-avatar-btn")!.click(); });
+  expect(document.querySelector(".acct-credits-left")!.textContent).toContain("222 left");
+  expect(document.querySelector(".acct-credits-left")!.textContent).not.toContain("111");
 });
 
 it("팀 공간이 아니면 Credits 칸만 — Limit·User group 칸이 없다", async () => {

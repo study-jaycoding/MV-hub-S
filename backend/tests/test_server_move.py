@@ -792,8 +792,11 @@ def test_restore_refuses_a_b1_set_with_a_transfer_in_flight(tmp_path, monkeypatc
 
 def test_server_restore_pauses_org_collection_and_preserves_history(tmp_path, monkeypatch):
     from app.db_hf_org_usage import migrate
+    from hf_balance_fixtures import seed_balance
     sm = _module()
     package = _make_package(tmp_path / "package")
+    with sqlite3.connect(package['content']) as conn:
+        item=seed_balance(conn)
     with sqlite3.connect(package["manage"]) as conn:
         migrate(conn)
         conn.execute("UPDATE hf_org_usage_config SET revision=7,enabled=1,encrypted_key='fake-cipher',key_verified_revision=7")
@@ -807,3 +810,6 @@ def test_server_restore_pauses_org_collection_and_preserves_history(tmp_path, mo
         assert conn.execute("SELECT revision,enabled,restore_paused,key_verified_revision FROM hf_org_usage_config").fetchone() == (8,0,1,None)
         assert conn.execute("SELECT lease_owner,lease_fence,io_owner,io_until_ms FROM hf_org_usage_collector").fetchone() == (None,5,None,0)
         assert conn.execute("SELECT COUNT(*) FROM hf_org_identity_link").fetchone()[0] == 1
+    with sqlite3.connect(result['targets']['content']) as conn:
+        assert conn.execute('SELECT observation_id,observed_at_ms FROM hf_balance_obs').fetchone()==(item['observation_id'],item['observed_at_ms'])
+        assert conn.execute('SELECT state FROM hf_balance_outbox').fetchone()[0]=='pending'

@@ -1,7 +1,12 @@
 import { passesChipFilters } from "../src/components/manage/console/ConsoleFilterBar";
 import { describe, expect, it } from "vitest";
 import type { CreditPlanSettings } from "../src/lib/creditPlan";
-import { consoleLimitView, creditDialogSub, EMAIL_RE, periodSummary, recurringPlanBody, scheduleLabel, topupAddBody, topupPatchBody } from "../src/lib/workspaceConsole";
+import { balanceUnconfirmedCount, consoleLimitView, creditDialogSub, EMAIL_RE, periodSummary, recurringPlanBody, scheduleLabel, topupAddBody, topupPatchBody } from "../src/lib/workspaceConsole";
+
+it("금액 없음·시각 미상·오래된 확인을 빠짐없이 세고 구서버 빈 값은 0이다", () => {
+  expect(balanceUnconfirmedCount({ unknown_workspace_count: 2, legacy_workspace_count: 1, stale_workspace_count: 3 })).toBe(6);
+  expect(balanceUnconfirmedCount()).toBe(0);
+});
 
 const settings = {
   workspace_id: "a",
