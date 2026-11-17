@@ -47,7 +47,7 @@
 | `backend/app/routers/assets.py` | `project_tree` | `thumbs.prewarm_asset_thumbs` |
 | `backend/app/routers/hf_balance.py` | `receive_observations` | `manager.broadcast` |
 | `backend/app/routers/ingest.py` | `ingest_account_report` | `manager.broadcast` |
-| `backend/app/routers/ingest.py` | `ingest` | `manager.broadcast` ×2 |
+| `backend/app/routers/ingest.py` | `ingest` | `manager.broadcast` |
 | `backend/app/routers/library.py` | `_schedule_remote_thumb_prewarm` | `thumbs.prewarm_remote_thumbs` |
 | `backend/app/routers/library.py` | `_stamped_download` | `lambda: tmp.unlink(missing_ok=True)` |
 | `backend/app/routers/library.py` | `download_media` | `lambda: tmp.unlink(missing_ok=True)` |
