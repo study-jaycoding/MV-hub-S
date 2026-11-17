@@ -31,6 +31,11 @@ export function usageBasisText(value: UsageBasis | null | undefined, t: (text: s
   return `${t("MV 생성 기록 기준")}${value?.basis_reason ? ` · ${usageReason(value.basis_reason, t)}` : ""}`;
 }
 
+/** 주기 사용 옆 미확인 건수 앞말 — API 기준이면 실제로 합계에 안 든 기록, 그 밖은 옛 '미상'. */
+export function unknownUsageLabel(value: UsageBasis | null | undefined): string {
+  return value?.basis === "api" ? "합계에 안 든 기록" : "미상";
+}
+
 export function usagePeriodText(value: UsageBasis | null | undefined): string {
   if (value?.period_start_ms == null || value.period_end_ms == null) return "";
   const day = (ms: number) => new Date(ms + 9 * 3_600_000).toISOString().slice(0, 10);

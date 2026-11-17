@@ -10,7 +10,7 @@ import { fillReorder, groupAssignBody, groupColorBody, groupDeleteBody, groupEdi
 import { recurringEditBody } from "../src/lib/workspaceConsole";
 import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
 import { creditAccessors } from "../src/lib/memberTable";
-import { usagePeriodText, usageBasisText } from "../src/lib/creditUsage";
+import { unknownUsageLabel, usagePeriodText, usageBasisText } from "../src/lib/creditUsage";
 
 const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(), setPlanning: vi.fn(), members: vi.fn(), setProjectRoles: vi.fn(), removeProjectMember: vi.fn(), models: vi.fn(),
   consoleSetStatus: vi.fn(), getPlanning: vi.fn(), updateProject: vi.fn(), projects: vi.fn(), reorderProjects: vi.fn(), projectFolder: vi.fn(), setProjectFolder: vi.fn() }));
@@ -1551,4 +1551,8 @@ it("메인 합본은 출처 없는 구서버 부분을 API로 올리지 않고 �
   expect(person.used?.basis).toBe("mixed");
   expect(person.used?.fallback_count).toBe(1);
   expect(person.used?.components).toHaveLength(2);
+});
+
+it.each([["api", "합계에 안 든 기록"], ["facts", "미상"], ["mixed", "미상"], [undefined, "미상"]] as const)("주기 사용 미확인 건수 앞말 — %s 기준이면 '%s'", (basis, label) => {
+  expect(unknownUsageLabel(basis ? { basis } : undefined)).toBe(label);
 });

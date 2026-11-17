@@ -33,6 +33,7 @@ import {
 } from "../../lib/creditPlan";
 import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
+import { unknownUsageLabel } from "../../lib/creditUsage";
 import { errorDetail, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { holdUnload } from "../../lib/unloadGuard";
 import { useModalFocus } from "../../lib/keyGate";
@@ -2049,7 +2050,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                 </div>
               ) : null}
               {consoleCredit?.used_cycle !== undefined ? (
-                <div><span>이번 주기 사용{consoleCredit.unknown_cycle ? ` · ${consoleCredit.cycle_usage?.basis === "api" ? "합계에 안 든 기록" : "미상"} ${consoleCredit.unknown_cycle}건` : ""}</span><strong>{credits(consoleCredit.used_cycle)}</strong><UsageBasis value={consoleCredit.cycle_usage} /></div>
+                <div><span>이번 주기 사용{consoleCredit.unknown_cycle ? ` · ${unknownUsageLabel(consoleCredit.cycle_usage)} ${consoleCredit.unknown_cycle}건` : ""}</span><strong>{credits(consoleCredit.used_cycle)}</strong><UsageBasis value={consoleCredit.cycle_usage} /></div>
               ) : null}
               {consoleCredit && consoleCredit.next_topup_day !== undefined ? (
                 <div><span>Next</span><strong>{consoleCredit.auto && consoleCredit.next_topup_day ? consoleCredit.next_topup_day : "—"}</strong></div>

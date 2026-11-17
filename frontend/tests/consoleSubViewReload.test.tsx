@@ -41,6 +41,13 @@ const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => {
 const render = async (signal: number, sub?: never) => { await act(async () => { root.render(<Host signal={signal} sub={sub} />); }); await settle(); };
 const peopleRows = () => [...host.querySelectorAll(".usage-table tbody tr")].filter((tr) => tr.textContent?.includes("@"));
 
+it.each([["api", "합계에 안 든 기록 2건"], ["facts", "미상 2건"]] as const)("크레딧 탭 주기 사용의 미확인 건수 앞말이 %s 기준을 따른다", async (basis, text) => {
+  await render(0, { ...(SUB as object), used_cycle: 10, unknown_cycle: 2, cycle_usage: { basis } } as never);
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((b) => b.textContent === "크레딧")!.click(); });
+  const cell = [...host.querySelectorAll(".credit-pool-grid > div")].find((div) => div.textContent?.startsWith("이번 주기 사용"));
+  expect(cell?.textContent).toContain(text);
+});
+
 it("다른 관리자가 참가자를 넣으면 변경 신호(reloadSignal)에 따라 명단을 다시 읽는다", async () => {
   await render(0);
   expect(peopleRows()).toHaveLength(1);

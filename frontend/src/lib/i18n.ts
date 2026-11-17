@@ -82,7 +82,6 @@ const EN: Record<string, string> = {
   "대체 사용 합계": "Fallback usage total",
   "API 내역은 확인할 수 없습니다": "API details unavailable",
   "사용량 출처는 위 기간별 표시를 따릅니다": "Usage follows the basis shown for each period",
-  "잔액은 힉스필드 보고": "Balance reported by Higgsfield",
   "팀 기록 장부": "Team record ledger",
   "팀 기록 장부 기준": "Based on the team record ledger",
   "잔액은 힉스필드 보고 · 사용은 {basis}": "Balance reported by Higgsfield · usage: {basis}",
