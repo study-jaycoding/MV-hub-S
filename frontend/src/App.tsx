@@ -1988,12 +1988,12 @@ export default function App() {
             confirm: () => confirmCanvasGeneration([link!]),
             apply: (next) => settleCanvasGeneration(link!, next),
           } : undefined);
-          acceptedOrUnknown = ["accepted", "accepted_local_pending", "acceptance_unknown"].includes(result.outcome.kind);
-          // 재확인의 로컬 준비 실패는 앞선 원격 미제출 증거가 아니다.
-          if (uncertain && result.outcome.kind === "prepare_failed") acceptedOrUnknown = true;
+          // 재확인의 준비 실패·사전 거절은 원래 키의 원격 미제출 증거가 아니다.
+          const stillUncertain = uncertain && ["prepare_failed", "rejected"].includes(result.outcome.kind);
+          acceptedOrUnknown = stillUncertain || ["accepted", "accepted_local_pending", "acceptance_unknown"].includes(result.outcome.kind);
           if (!scope.isCurrent!()) return;
           if (!result.generation) {
-            if (result.outcome.kind === "acceptance_unknown" || (uncertain && result.outcome.kind === "prepare_failed")) {
+            if (result.outcome.kind === "acceptance_unknown" || stillUncertain) {
               uncertain = true;
               draftRequests.retain(attempt, submit);
               flash(t("Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요."));

@@ -110,6 +110,33 @@ it("키보드 선택·Esc 초점 복귀·바깥 클릭·권한·선택 수를 �
   }
 });
 
+it.each([false, true])("키보드로 열고 Enter를 누르면 기본 1080p만 제출한다 (library=%s)", async (library) => {
+  const view = mount(library); await settle();
+  // jsdom은 Enter의 기본 click을 만들지 않으므로, 키 이벤트가 허용되면 초점 단추를 활성화한다.
+  const enter = () => act(() => {
+    const target = document.activeElement as HTMLButtonElement;
+    if (target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))) target.click();
+    target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+  });
+  act(() => view.button().focus()); enter(); await settle();
+  expect(document.activeElement).toBe(option("1080p"));
+  expect(view.finish).not.toHaveBeenCalled();
+  enter();
+  expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "1080p");
+});
+
+it("권한 때문에 비활성이면 진행 중으로 표시하지 않는다", async () => {
+  const view = mount(); act(() => view.button().click()); await settle();
+  view.render([{ ...draft, is_mine: false }]); await settle();
+  for (const resolution of ["1080p", "4k"]) {
+    expect(option(resolution).disabled).toBe(true);
+    expect(option(resolution).textContent).not.toContain("진행·확인 중");
+  }
+  view.render([draft], resolution => resolution === "1080p"); await settle();
+  expect(option("1080p").textContent).toContain("진행·확인 중");
+  expect(option("4k").textContent).not.toContain("진행·확인 중");
+});
+
 it("늦은 이전 선택·계정 응답은 새 메뉴를 덮지 않는다", async () => {
   let cost!: (value: { credits: number }) => void;
   let history!: (value: { children: Generation[] }) => void;

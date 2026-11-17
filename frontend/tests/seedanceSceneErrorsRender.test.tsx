@@ -256,12 +256,17 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     await act(async () => { await draftRun; }); await settle();
     expect(prepare).toHaveBeenCalledTimes(2);
   });
-  it("Draft 접수 재확인이 계속 불명이면 원래 예약을 유지하고 미제출 거절에만 정리한다", async () => {
+  it.each([
+    [409, "업데이트 중"], [409, "배포 일시중지"], [409, "계정 불일치"],
+    [404, "원본 없음"], [400, "워크스페이스 검증"],
+  ])("Draft 접수 재확인의 사전 거절(%s %s)도 불명으로 유지하고 같은 예약·전송으로 회수한다", async (status, reason) => {
     draftSelected = true;
+    let childId = "";
     const send = vi.fn().mockRejectedValueOnce(new TypeError("lost"))
       .mockRejectedValueOnce(new TypeError("still lost"))
-      .mockRejectedValue(Object.assign(new Error("not started"), { status: 409, notStarted: true }));
-    const prepare = vi.fn(() => send);
+      .mockRejectedValueOnce(Object.assign(new Error(reason), { status, notStarted: true }))
+      .mockImplementation(async () => ({ ...draftTarget, id: childId, status: "done", params: { draft: false, draft_job_id: "synthetic-draft", resolution: "1080p" } }));
+    const prepare = vi.fn((_id, _body, _workspace, link) => { childId = link.generation_id; return send; });
     (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = prepare;
     const { default: App } = await import("../src/App"); act(() => view.root.render(<App />)); await settle();
     click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
@@ -275,6 +280,10 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
     click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
     expect(prepare).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(3);
+    expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
+    expect(view.container.textContent).toContain("기존 요청을 확인하세요");
+    click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
+    expect(prepare).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(4);
     expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts || []).toHaveLength(0);
   });
   // 시간 제한 20초 — App 전체를 StrictMode 로 렌더하는 첫 마운트라 단독 1.4~1.8초인데, 전체 실행(파일 병렬·jsdom 기동 경합)에서는 기본 5초를 넘는다.

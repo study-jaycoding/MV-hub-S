@@ -69,7 +69,7 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
         bottom: window.innerHeight - rect.top + 8, maxHeight: Math.max(0, rect.top - 16) });
     };
     position();
-    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    menuRef.current?.querySelector<HTMLButtonElement>(".draft-finish-1080p:not(:disabled)")?.focus();
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
@@ -94,12 +94,13 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
       {summary?.expired && <p role="status">{t("드래프트 만료 · 새 드래프트를 만드세요")}</p>}
       {(["4k", "1080p"] as const).map((resolution) => {
         const busy = resolution === "4k" ? busy4k : busy1080;
-        const disabled = !canFinishDraft(generation) || summary?.expired || busy === true || (busy !== "uncertain" && summary?.pending[resolution]);
+        const inProgress = busy === true || (busy !== "uncertain" && summary?.pending[resolution]);
+        const disabled = !canFinishDraft(generation) || summary?.expired || inProgress;
         return <button key={resolution} type="button" className={`draft-finish-option draft-finish-${resolution}`}
           disabled={!!disabled} aria-busy={busy === true} onClick={() => { onFinishDraft?.(generation, resolution); }}>
           {t("{resolution}로 생성").replace("{resolution}", resolution === "4k" ? "4K" : resolution)} {credit(resolution)}
           {busy === "uncertain" && <span> · {t("접수 재확인")}</span>}
-          {disabled && !summary?.expired && <span> · {t("진행·확인 중")}</span>}
+          {inProgress && !summary?.expired && <span> · {t("진행·확인 중")}</span>}
         </button>;
       })}
     </div>, document.body)}
