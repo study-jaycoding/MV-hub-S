@@ -120,7 +120,7 @@
 | `task_assignment` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_tasks.py` | `repo/manage_tasks.py` |
 | `task_generation` | content DB | `repo/manage_schema.py` | `repo/manage.py` `repo/manage_tasks.py` | `repo/manage_schema.py` `repo/manage_task_activity.py` `repo/manage_tasks.py` |
 | `task_planned_creator` | content DB | `repo/manage_schema.py` | — | — |
-| `team_generation_fact` | manage_hub.db | `manage_db.py` | `manage_db.py` | `manage_db.py` `repo/hf_org_usage.py` `repo/manage_quota.py` `services/nas_results.py` |
+| `team_generation_fact` | manage_hub.db | `manage_db.py` | `manage_db.py` | `manage_db.py` `repo/hf_org_usage.py` `services/nas_results.py` |
 | `telemetry_delivery_state` | content DB | `repo/manage_schema.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` | `repo/manage_telemetry.py` |
 | `telemetry_outbox` | content DB | `repo/manage_schema.py` | `repo/manage_telemetry.py` | `repo/manage_schema.py` `repo/manage_telemetry.py` |
 | `tracked_job` | agent_state.db (작업자 PC) | `agent_push.py` | `agent_push.py` | `agent_push.py` |

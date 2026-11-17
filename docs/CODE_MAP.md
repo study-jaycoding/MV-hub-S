@@ -7,10 +7,12 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
+
+조직 사용량 2단계: `backend/app/repo/hf_org_usage.py`의 `CreditUsageSnapshot`이 명시적 공간·개인·기간의 API/facts 기준과 집계 전 견적을 읽는다. `backend/app/hf_org_usage_error.py`는 키/연결 import 없이 공유하는 예외형이다. `backend/app/usecases/hf_org_usage.py`의 본인 조회를 `backend/app/routers/manage_quota.py`가 제공한다. `frontend/src/lib/creditUsage.ts`는 출처·기간 표시 계약, `frontend/src/lib/myUsage.ts`는 문맥별 조회와 늦은 응답 폐기, `frontend/src/components/MyUsageWindow.tsx`는 개인 요약·분류·내역 창, `frontend/src/components/common/UsageBasis.tsx`는 범위별 출처 표시, `frontend/src/styles/my-usage.css`는 그 창의 스타일이다. [계약·검증](status/hf_org_usage_phase2_2026-11-17.md).
 
 공유 서버 HTTPS 전환 리허설: `backend/tests/test_shared_tls_rehearsal.py`는 임시 전환 사본·D2 인증서로 실제 서버/허브의 가입·로그인·중계 읽기·WSS·백업 하위 프로세스를 검증하고, 기록용 TCP 앞단에서 평문 하향 요청을 탐지한다. [계약](status/공유서버HTTPS_4묶음_격리리허설_2026-11-16.md).
 
