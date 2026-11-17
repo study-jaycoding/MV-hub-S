@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 대시보드 워크스페이스 판의 서브스페이스 ↔ 머리 선택 맞물림(Jay 2026-09-30) — 서브스페이스에서 고르면 머리가 따라가고, 머리 선택이 메인·서브면 서브스페이스도 따라간다.
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceConsole } from "../src/components/manage/console/WorkspaceConsole";
@@ -21,6 +21,7 @@ let root: Root, host: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  overview.mockClear();
   overview.mockResolvedValue({ today: "2026-09-30", main: { id: "mv", name: "MV", balance: 0, balance_seen_at: null, reported: 1 }, subs: [sub("a"), sub("b")], pending: [],
     totals: {}, schedule: [], allocation: {}, calendar: { from: "", to: "", events: [] } });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -34,6 +35,32 @@ const render = async (selectedId: string | undefined, onSelectedChange = vi.fn()
 };
 const shown = () => host.querySelector("[data-shown]")?.getAttribute("data-shown");
 const railButton = (name: string) => [...host.querySelectorAll<HTMLButtonElement>(".wc-rail .wc-ws")].find((button) => button.textContent?.replace("★", "").startsWith(name))!;
+
+it("parent-controlled selection keeps the console mounted without refetching its overview", async () => {
+  function Parent() {
+    const [selectedId, setSelectedId] = useState<string>();
+    return <WorkspaceConsole caps={caps} reloadSignal={0} selectedId={selectedId} onSelectedChange={setSelectedId} workingId="a" />;
+  }
+  await act(async () => root.render(<Parent />));
+  expect(overview).toHaveBeenCalledTimes(1);
+  expect(shown()).toBe("a");
+  const rail = host.querySelector(".wc-rail");
+  overview.mockImplementation(() => new Promise(() => {}));
+  await act(async () => railButton("B").click());
+  expect(overview).toHaveBeenCalledTimes(1);
+  expect(host.querySelector(".wc-rail")).toBe(rail);
+  expect(shown()).toBe("b");
+});
+
+it("reported-at chip uses KST without calling the receipt a balance confirmation", async () => {
+  vi.spyOn(Date,"now").mockReturnValue(Date.parse("2026-11-17T08:44:00Z"));
+  overview.mockResolvedValue({ today:"2026-11-17",main:null,subs:[],pending:[{id:"new",name:"New",reported:1,last_seen_at:"2026-11-17 08:41:00",archived:false}],
+    totals:{},schedule:[],allocation:{},calendar:{from:"",to:"",events:[]} });
+  await act(async () => root.render(<WorkspaceConsole caps={{...caps,createProject:true}} reloadSignal={0} />));
+  await act(async () => host.querySelector<HTMLButtonElement>(".wc-create")!.click());
+  expect(host.querySelector(".wc-choice .wc-chip")?.textContent).toContain("마지막 보고 11/17 17:41 (3분 전)");
+  expect(host.querySelector(".wc-choice .wc-chip")?.textContent).not.toContain("확인 시각 미상");
+});
 
 it("풀 카드는 확인 시각을 KST로 표시하고 불완전한 합계의 그래프를 그리지 않는다", async () => {
   const { PoolCard } = await vi.importActual<typeof import("../src/components/manage/console/ConsoleMainParts")>("../src/components/manage/console/ConsoleMainParts");

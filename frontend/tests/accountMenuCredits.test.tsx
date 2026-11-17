@@ -42,10 +42,10 @@ function serve(myQuota: MyCreditQuota | null, workspaces = WORKSPACES) {
 
 const ACCOUNT = { email: "member-a@example.com", name: "팀원 A", status: "approved", creator_uid: "u1", created_at: "2026-11-01", approved_at: "2026-11-01" };
 
-async function open(context: WorkspaceContext, signedIn = false) {
+async function open(context: WorkspaceContext, signedIn = false, localHub = false) {
   await act(async () => root.render(
     <AccountMenu provider={null} onProviderUpdated={noop} onWorkspaceSwitched={noop} onWorkspaceContextChange={noop}
-      workspaceContext={context} account={signedIn ? ACCOUNT : undefined} />,
+      workspaceContext={context} account={signedIn ? ACCOUNT : undefined} localHub={localHub} />,
   ));
   await act(async () => { host.querySelector<HTMLButtonElement>(".acct-avatar-btn")!.click(); });
   for (let i = 0; i < 4; i++) await act(async () => {}); // 목록·내 몫 조회
@@ -123,6 +123,24 @@ it("공유 서버 로그인(에이전트 보고값)에서도 두 칸이 그대�
   expect(m.limitText).toBe("∞");
   expect(m.groupText).toBe("Pipeline TD");
   expect(document.querySelector(".acct-pop")!.textContent).not.toContain("에이전트 보고값");
+});
+
+it("잔액 확인 전달 안내는 매니징 실패 경고와 분리하고 옛 서버·내용 불일치를 구별한다", async () => {
+  serve(null);
+  const fetch=globalThis.fetch;
+  vi.stubGlobal("fetch", (input:RequestInfo|URL,init?:RequestInit) => String(input).endsWith("/api/sync-status")
+    ? Promise.resolve(new Response(JSON.stringify({pending:0,failed:0,account_report_pending:0,account_report_failed:0,
+      balance_pending:8,balance_failed:8,balance_unsupported:2,balance_conflict:3,balance_last_error_code:"hub_not_signed_in"}),{status:200}))
+    : fetch(input,init));
+  await open(TEAM,false,true);
+  const pop=document.querySelector(".acct-pop")!;
+  expect(pop.textContent).not.toContain("매니징 동기화");
+  expect(pop.textContent).toContain("잔액 확인 3건 서버 전달 대기");
+  expect(pop.textContent).toContain("잔액 확인 2건 서버 업데이트 뒤 전달");
+  expect(pop.textContent).toContain("잔액 확인 3건 전달 내용을 확인해 주세요");
+  const notice=[...pop.querySelectorAll<HTMLElement>(".acct-sync-warn")].find((n)=>n.textContent==="잔액 확인 3건 서버 전달 대기")!;
+  expect(notice.title).toBe("공유 서버에 로그인하면 다시 전달합니다.");
+  expect(pop.innerHTML).not.toContain("hub_not_signed_in");
 });
 
 it("공유 서버 Credits 숫자에 공통 잔액의 KST 확인 시각을 붙이고 Usage 단추는 유지한다", async () => {

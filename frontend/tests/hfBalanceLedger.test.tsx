@@ -113,7 +113,31 @@ it.each(['account', 'server', 'period'] as const)('discards a pending %s respons
 it('prioritizes uncertain precision over an unavailable daily comparison', async () => {
   const value = page(); value.intervals[0].state = 'observation_uncertain'; value.intervals[0].reason_codes = ['observation_uncertain', 'precision_unknown'];
   mocks.ledger.mockResolvedValue(value);
-  await render(); expect(host.querySelector('.bl-day')?.textContent).toContain('정밀도 불확실');
+  await render(); expect(host.querySelector('.bl-day')?.textContent).toContain('금액 오차 범위를 모름');
+});
+
+it('shows known differences as a partial summary without treating missing intervals as zero', async () => {
+  const value=page();
+  const base=value.intervals[0];
+  value.intervals.push({...base,to_observation_id:'positive',residual_c:20000,state:'residual_present'},
+    {...base,to_observation_id:'negative',residual_c:-3000,state:'residual_present'});
+  mocks.ledger.mockResolvedValue(value);
+  await render();
+  expect([...host.querySelectorAll('.bl-summary strong')].map((node)=>node.textContent)).toEqual(['—','—','+200','-30']);
+  expect(host.querySelectorAll('.bl-summary .wc-chip')).toHaveLength(2);
+  expect(host.querySelector('.bl-summary')?.textContent).toContain('일부 구간만');
+});
+
+it('shows the recorded extra credits as top-up evidence and distinguishes same-time differing amounts', async () => {
+  const value=page();
+  value.chart_points[0].quality='conflict';
+  value.intervals[0]={...value.intervals[0],state:'residual_present',residual_c:20000,
+    candidate_classification:'topup_candidate',candidate_evidence:[{candidate:'topup_candidate',code:'current_plan_match',credits_c:20000,plan_revision:2}]};
+  mocks.ledger.mockResolvedValue(value);
+  await render();
+  expect(host.textContent).toContain('입력한 추가 크레딧 200과 같음');
+  expect(host.textContent).not.toContain('정기 충전 계획');
+  expect(host.querySelector('.bl-notice')?.textContent).toBe('같은 시각 값이 다름');
 });
 
 it('does not label unavailable collection as an ordinary pending comparison', async () => {

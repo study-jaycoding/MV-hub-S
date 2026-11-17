@@ -7,7 +7,7 @@ import { getAuthToken, isHttpStatus } from "../../../lib/http";
 import { t, useT } from "../../../lib/i18n";
 import type { ManageCaps } from "../../../lib/useManageCaps";
 import { useSyncStatus } from "../../../lib/useSyncStatus";
-import type { BalanceChartPoint, BalanceInterval, BalanceLedgerResponse, BalanceMeta, LedgerState } from "../../../shared/contracts/hfBalance";
+import type { BalanceChartPoint, BalanceInterval, BalanceLedgerResponse, BalanceMeta } from "../../../shared/contracts/hfBalance";
 
 type Space = { id: string; name: string };
 type Range = "week" | "month" | "previous";
@@ -27,8 +27,12 @@ function dates(range: Range): [string, string] {
   return [start.toISOString().slice(0, 10), end.toISOString().slice(0, 10)];
 }
 
-function stateLabel(state: LedgerState, reasons: string[] = []): string {
-  if (state === "observation_uncertain") return t(reasons.includes("precision_unknown") ? "정밀도 불확실" : "확인 시각 불확실");
+function stateLabel(item: BalanceInterval): string {
+  const {state, reason_codes: reasons} = item;
+  if (state === "observation_uncertain") {
+    if (item.opening_c == null || item.closing_c == null || reasons.includes("simultaneous_conflict")) return t("같은 시각 값이 다름");
+    return t(reasons.includes("precision_unknown") ? "금액 오차 범위를 모름" : "확인 시각 불확실");
+  }
   return t({ numeric_match: "맞음", residual_present: "차이 있음", api_pending: "사용 기록 모으는 중", comparison_unavailable: "비교 못 함" }[state]);
 }
 function candidateLabel(kind: string): string {
@@ -38,7 +42,7 @@ function evidenceLine(item: BalanceInterval, spaces: Space[]): string {
   if (item.candidate_classification === "unclassified") return "";
   const evidence = item.candidate_evidence[0];
   if (evidence?.code === "opposite_observed_intervals") return text("같은 시각 {공간} {금액}", { 공간: spaces.find((s) => s.id === evidence.workspace_id)?.name || t("다른 공간"), 금액: money(evidence.residual_c, true) });
-  if (evidence?.code === "current_plan_match") return `${text("정기 충전 계획 {금액} 과 같음", { 금액: money(evidence.credits_c) })} · ${text("현재 계획 일치 · 판 {판}", { 판: evidence.plan_revision ?? "—" })}`;
+  if (evidence?.code === "current_plan_match") return `${text("입력한 추가 크레딧 {금액}과 같음", { 금액: money(evidence.credits_c) })} · ${text("현재 계획 일치 · 판 {판}", { 판: evidence.plan_revision ?? "—" })}`;
   if (evidence?.code === "refund_time_unknown") return text("앞서 실패한 생성 {금액}", { 금액: money(evidence.refunded_c) });
   return "";
 }
@@ -123,11 +127,13 @@ export function BalanceLedger({ caps, spaces, selectedId, reloadSignal = 0 }: { 
   }, [key, allowed]);
 
   if (!allowed) return null;
-  const completeIntervals = data && data.intervals.length > 0 && !data.has_more && data.intervals.every((i) => i.residual_c != null);
-  const sum = (sign: 1 | -1) => !completeIntervals ? null : data.intervals.reduce((value, i) => value + (i.state === "residual_present" && Math.sign(i.residual_c!) === sign ? i.residual_c! : 0), 0);
+  const knownIntervals = data?.intervals.filter((i) => i.residual_c != null) ?? [];
+  const partialSummary = data && (data.has_more || knownIntervals.length < data.intervals.length);
+  const sum = (sign: 1 | -1) => !knownIntervals.length ? null : knownIntervals.reduce((value, i) => value + (i.state === "residual_present" && Math.sign(i.residual_c!) === sign ? i.residual_c! : 0), 0);
   const usage = data?.daily_api.length && data.daily_api.every((d) => d.net_c != null) ? data.daily_api.reduce((v, d) => v + d.net_c!, 0) : null;
   const rows = data?.daily_balances || [];
-  const uncertainty = data?.chart_points.some((p) => p.quality !== "reported");
+  const conflict = data?.chart_points.some((p) => p.quality === "conflict");
+  const uncertainty = data?.chart_points.some((p) => !["reported", "conflict"].includes(p.quality));
   return <section className="usage-card balance-ledger" aria-label={translate("잔액 장부")}>
     <header className="bl-head"><h3>{translate("잔액 장부")} <button type="button" className="bl-help" aria-label={translate("잔액 장부 안내")} aria-expanded={help} onClick={() => setHelp(!help)}>?</button></h3>
       <div className="bl-tools"><select aria-label={translate("장부 공간")} value={space} onChange={(e) => setSpace(e.target.value)}>{spaces.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
@@ -139,8 +145,9 @@ export function BalanceLedger({ caps, spaces, selectedId, reloadSignal = 0 }: { 
       <div className="bl-summary">
         <div><strong>{money(balance?.credits_c)}</strong><span>{translate("지금 잔액")} · {formatBalanceTime(balance)}</span></div>
         <div><strong>{money(usage == null ? null : -usage)}</strong><span>{translate("기간 사용 기록 합")}{data.daily_api.some((d) => !d.complete) ? ` · ${translate("사용 기록 모으는 중")}` : ''}</span></div>
-        {([1, -1] as const).map((sign) => <div key={sign}><strong className={sign > 0 ? 'bl-positive' : 'bl-negative'}>{money(sum(sign), true)}</strong><span>{translate(sign > 0 ? "설명 안 된 증가" : "설명 안 된 감소")} · {text("추정 {건수}건", { 건수: data.intervals.filter((i) => Math.sign(i.residual_c || 0) === sign && i.candidate_classification !== 'unclassified').length })}</span></div>)}
+        {([1, -1] as const).map((sign) => <div key={sign}><strong className={sign > 0 ? 'bl-positive' : 'bl-negative'}>{money(sum(sign), true)}</strong><span>{translate(sign > 0 ? "설명 안 된 증가" : "설명 안 된 감소")} · {text("추정 {건수}건", { 건수: knownIntervals.filter((i) => i.state === 'residual_present' && Math.sign(i.residual_c!) === sign && i.candidate_classification !== 'unclassified').length })}</span>{partialSummary && <span className="wc-chip">{translate("일부 구간만")}</span>}</div>)}
       </div>
+      {conflict && <p role="status" className="bl-notice">{translate("같은 시각 값이 다름")}</p>}
       {uncertainty && <p role="status" className="bl-notice">{translate("확인 시각 불확실")}</p>}
       {data.has_more && <p className="bl-notice">{translate("현재 불러온 구간 기준")}</p>}
       <LedgerChart data={data} />
@@ -153,12 +160,12 @@ export function BalanceLedger({ caps, spaces, selectedId, reloadSignal = 0 }: { 
           const residual = known ? intervals.reduce((v, i) => v + i.residual_c!, 0) : null;
           const uncertain = intervals.find((i) => i.state === 'observation_uncertain');
           const unavailable = intervals.some((i) => i.state === 'comparison_unavailable');
-          const dayState = !day.observation_count ? translate("잔액 확인 없음") : day.time_uncertain_count ? translate("확인 시각 불확실") : uncertain ? stateLabel(uncertain.state, uncertain.reason_codes) : unavailable ? translate("비교 못 함") : !daily?.complete ? translate("사용 기록 모으는 중") : !known ? translate("비교 못 함") : intervals.some((i) => i.state === 'residual_present') ? translate("차이 있음") : translate("맞음");
+          const dayState = !day.observation_count ? translate("잔액 확인 없음") : day.time_uncertain_count ? translate("확인 시각 불확실") : uncertain ? stateLabel(uncertain) : unavailable ? translate("비교 못 함") : !daily?.complete ? translate("사용 기록 모으는 중") : !known ? translate("비교 못 함") : intervals.some((i) => i.state === 'residual_present') ? translate("차이 있음") : translate("맞음");
           const shown = expanded.has(day.day) ? intervals : intervals.filter((i) => i.state === 'residual_present');
           const toggleDay = () => setExpanded((before) => { const next = new Set(before); if (next.has(day.day)) next.delete(day.day); else next.add(day.day); return next; });
           return <Fragment key={day.day}><tr className="bl-day" onClick={toggleDay}><td><button type="button" aria-expanded={expanded.has(day.day)} onClick={(event) => { event.stopPropagation(); toggleDay(); }}>{day.day.slice(5).replace('-', '/')} · {text("확인 {횟수}번", { 횟수: day.observation_count })}</button></td>
             <td>{money(day.opening_c)}</td><td>{money(day.closing_c)}</td><td>{money(day.delta_c, true)}</td><td>{money(daily?.net_c == null ? null : -daily.net_c)}</td><td>{money(residual, true)}</td><td /><td><span className="wc-chip">{dayState}</span></td></tr>
-            {shown.map((item) => <tr className="bl-interval" key={item.to_observation_id}><td>{formatBalanceAbsolute(item.start_ms)} → {formatBalanceAbsolute(item.end_ms)}</td><td>{money(item.opening_c)}</td><td>{money(item.closing_c)}</td><td>{money(item.delta_c, true)}</td><td>{money(item.api_created_net_c == null ? null : -item.api_created_net_c)}</td><td className={(item.residual_c || 0) > 0 ? 'bl-positive' : 'bl-negative'}>{money(item.residual_c, true)}</td><td><span className="wc-chip">{candidateLabel(item.candidate_classification)}</span><small>{evidenceLine(item, spaces)}</small></td><td><span className="wc-chip">{stateLabel(item.state, item.reason_codes)}</span></td></tr>)}
+            {shown.map((item) => <tr className="bl-interval" key={item.to_observation_id}><td>{formatBalanceAbsolute(item.start_ms)} → {formatBalanceAbsolute(item.end_ms)}</td><td>{money(item.opening_c)}</td><td>{money(item.closing_c)}</td><td>{money(item.delta_c, true)}</td><td>{money(item.api_created_net_c == null ? null : -item.api_created_net_c)}</td><td className={(item.residual_c || 0) > 0 ? 'bl-positive' : 'bl-negative'}>{money(item.residual_c, true)}</td><td><span className="wc-chip">{candidateLabel(item.candidate_classification)}</span><small>{evidenceLine(item, spaces)}</small></td><td><span className="wc-chip">{stateLabel(item)}</span></td></tr>)}
           </Fragment>;
         })}
       </tbody></table></div>

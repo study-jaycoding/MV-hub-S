@@ -5,6 +5,7 @@ import { api } from "../api";
 import { reconcileValueState } from "./stateReconciliation";
 import { getAccountNamespace, getConnectionKey } from "./accountScope";
 import { getAuthToken } from "./http";
+import { t } from "./i18n";
 
 export interface SyncStatus {
   pending: number;
@@ -36,8 +37,32 @@ export function syncPendingCount(status: SyncStatus): number {
 export function syncFailedCount(status: SyncStatus): number {
   return Math.max(0, status.failed || 0)
     + Math.max(0, status.account_report_failed || 0)
-    + Math.max(0, status.account_report_dead || 0)
-    + Math.max(0, status.balance_failed || 0);
+    + Math.max(0, status.account_report_dead || 0);
+}
+
+export function balanceDeliveryNotices(status: SyncStatus): { text: string; title: string }[] {
+  const unsupported = Math.max(0, status.balance_unsupported || 0);
+  const conflict = Math.max(0, status.balance_conflict || 0);
+  const pending = Math.max(0, (status.balance_pending || 0) - unsupported - conflict);
+  const failed = Math.max(0, (status.balance_failed || 0) - unsupported - conflict);
+  const notices = [];
+  if (pending) {
+    const code = status.balance_error_code || status.balance_last_error_code || "";
+    const reason: Record<string, string> = {
+      hub_not_signed_in: "공유 서버에 로그인하면 다시 전달합니다.",
+      account_mismatch: "힉스필드 계정과 허브 로그인 계정이 같은지 확인해 주세요.",
+      connection_changed: "로그인 계정이나 연결된 서버가 바뀌었습니다. 연결을 확인하면 다시 전달합니다.",
+      balance_schema_mismatch: "잔액 확인을 저장할 수 없습니다. 관리자에게 확인해 주세요.",
+      agent_key_mismatch: "이 PC의 연결 설정을 확인해 주세요.",
+    };
+    notices.push({ text: t("잔액 확인 {count}건 서버 전달 대기").replace("{count}", String(pending)),
+      title: failed ? t(reason[code] || "서버 저장 확인을 받지 못했습니다. 다음에 다시 전달합니다.") : t("보관한 잔액 확인을 서버에 전달하는 중입니다.") });
+  }
+  if (unsupported) notices.push({ text: t("잔액 확인 {count}건 서버 업데이트 뒤 전달").replace("{count}", String(unsupported)),
+    title: t("서버를 업데이트하면 보관 중인 잔액 확인을 다시 전달합니다.") });
+  if (conflict) notices.push({ text: t("잔액 확인 {count}건 전달 내용을 확인해 주세요").replace("{count}", String(conflict)),
+    title: t("이미 저장된 잔액 확인과 전달 내용이 다릅니다. 관리자에게 확인해 주세요.") });
+  return notices;
 }
 
 export function latestSyncSuccess(status: SyncStatus): string | null {

@@ -21,6 +21,7 @@ import {
   syncFailedCount,
   syncPendingCount,
   useSyncStatus,
+  balanceDeliveryNotices,
 } from "../lib/useSyncStatus";
 import {
   activeWorkspaceOf,
@@ -144,6 +145,7 @@ export function AccountMenu({
   const syncFailed = sync ? syncFailedCount(sync) : 0;
   const syncDead = Math.max(0, sync?.account_report_dead || 0);
   const syncError = sync?.account_report_last_error || sync?.last_error || undefined;
+  const balanceNotices = sync ? balanceDeliveryNotices(sync) : [];
   const syncBreakdown = sync
     ? `생성정보 ${sync.pending || 0}건 · 계정/거래 ${sync.account_report_pending || 0}건 · 격리 ${syncDead}건`
     : undefined;
@@ -489,6 +491,7 @@ export function AccountMenu({
               ⚠ 매니징 동기화 {syncFailed}건 실패{syncDead > 0 ? ` · ${syncDead}건 격리` : ""}{syncFailed > syncDead ? " — 다음 동기화 때 재시도" : ""}{syncPending > syncFailed ? ` (대기 ${syncPending})` : ""}
             </div>
           )}
+          {balanceNotices.map((notice) => <div key={notice.text} className="acct-sync-warn" title={notice.title}>{notice.text}</div>)}
 
           {/* 워크스페이스 — 로그인 계정은 내 에이전트가 보고한 검증된 값(읽기전용),
               비로그인(AUTH off)만 서버 CLI 라이브·전환 가능. 전환은 각자 자기 로컬 CLI에서. */}

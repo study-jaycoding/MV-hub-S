@@ -7,7 +7,7 @@ import { fillReorder } from "../../../lib/memberTable";
 import { api } from "../../../api";
 import { getAuthToken, isRouteMissing } from "../../../lib/http";
 import { getAccountNamespace, getConnectionKey } from "../../../lib/accountScope";
-import { formatBalanceTime, timestampMs } from "../../../lib/format";
+import { formatBalanceTime, formatReportedAt, timestampMs } from "../../../lib/format";
 import { useT } from "../../../lib/i18n";
 import { manageApi } from "../../../lib/manageApi";
 import type { ManageCaps } from "../../../lib/useManageCaps";
@@ -35,7 +35,7 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
 }) {
   const t = useT();
   const connection = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
-  const scope = `${connection()}\0${caps.contextKey ?? ""}\0${caps.system}\0${caps.authOff}\0${selectedId ?? ""}`;
+  const scope = `${connection()}\0${caps.contextKey ?? ""}\0${caps.system}\0${caps.authOff}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
   const loadSeq = useRef(0);
@@ -323,7 +323,7 @@ function LinkDialog({ pending, onClose, onLink }: {
         {pending.map((w) => (
           <label key={w.id} className={`wc-choice${pick === w.id ? " on" : ""}`}>
             <span><input type="radio" name="wc-link" checked={pick === w.id} onChange={() => setPick(w.id)} /> {w.name}</span>
-            <span className="wc-chip">{w.archived ? "내린 서브 · " : ""}보고 {w.reported}명{w.last_seen_at ? ` · ${formatBalanceTime({ basis: "legacy_snapshot", received_at_ms: timestampMs(w.last_seen_at) })}` : ""}</span>
+            <span className="wc-chip">{w.archived ? "내린 서브 · " : ""}보고 {w.reported}명{w.last_seen_at ? ` · ${formatReportedAt(w.last_seen_at)}` : ""}</span>
           </label>
         ))}
         {!pending.length ? <div className="wc-note">연결할 워크스페이스가 없습니다.</div> : null}
