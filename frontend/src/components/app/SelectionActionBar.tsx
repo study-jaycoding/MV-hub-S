@@ -108,8 +108,8 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
         const disabled = !canFinishDraft(generation) || summary?.expired || inProgress;
         return <button key={resolution} type="button" className={`draft-finish-option draft-finish-${resolution}`}
           onFocus={(event) => { focusedOptionRef.current = event.currentTarget; }}
-          // 막대 단추에서 Enter 를 누른 채 창이 열리면 반복 입력이 이 단추로 와 유료 생성이 된다 — 반복 입력은 누름으로 치지 않는다.
-          onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+          // 막대 단추에서 Enter 를 누른 채 창이 열리면 반복 입력이 이 단추로 와 유료 생성이 된다 — 누름 키(Enter·Space)의 반복만 막고 Tab 반복 이동은 둔다.
+          onKeyDown={(event) => { if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault(); }}
           disabled={!!disabled} aria-busy={busy === true} onClick={() => { onFinishDraft?.(generation, resolution); }}>
           {t("{resolution}로 생성").replace("{resolution}", resolution === "4k" ? "4K" : resolution)} {credit(resolution)}
           {busy === "uncertain" && <span> · {t("접수 재확인")}</span>}

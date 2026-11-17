@@ -157,6 +157,14 @@ it("막대 단추에서 Enter 를 누른 채 있으면 창만 열리고 반복 �
   expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "1080p");
 });
 
+it.each([["Tab", false], ["ArrowUp", false], [" ", true], ["Enter", true]] as const)("화질 단추에서 %s 반복 입력의 기본 동작 막기=%s", async (key, blocked) => {
+  const view = mount();
+  await settle(); act(() => view.button().focus()); enter(); await settle();
+  expect(document.activeElement).toBe(option("1080p"));
+  const allowed = option("1080p").dispatchEvent(new KeyboardEvent("keydown", { key, repeat: true, bubbles: true, cancelable: true }));
+  expect(allowed).toBe(!blocked);
+});
+
 it.each([false, true])("1080p 제출 뒤 Enter를 더 눌러도 한 번만 제출하고 창에 초점을 둔다 (키 반복=%s)", async (repeat) => {
   const view = mount();
   view.finish.mockImplementation(() => view.render([draft], resolution => resolution === "1080p"));
