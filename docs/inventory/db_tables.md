@@ -74,14 +74,14 @@
 | `generation_metrics` | content DB | `repo/manage_schema.py` | `repo/manage.py` `repo/manage_schema.py` `repo/manage_transactions.py` | `repo/generations_query.py` `repo/manage_analytics.py` `repo/manage_tasks.py` `repo/manage_telemetry.py` `repo/manage_transactions.py` `repo/trash.py` |
 | `generation_transfer` | content / trash DB (B1 transfer) | `services/trash_transfer.py` | `services/trash_transfer.py` | `repo/scene_keeps.py` `repo/trash.py` `services/trash_transfer.py` |
 | `generation_view` | content DB | `backend/schema.sql` `db_migrations.py` | `repo/generation_views.py` | `repo/generation_views.py` |
-| `hf_balance_obs` | content DB | `db_hf_balance.py` | `repo/hf_balance.py` | `repo/hf_balance.py` |
+| `hf_balance_obs` | content DB | `db_hf_balance.py` | `repo/hf_balance.py` | `repo/hf_balance.py` `repo/hf_balance_ledger.py` |
 | `hf_balance_outbox` | content DB | `db_hf_balance.py` | `repo/hf_balance.py` | `repo/hf_balance.py` `services/hf_balance_delivery.py` |
 | `hf_org_identity_link` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
-| `hf_org_usage_check` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_check` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_balance_ledger.py` `repo/hf_org_usage.py` |
 | `hf_org_usage_collector` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
-| `hf_org_usage_config` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` | `repo/hf_org_usage.py` |
-| `hf_org_usage_row` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` |
-| `hf_org_usage_window` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
+| `hf_org_usage_config` | manage_hub.db | `db_hf_org_usage.py` | `db_hf_org_usage.py` `repo/hf_org_usage.py` `services/db_scrub.py` | `repo/hf_balance_ledger.py` `repo/hf_org_usage.py` |
+| `hf_org_usage_row` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` | `repo/hf_balance_ledger.py` `repo/hf_org_usage.py` |
+| `hf_org_usage_window` | manage_hub.db | `db_hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_balance_ledger.py` `repo/hf_org_usage.py` |
 | `hf_usage_stage` | manage_hub.db (connection TEMP staging) | `repo/hf_org_usage.py` | `repo/hf_org_usage.py` `services/hf_org_usage_collector.py` | `repo/hf_org_usage.py` |
 | `history` | content DB | `backend/schema.sql` | `backend/cleanup_orphan_creators.py` `repo/generation_delete.py` `repo/lineage.py` `repo/share.py` | `repo/gen_requests.py` `repo/generation_rows.py` `repo/generations_query.py` `repo/history.py` `repo/lineage.py` `repo/share.py` `repo/trash.py` |
 | `history_import_audit` | content DB | `backend/schema.sql` | `repo/history_import_audit.py` | `repo/history_import_audit.py` |
@@ -135,13 +135,13 @@
 | `worker_backup_outbox` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
 | `worker_backup_source_state` | worker_backup_state.db | `services/worker_backup.py` | `services/worker_backup.py` | `services/worker_backup.py` |
 | `workspace_balance_daily` | content DB | `backend/schema.sql` | `repo/hf_balance.py` `repo/identity.py` | `repo/manage_credit_plan.py` |
-| `workspace_console` | content DB | `repo/manage_schema.py` | `repo/workspace_console.py` | `repo/console_guard.py` `repo/identity.py` `repo/manage_member_table.py` `repo/workspace_console.py` |
+| `workspace_console` | content DB | `repo/manage_schema.py` | `repo/workspace_console.py` | `repo/console_guard.py` `repo/hf_balance_ledger.py` `repo/identity.py` `repo/manage_member_table.py` `repo/workspace_console.py` |
 | `workspace_credit_group` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` `repo/manage_schema.py` | `repo/manage_credit_plan.py` |
 | `workspace_credit_group_member` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` |
-| `workspace_credit_plan` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` | `repo/manage.py` `repo/manage_credit_plan.py` `repo/workspace_console.py` |
-| `workspace_credit_topup` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` |
-| `workspace_member` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/identity.py` | `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/project_membership.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
-| `workspace_registry` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/hf_balance.py` `repo/identity.py` | `db_migrations.py` `repo/hf_balance.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/workspace_assignments.py` `repo/workspace_console.py` |
+| `workspace_credit_plan` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` `repo/workspace_console.py` | `repo/hf_balance_ledger.py` `repo/manage.py` `repo/manage_credit_plan.py` `repo/workspace_console.py` |
+| `workspace_credit_topup` | content DB | `repo/manage_schema.py` | `repo/manage_credit_plan.py` | `repo/hf_balance_ledger.py` `repo/manage_credit_plan.py` `repo/workspace_console.py` |
+| `workspace_member` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/identity.py` | `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/project_membership.py` `repo/workspace_assignments.py` `repo/workspace_console.py` `usecases/hf_balance.py` |
+| `workspace_registry` | content DB | `backend/schema.sql` | `db_migrations.py` `repo/hf_balance.py` `repo/identity.py` | `db_migrations.py` `repo/hf_balance.py` `repo/identity.py` `repo/manage_credit_plan.py` `repo/manage_member_table.py` `repo/workspace_assignments.py` `repo/workspace_console.py` `usecases/hf_balance.py` |
 
 ## 재구축용 임시 테이블
 
