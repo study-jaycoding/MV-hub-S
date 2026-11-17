@@ -96,10 +96,10 @@ function replacedJoinBases(joined: NotebookJoin | null | undefined, book: HubBoo
   const rows = new Map(book.items.map((row) => [row.id, row])); // tombstone도 실제로 있는 행이다.
   const skipped = new Set(book.skipped);
   return Object.entries(bases).some(([id, base]) => {
-    if (!base || base.history !== book.history_id || skipped.has(id)) return false;
+    if (!base || skipped.has(id)) return false;
     const row = rows.get(id);
-    return !row || row.base.rev < base.rev ||
-      (row.base.rev === base.rev && row.base.hash !== base.hash);
+    return !row || (base.history === book.history_id && (row.base.rev < base.rev ||
+      (row.base.rev === base.rev && row.base.hash !== base.hash)));
   });
 }
 async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean, leaseGeneration: string, approval?: NotebookStartApproval, rejoinRequired = false) {

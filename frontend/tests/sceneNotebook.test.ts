@@ -424,6 +424,44 @@ it.each([["cleanUpgrade", false], ["1011 adopt", false], ["cleanUpgrade", true],
   await syncSceneNotebook();
   expect([...fake.rows.keys()]).toEqual(selected.map((s) => s.id));
 });
+it("interrupted cleanUpgrade zero-start receipt is rejected after B selects an offline edit", async () => {
+  const original = [scene("a"), scene("z")], selected = [scene("a", "B offline final edit"), original[1]];
+  await joined(original, null); fake.book = null;
+  await sceneNotebookTransaction([], (_all, meta) => { delete meta[notebookKey("nj", "local")]; return { changed: true, value: null }; });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("ns", "local")] = { id: "interrupted-a", history: fake.history, restoreGeneration: fake.restoreGeneration,
+      generation: token!.generation, scenes: [] };
+    return { changed: true, value: null };
+  });
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: selected.length, order: selected.map((s) => s.id),
+    upserts: selected.map((s) => ({ id: s.id, data: JSON.stringify(s) })), commit: true });
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((c) => c.body)).toMatchObject([{ body: { attempt_id: "interrupted-a", expected_count: 0, upserts: [], commit: true } }]);
+  expect(readWorkingBucket(bucket)).toEqual(selected);
+  expect(fake.order.map((id) => JSON.parse(fake.rows.get(id)!.data))).toEqual(selected);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: original } }] });
+  expect((await state()).starting).toBeNull();
+});
+it("a lost own-start reply followed by remap conservatively archives once without losing the canvas", async () => {
+  const original = [scene("own")]; await currentLocal(original);
+  hook = (path, body) => {
+    if (path.endsWith("/start") && body.commit) {
+      hook = null; fake.history = "remapped-history"; fake.starts.clear();
+      for (const row of fake.rows.values()) row.base = { ...row.base, history_id: fake.history, rev: row.base.rev + 1 };
+      throw Error("lost commit reply before remap");
+    }
+  };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual(original);
+  expect((await state()).starting).toBeNull();
+  const archives = await readRestoreArchives("local"); if (!archives.ok) throw Error("archive read failed");
+  expect(archives.value).toHaveLength(1);
+  expect(archives.value[0].scenes[bucket]).toEqual(original);
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(await readRestoreArchives("local")).toEqual(archives);
+});
 it.each([[false, false], [false, true], [true, false], [true, true]])("a held browser losing its own zero-start commit reply leaves no empty control archive (legacy marker: %s, reordered: %s)", async (legacy, reordered) => {
   fake.save(scene("saved-a")); fake.save(scene("saved-b"));
   await writeScenesStore({ [bucket]: [scene("held")] });
@@ -444,6 +482,25 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("a held br
   expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("held")] } }] });
   expect((await state()).starting).toBeNull();
   expect((await state()).joined).toMatchObject({ notebookId: fake.book });
+});
+it("a legacy empty-id profile archives missing base rows after B starts and history is remapped", async () => {
+  const original = [scene("old-a"), scene("old-z")], selected = [scene("chosen-b")];
+  await joined(original);
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    return { changed: true, value: null };
+  });
+  fake.book = null;
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: selected.length, order: selected.map((s) => s.id),
+    upserts: selected.map((s) => ({ id: s.id, data: JSON.stringify(s) })), commit: true });
+  fake.history = "remapped-history";
+  for (const row of fake.rows.values()) row.base = { ...row.base, history_id: fake.history, rev: row.base.rev + 1 };
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual(selected);
+  expect([...fake.rows.keys()]).toEqual(["chosen-b"]);
+  expect(fake.calls.filter((c) => c.body)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: original } }] });
 });
 it.each([false, true])("history remap leaves a legacy empty-id profile on ordinary sync without adoption (edited: %s)", async (edited) => {
   await joined();

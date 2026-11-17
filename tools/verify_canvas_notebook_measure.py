@@ -97,10 +97,27 @@ def verify(report: dict) -> list[str]:
                 record = records.get(name) if isinstance(records, dict) else None
                 scenes = record.get("scenes") if isinstance(record, dict) else None
                 previous[name] = scenes if isinstance(scenes, list) else []
+            start_check = checks.get("interrupted_start")
+            start = start_check.get("actual") if isinstance(start_check, dict) else None
+            attempt = start.get("attempt_id") if isinstance(start, dict) else None
+            if not isinstance(attempt, str) or not attempt:
+                errors.append("actual blocked start attempt required")
+            try:
+                recovery = json.loads(records['b'].get('mirrorRecovery') or 'null')
+                if recovery is not None and (not isinstance(recovery, dict) or not recovery.get('generation') or recovery.get('blockedIds') != [] or recovery.get('uncopied')):
+                    raise ValueError('held B cannot select its original canvas')
+                if previous['a'] == previous['b']:
+                    raise ValueError('B must have an actual offline final edit')
+            except (TypeError, ValueError, KeyError, AttributeError):
+                errors.append("actual unheld offline B provenance required")
             for name, expected in {
                 "interrupted_clean_upgrade": {"not_started": True, "join_id": "", "awaiting": False,
                     "based_ids": sorted(row['id'] for row in previous['a'] if isinstance(row, dict) and isinstance(row.get('id'), str))},
                 "interrupted_closed": {"closed": True, "released": True}, "interrupted_no_upload": False,
+                "before_confirmation": previous,
+                "interrupted_start": {"attempt_id": attempt, "expected_count": 0, "upserts": 0, "commit": True, "before_start": True},
+                "interrupted_rejoin_requests": [{"path": "/api/scenes/notebook/start", "method": "POST", "attempt_id": attempt,
+                    "expected_count": 0, "upserts": 0, "commit": True, "status": 409, "code": "notebook_already_started"}],
                 "other_browser_preserved": [previous['a']], "selected_raw": previous['b'], "no_merge": previous['b'],
             }.items():
                 check = checks.get(name, {})

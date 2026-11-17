@@ -67,11 +67,17 @@ MEASURE_SCRIPT = """(() => {
     const parsed = new URL(url, location.href), path = parsed.pathname + parsed.search;
     if (!parsed.pathname.startsWith('/api/scenes/')) return original.apply(this, arguments);
     const row = {path, method:init?.method || 'GET', start:performance.timeOrigin+performance.now()};
-    if (typeof init?.body === 'string') { try { row.upserts = JSON.parse(init.body).upserts?.length || 0; } catch {} }
+    if (typeof init?.body === 'string') { try {
+      const body=JSON.parse(init.body); row.upserts=body.upserts?.length || 0;
+      if(parsed.pathname === '/api/scenes/notebook/start') {
+        row.attempt_id=body.attempt_id; row.expected_count=body.expected_count; row.commit=body.commit;
+      }
+    } catch {} }
     window.__measureNetwork.push(row);
     return original.apply(this, arguments).then(response => {
       response.clone().text().then(text => {
         row.end=performance.timeOrigin+performance.now(); row.status=response.status;
+        if(parsed.pathname === '/api/scenes/notebook/start') { try { const detail=JSON.parse(text).detail; row.code=typeof detail === 'string' ? detail : detail?.code; } catch {} }
         if (parsed.pathname === '/api/scenes/writer') { try { const data=JSON.parse(text); if(data.token) window.__measureLeaseTokens.push(data.token); } catch {} }
       }).catch(() => { row.failed=true; });
       return response;
@@ -449,7 +455,7 @@ class Measurement:
               const original=window.fetch;
               window.fetch=function(input,init) {
                 const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
-                if(path==='/api/scenes/backup' && init?.method==='PUT') return Promise.reject(new TypeError('measurement holds legacy mirror writes'));
+                if(path==='/api/scenes/backup' && (init?.method==='PUT' || window.__measureHoldMirrorReads)) return Promise.reject(new TypeError('measurement holds legacy mirror requests'));
                 return original.apply(this,arguments);
               };
             }""")
@@ -687,9 +693,15 @@ class Measurement:
             a = await self.open(stack, "a", seeds, hold_mirror=True)
         else:
             a = await self.open(stack, "a", seeds, hold_mirror=True)
-            b = await self.open(stack, "b", b_seed, hold_mirror=True)
+            b = await self.open(stack, "b", seeds if interrupted else b_seed, hold_mirror=True)
         await self.wait_local(a, lambda rows: len(rows) == len(seeds))
         await self.wait_local(b, lambda rows: len(rows) > 0)
+        if interrupted:
+            if generation and not await b.wait(f"JSON.parse({recovery} || 'null')?.generation === {json.dumps(generation)} && JSON.parse({recovery} || 'null')?.blockedIds?.length === 0", 20):
+                raise RuntimeError("interrupted transition requires B's actual unheld old provenance")
+            # Make a real offline final edit after 1011 established provenance; never forge its record.
+            await b.eval("window.__measureHoldMirrorReads = true")
+            await self.rename(b, "1011 B untransmitted final edit")
         if variant in {"same_generation", "held"}:
             if not await a.wait(f"!!{recovery}", 20):
                 raise RuntimeError("1011 browser's actual mirror generation record required")
@@ -744,6 +756,14 @@ class Measurement:
             self.check("interrupted_clean_upgrade", {"not_started": self.hub.request("/api/scenes/notebook")[1]["notebook_id"] is None,
                 "join_id": joined.get("notebookId"), "awaiting": bool(joined.get("awaitingStart")), "based_ids": based_ids},
                 {"not_started": True, "join_id": "", "awaiting": False, "based_ids": sorted(s["id"] for s in before["a"])})
+            pending = entries.get(json.dumps(["ns", self.account], separators=(",", ":")), {})
+            blocked = await a.eval("window.__measureInterruptedStart")
+            interrupted_attempt = pending.get("id")
+            self.check("interrupted_start", {"attempt_id": blocked.get("attempt_id"), "expected_count": blocked.get("expected_count"),
+                "upserts": len(blocked.get("upserts", [])), "commit": blocked.get("commit"), "before_start": joined.get("beforeStart") is True},
+                {"attempt_id": interrupted_attempt, "expected_count": 0, "upserts": 0, "commit": True, "before_start": True})
+            if not interrupted_attempt or any(self.report["checks"][name]["status"] != "passed" for name in ("interrupted_clean_upgrade", "interrupted_start")):
+                raise RuntimeError("actual interrupted clean-upgrade evidence required before continuing")
             paused_a = scene_fingerprints(await self.local(a))
             paused_network = await a.eval("window.__measureNetwork")
             await a.send("Page.close")
@@ -778,6 +798,8 @@ class Measurement:
                     raise RuntimeError("second first-start confirmation missing")
             self.check("before_confirmation", {name: paused_a if interrupted and name == "a" else scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
                        {name: scene_fingerprints(prior_hub if variant == "held" and name == "b" else rows) for name, rows in before.items()})
+            if interrupted and self.report["checks"]["before_confirmation"]["status"] != "passed":
+                raise RuntimeError("B's offline final edit was not preserved before confirmation")
             if variant == "held":
                 self.check("held_first", opened, ["b", "a"])
                 archives = dict(await b.eval(READ_STORE)).get(json.dumps(["nr", self.account], separators=(",", ":")), [])
@@ -854,8 +876,13 @@ class Measurement:
             self.check("other_browser_preserved", archived, [candidates[loser_name]])
             self.check("no_merge", scene_fingerprints(await self.local(loser)), actual)
             if interrupted:
-                self.check("interrupted_no_upload", any(row["method"] == "PUT" or row["path"].endswith("/start")
-                           for row in await a.eval("window.__measureNetwork")), False)
+                network = await a.eval("window.__measureNetwork")
+                requests = [{key: row[key] for key in ("path", "method", "attempt_id", "expected_count", "upserts", "commit", "status", "code") if key in row}
+                            for row in network if row["method"] == "PUT" or row["path"].endswith("/start")]
+                expected = [{"path": "/api/scenes/notebook/start", "method": "POST", "attempt_id": interrupted_attempt,
+                    "expected_count": 0, "upserts": 0, "commit": True, "status": 409, "code": "notebook_already_started"}]
+                self.check("interrupted_rejoin_requests", requests, expected)
+                self.check("interrupted_no_upload", requests != expected, False)
         archived_hub = [row["data"] for row in retained_rows(self.work) if row["reason"] == "before_start"]
         self.check("before_start", scene_fingerprints(sorted(archived_hub, key=lambda s: s["id"])),
                    scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if (variant not in {"equal", "limit_over"} or interrupted) and not (variant == "held" and order == "b") else [])
