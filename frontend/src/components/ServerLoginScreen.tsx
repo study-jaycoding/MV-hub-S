@@ -108,7 +108,7 @@ export function ServerLoginScreen({
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-brand">⬡ MV Hub</div>
+        <div className="login-brand"><i className="mv-mark full" aria-hidden="true" />MV Hub</div>
         <div className="login-sub">
           {isRegister ? (
             <>

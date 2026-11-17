@@ -21,6 +21,7 @@
 }
 .admin-window .admin-head { grid-column: 1 / -1; padding: 0 12px 0 20px; }
 .admin-title { font-weight: 700; font-size: 15px; }
+.admin-title .mv-mark { margin-right: 7px; vertical-align: -0.2em; } /* 관리자 창 제목 앞 MV 아이콘 실루엣(제목 글자 색) */
 .admin-window .assets-x { border-radius: 9px; color: var(--muted); }
 .admin-key {
   display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0;
@@ -732,7 +733,9 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .login-brand {
   font-weight: 800; font-size: 24px; letter-spacing: -0.4px; text-align: center;
   background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
 }
+.login-brand .mv-mark { width: 30px; height: 30px; } /* 원래 라임 MV 아이콘(글자 그라데이션과 같은 라임) */
 .login-sub { text-align: center; color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 4px; }
 .login-hint { color: var(--muted); font-size: 12px; margin-top: -6px; padding-left: 2px; }
 .login-card input {

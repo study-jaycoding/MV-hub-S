@@ -186,7 +186,7 @@ export function AgentConnect({ state, version, install, loginWindowEnabled, wait
   })();
   return (
     <section className="cn" aria-label={t("Claude 연결")} role="status">
-      <div className="cn-mark" aria-hidden="true">⬡</div>
+      <div className="cn-mark" aria-hidden="true"><i className="mv-mark full" /></div>
       {body}
       <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · [실행]만 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
     </section>
