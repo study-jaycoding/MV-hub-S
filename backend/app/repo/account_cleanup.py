@@ -80,7 +80,7 @@ _KINDS = {
     "슈퍼 관리자": ("super_admin_session",),
 }
 _KIND_OF = {table: kind for kind, tables in _KINDS.items() for table in tables}
-_COLUMNS = "email, name, status, creator_uid, created_at, COALESCE(hidden,0) AS hidden"
+_COLUMNS = "email, name, status, creator_uid, created_at, approved_at, COALESCE(hidden,0) AS hidden"
 
 
 class CleanupRefused(Exception):
@@ -162,6 +162,10 @@ def _judge(conn, row, actor_email: str, outside: dict[str, int]) -> dict[str, An
         verdict = "blocked"
     elif row["status"] == "approved":
         verdict = "block_first"
+    elif row["approved_at"]:
+        # 한 번 승인됐던 계정은 차단 전에 권한 검사를 지난 요청이 지운 뒤 저장될 수 있다 — 승인된 적 없는 계정만 지운다(Codex 01a1e6ef)
+        verdict = "blocked"
+        reasons = [{"kind": "승인된 적 있는 계정", "count": 0}]
     elif row["status"] == "rejected" or row["hidden"]:
         verdict = "deletable"
     else:

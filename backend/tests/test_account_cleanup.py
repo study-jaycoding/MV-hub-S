@@ -97,6 +97,16 @@ def test_only_accounts_that_cannot_log_in_are_deletable(world, status, hidden, v
         assert repo.get_account(GHOST) is not None
 
 
+def test_once_approved_then_blocked_account_is_not_deletable(world):
+    ghost("approved")  # 승인 → approved_at 기록
+    repo.set_account_status(GHOST, "rejected")
+    row = rows()[GHOST]
+    assert row["verdict"] == "blocked" and row["reasons"] == [{"kind": "승인된 적 있는 계정", "count": 0}]
+    with pytest.raises(cleanup.CleanupRefused):
+        delete()
+    assert repo.get_account(GHOST) is not None
+
+
 @pytest.mark.parametrize("status", ["pending", "approved"])
 def test_visible_accounts_are_not_listed_and_cannot_be_deleted(world, status):
     ghost(status)

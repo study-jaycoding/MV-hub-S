@@ -52,6 +52,10 @@ def signup_approved(email=GHOST):
 
 def wipe(email=GHOST):
     repo.set_account_status(email, "rejected")
+    # 승인됐던 계정은 이제 판정이 막는다. 옛 DB·수동 변경처럼 승인 기록(approved_at)이 비어 토큰이 있던 계정이
+    # 지워진 경우에도 옛 토큰·늦은 요청이 돌아오지 않는지는 이중 안전장치로 계속 지킨다.
+    with db.get_connection() as conn:
+        conn.execute("UPDATE account SET approved_at=NULL WHERE email=?", (email,))
     account = repo.get_account(email)
     cleanup.delete_cleanup_account(email, status="rejected", hidden=False, created_at=account["created_at"],
                                    actor_email=ADMIN, actor_uid="acct:" + ADMIN)
@@ -177,7 +181,8 @@ def test_api_lists_and_deletes_for_the_admin_on_the_server_pc(server, monkeypatc
     assert web.post("/api/admin/account-cleanup/delete", json=body).status_code == 409
 
 
-def test_delete_is_off_in_this_release(server):
+def test_delete_is_off_in_this_release(server, monkeypatch):
+    monkeypatch.setattr(cleanup_router, "DELETE_ENABLED", False)  # 꺼 둔 판의 흐름 — 다시 끌 때를 위해 지킨다
     repo.register(GHOST, PASSWORD, "유령")
     repo.set_account_status(GHOST, "rejected")
     web = login()

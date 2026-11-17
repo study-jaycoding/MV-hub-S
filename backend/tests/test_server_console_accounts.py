@@ -22,7 +22,17 @@ def test_table_values_tell_the_state_history_and_verdict():
     assert account_rows.table_values(blocked)[3:] == ("자기 계정 · 생성물 412", "삭제 불가")
     assert account_rows.table_values({**ROW, "name": None, "hidden": False, "verdict": "block_first", "status": "approved"})[:3] == (
         "ghost@x.test", "ghost@x.test", "승인")
-    assert account_rows.table_values({**ROW, "verdict": "block_first"})[4] == "먼저 차단"
+    assert account_rows.table_values({**ROW, "verdict": "block_first"})[4] == "차단만"
+
+
+def test_once_approved_accounts_are_never_promised_a_delete():
+    # 승인된 적 있는 계정은 차단해도 서버 판정이 삭제를 막는다 — 창이 '막은 뒤 지울 수 있다'고 말하면 안 된다(Codex 01a1e6fe)
+    approved = {**ROW, "verdict": "block_first", "status": "approved", "hidden": True}
+    was_approved = {**ROW, "verdict": "blocked", "reasons": [{"kind": "승인된 적 있는 계정", "count": 0}]}
+    texts = [account_rows.selection_text(approved), account_rows.selection_text(was_approved), account_rows.verdict_text(approved)]
+    assert not [t for t in texts if "지울 수" in t or "삭제 가능" in t]
+    assert "[차단]" in texts[0] and "승인된 적 있는 계정" in texts[1] and account_rows.verdict_text(was_approved) == "삭제 불가"
+    assert "승인된 적 있는 계정은 차단·숨김까지만" in account_rows.page_text(True)
 
 
 def test_unknown_verdict_never_reads_as_deletable():
