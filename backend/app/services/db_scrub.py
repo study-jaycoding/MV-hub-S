@@ -144,6 +144,7 @@ def _compact_scrubbed_copy(conn: sqlite3.Connection, *, changed: bool = False) -
 
 def scrub_slack_connection(conn: sqlite3.Connection) -> None:
     """Strip and verify on the caller's configured connection and transaction."""
+    conn.execute('PRAGMA secure_delete=ON')
     keys = ('slack_bot_config', 'slack_notify_floor', 'slack_notify_generation')
     if _table_exists(conn, 'app_setting'):
         for key in keys:

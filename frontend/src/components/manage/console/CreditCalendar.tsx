@@ -6,6 +6,8 @@ import { useModalFocus } from "../../../lib/keyGate";
 import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { acceptDecimal, acceptThousands, formatDecimal, formatThousands } from "../../../lib/creditPlan";
 import { formatCredits } from "../../../lib/formatCredits";
+import { formatBalanceTime, timestampMs } from "../../../lib/format";
+import { useT } from "../../../lib/i18n";
 import { ManageEditCancelled } from "../useManageEditConflict";
 import type { ConsoleOverview, ConsoleSub } from "../../../lib/workspaceConsole";
 import { PERIOD_UNIT } from "../../../lib/workspaceConsole";
@@ -163,6 +165,7 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
   onClose: () => void;
 }) {
   const { event, note } = info;
+  const t = useT();
   const noteFailed = !!info.noteFailed; // 메모를 못 읽었다 — 금액만 저장하고 메모는 보내지 않는다(서버의 기존 메모 유지)
   const recurring = event.kind === "recurring";
   const [creditsText, setCreditsText] = useState(recurring ? formatDecimal(String(event.credits)) : formatThousands(String(event.credits)));
@@ -212,7 +215,7 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
         <dl>
           <dt>날짜</dt><dd>{event.day}{recurring ? " (예정)" : " (기록)"}</dd>
           {repeat ? <><dt>반복</dt><dd>{repeat}</dd></> : null}
-          {sub ? <><dt>서브 잔액</dt><dd>{formatCredits(sub.balance)} <span className="credit-est">{sub.balance_seen_at?.slice(5, 16)} 보고</span></dd></> : null}
+          {sub ? <><dt>서브 잔액</dt><dd>{formatCredits(sub.balance)} <span className="credit-est">{t("잔액은 {time}").replace("{time}", formatBalanceTime(sub.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: sub.balance_seen_at ? timestampMs(sub.balance_seen_at) : null }))}</span></dd></> : null}
           {!canEdit ? (
             <>
               <dt>크레딧</dt><dd>+{formatCredits(event.credits)}{recurring && sub ? ` / ${PERIOD_UNIT[sub.recurring_period]}` : ""}</dd>
@@ -238,7 +241,7 @@ function EventInfo({ info, sub, canEdit, onEdit, onClose }: {
             ) : null}
             {!recurring ? (
               <label>메모<input id="wc-event-note" value={noteText} readOnly={busy} disabled={!noteReady || noteFailed}
-                placeholder={noteFailed ? "메모를 읽지 못했습니다 — 창을 닫았다가 다시 여세요" : noteReady ? "선택" : "불러오는 중..."}
+                placeholder={noteFailed ? "메모를 읽지 못했습니다 — 창을 닫았다가 다시 여세요" : noteReady ? "선택" : t("불러오는 중")}
                 onChange={(e) => setNoteDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save(); }} /></label>
             ) : <p className="wc-hint">반복을 끄거나 주기·날짜를 바꾸려면 서브 표의 ＋ 크레딧 창을 쓰세요. 날짜는 막대를 끌어서 옮깁니다.</p>}
           </>

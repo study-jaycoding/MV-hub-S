@@ -5,7 +5,10 @@ import { useEscapeClose } from "../../../lib/useEscapeClose";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fillReorder } from "../../../lib/memberTable";
 import { api } from "../../../api";
-import { isRouteMissing } from "../../../lib/http";
+import { getAuthToken, isRouteMissing } from "../../../lib/http";
+import { getAccountNamespace, getConnectionKey } from "../../../lib/accountScope";
+import { formatBalanceTime, timestampMs } from "../../../lib/format";
+import { useT } from "../../../lib/i18n";
 import { manageApi } from "../../../lib/manageApi";
 import type { ManageCaps } from "../../../lib/useManageCaps";
 import type { CreditPlanSaveBody, CreditPlanSettings } from "../../../lib/creditPlan";
@@ -16,6 +19,7 @@ import { ConsoleFolderDialog } from "./ConsoleFolderDialog";
 import { ConsolePeriodDialog } from "./ConsolePeriodDialog";
 import { CreditCalendar } from "./CreditCalendar";
 import { PoolCard, SubTable } from "./ConsoleMainParts";
+import { BalanceLedger } from "./BalanceLedger";
 
 const errorText = (reason: unknown) => String(reason).replace(/^Error:\s*/, "");
 
@@ -29,7 +33,14 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
   onSelectedChange?: (id: string) => void;
   workingId?: string;
 }) {
-  const [data, setData] = useState<ConsoleOverview | null>(null);
+  const t = useT();
+  const connection = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
+  const scope = `${connection()}\0${caps.contextKey ?? ""}\0${caps.system}\0${caps.authOff}\0${selectedId ?? ""}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const loadSeq = useRef(0);
+  const [record, setRecord] = useState<{ scope: string; data: ConsoleOverview } | null>(null);
+  const data = record?.scope === scope ? record.data : null;
   const [error, setError] = useState("");
   const [missing, setMissing] = useState(false);
   const [selected, setSelectedRaw] = useState<string | null>(null);
@@ -48,19 +59,24 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
   const canSetMain = caps.authOff || caps.system;
 
   const load = useCallback(async (): Promise<ConsoleOverview | null> => {
+    const ticket = ++loadSeq.current;
+    const sentConnection = connection();
+    const current = () => scopeRef.current === scope && loadSeq.current === ticket && connection() === sentConnection;
     try {
       const next = await manageApi.consoleOverview();
-      setData(next); setError(""); setMissing(false);
+      if (!current()) return null;
+      setRecord({ scope, data: next }); setError(""); setMissing(false);
       setSelectedRaw((current) => current ?? next.main?.id ?? next.subs[0]?.id ?? null);
       return next;
     } catch (reason) {
+      if (!current()) return null;
       if (isRouteMissing(reason)) setMissing(true);
       else setError(`불러오지 못했습니다. ${errorText(reason)}`);
       return null;
     }
-  }, []);
+  }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps -- connection reads current credentials
   const [dragSub, setDragSub] = useState<string | null>(null);
-  useEffect(() => { void load(); }, [load, reloadSignal]);
+  useEffect(() => { void load(); return () => { loadSeq.current++; }; }, [load, reloadSignal]);
   // 머리 선택이 서브스페이스의 메인·서브면 그쪽. 아니면(대시보드에서만) 내가 작업하던 워크스페이스 → 메인 순으로 열고 머리에도 알린다.
   useEffect(() => {
     if (!data) return;
@@ -72,7 +88,7 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
   }, [selectedId, data]); // eslint-disable-line react-hooks/exhaustive-deps -- 새 머리 선택·새 목록일 때만(작업 중 워크스페이스는 여는 순간의 값)
 
   if (missing) return <div className="manage-empty">공유 서버를 업데이트한 뒤 사용할 수 있습니다.</div>;
-  if (!data) return <div className="manage-empty">{error || "불러오는 중..."}</div>;
+  if (!data) return <div className="manage-empty">{error || t("불러오는 중")}</div>;
 
   const main = data.main;
   const sub = data.subs.find((s) => s.id === selected);
@@ -208,7 +224,7 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
                 <div className="usage-avatar">{main.name.slice(0, 1).toUpperCase()}</div>
                 <div>
                   <div className="wc-title">{main.name} <span className="wc-chip ok">메인</span></div>
-                  <p>서브 워크스페이스에 나갈 크레딧을 조율합니다 · 잔액은 {main.balance_seen_at?.slice(5, 16) ?? "보고 없음"} 보고값</p>
+                  <p>{t("서브 워크스페이스에 나갈 크레딧을 조율합니다")} · {t("잔액은 {time}").replace("{time}", formatBalanceTime(main.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: main.balance_seen_at ? timestampMs(main.balance_seen_at) : null }))}</p>
                 </div>
               </div>
             </div>
@@ -255,9 +271,10 @@ export function WorkspaceConsole({ caps, reloadSignal, selectedId, onSelectedCha
                 if (!settings) throw new Error("설정을 읽지 못했습니다.");
                 return settings.topups.find((t) => t.id === event.topup_id)?.note ?? null;
               }} />
+            {caps.system && !caps.authOff ? <BalanceLedger caps={caps} spaces={[{ id: main.id, name: main.name }, ...data.subs.map(({ id, name }) => ({ id, name }))]} selectedId={main.id} reloadSignal={reloadSignal} /> : null}
           </div>
         ) : sub ? (
-          <ConsoleSubView key={sub.id} workspaceId={sub.id} name={sub.name} tier="sub" sub={sub} today={data.today} canEdit={canEdit} conflict={conflict} onChanged={() => void load()} reloadSignal={reloadSignal} />
+          <ConsoleSubView key={sub.id} workspaceId={sub.id} name={sub.name} tier="sub" sub={sub} today={data.today} canEdit={canEdit} conflict={conflict} onChanged={() => void load()} reloadSignal={reloadSignal} contextKey={caps.contextKey} />
         ) : (
           <div className="manage-empty">왼쪽에서 워크스페이스를 고르세요.</div>
         )}
@@ -306,7 +323,7 @@ function LinkDialog({ pending, onClose, onLink }: {
         {pending.map((w) => (
           <label key={w.id} className={`wc-choice${pick === w.id ? " on" : ""}`}>
             <span><input type="radio" name="wc-link" checked={pick === w.id} onChange={() => setPick(w.id)} /> {w.name}</span>
-            <span className="wc-chip">{w.archived ? "내린 서브 · " : ""}보고 {w.reported}명{w.last_seen_at ? ` · ${w.last_seen_at.slice(5, 16)}` : ""}</span>
+            <span className="wc-chip">{w.archived ? "내린 서브 · " : ""}보고 {w.reported}명{w.last_seen_at ? ` · ${formatBalanceTime({ basis: "legacy_snapshot", received_at_ms: timestampMs(w.last_seen_at) })}` : ""}</span>
           </label>
         ))}
         {!pending.length ? <div className="wc-note">연결할 워크스페이스가 없습니다.</div> : null}

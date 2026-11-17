@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { reconcileValueState } from "./stateReconciliation";
+import { getAccountNamespace, getConnectionKey } from "./accountScope";
+import { getAuthToken } from "./http";
 
 export interface SyncStatus {
   pending: number;
@@ -16,16 +18,26 @@ export interface SyncStatus {
   account_report_last_error: string | null;
   account_report_oldest_dirty: string | null;
   account_report_last_success_at: string | null;
+  balance_pending?: number;
+  balance_failed?: number;
+  balance_conflict?: number;
+  balance_unsupported?: number;
+  balance_oldest_pending_at_ms?: number | null;
+  balance_last_success_at_ms?: number | null;
+  balance_last_error_code?: string | null;
+  balance_write_enabled?: boolean;
+  balance_error_code?: string | null;
 }
 
 export function syncPendingCount(status: SyncStatus): number {
-  return Math.max(0, status.pending || 0) + Math.max(0, status.account_report_pending || 0);
+  return Math.max(0, status.pending || 0) + Math.max(0, status.account_report_pending || 0) + Math.max(0, status.balance_pending || 0);
 }
 
 export function syncFailedCount(status: SyncStatus): number {
   return Math.max(0, status.failed || 0)
     + Math.max(0, status.account_report_failed || 0)
-    + Math.max(0, status.account_report_dead || 0);
+    + Math.max(0, status.account_report_dead || 0)
+    + Math.max(0, status.balance_failed || 0);
 }
 
 export function latestSyncSuccess(status: SyncStatus): string | null {
@@ -56,8 +68,11 @@ export function formatTelemetryLastSuccess(value: string | null): string {
   return `마지막 성공 ${formatted}`;
 }
 
-export function useSyncStatus(enabled = true): SyncStatus | null {
-  const [status, setStatus] = useState<SyncStatus | null>(null);
+export function useSyncStatus(enabled = true, contextKey = ""): SyncStatus | null {
+  const connection = () => `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
+  const connectionKey = connection();
+  const scope = `${connectionKey}\0${contextKey}`;
+  const [status, setStatus] = useState<{ key: string; value: SyncStatus } | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -67,9 +82,10 @@ export function useSyncStatus(enabled = true): SyncStatus | null {
       api
         .syncStatus()
         .then((s) => {
-          if (alive) setStatus((previous) => reconcileValueState(previous, s));
+          if (alive && connection() === connectionKey) setStatus((previous) => ({ key: scope,
+            value: reconcileValueState(previous?.key === scope ? previous.value : null, s) ?? s }));
         })
-        .catch(() => alive && setStatus(null));
+        .catch(() => alive && connection() === connectionKey && setStatus(null));
     };
     check();
     const id = window.setInterval(check, 30000); // 30초 — 관측용이라 자주 안 찔러도 됨
@@ -82,7 +98,7 @@ export function useSyncStatus(enabled = true): SyncStatus | null {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [enabled]);
+  }, [enabled, scope, connectionKey]); // eslint-disable-line react-hooks/exhaustive-deps -- connection reads the current credentials
 
-  return enabled ? status : null;
+  return enabled && status?.key === scope ? status.value : null;
 }

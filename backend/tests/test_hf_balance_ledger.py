@@ -87,6 +87,25 @@ def test_manual_topup_match_is_not_execution_proof():
     assert item['candidate_classification']=='topup_candidate'
     assert item['candidate_evidence'][0]['code']=='current_plan_match'
     assert item['candidate_evidence'][0]['plan_revision']==7
+    assert item['candidate_evidence'][0]['credits_c']==100
+
+
+def test_daily_balance_counts_original_rows_pins_receipts_and_rejects_conflicting_edges(world):
+    configured()
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws','Space')")
+        values = [observation(10000-n, when=START+n*1000, seq=n) for n in range(1, 12)]
+        balance.store(conn, EMAIL, None, 1, values, received_at_ms=AT)
+        # A second reporter's same-time different value is an uncertain opening.
+        conflict = observation(20000, when=START+1000, seq=50)
+        balance.store(conn, 'other@example.com', None, 1, [conflict], received_at_ms=AT)
+        late = observation(1, when=START+20000, seq=51)
+        balance.store(conn, EMAIL, None, 1, [late], received_at_ms=AT+100)
+        answer = ledger.daily_balances(conn, 'ws', START, START+2*ledger.DAY_MS, AT)
+    first, empty = answer
+    assert first['observation_count'] == 12
+    assert first['opening_c'] is None and first['closing_c'] == 9989 and first['delta_c'] is None
+    assert empty['observation_count'] == 0 and empty['opening_c'] is None and empty['closing_c'] is None
 
 
 def test_topup_and_usage_simultaneously_keep_residual_separate():
@@ -209,9 +228,21 @@ def test_bounded_rows_chart_and_response_size(world):
     seed(world,1100)
     answer=ledger.ledger('ws','2026-11-16','2026-11-17',limit=500,at=AT)
     assert answer['returned_count']<=500 and len(answer['chart_points'])<=1000 and answer['has_more']
+    assert answer['daily_balances'][0]['observation_count'] == 1100
+    assert answer['chart_gaps'] == []
     assert len(json.dumps(answer).encode())<1048576
     with pytest.raises(ValueError): ledger.ledger('ws','2026-10-01','2026-11-17',at=AT)
     with pytest.raises(ValueError): ledger.ledger('ws',limit=501,at=AT)
+
+
+def test_chart_gaps_come_from_original_checks_and_share_the_receipt_cutoff(world):
+    seed(world, 2)
+    with db.get_connection() as conn:
+        balance.store(conn, EMAIL, None, 1, [observation(9000, when=START+3600000, seq=3)], received_at_ms=AT)
+        # A late point cannot erase a gap in an already pinned reading.
+        balance.store(conn, EMAIL, None, 1, [observation(9500, when=START+1800000, seq=4)], received_at_ms=AT+1)
+    answer = ledger.ledger('ws', '2026-11-16', '2026-11-17', at=AT)
+    assert answer['chart_gaps'] == [dict(start_ms=START+2000, end_ms=START+3600000)]
 
 
 def test_phase2_usage_contract_is_unchanged():

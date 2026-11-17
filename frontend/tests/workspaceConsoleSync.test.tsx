@@ -5,9 +5,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceConsole } from "../src/components/manage/console/WorkspaceConsole";
 import type { ManageCaps } from "../src/lib/useManageCaps";
+import type { ConsoleOverview } from "../src/lib/workspaceConsole";
 
 const overview = vi.hoisted(() => vi.fn());
-vi.mock("../src/lib/manageApi", () => ({ manageApi: { consoleOverview: overview } }));
+const plan = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/manageApi", () => ({ manageApi: { consoleOverview: overview, creditPlan: plan } }));
 // 화면 본체는 이 시험의 관심 밖 — 어느 워크스페이스를 보이는지만 남긴다
 vi.mock("../src/components/manage/console/ConsoleSubView", () => ({ ConsoleSubView: ({ sub }: { sub: { id: string } }) => <div data-shown={sub.id} />, CreditDialog: () => null }));
 vi.mock("../src/components/manage/console/ConsoleMainParts", () => ({ PoolCard: () => <div data-shown="main" />, SubTable: () => null }));
@@ -23,7 +25,7 @@ beforeEach(() => {
     totals: {}, schedule: [], allocation: {}, calendar: { from: "", to: "", events: [] } });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const render = async (selectedId: string | undefined, onSelectedChange = vi.fn(), workingId?: string) => {
   await act(async () => { root.render(<WorkspaceConsole caps={caps} reloadSignal={0} selectedId={selectedId} onSelectedChange={onSelectedChange} workingId={workingId} />); });
@@ -32,6 +34,42 @@ const render = async (selectedId: string | undefined, onSelectedChange = vi.fn()
 };
 const shown = () => host.querySelector("[data-shown]")?.getAttribute("data-shown");
 const railButton = (name: string) => [...host.querySelectorAll<HTMLButtonElement>(".wc-rail .wc-ws")].find((button) => button.textContent?.replace("★", "").startsWith(name))!;
+
+it("풀 카드는 확인 시각을 KST로 표시하고 불완전한 합계의 그래프를 그리지 않는다", async () => {
+  const { PoolCard } = await vi.importActual<typeof import("../src/components/manage/console/ConsoleMainParts")>("../src/components/manage/console/ConsoleMainParts");
+  const at = Date.parse("2026-11-17T00:30:00Z");
+  vi.spyOn(Date, "now").mockReturnValue(at + 600_000);
+  const data = {
+    today: "2026-11-17", main: { id: "main", name: "Main", balance: 50, balance_seen_at: null, reported: 1, balance_meta: { basis: "observed", observed_at_ms: at } },
+    subs: [], pending: [], schedule: [], calendar: { from: "", to: "", events: [] },
+    totals: { unknown_workspace_count: 1, legacy_workspace_count: 1, stale_workspace_count: 1 },
+    allocation: { source: "estimate", base: null, base_day: null, allocated: null, spent: null, unused: 20, complete: false },
+  } as ConsoleOverview;
+  await act(async () => { root.render(<PoolCard data={data} canEdit={false} onChanged={() => {}} />); });
+  expect(host.textContent).toContain("잔액은 11/17 09:30 확인 (10분 전)");
+  expect(host.textContent).toContain("확인 안 된 서브 3곳");
+  expect(host.textContent).toContain("계산할 수 없음");
+  expect(host.querySelector(".wc-pool-bar")).toBeNull();
+  expect(host.textContent).not.toMatch(/관측|precision|legacy|API/);
+
+  const complete = { ...data, allocation: { ...data.allocation, complete: true, allocated: 70, spent: 50 } };
+  await act(async () => { root.render(<PoolCard data={complete} canEdit={false} onChanged={() => {}} />); });
+  expect(host.querySelector(".wc-pool-bar")).not.toBeNull();
+});
+
+it("서브 잔액은 공간·권한 문맥이 바뀐 뒤 도착한 이전 응답을 버린다", async () => {
+  const { ConsoleSubView } = await vi.importActual<typeof import("../src/components/manage/console/ConsoleSubView")>("../src/components/manage/console/ConsoleSubView");
+  let resolveOld!: (value: unknown) => void;
+  plan.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+  const props = { workspaceId: "old", name: "Old", tier: "sub" as const, today: "2026-11-17", canEdit: false,
+    conflict: {} as never, onChanged: () => {}, contextKey: "account-a" };
+  await act(async () => { root.render(<ConsoleSubView {...props} />); });
+  plan.mockResolvedValue({ pool: { balance: 42, balance_seen_at: null, topups_month: { credits: 0, count: 0 } }, groups: [] });
+  await act(async () => { root.render(<ConsoleSubView {...props} workspaceId="new" contextKey="account-b" />); });
+  await act(async () => { resolveOld({ pool: { balance: 987654, balance_seen_at: null, topups_month: { credits: 0, count: 0 } }, groups: [] }); });
+  expect(host.querySelector(".credit-pool-grid strong")?.textContent).toBe("42");
+  expect(host.textContent).not.toContain("987,654");
+});
 
 it("머리에서 고른 서브를 서브스페이스도 보이고, 서브스페이스 목록에서 고르면 머리에 알린다", async () => {
   const onChange = await render("a", vi.fn(), "b");

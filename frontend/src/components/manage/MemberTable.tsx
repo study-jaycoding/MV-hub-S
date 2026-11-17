@@ -33,6 +33,10 @@ import {
 } from "../../lib/creditPlan";
 import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
+import { formatBalanceTime, timestampMs } from "../../lib/format";
+import { useT } from "../../lib/i18n";
+import { getAccountNamespace, getConnectionKey } from "../../lib/accountScope";
+import { getAuthToken } from "../../lib/http";
 import { unknownUsageLabel } from "../../lib/creditUsage";
 import { errorDetail, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { holdUnload } from "../../lib/unloadGuard";
@@ -336,6 +340,7 @@ const emptyFilters = (): TableFilters => ({
 });
 
 export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceId?: string; reloadSignal?: number }) {
+  const t = useT();
   const conflict = useManageEditConflict();
   const [data, setData] = useState<MemberTableData | null>(null);
   const [error, setError] = useState("");
@@ -393,7 +398,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
   const load = useCallback(async () => {
     const requestId = ++requestRef.current;
     const epoch = epochRef.current;
-    const stale = () => requestRef.current !== requestId || epochRef.current !== epoch;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
+    const stale = () => requestRef.current !== requestId || epochRef.current !== epoch || account !== getAccountNamespace() || connection !== getConnectionKey() || token !== getAuthToken();
     try {
       const raw = await manageApi.memberTable(workspaceId || undefined);
       if (stale()) return;
@@ -430,6 +436,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
 
   useEffect(() => {
     void load();
+    return () => { requestRef.current += 1; };
   }, [load, reloadSignal]);
 
   useEffect(() => {
@@ -456,9 +463,10 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
     ? data.console_subs ?? null : null;
   useEffect(() => {
     const requestId = ++subRequestRef.current;
+    const account = getAccountNamespace(), connection = getConnectionKey(), token = getAuthToken();
     if (!mainSubs?.length) { setSubTables(mainSubs ? [] : null); return; } // 연결된 서브 0개 = 빈 합본(로딩 아님 — Codex 코드 리뷰)
     void Promise.allSettled(mainSubs.map((id) => manageApi.memberTable(id))).then((settled) => {
-      if (subRequestRef.current !== requestId) return;
+      if (subRequestRef.current !== requestId || account !== getAccountNamespace() || connection !== getConnectionKey() || token !== getAuthToken()) return;
       setSubTables(mainSubs.map((id, index) => {
         const result = settled[index];
         return result.status === "fulfilled" ? { id, table: withoutSystemRows(result.value), error: "" } : { id, table: null, error: errorText(result.reason) };
@@ -1867,8 +1875,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
             </table>
           </div>
           <div className="mtable-table-summary mtable-credit-summary" aria-label="메인 크레딧 요약">
-            <div title={data.main_balance?.seen_at ? `${data.main_balance.seen_at.slice(5, 16)} 보고값` : "보고 없음"}>
-              <span>크레딧 풀(메인 잔액) · {data.main_balance?.seen_at?.slice(5, 16) ?? "보고 없음"}</span>
+            <div title={formatBalanceTime(data.main_balance?.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: data.main_balance?.seen_at ? timestampMs(data.main_balance.seen_at) : null })}>
+              <span>크레딧 풀(메인 잔액) · {formatBalanceTime(data.main_balance?.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: data.main_balance?.seen_at ? timestampMs(data.main_balance.seen_at) : null })}</span>
               <strong>{data.main_balance?.credits == null ? "—" : credits(data.main_balance.credits)}</strong>
             </div>
             <div><span>서브 정기 크레딧 합계</span><strong>{mainRecurring.size ? [...mainRecurring].map(([period, value]) => `${credits(value)} /${PERIOD_UNIT[period]}`).join(" · ") : "없음"}</strong></div>
@@ -2045,8 +2053,8 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
               {/* 서브스페이스 서브 요약(§16) — 서브스페이스 서브 화면 머리 카드와 같은 값(서버 console_limit 상세) */}
               {consoleCredit?.topups_count !== undefined ? <div><span>추가 크레딧 건수</span><strong>{consoleCredit.topups_count}건</strong></div> : null}
               {consoleCredit && consoleCredit.balance !== undefined ? (
-                <div title={consoleCredit.balance_seen_at ? `${consoleCredit.balance_seen_at.slice(5, 16)} 보고값` : "보고 없음"}>
-                  <span>잔액(보고) · {consoleCredit.balance_seen_at?.slice(5, 16) ?? "보고 없음"}</span><strong>{credits(consoleCredit.balance)}</strong>
+                <div title={formatBalanceTime(consoleCredit.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: consoleCredit.balance_seen_at ? timestampMs(consoleCredit.balance_seen_at) : null })}>
+                  <span>{t("잔액은 {time}").replace("{time}", formatBalanceTime(consoleCredit.balance_meta ?? { basis: "legacy_snapshot", received_at_ms: consoleCredit.balance_seen_at ? timestampMs(consoleCredit.balance_seen_at) : null }))}</span><strong>{credits(consoleCredit.balance)}</strong>
                 </div>
               ) : null}
               {consoleCredit?.used_cycle !== undefined ? (

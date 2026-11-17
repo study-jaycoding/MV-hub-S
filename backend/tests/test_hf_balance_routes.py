@@ -203,6 +203,88 @@ def test_logout_switches_to_legacy_db_without_ack_and_login_delivers_original(tm
         db.flush_pool()
 
 
+@pytest.mark.parametrize('race',['switch_after_validation','logout_before_store','logout_after_validation'])
+def test_observation_ingest_pins_account_db_and_requires_delivery_target(tmp_path,monkeypatch,race):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import active_account, db, db_paths, repo
+    from app.routers import publish
+
+    monkeypatch.delenv('CONTENT_HUB_DB',raising=False)
+    monkeypatch.setattr(config,'DATA_DIR',tmp_path)
+    monkeypatch.setattr(config,'AUTH_ENABLED',False)
+    monkeypatch.setattr(deps,'AUTH_ENABLED',False)
+    monkeypatch.setattr(publish,'AUTH_ENABLED',False)
+    monkeypatch.setattr(route._proxy,'AUTH_ENABLED',False)
+    monkeypatch.setattr(config,'LOCAL_AGENT_PAIR_SECRET','')
+    monkeypatch.setattr(active_account,'_POINTER',tmp_path/'active.json')
+    monkeypatch.setattr(active_account,'_cache',[False,None])
+    monkeypatch.setattr(active_account,'_epoch',[0])
+    legacy=tmp_path/'legacy.db'
+    monkeypatch.setattr(db_paths,'DEFAULT_DB_PATH',legacy)
+    monkeypatch.setattr(db,'DEFAULT_DB_PATH',legacy)
+    monkeypatch.setenv('CONTENT_HUB_NO_PROXY','0')
+    monkeypatch.setattr(route,'schedule_telemetry_drain',lambda:None)
+    marker=active_account.set_override(None)
+    try:
+        active_account.clear_active()
+        db.init_db()
+        paths={}
+        for email,target in ((EMAIL,'https://a.example.invalid'),('other@example.test','https://b.example.invalid')):
+            active_account.set_active(email)
+            db.init_db()
+            paths[email]=db.get_db_path()
+            repo.set_setting('shared_server_url',target)
+            repo.set_setting('shared_server_token','fixture-session')
+        active_account.set_active(EMAIL)
+        validate=route._validate_balance_sender
+        receive=route.hf_balance.receive
+        def transition():
+            if race=='switch_after_validation':
+                active_account.set_active('other@example.test')
+            else:
+                # The real logout endpoint clears A's session before deleting the machine pointer.
+                with active_account.transition_lock:
+                    publish._clear_session_settings()
+                    publish._detach_active_account()
+        def validated(*args):
+            value=validate(*args)
+            if race!='logout_before_store':
+                transition()
+            return value
+        def storing(*args,**kwargs):
+            if race=='logout_before_store':
+                transition()
+            assert db.get_db_path()==paths[EMAIL]
+            assert kwargs['target']=='https://a.example.invalid'
+            return receive(*args,**kwargs)
+        monkeypatch.setattr(route,'_validate_balance_sender',validated)
+        monkeypatch.setattr(route.hf_balance,'receive',storing)
+        app=FastAPI()
+        @app.middleware('http')
+        async def loopback(request,call_next):
+            request.scope['client']=('127.0.0.1',12345)
+            return await call_next(request)
+        app.include_router(route.router)
+        with TestClient(app,base_url='http://localhost') as client:
+            response=client.post('/api/ingest/balance-observations',headers={'Authorization':'Bearer local'},
+                                  json=dict(version=1,account_email=EMAIL,observations=[observation()]))
+        accepted=race!='logout_after_validation'
+        assert response.status_code==(200 if accepted else 409)
+        if not accepted:
+            assert response.json()['detail']==dict(code='hub_not_signed_in',retryable=True)
+        for email,path in (*paths.items(),('legacy',legacy)):
+            with db.get_connection(db_path=path) as conn:
+                expected=int(accepted and email==EMAIL)
+                assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==expected
+                assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==expected
+                if expected:
+                    assert conn.execute('SELECT target_key FROM hf_balance_outbox').fetchone()[0]=='https://a.example.invalid'
+    finally:
+        active_account.reset_override(marker)
+        db.flush_pool()
+
+
 def test_legacy_ingest_ignores_observations_without_ack(balance_db,monkeypatch):
     import json
     from fastapi import FastAPI

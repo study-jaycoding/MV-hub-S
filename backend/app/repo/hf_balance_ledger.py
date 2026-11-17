@@ -9,6 +9,7 @@ from bisect import bisect_left
 from datetime import date, datetime, timedelta, timezone
 
 from .. import db, db_hf_balance, manage_db
+from ..hf_balance_contract import amount
 from .hf_org_usage import DAY_MS, today_start, usage_days
 
 KST = timezone(timedelta(hours=9))
@@ -93,6 +94,8 @@ def interval(data, first, last, workspace_id):
                                                    'not_configured', 'restore_paused', 'collection_disabled', 'contract_mismatch') else
              'api_pending' if reason else 'numeric_match' if abs(residual) <= tolerance else 'residual_present')
     reasons = ([reason] if reason else []) + (['observation_uncertain'] if uncertain else [])
+    if any(r['precision_error_c'] is None for r in (first, last)):
+        reasons.append('precision_unknown')
     return dict(from_observation_id=first['observation_id'], to_observation_id=last['observation_id'],
                 start_ms=start, end_ms=end, opening_c=None if first.get('conflict') else first['credits_c'],
                 closing_c=None if last.get('conflict') else last['credits_c'],
@@ -183,10 +186,12 @@ def classify(item, data, topups, revision, allocation_pairs=()):
             matching_days.append(topup)
         if (residual > 0 and day < item['end_ms'] and day + DAY_MS > item['start_ms']
                 and abs(topup['credits'] * 100 - residual) <= tolerance):
-            candidates.append(('topup_candidate', dict(code='current_plan_match', topup_id=topup['id'], plan_revision=revision)))
+            candidates.append(('topup_candidate', dict(code='current_plan_match', topup_id=topup['id'], plan_revision=revision,
+                                                      credits_c=amount(topup['credits'])[0])))
     if residual > 0 and len(matching_days) > 1 and abs(sum(t['credits'] * 100 for t in matching_days) - residual) <= tolerance:
         candidates.append(('topup_candidate', dict(code='current_plan_match', topup_ids=[t['id'] for t in matching_days[:10]],
-                                                  topup_count=len(matching_days), plan_revision=revision)))
+                                                  topup_count=len(matching_days), plan_revision=revision,
+                                                  credits_c=sum(amount(t['credits'])[0] for t in matching_days))))
     refund_rows = data.get('refund_rows', {}).get(data['workspace_id'], []) if 'refund_rows' in data else data['rows']
     for row in refund_rows:
         if (residual > 0 and row['workspace_id'] == data['workspace_id'] and row['created_at'] < item['end_ms']
@@ -273,8 +278,38 @@ def _peer_pairs(conn, first, last, item, data, tiers, *, mutual=True):
                 and abs(item['residual_c'] + other['residual_c']) <= item['tolerance_c'] + other['tolerance_c']):
             ambiguous = mutual and len(_peer_pairs(conn, *points, other, peer_data, tiers, mutual=False)) != 1
             pairs.append(dict(workspace_id=peer['workspace_id'], from_observation_id=points[0]['observation_id'],
-                              to_observation_id=points[1]['observation_id'], ambiguous_pair=bool(ambiguous)))
+                              to_observation_id=points[1]['observation_id'], ambiguous_pair=bool(ambiguous), residual_c=other['residual_c']))
     return pairs
+
+
+def daily_balances(conn, workspace, start, end, at):
+    # Counts use original rows, never the downsampled chart or a page of intervals.
+    counts = {row['day']: row for row in conn.execute(
+        "SELECT (observed_at_ms+32400000)/86400000 AS day,COUNT(*) AS count, "
+        "SUM(time_quality<>'reported') AS uncertain FROM hf_balance_obs "
+        'WHERE workspace_id=? AND observed_at_ms>=? AND observed_at_ms<? AND received_at_ms<=? GROUP BY day',
+        (workspace, start, end, at))}
+    edges = {row['day']: row for row in conn.execute(
+        'WITH epochs AS (SELECT (observed_at_ms+32400000)/86400000 AS day,observed_at_ms, '
+        'CASE WHEN MIN(credits_c)=MAX(credits_c) THEN MIN(credits_c) END AS credits_c '
+        "FROM hf_balance_obs WHERE workspace_id=? AND time_quality='reported' "
+        'AND observed_at_ms>=? AND observed_at_ms<? AND received_at_ms<=? GROUP BY observed_at_ms), '
+        'ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY day ORDER BY observed_at_ms) AS first, '
+        'ROW_NUMBER() OVER(PARTITION BY day ORDER BY observed_at_ms DESC) AS last FROM epochs) '
+        'SELECT day,MAX(CASE WHEN first=1 THEN credits_c END) AS opening_c, '
+        'MAX(CASE WHEN last=1 THEN credits_c END) AS closing_c FROM ranked GROUP BY day',
+        (workspace, start, end, at))}
+    result = []
+    for day in range(start, min(end, at), DAY_MS):
+        key = (day + 32400000) // DAY_MS
+        count, edge = counts.get(key), edges.get(key)
+        opening, closing = (edge['opening_c'], edge['closing_c']) if edge else (None, None)
+        result.append(dict(day=datetime.fromtimestamp(day / 1000, KST).date().isoformat(),
+                           observation_count=count['count'] if count else 0,
+                           time_uncertain_count=count['uncertain'] if count else 0,
+                           opening_c=opening, closing_c=closing,
+                           delta_c=None if opening is None or closing is None else closing-opening))
+    return result
 
 
 def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=None):
@@ -303,6 +338,7 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
         conn.execute('BEGIN')
         if error := db_hf_balance.schema_error(conn):
             raise RuntimeError(error)
+        daily_balance_rows = daily_balances(conn, workspace_id, start, end, at)
         if cursor and delivered_version != _delivered_version(conn, workspace_id, start, after):
             raise AnalysisChanged('analysis_changed')
         preceding = conn.execute("SELECT MAX(observed_at_ms) FROM hf_balance_obs WHERE workspace_id=? "
@@ -341,6 +377,14 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
                     "AND time_quality='reported' AND observed_at_ms=? AND credits_c<>? AND received_at_ms<=? LIMIT 1",
                     (workspace_id, point['observed_at_ms'], point['credits_c'], at)).fetchone():
                 point['quality'] = 'conflict'
+        # Two missed ten-minute collections mark a gap; downsampling must not invent gaps.
+        chart_gaps = [dict(r) for r in conn.execute(
+            'WITH epochs AS (SELECT observed_at_ms FROM hf_balance_obs WHERE workspace_id=? '
+            "AND time_quality='reported' AND observed_at_ms>=? AND observed_at_ms<? AND received_at_ms<=? "
+            'GROUP BY observed_at_ms), pairs AS (SELECT observed_at_ms AS end_ms, '
+            'LAG(observed_at_ms) OVER(ORDER BY observed_at_ms) AS start_ms FROM epochs) '
+            'SELECT start_ms,end_ms FROM pairs WHERE end_ms-start_ms>1200000 ORDER BY start_ms',
+            (workspace_id, start, end, at))]
         content_at = int(time.time() * 1000)
         with manage_db.get_connection() as manage:
             manage.execute('BEGIN')
@@ -393,5 +437,6 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
                 as_of_ms=at, content_read_at_ms=content_at, manage_read_at_ms=manage_at, basis_signature=signature,
                 api_state='unavailable' if api_reason else 'available', reason_codes=reasons,
                 api_window_versions=[dict(window_id=w['id'], snapshot_version=w['snapshot_version']) for w in windows],
-                plan_revision=revision, chart_points=chart, intervals=intervals, daily_api=daily,
+                plan_revision=revision, chart_points=chart, chart_gaps=chart_gaps, intervals=intervals,
+                daily_api=daily, daily_balances=daily_balance_rows,
                 returned_count=len(intervals), has_more=has_more, next_cursor=token)

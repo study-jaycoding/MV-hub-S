@@ -473,3 +473,45 @@ def test_copy_scrub_compacts_only_when_hf_data_changes(tmp_path, monkeypatch, pr
         assert conn.execute("SELECT value FROM app_setting WHERE key='shared_server_token'").fetchone() is None
         secret = conn.execute("SELECT value FROM app_setting WHERE key='auth_secret'").fetchone()
         assert secret == (('replacement-secret',) if profile == 'post_install' else None)
+
+
+@pytest.mark.parametrize('profile', ['transfer', 'test_snapshot', 'post_install', 'slack_only'])
+def test_slack_scrub_clears_deleted_page_bytes_without_compaction(tmp_path,monkeypatch,profile):
+    from app.services import db_scrub
+
+    path=tmp_path/'slack-copy.db'
+    marker='fake-slack-secret-page-marker-'
+    with sqlite3.connect(path) as conn:
+        conn.execute('PRAGMA secure_delete=OFF')
+        conn.execute('CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)')
+        conn.execute('CREATE TABLE account(password_hash TEXT,password_changed_at TEXT)')
+        conn.execute('CREATE TABLE mcp_client(revoked_at TEXT)')
+        conn.execute('CREATE TABLE slack_link(secret TEXT)')
+        conn.execute('CREATE TABLE slack_dm_outbox(secret TEXT)')
+        conn.execute('INSERT INTO app_setting VALUES(?,?)',('slack_bot_config',marker*400))
+        for table in ('slack_link','slack_dm_outbox'):
+            conn.execute(f'INSERT INTO {table} VALUES(?)',(marker*400,))
+    assert marker.encode() in path.read_bytes()
+    traces=[]
+    original=sqlite3.connect
+    def connect(*args,**kwargs):
+        conn=original(*args,**kwargs)
+        conn.execute('PRAGMA secure_delete=OFF')
+        conn.set_trace_callback(traces.append)
+        return conn
+    monkeypatch.setattr(sqlite3,'connect',connect)
+    if profile=='transfer':
+        db_scrub.strip_transfer_secrets(path)
+    elif profile=='test_snapshot':
+        db_scrub.scrub_test_snapshot_db(path,create_test_admin=False)
+    elif profile=='post_install':
+        db_transfer._post_install_security_init(path,new_secret='replacement-secret',email='')
+    else:
+        db_scrub.scrub_slack(path)
+    assert not any('VACUUM' in statement for statement in traces)
+    assert traces.index('PRAGMA secure_delete=ON')<next(i for i,sql in enumerate(traces) if sql.startswith('DELETE'))
+    assert marker.encode() not in path.read_bytes()
+    with original(path) as conn:
+        assert conn.execute('PRAGMA freelist_count').fetchone()[0]>0
+        assert conn.execute('SELECT COUNT(*) FROM slack_link').fetchone()[0]==0
+        assert conn.execute('SELECT COUNT(*) FROM slack_dm_outbox').fetchone()[0]==0

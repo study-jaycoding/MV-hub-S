@@ -36,6 +36,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { AccountIcon, SettingIcon, SignOutIcon } from "./common/ViewIcons";
 import { manageApi } from "../lib/manageApi";
 import { formatCredits } from "../lib/formatCredits";
+import { formatBalanceTime } from "../lib/format";
 import { hasPersonalQuota, quotaUncertainty, showsWorkspacePool, useMyCreditQuota } from "../lib/myCreditQuota";
 import type { Account, ReportedHfStatus, Workspace, WorkspaceContext } from "../types";
 
@@ -184,7 +185,8 @@ export function AccountMenu({
     const ticket = ++listSeqRef.current;
     const token = getAuthToken();
     const valid = () => mountedRef.current && requestKeyRef.current === requestKey &&
-      listSeqRef.current === ticket && token === getAuthToken();
+      listSeqRef.current === ticket && token === getAuthToken() &&
+      connectionScope === `${getAccountNamespace()}\0${getConnectionKey()}\0${getAuthToken() ?? ""}`;
     const run = (liveMode
       ? api.workspaces().then((items) => { if (valid()) acceptLiveWorkspaces(items, ticket); })
       : api.accountHf().then((status) => {
@@ -354,7 +356,10 @@ export function AccountMenu({
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   // 숫자로 정규화 — CLI 가 문자열/누락/이상값을 줘도 NaN·Infinity 로 링/aria/CSS 가 깨지지 않게 한다.
   // 잔액 = 고른 공간의 값만. 폴백 없음, 못 찾으면 미확인(null) — 규칙은 scopedCredits 한 곳에 있다.
-  const activeCredits = scopedCredits(wsList, workspaceContext);
+  const balanceMeta = !liveMode ? activeWs?.balance_meta : undefined;
+  const confirmedCredits = balanceMeta?.credits_c != null ? balanceMeta.credits_c / 100 : balanceMeta?.credits;
+  const activeCredits = balanceMeta ? typeof confirmedCredits === "number" && Number.isFinite(confirmedCredits) ? confirmedCredits : null : scopedCredits(wsList, workspaceContext);
+  const creditTimeTitle = !liveMode ? formatBalanceTime(balanceMeta ?? { basis: "legacy_snapshot" }) : undefined;
   const displayedCredits = quotaWorkspaceId && !poolQuota ? personalQuota?.remaining ?? null : activeCredits;
   const gaugeCredits = displayedCredits != null ? Math.max(0, displayedCredits) : null;
   // 게이지 채움 비율 = 남은 크레딧 / 예산 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
@@ -579,7 +584,7 @@ export function AccountMenu({
                     aria-hidden="true"
                   >?</span>
                 </span>
-                <span className="acct-credits-left">
+                <span className="acct-credits-left" title={creditTimeTitle}>
                   {activeCredits == null ? "확인 불가" : `${formatCredits(activeCredits)} left`}
                   {onOpenManage ? <span className="acct-credits-chev" aria-hidden="true">›</span> : null}
                 </span>

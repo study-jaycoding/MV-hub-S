@@ -1,5 +1,6 @@
 // 백엔드 API 응답 타입 (backend/app/models.py 와 1:1)
 import type { AssetReferenceIdentity } from "./shared/contracts/assets";
+import type { BalanceMeta, BalancePartialTotals } from "./shared/contracts/hfBalance";
 
 export type MediaType = "image" | "video" | "audio";
 
@@ -276,9 +277,12 @@ export interface AuthConfig {
 }
 
 // 팀 크레딧 집계 — 각 계정 에이전트가 보고한 마지막 잔액(실시간 아님).
-export interface CreditSummary {
+export interface CreditSummary extends BalancePartialTotals {
   total: number;
   accounts: { email: string; name: string; credits: number | null; plan?: string | null }[];
+  total_complete?: boolean;
+  total_fresh?: boolean;
+  balance_meta?: BalancePartialTotals;
 }
 
 // 서버 콘솔 패널 — cmd 창에 보이던 정보(/api/console/summary, 로컬 전용).
@@ -412,7 +416,8 @@ export interface Workspace {
   id: string;
   name: string | null;
   plan_type: string; // free | team …
-  credits: number;
+  credits: number | null;
+  balance_meta?: BalanceMeta;
   is_selected: boolean; // 현재 컨텍스트
   user_role: string; // owner | member …
 }

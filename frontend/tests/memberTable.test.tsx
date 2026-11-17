@@ -1397,6 +1397,35 @@ const subTable = (id: string, name: string, credits: number, rows: MemberTableRo
 const mainTable = (credit = true): MemberTableData => ({ ...table(1, [row("a@x")]), workspace_id: "main", console_subs: ["subA", "subB"],
   credit: credit ? table(1, []).credit : null, main_balance: credit ? { credits: 158155.75, seen_at: "2026-09-29 05:45:48" } : null });
 
+it("관리 표 메인 잔액은 확인 시각을 KST로, 시각을 모르는 잔액은 받은 시각으로 구별한다", async () => {
+  const at = Date.parse("2026-11-17T00:30:00Z");
+  const clock = vi.spyOn(Date, "now").mockReturnValue(at + 600_000);
+  try {
+    const data = { ...mainTable(), console_subs: [], main_balance: { credits: 42, seen_at: null,
+      balance_meta: { basis: "observed", observed_at_ms: at } } };
+    mocks.memberTable.mockResolvedValue(data);
+    await mount("main"); await openSheet("크레딧 관리"); await settle();
+    expect(host.querySelector('[aria-label="메인 크레딧 요약"]')?.textContent).toContain("11/17 09:30 확인 (10분 전)");
+    mocks.memberTable.mockResolvedValue({ ...data, main_balance: { credits: 42, seen_at: "2026-11-17T00:30:00Z" } });
+    await act(async () => { root.render(<MemberTable workspaceId="main" reloadSignal={1} />); });
+    await settle();
+    expect(host.querySelector('[aria-label="메인 크레딧 요약"]')?.textContent).toContain("확인 시각 미상 · 10분 전 받음");
+  } finally { clock.mockRestore(); }
+});
+
+it("관리 표 서브 잔액은 공통 확인 시각을 쓰고 사람별 마지막 보고 시각을 덮지 않는다", async () => {
+  const at = Date.parse("2026-11-17T00:30:00Z");
+  const clock = vi.spyOn(Date, "now").mockReturnValue(at + 3_600_000);
+  try {
+    const person = row("a@x", { last_seen_at: "2026-11-16T01:00:00Z" });
+    mocks.memberTable.mockResolvedValue({ ...table(1, [person]), console_limit: { ...subLimit("ws1", "Sub", 10), balance: 42,
+      balance_meta: { basis: "observed", observed_at_ms: at } } });
+    await mount(); await openSheet("크레딧 관리"); await settle();
+    expect(host.textContent).toContain("잔액은 11/17 09:30 확인 (1시간 전)");
+    expect(person.last_seen_at).toBe("2026-11-16T01:00:00Z");
+  } finally { clock.mockRestore(); }
+});
+
 it("메인 크레딧 시트 = 서브 합본 — 계정 한 줄에 속한 서브의 '서브 / 그룹'과 합친 값(툴팁 = 서브별), 서브 필터, 메인→서브 크레딧 기록", async () => {
   const subA = subTable("subA", "A", 20000, [row("a@x", { group_id: "subA-g" })], {
     members: [{ email: "a@x", name: "a", workspace_role: "member", is_available: true, group_id: "subA-g", quota: null, quota_effective: 5000, quota_source: "auto", used_period: 800, unknown_period: 0, remaining: 4200 }],

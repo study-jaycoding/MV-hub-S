@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, StrictInt
 
-from .. import config, deps, rbac
+from .. import config, db, deps, rbac
 from ..services import shared_connection
 from ..usecases import hf_balance
 from . import _proxy
@@ -27,12 +27,17 @@ class BalanceObservationsIn(BaseModel):
 def receive_observations(body: BalanceObservationsIn, request: Request, background_tasks: BackgroundTasks):
     if not config.MANAGE_ENABLED:
         raise HTTPException(503, '잔액 기록을 사용할 수 없습니다')
-    acc = _agent_write_acc(request)
-    acc = _validate_balance_sender(request, acc, body.account_email)
     try:
-        receipt, changed = hf_balance.receive(acc, body.account_email, body.version, body.observations,
-                                     target=_proxy.base_url() if _proxy.proxying() else None,
-                                     receiver='server' if shared_connection.is_shared_team_server() else 'hub')
+        # Validation, upstream selection and storage must use the same captured account DB.
+        with db.pinned_share_operation():
+            acc = _agent_write_acc(request)
+            acc = _validate_balance_sender(request, acc, body.account_email)
+            target = _proxy.base_url() if _proxy.proxying() else None
+            if _proxy.is_worker_hub() and not target:
+                raise HTTPException(409, dict(code='hub_not_signed_in', retryable=True))
+            receipt, changed = hf_balance.receive(acc, body.account_email, body.version, body.observations,
+                                         target=target,
+                                         receiver='server' if shared_connection.is_shared_team_server() else 'hub')
     except ValueError as exc:
         raise HTTPException(422, '잔액 보고 형식을 확인하세요') from exc
     except RuntimeError as exc:

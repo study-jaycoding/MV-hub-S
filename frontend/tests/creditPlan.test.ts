@@ -21,7 +21,7 @@ import {
   stripThousands,
   acceptDecimal,
   acceptThousands,
-  topupSteps,
+  balanceIncreaseSteps,
   topupsOnlyBody,
   usagePercent,
   validateDraft,
@@ -60,10 +60,10 @@ describe("remainingTone — 남은 양 기준 경고색", () => {
 
 describe("잔액 추이 — 충전 계단과 예상 소진", () => {
   const falling: BalancePoint[] = [0, 1, 2, 3, 4, 5, 6].map((i) => ({ day: day(i), credits: 7000 - i * 500 }));
-  it("관측 사이의 증가만 충전으로 본다", () => {
+  it("확인한 잔액 사이의 증가만 표시하고 원인을 충전으로 확정하지 않는다", () => {
     const history = [...falling, { day: day(7), credits: 24000 }, { day: day(8), credits: 23000 }];
-    expect(topupSteps(history)).toEqual([{ day: day(7), amount: 20000 }]);
-    expect(topupSteps(falling)).toEqual([]);
+    expect(balanceIncreaseSteps(history)).toEqual([{ day: day(7), amount: 20000 }]);
+    expect(balanceIncreaseSteps(falling)).toEqual([]);
   });
   it("최근 7일 소진 속도로 바닥나는 날을 예상하고, 충전은 소진에서 뺀다", () => {
     const projection = projectDepletion(falling, 7, day(7));
