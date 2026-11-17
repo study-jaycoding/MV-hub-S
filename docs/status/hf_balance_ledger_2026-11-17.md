@@ -5,7 +5,7 @@ updated: 2026-11-17
 
 # 힉스필드 잔액 장부 — 남은 크레딧을 관측으로 정확히 기록·계산 (2026-11-17)
 
-owner: Codex(구현 `01a1e878`) · 총괄·설계: Claude(`45eaa469`) · reviewer: 설계·합의·구현에 참여하지 않은 Claude 세션 · status: 설계 중(양측 합의 대기) · updated: 2026-11-17
+owner: Codex(구현 `01a1e878`) · 총괄·설계: Claude(`45eaa469`) · reviewer: 설계·합의·구현에 참여하지 않은 Claude 세션 · status: 구현 중(계약 `0e600ac1` 양측 합의 — Codex `01a1e878`·Claude `dd3bf711` VIBE-AGREE) · updated: 2026-11-17
 작업실: `D:\ClaudeCode\work\mvhub-hf-balance-20261117` · 브랜치 `codex/hf-balance-ledger`(dev `ca7bdcdc` 에서 분기, 기록 커밋 `635ca4a9`부터 — dev 는 그 뒤로도 움직이므로 통합 전에 dev 를 이 브랜치에 merge) · `frontend\node_modules` = dev 로 가는 junction(작업실 지우기 전 rmdir)
 guard 위치: 검사기 등록 작업장은 dev 뿐이다. 계약 `root` 는 dev 이고, **계약 정본은 통합 때 dev 의 같은 경로(`docs/status/hf_balance_ledger_2026-11-17.md`)로 꺼낸 이 기록**이다. guard 시험 기록(run-test)·integrate 검사는 dev 에 꺼낸 **고정 후보 SHA** 를 대상으로 총괄이 받는다. 작업실에서 Codex 가 돌린 시험은 후보 SHA 와 함께 적는 참고이며 dev 시험 기록으로 치지 않는다. 작업실 자체를 guard 대상으로 등록하지 않는다(등록 확대는 별도 승인 범위).
 관계: [1단계](hf_org_usage_2026-11-10.md) = 조직 API 사용 행 수집 · [2단계](hf_org_usage_phase2_2026-11-17.md) = 개인·그룹 '사용'을 API 기준으로. 2단계 기록의 '3단계 = 카드 금액'과는 다른 일이다. 이 기록은 **공간 잔액(Credits left)** 만 다룬다.
@@ -1236,7 +1236,10 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
   ],
   "evidence": {
     "target": {"kind": "worktree"},
-    "consensus": [],
+    "consensus": [
+      {"host": "codex", "session": "01a1e878-0bec-7e51-bede-59f8f7b43295", "transcript": "C:/Users/FX-PC06/.codex/sessions/2026/11/17/rollout-2026-11-17T16-45-44-01a1e878-0bec-7e51-bede-59f8f7b43295.jsonl"},
+      {"host": "claude", "session": "dd3bf711-97fa-494f-9c12-8233f0effa61", "transcript": "C:/Users/FX-PC06/.claude/projects/D--ClaudeCode/dd3bf711-97fa-494f-9c12-8233f0effa61.jsonl"}
+    ],
     "design_sessions": [{"host": "claude", "session": "45eaa469-b035-4eed-bb7c-cdd50c1888d7"}]
   }
 }
