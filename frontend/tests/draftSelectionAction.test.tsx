@@ -146,11 +146,22 @@ it.each([false, true])("1080p 진행 중에는 창에 초점을 주고 Tab으로
   expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "4k");
 });
 
+it("막대 단추에서 Enter 를 누른 채 있으면 창만 열리고 반복 입력으로는 제출하지 않는다", async () => {
+  const view = mount();
+  await settle(); act(() => view.button().focus()); enter(); await settle();
+  expect(document.activeElement).toBe(option("1080p"));
+  for (let index = 0; index < 5; index++) enter(true);
+  expect(view.finish).not.toHaveBeenCalled();
+  expect(view.button().getAttribute("aria-expanded")).toBe("true");
+  enter(); // 손을 뗀 뒤 새로 누르면 정상 제출
+  expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "1080p");
+});
+
 it.each([false, true])("1080p 제출 뒤 Enter를 더 눌러도 한 번만 제출하고 창에 초점을 둔다 (키 반복=%s)", async (repeat) => {
   const view = mount();
   view.finish.mockImplementation(() => view.render([draft], resolution => resolution === "1080p"));
   await settle(); act(() => view.button().focus()); enter(); await settle();
-  enter(repeat); await settle();
+  enter(); await settle(); // 새로 누른 Enter 로 1080p 제출(반복 입력은 누름으로 치지 않는다)
   expect(document.activeElement).toBe(dialog());
   expect(option("4k").disabled).toBe(false);
   for (let index = 0; index < 5; index++) enter(repeat);
