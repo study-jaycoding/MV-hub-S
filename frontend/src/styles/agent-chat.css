@@ -174,7 +174,7 @@
 /* 대화 */
 .agent-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
 .agent-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); text-align: center; }
-.agent-empty-mark { font-size: 40px; line-height: 1; color: var(--muted2); opacity: 0.6; }
+.agent-empty .agent-empty-mark { width: 44px; height: 44px; color: var(--muted2); opacity: 0.6; } /* MV 아이콘 회색 실루엣(.mv-mark, Jay 11-17 ①) */
 .agent-empty p { margin: 0; font-size: 13px; }
 .agent-msg { max-width: 92%; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-user { align-self: flex-end; padding: 9px 13px; border: 1px solid transparent; border-radius: 14px; background: #363636; }
@@ -478,6 +478,7 @@
 .agent-panel .cn { margin: auto 0; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 8px 18px; text-align: center; }
 .agent-panel .cn-mark { display: grid; place-items: center; width: 58px; height: 58px; border-radius: 16px; border: 1px solid var(--border2);
   background: rgba(255, 255, 255, 0.03); font-size: 26px; color: var(--accent); }
+.agent-panel .cn-mark .mv-mark { width: 30px; height: 30px; } /* 원래 라임 MV 아이콘 */
 .agent-panel .cn h3 { margin: 0; font-size: 17px; }
 .agent-panel .cn p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .agent-panel .cn-steps { align-self: stretch; margin: 4px 0; padding: 12px 14px; list-style: none; display: flex; flex-direction: column; gap: 10px;

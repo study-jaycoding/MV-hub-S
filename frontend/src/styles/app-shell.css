@@ -24,7 +24,11 @@
   -webkit-text-fill-color: currentColor;
   color: var(--muted); /* '팀 공유' 비활성 탭과 같은 차분한 회색 */
   border: none; cursor: pointer; padding: 2px 4px; border-radius: 8px;
+  display: inline-flex; align-items: center; gap: 8px;
+  flex: none; white-space: nowrap; /* 좁은 창(MV Agent 칸을 연 채)에서 'MV Hub' 가 두 줄로 꺾이지 않게 — 탭 시작선(201px) 안에 늘 들어간다 */
 }
+.brand .mv-mark { width: 24px; height: 24px; } /* 평소 = 글자와 같은 회색 실루엣 */
+.brand:hover .mv-mark { background: url(/icon-96.png) center / contain no-repeat; -webkit-mask: none; mask: none; } /* 올리면 원래 라임(힉스필드 아이콘처럼) */
 .brand:hover { color: var(--text); }
 .brand:hover { filter: brightness(1.15); }
 /* 상단 탭 — 텍스트 전용(힉스필드 Studio 메뉴 스타일): 비활성=회색, 활성=라임, 호버=색 변화 */

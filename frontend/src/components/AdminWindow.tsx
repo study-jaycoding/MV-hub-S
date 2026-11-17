@@ -315,7 +315,7 @@ export function AdminWindow({
         aria-label="관리자"
       >
         <header className="admin-head">
-          <span className="admin-title">⬡ 관리자</span>
+          <span className="admin-title"><i className="mv-mark" aria-hidden="true" />관리자</span>
           {localOnlyServerControls && isPermanentAdmin && (
           <button
             className={"admin-key" + (elevated ? " on" : "")}

@@ -54,7 +54,7 @@ export function LoginScreen({
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-brand">⬡ Millionvolt Hub</div>
+        <div className="login-brand"><i className="mv-mark full" aria-hidden="true" />Millionvolt Hub</div>
         {notice && <div className="login-notice">{notice}</div>}
         <div className="login-sub">
           {first ? (
