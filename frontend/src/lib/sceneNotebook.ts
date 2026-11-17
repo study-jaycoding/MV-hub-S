@@ -90,6 +90,17 @@ export function subscribeRestoreArchived(fn: () => void): () => void {
   restoreArchivedSubs.add(fn);
   return () => { restoreArchivedSubs.delete(fn); };
 }
+function replacedJoinBases(joined: NotebookJoin | null | undefined, book: HubBook, bases: Record<string, SceneBase | null>): boolean {
+  if (joined?.notebookId !== "" || !book.notebook_id) return false;
+  const rows = new Map(book.items.map((row) => [row.id, row])); // tombstone도 실제로 있는 행이다.
+  const skipped = new Set(book.skipped);
+  return Object.entries(bases).some(([id, base]) => {
+    if (!base || skipped.has(id)) return false;
+    const row = rows.get(id);
+    return !row || row.base.history_id !== base.history || row.base.rev < base.rev ||
+      (row.base.rev === base.rev && row.base.hash !== base.hash);
+  });
+}
 async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean, leaseGeneration: string, approval?: NotebookStartApproval) {
   const hadPending = pendingAtStart || sceneStoreHasPending();
   const release = holdNotebookWrites(account);
@@ -100,7 +111,12 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       archived = false; // 다시 도는 거래면 앞 시도의 표시를 지운다
       const joined = meta[key("nj", account)] as NotebookJoin | undefined;
       const staleProgress = [meta[key("ns", account)], meta[key("nw", account)]].some((value) => value && (value as NotebookProgress).restoreGeneration !== book.restore_generation);
-      if (joined?.restoreGeneration === book.restore_generation && !staleProgress && !joined.awaitingStart) return { changed: false, value: false };
+      const bases = Object.fromEntries(Object.entries(meta).flatMap(([name, value]) => {
+        if (!value || !name.startsWith('["b",')) return [];
+        const [, scope, id] = JSON.parse(name) as string[];
+        return scope === `${account}::_none` ? [[id, value as SceneBase]] : [];
+      }));
+      if (joined?.restoreGeneration === book.restore_generation && !staleProgress && !joined.awaitingStart && !replacedJoinBases(joined, book, bases)) return { changed: false, value: false };
       const before = shownScenes(all, account);
       const scenes = Object.fromEntries(Object.entries(all).filter(([bucket]) => belongs(bucket, account)));
       const conflicts = ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => belongs(item.bucket, account));
@@ -145,7 +161,10 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       }
       const receivedOnly = joined?.awaitingStart && book.notebook_id && joined.restoreGeneration === book.restore_generation &&
         joined.history === book.history_id && !conflicts.length && joined.receivedFingerprint === receivedFingerprint(all, account);
-      const pendingControl = hasIntent || !!meta[key("ns", account)] || !!meta[key("nw", account)];
+      const progress = meta[key("ns", account)] as PendingStart | undefined;
+      const completedEmptyStart = receivedOnly && sameScenes && progress?.restoreGeneration === book.restore_generation &&
+        progress.history === book.history_id && progress.generation === leaseGeneration && Array.isArray(progress.scenes) && progress.scenes.length === 0;
+      const pendingControl = hasIntent || (!!progress && !completedEmptyStart) || !!meta[key("nw", account)];
       const archiveScenes = receivedOnly ? {} : scenes;
       const controls: Meta = {};
       for (const [name, value] of Object.entries(meta)) {
@@ -761,8 +780,10 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
         let local = await snapshot();
         let book = await getBook();
         let firstStart: PendingStart["firstStart"];
-        // 1011의 빈 ID도 합류 기록이다. 시작 영수증이 남으면 아래의 순서 승계를 먼저 마친다.
-        if (book.notebook_id && local.joined?.notebookId === "" && !local.joined.awaitingStart && !local.starting && local.joined.restoreGeneration === book.restore_generation) {
+        const replacedBases = replacedJoinBases(local.joined, book,
+          Object.fromEntries(Object.entries(local.buckets[bucket]?.states ?? {}).map(([id, state]) => [id, state.base])));
+        // 1011의 빈 ID는 기준 행이 이어질 때 합류 기록이다. 시작 영수증의 순서 승계는 아래에서 마친다.
+        if (book.notebook_id && local.joined?.notebookId === "" && !replacedBases && !local.joined.awaitingStart && !local.starting && local.joined.restoreGeneration === book.restore_generation) {
           const expected = local.joined;
           if (!(await change([], (_all, meta) => {
             if (!equal(meta[key("nj", account)], expected)) return false;
@@ -772,7 +793,7 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
           changed = true;
           local = await snapshot();
         }
-        if (local.joined?.restoreGeneration !== book.restore_generation || local.joined?.awaitingStart ||
+        if (local.joined?.restoreGeneration !== book.restore_generation || local.joined?.awaitingStart || replacedBases ||
             [local.starting, local.writing].some((value) => value && value.restoreGeneration !== book.restore_generation)) {
           const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart, lease.generation, approval);
           if (!adopted.ok) throw new Error("local_store_failed");

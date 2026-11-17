@@ -273,13 +273,111 @@ def test_held_first_verifier_requires_b_provenance_order_and_preconfirmation_arc
 
 
 @pytest.mark.parametrize('order', ['a', 'b'])
-def test_held_first_cli_accepts_b_first_with_either_confirmation_order(tmp_path, monkeypatch, order):
+@pytest.mark.parametrize('fault', ['none', 'lost_commit'])
+def test_held_first_cli_accepts_b_first_with_either_confirmation_order(tmp_path, monkeypatch, order, fault):
     async def execute(args):
         assert args.transition == 'held' and args.start_order == order
         return 0
     monkeypatch.setattr(measure, 'execute', execute)
-    monkeypatch.setattr(sys, 'argv', ['canvas_notebook.py', '--case', 'first_transition', '--old-checkout', str(tmp_path), '--transition', 'held', '--start-order', order])
+    monkeypatch.setattr(sys, 'argv', ['canvas_notebook.py', '--case', 'first_transition', '--old-checkout', str(tmp_path), '--transition', 'held', '--start-order', order, '--transition-fault', fault])
     assert measure.main() == 0
+
+
+def test_equal_b_cli_selects_interrupted_clean_upgrade_without_starting_a_browser(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    run = AsyncMock(return_value=0)
+    monkeypatch.setattr(measure, 'execute', run)
+    monkeypatch.setattr(sys, 'argv', ['canvas_notebook.py', '--case', 'first_transition', '--old-checkout', str(tmp_path), '--transition', 'equal', '--start-order', 'b'])
+    assert measure.main() == 0
+    assert run.call_args.args[0].start_order == 'b'
+
+
+@pytest.mark.parametrize('broken', ['missing_join', 'missing_close', 'missing_no_upload', 'based_id', 'upload', 'archive', 'union', 'malformed_records'])
+def test_interrupted_equal_verifier_requires_close_bases_no_upload_and_original_archive(broken):
+    value = report('first_transition'); value['transition'].update(variant='equal', start_order='b')
+    records = value['previous_browser_records']
+    evidence = {
+        'interrupted_clean_upgrade': {'not_started': True, 'join_id': '', 'awaiting': False, 'based_ids': ['a']},
+        'interrupted_closed': {'closed': True, 'released': True}, 'interrupted_no_upload': False,
+        'other_browser_preserved': [records['a']['scenes']], 'selected_raw': records['b']['scenes'], 'no_merge': records['b']['scenes'],
+    }
+    for name, actual in evidence.items(): value['checks'][name] = {'status': 'passed', 'actual': actual, 'expected': actual}
+    assert verify(value) == []
+    if broken.startswith('missing_'):
+        del value['checks'][{'missing_join': 'interrupted_clean_upgrade', 'missing_close': 'interrupted_closed', 'missing_no_upload': 'interrupted_no_upload'}[broken]]
+    elif broken == 'based_id': value['checks']['interrupted_clean_upgrade']['actual']['based_ids'] = []
+    elif broken == 'upload': value['checks']['interrupted_no_upload'].update(actual=True, expected=True)
+    elif broken == 'archive': value['checks']['other_browser_preserved'].update(actual=True, expected=True)
+    elif broken == 'union': value['checks']['no_merge'].update(actual=[*records['a']['scenes'], *records['b']['scenes']], expected=[*records['a']['scenes'], *records['b']['scenes']])
+    else: value['previous_browser_records'] = None
+    assert verify(value)
+
+
+def test_interrupted_equal_flow_closes_a_before_b_confirmation_and_reopens_the_same_profile(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    instance = measure.Measurement('first_transition', tmp_path)
+    instance.transition_args = SimpleNamespace(old_checkout=tmp_path, transition='equal', start_order='b', transition_fault='none')
+    seeds = measure.fixture(); original_b = [{**seeds[-1], 'id': 'prior-b', 'name': 'browser B original'}]
+    selected, closed, events = False, False, []
+    pages = {name: SimpleNamespace(goto=AsyncMock(), wait=AsyncMock(return_value=True), send=AsyncMock(), shot=AsyncMock(),
+             mirror_hold_script='hold', mutations=[], proc=Mock()) for name in ('a', 'b', 'reopened-a')}
+    pages['a'].proc.poll.side_effect = lambda: 0 if closed else None
+    async def kill():
+        nonlocal closed
+        closed = True; events.append('closed-a')
+    pages['a']._kill = kill
+    async def choose(_selector):
+        nonlocal selected
+        assert closed
+        selected = True; events.append('confirmed-b'); return True
+    pages['b'].click = choose
+    a_opens = 0
+    async def open_page(_stack, name, seed=None, **_kwargs):
+        nonlocal a_opens
+        if name == 'a':
+            a_opens += 1
+            if a_opens == 2:
+                assert selected and seed is None
+                events.append('reopened-a'); return pages['reopened-a']
+        return pages[name]
+    instance.open = AsyncMock(side_effect=open_page)
+    async def evaluate(name, script):
+        if name == 'a' and closed: raise AssertionError('closed A cannot be read')
+        if script == measure.READ_STORE:
+            joined = {'notebookId': 'book' if selected else '', 'restoreGeneration': 'G1'}
+            entries = [(json.dumps(['nj', instance.account], separators=(',', ':')), joined)]
+            entries.extend((json.dumps(['b', instance.bucket, s['id']], separators=(',', ':')), {'hash': 'old'}) for s in seeds)
+            if name == 'reopened-a': entries.append((json.dumps(['nr', instance.account], separators=(',', ':')), [{'scenes': {instance.bucket: seeds}}]))
+            return entries
+        if script == 'window.__measureNetwork': return []
+        if script.startswith('!!document.'): return False
+        if script == 'navigator.userAgent': return 'synthetic Chrome'
+        return None
+    for name, page in pages.items():
+        async def eval_page(script, n=name): return await evaluate(n, script)
+        page.eval = eval_page
+    async def local(page): return seeds if page is pages['a'] else original_b
+    def book():
+        scenes = original_b if selected else seeds
+        return {'restore_generation': 'G1', 'notebook_id': 'book' if selected else None,
+                'items': [{'id': s['id'], 'data': json.dumps(s)} for s in scenes], 'order': {'ids': [s['id'] for s in scenes]}}
+    def request(path, *_args):
+        if path == '/api/auth/config': return 200, {'features': ['scene_writer_confirm_v1']}
+        if path == '/api/scenes/writer': return 200, {'writer': None}
+        return 200, book()
+    instance.hub.request = request; instance.hub.start = Mock(); instance.hub.stop = Mock()
+    instance.local = local; instance.wait_local = AsyncMock(); instance.ensure_canvas = AsyncMock(); instance.take = AsyncMock()
+    async def synced(_page, _timeout): return book()
+    instance.synced = synced
+    monkeypatch.setattr(measure, 'validate_checkout', lambda _p: tmp_path)
+    monkeypatch.setattr(measure, 'retained_rows', lambda _p: [{'reason': 'before_start', 'data': s} for s in seeds])
+    asyncio.run(instance.first_transition(None, seeds))
+    assert events == ['closed-a', 'confirmed-b', 'reopened-a']
+    assert all(check['status'] == 'passed' for check in instance.report['checks'].values()), instance.report['checks']
+    assert any('window.__measureInterruptedStart' in call.kwargs.get('source', '') for call in pages['a'].send.call_args_list)
+    assert instance.report['checks']['other_browser_preserved']['actual'] == [measure.scene_fingerprints(seeds)]
 
 
 @pytest.mark.parametrize('order', ['a', 'b'])

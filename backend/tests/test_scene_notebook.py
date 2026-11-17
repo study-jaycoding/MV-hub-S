@@ -116,6 +116,30 @@ def test_start_oversize_never_publishes_partial(notebook_db):
     assert [r['id'] for r in legacy.list_scene_backups('u')] == ['old']
 
 
+@pytest.mark.parametrize('edited', [False, True])
+def test_before_start_base_cannot_repopulate_selected_notebook_and_batch_rolls_back(notebook_db, edited):
+    original = scene('old-a')
+    legacy.sync_scene_backups('u', '', [original], [], restore_generation=restore_generation())
+    old_base = base('old-a')
+    seed(items=[scene('chosen-b')])
+    before = store.notebook('u')
+    stale = scene('old-a', name='unsent edit') if edited else original
+    with pytest.raises(WriterConflict, match='notebook_rejoin_required'):
+        push('stale-start', upserts=[scene('new-in-same-batch'), {**stale, 'base': old_base}])
+    assert store.notebook('u') == before
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM scene_archive WHERE reason='before_start' AND scene_id='old-a'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM scene_request_receipt WHERE request_id='stale-start'").fetchone()[0] == 0
+
+
+def test_before_start_original_can_be_restored_explicitly_without_a_base(notebook_db):
+    original = scene('old-a')
+    legacy.sync_scene_backups('u', '', [original], [], restore_generation=restore_generation())
+    seed(items=[scene('chosen-b')])
+    assert push('explicit-restore', upserts=[original])['results'][0]['status'] == 'saved'
+    assert {r['id'] for r in store.notebook('u')['items']} == {'old-a', 'chosen-b'}
+
+
 def test_post_start_too_big_is_per_scene_result(notebook_db):
     seed()
     result = push('big', upserts=[{**scene(padding='x' * store.MAX_SCENE_BYTES), 'base': base()}])

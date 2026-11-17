@@ -12,6 +12,7 @@ Run with the repository venv, after building frontend/dist:
   # Repeat --transition equal/different/restored_unknown/same_generation/held/limit_exact/limit_over;
   # repeat --start-order b/simultaneous with different first canvases.
   # --transition held always opens held B first; --start-order a/b chooses who confirms first.
+  # --transition equal --start-order b closes A after cleanUpgrade, starts B, then reopens A.
 
 No default/source DB is opened or copied. Artifacts remain in a newly allocated
 temporary directory, printed on exit. Only this process's server/Chrome are stopped.
@@ -653,6 +654,7 @@ class Measurement:
         args = self.transition_args
         checkout = validate_checkout(args.old_checkout) if args.old_checkout else REPO
         variant, order = args.transition, args.start_order
+        interrupted = variant == "equal" and order == "b"
         self.report["transition"] = {"variant": variant, "start_order": order, "old_checkout": str(checkout), "fault": args.transition_fault}
         if variant.startswith("limit_"):
             size = 5 * 1024 * 1024 + (variant == "limit_over")
@@ -712,6 +714,18 @@ class Measurement:
                    and "scene_writer_confirm_v1" in self.hub.request("/api/auth/config")[1]["features"], True)
         for page in (a, b):
             await page.send("Page.removeScriptToEvaluateOnNewDocument", identifier=page.mirror_hold_script)
+        if interrupted:
+            await a.send("Page.addScriptToEvaluateOnNewDocument", source="""{
+              const original=window.fetch;
+              window.fetch=function(input,init) {
+                const path=new URL(typeof input==='string'?input:input.url,location.href).pathname;
+                if(path==='/api/scenes/notebook/start') {
+                  window.__measureInterruptedStart=JSON.parse(init?.body || '{}');
+                  return new Promise(() => {});
+                }
+                return original.apply(this,arguments);
+              };
+            }""")
         opened = []
         for name, page in (("b", b), ("a", a)) if variant == "held" else (("a", a),):
             await page.goto(self.hub.url, settle=.2)
@@ -720,28 +734,56 @@ class Measurement:
             if variant == "held" and not await page.wait("document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')", 30):
                 raise RuntimeError(f"held-first browser {name} confirmation missing")
         self.report["browser_version"] = await a.eval("navigator.userAgent")
+        if interrupted:
+            if not await a.wait("window.__measureInterruptedStart?.expected_count === 0", 30):
+                raise RuntimeError("cleanUpgrade did not reach the interrupted zero-item start")
+            entries = dict(await a.eval(READ_STORE))
+            joined = entries.get(json.dumps(["nj", self.account], separators=(",", ":")), {})
+            based_ids = sorted(json.loads(key)[2] for key, value in entries.items()
+                               if key.startswith('["b",') and json.loads(key)[1] == self.bucket and value)
+            self.check("interrupted_clean_upgrade", {"not_started": self.hub.request("/api/scenes/notebook")[1]["notebook_id"] is None,
+                "join_id": joined.get("notebookId"), "awaiting": bool(joined.get("awaitingStart")), "based_ids": based_ids},
+                {"not_started": True, "join_id": "", "awaiting": False, "based_ids": sorted(s["id"] for s in before["a"])})
+            paused_a = scene_fingerprints(await self.local(a))
+            paused_network = await a.eval("window.__measureNetwork")
+            await a.send("Page.close")
+            await a._kill()
+            # An uncommitted notebook cannot accept a close delta. Observe release or natural lease expiry.
+            released = False
+            deadline = time.monotonic() + 100
+            while time.monotonic() < deadline:
+                code, status = self.hub.request("/api/scenes/writer", {"action": "status"})
+                if code == 200 and status.get("writer") is None:
+                    released = True
+                    break
+                await asyncio.sleep(1)
+            self.check("interrupted_closed", {"closed": a.proc.poll() is not None, "released": released}, {"closed": True, "released": True})
+            if not released:
+                raise RuntimeError("interrupted A lease did not release or expire")
+            await b.goto(self.hub.url, settle=.2)
+            await self.ensure_canvas(b)
         confirm = "document.querySelector('[data-notebook-action=\"start\"]:not([disabled])')"
-        automatic = variant == "equal"
+        automatic = variant == "equal" and not interrupted
         if automatic:
             book = await self.synced(a, 40)
             self.check("before_confirmation", scene_fingerprints(await self.local(a)), scene_fingerprints(before["a"]))
             self.check("no_upload_before", await a.eval(f"!{confirm}"), True)
             self.check("confirmation", False, False)
         else:
-            if not await a.wait(confirm, 30):
+            if not await (b if interrupted else a).wait(confirm, 30):
                 raise RuntimeError("first-start confirmation missing")
-            if variant not in {"same_generation", "held"}:
+            if variant not in {"same_generation", "held"} and not interrupted:
                 await b.goto(self.hub.url, settle=.2)
                 if not await b.wait(confirm, 30):
                     raise RuntimeError("second first-start confirmation missing")
-            self.check("before_confirmation", {name: scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
+            self.check("before_confirmation", {name: paused_a if interrupted and name == "a" else scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
                        {name: scene_fingerprints(prior_hub if variant == "held" and name == "b" else rows) for name, rows in before.items()})
             if variant == "held":
                 self.check("held_first", opened, ["b", "a"])
                 archives = dict(await b.eval(READ_STORE)).get(json.dumps(["nr", self.account], separators=(",", ":")), [])
                 self.check("held_archive_before_confirmation", [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives], [scene_fingerprints(before["b"])])
             unchanged = self.hub.request("/api/scenes/notebook")[1]
-            network = [row for page in (a, b) for row in await page.eval("window.__measureNetwork")]
+            network = paused_network + await b.eval("window.__measureNetwork") if interrupted else [row for page in (a, b) for row in await page.eval("window.__measureNetwork")]
             self.check("no_upload_before", {"not_started": unchanged["notebook_id"] is None,
                 "hub_raw": scene_fingerprints(sorted([json.loads(row["data"]) for row in unchanged["items"] if not row.get("deleted_at")], key=lambda s: s["id"])),
                 "no_writes": not any(row["method"] == "PUT" or row["path"].endswith("/start") for row in network)},
@@ -793,8 +835,11 @@ class Measurement:
                 selected_name = next((name for name, fingerprints in candidates.items() if fingerprints == actual), "a")
             self.check("selected_raw", actual, scene_fingerprints(prior_hub) if variant == "held" and selected_name == "b" else candidates[selected_name])
             loser_name = "b" if selected_name == "a" else "a"
+            if interrupted:
+                a = await self.open(stack, "a") # same owned profile; no seed or synthetic join record
             loser = b if loser_name == "b" else a
-            await loser.goto(self.hub.url, settle=.2)
+            if not interrupted:
+                await loser.goto(self.hub.url, settle=.2)
             await self.ensure_canvas(loser)
             if await loser.eval(f"!!{confirm}"):
                 await loser.click(confirm)
@@ -808,9 +853,12 @@ class Measurement:
             archived = [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives]
             self.check("other_browser_preserved", archived, [candidates[loser_name]])
             self.check("no_merge", scene_fingerprints(await self.local(loser)), actual)
+            if interrupted:
+                self.check("interrupted_no_upload", any(row["method"] == "PUT" or row["path"].endswith("/start")
+                           for row in await a.eval("window.__measureNetwork")), False)
         archived_hub = [row["data"] for row in retained_rows(self.work) if row["reason"] == "before_start"]
         self.check("before_start", scene_fingerprints(sorted(archived_hub, key=lambda s: s["id"])),
-                   scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if variant not in {"equal", "limit_over"} and not (variant == "held" and order == "b") else [])
+                   scene_fingerprints(sorted(prior_hub, key=lambda s: s["id"])) if (variant not in {"equal", "limit_over"} or interrupted) and not (variant == "held" and order == "b") else [])
         reconnect = b if not not_started else a
         old_store = dict(await reconnect.eval(READ_STORE))
         archive_keys = [key for key in old_store if key.startswith('["nr",') or key.startswith('["na",')]
@@ -1147,10 +1195,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.case == "first_transition" and not args.old_checkout:
         parser.error("first_transition requires --old-checkout (built isolated 0123 or 1011 checkout)")
-    if args.transition_fault != "none" and (args.case != "first_transition" or args.transition not in {"empty", "different", "restored_unknown", "same_generation"} or args.start_order == "simultaneous"):
+    if args.transition_fault != "none" and (args.case != "first_transition" or (args.transition not in {"empty", "different", "restored_unknown", "same_generation"} and not (args.transition == "held" and args.transition_fault == "lost_commit")) or args.start_order == "simultaneous"):
         parser.error("reply loss requires a first_transition confirmation variant and --start-order a or b")
-    if args.case == "first_transition" and ((args.transition in {"equal", "same_generation", "limit_exact", "limit_over"} and args.start_order != "a") or (args.transition == "held" and args.start_order == "simultaneous")):
-        parser.error("equal/same_generation/size boundaries require a; held opens B first and accepts confirmation order a or b")
+    if args.case == "first_transition" and ((args.transition in {"same_generation", "limit_exact", "limit_over"} and args.start_order != "a") or (args.transition in {"held", "equal"} and args.start_order == "simultaneous")):
+        parser.error("same_generation/size boundaries require a; equal/held accept a or b")
     if (args.baseline_report or args.baseline_checkout or args.max_slowdown is not None) and args.case != "performance":
         parser.error("baseline and slowdown options require --case performance")
     if args.max_slowdown is not None and (not math.isfinite(args.max_slowdown) or args.max_slowdown <= 0):

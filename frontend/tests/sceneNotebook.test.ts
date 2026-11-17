@@ -395,9 +395,61 @@ async function joined(scenes = [scene()], generation: string | null = fake.resto
   await joinSceneNotebook("local", fake.book, fake.history, { [bucket]: { scenes,
     bases: Object.fromEntries(scenes.map((s) => [s.id, { history: fake.history, rev: fake.rows.get(s.id)!.base.rev, hash: fake.rows.get(s.id)!.base.hash }])), order: { history: fake.history, rev: fake.rev } } }, undefined, generation ?? undefined);
 }
+it.each([["cleanUpgrade", false], ["1011 adopt", false], ["cleanUpgrade", true], ["1011 adopt", true]] as const)("interrupted %s empty-id join archives A after B starts without merging old base rows (reused ids: %s)", async (kind, reusedIds) => {
+  const original = [scene("old-a"), scene("old-z")], selected = reusedIds ? original.map((s) => ({ ...s, name: `B selected ${s.id}` })) : [scene("chosen-b")];
+  await joined(original, null); fake.book = null;
+  await sceneNotebookTransaction([], (_all, meta) => { delete meta[notebookKey("nj", "local")]; return { changed: true, value: null }; });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  if (kind === "1011 adopt") {
+    await sceneNotebookTransaction([], (_all, meta) => {
+      meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+      return { changed: true, value: null };
+    });
+    edit([scene("old-a", "A unsent edit"), original[1]]); await settleSceneStoreForTest();
+  }
+  const before = readWorkingBucket(bucket);
+  expect((await state()).joined).toMatchObject({ notebookId: "" });
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: selected.length, order: selected.map((s) => s.id),
+    upserts: selected.map((s) => ({ id: s.id, data: JSON.stringify(s) })), commit: true });
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual(selected);
+  expect(fake.order.map((id) => JSON.parse(fake.rows.get(id)!.data))).toEqual(selected);
+  expect(fake.calls.filter((c) => c.body)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: before } }] });
+  expect((await state()).joined?.notebookId).toBe(fake.book);
+  await syncSceneNotebook();
+  expect([...fake.rows.keys()]).toEqual(selected.map((s) => s.id));
+});
+it("a held browser losing its own zero-start commit reply leaves no empty control archive", async () => {
+  fake.save(scene("saved"));
+  await writeScenesStore({ [bucket]: [scene("held")] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["held"] }));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  hook = (path, body) => { if (path.endsWith("/start") && body.commit) throw Error("lost commit reply"); };
+  expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("held")] } }] });
+  expect((await state()).starting).toBeNull();
+  expect((await state()).joined).toMatchObject({ notebookId: fake.book });
+});
+it("an unreadable existing base row does not turn a legacy empty-id join into adoption", async () => {
+  await joined();
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    return { changed: true, value: null };
+  });
+  fake.rows.get("s")!.data = "{}";
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene()]);
+  expect((await state()).joined?.notebookId).toBe(fake.book);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+});
 it("1011 empty join id upgrades only its id and preserves edits, deletion, revival, order and write progress", async () => {
   await joined([scene("a"), scene("deleted"), scene("revived"), scene("z")]);
   edit([scene("z"), scene("a", "unsent edit"), scene("revived")]); await settleSceneStoreForTest();
+  fake.save(scene("z", "newer hub edit"));
+  fake.rows.get("deleted")!.deleted_at = "already-deleted";
+  fake.order = fake.order.filter((id) => id !== "deleted");
   await sceneNotebookTransaction([], (_all, meta) => {
     meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
     meta[notebookKey("r", bucket, "revived")] = { intentId: "revive", base: null };
@@ -422,6 +474,7 @@ it("1011 empty join id upgrades only its id and preserves edits, deletion, reviv
   expect((await syncSceneNotebook()).status).toBe("ready");
   expect(fake.rows.get("deleted")!.deleted_at).not.toBeNull();
   expect(JSON.parse(fake.rows.get("a")!.data).name).toBe("unsent edit");
+  expect(readWorkingBucket(bucket).find((s) => s.id === "z")?.name).toBe("newer hub edit");
   expect(fake.order).toEqual(["z", "a", "revived"]);
   expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
 });

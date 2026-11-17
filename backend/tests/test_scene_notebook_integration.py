@@ -20,6 +20,23 @@ def client(notebook_db, monkeypatch):
         yield client
 
 
+@pytest.mark.parametrize('close', [False, True])
+def test_stale_before_start_base_gets_409_without_repopulating_or_releasing(client, close):
+    original = scene('old-a')
+    legacy.sync_scene_backups('u', '', [original], [], restore_generation=restore_generation())
+    old_base = base('old-a')
+    seed(items=[scene('chosen-b')])
+    before = store.notebook('u')
+    token = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'a', 'tab_id': 'a'}).json()['token']
+    body = {'restore_generation': restore_generation(), 'token': token, 'request_id': 'stale-a',
+            'upserts': [scene('new-in-batch'), {**original, 'base': old_base}]}
+    response = client.post('/api/scenes/notebook/close', json=body) if close else client.put('/api/scenes/backup', json=body)
+    assert response.status_code == 409, response.text
+    assert response.json()['detail'] == 'notebook_rejoin_required'
+    assert store.notebook('u') == before
+    assert client.post('/api/scenes/writer', json={'action': 'status'}).json()['writer'] is not None
+
+
 def test_http_token_gate_start_retry_and_legacy_get(client, monkeypatch):
     assert client.put('/api/scenes/backup', json={**{'upserts': [scene()]}, 'restore_generation': restore_generation()}).status_code == 409
     lease = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'b', 'tab_id': 't'}).json()

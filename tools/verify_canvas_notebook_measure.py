@@ -90,6 +90,22 @@ def verify(report: dict) -> list[str]:
                 errors.append("measured UTF-8 size boundary required")
         if transition.get("variant") == "held" and transition.get("start_order") not in {"a", "b"}:
             errors.append("held-first requires confirmation order a or b")
+        if transition.get("variant") == "equal" and transition.get("start_order") == "b":
+            records = report.get("previous_browser_records")
+            previous = {}
+            for name in ("a", "b"):
+                record = records.get(name) if isinstance(records, dict) else None
+                scenes = record.get("scenes") if isinstance(record, dict) else None
+                previous[name] = scenes if isinstance(scenes, list) else []
+            for name, expected in {
+                "interrupted_clean_upgrade": {"not_started": True, "join_id": "", "awaiting": False,
+                    "based_ids": sorted(row['id'] for row in previous['a'] if isinstance(row, dict) and isinstance(row.get('id'), str))},
+                "interrupted_closed": {"closed": True, "released": True}, "interrupted_no_upload": False,
+                "other_browser_preserved": [previous['a']], "selected_raw": previous['b'], "no_merge": previous['b'],
+            }.items():
+                check = checks.get(name, {})
+                if not isinstance(check, dict) or check.get("status") != "passed" or check.get("actual") != expected:
+                    errors.append(f"{name}: actual interrupted clean-upgrade evidence required")
         if transition.get("fault", "none") not in {"none", "lost_chunk", "lost_commit"}:
             errors.append("unknown first-transition fault")
         elif transition.get("fault", "none") != "none":
