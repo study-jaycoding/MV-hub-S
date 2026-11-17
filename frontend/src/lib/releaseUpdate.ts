@@ -113,6 +113,66 @@ export function pollFailureMessage(firstFailedAt: number | null, now: number): s
   return "앱 응답이 90초 넘게 없습니다. 업데이트가 아직 실행 중일 수 있으니 프로그램을 직접 실행하지 말고 잠시 기다려주세요.";
 }
 
+// 자동 확인 제한(덮개·설정 창 공통) — 시작부터 재는 고정 5분은 정상 설치를 끊었다: 파일 교체·확인 동안 앱이 꺼져 진행을
+//  읽을 수 없고, 그 구간만 이 PC 실측 약 4분(설치 전체 약 5분, 2026-11-18 0632→0602·11-17 →0632). 진행이 바뀌는 동안은
+//  기다리고, 멈췄을 때만 끊는다. docs/status/업데이트덮개_시간초과_2026-11-18.md
+// 상태 그대로 10분 — 70% 고정인 파일 준비(이 PC 31초)가 느린 PC 에서 길어질 수 있고, 시간 초과 화면은 [강제 업데이트]를 내주므로
+//  늦게 알리는 쪽이 잘못 알리는 쪽보다 안전하다.
+export const UPDATE_STALL_MS = 10 * 60_000; // 앱이 답하는데 상태가 그대로인 시간
+export const UPDATE_SILENT_MS = 15 * 60_000; // 앱이 답하지 않는 시간(교체·확인·다시 시작 — 실패하면 업데이터가 옛 판으로 되돌린다)
+export const UPDATE_MAX_MS = 40 * 60_000; // 시작부터 전체 상한(무한 대기 방지 — 2026-10-03 CXF-6)
+export const UPDATE_SLOW_ANSWER_MS = 30_000; // 이만큼 늦게 온 답은 그 사이 앱이 꺼졌다 뜬 것일 수 있어 진행으로 본다
+
+export const UPDATE_TIMEOUT_MESSAGE =
+  "자동 확인 시간이 초과됐습니다. 설치가 이미 끝났을 수 있으니 닫기를 누른 뒤 새로 고침해 판을 먼저 확인하세요. 프로그램 창과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)도 확인해주세요.";
+
+/** 진행 비교용 열쇠 — 단계·퍼센트·문구·지금 판 중 하나라도 바뀌면 진행으로 본다. */
+export function updateProgressKey(status: ReleaseUpdateStatus): string {
+  return JSON.stringify([status.state, status.percent ?? null, status.message ?? "", status.current_version ?? ""]);
+}
+
+/** 자동 확인을 멈출 때인가 — silentSince = 앱이 답하지 않기 시작한 때(답하는 중이면 null). */
+export function updateWaitExpired(t: { now: number; startedAt: number; lastChangeAt: number; silentSince: number | null }): boolean {
+  if (t.now - t.startedAt >= UPDATE_MAX_MS) return true;
+  if (t.silentSince != null) return t.now - t.silentSince >= UPDATE_SILENT_MS;
+  return t.now - t.lastChangeAt >= UPDATE_STALL_MS;
+}
+
+/** 덮개·설정 창이 같이 쓰는 자동 확인 시계 — 요청을 보낸 때·받은 답·실패를 알려 주면 멈출 때인지 답한다.
+ *  답을 기다리는 요청이 있는 동안은 '응답 없음'으로 잰다: 상태가 그대로인 채 정체 기준 직전에 앱이 꺼지면(교체 시작), 그 요청은
+ *  아직 실패도 답도 아니다 — 정체로 재면 정상 설치를 끊는다(Codex 리뷰 1차 높음). */
+export function createUpdateWaitClock(now = Date.now()) {
+  const startedAt = now;
+  let lastChangeAt = now;
+  let lastKey = "";
+  let askedAt: number | null = null;
+  let failedSince: number | null = null;
+  return {
+    asked(at = Date.now()) {
+      askedAt = at;
+    },
+    answered(status: ReleaseUpdateStatus, at = Date.now()) {
+      const key = updateProgressKey(status);
+      // 앱이 다시 답하기 시작한 것(교체 뒤 새 앱)·오래 걸린 답도 진행이다 — 꺼지기 전과 같은 상태여도 정체 시계를 새로 잰다
+      if (key !== lastKey || failedSince != null || (askedAt != null && at - askedAt >= UPDATE_SLOW_ANSWER_MS)) {
+        lastKey = key;
+        lastChangeAt = at;
+      }
+      askedAt = null;
+      failedSince = null;
+    },
+    failed(at = Date.now()) {
+      failedSince ??= askedAt ?? at;
+      askedAt = null;
+    },
+    /** 연속 실패가 시작된 때 — 90초 안내(pollFailureMessage)용. 답을 기다리는 중은 넣지 않는다. */
+    failedSince: () => failedSince,
+    expired(at = Date.now()) {
+      return updateWaitExpired({ now: at, startedAt, lastChangeAt, silentSince: failedSince ?? askedAt });
+    },
+  };
+}
+
 export const UPDATE_WAIT_VERSION_KEY = "mvhub.release-update.wait-version";
 
 export function isReleaseUpdateRunning(state: ReleaseUpdateState | undefined): boolean {

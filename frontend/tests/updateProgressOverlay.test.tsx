@@ -6,7 +6,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UpdateProgressOverlay } from "../src/components/UpdateProgressOverlay";
 import {
+  UPDATE_MAX_MS,
+  UPDATE_SILENT_MS,
+  UPDATE_STALL_MS,
   UPDATE_WAIT_VERSION_KEY,
+  createUpdateWaitClock,
   startReleaseUpdate,
   updateStageIndex,
   type ReleaseUpdateState,
@@ -78,6 +82,54 @@ describe("단계 계산", () => {
     expect(at("installing")).toBe(2);
     expect(at("restarting")).toBe(3);
     expect(at("complete")).toBe(4);
+  });
+});
+
+// 덮개·설정 창이 같이 쓰는 시계(2026-11-18, Codex 리뷰 1차 높음·중간의 경계)
+describe("자동 확인 시계", () => {
+  const same = status({ state: "installing", percent: 70 });
+
+  it("상태가 그대로인 채 정체 기준 직전에 보낸 요청이 답이 없으면 정체가 아니라 응답 없음으로 잰다", () => {
+    const clock = createUpdateWaitClock(0);
+    clock.asked(0);
+    clock.answered(same, 100);
+    clock.asked(UPDATE_STALL_MS - 1500); // 이 요청부터 앱이 꺼졌다(교체 시작)
+    expect(clock.expired(UPDATE_STALL_MS)).toBe(false);
+    expect(clock.expired(UPDATE_STALL_MS - 1500 + UPDATE_SILENT_MS - 1)).toBe(false);
+    expect(clock.expired(UPDATE_STALL_MS - 1500 + UPDATE_SILENT_MS)).toBe(true);
+  });
+
+  it("앱이 꺼졌다 같은 상태로 다시 답해도 복귀로 보고 정체 시계를 새로 잰다", () => {
+    const clock = createUpdateWaitClock(0);
+    clock.asked(0);
+    clock.answered(same, 100);
+    clock.asked(60_000);
+    clock.failed(61_000);
+    clock.asked(6 * 60_000);
+    clock.answered(same, 6 * 60_000 + 100); // 꺼지기 전과 같은 상태
+    expect(clock.expired(6 * 60_000 + 200)).toBe(false);
+    expect(clock.expired(6 * 60_000 + 100 + UPDATE_STALL_MS)).toBe(true);
+  });
+
+  it("실패가 이어지면 처음 실패한 요청을 보낸 때부터 재고, 90초 안내용 시각도 준다", () => {
+    const clock = createUpdateWaitClock(0);
+    clock.asked(1000);
+    clock.failed(5000);
+    clock.asked(7000);
+    clock.failed(9000);
+    expect(clock.failedSince()).toBe(1000);
+    expect(clock.expired(1000 + UPDATE_SILENT_MS - 1)).toBe(false);
+    expect(clock.expired(1000 + UPDATE_SILENT_MS)).toBe(true);
+  });
+
+  it("진행이 계속 바뀌어도 시작부터 전체 상한이 지나면 멈춘다", () => {
+    const clock = createUpdateWaitClock(0);
+    for (let t = 0; t < UPDATE_MAX_MS; t += 60_000) {
+      clock.asked(t);
+      clock.answered(status({ state: "downloading", percent: (t / 60_000) % 100 }), t + 10);
+    }
+    expect(clock.expired(UPDATE_MAX_MS - 1)).toBe(false);
+    expect(clock.expired(UPDATE_MAX_MS)).toBe(true);
   });
 });
 
@@ -304,14 +356,18 @@ describe("덮개", () => {
     expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
   });
 
-  it("상태 요청이 끝나지 않아도 5분이 지나면 멈추고 닫기를 내준다 — 늦은 응답은 버리고 타이머도 남기지 않는다(2026-10-03 점검 CXF-6)", async () => {
+  it("상태 요청이 끝나지 않아도 응답 없음 15분이 지나면 멈추고 닫기를 내준다 — 늦은 응답은 버리고 타이머도 남기지 않는다(2026-10-03 점검 CXF-6)", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
     let answer: (value: ReleaseUpdateStatus) => void = () => {};
     mocks.jsonFetch.mockReturnValue(new Promise<ReleaseUpdateStatus>((resolve) => { answer = resolve; }));
     mount();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(14 * 60 * 1000);
+    });
+    expect(text()).not.toContain("자동 확인 시간이 초과"); // 교체 중 앱이 꺼진 구간일 수 있다 — 15분까지는 기다린다
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
     });
 
     expect(document.querySelector(".upd-close")).not.toBeNull();
@@ -324,6 +380,107 @@ describe("덮개", () => {
     });
     expect(text()).not.toContain("40%"); // 늦게 온 응답이 화면을 되돌리지 않는다
     expect(document.querySelector(".upd-close")).not.toBeNull();
+  });
+
+  // 2026-11-18 Jay PC 0632→0602: 설치는 07:49:09 에 끝났는데(update.log·update-journal committed) 덮개가 시작부터 고정 5분에
+  //  '자동 확인 시간이 초과'와 [강제 업데이트]를 띄웠다. 파일 교체·확인 동안 앱이 약 4분 꺼져 진행을 읽을 수 없다.
+  it("앱이 꺼진 교체 구간이 6분 걸려도 끊지 않고, 새 판으로 다시 뜨면 완료로 본다", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+      hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload });
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    let phase: "installing" | "down" | "up" = "installing";
+    mocks.jsonFetch.mockImplementation(() => (phase === "installing"
+      ? Promise.resolve(status({ state: "installing", percent: 70 }))
+      : phase === "down"
+        ? Promise.reject(new Error("앱이 꺼져 있음"))
+        : Promise.resolve(status({ state: "complete", current_version: "2026.09.28-1438", percent: 100 }))));
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 1000); // 70% 에서 1분
+    });
+    phase = "down";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6 * 60 * 1000); // 시작부터 7분 — 옛 고정 5분이면 여기서 끊었다
+    });
+    expect(text()).not.toContain("자동 확인 시간이 초과");
+    phase = "up";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(text()).not.toContain("자동 확인 시간이 초과");
+    vi.unstubAllGlobals();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  it("전체 상한 직전에 완료되고 새로고침 예약 사이에 저장 안 됨이 생겨도 시간 초과로 덮지 않고 완료 안내를 띄운다", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    vi.stubGlobal("location", { href: "http://localhost:3000/", origin: "http://localhost:3000", protocol: "http:", host: "localhost:3000",
+      hostname: "localhost", port: "3000", pathname: "/", search: "", hash: "", reload });
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    // 폴링 시각 = 1200 + k·1500 → 완료 응답이 정확히 상한 0.3초 전(MAX−300)에 오고, 새로고침 예약(0.6초)은 상한 뒤(MAX+300)다.
+    //  감시는 1초마다라 상한(MAX)에 닿는다 — 옛 코드는 여기서 성공을 시간 초과로 덮고 완료 안내까지 건너뛰었다.
+    const t0 = Date.now();
+    const doneAt = t0 + UPDATE_MAX_MS - 1000;
+    let n = 0;
+    mocks.jsonFetch.mockImplementation(() => {
+      n += 1;
+      if (n === 1) return new Promise((resolve) => window.setTimeout(() => resolve(status({ state: "downloading", percent: 1 })), 1200));
+      return Promise.resolve(Date.now() < doneAt
+        ? status({ state: "downloading", percent: n % 100 })
+        : status({ state: "complete", current_version: "2026.09.28-1438", percent: 100 }));
+    });
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_MAX_MS - 250); // 완료 응답(MAX−300)을 받은 직후, 예약(MAX+300) 전
+    });
+    holdUnload("edit-docs", true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(reload).not.toHaveBeenCalled();
+    expect(text()).toContain("업데이트가 끝났습니다");
+    expect(text()).not.toContain("자동 확인 시간이 초과");
+    expect(vi.getTimerCount()).toBe(0);
+    holdUnload("edit-docs", false);
+    vi.unstubAllGlobals();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  it("진행이 계속 바뀌면 12분이 지나도 끊지 않는다(느린 내려받기)", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    let n = 0;
+    mocks.jsonFetch.mockImplementation(() => Promise.resolve(status({ state: "downloading", percent: (n += 1) % 100 })));
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(12 * 60 * 1000);
+    });
+    expect(text()).not.toContain("자동 확인 시간이 초과");
+    expect(document.querySelector(".upd-close")).toBeNull();
+  });
+
+  it("앱이 답하는데 상태가 10분 그대로면 시간 초과로 멈추고 새로 고침 확인을 안내한다", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, "2026.09.28-1438");
+    mocks.jsonFetch.mockResolvedValue(status({ state: "installing", percent: 70 }));
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9.5 * 60 * 1000);
+    });
+    expect(text()).not.toContain("자동 확인 시간이 초과");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 1000);
+    });
+    expect(text()).toContain("자동 확인 시간이 초과");
+    expect(text()).toContain("새로 고침해 판을 먼저 확인");
+    expect(document.querySelector(".upd-close")).not.toBeNull();
+    expect(window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("업데이트가 앱을 다시 띄워도 대기 표시가 있으면 이어서 뜬다", async () => {

@@ -74,7 +74,9 @@ import {
   pollFailureMessage,
   releaseUpdateMessage,
   startReleaseUpdate,
+  UPDATE_TIMEOUT_MESSAGE,
   UPDATE_WAIT_VERSION_KEY,
+  createUpdateWaitClock,
   type ReleaseUpdateStatus,
 } from "../lib/releaseUpdate";
 import { CloseIcon } from "./common/ViewIcons";
@@ -260,8 +262,18 @@ export function SettingsPanel({
     if (!releaseUpdatePolling) return;
     let cancelled = false;
     let timer = 0;
-    let firstFailedAt: number | null = null;
-    const deadline = Date.now() + 5 * 60 * 1000;
+    // 시작부터 고정 5분이 아니라 진행이 멈춘 시간으로 끊는다 — 덮개와 같은 시계(lib/releaseUpdate createUpdateWaitClock).
+    //  요청과 따로 도는 감시라 끝나지 않는 요청에도 멈춘다(덮개와 같은 이유 — 2026-10-03 CXF-6, Codex 리뷰 1차 중간).
+    const clock = createUpdateWaitClock();
+    const watch = window.setInterval(() => {
+      if (cancelled || !clock.expired()) return;
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearInterval(watch);
+      setReleaseUpdateBusy(false);
+      setReleaseUpdatePolling(false);
+      setReleaseUpdateMsg(UPDATE_TIMEOUT_MESSAGE);
+    }, 1000);
 
     const poll = async () => {
       let expected = "";
@@ -270,13 +282,15 @@ export function SettingsPanel({
       } catch {
         // 아래 status.latest_version으로 폴백한다.
       }
+      clock.asked();
       try {
         const status = await getReleaseUpdateStatus(false);
         if (cancelled) return;
-        firstFailedAt = null;
+        clock.answered(status);
         setReleaseUpdateStatus(status);
         const target = expected || status.latest_version;
         if (status.state === "failed") {
+          window.clearInterval(watch); // 결과가 정해졌다 — 감시가 뒤늦게 시간 초과로 덮지 않게
           // recovery_required 안내(로그 확인·관리자 문의)까지 포함되도록 공용 문구를 쓴다.
           setReleaseUpdateMsg(releaseUpdateMessage(status) || "업데이트에 실패했습니다.");
           setReleaseUpdateBusy(false);
@@ -293,6 +307,8 @@ export function SettingsPanel({
           && (status.state === "complete" || status.state === "up_to_date")
           && status.current_version === target
         ) {
+          // 완료가 정해졌다 — 새로고침을 예약한 0.5초 사이에 감시가 전체 상한에 닿아 성공을 시간 초과로 덮지 않게(Codex 재확인 중간)
+          window.clearInterval(watch);
           setReleaseUpdateMsg("업데이트 완료 · 새 화면을 여는 중…");
           try {
             window.sessionStorage.removeItem(UPDATE_WAIT_VERSION_KEY);
@@ -313,26 +329,19 @@ export function SettingsPanel({
         // 기존 허브가 종료되고 새 허브가 뜨는 동안 연결 실패는 정상이다.
         // 다만 무응답이 90초를 넘으면 멈춘 문구 대신 정직한 대기 안내로 바꾼다(유령 진행률 방지).
         if (!cancelled) {
-          if (firstFailedAt == null) firstFailedAt = Date.now();
+          clock.failed();
           setReleaseUpdateMsg(
-            pollFailureMessage(firstFailedAt, Date.now()) ?? "프로그램을 교체하고 다시 시작하는 중…",
+            pollFailureMessage(clock.failedSince(), Date.now()) ?? "프로그램을 교체하고 다시 시작하는 중…",
           );
         }
       }
-      if (!cancelled && Date.now() < deadline) {
-        timer = window.setTimeout(poll, 1500);
-      } else if (!cancelled) {
-        setReleaseUpdateBusy(false);
-        setReleaseUpdatePolling(false);
-        setReleaseUpdateMsg(
-          "자동 확인 시간이 초과됐습니다. 프로그램 창과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)를 확인해주세요.",
-        );
-      }
+      if (!cancelled) timer = window.setTimeout(poll, 1500); // 멈출 때는 위 감시가 정한다
     };
     void poll();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearInterval(watch);
     };
   }, [releaseUpdatePolling]);
 
