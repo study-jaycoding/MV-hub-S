@@ -9,6 +9,8 @@ import { HttpError } from "../src/lib/http";
 import { fillReorder, groupAssignBody, groupColorBody, groupDeleteBody, groupEditBody, groupTermsBody, mainPeople, memberQuotaBody, type MemberTableData, type MemberTableRow } from "../src/lib/memberTable";
 import { recurringEditBody } from "../src/lib/workspaceConsole";
 import { unloadHeld, unsavedPlaces } from "../src/lib/unloadGuard";
+import { creditAccessors } from "../src/lib/memberTable";
+import { unknownUsageLabel, usagePeriodText, usageBasisText } from "../src/lib/creditUsage";
 
 const mocks = vi.hoisted(() => ({ memberTable: vi.fn(), saveCreditPlan: vi.fn(), setPlanning: vi.fn(), members: vi.fn(), setProjectRoles: vi.fn(), removeProjectMember: vi.fn(), models: vi.fn(),
   consoleSetStatus: vi.fn(), getPlanning: vi.fn(), updateProject: vi.fn(), projects: vi.fn(), reorderProjects: vi.fn(), projectFolder: vi.fn(), setProjectFolder: vi.fn() }));
@@ -1517,4 +1519,40 @@ it("그룹 시트 남음 — 그룹 크레딧이 없는 그룹은 '제한 없음
   const remaining = (name: string) => rowOf(name).children[5].textContent; // 6번째 칸 = 남음(그 뒤는 '관리' 칸)
   expect(remaining("2nd floor")).toBe("제한 없음");
   expect(remaining("3rd floor")).toBe("3,480");
+});
+
+
+it("API metadata survives member accessors and main aggregation with each sub period", () => {
+  const a = table(1, [row("a@x", { usage: { credits: 1.25, count: 1, unknown: 0, basis: "api", period_start_ms: 1794754800000, period_end_ms: 1795359600000 } })]);
+  const b = table(1, [row("a@x", { usage: { credits: 2, count: 1, unknown: 0, basis: "facts", basis_reason: "identity_unlinked", period_start_ms: 1794841200000, period_end_ms: 1794927600000 } })]);
+  expect(creditAccessors(a).usageOf(a.rows[0])?.basis).toBe("api");
+  const person = mainPeople([{ id: "a", table: a, error: "" }, { id: "b", table: b, error: "" }])[0];
+  expect(person.used?.credits).toBe(3.25);
+  expect(person.used?.basis).toBe("mixed");
+  expect(person.used?.fallback_count).toBe(1);
+  expect(person.used?.components?.map(usagePeriodText)).toEqual(["2026-11-16 ~ 2026-11-22 (KST)", "2026-11-17 ~ 2026-11-17 (KST)"]);
+  expect(usageBasisText(person.used, s => s)).toContain("일부 MV 기록 기준");
+  expect(groupAssignBody(a.credit!, "a@x", "g1")).not.toHaveProperty("basis");
+});
+
+it("개인 크레딧 표에 값과 같은 범위의 출처를 표시한다", async () => {
+  const data = table(1, [row("a@x", { usage: { credits: 1.25, count: 1, unknown: 0, basis: "api", period_start_ms: 1794754800000, period_end_ms: 1795359600000 } })]);
+  mocks.memberTable.mockResolvedValue(data);
+  await mount();
+  await openSheet("크레딧 관리");
+  expect(host.textContent).toContain("힉스필드 기준");
+  expect(host.textContent).toContain("2026-11-16 ~ 2026-11-22 (KST)");
+});
+
+it("메인 합본은 출처 없는 구서버 부분을 API로 올리지 않고 대체 대상 수에 포함한다", () => {
+  const old = table(1, [row("a@x", { usage: { credits: 2, count: 1, unknown: 0 } })]);
+  const current = table(1, [row("a@x", { usage: { credits: 1, count: 1, unknown: 0, basis: "api" } })]);
+  const person = mainPeople([{ id: "old", table: old, error: "" }, { id: "new", table: current, error: "" }])[0];
+  expect(person.used?.basis).toBe("mixed");
+  expect(person.used?.fallback_count).toBe(1);
+  expect(person.used?.components).toHaveLength(2);
+});
+
+it.each([["api", "합계에 안 든 기록"], ["facts", "미상"], ["mixed", "미상"], [undefined, "미상"]] as const)("주기 사용 미확인 건수 앞말 — %s 기준이면 '%s'", (basis, label) => {
+  expect(unknownUsageLabel(basis ? { basis } : undefined)).toBe(label);
 });

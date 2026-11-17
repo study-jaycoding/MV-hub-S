@@ -58,7 +58,8 @@ def content(tmp_path, monkeypatch):
     db.flush_pool()
 
 
-def test_import_preserves_recipe_and_uses_remote_job_id(content):
+@pytest.mark.parametrize("resolution", ["1080p", "4k"])
+def test_import_preserves_recipe_and_uses_remote_job_id(content, resolution):
     source = draft()
     parent = repo.create_local_generation({
         "model": source["model"], "prompt": "fixed prompt", "params": source["params"],
@@ -66,9 +67,9 @@ def test_import_preserves_recipe_and_uses_remote_job_id(content):
     }, "me", creator_uid="artist")
     with db.get_connection() as conn:
         conn.execute("UPDATE generation SET status='done', job_id='remote-123' WHERE id=?", (parent,))
-    child = repo.import_generation(parent, "me", creator_uid="artist", finish_draft=True)
+    child = repo.import_generation(parent, "me", creator_uid="artist", finish_draft=True, finish_resolution=resolution)
     recipe = repo.gen_recipe(child)
-    assert recipe["params"] == finish_params(source)
+    assert recipe["params"] == finish_params(source, resolution)
     assert recipe["prompt"] == "fixed prompt"
     assert recipe["references"][0]["file_path"] == "https://example.invalid/ref.png"
     assert repo.get_generation(child)["parent_gen_id"] == parent
@@ -262,6 +263,7 @@ def test_recovery_pending_regenerate_reports_not_started():
 @pytest.mark.parametrize("params", [
     {"draft": True, "resolution": "480p"},
     {"draft": False, "draft_job_id": "remote-123", "resolution": "1080p"},
+    {"draft": False, "draft_job_id": "remote-123", "resolution": "4k"},
 ])
 def test_draft_flags_must_survive_agent_filter_before_paid_submission(content, params):
     parent = repo.create_local_generation({"prompt": "p", "model": "seedance_2_5", "params": params}, "me")
@@ -280,6 +282,7 @@ def test_draft_flags_must_survive_agent_filter_before_paid_submission(content, p
     (draft(creator_uid="other"), RegenerateIn(finish_draft=True), 403),
     (draft(workspace_scope="team", workspace_id="other"), RegenerateIn(finish_draft=True), 409),
     (draft(), RegenerateIn(finish_draft=True, prompt="changed"), 400),
+    (draft(), RegenerateIn(finish_resolution="4k"), 400),
     (draft(job_id=None), RegenerateIn(finish_draft=True), 409),
 ])
 def test_finish_route_rejects_before_submission(content, parent, reg, code):
@@ -334,3 +337,217 @@ def test_asgi_submission_marker_matches_actual_route_outcome(not_started):
     assert response.status_code == 409
     assert response.headers.get("X-MVHub-Submission") == ("not-started" if not_started else None)
     assert submit.call_count == (0 if not_started else 1)
+
+
+@pytest.mark.parametrize("resolution", ["480p", "720p", "8k"])
+def test_invalid_finish_resolution_is_422(resolution):
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        result = client.post("/api/gen-requests", json={"kind": "regenerate", "source_gen_id": "synthetic",
+            "regenerate": {"finish_draft": True, "finish_resolution": resolution}, "workspace": {"scope": "personal"}})
+    assert result.status_code == 422
+    with pytest.raises(ValueError):
+        finish_params(draft(), resolution)
+
+
+@pytest.mark.parametrize("status", ["done", "failed"])
+def test_terminal_completion_allows_new_intent_but_same_key_returns_original(content, status):
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status=? WHERE id=?", (status, first["id"]))
+        conn.execute("UPDATE gen_request SET status=?, terminal_at=datetime('now') WHERE gen_id=?", (status, first["id"]))
+    assert _submit_without_external(command)["id"] == first["id"]
+    assert _submit_without_external(replace(command, idempotency_key="new"))["id"] != first["id"]
+
+
+@pytest.mark.parametrize("phase", ["preparing", "pending", "claimed", "submitting", "running", "tracking",
+                                    "verifying", "blocked", "recovery_required", "unknown", "done", "failed", "canceled"])
+def test_unconfirmed_or_nonterminal_phases_block_even_with_terminal_timestamp(content, phase):
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE generation SET status='done' WHERE id=?", (first["id"],))
+        conn.execute("UPDATE gen_request SET status=?, terminal_at=? WHERE gen_id=?",
+                     (phase, None if phase in ("done", "failed") else "2026-11-17", first["id"]))
+    with pytest.raises(DraftFinishConflict):
+        _submit_without_external(replace(command, idempotency_key="new"))
+
+
+@pytest.mark.parametrize("canvas", [False, True])
+def test_same_intent_cannot_change_resolution(content, canvas):
+    from app.usecases.gen_requests import CanvasGenerationConflict, GenerationIdempotencyConflict
+    command = _finish_command()
+    if canvas:
+        command = replace(command, idempotency_key=None, canvas_link={"attempt_id": "canvas-intent", "scene_id": "scene",
+            "card_id": "card", "generation_id": "canvas-child"})
+    _submit_without_external(command)
+    with pytest.raises((CanvasGenerationConflict, GenerationIdempotencyConflict)):
+        _submit_without_external(replace(command, regenerate=RegenerateIn(finish_draft=True, finish_resolution="4k")))
+
+
+@pytest.mark.parametrize("kinds", [("key", "key"), ("canvas", "canvas"), ("key", "canvas"), ("none", "none")])
+@pytest.mark.parametrize("resolutions", [("1080p", "1080p"), ("1080p", "4k")])
+def test_resolution_reservation_race(content, kinds, resolutions):
+    command = _finish_command()
+    reservations = []
+    for i, kind in enumerate(kinds):
+        if kind == "key":
+            reservation = repo.reserve_idempotent_gen_request(command.email, command.creator_uid, "regenerate", f"key-{i}", {})
+        elif kind == "canvas":
+            link = {"attempt_id": f"canvas-{i}", "scene_id": "scene", "card_id": "card", "generation_id": f"child-{i}"}
+            reservation = repo.reserve_canvas_gen_request(command.email, command.creator_uid, link["generation_id"], "regenerate", link, {})
+        else:
+            reservation = {}
+        reservations.append(reservation)
+    barrier = Barrier(2)
+    def finish(item):
+        reservation, resolution = item
+        barrier.wait(timeout=5)
+        try:
+            return repo.import_generation(command.source_gen_id, "me", creator_uid="artist", workspace=command.workspace,
+                finish_draft=True, finish_resolution=resolution, generation_id=reservation.get("gen_id"))
+        except DraftFinishConflict:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(finish, zip(reservations, resolutions)))
+    assert len([value for value in outcomes if value]) == (1 if resolutions[0] == resolutions[1] else 2)
+
+
+@pytest.mark.parametrize("resolution", [None, "unexpected"])
+def test_legacy_marker_blocks_conservatively(content, resolution):
+    import json
+    command = _finish_command()
+    reservation = repo.reserve_idempotent_gen_request(command.email, "artist", "regenerate", "old", {})
+    payload = {"_draft_finish_job_id": "remote-123"}
+    if resolution:
+        payload["_draft_finish_resolution"] = resolution
+    with db.get_connection() as conn:
+        conn.execute("UPDATE gen_request SET payload=? WHERE id=?", (json.dumps(payload), reservation["id"]))
+    with pytest.raises(DraftFinishConflict):
+        _submit_without_external(command)
+    if resolution is None:
+        assert _submit_without_external(replace(command, idempotency_key="4k-intent", regenerate=RegenerateIn(finish_draft=True, finish_resolution="4k")))["params"]["resolution"] == "4k"
+
+
+@pytest.mark.parametrize("phase", ["pending", "claimed", "submitting", "recovery_required"])
+@pytest.mark.parametrize("purge", [False, True])
+@pytest.mark.parametrize("transfer", [False, True])
+def test_deletion_only_unlocks_confirmed_presubmit_cancellation(content, phase, purge, transfer):
+    from app.repo import trash
+    if transfer:
+        trash.activate_transfer(db.get_db_path(), storage_evidence="synthetic", writer_evidence="synthetic")
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE gen_request SET status=? WHERE gen_id=?", (phase, first["id"]))
+    assert trash.move_to_trash(first["id"])
+    if purge:
+        assert trash.purge_trashed_item(first["id"])
+    trash.reconcile_with_main()
+    with db.get_connection() as conn:
+        import json
+        row = conn.execute("SELECT status, payload FROM gen_request WHERE gen_id=?", (first["id"],)).fetchone()
+        marked = json.loads(row["payload"]).get("_draft_finish_release_reason") == "not_submitted"
+    assert marked == (phase in ("pending", "claimed"))
+    retry = replace(command, idempotency_key="new")
+    if marked:
+        assert _submit_without_external(retry)["id"] != first["id"]
+    else:
+        with pytest.raises(DraftFinishConflict):
+            _submit_without_external(retry)
+
+
+def test_remote_terminal_cancellation_unlocks_finish(content):
+    from app.repo import trash
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        rid = conn.execute("SELECT id FROM gen_request WHERE gen_id=?", (first["id"],)).fetchone()[0]
+        conn.execute("UPDATE generation SET status='running', job_id='finish-job' WHERE id=?", (first["id"],))
+        conn.execute("UPDATE gen_request SET status='tracking' WHERE id=?", (rid,))
+    assert trash.move_to_trash(first["id"])
+    result = trash.resolve_missing_target(first["id"], rid, "finish-job", command.email, provider_kind="failure")
+    assert result["decision"] == "retired"
+    assert _submit_without_external(replace(command, idempotency_key="new"))["id"] != first["id"]
+
+
+def test_expired_fail_route_records_atomic_terminal_and_generation_failure(content):
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        rid = conn.execute("SELECT id FROM gen_request WHERE gen_id=?", (first["id"],)).fetchone()[0]
+        conn.execute("UPDATE gen_request SET status='submitting' WHERE id=?", (rid,))
+    reason = "CLI 실패: Error: Seedance 2.5 draft has expired — cmd: generate create seedance_2_5"
+    with patch.object(routes, "_require_account", return_value={"email": command.email, "creator_uid": "artist"}), \
+         patch.object(routes, "schedule_telemetry_drain"), \
+         patch("app.usecases.gen_requests.pm_best_effort"), \
+         patch("app.usecases.gen_requests.journal_generation_event"), \
+         patch("app.usecases.gen_requests.manager.broadcast", AsyncMock()):
+        assert asyncio.run(routes.fail_gen_request(rid, SimpleNamespace(), reason)) == {"ok": True}
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT status, terminal_at, error FROM gen_request WHERE id=?", (rid,)).fetchone()
+        assert row["status"] == "failed" and row["terminal_at"] and row["error"] == reason
+    assert repo.get_generation(first["id"])["status"] == "failed"
+    assert repo.get_generation(first["id"])["error"] == reason
+
+
+@pytest.mark.parametrize("resolution", ["1080p", "4k"])
+def test_submission_fingerprint_rejects_wrong_finish_resolution(content, resolution):
+    command = _finish_command()
+    first = _submit_without_external(replace(command, regenerate=RegenerateIn(finish_draft=True, finish_resolution=resolution)))
+    with db.get_connection() as conn:
+        rid = conn.execute("SELECT id FROM gen_request WHERE gen_id=?", (first["id"],)).fetchone()[0]
+        conn.execute("UPDATE gen_request SET status='claimed', lease_owner='agent', lease_expires_at=datetime('now','+5 minutes') WHERE id=?", (rid,))
+    wrong = {**first["params"], "resolution": "4k" if resolution == "1080p" else "1080p"}
+    assert repo.begin_request_submission(rid, command.email, "agent", {"params": wrong}) is None
+    assert repo.begin_request_submission(rid, command.email, "agent", {"params": first["params"]})["transitioned"]
+
+
+@pytest.mark.parametrize("phase", ["preparing", "pending", "claimed", "submitting", "recovery_required"])
+def test_orphan_boot_cleanup_only_marks_presubmit_release(content, phase):
+    from app.repo import trash
+    from app.repo.generation_delete import delete_generation_rows
+    import json
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE gen_request SET status=? WHERE gen_id=?", (phase, first["id"]))
+        delete_generation_rows(conn, first["id"])
+    trash.reconcile_with_main()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT status, terminal_at, payload FROM gen_request WHERE gen_id=?", (first["id"],)).fetchone()
+    assert row["status"] == "canceled" and row["terminal_at"]
+    marked = json.loads(row["payload"]).get("_draft_finish_release_reason") == "not_submitted"
+    assert marked == (phase in ("preparing", "pending", "claimed"))
+    if not marked:
+        with pytest.raises(DraftFinishConflict):
+            _submit_without_external(replace(command, idempotency_key="new"))
+    else:
+        assert _submit_without_external(replace(command, idempotency_key="new"))["id"] != first["id"]
+
+
+@pytest.mark.parametrize("phase", ["done", "failed"])
+def test_unknown_resolution_stays_blocked_even_when_request_is_terminal(content, phase):
+    import json
+    command = _finish_command()
+    reservation = repo.reserve_idempotent_gen_request(command.email, "artist", "regenerate", "invalid-resolution", {})
+    with db.get_connection() as conn:
+        conn.execute("UPDATE gen_request SET payload=?, status=?, terminal_at=datetime('now') WHERE id=?",
+            (json.dumps({"_draft_finish_job_id": "remote-123", "_draft_finish_resolution": "unexpected"}), phase, reservation["id"]))
+    with pytest.raises(DraftFinishConflict):
+        _submit_without_external(command)
+
+
+@pytest.mark.parametrize("phase", ["done", "failed"])
+def test_unknown_child_resolution_is_not_reinterpreted_as_an_allowed_resolution(content, phase):
+    import json
+    command = _finish_command()
+    first = _submit_without_external(command)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE gen_request SET status=?, terminal_at=datetime('now') WHERE gen_id=?", (phase, first["id"]))
+        conn.execute("UPDATE generation SET status=?, params=? WHERE id=?",
+            (phase, json.dumps({"draft_job_id": "remote-123", "resolution": "unexpected"}), first["id"]))
+    with pytest.raises(DraftFinishConflict):
+        _submit_without_external(replace(command, idempotency_key="new-intent"))

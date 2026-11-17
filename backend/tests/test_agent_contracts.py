@@ -1983,10 +1983,11 @@ def test_staged_agent_never_creates_when_begin_ack_is_missing():
     release.assert_called_once_with("http://hub", "token-1", "request-1", "agent-1")
 
 
-def test_seedance_finish_keeps_draft_flags_and_original_mode_before_submission():
+@pytest.mark.parametrize("resolution", ["1080p", "4k"])
+def test_seedance_finish_keeps_draft_flags_and_original_mode_before_submission(resolution):
     agent = _load_agent()
     request = {**_submission_request(), "model": "seedance_2_5",
-               "params": {"mode": "text_to_video", "draft": False, "draft_job_id": "remote-draft", "resolution": "1080p"}}
+               "params": {"mode": "text_to_video", "draft": False, "draft_job_id": "remote-draft", "resolution": resolution}}
     with patch.object(agent, "_allowed_params", return_value={"mode", "resolution"}), \
          patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), \
          patch.object(agent, "_begin_submission", return_value=False) as begin, \
@@ -3167,3 +3168,43 @@ def test_k2_submit_recovery_http_body_masks_url_once_through_real_product_path()
         '{"prompt":"<프롬프트 13자>","token":<토큰 숨김>}'
         ' — cmd: generate create nano-banana --prompt <프롬프트 11자>'
     )}
+
+
+@pytest.mark.parametrize("model,draft_job,error,created,expired", [
+    ("seedance_2_5", "draft", "CLI 실패: Error: Seedance 2.5 draft has expired — cmd: generate create seedance_2_5", None, True),
+    ("seedance_2_5", "draft", "CLI 실패: Seedance 2.5 draft has expired.", None, True),
+    ("other", "draft", "CLI 실패: Error: Seedance 2.5 draft has expired", None, False),
+    ("seedance_2_5", None, "CLI 실패: Error: Seedance 2.5 draft has expired", None, False),
+    ("seedance_2_5", "draft", "CLI 타임아웃: Seedance 2.5 draft has expired", None, False),
+    ("seedance_2_5", "draft", "CLI JSON 파싱 실패: Seedance 2.5 draft has expired", None, False),
+    ("seedance_2_5", "draft", "CLI 실패: other error — cmd: --prompt Seedance 2.5 draft has expired", None, False),
+    ("seedance_2_5", "draft", "CLI 실패: other error Seedance 2.5 draft has expired", None, False),
+    ("seedance_2_5", "draft", "CLI 실패: Error: Seedance 2.5 draft has expiredXYZ", None, False),
+    ("seedance_2_5", "draft", "CLI 실패: Error: Seedance 2.5 draft has expired", {"partial": True}, False),
+    ("seedance_2_5", "draft", "CLI 실패: Error: Seedance 2.5 draft has expired", ["12345678-1234-1234-1234-123456789abc"], False),
+])
+def test_only_direct_draft_expiry_without_job_is_failed(model, draft_job, error, created, expired):
+    agent = _load_agent()
+    request = {**_submission_request(), "model": model, "params": {"draft": False, "resolution": "4k"}}
+    if draft_job:
+        request["params"]["draft_job_id"] = draft_job
+    with patch.object(agent, "_allowed_params", return_value={"resolution"}), \
+         patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), \
+         patch.object(agent, "_begin_submission", return_value=True), \
+         patch.object(agent, "_run_cli_json", return_value=(created, error)) as create, \
+         patch.object(agent, "_require_submission_recovery", return_value=True) as recovery, \
+         patch.object(agent, "_fail") as fail, patch.object(agent, "_outbox_add"), \
+         patch.object(agent, "_anchor_with_retry", return_value=True):
+        result = agent._submit_one("http://hub", "token", "fake-cli", "user@example.com", request,
+                                   {}, {}, agent.Lock(), agent.Lock(), "agent")
+    create.assert_called_once()
+    if expired:
+        fail.assert_called_once_with("http://hub", "token", request["id"], agent._sanitize_diagnostic(error).strip()[:700])
+        recovery.assert_not_called()
+    elif isinstance(created, list):
+        assert result and result["job_id"] == created[0]
+        recovery.assert_not_called()
+        fail.assert_not_called()
+    else:
+        recovery.assert_called_once()
+        fail.assert_not_called()

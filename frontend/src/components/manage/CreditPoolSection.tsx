@@ -1,3 +1,6 @@
+import { UsageBasis } from "../common/UsageBasis";
+import { useT } from "../../lib/i18n";
+import { usageBasisText } from "../../lib/creditUsage";
 // 대시보드 '워크스페이스 사용 현황' 패널 안, 고리·통계 격자 바로 아래의 크레딧 풀 구역(Jay 2026-09-10).
 // 매니저: 풀 카드(월 충전·이번 달 사용·현재 잔액·월초 잔액) → 그룹별 한도 표 → 잔액 추이(관측값).
 // 일반 멤버: '내 그룹' 카드 하나(그룹 합계는 보이되 팀원 개인 내역은 없음).
@@ -157,6 +160,7 @@ export function CreditPoolSection({
    *  (사람별 몫은 관리 표 '크레딧' 시트에 있다). 고른 사람에 맞춰 숫자를 바꾸지 않는다. */
   focusMember?: { uid: string | null; name: string | null } | null;
 }) {
+  const t = useT();
   const [view, setView] = useState<CreditPlanView | null>(null);
   const [error, setError] = useState("");
   const [hidden, setHidden] = useState(false);
@@ -228,8 +232,10 @@ export function CreditPoolSection({
             <div>
               <span>{periodUsageLabel(mine.limit_period)} 내 사용</span>
               <strong>{n(mine.my_used_period ?? mine.my_used_month)}</strong>
+              <UsageBasis value={mine.my_period_usage} />
               <em>
                 그룹 전체 {n(mine.used_period ?? mine.used_month)}
+                <UsageBasis value={mine.period_usage} />
                 {(mine.my_unknown_period ?? mine.my_unknown_month) ? ` · 미상 ${mine.my_unknown_period ?? mine.my_unknown_month}건` : ""}
               </em>
             </div>
@@ -239,7 +245,8 @@ export function CreditPoolSection({
               <em>
                 {mine.my_remaining != null && mine.my_remaining < 0
                   ? `할당 크레딧보다 ${n(Math.abs(mine.my_remaining))} 크레딧 더 썼습니다`
-                  : mine.estimated ? `미상 ${mine.unknown_since_base}건 섞임 · 추정` : "팀 기록 장부 기준"}
+                  : mine.estimated ? `미상 ${mine.unknown_since_base}건 섞임 · 추정`
+                    : mine.my_period_usage?.basis ? t("사용량 출처는 위 기간별 표시를 따릅니다") : t("팀 기록 장부 기준")}
               </em>
             </div>
           </div>
@@ -272,7 +279,7 @@ export function CreditPoolSection({
               </span>
             ) : null}
           </div>
-          <span>{view.configured ? `${recurringSchedule ?? `충전일 매월 ${pool?.topup_day ?? 1}일`} · 잔액은 힉스필드 보고 · 사용은 팀 기록 장부` : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
+          <span>{view.configured ? `${recurringSchedule ?? `충전일 매월 ${pool?.topup_day ?? 1}일`} · ${pool?.month_usage?.basis ? t("잔액은 힉스필드 보고 · 사용은 {basis}").replace("{basis}", usageBasisText(pool.month_usage, t)) : "잔액은 힉스필드 보고 · 사용은 팀 기록 장부"}` : "프로젝트 설정에서 예산 한도(매월)와 그룹을 적으면 채워집니다"}</span>
         </div>
         {pool ? (
           <div className="credit-pool-grid">
@@ -289,9 +296,13 @@ export function CreditPoolSection({
               <em>{pool.topups_month?.count ? `${pool.topups_month.count}회 · 아래 기록` : "정기 크레딧 밖 추가 크레딧"}</em>
             </div>
             <div>
-              <span>{cycleLabel(view, pool.topup_day)} 사용 (팀 기록 장부)</span>
+              <span>{cycleLabel(view, pool.topup_day)} 사용{!pool.month_usage?.basis && ` (${t("팀 기록 장부")})`}</span>
               <strong>{n(pool.used_month)}</strong>
-              <em>{pool.unknown_month ? `미상 ${pool.unknown_month}건 제외 · 미분류 포함` : "미분류 포함"}</em>
+              <UsageBasis value={pool.month_usage} />
+              {!!pool.month_usage?.unlinked_api && <small>{t("미연결 API 사용")} {n(pool.month_usage.unlinked_api)}</small>}
+              <em>{pool.unknown_month ? pool.month_usage?.basis === "api"
+                ? t("합계에 안 든 기록 {count}건").replace("{count}", String(pool.unknown_month))
+                : `미상 ${pool.unknown_month}건 제외 · 미분류 포함` : "미분류 포함"}</em>
             </div>
             <div className="left">
               <span>잔액(보고)</span>
@@ -346,6 +357,7 @@ export function CreditPoolSection({
                   </td>
                   <td className="tnum">
                     {n(group.used_period ?? group.used_month)}
+                    <UsageBasis value={group.period_usage} />
                     <span className="credit-est"> {periodUsageLabel(group.limit_period)}{(group.unknown_period ?? group.unknown_month) ? ` · 미상 ${group.unknown_period ?? group.unknown_month}` : ""}</span>
                   </td>
                   {perPersonServer ? <GroupRemaining group={group} /> : <><td className="tnum">—</td><td>—</td></>}
@@ -357,7 +369,7 @@ export function CreditPoolSection({
                   <td className="tnum">{unassigned.member_count}</td>
                   <td className="tnum">—</td>
                   <td className="tnum">—</td>
-                  <td className="tnum">{n(unassigned.used_month)}{unassigned.unknown_month ? <span className="credit-est"> · 미상 {unassigned.unknown_month}</span> : null}</td>
+                  <td className="tnum">{n(unassigned.used_month)}<UsageBasis value={unassigned.month_usage} />{unassigned.unknown_month ? <span className="credit-est"> · 미상 {unassigned.unknown_month}</span> : null}</td>
                   <td className="tnum">—</td>
                   <td><span className="credit-pct tone-bad">!</span></td>
                 </tr>

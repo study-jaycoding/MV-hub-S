@@ -3497,6 +3497,16 @@ def _submit_one_attempt(
         created, cli_error = _run_cli_json(cli, *args, timeout=_SUBMIT_TIMEOUT_SECONDS, env=create_env)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
+        # 직접 CLI 거절의 선두만 확정 실패로 인정한다. 인자·부분 응답은 근거가 아니다.
+        error_body = (cli_error or "").partition(" — cmd:")[0]
+        if error_body.startswith("CLI 실패:"):
+            error_body = error_body.removeprefix("CLI 실패:").strip()
+            error_body = error_body.removeprefix("Error:").strip()
+            if (model == "seedance_2_5" and params.get("draft_job_id")
+                    and params.get("draft") is False and created is None
+                    and re.match(r"^Seedance 2\.5 draft has expired(?:$|[\s.!?;:—])", error_body)):
+                _fail(server, token, rid, _sanitize_diagnostic(cli_error).strip()[:700])
+                return None
         # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
         # 자동 fail/재시도하면 이미 결제된 작업을 한 번 더 만들 수 있으므로 수동 복구 상태로 격리한다.
         reason = _sanitize_diagnostic(cli_error or "잡 id를 확인하지 못했습니다").strip()[:700]

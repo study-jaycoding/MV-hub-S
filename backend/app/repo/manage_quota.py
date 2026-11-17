@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .. import manage_db
 from ..db import get_connection
 from ..emailnorm import norm_email
 from . import manage_credit_plan as credit_plan
@@ -25,8 +24,9 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
             conn.execute("BEGIN")
         plan, groups, members, topups, quotas = credit_plan._load(conn, workspace_id)
         derived_topup = credit_plan._monthly_budget(conn, workspace_id)
-
-    anchor = credit_plan._plan_anchor(plan)
+        anchor = credit_plan._plan_anchor(plan)
+        group = next((g for g in groups if email in members.get(g["id"], set())), None)
+        snapshot = credit_plan.usage_snapshot(conn, workspace_id, today, groups, anchor) if group else None
 
     def pool_total() -> float | None:
         # 내 몫이 없으면 계정 메뉴가 워크스페이스 잔액을 '이번 충전 달에 채운 총량'에 대어 고리로 그린다
@@ -45,7 +45,6 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
             return None
         return credit_plan._shown(float(monthly or 0) + float(emergency))
 
-    group = next((g for g in groups if email in members.get(g["id"], set())), None)
     result: dict[str, Any] = {
         "workspace_id": workspace_id,
         "source": "unassigned",
@@ -65,6 +64,7 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
         "revision": int(plan["revision"]) if plan else 0,
         "enforcement": "advisory",
         "pool_total": None,
+        "usage_supported": True,
     }
     if group is None:
         # 그룹에 들지 않은 사람도 기본으로 워크스페이스 남은 크레딧을 본다(Jay 2026-09-29).
@@ -79,23 +79,10 @@ def my_quota(workspace_id: str, email: str) -> dict[str, Any]:
         + timedelta(days=1)
     )
 
-    # upsert_facts owns job deduplication. Like workspace_email_usage, include
-    # tombstones and failed/pending estimates, but never add an estimate to real usage.
-    with manage_db.get_connection() as conn:
-        usage = conn.execute(
-            "SELECT COALESCE(SUM(real_credits), 0) AS used_real, "
-            "COALESCE(SUM(CASE WHEN real_credits IS NULL THEN est_credits ELSE 0 END), 0) "
-            "AS used_estimated, "
-            "COUNT(CASE WHEN real_credits IS NULL AND est_credits IS NOT NULL THEN 1 END) "
-            "AS estimated_count, "
-            "COUNT(CASE WHEN real_credits IS NULL AND est_credits IS NULL THEN 1 END) "
-            "AS unknown_count "
-            "FROM team_generation_fact "
-            "WHERE workspace_scope='team' AND workspace_id=? AND account_email=? "
-            "AND julianday(created_at) >= julianday(?) "
-            "AND julianday(created_at) < julianday(?)",
-            (workspace_id, email, start.isoformat(), end.isoformat()),
-        ).fetchone()
+    usage = snapshot.total(workspace_id, email, int(start.timestamp()*1000), int(end.timestamp()*1000))
+    result.update(credit_plan.usage_metadata(usage))
+    for key in ('failed_count', 'failed_refunded_count', 'refunded', 'overdue_pending_count'):
+        result[key] = usage[key]
 
     used_real = float(usage["used_real"])
     used_estimated = float(usage["used_estimated"])

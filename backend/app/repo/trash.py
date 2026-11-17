@@ -473,7 +473,12 @@ def _remove_main_for_transfer(conn, gen_id, tomb):
     # 아직 유료 CLI 제출 전인 요청은 삭제 시점에 함께 종결한다. gen_request는 휴지통 payload에
     # 포함되지 않으므로 여기서 취소하지 않으면 복원 뒤 pending/claimed가 되살아 자동 과금될 수 있다.
     conn.execute(
-        "UPDATE gen_request SET status='canceled', error=?, lease_owner=NULL, "
+        "UPDATE gen_request SET payload=CASE WHEN status IN ('preparing','pending','claimed') AND json_valid(payload) "
+        "THEN CASE WHEN json_extract(payload,'$.params.draft_job_id') IS NOT NULL "
+        "OR json_extract(payload,'$._draft_finish_job_id') IS NOT NULL "
+        "THEN json_set(payload,'$._draft_finish_release_reason','not_submitted') "
+        "ELSE payload END ELSE payload END, "
+        "status='canceled', error=?, lease_owner=NULL, "
         "lease_expires_at=NULL, next_check_at=NULL, terminal_at=datetime('now'), "
         "updated_at=datetime('now') WHERE gen_id=? "
         f"AND status IN ({','.join('?' for _ in _PRESUBMIT_REQUEST_PHASES)})",
@@ -865,7 +870,12 @@ def _cancel_orphan_requests(conn: sqlite3.Connection, gen_id: str | None = None)
     if gen_id is not None:
         params.append(gen_id)
     cur = conn.execute(
-        "UPDATE gen_request SET status='canceled', error=?, lease_owner=NULL, "
+        "UPDATE gen_request SET payload=CASE WHEN status IN ('preparing','pending','claimed') AND json_valid(payload) "
+        "THEN CASE WHEN json_extract(payload,'$.params.draft_job_id') IS NOT NULL "
+        "OR json_extract(payload,'$._draft_finish_job_id') IS NOT NULL "
+        "THEN json_set(payload,'$._draft_finish_release_reason','not_submitted') "
+        "ELSE payload END ELSE payload END, "
+        "status='canceled', error=?, lease_owner=NULL, "
         "lease_expires_at=NULL, next_check_at=NULL, terminal_at=datetime('now'), "
         "updated_at=datetime('now') WHERE "
         f"status IN ({','.join('?' for _ in _NONTERMINAL_REQUEST_PHASES)}) "

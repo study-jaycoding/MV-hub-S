@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, useCallback, useMemo, useRef, useState, type ComponentProps, type SetStateAction } from "react";
+import { act, useCallback, useMemo, useRef, useState, type ComponentProps, type ReactNode, type SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Scene, SceneCard } from "../src/lib/scenes";
 import type { Generation } from "../src/types";
@@ -67,12 +67,12 @@ function installAppBoundaries() {
   }
   vi.doMock("../src/components/app/SelectionActionBar", () => ({
     LibrarySelectionActionBar: () => null,
-    BoardSelectionActionBar: ({ onFinishDraft }: { onFinishDraft?: (generation: Generation) => Promise<void> }) => draftSelected ? (
-      <button onClick={() => { draftRun = Promise.resolve(onFinishDraft?.(draftTarget)); }}>시험 Draft 완료</button>
+    BoardSelectionActionBar: ({ onFinishDraft }: { onFinishDraft?: (generation: Generation, resolution: "1080p" | "4k") => Promise<void> }) => draftSelected ? (
+      <button onClick={() => { draftRun = Promise.resolve(onFinishDraft?.(draftTarget, "1080p")); }}>시험 Draft 완료</button>
     ) : null,
   }));
   vi.doMock("../src/components/app/AppOverlays", () => ({
-    AppOverlays: ({ toast }: { toast: string | null }) => <div role="status">{toast}</div>,
+    AppOverlays: ({ toast }: { toast: ReactNode }) => <div role="status">{toast}</div>,
   }));
   vi.doMock("../src/components/scene/SceneBoard", () => ({
     SceneBoard: ({ onRenderCards, onRegenerate }: Pick<ComponentProps<typeof SceneBoard>, "onRenderCards" | "onRegenerate">) => (
@@ -231,32 +231,68 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     expect(scene.cards.find(card => card.id === "made")?.pendingGenerationAttempts || []).toHaveLength(aba ? 1 : 0);
     expect(released).toHaveBeenCalledTimes(1);
   });
-  it.each([409, 408, 429, 500, 503, undefined])("Draft 접수 불명(%s) 뒤 재확인과 확정 거절은 기존 표식만 보존한다", { timeout: 20_000 }, async status => {
+  it.each([409, 408, 429, 500, 503, undefined])("Draft 접수 불명(%s) 뒤 같은 의도·키·예약으로 이미 완료된 결과만 회수한다", { timeout: 20_000 }, async status => {
     draftSelected = true;
     const unknown = status === undefined ? new TypeError("synthetic lost response")
       : Object.assign(new Error("synthetic uncertain response"), { status });
-    const rejected = Object.assign(new Error("synthetic not-started conflict"), { status: 409, notStarted: true });
-    const send = vi.fn().mockRejectedValueOnce(unknown).mockRejectedValue(rejected);
-    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = vi.fn(() => send);
+    let childId = "";
+    const send = vi.fn().mockRejectedValueOnce(unknown).mockImplementation(async () => ({ ...draftTarget, id: childId, status: "done", params: { draft: false, draft_job_id: "synthetic-draft", resolution: "1080p" } }));
+    const prepare = vi.fn((_id, _body, _workspace, link) => { childId = link.generation_id; return send; });
+    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = prepare;
     const { default: App } = await import("../src/App");
-    act(() => view.root.render(<App />));
-    await settle();
+    act(() => view.root.render(<App />)); await settle();
     click(button(view.container, "시험 Draft 완료"));
-    await act(async () => { await draftRun; });
-    await settle();
-    expect(send).toHaveBeenCalledTimes(1);
+    await act(async () => { await draftRun; }); await settle();
     const first = scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts!;
-    expect(first).toHaveLength(1);
-    const notice = view.container.textContent;
-    for (const count of [2, 3]) {
-      click(button(view.container, "시험 Draft 완료"));
-      await act(async () => { await draftRun; });
-      await settle();
-      expect(send).toHaveBeenCalledTimes(count);
-      expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
-      expect(view.container.textContent).toContain("Draft 생성 실패");
-    }
-    expect(notice).toContain("기존 요청을 확인하세요");
+    expect(first).toHaveLength(1); expect(send).toHaveBeenCalledTimes(1);
+    expect(view.container.textContent).toContain("기존 요청을 확인하세요");
+    click(button(view.container, "시험 Draft 완료"));
+    await act(async () => { await draftRun; }); await settle();
+    expect(send).toHaveBeenCalledTimes(2); expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({ finish_draft: true, finish_resolution: "1080p" })]));
+    expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts || []).toHaveLength(0);
+    // 완료된 기존 의도를 회수한 다음 클릭부터만 새 의도를 준비한다.
+    click(button(view.container, "시험 Draft 완료"));
+    await act(async () => { await draftRun; }); await settle();
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    [409, "업데이트 중", "업데이트 중"], [409, "배포 일시중지", "배포 일시중지"], [409, "계정 불일치", "계정 불일치"],
+    [404, "원본 generation 없음", "원본 카드를 찾지 못했습니다"], [400, "워크스페이스 검증", "워크스페이스 검증"],
+    [409, "처음 고른 공간과 다릅니다", "처음 고른 공간과 다릅니다"],
+    [400, "source_gen_id 가 필요합니다", "원본 카드를 찾지 못했습니다"],
+    [400, "workspace_id is missing", "선택한 작업 공간을 확인하지 못했습니다"],
+    [409, "idempotency_key mismatch", "요청 정보를 확인하지 못했습니다"],
+  ] as const)("Draft 접수 재확인의 사전 거절(%s %s)도 불명으로 유지하고 같은 예약·전송으로 회수한다", async (status, reason, displayReason) => {
+    draftSelected = true;
+    const { HttpError } = await import("../src/lib/http");
+    let childId = "";
+    const send = vi.fn().mockRejectedValueOnce(new TypeError("lost"))
+      .mockRejectedValueOnce(new TypeError("still lost"))
+      .mockRejectedValueOnce(new HttpError(status, `${status}: ${reason}`, reason, undefined, true))
+      .mockImplementation(async () => ({ ...draftTarget, id: childId, status: "done", params: { draft: false, draft_job_id: "synthetic-draft", resolution: "1080p" } }));
+    const prepare = vi.fn((_id, _body, _workspace, link) => { childId = link.generation_id; return send; });
+    (boundary.api as unknown as Record<string, unknown>).prepareRegenerate = prepare;
+    const { default: App } = await import("../src/App"); act(() => view.root.render(<App />)); await settle();
+    click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
+    const first = scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts!;
+    sceneConfirmFails = true;
+    click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
+    sceneConfirmFails = false;
+    click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
+    expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
+    click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
+    expect(prepare).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(3);
+    expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
+    const notice = view.container.querySelector("[role=status]")!.textContent!;
+    expect(notice).toBe(`앞선 요청은 계속 확인합니다. 새로 고치기 전에 생성 목록에 같은 화질 결과가 있는지 먼저 보세요.\n${displayReason}`);
+    expect(view.container.querySelector<HTMLElement>("[role=status] span")!.style.whiteSpace).toBe("pre-line");
+    expect(notice).not.toMatch(/\d{3}:|generation|source_gen_id|workspace_id|idempotency_key|\.\.\./);
+    click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
+    expect(prepare).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(4);
+    expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts || []).toHaveLength(0);
   });
   // 시간 제한 20초 — App 전체를 StrictMode 로 렌더하는 첫 마운트라 단독 1.4~1.8초인데, 전체 실행(파일 병렬·jsdom 기동 경합)에서는 기본 5초를 넘는다.
   // 2026-09-20 실측: 시험 파일이 하나 늘 때마다 넘었고 단독으로는 3/3 통과. 이 시험에만 올린다(전역 제한은 그대로 — 다른 시험의 무한 대기를 가리지 않게).

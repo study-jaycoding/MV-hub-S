@@ -1,3 +1,4 @@
+import { UsageBasis } from "../common/UsageBasis";
 // PM 대시보드 '관리 표' — 엑셀 시트처럼 멤버·그룹·크레딧을 나눠 보고, 편집 가능한 칸은 바로 저장한다.
 // 설계: docs/MEMBER_TABLE_DESIGN.md. 표에는 자기만의 쓰기 API 가 없다 — 칸마다 기존 API 를 부른다(권한·감사 그대로).
 // 저장은 직렬 큐 하나로 줄 세우고, 큐가 비면 성공·실패와 관계없이 표를 다시 읽는다(다른 창·다른 사람의 변경은 큐 밖이다).
@@ -32,6 +33,7 @@ import {
 } from "../../lib/creditPlan";
 import { isSystemAccountEmail } from "../../lib/accountIdentity";
 import { formatCredits as credits } from "../../lib/formatCredits";
+import { unknownUsageLabel } from "../../lib/creditUsage";
 import { errorDetail, isHttpStatus, isRouteMissing } from "../../lib/http";
 import { holdUnload } from "../../lib/unloadGuard";
 import { useModalFocus } from "../../lib/keyGate";
@@ -1601,7 +1603,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                       <td className="num">{group.member_count}</td>
                       <td className="num mtable-period-col">{PERIOD_UNIT[group.limit_period ?? "month"]}</td>
                       <td className="num">{group.monthly_limit == null ? <span className="mtable-muted">제한 없음</span> : credits(group.monthly_limit)}</td>
-                      <td className="num">{group.used_period == null ? "—" : credits(group.used_period)}</td>
+                      <td className="num">{group.used_period == null ? "—" : credits(group.used_period)}<UsageBasis value={group.period_usage} /></td>
                       <td className="num">{group.remaining === null ? (group.monthly_limit == null ? <span className="mtable-muted">제한 없음</span> : "—") : <span className={`credit-pct tone-${remainingTone(group.remaining, group.quota_total ?? null)}`}>{credits(group.remaining)}</span>}</td>
                     </tr>
                   )))}
@@ -1709,7 +1711,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                           onDirtyChange={(dirty) => { if (dirty) inlineDirtyRef.current.add(group.id); else inlineDirtyRef.current.delete(group.id); }}
                         />
                       </td>
-                      <td className="num">{credits(groupUsed(group))}</td>
+                      <td className="num">{credits(groupUsed(group))}<UsageBasis value={group.period_usage} /></td>
                       <td className="num">{group.remaining === null ? (group.monthly_limit == null ? <span className="mtable-muted">제한 없음</span> : "—") : <span className={`credit-pct tone-${remainingTone(group.remaining, group.quota_total ?? null)}`}>{credits(group.remaining)}</span>}</td>
                       {canGroup ? (
                         <td className="mtable-group-actions-col">
@@ -1813,7 +1815,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                     <td className="num" title={perSub(person, (entry) => (!entry.row.group_id ? "그룹 없음" : entry.unlimited ? "제한 없음" : entry.quota == null ? "—" : credits(entry.quota)))}>
                       {!person.grouped ? <span className="mtable-muted">그룹 없음</span> : person.unlimited ? <span className="mtable-muted">제한 없음</span> : person.quota == null ? "—" : credits(person.quota)}
                     </td>
-                    <td className="num" title={perSub(person, (entry) => (entry.used ? credits(entry.used.credits) : "—"))}>{person.used ? credits(person.used.credits) : "—"}</td>
+                    <td className="num" title={perSub(person, (entry) => (entry.used ? credits(entry.used.credits) : "—"))}>{person.used ? credits(person.used.credits) : "—"}<UsageBasis value={person.used} /></td>
                     <td className={`num${!person.unlimited && (person.remaining ?? 0) < 0 ? " mtable-over" : ""}`} title={perSub(person, (entry) => (entry.unlimited ? "제한 없음" : entry.remaining == null ? "—" : credits(entry.remaining)))}>
                       {person.unlimited ? <span className="mtable-muted">제한 없음</span> : person.remaining == null ? "—" : credits(person.remaining)}
                     </td>
@@ -1918,7 +1920,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                         />
                       )}
                     </td>
-                    <td className="num">{usageOf(row) ? credits(usageOf(row)!.credits) : "—"}</td>
+                    <td className="num">{usageOf(row) ? credits(usageOf(row)!.credits) : "—"}<UsageBasis value={usageOf(row)} /></td>
                     <td className={`num${(quotaOf(row.email)?.remaining ?? 0) < 0 ? " mtable-over" : ""}`}>
                       {quotaOf(row.email)?.remaining == null ? (unlimitedOf(row) ? <span className="mtable-muted">제한 없음</span> : "—") : credits(quotaOf(row.email)!.remaining!)}
                     </td>
@@ -2048,7 +2050,7 @@ export function MemberTable({ workspaceId = "", reloadSignal = 0 }: { workspaceI
                 </div>
               ) : null}
               {consoleCredit?.used_cycle !== undefined ? (
-                <div><span>이번 주기 사용{consoleCredit.unknown_cycle ? ` · 미상 ${consoleCredit.unknown_cycle}건` : ""}</span><strong>{credits(consoleCredit.used_cycle)}</strong></div>
+                <div><span>이번 주기 사용{consoleCredit.unknown_cycle ? ` · ${unknownUsageLabel(consoleCredit.cycle_usage)} ${consoleCredit.unknown_cycle}건` : ""}</span><strong>{credits(consoleCredit.used_cycle)}</strong><UsageBasis value={consoleCredit.cycle_usage} /></div>
               ) : null}
               {consoleCredit && consoleCredit.next_topup_day !== undefined ? (
                 <div><span>Next</span><strong>{consoleCredit.auto && consoleCredit.next_topup_day ? consoleCredit.next_topup_day : "—"}</strong></div>

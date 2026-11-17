@@ -1,3 +1,4 @@
+import { useT } from "../../lib/i18n";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { createPortal } from "react-dom";
@@ -419,6 +420,7 @@ export function WorkspaceUsageDashboard({
   detailOpen?: boolean;
   onToggleDetail?: () => void;
 }) {
+  const t = useT();
   const mine = scope === "mine";
   const showTable = (consoleOpen || detailOpen) && Boolean(tableSlot);
   // 구서버(read_all 전용)에 새 프론트가 붙으면 멤버는 403 — 빈 결과와 구분해 안내만 한다(코덱스 P2).
@@ -750,6 +752,7 @@ export function WorkspaceUsageDashboard({
               {selectedWorker ? ` · 인원: ${selectedWorker.creator_name || "이름 없는 멤버"}` : selectedProject ? ` · 프로젝트: ${selectedProject.project_name || "미분류"}` : ""}
             </p>
             <p className="work-source-label">
+              {t("생성 기록 분석 · 프로젝트·모델 차트는 MV 기록 기준")} ·
               {mine ? "출처 · 에이전트 자동 보고(내 기록만 · 삭제분 포함)" : "출처 · 에이전트 자동 보고(팀 텔레메트리 집계)"}
               {totals?.estimated_count ? (
                 <span title="실제 차감액이 확인되지 않은 생성물 수 — 견적값이 있으면 그 값으로 합산됩니다">

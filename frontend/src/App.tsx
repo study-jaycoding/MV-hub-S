@@ -4,7 +4,7 @@ import { useSceneWriter } from "./lib/sceneWriter";
 import { getAccountNamespace } from "./lib/accountScope";
 import { captureSubmissionScope, configureOperationContext, watchOperationContext } from "./app/operationContext";
 import { prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
-import { canFinishDraft } from "./lib/seedanceDraft";
+import { canFinishDraft, draftRequestKey, type DraftResolution } from "./lib/seedanceDraft";
 import { useDraftRequests } from "./lib/useDraftRequests";
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
 import { cloneElement, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -45,7 +45,7 @@ import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
 import { cardCommentOpensDrawing } from "./components/MediaPreview";
 import { ResolveNotices } from "./components/app/ResolveNotices";
 import { AuthPauseBanner } from "./components/app/AuthPauseBanner";
-import { getApiPause } from "./lib/http";
+import { getApiPause, HttpError } from "./lib/http";
 const EditTab = lazy(() =>
   import("./components/timeline/EditTab").then((m) => ({ default: m.EditTab })),
 );
@@ -1957,13 +1957,18 @@ export default function App() {
   });
   const draftRequests = useDraftRequests(gens);
   // onCanvas = 캔버스 선택바에서 눌렀다 — 결과를 그 카드에 쌓는다. 워크스페이스(라이브러리)에서 누르면 보이지 않는 캔버스에 잇지 않는다(10-22).
-  const finishDraft = async (generation: Generation, onCanvas = true) => {
+  const draftContextKey = JSON.stringify([libraryAuthKey, workspaceContext.scope, workspaceContext.id]);
+  const draftBusy = (generation: Generation, resolution: DraftResolution): boolean | "uncertain" => {
+    const key = draftRequestKey(generation.id, generation.job_id || "", resolution);
+    return draftRequests.pending.has(key) || (draftRequests.uncertain.has(key) ? "uncertain" : false);
+  };
+  const finishDraft = async (generation: Generation, resolution: DraftResolution, onCanvas = true) => {
     if (!canFinishDraft(generation)) return;
+    if (await draftRequests.recheck(generation.id, generation.job_id!, resolution)) return;
     const scope = captureSubmissionScope(workspaceContext);
-    const attempt = draftRequests.begin(generation.id, scope);
+    const attempt = draftRequests.begin(generation.id, generation.job_id!, resolution, scope);
     if (!attempt) return;
     let link: Awaited<ReturnType<typeof prepareCanvasGenerationBatch>>[number] | undefined;
-    let acceptedOrUnknown = false;
     try {
       if (onCanvas && activeScene) {
         flushScenePending(activeScene.id);
@@ -1973,35 +1978,58 @@ export default function App() {
         link = (await prepareCanvasGenerationBatch(scene.id, [card.id]))[0];
         if (!link) throw new Error("캔버스 저장을 확인하지 못했습니다.");
       }
-      const prepared = prepareRegenerateSubmission(generation.id, { finish_draft: true }, workspaceContext, link, scope);
-      const result = await runSubmission(prepared, link ? {
-        confirm: () => confirmCanvasGeneration([link!]),
-        apply: (next) => settleCanvasGeneration(link!, next),
-      } : undefined);
-      acceptedOrUnknown = result.outcome.kind === "accepted" || result.outcome.kind === "accepted_local_pending" || result.outcome.kind === "acceptance_unknown";
-      if (!scope.isCurrent!()) return;
-      if (!result.generation) {
-        if (result.outcome.kind === "acceptance_unknown") {
-          // 서버의 Draft 예약이 중복 생성을 막으므로, 결과 id가 없는 시도는 다시 확인할 수 있게 한다.
-          draftRequests.release(attempt);
-          flash("Draft 요청의 접수 여부를 확인하지 못했습니다. 생성 목록에서 기존 요청을 확인하세요.");
-          return;
+      const prepared = prepareRegenerateSubmission(generation.id, { finish_draft: true, finish_resolution: resolution }, workspaceContext, link, scope);
+      let uncertain = false;
+      const submit = async () => {
+        if (!scope.isCurrent!()) return;
+        let acceptedOrUnknown = false;
+        try {
+          const result = await runSubmission(prepared, link ? {
+            confirm: () => confirmCanvasGeneration([link!]),
+            apply: (next) => settleCanvasGeneration(link!, next),
+          } : undefined);
+          // 재확인의 준비 실패·사전 거절은 원래 키의 원격 미제출 증거가 아니다.
+          const stillUncertain = uncertain && ["prepare_failed", "rejected"].includes(result.outcome.kind);
+          acceptedOrUnknown = stillUncertain || ["accepted", "accepted_local_pending", "acceptance_unknown"].includes(result.outcome.kind);
+          if (!scope.isCurrent!()) return;
+          if (!result.generation) {
+            if (result.outcome.kind === "acceptance_unknown" || stillUncertain) {
+              uncertain = true;
+              draftRequests.retain(attempt, submit);
+              let reason = stillUncertain && result.error ? (result.error instanceof HttpError ? result.error.detail
+                : result.error instanceof Error ? result.error.message : String(result.error)) : "";
+              if (/\b(?:generation|source_gen_id)\b/i.test(reason)) reason = t("원본 카드를 찾지 못했습니다");
+              else if (/\bworkspace(?:_id|_scope)?\b/i.test(reason)) reason = t("선택한 작업 공간을 확인하지 못했습니다");
+              else if (/\b(?:idempotency_key|canvas_link|placeholder|request_id)\b/i.test(reason)) reason = t("요청 정보를 확인하지 못했습니다");
+              flash(stillUncertain
+                ? <span style={{ whiteSpace: "pre-line" }}>{`${t("앞선 요청은 계속 확인합니다. 새로 고치기 전에 생성 목록에 같은 화질 결과가 있는지 먼저 보세요.")}${reason ? `\n${reason}` : ""}`}</span>
+                : t("Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요."));
+              return;
+            }
+            throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");
+          }
+          draftRequests.accept(attempt, result.generation);
+          flash(result.outcome.kind === "accepted_local_pending" && link
+            ? t("Draft 생성 요청은 접수됐습니다. 캔버스 연결은 재시작 시 복구됩니다.")
+            : t("Draft {resolution} 생성 요청을 접수했습니다.").replace("{resolution}", resolution === "4k" ? "4K" : resolution));
+          await reload();
+          if (scope.isCurrent!()) { bumpBoard(); postLibraryChanged(); }
+        } catch (error) {
+          if (scope.isCurrent!()) flash(`${t("Draft 생성 실패")}: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          if (!acceptedOrUnknown) {
+            if (link && scope.isCurrent!()) discardCanvasGeneration(link);
+            draftRequests.release(attempt);
+          }
         }
-        throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");
-      }
-      draftRequests.accept(attempt, result.generation);
-      flash(result.outcome.kind === "accepted_local_pending" && link
-        ? "Draft 생성 요청은 접수됐습니다. 캔버스 연결은 재시작 시 복구됩니다."
-        : "Draft 1080p 생성 요청을 접수했습니다.");
-      await reload();
-      if (scope.isCurrent!()) { bumpBoard(); postLibraryChanged(); }
+      };
+      await submit();
     } catch (error) {
-      if (scope.isCurrent!()) flash(`Draft 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      if (!acceptedOrUnknown) {
-        if (link && scope.isCurrent!()) discardCanvasGeneration(link);
-        draftRequests.release(attempt);
+      if (scope.isCurrent!()) {
+        if (link) discardCanvasGeneration(link);
+        flash(`${t("Draft 생성 실패")}: ${error instanceof Error ? error.message : String(error)}`);
       }
+      draftRequests.release(attempt);
     }
   };
 
@@ -2407,9 +2435,9 @@ export default function App() {
         onDelete={bulkDelete}
         onRestore={bulkRestore}
         onPurge={bulkPurge}
-        onFinishDraft={(generation) => finishDraft(generation, false)}
-        draftBusy={selectedGenerations.some((generation) => draftRequests.pending.has(generation.id))}
-        draftDone={selectedGenerations.some((generation) => draftRequests.completed.has(generation.id))}
+        onFinishDraft={(generation, resolution) => finishDraft(generation, resolution, false)}
+        draftBusy={(resolution) => selectedGenerations.length === 1 ? draftBusy(selectedGenerations[0], resolution) : false}
+        draftContextKey={draftContextKey} draftRevision={draftRequests.revision}
       />
     ) : undefined);
 
@@ -2432,8 +2460,8 @@ export default function App() {
           <BoardSelectionActionBar
             selected={sceneSelGens}
             onFinishDraft={finishDraft}
-            draftBusy={sceneSelGens.some((generation) => draftRequests.pending.has(generation.id))}
-            draftDone={sceneSelGens.some((generation) => draftRequests.completed.has(generation.id))}
+            draftBusy={(resolution) => sceneSelGens.length === 1 ? draftBusy(sceneSelGens[0], resolution) : false}
+            draftContextKey={draftContextKey} draftRevision={draftRequests.revision}
             projects={projects}
             onShare={boardShare}
             onDownload={bulkDownload}
@@ -2451,8 +2479,8 @@ export default function App() {
         <BoardSelectionActionBar
           selected={boardSelected}
           onFinishDraft={finishDraft}
-          draftBusy={boardSelected.some((generation) => draftRequests.pending.has(generation.id))}
-          draftDone={boardSelected.some((generation) => draftRequests.completed.has(generation.id))}
+          draftBusy={(resolution) => boardSelected.length === 1 ? draftBusy(boardSelected[0], resolution) : false}
+          draftContextKey={draftContextKey} draftRevision={draftRequests.revision}
           projects={projects}
           onShare={boardShare}
           onDownload={bulkDownload}
@@ -2972,9 +3000,10 @@ export default function App() {
                   pendingCount: resolveTransfer.pendingCount,
                 }}
                 variantDraft={{
-                  finish: (generation) => void finishDraft(generation),
-                  busy: (id) => draftRequests.pending.has(id),
-                  done: (id) => draftRequests.completed.has(id),
+                  finish: (generation, resolution) => void finishDraft(generation, resolution),
+                  busy: draftBusy,
+                  contextKey: draftContextKey,
+                  revision: draftRequests.revision,
                 }}
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
