@@ -677,6 +677,9 @@ def test_keep_and_account_cleanup_leave_no_orphan_in_either_order(isolated_db, a
 
     def delete_owner():
         repo.set_account_status(OWNER, "rejected")
+        # 승인됐던 계정은 계정 정리가 지우지 않는다 — 이 시험이 보는 '삭제 뒤 찌꺼기'만 남기려 승인 기록이 빈 옛 계정을 흉내 낸다.
+        with db.get_connection() as conn:
+            conn.execute("UPDATE account SET approved_at=NULL WHERE email=?", (OWNER,))
         now = repo.get_account(OWNER)
         return cleanup.delete_cleanup_account(OWNER, status="rejected", hidden=False, created_at=now["created_at"],
                                               actor_email=admin, actor_uid="acct:" + admin)
