@@ -128,7 +128,8 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
         return { changed: true, value: false };
       }
       if (!book.notebook_id && !joined?.restoreGeneration && !staleProgress && !restored) {
-        const offer: NotebookStartOffer = { kind: "confirm", id: newSceneIntentId(), account, count: localScenes.length,
+        const offer: NotebookStartOffer = { kind: "confirm", id: newSceneIntentId(), account, count: localScenes.length, hubCount: incoming.scenes.length,
+          provenanceFingerprint: startFingerprint(all, meta, account, true),
           localFingerprint: startFingerprint(all, meta, account), bookFingerprint: bookFingerprint(book) };
         const progress = meta[key("ns", account)] as PendingStart | undefined;
         const confirmed = approval?.account === account && approval.bookFingerprint === offer.bookFingerprint &&
@@ -376,7 +377,8 @@ export function preserveUnuploadableNotebookScene(bucket: string, id: string, ex
 }
 
 // ── 3단계: 네트워크는 저장 트랜잭션 밖에서, 응답은 고정본과 조건부로 맞춘다. ──
-export const SCENE_WRITER_FEATURE = "scene_writer_v1";
+export const SCENE_WRITER_FEATURE = "scene_writer_confirm_v1";
+export const NOTEBOOK_PROTOCOL_HEADERS = { "X-MVHub-Canvas-Protocol": "confirm-v1" };
 const SCENE_LIMIT = 5 * 1024 * 1024;
 export interface NotebookToken { account: string; token: string; generation: string }
 export interface NotebookSyncResult {
@@ -388,7 +390,8 @@ export interface NotebookSyncResult {
   sceneIds?: string[];
 }
 export interface NotebookStartOffer {
-  kind: "confirm"; id: string; account: string; count: number; localFingerprint: string; bookFingerprint: string;
+  kind: "confirm"; id: string; account: string; count: number; hubCount: number; provenanceFingerprint: string; localFingerprint: string; bookFingerprint: string;
+  changed?: boolean;
 }
 export type NotebookStartApproval = NotebookStartOffer;
 type NotebookStartNotice = NotebookStartOffer | { kind: "started"; id: string; account: string };
@@ -420,7 +423,7 @@ function knownMirrorRestore(account: string, generation: string, scenes: ScenesB
       (Array.isArray(value.uncopied) && value.uncopied.length > 0);
   } catch { return true; } // 출처 기록을 읽을 수 없으면 기존 보관·복구 경로로 간다.
 }
-function startFingerprint(all: ScenesByProject, meta: Meta, account: string): string {
+function startFingerprint(all: ScenesByProject, meta: Meta, account: string, provenanceOnly = false): string {
   // ns는 이 고정본의 재시도 영수증이므로 그 자체를 원문 변경으로 세지 않는다.
   const controls = Object.entries(meta).filter(([name, value]) => {
     if (value === undefined || !/^\["(?:b|d|r|ob|nw|nj)",/.test(name)) return false;
@@ -428,12 +431,19 @@ function startFingerprint(all: ScenesByProject, meta: Meta, account: string): st
     return scope === account || belongs(scope, account);
   });
   const scenes = Object.entries(all).filter(([bucket]) => belongs(bucket, account)).sort(([a], [b]) => a.localeCompare(b));
+  const mirrorRaw = localStorage.getItem(`mvhub.mirrorRecovery:${account}`);
+  let mirror: unknown = mirrorRaw;
+  if (provenanceOnly && mirrorRaw) {
+    try { const { raws: _raws, ...source } = JSON.parse(mirrorRaw); mirror = source; }
+    catch { /* 읽을 수 없는 출처는 원문 그대로 대조한다. */ }
+  }
   return sha256Js(new TextEncoder().encode(JSON.stringify([
-    scenes,
+    provenanceOnly ? null : scenes,
     controls.sort(([a], [b]) => a.localeCompare(b)),
     ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => belongs(item.bucket, account)),
-    localStorage.getItem(`mvhub.mirrorRecovery:${account}`),
-    scenes.flatMap(([, items]) => items.map((scene) => [scene.id, localStorage.getItem(`mvhub.sceneBackupBase:${account}:${scene.id}`)])),
+    mirror,
+    scenes.flatMap(([, items]) => items.map((scene) => [scene.id, localStorage.getItem(`mvhub.sceneBackupBase:${account}:${scene.id}`)]))
+      .filter(([, ledger]) => !provenanceOnly || ledger !== null).sort(([a], [b]) => a!.localeCompare(b!)),
   ])));
 }
 const bookFingerprint = (book: HubBook) => sha256Js(new TextEncoder().encode(JSON.stringify(book)));
@@ -444,11 +454,11 @@ export async function prepareNotebookStart(id: string, settle: () => Promise<boo
   if (offer?.kind !== "confirm" || offer.id !== id || offer.account !== account) return null;
   const guard = () => startNotice === offer && account === getAccountNamespace() && epoch === providerEpoch && hubHasFeature(SCENE_WRITER_FEATURE);
   const before = await sceneNotebookTransaction([key("ns", account), key("nw", account)], (all, meta) =>
-    ({ changed: false, value: startFingerprint(all, meta, account) }), guard);
-  if (!before.ok || before.value !== offer.localFingerprint || !guard() || !(await settle()) || !guard()) return null;
+    ({ changed: false, value: startFingerprint(all, meta, account, true) }), guard);
+  if (!before.ok || before.value !== offer.provenanceFingerprint || !guard() || !(await settle()) || !guard()) return null;
   const after = await sceneNotebookTransaction([key("ns", account), key("nw", account)], (all, meta) =>
-    ({ changed: false, value: startFingerprint(all, meta, account) }), guard);
-  return after.ok && guard() ? { ...offer, localFingerprint: after.value } : null;
+    ({ changed: false, value: { source: startFingerprint(all, meta, account, true), raw: startFingerprint(all, meta, account) } }), guard);
+  return after.ok && guard() && after.value.source === offer.provenanceFingerprint ? { ...offer, localFingerprint: after.value.raw } : null;
 }
 let tokenProvider: () => NotebookToken | null = () => null;
 let providerEpoch = 0;
@@ -703,7 +713,7 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
     try {
       const result = await jsonFetch<T>(`/api/scenes/${path}`, {
         method: payload === undefined ? "GET" : method,
-        headers: { [EXPECT_ACCOUNT_HEADER]: account, "Content-Type": "application/json" },
+        headers: { ...NOTEBOOK_PROTOCOL_HEADERS, [EXPECT_ACCOUNT_HEADER]: account, "Content-Type": "application/json" },
         signal: controller.signal, ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
       });
       check(); return result;
@@ -747,8 +757,10 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
           }
           if (!adopted.value.approved) {
             const previous = startNotice;
-            setStartNotice(previous?.kind === "confirm" && previous.account === account &&
-              previous.localFingerprint === adopted.value.localFingerprint && previous.bookFingerprint === adopted.value.bookFingerprint ? previous : adopted.value);
+            const same = !approval && previous?.kind === "confirm" && previous.account === account &&
+              previous.provenanceFingerprint === adopted.value.provenanceFingerprint && previous.bookFingerprint === adopted.value.bookFingerprint &&
+              previous.count === adopted.value.count;
+            setStartNotice(same ? previous : { ...adopted.value, changed: previous?.kind === "confirm" && previous.account === account });
             return { status: "local_only", reason: "start_confirmation", changed, visibleChanged };
           }
           firstStart = { localFingerprint: adopted.value.localFingerprint, bookFingerprint: adopted.value.bookFingerprint };

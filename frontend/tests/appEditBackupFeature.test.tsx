@@ -30,7 +30,7 @@ it("늦은 기능 응답만으로 백업이 시작되고 같은 표식은 재시
   render(); expect(start).not.toHaveBeenCalled();
   act(() => features.setHubFeatures(["edit_doc_backup_v1"]));
   expect(start).toHaveBeenCalledTimes(1);
-  act(() => features.setHubFeatures(["edit_doc_backup_v1", "scene_writer_v1"]));
+  act(() => features.setHubFeatures(["edit_doc_backup_v1", "scene_writer_confirm_v1"]));
   expect(start).toHaveBeenCalledTimes(1); expect(stop).not.toHaveBeenCalled();
   act(() => features.setHubFeatures([])); expect(stop).toHaveBeenCalledTimes(1);
 });

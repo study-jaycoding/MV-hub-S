@@ -120,7 +120,7 @@ def sync_scene_backups(body: SceneSyncIn, request: Request):
         try:
             owner = actor_id(request)
             if body.token is not None:
-                _notebook_available(owner)
+                _notebook_available(owner, request)
                 if body.deleted_ids or body.delete_bases is not None:
                     raise ValueError('new writes require delete intents')
                 with writer.writing(owner, body.token):
@@ -143,9 +143,11 @@ def sync_scene_backups(body: SceneSyncIn, request: Request):
     return {"ok": True, **res}
 
 
-def _notebook_available(owner):
+def _notebook_available(owner, request, *, legacy_release=False):
     if config.AUTH_ENABLED or not (enabled() or scene_notebook.is_started(owner)):
         raise HTTPException(404, 'scene_writer_disabled')
+    if not legacy_release and request.headers.get('X-MVHub-Canvas-Protocol') != 'confirm-v1':
+        raise HTTPException(409, 'canvas_client_update_required')
 
 
 class WriterIn(BaseModel):
@@ -160,7 +162,7 @@ class WriterIn(BaseModel):
 def scene_writer(body: WriterIn, request: Request, response: Response):
     with _account_scope(request):
         owner = actor_id(request)
-        _notebook_available(owner)
+        _notebook_available(owner, request, legacy_release=body.action == 'release')
         try:
             result = writer.action(owner, **body.model_dump())
             if body.action in ('claim', 'release', 'request', 'force'):
@@ -178,7 +180,7 @@ def scene_writer(body: WriterIn, request: Request, response: Response):
 def get_notebook(request: Request, project_id: str = ''):
     with _account_scope(request):
         owner = actor_id(request)
-        _notebook_available(owner)
+        _notebook_available(owner, request)
         with writer.locked(owner):
             return scene_notebook.notebook(owner, project_id)
 
@@ -198,7 +200,7 @@ def close_notebook(body: SceneCloseIn, request: Request, response: Response):
     """Pagehide keepalive: persist the final delta and release in one lease lock."""
     with _account_scope(request):
         owner = actor_id(request)
-        _notebook_available(owner)
+        _notebook_available(owner, request)
         try:
             if body.deleted_ids or body.delete_bases is not None:
                 raise ValueError('new writes require delete intents')
@@ -230,7 +232,7 @@ class StartIn(BaseModel):
 def start_notebook(body: StartIn, request: Request):
     with _account_scope(request):
         owner = actor_id(request)
-        _notebook_available(owner)
+        _notebook_available(owner, request)
         try:
             with writer.writing(owner, body.token) as lease:
                 try:

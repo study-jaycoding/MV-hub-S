@@ -48,7 +48,7 @@ let root: Root | undefined, host: HTMLDivElement;
 beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear(); sessionStorage.clear(); request.mockReset(); download.mockClear();
-  setAccountScope(null); setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false);
+  setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]); setSceneWriteGate(() => false);
   setSceneNotebookTokenProvider(() => lease);
   await writeScenesStore({ [bucket]: [] });
   const scenes = [scene("a"), scene("b")];
@@ -890,7 +890,7 @@ it.each([
 it.each([
   ["legacy", "resolved"], ["notebook", "resolved"], ["legacy", "ledger"], ["notebook", "ledger"],
 ])("no extra recovery download for %s hub with only %s originals", async (hub, kind) => {
-  setHubFeatures(hub === "notebook" ? ["scene_writer_v1"] : []);
+  setHubFeatures(hub === "notebook" ? ["scene_writer_confirm_v1"] : []);
   const original = { generation: "old", scenes: kind === "resolved" ? [{ id: "a", text: JSON.stringify(scene("a")) }] : [], ledger: kind === "ledger" ? [["a", { b: "old" }]] : [] };
   const raw = JSON.stringify({ generation: "new", blockedIds: [], raws: {}, originals: [original] });
   localStorage.setItem("mvhub.mirrorRecovery:local", raw);

@@ -195,7 +195,7 @@ def controlled_launcher(checkout: Path, control_token: str) -> str:
     return f"""import runpy, sys
 from fastapi import Request, HTTPException
 from app.main import app
-from app import active_account
+from app import active_account, db
 from app.routers.publish import _switch_account_db
 @app.post('/api/__measure/account-aba')
 async def account_aba(request: Request):
@@ -212,6 +212,19 @@ async def account_aba(request: Request):
         _switch_account_db(original, original_uid)
         return {{'before': before, 'after': active_account.account_epoch(), 'account_before': original,
                  'account_b': middle, 'account': active_account.account_key()}}
+app.router.routes.insert(0, app.router.routes.pop())
+@app.post('/api/__measure/restore-generation')
+async def restore_generation(request: Request):
+    if request.client.host not in ('127.0.0.1', '::1') or request.headers.get('X-Measure-Control') != {control_token!r}:
+        raise HTTPException(403, 'isolated measurement control only')
+    body = await request.json()
+    with active_account.transition_lock, db.get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute("UPDATE app_setting SET value=? WHERE key='share_db_generation'", (body['generation'],))
+        if body.get('clear'):
+            conn.execute('DELETE FROM scene_backup')
+        conn.commit()
+    return {{'generation': body['generation'], 'cleared': bool(body.get('clear'))}}
 app.router.routes.insert(0, app.router.routes.pop())
 sys.argv = [{str(checkout / 'backend' / 'serve.py')!r}]
 runpy.run_path(sys.argv[0], run_name='__main__')
@@ -320,6 +333,7 @@ class Hub:
         headers = {}
         if path.startswith('/api/scenes/'):
             headers['X-MVHub-Expect-Account'] = f'acct:{self.shared.email.lower()}'
+            headers['X-MVHub-Canvas-Protocol'] = 'confirm-v1'
         if path.startswith("/api/__measure/") and self.control_token:
             headers["X-Measure-Control"] = self.control_token
         return isolated_request(self.url, path, body, method, headers)
@@ -373,8 +387,8 @@ class Hub:
                               "shared_auth_enabled": True, "ephemeral_admin": True, "token_verified": True}
             if health.get("cli_available") is not False:
                 raise RuntimeError("hub CLI isolation failed")
-            if not legacy and ("scene_writer_v1" in self.request("/api/auth/config")[1].get("features", [])) != writer:
-                raise RuntimeError("isolated scene_writer_v1 feature state differs from the requested writer mode")
+            if not legacy and ("scene_writer_confirm_v1" in self.request("/api/auth/config")[1].get("features", [])) != writer:
+                raise RuntimeError("isolated scene_writer_confirm_v1 feature state differs from the requested writer mode")
         except BaseException:
             self.stop()
             raise
@@ -392,10 +406,21 @@ class Hub:
             self.log.close()
             self.log = None
 
+    def restore_fixture(self, generation: str, *, clear: bool = False) -> None:
+        # Use the owned server connection; never reopen a forcibly stopped WAL database for mutation.
+        self.stop()
+        self.start(writer=False)
+        try:
+            status, result = self.request('/api/__measure/restore-generation', {'generation': generation, 'clear': clear})
+            if status != 200 or result != {'generation': generation, 'cleared': clear}:
+                raise RuntimeError('owned restore generation injection failed')
+        finally:
+            self.stop()
+
 
 class Measurement:
     def __init__(self, case: str, work: Path):
-        self.case, self.work, self.hub = case, work, Hub(work, controls=case == "lease_races")
+        self.case, self.work, self.hub = case, work, Hub(work, controls=case in {"lease_races", "first_transition"})
         self.account = f"acct:{self.hub.shared.email.lower()}"
         self.bucket = f"{self.account}::_none"
         self.report = {"format": "mvhub-canvas-notebook-measure-v1", "case": case,
@@ -432,8 +457,8 @@ class Measurement:
         if seed is not None:
             # Seed legacy storage before first app boot, only on our exact origin, once per profile.
             script = f"""if (location.origin === {json.dumps(self.hub.url)} && !localStorage.getItem('measure-seeded')) {{
-                localStorage.setItem('ch.scenes', {json.dumps(json.dumps({self.bucket: seed}))});
-                localStorage.setItem('ch.scenes.active', {json.dumps(json.dumps({self.bucket: seed[0]['id'] if seed else None}))});
+                localStorage.setItem('ch.scenes', {json.dumps(json.dumps({self.bucket: seed}, ensure_ascii=False, separators=(',', ':')))});
+                localStorage.setItem('ch.scenes.active', {json.dumps(json.dumps({self.bucket: seed[-1]['id'] if seed else None}))});
                 localStorage.setItem('ch.lib.filters', '{{"tab":"compose"}}');
                 localStorage.setItem('measure-seeded', '1'); }}"""
             await page.send("Page.addScriptToEvaluateOnNewDocument", source=script)
@@ -643,7 +668,7 @@ class Measurement:
             if code != 200:
                 raise RuntimeError("old mirror preparation failed")
         a = await self.open(stack, "a", seeds, hold_mirror=True)
-        b = await self.open(stack, "b", [{**seeds[0], "id": "prior-b", "name": "browser B original"}], hold_mirror=True)
+        b = await self.open(stack, "b", [{**seeds[-1], "id": "prior-b", "name": "browser B original"}], hold_mirror=True)
         await self.wait_local(a, lambda rows: len(rows) == len(seeds))
         await self.wait_local(b, lambda rows: len(rows) > 0)
         recovery = f"localStorage.getItem({json.dumps('mvhub.mirrorRecovery:' + self.account)})"
@@ -653,15 +678,8 @@ class Measurement:
         if variant == "same_generation":
             await self.rename(a, "1011 untransmitted final edit")
         if variant == "held":
-            # G1 -> empty restored G2 -> run the old mirror again. Only this stopped, owned DB is changed.
-            self.hub.stop()
-            database = (self.work / "hub" / "db" / "content_hub.db").resolve(strict=True)
-            if self.work.resolve() not in database.parents:
-                raise ValueError("restore injection must stay in the owned measurement directory")
-            with closing(sqlite3.connect(database)) as conn:
-                conn.execute("UPDATE app_setting SET value=? WHERE key='share_db_generation'", ("measure-restored-G2",))
-                conn.execute("DELETE FROM scene_backup")
-                conn.commit()
+            # G1 -> empty restored G2 -> run the old mirror again to produce real blocked records.
+            self.hub.restore_fixture("measure-restored-G2", clear=True)
             self.hub.start(checkout, legacy=checkout != REPO, writer=False)
             await a.goto(self.hub.url, settle=.2)
             if not await a.wait(f"JSON.parse({recovery} || 'null')?.blockedIds?.length > 0", 20):
@@ -679,16 +697,11 @@ class Measurement:
         prior_hub = [json.loads(row["data"]) for row in self.hub.request("/api/scenes/backup?include_data=true")[1]["items"] if not row.get("deleted_at")]
         self.hub.stop()
         if variant == "restored_unknown":
-            database = (self.work / "hub" / "db" / "content_hub.db").resolve(strict=True)
-            if self.work.resolve() not in database.parents:
-                raise ValueError("restore injection must stay in the owned measurement directory")
-            with closing(sqlite3.connect(database)) as conn:
-                conn.execute("UPDATE app_setting SET value=? WHERE key='share_db_generation'", ("measure-restored-unknown-G2",))
-                conn.commit()
+            self.hub.restore_fixture("measure-restored-unknown-G2")
         self.hub.start()
         self.report["isolation"] = self.hub.isolation
         self.check("default_enabled", "CONTENT_HUB_SCENE_WRITER" not in make_env(self.work / "hub", self.hub.port)
-                   and "scene_writer_v1" in self.hub.request("/api/auth/config")[1]["features"], True)
+                   and "scene_writer_confirm_v1" in self.hub.request("/api/auth/config")[1]["features"], True)
         for page in (a, b):
             await page.send("Page.removeScriptToEvaluateOnNewDocument", identifier=page.mirror_hold_script)
         await a.goto(self.hub.url, settle=.2)
@@ -710,9 +723,11 @@ class Measurement:
         else:
             if not await a.wait(confirm, 30):
                 raise RuntimeError("first-start confirmation missing")
-            await b.goto(self.hub.url, settle=.2)
-            if not await b.wait(confirm, 30):
-                raise RuntimeError("second first-start confirmation missing")
+            # 1011 B already has a real blocked record: its existing adopt path must run AFTER A starts.
+            if variant != "same_generation":
+                await b.goto(self.hub.url, settle=.2)
+                if not await b.wait(confirm, 30):
+                    raise RuntimeError("second first-start confirmation missing")
             self.check("before_confirmation", {name: scene_fingerprints(await self.local(page)) for name, page in (("a", a), ("b", b))},
                        {name: scene_fingerprints(rows) for name, rows in before.items()})
             unchanged = self.hub.request("/api/scenes/notebook")[1]
@@ -1123,8 +1138,8 @@ def main() -> int:
         parser.error("first_transition requires --old-checkout (built isolated 0123 or 1011 checkout)")
     if args.transition_fault != "none" and (args.case != "first_transition" or args.transition not in {"empty", "different", "restored_unknown", "same_generation"} or args.start_order == "simultaneous"):
         parser.error("reply loss requires a first_transition confirmation variant and --start-order a or b")
-    if args.case == "first_transition" and (args.transition in {"equal", "held", "limit_exact", "limit_over"}) and args.start_order != "a":
-        parser.error("equal/held/size boundaries require --start-order a; race order uses empty/different/same_generation")
+    if args.case == "first_transition" and (args.transition in {"equal", "held", "same_generation", "limit_exact", "limit_over"}) and args.start_order != "a":
+        parser.error("equal/held/same_generation/size boundaries require --start-order a; race order uses empty/different")
     if (args.baseline_report or args.baseline_checkout or args.max_slowdown is not None) and args.case != "performance":
         parser.error("baseline and slowdown options require --case performance")
     if args.max_slowdown is not None and (not math.isfinite(args.max_slowdown) or args.max_slowdown <= 0):

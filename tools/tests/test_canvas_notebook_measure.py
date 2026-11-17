@@ -703,6 +703,118 @@ def test_direct_scene_probes_send_the_same_expected_account_as_seeded_browser(tm
     hub.request("/api/scenes/notebook")
     hub.request("/api/scenes/backup", {"token": "synthetic", "upserts": []}, "PUT")
     hub.request("/api/shared-server/status")
-    assert calls[:2] == [(path, {"X-MVHub-Expect-Account": f"acct:{hub.shared.email.lower()}"})
+    assert calls[:2] == [(path, {"X-MVHub-Expect-Account": f"acct:{hub.shared.email.lower()}", "X-MVHub-Canvas-Protocol": "confirm-v1"})
                          for path in ("/api/scenes/notebook", "/api/scenes/backup")]
     assert calls[2][1] == {}
+
+
+def test_large_korean_seed_fits_legacy_storage_and_opens_a_small_scene(tmp_path, monkeypatch):
+    import asyncio
+    import re
+    from contextlib import AsyncExitStack
+    from unittest.mock import AsyncMock
+    scripts = []
+    class FakePage:
+        def __init__(self, *_args): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        async def send(self, _method, **options): scripts.append(options.get('source', ''))
+        async def goto(self, *_args, **_options): pass
+    monkeypatch.setattr(measure, 'Page', FakePage)
+    instance = measure.Measurement('first_transition', tmp_path)
+    instance.ensure_canvas = AsyncMock()
+    seeds = measure.fixture()
+    seeds[0]['cards'][0]['text'] = '한' * (5 * 1024 * 1024 // 3)
+    async def run():
+        async with AsyncExitStack() as stack:
+            await instance.open(stack, 'a', seeds)
+    asyncio.run(run())
+    script = next(s for s in scripts if "setItem('ch.scenes'," in s)
+    stored = json.loads(re.search(r"setItem\('ch.scenes', (.*)\);", script)[1])
+    assert len(stored.encode('utf-16-le')) < 5 * 1024 * 1024
+    assert json.loads(stored)[instance.bucket] == seeds
+    active = json.loads(json.loads(re.search(r"setItem\('ch.scenes.active', (.*)\);", script)[1]))
+    assert active[instance.bucket] == seeds[-1]['id']
+
+
+@pytest.mark.parametrize('clear', [False, True])
+def test_restore_injection_uses_owned_live_server_not_external_sqlite(tmp_path, monkeypatch, clear):
+    hub = measure.Hub(tmp_path, controls=True)
+    calls = []
+    monkeypatch.setattr(hub, 'start', lambda **options: calls.append(('start', options)))
+    monkeypatch.setattr(hub, 'stop', lambda: calls.append(('stop',)))
+    def request(path, body):
+        calls.append((path, body))
+        return 200, {'generation': body['generation'], 'cleared': body['clear']}
+    monkeypatch.setattr(hub, 'request', request)
+    monkeypatch.setattr(measure.sqlite3, 'connect', lambda *_a, **_k: pytest.fail('external SQLite mutation forbidden'))
+    hub.restore_fixture('restored-G2', clear=clear)
+    assert calls == [('stop',), ('start', {'writer': False}),
+        ('/api/__measure/restore-generation', {'generation': 'restored-G2', 'clear': clear}), ('stop',)]
+
+
+@pytest.mark.parametrize('clear', [False, True])
+def test_isolated_restore_route_changes_generation_and_optionally_clears_only_fixture(tmp_path, clear):
+    import ast
+    import asyncio
+    import sqlite3
+    import threading
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    path = tmp_path / 'fixture.db'
+    with sqlite3.connect(path) as conn:
+        conn.executescript("CREATE TABLE app_setting(key TEXT, value TEXT); INSERT INTO app_setting VALUES('share_db_generation','G1'); CREATE TABLE scene_backup(id TEXT); INSERT INTO scene_backup VALUES('prior');")
+    @contextmanager
+    def connection():
+        conn = sqlite3.connect(path)
+        try:
+            with conn: yield conn
+        finally: conn.close()
+    route = next(n for n in ast.parse(measure.controlled_launcher(tmp_path, 'synthetic')).body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'restore_generation')
+    route.decorator_list = []
+    class Denied(Exception): pass
+    scope = {'Request': object, 'HTTPException': Denied, 'active_account': SimpleNamespace(transition_lock=threading.RLock()), 'db': SimpleNamespace(get_connection=connection)}
+    exec(compile(ast.Module(body=[route], type_ignores=[]), 'isolated-restore-unit', 'exec'), scope)
+    async def body(): return {'generation': 'G2', 'clear': clear}
+    request = SimpleNamespace(client=SimpleNamespace(host='127.0.0.1'), headers={'X-Measure-Control': 'synthetic'}, json=body)
+    assert asyncio.run(scope['restore_generation'](request)) == {'generation': 'G2', 'cleared': clear}
+    with sqlite3.connect(path) as conn:
+        assert conn.execute('SELECT value FROM app_setting').fetchone()[0] == 'G2'
+        assert conn.execute('SELECT COUNT(*) FROM scene_backup').fetchone()[0] == (0 if clear else 1)
+    request.headers = {}
+    with pytest.raises(Denied): asyncio.run(scope['restore_generation'](request))
+
+
+def test_same_generation_waits_for_a_before_upgrading_the_blocked_b_browser(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    instance = measure.Measurement('first_transition', tmp_path)
+    instance.transition_args = SimpleNamespace(old_checkout=tmp_path, transition='same_generation', start_order='a', transition_fault='none')
+    seeds = measure.fixture()
+    pages = {name: SimpleNamespace(goto=AsyncMock(), wait=AsyncMock(return_value=True), send=AsyncMock(), mirror_hold_script='hold') for name in ('a', 'b')}
+    class Selected(Exception): pass
+    async def choose(_selector): raise Selected()
+    pages['a'].click = choose
+    async def evaluate(name, script):
+        if script == measure.READ_STORE: return []
+        if script == 'window.__measureNetwork': return []
+        return json.dumps({'generation': 'G1', 'blockedIds': ['prior-b'] if name == 'b' else []})
+    for name, page in pages.items():
+        async def run_eval(script, n=name): return await evaluate(n, script)
+        page.eval = run_eval
+    instance.open = AsyncMock(side_effect=lambda _stack, name, *_a, **_k: pages[name])
+    instance.wait_local = AsyncMock(); instance.rename = AsyncMock(); instance.ensure_canvas = AsyncMock()
+    async def local(page): return seeds if page is pages['a'] else [{**seeds[0], 'id': 'prior-b'}]
+    instance.local = local
+    instance.hub.start = Mock(); instance.hub.stop = Mock()
+    def request(path, *_args):
+        if path == '/api/auth/config': return 200, {'features': ['scene_writer_confirm_v1']}
+        return 200, {'restore_generation': 'G1', 'notebook_id': None, 'items': [{'data': json.dumps(s)} for s in seeds]}
+    instance.hub.request = request
+    monkeypatch.setattr(measure, 'validate_checkout', lambda _p: tmp_path)
+    with pytest.raises(Selected): asyncio.run(instance.first_transition(None, seeds))
+    assert instance.open.call_args_list[1].args[2][0]['cards'] == seeds[-1]['cards']
+    pages['b'].goto.assert_not_awaited()
+    assert instance.report['checks']['before_confirmation']['status'] == 'passed'
+    assert instance.report['checks']['no_upload_before']['status'] == 'passed'

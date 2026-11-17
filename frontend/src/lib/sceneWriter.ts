@@ -5,7 +5,7 @@ import { flashMsg } from "./flash";
 import { EXPECT_ACCOUNT_HEADER, hubHasFeature, subscribeHubFeatures } from "./hubFeatures";
 import { getApiPause, jsonFetch, subscribeApiPause } from "./http";
 import { collectCanvasForWriter, flushWriterInput, hasProfileSceneWriter, isCanvasWindow, setHubCanvasPaused, subscribeProfileSceneWriter } from "./popupWindows";
-import { SCENE_WRITER_FEATURE, buildSceneNotebookClose, invalidateNotebookStart, prepareNotebookStart, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookStartApproval, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
+import { SCENE_WRITER_FEATURE, NOTEBOOK_PROTOCOL_HEADERS, buildSceneNotebookClose, invalidateNotebookStart, prepareNotebookStart, setSceneNotebookTokenProvider, syncSceneNotebook, subscribeNotebookSyncResult, type NotebookStartApproval, type NotebookSyncResult, type NotebookToken } from "./sceneNotebook";
 import { isNotebookWriteHeld, setAsidePendingWrites, setSceneLeaseGeneration, settleSceneWrites, subscribeNotebookWriteHold } from "./sceneStore";
 import { listScenes, subscribeScenesPersisted } from "./scenes";
 import { t } from "./i18n";
@@ -374,7 +374,7 @@ export class SceneWriterClient {
           if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
           if (!this.valid(epoch)) return;
           this.prepared = true;
-          this.pendingNotice = t("넘겨받았습니다");
+          this.pendingNotice = this.startApproval ? undefined : t("넘겨받았습니다");
           await this.reconcile(epoch);
           return;
         }
@@ -393,7 +393,7 @@ export class SceneWriterClient {
       if (!(await this.deps.settle())) { await this.failedStart(epoch, t("분리 캔버스 창을 닫아 주세요")); return; }
       if (!this.valid(epoch)) return;
       this.prepared = true;
-      this.pendingNotice = forced ? t("강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다") : t("넘겨받았습니다");
+      this.pendingNotice = this.startApproval ? undefined : forced ? t("강제로 넘겨받았습니다\n다른 브라우저의 마지막 편집은 그 브라우저를 다시 열 때 [옛 창] 탭으로 들어옵니다") : t("넘겨받았습니다");
       await this.reconcile(epoch);
     } catch { if (this.valid(epoch)) this.lose(); }
     finally { if (epoch === this.epoch) this.taking = false; }
@@ -491,7 +491,7 @@ export function startSceneWriter(): void {
   client = new SceneWriterClient({
     account: getAccountNamespace,
     eligible: () => hasProfileSceneWriter() && !getApiPause(),
-    send: (account, body) => jsonFetch<WriterStatus>("/api/scenes/writer", { method: "POST", body: JSON.stringify(body), headers: { [EXPECT_ACCOUNT_HEADER]: account }, signal: AbortSignal.timeout(5000) }),
+    send: (account, body) => jsonFetch<WriterStatus>("/api/scenes/writer", { method: "POST", body: JSON.stringify(body), headers: { ...NOTEBOOK_PROTOCOL_HEADERS, [EXPECT_ACCOUNT_HEADER]: account }, signal: AbortSignal.timeout(5000) }),
     sync: (fresh, startApproval) => syncSceneNotebook({ fresh, startApproval }),
     settle: async () => {
       if (!(await collectCanvasForWriter(4500))) return false;
@@ -554,7 +554,7 @@ export function startSceneWriter(): void {
     client?.releaseBeacon((body, path, account) => {
       if (getApiPause()) return;
       if (path === "/api/scenes/notebook/close") {
-        void jsonFetch(path, { method: "POST", body, keepalive: true, headers: { [EXPECT_ACCOUNT_HEADER]: account! } }).catch(() => {});
+        void jsonFetch(path, { method: "POST", body, keepalive: true, headers: { ...NOTEBOOK_PROTOCOL_HEADERS, [EXPECT_ACCOUNT_HEADER]: account! } }).catch(() => {});
       } else navigator.sendBeacon?.("/api/scenes/writer", new Blob([body], { type: "application/json" }));
     });
   });

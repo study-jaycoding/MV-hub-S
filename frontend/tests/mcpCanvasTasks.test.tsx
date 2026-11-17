@@ -165,7 +165,7 @@ it("소비자가 생성물을 기다리는 중 실제 계정이 바뀌면 저장
 });
 
 it("notebook completion: saved response lost, same retry, deleted card never reattaches", async () => {
-  vi.useFakeTimers(); setHubFeatures(["scene_writer_v1"]);
+  vi.useFakeTimers(); setHubFeatures(["scene_writer_confirm_v1"]);
   let serial = 0; vi.stubGlobal("crypto", { randomUUID: () => `mcp-test-${++serial}` });
   const digest = (s: string) => createHash("sha256").update(s).digest("hex");
   const bucket = "a::_none";

@@ -157,6 +157,54 @@ it("confirmation settles active input before selecting the final raw snapshot", 
   expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
   expect(JSON.parse(fake.rows.get("s")!.data).name).toBe("final input and drag");
 });
+it("camera and mirror raws changed after the question start once with the latest settled canvas", async () => {
+  await writeScenesStore({ [bucket]: [scene()] });
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: [], raws: { s: "before" } }));
+  await syncSceneNotebook();
+  const latest = { ...scene(), camera: { x: 300, y: 200, z: 0.5 } };
+  edit([latest]); await settleSceneStoreForTest();
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: [], raws: { s: "after" } }));
+  const approval = await approveStart();
+  expect((await syncSceneNotebook({ startApproval: approval })).status).toBe("ready");
+  expect(JSON.parse(fake.rows.get("s")!.data)).toEqual(latest);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+});
+it("provenance changing while input settles cannot be approved", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const notice = getNotebookStartNotice()!;
+  expect(await prepareNotebookStart(notice.id, async () => {
+    localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "G2" })); return true;
+  })).toBeNull();
+});
+it.each(["ledger", "control", "mirror source"])("source changes before the click ask again without reusing approval: %s", async (kind) => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const offer = getNotebookStartNotice()!;
+  if (kind === "ledger") localStorage.setItem("mvhub.sceneBackupBase:local:s", JSON.stringify({ hash: "new-base" }));
+  if (kind === "mirror source") localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration }));
+  if (kind === "control") await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("ob", bucket)] = { base: null, dirty: "new-order" }; return { changed: true, value: null };
+  });
+  expect(await prepareNotebookStart(offer.id, async () => true)).toBeNull();
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ changed: true, count: 1 });
+  expect(getNotebookStartNotice()!.id).not.toBe(offer.id);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start"))).toEqual([]);
+});
+it("a changed hub or generation asks again with the fresh scene count and explanation", async () => {
+  await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
+  const approval = await approveStart();
+  edit([scene(), scene("added")]); await settleSceneStoreForTest(); fake.restoreGeneration = "G2";
+  expect((await syncSceneNotebook({ startApproval: approval })).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ kind: "confirm", count: 2, changed: true });
+});
+it("empty local confirmation loads the hub scenes without replacing or archiving them", async () => {
+  await writeScenesStore({ [bucket]: [] }); fake.save(scene("hub"));
+  expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
+  expect(getNotebookStartNotice()).toMatchObject({ count: 0, hubCount: 1 });
+  expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("hub")]);
+  expect(fake.calls.filter((c) => c.path.endsWith("/start")).every((c) => c.body.expected_count === 0)).toBe(true);
+});
 it.each(["settle", "storage", "account"])("failed confirmation preserves local input and never starts: %s", async (failure) => {
   await writeScenesStore({ [bucket]: [scene()] }); await syncSceneNotebook();
   const notice = getNotebookStartNotice()!;
@@ -455,7 +503,7 @@ beforeEach(() => {
   const storage = new Map<string, string>();
   vi.stubGlobal("sessionStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
   vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
-  fake = new FakeHub(); hook = null; setAccountScope(null); setHubFeatures(["scene_writer_v1"]);
+  fake = new FakeHub(); hook = null; setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]);
   token = { account: "local", token: "token", generation: "g1" }; setSceneNotebookTokenProvider(() => token); setSceneWriteGate(() => false);
   vi.stubGlobal("crypto", {});
 });
@@ -515,7 +563,7 @@ it("close ignores a stale token, disabled feature and an unjoined profile", asyn
   setHubFeatures([]); expect(buildSceneNotebookClose(token!)).toBeNull();
 });
 it("c13 disabled and missing token perform no IO", async () => {
-  setHubFeatures([]); expect((await syncSceneNotebook()).status).toBe("disabled"); setHubFeatures(["scene_writer_v1"]); token = null;
+  setHubFeatures([]); expect((await syncSceneNotebook()).status).toBe("disabled"); setHubFeatures(["scene_writer_confirm_v1"]); token = null;
   expect((await syncSceneNotebook()).status).toBe("waiting_token"); expect(fake.calls).toEqual([]);
 });
 it("c01 stages current browser before commit and keeps same-id execution fields", async () => {
@@ -904,6 +952,6 @@ it("visibleChanged: 올리는 동안의 내 편집 — 기준만 승계하고 �
 it("visibleChanged: 동기화가 안 도는 경우(꺼짐·토큰 없음)는 false", async () => {
   setHubFeatures([]);
   expect(await syncSceneNotebook()).toEqual({ status: "disabled", changed: false, visibleChanged: false });
-  setHubFeatures(["scene_writer_v1"]); token = null;
+  setHubFeatures(["scene_writer_confirm_v1"]); token = null;
   expect(await syncSceneNotebook()).toEqual({ status: "waiting_token", changed: false, visibleChanged: false });
 });

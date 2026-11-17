@@ -16,7 +16,7 @@ def client(notebook_db, monkeypatch):
     monkeypatch.setattr(scenes, 'writer', SceneWriter())
     app = FastAPI()
     app.include_router(scenes.router)
-    with TestClient(app) as client:
+    with TestClient(app, headers={'X-MVHub-Canvas-Protocol': 'confirm-v1'}) as client:
         yield client
 
 
@@ -36,6 +36,25 @@ def test_http_token_gate_start_retry_and_legacy_get(client, monkeypatch):
     assert client.put('/api/scenes/backup', json={**{'upserts': [scene()]}, 'restore_generation': restore_generation()}).status_code == 409
     assert client.post('/api/scenes/writer', json={'action': 'release', 'token': lease['token']}).status_code == 200
     assert client.put('/api/scenes/backup', json={**{'token': lease['token'], 'request_id': 'late', 'upserts': [scene()]}, 'restore_generation': restore_generation()}).status_code == 409
+
+
+def test_open_1011_tab_cannot_read_adopt_claim_start_or_close_without_confirmation_protocol(client):
+    seed()
+    lease = client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'new', 'tab_id': 'new'}).json()
+    before = store.notebook('u')
+    client.headers.pop('X-MVHub-Canvas-Protocol')
+    calls = [
+        client.get('/api/scenes/notebook'),
+        client.post('/api/scenes/writer', json={'action': 'claim', 'browser_id': 'old', 'tab_id': 'old'}),
+        client.post('/api/scenes/notebook/start', json={'token': lease['token'], 'attempt_id': 'old', 'expected_count': 0, 'commit': True}),
+        client.post('/api/scenes/notebook/close', json={'token': lease['token'], 'request_id': 'old', 'upserts': [scene(name='old')]}),
+        client.put('/api/scenes/backup', json={'token': lease['token'], 'request_id': 'old', 'upserts': [scene(name='old')]}),
+    ]
+    assert [(reply.status_code, reply.json()['detail']) for reply in calls] == [(409, 'canvas_client_update_required')] * len(calls)
+    assert store.notebook('u') == before
+    assert client.get('/api/scenes/backup?include_data=true').status_code == 200
+    # An old unload beacon may release its own token, but cannot read or replace canvas content.
+    assert client.post('/api/scenes/writer', json={'action': 'release', 'token': lease['token']}).status_code == 200
 
 
 def test_flag_off_and_auth_on_keep_legacy_contract(client, monkeypatch):
@@ -439,19 +458,20 @@ def test_auth_feature_is_default_on_for_local_hub(notebook_db, monkeypatch):
     from app.routers import auth
     from app.services import scene_writer
     monkeypatch.setattr(auth, 'AUTH_ENABLED', False)
-    assert 'scene_writer_v1' in auth.auth_config()['features']  # notebook_db 가 '1' 로 켠 상태
+    assert 'scene_writer_confirm_v1' in auth.auth_config()['features']  # notebook_db 가 '1' 로 켠 상태
     for value in (None, '1', '0', '', 'yes', 'true', ' 1'):
         if value is None:
             monkeypatch.delenv('CONTENT_HUB_SCENE_WRITER')
         else:
             monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', value)
         assert scene_writer.enabled() is (value != '0'), value
-        assert ('scene_writer_v1' in auth.auth_config()['features']) is (value != '0'), value
+        assert ('scene_writer_confirm_v1' in auth.auth_config()['features']) is (value != '0'), value
         with monkeypatch.context() as auth_on:
             auth_on.setattr(config, 'AUTH_ENABLED', True)
             assert not scene_writer.enabled(), value
     monkeypatch.setenv('CONTENT_HUB_SCENE_WRITER', '1')
     assert scene_writer.enabled()
-    assert 'scene_writer_v1' in auth.auth_config()['features']
+    assert 'scene_writer_confirm_v1' in auth.auth_config()['features']
+    assert 'scene_writer_v1' not in auth.auth_config()['features']  # 열린 1011 탭의 코멘트 창 재조회도 옛 전환을 켜지 않는다.
     monkeypatch.setattr(auth, 'AUTH_ENABLED', True)
-    assert 'scene_writer_v1' not in auth.auth_config()['features']
+    assert 'scene_writer_confirm_v1' not in auth.auth_config()['features']

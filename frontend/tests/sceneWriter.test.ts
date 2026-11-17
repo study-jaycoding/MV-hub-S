@@ -48,7 +48,7 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks();
 describe("hub scene writer", () => {
   async function joinedWriter() {
     const initial = ["a", "b", "c"].map(id => ({ id, name: id, cards: [], edges: [], created_at: 1 }));
-    setAccountScope(null); setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false);
+    setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]); setSceneWriteGate(() => false);
     await initSceneStore(() => ({ "local::_none": initial }), null, () => true);
     await joinSceneNotebook("local", "book", "history", { "local::_none": {
       scenes: initial, bases: Object.fromEntries(initial.map(scene => [scene.id, { history: "history", rev: 1,
@@ -371,7 +371,7 @@ describe("hub scene writer", () => {
     const h = harness(); h.client.configure(true);
     h.deps.sync.mockResolvedValueOnce({ status: "local_only", changed: false, reason: "start_confirmation" });
     await h.client.refresh();
-    const approval = { kind: "confirm" as const, id: "offer", account: "A", count: 1, localFingerprint: "local", bookFingerprint: "book" };
+    const approval = { kind: "confirm" as const, id: "offer", account: "A", count: 1, hubCount: 0, provenanceFingerprint: "source", localFingerprint: "local", bookFingerprint: "book" };
     vi.spyOn(sceneNotebook, "prepareNotebookStart").mockResolvedValue(approval);
     if (change === "boot") h.setServer({ ...h.server(), boot_id: "restarted" });
     if (change === "account epoch") h.setServer({ ...h.server(), account_epoch: 3 });
@@ -385,6 +385,7 @@ describe("hub scene writer", () => {
     }
     await h.client.startNotebook("offer");
     expect(h.deps.sync).toHaveBeenLastCalledWith(false, change === "same" ? approval : undefined);
+    if (change === "same") expect(h.deps.notice).not.toHaveBeenCalledWith("넘겨받았습니다");
   });
   it("empty notebook retries only when the first local scene appears", async () => {
     const h = harness(); h.client.configure(true);
@@ -456,7 +457,7 @@ describe("hub scene writer", () => {
     const runtime = await import("../src/lib/sceneWriter");
     try {
       await store.initSceneStore(() => ({ "local::_none": [{ id: "s", name: "s", created_at: 1, cards: [], edges: [] }] }), null, () => true);
-      features.setHubFeatures(["scene_writer_v1"]); runtime.startSceneWriter();
+      features.setHubFeatures(["scene_writer_confirm_v1"]); runtime.startSceneWriter();
       scenes.updateScene(null, "s", { name: "분리 창 편집" });
       expect(store.unconfirmedSceneWrites()[0].leaseGeneration).toBe("opened-generation");
       await store.settleSceneStoreForTest();
@@ -503,7 +504,7 @@ describe("hub scene writer", () => {
     const beacon = vi.fn(); Object.defineProperty(navigator, "sendBeacon", { configurable: true, value: beacon });
     const features = await import("../src/lib/hubFeatures");
     try {
-      features.setHubFeatures(["scene_writer_v1"]);
+      features.setHubFeatures(["scene_writer_confirm_v1"]);
       const runtime = await import("../src/lib/sceneWriter");
       runtime.setSceneWriterFlush(() => events.push("flush")); runtime.startSceneWriter();
       await vi.advanceTimersByTimeAsync(0);
@@ -517,7 +518,7 @@ describe("hub scene writer", () => {
       expect(events).toEqual(["flush", "close-body"]);
       expect(jsonFetch).toHaveBeenCalledOnce(); expect(beacon).not.toHaveBeenCalled();
       expect(jsonFetch).toHaveBeenCalledWith("/api/scenes/notebook/close", expect.objectContaining({
-        method: "POST", body: closeBody, keepalive: true, headers: { "X-MVHub-Expect-Account": "local" },
+        method: "POST", body: closeBody, keepalive: true, headers: { "X-MVHub-Expect-Account": "local", "X-MVHub-Canvas-Protocol": "confirm-v1" },
       }));
     } finally {
       vi.doUnmock("../src/lib/http"); vi.doUnmock("../src/lib/popupWindows");

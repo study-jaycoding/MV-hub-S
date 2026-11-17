@@ -32,7 +32,7 @@ async function stateOf(id = "s") {
   return r.value.buckets[bucket].states[id];
 }
 
-beforeEach(() => { setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false); setAccountScope(null); sha.calls.length = 0; });
+beforeEach(() => { setHubFeatures(["scene_writer_confirm_v1"]); setSceneWriteGate(() => false); setAccountScope(null); sha.calls.length = 0; });
 afterEach(async () => { await settleSceneStoreForTest(); setHubFeatures([]); setAccountScope(null); vi.unstubAllGlobals(); });
 
 describe("R2 저장소 바깥 알림 — 씬이 실제로 달라진 확정에만", () => {

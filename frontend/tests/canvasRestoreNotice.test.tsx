@@ -56,7 +56,7 @@ beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear(); sessionStorage.clear(); request.mockReset(); flash.mockReset();
   windowState.canvasWindow = false; windowState.floating = false;
-  setAccountScope(null); setHubFeatures(["scene_writer_v1"]); setSceneWriteGate(() => false);
+  setAccountScope(null); setHubFeatures(["scene_writer_confirm_v1"]); setSceneWriteGate(() => false);
   setSceneNotebookTokenProvider(() => ({ account: "local", token: "token", generation: "lease" }));
   await writeScenesStore({ [bucket]: [] });
   const base = [scene("a"), scene("b")];
@@ -121,6 +121,61 @@ it("first start follows the i18n dictionary and account isolation", async () => 
   setAccountScope("other"); await render(<CanvasRestoreNotice />);
   expect(host.querySelector(".canvas-notebook-start")).toBeNull();
 });
+it("Later survives a component remount only for the same account and question", async () => {
+  await firstStartNotice();
+  await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "나중에")!.click());
+  const prior = sceneNotebook.getNotebookStartNotice()!.id;
+  sceneNotebook.invalidateNotebookStart();
+  await syncSceneNotebook();
+  expect(sceneNotebook.getNotebookStartNotice()!.id).not.toBe(prior);
+  await render(null); await render(<CanvasRestoreNotice />);
+  expect(notice()?.textContent).toContain("이 브라우저에만 저장 중");
+  expect(notice()?.textContent).not.toContain("이 캔버스를 다른 브라우저에서도 쓸까요?");
+  await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "다른 브라우저와 같이 쓰기")!.click());
+  await render(null); await render(<CanvasRestoreNotice />);
+  expect(notice()?.textContent).toContain("이 캔버스를 다른 브라우저에서도 쓸까요?");
+});
+it("empty local canvas offers to load the saved scene count without promising an archive", async () => {
+  await firstStartNotice();
+  await writeScenesStore({ [bucket]: [] });
+  const saved = scene("saved");
+  request.mockResolvedValue({ ...emptyBook(), items: [{ id: saved.id, data: JSON.stringify(saved), deleted_at: null,
+    base: { history_id: "h", rev: 1, hash: hash(JSON.stringify(saved)) } }], order: { ids: [saved.id], rev: 0, history_id: "h" } });
+  await act(async () => { await syncSceneNotebook(); });
+  expect(notice()?.textContent).toContain("이 브라우저의 캔버스가 비어 있습니다. 이 PC 에 저장된 캔버스(씬 1개)를 불러와 다른 브라우저와 같이 쓸까요?");
+  expect(notice()?.textContent).toContain("캔버스가 바뀌어 다시 확인해 주세요");
+  expect(host.querySelector('[data-notebook-action="start"]')?.textContent).toBe("불러오기");
+  expect(notice()?.textContent).not.toContain("따로 보관");
+  await act(async () => setLang("en"));
+  expect(notice()?.textContent).toContain("This browser's canvas is empty.");
+  expect(host.querySelector('[data-notebook-action="start"]')?.textContent).toBe("Load");
+});
+it.each(["write", "reopen"])("Later remains usable when session storage is blocked: %s", async (failure) => {
+  await firstStartNotice();
+  const storage = vi.spyOn(Storage.prototype, failure === "write" ? "setItem" : "removeItem").mockImplementation(() => { throw new DOMException("blocked"); });
+  try {
+    await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "나중에")!.click());
+    expect(notice()?.textContent).toContain("이 브라우저에만 저장 중");
+    if (failure === "reopen") {
+      await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "다른 브라우저와 같이 쓰기")!.click());
+      expect(notice()?.textContent).toContain("이 캔버스를 다른 브라우저에서도 쓸까요?");
+    }
+  } finally { storage.mockRestore(); }
+});
+it("Later does not fold the same-looking question on a different account", async () => {
+  await firstStartNotice();
+  await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "나중에")!.click());
+  await act(async () => {
+    setAccountScope("other");
+    const account = accountScope.getAccountNamespace();
+    setSceneNotebookTokenProvider(() => ({ account, token: "other-token", generation: "other-lease" }));
+    await writeScenesStore({ [`${account}::_none`]: [scene("mine", "local raw")] });
+    await syncSceneNotebook();
+  });
+  await render(<CanvasRestoreNotice />);
+  expect(notice()?.textContent).toContain("이 캔버스를 다른 브라우저에서도 쓸까요?");
+  expect(notice()?.textContent).not.toContain("이 브라우저에만 저장 중");
+});
 
 it("rows: own buckets only, separate rows per bucket, and the five states (camera ignored, copy key like mergeArchiveBucket)", () => {
   // mergeArchiveBucket 이 만드는 사본 표식과 같은 지문(정규화한 보관 씬의 sceneBodySum)
@@ -170,7 +225,7 @@ it("restore refuses without writing when the account changed, the notebook is of
   await expect(restoreRows("someone-else", rows)).rejects.toThrow("계정이 바뀌었습니다");
   act(() => setHubFeatures([]));
   await expect(restoreRows("local", rows)).rejects.toThrow("캔버스가 이 브라우저에만 저장되는 상태라");
-  act(() => setHubFeatures(["scene_writer_v1"]));
+  act(() => setHubFeatures(["scene_writer_confirm_v1"]));
   vi.spyOn(sceneWriter, "getSceneWriterView").mockReturnValue({ mode: "away", handed: false, localCount: 0 });
   await expect(restoreRows("local", rows)).rejects.toThrow("다른 브라우저가 쓰는 중");
   windowState.floating = true;
@@ -239,7 +294,7 @@ it("notice stays away on read failure, stale reads, notebook off and in the canv
   expect(notice()).not.toBeNull();
   act(() => setHubFeatures([])); await flush();
   expect(notice()).toBeNull();
-  act(() => setHubFeatures(["scene_writer_v1"])); windowState.canvasWindow = true;
+  act(() => setHubFeatures(["scene_writer_confirm_v1"])); windowState.canvasWindow = true;
   act(() => root!.unmount()); root = undefined;
   await render(<CanvasRestoreNotice />);
   expect(notice()).toBeNull();

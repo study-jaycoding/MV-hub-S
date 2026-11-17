@@ -2072,7 +2072,7 @@
 .canvas-restore-notice > span { flex: 1 1 auto; min-width: 0; }
 .canvas-restore-notice > .settings-action { flex: 0 0 auto; width: auto; }
 .canvas-notebook-start { flex-wrap: wrap; border-color: var(--border); }
-.canvas-notebook-start .canvas-notebook-confirm { background: #c5f36b; color: #000; border-color: #c5f36b; }
+.canvas-notebook-start .canvas-notebook-confirm { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .canvas-restore-x { flex: 0 0 auto; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .canvas-restore-x:hover { color: var(--text); }
 .canvas-restore-picker { width: min(520px, 92vw); }

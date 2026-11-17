@@ -1460,7 +1460,7 @@ describe("허브 공책 동기화 결과와 복구 알림", () => {
     vi.useFakeTimers();
     try {
       const { setHubFeatures } = await import("../src/lib/hubFeatures");
-      setHubFeatures(["scene_writer_v1"]);
+      setHubFeatures(["scene_writer_confirm_v1"]);
       const backup = await import("../src/lib/sceneBackup");
       const notified: number[] = [];
       backup.subscribeSceneRestore(() => notified.push(1));

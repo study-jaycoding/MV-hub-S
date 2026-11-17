@@ -117,7 +117,7 @@ describe("쓰기 입구 — 떠 있는 동안 원래 창은 씬을 쓰지 않는
     const { store, data } = await openStore([{ id: "a", name: "a", created_at: 1, edges: [],
       cards: [{ id: "c", kind: "generation", x: 0, y: 0 }] }]);
     const { setHubFeatures } = await import("../src/lib/hubFeatures");
-    setHubFeatures(["scene_writer_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1"]);
     const { createCanvasDocumentPort, canvasTarget } = await import("../src/features/canvas/session");
     const port = createCanvasDocumentPort({ flushPending: () => {} });
     const target = canvasTarget("a");
@@ -145,7 +145,7 @@ describe("쓰기 입구 — 떠 있는 동안 원래 창은 씬을 쓰지 않는
       cards: [{ id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: { content: "{}" } }],
       comfyCardRuns: { c: { groupId: "group", groupSeq: 1 } } }]);
     const { setHubFeatures } = await import("../src/lib/hubFeatures");
-    setHubFeatures(["scene_writer_v1", "comfy_canvas_runs_v1"]);
+    setHubFeatures(["scene_writer_confirm_v1", "comfy_canvas_runs_v1"]);
     const { comfySceneFingerprints } = await import("../src/lib/sceneComfyInputs");
     const origin = { hub_id: "hub", device_id: "pc" };
     data.updateScene(null, "a", { comfyRuns: [{ version: 1, attemptId: "run", cardId: "c", copyIndex: 0,
@@ -1195,7 +1195,7 @@ describe("원래 창의 사람 동작", () => {
     try {
       expect(host.querySelector(".scene-restore")?.textContent).toContain("씬 3개 가져오기");
       const staleImport = coordination().importBackupScenes;
-      act(() => setHubFeatures(["scene_writer_v1"]));
+      act(() => setHubFeatures(["scene_writer_confirm_v1"]));
       expect(host.querySelector(".scene-restore")).toBeNull();
       await staleImport();
       expect(backupState.imported).not.toHaveBeenCalled();
@@ -1220,7 +1220,7 @@ describe("원래 창의 사람 동작", () => {
   it.each([true, false])("공책 표식 %s — 잠금 중 한 번 받은 카드 소속을 해제 때 다시 적용한다", async enabled => {
     const { store, data, follow, stop } = await coordinationIn(true);
     const { setHubFeatures } = await import("../src/lib/hubFeatures");
-    setHubFeatures(enabled ? ["scene_writer_v1"] : []);
+    setHubFeatures(enabled ? ["scene_writer_confirm_v1"] : []);
     try {
       data.updateScene(null, "a", { cards: [{ id: "c", kind: "generation", x: 0, y: 0 }] });
       await store.settleSceneStoreForTest();
