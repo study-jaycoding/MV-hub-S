@@ -122,6 +122,9 @@ def verify(report: dict) -> list[str]:
                             raise ValueError("B must actually open first")
                         if checks.get("held_archive_before_confirmation", {}).get("actual") != [records["b"].get("scenes")]:
                             raise ValueError("B original archive before confirmation required")
+                        loser = "b" if transition["start_order"] == "a" else "a"
+                        if checks.get("other_browser_preserved", {}).get("actual") != [records[loser].get("scenes")]:
+                            raise ValueError("one original archive without a duplicate received canvas required")
                     if transition["variant"] == "same_generation" and recovery["blockedIds"]:
                         raise ValueError("normal untransmitted edit cannot use held provenance")
                 except (TypeError, ValueError, AttributeError):

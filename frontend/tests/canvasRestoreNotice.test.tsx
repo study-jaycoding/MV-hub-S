@@ -174,6 +174,15 @@ it("an archived canvas asks before sharing the saved canvas in Korean and Englis
   await act(async () => setLang("en"));
   expect(host.querySelector(".canvas-notebook-start")?.textContent).toContain("This browser's previous canvas has been kept separately.");
 });
+it("an empty restored hub archives the old canvas without offering to load zero scenes", async () => {
+  await firstStartNotice();
+  localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: "new", blockedIds: ["mine"] }));
+  await act(async () => { expect((await syncSceneNotebook()).reason).toBe("empty_notebook"); });
+  expect(sceneNotebook.getNotebookStartNotice()).toBeNull();
+  expect(host.querySelector(".canvas-notebook-start")).toBeNull();
+  expect(await sceneNotebook.readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("mine", "local raw")] } }] });
+  expect(request.mock.calls.filter(([path]) => path.endsWith("/start"))).toEqual([]);
+});
 it("Later does not fold the same-looking question on a different account", async () => {
   await firstStartNotice();
   await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "나중에")!.click());
@@ -321,7 +330,7 @@ it("notice does not read the archive on scene saves; a first-transition archive 
   expect(read).not.toHaveBeenCalled();
   // 첫 전환(새 복원 세대) — 로컬 변경이 보관되고 알림이 뜬다
   await writeNotebookProgress("local", "write", null, { id: "old-write", restoreGeneration: "old", requests: [{ restore_generation: "old" }] });
-  await act(async () => { expect((await syncSceneNotebook()).reason).toBe("start_confirmation"); });
+  await act(async () => { expect((await syncSceneNotebook()).reason).toBe("empty_notebook"); });
   await flush();
   expect(read).toHaveBeenCalled();
   // 이 브라우저는 옛 세대에 합류했던 것이라 묶음에 fromGeneration 이 있다 — '허브 기록이 바뀌어' 문구

@@ -806,10 +806,7 @@ class Measurement:
             self.check("join_generation", joined.get("restoreGeneration"), book["restore_generation"])
             archives = entries.get(json.dumps(["nr", self.account], separators=(",", ":")), [])
             archived = [scene_fingerprints(item.get("scenes", {}).get(self.bucket, [])) for item in archives]
-            if variant == "held":
-                self.check("other_browser_preserved", archived, candidates[loser_name], candidates[loser_name] in archived)
-            else:
-                self.check("other_browser_preserved", archived, [candidates[loser_name]])
+            self.check("other_browser_preserved", archived, [candidates[loser_name]])
             self.check("no_merge", scene_fingerprints(await self.local(loser)), actual)
         archived_hub = [row["data"] for row in retained_rows(self.work) if row["reason"] == "before_start"]
         self.check("before_start", scene_fingerprints(sorted(archived_hub, key=lambda s: s["id"])),

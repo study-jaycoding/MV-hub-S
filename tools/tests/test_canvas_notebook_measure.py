@@ -212,6 +212,24 @@ def held_records(value):
     records['b']['mirrorRecovery'] = json.dumps({'generation': 'G2', 'blockedIds': ['b']})
     for name, actual in [('held_first', ['b', 'a']), ('held_archive_before_confirmation', [records['b']['scenes']])]:
         value['checks'][name] = {'status': 'passed', 'actual': actual, 'expected': actual}
+    loser = 'b' if value['transition']['start_order'] == 'a' else 'a'
+    archives = [records[loser]['scenes']]
+    value['checks']['other_browser_preserved'] = {'status': 'passed', 'actual': archives, 'expected': archives}
+
+
+@pytest.mark.parametrize('order', ['a', 'b'])
+@pytest.mark.parametrize('broken', ['duplicate', 'boolean', 'missing'])
+def test_held_first_verifier_requires_one_original_archive_without_received_canvas(order, broken):
+    value = report('first_transition'); value['transition'].update(variant='held', start_order=order)
+    held_records(value)
+    assert verify(value) == []
+    check = value['checks']['other_browser_preserved']
+    if broken == 'duplicate':
+        extra = [{'id': 'received', 'sha256': 'c' * 64}]
+        check.update(actual=[*check['actual'], extra], expected=[*check['expected'], extra])
+    elif broken == 'boolean': check.update(actual=True, expected=True)
+    else: del value['checks']['other_browser_preserved']
+    assert verify(value)
 
 
 @pytest.mark.parametrize("variant", ["same_generation", "held"])
