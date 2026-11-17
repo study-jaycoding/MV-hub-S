@@ -25,7 +25,7 @@ export interface NotebookBucket {
   states: Record<string, NotebookSceneState>;
   order: SceneOrderState;
 }
-export interface NotebookJoin { notebookId: string; history: string; restoreGeneration?: string; awaitingStart?: true; receivedFingerprint?: string }
+export interface NotebookJoin { notebookId: string; history: string; restoreGeneration?: string; beforeStart?: true; awaitingStart?: true; receivedFingerprint?: string }
 export interface NotebookProgress { id: string; [field: string]: unknown }
 export interface NotebookSnapshot {
   buckets: Record<string, NotebookBucket>;
@@ -92,16 +92,17 @@ export function subscribeRestoreArchived(fn: () => void): () => void {
 }
 function replacedJoinBases(joined: NotebookJoin | null | undefined, book: HubBook, bases: Record<string, SceneBase | null>): boolean {
   if (joined?.notebookId !== "" || !book.notebook_id) return false;
+  if (joined.beforeStart) return true;
   const rows = new Map(book.items.map((row) => [row.id, row])); // tombstone도 실제로 있는 행이다.
   const skipped = new Set(book.skipped);
   return Object.entries(bases).some(([id, base]) => {
-    if (!base || skipped.has(id)) return false;
+    if (!base || base.history !== book.history_id || skipped.has(id)) return false;
     const row = rows.get(id);
-    return !row || row.base.history_id !== base.history || row.base.rev < base.rev ||
+    return !row || row.base.rev < base.rev ||
       (row.base.rev === base.rev && row.base.hash !== base.hash);
   });
 }
-async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean, leaseGeneration: string, approval?: NotebookStartApproval) {
+async function adoptRestoredNotebook(account: string, book: HubBook, guard: () => boolean, pendingAtStart: boolean, leaseGeneration: string, approval?: NotebookStartApproval, rejoinRequired = false) {
   const hadPending = pendingAtStart || sceneStoreHasPending();
   const release = holdNotebookWrites(account);
   let archived = false;
@@ -116,7 +117,7 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
         const [, scope, id] = JSON.parse(name) as string[];
         return scope === `${account}::_none` ? [[id, value as SceneBase]] : [];
       }));
-      if (joined?.restoreGeneration === book.restore_generation && !staleProgress && !joined.awaitingStart && !replacedJoinBases(joined, book, bases)) return { changed: false, value: false };
+      if (!rejoinRequired && joined?.restoreGeneration === book.restore_generation && !staleProgress && !joined.awaitingStart && !replacedJoinBases(joined, book, bases)) return { changed: false, value: false };
       const before = shownScenes(all, account);
       const scenes = Object.fromEntries(Object.entries(all).filter(([bucket]) => belongs(bucket, account)));
       const conflicts = ((meta.conflicts as SceneAbsorbConflict[] | undefined) ?? []).filter((item) => belongs(item.bucket, account));
@@ -129,18 +130,18 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       const localScenes = scenes[bucket] ?? [];
       const unordered = book.notebook_id === null || book.order.rev === 0;
       const incomingById = new Map(incoming.scenes.map((scene) => [scene.id, scene]));
-      const sameScenes = unordered
-        ? localScenes.length === incoming.scenes.length && new Set(localScenes.map((scene) => scene.id)).size === localScenes.length &&
-          localScenes.every((scene) => equal(scene, incomingById.get(scene.id)))
-        : equal(localScenes, incoming.scenes);
+      const sameContents = localScenes.length === incoming.scenes.length && new Set(localScenes.map((scene) => scene.id)).size === localScenes.length &&
+        localScenes.every((scene) => equal(scene, incomingById.get(scene.id)));
+      const sameScenes = unordered ? sameContents : equal(localScenes, incoming.scenes);
       const restored = knownMirrorRestore(account, book.restore_generation, scenes);
-      const cleanUpgrade = !restored && !joined?.restoreGeneration && !hadPending && !sceneStoreHasPending() && !hasIntent && !conflicts.length && !book.skipped?.length &&
+      const cleanUpgrade = !rejoinRequired && !restored && !joined?.restoreGeneration && !hadPending && !sceneStoreHasPending() && !hasIntent && !conflicts.length && !book.skipped?.length &&
         !meta[key("ns", account)] && !meta[key("nw", account)] &&
         Object.entries(scenes).every(([name, items]) => name === bucket || !items.length) && sameScenes;
       if (cleanUpgrade) {
         for (const row of book.items) meta[key("b", bucket, row.id)] = fromBase(row.base);
         meta[key("ob", bucket)] = { base: incoming.order, dirty: unordered ? newSceneIntentId() : null } satisfies SceneOrderState;
-        meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation } satisfies NotebookJoin;
+        meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation,
+          ...(!book.notebook_id ? { beforeStart: true } : {}) } satisfies NotebookJoin;
         return { changed: true, value: false };
       }
       if (!book.notebook_id && !staleProgress &&
@@ -162,7 +163,7 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       const receivedOnly = joined?.awaitingStart && book.notebook_id && joined.restoreGeneration === book.restore_generation &&
         joined.history === book.history_id && !conflicts.length && joined.receivedFingerprint === receivedFingerprint(all, account);
       const progress = meta[key("ns", account)] as PendingStart | undefined;
-      const completedEmptyStart = receivedOnly && sameScenes && progress?.restoreGeneration === book.restore_generation &&
+      const completedEmptyStart = receivedOnly && sameContents && progress?.restoreGeneration === book.restore_generation &&
         progress.history === book.history_id && progress.generation === leaseGeneration && Array.isArray(progress.scenes) && progress.scenes.length === 0;
       const pendingControl = hasIntent || (!!progress && !completedEmptyStart) || !!meta[key("nw", account)];
       const archiveScenes = receivedOnly ? {} : scenes;
@@ -185,7 +186,7 @@ async function adoptRestoredNotebook(account: string, book: HubBook, guard: () =
       for (const row of book.items) meta[key("b", bucket, row.id)] = fromBase(row.base);
       meta[key("ob", bucket)] = { base: incoming.order, dirty: null } satisfies SceneOrderState;
       meta[key("nj", account)] = { notebookId: book.notebook_id ?? "", history: book.history_id, restoreGeneration: book.restore_generation,
-        ...(!book.notebook_id ? { awaitingStart: true, receivedFingerprint: receivedFingerprint(all, account) } : {}) } satisfies NotebookJoin;
+        ...(!book.notebook_id ? { beforeStart: true, awaitingStart: true, receivedFingerprint: receivedFingerprint(all, account) } : {}) } satisfies NotebookJoin;
       return { changed: true, value: before !== shownScenes(all, account), notify: conflicts.length > 0 };
     }, guard);
     if (result.ok && archived) for (const fn of [...restoreArchivedSubs]) fn();
@@ -774,29 +775,48 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
     check(); return result.value;
   };
   const pendingAtStart = sceneStoreHasPending();
+  let rejoinRequired = false;
   try {
-    for (let round = 0; round < 3; round++) {
+    for (let round = 0; round < 3 || rejoinRequired; round++) {
       try {
         let local = await snapshot();
         let book = await getBook();
         let firstStart: PendingStart["firstStart"];
-        const replacedBases = replacedJoinBases(local.joined, book,
+        let resumedStart = false;
+        const starting = local.starting as PendingStart | null;
+        if (!rejoinRequired && book.notebook_id && local.joined?.beforeStart && starting?.restoreGeneration === book.restore_generation &&
+            starting.history === book.history_id && Array.isArray(starting.scenes)) {
+          try {
+            // 이미 시작된 공책에는 새 시도가 들어가지 않는다. 같은 시도의 확정 영수증만 재조회한다.
+            const receipt = await request<{ status: string; notebook_id: string; history_id: string; restore_generation: string }>("notebook/start", {
+              restore_generation: starting.restoreGeneration, token: lease.token, attempt_id: starting.id, project_id: "",
+              expected_count: starting.scenes.length, order: starting.scenes.map((s) => s.id), upserts: [], commit: true,
+            });
+            if (receipt.status !== "committed" || receipt.notebook_id !== book.notebook_id || receipt.history_id !== book.history_id ||
+                receipt.restore_generation !== book.restore_generation) throw new Error("invalid_start_receipt");
+            resumedStart = true;
+          } catch (error) { if (errorCode(error) !== "notebook_already_started") throw error; }
+        }
+        const replacedBases = !resumedStart && replacedJoinBases(local.joined, book,
           Object.fromEntries(Object.entries(local.buckets[bucket]?.states ?? {}).map(([id, state]) => [id, state.base])));
-        // 1011의 빈 ID는 기준 행이 이어질 때 합류 기록이다. 시작 영수증의 순서 승계는 아래에서 마친다.
-        if (book.notebook_id && local.joined?.notebookId === "" && !replacedBases && !local.joined.awaitingStart && !local.starting && local.joined.restoreGeneration === book.restore_generation) {
+        // 미시작을 직접 본 옛 기록도 표시한다. 이미 시작된 1011 기록의 합류 해석은 유지한다.
+        if (local.joined?.notebookId === "" && (book.notebook_id || !local.joined.beforeStart) && !replacedBases &&
+            !local.joined.awaitingStart && !local.starting && local.joined.restoreGeneration === book.restore_generation) {
           const expected = local.joined;
           if (!(await change([], (_all, meta) => {
             if (!equal(meta[key("nj", account)], expected)) return false;
-            meta[key("nj", account)] = { ...expected, notebookId: book.notebook_id! } satisfies NotebookJoin;
+            meta[key("nj", account)] = { ...expected,
+              ...(book.notebook_id ? { notebookId: book.notebook_id } : { beforeStart: true }) } satisfies NotebookJoin;
             return true;
           }, guard))) { check(); continue; }
           changed = true;
           local = await snapshot();
         }
-        if (local.joined?.restoreGeneration !== book.restore_generation || local.joined?.awaitingStart || replacedBases ||
+        if (rejoinRequired || local.joined?.restoreGeneration !== book.restore_generation || (local.joined?.awaitingStart && !resumedStart) || replacedBases ||
             [local.starting, local.writing].some((value) => value && value.restoreGeneration !== book.restore_generation)) {
-          const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart, lease.generation, approval);
+          const adopted = await adoptRestoredNotebook(account, book, guard, pendingAtStart, lease.generation, approval, rejoinRequired);
           if (!adopted.ok) throw new Error("local_store_failed");
+          rejoinRequired = false;
           if (typeof adopted.value === "boolean") {
             if (startNotice?.account === account) setStartNotice(null);
             mcpCompletions.clear();
@@ -836,7 +856,7 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
         }
         if (!local.joined || !book.notebook_id || local.starting) {
           let releaseHold: (() => void) | undefined;
-          let startedHere = false;
+          let startedHere = resumedStart;
           try {
             local = await snapshot();
             if (!book.notebook_id) {
@@ -903,7 +923,7 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
             }
             const progress = (await snapshot()).starting;
             // Zero-item start establishes the first order; retain the clean browser order even after a lost start reply.
-            if (local.joined.notebookId === "" && progress?.history === book.history_id && progress.generation === lease.generation &&
+            if (local.joined.notebookId === "" && progress?.history === book.history_id && (progress.generation === lease.generation || resumedStart) &&
                 Array.isArray(progress.scenes)) {
               const emptyStart = progress.scenes.length === 0;
               const advanced = await sceneNotebookTransaction([key("ns", account)], (_all, meta) => {
@@ -911,7 +931,7 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
                 const joined = meta[key("nj", account)] as NotebookJoin | undefined;
                 if (joined?.restoreGeneration !== book.restore_generation || !equal(meta[key("ns", account)], progress)) return { changed: false, value: null };
                 const next = { ...joined, notebookId: book.notebook_id! };
-                delete next.awaitingStart; delete next.receivedFingerprint;
+                delete next.beforeStart; delete next.awaitingStart; delete next.receivedFingerprint;
                 meta[key("nj", account)] = next;
                 if (emptyStart && order?.dirty && order.base?.history === book.history_id && order.base.rev + 1 === book.order.rev) {
                   meta[key("ob", bucket)] = { ...order, base: { history: book.history_id, rev: book.order.rev } } satisfies SceneOrderState;
@@ -1108,6 +1128,7 @@ async function runNotebookSync(approval?: NotebookStartApproval): Promise<Notebo
         visibleChanged ||= applied.value.visible;
         return { status: "ready", changed, visibleChanged };
       } catch (error) {
+        if (errorCode(error) === "notebook_rejoin_required" && !rejoinRequired) { rejoinRequired = true; continue; }
         if (error instanceof NotebookTransportError && round < 2) continue;
         throw error;
       }

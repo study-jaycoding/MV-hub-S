@@ -17,6 +17,7 @@ vi.mock("../src/lib/http", () => ({ jsonFetch: async (path: string, init?: Reque
 type Base = { history_id: string; rev: number; hash: string };
 type Row = { id: string; data: string; deleted_at: string | null; base: Base };
 class FakeHub {
+  rejectWrites = false;
   restoreGeneration = "restore-1";
   history = "h1"; book: string | null = null; rows = new Map<string, Row>(); order: string[] = []; rev = 1;
   calls: { path: string; body: any }[] = []; receipts = new Map<string, any>(); starts = new Map<string, any>();
@@ -42,9 +43,11 @@ class FakeHub {
       if (staged.rows.size !== body.expected_count) throw { detail: "start_incomplete" };
       if (!body.expected_count && !this.rows.size) throw { detail: "empty_notebook" };
       if (body.expected_count) { this.rows.clear(); this.order = []; for (const s of staged.rows.values()) this.save(JSON.parse(s.data)); this.order = body.order; }
-      this.book = "book1"; return staged.done = { status: "committed", notebook_id: this.book, history_id: this.history };
+      this.book = "book1"; return staged.done = { status: "committed", notebook_id: this.book, history_id: this.history,
+        restore_generation: this.restoreGeneration, attempt_id: body.attempt_id };
     }
     if (path.endsWith("/backup")) {
+      if (this.rejectWrites) throw { status: 409, detail: "notebook_rejoin_required" };
       if (this.receipts.has(body.request_id)) return this.receipts.get(body.request_id);
       const previousOrder = JSON.stringify(this.order), results = [], deletes = [];
       for (const up of body.upserts) {
@@ -421,16 +424,149 @@ it.each([["cleanUpgrade", false], ["1011 adopt", false], ["cleanUpgrade", true],
   await syncSceneNotebook();
   expect([...fake.rows.keys()]).toEqual(selected.map((s) => s.id));
 });
-it("a held browser losing its own zero-start commit reply leaves no empty control archive", async () => {
-  fake.save(scene("saved"));
+it.each([[false, false], [false, true], [true, false], [true, true]])("a held browser losing its own zero-start commit reply leaves no empty control archive (legacy marker: %s, reordered: %s)", async (legacy, reordered) => {
+  fake.save(scene("saved-a")); fake.save(scene("saved-b"));
   await writeScenesStore({ [bucket]: [scene("held")] });
   localStorage.setItem("mvhub.mirrorRecovery:local", JSON.stringify({ generation: fake.restoreGeneration, blockedIds: ["held"] }));
   expect((await syncSceneNotebook()).reason).toBe("start_confirmation");
-  hook = (path, body) => { if (path.endsWith("/start") && body.commit) throw Error("lost commit reply"); };
+  if (legacy) await sceneNotebookTransaction([], (_all, meta) => {
+    delete (meta[notebookKey("nj", "local")] as { beforeStart?: true }).beforeStart;
+    return { changed: true, value: null };
+  });
+  hook = (path, body) => {
+    if (path.endsWith("/start") && body.commit) {
+      hook = null;
+      if (reordered) { fake.order.reverse(); fake.rev++; }
+      throw Error("lost commit reply");
+    }
+  };
   expect((await syncSceneNotebook({ startApproval: await approveStart() })).status).toBe("ready");
   expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("held")] } }] });
   expect((await state()).starting).toBeNull();
   expect((await state()).joined).toMatchObject({ notebookId: fake.book });
+});
+it.each([false, true])("history remap leaves a legacy empty-id profile on ordinary sync without adoption (edited: %s)", async (edited) => {
+  await joined();
+  await sceneNotebookTransaction([], (_all, meta) => {
+    meta[notebookKey("nj", "local")] = { notebookId: "", history: fake.history, restoreGeneration: fake.restoreGeneration };
+    return { changed: true, value: null };
+  });
+  if (edited) { edit([scene("s", "offline edit")]); await settleSceneStoreForTest(); }
+  fake.history = "remapped-history";
+  for (const row of fake.rows.values()) row.base = { ...row.base, history_id: fake.history, rev: row.base.rev + 1 };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect(readWorkingBucket(bucket).map((s) => s.name)).toEqual(edited ? ["s", "[old] offline edit"] : ["s"]);
+  expect((await state()).joined?.notebookId).toBe(fake.book);
+});
+it.each([false, true])("a base-free scene created after empty cleanUpgrade is archived when B starts first (legacy unstarted: %s)", async (legacy) => {
+  await writeScenesStore({ [bucket]: [] });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  if (legacy) {
+    await sceneNotebookTransaction([], (_all, meta) => {
+      delete (meta[notebookKey("nj", "local")] as { beforeStart?: true }).beforeStart;
+      return { changed: true, value: null };
+    });
+    expect((await syncSceneNotebook()).reason).toBe("empty_notebook");
+  }
+  edit([scene("x", "A new scene")]); await settleSceneStoreForTest();
+  const profile = await sceneNotebookTransaction([], (all, meta) => ({ changed: false, value: { all, meta } }));
+  if (!profile.ok) throw Error("profile read failed");
+  resetSceneStoreForTest();
+  seedLegacyLayoutForTest(profile.value.all, Object.fromEntries(Object.entries(profile.value.meta).filter(([key]) => key.startsWith('["') || key === "conflicts")));
+  expect((await initSceneStore(() => null, null, () => true)).kind).toBe("ready"); setSceneWriteGate(() => false);
+  expect((await state()).joined).toMatchObject({ notebookId: "", beforeStart: true });
+  fake.book = "B-book"; fake.save(scene("b", "B selected")); fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b", "B selected")]);
+  expect([...fake.rows.keys()]).toEqual(["b"]);
+  expect(fake.calls.filter((c) => c.body)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("x", "A new scene")] } }] });
+});
+it("an uncommitted base-free start does not pass as its own committed notebook when B wins", async () => {
+  await currentLocal([scene("x")]);
+  hook = (path, body) => { if (path.endsWith("/start") && !body.commit) throw Error("lost staged reply"); };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  expect((await state()).starting).not.toBeNull();
+  hook = null;
+  fake.handle("/api/scenes/notebook/start", { attempt_id: "b", expected_count: 1, order: ["b"], upserts: [{ id: "b", data: JSON.stringify(scene("b")) }], commit: true });
+  fake.calls = [];
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b")]);
+  expect([...fake.rows.keys()]).toEqual(["b"]);
+  expect(fake.calls.filter((c) => c.path.endsWith("/backup") || c.body?.upserts?.length)).toEqual([]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("x")] } }] });
+});
+it.each(["new lease", "lease change", "wrong receipt"])("a base-free own start lost reply is verified across a new lease: %s", async (kind) => {
+  await currentLocal([scene("x")]);
+  let lost = false;
+  hook = (path, body) => {
+    if (path.endsWith("/start") && body.commit) lost = true;
+    if (lost) throw Error("lost commit and later replies");
+  };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  const pending = (await state()).starting;
+  token = { account: "local", token: "new-token", generation: "g2" };
+  hook = (path, _body, reply) => {
+    if (path.endsWith("/start")) {
+      if (kind === "lease change") token = null;
+      if (kind === "wrong receipt") reply.notebook_id = "wrong-book";
+    }
+  };
+  expect((await syncSceneNotebook()).status).toBe(kind === "lease change" ? "waiting_token" : kind === "wrong receipt" ? "retry" : "ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("x")]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect(fake.starts.size).toBe(1);
+  if (kind !== "new lease") {
+    expect((await state()).starting).toEqual(pending);
+    expect((await state()).joined).toMatchObject({ beforeStart: true });
+  } else {
+    expect((await state()).starting).toBeNull();
+    expect((await state()).joined).toEqual({ notebookId: fake.book, history: fake.history, restoreGeneration: fake.restoreGeneration });
+  }
+});
+it.each([0, 2])("notebook_rejoin_required archives the rejected request and joins B after %s transport retries", async (failures) => {
+  await joined(); edit([scene("s", "A unsent")]); await settleSceneStoreForTest();
+  fake.book = "B-book"; fake.rows.clear(); fake.order = []; fake.save(scene("b", "B selected"));
+  fake.rejectWrites = true;
+  hook = (path) => { if (path.includes("notebook?") && failures-- > 0) throw { status: 503, detail: "offline" }; };
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b", "B selected")]);
+  expect((await state()).writing).toBeNull();
+  const archives = await readRestoreArchives("local"); if (!archives.ok) throw Error("archive read failed");
+  expect(archives.value).toHaveLength(1);
+  expect(archives.value[0].scenes[bucket]).toEqual([scene("s", "A unsent")]);
+  expect(archives.value[0].controls[notebookKey("nw", "local")]).toMatchObject({ requests: [{ upserts: [{ id: "s" }] }] });
+  const sends = fake.calls.filter((c) => c.path.endsWith("/backup")).length;
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(fake.calls.filter((c) => c.path.endsWith("/backup"))).toHaveLength(sends);
+  expect([...fake.rows.keys()]).toEqual(["b"]);
+});
+it("a failed rejoin archive keeps the rejected request and local raw for a later safe retry", async () => {
+  await joined(); edit([scene("s", "A unsent")]); await settleSceneStoreForTest();
+  fake.rows.clear(); fake.order = []; fake.save(scene("b")); fake.rejectWrites = true;
+  let gets = 0;
+  hook = (path) => { if (path.includes("notebook?") && ++gets === 2) abortSceneStoreWritesForTest(true); };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  abortSceneStoreWritesForTest(false); hook = null;
+  expect(readWorkingBucket(bucket)).toEqual([scene("s", "A unsent")]);
+  expect((await state()).writing).not.toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
+  expect((await syncSceneNotebook()).status).toBe("ready");
+  expect(readWorkingBucket(bucket)).toEqual([scene("b")]);
+  expect((await state()).writing).toBeNull();
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [{ scenes: { [bucket]: [scene("s", "A unsent")] } }] });
+});
+it("an unexpected second rejoin error returns without looping or discarding local progress", async () => {
+  await joined(); edit([scene("s", "A unsent")]); await settleSceneStoreForTest();
+  fake.rejectWrites = true;
+  let gets = 0;
+  hook = (path) => { if (path.includes("notebook?") && ++gets > 1) throw { status: 409, detail: "notebook_rejoin_required" }; };
+  expect((await syncSceneNotebook()).status).toBe("retry");
+  expect(gets).toBe(2);
+  expect((await state()).writing).not.toBeNull();
+  expect(readWorkingBucket(bucket)).toEqual([scene("s", "A unsent")]);
+  expect(await readRestoreArchives("local")).toMatchObject({ value: [] });
 });
 it("an unreadable existing base row does not turn a legacy empty-id join into adoption", async () => {
   await joined();
@@ -958,7 +1094,10 @@ it("lost commit acknowledgement joins the committed notebook without starting tw
   await currentLocal([scene()]); let failures = 0;
   hook = (p, b) => { if ((p.endsWith("/start") && b.commit) || (failures > 0 && p.includes("notebook?"))) { failures++; throw Error("lost"); } };
   expect((await syncSceneNotebook()).status).toBe("retry"); hook = null; expect((await syncSceneNotebook()).status).toBe("ready");
-  expect(fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit)).toHaveLength(1);
+  const commits = fake.calls.filter((c) => c.path.endsWith("/start") && c.body.commit);
+  expect(commits).toHaveLength(2);
+  expect(new Set(commits.map((c) => c.body.attempt_id)).size).toBe(1);
+  expect(fake.starts.size).toBe(1);
 });
 it("changed lease generation restarts an uncommitted staged attempt", async () => {
   await currentLocal([scene()]); let failures = 0;

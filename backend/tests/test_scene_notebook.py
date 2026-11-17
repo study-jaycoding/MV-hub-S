@@ -99,6 +99,21 @@ def test_start_staging_crash_empty_browser_and_commit_retry(notebook_db):
         seed(attempt='again')
 
 
+@pytest.mark.parametrize('empty_start', [False, True])
+def test_first_start_keeps_history_including_staging_and_committed_retry(notebook_db, empty_start):
+    legacy.sync_scene_backups('u', '', [scene('old')], [], restore_generation=restore_generation())
+    before = store.notebook('u')['history_id']
+    items = [] if empty_start else [scene('selected')]
+    body = {'restore_generation': restore_generation(), 'attempt_id': 'history', 'expected_count': len(items),
+            'upserts': items, 'order': [s['id'] for s in items], 'commit': False}
+    assert store.start('u', 'lease', body)['status'] == 'staging'
+    assert store.notebook('u')['history_id'] == before
+    body.update(upserts=[], commit=True)
+    result = store.start('u', 'lease', body)
+    assert result['history_id'] == store.notebook('u')['history_id'] == before
+    assert store.start('u', 'new-lease', body) == result
+
+
 def test_start_archives_same_id_and_all_old_rows(notebook_db):
     legacy.sync_scene_backups('u', '', [scene(name='old'), scene('hidden')], [], restore_generation=restore_generation())
     seed()
