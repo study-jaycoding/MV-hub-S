@@ -18,6 +18,7 @@ const EN: Record<string, string> = {
   "접수 재확인": "Check submission",
   "진행·확인 중": "In progress or checking",
   "Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요.": "Submission is uncertain. Click the same resolution to check the existing request.",
+  "이전 요청을 그대로 확인합니다. 페이지를 새로 고치면 화질을 다시 고를 수 있습니다.": "We are still checking the original request. Refresh the page to choose a resolution again.",
   "Draft {resolution} 생성 요청을 접수했습니다.": "Draft {resolution} request accepted.",
   "Draft 생성 실패": "Draft generation failed",
 

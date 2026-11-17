@@ -20,6 +20,12 @@ const draft = { id: "draft", model: "seedance_2_5", status: "done", is_mine: tru
 const noop = () => {};
 const settle = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
 const option = (resolution: string) => document.querySelector<HTMLButtonElement>(`.draft-finish-${resolution}`)!;
+// jsdom은 Enter의 기본 click을 만들지 않으므로, 키 이벤트가 허용되면 초점 단추를 활성화한다.
+const enter = () => act(() => {
+  const target = document.activeElement as HTMLButtonElement;
+  if (target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))) target.click();
+  target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+});
 let dispose: (() => void) | undefined;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -112,17 +118,39 @@ it("키보드 선택·Esc 초점 복귀·바깥 클릭·권한·선택 수를 �
 
 it.each([false, true])("키보드로 열고 Enter를 누르면 기본 1080p만 제출한다 (library=%s)", async (library) => {
   const view = mount(library); await settle();
-  // jsdom은 Enter의 기본 click을 만들지 않으므로, 키 이벤트가 허용되면 초점 단추를 활성화한다.
-  const enter = () => act(() => {
-    const target = document.activeElement as HTMLButtonElement;
-    if (target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))) target.click();
-    target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
-  });
   act(() => view.button().focus()); enter(); await settle();
   expect(document.activeElement).toBe(option("1080p"));
   expect(view.finish).not.toHaveBeenCalled();
   enter();
   expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "1080p");
+});
+
+it.each([false, true])("1080p 진행 중 키보드로 열면 4K에 초점을 주고 Enter로 한 번 제출한다 (library=%s)", async (library) => {
+  const view = mount(library); view.render([draft], resolution => resolution === "1080p"); await settle();
+  act(() => view.button().focus()); enter(); await settle();
+  expect(option("1080p").disabled).toBe(true);
+  expect(document.activeElement).toBe(option("4k"));
+  expect(view.finish).not.toHaveBeenCalled();
+  enter();
+  expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "4k");
+});
+
+it.each([false, true])("늦은 history로 초점 단추가 비활성이 되면 창 안 활성 단추로 옮긴다 (body로 이동=%s)", async (blurToBody) => {
+  let history!: (value: { children: Generation[] }) => void;
+  mocks.history.mockReturnValue(new Promise(resolve => { history = resolve; }));
+  const view = mount(); await settle();
+  act(() => view.button().focus()); enter(); await settle();
+  expect(document.activeElement).toBe(option("1080p"));
+  await act(async () => {
+    // 비활성 단추의 초점을 body로 옮기는 브라우저도 재현한다.
+    if (blurToBody) option("1080p").blur();
+    history({ children: [{ ...draft, id: "running", status: "pending", params: { draft_job_id: "job", resolution: "1080p" } }] });
+  });
+  expect(option("1080p").disabled).toBe(true);
+  expect(document.activeElement).toBe(option("4k"));
+  expect(view.button().getAttribute("aria-expanded")).toBe("true");
+  enter();
+  expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "4k");
 });
 
 it("권한 때문에 비활성이면 진행 중으로 표시하지 않는다", async () => {

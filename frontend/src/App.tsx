@@ -1996,7 +1996,9 @@ export default function App() {
             if (result.outcome.kind === "acceptance_unknown" || stillUncertain) {
               uncertain = true;
               draftRequests.retain(attempt, submit);
-              flash(t("Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요."));
+              const reason = stillUncertain && result.error ? ` ${result.error instanceof Error ? result.error.message : String(result.error)}` : "";
+              const guidance = stillUncertain ? ` ${t("이전 요청을 그대로 확인합니다. 페이지를 새로 고치면 화질을 다시 고를 수 있습니다.")}` : "";
+              flash(`${t("Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요.")}${reason}${guidance}`);
               return;
             }
             throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");

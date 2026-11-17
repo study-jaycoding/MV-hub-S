@@ -36,6 +36,7 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
   const [summary, setSummary] = useState<ReturnType<typeof summarizeDraftChildren> | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const focusedOptionRef = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
   const [placement, setPlacement] = useState({ left: 0, bottom: 0, maxHeight: 360 });
   const busy1080 = draftBusy?.("1080p") ?? false;
@@ -69,11 +70,20 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
         bottom: window.innerHeight - rect.top + 8, maxHeight: Math.max(0, rect.top - 16) });
     };
     position();
-    menuRef.current?.querySelector<HTMLButtonElement>(".draft-finish-1080p:not(:disabled)")?.focus();
+    (menuRef.current?.querySelector<HTMLButtonElement>(".draft-finish-1080p:not(:disabled)")
+      ?? menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
   }, [open]);
+  useLayoutEffect(() => {
+    if (!open) { focusedOptionRef.current = null; return; }
+    const focused = focusedOptionRef.current;
+    // 비활성이 되며 body로 빠진 초점도 복구하되 사용자가 옮긴 초점은 건드리지 않는다.
+    if (focused?.disabled && (document.activeElement === focused || document.activeElement === document.body)) {
+      menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    }
+  }, [open, summary, busy1080, busy4k, generation]);
   useOutsideMouseDown(buttonRef, () => setOpen(false), open, menuRef, true);
   useEscapeClose(() => { setOpen(false); buttonRef.current?.focus(); }, open, true, true);
   const credit = (resolution: DraftResolution) => `✦${costs[resolution] ?? ""}`;
@@ -97,6 +107,7 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
         const inProgress = busy === true || (busy !== "uncertain" && summary?.pending[resolution]);
         const disabled = !canFinishDraft(generation) || summary?.expired || inProgress;
         return <button key={resolution} type="button" className={`draft-finish-option draft-finish-${resolution}`}
+          onFocus={(event) => { focusedOptionRef.current = event.currentTarget; }}
           disabled={!!disabled} aria-busy={busy === true} onClick={() => { onFinishDraft?.(generation, resolution); }}>
           {t("{resolution}로 생성").replace("{resolution}", resolution === "4k" ? "4K" : resolution)} {credit(resolution)}
           {busy === "uncertain" && <span> · {t("접수 재확인")}</span>}

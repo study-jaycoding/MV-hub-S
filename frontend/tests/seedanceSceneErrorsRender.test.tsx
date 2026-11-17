@@ -258,7 +258,7 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
   });
   it.each([
     [409, "업데이트 중"], [409, "배포 일시중지"], [409, "계정 불일치"],
-    [404, "원본 없음"], [400, "워크스페이스 검증"],
+    [404, "원본 없음"], [400, "워크스페이스 검증"], [409, "처음 고른 공간과 다릅니다"],
   ])("Draft 접수 재확인의 사전 거절(%s %s)도 불명으로 유지하고 같은 예약·전송으로 회수한다", async (status, reason) => {
     draftSelected = true;
     let childId = "";
@@ -282,6 +282,8 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     expect(prepare).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(3);
     expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts).toEqual(first);
     expect(view.container.textContent).toContain("기존 요청을 확인하세요");
+    expect(view.container.textContent).toContain(reason);
+    expect(view.container.textContent).toContain("이전 요청을 그대로 확인합니다. 페이지를 새로 고치면 화질을 다시 고를 수 있습니다.");
     click(button(view.container, "시험 Draft 완료")); await act(async () => { await draftRun; }); await settle();
     expect(prepare).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(4);
     expect(scene.cards.find(card => card.id === "made")!.pendingGenerationAttempts || []).toHaveLength(0);
