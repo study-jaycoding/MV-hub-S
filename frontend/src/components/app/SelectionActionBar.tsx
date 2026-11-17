@@ -1,8 +1,15 @@
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { api } from "../../api";
+import { captureSubmissionScope } from "../../app/operationContext";
+import { sharedCostEstimate } from "../../lib/useModels";
+import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { ProjectAssignMenu } from "../ProjectAssignMenu";
 import { useT } from "../../lib/i18n";
 import type { GradeMode } from "../../lib/gradeStep";
 import type { Generation, Project } from "../../types";
-import { canFinishDraft, isDraftGeneration } from "../../lib/seedanceDraft";
+import { canFinishDraft, isDraftGeneration, normalizeSeedanceDraftParams, summarizeDraftChildren, type DraftResolution } from "../../lib/seedanceDraft";
 
 type AssignHandlers = {
   projects: Project[];
@@ -10,26 +17,93 @@ type AssignHandlers = {
 };
 
 type DraftHandlers = {
-  onFinishDraft?: (generation: Generation) => void;
-  draftBusy?: boolean;
-  draftDone?: boolean;
+  onFinishDraft?: (generation: Generation, resolution: DraftResolution) => void;
+  draftBusy?: (resolution: DraftResolution) => boolean | "uncertain";
+  draftContextKey?: string;
+  draftRevision?: number;
 };
 
-/** Draft 생성 단추 — Draft 생성물 하나를 골랐을 때만 보인다(Jay 10-22, 캔버스·워크스페이스 선택바 공용). 남의 것·이미 1080p 로 만든 것은
- *  보이되 눌리지 않는다(이유는 title). */
-function DraftFinishButton({ selected, onFinishDraft, draftBusy = false, draftDone = false }: { selected: Generation[] } & DraftHandlers) {
-  const t = useT();
-  if (!onFinishDraft || selected.length !== 1 || !isDraftGeneration(selected[0])) return null;
+function DraftFinishButton({ selected, draftContextKey, ...handlers }: { selected: Generation[] } & DraftHandlers) {
+  if (!handlers.onFinishDraft || selected.length !== 1 || !isDraftGeneration(selected[0])) return null;
   const generation = selected[0];
-  return (
-    <button type="button" className="sb-draft"
-      disabled={draftBusy || draftDone || !canFinishDraft(generation)}
-      aria-busy={draftBusy}
-      title={draftDone ? t("이 Draft는 이미 1080p로 생성했습니다") : draftBusy ? t("Draft 요청을 처리 중입니다") : t("완료된 내 Draft 한 개를 선택하여 1080p로 생성")}
-      onClick={() => { if (canFinishDraft(generation) && !draftBusy && !draftDone) onFinishDraft(generation); }}>
-      {t("Draft 생성")} <span>1080p</span>
+  return <DraftFinishPicker key={JSON.stringify([generation.id, generation.job_id, draftContextKey])} generation={generation} {...handlers} />;
+}
+
+function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision }: { generation: Generation } & DraftHandlers) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [costs, setCosts] = useState<Partial<Record<DraftResolution, number>>>({});
+  const [summary, setSummary] = useState<ReturnType<typeof summarizeDraftChildren> | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const [placement, setPlacement] = useState({ left: 0, bottom: 0, maxHeight: 360 });
+  const busy1080 = draftBusy?.("1080p") ?? false;
+  const busy4k = draftBusy?.("4k") ?? false;
+  const optionsKey = JSON.stringify(generation.params || {});
+  useEffect(() => {
+    let active = true;
+    const scope = captureSubmissionScope({ scope: generation.workspace_scope || "unknown", id: generation.workspace_id, name: null });
+    for (const resolution of ["1080p", "4k"] as const) {
+      const opts = normalizeSeedanceDraftParams("seedance_2_5", { ...JSON.parse(optionsKey), resolution });
+      void sharedCostEstimate("seedance_2_5", opts).then((value) => {
+        if (active && scope.isCurrent!()) setCosts((previous) => ({ ...previous, [resolution]: value.credits }));
+      }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [optionsKey, generation.workspace_scope, generation.workspace_id]);
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    const scope = captureSubmissionScope({ scope: generation.workspace_scope || "unknown", id: generation.workspace_id, name: null });
+    void api.history(generation.id).then((history) => {
+      if (active && scope.isCurrent!()) setSummary(summarizeDraftChildren(generation.job_id!, history.children));
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [open, generation.id, generation.job_id, generation.workspace_scope, generation.workspace_id, busy1080, busy4k, draftRevision]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const position = () => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (rect) setPlacement({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)),
+        bottom: window.innerHeight - rect.top + 8, maxHeight: Math.max(0, rect.top - 16) });
+    };
+    position();
+    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
+  }, [open]);
+  useOutsideMouseDown(buttonRef, () => setOpen(false), open, menuRef, true);
+  useEscapeClose(() => { setOpen(false); buttonRef.current?.focus(); }, open, true, true);
+  const credit = (resolution: DraftResolution) => `✦${costs[resolution] ?? ""}`;
+  const counts = summary ? (["1080p", "4k"] as const).filter((resolution) => summary.done[resolution] > 0)
+    .map((resolution) => `${resolution === "4k" ? "4K" : resolution} ${summary.done[resolution]}`).join(" · ") : "";
+  return <>
+    <button ref={buttonRef} type="button" className="sb-draft" disabled={!canFinishDraft(generation)}
+      aria-expanded={open} aria-controls={menuId} aria-haspopup="dialog"
+      onClick={() => setOpen((previous) => !previous)}>
+      Draft 1080p {credit("1080p")} ⌃
     </button>
-  );
+    {open && createPortal(<div ref={menuRef} id={menuId} className="draft-finish-menu" role="dialog" aria-label={t("Draft 완성 화질")}
+      style={{ position: "fixed", ...placement }}>
+      <p>{t("{seconds}초 · Higgsfield 견적").replace("{seconds}", String(generation.params?.duration ?? "—"))}<br />
+        {t("누를 때마다 새로 생성하며 크레딧이 듭니다")}
+        {counts && <><br />{t("이 드래프트로 만든 것")}: {counts}</>}
+      </p>
+      {summary?.expired && <p role="status">{t("드래프트 만료 · 새 드래프트를 만드세요")}</p>}
+      {(["4k", "1080p"] as const).map((resolution) => {
+        const busy = resolution === "4k" ? busy4k : busy1080;
+        const disabled = !canFinishDraft(generation) || summary?.expired || busy === true || (busy !== "uncertain" && summary?.pending[resolution]);
+        return <button key={resolution} type="button" className={`draft-finish-option draft-finish-${resolution}`}
+          disabled={!!disabled} aria-busy={busy === true} onClick={() => { onFinishDraft?.(generation, resolution); }}>
+          {t("{resolution}로 생성").replace("{resolution}", resolution === "4k" ? "4K" : resolution)} {credit(resolution)}
+          {busy === "uncertain" && <span> · {t("접수 재확인")}</span>}
+          {disabled && !summary?.expired && <span> · {t("진행·확인 중")}</span>}
+        </button>;
+      })}
+    </div>, document.body)}
+  </>;
 }
 
 export function BoardSelectionActionBar({
@@ -46,8 +120,9 @@ export function BoardSelectionActionBar({
   resolveTransferBusy,
   resolveTransferPendingCount,
   onFinishDraft,
-  draftBusy = false,
-  draftDone = false,
+  draftBusy,
+  draftContextKey,
+  draftRevision,
 }: {
   selected: Generation[];
   onShare: (selected: Generation[]) => void;
@@ -70,7 +145,7 @@ export function BoardSelectionActionBar({
         {selected.length}
         {t("개 선택")}
       </span>
-      <DraftFinishButton selected={selected} onFinishDraft={onFinishDraft} draftBusy={draftBusy} draftDone={draftDone} />
+      <DraftFinishButton selected={selected} onFinishDraft={onFinishDraft} draftBusy={draftBusy} draftContextKey={draftContextKey} draftRevision={draftRevision} />
       <button onClick={() => onShare(selected)}>{t("↗ 팀 공유")}</button>
       <button
         onClick={() => onDownload(selected)}
@@ -138,7 +213,8 @@ export function LibrarySelectionActionBar({
   onPurge,
   onFinishDraft,
   draftBusy,
-  draftDone,
+  draftContextKey,
+  draftRevision,
 }: {
   selectedCount: number;
   selectedGenerations: Generation[];
@@ -169,7 +245,7 @@ export function LibrarySelectionActionBar({
         {t("개 선택")}
       </span>
       {selectedCount === 1 && (
-        <DraftFinishButton selected={selectedGenerations} onFinishDraft={onFinishDraft} draftBusy={draftBusy} draftDone={draftDone} />
+        <DraftFinishButton selected={selectedGenerations} onFinishDraft={onFinishDraft} draftBusy={draftBusy} draftContextKey={draftContextKey} draftRevision={draftRevision} />
       )}
       {/* 캔버스 선택바와 동일 — 휴지통 항목만 선택했을 땐 숨김(공유 대상 없음).
           공유&리뷰 탭(onGradeStep)에서는 '팀 공유' 대신 ↑/↓ 등급 한 칸 이동 버튼 2개. */}

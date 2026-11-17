@@ -249,3 +249,16 @@ describe("오류 원인 안내는 상태를 바꾸지 않고 필요한 카드에
     expect(generationIssueFor("failed", creditError)?.title).toBe("크레딧 한도 초과");
   });
 });
+
+
+it("실제 저장 만료 사유를 새 실패·옛 복구 보류에 표시하며 부분 출력과 인자는 제외한다", () => {
+  const reason = "CLI 실패: Error: Seedance 2.5 draft has expired — cmd: generate create seedance_2_5";
+  expect(generationIssueFor("failed", reason, "failed")?.title).toBe("드래프트 만료");
+  expect(generationIssueFor("running", `제출 확인 필요\n제출 진단: ${reason}`, "recovery_required")?.action).toBe("새 드래프트를 만드세요");
+  for (const phase of ["tracking", "submitting", "done"]) expect(generationIssueFor("failed", reason, phase)).toBeNull();
+  expect(generationIssueFor("done", reason, "recovery_required")).toBeNull();
+  for (const error of ["CLI JSON 파싱 실패: Seedance 2.5 draft has expired", "CLI 타임아웃: Seedance 2.5 draft has expired",
+    "CLI 실패: other error — cmd: --prompt Seedance 2.5 draft has expired", "CLI 실패: Error: Seedance 2.5 draft has expiredXYZ"]) {
+    expect(generationIssueFor("failed", error, "failed")?.title).not.toBe("드래프트 만료");
+  }
+});

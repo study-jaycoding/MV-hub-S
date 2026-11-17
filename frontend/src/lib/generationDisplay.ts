@@ -1,3 +1,4 @@
+import { isDraftExpiredError } from "./seedanceDraft";
 import { isFolderDisabled, type DisabledFolders } from "./deactivated";
 import { t } from "./i18n";
 import { classifyGenerationError, generationErrorMatches, type GenerationIssueCode } from "./generationIssue";
@@ -146,6 +147,9 @@ export function generationIssueFor(
   if (executionPhase && ACTIVE_EXECUTION_PHASES.has(executionPhase)) return null;
   if (status !== "failed" && !["failed", "blocked", "recovery_required"].includes(executionPhase || "")) return null;
   // 공용 분류와 같은 기준으로 뽑은 오류 줄의 맨 앞에서만 찾는다 — 명령 인자·부분 응답·JSON 의 사용자 글·프롬프트 경계 뒤는 원인으로 보지 않는다.
+  if (isDraftExpiredError(error)) {
+    return { code: "invalid_input", title: t("드래프트 만료"), detail: t("드래프트 만료 · 새 드래프트를 만드세요"), action: t("새 드래프트를 만드세요") };
+  }
   if (generationErrorMatches(error, SEEDANCE_AUDIO_RULE)) {
     const text = SEEDANCE_AUDIO_ISSUE_TEXT;
     return { code: "invalid_input", title: t(text.title), detail: t(text.detail), action: t(text.action) };

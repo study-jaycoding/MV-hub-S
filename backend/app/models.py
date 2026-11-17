@@ -468,6 +468,7 @@ class RegenerateIn(BaseModel):
     worker_id: Optional[str] = None
     auto_tags: Optional[list[str]] = None  # 재생성 시점 무장된 자동태그(부모 자동태그에 더해 적용)
     finish_draft: bool = False  # 원본 원격 Draft 작업을 고화질로 완성
+    finish_resolution: Optional[Literal["1080p", "4k"]] = None
 
 
 class CanvasGenerationLinkIn(BaseModel):

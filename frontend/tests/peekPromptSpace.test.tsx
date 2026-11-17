@@ -5,6 +5,7 @@
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+vi.mock("../src/lib/useModels", () => ({ sharedCostEstimate: () => Promise.resolve({ credits: 64 }) }));
 import { AccountMenu } from "../src/components/AccountMenu";
 import { SceneVariantPopup, type VariantDraftControls } from "../src/components/scene/SceneVariantPopup";
 import type { Generation } from "../src/types";
@@ -15,6 +16,7 @@ vi.mock("virtua", async () => {
 });
 vi.mock("../src/api", () => ({ api: {
   thumbOrRaw: (path: string) => path, mediaUrl: (path: string) => path, prefetchGenComments: () => {},
+  history: () => Promise.resolve({ children: [] }),
   workspaces: () => Promise.resolve([{ id: "ws-me", name: null, plan_type: "team", credits: 1200, is_selected: true, user_role: "owner" }]),
   projects: () => Promise.resolve({ projects: [] }),
 } }));
@@ -67,14 +69,16 @@ afterEach(() => {
 
 it("Draft 생성물 하나를 고르면 창의 선택 막대에 Draft 단추 — 누르면 캔버스 선택 막대와 같은 처리로 간다", () => {
   const finish = vi.fn();
-  render(["d"], { finish, busy: () => false, done: () => false });
+  render(["d"], { finish, busy: () => false });
   expect(draftButton()).not.toBeNull();
   act(() => { draftButton()!.click(); });
-  expect(finish).toHaveBeenCalledWith(expect.objectContaining({ id: "d" }));
+  expect(finish).not.toHaveBeenCalled();
+  act(() => document.querySelector<HTMLButtonElement>(".draft-finish-1080p")!.click());
+  expect(finish).toHaveBeenCalledWith(expect.objectContaining({ id: "d" }), "1080p");
 });
 
 it("Draft 가 아니거나 둘을 고르면 단추가 없고, 처리기를 안 넘기면(예전) 단추가 없다", () => {
-  const controls = { finish: vi.fn(), busy: () => false, done: () => false };
+  const controls = { finish: vi.fn(), busy: () => false };
   render(["n"], controls);
   expect(draftButton()).toBeNull();
   render(["d", "n"], controls);
@@ -83,11 +87,14 @@ it("Draft 가 아니거나 둘을 고르면 단추가 없고, 처리기를 안 �
   expect(draftButton()).toBeNull();
 });
 
-it("요청 중·이미 만든 Draft 는 단추가 잠긴다(캔버스 선택 막대와 같은 표시)", () => {
-  render(["d"], { finish: vi.fn(), busy: (id) => id === "d", done: () => false });
-  expect(draftButton()?.disabled).toBe(true);
-  render(["d"], { finish: vi.fn(), busy: () => false, done: (id) => id === "d" });
-  expect(draftButton()?.disabled).toBe(true);
+it("요청 중 화질만 잠기고 완료 뒤에는 다시 고를 수 있다", () => {
+  render(["d"], { finish: vi.fn(), busy: (_generation, resolution) => resolution === "1080p" });
+  expect(draftButton()?.disabled).toBe(false);
+  act(() => draftButton()!.click());
+  expect(document.querySelector<HTMLButtonElement>(".draft-finish-1080p")?.disabled).toBe(true);
+  expect(document.querySelector<HTMLButtonElement>(".draft-finish-4k")?.disabled).toBe(false);
+  render(["d"], { finish: vi.fn(), busy: () => false });
+  expect(document.querySelector<HTMLButtonElement>(".draft-finish-1080p")?.disabled).toBe(false);
 });
 
 async function openAccountMenu(onOpenManage?: () => void) {

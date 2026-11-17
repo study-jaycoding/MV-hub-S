@@ -7,6 +7,20 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "드래프트 만료": "Draft expired",
+  "새 드래프트를 만드세요": "Create a new draft",
+  "드래프트 만료 · 새 드래프트를 만드세요": "Draft expired · Create a new draft",
+  "Draft 완성 화질": "Draft output resolution",
+  "{seconds}초 · Higgsfield 견적": "{seconds}s · Higgsfield estimate",
+  "누를 때마다 새로 생성하며 크레딧이 듭니다": "Each click creates a new output and costs credits",
+  "이 드래프트로 만든 것": "Created from this draft",
+  "{resolution}로 생성": "Generate at {resolution}",
+  "접수 재확인": "Check submission",
+  "진행·확인 중": "In progress or checking",
+  "Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요.": "Submission is uncertain. Click the same resolution to check the existing request.",
+  "Draft {resolution} 생성 요청을 접수했습니다.": "Draft {resolution} request accepted.",
+  "Draft 생성 실패": "Draft generation failed",
+
   "받는 중": "Downloading",
   "넣는 중": "Importing",
   "선택한 빈에서 가져오기 대기": "Waiting to import into the selected bin",

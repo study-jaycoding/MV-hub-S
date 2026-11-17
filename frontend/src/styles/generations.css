@@ -1314,3 +1314,12 @@ svg.thumb-broken-ic { width: 24px; height: 24px; }
 .reel-tbtn.reel-play svg, .reel-tbtn.reel-play:hover svg { fill: var(--accent-ink); }
 @media (max-width: 1100px) { .reel-hint { display: none; } }
 .scene-varpop-rep:disabled:hover { background: rgba(255, 255, 255, 0.06); color: var(--muted); }
+
+
+.draft-finish-menu { z-index: 1200; width: min(320px, calc(100vw - 16px)); padding: 12px; box-sizing: border-box; overflow-y: auto; border: 1px solid var(--border, #505050); border-radius: 10px; background: var(--bg, #202020); color: var(--text, #eee); box-shadow: 0 8px 28px #0008; }
+.draft-finish-menu p { margin: 0 0 10px; font-size: 12px; line-height: 1.6; }
+.draft-finish-option { display: block; width: 100%; padding: 10px 12px; border: 1px solid #c8ef40; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.draft-finish-option + .draft-finish-option { margin-top: 8px; }
+.draft-finish-1080p { background: #c8ef40; color: #000; }
+.draft-finish-option:disabled { opacity: .5; cursor: not-allowed; }
+.draft-finish-option:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }

@@ -382,6 +382,8 @@ async def create_gen_request(body: GenRequestIn, request: Request):
                 raise HTTPException(422, str(exc), headers=dict(NOT_STARTED)) from None
             except cli_bridge.CLIError:
                 raise HTTPException(502, "생성 옵션 또는 목소리를 확인할 수 없습니다", headers=dict(NOT_STARTED)) from None
+        if reg.finish_resolution is not None and not reg.finish_draft:
+            raise HTTPException(400, "Draft 완성 요청에만 화질을 지정할 수 있습니다", headers=dict(NOT_STARTED))
         if reg.finish_draft:
             if not creator_uid or parent.get("creator_uid") != creator_uid:
                 raise HTTPException(status_code=403, detail="내 계정의 Draft만 고화질로 생성할 수 있습니다")
@@ -394,7 +396,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             if any(getattr(reg, key) is not None for key in ("prompt", "model", "color", "worker_id", "auto_tags")):
                 raise HTTPException(status_code=400, detail="Draft 고화질 생성에서는 원본 옵션을 변경할 수 없습니다")
             try:
-                finish_params(parent)
+                finish_params(parent, reg.finish_resolution or "1080p")
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc), headers=dict(NOT_STARTED)) from exc
         # worker_id 는 parent 기준으로 라우터가 계산(usecase 가 parent 를 다시 읽으면 동작이 달라짐).

@@ -22,6 +22,7 @@ export interface RegenerateBody {
   color?: string | null;
   auto_tags?: string[];
   finish_draft?: boolean;
+  finish_resolution?: "1080p" | "4k";
 }
 
 export interface SubmissionCanvasLink {
