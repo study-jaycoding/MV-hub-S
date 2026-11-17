@@ -25,6 +25,10 @@ guard 위치: 검사기 등록 작업장은 dev 뿐이다. 계약 `root` 는 dev
 
 Codex `01a1e878`(CHANGES 4)와 별도 Claude `dd3bf711`(CHANGES 중간 5·낮음 4)를 모두 받아들였다 — 경로 3개 추가(`backend/app/services/upload_limits.py`·`backend/app/repo/account_cleanup.py`·`backend/tests/test_account_cleanup.py`), 조건 2개 신설(`delivery_target`·`ingest_guard`), `membership_compatibility`·`precision`·`consistent_display` 보강, 정밀도 규칙·공간 지정 조회 검증·계정 정리 분류를 본문(D6·2절·3절)과 결정에 명시, 아래 표식 사이 본문을 계약 `references` 로 고정, 미결정처럼 읽히던 문장 3곳(D3 J1·D4 J6·결정의 binary32)을 결정문으로 정리, 기준 커밋·guard 위치 문구 정정.
 
+## 합의 2차 반영 (2026-11-17)
+
+별도 Claude `dd3bf711` 은 계약 b2ef7b0e 에 동의(VIBE-AGREE), Codex `01a1e878` 은 2건 지적 — 모두 받아들였다. ① **높음**: 금액 일치만으로 공간 지정 account status 의 대상 공간을 확인할 수 없다(binary32 가 같은 다른 공간 반례). 11-17 실측에서 account status 응답 칸은 `credits`·`email`·`subscription_plan_type` 뿐(공간 식별 없음) → **account status 보완을 없애고 관측은 workspace-list 만**, 정밀도는 크기별 binary32 오차 상한(131,072 이상 binary32 수는 floor(0.5+50·ulp) cents, binary32 가 아니면 미확인)으로. ② **중간**: KEPT 분류는 실제 삭제를 막지 못한다 → reporter_uid 는 UID 이력, reporter_key·outbox account_key 는 EMAIL_HISTORY, 관측만 있는 계정·UID NULL 관측 계정 삭제 거부 시험. 계약 SHA 가 바뀌어 양측 재합의.
+
 <!-- hf-balance-design:begin -->
 
 ## 배포 영향 (work 세션 요청 2026-11-17 — Jay: 이 작업이 끝나면 합친 배포 후보와 같이 병합)
@@ -64,7 +68,7 @@ Codex `01a1e878`(CHANGES 4)와 별도 Claude `dd3bf711`(CHANGES 중간 5·낮음
 ### D2. 수집·전달·혼합 판 계약
 
 - 새 에이전트는 CLI 호출별 수집 ID와 시작·끝 시각을 만든다. 재전송 때 ID·시각·값을 바꾸지 않는다.
-- account-status와 workspace-list의 관측 시각을 구별한다. 계정 전환·사이클 캐시 무효화 규칙을 유지한다.
+- 관측 시각은 workspace-list 호출의 시작·끝으로 한다(account-status 숫자는 관측으로 쓰지 않음 — D6 합의 2차). 계정 전환·사이클 캐시 무효화 규칙을 유지한다.
 - 새 메타데이터는 기존 `account_status` 내부의 버전 있는 선택 필드로 싣는다. 구형 금액·공간 필드는 유지한다.
 - G1의 전체 이력 보존을 위해 에이전트는 허브의 명시적 관측 저장 ACK까지 미전달 자료를 보존한다.
 - 로컬 허브는 관측과 서버 전달 대상을 같은 콘텐츠 DB 트랜잭션으로 저장한다. 기존 최신 상태 outbox와 별도로 `hf_balance_outbox`를 추가한다.
@@ -113,12 +117,14 @@ Codex `01a1e878`(CHANGES 4)와 별도 Claude `dd3bf711`(CHANGES 중간 5·낮음
 - CLI 금액 정규화는 API 금액 파서와 구별한다. `Decimal(str(v))` 이후 명시한 반올림 방식으로 cents를 만든다.
 - `167,772 초과 → precise=0` 규칙은 제거한다. binary32 가정에서 센트 복원이 실패할 수 있는 131,072 경계를 시험에 포함한다.
 - 내부 정밀도 계약을 확인하기 전에는 `정확함` 대신 `2자리 보고값`, `workspace-list 보고값`, `정밀도 미확인`처럼 근거 수준을 기록한다.
-- **정밀도 규칙(합의 1차 확정):**
-  - workspace-list 값: `Decimal(str(v))` 를 1/100 로 반올림(ROUND_HALF_EVEN 아님 — ROUND_HALF_UP)해 cents. `|값| < 131072` 이면 `precision_kind='workspace_list_binary32'`·`precision_error_c=0`(가정: CLI 값이 binary32 표현과 일치 — 11-17 실측과 맞음, 내부 형식은 미확인). `|값| ≥ 131072` 이면 `precision_kind='workspace_list_unknown'`·`precision_error_c=NULL`.
-  - 공간 지정 account-status 값(2자리): 아래 검증을 통과했을 때만 `precision_kind='reported_2dp'`·`precision_error_c=0`.
+- **정밀도 규칙(합의 2차 확정):** 관측 출처는 workspace-list 하나다.
+  - 금액: `Decimal(str(v))` 를 1/100 로 반올림(ROUND_HALF_UP)해 cents.
+  - `|값| < 131072`: `precision_kind='workspace_list_binary32'`·`precision_error_c=0`.
+  - `|값| ≥ 131072` 이고 값이 binary32 로 정확히 표현되는 수: `precision_kind='workspace_list_binary32'`·`precision_error_c = floor(0.5 + 50·ulp(|값|))` cents(ulp = 그 크기의 binary32 간격 — 131,072~262,143 은 1, 262,144~524,287 은 2, 524,288~1,048,575 은 3). 근거: 참값(센트)과 binary32 값의 차이 ≤ ulp/2, 반올림 차이 ≤ 0.005 → 정수 센트 차이 ≤ floor(0.5 + 50·ulp).
+  - `|값| ≥ 131072` 이고 binary32 로 표현되지 않는 수(CLI 형식이 바뀐 경우): `precision_kind='workspace_list_unknown'`·`precision_error_c=NULL`.
+  - 가정: CLI 값이 binary32 표현과 일치한다(11-17 실측 `17574.91015625` 등과 맞음). CLI 내부 형식 자체는 미확인이다.
   - 장부 허용치 = 두 끝점 `precision_error_c` 의 합. **끝점 하나라도 NULL 이면 허용치 NULL, 구간 상태는 `observation_uncertain`.**
-- 높은 잔액(`|값| ≥ 131072`)의 정밀도 보완은 해당 공간을 명시한 `account status` 를 한 수집에 한 번 시도한다. 자식 프로세스 환경변수 `HIGGSFIELD_WORKSPACE_ID` 로 공간을 지정하며 `workspace set` 으로 전역 상태를 바꾸지 않는다.
-- **공간 지정 조회 검증:** 환경변수가 account status 에도 먹히는지는 미확인이다. 그래서 응답 값이 같은 수집의 그 공간 workspace-list 값과 **binary32 반간격을 센트로 올린 값 이내**에서 일치할 때만(응답에 공간 식별 값이 있으면 그것도 일치해야) 그 공간 관측으로 저장한다. 불일치·식별 불일치·실패면 account-status 값은 저장하지 않고 workspace-list 관측(정밀도 미확인)만 남긴다. 다른 공간의 숫자로 대체하지 않는다.
+- **공간 지정 account status 보완은 하지 않는다(합의 2차).** 11-17 실측에서 `account status --json` 응답 칸은 `credits`·`email`·`subscription_plan_type` 뿐이라 **대상 공간을 독립적으로 확인할 수 없다.** 금액 일치만으로는 binary32 가 같은 다른 공간(예: 205,722.76 과 205,722.77 → 둘 다 205,722.765625)을 걸러내지 못한다(Codex 반례). 앞선 account-status 숫자를 workspace-list 선택 상태에 추측으로 붙이지도 않는다. CLI 가 공간 식별 값을 주게 되면 다시 본다.
 
 ### D7. 화면·권한
 
@@ -355,7 +361,7 @@ CREATE TABLE IF NOT EXISTS hf_balance_obs (
 
     workspace_id         TEXT NOT NULL,
     source               TEXT NOT NULL
-                         CHECK(source IN ('workspace_list', 'account_status')),
+                         CHECK(source IN ('workspace_list')),
 
     reported_credits     TEXT NOT NULL,
     credits_c            INTEGER NOT NULL
@@ -377,7 +383,7 @@ CREATE TABLE IF NOT EXISTS hf_balance_obs (
 
     precision_kind       TEXT NOT NULL
                          CHECK(precision_kind IN (
-                           'reported_2dp', 'workspace_list_binary32',
+                           'workspace_list_binary32',
                            'workspace_list_unknown'
                          )),
     precision_error_c    INTEGER
@@ -418,7 +424,7 @@ ON hf_balance_obs(
 
 - `reporter_key`는 수신자가 검증한 계정 키이며 응답에 내보내지 않습니다.
 - `reporter_uid`는 당시 신원 스냅샷입니다. `_REMAP_EXEMPT`에 사유를 등록하고 접근 권한 판정에는 사용하지 않습니다.
-- **계정 정리 분류(합의 1차):** `test_account_cleanup.py` 는 모든 DB 의 uid·email·account 류 칸을 훑어 분류되지 않은 칸이 있으면 실패하고, 계정 정리 목록은 `_REMAP_PLAN` 에서만 만들어진다(`account_cleanup.py:90-91`). 그래서 `repo/account_cleanup.py` 에 `hf_balance_obs.reporter_uid`·`reporter_key` = **보존 스냅샷(KEPT)**, `hf_balance_outbox.account_key` = **EMAIL_HISTORY**(기존 `asset_sync_outbox` 와 같은 취급, `account_cleanup.py:58`)로 등록하고 시험으로 고정한다. 관측 이력이 있는 계정을 '이력 없음'으로 지우지 않는다.
+- **계정 정리 분류(합의 2차):** 실제 이력 검사는 `uid_history_columns()` 와 `EMAIL_HISTORY` 만 읽는다(`account_cleanup.py:107`) — 시험의 KEPT 분류만으로는 삭제를 막지 못한다. 그래서 `hf_balance_obs.reporter_uid` 는 **UID 이력**(uid_history_columns 에 포함 — `_REMAP_EXEMPT` 는 유지해 신원 재연결이 과거 스냅샷을 고치지 않게), `hf_balance_obs.reporter_key`(= 수신자가 확인한 계정의 소문자 정규화 이메일)와 `hf_balance_outbox.account_key` 는 **EMAIL_HISTORY**(기존 `asset_sync_outbox` 와 같은 취급, `account_cleanup.py:58`)로 등록한다. 시험: 관측만 있고 전달 큐가 없는 계정, UID 가 NULL 인 관측만 있는 계정(이메일 키로) 모두 계정 정리가 삭제를 거부한다. `test_account_cleanup.py` 의 전 칸 분류 목록에도 새 칸을 넣는다.
 - `collector_id`는 기존 에이전트 상태 DB의 영속 device ID를 재사용합니다. PID를 붙인 실행 인스턴스 ID는 사용하지 않습니다.
 - `collection_seq`는 기존 `meta`의 값으로 증가시킵니다. 기존 표의 **열 변경은 없고 행 추가·갱신만** 있습니다.
 - `observed_at_ms < started_at_ms`도 원 시각을 보존해야 하므로 DDL에서 삭제·보정하지 않고 `reversed`로 분류합니다.
@@ -569,8 +575,7 @@ CLI 결과를 받으면 **허브 요청 전에** 저장합니다. 허브 저장 
 - `observation_id`는 공간별 표본 ID입니다.
 - `collection_id`·`collection_seq`는 CLI 호출별입니다.
 - workspace-list의 여러 공간은 같은 호출 시각을 공유합니다.
-- account-status는 **자식 환경변수로 공간을 지정한 호출**만 해당 공간 관측으로 사용합니다. 앞선 account-status 숫자를 뒤의 workspace-list 선택 상태에 추측으로 붙이지 않습니다.
-- 정밀도 보완 대상은 `abs(workspace-list 값) >= 131072`인 공간입니다. 해당 수집 때 공간 지정 account-status를 한 번 시도하고 실패하면 목록 관측과 정밀도 미확인을 남깁니다. **account-status 값은 D6 의 '공간 지정 조회 검증'(같은 수집 workspace-list 값과 binary32 반간격 이내 일치, 공간 식별 값이 있으면 일치)을 통과할 때만 그 공간 관측으로 보냅니다.**
+- 관측은 workspace-list 에서만 만듭니다(`source='workspace_list'`). account-status 숫자는 관측으로 쓰지 않습니다 — 응답에 공간 식별 값이 없어(11-17 실측) 어느 공간 값인지 독립적으로 확인할 수 없기 때문입니다(합의 2차). 정밀도는 D6 의 binary32 규칙으로 정합니다. 위 예시의 `"source"` 는 이 값 하나입니다.
 - 문자열 길이·UUID·정수 타입·금액·시각을 검사합니다. bool은 정수로 받지 않습니다.
 - `credits_c`는 서버가 다시 계산해 대조합니다. 클라이언트 정밀도·보고자 UID는 신뢰하지 않습니다.
 - 지문은 정규화한 불변 필드의 UTF-8 JSON으로 계산합니다. 수신 시각·재시도 정보는 제외합니다.
@@ -991,7 +996,7 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
 
 - **AC8 — `precision`**
   - `test_hf_balance_protocol.py::test_decimal_normalization_and_binary32_boundary`
-  - `test_agent_balance_observations.py::test_large_balance_probe_uses_child_workspace_env_only`
+  - `test_agent_balance_observations.py::test_no_account_status_probe_and_workspace_list_only`
 
 - **AC9 — `consistent_display`**
   - `test_hf_balance_consumers.py::test_all_consumers_share_observation_id_amount_and_time`
@@ -1028,8 +1033,8 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
   - `ingest_guard`: `test_hf_balance_routes.py::test_observation_ingest_rejects_unauthenticated_mismatch_and_bad_agent_key` · `test_hf_balance_protocol.py::test_observation_count_limit` · `test_upload_limits.py::test_balance_observations_body_limit_before_json_parse`(Content-Length 없음·허위 값·나눠 받기)
   - `delivery_target`: `test_hf_balance_delivery.py::test_no_remote_delivery_in_server_readonly_isolated_or_test_dev` · `test_hf_balance_delivery.py::test_delivery_pins_account_target_and_lease_without_downgrade`
   - `membership_compatibility` 보강: `test_mutation_notify.py::test_balance_metadata_only_report_does_not_signal_library_change`
-  - `precision` 보강: `test_hf_balance_protocol.py::test_precision_kinds_and_null_tolerance_marks_uncertain` · `test_agent_balance_observations.py::test_workspace_probe_ignored_env_is_not_stored_as_target_balance`(환경변수를 무시하는 가짜 CLI)
-  - 계정 정리: `test_account_cleanup.py` 의 전 칸 분류 시험이 새 표 칸을 KEPT·EMAIL_HISTORY 로 통과
+  - `precision` 보강(합의 2차): `test_hf_balance_protocol.py::test_binary32_error_bound_by_magnitude`(131071.99·131072.01·205722.76/205722.77·262144.03·비 binary32 값) · `test_hf_balance_protocol.py::test_null_error_endpoint_marks_interval_uncertain`
+  - 계정 정리(합의 2차): `test_account_cleanup.py::test_balance_observation_only_account_is_not_deleted` · `test_account_cleanup.py::test_balance_observation_with_null_uid_blocks_by_email` · 전 칸 분류 목록 통과
   - `consistent_display` 보강: `frontend/tests/workspaceConsoleSync.test.tsx` — `reported-at chip uses KST`
 
 ## D. 8절 위험·되돌리기·릴리스 영향
@@ -1082,7 +1087,7 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
 
 - Claude 화면 시안과 실제 관리 화면 배치.
 - 운영 서버 검사기·호환성 시험에 사용할 구앱의 정확한 SHA.
-- CLI 내부 숫자 형식과 공간 지정 account-status의 실제 정밀도.
+- CLI 내부 숫자 형식(binary32 가정의 근거는 11-17 실측 표본뿐).
 - 운영 PC 시계 편차와 실제 수집·전달 지연.
 - 수백만 관측의 DB 크기·동시성·조회 성능.
 - 혼합 판 8조합·구판 재열기·백업 복원·사본 정제의 실행 결과.
@@ -1204,12 +1209,12 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
     {"id": "observation_order", "success": "늦게 도착한 옛 관측은 이력에만 남는다. 같은 ID·내용의 재시도는 한 행이며 내용 충돌은 원행을 보존한다.", "failure": "지연·중복·충돌 보고가 최신 정상값을 덮거나 이력을 중복 생성한다.", "required": true, "verification": []},
     {"id": "durable_delivery", "success": "저장 후 중단·통신 장애·ACK 유실·재시작 뒤에도 모든 미전달 관측이 원 ID·값·시각으로 전달되고 최신 관측과 오래된 대기가 모두 진행한다.", "failure": "최신 한 행만 남거나 저장 ACK 없이 성공 처리하거나 대기 관측이 영구 정체된다.", "required": true, "verification": []},
     {"id": "time_quality", "success": "미래·역행·동시각 충돌·legacy 보고를 구별한다. 재시도로 관측·최초 수신 시각을 바꾸지 않으며 시각 이상이 정상 최신값을 대체하지 않는다.", "failure": "옛 보고를 재수신 때마다 새 관측으로 만들거나 시각 이상을 정상 확인으로 표시한다.", "required": true, "verification": []},
-    {"id": "membership_compatibility", "success": "현재 상태 보고의 이름·플랜·멤버십·자동 편입·사람별 최근 확인 의미를 유지한다. 역사 관측 전달은 현재 멤버십을 변경하지 않는다. 관측 정보만 바뀐 상태 보고는 라이브러리 변경 신호를 내지 않는다. 새 표의 계정 칸은 계정 정리에서 보존 스냅샷·EMAIL_HISTORY 로 분류된다.", "failure": "잔액 순서 검사로 정상 상태 갱신을 막거나 역사 재전송으로 접근 상태·선택 공간·프로젝트 편입을 되돌리거나, 관측 시각만 바뀐 보고마다 목록 전체 갱신 신호가 나거나, 계정 정리 전 칸 분류 시험이 새 칸 때문에 실패하거나 관측 이력 있는 계정을 '이력 없음'으로 지운다.", "required": true, "verification": []},
+    {"id": "membership_compatibility", "success": "현재 상태 보고의 이름·플랜·멤버십·자동 편입·사람별 최근 확인 의미를 유지한다. 역사 관측 전달은 현재 멤버십을 변경하지 않는다. 관측 정보만 바뀐 상태 보고는 라이브러리 변경 신호를 내지 않는다. 계정 정리는 hf_balance_obs.reporter_uid 를 UID 이력, reporter_key(정규화 이메일)·hf_balance_outbox.account_key 를 EMAIL 이력으로 세어, 관측만 있고 전달 큐가 없는 계정과 UID 가 NULL 인 관측만 있는 계정의 삭제를 거부한다.", "failure": "잔액 순서 검사로 정상 상태 갱신을 막거나 역사 재전송으로 접근 상태·선택 공간·프로젝트 편입을 되돌리거나, 관측 시각만 바뀐 보고마다 목록 전체 갱신 신호가 나거나, 계정 정리 전 칸 분류 시험이 새 칸 때문에 실패하거나 관측 이력 있는 계정을 '이력 없음'으로 지운다.", "required": true, "verification": []},
     {"id": "ingest_guard", "success": "관측 수신점(허브·서버)은 인증 없음·로그인 계정과 account_email 불일치·로컬 에이전트 키 불일치 요청을 거부하고 아무것도 저장하지 않으며 payload 의 보고자·UID 를 믿지 않는다. 최대 100관측·262144바이트를 허용하고, 관측 수 초과는 저장·ACK 없이 거부하며, 바이트 초과는 JSON 파싱 전에 413 으로 거부한다(Content-Length 없음·허위 값·나눠 받기 포함).", "failure": "인증되지 않았거나 다른 계정의 관측을 저장해 확인 잔액으로 쓰거나, 상한을 넘긴 자료를 저장·ACK 하거나, 본문 전체를 파싱한 뒤 크기를 검사한다.", "required": true, "verification": []},
     {"id": "delivery_target", "success": "서버 본체·READ_ONLY·외부 작업 차단·격리·test_dev(NO_PROXY) 모드에서는 원격 관측 전달을 시작하지 않는다. 전송은 큐에 고정한 계정·대상 서버·lease 와 현재 연결이 같을 때만 하며 다른 서버로 바꾸거나 저장된 HTTP 주소로 내려 보내지 않고, 이전 대상의 ACK 로 현재 큐를 정산하지 않는다.", "failure": "격리·test_dev 허브가 실사용 서버로 보내거나, 다른 계정 토큰·다른 서버·낮은 보안 주소로 관측을 보내거나, 이전 대상 ACK 로 큐를 정산한다.", "required": true, "verification": []},
     {"id": "api_coverage", "success": "KST 경계·성공한 빈 창·미수집·불완전·중복·mismatch·exact/day를 구별한다. 구간 전체가 확인되지 않으면 잔차를 null과 사유로 제공한다.", "failure": "부분 수집을 0이나 완전한 하루로 표시하거나 exact/day를 이중 합산하거나 기존 개인·그룹 사용량 계약을 바꾼다.", "required": true, "verification": []},
     {"id": "candidate_classification", "success": "늦은 환불·충전과 사용 동시 발생·복수 배분 후보·손 입력 변경에서 X를 잔차로 유지하고 분류는 근거 있는 후보로만 제공한다.", "failure": "금액·시각 유사성이나 2시간 경과만으로 충전·배분·환불·정산 완료를 확정한다.", "required": true, "verification": []},
-    {"id": "precision", "success": "workspace-list 값은 Decimal(str(v)) 을 1/100 반올림한 cents 로 저장하고 |값|<131072 이면 workspace_list_binary32·오차 0, 그 이상이면 workspace_list_unknown·오차 NULL 이다. 131072 이상 공간의 공간 지정 account status 값은 같은 수집 workspace-list 값과 binary32 반간격(센트 올림) 안에서 일치하고 공간 식별 값이 있으면 그것도 일치할 때만 reported_2dp·오차 0 으로 저장한다. 끝점 하나라도 오차 NULL 이면 장부 허용치 NULL·상태 observation_uncertain 이다. 공간 지정 조회는 CLI 전역 선택을 바꾸지 않는다.", "failure": "167772 경계를 쓰거나 모든 큰 값에 고정 ±0.01 을 적용하거나, 대상 공간임을 확인하지 못한 account status 값(환경변수가 무시된 경우 포함)을 그 공간의 2자리 관측으로 저장하거나, 오차 NULL 끝점으로 수치 일치를 판정하거나, CLI 전역 공간을 변경한다.", "required": true, "verification": []},
+    {"id": "precision", "success": "관측은 workspace-list 값만 쓰고 Decimal(str(v)) 을 1/100 반올림한 cents 로 저장한다. |값|<131072 이면 workspace_list_binary32·오차 0, 그 이상이고 binary32 로 정확히 표현되는 수면 workspace_list_binary32·오차 floor(0.5+50·ulp) cents, binary32 가 아닌 수면 workspace_list_unknown·오차 NULL 이다. 끝점 하나라도 오차 NULL 이면 장부 허용치 NULL·상태 observation_uncertain 이다. account status 숫자는 어느 공간의 관측으로도 저장하지 않으며 수집이 CLI 전역 선택 공간을 바꾸지 않는다.", "failure": "167772 경계를 쓰거나 모든 큰 값에 고정 ±0.01 을 적용하거나, 크기별 binary32 오차 상한을 틀리게 계산하거나, account status 숫자를 공간 관측(정확한 값)으로 저장하거나, 오차 NULL 끝점으로 수치 일치를 판정하거나, CLI 전역 공간을 변경한다.", "required": true, "verification": []},
     {"id": "consistent_display", "success": "같은 서버 관측 ID의 모든 대상 화면 잔액·시각이 일치하고 UTC 브라우저에서도 KST로 표시한다(콘솔 보고 시각 칩 포함). 문맥 변경 뒤 이전 응답은 버린다.", "failure": "UTC 문자열을 잘라 표시하거나 서로 다른 출처 값을 같은 확인 잔액처럼 표시하거나 이전 계정·공간 응답을 적용한다.", "required": true, "verification": []},
     {"id": "partial_totals", "success": "미확인 공간이 있는 합계는 알려진 부분합·미확인 수·완전성을 제공하고 불완전한 파생값은 확정 표시하지 않는다.", "failure": "None을 0으로 흡수해 전체 잔액·사용·할당·비율을 확정 표시한다.", "required": true, "verification": []},
     {"id": "access_and_scrub", "success": "잔액 조회는 멤버십·기존 read_all 범위를 지키고 장부는 실제 관리자만 조회한다. 보고자 정보는 응답에서 제외하며 모든 지정 사본에서 새 표·중첩 관측 필드를 정제한다.", "failure": "권한 우회로 자료가 노출되거나 사본에 관측·전달 정보가 남거나 정제 과정에서 원본을 변경한다.", "required": true, "verification": []},
@@ -1218,15 +1223,15 @@ if ($LASTEXITCODE -ne 0) { throw '코드 지도 불일치' }
     {"id": "reanalysis_and_limits", "success": "현재 API 성공본·계획 revision으로 재분석하고 입력 버전을 표시한다. 페이지 중 입력 변경을 감지하며 색인·기간·행 수·응답 크기 제한을 지킨다.", "failure": "과거 결과 불변을 거짓 보장하거나 서로 다른 입력 버전을 섞거나 전체 이력을 무제한 전송한다.", "required": true, "verification": []},
     {"id": "regression_build", "success": "backend 전체·frontend 전체 시험, 구조 검사, 빌드, gen_inventory --check, check_code_map 이 통과한다.", "failure": "하나라도 실패하거나 목록·코드 지도가 낡는다.", "required": true, "verification": []}
   ],
-  "references": [{"path": "docs/status/hf_balance_ledger_2026-11-17.md", "begin": "<!-- hf-balance-design:begin -->", "end": "<!-- hf-balance-design:end -->", "sha256": "ace7eacb9031588b799851c821b52fc8e449469bc8d5e522c19c5df911d4aed7"}],
+  "references": [{"path": "docs/status/hf_balance_ledger_2026-11-17.md", "begin": "<!-- hf-balance-design:begin -->", "end": "<!-- hf-balance-design:end -->", "sha256": "942ffb57716be2622b7bf6abcaeded0ed8b9c26ec15172fe34bfc6e13831b189"}],
   "decisions": [
     {"choice": "잔액은 CLI 관측을 기준점, 조직 API 사용은 그 사이 출금으로 보고 두 관측 사이 차이를 '잔차'로만 표시한다", "why": "공식 API 는 잔액·충전·배분·환불 시각을 주지 않아 사용만으로 잔액을 계산하면 충전·갱신·늦은 환불 때 틀어진다(공식 문서 6쪽, Codex C1)", "alternative": "API 사용 누적으로 잔액 직접 계산 — 입금 쪽을 몰라 틀어짐", "revisit": "힉스필드가 잔액·거래 원장 API 를 공개할 때"},
     {"choice": "수집별 관측을 에이전트·허브에 보존하고 저장 ACK 로 서버까지 전달한다(J5=B)", "why": "Jay 가 서버 장애 중 관측까지 빠짐없이 남기는 B 를 골랐다(2026-11-17)", "alternative": "A+ 도착한 관측만 기록·최신 1행 outbox 유지 — 장애 중 중간 관측 손실", "revisit": "관측 보존량·전달 부하가 문제될 때"},
     {"choice": "관측 표는 콘텐츠 DB(workspace_registry 옆)에 추가 표로, migration 이름표·기존 표 변경 없이", "why": "관측 저장과 registry 호환값 갱신을 한 트랜잭션으로 하고, 서버 업데이트 검사기가 모르는 migration 은 거부하지만 추가 표는 허용한다(schema_compat.py:212, Codex C9)", "alternative": "관리 DB(API 행 옆) — 장부 조회는 쉽지만 registry 와 원자성 없음", "revisit": "두 DB 가 합쳐지거나 검사기 갱신 길이 생길 때"},
     {"choice": "화면은 확인 잔액·KST 시각만, 예상 잔액은 넣지 않는다(J1)", "why": "확인 잔액에 이미 반영된 MV 생성을 또 뺄 위험이 있다(Codex C2), Jay 결정", "alternative": "≈ 예상 잔액 보조값", "revisit": "관측 뒤 차감 시점 계약을 확인할 근거가 생길 때"},
     {"choice": "과거 장부는 불변 관측 + 현재 API 성공본으로 다시 분석하고 입력 버전을 표시한다(J6=A)", "why": "API 성공본은 환불로 교체되고 손 입력 계획도 바뀐다. 과거 결과 고정은 입력 이력 보존 설계가 따로 필요하다(Codex C8)", "alternative": "당시 입력·판정까지 보존(J6=B)", "revisit": "감사용 고정 장부가 필요해질 때"},
-    {"choice": "131,072 이상 잔액은 그 공간을 지정한 account status(자식 환경변수)로 2자리 값을 한 번 보완 시도하고, 실패하면 정밀도 미확인으로 남긴다", "why": "workspace list 실측값이 binary32 표현과 일치하지만 CLI 내부 형식은 미확인이다 — 그 가정에서 131,072 이상은 센트 복원이 보장되지 않는다(Codex 정정). 환경변수가 account status 에 먹히는지도 미확인이라 같은 수집 workspace-list 값과의 일치로 대상 공간을 확인한다(합의 1차)", "alternative": "고정 ±0.01 허용치 — 큰 값에 일반화 불가", "revisit": "CLI 가 정확한 십진 잔액·공간 식별을 줄 때"},
-    {"choice": "새 표의 계정 칸은 계정 정리에서 reporter_uid·reporter_key = 보존 스냅샷(KEPT), hf_balance_outbox.account_key = EMAIL_HISTORY 로 분류한다", "why": "계정 정리 전 칸 분류 시험이 분류 안 된 칸을 실패시키고 목록은 _REMAP_PLAN 에서만 만들어진다(account_cleanup.py:90-91, 합의 1차 Claude dd3bf711)", "alternative": "_REMAP_EXEMPT 만 등록 — 계정 정리 쪽 시험은 그대로 실패", "revisit": "계정 정리 분류 체계가 바뀔 때"},
+    {"choice": "관측은 workspace-list 만 쓰고, 정밀도 오차는 binary32 간격으로 정한다 — |값|<131072 은 0, 그 이상 binary32 수는 floor(0.5+50·ulp) cents, binary32 가 아닌 수는 NULL(미확인). account status 공간 지정 보완은 하지 않는다", "why": "workspace list 실측값이 binary32 표현과 일치하지만 CLI 내부 형식은 미확인이다. account status 응답에는 공간 식별 값이 없어(11-17 실측: credits·email·subscription_plan_type) 금액 일치만으로는 binary32 가 같은 다른 공간을 걸러내지 못한다(합의 2차 Codex 반례 205,722.76/205,722.77)", "alternative": "공간 지정 account status 로 2자리 보완 — 대상 공간을 독립 확인할 수 없어 잘못된 공간 값을 정확한 값으로 저장할 수 있음", "revisit": "CLI 가 정확한 십진 잔액이나 공간 식별 값을 줄 때"},
+    {"choice": "계정 정리에서 hf_balance_obs.reporter_uid 는 UID 이력(_REMAP_EXEMPT 유지), reporter_key(정규화 이메일)·hf_balance_outbox.account_key 는 EMAIL_HISTORY 로 등록한다", "why": "계정 정리 전 칸 분류 시험이 분류 안 된 칸을 실패시키고(합의 1차 Claude dd3bf711), 실제 삭제 차단은 uid_history_columns()·EMAIL_HISTORY 만 읽어 KEPT 분류로는 관측 이력이 삭제를 막지 못한다(account_cleanup.py:107, 합의 2차 Codex)", "alternative": "보존 스냅샷(KEPT)만 — 관측만 있는 계정이 '이력 없음'으로 지워질 수 있음", "revisit": "계정 정리 분류 체계가 바뀔 때"},
     {"choice": "장부 화면(BalanceLedger)은 Claude 시안을 Jay 가 확인한 뒤 구현한다", "why": "새 화면은 모의 이미지 먼저(Jay 규칙)", "alternative": "백엔드 계약대로 바로 화면 구현", "revisit": "Jay 가 시안 없이 진행하라고 할 때"}
   ],
   "evidence": {
