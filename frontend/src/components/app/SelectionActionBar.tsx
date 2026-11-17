@@ -71,7 +71,7 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
     };
     position();
     (menuRef.current?.querySelector<HTMLButtonElement>(".draft-finish-1080p:not(:disabled)")
-      ?? menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
+      ?? menuRef.current)?.focus();
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
@@ -79,9 +79,9 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
   useLayoutEffect(() => {
     if (!open) { focusedOptionRef.current = null; return; }
     const focused = focusedOptionRef.current;
-    // 비활성이 되며 body로 빠진 초점도 복구하되 사용자가 옮긴 초점은 건드리지 않는다.
+    // Enter 반복으로 다른 화질까지 제출되지 않게 창 자체로 옮긴다.
     if (focused?.disabled && (document.activeElement === focused || document.activeElement === document.body)) {
-      menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+      menuRef.current?.focus();
     }
   }, [open, summary, busy1080, busy4k, generation]);
   useOutsideMouseDown(buttonRef, () => setOpen(false), open, menuRef, true);
@@ -95,7 +95,7 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
       onClick={() => setOpen((previous) => !previous)}>
       Draft 1080p {credit("1080p")} ⌃
     </button>
-    {open && createPortal(<div ref={menuRef} id={menuId} className="draft-finish-menu" role="dialog" aria-label={t("Draft 완성 화질")}
+    {open && createPortal(<div ref={menuRef} id={menuId} className="draft-finish-menu" role="dialog" tabIndex={-1} aria-label={t("Draft 완성 화질")}
       style={{ position: "fixed", ...placement }}>
       <p>{t("{seconds}초 · Higgsfield 견적").replace("{seconds}", String(generation.params?.duration ?? "—"))}<br />
         {t("누를 때마다 새로 생성하며 크레딧이 듭니다")}

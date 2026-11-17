@@ -21,11 +21,13 @@ const noop = () => {};
 const settle = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
 const option = (resolution: string) => document.querySelector<HTMLButtonElement>(`.draft-finish-${resolution}`)!;
 // jsdom은 Enter의 기본 click을 만들지 않으므로, 키 이벤트가 허용되면 초점 단추를 활성화한다.
-const enter = () => act(() => {
-  const target = document.activeElement as HTMLButtonElement;
-  if (target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))) target.click();
-  target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+const enter = (repeat = false) => act(() => {
+  const target = document.activeElement as HTMLElement;
+  if (target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat, bubbles: true, cancelable: true }))
+    && target instanceof HTMLButtonElement) target.click();
+  if (!repeat) target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
 });
+const dialog = () => document.querySelector<HTMLElement>(".draft-finish-menu")!;
 let dispose: (() => void) | undefined;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -125,17 +127,39 @@ it.each([false, true])("키보드로 열고 Enter를 누르면 기본 1080p만 �
   expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "1080p");
 });
 
-it.each([false, true])("1080p 진행 중 키보드로 열면 4K에 초점을 주고 Enter로 한 번 제출한다 (library=%s)", async (library) => {
+it.each([false, true])("1080p 진행 중에는 창에 초점을 주고 Tab으로 골라야 4K를 제출한다 (library=%s)", async (library) => {
   const view = mount(library); view.render([draft], resolution => resolution === "1080p"); await settle();
   act(() => view.button().focus()); enter(); await settle();
   expect(option("1080p").disabled).toBe(true);
-  expect(document.activeElement).toBe(option("4k"));
+  expect(document.activeElement).toBe(dialog());
   expect(view.finish).not.toHaveBeenCalled();
+  enter();
+  expect(view.finish).not.toHaveBeenCalled();
+  // jsdom은 Tab의 기본 초점 이동도 만들지 않으므로 창 다음의 첫 활성 단추로 이동한다.
+  act(() => {
+    if (dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }))) {
+      dialog().querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    }
+  });
+  expect(document.activeElement).toBe(option("4k"));
   enter();
   expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "4k");
 });
 
-it.each([false, true])("늦은 history로 초점 단추가 비활성이 되면 창 안 활성 단추로 옮긴다 (body로 이동=%s)", async (blurToBody) => {
+it.each([false, true])("1080p 제출 뒤 Enter를 더 눌러도 한 번만 제출하고 창에 초점을 둔다 (키 반복=%s)", async (repeat) => {
+  const view = mount();
+  view.finish.mockImplementation(() => view.render([draft], resolution => resolution === "1080p"));
+  await settle(); act(() => view.button().focus()); enter(); await settle();
+  enter(repeat); await settle();
+  expect(document.activeElement).toBe(dialog());
+  expect(option("4k").disabled).toBe(false);
+  for (let index = 0; index < 5; index++) enter(repeat);
+  expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "1080p");
+  expect(document.activeElement).toBe(dialog());
+  expect(view.button().getAttribute("aria-expanded")).toBe("true");
+});
+
+it.each([false, true])("늦은 history로 초점 단추가 비활성이 되면 창 자체로 옮긴다 (body로 이동=%s)", async (blurToBody) => {
   let history!: (value: { children: Generation[] }) => void;
   mocks.history.mockReturnValue(new Promise(resolve => { history = resolve; }));
   const view = mount(); await settle();
@@ -147,10 +171,10 @@ it.each([false, true])("늦은 history로 초점 단추가 비활성이 되면 �
     history({ children: [{ ...draft, id: "running", status: "pending", params: { draft_job_id: "job", resolution: "1080p" } }] });
   });
   expect(option("1080p").disabled).toBe(true);
-  expect(document.activeElement).toBe(option("4k"));
+  expect(document.activeElement).toBe(dialog());
   expect(view.button().getAttribute("aria-expanded")).toBe("true");
   enter();
-  expect(view.finish).toHaveBeenCalledExactlyOnceWith(draft, "4k");
+  expect(view.finish).not.toHaveBeenCalled();
 });
 
 it("권한 때문에 비활성이면 진행 중으로 표시하지 않는다", async () => {

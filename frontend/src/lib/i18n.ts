@@ -18,7 +18,10 @@ const EN: Record<string, string> = {
   "접수 재확인": "Check submission",
   "진행·확인 중": "In progress or checking",
   "Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요.": "Submission is uncertain. Click the same resolution to check the existing request.",
-  "이전 요청을 그대로 확인합니다. 페이지를 새로 고치면 화질을 다시 고를 수 있습니다.": "We are still checking the original request. Refresh the page to choose a resolution again.",
+  "앞선 요청은 계속 확인합니다. 새로 고치기 전에 생성 목록에 같은 화질 결과가 있는지 먼저 보세요.": "We are still checking the earlier request. Before refreshing, check the generation list for a result at the same resolution.",
+  "원본 카드를 찾지 못했습니다": "Could not find the original card",
+  "선택한 작업 공간을 확인하지 못했습니다": "Could not verify the selected workspace",
+  "요청 정보를 확인하지 못했습니다": "Could not verify the request details",
   "Draft {resolution} 생성 요청을 접수했습니다.": "Draft {resolution} request accepted.",
   "Draft 생성 실패": "Draft generation failed",
 

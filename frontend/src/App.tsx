@@ -45,7 +45,7 @@ import { AppOverlays, VideoCompareOverlay } from "./components/app/AppOverlays";
 import { cardCommentOpensDrawing } from "./components/MediaPreview";
 import { ResolveNotices } from "./components/app/ResolveNotices";
 import { AuthPauseBanner } from "./components/app/AuthPauseBanner";
-import { getApiPause } from "./lib/http";
+import { getApiPause, HttpError } from "./lib/http";
 const EditTab = lazy(() =>
   import("./components/timeline/EditTab").then((m) => ({ default: m.EditTab })),
 );
@@ -1996,9 +1996,14 @@ export default function App() {
             if (result.outcome.kind === "acceptance_unknown" || stillUncertain) {
               uncertain = true;
               draftRequests.retain(attempt, submit);
-              const reason = stillUncertain && result.error ? ` ${result.error instanceof Error ? result.error.message : String(result.error)}` : "";
-              const guidance = stillUncertain ? ` ${t("이전 요청을 그대로 확인합니다. 페이지를 새로 고치면 화질을 다시 고를 수 있습니다.")}` : "";
-              flash(`${t("Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요.")}${reason}${guidance}`);
+              let reason = stillUncertain && result.error ? (result.error instanceof HttpError ? result.error.detail
+                : result.error instanceof Error ? result.error.message : String(result.error)) : "";
+              if (/\b(?:generation|source_gen_id)\b/i.test(reason)) reason = t("원본 카드를 찾지 못했습니다");
+              else if (/\bworkspace(?:_id|_scope)?\b/i.test(reason)) reason = t("선택한 작업 공간을 확인하지 못했습니다");
+              else if (/\b(?:idempotency_key|canvas_link|placeholder|request_id)\b/i.test(reason)) reason = t("요청 정보를 확인하지 못했습니다");
+              flash(stillUncertain
+                ? <span style={{ whiteSpace: "pre-line" }}>{`${t("앞선 요청은 계속 확인합니다. 새로 고치기 전에 생성 목록에 같은 화질 결과가 있는지 먼저 보세요.")}${reason ? `\n${reason}` : ""}`}</span>
+                : t("Draft 요청의 접수 여부를 확인하지 못했습니다. 같은 화질을 눌러 기존 요청을 확인하세요."));
               return;
             }
             throw result.error ?? new Error("Draft 생성 요청을 제출하지 못했습니다.");
