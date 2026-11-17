@@ -28,13 +28,17 @@ def receive_observations(body: BalanceObservationsIn, request: Request, backgrou
     if not config.MANAGE_ENABLED:
         raise HTTPException(503, '잔액 기록을 사용할 수 없습니다')
     acc = _agent_write_acc(request)
-    _validate_balance_sender(request, acc, body.account_email)
+    acc = _validate_balance_sender(request, acc, body.account_email)
     try:
         receipt, changed = hf_balance.receive(acc, body.account_email, body.version, body.observations,
                                      target=_proxy.base_url() if _proxy.proxying() else None,
                                      receiver='server' if shared_connection.is_shared_team_server() else 'hub')
     except ValueError as exc:
         raise HTTPException(422, '잔액 보고 형식을 확인하세요') from exc
+    except RuntimeError as exc:
+        if str(exc) != 'balance_schema_mismatch':
+            raise
+        raise HTTPException(503, dict(code='balance_schema_mismatch', retryable=True)) from exc
     if changed:
         from ..ws import manager
         from ..deps import realtime_scope

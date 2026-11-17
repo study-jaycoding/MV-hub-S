@@ -28,12 +28,80 @@ def test_observation_ingest_rejects_unauthenticated_mismatch_and_bad_agent_key(b
     with pytest.raises(HTTPException) as exc:
         route.receive_observations(body.model_copy(update={'account_email':'other@example.test'}),request(),BackgroundTasks())
     assert exc.value.status_code==409
-    monkeypatch.setattr(config,'AUTH_ENABLED',False)
     monkeypatch.setattr(config,'LOCAL_AGENT_PAIR_SECRET','fixture-key')
-    monkeypatch.setattr(route._proxy,'token',lambda:'fixture-token')
     with pytest.raises(HTTPException) as exc:
-        route.receive_observations(body,request(token='fixture-token',key='wrong'),BackgroundTasks())
+        route.receive_observations(body,request(token='local',key='wrong'),BackgroundTasks())
     assert exc.value.status_code==403
+    from app import db
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==0
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==0
+
+
+@pytest.mark.parametrize('mode',['signed_in','signed_out','mismatch','standalone'])
+def test_agent_bearer_local_hub_http_boundary_preserves_rejected_reports(balance_db,monkeypatch,tmp_path,mode):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import active_account, db, repo
+    from app.routers import ingest
+    from test_agent_contracts import _load_agent
+    from hf_balance_fixtures import NOW
+    agent=_load_agent()
+    monkeypatch.setattr(agent,'_agent_state_path',lambda:str(tmp_path/'agent-http.db'))
+    monkeypatch.setattr(agent,'_cli_json',lambda *a,**kw:pytest.fail('retry collected again'))
+    monkeypatch.setattr(config,'AUTH_ENABLED',False)
+    monkeypatch.setattr(deps,'AUTH_ENABLED',False)
+    monkeypatch.setattr(route._proxy,'AUTH_ENABLED',False)
+    monkeypatch.setattr(config,'LOCAL_AGENT_PAIR_SECRET','')
+    monkeypatch.setenv('CONTENT_HUB_NO_PROXY','0')
+    monkeypatch.delenv('CONTENT_HUB_SHARED_URL',raising=False)
+    monkeypatch.setattr(route,'schedule_telemetry_drain',lambda:None)
+    active=active_account.set_override(EMAIL if mode in ('signed_in','mismatch') else '')
+    try:
+        if mode!='standalone':
+            repo.set_setting('shared_server_url','https://server.example.invalid')
+        if mode in ('signed_in','mismatch'):
+            repo.set_setting('shared_server_token','server-session-fixture')
+        assert route._proxy.token()!='local'
+        app=FastAPI()
+        @app.middleware('http')
+        async def loopback(request,call_next):
+            request.scope['client']=('127.0.0.1',12345)
+            return await call_next(request)
+        app.include_router(route.router)
+        email='other@example.test' if mode=='mismatch' else EMAIL
+        original=agent._persist_balance_collection('http://localhost',email,[dict(id='ws',credits=123)],NOW-1,NOW,None)
+        responses=[]
+        with TestClient(app) as client:
+            def send(method,url,*,token,body,**kwargs):
+                assert token=='local'
+                response=client.request(method,'/api/ingest/balance-observations',headers={'Authorization':'Bearer '+token},json=body)
+                responses.append(response)
+                return response.status_code,response.json()
+            monkeypatch.setattr(agent,'_http',send)
+            agent._drain_balance_observations('http://localhost','local',email)
+        accepted=mode in ('signed_in','standalone')
+        with db.get_connection() as conn:
+            assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==int(accepted)
+            assert conn.execute('SELECT COUNT(*) FROM hf_balance_outbox').fetchone()[0]==int(mode=='signed_in')
+            assert conn.execute("SELECT credits FROM workspace_registry WHERE id='ws'").fetchone()[0]==(123 if accepted else 100)
+            assert conn.execute('SELECT COUNT(*) FROM workspace_member').fetchone()[0]==0
+            assert bool(conn.execute("SELECT 1 FROM app_setting WHERE key='balance_database_id'").fetchone())==accepted
+        with agent._state_db() as conn:
+            row=conn.execute('SELECT * FROM balance_observation_outbox').fetchone()
+            import json
+            assert json.loads(row['payload_json'])==original['observations'][0]
+            assert row['state']==('acked' if accepted else 'pending')
+            if not accepted:
+                assert row['next_retry_at_ms']>row['last_attempt_at_ms']
+        response=responses[0]
+        if accepted:
+            assert response.status_code==200 and response.json()['receiver_kind']=='hub'
+        else:
+            assert response.status_code==409 and response.json()['detail']['retryable']
+            assert response.json()['detail']['code']==('hub_not_signed_in' if mode=='signed_out' else 'account_mismatch')
+    finally:
+        active_account.reset_override(active)
 
 
 def test_history_ingest_does_not_reapply_membership(balance_db,monkeypatch):
@@ -101,3 +169,26 @@ def test_balance_get_is_read_only_and_never_collects(balance_db,monkeypatch):
     monkeypatch.setattr(route,'schedule_telemetry_drain',lambda:pytest.fail('GET scheduled delivery'))
     answer=route.get_balances(request(dict(email=EMAIL,status='approved',global_role='member')))
     assert answer['balances'][0]['basis']=='legacy_snapshot'
+
+
+def test_mismatched_balance_schema_keeps_legacy_status_and_exposes_write_error(balance_db,monkeypatch):
+    from app import db, repo
+    from app.usecases.hf_balance import delivery_status
+    with db.get_connection() as conn:
+        conn.execute('DROP TABLE hf_balance_outbox')
+        conn.execute('DROP TABLE hf_balance_obs')
+        conn.execute('CREATE TABLE hf_balance_obs(observation_id TEXT PRIMARY KEY)')
+    db.flush_pool()
+    db.init_db()
+    repo.record_account_status(EMAIL,dict(email=EMAIL,workspaces=[dict(id='ws',name='Still usable',credits=42)]))
+    assert delivery_status()['balance_error_code']=='balance_schema_mismatch'
+    assert not delivery_status()['balance_write_enabled']
+    monkeypatch.setattr(config,'AUTH_ENABLED',True)
+    monkeypatch.setattr(route,'_agent_write_acc',lambda req:dict(email=EMAIL))
+    body=route.BalanceObservationsIn(version=1,account_email=EMAIL,observations=[observation()])
+    with pytest.raises(HTTPException) as exc:
+        route.receive_observations(body,request(),BackgroundTasks())
+    assert exc.value.status_code==503 and exc.value.detail['retryable']
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT credits FROM workspace_registry WHERE id='ws'").fetchone()[0]==42
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0]==0

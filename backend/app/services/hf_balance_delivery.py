@@ -4,7 +4,8 @@ from __future__ import annotations
 import time
 from urllib.parse import urlsplit
 
-from .. import config, db
+from .. import config, db, db_hf_balance
+from ..emailnorm import norm_email
 from ..hf_balance_contract import FIELDS, matching_ack
 from ..repo import hf_balance
 from . import shared_connection
@@ -18,18 +19,21 @@ def enabled():
 
 
 def drain(push, *, account_key, target, current, clock=None):
+    account_key = norm_email(account_key)
     if not enabled() or not account_key or not target:
         return {'pushed': 0}
     clock = clock or (lambda: int(time.time()*1000))
     def unchanged():
         account, url = current()
-        return account == account_key and url == target and enabled()
+        return norm_email(account) == account_key and url == target and enabled()
     if not unchanged():
         return {'pushed': 0}
     # HTTPS upgrades use the current address; never replay the stored HTTP address.
     with db.get_connection() as conn:
+        if db_hf_balance.schema_error(conn):
+            return {'pushed': 0, 'error_code': 'balance_schema_mismatch'}
         conn.execute('BEGIN IMMEDIATE')
-        targets = conn.execute('SELECT DISTINCT target_key FROM hf_balance_outbox WHERE account_key=?', (account_key,)).fetchall()
+        targets = conn.execute("SELECT DISTINCT target_key FROM hf_balance_outbox INDEXED BY idx_hf_balance_outbox_active WHERE account_key=? AND state<>'acked'", (account_key,)).fetchall()
         rows = []
         for (queued_target,) in targets:
             if (not shared_connection.same_shared_server(queued_target, target)

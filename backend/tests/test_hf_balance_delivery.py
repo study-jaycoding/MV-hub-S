@@ -143,3 +143,19 @@ def test_forwarding_packs_within_raw_request_limit(forward):
     assert lengths and max(lengths)<=262144
     with db.get_connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM hf_balance_outbox WHERE state='acked'").fetchone()[0]<100
+
+
+def test_delivery_normalizes_account_and_current_connection_keys(forward):
+    queue([observation()])
+    assert delivery.drain(ack, account_key='  '+EMAIL.upper()+' ', target=TARGET,
+                          current=lambda: (' '+EMAIL.upper()+' ', TARGET), clock=lambda: NOW+10000)['pushed'] == 1
+
+
+def test_schema_mismatch_disables_only_balance_delivery(forward):
+    queue([observation()])
+    with db.get_connection() as conn:
+        conn.execute('DROP INDEX idx_hf_balance_obs_latest')
+    result = forward(lambda body: pytest.fail('schema mismatch must not forward'))
+    assert result == {'pushed': 0, 'error_code': 'balance_schema_mismatch'}
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT state FROM hf_balance_outbox').fetchone()[0] == 'pending'

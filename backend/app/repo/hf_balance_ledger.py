@@ -113,13 +113,17 @@ def _net(data, ids, workspace_id, start, end):
 
 
 def _prepare(data):
-    groups, row_windows, refunds = {}, {}, {}
+    groups, row_windows, refunds, daily_totals = {}, {}, {}, {}
     valid = _proof_windows(data['windows'], data['checks'])
     for row in data['rows']:
         groups.setdefault((row['window_id'], row['workspace_id']), []).append((row['created_at'], row['credits_c']))
         row_windows.setdefault(row['row_id'], set()).add(row['window_id'])
+        totals = daily_totals.setdefault((row['window_id'], row['workspace_id']), [0, 0, 0])
+        for index, key in enumerate(('credits_c', 'charged_c', 'refunded_c')):
+            totals[index] += row[key]
         if row['window_id'] in valid:
-            refunds.setdefault(row['workspace_id'], []).append((row['created_at'], row['refunded_c']))
+            if row['refunded_c'] > 0:
+                refunds.setdefault(row['workspace_id'], []).append(row)
     data['duplicate_windows'] = [ids for ids in row_windows.values() if len(ids) > 1]
     data['net_index'] = {}
     for key, pairs in groups.items():
@@ -128,13 +132,8 @@ def _prepare(data):
         for _, cents in pairs:
             prefix.append(prefix[-1] + cents)
         data['net_index'][key] = ([at for at, _ in pairs], prefix)
-    data['refund_index'] = {}
-    for workspace, pairs in refunds.items():
-        pairs.sort()
-        prefix = [0]
-        for _, cents in pairs:
-            prefix.append(prefix[-1] + cents)
-        data['refund_index'][workspace] = ([at for at, _ in pairs], prefix)
+    data['refund_rows'] = refunds
+    data['daily_totals'] = daily_totals
 
 
 def _proof_windows(windows, checks):
@@ -153,14 +152,18 @@ def daily_usage(data, day, at):
     if strict_reason not in (None, 'unfinished_day'):
         reason = strict_reason
     ids = {w['id'] for w in selected}
-    rows = [r for r in data['rows'] if r['window_id'] in ids and r['workspace_id'] == data['workspace_id']]
+    if 'daily_totals' in data:
+        totals = [sum(data['daily_totals'].get((wid, data['workspace_id']), [0, 0, 0])[i] for wid in ids)
+                  for i in range(3)]
+    else:
+        rows = [r for r in data['rows'] if r['window_id'] in ids and r['workspace_id'] == data['workspace_id']]
+        totals = [sum(r[key] for r in rows) for key in ('credits_c', 'charged_c', 'refunded_c')]
     window = next((w for w in data['windows'] if w['start_ms'] == day and w['snapshot_version']), None)
     actual_end = window['actual_end_ms'] if window else None
     complete = reason is None and actual_end is not None and actual_end >= day + DAY_MS
     return dict(day=datetime.fromtimestamp(day / 1000, KST).date().isoformat(),
                 actual_start_ms=window['actual_start_ms'] if window else None, actual_end_ms=actual_end,
-                **{key: None if reason else sum(r[field] for r in rows) for key, field in
-                   (('net_c', 'credits_c'), ('charged_c', 'charged_c'), ('refunded_c', 'refunded_c'))},
+                **{key: None if reason else totals[i] for i, key in enumerate(('net_c', 'charged_c', 'refunded_c'))},
                 complete=complete, collected_at_ms=window['succeeded_at_ms'] if window else None,
                 window_versions=[dict(window_id=w['id'], snapshot_version=w['snapshot_version']) for w in selected],
                 reason_codes=[reason] if reason else [] if complete else ['partial_day'])
@@ -184,14 +187,11 @@ def classify(item, data, topups, revision, allocation_pairs=()):
     if residual > 0 and len(matching_days) > 1 and abs(sum(t['credits'] * 100 for t in matching_days) - residual) <= tolerance:
         candidates.append(('topup_candidate', dict(code='current_plan_match', topup_ids=[t['id'] for t in matching_days[:10]],
                                                   topup_count=len(matching_days), plan_revision=revision)))
-    if 'refund_index' in data:
-        times, prefix = data['refund_index'].get(data['workspace_id'], ([], [0]))
-        refunds = prefix[bisect_left(times, item['end_ms'])]
-    else:
-        refunds = sum(r['refunded_c'] for r in data['rows'] if r['workspace_id'] == data['workspace_id']
-                      and r['created_at'] < item['end_ms'])
-    if residual > 0 and refunds > 0 and abs(refunds - residual) <= tolerance:
-        candidates.append(('refund_candidate', dict(code='refund_time_unknown', refunded_c=refunds)))
+    refund_rows = data.get('refund_rows', {}).get(data['workspace_id'], []) if 'refund_rows' in data else data['rows']
+    for row in refund_rows:
+        if (residual > 0 and row['workspace_id'] == data['workspace_id'] and row['created_at'] < item['end_ms']
+                and row['refunded_c'] > 0 and abs(row['refunded_c'] - residual) <= tolerance):
+            candidates.append(('refund_candidate', dict(code='refund_time_unknown', refunded_c=row['refunded_c'])))
     item['candidate_evidence'] = [dict(candidate=kind, **evidence) for kind, evidence in candidates[:3]]
     item['candidate_count'] = len(candidates)
     if len(candidates) > 3:
@@ -207,18 +207,33 @@ def _signature(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
 
 
-def _endpoints(conn, workspace, start, end, after, limit):
+def _delivered_version(conn, workspace, start, through, at=None):
+    # Only already delivered target intervals can be invalidated by a late arrival.
+    cutoff = ' AND received_at_ms<=?' if at is not None else ''
+    params = (workspace, start, at) if at is not None else (workspace, start)
+    anchor = conn.execute("SELECT MAX(observed_at_ms) FROM hf_balance_obs WHERE workspace_id=? "
+                          "AND time_quality='reported' AND observed_at_ms<?" + cutoff, params).fetchone()[0]
+    params = (workspace, anchor if anchor is not None else start, through)
+    if at is not None:
+        params += (at,)
+    version = tuple(conn.execute('SELECT COUNT(*),MAX(observation_id) FROM hf_balance_obs '
+                                 "WHERE workspace_id=? AND time_quality='reported' AND observed_at_ms>=? "
+                                 'AND observed_at_ms<=?' + cutoff, params).fetchone())
+    return _signature([anchor, *version])
+
+
+def _endpoints(conn, workspace, start, end, after, limit, at):
     # One representative per epoch; conflicting cents invalidate both adjacent intervals.
     rows = conn.execute("SELECT observed_at_ms, MIN(observation_id) AS id FROM hf_balance_obs "
                         "WHERE workspace_id=? AND time_quality='reported' AND observed_at_ms>=? AND observed_at_ms<? "
-                        'AND observed_at_ms>? GROUP BY observed_at_ms ORDER BY observed_at_ms LIMIT ?',
-                        (workspace, start, end, after, limit)).fetchall()
+                        'AND observed_at_ms>? AND received_at_ms<=? GROUP BY observed_at_ms ORDER BY observed_at_ms LIMIT ?',
+                        (workspace, start, end, after, at, limit)).fetchall()
     points = []
     for row in rows:
         point = dict(conn.execute('SELECT * FROM hf_balance_obs WHERE observation_id=?', (row['id'],)).fetchone())
         point['conflict'] = bool(conn.execute("SELECT 1 FROM hf_balance_obs WHERE workspace_id=? AND time_quality='reported' "
-                                             'AND observed_at_ms=? AND credits_c<>? LIMIT 1',
-                                             (workspace, point['observed_at_ms'], point['credits_c'])).fetchone())
+                                             'AND observed_at_ms=? AND credits_c<>? AND received_at_ms<=? LIMIT 1',
+                                             (workspace, point['observed_at_ms'], point['credits_c'], at)).fetchone())
         points.append(point)
     return points
 
@@ -234,19 +249,22 @@ def _peer_pairs(conn, first, last, item, data, tiers, *, mutual=True):
                          "WHERE a.collection_id=? AND b.collection_id=? AND a.collector_id=? AND b.collector_id=? "
                          f"AND b.workspace_id IN ({','.join('?' for _ in spaces)}) "
                          "AND a.observed_at_ms=? AND b.observed_at_ms=? "
+                         'AND a.received_at_ms<=? AND b.received_at_ms<=? '
                          "AND a.workspace_id<>? AND a.time_quality='reported' AND b.time_quality='reported'",
                          (first['collection_id'], last['collection_id'], first['collector_id'], last['collector_id'],
-                          *spaces, first['observed_at_ms'], last['observed_at_ms'], data['workspace_id'])).fetchall()
+                          *spaces, first['observed_at_ms'], last['observed_at_ms'], data['as_of_ms'], data['as_of_ms'],
+                          data['workspace_id'])).fetchall()
     pairs = []
     for raw in peers:
         peer = dict(raw)
         if {tiers.get(peer['workspace_id']), tiers.get(data['workspace_id'])} != {'main', 'sub'}:
             continue
-        opening = conn.execute('SELECT * FROM hf_balance_obs WHERE workspace_id=? AND observed_at_ms=? AND collection_id=? AND collector_id=?',
-                               (peer['workspace_id'], first['observed_at_ms'], first['collection_id'], first['collector_id'])).fetchone()
+        opening = conn.execute('SELECT * FROM hf_balance_obs WHERE workspace_id=? AND observed_at_ms=? AND collection_id=? AND collector_id=? '
+                               "AND time_quality='reported' AND received_at_ms<=?",
+                               (peer['workspace_id'], first['observed_at_ms'], first['collection_id'], first['collector_id'], data['as_of_ms'])).fetchone()
         # Latest-by-epoch check also rejects ambiguous independent reports at either endpoint.
         points = _endpoints(conn, peer['workspace_id'], opening['observed_at_ms'], peer['observed_at_ms'] + 1,
-                            opening['observed_at_ms'] - 1, 2)
+                            opening['observed_at_ms'] - 1, 2, data['as_of_ms'])
         if len(points) != 2 or points[-1]['observed_at_ms'] != peer['observed_at_ms']:
             continue
         peer_data = dict(data, workspace_id=peer['workspace_id'], workspace_proven=peer['workspace_id'] in data['proven_workspaces'])
@@ -264,7 +282,7 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
     start, end = period(start, end, at=at)
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError('row_limit')
-    after, expected = start - 1, None
+    after, expected, delivered_version = start - 1, None, None
     if cursor:
         try:
             if len(cursor) > 2048:
@@ -273,6 +291,7 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
             if payload['scope'] != [workspace_id, start, end] or type(payload['after']) is not int:
                 raise ValueError
             after, expected = payload['after'], payload['signature']
+            delivered_version = payload['observation_signature']
             if type(payload['as_of_ms']) is not int or not 0 < payload['as_of_ms'] <= at:
                 raise ValueError
             at = payload['as_of_ms']
@@ -282,38 +301,39 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
             raise ValueError('invalid_cursor') from exc
     with db.get_connection() as conn:
         conn.execute('BEGIN')
+        if cursor and delivered_version != _delivered_version(conn, workspace_id, start, after):
+            raise AnalysisChanged('analysis_changed')
         preceding = conn.execute("SELECT MAX(observed_at_ms) FROM hf_balance_obs WHERE workspace_id=? "
-                                 "AND time_quality='reported' AND observed_at_ms<?", (workspace_id, start)).fetchone()[0]
+                                 "AND time_quality='reported' AND observed_at_ms<? AND received_at_ms<=?", (workspace_id, start, at)).fetchone()[0]
         analysis_start = max(start - 31 * DAY_MS, preceding if preceding is not None else start)
-        points = _endpoints(conn, workspace_id, start, end, after, limit + 1)
+        points = _endpoints(conn, workspace_id, start, end, after, limit + 1, at)
         prior_at = conn.execute("SELECT MAX(observed_at_ms) FROM hf_balance_obs WHERE workspace_id=? "
-                                "AND time_quality='reported' AND observed_at_ms<?",
-                                (workspace_id, points[0]['observed_at_ms'] if points else start)).fetchone()[0]
-        prior = _endpoints(conn, workspace_id, prior_at, prior_at + 1, prior_at - 1, 1)[0] if prior_at is not None else None
+                                "AND time_quality='reported' AND observed_at_ms<? AND received_at_ms<=?",
+                                (workspace_id, points[0]['observed_at_ms'] if points else start, at)).fetchone()[0]
+        prior = _endpoints(conn, workspace_id, prior_at, prior_at + 1, prior_at - 1, 1, at)[0] if prior_at is not None else None
         topups = [dict(r) for r in conn.execute('SELECT id,day,credits FROM workspace_credit_topup WHERE workspace_id=? AND day>=? AND day<? ORDER BY day,id',
                   (workspace_id, datetime.fromtimestamp(analysis_start / 1000, KST).date().isoformat(), datetime.fromtimestamp(end / 1000, KST).date().isoformat()))]
         plan = conn.execute('SELECT revision FROM workspace_credit_plan WHERE workspace_id=?', (workspace_id,)).fetchone()
         revision = plan[0] if plan else 0
         tiers = {r[0]: r[1] for r in conn.execute('SELECT workspace_id,tier FROM workspace_console WHERE archived=0')}
-        content_version = []
-        version_spaces = sorted(set(tiers) | {workspace_id})
-        for offset in range(0, len(version_spaces), 500):
-            spaces = version_spaces[offset:offset + 500]
-            content_version.extend(tuple(r) for r in conn.execute('SELECT workspace_id,COUNT(*),MAX(observation_id) FROM hf_balance_obs '
-                           f"WHERE workspace_id IN ({','.join('?' for _ in spaces)}) AND observed_at_ms>=? AND observed_at_ms<? "
-                           'GROUP BY workspace_id ORDER BY workspace_id', (*spaces, analysis_start, end)))
-        anchor_version = [tuple(r) for r in conn.execute('SELECT observation_id,payload_sha256 FROM hf_balance_obs '
-                          "WHERE workspace_id=? AND time_quality='reported' AND observed_at_ms=? ORDER BY observation_id", (workspace_id, preceding))]
+        related = {workspace_id} | {r[0] for r in conn.execute(
+            'SELECT DISTINCT p.workspace_id FROM hf_balance_obs t JOIN hf_balance_obs p '
+            'ON p.collection_id=t.collection_id AND p.collector_id=t.collector_id AND p.observed_at_ms=t.observed_at_ms '
+            "WHERE t.workspace_id=? AND t.time_quality='reported' AND p.time_quality='reported' "
+            'AND t.observed_at_ms>=? AND t.observed_at_ms<? AND t.received_at_ms<=? AND p.received_at_ms<=?',
+            (workspace_id, preceding if preceding is not None else start, end, at, at))
+            if tiers.get(r[0]) in ('main', 'sub')}
+        tiers = {wid: tier for wid, tier in tiers.items() if wid in related}
         chart = [dict(r) for r in conn.execute('WITH ranked AS (SELECT observation_id,observed_at_ms,credits_c,time_quality AS quality, '
                  'ROW_NUMBER() OVER (PARTITION BY (observed_at_ms-?)*500/? ORDER BY credits_c,observation_id) AS lo, '
                  'ROW_NUMBER() OVER (PARTITION BY (observed_at_ms-?)*500/? ORDER BY credits_c DESC,observation_id DESC) AS hi '
-                 'FROM hf_balance_obs WHERE workspace_id=? AND observed_at_ms>=? AND observed_at_ms<?) '
+                 'FROM hf_balance_obs WHERE workspace_id=? AND observed_at_ms>=? AND observed_at_ms<? AND received_at_ms<=?) '
                  'SELECT observation_id,observed_at_ms,credits_c,quality FROM ranked WHERE lo=1 OR hi=1 ORDER BY observed_at_ms,observation_id LIMIT 1000',
-                 (start, end-start, start, end-start, workspace_id, start, end))]
+                 (start, end-start, start, end-start, workspace_id, start, end, at))]
         for point in chart:
             if point['quality'] == 'reported' and conn.execute("SELECT 1 FROM hf_balance_obs WHERE workspace_id=? "
-                    "AND time_quality='reported' AND observed_at_ms=? AND credits_c<>? LIMIT 1",
-                    (workspace_id, point['observed_at_ms'], point['credits_c'])).fetchone():
+                    "AND time_quality='reported' AND observed_at_ms=? AND credits_c<>? AND received_at_ms<=? LIMIT 1",
+                    (workspace_id, point['observed_at_ms'], point['credits_c'], at)).fetchone():
                 point['quality'] = 'conflict'
         content_at = int(time.time() * 1000)
         with manage_db.get_connection() as manage:
@@ -321,25 +341,33 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
             cfg = dict(manage.execute('SELECT * FROM hf_org_usage_config WHERE singleton=1').fetchone())
             windows = [dict(r) for r in manage.execute("SELECT * FROM hf_org_usage_window WHERE org_id=? AND kind='day' AND start_ms>=? AND start_ms<? ORDER BY start_ms,id",
                        (cfg['org_id'], today_start(analysis_start), end))]
-            rows = [dict(r) for r in manage.execute('SELECT r.window_id,r.row_id,r.workspace_id,r.created_at,r.credits_c,r.charged_c,r.refunded_c '
-                    "FROM hf_org_usage_row r JOIN hf_org_usage_window w ON w.id=r.window_id WHERE w.org_id=? AND w.kind='day' AND w.start_ms>=? AND w.start_ms<? ORDER BY w.id,r.row_id",
-                    (cfg['org_id'], today_start(analysis_start), end))]
+            rows = []
+            spaces = sorted(related)
+            for offset in range(0, len(spaces), 500):
+                batch = spaces[offset:offset + 500]
+                rows.extend(dict(r) for r in manage.execute(
+                    'SELECT r.window_id,r.row_id,r.workspace_id,r.created_at,r.credits_c,r.charged_c,r.refunded_c '
+                    "FROM hf_org_usage_row r JOIN hf_org_usage_window w ON w.id=r.window_id WHERE w.org_id=? AND w.kind='day' "
+                    f"AND w.start_ms>=? AND w.start_ms<? AND r.workspace_id IN ({','.join('?' for _ in batch)}) ORDER BY w.id,r.row_id",
+                    (cfg['org_id'], today_start(analysis_start), end, *batch)))
             checks = [dict(r) for r in manage.execute('SELECT * FROM hf_org_usage_check WHERE org_id=? AND start_ms<? AND end_ms>? ORDER BY start_ms,end_ms',
                       (cfg['org_id'], end, analysis_start))]
             manage_at = int(time.time() * 1000)
         valid_ids = _proof_windows(windows, checks)
         proven = {r['workspace_id'] for r in rows if r['window_id'] in valid_ids}
-        data = dict(config=cfg, windows=windows, rows=rows, checks=checks, workspace_id=workspace_id,
+        data = dict(config=cfg, windows=windows, rows=rows, checks=checks, workspace_id=workspace_id, as_of_ms=at,
                     workspace_proven=workspace_id in proven, proven_workspaces=proven)
         _prepare(data)
-        window_inputs = [{key:w[key] for key in ('id','start_ms','end_ms','contract_version','snapshot_version','success_complete',
+        window_inputs = [{key:w[key] for key in ('id','start_ms','end_ms','contract_version','snapshot_version','row_count','success_complete',
                                                 'actual_start_ms','actual_end_ms','succeeded_at_ms')} for w in windows]
-        signature = _signature([workspace_id, start, end, at, content_version, anchor_version,
-                                window_inputs, rows, checks, cfg['revision'], cfg['enabled'], cfg['restore_paused'], revision, topups, tiers])
+        check_inputs = [{key:value for key,value in check.items() if key != 'checked_at_ms'} for check in checks]
+        signature = _signature([workspace_id, start, end, at, window_inputs, check_inputs, cfg['org_id'], cfg['revision'], cfg['enabled'],
+                                cfg['restore_paused'], revision, topups, tiers])
         if expected and expected != signature:
             raise AnalysisChanged('analysis_changed')
         has_more = len(points) > limit
         points = points[:limit]
+        observation_signature = _delivered_version(conn, workspace_id, start, points[-1]['observed_at_ms'], at) if has_more else None
         intervals = []
         for point in points:
             if prior:
@@ -349,7 +377,8 @@ def ledger(workspace_id, start=None, end=None, *, limit=100, cursor=None, at=Non
             prior = point
     daily = [daily_usage(data, day, at) for day in range(start, min(end, at), DAY_MS)]
     token = base64.urlsafe_b64encode(json.dumps(dict(scope=[workspace_id, start, end], as_of_ms=at,
-                                                   after=points[-1]['observed_at_ms'], signature=signature)).encode()).decode() if has_more else None
+                                                   after=points[-1]['observed_at_ms'], signature=signature,
+                                                   observation_signature=observation_signature)).encode()).decode() if has_more else None
     reasons = sorted({reason for i in intervals for reason in i['reason_codes']} | {reason for d in daily for reason in d['reason_codes']})
     _, api_reason = coverage(data, start, min(end, at)) if start < at else ([], 'future_period')
     if api_reason:

@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS hf_balance_outbox (
  PRIMARY KEY(account_key,target_key,observation_id));
 CREATE INDEX IF NOT EXISTS idx_hf_balance_outbox_due
  ON hf_balance_outbox(account_key,target_key,state,next_retry_at_ms,queued_at_ms);
+CREATE INDEX IF NOT EXISTS idx_hf_balance_outbox_active
+ ON hf_balance_outbox(account_key,target_key,next_retry_at_ms,queued_at_ms) WHERE state<>'acked';
+CREATE INDEX IF NOT EXISTS idx_hf_balance_outbox_ack_time
+ ON hf_balance_outbox(acked_at_ms DESC) WHERE state='acked';
 """
 
 
@@ -48,8 +52,17 @@ def validate(conn):
         expected.executescript(DDL)
         wanted = [tuple(row) for row in _structure(expected)]
     actual = [tuple(row) for row in _structure(conn)]
-    if actual != wanted:
+    actual = {row[1]: row for row in actual}
+    if any(actual.get(row[1]) != row for row in wanted):
         raise RuntimeError('balance_schema_mismatch')
+
+
+def schema_error(conn):
+    try:
+        validate(conn)
+    except (RuntimeError, sqlite3.DatabaseError):
+        return 'balance_schema_mismatch'
+    return None
 
 
 def migrate(conn):

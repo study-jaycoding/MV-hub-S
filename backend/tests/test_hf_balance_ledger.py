@@ -157,6 +157,40 @@ def test_cursor_rejects_changed_analysis(world):
         ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT)
 
 
+def test_cursor_ignores_check_timestamp_without_input_change(world):
+    seed(world)
+    with manage_db.get_connection() as conn:
+        conn.execute("INSERT INTO hf_org_usage_check(org_id,start_ms,end_ms,state,daily_versions_json,checked_at_ms) VALUES(?,?,?,'matched','{}',?)",
+                     (ORG,START,START+ledger.DAY_MS,AT))
+    first=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,at=AT)
+    with manage_db.get_connection() as conn:
+        conn.execute('UPDATE hf_org_usage_check SET checked_at_ms=checked_at_ms+1000')
+    later=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1000)
+    assert later['basis_signature']==first['basis_signature']
+
+
+@pytest.mark.parametrize('update', [
+    'UPDATE hf_org_usage_window SET row_count=COALESCE(row_count,0)+1',
+    'UPDATE hf_org_usage_config SET enabled=0',
+    'UPDATE hf_org_usage_config SET revision=revision+1',
+])
+def test_cursor_rejects_api_row_count_or_config_changes(world,update):
+    seed(world)
+    first=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,at=AT)
+    with manage_db.get_connection() as conn:
+        conn.execute(update)
+    with pytest.raises(ledger.AnalysisChanged):
+        ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1)
+
+
+@pytest.mark.parametrize('payload', [[], {}, {'scope': []}, {'scope': ['ws', START, START+ledger.DAY_MS], 'after': True}])
+def test_malformed_cursor_is_rejected_before_query(world,payload):
+    import base64
+    token=base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+    with pytest.raises(ValueError,match='invalid_cursor'):
+        ledger.ledger('ws','2026-11-16','2026-11-17',cursor=token,at=AT)
+
+
 def test_reanalysis_changes_with_api_and_plan_versions(world):
     seed(world)
     first=ledger.ledger('ws','2026-11-16','2026-11-17',at=AT)
@@ -226,6 +260,12 @@ def test_real_allocation_pairs_require_mutual_unique_match(world):
         conn.execute("UPDATE workspace_console SET archived=1 WHERE workspace_id='other'")
     answer=ledger.ledger('sub','2026-11-16','2026-11-17',at=AT)
     assert answer['intervals'][0]['candidate_classification']=='allocation_candidate'
+    with db.get_connection() as conn:
+        conn.execute("UPDATE hf_balance_obs SET received_at_ms=? WHERE workspace_id='main'", (AT+1,))
+    pinned=ledger.ledger('sub','2026-11-16','2026-11-17',at=AT)
+    assert pinned['intervals'][0]['candidate_classification']=='unclassified'
+    refreshed=ledger.ledger('sub','2026-11-16','2026-11-17',at=AT+1)
+    assert refreshed['intervals'][0]['candidate_classification']=='allocation_candidate'
 
 
 def test_cursor_pins_time_and_rejects_observation_or_plan_changes(world):
@@ -234,14 +274,83 @@ def test_cursor_pins_time_and_rejects_observation_or_plan_changes(world):
     second=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1000)
     assert second['as_of_ms']==AT and second['basis_signature']==first['basis_signature']
     with db.get_connection() as conn:
-        balance.store(conn,EMAIL,None,1,[observation(9999,when=START+5000,seq=5)],received_at_ms=AT)
+        balance.store(conn,EMAIL,None,1,[observation(9999,when=START+5000,seq=5)],received_at_ms=AT+1000)
+        conn.execute("INSERT INTO workspace_registry(id,name) VALUES('other','Other')")
+        conn.execute("INSERT INTO workspace_console(workspace_id,tier) VALUES('other','sub')")
+        balance.store(conn,EMAIL,None,1,[observation(50,when=START+1500,workspace='other')],received_at_ms=AT+1000)
+    later=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1000)
+    assert later['as_of_ms']==AT and later['basis_signature']==first['basis_signature']
+    assert later['chart_points']==first['chart_points']
+    assert all(i['end_ms']<=START+4000 for i in later['intervals'])
+    with db.get_connection() as conn:
+        balance.store(conn,EMAIL,None,1,[observation(9999,when=START+1500,
+                      collector_id='22222222-2222-4222-8222-222222222222')],received_at_ms=AT+1000)
     with pytest.raises(ledger.AnalysisChanged):
-        ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT)
-    first=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,at=AT)
+        ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1000)
+    first=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,at=AT+1000)
     with db.get_connection() as conn:
         conn.execute("INSERT INTO workspace_credit_plan(workspace_id,revision) VALUES('ws',2)")
     with pytest.raises(ledger.AnalysisChanged):
-        ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT)
+        ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1000)
+
+
+@pytest.mark.parametrize('prepared', [False, True])
+def test_refund_candidates_match_individual_rows_and_multiple_matches_are_unclassified(prepared):
+    sample = data()
+    sample['windows'][0]['contract_version'] = 1
+    a,b = points()
+    b['credits_c'] = 10100
+    sample['rows'] = [dict(row(str(n),created_at=START,workspace_id='ws',refunded_c=cents),window_id=1)
+                      for n,cents in enumerate((100,250))]
+    if prepared:
+        ledger._prepare(sample)
+    item = ledger.interval(sample,a,b,'ws')
+    ledger.classify(item,sample,[],0)
+    assert item['candidate_classification']=='refund_candidate' and item['candidate_count']==1
+    sample['rows'].append(dict(row('another',created_at=START,workspace_id='ws',refunded_c=100),window_id=1))
+    if prepared:
+        ledger._prepare(sample)
+    item = ledger.interval(sample,a,b,'ws')
+    ledger.classify(item,sample,[],0)
+    assert item['candidate_classification']=='unclassified' and item['candidate_count']==2
+    assert 'multiple_candidates' in item['reason_codes']
+
+
+def test_api_rows_are_sql_scoped_and_daily_totals_are_prepared_once(world,monkeypatch):
+    seed(world)
+    with manage_db.get_connection() as conn:
+        conn.execute('DELETE FROM hf_org_usage_row')
+        conn.execute('DELETE FROM hf_org_usage_window')
+    store_day(rows=[api_row('target',workspace_id='ws'),api_row('unrelated',workspace_id='unrelated')])
+    prepare = ledger._prepare
+    captured = []
+    class NoRescan(list):
+        def __iter__(self):
+            raise AssertionError('prepared rows scanned again')
+    def checked(data):
+        captured.extend(data['rows'])
+        prepare(data)
+        data['rows'] = NoRescan(data['rows'])
+    monkeypatch.setattr(ledger,'_prepare',checked)
+    answer=ledger.ledger('ws','2026-11-16','2026-11-17',at=AT)
+    assert captured and {r['workspace_id'] for r in captured}=={'ws'}
+    assert answer['daily_api'][0]['net_c']==captured[0]['credits_c']
+
+
+def test_cursor_rejects_new_preceding_anchor_but_pins_unseen_equal_epoch_conflicts(world):
+    seed(world)
+    collector='22222222-2222-4222-8222-222222222222'
+    first=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,at=AT)
+    with db.get_connection() as conn:
+        balance.store(conn,EMAIL,None,1,[observation(500,when=START+3000,collector_id=collector)],received_at_ms=AT+1)
+    second=ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1)
+    assert second['intervals'][0]['state']!='observation_uncertain'
+    assert second['chart_points']==first['chart_points']
+    with db.get_connection() as conn:
+        balance.store(conn,EMAIL,None,1,[observation(10000,when=START-1000,
+                      collector_id='33333333-3333-4333-8333-333333333333')],received_at_ms=AT+1)
+    with pytest.raises(ledger.AnalysisChanged):
+        ledger.ledger('ws','2026-11-16','2026-11-17',limit=2,cursor=first['next_cursor'],at=AT+1)
 
 
 def test_conflicting_epochs_and_future_points_are_not_normal_endpoints(world):

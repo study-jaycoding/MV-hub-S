@@ -14,6 +14,7 @@ import time
 from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..services.operational_logging import log_event
+from ..emailnorm import norm_email
 from ..services.account_report_delivery import drain_remote_account_reports
 from ..services.telemetry_drain import drain_isolated_telemetry, drain_remote_telemetry
 from . import _proxy
@@ -53,7 +54,7 @@ def _drain_once() -> None:
             # 계정 키와 uid를 같은 DB에서 원자 캡처한다. override는 두 outbox 드레인이 모두
             # 끝날 때까지 유지하되 transition_lock은 네트워크 전에 놓아 계정 전환을 막지 않는다.
             with active_account.transition_lock:
-                account_key = active_account.account_key()
+                account_key = norm_email(active_account.account_key())
                 origin, captured_token = _proxy.base_url(), _proxy.token()
                 epoch = active_account.account_epoch()
                 token = active_account.set_override(account_key or "")
@@ -70,7 +71,7 @@ def _drain_once() -> None:
                 def balance_current():
                     if active_account.account_epoch() != epoch or shared_connection.token() != captured_token:
                         return None, None
-                    return active_account.account_key(), shared_connection.base_url()
+                    return norm_email(active_account.account_key()), shared_connection.base_url()
                 try:
                     with _proxy.pinned_connection((origin, captured_token)):
                         drain_balances(

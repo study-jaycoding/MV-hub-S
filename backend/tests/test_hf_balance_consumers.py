@@ -17,7 +17,7 @@ def seed():
         conn.execute("INSERT INTO workspace_member(workspace_id,account_email,creator_uid,is_available,last_seen_at) VALUES('ws',?,'uid-a',1,'2020-01-01 00:00:00')", (EMAIL,))
         value = observation(12345, when=at)
         balance.store(conn, EMAIL, 'uid-a', 1, [value], received_at_ms=at)
-        conn.execute('INSERT INTO app_setting(key,value) VALUES(?,?)', ('hf_status:'+EMAIL, json.dumps(dict(credits=7, workspaces=[dict(id='ws', credits=1)]))))
+        conn.execute('INSERT INTO app_setting(key,value) VALUES(?,?)', ('hf_status:'+EMAIL, json.dumps(dict(credits=7, workspaces=[dict(id='ws', name='Space', credits=1)]))))
     return value
 
 
@@ -87,10 +87,14 @@ def test_membership_refresh_is_independent_of_balance_order(world):
 def test_account_menu_uses_current_membership_and_keeps_personal_raw(world):
     seed()
     from app.usecases.hf_balance import account_workspaces
-    assert account_workspaces(EMAIL,[])[0]['id']=='ws'
+    personal=dict(id='personal',name='',credits=7)
+    reported=[personal,dict(id='revoked',name='Revoked',credits=99),dict(id='ws',name='Space',credits=1)]
+    current=account_workspaces(EMAIL,reported)
+    assert [w['id'] for w in current]==['personal','ws'] and current[0]==personal
+    assert current[1]['credits']==123.45
     with db.get_connection() as conn:
         conn.execute("UPDATE workspace_member SET is_available=0 WHERE workspace_id='ws'")
-    assert account_workspaces(EMAIL,[dict(id='ws',credits=999)])==[]
+    assert account_workspaces(EMAIL,[personal,dict(id='ws',name='Space',credits=999)])==[personal]
 
 
 def test_credit_summary_counts_pools_once_and_marks_unknown_solo(world):

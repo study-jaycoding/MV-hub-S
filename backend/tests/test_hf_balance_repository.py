@@ -107,3 +107,59 @@ def test_valid_rows_are_acked_next_to_rejected_rows(balance_db):
     receipt=store([good,bad])
     assert [row['observation_id'] for row in receipt['stored']]==[good['observation_id']]
     assert matching_ack(receipt,[good,bad],'server')==receipt
+
+
+def test_balance_schema_allows_extra_objects_but_mismatch_only_disables_balance_writes(balance_db):
+    with db.get_connection() as conn:
+        conn.execute('CREATE INDEX idx_hf_balance_extra ON hf_balance_obs(reporter_uid)')
+        db_hf_balance.validate(conn)
+        conn.execute('DROP INDEX idx_hf_balance_obs_latest')
+        conn.execute('CREATE INDEX idx_hf_balance_obs_latest ON hf_balance_obs(reporter_uid)')
+    db.flush_pool()
+    db.init_db()
+    with db.get_connection() as conn:
+        assert db_hf_balance.schema_error(conn) == 'balance_schema_mismatch'
+        conn.execute("UPDATE workspace_registry SET name='Still available' WHERE id='ws'")
+    with pytest.raises(RuntimeError, match='balance_schema_mismatch'):
+        store([observation()])
+    with db.get_connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM hf_balance_obs').fetchone()[0] == 0
+        assert conn.execute("SELECT name FROM workspace_registry WHERE id='ws'").fetchone()[0] == 'Still available'
+
+
+def test_balance_snapshot_closes_owned_transaction_and_preserves_callers_transaction(balance_db):
+    with db.get_connection() as conn:
+        assert not conn.in_transaction
+        assert balances.balance_snapshot(conn, ['ws'])['ws']['basis'] == 'legacy_snapshot'
+        assert not conn.in_transaction
+        conn.execute('BEGIN')
+        balances.balance_snapshot(conn, ['ws'])
+        assert conn.in_transaction
+        conn.rollback()
+
+
+def test_outbox_status_and_claim_skip_retained_ack_rows(balance_db):
+    items = [observation(seq=i+1, when=NOW+i) for i in range(100)]
+    store(items, target='https://fixture.invalid')
+    with db.get_connection() as conn:
+        conn.execute("UPDATE hf_balance_outbox SET state='acked',acked_at_ms=?", (NOW,))
+        conn.execute("UPDATE hf_balance_outbox SET state='pending',acked_at_ms=NULL WHERE observation_id=?", (items[-1]['observation_id'],))
+    with db.get_connection() as conn:
+        statements = []
+        conn.set_trace_callback(statements.append)
+        status = balances.outbox_status(conn)
+        conn.set_trace_callback(None)
+        assert status['balance_pending'] == 1
+        assert status['balance_last_success_at_ms'] == NOW
+        for statement in statements:
+            plan = str([tuple(row) for row in conn.execute('EXPLAIN QUERY PLAN ' + statement)])
+            assert ('idx_hf_balance_outbox_active' if "state<>'acked'" in statement else 'idx_hf_balance_outbox_ack_time') in plan
+        conn.execute('BEGIN IMMEDIATE')
+        queries = []
+        conn.set_trace_callback(queries.append)
+        claimed = balances.claim(conn, EMAIL, 'https://fixture.invalid', NOW+10000)
+        conn.set_trace_callback(None)
+        assert [row['observation_id'] for row in claimed] == [items[-1]['observation_id']]
+        candidate_queries = [q for q in queries if q.startswith('SELECT q.observation_id')]
+        assert len(candidate_queries) == 2
+        assert all('idx_hf_balance_outbox_active' in str([tuple(row) for row in conn.execute('EXPLAIN QUERY PLAN '+q)]) for q in candidate_queries)

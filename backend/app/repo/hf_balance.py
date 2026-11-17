@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 import uuid
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from .. import db_hf_balance
@@ -16,9 +17,18 @@ def observed_iso(view):
 
 
 def balance_snapshot(conn, workspace_ids, as_of_ms=None):
-    """Public, reporter-free views. Caller owns the content read transaction."""
-    if not conn.in_transaction:
+    """Reporter-free views; preserve the caller transaction or finish an owned read snapshot."""
+    own_snapshot = not conn.in_transaction
+    if own_snapshot:
         conn.execute('BEGIN')
+    try:
+        return _balance_snapshot(conn, workspace_ids, as_of_ms)
+    finally:
+        if own_snapshot:
+            conn.rollback()
+
+
+def _balance_snapshot(conn, workspace_ids, as_of_ms):
     at = int(time.time() * 1000) if as_of_ms is None else as_of_ms
     exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='hf_balance_obs'").fetchone()
     views = {}
@@ -71,9 +81,21 @@ def partial_totals(views):
 
 
 def latest(conn, workspace_id):
+    try:
+        return _latest(conn, workspace_id)
+    except sqlite3.OperationalError:
+        if db_hf_balance.schema_error(conn):
+            return None
+        raise
+
+
+def _latest(conn, workspace_id):
     row = conn.execute("SELECT * FROM hf_balance_obs WHERE workspace_id=? AND time_quality='reported' "
                        "ORDER BY observed_at_ms DESC,observation_id DESC LIMIT 1", (workspace_id,)).fetchone()
     if row is None:
+        return None
+    if not {'observation_id','source','credits_c','observed_at_ms','received_at_ms','time_quality',
+            'precision_kind','precision_error_c'}.issubset(row.keys()):
         return None
     conflict = conn.execute("SELECT 1 FROM hf_balance_obs WHERE workspace_id=? AND time_quality='reported' "
                             'AND observed_at_ms=? AND credits_c<>? LIMIT 1',
@@ -181,13 +203,14 @@ def store(conn, reporter_key, reporter_uid, version, observations, *, target=Non
 
 def claim(conn, account_key, target, now, limit=100):
     """Caller holds a short write transaction; never retain it across HTTP."""
-    predicate = "account_key=? AND target_key=? AND next_retry_at_ms<=? AND (state IN ('pending','unsupported') OR (state='sending' AND lease_until_ms<=?))"
+    db_hf_balance.validate(conn)
+    predicate = "q.state<>'acked' AND account_key=? AND target_key=? AND next_retry_at_ms<=? AND (state IN ('pending','unsupported') OR (state='sending' AND lease_until_ms<=?))"
     args = (account_key, target, now, now)
     gate = conn.execute("SELECT MAX(next_retry_at_ms) FROM hf_balance_outbox WHERE account_key=? AND target_key=? AND state='unsupported'",
                         (account_key, target)).fetchone()[0]
     if gate and gate > now:
         return []
-    source = 'hf_balance_outbox q JOIN hf_balance_obs b ON b.observation_id=q.observation_id'
+    source = 'hf_balance_outbox q INDEXED BY idx_hf_balance_outbox_active JOIN hf_balance_obs b ON b.observation_id=q.observation_id'
     recent = conn.execute(f'SELECT q.observation_id FROM {source} WHERE {predicate} ORDER BY b.observed_at_ms DESC,q.queued_at_ms DESC,q.observation_id LIMIT ?', (*args, limit//2)).fetchall()
     oldest = conn.execute(f'SELECT q.observation_id FROM {source} WHERE {predicate} ORDER BY q.queued_at_ms,b.observed_at_ms,q.observation_id LIMIT ?', (*args, limit)).fetchall()
     ids = list(dict.fromkeys(row[0] for row in [*recent, *oldest]))[:limit]
@@ -208,6 +231,7 @@ def claim(conn, account_key, target, now, limit=100):
 
 
 def settle(conn, rows, receipt, now, *, code=None):
+    db_hf_balance.validate(conn)
     stored = {r['observation_id'] for r in (receipt or {}).get('stored', [])}
     conflicts = {r['observation_id'] for r in (receipt or {}).get('conflicts', [])}
     for row in rows:
@@ -225,11 +249,16 @@ def settle(conn, rows, receipt, now, *, code=None):
 
 
 def outbox_status(conn):
-    row = conn.execute("SELECT COALESCE(SUM(state<>'acked'),0),COALESCE(SUM(state<>'acked' AND fail_streak>0),0),"
+    row = conn.execute("SELECT COUNT(*),COALESCE(SUM(fail_streak>0),0),"
                        "COALESCE(SUM(state='conflict'),0),COALESCE(SUM(state='unsupported'),0),"
-                       "MIN(CASE WHEN state<>'acked' THEN queued_at_ms END),MAX(acked_at_ms) FROM hf_balance_outbox").fetchone()
-    error = conn.execute('SELECT last_error_code FROM hf_balance_outbox WHERE last_error_code IS NOT NULL '
-                         'ORDER BY last_attempt_at_ms DESC LIMIT 1').fetchone()
+                       "MIN(queued_at_ms) FROM hf_balance_outbox INDEXED BY idx_hf_balance_outbox_active "
+                       "WHERE state<>'acked'").fetchone()
+    success = conn.execute("SELECT acked_at_ms FROM hf_balance_outbox WHERE state='acked' "
+                           "ORDER BY acked_at_ms DESC LIMIT 1").fetchone()
+    error = conn.execute("SELECT last_error_code FROM hf_balance_outbox INDEXED BY idx_hf_balance_outbox_active "
+                         "WHERE state<>'acked' AND last_error_code IS NOT NULL "
+                         "ORDER BY last_attempt_at_ms DESC LIMIT 1").fetchone()
     return dict(zip(('balance_pending','balance_failed','balance_conflict','balance_unsupported',
-                     'balance_oldest_pending_at_ms','balance_last_success_at_ms'), row)) | {
+                     'balance_oldest_pending_at_ms'), row)) | {
+                         'balance_last_success_at_ms':success[0] if success else None,
                          'balance_last_error_code':error[0] if error else None}

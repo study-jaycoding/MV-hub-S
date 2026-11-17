@@ -971,7 +971,7 @@ def migrate_all_acct_to_creator_uid() -> int:
     return total
 
 
-def record_account_status(email: str, status: dict[str, Any], *, balance_target=None, balance_receipt=None, balance_changes=None, balance_receiver='hub') -> bool:
+def record_account_status(email: str, status: dict[str, Any], *, balance_target=None, balance_receipt=None, balance_changes=None, balance_receiver='hub', balance_reporter_key=None) -> bool:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
     원본 JSON은 계정 메뉴 하위호환용으로 보존하고, 팀 워크스페이스는 registry/member 테이블에
     정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다.
@@ -996,7 +996,7 @@ def record_account_status(email: str, status: dict[str, Any], *, balance_target=
         row = conn.execute("SELECT creator_uid FROM account WHERE email=?", (email,)).fetchone()
         conn.execute('SAVEPOINT balance_report')
         try:
-            receipt = hf_balance.store(conn, email, row[0] if row else None,
+            receipt = hf_balance.store(conn, balance_reporter_key or email, row[0] if row else None,
                                        balance_report.get('version'), balance_report.get('observations'),
                                        target=balance_target, changes=balance_changes,
                                        receiver=balance_receiver)

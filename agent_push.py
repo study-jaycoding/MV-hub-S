@@ -2360,7 +2360,7 @@ def _prepare_state_db(conn: sqlite3.Connection) -> None:
           server_key TEXT NOT NULL, account_email TEXT NOT NULL, observation_id TEXT NOT NULL,
           collection_id TEXT NOT NULL, collector_id TEXT NOT NULL, collection_seq INTEGER NOT NULL,
           payload_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
-          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','acked','unsupported','conflict')),
+          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','acked','unsupported','conflict','rejected')),
           attempts INTEGER NOT NULL DEFAULT 0, fail_streak INTEGER NOT NULL DEFAULT 0,
           last_attempt_at_ms INTEGER, next_retry_at_ms INTEGER NOT NULL DEFAULT 0,
           hub_acked_at_ms INTEGER, receiver_database_id TEXT, last_error_code TEXT,
@@ -2370,6 +2370,25 @@ def _prepare_state_db(conn: sqlite3.Connection) -> None:
         ON balance_observation_outbox(server_key,account_email,state,next_retry_at_ms,created_at_ms);
         """
     )
+    balance_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='balance_observation_outbox'").fetchone()[0]
+    if "'rejected'" not in balance_sql:
+        # SQLite CHECK changes require a table copy; preserve every queued payload atomically.
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            balance_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='balance_observation_outbox'").fetchone()[0]
+            if "'rejected'" not in balance_sql:
+                upgraded_sql = balance_sql.replace("'conflict')", "'conflict','rejected')")
+                if upgraded_sql == balance_sql:
+                    raise RuntimeError('unsupported_balance_outbox_schema')
+                conn.execute(upgraded_sql.replace('balance_observation_outbox', '_balance_observation_outbox_upgrade', 1))
+                conn.execute('INSERT INTO _balance_observation_outbox_upgrade SELECT * FROM balance_observation_outbox')
+                conn.execute('DROP TABLE balance_observation_outbox')
+                conn.execute('ALTER TABLE _balance_observation_outbox_upgrade RENAME TO balance_observation_outbox')
+                conn.execute('CREATE INDEX idx_agent_balance_outbox_due ON balance_observation_outbox(server_key,account_email,state,next_retry_at_ms,created_at_ms)')
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
     scan_columns = {row[1] for row in conn.execute("PRAGMA table_info(txn_scan)")}
     for column in ("pending_cursor", "pending_newest"):
         if column not in scan_columns:
@@ -4485,8 +4504,6 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 거래가 **장부에 실제로 들어간 뒤에야** 수집 기준을 옮긴다. 200 만 보고 옮기면 서버가
     # 삼킨 적재 실패 구간이 영영 다시 안 읽힌다(코덱스 P1). 옛 서버는 이 필드를 안 주므로
     # (None) 종전대로 200 을 성공으로 본다 — 그 경우 _TXN_OVERLAP_SECONDS 겹침이 안전망이다.
-    _ack_balance_observations(server, txn_email, body.get('balance_receipt'),
-                              {item['observation_id'] for item in (acct or {}).get('balance_report', {}).get('observations', [])})
     txn_ack = body.get("transactions_recorded")
     _save_txn_marks(server, txn_email, _marks_to_persist(txn_ack, txn_newest))
     if txn_ack is False:
@@ -4783,11 +4800,15 @@ def _ack_balance_observations_core(server, email, receipt, expected=None):
                 if group == 'stored' and type(entry.get('received_at_ms')) is not int:
                     return False
                 seen.add(key)
-                updates.append((key, 'acked' if group == 'stored' else 'conflict' if group == 'conflicts' else 'pending'))
-        for key, state in updates:
-            conn.execute('UPDATE balance_observation_outbox SET state=?,hub_acked_at_ms=?,receiver_database_id=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=?',
+                state = ('acked' if group == 'stored' else 'conflict' if group == 'conflicts'
+                         else 'pending' if entry.get('retryable') is True else 'rejected')
+                code = (None if state == 'acked' else 'observation_conflict' if state == 'conflict'
+                        else str(entry.get('code') or 'observation_rejected')[:128])
+                updates.append((key, state, code))
+        for key, state, code in updates:
+            conn.execute("UPDATE balance_observation_outbox SET state=?,hub_acked_at_ms=?,receiver_database_id=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=? AND state IN ('pending','unsupported')",
                          (state, int(time.time()*1000) if state == 'acked' else None, receipt['receiver_database_id'],
-                          None if state == 'acked' else 'observation_conflict', server.rstrip('/'), email, key))
+                          code, server.rstrip('/'), email, key))
     return True
 
 
@@ -4830,6 +4851,7 @@ def _drain_balance_observations_core(server, token, email):
                             body={'version': 1, 'account_email': email, 'observations': items})
     if status == 200 and _ack_balance_observations(server, email, receipt, {r['observation_id'] for r in rows}):
         acknowledged = {r['observation_id'] for group in ('stored','conflicts') for r in receipt[group]}
+        acknowledged.update(r['observation_id'] for r in receipt['rejected'] if r.get('retryable') is not True)
         rows = [r for r in rows if r['observation_id'] not in acknowledged]
     unsupported = status in (404,405) or (status == 200 and not isinstance(receipt, dict)) or (status == 200 and receipt.get('version') != 1)
     if rows:
@@ -4837,7 +4859,7 @@ def _drain_balance_observations_core(server, token, email):
     with _outbox_lock, _state_db() as conn:
         for row in rows:
             streak = row['fail_streak']+1
-            conn.execute("UPDATE balance_observation_outbox SET state=?,fail_streak=?,next_retry_at_ms=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=? AND state<>'acked'",
+            conn.execute("UPDATE balance_observation_outbox SET state=?,fail_streak=?,next_retry_at_ms=?,last_error_code=? WHERE server_key=? AND account_email=? AND observation_id=? AND state IN ('pending','unsupported')",
                          ('unsupported' if unsupported else 'pending', streak, now+(600000 if unsupported else min(3600000,1000*2**min(streak,12))),
                           'unsupported' if unsupported else 'delivery_failed', server.rstrip('/'), email, row['observation_id']))
 
@@ -4858,10 +4880,8 @@ def _collect_account_status(cli: str):
         if isinstance(ws, list):
             acct["workspaces"] = ws
             try:
-                report = _persist_balance_collection(getattr(_balance_context, 'server', None), acct.get('email'),
-                                                     ws, started, observed, acct.get('cli_version'))
-                if report:
-                    acct['balance_report'] = report
+                _persist_balance_collection(getattr(_balance_context, 'server', None), acct.get('email'),
+                                            ws, started, observed, acct.get('cli_version'))
             except Exception:
                 print('[잔액 보고] 기록을 보존하지 못했습니다 — 저장 공간을 확인하세요')
         workspace = _workspace_context_from_list(ws)
@@ -4899,8 +4919,6 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
         detail = body.get("detail") if isinstance(body, dict) else body
         print(f"[상태보고] 보류(status={status}): {str(detail)[:200]}")
         return False
-    _ack_balance_observations(server, acct.get('email'), body.get('balance_receipt') if isinstance(body, dict) else None,
-                              {item['observation_id'] for item in acct.get('balance_report', {}).get('observations', [])})
     _drain_balance_observations(server, token, acct.get('email'))
     return True
 

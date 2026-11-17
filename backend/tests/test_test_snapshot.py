@@ -416,3 +416,23 @@ def test_org_usage_scrub_removes_deleted_page_bytes_and_fails_closed(tmp_path):
         conn.execute("CREATE TRIGGER refuse_scrub BEFORE DELETE ON hf_org_usage_config BEGIN SELECT RAISE(ABORT,'blocked'); END")
     with pytest.raises(sqlite3.DatabaseError):
         scrub_test_snapshot_db(path, create_test_admin=False)
+
+
+def test_balance_scrub_skips_compaction_when_only_unrelated_settings_exist(tmp_path, monkeypatch):
+    from app import db_hf_balance
+    from app.services import db_scrub
+    path = tmp_path / 'no-balance.db'
+    with sqlite3.connect(path) as conn:
+        db_hf_balance.migrate(conn)
+        conn.execute('CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)')
+        conn.execute('INSERT INTO app_setting VALUES(?,?)', ('hf_status:local', json.dumps({'email':'local'})))
+    traces = []
+    original = db_scrub.sqlite3.connect
+    def connect(*args, **kwargs):
+        conn = original(*args, **kwargs)
+        conn.set_trace_callback(traces.append)
+        return conn
+    monkeypatch.setattr(db_scrub.sqlite3, 'connect', connect)
+    db_scrub.scrub_hf_balance(path)
+    assert not any('VACUUM' in statement for statement in traces)
+    assert not any('wal_checkpoint' in statement for statement in traces)

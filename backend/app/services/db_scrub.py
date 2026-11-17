@@ -60,6 +60,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
     c = sqlite3.connect(str(db_path))
     try:
         trash_transfer.configure_connection(c)
+        before = c.total_changes
         c.execute("BEGIN")
         scrub_slack_connection(c)  # Strict errors stay outside the legacy best-effort block.
         scrub_hf_org_usage_connection(c)
@@ -77,7 +78,7 @@ def strip_transfer_secrets(db_path: Path) -> None:
             c.execute('ROLLBACK TO legacy_secrets')
         c.execute('RELEASE legacy_secrets')
         c.execute("COMMIT")
-        _compact_scrubbed_copy(c)
+        _compact_scrubbed_copy(c, changed=c.total_changes > before)
     finally:
         c.close()
 
@@ -97,6 +98,7 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
 
     with closing(sqlite3.connect(str(db_path))) as conn:
         trash_transfer.configure_connection(conn)
+        before = conn.total_changes
         conn.execute("BEGIN")
         scrub_slack_connection(conn)
         scrub_hf_org_usage_connection(conn)
@@ -130,12 +132,12 @@ def scrub_test_snapshot_db(db_path: Path, *, create_test_admin: bool) -> None:
                 )
         conn.execute("COMMIT")
 
-        _compact_scrubbed_copy(conn)
+        _compact_scrubbed_copy(conn, changed=conn.total_changes > before)
 
 
-def _compact_scrubbed_copy(conn: sqlite3.Connection) -> None:
+def _compact_scrubbed_copy(conn: sqlite3.Connection, *, changed: bool = False) -> None:
     # secure_delete clears today's deletes; VACUUM also removes older freelist/overflow residues.
-    if not any(_table_exists(conn, table) for table in (*HF_ORG_USAGE_TABLES, *HF_BALANCE_TABLES, 'app_setting', 'account_report_outbox')):
+    if not changed:
         return
     conn.execute('VACUUM')
     if conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:
@@ -197,29 +199,32 @@ def scrub_slack(db_path: Path) -> None:
         conn.commit()
 
 
-def scrub_hf_org_usage_connection(conn: sqlite3.Connection) -> None:
+def scrub_hf_org_usage_connection(conn: sqlite3.Connection) -> bool:
     """Fail closed, including deleted-page bytes. Safe for standalone workroom loading."""
     conn.execute('PRAGMA secure_delete=ON')
+    before = conn.total_changes
     for table in HF_ORG_USAGE_TABLES:
         if _table_exists(conn, table):
             conn.execute(f'DELETE FROM {table}')
             if conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
                 raise RuntimeError('Organization usage remains in snapshot')
+    return conn.total_changes > before
 
 
 def scrub_hf_org_usage(db_path: Path) -> None:
     """Offline copied DB only. No app import: workroom_data loads this file standalone."""
     with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute('BEGIN IMMEDIATE')
-        scrub_hf_org_usage_connection(conn)
+        compact = scrub_hf_org_usage_connection(conn)
         conn.commit()
-        _compact_scrubbed_copy(conn)
+        _compact_scrubbed_copy(conn, changed=compact)
 
 
-def scrub_hf_balance_connection(conn: sqlite3.Connection) -> None:
+def scrub_hf_balance_connection(conn: sqlite3.Connection) -> bool:
     """Copies only: remove both normalized observations and old-hub JSON envelopes."""
     import json
     conn.execute('PRAGMA secure_delete=ON')
+    before = conn.total_changes
     for table in HF_BALANCE_TABLES:
         if _table_exists(conn, table):
             conn.execute(f'DELETE FROM {table}')
@@ -246,14 +251,15 @@ def scrub_hf_balance_connection(conn: sqlite3.Connection) -> None:
             if stripped != value:
                 conn.execute(f'UPDATE {table} SET {column}=? WHERE rowid=?',
                              (json.dumps(stripped, ensure_ascii=False), rowid))
+    return conn.total_changes > before
 
 
 def scrub_hf_balance(db_path: Path) -> None:
     with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute('BEGIN IMMEDIATE')
-        scrub_hf_balance_connection(conn)
+        compact = scrub_hf_balance_connection(conn)
         conn.commit()
-        _compact_scrubbed_copy(conn)
+        _compact_scrubbed_copy(conn, changed=compact)
 
 
 def pause_hf_org_usage_for_restore(db_path: Path) -> bool:

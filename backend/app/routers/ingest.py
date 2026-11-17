@@ -105,21 +105,29 @@ def _agent_write_acc(request: Request) -> dict:
     return acc
 
 
-def _validate_balance_sender(request: Request, account: dict, email: str) -> None:
+def _validate_balance_sender(request: Request, account: dict, email: str) -> dict:
     from .. import config
-    from ..deps import bearer_token
+    import os
     from ..services.request_guards import require_loopback_request
-    if norm_email(account.get('email')) != norm_email(email) or not norm_email(email):
-        raise HTTPException(409, '로그인 계정과 보고 계정이 다릅니다')
+    email = norm_email(email)
+    if not email:
+        raise HTTPException(409, dict(code='account_mismatch', retryable=True))
     if not config.AUTH_ENABLED:
         require_loopback_request(request, '이 PC에서만 보낼 수 있습니다')
-        expected, supplied = _proxy.token(), bearer_token(request)
-        if not expected or not supplied or not hmac.compare_digest(expected, supplied):
-            raise HTTPException(401, '로그인이 필요합니다')
-        if config.LOCAL_AGENT_PAIR_SECRET and not hmac.compare_digest(
-            request.headers.get('X-MVHub-Agent-Key') or '', config.LOCAL_AGENT_PAIR_SECRET
-        ):
-            raise HTTPException(403, '에이전트 연결을 확인하세요')
+        hub_email = norm_email(active_account.account_key())
+        configured = bool(repo.get_setting('shared_server_url') or os.environ.get('CONTENT_HUB_SHARED_URL')
+                          or _proxy.token())
+        if configured and (not hub_email or not _proxy.token()):
+            raise HTTPException(409, dict(code='hub_not_signed_in', retryable=True))
+        if hub_email and hub_email != email:
+            raise HTTPException(409, dict(code='account_mismatch', retryable=True))
+    elif norm_email(account.get('email')) != email:
+        raise HTTPException(409, dict(code='account_mismatch', retryable=True))
+    if config.LOCAL_AGENT_PAIR_SECRET and not hmac.compare_digest(
+        request.headers.get('X-MVHub-Agent-Key') or '', config.LOCAL_AGENT_PAIR_SECRET
+    ):
+        raise HTTPException(403, dict(code='agent_key_mismatch', retryable=True))
+    return {**account, 'email':email}
 
 
 def _mcp_backfill_jobs(
@@ -141,7 +149,7 @@ def _mcp_backfill_jobs(
     return jobs
 
 
-def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: Optional[dict] = None) -> IngestOut:
+def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: Optional[dict] = None, *, balance_reporter_key=None) -> IngestOut:
     """CLI list 형태 잡들을 적재 + 계정↔힉스필드 uid 연결 + 크레딧 보고. push/mcp 공통 코어.
     각 잡은 자기 고유 creator_uid(URL의 user_<id>)를 유지하고, 이미 실제 uid 에 연결된 계정은
     재연결하지 않는다(레퍼런스 오염 방지, 실측 버그)."""
@@ -302,6 +310,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None, notes: 
                 balance_receipt=balance_receipt,
                 balance_changes=balance_changes,
                 balance_receiver='server' if is_shared_team_server() else 'hub',
+                balance_reporter_key=balance_reporter_key,
             )
         else:
             changed = repo.record_account_status(acc["email"], account_status)
@@ -339,10 +348,13 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
     acc = _agent_write_acc(request)
     notes = {}
     status = body.account_status
+    balance_account = None
+    balance_error = None
     if isinstance(status, dict) and 'balance_report' in status:
         try:
-            _validate_balance_sender(request, acc, status.get('email'))
-        except HTTPException:
+            balance_account = _validate_balance_sender(request, acc, status.get('email'))
+        except HTTPException as exc:
+            balance_error = exc.detail
             # No observation ACK, but preserve the legacy jobs/status ingestion contract.
             status = {key: value for key, value in status.items() if key != 'balance_report'}
     out = _ingest_core(
@@ -352,9 +364,10 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
         status,
         workspace=body.workspace.model_dump(),
         notes=notes,
+        balance_reporter_key=balance_account['email'] if balance_account else None,
     )
-    if not body.jobs and not notes.get('identity_changed') and notes.get('status_changed') is False:
-        request.state.library_unchanged = True
+    if balance_error:
+        out.balance_receipt = dict(version=1, retryable=True, error=balance_error)
     if notes.get('balance_changed') and background_tasks is not None:
         background_tasks.add_task(manager.broadcast, {'type':'credits_changed'}, account_uid=realtime_scope(acc))
     # 에이전트는 최신 목록의 차집합만 보내므로 len(body.jobs)가 아니라 차집합 전 원본 수로
@@ -372,17 +385,22 @@ def ingest(body: IngestIn, request: Request, background_tasks: BackgroundTasks =
     # 거래 차집합이 비어도, 방금 적재/보강된 생성물로 저장된 미매칭 거래를 다시 평가한다.
     # 신원을 못 정한 사이클은 전체 사용자 범위로 매칭하지 않는다.
     transactions_stored = False
+    transaction_changes = 0
     if MANAGE_ENABLED and out.linked_uid:
+        transaction_changes = None
         try:
             from ..repo import manage as _m
 
             transactions = body.account_transactions or []
             recorded = _m.record_transactions(out.linked_uid, acc.get("email"), transactions)
             transactions_stored = recorded["stored"] + recorded["rejected"] == len(transactions)
+            transaction_changes = recorded.get('inserted', 0) + recorded.get('matched', 0)
             if background_tasks is not None and (recorded.get("inserted", 0) > 0 or recorded.get("matched", 0) > 0):
                 background_tasks.add_task(manager.broadcast, {"type": "credits_changed"}, account_uid=realtime_scope(acc))
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
+    if not body.jobs and not notes.get('identity_changed') and notes.get('status_changed') is False and transaction_changes == 0:
+        request.state.library_unchanged = True
     report_queued = False
     # 프록시(로컬 허브)에서는 대기열에 들어가야 공유 서버까지 간다 — 로컬 저장만으로 성공이라고
     # 답하면 에이전트가 기준을 옮겨 버리고, 전송기는 대기열만 읽으므로 그 구간을 아무도 다시
