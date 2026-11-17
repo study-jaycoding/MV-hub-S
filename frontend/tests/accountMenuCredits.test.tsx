@@ -58,8 +58,9 @@ async function open(context: WorkspaceContext, signedIn = false) {
     creditsText: credits?.querySelector(".acct-credits-top")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
     limit,
     limitText: rows[0]?.querySelector(".acct-limit-val")?.textContent?.trim() ?? "",
-    groupText: rows[1]?.querySelector(".acct-limit-val")?.textContent?.trim() ?? "",
+    groupText: limit?.querySelector(".acct-limit-sep .acct-limit-val")?.textContent?.trim() ?? "",
     limitTitle: rows[0]?.getAttribute("title") ?? "",
+    usage: limit?.querySelector<HTMLButtonElement>(".acct-usage-num") ?? null,
   };
 }
 
@@ -130,30 +131,51 @@ it("팀 공간이 아니면 Credits 칸만 — Limit·User group 칸이 없다",
 });
 
 
-it.each(["unassigned", "unlimited"] as const)("새 서버 %s 계정도 내 사용량 진입을 제공한다", async source => {
+it.each(["unassigned", "unlimited"] as const)("새 서버 %s 계정도 Usage 숫자로 내 사용량 창에 들어간다(값이 없으면 —)", async source => {
   serve(quota({ source, usage_supported: true }));
   const m = await open(TEAM);
-  expect(m.limit?.textContent).toContain("내 사용량 보기");
+  expect(m.usage).not.toBeNull();
+  expect(m.usage!.textContent).toBe("—›");
+  expect(m.usage!.getAttribute("aria-label")).toBe("Usage — · 내 사용량 창 열기");
+  expect(m.limit?.textContent).not.toContain("내 사용량 보기"); // 옛 단추는 없앴다(Jay 2026-11-17)
 });
 
-it("basis 없는 구서버는 내 사용량 진입과 API 출처를 숨긴다", async () => {
+it("basis 없는 구서버는 Usage 줄과 API 출처를 숨긴다", async () => {
   serve(quota({ source: "auto", quota: 100, remaining: 90 }));
   const m = await open(TEAM);
-  expect(m.limit?.textContent).not.toContain("내 사용량 보기");
+  expect(m.usage).toBeNull();
+  expect(m.limit?.textContent).not.toContain("Usage");
   expect(m.limit?.textContent).not.toContain("힉스필드 기준");
 });
 
-it("API와 facts 출처를 몫 source와 구별하고 실제 전액 환불만 안내한다", async () => {
+it("API 기준·전액 환불 안내는 작은 글씨가 아니라 Usage 숫자의 풀이 글로 간다", async () => {
   serve(quota({ source: "auto", basis: "api", quota: 100, remaining: 90, used: 10, failed_count: 3, failed_refunded_count: 1, collected_at_ms: 100 }));
   const m = await open(TEAM);
-  expect(m.limit?.textContent).toContain("힉스필드 기준");
-  expect(m.limit?.textContent).toContain("오류 보고 후 전액 환불 1건");
-  expect(m.limit?.textContent).not.toContain("전액 환불 3건");
+  expect(m.usage!.textContent).toBe("10›");
+  expect(m.limit?.textContent).not.toContain("힉스필드 기준");
+  expect(m.limit?.textContent).not.toContain("전액 환불");
+  expect(m.usage!.title).toContain("힉스필드 기준");
+  expect(m.usage!.title).toContain("오류 보고 후 전액 환불 1건");
+  expect(m.usage!.title).not.toContain("전액 환불 3건");
 });
 
-it("미상 건수만 있을 때 금액에 견적 기호를 붙이지 않는다", async () => {
+it("미상 건수만 있을 때 금액에 견적 기호를 붙이지 않고 미확인 안내는 풀이 글로", async () => {
   serve(quota({ source: "auto", basis: "api", quota: 100, remaining: 90, used: 10, unknown_count: 3 }));
   const m = await open(TEAM);
   expect(m.limitText).toBe("90 / 100");
-  expect(m.limit?.textContent).toContain("사용량 미확인 3건");
+  expect(m.usage!.textContent).toBe("10›");
+  expect(m.limit?.textContent).not.toContain("사용량 미확인 3건");
+  expect(m.usage!.title).toContain("사용량 미확인 3건");
+});
+
+it("집계 전 견적이 있으면 Usage 숫자 앞에 ≈, 누르면 메뉴가 닫히고 내 사용량 창이 열린다", async () => {
+  serve(quota({ source: "auto", basis: "api", quota: 100, remaining: 88, used: 12, estimated_count: 2, used_estimated: 2 }));
+  const m = await open(TEAM);
+  expect(m.usage!.textContent).toBe("≈ 12›");
+  // 단추 이름에 숫자와 용도가 함께 — 옆 'Usage' 글자와 무관하게 무엇을 여는지 알 수 있다
+  expect(m.usage!.getAttribute("aria-label")).toBe("Usage ≈ 12 · 내 사용량 창 열기");
+  expect(m.usage!.title.split("\n")[0]).toBe("내 사용량 창 열기");
+  await act(async () => { m.usage!.click(); });
+  expect(document.querySelector(".acct-pop")).toBeNull();
+  expect(document.querySelector('[role="dialog"].my-usage-window')).not.toBeNull();
 });

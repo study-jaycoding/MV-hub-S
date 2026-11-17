@@ -31,7 +31,7 @@ import {
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
 import { MyUsageWindow } from "./MyUsageWindow";
-import { UsageBasis } from "./common/UsageBasis";
+import { usageBasisText, usagePeriodText } from "../lib/creditUsage";
 import { SettingsPanel } from "./SettingsPanel";
 import { AccountIcon, SettingIcon, SignOutIcon } from "./common/ViewIcons";
 import { manageApi } from "../lib/manageApi";
@@ -336,6 +336,17 @@ export function AccountMenu({
     : myQuota?.source === "unassigned" ? "그룹에 들지 않았습니다 — 워크스페이스 잔액 안에서 씁니다"
     : quotaState.loading ? "확인 중" : "확인 불가";
   const groupName = myQuota?.group_name || (myQuota?.source === "unassigned" ? "None" : "—");
+  // Usage 줄 — 새 서버(기준·지원 표시가 있음)면 창을 열 수 있고, 미배정은 my-quota 가 사용을 안 세므로 '—'.
+  const usageEntry = Boolean(myQuota?.usage_supported || myQuota?.basis) && myQuota?.source !== "unavailable";
+  const usageShown = Boolean(myQuota?.basis) && myQuota?.source !== "unassigned" && myQuota?.source !== "unavailable";
+  const usageText = usageShown && myQuota ? `${myQuota.estimated_count > 0 ? "≈ " : ""}${formatCredits(myQuota.used)}` : "—";
+  const usageTitle = myQuota?.basis ? [
+    t("내 사용량 창 열기"),
+    [usageBasisText(myQuota, t), usagePeriodText(myQuota)].filter(Boolean).join(" · "),
+    myQuota.collected_at_ms != null ? `${t("수집 시각")} ${new Date(myQuota.collected_at_ms).toLocaleString()}` : "",
+    myQuota.basis === "api" && myQuota.failed_refunded_count ? t("오류 보고 후 전액 환불 {count}건").replace("{count}", String(myQuota.failed_refunded_count)) : "",
+    uncertainty,
+  ].filter(Boolean).join("\n") : t("내 사용량 창 열기");
   const gaugeMax = quotaWorkspaceId
     ? poolQuota ? myQuota?.pool_total ?? 0 : personalQuota?.quota ?? 0
     : budgetMax ?? MONTHLY_CREDIT_MAX;
@@ -604,16 +615,26 @@ export function AccountMenu({
                   <span className="acct-limit-val">—</span>
                 )}
               </div>
-              {uncertainty ? <div className="acct-quota-note">{uncertainty}</div> : null}
+              {(usageEntry || usageShown) && (
+                // Usage 줄 — 숫자를 누르면 '내 사용량' 창. 기준·기간·환불·미확인 같은 작은 글씨는 숫자의 풀이 글로(Jay 2026-11-17 시안)
+                <div className="acct-limit-row">
+                  <span className="acct-limit-label">Usage</span>
+                  {usageEntry ? (
+                    <button type="button" className="acct-usage-num" title={usageTitle} aria-haspopup="dialog"
+                      aria-label={`Usage ${usageText} · ${t("내 사용량 창 열기")}`}
+                      onClick={() => { setOpen(false); avatarRef.current?.focus(); setUsageOpen(true); }}>
+                      {usageText}<span className="acct-credits-chev" aria-hidden="true">›</span>
+                    </button>
+                  ) : (
+                    <span className="acct-limit-val" title={usageTitle}>{usageText}</span>
+                  )}
+                </div>
+              )}
               <div className="acct-limit-row acct-limit-sep">
                 <span className="acct-limit-label">User group</span>
                 <span className="acct-limit-val">{groupName}</span>
               </div>
-              {myQuota?.basis && myQuota.source !== "unassigned" && myQuota.source !== "unavailable" && <div className="acct-quota-note">{t("사용")} {myQuota.estimated_count > 0 ? "≈ " : ""}{formatCredits(myQuota.used)}</div>}
-              {myQuota?.basis && <UsageBasis value={myQuota} />}
-              {myQuota?.basis === "api" && !!myQuota.failed_refunded_count && <div className="acct-quota-note">{t("오류 보고 후 전액 환불 {count}건").replace("{count}", String(myQuota.failed_refunded_count))}</div>}
               {quotaState.loading ? null : !myQuota || myQuota.source === "unavailable" ? <div className="acct-quota-note">{t("확인 불가")}</div> : null}
-              {(myQuota?.usage_supported || myQuota?.basis) && myQuota?.source !== "unavailable" && <button type="button" className="acct-action" onClick={() => { setOpen(false); avatarRef.current?.focus(); setUsageOpen(true); }}>{t("내 사용량 보기")}</button>}
             </div>
           )}
 

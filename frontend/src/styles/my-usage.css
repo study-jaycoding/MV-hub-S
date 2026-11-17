@@ -1,26 +1,51 @@
+/* '내 사용량' 창 — Jay 2026-11-17 고른 시안대로(제목 줄 기간 칸·숫자 칸·색 막대·짧은 시각·색 알약). 웹 파랑·Claude Code 보라·실패 빨강은 시안 값 */
 .my-usage-backdrop { position:fixed; inset:0; z-index:12000; background:#0009; display:grid; place-items:center; padding:20px; }
-.my-usage-window { width:min(960px,100%); max-height:90vh; overflow:auto; background:var(--panel); color:var(--text,#e8ede3); border:1px solid var(--border,#343b2f); border-radius:14px; padding:20px; display:flex; flex-direction:column; gap:14px; }
-.my-usage-window header,.my-usage-window nav { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-.my-usage-window header { justify-content:space-between; }
-.my-usage-window h2 { font-size:18px; margin:0; }
+.my-usage-window { --mu-web:#8fd0ff; --mu-cc:#d6a2ff; --mu-bad:#f07a5a;
+  width:min(760px,100%); max-height:90vh; overflow:auto; background:var(--panel); color:var(--text,#e8ede3); border:1px solid var(--border,#343b2f); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; }
+.my-usage-window header { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+.my-usage-window h2 { font-size:16px; font-weight:700; margin:0; white-space:nowrap; }
+.my-usage-titlebar { display:flex; align-items:center; gap:8px; min-width:0; }
+/* 기준·안내 단추 — 계정 메뉴 Credits 옆 '?' 와 같은 모양 */
+.my-usage-help { width:16px; height:16px; padding:0; display:inline-grid; place-items:center; border:1.3px solid var(--muted); border-radius:50%; background:transparent; color:var(--muted); font-size:10px; font-weight:800; line-height:1; }
+.my-usage-help:hover,.my-usage-help[aria-expanded=true] { border-color:var(--text); color:var(--text); }
+.my-usage-help-pop { background:rgba(255,255,255,0.03); border:1px solid var(--border,#343b2f); border-radius:8px; padding:8px 10px; display:flex; flex-direction:column; gap:4px; }
+.my-usage-help-pop p { font-size:12px; color:var(--muted); white-space:pre-line; }
 .my-usage-window p { margin:0; }
-.my-usage-window button,.my-usage-window select { background:transparent; color:inherit; border:1px solid var(--border,#343b2f); border-radius:7px; padding:7px 12px; cursor:pointer; }
-.my-usage-window select { background:var(--panel); }
-.my-usage-window button[aria-pressed=true] { background:var(--accent,#c8f03c); color:#11140c; }
+.my-usage-tools { display:flex; align-items:center; gap:6px; }
+.my-usage-seg { display:flex; border:1px solid var(--border2,#3d4536); border-radius:8px; overflow:hidden; }
+.my-usage-seg button { padding:4px 10px; border:none; border-radius:0; background:transparent; color:var(--muted); font-size:12px; }
+.my-usage-seg button[aria-pressed=true] { background:var(--accent,#c8f03c); color:var(--accent-ink,#11140c); font-weight:700; }
+.my-usage-window select { border:1px solid var(--border2,#3d4536); border-radius:8px; padding:4px 8px; font-size:12px; color:var(--muted); background:var(--panel); }
+.my-usage-close { width:26px; height:26px; padding:0; display:grid; place-items:center; border:1px solid var(--border2,#3d4536); border-radius:8px; background:transparent; color:var(--muted); font-size:14px; }
+.my-usage-window button:active { transform:none; }
 .my-usage-window button:focus-visible,.my-usage-window select:focus-visible { outline:2px solid var(--accent,#c8f03c); outline-offset:2px; }
-.my-usage-tiles { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
-.my-usage-tiles>div { background:#ffffff07; border:1px solid var(--border,#343b2f); border-radius:10px; padding:12px; display:flex; flex-direction:column; }
-.my-usage-tiles strong { font-size:24px; font-variant-numeric:tabular-nums; }
-.my-usage-tiles span,.credit-usage-basis,.my-usage-note { font-size:12px; color:var(--muted); }
-.credit-usage-basis { display:block; font-weight:normal; white-space:normal; }
-.my-usage-bars { display:flex; flex-direction:column; gap:8px; }
-.my-usage-bars>div { display:grid; grid-template-columns:180px minmax(0,1fr) 80px; align-items:center; gap:10px; }
-.my-usage-bars .track { background:#ffffff12; height:8px; border-radius:4px; overflow:hidden; }
-.my-usage-bars i { display:block; background:var(--accent,#c8f03c); height:100%; }
+.my-usage-tiles { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.my-usage-tiles>div { background:rgba(255,255,255,0.03); border:1px solid var(--border,#343b2f); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; }
+.my-usage-tiles strong { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+.my-usage-tiles .good strong { color:var(--accent,#c8f03c); }
+.my-usage-tiles span,.my-usage-note { font-size:12px; color:var(--muted); }
+.my-usage-bars { display:flex; flex-direction:column; gap:7px; }
+.my-usage-bars>div { display:grid; grid-template-columns:120px minmax(0,1fr) 70px; align-items:center; gap:10px; font-size:12.5px; }
+.my-usage-bars .track { background:rgba(255,255,255,0.07); height:8px; border-radius:4px; overflow:hidden; }
+.my-usage-bars i { display:block; height:100%; background:var(--accent,#c8f03c); }
+.my-usage-bars i.web { background:var(--mu-web); }
+.my-usage-bars i.cc { background:var(--mu-cc); }
+.my-usage-bars i.etc { background:var(--muted2,#5f6573); }
 .my-usage-bars b { text-align:right; font-variant-numeric:tabular-nums; }
 .my-usage-table { overflow-x:auto; border:1px solid var(--border,#343b2f); border-radius:10px; }
-.my-usage-table table { width:100%; border-collapse:collapse; white-space:nowrap; }
-.my-usage-table th,.my-usage-table td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--border,#343b2f); }
-.my-usage-table td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+.my-usage-table table { width:100%; border-collapse:collapse; white-space:nowrap; font-size:12.5px; }
+.my-usage-table th,.my-usage-table td { padding:7px 10px; text-align:left; border-bottom:1px solid var(--border,#343b2f); }
+.my-usage-table th { color:var(--muted); font-weight:500; background:rgba(255,255,255,0.03); }
+.my-usage-table tr:last-child td { border-bottom:none; }
+.my-usage-table td:last-child,.my-usage-table th:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+.my-usage-table td.fail { color:var(--mu-bad); }
 .my-usage-table del { color:var(--muted); margin-right:4px; }
-@media(max-width:650px) { .my-usage-backdrop { padding:8px; } .my-usage-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .my-usage-bars>div { grid-template-columns:130px minmax(0,1fr) 60px; font-size:12px; } }
+.my-usage-pill { display:inline-block; font-size:11px; padding:0 7px; border-radius:999px; border:1px solid var(--border2,#3d4536); color:var(--muted); }
+.my-usage-pill.mv { border-color:var(--accent,#c8f03c); color:var(--accent,#c8f03c); }
+.my-usage-pill.web { border-color:var(--mu-web); color:var(--mu-web); }
+.my-usage-pill.cc { border-color:var(--mu-cc); color:var(--mu-cc); }
+/* 관리 화면(MemberTable·CreditPoolSection·ConsoleSubView)의 UsageBasis 기준 줄 — 이 파일에만 있던 규칙이라 그대로 둔다 */
+.credit-usage-basis { display:block; font-size:12px; font-weight:normal; color:var(--muted); white-space:normal; }
+.my-usage-empty { padding:14px 4px 4px; font-size:13.5px; line-height:1.6; display:flex; flex-direction:column; gap:2px; }
+.my-usage-empty span { color:var(--muted); font-size:12.5px; }
+@media(max-width:650px) { .my-usage-backdrop { padding:8px; } .my-usage-bars>div { grid-template-columns:110px minmax(0,1fr) 60px; font-size:12px; } .my-usage-tools { flex-wrap:wrap; } }
