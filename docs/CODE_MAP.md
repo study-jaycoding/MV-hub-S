@@ -20,6 +20,7 @@ updated: 2026-11-17
 `backend/app/services/hf_balance_delivery.py`는 계정·대상·임대를 고정한 전달,
 `backend/app/routers/hf_balance.py`는 역사 관측 수신·멤버/read_all 잔액 조회·관리자 장부 조회의 HTTP 경계다.
 `agent_push.py`는 workspace-list 관측을 로컬 SQLite에 먼저 보존하고 허브 저장 확인 후에도 원문을 남긴다.
+관측은 전용 수신점으로만 전달하며 영구 거부 원문은 `rejected`로 보존한다. 허브는 loopback CLI 신원과 로그인 계정을 확인하고, 설정된 서버에 미로그인이면 저장 없이 재시도 가능한 거부를 반환한다. 잔액 스키마 불일치는 해당 쓰기·전달만 막고 앱 기동과 기존 상태 보고를 유지한다. 장부 커서는 최초 수신 시각으로 관측을 고정하며 이미 제공한 구간의 늦은 관측·API/계획 변경을 검사한다.
 `backend/tests/test_hf_balance_consumers.py`·`backend/tests/test_hf_balance_ledger.py`·`backend/tests/test_hf_balance_routes.py`는 공통 잔액·부분합·권한·읽기 전용·재분석 계약을 확인한다.
 화면은 Jay 시안 확인 뒤 후속 묶음이다. [합의 계약](status/hf_balance_ledger_2026-11-17.md).
 

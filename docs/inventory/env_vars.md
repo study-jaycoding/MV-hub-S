@@ -117,7 +117,7 @@
 | `CONTENT_HUB_SERVER_SYNC` | `"1"` | `backend/app/services/syncer.py` | `MV_server.bat` `test_dev.bat` `test_dev_server.bat` `test_push-db.bat` |
 | `CONTENT_HUB_SERVICE_NAME` | `"mvhub-backend"` | `backend/app/services/operational_logging.py` | — |
 | `CONTENT_HUB_SHARED` | `DATA_DIR / "shared"` | `backend/app/config.py` | — |
-| `CONTENT_HUB_SHARED_URL` | `"http://192.168.1.171:8010"` | `backend/app/shared_server_config.py` `tools/tests/test_canvas_notebook_measure.py` | `MV_agent.bat` |
+| `CONTENT_HUB_SHARED_URL` | `"http://192.168.1.171:8010"` | `backend/app/routers/ingest.py` `backend/app/shared_server_config.py` `tools/tests/test_canvas_notebook_measure.py` | `MV_agent.bat` |
 | `CONTENT_HUB_SHARE_RECONCILE_INTERVAL_SECONDS` | `"30"` | `backend/app/services/share_state_reconciler.py` | — |
 | `CONTENT_HUB_SLACK_TEST_RECIPIENTS` | `''` | `backend/app/services/slack_client.py` | — |
 | `CONTENT_HUB_SLACK_TEST_SEND` | — | `backend/app/services/slack_client.py` `backend/app/services/slack_notify.py` | — |
