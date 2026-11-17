@@ -12,7 +12,9 @@ import { createPortal } from "react-dom";
 import {
   FORCE_UPDATE_INSTALLS_PUBLIC,
   UPDATE_STAGES,
+  UPDATE_TIMEOUT_MESSAGE,
   UPDATE_WAIT_VERSION_KEY,
+  createUpdateWaitClock,
   getReleaseUpdateStatus,
   isReleaseUpdateRunning,
   onReleaseUpdateStarted,
@@ -25,7 +27,6 @@ import {
 } from "../lib/releaseUpdate";
 
 const POLL_MS = 1500;
-const DEADLINE_MS = 5 * 60 * 1000;
 
 function waitVersion(): string {
   try {
@@ -96,31 +97,34 @@ export function UpdateProgressOverlay() {
     if (!open || done) return;
     let cancelled = false;
     let timer = 0;
-    let firstFailedAt: number | null = null;
     let idleHits = 0; // 진행 중이 아닌 응답을 연달아 받은 횟수
-    // 제한 시간은 요청과 따로 잰다 — 상태 요청이 끝나지 않으면 await 뒤의 시간 검사에 닿지 못해 5분이 지나도 덮개가
-    // 화면을 막았다(2026-10-03 점검 CXF-6). 만료되면 늦게 오는 응답은 버린다(cancelled).
-    const limit = window.setTimeout(() => {
+    const clock = createUpdateWaitClock();
+    // 제한 시간은 요청과 따로 잰다 — 상태 요청이 끝나지 않으면 await 뒤의 시간 검사에 닿지 못해 덮개가 화면을 계속
+    // 막았다(2026-10-03 점검 CXF-6). 시작부터 고정 5분이 아니라 진행이 멈춘 시간으로 끊는다(lib/releaseUpdate 의 시계).
+    // 만료되면 늦게 오는 응답은 버린다(cancelled).
+    const watch = window.setInterval(() => {
+      if (!clock.expired()) return;
       cancelled = true;
       window.clearTimeout(timer);
-      // 대기 표시를 지운다 — 남겨 두면 다음 새로고침에 덮개가 다시 떠서 앱을 5분 더 가린다
+      window.clearInterval(watch);
+      // 대기 표시를 지운다 — 남겨 두면 다음 새로고침에 덮개가 다시 떠서 앱을 또 가린다
       // (Codex 지적, 2026-09-28).
       clearWait();
-      setNote(
-        "자동 확인 시간이 초과됐습니다. 프로그램 창과 업데이트 로그(%LOCALAPPDATA%\\MVHub\\updates\\update.log)를 확인해주세요.",
-      );
+      setNote(UPDATE_TIMEOUT_MESSAGE);
       setDone(true);
-    }, DEADLINE_MS);
+    }, 1000);
 
     const poll = async () => {
       const expected = waitVersion();
+      clock.asked();
       try {
         const next = await getReleaseUpdateStatus(false);
         if (cancelled) return;
-        firstFailedAt = null;
+        clock.answered(next);
         setStatus(next);
         setNote("");
         if (next.state === "failed") {
+          window.clearInterval(watch); // 결과가 정해졌다 — 감시가 뒤늦게 시간 초과로 덮지 않게
           clearWait();
           setDone(true);
           return;
@@ -132,6 +136,8 @@ export function UpdateProgressOverlay() {
           && (next.state === "complete" || next.state === "up_to_date")
           && next.current_version === target
         ) {
+          // 완료가 정해졌다 — 새로고침을 예약한 0.6초 사이에 감시가 전체 상한에 닿아 성공을 시간 초과로 덮지 않게(Codex 재확인 중간)
+          window.clearInterval(watch);
           clearWait();
           // 폴링을 멈추고 알린다 — 단추는 아래 finished 가 따로 그린다
           const ask = () => {
@@ -152,6 +158,7 @@ export function UpdateProgressOverlay() {
         if (!isReleaseUpdateRunning(next.state)) {
           idleHits += 1;
           if (idleHits >= 2) {
+            window.clearInterval(watch);
             clearWait();
             setOpen(false);
             return;
@@ -163,8 +170,8 @@ export function UpdateProgressOverlay() {
         // 옛 허브가 내려가고 새 허브가 뜨는 동안의 무응답은 정상이다. 다만 90초를 넘으면
         // 멈춘 퍼센트 대신 정직한 대기 안내로 바꾼다(유령 진행률 방지).
         if (cancelled) return;
-        if (firstFailedAt == null) firstFailedAt = Date.now();
-        setNote(pollFailureMessage(firstFailedAt, Date.now()) ?? "");
+        clock.failed();
+        setNote(pollFailureMessage(clock.failedSince(), Date.now()) ?? "");
       }
       if (cancelled) return;
       timer = window.setTimeout(poll, POLL_MS);
@@ -173,7 +180,7 @@ export function UpdateProgressOverlay() {
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
-      window.clearTimeout(limit);
+      window.clearInterval(watch);
     };
   }, [open, done]);
 
