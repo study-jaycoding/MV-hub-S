@@ -7,6 +7,7 @@ import { HttpError } from "../src/lib/http";
 import type { ManageCaps } from "../src/lib/useManageCaps";
 import type { BalanceLedgerResponse } from "../src/shared/contracts/hfBalance";
 import { setAccountScope, setConnectionKey } from "../src/lib/accountScope";
+import { setLang } from "../src/lib/i18n";
 
 const mocks = vi.hoisted(() => ({ ledger: vi.fn(), balances: vi.fn() }));
 vi.mock("../src/lib/hfBalance", () => ({ getBalanceLedger: mocks.ledger, getBalances: mocks.balances }));
@@ -83,12 +84,39 @@ it('discards late responses after account, permission and workspace changes', as
   await render({ ...caps, system: false }); expect(host.textContent).toBe('');
 });
 
+const gapLabels = () => [...host.querySelectorAll('svg > g > text')].filter((n) => n.textContent === '잔액 확인 없음');
+
 it('plots only real checks and marks a missing interval with a dashed line and text', async () => {
-  const value = page(); value.chart_points[1].observed_at_ms += 3600000;
+  const value = page(); value.chart_points[1].observed_at_ms += 6 * 3600000;
   value.chart_gaps = [{ start_ms: value.chart_points[0].observed_at_ms, end_ms: value.chart_points[1].observed_at_ms }];
   mocks.ledger.mockResolvedValue(value);
   await render(); expect(host.querySelectorAll('circle')).toHaveLength(2);
-  expect(host.querySelector('.bl-gap')).not.toBeNull(); expect(host.querySelector('svg')?.textContent).toContain('잔액 확인 없음');
+  expect(host.querySelector('.bl-gap title')?.textContent).toBe('잔액 확인 없음'); expect(gapLabels()).toHaveLength(1);
+});
+
+it('keeps narrow missing intervals as dashed lines with a hover note instead of overlapping text', async () => {
+  // 하루 범위에 30분 간격 확인 8개, 사이마다 빈 곳 — 폭 약 19단위라 글자가 겹친다
+  const points = Array.from({ length: 8 }, (_, n) => ({ observation_id: String(n + 1), observed_at_ms: start + n * 1800000, credits_c: 10000 - n * 10, quality: 'reported' as const }));
+  const gaps = points.slice(1).map((p, n) => ({ start_ms: points[n].observed_at_ms, end_ms: p.observed_at_ms }));
+  mocks.ledger.mockResolvedValue(page({ chart_points: points, chart_gaps: gaps }));
+  await render();
+  expect(host.querySelectorAll('.bl-gap')).toHaveLength(7);
+  expect([...host.querySelectorAll('.bl-gap title')].map((n) => n.textContent)).toEqual(Array(7).fill('잔액 확인 없음'));
+  expect(gapLabels()).toHaveLength(0);
+});
+
+it('sizes the gap text to the displayed language so a longer translation does not overlap', async () => {
+  // 2.5시간 빈 곳 두 개(폭 약 97) — 한국어 글자는 들어가고 영어 'No balance confirmation'(약 109)은 안 들어간다
+  const points = [0, 1, 2].map((n) => ({ observation_id: String(n + 1), observed_at_ms: start + n * 9000000, credits_c: 10000 - n, quality: 'reported' as const }));
+  const gaps = points.slice(1).map((p, n) => ({ start_ms: points[n].observed_at_ms, end_ms: p.observed_at_ms }));
+  mocks.ledger.mockResolvedValue(page({ chart_points: points, chart_gaps: gaps }));
+  await render(); expect(gapLabels()).toHaveLength(2);
+  try {
+    act(() => setLang('en')); await render();
+    const english = 'No balance confirmation';
+    expect([...host.querySelectorAll('svg > g > text')].filter((n) => n.textContent === english)).toHaveLength(0);
+    expect([...host.querySelectorAll('.bl-gap title')].map((n) => n.textContent)).toEqual([english, english]);
+  } finally { act(() => setLang('ko')); }
 });
 
 it('does not invent missing checks from downsampled chart spacing or zero totals without intervals', async () => {
