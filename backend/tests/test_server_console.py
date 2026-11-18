@@ -147,6 +147,118 @@ def test_tls_session_cannot_fall_back_after_configuration_removed(tmp_path, monk
         server_api.call(server, 'GET', '/api/ready', 'must-not-send')
 
 
+@pytest.mark.parametrize('case', ['server.pem', 'server.key', 'promote.pending', 'permission', 'unknown'])
+def test_missing_tls_module_fails_closed(tmp_path, monkeypatch, tls_dir, case):
+    from server_console import power, server_api
+    monkeypatch.setattr(install, 'server_tls', None)
+    monkeypatch.setattr(server_api, 'server_tls', None)
+    monkeypatch.setattr(install, 'machine_env', lambda name: '')
+    if case == 'unknown':
+        monkeypatch.delenv('MVHUB_SERVER_TLS_DIR')
+        monkeypatch.delenv('PROGRAMDATA', raising=False)
+    elif case == 'permission':
+        original = Path.stat
+
+        def denied(path, *args, **kwargs):
+            if path.parent == tls_dir:
+                raise PermissionError('denied')
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'stat', denied)
+    else:
+        (tls_dir / case).write_text('present')
+    inst = install.resolve_installation(tmp_path)
+    assert inst.tls_state == 'error' and 'tls_config_error' in inst.problems
+    assert power.common_refusals(inst, 'server-start', {}, [], [])
+    assert status.read_ready(1).error == 'tls_config_error'
+    monkeypatch.setattr(server_api, 'verify_server', lambda *a: {'port': 1, 'tls': False})
+    with pytest.raises(server_api.ServerError, match='관리 도구 갱신'):
+        server_api.login(inst, fake_runner(), 'admin', 'must-not-send')
+
+
+@pytest.mark.parametrize('name,expected', [('server.pem', 'off'), ('server.key', 'off'),
+                                          ('promote.pending', 'error')])
+def test_missing_tls_module_broken_links(monkeypatch, tls_dir, name, expected):
+    monkeypatch.setattr(install, 'server_tls', None)
+    try:
+        (tls_dir / name).symlink_to(tls_dir / 'missing')
+    except OSError as exc:
+        pytest.skip(f'symlink privilege required: {exc}')
+    assert install.tls_state() == expected
+
+
+@pytest.mark.parametrize('name,expected', [('server.pem', 'off'), ('server.key', 'off'),
+                                          ('promote.pending', 'error')])
+def test_missing_tls_module_broken_link_stat_semantics(monkeypatch, tls_dir, name, expected):
+    monkeypatch.setattr(install, 'server_tls', None)
+    original = Path.lstat
+    seen = []
+
+    def broken_stat(path, *args, **kwargs):
+        if path.parent == tls_dir:
+            seen.append(('stat', path.name))
+            raise FileNotFoundError(str(path))
+        return original(path, *args, **kwargs)
+
+    def link_stat(path, *args, **kwargs):
+        if path.parent == tls_dir:
+            seen.append(('lstat', path.name))
+            if path.name == name:
+                return os.stat_result((0o120777,) + (0,) * 9)
+            raise FileNotFoundError(str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', broken_stat)
+    monkeypatch.setattr(Path, 'lstat', link_stat)
+    assert install.tls_state() == expected
+    assert ('lstat', 'promote.pending') in seen
+    if expected == 'off':
+        assert ('stat', name) in seen and ('lstat', name) not in seen
+
+
+def test_missing_tls_module_programdata(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, 'server_tls', None)
+    monkeypatch.delenv('MVHUB_SERVER_TLS_DIR')
+    monkeypatch.setenv('PROGRAMDATA', str(tmp_path))
+    assert install.tls_state() == 'off'
+    folder = tmp_path / 'MVHub/server-tls'
+    folder.mkdir(parents=True)
+    (folder / 'server.key').write_text('present')
+    assert install.tls_state() == 'error'
+
+
+def test_missing_tls_module_rechecks_each_request(monkeypatch, tls_dir):
+    from server_console import server_api, ui
+    import io
+    import urllib.error
+    import urllib.request
+    from unittest.mock import Mock, MagicMock
+    monkeypatch.setattr(install, 'server_tls', None)
+    monkeypatch.setattr(ui, 'server_tls', None)
+    assert ui._certificate_expiry_label() == ''
+    monkeypatch.setenv('http_proxy', 'http://must-not-use.invalid:9999')
+    scheme, opener = install.tls_transport(False)
+    assert scheme == 'http'
+    assert not any(isinstance(h, urllib.request.ProxyHandler) and h.proxies for h in opener.handlers)
+    redirect = next(h for h in opener.handlers if isinstance(h, urllib.request.HTTPRedirectHandler))
+    request = urllib.request.Request('http://127.0.0.1:1/api/ready')
+    assert redirect.redirect_request(request, None, 302, 'Found', {}, 'http://other.invalid/') is None
+    with pytest.raises(urllib.error.HTTPError):
+        opener.error('http', request, io.BytesIO(), 302, 'Found', {'location': 'http://other.invalid/'})
+    response = Mock(status=200)
+    response.read.return_value = b'{"status":"ready"}'
+    transport = MagicMock()
+    transport.open.return_value.__enter__.return_value = response
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *a: transport)
+    assert status.read_ready(1).code == 200
+    assert server_api.call({'port': 1}, 'GET', '/api/ready')[0] == 200
+    (tls_dir / 'server.pem').write_text('appeared after opening the window')
+    assert status.read_ready(1).error == 'tls_config_error'
+    with pytest.raises(server_api.ServerError, match='TLS 설정 오류'):
+        server_api.call({'port': 1}, 'POST', '/api/auth/login', body={'password': 'must-not-send'})
+    assert transport.open.call_count == 2
+
+
 # ---------- logs ----------
 
 @pytest.mark.parametrize("payload,tabs", [
@@ -1014,6 +1126,79 @@ def test_bootstrap_runs_the_verified_stage_and_falls_back_to_root(tmp_path):
     assert stage_found is None and "확인 실패" in note
     done = _bootstrap_check(root)
     assert done.returncode == 0 and f"code_root={root}" in done.stdout  # 검증 실패 → 루트 판으로
+
+
+def test_old_paths_first_hop_then_stage_code_includes_tls(tmp_path, monkeypatch):
+    from server_console import console_stage, main as boot
+    root = _install_tree(tmp_path)
+    inst = _stage_inst(root)
+    sha = subprocess.run(
+        [str(install.trusted_git()), '-C', str(root), 'rev-parse', 'HEAD'],
+        check=True, capture_output=True, text=True).stdout.strip()
+    runner = console_stage.default_runner_for(inst)
+    with monkeypatch.context() as old:
+        old.setattr(console_stage, 'PATHS', ('tools/server_console', 'tools/log_viewer.py',
+                                            'tools/deploy_fence_check.py'))
+        stage = console_stage.build(inst, runner, sha, console_stage.check_with_python(inst, runner), lambda s: None)
+        console_stage.publish(inst, sha)
+    assert not (stage / 'tools/server_tls.py').exists()
+    done = _bootstrap_check(root)
+    assert done.returncode == 0 and f'code_root={stage}' in done.stdout, done.stdout + done.stderr
+    (root / 'next.txt').write_text('next main commit')
+    next_sha = _git_commit(root, 'next hop')
+    script = textwrap.dedent('''
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        from server_console import console_stage, install, server_api
+        assert install.server_tls is None
+        root = Path(sys.argv[2])
+        install.configure(root)
+        inst = install.resolve_installation()
+        runner = console_stage.default_runner_for(inst)
+        stage = console_stage.build(inst, runner, sys.argv[3], console_stage.check_with_python(inst, runner), print)
+        assert (stage / 'tools/server_tls.py').is_file()
+        console_stage.publish(inst, sys.argv[3])
+        # Installing root tools on sys.path must not change the missing-module decision.
+        sys.path.insert(0, str(root / 'tools'))
+        assert install.tls_transport(False)[0] == 'http'
+        assert install.server_tls is None
+        (Path(sys.argv[4]) / 'server.pem').write_text('appeared')
+        try:
+            server_api.call({'port': 1}, 'POST', '/api/auth/login', body={'password': 'must-not-send'})
+        except server_api.ServerError:
+            pass
+        else:
+            raise AssertionError('sent credentials')
+    ''')
+    done = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(stage / 'tools'), str(root),
+                           next_sha, os.environ['MVHUB_SERVER_TLS_DIR']], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+    next_stage, note = boot.current_stage(root)
+    assert next_stage == root / 'logs/console-stages' / next_sha and not note
+    assert (next_stage / 'tools/server_tls.py').is_file()
+    done = _bootstrap_check(root)
+    assert done.returncode == 0 and f'code_root={next_stage}' in done.stdout, done.stdout + done.stderr
+
+
+def test_console_rejects_tls_loaded_outside_code_root(tmp_path):
+    root = _install_tree(tmp_path)
+    script = textwrap.dedent('''
+        import importlib.util
+        import sys
+        import types
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location('console_entry', sys.argv[1])
+        console = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(console)
+        sys.modules['server_tls'] = types.SimpleNamespace(
+            __file__=sys.argv[2], TLSConfigError=ValueError)
+        raise SystemExit(console.main(['--install-root', sys.argv[3], '--check']))
+    ''')
+    done = subprocess.run([sys.executable, '-I', '-B', '-c', script,
+                           str(root / 'tools/server_console/console.py'), str(tmp_path / 'outside/server_tls.py'),
+                           str(root)], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 3 and 'server_tls' in done.stderr, done.stdout + done.stderr
 
 
 def test_tools_update_refuses_a_console_the_root_functions_cannot_serve(tmp_path):

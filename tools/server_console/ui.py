@@ -17,7 +17,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
-import server_tls
+from .install import server_tls
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -83,6 +83,8 @@ class ConsoleTk(tk.Tk):
 
 
 def _certificate_expiry_label() -> str:
+    if server_tls is None:
+        return ''
     expiry = server_tls.certificate_expiry(server_tls.read_config().cert)
     if expiry is None:
         return "\n인증서 만료 확인 불가"
@@ -278,6 +280,9 @@ class App:
         self.pages: dict[str, tk.Frame] = {}
         self.nav_items: dict[str, tk.Label] = {}
         main = tk.Frame(root, bg=BG)
+        if server_tls is None:
+            tk.Label(main, text=install.TLS_TOOL_NOTICE, bg=BG, fg=AMBER, font=FONT,
+                     wraplength=900, justify='left').pack(fill='x', padx=16, pady=8)
         main.pack(side="left", fill="both", expand=True)
         if self.note:  # 부트스트랩 알림(관리 창 stage 확인 실패 등)은 어느 화면에서도 보이게 맨 위에
             tk.Label(main, text=self.note, bg="#3a2f12", fg=AMBER, font=BOLD, anchor="w", justify="left",

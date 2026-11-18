@@ -20,8 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import names, status
-import server_tls
-from .install import Installation, Runner, powershell_exe
+from .install import Installation, Runner, powershell_exe, TLSConfigError, tls_transport, server_tls, TLS_TOOL_NOTICE
 from .jobs import read_json, valid_token
 
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -225,13 +224,10 @@ def call(server: dict, method: str, path: str, token: str = "", body: dict | Non
         if _recheck() != server:
             raise ServerError("확인했던 서버와 지금 포트의 서버가 다릅니다 — 로그인 정보를 보내지 않았습니다. 다시 시도하세요")
     try:
-        config = server_tls.read_config()
-        if bool(server.get('tls')) != (config.state == 'on'):
-            raise server_tls.TLSConfigError('server_tls_configuration_changed')
-        scheme = config.scheme
-        opener = server_tls.opener(config)
-    except (server_tls.TLSConfigError, OSError) as exc:
-        raise ServerError('TLS 설정 오류 — 로그인 정보를 보내지 않았습니다') from exc
+        scheme, opener = tls_transport(bool(server.get('tls')))
+    except (TLSConfigError, OSError) as exc:
+        notice = f' — {TLS_TOOL_NOTICE}' if server_tls is None else ''
+        raise ServerError('TLS 설정 오류 — 로그인 정보를 보내지 않았습니다' + notice) from exc
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(f"{scheme}://127.0.0.1:{int(server['port'])}{path}", data=data, method=method)
     request.add_header("Accept", "application/json")
