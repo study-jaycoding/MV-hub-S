@@ -1030,3 +1030,28 @@ def test_worker_queue_holds_set_while_copying(live_db, monkeypatch, tmp_path):
     worker_backup.queue_backup_set(current, account_email="artist@example.com")  # 빈 DB 라 전송은 건너뛸 수 있음
     assert held_during_copy and all(held_during_copy)
     assert not backup._held(current)
+
+
+def test_worker_queue_skip_survives_stage_cleanup_failure(live_db, monkeypatch, tmp_path):
+    """임시 사본 정리 실패(11-18 게이트 WinError 145)가 빈 DB 건너뜀을 staging_failed 로 바꾸지 않는다."""
+    from app.services import worker_backup
+
+    monkeypatch.setattr(worker_backup, "STATE_DB", tmp_path / "worker-state.db")
+    monkeypatch.setattr(worker_backup, "OUTBOX_DIR", tmp_path / "outbox")
+    monkeypatch.setattr(backup.active_account, "account_key", lambda: "artist@example.com")
+    current = backup.backup_now()
+    real_rmtree = worker_backup.shutil.rmtree
+
+    def busy(path, *args, **kwargs):
+        if Path(path).name.startswith(".stage-"):
+            raise OSError(145, "directory is not empty", str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(worker_backup.shutil, "rmtree", busy)
+        assert worker_backup.queue_backup_set(current, account_email="artist@example.com") is None
+    assert worker_backup.status_snapshot()["last_error_code"] == "empty_metadata"
+    left = list((tmp_path / "outbox").rglob(".stage-*"))
+    assert len(left) == 1
+    worker_backup.cleanup_stale_state()  # 다음 시작 때 남은 사본을 지운다
+    assert not left[0].exists()
