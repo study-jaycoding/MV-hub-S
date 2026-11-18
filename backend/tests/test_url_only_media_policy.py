@@ -55,6 +55,20 @@ def test_cached_rows_are_serialized_back_to_their_remote_source() -> None:
     assert image["cached"] is video["cached"] is reference["cached"] is False
 
 
+def test_trash_list_serializes_back_to_remote_source_like_other_lists(monkeypatch) -> None:
+    # 휴지통 목록만 이 보정이 빠져, 로컬 파일 없고 원본은 살아 있는 항목이 '원본 없음'이 될 수 있었다(11-18 Codex 진단)
+    rows = [{"assets": [{"type": "image", "file_path": "/media/aa/image.png", "thumbnail_path": "/media/aa/image.png",
+                         "source_url": "https://cdn.example/image.png", "cached": True}], "references": []}]
+    monkeypatch.setattr(library, "_account_uid", lambda _request: None)
+    monkeypatch.setattr(library.repo, "list_trash", lambda **_kwargs: rows)
+
+    out = library.list_trash(SimpleNamespace(), search=None, limit=200, offset=0)
+
+    asset = out[0]["assets"][0]
+    assert asset["file_path"] == asset["thumbnail_path"] == "https://cdn.example/image.png"
+    assert asset["cached"] is False
+
+
 def test_remote_media_thumb_uses_bounded_thumbnail_cache(monkeypatch, tmp_path) -> None:
     source = tmp_path / "source.jpg"
     source.write_bytes(b"source")
