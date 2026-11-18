@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -274,6 +275,90 @@ def test_engine_cache_drops_when_running_expires(monkeypatch):
 
 
 # ── 로그인 창 ──
+@pytest.mark.parametrize("reason", ["elevated", "service", "other_user", "unknown"])
+def test_login_unsupported_before_lock_records_or_process(reason, isolated, monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: reason)
+    for name in ("ClaudeLock", "_write", "_spawn_window"):
+        monkeypatch.setattr(claude, name, lambda *a, **k: pytest.fail("refusal must have no side effects"))
+    with pytest.raises(claude.LoginUnsupported) as caught:
+        claude.open_login_window(lambda: pytest.fail("identity callback before refusal"))
+    assert caught.value.reason == reason
+    assert list(isolated.iterdir()) == []
+
+
+def test_disabled_login_never_queries_token(monkeypatch):
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", False)
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: pytest.fail("switch must be checked first"))
+    with pytest.raises(claude.LoginDisabled):
+        claude.open_login_window(lambda: None)
+
+
+@windows
+@pytest.mark.parametrize("mode, expected", [
+    ("ready", None), ("case", None), ("elevated", "elevated"), ("service", "service"),
+    ("other_name", "other_user"), ("other_domain", "other_user"),
+    *[(step, "unknown") for step in ("open", "elevation", "session", "size", "user", "lookup", "wts_name", "wts_domain", "wts_raise", "empty")],
+])
+def test_login_token_queries_and_frees_handles(mode, expected, monkeypatch):
+    """가짜 Win32 경계 — 토큰 세션(RDP 포함), 이름·도메인 대조, 중간 실패의 핸들·WTS 메모리 정리."""
+    from ctypes import wintypes
+    closed, allocated, freed, queries = [], [], [], []
+
+    def put(pointer, kind, value):
+        ctypes.cast(pointer, ctypes.POINTER(kind))[0] = value
+
+    def open_token(proc, access, output):
+        if mode == "open":
+            return 0
+        put(output, wintypes.HANDLE, 123)
+        return 1
+
+    def info(token, kind, output, length, size):
+        if (kind, mode) in ((20, "elevation"), (12, "session"), (1, "user")):
+            return 0
+        put(size, wintypes.DWORD, 0 if mode == "size" else ctypes.sizeof(ctypes.c_void_p))
+        if output is None:
+            return 0
+        if kind == 20:
+            put(output, wintypes.DWORD, int(mode == "elevated"))
+        elif kind == 12:
+            put(output, wintypes.DWORD, 0 if mode == "service" else 7)
+        else:
+            put(output, ctypes.c_void_p, 456)
+        return 1
+
+    def lookup(system, sid, name, name_size, domain, domain_size, use):
+        put(name_size, wintypes.DWORD, 20)
+        put(domain_size, wintypes.DWORD, 20)
+        put(use, wintypes.DWORD, 1)
+        if name is None or mode == "lookup":
+            return 0
+        name.value, domain.value = "worker", "PC"
+        return 1
+
+    def query(server, session, kind, output, length):
+        queries.append((session.value, kind))
+        if (kind, mode) in ((5, "wts_name"), (7, "wts_domain")):
+            return 0
+        value = ("other" if mode == "other_name" else "WORKER" if mode == "case" else "worker") if kind == 5 else ("OTHER" if mode == "other_domain" else "PC")
+        memory = ctypes.create_unicode_buffer("" if mode == "empty" else value)
+        allocated.append(memory)
+        put(output, ctypes.c_void_p, ctypes.addressof(memory))
+        put(length, wintypes.DWORD, ctypes.sizeof(memory))
+        if mode == "wts_raise":
+            raise OSError("query failed")
+        return 1
+
+    kernel = SimpleNamespace(GetCurrentProcess=lambda: 99, CloseHandle=lambda handle: closed.append(handle.value))
+    advapi = SimpleNamespace(OpenProcessToken=open_token, GetTokenInformation=info, LookupAccountSidW=lookup)
+    wts = SimpleNamespace(WTSQuerySessionInformationW=query, WTSFreeMemory=lambda memory: freed.append(memory.value))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **k: {"kernel32": kernel, "advapi32": advapi, "wtsapi32": wts}[name])
+    assert claude._login_token_problem() == expected
+    assert closed == ([] if mode == "open" else [123])
+    assert freed == [ctypes.addressof(memory) for memory in allocated]
+    assert all(session == 7 for session, _ in queries)
+
+
 class FakeWindow:
     """창 대신 — 진짜로 잠자는 프로세스(pid·시작 시각 확인용). 허브가 끄지 않는지 본다."""
 
@@ -287,9 +372,14 @@ class FakeWindow:
         self.proc.kill()
         self.proc.wait(10)
 
+    def wait(self, timeout=None):
+        return self.proc.wait(timeout)
+
 
 @pytest.fixture
 def window(monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: False)
     seen = {"spawned": [], "resumed": [], "record_at_spawn": None, "record_at_resume": None}
 
     def spawn(command):
@@ -306,7 +396,8 @@ def window(monkeypatch):
     monkeypatch.setattr(claude, "_resume", resume)
     yield seen
     for _, win in seen["spawned"]:
-        win.kill()
+        win.proc.kill()
+        win.proc.wait(10)
     claude._held_windows.clear()
 
 
@@ -349,12 +440,111 @@ def test_login_window_never_runs_untracked(window, monkeypatch):
 
     monkeypatch.setattr(claude, "_resume", broken_resume)
     with pytest.raises(OSError):
-        claude.open_login_window(lambda: None)  # 재개가 안 되면 멈춘 창을 끈다(보인 적 없는 창이 기록을 막지 않게)
+        claude.open_login_window(lambda: None)  # 재개가 안 되면 창을 끄고 종료를 확인한다
     assert window["resumed"] == [] and len(window["spawned"]) == 2
     for _, win in window["spawned"]:
         assert win.proc.wait(10) is not None
     assert json.loads(claude._window_file().read_text(encoding="utf-8"))["status"] == "none"
     assert not claude.window_alive() and claude._held_windows == []
+
+
+@windows
+def test_login_window_in_job_is_killed_before_resume(window, monkeypatch):
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: True)
+    monkeypatch.setattr(claude, "_handle_start", lambda *args: pytest.fail("job check must precede start lookup"))
+    # 허브 자신의 시작 시각은 창 생성 전에 필요하다.
+    monkeypatch.setattr(claude, "_me", lambda: {"pid": os.getpid(), "start": 1})
+    with pytest.raises(claude.BreakawayDenied):
+        claude.open_login_window(lambda: None)
+    assert len(window["spawned"]) == 1 and window["resumed"] == []
+    win = window["spawned"][0][1]
+    assert win.proc.poll() is not None
+    assert json.loads(claude._window_file().read_text(encoding="utf-8"))["status"] == "none"
+    assert win not in claude._held_windows
+
+
+@windows
+@pytest.mark.parametrize("failure", ["kill", "wait_timeout", "wait_oserror"])
+def test_login_window_cleanup_failure_preserves_record_and_original_error(window, monkeypatch, failure):
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    original_spawn = claude._spawn_window
+    resume_error = OSError("resume failed")
+
+    def fail_resume(proc):
+        raise resume_error
+
+    def fail_cleanup(*args, **kwargs):
+        if failure == "wait_timeout":
+            raise subprocess.TimeoutExpired("fake window", 5)
+        raise OSError("cleanup failed")
+
+    def spawn(command):
+        win = original_spawn(command)
+        if failure == "kill":
+            monkeypatch.setattr(win, "kill", fail_cleanup)
+        else:
+            monkeypatch.setattr(win, "wait", fail_cleanup)
+        return win
+
+    monkeypatch.setattr(claude, "_spawn_window", spawn)
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: failure == "kill")
+    monkeypatch.setattr(claude, "_resume", fail_resume)
+    with pytest.raises(claude.BreakawayDenied if failure == "kill" else OSError) as caught:
+        claude.open_login_window(lambda: None)
+    win = window["spawned"][0][1]
+    record = json.loads(claude._window_file().read_text(encoding="utf-8"))
+    assert window["resumed"] == [] and win not in claude._held_windows
+    if failure == "kill":
+        assert record["status"] == "launching" and record["hub_pid"] == os.getpid()
+        assert win.proc.poll() is None
+    else:
+        assert caught.value is resume_error
+        assert record["status"] == "open" and record["pid"] == win.pid
+        assert record["start"] > 0
+
+
+@pytest.mark.parametrize("in_job, trapped", [(False, False), (True, True), (None, True)])
+def test_window_trapped_uses_creation_handle(monkeypatch, in_job, trapped):
+    handles = []
+
+    def check(handle):
+        handles.append(handle)
+        return in_job
+
+    monkeypatch.setattr(claude, "_in_any_job", check)
+    assert claude._window_trapped(SimpleNamespace(_handle=123)) is trapped
+    assert handles == [123]
+
+
+@pytest.mark.parametrize("error", [None, OSError, AttributeError, ctypes.ArgumentError])
+def test_in_any_job_failure_is_unknown(monkeypatch, error):
+    def check(*args):
+        if error:
+            raise error("query failed")
+        return 0
+
+    monkeypatch.setattr(claude, "_k32", lambda: SimpleNamespace(IsProcessInJob=check))
+    assert claude._in_any_job(123) is None
+
+
+@pytest.mark.parametrize("in_job", [False, True])
+def test_in_any_job_reads_bool_and_queries_any_job(monkeypatch, in_job):
+    def check(handle, job, result):
+        assert handle == 123 and job is None
+        ctypes.cast(result, ctypes.POINTER(claude.wintypes.BOOL))[0] = in_job
+        return 1
+
+    monkeypatch.setattr(claude, "_k32", lambda: SimpleNamespace(IsProcessInJob=check))
+    assert claude._in_any_job(123) is in_job
+    assert check.argtypes == [claude.wintypes.HANDLE, claude.wintypes.HANDLE, ctypes.POINTER(claude.wintypes.BOOL)]
+
+
+@windows
+def test_in_any_job_real_current_process_returns_bool():
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = claude.wintypes.HANDLE
+    assert type(claude._in_any_job(kernel.GetCurrentProcess())) is bool
 
 
 @windows
@@ -396,6 +586,7 @@ def test_login_window_refusals(window, monkeypatch):
 
 @windows
 def test_breakaway_denied_goes_to_terminal_guidance(monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
 
     def denied(command):
@@ -412,6 +603,7 @@ def test_breakaway_denied_goes_to_terminal_guidance(monkeypatch):
 
 @windows
 def test_window_record_after_crashes(monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait(10)
     me = claude.process_start(os.getpid())
@@ -666,16 +858,25 @@ def test_parser_turns_system_notices_into_events():
 # ── 기본 켜기 ──
 def test_enabled_by_default_and_off_with_zero(monkeypatch):
     saved = os.environ.get("CONTENT_HUB_AGENT_CHAT")
+    saved_login_window = os.environ.get("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW")
     try:
         monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT", raising=False)
         assert importlib.reload(config).AGENT_CHAT_ENABLED is True
         monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT", "0")
         assert importlib.reload(config).AGENT_CHAT_ENABLED is False
         monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", raising=False)
-        assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is False  # 로그인 창 스위치는 기본 꺼짐
+        assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is True
+        for value, expected in (("0", False), ("1", True), ("", False)):
+            monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", value)
+            assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is expected
     finally:
         if saved is None:
             monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT", raising=False)
         else:
             monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT", saved)
+        if saved_login_window is None:
+            monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", raising=False)
+        else:
+            monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", saved_login_window)
         importlib.reload(config)
+    assert config.AGENT_CHAT_LOGIN_WINDOW is (("1" if saved_login_window is None else saved_login_window).lower() in ("1", "true", "yes", "on"))

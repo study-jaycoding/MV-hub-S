@@ -1,8 +1,8 @@
 """MV Agent 칸 — 이 PC 의 Claude 상태 판정·로그인 창·PC 전체 뮤텍스(설계 docs/status/AskAgent_첫연결_설계_2026-11-09.md 3·5·6절).
 
 - 상태는 `claude --setting-sources local auth status` 하나로 본다. 로그아웃이면 종료 코드 1 이어도 JSON 이 오니 종료 코드로 버리지 않는다.
-- 로그인은 사람이 보는 새 콘솔 창(`CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB`)이다 — 허브는 그 창을 Job 에 넣지도 끄지도 않는다
-  (브라우저 자동 열기를 끄는 방법이 공식 문서에 없어서, 숨긴 프로세스로 띄우면 사용자 브라우저를 끌 수 있다). 스위치 기본 꺼짐.
+- 로그인은 사람이 보는 새 콘솔 창(`CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB`)이다 — Job 에 남았으면 재개하지 않고 끈다
+  (브라우저 자동 열기를 끄는 방법이 공식 문서에 없어서, 숨긴 프로세스로 띄우면 사용자 브라우저를 끌 수 있다). 스위치 기본 켜짐.
 - 같은 Claude 자격을 쓰는 허브들(dev·배포판, 기록 폴더를 따로 준 허브까지)은 이름 있는 뮤텍스 하나로 '차례'와 '로그인 창 만들기'를
   줄 세운다 — 이름·기록 위치는 자격 폴더(CLAUDE_CONFIG_DIR 또는 ~/.claude)로 정한다. 뮤텍스는 스레드 소유라 잡은 스레드가 놓는다.
   주인 기록(running|clean)은 정상·버려진 획득 모두에서 먼저 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다.
@@ -66,6 +66,12 @@ class Busy(Exception):
 
 class LoginDisabled(Exception):
     pass
+
+
+class LoginUnsupported(Exception):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
 
 
 class BreakawayDenied(Exception):
@@ -570,14 +576,104 @@ def would_block() -> str | None:
 
 
 # ── 로그인 창 ──
+def _login_token_problem() -> str | None:
+    """현재 토큰과 그 Windows 세션의 로그인 사용자를 대조한다. 조회 실패는 허용하지 않는다."""
+    if os.name != "nt":
+        return "unknown"
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                               ctypes.POINTER(wintypes.DWORD)]
+        advapi.LookupAccountSidW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPWSTR,
+                                           ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+                                           ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+        wts.WTSQuerySessionInformationW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_int,
+                                                   ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+        wts.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        wts.WTSFreeMemory.restype = None
+        token = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            return "unknown"
+        try:
+            size, elevated, session = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
+            if not advapi.GetTokenInformation(token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated), ctypes.byref(size)):
+                return "unknown"
+            if elevated.value:
+                return "elevated"
+            if not advapi.GetTokenInformation(token, 12, ctypes.byref(session), ctypes.sizeof(session), ctypes.byref(size)):
+                return "unknown"
+            if session.value == 0:
+                return "service"
+            advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser 크기
+            if not size.value:
+                return "unknown"
+            buffer = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
+                return "unknown"
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+            name_size, domain_size, use = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
+            advapi.LookupAccountSidW(None, sid, None, ctypes.byref(name_size), None, ctypes.byref(domain_size), ctypes.byref(use))
+            if not name_size.value or not domain_size.value:
+                return "unknown"
+            name = ctypes.create_unicode_buffer(name_size.value)
+            domain = ctypes.create_unicode_buffer(domain_size.value)
+            if not advapi.LookupAccountSidW(None, sid, name, ctypes.byref(name_size), domain,
+                                           ctypes.byref(domain_size), ctypes.byref(use)):
+                return "unknown"
+            if not name.value or not domain.value or use.value != 1:  # SidTypeUser
+                return "unknown"
+            logged_in = []
+            for info in (5, 7):  # WTSUserName · WTSDomainName(콘솔 대신 토큰 세션 — RDP 한 세션도 지원)
+                memory, length = ctypes.c_void_p(), wintypes.DWORD()
+                try:
+                    if not wts.WTSQuerySessionInformationW(None, session, info, ctypes.byref(memory), ctypes.byref(length)):
+                        return "unknown"
+                    if not memory.value or length.value < ctypes.sizeof(ctypes.c_wchar):
+                        return "unknown"
+                    value = ctypes.wstring_at(memory, length.value // ctypes.sizeof(ctypes.c_wchar)).rstrip("\0")
+                    if not value:
+                        return "unknown"
+                    logged_in.append(value.casefold())
+                finally:
+                    if memory.value:
+                        wts.WTSFreeMemory(memory)
+            return None if logged_in == [name.value.casefold(), domain.value.casefold()] else "other_user"
+        finally:
+            kernel.CloseHandle(token)
+    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+        return "unknown"
+
+
 def login_command(prefix: list[str]) -> list[str]:
     return [*prefix, "--setting-sources", "local", "auth", "login", "--claudeai"]  # --setting-sources 는 auth 앞(뒤면 모르는 옵션)
 
 
 def _spawn_window(command: list[str]) -> subprocess.Popen:
-    """새 콘솔·Job 밖·멈춘 채. 입출력은 넘기지 않는다(새 콘솔의 핸들 — 허브 로그로 주소·코드·이메일이 가지 않게)."""
+    """새 콘솔·멈춘 채. Job 에 남았으면 재개하지 않고 끈다. 입출력은 넘기지 않는다(허브 로그로 주소·코드·이메일이 가지 않게)."""
     return subprocess.Popen(command, cwd=str(_work_dir()), env=process.child_env(), close_fds=True,
                             creationflags=CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB | process.CREATE_SUSPENDED)
+
+
+def _in_any_job(handle) -> bool | None:
+    try:
+        kernel = _k32()
+        kernel.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+        kernel.IsProcessInJob.restype = wintypes.BOOL
+        in_job = wintypes.BOOL()
+        if kernel.IsProcessInJob(handle, None, ctypes.byref(in_job)):
+            return bool(in_job.value)
+    except (OSError, AttributeError, ctypes.ArgumentError):
+        pass
+    return None
+
+
+def _window_trapped(proc) -> bool:
+    return _in_any_job(int(proc._handle)) is not False
 
 
 def _resume(proc: subprocess.Popen) -> None:
@@ -590,10 +686,13 @@ def _resume(proc: subprocess.Popen) -> None:
 
 def open_login_window(still_current: Callable[[], None]) -> None:
     """[Claude 연결] — 스위치가 켜졌고 연결이 필요한 상태일 때만. 순서: 잠금 → 상태·창 기록 판정(잠금 안에서 — 그새 다른 허브가
-    연결했거나 창을 열었으면 안 연다) → 신원 재대조 → launching 기록 → 멈춘 채 생성 → open 기록(생성 핸들의 시작 시각) → 재개 → 놓기.
+    연결했거나 창을 열었으면 안 연다) → 신원 재대조 → launching 기록 → 멈춘 채 생성 → Job 판정 → open 기록(생성 핸들의 시작 시각) → 재개 → 놓기.
     open 기록·재개가 안 되면 멈춘 창을 끈다 — 추적 안 된 로그인은 실행되지 않는다."""
     if not config.AGENT_CHAT_LOGIN_WINDOW:
         raise LoginDisabled()
+    problem = _login_token_problem()
+    if problem:
+        raise LoginUnsupported(problem)
     prefix = process.engine_prefix("claude")  # 차례·엔진 목록과 같은 찾기
     lock = ClaudeLock("login")
     lock.acquire()
@@ -616,16 +715,22 @@ def open_login_window(still_current: Callable[[], None]) -> None:
                 raise BreakawayDenied() from exc
             raise
         try:
+            if _window_trapped(proc):
+                raise BreakawayDenied()
             start = _handle_start(_k32(), int(proc._handle))  # 번호로 다시 열지 않는다 — 생성 핸들이 그 프로세스 자체
             if start is None:
                 raise OSError("로그인 창 시작 시각을 읽지 못했어요")
             _write(_window_file(), {"status": "open", "pid": proc.pid, "start": start, "at": time.time()})
             _resume(proc)
         except BaseException:
-            with contextlib.suppress(OSError):
-                proc.kill()  # 멈춘 채 끈다 — 사람에게 보인 적 없는 창
-            with contextlib.suppress(OSError):
-                _write(_window_file(), {"status": "none", "at": time.time()})
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # 끝났음을 확인하지 못하면 launching 또는 open 기록을 그대로 둔다
+            else:
+                with contextlib.suppress(OSError):
+                    _write(_window_file(), {"status": "none", "at": time.time()})
             raise
         _held_windows.append(proc)
     finally:

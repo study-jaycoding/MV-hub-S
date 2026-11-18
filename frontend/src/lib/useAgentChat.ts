@@ -526,6 +526,9 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const connectSupported = hubHasFeature(AGENT_CHAT_CONNECT_FEATURE);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
   const [waiting, setWaiting] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const connectInFlight = useRef(false);
   const [loginNote, setLoginNote] = useState<"terminal" | "expired" | "unfinished" | null>(null);
   const [connected, setConnected] = useState<{ subscription: string | null } | null>(null); // 막 연결됐다는 띠(한 번)
   const claudeTimer = useRef<number | null>(null);
@@ -591,6 +594,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   }, []);
 
   const startWaiting = useCallback(() => {
+    if (!mounted.current) return;
     stopWaiting();
     setWaiting(true);
     const startedAt = Date.now();
@@ -602,7 +606,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       }
       if (claudeInFlight.current) return;
       void recheck().then((status) => {
-        if (!status) return;
+        if (!mounted.current || !status) return;
         if (CLAUDE_CHAT_OK.has(status.state)) stopWaiting();
         else if (!status.login_window) {
           stopWaiting();
@@ -623,22 +627,35 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
 
   /** [Claude 연결] — 허브가 보이는 로그인 창을 연다(스위치가 꺼졌거나 열 수 없으면 터미널 안내로). */
   const connect = useCallback(async () => {
+    if (!mounted.current || connectInFlight.current || claudeTimer.current !== null) return;
+    const account = getAccountNamespace();
+    const current = () => mounted.current && account === getAccountNamespace();
+    connectInFlight.current = true;
+    setConnecting(true);
     setLoginNote(null);
-    setError(null);
+    setConnectError(null);
     try {
       await agentChatApi.openClaudeLogin();
-      if (!mounted.current) return; // 그새 칸이 닫혔으면 타이머를 새로 걸지 않는다
+      if (!current()) return; // 그새 칸이 닫혔으면 타이머를 새로 걸지 않는다
       startWaiting();
       void recheck();
     } catch (e) {
-      if (!mounted.current) return;
-      if (e instanceof ClaudeLoginError && ["login_window_disabled", "breakaway_denied", "spawn_failed"].includes(e.code)) {
+      if (!current()) return;
+      if (e instanceof ClaudeLoginError && ["login_window_disabled", "login_window_unsupported", "breakaway_denied", "spawn_failed"].includes(e.code)) {
         setLoginNote("terminal");
+        if (e.code === "login_window_unsupported") setConnectError(e.message);
+      } else if (e instanceof ClaudeLoginError && e.code === "not_needed") {
+        const status = await recheck();
+        if (!status && current()) setConnectError("Claude 상태를 다시 확인하지 못했어요");
       } else if (e instanceof ClaudeLoginError && e.code === "login_window_open") {
         startWaiting();
+        void recheck();
       } else {
-        setError(errorDetail(e));
+        setConnectError(errorDetail(e));
       }
+    } finally {
+      connectInFlight.current = false;
+      if (current()) setConnecting(false);
     }
   }, [recheck, startWaiting]);
 
@@ -654,7 +671,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       lastClaudeState.current = claudeEngine?.state ?? null;
       // Claude 를 못 쓰면 연결 안내에 필요한 지금 상태(스위치 포함)를 받는다 — 로그인 창이 열려 있으면 기다림부터
       if (connectSupported && claudeEngine && !claudeEngine.available) {
-        void recheck().then((status) => { if (status?.state === "login_window") startWaiting(); });
+        void recheck().then((status) => { if (mounted.current && status?.state === "login_window") startWaiting(); });
       }
       // 새 창은 '새 창에서 열기' 요청이 마지막 대화 복원보다 먼저(서랍 메뉴 2-1)
       if (takeOpenRequest(readOpenRequest(), s.identity_key, true)) return;
@@ -1034,7 +1051,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       allowed: !!claudeEngine?.available,
       loginWindowEnabled: !!claude?.login_window_enabled,
       install: claude?.install ?? null,
-      waiting, note: loginNote, connected,
+      waiting, connecting, connectError, note: loginNote, connected,
       recheck, connect, stopWaiting, dismissConnected: () => setConnected(null),
     },
   };

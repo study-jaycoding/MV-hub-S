@@ -16,13 +16,15 @@ interface Props {
   install?: ClaudeInstall | null; // 실행기의 공식 설치 표식(허브가 읽어 준다) — 옛 허브는 없음
   loginWindowEnabled: boolean;
   waiting: boolean;
+  connecting?: boolean;
+  connectError?: string | null;
   note: "terminal" | "expired" | "unfinished" | null;
   onConnect: () => void;
   onRecheck: () => void;
   onStopWaiting: () => void;
 }
 
-function CopyLine({ command }: { command: string }) {
+export function CopyLine({ command }: { command: string }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -52,10 +54,11 @@ function Steps({ installed, version, login }: { installed: boolean; version: str
   );
 }
 
-function Terminal({ onRecheck }: { onRecheck: () => void }) {
+export function Terminal({ onRecheck }: { onRecheck: () => void }) {
   const t = useT();
   return (
     <>
+      <b>{t("PowerShell 로 연결")}</b>
       <p>{t("터미널(PowerShell)에서 아래 명령을 실행해 브라우저로 로그인하세요. 끝나면 [다시 확인].")}</p>
       <CopyLine command={LOGIN_COMMAND} />
       <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button>
@@ -71,14 +74,14 @@ const SKIP_TEXT: Record<string, string> = {
   token_unknown: "권한을 확인하지 못해 자동 설치를 건너뛰었어요",
 };
 
-function InstallNote({ install }: { install?: ClaudeInstall | null }) {
+export function InstallNote({ install }: { install?: ClaudeInstall | null }) {
   const t = useT();
   if (install?.state === "failed") return <p className="cn-note cn-warn" role="status">{t("자동 설치가 안 됐어요 — 아래처럼 직접 설치해 주세요")}</p>;
   if (install?.state !== "skipped") return null;
   return <p className="cn-note" role="status">{t(SKIP_TEXT[install.reason ?? ""] ?? "자동 설치를 건너뛰었어요")} — {t("아래처럼 직접 설치해 주세요")}</p>;
 }
 
-function ManualInstall({ onRecheck }: { onRecheck: () => void }) {
+export function ManualInstall({ onRecheck }: { onRecheck: () => void }) {
   const t = useT();
   return (
     <>
@@ -93,7 +96,22 @@ function ManualInstall({ onRecheck }: { onRecheck: () => void }) {
   );
 }
 
-export function AgentConnect({ state, version, install, loginWindowEnabled, waiting, note, onConnect, onRecheck, onStopWaiting }: Props) {
+export function ManualLogin({ onRecheck }: { onRecheck: () => void }) {
+  const t = useT();
+  return <details className="cn-more"><summary>{t("직접 하려면(PowerShell)")}</summary><Terminal onRecheck={onRecheck} /></details>;
+}
+
+export function LoginWindowGuide({ waiting, note, onRecheck, onStopWaiting }: Pick<Props, "waiting" | "note" | "onRecheck" | "onStopWaiting">) {
+  const t = useT();
+  return <>
+    <p>{t("Claude 로그인 창을 열었어요. 브라우저에 claude.ai 로그인이 뜨면 이 PC 를 쓰는 사람의 계정으로 로그인하고 승인해 주세요. 로그인을 마치고 그 창이 닫히면 여기가 바뀌어요.")}</p>
+    <p className="cn-note">{t("브라우저가 안 열리면 그 창에서 c 를 눌러 주소를 복사해 브라우저에 붙여 넣어요. 브라우저가 코드를 보여 주면 그 창에 붙여 넣어요.")}</p>
+    {waiting ? <div><button type="button" className="cn-text" onClick={onStopWaiting}>{t("그만두기")}</button>{" "}<small className="cn-note">{t("자동 확인만 멈춰요 · 로그인 창은 직접 닫아 주세요")}</small></div>
+      : <>{note === "expired" && <p className="cn-note">{t("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]")}</p>}<button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>}
+  </>;
+}
+
+export function AgentConnect({ state, version, install, loginWindowEnabled, waiting, connecting, connectError, note, onConnect, onRecheck, onStopWaiting }: Props) {
   const t = useT();
   const terminal = !loginWindowEnabled || note === "terminal";
   const body = (() => {
@@ -137,12 +155,8 @@ export function AgentConnect({ state, version, install, loginWindowEnabled, wait
         return (
           <>
             <h3>{t("열린 창에서 로그인을 마쳐 주세요")}</h3>
-            <p>{t("브라우저가 안 열리면 그 창에서 c 를 눌러 주소를 복사해요. 마치면 여기가 알아서 바뀌어요.")}</p>
-            <Steps installed version={version} login="wait" />
-            {waiting
-              ? <button type="button" className="cn-text" onClick={onStopWaiting}>{t("그만두기")}</button>
-              : <>{note === "expired" && <p className="cn-note">{t("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]")}</p>}
-                <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>}
+            <Steps installed version={version} login={waiting ? "wait" : "now"} />
+            <LoginWindowGuide waiting={waiting} note={note} onRecheck={onRecheck} onStopWaiting={onStopWaiting} />
           </>
         );
       case "not_subscription":
@@ -162,8 +176,9 @@ export function AgentConnect({ state, version, install, loginWindowEnabled, wait
             {note === "unfinished" && <p className="cn-note" role="status">{t("로그인을 마치지 못했어요 — 다시 해 주세요")}</p>}
             {terminal ? <Terminal onRecheck={onRecheck} /> : (
               <>
-                <button type="button" className="cn-go" onClick={onConnect}>{action}</button>
-                <p className="cn-note">{t("누르면 Claude 로그인 창이 열리고, 그 창이 브라우저에 claude.ai 로그인을 띄워요")}</p>
+                <button type="button" className="cn-go" disabled={connecting || waiting} onClick={onConnect}>{connecting ? t("연결 요청 중") : action}</button>
+                <p className="cn-note">{t("누르면 Claude 로그인 창이 열리고 브라우저에 claude.ai 로그인이 떠요. 로그인을 마치고 그 창이 닫히면 여기가 바뀌어요.")}</p>
+                <ManualLogin onRecheck={onRecheck} />
               </>
             )}
             {state !== "not_logged_in" && <p className="cn-note">{t("이 PC 에서 Claude 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요")}</p>}
@@ -188,6 +203,7 @@ export function AgentConnect({ state, version, install, loginWindowEnabled, wait
     <section className="cn" aria-label={t("Claude 연결")} role="status">
       <div className="cn-mark" aria-hidden="true"><i className="mv-mark full" /></div>
       {body}
+      {connectError && <p className="cn-note cn-warn" role="alert">{connectError}</p>}
       <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · [실행]만 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
     </section>
   );

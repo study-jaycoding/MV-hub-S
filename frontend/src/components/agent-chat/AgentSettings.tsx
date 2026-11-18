@@ -8,7 +8,8 @@ import { useT } from "../../lib/i18n";
 import { fetchModelCatalog } from "../../lib/modelCatalogCache";
 import { saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
-import { readDefaults, type AgentDefaults, type AgentUsage } from "../../lib/useAgentChat";
+import { readDefaults, type AgentDefaults, type AgentUsage, type useAgentChat } from "../../lib/useAgentChat";
+import { CopyLine, InstallNote, LoginWindowGuide, ManualInstall, ManualLogin, Terminal } from "./AgentConnect";
 
 const EFFORT_NAMES: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
 const pct = (x: number) => Math.round(x * 100);
@@ -86,11 +87,12 @@ export function UsagePop({ usage }: { usage: AgentUsage }) {
 }
 
 /** 설정 쪽 — 칸 안을 덮는다(← 와 Esc 로 돌아감, Esc 는 칸이 건다) */
-export function AgentSettings({ engines, usage, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
+export function AgentSettings({ engines, usage, connection, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
   engines: AgentEngine[];
   usage: AgentUsage;
+  connection: ReturnType<typeof useAgentChat>["connect"];
   onBack: () => void;
-  onConnectClaude: () => void; // 지금의 Claude 연결 흐름(대화 칸의 연결 안내)으로
+  onConnectClaude: () => void;
   onSetCodexEnabled: (enabled: boolean) => void;
   codexBusy: boolean;
   codexError: string | null;
@@ -115,6 +117,27 @@ export function AgentSettings({ engines, usage, onBack, onConnectClaude, onSetCo
   const efforts = [...new Set(engines.flatMap((e) => e.efforts))];
   const modelValue = d.model ? `${d.model.engine}:${d.model.model}` : "";
   const known = gens?.some((g) => g.code === d.gen_model) ?? false;
+  const state = connection.state;
+  const needsLogin = state === "not_logged_in" || state === "not_subscription" || state === "no_plan";
+  const reconnect = state === "not_subscription" || state === "no_plan";
+  const recheck = () => { void connection.recheck(); };
+  const guide = (() => {
+    if (connection.waiting || state === "login_window") return <LoginWindowGuide waiting={connection.waiting} note={connection.note} onRecheck={recheck} onStopWaiting={connection.stopWaiting} />;
+    if (state === "window_record") return <><p>{t("열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요")}</p><button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button></>;
+    if (needsLogin) return <>
+      {reconnect && <p className="cn-warn">{state === "no_plan" ? t("이 계정엔 Claude Code 를 쓸 수 있는 구독이 없어요") : t("구독 로그인이 아니에요")}</p>}
+      {connection.note === "unfinished" && <p>{t("로그인을 마치지 못했어요 — 다시 해 주세요")}</p>}
+      {connection.note === "terminal" || !connection.loginWindowEnabled ? <Terminal onRecheck={recheck} /> : <ManualLogin onRecheck={recheck} />}
+      {reconnect && <p className="cn-note">{t("이 PC 에서 Claude 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요")}</p>}
+    </>;
+    if (state === "not_installed") return <>
+      {connection.install?.state === "running" ? <><p>{t("MV Hub 가 Claude Code 를 설치하는 중이에요")}</p><details className="cn-more"><summary>{t("직접 설치하려면")}</summary><ManualInstall onRecheck={recheck} /></details></>
+        : <><p>{t("이 PC 에 Claude Code 가 없어요")}</p><InstallNote install={connection.install} /><ManualInstall onRecheck={recheck} /></>}
+    </>;
+    if (state === "outdated") return <><p>{t("Claude Code 를 업데이트해야 해요")}</p><CopyLine command="claude update" /><button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button></>;
+    return <><p>{t("Claude 상태를 확인하지 못했어요")}</p><InstallNote install={connection.install} />
+      {connection.install?.state === "failed" || connection.install?.state === "skipped" ? <ManualInstall onRecheck={recheck} /> : <button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button>}</>;
+  })();
   return (
     <section className="agent-settings" aria-label={t("설정")}>
       <header className="agent-settings-head">
@@ -131,9 +154,16 @@ export function AgentSettings({ engines, usage, onBack, onConnectClaude, onSetCo
                 {[claude?.subscription ? `${t("구독")} ${claude.subscription}` : null, claude?.version ? `Claude Code ${claude.version}` : null]
                   .filter(Boolean).join(" · ")}
                 {claude?.available ? <> · <span className="ok">{t("연결됨")}</span></> : null}
+                {!claude?.available && (connection.waiting
+                  ? <span className="agent-connect-wait"><i className="agent-connect-spin" aria-hidden="true" />{t("로그인 창 기다리는 중")}</span>
+                  : state === "not_logged_in" ? <span>{t("로그인 안 됨")}</span> : null)}
               </small></span>
-              {!claude?.available && <button type="button" className="agent-settings-btn" onClick={onConnectClaude}>{t("연결")}</button>}
+              {!claude?.available && needsLogin && !connection.waiting && connection.loginWindowEnabled && connection.note !== "terminal" && <button type="button" className="agent-settings-btn agent-connect-go" disabled={connection.connecting} onClick={onConnectClaude}>{connection.connecting ? t("연결 요청 중") : reconnect ? t("다시 연결") : t("연결")}</button>}
             </div>
+            {!claude?.available && <div className="agent-settings-connect">
+              {connection.connectError && <p className="cn-warn" role="alert">{connection.connectError}</p>}
+              {guide}
+            </div>}
             <div className="agent-settings-line">
               <span className="agent-settings-logo" aria-hidden="true"><OpenAIIcon size={15} /></span>
               <span className="agent-settings-t">ChatGPT (Codex)<small>

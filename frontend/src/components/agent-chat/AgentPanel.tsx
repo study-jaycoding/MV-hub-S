@@ -757,7 +757,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         {needsConnect && (
           <AgentConnect state={chat.connect.state} version={chat.connect.version} install={chat.connect.install}
             loginWindowEnabled={chat.connect.loginWindowEnabled}
-            waiting={chat.connect.waiting} note={chat.connect.note} onConnect={() => void chat.connect.connect()}
+            waiting={chat.connect.waiting} connecting={chat.connect.connecting} connectError={chat.connect.connectError}
+            note={chat.connect.note} onConnect={() => void chat.connect.connect()}
             onRecheck={() => void chat.connect.recheck()} onStopWaiting={chat.connect.stopWaiting} />
         )}
       </div>
@@ -845,14 +846,14 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           {/* [모델 ⌄][깊이 ⌄][사용량 원] — 평소 글자만, 올리면 바탕·⌄(시안 model-settings.png ①②) */}
           <div className="agent-foot-chips" ref={modelRef}>
             <div className="agent-model-wrap">
-              <button type="button" className="agent-chip agent-model-btn" disabled={!chat.choice || blocked}
+              <button type="button" className="agent-chip agent-model-btn" disabled={blocked}
                 onClick={() => setMenu(menu === "model" ? null : "model")} aria-haspopup="true" aria-expanded={menu === "model"}
                 aria-label={t("모델 고르기")}>
                 <span className="agent-co" aria-hidden="true">{chat.choice?.engine === "codex" ? <OpenAIIcon /> : "✳"}</span>
                 <span>{modelLabel}</span>
                 <Chevron />
               </button>
-              {menu === "model" && chat.choice && (
+              {menu === "model" && (
                 <ModelMenu engines={engines} choice={chat.choice}
                   onChoose={(next) => { chat.choose(next); setMenu(null); }}
                   onSettings={() => { setMenu(null); setSettings(true); }} />
@@ -939,8 +940,8 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       )}
       </div>
       {settings && (
-        <AgentSettings engines={engines} usage={chat.usage} onBack={closeSettings}
-          onConnectClaude={() => { setSettings(false); void chat.connect.connect(); }}
+        <AgentSettings engines={engines} usage={chat.usage} connection={chat.connect} onBack={closeSettings}
+          onConnectClaude={() => { void chat.connect.connect(); }}
           onSetCodexEnabled={(enabled) => { void chat.codex.setEnabled(enabled); }}
           codexBusy={chat.codex.busy} codexError={chat.codex.error} />
       )}
@@ -1656,7 +1657,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
  *  하나 고르면 닫힌다. 다른 회사 모델을 고르면 새 대화(useAgentChat). 칸이 좁아 옆에 펼 자리가 없으면 줄 아래로 편다. */
 function ModelMenu({ engines, choice, onChoose, onSettings }: {
   engines: AgentEngine[];
-  choice: AgentChoice;
+  choice: AgentChoice | null;
   onChoose: (next: AgentChoice) => void;
   onSettings: () => void;
 }) {
@@ -1671,13 +1672,13 @@ function ModelMenu({ engines, choice, onChoose, onSettings }: {
     if (el && panel && panel.width > 0) setInline(el.getBoundingClientRect().right + 170 > panel.right);
   }, []);
   const q = query.trim().toLowerCase();
-  const effortFor = (e: AgentEngine) => e.efforts.includes(choice.effort) ? choice.effort : e.efforts.includes("medium") ? "medium" : e.efforts[0] ?? "medium";
+  const effortFor = (e: AgentEngine) => choice && e.efforts.includes(choice.effort) ? choice.effort : e.efforts.includes("medium") ? "medium" : e.efforts[0] ?? "medium";
   const check = <span className="agent-model-check" aria-hidden="true">✓</span>;
   const item = (e: AgentEngine, m: { id: string; label: string }) => {
-    const on = choice.engine === e.id && choice.model === m.id;
+    const on = choice?.engine === e.id && choice.model === m.id;
     return (
       <button key={`${e.id}:${m.id}`} type="button" className={`agent-model-item${on ? " on" : ""}`} disabled={!e.available} aria-pressed={on}
-        onClick={() => onChoose(e.id === choice.engine ? { ...choice, model: m.id } : { engine: e.id, model: m.id, effort: effortFor(e), fast: false })}>
+        onClick={() => onChoose(choice && e.id === choice.engine ? { ...choice, model: m.id } : { engine: e.id, model: m.id, effort: effortFor(e), fast: false })}>
         <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? <OpenAIIcon /> : "✳"}</span>
         <span className="agent-model-name">{m.label}</span>
         {on && check}

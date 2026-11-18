@@ -325,3 +325,24 @@ it("창에서 결과를 지운 것은 되돌리기 단계가 아니다 — 지�
   //  첫 Ctrl+Z 가 헛돌고 두 번째에야 그 앞의 편집이 되돌려졌다.
   expect(saved.length).toBe(before);
 });
+
+// Jay 2026-11-18 — 화질 메뉴는 body 에 그린다(포털). 그 누름이 보드의 잡는 단계를 지나며 보드가 초점을 가져가면 메뉴가 '초점 잃음'으로
+//  닫혀 [1080p로 생성] 이 클릭 전에 사라졌다(라이브러리는 됨).
+it("창 선택 막대의 Draft 화질 메뉴는 누르는 동안 닫히지 않고 그 화질로 Draft 완성을 부른다", async () => {
+  (boundary.api as unknown as Record<string, unknown>).history = vi.fn().mockResolvedValue({ children: [] });
+  const finish = vi.fn();
+  const draft = gen("a", 0, { model: "seedance_2_5", job_id: "remote-a", params: { draft: true, resolution: "480p", duration: 4 } });
+  await openWindow([draft, gen("b", 1), gen("c", 2)], { variantDraft: { finish, busy: () => false, contextKey: "k", revision: 0 } });
+  pick("a");
+  await settle();
+  act(() => windowEl()!.querySelector<HTMLButtonElement>(".folder-peek-selbar .sb-draft")!.click());
+  await settle();
+  const option = document.querySelector<HTMLButtonElement>(".draft-finish-menu .draft-finish-1080p");
+  expect(option, "화질 메뉴").toBeTruthy();
+  act(() => { option!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 })); });
+  expect(document.querySelector(".draft-finish-menu"), "누르는 동안 메뉴").toBeTruthy();
+  act(() => option!.click());
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(finish.mock.calls[0][0]).toMatchObject({ id: "a" });
+  expect(finish.mock.calls[0][1]).toBe("1080p");
+});
