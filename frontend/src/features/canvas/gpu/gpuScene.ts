@@ -368,8 +368,8 @@ export function buildGpuScene(input: GpuSceneInput): GpuSceneModel {
       textQuads.push(q);
     }
     if (card.kind === "generation") {
-      const n = input.variantCount(card);
-      if (n > 1) {
+      const n = input.variantCount(card); // 배지에 띄울 수 — 0 이면 없음(scenes.variantBadgeCount, DOM 배지와 같은 규칙)
+      if (n > 0) {
         const q = pillQuad("multi:" + card.id, `▤ ${n}`, 0, 0, { size: 12, weight: 800, padX: 11, padY: 3, radius: 8, bg: BADGE, fg: ACCENT_INK, border: "rgba(0,0,0,0.25)" });
         q.x = card.x + w / 2 - q.w / 2;
         q.y = card.y - 4 - q.h;

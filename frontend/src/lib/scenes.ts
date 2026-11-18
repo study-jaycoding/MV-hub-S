@@ -3,6 +3,7 @@
 // ★저장 자리는 IndexedDB(sceneStore)다. 옛 localStorage 는 출처당 약 5MB 라 큰 씬 9개면 찼다.
 //  '마지막 연 씬'(scenesActive)처럼 작은 값은 그대로 localStorage 에 남는다.
 import { loadJSON, saveJSON } from "./storage";
+import { ownEntry } from "./ownEntry";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 import { hubHasFeature } from "./hubFeatures";
@@ -274,6 +275,20 @@ export function variantIds(card: Pick<SceneCard, "genIds" | "genId">): string[] 
   for (const id of card.genIds || []) if (id && !out.includes(id)) out.push(id);
   if (card.genId && !out.includes(card.genId)) out.push(card.genId);
   return out;
+}
+
+/** 화면에 세는 결과 수 — 휴지통에 간 결과(자료의 deleted)는 뺀다(Jay 2026-11-18). 카드 기록(genIds)에는 남는다 — 복구 후보.
+ *  자료가 아직 안 온 id 는 센다(곧 보일 것 — 결과 창의 선택 규칙과 같다). */
+export function shownVariantCount(card: Pick<SceneCard, "genIds" | "genId">, genData: Record<string, { deleted?: boolean }>): number {
+  return variantIds(card).filter((id) => !ownEntry(genData, id)?.deleted).length;
+}
+
+/** 결과 수 배지(▤ n)에 띄울 수 — 0 이면 배지 없음. 보통은 2개 이상일 때만 띄우지만, 대표(genId)가 휴지통에 가고 하나가 남으면 1 —
+ *  배지가 결과 창의 입구라 사라지면 남은 것을 대표로 고를 길이 없어진다(Codex 리뷰 01a1eda5 중간 3). 생성 카드(DOM)·GPU 판이 같이 쓴다. */
+export function variantBadgeCount(card: Pick<SceneCard, "genIds" | "genId">, genData: Record<string, { deleted?: boolean }>): number {
+  const n = shownVariantCount(card, genData);
+  if (n > 1) return n;
+  return n === 1 && !!ownEntry(genData, card.genId)?.deleted ? 1 : 0;
 }
 
 /** 카드에서 생성물을 뗀다 — 저장 뒤에도 주소가 남는 Comfy 출력도 같이 지운다. 남으면 지운 결과가 표시·입력으로 되살아난다. */

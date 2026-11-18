@@ -8,7 +8,7 @@ import { useMemo, useState } from "react";
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { LastViewedBadge } from "../LastViewedBadge";
-import { cardBatch, variantIds } from "../../../lib/scenes";
+import { cardBatch, shownVariantCount } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import {
@@ -517,17 +517,17 @@ export function ComfyCard({
         )}
       </div>
       {/* 결과 배지 — 이 노드가 만든 생성물이 있으면 카드 위에 떠서 표시. 클릭=변형 팝업으로 모아보기. */}
-      {variantIds(card).length > 0 && (
+      {shownVariantCount(card, genData) > 0 && (
         <button
           className="scene-multi-badge scene-multi-badge-comfy"
-          title={`이 노드의 생성 결과 ${variantIds(card).length}개 모두 보기`}
+          title={`이 노드의 생성 결과 ${shownVariantCount(card, genData)}개 모두 보기`}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             actions.setCardMenu(card.id);
           }}
         >
-          ▤ {variantIds(card).length}
+          ▤ {shownVariantCount(card, genData)}
         </button>
       )}
       {cfg?.content && sel && (

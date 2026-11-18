@@ -91,7 +91,7 @@ describe("카드 읽기 형태 — 변경 요소 0", () => {
     const card = { id: "c", kind: "generation", x: 0, y: 0, genId: "g1", genIds: ["g1", "g2"] } as unknown as SceneCard;
     const onInfo = vi.fn();
     act(() => root.render(
-      <GenerationCard mode="read" card={card} g={gen()} showNode waiting={false} genMissing={false} width={260} height={260} fill
+      <GenerationCard mode="read" card={card} g={gen()} variantCount={2} showNode waiting={false} genMissing={false} width={260} height={260} fill
         getNodePreview={() => () => {}} hist={{ ...filters, onInfo }} />,
     ));
     expect(editCount()).toBe(0);

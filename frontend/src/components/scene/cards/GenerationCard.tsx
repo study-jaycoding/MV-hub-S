@@ -4,7 +4,7 @@
 import type React from "react";
 import { memo } from "react";
 import type { SceneCard, SceneEdgeRole, ScenePortLane } from "../../../lib/scenes";
-import { cardBatch, variantIds } from "../../../lib/scenes";
+import { cardBatch } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
 import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../../lib/workspaceCommand";
 import { generationIssueFor, generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
@@ -60,6 +60,7 @@ function sameValues(a: Record<string, unknown>, b: Record<string, unknown>, bund
 type GenerationCardView = {
   card: SceneCard;
   g: Generation | null;
+  variantCount: number; // 결과 수 배지에 띄울 수, 0 = 배지 없음(scenes.variantBadgeCount — 휴지통 결과는 뺌, SceneBoard 가 셈)
   showNode: boolean;
   waiting: boolean; // 상류 comfy 실행 중 — '생성중(회색)' 최우선 표시
   genMissing: boolean; // 바인딩된 생성물이 외부에서 삭제됨(missingIds)
@@ -76,9 +77,9 @@ export type ReadHistPass = Pick<HistPass, "disabledIds" | "typeFilter" | "colorF
 // memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
 //  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 결과 미리보기·정보만(포트·Generate·태그·결과 창 단추 없음).
 export const GenerationCard = memo(function GenerationCard(props: GenerationCardEditProps | (GenerationCardView & { mode: "read"; hist: ReadHistPass })) {
-  const { card, g, showNode, waiting, genMissing, genKnown = true, width, height, fill, getNodePreview, lastViewed, hist } = props;
+  const { card, g, variantCount, showNode, waiting, genMissing, genKnown = true, width, height, fill, getNodePreview, lastViewed, hist } = props;
   const edit = props.mode === "read" ? null : props;
-  return <GenerationCardBody {...{ card, g, showNode, waiting, genMissing, genKnown, width, height, fill, getNodePreview, lastViewed, hist, edit }} />;
+  return <GenerationCardBody {...{ card, g, variantCount, showNode, waiting, genMissing, genKnown, width, height, fill, getNodePreview, lastViewed, hist, edit }} />;
 }, (prev, next) => sameValues(prev as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>, BUNDLES));
 
 type GenerationCardEditProps = GenerationCardView & {
@@ -113,7 +114,7 @@ type GenerationCardEditProps = GenerationCardView & {
 
 // 본문 — 편집 형태(edit 있음)와 읽기 형태(edit null)가 같이 쓴다. 읽기 형태엔 변경 단추·포트·창을 그리지 않는다.
 function GenerationCardBody({
-  card, g, showNode, waiting, genMissing, genKnown, width, height, fill, getNodePreview, lastViewed, hist, edit,
+  card, g, variantCount, showNode, waiting, genMissing, genKnown, width, height, fill, getNodePreview, lastViewed, hist, edit,
 }: GenerationCardView & { genKnown: boolean; hist: HistPass | ReadHistPass; edit: GenerationCardEditProps | null }) {
   // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
   const t = useT();
@@ -269,18 +270,18 @@ function GenerationCardBody({
           거기 넣으면 안 된다 — 이건 반대로 평소 보이고 호버 때 비켜준다. */}
       {lastViewed && <LastViewedBadge />}
       {/* 다중 결과 배지 — 이 카드에서 만든 결과가 2개 이상이면. 클릭=팝업으로 모아보기 */}
-      {variantIds(card).length > 1 && !edit && <span className="scene-multi-badge">▤ {variantIds(card).length}</span>}
-      {variantIds(card).length > 1 && edit && (
+      {variantCount > 0 && !edit && <span className="scene-multi-badge">▤ {variantCount}</span>}
+      {variantCount > 0 && edit && (
         <button
           className="scene-multi-badge"
-          title={`이 카드의 생성 결과 ${variantIds(card).length}개 모두 보기`}
+          title={`이 카드의 생성 결과 ${variantCount}개 모두 보기`}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             edit.actions.setCardMenu(card.id);
           }}
         >
-          ▤ {variantIds(card).length}
+          ▤ {variantCount}
         </button>
       )}
       {edit && <GenerationCardEditParts card={card} sel={sel} g={g} edit={edit} />}

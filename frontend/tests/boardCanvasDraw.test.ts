@@ -154,6 +154,18 @@ describe("리스트", () => {
     drawBoardItem(empty.g, buildBoardItem({ id: "E", kind: "list", x: 0, y: 0 } as SceneCard, box("E"), ctx({ cardsById: new Map() }))!, () => null);
     expect(empty.texts()).toEqual(["생성/텍스트/레퍼런스", "노드 연결"]);
   });
+
+  it("생성물 리스트 줄의 ▤ 수는 휴지통에 간 결과를 뺀다 — 카드 기록에는 남는다(Jay 11-18)", () => {
+    const cards = new Map<string, SceneCard>([
+      ["g1", { id: "g1", kind: "generation", x: 0, y: 0, genId: "a", genIds: ["a", "b", "c"] } as SceneCard],
+      ["L", { id: "L", kind: "list", x: 0, y: 0 } as SceneCard],
+    ]);
+    const edges = [{ id: "e1", from: "g1", to: "L" }] as never;
+    const genData = { a: gen("a"), b: gen("b"), c: gen("c", { deleted: true }) } as never;
+    const item = buildBoardItem(cards.get("L")!, box("L"), ctx({ cardsById: cards, resolvedEdges: edges, genData }))!;
+    expect(item).toMatchObject({ kind: "list", mode: "rows" });
+    expect((item as unknown as { rows: Array<{ badge?: string }> }).rows[0].badge).toBe("▤ 2");
+  });
 });
 
 describe("생성", () => {

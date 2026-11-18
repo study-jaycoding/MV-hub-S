@@ -6,7 +6,7 @@ import type { CSSProperties } from "react";
 import { memo, useEffect, useRef, useSyncExternalStore } from "react";
 import { assetVersionsSnapshot, subscribeAssetVersions } from "../../../lib/assetVersions";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
-import { variantIds } from "../../../lib/scenes";
+import { shownVariantCount, variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
@@ -175,7 +175,7 @@ export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEd
                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                 const gen = gid ? ownEntry(genData, gid) : undefined;
                 const src = gen ? thumbOf(gen, 128) : null;
-                const n = gc ? variantIds(gc).length : 0; // 이 카드에 생성된 결과 수
+                const n = gc ? shownVariantCount(gc, genData) : 0; // 이 카드에 생성된 결과 수 — 휴지통 결과는 뺀다
                 const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
                 const rsel = rowSel.listId === card.id && rowSel.cids.has(cid);
                 return (

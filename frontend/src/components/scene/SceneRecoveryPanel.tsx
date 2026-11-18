@@ -10,6 +10,35 @@ import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "../generation/Generati
 import { RECOVERY_PAGE, type useSceneCardRecovery } from "../../lib/useSceneCardRecovery";
 
 type Props = Omit<ReturnType<typeof useSceneCardRecovery>, "openCanvasRecovery"> & { onPreview?: (target: PreviewTarget) => void };
+
+const WAVE = [38, 72, 50, 92, 60, 80, 34, 56]; // 음성 파형 막대 높이(%) — 꾸밈(실제 소리 모양 아님)
+
+/** 목록 썸네일 — 이미지 그대로 · 영상 = 첫 장면 + 재생 표시 + 길이 · 그림 없는 영상 = 재생 표시 + '영상' + 길이 · 음성 = 음표 + 파형 + 길이
+ *  (Jay 11-18 시안). 전엔 음성·그림 없는 영상이 빈 검은 칸이었다 — media.ts mediaThumbUrl 이 음성·포스터 없는 원격 영상에 null. */
+export function RecoveryThumb({ thumb, media, duration }: { thumb: string | null; media: "image" | "video" | "audio"; duration?: string }) {
+  const dur = duration ? <span className="scene-recovery-dur">{duration}</span> : null;
+  if (media === "audio") return (
+    <span className="scene-recovery-thumb scene-recovery-thumb-audio" role="img" aria-label="음성">
+      <span className="audio-glyph" aria-hidden="true">🎵</span>
+      <span className="scene-recovery-wave" aria-hidden="true">{WAVE.map((h, i) => <span key={i} style={{ height: `${h}%` }} />)}</span>
+      {dur}
+    </span>
+  );
+  if (media === "video") return thumb ? (
+    <span className="scene-recovery-thumb scene-recovery-thumb-video">
+      <img src={thumb} alt="" loading="lazy" />
+      <span className="play-badge" aria-hidden="true">▶</span>
+      {dur}
+    </span>
+  ) : (
+    <span className="scene-recovery-thumb scene-recovery-thumb-novideo" role="img" aria-label="영상">
+      <span className="play-badge" aria-hidden="true">▶</span>
+      <span className="scene-recovery-kind">영상</span>
+      {dur}
+    </span>
+  );
+  return thumb ? <img className="scene-recovery-thumb" src={thumb} alt="" loading="lazy" /> : <span className="scene-recovery-thumb scene-recovery-thumb-empty" />;
+}
 export function SceneRecoveryPanel({ canvasRecovery, setCanvasRecovery, loadMoreDetached, claimCanvasRecovery, claimDetachedGeneration, onPreview }: Props) {
   const recoveryModelName = useModelDisplayName();
   const recoveryRef = useRef<HTMLDivElement>(null);
@@ -37,6 +66,8 @@ export function SceneRecoveryPanel({ canvasRecovery, setCanvasRecovery, loadMore
   ) => {
     const meta = generationListMeta((generation.params || {}) as Record<string, unknown>);
     const thumb = thumbOf(generation, 256);
+    const type = generation.assets?.[0]?.type;
+    const media = type === "audio" ? "audio" : type === "video" ? "video" : "image";
     const busy = !!canvasRecovery?.claimingId;
     return (
       <div
@@ -54,11 +85,7 @@ export function SceneRecoveryPanel({ canvasRecovery, setCanvasRecovery, loadMore
           }
         }}
       >
-        {thumb ? (
-          <img className="scene-recovery-thumb" src={thumb} alt="" loading="lazy" />
-        ) : (
-          <span className="scene-recovery-thumb scene-recovery-thumb-empty" />
-        )}
+        <RecoveryThumb thumb={thumb} media={media} duration={meta.duration} />
         <span className="scene-recovery-detail">
           <span className="scene-recovery-model">
             <ModelIcon /> {recoveryModelName(generation.model, generation.params) || generation.model || "모델 미상"}

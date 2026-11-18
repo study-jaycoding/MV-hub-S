@@ -45,7 +45,9 @@ import { toggleDisabledGen } from "../../lib/deactivated";
 import {
   sceneRefFingerprint,
   settleComfyRunning,
+  shownVariantCount,
   uid,
+  variantBadgeCount,
   variantIds,
   type Scene,
   type SceneCard,
@@ -728,6 +730,7 @@ export function SceneBoard({
     for (const c of cards) {
       if (c.kind !== "generation") continue;
       for (const gid of variantIds(c)) {
+        if (ownEntry(genData, gid)?.deleted) continue; // 휴지통 결과는 세지 않는다(결과 창·배지와 같은 수)
         if (typeFilter === "all") n += 1;
         else if (ownEntry(genData, gid)?.assets?.[0]?.type === typeFilter) n += 1;
       }
@@ -906,7 +909,7 @@ export function SceneBoard({
     const selectable = new Set(shownIds);
     for (const id of ids) if (!ownEntry(genData, id)) selectable.add(id);
     const dimIds = new Set(shown.filter((g) => !inBoardFolder(g, folderSel)).map((g) => g.id));
-    return { card, total: ids.length, shown, shownIds, selectable, dimIds };
+    return { card, total: shownVariantCount(card, genData), shown, shownIds, selectable, dimIds }; // 휴지통 결과는 수에서도 뺀다(격자처럼)
   }, [cardMenu, cards, genData, resolveHighlightedIds, disabledIds, grayOn, folderSel,
     typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, hideFailed]);
   const variantViewRef = useRef(variantView);
@@ -3259,7 +3262,7 @@ export function SceneBoard({
         return { id: g.id, x: box.x, y: box.y, w: box.w, h: box.h, color: g.color ?? null, name: g.name, count: g.cardIds.filter((id) => cardById(id)).length,
           collapsed: !!g.collapsed, selected: selectedGroupIds.has(g.id) };
       }),
-      variantCount: (card) => variantIds(card).length,
+      variantCount: (card) => variantBadgeCount(card, genData), // DOM 배지와 같은 수(휴지통 결과 뺌)
       folderChip: (card) => {
         const g = card.genId ? ownEntry(genData, card.genId) : undefined;
         return !g || (card.genId && missingIds.has(card.genId)) || g.deleted ? undefined : folderChipLabel(g.folder_path);
@@ -4080,6 +4083,7 @@ export function SceneBoard({
                   card={inner}
                   sel={sel}
                   g={g}
+                  variantCount={variantBadgeCount(inner, genData)}
                   showNode={showNode}
                   waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
                   genMissing={!!card.genId && missingIds.has(card.genId)}
@@ -4178,6 +4182,7 @@ export function SceneBoard({
                   mode="read"
                   card={card}
                   g={g}
+                  variantCount={variantBadgeCount(card, genData)}
                   showNode={showNode}
                   waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
                   genMissing={!!card.genId && missingIds.has(card.genId)}
