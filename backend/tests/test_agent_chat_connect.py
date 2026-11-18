@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -274,6 +275,90 @@ def test_engine_cache_drops_when_running_expires(monkeypatch):
 
 
 # ── 로그인 창 ──
+@pytest.mark.parametrize("reason", ["elevated", "service", "other_user", "unknown"])
+def test_login_unsupported_before_lock_records_or_process(reason, isolated, monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: reason)
+    for name in ("ClaudeLock", "_write", "_spawn_window"):
+        monkeypatch.setattr(claude, name, lambda *a, **k: pytest.fail("refusal must have no side effects"))
+    with pytest.raises(claude.LoginUnsupported) as caught:
+        claude.open_login_window(lambda: pytest.fail("identity callback before refusal"))
+    assert caught.value.reason == reason
+    assert list(isolated.iterdir()) == []
+
+
+def test_disabled_login_never_queries_token(monkeypatch):
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", False)
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: pytest.fail("switch must be checked first"))
+    with pytest.raises(claude.LoginDisabled):
+        claude.open_login_window(lambda: None)
+
+
+@windows
+@pytest.mark.parametrize("mode, expected", [
+    ("ready", None), ("case", None), ("elevated", "elevated"), ("service", "service"),
+    ("other_name", "other_user"), ("other_domain", "other_user"),
+    *[(step, "unknown") for step in ("open", "elevation", "session", "size", "user", "lookup", "wts_name", "wts_domain", "wts_raise", "empty")],
+])
+def test_login_token_queries_and_frees_handles(mode, expected, monkeypatch):
+    """가짜 Win32 경계 — 토큰 세션(RDP 포함), 이름·도메인 대조, 중간 실패의 핸들·WTS 메모리 정리."""
+    from ctypes import wintypes
+    closed, allocated, freed, queries = [], [], [], []
+
+    def put(pointer, kind, value):
+        ctypes.cast(pointer, ctypes.POINTER(kind))[0] = value
+
+    def open_token(proc, access, output):
+        if mode == "open":
+            return 0
+        put(output, wintypes.HANDLE, 123)
+        return 1
+
+    def info(token, kind, output, length, size):
+        if (kind, mode) in ((20, "elevation"), (12, "session"), (1, "user")):
+            return 0
+        put(size, wintypes.DWORD, 0 if mode == "size" else ctypes.sizeof(ctypes.c_void_p))
+        if output is None:
+            return 0
+        if kind == 20:
+            put(output, wintypes.DWORD, int(mode == "elevated"))
+        elif kind == 12:
+            put(output, wintypes.DWORD, 0 if mode == "service" else 7)
+        else:
+            put(output, ctypes.c_void_p, 456)
+        return 1
+
+    def lookup(system, sid, name, name_size, domain, domain_size, use):
+        put(name_size, wintypes.DWORD, 20)
+        put(domain_size, wintypes.DWORD, 20)
+        put(use, wintypes.DWORD, 1)
+        if name is None or mode == "lookup":
+            return 0
+        name.value, domain.value = "worker", "PC"
+        return 1
+
+    def query(server, session, kind, output, length):
+        queries.append((session.value, kind))
+        if (kind, mode) in ((5, "wts_name"), (7, "wts_domain")):
+            return 0
+        value = ("other" if mode == "other_name" else "WORKER" if mode == "case" else "worker") if kind == 5 else ("OTHER" if mode == "other_domain" else "PC")
+        memory = ctypes.create_unicode_buffer("" if mode == "empty" else value)
+        allocated.append(memory)
+        put(output, ctypes.c_void_p, ctypes.addressof(memory))
+        put(length, wintypes.DWORD, ctypes.sizeof(memory))
+        if mode == "wts_raise":
+            raise OSError("query failed")
+        return 1
+
+    kernel = SimpleNamespace(GetCurrentProcess=lambda: 99, CloseHandle=lambda handle: closed.append(handle.value))
+    advapi = SimpleNamespace(OpenProcessToken=open_token, GetTokenInformation=info, LookupAccountSidW=lookup)
+    wts = SimpleNamespace(WTSQuerySessionInformationW=query, WTSFreeMemory=lambda memory: freed.append(memory.value))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **k: {"kernel32": kernel, "advapi32": advapi, "wtsapi32": wts}[name])
+    assert claude._login_token_problem() == expected
+    assert closed == ([] if mode == "open" else [123])
+    assert freed == [ctypes.addressof(memory) for memory in allocated]
+    assert all(session == 7 for session, _ in queries)
+
+
 class FakeWindow:
     """창 대신 — 진짜로 잠자는 프로세스(pid·시작 시각 확인용). 허브가 끄지 않는지 본다."""
 
@@ -290,6 +375,7 @@ class FakeWindow:
 
 @pytest.fixture
 def window(monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     seen = {"spawned": [], "resumed": [], "record_at_spawn": None, "record_at_resume": None}
 
     def spawn(command):
@@ -396,6 +482,7 @@ def test_login_window_refusals(window, monkeypatch):
 
 @windows
 def test_breakaway_denied_goes_to_terminal_guidance(monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
 
     def denied(command):
@@ -412,6 +499,7 @@ def test_breakaway_denied_goes_to_terminal_guidance(monkeypatch):
 
 @windows
 def test_window_record_after_crashes(monkeypatch):
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait(10)
     me = claude.process_start(os.getpid())
@@ -666,6 +754,7 @@ def test_parser_turns_system_notices_into_events():
 # ── 기본 켜기 ──
 def test_enabled_by_default_and_off_with_zero(monkeypatch):
     saved = os.environ.get("CONTENT_HUB_AGENT_CHAT")
+    saved_login_window = os.environ.get("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW")
     try:
         monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT", raising=False)
         assert importlib.reload(config).AGENT_CHAT_ENABLED is True
@@ -673,9 +762,17 @@ def test_enabled_by_default_and_off_with_zero(monkeypatch):
         assert importlib.reload(config).AGENT_CHAT_ENABLED is False
         monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", raising=False)
         assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is False  # 로그인 창 스위치는 기본 꺼짐
+        for value, expected in (("0", False), ("1", True)):
+            monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", value)
+            assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is expected
     finally:
         if saved is None:
             monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT", raising=False)
         else:
             monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT", saved)
+        if saved_login_window is None:
+            monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", raising=False)
+        else:
+            monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", saved_login_window)
         importlib.reload(config)
+    assert config.AGENT_CHAT_LOGIN_WINDOW is ((saved_login_window or "0").lower() in ("1", "true", "yes", "on"))

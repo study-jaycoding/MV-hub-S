@@ -54,7 +54,7 @@ export interface ClaudeVersionInfo {
   newer: boolean;
   method?: "official" | "npm" | "other" | "none";
 }
-/** [Claude 연결]을 허브가 거절한 까닭(허브 머리 X-MVHub-Claude-Error) — login_window_disabled·breakaway_denied 면 터미널 안내로. */
+/** [Claude 연결] 거절 코드(X-MVHub-Claude-Error) — disabled·unsupported·breakaway_denied 는 터미널 안내, 문구는 본문 detail 그대로. */
 export class ClaudeLoginError extends Error {
   name = "ClaudeLoginError";
   constructor(public code: string, message: string) {

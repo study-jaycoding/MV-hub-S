@@ -17,6 +17,7 @@ import { getAccountNamespace } from "../src/lib/accountScope";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { getAuthToken, setAuthToken } from "../src/lib/http";
 import { applyAgentEvent, type AgentMessage } from "../src/lib/useAgentChat";
+import { setHubFeatures } from "../src/lib/hubFeatures";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,6 +121,35 @@ function pickSelect(label: string, value: string) {
 }
 
 describe("Ask Agent 옆 칸", () => {
+  it("Codex 선택 중에도 설정의 Claude 안내·연결 요청 오류가 보인다", async () => {
+    setHubFeatures(["agent_chat_v1", "agent_chat_connect_v1"]);
+    const engines = ENGINES.map((e) => e.id === "claude" ? { ...e, state: "not_logged_in", available: false, subscription: null } : e);
+    route = (c) => {
+      if (c.path === "/session") return json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines });
+      if (c.path === "/claude") return json({ state: "not_logged_in", version: "2.1.296", subscription: null, login_window: false, login_window_enabled: true, engines });
+      if (c.path === "/claude/login") return json({ detail: "권한을 확인하지 못해 버튼 연결을 쓸 수 없어요" }, 409, { "X-MVHub-Claude-Error": "login_window_unsupported" });
+      return json({ detail: "Not Found" }, 404);
+    };
+    try {
+      await mount();
+      pickModel("GPT-6.1 Sol");
+      expect(host.querySelector(".cn")).toBeNull();
+      act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+      act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent === "설정")!.click());
+      const settings = () => host.querySelector<HTMLElement>(".agent-settings")!;
+      expect(settings().textContent).toContain("로그인 안 됨");
+      expect(settings().querySelector("summary")!.textContent).toBe("직접 하려면(PowerShell)");
+      act(() => [...settings().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "연결")!.click());
+      await flush();
+      expect(settings().querySelector('[role="alert"]')!.textContent).toBe("권한을 확인하지 못해 버튼 연결을 쓸 수 없어요");
+      expect(settings().textContent).toContain("PowerShell 로 연결");
+      expect(settings().querySelector(".cn-code span")!.textContent).toBe("claude auth login");
+      expect(host.querySelector(".agent-model-btn")!.textContent).toContain("GPT-6.1 Sol");
+    } finally {
+      setHubFeatures([]);
+    }
+  });
+
   it("설정 Codex 연결 — 확인 중·실패 사유·다시 연결·끄기와 엔진 목록 갱신", async () => {
     let enabled = false;
     const engines = () => ENGINES.map((e) => e.id === "codex"

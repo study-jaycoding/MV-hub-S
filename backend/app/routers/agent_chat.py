@@ -147,6 +147,13 @@ async def claude_login(panel=Depends(_panel)):
         await asyncio.to_thread(claude.open_login_window, lambda: mcp_v2._still_current(ctx))
     except claude.LoginDisabled as exc:
         raise HTTPException(409, "이 PC 에서는 터미널에서 로그인해 주세요.", headers={_CLAUDE_ERROR: "login_window_disabled"}) from exc
+    except claude.LoginUnsupported as exc:
+        detail = {
+            "elevated": "관리자 권한으로 켠 MV Hub 라 버튼 연결을 쓸 수 없어요",
+            "service": "이 Windows 로그인에서는 버튼 연결을 쓸 수 없어요",
+            "other_user": "다른 Windows 사용자로 켠 MV Hub 라 버튼 연결을 쓸 수 없어요",
+        }.get(exc.reason, "권한을 확인하지 못해 버튼 연결을 쓸 수 없어요")
+        raise HTTPException(409, detail, headers={_CLAUDE_ERROR: "login_window_unsupported"}) from exc
     except claude.BreakawayDenied as exc:
         raise HTTPException(409, "로그인 창을 열 수 없는 환경이에요 — 터미널에서 로그인해 주세요.",
                             headers={_CLAUDE_ERROR: "breakaway_denied"}) from exc

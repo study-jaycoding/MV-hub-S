@@ -521,6 +521,7 @@ def test_panel_client_can_never_execute(hub):
 def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch):
     """GET /claude(새 상태·스위치·누출 없음) · 스위치 꺼짐 = 터미널 안내 · 켜면 로그인 창 하나 · 창이 열려 있으면 차례 409."""
     from app.services import agent_chat_claude as claude
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     client, _, _ = hub
     headers = panel_headers(client)
     monkeypatch.setenv("FAKE_AGENT_AUTH", "leak")
@@ -530,8 +531,10 @@ def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch):
     assert (body["state"], body["subscription"], body["login_window"], body["login_window_enabled"]) == ("ready", "Max", False, False)
     assert "secret@example.test" not in status.text and "org-SECRET" not in status.text and "SECRET" not in status.text
     monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: pytest.fail("disabled login queried token"))
     off = client.post("/api/agent-chat/claude/login", headers=headers)
     assert off.status_code == 409 and off.headers["X-MVHub-Claude-Error"] == "login_window_disabled"
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
     windows_opened = []
 
@@ -557,6 +560,40 @@ def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch):
             proc.wait(10)
         claude._held_windows.clear()
     assert len(windows_opened) == 1
+
+
+@pytest.mark.parametrize("reason, detail", [
+    ("elevated", "관리자 권한으로 켠 MV Hub 라 버튼 연결을 쓸 수 없어요"),
+    ("service", "이 Windows 로그인에서는 버튼 연결을 쓸 수 없어요"),
+    ("other_user", "다른 Windows 사용자로 켠 MV Hub 라 버튼 연결을 쓸 수 없어요"),
+    ("unknown", "권한을 확인하지 못해 버튼 연결을 쓸 수 없어요"),
+])
+def test_login_unsupported_reason_in_detail_without_side_effects(hub, monkeypatch, reason, detail):
+    from app.services import agent_chat_claude as claude
+    client, _, _ = hub
+    headers = panel_headers(client)
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: reason)
+    for name in ("ClaudeLock", "_write", "_spawn_window"):
+        monkeypatch.setattr(claude, name, lambda *a, **k: pytest.fail("unsupported login had a side effect"))
+    response = client.post("/api/agent-chat/claude/login", headers=headers)
+    assert response.status_code == 409
+    assert response.headers["X-MVHub-Claude-Error"] == "login_window_unsupported"
+    assert response.json() == {"detail": detail}
+    assert [key for key in response.headers if key.startswith("x-mvhub-claude")] == ["x-mvhub-claude-error"]
+
+
+def test_login_not_needed_is_unchanged(hub, monkeypatch):
+    from app.services import agent_chat_claude as claude
+    client, _, _ = hub
+    headers = panel_headers(client)
+
+    def already_connected(callback):
+        raise claude.Busy("이미 연결됨", "not_needed")
+
+    monkeypatch.setattr(claude, "open_login_window", already_connected)
+    response = client.post("/api/agent-chat/claude/login", headers=headers)
+    assert response.status_code == 409 and response.headers["X-MVHub-Claude-Error"] == "not_needed"
 
 
 def test_turn_validates_fast_mode_and_effort(hub):

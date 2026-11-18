@@ -68,6 +68,12 @@ class LoginDisabled(Exception):
     pass
 
 
+class LoginUnsupported(Exception):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 class BreakawayDenied(Exception):
     """허브가 탈출을 허용하지 않는 Job 아래라 로그인 창을 Job 밖으로 띄울 수 없다 — 터미널 안내로 간다."""
 
@@ -570,6 +576,79 @@ def would_block() -> str | None:
 
 
 # ── 로그인 창 ──
+def _login_token_problem() -> str | None:
+    """현재 토큰과 그 Windows 세션의 로그인 사용자를 대조한다. 조회 실패는 허용하지 않는다."""
+    if os.name != "nt":
+        return "unknown"
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                               ctypes.POINTER(wintypes.DWORD)]
+        advapi.LookupAccountSidW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPWSTR,
+                                           ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+                                           ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+        wts.WTSQuerySessionInformationW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_int,
+                                                   ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+        wts.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        wts.WTSFreeMemory.restype = None
+        token = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            return "unknown"
+        try:
+            size, elevated, session = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
+            if not advapi.GetTokenInformation(token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated), ctypes.byref(size)):
+                return "unknown"
+            if elevated.value:
+                return "elevated"
+            if not advapi.GetTokenInformation(token, 12, ctypes.byref(session), ctypes.sizeof(session), ctypes.byref(size)):
+                return "unknown"
+            if session.value == 0:
+                return "service"
+            advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser 크기
+            if not size.value:
+                return "unknown"
+            buffer = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
+                return "unknown"
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+            name_size, domain_size, use = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
+            advapi.LookupAccountSidW(None, sid, None, ctypes.byref(name_size), None, ctypes.byref(domain_size), ctypes.byref(use))
+            if not name_size.value or not domain_size.value:
+                return "unknown"
+            name = ctypes.create_unicode_buffer(name_size.value)
+            domain = ctypes.create_unicode_buffer(domain_size.value)
+            if not advapi.LookupAccountSidW(None, sid, name, ctypes.byref(name_size), domain,
+                                           ctypes.byref(domain_size), ctypes.byref(use)):
+                return "unknown"
+            if not name.value or not domain.value or use.value != 1:  # SidTypeUser
+                return "unknown"
+            logged_in = []
+            for info in (5, 7):  # WTSUserName · WTSDomainName(콘솔 대신 토큰 세션 — RDP 한 세션도 지원)
+                memory, length = ctypes.c_void_p(), wintypes.DWORD()
+                try:
+                    if not wts.WTSQuerySessionInformationW(None, session, info, ctypes.byref(memory), ctypes.byref(length)):
+                        return "unknown"
+                    if not memory.value or length.value < ctypes.sizeof(ctypes.c_wchar):
+                        return "unknown"
+                    value = ctypes.wstring_at(memory, length.value // ctypes.sizeof(ctypes.c_wchar)).rstrip("\0")
+                    if not value:
+                        return "unknown"
+                    logged_in.append(value.casefold())
+                finally:
+                    if memory.value:
+                        wts.WTSFreeMemory(memory)
+            return None if logged_in == [name.value.casefold(), domain.value.casefold()] else "other_user"
+        finally:
+            kernel.CloseHandle(token)
+    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+        return "unknown"
+
+
 def login_command(prefix: list[str]) -> list[str]:
     return [*prefix, "--setting-sources", "local", "auth", "login", "--claudeai"]  # --setting-sources 는 auth 앞(뒤면 모르는 옵션)
 
@@ -594,6 +673,9 @@ def open_login_window(still_current: Callable[[], None]) -> None:
     open 기록·재개가 안 되면 멈춘 창을 끈다 — 추적 안 된 로그인은 실행되지 않는다."""
     if not config.AGENT_CHAT_LOGIN_WINDOW:
         raise LoginDisabled()
+    problem = _login_token_problem()
+    if problem:
+        raise LoginUnsupported(problem)
     prefix = process.engine_prefix("claude")  # 차례·엔진 목록과 같은 찾기
     lock = ClaudeLock("login")
     lock.acquire()

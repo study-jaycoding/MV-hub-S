@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit = {}) => {
     const call: Call = { path: String(url).replace("/api/agent-chat", ""), method: init.method ?? "GET" };
     calls.push(call);
-    return Promise.resolve().then(() => route(call));
+    return Promise.resolve().then(() => call.path === "/api/models" ? json([]) : route(call));
   }));
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -68,6 +68,242 @@ async function mount() {
   act(() => root.render(<AgentPanel context={{ tab: "my" }} contextLabel="워크스페이스" onClose={() => {}} />));
   await flush();
 }
+
+function openSettings() {
+  act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+  act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent === "설정")!.click());
+}
+const settings = () => host.querySelector<HTMLElement>(".agent-settings")!;
+const settingsButton = (text: string) => [...settings().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text)!;
+const back = () => act(() => settings().querySelector<HTMLButtonElement>('button[aria-label="돌아가기"]')!.click());
+
+describe("계약 A — 설정 안 Claude 연결", () => {
+  it("스위치 켬의 대화 칸 버튼 아래 안내·접힌 PowerShell", async () => {
+    route = (c) => c.path === "/session" ? session("not_logged_in") : status("not_logged_in", { enabled: true });
+    await mount();
+    expect(buttonText("Claude 연결")).not.toBeNull();
+    expect(host.querySelector<HTMLDetailsElement>(".cn-more")!.open).toBe(false);
+    expect(host.querySelector(".cn-more summary")!.textContent).toBe("직접 하려면(PowerShell)");
+    expect(panel().textContent).toContain("로그인을 마치고 그 창이 닫히면 여기가 바뀌어요.");
+  });
+
+  it("설정은 닫히지 않고 요청 중 클릭·대화 칸과 설정의 요청도 하나", async () => {
+    let finish!: (r: Response) => void;
+    let opened = false;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") return new Promise<Response>((done) => { finish = done; });
+      return opened ? status("login_window", { enabled: true, window: true }) : status("not_logged_in", { enabled: true });
+    };
+    await mount();
+    openSettings();
+    const connect = settingsButton("연결");
+    act(() => { connect.click(); connect.click(); buttonText("Claude 연결")?.click(); });
+    await flush();
+    expect(settings()).not.toBeNull();
+    expect(settingsButton("연결 요청 중").disabled).toBe(true);
+    back();
+    expect(buttonText("연결 요청 중")!.disabled).toBe(true);
+    act(() => buttonText("연결 요청 중")!.click());
+    openSettings();
+    expect(calls.filter((c) => c.path === "/claude/login")).toHaveLength(1);
+    opened = true;
+    finish(json({ opened: true }));
+    await flush();
+    expect(settings().textContent).toContain("로그인 창 기다리는 중");
+    expect(settings().querySelector(".agent-connect-spin")).not.toBeNull();
+    expect(settings().textContent).toContain("자동 확인만 멈춰요 · 로그인 창은 직접 닫아 주세요");
+    back();
+    openSettings();
+    expect(settingsButton("그만두기")).toBeDefined();
+    act(() => settingsButton("그만두기").click());
+    expect(settings().querySelector(".agent-connect-spin")).toBeNull();
+    expect(settingsButton("다시 확인")).toBeDefined();
+  });
+
+  it("not_needed 는 최신 상태로 확인하고 연결 알림은 한 곳에 한 번", async () => {
+    let done = false;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") { done = true; return json({ detail: "이미 연결됨" }, 409, { "X-MVHub-Claude-Error": "not_needed" }); }
+      return done ? status("ready", { enabled: true, subscription: "Max" }) : status("not_logged_in", { enabled: true });
+    };
+    await mount();
+    openSettings();
+    act(() => settingsButton("연결").click());
+    await flush();
+    expect(settings().textContent).toContain("구독 Max");
+    expect(settings().textContent).toContain("연결됨");
+    expect(settings().querySelector(".agent-settings-connect")).toBeNull();
+    expect(host.querySelectorAll(".cn-done")).toHaveLength(1);
+    back();
+    openSettings();
+    expect(host.querySelectorAll(".cn-done")).toHaveLength(1);
+    expect(host.querySelector(".agent-error")).toBeNull();
+  });
+
+  it("not_needed 뒤 상태 조회 실패도 설정 안 연결 오류로 보인다", async () => {
+    let connectedElsewhere = false;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") {
+        connectedElsewhere = true;
+        return json({ detail: "이미 연결됨" }, 409, { "X-MVHub-Claude-Error": "not_needed" });
+      }
+      return connectedElsewhere ? json({ detail: "상태 조회 오류" }, 503) : status("not_logged_in", { enabled: true });
+    };
+    await mount();
+    openSettings();
+    act(() => settingsButton("연결").click());
+    await flush();
+    expect(settings().querySelector('[role="alert"]')?.textContent).toBe("Claude 상태를 다시 확인하지 못했어요");
+    expect(host.querySelector(".agent-error")!.textContent).toBe("상태 조회 오류");
+    expect(settingsButton("연결").disabled).toBe(false);
+  });
+
+  it.each(["not_logged_in", "not_subscription", "no_plan"])("스위치 0이면 설정 %s 연결 버튼 없이 PowerShell 안내만 보인다", async (state) => {
+    route = (c) => c.path === "/session" ? session(state) : status(state, { enabled: false });
+    await mount();
+    openSettings();
+    await flush();
+    expect(settings().querySelector(".agent-connect-go")).toBeNull();
+    expect(settings().textContent).toContain("PowerShell 로 연결");
+    expect(settingsButton("다시 확인")).toBeDefined();
+    expect(calls.filter((c) => c.path === "/claude/login")).toHaveLength(0);
+  });
+
+  it("대화 칸에서 먼저 요청한 동안 설정의 연결도 잠긴다", async () => {
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") return new Promise<Response>(() => {});
+      return status("not_logged_in", { enabled: true });
+    };
+    await mount();
+    act(() => buttonText("Claude 연결")!.click());
+    openSettings();
+    const connect = settingsButton("연결 요청 중");
+    expect(connect.disabled).toBe(true);
+    act(() => connect.click());
+    await flush();
+    expect(calls.filter((c) => c.path === "/claude/login")).toHaveLength(1);
+  });
+
+  it.each([
+    ["login_window_disabled", "이 PC 에서는 터미널에서 로그인해 주세요."],
+    ["login_window_unsupported", "관리자 권한으로 켠 MV Hub 라 버튼 연결을 쓸 수 없어요"],
+    ["login_window_unsupported", "이 Windows 로그인에서는 버튼 연결을 쓸 수 없어요"],
+    ["login_window_unsupported", "다른 Windows 사용자로 켠 MV Hub 라 버튼 연결을 쓸 수 없어요"],
+    ["login_window_unsupported", "권한을 확인하지 못해 버튼 연결을 쓸 수 없어요"],
+  ])("%s 는 설정·대화 칸의 펼친 터미널 안내와 본문 까닭", async (code, detail) => {
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") return json({ detail }, 409, { "X-MVHub-Claude-Error": code });
+      return status("not_logged_in", { enabled: true });
+    };
+    await mount();
+    openSettings();
+    act(() => settingsButton("연결").click());
+    await flush();
+    expect(settings().textContent).toContain("PowerShell 로 연결");
+    expect(settings().querySelector("details")).toBeNull();
+    expect(settings().querySelector(".agent-connect-go")).toBeNull();
+    expect(settings().querySelector(".cn-code span")!.textContent).toBe("claude auth login");
+    if (code === "login_window_unsupported") expect(settings().querySelector('[role="alert"]')!.textContent).toBe(detail);
+    back();
+    expect(buttonText("Claude 연결")).toBeNull();
+    if (code === "login_window_unsupported") expect(host.querySelector('.cn [role="alert"]')!.textContent).toBe(detail);
+    expect(host.querySelector(".cn-code span")!.textContent).toBe("claude auth login");
+  });
+
+  it("연결 오류는 설정 안에 보이고 일반 대화 오류와 분리", async () => {
+    let checks = 0;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") return json({ detail: "다른 MV Hub 에서 Claude 가 일하는 중이에요" }, 409, { "X-MVHub-Claude-Error": "claude_busy" });
+      return ++checks === 1 ? status("not_logged_in", { enabled: true }) : json({ detail: "상태 조회 오류" }, 503);
+    };
+    await mount();
+    openSettings();
+    act(() => settingsButton("다시 확인").click());
+    await flush();
+    act(() => settingsButton("연결").click());
+    await flush();
+    expect(settings().querySelector('[role="alert"]')!.textContent).toBe("다른 MV Hub 에서 Claude 가 일하는 중이에요");
+    expect(host.querySelector(".agent-error")!.textContent).toBe("상태 조회 오류");
+    back();
+    expect(host.querySelector('.cn [role="alert"]')).not.toBeNull();
+  });
+
+  it.each([
+    ["not_installed", "이 PC 에 Claude Code 가 없어요", "irm https://claude.ai/install.ps1 | iex"],
+    ["outdated", "Claude Code 를 업데이트해야 해요", "claude update"],
+    ["unknown", "Claude 상태를 확인하지 못했어요", null],
+    ["window_record", "열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요", null],
+    ["not_subscription", "구독 로그인이 아니에요", "claude auth login"],
+    ["no_plan", "이 계정엔 Claude Code 를 쓸 수 있는 구독이 없어요", "claude auth login"],
+  ])("설정 %s 안내가 안에서 펼쳐진다", async (state, line, command) => {
+    route = (c) => c.path === "/session" ? session(state) : status(state, { enabled: true });
+    await mount();
+    openSettings();
+    expect(settings().textContent).toContain(line);
+    if (command) expect(settings().querySelector(".cn-code span")!.textContent).toBe(command);
+    if (state === "not_subscription" || state === "no_plan") {
+      expect(settingsButton("다시 연결")).toBeDefined();
+      expect(settings().textContent).toContain("이 PC 에서 Claude 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요");
+      expect(settings().querySelector<HTMLDetailsElement>("details")!.open).toBe(false);
+    } else expect(settingsButton("다시 확인")).toBeDefined();
+  });
+
+  it("10분 만료와 로그인 미완료를 설정 안에서 표시", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    let state = "login_window";
+    route = (c) => c.path === "/session" ? session(state) : status(state, { enabled: true, window: state === "login_window" });
+    await mount();
+    openSettings();
+    await act(async () => { await vi.advanceTimersByTimeAsync(602_000); });
+    await flush();
+    expect(settings().textContent).toContain("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]");
+    expect(settings().querySelector(".agent-connect-spin")).toBeNull();
+    const before = calls.length;
+    await act(async () => { vi.advanceTimersByTime(4000); });
+    expect(calls).toHaveLength(before);
+    // 새로 연 칸에서 로그인 창이 닫혔으나 로그인은 마치지 못한 경우
+    act(() => root.unmount());
+    root = createRoot(host);
+    await mount();
+    openSettings();
+    state = "not_logged_in";
+    await act(async () => { vi.advanceTimersByTime(2000); });
+    await flush();
+    expect(settings().textContent).toContain("로그인을 마치지 못했어요 — 다시 해 주세요");
+    expect(settingsButton("연결")).toBeDefined();
+  });
+
+  it.each(["connect", "status", "poll"])("칸을 닫은 뒤 늦은 %s 응답은 타이머를 만들지 않는다", async (late) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let finish!: (r: Response) => void;
+    let opened = false;
+    route = (c) => {
+      if (c.path === "/session") return session("not_logged_in");
+      if (c.path === "/claude/login") {
+        opened = true;
+        return late === "connect" ? new Promise<Response>((done) => { finish = done; }) : json({ opened: true });
+      }
+      if (late === "status" || opened) return new Promise<Response>((done) => { finish = done; });
+      return status("not_logged_in", { enabled: true });
+    };
+    await mount();
+    if (late !== "status") { act(() => buttonText("Claude 연결")!.click()); await flush(); }
+    act(() => root.unmount());
+    root = createRoot(host);
+    finish(late === "connect" ? json({ opened: true }) : status("login_window", { enabled: true, window: true }));
+    await flush();
+    const before = calls.length;
+    await act(async () => { vi.advanceTimersByTime(12_000); });
+    expect(calls).toHaveLength(before);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe("MV Agent 칸 — Claude 연결 안내", () => {
   it("Claude Code 가 없으면 설치 안내(B) — 공식 명령·복사·다시 확인 → 연결되면 띠와 함께 입력칸이 풀린다", async () => {
