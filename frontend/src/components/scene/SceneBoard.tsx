@@ -2406,6 +2406,9 @@ export function SceneBoard({
     const t = e.target as HTMLElement;
     if (isSceneTextEntryTarget(t)) return;
     const ae = document.activeElement as HTMLElement | null;
+    // 쓰는 중인 칸 안의 '못 고치는 조각'(텍스트 카드 편집칸의 알약 — contentEditable=false 라 위 판정이 놓친다)도 칸 안의 누름이다.
+    //  아래 blur 가 편집을 끝내 알약을 글자로 풀지 못하고 선택이 풀린 것처럼 보였다(Jay 2026-11-18).
+    if (ae && isSceneTextEntryTarget(ae) && ae.contains(t)) return;
     // 편집 요소 + 프롬프트 dock(레퍼런스 트레이 등) 포커스를 캔버스 클릭 시 해제 — 안 하면 트레이가 계속
     //  포커스로 남아, 캔버스 클릭 후 붙여넣기가 캔버스 카드 대신 트레이로 잘못 가던 문제가 생긴다.
     if (
@@ -2425,6 +2428,9 @@ export function SceneBoard({
     //  동작(자동 스크롤)을 막는데 초점 이동도 같이 막혀, 여기서 가져온 초점이 보드에 남았다(카드를 휠로 누른 뒤 — 6회차 기록).
     //  창의 툴바가 연 태그 패널은 body 에 그려진다 — 그 누름도 창 안의 누름이다(lib/keyGate floatHost).
     if (floatHost(t).closest?.(".scene-varwin")) return;
+    // body 에 옮겨 그린 것(포털 — 선택 막대의 Draft 화질 메뉴 등)의 누름도 React 트리를 따라 여기를 지난다. 보드 밖이면 가져오지 않는다 —
+    //  가져오면 그 메뉴가 '초점 잃음'으로 닫혀 누른 단추가 클릭 전에 사라졌다('생성 결과' 창의 [1080p로 생성], Jay 2026-11-18).
+    if (!(e.currentTarget as HTMLElement).contains(t)) return;
     (e.currentTarget as HTMLElement).focus({ preventScroll: true });
   };
 
