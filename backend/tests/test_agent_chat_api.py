@@ -518,10 +518,13 @@ def test_panel_client_can_never_execute(hub):
 
 
 @windows
-def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch):
+@pytest.mark.parametrize("trapped", [False, True])
+def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch, trapped):
     """GET /claude(새 상태·스위치·누출 없음) · 스위치 꺼짐 = 터미널 안내 · 켜면 로그인 창 하나 · 창이 열려 있으면 차례 409."""
     from app.services import agent_chat_claude as claude
     monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", False)
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: False)
     client, _, _ = hub
     headers = panel_headers(client)
     monkeypatch.setenv("FAKE_AGENT_AUTH", "leak")
@@ -546,8 +549,16 @@ def test_claude_status_login_switch_and_turn_refusal(hub, monkeypatch):
 
     monkeypatch.setattr(claude, "_spawn_window", spawn)
     monkeypatch.setattr(claude, "_resume", lambda proc: None)
+    if trapped:
+        monkeypatch.setattr(claude, "_window_trapped", lambda proc: True)
     try:
         opened = client.post("/api/agent-chat/claude/login", headers=headers)
+        if trapped:
+            assert opened.status_code == 409
+            assert opened.headers["X-MVHub-Claude-Error"] == "breakaway_denied"
+            assert len(windows_opened) == 1 and windows_opened[0].poll() is not None
+            assert windows_opened[0] not in claude._held_windows
+            return
         assert opened.status_code == 200 and opened.json() == {"opened": True}
         again = client.post("/api/agent-chat/claude/login", headers=headers)
         assert again.status_code == 409 and again.headers["X-MVHub-Claude-Error"] == "login_window_open"

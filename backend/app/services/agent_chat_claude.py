@@ -1,8 +1,8 @@
 """MV Agent 칸 — 이 PC 의 Claude 상태 판정·로그인 창·PC 전체 뮤텍스(설계 docs/status/AskAgent_첫연결_설계_2026-11-09.md 3·5·6절).
 
 - 상태는 `claude --setting-sources local auth status` 하나로 본다. 로그아웃이면 종료 코드 1 이어도 JSON 이 오니 종료 코드로 버리지 않는다.
-- 로그인은 사람이 보는 새 콘솔 창(`CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB`)이다 — 허브는 그 창을 Job 에 넣지도 끄지도 않는다
-  (브라우저 자동 열기를 끄는 방법이 공식 문서에 없어서, 숨긴 프로세스로 띄우면 사용자 브라우저를 끌 수 있다). 스위치 기본 꺼짐.
+- 로그인은 사람이 보는 새 콘솔 창(`CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB`)이다 — Job 에 남았으면 재개하지 않고 끈다
+  (브라우저 자동 열기를 끄는 방법이 공식 문서에 없어서, 숨긴 프로세스로 띄우면 사용자 브라우저를 끌 수 있다). 스위치 기본 켜짐.
 - 같은 Claude 자격을 쓰는 허브들(dev·배포판, 기록 폴더를 따로 준 허브까지)은 이름 있는 뮤텍스 하나로 '차례'와 '로그인 창 만들기'를
   줄 세운다 — 이름·기록 위치는 자격 폴더(CLAUDE_CONFIG_DIR 또는 ~/.claude)로 정한다. 뮤텍스는 스레드 소유라 잡은 스레드가 놓는다.
   주인 기록(running|clean)은 정상·버려진 획득 모두에서 먼저 본다 — 살아 있는 허브의 정리 안 된 일이면 계속 막는다.
@@ -654,9 +654,26 @@ def login_command(prefix: list[str]) -> list[str]:
 
 
 def _spawn_window(command: list[str]) -> subprocess.Popen:
-    """새 콘솔·Job 밖·멈춘 채. 입출력은 넘기지 않는다(새 콘솔의 핸들 — 허브 로그로 주소·코드·이메일이 가지 않게)."""
+    """새 콘솔·멈춘 채. Job 에 남았으면 재개하지 않고 끈다. 입출력은 넘기지 않는다(허브 로그로 주소·코드·이메일이 가지 않게)."""
     return subprocess.Popen(command, cwd=str(_work_dir()), env=process.child_env(), close_fds=True,
                             creationflags=CREATE_NEW_CONSOLE | CREATE_BREAKAWAY_FROM_JOB | process.CREATE_SUSPENDED)
+
+
+def _in_any_job(handle) -> bool | None:
+    try:
+        kernel = _k32()
+        kernel.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+        kernel.IsProcessInJob.restype = wintypes.BOOL
+        in_job = wintypes.BOOL()
+        if kernel.IsProcessInJob(handle, None, ctypes.byref(in_job)):
+            return bool(in_job.value)
+    except (OSError, AttributeError, ctypes.ArgumentError):
+        pass
+    return None
+
+
+def _window_trapped(proc) -> bool:
+    return _in_any_job(int(proc._handle)) is not False
 
 
 def _resume(proc: subprocess.Popen) -> None:
@@ -669,7 +686,7 @@ def _resume(proc: subprocess.Popen) -> None:
 
 def open_login_window(still_current: Callable[[], None]) -> None:
     """[Claude 연결] — 스위치가 켜졌고 연결이 필요한 상태일 때만. 순서: 잠금 → 상태·창 기록 판정(잠금 안에서 — 그새 다른 허브가
-    연결했거나 창을 열었으면 안 연다) → 신원 재대조 → launching 기록 → 멈춘 채 생성 → open 기록(생성 핸들의 시작 시각) → 재개 → 놓기.
+    연결했거나 창을 열었으면 안 연다) → 신원 재대조 → launching 기록 → 멈춘 채 생성 → Job 판정 → open 기록(생성 핸들의 시작 시각) → 재개 → 놓기.
     open 기록·재개가 안 되면 멈춘 창을 끈다 — 추적 안 된 로그인은 실행되지 않는다."""
     if not config.AGENT_CHAT_LOGIN_WINDOW:
         raise LoginDisabled()
@@ -698,16 +715,22 @@ def open_login_window(still_current: Callable[[], None]) -> None:
                 raise BreakawayDenied() from exc
             raise
         try:
+            if _window_trapped(proc):
+                raise BreakawayDenied()
             start = _handle_start(_k32(), int(proc._handle))  # 번호로 다시 열지 않는다 — 생성 핸들이 그 프로세스 자체
             if start is None:
                 raise OSError("로그인 창 시작 시각을 읽지 못했어요")
             _write(_window_file(), {"status": "open", "pid": proc.pid, "start": start, "at": time.time()})
             _resume(proc)
         except BaseException:
-            with contextlib.suppress(OSError):
-                proc.kill()  # 멈춘 채 끈다 — 사람에게 보인 적 없는 창
-            with contextlib.suppress(OSError):
-                _write(_window_file(), {"status": "none", "at": time.time()})
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # 끝났음을 확인하지 못하면 launching 또는 open 기록을 그대로 둔다
+            else:
+                with contextlib.suppress(OSError):
+                    _write(_window_file(), {"status": "none", "at": time.time()})
             raise
         _held_windows.append(proc)
     finally:

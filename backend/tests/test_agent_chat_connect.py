@@ -372,10 +372,14 @@ class FakeWindow:
         self.proc.kill()
         self.proc.wait(10)
 
+    def wait(self, timeout=None):
+        return self.proc.wait(timeout)
+
 
 @pytest.fixture
 def window(monkeypatch):
     monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: False)
     seen = {"spawned": [], "resumed": [], "record_at_spawn": None, "record_at_resume": None}
 
     def spawn(command):
@@ -392,7 +396,8 @@ def window(monkeypatch):
     monkeypatch.setattr(claude, "_resume", resume)
     yield seen
     for _, win in seen["spawned"]:
-        win.kill()
+        win.proc.kill()
+        win.proc.wait(10)
     claude._held_windows.clear()
 
 
@@ -435,12 +440,111 @@ def test_login_window_never_runs_untracked(window, monkeypatch):
 
     monkeypatch.setattr(claude, "_resume", broken_resume)
     with pytest.raises(OSError):
-        claude.open_login_window(lambda: None)  # 재개가 안 되면 멈춘 창을 끈다(보인 적 없는 창이 기록을 막지 않게)
+        claude.open_login_window(lambda: None)  # 재개가 안 되면 창을 끄고 종료를 확인한다
     assert window["resumed"] == [] and len(window["spawned"]) == 2
     for _, win in window["spawned"]:
         assert win.proc.wait(10) is not None
     assert json.loads(claude._window_file().read_text(encoding="utf-8"))["status"] == "none"
     assert not claude.window_alive() and claude._held_windows == []
+
+
+@windows
+def test_login_window_in_job_is_killed_before_resume(window, monkeypatch):
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: True)
+    monkeypatch.setattr(claude, "_handle_start", lambda *args: pytest.fail("job check must precede start lookup"))
+    # 허브 자신의 시작 시각은 창 생성 전에 필요하다.
+    monkeypatch.setattr(claude, "_me", lambda: {"pid": os.getpid(), "start": 1})
+    with pytest.raises(claude.BreakawayDenied):
+        claude.open_login_window(lambda: None)
+    assert len(window["spawned"]) == 1 and window["resumed"] == []
+    win = window["spawned"][0][1]
+    assert win.proc.poll() is not None
+    assert json.loads(claude._window_file().read_text(encoding="utf-8"))["status"] == "none"
+    assert win not in claude._held_windows
+
+
+@windows
+@pytest.mark.parametrize("failure", ["kill", "wait_timeout", "wait_oserror"])
+def test_login_window_cleanup_failure_preserves_record_and_original_error(window, monkeypatch, failure):
+    monkeypatch.setenv("FAKE_AGENT_AUTH", "none")
+    original_spawn = claude._spawn_window
+    resume_error = OSError("resume failed")
+
+    def fail_resume(proc):
+        raise resume_error
+
+    def fail_cleanup(*args, **kwargs):
+        if failure == "wait_timeout":
+            raise subprocess.TimeoutExpired("fake window", 5)
+        raise OSError("cleanup failed")
+
+    def spawn(command):
+        win = original_spawn(command)
+        if failure == "kill":
+            monkeypatch.setattr(win, "kill", fail_cleanup)
+        else:
+            monkeypatch.setattr(win, "wait", fail_cleanup)
+        return win
+
+    monkeypatch.setattr(claude, "_spawn_window", spawn)
+    monkeypatch.setattr(claude, "_window_trapped", lambda proc: failure == "kill")
+    monkeypatch.setattr(claude, "_resume", fail_resume)
+    with pytest.raises(claude.BreakawayDenied if failure == "kill" else OSError) as caught:
+        claude.open_login_window(lambda: None)
+    win = window["spawned"][0][1]
+    record = json.loads(claude._window_file().read_text(encoding="utf-8"))
+    assert window["resumed"] == [] and win not in claude._held_windows
+    if failure == "kill":
+        assert record["status"] == "launching" and record["hub_pid"] == os.getpid()
+        assert win.proc.poll() is None
+    else:
+        assert caught.value is resume_error
+        assert record["status"] == "open" and record["pid"] == win.pid
+        assert record["start"] > 0
+
+
+@pytest.mark.parametrize("in_job, trapped", [(False, False), (True, True), (None, True)])
+def test_window_trapped_uses_creation_handle(monkeypatch, in_job, trapped):
+    handles = []
+
+    def check(handle):
+        handles.append(handle)
+        return in_job
+
+    monkeypatch.setattr(claude, "_in_any_job", check)
+    assert claude._window_trapped(SimpleNamespace(_handle=123)) is trapped
+    assert handles == [123]
+
+
+@pytest.mark.parametrize("error", [None, OSError, AttributeError, ctypes.ArgumentError])
+def test_in_any_job_failure_is_unknown(monkeypatch, error):
+    def check(*args):
+        if error:
+            raise error("query failed")
+        return 0
+
+    monkeypatch.setattr(claude, "_k32", lambda: SimpleNamespace(IsProcessInJob=check))
+    assert claude._in_any_job(123) is None
+
+
+@pytest.mark.parametrize("in_job", [False, True])
+def test_in_any_job_reads_bool_and_queries_any_job(monkeypatch, in_job):
+    def check(handle, job, result):
+        assert handle == 123 and job is None
+        ctypes.cast(result, ctypes.POINTER(claude.wintypes.BOOL))[0] = in_job
+        return 1
+
+    monkeypatch.setattr(claude, "_k32", lambda: SimpleNamespace(IsProcessInJob=check))
+    assert claude._in_any_job(123) is in_job
+    assert check.argtypes == [claude.wintypes.HANDLE, claude.wintypes.HANDLE, ctypes.POINTER(claude.wintypes.BOOL)]
+
+
+@windows
+def test_in_any_job_real_current_process_returns_bool():
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = claude.wintypes.HANDLE
+    assert type(claude._in_any_job(kernel.GetCurrentProcess())) is bool
 
 
 @windows
@@ -761,8 +865,8 @@ def test_enabled_by_default_and_off_with_zero(monkeypatch):
         monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT", "0")
         assert importlib.reload(config).AGENT_CHAT_ENABLED is False
         monkeypatch.delenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", raising=False)
-        assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is False  # 로그인 창 스위치는 기본 꺼짐
-        for value, expected in (("0", False), ("1", True)):
+        assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is True
+        for value, expected in (("0", False), ("1", True), ("", False)):
             monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", value)
             assert importlib.reload(config).AGENT_CHAT_LOGIN_WINDOW is expected
     finally:
@@ -775,4 +879,4 @@ def test_enabled_by_default_and_off_with_zero(monkeypatch):
         else:
             monkeypatch.setenv("CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW", saved_login_window)
         importlib.reload(config)
-    assert config.AGENT_CHAT_LOGIN_WINDOW is ((saved_login_window or "0").lower() in ("1", "true", "yes", "on"))
+    assert config.AGENT_CHAT_LOGIN_WINDOW is (("1" if saved_login_window is None else saved_login_window).lower() in ("1", "true", "yes", "on"))
