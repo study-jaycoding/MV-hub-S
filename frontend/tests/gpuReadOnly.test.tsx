@@ -80,7 +80,7 @@ describe("카드 읽기 형태 — 변경 요소 0", () => {
     const preview = vi.fn();
     act(() => root.render(
       <ListCard mode="read" card={list} cardsById={new Map([["c1", g], ["l", list]])} resolvedEdges={[{ id: "e", from: "c1", to: "l" }] as never}
-        genData={{ g1: gen() }} disabledIds={new Set()} cardWidth={260} workspaceId="ws" getNodePreview={() => preview} />,
+        genData={{ g1: gen() }} disabledIds={new Set()} missingIds={new Set()} cardWidth={260} workspaceId="ws" getNodePreview={() => preview} />,
     ));
     expect(editCount()).toBe(0);
     act(() => (host.querySelector(".scene-listrow-view") as HTMLElement).click());
@@ -91,7 +91,7 @@ describe("카드 읽기 형태 — 변경 요소 0", () => {
     const card = { id: "c", kind: "generation", x: 0, y: 0, genId: "g1", genIds: ["g1", "g2"] } as unknown as SceneCard;
     const onInfo = vi.fn();
     act(() => root.render(
-      <GenerationCard mode="read" card={card} g={gen()} showNode waiting={false} genMissing={false} width={260} height={260} fill
+      <GenerationCard mode="read" card={card} g={gen()} variantCount={2} showNode waiting={false} genMissing={false} width={260} height={260} fill
         getNodePreview={() => () => {}} hist={{ ...filters, onInfo }} />,
     ));
     expect(editCount()).toBe(0);

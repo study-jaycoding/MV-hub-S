@@ -10,7 +10,7 @@ import type { refServerStatus } from "./sceneAssetRelink";
 import { CARD_W } from "./sceneDerive";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "./sceneEdges";
 import { refMediaType, refThumbSrc } from "./sceneMedia";
-import { variantIds, type SceneCard, type SceneEdge } from "./scenes";
+import { shownVariantCount, variantIds, type SceneCard, type SceneEdge } from "./scenes";
 import { isDraftGeneration, normalizeSeedanceDraftParams } from "./seedanceDraft";
 import { parseSceneSetTags } from "./sceneSet";
 import { spotlightParamLabel, spotlightValueLabel } from "./spotlightPromptConfig";
@@ -188,7 +188,7 @@ export function buildBoardItem(card: SceneCard, box: Box, ctx: BoardBuildContext
         }
         const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
         const gen = gid ? ownEntry(ctx.genData, gid) : undefined;
-        const n = gc ? variantIds(gc).length : 0;
+        const n = gc ? shownVariantCount(gc, ctx.genData, ctx.genMissing) : 0; // 휴지통 결과는 뺀다(ListCard 와 같은 수)
         base.rows.push({ src: gen ? thumbOf(gen, 128) : null, text: "", media: mediaOf(gen?.assets?.[0]?.type), badge: n > 0 ? `▤ ${n}` : undefined, empty: n <= 0,
           off: !!gid && ctx.disabled(gid) });
       }

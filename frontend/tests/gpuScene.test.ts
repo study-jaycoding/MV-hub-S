@@ -15,7 +15,7 @@ const text = (id: string, x: number, body = "hello") => ({ id, kind: "text", x, 
 const boardDraw = { kinds: BOARD_KINDS, build: buildBoardItem, sources: boardItemSources, draw: drawBoardItem };
 const input = (over: Partial<GpuSceneInput> = {}): GpuSceneInput => ({
   cards: [{ card: text("t", 0), w: 260, h: 120 }], boardDraw, build, selected: new Set(), glow: new Set(), offServer: new Set(), listKind: () => null,
-  lines: [], dots: [], groups: [], variantCount: () => 1, folderChip: () => undefined, refTypeLabel: () => "이미지", ...over,
+  lines: [], dots: [], groups: [], variantCount: () => 0, folderChip: () => undefined, refTypeLabel: () => "이미지", ...over, // variantCount = 배지에 띄울 수(0 = 없음, scenes.variantBadgeCount)
 });
 
 describe("모습 열쇠", () => {
@@ -89,6 +89,27 @@ describe("단순화(25% 이하)", () => {
     expect(m.dots.filter((d) => !d.hideLow)).toHaveLength(1);
     const picked = buildGpuScene({ ...base, selected: new Set(["g"]) });
     expect(picked.quads.find((q) => q.id === "multi:g")?.hideLow).toBeUndefined();
+  });
+
+  it("결과 수 배지는 띄울 수가 1 이상일 때만 — 0 이면 없다 · 띄울 수는 휴지통 결과를 뺀 variantBadgeCount(Codex 재확인 01a1eda5 낮음)", async () => {
+    const { variantBadgeCount } = await import("../src/lib/scenes");
+    const gen = { id: "g", kind: "generation", x: 0, y: 0, genId: "a", genIds: ["a", "b"] } as unknown as SceneCard;
+    const quads = (n: number) => buildGpuScene(input({ cards: [{ card: gen, w: 260, h: 260 }], variantCount: () => n })).quads.map((q) => q.id);
+    expect(quads(1)).toEqual(["multi:g"]);
+    expect(quads(0)).toEqual([]);
+    const done = { status: "done" };
+    const none = () => false;
+    // 둘 다 살아 있음 = 2 · 하나만 있는 보통 카드 = 0(배지 없음) · 대표가 휴지통이고 하나 남음 = 1(결과 창 입구) · 둘 다 휴지통 = 0
+    expect(variantBadgeCount(gen, { a: done, b: done }, none)).toBe(2);
+    expect(variantBadgeCount({ genId: "a", genIds: ["a"] }, { a: done }, none)).toBe(0);
+    expect(variantBadgeCount(gen, { a: { deleted: true }, b: done }, none)).toBe(1);
+    expect(variantBadgeCount(gen, { a: done, b: { deleted: true } }, none)).toBe(0);
+    expect(variantBadgeCount(gen, { a: { deleted: true }, b: { deleted: true } }, none)).toBe(0);
+    // 휴지통 결과는 보통 서버 조회에서 '없음'으로 와 자료에서 지워진다(isGone) — 같은 규칙(Jay 11-18 '아직 9개')
+    expect(variantBadgeCount(gen, { b: done }, (id) => id === "a")).toBe(1);
+    expect(variantBadgeCount(gen, { a: done }, (id) => id === "b")).toBe(0);
+    expect(variantBadgeCount(gen, {}, () => true)).toBe(0);
+    expect(variantBadgeCount(gen, { b: done }, none)).toBe(2); // 답을 아직 못 받은 a 는 센다(곧 보일 것)
   });
 
   it("모습 열쇠는 짧은 해시 — 같은 값이면 같고 글이 한 자만 달라도 다르다", async () => {

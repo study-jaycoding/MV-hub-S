@@ -53,7 +53,7 @@ function comfyProps(g: Generation, h: HistPass): ComponentProps<typeof ComfyCard
   const c = card("comfy", g);
   return { card: c, sel: false, fill: true, width: 180, runningLocal: false, loadingWorkflow: false,
     laneDelta: () => 0, getNodePreview: () => noop, hist: h,
-    graph: { cards: [c], cardsById: new Map([[c.id, c]]), edges: [], refParents: {}, genData: { [g.id]: g } },
+    graph: { cards: [c], cardsById: new Map([[c.id, c]]), edges: [], refParents: {}, genData: { [g.id]: g }, missingIds: new Set() },
     tagEdit: { cardId: null, nodeGenId: null, enabled: false, hasAutoTags: false,
       autoTagOptions: [], applyCardTags: noop, applyCardAutoTags: noop, close: noop },
     actions: { applyComfyApi: async () => false, pickComfyFile: noop, setComfyModalId: noop,

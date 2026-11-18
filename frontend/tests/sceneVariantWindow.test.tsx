@@ -52,9 +52,10 @@ const key = (target: EventTarget, init: KeyboardEventInit) => act(() => {
 });
 const wait = (ms: number) => act(async () => { await new Promise((done) => setTimeout(done, ms)); });
 
-async function openWindow(gens: Generation[], props: Partial<BoardProps> = {}) {
+// missing = 서버 묶음 조회가 '없음'으로 돌려줄 id — 휴지통으로 보낸 결과는 이렇게 온다(자료에서 지워지고 missingIds 로)
+async function openWindow(gens: Generation[], props: Partial<BoardProps> = {}, missing: string[] = []) {
   boundary.api.getGenerationsBatch.mockResolvedValue({
-    materials: {}, missing: [], items: Object.fromEntries(gens.map((item) => [item.id, item])),
+    materials: {}, missing, items: Object.fromEntries(gens.map((item) => [item.id, item])),
   } as never);
   // 공유·최종 뒤 씬이 그 한 건을 다시 읽는다 — 서버 기록 그대로(이 시험의 공유 콜백은 서버를 바꾸지 않는다)
   boundary.api.getGeneration.mockImplementation((async (id: string) => gens.find((item) => item.id === id)) as never);
@@ -66,7 +67,7 @@ async function openWindow(gens: Generation[], props: Partial<BoardProps> = {}) {
   }
   act(() => view.root.render(<StrictMode><Host /></StrictMode>));
   await settle();
-  const badge = [...view.container.querySelectorAll("button")].find((el) => el.textContent === `▤ ${scene.cards[0].genIds!.length}`);
+  const badge = view.container.querySelector<HTMLButtonElement>("button.scene-multi-badge");
   expect(badge, "결과 수 배지").toBeTruthy();
   act(() => { badge!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   await settle();
@@ -97,10 +98,14 @@ afterEach(() => {
 });
 
 it("필터에 가려진 결과는 창에서 빠지고 선택에서도 빠진다 — 다시 보여도 골라져 있지 않다 · 지운 결과는 그리지 않는다", async () => {
-  await openWindow([gen("a", 0, { tags: ["keep"] }), gen("b", 1), gen("c", 2, { deleted: true })]);
+  const onTypeCount = vi.fn();
+  await openWindow([gen("a", 0, { tags: ["keep"] }), gen("b", 1), gen("c", 2, { deleted: true })], { onTypeCount });
   expect(shownIds()).toEqual(["a", "b"]); // 지운 c 는 없다
-  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 3개");
-  expect(windowEl()!.querySelector(".folder-peek-count")!.textContent).toBe("2개 표시");
+  expect(onTypeCount).toHaveBeenLastCalledWith(2); // 캔버스 도구 줄의 결과 수도 휴지통 결과를 뺀다(Codex 리뷰 01a1eda5 중간 2)
+  // 휴지통에 간 결과는 수에서도 뺀다 — 카드 기록(genIds)에는 남아 복구 후보다(Jay 11-18 '8개가 됐는데 9개로 보인다')
+  expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 2");
+  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 2개");
+  expect(windowEl()!.querySelector(".folder-peek-count")).toBeNull();
   pick("a");
   pick("b", { ctrlKey: true });
   expect(selectedIds()).toEqual(["a", "b"]);
@@ -114,6 +119,30 @@ it("필터에 가려진 결과는 창에서 빠지고 선택에서도 빠진다 
   await settle();
   expect(shownIds()).toEqual(["a", "b"]);
   expect(selectedIds()).toEqual(["a"]); // 가려진 동안 선택에서 빠졌다 — 되돌아와도 고른 적 없는 카드다
+});
+
+it("대표가 휴지통에 가고 결과가 하나 남으면 ▤ 1 로 창을 열어 남은 것을 고를 수 있다(Codex 리뷰 01a1eda5 중간 3)", async () => {
+  await openWindow([gen("a", 0, { deleted: true }), gen("b", 1, { deleted: true }), gen("c", 2)]);
+  expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 1");
+  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 1개");
+  expect(shownIds()).toEqual(["c"]);
+});
+
+it("휴지통 결과가 서버 조회에서 '없음'으로 와도 수에서 뺀다 — 창 제목·배지·도구 줄 수(Jay 11-18 '휴지통에 있는데 아직 9개')", async () => {
+  const onTypeCount = vi.fn();
+  await openWindow([gen("a", 0), gen("b", 1)], { onTypeCount }, ["c"]);
+  expect(shownIds()).toEqual(["a", "b"]);
+  expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 2");
+  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 2개");
+  expect(windowEl()!.querySelector(".folder-peek-count")).toBeNull(); // '3개 · 2개 표시' 가 아니다
+  expect(onTypeCount).toHaveBeenLastCalledWith(2);
+});
+
+it("대표가 휴지통에 가 '없음'으로 오고 하나가 남아도 ▤ 1 로 창에 들어간다", async () => {
+  await openWindow([gen("c", 2)], {}, ["a", "b"]);
+  expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 1");
+  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 1개");
+  expect(shownIds()).toEqual(["c"]);
 });
 
 it("다빈치가 고른 결과는 필터에 안 맞아도 보인다 — 직접 고르면 그 표시가 풀리며 다시 가려진다", async () => {

@@ -1681,6 +1681,17 @@
   object-fit: cover; background: #10131a;
 }
 .scene-recovery-thumb-empty { display: block; }
+/* 영상·음성 썸네일(Jay 11-18 시안) — 재생 표시는 앱 공용 .play-badge, 길이는 오른쪽 아래 */
+.scene-recovery-thumb-video, .scene-recovery-thumb-novideo, .scene-recovery-thumb-audio { position: relative; display: block; overflow: hidden; }
+.scene-recovery-thumb-video > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.scene-recovery-thumb-novideo { box-sizing: border-box; border: 1px solid #303641; background: #141820; }
+.scene-recovery-thumb-novideo .play-badge { top: 40%; }
+.scene-recovery-kind { position: absolute; left: 0; right: 0; top: 62%; text-align: center; font-size: 10.5px; font-weight: 700; color: var(--muted); }
+.scene-recovery-thumb-audio { display: flex; align-items: center; justify-content: center; gap: 5px; background: linear-gradient(135deg, #1b1d27, #0b0c11); }
+.scene-recovery-thumb-audio .audio-glyph { font-size: 15px; opacity: 0.85; }
+.scene-recovery-wave { display: flex; align-items: center; gap: 2px; height: 30px; }
+.scene-recovery-wave span { display: block; width: 3px; border-radius: 2px; background: var(--accent); opacity: 0.8; }
+.scene-recovery-dur { position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 5px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 10px; font-weight: 700; line-height: 1.4; }
 .scene-recovery-detail { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .scene-recovery-model {
   display: inline-flex; align-items: center; gap: 5px;

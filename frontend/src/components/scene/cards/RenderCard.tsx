@@ -3,7 +3,7 @@
 import { ownEntry } from "../../../lib/ownEntry";
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
-import { cardBatch, variantIds } from "../../../lib/scenes";
+import { cardBatch, shownVariantCount, variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectRenderGenCardIds } from "../../../lib/sceneEdges";
 import { hideBrokenImg, showLoadedImg, thumbOf } from "../../../lib/media";
@@ -16,6 +16,7 @@ export function RenderCard({
   resolvedEdges,
   genData,
   disabledIds,
+  missingIds,
   rowSel,
   reorderFrom,
   showRenderBar,
@@ -35,6 +36,7 @@ export function RenderCard({
   resolvedEdges: SceneEdge[];
   genData: Record<string, Generation>;
   disabledIds: Set<string>;
+  missingIds: Set<string>; // 서버가 '없음'으로 돌려준 결과(휴지통) — 줄의 결과 수에서 뺀다(scenes.shownVariantCount)
   rowSel: { listId: string; cids: Set<string> };
   reorderFrom: string | null;
   showRenderBar: boolean; // sel && onRenderCards — 실행바 노출 조건(부모 prop 존재 여부 포함)
@@ -74,7 +76,7 @@ export function RenderCard({
                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                 const gen = gid ? ownEntry(genData, gid) : undefined;
                 const src = gen ? thumbOf(gen, 128) : null;
-                const n = gc ? variantIds(gc).length : 0;
+                const n = gc ? shownVariantCount(gc, genData, (id) => missingIds.has(id)) : 0; // 휴지통 결과는 뺀다(ListCard 와 같은 수)
                 const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
                 const rsel = rowSel.listId === card.id && rowSel.cids.has(cid);
                 return (

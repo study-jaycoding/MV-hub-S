@@ -6,7 +6,7 @@ import type { CSSProperties } from "react";
 import { memo, useEffect, useRef, useSyncExternalStore } from "react";
 import { assetVersionsSnapshot, subscribeAssetVersions } from "../../../lib/assetVersions";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
-import { variantIds } from "../../../lib/scenes";
+import { shownVariantCount, variantIds } from "../../../lib/scenes";
 import type { Generation, PreviewTarget } from "../../../types";
 import { collectListInputs, collectRenderGenCardIds, effectiveTextOf } from "../../../lib/sceneEdges";
 import { refThumbSrc } from "../../../lib/sceneMedia";
@@ -31,6 +31,7 @@ type ListCardView = {
   resolvedEdges: SceneEdge[];
   genData: Record<string, Generation>;
   disabledIds: Set<string>;
+  missingIds: Set<string>; // 서버가 '없음'으로 돌려준 결과(휴지통) — 줄의 결과 수에서 뺀다(scenes.shownVariantCount)
   cardWidth: number; // widthOf(card) — 부모 계산(head 폭 측정 ref 의존이라 값으로 받음)
   workspaceId: string; // 서버에 없는 레퍼런스 판정의 열쇠(캔버스 탭의 공간) — ReferenceCard 와 같은 값
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
@@ -58,7 +59,7 @@ const LIST_READ_ONLY: ListCardEdit = {
 //  읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸. 미리보기(줄의 크게 보기)·카드 안 스크롤만.
 export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEdit & { mode?: "edit" }) | (ListCardView & { mode: "read" })) {
   const read = props.mode === "read";
-  const { card, cardsById, resolvedEdges, genData, disabledIds, cardWidth, workspaceId, getNodePreview } = props;
+  const { card, cardsById, resolvedEdges, genData, disabledIds, missingIds, cardWidth, workspaceId, getNodePreview } = props;
   const { rowSel, reorderFrom, toggleRowSel, startReorder, setCardMenu, addListAsReference, onOutPortDown, onResizeDown, expanded = false, onCollapse } = read ? LIST_READ_ONLY : props;
   const reorderable = expanded;
   const floatRef = useRef<HTMLDivElement>(null);
@@ -175,7 +176,7 @@ export const ListCard = memo(function ListCard(props: (ListCardView & ListCardEd
                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                 const gen = gid ? ownEntry(genData, gid) : undefined;
                 const src = gen ? thumbOf(gen, 128) : null;
-                const n = gc ? variantIds(gc).length : 0; // 이 카드에 생성된 결과 수
+                const n = gc ? shownVariantCount(gc, genData, (id) => missingIds.has(id)) : 0; // 이 카드에 생성된 결과 수 — 휴지통 결과는 뺀다
                 const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
                 const rsel = rowSel.listId === card.id && rowSel.cids.has(cid);
                 return (
