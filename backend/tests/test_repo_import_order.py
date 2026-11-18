@@ -37,11 +37,19 @@ class RepoImportOrderTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_every_entry_point_imports_cleanly(self):
+        # facade 공개 계약: repo.restore_generation 은 '참'이 아니라 그 함수여야 한다 — 같은 이름 잎 모듈
+        #  (repo/restore_generation.py)이 함수를 가려도 모듈은 참이라 못 잡았다(11-18 휴지통 복구 500)
+        same_fn = (
+            "; from app.repo import generations; "
+            "assert repo.restore_generation is generations.restore_generation, repo.restore_generation"
+        )
         for statement in (
-            "from app import repo; import app.repo.trash",
+            "from app import repo; import app.repo.trash" + same_fn,
             "import app.repo.trash; from app import repo; "
-            "assert repo.delete_generation and repo.restore_generation",  # facade 공개 계약 유지
-            "import app.repo.manage_telemetry; import app.repo.trash; from app import repo",
+            "assert repo.delete_generation" + same_fn,
+            "import app.repo.manage_telemetry; import app.repo.trash; from app import repo" + same_fn,
+            "import app.repo.restore_generation; from app import repo" + same_fn,  # 잎 모듈 먼저
+            "import app.main; from app import repo" + same_fn,
         ):
             completed = _import_in_fresh_process(statement)
             self.assertEqual(completed.returncode, 0, f"{statement!r}: {completed.stderr}")
