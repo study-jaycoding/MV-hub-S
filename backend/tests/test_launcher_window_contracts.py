@@ -383,3 +383,315 @@ def test_console_cmd_cmdlines_query_states(launcher, monkeypatch):
     assert launcher._console_cmd_cmdlines([11]) is None  # cmdlet 실패 — 숨기지 않는 방향
 
     assert launcher._console_cmd_cmdlines([]) == []  # cmd 없음 — 조회 없이 빈 목록
+
+
+@pytest.fixture
+def watch_scenario(launcher, monkeypatch):
+    """감시 틱과 Win32/CIM 경계를 가짜로 진행하며 실제 사용자 창은 건드리지 않는다."""
+    def run(frames, *, adopted=(_BIG_HWND,), marker="a" * 32, nonce="a" * 32,
+            failed_close=(), spawn_error=None):
+        events = []
+        current = {"app": list(adopted), "now": 0.0, "tick": -1}
+        remaining = iter(frames)
+
+        def sleep(_seconds):
+            frame = next(remaining, None)
+            assert frame is not None, "감시자가 예정된 마지막 틱에서 끝나지 않았다"
+            tick = current["tick"] + 1
+            now = current["now"] + 1.0
+            current.clear()
+            current.update(app=[], now=now)
+            current.update(frame)
+            current["tick"] = tick
+
+        def profile_pids(*_a, **_k):
+            current["queries"] = current.get("queries", 0) + 1
+            events.append(("query", current["tick"]))
+            if "settle_until" in current:
+                current["now"] = current["settle_until"]
+            if current.get("recheck"):
+                current["app"] = current["recheck"]
+            if not current.get("query_ok", True):
+                return None
+            pids = {11} if (current["app"] or current.get("hidden")) and not current.get("process_gone") else set()
+            return pids, pids
+
+        def post(hwnd, message, wparam, lparam):
+            events.append(("close", current["tick"], hwnd, message, wparam, lparam))
+            return hwnd not in failed_close
+
+        def spawn(*_a):
+            console_events = [e for e in events if e[0] == "console"]
+            assert not console_events or console_events[-1] == ("console", True)
+            events.append(("spawn", current["tick"]))
+            if spawn_error:
+                raise spawn_error
+            return SimpleNamespace(pid=22, poll=lambda: None)
+
+        def outcome(_nonce):
+            events.append(("outcome", current["tick"], _nonce))
+            return current.get("outcome", True)
+
+        if marker is None:
+            monkeypatch.delenv("MVHUB_UPDATE_WINDOW_NONCE", raising=False)
+        else:
+            monkeypatch.setenv("MVHUB_UPDATE_WINDOW_NONCE", marker)
+        monkeypatch.setenv("MVHUB_EXECUTION_NONCE", nonce)
+        monkeypatch.setenv("MVHUB_ACTIVATION_CONTROL", "1")
+        monkeypatch.setattr(launcher, "_find_app_browser", lambda: ("chrome", "chrome.exe"))
+        monkeypatch.setattr(launcher, "_app_profile_dir", lambda _name: Path("C:/fake-profile"))
+        monkeypatch.setattr(launcher, "_profile_pids", profile_pids)
+        monkeypatch.setattr(launcher, "_classify_app_hwnds", lambda _pids: (list(current["app"]), []))
+        monkeypatch.setattr(launcher, "_visible_app_hwnds", lambda _pids: list(current["app"]))
+        monkeypatch.setattr(launcher, "_approved_alive", lambda hwnd: hwnd in current["app"])
+        monkeypatch.setattr(launcher, "_is_marked_approved", lambda hwnd: hwnd not in current.get("unmarked", []))
+        monkeypatch.setattr(launcher, "_update_boot_outcome", outcome)
+        monkeypatch.setattr(launcher, "_user32", lambda: SimpleNamespace(
+            PostMessageW=post, IsWindow=lambda hwnd: hwnd in current["app"] + current.get("hidden", [])))
+        monkeypatch.setattr(launcher, "_spawn_app_window", spawn)
+        monkeypatch.setattr(launcher, "_pin_browser", lambda name: events.append(("pin", name)))
+        monkeypatch.setattr(launcher, "_console_is_ours", lambda: True)
+        monkeypatch.setattr(launcher, "_set_console_visible", lambda visible: events.append(("console", visible)))
+        monkeypatch.setattr(launcher.time, "sleep", sleep)
+        monkeypatch.setattr(launcher.time, "monotonic", lambda: current["now"])
+        return SimpleNamespace(run=lambda: launcher.watch_app_window("http://127.0.0.1:8010"), events=events)
+
+    return run
+
+
+def test_update_replaces_committed_snapshot_once_then_watches_new_window(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND], "outcome": None},
+        {"app": [_BIG_HWND, 102]},
+        {},  # 옛 HWND 가 없어진 바로 그 틱에 교체
+        {"app": [200]},
+        {}, {}, {},
+    ])
+    assert scenario.run() == 0
+    assert sorted(e for e in scenario.events if e[0] == "close") == [
+        ("close", 1, 102, 0x0010, 0, 0), ("close", 1, _BIG_HWND, 0x0010, 0, 0),
+    ]
+    assert [e for e in scenario.events if e[0] == "spawn"] == [("spawn", 2)]
+    assert [e for e in scenario.events if e == ("query", 2)] == [("query", 2)]
+    assert [e for e in scenario.events if e[0] == "pin"] == [("pin", "chrome")]
+    assert [e for e in scenario.events if e[0] == "console"] == [
+        ("console", False), ("console", True), ("console", False),
+    ]
+
+
+def test_committed_without_live_approved_windows_discards_replacement(launcher, watch_scenario):
+    swap = launcher._UpdateWindowSwap("a" * 32, "a" * 32, True)
+    assert swap.commit(True, set(), 1.0) == ()
+    assert swap.nonce == "" and swap.deadline is None
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND], "outcome": None}, {}, {}, {},
+    ])
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] in ("close", "spawn")]
+
+
+@pytest.mark.parametrize("outcome", [None, False])
+def test_uncommitted_or_rolled_back_update_never_closes_or_spawns(watch_scenario, outcome):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND], "outcome": outcome, "now": 170},
+        {"app": [_BIG_HWND], "outcome": outcome},
+        {"outcome": outcome}, {"outcome": outcome}, {"outcome": outcome},
+    ])
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] in ("close", "spawn")]
+    if outcome is False:
+        assert len([e for e in scenario.events if e[0] == "outcome"]) == 1
+
+
+@pytest.mark.parametrize("marker,nonce,adopted", [
+    (None, "a" * 32, (_BIG_HWND,)),  # 일반 부팅: 예전 committed control 재사용
+    ("b" * 32, "a" * 32, (_BIG_HWND,)),
+    ("A" * 32, "A" * 32, (_BIG_HWND,)),
+    ("a" * 31, "a" * 31, (_BIG_HWND,)),
+    ("a" * 32 + "\n", "a" * 32 + "\n", (_BIG_HWND,)),
+    ("a" * 32, "a" * 32, ()),
+])
+def test_non_candidate_boot_does_not_replace(watch_scenario, marker, nonce, adopted):
+    scenario = watch_scenario([{"app": [200]}, {}, {}, {}],
+                              marker=marker, nonce=nonce, adopted=adopted)
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] in ("close", "outcome")]
+    assert len([e for e in scenario.events if e[0] == "spawn"]) == (0 if adopted else 1)
+
+
+def test_reappearance_resets_debounce_and_late_windows_are_not_closed(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND]}, {}, {}, {"app": [200]}, {}, {}, {"app": [200]},
+        {}, {}, {},
+    ], marker=None)
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] == "close"]
+    assert not [e for e in scenario.events if e[0] == "spawn"]
+
+
+def test_query_failure_holds_replacement_and_recovers_console(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND]},
+        {"query_ok": False}, {"query_ok": False}, {},
+        {"app": [200]}, {}, {}, {},
+    ])
+    assert scenario.run() == 0
+    assert [e for e in scenario.events if e[0] == "spawn"] == [("spawn", 3)]
+    first_query = scenario.events.index(("query", 1))
+    assert scenario.events[first_query - 1] == ("console", True)
+    assert [e for e in scenario.events[:first_query - 1] if e[0] == "console"] == [("console", False)]
+    assert [e for e in scenario.events if e in (("query", 1), ("query", 2), ("query", 3))] == [
+        ("query", 1), ("query", 2), ("query", 3),
+    ]
+
+
+@pytest.mark.parametrize("unmarked", [False, True])
+def test_hidden_old_window_blocks_until_destroyed_or_property_removed(watch_scenario, unmarked):
+    frames = [{"app": [_BIG_HWND]}, {"hidden": [_BIG_HWND]}, {"hidden": [_BIG_HWND]}, {"hidden": [_BIG_HWND]},
+              {"hidden": [_BIG_HWND]}]
+    frames += [{"hidden": [_BIG_HWND], "unmarked": [_BIG_HWND], "process_gone": True} if unmarked else {}]
+    frames += [{"app": [200]}, {}, {}, {}]
+    scenario = watch_scenario(frames)
+    assert scenario.run() == 0
+    assert [e for e in scenario.events if e[0] == "spawn"] == [("spawn", 5)]
+
+
+def test_failed_close_waits_for_surviving_window_without_resending(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND, 102]}, {"app": [102]}, {"app": [102]},
+        {}, {"app": [200]}, {}, {}, {},
+    ], adopted=(_BIG_HWND, 102), failed_close=(102,))
+    assert scenario.run() == 0
+    assert len([e for e in scenario.events if e[0] == "close"]) == 2
+    assert [e for e in scenario.events if e[0] == "spawn"] == [("spawn", 3)]
+
+
+def test_window_reappearing_before_spawn_is_adopted_without_another_replacement(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND]}, {"recheck": [200]}, {}, {}, {},
+    ])
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] == "spawn"]
+    assert len([e for e in scenario.events if e[0] == "close"]) == 1
+    assert [e for e in scenario.events if e == ("query", 1)] == [("query", 1)]
+
+
+def test_failed_pre_spawn_recheck_holds_until_query_recovers(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND]}, {"query_ok": False}, {},
+        {"app": [200]}, {}, {}, {},
+    ])
+    assert scenario.run() == 0
+    assert [e for e in scenario.events if e[0] == "spawn"] == [("spawn", 2)]
+
+
+def test_cleanup_exception_leaves_console_visible(launcher, monkeypatch, watch_scenario):
+    scenario = watch_scenario([{"app": [_BIG_HWND]}, {}, {}, {}])
+
+    def fail(*_args):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(launcher, "_wait_app_browser_settle", fail)
+    with pytest.raises(OSError, match="cleanup failed"):
+        scenario.run()
+    assert scenario.events[-1] == ("console", True)
+
+
+@pytest.mark.parametrize("gone_at,replaced", [(120.9, True), (121.0, False), (121.1, False)])
+def test_replacement_reservation_expires_120_seconds_after_close(watch_scenario, gone_at, replaced):
+    frames = [{"app": [_BIG_HWND]}, {"now": gone_at}]
+    if replaced:
+        frames += [{"app": [200], "now": 122}, {"now": 123}, {"now": 124}, {"now": 125}]
+    else:
+        frames += [{}, {}]
+    scenario = watch_scenario(frames)
+    assert scenario.run() == 0
+    assert bool([e for e in scenario.events if e[0] == "spawn"]) is replaced
+    if replaced:
+        assert ("spawn", 1) in scenario.events
+
+
+def test_reservation_expiring_during_settle_never_spawns(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND]}, {"now": 120, "settle_until": 122}, {}, {}, {},
+    ])
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] == "spawn"]
+    assert [e for e in scenario.events if e == ("query", 1)] == [("query", 1)]
+
+
+def test_hidden_old_window_outlasting_reservation_exits_without_spawn(watch_scenario):
+    scenario = watch_scenario([
+        {"app": [_BIG_HWND]}, {"hidden": [_BIG_HWND]}, {"hidden": [_BIG_HWND]}, {"hidden": [_BIG_HWND]},
+        {"hidden": [_BIG_HWND], "now": 121.1},
+    ])
+    assert scenario.run() == 0
+    assert not [e for e in scenario.events if e[0] == "spawn"]
+
+
+def test_spawn_exception_leaves_console_visible(watch_scenario):
+    scenario = watch_scenario([{"app": [_BIG_HWND]}, {}, {}, {}], spawn_error=OSError("spawn failed"))
+    with pytest.raises(OSError, match="spawn failed"):
+        scenario.run()
+    assert scenario.events[-3:] == [("console", True), ("query", 1), ("spawn", 1)]
+
+
+def test_replacement_without_new_window_falls_back_with_visible_console(launcher, watch_scenario):
+    scenario = watch_scenario([{"app": [_BIG_HWND]}, {}, {}, {}, {"now": 45}])
+    assert scenario.run() == launcher.APP_EXIT_NO_WINDOW
+    assert [e for e in scenario.events if e[0] == "console"] == [("console", False), ("console", True)]
+    assert len([e for e in scenario.events if e[0] == "spawn"]) == 1
+
+
+@pytest.mark.parametrize("control,nonce,expected", [
+    ("1", "a" * 32, "a" * 32), (None, "a" * 32, None), ("", "a" * 32, None),
+    ("1", "A" * 32, None), ("1", "a" * 31, None), ("1", "a" * 32 + "\n", None),
+])
+def test_update_marker_in_child_environment_is_explicit(launcher, monkeypatch, control, nonce, expected):
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("MVHUB_UPDATE_WINDOW_NONCE", "inherited-poison")
+    monkeypatch.setenv("MVHUB_EXECUTION_NONCE", nonce)
+    if control is None:
+        monkeypatch.delenv("MVHUB_ACTIVATION_CONTROL", raising=False)
+    else:
+        monkeypatch.setenv("MVHUB_ACTIVATION_CONTROL", control)
+    monkeypatch.setattr(launcher, "_native_link_eligible", lambda: False)
+    captured = {}
+
+    def create(*args):
+        values = dict(item.split("=", 1) for item in "".join(args[6]).split("\0")
+                      if item and not item.startswith("="))
+        captured["marker"] = values.get("MVHUB_UPDATE_WINDOW_NONCE")
+        return True
+
+    launcher._create_suspended_process(SimpleNamespace(CreateProcessW=create), LAUNCHER_PATH)
+    assert captured["marker"] == expected
+    assert launcher.os.environ["MVHUB_UPDATE_WINDOW_NONCE"] == "inherited-poison"
+
+
+@pytest.mark.parametrize("got,windows", [(None, []), ((set(), set()), []), (({11}, {11}), [100])])
+def test_cleanup_wait_stops_on_failed_query_no_process_or_visible_window(launcher, monkeypatch, got, windows):
+    monkeypatch.setattr(launcher, "_profile_pids", lambda *_a: got)
+    monkeypatch.setattr(launcher, "_visible_app_hwnds", lambda _pids: windows)
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _s: pytest.fail("불필요한 기다림"))
+    assert launcher._wait_app_browser_settle("chrome.exe", Path("C:/profile")) is got
+
+
+def test_cleanup_wait_has_best_effort_deadline_between_queries(launcher, monkeypatch):
+    clock = [0.0]
+    queries = []
+
+    def query(*_a):
+        queries.append(clock[0])
+        clock[0] += 2.0  # CIM 조회 시간도 기다림 예산에 포함한다
+        return {11}, {11}
+
+    monkeypatch.setattr(launcher, "_profile_pids", query)
+    monkeypatch.setattr(launcher, "_visible_app_hwnds", lambda _pids: [])
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(launcher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    assert launcher._wait_app_browser_settle("chrome.exe", Path("C:/profile")) == ({11}, {11})
+    assert len(queries) > 1
+    assert queries[-1] < launcher._APP_BROWSER_CLEANUP_TIMEOUT <= clock[0]
+    assert clock[0] < launcher._APP_BROWSER_CLEANUP_TIMEOUT + 2.4
