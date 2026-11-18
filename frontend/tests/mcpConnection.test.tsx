@@ -29,14 +29,17 @@ type Command = { id: string; method: string; args: object };
 type Reply = { id: string; error?: string; result?: Record<string, unknown> };
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const realSetTimeout = globalThis.setTimeout;
+const realNow = Date.now;
 let root: Root, host: HTMLDivElement, scene: Scene, props: McpConnectionProps;
 let record: McpPlanRecord | undefined;
 let pendingPoll: ((request: Command | null) => void) | undefined;
 let replies: Map<string, Reply>, sequence: number, pollCount: number;
 let events: string[];
 
+// 횟수가 아니라 실제 시간으로 기다린다 — 실행이 거치는 지문 계산(crypto.subtle)은 바쁜 PC 에서 실제 시간이 더 든다(전체 시험 때만 실패했다)
 async function until(done: () => boolean) {
-  for (let index = 0; index < 300 && !done(); index++) {
+  const deadline = realNow() + 3_000; // 가짜 시계(useFakeTimers)를 켠 시험에서도 진짜 시간으로 — 시험 시간 제한(5초)보다 먼저 끝나 이유를 말한다
+  while (!done() && realNow() < deadline) {
     await act(async () => { await new Promise<void>((resolve) => realSetTimeout(resolve, 0)); });
   }
   expect(done(), "비동기 MCP 요청이 끝나지 않았습니다").toBe(true);
@@ -242,9 +245,11 @@ it.each(["preflight", "cards"])("%s 실패는 get_plan에 안전하게 보이고
   else vi.mocked(props.patchSceneById).mockImplementation(() => { throw new Error("token=fake-private-secret"); });
   await command("execute_generation_plan", plan);
   let status: Reply | undefined;
-  for (let attempt = 0; attempt < 10; attempt++) {
+  // 실행은 실제 시간이 드는 지문 계산(crypto.subtle — mcpPlans)을 거친다 — 정해진 횟수만 물으면 바쁜 PC 에서 먼저 끝났다(전체 시험 때만 실패)
+  for (let attempt = 0; attempt < 200; attempt++) {
     status = await command("get_plan", plan);
     if ((status.result?.execution as { running: boolean })?.running === false) break;
+    await act(async () => { await new Promise<void>((resolve) => realSetTimeout(resolve, 5)); });
   }
   expect(status).toMatchObject({ result: { execution: { running: false, error: expect.any(String) } } });
   expect((status!.result!.execution as { error: string }).error).toContain("API 호출 전에 중단");
