@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-17
+updated: 2026-11-18
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -164,7 +164,7 @@ ZIP 없는 MCP 독립 업데이트의 파일 검증·불변 버전·설치 선�
 
 MV Agent 옆 칸(옛 이름 Ask Agent — 이 PC 의 Claude Code·Codex 를 각자 로그인으로 — 계약 [옆 칸 설계](status/AskAgent_옆칸_설계_2026-11-09.md)·[첫 연결 설계](status/AskAgent_첫연결_설계_2026-11-09.md))은
 로컬 허브에서 기본으로 붙는다(`CONTENT_HUB_AGENT_CHAT=0` 이면 꺼짐, 공유 서버는 안 붙음 — `services/agent_chat.py` 의 `enabled()`, `/api/agent-chat/` 는 `_proxy` 로컬 목록 — 빠지면 공유 서버로 샌다).
-Claude 상태 판정·로그인 창(스위치 `CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW` 기본 꺼짐 · 새 콘솔 + Job 탈출, 허브가 끄지 않음)·PC 뮤텍스(차례·로그인 줄 세우기, 주인 기록 running|clean — 이름·기록은 Claude 자격 폴더 기준, 기록 위치 `config.AGENT_CHAT_CLAUDE_DIR`, 깨진 기록은 허브가 띄운 Claude 가 없을 때만 치움)는 `backend/app/services/agent_chat_claude.py`.
+Claude 상태 판정·로그인 창(스위치 `CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW` 기본 꺼짐 · 띄우기 전 관리자·세션 0·다른 사용자·조회 실패 거절 · 새 콘솔 + Job 탈출, 허브가 끄지 않음)·PC 뮤텍스(차례·로그인 줄 세우기, 주인 기록 running|clean — 이름·기록은 Claude 자격 폴더 기준, 기록 위치 `config.AGENT_CHAT_CLAUDE_DIR`, 깨진 기록은 허브가 띄운 Claude 가 없을 때만 치움)는 `backend/app/services/agent_chat_claude.py`.
 HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_still_current`, [실행] = `mcp_v2.submit_plan`),
 차례·사건·긴 기다림·취소·계획 대응 `backend/app/services/agent_chat.py`, CLI 찾기·명령·자식 환경·Job `backend/app/services/agent_chat_process.py`
 (루트 런처 import 금지 — 옵션은 0단계 실측값), 출력 해석 `backend/app/services/agent_chat_parse.py`(순수), 신원별 기록 DB `backend/app/repo/agent_chat.py`.
