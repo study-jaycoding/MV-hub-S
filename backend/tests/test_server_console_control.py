@@ -319,7 +319,8 @@ def test_tls_error_does_not_kill_running_server(tmp_path, monkeypatch):
     assert fake.killed == [] and fake.calls == []
 
 
-def test_move_wrapper_loads_installation_tls_helper(tmp_path, monkeypatch):
+@pytest.mark.parametrize('missing_tls', [False, True])
+def test_move_wrapper_loads_installation_tls_helper(tmp_path, monkeypatch, missing_tls):
     from server_console import console_run
     import server_tls
     inst = make_inst(tmp_path)
@@ -332,12 +333,17 @@ def test_move_wrapper_loads_installation_tls_helper(tmp_path, monkeypatch):
     for name in ('server_move_easy', 'server_move', 'deploy_fence_check', 'app'):
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setitem(sys.modules, 'server_tls', server_tls)
+    if missing_tls:
+        monkeypatch.delitem(sys.modules, 'server_tls')
+        monkeypatch.setattr(install, 'server_tls', None)
     monkeypatch.setattr(console_run.moves, 'archives', lambda inst: set())
     monkeypatch.setattr(console_run, 'tool_args', lambda *args: ('server_move_easy', []))
     try:
         assert console_run.run_tool(inst, 'move-out', {}) == (0, {})
         assert sys.modules['server_tls'].source == 'installation'
         assert console_run.run_tool(inst, 'move-out', {}) == (0, {})
+        if missing_tls:
+            assert install.server_tls is None
     finally:
         sys.modules.pop('server_move_easy', None)
 

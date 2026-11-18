@@ -7,12 +7,18 @@ import json
 import os
 import re
 import subprocess
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from . import names
-import server_tls
+try:
+    import server_tls
+except ModuleNotFoundError as exc:
+    if exc.name != 'server_tls':
+        raise
+    server_tls = None
 from .main import STAGES, first_line_path as _first_line_path
 
 # 코드가 든 트리(루트 또는 관리 창 stage)와 서버 설치 루트는 다르다(2단계 설계 3판) — 기록·잠금·Python·데이터는
@@ -20,6 +26,49 @@ from .main import STAGES, first_line_path as _first_line_path
 CODE_ROOT = Path(__file__).resolve().parents[2]
 ROOT = CODE_ROOT
 CREATE_NO_WINDOW = 0x08000000
+
+TLSConfigError = server_tls.TLSConfigError if server_tls is not None else ValueError
+TLS_TOOL_NOTICE = 'HTTPS 도구가 아직 없습니다 — 다음 main 판으로 [관리 도구 갱신]을 한 번 더 하세요'
+
+
+def missing_tls_state() -> str:
+    """옛 PATHS stage: 셋 다 없음이 확인될 때만 HTTP 를 허용한다."""
+    override = os.environ.get('MVHUB_SERVER_TLS_DIR', '').strip()
+    programdata = os.environ.get('PROGRAMDATA', '').strip()
+    if not override and not programdata:
+        return 'error'
+    folder = Path(override) if override else Path(programdata) / 'MVHub/server-tls'
+    try:
+        for name in ('promote.pending', 'server.pem', 'server.key'):
+            path = folder / name
+            try:
+                path.lstat() if name == 'promote.pending' else path.stat()
+            except FileNotFoundError:
+                continue
+            return 'error'
+    except (OSError, ValueError):
+        return 'error'
+    return 'off'
+
+
+def tls_state() -> str:
+    return server_tls.read_config().state if server_tls is not None else missing_tls_state()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def tls_transport(expected: bool | None = None):
+    """요청마다 다시 판정한다. 모듈이 있으면 기존 설정·전송 처리를 그대로 쓴다."""
+    config = server_tls.read_config() if server_tls is not None else None
+    state = config.state if config is not None else missing_tls_state()
+    if state == 'error' or expected is not None and expected != (state == 'on'):
+        raise TLSConfigError(TLS_TOOL_NOTICE if server_tls is None else 'server_tls_configuration_changed')
+    if config is not None:
+        return config.scheme, server_tls.opener(config)
+    return 'http', urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
 def configure(install_root: Path) -> None:
@@ -161,13 +210,13 @@ def resolve_installation(root: Path | None = None) -> Installation:
     log_dir = Path(machine_env("CONTENT_HUB_LOG_DIR") or data / "logs")
     port_text = machine_env("PORT")
     port_known = port_text.isdigit() and 0 < int(port_text) < 65536
-    tls = server_tls.read_config()
-    if tls.state == 'error':
+    state = tls_state()
+    if state == 'error':
         problems.append('tls_config_error')
     return Installation(root=root, data_dir=data, log_dir=log_dir, content_db=content_db,
                         port=int(port_text) if port_known else names.DEFAULT_PORT,
                         port_known=port_known, python=python, problems=tuple(problems),
-                        tls=tls.state == 'on', tls_state=tls.state)
+                        tls=state == 'on', tls_state=state)
 
 
 def trusted_git() -> Path | None:

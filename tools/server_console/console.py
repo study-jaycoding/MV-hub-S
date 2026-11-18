@@ -21,7 +21,7 @@ APP_MODULES = ("server_console.names", "server_console.install", "server_console
                "server_console.server_api", "server_console.backup", "server_console.backup_helper",
                "server_console.release", "server_console.release_helper", "server_console.nas_access",
                "server_console.winjob", "server_console.power", "server_console.moves",
-               "server_console.job_main", "server_console.ui", "log_viewer", "deploy_fence_check", "server_tls")
+               "server_console.job_main", "server_console.ui", "log_viewer", "deploy_fence_check")
 
 
 def parse(argv: list[str]) -> tuple[Path, bool, str]:
@@ -50,6 +50,11 @@ def stray_modules(modules: dict) -> list[str]:
         file = getattr(module, "__file__", None)
         if module is None or not file or tools not in Path(file).resolve().parents:
             stray.append(name)
+    module = modules.get('server_tls')
+    if module is not None:
+        file = getattr(module, '__file__', None)
+        if not file or tools not in Path(file).resolve().parents:
+            stray.append('server_tls')
     return stray
 
 
