@@ -345,4 +345,14 @@ it("창 선택 막대의 Draft 화질 메뉴는 누르는 동안 닫히지 않�
   expect(finish).toHaveBeenCalledTimes(1);
   expect(finish.mock.calls[0][0]).toMatchObject({ id: "a" });
   expect(finish.mock.calls[0][1]).toBe("1080p");
+  // 메뉴를 쓴 뒤에도 키가 산다(Codex 후보 리뷰 낮음 1) — Esc 는 메뉴 → 선택 → 창 순서로 하나씩 닫는다
+  key(document.activeElement ?? document.body, { key: "Escape" });
+  expect(document.querySelector(".draft-finish-menu"), "첫 Esc 는 메뉴").toBeNull();
+  expect(selectedIds()).toEqual(["a"]);
+  expect(windowEl()).toBeTruthy();
+  key(document.activeElement ?? document.body, { key: "Escape" });
+  expect(selectedIds(), "둘째 Esc 는 선택").toEqual([]);
+  expect(windowEl()).toBeTruthy();
+  key(document.activeElement ?? document.body, { key: "Escape" });
+  expect(windowEl(), "셋째 Esc 는 창").toBeNull();
 });
