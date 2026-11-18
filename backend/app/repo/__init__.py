@@ -62,3 +62,5 @@ from .tags import _add_tags, _set_auto_tags, _set_tags
 from .generation_rows import _attach_children
 from .generation_delete import delete_generation_rows as _delete_generation
 from .share import import_bundle_item
+# 같은 이름 잎 모듈(restore_generation.py)을 위에서 처음 import 하면 패키지 속성이 모듈로 덮인다 → 함수로 되돌림(11-18 휴지통 복구 500)
+from .generations import restore_generation  # noqa: E402,F811

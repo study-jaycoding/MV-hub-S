@@ -1126,9 +1126,11 @@ def list_trash(
     offset: int = Query(0, ge=0),
 ):
     """휴지통 항목 목록(최근 삭제순). 내 휴지통만(다른 사람 삭제물 열람 방지)."""
-    return repo.list_trash(
+    rows = repo.list_trash(
         search=search, limit=limit, offset=offset, account_uid=_account_uid(request)
     )
+    _prefer_remote_source_urls(rows)  # 다른 목록과 같은 URL-only 응답 — 빠지면 옛 /media 주소가 '원본 없음'이 됐다
+    return rows
 
 
 @router.delete("/trash/{gen_id}")
