@@ -263,6 +263,8 @@ describe("계약 A — 설정 안 Claude 연결", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(602_000); });
     await flush();
     expect(settings().textContent).toContain("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]");
+    // 창을 끄지 못해 기록이 남은 드문 경우의 복구 순서(Codex 후보 리뷰 낮음 2, Jay 11-18 "지금 고침")
+    expect(settings().textContent).toContain("로그인 창이 보이지 않으면 MV Hub 를 다시 켜 주세요. 그래도 그대로면 PC 를 다시 시작하면 풀려요");
     expect(settings().querySelector(".agent-connect-spin")).toBeNull();
     const before = calls.length;
     await act(async () => { vi.advanceTimersByTime(4000); });
@@ -480,9 +482,13 @@ describe("MV Agent 칸 — Claude 연결 안내", () => {
       return json({ detail: "Not Found" }, 404);
     };
     await mount();
+    // 복구 안내는 기다리는 중엔 없고(막 연 창이 보이는 때) 그만둔 뒤 대화 칸에 보인다(Codex 낮음 대응 리뷰 01a1ed70 낮음)
+    const hint = "로그인 창이 보이지 않으면 MV Hub 를 다시 켜 주세요. 그래도 그대로면 PC 를 다시 시작하면 풀려요";
+    expect(panel().textContent).not.toContain(hint);
     act(() => buttonText("그만두기")!.click());
     await flush();
     expect(buttonText("그만두기")).toBeNull();
+    expect(host.querySelector(".cn")!.textContent).toContain(hint);
     const polls = calls.filter((c) => c.path === "/claude").length;
     act(() => buttonText("다시 확인")!.click());
     await flush();

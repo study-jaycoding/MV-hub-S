@@ -107,7 +107,10 @@ export function LoginWindowGuide({ waiting, note, onRecheck, onStopWaiting }: Pi
     <p>{t("Claude 로그인 창을 열었어요. 브라우저에 claude.ai 로그인이 뜨면 이 PC 를 쓰는 사람의 계정으로 로그인하고 승인해 주세요. 로그인을 마치고 그 창이 닫히면 여기가 바뀌어요.")}</p>
     <p className="cn-note">{t("브라우저가 안 열리면 그 창에서 c 를 눌러 주소를 복사해 브라우저에 붙여 넣어요. 브라우저가 코드를 보여 주면 그 창에 붙여 넣어요.")}</p>
     {waiting ? <div><button type="button" className="cn-text" onClick={onStopWaiting}>{t("그만두기")}</button>{" "}<small className="cn-note">{t("자동 확인만 멈춰요 · 로그인 창은 직접 닫아 주세요")}</small></div>
-      : <>{note === "expired" && <p className="cn-note">{t("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]")}</p>}<button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>}
+      : <>{note === "expired" && <p className="cn-note">{t("아직 로그인 창이 열려 있어요 — 마치면 [다시 확인]")}</p>}
+        {/* 창을 끄지 못해 기록이 남은 드문 경우의 복구 순서 — launching 은 그 MV Hub 가 꺼지면, open 은 창 프로세스가 끝나야 풀린다(CODE_MAP 로그인 창 줄) */}
+        <p className="cn-note">{t("로그인 창이 보이지 않으면 MV Hub 를 다시 켜 주세요. 그래도 그대로면 PC 를 다시 시작하면 풀려요")}</p>
+        <button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>}
   </>;
 }
 
