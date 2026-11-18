@@ -390,6 +390,27 @@ def test_queue_capture_times_do_not_make_duplicate_transfers(delivery_store):
     assert json.loads((stage / 'manifest.json').read_text('utf-8')) == first
 
 
+def test_queue_duplicate_survives_stage_cleanup_failure(delivery_store, monkeypatch):
+    """같은 내용 재접수도 임시 사본 정리 실패(11-18 게이트 WinError 145)로 실패하지 않는다 — 기존 세트를 그대로 돌려준다."""
+    extras(delivery_store)
+    _, _, first = queued(delivery_store)
+    content = capture(delivery_store, '20261113_010101_000003')
+    real_rmtree = worker_backup.shutil.rmtree
+
+    def busy(path, *args, **kwargs):
+        if Path(path).name.startswith('.stage-'):
+            raise OSError(145, 'directory is not empty', str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(worker_backup.shutil, 'rmtree', busy)
+        assert worker_backup.queue_backup_set(content) == first['backup_set_id']
+    assert worker_backup.status_snapshot()['last_error_code'] != 'staging_failed'
+    assert len(list(worker_backup.OUTBOX_DIR.rglob('.stage-*'))) == 1  # 정리를 시도한 자리 — 다음 시작 때 지운다
+    with closing(worker_backup._connect()) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM worker_backup_outbox').fetchone()[0] == 1
+
+
 def test_queue_v2_key_and_fast_path_unchanged_v3_separate(delivery_store, monkeypatch):
     monkeypatch.setattr(backup, 'CAPTURE_VERSION', 2)
     _, _, v2 = queued(delivery_store)

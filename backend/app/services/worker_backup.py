@@ -625,7 +625,9 @@ def _queue_backup_set_held(
         # 새 PC 로그인 직후 만들어지는 스키마/기본 작업자뿐인 DB가 서버 최신본처럼 올라가면
         # 기존 작업을 찾기 어려워진다. 의미 있는 개인 기록이 생기기 전에는 자동 전송하지 않는다.
         if summary["meaningful_records"] <= 0 and extra_records <= 0:
-            shutil.rmtree(temp)
+            # 임시 사본 정리 실패(Windows 삭제 대기 WinError 145 등)는 결과와 무관 — 남은 .stage-* 는 cleanup_stale_state 가 지운다
+            with contextlib.suppress(OSError):
+                shutil.rmtree(temp)
             now = _utc_now()
             with contextlib.closing(_connect()) as conn, conn:
                 conn.execute(
@@ -661,7 +663,8 @@ def _queue_backup_set_held(
                 (account_slug, roles_json),
             ).fetchone()
         if unchanged is not None:
-            shutil.rmtree(temp)
+            with contextlib.suppress(OSError):  # 위 건너뜀과 같은 이유
+                shutil.rmtree(temp)
             backup_set_id = str(unchanged[0])
             _remember_source_state(
                 account_slug,
@@ -699,7 +702,8 @@ def _queue_backup_set_held(
                 (backup_set_id,),
             ).fetchone()
         if existing is not None and str(existing[0]) in {"pending", "running", "done"}:
-            shutil.rmtree(temp)
+            with contextlib.suppress(OSError):  # 위 건너뜀과 같은 이유
+                shutil.rmtree(temp)
             _remember_source_state(
                 account_slug,
                 stamp,
