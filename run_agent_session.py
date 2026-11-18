@@ -199,8 +199,12 @@ def _create_suspended_process(kernel32, script: Path) -> PROCESS_INFORMATION:
     child_env = os.environ.copy()
     child_env.pop('MVHUB_OPEN_LINK', None)
     child_env.pop('MVHUB_REGISTER_LINK', None)
+    child_env.pop('MVHUB_UPDATE_WINDOW_NONCE', None)
     if _native_link_eligible():
         child_env['MVHUB_OPEN_LINK'] = '1'
+    nonce = os.environ.get('MVHUB_EXECUTION_NONCE', '')
+    if os.environ.get('MVHUB_ACTIVATION_CONTROL', '') and re.fullmatch(r'[0-9a-f]{32}', nonce):
+        child_env['MVHUB_UPDATE_WINDOW_NONCE'] = nonce
     environment = ctypes.create_unicode_buffer('\0'.join(f'{key}={value}' for key, value in
                                                        sorted(child_env.items(), key=lambda pair: pair[0].upper())) + '\0\0')
 
@@ -281,6 +285,8 @@ APP_EXIT_NO_WINDOW = 4  # 창이 제시간에 안 나타남/감시 실패 — �
 _APP_WINDOW_CLASS_PREFIX = "Chrome_WidgetWin"
 _APP_CLOSE_DEBOUNCE_SCANS = 3  # 연속 N 회(초) 창 0 이어야 '닫힘' 확정 — 순간 깜빡임 오인 방지
 _APP_FIRST_WINDOW_TIMEOUT = 40.0
+_APP_UPDATE_WINDOW_TTL = 120.0
+_APP_BROWSER_CLEANUP_TIMEOUT = 15.0
 
 ERROR_ALREADY_EXISTS = 183
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -1036,6 +1042,40 @@ def _approved_alive(hwnd: int) -> bool:
     )
 
 
+class _UpdateWindowSwap:
+    """입양한 업데이트 창에만 한 번 닫기를 보내고, 교체 예약을 짧게 유지한다."""
+
+    def __init__(self, nonce: str, execution_nonce: str, adopted: bool):
+        self.nonce = nonce if adopted and nonce == execution_nonce and re.fullmatch(r'[0-9a-f]{32}', nonce) else ''
+        self.old_hwnds: tuple[int, ...] = ()
+        self.deadline: float | None = None
+
+    def commit(self, outcome: bool | None, approved: set[int], now: float) -> tuple[int, ...]:
+        if not self.nonce or outcome is None:
+            return ()
+        self.nonce = ''  # 롤백 또는 committed 관측 뒤에는 다시 닫지 않는다
+        if outcome is True and approved:
+            self.old_hwnds = tuple(sorted(approved))
+            self.deadline = now + _APP_UPDATE_WINDOW_TTL
+            return self.old_hwnds
+        return ()
+
+    def reserved(self, now: float) -> bool:
+        return self.deadline is not None and now < self.deadline
+
+
+def _wait_app_browser_settle(exe: str, profile: Path) -> tuple[set[int], set[int]] | None:
+    # shortcut: CIM 한 번의 소요 시간은 막지 못한다. 조회 계약이 바뀌면 별도 실행 시한을 검토한다.
+    deadline = time.monotonic() + _APP_BROWSER_CLEANUP_TIMEOUT
+    while True:
+        got = _profile_pids(exe, profile)
+        if got is None or not got[1] or _visible_app_hwnds(got[1]):
+            return got
+        if time.monotonic() >= deadline:
+            return got
+        time.sleep(0.4)
+
+
 def watch_app_window(url: str) -> int:
     """앱 창을 띄우고(있으면 입양) 승인된 MV Hub 창이 전부 닫힐 때까지 대기.
     승인 창 확인 후 (전용 콘솔일 때만) 콘솔을 숨기고, 비정상 종료 전엔 반드시 되살린다."""
@@ -1052,6 +1092,8 @@ def watch_app_window(url: str) -> int:
     _roots, all_pids = got
     known_pids: set[int] = set(all_pids)  # CIM 실패 시 보조 탐색용 '마지막으로 안 pid'
     app, _other = _classify_app_hwnds(all_pids)
+    swap = _UpdateWindowSwap(os.environ.get('MVHUB_UPDATE_WINDOW_NONCE', ''),
+                             os.environ.get('MVHUB_EXECUTION_NONCE', ''), bool(app))
     spawn_proc: subprocess.Popen | None = None
     if not app:
         # MV Hub 창 없음 — 루트·비승인 창(DevTools 등)이 남아 있어도 --app 으로 새 창을 연다.
@@ -1067,6 +1109,29 @@ def watch_app_window(url: str) -> int:
     try:
         while True:
             time.sleep(0.7 if not state.approved_ever else 1.0)
+            if swap.reserved(time.monotonic()) and not any(
+                _user32().IsWindow(h) and _is_marked_approved(h) for h in swap.old_hwnds
+            ):
+                if hid_console:
+                    _set_console_visible(True)
+                    hid_console = False
+                got = _wait_app_browser_settle(exe, profile)
+                if got is None:
+                    continue  # 조회 실패 중에는 열지 않고 예약 안에서 다음 틱에 다시 본다
+                _roots, all_pids = got
+                app, _other = _classify_app_hwnds(all_pids)
+                if not app and not swap.reserved(time.monotonic()):
+                    swap.deadline = None
+                    continue  # 정리 기다림 중 만료 — 이후 closed 는 평소대로 종료한다
+                swap.deadline = None  # 재입양·spawn 어느 쪽이든 이번 한 번으로 끝낸다
+                spawn_proc = None
+                known_pids = set(all_pids) if app else set()
+                if not app:
+                    spawn_proc = _spawn_app_window(exe, profile, url)
+                state = _WatchState(time.monotonic())
+                if app:
+                    state.observe(set(app), True, time.monotonic(), _approved_alive)
+                continue
             aux = set(known_pids)
             if spawn_proc is not None and spawn_proc.poll() is None:
                 aux.add(spawn_proc.pid)
@@ -1085,6 +1150,10 @@ def watch_app_window(url: str) -> int:
                         {spawn_proc.pid} if spawn_proc is not None and spawn_proc.poll() is None else set()
                     ))
             action = state.observe(set(app), query_ok, time.monotonic(), _approved_alive)
+            if swap.nonce:
+                closing = swap.commit(_update_boot_outcome(swap.nonce), state.approved, time.monotonic())
+                for hwnd in closing:
+                    _user32().PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE — 사용자의 X 와 같은 경로
             if action == "anchored":
                 if not pinned:
                     # ★새로 띄운 창은 '실제로 승인된 창이 떴을 때' 고정한다 — spawn 성공만 보고
@@ -1101,7 +1170,8 @@ def watch_app_window(url: str) -> int:
                     _set_console_visible(True)  # 장기 조회 실패 — 사용자 제어권 회복
                     hid_console = False
             elif action == "closed":
-                return 0  # 승인 창 전부 닫힘 확정 → bat 종료 → Job 정리
+                if not swap.reserved(time.monotonic()):
+                    return 0  # 승인 창 전부 닫힘 확정 → bat 종료 → Job 정리
             elif action == "fallback":
                 return APP_EXIT_NO_WINDOW
             # waiting / hold / empty → 다음 틱
