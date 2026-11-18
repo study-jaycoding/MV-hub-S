@@ -188,7 +188,7 @@ export function buildBoardItem(card: SceneCard, box: Box, ctx: BoardBuildContext
         }
         const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
         const gen = gid ? ownEntry(ctx.genData, gid) : undefined;
-        const n = gc ? shownVariantCount(gc, ctx.genData) : 0; // 휴지통 결과는 뺀다(ListCard 와 같은 수)
+        const n = gc ? shownVariantCount(gc, ctx.genData, ctx.genMissing) : 0; // 휴지통 결과는 뺀다(ListCard 와 같은 수)
         base.rows.push({ src: gen ? thumbOf(gen, 128) : null, text: "", media: mediaOf(gen?.assets?.[0]?.type), badge: n > 0 ? `▤ ${n}` : undefined, empty: n <= 0,
           off: !!gid && ctx.disabled(gid) });
       }

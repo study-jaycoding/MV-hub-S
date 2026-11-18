@@ -98,12 +98,18 @@ describe("단순화(25% 이하)", () => {
     expect(quads(1)).toEqual(["multi:g"]);
     expect(quads(0)).toEqual([]);
     const done = { status: "done" };
+    const none = () => false;
     // 둘 다 살아 있음 = 2 · 하나만 있는 보통 카드 = 0(배지 없음) · 대표가 휴지통이고 하나 남음 = 1(결과 창 입구) · 둘 다 휴지통 = 0
-    expect(variantBadgeCount(gen, { a: done, b: done })).toBe(2);
-    expect(variantBadgeCount({ genId: "a", genIds: ["a"] }, { a: done })).toBe(0);
-    expect(variantBadgeCount(gen, { a: { deleted: true }, b: done })).toBe(1);
-    expect(variantBadgeCount(gen, { a: done, b: { deleted: true } })).toBe(0);
-    expect(variantBadgeCount(gen, { a: { deleted: true }, b: { deleted: true } })).toBe(0);
+    expect(variantBadgeCount(gen, { a: done, b: done }, none)).toBe(2);
+    expect(variantBadgeCount({ genId: "a", genIds: ["a"] }, { a: done }, none)).toBe(0);
+    expect(variantBadgeCount(gen, { a: { deleted: true }, b: done }, none)).toBe(1);
+    expect(variantBadgeCount(gen, { a: done, b: { deleted: true } }, none)).toBe(0);
+    expect(variantBadgeCount(gen, { a: { deleted: true }, b: { deleted: true } }, none)).toBe(0);
+    // 휴지통 결과는 보통 서버 조회에서 '없음'으로 와 자료에서 지워진다(isGone) — 같은 규칙(Jay 11-18 '아직 9개')
+    expect(variantBadgeCount(gen, { b: done }, (id) => id === "a")).toBe(1);
+    expect(variantBadgeCount(gen, { a: done }, (id) => id === "b")).toBe(0);
+    expect(variantBadgeCount(gen, {}, () => true)).toBe(0);
+    expect(variantBadgeCount(gen, { b: done }, none)).toBe(2); // 답을 아직 못 받은 a 는 센다(곧 보일 것)
   });
 
   it("모습 열쇠는 짧은 해시 — 같은 값이면 같고 글이 한 자만 달라도 다르다", async () => {

@@ -80,7 +80,7 @@ describe("카드 읽기 형태 — 변경 요소 0", () => {
     const preview = vi.fn();
     act(() => root.render(
       <ListCard mode="read" card={list} cardsById={new Map([["c1", g], ["l", list]])} resolvedEdges={[{ id: "e", from: "c1", to: "l" }] as never}
-        genData={{ g1: gen() }} disabledIds={new Set()} cardWidth={260} workspaceId="ws" getNodePreview={() => preview} />,
+        genData={{ g1: gen() }} disabledIds={new Set()} missingIds={new Set()} cardWidth={260} workspaceId="ws" getNodePreview={() => preview} />,
     ));
     expect(editCount()).toBe(0);
     act(() => (host.querySelector(".scene-listrow-view") as HTMLElement).click());

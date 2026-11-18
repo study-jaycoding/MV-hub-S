@@ -97,6 +97,7 @@ export function ComfyCard({
     edges: SceneEdge[];
     refParents: Record<string, string[]>;
     genData: Record<string, Generation>;
+    missingIds: Set<string>; // 서버가 '없음'으로 돌려준 결과(휴지통) — 결과 수에서 뺀다(scenes.shownVariantCount)
   };
   hist: HistPass;
   tagEdit: {
@@ -130,7 +131,8 @@ export function ComfyCard({
 }) {
   // 언어를 바꾼 즉시 상태 문구가 다시 그려지도록 구독한다(번역 자체는 generationDisplay).
   const t = useT();
-  const { cards, cardsById, edges, refParents, genData } = graph;
+  const { cards, cardsById, edges, refParents, genData, missingIds } = graph;
+  const resultCount = shownVariantCount(card, genData, (id) => missingIds.has(id)); // 휴지통 결과는 뺀다(생성 카드 배지와 같은 수)
   // Comfy 노드 — ComfyUI 워크플로우를 얹어 단독 실행. 더블클릭=API 로드·파라미터 노출 모달.
   const cfg = card.comfyCfg;
   const st = cfg?.status;
@@ -517,17 +519,17 @@ export function ComfyCard({
         )}
       </div>
       {/* 결과 배지 — 이 노드가 만든 생성물이 있으면 카드 위에 떠서 표시. 클릭=변형 팝업으로 모아보기. */}
-      {shownVariantCount(card, genData) > 0 && (
+      {resultCount > 0 && (
         <button
           className="scene-multi-badge scene-multi-badge-comfy"
-          title={`이 노드의 생성 결과 ${shownVariantCount(card, genData)}개 모두 보기`}
+          title={`이 노드의 생성 결과 ${resultCount}개 모두 보기`}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             actions.setCardMenu(card.id);
           }}
         >
-          ▤ {shownVariantCount(card, genData)}
+          ▤ {resultCount}
         </button>
       )}
       {cfg?.content && sel && (

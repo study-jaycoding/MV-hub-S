@@ -42,7 +42,7 @@ function draw(cards: SceneCard[], edges: SceneEdge[], o: { expanded: boolean; st
   act(() => root.render(
     <div className="scene-card scene-card-list">
       <ListCard card={cards[0]} cardsById={new Map(cards.map((c) => [c.id, c]))} resolvedEdges={edges} genData={genData}
-        disabledIds={new Set()} rowSel={{ listId: "", cids: new Set() }} reorderFrom={null} cardWidth={240} workspaceId="personal"
+        disabledIds={new Set()} missingIds={new Set()} rowSel={{ listId: "", cids: new Set() }} reorderFrom={null} cardWidth={240} workspaceId="personal"
         toggleRowSel={noop} startReorder={o.startReorder ?? noop} getNodePreview={() => noop} setCardMenu={noop} addListAsReference={noop}
         onOutPortDown={noop} onResizeDown={noop} expanded={o.expanded} onCollapse={o.onCollapse} />
     </div>,

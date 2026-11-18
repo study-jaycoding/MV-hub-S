@@ -52,9 +52,10 @@ const key = (target: EventTarget, init: KeyboardEventInit) => act(() => {
 });
 const wait = (ms: number) => act(async () => { await new Promise((done) => setTimeout(done, ms)); });
 
-async function openWindow(gens: Generation[], props: Partial<BoardProps> = {}) {
+// missing = 서버 묶음 조회가 '없음'으로 돌려줄 id — 휴지통으로 보낸 결과는 이렇게 온다(자료에서 지워지고 missingIds 로)
+async function openWindow(gens: Generation[], props: Partial<BoardProps> = {}, missing: string[] = []) {
   boundary.api.getGenerationsBatch.mockResolvedValue({
-    materials: {}, missing: [], items: Object.fromEntries(gens.map((item) => [item.id, item])),
+    materials: {}, missing, items: Object.fromEntries(gens.map((item) => [item.id, item])),
   } as never);
   // 공유·최종 뒤 씬이 그 한 건을 다시 읽는다 — 서버 기록 그대로(이 시험의 공유 콜백은 서버를 바꾸지 않는다)
   boundary.api.getGeneration.mockImplementation((async (id: string) => gens.find((item) => item.id === id)) as never);
@@ -122,6 +123,23 @@ it("필터에 가려진 결과는 창에서 빠지고 선택에서도 빠진다 
 
 it("대표가 휴지통에 가고 결과가 하나 남으면 ▤ 1 로 창을 열어 남은 것을 고를 수 있다(Codex 리뷰 01a1eda5 중간 3)", async () => {
   await openWindow([gen("a", 0, { deleted: true }), gen("b", 1, { deleted: true }), gen("c", 2)]);
+  expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 1");
+  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 1개");
+  expect(shownIds()).toEqual(["c"]);
+});
+
+it("휴지통 결과가 서버 조회에서 '없음'으로 와도 수에서 뺀다 — 창 제목·배지·도구 줄 수(Jay 11-18 '휴지통에 있는데 아직 9개')", async () => {
+  const onTypeCount = vi.fn();
+  await openWindow([gen("a", 0), gen("b", 1)], { onTypeCount }, ["c"]);
+  expect(shownIds()).toEqual(["a", "b"]);
+  expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 2");
+  expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 2개");
+  expect(windowEl()!.querySelector(".folder-peek-count")).toBeNull(); // '3개 · 2개 표시' 가 아니다
+  expect(onTypeCount).toHaveBeenLastCalledWith(2);
+});
+
+it("대표가 휴지통에 가 '없음'으로 오고 하나가 남아도 ▤ 1 로 창에 들어간다", async () => {
+  await openWindow([gen("c", 2)], {}, ["a", "b"]);
   expect(view.container.querySelector("button.scene-multi-badge")!.textContent).toBe("▤ 1");
   expect(windowEl()!.querySelector(".folder-peek-title")!.textContent).toBe("생성 결과 1개");
   expect(shownIds()).toEqual(["c"]);

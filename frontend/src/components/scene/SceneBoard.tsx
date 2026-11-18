@@ -709,6 +709,8 @@ export function SceneBoard({
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
   const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents, answeredIds, colors, refreshGenerationAfter } = useSceneGenData(cards,
     { sceneKey: cardsSceneId, authKey, authReady });
+  // 서버가 '없음'으로 돌려준 결과(휴지통) — 결과 수 세기(scenes.shownVariantCount)가 같이 쓴다
+  const isGenGone = useCallback((gid: string) => missingIds.has(gid), [missingIds]);
   const { applyColorToGids } = useSceneColorActions(colors, genDataRef);
   // 캔버스에 있는 동안 관찰한 생성 카드 상태를 store 에 반영(전환 규칙은 store 가 판정). 초기 done/새로고침은
   //  store 가 baseline 으로만 처리해 glow 안 함. active→done 만 recentlyDone. (App watcher 와 공동으로 채움)
@@ -730,13 +732,13 @@ export function SceneBoard({
     for (const c of cards) {
       if (c.kind !== "generation") continue;
       for (const gid of variantIds(c)) {
-        if (ownEntry(genData, gid)?.deleted) continue; // 휴지통 결과는 세지 않는다(결과 창·배지와 같은 수)
+        if (ownEntry(genData, gid)?.deleted || missingIds.has(gid)) continue; // 휴지통 결과는 세지 않는다(결과 창·배지와 같은 수 — scenes.shownVariantCount)
         if (typeFilter === "all") n += 1;
         else if (ownEntry(genData, gid)?.assets?.[0]?.type === typeFilter) n += 1;
       }
     }
     return n;
-  }, [cards, genData, typeFilter]);
+  }, [cards, genData, missingIds, typeFilter]);
   useEffect(() => {
     onTypeCount?.(typeCount);
   }, [typeCount, onTypeCount]);
@@ -909,8 +911,8 @@ export function SceneBoard({
     const selectable = new Set(shownIds);
     for (const id of ids) if (!ownEntry(genData, id)) selectable.add(id);
     const dimIds = new Set(shown.filter((g) => !inBoardFolder(g, folderSel)).map((g) => g.id));
-    return { card, total: shownVariantCount(card, genData), shown, shownIds, selectable, dimIds }; // 휴지통 결과는 수에서도 뺀다(격자처럼)
-  }, [cardMenu, cards, genData, resolveHighlightedIds, disabledIds, grayOn, folderSel,
+    return { card, total: shownVariantCount(card, genData, isGenGone), shown, shownIds, selectable, dimIds }; // 휴지통 결과는 수에서도 뺀다(격자처럼)
+  }, [cardMenu, cards, genData, isGenGone, resolveHighlightedIds, disabledIds, grayOn, folderSel,
     typeFilter, colorFilter, tagFilter, sharedOnly, reviewFilter, commentOnly, finalOnly, hideFailed]);
   const variantViewRef = useRef(variantView);
   variantViewRef.current = variantView;
@@ -3262,7 +3264,7 @@ export function SceneBoard({
         return { id: g.id, x: box.x, y: box.y, w: box.w, h: box.h, color: g.color ?? null, name: g.name, count: g.cardIds.filter((id) => cardById(id)).length,
           collapsed: !!g.collapsed, selected: selectedGroupIds.has(g.id) };
       }),
-      variantCount: (card) => variantBadgeCount(card, genData), // DOM 배지와 같은 수(휴지통 결과 뺌)
+      variantCount: (card) => variantBadgeCount(card, genData, isGenGone), // DOM 배지와 같은 수(휴지통 결과 뺌)
       folderChip: (card) => {
         const g = card.genId ? ownEntry(genData, card.genId) : undefined;
         return !g || (card.genId && missingIds.has(card.genId)) || g.deleted ? undefined : folderChipLabel(g.folder_path);
@@ -3938,6 +3940,7 @@ export function SceneBoard({
                   resolvedEdges={resolvedEdges}
                   genData={genData}
                   disabledIds={disabledIds}
+                  missingIds={missingIds}
                   rowSel={rowSel}
                   reorderFrom={reorderFrom}
                   cardWidth={widthOf(card)}
@@ -3990,6 +3993,7 @@ export function SceneBoard({
                   resolvedEdges={resolvedEdges}
                   genData={genData}
                   disabledIds={disabledIds}
+                  missingIds={missingIds}
                   rowSel={rowSel}
                   reorderFrom={reorderFrom}
                   showRenderBar={!!onRenderCards}
@@ -4016,7 +4020,7 @@ export function SceneBoard({
                   laneDelta={laneDelta}
                   getNodePreview={getNodePreview}
                   lastViewed={genViews.lastCardId === card.id}
-                  graph={{ cards, cardsById, edges, refParents, genData }}
+                  graph={{ cards, cardsById, edges, refParents, genData, missingIds }}
                   hist={{
                     disabledIds,
                     typeFilter,
@@ -4083,7 +4087,7 @@ export function SceneBoard({
                   card={inner}
                   sel={sel}
                   g={g}
-                  variantCount={variantBadgeCount(inner, genData)}
+                  variantCount={variantBadgeCount(inner, genData, isGenGone)}
                   showNode={showNode}
                   waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
                   genMissing={!!card.genId && missingIds.has(card.genId)}
@@ -4176,13 +4180,13 @@ export function SceneBoard({
                 <SetCard mode="read" card={card} />
               ) : card.kind === "list" ? (
                 <ListCard mode="read" card={card} cardsById={cardsById} resolvedEdges={resolvedEdges} genData={genData} disabledIds={disabledIds}
-                  cardWidth={widthOf(card)} workspaceId={refWorkspaceId} getNodePreview={getNodePreview} />
+                  missingIds={missingIds} cardWidth={widthOf(card)} workspaceId={refWorkspaceId} getNodePreview={getNodePreview} />
               ) : card.kind === "generation" ? (
                 <GenerationCard
                   mode="read"
                   card={card}
                   g={g}
-                  variantCount={variantBadgeCount(card, genData)}
+                  variantCount={variantBadgeCount(card, genData, isGenGone)}
                   showNode={showNode}
                   waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
                   genMissing={!!card.genId && missingIds.has(card.genId)}

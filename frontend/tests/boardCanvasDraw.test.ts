@@ -165,6 +165,11 @@ describe("리스트", () => {
     const item = buildBoardItem(cards.get("L")!, box("L"), ctx({ cardsById: cards, resolvedEdges: edges, genData }))!;
     expect(item).toMatchObject({ kind: "list", mode: "rows" });
     expect((item as unknown as { rows: Array<{ badge?: string }> }).rows[0].badge).toBe("▤ 2");
+    // 휴지통 결과는 보통 서버 조회에서 '없음'으로 와 자료에서 지워진다(genMissing) — 그것도 뺀다(Jay 11-18 '아직 9개')
+    const gone = buildBoardItem(cards.get("L")!, box("L"), ctx({
+      cardsById: cards, resolvedEdges: edges, genData: { a: gen("a"), b: gen("b") } as never, genMissing: (id) => id === "c",
+    }))!;
+    expect((gone as unknown as { rows: Array<{ badge?: string }> }).rows[0].badge).toBe("▤ 2");
   });
 });
 
