@@ -590,6 +590,29 @@ def read_session(home, cwd, session_id, anchor=None):
     return {"session_id": session_id, "transcript_location": str(path), "anchor_uuid": chain[-1]["uuid"], "prefix_digest": _digest(chain)}
 
 
+def rename_session(location, session_id, title) -> bool:
+    """Claude 앱 목록 제목 — SDK 0.2.184 `session_mutations.rename_session` 과 같은 custom-title 한 줄을 끝에 덧붙인다.
+    앱은 가져올 때 이 줄을 제목으로 읽는다(11-20 실측: 없으면 'Untitled', `--desktop` 은 `--name` 을 거절). 제목뿐이라 실패는 False."""
+    stripped = (title or "").strip()
+    if not stripped:
+        return False
+    data = json.dumps({"type": "custom-title", "customTitle": stripped, "sessionId": session_id}, separators=(",", ":")) + "\n"
+    try:
+        with open(location, "rb") as stream:
+            stream.seek(-1, os.SEEK_END)  # 빈 파일은 여기서 OSError
+            if stream.read(1) != b"\n":
+                return False  # 쓰다 만 줄 뒤에 붙이면 두 줄이 한 줄로 깨진다.
+        # SDK처럼 새로 만들지 않는다(O_CREAT 없음). O_BINARY: Windows 텍스트 모드의 \r\n 바꾸기를 막는다.
+        fd = os.open(location, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
+        try:
+            os.write(fd, data.encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+    except OSError:
+        return False
+
+
 def convert(chain):
     turns, current, calls, answered = [], None, {}, set()
     first_human = True

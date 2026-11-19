@@ -408,6 +408,10 @@ class AgentChat:
                     return result
 
                 save()
+                # Claude 앱 목록 제목. 실패해도 열기는 계속한다. 다시 열기는 앱이 같은 파일을 쓰는 중일 수 있어 쓰지 않는다
+                # (Windows UCRT 의 덧붙이기 = 끝으로 이동 + 따로 쓰기라 그 사이 앱이 쓴 줄을 덮을 수 있다).
+                if anchor and not reopening:
+                    transcript.rename_session(anchor["transcript_location"], row["cli_session_id"], f"MV Agent · {row['title']}")
 
                 def before_resume(pid, start):
                     nonlocal opened_at

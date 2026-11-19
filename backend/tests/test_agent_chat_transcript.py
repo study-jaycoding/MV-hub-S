@@ -27,6 +27,23 @@ def transcript(tmp_path):
     return cases, path, write, read, read()
 
 
+def test_rename_session_appends_sdk_custom_title_line_only_when_safe(transcript, tmp_path):
+    cases, path, write, read, anchor = transcript
+    before = path.read_bytes()
+    assert tr.rename_session(str(path), cases["session_id"], "  MV Agent · 제목  ") is True
+    line = json.dumps({"type": "custom-title", "customTitle": "MV Agent · 제목", "sessionId": cases["session_id"]}, separators=(",", ":"))
+    assert path.read_bytes() == before + (line + "\n").encode()  # Windows 에서도 \r\n 으로 바뀌지 않는다
+    assert read() == anchor  # 메타 줄이라 앵커·지문이 그대로다
+    after = path.read_bytes()
+    assert tr.rename_session(str(path), cases["session_id"], "   ") is False and path.read_bytes() == after
+    path.write_bytes(after + b'{"type":"user"')  # 쓰다 만 줄
+    assert tr.rename_session(str(path), cases["session_id"], "제목") is False and path.read_bytes().endswith(b'{"type":"user"')
+    empty, missing = tmp_path / "empty.jsonl", tmp_path / "missing.jsonl"
+    empty.write_bytes(b"")
+    assert tr.rename_session(str(empty), cases["session_id"], "제목") is False and empty.read_bytes() == b""
+    assert tr.rename_session(str(missing), cases["session_id"], "제목") is False and not missing.exists()
+
+
 def test_normal_round_trip_mixed_versions_and_inert_tools(transcript):
     cases, path, write, read, anchor = transcript
     write(cases["metadata"][:3] + cases["base"] + cases["metadata"][3:] + cases["normal"] +

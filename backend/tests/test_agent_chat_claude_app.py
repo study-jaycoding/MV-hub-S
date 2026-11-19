@@ -102,6 +102,34 @@ def test_roundtrip_atomic_import_public_snapshot_mcp_and_same_resume(app_chat):
     assert command[command.index("--resume") + 1] == a.cases["session_id"]
 
 
+def test_open_titles_app_session_and_import_still_works(app_chat):
+    a = app_chat
+    _, response = open_app(a)
+    opened = response.json()
+    lines = a.file.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[-1]) == {"type": "custom-title", "customTitle": "MV Agent · 합성 대화", "sessionId": a.cases["session_id"]}
+    cwd = json.loads(lines[0])["cwd"]
+    with a.file.open("a", encoding="utf-8", newline="\n") as stream:  # 앱이 제목 줄 뒤에 이어 적은 모양
+        for row in a.cases["normal"]:
+            stream.write(json.dumps({"sessionId": a.cases["session_id"], "cwd": cwd, **row}, ensure_ascii=False) + "\n")
+    _, back = bring(a, opened)
+    assert back.status_code == 200, back.text
+    assert back.json()["imported"] == 2
+
+
+def test_reopen_does_not_write_title_while_app_may_be_writing(app_chat):
+    a = app_chat
+    _, response = open_app(a)
+    first = response.json()
+    anchor = store.handoff_state(store.get_conversation(a.path, a.cid)["app_handoff"])["anchor"]
+    before = a.file.read_bytes()
+    _, response = open_app(a, expected_revision=1, handoff_id=first["app_handoff"]["id"])
+    assert response.status_code == 200, response.text
+    assert a.file.read_bytes() == before and before.count(b'"custom-title"') == 1
+    assert len(a.spawned) == 2
+    assert store.handoff_state(store.get_conversation(a.path, a.cid)["app_handoff"])["anchor"] == anchor
+
+
 def test_idempotency_reopen_stale_and_cross_conversation(app_chat):
     a = app_chat
     request, response = open_app(a)
