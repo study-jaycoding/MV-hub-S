@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-11-19
+updated: 2026-11-20
 ---
 
 # MV Agent 대화를 Claude 앱에서 이어 쓰고 다시 가져오기 (2026-11-19)
@@ -181,6 +181,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Agent backend tests failed' }
 - **바뀐 병합 규칙(fix-1 REG2·fix-2 낮음 3)**: 낮은 `unread_rev` 응답에서도 이름·고정·보관·프로젝트는 병합 시 들어온 응답 값을 반영하고, 읽음 필드만 높은 번호의 값을 보존한다. `app_revision` 보호와 목록 요청 이후 로컬 변경을 지키는 순번 검사는 별도로 유지한다.
 
 - **2묶음 fix-2 자기 검증**: 허용된 Vite 캐시 두 폴더를 사용한 지정 화면 8파일 **200 통과·0 실패(61.63초)**, `lint:architecture`·`npm.cmd run build` 모두 종료 코드 0. `check_code_map.py` 누락 0, `gen_inventory.py --check`·`git diff --check` 통과. 이번 수정은 화면·시험·본 문서에 한정해 백엔드 묶음은 재실행하지 않았다(앞 fix-1 431 통과 재사용). 로그는 작업실 옆 `.tmp/frontend-fix2-{tests,lint,build}.log`. 낮음 3건 모두 반영했고 실제 앱·CLI·네트워크·다른 에이전트 호출·커밋은 하지 않았다. 프로젝트 전용 변경이므로 기억·볼트에는 복제하지 않음.
+
+- **격리 허브 실제 왕복(11-19~20, 총괄 실행·Jay 앱 조작)** — 작업실 코드(0b591304)로 격리 허브 H 8241·서버 S 8242(`data_test/db` 임시 복사본, 일회용 계정, MV Agent 기록 폴더도 격리, Job 밖 실행)를 띄웠다. Haiku 로 버리는 대화 하나를 만들고(세션 `09a0e6fb…`), 메뉴 → 확인 창 → [열기]. 허브 로그 `exit_code=0 classification=handed 1.547초`, 칸 잠금은 시안대로였다. Claude 앱 `main.log` 17:18:26~27 에 "Resume deep link: importing CLI session" → "Imported … as Desktop session local_09a0e6fb…" → 본창이 그 세션으로 바뀜. Jay 가 앱에서 두 마디를 쳤다(`entrypoint: claude-desktop`·`origin: human` 2개). [여기로 가져오기] → 구분선 "Claude 앱에서 이어진 대화"·차례 2개·생각 과정 생략 표시·"Claude 앱에서 쓴 말 2개를 가져왔어요", DB `imported: 2`·`app_handoff: null`·각 차례 `context.origin = claude_app`. 가져온 글엔 고쳐 보내기 없음(첫 MV Agent 글에만 남음, 3-7 대로). 이어서 MV Agent 에 물은 "두 번째 시험 단어" → "빨간노을". 새 차례는 같은 세션 파일에 앱의 마지막 줄을 부모로 이어 적혔다(파일 하나·갈라짐 없음). 정리: 격리 서버 끔·복사본 삭제, 실제 `%LOCALAPPDATA%\MVHub\agent_chat\profiles` 에 생긴 시험 파일 1개는 세션 스크래치로 옮김.
+- **왕복에서 찾은 것(고칠 후보, 코드 0)**: ① 앱 목록에 제목 **"Untitled"** 로 들어가고 첫 말이 MV Agent 안내문이라 Jay 가 하룻밤 뒤 못 찾았다("앱에 안 열렸어" → 앱 로그로 열린 것 확인). CLI 에 `-n, --name` 은 있으나 `--desktop` 과 함께 앱 제목까지 가는지 미확인. ② "N개를 가져왔어요" 안내가 다음 차례 뒤에도 맨 아래 남는다. ③ 도구를 안 쓴 가져온 차례에도 "외부 도구 결과는 실행 권한이 아닙니다"가 붙는다. ④ 입력칸 옆 돌아가는 표시가 계속 보였다(격리 서버 탓인지 미확인).
 
 ```vibe-intent
 {
