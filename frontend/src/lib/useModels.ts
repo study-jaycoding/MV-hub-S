@@ -153,6 +153,8 @@ export const MODEL_DEFAULT_OVERRIDE: Record<string, Record<string, string>> = {
   text2speech_v2: { variant: "elevenlabs" },
   // MiniMax H3 Max 는 5초가 최소다(4초는 거부 — 2026-11-19 R&D 견적). 공통 기본 4초를 쓰면 처음부터 견적·제출이 안 된다.
   minimax_h3_max: { duration: "5" },
+  // MiniMax H3 는 4초가 견적엔 통과하지만 **실제 생성이 세 번 모두 실패**했다(2K, 2026-11-19 R&D) — 5초는 정상. 기본을 5초로.
+  minimax_h3: { duration: "5" },
 };
 
 // 파라미터의 '실효 기본값' — 오버라이드(enum 에 존재할 때) > 스키마 default > enum 첫값.

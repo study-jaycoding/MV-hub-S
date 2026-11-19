@@ -124,7 +124,7 @@ const DURATION_RANGE: Record<string, { min: number; max: number }> = {
   gemini_omni_flash_1_2: { min: 3, max: 15 }, // 3~15 허용, 16·18·20·30 거부. 참조·처음끝 그림·이어 붙이기는 10초까지(CLI 규칙)
   wan3_0: { min: 2, max: 30 }, // 1 거부, 2·4·30 허용, 31 거부(CLI 규칙: -1 스마트 길이 또는 2~30)
   wan3_0_prime: { min: 2, max: 30 }, // 2·4·30 허용
-  minimax_h3: { min: 4, max: 15 }, // 2·3 거부, 4·5·10·15 허용, 16·20 거부
+  minimax_h3: { min: 5, max: 15 }, // 견적: 2·3 거부, 4·5·10·15 허용, 16·20 거부 — 그러나 4초는 실제 생성이 세 번 실패(11-19 R&D)해 5초부터
   minimax_h3_max: { min: 5, max: 15 }, // 2·3·4 거부, 5·6·10·15 허용(15 위는 재지 않음)
 };
 

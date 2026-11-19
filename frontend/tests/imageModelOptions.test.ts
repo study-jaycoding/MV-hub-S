@@ -59,13 +59,13 @@ describe("새 영상 모델(2026-11-19 R&D 견적으로 맞춘 값)", () => {
     expect(r("gemini_omni_flash_1_2")).toEqual({ min: 3, max: 15 });
     expect(r("wan3_0")).toEqual({ min: 2, max: 30 });
     expect(r("wan3_0_prime")).toEqual({ min: 2, max: 30 });
-    expect(r("minimax_h3")).toEqual({ min: 4, max: 15 });
+    expect(r("minimax_h3")).toEqual({ min: 5, max: 15 }); // 4초는 견적만 통과하고 실제 생성이 실패한다
     expect(r("minimax_h3_max")).toEqual({ min: 5, max: 15 });
   });
 
   it("MiniMax H3 Max 의 기본 길이는 최소 5초(공통 4초는 거부되는 값), 다른 새 모델은 공통 4초", () => {
     expect(defaultOptions(MAX, "minimax_h3_max").duration).toBe("5");
-    expect(defaultOptions(MAX, "minimax_h3").duration).toBe("4");
+    expect(defaultOptions(MAX, "minimax_h3").duration).toBe("5");
     expect(defaultOptions(KLING, "kling4_0").duration).toBe("4");
   });
 
