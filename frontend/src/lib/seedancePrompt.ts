@@ -278,18 +278,26 @@ export function seedanceAudioIndexMap(trayRefs: SeedanceRefLike[]): Map<number, 
   return map;
 }
 
+// 첫·끝 프레임 이미지는 프롬프트가 아니라 start_image·end_image 값으로 따로 간다(CLI `model get` 규칙, 7개 모델 모두 확인).
+// 프롬프트에 남은 @simage·@eimage 는 Seedance 만 지금까지 쓰던 "첫 프레임"·"끝 프레임" 글자로 바꾼다(실사용 검증된 기존 방식).
+// Kling·Gemini·Wan·MiniMax 는 프롬프트에 프레임 말이 필요 없어 토큰만 지운다(한국어 단어가 영문 프롬프트에 끼지 않게).
+export function frameTokensAsWords(model: string): boolean {
+  return usesSeedanceMediaRefs(model);
+}
+
 export function normalizeSeedancePromptTokens(
   text: string,
   imageIndexMap?: Map<number, number>,
   videoIndexMap?: Map<number, number>,
   audioIndexMap?: Map<number, number>,
+  frameAsWords = true,
 ): string {
   return text.replace(new RegExp(SEEDANCE_TOKEN_SRC, "gi"), (_m, k1, n1, k2, n2) => {
     const kind = String(k1 || k2).toLowerCase();
     const n = n1 || n2; // <<<>>> 또는 @ 어느 형태든 같은 CLI 토큰(<<<>>>)으로 출력
     const idx = Number(n);
-    if (kind === "simage") return "첫 프레임";
-    if (kind === "eimage") return "끝 프레임";
+    if (kind === "simage") return frameAsWords ? "첫 프레임" : "";
+    if (kind === "eimage") return frameAsWords ? "끝 프레임" : "";
     if (kind === "image") return `<<<image${imageIndexMap?.get(idx) || n}>>>`;
     if (kind === "video" || kind === "vedio") return `<<<video${videoIndexMap?.get(idx) || n}>>>`;
     if (kind === "audio") return `<<<audio${audioIndexMap?.get(idx) || n}>>>`;
@@ -318,13 +326,14 @@ export function seedancePromptText(
   videoIndexMap?: Map<number, number>,
   trayAudioCount = 0,
   audioIndexMap?: Map<number, number>,
+  frameAsWords = true,
 ): string {
   let imgN = trayImageCount;
   let videoN = trayVideoCount;
   let audioN = trayAudioCount;
   return parts
     .map((p) => {
-      if (p.t === "text") return normalizeSeedancePromptTokens(p.v, imageIndexMap, videoIndexMap, audioIndexMap);
+      if (p.t === "text") return normalizeSeedancePromptTokens(p.v, imageIndexMap, videoIndexMap, audioIndexMap, frameAsWords);
       const type = p.ref?.type as SeedanceRefType | undefined;
       if (type === "image") return `<<<image${++imgN}>>>`;
       if (type === "video") return `<<<video${++videoN}>>>`;

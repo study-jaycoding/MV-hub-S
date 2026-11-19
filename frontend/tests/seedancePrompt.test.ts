@@ -8,6 +8,7 @@ import {
   seedanceHasTokenRoles,
   normalizeSeedancePromptTokens,
   normalizeMediaRefTokensBasic,
+  frameTokensAsWords,
   effectiveSeedanceMode,
   validateSeedanceMode,
   validateSeedanceTokenRoles,
@@ -78,6 +79,23 @@ describe("Seedance 2.5 모드 검증", () => {
   it.each(["seedance_2_0", "seedance_2_0_mini"])("%s에는 2.5의 모드 규칙을 적용하지 않는다", (model) => {
     expect(validateSeedanceMode(model, "video_edit", [], seedanceTokenRoles("@simage1"), undefined)).toBeNull();
     expect(validateSeedanceMode(model, "video_extension", [], roles, undefined)).toBeNull();
+  });
+});
+
+describe("프레임 토큰(@simage·@eimage)의 프롬프트 처리 — 모델별 정책", () => {
+  it("기본(Seedance)은 첫/끝 프레임 글자로 바꾸고, frameAsWords=false 는 토큰만 지운다", () => {
+    expect(normalizeSeedancePromptTokens("@simage1 에서 @eimage2 로")).toBe("첫 프레임 에서 끝 프레임 로");
+    expect(normalizeSeedancePromptTokens("@simage1 에서 @eimage2 로", undefined, undefined, undefined, false)).toBe(" 에서  로");
+  });
+  it("글자 치환은 Seedance 만, 나머지 프레임 모델은 토큰 삭제 정책이다", () => {
+    expect(frameTokensAsWords("seedance_2_0")).toBe(true);
+    expect(frameTokensAsWords("seedance_2_5")).toBe(true);
+    for (const model of ["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]) {
+      expect(frameTokensAsWords(model)).toBe(false);
+    }
+  });
+  it("프레임이 아닌 토큰(@image1)은 정책과 상관없이 <<<image1>>> 로 간다", () => {
+    expect(normalizeSeedancePromptTokens("@image1 처럼", undefined, undefined, undefined, false)).toBe("<<<image1>>> 처럼");
   });
 });
 

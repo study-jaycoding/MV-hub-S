@@ -200,14 +200,31 @@ describe("buildSpotlightCreateBody — 시작·끝 프레임(@simage·@eimage)�
       const { body, error } = frames(model, "@simage1 에서 @eimage2 로 천천히 이동", [img(), img()]);
       expect(error).toBeNull();
       expect(body!.references!.map((r) => r.role)).toEqual(["@Start", "@End"]);
-      expect(body!.prompt).toBe("첫 프레임 에서 끝 프레임 로 천천히 이동");
+      // 프레임 이미지는 start_image·end_image 로 따로 가므로 프롬프트에는 토큰만 지운다(한국어 단어를 끼우지 않는다)
+      expect(body!.prompt).toBe("에서 로 천천히 이동");
+    }
+  });
+  it("Seedance 는 지금까지 쓰던 \"첫 프레임\"·\"끝 프레임\" 글자 치환을 그대로 쓴다", () => {
+    const { body } = frames("seedance_2_0", "@simage1 에서 @eimage2 로 천천히 이동", [img(), img()], { mode: "std" });
+    expect(body!.prompt).toBe("첫 프레임 에서 끝 프레임 로 천천히 이동");
+  });
+  it("프레임 토큰만 쓰면 프롬프트가 필수인 모델은 이유를 알리고, 선택인 모델은 (no text) 로 보낸다", () => {
+    for (const model of ["gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3_max"]) {
+      const { body, error } = frames(model, "@simage1 @eimage2", [img(), img()]);
+      expect(body).toBeNull();
+      expect(error).toContain("프롬프트 글이 있어야 합니다");
+    }
+    for (const model of ["kling4_0", "minimax_h3"]) {
+      const { body, error } = frames(model, "@simage1 @eimage2", [img(), img()]);
+      expect(error).toBeNull();
+      expect(body!.prompt).toBe("(no text)");
     }
   });
   it("프레임이 아닌 이미지는 번호가 이어진다(@Image1), Kling 은 프레임+참조를 함께 보낸다", () => {
     const { body, error } = frames("kling4_0", "@simage1 에서 시작해 @image2 의 인물처럼", [img(), img()]);
     expect(error).toBeNull();
     expect(body!.references!.map((r) => r.role)).toEqual(["@Start", "@Image1"]);
-    expect(body!.prompt).toBe("첫 프레임 에서 시작해 <<<image1>>> 의 인물처럼");
+    expect(body!.prompt).toBe("에서 시작해 <<<image1>>> 의 인물처럼");
   });
   it("모델 제약 — 끝만·Flash 끝·Gemini/Wan/MiniMax 의 프레임+참조는 요청을 만들지 않고 이유를 알린다", () => {
     expect(frames("kling4_0", "@eimage1 로", [img()]).error).toContain("시작 프레임");

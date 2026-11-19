@@ -10,6 +10,7 @@ import {
   seedanceAtTokenKind,
   emptySeedanceTokenRoles,
   effectiveSeedanceMode,
+  frameTokensAsWords,
   normalizeMediaRefTokensBasic,
   normalizeSeedancePromptTokens,
   seedanceAudioIndexMap,
@@ -240,15 +241,20 @@ export function buildSpotlightCreateBody({
     : trayRefs.filter((ref) => ref.type === "image").length;
   const trayVideoCount = seedanceMode ? trayRefs.filter((ref) => ref.type === "video").length : 0;
   const trayAudioCount = seedanceMode ? trayRefs.filter((ref) => (ref.type as SeedanceRefType) === "audio").length : 0;
+  const frameAsWords = frameTokensAsWords(model);
   const promptText = seedanceMode
-    ? seedancePromptText(parts, trayOmniImageCount, imageIndexMap, trayVideoCount, videoIndexMap, trayAudioCount, audioIndexMap) ||
-      normalizeSeedancePromptTokens(text, imageIndexMap, videoIndexMap, audioIndexMap)
+    ? seedancePromptText(parts, trayOmniImageCount, imageIndexMap, trayVideoCount, videoIndexMap, trayAudioCount, audioIndexMap, frameAsWords) ||
+      normalizeSeedancePromptTokens(text, imageIndexMap, videoIndexMap, audioIndexMap, frameAsWords)
     : usesMediaRefTokens(model)
       ? normalizeMediaRefTokensBasic(text) // 이미지 모델 등: 알약(@imageN)을 CLI 용 <<<imageN>>> 원형으로(바이트 동일)
       : text;
   // ★CLI 프롬프트는 반드시 한 줄 — 프롬프트에 줄바꿈이 있으면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙여
   //  '엉뚱한 결과물'이 나온다(실측). 줄바꿈은 display_prompt 에만 남긴다. seedance/비-seedance 두 경로 모두 커버.
   const cliPrompt = (promptText || "").replace(/[^\S\n]*\n[^\S\n]*/g, " ").replace(/[^\S\n]+/g, " ").trim();
+  // 프레임 토큰만 쓴 프롬프트는 토큰을 지우면 비는데, 이 모델들은 CLI 가 프롬프트를 필수로 요구한다(`model get` 의 required) → 이유를 알린다.
+  if (!cliPrompt && text.trim() && FRAME_PROMPT_REQUIRED_MODELS.has(model)) {
+    return { body: null, error: "이 모델은 프롬프트 글이 있어야 합니다 — 첫·끝 프레임 표시만으로는 만들 수 없습니다" };
+  }
 
   return {
     error: null,
@@ -276,6 +282,11 @@ export function buildSpotlightCreateBody({
 
 // 이미지 레퍼런스의 최소 변(px) — 이보다 작으면 힉스필드가 사유 없이 실패한다(2026-11-19 유료 실측: Kling 4.0·Flash 299 실패·300 성공,
 // Wan 3.0·Prime 224 실패·240 성공). 에이전트(agent_push._reference_image_error)가 같은 값으로 한 번 더 막는다.
+// 프롬프트를 필수로 요구하는 프레임 모델(CLI `model get` 의 required: Gemini·Wan·Prime·H3 Max). Kling·Flash·H3 는 선택이다.
+const FRAME_PROMPT_REQUIRED_MODELS: ReadonlySet<string> = new Set([
+  "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3_max",
+]);
+
 const MIN_REF_IMAGE_SIDE: Record<string, number> = { kling4_0: 300, kling_4_0_flash: 300, wan3_0: 240, wan3_0_prime: 240 };
 
 /** 제출 직전(비동기): 원본 이미지 크기를 재서 모델의 최소 변보다 작으면 이유를, 아니면 null. 못 재면(원본 로드 실패·시간 초과) 막지 않는다 —
