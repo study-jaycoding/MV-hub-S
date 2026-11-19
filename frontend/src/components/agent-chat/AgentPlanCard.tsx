@@ -16,7 +16,7 @@ interface Props {
   estimate?: PlanMessage["estimate"];
   progress?: AgentPlanProgress;
   onExecute: () => void;
-  onRevise: () => void;
+  onRevise?: () => void;
   findGeneration?: (id: string) => Generation | undefined; // 앱이 이미 읽은 라이브러리 카드(같은 계정 — 진행 소켓이 갱신)
   onPreview?: (target: PreviewTarget) => void;
 }
@@ -199,7 +199,7 @@ export function AgentPlanCard({ plan, exec, estimate, progress, onExecute, onRev
               aria-label={running ? t("실행하는 중") : t("계획 실행 — 크레딧이 나갑니다")}>
               {running ? t("실행하는 중") : t("실행")}
             </button>
-            <button type="button" className="agent-plan-fix" onClick={onRevise} disabled={running} aria-label={t("계획 고치기")}>
+            <button type="button" className="agent-plan-fix" onClick={onRevise} disabled={running || !onRevise} aria-label={t("계획 고치기")}>
               {t("고치기")}
             </button>
           </div>

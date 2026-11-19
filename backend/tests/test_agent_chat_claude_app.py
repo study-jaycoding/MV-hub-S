@@ -561,6 +561,21 @@ def test_default_home_windows_spelling_is_equivalent(tmp_path):
     assert not store.app_custom_config_dir(home, {"USERPROFILE": str(tmp_path)})
 
 
+def test_default_home_is_resolved_once_per_profile(tmp_path, monkeypatch):
+    calls = []
+    original = store.path_key
+    store._default_claude_home.cache_clear()
+
+    def tracked(path):
+        calls.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(store, "path_key", tracked)
+    for _ in range(2):
+        assert store.app_custom_config_dir(str(tmp_path / "custom"), {"USERPROFILE": str(tmp_path)})
+    assert calls.count(str(tmp_path / ".claude")) == 1
+
+
 @pytest.fixture
 def launcher(monkeypatch):
     sequence = []

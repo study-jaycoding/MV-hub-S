@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentPanel } from "../src/components/agent-chat/AgentPanel";
 import type { CanvasInputCommand } from "../src/features/canvas/api";
 import { applyCanvasEdit, type CanvasEditCommand } from "../src/features/canvas/edits";
-import type { AgentEvent } from "../src/lib/agentChatApi";
+import type { AgentConversationSummary, AgentEvent, AgentTurnRecord } from "../src/lib/agentChatApi";
 import type { ScreenHost } from "../src/lib/agentScreenActions";
 import type { SceneCard, SceneEdge, SceneGroup } from "../src/lib/scenes";
 import { getAccountNamespace } from "../src/lib/accountScope";
@@ -1751,6 +1751,7 @@ describe("MV Agent 서랍 메뉴", () => {
     openMenu("대화1");
     act(() => mi("프로젝트로 옮기기").click());
     expect(host.querySelectorAll(".agent-row-sub.below .agent-row-mi")).toHaveLength(15); // 후보 14 + 없음
+    expect(host.querySelector(".agent-row-sub.below")!.textContent).toContain("프로젝트 p1");
     expect(host.querySelector(".agent-row-menu")!.classList.contains("stacked")).toBe(true);
     const css = readFileSync(new NodeURL("../src/styles/agent-chat.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.agent-row-sub\.below \{[^}]*max-height: 200px;[^}]*overflow-y: auto/);
@@ -2302,5 +2303,434 @@ describe("MV Agent 화면 동작", () => {
     const sent = calls.filter((c) => c.path === "/turns" && c.method === "POST").pop()!;
     expect(sent.body?.screen_tab).toBeUndefined();
     expect(calls.some((c) => c.path.endsWith("/claim"))).toBe(false);
+  });
+});
+
+describe("Claude 앱 원본 열기와 가져오기", () => {
+  let conversation: AgentConversationSummary;
+  let turns: AgentTurnRecord[];
+  const menuItem = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".agent-row-mi")].find((b) => b.textContent?.includes(label));
+  const clickText = (label: string, selector = "button") => act(() => {
+    const found = [...host.querySelectorAll<HTMLButtonElement>(selector)].find((b) => b.textContent === label);
+    expect(found, label).toBeTruthy(); found!.click();
+  });
+  const titleMenu = () => act(() => host.querySelector<HTMLButtonElement>(".agent-title-btn")!.click());
+  const appCalls = () => calls.filter((c) => c.path.includes("/claude-app/"));
+  const reads = () => calls.filter((c) => c.path === "/conversations/c1" && c.method === "GET");
+  const hand = (state: "opening" | "handed" | "uncertain" = "handed") => {
+    conversation = { ...conversation, app_revision: (conversation.app_revision ?? 0) + 1,
+      app_handoff: { id: "h1", at: "2026-11-19 06:20:00", state }, app_opened_at: "2026-11-19 06:20:00",
+      can_open_app: false, open_app_block: "in_claude_app", can_fork: false, fork_block: "in_claude_app" };
+  };
+  const result = () => ({ app_handoff: conversation.app_handoff, app_revision: conversation.app_revision,
+    app_opened_at: conversation.app_opened_at, resumable: true });
+  const render = async (popout = false) => {
+    localStorage.setItem(STORAGE_KEYS.agentPanelConversation, JSON.stringify({ account: getAccountNamespace(), id: "c1" }));
+    act(() => root.render(<AgentPanel context={{ tab: "my", workspace: { scope: "personal", id: null, name: null } }} contextLabel="내 공간" onClose={() => {}} popout={popout} />));
+    await flush();
+  };
+  beforeEach(() => {
+    setHubFeatures(["agent_chat_v1"]);
+    conversation = { id: "c1", title: "앱 왕복", engine: "claude", model: "opus", effort: "medium", updated_at: "",
+      resumable: true, unread: false, unread_rev: 0, can_fork: true, can_open_app: true, open_app_block: null,
+      app_revision: 0, app_handoff: null, app_opened_at: null };
+    turns = [{ id: "t1", text: "원래 사람 글", status: "done", created_at: "2026-11-19 06:00:00",
+      events: [{ seq: 1, kind: "text", text: "원래 답" }, { seq: 2, kind: "plan", plan: PLAN }] }];
+    route = (c) => {
+      if (c.path === "/session") return session();
+      if (c.path === "/conversations") return json({ conversations: [conversation] });
+      if (c.path === "/conversations/c1") return json({ conversation, turns });
+      if (c.path === "/claude/version") return json({ current: null, latest: null, newer: false });
+      if (c.path === "/plans/p1/estimate") return json({ plan_id: "p1", total_credits: 0 });
+      if (c.path === "/plans/p1/execute") return json({ plan: { ...PLAN, status: "submitted" } });
+      if (c.path.endsWith("/claude-app/open")) { hand(); return json(result()); }
+      if (c.path.endsWith("/claude-app/bring-back")) {
+        if (!c.body?.unlock_only) turns = [...turns, { id: "t2", text: "앱에서 쓴 사람 글", status: "done", created_at: "2026-11-19 06:20:00",
+          origin: "claude_app", handoff_id: "h1", imported_at: "2026-11-19 06:20:00", omitted: { images: 1 },
+          events: [{ seq: 1, kind: "tool", name: "Read", status: "unknown" }, { seq: 2, kind: "text", text: "앱에서 쓴 답" }] }];
+        conversation = { ...conversation, app_revision: conversation.app_revision! + 1, app_handoff: null,
+          can_open_app: true, open_app_block: null, can_fork: true, fork_block: null };
+        return json({ ...result(), imported: c.body?.unlock_only ? 0 : 1 });
+      }
+      return json({ detail: "Not Found" }, 404);
+    };
+  });
+
+  it("공용 메뉴 O → 원본 확인·창 단위 기억 → 잠금 → 서버 스냅샷으로 출처·생략·결과 미확인 표시", async () => {
+    await render(); titleMenu();
+    const labels = texts(".agent-row-mi");
+    expect(labels.indexOf("Claude 앱에서 열기O")).toBe(labels.indexOf("포크F") + 1);
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyO", key: "o", bubbles: true })));
+    expect(host.querySelector('[role="dialog"]')!.textContent).toContain("같은 원본 대화를 이어 씁니다");
+    expect(host.querySelector('[role="dialog"]')!.textContent).toContain("Claude 앱 자체의 도구와 권한");
+    act(() => host.querySelector<HTMLInputElement>('.agent-app-skip input')!.click());
+    clickText("열기"); await flush();
+    expect(sessionStorage.getItem(STORAGE_KEYS.agentClaudeAppConfirmed)).toBe("1");
+    expect(appCalls()[0].body).toEqual({ request_id: expect.any(String), expected_revision: 0 });
+    expect(input().disabled).toBe(true);
+    expect(texts(".agent-app-badge")).toEqual(["Claude 앱에서 쓰는 중"]);
+    const before = reads().length;
+    clickText("여기로 가져오기"); await flush();
+    expect(appCalls()[1].body).toEqual({ request_id: expect.any(String), expected_revision: 1, handoff_id: "h1", unlock_only: false });
+    expect(reads().length).toBe(before + 1);
+    expect(input().disabled).toBe(false);
+    expect(panel().textContent).toContain("Claude 앱에서 쓴 말 1개를 가져왔어요");
+    expect(host.querySelectorAll(".agent-app-divider")).toHaveLength(1);
+    expect(host.querySelector(".agent-app-divider time")!.getAttribute("datetime")).toBe("2026-11-19T06:20:00.000Z");
+    expect(panel().textContent).toContain("결과 미확인");
+    expect(panel().textContent).toContain("생략된 내용: 그림 1");
+    expect(host.querySelectorAll('button[aria-label="고쳐 보내기"]')).toHaveLength(1); // 원래 사람 글만
+    expect(panel().textContent).toContain("앱에서 쓴 답");
+    titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    expect(host.querySelector('[role="dialog"]')).toBeNull();
+    expect(appCalls()).toHaveLength(3);
+  });
+
+  it.each([
+    ["opening", "Claude 앱을 여는 중이에요"], ["handed", "Claude 앱에서 이 대화를 쓰는 중이에요"],
+    ["uncertain", "Claude 앱에 열렸는지 확인하지 못했어요"],
+  ] as const)("%s 잠금은 입력·키보드 보내기·드롭·붙여넣기·고쳐 보내기·포크·삭제를 막고 계획 실행·이동은 허용", async (state, message) => {
+    hand(state); await render();
+    expect(host.querySelector(".agent-app-band")!.textContent).toContain(message);
+    expect(input().disabled).toBe(true);
+    type("금지된 보내기"); enter();
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { types: ["application/x-ch-asset"],
+      getData: () => JSON.stringify({ project: "p1", path: "x.png" }), files: [] } });
+    act(() => panel().dispatchEvent(drop));
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { items: [{ kind: "file", type: "image/png", getAsFile: () => new File(["png"], "x.png", { type: "image/png" }) }] } });
+    act(() => input().dispatchEvent(paste)); await flush();
+    expect(turnCalls()).toEqual([]);
+    expect(calls.some((c) => c.path.includes("upload"))).toBe(false);
+    expect(host.querySelectorAll(".agent-attach")).toHaveLength(0);
+    expect(button("고쳐 보내기")).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>(".agent-plan-fix")!.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".agent-plan-run")!.disabled).toBe(false);
+    titleMenu(); expect(menuItem("포크")!.disabled).toBe(true); expect(menuItem("삭제")!.disabled).toBe(true);
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    act(() => button("대화 목록")!.click()); await flush();
+    expect(host.querySelectorAll(".agent-app-monitor")).toHaveLength(1);
+    act(() => host.querySelector<HTMLButtonElement>(".agent-drawer-more")!.click());
+    expect(menuItem("Claude 앱에서 열기")!.disabled).toBe(true);
+    act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    expect(button("새 대화")!.disabled).toBe(false);
+    act(() => button("새 대화")!.click());
+    expect(input().disabled).toBe(false);
+  });
+
+  it.each([
+    ["custom_config_dir", "Claude 설정 폴더를 바꾼 PC 라 열 수 없어요"],
+    ["codex", "Codex 대화는 Claude 앱에서 열 수 없어요"], ["forked_unstarted", "포크한 대화에 먼저 한 번 말해 주세요"],
+    ["old_cli", "Claude Code를 업데이트해 주세요"], ["platform", "이 PC에서는 Claude 앱 열기를 지원하지 않아요"],
+    ["no_session", "먼저 한 번 대화해 주세요"], ["restored", "복원한 기록은 Claude 앱에서 열 수 없어요"],
+    ["not_resumable", "이어 갈 수 없는 대화예요"],
+  ])("열기 불가 %s는 메뉴 설명과 단축키에도 적용", async (code, message) => {
+    conversation = { ...conversation, can_open_app: false, open_app_block: code };
+    await render(); titleMenu();
+    expect([menuItem("Claude 앱에서 열기")!.disabled, menuItem("Claude 앱에서 열기")!.title]).toEqual([true, message]);
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyO", key: "o", bubbles: true })));
+    expect(host.querySelector('[role="dialog"]')).toBeNull(); expect(appCalls()).toEqual([]);
+  });
+
+  it("옛 서버는 메뉴 줄을 숨기고 O도 무시", async () => {
+    delete conversation.can_open_app; delete conversation.app_revision;
+    await render(); titleMenu(); expect(menuItem("Claude 앱에서 열기")).toBeUndefined();
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyO", key: "o", bubbles: true })));
+    expect(host.querySelector('[role="dialog"]')).toBeNull(); expect(appCalls()).toEqual([]);
+  });
+
+  it.each([
+    [409, "branched", "기록이 갈라져 가져오지 않았어요"], [413, "too_large", "기록이 너무 커서 가져오지 않았어요"],
+  ])("가져오기 %s %s → 까닭·잠금 유지 → 잠금만 풀기 확인", async (status, code, message) => {
+    hand(); const base = route;
+    route = (c) => c.path.endsWith("/bring-back") && !c.body?.unlock_only
+      ? json({ detail: code }, status) : base(c);
+    await render(); clickText("여기로 가져오기"); await flush();
+    expect(panel().textContent).toContain(message); expect(input().disabled).toBe(true);
+    clickText("잠금만 풀기");
+    expect(host.querySelector('[role="dialog"]')!.textContent).toContain("가져오지 않은 내용은 화면에 반영되지 않아요. 이어질 문맥은 Claude 세션 상태에 따릅니다");
+    clickText("잠금만 풀기", '[role="dialog"] button'); await flush();
+    expect(appCalls().at(-1)!.body?.unlock_only).toBe(true);
+    expect(input().disabled).toBe(false);
+    expect(panel().textContent).not.toContain("앱에서 쓴 사람 글");
+  });
+
+  it("실행기 정리가 불확실하면 잠금 해제 없이 상태 읽기만 제공", async () => {
+    hand(); const base = route;
+    route = (c) => c.path.endsWith("/bring-back") ? json({ detail: "launcher_uncertain" }, 409) : base(c);
+    await render(); clickText("여기로 가져오기"); await flush();
+    expect(panel().textContent).toContain("열기 작업이 끝났는지 확인하지 못했어요. 잠금을 유지합니다");
+    expect(input().disabled).toBe(true);
+    expect(texts(".agent-app-acts button")).toEqual(["상태 다시 확인"]);
+    const before = reads().length;
+    clickText("상태 다시 확인"); await flush();
+    expect(reads()).toHaveLength(before + 1); expect(appCalls()).toHaveLength(1);
+    expect(input().disabled).toBe(true); expect(texts(".agent-app-acts button")).not.toContain("잠금만 풀기");
+  });
+
+  it.each(["unlock_only", "supplement"] as const)("%s 기록은 사람 말풍선·가져온 묶음 대신 안내 줄", async (kind) => {
+    turns.push({ id: "t-note", text: kind === "unlock_only" ? "[앱 기록을 가져오지 않고 잠금을 풂]" : "[Claude 앱에서 이어진 응답]",
+      status: "done", created_at: "2026-11-19 06:20:00", origin: "claude_app", handoff_id: "h1", [kind]: true,
+      events: kind === "supplement" ? [{ seq: 1, kind: "text", text: "보충 답변" }] : [] });
+    await render();
+    expect(texts(".agent-user")).toEqual(["원래 사람 글"]);
+    expect(texts(".agent-notice")).toContain(turns[1].text);
+    expect(host.querySelectorAll(".agent-app-divider")).toHaveLength(0);
+    if (kind === "supplement") expect(texts(".agent-assistant")).toContain("보충 답변");
+  });
+
+  it("0개 성공은 새 말 없음 안내와 서버 스냅샷·입력 복구", async () => {
+    hand(); const base = route;
+    route = (c) => {
+      if (c.path.endsWith("/bring-back")) {
+        conversation = { ...conversation, app_revision: 2, app_handoff: null, can_open_app: true };
+        return json({ ...result(), imported: 0 });
+      }
+      return base(c);
+    };
+    await render(); clickText("여기로 가져오기"); await flush();
+    expect(panel().textContent).toContain("새로 쓴 말이 없어요"); expect(input().disabled).toBe(false);
+    expect(reads()).toHaveLength(2);
+  });
+
+  it.each(["open", "bring-back"] as const)("%s 응답 전에 새 대화로 옮기면 늦은 결과·안내를 버림", async (action) => {
+    if (action === "bring-back") hand();
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1");
+    const pending = deferred<Response>(), base = route;
+    route = (c) => c.path.endsWith(`/claude-app/${action}`) ? pending.promise : base(c);
+    await render();
+    if (action === "open") { titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); }
+    else clickText("여기로 가져오기");
+    await flush(); expect(input().disabled).toBe(true);
+    act(() => button("새 대화")!.click());
+    hand(); pending.resolve(json({ ...result(), imported: 4 })); await flush();
+    expect(input().disabled).toBe(false); expect(host.querySelector(".agent-app-band")).toBeNull();
+    expect(panel().textContent).not.toContain("4개를 가져왔어요"); expect(reads()).toHaveLength(1);
+  });
+
+  it("계정이 바뀐 뒤의 열기 응답은 버림", async () => {
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1");
+    const pending = deferred<Response>(), base = route;
+    route = (c) => c.path.endsWith("/claude-app/open") ? pending.promise : base(c);
+    await render(); titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    sessionStorage.setItem("ch.accountScope", "other@example.com");
+    hand(); pending.resolve(json(result())); await flush();
+    expect(host.querySelector(".agent-app-band")).toBeNull(); expect(reads()).toHaveLength(1);
+  });
+
+  it("늦은 목록은 최신 잠금을 덮지 않고 창 복귀는 다시 조회", async () => {
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1");
+    const pending = deferred<Response>(), old = { ...conversation }, base = route;
+    route = (c) => c.path === "/conversations" ? pending.promise : base(c);
+    await render(); act(() => button("대화 목록")!.click()); await flush();
+    act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    pending.resolve(json({ conversations: [old] })); await flush();
+    expect(input().disabled).toBe(true);
+    conversation = { ...conversation, app_revision: 2, app_handoff: null, can_open_app: true, can_fork: true };
+    act(() => window.dispatchEvent(new Event("focus"))); await flush();
+    expect(input().disabled).toBe(false); expect(reads()).toHaveLength(3);
+  });
+
+  it("응답을 잃은 재시도는 같은 요청 번호·내용을 재사용", async () => {
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1");
+    let tries = 0; const base = route;
+    route = (c) => { if (c.path.endsWith("/claude-app/open") && tries++ === 0) throw new TypeError("network"); return base(c); };
+    await render(); titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    expect(appCalls()).toHaveLength(2); expect(appCalls()[1].body).toEqual(appCalls()[0].body);
+  });
+
+  it("열기는 처리됐지만 응답을 잃으면 최신 상태로 다시 열기 요청을 새로 만듦", async () => {
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1");
+    let lost = false; const base = route;
+    route = (c) => {
+      if (c.path.endsWith("/claude-app/open") && !lost) { lost = true; hand(); throw new TypeError("network"); }
+      return base(c);
+    };
+    await render(); titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    expect(input().disabled).toBe(true);
+    clickText("Claude 앱 다시 열기"); await flush();
+    expect(appCalls()).toHaveLength(2);
+    expect(appCalls()[1].body).toMatchObject({ expected_revision: 1, handoff_id: "h1" });
+    expect(appCalls()[1].body?.request_id).not.toBe(appCalls()[0].body?.request_id);
+  });
+
+  it("가져오기는 처리됐지만 응답을 잃은 뒤 새 넘김은 새 요청 번호로 가져옴", async () => {
+    hand(); let lost = false; const base = route;
+    route = (c) => {
+      if (c.path.endsWith("/bring-back") && !lost) { lost = true; base(c); throw new TypeError("network"); }
+      return base(c);
+    };
+    await render(); clickText("여기로 가져오기"); await flush();
+    expect(input().disabled).toBe(false);
+    hand(); conversation.app_handoff = { ...conversation.app_handoff!, id: "h2" };
+    act(() => window.dispatchEvent(new Event("focus"))); await flush();
+    clickText("여기로 가져오기"); await flush();
+    expect(appCalls()).toHaveLength(2);
+    expect(appCalls()[1].body).toMatchObject({ expected_revision: 3, handoff_id: "h2", unlock_only: false });
+    expect(appCalls()[1].body?.request_id).not.toBe(appCalls()[0].body?.request_id);
+  });
+
+  it.each([false, true, "launch"])("서랍의 다른 대화 열기(실패=%s)는 서랍을 유지하고 실패 까닭을 한 번 안내", async (fails) => {
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1");
+    let other = { ...conversation, id: "c2", title: "다른 대화" }; const base = route;
+    route = (c) => {
+      if (c.path === "/conversations") return json({ conversations: [conversation, other] });
+      if (c.path === "/conversations/c2/claude-app/open") {
+        if (fails === "launch") return json({ app_revision: 1, app_handoff: null, open_failed: "launch", resumable: true });
+        if (fails) return json({ detail: "custom_config_dir" }, 409);
+        other = { ...other, app_revision: 1, app_handoff: { id: "h2", state: "handed", at: "2026-11-19 06:20:00" }, can_open_app: false };
+        return json({ app_revision: other.app_revision, app_handoff: other.app_handoff, resumable: true });
+      }
+      return base(c);
+    };
+    await render(); act(() => button("대화 목록")!.click()); await flush();
+    const row = () => [...host.querySelectorAll<HTMLElement>(".agent-drawer-row")].find((r) => r.textContent?.includes("다른 대화"))!;
+    act(() => row().querySelector<HTMLButtonElement>(".agent-drawer-more")!.click());
+    act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    expect(appCalls()[0].path).toBe("/conversations/c2/claude-app/open");
+    expect(row().querySelectorAll(".agent-app-monitor")).toHaveLength(fails ? 0 : 1);
+    expect(reads()).toHaveLength(1);
+    expect(calls.some((c) => c.path === "/conversations/c2")).toBe(false);
+    expect(input().disabled).toBe(false); expect(texts(".agent-user")).toEqual(["원래 사람 글"]);
+    const message = fails === "launch" ? "Claude 앱 열기 작업을 시작하지 못했어요" : "Claude 설정 폴더를 바꾼 PC 라 열 수 없어요";
+    expect(texts(".agent-notice").filter((text) => text === message)).toHaveLength(fails ? 1 : 0);
+    expect(texts(".agent-error")).not.toContain(message);
+    act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    act(() => button("새 대화")!.click());
+    expect(panel().textContent).not.toContain(message);
+  });
+
+  it.each(["새 대화", "다른 대화"])("현재 대화의 앱 오류는 %s로 이동하면 사라짐", async (destination) => {
+    hand(); const other = { ...conversation, id: "c2", title: "다른 대화", app_handoff: null, app_revision: 0 };
+    const base = route;
+    route = (c) => {
+      if (c.path.endsWith("/bring-back")) return json({ detail: "branched" }, 409);
+      if (c.path === "/conversations") return json({ conversations: [other, conversation] });
+      if (c.path === "/conversations/c2") return json({ conversation: other, turns: [] });
+      return base(c);
+    };
+    await render(); clickText("여기로 가져오기"); await flush();
+    expect(panel().textContent).toContain("기록이 갈라져 가져오지 않았어요");
+    if (destination === "새 대화") act(() => button("새 대화")!.click());
+    else {
+      act(() => button("대화 목록")!.click()); await flush();
+      const row = [...host.querySelectorAll<HTMLElement>(".agent-drawer-row")].find((r) => r.textContent?.includes("다른 대화"))!;
+      act(() => row.querySelector<HTMLButtonElement>(".agent-drawer-item")!.click()); await flush();
+    }
+    expect(panel().textContent).not.toContain("기록이 갈라져 가져오지 않았어요");
+  });
+
+  it("복원으로 상태 번호가 낮아져도 대화를 다시 열면 서버 기록과 잠금을 표시", async () => {
+    hand(); conversation.app_revision = 8; await render();
+    act(() => button("새 대화")!.click());
+    conversation = { ...conversation, app_revision: 0, app_handoff: null, restored_from: "backup-1", resumable: false, can_open_app: false, can_fork: false };
+    turns = [{ ...turns[0], text: "복원한 대화 글" }];
+    act(() => button("대화 목록")!.click()); await flush();
+    act(() => host.querySelector<HTMLButtonElement>(".agent-drawer-item")!.click()); await flush();
+    expect(texts(".agent-user")).toEqual(["복원한 대화 글"]);
+    expect(input().disabled).toBe(true); expect(host.querySelector(".agent-app-band")).toBeNull();
+    expect(panel().textContent).toContain("복원한 기록이에요");
+    titleMenu(); expect(menuItem("Claude 앱에서 열기")!.disabled).toBe(true);
+  });
+
+  it.each([false, true])("앱 열기 중 같은 대화를 명시적으로 다시 읽어도 낮은 번호의 늦은 조회(복원=%s)는 잠금을 풀지 않음", async (restored) => {
+    hand(); conversation.app_revision = 8; await render(true);
+    const opened = deferred<Response>(), snapshot = deferred<Response>(), base = route;
+    const old = { ...conversation, app_revision: 0, app_handoff: null, ...(restored ? { restored_from: "backup-1" } : {}) };
+    let delayed = true;
+    route = (c) => {
+      if (c.path.endsWith("/claude-app/open")) return opened.promise;
+      if (c.path === "/conversations/c1" && delayed) return snapshot.promise;
+      return base(c);
+    };
+    clickText("Claude 앱 다시 열기"); await flush();
+    localStorage.setItem(STORAGE_KEYS.agentPanelOpenRequest, JSON.stringify({ account: getAccountNamespace(), identity: "id-1", id: "c1", nonce: "reopen-during-app", at: Date.now() }));
+    act(() => window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEYS.agentPanelOpenRequest })));
+    await flush(); expect(reads()).toHaveLength(2);
+    snapshot.resolve(json({ conversation: old, turns: [{ ...turns[0], text: "늦게 온 옛 글" }] })); await flush();
+    expect(input().disabled).toBe(true); expect(texts(".agent-user")).toEqual(["원래 사람 글"]);
+    expect(host.querySelector(".agent-app-band")).not.toBeNull();
+    delayed = false; hand(); opened.resolve(json(result())); await flush();
+    expect(input().disabled).toBe(true); expect(texts(".agent-app-badge")).toEqual(["Claude 앱에서 쓰는 중"]);
+    expect(texts(".agent-user")).toEqual(["원래 사람 글"]);
+  });
+
+  it("앱에서 쓴 이력이 있는 대화 삭제에는 원본 파일 경고", async () => {
+    conversation.app_opened_at = "2026-11-19 06:20:00";
+    await render(); titleMenu(); act(() => menuItem("삭제")!.click());
+    expect(panel().textContent).toContain("Claude 앱에서도 쓰는 원본 세션 파일을 함께 지울 수 있어요. 앱에서 이 대화를 닫아 주세요");
+  });
+
+  it("잠금만 풀어도 원본을 확인 못 하면 새 대화로 안내하고 보내기는 막음", async () => {
+    hand(); const base = route;
+    route = (c) => {
+      if (c.path.endsWith("/bring-back")) {
+        if (!c.body?.unlock_only) return json({ detail: "read_failed" }, 409);
+        conversation = { ...conversation, app_handoff: null, app_revision: 2, resumable: false, open_app_block: "not_resumable" };
+        return json({ ...result(), imported: 0, resumable: false });
+      }
+      return base(c);
+    };
+    await render(); clickText("여기로 가져오기"); await flush(); clickText("잠금만 풀기");
+    clickText("잠금만 풀기", '[role="dialog"] button'); await flush();
+    expect(host.querySelector(".agent-app-band")).toBeNull(); expect(input().disabled).toBe(true);
+    expect(panel().textContent).toContain("새 대화를 시작해 주세요");
+    type("못 보내는 글"); enter(); await flush(); expect(turnCalls()).toEqual([]);
+  });
+
+  it("창 복귀 조회보다 뒤에 보낸 차례를 늦은 스냅샷이 지우지 않음", async () => {
+    await render(); const pending = deferred<Response>(), base = route;
+    route = (c) => {
+      if (c.path === "/conversations/c1") return pending.promise;
+      if (c.path === "/turns") return started("t-new", "c1");
+      if (c.path.startsWith("/turns/t-new/events")) return json({ events: [{ seq: 1, kind: "text", text: "새 차례 답" }], status: "done", last_seq: 1 });
+      return base(c);
+    };
+    act(() => window.dispatchEvent(new Event("focus"))); await flush();
+    type("새 차례 글"); enter(); await flush();
+    pending.resolve(json({ conversation, turns })); await flush();
+    expect(panel().textContent).toContain("새 차례 글"); expect(panel().textContent).toContain("새 차례 답");
+  });
+
+  it("같은 상태 번호의 늦은 opening 목록은 전달 완료를 되돌리지 않음", async () => {
+    hand("opening"); await render(); const pending = deferred<Response>(), old = { ...conversation }, base = route;
+    route = (c) => c.path === "/conversations" ? pending.promise : base(c);
+    act(() => button("대화 목록")!.click()); await flush();
+    act(() => host.querySelector<HTMLElement>(".agent-drawer-dim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    conversation = { ...conversation, app_handoff: { ...conversation.app_handoff!, state: "handed" } };
+    act(() => window.dispatchEvent(new Event("focus"))); await flush();
+    pending.resolve(json({ conversations: [old] })); await flush();
+    expect(host.querySelector(".agent-app-band")!.textContent).toContain("Claude 앱에서 이 대화를 쓰는 중이에요");
+  });
+
+  it("가져오기는 성공했지만 스냅샷을 못 읽으면 입력 잠금 유지·상태 재조회로만 복구", async () => {
+    hand(); await render(); let failRead = true; const base = route;
+    route = (c) => c.path === "/conversations/c1" && failRead ? json({ detail: "unavailable" }, 503) : base(c);
+    clickText("여기로 가져오기"); await flush();
+    expect(input().disabled).toBe(true); expect(panel().textContent).not.toContain("앱에서 쓴 사람 글");
+    expect(panel().textContent).toContain("작업 결과를 화면에 다시 읽지 못했어요");
+    failRead = false; clickText("상태 다시 확인"); await flush();
+    expect(input().disabled).toBe(false); expect(panel().textContent).toContain("앱에서 쓴 사람 글");
+    expect(appCalls()).toHaveLength(1); // 가져오기 자체를 다시 호출하거나 화면에서 합성하지 않는다.
+  });
+
+  it.each([
+    ["job", "Windows 실행 격리를 확인하지 못해 앱을 열지 않았어요"],
+    ["launch", "Claude 앱 열기 작업을 시작하지 못했어요"],
+    ["identify", "열기 작업을 확인하지 못해 앱을 열지 않았어요"],
+  ])("재개 전 실패 %s를 공개 분류로 안내", async (openFailed, message) => {
+    sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1"); const base = route;
+    route = (c) => {
+      if (c.path.endsWith("/claude-app/open")) {
+        conversation = { ...conversation, app_revision: 1 };
+        return json({ ...result(), open_failed: openFailed });
+      }
+      return base(c);
+    };
+    await render(); titleMenu(); act(() => menuItem("Claude 앱에서 열기")!.click()); await flush();
+    expect(panel().textContent).toContain(message); expect(input().disabled).toBe(false);
   });
 });

@@ -554,3 +554,25 @@
 .agent-md-code code { padding: 0; background: transparent; }
 .agent-md a { color: var(--accent); }
 .agent-notice { align-self: flex-start; color: #f5c542; font-size: 12px; }
+
+/* Claude 앱 왕복 — 기존 회색 면·라임 강조와 확인 창을 함께 쓴다. */
+.agent-app-badge, .agent-app-monitor { display: inline-flex; align-items: center; justify-content: center; gap: 4px; color: var(--accent); }
+.agent-app-badge { flex: none; padding: 3px 6px; border-radius: 6px; background: rgba(var(--accent-rgb), 0.1); font-size: 11px; }
+.agent-app-badge .agent-row-ic, .agent-app-monitor .agent-row-ic { display: grid; place-items: center; width: 16px; height: 16px; color: inherit; }
+.agent-drawer-item .agent-app-monitor { flex: none; }
+.agent-app-band { margin: 0 16px 10px; padding: 12px; border: 1px dashed var(--accent); border-radius: 12px; background: rgba(var(--accent-rgb), 0.06); font-size: 12.5px; }
+.agent-app-band p { margin: 0 0 6px; color: var(--muted); }
+.agent-app-band p:first-child { color: var(--text); }
+.agent-app-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.agent-confirm-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.agent-confirm-btn:disabled { opacity: 0.45; cursor: default; }
+.agent-composer.app-locked { opacity: 0.5; }
+.agent-app-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: var(--accent); font-size: 12px; }
+.agent-app-divider::before, .agent-app-divider::after { content: ""; height: 1px; flex: 1; background: rgba(var(--accent-rgb), 0.35); }
+.agent-app-divider time { color: var(--muted); font-size: 11px; }
+.agent-app-overlay { position: absolute; inset: 0; z-index: 30; background: rgba(0, 0, 0, 0.4); display: flex; align-items: center; padding: 16px; }
+.agent-app-confirm { position: static; width: 100%; max-height: 100%; overflow: auto; }
+.agent-app-confirm ol { padding-left: 22px; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.agent-app-confirm li { margin: 6px 0; }
+.agent-app-skip { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.agent-app-skip input { accent-color: var(--accent); }

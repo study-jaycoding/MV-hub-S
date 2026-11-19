@@ -29,8 +29,7 @@ def transcript(tmp_path):
 
 def test_normal_round_trip_mixed_versions_and_inert_tools(transcript):
     cases, path, write, read, anchor = transcript
-    rows = cases["base"] + cases["normal"]
-    write([item for row, meta in zip(rows, cases["metadata"]) for item in (meta, row)] +
+    write(cases["metadata"][:3] + cases["base"] + cases["metadata"][3:] + cases["normal"] +
           [{"type": "api-request-blob", "data": '{"type":"user","uuid":"fake","origin":{"kind":"human"}}'}])
     turns = read(anchor)
     assert [t["text"] for t in turns] == ["앱 첫 질문", "[그림]"]
@@ -41,8 +40,8 @@ def test_normal_round_trip_mixed_versions_and_inert_tools(transcript):
     assert read() != anchor
 
 
-@pytest.mark.parametrize("kind", ["future-metadata", "api-request-blob"])
-@pytest.mark.parametrize("field", ["uuid", "parentUuid", "logicalParentUuid"])
+@pytest.mark.parametrize("kind", ["future-metadata", "future-request-blob"])
+@pytest.mark.parametrize("field", ["uuid", "parentUuid", "logicalParentUuid", "message", "origin"])
 def test_unknown_linked_record_is_not_metadata(transcript, kind, field):
     cases, _, write, read, anchor = transcript
     write(cases["metadata"] + cases["base"] + cases["normal"] + [{"type": kind, field: None}])
@@ -50,6 +49,15 @@ def test_unknown_linked_record_is_not_metadata(transcript, kind, field):
         read()
     with pytest.raises(tr.TranscriptError, match="read_failed"):
         read(anchor)
+
+
+@pytest.mark.parametrize("kind", ["api-request-blob", "queue-operation", "custom-title"])
+def test_known_metadata_is_not_interpreted_as_a_node(transcript, kind):
+    cases, _, write, read, anchor = transcript
+    write(cases["base"] + [{"type": kind, "uuid": None, "parentUuid": "missing",
+                           "logicalParentUuid": {}, "message": {"role": "user"}, "origin": None}] + cases["normal"])
+    assert read() != anchor
+    assert [t["text"] for t in read(anchor)] == ["앱 첫 질문", "[그림]"]
 
 
 def test_compaction_summary_tail_without_new_words(transcript):

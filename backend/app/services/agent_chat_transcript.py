@@ -285,6 +285,10 @@ def _is_visible_message(entry: _TranscriptEntry) -> bool:
 MAX_FILE, MAX_LINE, MAX_RESULT = 64 * 1024**2, 16 * 1024**2, 4 * 1024**2
 MAX_TURNS, MAX_EVENTS, MAX_TEXT = 200, 1000, 20_000
 _NODES = {"user", "assistant", "system", "progress", "attachment"}
+# SDK가 읽는 메타와 실측 종류: 요청 본문에 message가 있어도 대화 노드가 아니다.
+_METADATA = {"summary", "custom-title", "tag", "agent_metadata", "permission-mode",
+             "api-request", "api-request-blob", "api-request-shape", "atis-latch", "cost-state",
+             "file-history-snapshot", "last-prompt", "mode", "queue-operation", "session-owner", "tools-used"}
 
 
 class TranscriptError(Exception):
@@ -353,8 +357,10 @@ def _read(path, session_id, cwd):
                 if not isinstance(row, dict) or not isinstance(row.get("type"), str):
                     raise TranscriptError()
                 kind = row["type"]
+                if kind in _METADATA:
+                    continue
                 if kind not in _NODES:
-                    if any(key in row for key in ("uuid", "parentUuid", "logicalParentUuid")):
+                    if any(key in row for key in ("uuid", "parentUuid", "logicalParentUuid", "message", "origin")):
                         raise TranscriptError()
                     continue  # 연결에 참여하지 않는 메타의 본문은 해석하지 않는다.
                 if not isinstance(row.get("uuid"), str) or not row["uuid"]:

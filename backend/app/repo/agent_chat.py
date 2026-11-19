@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from contextvars import ContextVar
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -305,10 +306,14 @@ def require_app_idle(row) -> None:
         raise HTTPException(409, "in_claude_app")
 
 
+@lru_cache(maxsize=8)
+def _default_claude_home(profile: str) -> str:
+    return path_key(Path(profile) / ".claude")
+
+
 def app_custom_config_dir(home, env) -> bool:
     # shortcut: 앱 본체에 설정 폴더가 전달되는지 제품 M4 실측으로 확인하기 전까지 기본 홈만 허용한다.
-    default = Path(env.get("USERPROFILE") or Path.home()) / ".claude"
-    return "CLAUDE_CONFIG_DIR" in env or bool(home and path_key(home) != path_key(default))
+    return "CLAUDE_CONFIG_DIR" in env or bool(home and path_key(home) != _default_claude_home(str(env.get("USERPROFILE") or Path.home())))
 
 
 def app_fields(row) -> dict:

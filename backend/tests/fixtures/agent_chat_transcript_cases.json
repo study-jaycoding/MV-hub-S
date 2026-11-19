@@ -8,7 +8,9 @@
     {"type":"mode","data":"synthetic"},
     {"type":"api-request-shape","data":{"parentUuid":"nested-not-a-link"}},
     {"type":"tools-used","data":["synthetic"]},
-    {"type":"future-metadata","data":{"logicalParentUuid":"nested-not-a-link"}}
+    {"type":"future-metadata","data":{"logicalParentUuid":"nested-not-a-link"}},
+    {"type":"api-request-blob","hash":"synthetic-hash","message":{"model":"synthetic","messages":[{"role":"user","content":"합성 요청 본문"}]}},
+    {"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T00:00:00Z","content":"합성 대기 내용"}
   ],
   "base": [
     {"type":"user","uuid":"u0","parentUuid":null,"message":{"role":"user","content":"허브에서 쓴 합성 질문"},"entrypoint":"sdk-cli","version":"2.1.322"},

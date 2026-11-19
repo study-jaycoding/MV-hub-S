@@ -38,6 +38,7 @@ export const STORAGE_KEYS = {
   agentDefaults: "mvhub.agentPanel.defaults", // 칸 설정 — 새 대화 모델·생각 깊이, 먼저 쓸 생성 모델(gen_model)
   agentPanelOpenRequest: "mvhub.agentPanel.openRequest",
   agentPanelOpenDone: "mvhub.agentPanel.openDone",
+  agentClaudeAppConfirmed: "mvhub.agentPanel.claudeAppConfirmed", // sessionStorage: 이 창의 원본 열기 안내
   agentPanelDeleted: "mvhub.agentPanel.deleted",
   // 휠 클릭으로 새로 여는 캔버스 창에 넘기는 화면 값(lib/popupWindows) — 그 창이 처음 그릴 때 한 번 읽고 지운다
   canvasHandoff: "mvhub.canvasHandoff",
