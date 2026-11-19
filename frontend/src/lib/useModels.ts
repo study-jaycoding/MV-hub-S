@@ -181,6 +181,8 @@ export function effectiveDefault(p: {
 export type ParamConstraint = {
   whenParam: string;
   whenEquals: string;
+  /** true 면 조건과 상관없이 늘 적용(whenParam·whenEquals 는 무시) — 값 하나가 늘 못 쓰일 때. */
+  always?: boolean;
   param: string;
   allow: string[];
   note: string;
@@ -191,6 +193,14 @@ const KLING_TEXT_FIXED_RATIO: ParamConstraint = {
   param: "aspect_ratio",
   allow: ["21:9", "16:9", "9:16", "1:1"],
   note: "글만으로 영상을 만들 때는 비율을 정해야 합니다 (auto 는 그림·영상을 넣는 모드에서만).",
+};
+// 참조(시작·끝 이미지 칸 없음)로만 이미지를 받으니 시작 이미지 모드는 못 쓴다 — Flash·Gemini 는 image-to-video 에 --start-image 가 필요해 거절된다(2026-11-19 generate cost).
+// 그림을 넣으면 제출 직전에 에이전트가 reference-to-video 로, 안 넣으면 text-to-video 로 맞춘다(agent_push._reference_mode_for_refs).
+const NO_START_IMAGE_MODE: ParamConstraint = {
+  whenParam: "mode", whenEquals: "", always: true,
+  param: "mode",
+  allow: ["text-to-video", "reference-to-video", "video-edit", "edit", "extend"],
+  note: "시작 이미지 칸이 없어 쓸 수 없습니다. 그림을 넣으면 자동으로 참조 모드로 만들어집니다.",
 };
 const GPT_JPEG_NO_TRANSPARENT: ParamConstraint = {
   whenParam: "output_format",
@@ -210,8 +220,9 @@ export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
     },
   ],
   // Kling 4.0 계열 — 글→영상은 비율을 고정해야 한다("Text-to-video requires a fixed aspect ratio", R&D 견적에서 auto 는 거부 확인).
-  kling4_0: [KLING_TEXT_FIXED_RATIO],
-  kling_4_0_flash: [KLING_TEXT_FIXED_RATIO],
+  kling4_0: [KLING_TEXT_FIXED_RATIO, NO_START_IMAGE_MODE],
+  kling_4_0_flash: [KLING_TEXT_FIXED_RATIO, NO_START_IMAGE_MODE],
+  gemini_omni_flash_1_2: [NO_START_IMAGE_MODE],
   // GPT Image 2.6 — jpeg 는 투명을 못 담는다: jpeg+transparent 는 힉스필드에서 **사유 없이 실패**했다(2026-11-19 R&D 시험, png·webp·gif 는 정상).
   gpt_image_2_6: [GPT_JPEG_NO_TRANSPARENT],
   gpt_image_2_6_flare: [GPT_JPEG_NO_TRANSPARENT],
@@ -277,7 +288,7 @@ export function activeConstraints(
 ): Record<string, { allow: Set<string>; note: string }> {
   const out: Record<string, { allow: Set<string>; note: string }> = {};
   for (const c of MODEL_CONSTRAINTS[model] || []) {
-    if (String(optionValues[c.whenParam] ?? "") !== c.whenEquals) continue;
+    if (!c.always && String(optionValues[c.whenParam] ?? "") !== c.whenEquals) continue;
     const ex = out[c.param];
     if (ex) {
       ex.allow = new Set([...ex.allow].filter((v) => c.allow.includes(v)));

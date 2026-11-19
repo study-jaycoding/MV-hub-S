@@ -2925,6 +2925,57 @@ def test_seedance_mode_follows_references_before_submit():
     assert same == {}
 
 
+def test_reference_mode_follows_references_for_kling_and_gemini():
+    """Kling 4.0·Flash·Gemini Omni 는 text-to-video 에 참조를 붙이면 거절된다(2026-11-19 generate cost 실측).
+    레퍼런스 유무로 제출 직전에 mode 를 맞추되, 사용자가 고른 edit·extend·video-edit 는 두고
+    두 모드가 enum 에 없는 모델은 손대지 않는다."""
+    agent = _load_agent()
+    enum = {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
+    ref = {"file_path": "https://cdn.example/a.png", "type": "image", "role": "@image1"}
+    src = {"duration": 4}
+    fixed, note = agent._reference_mode_for_refs(src, [ref], enum)
+    assert fixed == {"duration": 4, "mode": "reference-to-video"} and note and src == {"duration": 4}
+    for mode in ("text-to-video", "image-to-video", ""):
+        assert agent._reference_mode_for_refs({"mode": mode}, [ref], enum)[0]["mode"] == "reference-to-video"
+    # 레퍼런스가 없으면 text-to-video (Gemini 는 mode 가 필수라 비어 있어도 채운다)
+    for mode in (None, "reference-to-video", "image-to-video"):
+        params = {} if mode is None else {"mode": mode}
+        assert agent._reference_mode_for_refs(params, [], enum)[0]["mode"] == "text-to-video"
+    # 사용자가 고른 수정·이어붙이기 모드는 그대로
+    edit_enum = enum | {"edit", "extend"}
+    for mode in ("video-edit", "edit", "extend"):
+        same, note = agent._reference_mode_for_refs({"mode": mode}, [ref], edit_enum)
+        assert same["mode"] == mode and note is None
+    # 파일 경로가 없는 껍데기 레퍼런스는 레퍼런스로 세지 않는다
+    assert agent._reference_mode_for_refs({"mode": "text-to-video"}, [{"type": "image"}], enum)[1] is None
+    # 두 모드가 enum 에 없는 모델(Seedance·kling_video_edit·이미지 모델)은 손대지 않는다
+    for other in (set(), {"t2v", "omni_reference"}, {"pro", "std"}):
+        same, note = agent._reference_mode_for_refs({"mode": "pro"}, [ref], other)
+        assert same == {"mode": "pro"} and note is None
+
+
+@pytest.mark.parametrize("refs, mode_in, mode_out", [
+    ([{"file_path": "https://cdn.example/a.png", "type": "image", "role": "@Image1"}], "text-to-video", "reference-to-video"),
+    ([], "reference-to-video", "text-to-video"),
+])
+def test_submit_one_sets_kling_mode_from_references_before_submission(refs, mode_in, mode_out):
+    """제출 경로에서도 보정값이 제출 지문에 실린다(참조가 있으면 reference-to-video)."""
+    agent = _load_agent()
+    request = {**_submission_request(), "model": "kling4_0", "params": {"mode": mode_in, "duration": 4}, "references": refs}
+    enum = {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
+    cache = {ref["file_path"]: ref["file_path"] for ref in refs}
+    with patch.object(agent, "_allowed_params", return_value={"mode", "duration"}), \
+         patch.object(agent, "_param_enum", return_value=enum), \
+         patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), \
+         patch.object(agent, "_begin_submission", return_value=False) as begin, \
+         patch.object(agent, "_release_claim", return_value=True), \
+         patch.object(agent, "_run_cli_json") as create:
+        agent._submit_one("http://hub", "token", "higgsfield", "user@example.com", request,
+                          cache, {}, agent.Lock(), agent.Lock(), "agent")
+    create.assert_not_called()
+    assert begin.call_args.args[-1]["params"]["mode"] == mode_out
+
+
 def test_param_enum_reads_model_get_cache_and_failure_is_not_frozen():
     """mode 보정은 스키마 enum 을 본다 — `model get` 은 _allowed_params 가 부른 한 번을 재사용하고(제출 경로 CLI
     호출 수 불변), 조회 실패는 캐시에 박제하지 않아 다음 제출에서 다시 조회된다(한 번 실패로 에이전트가 사는 동안

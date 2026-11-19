@@ -81,6 +81,19 @@ describe("새 영상 모델(2026-11-19 R&D 견적으로 맞춘 값)", () => {
     // auto 로 둔 채 글→영상이 되면 허용값으로 돌려놓는다(제출 거절 방지)
     expect(correctedOptions("kling4_0", KLING, { mode: "text-to-video", aspect_ratio: "auto" }).aspect_ratio).not.toBe("auto");
   });
+
+  it("Kling 4.0·Flash·Gemini Omni: 시작 이미지 칸이 없어 image-to-video 모드는 늘 막고, 나머지 모드는 연다", () => {
+    for (const model of ["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"]) {
+      const mode = activeConstraints(model, { mode: "text-to-video" }).mode;
+      expect(mode.allow.has("image-to-video")).toBe(false);
+      for (const ok of ["text-to-video", "reference-to-video", "video-edit"]) expect(mode.allow.has(ok)).toBe(true);
+      expect(activeConstraints(model, {}).mode.allow.has("image-to-video")).toBe(false); // 조건 없이도
+    }
+    expect(activeConstraints("wan3_0", { mode: "text-to-video" }).mode).toBeUndefined();
+    // 저장된 카드가 image-to-video 면 허용값으로 돌려놓는다
+    const GEMINI = [p("mode", "string", null, ["text-to-video", "image-to-video", "reference-to-video", "edit", "extend"])];
+    expect(correctedOptions("gemini_omni_flash_1_2", GEMINI, { mode: "image-to-video" }).mode).not.toBe("image-to-video");
+  });
 });
 
 describe("GPT Image 2.6 jpeg 는 투명 배경 불가(R&D: jpeg+transparent 는 사유 없이 실패)", () => {

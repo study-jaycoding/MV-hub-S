@@ -1859,6 +1859,22 @@ def _seedance_mode_for_refs(model: str, params: dict, refs: list, mode_enum: set
     return params, None
 
 
+# Kling 4.0·4.0 Flash·Gemini Omni Flash 1.2 — mode 가 text-to-video 면 참조 입력을 거부하고("Text-to-video does not accept reference inputs",
+# 2026-11-19 generate cost 실측) 화면은 참조 칸만 있어 시작 이미지 모드(image-to-video)는 못 쓴다. 레퍼런스 유무에 맞춰 제출 직전에 보정한다.
+# text-to-video·reference-to-video 가 모두 enum 에 있는 모델만 — edit·extend·video-edit 는 사용자가 고른 것이니 그대로 둔다.
+def _reference_mode_for_refs(params: dict, refs: list, mode_enum: set) -> tuple[dict, str | None]:
+    """(보정된 params, 안내문|None). 바꿀 게 없으면 원본 그대로."""
+    if not {"text-to-video", "reference-to-video"} <= mode_enum:
+        return params, None
+    has_media = any(isinstance(ref, dict) and ref.get("file_path") for ref in refs)
+    mode = params.get("mode")
+    if has_media and mode in (None, "", "text-to-video", "image-to-video"):
+        return {**params, "mode": "reference-to-video"}, f"mode {mode or '없음'} → reference-to-video(레퍼런스 있음)"
+    if not has_media and mode in (None, "", "reference-to-video", "image-to-video"):
+        return {**params, "mode": "text-to-video"}, f"mode {mode or '없음'} → text-to-video(레퍼런스 없음)"
+    return params, None
+
+
 def _upload_cache_path() -> str:
     base = os.environ.get("LOCALAPPDATA")
     if base:
@@ -3375,6 +3391,8 @@ def _submit_one_attempt(
         (params, None) if model == "seedance_2_5" and params.get("draft_job_id")
         else _seedance_mode_for_refs(model, params, refs, _param_enum(model, "mode"))
     )
+    if not mode_note and not _uses_single_start_image(model):
+        params, mode_note = _reference_mode_for_refs(params, refs, _param_enum(model, "mode"))
     if mode_note:
         print(f"  ⚠ {model}: {mode_note}")
     if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
