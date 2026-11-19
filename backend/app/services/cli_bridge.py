@@ -1207,6 +1207,8 @@ _COST_DUMMY_REF = "00000000-0000-4000-8000-000000000000"
 _COST_REF_REQUIRED_MODES = {
     "omni_reference": "--image-references",
     "video_extension": "--video-references",
+    # Kling 4.0·Flash·Gemini Omni — "Reference-to-video requires at least one reference input"(2026-11-19 실측). 가격은 모드와 무관(3모델 동일).
+    "reference-to-video": "--image-references",
 }
 # 수정 창이 고칠 영상(작업 id·업로드 id)을 견적에 붙이는 모델 — 위 더미와 달리 진짜 영상이라 길이대로 값이 나온다.
 _VIDEO_EDIT_COST_MODELS = frozenset({"kling_video_edit", "kling4_0", "seedance_2_5"})
