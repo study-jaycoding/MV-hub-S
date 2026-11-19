@@ -15,6 +15,8 @@ import {
   recommendedVoiceIds,
   currentVariantValue,
   durationRange,
+  NO_REFS,
+  type RefSummary,
   isVariantParam,
   modelChipLabel,
   modelRows,
@@ -158,6 +160,8 @@ interface Props {
   /** bar = 생성창 아래 칩 한 줄(기본). rows = 옵션마다 '이름 | 값' 한 줄 — 캔버스 모델 설정 창(Jay 2026-10-28 시안 b2).
    *  rows 에서는 종류 단추를 그리지 않는다(창 머리줄이 SpotlightTypeToggle 로 그린다). */
   layout?: "bar" | "rows";
+  /** 지금 붙은 레퍼런스 요약(개수·시작/끝 프레임) — 참조가 붙으면 길이 상한이 낮은 모델의 길이 칸 상한에 쓴다(Gemini Omni 10초). */
+  refInfo?: RefSummary;
 }
 
 /** Image·Video·Audio 단추 — 생성창 칩 줄 맨 앞과 캔버스 모델 설정 창 머리줄이 같이 쓴다. */
@@ -424,6 +428,7 @@ export function SpotlightOptionsBar({
   setOpen,
   optionsLoading = false,
   layout = "bar",
+  refInfo = NO_REFS,
 }: Props) {
   if (audioModelBlocked(model)) { modelBlocked = true; blockedNote = audioModelBlocked(model); }
   const helpId = useId(); // Set 창 이름 → 설명 상자(aria-describedby)
@@ -649,7 +654,7 @@ export function SpotlightOptionsBar({
                 onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: vals[stops.indexOf(v)] }))} ignored={isIgnored} title={p.name} />);
           }
           const def = Number(p.default) || 5;
-          const { min: dmin, max: dmax } = durationRange(model, def);
+          const { min: dmin, max: dmax } = durationRange(model, def, { mode: optionValues.mode, refs: refInfo });
           const raw = Number(optionValues[p.name] ?? def) || def;
           const cur = Math.min(dmax, Math.max(dmin, raw));
           return row(p.name, "Duration", <SpotlightOptionIcon name="duration" />,

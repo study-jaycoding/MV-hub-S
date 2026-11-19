@@ -124,12 +124,102 @@ const DURATION_RANGE: Record<string, { min: number; max: number }> = {
   gemini_omni_flash_1_2: { min: 3, max: 15 }, // 3~15 허용, 16·18·20·30 거부. 참조·처음끝 그림·이어 붙이기는 10초까지(CLI 규칙)
   wan3_0: { min: 2, max: 30 }, // 1 거부, 2·4·30 허용, 31 거부(CLI 규칙: -1 스마트 길이 또는 2~30)
   wan3_0_prime: { min: 2, max: 30 }, // 2·4·30 허용
-  minimax_h3: { min: 4, max: 15 }, // 2·3 거부, 4·5·10·15 허용, 16·20 거부
+  minimax_h3: { min: 5, max: 15 }, // 견적: 2·3 거부, 4·5·10·15 허용, 16·20 거부 — 그러나 4초는 실제 생성이 세 번 실패(11-19 R&D)해 5초부터
   minimax_h3_max: { min: 5, max: 15 }, // 2·3·4 거부, 5·6·10·15 허용(15 위는 재지 않음)
 };
 
-export function durationRange(model: string, fallback: number): { min: number; max: number } {
-  return DURATION_RANGE[model] || { min: 1, max: Math.max(12, fallback * 2) };
+// 참조가 붙으면 길이 상한이 더 낮은 모델 — CLI 가 "References, first/last frames and extensions support at most 10 seconds" 로 거절한다
+// (2026-11-19 generate cost 실측: Gemini Omni Flash 1.2 의 reference-to-video·extend 는 10초 · 11초부터 거절, edit 은 15초까지 통과).
+// 글만 쓰는 모드(text-to-video)는 15초까지. 그림을 넣으면 에이전트가 reference-to-video 로 맞추므로(agent_push) 참조가 있으면 같은 상한을 쓴다.
+const REF_DURATION_CAP: Record<string, { max: number; modes: readonly string[] }> = {
+  gemini_omni_flash_1_2: { max: 10, modes: ["reference-to-video", "extend"] },
+};
+const REF_AUTO_MODES: ReadonlySet<string> = new Set(["", "text-to-video", "image-to-video", "reference-to-video"]);
+
+/** 지금 붙은 레퍼런스 요약 — 개수(종류 무관)와 시작·끝 프레임 지정 여부. */
+export interface RefSummary { count: number; start: boolean; end: boolean }
+export const NO_REFS: RefSummary = { count: 0, start: false, end: false };
+const roleOf = (ref: { role?: string }, prefix: string) => String(ref.role ?? "").toLowerCase().startsWith(prefix);
+/** 제출 직전 레퍼런스(역할 포함)에서 요약을 만든다. */
+export function summarizeRefs(refs: readonly { role?: string }[]): RefSummary {
+  return { count: refs.length, start: refs.some((r) => roleOf(r, "@start")), end: refs.some((r) => roleOf(r, "@end")) };
+}
+
+/** 지금 모드·참조에서 길이 상한(초) — 따로 상한이 없으면 null.
+ *  Gemini: 시작 프레임 한 장만(이미지→영상)은 15초까지, 시작+끝·참조·이어붙이기는 10초까지(CLI 실측). */
+export function referenceDurationCap(model: string, mode: unknown, refs: RefSummary): number | null {
+  const cap = REF_DURATION_CAP[model];
+  if (!cap) return null;
+  const m = String(mode ?? "");
+  if (cap.modes.includes(m) && (m !== "reference-to-video" || refs.count > 0)) return cap.max;
+  if (refs.count === 0 || !REF_AUTO_MODES.has(m)) return null;
+  return refs.start && !refs.end && refs.count === 1 ? null : cap.max;
+}
+
+export function durationRange(model: string, fallback: number, ctx?: { mode?: unknown; refs?: RefSummary }): { min: number; max: number } {
+  const base = DURATION_RANGE[model] || { min: 1, max: Math.max(12, fallback * 2) };
+  const cap = ctx ? referenceDurationCap(model, ctx.mode, ctx.refs ?? NO_REFS) : null;
+  return cap == null ? base : { min: base.min, max: Math.min(base.max, cap) };
+}
+
+// 이 영상 모델들이 받지 않는 참조 — CLI 가 제출 때 거절한다(2026-11-19 generate cost 실측). 칸은 막지 않고 제출 전에 이유를 알린다.
+//  · Kling 4.0·Flash·Gemini: 오디오 참조 없음("Model does not accept --audio-references")
+//  · MiniMax H3·H3 Max: 오디오 참조는 이미지나 영상 참조가 함께 있어야 한다
+const NO_AUDIO_REFERENCE: ReadonlySet<string> = new Set(["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"]);
+const AUDIO_NEEDS_VISUAL: ReadonlySet<string> = new Set(["minimax_h3", "minimax_h3_max"]);
+// 시작·끝 프레임(2026-11-19 generate cost 실측): Kling 4.0·Flash 는 프레임과 다른 참조를 함께 쓸 수 있지만(Flash 는 끝 프레임 없음),
+//  Gemini·Wan·MiniMax 는 프레임을 다른 참조와 못 섞는다("cannot be mixed/combined with reference media"). 끝 프레임은 시작 프레임이 있어야 한다.
+const NO_FRAME_MIX: ReadonlySet<string> = new Set(["gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]);
+export function videoReferenceError(model: string, refs: readonly { type: string; role?: string }[]): string | null {
+  const audio = refs.filter((r) => r.type === "audio").length;
+  if (audio && NO_AUDIO_REFERENCE.has(model)) return "이 모델은 오디오 레퍼런스를 받지 않습니다. 오디오를 빼고 생성하세요.";
+  if (audio && AUDIO_NEEDS_VISUAL.has(model) && audio === refs.length) return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다.";
+  const start = refs.some((r) => roleOf(r, "@start"));
+  const end = refs.some((r) => roleOf(r, "@end"));
+  const others = refs.filter((r) => !roleOf(r, "@start") && !roleOf(r, "@end")).length;
+  if (NO_FRAME_MIX.has(model) || model === "kling4_0" || model === "kling_4_0_flash") {
+    if (end && !start) return "끝 프레임(@eimage)은 시작 프레임(@simage)과 함께 넣어야 합니다.";
+    if (end && model === "kling_4_0_flash") return "Kling 4.0 Flash 는 끝 프레임을 받지 않습니다. 시작 프레임만 쓰세요.";
+    if ((start || end) && others && NO_FRAME_MIX.has(model)) return "이 모델은 시작·끝 프레임을 다른 레퍼런스와 함께 쓸 수 없습니다. 프레임만 남기거나 레퍼런스만 쓰세요.";
+  }
+  return null;
+}
+
+// 레퍼런스 개수 한도 — 넘으면 힉스필드(CLI 검증)가 거절하는데 거절이 제출 허가 뒤라 '확인 필요' 기록이 남는다. 제출 전에 막는다.
+//  2026-11-19 실측(generate cost·generate create): Kling 4.0·Flash 이미지 10(시작·끝 프레임 포함)·영상 5 · Gemini 이미지 7·영상 3 ·
+//  Wan 3.0·Prime 이미지 10·영상 5 · MiniMax H3·Max 이미지 9·영상 3·오디오 3(H3 는 CLI 검증, Max 는 10·4·4 가 생성 단계에서 실패, 9·3·3 은 통과) ·
+//  Seedance 2.0·Mini 이미지 9(프레임 포함)·영상 3·오디오 3 · Seedance 2.5 이미지 30 · Nano Banana 2 Lite·Pro 이미지 14 · Seedream 5.5·Pro·Flash 이미지 10.
+//  한도가 안 나온 종류는 적지 않았다(Wan 오디오는 1개만 통과 — 길이 합계 한도로 보이나 개수로는 못 정했다).
+const REF_COUNT_LIMITS: Record<string, { image?: number; video?: number; audio?: number }> = {
+  kling4_0: { image: 10, video: 5 }, kling_4_0_flash: { image: 10, video: 5 },
+  gemini_omni_flash_1_2: { image: 7, video: 3 },
+  wan3_0: { image: 10, video: 5 }, wan3_0_prime: { image: 10, video: 5 },
+  minimax_h3: { image: 9, video: 3, audio: 3 }, minimax_h3_max: { image: 9, video: 3, audio: 3 },
+  seedance_2_0: { image: 9, video: 3 }, seedance_2_0_mini: { image: 9, video: 3 }, // 오디오 3개 한도는 validateSeedanceMode 가 따로 안내한다
+  seedance_2_5: { image: 30 },
+  nano_banana_2_lite: { image: 14 }, nano_banana_pro: { image: 14 },
+  seedream_5_5: { image: 10 }, seedream_v5_pro: { image: 10 }, seedream_5_0_flash: { image: 10 },
+};
+const COUNT_LABEL = { image: "이미지", video: "영상", audio: "오디오" } as const;
+/** 종류별 개수가 모델 한도를 넘으면 이유를, 아니면 null. 시작·끝 프레임은 이미지로 센다. */
+export function referenceCountError(model: string, refs: readonly { type: string }[]): string | null {
+  const limits = REF_COUNT_LIMITS[model];
+  if (!limits) return null;
+  for (const kind of ["image", "video", "audio"] as const) {
+    const max = limits[kind];
+    const count = refs.filter((ref) => ref.type === kind).length;
+    if (max != null && count > max) {
+      return `이 모델은 ${COUNT_LABEL[kind]} 레퍼런스를 ${max}개까지 넣을 수 있습니다`;
+    }
+  }
+  return null;
+}
+
+/** 길이 칸은 상한으로 줄여 보여 주니(SpotlightOptionsBar) 보내는 값도 같게 — 화면 10초인데 15초가 나가지 않게. */
+export function durationForReferences(model: string, mode: unknown, duration: unknown, refs: RefSummary): unknown {
+  const cap = referenceDurationCap(model, mode, refs);
+  const seconds = Number(duration);
+  return cap != null && Number.isFinite(seconds) && seconds > cap ? cap : duration;
 }
 
 // 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고, 나머지는 고급 팝오버로 모은다.

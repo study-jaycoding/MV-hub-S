@@ -10,7 +10,7 @@ import { listScenes, variantIds, type Scene, type SceneModelCfg } from "./scenes
 import { resolvePortEdges, type SceneGenerationRun } from "./sceneEdges";
 import { buildSceneGenerationJobInput, type SceneGenerationJobInput } from "./sceneGenerationInputs";
 import { acquireSceneGeneration, executeSceneGenerationBatch } from "./sceneGenerationSubmission";
-import { buildSpotlightCreateBody } from "./spotlightSubmit";
+import { buildSpotlightCreateBody, referenceImageSizeError } from "./spotlightSubmit";
 import { isVideoVoiceModel, videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
 import { refSrc } from "./promptParts";
 import { resolveAutoAspectRatio } from "./aspectAuto";
@@ -255,11 +255,15 @@ export function useSceneGenerationSubmission({
             folderPath: assignmentFolderPath,
             costContext,
           });
-          if (error || !body) {
+          // 이미지가 너무 작으면(Kling 300px·Wan 240px 미만) 힉스필드가 사유 없이 실패한다 — 같은 거절 길로 이유를 알린다.
+          const sizeError = !error && body ? await referenceImageSizeError(j.model, body.references ?? []) : null;
+          assertOperationContextCurrent(operationScope.operation!);
+          const problem = error || sizeError;
+          if (problem || !body) {
             if (j.canvasLink && operationScope.isCurrent!()) discardCanvasGeneration(j.canvasLink);
             // 같은 카드의 배치 반복은 한 번만 알리고, 유효한 다른 카드는 계속 제출한다.
             const cardNumber = generationCards.findIndex((card) => card.id === j.cardId) + 1;
-            invalidCards.set(j.cardId, `생성 카드 ${cardNumber}: ${error || "생성 요청을 만들 수 없습니다."}`);
+            invalidCards.set(j.cardId, `생성 카드 ${cardNumber}: ${problem || "생성 요청을 만들 수 없습니다."}`);
             if (operationScope.isCurrent!() && uiContext.current === submittedUi) reportPromptError([...invalidCards.values()].join("\n"));
             return null;
           }

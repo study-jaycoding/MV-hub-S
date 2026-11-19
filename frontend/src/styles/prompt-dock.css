@@ -708,12 +708,19 @@
 .sl-gen:disabled { opacity: 0.55; }
 .sl-sparkle { font-size: 12px; }
 
-.sl-error { color: #ff6b6b; font-size: 13px; padding: 0 6px; }
+/* 생성을 막는 오류 — 프롬프트 바로 위 박스(프롬프트를 숨겼을 때의 .sl-error-float 와 같은 모양). 도크가 아래 고정이라 위로 자란다. */
+.sl-error {
+  order: -1; align-self: center; max-width: min(680px, 92vw);
+  padding: 9px 16px; border-radius: 10px; text-align: center;
+  color: #ff6b6b; font-size: 13px; font-weight: 600; line-height: 1.4;
+  background: rgba(18, 8, 10, 0.92); border: 1px solid rgba(255, 107, 107, 0.55);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
 .sl-error, .sl-error-float { white-space: pre-line; }
 /* Ctrl+K 로 프롬프트를 숨겼을 때 오류를 대신 띄우는 자리 — 화면 하단 중앙의 묶음(`.dock-float`, generations.css) 안 위 칸.
    프롬프트 도크가 있던 위치라 눈이 가던 곳 그대로다. 클릭을 막지 않는다(캔버스 조작 방해 금지). 자리는 묶음이 잡는다(전엔 스스로 fixed). */
 .sl-error-float {
-  pointer-events: none; max-width: min(680px, 92vw);
+  pointer-events: none; white-space: pre; /* 한 줄 고정(여러 카드 오류의 줄바꿈 \n 은 유지) */
   padding: 9px 16px; border-radius: 10px; text-align: center;
   color: #ff6b6b; font-size: 13px; font-weight: 600; line-height: 1.4;
   background: rgba(18, 8, 10, 0.92); border: 1px solid rgba(255, 107, 107, 0.55);

@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject, type MouseEvent } from "react";
 import type { SpotlightTrayRef } from "../components/spotlight/SpotlightRefTray";
 import { serializeParts, wrapRefTokens, type PromptPart } from "./promptEditor";
-import { seedanceTrayTypeIndex, type SeedanceImageTokenKind } from "./seedancePrompt";
+import { FRAME_ROLE_MODELS, roleMenuAvailable, seedanceTrayTypeIndex, type SeedanceImageTokenKind } from "./seedancePrompt";
+
+// 메뉴를 열 수 있는 모델 — Seedance 2.5 와 시작·끝 프레임을 받는 영상 모델들(켜짐 여부는 roleMenuAvailable)
+const roleMenuModel = (model: string) => model === "seedance_2_5" || FRAME_ROLE_MODELS.has(model);
 import { captureRoleSelection, editSeedanceImageRole, restoreRoleSelection, restoreRoleSnapshot, roleEditorFingerprint, type EditorBookmark } from "./seedanceRoleEditor";
 
 interface Params {
@@ -79,9 +82,9 @@ export function useSeedanceRoleMenu(params: Params) {
     };
   }, [params.editorRef]);
 
-  const enabled = params.model === "seedance_2_5" && params.ready && params.mode === "omni_reference";
+  const enabled = params.ready && roleMenuAvailable(params.model, params.mode);
   const openMenu = (event: MouseEvent, uid: string) => {
-    if (params.model !== "seedance_2_5" || params.trayRefs.find((ref) => ref.uid === uid)?.type !== "image") return;
+    if (!roleMenuModel(params.model) || params.trayRefs.find((ref) => ref.uid === uid)?.type !== "image") return;
     event.preventDefault(); event.stopPropagation();
     const editor = params.editorRef.current;
     if (editor && interacted.current && document.activeElement === editor) {
@@ -94,7 +97,7 @@ export function useSeedanceRoleMenu(params: Params) {
     const current = latest.current;
     const target = menu;
     setMenu(null);
-    if (!target || target.scope !== current.scope || !current.active || current.model !== "seedance_2_5" || !current.ready || current.mode !== "omni_reference") return;
+    if (!target || target.scope !== current.scope || !current.active || !current.ready || !roleMenuAvailable(current.model, current.mode)) return;
     const index = current.trayRefs.findIndex((ref) => ref.uid === target.uid);
     const editor = current.editorRef.current;
     if (index < 0 || current.trayRefs[index].type !== "image" || !editor) return;
@@ -110,6 +113,6 @@ export function useSeedanceRoleMenu(params: Params) {
     undo.current = { parts, selection: saved, after: roleEditorFingerprint(editor), scope: current.scope };
     current.onEdited();
   };
-  return { menu: menu?.scope === params.scope && params.model === "seedance_2_5" && params.trayRefs.some((ref) => ref.uid === menu.uid) ? menu : null,
+  return { menu: menu?.scope === params.scope && roleMenuModel(params.model) && params.trayRefs.some((ref) => ref.uid === menu.uid) ? menu : null,
     enabled, openMenu, choose, close: () => setMenu(null) };
 }

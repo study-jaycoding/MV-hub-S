@@ -1,5 +1,5 @@
 // 좌측 폴더 트리(재귀) — 폴더만 표시, 펼침 상태 + 재귀 카운트 배지(미디어 수 또는 소스 수).
-import { useMemo } from "react";
+import { useMemo, type MouseEvent } from "react";
 import type { AssetMeta, AssetNode } from "../../types";
 import { FolderTreeView, type FolderTreeItem } from "../common/FolderTreeView";
 import { flattenFiles, orderAssetFolders } from "./treeUtils";
@@ -47,6 +47,7 @@ export function FolderTree({
   meta,
   sourceOnly = false,
   project,
+  onContextMenu,
 }: {
   nodes: AssetNode[];
   current: string;
@@ -58,6 +59,7 @@ export function FolderTree({
   meta: Record<string, AssetMeta>;
   sourceOnly?: boolean;
   project?: string; // 프로젝트별 표시 순서 규칙(예: assets 는 CLIP 맨 아래)
+  onContextMenu?: (path: string, name: string, depth: number, e: MouseEvent) => void; // 폴더 줄 우클릭 메뉴(AssetsSidebar)
 }) {
   // 배지 카운트(재귀 flatten)는 tree/meta/필터에만 의존 — 폴더 전환(current 변경)으로는 재계산 안 되게
   // memo. 예전엔 매 렌더(setDir 포함)마다 전체 트리를 재귀로 세어 큰 프로젝트에서 전환 딜레이의 한 원인.
@@ -75,6 +77,7 @@ export function FolderTree({
       onToggle={onToggle}
       onSelect={onSelect}
       onOpenTab={onOpenTab}
+      onContextMenu={onContextMenu}
     />
   );
 }

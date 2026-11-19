@@ -8,11 +8,13 @@ interface Props {
   x: number;
   y: number;
   enabled: boolean;
+  /** true 면 '옴니 레퍼런스'(Seedance 용어) 대신 '레퍼런스' — Seedance 가 아닌 영상 모델은 일반 이미지 참조다. 역할 값은 같다. */
+  plain?: boolean;
   onChoose: (role: SeedanceImageTokenKind) => void;
   onClose: () => void;
 }
 
-export function SpotlightRefRoleMenu({ x, y, enabled, onChoose, onClose }: Props) {
+export function SpotlightRefRoleMenu({ x, y, enabled, plain = false, onChoose, onClose }: Props) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
   // Esc 는 맨 위 겹으로 닫는다(lib/useEscapeClose) — 겹이어야 떠 있는 동안 뒤 화면의 키가 쉰다. 전엔 document 에 직접 걸어, 메뉴가 뜬 채
@@ -35,7 +37,7 @@ export function SpotlightRefRoleMenu({ x, y, enabled, onChoose, onClose }: Props
     <div ref={menuRef} className="sl-dropdown sl-ref-role-menu" role="menu" aria-label={t("레퍼런스 역할")}
       style={{ left: Math.max(8, Math.min(x, window.innerWidth - 224)), top: Math.max(8, Math.min(y, window.innerHeight - 142)) }}
       onMouseDown={(event) => event.preventDefault()} onContextMenu={(event) => event.preventDefault()}>
-      {([["start", "첫 프레임"], ["end", "끝 프레임"], ["image", "옴니 레퍼런스"]] as const).map(([role, label]) => (
+      {([["start", "첫 프레임"], ["end", "끝 프레임"], ["image", plain ? "레퍼런스" : "옴니 레퍼런스"]] as const).map(([role, label]) => (
         <button key={role} type="button" role="menuitem" className="sl-dd-item" disabled={!enabled}
           title={enabled ? undefined : t("레퍼런스 모드에서만 지정할 수 있습니다.")}
           onClick={() => onChoose(role)}>{t(label)}</button>

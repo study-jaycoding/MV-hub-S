@@ -175,7 +175,7 @@ import {
 } from "../../lib/canvasDetached";
 import type { SceneModelCfg } from "../../lib/scenes";
 import { canvasHandoffSelection, markCanvasHandoffSelectionUsed, onCanvasMemoryReturn, type CanvasSelection } from "../../lib/popupWindows";
-import { modelNodeImageRefCount, svgReferenceConflicts, type SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
+import { modelNodeImageRefCount, modelNodeRefSummary, svgReferenceConflicts, type SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
 import { planAutoConnections } from "../../lib/sceneAutoConnect";
@@ -4380,6 +4380,7 @@ export function SceneBoard({
               key={modelModalId}
               initial={c.modelCfg}
               svgRefCount={modelNodeImageRefCount(c.id, cardsById, resolvedEdges)}
+              refInfo={modelNodeRefSummary(c.id, cardsById, resolvedEdges)}
               onClose={() => setModelModalId(null)}
               onSave={(cfg) => {
                 if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) requestFit(modelModalId);

@@ -1859,6 +1859,179 @@ def _seedance_mode_for_refs(model: str, params: dict, refs: list, mode_enum: set
     return params, None
 
 
+# Kling 4.0·4.0 Flash·Gemini Omni Flash 1.2 — mode 가 text-to-video 면 참조 입력을 거부하고("Text-to-video does not accept reference inputs",
+# 2026-11-19 generate cost 실측) 화면은 참조 칸만 있어 시작 이미지 모드(image-to-video)는 못 쓴다. 레퍼런스 유무에 맞춰 제출 직전에 보정한다.
+# text-to-video·reference-to-video 가 모두 enum 에 있는 모델만 — edit·extend·video-edit 는 사용자가 고른 것이니 그대로 둔다.
+#  시작·끝 프레임(@Start·@End 역할)만 있으면 image-to-video(Kling·Gemini 모두 시작 이미지 모드), 프레임과 다른 참조가 함께면 reference-to-video
+#  (Kling 4.0·Flash 는 프레임+참조를 받는다 — 2026-11-19 견적. Gemini 는 못 섞어 아래 _reference_rule_error 가 막는다).
+def _reference_mode_for_refs(params: dict, refs: list, mode_enum: set) -> tuple[dict, str | None]:
+    """(보정된 params, 안내문|None). 바꿀 게 없으면 원본 그대로."""
+    if not {"text-to-video", "reference-to-video"} <= mode_enum:
+        return params, None
+    media = [ref for ref in refs if isinstance(ref, dict) and ref.get("file_path")]
+    frames = [ref for ref in media if _is_start_ref(ref) or _is_end_ref(ref)]
+    if not media:
+        target, why = "text-to-video", "레퍼런스 없음"
+    elif frames and len(frames) == len(media) and "image-to-video" in mode_enum:
+        target, why = "image-to-video", "시작·끝 프레임만 있음"
+    else:
+        target, why = "reference-to-video", "레퍼런스 있음"
+    mode = params.get("mode")
+    if mode in (None, "", "text-to-video", "image-to-video", "reference-to-video") and mode != target:
+        return {**params, "mode": target}, f"mode {mode or '없음'} → {target}({why})"
+    return params, None
+
+
+# 참조 입력 규칙 — CLI 가 제출 때 거절하는 조합을 제출 전에 막아 '제출 여부 불명확' 기록이 남지 않게 한다(2026-11-19 generate cost 실측).
+#  · Kling 4.0·Flash·Gemini Omni Flash 1.2: 오디오 참조 없음 · MiniMax H3·H3 Max: 오디오는 이미지·영상 참조와 함께일 때만
+#  · Gemini Omni Flash 1.2: reference-to-video·extend 는 10초까지(edit 은 15초까지)
+_NO_AUDIO_REFERENCE_MODELS = frozenset({"kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"})
+_AUDIO_NEEDS_VISUAL_MODELS = frozenset({"minimax_h3", "minimax_h3_max"})
+#  · 시작·끝 프레임(@Start·@End): 끝은 시작과 함께 · Kling 4.0 Flash 는 끝 프레임 없음 · Gemini·Wan·MiniMax 는 프레임을 다른 참조와 못 섞음
+#    · Gemini 의 시작+끝(image-to-video)은 10초까지(시작만이면 15초까지)
+_REFERENCE_MAX_SECONDS = {"gemini_omni_flash_1_2": (10, frozenset({"reference-to-video", "extend"}))}
+_NO_FRAME_MIX_MODELS = frozenset({"gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"})
+_FRAME_MODELS = _NO_FRAME_MIX_MODELS | {"kling4_0", "kling_4_0_flash"}
+
+
+# 레퍼런스 개수 한도(2026-11-19 generate cost·create 실측 — 화면 spotlightPromptConfig.REF_COUNT_LIMITS 와 같은 값). 시작·끝 프레임은 이미지로 센다.
+_REF_COUNT_LIMITS = {
+    "kling4_0": {"image": 10, "video": 5}, "kling_4_0_flash": {"image": 10, "video": 5},
+    "gemini_omni_flash_1_2": {"image": 7, "video": 3},
+    "wan3_0": {"image": 10, "video": 5}, "wan3_0_prime": {"image": 10, "video": 5},
+    "minimax_h3": {"image": 9, "video": 3, "audio": 3}, "minimax_h3_max": {"image": 9, "video": 3, "audio": 3},
+    "seedance_2_0": {"image": 9, "video": 3}, "seedance_2_0_mini": {"image": 9, "video": 3},  # 오디오 3개 한도는 backend models.py 검증이 따로
+    "seedance_2_5": {"image": 30},
+    "nano_banana_2_lite": {"image": 14}, "nano_banana_pro": {"image": 14},
+    "seedream_5_5": {"image": 10}, "seedream_v5_pro": {"image": 10}, "seedream_5_0_flash": {"image": 10},
+}
+
+
+def _ref_kind(ref: dict) -> str:
+    role = _role_key(ref)
+    if ref.get("type") == "video" or role.startswith("@video"):
+        return "video"
+    if ref.get("type") == "audio" or role.startswith("@audio"):
+        return "audio"
+    return "image"
+
+
+def _reference_count_error(model: str, refs: list) -> str | None:
+    limits = _REF_COUNT_LIMITS.get(model)
+    if not limits:
+        return None
+    kinds = [_ref_kind(r) for r in refs if isinstance(r, dict)]
+    for kind, label in (("image", "이미지"), ("video", "영상"), ("audio", "오디오")):
+        if kind in limits and kinds.count(kind) > limits[kind]:
+            return f"이 모델은 {label} 레퍼런스를 {limits[kind]}개까지 넣을 수 있습니다"
+    return None
+
+
+def _reference_rule_error(model: str, params: dict, refs: list) -> str | None:
+    count_error = _reference_count_error(model, refs)
+    if count_error:
+        return count_error
+    media = [r for r in refs if isinstance(r, dict)]
+    audio = [r for r in media if r.get("type") == "audio" or _role_key(r).startswith("@audio")]
+    if audio and model in _NO_AUDIO_REFERENCE_MODELS:
+        return "이 모델은 오디오 레퍼런스를 받지 않습니다"
+    if audio and model in _AUDIO_NEEDS_VISUAL_MODELS and len(audio) == len(media):
+        return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다"
+    start = any(_is_start_ref(r) for r in media)
+    end = any(_is_end_ref(r) for r in media)
+    if model in _FRAME_MODELS and (start or end):
+        if end and not start:
+            return "끝 프레임은 시작 프레임과 함께 넣어야 합니다"
+        if end and model == "kling_4_0_flash":
+            return "Kling 4.0 Flash 는 끝 프레임을 받지 않습니다"
+        if model in _NO_FRAME_MIX_MODELS and any(not (_is_start_ref(r) or _is_end_ref(r)) for r in media):
+            return "시작·끝 프레임은 다른 레퍼런스와 함께 쓸 수 없습니다"
+    cap = _REFERENCE_MAX_SECONDS.get(model)
+    duration = params.get("duration")
+    mode = params.get("mode")
+    if cap and isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > cap[0]:
+        if mode in cap[1] or (mode == "image-to-video" and end):
+            return f"레퍼런스가 있는 영상은 {cap[0]}초까지 만들 수 있습니다"
+    return None
+
+
+# Kling 4.0·Flash 는 가로·세로가 300px 미만인 이미지를 사유 없이 실패시킨다(2026-11-19 유료 실측: 299×299 실패·300×300 성공,
+# 256×256 은 4.0·Flash 모두 실패). 비율은 Kling 공식 가이드의 2:5~5:2. 크기를 못 읽으면 막지 않는다(판별 불가).
+#  Wan 3.0·Prime 도 작은 이미지에서 실패한다(같은 날 유료 실측: 224×224 실패·240×240 성공, 128 도 실패). 화면(spotlightSubmit.MIN_REF_IMAGE_SIDE)이 같은 값으로 먼저 알린다.
+_KLING_IMAGE_MODELS = frozenset({"kling4_0", "kling_4_0_flash"})
+_KLING_IMAGE_MIN_SIDE = 300
+_MIN_REF_IMAGE_SIDE = {"kling4_0": 300, "kling_4_0_flash": 300, "wan3_0": 240, "wan3_0_prime": 240}
+
+# 화면이 빈 프롬프트에 채우는 자리표시 "(no text)" 가 글자 그대로 모델에 가면 안 된다(예: 프레임만 쓴 Kling i2v).
+# CLI `model get` 이 프롬프트를 선택으로 받는 조합에서만 인자를 뺀다 — Kling·Flash 는 image-to-video 에서만(그 밖은 필수),
+# MiniMax H3 는 늘 선택. Gemini·Wan·H3 Max·Seedance 는 필수라 그대로 둔다. 미디어가 없는 글 생성도 그대로 둔다.
+_NO_TEXT_PLACEHOLDER = "(no text)"
+
+
+def _placeholder_prompt_is_optional(model: str, params: dict, refs: list) -> bool:
+    if not refs:
+        return False
+    if model == "minimax_h3":
+        return True
+    return model in _KLING_IMAGE_MODELS and params.get("mode") == "image-to-video"
+
+
+def _image_size(path: str) -> tuple[int, int] | None:
+    """PNG·GIF·JPEG·WebP 머리에서 (가로, 세로) — 표준 라이브러리만. 못 읽으면 None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    try:
+        if head[:8] == b"\x89PNG\r\n\x1a\n" and len(head) >= 24:
+            return struct.unpack(">II", head[16:24])
+        if head[:6] in (b"GIF87a", b"GIF89a") and len(head) >= 10:
+            return struct.unpack("<HH", head[6:10])
+        if head[:2] == b"\xff\xd8":
+            pos = 2
+            while pos + 9 < len(head):
+                if head[pos] != 0xFF:
+                    pos += 1
+                    continue
+                marker = head[pos + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7 or marker == 0xFF:
+                    pos += 1 if marker == 0xFF else 2
+                    continue
+                size = struct.unpack(">H", head[pos + 2:pos + 4])[0]
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    height, width = struct.unpack(">HH", head[pos + 5:pos + 9])
+                    return width, height
+                pos += 2 + size
+            return None
+        if head[:4] == b"RIFF" and head[8:12] == b"WEBP" and len(head) >= 30:
+            kind = head[12:16]
+            if kind == b"VP8X":
+                return 1 + int.from_bytes(head[24:27], "little"), 1 + int.from_bytes(head[27:30], "little")
+            if kind == b"VP8L" and head[20] == 0x2F:
+                bits = int.from_bytes(head[21:25], "little")
+                return 1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)
+            if kind == b"VP8 " and head[23:26] == b"\x9d\x01\x2a":
+                return struct.unpack("<H", head[26:28])[0] & 0x3FFF, struct.unpack("<H", head[28:30])[0] & 0x3FFF
+    except (struct.error, IndexError):
+        return None
+    return None
+
+
+def _reference_image_error(model: str, path: str) -> str | None:
+    """모델별 이미지 레퍼런스 한도 — 최소 변(Kling 300·Wan 240), Kling 은 비율 2:5~5:2 도. 모델이 표에 없거나 크기를 못 읽으면 None."""
+    min_side = _MIN_REF_IMAGE_SIDE.get(model)
+    size = _image_size(path) if min_side else None
+    if not size or not size[0] or not size[1]:
+        return None
+    width, height = size
+    if min(width, height) < min_side:
+        return f"이 모델은 이미지 레퍼런스의 가로·세로가 {min_side}px 이상이어야 합니다(지금 {width}×{height})"
+    if model in _KLING_IMAGE_MODELS and not 0.4 <= width / height <= 2.5:
+        return f"Kling 이미지 레퍼런스의 가로세로 비율은 2:5~5:2 안이어야 합니다(지금 {width}×{height})"
+    return None
+
+
 def _upload_cache_path() -> str:
     base = os.environ.get("LOCALAPPDATA")
     if base:
@@ -3375,8 +3548,18 @@ def _submit_one_attempt(
         (params, None) if model == "seedance_2_5" and params.get("draft_job_id")
         else _seedance_mode_for_refs(model, params, refs, _param_enum(model, "mode"))
     )
+    if not mode_note and not _uses_single_start_image(model):
+        params, mode_note = _reference_mode_for_refs(params, refs, _param_enum(model, "mode"))
     if mode_note:
         print(f"  ⚠ {model}: {mode_note}")
+    rule_error = _reference_rule_error(model, params, refs)
+    if rule_error:
+        _fail(server, token, rid, rule_error)
+        print(f"  ✗ {model}: {rule_error}")
+        return None
+    if prompt == _NO_TEXT_PLACEHOLDER and "--prompt" in args and _placeholder_prompt_is_optional(model, params, refs):
+        at = args.index("--prompt")
+        del args[at:at + 2]
     if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
         wire_params = audio_cli_params(model, r.get("prompt") or "", params)
         args += ["--dialogue", json.dumps(wire_params.pop("dialogue"), ensure_ascii=False)]
@@ -3406,6 +3589,12 @@ def _submit_one_attempt(
         if not resolved:
             unresolved.append(val)
             continue
+        if model in _MIN_REF_IMAGE_SIDE and _is_image_ref(ref) and os.path.isfile(resolved):
+            size_error = _reference_image_error(model, resolved)
+            if size_error:
+                _fail(server, token, rid, size_error)
+                print(f"  ✗ {model}: {size_error}")
+                return None
         if seedance_media:
             # Seedance 옴니 레퍼런스는 --image 로 넘기면 start_image 로 오해된다. upload create 로
             # id 를 만들어(업로드 캐시 재사용) 역할별 --*-references 플래그로 넘긴다.

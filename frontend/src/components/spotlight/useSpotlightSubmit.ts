@@ -18,6 +18,7 @@ import type { ChipRef, HistEntry } from "../../lib/promptEditor";
 import {
   buildSpotlightCreateBody,
   normalizeSpotlightBatch,
+  referenceImageSizeError,
 } from "../../lib/spotlightSubmit";
 import type { Generation, ModelParam, WorkspaceContext } from "../../types";
 import type { SpotlightTrayRef } from "./SpotlightRefTray";
@@ -219,6 +220,15 @@ export function useSpotlightSubmit({
           setBusy(false);
           return;
         }
+      }
+      // 이미지가 너무 작으면(Kling 300px·Wan 240px 미만) 힉스필드가 사유 없이 실패한다 — 업로드·캔버스 표식 전에 이유를 알린다.
+      const sizeError = await referenceImageSizeError(model, body.references ?? []);
+      if (!operationCurrent()) { setBusy(false); return; }
+      if (sizeError) {
+        // 크기를 재는 동안 다른 카드로 옮겼으면 그 카드에 이 오류를 띄우지 않는다(Codex 리뷰 — 다른 거절 길과 같은 규칙)
+        if (promptContextRef.current === submittedContext) setError(sizeError);
+        setBusy(false);
+        return;
       }
       // 검증을 통과한 요청만 이미지 비율을 비동기로 잰다. 무시되는 옵션도 기존 auto 변환은 유지한다.
       body.params = await resolveAutoAspectRatio(body.params || {}, tunable, [...trayRefs, ...inlineRefs]);

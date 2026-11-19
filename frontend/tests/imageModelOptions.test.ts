@@ -2,7 +2,7 @@
 //  Seedream 5.0 Pro width·height 지정은 생성 실패, Flash 는 무시, Pro remove_bg 는 효과 없음, GPT 2.6 frame_* 는 GIF 에서만, size 는 미확인.
 import { describe, expect, it } from "vitest";
 import { activeConstraints, correctedOptions, defaultOptions, isModelHiddenParam, paramGateAllows } from "../src/lib/useModels";
-import { durationRange } from "../src/lib/spotlightPromptConfig";
+import { durationForReferences, durationRange, referenceCountError, videoReferenceError } from "../src/lib/spotlightPromptConfig";
 import type { ModelParam } from "../src/types";
 
 const p = (name: string, type: string, def: unknown = null, en?: string[]): ModelParam =>
@@ -59,13 +59,13 @@ describe("새 영상 모델(2026-11-19 R&D 견적으로 맞춘 값)", () => {
     expect(r("gemini_omni_flash_1_2")).toEqual({ min: 3, max: 15 });
     expect(r("wan3_0")).toEqual({ min: 2, max: 30 });
     expect(r("wan3_0_prime")).toEqual({ min: 2, max: 30 });
-    expect(r("minimax_h3")).toEqual({ min: 4, max: 15 });
+    expect(r("minimax_h3")).toEqual({ min: 5, max: 15 }); // 4초는 견적만 통과하고 실제 생성이 실패한다
     expect(r("minimax_h3_max")).toEqual({ min: 5, max: 15 });
   });
 
   it("MiniMax H3 Max 의 기본 길이는 최소 5초(공통 4초는 거부되는 값), 다른 새 모델은 공통 4초", () => {
     expect(defaultOptions(MAX, "minimax_h3_max").duration).toBe("5");
-    expect(defaultOptions(MAX, "minimax_h3").duration).toBe("4");
+    expect(defaultOptions(MAX, "minimax_h3").duration).toBe("5");
     expect(defaultOptions(KLING, "kling4_0").duration).toBe("4");
   });
 
@@ -80,6 +80,89 @@ describe("새 영상 모델(2026-11-19 R&D 견적으로 맞춘 값)", () => {
     expect(defaultOptions(KLING, "kling4_0")).toEqual({ aspect_ratio: "16:9", duration: "4", mode: "text-to-video", resolution: "1080p" });
     // auto 로 둔 채 글→영상이 되면 허용값으로 돌려놓는다(제출 거절 방지)
     expect(correctedOptions("kling4_0", KLING, { mode: "text-to-video", aspect_ratio: "auto" }).aspect_ratio).not.toBe("auto");
+  });
+
+  it("Gemini Omni: 참조·이어붙이기는 길이 10초까지(CLI 실측), 글만이나 edit 은 15초까지 — 칸 상한과 보내는 값이 같다", () => {
+    const g = "gemini_omni_flash_1_2";
+    const refs = (count: number, start = false, end = false) => ({ count, start, end });
+    expect(durationRange(g, 5, { mode: "text-to-video", refs: refs(0) })).toEqual({ min: 3, max: 15 });
+    expect(durationRange(g, 5, { mode: "text-to-video", refs: refs(1) })).toEqual({ min: 3, max: 10 }); // 그림을 넣으면 reference-to-video 로 맞춰진다
+    expect(durationRange(g, 5, { mode: "reference-to-video", refs: refs(2) })).toEqual({ min: 3, max: 10 });
+    expect(durationRange(g, 5, { mode: "extend", refs: refs(0) })).toEqual({ min: 3, max: 10 });
+    expect(durationRange(g, 5, { mode: "edit", refs: refs(1) })).toEqual({ min: 3, max: 15 });
+    expect(durationRange(g, 5, { mode: "text-to-video", refs: refs(1, true) })).toEqual({ min: 3, max: 15 }); // 시작 프레임 한 장(이미지→영상)은 15초까지
+    expect(durationRange(g, 5, { mode: "text-to-video", refs: refs(2, true, true) })).toEqual({ min: 3, max: 10 }); // 시작+끝은 10초까지
+    expect(durationRange(g, 5)).toEqual({ min: 3, max: 15 }); // 정보 없으면 종전 그대로
+    expect(durationRange("kling4_0", 5, { mode: "text-to-video", refs: refs(3) })).toEqual({ min: 3, max: 30 });
+    expect(durationForReferences(g, "text-to-video", 15, refs(1))).toBe(10);
+    expect(durationForReferences(g, "text-to-video", 15, refs(0))).toBe(15);
+    expect(durationForReferences(g, "edit", 15, refs(1))).toBe(15);
+    expect(durationForReferences(g, "text-to-video", 15, refs(1, true))).toBe(15);
+    expect(durationForReferences(g, "text-to-video", 15, refs(2, true, true))).toBe(10);
+  });
+
+  it("오디오 레퍼런스: Kling·Gemini 는 못 받고, MiniMax 는 이미지·영상과 함께일 때만 받는다", () => {
+    const of = (...types: string[]) => types.map((type) => ({ type }));
+    for (const model of ["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"]) {
+      expect(videoReferenceError(model, of("image", "audio"))).toContain("오디오");
+    }
+    for (const model of ["minimax_h3", "minimax_h3_max"]) {
+      expect(videoReferenceError(model, of("audio"))).toContain("함께");
+      expect(videoReferenceError(model, of("image", "audio"))).toBeNull();
+      expect(videoReferenceError(model, of("video", "audio"))).toBeNull();
+    }
+    expect(videoReferenceError("wan3_0", of("audio"))).toBeNull();
+    expect(videoReferenceError("kling4_0", of("image", "video"))).toBeNull();
+  });
+
+  it("레퍼런스 개수 한도(실측): 넘으면 이유를, 한도 안이거나 한도 표에 없는 모델은 null — 시작·끝 프레임도 이미지로 센다", () => {
+    const of = (type: string, n: number) => Array.from({ length: n }, () => ({ type }));
+    expect(referenceCountError("kling4_0", of("image", 10))).toBeNull();
+    expect(referenceCountError("kling4_0", of("image", 11))).toContain("10개까지");
+    expect(referenceCountError("kling_4_0_flash", of("video", 6))).toContain("영상");
+    expect(referenceCountError("gemini_omni_flash_1_2", of("image", 8))).toContain("7개까지");
+    expect(referenceCountError("gemini_omni_flash_1_2", of("video", 4))).toContain("3개까지");
+    expect(referenceCountError("wan3_0", of("image", 11))).toContain("10개");
+    expect(referenceCountError("minimax_h3_max", [...of("image", 9), ...of("video", 3), ...of("audio", 3)])).toBeNull();
+    expect(referenceCountError("minimax_h3", of("audio", 4))).toContain("오디오");
+    expect(referenceCountError("seedance_2_0_mini", of("image", 10))).toContain("9개까지");
+    expect(referenceCountError("seedance_2_5", of("image", 31))).toContain("30개까지");
+    expect(referenceCountError("nano_banana_pro", of("image", 15))).toContain("14개까지");
+    expect(referenceCountError("seedream_5_5", of("image", 11))).toContain("10개까지");
+    for (const model of ["seedream_v5_lite", "gpt_image_2_6", "nano_banana_flash", "text2speech_v2"]) expect(referenceCountError(model, of("image", 40))).toBeNull();
+    expect(referenceCountError("kling4_0", of("audio", 3))).toBeNull(); // 오디오 규칙은 따로(videoReferenceError)
+  });
+
+  it("시작·끝 프레임(@Start·@End): 끝은 시작과 함께, Flash 는 끝 없음, Gemini·Wan·MiniMax 는 다른 참조와 못 섞는다(CLI 실측)", () => {
+    const start = { type: "image", role: "@Start" };
+    const end = { type: "image", role: "@End" };
+    const ref = { type: "image", role: "@Image1" };
+    for (const model of ["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]) {
+      expect(videoReferenceError(model, [start])).toBeNull();
+      expect(videoReferenceError(model, [end])).toContain("시작 프레임");
+    }
+    for (const model of ["kling4_0", "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]) {
+      expect(videoReferenceError(model, [start, end])).toBeNull();
+    }
+    expect(videoReferenceError("kling_4_0_flash", [start, end])).toContain("Flash");
+    for (const model of ["gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]) {
+      expect(videoReferenceError(model, [start, ref])).toContain("함께 쓸 수 없습니다");
+    }
+    for (const model of ["kling4_0", "kling_4_0_flash"]) expect(videoReferenceError(model, [start, ref])).toBeNull(); // Kling 은 프레임+참조 가능
+    expect(videoReferenceError("seedance_2_0", [end])).toBeNull(); // Seedance 규칙은 따로(Seedance 는 여기 안 온다)
+  });
+
+  it("Kling 4.0·Flash·Gemini Omni: 시작 이미지 칸이 없어 image-to-video 모드는 늘 막고, 나머지 모드는 연다", () => {
+    for (const model of ["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"]) {
+      const mode = activeConstraints(model, { mode: "text-to-video" }).mode;
+      expect(mode.allow.has("image-to-video")).toBe(false);
+      for (const ok of ["text-to-video", "reference-to-video", "video-edit"]) expect(mode.allow.has(ok)).toBe(true);
+      expect(activeConstraints(model, {}).mode.allow.has("image-to-video")).toBe(false); // 조건 없이도
+    }
+    expect(activeConstraints("wan3_0", { mode: "text-to-video" }).mode).toBeUndefined();
+    // 저장된 카드가 image-to-video 면 허용값으로 돌려놓는다
+    const GEMINI = [p("mode", "string", null, ["text-to-video", "image-to-video", "reference-to-video", "edit", "extend"])];
+    expect(correctedOptions("gemini_omni_flash_1_2", GEMINI, { mode: "image-to-video" }).mode).not.toBe("image-to-video");
   });
 });
 
