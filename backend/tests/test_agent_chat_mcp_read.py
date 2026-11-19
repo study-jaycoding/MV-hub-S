@@ -141,7 +141,8 @@ def test_read_shape_is_allowlisted_and_answers_reconstructed(local):
     assert listing.status_code == 200, listing.text
     rows = listing.json()["conversations"]
     assert {row["id"] for row in rows} == {conv["id"], codex_conv["id"]}
-    assert set(rows[0]) == {"id", "title", "engine", "model", "updated_at", "project", "turns"}
+    assert set(rows[0]) == {"id", "title", "engine", "model", "updated_at", "project", "turns", "in_claude_app"}
+    assert all(row["in_claude_app"] is False for row in rows)
     assert {row["model"] for row in rows} == {"Opus 5.5", "GPT-6.1 Sol"}
 
     body = read(local, secret, kind="agent_chat", conversation_id=conv["id"]).json()
@@ -156,7 +157,8 @@ def test_read_shape_is_allowlisted_and_answers_reconstructed(local):
     assert (plan["workspace_scope"], plan["workspace_id"]) == ("team", "ws-1")
     assert plan["progress"]["items"] == [{"index": 0, "state": "submitted", "generation_status": "done", "generation_id": "gen-1"}]
     assert second["plans"] == [] and "live" not in second
-    assert set(body["conversation"]) == {"id", "title", "engine", "model", "effort", "updated_at"}
+    assert set(body["conversation"]) == {"id", "title", "engine", "model", "effort", "updated_at", "in_claude_app"}
+    assert body["conversation"]["in_claude_app"] is False
     assert "get_plan" in body["note"] and body["earlier_turns"] == 0 and body["next_cursor"] is None
     codex = read(local, secret, kind="agent_chat", conversation_id=codex_conv["id"]).json()
     assert codex["turns"][0]["answer"] == "통째 답"

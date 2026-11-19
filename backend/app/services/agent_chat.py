@@ -19,6 +19,8 @@ import secrets
 import shutil
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from contextvars import copy_context
 from pathlib import Path
@@ -29,6 +31,7 @@ from ..repo import agent_chat as store
 from . import agent_chat_claude as claude
 from . import agent_chat_codex as codex
 from . import agent_chat_process as process
+from . import agent_chat_transcript as transcript
 from .agent_chat_parse import parser_for
 from .shared_connection import is_shared_team_server
 
@@ -282,6 +285,7 @@ class AgentChat:
             closed = store.close_admission(paths)
         try:
             store.drain_connections(closed, timeout)
+            store.check_restore_handoffs(paths)
             yield
         finally:
             store.reopen_admission(closed)
@@ -337,6 +341,95 @@ class AgentChat:
 
     def engine_problem(self, engine: str) -> str | None:
         return engine_problem(engine, process.engine_prefix(engine))
+
+    def claude_app(self, identity, conversation_id, request, action, still_current):
+        """라우터의 _turn_lock 안에서 호출한다: issuance → 짧은 DB 거래 → 외부 작업 → DB 거래."""
+        from fastapi import HTTPException
+
+        with self.issuance(identity):
+            path = identity.db_file()
+
+            def current():
+                store.check_current(path)
+                still_current()
+
+            current()
+            row = store.get_conversation(path, conversation_id)
+            if row is None:
+                raise HTTPException(404, "대화를 찾을 수 없습니다.")
+            state, cached = store.check_app_request(row, request, action)
+            if cached is not None:
+                return cached
+            if self._closing or store.has_active(path):
+                raise HTTPException(409, "turn_active")
+            if state.get("launcher") and state["phase"] in ("opening", "uncertain"):
+                if not claude.reap_desktop_launcher(state["launcher"]):
+                    raise HTTPException(409, "launcher_uncertain")
+            if action == "bring-back":
+                if state["phase"] == "idle":
+                    raise HTTPException(409, "stale_handoff")
+                resumable = True
+                if request["unlock_only"]:
+                    try:
+                        transcript.read_session(row["cli_home"], row["cli_cwd"], row["cli_session_id"])
+                    except transcript.TranscriptError:
+                        resumable = False
+                    turns = [{"source_uuid": "unlock:" + state["handoff_id"], "text": "[앱 기록을 가져오지 않고 잠금을 풂]",
+                              "context": {"unlock_only": True}, "events": [{"kind": "notice", "text":
+                              "앱에서 쓴 내용은 화면에 반영되지 않았어요. 이어질 문맥은 Claude 세션 상태에 따릅니다."}]}]
+                else:
+                    turns = transcript.read_session(row["cli_home"], row["cli_cwd"], row["cli_session_id"], state["anchor"])
+                current()
+                return store.import_app_turns(path, conversation_id, request, turns, resumable=resumable, still_current=current)
+
+            block = store.app_fields(row)["open_app_block"]
+            if block not in (None, "in_claude_app"):
+                raise HTTPException(409, block)
+            if self.forking_from(row["cli_session_id"]):
+                raise HTTPException(409, "fork_running")
+            prefix, env = process.engine_prefix("claude"), process.child_env()
+            lock = claude.ClaudeLock("desktop")
+            lock.acquire()
+            try:
+                claude.desktop_precheck(prefix, row["cli_home"], row["cli_cwd"], env)
+                reopening = state["phase"] != "idle"
+                anchor = state.get("anchor") if reopening else transcript.read_session(row["cli_home"], row["cli_cwd"], row["cli_session_id"])
+                at = datetime.now(timezone.utc).isoformat()
+                state = {"revision": state["revision"] + 1, "phase": "opening", "handoff_id": state.get("handoff_id") or str(uuid.uuid4()),
+                         "at": state.get("at") or at, "anchor": anchor}
+                opened_at, raw = row["app_opened_at"], row["app_handoff"]
+
+                def save(*, invalidate=False, **extra):
+                    nonlocal raw
+                    result = store._app_result(state, opened_at, **extra)
+                    store._app_request(state, request, action, result)
+                    store.write_handoff(path, conversation_id, raw, state, still_current=current, invalidate=invalidate, opened_at=opened_at)
+                    raw = json.dumps(state, ensure_ascii=False)
+                    return result
+
+                save()
+
+                def before_resume(pid, start):
+                    nonlocal opened_at
+                    current()
+                    if self.forking_from(row["cli_session_id"]):
+                        raise HTTPException(409, "fork_running")
+                    state["launcher"] = {"pid": pid, "start": start}
+                    opened_at = at
+                    save(invalidate=True)
+
+                outcome = claude.open_desktop(prefix, row["cli_session_id"], row["cli_cwd"], env, current, before_resume)
+                state["phase"] = outcome["phase"]
+                if state["phase"] == "idle":
+                    if reopening:
+                        state["phase"] = "uncertain"  # 다시 열기 실패로 기존 잠금·앵커를 잃지 않는다.
+                    else:
+                        state = {"phase": "idle", "revision": state["revision"]}
+                if outcome["code"] is not None:
+                    state.pop("launcher", None)
+                return save(**({"open_failed": outcome["open_failed"]} if "open_failed" in outcome else {}))
+            finally:
+                lock.release()
 
     # ── 차례 ──
     def start_turn(self, identity: Identity, *, conversation: dict, turn: dict, model: str, effort: str,
@@ -1019,7 +1112,7 @@ def _turn(conn, row: dict, names: dict, live: Callable[[str], bool]) -> dict:
     cut: list[bool] = []  # 덩어리마다 원래 글보다 짧게 담았는가 — 자리가 0 이라 빈 글로 담긴 뒤 덩어리도(독립 리뷰 2차)
     closed = 0  # 닫힌 덩어리 글자 수 + 잇는 빈 줄
     open_chunk = False
-    tools: dict[str, list[int]] = {}  # 이름 → [시작, 끝남, 실패]
+    tools: dict[str, list[int]] = {}  # 이름 → [시작, 끝남, 실패, 결과 미확인]
     extra_tools: set[str] = set()  # 상한 밖 도구 이름(차례 사건 수가 MAX_EVENTS 로 막혀 있어 작다)
     plans, errors = [], []
     omitted = {"plans": 0, "items": 0, "tools": 0, "errors": 0}
@@ -1061,9 +1154,10 @@ def _turn(conn, row: dict, names: dict, live: Callable[[str], bool]) -> dict:
             if name not in tools and len(tools) >= _CAPS["tools"]:
                 extra_tools.add(name)
                 continue
-            count = tools.setdefault(name, [0, 0, 0])
+            count = tools.setdefault(name, [0, 0, 0, 0])
             count[0 if payload.get("status") == "started" else 1] += 1
             count[2] += payload.get("status") == "failed"
+            count[3] += payload.get("status") == "unknown"
         elif kind == "plan":
             made = _plan(payload.get("plan"), names)
             if made and len(plans) < _CAPS["plans"]:
@@ -1078,8 +1172,12 @@ def _turn(conn, row: dict, names: dict, live: Callable[[str], bool]) -> dict:
     omitted["tools"] = len(extra_tools)
     answer = "\n\n".join(chunk for chunk in chunks if chunk)
     turn = {"at": row["created_at"], "status": row["status"], "you": row["text"], "screen": _screen(row["context"]),
-            "answer": answer[:_ANSWER_MAX], "tools": [{"name": name, "count": max(c[0], c[1]), "failed": c[2]} for name, c in tools.items()],
+            "answer": answer[:_ANSWER_MAX], "tools": [{"name": name, "count": max(c[0], c[1]), "failed": c[2],
+                                                     **({"unknown": c[3]} if c[3] else {})} for name, c in tools.items()],
             "plans": plans, "errors": errors, "omitted": omitted}
+    imported = store.import_fields(row["context"])
+    if imported:
+        turn["import"] = imported
     if len(answer) > _ANSWER_MAX or any(cut):
         turn["answer_truncated"] = True
     if row["status"] in store.ACTIVE:
@@ -1114,7 +1212,8 @@ def chat_list(path: Path, *, search: str | None, limit: int, cursor: str | None,
         rows = []
     more, rows = len(rows) > limit, rows[:limit]
     items = [{"id": row["id"], "title": _clip(row["title"], 80), "engine": row["engine"], "model": _clip(_model_label(row["engine"], row["model"]), 80),
-              "updated_at": row["updated_at"], "project": _clip(row["project"], 200), "turns": row["turns"]} for row in rows]
+              "updated_at": row["updated_at"], "project": _clip(row["project"], 200), "turns": row["turns"],
+              "in_claude_app": row["in_claude_app"]} for row in rows]
     result = {"conversations": items, "next_cursor": None, "note": _LIST_NOTE}
     while len(items) > 1 and _size(result) > budget - 600:  # 글자 상한으로 보통은 넘지 않는다 — 넘으면 뒤(오래된)부터 다음 쪽으로
         items.pop()

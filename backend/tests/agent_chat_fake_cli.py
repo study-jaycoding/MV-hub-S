@@ -53,6 +53,13 @@ CLAUDE_STATUS = {
 
 def main():
     args = sys.argv[1:]
+    if "--desktop" in args:
+        if not sys.stdout.isatty():
+            print("--desktop can't run non-interactively (--print, --sdk-url, --init-only, or redirected output)", file=sys.stderr)
+            sys.exit(1)
+        if os.environ.get("FAKE_AGENT_DESKTOP") == "timeout":
+            time.sleep(60)
+        sys.exit(int(os.environ.get("FAKE_AGENT_DESKTOP_EXIT", "0")))
     claude = "--fake-engine=claude" in args  # 시험의 실행기 앞부분이 엔진을 알려 준다(판이 엔진마다 다르다)
     if "--version" in args:
         default = "2.1.296 (Claude Code)" if claude else "0.162.0-alpha.17.2"

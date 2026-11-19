@@ -110,6 +110,30 @@ def capture(local, stamp="20261113_010101_000002"):
     return backup._backup_now_for_scope(local[0], local[1], stamp)
 
 
+def test_capture_preserves_claude_app_lock_and_import_origin(local):
+    agent, _ = extras(local)
+    store = agent_chat.store
+    store.open_db(agent)
+    conv = store.create_conversation(agent, engine="claude", model="haiku", effort="low", client_id="synthetic",
+                                     mcp_entry={}, title="앱에서 가져온 합성 기록")
+    turn, _ = store.claim_turn(agent, conversation_id=conv["id"], idempotency_key="synthetic-import", text="가져온 말",
+                              context={"origin": "claude_app", "handoff_id": "synthetic", "omitted": {"images": 1}})
+    store.finish_turn(agent, turn["id"], "done")
+    handoff = json.dumps({"phase": "uncertain", "revision": 1, "handoff_id": "11111111-1111-4111-8111-111111111111",
+                          "at": "synthetic", "anchor": {"session_id": "synthetic", "anchor_uuid": "a0",
+                                                         "transcript_location": "synthetic", "prefix_digest": "synthetic"}})
+    with store.connect(agent) as conn:
+        conn.execute("UPDATE agent_chat_conversation SET app_handoff=?,app_opened_at='synthetic' WHERE id=?", (handoff, conv["id"]))
+    content = capture(local)
+    manifest = backup_manifest.read_local(content, allow_v3=True)
+    copied = backup_manifest.local_paths(content, manifest, check_present=True)["agent_chat"]
+    with store.connect_readonly(copied) as conn:
+        assert conn.execute("SELECT app_handoff FROM agent_chat_conversation WHERE id=?", (conv["id"],)).fetchone()[0] == handoff
+        context = json.loads(conn.execute("SELECT context FROM agent_chat_turn WHERE id=?", (turn["id"],)).fetchone()[0])
+        assert context["origin"] == "claude_app" and context["omitted"] == {"images": 1}
+    assert store.has_handoff(agent)
+
+
 def test_capture_present_original_bytes_and_independent_times(local, monkeypatch):
     agent, mounts = extras(local)
     monkeypatch.setattr(auth, "get_secret", lambda: pytest.fail("must not create secret"))

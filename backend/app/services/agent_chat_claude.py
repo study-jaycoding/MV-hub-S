@@ -18,7 +18,9 @@ import contextlib
 import ctypes
 import hashlib
 import json
+import logging
 import os
+import platform
 import re
 import subprocess
 import threading
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import config
+from ..repo.agent_chat import app_custom_config_dir
 from . import agent_chat_process as process
 
 MIN_VERSION = (2, 1, 268)  # auth status JSON 필드(configDirectory 등)가 문서와 맞는 판
@@ -308,7 +311,7 @@ def _valid_window(data: dict) -> bool:
 
 
 def _valid_owner(data: dict) -> bool:
-    return (data.get("status") in ("running", "clean") and data.get("kind") in ("turn", "login")
+    return (data.get("status") in ("running", "clean") and data.get("kind") in ("turn", "login", "desktop")
             and _id(data.get("pid")) and _id(data.get("start")))
 
 
@@ -682,6 +685,139 @@ def _resume(proc: subprocess.Popen) -> None:
     ntdll.NtResumeProcess.restype = ctypes.c_long
     if ntdll.NtResumeProcess(int(proc._handle)) != 0:
         raise OSError("로그인 창을 시작하지 못했어요")
+
+
+def desktop_installation() -> str:
+    """현재 사용자의 MSIX 등록과 실제 Claude.exe를 함께 확인한다. 잔여 CLI 폴더는 설치 증거가 아니다."""
+    if os.name != "nt":
+        return "unknown"
+    script = r"""$ErrorActionPreference = 'Stop'
+try {
+  $packages = @(Get-AppxPackage -Name '*Claude*')
+  $found = $false
+  foreach ($package in $packages) {
+    $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+    foreach ($application in $manifest.Package.Applications.Application) {
+      $exe = [string]$application.Executable
+      if ($exe -and [IO.Path]::GetFileName($exe) -ieq 'Claude.exe' -and
+          (Test-Path -LiteralPath (Join-Path $package.InstallLocation $exe) -PathType Leaf)) { $found = $true }
+    }
+  }
+  if ($found) { 'available' }
+  elseif ($packages.Count -gt 0) { 'unknown' }
+  elseif ((Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\Claude.exe') -or
+          (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\Claude.exe') -or
+          (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'AnthropicClaude\claude.exe'))) { 'unknown' }
+  else { 'missing' }
+} catch { 'unknown' }
+"""
+    try:
+        done = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+                              creationflags=process.CREATE_NO_WINDOW, env=process.child_env())
+        value = done.stdout.strip()
+        return value if done.returncode == 0 and value in ("available", "missing", "unknown") else "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
+def desktop_precheck(prefix, home, cwd, env) -> None:
+    if app_custom_config_dir(home, env):
+        raise Busy("기본 설정 폴더의 Claude 세션만 앱에서 열 수 있어요", "custom_config_dir")
+    if os.name != "nt" or platform.machine().lower() not in ("amd64", "x86_64"):
+        raise Busy("이 환경에서는 Claude 앱 열기를 지원하지 않아요", "unsupported")
+    if _login_token_problem():
+        raise Busy("Windows 실행 사용자를 확인하지 못했어요", "unsupported")
+    if not prefix:
+        raise Busy("Claude Code를 찾지 못했어요", "not_installed")
+    state = claude_state(prefix)
+    if not state.get("version") or process.version_tuple(state["version"]) < (2, 1, 285):
+        raise Busy("Claude Code를 업데이트해 주세요", "outdated")
+    if state["state"] not in CHAT_OK:
+        raise Busy(MESSAGES.get(state["state"], MESSAGES["unknown"]), "not_subscription")
+    if not home or not cwd or not Path(cwd).is_absolute() or not Path(cwd).is_dir() or not Path(home).is_dir():
+        raise Busy("원래 세션 환경을 확인하지 못했어요", "environment_changed")
+    if _norm(os.path.realpath(home)) != _norm(os.path.realpath(claude_home(env, Path(cwd)))):
+        raise Busy("원래 세션 환경을 확인하지 못했어요", "environment_changed")
+    installation = desktop_installation()
+    if installation != "available":
+        raise Busy("Claude 데스크톱 앱이 없어요" if installation == "missing" else "Claude 데스크톱 설치를 확인하지 못했어요",
+                   "desktop_missing" if installation == "missing" else "desktop_unknown")
+
+
+def _stop_desktop_launcher(proc) -> bool:
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=5)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def open_desktop(prefix, session_id, cwd, env, still_current, before_resume) -> dict:
+    """로그인 창과 별개 계약: 숨긴 새 콘솔, 표준 핸들 무지정. 재개 뒤 실패는 잠금 유지."""
+    proc, resumed = None, False
+    started, code, classification = time.monotonic(), None, "launch"
+    try:
+        still_current()
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = subprocess.SW_HIDE
+        proc = subprocess.Popen([*prefix, "--desktop", "--resume", session_id], cwd=cwd, env=env, shell=False,
+                                close_fds=True, stdin=None, stdout=None, stderr=None, startupinfo=startup,
+                                creationflags=CREATE_NEW_CONSOLE | process.CREATE_SUSPENDED | CREATE_BREAKAWAY_FROM_JOB)
+        classification = "job"
+        if _in_any_job(int(proc._handle)) is not False:
+            raise BreakawayDenied()
+        classification = "identify"
+        start = _handle_start(_k32(), int(proc._handle))
+        if start is None:
+            raise OSError("launcher_identity_unknown")
+        still_current()
+        before_resume(proc.pid, start)
+        # 호출 결과가 유실돼도 재개됐을 수 있으므로 호출 전부터 불확실한 상태다.
+        resumed = True
+        classification = "uncertain"
+        _resume(proc)
+        code = proc.wait(timeout=30)
+        classification = "handed" if code == 0 else "uncertain"
+        return {"phase": "handed" if code == 0 else "uncertain", "code": code}
+    except BaseException as exc:
+        stopped = proc is None or _stop_desktop_launcher(proc)
+        if not isinstance(exc, (OSError, subprocess.TimeoutExpired, BreakawayDenied)):
+            raise  # 신원·DB 오류는 호출자가 보존된 opening으로 회수한다.
+        result = {"phase": "idle" if not resumed and stopped else "uncertain", "code": None}
+        if not resumed:
+            result["open_failed"] = classification
+        return result
+    finally:
+        logging.getLogger(__name__).info("Claude desktop exit_code=%s classification=%s seconds=%.3f",
+                                        code, classification, time.monotonic() - started)
+
+
+def reap_desktop_launcher(launcher: dict) -> bool:
+    """재시작 후 자동 재개 금지. 같은 PID·생성 시각의 실행기만 핸들로 정리한다."""
+    if not isinstance(launcher, dict) or type(launcher.get("pid")) is not int or type(launcher.get("start")) is not int:
+        return False
+    try:
+        kernel = _k32()
+        handle = kernel.OpenProcess(_PROCESS_QUERY_LIMITED | _SYNCHRONIZE | 0x0001, False, launcher["pid"])
+        if not handle:
+            return ctypes.get_last_error() == _ERROR_INVALID_PARAMETER
+        try:
+            actual = _handle_start(kernel, handle)
+            if actual != launcher["start"]:
+                return actual is not None  # 번호가 재사용됐으면 원래 실행기는 끝났다. 새 프로세스는 건드리지 않는다.
+            kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            kernel.TerminateProcess.restype = wintypes.BOOL
+            if kernel.WaitForSingleObject(handle, 0) == _WAIT_OBJECT_0:
+                return True
+            return bool(kernel.TerminateProcess(handle, 1)) and kernel.WaitForSingleObject(handle, 5000) == _WAIT_OBJECT_0
+        finally:
+            kernel.CloseHandle(handle)
+    except (OSError, AttributeError, ctypes.ArgumentError):
+        return False
 
 
 def open_login_window(still_current: Callable[[], None]) -> None:

@@ -259,6 +259,8 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
     _, identity = panel
     async with _turn_lock(identity):  # 새 차례 시작도 이 잠금 안 — 확인과 지우기 사이에 가르기가 시작되지 않는다
         source = await asyncio.to_thread(chat_store.get_conversation, identity.db_file(), str(conversation_id))
+        if source:
+            chat_store.require_app_idle(source)
         if source and service.forking_from(source["cli_session_id"]):
             raise HTTPException(409, "포크한 대화가 이 대화에서 가르는 중이에요. 끝난 뒤 지워 주세요.")
         try:
@@ -283,6 +285,44 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
 
 class ForkIn(StrictModel):
     request_id: UUID  # 응답을 잃고 다시 눌러도 같은 포크(설계 2-1)
+
+
+class ClaudeAppOpen(StrictModel):
+    request_id: UUID
+    expected_revision: Annotated[StrictInt, Field(ge=0)]
+    handoff_id: UUID | None = None
+
+
+class ClaudeAppBringBack(StrictModel):
+    request_id: UUID
+    expected_revision: Annotated[StrictInt, Field(ge=0)]
+    handoff_id: UUID
+    unlock_only: StrictBool = False
+
+
+async def _claude_app(conversation_id, body, panel, action):
+    ctx, identity = panel
+    async with _turn_lock(identity):
+        try:
+            with anyio.CancelScope(shield=True):
+                return await to_thread_non_abandon(service.claude_app, identity, str(conversation_id), body.model_dump(mode="json"),
+                                                   action, lambda: mcp_v2._still_current(ctx))
+        except chat.transcript.TranscriptError as exc:
+            raise HTTPException(413 if exc.code == "too_large" else 409, exc.code) from exc
+        except claude.Busy as exc:
+            raise HTTPException(409, exc.code) from exc
+        except OSError as exc:
+            raise HTTPException(503, "claude_app_failed") from exc
+
+
+@router.post("/conversations/{conversation_id}/claude-app/open")
+async def open_claude_app(conversation_id: UUID, body: ClaudeAppOpen, panel=Depends(_panel)):
+    return await _claude_app(conversation_id, body, panel, "open")
+
+
+@router.post("/conversations/{conversation_id}/claude-app/bring-back")
+async def bring_back_claude_app(conversation_id: UUID, body: ClaudeAppBringBack, panel=Depends(_panel)):
+    return await _claude_app(conversation_id, body, panel, "bring-back")
 
 
 _FORK_REFUSED = {"codex": (409, "Codex 대화는 포크할 수 없어요."),
@@ -344,7 +384,7 @@ async def fork_conversation(conversation_id: UUID, body: ForkIn, request: Reques
         except ValueError as exc:
             raise HTTPException(503, mcp_v2._setup_error_message(exc)) from exc
         except HTTPException as exc:  # 발급·커밋 직전 신원 확인
-            if isinstance(exc, chat_store.StaleRequest):
+            if isinstance(exc, chat_store.StaleRequest) or (exc.status_code == 409 and exc.detail == "in_claude_app"):
                 raise
             raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED) from exc
         except (chat_store.ForkRefused, chat_store.Busy, LookupError) as exc:
@@ -365,6 +405,9 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
         public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable",
                                               "can_fork", "fork_block", "fork_state", "restored_from")}
         public.update({key: bool(found.get(key)) for key in ("pinned", "archived", "unread")}, unread_rev=found.get("unread_rev") or 0)
+        public.update(chat_store.app_fields(found))
+        if public["app_handoff"]:
+            public.update(can_fork=False, fork_block="in_claude_app")
         return {"conversation": public, "turns": found["turns"]}
 
     result = await asyncio.to_thread(load)  # 사건을 먼저 읽고 그다음 스냅샷 — 복원 스냅샷이 함께 돌려준 사건보다 새롭다(설계 A2-5)
@@ -661,6 +704,7 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         conv = await asyncio.to_thread(chat_store.get_conversation, path, str(body.conversation_id))
         if not conv:
             raise HTTPException(404, "대화를 찾을 수 없습니다.")
+        chat_store.require_app_idle(conv)
         if conv.get("restored_from"):
             raise HTTPException(409, "복원한 기록은 읽기 전용입니다. 새 대화로 시작하세요.")
         if conv["engine"] != body.engine:
