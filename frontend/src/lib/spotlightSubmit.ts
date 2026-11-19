@@ -1,7 +1,7 @@
 import { tagsProblem } from "./nameGuard";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
-import { audioModelBlocked, audioParamsError, audioReferenceError, DUBBING_LANGUAGES, isTtsModel, isVideoVoiceModel,
-  videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
+import { audioModelBlocked, audioParamsError, audioReferenceError, DUBBING_LANGUAGES, durationForReferences, isTtsModel, isVideoVoiceModel,
+  summarizeRefs, videoReferenceError, videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   SEEDANCE_TOKEN_SRC,
@@ -16,6 +16,7 @@ import {
   seedanceTokenRoles,
   seedanceTrayRole,
   seedanceVideoIndexMap,
+  usesFrameRoles,
   usesMediaRefTokens,
   usesSeedanceMediaRefs,
   validateSeedanceTokenRoles,
@@ -178,7 +179,9 @@ export function buildSpotlightCreateBody({
       project_id: activeProjectId, folder_path: folderPath || undefined,
     } };
   }
-  const seedanceMode = usesSeedanceMediaRefs(model);
+  // 시작·끝 프레임(@simage·@eimage)·번호 매김·역할 배지는 Seedance 와 시작·끝 프레임을 받는 영상 모델(Kling·Gemini·Wan·MiniMax)이 같이 쓴다.
+  // 이름은 옛 그대로 seedanceMode — 모드·오디오·엔진 규칙은 아래에서 모델 이름으로 따로 가른다.
+  const seedanceMode = usesFrameRoles(model);
   const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : emptySeedanceTokenRoles();
 
   let imgN = 0;
@@ -212,6 +215,12 @@ export function buildSpotlightCreateBody({
   const modeError = validateSeedanceMode(model, effectiveMode, refs, tokenRoles, params.extension_mode);
   if (modeError) return { body: null, error: modeError };
   if (model === "seedance_2_5" && effectiveMode !== "video_extension") delete params.extension_mode;
+  if (!usesSeedanceMediaRefs(model)) {
+    // Kling·Gemini·Wan·MiniMax 의 레퍼런스·프레임 규칙(CLI 거절) — 못 받는 조합은 이유를 알리고, 참조가 있으면 길이 상한은 칸이 보여 준 값으로 맞춘다
+    const refError = videoReferenceError(model, refs.map((ref) => ({ type: String(ref.type), role: ref.role })));
+    if (refError) return { body: null, error: refError };
+    if (params.duration != null) params.duration = durationForReferences(model, params.mode, params.duration, summarizeRefs(refs)) as typeof params.duration;
+  }
 
   // 없는 번호의 레퍼런스 토큰(빨강 알약)이 섞인 채 제출되면 CLI 가 크레딧만 쓰고 실패한다 → 차단.
   if (!seedanceMode && usesMediaRefTokens(model)) {

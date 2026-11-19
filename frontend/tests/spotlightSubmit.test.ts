@@ -159,6 +159,62 @@ describe("buildSpotlightCreateBody — 없는 레퍼런스 토큰 차단", () =>
   });
 });
 
+describe("buildSpotlightCreateBody — 영상 모델 레퍼런스 규칙(CLI 거절 조합)", () => {
+  const gemini = { ...base, model: "gemini_omni_flash_1_2", text: "움직인다", inlineRefs: [] };
+  it("Gemini Omni 에 레퍼런스가 있으면 길이를 10초로 줄여 보낸다(칸이 보여 준 값과 같다), 없으면 15초 그대로", () => {
+    const withRef = buildSpotlightCreateBody({ ...gemini, optionValues: { mode: "text-to-video", duration: 15 }, trayRefs: [img()] });
+    expect(withRef.error).toBeNull();
+    expect(withRef.body!.params!.duration).toBe(10);
+    const textOnly = buildSpotlightCreateBody({ ...gemini, optionValues: { mode: "text-to-video", duration: 15 }, trayRefs: [] });
+    expect(textOnly.body!.params!.duration).toBe(15);
+  });
+  it("Kling·Gemini 에 오디오 레퍼런스를 넣으면 요청을 만들지 않고 이유를 알린다", () => {
+    const audio = img({ type: "audio", file_path: "asset:p|a.mp3" });
+    for (const model of ["kling4_0", "gemini_omni_flash_1_2"]) {
+      const { body, error } = buildSpotlightCreateBody({ ...base, model, text: "x", inlineRefs: [], trayRefs: [img(), audio] });
+      expect(body).toBeNull();
+      expect(error).toContain("오디오");
+    }
+    expect(buildSpotlightCreateBody({ ...base, model: "wan3_0", text: "x", inlineRefs: [], trayRefs: [img(), audio] }).error).toBeNull();
+  });
+});
+
+describe("buildSpotlightCreateBody — 시작·끝 프레임(@simage·@eimage)을 새 영상 모델에도", () => {
+  const frames = (model: string, text: string, tray: ChipRef[], optionValues: Record<string, unknown> = { duration: 4 }) =>
+    buildSpotlightCreateBody({ ...base, model, text, inlineRefs: [], trayRefs: tray, optionValues } as never);
+  it("Kling·Gemini·Wan·MiniMax 도 @simage·@eimage 를 @Start·@End 로 보낸다(예전엔 일반 이미지 참조였다)", () => {
+    for (const model of ["kling4_0", "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]) {
+      const { body, error } = frames(model, "@simage1 에서 @eimage2 로 천천히 이동", [img(), img()]);
+      expect(error).toBeNull();
+      expect(body!.references!.map((r) => r.role)).toEqual(["@Start", "@End"]);
+      expect(body!.prompt).toBe("첫 프레임 에서 끝 프레임 로 천천히 이동");
+    }
+  });
+  it("프레임이 아닌 이미지는 번호가 이어진다(@Image1), Kling 은 프레임+참조를 함께 보낸다", () => {
+    const { body, error } = frames("kling4_0", "@simage1 에서 시작해 @image2 의 인물처럼", [img(), img()]);
+    expect(error).toBeNull();
+    expect(body!.references!.map((r) => r.role)).toEqual(["@Start", "@Image1"]);
+    expect(body!.prompt).toBe("첫 프레임 에서 시작해 <<<image1>>> 의 인물처럼");
+  });
+  it("모델 제약 — 끝만·Flash 끝·Gemini/Wan/MiniMax 의 프레임+참조는 요청을 만들지 않고 이유를 알린다", () => {
+    expect(frames("kling4_0", "@eimage1 로", [img()]).error).toContain("시작 프레임");
+    expect(frames("kling_4_0_flash", "@simage1 에서 @eimage2 로", [img(), img()]).error).toContain("Flash");
+    expect(frames("kling_4_0_flash", "@simage1 에서", [img()]).error).toBeNull();
+    for (const model of ["gemini_omni_flash_1_2", "wan3_0", "minimax_h3"]) {
+      expect(frames(model, "@simage1 에서 @image2 처럼", [img(), img()]).error).toContain("함께 쓸 수 없습니다");
+    }
+  });
+  it("프레임을 안 쓰는 일반 참조는 종전 그대로 @Image 로 나가고 Seedance 의 프레임도 그대로다", () => {
+    const plain = frames("wan3_0", "@image1 처럼", [img()]);
+    expect(plain.body!.references!.map((r) => r.role)).toEqual(["@Image1"]);
+    expect(frames("seedance_2_0", "@simage1 에서 @eimage2 로", [img(), img()], { mode: "std" }).body!.references!.map((r) => r.role)).toEqual(["@Start", "@End"]);
+  });
+  it("Gemini 는 시작 한 장은 15초 그대로, 시작+끝은 10초로 줄인다", () => {
+    expect(frames("gemini_omni_flash_1_2", "@simage1 에서", [img()], { mode: "text-to-video", duration: 15 }).body!.params!.duration).toBe(15);
+    expect(frames("gemini_omni_flash_1_2", "@simage1 에서 @eimage2 로", [img(), img()], { mode: "text-to-video", duration: 15 }).body!.params!.duration).toBe(10);
+  });
+});
+
 describe("buildSpotlightCreateBody — 역할 번호 부여", () => {
   it("트레이 이미지들은 @Image1,@Image2 로 순번(타입별)", () => {
     const { body } = buildSpotlightCreateBody({

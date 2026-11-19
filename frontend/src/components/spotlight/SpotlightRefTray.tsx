@@ -9,8 +9,8 @@ import {
   seedanceTrayBadgeTitle,
   seedanceTrayRole,
   seedanceTrayTypeIndex,
+  usesFrameRoles,
   usesMediaRefTokens,
-  usesSeedanceMediaRefs,
   type SeedanceTokenRoles,
 } from "../../lib/seedancePrompt";
 import { addWindowMouseDrag, dragLost, removeWindowMouseDrag } from "../../lib/windowDrag";
@@ -155,7 +155,7 @@ export function SpotlightRefTray({
           const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
           // 역할(시작/끝/옴니)은 seedance 전용 개념 → seedance 모델에서만 번호 알약에 역할 클래스를 붙이고,
           //  시작·끝만 번호 앞에 금색 S·E 칸을 그린다(옴니·영상·오디오는 번호 색이 곧 종류, Jay 2026-10-29).
-          const showRole = usesSeedanceMediaRefs(model);
+          const showRole = usesFrameRoles(model);
           const startOrEnd = showRole && (badgeRole === "start" || badgeRole === "end");
           const kind = ref.type === "video" ? "video" : (ref.type as string) === "audio" ? "audio" : "image";
           // 보이는 번호 = 프롬프트에 쓰는 번호(@image2, @video1 …).

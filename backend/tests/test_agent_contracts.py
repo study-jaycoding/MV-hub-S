@@ -2976,6 +2976,170 @@ def test_submit_one_sets_kling_mode_from_references_before_submission(refs, mode
     assert begin.call_args.args[-1]["params"]["mode"] == mode_out
 
 
+def test_reference_rule_error_blocks_combinations_the_cli_rejects():
+    """CLI 가 제출 때 거절하는 참조 조합(2026-11-19 generate cost 실측)을 제출 전에 막는다 — Kling·Gemini 오디오 참조 없음,
+    MiniMax 오디오는 이미지·영상과 함께, Gemini 참조·이어붙이기는 10초까지(edit 은 15초까지)."""
+    agent = _load_agent()
+    image = {"file_path": "a.png", "type": "image", "role": "@Image1"}
+    audio = {"file_path": "a.mp3", "type": "audio", "role": "@Audio1"}
+    video = {"file_path": "a.mp4", "type": "video", "role": "@Video1"}
+    for model in ("kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"):
+        assert agent._reference_rule_error(model, {}, [image, audio])
+    for model in ("minimax_h3", "minimax_h3_max"):
+        assert agent._reference_rule_error(model, {}, [audio])
+        assert agent._reference_rule_error(model, {}, [image, audio]) is None
+        assert agent._reference_rule_error(model, {}, [video, audio]) is None
+    for model in ("wan3_0", "seedance_2_5"):
+        assert agent._reference_rule_error(model, {}, [audio]) is None
+    gemini = "gemini_omni_flash_1_2"
+    assert agent._reference_rule_error(gemini, {"mode": "reference-to-video", "duration": 11}, [image])
+    assert agent._reference_rule_error(gemini, {"mode": "reference-to-video", "duration": 10}, [image]) is None
+    assert agent._reference_rule_error(gemini, {"mode": "extend", "duration": 15}, [video])
+    assert agent._reference_rule_error(gemini, {"mode": "edit", "duration": 15}, [video]) is None
+    assert agent._reference_rule_error(gemini, {"mode": "text-to-video", "duration": 15}, []) is None
+    assert agent._reference_rule_error("kling4_0", {"mode": "reference-to-video", "duration": 30}, [image]) is None
+
+
+def test_submit_one_fails_gemini_reference_over_ten_seconds_before_the_cli():
+    """제출 경로: 참조가 있는 Gemini 12초는 보정된 reference-to-video 로 10초 규칙에 걸려 CLI 를 부르기 전에 실패한다."""
+    agent = _load_agent()
+    ref = {"file_path": "https://cdn.example/a.png", "type": "image", "role": "@Image1"}
+    request = {**_submission_request(), "model": "gemini_omni_flash_1_2",
+               "params": {"mode": "text-to-video", "duration": 12}, "references": [ref]}
+    enum = {"text-to-video", "image-to-video", "reference-to-video", "edit", "extend"}
+    with patch.object(agent, "_allowed_params", return_value={"mode", "duration"}), \
+         patch.object(agent, "_param_enum", return_value=enum), \
+         patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), \
+         patch.object(agent, "_fail") as fail, \
+         patch.object(agent, "_begin_submission") as begin, \
+         patch.object(agent, "_run_cli_json") as create:
+        assert agent._submit_one("http://hub", "token", "higgsfield", "user@example.com", request,
+                                 {ref["file_path"]: ref["file_path"]}, {}, agent.Lock(), agent.Lock(), "agent") is None
+    fail.assert_called_once()
+    begin.assert_not_called()
+    create.assert_not_called()
+
+
+def _tiny_png(path, width, height):
+    import struct as _s
+    import zlib as _z
+
+    def chunk(kind, data):
+        return _s.pack(">I", len(data)) + kind + data + _s.pack(">I", _z.crc32(kind + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + b"\x80\x40\x20" * width for _ in range(height))
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", _s.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                     + chunk(b"IDAT", _z.compress(raw)) + chunk(b"IEND", b""))
+
+
+def test_image_size_reads_png_gif_jpeg_webp_headers(tmp_path):
+    import struct as s
+    agent = _load_agent()
+    png = tmp_path / "a.png"
+    _tiny_png(png, 300, 299)
+    assert agent._image_size(str(png)) == (300, 299)
+    gif = tmp_path / "a.gif"
+    gif.write_bytes(b"GIF89a" + s.pack("<HH", 120, 80) + b"\x00" * 8)
+    assert agent._image_size(str(gif)) == (120, 80)
+    jpg = tmp_path / "a.jpg"  # SOI + APP0(짧은 마디) + SOF0(높이 200·가로 640)
+    jpg.write_bytes(b"\xff\xd8" + b"\xff\xe0" + s.pack(">H", 4) + b"\x00\x00" + b"\xff\xc0" + s.pack(">H", 17) + b"\x08"
+                    + s.pack(">HH", 200, 640) + b"\x03" + b"\x00" * 9)
+    assert agent._image_size(str(jpg)) == (640, 200)
+    vp8x = tmp_path / "x.webp"
+    vp8x.write_bytes(b"RIFF" + b"\x00" * 4 + b"WEBP" + b"VP8X" + b"\x0a\x00\x00\x00" + b"\x00" * 4
+                     + (511).to_bytes(3, "little") + (255).to_bytes(3, "little") + b"\x00" * 4)
+    assert agent._image_size(str(vp8x)) == (512, 256)
+    junk = tmp_path / "j.bin"
+    junk.write_bytes(b"not an image")
+    assert agent._image_size(str(junk)) is None
+    assert agent._image_size(str(tmp_path / "missing.png")) is None
+
+
+def test_kling_image_error_follows_the_measured_300px_floor(tmp_path):
+    """2026-11-19 유료 실측: Kling 4.0·Flash 는 299×299 실패·300×300 성공(256×256 도 실패). 비율은 공식 가이드의 2:5~5:2."""
+    agent = _load_agent()
+    cases = {(299, 299): True, (300, 300): False, (256, 256): True, (1024, 768): False, (1024, 1024): False,
+             (750, 300): False, (300, 750): False,   # 비율 2.5·0.4 는 경계 안
+             (800, 300): True, (300, 800): True}      # 비율 2.67·0.375 는 밖
+    for (w, h), bad in cases.items():
+        path = tmp_path / f"{w}x{h}.png"
+        _tiny_png(path, w, h)
+        assert bool(agent._kling_image_error(str(path))) is bad, (w, h)
+    assert agent._kling_image_error(str(tmp_path / "missing.png")) is None  # 못 읽으면 막지 않는다
+
+
+@pytest.mark.parametrize("model, size, fails", [("kling4_0", 256, True), ("kling_4_0_flash", 299, True), ("kling_4_0_flash", 300, False),
+                                                ("wan3_0", 256, False)])
+def test_submit_one_rejects_small_kling_images_before_the_cli(tmp_path, model, size, fails):
+    agent = _load_agent()
+    path = tmp_path / "ref.png"
+    _tiny_png(path, size, size)
+    ref = {"file_path": "https://cdn.example/a.png", "type": "image", "role": "@Image1"}
+    request = {**_submission_request(), "model": model, "params": {"mode": "reference-to-video", "duration": 3}, "references": [ref]}
+    enum = {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
+    with patch.object(agent, "_allowed_params", return_value={"mode", "duration"}), \
+         patch.object(agent, "_param_enum", return_value=enum), \
+         patch.object(agent, "_ensure_request_workspace", return_value=("ws-test", None)), \
+         patch.object(agent, "_fail") as fail, \
+         patch.object(agent, "_begin_submission", return_value=False), \
+         patch.object(agent, "_release_claim", return_value=True), \
+         patch.object(agent, "_run_cli_json"):
+        agent._submit_one("http://hub", "token", "higgsfield", "user@example.com", request,
+                          {ref["file_path"]: str(path)}, {}, agent.Lock(), agent.Lock(), "agent")
+    assert fail.called is fails
+
+
+def _frame_submit(agent, tmp_path, model, roles, params, enum=None):
+    """@Start·@End 역할 레퍼런스를 담은 제출 — (CLI 인자, _fail 호출 수)를 돌려준다."""
+    refs, cache = [], {}
+    for index, role in enumerate(roles):
+        path = tmp_path / f"{model}_{index}.png"
+        _tiny_png(path, 320, 320)
+        refs.append({"file_path": f"ref{index}", "type": "image", "role": role, "reference_id": f"r{index}"})
+        cache[f"ref{index}"] = str(path)
+    request = {**_submission_request(), "model": model, "params": params, "references": refs}
+    enum = enum or {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
+    with patch.object(agent, "_allowed_params", return_value={"mode", "duration"}), \
+         patch.object(agent, "_param_enum", return_value=enum), \
+         patch.object(agent, "_ensure_request_workspace", return_value=("ws", None)), \
+         patch.object(agent, "_begin_submission", return_value=True), \
+         patch.object(agent, "_fail") as fail, \
+         patch.object(agent, "_run_cli_json", return_value=(["12345678-1234-1234-1234-123456789abc"], None)) as run, \
+         patch.object(agent, "_anchor_tracked_safe"):
+        agent._submit_one("http://hub", "token", "hf", "artist@example.com", request, cache, {}, agent.Lock(), agent.Lock(), "agent")
+    return (list(run.call_args.args) if run.called else None), fail.call_count
+
+
+def test_submit_one_sends_frames_with_image_to_video_and_mixed_with_reference_for_kling(tmp_path):
+    """시작·끝 프레임만이면 image-to-video, 프레임+참조가 함께면 reference-to-video(Kling 만 — 2026-11-19 견적)."""
+    agent = _load_agent()
+    args, failed = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@End"], {"mode": "text-to-video", "duration": 4})
+    assert failed == 0
+    assert args[args.index("--mode") + 1] == "image-to-video"
+    assert "--start-image" in args and "--end-image" in args and "--image" not in args
+    args, failed = _frame_submit(agent, tmp_path, "kling_4_0_flash", ["@Start", "@Image1"], {"mode": "text-to-video", "duration": 4})
+    assert failed == 0
+    assert args[args.index("--mode") + 1] == "reference-to-video"
+    assert "--start-image" in args and "--image" in args and "--end-image" not in args
+
+
+def test_submit_one_rejects_frame_combinations_the_cli_refuses_before_the_cli(tmp_path):
+    agent = _load_agent()
+    enum = {"text-to-video", "image-to-video", "reference-to-video", "edit", "extend"}
+    for model, roles in (("gemini_omni_flash_1_2", ["@Start", "@Image1"]), ("kling_4_0_flash", ["@Start", "@End"]),
+                         ("kling4_0", ["@End"]), ("wan3_0", ["@Start", "@Image1"]), ("minimax_h3", ["@Start", "@Image1"])):
+        args, failed = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum)
+        assert failed == 1 and args is None, (model, roles)
+    # 허용 조합은 그대로 나간다: Wan·MiniMax 시작+끝, Gemini 시작+끝(10초 이하)
+    for model, duration in (("wan3_0", 4), ("minimax_h3_max", 5), ("gemini_omni_flash_1_2", 10)):
+        args, failed = _frame_submit(agent, tmp_path, model, ["@Start", "@End"], {"mode": "text-to-video", "duration": duration}, enum)
+        assert failed == 0 and "--start-image" in args and "--end-image" in args, model
+    # Gemini 시작+끝 11초는 거절, 시작만 15초는 통과
+    assert _frame_submit(agent, tmp_path, "gemini_omni_flash_1_2", ["@Start", "@End"], {"mode": "text-to-video", "duration": 11}, enum)[1] == 1
+    args, failed = _frame_submit(agent, tmp_path, "gemini_omni_flash_1_2", ["@Start"], {"mode": "text-to-video", "duration": 15}, enum)
+    assert failed == 0 and args[args.index("--mode") + 1] == "image-to-video"
+
+
 def test_param_enum_reads_model_get_cache_and_failure_is_not_frozen():
     """mode 보정은 스키마 enum 을 본다 — `model get` 은 _allowed_params 가 부른 한 번을 재사용하고(제출 경로 CLI
     호출 수 불변), 조회 실패는 캐시에 박제하지 않아 다음 제출에서 다시 조회된다(한 번 실패로 에이전트가 사는 동안

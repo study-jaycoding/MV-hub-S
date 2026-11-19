@@ -4,6 +4,20 @@ export function usesSeedanceMediaRefs(model: string): boolean {
   return model.startsWith("seedance");
 }
 
+// 시작·끝 프레임(@simage·@eimage)을 쓰는 Seedance 밖의 영상 모델 — CLI 가 start_image·end_image 를 받는다(2026-11-19 견적·실생성).
+// 모델별 제약(Flash 끝 프레임 없음, Gemini·Wan·MiniMax 는 프레임을 다른 참조와 못 섞음)은 spotlightPromptConfig.videoReferenceError.
+export const FRAME_ROLE_MODELS: ReadonlySet<string> = new Set([
+  "kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max",
+]);
+/** 이 모델은 @simage·@eimage 를 시작·끝 프레임으로 읽는다 — Seedance 와 위 모델들. */
+export function usesFrameRoles(model: string): boolean {
+  return usesSeedanceMediaRefs(model) || FRAME_ROLE_MODELS.has(model);
+}
+/** 트레이 이미지의 우클릭 역할 메뉴(옴니·시작·끝)를 켤 수 있는 모델·모드. Seedance 는 2.5 의 omni_reference 만. */
+export function roleMenuAvailable(model: string, mode: unknown): boolean {
+  return model === "seedance_2_5" ? mode === "omni_reference" : FRAME_ROLE_MODELS.has(model);
+}
+
 // 2.0/mini의 std·fast는 생성 방식이 아니므로 그대로 둔다. 화면과 제출의 공통 판정.
 export function effectiveSeedanceMode<T>(model: string, mode: T, referenceCount: number): T | "t2v" | "omni_reference" {
   if (model !== "seedance_2_5" || (mode !== "t2v" && mode !== "omni_reference")) return mode;
@@ -224,8 +238,8 @@ export function validateSeedanceTokenRoles(
   for (const idx of roles.audio) {
     if (idx > audioCount) return `오디오 레퍼런스 ${idx}번이 없습니다.`;
   }
-  if (starts > 1) return "Seedance 시작 프레임은 1장만 지정할 수 있습니다.";
-  if (ends > 1) return "Seedance 끝 프레임은 1장만 지정할 수 있습니다.";
+  if (starts > 1) return "시작 프레임은 1장만 지정할 수 있습니다.";
+  if (ends > 1) return "끝 프레임은 1장만 지정할 수 있습니다.";
   return null;
 }
 

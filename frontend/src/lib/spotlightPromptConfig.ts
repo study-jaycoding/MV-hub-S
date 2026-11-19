@@ -128,8 +128,68 @@ const DURATION_RANGE: Record<string, { min: number; max: number }> = {
   minimax_h3_max: { min: 5, max: 15 }, // 2·3·4 거부, 5·6·10·15 허용(15 위는 재지 않음)
 };
 
-export function durationRange(model: string, fallback: number): { min: number; max: number } {
-  return DURATION_RANGE[model] || { min: 1, max: Math.max(12, fallback * 2) };
+// 참조가 붙으면 길이 상한이 더 낮은 모델 — CLI 가 "References, first/last frames and extensions support at most 10 seconds" 로 거절한다
+// (2026-11-19 generate cost 실측: Gemini Omni Flash 1.2 의 reference-to-video·extend 는 10초 · 11초부터 거절, edit 은 15초까지 통과).
+// 글만 쓰는 모드(text-to-video)는 15초까지. 그림을 넣으면 에이전트가 reference-to-video 로 맞추므로(agent_push) 참조가 있으면 같은 상한을 쓴다.
+const REF_DURATION_CAP: Record<string, { max: number; modes: readonly string[] }> = {
+  gemini_omni_flash_1_2: { max: 10, modes: ["reference-to-video", "extend"] },
+};
+const REF_AUTO_MODES: ReadonlySet<string> = new Set(["", "text-to-video", "image-to-video", "reference-to-video"]);
+
+/** 지금 붙은 레퍼런스 요약 — 개수(종류 무관)와 시작·끝 프레임 지정 여부. */
+export interface RefSummary { count: number; start: boolean; end: boolean }
+export const NO_REFS: RefSummary = { count: 0, start: false, end: false };
+const roleOf = (ref: { role?: string }, prefix: string) => String(ref.role ?? "").toLowerCase().startsWith(prefix);
+/** 제출 직전 레퍼런스(역할 포함)에서 요약을 만든다. */
+export function summarizeRefs(refs: readonly { role?: string }[]): RefSummary {
+  return { count: refs.length, start: refs.some((r) => roleOf(r, "@start")), end: refs.some((r) => roleOf(r, "@end")) };
+}
+
+/** 지금 모드·참조에서 길이 상한(초) — 따로 상한이 없으면 null.
+ *  Gemini: 시작 프레임 한 장만(이미지→영상)은 15초까지, 시작+끝·참조·이어붙이기는 10초까지(CLI 실측). */
+export function referenceDurationCap(model: string, mode: unknown, refs: RefSummary): number | null {
+  const cap = REF_DURATION_CAP[model];
+  if (!cap) return null;
+  const m = String(mode ?? "");
+  if (cap.modes.includes(m) && (m !== "reference-to-video" || refs.count > 0)) return cap.max;
+  if (refs.count === 0 || !REF_AUTO_MODES.has(m)) return null;
+  return refs.start && !refs.end && refs.count === 1 ? null : cap.max;
+}
+
+export function durationRange(model: string, fallback: number, ctx?: { mode?: unknown; refs?: RefSummary }): { min: number; max: number } {
+  const base = DURATION_RANGE[model] || { min: 1, max: Math.max(12, fallback * 2) };
+  const cap = ctx ? referenceDurationCap(model, ctx.mode, ctx.refs ?? NO_REFS) : null;
+  return cap == null ? base : { min: base.min, max: Math.min(base.max, cap) };
+}
+
+// 이 영상 모델들이 받지 않는 참조 — CLI 가 제출 때 거절한다(2026-11-19 generate cost 실측). 칸은 막지 않고 제출 전에 이유를 알린다.
+//  · Kling 4.0·Flash·Gemini: 오디오 참조 없음("Model does not accept --audio-references")
+//  · MiniMax H3·H3 Max: 오디오 참조는 이미지나 영상 참조가 함께 있어야 한다
+const NO_AUDIO_REFERENCE: ReadonlySet<string> = new Set(["kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"]);
+const AUDIO_NEEDS_VISUAL: ReadonlySet<string> = new Set(["minimax_h3", "minimax_h3_max"]);
+// 시작·끝 프레임(2026-11-19 generate cost 실측): Kling 4.0·Flash 는 프레임과 다른 참조를 함께 쓸 수 있지만(Flash 는 끝 프레임 없음),
+//  Gemini·Wan·MiniMax 는 프레임을 다른 참조와 못 섞는다("cannot be mixed/combined with reference media"). 끝 프레임은 시작 프레임이 있어야 한다.
+const NO_FRAME_MIX: ReadonlySet<string> = new Set(["gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"]);
+export function videoReferenceError(model: string, refs: readonly { type: string; role?: string }[]): string | null {
+  const audio = refs.filter((r) => r.type === "audio").length;
+  if (audio && NO_AUDIO_REFERENCE.has(model)) return "이 모델은 오디오 레퍼런스를 받지 않습니다. 오디오를 빼고 생성하세요.";
+  if (audio && AUDIO_NEEDS_VISUAL.has(model) && audio === refs.length) return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다.";
+  const start = refs.some((r) => roleOf(r, "@start"));
+  const end = refs.some((r) => roleOf(r, "@end"));
+  const others = refs.filter((r) => !roleOf(r, "@start") && !roleOf(r, "@end")).length;
+  if (NO_FRAME_MIX.has(model) || model === "kling4_0" || model === "kling_4_0_flash") {
+    if (end && !start) return "끝 프레임(@eimage)은 시작 프레임(@simage)과 함께 넣어야 합니다.";
+    if (end && model === "kling_4_0_flash") return "Kling 4.0 Flash 는 끝 프레임을 받지 않습니다. 시작 프레임만 쓰세요.";
+    if ((start || end) && others && NO_FRAME_MIX.has(model)) return "이 모델은 시작·끝 프레임을 다른 레퍼런스와 함께 쓸 수 없습니다. 프레임만 남기거나 레퍼런스만 쓰세요.";
+  }
+  return null;
+}
+
+/** 길이 칸은 상한으로 줄여 보여 주니(SpotlightOptionsBar) 보내는 값도 같게 — 화면 10초인데 15초가 나가지 않게. */
+export function durationForReferences(model: string, mode: unknown, duration: unknown, refs: RefSummary): unknown {
+  const cap = referenceDurationCap(model, mode, refs);
+  const seconds = Number(duration);
+  return cap != null && Number.isFinite(seconds) && seconds > cap ? cap : duration;
 }
 
 // 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고, 나머지는 고급 팝오버로 모은다.
