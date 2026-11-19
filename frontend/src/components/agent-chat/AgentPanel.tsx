@@ -1699,7 +1699,7 @@ function ModelMenu({ engines, choice, onChoose, onSettings }: {
             <span className="agent-model-name">{GROUP[e.id] ?? e.id}</span>
             {e.available
               ? e.subscription && <span className="agent-model-plan">{`${e.subscription} ${t("구독")}`}</span>
-              : <span className="agent-model-reason">{e.id === "codex" ? t("미연결") : e.reason || t("쓸 수 없음")}</span>}
+              : <span className="agent-model-reason">{t("미연결")}</span>}
             <Chevron />
           </button>
           {sub === e.id && (

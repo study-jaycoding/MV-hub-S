@@ -123,7 +123,7 @@ function pickSelect(label: string, value: string) {
 describe("Ask Agent 옆 칸", () => {
   it("Codex 선택 중에도 설정의 Claude 안내·연결 요청 오류가 보인다", async () => {
     setHubFeatures(["agent_chat_v1", "agent_chat_connect_v1"]);
-    const engines = ENGINES.map((e) => e.id === "claude" ? { ...e, state: "not_logged_in", available: false, subscription: null } : e);
+    const engines = ENGINES.map((e) => e.id === "claude" ? { ...e, state: "not_logged_in", available: false, subscription: null, reason: "Claude 로그인이 필요해요 — 설정에서 연결" } : e);
     route = (c) => {
       if (c.path === "/session") return json({ secret: "s1", account_email: "jay@example.com", identity_key: "id-1", engines });
       if (c.path === "/claude") return json({ state: "not_logged_in", version: "2.1.296", subscription: null, login_window: false, login_window_enabled: true, engines });
@@ -135,6 +135,7 @@ describe("Ask Agent 옆 칸", () => {
       pickModel("GPT-6.1 Sol");
       expect(host.querySelector(".cn")).toBeNull();
       act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+      expect(texts(".agent-model-row")).toEqual(["✳Claude미연결", "ChatGPT"]); // ChatGPT 처럼 긴 까닭 대신 한 단어(Jay 11-19)
       act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent === "설정")!.click());
       const settings = () => host.querySelector<HTMLElement>(".agent-settings")!;
       expect(settings().textContent).toContain("로그인 안 됨");
