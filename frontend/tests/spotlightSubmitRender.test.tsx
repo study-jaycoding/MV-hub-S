@@ -472,6 +472,40 @@ describe("실제 프롬프트 제출: 캔버스 연속 생성과 응답 후 편�
     expect(onCreated).toHaveBeenCalledTimes(1);
   });
 
+  describe("이미지 레퍼런스가 너무 작을 때(Kling 300px·Wan 240px 미만)", () => {
+    // 이미지 로드를 손으로 풀어 줄 수 있는 가짜 Image — 크기를 재는 동안 카드가 바뀌는 경우를 만든다.
+    const waiting: Array<() => void> = [];
+    class HeldImage {
+      naturalWidth = 0; naturalHeight = 0; onload: (() => void) | null = null; onerror: (() => void) | null = null;
+      set src(_url: string) { waiting.push(() => { this.naturalWidth = 128; this.naturalHeight = 128; this.onload?.(); }); }
+    }
+    const small = (): Props => ({
+      model: "kling4_0", paramsModel: "kling4_0", inCompose: false, canvasTarget: null, preservePromptAfterSubmit: false,
+      promptContextKey: "context-a", optionValues: { mode: "text-to-video", duration: 4, aspect_ratio: "16:9", resolution: "720p" },
+      trayRefs: [{ uid: "r0", file_path: "https://fixture.invalid/small.png", type: "image", role: "", name: "작은 그림", thumb: "" }],
+    });
+    beforeEach(() => { waiting.length = 0; vi.stubGlobal("Image", HeldImage); });
+
+    it("크기를 재서 작으면 이유를 알리고 생성 요청을 보내지 않는다", async () => {
+      await mount(small(), "움직인다");
+      let pending!: Promise<void>;
+      await act(async () => { pending = submit(); await Promise.resolve(); });
+      await act(async () => { waiting.splice(0).forEach((release) => release()); await pending; });
+      expect(errors.some((message) => message?.includes("300px") && message.includes("작은 그림"))).toBe(true);
+      expect(prepareCreate).not.toHaveBeenCalled();
+    });
+
+    it("재는 동안 다른 카드로 옮기면 그 카드에 이 오류를 띄우지 않는다", async () => {
+      await mount(small(), "움직인다");
+      let pending!: Promise<void>;
+      await act(async () => { pending = submit(); await Promise.resolve(); });
+      await rerender({ promptContextKey: "context-b" });
+      await act(async () => { waiting.splice(0).forEach((release) => release()); await pending; });
+      expect(errors.filter((message) => message?.includes("300px"))).toEqual([]);
+      expect(prepareCreate).not.toHaveBeenCalled();
+    });
+  });
+
   it("캔버스 제출 후 라이브러리로 바뀌어도 새 초안을 보존한다", async () => {
     const response = deferred<Generation>();
     prepareCreate.mockImplementation(() => () => response.promise);

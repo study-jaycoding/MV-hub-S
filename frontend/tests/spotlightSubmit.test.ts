@@ -179,6 +179,19 @@ describe("buildSpotlightCreateBody — 영상 모델 레퍼런스 규칙(CLI 거
   });
 });
 
+describe("buildSpotlightCreateBody — 레퍼런스 개수 한도", () => {
+  it("한도를 넘으면 요청을 만들지 않고 이유를 알린다(이미지·영상 모델 모두), 한도 안이면 그대로", () => {
+    const many = (n: number) => Array.from({ length: n }, () => img());
+    const run = (model: string, tray: ChipRef[]) => buildSpotlightCreateBody({ ...base, model, text: "x", inlineRefs: [], trayRefs: tray } as never);
+    expect(run("gemini_omni_flash_1_2", many(8)).error).toContain("7개까지");
+    expect(run("gemini_omni_flash_1_2", many(7)).error).toBeNull();
+    expect(run("seedream_5_5", many(11)).error).toContain("10개까지");
+    expect(run("nano_banana_pro", many(14)).error).toBeNull();
+    expect(run("seedance_2_0", many(10)).error).toContain("9개까지");
+    expect(run("gpt_image_2_6", many(16)).error).toBeNull();
+  });
+});
+
 describe("buildSpotlightCreateBody — 시작·끝 프레임(@simage·@eimage)을 새 영상 모델에도", () => {
   const frames = (model: string, text: string, tray: ChipRef[], optionValues: Record<string, unknown> = { duration: 4 }) =>
     buildSpotlightCreateBody({ ...base, model, text, inlineRefs: [], trayRefs: tray, optionValues } as never);

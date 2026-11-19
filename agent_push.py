@@ -1894,7 +1894,43 @@ _NO_FRAME_MIX_MODELS = frozenset({"gemini_omni_flash_1_2", "wan3_0", "wan3_0_pri
 _FRAME_MODELS = _NO_FRAME_MIX_MODELS | {"kling4_0", "kling_4_0_flash"}
 
 
+# 레퍼런스 개수 한도(2026-11-19 generate cost·create 실측 — 화면 spotlightPromptConfig.REF_COUNT_LIMITS 와 같은 값). 시작·끝 프레임은 이미지로 센다.
+_REF_COUNT_LIMITS = {
+    "kling4_0": {"image": 10, "video": 5}, "kling_4_0_flash": {"image": 10, "video": 5},
+    "gemini_omni_flash_1_2": {"image": 7, "video": 3},
+    "wan3_0": {"image": 10, "video": 5}, "wan3_0_prime": {"image": 10, "video": 5},
+    "minimax_h3": {"image": 9, "video": 3, "audio": 3}, "minimax_h3_max": {"image": 9, "video": 3, "audio": 3},
+    "seedance_2_0": {"image": 9, "video": 3}, "seedance_2_0_mini": {"image": 9, "video": 3},  # 오디오 3개 한도는 backend models.py 검증이 따로
+    "seedance_2_5": {"image": 30},
+    "nano_banana_2_lite": {"image": 14}, "nano_banana_pro": {"image": 14},
+    "seedream_5_5": {"image": 10}, "seedream_v5_pro": {"image": 10}, "seedream_5_0_flash": {"image": 10},
+}
+
+
+def _ref_kind(ref: dict) -> str:
+    role = _role_key(ref)
+    if ref.get("type") == "video" or role.startswith("@video"):
+        return "video"
+    if ref.get("type") == "audio" or role.startswith("@audio"):
+        return "audio"
+    return "image"
+
+
+def _reference_count_error(model: str, refs: list) -> str | None:
+    limits = _REF_COUNT_LIMITS.get(model)
+    if not limits:
+        return None
+    kinds = [_ref_kind(r) for r in refs if isinstance(r, dict)]
+    for kind, label in (("image", "이미지"), ("video", "영상"), ("audio", "오디오")):
+        if kind in limits and kinds.count(kind) > limits[kind]:
+            return f"이 모델은 {label} 레퍼런스를 {limits[kind]}개까지 넣을 수 있습니다"
+    return None
+
+
 def _reference_rule_error(model: str, params: dict, refs: list) -> str | None:
+    count_error = _reference_count_error(model, refs)
+    if count_error:
+        return count_error
     media = [r for r in refs if isinstance(r, dict)]
     audio = [r for r in media if r.get("type") == "audio" or _role_key(r).startswith("@audio")]
     if audio and model in _NO_AUDIO_REFERENCE_MODELS:
@@ -1921,8 +1957,10 @@ def _reference_rule_error(model: str, params: dict, refs: list) -> str | None:
 
 # Kling 4.0·Flash 는 가로·세로가 300px 미만인 이미지를 사유 없이 실패시킨다(2026-11-19 유료 실측: 299×299 실패·300×300 성공,
 # 256×256 은 4.0·Flash 모두 실패). 비율은 Kling 공식 가이드의 2:5~5:2. 크기를 못 읽으면 막지 않는다(판별 불가).
+#  Wan 3.0·Prime 도 작은 이미지에서 실패한다(같은 날 유료 실측: 224×224 실패·240×240 성공, 128 도 실패). 화면(spotlightSubmit.MIN_REF_IMAGE_SIDE)이 같은 값으로 먼저 알린다.
 _KLING_IMAGE_MODELS = frozenset({"kling4_0", "kling_4_0_flash"})
 _KLING_IMAGE_MIN_SIDE = 300
+_MIN_REF_IMAGE_SIDE = {"kling4_0": 300, "kling_4_0_flash": 300, "wan3_0": 240, "wan3_0_prime": 240}
 
 
 def _image_size(path: str) -> tuple[int, int] | None:
@@ -1967,14 +2005,16 @@ def _image_size(path: str) -> tuple[int, int] | None:
     return None
 
 
-def _kling_image_error(path: str) -> str | None:
-    size = _image_size(path)
+def _reference_image_error(model: str, path: str) -> str | None:
+    """모델별 이미지 레퍼런스 한도 — 최소 변(Kling 300·Wan 240), Kling 은 비율 2:5~5:2 도. 모델이 표에 없거나 크기를 못 읽으면 None."""
+    min_side = _MIN_REF_IMAGE_SIDE.get(model)
+    size = _image_size(path) if min_side else None
     if not size or not size[0] or not size[1]:
         return None
     width, height = size
-    if min(width, height) < _KLING_IMAGE_MIN_SIDE:
-        return f"Kling 이미지 레퍼런스는 가로·세로가 {_KLING_IMAGE_MIN_SIDE}px 이상이어야 합니다(지금 {width}×{height})"
-    if not 0.4 <= width / height <= 2.5:
+    if min(width, height) < min_side:
+        return f"이 모델은 이미지 레퍼런스의 가로·세로가 {min_side}px 이상이어야 합니다(지금 {width}×{height})"
+    if model in _KLING_IMAGE_MODELS and not 0.4 <= width / height <= 2.5:
         return f"Kling 이미지 레퍼런스의 가로세로 비율은 2:5~5:2 안이어야 합니다(지금 {width}×{height})"
     return None
 
@@ -3533,8 +3573,8 @@ def _submit_one_attempt(
         if not resolved:
             unresolved.append(val)
             continue
-        if model in _KLING_IMAGE_MODELS and _is_image_ref(ref) and os.path.isfile(resolved):
-            size_error = _kling_image_error(resolved)
+        if model in _MIN_REF_IMAGE_SIDE and _is_image_ref(ref) and os.path.isfile(resolved):
+            size_error = _reference_image_error(model, resolved)
             if size_error:
                 _fail(server, token, rid, size_error)
                 print(f"  ✗ {model}: {size_error}")

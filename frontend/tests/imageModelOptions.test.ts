@@ -2,7 +2,7 @@
 //  Seedream 5.0 Pro width·height 지정은 생성 실패, Flash 는 무시, Pro remove_bg 는 효과 없음, GPT 2.6 frame_* 는 GIF 에서만, size 는 미확인.
 import { describe, expect, it } from "vitest";
 import { activeConstraints, correctedOptions, defaultOptions, isModelHiddenParam, paramGateAllows } from "../src/lib/useModels";
-import { durationForReferences, durationRange, videoReferenceError } from "../src/lib/spotlightPromptConfig";
+import { durationForReferences, durationRange, referenceCountError, videoReferenceError } from "../src/lib/spotlightPromptConfig";
 import type { ModelParam } from "../src/types";
 
 const p = (name: string, type: string, def: unknown = null, en?: string[]): ModelParam =>
@@ -113,6 +113,24 @@ describe("새 영상 모델(2026-11-19 R&D 견적으로 맞춘 값)", () => {
     }
     expect(videoReferenceError("wan3_0", of("audio"))).toBeNull();
     expect(videoReferenceError("kling4_0", of("image", "video"))).toBeNull();
+  });
+
+  it("레퍼런스 개수 한도(실측): 넘으면 이유를, 한도 안이거나 한도 표에 없는 모델은 null — 시작·끝 프레임도 이미지로 센다", () => {
+    const of = (type: string, n: number) => Array.from({ length: n }, () => ({ type }));
+    expect(referenceCountError("kling4_0", of("image", 10))).toBeNull();
+    expect(referenceCountError("kling4_0", of("image", 11))).toContain("10개까지");
+    expect(referenceCountError("kling_4_0_flash", of("video", 6))).toContain("영상");
+    expect(referenceCountError("gemini_omni_flash_1_2", of("image", 8))).toContain("7개까지");
+    expect(referenceCountError("gemini_omni_flash_1_2", of("video", 4))).toContain("3개까지");
+    expect(referenceCountError("wan3_0", of("image", 11))).toContain("10개");
+    expect(referenceCountError("minimax_h3_max", [...of("image", 9), ...of("video", 3), ...of("audio", 3)])).toBeNull();
+    expect(referenceCountError("minimax_h3", of("audio", 4))).toContain("오디오");
+    expect(referenceCountError("seedance_2_0_mini", of("image", 10))).toContain("9개까지");
+    expect(referenceCountError("seedance_2_5", of("image", 31))).toContain("30개까지");
+    expect(referenceCountError("nano_banana_pro", of("image", 15))).toContain("14개까지");
+    expect(referenceCountError("seedream_5_5", of("image", 11))).toContain("10개까지");
+    for (const model of ["seedream_v5_lite", "gpt_image_2_6", "nano_banana_flash", "text2speech_v2"]) expect(referenceCountError(model, of("image", 40))).toBeNull();
+    expect(referenceCountError("kling4_0", of("audio", 3))).toBeNull(); // 오디오 규칙은 따로(videoReferenceError)
   });
 
   it("시작·끝 프레임(@Start·@End): 끝은 시작과 함께, Flash 는 끝 없음, Gemini·Wan·MiniMax 는 다른 참조와 못 섞는다(CLI 실측)", () => {

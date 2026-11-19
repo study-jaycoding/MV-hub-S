@@ -1239,6 +1239,7 @@ const EN: Record<string, string> = {
   "첫 프레임": "First frame",
   "끝 프레임": "Last frame",
   "옴니 레퍼런스": "Omni reference",
+  "레퍼런스": "Reference",
   "레퍼런스 모드에서만 지정할 수 있습니다.": "Available only in reference mode.",
   // 캔버스 노드
   "미리보기": "View", // View 노드 헤더(한글 UI=미리보기, 영문 UI=View)

@@ -329,7 +329,7 @@ describe("App: 프롬프트 숨김 상태에서 씬의 부분 성공과 카드�
     ];
     const floating = required(view.container, ".sl-error-float");
     expect(floating.textContent?.split("\n").sort()).toEqual([...errors].sort());
-    expect(getComputedStyle(floating).whiteSpace).toBe("pre-line");
+    expect(getComputedStyle(floating).whiteSpace).toBe("pre"); // 한 줄 고정 + 카드별 줄바꿈 유지
     expect(floating.closest(".sl-hidden")).toBeNull();
     expect(required(view.container, ".sl-error").textContent).toBe(floating.textContent);
 

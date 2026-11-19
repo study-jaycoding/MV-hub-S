@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelCard } from "../src/components/scene/cards/ModelCard";
-import { modelNodeImageRefCount, svgReferenceConflicts } from "../src/lib/sceneGenerationInputs";
+import { modelNodeImageRefCount, modelNodeParamsForRefs, modelNodeRefSummary, svgReferenceConflicts } from "../src/lib/sceneGenerationInputs";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
 const modelParams = vi.fn();
@@ -50,6 +50,35 @@ describe("모델 노드·생성카드 판정", () => {
     const videoOnly = scene(svgModel("svg"), [ref(1, "video")]);
     expect(modelNodeImageRefCount("m", videoOnly.cardsById, videoOnly.edges)).toBe(0);
     expect(none(videoOnly)).toBe(true);
+  });
+
+  it("모델 노드 저장 옵션: Gemini 길이는 칸이 보여 준 값과 같게 저장한다 — 참조·시작+끝은 10초, 시작 한 장은 15초 그대로", () => {
+    const g = "gemini_omni_flash_1_2";
+    const params = { mode: "text-to-video", duration: 15, aspect_ratio: "16:9" };
+    const refs = (count: number, start = false, end = false) => ({ count, start, end });
+    expect(modelNodeParamsForRefs(g, params, refs(2))).toEqual({ ...params, duration: 10 });
+    expect(modelNodeParamsForRefs(g, params, refs(2, true, true))).toEqual({ ...params, duration: 10 });
+    expect(modelNodeParamsForRefs(g, params, refs(1, true))).toBe(params); // 시작 프레임 한 장 = 이미지→영상 15초까지
+    expect(modelNodeParamsForRefs(g, params, refs(0))).toBe(params); // 참조 없으면 그대로(같은 객체)
+    expect(modelNodeParamsForRefs("kling4_0", params, refs(3))).toBe(params);
+    expect(modelNodeParamsForRefs(g, { mode: "edit", duration: 15 }, refs(2))).toEqual({ mode: "edit", duration: 15 });
+    const noDuration = { mode: "text-to-video" };
+    expect(modelNodeParamsForRefs(g, noDuration, refs(2))).toBe(noDuration);
+  });
+
+  it("modelNodeRefSummary: 종류 무관 개수와 카드 글의 @simage·@eimage 로 시작·끝 프레임을 읽는다", () => {
+    const withText = (text: string, refs: ReturnType<typeof ref>[]) => {
+      const cards = [svgModel("png", "gemini_omni_flash_1_2"), card({ id: "g", kind: "generation", refs, prompt: text })];
+      return { cardsById: new Map(cards.map((c) => [c.id, c])), edges: [edge("e1", "m", "g")] };
+    };
+    const mixed = withText("", [ref(1), ref(2, "video"), ref(3, "audio")]);
+    expect(modelNodeRefSummary("m", mixed.cardsById, mixed.edges)).toEqual({ count: 3, start: false, end: false });
+    const startOnly = withText("@simage1 에서 움직인다", [ref(1)]);
+    expect(modelNodeRefSummary("m", startOnly.cardsById, startOnly.edges)).toEqual({ count: 1, start: true, end: false });
+    const both = withText("@simage1 에서 @eimage2 로", [ref(1), ref(2)]);
+    expect(modelNodeRefSummary("m", both.cardsById, both.edges)).toEqual({ count: 2, start: true, end: true });
+    const none = scene(svgModel("png"), []);
+    expect(modelNodeRefSummary("m", none.cardsById, none.edges)).toEqual({ count: 0, start: false, end: false });
   });
 });
 

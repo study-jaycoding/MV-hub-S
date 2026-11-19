@@ -1,7 +1,9 @@
 import { tagsProblem } from "./nameGuard";
+import { measureImageSize } from "./aspectAuto";
+import { refSrc } from "./promptParts";
 import { normalizeSeedanceDraftParams } from "./seedanceDraft";
 import { audioModelBlocked, audioParamsError, audioReferenceError, DUBBING_LANGUAGES, durationForReferences, isTtsModel, isVideoVoiceModel,
-  summarizeRefs, videoReferenceError, videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
+  referenceCountError, summarizeRefs, videoReferenceError, videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   SEEDANCE_TOKEN_SRC,
@@ -203,6 +205,8 @@ export function buildSpotlightCreateBody({
     return { ...ref, role: `@Image${++imgN}` };
   });
   const refs = [...trayWithRoles, ...inlineWithRoles];
+  const countError = referenceCountError(model, refs.map((ref) => ({ type: String(ref.type) })));
+  if (countError) return { body: null, error: countError };
   const params = normalizeSeedanceDraftParams(model, optionValues);
   const effectiveMode = effectiveSeedanceMode(model, params.mode, refs.length);
   if (effectiveMode !== params.mode) params.mode = effectiveMode;
@@ -268,4 +272,27 @@ export function buildSpotlightCreateBody({
       folder_path: folderPath || undefined,
     },
   };
+}
+
+// 이미지 레퍼런스의 최소 변(px) — 이보다 작으면 힉스필드가 사유 없이 실패한다(2026-11-19 유료 실측: Kling 4.0·Flash 299 실패·300 성공,
+// Wan 3.0·Prime 224 실패·240 성공). 에이전트(agent_push._reference_image_error)가 같은 값으로 한 번 더 막는다.
+const MIN_REF_IMAGE_SIDE: Record<string, number> = { kling4_0: 300, kling_4_0_flash: 300, wan3_0: 240, wan3_0_prime: 240 };
+
+/** 제출 직전(비동기): 원본 이미지 크기를 재서 모델의 최소 변보다 작으면 이유를, 아니면 null. 못 재면(원본 로드 실패·시간 초과) 막지 않는다 —
+ *  썸네일로 대신 재지 않는다(썸네일은 원본보다 작아 큰 원본을 잘못 막는다). */
+export async function referenceImageSizeError(
+  model: string,
+  refs: readonly { type?: string; file_path?: string; name?: string }[],
+): Promise<string | null> {
+  const min = MIN_REF_IMAGE_SIDE[model];
+  if (!min) return null;
+  const images = refs.filter((ref) => ref.type === "image" && ref.file_path);
+  const sizes = await Promise.all(images.map((ref) => measureImageSize(refSrc(ref.file_path as string) || "")));
+  for (let i = 0; i < images.length; i += 1) {
+    const size = sizes[i];
+    if (size && Math.min(size.width, size.height) < min) {
+      return `이 모델은 이미지 레퍼런스의 가로·세로가 ${min}px 이상이어야 합니다 — "${images[i].name || "이미지"}" 은 ${size.width}×${size.height} 입니다. 더 큰 이미지로 바꿔 주세요.`;
+    }
+  }
+  return null;
 }

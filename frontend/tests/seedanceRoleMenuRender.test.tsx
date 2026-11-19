@@ -76,6 +76,13 @@ describe("Seedance 2.5 트레이 우클릭 역할 편집", () => {
     context(0); expect(document.querySelector(".sl-ref-role-menu")).toBeNull();
   });
 
+  it("시작·끝 프레임을 받는 다른 영상 모델(Kling 등)에도 메뉴가 뜨고 옴니 대신 '레퍼런스'로 적힌다", async () => {
+    view = await mountPrompt({ trayBinding: { ...binding(), modelKey: "kling", model: { model: "kling4_0", type: "video", params: { mode: "text-to-video" } } } });
+    context(0);
+    const menu = required(document.body, ".sl-ref-role-menu");
+    expect([...menu.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["첫 프레임", "끝 프레임", "레퍼런스"]);
+  });
+
   // 2026-10-11 격리 실측(dist_b46) 5/5: 메뉴가 뜬 채 Ctrl+K → 메뉴 뒤에서 도크가 숨고 메뉴가 사라졌다(같은 도크의 모델 목록은 쉬었다).
   it("메뉴가 떠 있는 동안 뒤 화면의 키는 쉰다 — Ctrl+K(도크 숨김)가 보는 값·트레이의 Shift+Backspace. Esc 한 번에 메뉴만 닫힌다", async () => {
     view = await mountPrompt({ trayBinding: binding() });

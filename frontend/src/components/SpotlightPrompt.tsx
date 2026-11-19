@@ -1773,7 +1773,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             />
           )}
           {expanded && visible && roleMenu.menu && (
-            <SpotlightRefRoleMenu {...roleMenu.menu} enabled={roleMenu.enabled}
+            <SpotlightRefRoleMenu {...roleMenu.menu} enabled={roleMenu.enabled} plain={model !== "seedance_2_5"}
               onChoose={roleMenu.choose} onClose={roleMenu.close} />
           )}
 

@@ -185,6 +185,36 @@ export function videoReferenceError(model: string, refs: readonly { type: string
   return null;
 }
 
+// 레퍼런스 개수 한도 — 넘으면 힉스필드(CLI 검증)가 거절하는데 거절이 제출 허가 뒤라 '확인 필요' 기록이 남는다. 제출 전에 막는다.
+//  2026-11-19 실측(generate cost·generate create): Kling 4.0·Flash 이미지 10(시작·끝 프레임 포함)·영상 5 · Gemini 이미지 7·영상 3 ·
+//  Wan 3.0·Prime 이미지 10·영상 5 · MiniMax H3·Max 이미지 9·영상 3·오디오 3(H3 는 CLI 검증, Max 는 10·4·4 가 생성 단계에서 실패, 9·3·3 은 통과) ·
+//  Seedance 2.0·Mini 이미지 9(프레임 포함)·영상 3·오디오 3 · Seedance 2.5 이미지 30 · Nano Banana 2 Lite·Pro 이미지 14 · Seedream 5.5·Pro·Flash 이미지 10.
+//  한도가 안 나온 종류는 적지 않았다(Wan 오디오는 1개만 통과 — 길이 합계 한도로 보이나 개수로는 못 정했다).
+const REF_COUNT_LIMITS: Record<string, { image?: number; video?: number; audio?: number }> = {
+  kling4_0: { image: 10, video: 5 }, kling_4_0_flash: { image: 10, video: 5 },
+  gemini_omni_flash_1_2: { image: 7, video: 3 },
+  wan3_0: { image: 10, video: 5 }, wan3_0_prime: { image: 10, video: 5 },
+  minimax_h3: { image: 9, video: 3, audio: 3 }, minimax_h3_max: { image: 9, video: 3, audio: 3 },
+  seedance_2_0: { image: 9, video: 3 }, seedance_2_0_mini: { image: 9, video: 3 }, // 오디오 3개 한도는 validateSeedanceMode 가 따로 안내한다
+  seedance_2_5: { image: 30 },
+  nano_banana_2_lite: { image: 14 }, nano_banana_pro: { image: 14 },
+  seedream_5_5: { image: 10 }, seedream_v5_pro: { image: 10 }, seedream_5_0_flash: { image: 10 },
+};
+const COUNT_LABEL = { image: "이미지", video: "영상", audio: "오디오" } as const;
+/** 종류별 개수가 모델 한도를 넘으면 이유를, 아니면 null. 시작·끝 프레임은 이미지로 센다. */
+export function referenceCountError(model: string, refs: readonly { type: string }[]): string | null {
+  const limits = REF_COUNT_LIMITS[model];
+  if (!limits) return null;
+  for (const kind of ["image", "video", "audio"] as const) {
+    const max = limits[kind];
+    const count = refs.filter((ref) => ref.type === kind).length;
+    if (max != null && count > max) {
+      return `이 모델은 ${COUNT_LABEL[kind]} 레퍼런스를 ${max}개까지 넣을 수 있습니다`;
+    }
+  }
+  return null;
+}
+
 /** 길이 칸은 상한으로 줄여 보여 주니(SpotlightOptionsBar) 보내는 값도 같게 — 화면 10초인데 15초가 나가지 않게. */
 export function durationForReferences(model: string, mode: unknown, duration: unknown, refs: RefSummary): unknown {
   const cap = referenceDurationCap(model, mode, refs);

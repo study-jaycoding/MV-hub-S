@@ -44,8 +44,8 @@ function fallbackRatio(enumVals: string[]): string {
   return enumVals.find((v) => v !== AUTO_RATIO && parseRatio(v) !== null) || "1:1";
 }
 
-// 이미지 URL 을 로드해 naturalWidth/Height 비율을 잰다. 실패/타임아웃 → null(폴백으로 처리).
-function measureRatio(url: string): Promise<number | null> {
+// 이미지 URL 을 로드해 naturalWidth/Height 를 잰다. 실패/타임아웃 → null(판별 불가).
+export function measureImageSize(url: string): Promise<{ width: number; height: number } | null> {
   return new Promise((resolve) => {
     if (!url) {
       resolve(null);
@@ -54,7 +54,7 @@ function measureRatio(url: string): Promise<number | null> {
     const img = new Image();
     let done = false;
     let timer = 0;
-    const finish = (r: number | null) => {
+    const finish = (r: { width: number; height: number } | null) => {
       if (done) return;
       done = true;
       if (timer) window.clearTimeout(timer); // 성공/실패 시 남은 타이머·핸들러 정리(누수 방지)
@@ -63,11 +63,17 @@ function measureRatio(url: string): Promise<number | null> {
       resolve(r);
     };
     img.onload = () =>
-      finish(img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : null);
+      finish(img.naturalWidth && img.naturalHeight ? { width: img.naturalWidth, height: img.naturalHeight } : null);
     img.onerror = () => finish(null);
-    timer = window.setTimeout(() => finish(null), 4000); // 안전 타임아웃(로드 지연 시 폴백)
+    timer = window.setTimeout(() => finish(null), 4000); // 안전 타임아웃(로드 지연 시 판별 불가로 처리)
     img.src = url;
   });
+}
+
+// 비율만 필요할 때 — 실패/타임아웃 → null(폴백으로 처리).
+async function measureRatio(url: string): Promise<number | null> {
+  const size = await measureImageSize(url);
+  return size ? size.width / size.height : null;
 }
 
 // 제출 직전(비동기): aspect_ratio 가 "auto" 이면(어느 모델이든) 실제 비율로 치환한 새 optionValues 를 반환.

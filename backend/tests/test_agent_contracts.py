@@ -3000,6 +3000,31 @@ def test_reference_rule_error_blocks_combinations_the_cli_rejects():
     assert agent._reference_rule_error("kling4_0", {"mode": "reference-to-video", "duration": 30}, [image]) is None
 
 
+def test_reference_count_error_follows_the_measured_per_model_limits():
+    """2026-11-19 실측: 개수 한도를 넘으면 CLI·힉스필드가 제출 허가 뒤에 거절해 '확인 필요' 기록이 남는다 — 제출 전에 막는다. 시작·끝 프레임은 이미지로 센다."""
+    agent = _load_agent()
+    def refs(image=0, video=0, audio=0, start=0, end=0):
+        out = [{"file_path": f"i{n}", "type": "image", "role": f"@Image{n + 1}"} for n in range(image)]
+        out += [{"file_path": "s", "type": "image", "role": "@Start"}] * start + [{"file_path": "e", "type": "image", "role": "@End"}] * end
+        out += [{"file_path": f"v{n}", "type": "video", "role": f"@Video{n + 1}"} for n in range(video)]
+        out += [{"file_path": f"a{n}", "type": "audio", "role": f"@Audio{n + 1}"} for n in range(audio)]
+        return out
+    cases = [
+        ("kling4_0", refs(image=10), False), ("kling4_0", refs(image=10, start=1), True), ("kling4_0", refs(video=6), True),
+        ("kling_4_0_flash", refs(image=9, start=1), False), ("gemini_omni_flash_1_2", refs(image=8), True), ("gemini_omni_flash_1_2", refs(video=3), False),
+        ("wan3_0", refs(image=11), True), ("wan3_0_prime", refs(video=5), False), ("wan3_0", refs(audio=3, image=1), False),
+        ("minimax_h3", refs(image=10), True), ("minimax_h3_max", refs(video=4), True), ("minimax_h3_max", refs(image=9, video=3, audio=3), False),
+        ("minimax_h3_max", refs(image=1, audio=4), True),
+        ("seedance_2_0", refs(image=9), False), ("seedance_2_0_mini", refs(image=8, start=1, end=1), True), ("seedance_2_0", refs(video=4), True),
+        ("seedance_2_5", refs(image=30), False), ("seedance_2_5", refs(image=31), True),
+        ("nano_banana_pro", refs(image=14), False), ("nano_banana_2_lite", refs(image=15), True),
+        ("seedream_5_5", refs(image=11), True), ("seedream_v5_lite", refs(image=16), False), ("gpt_image_2_6", refs(image=16), False),
+    ]
+    for model, items, bad in cases:
+        assert bool(agent._reference_count_error(model, items)) is bad, (model, [r["role"] for r in items][:3], len(items))
+        assert bool(agent._reference_rule_error(model, {}, items)) is bad or bad is False, model
+
+
 def test_submit_one_fails_gemini_reference_over_ten_seconds_before_the_cli():
     """제출 경로: 참조가 있는 Gemini 12초는 보정된 reference-to-video 로 10초 규칙에 걸려 CLI 를 부르기 전에 실패한다."""
     agent = _load_agent()
@@ -3064,12 +3089,28 @@ def test_kling_image_error_follows_the_measured_300px_floor(tmp_path):
     for (w, h), bad in cases.items():
         path = tmp_path / f"{w}x{h}.png"
         _tiny_png(path, w, h)
-        assert bool(agent._kling_image_error(str(path))) is bad, (w, h)
-    assert agent._kling_image_error(str(tmp_path / "missing.png")) is None  # 못 읽으면 막지 않는다
+        assert bool(agent._reference_image_error("kling4_0", str(path))) is bad, (w, h)
+        assert bool(agent._reference_image_error("kling_4_0_flash", str(path))) is bad, (w, h)
+    assert agent._reference_image_error("kling4_0", str(tmp_path / "missing.png")) is None  # 못 읽으면 막지 않는다
+
+
+def test_reference_image_error_follows_the_measured_wan_240px_floor(tmp_path):
+    """2026-11-19 유료 실측: Wan 3.0·Prime 은 224×224 실패·240×240 성공(128 도 실패). 비율 한도는 없다(그 한도는 Kling 만)."""
+    agent = _load_agent()
+    for model in ("wan3_0", "wan3_0_prime"):
+        for (w, h), bad in {(128, 128): True, (224, 224): True, (240, 240): False, (1024, 240): False, (200, 1000): True}.items():
+            path = tmp_path / f"{model}_{w}x{h}.png"
+            _tiny_png(path, w, h)
+            assert bool(agent._reference_image_error(model, str(path))) is bad, (model, w, h)
+    small = tmp_path / "s.png"
+    _tiny_png(small, 64, 64)
+    for model in ("minimax_h3_max", "gemini_omni_flash_1_2", "seedance_2_0_mini", "nano_banana_pro"):  # 한도 표에 없는 모델은 막지 않는다
+        assert agent._reference_image_error(model, str(small)) is None
 
 
 @pytest.mark.parametrize("model, size, fails", [("kling4_0", 256, True), ("kling_4_0_flash", 299, True), ("kling_4_0_flash", 300, False),
-                                                ("wan3_0", 256, False)])
+                                                ("wan3_0", 224, True), ("wan3_0_prime", 224, True), ("wan3_0", 240, False),
+                                                ("minimax_h3_max", 128, False)])
 def test_submit_one_rejects_small_kling_images_before_the_cli(tmp_path, model, size, fails):
     agent = _load_agent()
     path = tmp_path / "ref.png"
