@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-// 어셋 왼쪽 폴더 트리의 폴더 우클릭 → '원본 위치 열기'(Jay 2026-11-20 시안 B). 누르면 그 폴더 경로로 탐색기 열기를 부르고 메뉴가 닫힌다.
+// 어셋 왼쪽 폴더 트리의 폴더 우클릭 → '원본 위치 열기'. 모양은 워크스페이스·공유 탭 폴더 메뉴와 같다(Jay 2026-11-20 맞춤 2 — 이름 + 깊이별 색 알약).
+//  누르면 그 폴더 경로로 탐색기 열기를 부르고 메뉴가 닫힌다.
 //  Esc 는 메뉴만 닫고 초점을 연 줄로 돌린다. (원격 접속에서 메뉴를 안 띄우는 갈래는 jsdom 주소가 localhost 라 여기서 못 본다.)
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -33,13 +34,14 @@ const rightClick = (target: HTMLElement) => {
   return event;
 };
 
-it("폴더 줄 우클릭 → 이름표와 '원본 위치 열기' 메뉴 · 누르면 그 폴더로 탐색기 열기를 부르고 닫힌다", async () => {
+it("폴더 줄 우클릭 → 이름과 '원본 위치 열기' 알약(하위 폴더 = 라임) · 누르면 그 폴더로 탐색기 열기를 부르고 닫힌다", async () => {
   const reveal = vi.spyOn(api, "revealAsset").mockResolvedValue({ ok: true });
   show();
   expect(menu()).toBeNull();
   expect(rightClick(row("CH")).defaultPrevented).toBe(true); // 브라우저 기본 메뉴 대신
   expect(menu()?.querySelector(".folder-ctx-name")?.textContent).toBe("CH");
-  const open = menu()!.querySelector<HTMLButtonElement>(".preview-menu-item")!;
+  const open = menu()!.querySelector<HTMLButtonElement>(".folder-ctx-btn")!;
+  expect(open.classList.contains("tone-child")).toBe(true); // 워크스페이스 메뉴와 같은 색 규칙
   expect(open.textContent).toContain("원본 위치 열기");
   expect(document.activeElement).toBe(open); // 열리면 단추에 초점 — 줄에 남아 단축키가 먹지 않게
   await act(async () => { open.click(); });
@@ -57,6 +59,7 @@ it("Esc 는 메뉴만 닫고 초점을 연 줄로 돌린다 · 바깥을 누르�
   expect(document.activeElement).toBe(row("CH"));
   rightClick(row("assets"));
   expect(menu()?.querySelector(".folder-ctx-name")?.textContent).toBe("assets");
+  expect(menu()?.querySelector(".folder-ctx-btn")?.classList.contains("tone-root")).toBe(true); // 맨 위 폴더 = 하늘색
   act(() => { document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
   expect(menu()).toBeNull();
   expect(reveal).not.toHaveBeenCalled();
