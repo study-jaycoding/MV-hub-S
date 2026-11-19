@@ -3130,7 +3130,7 @@ def test_submit_one_rejects_small_kling_images_before_the_cli(tmp_path, model, s
     assert fail.called is fails
 
 
-def _frame_submit(agent, tmp_path, model, roles, params, enum=None):
+def _frame_submit(agent, tmp_path, model, roles, params, enum=None, prompt=None):
     """@Start·@End 역할 레퍼런스를 담은 제출 — (CLI 인자, _fail 호출 수)를 돌려준다."""
     refs, cache = [], {}
     for index, role in enumerate(roles):
@@ -3139,6 +3139,8 @@ def _frame_submit(agent, tmp_path, model, roles, params, enum=None):
         refs.append({"file_path": f"ref{index}", "type": "image", "role": role, "reference_id": f"r{index}"})
         cache[f"ref{index}"] = str(path)
     request = {**_submission_request(), "model": model, "params": params, "references": refs}
+    if prompt is not None:
+        request["prompt"] = prompt
     enum = enum or {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
     with patch.object(agent, "_allowed_params", return_value={"mode", "duration"}), \
          patch.object(agent, "_param_enum", return_value=enum), \
@@ -3162,6 +3164,26 @@ def test_submit_one_sends_frames_with_image_to_video_and_mixed_with_reference_fo
     assert failed == 0
     assert args[args.index("--mode") + 1] == "reference-to-video"
     assert "--start-image" in args and "--image" in args and "--end-image" not in args
+
+
+def test_submit_one_drops_the_no_text_placeholder_only_where_the_cli_makes_the_prompt_optional(tmp_path):
+    """화면이 빈 프롬프트에 채우는 "(no text)" 는 CLI 가 프롬프트를 선택으로 받는 조합에서만 인자에서 뺀다(model get 기준)."""
+    agent = _load_agent()
+    placeholder = "(no text)"
+    enum = {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
+    # 빼는 조합 — Kling·Flash 프레임만(image-to-video)·MiniMax H3 프레임
+    for model, roles in (("kling4_0", ["@Start", "@End"]), ("kling_4_0_flash", ["@Start"]), ("minimax_h3", ["@Start", "@End"])):
+        args, failed = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum, placeholder)
+        assert failed == 0 and "--prompt" not in args and placeholder not in args, model
+    # 진짜 프롬프트는 그대로 간다
+    args, _ = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@End"], {"mode": "text-to-video", "duration": 5}, enum, "the apple turns")
+    assert args[args.index("--prompt") + 1] == "the apple turns"
+    # 그대로 두는 조합 — Kling 프레임+참조(reference-to-video 는 프롬프트 필수)·Gemini·Wan·H3 Max 는 필수
+    args, _ = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@Image1"], {"mode": "text-to-video", "duration": 5}, enum, placeholder)
+    assert args[args.index("--mode") + 1] == "reference-to-video" and args[args.index("--prompt") + 1] == placeholder
+    for model in ("wan3_0", "minimax_h3_max", "gemini_omni_flash_1_2"):
+        args, _ = _frame_submit(agent, tmp_path, model, ["@Start", "@End"], {"mode": "text-to-video", "duration": 5}, enum, placeholder)
+        assert args[args.index("--prompt") + 1] == placeholder, model
 
 
 def test_submit_one_rejects_frame_combinations_the_cli_refuses_before_the_cli(tmp_path):

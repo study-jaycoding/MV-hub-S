@@ -1962,6 +1962,19 @@ _KLING_IMAGE_MODELS = frozenset({"kling4_0", "kling_4_0_flash"})
 _KLING_IMAGE_MIN_SIDE = 300
 _MIN_REF_IMAGE_SIDE = {"kling4_0": 300, "kling_4_0_flash": 300, "wan3_0": 240, "wan3_0_prime": 240}
 
+# 화면이 빈 프롬프트에 채우는 자리표시 "(no text)" 가 글자 그대로 모델에 가면 안 된다(예: 프레임만 쓴 Kling i2v).
+# CLI `model get` 이 프롬프트를 선택으로 받는 조합에서만 인자를 뺀다 — Kling·Flash 는 image-to-video 에서만(그 밖은 필수),
+# MiniMax H3 는 늘 선택. Gemini·Wan·H3 Max·Seedance 는 필수라 그대로 둔다. 미디어가 없는 글 생성도 그대로 둔다.
+_NO_TEXT_PLACEHOLDER = "(no text)"
+
+
+def _placeholder_prompt_is_optional(model: str, params: dict, refs: list) -> bool:
+    if not refs:
+        return False
+    if model == "minimax_h3":
+        return True
+    return model in _KLING_IMAGE_MODELS and params.get("mode") == "image-to-video"
+
 
 def _image_size(path: str) -> tuple[int, int] | None:
     """PNG·GIF·JPEG·WebP 머리에서 (가로, 세로) — 표준 라이브러리만. 못 읽으면 None."""
@@ -3544,6 +3557,9 @@ def _submit_one_attempt(
         _fail(server, token, rid, rule_error)
         print(f"  ✗ {model}: {rule_error}")
         return None
+    if prompt == _NO_TEXT_PLACEHOLDER and "--prompt" in args and _placeholder_prompt_is_optional(model, params, refs):
+        at = args.index("--prompt")
+        del args[at:at + 2]
     if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
         wire_params = audio_cli_params(model, r.get("prompt") or "", params)
         args += ["--dialogue", json.dumps(wire_params.pop("dialogue"), ensure_ascii=False)]
