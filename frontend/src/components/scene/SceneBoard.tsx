@@ -175,7 +175,7 @@ import {
 } from "../../lib/canvasDetached";
 import type { SceneModelCfg } from "../../lib/scenes";
 import { canvasHandoffSelection, markCanvasHandoffSelectionUsed, onCanvasMemoryReturn, type CanvasSelection } from "../../lib/popupWindows";
-import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
+import { modelNodeImageRefCount, svgReferenceConflicts, type SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
 import { planAutoConnections } from "../../lib/sceneAutoConnect";
@@ -2959,6 +2959,8 @@ export function SceneBoard({
   // 수집·분류에 넘길 '해석된 엣지' — input(무선) 소스를 실제 소스로 치환. 그리기(선 좌표)는 원본 edges 사용.
   //  ★엣지 id 는 보존되므로(from 만 치환) refCardEdgeIds/genRefEdgeIds 의 e.id 판정이 원본 렌더와 그대로 맞물린다.
   const resolvedEdges = useMemo(() => resolvePortEdges(cardsById, edges), [cardsById, edges]);
+  // GPT 2.6 SVG 인데 연결된 생성카드에 참조 이미지가 붙은 모델 노드 — 'SVG + 참조 불가' 알약(제출은 건너뛴다). svg 가 아닌 노드는 계산하지 않는다.
+  const svgConflicts = useMemo(() => svgReferenceConflicts(cardsById, resolvedEdges), [cardsById, resolvedEdges]);
   // 연결 종류 판정 — 카드 종류가 아니라 실제 데이터 기준. input 은 해석된 실제 소스로 판정(레퍼런스 무선연결도 파란점선).
   //  · refCardEdgeIds: 레퍼런스 카드 → 생성(파란 점선)
   //  · genRefEdgeIds : 생성물을 레퍼런스로 사용 → 초록 점선. 두 근거를 OR:
@@ -3932,7 +3934,7 @@ export function SceneBoard({
                   onResizeDown={onResizeDown}
                 />
               ) : card.kind === "model" ? (
-                <ModelCard card={inner} onOutPortDown={cardFns.onOutPortDown} onResizeDown={onResizeDown} />
+                <ModelCard card={inner} svgRefBlocked={svgConflicts.modelNodeIds.has(card.id)} onOutPortDown={cardFns.onOutPortDown} onResizeDown={onResizeDown} />
               ) : card.kind === "list" ? (
                 <ListCard
                   card={card}
@@ -4377,6 +4379,7 @@ export function SceneBoard({
             <SceneModelModal
               key={modelModalId}
               initial={c.modelCfg}
+              svgRefCount={modelNodeImageRefCount(c.id, cardsById, resolvedEdges)}
               onClose={() => setModelModalId(null)}
               onSave={(cfg) => {
                 if (commitDocument({ type: "saveModelConfig", cardId: modelModalId, config: cfg })) requestFit(modelModalId);

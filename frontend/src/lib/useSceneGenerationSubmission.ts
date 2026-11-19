@@ -59,6 +59,7 @@ export async function videoCostContext(model: string, refs: { type: string; file
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import { currentModelPolicy, modelBlockMessage } from "./modelPolicy";
 import { modelAllowed } from "./modelPolicyCore";
+import { SVG_REF_MESSAGE, isSvgWithReferences } from "./svgReference";
 import type { useCanvasGenerationLinks } from "./useCanvasGenerationLinks";
 import type { useGenerationCardActions } from "./useGenerationCardActions";
 
@@ -164,9 +165,18 @@ export function useSceneGenerationSubmission({
     const blockedCards = new Set(
       requestedJobs.filter((job) => !modelAllowed(policy, job.model)).map((job) => job.cardId),
     );
-    const jobs = blockedCards.size
+    const policyJobs = blockedCards.size
       ? requestedJobs.filter((job) => modelAllowed(policy, job.model))
       : requestedJobs;
+    // GPT 2.6 SVG 는 참조 이미지와 함께 못 쓴다(CLI 가 거절) — 그 카드는 pending 기록·업로드 전에 건너뛰고 이유를 알린다.
+    const svgConflictCards = new Set(
+      policyJobs
+        .filter((job) => isSvgWithReferences(job.model, (job.params ?? {}) as Record<string, string | number | boolean>, (job.refs ?? []).filter((ref) => ref.type === "image").length))
+        .map((job) => job.cardId),
+    );
+    const jobs = svgConflictCards.size ? policyJobs.filter((job) => !svgConflictCards.has(job.cardId)) : policyJobs;
+    if (svgConflictCards.size) flash(`${SVG_REF_MESSAGE}${jobs.length ? ` (${svgConflictCards.size}개 카드는 건너뛰었습니다)` : ""}`);
+    if (!jobs.length && svgConflictCards.size) return;
     if (!jobs.length && blockedCards.size) {
       flash(
         `선택한 카드의 모델을 모두 ${policy.groupName ? `'${policy.groupName}' 그룹` : "이 그룹"}에서 쓸 수 없습니다. ` +

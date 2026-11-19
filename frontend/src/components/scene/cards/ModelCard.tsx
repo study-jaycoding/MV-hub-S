@@ -6,11 +6,13 @@ import { useModelPolicy } from "../../../lib/modelPolicy";
 import type { SceneCard } from "../../../lib/scenes";
 import { spotlightParamLabel, spotlightValueLabel } from "../../../lib/spotlightPromptConfig";
 import { normalizeSeedanceDraftParams } from "../../../lib/seedanceDraft";
+import { SVG_REF_MESSAGE } from "../../../lib/svgReference";
 
 // 읽기 형태(mode "read") — GPU 보기 모드의 덧판·숨은 측정 칸이 쓴다. 변경 콜백을 받지 않고 포트·크기 손잡이를 그리지 않는다.
+// svgRefBlocked — GPT 2.6 SVG 인데 연결된 생성카드에 참조 이미지가 붙어 CLI 가 거절할 때 보드가 켠다('SVG + 참조 불가' 알약).
 type ModelCardProps =
-  | { mode?: "edit"; card: SceneCard; onOutPortDown: (e: React.MouseEvent, cardId: string) => void; onResizeDown: (e: React.MouseEvent, cardId: string) => void }
-  | { mode: "read"; card: SceneCard };
+  | { mode?: "edit"; card: SceneCard; svgRefBlocked?: boolean; onOutPortDown: (e: React.MouseEvent, cardId: string) => void; onResizeDown: (e: React.MouseEvent, cardId: string) => void }
+  | { mode: "read"; card: SceneCard; svgRefBlocked?: boolean };
 
 // memo — 받은 값이 그대로면 다시 그리지 않는다(보드는 카드를 끄는 걸음마다 통째로 다시 그려진다 — ReferenceCard 의 주석 참고).
 //  그룹 사용 모델(정책)은 아래 useModelPolicy 가 직접 듣는다.
@@ -43,6 +45,11 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                   data-tip-tone="bad"
                 >
                   사용 불가
+                </div>
+              )}
+              {props.svgRefBlocked && (
+                <div className="scene-modelnode-blocked" title={`${SVG_REF_MESSAGE}\n더블클릭 = 출력 형식 바꾸기`} data-tip-tone="bad">
+                  SVG + 참조 불가
                 </div>
               )}
             </div>

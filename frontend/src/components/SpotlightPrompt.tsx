@@ -76,7 +76,8 @@ import {
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
-import { useModels, ALLOWED, HIDDEN_PARAMS, inferModelType, optionsMatchModel, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
+import { useModels, ALLOWED, HIDDEN_PARAMS, SVG_REF_MESSAGE, inferModelType, isSvgWithReferences, optionsMatchModel, stripHiddenParams, withEffectiveDefaults, withSvgReferenceConstraint } from "../lib/useModels";
+import { SvgReferenceBand } from "./spotlight/SvgReferenceBand";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
 import { videoCostContext } from "../lib/useSceneGenerationSubmission";
 import { AUDIO_TASK_MODELS, audioModelBlocked, audioTagMatches, audioTagModel, audioTaskOf, isTtsModel, isVideoVoiceModel, refTrayShown, videoVoiceInputRef,
@@ -494,6 +495,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     return [...projects].sort().join("|");
   }, [trayRefs, promptTick]);
+  // 붙어 있는 참조 이미지 수(트레이 + 프롬프트 안 칩) — GPT 2.6 SVG 는 참조와 함께 못 쓴다(띠·Generate 잠금·Set 창 svg 잠금)
+  const imageRefCount = useMemo(() => {
+    const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
+    return [...trayRefs, ...inlineRefs].filter((ref) => ref.type === "image").length;
+  }, [trayRefs, promptTick]);
+  const svgRefBlocked = isSvgWithReferences(model, optionValues, imageRefCount);
   const trayAssetVerInFlightRef = useRef<Set<string>>(new Set());
   const refreshTrayAssetVersions = useCallback((changed: string[] = [], fresh = false) => {
     const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
@@ -1404,7 +1411,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     preservePromptAfterSubmit: !!trayBinding?.promptDerived,
     promptContextKey: JSON.stringify([bindingKey, bindingPromptKey]),
     model,
-    modelBlockedMessage,
+    modelBlockedMessage: modelBlockedMessage || (svgRefBlocked ? SVG_REF_MESSAGE : null),
     onCreated,
     reload,
     canvasTarget,
@@ -1703,8 +1710,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     >
       <div className="sl-dock">
         {topSlot}
+        {/* SVG + 참조 이미지 — 프롬프트 창 바로 위에 붙는 띠(창 윗모서리를 곧게 맞춘다) */}
+        {svgRefBlocked && <SvgReferenceBand onFix={() => setOpt("output_format", "png")} />}
         <div
-          className={"sl-panel" + (trayMode ? " expanded" : "") + (isVideoVoiceModel(model) ? " sl-video-voice" : "")}
+          className={"sl-panel" + (trayMode ? " expanded" : "") + (isVideoVoiceModel(model) ? " sl-video-voice" : "") + (svgRefBlocked ? " has-band" : "")}
           onDragOver={onPanelDragOver}
           onDrop={onPanelDrop}
         >
@@ -1793,6 +1802,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             cost={cost}
             costLoading={costLoading}
             onSubmit={submit}
+            blockedReason={svgRefBlocked ? SVG_REF_MESSAGE : null}
           >
               <SpotlightOptionsBar
                 type={type}
@@ -1812,7 +1822,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 typeFullyBlocked={typeFullyBlocked}
                 policyNote={policyNote(modelPolicy)}
                 tunable={optionsMatchModel(type, model, paramsModel) ? tunable : []}
-                constraints={constraints}
+                constraints={withSvgReferenceConstraint(constraints, model, tunable, imageRefCount)}
                 optionValues={optionValues}
                 setOptionValues={setOptionValues}
                 setOpt={setOpt}

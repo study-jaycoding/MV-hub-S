@@ -14,6 +14,7 @@ import {
 } from "./sceneEdges";
 import { variantIds, type SceneCard, type SceneEdge, type SceneModelCfg } from "./scenes";
 import { parseSceneSetTags } from "./sceneSet";
+import { isSvgWithReferences } from "./svgReference";
 
 export interface SceneGenerationAssignment {
   projectId?: string;
@@ -173,6 +174,45 @@ export function collectSceneGenerationCardInput(
     text,
     assignment: collectSceneGenerationAssignment(cardId, cardsById, resolvedEdges),
   };
+}
+
+// ── SVG + 참조 이미지(GPT Image 2.6 은 SVG 에 참조를 못 쓴다 — svgReference) ──
+// 모델 노드가 먹이는 생성카드들 중 이미지 참조가 가장 많은 카드의 참조 수. 참조 수는 제출과 같은 함수(collectSceneGenerationCardInput)로 센다.
+export function modelNodeImageRefCount(
+  nodeId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+): number {
+  let most = 0;
+  for (const edge of resolvedEdges) {
+    if (edge.from !== nodeId) continue;
+    const target = cardsById.get(edge.to);
+    if (target?.kind !== "generation") continue;
+    const input = collectSceneGenerationCardInput(target.id, cardsById, resolvedEdges);
+    most = Math.max(most, input ? input.refs.filter((ref) => ref.type === "image").length : 0);
+  }
+  return most;
+}
+
+// SVG 를 고른 모델 노드 중 연결된 생성카드에 이미지 참조가 붙어 CLI 가 거절할 노드와 그 생성카드. 노드 알약·생성 건너뛰기가 같이 쓴다.
+//  svg 가 아닌 노드는 참조를 세지 않고 지나간다(보드가 카드를 움직일 때마다 도는 계산이라 가볍게).
+export function svgReferenceConflicts(
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+): { modelNodeIds: Set<string>; generationIds: Set<string> } {
+  const modelNodeIds = new Set<string>();
+  const generationIds = new Set<string>();
+  for (const card of cardsById.values()) {
+    const cfg = card.kind === "model" ? card.modelCfg : undefined;
+    if (!cfg?.model || cfg.params?.output_format !== "svg") continue;
+    const count = modelNodeImageRefCount(card.id, cardsById, resolvedEdges);
+    if (!isSvgWithReferences(cfg.model, cfg.params as Record<string, string | number | boolean>, count)) continue;
+    modelNodeIds.add(card.id);
+    for (const edge of resolvedEdges) {
+      if (edge.from === card.id && cardsById.get(edge.to)?.kind === "generation") generationIds.add(edge.to);
+    }
+  }
+  return { modelNodeIds, generationIds };
 }
 
 function modelNodeCount(

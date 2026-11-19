@@ -9,6 +9,7 @@ import { useModelDisplayName } from "../../lib/modelCatalog";
 import { BUDGET_PERIOD_OPTIONS } from "../../lib/projectPlanning";
 import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
+import { POLICY_EXEMPT_MODELS } from "../../lib/modelPolicyCore";
 import { ALLOWED } from "../../lib/useModels";
 import { formatCredits } from "../../lib/formatCredits";
 import { useManageEditConflict } from "./useManageEditConflict";
@@ -44,7 +45,8 @@ function memberLabel(member: CreditPlanMember): string {
 // 그룹 창의 '사용 모델' 후보 — 생성창 모델과 영상 수정 workflow. 기존 이미지 수정 전용 모델은 제외한다.
 // 저장값은 job_type 문자열이라 여기 없는 옛·미래 id 도 알약으로는 보여 주고 그대로 보존한다.
 const SELECTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
-  { title: "이미지", ids: ALLOWED.image },
+  // 면제 모델(Seedream 5.0 Pro)은 그룹이 막을 수 없어 눌러도 소용없으니 고르는 칸에서 뺀다.
+  { title: "이미지", ids: ALLOWED.image.filter((id) => !POLICY_EXEMPT_MODELS.has(id)) },
   { title: "영상", ids: [...ALLOWED.video, "draw_to_video"] },
   { title: "오디오", ids: [...ALLOWED.audio, "voice_change", "dubbing"] },
 ];

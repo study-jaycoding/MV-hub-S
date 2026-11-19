@@ -35,6 +35,12 @@ const caretAt = (ed: HTMLElement) => {
 
 afterEach(() => { document.body.innerHTML = ""; });
 
+// 모델 목록이 계열 아이콘 타일(Seed·ElevenLabs·Qwen·MiniMax)로 나뉘어(2026-11-19), 줄은 보는 계열 것만 보인다 — 고를 줄의 계열 타일을 먼저 누른다.
+function pickFamilyTile(container: HTMLElement, name: string) {
+  const tile = container.querySelector<HTMLButtonElement>(`.sl-fam-tab[aria-label="${name}"]`);
+  if (tile) act(() => tile.click());
+}
+
 describe("태그 표·모델", () => {
   it("웹 v4 와 같은 5묶음 40개 · v4 와 v3(text2speech_v2·elevenlabs)에서만", () => {
     expect(AUDIO_TAG_GROUPS.map(([g, t]) => [g, t.length])).toEqual([
@@ -226,6 +232,7 @@ describe("bracket-list — 프롬프트에서(ElevenLabs v4)", () => {
     // 첫 오디오 모델(Seed Audio)이 자동으로 골라진다 — 모델 칩에서 v4 로 바꾼다
     act(() => [...view!.container.querySelectorAll("button")].find((b) => b.textContent?.includes("모델 선택"))!.click());
     await settle();
+    pickFamilyTile(view.container, "ElevenLabs");
     act(() => [...view!.container.querySelectorAll<HTMLElement>(".sl-dd-item")].find((b) => b.textContent?.includes("Eleven v4"))!.click());
     await settle();
     expect(view.container.querySelector(".sl-atag-btn")).not.toBeNull();
@@ -276,6 +283,7 @@ describe("bracket-list — 프롬프트에서(ElevenLabs v4)", () => {
     const pick = async (from: string, to: string) => {
       act(() => [...view!.container.querySelectorAll("button")].find((b) => b.textContent?.includes(from))!.click());
       await settle();
+      pickFamilyTile(view!.container, to.includes("MiniMax") ? "MiniMax" : "ElevenLabs");
       act(() => [...view!.container.querySelectorAll<HTMLElement>(".sl-dd-item")].find((b) => b.textContent?.includes(to))!.click());
       await settle();
     };
@@ -300,6 +308,7 @@ describe("bracket-list — 프롬프트에서(ElevenLabs v4)", () => {
     await settle();
     act(() => [...view!.container.querySelectorAll("button")].find((b) => b.textContent?.includes("모델 선택"))!.click());
     await settle();
+    pickFamilyTile(view.container, "ElevenLabs");
     act(() => [...view!.container.querySelectorAll<HTMLElement>(".sl-dd-item")].find((b) => b.textContent?.includes("Eleven v4"))!.click());
     await settle();
     const editor = required(view.container, '[contenteditable="true"]');

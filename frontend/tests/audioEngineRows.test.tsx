@@ -79,6 +79,10 @@ const button = (label: string) => {
 const openModelList = () => act(() => (container.querySelector(".sl-chip") as HTMLButtonElement).click());
 const rowNames = () => [...container.querySelectorAll(".sl-dropdown .sl-dd-item")].map((b) => (b.getAttribute("aria-label") || b.textContent || "").trim());
 const audioNames = ["Seed Audio 1.0", "ElevenLabs v4", "ElevenLabs v4 Turbo", "ElevenLabs v3", "Qwen Audio 3.0 TTS", "MiniMax Speech 2.8 HD", "Seed Speech"];
+// 2026-11-19: 모델 목록이 계열 아이콘 타일(Seed·ElevenLabs·Qwen·MiniMax)로 나뉘어, 줄은 지금 보는 계열 것만 보인다 — 다른 계열 줄은 그 타일을 먼저 누른다.
+const famTab = (name: string) => container.querySelector<HTMLButtonElement>(`.sl-fam-tab[aria-label="${name}"]`);
+const pickFamily = (name: string) => act(() => famTab(name)!.click());
+const allRowNames = () => [...container.querySelectorAll<HTMLButtonElement>(".sl-fam-tab")].flatMap((tab) => { act(() => tab.click()); return rowNames(); });
 
 describe("오디오 엔진 줄 — 씬 모델 창", () => {
   it("새로 고르면 첫 엔진(elevenlabs)이 옵션값에도 실리고, 고급에 variant 가 없다", async () => {
@@ -86,7 +90,9 @@ describe("오디오 엔진 줄 — 씬 모델 창", () => {
     expect(chipText()).toBe("ElevenLabs v3");
     expect(container.querySelector('button[title^="고급 옵션"]')).toBeNull(); // 고급(Set) 칩 없음
     openModelList();
-    expect(rowNames()).toEqual(audioNames);
+    expect([...container.querySelectorAll(".sl-fam-tab")].map((tab) => tab.getAttribute("aria-label"))).toEqual(["Seed", "ElevenLabs", "Qwen", "MiniMax"]);
+    expect(rowNames()).toEqual(["ElevenLabs v4", "ElevenLabs v4 Turbo", "ElevenLabs v3"]); // 고른 엔진(ElevenLabs v3)의 계열이 먼저 열린다
+    expect([...allRowNames()].sort()).toEqual([...audioNames].sort()); // 타일을 차례로 눌러 보면 7줄이 모두 있다
     act(() => button("저장").click());
     expect(saved[0]).toMatchObject({ model: "text2speech_v2", modelName: "ElevenLabs v3", params: { variant: "elevenlabs" } });
   });
@@ -98,6 +104,7 @@ describe("오디오 엔진 줄 — 씬 모델 창", () => {
     expect(container.textContent).toContain("음성 엔진이 없습니다");
     openModelList();
     expect(container.querySelector(".sl-dropdown .sl-dd-item.sel")).toBeNull(); // 어느 줄도 고른 것처럼 보이지 않는다
+    pickFamily("MiniMax");
     act(() => button("MiniMax Speech 2.8 HD").click());
     await settle();
     expect(chipText()).toBe("MiniMax Speech 2.8 HD");
@@ -179,9 +186,11 @@ describe("Codex H — 옵션 준비 전 선택·키보드 초점·빈 목록", (
     await mountModal({ model: "elevenlabs_v4", params: {} });
     expect(modelParams.mock.calls.map(([m]) => m)).toContain("elevenlabs_v4");
     openModelList();
+    pickFamily("MiniMax");
     act(() => button("MiniMax Speech 2.8 HD").click()); // 다른 모델 → 예약값(minimax)
     await settle(); // text2speech_v2 스키마는 아직 안 왔다
     openModelList();
+    pickFamily("Seed");
     act(() => button("Seed Speech").click()); // 반례: 받아들여 보였다가 응답 때 minimax 로 되돌아갔다
     expect(chipText()).not.toBe("Seed Speech");
     expect(button("Voice").disabled).toBe(true); // 반례: 여기서 고른 목소리(Emily)도 응답 때 초기화로 사라졌다
@@ -194,6 +203,7 @@ describe("Codex H — 옵션 준비 전 선택·키보드 초점·빈 목록", (
     act(() => button("Emily").click());
     expect(voiceLabel()).toBe("Emily");
     if (!container.querySelector(".sl-dropdown .sl-dd-item")) openModelList();
+    pickFamily("Seed");
     act(() => button("Seed Speech").click());
     await settle();
     expect(chipText()).toBe("Seed Speech");

@@ -46,7 +46,12 @@ describe("audio models v1", () => {
     expect(rows.map((row) => row.key)).toEqual(["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "text2speech_v2:elevenlabs", "qwen_audio_tts", "text2speech_v2:minimax", "text2speech_v2:seed_speech"]);
     expect(rows.every((row) => row.description)).toBe(true);
     await act(async () => root.render(<Panel model="seed_audio" />));
-    expect(host.querySelectorAll(".sl-model-description")).toHaveLength(7);
+    // 2026-11-19: 계열 아이콘 타일(Seed·ElevenLabs·Qwen·MiniMax)로 나뉘어 줄은 보는 계열 것만 — 타일을 차례로 눌러 7줄을 센다
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>(".sl-fam-tab")];
+    expect(tabs).toHaveLength(4);
+    let described = 0;
+    for (const tab of tabs) { act(() => tab.click()); described += host.querySelectorAll(".sl-model-description").length; }
+    expect(described).toBe(7);
     // 2-B: Voice Change 는 더 이상 '준비 중'이 아니다 — 일을 바꾸면 그 일로 표시된다(실행 키 전환은 생성 바가 한다).
     act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "Voice Change")!.click());
     expect(host.querySelector('[role="status"]')).toBeNull();

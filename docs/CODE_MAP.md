@@ -725,6 +725,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `spotlight/SpotlightMentionPicker.tsx`(152줄) | @/# 피커 목록(트레이 항목 + 소스 + 태그) | `SpotlightMentionPicker` |
 | `spotlight/SpotlightPromptRow.tsx`(92줄) | 프롬프트 입력 행(순수 프레젠테이션) | `SpotlightPromptRow` |
 | `spotlight/SpotlightOptionIcon.tsx`(85줄) | 옵션 이름 → SVG 아이콘 매핑 | `SpotlightOptionIcon` |
+| `spotlight/ModelFamilyIcon.tsx`(107줄) | 모델 선택 목록의 계열 판정(`modelFamily`·줄 단위 `rowFamily` — 오디오 Text to Speech 엔진 줄 포함)과 계열 아이콘 11종(Nano Banana·GPT Image·Seedream·Seedance·Kling·Gemini·Wan·MiniMax·Seed·ElevenLabs·Qwen — 힉스필드 이미지·비디오·오디오 아이콘 폴더 SVG) | `ModelFamilyIcon`, `modelFamily` |
+| `spotlight/SvgReferenceBand.tsx`(14줄) | GPT 2.6 SVG 와 참조 이미지를 함께 쓸 때 프롬프트 창 위에 붙는 띠(메시지 + [png 로 바꾸기]) — 판정은 `useModels` 의 `isSvgWithReferences` | `SvgReferenceBand` |
 | `spotlight/SpotlightDurationChip.tsx`(74줄) | 길이 칩("4s") + 누르면 위에 뜨는 눈금 슬라이더 창 — 생성창·수정 창 공용 | `SpotlightDurationChip` |
 | `spotlight/SpotlightGenerateControls.tsx`(77줄) | 배치 수·비용·생성 버튼 줄 | `SpotlightGenerateControls` |
 | `spotlight/SpotlightRefRoleMenu.tsx`(45줄) | 트레이 우클릭 역할 메뉴(포털) | `SpotlightRefRoleMenu` |
@@ -1127,7 +1129,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `comfyRunState.ts` | 순수 | 배치 실행 판정 상태기계·동시성 리미터 |
 | `useComfyUnresolvedRuns.ts` | 훅 | 미회수 실행 목록 조회·해제 |
 | `useCanvasComfyRuns.ts` | 훅 | 캔버스 Comfy 실행 복구 주기 — 씬의 `comfyRuns` 를 resolve → 반영+applied 한 번 저장 → 확인 → ACK(보드 없이도, 쓰는 창만) |
-| `sceneGenerationInputs.ts` | 순수 | 캔버스 생성 요청 재료 + 실행 중 변경 감지 지문 |
+| `sceneGenerationInputs.ts` | 순수 | 캔버스 생성 요청 재료 + 실행 중 변경 감지 지문 + SVG·참조 충돌 노드 판정(`svgReferenceConflicts`) |
+| `svgReference.ts` | 순수 | GPT 2.6 SVG 는 참조 이미지와 함께 못 씀 — 판정·문구·Set 창 svg 잠금(import 없는 가벼운 모듈, 생성창·씬 보드·모델 창 공용) |
 | `sceneGenerationSubmission.ts` | 순수 | 캔버스 생성 배치 제출 경계(작업·씬 격리) |
 
 **13. 어셋·폴더 트리·팀 신규(8)**

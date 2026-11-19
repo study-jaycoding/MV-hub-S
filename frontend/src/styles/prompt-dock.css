@@ -528,6 +528,48 @@
 }
 .sl-dd-item.sel::before { border-color: var(--accent); background: var(--accent); }
 
+/* 이미지·영상 모델 목록 — 계열 아이콘 타일(글씨 없음) + 줄 아이콘. 기본 흰색, 고른 것·보는 계열은 accent(라임). 체크 칸 자리에 아이콘. */
+.sl-fam-tabs { display: flex; gap: 6px; padding: 4px 5px 8px; margin-bottom: 5px; border-bottom: 1px solid var(--border2); }
+.sl-fam-tab {
+  width: 40px; height: 40px; padding: 0; display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; border: 1px solid var(--border2); background: transparent; color: #fff;
+}
+.sl-fam-tab:hover { background: rgba(255, 255, 255, 0.06); }
+.sl-fam-tab.on { color: var(--accent); border-color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+.sl-fam-tab .sl-fam-ic { width: 20px; height: 20px; }
+.sl-dd-item.has-ic { display: flex; align-items: center; gap: 12px; padding-left: 12px; }
+.sl-dd-item.has-ic::before { display: none; }
+.sl-dd-item.has-ic .sl-fam-ic { width: 18px; height: 18px; flex: none; color: #fff; }
+/* 이름 아래에 설명(오디오 줄) — 한 줄로 길게 늘어나 가로 막대가 생기던 것을 줄바꿈으로 */
+.sl-dd-item.has-ic { white-space: normal; }
+.sl-dd-item.has-ic .sl-dd-text { display: flex; flex-direction: column; min-width: 0; }
+.sl-dd-item.has-ic .sl-model-description { margin-top: 1px; line-height: 1.35; font-weight: 400; }
+/* 오디오 모델 목록 — 넓혀서 설명이 이름 아래 한 줄에 들어간다(Jay 2026-11-19 A안) */
+/* 너비는 가장 긴 설명(23자 안팎)이 겨우 들어가는 330px 로 고정 — 계열 타일을 바꿔도 창 너비가 흔들리지 않는다. 줄 오른쪽 여백은 체크 칸 시절의 28px 를 12px 로(글씨 뒤 빈칸 줄이기). */
+.sl-dropdown.sl-dd-wide { min-width: 330px; max-width: none; }
+.sl-dropdown.sl-dd-wide .sl-dd-item.has-ic { padding-right: 12px; }
+.sl-dropdown.sl-dd-wide .sl-dd-item.has-ic .sl-model-description { white-space: nowrap; }
+.sl-dd-item.has-ic.sel .sl-fam-ic { color: var(--accent); }
+.sl-chip-ic { width: 14px; height: 14px; flex: none; color: var(--accent); }
+.sl-chip.blocked .sl-chip-ic { color: #f06a5a; }
+/* SVG + 참조 이미지 — 프롬프트 창에 딱 붙는 띠(Jay A안). 창은 윗모서리를 곧게 맞춘다. */
+.sl-svg-band {
+  display: flex; align-items: center; gap: 10px; padding: 9px 14px; font-size: 13px;
+  border: 1px solid rgba(240, 106, 90, 0.55); border-bottom: none; border-radius: 12px 12px 0 0;
+  background: #221412; color: #f4a79d;
+}
+.sl-svg-band b { color: #ffc7bf; }
+.sl-svg-band-fix {
+  margin-left: auto; flex: none; padding: 3px 12px; font-size: 12px; border-radius: 14px;
+  border: 1px solid rgba(240, 106, 90, 0.5); background: transparent; color: #f4a79d; cursor: pointer;
+}
+.sl-svg-band-fix:hover { background: rgba(240, 106, 90, 0.14); }
+.sl-panel.has-band { border-top-left-radius: 0; border-top-right-radius: 0; border-top-color: rgba(240, 106, 90, 0.55); }
+/* 캔버스 모델 창 안에서는 창에 붙는 게 아니라 옵션 위의 한 덩어리 안내 */
+.scene-modelmodal-body .sl-svg-band { border-bottom: 1px solid rgba(240, 106, 90, 0.55); border-radius: 10px; margin-bottom: 8px; }
+/* GIF 는 크기가 고정(288×288) — 눌러도 열리지 않는 잠긴 칸 */
+.sl-chip-locked { opacity: 0.7; cursor: not-allowed; }
+
 /* 목소리 창(오디오) — 이름 검색칸 + 목록. 목록 모양은 .sl-dd-item 그대로. */
 .sl-voice-pop { min-width: 240px; }
 .sl-voice-search {
@@ -641,8 +683,11 @@
 /* 조합 제약으로 막힌 값 — 비활성 + 취소선(예: Fast 모드의 1080p) */
 .sl-adv-opt.blocked,
 .sl-dd-item.blocked {
-  opacity: 0.4; cursor: not-allowed; text-decoration: line-through;
+  opacity: 0.4; cursor: not-allowed;
 }
+/* 막힌 값의 취소선 — 글자 기본 취소선은 위로 치우쳐 보여, 글자(x높이) 가운데를 지나는 선을 직접 긋는다(Jay 2026-11-19). */
+.sl-opt-t { position: relative; display: inline-block; }
+.blocked .sl-opt-t::after { content: ""; position: absolute; left: -0.3em; right: -0.3em; top: calc(50% + 0.13em); height: 1px; background: currentColor; }
 .sl-adv-opt.blocked:hover,
 .sl-dd-item.blocked:hover { background: transparent; color: var(--muted); }
 .sl-dd-lock { font-size: 10px; opacity: 0.8; }

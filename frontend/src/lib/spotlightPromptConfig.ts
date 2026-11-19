@@ -118,6 +118,14 @@ const DURATION_RANGE: Record<string, { min: number; max: number }> = {
   seedance_2_0: { min: 4, max: 15 },
   seedance_2_0_mini: { min: 4, max: 15 },
   gemini_omni: { min: 4, max: 10 }, // 실측(generate cost): 4 미만/10 초과 거부
+  // 2026-11-19 R&D 견적(generate cost, 글→영상 기준) — 허용·거부 경계를 직접 쟀다. 칸 밖 값은 견적이 '없음'으로 나온다.
+  kling4_0: { min: 3, max: 30 }, // 1·2 거부, 3·4·30 허용, 31 거부
+  kling_4_0_flash: { min: 3, max: 20 }, // 3~20 허용, 22·25·30 거부(21 은 재지 않음)
+  gemini_omni_flash_1_2: { min: 3, max: 15 }, // 3~15 허용, 16·18·20·30 거부. 참조·처음끝 그림·이어 붙이기는 10초까지(CLI 규칙)
+  wan3_0: { min: 2, max: 30 }, // 1 거부, 2·4·30 허용, 31 거부(CLI 규칙: -1 스마트 길이 또는 2~30)
+  wan3_0_prime: { min: 2, max: 30 }, // 2·4·30 허용
+  minimax_h3: { min: 4, max: 15 }, // 2·3 거부, 4·5·10·15 허용, 16·20 거부
+  minimax_h3_max: { min: 5, max: 15 }, // 2·3·4 거부, 5·6·10·15 허용(15 위는 재지 않음)
 };
 
 export function durationRange(model: string, fallback: number): { min: number; max: number } {

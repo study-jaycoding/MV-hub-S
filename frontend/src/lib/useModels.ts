@@ -12,16 +12,19 @@ import { audioModelBlocked, audioParamsError, isTtsModel, isVideoVoiceModel, req
   type VideoCostContext } from "./spotlightPromptConfig";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
-//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.5(gpt_image_2_5) · GPT Image 2(gpt_image_2)
+//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2.1(nano_banana_2_1, 2026-10-14 추가 — 첫 자리는 그대로 두어 기본 모델이 안 바뀐다) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2.6(gpt_image_2_6)·2.6 Flare(gpt_image_2_6_flare)·2.5(gpt_image_2_5)·2(gpt_image_2) · Seedream 5.5(seedream_5_5)·5.0 Pro(seedream_v5_pro)·5.0 Flash(seedream_5_0_flash)·5.0 Lite(seedream_v5_lite)
+//   ※ 2026-11-19 GPT 2.6 두 개·Seedream 네 개 추가(Jay). Seedream 5.0 Pro 는 부분 수정 기본 모델이기도 해서 `POLICY_EXEMPT_MODELS` 면제가 그대로다 —
+//     그룹이 생성 창에서 막지 못하고(수정 결과 재생성·복구가 막히지 않게), 그룹 허용 선택 목록(CreditPlanFields)에서는 뺀다.
 //  비디오: Seedance 2.5(seedance_2_5, duration 4~30s·오디오 생성 지원·480p/720p/1080p) · Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p)
+//        · 2026-11-19 Jay 추가: Kling 4.0(kling4_0)·4.0 Flash(kling_4_0_flash) · Gemini Omni Flash 1.2(gemini_omni_flash_1_2) · Wan 3.0(wan3_0)·3.0 Prime(wan3_0_prime) · MiniMax H3(minimax_h3)·H3 Max(minimax_h3_max)
 //   ※ Gemini Omni Flash(gemini_omni)는 2026-09-15 노출 제외(Jay 요청). CLI 카탈로그엔 남아 있고 이 목록에서만 뺐다 —
 //     이 모델로 만든 생성물은 0건이라 기존 카드 표시엔 영향 없다(DB 대조 확인).
 // 각 모델의 옵션은 CLI 스키마(get_model_params)로 동적 렌더 — 모델마다 다른 파라미터 자동 반영.
 // ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
 //   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
 export const ALLOWED: Record<"image" | "video" | "audio", string[]> = {
-  image: ["nano_banana_flash", "nano_banana_2_1", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_5", "gpt_image_2"],
-  video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini"],
+  image: ["nano_banana_flash", "nano_banana_2_1", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2_6", "gpt_image_2_6_flare", "gpt_image_2_5", "gpt_image_2", "seedream_5_5", "seedream_v5_pro", "seedream_5_0_flash", "seedream_v5_lite"],
+  video: ["seedance_2_5", "seedance_2_0", "seedance_2_0_mini", "kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"],
   audio: ["seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "text2speech_v2", "qwen_audio_tts"],
 };
 
@@ -63,9 +66,22 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   nano_banana: "Nano Banana",
   gpt_image_2_5: "GPT Image 2.5", // 휴머나이즈는 "Gpt Image 2 5"(소문자 pt·마침표 소실)라 표기 교정
   gpt_image_2: "GPT Image 2", // 휴머나이즈는 "Gpt Image 2"(소문자 pt)라 표기 교정
+  seedream_v5_pro: "Seedream 5.0 Pro",
+  gpt_image_2_6: "GPT Image 2.6",
+  gpt_image_2_6_flare: "GPT Image 2.6 Flare",
+  seedream_5_5: "Seedream 5.5",
+  seedream_5_0_flash: "Seedream 5.0 Flash",
+  seedream_v5_lite: "Seedream 5.0 Lite",
   seedance_2_5: "Seedance 2.5",
   seedance_2_0: "Seedance 2.0",
   seedance_2_0_mini: "Seedance 2.0 Mini",
+  kling4_0: "Kling 4.0",
+  kling_4_0_flash: "Kling 4.0 Flash",
+  gemini_omni_flash_1_2: "Gemini Omni Flash 1.2",
+  wan3_0: "Wan 3.0",
+  wan3_0_prime: "Wan 3.0 Prime",
+  minimax_h3: "MiniMax H3",
+  minimax_h3_max: "MiniMax H3 Max",
 };
 // 동적 옵션에서 제외(프롬프트·미디어·내부용)
 //  · batch_size: "한 번에 N장"은 앱 레벨 count(1/4)로 일원화 → UI 에서 숨김(중복·곱셈 함정 제거).
@@ -83,6 +99,32 @@ export const HIDDEN_PARAMS = new Set([
   "video", "ref_image", "input_video",
   "is_inpaint", "mask", "draft", "draft_job_id",
 ]);
+
+// 모델별 숨김 파라미터 — 그 모델에서만 칸을 보이지 않는다(2026-11-19 R&D 제이/101 실측).
+//  · seedream_v5_pro: width·height 를 주면 **생성 실패**(768×512), remove_bg=true 는 전송돼도 **배경이 안 지워진다**(효과 없는 칸).
+//  · seedream_5_0_flash: width·height 는 **무시**된다(비율·해상도가 크기를 정한다 — 768×512 요청이 1248×832 로 나옴).
+//  · gpt_image_2_6(·flare): size 는 형식·효과를 확인하지 못했다(자유 글자 칸) — 잘못 넣으면 거절된다.
+// 값 없는 기본이라 평소엔 안 실리고, 옛 카드·복원값으로 되살아오는 것은 correctedOptions 가 걷어 낸다.
+export const MODEL_HIDDEN_PARAMS: Record<string, ReadonlySet<string>> = {
+  seedream_v5_pro: new Set(["width", "height", "remove_bg"]),
+  seedream_5_0_flash: new Set(["width", "height"]),
+  gpt_image_2_6: new Set(["size"]),
+  gpt_image_2_6_flare: new Set(["size"]),
+  // Kling 4.0 계열 kling_element_ids 는 '요소 ID 목록'이라 글자 칸으로 넣을 수 없다(넣으면 문자열로 가서 거절) — 요소 고르기가 생길 때까지 숨긴다.
+  kling4_0: new Set(["kling_element_ids"]),
+  kling_4_0_flash: new Set(["kling_element_ids"]),
+};
+export const isModelHiddenParam = (model: string, name: string): boolean => MODEL_HIDDEN_PARAMS[model]?.has(name) === true;
+
+// GPT Image 2.6 은 GIF 로 만들면 해상도 값과 상관없이 **288×288** 이 나온다(2026-11-19 R&D 실측 — 1k 요청이 288×288 GIF).
+//  그래서 GIF 일 때 해상도 칸을 이 크기로 바꿔 보이고 잠근다(Jay 1-A 안). 옵션값(resolution)은 그대로 둔다 — png 로 돌아오면 고르던 값이 살아 있다.
+// SVG + 참조 이미지 판정은 가벼운 따로 모듈(svgReference)에 있다 — 씬 보드도 쓰는데 이 파일은 무겁다. 기존 import 자리를 위해 다시 내보낸다.
+export { SVG_REF_MESSAGE, isSvgWithReferences, withSvgReferenceConstraint } from "./svgReference";
+
+export const GIF_FIXED_SIZE_LABEL = "288×288";
+const GIF_FIXED_SIZE_MODELS: ReadonlySet<string> = new Set(["gpt_image_2_6", "gpt_image_2_6_flare"]);
+export const isGifFixedSize = (model: string, optionValues: Record<string, string | number | boolean>): boolean =>
+  GIF_FIXED_SIZE_MODELS.has(model) && optionValues.output_format === "gif";
 
 // 외부에서 들어오는 옵션 덩어리(씬 카드 저장분·initial.params 등)에서 숨김 파라미터 제거 —
 // setOptionValues/pending 경로로 숨김 키가 되살아나 요청 body 에 실리는 것을 막는다(코덱스).
@@ -109,6 +151,8 @@ export const MODEL_DEFAULT_OVERRIDE: Record<string, Record<string, string>> = {
   seedance_2_5: { mode: "omni_reference" },
   // 새로 고를 때의 엔진 — 모델 줄의 첫 줄과 같은 값을 옵션값에도 명시한다(CLI enum 순서에 기대지 않게 — Codex A5).
   text2speech_v2: { variant: "elevenlabs" },
+  // MiniMax H3 Max 는 5초가 최소다(4초는 거부 — 2026-11-19 R&D 견적). 공통 기본 4초를 쓰면 처음부터 견적·제출이 안 된다.
+  minimax_h3_max: { duration: "5" },
 };
 
 // 파라미터의 '실효 기본값' — 오버라이드(enum 에 존재할 때) > 스키마 default > enum 첫값.
@@ -141,6 +185,20 @@ export type ParamConstraint = {
   allow: string[];
   note: string;
 };
+const KLING_TEXT_FIXED_RATIO: ParamConstraint = {
+  whenParam: "mode",
+  whenEquals: "text-to-video",
+  param: "aspect_ratio",
+  allow: ["21:9", "16:9", "9:16", "1:1"],
+  note: "글만으로 영상을 만들 때는 비율을 정해야 합니다 (auto 는 그림·영상을 넣는 모드에서만).",
+};
+const GPT_JPEG_NO_TRANSPARENT: ParamConstraint = {
+  whenParam: "output_format",
+  whenEquals: "jpeg",
+  param: "background",
+  allow: ["auto", "opaque"],
+  note: "jpeg 는 투명 배경을 담을 수 없습니다 (투명은 png·webp·gif 에서).",
+};
 export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
   seedance_2_0: [
     {
@@ -151,6 +209,12 @@ export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
       note: "Fast 모드는 720p 초과 해상도(1080p·4k)를 지원하지 않습니다 (최대 720p).",
     },
   ],
+  // Kling 4.0 계열 — 글→영상은 비율을 고정해야 한다("Text-to-video requires a fixed aspect ratio", R&D 견적에서 auto 는 거부 확인).
+  kling4_0: [KLING_TEXT_FIXED_RATIO],
+  kling_4_0_flash: [KLING_TEXT_FIXED_RATIO],
+  // GPT Image 2.6 — jpeg 는 투명을 못 담는다: jpeg+transparent 는 힉스필드에서 **사유 없이 실패**했다(2026-11-19 R&D 시험, png·webp·gif 는 정상).
+  gpt_image_2_6: [GPT_JPEG_NO_TRANSPARENT],
+  gpt_image_2_6_flare: [GPT_JPEG_NO_TRANSPARENT],
 };
 
 // ── 조건부 파라미터 게이트 ────────────────────────────────────────────────
@@ -162,6 +226,15 @@ export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
 export const PARAM_GATES: Record<string, Record<string, { whenParam: string; whenIn: string[] }>> = {
   seedance_2_5: {
     extension_mode: { whenParam: "mode", whenIn: ["video_extension"] },
+  },
+  // GPT Image 2.6 — 프레임 옵션은 GIF 출력에서만(CLI 규칙 "Frame parameters are only supported for GIF output", 2026-11-19 스키마·R&D 시험).
+  gpt_image_2_6: {
+    frame_count: { whenParam: "output_format", whenIn: ["gif"] },
+    frame_duration_ms: { whenParam: "output_format", whenIn: ["gif"] },
+  },
+  gpt_image_2_6_flare: {
+    frame_count: { whenParam: "output_format", whenIn: ["gif"] },
+    frame_duration_ms: { whenParam: "output_format", whenIn: ["gif"] },
   },
 };
 
@@ -224,7 +297,7 @@ export function defaultOptions(
 ): Record<string, string | number | boolean> {
   const init: Record<string, string | number | boolean> = {};
   for (const p of params) {
-    if (HIDDEN_PARAMS.has(p.name)) continue;
+    if (HIDDEN_PARAMS.has(p.name) || isModelHiddenParam(model, p.name)) continue;
     const dv = effectiveDefault(p, model); // 공통·모델별 오버라이드 반영
     if (dv != null) init[p.name] = dv;
   }
@@ -262,6 +335,13 @@ export function correctedOptions(
 ): Record<string, string | number | boolean> {
   const constraints = activeConstraints(model, optionValues);
   let next: Record<string, string | number | boolean> | null = null;
+  // ⓪ 모델별 숨김 파라미터 — 옛 카드·복원값으로 되살아온 값은 걷어 낸다(CLI 가 거부하거나 효과가 없다)
+  for (const name of MODEL_HIDDEN_PARAMS[model] ?? []) {
+    if (name in optionValues) {
+      next ||= { ...optionValues };
+      delete next[name];
+    }
+  }
   // ① enum 조합 제약 → 금지값이면 허용값으로 스냅
   for (const [pname, c] of Object.entries(constraints)) {
     const cur = String(optionValues[pname] ?? "");
@@ -496,8 +576,8 @@ export function useModels(
     modelRef.current = model;
   }, [allowed, model]);
   /** 이 타입에서 지금 고를 수 있는 첫 모델 — 재사용·복원 폴백이 못 쓰는 모델을 집지 않게.
-   *  ★여기도 같은 공통 함수를 쓴다. 지금 카탈로그(`ALLOWED`)에는 면제 모델이 없어 결과는
-   *   같지만, 판정을 두 벌로 두면 다음 정책 변경 때 또 어긋난다(코덱스). */
+   *  ★여기도 같은 공통 함수를 쓴다. 카탈로그(`ALLOWED`)에 면제 모델(Seedream 5.0 Pro, 2026-11-19 추가)이 들어와
+   *   이 판정이 실제로 갈린다 — 판정을 두 벌로 두면 또 어긋난다(코덱스). */
   const firstAllowed = useCallback(
     (t: "image" | "video" | "audio") =>
       ALLOWED[t].find((jt) => !audioModelBlocked(jt) && modelAllowed({ allowed: allowedRef.current }, jt)) ?? "",
@@ -560,7 +640,7 @@ export function useModels(
   const modelName =
     models.find((m) => m.job_set_type === model)?.display_name || "모델 선택";
   // 동적 옵션으로 보여줄 파라미터(프롬프트·미디어 제외)
-  const tunable = params.filter((p) => !HIDDEN_PARAMS.has(p.name));
+  const tunable = params.filter((p) => !HIDDEN_PARAMS.has(p.name) && !isModelHiddenParam(model, p.name));
 
   useEffect(() => {
     // 훅 인스턴스마다 같은 목록을 다시 받지 않는다 — 단일비행 + 짧은 TTL(`modelCatalogCache`).

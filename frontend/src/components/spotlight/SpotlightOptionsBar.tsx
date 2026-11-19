@@ -5,7 +5,7 @@ import { getAuthToken } from "../../lib/http";
 import type { VoiceInfo } from "../../types";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { MediaType, ModelInfo, ModelParam } from "../../types";
-import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
+import { GIF_FIXED_SIZE_LABEL, effectiveDefault, isGifFixedSize, numericRange, paramGateAllows } from "../../lib/useModels";
 import {
   SPOTLIGHT_PRIMARY_PARAMS,
   DUBBING_LANGUAGES,
@@ -23,6 +23,7 @@ import {
   spotlightParamLabel,
 } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionIcon } from "./SpotlightOptionIcon";
+import { FAMILY_NAMES, ModelFamilyIcon, rowFamily, type ModelFamily } from "./ModelFamilyIcon";
 import { SpotlightDurationChip } from "./SpotlightDurationChip";
 import { normalizeSeedanceDraftParams } from "../../lib/seedanceDraft";
 import voiceCatalog from "../../lib/voiceCatalog.json";
@@ -472,6 +473,19 @@ export function SpotlightOptionsBar({
     setOpen(null);
   }, [model, setOpen]);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
+  // 이미지·영상·오디오 모델 목록 — 계열 아이콘 타일(계열 2개 이상)과 줄 아이콘. 계열 없는 줄(옛 엔진 등)이 섞이면 타일 없이 평평한 목록 그대로.
+  //  계열은 줄 단위로 가른다 — 오디오 Text to Speech 는 한 모델 코드 안의 엔진(ElevenLabs·MiniMax·Seed Speech)이 줄마다 다르다.
+  const [famPick, setFamPick] = useState<ModelFamily | null>(null);
+  const modelRowList = modelRows(typeModels, { model, optionValues });
+  const rowFam = (r: (typeof modelRowList)[number]) => rowFamily(r.model, r.value);
+  const rowsAllFamilied = modelRowList.length > 0 && modelRowList.every((r) => rowFam(r));
+  const families = rowsAllFamilied ? [...new Set(modelRowList.map((r) => rowFam(r)!))] : [];
+  const selectedRow = modelRowList.find((r) => r.model === model && (r.value === undefined || currentVariantValue(model, optionValues) === r.value));
+  const curFamily = selectedRow ? rowFam(selectedRow) : rowFamily(model);
+  const activeFamily = families.length < 2 ? null
+    : famPick && families.includes(famPick) ? famPick
+      : curFamily && families.includes(curFamily) ? curFamily : families[0];
+  const shownModelRows = activeFamily ? modelRowList.filter((r) => rowFam(r) === activeFamily) : modelRowList;
   // 두 호출 화면에서 같은 Esc 겹을 사용하고, 바깥 클릭에는 초점을 돌리지 않는다.
   useEscapeClose(() => {
     setOpen(null);
@@ -516,14 +530,14 @@ export function SpotlightOptionsBar({
           aria-expanded={open === "model"}
           className={"sl-chip" + (open === "model" ? " active" : "") + (modelBlocked ? " blocked" : "")}
           title={modelBlocked ? blockedNote || "이 모델은 이 그룹에서 쓸 수 없습니다" : undefined}
-          onClick={() => setOpen(open === "model" ? null : "model")}
+          onClick={() => { setFamPick(null); setOpen(open === "model" ? null : "model"); }}
         >
-          <span className="sl-dot" />
+          {curFamily ? <ModelFamilyIcon family={curFamily} className="sl-chip-ic" /> : <span className="sl-dot" />}
           <span className="sl-chip-label">{modelChipLabel(modelName, model, optionValues)}</span>
           <span className="sl-caret">›</span>
         </button>
         {open === "model" && (
-          <div className="sl-dropdown">
+          <div className={"sl-dropdown" + (type === "audio" ? " sl-dd-wide" : "")} /* 오디오는 줄마다 설명이 있어 넓힌다(Jay 2026-11-19 A안) */>
             <div className="sl-dd-title">{type === "video" ? "Video" : type === "audio" ? "Audio" : "Image"} Model</div>
             {modelBlocked ? (
               <div className="sl-dd-note">{blockedNote || "지금 고른 모델은 이 그룹에서 쓸 수 없습니다. 다른 모델을 고르세요."}</div>
@@ -532,8 +546,18 @@ export function SpotlightOptionsBar({
               <div className="sl-dd-empty">이 그룹에서 쓸 수 있는 {type === "video" ? "영상" : type === "audio" ? "오디오" : "이미지"} 모델이 없습니다.</div>
             ) : null}
             {policyNote ? <div className="sl-dd-empty">{policyNote}</div> : null}
+            {activeFamily && (
+              <div className="sl-fam-tabs" role="tablist" aria-label="모델 계열">
+                {families.map((f) => (
+                  <button key={f} type="button" role="tab" aria-selected={f === activeFamily} aria-label={FAMILY_NAMES[f]} title={FAMILY_NAMES[f]}
+                    className={"sl-fam-tab" + (f === activeFamily ? " on" : "")} onClick={() => setFamPick(f)}>
+                    <ModelFamilyIcon family={f} />
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="sl-dd-scroll">
-              {modelRows(typeModels, { model, optionValues }).map((row) => (
+              {shownModelRows.map((row) => (
                 <button
                   key={row.key}
                   aria-label={row.display_name}
@@ -542,6 +566,7 @@ export function SpotlightOptionsBar({
                   title={audioModelBlocked(row.model) ?? (optionsLoading && row.model === model ? "모델 옵션을 불러오는 중입니다" : undefined)}
                   className={
                     "sl-dd-item" +
+                    (rowFam(row) ? " has-ic" : "") +
                     (row.model === model &&
                     (row.value === undefined || currentVariantValue(model, optionValues) === row.value)
                       ? " sel"
@@ -558,8 +583,19 @@ export function SpotlightOptionsBar({
                     setOpen(null);
                   }}
                 >
-                  <span>{row.display_name}</span>
-                  {row.description && <small className="sl-model-description">{audioModelBlocked(row.model) || row.description}</small>}
+                  {rowFam(row) ? <ModelFamilyIcon family={rowFam(row)!} /> : null}
+                  {/* 아이콘 줄은 이름 아래에 설명을 쌓는다(이름 옆으로 길게 늘어나지 않게) — 아이콘 없는 줄은 종전 모양 */}
+                  {rowFam(row) ? (
+                    <span className="sl-dd-text">
+                      <span>{row.display_name}</span>
+                      {row.description && <small className="sl-model-description">{audioModelBlocked(row.model) || row.description}</small>}
+                    </span>
+                  ) : (
+                    <>
+                      <span>{row.display_name}</span>
+                      {row.description && <small className="sl-model-description">{audioModelBlocked(row.model) || row.description}</small>}
+                    </>
+                  )}
                 </button>
               ))}
             </div>
@@ -622,6 +658,15 @@ export function SpotlightOptionsBar({
               onChange={(v) => setOptionValues((prev) => ({ ...prev, [p.name]: v }))}
               ignored={isIgnored} title={`${p.name} (${dmin}~${dmax}s)`} />);
         }
+        if (p.name === "resolution" && isGifFixedSize(model, optionValues)) {
+          // GIF 는 해상도와 상관없이 288×288 — 칸을 그 크기로 바꿔 잠근다(값이 곧 사실이라 오해가 없다)
+          return row(p.name, rowLabel, <SpotlightOptionIcon name={p.name} />,
+            <span className="sl-chip sl-opt-chip sl-chip-locked" key={p.name} aria-disabled="true" title="GIF 는 크기가 고정입니다">
+              <span className="sl-opt-ic"><SpotlightOptionIcon name={p.name} /></span>
+              <span className="sl-opt-text">{GIF_FIXED_SIZE_LABEL}</span>
+              <span aria-hidden="true">🔒</span>
+            </span>);
+        }
         if (rows && p.enum?.length) {
           // 줄 배치 — 목록 대신 값을 한 캡슐에 다 펼친다. 합성 'auto'·막힌 값·Draft 표시·무시되는 값 규칙은 목록과 같다.
           const values = p.name === "aspect_ratio" && !p.enum.includes("auto") ? ["auto", ...p.enum] : p.enum;
@@ -635,7 +680,7 @@ export function SpotlightOptionsBar({
                   <button key={v} type="button" className={"sl-adv-opt" + (cur === v ? " sel" : "") + (blocked ? " blocked" : "")}
                     aria-pressed={cur === v} disabled={isIgnored || blocked} title={blocked ? con!.note : undefined}
                     onClick={() => setOpt(p.name, v)}>
-                    {v}
+                    <span className="sl-opt-t">{v}</span>
                     {isDraftResolution(p.name, v) && <span className="sl-draft-pill">Draft</span>}
                   </button>
                 );
@@ -686,7 +731,7 @@ export function SpotlightOptionsBar({
                         onClick={() => !blocked && setOpt(p.name, v)}
                         title={blocked ? con!.note : undefined}
                       >
-                        {v}
+                        <span className="sl-opt-t">{v}</span>
                         {isDraftResolution(p.name, v) && <span className="sl-draft-pill">Draft</span>}
                         {blocked && <span className="sl-dd-lock"> 🔒</span>}
                       </button>
@@ -789,7 +834,7 @@ export function SpotlightOptionsBar({
                                 : setOptionValues((prev) => ({ ...prev, [p.name]: isTtsModel(model) && ["integer", "number"].includes(p.type.split("|")[0]) ? Number(v) : v })))}
                               title={blocked ? con!.note : undefined}
                             >
-                              {advancedValue(v, p.name)}
+                              <span className="sl-opt-t">{advancedValue(v, p.name)}</span>
                             </button>
                           );
                         })}
