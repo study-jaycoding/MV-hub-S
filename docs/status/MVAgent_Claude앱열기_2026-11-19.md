@@ -5,7 +5,8 @@ updated: 2026-11-19
 
 # MV Agent 대화를 Claude 앱에서 이어 쓰고 다시 가져오기 (2026-11-19)
 
-owner: Claude(설계) · reviewer: Codex(설계 확정) · status: 3판 확정(0단계 실측 반영 · Codex 2차 동의·조건 6개 반영) · M4 측정 통과(11-19 — 구현 뒤 실제 허브 코드로 한 번 더) · 코드 0 · updated: 2026-11-19
+owner: Claude(설계·총괄) · Codex(구현) · reviewer: Codex(설계 확정) · Claude 별도 세션(독립 리뷰) · status: 구현 중 — 1묶음 백엔드 독립 리뷰 PASS(작업실 브랜치 커밋) · 2묶음 화면 남음 · 실제 허브 코드 M4·실사용 전 확인 남음 · updated: 2026-11-19
+작업실: `D:\ClaudeCode\work\mvagent-claude-app-20261119`(브랜치 `codex/mvagent-claude-app`, 기준 dev `d117c248`) · 담당 Codex(구현)·Claude(총괄) · 포트·서버 없음 · 시험 데이터 = pytest 임시 폴더만 · 완료 조건 = 5절
 
 ## 1. 요청
 
@@ -161,6 +162,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Agent backend tests failed' }
 - Codex 설계 확정 1차(새 세션 `01a1f180-b36f-7a82-810d-f48fa0f8e4b3`, 요청 `gpt-6-astra`·high, 실제 로그 `model: gpt-6-astra`·`reasoning effort: high`·`sandbox: read-only`, 종료 0, 답 = 세션 스크래치 `codex/plan_review_1.answer.md`) — 방향 유지, 지적 9(높음 7·중간 2): D1 시작 전 포크 첫 실행 막기 · D2 시간 초과·응답 유실은 잠금 유지(`uncertain`) · D3 가져오기에 handoff_id·revision · D4 앵커 uuid 만으론 부족(압축·분기·불완전 쓰기 구분) · D5 차례 표 `origin` 칸 대신 `context` · D6 내부 전용 입력 키·짝 없는 도구를 성공으로 안 함·상한 넘으면 넣지 않고 잠금 유지 · D7 넘김 중 전체 복원 409·복원본 넘김 초기화 · D8 "AI 가 전부 기억"·"앱 목록에서 사라짐" 보장 문구 뺌 · D9 앱 쪽 MV 실행 권한을 가정하지 않고 가져온 기록으로 계획 묶음·화면 동작을 만들지 않음. → Claude 가 근거 코드(`routers/agent_chat.py:482` 입력 키 규칙, `services/agent_chat.py:45` 사건 상한, `repo/agent_chat.py:365` 포크 판정, `repo/agent_chat.py:236` 복원 채택)를 직접 확인하고 전부 받아 2판으로 반영.
 - 0단계 실측(11-19, Claude 실행·Jay 앱 조작, 결과 4-1) → 3판(Claude): R1 숨긴 새 콘솔·종료 코드 판정·설치 사전 확인 · R2 사람 글 고르기 · R3 압축 경계 한 연결 · R4 갈라짐 실패 · R5 다시 열기 안내 · R6·R7 큰 줄·판 섞임 · 합성 시험 자료. M4 앱 꺼진 경우는 남음.
 - Codex 설계 확정 2차(같은 세션 `01a1f180-…` 이어 받기, 요청 `gpt-6-astra`·high·`-c sandbox_mode=read-only`, 실제 로그 `model: gpt-6-astra`·`reasoning effort: high`·`sandbox: read-only`, 종료 0, 답 = 세션 스크래치 `codex/plan_review_2.answer.md`) — **3판 방향 동의**, 조건 6(높음 5·중간 1): P1 실측한 조합은 숨긴 새 콘솔뿐 — 정지·breakaway·Job 종료는 미검증, 표준 핸들 무지정·`STARTF_USESTDHANDLES` 금지·실행기 PID 기록·자동 재개 금지 · P2 내장 CLI 폴더만으로 설치를 확정하지 않음(available·missing·unknown), 종료 0 = 전달 명령 완료(화면 관찰과 구분) · P3 압축 경계는 구조 5조건(요약 직접 자식·경계 하나 등)을 모두 맞을 때만, 측정기의 일반 논리 부모 탐색은 검증이 아님 · P4 갈라짐은 물리 잎이 아니라 정규화한 진행 경로 수, SDK 가 잎을 고르기 전에 검사 · P5 origin 은 건별 검사(하나라도 빠지면 실패), `<system-reminder>` 는 접두만으로 지우지 않음 · P6 측정 환경(모든 CLAUDE* 제거)은 제품 `child_env()` 와 다름, M4 는 미완료·실사용 활성화 전 필수. → Claude 가 근거(`services/agent_chat_process.py:23-24` 변수 빼기 범위, `measure.py` 생성 옵션)를 확인하고 전부 받아 3판에 반영. R5·합성 자료·판 섞임 허용 방향은 동의.
+- M4 실측(11-19 오후, 4-1 M4 줄) 통과 — 앱 켜짐·꺼짐 모두.
+- **1묶음 백엔드 구현**(Codex 새 세션 `01a1f24f-3b4e-7940-8de9-56be40a71830`, 요청·실제 `gpt-6-astra`·high·`workspace-write`(작업실 + `.tmp` 만), 프롬프트 = 세션 스크래치 `codex/impl_backend.prompt.md`) — 샌드박스 안 Agent 시험 11파일 385+2 실패 → 고침. 총괄 샌드박스 밖 재실행 400 통과·코드 지도·인벤토리 통과.
+- **독립 리뷰 1차**(Claude 별도 세션 `e4e2882e-10f7-4da9-8b75-0cc5d9f42ee3`, `claude-opus-5-5` high, 읽기 도구만) — **CHANGES**: 중간 1(설정 폴더를 바꾼 환경에서 앱이 원래 세션을 못 봐 `imported 0` 으로 거짓 성공 — 추정) · 낮음 7(재개 전 실패 까닭 · 같은 초 정렬 · 깨진 넘김 JSON 영구 잠금 · 머리말 글자 깨짐 · 안내 블록 정규식 · 포크 거절 403 · 로그 없음) · 시험 빈틈 6.
+- **총괄 실제 기록 확인**(0단계·M4 시험 세션 3개 사본, 세션 스크래치 `desk/real_read.py`) — **높음 H1**: 실제 기록의 메타 줄(`session-owner`·`atis-latch`·`cost-state`·`mode`·`api-request-shape`·`tools-used`, 연결 칸 없음) 때문에 앵커 만들기부터 전부 `read_failed`(합성 시험 자료엔 없던 줄).
+- **수정 1차**(같은 Codex 세션 이어 받기, `-c sandbox_mode=workspace-write`, 로그 sandbox 줄 확인) — H1(연결 칸 없는 모르는 종류 = 메타로 건너뜀, 있으면 실패) · 중간 1(`CLAUDE_CONFIG_DIR` 있거나 `cli_home` ≠ 기본이면 `custom_config_dir` 409) · 낮음 2·3·5·6·7·8 · 시험 빈틈 보강, 낮음 4 는 설계대로 닫힌 실패 유지. Codex 423 통과 → 총괄 샌드박스 밖 **423 통과**·코드 지도·인벤토리 통과. 실제 기록 재확인: 갈라진 기록 = `branched` · 몰래 넣은 차례만 뺀 사본 = 앱 사람 글 4개(도구 done·압축 경계 건넘 포함)가 차례 4개 · 새 말 없는 세션 2개 = 0개.
+- **독립 리뷰 2차**(같은 리뷰 세션 이어 받기) — **PASS**. 남은 낮음 3: 연결 칸 없이 최상위 `message`·`origin` 을 실은 모르는 종류를 건너뜀(→ 2묶음 때 실패로 바꿈) · `CLAUDE_CONFIG_DIR=""` 도 막힘(보수적, 문구로 안내) · 목록마다 경로 해석(느려지면 기본 경로 한 번만 계산).
 
 ```vibe-intent
 {

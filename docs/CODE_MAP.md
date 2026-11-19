@@ -7,7 +7,7 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-18
+updated: 2026-11-19
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
@@ -168,6 +168,7 @@ Claude 상태 판정·로그인 창(스위치 `CONTENT_HUB_AGENT_CHAT_LOGIN_WIND
 HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_still_current`, [실행] = `mcp_v2.submit_plan`),
 차례·사건·긴 기다림·취소·계획 대응 `backend/app/services/agent_chat.py`, CLI 찾기·명령·자식 환경·Job `backend/app/services/agent_chat_process.py`
 (루트 런처 import 금지 — 옵션은 0단계 실측값), 출력 해석 `backend/app/services/agent_chat_parse.py`(순수), 신원별 기록 DB `backend/app/repo/agent_chat.py`.
+Claude 앱 기록의 앵커·분기·압축 검사와 읽기 전용 변환은 `backend/app/services/agent_chat_transcript.py`(SDK 0.2.184 읽기 로직 이식·MIT, 합성 자료 시험)다.
 Codex의 PC별 활성화 표식·두 파일 잠금·작업 폴더 검사·연결 점검은 `backend/app/services/agent_chat_codex.py`.
 점검 전용 stdio MCP 서버는 `backend/app/services/agent_chat_probe_mcp.py`(표준 라이브러리만, check_connection·nonce, MV 권한 없음).
 칸 전용 MCP 연결은 `mcp_v2.issue_panel_client`(실행권 영구 끔 — `repo/mcp_v2.create_client` 도 강제)·`local_setup.write_panel_profile`(전역 설정 안 건드림)·어댑터 `--panel`(도구 6개만).
