@@ -838,7 +838,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `edit/EditRefPrompt.tsx`(136줄) | 수정 창 지시문 칸 — `@imageN` 을 레퍼런스 칸 썸네일 알약으로·`@` 목록·없는 번호 경고(알약은 `lib/promptEditor` 재사용, 내보내는 글은 `@imageN` 그대로) | `EditRefPrompt` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
 | `upscale/UpscaleModal.tsx` | 업스케일 창 — 원본 크기 → 결과·모델 칩(아이콘)·옵션 칩·견적·[Upscale ✦]. 제출은 `api.prepareCreate`(수정 창과 같은 길) | `UpscaleModal` |
-| `upscale/UpscaleHost.tsx` | `upscale` 이벤트(크게 보기 머리줄) → 최신 Generation 조회 → 창 개방 | `UpscaleHost`(§3.5 숨은 진입점) |
+| `upscale/UpscaleHost.tsx` | `upscale` 이벤트(크게 보기 머리줄·선택 단추 줄) → 최신 Generation 조회 → 창 개방. 캔버스 카드(sceneId·cardId)가 실려 오면 결과를 그 카드에 쌓는다(App 의 canvas = 캔버스 재생성과 같은 자리 표·확인·정산) | `UpscaleHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
 | `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 무대를 덮는 것(`over` — 다이나믹 재생 모드의 두 칸)을 받는다 | `EditViewer`, `ViewerProps`, `ViewerMarking` |
@@ -1331,7 +1331,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
   이 창들의 존재를 놓친다. Assets·관리 창은 메인 창 없이도 WS 를 직접 구독한다.
 - **`edit/PartialEditHost.tsx`** — JSX·import 로 열리지 않는다. `InfoPopup` 이 쏘는 커스텀 이벤트
   `partialEdit` 을 구독해서만 열린다.
-- **`upscale/UpscaleHost.tsx`** — 같은 꼴. `MediaPreview` 머리줄 [⤢ Upscale] 이 쏘는 `upscale` 이벤트로만 열린다.
+- **`upscale/UpscaleHost.tsx`** — 같은 꼴. `MediaPreview` 머리줄과 선택 단추 줄(`app/SelectionActionBar`)의 [⤢ Upscale] 이 쏘는 `upscale` 이벤트로만 열린다.
 
 ---
 
