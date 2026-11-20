@@ -36,6 +36,18 @@ vi.mock("../src/lib/http", () => ({
 import { McpQuickConnect } from "../src/components/mcp/McpQuickConnect";
 import { mcpTabId } from "../src/lib/mcpTab";
 
+it("살아 있는 연결 기록이 허용 충돌을 가리지 않는다", async () => {
+  clients = [{ id: "c-existing", name: "codex", revoked_at: null, last_seen_at: "now" }];
+  configureResult = [{ client: "codex", status: "configured", access: "conflict", message: "설정 확인" }];
+  await act(async () => root.render(<McpQuickConnect onOpenWindow={() => {}} />));
+  await flush();
+  await act(async () => host.querySelector<HTMLButtonElement>(".settings-action-main")!.click());
+  await flush();
+  const row = host.querySelector('[data-app="codex"]')!;
+  expect(row.textContent).toContain("허용 확인 필요(충돌)");
+  expect(row.querySelector(".settings-pill")!.textContent).toBe("실패");
+});
+
 // 서버의 탭 표시 검사(routers/mcp.py `_secret`): 32~128자, 영문·숫자·-·_
 const validTab = (value: string | undefined) => !!value && value.length >= 32 && value.length <= 128 && /^[A-Za-z0-9_-]+$/.test(value);
 
@@ -72,7 +84,7 @@ it("처음 — 목록을 읽어 앱마다 상태(해제된 연결은 안 셈)·�
   expect([pill("codex"), pill("claude"), pill("claude_desktop")]).toEqual(["연결됨", "연결 안 됨", "연결 안 됨"]);
   expect([button("codex").textContent, button("claude").textContent]).toEqual(["해제", "연결"]);
   expect(onSummary).toHaveBeenLastCalledWith("연결됨 · Codex");
-  expect(host.textContent).toContain("MV Agent 칸은 이 연결 없이 씁니다.");
+  expect(host.textContent).toContain("MV Agent 를 연결하면 Claude Code·Codex 는 저절로 연결돼요");
 });
 
 it("[한 번에 연결] — 세 앱을 계정 기준·생성 허용으로 한 번에 등록, 건너뛴 앱은 까닭과 [다시 연결]", async () => {
@@ -137,7 +149,7 @@ it("[해제] — 해제 뒤에도 살아 있는 연결이 남으면 '해제했�
 it("수동 등록 필요 — 연결 기록이 있어도 '연결됨'이 아니라 '수동 등록 필요'와 까닭·[설정 복사](Codex 리뷰 #2)", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-  configureResult = [{ client: "codex", status: "manual", message: "설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요.", config: { mcpServers: { mvhub: { command: "py" } } } }];
+  configureResult = [{ client: "codex", status: "manual", access: "conflict", message: "설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요.", config: { mcpServers: { mvhub: { command: "py" } } } }];
   onConfigure = () => {};
   await act(async () => root.render(<McpQuickConnect onOpenWindow={() => {}} />));
   await flush();
@@ -145,6 +157,7 @@ it("수동 등록 필요 — 연결 기록이 있어도 '연결됨'이 아니라
   await flush();
   expect(pill("codex")).toBe("수동 등록 필요");
   expect(row("codex").textContent).toContain("설정이 다른 프로그램에서 바뀌었습니다");
+  expect(row("codex").textContent).toContain("허용 확인 필요(충돌)");
   expect(button("codex").textContent).toBe("설정 복사");
   await act(async () => button("codex").click());
   await flush();

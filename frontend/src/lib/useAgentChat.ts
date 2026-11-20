@@ -21,6 +21,7 @@ import {
   type AgentSessionFileResult,
   type AgentEngine,
   type AgentEngineId,
+  type AgentLinkResult,
   type AgentEvent,
   type AgentPlan,
   type AgentPlanItemState,
@@ -35,7 +36,7 @@ import {
 } from "./agentChatApi";
 import { runScreenAction, undoScreenAction, type ScreenHost, type ScreenUndo } from "./agentScreenActions";
 import { AGENT_CHAT_CONNECT_FEATURE, hubHasFeature } from "./hubFeatures";
-import { errorDetail, isHttpStatus } from "./http";
+import { errorDetail, isHttpStatus, getAuthToken } from "./http";
 import { loadJSON, loadString, saveJSON, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
@@ -48,6 +49,17 @@ function readOpenRequest(): OpenRequest | null {
     && typeof r.nonce === "string" && typeof r.at === "number" ? (r as OpenRequest) : null;
 }
 const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
+
+// Share requests across StrictMode mounts. Failures remain retryable, never successful cache entries.
+const externalPending = new Map<string, Promise<AgentLinkResult>>();
+function linkExternal(key: string, engine: AgentEngineId, identity: string) {
+  let pending = externalPending.get(key);
+  if (!pending) {
+    pending = agentChatApi.agentLink(engine, identity).finally(() => { externalPending.delete(key); });
+    externalPending.set(key, pending);
+  }
+  return pending;
+}
 
 export type AgentMessage =
   | { kind: "user"; id: string; text: string; attachments?: AgentAttachment[]; imported?: boolean } // attachments = 그 말과 함께 붙인 자료
@@ -237,6 +249,41 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   // popout = 새 창(?embed=agent) — '새 창에서 열기' 요청을 받는 쪽 · screen = 이 창의 캔버스 손잡이(옆 칸만, 화면 동작 실행)
   options: { popout?: boolean; screen?: ScreenHost } = {}) {
   const [session, setSession] = useState<AgentSession | null>(null);
+  const [externalResults, setExternalResults] = useState<AgentLinkResult[]>([]);
+  const [externalBusy, setExternalBusy] = useState(false);
+  const [externalRetry, setExternalRetry] = useState(0);
+  const externalAttempts = useRef(new Map<string, AgentLinkResult>());
+  const linkNamespace = getAccountNamespace(), linkToken = getAuthToken();
+  const linkIdentity = session?.identity_key;
+  const linkSession = session?.secret;
+  const linkEngines = session?.engines.filter((engine) => engine.available).map((engine) => engine.id).sort().join(",") ?? "";
+  useEffect(() => {
+    let active = true;
+    // A fresh panel session also invalidates old results after logout with a cookie/worker login.
+    const scope = JSON.stringify([linkNamespace, linkToken, linkIdentity, linkSession]);
+    const current = () => active && getAccountNamespace() === linkNamespace && getAuthToken() === linkToken;
+    if (!current()) return;
+    if (!linkIdentity || !linkEngines) { setExternalResults([]); setExternalBusy(false); return; }
+    setExternalBusy(true);
+    const engines = linkEngines.split(",") as AgentEngineId[];
+    void Promise.all(engines.map(async (engine) => {
+      const key = JSON.stringify([scope, engine]);
+      const attempted = externalAttempts.current.get(key);
+      if (attempted) return attempted;
+      let result: AgentLinkResult;
+      try { result = await linkExternal(key, engine, linkIdentity); }
+      catch { result = { client: engine, status: "error" }; }
+      if (current()) externalAttempts.current.set(key, result);
+      return result;
+    })).then((results) => { if (current()) { setExternalResults(results); setExternalBusy(false); } });
+    return () => { active = false; };
+  }, [linkNamespace, linkToken, linkIdentity, linkSession, linkEngines, externalRetry]);
+  const recheckExternal = () => {
+    for (const [key, result] of externalAttempts.current) {
+      if (result.status !== "off") externalAttempts.current.delete(key);
+    }
+    setExternalRetry((value) => value + 1);
+  };
   const [choice, setChoice] = useState<AgentChoice | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -1246,6 +1293,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
+    external: { results: externalResults, busy: externalBusy, recheck: recheckExternal },
     claudeApp, appBusy, appError,
     codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled, login: codexLogin, connect: loginCodex,
       recheck: () => {

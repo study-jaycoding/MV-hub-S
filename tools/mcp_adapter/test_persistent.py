@@ -28,7 +28,7 @@ import server as adapter
 
 # conversation(Codex) 연결의 지침·도구 목록 지문 — 2026-10-30 힉스필드 표시 기본 때는 바뀌지 않게 고정(옛 값 978d500d…, 2026.10.28.1),
 # 2026-11-12 MV Agent 대화 기록 읽기(read_context kind 두 개·conversation_id·chat_cursor·지침 3문장)는 Codex 연결에도 들어가는 것이 맞아 새 값으로
-CONVERSATION_SURFACE_SHA256 = "a7bda54ff62d12ec4d1c2d5e2b031010ba48130b1e9eb4c7170737b48c160b87"  # 11-12 read_context 정확히 찾기 입력·설명
+CONVERSATION_SURFACE_SHA256 = "314c7c63d4b39f85a2991a11986ea7d6c45e470454ddbc314e51003a83bbed38"  # 11-20 두 허브 선택 안내만 추가, 도구·칸 표면 불변
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1348,7 +1348,7 @@ assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
             self.assertNotIn("명시적으로 고른 경우에만", descriptions[name])
 
     def test_conversation_surface_is_unchanged(self):
-        # 힉스필드 위젯 기본 표시(2026-10-30)는 native 만 — Codex 연결의 지침·도구 목록은 바뀌기 전 코드로 잰 지문 그대로
+        # 일반 안내의 의도한 변경은 지문을 갱신하고 도구·칸 격리는 별도로 확인한다.
         config, _ = self.profile("conversation")
         async def exercise():
             async with Client(StdioServerParameters(**config)) as client:
@@ -1357,6 +1357,22 @@ assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
                 surface = json.dumps({"instructions": client.instructions, "tools": tools}, ensure_ascii=False, sort_keys=True)
                 return hashlib.sha256(surface.encode("utf-8")).hexdigest()
         self.assertEqual(anyio.run(exercise), CONVERSATION_SURFACE_SHA256)
+
+    def test_general_guidance_and_panel_isolation(self):
+        from unittest.mock import patch
+        import server
+        credential = {"url": self.url, "hub_id": "b" * 64, "client_id": str(uuid4()), "secret": "x" * 43}
+        async def exercise():
+            with patch.object(server, "profile_settings", return_value=credential):
+                general = server.create_server(self.url, "fixture", display_mode="conversation")
+                panel = server.create_server(self.url, "fixture", panel=True)
+            tools = sorted((tool.model_dump(mode="json", exclude_none=True) for tool in await general.list_tools()), key=lambda tool: tool["name"])
+            surface = json.dumps({"instructions": general.instructions, "tools": tools}, ensure_ascii=False, sort_keys=True)
+            self.assertEqual(hashlib.sha256(surface.encode()).hexdigest(), CONVERSATION_SURFACE_SHA256)
+            self.assertIn("둘 다 응답하면", general.instructions)
+            self.assertEqual(panel.instructions, server.PANEL_INSTRUCTIONS)
+            self.assertEqual({tool.name for tool in await panel.list_tools()}, set(server.PANEL_TOOLS))
+        anyio.run(exercise)
 
 
 if __name__ == "__main__":

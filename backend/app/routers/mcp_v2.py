@@ -28,7 +28,7 @@ from starlette.responses import FileResponse
 
 from .. import active_account, config, repo
 from ..db_paths import get_db_path
-from ..deps import account_actor_uid, actor_id, current_account, resolve_agent_account
+from ..deps import account_actor_uid, actor_id, current_account, resolve_agent_account, expected_account_differs
 from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext, seedance_audio_reference_error
@@ -41,7 +41,7 @@ from ..services.path_safety import safe_join
 from . import _proxy, asset_sync, assets, gen_requests, generation, library, manage, mcp, projects
 
 router = APIRouter(prefix="/api/mcp/v2", tags=["mcp"])
-_registration_lock = threading.Lock()
+_registration_lock = store.registration_lock
 _result_wait_slots = threading.BoundedSemaphore(8)
 _RESULT_POLL_SECONDS = 2.0
 _ESTIMATE_BUDGET_SECONDS = 20.0
@@ -85,6 +85,7 @@ class Context:
     hub: str
     upstream: tuple[str, str] | None
     client: dict | None = None
+    account_epoch: int | None = None
 
 
 def _internal(ctx, path, query=None, *, submit=False):
@@ -95,6 +96,7 @@ def _internal(ctx, path, query=None, *, submit=False):
 
 
 def _capture(request, client_secret=None):
+    epoch = active_account.account_epoch()
     if _proxy.is_shared_team_server():
         raise HTTPException(403, "공유 서버에서는 MCP를 등록하거나 실행할 수 없습니다.")
     pin = active_account.capture_account_pin()
@@ -140,11 +142,15 @@ def _capture(request, client_secret=None):
                        or client["password_stamp"] != account.get("password_changed_at")):
             raise HTTPException(403, "계정 또는 비밀번호가 바뀌었습니다. 앱에서 다시 연결하세요.")
         agent_chat.store.check_current(agent_chat.Identity(identity, str(path), norm_email(account["email"])).file_path())
-        store.recover_interrupted_plans(str(path).casefold())
-        return Context(request, pin, path, account, owner, identity, upstream, client)
+        # agent-link must validate its expected account/identity before any persistent writes.
+        if request.url.path != "/api/mcp/v2/app/agent-link":
+            store.recover_interrupted_plans(str(path).casefold())
+        return Context(request, pin, path, account, owner, identity, upstream, client, epoch)
 
 
 def _still_current(ctx):
+    if ctx.account_epoch is not None and ctx.account_epoch != active_account.account_epoch():
+        raise HTTPException(403, "로그인이 바뀌었습니다. 다시 연결하세요.")
     agent_chat.store.check_current(_chat_identity(ctx).file_path())
     # Inspect the machine pointer, not this request's ContextVar override.
     with active_account.transition_lock:
@@ -274,11 +280,13 @@ def _setup_error_message(exc):
     return "MCP 설정을 완료하지 못했습니다. 앱 설치와 LLM 설정 파일 상태를 확인한 뒤 다시 연결하세요."
 
 
-def _register_client(ctx, name, setup, workspace, allow_execution):
+def _register_client(ctx, name, setup, workspace, allow_execution, *, automatic=False):
     # Serialize config replacement and grant rotation together; no await holds this lock.
-    with _registration_lock:
+    with _registration_lock, (_setup_module().connection_lock(name) if name in ("claude", "codex") else contextlib.nullcontext()):
         _still_current(ctx)
         email = norm_email(ctx.account["email"])
+        if config.AUTH_ENABLED:
+            repo.set_setting("mcp_active_account", email)
         secret = secrets.token_urlsafe(32)
         cid = store.create_client(mcp.digest(secret), ctx.hub, ctx.owner, email,
                                   ctx.account.get("password_changed_at"), workspace, name, allow_execution)
@@ -286,15 +294,25 @@ def _register_client(ctx, name, setup, workspace, allow_execution):
             result = _configure_local(name, setup, {"secret": secret, "hub_id": ctx.hub, "client_id": cid, "url": setup["url"]})
             if result.get("status") == "skipped":  # 그 프로그램이 없다 — 방금 만든 연결만 거둔다(프로필 파일은 만들지 않았다)
                 store.revoke(cid, ctx.owner, email)
+                if automatic:
+                    store.set_link_state(ctx.owner, email, name, "retry", cid)
                 return {**result, "id": cid}
             if result.get("status") not in ("configured", "manual"):
                 raise ValueError("configuration failed")
             _still_current(ctx)
             if result["status"] == "configured" and name in ("codex", "claude", "claude_desktop"):
                 _remove_profiles(ctx.hub, store.revoke_replaced_clients(cid, ctx.owner, email, name))
+                if name in ("claude", "codex"):
+                    store.set_link_state(ctx.owner, email, name, "linked", cid)
         except Exception as exc:
             store.revoke(cid, ctx.owner, email)
             result = {"client": name, "status": "error", "message": _setup_error_message(exc)}
+        if automatic and result["status"] != "configured":
+            store.revoke(cid, ctx.owner, email)
+            result.pop("config", None)
+            store.set_link_state(ctx.owner, email, name, "retry", cid)
+        elif automatic and (not allow_execution or workspace.get("scope") != "account"):
+            result["status"] = "limited"
         return {**result, "id": cid}
 
 
@@ -337,11 +355,83 @@ async def configure(body: ConfigureIn, request: Request, ctx=Depends(_app_contex
     # Only newly issued grants can carry this marker; existing grants remain restricted.
     ws = {"scope": "account"} if body.scope == "account" else await asyncio.to_thread(_workspace, ctx, body.workspace.model_dump())
     setup = await mcp.setup(request, identity=None)
-    if config.AUTH_ENABLED:
-        await asyncio.to_thread(repo.set_setting, "mcp_active_account", norm_email(ctx.account["email"]))
     results = []
     for name in dict.fromkeys(body.clients):
-        results.append(await asyncio.to_thread(_register_client, ctx, name, setup, ws, body.allow_execution))
+        try:
+            results.append(await to_thread_non_abandon(_register_client, ctx, name, setup, ws, body.allow_execution))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            results.append({"client": name, "status": "error", "message": _setup_error_message(exc)})
+    return {"clients": results}
+
+
+class AgentLinkIn(StrictModel):
+    engines: list[Literal["claude", "codex"]] = Field(min_length=1, max_length=8)
+    identity_key: str = Field(min_length=1, max_length=256)
+
+
+def _link_previous(ctx, name, marker):
+    row = store.client_by_id(marker["id"]) if marker else None
+    if row and (row["owner_uid"], row["account_email"], row["hub_id"], row["name"]) == (
+            ctx.owner, norm_email(ctx.account["email"]), ctx.hub, name):
+        return row
+    return None
+
+
+def _agent_link(ctx, name, setup):
+    email = norm_email(ctx.account["email"])
+    # Team membership calls upstream. Resolve it before acquiring registration/file locks.
+    marker_before = store.link_state(ctx.owner, email, name)
+    previous = _link_previous(ctx, name, marker_before)
+    workspace = None
+    if previous and marker_before["state"] in ("linked", "retry"):
+        try:
+            old_workspace = json.loads(previous["workspace"])
+            workspace = old_workspace if old_workspace.get("scope") == "account" else _workspace(ctx, old_workspace)
+        except (HTTPException, ValueError, TypeError):
+            pass
+    module = _setup_module()
+    with _registration_lock:
+        _still_current(ctx)
+        marker = store.link_state(ctx.owner, email, name)
+        if marker and marker["state"] == "off":
+            return {"client": name, "status": "off"}
+        rows = [store.client_by_id(row["id"]) for row in store.list_clients(ctx.owner, email) if row["name"] == name]
+        live = [row for row in rows if store.valid_client(row, ctx.owner, email, ctx.account.get("password_changed_at"), ctx.hub)]
+        with module.connection_lock(name):
+            found = module.registration(name, setup, live)
+            if found["status"] == "matched":
+                row = next(row for row in live if row["id"] == found["id"])
+                result = module.ensure_access(name, setup, row)
+                _still_current(ctx)
+                if result["status"] in ("configured", "limited"):
+                    store.set_link_state(ctx.owner, email, name, "linked", row["id"])
+                return result
+            if not marker and not rows and found["status"] == "missing":
+                return _register_client(ctx, name, setup, {"scope": "account"}, True, automatic=True)
+            if not live and marker == marker_before and previous and workspace is not None:
+                old_found = module.registration(name, setup, [previous])
+                if (old_found["status"] == "matched" or (marker["state"] == "retry" and old_found["status"] == "missing")):
+                    return _register_client(ctx, name, setup, workspace, bool(previous["can_execute"]), automatic=True)
+            return {"client": name, "status": "manual" if found["status"] == "manual" else "reconnect"}
+
+
+@router.post("/app/agent-link")
+async def agent_link(body: AgentLinkIn, request: Request, ctx=Depends(_app_context)):
+    expected = request.headers.getlist("X-MVHub-Expect-Account")
+    if (len(expected) != 1 or not expected[0].strip() or expected_account_differs(request, ctx.account["email"])
+            or body.identity_key != _chat_identity(ctx).key()):
+        raise HTTPException(409, "계정 또는 허브가 바뀌었습니다.")
+    setup = await mcp.setup(request, identity=None)
+    results = []
+    for name in dict.fromkeys(body.engines):
+        try:
+            results.append(await to_thread_non_abandon(_agent_link, ctx, name, setup))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            results.append({"client": name, "status": "error", "message": _setup_error_message(exc)})
     return {"clients": results}
 
 
@@ -352,7 +442,11 @@ async def clients(ctx=Depends(_app_context)):
 
 @router.post("/app/clients/{client_id}/revoke")
 async def revoke(client_id: UUID, ctx=Depends(_app_context)):
-    if not await asyncio.to_thread(store.revoke, str(client_id), ctx.owner, norm_email(ctx.account["email"])):
+    def run():
+        with _registration_lock:
+            _still_current(ctx)
+            return store.revoke_explicit(str(client_id), ctx.owner, norm_email(ctx.account["email"]), ctx.account.get("password_changed_at"), ctx.hub)
+    if not await to_thread_non_abandon(run):
         raise HTTPException(404, "연결을 찾을 수 없습니다.")
     return {"ok": True}
 

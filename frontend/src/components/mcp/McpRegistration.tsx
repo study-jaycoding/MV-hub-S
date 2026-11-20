@@ -1,3 +1,4 @@
+import { mcpAccessMessage } from "../../lib/agentChatApi";
 import { useEffect, useRef, useState } from "react";
 import type { WorkspaceContext } from "../../types";
 import { getAuthToken, HttpError, jsonBody, jsonFetch } from "../../lib/http";
@@ -18,7 +19,7 @@ interface Client {
   last_seen_at: string | null; revoked_at: string | null;
 }
 interface Registration {
-  client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; config?: unknown;
+  client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; access?: string; config?: unknown;
 }
 const CLIENT_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude Code", claude_desktop: "Claude 데스크톱 채팅", other: "다른 MCP 프로그램" };
 const STATUS_LABELS: Record<Registration["status"], string> = { configured: "등록 완료", manual: "수동 등록 필요", skipped: "건너뜀", error: "등록 실패" };
@@ -131,6 +132,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
       return <div className="mcp-result" data-status={result.status} key={`${result.client}:${index}`}>
         <strong>{t(CLIENT_LABELS[result.client] ?? result.client)} · {t(STATUS_LABELS[result.status] ?? "등록 실패")}</strong>
         <p>{t(result.message)}</p>
+        {result.access && <p>{t(mcpAccessMessage(result))}</p>}
         {config && <><button onClick={() => void copy(config)}>{t("MCP 설정 복사")}</button><pre>{config}</pre></>}
       </div>;
     })}

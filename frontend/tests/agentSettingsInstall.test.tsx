@@ -85,6 +85,9 @@ it("모델 메뉴의 상태가 이름 뒤·화살표 앞이며 미연결 줄은 
 
 it("미설치 두 줄의 라임 설치 단추와 누르기 전 PATH 안내", async () => {
   await mount();
+  expect(host.querySelector(".agent-settings")!.textContent).toContain("생성마다 묻지 않음");
+  expect(host.querySelector(".agent-settings")!.textContent).toContain("바깥 앱 연결");
+  expect([...host.querySelectorAll(".agent-settings button")].filter((b) => b.textContent === "연결 다시 확인")).toHaveLength(1);
   expect(host.querySelectorAll(".agent-install-controls .cn-go")).toHaveLength(2);
   expect(group("codex").textContent).toContain("설치하면 사용자 PATH 에 공식 Codex 가 더해져 터미널의 codex 가 바뀔 수 있어요");
   expect(calls.some((c) => c.includes("POST /codex/install"))).toBe(false);

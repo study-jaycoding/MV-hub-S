@@ -8,6 +8,24 @@
 import { getAccountNamespace } from "./accountScope";
 import { authFormHeaders, jsonBody, throwHttpError } from "./http";
 import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
+import { mcpTabId } from "./mcpTab";
+
+export interface AgentLinkResult {
+  client: string;
+  status: string;
+  access?: string;
+  id?: string;
+}
+
+export function mcpAccessMessage(result: AgentLinkResult): string {
+  if (result.status === "off") return "해제됨";
+  if (result.status === "reconnect") return "다시 연결 필요";
+  if (result.access === "conflict") return "허용 확인 필요(충돌)";
+  if (result.access === "failed" || result.status === "error") return "허용 설정 확인 실패";
+  if (result.status === "manual" || result.status === "skipped" || result.access === "manual" || result.access === "missing") return "수동 등록 필요";
+  if (result.status === "limited" || result.access === "limited") return "제한된 연결";
+  return result.status === "configured" && ["allowed", "present"].includes(result.access ?? "") ? "등록·허용 설정 완료" : "허용 설정 확인 실패";
+}
 
 const BASE = "/api/agent-chat";
 export const PANEL_HEADER = "X-MVHub-Panel";
@@ -359,6 +377,18 @@ async function claudeApp(conversationId: string, action: "open" | "bring-back", 
 }
 
 export const agentChatApi = {
+  agentLink: async (engine: AgentEngineId, identity: string): Promise<AgentLinkResult> => {
+    const path = "/api/mcp/v2/app/agent-link";
+    const res = await fetch(path, { method: "POST", headers: {
+      "Content-Type": "application/json", ...authFormHeaders(),
+      [EXPECT_ACCOUNT_HEADER]: getAccountNamespace(), "X-MVHub-Tab": mcpTabId(),
+    }, body: jsonBody({ engines: [engine], identity_key: identity }) });
+    if (!res.ok) await throwHttpError(res, path);
+    const result = await res.json() as { clients: AgentLinkResult[] };
+    const found = result.clients.find((item) => item.client === engine);
+    if (!found) throw new Error("바깥 연결을 확인하지 못했어요");
+    return found;
+  },
   claudeApp,
   session: openAgentSession,
   setCodexEnabled: (enabled: boolean, chainId?: string) => panelFetch<{ engines: AgentEngine[] }>(

@@ -32,7 +32,7 @@ it("공유 서버의 LAN HTTP 처럼 crypto.randomUUID 가 없어도 그리고, 
 
 it("명시적인 최초 버튼만 세 클라이언트를 허용하고 등록과 연결 확인을 구분한다", async () => {
   io.http.mockResolvedValueOnce({ clients: [
-    { client: "codex", status: "configured", message: "등록됨" }, { client: "claude", status: "error", message: "설정 파일을 확인하세요" },
+    { client: "codex", status: "configured", access: "conflict", message: "등록됨" }, { client: "claude", status: "error", message: "설정 파일을 확인하세요" },
     { client: "claude_desktop", status: "skipped", message: "Claude 데스크톱 앱이 없어 건너뛰었습니다." },
   ] }).mockResolvedValueOnce({ clients: [client] });
   await render(); expect(io.http).not.toHaveBeenCalled();
@@ -48,6 +48,7 @@ it("명시적인 최초 버튼만 세 클라이언트를 허용하고 등록과 
   expect(io.http.mock.calls[0][1].headers["X-MVHub-Tab"]).toBeTruthy();
   expect(host.textContent).toContain("LLM 응답 미확인");
   expect(host.textContent).toContain("Codex · 등록 완료");
+  expect(host.textContent).toContain("허용 확인 필요(충돌)");
   expect(host.textContent).toContain("Claude Code · 등록 실패");
   expect(host.textContent).toContain("Claude 데스크톱 채팅 · 건너뜀");
   expect(host.querySelector(".mcp-reg-status strong")?.textContent).toBe("저장된 연결을 확인했습니다."); // 첫 문장만 굵게(모의 그림)

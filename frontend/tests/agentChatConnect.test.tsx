@@ -82,6 +82,8 @@ describe("계약 A — 설정 안 Claude 연결", () => {
     route = (c) => c.path === "/session" ? session("not_logged_in") : status("not_logged_in", { enabled: true });
     await mount();
     expect(buttonText("Claude 연결")).not.toBeNull();
+    expect(panel().textContent).toContain("Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요");
+    expect(panel().textContent).toContain("생성마다 묻지 않음");
     expect(host.querySelector<HTMLDetailsElement>(".cn-more")!.open).toBe(false);
     expect(host.querySelector(".cn-more summary")!.textContent).toBe("직접 하려면(PowerShell)");
     expect(panel().textContent).toContain("로그인을 마치고 그 창이 닫히면 여기가 바뀌어요.");

@@ -243,7 +243,8 @@ export function AgentConnect({ state, version, install, loginWindowEnabled, wait
       <div className="cn-mark" aria-hidden="true"><i className="mv-mark full" /></div>
       {body}
       {connectError && <p className="cn-note cn-warn" role="alert">{connectError}</p>}
-      <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · [실행]만 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
+      <p className="cn-note">{t("연결하면 이 PC 의 Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요(생성마다 묻지 않음 · 요청한 생성은 크레딧)")}</p>
+      <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · 요청한 생성은 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
     </section>
   );
 }

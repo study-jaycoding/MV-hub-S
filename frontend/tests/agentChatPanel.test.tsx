@@ -4,7 +4,7 @@
 //  패널 표 401 → 같은 계정일 때만 한 번 다시 보냄 · 계정이 바뀐 뒤의 늦은 답 버림 · 엔진을 바꾸면 새 대화 · 닫았다 열면 이어 붙기.
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentPanel } from "../src/components/agent-chat/AgentPanel";
@@ -123,6 +123,62 @@ function pickSelect(label: string, value: string) {
 }
 
 describe("Ask Agent 옆 칸", () => {
+  it("StrictMode에서도 엔진당 한 번 바깥 연결하고 칸 비밀값을 보내지 않는다", async () => {
+    route = (c) => c.path === "/session" ? session("jay@example.com", "s-external", "external-strict")
+      : c.path === "/api/mcp/v2/app/agent-link" ? json({ clients: [{ client: (c.body?.engines as string[])[0], status: "configured", access: "allowed" }] })
+      : json({}, 404);
+    act(() => root.render(<StrictMode><AgentPanel context={{ tab: "my" }} contextLabel="" onClose={() => {}} /></StrictMode>));
+    await flush();
+    const links = calls.filter((c) => c.path === "/api/mcp/v2/app/agent-link");
+    expect(links).toHaveLength(2);
+    expect(links.map((c) => c.body?.engines)).toEqual([["claude"], ["codex"]]);
+    for (const call of links) {
+      expect(call.body?.identity_key).toBe("external-strict");
+      expect(call.headers["X-MVHub-Expect-Account"]).toBe("acct:jay@example.com");
+      expect(call.headers["X-MVHub-Tab"]).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
+      expect(call.headers["X-MVHub-Panel"]).toBeUndefined();
+    }
+    expect(input()).toBeTruthy();
+  });
+
+  it("바깥 연결 실패는 칸을 막지 않고 다시 확인으로만 재시도하며 off는 유지한다", async () => {
+    let attempts = 0;
+    route = (c) => {
+      if (c.path === "/session") return session("jay@example.com", "s-external", "external-retry");
+      if (c.path === "/api/mcp/v2/app/agent-link") {
+        const engine = (c.body?.engines as string[])[0];
+        if (engine === "codex") return json({ clients: [{ client: engine, status: "off" }] });
+        attempts += 1;
+        return attempts === 1 ? json({}, 503) : json({ clients: [{ client: engine, status: "configured", access: "allowed" }] });
+      }
+      return json({}, 404);
+    };
+    await mount();
+    expect(input()).toBeTruthy();
+    expect(attempts).toBe(1);
+    act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent === "설정")!.click());
+    expect(host.textContent).toContain("허용 설정 확인 실패");
+    const external = [...host.querySelectorAll<HTMLElement>('[role="status"]')].find((el) => el.textContent?.includes("바깥 앱 연결"))!;
+    act(() => [...external.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "연결 다시 확인")!.click());
+    await flush();
+    expect(attempts).toBe(2);
+    expect(host.textContent).toContain("등록·허용 설정 완료");
+    expect(calls.filter((c) => c.path === "/api/mcp/v2/app/agent-link" && (c.body?.engines as string[])[0] === "codex")).toHaveLength(1);
+  });
+
+  it("계정이 바뀐 뒤 바깥 연결의 늦은 성공을 표시하지 않는다", async () => {
+    const pending = deferred<Response>();
+    route = (c) => c.path === "/session" ? session("jay@example.com", "s-external", "external-stale")
+      : c.path === "/api/mcp/v2/app/agent-link" ? pending.promise : json({}, 404);
+    await mount();
+    act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
+    act(() => [...host.querySelectorAll<HTMLButtonElement>(".agent-model-item")].find((b) => b.textContent === "설정")!.click());
+    sessionStorage.setItem("ch.accountScope", "other@example.com");
+    pending.resolve(json({ clients: [{ client: "claude", status: "configured", access: "allowed" }, { client: "codex", status: "configured", access: "allowed" }] }));
+    await flush();
+    expect(host.textContent).not.toContain("등록·허용 설정 완료");
+  });
   it("Codex 선택 중에도 설정의 Claude 안내·연결 요청 오류가 보인다", async () => {
     setHubFeatures(["agent_chat_v1", "agent_chat_connect_v1"]);
     const engines = ENGINES.map((e) => e.id === "claude" ? { ...e, state: "not_logged_in", available: false, subscription: null, reason: "Claude 로그인이 필요해요 — 설정에서 연결" } : e);

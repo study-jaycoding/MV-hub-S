@@ -72,7 +72,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.11.14.1"
+ADAPTER_VERSION = "2026.11.20.1"
 MCP_UPDATE_API = 1
 HUB_FEATURES = {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
                 "agent_chat_read", "reference_exact"}
@@ -998,6 +998,7 @@ def create_server(url: str = "http://127.0.0.1:8010", profile: str | None = None
         instructions=(
             "MV Hub 앱에서 등록한 이 PC의 영속 연결입니다. check_connection과 connect로 연결 범위·권한을 확인하세요. "
             "현재 허브는 이 MCP 연결에 등록된 hub_url과 인증된 허브입니다. 포트 번호나 열린 브라우저 탭으로 대상을 판단하지 마세요. "
+            "이 PC에 MV Hub 연결이 둘 이상이면 각 연결의 check_connection으로 status=available인 허브를 찾고, 그 연결의 connect로 자격·범위를 확인하세요. 둘 다 응답하면 어느 허브인지 사용자에게 확인하세요. available은 계정 인증 성공이 아닙니다. "
             "자료 조회부터 계획·실행·대기·결과 표시까지 같은 MCP 연결을 사용하세요. 다른 연결의 ID를 재사용하거나 포트를 바꿔 자동 탐색하지 마세요. "
             "연결 코드를 요구하지 않으며 브라우저 탭을 닫아도 허브와 작업자가 실행 중이면 처리됩니다. "
             "기본은 캔버스 없는 일반 생성이고 결과·기록은 MV Hub 라이브러리에 남습니다. "

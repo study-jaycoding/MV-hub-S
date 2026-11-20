@@ -329,13 +329,14 @@ def me(request: Request, response: Response):
 def logout(response: Response, request: Request):
     """토큰은 무상태라 서버 저장이 없다 — 클라이언트가 토큰을 버리고 세션 쿠키를 지운다."""
     acc = getattr(request.state, "account", None)
-    if acc:
-        from ..repo.mcp_v2 import revoke_account
-        revoke_account(acc["email"])
-    previous = local_agent_pair.clear(request, (acc or {}).get("email"))
-    if previous:
-        agent_signals.signal(previous, "pair-change")
-    active_account.bump_account_epoch()  # 토큰은 폐기되지 않는다 — 그 토큰으로 연 것들(클린 피드 세션)은 여기서 끝난다
+    from ..repo.mcp_v2 import registration_lock, revoke_account
+    with registration_lock:
+        if acc:
+            revoke_account(acc["email"])
+        previous = local_agent_pair.clear(request, (acc or {}).get("email"))
+        if previous:
+            agent_signals.signal(previous, "pair-change")
+        active_account.bump_account_epoch()  # Serialize revocation and epoch change with MCP issuance.
     response.delete_cookie(SESSION_COOKIE, **_session_cookie_options(request))
     return {"ok": True}
 

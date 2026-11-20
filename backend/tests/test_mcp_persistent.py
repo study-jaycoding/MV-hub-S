@@ -17,6 +17,214 @@ from app.routers import auth as auth_router, gen_requests, mcp_v2 as api, _proxy
 APP_HEADERS = {"X-MVHub-Tab": "t" * 40}
 
 
+@pytest.fixture
+def external_link(local, tmp_path, monkeypatch):
+    """Actual setup parser/writer against scratch homes; never the interactive user's files."""
+    from pathlib import Path
+    import sys
+    module = api._setup_module()
+    home, local_dir = tmp_path / "home", tmp_path / "local"
+    home.mkdir()
+    (home / ".claude.json").write_text("{}")
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text('model = "fixture"\n')
+    monkeypatch.setattr(module, "_require_interactive_user", lambda: None)
+    monkeypatch.setattr(module, "_crypt", lambda data, **_: data)
+    for name in ("connection_lock", "registration", "ensure_access"):
+        original = getattr(module, name)
+        def wrapped(*args, _original=original, _name=name, **kwargs):
+            kwargs["home"] = home
+            if _name != "connection_lock":
+                kwargs["local_appdata"] = local_dir
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(module, name, wrapped)
+    setup = {"python": sys.executable, "adapter": str(Path(module.__file__).with_name("server.py")),
+             "url": "http://127.0.0.1:8012", "release": False}
+    async def setup_api(*args, **kwargs):
+        return setup
+    monkeypatch.setattr(api.mcp, "setup", setup_api)
+    def configure_local(name, setup, credential):
+        local[1][name] = credential
+        return module.configure_client(name, setup, credential, home=home, local_appdata=local_dir)
+    monkeypatch.setattr(api, "_configure_local", configure_local)
+    def invoke(engine="claude", **changes):
+        with active_account.pinned_account_scope(active_account.capture_account_pin()):
+            identity = api.agent_chat.Identity(api._required_hub_id(), str(api.get_db_path().resolve()), local[2]["email"]).key()
+        return local[0].post("/api/mcp/v2/app/agent-link", headers={**APP_HEADERS, "X-MVHub-Expect-Account": "acct:" + local[2]["email"]},
+                             json={"engines": [engine, engine], "identity_key": identity, **changes})
+    return invoke, home, local_dir
+
+
+def test_agent_link_first_reuse_off_and_explicit_reconnect(local, external_link):
+    invoke, home, _ = external_link
+    first = invoke().json()["clients"]
+    assert len(first) == 1 and first[0]["status"] == "configured"
+    cid = first[0]["id"]
+    before = (home / ".claude.json").read_bytes()
+    assert invoke().json()["clients"][0]["id"] == cid
+    assert (home / ".claude.json").read_bytes() == before
+    assert local[0].post(f"/api/mcp/v2/app/clients/{cid}/revoke", headers=APP_HEADERS).status_code == 200
+    assert invoke().json()["clients"][0]["status"] == "off"
+    assert (home / ".claude.json").read_bytes() == before
+    configure(local, ["claude"], scope="account")
+    fresh = invoke().json()["clients"][0]
+    assert fresh["status"] == "configured" and fresh["id"] != cid
+    local[0].post(f"/api/mcp/v2/app/clients/{cid}/revoke", headers=APP_HEADERS)
+    assert invoke().json()["clients"][0]["id"] == fresh["id"]
+
+
+def test_agent_link_reissue_keeps_restrictions_and_other_account_config(local, external_link):
+    invoke, home, _ = external_link
+    configure(local, ["claude"], execute=False)
+    first = invoke().json()["clients"][0]
+    assert first["status"] == "limited"
+    assert local[0].post("/api/auth/logout").status_code == 200
+    second = invoke().json()["clients"][0]
+    row = store.client_by_id(second["id"])
+    assert second["id"] != first["id"] and not row["can_execute"]
+    assert json.loads(row["workspace"])["scope"] == "personal"
+    local[0].post("/api/auth/logout")
+    path = home / ".claude.json"
+    value = json.loads(path.read_text())
+    args = value["mcpServers"]["mvhub-test"]["args"]
+    args[args.index("--profile") + 1] = str(home / "other-account.bin")
+    path.write_text(json.dumps(value))
+    before = path.read_bytes()
+    assert invoke().json()["clients"][0]["status"] == "reconnect"
+    assert path.read_bytes() == before
+
+
+def test_agent_link_codex_reuses_grant_and_reports_permission_result(local, external_link):
+    invoke, _, _ = external_link
+    first = invoke("codex").json()["clients"][0]
+    second = invoke("codex").json()["clients"][0]
+    assert first["status"] == second["status"] == "configured"
+    assert first["access"] == "allowed" and second["access"] == "present"
+    assert first["id"] == second["id"]
+
+
+def test_agent_link_password_invalid_explicit_revoke_stays_off(local, external_link):
+    invoke, _, _ = external_link
+    first = invoke().json()["clients"][0]
+    # A password change leaves the DB grant unrevoked, but no longer usable.
+    with db.get_connection() as conn:
+        conn.execute("UPDATE mcp_client SET password_stamp='old' WHERE id=?", (first["id"],))
+    assert local[0].post(f"/api/mcp/v2/app/clients/{first['id']}/revoke", headers=APP_HEADERS).status_code == 200
+    assert invoke().json()["clients"][0]["status"] == "off"
+
+
+def test_agent_link_missing_corrupt_profile_and_wrong_identity_do_not_issue(local, external_link):
+    invoke, home, local_dir = external_link
+    assert invoke(identity_key="wrong").status_code == 409
+    assert not list(local_dir.rglob("*.bin"))
+    first = invoke().json()["clients"][0]
+    next(local_dir.rglob("*.bin")).write_bytes(b"corrupt")
+    before = (home / ".claude.json").read_bytes()
+    assert invoke().json()["clients"][0]["status"] == "reconnect"
+    assert (home / ".claude.json").read_bytes() == before
+    assert store.client_by_id(first["id"])["revoked_at"] is None
+
+
+def test_agent_link_retry_rechecks_setup_and_revokes_incomplete_grant(local, external_link, monkeypatch):
+    invoke, _, _ = external_link
+    original = api._configure_local
+    monkeypatch.setattr(api, "_configure_local", lambda name, *_: {"client": name, "status": "manual", "config": "not-ready"})
+    first = invoke().json()["clients"][0]
+    assert "config" not in first and store.client_by_id(first["id"])["revoked_at"]
+    monkeypatch.setattr(api, "_configure_local", original)
+    second = invoke().json()["clients"][0]
+    assert second["status"] == "configured" and second["id"] != first["id"]
+
+
+def test_agent_link_team_reissue_checks_membership_outside_lock(local, external_link, monkeypatch):
+    invoke, _, _ = external_link
+    first = invoke().json()["clients"][0]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE mcp_client SET workspace=? WHERE id=?", (json.dumps({"scope": "team", "id": "team-x"}), first["id"]))
+    local[0].post("/api/auth/logout")
+    checked = []
+    def denied(ctx, workspace):
+        assert not api._registration_lock._is_owned()
+        checked.append(workspace)
+        raise HTTPException(403, "fixture membership removed")
+    monkeypatch.setattr(api, "_workspace", denied)
+    assert invoke().json()["clients"][0]["status"] == "reconnect"
+    assert checked and store.client_by_id(first["id"])["revoked_at"]
+
+
+def test_agent_link_simultaneous_first_calls_share_one_grant(local, external_link):
+    from concurrent.futures import ThreadPoolExecutor
+    invoke, _, _ = external_link
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke) for _ in range(2)]
+        responses = [future.result(timeout=15) for future in futures]
+    assert all(response.status_code == 200 for response in responses)
+    assert len({response.json()["clients"][0]["id"] for response in responses}) == 1
+
+
+def test_agent_link_logout_waits_for_registration_then_revokes(local, external_link, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    invoke, _, _ = external_link
+    entered, release, revoked = threading.Event(), threading.Event(), threading.Event()
+    original, original_revoke = api._configure_local, store.revoke_account
+    def blocked(*args):
+        entered.set()
+        assert release.wait(10)
+        return original(*args)
+    def revoke_account(email):
+        revoked.set()
+        return original_revoke(email)
+    monkeypatch.setattr(api, "_configure_local", blocked)
+    monkeypatch.setattr(store, "revoke_account", revoke_account)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        issuing = pool.submit(invoke)
+        try:
+            assert entered.wait(10)
+            logout = pool.submit(local[0].post, "/api/auth/logout")
+            assert not revoked.wait(0.1)
+        finally:
+            release.set()
+        result = issuing.result(timeout=15)
+        assert logout.result(timeout=15).status_code == 200
+    cid = result.json()["clients"][0]["id"]
+    assert revoked.is_set() and store.client_by_id(cid)["revoked_at"]
+
+
+def test_agent_link_old_account_epoch_cannot_issue(local, external_link, monkeypatch):
+    invoke, _, local_dir = external_link
+    original = api._capture
+    def stale(*args, **kwargs):
+        ctx = original(*args, **kwargs)
+        active_account.bump_account_epoch()
+        return ctx
+    monkeypatch.setattr(api, "_capture", stale)
+    assert invoke().status_code == 403
+    assert not list(local_dir.rglob("*.bin"))
+
+
+def test_configure_mutex_failure_is_sanitized_without_issuing(local, external_link, monkeypatch):
+    module = api._setup_module()
+    def denied(*args, **kwargs):
+        raise ValueError("private fixture path")
+    monkeypatch.setattr(module, "connection_lock", denied)
+    response = local[0].post("/api/mcp/v2/app/configure", headers=APP_HEADERS,
+                             json={"clients": ["claude"], "scope": "account", "allow_execution": True})
+    assert response.status_code == 200 and response.json()["clients"][0]["status"] == "error"
+    assert "private fixture" not in response.text and not local[1]
+
+
+def test_agent_link_requires_current_account_header_before_mutations(local, external_link, monkeypatch):
+    recovered = []
+    monkeypatch.setattr(store, "recover_interrupted_plans", lambda *_: recovered.append(True))
+    for expected in (None, "", "acct:another@example.test"):
+        headers = {**APP_HEADERS, **({"X-MVHub-Expect-Account": expected} if expected is not None else {})}
+        response = local[0].post("/api/mcp/v2/app/agent-link", headers=headers,
+                                 json={"engines": ["claude"], "identity_key": "wrong"})
+        assert response.status_code == 409
+    assert not local[1] and not recovered
+
+
 @pytest.mark.parametrize("state,queue,generation,expected", [
     ("pending", None, None, "planned"), ("rejected", None, None, "failed"),
     ("uncertain", "preparing", None, "attention"), ("submitting", None, None, "unknown"),

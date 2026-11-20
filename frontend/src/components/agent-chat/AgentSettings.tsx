@@ -3,7 +3,7 @@
 //  설정 = 연결 상태 · 새 대화 기본 모델·깊이 · 먼저 쓸 생성 모델(차례마다 gen_model 로 실림) · 사용량 — 이 브라우저에 남긴다.
 import { useEffect, useState } from "react";
 import { getAccountNamespace } from "../../lib/accountScope";
-import type { AgentEngine } from "../../lib/agentChatApi";
+import { mcpAccessMessage, type AgentEngine } from "../../lib/agentChatApi";
 import { useT } from "../../lib/i18n";
 import { fetchModelCatalog } from "../../lib/modelCatalogCache";
 import { saveJSON } from "../../lib/storage";
@@ -87,11 +87,12 @@ export function UsagePop({ usage }: { usage: AgentUsage }) {
 }
 
 /** 설정 쪽 — 칸 안을 덮는다(← 와 Esc 로 돌아감, Esc 는 칸이 건다) */
-export function AgentSettings({ engines, usage, connection, codexConnection, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
+export function AgentSettings({ engines, usage, connection, codexConnection, external, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
   engines: AgentEngine[];
   usage: AgentUsage;
   connection: ReturnType<typeof useAgentChat>["connect"];
   codexConnection: ReturnType<typeof useAgentChat>["codex"];
+  external?: ReturnType<typeof useAgentChat>["external"];
   onBack: () => void;
   onConnectClaude: () => void;
   onSetCodexEnabled: (enabled: boolean) => void;
@@ -160,6 +161,11 @@ export function AgentSettings({ engines, usage, connection, codexConnection, onB
       <div className="agent-settings-body">
         <div className="agent-settings-grp">
           <h4>{t("연결")}</h4>
+          <p className="cn-note">{t("연결하면 이 PC 의 Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요(생성마다 묻지 않음 · 요청한 생성은 크레딧)")}</p>
+          {external && <div role="status" className="cn-note">
+            {t("바깥 앱 연결")}{" · "}{external.busy ? t("확인 중") : external.results.length ? external.results.map((result) => `${result.client === "claude" ? "Claude Code" : "Codex"}: ${t(mcpAccessMessage(result))}`).join(" · ") : t("연결 안 됨")}
+            <button type="button" className="cn-ghost" disabled={external.busy} onClick={external.recheck}>{t("연결 다시 확인")}</button>
+          </div>}
           <div className="agent-settings-card">
             <div className="agent-settings-line">
               <span className="agent-settings-logo claude" aria-hidden="true">✳</span>

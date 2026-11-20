@@ -7,6 +7,18 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "해제됨": "Disconnected",
+  "다시 연결 필요": "Reconnect needed",
+  "허용 확인 필요(충돌)": "Permission conflict",
+  "허용 설정 확인 실패": "Could not check permissions",
+  "제한된 연결": "Limited access",
+  "등록·허용 설정 완료": "Registration and permissions configured",
+  "바깥 앱 연결": "External app connection",
+  "연결 다시 확인": "Recheck connections",
+  "MV Agent 를 연결하면 Claude Code·Codex 는 저절로 연결돼요": "Connecting MV Agent also connects Claude Code and Codex",
+  "연결하면 이 PC 의 Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요(생성마다 묻지 않음 · 요청한 생성은 크레딧)": "Connecting also enables MV Hub in Claude Code and Codex on this PC (no per-generation prompts; requested generation uses credits)",
+  "대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · 요청한 생성은 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요": "Chat uses your Claude subscription (and your extra usage settings beyond its limit). Requested generation uses MV credits. MV accounts on this PC share the Claude sign-in.",
+
   "이 PC 에서 Codex 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요": "This also changes the Codex sign-in used elsewhere on this PC, including terminals",
   "설치하고 연결": "Install and connect",
   "설치하는 중 · 몇 분 걸려요": "Installing · This may take a few minutes",

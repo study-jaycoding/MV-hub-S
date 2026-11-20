@@ -141,6 +141,12 @@ MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행�
 | 안전한 검증 | `backend/app/services/isolated_env.py`(표준 라이브러리 전용 환경/경로 검사), `tools/smoke_env.py`(app import 없이 공통 helper를 읽는 호환 입구), `tools/validation_result.ps1`(고유 run·소스 지문·실패/Skip), `tools/check_code_map.py`(추적·미추적 소스와 지도 대조). 사용자 DB·실사용 설치 실행은 별도 승인 범위 |
 
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
+
+MV Agent 바깥 연결은 `routers/mcp_v2.py`의 `POST /api/mcp/v2/app/agent-link`·`_agent_link`가 맡는다.
+`repo/mcp_v2.py`의 `registration_lock`·`link_state`·`valid_client`·`revoke_explicit`가 등록/로그아웃 직렬화와 해제 표식을 공유한다.
+`tools/mcp_adapter/local_setup.py`의 `registration`은 실제 프로필을 대조하고 `ensure_access`는 재발급 없이 사용자 허용만 맞춘다.
+같은 파일의 `connection_lock`은 설정 경로별 프로세스 간 잠금이다. 호출 수명은 `useAgentChat.ts`, HTTP·상태 문구는 `agentChatApi.ts`,
+표시는 `AgentSettings.tsx`·`McpQuickConnect.tsx`·`McpRegistration.tsx`가 맡는다. 칸 실행 옵션·전용 프로필은 별개다.
 프런트 연결은 `McpRegistration.tsx`, `McpConnection.tsx`, `mcp.css`, `mcpContext.ts`, `mcpPlans.ts`,
 캔버스 요청 처리는 `mcpCanvasTasks.ts`에서 맡는다. 설정 옆 창의 간단한 연결 칸([한 번에 연결]·앱별 상태·해제, 같은 API)은 `McpQuickConnect.tsx`다. MCP 앱 탭 표시(`X-MVHub-Tab`, 서버 `_secret` 형식 32~128자)는 `lib/mcpTab.ts` 하나로 만든다 — `crypto.randomUUID` 는 LAN HTTP 에 없다.
 

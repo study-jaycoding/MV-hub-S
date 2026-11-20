@@ -982,7 +982,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       )}
       </div>
       {settings && (
-        <AgentSettings engines={engines} usage={chat.usage} connection={chat.connect} codexConnection={chat.codex} onBack={closeSettings}
+        <AgentSettings external={chat.external} engines={engines} usage={chat.usage} connection={chat.connect} codexConnection={chat.codex} onBack={closeSettings}
           onConnectClaude={() => { void chat.connect.connect(); }}
           onSetCodexEnabled={(enabled) => { void chat.codex.setEnabled(enabled); }}
           codexBusy={chat.codex.busy} codexError={chat.codex.error} />
