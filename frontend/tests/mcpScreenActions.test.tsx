@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act, StrictMode } from "react";
+import { act, StrictMode, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-const io = vi.hoisted(() => ({ http: vi.fn(), execute: vi.fn(), undo: vi.fn(), token: "token", account: "acct:a", connection: "hub", revision: 1, canvasWindow: false }));
+const io = vi.hoisted(() => ({ http: vi.fn(), execute: vi.fn(), undo: vi.fn(), token: "token", account: "acct:a", connection: "hub", revision: 1, canvasWindow: false, detached: false }));
 vi.mock("../src/lib/popupWindows", () => ({ isCanvasWindow: () => io.canvasWindow }));
 vi.mock("../src/lib/http", () => ({ jsonFetch: io.http, jsonBody: JSON.stringify, getAuthToken: () => io.token,
   withRequestTimeout: (run: (signal: AbortSignal) => unknown) => run(new AbortController().signal) }));
@@ -17,9 +17,10 @@ import type { ScreenHost } from "../src/lib/agentScreenActions";
 
 let root: Root, container: HTMLDivElement, scene: string | null, epoch: number;
 const workspace = { scope: "personal" as const, id: null, name: null };
-const host = { scene: () => scene ? { sceneId: scene, snapshot: () => ({ cards: [], edges: [], groups: [] }) } : null } as ScreenHost;
-function Consumer({ view = "A" }: { view?: string }) {
+const host = { scene: () => scene && !io.detached ? { sceneId: scene, snapshot: () => ({ cards: [], edges: [], groups: [] }) } : null } as ScreenHost;
+function Consumer({ view = "A", restoreHandle = false }: { view?: string; restoreHandle?: boolean }) {
   const result = useMcpScreenActions({ ready: true, authKey: "auth", workspace, host, boardVisible: true, sceneId: scene, viewKey: view });
+  useLayoutEffect(() => { if (restoreHandle) io.detached = false; });
   return <><McpScreenControl /><McpScreenNotice {...result} /></>;
 }
 const tick = async (ms = 110) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
@@ -27,7 +28,7 @@ const render = async (view = "A") => { await act(async () => root.render(<Strict
 const wake = async (id = "action") => { await act(async () => dispatchAppEvent(APP_EVENTS.mcpScreenAction, { receiver_id: "receiver", action_id: id })); };
 beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks(); localStorage.clear(); scene = "scene"; epoch = 1;
-  io.account = "acct:a"; io.token = "token"; io.connection = "hub"; io.revision = 1; io.canvasWindow = false;
+  io.account = "acct:a"; io.token = "token"; io.connection = "hub"; io.revision = 1; io.canvasWindow = false; io.detached = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   setHubFeatures(["external_screen"]);
@@ -37,7 +38,7 @@ beforeEach(() => {
       epoch = JSON.parse(String(init?.body)).epoch;
       return { receiver_id: "receiver", receiver_secret: "secret", multiple: false, selected: false };
     }
-    if (url.endsWith("/claim")) return { token: "claim", name: "canvas.create_nodes", args: { scene_id: "scene" }, epoch, workspace: { scope: "personal", id: null }, client_name: "Claude Code" };
+    if (url.endsWith("/claim")) return { token: "claim", name: "canvas.create_nodes", args: { scene_id: "scene" }, epoch, workspace: { scope: "personal", id: null }, client_name: "Claude Code", remaining_ms: 30_000 };
     return { accepted: true };
   });
   io.execute.mockReturnValue({ ok: true, summary: "made", data: {}, undo: { kind: "canvas" } });
@@ -110,23 +111,22 @@ it("keeps a receipt before a failed result report, deduplicates wakeups, and sup
   expect(container.textContent).not.toContain("made");
 });
 
-it.each(["hidden", "off", "scene", "edit", "account", "unmount"])("rejects a late claim after %s", async change => {
+it.each(["off", "scene", "edit", "account", "unmount"])("rejects a late claim after %s", async change => {
   await enabled();
   let resolve!: (value: unknown) => void;
   io.http.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
   await wake();
   const oldEpoch = epoch;
-  if (change === "hidden") Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   if (change === "off") localStorage.setItem(screenStorageKey("hub", "acct:a"), "false");
   if (change === "scene") { scene = "B"; await render("B"); scene = "scene"; await render("A"); }
   if (change === "edit") io.revision += 1;
   if (change === "account") io.account = "acct:b";
   if (change === "unmount") { await act(async () => root.unmount()); root = createRoot(container); }
-  await act(async () => resolve({ token: "claim", name: "canvas.create_nodes", args: {}, epoch: oldEpoch, workspace: { scope: "personal", id: null }, client_name: "Claude Code" }));
+  await act(async () => resolve({ token: "claim", name: "canvas.create_nodes", args: { scene_id: "scene" }, epoch: oldEpoch, workspace: { scope: "personal", id: null }, client_name: "Claude Code", remaining_ms: 30_000 }));
   expect(io.execute).not.toHaveBeenCalled();
 });
 
-it("does not show enabled after storage failure and stops polling while hidden", async () => {
+it("does not show enabled after storage failure and keeps heartbeats while hidden", async () => {
   await render();
   const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
   await act(async () => changeScreenControl(true));
@@ -138,5 +138,98 @@ it("does not show enabled after storage failure and stops polling while hidden",
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   await act(async () => document.dispatchEvent(new Event("visibilitychange"))); await tick();
   io.http.mockClear(); await tick(60_000);
+  expect(io.http.mock.calls.filter(([u]) => u.endsWith("screen-presence"))).toHaveLength(6);
+  await act(async () => changeScreenControl(false)); await tick();
+  io.http.mockClear(); await tick(60_000);
   expect(io.http).not.toHaveBeenCalled();
+});
+
+const visibility = async (value: "visible" | "hidden") => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, value });
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+};
+
+it("registers while hidden, executes without a heartbeat wake, and reports hidden changes once", async () => {
+  await visibility("hidden"); await enabled();
+  const registeredEpoch = epoch;
+  const flashes: string[] = [];
+  const flash = (event: Event) => flashes.push((event as CustomEvent<string>).detail);
+  window.addEventListener(APP_EVENTS.flash, flash);
+  try {
+    await wake("one"); await wake("two");
+    expect(io.execute).toHaveBeenCalledTimes(2);
+    expect(flashes).toHaveLength(0);
+    expect(container.textContent).toContain("made");
+    await visibility("visible"); await tick();
+    expect(epoch).toBe(registeredEpoch);
+    expect(flashes).toEqual(["가려진 동안 바깥 앱이 화면을 2번 바꿨어요"]);
+    await visibility("hidden"); await visibility("visible");
+    expect(flashes).toHaveLength(1);
+  } finally { window.removeEventListener(APP_EVENTS.flash, flash); }
+});
+
+it("preserves a pending claim across visibility changes", async () => {
+  await enabled();
+  const response = await io.http.getMockImplementation()!("/claim");
+  let resolve!: (value: unknown) => void;
+  io.http.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  await wake(); await visibility("hidden"); await tick();
+  expect(epoch).toBe(response.epoch);
+  await act(async () => resolve(response));
+  expect(io.execute).toHaveBeenCalledTimes(1);
+});
+
+it("does not execute a claim received after expiry even when timeout callbacks did not run", async () => {
+  await enabled();
+  const response = await io.http.getMockImplementation()!("/claim");
+  let resolve!: (value: unknown) => void;
+  io.http.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  await wake();
+  vi.setSystemTime(Date.now() + 30_001);
+  await act(async () => resolve(response));
+  expect(io.execute).not.toHaveBeenCalled();
+  const report = io.http.mock.calls.find(([url]) => url.endsWith("/result"));
+  expect(JSON.parse(String(report![1].body)).ok).toBe(false);
+});
+
+it.each([false, true])("releases on pagehide (persisted=%s) with keepalive and stops claims", async persisted => {
+  await enabled();
+  io.http.mockClear();
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted })));
+  const [url, init] = io.http.mock.calls[0];
+  expect(url).toContain("screen-presence");
+  expect(init.keepalive).toBe(true);
+  expect(JSON.parse(String(init.body))).toMatchObject({ receiver_id: "receiver", secret: "secret", enabled: false, release: true });
+  io.http.mockClear(); await wake(); await tick(60_000);
+  expect(io.http).not.toHaveBeenCalled();
+  expect(io.execute).not.toHaveBeenCalled();
+});
+
+it("reregisters on bfcache restoration and ignores a pre-pagehide claim", async () => {
+  await enabled();
+  const response = await io.http.getMockImplementation()!("/claim");
+  let resolve!: (value: unknown) => void;
+  io.http.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  await wake("old");
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  io.http.mockClear();
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  const registration = io.http.mock.calls.find(([url]) => url.endsWith("screen-presence"));
+  expect(JSON.parse(String(registration![1].body)).receiver_id).toBeUndefined();
+  await act(async () => resolve(response));
+  expect(io.execute).not.toHaveBeenCalled();
+  await wake("new"); expect(io.execute).toHaveBeenCalledTimes(1);
+});
+
+it("ignores a handle mismatch repaired within layout but invalidates a real detach", async () => {
+  await enabled();
+  const registeredEpoch = epoch;
+  io.detached = true;
+  await act(async () => root.render(<StrictMode><Consumer restoreHandle /></StrictMode>));
+  await tick();
+  expect(epoch).toBe(registeredEpoch);
+  await wake("stable"); expect(io.execute).toHaveBeenCalledTimes(1);
+  io.detached = true; await render(); await tick();
+  expect(epoch).toBeGreaterThan(registeredEpoch);
+  await wake("detached"); expect(io.execute).toHaveBeenCalledTimes(1);
 });

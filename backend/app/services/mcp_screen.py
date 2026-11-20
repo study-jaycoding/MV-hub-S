@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-PRESENCE_SECONDS = 25.0
+PRESENCE_SECONDS = 150.0
 ACTION_SECONDS = 30.0
 LIMITS = {"canvas.create_nodes": 10, "canvas.connect": 20, "library.set_hidden": 100}
 
@@ -127,27 +127,34 @@ class ScreenService:
 
     def update(self, r, body):
         with self.lock:
+            if self.receivers.get(r.id) is not r:
+                refuse("screen_receiver_invalid", 403)
             if body.seq <= r.seq:
                 refuse("screen_stale")
             ws = body.workspace.model_dump(include={"scope", "id"})
-            changed = (ws, body.scene_id, body.visible, body.enabled) != (r.workspace, r.scene_id, r.visible, r.enabled)
+            changed = (ws, body.scene_id, body.enabled) != (r.workspace, r.scene_id, r.enabled)
             if body.epoch < r.epoch or (changed and body.epoch <= r.epoch):
                 refuse("screen_stale")
             r.seq, r.epoch = body.seq, body.epoch
             r.workspace, r.scene_id, r.visible, r.enabled = ws, body.scene_id, body.visible, body.enabled
             r.expires = self.clock() + PRESENCE_SECONDS
             for a in self.actions.values():
-                if a.receiver is r and (a.epoch != r.epoch or not r.visible or not r.enabled):
+                if a.receiver is r and (a.epoch != r.epoch or not r.enabled):
                     self._close(a)
+            if body.release:
+                self.receivers.pop(r.id)
+                self.tickets = {k: t for k, t in self.tickets.items() if t[1] != r.id}
+                if self.selected.get(r.account) == r.id:
+                    self.selected.pop(r.account)
             if body.select:
-                if not r.visible or not r.enabled:
+                if not r.enabled:
                     refuse("screen_unavailable")
                 self.selected[r.account] = r.id
 
     def target(self, account):
         with self.lock:
             self._clean()
-            candidates = [r for r in self.receivers.values() if r.account == account and r.visible and r.enabled]
+            candidates = [r for r in self.receivers.values() if r.account == account and r.enabled]
             selected = self.selected.get(account)
             if selected:
                 candidates = [r for r in candidates if r.id == selected]
@@ -221,12 +228,13 @@ class ScreenService:
             token = secrets.token_urlsafe(32)
             a.state, a.token_hash = "claimed", digest(token)
             return {"token": token, "name": a.name, "args": a.args, "epoch": a.epoch,
+                    "remaining_ms": max(0, int((a.expires - self.clock()) * 1000)),
                     "workspace": dict(r.workspace), "client_name": a.context.client["name"]}
 
     def finish(self, a, token, ok, summary, data):
         with self.lock:
             self._clean()
-            if (a.state != "claimed" or a.receiver.epoch != a.epoch or not a.receiver.visible or not a.receiver.enabled
+            if (a.state != "claimed" or a.receiver.epoch != a.epoch or not a.receiver.enabled
                     or not hmac.compare_digest(a.token_hash, digest(token))):
                 return False
             self._close(a, {"status": "done" if ok else "failed", "ok": ok, "summary": summary, "data": data})

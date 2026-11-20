@@ -7,6 +7,8 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "가려진 동안 바깥 앱이 화면을 {count}번 바꿨어요": "External apps changed this screen {count} times while it was hidden",
+  "화면 동작 기한이 지나 실행하지 않았어요": "The screen action expired and was not executed",
   "MV Hub 본창에서 허브 연결을 확인한 뒤 켜 주세요": "Enable this in the main MV Hub window after verifying the hub connection",
   "바깥 앱": "External app",
   "그 씬을 이 창의 캔버스에서 열어 주세요": "Open that scene in this window",
@@ -25,7 +27,7 @@ const EN: Record<string, string> = {
   "되돌리지 못했어요 — 캔버스가 받아들이지 않았어요": "The canvas did not accept the undo",
   "되돌렸어요": "Undone",
 
-  "화면 제어를 켜면 연결된 바깥 앱이 허용한 MV Hub 창의 현재 공간·씬과 선택 카드 일부를 읽고, 빈 카드·연결·내 생성물 회색 표시를 바꿀 수 있어요. 화면 동작은 MV 생성 크레딧을 쓰지 않아요. 생성 요청에는 기존 크레딧 규칙이 적용돼요.": "When screen control is enabled, connected external apps can read the current workspace, scene and selected card excerpts in the allowed MV Hub window, and change empty cards, connections and dimming of your generations. Screen actions use no MV generation credits. Generation requests still follow the existing credit rules.",
+  "화면 제어를 켜면 창이 가려져 있거나 최소화돼 있어도 연결된 바깥 앱이 허용한 MV Hub 창의 현재 공간·씬과 선택 카드 일부를 읽고, 빈 카드·연결·내 생성물 회색 표시를 바꿀 수 있어요. 화면 동작은 MV 생성 크레딧을 쓰지 않아요. 생성 요청에는 기존 크레딧 규칙이 적용돼요.": "When screen control is enabled, connected external apps can read the current workspace, scene and selected card excerpts in the allowed MV Hub window even when it is obscured or minimized, and change empty cards, connections and dimming of your generations. Screen actions use no MV generation credits. Generation requests still follow the existing credit rules.",
   "바깥 앱 화면 제어": "External app screen control",
   "이 창 사용": "Use this window",
   "이 창을 사용 중": "Using this window",

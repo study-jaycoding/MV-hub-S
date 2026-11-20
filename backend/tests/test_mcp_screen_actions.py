@@ -84,15 +84,67 @@ def test_multiple_selection_and_no_fallback(screen):
     assert s[4](**s[5], seq=2, select=True).status_code == 200
     ticket(s)
     assert s[4](receiver_id=second["receiver_id"], secret=second["receiver_secret"], seq=2).status_code == 200
-    assert s[4](**s[5], seq=3, epoch=2, visible=False).status_code == 200
+    assert s[4](**s[5], seq=3, epoch=2, enabled=False).status_code == 200
     assert action(s[0], "read_context", {"kind": "screen"}).json()["detail"] == "screen_unavailable"
 
 
-@pytest.mark.parametrize("change", ["scene", "hidden", "off", "epoch", "expired", "logout", "restart"])
+def test_hidden_registration_selection_and_presence_ttl_150(screen):
+    s = screen
+    second = s[4](visible=False).json()
+    assert second["multiple"] is True
+    assert action(s[0], "read_context", {"kind": "screen"}).json()["detail"] == "screen_ambiguous"
+    credentials = {"receiver_id": second["receiver_id"], "secret": second["receiver_secret"]}
+    assert s[4](**credentials, seq=2, visible=False, select=True).status_code == 200
+    s[2][0] += 149
+    ticket(s)
+    s[2][0] += 1
+    assert action(s[0], "read_context", {"kind": "screen"}).json()["detail"] == "screen_unavailable"
+    assert s[4](**credentials, seq=3, visible=False).status_code == 403
+
+
+def test_visibility_keeps_epoch_ticket_action_and_result(screen):
+    s = screen
+    context = ticket(s)
+    assert s[4](**s[5], seq=2, visible=False).status_code == 200
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(action, s[0], "screen_action", {"name": "canvas.read_selection",
+            "args": {"scene_id": "scene"}, "screen_context": context})
+        assert s[7].wait(5)
+        aid = s[6][-1][0]["action_id"]
+        s[2][0] += 7
+        result = claim(s, aid)
+        assert result.status_code == 200, result.text
+        assert result.json()["remaining_ms"] == 23_000
+        assert s[4](**s[5], seq=3, visible=True).status_code == 200
+        assert s[4](**s[5], seq=4, visible=False).status_code == 200
+        assert s[1].receivers[s[5]["receiver_id"]].epoch == 1
+        assert finish(s, aid, result.json()["token"]).json() == {"accepted": True}
+        assert future.result(5).json()["status"] == "done"
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+def test_release_removes_target_selection_and_rejects_late_heartbeat(screen, claimed):
+    s = screen
+    with ThreadPoolExecutor() as pool:
+        future, aid = start(s, pool)
+        if claimed:
+            assert claim(s, aid).status_code == 200
+        assert s[4](**s[5], seq=2, select=True).status_code == 200
+        second = s[4](visible=False).json()
+        assert s[4](**s[5], seq=3, epoch=2, enabled=False, release=True).status_code == 200
+        assert s[5]["receiver_id"] not in s[1].receivers
+        assert s[1].selected == {}
+        assert s[1].target(s[0][2]["email"]).id == second["receiver_id"]
+        ticket(s)
+        assert s[4](**s[5], seq=4, epoch=3).status_code == 403
+        assert future.result(5).json()["status"] == ("unknown" if claimed else "expired_unclaimed")
+
+
+@pytest.mark.parametrize("change", ["scene", "off", "epoch", "expired", "logout", "restart"])
 def test_old_ticket_never_revives(screen, monkeypatch, change):
     s = screen; token = ticket(s)
-    if change in ("scene", "hidden", "off", "epoch"):
-        changed = {"scene_id": "other"} if change == "scene" else {"visible": False} if change == "hidden" else {"enabled": False} if change == "off" else {}
+    if change in ("scene", "off", "epoch"):
+        changed = {"scene_id": "other"} if change == "scene" else {"enabled": False} if change == "off" else {}
         assert s[4](**s[5], seq=2, epoch=2, **changed).status_code == 200
         assert s[4](**s[5], seq=3, epoch=3).status_code == 200
     elif change == "expired":
@@ -194,7 +246,7 @@ def test_invalid_requests_are_rate_limited_and_db_replacement_invalidates(screen
     for _ in range(30):
         assert action(s[0], "screen_action", {"name": "canvas.read_selection", "args": {"scene_id": "scene"}, "screen_context": "x" * 43}).status_code == 409
     assert action(s[0], "screen_action", {"name": "canvas.read_selection", "args": {}, "screen_context": "x" * 43}).status_code == 429
-    s[2][0] += 61
+    s[2][0] += 151
     assert s[4](**s[5], seq=2).status_code == 403
     r = s[4]().json()
     db.flush_pool()
@@ -242,7 +294,7 @@ def test_registration_bound_and_expiry_cleanup(screen):
     for _ in range(15):
         assert s[4]().status_code == 200
     assert s[4]().status_code == 429
-    s[2][0] += 26
+    s[2][0] += 150
     assert s[4]().status_code == 200 and len(s[1].receivers) == 1
 
 
@@ -295,7 +347,7 @@ def test_global_caps_rate_windows_and_terminal_retention():
         service.rate(str(i // 20), "one-account")
     with pytest.raises(HTTPException):
         service.rate("fresh-client", "one-account")
-    clock[0] += 61
+    clock[0] += 151
     service.rate("fresh-client", "one-account")
     assert not service.actions and not service.receivers and len(service.requests) == 1
 
@@ -361,7 +413,7 @@ def test_ticket_cap_is_per_client_and_expires(screen):
     assert action(s[0], "read_context", {"kind": "screen"}, name="claude").status_code == 200
     assert len(s[1].tickets) == 9
     s[2][0] += 31
-    assert s[4]().status_code == 200
+    assert s[4](**s[5], seq=2).status_code == 200
     ticket(s)
     assert len(s[1].tickets) == 1
 

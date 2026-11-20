@@ -1785,6 +1785,7 @@ class ScreenPresenceIn(StrictModel):
     visible: StrictBool
     enabled: StrictBool
     select: StrictBool = False
+    release: StrictBool = False
 
 
 class ScreenClaimIn(StrictModel):
@@ -1870,19 +1871,21 @@ async def screen_presence(body: ScreenPresenceIn, request: Request, _headers=Dep
         mcp_screen.refuse("screen_hub_changed", 403)
     if body.workspace.scope not in ("personal", "team"):
         mcp_screen.refuse("screen_workspace_invalid", 422)
+    if body.release and (not body.receiver_id or body.enabled or body.select):
+        mcp_screen.refuse("screen_release_invalid", 422)
     if body.receiver_id:
         r = mcp_screen.service.authenticate(body.receiver_id, body.secret, binding)
         mcp_screen.service.update(r, body)
         secret = None
     else:
-        if not body.visible or not body.enabled:
+        if not body.enabled:
             mcp_screen.refuse("screen_unavailable")
         ctx = await asyncio.to_thread(_capture, request)
         if binding != await asyncio.to_thread(_screen_binding, request):
             mcp_screen.refuse("screen_account_changed", 403)
         r, secret = mcp_screen.service.register(binding, norm_email(ctx.account["email"]), ctx, body)
     with mcp_screen.service.lock:
-        candidates = sum(v.account == r.account and v.visible and v.enabled for v in mcp_screen.service.receivers.values())
+        candidates = sum(v.account == r.account and v.enabled for v in mcp_screen.service.receivers.values())
         selected = mcp_screen.service.selected.get(r.account)
         return {"receiver_id": r.id, **({"receiver_secret": secret} if secret else {}),
                 "multiple": candidates > 1 or selected not in (None, r.id), "selected": selected == r.id}

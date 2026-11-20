@@ -148,6 +148,7 @@ MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행�
 `frontend/src/components/mcp/McpScreenNotice.tsx`는 기본 끔 스위치·명시 창 선택·지속 알림·되돌리기를 표시한다.
 기존 칸 상태기계·도구 표면은 그대로이며, 일반 화면 동작만 라이브러리 변경 알림에서 제외한다. 허브·앱·어댑터는 `external_screen` 기능 표식으로 호환 여부를 확인한다.
 AUTH 끔에서는 내용·자격 없는 WS 깨우기가 다른 로컬 소켓에도 전달될 수 있으며, 실제 명령 접근은 HTTP 수신 자격 검사로 제한한다.
+3판은 켠 본창의 가려짐·최소화도 허용한다(숨김 heartbeat·TTL 150초·보임 전환은 세대 유지). claim의 남은 시간에서 요청 경과를 빼 만료 실행을 막고, pagehide는 기존 presence 경로의 keepalive 해제·bfcache 복귀는 재등록한다. 여러 창이면 새로고침 뒤 [이 창 사용]을 다시 고른다. 숨은 동안 변경은 다시 보일 때 한 번 알리며, 브라우저 정지·폐기 중 실행은 보장하지 않는다(미선점 만료 `expired_unclaimed`, 선점 뒤 결과 없음 `unknown`).
 
 MV Agent 바깥 연결은 `routers/mcp_v2.py`의 `POST /api/mcp/v2/app/agent-link`·`_agent_link`가 맡는다.
 `repo/mcp_v2.py`의 `registration_lock`·`link_state`·`valid_client`·`revoke_explicit`가 등록/로그아웃 직렬화와 해제 표식을 공유한다.

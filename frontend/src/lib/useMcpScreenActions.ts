@@ -23,7 +23,7 @@ export function screenMessage(message: string): string {
   return t(message);
 }
 
-export const SCREEN_CONSENT = "화면 제어를 켜면 연결된 바깥 앱이 허용한 MV Hub 창의 현재 공간·씬과 선택 카드 일부를 읽고, 빈 카드·연결·내 생성물 회색 표시를 바꿀 수 있어요. 화면 동작은 MV 생성 크레딧을 쓰지 않아요. 생성 요청에는 기존 크레딧 규칙이 적용돼요.";
+export const SCREEN_CONSENT = "화면 제어를 켜면 창이 가려져 있거나 최소화돼 있어도 연결된 바깥 앱이 허용한 MV Hub 창의 현재 공간·씬과 선택 카드 일부를 읽고, 빈 카드·연결·내 생성물 회색 표시를 바꿀 수 있어요. 화면 동작은 MV 생성 크레딧을 쓰지 않아요. 생성 요청에는 기존 크레딧 규칙이 적용돼요.";
 const listeners = new Set<() => void>();
 const initial = { available: false, enabled: false, multiple: false, selected: false, note: "" };
 let control = initial;
@@ -45,7 +45,7 @@ const storedSetting = (key: string) => { try { return localStorage.getItem(key);
 export interface ScreenNotice extends ScreenReceipt { id: string; client: string; scope: string; note?: string }
 interface Props { ready: boolean; authKey: string; workspace: WorkspaceContext; host: ScreenHost; boardVisible: boolean; sceneId: string | null; viewKey: string }
 interface Presence { receiver_id: string; receiver_secret?: string; multiple: boolean; selected: boolean }
-interface Claim { token: string; name: string; args: Record<string, unknown>; epoch: number; workspace: WorkspaceContext; client_name: string }
+interface Claim { token: string; name: string; args: Record<string, unknown>; epoch: number; workspace: WorkspaceContext; client_name: string; remaining_ms: number }
 
 export function useMcpScreenActions(props: Props) {
   const current = useRef(props); current.current = props;
@@ -64,7 +64,7 @@ export function useMcpScreenActions(props: Props) {
     const update = () => setSupported(hubHasFeature(EXTERNAL_SCREEN_FEATURE));
     update(); return subscribeHubFeatures(update);
   }, []);
-  // Layout effects observe the actual child board handle, including unmounts and A→B→A.
+  // Record real view transitions now; sample the board handle after layout effects settle.
   useLayoutEffect(() => { signal.current(); });
   useEffect(() => {
     publish(initial);
@@ -72,11 +72,12 @@ export function useMcpScreenActions(props: Props) {
     if (!props.ready || !supported || isCanvasWindow() || new URLSearchParams(location.search).has("embed")) return;
     let alive = true, key = "", hub = "", receiver: Presence | null = null, secret = "";
     let seq = 0, epoch = 0, signature = "", busy = false, dirty = false, choose = false, delay = 10_000;
+    let viewSignature = "", pageHidden = false, lifecycle = 0, hiddenChanges = 0, hiddenScope = "";
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tab = mcpTabId(), account = currentAccount, token = currentToken, connection = currentConnection;
-    const abort = new AbortController();
+    let abort = new AbortController();
     const seen = new Set<string>();
-    const fresh = () => alive && !isCanvasWindow() && current.current.ready && current.current.authKey === props.authKey
+    const fresh = () => alive && !pageHidden && !isCanvasWindow() && current.current.ready && current.current.authKey === props.authKey
       && getAccountNamespace() === account && getAuthToken() === token && getConnectionKey() === connection;
     const snapshot = () => {
       const p = current.current;
@@ -84,7 +85,7 @@ export function useMcpScreenActions(props: Props) {
       const scene = p.boardVisible && board?.sceneId === p.sceneId ? board : null;
       const enabled = screenEnabled(key), visible = document.visibilityState === "visible";
       const workspace = { scope: p.workspace.scope, id: p.workspace.id || null };
-      const next = JSON.stringify([workspace, scene?.sceneId || null, enabled, visible, p.viewKey, storedSetting(key)]);
+      const next = JSON.stringify([workspace, scene?.sceneId || null, enabled, p.viewKey, storedSetting(key)]);
       if (signature !== next) { signature = next; epoch += 1; }
       return { workspace, scene_id: scene?.sceneId || null, enabled, visible, epoch };
     };
@@ -99,39 +100,42 @@ export function useMcpScreenActions(props: Props) {
     const presence = async () => {
       if (!fresh()) return;
       if (busy) { dirty = true; return; }
+      const started = lifecycle;
+      const requestFresh = () => fresh() && started === lifecycle;
       if (!hub) {
         busy = true;
         try {
           const result = await readHub();
-          if (!fresh()) return;
+          if (!requestFresh()) return;
           if (!result.mcp_bridge?.hub_id) throw new Error("identity unavailable");
           hub = result.mcp_bridge.hub_id; key = screenStorageKey(hub, account);
           setHubIdentity(hub);
           publish({ ...initial, available: true, enabled: screenEnabled(key) });
         } catch {
-          delay = Math.min(delay * 2, 60_000);
-          if (fresh()) publish({ ...initial, note: "화면 연결을 확인하지 못했어요" });
+          if (requestFresh()) {
+            delay = Math.min(delay * 2, 60_000);
+            publish({ ...initial, note: "화면 연결을 확인하지 못했어요" });
+          }
         } finally {
-          busy = false;
-          if (fresh() && document.visibilityState === "visible") schedule(hub ? 100 : delay);
+          if (requestFresh()) { busy = false; schedule(hub ? 100 : delay); }
         }
         return;
       }
       const state = snapshot();
       publish({ ...control, available: true, enabled: state.enabled });
-      if ((!state.enabled || !state.visible) && !receiver) return;
+      if (!state.enabled && !receiver) return;
       busy = true; dirty = false;
       const select = choose; choose = false;
       try {
         const result = await post<Presence>("screen-presence", { ...state, hub_id: hub, seq: ++seq,
           ...(receiver ? { receiver_id: receiver.receiver_id, secret } : {}), select });
-        if (!fresh()) return;
+        if (!requestFresh()) return;
         if (typeof result.receiver_id !== "string" || (!receiver && !result.receiver_secret)
           || (receiver && receiver.receiver_id !== result.receiver_id)) throw new Error("invalid receiver response");
         receiver = result; secret = result.receiver_secret || secret; delay = 10_000;
         publish({ available: true, enabled: screenEnabled(key), multiple: result.multiple, selected: result.selected, note: "" });
       } catch (error) {
-        if (fresh()) {
+        if (requestFresh()) {
           const rejected = [403, 404].includes(Number((error as { status?: number } | null)?.status));
           const lostReceiver = rejected && receiver !== null;
           if (rejected) { receiver = null; secret = ""; }
@@ -140,19 +144,34 @@ export function useMcpScreenActions(props: Props) {
           publish({ ...control, note: "화면 연결을 확인하지 못했어요" });
           // An explicitly rejected capability cannot leave an orphan; retry registration once now.
           const health = lostReceiver ? null : await readHub().catch(() => null);
-          if (fresh() && health?.mcp_bridge?.hub_id && health.mcp_bridge.hub_id !== hub) {
+          if (requestFresh() && health?.mcp_bridge?.hub_id && health.mcp_bridge.hub_id !== hub) {
             hub = health.mcp_bridge.hub_id; key = screenStorageKey(hub, account); snapshot();
             setHubIdentity(hub);
             publish({ ...initial, available: true, enabled: screenEnabled(key) });
           }
         }
       } finally {
-        busy = false;
-        if (fresh() && (dirty || (snapshot().enabled && snapshot().visible))) schedule(dirty ? 100 : delay);
+        if (requestFresh()) {
+          busy = false;
+          if (dirty || snapshot().enabled) schedule(dirty ? 100 : delay);
+        }
       }
     };
     const changed = () => { snapshot(); if (busy) dirty = true; else schedule(100); };
-    signal.current = () => { const before = signature; snapshot(); if (before !== signature) changed(); };
+    signal.current = () => {
+      const p = current.current;
+      const next = JSON.stringify([p.workspace.scope, p.workspace.id, p.sceneId, p.boardVisible, p.viewKey]);
+      if (viewSignature !== next) {
+        viewSignature = next; epoch += 1;
+        if (busy) dirty = true; else schedule(100);
+      }
+      // Never sample a temporarily detached/old child handle in the middle of a commit.
+      queueMicrotask(() => {
+        if (!fresh()) return;
+        const before = signature; snapshot();
+        if (before !== signature) changed();
+      });
+    };
     const setting = (event: Event) => {
       if (!fresh() || !key) return;
       const detail = (event as CustomEvent<{ enabled?: boolean; select?: boolean }>).detail;
@@ -171,27 +190,37 @@ export function useMcpScreenActions(props: Props) {
       const detail = (event as CustomEvent<{ receiver_id: string; action_id: string }>).detail;
       if (!detail || typeof detail.action_id !== "string" || !fresh() || !receiver || detail.receiver_id !== receiver.receiver_id || seen.has(detail.action_id)) return;
       const before = snapshot(), startScope = scopeRef.current;
-      if (!before.enabled || !before.visible) return;
+      if (!before.enabled) return;
       seen.add(detail.action_id); if (seen.size > 256) seen.delete(seen.values().next().value!);
       const credentials = { receiver_id: receiver.receiver_id, secret };
       const board = current.current.boardVisible ? current.current.host.scene() : null;
       const fingerprint = board ? sceneFingerprint(board.snapshot()) : null;
       const hiddenStamp = disabledGenStamp();
+      const started = lifecycle, sentAt = performance.now(), sentWall = Date.now();
       let claim: Claim;
       try { claim = await post<Claim>(`screen-actions/${encodeURIComponent(detail.action_id)}/claim`, credentials); }
       catch { return; }
       const now = snapshot(), currentBoard = current.current.boardVisible ? current.current.host.scene() : null;
-      const valid = fresh() && before.epoch === now.epoch && claim.epoch === now.epoch && now.enabled && now.visible
+      const valid = fresh() && started === lifecycle && before.epoch === now.epoch && claim.epoch === now.epoch && now.enabled
         && scopeRef.current === startScope && JSON.stringify(claim.workspace) === JSON.stringify(now.workspace)
         && (!claim.name.startsWith("canvas.") || (!!now.scene_id && claim.args.scene_id === now.scene_id))
-        && fingerprint === (currentBoard ? sceneFingerprint(currentBoard.snapshot()) : null);
-      const result = valid && (claim.name !== "library.set_hidden" || hiddenStamp === disabledGenStamp()) ? runScreenAction(claim.name, claim.args, current.current.host)
-        : { ok: false, summary: "화면이 바뀌어 실행하지 않았어요", data: {} };
-      if (fresh()) {
+        && fingerprint === (currentBoard ? sceneFingerprint(currentBoard.snapshot()) : null)
+        && (claim.name !== "library.set_hidden" || hiddenStamp === disabledGenStamp());
+      // Wall time also counts an OS suspension if its monotonic clock pauses; never extend the budget.
+      const elapsed = Math.max(0, performance.now() - sentAt, Date.now() - sentWall);
+      const withinDeadline = Number.isFinite(claim.remaining_ms) && claim.remaining_ms > elapsed;
+      const result = valid && withinDeadline ? runScreenAction(claim.name, claim.args, current.current.host)
+        : { ok: false, summary: withinDeadline ? "화면이 바뀌어 실행하지 않았어요" : "화면 동작 기한이 지나 실행하지 않았어요", data: {} };
+      if (fresh() && started === lifecycle) {
         const client = ({ claude: "Claude Code", codex: "Codex", claude_desktop: t("Claude 데스크톱 채팅") } as Record<string, string>)[claim.client_name] || t("바깥 앱");
         const receipt = { ...result, id: detail.action_id, client, scope: startScope };
         setNotices(list => [...list, receipt].slice(-20));
-        dispatchAppEvent(APP_EVENTS.flash, `${client}: ${screenMessage(result.summary)}`);
+        if (now.visible) dispatchAppEvent(APP_EVENTS.flash, `${client}: ${screenMessage(result.summary)}`);
+        else if (result.ok && claim.name !== "canvas.read_selection"
+          && !(Array.isArray(result.data.changed) && result.data.changed.length === 0)) {
+          if (hiddenScope !== startScope) { hiddenScope = startScope; hiddenChanges = 0; }
+          hiddenChanges += 1;
+        }
         try {
           const accepted = await post<{ accepted: boolean }>(`screen-actions/${encodeURIComponent(detail.action_id)}/result`, {
             ...credentials, token: claim.token, ok: result.ok, summary: result.summary, data: result.data,
@@ -202,23 +231,47 @@ export function useMcpScreenActions(props: Props) {
         }
       }
     };
+    const visibilityChanged = () => {
+      if (!fresh()) return;
+      if (document.visibilityState === "visible" && hiddenChanges) {
+        if (hiddenScope === scopeRef.current) dispatchAppEvent(APP_EVENTS.flash,
+          t("가려진 동안 바깥 앱이 화면을 {count}번 바꿨어요").replace("{count}", String(hiddenChanges)));
+        hiddenChanges = 0;
+      }
+      changed();
+    };
+    const release = () => {
+      if (receiver && token === getAuthToken() && account === getAccountNamespace() && connection === getConnectionKey()) {
+        void jsonFetch("/api/mcp/v2/app/screen-presence", { method: "POST", headers, keepalive: true,
+          body: jsonBody({ ...snapshot(), hub_id: hub, receiver_id: receiver.receiver_id, secret,
+            seq: ++seq, epoch: ++epoch, enabled: false, release: true }),
+        }).catch(() => {});
+      }
+      receiver = null; secret = ""; choose = false;
+      pageHidden = true; lifecycle += 1; busy = false; dirty = false;
+      abort.abort(); clearTimeout(timer);
+    };
+    const restore = (event: PageTransitionEvent) => {
+      if (!event.persisted || !alive) return;
+      pageHidden = false; abort = new AbortController();
+      void presence();
+    };
     window.addEventListener(APP_EVENTS.mcpScreenControl, setting);
     window.addEventListener(APP_EVENTS.mcpScreenAction, wake);
     window.addEventListener("storage", changed);
-    document.addEventListener("visibilitychange", changed);
+    document.addEventListener("visibilitychange", visibilityChanged);
+    window.addEventListener("pagehide", release);
+    window.addEventListener("pageshow", restore);
     void presence();
     return () => {
-      if (receiver && token === getAuthToken() && account === getAccountNamespace() && connection === getConnectionKey()) {
-        void jsonFetch("/api/mcp/v2/app/screen-presence", { method: "POST", headers,
-          body: jsonBody({ ...snapshot(), hub_id: hub, receiver_id: receiver.receiver_id, secret,
-            seq: ++seq, epoch: ++epoch, visible: false, enabled: false }),
-        }).catch(() => {});
-      }
+      release();
       alive = false; abort.abort(); clearTimeout(timer); signal.current = () => {};
       window.removeEventListener(APP_EVENTS.mcpScreenControl, setting);
       window.removeEventListener(APP_EVENTS.mcpScreenAction, wake);
       window.removeEventListener("storage", changed);
-      document.removeEventListener("visibilitychange", changed);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      window.removeEventListener("pagehide", release);
+      window.removeEventListener("pageshow", restore);
       publish(initial);
     };
   }, [props.ready, props.authKey, supported, currentAccount, currentToken, currentConnection]);
