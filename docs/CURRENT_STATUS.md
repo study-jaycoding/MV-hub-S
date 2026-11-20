@@ -5,10 +5,12 @@ tags:
   - mvhub
   - mvhub/현황
 status: active
-updated: 2026-11-20
+updated: 2026-11-21
 ---
 
 # MV Hub 현재 작업 현황
+
+- 11-21 생성 복구: 새 제출에서 "(no text)" 인자를 생략하면 빈 프롬프트 지문을 저장하며, 원격 prompt 누락은 빈 지문의 업스케일·MiniMax H3·Kling 4.0/Flash image-to-video만 허용한다(기존 지문·음성 대조 유지, 독립 리뷰·dev 반영 전).
 
 ## 11-20 바깥 앱 화면 편집
 
