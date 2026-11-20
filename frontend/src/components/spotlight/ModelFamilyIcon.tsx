@@ -2,12 +2,14 @@
 //  기본은 글자색(흰색), 고른 줄·타일은 CSS 가 라임으로 바꾼다.
 //  같은 브랜드는 아이콘이 같다(Gemini = Nano Banana 의 구글 G, Seedance = 폴더 `seedance.svg`, Seedream 은 따로).
 
-export type ModelFamily = "nano" | "gpt" | "seedream" | "seedance" | "kling" | "gemini" | "wan" | "minimax" | "seed" | "eleven" | "qwen";
+export type ModelFamily = "nano" | "gpt" | "seedream" | "seedance" | "kling" | "gemini" | "wan" | "minimax" | "seed" | "eleven" | "qwen"
+  | "bytedance" | "topaz";
 
 export const FAMILY_NAMES: Record<ModelFamily, string> = {
   nano: "Nano Banana", gpt: "GPT Image", seedream: "Seedream", seedance: "Seedance",
   kling: "Kling", gemini: "Gemini Omni", wan: "Wan", minimax: "MiniMax",
   seed: "Seed", eleven: "ElevenLabs", qwen: "Qwen", // 오디오(폴더 higgsfield-audio-icons)
+  bytedance: "ByteDance", topaz: "Topaz", // 업스케일(폴더 higgsfield-upscale-icons)
 };
 
 /** 모델 코드 → 계열. 모르는 모델은 null(아이콘·타일 없이 기존 모양). */
@@ -23,6 +25,8 @@ export function modelFamily(jobType: string): ModelFamily | null {
   if (jobType === "seed_audio") return "seed";
   if (jobType.startsWith("elevenlabs")) return "eleven";
   if (jobType.startsWith("qwen")) return "qwen";
+  if (jobType.startsWith("bytedance")) return "bytedance";
+  if (jobType.startsWith("topaz")) return "topaz";
   return null;
 }
 
@@ -67,6 +71,20 @@ const ICONS: Record<ModelFamily, IconShape> = {
   seed: {
     viewBox: "0 0 16 16",
     paths: [{ d: "m3.154 12.154-2.62.655V1.2l2.62.655v10.3Zm12.668.679-2.626.656V.519l2.627.65v11.664Zm-8.509-.325-2.622.656v-6.84l2.622.655v5.53ZM9.025 5.31l2.627-.656v6.84l-2.627-.656V5.31Z" }],
+  },
+  // ByteDance 업스케일(이미지·영상) — 폴더 higgsfield-upscale-icons/svg/bytedance-upscale.svg, Seedance 와 같은 모양
+  bytedance: {
+    viewBox: "0 0 16 16",
+    paths: [{ d: "m3.154 12.154-2.62.655V1.2l2.62.655v10.3Zm12.668.679-2.626.656V.519l2.627.65v11.664Zm-8.509-.325-2.622.656v-6.84l2.622.655v5.53ZM9.025 5.31l2.627-.656v6.84l-2.627-.656V5.31Z" }],
+  },
+  // Topaz(이미지·영상·Hyperion 모두 같은 로고) — 폴더 higgsfield-upscale-icons/svg/topaz-video.svg
+  topaz: {
+    viewBox: "0 0 18 18",
+    paths: [
+      { d: "M12.0005 6H6.00031V12.0002H12.0005V6Z" },
+      { d: "M18.0001 0.000488281H11.9999V6.00066H18.0001V0.000488281Z" },
+      { d: "M6.00003 11.9995H-0.00012207V17.9997H6.00003V11.9995Z" },
+    ],
   },
   // ElevenLabs — 폴더 elevenlabs-v4.svg
   eleven: { viewBox: "0 0 24 24", paths: [{ d: "M10.018 22H6V2h4.018zM18 22h-4.018V2H18z" }] },

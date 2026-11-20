@@ -316,6 +316,7 @@ export function SceneVariantPopup({
           <div className="folder-peek-selbar">
             <BoardSelectionActionBar
               selected={selected}
+              upscaleTarget={card.kind === "generation" ? () => ({ sceneId, cardId: card.id }) : undefined} // 업스케일 결과를 이 카드에 쌓는다
               projects={projects}
               onShare={(s) => actions.onVariantShare?.(s)}
               onDownload={(s) => actions.onVariantDownload?.(s)}

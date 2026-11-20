@@ -55,6 +55,7 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { copyText, flashMsg } from "../lib/flash";
+import { upscaleModel } from "../lib/upscaleModels";
 import { libraryDraftKey, readLibraryDraft, writeLibraryDraft, type LibraryPromptDraft } from "../lib/libraryPromptDraft";
 import { takeCanvasHandoff, type CanvasPromptDraft } from "../lib/popupWindows";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
@@ -1152,6 +1153,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       const g = await api.getGeneration(id);
       // 기다리는 사이 고른 카드가 바뀌었거나(다녀온 것 포함) 더 나중의 재사용이 눌렸다 — 입력칸을 갈아 치우지 않는다
       if (bindingTurnRef.current !== startedTurn || reuseSeqRef.current !== mine) return;
+      // 업스케일 카드는 생성창 모델로 옮기면 다른 유료 생성이 된다(Codex 설계 확인 P2-4) — 입력칸을 바꾸지 않고 안내만
+      if (upscaleModel(g.model || "")) {
+        flashMsg("업스케일 결과는 재사용하지 않습니다 — 크게 보기의 [⤢ Upscale] 로 다시 업스케일하세요.");
+        return;
+      }
       // 재사용 원본 → 다음 생성의 자동 히스토리 부모(원본→파생).
       dragParentRef.current = id;
       // 모드 판정 — 출력 자산 타입이 우선(성공작). 단 실패 생성은 자산이 없어 무조건 image 로

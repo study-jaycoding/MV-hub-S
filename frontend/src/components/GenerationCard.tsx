@@ -15,6 +15,7 @@ import { thumbOf, thumbUrl } from "../lib/media";
 import { folderChipLabel, folderFullLabel } from "../lib/folderLabel";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { isDraftGeneration } from "../lib/seedanceDraft";
+import { upscaleBadge } from "../lib/upscaleModels";
 import { MediaThumbnail } from "./MediaThumbnail";
 import comfyLogo from "../assets/comfy-logo.svg";
 import higgsfieldLogo from "../assets/higgsfield-logo.svg";
@@ -469,6 +470,12 @@ function GenerationCardImpl({
       {/* Draft 생성물(Jay 10-22) — 캔버스 카드와 같은 라임 알약. 남의 카드는 작성자 배지 아래. 목록 보기는 썸네일이 작아 뺀다. */}
       {!isList && isDraftGeneration(gen) && (
         <span className={"linb-draft" + (gen.is_mine ? "" : " below-creator")}>Draft</span>
+      )}
+      {/* 업스케일 결과(Jay 11-20 시안 v3) — Draft 와 같은 자리·모양의 알약에 '⤢ 4K'. 왼쪽 위는 S·T·C 단추 자리라 비켰다 */}
+      {!isList && !isDraftGeneration(gen) && upscaleBadge(gen.model, gen.params) && (
+        <span className={"linb-draft linb-upscale" + (gen.is_mine ? "" : " below-creator")} title="업스케일 결과">
+          ⤢ {upscaleBadge(gen.model, gen.params)}
+        </span>
       )}
       {/* 다른 작업자가 만든 결과물 — 카드 우측 상단 뱃지(상시 표시). */}
       {!gen.is_mine && (

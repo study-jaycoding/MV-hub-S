@@ -1137,7 +1137,12 @@ async def estimate_cost(
     # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
     # 부른다(게이트 밖 무제한 model get 방지).
     _require_model_id(model)
-    from ..models import TTS_MODELS, VIDEO_VOICE_MODELS, validate_media_request, video_voice_cost_context
+    from ..models import TTS_MODELS, UPSCALE_MODELS, VIDEO_VOICE_MODELS, validate_media_request, video_voice_cost_context
+    if model in _UPSCALE_NO_COST_MODELS:
+        raise CLIError("이 업스케일 모델은 견적을 주지 않습니다")
+    if UPSCALE_MODELS.get(model) == "video" and not video_ref:
+        # 값이 원본 영상(길이)에 달려 가짜 원본으로는 틀린 값이 나온다 — 원본 id 를 못 받는 입구(MCP·요청 장부)는 '견적 없음'
+        raise CLIError("원본 영상 없이 업스케일 견적을 낼 수 없습니다")
     if model in VIDEO_VOICE_MODELS:
         # 견적은 cost_params(길이·번역 fps)만 받는다 — 생성 옵션·파일·prompt 를 넣으면 CLI 가 거부한다(10-28 실측).
         ctx = video_voice_cost_context(model, params or {})
@@ -1211,7 +1216,12 @@ _COST_REF_REQUIRED_MODES = {
     "reference-to-video": "--image-references",
 }
 # 수정 창이 고칠 영상(작업 id·업로드 id)을 견적에 붙이는 모델 — 위 더미와 달리 진짜 영상이라 길이대로 값이 나온다.
-_VIDEO_EDIT_COST_MODELS = frozenset({"kling_video_edit", "kling4_0", "seedance_2_5"})
+#  영상 업스케일 둘도 같다(11-20 실측: Bytedance 1080p 1·2K 2·4K 4·60fps ×2·Pro ×10, Hyperion 13 — 가짜 id 는 Hyperion 이 거절).
+_VIDEO_EDIT_COST_MODELS = frozenset({"kling_video_edit", "kling4_0", "seedance_2_5", "bytedance_video_upscale", "topaz_hyperion_2_5"})
+# 원본 이미지가 정확히 하나 있어야 견적을 주는 업스케일 — 값은 원본과 무관해 더미 id 로 규칙만 통과시킨다(11-20 실측: 2K·4K·배경 제거 모두 2)
+_COST_DUMMY_MODEL_REFS = {"bytedance_image_upscale": "--image-references"}
+# CLI 가 견적을 지원하지 않는 업스케일(`does not support alpha v2 cost estimation`, 11-20 실측) — CLI 를 부르지 않고 '견적 없음'
+_UPSCALE_NO_COST_MODELS = frozenset({"topaz_image", "topaz_image_generative", "topaz_video"})
 
 
 def _cost_dummy_ref_args(param_args: list[str]) -> list[str]:
@@ -1235,9 +1245,10 @@ async def _estimate_cost_miss(
         entry = _COST_CACHE.get(key)
         if entry is not None and (time.time() - entry[1]) < _COST_TTL:
             return _cost_result(entry)
-        from ..models import VIDEO_VOICE_MODELS
+        from ..models import UPSCALE_MODELS, VIDEO_VOICE_MODELS
         workflow = model == "draw_to_video" or model in VIDEO_VOICE_MODELS
-        no_prompt = model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} or model in VIDEO_VOICE_MODELS
+        # 업스케일은 prompt 인자를 거절한다(11-20 실측 `Unknown params: prompt`)
+        no_prompt = model in {"elevenlabs_v4", "elevenlabs_v4_turbo"} or model in VIDEO_VOICE_MODELS or model in UPSCALE_MODELS
         args: list[str] = [
             "generate", "cost",
             *(["workflow"] if workflow else []), model,
@@ -1247,6 +1258,8 @@ async def _estimate_cost_miss(
         # 캐시 키(param_args 기준)는 더미와 무관하게 유지 — CLI 호출에만 끼운다.
         if not workflow:
             args += _cost_dummy_ref_args(param_args)
+        if model in _COST_DUMMY_MODEL_REFS:
+            args += [_COST_DUMMY_MODEL_REFS[model], _COST_DUMMY_REF]
         try:
             data = await _run_json(*args, timeout=timeout)
         except CLIError:
