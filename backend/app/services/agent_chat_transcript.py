@@ -620,7 +620,10 @@ def rename_session(location, session_id, title) -> bool:
                 if os.write(fd, payload) != len(payload):
                     raise OSError("short write")
             except OSError:
-                os.ftruncate(fd, size)  # 쓰다 만 줄을 남기지 않는다(처음 열기라 다른 작성자는 없다).
+                try:
+                    os.ftruncate(fd, size)  # 쓰다 만 줄을 남기지 않는다(처음 열기라 다른 작성자는 없다).
+                except OSError as exc:
+                    raise TranscriptError("title_write_failed") from exc  # 되돌리지 못함 — 호출자는 앱을 띄우지 않는다.
                 raise
         finally:
             os.close(fd)

@@ -50,6 +50,12 @@ def test_rename_session_appends_sdk_custom_title_line_only_when_safe(transcript,
             patch.setattr(tr.os, "write", broken)
             assert tr.rename_session(str(path), cases["session_id"], "제목") is False
         assert path.read_bytes() == after  # 쓰다 만 줄을 남기지 않는다
+    with pytest.MonkeyPatch.context() as patch:  # 되돌리기까지 실패하면 일반 실패와 구분해 올린다
+        patch.setattr(tr.os, "write", lambda fd, payload: real_write(fd, payload[:10]))
+        patch.setattr(tr.os, "ftruncate", lambda fd, size: (_ for _ in ()).throw(OSError("locked")))
+        with pytest.raises(tr.TranscriptError, match="title_write_failed"):
+            tr.rename_session(str(path), cases["session_id"], "제목")
+    path.write_bytes(after)
     empty, missing = tmp_path / "empty.jsonl", tmp_path / "missing.jsonl"
     empty.write_bytes(b"")
     assert tr.rename_session(str(empty), cases["session_id"], "제목") is False and empty.read_bytes() == b""

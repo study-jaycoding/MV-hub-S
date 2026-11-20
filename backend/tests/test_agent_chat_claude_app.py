@@ -117,6 +117,15 @@ def test_open_titles_app_session_and_import_still_works(app_chat):
     assert back.json()["imported"] == 2
 
 
+def test_title_rollback_failure_keeps_lock_and_never_launches(app_chat, monkeypatch):
+    a = app_chat
+    monkeypatch.setattr(tr, "rename_session", lambda *args: (_ for _ in ()).throw(tr.TranscriptError("title_write_failed")))
+    _, response = open_app(a)
+    assert response.status_code == 200, response.text
+    assert response.json()["app_handoff"]["state"] == "uncertain" and a.spawned == []
+    assert chat.chat_list(a.path, search=None, limit=20, cursor=None)["conversations"][0]["in_claude_app"] is True
+
+
 def test_reopen_does_not_write_title_while_app_may_be_writing(app_chat):
     a = app_chat
     _, response = open_app(a)
