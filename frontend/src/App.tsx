@@ -3,7 +3,7 @@ import { CanvasRestoreNotice } from "./components/scene/CanvasRestoreNotice";
 import { useSceneWriter } from "./lib/sceneWriter";
 import { getAccountNamespace } from "./lib/accountScope";
 import { captureSubmissionScope, configureOperationContext, watchOperationContext } from "./app/operationContext";
-import { prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
+import { prepareCreateSubmission, prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
 import { canFinishDraft, draftRequestKey, type DraftResolution } from "./lib/seedanceDraft";
 import { useDraftRequests } from "./lib/useDraftRequests";
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
@@ -2461,6 +2461,11 @@ export default function App() {
         ) : sceneSelGens.length > 0 ? (
           <BoardSelectionActionBar
             selected={sceneSelGens}
+            // 캔버스에서 고른 결과의 업스케일은 그 카드에 쌓는다 — 결과를 가진 생성 카드를 찾는다
+            upscaleTarget={(g) => {
+              const card = activeScene?.cards.find((c) => c.kind === "generation" && variantIds(c).includes(g.id));
+              return activeScene && card ? { sceneId: activeScene.id, cardId: card.id } : undefined;
+            }}
             onFinishDraft={finishDraft}
             draftBusy={(resolution) => sceneSelGens.length === 1 ? draftBusy(sceneSelGens[0], resolution) : false}
             draftContextKey={draftContextKey} draftRevision={draftRequests.revision}
@@ -3404,9 +3409,29 @@ export default function App() {
           postLibraryChanged();
         }}
       />
-      {/* 업스케일 — 크게 보기의 upscale 이벤트로 열림. 목록 merge 는 수정과 같다(좁은 merge 만). */}
+      {/* 업스케일 — 크게 보기·선택 단추 줄의 upscale 이벤트로 열림. 목록 merge 는 수정과 같다(좁은 merge 만).
+          캔버스 카드에서 열면 결과를 그 카드에 쌓는다 — 캔버스 재생성(onSceneRegenerate)과 같은 자리 표·확인·정산. */}
       <UpscaleHost
         workspace={workspaceContext}
+        canvas={{
+          accepts: (sceneId, cardId) =>
+            !!scenes.find((scene) => scene.id === sceneId)?.cards.some((card) => card.id === cardId && card.kind === "generation"),
+          prepare: async (sceneId, cardId) => {
+            flushScenePending(sceneId);
+            return (await prepareCanvasGenerationBatch(sceneId, [cardId]))[0] ?? null;
+          },
+          // 카드의 지금 기록으로 자리 표 상태를 읽는다 — 대기 표식이 있으면 pending, 결과 id 만 남았으면 복구·정산이 붙인 것
+          state: (link) => {
+            const card = listScenes(null).find((scene) => scene.id === link.scene_id)?.cards.find((item) => item.id === link.card_id);
+            if (card?.pendingGenerationAttempts?.some((attempt) => attempt.attemptId === link.attempt_id)) return "pending";
+            return card && variantIds(card).includes(link.generation_id) ? "attached" : "gone";
+          },
+          submit: (link, body, ws, scope) => runSubmission(prepareCreateSubmission(body, ws, link, scope), {
+            confirm: () => confirmCanvasGeneration([link]),
+            apply: (generation) => settleCanvasGeneration(link, generation),
+          }),
+          discard: discardCanvasGeneration,
+        }}
         onQueued={(g) => {
           setGens((prev) => (prev.some((p) => p.id === g.id) ? prev : [g, ...prev]));
           flash("업스케일 생성을 시작했습니다 — 결과는 새 카드로 나옵니다.");

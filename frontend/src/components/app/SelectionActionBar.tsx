@@ -7,6 +7,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import { ProjectAssignMenu } from "../ProjectAssignMenu";
 import { useT } from "../../lib/i18n";
+import { APP_EVENTS } from "../../lib/appEvents";
 import type { GradeMode } from "../../lib/gradeStep";
 import type { Generation, Project } from "../../types";
 import { canFinishDraft, isDraftGeneration, normalizeSeedanceDraftParams, summarizeDraftChildren, type DraftResolution } from "../../lib/seedanceDraft";
@@ -120,8 +121,31 @@ function DraftFinishPicker({ generation, onFinishDraft, draftBusy, draftRevision
   </>;
 }
 
+// [⤢ Upscale](Jay 11-20 '리졸브 보내기 옆에') — 완료된 이미지·영상 한 개를 골랐을 때만(비교가 2개부터 보이는 것과 같은 규칙).
+//  크게 보기의 단추와 같은 upscale 이벤트 — 캔버스에서 고른 것이면 그 카드(target)를 실어 결과가 그 카드에 쌓인다.
+export type UpscaleTargetOf = (generation: Generation) => { sceneId: string; cardId: string } | undefined;
+
+function UpscaleButton({ selected, targetOf }: { selected: Generation[]; targetOf?: UpscaleTargetOf }) {
+  const t = useT();
+  const generation = selected.length === 1 ? selected[0] : null;
+  const kind = generation?.assets?.[0]?.type;
+  if (!generation || generation.deleted || generation.status !== "done" || (kind !== "image" && kind !== "video")) return null;
+  return (
+    <button
+      className="sb-upscale"
+      title={t("고른 결과를 더 큰 크기로 업스케일 — 결과는 새 카드")}
+      onClick={() => window.dispatchEvent(new CustomEvent(APP_EVENTS.upscale, {
+        detail: { genId: generation.id, mode: kind, ...targetOf?.(generation) },
+      }))}
+    >
+      ⤢ Upscale
+    </button>
+  );
+}
+
 export function BoardSelectionActionBar({
   selected,
+  upscaleTarget,
   projects,
   onShare,
   onDownload,
@@ -139,6 +163,7 @@ export function BoardSelectionActionBar({
   draftRevision,
 }: {
   selected: Generation[];
+  upscaleTarget?: UpscaleTargetOf; // 캔버스에서 고른 것 — 업스케일 결과를 쌓을 카드
   onShare: (selected: Generation[]) => void;
   onDownload: (selected: Generation[]) => void;
   onCompare: (selected: Generation[]) => void;
@@ -192,6 +217,7 @@ export function BoardSelectionActionBar({
           ↻ {t("준비 원본 다시 가져오기")}
         </button>
       )}
+      <UpscaleButton selected={selected} targetOf={upscaleTarget} />
       {selected.length >= 2 && (
         <button
           onClick={() => onCompare(selected)}
@@ -311,6 +337,7 @@ export function LibrarySelectionActionBar({
           ↻ {t("준비 원본 다시 가져오기")}
         </button>
       )}
+      <UpscaleButton selected={selectedGenerations} />
       {selectedCount >= 2 && (
         <button
           onClick={() => onCompare(selectedGenerations)}

@@ -12,7 +12,8 @@ import { modelAllowed, submitBlockMessage } from "../../lib/modelPolicyCore";
 import { formatCredits } from "../../lib/formatCredits";
 import { HttpError } from "../../lib/http";
 import { newGenerationRequestKey } from "../../features/generation/api";
-import { captureOperationContext, isOperationContextCurrent } from "../../app/operationContext";
+import { captureOperationContext, captureSubmissionScope, isOperationContextCurrent } from "../../app/operationContext";
+import { flashMsg } from "../../lib/flash";
 import { thumbOf } from "../../lib/media";
 import {
   UPSCALE_NO_COST_MODELS, UPSCALE_VIDEO_COST_MODELS, choiceLabel, initialValues, upscaleModel, upscaleModelsFor,
@@ -21,6 +22,8 @@ import {
 import { CloseIcon } from "../common/ViewIcons";
 import { ModelFamilyIcon, modelFamily } from "../spotlight/ModelFamilyIcon";
 import type { Generation, WorkspaceContext } from "../../types";
+import type { GenerationCreateBody, SubmissionContext, SubmissionResult } from "../../shared/contracts/generation";
+import type { CanvasGenerationLink } from "../../lib/canvasGenerationRecovery";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; // 힉스필드 작업 id(서버 video_ref 검사와 같은 꼴)
 // 접수됐는지 모르는 제출(응답 유실·5xx·시간 초과)의 요청 키 — 계정·서버·공간·몸통이 같으면 다시 눌러도, 창을 닫았다 다시 열어도,
@@ -28,13 +31,33 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 //  Codex 독립 리뷰 1·2차). 준비한 send 를 들고 있으면 문맥이 바뀐 뒤 영영 못 보낸다(2차). 확정 거절(400/422)만 지운다.
 //  shortcut: 페이지를 새로 고치면 잊는다 — 그때는 라이브러리 카드로 접수 여부를 본다.
 const pendingKeys = new Map<string, string>();
+// 캔버스 카드로 보낸 것은 자리 표(attempt — 그 자체가 서버 중복 방지 키, 결과 id 도 미리 정해져 재시작 복구가 카드에 붙인다)를 같은 규칙으로 보관한다.
+const pendingLinks = new Map<string, CanvasGenerationLink>();
+// 한 번이라도 '접수 불명'이었던 자리 표 — 뒤의 확인 실패·거절만으로는 버리지 않는다. 백그라운드 복구가 접수를 확인해
+//  대기 표식을 걷으면 확인이 실패하는데, 그때 버리고 새 자리 표를 만들면 두 번 과금된다(Codex 독립 리뷰 4차 높음).
+const uncertainLinks = new Set<string>();
 
 type Source = { w: number; h: number; duration?: number };
+/** 업스케일을 연 캔버스 카드(크게 보기·선택 단추 줄이 캔버스에서 열었을 때만). */
+export type UpscaleCanvasTarget = { sceneId: string; cardId: string };
+/** 캔버스 카드에 결과를 쌓는 제출 — App 이 재생성과 같은 길(자리 표 → runSubmission(확인·정산))로 만들어 넘긴다. */
+export interface UpscaleCanvas {
+  accepts: (sceneId: string, cardId: string) => boolean; // 결과를 쌓을 수 있는 생성 카드인가(Comfy 노드 등은 일반 업스케일로)
+  prepare: (sceneId: string, cardId: string) => Promise<CanvasGenerationLink | null>; // 자리 표를 저장소에 확정 — 못 하면 null
+  /** 자리 표의 지금 상태 — pending = 대기 표식 있음 · attached = 복구·정산이 결과를 카드에 붙임 · gone = 서버에 안 닿아 걷힘 */
+  state: (link: CanvasGenerationLink) => "pending" | "attached" | "gone";
+  /** 누른 순간 잡은 문맥(scope)으로 보낸다 — 자리 표를 저장하는 사이 계정·서버가 바뀌면 보내지 않는다(Codex 4차 높음). */
+  submit: (link: CanvasGenerationLink, body: GenerationCreateBody, workspace: WorkspaceContext,
+    scope: Pick<SubmissionContext, "operation" | "isCurrent">) => Promise<SubmissionResult>;
+  discard: (link: CanvasGenerationLink) => void; // 서버에 안 간 것이 확실할 때 자리 표를 걷는다
+}
 
-export function UpscaleModal({ gen, mode, workspace, onQueued, onClose }: {
+export function UpscaleModal({ gen, mode, workspace, canvasTarget = null, canvas, onQueued, onClose }: {
   gen: Generation;
   mode: "image" | "video";
   workspace: WorkspaceContext;
+  canvasTarget?: UpscaleCanvasTarget | null;
+  canvas?: UpscaleCanvas;
   onQueued: (g: Generation) => void;
   onClose: () => void;
 }) {
@@ -132,13 +155,18 @@ export function UpscaleModal({ gen, mode, workspace, onQueued, onClose }: {
     if (!canSubmit || !params || !asset) return;
     // 연 뒤 계정·서버·작업 공간이 바뀌었으면 보내지 않는다(수정 창과 같은 검사) — 다른 공간에 과금되지 않게
     if (!isOperationContextCurrent(openingContext.current) || openingWorkspace.current !== JSON.stringify([workspace.scope, workspace.id])) {
-      setError("작업 공간이 바뀌었습니다 — 창을 닫고 다시 여세요.");
+      setError("계정·작업 공간을 아직 확인하는 중이거나 연 뒤에 바뀌었습니다 — 창을 닫고 다시 여세요.");
       return;
     }
     setError("");
     setSubmitting(true);
     const body = upscaleRequestBody(gen, asset.file_path, mode, spec.id, params);
     const { accountNamespace, serverOrigin } = openingContext.current;
+    if (canvasTarget && canvas) {
+      await submitToCanvas(canvasTarget, canvas, body, JSON.stringify([accountNamespace, serverOrigin, workspace.scope, workspace.id,
+        canvasTarget.sceneId, canvasTarget.cardId, body]));
+      return;
+    }
     const key = JSON.stringify([accountNamespace, serverOrigin, workspace.scope, workspace.id, body]);
     let requestKey = pendingKeys.get(key);
     if (!requestKey) {
@@ -148,6 +176,8 @@ export function UpscaleModal({ gen, mode, workspace, onQueued, onClose }: {
     try {
       const created = await api.create(body, workspace, undefined, requestKey); // 문맥은 보낼 때마다 새로 잡는다
       pendingKeys.delete(key);
+      // 기다리는 사이 계정·서버가 바뀌었으면 지금 목록에 섞지 않는다(Codex 5차 — 캔버스 길과 같은 규칙)
+      if (!isOperationContextCurrent(openingContext.current)) { onClose(); return; }
       onQueued(created);
       onClose();
     } catch (e) {
@@ -161,6 +191,64 @@ export function UpscaleModal({ gen, mode, workspace, onQueued, onClose }: {
       }
     }
   };
+  // 캔버스 카드에서 연 업스케일 — 결과가 그 카드의 '생성 결과'에 쌓인다(Jay 11-20). 같은 선택의 다시 누름은 같은 자리 표로.
+  const submitToCanvas = async (target: UpscaleCanvasTarget, ops: UpscaleCanvas, body: GenerationCreateBody, key: string) => {
+    const scope = captureSubmissionScope(workspace); // 누른 순간의 계정·서버 — 자리 표를 저장하는 사이 바뀌면 보내지 않는다
+    const forget = () => { pendingLinks.delete(key); uncertainLinks.delete(key); };
+    const attachedAlready = () => {
+      forget();
+      flashMsg("앞서 보낸 업스케일이 이미 접수돼 이 캔버스 카드에 붙었습니다.");
+      onClose();
+    };
+    let link = pendingLinks.get(key);
+    if (link) {
+      // 다시 누름 — 그 사이 복구가 결과를 붙였으면 끝, 서버에 안 닿아 걷혔으면 새 자리 표, 대기 중이면 같은 자리 표로
+      const state = ops.state(link);
+      if (state === "attached") return attachedAlready();
+      if (state === "gone") { forget(); link = undefined; }
+    }
+    if (!link) {
+      link = (await ops.prepare(target.sceneId, target.cardId)) ?? undefined;
+      if (!link) {
+        setSubmitting(false);
+        setError("캔버스 카드에 결과 자리를 만들지 못해 보내지 않았습니다 — 캔버스가 다른 창에 떠 있거나 생성 카드가 아닙니다.");
+        return;
+      }
+      pendingLinks.set(key, link);
+    }
+    const contextChanged = () => {
+      // 보내지 않았다 — 자리 표는 원래 계정·서버의 것이라 여기서 걷지 않는다(돌아오면 같은 자리 표로, 안 오면 복구가 2분 뒤 걷는다)
+      setSubmitting(false);
+      setError("자리를 저장하는 사이 계정·서버가 바뀌어 보내지 않았습니다 — 원래 계정에서 다시 누르세요.");
+    };
+    if (scope.isCurrent && !scope.isCurrent()) return contextChanged();
+    const result = await ops.submit(link, body, workspace, scope);
+    if (result.generation) {
+      forget(); // 접수됐다 — 다시 보낼 일 없음
+      // 기다리는 사이 계정·서버가 바뀌었으면 지금 목록에 섞지 않는다 — 원래 문맥의 카드 반영은 그 문맥의 복구가 한다(Codex 5차)
+      if (scope.isCurrent && !scope.isCurrent()) { onClose(); return; }
+      onQueued(result.generation);
+      onClose();
+      return;
+    }
+    setSubmitting(false);
+    if (result.outcome.kind === "acceptance_unknown") {
+      uncertainLinks.add(key);
+      setError(`접수됐는지 확인하지 못했습니다(${String(result.error ?? "응답 없음")}) — 다시 누르면 같은 요청으로 확인합니다(두 번 생성되지 않음).`);
+      return;
+    }
+    if (result.outcome.kind === "prepare_failed" && result.outcome.reasonCode === "context_changed") return contextChanged();
+    if (uncertainLinks.has(key)) {
+      // 앞서 접수 불명이었다 — 확인 실패·거절만으로 버리면 새 자리 표 = 두 번 과금이 될 수 있다. 붙었으면 끝, 아니면 그대로 둔다
+      if (ops.state(link) === "attached") return attachedAlready();
+      setError("앞서 보낸 업스케일의 접수 여부를 아직 확인하는 중입니다 — 캔버스 카드의 '생성 결과'를 보고, 잠시 뒤 다시 누르세요.");
+      return;
+    }
+    // 처음 보낸 것의 보내기 전 멈춤(prepare_failed)·확정 거절(rejected) — 서버에 남지 않았다. 자리 표를 걷고 다음 누름은 새로
+    ops.discard(link);
+    forget();
+    setError(`업스케일 요청 실패: ${String(result.error ?? (result.outcome.kind === "prepare_failed" ? result.outcome.reasonCode : "거절"))}`);
+  };
 
   const family = modelFamily(spec.id);
   const srcText = src ? `${src.w}×${src.h}` : srcFailed ? "크기 확인 안 됨" : "크기 확인 중";
@@ -173,7 +261,7 @@ export function UpscaleModal({ gen, mode, workspace, onQueued, onClose }: {
       : !params && spec.options.some((o) => o.key === "scale") ? (srcFailed ? "원본 크기를 읽지 못해 Topaz 로 보낼 수 없습니다" : "원본 크기를 읽는 중")
       : noCost ? "Topaz 는 견적이 없습니다 — 쓴 크레딧은 생성 뒤 기록에서 확인"
       : spec.id === "bytedance_video_upscale" ? "FPS 30 넘게 고르면 비용 2배 · Pro 는 더 비쌉니다"
-      : "원본은 그대로 · 결과는 새 카드");
+      : canvasTarget ? "원본은 그대로 · 결과는 이 캔버스 카드에 쌓입니다" : "원본은 그대로 · 결과는 새 카드");
   const thumb = thumbOf(gen, 256);
 
   return (
