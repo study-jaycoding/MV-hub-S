@@ -230,6 +230,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 워크스페이스 콘솔(서브스페이스 — 대시보드 '워크스페이스' 단추, 메인·서브) | `components/manage/console/WorkspaceConsole.tsx`(목록·메인 조율·만들기), `ConsoleSubView.tsx`(그룹·크레딧·참가자), `lib/workspaceConsole.ts`(`topupAddBody`) | `routers/workspace_console.py`(`/api/manage/console/*`), `repo/workspace_console.py`(시드·연결·메인 최초 지정(바꾸지 않음)·개요), `repo/console_guard.py`(보호 판정) | 설계 `docs/WORKSPACE_CONSOLE_DESIGN.md` · 앱은 힉스필드 워크스페이스를 **못 만든다** — '만들기'=보고된 것을 서브로 연결. 할당·그룹·참가자 쓰기는 기존 `PUT credit-plan` 뿐이고 **note·topups 전체를 되보내야** 한다(빼면 지운다) |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
+| 업스케일(크게 보기 [⤢ Upscale] — 이미지 3·영상 3 모델) | `components/upscale/UpscaleModal.tsx`, `lib/upscaleModels.ts`(모델 표·보낼 값·카드 '⤢' 표시) | `models.py`(`UPSCALE_MODELS` — 원본 1개 검사), `services/cli_bridge.py`(견적: prompt 없음·가짜/실제 원본), `agent_push.py`(`UPSCALE_MODELS` — `--prompt` 빼기·원본 종류로 `--image-references`/`--video-references`) | 설계 [업스케일_크게보기_2026-11-20.md](status/업스케일_크게보기_2026-11-20.md). **모델 목록이 세 곳**(화면·서버·에이전트) — 같이 고친다(`test_upscale` 가 서버·에이전트를 대조). `UpscaleHost`는 커스텀 이벤트로만 열림(§3.5) |
 | 크게 보기 코멘트 그림(C 단추·코멘트 모드·그림 겹쳐 보기) | `components/MediaPreview.tsx`(C·`c`·겹쳐 보기), `App.tsx`(`openCardComment` — 카드 C 도 이 창), `components/comment/CommentDrawModal.tsx`, `components/edit/drawing/*`(수정 창과 같은 그리기 도구·획 v1 정규화/해시), `components/GenCommentPanel.tsx`(그림 줄·그림 불러오기) | `routers/generation.py`(`comments-v2`·그림 조회), `repo/comment_drawings.py`, `services/comment_strokes.py`(검증·해시·표 구조 검사), `repo/share.py`·`routers/publish.py`(발행 `publish-bundle-v2`), `repo/trash.py` | 설계·계약 [크게보기_코멘트그림_설계_2026-11-05.md](status/크게보기_코멘트그림_설계_2026-11-05.md) §10. 새 표 셋은 이름표(baseline)가 없다 — 구조는 시작·쓰기 전에 직접 본다. 프런트·서버가 **같은 바이트**로 정규화·해시한다(`strokes.ts` ↔ `comment_strokes.py`) |
 | 생성물 비교(Compare) | `components/CompareModal.tsx`, `VideoCompareModal.tsx` | — | |
 | 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `routers/generation.py`(`/history`·`/history-tree`), `repo/history.py`, `repo/lineage.py` | |
@@ -836,6 +837,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `comment/CommentDrawModal.tsx` | 코멘트 그림 창 — 생성물·어셋 공용(대상 `CommentTarget`). 무대 아래 한 판(영상 = 타임라인 책갈피·재생 줄·도구 줄 / 이미지 = 그림 ①②③ 번호 줄·도구 줄, 시안 ⑥⑦), 오른쪽 = 작은 코멘트 창 그대로 + 새 코멘트 입력(composer). 그림이 있을 때만 comments-v2(의도가 같으면 같은 id, 처음 보낸 문맥에 묶임), 글만이면 옛 경로 | `CommentDrawModal`·`AssetCommentSide`(`MediaPreview`·`app/AppOverlays`(카드 C)·`AssetsView`(작은 창 [편집]) 가 연다) |
 | `edit/EditRefPrompt.tsx`(136줄) | 수정 창 지시문 칸 — `@imageN` 을 레퍼런스 칸 썸네일 알약으로·`@` 목록·없는 번호 경고(알약은 `lib/promptEditor` 재사용, 내보내는 글은 `@imageN` 그대로) | `EditRefPrompt` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
+| `upscale/UpscaleModal.tsx` | 업스케일 창 — 원본 크기 → 결과·모델 칩(아이콘)·옵션 칩·견적·[Upscale ✦]. 제출은 `api.prepareCreate`(수정 창과 같은 길) | `UpscaleModal` |
+| `upscale/UpscaleHost.tsx` | `upscale` 이벤트(크게 보기 머리줄) → 최신 Generation 조회 → 창 개방 | `UpscaleHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
 | `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 무대를 덮는 것(`over` — 다이나믹 재생 모드의 두 칸)을 받는다 | `EditViewer`, `ViewerProps`, `ViewerMarking` |
@@ -991,6 +994,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 |---|---|---|
 | `useModels.ts` | 훅 | 모델 목록·파라미터 제약·기본값·예상 크레딧 |
 | `modelCatalog.ts` | store | job_set_type → 표시명 단일 사전(+폴백) |
+| `upscaleModels.ts` | 순수 | 업스케일 모델 표(이미지 3·영상 3, CLI 1.2.2 값)·보낼 값(Topaz 배율 → 출력 픽셀)·결과 크기 글자·카드 '⤢' 표시·요청 몸통. 서버 `models.UPSCALE_MODELS`·에이전트 `UPSCALE_MODELS` 와 같은 목록 |
 | `modelCatalogCache.ts` | store | `/api/models` TTL 60초 + single-flight |
 | `modelPolicy.ts` | store | 그룹 허용 모델 정책 구독·조회·캐시 |
 | `modelPolicyCore.ts` | 순수 | 정책 키 계산·상태 전이·차단 문구(도메인) |
@@ -1314,7 +1318,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
-| `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
+| `partial-edit.css` | 약 360 | 부분 수정 캔버스(`edit/PartialEditModal`) · 업스케일 창(`.upscale-*`, `upscale/UpscaleModal` — 생성창 칩 `.sl-*` 를 빌린다) |
 | `comment-draw.css` | 약 100 | 크게 보기 코멘트 그림 — C 단추·코멘트 모드 창(`.cm-*`)·지난 코멘트 그림 줄(`.cmt-att*`)·겹쳐 보기 띠. 수정 창 부품(`.pe-*`·`.sl-*`)은 그대로 빌린다 |
 | `edit-tab.css` | 188 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다). 생성물 카드만 라이브러리 카드의 클래스를 일부러 같이 쓴다(같은 모양) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
@@ -1327,6 +1331,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
   이 창들의 존재를 놓친다. Assets·관리 창은 메인 창 없이도 WS 를 직접 구독한다.
 - **`edit/PartialEditHost.tsx`** — JSX·import 로 열리지 않는다. `InfoPopup` 이 쏘는 커스텀 이벤트
   `partialEdit` 을 구독해서만 열린다.
+- **`upscale/UpscaleHost.tsx`** — 같은 꼴. `MediaPreview` 머리줄 [⤢ Upscale] 이 쏘는 `upscale` 이벤트로만 열린다.
 
 ---
 
