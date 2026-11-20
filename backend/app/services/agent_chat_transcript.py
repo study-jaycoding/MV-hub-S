@@ -418,14 +418,24 @@ def _tool_only(row):
     return row["type"] == "user" and all(b["type"] == "tool_result" for b in _blocks(row))
 
 
+# 앱이 첫 사람 글 앞에 붙이는 안내 블록의 첫 문장(11-20 실제 기록 2건 같음). 태그 모양만으로는 지우지 않는다.
+_APP_NOTICE = "<system-reminder>\nThis conversation is now continuing in the Claude desktop"
+# 표식(origin) 없는 CLI 로컬 줄로 실제 기록에서 본 세 모양(문자열 content): 안내(isMeta)·슬래시 명령·출력.
+_CAVEAT = r"\s*<local-command-caveat>[\s\S]*?</local-command-caveat>\s*"
+_COMMAND = r"\s*<command-name>/[^<\s]+</command-name>\s*<command-message>[^<]*</command-message>\s*<command-args>[\s\S]*?</command-args>\s*"
+_STDOUT = r"\s*<local-command-stdout>[\s\S]*?</local-command-stdout>\s*"
+
+
 def _local_command(row):
-    # human의 태그 문장은 그대로. 표식 없는 CLI 로컬 출력은 완결된 태그만 허용한다.
+    # human의 태그 문장은 그대로. 세 모양 밖의 표식 없는 줄은 사람 글 후보로 남아 표식 검사에서 실패한다.
     if row.get("origin") is not None or row.get("entrypoint") not in (None, "claude-desktop"):
         return False
-    blocks = _blocks(row)
-    tags = r"local-command-caveat|command-name|command-message|command-args|local-command-stdout"
-    pattern = rf"(?:\s*<({tags})>[\s\S]*?</\1>\s*)+"
-    return all(b["type"] == "text" and isinstance(b.get("text"), str) and re.fullmatch(pattern, b["text"]) for b in blocks)
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        return False
+    return bool((re.fullmatch(_CAVEAT, content) and row.get("isMeta") is True)
+                or re.fullmatch(_COMMAND, content) or re.fullmatch(_STDOUT, content))
 
 
 def _progress(row):
@@ -584,7 +594,7 @@ def read_session(home, cwd, session_id, anchor=None):
         if index is None or _digest(chain[:index + 1]) != anchor.get("prefix_digest"):
             raise TranscriptError("anchor_changed")
         try:
-            return convert(chain[index + 1:])
+            return convert(chain[index + 1:], _pending_tools(chain[:index + 1]))
         except (UnicodeError, RecursionError) as exc:
             raise TranscriptError() from exc
     return {"session_id": session_id, "transcript_location": str(path), "anchor_uuid": chain[-1]["uuid"], "prefix_digest": _digest(chain)}
@@ -605,7 +615,13 @@ def rename_session(location, session_id, title) -> bool:
         # SDK처럼 새로 만들지 않는다(O_CREAT 없음). O_BINARY: Windows 텍스트 모드의 \r\n 바꾸기를 막는다.
         fd = os.open(location, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
         try:
-            os.write(fd, data.encode("utf-8"))
+            size, payload = os.fstat(fd).st_size, data.encode("utf-8")
+            try:
+                if os.write(fd, payload) != len(payload):
+                    raise OSError("short write")
+            except OSError:
+                os.ftruncate(fd, size)  # 쓰다 만 줄을 남기지 않는다(처음 열기라 다른 작성자는 없다).
+                raise
         finally:
             os.close(fd)
         return True
@@ -613,8 +629,24 @@ def rename_session(location, session_id, title) -> bool:
         return False
 
 
-def convert(chain):
-    turns, current, calls, answered = [], None, {}, set()
+def _pending_tools(rows):
+    """앵커까지 결과가 없던 도구 호출(id → 이름). 앱이 그 결과를 이어 적으면 보충 사건으로 받는다."""
+    pending = {}
+    for row in rows:
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if row["type"] == "assistant" and block.get("type") == "tool_use" and isinstance(block.get("id"), str) and isinstance(block.get("name"), str):
+                pending[block["id"]] = block["name"]
+            elif row["type"] == "user" and block.get("type") == "tool_result":
+                pending.pop(block.get("tool_use_id"), None)
+    return pending
+
+
+def convert(chain, prior=None):
+    turns, current, calls, answered, prior = [], None, {}, set(), prior or {}
     first_human = True
 
     def new(row, text, supplement=False):
@@ -653,8 +685,8 @@ def convert(chain):
             # 앱의 앞 독립 안내 블록만: 같은 블록에 사용자 글이 있거나 문자열 content면 보존한다.
             if first_human and isinstance(row["message"]["content"], list) and len(blocks) > 1:
                 first = blocks[0]
-                if first["type"] == "text" and isinstance(first.get("text"), str) and first["text"].count("</system-reminder>") == 1 and re.fullmatch(
-                        r"<system-reminder>\n[\s\S]*?\n</system-reminder>\s*", first["text"]):
+                if first["type"] == "text" and isinstance(first.get("text"), str) and first["text"].startswith(_APP_NOTICE) \
+                        and first["text"].count("</system-reminder>") == 1 and re.fullmatch(r"<system-reminder>\n[\s\S]*?\n</system-reminder>\s*", first["text"]):
                     blocks = blocks[1:]
             first_human = False
         elif current is None:
@@ -684,8 +716,16 @@ def convert(chain):
                 current["events"].append(event)
             elif kind == "tool_result" and row["type"] == "user":
                 tool_id = block.get("tool_use_id")
-                if not isinstance(tool_id, str) or tool_id not in calls or tool_id in answered or type(block.get("is_error", False)) is not bool:
+                if not isinstance(tool_id, str) or tool_id in answered or type(block.get("is_error", False)) is not bool:
                     raise TranscriptError()
+                if tool_id not in calls:
+                    if tool_id not in prior:
+                        raise TranscriptError()
+                    # 앵커 앞 호출의 결과: 앞 발화는 다시 넣지 않고, 출처 안내가 붙은 이 묶음에 결과 사건만 둔다.
+                    answered.add(tool_id)
+                    current["events"].append({"kind": "tool", "name": clip(prior[tool_id].removeprefix("mcp__mvhub_panel__")),
+                                              "status": "failed" if block.get("is_error") else "done"})
+                    continue
                 answered.add(tool_id)
                 event, owner = calls[tool_id]
                 if owner is not current and not human:

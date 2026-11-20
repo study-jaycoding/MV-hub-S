@@ -17,7 +17,7 @@
     {"type":"assistant","uuid":"a0","parentUuid":"u0","message":{"role":"assistant","id":"response0","content":[{"type":"text","text":"합성 답변"}]},"version":"2.1.322"}
   ],
   "normal": [
-    {"type":"user","uuid":"u1","parentUuid":"a0","entrypoint":"claude-desktop","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>\n합성 앱 안내\n</system-reminder>"},{"type":"text","text":"앱 첫 질문"}]},"version":"2.1.325"},
+    {"type":"user","uuid":"u1","parentUuid":"a0","entrypoint":"claude-desktop","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>\nThis conversation is now continuing in the Claude desktop app. 합성 앱 안내\n</system-reminder>"},{"type":"text","text":"앱 첫 질문"}]},"version":"2.1.325"},
     {"type":"assistant","uuid":"a1","parentUuid":"u1","entrypoint":"claude-desktop","message":{"role":"assistant","id":"response1","content":[{"type":"thinking","thinking":"보관하지 않는 합성 생각"},{"type":"text","text":"앱 첫 답변"},{"type":"tool_use","id":"tool1","name":"mcp__mvhub_panel__screen_action","input":{"action":"synthetic"}}]}},
     {"type":"user","uuid":"r1","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool1","content":"{\"kind\":\"screen_action\"}"}]}},
     {"type":"user","uuid":"u2","parentUuid":"r1","entrypoint":"claude-desktop","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"synthetic"}}]}},
