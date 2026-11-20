@@ -564,6 +564,21 @@ export function MediaPreview({ target, onClose, onOpenInBoard, myId = "", localH
                 🖌 Edit
               </button>
             )}
+            {/* 업스케일 — 수정과 같은 줄·같은 대상(생성 결과 이미지·영상). 결과는 새 카드(시안 v3, Jay 2026-11-20) */}
+            {(cur.type === "image" || isVideo) && cur.genId && (
+              <button
+                className="lin-board-btn preview-upscale-btn"
+                title={isVideo ? "영상을 더 높은 해상도로 — 결과는 새 카드" : "이미지를 더 큰 크기로 — 결과는 새 카드"}
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent(APP_EVENTS.upscale, { detail: { genId: cur.genId, mode: isVideo ? "video" : "image" } }),
+                  );
+                  onClose();
+                }}
+              >
+                ⤢ Upscale
+              </button>
+            )}
             {/* 계보 트리 — 오디오도 둔다(11-06 한 번 뺐다가 Jay 가 되돌림) */}
             {onOpenInBoard && cur.genId && (
               <button

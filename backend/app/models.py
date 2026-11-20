@@ -17,7 +17,13 @@ MediaType = Literal["image", "video", "audio"]
 ReferenceMediaType = Literal["image", "video", "audio"]
 
 MEDIA_V2_MODELS = frozenset({"draw_to_video", "text2speech_v2"})
-AUDIO_MODELS_V1 = frozenset({"seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"})
+# 업스케일(크게 보기 [⤢ Upscale], docs/status/업스케일_크게보기_2026-11-20.md) — 모델 → 원본 종류. 원본 1개만 받고 prompt 는
+# CLI 로 보내지 않는다(CLI 1.2.2 가 거절). 에이전트(agent_push.UPSCALE_MODELS)·화면(lib/upscaleModels)과 같은 목록.
+UPSCALE_MODELS: dict[str, str] = {
+    "bytedance_image_upscale": "image", "topaz_image": "image", "topaz_image_generative": "image",
+    "bytedance_video_upscale": "video", "topaz_video": "video", "topaz_hyperion_2_5": "video",
+}
+AUDIO_MODELS_V1 =frozenset({"seed_audio", "elevenlabs_v4", "elevenlabs_v4_turbo", "qwen_audio_tts"})
 TTS_MODELS = AUDIO_MODELS_V1 | {"text2speech_v2"}
 AUDIO_PARAMS = {
     "text2speech_v2": {"variant", "voice_id", "voice_type"},
@@ -161,6 +167,10 @@ def validate_media_request(model: str, prompt: str, params: dict, references: li
     seedance_error = seedance_audio_reference_error(model, references)
     if seedance_error:
         raise ValueError(seedance_error)
+    upscale_kind = UPSCALE_MODELS.get(model)
+    # 역할은 보지 않는다 — MCP 계획은 @Image1·@Video1 로 보내고, CLI 플래그는 에이전트가 종류로 고른다(Codex 설계 확인 P1-2)
+    if upscale_kind and (len(references) != 1 or references[0].get("type") != upscale_kind or not references[0].get("file_path")):
+        raise ValueError(f"업스케일에는 원본 {'영상' if upscale_kind == 'video' else '이미지'} 1개가 필요합니다")
     if model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 and not prompt.strip():
         raise ValueError("수정 설명 또는 내레이션 내용을 입력하세요")
     if model in VIDEO_VOICE_MODELS:

@@ -403,6 +403,13 @@ def _validate_audio_request(model: str, prompt: str, params: dict, references: l
             raise ValueError("지원하지 않는 음성 언어입니다")
 
 
+# 업스케일(모델 → 원본 종류) — backend/app/models.py 의 같은 이름 정의와 같아야 한다. 원본 1개를 종류대로
+# --image-references·--video-references 로 보내고(역할 무관 — MCP 는 @Image1·@Video1), prompt 는 보내지 않는다(CLI 1.2.2 가 거절).
+UPSCALE_MODELS = {
+    "bytedance_image_upscale": "image", "topaz_image": "image", "topaz_image_generative": "image",
+    "bytedance_video_upscale": "video", "topaz_video": "video", "topaz_hyperion_2_5": "video",
+}
+
 # 보이스 체인지·번역(2-B) — backend/app/models.py 의 같은 이름 정의와 같아야 한다.
 VIDEO_VOICE_MODELS = frozenset({"voice_change", "dubbing"})
 VIDEO_VOICE_PARAMS = {"voice_change": {"voice_id", "voice_type", "cost_context"},
@@ -1485,6 +1492,8 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
     params = job.get("params")
     if isinstance(params, dict):
         params = audio_stored_params(model, params)
+    if isinstance(params, dict) and model in UPSCALE_MODELS and "prompt" not in params:
+        params = {**params, "prompt": ""}  # 업스케일은 prompt 없이 제출한다 — 지문도 빈 prompt(_submit_one_attempt)
     if not isinstance(params, dict) or not isinstance(params.get("prompt"), str):
         return False
     candidate_prompt = re.sub(r"\s+", " ", params["prompt"].lstrip(_ZWSP)).strip()
@@ -1512,6 +1521,9 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
 
     expected_roles = sorted(str(role) for role in (fingerprint.get("reference_roles") or []))
     candidate_roles = _job_reference_roles(params.get("medias"))
+    if model in UPSCALE_MODELS:
+        # 응답은 원본을 video·video_references 어느 쪽으로도 적을 수 있다 — 업스케일은 종류로만 맞춘다(Codex 독립 리뷰 1차 중간)
+        candidate_roles = sorted(_upscale_role(role) for role in candidate_roles)
     # 공급자가 입력 메타를 통째로 누락한 검증실패 결과도 찾을 수 있게 빈 목록은 중립으로 둔다.
     if candidate_roles and candidate_roles != expected_roles:
         return False
@@ -1753,7 +1765,7 @@ _ROLE_TO_FLAG = {
 
 def _role_flag(role: str) -> str:
     key = (role or "").lower()
-    if key in {"video", "image_references", "input_video"}:
+    if key in {"video", "image_references", "video_references", "input_video"}:
         return "--" + key.replace("_", "-")
     for prefix, flag in _ROLE_TO_FLAG.items():
         if key.startswith(prefix):
@@ -1815,6 +1827,13 @@ def _media_role(ref: dict) -> str:
 
 
 def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
+    kind = UPSCALE_MODELS.get(model)
+    if kind:
+        # 원본 1개를 종류로 확인하고 역할을 CLI 인자 이름으로 바꾼다 — 화면은 image_references·video_references,
+        # MCP 는 @Image1·@Video1, 동기화본은 video 로 와도 같은 플래그로 나간다(Codex 설계 확인 P1-2)
+        if len(refs) != 1 or not isinstance(refs[0], dict) or refs[0].get("type") != kind or not refs[0].get("file_path"):
+            return [], f"업스케일에는 원본 {'영상' if kind == 'video' else '이미지'} 1개가 필요합니다"
+        return [{**refs[0], "role": f"{kind}_references"}], None
     if model in AUDIO_MODELS_V1:
         error = audio_reference_error(model, {}, refs)
         if error:
@@ -2421,6 +2440,11 @@ def _probe_role(value, fallback: str = "") -> str:
     return re.sub(r"[^a-z0-9]", "", raw)
 
 
+def _upscale_role(role: str) -> str:
+    """업스케일 원본 역할을 종류로 — videoreferences·video → video, imagereferences·image → image."""
+    return "video" if role.startswith("video") else "image" if role.startswith("image") else role
+
+
 def _submission_fingerprint(model: str, prompt: str, params: dict, allowed: set, refs: list) -> dict:
     """원문 프롬프트를 저장하지 않고 같은 HF 목록 항목을 대조할 안정 지문을 만든다."""
     normalized_prompt = re.sub(r"\s+", " ", prompt.lstrip(_ZWSP)).strip()
@@ -2429,6 +2453,8 @@ def _submission_fingerprint(model: str, prompt: str, params: dict, allowed: set,
         for ref in refs
         if isinstance(ref, dict)
     )
+    if model in UPSCALE_MODELS:
+        roles = sorted(_upscale_role(role) for role in roles)  # 대조(_matches_submission_fingerprint)와 같은 표기
     return {
         "version": 1,
         "model": model,
@@ -3469,10 +3495,14 @@ def _submit_one_attempt(
     # 통째 JSON 프롬프트(작업자가 지시서를 붙여넣는 경우)는 CLI 가 '객체'로 파싱해 거부한다 →
     # zero-width space 를 앞에 붙여 문자열로 받게 한다(힉스 웹과 동일 동작, 내용은 그대로).
     prompt = _shield_json_prompt(prompt)
+    if model in UPSCALE_MODELS:
+        # 업스케일은 CLI 가 prompt 를 거절한다 — 자리표시·동기화 '(제목 없음)'·재생성 덮어쓰기 무엇이 와도 늘 뺀다(Codex 설계 확인 P1-1).
+        #  제출 지문도 빈 prompt 로 둔다(복구 대조가 prompt 없는 응답과 맞게 — _matches_submission_fingerprint).
+        prompt = ""
     # ★create-first: --wait 없이 제출해 job_id 를 즉시 확보한다. 긴 대기(15~30분)를 시작하기 전에
     #  job_id 를 서버에 앵커해두어, 대기 중 프로그램이 꺼져도 재조정이 반드시 이어받아 완료시킨다.
     args = ["generate", "workflow" if model == "draw_to_video" or model in VIDEO_VOICE_MODELS else "create", model]
-    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and model not in VIDEO_VOICE_MODELS:
+    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and model not in VIDEO_VOICE_MODELS and model not in UPSCALE_MODELS:
         args += ["--prompt", prompt]
     # ★batch_size 는 1 로 강제 — create-first 는 잡 1개(=카드 1개)를 앵커·대기하므로, N>1 이면 나머지
     #  잡이 앵커·검증 없이 나중에 synced 독립 카드로 새어 나온다(프론트 배치는 요청 N개 복제 방식이라 무영향).
@@ -3625,7 +3655,8 @@ def _submit_one_attempt(
             if arg != resolved:
                 submitted["transcoded"] = "h264"
         args += [flag, arg]
-        submitted["role"] = flag.removeprefix("--").replace("-", "_")
+        # 서버 전달 확인은 응답의 video_references 를 'video' 로 읽는다(repo/gen_requests._reference_delivery_check) — 같은 표기로 남긴다
+        submitted["role"] = "video" if flag == "--video-references" else flag.removeprefix("--").replace("-", "_")
         if _UUID_RE.fullmatch(resolved):
             submitted["upload_id"] = resolved
         direct_order.append(position)

@@ -11,6 +11,7 @@ import { useModalFocus } from "../../lib/keyGate";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { POLICY_EXEMPT_MODELS } from "../../lib/modelPolicyCore";
 import { ALLOWED } from "../../lib/useModels";
+import { UPSCALE_MODELS, upscaleModel } from "../../lib/upscaleModels";
 import { formatCredits } from "../../lib/formatCredits";
 import { useManageEditConflict } from "./useManageEditConflict";
 import {
@@ -49,6 +50,8 @@ const SELECTABLE_MODEL_GROUPS: { title: string; ids: readonly string[] }[] = [
   { title: "이미지", ids: ALLOWED.image.filter((id) => !POLICY_EXEMPT_MODELS.has(id)) },
   { title: "영상", ids: [...ALLOWED.video, "draw_to_video"] },
   { title: "오디오", ids: [...ALLOWED.audio, "voice_change", "dubbing"] },
+  // 크게 보기 [⤢ Upscale] 의 모델(생성창 목록 밖) — 제한 그룹에서도 체크하면 쓸 수 있게(Codex 설계 확인 P2-3)
+  { title: "업스케일", ids: UPSCALE_MODELS.map((model) => model.id) },
 ];
 
 // ── 그룹 창(힉스필드 "Add new group" 과 같은 두 칸 구성) ──────────────────────
@@ -76,7 +79,9 @@ export function GroupEditor({
   const [pickingModels, setPickingModels] = useState(false);
   const catalogModelLabel = useModelDisplayName();
   const modelLabel = (id: string) => id === "draw_to_video" ? "영상 수정"
-    : id === "voice_change" ? "보이스 체인지" : id === "dubbing" ? "번역(더빙)" : catalogModelLabel(id);
+    : id === "voice_change" ? "보이스 체인지" : id === "dubbing" ? "번역(더빙)"
+    // CLI 목록은 Topaz 셋을 모두 "Topaz" 로 불러 구분이 안 된다 — 업스케일 창의 이름 + 종류
+    : upscaleModel(id) ? `${upscaleModel(id)!.label} (${upscaleModel(id)!.kind === "video" ? "영상" : "이미지"})` : catalogModelLabel(id);
   const toggleAllowed = (id: string) =>
     setAllowed((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const [emails, setEmails] = useState<string[]>(

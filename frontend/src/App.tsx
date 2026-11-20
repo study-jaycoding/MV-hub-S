@@ -135,6 +135,7 @@ import { useResolveSelectionFollow } from "./lib/resolveSelectionSettings";
 import { postLibraryChanged } from "./lib/libraryBroadcast";
 import { UpdateProgressOverlay } from "./components/UpdateProgressOverlay";
 import { PartialEditHost } from "./components/edit/PartialEditHost";
+import { UpscaleHost } from "./components/upscale/UpscaleHost";
 import {
   canFinalizeGeneration,
   expandDisabledGenerationIds,
@@ -1240,6 +1241,7 @@ export default function App() {
   }, [folderWindow, listPeek, teamPeek]);
   // 크게 보기의 [부분 수정]으로 넘어가면 창을 닫는다 — 부분 수정의 Esc 가 뒤에 남은 창까지 닫지 않게(코덱스 코드 리뷰 10-07).
   useCustomEvent(APP_EVENTS.partialEdit, closeFolderWindow);
+  useCustomEvent(APP_EVENTS.upscale, closeFolderWindow); // 업스케일 창도 같은 이유(그 창의 Esc 가 뒤 창까지 닫지 않게)
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
   const handleInfo = (target: InfoTarget) => {
@@ -3399,6 +3401,15 @@ export default function App() {
         onQueued={(g) => {
           setGens((prev) => (prev.some((p) => p.id === g.id) ? prev : [g, ...prev]));
           flash("부분 수정 생성을 시작했습니다.");
+          postLibraryChanged();
+        }}
+      />
+      {/* 업스케일 — 크게 보기의 upscale 이벤트로 열림. 목록 merge 는 수정과 같다(좁은 merge 만). */}
+      <UpscaleHost
+        workspace={workspaceContext}
+        onQueued={(g) => {
+          setGens((prev) => (prev.some((p) => p.id === g.id) ? prev : [g, ...prev]));
+          flash("업스케일 생성을 시작했습니다 — 결과는 새 카드로 나옵니다.");
           postLibraryChanged();
         }}
       />
