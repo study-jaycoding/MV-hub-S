@@ -429,6 +429,11 @@ class AgentChat:
                     opened_at = at
                     save(invalidate=True)
 
+                try:
+                    tools_result = claude.allow_hub_tools(row["cli_cwd"], config.AGENT_CHAT_DIR / "work")
+                except Exception:
+                    tools_result = "failed"
+                _log.info("Claude app hub tools: %s", tools_result)
                 outcome = claude.open_desktop(prefix, row["cli_session_id"], row["cli_cwd"], env, current, before_resume)
                 state["phase"] = outcome["phase"]
                 if state["phase"] == "idle":

@@ -22,7 +22,9 @@ import logging
 import os
 import platform
 import re
+import stat
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -743,6 +745,78 @@ def desktop_precheck(prefix, home, cwd, env) -> None:
     if installation != "available":
         raise Busy("Claude 데스크톱 앱이 없어요" if installation == "missing" else "Claude 데스크톱 설치를 확인하지 못했어요",
                    "desktop_missing" if installation == "missing" else "desktop_unknown")
+
+
+# tools/mcp_adapter/local_setup.py:server_name — 설치본 mvhub, 소스 실행 mvhub-test.
+HUB_TOOL_RULES = ("mcp__mvhub", "mcp__mvhub-test")
+
+
+def allow_hub_tools(cwd, managed) -> str:
+    """ClaudeLock('desktop') 안에서 호출한다. 설정을 못 고쳐도 앱 열기는 계속한다."""
+    temp = None
+    try:
+        normalized = []
+        for value in (cwd, managed):
+            if not Path(value).is_absolute():
+                return "skipped_path"
+            value = _norm(str(value))
+            if os.name == "nt" and value.startswith("\\\\?\\"):
+                value = "\\\\" + value[8:] if value.startswith("\\\\?\\unc\\") else value[4:]
+            normalized.append(value)
+        if normalized[0] != normalized[1]:
+            return "skipped_path"
+        work = Path(normalized[0])
+        folder, target = work / ".claude", work / ".claude" / "settings.json"
+        for path in (work, folder, target):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                return "skipped_path"
+            if not (stat.S_ISREG(info.st_mode) if path == target else stat.S_ISDIR(info.st_mode)):
+                return "skipped_path"
+        try:
+            original = target.read_bytes()
+        except FileNotFoundError:
+            original = None
+        try:
+            data = json.loads(original.decode("utf-8-sig")) if original is not None else {}
+        except (ValueError, UnicodeError):
+            return "skipped_format"
+        if not isinstance(data, dict):
+            return "skipped_format"
+        permissions = data.setdefault("permissions", {})
+        if not isinstance(permissions, dict):
+            return "skipped_format"
+        allow = permissions.setdefault("allow", [])
+        if not isinstance(allow, list) or not all(isinstance(rule, str) for rule in allow):
+            return "skipped_format"
+        missing = [rule for rule in HUB_TOOL_RULES if rule not in allow]
+        if not missing:
+            return "present"
+        allow.extend(missing)
+        payload = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="wb", dir=folder, prefix=".settings-", suffix=".tmp", delete=False) as stream:
+            temp = Path(stream.name)
+            stream.write(payload)
+        # shortcut: 외부 편집자의 대조 직후 변경까지 막지는 못함, 외부 작성자와 잠금을 공유할 때 보강.
+        try:
+            current = target.read_bytes()
+        except FileNotFoundError:
+            current = None
+        if current != original:
+            return "skipped_changed"
+        os.replace(temp, target)
+        return "written"
+    except Exception:
+        return "failed"
+    finally:
+        if temp is not None:
+            with contextlib.suppress(OSError):
+                temp.unlink(missing_ok=True)
 
 
 def _stop_desktop_launcher(proc) -> bool:

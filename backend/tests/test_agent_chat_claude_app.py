@@ -3,10 +3,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -29,6 +31,7 @@ from test_agent_chat_transcript import transcript  # noqa: F401
 def app_chat(hub, transcript, monkeypatch):
     client, _, service = hub
     cases, file, write, read, anchor = transcript
+    base = json.loads(file.read_text(encoding="utf-8").splitlines()[0])
     monkeypatch.setenv("USERPROFILE", str(file.parent.parent.parent.parent))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(claude, "claude_state", lambda prefix: {"state": "ready", "version": "2.1.296", "subscription": "Max"})
@@ -37,11 +40,11 @@ def app_chat(hub, transcript, monkeypatch):
     monkeypatch.setattr(claude.ClaudeLock, "release", lambda self: None)
     monkeypatch.setattr(claude, "reap_desktop_launcher", lambda launcher: True)
     headers = panel_headers(client)
+    monkeypatch.setattr(config, "AGENT_CHAT_DIR", Path(base["cwd"]).parent)
     identity = service.session_identity(headers["X-MVHub-Panel"])
     path = identity.db_file()
     conv = store.create_conversation(path, engine="claude", model="haiku", effort="low", client_id="synthetic-client",
                                      mcp_entry={}, title="합성 대화")
-    base = json.loads(file.read_text(encoding="utf-8").splitlines()[0])
     store.update_conversation(path, conv["id"], cli_session_id=cases["session_id"], cli_home=str(file.parent.parent.parent), cli_cwd=base["cwd"])
     turn, _ = store.claim_turn(path, conversation_id=conv["id"], idempotency_key=uuid4().hex, text="허브 질문", context={})
     store.finish_turn(path, turn["id"], "done")
@@ -70,6 +73,289 @@ def bring(a, opened, **values):
                "unlock_only": False, **values}
     response = a.client.post(a.url + "/bring-back", headers=a.headers, json=request)
     return request, response
+
+
+@pytest.mark.parametrize("reopening", [False, True])
+def test_hub_permissions_inside_lock_before_launcher_and_not_on_retry(app_chat, monkeypatch, reopening):
+    a = app_chat
+    values = {}
+    settings = config.AGENT_CHAT_DIR / "work" / ".claude" / "settings.json"
+    if reopening:
+        _, first = open_app(a)
+        values = {"expected_revision": 1, "handoff_id": first.json()["app_handoff"]["id"]}
+        settings.unlink()  # 다시 열기도 설정이 없어졌으면 다시 준비한다.
+    events = []
+    allow, launch, rename = claude.allow_hub_tools, claude.open_desktop, tr.rename_session
+
+    def prepare(cwd, managed):
+        assert events[-1] == ("acquire" if reopening else "title")
+        assert Path(cwd) == managed == settings.parent.parent
+        result = allow(cwd, managed)
+        assert result == "written"
+        events.append("allow")
+        return result
+
+    def open_desktop(*args):
+        assert json.loads(settings.read_bytes())["permissions"]["allow"] == list(claude.HUB_TOOL_RULES)
+        events.append("launch")
+        return launch(*args)
+
+    def title(*args):
+        events.append("title")
+        return rename(*args)
+
+    monkeypatch.setattr(claude.ClaudeLock, "acquire", lambda self: events.append("acquire"))
+    monkeypatch.setattr(claude.ClaudeLock, "release", lambda self: events.append("release"))
+    monkeypatch.setattr(claude, "allow_hub_tools", prepare)
+    monkeypatch.setattr(claude, "open_desktop", open_desktop)
+    monkeypatch.setattr(tr, "rename_session", title)
+    request, response = open_app(a, **values)
+    assert response.status_code == 200, response.text
+    expected = ["acquire", *([] if reopening else ["title"]), "allow", "launch", "release"]
+    assert events == expected
+    assert a.client.post(a.url + "/open", headers=a.headers, json=request).json() == response.json()
+    assert events == expected
+
+
+@pytest.mark.parametrize("fault", ["precheck", "lock", "active", "fork"])
+def test_rejected_open_does_not_prepare_hub_permissions(app_chat, monkeypatch, fault):
+    a = app_chat
+
+    def busy(*args):
+        raise claude.Busy("busy", "claude_busy")
+
+    monkeypatch.setattr(claude, "allow_hub_tools", lambda *args: pytest.fail("rejected open must not prepare settings"))
+    if fault == "precheck":
+        monkeypatch.setattr(claude, "desktop_precheck", busy)
+    elif fault == "lock":
+        monkeypatch.setattr(claude.ClaudeLock, "acquire", busy)
+    elif fault == "active":
+        monkeypatch.setattr(store, "has_active", lambda path: True)
+    else:
+        monkeypatch.setattr(a.service, "forking_from", lambda sid: True)
+    _, response = open_app(a)
+    assert response.status_code == 409, response.text
+    assert not a.spawned and not (config.AGENT_CHAT_DIR / "work" / ".claude").exists()
+
+
+@pytest.mark.parametrize("reopening", [False, True])
+@pytest.mark.parametrize("fault", ["result", "exception"])
+def test_hub_permission_failure_does_not_block_open_or_leak(app_chat, monkeypatch, caplog, reopening, fault):
+    a = app_chat
+    values = {}
+    if reopening:
+        _, first = open_app(a)
+        values = {"expected_revision": 1, "handoff_id": first.json()["app_handoff"]["id"]}
+
+    def failed(*args):
+        if fault == "exception":
+            raise OSError("private path and settings contents")
+        return "failed"
+
+    monkeypatch.setattr(claude, "allow_hub_tools", failed)
+    with caplog.at_level(logging.INFO, logger=chat.__name__):
+        _, response = open_app(a, **values)
+    assert response.status_code == 200 and response.json()["app_handoff"]["state"] == "handed"
+    assert len(a.spawned) == (2 if reopening else 1)
+    messages = [record.getMessage() for record in caplog.records if record.name == chat.__name__]
+    assert messages == ["Claude app hub tools: failed"]
+
+
+@pytest.fixture
+def hub_settings(tmp_path):
+    work = tmp_path / "work"
+    target = work / ".claude" / "settings.json"
+    return work, target
+
+
+def test_hub_tools_create_and_present_preserves_bytes(hub_settings, monkeypatch):
+    work, target = hub_settings
+    assert claude.allow_hub_tools(work, work) == "written"
+    assert json.loads(target.read_bytes()) == {"permissions": {"allow": list(claude.HUB_TOOL_RULES)}}
+    before = b'{ "permissions": {"allow":["mcp__mvhub-test", "mcp__mvhub"]}, "custom": true }\r\n'
+    target.write_bytes(before)
+    monkeypatch.setattr(claude.tempfile, "NamedTemporaryFile", lambda **kw: pytest.fail("present must not write"))
+    assert claude.allow_hub_tools(work, work) == "present"
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("existing", [
+    {"custom": {"nested": [1, True, None]}},
+    {"permissions": {"deny": ["mcp__mvhub__execute_generation_plan"]}, "custom": "한글"},
+    {"permissions": {"allow": ["Read", "mcp__mvhub", "Read"], "deny": ["Bash"], "ask": ["Edit"]}},
+])
+def test_hub_tools_merge_only_missing_rules(hub_settings, existing):
+    work, target = hub_settings
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+    expected = json.loads(json.dumps(existing))
+    allow = expected.setdefault("permissions", {}).setdefault("allow", [])
+    allow.extend(rule for rule in claude.HUB_TOOL_RULES if rule not in allow)
+    assert claude.allow_hub_tools(work, work) == "written"
+    assert json.loads(target.read_bytes()) == expected
+    assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("raw", [b"{", b"", b"\xff", b"[]", b"null", b'"text"',
+    b'{"permissions":null}', b'{"permissions":[]}', b'{"permissions":"allow"}',
+    b'{"permissions":{"allow":null}}', b'{"permissions":{"allow":{}}}',
+    b'{"permissions":{"allow":"mcp__mvhub"}}', b'{"permissions":{"allow":["Read",1]}}',
+    b'{"permissions":{"allow":[false]}}'])
+def test_hub_tools_invalid_format_unchanged(hub_settings, raw):
+    work, target = hub_settings
+    target.parent.mkdir(parents=True)
+    target.write_bytes(raw)
+    assert claude.allow_hub_tools(work, work) == "skipped_format"
+    assert target.read_bytes() == raw and list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("spelling", ["upper", "trailing", "extended"])
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path spelling")
+def test_hub_tools_windows_path_spelling(hub_settings, spelling):
+    work, target = hub_settings
+    cwd = str(work).upper() if spelling == "upper" else str(work) + "\\"
+    if spelling == "extended":
+        cwd = "\\\\?\\" + str(work)
+    assert claude.allow_hub_tools(cwd, work) == "written"
+    assert json.loads(target.read_bytes())["permissions"]["allow"] == list(claude.HUB_TOOL_RULES)
+
+
+@pytest.mark.parametrize("fault", ["outside", "relative", "work_file", "folder_file", "settings_dir"])
+def test_hub_tools_rejects_path_without_changes(hub_settings, tmp_path, fault):
+    work, target = hub_settings
+    cwd = work
+    sentinel = None
+    if fault == "outside":
+        cwd = tmp_path / "outside"
+        cwd.mkdir()
+    elif fault == "relative":
+        cwd = "work"
+    elif fault in ("work_file", "folder_file"):
+        sentinel = work if fault == "work_file" else target.parent
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_bytes(b"user data")
+    else:
+        target.mkdir(parents=True)
+    assert claude.allow_hub_tools(cwd, work) == "skipped_path"
+    if sentinel:
+        assert sentinel.read_bytes() == b"user data"
+    elif fault == "settings_dir":
+        assert target.is_dir() and not list(target.iterdir())
+    else:
+        assert not work.exists()
+        if fault == "outside":
+            assert not list(cwd.iterdir())
+
+
+@pytest.mark.parametrize("kind,part", [("junction", "work"), ("junction", "folder"),
+    ("symlink", "work"), ("symlink", "folder"), ("symlink", "settings"), ("dangling", "settings")])
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows reparse points")
+def test_hub_tools_rejects_links(hub_settings, tmp_path, kind, part):
+    work, target = hub_settings
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "settings.json" if part == "settings" else outside
+    link = {"work": work, "folder": target.parent, "settings": target}[part]
+    link.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "settings.json"
+    if kind != "dangling":
+        sentinel.write_bytes(b'{"custom":"keep"}')
+    try:
+        if kind == "junction":
+            import _winapi
+            _winapi.CreateJunction(str(source), str(link))
+        else:
+            os.symlink(source, link, target_is_directory=part != "settings")
+    except OSError as exc:
+        if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) == 1314:
+            pytest.skip(f"{kind} creation not permitted (winerror={getattr(exc, 'winerror', None)})")
+        raise
+    assert claude.allow_hub_tools(work, work) == "skipped_path"
+    assert os.path.lexists(link)
+    if kind == "dangling":
+        assert not sentinel.exists()
+    else:
+        assert sentinel.read_bytes() == b'{"custom":"keep"}'
+    assert not (outside / ".claude").exists()
+
+
+@pytest.mark.parametrize("change", ["edit", "create", "delete"])
+def test_hub_tools_rechecks_original_bytes_before_replace(hub_settings, monkeypatch, change):
+    work, target = hub_settings
+    target.parent.mkdir(parents=True)
+    if change != "create":
+        target.write_bytes(b'{"custom":"original"}')
+    create_temp = claude.tempfile.NamedTemporaryFile
+
+    @contextlib.contextmanager
+    def concurrent_edit(**kwargs):
+        with create_temp(**kwargs) as stream:
+            yield stream
+        if change == "delete":
+            target.unlink()
+        else:
+            target.write_bytes(b'{"custom":"external edit"}')
+
+    monkeypatch.setattr(claude.tempfile, "NamedTemporaryFile", concurrent_edit)
+    monkeypatch.setattr(claude.os, "replace", lambda *args: pytest.fail("changed original must not be replaced"))
+    assert claude.allow_hub_tools(work, work) == "skipped_changed"
+    if change == "delete":
+        assert not target.exists() and not list(target.parent.iterdir())
+    else:
+        assert target.read_bytes() == b'{"custom":"external edit"}'
+        assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("exists", [False, True])
+@pytest.mark.parametrize("fault", ["create", "write", "replace", "read", "stat", "mkdir"])
+def test_hub_tools_io_failures_preserve_original_and_clean_temp(hub_settings, monkeypatch, exists, fault):
+    work, target = hub_settings
+    target.parent.mkdir(parents=True)
+    original = b'{"permissions":{"allow":["Read"]}}'
+    if exists:
+        target.write_bytes(original)
+    unrelated = target.parent / "other.tmp"
+    unrelated.write_bytes(b"other writer")
+    create_temp = claude.tempfile.NamedTemporaryFile
+    names = []
+
+    def fail(*args, **kwargs):
+        raise OSError("private path or content")
+
+    def temporary(**kwargs):
+        if fault == "create":
+            fail()
+        stream = create_temp(**kwargs)
+        names.append(stream.name)
+        if fault == "write":
+            write = stream.write
+
+            def partial(payload):
+                write(payload[:3])
+                fail()
+
+            stream.write = partial
+        return stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(claude.tempfile, "NamedTemporaryFile", temporary)
+        if fault == "replace":
+            patch.setattr(claude.os, "replace", fail)
+        elif fault == "read":
+            patch.setattr(Path, "read_bytes", fail)
+        elif fault == "stat":
+            patch.setattr(Path, "lstat", fail)
+        elif fault == "mkdir":
+            patch.setattr(Path, "mkdir", fail)
+        assert claude.allow_hub_tools(work, work) == "failed"
+        assert claude.allow_hub_tools(work, work) == "failed"
+    assert len(names) == len(set(names))
+    assert all(not Path(name).exists() for name in names)
+    assert target.exists() is exists
+    if exists:
+        assert target.read_bytes() == original
+    assert unrelated.read_bytes() == b"other writer"
+    assert set(target.parent.iterdir()) == ({target, unrelated} if exists else {unrelated})
 
 
 def test_roundtrip_atomic_import_public_snapshot_mcp_and_same_resume(app_chat):
@@ -119,6 +405,7 @@ def test_open_titles_app_session_and_import_still_works(app_chat):
 
 def test_title_rollback_failure_keeps_lock_and_never_launches(app_chat, monkeypatch):
     a = app_chat
+    monkeypatch.setattr(claude, "allow_hub_tools", lambda *args: pytest.fail("failed title must not change permissions"))
     monkeypatch.setattr(tr, "rename_session", lambda *args: (_ for _ in ()).throw(tr.TranscriptError("title_write_failed")))
     _, response = open_app(a)
     assert response.status_code == 200, response.text
@@ -127,6 +414,7 @@ def test_title_rollback_failure_keeps_lock_and_never_launches(app_chat, monkeypa
     assert chat.chat_list(a.path, search=None, limit=20, cursor=None)["conversations"][0]["in_claude_app"] is True
     _, again = open_app(a, expected_revision=first["app_revision"], handoff_id=first["app_handoff"]["id"])  # 새 요청으로 다시 열기
     assert again.status_code == 409 and again.json()["detail"] == "title_write_failed" and a.spawned == []
+    assert not (config.AGENT_CHAT_DIR / "work" / ".claude").exists()
 
 
 def test_has_handoff_ignores_non_sqlite_collision_file_but_not_broken_db(tmp_path):
