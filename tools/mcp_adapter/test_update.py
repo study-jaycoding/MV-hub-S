@@ -130,6 +130,16 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("external_screen", manifest["requires"]["hub_features"])
         self.assertTrue(update.compatibility(manifest, self.bundle))
 
+    def test_screen_lows_version_preserves_update_requirements(self):
+        code = (HERE / "server.py").read_bytes()
+        old = code.replace(b'ADAPTER_VERSION = "2026.11.20.3"', b'ADAPTER_VERSION = "2026.11.20.2"')
+        self.assertNotEqual(old, code)
+        (self.bundle / "server.py").write_bytes(old)
+        baseline = {name: (self.bundle / name).read_bytes() for name in update.BASELINE}
+        manifest = update.build_manifest("5" * 40, code, baseline)
+        self.assertEqual(manifest["version"], "2026.11.20.3")
+        self.assertEqual(update.compatibility(manifest, self.bundle), "")
+
     def test_version_directory_is_immutable_and_extra_files_are_rejected(self):
         manifest, files = self.candidate()
         update.stage_version(self.release, manifest, files)

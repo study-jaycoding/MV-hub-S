@@ -143,6 +143,7 @@ MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행�
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
 
 바깥 앱의 화면 편집은 `backend/app/services/mcp_screen.py`가 수신 자격·일회용 화면 표·대상 선택·동작 수명과 한도를 소유한다.
+낮음 정리: 씬 불일치·씬 없음은 표를 보존하며, 미확인 등록 취소(묘비 150초·서버 처리 20초 상한)와 붙잡은 로그인 자격의 해제, 끔·만료 시 선택 해제, 상류 조회를 등록 잠금 밖에서 수행한 뒤 권한·화면 재확인을 적용한다.
 `routers/mcp_v2.py`의 screen-presence·screen-actions claim/result와 일반 연결 screen_action이 원래 연결 권한을 재확인한다.
 `frontend/src/lib/useMcpScreenActions.ts`는 본창 등록·실행 직전 세대/지문 검사·영수증을 맡고,
 `frontend/src/components/mcp/McpScreenNotice.tsx`는 기본 끔 스위치·명시 창 선택·지속 알림·되돌리기를 표시한다.

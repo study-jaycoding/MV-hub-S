@@ -1361,6 +1361,7 @@ assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
     def test_general_guidance_and_panel_isolation(self):
         from unittest.mock import patch
         import server
+        self.assertEqual(server.ADAPTER_VERSION, "2026.11.20.3")
         credential = {"url": self.url, "hub_id": "b" * 64, "client_id": str(uuid4()), "secret": "x" * 43}
         async def exercise():
             with patch.object(server, "profile_settings", return_value=credential):

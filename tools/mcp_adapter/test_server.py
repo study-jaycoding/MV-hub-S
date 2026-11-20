@@ -15,7 +15,7 @@ import anyio
 from mcp import Client, StdioServerParameters
 from mcp.server.mcpserver.exceptions import ToolError
 
-from server import Broker, MAX_REQUEST, MAX_RESPONSE, local_url
+from server import Broker, BrokerError, MAX_REQUEST, MAX_RESPONSE, local_url
 
 
 class FakeBroker(BaseHTTPRequestHandler):
@@ -77,6 +77,13 @@ class FakeBroker(BaseHTTPRequestHandler):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_screen_scene_mismatch_is_specific_and_never_retried(self):
+        error = json.loads(str(BrokerError("screen_scene_mismatch")))["error"]
+        self.assertEqual(error["code"], "screen_scene_mismatch")
+        self.assertFalse(error["retryable"])
+        self.assertEqual(error["next_action"], "read_context")
+        self.assertIn("scene_id", error["message"])
+
     def setUp(self):
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), FakeBroker)
         self.http.url = f"http://127.0.0.1:{self.http.server_port}"

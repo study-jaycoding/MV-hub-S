@@ -72,7 +72,7 @@ MAX_PREVIEW = 512 * 1024
 REQUEST_TIMEOUT = 30
 RESULT_TIMEOUT = 90
 RESULT_UI_URI = "ui://mvhub/result.html"
-ADAPTER_VERSION = "2026.11.20.2"
+ADAPTER_VERSION = "2026.11.20.3"
 MCP_UPDATE_API = 1
 HUB_FEATURES = {"external_screen", "generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
                 "agent_chat_read", "reference_exact"}
@@ -83,6 +83,7 @@ ERRORS = {
     "screen_ambiguous": ("화면 제어를 켠 창이 여럿입니다. 사용할 MV Hub 창의 설정에서 [이 창 사용]을 누르세요.", False, "select_screen"),
     "screen_context_invalid": ("화면 표가 만료되거나 이미 쓰였거나 화면이 바뀌었습니다. read_context(kind='screen')으로 새 표를 받으세요.", False, "read_context"),
     "screen_scene_unavailable": ("허용한 창에서 저장된 캔버스 씬을 열고 화면을 다시 조회하세요.", False, "check_screen"),
+    "screen_scene_mismatch": ("지금 사용자가 보는 캔버스 씬이 아니에요. read_context(kind='screen')이 준 scene_id 를 그대로 쓰세요.", False, "read_context"),
     "screen_busy": ("다른 화면 동작이 진행 중입니다. 그 결과를 확인하고 다시 요청하세요. 자동 재실행하지 마세요.", False, "check_screen"),
     "screen_limit": ("분당 화면 동작 한도를 넘었습니다. 잠시 뒤 화면을 다시 조회하세요. 자동 재실행하지 마세요.", False, "check_screen"),
     "invalid_input": ("입력 형식을 확인하세요.", False, "check_arguments"),

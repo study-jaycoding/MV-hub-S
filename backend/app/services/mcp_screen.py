@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import HTTPException
 
 PRESENCE_SECONDS = 150.0
+REGISTRATION_SECONDS = 20.0
 ACTION_SECONDS = 30.0
 LIMITS = {"canvas.create_nodes": 10, "canvas.connect": 20, "library.set_hidden": 100}
 
@@ -38,6 +39,7 @@ class Receiver:
     visible: bool
     enabled: bool
     expires: float
+    registration_hash: str = ""
 
 
 @dataclass
@@ -66,6 +68,7 @@ class ScreenService:
         self.actions: dict[str, Action] = {}
         self.usage: list[tuple] = []
         self.requests: list[tuple] = []
+        self.cancelled: dict[tuple, float] = {}
 
     def _close(self, action, result=None):
         if action.settled.is_set():
@@ -83,6 +86,9 @@ class ScreenService:
             if action.expires <= now:
                 self._close(action)
         self.receivers = {k: r for k, r in self.receivers.items() if r.expires > now}
+        self.selected = {a: rid for a, rid in self.selected.items()
+                         if rid in self.receivers and self.receivers[rid].enabled}
+        self.cancelled = {k: expires for k, expires in self.cancelled.items() if expires > now}
         self.tickets = {k: v for k, v in self.tickets.items() if v[-1] > now}
         self.usage = [v for v in self.usage if v[0] > now - 60]
         self.requests = [v for v in self.requests if v[0] > now - 60]
@@ -90,7 +96,7 @@ class ScreenService:
         keep = {a.id for a in ended[:256] if a.ended > now - 60}
         self.actions = {k: a for k, a in self.actions.items() if not a.settled.is_set() or k in keep}
 
-    def register(self, binding, account, context, body):
+    def register(self, binding, account, context, body, started=None):
         with self.lock:
             self._clean()
             if any(r.account == account and (r.binding[:4], r.binding[6]) != (binding[:4], binding[6]) for r in self.receivers.values()):
@@ -98,13 +104,44 @@ class ScreenService:
             if len(self.receivers) >= 128 or sum(r.account == account for r in self.receivers.values()) >= 16:
                 refuse("screen_busy", 429)
             secret = secrets.token_urlsafe(32)
+            registration_hash = digest(body.registration) if body.registration else ""
+            # shortcut: cancellation lasts 150s; revisit if requests can arrive after that window.
+            if ((started is not None and self.clock() - started > REGISTRATION_SECONDS)
+                    or (binding, account, registration_hash) in self.cancelled):
+                refuse("screen_stale")
             r = Receiver(secrets.token_urlsafe(24), digest(secret), binding, account, context,
                          body.seq, body.epoch, body.workspace.model_dump(include={"scope", "id"}), body.scene_id,
-                         body.visible, body.enabled, self.clock() + PRESENCE_SECONDS)
+                         body.visible, body.enabled, self.clock() + PRESENCE_SECONDS, registration_hash)
             self.receivers[r.id] = r
             if body.select:
                 self.selected[account] = r.id
             return r, secret
+
+    def _remove(self, r):
+        self.receivers.pop(r.id, None)
+        self.tickets = {k: t for k, t in self.tickets.items() if t[1] != r.id}
+        if self.selected.get(r.account) == r.id:
+            self.selected.pop(r.account)
+        for a in self.actions.values():
+            if a.receiver is r:
+                self._close(a)
+
+    def cancel_registration(self, binding, account, registration):
+        with self.lock:
+            self._clean()
+            registration_hash = digest(registration)
+            matches = [r for r in self.receivers.values()
+                       if r.binding == binding and r.account == account and r.registration_hash == registration_hash]
+            if matches:
+                for r in matches:
+                    self._remove(r)
+                return
+            key = (binding, account, registration_hash)
+            if key in self.cancelled:
+                return
+            if len(self.cancelled) >= 512 or sum(k[1] == account for k in self.cancelled) >= 16:
+                refuse("screen_busy", 429)
+            self.cancelled[key] = self.clock() + PRESENCE_SECONDS
 
     def invalidate(self, account=None):
         with self.lock:
@@ -138,14 +175,13 @@ class ScreenService:
             r.seq, r.epoch = body.seq, body.epoch
             r.workspace, r.scene_id, r.visible, r.enabled = ws, body.scene_id, body.visible, body.enabled
             r.expires = self.clock() + PRESENCE_SECONDS
+            if not r.enabled and self.selected.get(r.account) == r.id:
+                self.selected.pop(r.account)
             for a in self.actions.values():
                 if a.receiver is r and (a.epoch != r.epoch or not r.enabled):
                     self._close(a)
             if body.release:
-                self.receivers.pop(r.id)
-                self.tickets = {k: t for k, t in self.tickets.items() if t[1] != r.id}
-                if self.selected.get(r.account) == r.id:
-                    self.selected.pop(r.account)
+                self._remove(r)
             if body.select:
                 if not r.enabled:
                     refuse("screen_unavailable")
@@ -177,13 +213,19 @@ class ScreenService:
             self.tickets[digest(token)] = (client_id, r.id, r.epoch, self.clock() + 30)
             return {"workspace": dict(r.workspace), "scene_id": r.scene_id, "screen_context": token, "expires_in": 30}
 
-    def consume(self, token, client_id, account):
+    def consume(self, token, client_id, account, scene_id=None):
         with self.lock:
             self._clean()
-            ticket = self.tickets.pop(digest(token), None)
+            ticket = self.tickets.get(digest(token))
             r = self.target(account)
             if not ticket or ticket[:3] != (client_id, r.id, r.epoch):
                 refuse("screen_context_invalid")
+            if scene_id is not None:
+                if not r.scene_id:
+                    refuse("screen_scene_unavailable")
+                if scene_id != r.scene_id:
+                    refuse("screen_scene_mismatch")
+            self.tickets.pop(digest(token))
             return r, r.epoch
 
     def issue(self, r, epoch, ctx, name, args, cost):

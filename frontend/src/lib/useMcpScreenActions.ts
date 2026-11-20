@@ -90,6 +90,22 @@ export function useMcpScreenActions(props: Props) {
       return { workspace, scene_id: scene?.sceneId || null, enabled, visible, epoch };
     };
     const headers = { "X-MVHub-Tab": tab, [EXPECT_ACCOUNT_HEADER]: account };
+    const pending = new Map<string, ReturnType<typeof snapshot> & { hub_id: string; registration: string }>();
+    const sendRelease = async (body: Record<string, unknown>) => {
+      if (connection !== getConnectionKey()) return false;
+      try {
+        const response = await withRequestTimeout(signal => fetch("/api/mcp/v2/app/screen-presence", {
+          method: "POST", keepalive: true, signal,
+          headers: { ...headers, "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: jsonBody({ ...body, seq: ++seq, enabled: false, select: false, release: true }),
+        }), 20_000, "화면 연결을 확인하지 못했어요");
+        return response.ok || (response.status >= 400 && response.status < 500 && response.status !== 429);
+      } catch { return false; }
+    };
+    const cancelRegistration = async (registration: string) => {
+      const body = pending.get(registration);
+      if (body && await sendRelease(body)) pending.delete(registration);
+    };
     const post = <T,>(path: string, body: unknown) => withRequestTimeout(signal => jsonFetch<T>(`/api/mcp/v2/app/${path}`, {
       method: "POST", headers, body: jsonBody(body), signal: AbortSignal.any([signal, abort.signal]),
     }), 20_000, "화면 연결을 확인하지 못했어요");
@@ -123,20 +139,32 @@ export function useMcpScreenActions(props: Props) {
       }
       const state = snapshot();
       publish({ ...control, available: true, enabled: state.enabled });
-      if (!state.enabled && !receiver) return;
+      for (const registration of pending.keys()) void cancelRegistration(registration);
+      if ((!state.enabled && !receiver) || (!receiver && pending.size >= 4)) {
+        if (pending.size) schedule(delay);
+        return;
+      }
       busy = true; dirty = false;
       const select = choose; choose = false;
+      const registration = receiver ? null : Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("");
+      if (registration) pending.set(registration, { ...state, hub_id: hub, registration });
       try {
         const result = await post<Presence>("screen-presence", { ...state, hub_id: hub, seq: ++seq,
-          ...(receiver ? { receiver_id: receiver.receiver_id, secret } : {}), select });
-        if (!requestFresh()) return;
+          ...(receiver ? { receiver_id: receiver.receiver_id, secret } : { registration }), select });
+        if (!requestFresh()) { if (registration) void cancelRegistration(registration); return; }
         if (typeof result.receiver_id !== "string" || (!receiver && !result.receiver_secret)
           || (receiver && receiver.receiver_id !== result.receiver_id)) throw new Error("invalid receiver response");
+        if (registration) pending.delete(registration);
         receiver = result; secret = result.receiver_secret || secret; delay = 10_000;
         publish({ available: true, enabled: screenEnabled(key), multiple: result.multiple, selected: result.selected, note: "" });
       } catch (error) {
+        const status = Number((error as { status?: number } | null)?.status);
+        if (registration) {
+          if (status >= 400 && status < 500) pending.delete(registration);
+          else void cancelRegistration(registration);
+        }
         if (requestFresh()) {
-          const rejected = [403, 404].includes(Number((error as { status?: number } | null)?.status));
+          const rejected = [403, 404].includes(status);
           const lostReceiver = rejected && receiver !== null;
           if (rejected) { receiver = null; secret = ""; }
           delay = lostReceiver ? 100 : Math.min(Math.max(receiver ? 10_000 : 30_000, delay * 2), 60_000);
@@ -153,7 +181,7 @@ export function useMcpScreenActions(props: Props) {
       } finally {
         if (requestFresh()) {
           busy = false;
-          if (dirty || snapshot().enabled) schedule(dirty ? 100 : delay);
+          if (dirty || snapshot().enabled || pending.size) schedule(dirty ? 100 : delay);
         }
       }
     };
@@ -241,12 +269,10 @@ export function useMcpScreenActions(props: Props) {
       changed();
     };
     const release = () => {
-      if (receiver && token === getAuthToken() && account === getAccountNamespace() && connection === getConnectionKey()) {
-        void jsonFetch("/api/mcp/v2/app/screen-presence", { method: "POST", headers, keepalive: true,
-          body: jsonBody({ ...snapshot(), hub_id: hub, receiver_id: receiver.receiver_id, secret,
-            seq: ++seq, epoch: ++epoch, enabled: false, release: true }),
-        }).catch(() => {});
+      if (receiver) {
+        void sendRelease({ ...snapshot(), hub_id: hub, receiver_id: receiver.receiver_id, secret, epoch: ++epoch });
       }
+      for (const registration of pending.keys()) void cancelRegistration(registration);
       receiver = null; secret = ""; choose = false;
       pageHidden = true; lifecycle += 1; busy = false; dirty = false;
       abort.abort(); clearTimeout(timer);

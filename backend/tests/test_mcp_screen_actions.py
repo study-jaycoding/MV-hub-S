@@ -77,7 +77,7 @@ def test_registration_secret_and_minimal_ticket(screen):
         assert response.status_code == 403
 
 
-def test_multiple_selection_and_no_fallback(screen):
+def test_disabled_selection_falls_back_but_does_not_reselect_when_enabled(screen):
     s = screen
     second = s[4]().json()
     assert action(s[0], "read_context", {"kind": "screen"}).json()["detail"] == "screen_ambiguous"
@@ -85,7 +85,11 @@ def test_multiple_selection_and_no_fallback(screen):
     ticket(s)
     assert s[4](receiver_id=second["receiver_id"], secret=second["receiver_secret"], seq=2).status_code == 200
     assert s[4](**s[5], seq=3, epoch=2, enabled=False).status_code == 200
-    assert action(s[0], "read_context", {"kind": "screen"}).json()["detail"] == "screen_unavailable"
+    assert not s[1].selected
+    assert s[1].target(s[0][2]["email"]).id == second["receiver_id"]
+    ticket(s)
+    assert s[4](**s[5], seq=4, epoch=3).status_code == 200
+    assert action(s[0], "read_context", {"kind": "screen"}).json()["detail"] == "screen_ambiguous"
 
 
 def test_hidden_registration_selection_and_presence_ttl_150(screen):
@@ -458,3 +462,278 @@ def test_rejected_selection_still_closes_disabled_receiver_action(screen):
         assert not s[1].receivers[s[5]["receiver_id"]].enabled
         assert s[1].actions[aid].settled.is_set()
         assert future.result(5).json()["status"] == "expired_unclaimed"
+
+
+def test_scene_mismatch_keeps_ticket_for_one_correct_execution(screen):
+    s = screen
+    context = ticket(s)
+    payload = {"name": "canvas.read_selection", "args": {"scene_id": "other"}, "screen_context": context}
+    response = action(s[0], "screen_action", payload)
+    assert response.status_code == 409 and response.json()["detail"] == "screen_scene_mismatch"
+    assert mcp_screen.digest(context) in s[1].tickets and not s[6]
+    payload["args"]["scene_id"] = "scene"
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(action, s[0], "screen_action", payload)
+        assert s[7].wait(5)
+        aid = s[6][-1][0]["action_id"]
+        assert finish(s, aid, claim(s, aid).json()["token"]).json()["accepted"]
+        assert future.result(5).json()["status"] == "done"
+    assert action(s[0], "screen_action", payload).json()["detail"] == "screen_context_invalid"
+
+
+def test_no_scene_and_invalid_arguments_keep_ticket(screen):
+    s = screen
+    context = ticket(s)
+    response = action(s[0], "screen_action", {"name": "canvas.read_selection", "args": {}, "screen_context": context})
+    assert response.status_code == 422
+    assert mcp_screen.digest(context) in s[1].tickets
+    assert s[4](**s[5], seq=2, epoch=2, scene_id=None).status_code == 200
+    context = ticket(s)
+    response = action(s[0], "screen_action", {"name": "canvas.read_selection", "args": {"scene_id": "scene"}, "screen_context": context})
+    assert response.json()["detail"] == "screen_scene_unavailable"
+    assert mcp_screen.digest(context) in s[1].tickets
+
+
+def test_same_ticket_concurrent_requests_issue_once(screen):
+    s = screen
+    payload = {"name": "canvas.read_selection", "args": {"scene_id": "scene"}, "screen_context": ticket(s)}
+    barrier = threading.Barrier(2)
+    def send():
+        barrier.wait(5)
+        return action(s[0], "screen_action", payload)
+    with ThreadPoolExecutor() as pool:
+        futures = [pool.submit(send) for _ in range(2)]
+        assert s[7].wait(5)
+        aid = s[6][-1][0]["action_id"]
+        assert finish(s, aid, claim(s, aid).json()["token"]).json()["accepted"]
+        results = [f.result(5) for f in futures]
+    assert sorted(r.status_code for r in results) == [200, 409]
+    assert next(r for r in results if r.status_code == 409).json()["detail"] == "screen_context_invalid"
+    assert len(s[6]) == 1
+
+
+@pytest.mark.parametrize("before", [False, True])
+def test_registration_cancel_before_arrival_or_after_lost_response(screen, before):
+    s = screen
+    registration = "r" * 48
+    s[1].invalidate()
+    if not before:
+        registered = s[4](registration=registration, select=True)
+        assert registered.status_code == 200 and registration not in registered.text
+        r = s[1].target(s[0][2]["email"])
+        assert r.registration_hash == mcp_screen.digest(registration)
+        ticket(s)
+    response = s[4](registration=registration, enabled=False, release=True)
+    assert response.status_code == 200 and response.json() == {"released": True}
+    assert not s[1].receivers and not s[1].tickets and not s[1].selected
+    if before:
+        assert s[4](registration=registration).json()["detail"] == "screen_stale"
+
+
+def test_cancel_during_registration_rechecks_tombstone_before_storing(screen, monkeypatch):
+    s = screen
+    original = api._capture
+    waiting, proceed = threading.Event(), threading.Event()
+    def capture(*args):
+        result = original(*args)
+        waiting.set()
+        assert proceed.wait(5)
+        return result
+    monkeypatch.setattr(api, "_capture", capture)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(s[4], registration="r" * 48)
+        try:
+            assert waiting.wait(5)
+            assert s[4](registration="r" * 48, release=True, enabled=False).status_code == 200
+        finally:
+            proceed.set()
+        assert future.result(5).json()["detail"] == "screen_stale"
+    assert len(s[1].receivers) == 1
+
+
+@pytest.mark.parametrize("elapsed", [149.999, 150.001])
+def test_tombstone_boundary_and_new_receiver_ttl(screen, elapsed):
+    s = screen
+    assert s[4](registration="r" * 48, release=True, enabled=False).status_code == 200
+    s[2][0] += elapsed
+    result = s[4](registration="r" * 48)
+    if elapsed < 150:
+        assert result.json()["detail"] == "screen_stale"
+    else:
+        assert result.status_code == 200
+        r = s[1].receivers[result.json()["receiver_id"]]
+        assert r.expires == s[2][0] + 150
+
+
+@pytest.mark.parametrize("delay_at", ["binding", "capture"])
+def test_registration_deadline_starts_before_first_await(screen, monkeypatch, delay_at):
+    s = screen
+    name = "_screen_binding" if delay_at == "binding" else "_capture"
+    original = getattr(api, name)
+    def delayed(*args):
+        result = original(*args)
+        s[2][0] += 20.001
+        return result
+    monkeypatch.setattr(api, name, delayed)
+    result = s[4](registration="r" * 48)
+    assert result.json()["detail"] == "screen_stale"
+    assert len(s[1].receivers) == 1
+
+
+@pytest.mark.parametrize("change", ["account", "binding", "legacy"])
+def test_cancel_cannot_remove_unrelated_or_legacy_receiver(screen, change):
+    s = screen
+    registration = "r" * 48
+    if change == "legacy":
+        r = s[1].receivers[s[5]["receiver_id"]]
+    else:
+        result = s[4](registration=registration).json()
+        r = s[1].receivers[result["receiver_id"]]
+    binding, account = r.binding, r.account
+    if change == "account":
+        account = "other@example.test"
+    if change == "binding":
+        binding = (*binding[:4], "other-session", *binding[5:])
+    s[1].cancel_registration(binding, account, registration)
+    assert r.id in s[1].receivers
+
+
+def test_cancel_releases_selected_receiver_and_pending_action(screen):
+    s = screen
+    r = s[1].receivers[s[5]["receiver_id"]]
+    r.registration_hash = mcp_screen.digest("r" * 48)
+    with ThreadPoolExecutor() as pool:
+        future, aid = start(s, pool)
+        assert s[4](**s[5], seq=2, select=True).status_code == 200
+        other = s[4]().json()
+        assert s[4](registration="r" * 48, release=True, enabled=False).status_code == 200
+        assert not s[1].selected
+        assert s[1].target(r.account).id == other["receiver_id"]
+        assert future.result(5).json()["status"] == "expired_unclaimed"
+
+
+def test_tombstone_caps_do_not_evict_live_cancellations():
+    from fastapi import HTTPException
+    now = [100.0]
+    service = mcp_screen.ScreenService(lambda: now[0])
+    binding = ("db", "hub", 1, "account", "session", (), 1)
+    for account in range(32):
+        for index in range(16):
+            service.cancel_registration(binding, str(account), str(index).zfill(32))
+        if account == 0:
+            with pytest.raises(HTTPException) as error:
+                service.cancel_registration(binding, "0", "new" * 11)
+            assert error.value.status_code == 429 and len(service.cancelled) == 16
+    before = dict(service.cancelled)
+    for account in ("0", "new-account"):
+        with pytest.raises(HTTPException) as error:
+            service.cancel_registration(binding, account, "new" * 11)
+        assert error.value.status_code == 429
+        assert service.cancelled == before
+    service.cancel_registration(binding, "0", "0" * 32)  # idempotent even at capacity
+    assert service.cancelled == before
+    now[0] += 150
+    service.cancel_registration(binding, "new-account", "new" * 11)
+    assert len(service.cancelled) == 1
+
+
+def test_http_cancel_requires_same_account_and_app_session(screen):
+    s = screen
+    registration = "r" * 48
+    registered = s[4](registration=registration).json()
+    body = {"hub_id": api.hub_id(), "seq": 2, "epoch": 2, "workspace": {"scope": "personal"},
+            "visible": False, "enabled": False, "release": True, "registration": registration}
+    for headers, status in (({**s[3], "X-MVHub-Expect-Account": "acct:other@example.test"}, 403),
+                            ({**s[3], "Authorization": "Bearer other-session"}, 200)):
+        response = s[0][0].post("/api/mcp/v2/app/screen-presence", headers=headers, json=body)
+        assert response.status_code == status
+        assert registered["receiver_id"] in s[1].receivers
+
+
+@pytest.mark.parametrize("registration", ["", "r" * 31, "r" * 101, 123])
+def test_registration_length_and_release_validation(screen, registration):
+    s = screen
+    assert s[4](registration=registration).status_code == 422
+    assert s[4](registration="r" * 32, release=True).status_code == 422
+    assert s[4](registration="r" * 32, release=True, enabled=False, select=True).status_code == 422
+    assert s[4](release=True, enabled=False).status_code == 422
+
+
+def test_expired_selection_is_cleared_before_targeting(screen):
+    s = screen
+    assert s[4](**s[5], seq=2, select=True).status_code == 200
+    s[2][0] += 100
+    second = s[4]().json()
+    s[2][0] += 50
+    assert s[1].target(s[0][2]["email"]).id == second["receiver_id"]
+    assert not s[1].selected
+
+
+@pytest.mark.parametrize("lookup", ["_upstream_me", "_request_workspace", "_generation_row"])
+def test_all_upstream_screen_checks_leave_registration_lock_free(screen, monkeypatch, lookup):
+    from dataclasses import replace
+    from test_mcp_persistent import headers
+    s = screen
+    r = s[1].receivers[s[5]["receiver_id"]]
+    ctx = api._capture(r.context.request, headers(s[0])["X-MVHub-MCP-Secret"])
+    if lookup == "_upstream_me":
+        ctx = replace(ctx, upstream=("http://isolated.invalid", "test-token"))
+        monkeypatch.setattr(api._proxy, "_stored_base_url", lambda: ctx.upstream[0])
+        monkeypatch.setattr(api._proxy, "_stored_token", lambda: ctx.upstream[1])
+    original = getattr(api, lookup)
+    waiting, proceed = threading.Event(), threading.Event()
+    def blocked(*args):
+        waiting.set()
+        assert proceed.wait(5)
+        if lookup == "_upstream_me":
+            return ctx.account
+        if lookup == "_generation_row":
+            return {"creator_uid": api._owner_uid(ctx), "workspace_scope": "personal", "workspace_id": None}
+        return original(*args)
+    monkeypatch.setattr(api, lookup, blocked)
+    with ThreadPoolExecutor() as pool:
+        check = pool.submit(api._screen_validate, ctx, r, "library.set_hidden", lambda: True, {"generation_ids": ["test"]} if lookup == "_generation_row" else {})
+        try:
+            assert waiting.wait(5)
+            registration = pool.submit(configure, s[0], ["claude"])
+            assert registration.result(3)
+        finally:
+            proceed.set()
+        assert check.result(5) is True
+
+
+@pytest.mark.parametrize("change", ["scene", "workspace", "epoch", "permission", "revoke", "login", "database"])
+def test_authority_and_screen_rechecked_after_slow_lookup(screen, monkeypatch, change):
+    from fastapi import HTTPException
+    from test_mcp_persistent import headers
+    s = screen
+    r = s[1].receivers[s[5]["receiver_id"]]
+    ctx = api._capture(r.context.request, headers(s[0])["X-MVHub-MCP-Secret"])
+    original = api._request_workspace
+    waiting, proceed, committed = threading.Event(), threading.Event(), []
+    def blocked(*args):
+        result = original(*args)
+        waiting.set()
+        assert proceed.wait(5)
+        return result
+    monkeypatch.setattr(api, "_request_workspace", blocked)
+    with ThreadPoolExecutor() as pool:
+        check = pool.submit(api._screen_validate, ctx, r, "library.set_hidden", lambda: committed.append(True))
+        try:
+            assert waiting.wait(5)
+            if change in ("scene", "workspace", "epoch"):
+                changes = {"scene_id": "other"} if change == "scene" else {"workspace": {"scope": "team", "id": "other"}} if change == "workspace" else {}
+                assert s[4](**s[5], seq=2, epoch=2, **changes).status_code == 200
+            elif change == "permission":
+                configure(s[0], execute=False)
+            elif change == "revoke":
+                assert s[0][0].post(f"/api/mcp/v2/app/clients/{ctx.client['id']}/revoke", headers=APP_HEADERS).status_code == 200
+            elif change == "login":
+                active_account.bump_account_epoch()
+            else:
+                api.db.flush_pool()
+        finally:
+            proceed.set()
+        with pytest.raises(HTTPException):
+            check.result(5)
+    assert not committed

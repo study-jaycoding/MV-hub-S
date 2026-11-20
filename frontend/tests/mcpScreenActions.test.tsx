@@ -2,7 +2,7 @@
 import { act, StrictMode, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-const io = vi.hoisted(() => ({ http: vi.fn(), execute: vi.fn(), undo: vi.fn(), token: "token", account: "acct:a", connection: "hub", revision: 1, canvasWindow: false, detached: false }));
+const io = vi.hoisted(() => ({ http: vi.fn(), fetch: vi.fn(), execute: vi.fn(), undo: vi.fn(), token: "token", account: "acct:a", connection: "hub", revision: 1, canvasWindow: false, detached: false }));
 vi.mock("../src/lib/popupWindows", () => ({ isCanvasWindow: () => io.canvasWindow }));
 vi.mock("../src/lib/http", () => ({ jsonFetch: io.http, jsonBody: JSON.stringify, getAuthToken: () => io.token,
   withRequestTimeout: (run: (signal: AbortSignal) => unknown) => run(new AbortController().signal) }));
@@ -30,6 +30,8 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks(); localStorage.clear(); scene = "scene"; epoch = 1;
   io.account = "acct:a"; io.token = "token"; io.connection = "hub"; io.revision = 1; io.canvasWindow = false; io.detached = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("fetch", io.fetch);
+  io.fetch.mockResolvedValue({ ok: true, status: 200 });
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   setHubFeatures(["external_screen"]);
   io.http.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -196,9 +198,10 @@ it.each([false, true])("releases on pagehide (persisted=%s) with keepalive and s
   await enabled();
   io.http.mockClear();
   await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted })));
-  const [url, init] = io.http.mock.calls[0];
+  const [url, init] = io.fetch.mock.calls[0];
   expect(url).toContain("screen-presence");
   expect(init.keepalive).toBe(true);
+  expect(init.headers.Authorization).toBe("Bearer token");
   expect(JSON.parse(String(init.body))).toMatchObject({ receiver_id: "receiver", secret: "secret", enabled: false, release: true });
   io.http.mockClear(); await wake(); await tick(60_000);
   expect(io.http).not.toHaveBeenCalled();
@@ -232,4 +235,101 @@ it("ignores a handle mismatch repaired within layout but invalidates a real deta
   io.detached = true; await render(); await tick();
   expect(epoch).toBeGreaterThan(registeredEpoch);
   await wake("detached"); expect(io.execute).toHaveBeenCalledTimes(1);
+});
+
+it.each(["pagehide", "unmount", "token"])("cancels an unconfirmed registration on %s with the captured credentials", async change => {
+  await render();
+  let resolve!: (value: unknown) => void;
+  io.http.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  await act(async () => changeScreenControl(true)); await tick();
+  const request = io.http.mock.calls.find(([url]) => url.endsWith("screen-presence"))!;
+  const registration = JSON.parse(String(request[1].body)).registration;
+  expect(registration).toMatch(/^[a-f0-9]{48}$/);
+  if (change === "pagehide") await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+  if (change === "unmount") { await act(async () => root.unmount()); root = createRoot(container); }
+  if (change === "token") { io.token = "new-token"; await render(); }
+  const [url, init] = io.fetch.mock.calls[0];
+  expect(url).toContain("screen-presence");
+  expect(init.keepalive).toBe(true);
+  expect(init.headers.Authorization).toBe("Bearer token");
+  expect(init.headers["X-MVHub-Expect-Account"]).toBe("acct:a");
+  expect(JSON.parse(String(init.body))).toMatchObject({ registration, release: true, enabled: false, select: false });
+  await act(async () => resolve({ receiver_id: "late", receiver_secret: "late-secret", multiple: false, selected: false }));
+  await wake(); expect(io.execute).not.toHaveBeenCalled();
+});
+
+it.each(["token", "account", "connection"])("releases a receiver with old credentials unless the %s change moves to another hub", async change => {
+  await enabled();
+  io.fetch.mockClear();
+  if (change === "token") io.token = "new-token";
+  if (change === "account") io.account = "acct:b";
+  if (change === "connection") io.connection = "other-hub";
+  await render();
+  if (change === "connection") expect(io.fetch).not.toHaveBeenCalled();
+  else {
+    const init = io.fetch.mock.calls[0][1];
+    expect(init.headers.Authorization).toBe("Bearer token");
+    expect(init.headers["X-MVHub-Expect-Account"]).toBe("acct:a");
+    expect(JSON.parse(String(init.body))).toMatchObject({ receiver_id: "receiver", secret: "secret", release: true });
+  }
+});
+
+it.each(["timeout", "lost-response"])("immediately cancels a registration after %s and retains it until cancellation succeeds", async failure => {
+  await render();
+  let reject!: (reason: unknown) => void;
+  let accepted!: (value: unknown) => void;
+  io.http.mockImplementationOnce(() => new Promise((_resolve, r) => { reject = r; }));
+  io.fetch.mockImplementation(() => new Promise(r => { accepted = r; }));
+  await act(async () => changeScreenControl(true)); await tick();
+  const registration = JSON.parse(String(io.http.mock.calls.find(([url]) => url.endsWith("screen-presence"))![1].body)).registration;
+  await act(async () => reject(new Error(failure)));
+  expect(io.fetch).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(String(io.fetch.mock.calls[0][1].body)).registration).toBe(registration);
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  expect(io.fetch).toHaveBeenCalledTimes(2);
+  await act(async () => accepted({ ok: true, status: 200 }));
+  io.fetch.mockClear();
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  expect(io.fetch).not.toHaveBeenCalled();
+});
+
+it.each([429, "network"])("retries cancellation after %s and pauses new registrations when four remain unknown", async failure => {
+  await render();
+  const original = io.http.getMockImplementation()!;
+  io.http.mockImplementation((url, init) => url.endsWith("screen-presence") ? Promise.reject(new Error("lost")) : original(url, init));
+  if (failure === "network") io.fetch.mockRejectedValue(new Error("offline"));
+  else io.fetch.mockResolvedValue({ ok: false, status: failure });
+  await act(async () => changeScreenControl(true)); await tick();
+  await tick(240_000);
+  const registrations = () => io.http.mock.calls.filter(([url]) => url.endsWith("screen-presence"));
+  expect(registrations()).toHaveLength(4);
+  const values = new Set(registrations().map(([, init]) => JSON.parse(String(init.body)).registration));
+  expect(values.size).toBe(4);
+  expect(io.fetch.mock.calls.length).toBeGreaterThan(4);
+  await tick(120_000); expect(registrations()).toHaveLength(4);
+  io.fetch.mockResolvedValue({ ok: true, status: 200 });
+  await tick(120_000);
+  expect(registrations().length).toBeGreaterThan(4);
+});
+
+it.each([403, 422])("forgets explicitly rejected cancellations (%s) and can register again", async status => {
+  await render();
+  const original = io.http.getMockImplementation()!;
+  io.http.mockImplementation((url, init) => url.endsWith("screen-presence") ? Promise.reject(new Error("lost")) : original(url, init));
+  io.fetch.mockResolvedValue({ ok: false, status });
+  await act(async () => changeScreenControl(true)); await tick();
+  await tick(300_000);
+  const registrations = io.http.mock.calls.filter(([url]) => url.endsWith("screen-presence"));
+  expect(registrations.length).toBeGreaterThan(4);
+  const count = io.fetch.mock.calls.length;
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+  expect(io.fetch).toHaveBeenCalledTimes(count);
+});
+
+it("does not cancel a registration that was explicitly rejected", async () => {
+  await render();
+  io.http.mockRejectedValueOnce({ status: 422 });
+  await act(async () => changeScreenControl(true)); await tick();
+  await act(async () => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+  expect(io.fetch).not.toHaveBeenCalled();
 });
