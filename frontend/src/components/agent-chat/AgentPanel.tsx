@@ -982,7 +982,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       )}
       </div>
       {settings && (
-        <AgentSettings engines={engines} usage={chat.usage} connection={chat.connect} onBack={closeSettings}
+        <AgentSettings engines={engines} usage={chat.usage} connection={chat.connect} codexConnection={chat.codex} onBack={closeSettings}
           onConnectClaude={() => { void chat.connect.connect(); }}
           onSetCodexEnabled={(enabled) => { void chat.codex.setEnabled(enabled); }}
           codexBusy={chat.codex.busy} codexError={chat.codex.error} />
@@ -1799,7 +1799,7 @@ function ModelMenu({ engines, choice, onChoose, onSettings }: {
       {q ? (found.length ? found : <p className="agent-menu-note">{t("맞는 모델이 없어요")}</p>) : engines.map((e) => (
         <div key={e.id} className="agent-model-co" onMouseEnter={() => setSub(e.id)}>
           <button type="button" className={`agent-model-item agent-model-row${sub === e.id ? " on" : ""}`} aria-haspopup="true" aria-expanded={sub === e.id}
-            onClick={() => setSub(sub === e.id ? null : e.id)}
+            onClick={() => e.available ? setSub(sub === e.id ? null : e.id) : onSettings()}
             onKeyDown={(event) => { if (event.key === "ArrowRight") { event.preventDefault(); setSub(e.id); } }}>
             <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? <OpenAIIcon /> : "✳"}</span>
             <span className="agent-model-name">{GROUP[e.id] ?? e.id}</span>

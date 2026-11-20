@@ -11,7 +11,7 @@
 - **설정하는 곳** = 코드가 읽는 이름을 `.bat`/`.ps1` 이 `set X=`·`$env:X =` 로 주는 자리와 파이썬의 `os.environ["X"] = …`.
 - 스캔 범위는 `backend/app`·`backend/*.py`(서버 기동기 `serve.py` 등)·루트 `*.py`(`agent_push.py` 등)·`tools`·`release`·`deploy`·`frontend/src` 다. **시험 폴더(`backend/tests`·`frontend/tests`)는 보지 않는다** — 시험 전용 변수는 여기 없다.
 
-제품 환경변수 169개.
+제품 환경변수 172개.
 
 | 이름 | 기본값 | 직접 읽는 파일 | 설정하는 곳 |
 | --- | --- | --- | --- |
@@ -20,13 +20,16 @@
 | `CAMERA_TEST_RETAINED_HOME` | — | `tools/tests/test_camera_original.py` | — |
 | `CLAUDE_CODE_SESSION_ID` | `""` | `tools/mcp_adapter/server.py` | — |
 | `CLAUDE_CONFIG_DIR` | — | `tools/mcp_adapter/local_setup.py` | — |
-| `CODEX_HOME` | — | `tools/mcp_adapter/local_setup.py` | — |
+| `CODEX_HOME` | — | `backend/app/services/agent_chat_install.py` `tools/mcp_adapter/local_setup.py` | — |
 | `CONTENT_HUB_ACCESS_LOG` | `"0"` | `backend/serve.py` | — |
 | `CONTENT_HUB_ADMIN_EMAIL` | — | `backend/app/main.py` `backend/app/repo/account_cleanup.py` | — |
 | `CONTENT_HUB_ADMIN_PASSWORD` | — | `backend/app/main.py` | — |
 | `CONTENT_HUB_AGENT_CHAT` | `"1"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_AGENT_CHAT_DIR` | — | `backend/app/config.py` | — |
 | `CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW` | `"1"` | `backend/app/config.py` | — |
+| `CONTENT_HUB_AGENT_INSTALL_GENERATION` | `None` | `backend/app/services/agent_chat_install.py` `run_agent_session.py` | — |
+| `CONTENT_HUB_AGENT_INSTALL_ID` | `""` | `backend/app/services/agent_chat_install.py` | — |
+| `CONTENT_HUB_AGENT_INSTALL_PORT` | `""` | `backend/app/services/agent_chat_install.py` | — |
 | `CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSET_REGISTRY` | `"0"` | `backend/app/config.py` | `test_dev.bat` |
@@ -209,9 +212,10 @@
 | `COMPUTERNAME` | `backend/app/routers/registry_helper.py` `backend/app/services/worker_backup.py` `tools/server_console/install.py` |
 | `HOMEDRIVE` | `tools/server_console/install.py` |
 | `HOMEPATH` | `tools/server_console/install.py` |
-| `LOCALAPPDATA` | `agent_push.py` `backend/app/config.py` `backend/app/routers/mcp.py` `backend/app/services/agent_chat_process.py` `backend/app/services/clean_feed_window.py` `backend/app/services/open_link.py` `backend/app/services/release_update.py` `open_link.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` `tools/mcp_adapter/update.py` `tools/server_console/install.py` |
+| `LOCALAPPDATA` | `agent_push.py` `backend/app/config.py` `backend/app/routers/mcp.py` `backend/app/services/agent_chat_install.py` `backend/app/services/agent_chat_process.py` `backend/app/services/clean_feed_window.py` `backend/app/services/open_link.py` `backend/app/services/release_update.py` `open_link.py` `run_agent_session.py` `tools/mcp_adapter/local_setup.py` `tools/mcp_adapter/update.py` `tools/server_console/install.py` |
+| `PATH` | `backend/app/services/agent_chat_process.py` |
 | `PROGRAMDATA` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_script_installer.py` `tools/server_console/install.py` `tools/server_tls.py` |
 | `PROGRAMFILES` | `backend/app/services/resolve_bridge.py` `backend/app/services/resolve_diagnostics.py` |
 | `TEMP` | `tools/mcp_adapter/server.py` `tools/server_console/install.py` |
 | `USERNAME` | `tools/server_console/install.py` `tools/server_console/jobs.py` |
-| `USERPROFILE` | `backend/app/services/agent_chat_process.py` `run_agent_session.py` `tools/server_console/install.py` |
+| `USERPROFILE` | `backend/app/services/agent_chat_install.py` `backend/app/services/agent_chat_process.py` `run_agent_session.py` `tools/server_console/install.py` |

@@ -9,7 +9,7 @@ import { fetchModelCatalog } from "../../lib/modelCatalogCache";
 import { saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { readDefaults, type AgentDefaults, type AgentUsage, type useAgentChat } from "../../lib/useAgentChat";
-import { CopyLine, InstallNote, LoginWindowGuide, ManualInstall, ManualLogin, Terminal } from "./AgentConnect";
+import { CopyLine, InstallControls, InstallNote, LoginWindowGuide, ManualInstall, ManualLogin, Terminal } from "./AgentConnect";
 
 const EFFORT_NAMES: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
 const pct = (x: number) => Math.round(x * 100);
@@ -87,10 +87,11 @@ export function UsagePop({ usage }: { usage: AgentUsage }) {
 }
 
 /** 설정 쪽 — 칸 안을 덮는다(← 와 Esc 로 돌아감, Esc 는 칸이 건다) */
-export function AgentSettings({ engines, usage, connection, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
+export function AgentSettings({ engines, usage, connection, codexConnection, onBack, onConnectClaude, onSetCodexEnabled, codexBusy, codexError }: {
   engines: AgentEngine[];
   usage: AgentUsage;
   connection: ReturnType<typeof useAgentChat>["connect"];
+  codexConnection: ReturnType<typeof useAgentChat>["codex"];
   onBack: () => void;
   onConnectClaude: () => void;
   onSetCodexEnabled: (enabled: boolean) => void;
@@ -121,6 +122,14 @@ export function AgentSettings({ engines, usage, connection, onBack, onConnectCla
   const needsLogin = state === "not_logged_in" || state === "not_subscription" || state === "no_plan";
   const reconnect = state === "not_subscription" || state === "no_plan";
   const recheck = () => { void connection.recheck(); };
+  const claudeInstall = connection.installs.claude ?? connection.install;
+  const managedClaude = (state === "not_installed" || (state === "unknown" && claudeInstall?.state === "failed"))
+    && (claude?.install_blocked !== undefined || !!connection.installs.claude);
+  const codexInstall = connection.installs.codex ?? codex?.install;
+  const codexInstalling = codexInstall?.state === "running";
+  const codexWaiting = codexConnection.login?.state === "running";
+  const codexLoginFailed = codexConnection.login?.state === "failed";
+  const codexNeedsInstall = codex?.installed === false || codexInstalling || (!codex?.available && codexInstall?.state === "failed");
   const guide = (() => {
     if (connection.waiting || state === "login_window") return <LoginWindowGuide waiting={connection.waiting} note={connection.note} onRecheck={recheck} onStopWaiting={connection.stopWaiting} />;
     if (state === "window_record") return <><p>{t("열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요")}</p><button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button></>;
@@ -155,28 +164,38 @@ export function AgentSettings({ engines, usage, connection, onBack, onConnectCla
                   .filter(Boolean).join(" · ")}
                 {claude?.available ? <> · <span className="ok">{t("연결됨")}</span></> : null}
                 {!claude?.available && (connection.waiting
-                  ? <span className="agent-connect-wait"><i className="agent-connect-spin" aria-hidden="true" />{t("로그인 창 기다리는 중")}</span>
+                  ? <span className="agent-connect-wait"><i className="agent-connect-spin" aria-hidden="true" />{t("로그인 창 기다리는 중 — 브라우저에서 로그인")}</span>
                   : state === "not_logged_in" ? <span>{t("로그인 안 됨")}</span> : null)}
               </small></span>
               {!claude?.available && needsLogin && !connection.waiting && connection.loginWindowEnabled && connection.note !== "terminal" && <button type="button" className="agent-settings-btn agent-connect-go" disabled={connection.connecting} onClick={onConnectClaude}>{connection.connecting ? t("연결 요청 중") : reconnect ? t("다시 연결") : t("연결")}</button>}
             </div>
             {!claude?.available && <div className="agent-settings-connect">
               {connection.connectError && <p className="cn-warn" role="alert">{connection.connectError}</p>}
-              {guide}
+              {managedClaude ? <InstallControls engine="claude" install={claudeInstall}
+                blocked={claude?.install_blocked} onInstall={() => { void connection.installEngine("claude"); }} onRecheck={recheck} /> : guide}
             </div>}
             <div className="agent-settings-line">
               <span className="agent-settings-logo" aria-hidden="true"><OpenAIIcon size={15} /></span>
               <span className="agent-settings-t">ChatGPT (Codex)<small>
                 {codex?.version ? `Codex ${codex.version} · ` : ""}
-                {codex?.enabled ? t("이 PC 에서 켬") : t("꺼짐")}{" · "}
-                {codex?.available ? <span className="ok">{t("연결됨")}</span> : <span className="warn">{codex?.reason || t("쓸 수 없음")}</span>}
+                {!codexWaiting && !codexLoginFailed && !codexInstalling && codex?.installed !== false && <>{codex?.enabled ? t("이 PC 에서 켬") : t("꺼짐")}{" · "}</>}
+                {codexWaiting ? <span className="agent-connect-wait"><i className="agent-connect-spin" aria-hidden="true" />{t("로그인 창 기다리는 중 — 브라우저에서 로그인")}</span>
+                  : codexLoginFailed ? <span className="warn">{t(codexConnection.login?.reason === "login_unfinished" ? "로그인을 마치지 못했어요" : "로그인 창을 열지 못했어요")}</span>
+                  : codex?.available ? <span className="ok">{t("연결됨")}</span>
+                  : codex?.installed !== false && !codexInstalling ? <span className="warn">{codex?.reason || t("쓸 수 없음")}</span> : null}
               </small>{codexError && <small className="agent-codex-error" role="alert">{codexError}</small>}</span>
-              <button type="button" className="agent-settings-btn" disabled={codexBusy}
+              {(!codexNeedsInstall || codexWaiting || codexInstalling || codexLoginFailed) && <button type="button" className="agent-settings-btn" disabled={codexBusy && !codex?.enabled && !codexWaiting && !codexInstalling}
                 aria-label={codex?.enabled ? t("Codex 끄기") : t("Codex 연결")}
-                onClick={() => onSetCodexEnabled(!codex?.enabled)}>
-                {codexBusy ? t("확인하는 중") : codex?.enabled ? t("끄기") : t("연결")}
-              </button>
+                onClick={() => codex?.enabled || codexWaiting || codexInstalling || codexBusy ? onSetCodexEnabled(false)
+                  : codex?.installed === true || codexLoginFailed ? void codexConnection.connect() : onSetCodexEnabled(true)}>
+                {codex?.enabled || codexWaiting || codexInstalling ? t("끄기") : codexBusy ? t("확인하는 중") : codexLoginFailed ? t("다시 시도") : t("연결")}
+              </button>}
             </div>
+            {codexNeedsInstall && !codexWaiting && !codexLoginFailed && <InstallControls engine="codex" install={codexInstall} version={codex?.install_version}
+              blocked={codex?.install_blocked} onInstall={() => { void connection.installEngine("codex"); }} onRecheck={recheck} />}
+            {codexWaiting && <div className="agent-settings-connect"><button type="button" className="cn-ghost" onClick={() => { void codexConnection.recheck(); }}>{t("다시 확인")}</button>
+              <button type="button" className="cn-text" onClick={codexConnection.stopWaiting}>{t("그만두기")}</button><small className="cn-note">{t("자동 확인만 멈춰요 · 로그인 창은 직접 닫아 주세요")}</small></div>}
+            {codexLoginFailed && codexConnection.login?.ports_busy && <p className="cn-note">{t("확인한 현재 상태: 로그인 포트 1455 와 1457 을 다른 프로세스가 사용 중이에요")}</p>}
           </div>
         </div>
         <div className="agent-settings-grp">

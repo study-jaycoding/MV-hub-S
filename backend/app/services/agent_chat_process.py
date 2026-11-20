@@ -107,6 +107,8 @@ def install_method(prefix: list[str] | None) -> str:
 
 
 def _claude_candidates() -> list[list[str]]:
+    from . import agent_chat_install as install
+
     found, out = shutil.which("claude"), []
     if found:
         path = Path(found)
@@ -118,7 +120,7 @@ def _claude_candidates() -> list[list[str]]:
             if native.is_file():
                 out.append([str(native)])
     official = official_claude()
-    if (claude_install() or {}).get("state") == "running":
+    if (claude_install() or {}).get("state") == "running" or (install.status("claude") or {}).get("state") == "running":
         # 실행기가 공식 설치를 하는 중 — 공식 파일은 판 비교용 --version 까지 띄우지 않는다. PATH 로 찾은 것도 실제 경로로 비교해 뺀다.
         return [c for c in out if not _same_file(c[0], official)]
     if official.is_file() and all(not _same_file(c[0], official) for c in out):
@@ -136,11 +138,38 @@ def find_claude() -> list[str] | None:
 
 
 def find_codex() -> list[str] | None:
-    node, shim = shutil.which("node"), shutil.which("codex")
-    if not node or not shim:
+    from . import agent_chat_codex as codex
+    from . import agent_chat_install as install
+
+    node, candidates = shutil.which("node"), []
+    # 공식 bin 이 PATH 앞에 있어도 뒤쪽 npm 셰임을 따로 찾는다.
+    if node:
+        for folder in os.environ.get("PATH", "").split(os.pathsep):
+            folder = Path(folder.strip('"'))
+            script = folder / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            if any((folder / name).is_file() for name in ("codex", "codex.cmd", "codex.ps1")) and script.is_file():
+                candidate = [node, str(script)]
+                if candidate not in candidates:
+                    candidates.append(candidate)
+    official = install.official_codex()
+    if official.is_file() and (install.status("codex") or {}).get("state") != "running":
+        candidates.append([str(official)])
+    saved = codex.marker()
+    if not candidates:
         return None
-    script = Path(shim).parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
-    return [node, str(script)] if script.is_file() else None
+    if saved:
+        for candidate in candidates:
+            if codex.target_matches(saved, candidate) and saved["policy"] == codex.CODEX_POLICY \
+                    and saved["version"] in CODEX_VERIFIED and cli_version(candidate) == saved["version"]:
+                return candidate
+    if len(candidates) == 1:
+        return candidates[0]
+    return next((candidate for candidate in candidates if cli_version(candidate) in CODEX_VERIFIED), candidates[0])
+
+
+def codex_target(prefix: list[str]) -> dict:
+    return {"path": os.path.normcase(os.path.abspath(prefix[1] if len(prefix) > 1 else prefix[0])),
+            "kind": "npm" if len(prefix) > 1 else "official"}
 
 
 def engine_prefix(engine: str) -> list[str] | None:
@@ -154,7 +183,7 @@ def cli_version(prefix: list[str]) -> str:
                               creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    words = (done.stdout or "").split()
+    words = (done.stdout or "").split() if done.returncode == 0 else []
     if not words:
         return ""
     # "2.1.296 (Claude Code)" / "codex-cli 0.162.0-alpha.17.2"

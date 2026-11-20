@@ -31,6 +31,8 @@ from ..repo import mcp_v2 as mcp_store
 from ..services import agent_chat as chat
 from ..services import agent_chat_claude as claude
 from ..services import agent_chat_codex as codex
+from ..services import agent_chat_codex_login as codex_login
+from ..services import agent_chat_install as installer
 from ..services.agent_chat import EFFORTS, MODELS, Identity, service
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_browser_request
@@ -168,13 +170,65 @@ async def claude_login(panel=Depends(_panel)):
     return {"opened": True}
 
 
+class InstallRequest(StrictModel):
+    pass  # 명령·URL·경로를 받지 않는다.
+
+
+@router.post("/{engine}/install")
+async def install_engine(engine: Literal["claude", "codex"], body: InstallRequest | None = None, panel=Depends(_panel)):
+    ctx, _ = panel
+
+    def submit():
+        if engine == "codex":
+            with codex._lock("codex_enabled.lock", wait=True):
+                result = installer.request(engine, lambda: mcp_v2._still_current(ctx))
+                if result.get("id") and (codex._read("codex_chain.json") or {}).get("id") != result["id"]:
+                    codex.start_chain(result["id"])
+                return result
+        return installer.request(engine, lambda: mcp_v2._still_current(ctx))
+
+    try:
+        return await asyncio.to_thread(submit)
+    except OSError as exc:
+        raise HTTPException(503, "설치 요청을 저장하지 못했어요") from exc
+
+
+@router.get("/{engine}/install")
+async def install_status(engine: Literal["claude", "codex"], panel=Depends(_panel)):
+    return {"install": await asyncio.to_thread(installer.verified_status, engine),
+            "blocked": await asyncio.to_thread(installer.eligibility)}
+
+
+@router.post("/codex/login")
+async def open_codex_login(body: InstallRequest | None = None,
+                           chain_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
+    ctx, _ = panel
+    try:
+        return await asyncio.to_thread(codex_login.open_login_window, lambda: mcp_v2._still_current(ctx), chain_id)
+    except (codex.CodexError, claude.RecordUnreadable) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, "로그인 창을 열지 못했어요") from exc
+
+
+@router.get("/codex/login")
+async def codex_login_status(chain_id: str = Query(pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
+    try:
+        return await asyncio.to_thread(codex_login.status, chain_id)
+    except (codex.CodexError, claude.RecordUnreadable) as exc:
+        raise HTTPException(409, "로그인 창 상태를 확인하지 못했어요") from exc
+
+
 @router.post("/codex/enable")
-async def codex_enable(panel=Depends(_panel)):
+async def codex_enable(chain_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
     """이 PC에서 Codex 연결 점검을 통과한 뒤 활성화한다(MV 생성 없음)."""
     ctx, _ = panel
     try:
         with anyio.CancelScope(shield=True):
-            await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx))
+            if chain_id is None:
+                await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx))
+            else:
+                await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx), chain_id)
     except codex.CodexError as exc:
         raise HTTPException(409, str(exc)) from exc
     except OSError as exc:

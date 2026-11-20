@@ -7,6 +7,16 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "설치하고 연결": "Install and connect",
+  "설치하는 중 · 몇 분 걸려요": "Installing · This may take a few minutes",
+  "로그인 창 기다리는 중 — 브라우저에서 로그인": "Waiting for sign-in — Sign in in your browser",
+  "설치하지 못했어요": "Could not install",
+  "이 PC 에 없어요": "Not installed on this PC",
+  "로그인을 마치지 못했어요": "Sign-in was not completed",
+  "로그인 창을 열지 못했어요": "Could not open sign-in window",
+  "설치가 중단됐어요": "Installation was interrupted",
+  "설치하면 사용자 PATH 에 공식 Codex 가 더해져 터미널의 codex 가 바뀔 수 있어요": "Installation adds official Codex to your user PATH and may change which codex runs in your terminal",
+  "확인한 현재 상태: 로그인 포트 1455 와 1457 을 다른 프로세스가 사용 중이에요": "Current observation: other processes are using sign-in ports 1455 and 1457",
   "잔액": "Balance",
   "같은 시각 값이 다름": "Different amounts at the same time",
   "일부 구간만": "Some intervals only",
