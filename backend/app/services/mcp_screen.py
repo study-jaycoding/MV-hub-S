@@ -136,13 +136,13 @@ class ScreenService:
             r.seq, r.epoch = body.seq, body.epoch
             r.workspace, r.scene_id, r.visible, r.enabled = ws, body.scene_id, body.visible, body.enabled
             r.expires = self.clock() + PRESENCE_SECONDS
+            for a in self.actions.values():
+                if a.receiver is r and (a.epoch != r.epoch or not r.visible or not r.enabled):
+                    self._close(a)
             if body.select:
                 if not r.visible or not r.enabled:
                     refuse("screen_unavailable")
                 self.selected[r.account] = r.id
-            for a in self.actions.values():
-                if a.receiver is r and (a.epoch != r.epoch or not r.visible or not r.enabled):
-                    self._close(a)
 
     def target(self, account):
         with self.lock:
@@ -164,6 +164,8 @@ class ScreenService:
                 refuse("screen_context_invalid")
             if len(self.tickets) >= 512:
                 refuse("screen_busy", 429)
+            if sum(t[0] == client_id for t in self.tickets.values()) >= 8:
+                refuse("screen_limit", 429)
             token = secrets.token_urlsafe(32)
             self.tickets[digest(token)] = (client_id, r.id, r.epoch, self.clock() + 30)
             return {"workspace": dict(r.workspace), "scene_id": r.scene_id, "screen_context": token, "expires_in": 30}

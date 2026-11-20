@@ -9,6 +9,7 @@ import { mcpTabId } from "./mcpTab";
 import { STORAGE_KEYS } from "./storageKeys";
 import { disabledGenStamp } from "./deactivated";
 import { getLang, t } from "./i18n";
+import { isCanvasWindow } from "./popupWindows";
 
 export function screenMessage(message: string): string {
   if (getLang() !== "en") return message;
@@ -68,14 +69,14 @@ export function useMcpScreenActions(props: Props) {
   useEffect(() => {
     publish(initial);
     setHubIdentity("");
-    if (!props.ready || !supported || new URLSearchParams(location.search).has("embed")) return;
+    if (!props.ready || !supported || isCanvasWindow() || new URLSearchParams(location.search).has("embed")) return;
     let alive = true, key = "", hub = "", receiver: Presence | null = null, secret = "";
     let seq = 0, epoch = 0, signature = "", busy = false, dirty = false, choose = false, delay = 10_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tab = mcpTabId(), account = currentAccount, token = currentToken, connection = currentConnection;
     const abort = new AbortController();
     const seen = new Set<string>();
-    const fresh = () => alive && current.current.ready && current.current.authKey === props.authKey
+    const fresh = () => alive && !isCanvasWindow() && current.current.ready && current.current.authKey === props.authKey
       && getAccountNamespace() === account && getAuthToken() === token && getConnectionKey() === connection;
     const snapshot = () => {
       const p = current.current;
@@ -131,11 +132,14 @@ export function useMcpScreenActions(props: Props) {
         publish({ available: true, enabled: screenEnabled(key), multiple: result.multiple, selected: result.selected, note: "" });
       } catch (error) {
         if (fresh()) {
-          if ([403, 404].includes(Number((error as { status?: number } | null)?.status))) { receiver = null; secret = ""; }
-          delay = Math.min(Math.max(receiver ? 10_000 : 30_000, delay * 2), 60_000);
+          const rejected = [403, 404].includes(Number((error as { status?: number } | null)?.status));
+          const lostReceiver = rejected && receiver !== null;
+          if (rejected) { receiver = null; secret = ""; }
+          delay = lostReceiver ? 100 : Math.min(Math.max(receiver ? 10_000 : 30_000, delay * 2), 60_000);
           choose = choose || select;
           publish({ ...control, note: "화면 연결을 확인하지 못했어요" });
-          const health = await readHub().catch(() => null);
+          // An explicitly rejected capability cannot leave an orphan; retry registration once now.
+          const health = lostReceiver ? null : await readHub().catch(() => null);
           if (fresh() && health?.mcp_bridge?.hub_id && health.mcp_bridge.hub_id !== hub) {
             hub = health.mcp_bridge.hub_id; key = screenStorageKey(hub, account); snapshot();
             setHubIdentity(hub);

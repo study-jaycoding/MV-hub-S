@@ -147,6 +147,7 @@ MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행�
 `frontend/src/lib/useMcpScreenActions.ts`는 본창 등록·실행 직전 세대/지문 검사·영수증을 맡고,
 `frontend/src/components/mcp/McpScreenNotice.tsx`는 기본 끔 스위치·명시 창 선택·지속 알림·되돌리기를 표시한다.
 기존 칸 상태기계·도구 표면은 그대로이며, 일반 화면 동작만 라이브러리 변경 알림에서 제외한다. 허브·앱·어댑터는 `external_screen` 기능 표식으로 호환 여부를 확인한다.
+AUTH 끔에서는 내용·자격 없는 WS 깨우기가 다른 로컬 소켓에도 전달될 수 있으며, 실제 명령 접근은 HTTP 수신 자격 검사로 제한한다.
 
 MV Agent 바깥 연결은 `routers/mcp_v2.py`의 `POST /api/mcp/v2/app/agent-link`·`_agent_link`가 맡는다.
 `repo/mcp_v2.py`의 `registration_lock`·`link_state`·`valid_client`·`revoke_explicit`가 등록/로그아웃 직렬화와 해제 표식을 공유한다.

@@ -308,3 +308,101 @@ def test_receipt_bound_accepts_the_full_allowed_id_batch_and_unicode():
     for data in ({"undo": {}}, {"large": "x" * 8192}, {"value": float("nan")}):
         with pytest.raises(ValidationError):
             api.ScreenResultIn(**fields, data=data)
+
+
+@pytest.mark.parametrize("change", ["scene", "workspace", "revoke"])
+def test_final_response_uses_issued_screen_but_rechecks_authority(screen, monkeypatch, change):
+    s = screen
+    waiting, proceed = threading.Event(), threading.Event()
+    original = api._screen_validate
+    def validate(ctx, receiver, name=None, commit=None, args=None):
+        if args is not None and commit is None:
+            waiting.set()
+            assert proceed.wait(5), "final authorization barrier timed out"
+        return original(ctx, receiver, name, commit, args)
+    monkeypatch.setattr(api, "_screen_validate", validate)
+    with ThreadPoolExecutor() as pool:
+        future, aid = start(s, pool, "canvas.create_nodes", {"scene_id": "scene", "nodes": [{"kind": "text"}]})
+        token = claim(s, aid).json()["token"]
+        try:
+            assert finish(s, aid, token).json() == {"accepted": True}
+            assert waiting.wait(5)
+            if change == "revoke":
+                cid = s[1].actions[aid].context.client["id"]
+                assert s[0][0].post(f"/api/mcp/v2/app/clients/{cid}/revoke", headers=APP_HEADERS).status_code == 200
+            else:
+                changes = {"scene_id": None} if change == "scene" else {"workspace": {"scope": "team", "id": "other"}, "scene_id": None}
+                assert s[4](**s[5], seq=2, epoch=2, **changes).status_code == 200
+        finally:
+            proceed.set()
+        result = future.result(5)
+        if change == "revoke":
+            assert result.status_code == 403
+        else:
+            assert result.status_code == 200 and result.json()["status"] == "done"
+        assert len(s[6]) == 1
+
+
+def test_empty_owned_generation_set_skips_without_issuing(screen):
+    s = screen
+    result = action(s[0], "screen_action", {"name": "library.set_hidden", "args": {
+        "generation_ids": ["missing", "missing"], "hidden": True}, "screen_context": ticket(s)})
+    assert result.status_code == 200, result.text
+    assert result.json() == {"status": "skipped", "ok": False, "summary": "바꿀 수 있는 내 생성물이 없어요", "data": {}, "skipped": ["missing"]}
+    assert not s[1].actions and not s[1].usage and not s[6]
+
+
+def test_ticket_cap_is_per_client_and_expires(screen):
+    s = screen
+    configure(s[0], ["claude"])
+    for _ in range(8):
+        ticket(s)
+    assert action(s[0], "read_context", {"kind": "screen"}).status_code == 429
+    assert action(s[0], "read_context", {"kind": "screen"}, name="claude").status_code == 200
+    assert len(s[1].tickets) == 9
+    s[2][0] += 31
+    assert s[4]().status_code == 200
+    ticket(s)
+    assert len(s[1].tickets) == 1
+
+
+def test_screen_reads_and_actions_share_request_rate_limit(screen):
+    s = screen
+    s[1].invalidate()
+    for _ in range(30):
+        assert action(s[0], "read_context", {"kind": "screen"}).status_code == 409
+    assert action(s[0], "read_context", {"kind": "screen"}).status_code == 429
+    assert action(s[0], "screen_action", {"name": "canvas.read_selection", "args": {}, "screen_context": "x" * 43}).status_code == 429
+
+
+@pytest.mark.parametrize("known", [False, True])
+def test_logout_only_invalidates_a_known_account(screen, monkeypatch, known):
+    from dataclasses import replace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.routers import auth as auth_router
+    s = screen
+    receiver = s[1].receivers[s[5]["receiver_id"]]
+    s[1].receivers["other-receiver"] = replace(receiver, id="other-receiver", account="other@example.test")
+    monkeypatch.setattr(active_account, "active_email", lambda: "")
+    monkeypatch.setattr(auth_router.local_agent_pair, "clear", lambda *_: None)
+    app = FastAPI()
+    @app.middleware("http")
+    async def identity(request, call_next):
+        request.state.account = s[0][2] if known else None
+        return await call_next(request)
+    app.include_router(auth_router.router)
+    with TestClient(app, base_url="http://127.0.0.1:8123") as client:
+        assert client.post("/api/auth/logout").status_code == 200
+    assert set(s[1].receivers) == ({"other-receiver"} if known else {receiver.id, "other-receiver"})
+
+
+def test_rejected_selection_still_closes_disabled_receiver_action(screen):
+    s = screen
+    with ThreadPoolExecutor() as pool:
+        future, aid = start(s, pool)
+        response = s[4](**s[5], seq=2, epoch=2, enabled=False, select=True)
+        assert response.status_code == 409
+        assert not s[1].receivers[s[5]["receiver_id"]].enabled
+        assert s[1].actions[aid].settled.is_set()
+        assert future.result(5).json()["status"] == "expired_unclaimed"

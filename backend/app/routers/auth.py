@@ -331,7 +331,9 @@ def logout(response: Response, request: Request):
     acc = getattr(request.state, "account", None)
     from ..repo.mcp_v2 import registration_lock, revoke_account
     with registration_lock:
-        mcp_screen.service.invalidate(norm_email((acc or {}).get("email") or active_account.active_email()) or None)
+        screen_account = norm_email((acc or {}).get("email") or active_account.active_email())
+        if screen_account:
+            mcp_screen.service.invalidate(screen_account)
         if acc:
             revoke_account(acc["email"])
         previous = local_agent_pair.clear(request, (acc or {}).get("email"))

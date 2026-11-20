@@ -15,7 +15,7 @@ import secrets
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -863,6 +863,7 @@ async def _read(ctx, args):
     if args.kind == "screen":
         if ctx.client.get("name") == PANEL_CLIENT:
             raise HTTPException(403, "칸 연결은 화면 표를 요청할 수 없습니다.")
+        mcp_screen.service.rate(ctx.client["id"], norm_email(ctx.account["email"]))
         r = mcp_screen.service.target(norm_email(ctx.account["email"]))
         epoch = r.epoch
         return await _screen_authorize(ctx, r, commit=lambda: mcp_screen.service.ticket(r, ctx.client["id"], epoch))
@@ -1929,12 +1930,18 @@ async def _external_screen_action(ctx, body):
         cost = len(args.nodes) if body.name == "canvas.create_nodes" else len(args.pairs) if body.name == "canvas.connect" else 0
     else:
         keep, skipped = await _owned_generation_ids(ctx, r.workspace, args.generation_ids)
+        if not keep:
+            await _screen_authorize(ctx, r, body.name)
+            return {"status": "skipped", "ok": False, "summary": "바꿀 수 있는 내 생성물이 없어요", "data": {}, "skipped": skipped}
         payload["generation_ids"] = keep
         cost = len(keep)
     a = None
+    issued_receiver = None
     def issue():
-        nonlocal a
-        a = mcp_screen.service.issue(r, epoch, ctx, body.name, payload, cost)
+        nonlocal a, issued_receiver
+        with mcp_screen.service.lock:
+            a = mcp_screen.service.issue(r, epoch, ctx, body.name, payload, cost)
+            issued_receiver = replace(r, workspace=dict(r.workspace))
         return a
     try:
         await _screen_authorize(ctx, r, body.name, issue, payload)
@@ -1942,7 +1949,8 @@ async def _external_screen_action(ctx, body):
         await manager.broadcast({"type": "mcp_screen_action", "receiver_id": r.id, "action_id": a.id}, realtime_scope(ctx.account))
         if not await asyncio.to_thread(a.settled.wait, mcp_screen.ACTION_SECONDS):
             mcp_screen.service.expire(a)
-        await _screen_authorize(ctx, r, body.name, args=payload)
+        # A later navigation must not turn an accepted result into a retryable screen error.
+        await _screen_authorize(ctx, issued_receiver, body.name, args=payload)
         return {**a.result, "skipped": skipped}
     finally:
         if a is not None:

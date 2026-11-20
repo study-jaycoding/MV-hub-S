@@ -2,7 +2,8 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-const io = vi.hoisted(() => ({ http: vi.fn(), execute: vi.fn(), undo: vi.fn(), token: "token", account: "acct:a", connection: "hub", revision: 1 }));
+const io = vi.hoisted(() => ({ http: vi.fn(), execute: vi.fn(), undo: vi.fn(), token: "token", account: "acct:a", connection: "hub", revision: 1, canvasWindow: false }));
+vi.mock("../src/lib/popupWindows", () => ({ isCanvasWindow: () => io.canvasWindow }));
 vi.mock("../src/lib/http", () => ({ jsonFetch: io.http, jsonBody: JSON.stringify, getAuthToken: () => io.token,
   withRequestTimeout: (run: (signal: AbortSignal) => unknown) => run(new AbortController().signal) }));
 vi.mock("../src/lib/accountScope", () => ({ getAccountNamespace: () => io.account, getConnectionKey: () => io.connection }));
@@ -26,7 +27,7 @@ const render = async (view = "A") => { await act(async () => root.render(<Strict
 const wake = async (id = "action") => { await act(async () => dispatchAppEvent(APP_EVENTS.mcpScreenAction, { receiver_id: "receiver", action_id: id })); };
 beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks(); localStorage.clear(); scene = "scene"; epoch = 1;
-  io.account = "acct:a"; io.token = "token"; io.connection = "hub"; io.revision = 1;
+  io.account = "acct:a"; io.token = "token"; io.connection = "hub"; io.revision = 1; io.canvasWindow = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   setHubFeatures(["external_screen"]);
@@ -48,6 +49,41 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 async function enabled() {
   await render(); await act(async () => changeScreenControl(true)); await tick();
 }
+
+it("does not register or claim from a detached canvas window without embed", async () => {
+  io.canvasWindow = true;
+  localStorage.setItem(screenStorageKey("hub", "acct:a"), JSON.stringify({ enabled: true, change: "opt-in" }));
+  await render(); await tick(); await wake();
+  expect(io.http).not.toHaveBeenCalled();
+  expect(io.execute).not.toHaveBeenCalled();
+  expect(container.querySelector<HTMLInputElement>("input")!.disabled).toBe(true);
+});
+
+it.each([403, 404])("reregisters within 100ms after an existing receiver is rejected with %s", async status => {
+  await enabled();
+  io.http.mockClear();
+  io.http.mockRejectedValueOnce({ status });
+  await tick(10_000);
+  expect(io.http).toHaveBeenCalledTimes(1);
+  await tick(100);
+  const registrations = io.http.mock.calls.filter(([u]) => u.endsWith("screen-presence"));
+  expect(registrations).toHaveLength(2);
+  expect(JSON.parse(String(registrations[0][1].body)).receiver_id).toBe("receiver");
+  expect(JSON.parse(String(registrations[1][1].body)).receiver_id).toBeUndefined();
+  await wake(); expect(io.execute).toHaveBeenCalledTimes(1);
+});
+
+it("backs off if the immediate replacement registration is also rejected", async () => {
+  await enabled();
+  const original = io.http.getMockImplementation()!;
+  io.http.mockClear();
+  io.http.mockImplementation((url, init) => url.endsWith("screen-presence") ? Promise.reject({ status: 403 }) : original(url, init));
+  await tick(10_000); await tick(100);
+  const attempts = () => io.http.mock.calls.filter(([u]) => u.endsWith("screen-presence"));
+  expect(attempts()).toHaveLength(2);
+  await tick(29_000); expect(attempts()).toHaveLength(2);
+  await tick(1000); expect(attempts()).toHaveLength(3);
+});
 
 it("defaults off and stores opt-in for this hub/account only; StrictMode registers one receiver", async () => {
   await render(); await tick();
