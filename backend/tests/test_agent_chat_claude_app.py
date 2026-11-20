@@ -136,6 +136,7 @@ def test_idempotency_reopen_stale_and_cross_conversation(app_chat):
     opened = response.json()
     assert a.client.post(a.url + "/open", headers=a.headers, json=request).json() == opened
     assert len(a.spawned) == 1
+    assert a.file.read_bytes().count(b'"custom-title"') == 1  # 같은 요청 재시도는 제목 줄을 더하지 않는다
     changed = {**request, "expected_revision": 1}
     assert a.client.post(a.url + "/open", headers=a.headers, json=changed).status_code == 409
     _, back = bring(a, opened)
