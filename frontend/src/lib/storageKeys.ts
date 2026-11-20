@@ -1,4 +1,5 @@
 export const STORAGE_KEYS = {
+  mcpScreen: "mvhub.externalScreen",
   activeAccount: "ch.activeAccount",
   authToken: "ch.auth.token",
   assetsDir: "ch.assets.dir",

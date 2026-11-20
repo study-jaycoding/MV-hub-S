@@ -586,7 +586,7 @@ def test_capability_probe_is_public_and_never_proxied(local, monkeypatch):
         assert bridge["protocol"] == 1 and bridge["transport"] == "stdio-local"
         assert bridge["persistent_protocol"] == 2
         assert set(bridge["features"]) == {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
-                                           "agent_chat_read", "reference_exact"}
+                                           "agent_chat_read", "reference_exact", "external_screen"}
         assert len(bridge["hub_id"]) == 64
         assert _proxy.is_local_path("/api/mcp/client/connect")
     finally:

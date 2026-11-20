@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SCREEN_CONSENT } from "../src/lib/useMcpScreenActions";
 // 설정 옆 창의 MV·MCP 연결(Jay 2026-11-16 시안 v3) — [한 번에 연결]은 세 앱을 한 번에 등록하고, 앱마다 상태·[해제]/[다시 연결].
 //  가짜는 바깥 경계(jsonFetch)에만 — 등록·목록·해제 API 는 MCP 창(McpRegistration)과 같다.
 import { act } from "react";
@@ -83,6 +84,9 @@ it("처음 — 목록을 읽어 앱마다 상태(해제된 연결은 안 셈)·�
   await flush();
   expect([pill("codex"), pill("claude"), pill("claude_desktop")]).toEqual(["연결됨", "연결 안 됨", "연결 안 됨"]);
   expect([button("codex").textContent, button("claude").textContent]).toEqual(["해제", "연결"]);
+  expect(host.textContent).toContain(SCREEN_CONSENT);
+  expect(host.querySelectorAll(".mcp-screen-control input")).toHaveLength(1);
+  expect(host.querySelector<HTMLInputElement>(".mcp-screen-control input")!.checked).toBe(false);
   expect(onSummary).toHaveBeenLastCalledWith("연결됨 · Codex");
   expect(host.textContent).toContain("MV Agent 를 연결하면 Claude Code·Codex 는 저절로 연결돼요");
 });

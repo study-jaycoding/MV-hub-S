@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SCREEN_CONSENT } from "../src/lib/useMcpScreenActions";
 // 설치·로그인 API 경계만 가짜. 화면 요청 id·한 번 이어가기·취소·실패 문구를 확인한다.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -73,6 +74,9 @@ async function tick() { await act(async () => { vi.advanceTimersByTime(2000); })
 
 it("모델 메뉴의 상태가 이름 뒤·화살표 앞이며 미연결 줄은 설정 연결로 이동", async () => {
   await mount();
+  expect(host.textContent).toContain(SCREEN_CONSENT);
+  expect(host.querySelectorAll(".mcp-screen-control input")).toHaveLength(1);
+  expect(host.querySelector<HTMLInputElement>(".mcp-screen-control input")!.checked).toBe(false);
   act(() => host.querySelector<HTMLButtonElement>('.agent-settings button[aria-label="돌아가기"]')!.click());
   act(() => host.querySelector<HTMLButtonElement>(".agent-model-btn")!.click());
   const row = host.querySelector<HTMLButtonElement>(".agent-model-row")!;

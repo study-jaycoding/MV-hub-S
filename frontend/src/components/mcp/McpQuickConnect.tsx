@@ -1,3 +1,4 @@
+import { McpScreenControl } from "./McpScreenNotice";
 import { mcpAccessMessage } from "../../lib/agentChatApi";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAuthToken, jsonBody, jsonFetch } from "../../lib/http";
@@ -118,6 +119,7 @@ export function McpQuickConnect({ onSummary, onOpenWindow }: { onSummary?: (text
   return (
     <section className="settings-section mcp-quick">
       <h4>{t("MV·MCP 연결")}</h4>
+      <McpScreenControl />
       <p className="settings-lead">
         {t("내 PC 의 Codex·Claude 앱에서 MV Hub 자료를 쓰고 생성하게 합니다.")} <b>{t("MV Agent 를 연결하면 Claude Code·Codex 는 저절로 연결돼요")}</b>
       </p>

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SCREEN_CONSENT } from "../src/lib/useMcpScreenActions";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -43,7 +44,8 @@ it("명시적인 최초 버튼만 세 클라이언트를 허용하고 등록과 
   await click("Codex·Claude 연결 허용");
   expect(io.http.mock.calls[0][0]).toBe("/api/mcp/v2/app/configure");
   expect(JSON.parse(io.http.mock.calls[0][1].body)).toEqual({ clients: ["codex", "claude", "claude_desktop"], scope: "account", allow_execution: true });
-  expect(host.textContent).not.toContain("현재 공간");
+  expect(host.querySelector(".mcp-reg-status")?.textContent).not.toContain("현재 공간");
+  expect(host.textContent).toContain(SCREEN_CONSENT);
   expect(host.textContent).toContain("공간 고정: 작업 공간");
   expect(io.http.mock.calls[0][1].headers["X-MVHub-Tab"]).toBeTruthy();
   expect(host.textContent).toContain("LLM 응답 미확인");

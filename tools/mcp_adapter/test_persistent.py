@@ -28,7 +28,7 @@ import server as adapter
 
 # conversation(Codex) 연결의 지침·도구 목록 지문 — 2026-10-30 힉스필드 표시 기본 때는 바뀌지 않게 고정(옛 값 978d500d…, 2026.10.28.1),
 # 2026-11-12 MV Agent 대화 기록 읽기(read_context kind 두 개·conversation_id·chat_cursor·지침 3문장)는 Codex 연결에도 들어가는 것이 맞아 새 값으로
-CONVERSATION_SURFACE_SHA256 = "314c7c63d4b39f85a2991a11986ea7d6c45e470454ddbc314e51003a83bbed38"  # 11-20 두 허브 선택 안내만 추가, 도구·칸 표면 불변
+CONVERSATION_SURFACE_SHA256 = "66f2652b6808570bfdc6c3498483820cbaf32fc2c0e80a76c56185465c2485d8"  # 11-20 외부 화면 도구·화면 표 안내 추가; 칸 표면은 별도 지문
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -159,7 +159,7 @@ class PersistentTests(unittest.TestCase):
         self.http.clients[credential["secret"]] = credential["client_id"]
         async def exercise():
             with patch.dict(os.environ, env), patch("server.profile_settings", return_value=credential):
-                for mode, count in (("native", 15), ("conversation", 14)):
+                for mode, count in (("native", 16), ("conversation", 15)):
                     server = adapter.create_server(self.url, "isolated-profile", mode)
                     listing = await server.list_tools()
                     self.assertEqual(len(listing), count)
@@ -209,7 +209,7 @@ class PersistentTests(unittest.TestCase):
         self.assertIn("card_text를 답에 옮겨 쓰거나 인용하지 말고", adapter.PANEL_INSTRUCTIONS)
 
     def test_screen_action_only_on_the_panel_connection(self):
-        # 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md 3-4) — 칸 연결에만, 이름·값을 그대로 허브 screen_action 으로
+        # 칸은 기존 인자 그대로, 일반 연결은 별도의 일회용 화면 표 스키마로 등록한다.
         credential = {"secret": uuid4().hex + uuid4().hex, "url": self.url, "hub_id": self.http.hub_id, "client_id": str(uuid4())}
         async def exercise():
             with patch("server.profile_settings", return_value=credential):
@@ -220,7 +220,7 @@ class PersistentTests(unittest.TestCase):
                 await panel.call_tool("screen_action", {"name": "canvas.read_selection", "args": {"scene_id": "s1"}})
                 return names, described
         names, described = anyio.run(exercise)
-        self.assertNotIn("screen_action", names)
+        self.assertIn("screen_action", names)
         self.assertIn("회색(비활성)", described)
         self.assertIn("같은 동작을 자동으로 다시 내지 마세요", described)
         path, body = self.http.calls[-1][:2]
@@ -370,7 +370,7 @@ class PersistentTests(unittest.TestCase):
     def test_sdk_reference_tool_lists_counts_and_uses_same_handle(self):
         path, env = self.attachment()
         async def exercise():
-            for mode, count in (("native", 15), ("conversation", 14)):
+            for mode, count in (("native", 16), ("conversation", 15)):
                 config, _ = self.profile(mode)
                 config["env"] = {**os.environ, **env}
                 async with Client(StdioServerParameters(**config)) as client:
@@ -899,7 +899,7 @@ class PersistentTests(unittest.TestCase):
                     self.assertFalse(response.is_error)
                     info = response.structured_content
                     self.assertEqual(info["apps_negotiated"], supported)
-                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 15})
+                    self.assertEqual(info["adapter"], {"version": ADAPTER_VERSION, "tools": 16})
                     self.assertIsNone(info["reload_required"])
                     listing = {t.name: t for t in (await client.list_tools()).tools}
                     self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in listing.values()))
@@ -936,7 +936,7 @@ class PersistentTests(unittest.TestCase):
         async def exercise():
             async with Client(StdioServerParameters(**config)) as client:
                 tools = await client.list_tools()
-                self.assertEqual(len(tools.tools), 15)
+                self.assertEqual(len(tools.tools), 16)
                 self.assertTrue(all(not (t.meta or {}).get("ui", {}).get("resourceUri") for t in tools.tools))
                 image = await client.call_tool("get_result", {"plan_id": "p"})
                 self.assertFalse(image.is_error)
@@ -1056,13 +1056,13 @@ class PersistentTests(unittest.TestCase):
             async with Client(StdioServerParameters(**config), extensions=[advertise(
                     "io.modelcontextprotocol/ui", {"mimeTypes": ["text/html;profile=mcp-app"]})]) as client:
                 listing = (await client.list_tools()).tools
-                self.assertEqual(len(listing), 14)
+                self.assertEqual(len(listing), 15)
                 self.assertNotIn("read_display_results", [t.name for t in listing])
                 self.assertTrue(all("ui" not in (t.meta or {}) for t in listing))
                 self.assertEqual((await client.list_resources()).resources, [])
                 info = (await client.call_tool("check_connection", {})).structured_content
                 self.assertEqual(info["display_mode"], "conversation")
-                self.assertEqual(info["adapter"]["tools"], 14)
+                self.assertEqual(info["adapter"]["tools"], 15)
                 self.assertFalse(info["apps_available"])
                 executed = await client.call_tool("execute_generation_plan", {"plan_id": plan})
                 self.assertNotIn("live_plan_id", executed.structured_content)
@@ -1370,6 +1370,12 @@ assert.ok(!html.includes('innerHTML') && !html.includes('fetch('));
             surface = json.dumps({"instructions": general.instructions, "tools": tools}, ensure_ascii=False, sort_keys=True)
             self.assertEqual(hashlib.sha256(surface.encode()).hexdigest(), CONVERSATION_SURFACE_SHA256)
             self.assertIn("둘 다 응답하면", general.instructions)
+            panel_tools = sorted((tool.model_dump(mode="json", exclude_none=True) for tool in await panel.list_tools()), key=lambda tool: tool["name"])
+            panel_surface = json.dumps({"instructions": panel.instructions, "tools": panel_tools}, ensure_ascii=False, sort_keys=True)
+            self.assertEqual(hashlib.sha256(panel_surface.encode()).hexdigest(), "e4040268d6903053562ce2860317662dfaea0a19c5f72995788e1cabc8ce4b73")
+            external = next(t for t in tools if t["name"] == "screen_action")
+            self.assertIn("screen_context", external["input_schema"]["required"])
+            self.assertIn("30초·일회용", external["description"])
             self.assertEqual(panel.instructions, server.PANEL_INSTRUCTIONS)
             self.assertEqual({tool.name for tool in await panel.list_tools()}, set(server.PANEL_TOOLS))
         anyio.run(exercise)

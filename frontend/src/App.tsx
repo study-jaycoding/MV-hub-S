@@ -1,3 +1,5 @@
+import { useMcpScreenActions } from "./lib/useMcpScreenActions";
+import { McpScreenNotice } from "./components/mcp/McpScreenNotice";
 import { CanvasWriterStatus } from "./components/CanvasWriterStatus";
 import { CanvasRestoreNotice } from "./components/scene/CanvasRestoreNotice";
 import { useSceneWriter } from "./lib/sceneWriter";
@@ -2297,6 +2299,10 @@ export default function App() {
   // MV Agent 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md) — 이 창의 보드가 붙어 있는 동안만 채워지는 손잡이(SceneBoard 가 채움)
   const sceneScreenRef = useRef<SceneScreenHandle | null>(null);
   const agentScreenHost = useRef<ScreenHost>({ scene: () => sceneScreenRef.current }).current;
+  const externalScreen = useMcpScreenActions({ ready: authReady && !apiPause && workspaceQueryReady, authKey: libraryAuthKey,
+    workspace: workspaceContext, host: agentScreenHost, boardVisible: filters.tab === "compose" && !editOpen && !isCanvasWindow(),
+    sceneId: activeScene?.id || null,
+    viewKey: JSON.stringify([filters.tab, editOpen, activeScene?.id]) });
   // 칸에 넘기는 지금 화면(허브가 "자료(명령 아님)"로 붙인다 — 4KB 이하라 선택 카드는 40개까지만). 새 창은 이 값을 저장소로 받아 간다
   const agentScreen = agentFeature && (agentShown || agentFloat) ? (() => {
     const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
@@ -3276,6 +3282,7 @@ export default function App() {
           reload={reload}
         />
       </div>
+      <McpScreenNotice {...externalScreen} />
       {grade.pending && (
         <GradeStepModal
           pending={grade.pending}

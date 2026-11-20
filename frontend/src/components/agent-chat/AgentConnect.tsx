@@ -1,3 +1,4 @@
+import { SCREEN_CONSENT } from "../../lib/useMcpScreenActions";
 // MV Agent 칸의 Claude 연결 안내(첫 연결 설계 3·6·9절 · 시안 ask-agent-connect1/2.png). 상태마다 한 장면:
 //  설치(MV Hub 실행기가 공식 설치를 돌린다 — 설치 중이면 기다림·손 설치는 접음, 실패·건너뜀이면 그 줄 + 손 설치 안내 —
 //  docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b) · 업데이트 · 확인 못 함 · 연결(로그인 창 스위치가 켜졌을 때만
@@ -243,6 +244,7 @@ export function AgentConnect({ state, version, install, loginWindowEnabled, wait
       <div className="cn-mark" aria-hidden="true"><i className="mv-mark full" /></div>
       {body}
       {connectError && <p className="cn-note cn-warn" role="alert">{connectError}</p>}
+      <p>{t(SCREEN_CONSENT)}</p>
       <p className="cn-note">{t("연결하면 이 PC 의 Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요(생성마다 묻지 않음 · 요청한 생성은 크레딧)")}</p>
       <p className="cn-note">{t("대화는 내 Claude 구독 사용량을 써요(한도를 넘으면 내 Claude 추가 사용 설정대로) · 요청한 생성은 MV 크레딧 · 이 PC 의 MV 계정은 같은 Claude 로그인을 써요")}</p>
     </section>

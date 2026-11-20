@@ -1,3 +1,4 @@
+import { McpScreenControl } from "../mcp/McpScreenNotice";
 // MV Agent 사용량 원·설정 쪽(docs/status/MVAgent_모델설정사용량_2026-11-12.md — 시안 mvagent-aside/model-settings.png ②③).
 //  사용량 = Claude CLI 가 차례마다 주는 값(주간 한도·문맥 토큰)을 마지막 답 기준으로 보인다. Codex 는 한도를 주지 않는다.
 //  설정 = 연결 상태 · 새 대화 기본 모델·깊이 · 먼저 쓸 생성 모델(차례마다 gen_model 로 실림) · 사용량 — 이 브라우저에 남긴다.
@@ -161,6 +162,7 @@ export function AgentSettings({ engines, usage, connection, codexConnection, ext
       <div className="agent-settings-body">
         <div className="agent-settings-grp">
           <h4>{t("연결")}</h4>
+          <McpScreenControl />
           <p className="cn-note">{t("연결하면 이 PC 의 Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요(생성마다 묻지 않음 · 요청한 생성은 크레딧)")}</p>
           {external && <div role="status" className="cn-note">
             {t("바깥 앱 연결")}{" · "}{external.busy ? t("확인 중") : external.results.length ? external.results.map((result) => `${result.client === "claude" ? "Claude Code" : "Codex"}: ${t(mcpAccessMessage(result))}`).join(" · ") : t("연결 안 됨")}

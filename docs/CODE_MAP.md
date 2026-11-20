@@ -142,6 +142,12 @@ MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행�
 
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
 
+바깥 앱의 화면 편집은 `backend/app/services/mcp_screen.py`가 수신 자격·일회용 화면 표·대상 선택·동작 수명과 한도를 소유한다.
+`routers/mcp_v2.py`의 screen-presence·screen-actions claim/result와 일반 연결 screen_action이 원래 연결 권한을 재확인한다.
+`frontend/src/lib/useMcpScreenActions.ts`는 본창 등록·실행 직전 세대/지문 검사·영수증을 맡고,
+`frontend/src/components/mcp/McpScreenNotice.tsx`는 기본 끔 스위치·명시 창 선택·지속 알림·되돌리기를 표시한다.
+기존 칸 상태기계·도구 표면은 그대로이며, 일반 화면 동작만 라이브러리 변경 알림에서 제외한다. 허브·앱·어댑터는 `external_screen` 기능 표식으로 호환 여부를 확인한다.
+
 MV Agent 바깥 연결은 `routers/mcp_v2.py`의 `POST /api/mcp/v2/app/agent-link`·`_agent_link`가 맡는다.
 `repo/mcp_v2.py`의 `registration_lock`·`link_state`·`valid_client`·`revoke_explicit`가 등록/로그아웃 직렬화와 해제 표식을 공유한다.
 `tools/mcp_adapter/local_setup.py`의 `registration`은 실제 프로필을 대조하고 `ensure_access`는 재발급 없이 사용자 허용만 맞춘다.

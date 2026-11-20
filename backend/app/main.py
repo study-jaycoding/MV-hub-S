@@ -32,6 +32,8 @@ if sys.platform == "win32":
             pass
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -805,6 +807,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Millionvolt Hub", version="0.1.0", lifespan=lifespan)
 
+
+@app.exception_handler(RequestValidationError)
+async def screen_validation_error(request: Request, exc: RequestValidationError):
+    # Validation errors normally echo the offending input, including capability secrets.
+    if request.url.path.startswith(("/api/mcp/v2/app/screen-presence", "/api/mcp/v2/app/screen-actions/")):
+        return JSONResponse(status_code=422, content={"detail": "화면 동작의 값이 올바르지 않아요."})
+    return await request_validation_exception_handler(request, exc)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in CORS_ORIGINS if o.strip()],
@@ -1168,7 +1178,7 @@ def health():
 
     bridge = {"protocol": 1, "transport": "stdio-local", "persistent_protocol": 2,
               "features": ["generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
-                           "agent_chat_read", "reference_exact"]}
+                           "agent_chat_read", "reference_exact", "external_screen"]}
     try:
         bridge["hub_id"] = mcp_v2.hub_id()
     except (auth_svc.AuthSecretUnavailable, sqlite3.Error):

@@ -26,14 +26,15 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import Field, StrictBool, ValidationError, model_validator
 from starlette.responses import FileResponse
 
-from .. import active_account, config, repo
+from .. import active_account, config, repo, db
 from ..db_paths import get_db_path
-from ..deps import account_actor_uid, actor_id, current_account, resolve_agent_account, expected_account_differs
+from ..deps import account_actor_uid, actor_id, current_account, resolve_agent_account, expected_account_differs, session_token, realtime_scope
 from ..emailnorm import norm_email
 from ..mcp_models import StrictModel
 from ..models import GenRequestIn, WorkspaceContext, seedance_audio_reference_error
 from ..repo import mcp_v2 as store
 from ..services import agent_chat, auth, cli_bridge, thumbs, reference_match, upload_limits, asset_tree
+from ..services import mcp_screen
 from ..services.auth import hub_id  # main·시험은 mcp_v2.hub_id 로 부른다
 from ..services.seedance_draft import fresh_params
 from ..services.async_tools import to_thread_non_abandon
@@ -464,7 +465,7 @@ _CHAT_KINDS = ("agent_chats", "agent_chat")  # MV Agent 대화 기록(설계 doc
 
 class ReadIn(StrictModel):
     kind: Literal["workspaces", "workspace", "projects", "generations", "models", "references", "scenes", "scene",
-                  "agent_chats", "agent_chat"] = "workspace"
+                  "agent_chats", "agent_chat", "screen"] = "workspace"
     workspace_scope: Literal["personal", "team"] | None = None
     workspace_id: str | None = Field(default=None, max_length=200)
     project_id: str | None = Field(default=None, max_length=200)
@@ -859,6 +860,12 @@ async def _read_chats(ctx, args):
 
 
 async def _read(ctx, args):
+    if args.kind == "screen":
+        if ctx.client.get("name") == PANEL_CLIENT:
+            raise HTTPException(403, "칸 연결은 화면 표를 요청할 수 없습니다.")
+        r = mcp_screen.service.target(norm_email(ctx.account["email"]))
+        epoch = r.epoch
+        return await _screen_authorize(ctx, r, commit=lambda: mcp_screen.service.ticket(r, ctx.client["id"], epoch))
     if args.kind in _CHAT_KINDS:  # 공간 확인(_request_workspace) 앞 — 대화는 계정 단위
         return await _read_chats(ctx, args)
     if args.kind == "workspaces":
@@ -1692,7 +1699,8 @@ async def _panel_execute(ctx, plan_id, turn):
 
 @router.post("/client/action")
 async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
-    if body.method in _LIBRARY_READ_METHODS:
+    # The shared set is unconditional; only external screen actions are library-neutral (L1).
+    if body.method in _LIBRARY_READ_METHODS or (body.method == "screen_action" and ctx.client.get("name") != PANEL_CLIENT):
         ctx.request.state.library_unchanged = True
     try:
         panel = ctx.client.get("name") == PANEL_CLIENT
@@ -1704,7 +1712,7 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
             return await _read(ctx, ReadIn.model_validate(body.args))
         if body.method == "screen_action":
             if not panel:
-                raise HTTPException(403, "화면 동작은 MV Agent 칸 연결에서만 쓸 수 있습니다.")
+                return await _external_screen_action(ctx, ExternalScreenActionIn.model_validate(body.args))
             return await _panel_screen_action(ctx, turn, ScreenActionIn.model_validate(body.args))
         if body.method == "prepare_generation_plan":
             data = PlanIn.model_validate(body.args)
@@ -1759,6 +1767,186 @@ async def action(body: mcp.ActionIn, ctx=Depends(_client_context)):
                 422: "invalid_input", 429: "busy"}.get(exc.status_code, "request_failed")
         exc.headers = {"X-MVHub-MCP-Error": code, **(exc.headers or {})}
         raise
+
+
+class ExternalScreenActionIn(ScreenActionIn):
+    screen_context: str = Field(min_length=32, max_length=100)
+
+
+class ScreenPresenceIn(StrictModel):
+    hub_id: str = Field(min_length=1, max_length=100)
+    receiver_id: str | None = Field(None, max_length=100)
+    secret: str = Field("", max_length=100)
+    seq: int = Field(ge=0, strict=True)
+    epoch: int = Field(ge=0, strict=True)
+    workspace: WorkspaceContext
+    scene_id: str | None = Field(None, max_length=100)
+    visible: StrictBool
+    enabled: StrictBool
+    select: StrictBool = False
+
+
+class ScreenClaimIn(StrictModel):
+    receiver_id: str = Field(min_length=16, max_length=100)
+    secret: str = Field(min_length=32, max_length=100)
+
+
+class ScreenResultIn(ScreenClaimIn):
+    token: str = Field(min_length=32, max_length=100)
+    ok: StrictBool
+    summary: str = Field(max_length=300)
+    data: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def bounded_data(self):
+        # Fifty allowed 80-character IDs alone exceed 4K; keep the full bounded receipt.
+        if len(json.dumps(self.data, ensure_ascii=False, allow_nan=False)) > 8192 or "undo" in self.data:
+            raise ValueError("화면 결과가 너무 큽니다")
+        return self
+
+
+def _screen_binding(request):
+    with active_account.transition_lock:
+        pin = active_account.capture_account_pin()
+        with active_account.pinned_account_scope(pin):
+            email = norm_email((current_account(request) or {}).get("email")) if config.AUTH_ENABLED else norm_email(pin[0])
+            if not request.headers.get("X-MVHub-Expect-Account") or expected_account_differs(request, email):
+                mcp_screen.refuse("screen_account_changed", 403)
+            return (str(get_db_path().resolve()), _required_hub_id(), active_account.account_epoch(), email,
+                    mcp_screen.digest(session_token(request) or ""), pin, db.pool_epoch())
+
+
+def _screen_validate(ctx, r, name=None, commit=None, args=None):
+    with store.registration_lock, active_account.pinned_account_scope(ctx.pin), _proxy.pinned_connection(ctx.upstream):
+        if r.binding[6] != db.pool_epoch():
+            mcp_screen.refuse("screen_database_changed", 403)
+        _still_current(ctx)
+        # The receiver also belongs to a particular app login, not just an email.
+        _still_current(r.context)
+        if norm_email(ctx.account["email"]) != r.account or ctx.hub != r.context.hub or ctx.path != r.context.path:
+            mcp_screen.refuse("screen_account_changed", 403)
+        if ctx.upstream:
+            account = _upstream_me(*ctx.upstream)
+            if (norm_email(account.get("email")) != r.account or account.get("status") != "approved"
+                    or account.get("hidden") or account.get("password_changed_at") != ctx.account.get("password_changed_at")):
+                mcp_screen.refuse("screen_account_changed", 403)
+        fresh = store.client_for_secret(ctx.client["secret_hash"])
+        if fresh["workspace"] != ctx.client["workspace"] or fresh["account_email"] != ctx.client["account_email"]:
+            mcp_screen.refuse("screen_permission_changed", 403)
+        if name and name != "canvas.read_selection" and not fresh.get("can_execute"):
+            mcp_screen.refuse("permission_denied", 403)
+        ws = _request_workspace(ctx, r.workspace["scope"], r.workspace.get("id"))
+        if name and name.startswith("canvas.") and (not r.scene_id or r.scene_id not in {s["id"] for s in _scenes(ctx, ws)}):
+            mcp_screen.refuse("screen_scene_unavailable")
+        if name == "library.set_hidden" and args:
+            owner = _owner_uid(ctx)
+            for gid in args["generation_ids"]:
+                try:
+                    row = _generation_row(ctx, gid)
+                except HTTPException:
+                    mcp_screen.refuse("screen_generation_unavailable", 403)
+                if not owner or row.get("creator_uid") != owner or not _matches(row, ws):
+                    mcp_screen.refuse("screen_generation_unavailable", 403)
+
+        # Revocation uses registration_lock; login transitions use transition_lock.
+        # No await between the final authority check and the one-shot state transition.
+        with active_account.transition_lock:
+            _still_current(ctx)
+            _still_current(r.context)
+            if r.binding[6] != db.pool_epoch():
+                mcp_screen.refuse("screen_database_changed", 403)
+            return commit() if commit else None
+
+
+async def _screen_authorize(ctx, r, name=None, commit=None, args=None):
+    return await to_thread_non_abandon(_screen_validate, ctx, r, name, commit, args)
+
+
+@router.post("/app/screen-presence")
+async def screen_presence(body: ScreenPresenceIn, request: Request, _headers=Depends(mcp.app_headers)):
+    binding = await asyncio.to_thread(_screen_binding, request)
+    if body.hub_id != binding[1]:
+        mcp_screen.refuse("screen_hub_changed", 403)
+    if body.workspace.scope not in ("personal", "team"):
+        mcp_screen.refuse("screen_workspace_invalid", 422)
+    if body.receiver_id:
+        r = mcp_screen.service.authenticate(body.receiver_id, body.secret, binding)
+        mcp_screen.service.update(r, body)
+        secret = None
+    else:
+        if not body.visible or not body.enabled:
+            mcp_screen.refuse("screen_unavailable")
+        ctx = await asyncio.to_thread(_capture, request)
+        if binding != await asyncio.to_thread(_screen_binding, request):
+            mcp_screen.refuse("screen_account_changed", 403)
+        r, secret = mcp_screen.service.register(binding, norm_email(ctx.account["email"]), ctx, body)
+    with mcp_screen.service.lock:
+        candidates = sum(v.account == r.account and v.visible and v.enabled for v in mcp_screen.service.receivers.values())
+        selected = mcp_screen.service.selected.get(r.account)
+        return {"receiver_id": r.id, **({"receiver_secret": secret} if secret else {}),
+                "multiple": candidates > 1 or selected not in (None, r.id), "selected": selected == r.id}
+
+
+async def _screen_app_action(request, body, action_id):
+    binding = await asyncio.to_thread(_screen_binding, request)
+    r = mcp_screen.service.authenticate(body.receiver_id, body.secret, binding)
+    a = mcp_screen.service.lookup(action_id, r)
+    # Full application and original MCP authority at claim/result; heartbeat stays cheap.
+    await asyncio.to_thread(_capture, request)
+    if binding != await asyncio.to_thread(_screen_binding, request):
+        mcp_screen.refuse("screen_account_changed", 403)
+    return a
+
+
+@router.post("/app/screen-actions/{action_id}/claim")
+async def screen_claim(action_id: str, body: ScreenClaimIn, request: Request, _headers=Depends(mcp.app_headers)):
+    a = await _screen_app_action(request, body, action_id)
+    def claim():
+        mcp_screen.service.authenticate(body.receiver_id, body.secret, _screen_binding(request))
+        return mcp_screen.service.claim(a)
+    return await _screen_authorize(a.context, a.receiver, a.name, claim, a.args)
+
+
+@router.post("/app/screen-actions/{action_id}/result")
+async def screen_result(action_id: str, body: ScreenResultIn, request: Request, _headers=Depends(mcp.app_headers)):
+    a = await _screen_app_action(request, body, action_id)
+    def finish():
+        mcp_screen.service.authenticate(body.receiver_id, body.secret, _screen_binding(request))
+        return {"accepted": mcp_screen.service.finish(a, body.token, body.ok, body.summary, body.data)}
+    return await _screen_authorize(a.context, a.receiver, a.name, finish, a.args)
+
+
+async def _external_screen_action(ctx, body):
+    mcp_screen.service.rate(ctx.client["id"], norm_email(ctx.account["email"]))
+    r, epoch = mcp_screen.service.consume(body.screen_context, ctx.client["id"], norm_email(ctx.account["email"]))
+    await _screen_authorize(ctx, r, body.name)
+    args = _SCREEN_ARGS[body.name].model_validate(body.args)
+    skipped = []
+    payload = args.model_dump(exclude_none=True)
+    if body.name.startswith("canvas."):
+        if args.scene_id != r.scene_id:
+            mcp_screen.refuse("screen_context_invalid")
+        cost = len(args.nodes) if body.name == "canvas.create_nodes" else len(args.pairs) if body.name == "canvas.connect" else 0
+    else:
+        keep, skipped = await _owned_generation_ids(ctx, r.workspace, args.generation_ids)
+        payload["generation_ids"] = keep
+        cost = len(keep)
+    a = None
+    def issue():
+        nonlocal a
+        a = mcp_screen.service.issue(r, epoch, ctx, body.name, payload, cost)
+        return a
+    try:
+        await _screen_authorize(ctx, r, body.name, issue, payload)
+        from ..ws import manager
+        await manager.broadcast({"type": "mcp_screen_action", "receiver_id": r.id, "action_id": a.id}, realtime_scope(ctx.account))
+        if not await asyncio.to_thread(a.settled.wait, mcp_screen.ACTION_SECONDS):
+            mcp_screen.service.expire(a)
+        await _screen_authorize(ctx, r, body.name, args=payload)
+        return {**a.result, "skipped": skipped}
+    finally:
+        if a is not None:
+            mcp_screen.service.expire(a)
 
 
 @router.get("/app/canvas-tasks")

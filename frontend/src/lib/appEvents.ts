@@ -2,6 +2,8 @@ import { generationChangeMatchesScope, generationChangeReceiver, readGenerationC
 import { generationChangeScope, invalidateGenerationReadModels } from "../features/library/api";
 
 export const APP_EVENTS = {
+  mcpScreenAction: "ch:mcp-screen-action",
+  mcpScreenControl: "ch:mcp-screen-control",
   openGeneration: "ch:open-generation",
   accountUpdated: "ch:account-updated",
   creditsChanged: "ch:credits-changed",
