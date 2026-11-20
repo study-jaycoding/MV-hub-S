@@ -129,6 +129,16 @@ def test_title_rollback_failure_keeps_lock_and_never_launches(app_chat, monkeypa
     assert again.status_code == 409 and again.json()["detail"] == "title_write_failed" and a.spawned == []
 
 
+def test_has_handoff_ignores_non_sqlite_collision_file_but_not_broken_db(tmp_path):
+    other = tmp_path / "foreign.db"
+    other.write_bytes(b"foreign history")  # 복원 대상이 다른 파일과 겹친 경우 — 복원 쪽 충돌 검사(409)에 맡긴다
+    assert store.has_handoff(other) is False
+    broken = tmp_path / "broken.db"
+    broken.write_bytes(b"SQLite format 3\x00" + b"\x01" * 84)
+    with pytest.raises(sqlite3.DatabaseError):  # 진짜 DB 가 깨졌으면 지금처럼 닫힌 쪽(복원 503)
+        store.has_handoff(broken)
+
+
 def test_reopen_does_not_write_title_while_app_may_be_writing(app_chat):
     a = app_chat
     _, response = open_app(a)

@@ -344,6 +344,9 @@ def import_fields(raw) -> dict:
 def has_handoff(path) -> bool:
     if not Path(path).exists():
         return False
+    with Path(path).open("rb") as stream:
+        if stream.read(16) != b"SQLite format 3\x00":
+            return False  # SQLite 가 아닌 파일엔 넘김 상태가 없다 — 복원 대상 충돌은 복원 쪽 검사가 409 로 막는다.
     with connect_readonly(path) as conn:
         if "app_handoff" not in {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}:
             return False
