@@ -117,7 +117,8 @@ def state(prefix: list[str] | None) -> dict:
     else:
         version = process.cli_version(prefix)
         result["version"] = version
-        result["enabled"] = bool(version and saved["version"] == version and saved["policy"] == CODEX_POLICY)
+        result["enabled"] = bool(version in process.CODEX_VERIFIED and saved["version"] == version
+                                 and saved["policy"] == CODEX_POLICY and target_matches(saved, prefix))
         if not version:
             result["reason"] = "판을 확인하지 못했습니다"
         elif version not in process.CODEX_VERIFIED:
@@ -127,6 +128,25 @@ def state(prefix: list[str] | None) -> dict:
         else:
             result["reason"] = work_problem() or process.auth_problem(prefix)
     return result
+
+
+def target_matches(saved: dict, prefix: list[str]) -> bool:
+    from . import agent_chat_process as process
+
+    target = process.codex_target(prefix)
+    if "target" not in saved:
+        return target["kind"] == "npm" and saved.get("version") in process.CODEX_VERIFIED and saved.get("policy") == CODEX_POLICY
+    return saved["target"] == target
+
+
+def start_chain(chain_id: str) -> None:
+    """부르는 쪽이 codex_enabled.lock 을 쥔 상태에서만 쓴다."""
+    _write("codex_chain.json", {"id": chain_id, "cancelled": False})
+
+
+def check_chain(chain_id: str | None) -> None:
+    if chain_id is not None and _read("codex_chain.json") != {"id": chain_id, "cancelled": False}:
+        raise CodexError("연결이 취소됐어요")
 
 
 def plan_name(prefix: list[str]) -> str | None:
@@ -226,18 +246,19 @@ def _probe(prefix: list[str], model: str, work: Path, nonce: str) -> str | None:
     return reason or (None if completed and not failed and calls == 1 and nonce in answer else "연결 점검을 통과하지 못했어요")
 
 
-def enable(model: str, still_current=lambda: None) -> None:
+def enable(model: str, still_current=lambda: None, chain_id: str | None = None) -> None:
     from . import agent_chat_process as process
 
     with _lock("codex_probe.lock"):
         token = secrets.token_hex(32)
         with _lock("codex_enabled.lock", wait=True):
+            check_chain(chain_id)
             _write("codex_pending.json", {"token": token, "at": datetime.now(timezone.utc).isoformat()})
         try:
             prefix = process.engine_prefix("codex")
             if not prefix:
                 raise CodexError("이 PC 에 설치되어 있지 않습니다")
-            version = process.cli_version(prefix)
+            prefix, version = process.verified_codex(prefix)
             if version not in process.CODEX_VERIFIED:
                 raise CodexError("판을 확인하지 못했거나 확인하지 않은 Codex 판입니다")
             problem = process.auth_problem(prefix) or work_problem()
@@ -251,9 +272,10 @@ def enable(model: str, still_current=lambda: None) -> None:
                 raise CodexError(problem)
             still_current()
             with _lock("codex_enabled.lock", wait=True):
+                check_chain(chain_id)
                 if (_read("codex_pending.json") or {}).get("token") != token:
                     raise CodexError("연결 점검 중 꺼졌어요")
-                _write("codex_enabled.json", {"version": version, "policy": CODEX_POLICY,
+                _write("codex_enabled.json", {"version": version, "policy": CODEX_POLICY, "target": process.codex_target(prefix),
                                                "at": datetime.now(timezone.utc).isoformat()})
                 _path("codex_pending.json").unlink(missing_ok=True)
         except (OSError, process.OutputLimit) as exc:
@@ -266,5 +288,8 @@ def enable(model: str, still_current=lambda: None) -> None:
 
 def disable() -> None:
     with _lock("codex_enabled.lock", wait=True):
+        chain = _read("codex_chain.json")
+        if chain:
+            _write("codex_chain.json", {"id": chain.get("id"), "cancelled": True})
         _path("codex_pending.json").unlink(missing_ok=True)
         _path("codex_enabled.json").unlink(missing_ok=True)

@@ -101,6 +101,12 @@ def test_off_without_calling_installer_or_writing(release, monkeypatch, setup):
     assert fake.calls == 0 and not launcher._claude_marker_path().exists()
 
 
+def test_manual_request_eligibility_does_not_turn_on_boot_install(release, monkeypatch):
+    monkeypatch.setenv("MVHUB_CLAUDE_INSTALL", "0")
+    assert launcher._claude_install_eligible() is False
+    assert launcher._claude_install_eligible(manual=True) is True
+
+
 @pytest.mark.parametrize("reason", launcher.CLAUDE_SKIP_REASONS)
 def test_token_problem_skips_and_keeps_status(release, monkeypatch, reason):
     monkeypatch.setattr(launcher, "_claude_token_problem", lambda: reason)
@@ -354,8 +360,10 @@ def test_installer_job_is_kill_on_close_without_breakaway_suspended_and_windowle
     limits = spy.calls["SetInformationJobObject"][0][2]._obj
     assert limits.BasicLimitInformation.LimitFlags == launcher.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     create = spy.calls["CreateProcessW"][0]
-    assert create[4] is False  # 핸들 상속 없음
-    assert create[5] == launcher.CREATE_SUSPENDED | launcher.CREATE_NO_WINDOW  # 탈출 플래그 없음
+    assert create[4] is True  # NUL 핸들만 명시적 상속 목록으로 제한한다.
+    assert create[5] == launcher.CREATE_SUSPENDED | launcher.CREATE_NO_WINDOW | 0x80000  # 탈출 없음·확장 시작 정보
+    attributes = spy.calls["UpdateProcThreadAttribute"][0]
+    assert attributes[2] == 0x20002 and len(attributes[3]) == 1  # HANDLE_LIST: 다른 허브 핸들은 상속하지 않는다.
     assert all(name in spy.calls for name in ("AssignProcessToJobObject", "ResumeThread", "TerminateJobObject"))
 
 

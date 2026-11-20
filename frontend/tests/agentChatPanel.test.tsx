@@ -18,6 +18,7 @@ import { STORAGE_KEYS } from "../src/lib/storageKeys";
 import { getAuthToken, setAuthToken } from "../src/lib/http";
 import { applyAgentEvent, type AgentMessage } from "../src/lib/useAgentChat";
 import { setHubFeatures } from "../src/lib/hubFeatures";
+import { resetModelCatalogCache } from "../src/lib/modelCatalogCache";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -46,6 +47,7 @@ const PLAN = { plan_id: "p1", title: "고양이 컷 4장", status: "draft", item
 let host: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
+  resetModelCatalogCache();
   localStorage.clear();
   sessionStorage.clear();
   sessionStorage.setItem("ch.accountScope", "jay@example.com");

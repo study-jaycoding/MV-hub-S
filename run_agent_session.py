@@ -14,9 +14,11 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -148,6 +150,10 @@ class PROCESS_INFORMATION(ctypes.Structure):
     ]
 
 
+class STARTUPINFOEXW(ctypes.Structure):
+    _fields_ = [("StartupInfo", STARTUPINFOW), ("lpAttributeList", ctypes.c_void_p)]
+
+
 def _configure_api():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
@@ -189,6 +195,11 @@ def _configure_api():
     kernel32.QueryInformationJobObject.argtypes = [
         wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
     kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    kernel32.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                                          ctypes.POINTER(ctypes.c_size_t)]
+    kernel32.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t,
+                                                  ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
     return kernel32
 
 
@@ -1487,7 +1498,7 @@ def _claude_marker_path() -> Path:
 
 
 def _claude_version(prefix: list[str], timeout: float = CLAUDE_VERSION_TIMEOUT,
-                    cap: int = CLAUDE_VERSION_CAP) -> str | None:
+                    cap: int = CLAUDE_VERSION_CAP, codex: bool = False) -> str | None:
     """정확한 경로로 `--version` — 종료 0 이고 첫 낱말이 숫자.숫자.숫자일 때만 판. 출력은 읽는 동안 cap 까지만 받는다."""
     try:
         proc = subprocess.Popen([*prefix, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -1513,6 +1524,8 @@ def _claude_version(prefix: list[str], timeout: float = CLAUDE_VERSION_TIMEOUT,
         if not reader.is_alive():  # 읽는 스레드가 쥔 채로 닫으면 닫기가 멈춘다
             proc.stdout.close()
     words = out[0].decode("utf-8", "replace").split()
+    if codex:
+        return words[1] if code == 0 and len(words) == 2 and words[0] == "codex-cli" else None
     return words[0] if code == 0 and words and re.fullmatch(r"\d+\.\d+\.\d+", words[0]) else None
 
 
@@ -1630,12 +1643,12 @@ def _set_claude_status(status: str, **fields) -> bool:
     return _write_claude_marker({**keep, "status": status, "at": int(time.time()), **fields})
 
 
-def _claude_install_eligible() -> bool:
+def _claude_install_eligible(manual: bool = False) -> bool:
     """릴리스 설치(.git 없음·open_link.py·설치 표식)·공유 서버 아님·끄는 스위치 없음. 토큰은 잠금 안에서 본다."""
     root = _install_root()
     return (os.name == "nt"
             and os.environ.get("CONTENT_HUB_AUTH", "0").strip().lower() not in {"1", "true", "yes", "on"}
-            and os.environ.get("MVHUB_CLAUDE_INSTALL", "").strip() != "0"
+            and (manual or os.environ.get("MVHUB_CLAUDE_INSTALL", "").strip() != "0")
             and not (root / ".git").exists() and (root / "open_link.py").is_file()
             and (root / ".install-activation.json").is_file())
 
@@ -1656,6 +1669,20 @@ def _claude_install_command() -> tuple[str, str]:
     powershell = str(Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
     return powershell, subprocess.list2cmdline(
         [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", CLAUDE_INSTALL_SCRIPT])
+
+
+def _install_contract():
+    source = _install_root() / "backend" / "app" / "services" / "agent_chat_install.py"
+    spec = importlib.util.spec_from_file_location("mvhub_install_contract", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _codex_install_command() -> tuple[str, str]:
+    powershell = _claude_install_command()[0]
+    return powershell, subprocess.list2cmdline([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-Command", "$ProgressPreference='SilentlyContinue'; irm https://chatgpt.com/codex/install.ps1 | iex"])
 
 
 CLAUDE_JOB_CHECK_SECONDS = 10.0  # 끝남을 한 번 기다리는 길이 — 확인할 때까지 되풀이한다
@@ -1692,18 +1719,54 @@ def _end_process(kernel32, handle) -> None:
         time.sleep(1.0)
 
 
+@contextlib.contextmanager
+def _installer_startup(kernel32):
+    """입출력은 NUL, 상속 목록도 그 핸들 하나만. 콘솔 입력을 다시 만드는 Windows 동작을 피한다."""
+    import msvcrt
+    with open(os.devnull, "r+b") as stream:
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        os.set_handle_inheritable(handle, True)
+        size = ctypes.c_size_t()
+        kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+        attributes = ctypes.create_string_buffer(size.value)
+        initialized = False
+        try:
+            if not kernel32.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)):
+                raise OSError("installer handles")
+            initialized = True
+            handles = (wintypes.HANDLE * 1)(handle)
+            if not kernel32.UpdateProcThreadAttribute(attributes, 0, 0x20002, handles, ctypes.sizeof(handles), None, None):
+                raise OSError("installer handles")
+            startup = STARTUPINFOEXW()
+            startup.StartupInfo.cb = ctypes.sizeof(startup)
+            startup.StartupInfo.dwFlags = 0x100
+            startup.StartupInfo.hStdInput = startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = handle
+            startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+            yield ctypes.cast(ctypes.byref(startup), ctypes.POINTER(STARTUPINFOW))
+        finally:
+            if initialized:
+                kernel32.DeleteProcThreadAttributeList(attributes)
+            os.set_handle_inheritable(handle, False)
+
+
 def _drive_claude_installer(kernel32, job, info, application: str, line: str, workdir: Path,
-                            timeout: float) -> tuple[int | None, str | None]:
+                            timeout: float, env: dict | None = None) -> tuple[int | None, str | None]:
     limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     # 닫히면 모두 끔만 — run_guarded 의 탈출 허용(BREAKAWAY_OK)은 넣지 않는다(Codex v3 2차 P2).
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     if not kernel32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
                                             ctypes.byref(limits), ctypes.sizeof(limits)):
         return None, "job"
-    startup = STARTUPINFOW(cb=ctypes.sizeof(STARTUPINFOW))
-    if not kernel32.CreateProcessW(application, ctypes.create_unicode_buffer(line), None, None, False,
-                                   CREATE_SUSPENDED | CREATE_NO_WINDOW, None, str(workdir),
-                                   ctypes.byref(startup), ctypes.byref(info)):
+    # Codex 환경만 별도 유니코드 블록으로 넘긴다.
+    block = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in
+             sorted(env.items(), key=lambda pair: pair[0].upper())) + "\0\0") if env is not None else None
+    try:
+        with _installer_startup(kernel32) as startup:
+            if not kernel32.CreateProcessW(application, ctypes.create_unicode_buffer(line), None, None, True,
+                    CREATE_SUSPENDED | CREATE_NO_WINDOW | 0x80000 | (0x400 if block is not None else 0), block, str(workdir),
+                    startup, ctypes.byref(info)):
+                return None, "start"
+    except OSError:
         return None, "start"
     if not kernel32.AssignProcessToJobObject(job, info.hProcess):
         _end_process(kernel32, info.hProcess)
@@ -1720,9 +1783,9 @@ def _drive_claude_installer(kernel32, job, info, application: str, line: str, wo
 
 
 def _run_claude_installer(command: tuple[str, str] | None = None, timeout: float = CLAUDE_INSTALL_TIMEOUT,
-                          kernel32=None) -> tuple[int | None, str | None]:
+                          kernel32=None, env: dict | None = None) -> tuple[int | None, str | None]:
     """설치 전용 Job 안에서 멈춘 채 생성 → 배정 → 재개. (종료 코드, 문제) — 문제는 job·start·timeout.
-    창 없음·핸들 상속 없음(출력은 버린다)·작업 폴더는 %LOCALAPPDATA%\\MVHub(설치 폴더를 붙잡지 않게)."""
+    창 없음·NUL 입출력 핸들만 상속·작업 폴더는 %LOCALAPPDATA%\\MVHub(설치 폴더를 붙잡지 않게)."""
     kernel32 = kernel32 or _configure_api()
     application, line = command or _claude_install_command()
     workdir = _mvhub_local_dir()
@@ -1732,7 +1795,7 @@ def _run_claude_installer(command: tuple[str, str] | None = None, timeout: float
         return None, "job"
     info = PROCESS_INFORMATION()
     try:
-        result = _drive_claude_installer(kernel32, job, info, application, line, workdir, timeout)
+        result = _drive_claude_installer(kernel32, job, info, application, line, workdir, timeout, env)
         # 남은 손자까지 끄고 0개를 확인한 뒤에야 돌려준다 — 부르는 쪽은 결과 판정까지 파일 잠금을 쥔다.
         _hold_until_empty(kernel32, job)
         return result
@@ -1796,6 +1859,117 @@ def _start_claude_install() -> None:
         threading.Thread(target=_claude_install_quietly, name="claude-install", daemon=True).start()
 
 
+def _request_valid(contract, request: dict, engine: str, generation: str) -> bool:
+    return (set(request) == {"id", "engine", "install_id", "generation", "at"}
+            and re.fullmatch(r"[a-f0-9]{32}", str(request.get("id", ""))) is not None
+            and request.get("engine") == engine and request.get("generation") == generation
+            and request.get("install_id") == _install_id()
+            and isinstance(request.get("at"), int) and not isinstance(request["at"], bool)
+            and 0 <= time.time() - request["at"] < CLAUDE_INSTALL_TIMEOUT + 120)
+
+
+def _run_requested_install(contract, request: dict) -> None:
+    engine = request["engine"]
+    problem = None
+    folder = contract.directory()
+    result = {**request, "state": "failed", "reason": "install_failed"}
+    try:
+        # 자동 Claude 설치와 같은 사용자별 잠금. 0개 회수까지 설치 함수가 이 잠금을 유지한다.
+        with contract.file_lock(_mvhub_local_dir() / f"{engine}-install.lock"):
+            if not _claude_install_eligible(manual=True):
+                result.update(state="skipped", reason="release_only")
+            elif problem := _claude_token_problem():
+                result.update(state="skipped", reason=problem)
+            else:
+                if engine == "claude":
+                    version = _claude_version([str(_official_claude())])
+                    if not version:
+                        if not _set_claude_status("started"):
+                            problem = "marker_failed"
+                        else:
+                            code, problem = _run_claude_installer()
+                            if code != 0 and problem is None:
+                                problem = "install_failed"
+                            version = _claude_version([str(_official_claude())]) if code == 0 and not problem else None
+                            _set_claude_status("ok" if version else "failed", reason=problem or (None if version else "install_failed"))
+                else:
+                    env = contract.installer_env()
+                    exe = contract.official_codex()
+                    version = _claude_version([str(exe)], codex=True)
+                    update = contract.codex_home() / "packages" / "standalone" / "auto-update-version"
+                    if version != env["CODEX_RELEASE"] or update.exists():
+                        code, problem = _run_claude_installer(_codex_install_command(), env=env)
+                        if code != 0 and problem is None:
+                            problem = "install_failed"
+                        version = _claude_version([str(exe)], codex=True) if code == 0 and not problem else None
+                    if version != env["CODEX_RELEASE"] or update.exists():
+                        version = None
+                result.update(state="ok" if version else "failed", reason=None if version else problem or "version_check")
+    except (OSError, ValueError):
+        result.update(state="failed", reason="start")
+    result["at"] = int(time.time())
+    with contract.file_lock(folder / f"{engine}.request.lock"):
+        current = contract.read(folder / f"{engine}.request.json")
+        if current == request:
+            contract.write(folder / f"{engine}.json", result)
+
+
+def _start_install_requests(port: str):
+    try:
+        contract = _install_contract()
+    except (OSError, ImportError):
+        os.environ.pop("CONTENT_HUB_AGENT_INSTALL_GENERATION", None)
+        return lambda: None  # backend 가 아직 없는 설치/복구 단계에서도 기존 실행기는 동작한다.
+    generation = secrets.token_hex(16)
+    os.environ.update(CONTENT_HUB_AGENT_INSTALL_ID=_install_id(), CONTENT_HUB_AGENT_INSTALL_PORT=str(port),
+                      CONTENT_HUB_AGENT_INSTALL_GENERATION=generation)
+    folder = contract.directory()
+    stop = threading.Event()
+    live = {"generation": generation, "pid": os.getpid(), "start": contract.process_start(os.getpid()),
+            "release": _claude_install_eligible(manual=True), "ready": False}
+    try:
+        contract.write(folder / "launcher.json", live)
+    except OSError:
+        os.environ.pop("CONTENT_HUB_AGENT_INSTALL_GENERATION", None)
+        return lambda: None  # 설치 통로 실패가 기존 앱 기동을 막지 않게 한다.
+
+    def watch():
+        workers = {}
+        while not stop.is_set():
+            try:
+                nonce = os.environ.get("MVHUB_EXECUTION_NONCE", "")
+                ready = (_update_boot_outcome(nonce) is True if os.environ.get("MVHUB_ACTIVATION_CONTROL")
+                         else _boot_would_be_accepted())
+                if ready != live["ready"]:
+                    live["ready"] = ready
+                    contract.write(folder / "launcher.json", live)
+                if ready and live["release"]:
+                    for engine in contract.ENGINES:
+                        if engine in workers and workers[engine].is_alive():
+                            continue
+                        with contract.file_lock(folder / f"{engine}.request.lock"):
+                            req = contract.read(folder / f"{engine}.request.json")
+                            result = contract.read(folder / f"{engine}.json")
+                            if not _request_valid(contract, req, engine, generation) or result.get("state") != "running" \
+                                    or result.get("id") != req["id"]:
+                                continue
+                            worker = threading.Thread(target=_run_requested_install, args=(contract, req),
+                                                      name=f"{engine}-requested-install", daemon=True)
+                            workers[engine] = worker
+                            worker.start()
+            except (OSError, ValueError):
+                pass  # 다음 조회에서 재확인한다. 출력·설치 명령은 기록하지 않는다.
+            stop.wait(2)
+
+    threading.Thread(target=watch, name="agent-install-requests", daemon=True).start()
+
+    def close():
+        stop.set()
+        if contract.read(folder / "launcher.json").get("generation") == generation:
+            (folder / "launcher.json").unlink(missing_ok=True)
+    return close
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MV Hub agent process-tree guard")
     parser.add_argument("script", nargs="?", type=Path)
@@ -1855,10 +2029,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
         _start_open_link_registration(port)
+        close_install_requests = _start_install_requests(port)
         _start_claude_install()
         _close_stale_launcher_shells(script)
         ensure_desktop_shortcut()
-        return run_guarded(script)
+        try:
+            return run_guarded(script)
+        finally:
+            close_install_requests()
     except (OSError, ValueError) as exc:
         print(f"[ERROR] Agent session guard failed: {exc}", file=sys.stderr)
         return 1

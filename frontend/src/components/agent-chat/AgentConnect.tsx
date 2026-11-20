@@ -38,6 +38,42 @@ export function CopyLine({ command }: { command: string }) {
   );
 }
 
+const INSTALL_REASONS: Record<string, string> = {
+  elevated: "관리자 권한으로 켜서 설치할 수 없어요", service_account: "이 Windows 로그인에서는 설치할 수 없어요",
+  not_interactive: "대화형 Windows 로그인에서만 설치할 수 있어요", token_unknown: "권한을 확인하지 못해 설치할 수 없어요",
+  other_user: "다른 Windows 사용자로 켜서 설치할 수 없어요", shared_server: "공유 서버에서는 설치할 수 없어요",
+  release_only: "MV Hub 설치판에서만 설치해요", launcher_missing: "MV Hub 설치판을 다시 켜 주세요",
+  boot_pending: "앱 업데이트가 끝난 뒤 다시 해 주세요", timeout: "설치 시간이 초과됐어요",
+  version_check: "설치한 판을 확인하지 못했어요", interrupted: "설치가 중단됐어요",
+  download: "내려받지 못했어요", disk: "디스크에 저장하지 못했어요", permission: "설치 권한이 없어요",
+  start: "설치기를 시작하지 못했어요", job: "설치 실행을 안전하게 준비하지 못했어요",
+  marker_failed: "설치 요청을 저장하지 못했어요", release_unavailable: "필요한 Codex 판을 받을 수 없어요",
+};
+
+export function InstallControls({ engine, install, blocked, version, onInstall, onRecheck }: {
+  engine: "claude" | "codex"; install?: ClaudeInstall | null; blocked?: string | null;
+  version?: string;
+  onInstall: () => void; onRecheck: () => void;
+}) {
+  const t = useT();
+  const running = install?.state === "running";
+  const skipped = install?.state === "skipped" ? install.reason : install?.state === "failed" ? null : blocked;
+  const failed = install?.state === "failed";
+  return <div className="agent-install-controls">
+    {running ? <p className="agent-connect-wait" role="status"><i className="agent-connect-spin" aria-hidden="true" />{t("설치하는 중 · 몇 분 걸려요")}</p>
+      : skipped ? <p className="cn-warn" role="status">{t(INSTALL_REASONS[skipped] ?? "이 환경에서는 설치할 수 없어요")}</p>
+      : <>
+        <p className={failed ? "cn-warn" : "cn-note"} role="status">{failed
+          ? `${t("설치하지 못했어요")} — ${t(INSTALL_REASONS[install.reason ?? ""] ?? "설치를 마치지 못했어요")}` : t("이 PC 에 없어요")}</p>
+        <button type="button" className="cn-go" onClick={onInstall}>{t(failed ? "다시 시도" : "설치하고 연결")}</button>
+        {engine === "codex" && <p className="cn-note agent-install-path">{t("설치하면 사용자 PATH 에 공식 Codex 가 더해져 터미널의 codex 가 바뀔 수 있어요")}</p>}
+        {failed && <details className="cn-more"><summary>{t("직접 설치하려면")}</summary>
+          {engine === "claude" ? <ManualInstall onRecheck={onRecheck} /> : <>{version && <CopyLine command={`$env:CODEX_RELEASE='${version}'; $env:CODEX_NON_INTERACTIVE='1'; $env:CODEX_INSTALL_DIR=$null; irm https://chatgpt.com/codex/install.ps1 | iex`} />}<button type="button" className="cn-ghost" onClick={onRecheck}>{t("다시 확인")}</button></>}
+        </details>}
+      </>}
+  </div>;
+}
+
 function Steps({ installed, version, login }: { installed: boolean; version: string | null; login: "todo" | "now" | "wait" | "warn" }) {
   const t = useT();
   return (

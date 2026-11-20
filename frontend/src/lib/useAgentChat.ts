@@ -30,6 +30,8 @@ import {
   type AgentTurnStatus,
   type AgentWeeklyUsage,
   type ClaudeStatus,
+  type ClaudeInstall,
+  type CodexLogin,
 } from "./agentChatApi";
 import { runScreenAction, undoScreenAction, type ScreenHost, type ScreenUndo } from "./agentScreenActions";
 import { AGENT_CHAT_CONNECT_FEATURE, hubHasFeature } from "./hubFeatures";
@@ -574,18 +576,33 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeInFlight = useRef(false); // 2초 확인은 앞 확인이 끝나야 다음을 보낸다
   const mounted = useRef(true); // 닫힌 칸엔 답·타이머가 쓰지 않는다
   const codexInFlight = useRef(false);
+  const codexAction = useRef(0);
+  const installAction = useRef({ claude: 0, codex: 0 });
+  const codexOpening = useRef(false);
+  const installRequests = useRef<Partial<Record<AgentEngineId, { id: string; account: string }>>>({});
+  const [installs, setInstalls] = useState<Partial<Record<AgentEngineId, ClaudeInstall>>>({});
+  const [codexLogin, setCodexLogin] = useState<CodexLogin | null>(null);
+  const codexLoginRequest = useRef<{ id: string; account: string } | null>(null);
   const [codexBusy, setCodexBusy] = useState(false);
   const [codexError, setCodexError] = useState<string | null>(null);
 
-  const setCodexEnabled = useCallback(async (enabled: boolean) => {
-    if (codexInFlight.current) return;
+  const setCodexEnabled = useCallback(async (enabled: boolean, chainId?: string) => {
+    if (enabled && codexInFlight.current) return;
+    const action = ++codexAction.current;
+    if (!enabled) {
+      installAction.current.codex += 1;
+      delete installRequests.current.codex;
+      codexLoginRequest.current = null;
+      setCodexLogin(null);
+      setInstalls((old) => { const next = { ...old }; delete next.codex; return next; });
+    }
     const account = getAccountNamespace();
-    const current = () => mounted.current && account === getAccountNamespace();
+    const current = () => mounted.current && action === codexAction.current && account === getAccountNamespace();
     codexInFlight.current = true;
     setCodexBusy(true);
     setCodexError(null);
     try {
-      const result = await agentChatApi.setCodexEnabled(enabled);
+      const result = await agentChatApi.setCodexEnabled(enabled, chainId);
       if (!current()) return;
       setSession((s) => s ? { ...s, engines: result.engines } : s);
       setChoice((c) => c ?? pickChoice(result.engines, null));
@@ -595,12 +612,16 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         if (e instanceof AccountChangedError) fail(e);
       }
     } finally {
-      codexInFlight.current = false;
-      if (mounted.current) setCodexBusy(false);
+      if (action === codexAction.current) {
+        codexInFlight.current = false;
+        if (mounted.current) setCodexBusy(false);
+      }
     }
   }, [fail]);
 
   const stopWaiting = useCallback(() => {
+    installAction.current.claude += 1;
+    delete installRequests.current.claude;
     if (claudeTimer.current !== null) window.clearInterval(claudeTimer.current);
     claudeTimer.current = null;
     setWaiting(false);
@@ -655,7 +676,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
 
   // 실행기가 Claude Code 를 설치하는 중이면 3초마다 다시 본다 — 끝나면(running 아님) 멈추고 화면이 그 단계로 넘어간다.
   //  로그인 창 기다림(2초·10분)과 따로다. 칸을 닫으면 정리로 멈춘다(설치 설계 2-v3-1b).
-  const installing = claude?.install?.state === "running";
+  const installing = claude?.install?.state === "running" || !!session?.engines.some((engine) => engine.install?.state === "running");
   useEffect(() => {
     if (!installing) return;
     const timer = window.setInterval(() => { if (!claudeInFlight.current) void recheck(); }, 3000);
@@ -695,6 +716,85 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       if (current()) setConnecting(false);
     }
   }, [recheck, startWaiting]);
+
+  const loginCodex = useCallback(async (chainId?: string, reconnect = false) => {
+    if (codexOpening.current || codexLoginRequest.current) return;
+    codexOpening.current = true;
+    const action = codexAction.current;
+    const account = getAccountNamespace();
+    const current = () => mounted.current && account === getAccountNamespace() && action === codexAction.current;
+    setCodexError(null);
+    try {
+      const result = await agentChatApi.openCodexLogin(chainId, reconnect);
+      if (!current()) return;
+      setCodexLogin(result);
+      if (result.state === "ok") void setCodexEnabled(true, result.id);
+      else if (result.state === "running") codexLoginRequest.current = { id: result.id, account };
+    } catch (e) { if (current()) setCodexError(errorDetail(e)); }
+    finally { codexOpening.current = false; }
+  }, [setCodexEnabled]);
+
+  const installEngine = useCallback(async (engine: AgentEngineId) => {
+    if (installRequests.current[engine]) return;
+    const action = ++installAction.current[engine];
+    const account = getAccountNamespace();
+    installRequests.current[engine] = { id: "", account };
+    setInstalls((old) => ({ ...old, [engine]: { state: "running", at: Date.now() / 1000, reason: null } }));
+    try {
+      const result = await agentChatApi.install(engine);
+      if (!mounted.current || account !== getAccountNamespace() || action !== installAction.current[engine] || !installRequests.current[engine]) return;
+      setInstalls((old) => ({ ...old, [engine]: result }));
+      if (result.id && result.state === "running") installRequests.current[engine] = { id: result.id, account };
+      else delete installRequests.current[engine];
+    } catch (e) {
+      if (action === installAction.current[engine]) delete installRequests.current[engine];
+      if (mounted.current && account === getAccountNamespace() && action === installAction.current[engine]) {
+        setInstalls((old) => ({ ...old, [engine]: { state: "failed", at: Date.now() / 1000, reason: "marker_failed" } }));
+        if (e instanceof AccountChangedError) fail(e);
+      }
+    }
+  }, [fail]);
+
+  const installPolling = useRef(false);
+  const checkConnections = useCallback(async () => {
+    if (installPolling.current) return;
+    installPolling.current = true;
+    try {
+      for (const engine of ["claude", "codex"] as const) {
+        const request = installRequests.current[engine];
+        if (!request?.id) continue;
+        const action = installAction.current[engine];
+        const { install } = await agentChatApi.installStatus(engine);
+        if (!mounted.current || request !== installRequests.current[engine] || request.account !== getAccountNamespace()) continue;
+        if (!install || install.id !== request.id) continue;
+        setInstalls((old) => ({ ...old, [engine]: install }));
+        if (install.state !== "running") {
+          delete installRequests.current[engine]; // 이 화면에서 누른 id 에 한 번만 이어 간다.
+          await recheck();
+          if (install.state === "ok" && mounted.current && action === installAction.current[engine] && request.account === getAccountNamespace()) {
+            if (engine === "claude") void connect();
+            else void loginCodex(request.id);
+          }
+        }
+      }
+      const request = codexLoginRequest.current;
+      if (request) {
+        const result = await agentChatApi.codexLoginStatus(request.id);
+        if (mounted.current && codexLoginRequest.current === request && request.account === getAccountNamespace() && result.id === request.id) {
+          setCodexLogin(result);
+          if (result.state !== "running") {
+            codexLoginRequest.current = null;
+            if (result.state === "ok") await setCodexEnabled(true, request.id);
+          }
+        }
+      }
+    } catch (e) { if (mounted.current && e instanceof AccountChangedError) fail(e); }
+    finally { installPolling.current = false; }
+  }, [connect, fail, loginCodex, recheck, setCodexEnabled]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { void checkConnections(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [checkConnections]);
 
   useEffect(() => {
     mounted.current = true; // 개발 모드의 두 번 올리기에서도 다시 켠다
@@ -1147,7 +1247,11 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
     claudeApp, appBusy, appError,
-    codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled },
+    codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled, login: codexLogin, connect: loginCodex,
+      recheck: () => {
+        if (codexLogin?.state === "manual") codexLoginRequest.current = { id: codexLogin.id, account: getAccountNamespace() };
+        return checkConnections();
+      }, stopWaiting: () => { codexLoginRequest.current = null; setCodexLogin(null); } },
     restoreReference, restoreSource, newFromRestored, removeRestoreSource,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking, undoAction,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
@@ -1159,6 +1263,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       allowed: !!claudeEngine?.available,
       loginWindowEnabled: !!claude?.login_window_enabled,
       install: claude?.install ?? null,
+      installs, installEngine,
       waiting, connecting, connectError, note: loginNote, connected,
       recheck, connect, stopWaiting, dismissConnected: () => setConnected(null),
     },

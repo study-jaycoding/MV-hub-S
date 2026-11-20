@@ -7,10 +7,16 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-19
+updated: 2026-11-20
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
+
+MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행기와 공유하는 요청/결과 표식·원자 저장·파일 잠금·공식 설치 환경을 맡고,
+`backend/app/services/agent_chat_codex_login.py`는 같은 Codex 자격별 로그인 창 하나·Job 탈출 확인·정확한 대상의 로그인 재확인을 맡는다.
+`run_agent_session.py`는 실행기 세대·2초 요청 조회·설치 전용 Job 실행을 맡는다. 요청과 API에는 명령·URL·경로를 받지 않는다.
+`backend/tests/test_agent_chat_install.py`·`backend/tests/test_agent_chat_codex_login.py`·`frontend/tests/agentSettingsInstall.test.tsx`는 임시 폴더·가짜 설치기/로그인으로 경계와 화면 사슬을 확인한다.
+설계는 [설치·연결](status/MVAgent_설치연결_2026-11-19.md)을 따른다.
 
 힉스필드 잔액 기록: `backend/app/hf_balance_contract.py`는 금액·정밀도·불변 지문·저장 확인 계약,
 `backend/app/db_hf_balance.py`는 migration 이름표 없는 추가 표와 구조 검사,

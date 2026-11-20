@@ -29,6 +29,7 @@ CODEX_FEATURES_OFF = ("apps", "multi_agent", "image_generation", "unified_exec",
                       "skill_mcp_dependency_install", "skill_search", "view_image")
 MAX_STDERR = 64 * 1024
 MAX_TOTAL = 32 * 1024 * 1024  # 한 차례 stdout 전체 상한 — 넘으면 끈다
+CODEX_NOT_SUBSCRIPTION = "구독 로그인이 아닙니다(API 키 방식은 쓰지 않습니다)"
 
 
 class OutputLimit(Exception):
@@ -107,6 +108,8 @@ def install_method(prefix: list[str] | None) -> str:
 
 
 def _claude_candidates() -> list[list[str]]:
+    from . import agent_chat_install as install
+
     found, out = shutil.which("claude"), []
     if found:
         path = Path(found)
@@ -118,7 +121,7 @@ def _claude_candidates() -> list[list[str]]:
             if native.is_file():
                 out.append([str(native)])
     official = official_claude()
-    if (claude_install() or {}).get("state") == "running":
+    if (claude_install() or {}).get("state") == "running" or (install.status("claude") or {}).get("state") == "running":
         # 실행기가 공식 설치를 하는 중 — 공식 파일은 판 비교용 --version 까지 띄우지 않는다. PATH 로 찾은 것도 실제 경로로 비교해 뺀다.
         return [c for c in out if not _same_file(c[0], official)]
     if official.is_file() and all(not _same_file(c[0], official) for c in out):
@@ -135,12 +138,61 @@ def find_claude() -> list[str] | None:
     return max(candidates, key=lambda c: (version_tuple(cli_version(c)), c[0].casefold() == official))
 
 
+def _codex_candidates() -> list[list[str]]:
+    from . import agent_chat_install as install
+
+    node, candidates = shutil.which("node"), []
+    # 공식 bin 이 PATH 앞에 있어도 뒤쪽 npm 셰임을 따로 찾는다.
+    if node:
+        for folder in os.environ.get("PATH", "").split(os.pathsep):
+            folder = Path(folder.strip('"'))
+            script = folder / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            if any((folder / name).is_file() for name in ("codex", "codex.cmd", "codex.ps1")) and script.is_file():
+                candidate = [node, str(script)]
+                if candidate not in candidates:
+                    candidates.append(candidate)
+    official = install.official_codex()
+    if official.is_file() and (install.status("codex") or {}).get("state") != "running":
+        candidates.append([str(official)])
+    return candidates
+
+
 def find_codex() -> list[str] | None:
-    node, shim = shutil.which("node"), shutil.which("codex")
-    if not node or not shim:
+    from . import agent_chat_codex as codex
+
+    candidates = _codex_candidates()
+    saved = codex.marker()
+    if not candidates:
         return None
-    script = Path(shim).parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
-    return [node, str(script)] if script.is_file() else None
+    if saved is None:
+        return candidates[0]  # 꺼져 있으면 파일 존재만 본다. 판 선택은 사람이 연결할 때 한다.
+    if saved:
+        for candidate in candidates:
+            if codex.target_matches(saved, candidate) and saved["policy"] == codex.CODEX_POLICY \
+                    and saved["version"] in CODEX_VERIFIED and cli_version(candidate) == saved["version"]:
+                return candidate
+    if len(candidates) == 1:
+        return candidates[0]
+    return next((candidate for candidate in candidates if cli_version(candidate) in CODEX_VERIFIED), candidates[0])
+
+
+def verified_codex(prefix: list[str]) -> tuple[list[str], str]:
+    """명시적 연결/켜기에서만 판을 고른다. 평소 꺼진 엔진 목록은 CLI 를 실행하지 않는다."""
+    version = cli_version(prefix)
+    if version not in CODEX_VERIFIED:
+        candidates = _codex_candidates()
+        if prefix in candidates:
+            for candidate in candidates:
+                if candidate != prefix:
+                    other = cli_version(candidate)
+                    if other in CODEX_VERIFIED:
+                        return candidate, other
+    return prefix, version
+
+
+def codex_target(prefix: list[str]) -> dict:
+    return {"path": os.path.normcase(os.path.abspath(prefix[1] if len(prefix) > 1 else prefix[0])),
+            "kind": "npm" if len(prefix) > 1 else "official"}
 
 
 def engine_prefix(engine: str) -> list[str] | None:
@@ -154,7 +206,7 @@ def cli_version(prefix: list[str]) -> str:
                               creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    words = (done.stdout or "").split()
+    words = (done.stdout or "").split() if done.returncode == 0 else []
     if not words:
         return ""
     # "2.1.296 (Claude Code)" / "codex-cli 0.162.0-alpha.17.2"
@@ -187,7 +239,7 @@ def auth_problem(prefix: list[str]) -> str | None:
     text = _status_output(prefix, ["login", "status"])
     if "Logged in using ChatGPT" in text:
         return None
-    return "구독 로그인이 아닙니다(API 키 방식은 쓰지 않습니다)" if "Logged in" in text else "로그인되어 있지 않습니다"
+    return CODEX_NOT_SUBSCRIPTION if "Logged in" in text else "로그인되어 있지 않습니다"
 
 
 def _toml_literal(value: str) -> str:

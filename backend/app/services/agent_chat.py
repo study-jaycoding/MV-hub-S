@@ -314,7 +314,14 @@ class AgentChat:
         #  캐시를 버린다(설치 설계 2-v3-1b, 설치 독립 리뷰 P2)
         raw = process.read_install_marker()
         install = process.claude_install(data=raw)
-        stamp = (json.dumps(raw, sort_keys=True, default=str), install, json.dumps(codex.marker(), sort_keys=True))
+        from . import agent_chat_install as installer
+        requests = {"claude": installer.verified_status("claude"),
+                    "codex": installer.verified_status("codex", probe=codex.marker() is not None)}
+        install = requests["claude"] or install
+        if (install or {}).get("state") == "skipped" and installer.eligibility() is None:
+            install = None
+        stamp = (json.dumps(raw, sort_keys=True, default=str), install, json.dumps(codex.marker(), sort_keys=True),
+                 json.dumps(requests, sort_keys=True), installer.launcher())
         with self._lock:
             if not refresh and self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS \
                     and self._engines[2] == stamp and (install or {}).get("state") != "running":
@@ -322,7 +329,7 @@ class AgentChat:
         result = []
         for engine in ("claude", "codex"):
             prefix = process.engine_prefix(engine)
-            row = {"id": engine, "models": MODELS[engine], "efforts": list(EFFORTS[engine])}
+            row = {"id": engine, "models": MODELS[engine], "efforts": list(EFFORTS[engine]), "installed": prefix is not None}
             if engine == "claude":
                 state = claude.claude_state(prefix)
                 ok = state["state"] in claude.CHAT_OK
@@ -334,6 +341,10 @@ class AgentChat:
                 row.update(available=state["reason"] is None, **state)
                 # 요금제 조회(Codex 한 번 더 띄움)는 목록에서만 — 대화 보낼 때의 state()·engine_problem 에서는 하지 않는다.
                 row["subscription"] = codex.plan_name(prefix) if row["available"] else None
+                row["installed"] = prefix is not None
+                row["install_version"] = next(iter(process.CODEX_VERIFIED))
+                row["install"] = requests["codex"]
+            row["install_blocked"] = installer.eligibility() if not prefix else None
             result.append(row)
         with self._lock:
             self._engines = (time.monotonic(), result, stamp)

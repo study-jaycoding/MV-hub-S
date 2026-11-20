@@ -34,10 +34,15 @@ export interface AgentEngine {
   subscription?: string | null; // 알려진 유료 종류의 표시 이름(Max 등) — ready 일 때만
   models: { id: string; label: string }[];
   efforts: string[];
+  installed?: boolean;
+  install_version?: string;
+  install?: ClaudeInstall | null;
+  install_blocked?: string | null;
 }
 /** MV Hub 실행기의 Claude Code 공식 설치(허브가 표식을 읽어 준다 — docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b).
  *  running = 설치 중(20분 안) · failed = 마지막 설치 실패 · skipped = 건너뜀(reason: elevated·not_interactive·service_account·token_unknown). */
-export interface ClaudeInstall { state: "running" | "failed" | "skipped"; at: number; reason: string | null }
+export interface ClaudeInstall { id?: string; state: "running" | "failed" | "skipped" | "ok"; at: number; reason: string | null }
+export interface CodexLogin { id: string; state: "running" | "failed" | "ok" | "manual" | "not_subscription"; reason: string | null; ports_busy?: boolean }
 export interface ClaudeStatus {
   state: ClaudeState;
   version: string | null;
@@ -294,6 +299,9 @@ function send(path: string, init: RequestInit, expect: string, secret?: string):
 }
 
 async function readJson<T>(res: Response, path: string): Promise<T> {
+  if (res.status === 422 && /^\/(claude|codex)\/(install|login|enable)(\?|$)/.test(path)) {
+    throw new Error("연결 요청을 확인하지 못했어요. 화면을 다시 열고 시도해 주세요");
+  }
   if (!res.ok) await throwHttpError(res, BASE + path);
   return (await res.json()) as T;
 }
@@ -353,8 +361,12 @@ async function claudeApp(conversationId: string, action: "open" | "bring-back", 
 export const agentChatApi = {
   claudeApp,
   session: openAgentSession,
-  setCodexEnabled: (enabled: boolean) => panelFetch<{ engines: AgentEngine[] }>(
-    `/codex/${enabled ? "enable" : "disable"}`, { method: "POST" }),
+  setCodexEnabled: (enabled: boolean, chainId?: string) => panelFetch<{ engines: AgentEngine[] }>(
+    `/codex/${enabled ? "enable" : "disable"}${chainId ? `?chain_id=${encodeURIComponent(chainId)}` : ""}`, { method: "POST" }),
+  install: (engine: AgentEngineId) => panelFetch<ClaudeInstall>(`/${engine}/install`, { method: "POST" }),
+  installStatus: (engine: AgentEngineId) => panelFetch<{ install: ClaudeInstall | null; blocked: string | null }>(`/${engine}/install`),
+  openCodexLogin: (chainId?: string, reconnect = false) => panelFetch<CodexLogin>(`/codex/login${chainId ? `?chain_id=${encodeURIComponent(chainId)}` : ""}`, { method: "POST", body: jsonBody({ reconnect }) }),
+  codexLoginStatus: (chainId: string) => panelFetch<CodexLogin>(`/codex/login?chain_id=${encodeURIComponent(chainId)}`),
   // truncated = 최근 500개만 실었다(서랍이 "최근 500개만 보여요")
   conversations: () => panelFetch<{ conversations: AgentConversationSummary[]; truncated?: boolean }>("/conversations"),
   patchConversation: (conversationId: string, body: AgentConversationPatch) =>
