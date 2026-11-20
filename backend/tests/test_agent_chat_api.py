@@ -179,6 +179,42 @@ def adapter_action(client, secret, method, args):
                        json={"method": method, "args": args})
 
 
+@pytest.mark.parametrize("problem,expected", [("missing", 503), ("busy", 409)])
+def test_install_pending_or_state_lock_failure_has_safe_response(hub, monkeypatch, problem, expected):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    if problem == "missing":
+        monkeypatch.setattr(router.installer, "request", lambda *args: None)
+    else:
+        def busy(*args, **kwargs): raise codex.Busy("internal lock")
+        monkeypatch.setattr(codex, "_lock", busy)
+    response = client.post("/api/agent-chat/codex/install", headers=headers)
+    assert response.status_code == expected
+    assert "잠시 뒤" in response.json()["detail"] and "internal" not in response.text
+
+
+@pytest.mark.parametrize("method", ["post", "get"])
+def test_codex_login_unreadable_process_is_human_message(hub, monkeypatch, method):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    def broken(*args): raise chat.claude.RecordUnreadable("process")
+    monkeypatch.setattr(router.codex_login, "open_login_window" if method == "post" else "status", broken)
+    response = getattr(client, method)("/api/agent-chat/codex/login?chain_id=" + "a" * 32, headers=headers)
+    assert response.status_code == 409
+    assert "로그인 창 상태를 확인하지 못했어요" in response.json()["detail"]
+    assert "process" not in response.text
+
+
+def test_codex_login_status_io_failure_is_retryable(hub, monkeypatch):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    def broken(*args): raise OSError("internal path")
+    monkeypatch.setattr(router.codex_login, "status", broken)
+    response = client.get("/api/agent-chat/codex/login?chain_id=" + "a" * 32, headers=headers)
+    assert response.status_code == 503 and "잠시 뒤" in response.json()["detail"]
+    assert "internal" not in response.text
+
+
 def plan_args():
     return {"title": "고양이", "context_id": None, "workspace_scope": "personal",
             "items": [{"label": "one", "prompt": "고양이", "model": "test_model", "params": {"seed": 1}}]}

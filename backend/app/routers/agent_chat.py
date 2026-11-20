@@ -182,6 +182,8 @@ async def install_engine(engine: Literal["claude", "codex"], body: InstallReques
         if engine == "codex":
             with codex._lock("codex_enabled.lock", wait=True):
                 result = installer.request(engine, lambda: mcp_v2._still_current(ctx))
+                if result is None:
+                    raise installer.RequestBusy("설치 요청 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요")
                 if result.get("id") and (codex._read("codex_chain.json") or {}).get("id") != result["id"]:
                     codex.start_chain(result["id"])
                 return result
@@ -189,6 +191,10 @@ async def install_engine(engine: Literal["claude", "codex"], body: InstallReques
 
     try:
         return await asyncio.to_thread(submit)
+    except codex.Busy as exc:
+        raise HTTPException(409, "연결 상태를 확인하는 중이에요. 잠시 뒤 다시 해 주세요") from exc
+    except installer.RequestBusy as exc:
+        raise HTTPException(503, "설치 요청 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요") from exc
     except OSError as exc:
         raise HTTPException(503, "설치 요청을 저장하지 못했어요") from exc
 
@@ -199,13 +205,20 @@ async def install_status(engine: Literal["claude", "codex"], panel=Depends(_pane
             "blocked": await asyncio.to_thread(installer.eligibility)}
 
 
+class CodexLoginRequest(StrictModel):
+    reconnect: StrictBool = False
+
+
 @router.post("/codex/login")
-async def open_codex_login(body: InstallRequest | None = None,
+async def open_codex_login(body: CodexLoginRequest | None = None,
                            chain_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
     ctx, _ = panel
     try:
-        return await asyncio.to_thread(codex_login.open_login_window, lambda: mcp_v2._still_current(ctx), chain_id)
-    except (codex.CodexError, claude.RecordUnreadable) as exc:
+        return await asyncio.to_thread(codex_login.open_login_window, lambda: mcp_v2._still_current(ctx), chain_id,
+                                       body.reconnect if body else False)
+    except claude.RecordUnreadable as exc:
+        raise HTTPException(409, "로그인 창 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요") from exc
+    except codex.CodexError as exc:
         raise HTTPException(409, str(exc)) from exc
     except OSError as exc:
         raise HTTPException(503, "로그인 창을 열지 못했어요") from exc
@@ -217,6 +230,8 @@ async def codex_login_status(chain_id: str = Query(pattern=r"^[a-f0-9]{32}$"), p
         return await asyncio.to_thread(codex_login.status, chain_id)
     except (codex.CodexError, claude.RecordUnreadable) as exc:
         raise HTTPException(409, "로그인 창 상태를 확인하지 못했어요") from exc
+    except OSError as exc:
+        raise HTTPException(503, "로그인 창 상태를 읽지 못했어요. 잠시 뒤 다시 해 주세요") from exc
 
 
 @router.post("/codex/enable")

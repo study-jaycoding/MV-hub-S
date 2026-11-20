@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 
+from .. import config
 from . import agent_chat_claude as claude
 from . import agent_chat_codex as codex
 from . import agent_chat_install as install
@@ -71,28 +72,46 @@ def _spawn(prefix):
         creationflags=claude.CREATE_NEW_CONSOLE | claude.CREATE_BREAKAWAY_FROM_JOB | process.CREATE_SUSPENDED)
 
 
-def open_login_window(still_current=lambda: None, chain_id: str | None = None) -> dict:
-    problem = claude._login_token_problem()
-    if problem:
-        raise codex.CodexError({"elevated": "관리자 권한으로 켜서 로그인 창을 열 수 없어요",
-                               "other_user": "다른 Windows 사용자로 켜서 로그인 창을 열 수 없어요"}
-                              .get(problem, "이 Windows 로그인에서는 로그인 창을 열 수 없어요"))
+def open_login_window(still_current=lambda: None, chain_id: str | None = None, reconnect: bool = False) -> dict:
     with install.file_lock(_folder() / "window.lock"):
-        old = _record()
-        if _alive(old):
-            return {"id": old["id"], "state": "running", "reason": None}
         prefix = process.engine_prefix("codex")
-        if not prefix or process.cli_version(prefix) not in process.CODEX_VERIFIED:
-            raise codex.CodexError("Codex 설치와 판을 먼저 확인해 주세요")
-        authenticated = process.auth_problem(prefix) is None
+        if not prefix:
+            raise codex.CodexError("이 PC 에 Codex 가 없어요")
+        prefix, version = process.verified_codex(prefix)
+        if version not in process.CODEX_VERIFIED:
+            raise codex.CodexError(f"점검 필요 — 확인하지 않은 판입니다({version})" if version else "Codex 판을 확인하지 못했어요")
+        auth = process.auth_problem(prefix)
+        warning = auth == process.CODEX_NOT_SUBSCRIPTION and not reconnect
+        # 이미 로그인된 PC 는 창 권한/스위치/오래된 창 기록과 무관하게 기존 켜기 점검으로 간다.
+        old = _record() if auth is not None and not warning else {}
+        alive = _alive(old)
+        if auth is not None and not warning and config.AGENT_CHAT_LOGIN_WINDOW and not alive:
+            problem = claude._login_token_problem()
+            if problem:
+                raise codex.CodexError({"elevated": "관리자 권한으로 켜서 로그인 창을 열 수 없어요",
+                                       "other_user": "다른 Windows 사용자로 켜서 로그인 창을 열 수 없어요"}
+                                      .get(problem, "이 Windows 로그인에서는 로그인 창을 열 수 없어요"))
         with codex._lock("codex_enabled.lock", wait=True):
             if chain_id is None:
-                chain_id = secrets.token_hex(16)
-                codex.start_chain(chain_id)
+                current = codex._read("codex_chain.json") or {}
+                if alive and current == {"id": old["id"], "cancelled": False}:
+                    chain_id = old["id"]
+                else:
+                    chain_id = secrets.token_hex(16)
+                    codex.start_chain(chain_id)
             codex.check_chain(chain_id)
             still_current()
-            if authenticated:
+            if auth is None:
                 return {"id": chain_id, "state": "ok", "reason": None}
+            if warning:
+                return {"id": chain_id, "state": "not_subscription", "reason": None}
+            if alive:
+                install.write(_folder() / "window.json", {**old, "id": chain_id})
+                return {"id": chain_id, "state": "running" if config.AGENT_CHAT_LOGIN_WINDOW else "manual", "reason": None}
+            if not config.AGENT_CHAT_LOGIN_WINDOW:
+                install.write(_folder() / "window.json", {"id": chain_id, "state": "none", "mode": "manual",
+                              "target": process.codex_target(prefix)})
+                return {"id": chain_id, "state": "manual", "reason": None}
             proc = None
             me = claude.process_start(os.getpid())
             if me is None:
@@ -132,11 +151,17 @@ def status(chain_id: str | None = None) -> dict:
         if not record or (chain_id is not None and record.get("id") != chain_id):
             return {"id": chain_id, "state": "failed", "reason": "login_unfinished", "ports_busy": False}
         prefix = process.engine_prefix("codex")
+        if prefix:
+            prefix, version = process.verified_codex(prefix)
+        else:
+            version = ""
         valid = prefix and process.codex_target(prefix) == record.get("target") \
-            and process.cli_version(prefix) in process.CODEX_VERIFIED
+            and version in process.CODEX_VERIFIED
         # 이미 종료 코드 0 으로 끝났어도 로그인 성공부터 다시 본다. 표식의 ok 는 성공 근거가 아니다.
         if valid and process.auth_problem(prefix) is None:
             return {"id": record["id"], "state": "ok", "reason": None}
+        if record.get("mode") == "manual" or not config.AGENT_CHAT_LOGIN_WINDOW:
+            return {"id": record["id"], "state": "manual", "reason": None}
         if _alive(record):
             return {"id": record["id"], "state": "running", "reason": None}
         return {"id": record["id"], "state": "failed", "reason": "login_unfinished", "ports_busy": ports_busy()}

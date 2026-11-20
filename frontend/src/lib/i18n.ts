@@ -7,6 +7,7 @@ import { type Lang, loadLang, saveLang } from "./theme";
 
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
+  "이 PC 에서 Codex 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요": "This also changes the Codex sign-in used elsewhere on this PC, including terminals",
   "설치하고 연결": "Install and connect",
   "설치하는 중 · 몇 분 걸려요": "Installing · This may take a few minutes",
   "로그인 창 기다리는 중 — 브라우저에서 로그인": "Waiting for sign-in — Sign in in your browser",

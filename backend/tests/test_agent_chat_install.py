@@ -182,7 +182,9 @@ def test_find_codex_keeps_enabled_npm_and_excludes_only_installing_official(isol
     (install.directory() / "codex.request.json").unlink()
     codex.disable()
     versions[str(script)] = "old"
-    assert process.find_codex() == [str(exe)]
+    seen.clear()
+    assert process.find_codex() == npm_prefix and not seen  # 꺼진 목록은 판을 읽지 않는다.
+    assert process.verified_codex(npm_prefix) == ([str(exe)], VERSION)  # 명시적 연결에서만 허용 판 선택
     monkeypatch.setattr(process.shutil, "which", lambda _: None)
     assert process.find_codex() == [str(exe)]  # node 없음
 
@@ -206,12 +208,30 @@ def test_disable_before_pending_blocks_late_enable(isolated):
     assert codex._read("codex_pending.json") is None
 
 
-def test_codex_has_no_boot_install_call():
-    import ast
-    tree = ast.parse((ROOT / "run_agent_session.py").read_text(encoding="utf-8"))
-    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-             and node.func.id == "_codex_install_command"]
-    assert len(calls) == 1  # 요청 처리 안에만 있다.
+@pytest.mark.parametrize("update", [False, True])
+def test_codex_not_installed_on_actual_boot_flow_without_request(isolated, monkeypatch, update):
+    monkeypatch.setattr(launcher, "_install_contract", lambda: install)
+    monkeypatch.setattr(launcher, "_boot_would_be_accepted", lambda: True)
+    monkeypatch.setattr(launcher, "_update_boot_outcome", lambda nonce: True)
+    if update:
+        monkeypatch.setenv("MVHUB_ACTIVATION_CONTROL", "control")
+        monkeypatch.setenv("MVHUB_EXECUTION_NONCE", "nonce")
+    else:
+        monkeypatch.delenv("MVHUB_ACTIVATION_CONTROL", raising=False)
+    installed = threading.Event()
+    monkeypatch.setattr(launcher, "ensure_claude_official", lambda: installed.set())
+    requested = []
+    monkeypatch.setattr(launcher, "_run_requested_install", lambda *args: requested.append(args))
+    close = launcher._start_install_requests("59321")
+    try:
+        launcher._start_claude_install()
+        assert installed.wait(2)
+        time.sleep(2.1)  # 조회 한 번을 지나도 Codex 요청/결과와 설치 호출이 없다.
+        assert not (install.directory() / "codex.request.json").exists()
+        assert not (install.directory() / "codex.json").exists()
+        assert requested == []
+    finally:
+        close()
 
 
 def test_launcher_publish_generation_boot_gate_poll_and_cleanup(isolated, monkeypatch):
@@ -258,3 +278,91 @@ def test_real_installer_driver_closes_input_and_passes_environment(isolated, mon
 
 
 REAL_DRIVER = launcher._run_claude_installer
+
+
+def test_inconsistent_pending_request_is_retryable_error(isolated, monkeypatch):
+    install.request("codex")
+    monkeypatch.setattr(install, "status", lambda engine: None)
+    with pytest.raises(install.RequestBusy, match="잠시 뒤"):
+        install.request("codex")
+
+
+@pytest.mark.parametrize("engine", ["claude", "codex"])
+def test_requested_install_rechecks_interactive_token(isolated, monkeypatch, engine):
+    install.request(engine)
+    request = install.read(install.directory() / f"{engine}.request.json")
+    monkeypatch.setattr(launcher, "_claude_token_problem", lambda: "not_interactive")
+    launcher._run_requested_install(install, request)
+    assert install.status(engine)["state"] == "skipped"
+    assert install.status(engine)["reason"] == "not_interactive"
+
+
+def test_skipped_old_generation_no_longer_blocks_request(isolated, monkeypatch):
+    first = install.request("codex")
+    path = install.directory() / "codex.json"
+    install.write(path, {**install.read(path), "state": "skipped", "reason": "not_interactive"})
+    assert install.status("codex")["state"] == "skipped"
+    monkeypatch.setenv("CONTENT_HUB_AGENT_INSTALL_GENERATION", "c" * 32)
+    live = install.read(install.directory() / "launcher.json")
+    install.write(install.directory() / "launcher.json", {**live, "generation": "c" * 32})
+    assert install.status("codex") is None
+    assert install.request("codex")["id"] != first["id"]
+
+
+@pytest.mark.parametrize("engine", ["claude", "codex"])
+def test_success_verification_cached_until_request_or_exe_changes(isolated, monkeypatch, engine):
+    install.request(engine)
+    path = install.directory() / f"{engine}.json"
+    exe = install.official_codex() if engine == "codex" else process.official_claude()
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"fake")
+    install.write(path, {**install.read(path), "state": "ok"})
+    seen = []
+    monkeypatch.setattr(process, "cli_version", lambda prefix: seen.append(prefix) or VERSION)
+    for _ in range(3): assert install.verified_status(engine)["state"] == "ok"
+    assert seen == [[str(exe)]]
+    exe.write_bytes(b"changed fake")
+    assert install.verified_status(engine)["state"] == "ok" and len(seen) == 2
+    stat = exe.stat()
+    os.utime(exe, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert install.verified_status(engine)["state"] == "ok" and len(seen) == 3
+    install.request(engine)
+    install.write(path, {**install.read(path), "state": "ok"})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert all(row["state"] == "ok" for row in pool.map(install.verified_status, [engine] * 4))
+    assert len(seen) == 4
+
+
+@pytest.mark.parametrize("engine", ["claude", "codex"])
+@pytest.mark.parametrize("state", ["ok", "failed"])
+def test_install_completion_invalidates_engine_cache_immediately(isolated, monkeypatch, engine, state):
+    install.request(engine)
+    path = install.directory() / f"{engine}.json"
+    installed = [False]
+    monkeypatch.setattr(process, "engine_prefix", lambda name: ["fake"] if name == engine and installed[0] else None)
+    monkeypatch.setattr(process, "read_install_marker", lambda: {})
+    monkeypatch.setattr(process, "cli_version", lambda prefix: "2.1.400")
+    monkeypatch.setattr(claude, "claude_state", lambda prefix: {"state": "not_logged_in" if prefix else "not_installed", "version": "", "subscription": None})
+    service = chat.AgentChat()
+    assert not next(row for row in service.engines() if row["id"] == engine)["installed"]
+    installed[0] = True
+    install.write(path, {**install.read(path), "state": state, "reason": None if state == "ok" else "version_check"})
+    assert next(row for row in service.engines() if row["id"] == engine)["installed"]
+
+
+def test_disabled_codex_two_candidates_and_ok_marker_never_launch_cli(isolated, monkeypatch):
+    exe = install.official_codex()
+    exe.parent.mkdir(parents=True)
+    exe.touch()
+    install.request("codex")
+    path = install.directory() / "codex.json"
+    install.write(path, {**install.read(path), "state": "ok"})
+    monkeypatch.setattr(process, "_codex_candidates", lambda: [["node", "codex.js"], [str(exe)]])
+    monkeypatch.setattr(process, "cli_version", lambda prefix: pytest.fail("disabled --version"))
+    monkeypatch.setattr(process, "auth_problem", lambda prefix: pytest.fail("disabled login status"))
+    monkeypatch.setattr(process, "engine_prefix", lambda name: process.find_codex() if name == "codex" else None)
+    monkeypatch.setattr(claude, "claude_state", lambda prefix: {"state": "not_installed", "version": "", "subscription": None})
+    service = chat.AgentChat()
+    for refresh in (False, True, False):
+        row = next(row for row in service.engines(refresh) if row["id"] == "codex")
+        assert row["installed"] and not row["enabled"] and not row["available"]

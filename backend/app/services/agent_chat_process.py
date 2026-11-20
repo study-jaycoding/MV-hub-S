@@ -29,6 +29,7 @@ CODEX_FEATURES_OFF = ("apps", "multi_agent", "image_generation", "unified_exec",
                       "skill_mcp_dependency_install", "skill_search", "view_image")
 MAX_STDERR = 64 * 1024
 MAX_TOTAL = 32 * 1024 * 1024  # 한 차례 stdout 전체 상한 — 넘으면 끈다
+CODEX_NOT_SUBSCRIPTION = "구독 로그인이 아닙니다(API 키 방식은 쓰지 않습니다)"
 
 
 class OutputLimit(Exception):
@@ -137,8 +138,7 @@ def find_claude() -> list[str] | None:
     return max(candidates, key=lambda c: (version_tuple(cli_version(c)), c[0].casefold() == official))
 
 
-def find_codex() -> list[str] | None:
-    from . import agent_chat_codex as codex
+def _codex_candidates() -> list[list[str]]:
     from . import agent_chat_install as install
 
     node, candidates = shutil.which("node"), []
@@ -154,9 +154,18 @@ def find_codex() -> list[str] | None:
     official = install.official_codex()
     if official.is_file() and (install.status("codex") or {}).get("state") != "running":
         candidates.append([str(official)])
+    return candidates
+
+
+def find_codex() -> list[str] | None:
+    from . import agent_chat_codex as codex
+
+    candidates = _codex_candidates()
     saved = codex.marker()
     if not candidates:
         return None
+    if saved is None:
+        return candidates[0]  # 꺼져 있으면 파일 존재만 본다. 판 선택은 사람이 연결할 때 한다.
     if saved:
         for candidate in candidates:
             if codex.target_matches(saved, candidate) and saved["policy"] == codex.CODEX_POLICY \
@@ -165,6 +174,20 @@ def find_codex() -> list[str] | None:
     if len(candidates) == 1:
         return candidates[0]
     return next((candidate for candidate in candidates if cli_version(candidate) in CODEX_VERIFIED), candidates[0])
+
+
+def verified_codex(prefix: list[str]) -> tuple[list[str], str]:
+    """명시적 연결/켜기에서만 판을 고른다. 평소 꺼진 엔진 목록은 CLI 를 실행하지 않는다."""
+    version = cli_version(prefix)
+    if version not in CODEX_VERIFIED:
+        candidates = _codex_candidates()
+        if prefix in candidates:
+            for candidate in candidates:
+                if candidate != prefix:
+                    other = cli_version(candidate)
+                    if other in CODEX_VERIFIED:
+                        return candidate, other
+    return prefix, version
 
 
 def codex_target(prefix: list[str]) -> dict:
@@ -216,7 +239,7 @@ def auth_problem(prefix: list[str]) -> str | None:
     text = _status_output(prefix, ["login", "status"])
     if "Logged in using ChatGPT" in text:
         return None
-    return "구독 로그인이 아닙니다(API 키 방식은 쓰지 않습니다)" if "Logged in" in text else "로그인되어 있지 않습니다"
+    return CODEX_NOT_SUBSCRIPTION if "Logged in" in text else "로그인되어 있지 않습니다"
 
 
 def _toml_literal(value: str) -> str:

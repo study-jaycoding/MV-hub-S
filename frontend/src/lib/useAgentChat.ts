@@ -717,7 +717,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // ë
     }
   }, [recheck, startWaiting]);
 
-  const loginCodex = useCallback(async (chainId?: string) => {
+  const loginCodex = useCallback(async (chainId?: string, reconnect = false) => {
     if (codexOpening.current || codexLoginRequest.current) return;
     codexOpening.current = true;
     const action = codexAction.current;
@@ -725,7 +725,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // ë
     const current = () => mounted.current && account === getAccountNamespace() && action === codexAction.current;
     setCodexError(null);
     try {
-      const result = await agentChatApi.openCodexLogin(chainId);
+      const result = await agentChatApi.openCodexLogin(chainId, reconnect);
       if (!current()) return;
       setCodexLogin(result);
       if (result.state === "ok") void setCodexEnabled(true, result.id);
@@ -1248,7 +1248,10 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // ë
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
     claudeApp, appBusy, appError,
     codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled, login: codexLogin, connect: loginCodex,
-      recheck: checkConnections, stopWaiting: () => { codexLoginRequest.current = null; setCodexLogin(null); } },
+      recheck: () => {
+        if (codexLogin?.state === "manual") codexLoginRequest.current = { id: codexLogin.id, account: getAccountNamespace() };
+        return checkConnections();
+      }, stopWaiting: () => { codexLoginRequest.current = null; setCodexLogin(null); } },
     restoreReference, restoreSource, newFromRestored, removeRestoreSource,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking, undoAction,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,

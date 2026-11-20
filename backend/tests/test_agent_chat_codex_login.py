@@ -17,6 +17,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(config, "AGENT_CHAT_DIR", tmp_path / "agent")
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", True)
     monkeypatch.setattr(claude, "_login_token_problem", lambda: None)
     monkeypatch.setattr(claude, "_window_trapped", lambda proc: False)
     monkeypatch.setattr(claude, "_handle_start", lambda *args: 123)
@@ -61,7 +62,7 @@ def test_only_one_window_and_record_before_resume(isolated, monkeypatch):
 def test_refuses_bad_token_without_spawn(isolated, monkeypatch, problem):
     monkeypatch.setattr(claude, "_login_token_problem", lambda: problem)
     with pytest.raises(codex.CodexError): login.open_login_window()
-    assert isolated[1] == [] and not login._folder().exists()
+    assert isolated[1] == [] and not login._record()
 
 
 def test_job_trapped_never_resumes_and_kills_suspended_process(isolated, monkeypatch):
@@ -129,3 +130,64 @@ def test_port_permission_error_is_not_reported_as_occupied(isolated, monkeypatch
 
 
 REAL_PORTS_BUSY = login.ports_busy
+
+
+@pytest.mark.parametrize("problem", ["elevated", "unknown"])
+@pytest.mark.parametrize("window_enabled", [False, True])
+def test_authenticated_can_enable_without_window_permission(isolated, monkeypatch, problem, window_enabled):
+    checked = []
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", window_enabled)
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: checked.append(problem) or problem)
+    monkeypatch.setattr(process, "auth_problem", lambda _: None)
+    monkeypatch.setattr(codex, "_probe", lambda *args: None)
+    monkeypatch.setattr(codex, "work_problem", lambda: None)
+    connected = login.open_login_window()
+    assert connected["state"] == "ok" and isolated[1] == [] and checked == []
+    codex.enable("gpt-6.1-sol", chain_id=connected["id"])
+    assert codex.marker() is not None
+
+
+def test_reconnect_reuses_open_window_with_fresh_chain_after_disable(isolated):
+    old = login.open_login_window()
+    codex.disable()
+    new = login.open_login_window()
+    assert new["state"] == "running" and new["id"] != old["id"]
+    assert login._record()["id"] == new["id"] and len(isolated[1]) == 1
+    codex.check_chain(new["id"])
+    with pytest.raises(codex.CodexError): codex.check_chain(old["id"])
+
+
+def test_window_switch_off_uses_manual_login_and_rechecks_exact_target(isolated, monkeypatch):
+    monkeypatch.setattr(config, "AGENT_CHAT_LOGIN_WINDOW", False)
+    monkeypatch.setattr(claude, "_login_token_problem", lambda: pytest.fail("no window permission needed"))
+    manual = login.open_login_window()
+    assert manual["state"] == "manual" and isolated[1] == []
+    assert login.status(manual["id"])["state"] == "manual"
+    monkeypatch.setattr(process, "auth_problem", lambda _: None)
+    assert login.status(manual["id"])["state"] == "ok"
+
+
+def test_api_key_requires_explicit_reconnect_before_opening_window(isolated, monkeypatch):
+    monkeypatch.setattr(process, "auth_problem", lambda _: process.CODEX_NOT_SUBSCRIPTION)
+    warning = login.open_login_window()
+    assert warning["state"] == "not_subscription" and isolated[1] == []
+    confirmed = login.open_login_window(reconnect=True)
+    assert confirmed["state"] == "running" and len(isolated[1]) == 1
+
+
+def test_unverified_version_keeps_existing_check_needed_message(isolated, monkeypatch):
+    monkeypatch.setattr(process, "cli_version", lambda _: "0.1.0")
+    with pytest.raises(codex.CodexError, match=r"점검 필요 — 확인하지 않은 판입니다\(0.1.0\)"):
+        login.open_login_window()
+    assert isolated[1] == []
+
+
+def test_login_rechecks_selected_allowed_candidate_when_disabled(isolated, monkeypatch):
+    npm, official = ["node", "codex.js"], ["codex.exe"]
+    monkeypatch.setattr(process, "engine_prefix", lambda _: npm)
+    monkeypatch.setattr(process, "_codex_candidates", lambda: [npm, official])
+    monkeypatch.setattr(process, "cli_version", lambda prefix: next(iter(process.CODEX_VERIFIED)) if prefix == official else "old")
+    opened = login.open_login_window()
+    assert isolated[1] == [official]
+    monkeypatch.setattr(process, "auth_problem", lambda _: None)
+    assert login.status(opened["id"])["state"] == "ok"

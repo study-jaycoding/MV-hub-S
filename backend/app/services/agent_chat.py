@@ -315,8 +315,11 @@ class AgentChat:
         raw = process.read_install_marker()
         install = process.claude_install(data=raw)
         from . import agent_chat_install as installer
-        requests = {engine: installer.verified_status(engine) for engine in ("claude", "codex")}
+        requests = {"claude": installer.verified_status("claude"),
+                    "codex": installer.verified_status("codex", probe=codex.marker() is not None)}
         install = requests["claude"] or install
+        if (install or {}).get("state") == "skipped" and installer.eligibility() is None:
+            install = None
         stamp = (json.dumps(raw, sort_keys=True, default=str), install, json.dumps(codex.marker(), sort_keys=True),
                  json.dumps(requests, sort_keys=True), installer.launcher())
         with self._lock:
@@ -326,7 +329,7 @@ class AgentChat:
         result = []
         for engine in ("claude", "codex"):
             prefix = process.engine_prefix(engine)
-            row = {"id": engine, "models": MODELS[engine], "efforts": list(EFFORTS[engine])}
+            row = {"id": engine, "models": MODELS[engine], "efforts": list(EFFORTS[engine]), "installed": prefix is not None}
             if engine == "claude":
                 state = claude.claude_state(prefix)
                 ok = state["state"] in claude.CHAT_OK

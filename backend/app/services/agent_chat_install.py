@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -17,6 +18,12 @@ FAIL_REASONS = {"download", "disk", "permission", "install_failed", "start", "ma
                 "job", "version_check", "release_unavailable", "interrupted"}
 SKIP_REASONS = {"service_account", "not_interactive", "elevated", "token_unknown", "other_user",
                 "shared_server", "release_only", "launcher_missing", "boot_pending"}
+_verified: dict[str, tuple[tuple, bool]] = {}
+_verify_lock = threading.Lock()
+
+
+class RequestBusy(RuntimeError):
+    pass
 
 
 def local_dir() -> Path:
@@ -142,7 +149,10 @@ def request(engine: str, still_current=lambda: None) -> dict:
             return {"state": "skipped", "reason": "launcher_missing", "at": int(time.time())}
         old = read(folder / f"{engine}.json")
         if old.get("generation") == live["generation"] and old.get("state") == "running":
-            return status(engine)
+            pending = status(engine)
+            if pending is None:
+                raise RequestBusy("설치 요청 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요")
+            return pending
         still_current()
         value = {"id": secrets.token_hex(16), "engine": engine,
                  "install_id": os.environ["CONTENT_HUB_AGENT_INSTALL_ID"], "generation": live["generation"],
@@ -165,6 +175,8 @@ def status(engine: str) -> dict | None:
     state, reason = data.get("state"), data.get("reason")
     if state not in {"running", "failed", "skipped", "ok"}:
         return None
+    if state == "skipped" and (not launcher() or req["generation"] != os.environ.get("CONTENT_HUB_AGENT_INSTALL_GENERATION")):
+        return None
     if state == "running" and (not launcher() or req["generation"] != os.environ.get("CONTENT_HUB_AGENT_INSTALL_GENERATION")):
         state, reason = "failed", "interrupted"
     if state == "failed" and reason not in FAIL_REASONS:
@@ -185,16 +197,35 @@ def codex_release(source: Path | None = None) -> str:
     raise ValueError("Codex release is not singular")
 
 
-def verified_status(engine: str) -> dict | None:
+def _file_stamp(path: Path) -> tuple | None:
+    try:
+        stat = path.stat()
+        return stat.st_size, stat.st_mtime_ns
+    except OSError:
+        return None
+
+
+def verified_status(engine: str, *, probe: bool = True) -> dict | None:
     from . import agent_chat_process as process
 
     result = status(engine)
     if result and result["state"] == "ok":
         exe = official_codex() if engine == "codex" else process.official_claude()
-        version = process.cli_version([str(exe)]) if exe.is_file() else ""
-        valid = version in process.CODEX_VERIFIED if engine == "codex" else bool(version)
-        if engine == "codex" and (codex_home() / "packages" / "standalone" / "auto-update-version").exists():
-            valid = False
+        update = codex_home() / "packages" / "standalone" / "auto-update-version"
+        fingerprint = (str(directory()), json.dumps(result, sort_keys=True), str(exe), _file_stamp(exe),
+                       str(update), _file_stamp(update) if engine == "codex" else None)
+        with _verify_lock:
+            cached = _verified.get(engine)
+            if cached and cached[0] == fingerprint:
+                valid = cached[1]
+            elif not probe:
+                return None  # 꺼진 Codex 목록은 성공 표식을 검증하려고 CLI 를 띄우지 않는다.
+            else:
+                version = process.cli_version([str(exe)]) if exe.is_file() else ""
+                valid = version in process.CODEX_VERIFIED if engine == "codex" else bool(version)
+                if engine == "codex" and update.exists():
+                    valid = False
+                _verified[engine] = fingerprint, valid
         if not valid:
             return {**result, "state": "failed", "reason": "version_check"}
     return result

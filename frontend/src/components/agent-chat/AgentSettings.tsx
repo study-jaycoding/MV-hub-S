@@ -122,14 +122,18 @@ export function AgentSettings({ engines, usage, connection, codexConnection, onB
   const needsLogin = state === "not_logged_in" || state === "not_subscription" || state === "no_plan";
   const reconnect = state === "not_subscription" || state === "no_plan";
   const recheck = () => { void connection.recheck(); };
-  const claudeInstall = connection.installs.claude ?? connection.install;
-  const managedClaude = (state === "not_installed" || (state === "unknown" && claudeInstall?.state === "failed"))
+  const claudeInstalled = claude?.installed ?? (state !== null && state !== "not_installed" && state !== "unknown");
+  const rawClaudeInstall = connection.installs.claude ?? connection.install;
+  const claudeInstall = claudeInstalled && rawClaudeInstall?.state !== "running" ? null : rawClaudeInstall;
+  const managedClaude = !claudeInstalled && (state === "not_installed" || (state === "unknown" && claudeInstall?.state === "failed"))
     && (claude?.install_blocked !== undefined || !!connection.installs.claude);
   const codexInstall = connection.installs.codex ?? codex?.install;
   const codexInstalling = codexInstall?.state === "running";
   const codexWaiting = codexConnection.login?.state === "running";
   const codexLoginFailed = codexConnection.login?.state === "failed";
-  const codexNeedsInstall = codex?.installed === false || codexInstalling || (!codex?.available && codexInstall?.state === "failed");
+  const codexReconnect = codexConnection.login?.state === "not_subscription";
+  const codexManual = codexConnection.login?.state === "manual";
+  const codexNeedsInstall = codex?.installed === false || codexInstalling;
   const guide = (() => {
     if (connection.waiting || state === "login_window") return <LoginWindowGuide waiting={connection.waiting} note={connection.note} onRecheck={recheck} onStopWaiting={connection.stopWaiting} />;
     if (state === "window_record") return <><p>{t("열린 Claude 로그인 창을 닫고 [다시 확인]을 눌러 주세요")}</p><button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button></>;
@@ -140,12 +144,12 @@ export function AgentSettings({ engines, usage, connection, codexConnection, onB
       {reconnect && <p className="cn-note">{t("이 PC 에서 Claude 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요")}</p>}
     </>;
     if (state === "not_installed") return <>
-      {connection.install?.state === "running" ? <><p>{t("MV Hub 가 Claude Code 를 설치하는 중이에요")}</p><details className="cn-more"><summary>{t("직접 설치하려면")}</summary><ManualInstall onRecheck={recheck} /></details></>
-        : <><p>{t("이 PC 에 Claude Code 가 없어요")}</p><InstallNote install={connection.install} /><ManualInstall onRecheck={recheck} /></>}
+      {claudeInstall?.state === "running" ? <><p>{t("MV Hub 가 Claude Code 를 설치하는 중이에요")}</p><details className="cn-more"><summary>{t("직접 설치하려면")}</summary><ManualInstall onRecheck={recheck} /></details></>
+        : <><p>{t("이 PC 에 Claude Code 가 없어요")}</p><InstallNote install={claudeInstall} /><ManualInstall onRecheck={recheck} /></>}
     </>;
     if (state === "outdated") return <><p>{t("Claude Code 를 업데이트해야 해요")}</p><CopyLine command="claude update" /><button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button></>;
-    return <><p>{t("Claude 상태를 확인하지 못했어요")}</p><InstallNote install={connection.install} />
-      {connection.install?.state === "failed" || connection.install?.state === "skipped" ? <ManualInstall onRecheck={recheck} /> : <button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button>}</>;
+    return <><p>{t("Claude 상태를 확인하지 못했어요")}</p><InstallNote install={claudeInstall} />
+      {claudeInstall?.state === "failed" || claudeInstall?.state === "skipped" ? <ManualInstall onRecheck={recheck} /> : <button type="button" className="cn-ghost" onClick={recheck}>{t("다시 확인")}</button>}</>;
   })();
   return (
     <section className="agent-settings" aria-label={t("설정")}>
@@ -181,16 +185,20 @@ export function AgentSettings({ engines, usage, connection, codexConnection, onB
                 {!codexWaiting && !codexLoginFailed && !codexInstalling && codex?.installed !== false && <>{codex?.enabled ? t("이 PC 에서 켬") : t("꺼짐")}{" · "}</>}
                 {codexWaiting ? <span className="agent-connect-wait"><i className="agent-connect-spin" aria-hidden="true" />{t("로그인 창 기다리는 중 — 브라우저에서 로그인")}</span>
                   : codexLoginFailed ? <span className="warn">{t(codexConnection.login?.reason === "login_unfinished" ? "로그인을 마치지 못했어요" : "로그인 창을 열지 못했어요")}</span>
+                  : codexReconnect ? <span className="warn">{t("구독 로그인이 아니에요")}</span>
                   : codex?.available ? <span className="ok">{t("연결됨")}</span>
                   : codex?.installed !== false && !codexInstalling ? <span className="warn">{codex?.reason || t("쓸 수 없음")}</span> : null}
               </small>{codexError && <small className="agent-codex-error" role="alert">{codexError}</small>}</span>
-              {(!codexNeedsInstall || codexWaiting || codexInstalling || codexLoginFailed) && <button type="button" className="agent-settings-btn" disabled={codexBusy && !codex?.enabled && !codexWaiting && !codexInstalling}
+              {!codexManual && (!codexNeedsInstall || codexWaiting || codexInstalling || codexLoginFailed) && <button type="button" className="agent-settings-btn" disabled={codexBusy && !codex?.enabled && !codexWaiting && !codexInstalling}
                 aria-label={codex?.enabled ? t("Codex 끄기") : t("Codex 연결")}
                 onClick={() => codex?.enabled || codexWaiting || codexInstalling || codexBusy ? onSetCodexEnabled(false)
-                  : codex?.installed === true || codexLoginFailed ? void codexConnection.connect() : onSetCodexEnabled(true)}>
-                {codex?.enabled || codexWaiting || codexInstalling ? t("끄기") : codexBusy ? t("확인하는 중") : codexLoginFailed ? t("다시 시도") : t("연결")}
+                  : codex?.installed === true || codexLoginFailed ? void codexConnection.connect(undefined, codexReconnect) : onSetCodexEnabled(true)}>
+                {codex?.enabled || codexWaiting || codexInstalling ? t("끄기") : codexBusy ? t("확인하는 중") : codexLoginFailed ? t("다시 시도") : codexReconnect ? t("다시 연결") : t("연결")}
               </button>}
             </div>
+            {codexReconnect && <p className="cn-note">{t("이 PC 에서 Codex 를 쓰는 다른 곳(터미널 등)의 로그인도 함께 바뀌어요")}</p>}
+            {codexManual && <div className="agent-settings-connect"><p>{t("터미널(PowerShell)에서 아래 명령을 실행해 브라우저로 로그인하세요. 끝나면 [다시 확인].")}</p>
+              <CopyLine command="codex login" /><button type="button" className="cn-ghost" onClick={() => { void codexConnection.recheck(); }}>{t("다시 확인")}</button></div>}
             {codexNeedsInstall && !codexWaiting && !codexLoginFailed && <InstallControls engine="codex" install={codexInstall} version={codex?.install_version}
               blocked={codex?.install_blocked} onInstall={() => { void connection.installEngine("codex"); }} onRecheck={recheck} />}
             {codexWaiting && <div className="agent-settings-connect"><button type="button" className="cn-ghost" onClick={() => { void codexConnection.recheck(); }}>{t("다시 확인")}</button>

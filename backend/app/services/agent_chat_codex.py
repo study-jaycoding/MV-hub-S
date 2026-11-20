@@ -258,7 +258,7 @@ def enable(model: str, still_current=lambda: None, chain_id: str | None = None) 
             prefix = process.engine_prefix("codex")
             if not prefix:
                 raise CodexError("이 PC 에 설치되어 있지 않습니다")
-            version = process.cli_version(prefix)
+            prefix, version = process.verified_codex(prefix)
             if version not in process.CODEX_VERIFIED:
                 raise CodexError("판을 확인하지 못했거나 확인하지 않은 Codex 판입니다")
             problem = process.auth_problem(prefix) or work_problem()
