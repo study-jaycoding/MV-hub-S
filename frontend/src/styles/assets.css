@@ -1137,11 +1137,6 @@
 .preview-menu-item kbd { margin-left: auto; padding-left: 18px; font: inherit; font-size: 11px; color: var(--muted); }
 .preview-menu-item:hover, .preview-menu-item:focus-visible { background: rgba(255,255,255,0.08); outline: none; }
 .preview-menu-item:hover svg, .preview-menu-item:focus-visible svg { color: var(--accent, #c8ef40); }
-/* 어셋 왼쪽 폴더 트리 우클릭 메뉴(원본 위치 열기, Jay 2026-11-20 시안 B) — 틀은 폴더 우클릭 메뉴(.folder-ctx-menu), 줄은 위 크게 보기 메뉴 줄.
-   위 이름은 어느 폴더인지 알리는 흐린 이름표다 */
-.folder-ctx-menu.assets-tree-menu { gap: 2px; }
-.assets-tree-menu .folder-ctx-name { color: var(--muted); font-size: 11.5px; }
-.assets-tree-menu-ico { flex: none; width: 14px; font-size: 13px; line-height: 1; }
 
 /* ── 토스트 ── */
 .toast {
