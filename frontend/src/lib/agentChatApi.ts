@@ -195,6 +195,7 @@ export const CLAUDE_APP_REASON: Record<string, string> = {
   file_changed: "기록이 바뀌고 있어요. 앱에서 대화를 마친 뒤 다시 가져오세요", file_missing: "대화 기록 파일을 찾지 못했어요",
   empty_file: "대화 기록이 비어 있어 가져오지 않았어요", too_large: "기록이 너무 커서 가져오지 않았어요",
   launcher_uncertain: "열기 작업이 끝났는지 확인하지 못했어요. 잠금을 유지합니다",
+  title_write_failed: "앱 목록 제목을 쓰다 멈춰 기록이 상했을 수 있어요. 다시 열지 않고 잠금을 유지합니다",
   stale_handoff: "다른 창에서 상태가 바뀌었어요. 새 상태를 확인해 주세요", request_mismatch: "요청 상태가 달라졌어요. 다시 확인해 주세요",
 };
 export class ClaudeAppError extends Error {

@@ -122,8 +122,11 @@ def test_title_rollback_failure_keeps_lock_and_never_launches(app_chat, monkeypa
     monkeypatch.setattr(tr, "rename_session", lambda *args: (_ for _ in ()).throw(tr.TranscriptError("title_write_failed")))
     _, response = open_app(a)
     assert response.status_code == 200, response.text
-    assert response.json()["app_handoff"]["state"] == "uncertain" and a.spawned == []
+    first = response.json()
+    assert first["app_handoff"]["state"] == "uncertain" and a.spawned == []
     assert chat.chat_list(a.path, search=None, limit=20, cursor=None)["conversations"][0]["in_claude_app"] is True
+    _, again = open_app(a, expected_revision=first["app_revision"], handoff_id=first["app_handoff"]["id"])  # 새 요청으로 다시 열기
+    assert again.status_code == 409 and again.json()["detail"] == "title_write_failed" and a.spawned == []
 
 
 def test_reopen_does_not_write_title_while_app_may_be_writing(app_chat):

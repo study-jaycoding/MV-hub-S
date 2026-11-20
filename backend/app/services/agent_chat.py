@@ -393,6 +393,8 @@ class AgentChat:
             try:
                 claude.desktop_precheck(prefix, row["cli_home"], row["cli_cwd"], env)
                 reopening = state["phase"] != "idle"
+                if reopening and state.get("title_failed"):
+                    raise HTTPException(409, "title_write_failed")  # 쓰다 만 제목 줄이 남았을 수 있는 파일은 다시 열기로도 넘기지 않는다
                 anchor = state.get("anchor") if reopening else transcript.read_session(row["cli_home"], row["cli_cwd"], row["cli_session_id"])
                 at = datetime.now(timezone.utc).isoformat()
                 state = {"revision": state["revision"] + 1, "phase": "opening", "handoff_id": state.get("handoff_id") or str(uuid.uuid4()),
@@ -415,7 +417,7 @@ class AgentChat:
                         transcript.rename_session(anchor["transcript_location"], row["cli_session_id"], f"MV Agent · {row['title']}")
                     except transcript.TranscriptError:
                         # 덧붙인 줄을 되돌리지 못했다: 쓰다 만 줄이 남았을 수 있어 앱을 띄우지 않고 잠금을 유지한다.
-                        state["phase"] = "uncertain"
+                        state.update(phase="uncertain", title_failed=True)
                         return save()
 
                 def before_resume(pid, start):
