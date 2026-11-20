@@ -55,6 +55,12 @@ export function connectProgress(
     ws.onmessage = (ev) => {
       try {
         const message = JSON.parse(ev.data) as import("../types").ProgressMessage;
+        if (message.type === "mcp_screen_action") {
+          if (connectedToken === getAuthToken() && typeof message.receiver_id === "string" && typeof message.action_id === "string") {
+            dispatchAppEvent(APP_EVENTS.mcpScreenAction, { receiver_id: message.receiver_id, action_id: message.action_id });
+          }
+          return;
+        }
         if (message.type === "open_generation" && message.generation_id && message.comment_id && message.open_id) {
           dispatchAppEvent(APP_EVENTS.openGeneration, message);
         }

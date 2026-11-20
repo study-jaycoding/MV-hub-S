@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "user"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+
+
 ROOT = Path(__file__).resolve().parents[2]
 GUARD = ROOT / "run_agent_session.py"
 _GUARD_SPEC = importlib.util.spec_from_file_location("run_agent_session", GUARD)

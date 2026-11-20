@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import os
 import sqlite3
 import threading
 import time
 import uuid
 from contextvars import ContextVar
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -75,6 +78,8 @@ _NEW_COLUMNS = {
     "fork_request": "TEXT",
     "restored_from": "TEXT",
     "source_reference": "TEXT",
+    "app_handoff": "TEXT",
+    "app_opened_at": "TEXT",
 }
 FORK_MAX_TURNS, FORK_MAX_EVENTS = 500, 20_000
 # 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-3) — 차례 표. NULL = 붙인 것 없음, 넣는 모양은 {"workspace", "items"} 하나
@@ -83,6 +88,7 @@ _PROJECT = ("CASE WHEN c.project_override IS NULL THEN (SELECT json_extract(t.co
             "WHERE t.conversation_id=c.id AND json_valid(t.context) AND json_type(t.context,'$.project')='text' "
             "ORDER BY t.created_at, t.rowid LIMIT 1) WHEN c.project_override='' THEN NULL ELSE c.project_override END")
 _SUMMARY = ("SELECT c.id,c.title,c.engine,c.model,c.effort,c.updated_at,c.resumable,c.pinned,c.archived,c.unread,c.unread_rev,c.restored_from,"
+            " c.app_handoff AS _handoff,c.app_opened_at,c.cli_home AS _home,"
             " c.cli_session_id AS _sid, c.fork_session AS _fsid, c.fork_turn AS _fturn, c.fork_from AS _ffrom,"
             f" {_PROJECT} AS project FROM agent_chat_conversation c")
 _opened: set[str] = set()
@@ -222,6 +228,12 @@ def open_db(path: Path, *, recover=True) -> Path:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_chat_fork_request ON agent_chat_conversation(fork_request) "
                              "WHERE fork_request IS NOT NULL")
                 if recover:
+                    for row in conn.execute("SELECT id,app_handoff FROM agent_chat_conversation WHERE app_handoff IS NOT NULL").fetchall():
+                        state = handoff_state(row["app_handoff"])
+                        if state["phase"] == "opening":
+                            state["phase"] = "uncertain"
+                            state.pop("last_request", None)  # 접수 결과 유실은 자동 재실행하지 않는다.
+                            conn.execute("UPDATE agent_chat_conversation SET app_handoff=? WHERE id=?", (json.dumps(state), row["id"]))
                     for (turn_id,) in conn.execute("SELECT id FROM agent_chat_turn WHERE status IN ('running','cancelling')").fetchall():
                         _finish(conn, turn_id, "interrupted", "restart", None)
                 conn.execute("COMMIT")
@@ -251,7 +263,7 @@ def adopt_restored(path: Path, restore_id: str) -> None:
             try:
                 conn.execute("UPDATE agent_chat_conversation SET restored_from=?, resumable=0, cli_session_id=NULL, "
                              "cli_home=NULL, cli_cwd=NULL, fork_session=NULL, fork_turn=NULL, fork_from=NULL, fork_request=NULL, "
-                             "client_id='', mcp_entry='{}', source_reference=NULL", (restore_id,))
+                             "client_id='', mcp_entry='{}', source_reference=NULL, app_handoff=NULL, app_opened_at=NULL", (restore_id,))
                 conn.execute("UPDATE agent_chat_turn SET status='interrupted', reason='restored', ended_at=COALESCE(ended_at,datetime('now')) "
                              "WHERE status IN ('running','cancelling')")
                 conn.execute("COMMIT")
@@ -264,6 +276,196 @@ def adopt_restored(path: Path, restore_id: str) -> None:
 
 def _tx(conn):
     conn.execute("BEGIN IMMEDIATE")
+
+
+def handoff_state(raw) -> dict:
+    if raw is None:
+        return {"revision": 0, "phase": "idle"}
+    try:
+        state = json.loads(raw)
+        if isinstance(state, dict) and "last_request" in state:
+            last = state["last_request"]
+            if not isinstance(last, dict) or not isinstance(last.get("result"), dict) or not all(
+                    isinstance(last.get(key), str) for key in ("request_id", "action", "request_fingerprint")):
+                raise ValueError("invalid handoff request")
+        if (isinstance(state, dict) and type(state.get("revision")) is int and state["revision"] >= 0
+                and state.get("phase") in ("idle", "opening", "handed", "uncertain")
+                and (state["phase"] == "idle" or (
+                    isinstance(state.get("anchor"), dict) and str(uuid.UUID(state["handoff_id"])) == state["handoff_id"]
+                    and all(isinstance(state["anchor"].get(key), str) and state["anchor"][key]
+                            for key in ("session_id", "transcript_location", "anchor_uuid", "prefix_digest"))
+                    and isinstance(state.get("at"), str)))):
+            return state
+    except (ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return {"revision": 0, "phase": "uncertain", "corrupt": True}
+
+
+def require_app_idle(row) -> None:
+    if handoff_state(dict(row).get("app_handoff"))["phase"] != "idle":
+        raise HTTPException(409, "in_claude_app")
+
+
+@lru_cache(maxsize=8)
+def _default_claude_home(profile: str) -> str:
+    return path_key(Path(profile) / ".claude")
+
+
+def app_custom_config_dir(home, env) -> bool:
+    # shortcut: 앱 본체에 설정 폴더가 전달되는지 제품 M4 실측으로 확인하기 전까지 기본 홈만 허용한다.
+    return "CLAUDE_CONFIG_DIR" in env or bool(home and path_key(home) != _default_claude_home(str(env.get("USERPROFILE") or Path.home())))
+
+
+def app_fields(row) -> dict:
+    row = dict(row)
+    state = handoff_state(row.get("app_handoff"))
+    locked = state["phase"] != "idle"
+    block = ("in_claude_app" if locked else "codex" if row.get("engine") != "claude" else
+             "restored" if row.get("restored_from") else "not_resumable" if not row.get("resumable") else
+             "forked_unstarted" if not row.get("cli_session_id") and row.get("fork_session") else
+             "no_session" if not row.get("cli_session_id") else
+             "custom_config_dir" if app_custom_config_dir(row.get("cli_home"), os.environ) else None)
+    return {"app_handoff": {"id": state.get("handoff_id"), "at": state.get("at"), "state": state["phase"]} if locked else None,
+            "app_revision": state["revision"], "app_opened_at": row.get("app_opened_at"),
+            "can_open_app": block is None, "open_app_block": block}
+
+
+def import_fields(raw) -> dict:
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict) or data.get("origin") != "claude_app":
+        return {}
+    # 원본 uuid·세션·경로·임의 context 는 공개하지 않는다.
+    return {key: data[key] for key in ("origin", "handoff_id", "imported_at", "omitted", "unlock_only", "supplement") if key in data}
+
+
+def has_handoff(path) -> bool:
+    if not Path(path).exists():
+        return False
+    with Path(path).open("rb") as stream:
+        if stream.read(16) != b"SQLite format 3\x00":
+            return False  # SQLite 가 아닌 파일엔 넘김 상태가 없다 — 복원 대상 충돌은 복원 쪽 검사가 409 로 막는다.
+    with connect_readonly(path) as conn:
+        if "app_handoff" not in {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}:
+            return False
+        return any(handoff_state(row[0])["phase"] != "idle" for row in conn.execute("SELECT app_handoff FROM agent_chat_conversation"))
+
+
+def check_restore_handoffs(paths) -> None:
+    """접수를 닫고 기존 연결을 배수한 뒤, 복원 소유자의 읽기 전용 연결로 검사한다."""
+    keys = {path_key(path) for path in paths}
+    with _admission:
+        if not keys <= _gates or any(_connections.get(key, 0) for key in keys):
+            raise StaleRequest()
+    token = _restore_owner.set(frozenset(keys))
+    try:
+        if any(has_handoff(path) for path in paths):
+            raise HTTPException(409, "in_claude_app")
+    except (OSError, sqlite3.Error) as exc:
+        raise StaleRequest() from exc
+    finally:
+        _restore_owner.reset(token)
+
+
+def check_app_request(row, request: dict, action: str) -> tuple[dict, dict | None]:
+    state = handoff_state(row.get("app_handoff"))
+    fingerprint = hashlib.sha256(json.dumps({"action": action, **request}, sort_keys=True).encode()).hexdigest()
+    last = state.get("last_request") or {}
+    if last.get("request_id") == request["request_id"]:
+        if last.get("request_fingerprint") != fingerprint:
+            raise HTTPException(409, "request_mismatch")
+        return state, last["result"]
+    if state.get("corrupt") or state["revision"] != request["expected_revision"] or state.get("handoff_id") != request.get("handoff_id"):
+        raise HTTPException(409, "stale_handoff")
+    return state, None
+
+
+def _app_result(state, opened_at, **extra):
+    return {"app_handoff": {"id": state.get("handoff_id"), "at": state.get("at"), "state": state["phase"]}
+            if state["phase"] != "idle" else None, "app_revision": state["revision"], "app_opened_at": opened_at, **extra}
+
+
+def _app_request(state, request, action, result):
+    state["last_request"] = {"request_id": request["request_id"], "action": action,
+                             "request_fingerprint": hashlib.sha256(json.dumps({"action": action, **request}, sort_keys=True).encode()).hexdigest(),
+                             "result": result}
+
+
+def write_handoff(path, conversation_id, old_raw, state, *, still_current, invalidate=False, opened_at=None) -> None:
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            row = conn.execute("SELECT app_handoff FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()
+            if not row or row[0] != old_raw:
+                raise HTTPException(409, "stale_handoff")
+            if conn.execute("SELECT 1 FROM agent_chat_turn WHERE status IN ('running','cancelling') LIMIT 1").fetchone():
+                raise HTTPException(409, "turn_active")
+            if invalidate:
+                conn.execute("UPDATE agent_chat_conversation SET fork_turn=NULL WHERE fork_from=? AND cli_session_id IS NULL", (conversation_id,))
+            conn.execute("UPDATE agent_chat_conversation SET app_handoff=?,app_opened_at=COALESCE(?,app_opened_at) WHERE id=?",
+                         (json.dumps(state, ensure_ascii=False), opened_at, conversation_id))
+            still_current()
+            check_current(path)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def import_app_turns(path, conversation_id, request, turns, *, resumable, still_current) -> dict:
+    """검증한 차례·사건·잠금 해제를 한 거래로. 어떤 실패도 앞부분만 남기지 않는다."""
+    if len(turns) > 200 or any(len(turn["events"]) + 1 > 1000 for turn in turns) or len(json.dumps(turns, ensure_ascii=False).encode()) > 4 * 1024**2:
+        raise HTTPException(413, "too_large")
+    if any(len(turn["text"]) > 20_000 or any(event.get("kind") not in ("notice", "text", "tool") for event in turn["events"]) for turn in turns):
+        raise HTTPException(409, "read_failed")
+    with connect(path) as conn:
+        _tx(conn)
+        try:
+            row = conn.execute("SELECT * FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, "대화를 찾을 수 없습니다.")
+            row = dict(row)
+            state, cached = check_app_request(row, request, "bring-back")
+            if cached is not None:
+                conn.execute("ROLLBACK")
+                return cached
+            if state["phase"] == "idle" or conn.execute("SELECT 1 FROM agent_chat_turn WHERE status IN ('running','cancelling') LIMIT 1").fetchone():
+                raise HTTPException(409, "stale_handoff")
+            now = conn.execute("SELECT datetime('now')").fetchone()[0]
+            revision = conn.execute("SELECT unread_rev FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()[0] + 1
+            for turn in turns:
+                key = "app:" + hashlib.sha256(json.dumps([conversation_id, row["cli_session_id"], turn["source_uuid"]]).encode()).hexdigest()
+                context = {"origin": "claude_app", "handoff_id": state["handoff_id"], "imported_at": now,
+                           "source_uuid": turn["source_uuid"], "source_session": row["cli_session_id"], **turn.get("context", {})}
+                existing = conn.execute("SELECT conversation_id,context FROM agent_chat_turn WHERE idempotency_key=?", (key,)).fetchone()
+                if existing:
+                    prior = json.loads(existing["context"])
+                    if (existing["conversation_id"] != conversation_id or prior.get("origin") != "claude_app"
+                            or prior.get("source_uuid") != turn["source_uuid"] or prior.get("source_session") != row["cli_session_id"]):
+                        raise HTTPException(409, "import_conflict")
+                    raise HTTPException(409, "anchor_changed")  # 재전송은 위 최근 요청 결과로만 처리한다.
+                tid = str(uuid.uuid4())
+                conn.execute("INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context,created_at,ended_at) "
+                             "VALUES(?,?,?,'done',?,?,?,?)", (tid, conversation_id, key, turn["text"], json.dumps(context, ensure_ascii=False), now, now))
+                for event in turn["events"]:
+                    _append(conn, tid, event["kind"], {k: v for k, v in event.items() if k != "kind"})
+                _append(conn, tid, "state", {"status": "done", "unread_rev": revision})
+            result = _app_result({"phase": "idle", "revision": state["revision"] + 1}, row["app_opened_at"],
+                                 imported=0 if request["unlock_only"] else len(turns), unlock_only=request["unlock_only"], resumable=resumable)
+            state = {"phase": "idle", "revision": state["revision"] + 1}
+            _app_request(state, request, "bring-back", result)
+            conn.execute("UPDATE agent_chat_conversation SET app_handoff=?,resumable=?,updated_at=?,unread=1,unread_rev=? WHERE id=?",
+                         (json.dumps(state), int(resumable), now, revision, conversation_id))
+            still_current()
+            check_current(path)
+            conn.execute("COMMIT")
+            return result
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
 
 def _append(conn, turn_id, kind, payload) -> int:
@@ -315,9 +517,10 @@ def restore_snapshot(path, conversation_id, event_limit) -> dict | None:
             fork = _fork_fields(conn, row["engine"], row["resumable"], row["cli_session_id"], row["fork_session"], row["fork_turn"],
                                 row["fork_from"])
             turns = [dict(t) for t in conn.execute(
-                "SELECT id,status,text,reason,created_at,ended_at,attachments FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
+                "SELECT id,status,text,context,reason,created_at,ended_at,attachments FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at, rowid",
                 (conversation_id,)).fetchall()]
             for turn in turns:
+                turn.update(import_fields(turn.pop("context")))
                 turn["attachments"] = read_attachments(turn["attachments"])
                 turn["events"] = [{"seq": e["seq"], "kind": e["kind"], **json.loads(e["payload"])} for e in conn.execute(
                     "SELECT seq,kind,payload FROM agent_chat_event WHERE turn_id=? ORDER BY seq LIMIT ?", (turn["id"], event_limit)).fetchall()]
@@ -365,9 +568,11 @@ def get_conversation(path, conversation_id) -> dict | None:
 def _fork_state(conn, fork_session, fork_turn, fork_from) -> str:
     """아직 갈라지지 않은 포크가 누른 때 그대로 시작할 수 있나 — 첫 차례 확인(라우터)과 요약이 같이 쓴다(포크 설계 2-2).
     ready = 원래가 있고 세션·마지막 차례(끝난 상태 모두 — 진행 중은 신원 전체 검사로 막힘)가 누른 때와 같음."""
-    source = conn.execute("SELECT cli_session_id FROM agent_chat_conversation WHERE id=?", (fork_from,)).fetchone()
+    source = conn.execute("SELECT cli_session_id,app_handoff FROM agent_chat_conversation WHERE id=?", (fork_from,)).fetchone()
     if not source:
         return "source_gone"
+    if handoff_state(source["app_handoff"])["phase"] != "idle":
+        return "source_changed"
     last = conn.execute("SELECT id FROM agent_chat_turn WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                         (fork_from,)).fetchone()
     return "ready" if source[0] == fork_session and last is not None and last[0] == fork_turn else "source_changed"
@@ -394,6 +599,9 @@ def _summary(row, conn=None) -> dict:
     data.update({key: bool(row[key]) for key in ("resumable", "pinned", "archived", "unread")})
     if conn is not None:
         data.update(_fork_fields(conn, row["engine"], row["resumable"], row["_sid"], row["_fsid"], row["_fturn"], row["_ffrom"]))
+    data.update(app_fields({**dict(row), "app_handoff": row["_handoff"], "cli_session_id": row["_sid"], "fork_session": row["_fsid"], "cli_home": row["_home"]}))
+    if data["app_handoff"]:
+        data.update(can_fork=False, fork_block="in_claude_app")
     return data
 
 
@@ -438,6 +646,7 @@ def _fork_check(conn, source_id):
     source = conn.execute("SELECT * FROM agent_chat_conversation WHERE id=?", (source_id,)).fetchone()
     if not source:
         raise LookupError(source_id)
+    require_app_idle(source)
     if source["restored_from"]:
         raise ForkRefused("restored")
     if source["engine"] != "claude":
@@ -541,11 +750,12 @@ def delete_conversation(path, conversation_id) -> dict | None:
     with connect(path) as conn:
         _tx(conn)
         try:
-            row = conn.execute("SELECT engine,cli_session_id,cli_home,cli_cwd FROM agent_chat_conversation WHERE id=?",
+            row = conn.execute("SELECT engine,cli_session_id,cli_home,cli_cwd,app_handoff,restored_from FROM agent_chat_conversation WHERE id=?",
                                (conversation_id,)).fetchone()
             if not row:
                 conn.execute("ROLLBACK")
                 return None
+            require_app_idle(row)
             if conn.execute("SELECT 1 FROM agent_chat_turn WHERE conversation_id=? AND status IN ('running','cancelling') LIMIT 1",
                             (conversation_id,)).fetchone():
                 conn.execute("ROLLBACK")
@@ -622,12 +832,16 @@ def claim_turn(path, *, conversation_id, idempotency_key, text, context, attachm
                 return dict(row), False
             if new_conversation is not None:
                 _insert_conversation(conn, conversation_id, **new_conversation)
-            source = conn.execute("SELECT restored_from FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()
+            source = conn.execute("SELECT * FROM agent_chat_conversation WHERE id=?", (conversation_id,)).fetchone()
             if not source:
                 conn.execute("ROLLBACK")  # 사이에 지워진 대화에 차례를 붙이지 않는다(설계 2-5)
                 raise LookupError(conversation_id)
             if source["restored_from"]:
                 raise HTTPException(409, "복원한 기록은 읽기 전용입니다. 새 대화로 시작하세요.")
+            require_app_idle(source)
+            if not source["cli_session_id"] and source["fork_session"] and _fork_state(
+                    conn, source["fork_session"], source["fork_turn"], source["fork_from"]) != "ready":
+                raise HTTPException(409, "source_changed")
             tid = str(uuid.uuid4())
             try:
                 conn.execute("INSERT INTO agent_chat_turn(id,conversation_id,idempotency_key,status,text,context,attachments) "
@@ -772,22 +986,28 @@ def ro_conversations(conn, *, search, limit, before) -> list[dict]:
     first = ("(SELECT substr(json_extract(t.context,'$.project'),1,200) FROM agent_chat_turn t WHERE t.conversation_id=c.id"
              " AND json_valid(t.context) AND json_type(t.context,'$.project')='text' ORDER BY t.created_at, t.rowid LIMIT 1)")
     # 서랍에서 옮긴 프로젝트를 따른다 — open_db 를 안 거치므로 칸이 없는 옛 파일이면 첫 차례 것만(설계 2-5)
-    moved = "project_override" in {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}
+    moved = "project_override" in columns
+    handoff = "c.app_handoff" if "app_handoff" in columns else "NULL"
     project = (f"CASE WHEN c.project_override IS NULL THEN {first} WHEN c.project_override='' THEN NULL "
                "ELSE substr(c.project_override,1,200) END" if moved else first)
     rows = conn.execute(
         "SELECT c.id,substr(c.title,1,80) AS title,c.engine,c.model,c.updated_at,"
-        f" {project} AS project,"
+        f" {project} AS project,{handoff} AS _handoff,"
         " (SELECT COUNT(*) FROM agent_chat_turn t WHERE t.conversation_id=c.id) AS turns"
         " FROM agent_chat_conversation c" + (" WHERE " + " AND ".join(where) if where else "") +
         " ORDER BY c.updated_at DESC, c.id DESC LIMIT ?", (*args, limit + 1)).fetchall()
-    return [dict(row) for row in rows]
+    return [{**{k: row[k] for k in row.keys() if k != "_handoff"},
+             "in_claude_app": handoff_state(row["_handoff"])["phase"] != "idle"} for row in rows]
 
 
 def ro_conversation(conn, conversation_id) -> dict | None:
-    row = conn.execute("SELECT id,title,engine,model,effort,updated_at FROM agent_chat_conversation WHERE id=?",
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_chat_conversation)")}
+    handoff = "app_handoff" if "app_handoff" in columns else "NULL"
+    row = conn.execute(f"SELECT id,title,engine,model,effort,updated_at,{handoff} AS _handoff FROM agent_chat_conversation WHERE id=?",
                        (conversation_id,)).fetchone()
-    return dict(row) if row else None
+    return {**{k: row[k] for k in row.keys() if k != "_handoff"},
+            "in_claude_app": handoff_state(row["_handoff"])["phase"] != "idle"} if row else None
 
 
 def ro_turns(conn, conversation_id, *, limit, before) -> list[dict]:

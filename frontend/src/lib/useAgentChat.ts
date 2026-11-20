@@ -10,6 +10,8 @@ import {
   agentChatApi,
   CLAUDE_CHAT_OK,
   ClaudeLoginError,
+  ClaudeAppError,
+  type AgentAppRequest,
   type AgentAttachment,
   type AgentSendAttachments,
   type AgentContext,
@@ -19,6 +21,7 @@ import {
   type AgentSessionFileResult,
   type AgentEngine,
   type AgentEngineId,
+  type AgentLinkResult,
   type AgentEvent,
   type AgentPlan,
   type AgentPlanItemState,
@@ -28,10 +31,12 @@ import {
   type AgentTurnStatus,
   type AgentWeeklyUsage,
   type ClaudeStatus,
+  type ClaudeInstall,
+  type CodexLogin,
 } from "./agentChatApi";
 import { runScreenAction, undoScreenAction, type ScreenHost, type ScreenUndo } from "./agentScreenActions";
 import { AGENT_CHAT_CONNECT_FEATURE, hubHasFeature } from "./hubFeatures";
-import { errorDetail, isHttpStatus } from "./http";
+import { errorDetail, isHttpStatus, getAuthToken } from "./http";
 import { loadJSON, loadString, saveJSON, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
@@ -45,10 +50,22 @@ function readOpenRequest(): OpenRequest | null {
 }
 const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
 
+// Share requests across StrictMode mounts. Failures remain retryable, never successful cache entries.
+const externalPending = new Map<string, Promise<AgentLinkResult>>();
+function linkExternal(key: string, engine: AgentEngineId, identity: string) {
+  let pending = externalPending.get(key);
+  if (!pending) {
+    pending = agentChatApi.agentLink(engine, identity).finally(() => { externalPending.delete(key); });
+    externalPending.set(key, pending);
+  }
+  return pending;
+}
+
 export type AgentMessage =
-  | { kind: "user"; id: string; text: string; attachments?: AgentAttachment[] } // attachments = 그 말과 함께 붙인 자료
+  | { kind: "user"; id: string; text: string; attachments?: AgentAttachment[]; imported?: boolean } // attachments = 그 말과 함께 붙인 자료
+  | { kind: "import"; id: string; at?: string }
   | { kind: "assistant"; id: string; text: string; open: boolean } // open = 아직 조각을 받는 덩어리
-  | { kind: "tool"; id: string; name: string; status: "started" | "done" | "failed" }
+  | { kind: "tool"; id: string; name: string; status: "started" | "done" | "failed" | "unknown" }
   | { kind: "plan"; id: string; plan: AgentPlan; exec?: { state: "running" | "done" | "failed"; message?: string };
       estimate?: { credits: number | null }; // 없으면 견적 확인 중 · credits null = 확인하지 못함
       progress?: AgentPlanProgress }
@@ -217,10 +234,56 @@ const remember = (id: string | null) => saveJSON(STORAGE_KEYS.agentPanelConversa
 //  shortcut: 페이지를 새로 고치면 사라진다 — 새로 고침 뒤 복구가 필요해지면 sessionStorage 로 옮긴다
 let pendingSend: { account: string; sig: string; key: string; sourceId?: string; identity?: string; mixed?: boolean } | null = null;
 
+function mergeSummary(before: AgentConversationSummary | null | undefined, next: AgentConversationSummary): AgentConversationSummary {
+  if (!before || before.id !== next.id) return next;
+  const base = (next.unread_rev ?? -1) < (before.unread_rev ?? -1)
+    ? { ...next, unread: before.unread, unread_rev: before.unread_rev } : next;
+  const app = next.app_revision === undefined && before.app_revision === undefined ? base
+    : (next.app_revision ?? -1) < (before.app_revision ?? -1)
+    || (next.app_revision === before.app_revision && next.app_handoff?.state === "opening" && before.app_handoff?.state !== "opening") ? before : next;
+  return { ...before, ...base, app_handoff: app.app_handoff, app_revision: app.app_revision, app_opened_at: app.app_opened_at,
+    can_open_app: app.can_open_app, open_app_block: app.open_app_block, can_fork: app.can_fork, fork_block: app.fork_block };
+}
+
 export function useAgentChat(context: AgentContext | Record<string, never>, // 빈 값 = '지금 화면' 칩을 뺐다
   // popout = 새 창(?embed=agent) — '새 창에서 열기' 요청을 받는 쪽 · screen = 이 창의 캔버스 손잡이(옆 칸만, 화면 동작 실행)
   options: { popout?: boolean; screen?: ScreenHost } = {}) {
   const [session, setSession] = useState<AgentSession | null>(null);
+  const [externalResults, setExternalResults] = useState<AgentLinkResult[]>([]);
+  const [externalBusy, setExternalBusy] = useState(false);
+  const [externalRetry, setExternalRetry] = useState(0);
+  const externalAttempts = useRef(new Map<string, AgentLinkResult>());
+  const linkNamespace = getAccountNamespace(), linkToken = getAuthToken();
+  const linkIdentity = session?.identity_key;
+  const linkSession = session?.secret;
+  const linkEngines = session?.engines.filter((engine) => engine.available).map((engine) => engine.id).sort().join(",") ?? "";
+  useEffect(() => {
+    let active = true;
+    // A fresh panel session also invalidates old results after logout with a cookie/worker login.
+    const scope = JSON.stringify([linkNamespace, linkToken, linkIdentity, linkSession]);
+    const current = () => active && getAccountNamespace() === linkNamespace && getAuthToken() === linkToken;
+    if (!current()) return;
+    if (!linkIdentity || !linkEngines) { setExternalResults([]); setExternalBusy(false); return; }
+    setExternalBusy(true);
+    const engines = linkEngines.split(",") as AgentEngineId[];
+    void Promise.all(engines.map(async (engine) => {
+      const key = JSON.stringify([scope, engine]);
+      const attempted = externalAttempts.current.get(key);
+      if (attempted) return attempted;
+      let result: AgentLinkResult;
+      try { result = await linkExternal(key, engine, linkIdentity); }
+      catch { result = { client: engine, status: "error" }; }
+      if (current()) externalAttempts.current.set(key, result);
+      return result;
+    })).then((results) => { if (current()) { setExternalResults(results); setExternalBusy(false); } });
+    return () => { active = false; };
+  }, [linkNamespace, linkToken, linkIdentity, linkSession, linkEngines, externalRetry]);
+  const recheckExternal = () => {
+    for (const [key, result] of externalAttempts.current) {
+      if (result.status !== "off") externalAttempts.current.delete(key);
+    }
+    setExternalRetry((value) => value + 1);
+  };
   const [choice, setChoice] = useState<AgentChoice | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -234,6 +297,12 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const [conversations, setConversations] = useState<AgentConversationSummary[] | null>(null);
   const [truncated, setTruncated] = useState(false); // 허브가 최근 500개만 실었다
   const [notice, setNotice] = useState<string | null>(null); // 오류가 아닌 안내(다른 창에서 지워짐 등)
+  const [appBusy, setAppBusy] = useState<{ id: string; action: "open" | "bring-back" } | null>(null);
+  const appInFlight = useRef<string | null>(null);
+  const appRequests = useRef(new Map<string, AgentAppRequest>());
+  const appUnverified = useRef(new Set<string>());
+  const [appError, setAppError] = useState<{ id: string; message: string; canUnlock: boolean; needsRead?: boolean } | null>(null);
+  const snapshotSeq = useRef(0);
   const [usage, setUsage] = useState<AgentUsage>(() => ({ weekly: savedWeekly() }));
   // 사건 속 사용량 — 대화 찬 정도는 마지막 값, 주간은 지금 받은 사건(live)만(복원한 옛 차례 값이 새 값을 덮지 않게)
   const noteUsage = (events: AgentEvent[], live: boolean) => {
@@ -262,10 +331,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const touch = (id: string, change: { deleted?: boolean; summary?: AgentConversationSummary }) => {
     changeSeq.current += 1;
     const before = changedAt.current.get(id)?.summary;
-    const older = before && change.summary && typeof before.unread_rev === "number" && typeof change.summary.unread_rev === "number"
-      && change.summary.unread_rev < before.unread_rev;
     changedAt.current.set(id, { seq: changeSeq.current, deleted: !!change.deleted,
-      summary: change.deleted ? undefined : older ? before : change.summary ?? before });
+      summary: change.deleted ? undefined : change.summary ? mergeSummary(before, change.summary) : before });
   };
 
   const contextRef = useRef(context);
@@ -350,6 +417,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     setConversationId(null);
     setTitle(null);
     setCurrent(null);
+    setAppError(null);
     setRestoreReference(null);
     setRestoreSource(null);
     setMessages([]);
@@ -385,12 +453,10 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const putSummary = (summary: AgentConversationSummary) => {
     if (changedAt.current.get(summary.id)?.deleted) return; // 지운 대화(id 는 다시 안 쓰임)에 늦게 온 응답 — 지움 표시를 풀지 않는다(독립 리뷰 재확인 3)
     touch(summary.id, { summary });
-    if (summary.id === currentId.current) setCurrent((c) => (
-      c?.id === summary.id && typeof c.unread_rev === "number" && typeof summary.unread_rev === "number" && summary.unread_rev < c.unread_rev ? c : summary));
+    if (summary.id === currentId.current) setCurrent((c) => mergeSummary(c, summary));
     setConversations((list) => (list ? list.map((c) => {
       if (c.id !== summary.id) return c;
-      if (typeof c.unread_rev === "number" && typeof summary.unread_rev === "number" && summary.unread_rev < c.unread_rev) return c;
-      return { ...c, ...summary };
+      return mergeSummary(c, summary);
     }) : list));
   };
 
@@ -451,25 +517,41 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     busy.current = false;
   }, [fail, forget, markRead, runAction]);
 
-  const openConversation = useCallback(async (id: string) => {
+  const openConversation = useCallback(async (id: string, refresh = false) => {
     if (busy.current) return; // 보내는 중·진행 중엔 대화를 바꾸지 않는다 — 허브에서 시작한 차례를 놓치지 않게
-    drop();
-    setError(null);
-    setNotice(null);
+    // 앱을 여는 같은 대화의 재조회는 지금 보이는 잠금을 비우지 않는다.
+    if (currentId.current === id && appInFlight.current === id) refresh = true;
+    if (refresh && currentId.current !== id) return;
+    if (!refresh) { drop(); setError(null); setNotice(null); }
     // 불러오는 동안 보내기·전환을 막는다 — 늦게 온 지난 대화가 그사이 보낸 새 차례를 덮지 않게(리뷰 2차)
-    busy.current = true;
-    setSending(true);
-    loadingId.current = id;
-    const stale = ticket();
+    if (!refresh) { busy.current = true; setSending(true); loadingId.current = id; }
+    const old = ticket(), seq = ++snapshotSeq.current;
+    const stale = () => old() || seq !== snapshotSeq.current;
     try {
       const r = await agentChatApi.conversation(id);
       if (stale()) return;
+      if ((r.conversation.app_revision ?? -1) < (changedAt.current.get(id)?.summary?.app_revision ?? -1)) {
+        if (refresh || !r.conversation.restored_from || appInFlight.current === id) return false;
+        // 복원 뒤 명시적으로 다시 연 대화는 서버를 기준으로 기억을 바꾼다.
+        changedAt.current.delete(id);
+        setConversations((list) => list?.map((c) => c.id === id ? r.conversation : c) ?? list);
+      }
       loadingId.current = null;
       let rebuilt: AgentMessage[] = [];
+      let importedGroup: string | undefined;
       for (const t of r.turns) {
         const attached = t.attachments?.items?.length ? { attachments: t.attachments.items } : {};
-        rebuilt = [...rebuilt, { kind: "user", id: `${t.id}:user`, text: t.text, ...attached }];
+        const informational = t.unlock_only || t.supplement;
+        if (t.origin === "claude_app" && !informational && (!importedGroup || importedGroup !== t.handoff_id)) {
+          rebuilt.push({ kind: "import", id: `${t.id}:import`, at: t.imported_at });
+        }
+        importedGroup = t.origin === "claude_app" && !informational ? t.handoff_id : undefined;
+        rebuilt.push(informational ? { kind: "notice", id: `${t.id}:notice`, text: t.text }
+          : { kind: "user", id: `${t.id}:user`, text: t.text, imported: t.origin === "claude_app", ...attached });
         rebuilt = t.events.reduce((acc, ev) => applyAgentEvent(acc, ev, t.id), rebuilt);
+        const omitted = Object.entries(t.omitted ?? {}).filter(([, count]) => count && count > 0)
+          .map(([key, count]) => `${({ characters: "글자", images: "그림", documents: "문서", thinking: "생각 과정" } as Record<string, string>)[key] ?? "내용"} ${count}`);
+        if (omitted.length) rebuilt.push({ kind: "notice", id: `${t.id}:omitted`, text: `생략된 내용: ${omitted.join(" · ")}` });
       }
       if (r.conversation.restored_from) {
         const references = new Map((r.references ?? []).map((p) => [p.plan_id, p]));
@@ -484,13 +566,17 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       setConversationId(id);
       currentId.current = id;
       setTitle(r.conversation.title);
-      setCurrent(r.conversation);
-      setChoice({ engine: r.conversation.engine, model: r.conversation.model, effort: r.conversation.effort });
+      setCurrent(mergeSummary(changedAt.current.get(id)?.summary, r.conversation));
+      putSummary(r.conversation);
+      if (appUnverified.current.delete(id)) setError(null);
+      setAppError((e) => e?.id === id && e.needsRead ? null : e);
+      if (!refresh) setChoice({ engine: r.conversation.engine, model: r.conversation.model, effort: r.conversation.effort });
       remember(id);
       // 열었다 = 봤다 — 그때의 번호로 조건부(늦게 닿아도 그 뒤의 차례 끝·수동 표시는 못 지운다), 이미 읽음이면 안 보냄
       if (r.conversation.unread) markRead(id, r.conversation.unread_rev ?? 0);
       const last = r.turns[r.turns.length - 1];
       if (!r.conversation.restored_from && last && !TERMINAL_TURN.has(last.status)) {
+        busy.current = true;
         setTurn({ id: last.id, status: last.status });
         void follow(last.id, last.events.length ? last.events[last.events.length - 1].seq : 0);
       }
@@ -502,7 +588,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       fail(e);
       if (!(e instanceof AccountChangedError)) return false;
     } finally {
-      if (!stale()) {
+      if (!stale() && !refresh) {
         setSending(false);
         if (!poll.current) busy.current = false; // 진행 중 차례를 이어 받았으면 follow 가 끝날 때 푼다
       }
@@ -537,18 +623,33 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeInFlight = useRef(false); // 2초 확인은 앞 확인이 끝나야 다음을 보낸다
   const mounted = useRef(true); // 닫힌 칸엔 답·타이머가 쓰지 않는다
   const codexInFlight = useRef(false);
+  const codexAction = useRef(0);
+  const installAction = useRef({ claude: 0, codex: 0 });
+  const codexOpening = useRef(false);
+  const installRequests = useRef<Partial<Record<AgentEngineId, { id: string; account: string }>>>({});
+  const [installs, setInstalls] = useState<Partial<Record<AgentEngineId, ClaudeInstall>>>({});
+  const [codexLogin, setCodexLogin] = useState<CodexLogin | null>(null);
+  const codexLoginRequest = useRef<{ id: string; account: string } | null>(null);
   const [codexBusy, setCodexBusy] = useState(false);
   const [codexError, setCodexError] = useState<string | null>(null);
 
-  const setCodexEnabled = useCallback(async (enabled: boolean) => {
-    if (codexInFlight.current) return;
+  const setCodexEnabled = useCallback(async (enabled: boolean, chainId?: string) => {
+    if (enabled && codexInFlight.current) return;
+    const action = ++codexAction.current;
+    if (!enabled) {
+      installAction.current.codex += 1;
+      delete installRequests.current.codex;
+      codexLoginRequest.current = null;
+      setCodexLogin(null);
+      setInstalls((old) => { const next = { ...old }; delete next.codex; return next; });
+    }
     const account = getAccountNamespace();
-    const current = () => mounted.current && account === getAccountNamespace();
+    const current = () => mounted.current && action === codexAction.current && account === getAccountNamespace();
     codexInFlight.current = true;
     setCodexBusy(true);
     setCodexError(null);
     try {
-      const result = await agentChatApi.setCodexEnabled(enabled);
+      const result = await agentChatApi.setCodexEnabled(enabled, chainId);
       if (!current()) return;
       setSession((s) => s ? { ...s, engines: result.engines } : s);
       setChoice((c) => c ?? pickChoice(result.engines, null));
@@ -558,12 +659,16 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         if (e instanceof AccountChangedError) fail(e);
       }
     } finally {
-      codexInFlight.current = false;
-      if (mounted.current) setCodexBusy(false);
+      if (action === codexAction.current) {
+        codexInFlight.current = false;
+        if (mounted.current) setCodexBusy(false);
+      }
     }
   }, [fail]);
 
   const stopWaiting = useCallback(() => {
+    installAction.current.claude += 1;
+    delete installRequests.current.claude;
     if (claudeTimer.current !== null) window.clearInterval(claudeTimer.current);
     claudeTimer.current = null;
     setWaiting(false);
@@ -618,7 +723,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
 
   // 실행기가 Claude Code 를 설치하는 중이면 3초마다 다시 본다 — 끝나면(running 아님) 멈추고 화면이 그 단계로 넘어간다.
   //  로그인 창 기다림(2초·10분)과 따로다. 칸을 닫으면 정리로 멈춘다(설치 설계 2-v3-1b).
-  const installing = claude?.install?.state === "running";
+  const installing = claude?.install?.state === "running" || !!session?.engines.some((engine) => engine.install?.state === "running");
   useEffect(() => {
     if (!installing) return;
     const timer = window.setInterval(() => { if (!claudeInFlight.current) void recheck(); }, 3000);
@@ -658,6 +763,85 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       if (current()) setConnecting(false);
     }
   }, [recheck, startWaiting]);
+
+  const loginCodex = useCallback(async (chainId?: string, reconnect = false) => {
+    if (codexOpening.current || codexLoginRequest.current) return;
+    codexOpening.current = true;
+    const action = codexAction.current;
+    const account = getAccountNamespace();
+    const current = () => mounted.current && account === getAccountNamespace() && action === codexAction.current;
+    setCodexError(null);
+    try {
+      const result = await agentChatApi.openCodexLogin(chainId, reconnect);
+      if (!current()) return;
+      setCodexLogin(result);
+      if (result.state === "ok") void setCodexEnabled(true, result.id);
+      else if (result.state === "running") codexLoginRequest.current = { id: result.id, account };
+    } catch (e) { if (current()) setCodexError(errorDetail(e)); }
+    finally { codexOpening.current = false; }
+  }, [setCodexEnabled]);
+
+  const installEngine = useCallback(async (engine: AgentEngineId) => {
+    if (installRequests.current[engine]) return;
+    const action = ++installAction.current[engine];
+    const account = getAccountNamespace();
+    installRequests.current[engine] = { id: "", account };
+    setInstalls((old) => ({ ...old, [engine]: { state: "running", at: Date.now() / 1000, reason: null } }));
+    try {
+      const result = await agentChatApi.install(engine);
+      if (!mounted.current || account !== getAccountNamespace() || action !== installAction.current[engine] || !installRequests.current[engine]) return;
+      setInstalls((old) => ({ ...old, [engine]: result }));
+      if (result.id && result.state === "running") installRequests.current[engine] = { id: result.id, account };
+      else delete installRequests.current[engine];
+    } catch (e) {
+      if (action === installAction.current[engine]) delete installRequests.current[engine];
+      if (mounted.current && account === getAccountNamespace() && action === installAction.current[engine]) {
+        setInstalls((old) => ({ ...old, [engine]: { state: "failed", at: Date.now() / 1000, reason: "marker_failed" } }));
+        if (e instanceof AccountChangedError) fail(e);
+      }
+    }
+  }, [fail]);
+
+  const installPolling = useRef(false);
+  const checkConnections = useCallback(async () => {
+    if (installPolling.current) return;
+    installPolling.current = true;
+    try {
+      for (const engine of ["claude", "codex"] as const) {
+        const request = installRequests.current[engine];
+        if (!request?.id) continue;
+        const action = installAction.current[engine];
+        const { install } = await agentChatApi.installStatus(engine);
+        if (!mounted.current || request !== installRequests.current[engine] || request.account !== getAccountNamespace()) continue;
+        if (!install || install.id !== request.id) continue;
+        setInstalls((old) => ({ ...old, [engine]: install }));
+        if (install.state !== "running") {
+          delete installRequests.current[engine]; // 이 화면에서 누른 id 에 한 번만 이어 간다.
+          await recheck();
+          if (install.state === "ok" && mounted.current && action === installAction.current[engine] && request.account === getAccountNamespace()) {
+            if (engine === "claude") void connect();
+            else void loginCodex(request.id);
+          }
+        }
+      }
+      const request = codexLoginRequest.current;
+      if (request) {
+        const result = await agentChatApi.codexLoginStatus(request.id);
+        if (mounted.current && codexLoginRequest.current === request && request.account === getAccountNamespace() && result.id === request.id) {
+          setCodexLogin(result);
+          if (result.state !== "running") {
+            codexLoginRequest.current = null;
+            if (result.state === "ok") await setCodexEnabled(true, request.id);
+          }
+        }
+      }
+    } catch (e) { if (mounted.current && e instanceof AccountChangedError) fail(e); }
+    finally { installPolling.current = false; }
+  }, [connect, fail, loginCodex, recheck, setCodexEnabled]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { void checkConnections(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [checkConnections]);
 
   useEffect(() => {
     mounted.current = true; // 개발 모드의 두 번 올리기에서도 다시 켠다
@@ -723,7 +907,9 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
    *  attach.images = 그림 칩의 썸네일 — 같은 요청 판정(sig)에는 넣지 않는다(칩 식별자에서 나오므로 같은 칩이면 같은 요청). */
   const send = useCallback(async (text: string, attach: AgentSendAttachments | null = null): Promise<boolean> => {
     const body = text.trim();
-    if (!body || !choice || busy.current || current?.restored_from) return false;
+    if (!body || !choice || busy.current || current?.restored_from || current?.resumable === false || current?.app_handoff
+      || (conversationId && (appInFlight.current === conversationId || appUnverified.current.has(conversationId)
+        || changedAt.current.get(conversationId)?.summary?.app_handoff))) return false;
     if (restoreSource && restoreSource.account !== getAccountNamespace()) {
       removeRestoreSource();
       setError(ACCOUNT_CHANGED_MESSAGE);
@@ -732,6 +918,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     busy.current = true;
     setSending(true);
     setError(null);
+    snapshotSeq.current += 1; // 보내기 전 시작한 창 복귀 조회가 새 차례를 덮지 않는다.
     const stale = ticket();
     const account = getAccountNamespace();
     const fast = !!choice.fast && choice.engine === "claude" && choice.model === "opus";
@@ -903,6 +1090,11 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
         for (const c of r.conversations) {
           const change = changedAt.current.get(c.id);
           if (change?.deleted && change.seq <= sentAt) changedAt.current.set(c.id, { seq: change.seq, deleted: false });
+          if (c.id === currentId.current) {
+            const summary = change && change.seq > sentAt ? mergeSummary(c, change.summary ?? c) : mergeSummary(change?.summary, c);
+            changedAt.current.set(c.id, { seq: change?.seq ?? sentAt, deleted: false, summary });
+            setCurrent((before) => mergeSummary(before, summary));
+          }
         }
         // 보낸 뒤 이 창에서 바꾼 줄 — 지운 줄은 빼고, 고친 줄은 지금 화면 값(목록에 없었으면 받은 요약)을 지킨다(늦게 온 옛 조회가 덮지 않게)
         setConversations((prev) => {
@@ -913,9 +1105,9 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
             change.seq > sentAt && !change.deleted && change.summary && !listed.has(id) ? [kept.get(id) ?? change.summary] : []));
           return [...fresh, ...r.conversations.flatMap((c) => {
             const change = changedAt.current.get(c.id);
-            if (!change || change.seq <= sentAt) return [c];
+            if (!change || change.seq <= sentAt) return [mergeSummary(kept.get(c.id) ?? change?.summary, c)];
             if (change.deleted) return [];
-            return [kept.get(c.id) ?? { ...c, ...(change.summary ?? {}) }];
+            return [mergeSummary(c, kept.get(c.id) ?? change.summary ?? c)];
           })];
         });
         setTruncated(!!r.truncated);
@@ -941,6 +1133,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
 
   /** 지우기 — 허브의 세션 파일 정리 결과를 돌려준다(실패면 null). 다른 창에도 알린다. */
   const removeConversation = useCallback(async (id: string): Promise<AgentSessionFileResult | null> => {
+    if (appInFlight.current === id || appUnverified.current.has(id) || changedAt.current.get(id)?.summary?.app_handoff) return null;
     try {
       const r = await agentChatApi.deleteConversation(id);
       forget(id);
@@ -963,7 +1156,8 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const forkingNow = useRef(false); // 같은 렌더에서 두 번 불려도 하나만 — 상태(forking)는 다음 렌더에야 바뀐다(포크 독립 리뷰 P2)
   const [forking, setForking] = useState(false);
   const forkConversation = useCallback(async (sourceId: string): Promise<string | null> => {
-    if (forkingNow.current || busy.current) return null;
+    if (forkingNow.current || busy.current || appInFlight.current === sourceId || appUnverified.current.has(sourceId)
+      || changedAt.current.get(sourceId)?.summary?.app_handoff) return null;
     forkingNow.current = true;
     const requestId = forkRequests.current.get(sourceId) ?? crypto.randomUUID();
     forkRequests.current.set(sourceId, requestId);
@@ -990,6 +1184,64 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     // ticket·touch 는 매번 새로 만드는 표·함수라 넣지 않는다
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openConversation]);
+
+  const claudeApp = useCallback(async (target: AgentConversationSummary, action: "open" | "bring-back", unlockOnly = false) => {
+    if (busy.current || forkingNow.current || appInFlight.current || target.app_revision === undefined) return;
+    const known = mergeSummary(target, changedAt.current.get(target.id)?.summary ?? target);
+    if (action === "bring-back" && !known.app_handoff) return;
+    const stale = ticket();
+    const key = JSON.stringify([getAccountNamespace(), session?.identity_key, target.id, action, unlockOnly]);
+    const pending = appRequests.current.get(key);
+    const request = pending && pending.expected_revision === known.app_revision && pending.handoff_id === known.app_handoff?.id
+      ? pending : { request_id: crypto.randomUUID(), expected_revision: known.app_revision!,
+      ...(known.app_handoff ? { handoff_id: known.app_handoff.id } : {}), ...(action === "bring-back" ? { unlock_only: unlockOnly } : {}) };
+    appRequests.current.set(key, request);
+    appInFlight.current = target.id;
+    snapshotSeq.current += 1; // 작업 전에 시작한 복귀 조회가 새 잠금을 덮지 않는다.
+    setAppBusy({ id: target.id, action });
+    setAppError(null);
+    setNotice(null);
+    try {
+      const result = await agentChatApi.claudeApp(target.id, action, request);
+      appRequests.current.delete(key);
+      if (stale()) return;
+      putSummary({ ...known, ...result, ...(result.app_handoff ? { can_open_app: false, open_app_block: "in_claude_app", can_fork: false } : {}) });
+      if (currentId.current === target.id) {
+        const loaded = await openConversation(target.id, true);
+        if (stale()) return;
+        if (!loaded) {
+          appUnverified.current.add(target.id);
+          setAppError({ id: target.id, canUnlock: false, needsRead: true, message: "작업 결과를 화면에 다시 읽지 못했어요. 상태를 다시 확인해 주세요" });
+          return;
+        }
+      }
+      if (result.open_failed) {
+        const message = ({ job: "Windows 실행 격리를 확인하지 못해 앱을 열지 않았어요",
+          launch: "Claude 앱 열기 작업을 시작하지 못했어요", identify: "열기 작업을 확인하지 못해 앱을 열지 않았어요" })[result.open_failed];
+        if (currentId.current === target.id) setAppError({ id: target.id, canUnlock: false, message });
+        else setNotice(message);
+      }
+      else if (action === "bring-back") setNotice(unlockOnly
+        ? "앱에서 쓴 내용은 화면에 반영되지 않았어요. 이어질 문맥은 Claude 세션 상태에 따릅니다"
+        : result.imported ? `Claude 앱에서 쓴 말 ${result.imported}개를 가져왔어요` : "새로 쓴 말이 없어요");
+    } catch (e) {
+      if (e instanceof ClaudeAppError && e.status < 500) appRequests.current.delete(key);
+      if (stale()) return;
+      if (e instanceof AccountChangedError) return fail(e);
+      const loaded = currentId.current === target.id ? await openConversation(target.id, true) : true;
+      if (stale()) return;
+      if (!loaded) appUnverified.current.add(target.id);
+      const launcherUncertain = e instanceof ClaudeAppError && e.code === "launcher_uncertain";
+      const message = e instanceof ClaudeAppError ? e.message : "Claude 앱 작업 결과를 확인하지 못했어요. 상태를 확인한 뒤 다시 시도해 주세요";
+      if (currentId.current === target.id) setAppError({ id: target.id, canUnlock: action === "bring-back" && !launcherUncertain, needsRead: !loaded || launcherUncertain, message });
+      else setNotice(message);
+    } finally {
+      appInFlight.current = null;
+      if (mounted.current) setAppBusy(null);
+    }
+    // ticket·putSummary 는 요청 때의 계정·대화와 최신 표를 읽는다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.identity_key, openConversation, fail]);
 
   /** 옆 칸의 '새 창에서 열기' — 새 창이 받을 요청을 적는다(창을 여는 것은 부르는 쪽의 onPopOut). */
   const requestOpenInWindow = useCallback((id: string) => {
@@ -1021,10 +1273,12 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
     const onVisible = () => {
       const pending = pendingRead.current;
       if (pending && visible() && pending.id === currentId.current) markRead(pending.id, pending.rev);
+      if (visible() && currentId.current && !appInFlight.current) void openConversation(currentId.current, true);
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [markRead]);
+    window.addEventListener("focus", onVisible);
+    return () => { document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); };
+  }, [markRead, openConversation]);
 
   // 바쁠 때 온 새 창 열기 요청 — 풀리면 연다
   useEffect(() => {
@@ -1039,7 +1293,13 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
   const claudeState = claude?.state ?? claudeEngine?.state ?? null;
   return {
     session, choice, choose, conversationId, title, current, messages, turn, running, sending, error, usage,
-    codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled },
+    external: { results: externalResults, busy: externalBusy, recheck: recheckExternal },
+    claudeApp, appBusy, appError,
+    codex: { busy: codexBusy, error: codexError, setEnabled: setCodexEnabled, login: codexLogin, connect: loginCodex,
+      recheck: () => {
+        if (codexLogin?.state === "manual") codexLoginRequest.current = { id: codexLogin.id, account: getAccountNamespace() };
+        return checkConnections();
+      }, stopWaiting: () => { codexLoginRequest.current = null; setCodexLogin(null); } },
     restoreReference, restoreSource, newFromRestored, removeRestoreSource,
     conversations, loadConversations, openConversation, newConversation, send, cancel, executePlan, forkConversation, forking, undoAction,
     truncated, notice, dismissNotice: () => setNotice(null), patchConversation, removeConversation, requestOpenInWindow,
@@ -1051,6 +1311,7 @@ export function useAgentChat(context: AgentContext | Record<string, never>, // �
       allowed: !!claudeEngine?.available,
       loginWindowEnabled: !!claude?.login_window_enabled,
       install: claude?.install ?? null,
+      installs, installEngine,
       waiting, connecting, connectError, note: loginNote, connected,
       recheck, connect, stopWaiting, dismissConnected: () => setConnected(null),
     },

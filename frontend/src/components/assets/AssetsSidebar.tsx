@@ -1,4 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
+import { api } from "../../api";
+import { clampMenuPosition, FOLDER_MENU_W, folderMenuHeight, folderTone } from "../../lib/folderContextMenu";
+import { useT } from "../../lib/i18n";
+import { reportSourceLocationError } from "../../lib/sourceLocationFeedback";
+import { useEscapeClose } from "../../lib/useEscapeClose";
+import { useOutsideMouseDown } from "../../lib/useOutsideMouseDown";
 import type { AssetMeta, AssetNode } from "../../types";
 import { SideMark } from "../common/FolderTreeView";
 import { WorkspaceMark } from "../common/WorkspaceMark";
@@ -42,6 +49,26 @@ export function AssetsSidebar({
   const count = useMemo(() => assetFileCount(tree, typeFilter, meta, sourceOnly), [tree, typeFilter, meta, sourceOnly]);
   const missing = folderKind === "missing";
   const atRoot = dir === "" && !missing;
+  const t = useT();
+  // 폴더 줄 우클릭 → '원본 위치 열기'. 모양은 워크스페이스·공유 탭의 폴더 메뉴와 같다(Jay 2026-11-20 맞춤 2) — 이름 + 깊이별 색 알약.
+  //  원격 접속에서는 서버 PC 의 탐색기를 열지 않으므로 메뉴 없이 브라우저 기본 메뉴 그대로 둔다(같은 기준 — 최종 판정은 백엔드 로컬 가드).
+  //  닫기: Esc(초점은 연 줄로 — 안 그러면 body 로 빠져 전역 단축키로 샌다), 바깥 누름, Tab 으로 빠져나감.
+  const [folderMenu, setFolderMenu] = useState<{ path: string; name: string; depth: number; x: number; y: number } | null>(null);
+  const folderMenuRef = useRef<HTMLDivElement>(null);
+  const menuAnchorRef = useRef<HTMLElement | null>(null);
+  const closeFolderMenu = (restoreFocus: boolean) => {
+    setFolderMenu(null);
+    if (restoreFocus) menuAnchorRef.current?.focus();
+  };
+  useEscapeClose(() => closeFolderMenu(true), !!folderMenu, true, true);
+  useOutsideMouseDown(folderMenuRef, () => closeFolderMenu(false), !!folderMenu, undefined, true);
+  const canOpenFolder = ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+  const openFolderMenu = canOpenFolder
+    ? (path: string, name: string, depth: number, e: MouseEvent) => {
+        menuAnchorRef.current = e.currentTarget as HTMLElement;
+        setFolderMenu({ path, name, depth, x: e.clientX, y: e.clientY });
+      }
+    : undefined;
   return (
     <aside className="assets-tree">
       <div className="proj-tree-wrap">
@@ -76,9 +103,40 @@ export function AssetsSidebar({
             meta={meta}
             sourceOnly={sourceOnly}
             project={project}
+            onContextMenu={openFolderMenu}
           />
         )}
       </div>
+      {folderMenu &&
+        createPortal(
+          <div
+            ref={folderMenuRef}
+            className="folder-ctx-menu assets-tree-menu"
+            role="menu"
+            style={clampMenuPosition(folderMenu.x, folderMenu.y, window.innerWidth, window.innerHeight, FOLDER_MENU_W, folderMenuHeight(1))}
+            onKeyDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <div className="folder-ctx-head">
+              <div className="folder-ctx-name" title={folderMenu.path}>{folderMenu.name}</div>
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              autoFocus
+              className={"folder-ctx-btn tone-" + folderTone(folderMenu.depth)}
+              title={t("원본 위치 열기 — 연결된 실제 폴더를 탐색기에서 엽니다")}
+              onClick={() => {
+                const path = folderMenu.path;
+                closeFolderMenu(true);
+                api.revealAsset(project, path).catch(reportSourceLocationError);
+              }}
+            >
+              📂 {t("원본 위치 열기")}
+            </button>
+          </div>,
+          document.body,
+        )}
     </aside>
   );
 }

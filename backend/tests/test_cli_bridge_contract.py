@@ -309,6 +309,18 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
             self.assertNotIn("--video-references", no_dummy)
             self.assertNotIn(cli_bridge._COST_DUMMY_REF, no_dummy)
 
+    def test_reference_to_video_cost_gets_a_dummy_image_reference(self):
+        """Kling 4.0·Flash·Gemini Omni 의 reference-to-video 견적은 참조가 있어야 통과한다(2026-11-19 실측) —
+        더미 참조를 끼운다. 다른 모드·모드 없음은 그대로."""
+        from app.services import cli_bridge
+
+        self.assertEqual(
+            cli_bridge._cost_dummy_ref_args(["--mode", "reference-to-video", "--duration", "3"]),
+            ["--image-references", cli_bridge._COST_DUMMY_REF],
+        )
+        for param_args in (["--mode", "text-to-video"], ["--mode", "video-edit"], ["--duration", "3"], []):
+            self.assertEqual(cli_bridge._cost_dummy_ref_args(param_args), [])
+
     async def test_cost_cache_write_failure_keeps_dirty_until_next_success(self):
         """R5 2-D — 쓰기 실패는 saved revision 을 올리지 않아 dirty 가 유지되고,
         다음 성공 저장(flush 포함)이 담아낸다."""

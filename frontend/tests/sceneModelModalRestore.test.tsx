@@ -33,9 +33,11 @@ vi.mock("../src/api", () => ({
         { display_name: "Nano Banana 2", job_set_type: "nano_banana_flash", type: "image" },
         { display_name: "Seedance 2.0 Mini", job_set_type: "seedance_2_0_mini", type: "video" },
         { display_name: "Seedance 2.5", job_set_type: "seedance_2_5", type: "video" },
-        // 부분 수정 전용 고정 모델 — **CLI 카탈로그에는 있고** 우리 드롭다운(`ALLOWED`)에는 없다.
-        // 실제 조건을 재현하려면 이 비대칭이 필요하다(코덱스): 제품 `ALLOWED` 에 넣으면 안 된다.
+        // 부분 수정 기본 모델 — 정책 면제(`POLICY_EXEMPT_MODELS`). 2026-11-19 부터 생성 창 목록(`ALLOWED`)에도 있다.
         { display_name: "Seedream V5 Pro", job_set_type: "seedream_v5_pro", type: "image" },
+        // 카탈로그에는 있고 우리 드롭다운(`ALLOWED`)에는 없는 이미지 모델 — '목록 밖 모델을 복원해도 탭이 갈아치우지 않는다' 조건을 재현한다
+        // (2026-11-19 전에는 seedream_v5_pro 가 이 역할이었다. 이제 목록에 들어와 이 모델로 바꿨다).
+        { display_name: "Flux Kontext", job_set_type: "flux_kontext", type: "image" },
       ]),
     modelParams: (...args: unknown[]) => modelParams(...args),
     estimateCost: () => Promise.resolve({ credits: 1 }),
@@ -146,7 +148,8 @@ describe("모델 키로 타입을 판정한다", () => {
     const { inferModelType } = await import("../src/lib/useModels");
     expect(inferModelType("seedance_2_0_mini")).toBe("video");
     expect(inferModelType("nano_banana_flash")).toBe("image");
-    expect(inferModelType("seedream_v5_pro")).toBeUndefined(); // 양쪽에 없음(옛/특수 키)
+    expect(inferModelType("seedream_v5_pro")).toBe("image"); // 2026-11-19 생성 창 목록에 들어왔다
+    expect(inferModelType("flux_kontext")).toBeUndefined(); // 양쪽에 없음(옛/특수 키)
     expect(inferModelType("")).toBeUndefined();
     expect(inferModelType(null)).toBeUndefined();
     expect(inferModelType(undefined)).toBeUndefined();
@@ -362,15 +365,16 @@ describe("그룹 정책 — 판정은 한 벌이어야 한다", () => {
     expect(saved).toHaveLength(0);
   });
 
-  it("면제라고 드롭다운에 끼워 넣지는 않는다 — 노출 카탈로그와 정책은 별개다", async () => {
+  it("면제 모델은 그룹이 제한해도 목록에 보이지만, 허용 안 된 다른 모델이 면제 덕에 끼어들지는 않는다", async () => {
+    // 2026-11-19: Seedream 5.0 Pro 가 생성 창 목록(ALLOWED)에 들어왔다 — 면제라서 그룹이 막지 못한다.
     allowedModels = new Set(["nano_banana_flash"]);
     await mount({ model: "seedream_v5_pro", params: {} });
     click(chip("Seedream V5 Pro")); // 모델 칩을 열어 목록을 편다
-    const labels = [...container.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
-    // 지금 고른 것을 보여 주는 칩 **하나뿐**이다 — 목록 항목으로 늘어나면 안 된다.
-    expect(labels.filter((t) => t.includes("Seedream"))).toHaveLength(1);
-    // 허용된 이미지 모델은 목록에 뜬다(목록 자체가 안 열린 것이 아님을 확인)
-    expect(labels.some((t) => t.includes("Nano Banana 2"))).toBe(true);
+    const rows = () => [...container.querySelectorAll(".sl-dropdown .sl-dd-item")].map((b) => b.getAttribute("aria-label"));
+    expect(rows()).toEqual(["Seedream V5 Pro"]); // 고른 면제 모델의 계열(Seedream)에는 그 줄 하나뿐
+    // 허용된 이미지 모델은 다른 계열 타일에 뜬다(목록 자체가 안 열린 것이 아님을 확인)
+    click(container.querySelector<HTMLButtonElement>('.sl-fam-tab[aria-label="Nano Banana"]')!);
+    expect(rows()).toEqual(["Nano Banana 2"]);
   });
 
   it("면제가 스키마 검증까지 우회하지는 않는다 — 조회 실패면 여전히 못 저장한다", async () => {
@@ -385,16 +389,17 @@ describe("그룹 정책 — 판정은 한 벌이어야 한다", () => {
 describe("저장하는 type 은 화면 탭이 아니라 **모델의 타입**이다", () => {
   // ★왜(2026-09-13, 코덱스 3회차 실측): 카탈로그(`ALLOWED`) 밖 모델을 복원하면 탭을 눌러도
   //  모델이 **교체되지 않는다**(`useModels.ts:444` 가 보존). 그런데 저장은 `m.type`(탭)을
-  //  그대로 썼다 → `{type:"video", model:"seedream_v5_pro"}` 같은 어긋난 메타가 남았다.
+  //  그대로 썼다 → `{type:"video", model:"flux_kontext"}` 같은 어긋난 메타가 남았다.
   //  이 값은 카드 표시와 **모달 재열기 초기 타입**이 읽는다.
+  //  (2026-11-19: 이 시험의 목록 밖 모델은 seedream_v5_pro 에서 flux_kontext 로 바뀌었다 — Pro 가 목록에 들어왔다.)
 
   it("★탭을 Video 로 바꿔도 이미지 모델은 image 로 저장된다", async () => {
-    await mount({ model: "seedream_v5_pro", params: {} });
+    await mount({ model: "flux_kontext", params: {} });
     click(button("Video")); // 카탈로그 밖 모델이라 모델은 안 바뀐다
-    expect(shownModel()).toBe("Seedream V5 Pro"); // 보존 확인(전제)
+    expect(shownModel()).toBe("Flux Kontext"); // 보존 확인(전제)
     click(button("저장"));
     expect(saved).toHaveLength(1);
-    expect(saved[0].model).toBe("seedream_v5_pro");
+    expect(saved[0].model).toBe("flux_kontext");
     expect(saved[0].type).toBe("image"); // 탭이 아니라 CLI 카탈로그의 타입
   });
 

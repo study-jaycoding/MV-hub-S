@@ -203,12 +203,13 @@ describe("크게 보기 코멘트 모드", () => {
   });
   afterEach(() => restore.forEach((undo) => undo()));
 
-  it("머리줄 = [Edit] [History] 만 — 코멘트 C·다운로드는 없다(Ctrl 카드 단추에 있다)", async () => {
+  it("머리줄 = [Edit] [Upscale] [History] 만 — 코멘트 C·다운로드는 없다(Ctrl 카드 단추에 있다)", async () => {
     const { MediaPreview } = await import("../src/components/MediaPreview");
     act(() => root.render(<MediaPreview target={VIDEO} onClose={onClose} onOpenInBoard={vi.fn()} cardActions={actions()} />));
     await settle();
     const head = [...host.querySelectorAll(".preview-head-actions button")].map((b) => b.textContent);
-    expect(head).toEqual(["🖌 Edit", "⧉ History"]);
+    // 업스케일은 수정과 같은 줄·같은 대상(Jay 11-20 시안 v3)
+    expect(head).toEqual(["🖌 Edit", "⤢ Upscale", "⧉ History"]);
     expect(host.querySelector(".cm-cbtn, .preview-dl-btn")).toBeNull();
   });
 
@@ -221,7 +222,7 @@ describe("크게 보기 코멘트 모드", () => {
     expect(head()).toEqual(["⧉ History", "다운로드"]);
     act(() => root.render(<MediaPreview target={{ ...IMAGE, genId: "gen-image" }} onClose={onClose} onOpenInBoard={vi.fn()} cardActions={actions()} />));
     await settle();
-    expect(head()).toEqual(["🖌 Edit", "⧉ History"]);
+    expect(head()).toEqual(["🖌 Edit", "⤢ Upscale", "⧉ History"]);
   });
 
   it("오디오만 머리줄에 받기 아이콘 단추(시안 ⑱) — 생성물은 앱 이름 규칙(downloadGeneration), 어셋은 파일 이름 그대로(downloadOne)", async () => {

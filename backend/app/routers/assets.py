@@ -2350,7 +2350,7 @@ class RevealIn(BaseModel):
 
 @router.post("/reveal", dependencies=[Depends(_require_local_assets)])
 def reveal_file(body: RevealIn, request: Request):
-    """OS 파일 탐색기에서 원본 위치를 열고 해당 파일을 선택(로컬 전용)."""
+    """OS 파일 탐색기에서 원본 위치를 열고 해당 파일을 선택(로컬 전용). 폴더는 그 안을 연다(왼쪽 폴더 트리 우클릭)."""
     proj_dir = _safe_project_dir(body.project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {body.project}")
@@ -2358,7 +2358,11 @@ def reveal_file(body: RevealIn, request: Request):
     if not target or not target.exists():
         raise HTTPException(status_code=404, detail="파일 없음")
     try:
-        if sys.platform == "win32":
+        if target.is_dir():
+            # 폴더 = 그 안을 연다(다른 탭의 '원본 위치 열기'와 같은 동작). /select 가 없어 인자 리스트로 넘겨도 공백 경로가 안전하다.
+            opener = "explorer" if sys.platform == "win32" else "open" if sys.platform == "darwin" else "xdg-open"
+            subprocess.Popen([opener, str(path_comparison_key(target))])
+        elif sys.platform == "win32":
             # ★인자 '리스트'로 넘기면 subprocess 가 경로에 공백이 있을 때 "/select,<경로>" 전체를
             #  통째로 따옴표로 감싸버린다(explorer "/select,C:\My Docs\a.png"). 이 형태는 explorer 가
             #  파싱 못 해 파일 선택 대신 기본 폴더(문서 등)가 열린다 → "원본을 못 찾는" 증상.

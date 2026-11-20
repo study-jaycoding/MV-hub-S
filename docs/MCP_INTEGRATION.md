@@ -1,9 +1,25 @@
 ---
 status: active
-updated: 2026-11-12
+updated: 2026-11-20
 ---
 
 # MV Hub 로컬 MCP
+
+## MV Agent와 바깥 앱 연결 (2026-11-20)
+
+MV Agent의 Claude·Codex 엔진이 사용 가능해지면 `POST /api/mcp/v2/app/agent-link`가 해당 바깥 앱 연결을 점검한다.
+기대 계정과 `identity_key`를 확인하고, 기존 프로필·DB 자격이 맞으면 ID를 유지하며 호스트 허용만 맞춘다.
+Claude Code는 사용자 `permissions.allow`에 해당 서버 규칙을, Codex는 서버 표에 `default_tools_approval_mode="approve"`를 쓴다.
+기존 거부·승인 정책·사용자 추가 설정은 덮지 않는다. 충돌·부분 실패는 연결 화면에 따로 표시한다.
+
+`app_setting`의 `mcp_agent_link:<owner>:<email>:<client>`는 `linked/off/retry`와 연결 ID를 저장한다.
+명시적 해제로 유효 자격이 없어지면 `off`를 함께 기록하고 자동 재발급하지 않는다. 로그아웃·비밀번호 변경 후에는
+이전 연결과 현재 설정이 일치할 때만 기존 공간·실행권을 계승한다. 팀 소속은 다시 확인한다.
+설정은 경로별 Windows 뮤텍스와 최초·직전 백업으로 보호하지만, 잠금에 참여하지 않는 편집기와의 경쟁은 남는다.
+
+등록·허용 설정 완료는 실제 호출 확인과 다르다. 프로젝트·관리자 정책은 별도로 적용될 수 있다.
+칸 전용 자격·실행 옵션은 그대로이며 바깥 앱의 `screen_action`은 지원하지 않는다.
+어댑터 `2026.11.20.1`의 두 허브 선택 안내와 함께 **앱 업데이트가 필요**하다. MCP 독립 업데이트는 `server.py`만 교체한다.
 
 ## MV Agent 대화 기록 읽기 (2026-11-12 구현)
 

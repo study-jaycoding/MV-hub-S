@@ -7,16 +7,25 @@ import { useEffect, useRef, useState } from "react";
 import { policyNote, submitBlockMessage } from "../../lib/modelPolicyCore";
 import { useModelPolicy } from "../../lib/modelPolicy";
 import { inferModelType, stripHiddenParams, useModels } from "../../lib/useModels";
-import { AUDIO_TASK_MODELS, audioTaskOf, isTtsModel, variantChoiceMissing, variantDisplayName } from "../../lib/spotlightPromptConfig";
+import { AUDIO_TASK_MODELS, audioTaskOf, isTtsModel, NO_REFS, variantChoiceMissing, variantDisplayName, type RefSummary } from "../../lib/spotlightPromptConfig";
 import { SpotlightOptionsBar, SpotlightTypeToggle } from "../spotlight/SpotlightOptionsBar";
+import { SvgReferenceBand } from "../spotlight/SvgReferenceBand";
+import { isSvgWithReferences, withSvgReferenceConstraint } from "../../lib/svgReference";
+import { modelNodeParamsForRefs } from "../../lib/sceneGenerationInputs";
 import type { SceneModelCfg } from "../../lib/scenes";
 
 export function SceneModelModal({
   initial,
+  svgRefCount = 0,
+  refInfo = NO_REFS,
   onSave,
   onClose,
 }: {
   initial?: SceneModelCfg;
+  // 이 모델 노드가 먹이는 생성카드에 붙은 이미지 참조 수 — GPT 2.6 은 SVG 에 참조를 못 쓴다(svg 잠금·띠·저장 잠금)
+  svgRefCount?: number;
+  // 같은 카드의 레퍼런스 요약(종류 무관 개수·카드 글의 시작/끝 프레임) — 참조가 붙으면 길이 상한이 낮은 모델(Gemini Omni 10초)의 길이 칸 상한에 쓴다.
+  refInfo?: RefSummary;
   onSave: (cfg: SceneModelCfg) => void;
   onClose: () => void;
 }) {
@@ -79,8 +88,10 @@ export function SceneModelModal({
   //  종전엔 버튼에만 있어, 다른 경로로 눌리면 그대로 저장됐다.
   //  엔진이 빠진 채 복원된 오디오 모델도 고를 때까지 막는다 — 기본값으로 조용히 채워 저장하지 않게(Codex B1).
   const engineMissing = variantChoiceMissing(m.model, m.optionValues);
+  // SVG + 참조 이미지 — 연결된 생성카드에 참조가 있으면 CLI 가 거절하니 저장을 막고 띠로 알린다(Jay A안).
+  const svgRefBlocked = isSvgWithReferences(m.model, m.optionValues, svgRefCount);
   const canSave =
-    !!m.model && !m.selectedBlocked && !m.paramsLoading && !m.paramsError && m.paramsModel === m.model && !engineMissing;
+    !!m.model && !m.selectedBlocked && !m.paramsLoading && !m.paramsError && m.paramsModel === m.model && !engineMissing && !svgRefBlocked;
 
   const save = () => {
     // ★이중 방어다 — 지금은 이 버튼 말고 `save` 를 부르는 곳이 없어 **관측되지 않는다**.
@@ -100,7 +111,8 @@ export function SceneModelModal({
       ...(resolvedType ? { type: resolvedType } : {}),
       model: m.model,
       modelName: variantDisplayName(m.model, m.optionValues) ?? m.modelName,
-      params: m.optionValues,
+      // 길이 칸이 참조 때문에 줄여 보여 준 값(Gemini 10초)과 저장되는 값을 같게 — 화면 10초인데 15초가 저장되지 않게(Codex 리뷰)
+      params: modelNodeParamsForRefs(m.model, m.optionValues, refInfo),
     });
     onClose();
   };
@@ -119,6 +131,7 @@ export function SceneModelModal({
           </button>
         </div>
         <div className="scene-modelmodal-body">
+          {svgRefBlocked ? <SvgReferenceBand onFix={() => m.setOpt("output_format", "png")} /> : null}
           {blockedNote ? <div className="scene-modelmodal-note">{blockedNote}</div> : null}
           {m.paramsError ? (
             <div className="scene-modelmodal-note">
@@ -135,6 +148,7 @@ export function SceneModelModal({
           <div className="sl-rows">
             <SpotlightOptionsBar
               layout="rows"
+              refInfo={refInfo}
               type={m.type}
               setType={m.setType}
               audioTask={audioTaskOf(m.model)}
@@ -157,7 +171,7 @@ export function SceneModelModal({
               typeFullyBlocked={m.typeFullyBlocked}
               policyNote={policyNote(policy)}
               tunable={m.tunable}
-              constraints={m.constraints}
+              constraints={withSvgReferenceConstraint(m.constraints, m.model, m.tunable, svgRefCount)}
               optionValues={m.optionValues}
               setOptionValues={m.setOptionValues}
               setOpt={m.setOpt}

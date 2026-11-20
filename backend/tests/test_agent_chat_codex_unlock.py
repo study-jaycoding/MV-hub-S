@@ -102,7 +102,7 @@ def test_disabled_never_checks_cli_even_for_engine_listing(isolated, monkeypatch
     monkeypatch.setattr(process, "auth_problem", lambda prefix: pytest.fail("CLI login ran while disabled"))
     monkeypatch.setattr(chat.claude, "claude_state", lambda prefix: {"state": "ready", "version": "2.1.296", "subscription": "Max"})
     monkeypatch.setattr(process, "read_install_marker", lambda: None)
-    assert chat.engine_problem("codex", ["fake"]) == codex.DISABLED
+    assert chat.engine_problem("codex", process.engine_prefix("codex")) == codex.DISABLED
     row = next(row for row in chat.AgentChat().engines(refresh=True) if row["id"] == "codex")
     assert row["enabled"] is False and row["available"] is False and row["version"] == ""
 
@@ -111,8 +111,8 @@ def test_disabled_never_checks_cli_even_for_engine_listing(isolated, monkeypatch
 def test_changed_version_or_policy_stays_locked(isolated, monkeypatch, changes):
     codex._write("codex_enabled.json", saved(**changes))
     monkeypatch.setattr(process, "auth_problem", lambda prefix: pytest.fail("stale marker must not check login"))
-    assert "다시 연결" in chat.engine_problem("codex", ["fake"])
-    assert codex.state(["fake"])["enabled"] is False
+    assert "다시 연결" in chat.engine_problem("codex", process.engine_prefix("codex"))
+    assert codex.state(process.engine_prefix("codex"))["enabled"] is False
 
 
 @pytest.mark.parametrize("name,directory,parent", [
@@ -129,7 +129,7 @@ def test_work_instructions_block_enable_and_turn(isolated, monkeypatch, name, di
         codex.enable(MODEL)
     assert codex.marker() is None and not (isolated / "codex_pending.json").exists()
     codex._write("codex_enabled.json", saved())
-    assert "작업 폴더" in chat.engine_problem("codex", ["fake"])
+    assert "작업 폴더" in chat.engine_problem("codex", process.engine_prefix("codex"))
     assert not FakeJob.instances
 
 
@@ -151,8 +151,8 @@ def test_success_uses_panel_command_and_disable_removes_marker(isolated):
     codex._write("codex_pending.json", {"token": "dead-owner", "at": "old"})
     codex.enable(MODEL)
     assert codex.marker()["policy"] == codex.CODEX_POLICY
-    assert codex.state(["fake"])["enabled"] is True
-    assert chat.engine_problem("codex", ["fake"]) is None
+    assert codex.state(process.engine_prefix("codex"))["enabled"] is True
+    assert chat.engine_problem("codex", process.engine_prefix("codex")) is None
     job = FakeJob.instances[0]
     assert job.closed and job.cwd == isolated / "work"
     assert job.command[job.command.index("--sandbox") + 1] == "read-only"
@@ -360,7 +360,7 @@ def test_engine_list_shows_plan_only_when_usable(isolated, monkeypatch):
     monkeypatch.setattr(codex, "plan_name", lambda prefix: calls.append(prefix) or "Pro Max")
     row = next(row for row in chat.AgentChat().engines(refresh=True) if row["id"] == "codex")
     assert row["available"] is True and row["subscription"] == "Pro Max" and len(calls) == 1
-    assert chat.engine_problem("codex", ["fake"]) is None and len(calls) == 1  # 대화 보낼 때의 판정은 조회하지 않는다
+    assert chat.engine_problem("codex", process.engine_prefix("codex")) is None and len(calls) == 1  # 대화 보낼 때의 판정은 조회하지 않는다
     monkeypatch.setattr(process, "auth_problem", lambda prefix: "로그인 필요")
     monkeypatch.setattr(codex, "plan_name", lambda prefix: pytest.fail("unusable codex must not look up the plan"))
     row = next(row for row in chat.AgentChat().engines(refresh=True) if row["id"] == "codex")

@@ -1,5 +1,27 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
 import { isStableConnection, progressReconnectDelayMs } from "./progressSocket";
+import { connectProgress } from "./progressSocket";
+import { APP_EVENTS } from "./appEvents";
+
+it("screen wakes contain only routing IDs and never reach library progress consumers", () => {
+  let socket: FakeSocket;
+  class FakeSocket {
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onclose = null; onopen = null; readyState = 0;
+    constructor() { socket = this; }
+    close() {} send() {}
+  }
+  vi.stubGlobal("WebSocket", FakeSocket);
+  const received = vi.fn(), progress = vi.fn();
+  window.addEventListener(APP_EVENTS.mcpScreenAction, received);
+  const stop = connectProgress(progress);
+  try {
+    socket!.onmessage!({ data: JSON.stringify({ type: "mcp_screen_action", receiver_id: "r", action_id: "a", args: "never forwarded" }) });
+    expect(received.mock.calls[0][0].detail).toEqual({ receiver_id: "r", action_id: "a" });
+    expect(progress).not.toHaveBeenCalled();
+  } finally { stop(); window.removeEventListener(APP_EVENTS.mcpScreenAction, received); vi.unstubAllGlobals(); }
+});
 
 // R13-WS-1 — 유지보수 거부(1013)는 서버가 accept 한 뒤 곧바로 닫아 매번 onopen 이 뜬다.
 // 열렸다는 사실만으로 백오프를 되돌리면 유지보수 내내 1초 간격 재접속이 된다.

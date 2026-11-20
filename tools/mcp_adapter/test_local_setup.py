@@ -30,13 +30,16 @@ class SetupTests(unittest.TestCase):
 
     def test_codex_preserves_comments_other_settings_and_nested_servers(self):
         text = '# important\nmodel = "unchanged"\n[mcp_servers.other]\ncommand = "keep"\n[mcp_servers.mvhub]\ncommand = ' + json.dumps(str(self.python)) + '\nargs = ' + json.dumps(self.entry["args"]) + '\n[mcp_servers.mvhub.env]\nOLD = "removed"\n[projects."D:/my project"]\ntrust_level = "trusted"\n'
+        with self.assertRaises(ValueError):
+            update_codex(text, self.entry, self.setup)
+        text = text.replace('[mcp_servers.mvhub.env]\nOLD = "removed"\n', "")
         updated = update_codex(text, self.entry, self.setup)
         parsed = tomllib.loads(updated)
         self.assertIn("# important", updated)
         self.assertEqual(parsed["model"], "unchanged")
         self.assertEqual(parsed["mcp_servers"]["other"], {"command": "keep"})
         self.assertEqual(parsed["projects"], {"D:/my project": {"trust_level": "trusted"}})
-        self.assertEqual(parsed["mcp_servers"]["mvhub"], {**self.entry, "tool_timeout_sec": 150})
+        self.assertEqual(parsed["mcp_servers"]["mvhub"], {**self.entry, "tool_timeout_sec": 150, "default_tools_approval_mode": "approve"})
 
     def test_conflicting_or_ambiguous_settings_are_not_replaced(self):
         for text in ('[mcp_servers.mvhub]\ncommand = "unrelated"\nargs=[]', 'mcp_servers = {mvhub = {command="other"}}', 'bad [ syntax'):
@@ -133,9 +136,12 @@ class SetupTests(unittest.TestCase):
         text = ("[mcp_servers.mvhub]\ncommand = " + json.dumps(installed["command"]) + "\nargs = " + json.dumps(installed["args"])
                 + "\n[mcp_servers.mvhub.env]\nKEEP = \"1\"\n[mcp_servers.mvhub-test]\ncommand = " + json.dumps(str(self.python))
                 + "\nargs = " + json.dumps(self.entry["args"]) + "\n[mcp_servers.mvhub-test.env]\nOLD = \"removed\"\n")
+        with self.assertRaises(ValueError):
+            update_codex(text, self.entry, dev, "mvhub-test")
+        text = text.replace('[mcp_servers.mvhub-test.env]\nOLD = "removed"\n', "")
         parsed = tomllib.loads(update_codex(text, self.entry, dev, "mvhub-test"))
         self.assertEqual(parsed["mcp_servers"]["mvhub"], {**installed, "env": {"KEEP": "1"}})
-        self.assertEqual(parsed["mcp_servers"]["mvhub-test"], {**self.entry, "tool_timeout_sec": 150})
+        self.assertEqual(parsed["mcp_servers"]["mvhub-test"], {**self.entry, "tool_timeout_sec": 150, "default_tools_approval_mode": "approve"})
         claude = {"mcpServers": {"mvhub": {"type": "stdio", **installed}}}
         updated = json.loads(update_claude(json.dumps(claude), self.entry, dev, "mvhub-test"))
         self.assertEqual(updated["mcpServers"]["mvhub"], claude["mcpServers"]["mvhub"])
@@ -157,7 +163,9 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(drop_old_dev_entry(none, "claude", dev), none)
         toml = lambda old: ("# 내 설정\nmodel = \"x\"\n\n[mcp_servers.mvhub]\ncommand = " + json.dumps(old["command"]) + "\nargs = " + json.dumps(old["args"])
                             + "\n\n[mcp_servers.mvhub.env]\nKEEP = \"1\"\n\n[mcp_servers.other]\ncommand = \"x\"\nargs = []\n")
-        removed = drop_old_dev_entry(toml(same), "codex", dev)
+        with self.assertRaises(ValueError):
+            drop_old_dev_entry(toml(same), "codex", dev)
+        removed = drop_old_dev_entry(toml(same).replace('[mcp_servers.mvhub.env]\nKEEP = "1"\n', ""), "codex", dev)
         self.assertIn("# 내 설정", removed)
         self.assertEqual(tomllib.loads(removed), {"model": "x", "mcp_servers": {"other": {"command": "x", "args": []}}})
         self.assertEqual(drop_old_dev_entry(toml(elsewhere), "codex", dev), toml(elsewhere))
@@ -349,6 +357,188 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(anyio.run(tool_names),
                          {"check_connection", "connect", "read_context", "prepare_generation_plan", "get_plan", "estimate_plan",
                           "execute_generation_plan", "wait_results", "add_to_canvas", "screen_action"})
+
+
+class AccessTests(unittest.TestCase):
+    """Pure registration contracts: fake interactive identity/DPAPI, real scratch files and mutex."""
+    def setUp(self):
+        import local_setup as setup
+        self.module = setup
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home, self.local = self.root / "home", self.root / "local"
+        self.home.mkdir()
+        (self.home / ".claude.json").write_text("{}")
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex" / "config.toml").write_text('model = "fixture"\n')
+        self.setup = {"python": sys.executable, "adapter": str(Path(__file__).with_name("server.py")),
+                      "url": "http://127.0.0.1:18999", "release": False}
+        self.credential = {"url": self.setup["url"], "hub_id": "a" * 64, "client_id": str(uuid4()), "secret": "x" * 43}
+        import hashlib
+        self.row = {"id": self.credential["client_id"], "hub_id": self.credential["hub_id"],
+                    "secret_hash": hashlib.sha256(self.credential["secret"].encode()).hexdigest(),
+                    "workspace": {"scope": "account"}, "can_execute": True}
+        self.settings = self.home / ".claude" / "settings.json"
+        self.settings.parent.mkdir()
+        for name, replacement in (("_require_interactive_user", lambda: None), ("_crypt", lambda data, **_: data)):
+            patcher = patch.object(setup, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def configure(self, client="claude"):
+        return configure_client(client, self.setup, self.credential, home=self.home, local_appdata=self.local)
+
+    def ensure(self, client="claude", row=None):
+        return self.module.ensure_access(client, self.setup, row or self.row, home=self.home, local_appdata=self.local)
+
+    def test_claude_merge_conflict_first_and_idempotent(self):
+        self.settings.write_text(json.dumps({"defaultMode": "dontAsk", "permissions": {"allow": ["Read"]}, "keep": 3}))
+        self.assertEqual(self.configure()["access"], "allowed")
+        before = self.settings.read_bytes()
+        backups = {p.name: p.read_bytes() for p in self.settings.parent.glob("*.mvhub-*")}
+        self.assertEqual(self.ensure()["access"], "present")
+        self.assertEqual(self.settings.read_bytes(), before)
+        self.assertEqual({p.name: p.read_bytes() for p in self.settings.parent.glob("*.mvhub-*")}, backups)
+        self.assertEqual(json.loads(before)["defaultMode"], "dontAsk")
+        for rule in ("*", "mcp__*", "mcp__mvhub-test", "mcp__mvhub-test__execute_generation_plan(prompt:*)"):
+            for key in ("ask", "deny"):
+                self.settings.write_text(json.dumps({"permissions": {"allow": ["mcp__mvhub-test"], key: [rule]}}))
+                before = self.settings.read_bytes()
+                self.assertEqual(self.ensure()["access"], "conflict")
+                self.assertEqual(before, self.settings.read_bytes())
+
+    def test_bad_claude_shapes_and_backup_failure_preserve_settings(self):
+        self.configure()
+        for raw in (b'{', b'[]', b'{"permissions":[]}', b'{"permissions":{"allow":"all"}}',
+                    b'{"permissions":{"deny":[3]}}', b'{"a":1,"a":2}', b'{"a":NaN}', b' ' * (4 * 1024 * 1024 + 1)):
+            self.settings.write_bytes(raw)
+            self.assertEqual(self.ensure()["access"], "failed")
+            self.assertEqual(raw, self.settings.read_bytes())
+        self.settings.write_bytes(b'{}')
+        original = self.module._atomic
+        def fail_backup(path, *args, **kwargs):
+            if path.name.endswith(".mvhub-backup"):
+                raise OSError("fixture")
+            return original(path, *args, **kwargs)
+        with patch.object(self.module, "_atomic", fail_backup):
+            self.assertEqual(self.ensure()["access"], "failed")
+        self.assertEqual(self.settings.read_bytes(), b'{}')
+
+    def test_existing_profile_identity_and_restriction(self):
+        self.configure()
+        self.assertEqual(self.ensure(row={**self.row, "can_execute": False})["status"], "limited")
+        profile = next(self.local.rglob("*.bin"))
+        original = profile.read_bytes()
+        before = self.settings.read_bytes()
+        for data in (b'bad', json.dumps({**self.credential, "client_id": str(uuid4())}).encode(),
+                     json.dumps({**self.credential, "secret": "y" * 43}).encode()):
+            profile.write_bytes(data)
+            self.assertEqual(self.ensure()["status"], "reconnect")
+            self.assertEqual(self.settings.read_bytes(), before)
+        profile.unlink()
+        self.assertEqual(self.ensure()["status"], "reconnect")
+        profile.write_bytes(original)
+        self.assertEqual(self.ensure(row={**self.row, "id": str(uuid4())})["status"], "reconnect")
+
+    def test_codex_insertion_preserves_bytes_and_custom_settings(self):
+        self.configure("codex")
+        path = self.home / ".codex" / "config.toml"
+        initial = path.read_text().replace('default_tools_approval_mode = "approve"\n', '')
+        initial = initial.replace('[mcp_servers.mvhub-test]', '[mcp_servers."mvhub-test"] # keep')
+        initial += 'enabled = false\n[projects."D:/x"]\ntrust_level = "trusted"\n'
+        raw = initial.replace('\n', '\r\n').encode()
+        path.write_bytes(raw)
+        result = self.ensure("codex")
+        self.assertEqual((result["status"], result["access"]), ("limited", "allowed"))
+        updated = path.read_bytes()
+        self.assertEqual(updated.replace(b'default_tools_approval_mode = "approve"\r\n', b''), raw)
+        result = self.ensure("codex")
+        self.assertEqual((result["status"], result["access"]), ("limited", "present"))
+        self.assertEqual(path.read_bytes(), updated)
+        path.write_bytes(updated.replace(b'"approve"', b'"prompt"'))
+        before = path.read_bytes()
+        self.assertEqual(self.ensure("codex")["access"], "conflict")
+        self.assertEqual(self.configure("codex")["status"], "manual")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_codex_ambiguous_syntax_and_timeout_preservation(self):
+        name = "mvhub-test"
+        for text in ('mcp_servers = {"mvhub-test" = {command="x"}}',
+                     '[mcp_servers.mvhub-test]\ncommand = """x\n[mcp_servers.mvhub-test]\n"""'):
+            path = self.home / "config.toml"
+            path.write_text(text)
+            with self.module._file_lock(path):
+                self.assertEqual(self.module._codex_access(path, name), ("manual", False))
+            self.assertEqual(path.read_text(), text)
+        self.configure("codex")
+        path = self.home / ".codex" / "config.toml"
+        path.write_text(path.read_text().replace("tool_timeout_sec = 150", "tool_timeout_sec = 321"))
+        self.assertEqual(self.configure("codex")["status"], "configured")
+        self.assertEqual(tomllib.loads(path.read_text())["mcp_servers"][name]["tool_timeout_sec"], 321)
+
+    def test_claude_extra_registration_keys_are_not_erased(self):
+        self.configure()
+        path = self.home / ".claude.json"
+        value = json.loads(path.read_text())
+        value["mcpServers"]["mvhub-test"]["env"] = {"KEEP": "fixture"}
+        path.write_text(json.dumps(value))
+        before = path.read_bytes()
+        self.assertEqual(self.configure()["status"], "manual")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_custom_claude_directory_and_legacy_entry_need_manual_reconnect(self):
+        self.configure()
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.root / "custom")}), patch.object(Path, "home", return_value=self.home):
+            result = self.module.ensure_access("claude", self.setup, self.row, local_appdata=self.local)
+            self.assertEqual(result["status"], "manual")
+        path = self.home / ".claude.json"
+        value = json.loads(path.read_text())
+        value["mcpServers"]["mvhub"] = value["mcpServers"].pop("mvhub-test")
+        path.write_text(json.dumps(value))
+        before = path.read_bytes()
+        self.assertEqual(self.module.registration("claude", self.setup, home=self.home, local_appdata=self.local)["status"], "reconnect")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_mutex_releases_on_exception_and_normalizes_paths(self):
+        path = self.home / "settings.json"
+        with self.assertRaises(RuntimeError), self.module._file_lock(path):
+            raise RuntimeError("fixture")
+        with self.module._file_lock(path):
+            self.assertEqual(self.module._path_key(path), self.module._path_key(str(path).upper()))
+            self.assertEqual(self.module._path_key(path), self.module._path_key("\\\\?\\" + str(path)))
+        with patch.object(Path, "resolve", return_value=Path("\\\\?\\UNC\\host\\share\\settings.json")):
+            self.assertEqual(self.module._path_key(path), "\\\\host\\share\\settings.json")
+
+    def test_two_processes_merge_without_losing_settings_or_first_backup(self):
+        import subprocess
+        path = self.home / "settings.json"
+        path.write_bytes(b'{}')
+        code = """import sys,json,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from local_setup import _file_lock,_read_config,_save_config
+path=Path(sys.argv[2])
+with _file_lock(path):
+    before=_read_config(path)
+    value=json.loads(before)
+    time.sleep(0.1)
+    value[sys.argv[3]]=True
+    _save_config(path,before,json.dumps(value).encode())
+"""
+        children = [subprocess.Popen([sys.executable, "-B", "-c", code, str(Path(__file__).parent), str(path), key],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE) for key in ("installed", "dev")]
+        try:
+            for child in children:
+                _, stderr = child.communicate(timeout=10)
+                self.assertEqual(child.returncode, 0, stderr.decode(errors="replace"))
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+        self.assertEqual(json.loads(path.read_bytes()), {"installed": True, "dev": True})
+        self.assertEqual(path.with_name(path.name + ".mvhub-original").read_bytes(), b'{}')
 
 
 if __name__ == "__main__":

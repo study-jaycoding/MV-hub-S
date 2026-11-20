@@ -131,6 +131,8 @@
 | `run_agent_session.py` | `_claude_version` | Thread | `lambda: out.append(proc.stdout.read(cap + 1))` |
 | `run_agent_session.py` | `_start_claude_install` | Thread | `_claude_install_after_commit (name=claude-install-after-commit)` |
 | `run_agent_session.py` | `_start_claude_install` | Thread | `_claude_install_quietly (name=claude-install)` |
+| `run_agent_session.py` | `_start_install_requests.watch` | Thread | `_run_requested_install` |
+| `run_agent_session.py` | `_start_install_requests` | Thread | `watch (name=agent-install-requests)` |
 | `run_agent_session.py` | `_start_open_link_registration` | Thread | `_register_after_update_commit (name=open-link-after-commit)` |
 
 ## ④ 작업자 에이전트 (`agent_push.py`)

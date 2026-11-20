@@ -10,6 +10,7 @@ import { api } from "../../api";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { assetThumbUrl } from "../../lib/assetUrls";
 import { DRAG_TYPES } from "../../lib/dragTypes";
+import { timestampMs } from "../../lib/format";
 import { dataTransferHasFiles, filesFromDataTransfer, thumbOf } from "../../lib/media";
 import { parseSceneFolderDrag } from "../../lib/sceneSet";
 import { notifySpotlightAssetsChanged, parseSpotlightAssetItems, referenceDropTypeFromFile } from "../../lib/spotlightAssetRefs";
@@ -17,7 +18,7 @@ import { useDragEndReset } from "../../lib/useDragEndReset";
 import type { AgentChoice, AgentMessage } from "../../lib/useAgentChat";
 import { useAgentChat } from "../../lib/useAgentChat";
 import {
-  agentChatApi, type AgentAttachment, type AgentAttachWorkspace, type AgentContext, type AgentConversationPatch, type AgentConversationSummary,
+  agentChatApi, CLAUDE_APP_REASON, type AgentAttachment, type AgentAttachWorkspace, type AgentContext, type AgentConversationPatch, type AgentConversationSummary,
   type AgentEngine, type AgentEngineId, type AgentSessionFileResult, type AgentTurnImage, type ClaudeVersionInfo,
 } from "../../lib/agentChatApi";
 import type { ScreenHost } from "../../lib/agentScreenActions";
@@ -75,7 +76,7 @@ const TOOL: Record<string, string> = {
   add_to_canvas: "캔버스에 놓기",
   screen_action: "화면 동작",
 };
-const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패" };
+const TOOL_STATE: Record<string, string> = { started: "하는 중", done: "끝", failed: "실패", unknown: "결과 미확인" };
 
 // ── 끌어다 넣기(docs/status/MVAgent_끌어다넣기_2026-11-12.md 2-1) — 생성물·어셋 레퍼런스·프로젝트 폴더를 칸에 놓으면 입력칸 위 칩 ──
 const ATTACH_MAX = 8; // 계획 항목의 reference_ids 상한과 같게
@@ -294,6 +295,20 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   // 새 창이면 '새 창에서 열기' 요청을 받는다 · 옆 칸이면 이 창의 캔버스 손잡이로 화면 동작을 실행한다(새 창은 실행하지 않음)
   const chat = useAgentChat(screenOn ? context : NO_SCREEN, { popout, screen: popout ? undefined : screen });
   const restored = !!chat.current?.restored_from;
+  const appNeedsRead = chat.appError?.id === chat.conversationId && !!chat.appError?.needsRead;
+  const appLocked = !!chat.current?.app_handoff || chat.appBusy?.id === chat.conversationId || appNeedsRead;
+  const appLockedRef = useRef(appLocked);
+  appLockedRef.current = appLocked;
+  const [appConfirm, setAppConfirm] = useState<{ target: AgentConversationSummary; unlock: boolean } | null>(null);
+  const requestAppOpen = (target: AgentConversationSummary) => {
+    if (chat.running || chat.sending || chat.appBusy || !target.can_open_app) return;
+    if (target.id === chat.conversationId) setDrawer(false);
+    try {
+      if (sessionStorage.getItem(STORAGE_KEYS.agentClaudeAppConfirmed) === "1") { void chat.claudeApp(target, "open"); return; }
+    } catch { /* 저장소가 막혔으면 안내를 다시 보여 준다. */ }
+    setAppConfirm({ target, unlock: false });
+  };
+  useEffect(() => setAppConfirm(null), [chat.conversationId, chat.session?.identity_key]);
   const [text, setText] = useState("");
   const [revising, setRevising] = useState<{ title: string } | null>(null); // [고치기] — 입력칸의 '고칠 계획' 칩
   // 입력칸 아래 칩 메뉴 — 모델(회사별 하위 메뉴·설정) · 생각 깊이(빠른 모드) · 사용량(docs/status/MVAgent_모델설정사용량_2026-11-12.md)
@@ -441,6 +456,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   // 길게 누른 Ctrl+V 는 keydown 이 반복될 때마다 붙여넣기가 또 와 같은 그림이 그만큼 올라간다 — 그 키를 뗄 때까지 반복만 막는다(프롬프트와 같음, SpotlightPrompt.tsx:930)
   const pasteHeld = useRef(false);
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (appLockedRef.current) { event.preventDefault(); return; }
     const items = event.clipboardData?.items;
     let image: File | null = null;
     for (let i = 0; items && i < items.length; i += 1) {
@@ -482,12 +498,12 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       if (!acceptsDrag(event.dataTransfer)) return;
       event.preventDefault();
       dragDepth.current += 1;
-      setDropping(attachWs ? "ok" : "blocked");
+      setDropping(attachWs && !appLockedRef.current ? "ok" : "blocked");
     },
     onDragOver: (event: DragEvent<HTMLElement>) => {
       if (!acceptsDrag(event.dataTransfer)) return;
       event.preventDefault(); // 받지 않는 상태에서도 — 입력칸 기본 동작(영상 주소 글자)을 막는다(Claude 합의 2차 P2)
-      event.dataTransfer.dropEffect = attachWs ? "copy" : "none";
+      event.dataTransfer.dropEffect = attachWs && !appLockedRef.current ? "copy" : "none";
     },
     onDragLeave: (event: DragEvent<HTMLElement>) => {
       if (!acceptsDrag(event.dataTransfer)) return;
@@ -498,6 +514,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       if (!acceptsDrag(event.dataTransfer)) return;
       event.preventDefault(); // 입력칸 위에 놓아도 글자가 들어가지 않게
       endDropping();
+      if (appLockedRef.current) { setAttachNote(t("Claude 앱에서 쓰는 동안은 자료를 붙일 수 없어요")); return; }
       if (!attachWs) {
         setAttachNote(t("공간을 확인한 뒤 다시 끌어 주세요"));
         return;
@@ -545,7 +562,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const preparing = useRef(false); // 보낼 그림을 받는 중 — 다시 보내기 막음
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (preparing.current) return;
+    if (preparing.current || appLockedRef.current) return;
     if (chipsRef.current.some((c) => c.uploading)) {
       setAttachNote(t("올리는 중인 그림이 끝나면 보낼 수 있어요"));
       return;
@@ -568,7 +585,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         preparing.current = false;
       }
       if (at.epoch !== chipEpoch.current || at.ws !== wsKeyRef.current || at.account !== getAccountNamespace()
-        || at.conversation !== conversationRef.current) return;
+        || at.conversation !== conversationRef.current || appLockedRef.current) return;
     }
     const attach = batch.length && attachWs
       ? { workspace: attachWs, items: batch.map((c) => c.item), ...(images.length ? { images } : {}) } : null;
@@ -614,10 +631,12 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   };
   // 포크 — 허브가 복사한 새 대화를 만들면 그 대화를 연다(docs/status/MVAgent_포크_2026-11-12.md 2-4)
   const forkNow = (id: string) => { setDrawer(false); setMenu(null); setRevising(null); setScreenOn(true); void chat.forkConversation(id); };  const revise = (title: string) => {
+    if (appLockedRef.current) return;
     setRevising({ title });
     inputRef.current?.focus();
   };
   const reuse = (value: string) => { // 내 말 [고쳐 보내기] — 입력칸에 다시 채운다
+    if (appLockedRef.current) return;
     setText(value);
     inputRef.current?.focus();
   };
@@ -630,10 +649,10 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
   const needsConnect = chat.connect.supported && !chat.connect.allowed && chat.choice?.engine !== "codex";
   // 아직 갈라지지 않은 포크 — 대화를 열 때 받은 응답 기준(목록 줄이 아니라). 원래가 이어졌거나 지워졌으면 보내기 잠금
   const forkState = chat.current && chat.current.id === chat.conversationId ? chat.current.fork_state ?? null : null;
-  const locked = restored || needsConnect || !chat.choice || (!!forkState && forkState !== "ready");
+  const locked = appLocked || restored || chat.current?.resumable === false || needsConnect || !chat.choice || (!!forkState && forkState !== "ready");
   // 머리글 메뉴 — 보고 있는 대화의 요약(목록에 있으면 그것, 없으면 열 때·허브 응답에서 받은 것) · 맨 위 줄은 옆 칸 = 새 창에서 열기, 새 창 = 옆 칸으로 붙이기
-  const summary = chat.conversations?.find((c) => c.id === chat.conversationId)
-    ?? (chat.current && chat.current.id === chat.conversationId ? chat.current : undefined);
+  const summary = (chat.current && chat.current.id === chat.conversationId ? chat.current : undefined)
+    ?? chat.conversations?.find((c) => c.id === chat.conversationId);
   const headTop = popout
     ? onDock && { icon: <WindowIcon />, label: t("옆 칸으로 붙이기"), run: onDock }
     : onPopOut && {
@@ -646,7 +665,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       {dropping && (
         <div className={`agent-drop${dropping === "blocked" ? " blocked" : ""}`} aria-hidden="true">
           <span className="agent-drop-ic">{dropping === "blocked" ? "!" : "＋"}</span>
-          <b>{dropping === "blocked" ? t("공간을 확인한 뒤 다시 끌어 주세요") : t("놓으면 대화에 붙어요")}</b>
+          <b>{appLocked ? t("Claude 앱에서 쓰는 동안은 자료를 붙일 수 없어요") : dropping === "blocked" ? t("공간을 확인한 뒤 다시 끌어 주세요") : t("놓으면 대화에 붙어요")}</b>
           {dropping === "ok" && <small>{t("생성물 · 레퍼런스 · 폴더 · 내 PC 파일")}<br />{t("그림은 AI 가 직접 봐요 · 한 번에 8개까지")}</small>}
         </div>
       )}
@@ -701,7 +720,9 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             candidates={projectCandidates(context.project, chat.conversations, projectName)} currentProject={context.project}
             onNeedSummary={() => void chat.loadConversations()} onOpen={() => { setDrawer(false); setMenu(null); }}
             onPatch={chat.patchConversation} onDelete={chat.removeConversation} onNote={setHeadNote} onFork={forkNow} forking={chat.forking}
+            onClaudeApp={requestAppOpen} appBusy={!!chat.appBusy || appNeedsRead}
             onLeave={() => { chat.newConversation(); setRevising(null); setScreenOn(true); }} />
+          {appLocked && <span className="agent-app-badge"><MonitorIcon />{t(chat.appBusy?.action === "open" || chat.current?.app_handoff?.state === "opening" ? "Claude 앱 여는 중" : "Claude 앱에서 쓰는 중")}</span>}
         </div>
         <div className="agent-head-actions">
           <button type="button" className="agent-ic" onClick={startNew} disabled={chat.running || chat.sending}
@@ -729,7 +750,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           onClose={closeDrawer} onPatch={chat.patchConversation} onDelete={chat.removeConversation}
           /* 새 창에서 열기 — 옆 칸에서만. 새 창이 받을 요청을 적고 지금 [새 창으로 띄우기] 길을 탄다(옆 칸의 지금 대화는 그대로) */
           onOpenInWindow={!popout && onPopOut ? (id) => { if (chat.requestOpenInWindow(id)) { setDrawer(false); onPopOut(); } } : undefined}
-          onFork={forkNow} forking={chat.forking} claude={engines.find((e) => e.id === "claude")} />
+          onFork={forkNow} forking={chat.forking} onClaudeApp={requestAppOpen} appBusy={!!chat.appBusy || appNeedsRead} claude={engines.find((e) => e.id === "claude")} />
       )}
 
       {/* 머리글 아래 = [대화 | 정보 칸]. 정보 칸은 옆에 설 자리가 없을 때만 대화 위에 겹쳐 뜬다(docs/status/MVAgent_정보칸분리_2026-11-12.md) */}
@@ -751,7 +772,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
           </div>
         )}
         {groupTools(chat.messages).map((r) => (r.kind === "tools" ? <ToolGroup key={r.id} tools={r.tools} /> : (
-          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={revise} onReuse={restored ? undefined : reuse} onUndo={chat.undoAction} readOnly={restored}
+          <Message key={r.id} message={r} onExecute={chat.executePlan} onRevise={appLocked ? undefined : revise} onReuse={restored || appLocked ? undefined : reuse} onUndo={chat.undoAction} readOnly={restored}
             findGeneration={findGeneration} genOf={genOf} onPreview={onPreview} />
         )))}
         {needsConnect && (
@@ -777,6 +798,7 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       {chat.notice && <p className="agent-notice" role="status">{chat.notice}</p>}
       {headNote && <p className="agent-notice" role="status">{headNote}</p>}
       {attachNote && <p className="agent-notice" role="status">{attachNote}</p>}
+      {chat.appError?.id === chat.conversationId && <p className="agent-error" role="alert">{chat.appError.message}</p>}
       {restored && <div className="agent-fork-note agent-notice" role="status">
         <p>{t("복원한 기록이에요 · 열람 전용 — 이어 쓰기·계획 실행·포크는 할 수 없어요")}</p>
         <button type="button" className="agent-action-undo" disabled={blocked || !chat.restoreReference}
@@ -792,7 +814,26 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
         </p>
       )}
 
-      <form className="agent-composer" onSubmit={submit}>
+      {appLocked && chat.current && <div className="agent-app-band" role="status">
+        <p>{t(appNeedsRead ? "Claude 앱 작업 뒤의 대화 상태를 확인하지 못했어요"
+          : chat.appBusy?.action === "bring-back" ? "Claude 앱에서 쓴 말을 가져오는 중이에요"
+          : chat.appBusy?.action === "open" || chat.current.app_handoff?.state === "opening" ? "Claude 앱을 여는 중이에요"
+          : chat.current.app_handoff?.state === "uncertain" ? "Claude 앱에 열렸는지 확인하지 못했어요" : "Claude 앱에서 이 대화를 쓰는 중이에요")}</p>
+        {chat.current.app_handoff?.state === "uncertain" && <p>{t("이미 Claude 앱에 열려 있을 수 있어요 · 앱에서 찾아 주세요")}</p>}
+        <p>{t("앱에서 대화를 마치고 닫은 뒤 가져오세요. 그 전에는 여기서 말을 걸 수 없어요.")}</p>
+        <div className="agent-app-acts">
+          {appNeedsRead && <button type="button" className="agent-confirm-btn primary" disabled={!!chat.appBusy}
+            onClick={() => void chat.openConversation(chat.current!.id, true)}>{t("상태 다시 확인")}</button>}
+          {!appNeedsRead && <><button type="button" className="agent-confirm-btn primary" disabled={!!chat.appBusy || !chat.current.app_handoff}
+            onClick={() => void chat.claudeApp(chat.current!, "bring-back")}>{t("여기로 가져오기")}</button>
+          <button type="button" className="agent-confirm-btn" disabled={!!chat.appBusy || !chat.current.app_handoff}
+            onClick={() => void chat.claudeApp(chat.current!, "open")}>{t("Claude 앱 다시 열기")}</button></>}
+          {chat.appError?.id === chat.conversationId && chat.appError.canUnlock && <button type="button" className="agent-confirm-btn"
+            disabled={!!chat.appBusy || appNeedsRead} onClick={() => setAppConfirm({ target: chat.current!, unlock: true })}>{t("잠금만 풀기")}</button>}
+        </div>
+      </div>}
+      {!restored && chat.current?.resumable === false && <p className="agent-notice">{t("이 대화는 이어 쓸 수 없어요. 새 대화를 시작해 주세요")}</p>}
+      <form className={`agent-composer${appLocked ? " app-locked" : ""}`} onSubmit={submit}>
         {/* 지금 화면은 머리글 정보 칸으로 옮겼다(docs/status/MVAgent_정보칸_2026-11-12.md) — 입력칸에는 고칠 계획·붙인 자료 칩만 */}
         {(chat.restoreSource || revising || chips.length > 0) && <div className="agent-chips">
           {chat.restoreSource && <div className="agent-context">
@@ -832,8 +873,9 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
             </div>
           ))}
         </div>}
-        <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect || restored}
-          placeholder={restored ? t("복원한 기록은 열람만 할 수 있어요")
+        <textarea ref={inputRef} className="agent-input" rows={2} value={text} disabled={needsConnect || restored || appLocked || chat.current?.resumable === false}
+          placeholder={appLocked ? t("Claude 앱에서 쓰는 중") : restored ? t("복원한 기록은 열람만 할 수 있어요")
+            : chat.current?.resumable === false ? t("이어 쓸 수 없어요 · 새 대화를 시작해 주세요")
             : needsConnect ? t("Claude 를 연결하면 쓸 수 있어요")
             : chat.restoreSource ? t("이 기록을 참고해 지금 할 일을 적어 주세요")
             : revising ? t("어떻게 고칠지 적어 주세요 — 예: 바나나만, 9:16 으로")
@@ -940,11 +982,17 @@ export function AgentPanel({ context, contextLabel, onClose, popout = false, onP
       )}
       </div>
       {settings && (
-        <AgentSettings engines={engines} usage={chat.usage} connection={chat.connect} onBack={closeSettings}
+        <AgentSettings external={chat.external} engines={engines} usage={chat.usage} connection={chat.connect} codexConnection={chat.codex} onBack={closeSettings}
           onConnectClaude={() => { void chat.connect.connect(); }}
           onSetCodexEnabled={(enabled) => { void chat.codex.setEnabled(enabled); }}
           codexBusy={chat.codex.busy} codexError={chat.codex.error} />
       )}
+      {appConfirm && <ClaudeAppConfirm unlock={appConfirm.unlock} onCancel={() => setAppConfirm(null)} onConfirm={(skip) => {
+        const { target, unlock } = appConfirm;
+        setAppConfirm(null);
+        if (skip && !unlock) { try { sessionStorage.setItem(STORAGE_KEYS.agentClaudeAppConfirmed, "1"); } catch { /* 다음에 다시 묻는다. */ } }
+        void chat.claudeApp(target, unlock ? "bring-back" : "open", unlock);
+      }} />}
     </aside>
   );
 }
@@ -972,23 +1020,29 @@ function Message({ message: m, onExecute, onRevise, onReuse, onUndo, findGenerat
   message: AgentMessage;
   onExecute: (planId: string) => void;
   onUndo: (actionId: string) => void;
-  onRevise: (title: string) => void;
+  onRevise?: (title: string) => void;
   onReuse?: (text: string) => void;
   readOnly?: boolean;
   findGeneration?: (id: string) => Generation | undefined;
   genOf: (id: string) => Generation | undefined; // 붙인 생성물 썸네일 — 앱 카드 또는 칸이 읽어 둔 것
   onPreview?: (target: PreviewTarget) => void;
 }) {
+  const t = useT();
   switch (m.kind) {
     case "user":
-      return <UserMessage text={m.text} attachments={m.attachments} genOf={genOf} onPreview={onPreview} onReuse={onReuse} readOnly={readOnly} />;
+      return <UserMessage text={m.text} attachments={m.attachments} genOf={genOf} onPreview={onPreview} onReuse={m.imported ? undefined : onReuse} readOnly={readOnly} />;
+    case "import": {
+      const at = m.at ? new Date(timestampMs(m.at)) : null;
+      return <div className="agent-app-divider"><span>{t("Claude 앱에서 이어진 대화")}</span>{at && Number.isFinite(at.getTime())
+        && <time dateTime={at.toISOString()}>{at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}</time>}</div>;
+    }
     case "assistant":
       return <div className="agent-msg agent-assistant"><AgentMarkdown text={m.text} /></div>;
     case "tool":
       return <ToolGroup tools={[m]} />;
     case "plan":
       return <AgentPlanCard plan={m.plan} exec={m.exec} estimate={m.estimate} progress={m.progress} onExecute={() => onExecute(m.plan.plan_id)}
-        onRevise={() => onRevise(m.plan.title ?? "")} findGeneration={findGeneration} onPreview={onPreview} />;
+        onRevise={onRevise ? () => onRevise(m.plan.title ?? "") : undefined} findGeneration={findGeneration} onPreview={onPreview} />;
     case "notice":
       return <div className="agent-notice" role="status">{m.text}</div>;
     case "error":
@@ -1021,7 +1075,8 @@ function ToolGroup({ tools }: { tools: ToolMessage[] }) {
   for (const x of tools) counts.set(x.name, (counts.get(x.name) ?? 0) + 1);
   const labels = [...counts].map(([name, n]) => `${t(TOOL[name] ?? name)}${n > 1 ? ` ${n}${t("번")}` : ""}`);
   const summary = labels.slice(0, 3).join(", ") + (labels.length > 3 ? ` ${t("외")} ${labels.length - 3}` : "");
-  const status = tools.some((x) => x.status === "started") ? "started" : tools.some((x) => x.status === "failed") ? "failed" : "done";
+  const status = tools.some((x) => x.status === "started") ? "started" : tools.some((x) => x.status === "failed") ? "failed"
+    : tools.some((x) => x.status === "unknown") ? "unknown" : "done";
   return (
     <div className="agent-tools">
       <button type="button" className={`agent-tool is-${status}`} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
@@ -1136,15 +1191,15 @@ type RowMenu = { id: string; top: number; left: number; sub: boolean; side?: "ri
 const ROW_MENU_W = 232;
 const PIN_GROUP = "__pinned__";
 const ARCHIVE_GROUP = "__archived__"; // 보관함 — 처음엔 접혀 있다
-type RowAct = "pin" | "unread" | "rename" | "fork" | "archive" | "delete";
-const ROW_KEYS: Record<string, RowAct | undefined> = { KeyP: "pin", KeyU: "unread", KeyR: "rename", KeyF: "fork", KeyA: "archive", KeyD: "delete" };
+type RowAct = "pin" | "unread" | "rename" | "fork" | "claude" | "archive" | "delete";
+const ROW_KEYS: Record<string, RowAct | undefined> = { KeyP: "pin", KeyU: "unread", KeyR: "rename", KeyF: "fork", KeyO: "claude", KeyA: "archive", KeyD: "delete" };
 // 포크할 수 없는 까닭(허브의 fork_block — docs/status/MVAgent_포크_2026-11-12.md 2-4)
 const FORK_BLOCK: Record<string, string> = {
   restored: "복원한 기록은 포크할 수 없어요",
   codex: "Codex 대화는 포크할 수 없어요", not_resumable: "이어 갈 수 없는 대화예요",
   forked_unstarted: "포크한 대화에 먼저 한 번 말해 주세요", no_session: "먼저 한 번 대화해 주세요",
 };
-const canFork = (c?: AgentConversationSummary) => !c?.restored_from && !!c?.can_fork;
+const canFork = (c?: AgentConversationSummary) => !c?.app_handoff && !c?.restored_from && !!c?.can_fork;
 type SubSide = NonNullable<RowMenu["side"]>;
 type MenuTop = { icon: ReactNode; label: string; run: () => void }; // 메뉴 맨 위 한 줄(새 창에서 열기 / 옆 칸으로 붙이기)
 
@@ -1184,7 +1239,7 @@ function useMenuKeys(enabled: boolean, run: (kind: RowAct) => void) {
 }
 
 /** 대화 메뉴 본문 — 서랍 줄(⋯·우클릭)과 머리글 제목이 같이 쓴다. 바꾸는 항목은 busy 면 잠근다(맨 위 줄은 늘 된다) */
-function ConversationMenu({ target, menuRef, style, sub, side, busy, forkLocked, top, showUnread, candidates, currentProject, onAct, onToggleSub, onProject }: {
+function ConversationMenu({ target, menuRef, style, sub, side, busy, forkLocked, appBusy, top, showUnread, candidates, currentProject, onAct, onToggleSub, onProject }: {
   target: AgentConversationSummary;
   menuRef: RefObject<HTMLDivElement>;
   style: CSSProperties;
@@ -1192,6 +1247,7 @@ function ConversationMenu({ target, menuRef, style, sub, side, busy, forkLocked,
   side?: SubSide;
   busy: boolean;
   forkLocked?: boolean; // 포크는 이 칸 전체가 쉴 때만(다른 줄이 일해도 잠금)
+  appBusy?: boolean;
   top?: MenuTop;
   showUnread: boolean;
   candidates: { id: string; name: string }[];
@@ -1225,6 +1281,12 @@ function ConversationMenu({ target, menuRef, style, sub, side, busy, forkLocked,
         title={canFork(target) ? t("지금까지를 복사한 새 대화 — 이후는 원래와 따로") : t(FORK_BLOCK[target.fork_block ?? ""] ?? "포크할 수 없어요")}>
         <ForkIcon /><span>{t("포크")}</span><kbd>F</kbd>
       </button>
+      {typeof target.can_open_app === "boolean" && <button type="button" role="menuitem" className="agent-row-mi"
+        disabled={busy || !!appBusy || !!forkLocked || !target.can_open_app || !!target.app_handoff} onClick={() => onAct("claude")}
+        title={appBusy ? t("Claude 앱 작업이 끝나면 열 수 있어요") : busy || forkLocked ? t("답이 끝난 뒤 열 수 있어요")
+          : t(target.can_open_app ? "Claude 앱 Code 탭에서 같은 대화를 이어 써요" : CLAUDE_APP_REASON[target.open_app_block ?? ""] ?? "Claude 앱에서 열 수 없어요")}>
+        <MonitorIcon /><span>{t("Claude 앱에서 열기")}</span><kbd>O</kbd>
+      </button>}
       <div className="agent-menu-sep" />
       <div className="agent-row-sub-wrap">
         <button type="button" role="menuitem" className={`agent-row-mi${sub ? " on" : ""}`} aria-haspopup="menu" aria-expanded={sub}
@@ -1250,7 +1312,7 @@ function ConversationMenu({ target, menuRef, style, sub, side, busy, forkLocked,
       <button type="button" role="menuitem" className="agent-row-mi" disabled={busy} onClick={() => onAct("archive")}>
         <ArchiveIcon /><span>{t(target.archived ? "보관 풀기" : "보관")}</span><kbd>A</kbd>
       </button>
-      <button type="button" role="menuitem" className="agent-row-mi danger" disabled={busy} onClick={() => onAct("delete")}>
+      <button type="button" role="menuitem" className="agent-row-mi danger" disabled={busy || !!target.app_handoff || !!appBusy} onClick={() => onAct("delete")}>
         <TrashIcon /><span>{t("삭제")}</span><kbd>D</kbd>
       </button>
     </div>
@@ -1267,6 +1329,7 @@ function DeleteConfirm({ target, onCancel, onConfirm }: { target: AgentConversat
       <p>{t(target.restored_from ? "복원한 칸 기록만 지워집니다. 원래 CLI 세션 파일과 라이브러리 자료는 그대로 남아요."
         : "칸 기록과 이 대화의 Claude 기억(세션 파일)이 함께 지워지고 되돌릴 수 없어요. 만든 그림은 라이브러리에 그대로 남아요.")}</p>
       {!target.restored_from && target.engine === "codex" && <p>{t("Codex 대화는 Codex 기록이 Codex 폴더에 남아요.")}</p>}
+      {target.app_opened_at && <p>{t("Claude 앱에서도 쓰는 원본 세션 파일을 함께 지울 수 있어요. 앱에서 이 대화를 닫아 주세요")}</p>}
       <div className="agent-confirm-acts">
         <button type="button" className="agent-confirm-btn" onClick={onCancel}>{t("취소")}</button>
         <button type="button" className="agent-confirm-btn danger" autoFocus onClick={onConfirm}>{t("삭제")}</button>
@@ -1275,10 +1338,44 @@ function DeleteConfirm({ target, onCancel, onConfirm }: { target: AgentConversat
   );
 }
 
+function ClaudeAppConfirm({ unlock, onCancel, onConfirm }: { unlock: boolean; onCancel: () => void; onConfirm: (skip: boolean) => void }) {
+  const t = useT();
+  const [skip, setSkip] = useState(false);
+  const previousFocus = useRef(document.activeElement as HTMLElement | null);
+  useEscapeClose(onCancel, true);
+  useEffect(() => {
+    const previous = previousFocus.current;
+    const panel = previous?.closest(".agent-panel");
+    return () => { (previous?.isConnected ? previous : panel?.querySelector<HTMLElement>(".agent-title-btn"))?.focus(); };
+  }, []);
+  return <div className="agent-app-overlay"><div className="agent-drawer-confirm agent-app-confirm" role="dialog" aria-modal="true"
+    aria-label={t(unlock ? "기록을 가져오지 않고 잠금만 풀까요?" : "Claude 앱에서 이어 쓸까요?")}
+    onKeyDown={(e) => {
+      if (e.key !== "Tab") return;
+      const controls = [...e.currentTarget.querySelectorAll<HTMLElement>("button, input")];
+      const next = (controls.indexOf(document.activeElement as HTMLElement) + (e.shiftKey ? -1 : 1) + controls.length) % controls.length;
+      e.preventDefault(); controls[next]?.focus();
+    }}>
+    <h4>{t(unlock ? "기록을 가져오지 않고 잠금만 풀까요?" : "Claude 앱에서 이어 쓸까요?")}</h4>
+    {unlock ? <p>{t("가져오지 않은 내용은 화면에 반영되지 않아요. 이어질 문맥은 Claude 세션 상태에 따릅니다")}</p> : <>
+      <p>{t("지금까지의 대화가 Claude 앱 Code 탭에 열려요. 같은 원본 대화를 이어 씁니다.")}</p>
+      <ol><li>{t("Claude 앱에서 쓰는 동안 여기는 잠겨요(기록이 꼬이지 않게)")}</li>
+        <li>{t("다 쓰면 앱에서 대화를 닫고 여기서 [여기로 가져오기]를 눌러요")}</li>
+        <li>{t("Claude 앱에서 쓴 말이 이 대화에 이어서 보여요")}</li></ol>
+      <p>{t("Claude 앱 자체의 도구와 권한이 적용돼요")}</p>
+      <label className="agent-app-skip"><input type="checkbox" checked={skip} onChange={(e) => setSkip(e.target.checked)} />{t("다시 묻지 않기")}</label>
+    </>}
+    <div className="agent-confirm-acts">
+      <button type="button" className="agent-confirm-btn" onClick={onCancel}>{t("취소")}</button>
+      <button type="button" className="agent-confirm-btn primary" autoFocus onClick={() => onConfirm(skip)}>{t(unlock ? "잠금만 풀기" : "열기")}</button>
+    </div>
+  </div></div>;
+}
+
 /** 머리글 제목 — 대화가 있으면 [제목 ⌄] 단추: 누르면 서랍 줄과 같은 메뉴(읽지 않음은 뺌 — 보고 있는 대화라 바로 읽음),
  *  이름 바꾸기는 제목 자리에서(Enter 저장 · Esc 취소), 보관하면 칸은 새 대화로. 답을 받는 중엔 바꾸는 항목을 잠근다.
  *  (시안 head-menu.png, Jay 11-12 "시안대로 만들고") */
-function AgentTitle({ id, title, summary, locked, top, candidates, currentProject, onNeedSummary, onOpen, onPatch, onDelete, onLeave, onNote, onFork, forking }: {
+function AgentTitle({ id, title, summary, locked, top, candidates, currentProject, onNeedSummary, onOpen, onPatch, onDelete, onLeave, onNote, onFork, forking, onClaudeApp, appBusy }: {
   id: string | null; // 없으면 아직 보낸 적 없는 새 대화 — 바꿀 것이 없어 단추를 안 보인다
   title: string | null;
   summary?: AgentConversationSummary;
@@ -1293,6 +1390,8 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
   onLeave: () => void;
   onNote: (text: string) => void;
   onFork: (id: string) => void;
+  onClaudeApp: (target: AgentConversationSummary) => void;
+  appBusy: boolean;
   forking?: boolean; // 포크를 받는 중 — 포크 항목만 잠근다(다른 대화로 옮기는 것은 막지 않음)
 }) {
   const t = useT();
@@ -1335,6 +1434,8 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
   const act = (kind: RowAct) => {
     setMenu(null);
     if (!summary || locked || kind === "unread") return;
+    if (kind === "claude") return void (!appBusy && !forking && summary.can_open_app && !summary.app_handoff && onClaudeApp(summary));
+    if ((kind === "fork" || kind === "delete") && (summary.app_handoff || appBusy)) return;
     if (kind === "pin") return void onPatch(summary.id, { pinned: !summary.pinned });
     if (kind === "archive") {
       const archiving = !summary.archived;
@@ -1374,7 +1475,7 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
       )}
       {menu && summary && (
         <ConversationMenu target={summary} menuRef={menuRef} style={{ top: menu.top, left: menu.left }} sub={menu.sub} side={menu.side}
-          busy={locked} forkLocked={forking} top={top && { ...top, run: () => { setMenu(null); top.run(); } }} showUnread={false} candidates={candidates} currentProject={currentProject} onAct={act}
+          busy={locked} forkLocked={forking || appBusy} appBusy={appBusy} top={top && { ...top, run: () => { setMenu(null); top.run(); } }} showUnread={false} candidates={candidates} currentProject={currentProject} onAct={act}
           onToggleSub={() => setMenu((m) => m && { ...m, sub: !m.sub, side: subSide(m.left, panelOf()?.clientWidth || window.innerWidth) })}
           onProject={(project) => { setMenu(null); void onPatch(summary.id, { project }); }} />
       )}
@@ -1388,7 +1489,7 @@ function AgentTitle({ id, title, summary, locked, top, candidates, currentProjec
  *  보내는 중·일하는 중에는 고르기와 그 대화의 바꾸는 항목만 잠근다. 설정 칸(새 대화 모델·칸 위치)은 넣지 않는다(Jay 11-10).
  *  요금제 = 허브가 Claude Code 설정의 표시 이름(Ultra 등)을 같은 계정일 때만 싣는다(docs/status/MVAgent_서랍아래줄_2026-11-10.md). */
 function AgentDrawer({ conversations, currentId, running, locked, projectName, currentProject, truncated, onNew, onOpen, onClose,
-  onPatch, onDelete, onOpenInWindow, onFork, forking, claude }: {
+  onPatch, onDelete, onOpenInWindow, onFork, forking, claude, onClaudeApp, appBusy }: {
   conversations: AgentConversationSummary[] | null;
   currentId: string | null;
   running: boolean;
@@ -1403,6 +1504,8 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
   onDelete: (id: string) => Promise<AgentSessionFileResult | null>;
   onOpenInWindow?: (id: string) => void;
   onFork: (id: string) => void;
+  onClaudeApp: (target: AgentConversationSummary) => void;
+  appBusy: boolean;
   forking?: boolean;
   claude?: AgentEngine;
 }) {
@@ -1482,6 +1585,8 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
     setMenu(null);
     if (kind === "window") return onOpenInWindow?.(c.id);
     if (busyRow(c.id)) return;
+    if (kind === "claude") return void (!locked && !appBusy && !forking && c.can_open_app && !c.app_handoff && onClaudeApp(c));
+    if ((kind === "fork" || kind === "delete") && (c.app_handoff || appBusy)) return;
     if (kind === "pin") return void onPatch(c.id, { pinned: !c.pinned });
     if (kind === "unread") return void onPatch(c.id, { unread: !c.unread });
     if (kind === "archive") return void onPatch(c.id, { archived: !c.archived });
@@ -1567,6 +1672,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
                         disabled={locked} onClick={() => (c.id === currentId ? onClose() : onOpen(c.id))}>
                         {c.pinned && !c.archived && <PinIcon />}
                         <span>{c.title || t("제목 없음")}</span>
+                        {c.app_handoff && <span className="agent-app-monitor" title={t("Claude 앱에서 쓰는 중")}><MonitorIcon /></span>}
                         {c.restored_from ? <small>{t("복원 기록")}</small> : !c.resumable && <small>{t("이어 가기 불가")}</small>}
                         {running && c.id === currentId ? <i className="agent-drawer-dot" title={t("일하는 중")} />
                           : c.unread && <i className="agent-drawer-unread" title={t("읽지 않음")} />}
@@ -1588,7 +1694,7 @@ function AgentDrawer({ conversations, currentId, running, locked, projectName, c
 
         {menu && target && (
           <ConversationMenu target={target} menuRef={menuRef} style={{ top: menu.top, left: menu.left }} sub={menu.sub} side={menu.side}
-            busy={busyRow(target.id)} forkLocked={locked || forking} showUnread candidates={candidates} currentProject={currentProject}
+            busy={busyRow(target.id)} forkLocked={locked || forking || appBusy} appBusy={appBusy} showUnread candidates={candidates} currentProject={currentProject}
             top={onOpenInWindow && { icon: <WindowIcon />, label: t("새 창에서 열기"), run: () => void act("window", target) }}
             onAct={(kind) => void act(kind, target)}
             onToggleSub={() => {
@@ -1693,13 +1799,13 @@ function ModelMenu({ engines, choice, onChoose, onSettings }: {
       {q ? (found.length ? found : <p className="agent-menu-note">{t("맞는 모델이 없어요")}</p>) : engines.map((e) => (
         <div key={e.id} className="agent-model-co" onMouseEnter={() => setSub(e.id)}>
           <button type="button" className={`agent-model-item agent-model-row${sub === e.id ? " on" : ""}`} aria-haspopup="true" aria-expanded={sub === e.id}
-            onClick={() => setSub(sub === e.id ? null : e.id)}
+            onClick={() => e.available ? setSub(sub === e.id ? null : e.id) : onSettings()}
             onKeyDown={(event) => { if (event.key === "ArrowRight") { event.preventDefault(); setSub(e.id); } }}>
             <span className="agent-model-ic" aria-hidden="true">{e.id === "codex" ? <OpenAIIcon /> : "✳"}</span>
             <span className="agent-model-name">{GROUP[e.id] ?? e.id}</span>
             {e.available
               ? e.subscription && <span className="agent-model-plan">{`${e.subscription} ${t("구독")}`}</span>
-              : <span className="agent-model-reason">{e.id === "codex" ? t("미연결") : e.reason || t("쓸 수 없음")}</span>}
+              : <span className="agent-model-reason">{t("미연결")}</span>}
             <Chevron />
           </button>
           {sub === e.id && (
@@ -1805,6 +1911,7 @@ function DotsIcon() {
     </svg>
   );
 }
+function MonitorIcon() { return <MenuGlyph><rect x="1.5" y="2" width="13" height="9" rx="1.5" /><path d="M8 11v3M5 14h6" /></MenuGlyph>; }
 function WindowIcon() { return <MenuGlyph><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M2 6h12" /></MenuGlyph>; }
 function PinIcon() { return <MenuGlyph><path d="M9.5 2.5l4 4-2 1-2.5 2.5.3 2.5-1.3 1.3-2.4-2.4L2.5 14.5M4.6 7.6l2.3-2.3 1-2" /></MenuGlyph>; }
 function UnreadIcon() { return <MenuGlyph><circle cx="8" cy="8" r="5.2" /><circle cx="8" cy="8" r="2" fill="currentColor" /></MenuGlyph>; }

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SCREEN_CONSENT } from "../src/lib/useMcpScreenActions";
 // MV Agent 칸의 Claude 연결 안내(첫 연결 설계 3·5·6·9절) — 가짜는 바깥 경계(fetch)에만 둔다.
 //  상태별 장면(설치 안내 B·업데이트·확인 못 함·연결·구독 아님·구독 없음·로그인 창) · 입력칸 잠금 = 허브와 같은 허용 조건 ·
 //  로그인 창 스위치 꺼짐/열 수 없음 = 터미널 안내 · [Claude 연결] → 2초마다 확인 → 연결 띠·엔진 목록 갱신 · 옛 허브(표식 없음).
@@ -82,6 +83,9 @@ describe("계약 A — 설정 안 Claude 연결", () => {
     route = (c) => c.path === "/session" ? session("not_logged_in") : status("not_logged_in", { enabled: true });
     await mount();
     expect(buttonText("Claude 연결")).not.toBeNull();
+    expect(panel().textContent).toContain(SCREEN_CONSENT);
+    expect(panel().textContent).toContain("Claude Code·Codex 에서도 MV Hub 를 바로 쓰고 생성해요");
+    expect(panel().textContent).toContain("생성마다 묻지 않음");
     expect(host.querySelector<HTMLDetailsElement>(".cn-more")!.open).toBe(false);
     expect(host.querySelector(".cn-more summary")!.textContent).toBe("직접 하려면(PowerShell)");
     expect(panel().textContent).toContain("로그인을 마치고 그 창이 닫히면 여기가 바뀌어요.");

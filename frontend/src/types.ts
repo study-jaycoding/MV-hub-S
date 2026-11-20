@@ -640,7 +640,10 @@ export interface PreviewTarget {
 
 // WebSocket 진행률 메시지
 export interface ProgressMessage {
+  receiver_id?: string;
+  action_id?: string;
   type:
+    | "mcp_screen_action"
     | "scene_writer_want"
     | "scene_writer_changed"
     | "queued"

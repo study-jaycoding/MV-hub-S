@@ -8,6 +8,58 @@ from uuid import uuid4
 from ..db import get_connection
 
 
+registration_lock = threading.RLock()
+
+
+def link_key(owner, email, name):
+    return f"mcp_agent_link:{owner}:{email}:{name}"
+
+
+def link_state(owner, email, name):
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM app_setting WHERE key=?", (link_key(owner, email, name),)).fetchone()
+    if not row:
+        return None
+    try:
+        value = json.loads(row[0])
+        if value["state"] in ("linked", "off", "retry") and isinstance(value["id"], str):
+            return value
+    except (ValueError, TypeError, KeyError):
+        pass
+    return {"state": "off", "id": ""}  # Unknown state must never enable automatic issuance.
+
+
+def set_link_state(owner, email, name, state, client_id):
+    with get_connection() as conn:
+        conn.execute("INSERT INTO app_setting(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (link_key(owner, email, name), encode({"state": state, "id": client_id})))
+
+
+def valid_client(row, owner, email, password_stamp, hub_id):
+    return (not row["revoked_at"] and row["owner_uid"] == owner and row["account_email"] == email
+            and row["password_stamp"] == password_stamp and row["hub_id"] == hub_id)
+
+
+def revoke_explicit(client_id, owner, email, password_stamp, hub_id):
+    with registration_lock, get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT * FROM mcp_client WHERE id=? AND owner_uid=? AND account_email=?",
+                               (client_id, owner, email)).fetchone()
+            if row and not row["revoked_at"]:
+                conn.execute("UPDATE mcp_client SET revoked_at=datetime('now') WHERE id=?", (client_id,))
+                remaining = conn.execute("SELECT * FROM mcp_client WHERE owner_uid=? AND account_email=? AND name=?",
+                                         (owner, email, row["name"])).fetchall()
+                if row["name"] in ("claude", "codex") and not any(valid_client(r, owner, email, password_stamp, hub_id) for r in remaining):
+                    conn.execute("INSERT INTO app_setting(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                 (link_key(owner, email, row["name"]), encode({"state": "off", "id": client_id})))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return row is not None
+
+
 def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 

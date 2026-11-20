@@ -51,7 +51,8 @@ from ..models import (
 from ..services.agent_signals import agent_signals
 from ..services import cli_bridge
 from ..models import (
-    AUDIO_MODELS_V1, MEDIA_V2_MODELS, SEEDANCE_AUDIO_LIMITED_MODELS, VIDEO_VOICE_MODELS, seedance_audio_reference_error,
+    AUDIO_MODELS_V1, MEDIA_V2_MODELS, SEEDANCE_AUDIO_LIMITED_MODELS, UPSCALE_MODELS, VIDEO_VOICE_MODELS,
+    seedance_audio_reference_error,
 )
 from ..services.seedance_draft import DraftFinishConflict, finish_params, fresh_params
 from ..services.operational_logging import log_event
@@ -369,7 +370,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         reg = body.regenerate or RegenerateIn()
         recipe = await asyncio.to_thread(repo.gen_recipe, body.source_gen_id)
         media_model = reg.model or (recipe or {}).get("model")
-        if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS | SEEDANCE_AUDIO_LIMITED_MODELS:
+        if media_model in MEDIA_V2_MODELS | AUDIO_MODELS_V1 | VIDEO_VOICE_MODELS | SEEDANCE_AUDIO_LIMITED_MODELS | frozenset(UPSCALE_MODELS):
             # 원본 카드의 레시피로 검사한다 — 요청자 기준 최종 레시피와 다를 수 있는 한계는 기록(Jay 10-28, G 4차 P3).
             seedance_error = seedance_audio_reference_error(media_model, (recipe or {}).get("references") or [])
             if seedance_error:

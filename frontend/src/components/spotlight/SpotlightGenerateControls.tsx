@@ -11,6 +11,8 @@ interface Props {
   cost: number | null;
   costLoading: boolean;
   onSubmit: () => void;
+  /** 값이 있으면 Generate 를 잠그고 이 글을 툴팁으로 보인다(예: SVG 와 참조 이미지를 함께 쓸 수 없음). */
+  blockedReason?: string | null;
 }
 
 export function SpotlightGenerateControls({
@@ -22,6 +24,7 @@ export function SpotlightGenerateControls({
   cost,
   costLoading,
   onSubmit,
+  blockedReason = null,
 }: Props) {
   return (
     <div className="sl-controls">
@@ -50,8 +53,8 @@ export function SpotlightGenerateControls({
 
       <button
         className="sl-gen"
-        title="생성 (Alt+Enter)"
-        disabled={busy}
+        title={blockedReason ?? "생성 (Alt+Enter)"}
+        disabled={busy || !!blockedReason}
         onClick={onSubmit}
       >
         {busy ? "생성 중…" : "Generate"}{" "}

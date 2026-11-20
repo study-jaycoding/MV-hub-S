@@ -33,7 +33,7 @@ from ..deps import (
 )
 from ..services import auth
 from ..services import local_agent_pair
-from ..services import agent_chat
+from ..services import agent_chat, mcp_screen
 from ..services.agent_signals import agent_signals
 from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
@@ -223,7 +223,7 @@ def auth_config():
         #  agent_chat_connect_v1 = 칸의 Claude 연결 경로(/api/agent-chat/claude)를 아는 허브 — 없으면 화면은 엔진 사유만 보인다.
         #  scene_writer_confirm_v1 = 허브 공책(브라우저 사이 한 곳 저장·임대) — 로컬 허브 기본 켬, CONTENT_HUB_SCENE_WRITER=0 이면 끔.
         "features": ["request_retry_v1", "edit_doc_backup_v1", "audio-models-v1", "video-voice-v1", "comfy_canvas_runs_v1",
-                     "comment_drawings_v1", "asset_comment_drawings_v1"]
+                     "comment_drawings_v1", "asset_comment_drawings_v1", "external_screen"]
                     + (["agent_chat_v1", "agent_chat_connect_v1"] if agent_chat.enabled() else [])
                     + ([] if AUTH_ENABLED else ["scene_keep_v1"])  # 로컬 전용은 맨 뒤 — '서버 표식 + 로컬 추가' 모양 유지(test_scene_keeps)
                     + (["scene_writer_confirm_v1"] if not AUTH_ENABLED and scene_writer_enabled() else []),
@@ -329,13 +329,17 @@ def me(request: Request, response: Response):
 def logout(response: Response, request: Request):
     """토큰은 무상태라 서버 저장이 없다 — 클라이언트가 토큰을 버리고 세션 쿠키를 지운다."""
     acc = getattr(request.state, "account", None)
-    if acc:
-        from ..repo.mcp_v2 import revoke_account
-        revoke_account(acc["email"])
-    previous = local_agent_pair.clear(request, (acc or {}).get("email"))
-    if previous:
-        agent_signals.signal(previous, "pair-change")
-    active_account.bump_account_epoch()  # 토큰은 폐기되지 않는다 — 그 토큰으로 연 것들(클린 피드 세션)은 여기서 끝난다
+    from ..repo.mcp_v2 import registration_lock, revoke_account
+    with registration_lock:
+        screen_account = norm_email((acc or {}).get("email") or active_account.active_email())
+        if screen_account:
+            mcp_screen.service.invalidate(screen_account)
+        if acc:
+            revoke_account(acc["email"])
+        previous = local_agent_pair.clear(request, (acc or {}).get("email"))
+        if previous:
+            agent_signals.signal(previous, "pair-change")
+        active_account.bump_account_epoch()  # Serialize revocation and epoch change with MCP issuance.
     response.delete_cookie(SESSION_COOKIE, **_session_cookie_options(request))
     return {"ok": True}
 

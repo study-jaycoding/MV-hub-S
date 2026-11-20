@@ -31,6 +31,8 @@ from ..repo import mcp_v2 as mcp_store
 from ..services import agent_chat as chat
 from ..services import agent_chat_claude as claude
 from ..services import agent_chat_codex as codex
+from ..services import agent_chat_codex_login as codex_login
+from ..services import agent_chat_install as installer
 from ..services.agent_chat import EFFORTS, MODELS, Identity, service
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_browser_request
@@ -168,13 +170,80 @@ async def claude_login(panel=Depends(_panel)):
     return {"opened": True}
 
 
+class InstallRequest(StrictModel):
+    pass  # 명령·URL·경로를 받지 않는다.
+
+
+@router.post("/{engine}/install")
+async def install_engine(engine: Literal["claude", "codex"], body: InstallRequest | None = None, panel=Depends(_panel)):
+    ctx, _ = panel
+
+    def submit():
+        if engine == "codex":
+            with codex._lock("codex_enabled.lock", wait=True):
+                result = installer.request(engine, lambda: mcp_v2._still_current(ctx))
+                if result is None:
+                    raise installer.RequestBusy("설치 요청 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요")
+                if result.get("id") and (codex._read("codex_chain.json") or {}).get("id") != result["id"]:
+                    codex.start_chain(result["id"])
+                return result
+        return installer.request(engine, lambda: mcp_v2._still_current(ctx))
+
+    try:
+        return await asyncio.to_thread(submit)
+    except codex.Busy as exc:
+        raise HTTPException(409, "연결 상태를 확인하는 중이에요. 잠시 뒤 다시 해 주세요") from exc
+    except installer.RequestBusy as exc:
+        raise HTTPException(503, "설치 요청 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요") from exc
+    except OSError as exc:
+        raise HTTPException(503, "설치 요청을 저장하지 못했어요") from exc
+
+
+@router.get("/{engine}/install")
+async def install_status(engine: Literal["claude", "codex"], panel=Depends(_panel)):
+    return {"install": await asyncio.to_thread(installer.verified_status, engine),
+            "blocked": await asyncio.to_thread(installer.eligibility)}
+
+
+class CodexLoginRequest(StrictModel):
+    reconnect: StrictBool = False
+
+
+@router.post("/codex/login")
+async def open_codex_login(body: CodexLoginRequest | None = None,
+                           chain_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
+    ctx, _ = panel
+    try:
+        return await asyncio.to_thread(codex_login.open_login_window, lambda: mcp_v2._still_current(ctx), chain_id,
+                                       body.reconnect if body else False)
+    except claude.RecordUnreadable as exc:
+        raise HTTPException(409, "로그인 창 상태를 확인하지 못했어요. 잠시 뒤 다시 해 주세요") from exc
+    except codex.CodexError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, "로그인 창을 열지 못했어요") from exc
+
+
+@router.get("/codex/login")
+async def codex_login_status(chain_id: str = Query(pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
+    try:
+        return await asyncio.to_thread(codex_login.status, chain_id)
+    except (codex.CodexError, claude.RecordUnreadable) as exc:
+        raise HTTPException(409, "로그인 창 상태를 확인하지 못했어요") from exc
+    except OSError as exc:
+        raise HTTPException(503, "로그인 창 상태를 읽지 못했어요. 잠시 뒤 다시 해 주세요") from exc
+
+
 @router.post("/codex/enable")
-async def codex_enable(panel=Depends(_panel)):
+async def codex_enable(chain_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$"), panel=Depends(_panel)):
     """이 PC에서 Codex 연결 점검을 통과한 뒤 활성화한다(MV 생성 없음)."""
     ctx, _ = panel
     try:
         with anyio.CancelScope(shield=True):
-            await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx))
+            if chain_id is None:
+                await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx))
+            else:
+                await to_thread_non_abandon(codex.enable, MODELS["codex"][0]["id"], lambda: mcp_v2._still_current(ctx), chain_id)
     except codex.CodexError as exc:
         raise HTTPException(409, str(exc)) from exc
     except OSError as exc:
@@ -259,6 +328,8 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
     _, identity = panel
     async with _turn_lock(identity):  # 새 차례 시작도 이 잠금 안 — 확인과 지우기 사이에 가르기가 시작되지 않는다
         source = await asyncio.to_thread(chat_store.get_conversation, identity.db_file(), str(conversation_id))
+        if source:
+            chat_store.require_app_idle(source)
         if source and service.forking_from(source["cli_session_id"]):
             raise HTTPException(409, "포크한 대화가 이 대화에서 가르는 중이에요. 끝난 뒤 지워 주세요.")
         try:
@@ -283,6 +354,44 @@ async def delete_conversation(conversation_id: UUID, panel=Depends(_panel)):
 
 class ForkIn(StrictModel):
     request_id: UUID  # 응답을 잃고 다시 눌러도 같은 포크(설계 2-1)
+
+
+class ClaudeAppOpen(StrictModel):
+    request_id: UUID
+    expected_revision: Annotated[StrictInt, Field(ge=0)]
+    handoff_id: UUID | None = None
+
+
+class ClaudeAppBringBack(StrictModel):
+    request_id: UUID
+    expected_revision: Annotated[StrictInt, Field(ge=0)]
+    handoff_id: UUID
+    unlock_only: StrictBool = False
+
+
+async def _claude_app(conversation_id, body, panel, action):
+    ctx, identity = panel
+    async with _turn_lock(identity):
+        try:
+            with anyio.CancelScope(shield=True):
+                return await to_thread_non_abandon(service.claude_app, identity, str(conversation_id), body.model_dump(mode="json"),
+                                                   action, lambda: mcp_v2._still_current(ctx))
+        except chat.transcript.TranscriptError as exc:
+            raise HTTPException(413 if exc.code == "too_large" else 409, exc.code) from exc
+        except claude.Busy as exc:
+            raise HTTPException(409, exc.code) from exc
+        except OSError as exc:
+            raise HTTPException(503, "claude_app_failed") from exc
+
+
+@router.post("/conversations/{conversation_id}/claude-app/open")
+async def open_claude_app(conversation_id: UUID, body: ClaudeAppOpen, panel=Depends(_panel)):
+    return await _claude_app(conversation_id, body, panel, "open")
+
+
+@router.post("/conversations/{conversation_id}/claude-app/bring-back")
+async def bring_back_claude_app(conversation_id: UUID, body: ClaudeAppBringBack, panel=Depends(_panel)):
+    return await _claude_app(conversation_id, body, panel, "bring-back")
 
 
 _FORK_REFUSED = {"codex": (409, "Codex 대화는 포크할 수 없어요."),
@@ -344,7 +453,7 @@ async def fork_conversation(conversation_id: UUID, body: ForkIn, request: Reques
         except ValueError as exc:
             raise HTTPException(503, mcp_v2._setup_error_message(exc)) from exc
         except HTTPException as exc:  # 발급·커밋 직전 신원 확인
-            if isinstance(exc, chat_store.StaleRequest):
+            if isinstance(exc, chat_store.StaleRequest) or (exc.status_code == 409 and exc.detail == "in_claude_app"):
                 raise
             raise HTTPException(403, "앱의 계정이나 허브가 바뀌었습니다.", headers=_ACCOUNT_CHANGED) from exc
         except (chat_store.ForkRefused, chat_store.Busy, LookupError) as exc:
@@ -365,6 +474,9 @@ async def conversation(conversation_id: UUID, panel=Depends(_panel)):
         public = {key: found[key] for key in ("id", "title", "engine", "model", "effort", "updated_at", "resumable",
                                               "can_fork", "fork_block", "fork_state", "restored_from")}
         public.update({key: bool(found.get(key)) for key in ("pinned", "archived", "unread")}, unread_rev=found.get("unread_rev") or 0)
+        public.update(chat_store.app_fields(found))
+        if public["app_handoff"]:
+            public.update(can_fork=False, fork_block="in_claude_app")
         return {"conversation": public, "turns": found["turns"]}
 
     result = await asyncio.to_thread(load)  # 사건을 먼저 읽고 그다음 스냅샷 — 복원 스냅샷이 함께 돌려준 사건보다 새롭다(설계 A2-5)
@@ -661,6 +773,7 @@ async def _start_turn_locked(body: TurnIn, request: Request, ctx, identity: Iden
         conv = await asyncio.to_thread(chat_store.get_conversation, path, str(body.conversation_id))
         if not conv:
             raise HTTPException(404, "대화를 찾을 수 없습니다.")
+        chat_store.require_app_idle(conv)
         if conv.get("restored_from"):
             raise HTTPException(409, "복원한 기록은 읽기 전용입니다. 새 대화로 시작하세요.")
         if conv["engine"] != body.engine:

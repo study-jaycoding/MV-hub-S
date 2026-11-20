@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import copy
+import contextlib
+import fnmatch
+import hashlib
+import hmac
 import ctypes
 from ctypes import wintypes
 import json
@@ -100,7 +104,7 @@ def read_profile(path: str | Path) -> dict:
         raise ValueError("MCP 연결 권한을 읽지 못했습니다. MV Hub에서 다시 연결하세요.") from None
 
 
-def _atomic(path: Path, data: bytes, previous: bytes | None = None, *, compare: bool = False) -> None:
+def _atomic(path: Path, data: bytes, previous: bytes | None = None, *, compare: bool = False, exclusive: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".mvhub-", suffix=".tmp")
     try:
@@ -111,7 +115,10 @@ def _atomic(path: Path, data: bytes, previous: bytes | None = None, *, compare: 
         if compare and (path.read_bytes() if path.exists() else None) != previous:
             raise ValueError("설정이 다른 프로그램에서 바뀌었습니다. 다시 연결하세요.")
         # External editors do not share our lock; compare immediately before atomic replacement.
-        os.replace(temporary, path)
+        if exclusive:
+            os.link(temporary, path)  # Publish a complete first backup, atomically, without replacing an existing one.
+        else:
+            os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -145,15 +152,256 @@ def _known_entry(old: object, setup: dict) -> bool:
         return True
     if not isinstance(old, dict) or not isinstance(old.get("args"), list):
         return False
-    normalize = lambda s: os.path.normcase(os.path.abspath(s)) if isinstance(s, str) else ""
+    normalize = lambda s: _path_key(s) if isinstance(s, str) else ""
     return (normalize(old.get("command")) == normalize(setup["python"])
             and any(normalize(arg) == normalize(setup["adapter"]) for arg in old["args"])
             and "url" not in old)
 
 
+def _path_key(path) -> str:
+    value = str(Path(path).resolve())
+    if value.upper().startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    else:
+        value = value.removeprefix("\\\\?\\")
+    return os.path.normcase(os.path.normpath(value))
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    """Share the read/backup/replace boundary between installed and dev hubs."""
+    with _LOCK:
+        if os.name != "nt":
+            raise ValueError("MCP 자동 연결은 Windows 사용자 계정에서 설정하세요.")
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel.CreateMutexW.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        name = "Local\\MVHub-MCP-" + hashlib.sha256(_path_key(path).encode()).hexdigest()
+        handle = kernel.CreateMutexW(None, False, name)
+        if not handle:
+            raise ValueError("MCP 설정 잠금을 얻지 못했습니다.")
+        acquired = False
+        try:
+            acquired = kernel.WaitForSingleObject(handle, 15000) in (0, 0x80)
+            if not acquired:
+                raise ValueError("다른 MV Hub가 설정 중입니다. 잠시 뒤 다시 확인하세요.")
+            yield
+        finally:
+            if acquired:
+                kernel.ReleaseMutex(handle)
+            kernel.CloseHandle(handle)
+
+
+def _read_config(path: Path) -> bytes | None:
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(4 * 1024 * 1024 + 1)
+    except FileNotFoundError:
+        return None
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError("클라이언트 설정이 너무 커 자동 등록할 수 없습니다.")
+    return data
+
+
+def _save_config(path: Path, previous: bytes | None, updated: bytes):
+    if previous == updated:
+        return
+    if previous is not None:
+        original = path.with_name(path.name + ".mvhub-original")
+        try:
+            _atomic(original, previous, exclusive=True)
+        except FileExistsError:
+            pass
+        _atomic(path.with_name(path.name + ".mvhub-backup"), previous)
+    # shortcut: editors and older hubs do not share the mutex; compare narrows that race only.
+    _atomic(path, updated, previous, compare=True)
+
+
+def _json(text: str) -> dict:
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("중복된 설정 키입니다.")
+            result[key] = value
+        return result
+    def invalid(_):
+        raise ValueError("표준 JSON 설정이 아닙니다.")
+    value = json.loads(text, object_pairs_hook=pairs, parse_constant=invalid) if text.strip() else {}
+    if not isinstance(value, dict):
+        raise ValueError("설정 객체가 아닙니다.")
+    return value
+
+
+def _replaceable(old, client):
+    allowed = ({"command", "args", "tool_timeout_sec", "default_tools_approval_mode"}
+               if client == "codex" else {"command", "args", "type"})
+    if old is not None and (not isinstance(old, dict) or set(old) - allowed):
+        raise ValueError("사용자가 추가한 서버 설정은 수동으로 유지하세요.")
+    if client != "codex" and old is not None and old.get("type", "stdio") != "stdio":
+        raise ValueError("기존 서버 형식을 유지합니다.")
+    if client == "codex" and old is not None and old.get("default_tools_approval_mode", "approve") != "approve":
+        raise ValueError("사용자가 지정한 도구 승인 방식을 유지합니다.")
+
+
+def config_path(client: str, *, home: Path | None = None) -> Path:
+    user_home = Path(home) if home is not None else Path.home()
+    codex_home = Path(os.environ["CODEX_HOME"]) if home is None and os.environ.get("CODEX_HOME") else user_home / ".codex"
+    return codex_home / "config.toml" if client == "codex" else user_home / ".claude.json"
+
+
+def connection_lock(client: str, *, home: Path | None = None):
+    return _file_lock(config_path(client, home=home))
+
+
+def registration(client, setup, candidates=(), *, home=None, local_appdata=None) -> dict:
+    """Inspect only; candidates are already authorized DB rows. Never return profile secrets."""
+    if client == "claude" and home is None and os.environ.get("CLAUDE_CONFIG_DIR"):
+        return {"status": "manual"}
+    path = config_path(client, home=home)
+    with _file_lock(path):
+        try:
+            raw = _read_config(path)
+            parsed = tomllib.loads(raw.decode("utf-8-sig")) if client == "codex" and raw else _json(raw.decode("utf-8-sig") if raw else "")
+            servers = parsed.get("mcp_servers" if client == "codex" else "mcpServers", {})
+            if not isinstance(servers, dict):
+                raise ValueError()
+            entry = servers.get(server_name(setup))
+            if entry is None:
+                legacy = servers.get("mvhub")
+                if server_name(setup) != "mvhub" and legacy is not None and _known_entry(legacy, setup):
+                    return {"status": "reconnect"}
+                return {"status": "missing"}
+            if not _known_entry(entry, setup):
+                raise ValueError()
+            args = entry["args"]
+            if args.count("--profile") != 1:
+                raise ValueError()
+            profile_path = Path(args[args.index("--profile") + 1])
+            profile = read_profile(profile_path)
+            local = Path(local_appdata) if local_appdata is not None else Path(os.environ["LOCALAPPDATA"])
+            expected_path = local / "MVHub-MCP" / "connections" / profile["hub_id"] / (profile["client_id"] + ".bin")
+            expected = _entry(setup, expected_path, client)
+            # Exact argument sequence also rejects duplicate flags, alternate scripts and --panel.
+            normalized = [str(arg) for arg in args]
+            normalized[normalized.index("--profile") + 1] = str(expected_path)
+            adapter_index = len(setup.get("python_args", []))
+            if _path_key(normalized[adapter_index]) == _path_key(setup["adapter"]):
+                normalized[adapter_index] = setup["adapter"]
+            if (_path_key(profile_path) != _path_key(expected_path) or normalized != expected["args"]
+                    or profile["url"] != setup["url"]):
+                raise ValueError()
+            for row in candidates:
+                if (row["id"] == profile["client_id"] and row["hub_id"] == profile["hub_id"]
+                        and hmac.compare_digest(row["secret_hash"], hashlib.sha256(profile["secret"].encode()).hexdigest())):
+                    return {"status": "matched", "id": row["id"]}
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            pass
+        return {"status": "reconnect"}
+
+
+def _claude_access(home, name):
+    path = (Path(home) if home is not None else Path.home()) / ".claude" / "settings.json"
+    try:
+        with _file_lock(path):
+            previous = _read_config(path)
+            if previous is not None and not previous.strip():
+                raise ValueError("빈 사용자 설정입니다.")
+            value = _json(previous.decode("utf-8-sig") if previous else "")
+            permissions = value.setdefault("permissions", {})
+            if not isinstance(permissions, dict):
+                raise ValueError()
+            for key in ("allow", "deny", "ask"):
+                if key in permissions and (not isinstance(permissions[key], list)
+                        or any(not isinstance(rule, str) for rule in permissions[key])):
+                    raise ValueError()
+            prefix = "mcp__" + name
+            for rule in permissions.get("deny", []) + permissions.get("ask", []):
+                tool = rule.split("(", 1)[0].strip()
+                # Unknown wildcard patterns fail closed; ordinary tool rules do not interfere.
+                if (tool in ("*", prefix) or tool.startswith(prefix + "__")
+                        or fnmatch.fnmatchcase(prefix, tool) or fnmatch.fnmatchcase(prefix + "__connect", tool)
+                        or any(c in tool for c in "*?[]")):
+                    return "conflict"
+            allow = permissions.get("allow", [])
+            if prefix in allow or prefix + "__*" in allow:
+                return "present"
+            permissions["allow"] = [*allow, prefix]
+            _save_config(path, previous, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode())
+            return "allowed"
+    except (OSError, ValueError, TypeError):
+        return "failed"
+
+
+def _codex_access(path, name) -> tuple[str, bool]:
+    try:
+        previous = _read_config(path)
+        if previous is None:
+            return "missing", False
+        text = previous.decode("utf-8-sig")
+        before = tomllib.loads(text)
+        server = before.get("mcp_servers", {}).get(name)
+        if not isinstance(server, dict):
+            return "missing", False
+        mode = server.get("default_tools_approval_mode")
+        if mode is not None and mode != "approve":
+            return "conflict", False
+        limited = server.get("enabled") is False or any(k in server for k in ("enabled_tools", "disabled_tools", "tools"))
+        if mode == "approve":
+            return "present", limited
+        # Multiline TOML strings can contain fake headers. Leave such files to the user.
+        if '"""' in text or "'''" in text:
+            return "manual", False
+        lines = text.splitlines(keepends=True)
+        positions = []
+        for index, line in enumerate(lines):
+            if not line.lstrip().startswith("["):
+                continue
+            try:
+                header = tomllib.loads(line)
+            except ValueError:
+                continue
+            if header == {"mcp_servers": {name: {}}}:
+                positions.append(index)
+        if len(positions) != 1:
+            return "manual", False
+        index = positions[0]
+        newline = "\r\n" if "\r\n" in text else "\n"
+        lines[index] = lines[index].rstrip("\r\n") + newline + 'default_tools_approval_mode = "approve"' + newline
+        updated = "".join(lines)
+        expected = copy.deepcopy(before)
+        expected["mcp_servers"][name]["default_tools_approval_mode"] = "approve"
+        if tomllib.loads(updated) != expected:
+            return "manual", False
+        bom = b"\xef\xbb\xbf" if previous.startswith(b"\xef\xbb\xbf") else b""
+        _save_config(path, previous, bom + updated.encode())
+        return "allowed", limited
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "failed", False
+
+
+def ensure_access(client, setup, expected_client, *, home=None, local_appdata=None) -> dict:
+    _require_interactive_user()
+    with connection_lock(client, home=home):
+        found = registration(client, setup, [expected_client], home=home, local_appdata=local_appdata)
+        if found["status"] != "matched":
+            return {"client": client, "status": found["status"], "access": "manual"}
+        access, host_limited = ((_claude_access(home, server_name(setup)), False) if client == "claude"
+                                else _codex_access(config_path(client, home=home), server_name(setup)))
+        workspace = expected_client["workspace"]
+        if isinstance(workspace, str):
+            workspace = json.loads(workspace)
+        limited = not expected_client["can_execute"] or workspace.get("scope") != "account" or host_limited
+        return {"client": client, "id": expected_client["id"], "status": "limited" if limited else "configured", "access": access}
+
+
 def _toml_entry(entry: dict, name: str = "mvhub") -> str:
     return (f"[mcp_servers.{name}]\ncommand = " + json.dumps(entry["command"], ensure_ascii=False)
-            + "\nargs = " + json.dumps(entry["args"], ensure_ascii=False) + "\ntool_timeout_sec = 150\n")
+            + "\nargs = " + json.dumps(entry["args"], ensure_ascii=False) + "\ntool_timeout_sec = 150\ndefault_tools_approval_mode = \"approve\"\n")
 
 
 def _without_server(value: dict, key: str, name: str = "mvhub") -> dict:
@@ -186,22 +434,30 @@ def _toml_without_server(text: str, name: str) -> str:
 
 def update_codex(text: str, entry: dict, setup: dict, name: str = "mvhub") -> str:
     before = tomllib.loads(text)
-    if not _known_entry(before.get("mcp_servers", {}).get(name), setup):
+    old = before.get("mcp_servers", {}).get(name)
+    _replaceable(old, "codex")
+    if not _known_entry(old, setup):
         raise ValueError("다른 mvhub 등록이 있습니다. 기존 등록을 확인한 뒤 수동으로 연결하세요.")
     result = _toml_without_server(text, name) + "\n\n" + _toml_entry(entry, name)
+    timeout = (old or {}).get("tool_timeout_sec", 150)
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout < float("inf"):
+        raise ValueError("기존 제한 시간을 확인하세요.")
+    result = result.rsplit("tool_timeout_sec = 150", 1)
+    result = ("tool_timeout_sec = " + str(timeout)).join(result)
     after = tomllib.loads(result)
     if _without_server(before, "mcp_servers", name) != _without_server(after, "mcp_servers", name):
         raise ValueError("기존 설정을 보존할 수 없어 자동 등록을 중단했습니다.")
-    if after.get("mcp_servers", {}).get(name) != {**entry, "tool_timeout_sec": 150}:
+    if after.get("mcp_servers", {}).get(name) != {**entry, "tool_timeout_sec": timeout, "default_tools_approval_mode": "approve"}:
         raise ValueError("MCP 등록 설정 검증에 실패했습니다.")
     return result
 
 
 def _update_mcp_json(text: str, value: dict, setup: dict, name: str) -> str:
     """Claude Code(~/.claude.json)와 Claude 데스크톱 설정은 같은 mcpServers 꼴 — 그 키 하나만 바꾸고 나머지는 그대로."""
-    before = json.loads(text) if text.strip() else {}
+    before = _json(text)
     if not isinstance(before, dict) or not isinstance(before.get("mcpServers", {}), dict):
         raise ValueError("기존 Claude 설정 형식을 확인하세요.")
+    _replaceable(before.get("mcpServers", {}).get(name), "claude")
     if not _known_entry(before.get("mcpServers", {}).get(name), setup):
         raise ValueError("다른 mvhub 등록이 있습니다. 기존 등록을 확인한 뒤 수동으로 연결하세요.")
     after = copy.deepcopy(before)
@@ -224,14 +480,16 @@ def drop_old_dev_entry(text: str, client: str, setup: dict) -> str:
         old = before.get("mcp_servers", {}).get("mvhub")
         if old is None or not _known_entry(old, setup):
             return text
+        _replaceable(old, "codex")
         result = _toml_without_server(text, "mvhub") + "\n"
         if _without_server(before, "mcp_servers") != _without_server(tomllib.loads(result), "mcp_servers"):
             raise ValueError("기존 설정을 보존할 수 없어 자동 등록을 중단했습니다.")
         return result
-    before = json.loads(text)
+    before = _json(text)
     old = before.get("mcpServers", {}).get("mvhub")
     if old is None or not _known_entry(old, setup):
         return text
+    _replaceable(old, "claude")
     return json.dumps(_without_server(before, "mcpServers"), ensure_ascii=False, indent=2) + "\n"
 
 
@@ -323,26 +581,19 @@ def configure_client(client: str, setup: dict, credential: dict, *, home: Path |
             installed = path.exists() or bool(shutil.which("codex" if client == "codex" else "claude"))
             if not installed:
                 return {"client": client, "status": "manual", "message": "프로그램 설치를 확인하지 못했습니다. 설치 후 설정을 등록하세요.", "config": config}
-        previous = path.read_bytes() if path.exists() else None
-        if previous is not None and len(previous) > 4 * 1024 * 1024:
-            raise ValueError("클라이언트 설정이 너무 커 자동 등록할 수 없습니다.")
-        try:
-            text = previous.decode("utf-8-sig") if previous else ""
-            update = {"codex": update_codex, "claude": update_claude, "claude_desktop": update_claude_desktop}[client]
-            updated = update(text, entry, setup, name)
-            if name != "mvhub":
-                updated = drop_old_dev_entry(updated, client, setup)
-        except (ValueError, UnicodeError, AttributeError):
-            return {"client": client, "status": "manual", "message": "기존 mvhub 설정과 충돌하거나 형식을 확인하지 못했습니다. 설정을 확인한 뒤 아래 내용을 수동 등록하세요.", "config": config}
-        if previous is not None:
-            # 설정 파일마다 사본 두 개로 끝난다 — 등록할 때마다 새 이름으로 쌓였다(Codex 리뷰 P2 ⑤). 예전 이름(…-<uuid>)은 지우지 않는다.
-            #  ① 처음 등록 전 원본(사용자 원래 설정)은 한 번만 남기고 다시 쓰지 않는다 ② 바로 앞 내용은 등록마다 원자 교체(재리뷰 P2:
-            #  하나만 두면 두 번째 등록에서 원래 설정이 사라졌다). 바로 앞 사본의 mvhub 항목은 회수된 옛 프로필이라 되살리면 다시 등록해야 한다.
-            original = path.with_name(path.name + ".mvhub-original")
-            if not original.exists():
-                _atomic(original, previous)
-            _atomic(path.with_name(path.name + ".mvhub-backup"), previous)
-        _atomic(path, updated.encode("utf-8"), previous, compare=True)
+        with _file_lock(path):
+            previous = _read_config(path)
+            try:
+                text = previous.decode("utf-8-sig") if previous else ""
+                update = {"codex": update_codex, "claude": update_claude, "claude_desktop": update_claude_desktop}[client]
+                updated = update(text, entry, setup, name)
+                if name != "mvhub":
+                    updated = drop_old_dev_entry(updated, client, setup)
+            except (ValueError, UnicodeError, AttributeError):
+                return {"client": client, "status": "manual", "access": "conflict", "message": "기존 설정과 충돌합니다. 사용자 설정을 유지하고 수동으로 연결하세요.", "config": config}
+            _save_config(path, previous, updated.encode("utf-8"))
     if desktop is not None:
         return {"client": client, "status": "configured", "message": "등록했습니다. Claude 앱을 켜면 채팅에 나타납니다."}
-    return {"client": client, "status": "configured", "message": "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요."}
+    access = _claude_access(home, name) if client == "claude" else "allowed"
+    return {"client": client, "status": "configured", "access": access,
+            "message": "등록했습니다. 실행 중인 LLM에서 MCP를 새로고침하거나 프로그램을 다시 시작하세요."}

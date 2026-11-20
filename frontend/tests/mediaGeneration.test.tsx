@@ -145,7 +145,8 @@ describe("narration generation", () => {
     });
     await act(async () => buttons().find((button) => button.textContent === "저장")!.click());
     expect(apply.mock.calls[0][0].allowedModels).toEqual(["future_model_9", "draw_to_video", "text2speech_v2"]);
-    expect(choices.some((label) => label.textContent?.includes("Seedream"))).toBe(false);
+    // 부분 수정 전용 Seedream 5.0 Pro 는 그룹 허용 목록에 없다(2026-11-19 생성 창에 Seedream 5.5·Flash·Lite 가 들어와 'Seedream' 전체가 아니라 Pro 로 좁힘)
+    expect(choices.some((label) => label.textContent?.includes("Seedream 5.0 Pro"))).toBe(false);
   });
   it("uses narration text in the price key and ignores older text responses", async () => {
     const { useModels, ALLOWED } = await import("../src/lib/useModels");

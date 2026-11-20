@@ -7,10 +7,16 @@ tags:
   - mvhub
   - mvhub/구조
 status: active
-updated: 2026-11-18
+updated: 2026-11-20
 ---
 
 # CODE_MAP — 파일 단위 코드 지도
+
+MV Agent 설치·연결: `backend/app/services/agent_chat_install.py`는 실행기와 공유하는 요청/결과 표식·원자 저장·파일 잠금·공식 설치 환경을 맡고,
+`backend/app/services/agent_chat_codex_login.py`는 같은 Codex 자격별 로그인 창 하나·Job 탈출 확인·정확한 대상의 로그인 재확인을 맡는다.
+`run_agent_session.py`는 실행기 세대·2초 요청 조회·설치 전용 Job 실행을 맡는다. 요청과 API에는 명령·URL·경로를 받지 않는다.
+`backend/tests/test_agent_chat_install.py`·`backend/tests/test_agent_chat_codex_login.py`·`frontend/tests/agentSettingsInstall.test.tsx`는 임시 폴더·가짜 설치기/로그인으로 경계와 화면 사슬을 확인한다.
+설계는 [설치·연결](status/MVAgent_설치연결_2026-11-19.md)을 따른다.
 
 힉스필드 잔액 기록: `backend/app/hf_balance_contract.py`는 금액·정밀도·불변 지문·저장 확인 계약,
 `backend/app/db_hf_balance.py`는 migration 이름표 없는 추가 표와 구조 검사,
@@ -135,6 +141,21 @@ updated: 2026-11-18
 | 안전한 검증 | `backend/app/services/isolated_env.py`(표준 라이브러리 전용 환경/경로 검사), `tools/smoke_env.py`(app import 없이 공통 helper를 읽는 호환 입구), `tools/validation_result.ps1`(고유 run·소스 지문·실패/Skip), `tools/check_code_map.py`(추적·미추적 소스와 지도 대조). 사용자 DB·실사용 설치 실행은 별도 승인 범위 |
 
 통합 시험실의 MCP 계약은 [MCP_INTEGRATION](MCP_INTEGRATION.md)이다.
+
+바깥 앱의 화면 편집은 `backend/app/services/mcp_screen.py`가 수신 자격·일회용 화면 표·대상 선택·동작 수명과 한도를 소유한다.
+낮음 정리: 씬 불일치·씬 없음은 표를 보존하며, 미확인 등록 취소(묘비 150초·서버 처리 20초 상한)와 붙잡은 로그인 자격의 해제, 끔·만료 시 선택 해제, 상류 조회를 등록 잠금 밖에서 수행한 뒤 권한·화면 재확인을 적용한다.
+`routers/mcp_v2.py`의 screen-presence·screen-actions claim/result와 일반 연결 screen_action이 원래 연결 권한을 재확인한다.
+`frontend/src/lib/useMcpScreenActions.ts`는 본창 등록·실행 직전 세대/지문 검사·영수증을 맡고,
+`frontend/src/components/mcp/McpScreenNotice.tsx`는 기본 끔 스위치·명시 창 선택·지속 알림·되돌리기를 표시한다.
+기존 칸 상태기계·도구 표면은 그대로이며, 일반 화면 동작만 라이브러리 변경 알림에서 제외한다. 허브·앱·어댑터는 `external_screen` 기능 표식으로 호환 여부를 확인한다.
+AUTH 끔에서는 내용·자격 없는 WS 깨우기가 다른 로컬 소켓에도 전달될 수 있으며, 실제 명령 접근은 HTTP 수신 자격 검사로 제한한다.
+3판은 켠 본창의 가려짐·최소화도 허용한다(숨김 heartbeat·TTL 150초·보임 전환은 세대 유지). claim의 남은 시간에서 요청 경과를 빼 만료 실행을 막고, pagehide는 기존 presence 경로의 keepalive 해제·bfcache 복귀는 재등록한다. 여러 창이면 새로고침 뒤 [이 창 사용]을 다시 고른다. 숨은 동안 변경은 다시 보일 때 한 번 알리며, 브라우저 정지·폐기 중 실행은 보장하지 않는다(미선점 만료 `expired_unclaimed`, 선점 뒤 결과 없음 `unknown`).
+
+MV Agent 바깥 연결은 `routers/mcp_v2.py`의 `POST /api/mcp/v2/app/agent-link`·`_agent_link`가 맡는다.
+`repo/mcp_v2.py`의 `registration_lock`·`link_state`·`valid_client`·`revoke_explicit`가 등록/로그아웃 직렬화와 해제 표식을 공유한다.
+`tools/mcp_adapter/local_setup.py`의 `registration`은 실제 프로필을 대조하고 `ensure_access`는 재발급 없이 사용자 허용만 맞춘다.
+같은 파일의 `connection_lock`은 설정 경로별 프로세스 간 잠금이다. 호출 수명은 `useAgentChat.ts`, HTTP·상태 문구는 `agentChatApi.ts`,
+표시는 `AgentSettings.tsx`·`McpQuickConnect.tsx`·`McpRegistration.tsx`가 맡는다. 칸 실행 옵션·전용 프로필은 별개다.
 프런트 연결은 `McpRegistration.tsx`, `McpConnection.tsx`, `mcp.css`, `mcpContext.ts`, `mcpPlans.ts`,
 캔버스 요청 처리는 `mcpCanvasTasks.ts`에서 맡는다. 설정 옆 창의 간단한 연결 칸([한 번에 연결]·앱별 상태·해제, 같은 API)은 `McpQuickConnect.tsx`다. MCP 앱 탭 표시(`X-MVHub-Tab`, 서버 `_secret` 형식 32~128자)는 `lib/mcpTab.ts` 하나로 만든다 — `crypto.randomUUID` 는 LAN HTTP 에 없다.
 
@@ -168,6 +189,7 @@ Claude 상태 판정·로그인 창(스위치 `CONTENT_HUB_AGENT_CHAT_LOGIN_WIND
 HTTP 입구 `backend/app/routers/agent_chat.py`(신원 = `mcp_v2._capture`·`_still_current`, [실행] = `mcp_v2.submit_plan`),
 차례·사건·긴 기다림·취소·계획 대응 `backend/app/services/agent_chat.py`, CLI 찾기·명령·자식 환경·Job `backend/app/services/agent_chat_process.py`
 (루트 런처 import 금지 — 옵션은 0단계 실측값), 출력 해석 `backend/app/services/agent_chat_parse.py`(순수), 신원별 기록 DB `backend/app/repo/agent_chat.py`.
+Claude 앱 기록의 앵커·분기·압축 검사와 읽기 전용 변환은 `backend/app/services/agent_chat_transcript.py`(SDK 0.2.184 읽기 로직 이식·MIT, 합성 자료 시험)다.
 Codex의 PC별 활성화 표식·두 파일 잠금·작업 폴더 검사·연결 점검은 `backend/app/services/agent_chat_codex.py`.
 점검 전용 stdio MCP 서버는 `backend/app/services/agent_chat_probe_mcp.py`(표준 라이브러리만, check_connection·nonce, MV 권한 없음).
 칸 전용 MCP 연결은 `mcp_v2.issue_panel_client`(실행권 영구 끔 — `repo/mcp_v2.create_client` 도 강제)·`local_setup.write_panel_profile`(전역 설정 안 건드림)·어댑터 `--panel`(도구 6개만).
@@ -223,6 +245,7 @@ MP4 그림 트랙 길이 판독은 [mp4_picture.py](../backend/app/services/mp4_
 | 워크스페이스 콘솔(서브스페이스 — 대시보드 '워크스페이스' 단추, 메인·서브) | `components/manage/console/WorkspaceConsole.tsx`(목록·메인 조율·만들기), `ConsoleSubView.tsx`(그룹·크레딧·참가자), `lib/workspaceConsole.ts`(`topupAddBody`) | `routers/workspace_console.py`(`/api/manage/console/*`), `repo/workspace_console.py`(시드·연결·메인 최초 지정(바꾸지 않음)·개요), `repo/console_guard.py`(보호 판정) | 설계 `docs/WORKSPACE_CONSOLE_DESIGN.md` · 앱은 힉스필드 워크스페이스를 **못 만든다** — '만들기'=보고된 것을 서브로 연결. 할당·그룹·참가자 쓰기는 기존 `PUT credit-plan` 뿐이고 **note·topups 전체를 되보내야** 한다(빼면 지운다) |
 | 알림 센터(코멘트·업데이트 공지) | `components/NotificationCenter.tsx` | `routers/notifications.py`, `routers/update_notices.py` | |
 | 부분 수정(마스크 편집 캔버스) | `components/edit/PartialEditModal.tsx` | — | 제출은 기존 생성 요청 경로 재사용(위 '생성 제출 흐름' 행 — `agent_push.py` 까지). `PartialEditHost`는 커스텀 이벤트로만 열림(§3.5) |
+| 업스케일(크게 보기 [⤢ Upscale] — 이미지 3·영상 3 모델) | `components/upscale/UpscaleModal.tsx`, `lib/upscaleModels.ts`(모델 표·보낼 값·카드 '⤢' 표시) | `models.py`(`UPSCALE_MODELS` — 원본 1개 검사), `services/cli_bridge.py`(견적: prompt 없음·가짜/실제 원본), `agent_push.py`(`UPSCALE_MODELS` — `--prompt` 빼기·원본 종류로 `--image-references`/`--video-references`) | 설계 [업스케일_크게보기_2026-11-20.md](status/업스케일_크게보기_2026-11-20.md). **모델 목록이 세 곳**(화면·서버·에이전트) — 같이 고친다(`test_upscale` 가 서버·에이전트를 대조). `UpscaleHost`는 커스텀 이벤트로만 열림(§3.5) |
 | 크게 보기 코멘트 그림(C 단추·코멘트 모드·그림 겹쳐 보기) | `components/MediaPreview.tsx`(C·`c`·겹쳐 보기), `App.tsx`(`openCardComment` — 카드 C 도 이 창), `components/comment/CommentDrawModal.tsx`, `components/edit/drawing/*`(수정 창과 같은 그리기 도구·획 v1 정규화/해시), `components/GenCommentPanel.tsx`(그림 줄·그림 불러오기) | `routers/generation.py`(`comments-v2`·그림 조회), `repo/comment_drawings.py`, `services/comment_strokes.py`(검증·해시·표 구조 검사), `repo/share.py`·`routers/publish.py`(발행 `publish-bundle-v2`), `repo/trash.py` | 설계·계약 [크게보기_코멘트그림_설계_2026-11-05.md](status/크게보기_코멘트그림_설계_2026-11-05.md) §10. 새 표 셋은 이름표(baseline)가 없다 — 구조는 시작·쓰기 전에 직접 본다. 프런트·서버가 **같은 바이트**로 정규화·해시한다(`strokes.ts` ↔ `comment_strokes.py`) |
 | 생성물 비교(Compare) | `components/CompareModal.tsx`, `VideoCompareModal.tsx` | — | |
 | 히스토리 보드(계보 그래프) | `components/HistoryBoard.tsx` | `routers/generation.py`(`/history`·`/history-tree`), `repo/history.py`, `repo/lineage.py` | |
@@ -725,6 +748,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `spotlight/SpotlightMentionPicker.tsx`(152줄) | @/# 피커 목록(트레이 항목 + 소스 + 태그) | `SpotlightMentionPicker` |
 | `spotlight/SpotlightPromptRow.tsx`(92줄) | 프롬프트 입력 행(순수 프레젠테이션) | `SpotlightPromptRow` |
 | `spotlight/SpotlightOptionIcon.tsx`(85줄) | 옵션 이름 → SVG 아이콘 매핑 | `SpotlightOptionIcon` |
+| `spotlight/ModelFamilyIcon.tsx`(107줄) | 모델 선택 목록의 계열 판정(`modelFamily`·줄 단위 `rowFamily` — 오디오 Text to Speech 엔진 줄 포함)과 계열 아이콘 11종(Nano Banana·GPT Image·Seedream·Seedance·Kling·Gemini·Wan·MiniMax·Seed·ElevenLabs·Qwen — 힉스필드 이미지·비디오·오디오 아이콘 폴더 SVG) | `ModelFamilyIcon`, `modelFamily` |
+| `spotlight/SvgReferenceBand.tsx`(14줄) | GPT 2.6 SVG 와 참조 이미지를 함께 쓸 때 프롬프트 창 위에 붙는 띠(메시지 + [png 로 바꾸기]) — 판정은 `useModels` 의 `isSvgWithReferences` | `SvgReferenceBand` |
 | `spotlight/SpotlightDurationChip.tsx`(74줄) | 길이 칩("4s") + 누르면 위에 뜨는 눈금 슬라이더 창 — 생성창·수정 창 공용 | `SpotlightDurationChip` |
 | `spotlight/SpotlightGenerateControls.tsx`(77줄) | 배치 수·비용·생성 버튼 줄 | `SpotlightGenerateControls` |
 | `spotlight/SpotlightRefRoleMenu.tsx`(45줄) | 트레이 우클릭 역할 메뉴(포털) | `SpotlightRefRoleMenu` |
@@ -827,6 +852,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `comment/CommentDrawModal.tsx` | 코멘트 그림 창 — 생성물·어셋 공용(대상 `CommentTarget`). 무대 아래 한 판(영상 = 타임라인 책갈피·재생 줄·도구 줄 / 이미지 = 그림 ①②③ 번호 줄·도구 줄, 시안 ⑥⑦), 오른쪽 = 작은 코멘트 창 그대로 + 새 코멘트 입력(composer). 그림이 있을 때만 comments-v2(의도가 같으면 같은 id, 처음 보낸 문맥에 묶임), 글만이면 옛 경로 | `CommentDrawModal`·`AssetCommentSide`(`MediaPreview`·`app/AppOverlays`(카드 C)·`AssetsView`(작은 창 [편집]) 가 연다) |
 | `edit/EditRefPrompt.tsx`(136줄) | 수정 창 지시문 칸 — `@imageN` 을 레퍼런스 칸 썸네일 알약으로·`@` 목록·없는 번호 경고(알약은 `lib/promptEditor` 재사용, 내보내는 글은 `@imageN` 그대로) | `EditRefPrompt` |
 | `edit/PartialEditHost.tsx`(47줄) | `partialEdit` 이벤트 → 최신 Generation 조회 → 모달 개방 | `PartialEditHost`(§3.5 숨은 진입점) |
+| `upscale/UpscaleModal.tsx` | 업스케일 창 — 원본 크기 → 결과·모델 칩(아이콘)·옵션 칩·견적·[Upscale ✦]. 제출은 `api.prepareCreate`(수정 창과 같은 길) | `UpscaleModal` |
+| `upscale/UpscaleHost.tsx` | `upscale` 이벤트(크게 보기 머리줄·선택 단추 줄) → 최신 Generation 조회 → 창 개방. 캔버스 카드(sceneId·cardId)가 실려 오면 결과를 그 카드에 쌓는다(App 의 canvas = 캔버스 재생성과 같은 자리 표·확인·정산) | `UpscaleHost`(§3.5 숨은 진입점) |
 | `timeline/EditTab.tsx`(약 1,100줄) | 편집 탭 조립 — 시퀀스 고르기·문서·재생·편집 키·컷(폴더) 비활성/숨기기·빈 곳 채우기(최종 확인된 것 먼저, 없으면 최신)·컷 더블클릭(공유 & 리뷰의 폴더 창을 App 에 열어 달라고 알린다)([EDIT_TAB.md](EDIT_TAB.md)). `edit/`(부분 수정)와 다른 기능이다 | `EditTab`(App 이 지연 로드) |
 | `timeline/EditTimeline.tsx`(약 345줄) | 눈금자(마크 인/아웃의 띠·북마크 꼬리표)·컷 줄·영상 트랙(트랙 색)·소리 줄·재생헤드. 클립은 위아래로만 끈다(컷 자리는 폴더 순서로 고정). 트랙 머리 우클릭·북마크 더블클릭은 무엇을 열지만 알린다 | `EditTimeline`, `EditMarks` |
 | `timeline/EditViewer.tsx`(약 230줄) | 뷰어 한 판 — 위 줄(지금 시각·무엇을 볼지·전체 길이·싱글/듀얼)·무대(`<video>` — 자기 시계로 이어 트는 판은 둘: 앞 · 다음 것을 미리 받는 뒤 `spareRef`)·아래 줄(타임바: 북마크·마크 인/아웃 · 버튼·반복·배속 · 오른쪽의 구간 반복·마크 인·마크 아웃). 타임라인·소스(클립·테이프)·한 트랙만이 같은 판을 쓰고, 시계는 편집 탭이 가진 엔진의 것이다. 무대를 덮는 것(`over` — 다이나믹 재생 모드의 두 칸)을 받는다 | `EditViewer`, `ViewerProps`, `ViewerMarking` |
@@ -982,6 +1009,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 |---|---|---|
 | `useModels.ts` | 훅 | 모델 목록·파라미터 제약·기본값·예상 크레딧 |
 | `modelCatalog.ts` | store | job_set_type → 표시명 단일 사전(+폴백) |
+| `upscaleModels.ts` | 순수 | 업스케일 모델 표(이미지 3·영상 3, CLI 1.2.2 값)·보낼 값(Topaz 배율 → 출력 픽셀)·결과 크기 글자·카드 '⤢' 표시·요청 몸통. 서버 `models.UPSCALE_MODELS`·에이전트 `UPSCALE_MODELS` 와 같은 목록 |
 | `modelCatalogCache.ts` | store | `/api/models` TTL 60초 + single-flight |
 | `modelPolicy.ts` | store | 그룹 허용 모델 정책 구독·조회·캐시 |
 | `modelPolicyCore.ts` | 순수 | 정책 키 계산·상태 전이·차단 문구(도메인) |
@@ -1127,7 +1155,8 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `comfyRunState.ts` | 순수 | 배치 실행 판정 상태기계·동시성 리미터 |
 | `useComfyUnresolvedRuns.ts` | 훅 | 미회수 실행 목록 조회·해제 |
 | `useCanvasComfyRuns.ts` | 훅 | 캔버스 Comfy 실행 복구 주기 — 씬의 `comfyRuns` 를 resolve → 반영+applied 한 번 저장 → 확인 → ACK(보드 없이도, 쓰는 창만) |
-| `sceneGenerationInputs.ts` | 순수 | 캔버스 생성 요청 재료 + 실행 중 변경 감지 지문 |
+| `sceneGenerationInputs.ts` | 순수 | 캔버스 생성 요청 재료 + 실행 중 변경 감지 지문 + SVG·참조 충돌 노드 판정(`svgReferenceConflicts`) |
+| `svgReference.ts` | 순수 | GPT 2.6 SVG 는 참조 이미지와 함께 못 씀 — 판정·문구·Set 창 svg 잠금(import 없는 가벼운 모듈, 생성창·씬 보드·모델 창 공용) |
 | `sceneGenerationSubmission.ts` | 순수 | 캔버스 생성 배치 제출 경계(작업·씬 격리) |
 
 **13. 어셋·폴더 트리·팀 신규(8)**
@@ -1304,7 +1333,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
 | `project-sidebar.css` | 318 | 프로젝트 사이드바(`sidebar/ProjectSection`) |
 | `composition-manage.css` | 1098 | 관리(PM)창 구성·대시보드 화면. 옛 합성보드·옛 통계 위젯(도넛·퍼널 등)의 규칙은 2026-09-18 에 걷어냈다. 남은 휴면 규칙은 §5-d |
 | `admin-auth-compare.css` | 682 | 로그인·관리자 창·계정 비교 화면 |
-| `partial-edit.css` | 327 | 부분 수정 캔버스(`edit/PartialEditModal`) |
+| `partial-edit.css` | 약 360 | 부분 수정 캔버스(`edit/PartialEditModal`) · 업스케일 창(`.upscale-*`, `upscale/UpscaleModal` — 생성창 칩 `.sl-*` 를 빌린다) |
 | `comment-draw.css` | 약 100 | 크게 보기 코멘트 그림 — C 단추·코멘트 모드 창(`.cm-*`)·지난 코멘트 그림 줄(`.cmt-att*`)·겹쳐 보기 띠. 수정 창 부품(`.pe-*`·`.sl-*`)은 그대로 빌린다 |
 | `edit-tab.css` | 188 | 편집 탭(`timeline/`) — 클래스는 전부 `ed-` 로 시작한다(흔한 이름은 다른 화면 규칙에 먹힌다). 생성물 카드만 라이브러리 카드의 클래스를 일부러 같이 쓴다(같은 모양) |
 | `resolve-library.css` | 22 | Resolve 관련 라이브러리 표시(소규모) |
@@ -1317,6 +1346,7 @@ Slack 추가 라우터: `routers/slack.py`는 계정 연결 4개·서버 관리�
   이 창들의 존재를 놓친다. Assets·관리 창은 메인 창 없이도 WS 를 직접 구독한다.
 - **`edit/PartialEditHost.tsx`** — JSX·import 로 열리지 않는다. `InfoPopup` 이 쏘는 커스텀 이벤트
   `partialEdit` 을 구독해서만 열린다.
+- **`upscale/UpscaleHost.tsx`** — 같은 꼴. `MediaPreview` 머리줄과 선택 단추 줄(`app/SelectionActionBar`)의 [⤢ Upscale] 이 쏘는 `upscale` 이벤트로만 열린다.
 
 ---
 

@@ -586,8 +586,23 @@ def test_capability_probe_is_public_and_never_proxied(local, monkeypatch):
         assert bridge["protocol"] == 1 and bridge["transport"] == "stdio-local"
         assert bridge["persistent_protocol"] == 2
         assert set(bridge["features"]) == {"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search",
-                                           "agent_chat_read", "reference_exact"}
+                                           "agent_chat_read", "reference_exact", "external_screen"}
         assert len(bridge["hub_id"]) == 64
         assert _proxy.is_local_path("/api/mcp/client/connect")
     finally:
         client.close()
+
+
+def test_screen_registration_validation_never_echoes_registration_or_token(local):
+    from app import main
+    from app.routers import mcp_v2
+    from fastapi.exceptions import RequestValidationError
+    app = FastAPI()
+    app.add_exception_handler(RequestValidationError, main.screen_validation_error)
+    app.include_router(mcp_v2.router)
+    with TestClient(app, base_url="http://127.0.0.1:8123", client=("127.0.0.1", 50123)) as client:
+        registration = "private-registration-" * 8
+        response = client.post("/api/mcp/v2/app/screen-presence", headers=APP_HEADERS,
+                               json={"registration": registration, "secret": "private-token"})
+        assert response.status_code == 422
+        assert registration not in response.text and "private-token" not in response.text

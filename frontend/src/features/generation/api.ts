@@ -6,7 +6,7 @@ import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import { getAccountNamespace } from "../../lib/accountScope";
 import { EXPECT_ACCOUNT_HEADER, hubHasFeature, REQUEST_RETRY_FEATURE } from "../../lib/hubFeatures";
 
-function newGenerationRequestKey(): string {
+export function newGenerationRequestKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }

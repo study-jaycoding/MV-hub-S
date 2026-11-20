@@ -8,6 +8,24 @@
 import { getAccountNamespace } from "./accountScope";
 import { authFormHeaders, jsonBody, throwHttpError } from "./http";
 import { EXPECT_ACCOUNT_HEADER } from "./hubFeatures";
+import { mcpTabId } from "./mcpTab";
+
+export interface AgentLinkResult {
+  client: string;
+  status: string;
+  access?: string;
+  id?: string;
+}
+
+export function mcpAccessMessage(result: AgentLinkResult): string {
+  if (result.status === "off") return "해제됨";
+  if (result.status === "reconnect") return "다시 연결 필요";
+  if (result.access === "conflict") return "허용 확인 필요(충돌)";
+  if (result.access === "failed" || result.status === "error") return "허용 설정 확인 실패";
+  if (result.status === "manual" || result.status === "skipped" || result.access === "manual" || result.access === "missing") return "수동 등록 필요";
+  if (result.status === "limited" || result.access === "limited") return "제한된 연결";
+  return result.status === "configured" && ["allowed", "present"].includes(result.access ?? "") ? "등록·허용 설정 완료" : "허용 설정 확인 실패";
+}
 
 const BASE = "/api/agent-chat";
 export const PANEL_HEADER = "X-MVHub-Panel";
@@ -34,10 +52,15 @@ export interface AgentEngine {
   subscription?: string | null; // 알려진 유료 종류의 표시 이름(Max 등) — ready 일 때만
   models: { id: string; label: string }[];
   efforts: string[];
+  installed?: boolean;
+  install_version?: string;
+  install?: ClaudeInstall | null;
+  install_blocked?: string | null;
 }
 /** MV Hub 실행기의 Claude Code 공식 설치(허브가 표식을 읽어 준다 — docs/status/MVAgent_ClaudeCode업데이트_2026-11-10.md 2-v3-1b).
  *  running = 설치 중(20분 안) · failed = 마지막 설치 실패 · skipped = 건너뜀(reason: elevated·not_interactive·service_account·token_unknown). */
-export interface ClaudeInstall { state: "running" | "failed" | "skipped"; at: number; reason: string | null }
+export interface ClaudeInstall { id?: string; state: "running" | "failed" | "skipped" | "ok"; at: number; reason: string | null }
+export interface CodexLogin { id: string; state: "running" | "failed" | "ok" | "manual" | "not_subscription"; reason: string | null; ports_busy?: boolean }
 export interface ClaudeStatus {
   state: ClaudeState;
   version: string | null;
@@ -110,7 +133,7 @@ export interface AgentPlanSnapshot {
 export type AgentEvent = { seq: number } & (
   | { kind: "text_delta"; text: string }
   | { kind: "text"; text: string }
-  | { kind: "tool"; name: string; status: "started" | "done" | "failed" }
+  | { kind: "tool"; name: string; status: "started" | "done" | "failed" | "unknown" }
   | { kind: "plan"; plan: AgentPlan }
   | ({ kind: "plan_progress" } & AgentPlanSnapshot)
   | { kind: "state"; status: AgentTurnStatus; reason?: string | null; unread_rev?: number } // 끝남 사건 = 그 대화의 읽지 않음 번호(서랍 메뉴)
@@ -171,6 +194,37 @@ export function buildAgentContext(screen: {
   }
   return context;
 }
+export interface AgentAppHandoff { id: string; at: string; state: "opening" | "handed" | "uncertain" }
+export interface AgentAppRequest { request_id: string; expected_revision: number; handoff_id?: string; unlock_only?: boolean }
+export interface AgentAppResult {
+  app_handoff: AgentAppHandoff | null;
+  app_revision: number;
+  app_opened_at: string | null;
+  imported?: number;
+  open_failed?: "job" | "launch" | "identify";
+  resumable?: boolean;
+}
+export const CLAUDE_APP_REASON: Record<string, string> = {
+  codex: "Codex 대화는 Claude 앱에서 열 수 없어요", custom_config_dir: "Claude 설정 폴더를 바꾼 PC 라 열 수 없어요",
+  old_cli: "Claude Code를 업데이트해 주세요", outdated: "Claude Code를 업데이트해 주세요",
+  platform: "이 PC에서는 Claude 앱 열기를 지원하지 않아요", unsupported: "이 PC에서는 Claude 앱 열기를 지원하지 않아요",
+  no_session: "먼저 한 번 대화해 주세요", restored: "복원한 기록은 Claude 앱에서 열 수 없어요",
+  forked_unstarted: "포크한 대화에 먼저 한 번 말해 주세요", not_resumable: "이어 갈 수 없는 대화예요",
+  in_claude_app: "Claude 앱에서 쓰는 중이에요", turn_active: "답이 끝난 뒤 열 수 있어요", fork_running: "포크가 끝난 뒤 열 수 있어요",
+  desktop_missing: "Claude 데스크톱 앱이 없어요", desktop_unknown: "Claude 데스크톱 설치를 확인하지 못했어요",
+  not_installed: "Claude Code를 찾지 못했어요", not_subscription: "Claude 구독 로그인을 확인해 주세요",
+  environment_changed: "원래 대화 환경을 확인하지 못했어요", read_failed: "기록을 확인하지 못해 가져오지 않았어요",
+  anchor_changed: "원래 대화와 이어지는지 확인하지 못해 가져오지 않았어요", branched: "기록이 갈라져 가져오지 않았어요",
+  file_changed: "기록이 바뀌고 있어요. 앱에서 대화를 마친 뒤 다시 가져오세요", file_missing: "대화 기록 파일을 찾지 못했어요",
+  empty_file: "대화 기록이 비어 있어 가져오지 않았어요", too_large: "기록이 너무 커서 가져오지 않았어요",
+  launcher_uncertain: "열기 작업이 끝났는지 확인하지 못했어요. 잠금을 유지합니다",
+  title_write_failed: "앱 목록 제목을 쓰다 멈춰 기록이 상했을 수 있어요. 다시 열지 않고 잠금을 유지합니다",
+  stale_handoff: "다른 창에서 상태가 바뀌었어요. 새 상태를 확인해 주세요", request_mismatch: "요청 상태가 달라졌어요. 다시 확인해 주세요",
+};
+export class ClaudeAppError extends Error {
+  constructor(public code: string, public status: number) { super(CLAUDE_APP_REASON[code] ?? "Claude 앱 작업을 마치지 못했어요"); }
+}
+
 export interface AgentConversationSummary {
   id: string;
   title: string | null;
@@ -179,6 +233,11 @@ export interface AgentConversationSummary {
   effort: string;
   updated_at: string;
   resumable: boolean;
+  can_open_app?: boolean;
+  open_app_block?: string | null;
+  app_handoff?: AgentAppHandoff | null;
+  app_revision?: number;
+  app_opened_at?: string | null;
   restored_from?: string | null;
   project?: string | null; // 옮긴 프로젝트(없으면 대화를 시작한 화면의 프로젝트) — 서랍이 프로젝트별로 묶는다
   // 서랍 메뉴(docs/status/MVAgent_서랍메뉴_2026-11-12.md) — 옛 허브는 없음
@@ -188,7 +247,7 @@ export interface AgentConversationSummary {
   unread_rev?: number; // 읽지 않음이 바뀔 때마다 오르는 번호 — 자동 읽음은 본 번호와 같을 때만 끈다
   // 포크(docs/status/MVAgent_포크_2026-11-12.md 2-4) — 옛 허브는 없음
   can_fork?: boolean;
-  fork_block?: "codex" | "not_resumable" | "forked_unstarted" | "no_session" | null;
+  fork_block?: "codex" | "not_resumable" | "forked_unstarted" | "no_session" | "in_claude_app" | null;
   fork_state?: "ready" | "source_changed" | "source_gone" | null; // 아직 갈라지지 않은 포크만
 }
 export interface AgentConversationPatch {
@@ -218,6 +277,12 @@ export interface AgentTurnRecord {
   text: string;
   created_at: string;
   events: AgentEvent[];
+  origin?: "claude_app";
+  handoff_id?: string;
+  imported_at?: string;
+  unlock_only?: boolean;
+  supplement?: boolean;
+  omitted?: { characters?: number; images?: number; documents?: number; thinking?: number };
   attachments?: AgentAttachments | null; // 그 차례에 붙인 자료(없으면 null)
 }
 export interface AgentTurnRequest {
@@ -252,6 +317,9 @@ function send(path: string, init: RequestInit, expect: string, secret?: string):
 }
 
 async function readJson<T>(res: Response, path: string): Promise<T> {
+  if (res.status === 422 && /^\/(claude|codex)\/(install|login|enable)(\?|$)/.test(path)) {
+    throw new Error("연결 요청을 확인하지 못했어요. 화면을 다시 열고 시도해 주세요");
+  }
   if (!res.ok) await throwHttpError(res, BASE + path);
   return (await res.json()) as T;
 }
@@ -298,10 +366,37 @@ async function openClaudeLogin(): Promise<{ opened: boolean }> {
 
 const id = (value: string) => encodeURIComponent(value);
 
+async function claudeApp(conversationId: string, action: "open" | "bring-back", body: AgentAppRequest): Promise<AgentAppResult> {
+  const path = `/conversations/${id(conversationId)}/claude-app/${action}`;
+  const res = await panelResponse(path, { method: "POST", body: jsonBody(body) });
+  if (!res.ok && [409, 413, 503].includes(res.status)) {
+    const data = await res.json().catch(() => ({})) as { detail?: unknown };
+    throw new ClaudeAppError(typeof data.detail === "string" ? data.detail : "unknown", res.status);
+  }
+  return readJson<AgentAppResult>(res, path);
+}
+
 export const agentChatApi = {
+  agentLink: async (engine: AgentEngineId, identity: string): Promise<AgentLinkResult> => {
+    const path = "/api/mcp/v2/app/agent-link";
+    const res = await fetch(path, { method: "POST", headers: {
+      "Content-Type": "application/json", ...authFormHeaders(),
+      [EXPECT_ACCOUNT_HEADER]: getAccountNamespace(), "X-MVHub-Tab": mcpTabId(),
+    }, body: jsonBody({ engines: [engine], identity_key: identity }) });
+    if (!res.ok) await throwHttpError(res, path);
+    const result = await res.json() as { clients: AgentLinkResult[] };
+    const found = result.clients.find((item) => item.client === engine);
+    if (!found) throw new Error("바깥 연결을 확인하지 못했어요");
+    return found;
+  },
+  claudeApp,
   session: openAgentSession,
-  setCodexEnabled: (enabled: boolean) => panelFetch<{ engines: AgentEngine[] }>(
-    `/codex/${enabled ? "enable" : "disable"}`, { method: "POST" }),
+  setCodexEnabled: (enabled: boolean, chainId?: string) => panelFetch<{ engines: AgentEngine[] }>(
+    `/codex/${enabled ? "enable" : "disable"}${chainId ? `?chain_id=${encodeURIComponent(chainId)}` : ""}`, { method: "POST" }),
+  install: (engine: AgentEngineId) => panelFetch<ClaudeInstall>(`/${engine}/install`, { method: "POST" }),
+  installStatus: (engine: AgentEngineId) => panelFetch<{ install: ClaudeInstall | null; blocked: string | null }>(`/${engine}/install`),
+  openCodexLogin: (chainId?: string, reconnect = false) => panelFetch<CodexLogin>(`/codex/login${chainId ? `?chain_id=${encodeURIComponent(chainId)}` : ""}`, { method: "POST", body: jsonBody({ reconnect }) }),
+  codexLoginStatus: (chainId: string) => panelFetch<CodexLogin>(`/codex/login?chain_id=${encodeURIComponent(chainId)}`),
   // truncated = 최근 500개만 실었다(서랍이 "최근 500개만 보여요")
   conversations: () => panelFetch<{ conversations: AgentConversationSummary[]; truncated?: boolean }>("/conversations"),
   patchConversation: (conversationId: string, body: AgentConversationPatch) =>

@@ -122,6 +122,24 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("reference_exact", manifest["requires"]["hub_features"])
         self.assertTrue(update.compatibility(manifest, self.bundle))
 
+    def test_external_screen_requires_matching_hub(self):
+        old = '{"generation_result", "batch_results", "history_cursor", "plan_estimate", "reference_import", "reference_search", "agent_chat_read", "reference_exact"}'
+        (self.bundle / "server.py").write_bytes(payload(features=old))
+        baseline = {name: (self.bundle / name).read_bytes() for name in update.BASELINE}
+        manifest = update.build_manifest("4" * 40, (HERE / "server.py").read_bytes(), baseline)
+        self.assertIn("external_screen", manifest["requires"]["hub_features"])
+        self.assertTrue(update.compatibility(manifest, self.bundle))
+
+    def test_screen_lows_version_preserves_update_requirements(self):
+        code = (HERE / "server.py").read_bytes()
+        old = code.replace(b'ADAPTER_VERSION = "2026.11.20.3"', b'ADAPTER_VERSION = "2026.11.20.2"')
+        self.assertNotEqual(old, code)
+        (self.bundle / "server.py").write_bytes(old)
+        baseline = {name: (self.bundle / name).read_bytes() for name in update.BASELINE}
+        manifest = update.build_manifest("5" * 40, code, baseline)
+        self.assertEqual(manifest["version"], "2026.11.20.3")
+        self.assertEqual(update.compatibility(manifest, self.bundle), "")
+
     def test_version_directory_is_immutable_and_extra_files_are_rejected(self):
         manifest, files = self.candidate()
         update.stage_version(self.release, manifest, files)

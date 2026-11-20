@@ -55,6 +55,7 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { copyText, flashMsg } from "../lib/flash";
+import { upscaleModel } from "../lib/upscaleModels";
 import { libraryDraftKey, readLibraryDraft, writeLibraryDraft, type LibraryPromptDraft } from "../lib/libraryPromptDraft";
 import { takeCanvasHandoff, type CanvasPromptDraft } from "../lib/popupWindows";
 import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
@@ -76,11 +77,12 @@ import {
 import { useSpotlightTray } from "../lib/useSpotlightTray";
 import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useSeedanceRoleMenu } from "../lib/useSeedanceRoleMenu";
-import { useModels, ALLOWED, HIDDEN_PARAMS, inferModelType, optionsMatchModel, stripHiddenParams, withEffectiveDefaults } from "../lib/useModels";
+import { useModels, ALLOWED, HIDDEN_PARAMS, SVG_REF_MESSAGE, inferModelType, isSvgWithReferences, optionsMatchModel, stripHiddenParams, withEffectiveDefaults, withSvgReferenceConstraint } from "../lib/useModels";
+import { SvgReferenceBand } from "./spotlight/SvgReferenceBand";
 import { SPEECH_TEXT_LIMITS } from "../lib/spotlightSubmit";
 import { videoCostContext } from "../lib/useSceneGenerationSubmission";
 import { AUDIO_TASK_MODELS, audioModelBlocked, audioTagMatches, audioTagModel, audioTaskOf, isTtsModel, isVideoVoiceModel, refTrayShown, videoVoiceInputRef,
-  videoVoiceReferenceError, type VideoCostContext } from "../lib/spotlightPromptConfig";
+  videoVoiceReferenceError, type RefSummary, type VideoCostContext } from "../lib/spotlightPromptConfig";
 import { policyNote, submitBlockMessage } from "../lib/modelPolicyCore";
 import { useModelPolicy } from "../lib/modelPolicy";
 import {
@@ -494,6 +496,12 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     return [...projects].sort().join("|");
   }, [trayRefs, promptTick]);
+  // 붙어 있는 참조 이미지 수(트레이 + 프롬프트 안 칩) — GPT 2.6 SVG 는 참조와 함께 못 쓴다(띠·Generate 잠금·Set 창 svg 잠금)
+  const imageRefCount = useMemo(() => {
+    const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
+    return [...trayRefs, ...inlineRefs].filter((ref) => ref.type === "image").length;
+  }, [trayRefs, promptTick]);
+  const svgRefBlocked = isSvgWithReferences(model, optionValues, imageRefCount);
   const trayAssetVerInFlightRef = useRef<Set<string>>(new Set());
   const refreshTrayAssetVersions = useCallback((changed: string[] = [], fresh = false) => {
     const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
@@ -909,6 +917,18 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     return seedanceTokenRoles(ed ? serialize(ed).text : "");
   }, [promptTick, trayRefs]);
 
+  // 붙은 레퍼런스 요약(종류 무관 개수 + 시작·끝 프레임 지정) — 참조가 붙으면 길이 상한이 낮은 영상 모델(Gemini Omni 10초)의 길이 칸 상한에 쓴다
+  const refSummary = useMemo<RefSummary>(() => {
+    const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
+    let start = false;
+    let end = false;
+    for (const kinds of liveSeedanceRoles.image.values()) {
+      start = start || kinds.has("start");
+      end = end || kinds.has("end");
+    }
+    return { count: trayRefs.length + inlineRefs.length, start, end };
+  }, [trayRefs, promptTick, liveSeedanceRoles]);
+
   // @ 피커에 얹을 '트레이 항목' 목록 — seedance 모드에서만(@imageN 토큰이 그때만 해석됨). 고르면
   // @image1 같은 텍스트 토큰을 넣는다(소스=시각적 칩과 구분). 입력한 @뒤 질의로 필터(빈 질의=전체).
   const trayMentionList = useMemo(() => {
@@ -1133,6 +1153,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       const g = await api.getGeneration(id);
       // 기다리는 사이 고른 카드가 바뀌었거나(다녀온 것 포함) 더 나중의 재사용이 눌렸다 — 입력칸을 갈아 치우지 않는다
       if (bindingTurnRef.current !== startedTurn || reuseSeqRef.current !== mine) return;
+      // 업스케일 카드는 생성창 모델로 옮기면 다른 유료 생성이 된다(Codex 설계 확인 P2-4) — 입력칸을 바꾸지 않고 안내만
+      if (upscaleModel(g.model || "")) {
+        flashMsg("업스케일 결과는 재사용하지 않습니다 — 크게 보기의 [⤢ Upscale] 로 다시 업스케일하세요.");
+        return;
+      }
       // 재사용 원본 → 다음 생성의 자동 히스토리 부모(원본→파생).
       dragParentRef.current = id;
       // 모드 판정 — 출력 자산 타입이 우선(성공작). 단 실패 생성은 자산이 없어 무조건 image 로
@@ -1404,7 +1429,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     preservePromptAfterSubmit: !!trayBinding?.promptDerived,
     promptContextKey: JSON.stringify([bindingKey, bindingPromptKey]),
     model,
-    modelBlockedMessage,
+    modelBlockedMessage: modelBlockedMessage || (svgRefBlocked ? SVG_REF_MESSAGE : null),
     onCreated,
     reload,
     canvasTarget,
@@ -1703,8 +1728,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     >
       <div className="sl-dock">
         {topSlot}
+        {/* SVG + 참조 이미지 — 프롬프트 창 바로 위에 붙는 띠(창 윗모서리를 곧게 맞춘다) */}
+        {svgRefBlocked && <SvgReferenceBand onFix={() => setOpt("output_format", "png")} />}
         <div
-          className={"sl-panel" + (trayMode ? " expanded" : "") + (isVideoVoiceModel(model) ? " sl-video-voice" : "")}
+          className={"sl-panel" + (trayMode ? " expanded" : "") + (isVideoVoiceModel(model) ? " sl-video-voice" : "") + (svgRefBlocked ? " has-band" : "")}
           onDragOver={onPanelDragOver}
           onDrop={onPanelDrop}
         >
@@ -1752,7 +1779,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             />
           )}
           {expanded && visible && roleMenu.menu && (
-            <SpotlightRefRoleMenu {...roleMenu.menu} enabled={roleMenu.enabled}
+            <SpotlightRefRoleMenu {...roleMenu.menu} enabled={roleMenu.enabled} plain={model !== "seedance_2_5"}
               onChoose={roleMenu.choose} onClose={roleMenu.close} />
           )}
 
@@ -1793,8 +1820,10 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
             cost={cost}
             costLoading={costLoading}
             onSubmit={submit}
+            blockedReason={svgRefBlocked ? SVG_REF_MESSAGE : null}
           >
               <SpotlightOptionsBar
+                refInfo={refSummary}
                 type={type}
                 setType={setType}
                 audioTask={audioTask}
@@ -1812,7 +1841,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
                 typeFullyBlocked={typeFullyBlocked}
                 policyNote={policyNote(modelPolicy)}
                 tunable={optionsMatchModel(type, model, paramsModel) ? tunable : []}
-                constraints={constraints}
+                constraints={withSvgReferenceConstraint(constraints, model, tunable, imageRefCount)}
                 optionValues={optionValues}
                 setOptionValues={setOptionValues}
                 setOpt={setOpt}

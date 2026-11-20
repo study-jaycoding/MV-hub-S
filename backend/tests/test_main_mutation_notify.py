@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest import mock
 
 from starlette.requests import Request
@@ -6,6 +7,33 @@ from starlette.responses import Response
 
 from app import deps as deps_mod
 from app import main
+
+
+def test_external_screen_is_unchanged_but_panel_hidden_still_notifies(monkeypatch):
+    from app.routers import mcp_v2 as api
+    async def done(*_):
+        return {"ok": True}
+    monkeypatch.setattr(api, "_external_screen_action", done)
+    monkeypatch.setattr(api, "_panel_screen_action", done)
+    for name, expected in (("codex", 0), (api.PANEL_CLIENT, 1)):
+        request = _request("POST", "/api/mcp/v2/client/action")
+        ctx = SimpleNamespace(request=request, client={"name": name, "id": "client"})
+        args = {"name": "library.set_hidden", "args": {"generation_ids": ["g"], "hidden": True}}
+        if name == "codex":
+            args["screen_context"] = "x" * 43
+        async def route(_):
+            await api.action(api.mcp.ActionIn(method="screen_action", args=args), ctx)
+            return Response(status_code=200)
+        with mock.patch.object(main, "manager") as manager:
+            asyncio.run(main.mutation_notify(request, route))
+            assert manager.notify_mutation.call_count == expected
+
+
+def test_screen_presence_claim_result_do_not_broadcast_synced():
+    for path in ("/api/mcp/v2/app/screen-presence", "/api/mcp/v2/app/screen-actions/id/claim", "/api/mcp/v2/app/screen-actions/id/result"):
+        with mock.patch.object(main, "manager") as manager:
+            asyncio.run(main.mutation_notify(_request("POST", path), _success))
+            manager.notify_mutation.assert_not_called()
 from app.mutation_notify import (
     CLIENT_ID_HEADER,
     MUTATION_DOMAINS_HEADER,

@@ -83,7 +83,7 @@ export function modelSet(
   return clean.length ? new Set(clean) : EMPTY_MODEL_SET;
 }
 
-/** 부분 수정 전용 고정 모델 — 일반 생성 드롭다운에 없고 관리자가 고를 수도 없다(Jay 2026-09-11: 제외).
+/** 부분 수정 기본 고정 모델 — 관리자가 그룹 허용 목록에서 고를 수 없다(Jay 2026-09-11: 제외). 2026-11-19 부터 생성 창 목록에도 보인다(그룹이 막지는 못함).
  *  허용 목록 방식에서는 '목록에 없음 = 못 씀'이라, 면제하지 않으면 부분 수정 결과물의 재생성·복구까지 막힌다(코덱스 P2). */
 export const POLICY_EXEMPT_MODELS: ReadonlySet<string> = new Set(["seedream_v5_pro"]);
 

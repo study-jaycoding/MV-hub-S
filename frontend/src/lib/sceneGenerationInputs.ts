@@ -14,6 +14,9 @@ import {
 } from "./sceneEdges";
 import { variantIds, type SceneCard, type SceneEdge, type SceneModelCfg } from "./scenes";
 import { parseSceneSetTags } from "./sceneSet";
+import { isSvgWithReferences } from "./svgReference";
+import { durationForReferences, NO_REFS, type RefSummary } from "./spotlightPromptConfig";
+import { seedanceTokenRoles } from "./seedancePrompt";
 
 export interface SceneGenerationAssignment {
   projectId?: string;
@@ -173,6 +176,80 @@ export function collectSceneGenerationCardInput(
     text,
     assignment: collectSceneGenerationAssignment(cardId, cardsById, resolvedEdges),
   };
+}
+
+// ── SVG + 참조 이미지(GPT Image 2.6 은 SVG 에 참조를 못 쓴다 — svgReference) ──
+// 모델 노드가 먹이는 생성카드들 중 이미지 참조가 가장 많은 카드의 참조 수. 참조 수는 제출과 같은 함수(collectSceneGenerationCardInput)로 센다.
+export function modelNodeImageRefCount(
+  nodeId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+  type: string | null = "image",
+): number {
+  let most = 0;
+  for (const edge of resolvedEdges) {
+    if (edge.from !== nodeId) continue;
+    const target = cardsById.get(edge.to);
+    if (target?.kind !== "generation") continue;
+    const input = collectSceneGenerationCardInput(target.id, cardsById, resolvedEdges);
+    most = Math.max(most, input ? input.refs.filter((ref) => type == null || ref.type === type).length : 0);
+  }
+  return most;
+}
+
+/** 모델 노드를 저장할 때의 옵션 — 길이 칸이 참조 때문에 줄여 보여 준 값(Gemini 참조·시작+끝 10초)과 저장·제출되는 값이 같게 맞춘다. */
+export function modelNodeParamsForRefs(
+  model: string,
+  params: Record<string, string | number | boolean>,
+  refs: RefSummary,
+): Record<string, string | number | boolean> {
+  if (params.duration == null) return params;
+  const duration = durationForReferences(model, params.mode, params.duration, refs);
+  return duration === params.duration ? params : { ...params, duration: duration as string | number | boolean };
+}
+
+/** 모델 노드가 먹이는 생성카드의 레퍼런스 요약(개수·시작/끝 프레임) — 길이 칸 상한에 쓴다(Gemini: 참조·시작+끝 10초, 시작 한 장은 15초).
+ *  시작·끝 프레임은 카드 글의 @simage·@eimage 로 읽는다(제출 때 정해지는 것과 같은 규칙). 카드가 여럿이면 레퍼런스가 가장 많은 카드를,
+ *  같으면 끝 프레임이 있는 카드를 쓴다(가장 빡빡한 쪽). */
+export function modelNodeRefSummary(nodeId: string, cardsById: Map<string, SceneCard>, resolvedEdges: SceneEdge[]): RefSummary {
+  let best: RefSummary = NO_REFS;
+  for (const edge of resolvedEdges) {
+    if (edge.from !== nodeId) continue;
+    const target = cardsById.get(edge.to);
+    if (target?.kind !== "generation") continue;
+    const input = collectSceneGenerationCardInput(target.id, cardsById, resolvedEdges);
+    if (!input) continue;
+    let start = false;
+    let end = false;
+    for (const kinds of seedanceTokenRoles(input.text || "").image.values()) {
+      start = start || kinds.has("start");
+      end = end || kinds.has("end");
+    }
+    const summary = { count: input.refs.length, start, end };
+    if (summary.count > best.count || (summary.count === best.count && summary.end && !best.end)) best = summary;
+  }
+  return best;
+}
+
+// SVG 를 고른 모델 노드 중 연결된 생성카드에 이미지 참조가 붙어 CLI 가 거절할 노드와 그 생성카드. 노드 알약·생성 건너뛰기가 같이 쓴다.
+//  svg 가 아닌 노드는 참조를 세지 않고 지나간다(보드가 카드를 움직일 때마다 도는 계산이라 가볍게).
+export function svgReferenceConflicts(
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+): { modelNodeIds: Set<string>; generationIds: Set<string> } {
+  const modelNodeIds = new Set<string>();
+  const generationIds = new Set<string>();
+  for (const card of cardsById.values()) {
+    const cfg = card.kind === "model" ? card.modelCfg : undefined;
+    if (!cfg?.model || cfg.params?.output_format !== "svg") continue;
+    const count = modelNodeImageRefCount(card.id, cardsById, resolvedEdges);
+    if (!isSvgWithReferences(cfg.model, cfg.params as Record<string, string | number | boolean>, count)) continue;
+    modelNodeIds.add(card.id);
+    for (const edge of resolvedEdges) {
+      if (edge.from === card.id && cardsById.get(edge.to)?.kind === "generation") generationIds.add(edge.to);
+    }
+  }
+  return { modelNodeIds, generationIds };
 }
 
 function modelNodeCount(

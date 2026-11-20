@@ -15,6 +15,25 @@ from app import deps as deps_mod
 from app.ws import ConnectionManager
 
 
+def test_external_screen_wakeup_stays_in_exact_account_bucket():
+    async def run():
+        mgr = ConnectionManager()
+        one, other, local = FakeWS(), FakeWS(), FakeWS()
+        await mgr.connect(one, "acct:a@test")
+        await mgr.connect(other, "acct:b@test")
+        await mgr.connect(local, None)
+        wake = {"type": "mcp_screen_action", "receiver_id": "opaque", "action_id": "opaque-action"}
+        try:
+            await mgr.broadcast(wake, "acct:a@test")
+            await wait_until(lambda: bool(one.received))
+            assert one.received == [wake] and not other.received and not local.received
+        finally:
+            await mgr.disconnect(one)
+            await mgr.disconnect(other)
+            await mgr.disconnect(local)
+    asyncio.run(run())
+
+
 class FakeWS:
     def __init__(self):
         self.received: list[dict] = []

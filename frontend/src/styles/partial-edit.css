@@ -346,3 +346,29 @@
   margin-left: auto; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
   color: var(--accent-ink); background: var(--accent);
 }
+
+/* ── 업스케일 창(크게 보기 [⤢ Upscale], Jay 11-20 시안 v3) — 생성 정보 창 머리 + 생성창 칩을 그대로 쓴다 ── */
+.upscale-modal {
+  width: min(92vw, 560px); background: var(--panel, #16181d); border: 1px solid var(--border, #2a2e37);
+  border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+.upscale-head { border-bottom: 1px solid var(--border, #2a2e37); }
+.upscale-body { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 16px; }
+.upscale-src { display: flex; align-items: center; gap: 14px; }
+.upscale-thumb {
+  width: 96px; height: 72px; flex: none; border-radius: var(--mp-media-r, 8px); overflow: hidden;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border, #2a2e37);
+}
+.upscale-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.upscale-size { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.upscale-arrow { color: var(--accent); font-weight: 800; }
+.upscale-size small { flex-basis: 100%; font-size: 11.5px; font-weight: 400; color: var(--muted, #8b93a3); }
+/* 칩 줄 — 생성창 칩(.sl-controls)의 위 구분선·여백은 빼고, 목록은 아래로 연다(창 위쪽이 원본 줄이라) */
+.upscale-chips { border-top: 0; padding: 0; justify-content: flex-start; }
+.upscale-modal .sl-dropdown { top: calc(100% + 8px); bottom: auto; }
+.upscale-menu { width: 320px; max-width: none; }
+.upscale-k { color: var(--muted, #8b93a3); font-size: 11.5px; }
+.upscale-gen-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.upscale-hint { font-size: 12px; color: var(--muted, #8b93a3); min-width: 0; }
+.upscale-hint.warn { color: #f0b35a; }
+.upscale-gen { flex: none; }

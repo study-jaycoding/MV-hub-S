@@ -1,5 +1,18 @@
 # MV Hub MCP 어댑터
 
+## MV Agent 연결과 사용자 허용 (2026-11-20)
+
+앱의 `agent-link`가 기존 프로필·계정 자격을 검증하고, `local_setup.ensure_access`가 재발급 없이
+Claude Code 사용자 `permissions.allow`와 Codex 서버 `default_tools_approval_mode="approve"`를 맞춘다.
+새 등록도 허용까지 설정한다. Claude 데스크톱 채팅 등록은 Claude Code 허용을 변경하지 않는다.
+거부·승인 규칙 충돌, 모호한 형식, 재등록에서 보존할 수 없는 사용자 추가 키는 자동 변경을 중단한다.
+경로별 Windows 뮤텍스 안에서 최초 원본·직전 원본을 백업하고 교체 직전 원본을 재대조한다.
+
+허브의 `linked/off/retry` 표식은 명시적 해제를 유지한다. 재로그인 복구는 이전 연결의 공간·실행권만 계승한다.
+`access` 결과는 사용자 설정 반영 상태이며 호스트 전체의 실행 보증이 아니다. 충돌은 연결 화면에서 확인한다.
+일반 어댑터 `2026.11.20.1`은 두 허브가 응답하면 사용자가 대상을 고르도록 안내한다. 칸 연결·화면 권한은 그대로다.
+등록기·허브·프런트가 함께 바뀌므로 **앱 업데이트가 필요**하고, MCP 독립 업데이트 범위는 여전히 `server.py`뿐이다.
+
 ## MV Agent 대화 기록 읽기 (2026-11-12)
 
 어댑터 `2026.11.12.1`의 영속(계정) 연결은 `read_context(kind="agent_chats", search?, limit≤50, chat_cursor?)`로 MV Agent 대화 목록을,

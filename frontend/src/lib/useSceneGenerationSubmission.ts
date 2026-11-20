@@ -10,7 +10,7 @@ import { listScenes, variantIds, type Scene, type SceneModelCfg } from "./scenes
 import { resolvePortEdges, type SceneGenerationRun } from "./sceneEdges";
 import { buildSceneGenerationJobInput, type SceneGenerationJobInput } from "./sceneGenerationInputs";
 import { acquireSceneGeneration, executeSceneGenerationBatch } from "./sceneGenerationSubmission";
-import { buildSpotlightCreateBody } from "./spotlightSubmit";
+import { buildSpotlightCreateBody, referenceImageSizeError } from "./spotlightSubmit";
 import { isVideoVoiceModel, videoVoiceInputRef, videoVoiceReferenceError, type VideoCostContext } from "./spotlightPromptConfig";
 import { refSrc } from "./promptParts";
 import { resolveAutoAspectRatio } from "./aspectAuto";
@@ -59,6 +59,7 @@ export async function videoCostContext(model: string, refs: { type: string; file
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import { currentModelPolicy, modelBlockMessage } from "./modelPolicy";
 import { modelAllowed } from "./modelPolicyCore";
+import { SVG_REF_MESSAGE, isSvgWithReferences } from "./svgReference";
 import type { useCanvasGenerationLinks } from "./useCanvasGenerationLinks";
 import type { useGenerationCardActions } from "./useGenerationCardActions";
 
@@ -164,9 +165,18 @@ export function useSceneGenerationSubmission({
     const blockedCards = new Set(
       requestedJobs.filter((job) => !modelAllowed(policy, job.model)).map((job) => job.cardId),
     );
-    const jobs = blockedCards.size
+    const policyJobs = blockedCards.size
       ? requestedJobs.filter((job) => modelAllowed(policy, job.model))
       : requestedJobs;
+    // GPT 2.6 SVG 는 참조 이미지와 함께 못 쓴다(CLI 가 거절) — 그 카드는 pending 기록·업로드 전에 건너뛰고 이유를 알린다.
+    const svgConflictCards = new Set(
+      policyJobs
+        .filter((job) => isSvgWithReferences(job.model, (job.params ?? {}) as Record<string, string | number | boolean>, (job.refs ?? []).filter((ref) => ref.type === "image").length))
+        .map((job) => job.cardId),
+    );
+    const jobs = svgConflictCards.size ? policyJobs.filter((job) => !svgConflictCards.has(job.cardId)) : policyJobs;
+    if (svgConflictCards.size) flash(`${SVG_REF_MESSAGE}${jobs.length ? ` (${svgConflictCards.size}개 카드는 건너뛰었습니다)` : ""}`);
+    if (!jobs.length && svgConflictCards.size) return;
     if (!jobs.length && blockedCards.size) {
       flash(
         `선택한 카드의 모델을 모두 ${policy.groupName ? `'${policy.groupName}' 그룹` : "이 그룹"}에서 쓸 수 없습니다. ` +
@@ -245,11 +255,15 @@ export function useSceneGenerationSubmission({
             folderPath: assignmentFolderPath,
             costContext,
           });
-          if (error || !body) {
+          // 이미지가 너무 작으면(Kling 300px·Wan 240px 미만) 힉스필드가 사유 없이 실패한다 — 같은 거절 길로 이유를 알린다.
+          const sizeError = !error && body ? await referenceImageSizeError(j.model, body.references ?? []) : null;
+          assertOperationContextCurrent(operationScope.operation!);
+          const problem = error || sizeError;
+          if (problem || !body) {
             if (j.canvasLink && operationScope.isCurrent!()) discardCanvasGeneration(j.canvasLink);
             // 같은 카드의 배치 반복은 한 번만 알리고, 유효한 다른 카드는 계속 제출한다.
             const cardNumber = generationCards.findIndex((card) => card.id === j.cardId) + 1;
-            invalidCards.set(j.cardId, `생성 카드 ${cardNumber}: ${error || "생성 요청을 만들 수 없습니다."}`);
+            invalidCards.set(j.cardId, `생성 카드 ${cardNumber}: ${problem || "생성 요청을 만들 수 없습니다."}`);
             if (operationScope.isCurrent!() && uiContext.current === submittedUi) reportPromptError([...invalidCards.values()].join("\n"));
             return null;
           }

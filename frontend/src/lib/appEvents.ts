@@ -2,6 +2,8 @@ import { generationChangeMatchesScope, generationChangeReceiver, readGenerationC
 import { generationChangeScope, invalidateGenerationReadModels } from "../features/library/api";
 
 export const APP_EVENTS = {
+  mcpScreenAction: "ch:mcp-screen-action",
+  mcpScreenControl: "ch:mcp-screen-control",
   openGeneration: "ch:open-generation",
   accountUpdated: "ch:account-updated",
   creditsChanged: "ch:credits-changed",
@@ -23,6 +25,8 @@ export const APP_EVENTS = {
   libraryChanged: "ch:library-changed",
   // 수정 창(이미지·영상) 열기 — InfoPopup·MediaPreview → App 의 PartialEditHost. detail={genId, mode: "image"|"video"}
   partialEdit: "ch:partial-edit",
+  // 업스케일 창 열기 — MediaPreview·선택 단추 줄 → App 의 UpscaleHost. detail={genId, mode: "image"|"video", sceneId?, cardId?(캔버스 카드)}
+  upscale: "ch:upscale",
   // 코멘트 그림 겹쳐 보기 — 코멘트 창 → 떠 있는 크게 보기(그 생성물을 보고 있으면 preventDefault 로 받는다). detail=CommentDrawingView
   commentDrawingView: "ch:comment-drawing-view",
   // 받는 크게 보기가 없을 때 그 생성물의 크게 보기를 그림을 겹친 채 연다 — useAppNavigation. detail=PreviewTarget(drawing 포함)

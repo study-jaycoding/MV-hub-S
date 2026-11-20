@@ -133,6 +133,41 @@ def panel_headers(client):
     return {**HEADERS, "X-MVHub-Panel": body["secret"]}
 
 
+@pytest.mark.parametrize("path,method", [("claude/install", "post"), ("codex/install", "post"),
+    ("codex/install", "get"), ("codex/login", "post"), ("codex/login?chain_id=" + "a" * 32, "get")])
+def test_install_and_codex_login_keep_panel_account_and_browser_guard(hub, path, method):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    call = getattr(client, method)
+    url = "/api/agent-chat/" + path
+    assert call(url, headers=HEADERS).status_code == 401
+    assert call(url, headers={**headers, "Origin": "http://evil.example"}).status_code == 403
+    assert call(url, headers={**headers, "Host": "remote.example"}).status_code == 403
+    assert call(url, headers={**headers, "X-MVHub-Expect-Account": "acct:other@example.test"}).status_code == 409
+
+
+@pytest.mark.parametrize("path", ["claude/install", "codex/install", "codex/login"])
+@pytest.mark.parametrize("field", ["command", "url", "path"])
+def test_install_login_never_accept_execution_inputs(hub, path, field):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    response = client.post("/api/agent-chat/" + path, headers=headers, json={field: "unsafe"})
+    assert response.status_code == 422
+
+
+def test_install_shared_server_refusal_and_codex_chain_is_not_revived(hub, monkeypatch):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    response = client.post("/api/agent-chat/codex/install", headers=headers)
+    assert response.json()["state"] == "skipped" and response.json()["reason"] == "shared_server"
+    chain = "a" * 32
+    codex.start_chain(chain)
+    codex.disable()
+    monkeypatch.setattr(router.installer, "request", lambda *args: {"id": chain, "state": "running"})
+    assert client.post("/api/agent-chat/codex/install", headers=headers).status_code == 200
+    assert codex._read("codex_chain.json")["cancelled"] is True
+
+
 def start_turn(client, headers, **body):
     payload = {"idempotency_key": uuid4().hex, "engine": "claude", "model": "haiku", "effort": "low",
                "text": "고양이 한 장 계획해 줘", "context": {"tab": "my"}, **body}
@@ -142,6 +177,42 @@ def start_turn(client, headers, **body):
 def adapter_action(client, secret, method, args):
     return client.post("/api/mcp/v2/client/action", headers={"X-MVHub-MCP": "1", "X-MVHub-MCP-Secret": secret},
                        json={"method": method, "args": args})
+
+
+@pytest.mark.parametrize("problem,expected", [("missing", 503), ("busy", 409)])
+def test_install_pending_or_state_lock_failure_has_safe_response(hub, monkeypatch, problem, expected):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    if problem == "missing":
+        monkeypatch.setattr(router.installer, "request", lambda *args: None)
+    else:
+        def busy(*args, **kwargs): raise codex.Busy("internal lock")
+        monkeypatch.setattr(codex, "_lock", busy)
+    response = client.post("/api/agent-chat/codex/install", headers=headers)
+    assert response.status_code == expected
+    assert "잠시 뒤" in response.json()["detail"] and "internal" not in response.text
+
+
+@pytest.mark.parametrize("method", ["post", "get"])
+def test_codex_login_unreadable_process_is_human_message(hub, monkeypatch, method):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    def broken(*args): raise chat.claude.RecordUnreadable("process")
+    monkeypatch.setattr(router.codex_login, "open_login_window" if method == "post" else "status", broken)
+    response = getattr(client, method)("/api/agent-chat/codex/login?chain_id=" + "a" * 32, headers=headers)
+    assert response.status_code == 409
+    assert "로그인 창 상태를 확인하지 못했어요" in response.json()["detail"]
+    assert "process" not in response.text
+
+
+def test_codex_login_status_io_failure_is_retryable(hub, monkeypatch):
+    client, _, _ = hub
+    headers = panel_headers(client)
+    def broken(*args): raise OSError("internal path")
+    monkeypatch.setattr(router.codex_login, "status", broken)
+    response = client.get("/api/agent-chat/codex/login?chain_id=" + "a" * 32, headers=headers)
+    assert response.status_code == 503 and "잠시 뒤" in response.json()["detail"]
+    assert "internal" not in response.text
 
 
 def plan_args():

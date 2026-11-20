@@ -403,6 +403,13 @@ def _validate_audio_request(model: str, prompt: str, params: dict, references: l
             raise ValueError("지원하지 않는 음성 언어입니다")
 
 
+# 업스케일(모델 → 원본 종류) — backend/app/models.py 의 같은 이름 정의와 같아야 한다. 원본 1개를 종류대로
+# --image-references·--video-references 로 보내고(역할 무관 — MCP 는 @Image1·@Video1), prompt 는 보내지 않는다(CLI 1.2.2 가 거절).
+UPSCALE_MODELS = {
+    "bytedance_image_upscale": "image", "topaz_image": "image", "topaz_image_generative": "image",
+    "bytedance_video_upscale": "video", "topaz_video": "video", "topaz_hyperion_2_5": "video",
+}
+
 # 보이스 체인지·번역(2-B) — backend/app/models.py 의 같은 이름 정의와 같아야 한다.
 VIDEO_VOICE_MODELS = frozenset({"voice_change", "dubbing"})
 VIDEO_VOICE_PARAMS = {"voice_change": {"voice_id", "voice_type", "cost_context"},
@@ -1485,6 +1492,8 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
     params = job.get("params")
     if isinstance(params, dict):
         params = audio_stored_params(model, params)
+    if isinstance(params, dict) and model in UPSCALE_MODELS and "prompt" not in params:
+        params = {**params, "prompt": ""}  # 업스케일은 prompt 없이 제출한다 — 지문도 빈 prompt(_submit_one_attempt)
     if not isinstance(params, dict) or not isinstance(params.get("prompt"), str):
         return False
     candidate_prompt = re.sub(r"\s+", " ", params["prompt"].lstrip(_ZWSP)).strip()
@@ -1512,6 +1521,9 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
 
     expected_roles = sorted(str(role) for role in (fingerprint.get("reference_roles") or []))
     candidate_roles = _job_reference_roles(params.get("medias"))
+    if model in UPSCALE_MODELS:
+        # 응답은 원본을 video·video_references 어느 쪽으로도 적을 수 있다 — 업스케일은 종류로만 맞춘다(Codex 독립 리뷰 1차 중간)
+        candidate_roles = sorted(_upscale_role(role) for role in candidate_roles)
     # 공급자가 입력 메타를 통째로 누락한 검증실패 결과도 찾을 수 있게 빈 목록은 중립으로 둔다.
     if candidate_roles and candidate_roles != expected_roles:
         return False
@@ -1753,7 +1765,7 @@ _ROLE_TO_FLAG = {
 
 def _role_flag(role: str) -> str:
     key = (role or "").lower()
-    if key in {"video", "image_references", "input_video"}:
+    if key in {"video", "image_references", "video_references", "input_video"}:
         return "--" + key.replace("_", "-")
     for prefix, flag in _ROLE_TO_FLAG.items():
         if key.startswith(prefix):
@@ -1815,6 +1827,13 @@ def _media_role(ref: dict) -> str:
 
 
 def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
+    kind = UPSCALE_MODELS.get(model)
+    if kind:
+        # 원본 1개를 종류로 확인하고 역할을 CLI 인자 이름으로 바꾼다 — 화면은 image_references·video_references,
+        # MCP 는 @Image1·@Video1, 동기화본은 video 로 와도 같은 플래그로 나간다(Codex 설계 확인 P1-2)
+        if len(refs) != 1 or not isinstance(refs[0], dict) or refs[0].get("type") != kind or not refs[0].get("file_path"):
+            return [], f"업스케일에는 원본 {'영상' if kind == 'video' else '이미지'} 1개가 필요합니다"
+        return [{**refs[0], "role": f"{kind}_references"}], None
     if model in AUDIO_MODELS_V1:
         error = audio_reference_error(model, {}, refs)
         if error:
@@ -1857,6 +1876,179 @@ def _seedance_mode_for_refs(model: str, params: dict, refs: list, mode_enum: set
     if not has_media and mode == "omni_reference":
         return {**params, "mode": "t2v"}, "mode omni_reference → t2v(레퍼런스 없음)"
     return params, None
+
+
+# Kling 4.0·4.0 Flash·Gemini Omni Flash 1.2 — mode 가 text-to-video 면 참조 입력을 거부하고("Text-to-video does not accept reference inputs",
+# 2026-11-19 generate cost 실측) 화면은 참조 칸만 있어 시작 이미지 모드(image-to-video)는 못 쓴다. 레퍼런스 유무에 맞춰 제출 직전에 보정한다.
+# text-to-video·reference-to-video 가 모두 enum 에 있는 모델만 — edit·extend·video-edit 는 사용자가 고른 것이니 그대로 둔다.
+#  시작·끝 프레임(@Start·@End 역할)만 있으면 image-to-video(Kling·Gemini 모두 시작 이미지 모드), 프레임과 다른 참조가 함께면 reference-to-video
+#  (Kling 4.0·Flash 는 프레임+참조를 받는다 — 2026-11-19 견적. Gemini 는 못 섞어 아래 _reference_rule_error 가 막는다).
+def _reference_mode_for_refs(params: dict, refs: list, mode_enum: set) -> tuple[dict, str | None]:
+    """(보정된 params, 안내문|None). 바꿀 게 없으면 원본 그대로."""
+    if not {"text-to-video", "reference-to-video"} <= mode_enum:
+        return params, None
+    media = [ref for ref in refs if isinstance(ref, dict) and ref.get("file_path")]
+    frames = [ref for ref in media if _is_start_ref(ref) or _is_end_ref(ref)]
+    if not media:
+        target, why = "text-to-video", "레퍼런스 없음"
+    elif frames and len(frames) == len(media) and "image-to-video" in mode_enum:
+        target, why = "image-to-video", "시작·끝 프레임만 있음"
+    else:
+        target, why = "reference-to-video", "레퍼런스 있음"
+    mode = params.get("mode")
+    if mode in (None, "", "text-to-video", "image-to-video", "reference-to-video") and mode != target:
+        return {**params, "mode": target}, f"mode {mode or '없음'} → {target}({why})"
+    return params, None
+
+
+# 참조 입력 규칙 — CLI 가 제출 때 거절하는 조합을 제출 전에 막아 '제출 여부 불명확' 기록이 남지 않게 한다(2026-11-19 generate cost 실측).
+#  · Kling 4.0·Flash·Gemini Omni Flash 1.2: 오디오 참조 없음 · MiniMax H3·H3 Max: 오디오는 이미지·영상 참조와 함께일 때만
+#  · Gemini Omni Flash 1.2: reference-to-video·extend 는 10초까지(edit 은 15초까지)
+_NO_AUDIO_REFERENCE_MODELS = frozenset({"kling4_0", "kling_4_0_flash", "gemini_omni_flash_1_2"})
+_AUDIO_NEEDS_VISUAL_MODELS = frozenset({"minimax_h3", "minimax_h3_max"})
+#  · 시작·끝 프레임(@Start·@End): 끝은 시작과 함께 · Kling 4.0 Flash 는 끝 프레임 없음 · Gemini·Wan·MiniMax 는 프레임을 다른 참조와 못 섞음
+#    · Gemini 의 시작+끝(image-to-video)은 10초까지(시작만이면 15초까지)
+_REFERENCE_MAX_SECONDS = {"gemini_omni_flash_1_2": (10, frozenset({"reference-to-video", "extend"}))}
+_NO_FRAME_MIX_MODELS = frozenset({"gemini_omni_flash_1_2", "wan3_0", "wan3_0_prime", "minimax_h3", "minimax_h3_max"})
+_FRAME_MODELS = _NO_FRAME_MIX_MODELS | {"kling4_0", "kling_4_0_flash"}
+
+
+# 레퍼런스 개수 한도(2026-11-19 generate cost·create 실측 — 화면 spotlightPromptConfig.REF_COUNT_LIMITS 와 같은 값). 시작·끝 프레임은 이미지로 센다.
+_REF_COUNT_LIMITS = {
+    "kling4_0": {"image": 10, "video": 5}, "kling_4_0_flash": {"image": 10, "video": 5},
+    "gemini_omni_flash_1_2": {"image": 7, "video": 3},
+    "wan3_0": {"image": 10, "video": 5}, "wan3_0_prime": {"image": 10, "video": 5},
+    "minimax_h3": {"image": 9, "video": 3, "audio": 3}, "minimax_h3_max": {"image": 9, "video": 3, "audio": 3},
+    "seedance_2_0": {"image": 9, "video": 3}, "seedance_2_0_mini": {"image": 9, "video": 3},  # 오디오 3개 한도는 backend models.py 검증이 따로
+    "seedance_2_5": {"image": 30},
+    "nano_banana_2_lite": {"image": 14}, "nano_banana_pro": {"image": 14},
+    "seedream_5_5": {"image": 10}, "seedream_v5_pro": {"image": 10}, "seedream_5_0_flash": {"image": 10},
+}
+
+
+def _ref_kind(ref: dict) -> str:
+    role = _role_key(ref)
+    if ref.get("type") == "video" or role.startswith("@video"):
+        return "video"
+    if ref.get("type") == "audio" or role.startswith("@audio"):
+        return "audio"
+    return "image"
+
+
+def _reference_count_error(model: str, refs: list) -> str | None:
+    limits = _REF_COUNT_LIMITS.get(model)
+    if not limits:
+        return None
+    kinds = [_ref_kind(r) for r in refs if isinstance(r, dict)]
+    for kind, label in (("image", "이미지"), ("video", "영상"), ("audio", "오디오")):
+        if kind in limits and kinds.count(kind) > limits[kind]:
+            return f"이 모델은 {label} 레퍼런스를 {limits[kind]}개까지 넣을 수 있습니다"
+    return None
+
+
+def _reference_rule_error(model: str, params: dict, refs: list) -> str | None:
+    count_error = _reference_count_error(model, refs)
+    if count_error:
+        return count_error
+    media = [r for r in refs if isinstance(r, dict)]
+    audio = [r for r in media if r.get("type") == "audio" or _role_key(r).startswith("@audio")]
+    if audio and model in _NO_AUDIO_REFERENCE_MODELS:
+        return "이 모델은 오디오 레퍼런스를 받지 않습니다"
+    if audio and model in _AUDIO_NEEDS_VISUAL_MODELS and len(audio) == len(media):
+        return "오디오 레퍼런스는 이미지나 영상 레퍼런스와 함께 넣어야 합니다"
+    start = any(_is_start_ref(r) for r in media)
+    end = any(_is_end_ref(r) for r in media)
+    if model in _FRAME_MODELS and (start or end):
+        if end and not start:
+            return "끝 프레임은 시작 프레임과 함께 넣어야 합니다"
+        if end and model == "kling_4_0_flash":
+            return "Kling 4.0 Flash 는 끝 프레임을 받지 않습니다"
+        if model in _NO_FRAME_MIX_MODELS and any(not (_is_start_ref(r) or _is_end_ref(r)) for r in media):
+            return "시작·끝 프레임은 다른 레퍼런스와 함께 쓸 수 없습니다"
+    cap = _REFERENCE_MAX_SECONDS.get(model)
+    duration = params.get("duration")
+    mode = params.get("mode")
+    if cap and isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > cap[0]:
+        if mode in cap[1] or (mode == "image-to-video" and end):
+            return f"레퍼런스가 있는 영상은 {cap[0]}초까지 만들 수 있습니다"
+    return None
+
+
+# Kling 4.0·Flash 는 가로·세로가 300px 미만인 이미지를 사유 없이 실패시킨다(2026-11-19 유료 실측: 299×299 실패·300×300 성공,
+# 256×256 은 4.0·Flash 모두 실패). 비율은 Kling 공식 가이드의 2:5~5:2. 크기를 못 읽으면 막지 않는다(판별 불가).
+#  Wan 3.0·Prime 도 작은 이미지에서 실패한다(같은 날 유료 실측: 224×224 실패·240×240 성공, 128 도 실패). 화면(spotlightSubmit.MIN_REF_IMAGE_SIDE)이 같은 값으로 먼저 알린다.
+_KLING_IMAGE_MODELS = frozenset({"kling4_0", "kling_4_0_flash"})
+_KLING_IMAGE_MIN_SIDE = 300
+_MIN_REF_IMAGE_SIDE = {"kling4_0": 300, "kling_4_0_flash": 300, "wan3_0": 240, "wan3_0_prime": 240}
+
+# 화면이 빈 프롬프트에 채우는 자리표시 "(no text)" 가 글자 그대로 모델에 가면 안 된다(예: 프레임만 쓴 Kling i2v).
+# CLI `model get` 이 프롬프트를 선택으로 받는 조합에서만 인자를 뺀다 — Kling·Flash 는 image-to-video 에서만(그 밖은 필수),
+# MiniMax H3 는 늘 선택. Gemini·Wan·H3 Max·Seedance 는 필수라 그대로 둔다. 미디어가 없는 글 생성도 그대로 둔다.
+_NO_TEXT_PLACEHOLDER = "(no text)"
+
+
+def _placeholder_prompt_is_optional(model: str, params: dict, refs: list) -> bool:
+    if not refs:
+        return False
+    if model == "minimax_h3":
+        return True
+    return model in _KLING_IMAGE_MODELS and params.get("mode") == "image-to-video"
+
+
+def _image_size(path: str) -> tuple[int, int] | None:
+    """PNG·GIF·JPEG·WebP 머리에서 (가로, 세로) — 표준 라이브러리만. 못 읽으면 None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    try:
+        if head[:8] == b"\x89PNG\r\n\x1a\n" and len(head) >= 24:
+            return struct.unpack(">II", head[16:24])
+        if head[:6] in (b"GIF87a", b"GIF89a") and len(head) >= 10:
+            return struct.unpack("<HH", head[6:10])
+        if head[:2] == b"\xff\xd8":
+            pos = 2
+            while pos + 9 < len(head):
+                if head[pos] != 0xFF:
+                    pos += 1
+                    continue
+                marker = head[pos + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7 or marker == 0xFF:
+                    pos += 1 if marker == 0xFF else 2
+                    continue
+                size = struct.unpack(">H", head[pos + 2:pos + 4])[0]
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    height, width = struct.unpack(">HH", head[pos + 5:pos + 9])
+                    return width, height
+                pos += 2 + size
+            return None
+        if head[:4] == b"RIFF" and head[8:12] == b"WEBP" and len(head) >= 30:
+            kind = head[12:16]
+            if kind == b"VP8X":
+                return 1 + int.from_bytes(head[24:27], "little"), 1 + int.from_bytes(head[27:30], "little")
+            if kind == b"VP8L" and head[20] == 0x2F:
+                bits = int.from_bytes(head[21:25], "little")
+                return 1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)
+            if kind == b"VP8 " and head[23:26] == b"\x9d\x01\x2a":
+                return struct.unpack("<H", head[26:28])[0] & 0x3FFF, struct.unpack("<H", head[28:30])[0] & 0x3FFF
+    except (struct.error, IndexError):
+        return None
+    return None
+
+
+def _reference_image_error(model: str, path: str) -> str | None:
+    """모델별 이미지 레퍼런스 한도 — 최소 변(Kling 300·Wan 240), Kling 은 비율 2:5~5:2 도. 모델이 표에 없거나 크기를 못 읽으면 None."""
+    min_side = _MIN_REF_IMAGE_SIDE.get(model)
+    size = _image_size(path) if min_side else None
+    if not size or not size[0] or not size[1]:
+        return None
+    width, height = size
+    if min(width, height) < min_side:
+        return f"이 모델은 이미지 레퍼런스의 가로·세로가 {min_side}px 이상이어야 합니다(지금 {width}×{height})"
+    if model in _KLING_IMAGE_MODELS and not 0.4 <= width / height <= 2.5:
+        return f"Kling 이미지 레퍼런스의 가로세로 비율은 2:5~5:2 안이어야 합니다(지금 {width}×{height})"
+    return None
 
 
 def _upload_cache_path() -> str:
@@ -2248,6 +2440,11 @@ def _probe_role(value, fallback: str = "") -> str:
     return re.sub(r"[^a-z0-9]", "", raw)
 
 
+def _upscale_role(role: str) -> str:
+    """업스케일 원본 역할을 종류로 — videoreferences·video → video, imagereferences·image → image."""
+    return "video" if role.startswith("video") else "image" if role.startswith("image") else role
+
+
 def _submission_fingerprint(model: str, prompt: str, params: dict, allowed: set, refs: list) -> dict:
     """원문 프롬프트를 저장하지 않고 같은 HF 목록 항목을 대조할 안정 지문을 만든다."""
     normalized_prompt = re.sub(r"\s+", " ", prompt.lstrip(_ZWSP)).strip()
@@ -2256,6 +2453,8 @@ def _submission_fingerprint(model: str, prompt: str, params: dict, allowed: set,
         for ref in refs
         if isinstance(ref, dict)
     )
+    if model in UPSCALE_MODELS:
+        roles = sorted(_upscale_role(role) for role in roles)  # 대조(_matches_submission_fingerprint)와 같은 표기
     return {
         "version": 1,
         "model": model,
@@ -3296,10 +3495,14 @@ def _submit_one_attempt(
     # 통째 JSON 프롬프트(작업자가 지시서를 붙여넣는 경우)는 CLI 가 '객체'로 파싱해 거부한다 →
     # zero-width space 를 앞에 붙여 문자열로 받게 한다(힉스 웹과 동일 동작, 내용은 그대로).
     prompt = _shield_json_prompt(prompt)
+    if model in UPSCALE_MODELS:
+        # 업스케일은 CLI 가 prompt 를 거절한다 — 자리표시·동기화 '(제목 없음)'·재생성 덮어쓰기 무엇이 와도 늘 뺀다(Codex 설계 확인 P1-1).
+        #  제출 지문도 빈 prompt 로 둔다(복구 대조가 prompt 없는 응답과 맞게 — _matches_submission_fingerprint).
+        prompt = ""
     # ★create-first: --wait 없이 제출해 job_id 를 즉시 확보한다. 긴 대기(15~30분)를 시작하기 전에
     #  job_id 를 서버에 앵커해두어, 대기 중 프로그램이 꺼져도 재조정이 반드시 이어받아 완료시킨다.
     args = ["generate", "workflow" if model == "draw_to_video" or model in VIDEO_VOICE_MODELS else "create", model]
-    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and model not in VIDEO_VOICE_MODELS:
+    if model not in {"elevenlabs_v4", "elevenlabs_v4_turbo"} and model not in VIDEO_VOICE_MODELS and model not in UPSCALE_MODELS:
         args += ["--prompt", prompt]
     # ★batch_size 는 1 로 강제 — create-first 는 잡 1개(=카드 1개)를 앵커·대기하므로, N>1 이면 나머지
     #  잡이 앵커·검증 없이 나중에 synced 독립 카드로 새어 나온다(프론트 배치는 요청 N개 복제 방식이라 무영향).
@@ -3375,8 +3578,18 @@ def _submit_one_attempt(
         (params, None) if model == "seedance_2_5" and params.get("draft_job_id")
         else _seedance_mode_for_refs(model, params, refs, _param_enum(model, "mode"))
     )
+    if not mode_note and not _uses_single_start_image(model):
+        params, mode_note = _reference_mode_for_refs(params, refs, _param_enum(model, "mode"))
     if mode_note:
         print(f"  ⚠ {model}: {mode_note}")
+    rule_error = _reference_rule_error(model, params, refs)
+    if rule_error:
+        _fail(server, token, rid, rule_error)
+        print(f"  ✗ {model}: {rule_error}")
+        return None
+    if prompt == _NO_TEXT_PLACEHOLDER and "--prompt" in args and _placeholder_prompt_is_optional(model, params, refs):
+        at = args.index("--prompt")
+        del args[at:at + 2]
     if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
         wire_params = audio_cli_params(model, r.get("prompt") or "", params)
         args += ["--dialogue", json.dumps(wire_params.pop("dialogue"), ensure_ascii=False)]
@@ -3406,6 +3619,12 @@ def _submit_one_attempt(
         if not resolved:
             unresolved.append(val)
             continue
+        if model in _MIN_REF_IMAGE_SIDE and _is_image_ref(ref) and os.path.isfile(resolved):
+            size_error = _reference_image_error(model, resolved)
+            if size_error:
+                _fail(server, token, rid, size_error)
+                print(f"  ✗ {model}: {size_error}")
+                return None
         if seedance_media:
             # Seedance 옴니 레퍼런스는 --image 로 넘기면 start_image 로 오해된다. upload create 로
             # id 를 만들어(업로드 캐시 재사용) 역할별 --*-references 플래그로 넘긴다.
@@ -3436,7 +3655,8 @@ def _submit_one_attempt(
             if arg != resolved:
                 submitted["transcoded"] = "h264"
         args += [flag, arg]
-        submitted["role"] = flag.removeprefix("--").replace("-", "_")
+        # 서버 전달 확인은 응답의 video_references 를 'video' 로 읽는다(repo/gen_requests._reference_delivery_check) — 같은 표기로 남긴다
+        submitted["role"] = "video" if flag == "--video-references" else flag.removeprefix("--").replace("-", "_")
         if _UUID_RE.fullmatch(resolved):
             submitted["upload_id"] = resolved
         direct_order.append(position)

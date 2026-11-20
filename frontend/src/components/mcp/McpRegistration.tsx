@@ -1,3 +1,5 @@
+import { SCREEN_CONSENT } from "../../lib/useMcpScreenActions";
+import { mcpAccessMessage } from "../../lib/agentChatApi";
 import { useEffect, useRef, useState } from "react";
 import type { WorkspaceContext } from "../../types";
 import { getAuthToken, HttpError, jsonBody, jsonFetch } from "../../lib/http";
@@ -18,7 +20,7 @@ interface Client {
   last_seen_at: string | null; revoked_at: string | null;
 }
 interface Registration {
-  client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; config?: unknown;
+  client: string; status: "configured" | "manual" | "skipped" | "error"; message: string; access?: string; config?: unknown;
 }
 const CLIENT_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude Code", claude_desktop: "Claude 데스크톱 채팅", other: "다른 MCP 프로그램" };
 const STATUS_LABELS: Record<Registration["status"], string> = { configured: "등록 완료", manual: "수동 등록 필요", skipped: "건너뜀", error: "등록 실패" };
@@ -108,6 +110,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
     <h3 className="mcp-reg-title">{t("LLM 프로그램 연결")}</h3>
     <p className="mcp-reg-lead">{t("한 번 연결하면 Codex·Claude Code·Claude 데스크톱 채팅에서 MV Hub의 자료를 조회하고 생성할 수 있습니다.")}</p>
     <div className="mcp-reg-consent">
+      <p>{t(SCREEN_CONSENT)}</p>
       <p>{t("현재 계정이 접근 가능한 모든 공간의 자료와 MV Agent 대화 기록 조회, 사용자 요청에 따른 크레딧 사용을 허용합니다. 이후 생성마다 앱 승인을 누르지 않습니다.")}</p>
       <button className="mcp-primary" disabled={disabled} onClick={() => void request("configure", ["codex", "claude", "claude_desktop"])}>{t("Codex·Claude 연결 허용")}</button>
     </div>
@@ -131,6 +134,7 @@ export function McpRegistration({ authReady, authKey, workspace }: { authReady: 
       return <div className="mcp-result" data-status={result.status} key={`${result.client}:${index}`}>
         <strong>{t(CLIENT_LABELS[result.client] ?? result.client)} · {t(STATUS_LABELS[result.status] ?? "등록 실패")}</strong>
         <p>{t(result.message)}</p>
+        {result.access && <p>{t(mcpAccessMessage(result))}</p>}
         {config && <><button onClick={() => void copy(config)}>{t("MCP 설정 복사")}</button><pre>{config}</pre></>}
       </div>;
     })}

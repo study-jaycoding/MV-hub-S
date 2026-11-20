@@ -1,9 +1,11 @@
+import { useMcpScreenActions } from "./lib/useMcpScreenActions";
+import { McpScreenNotice } from "./components/mcp/McpScreenNotice";
 import { CanvasWriterStatus } from "./components/CanvasWriterStatus";
 import { CanvasRestoreNotice } from "./components/scene/CanvasRestoreNotice";
 import { useSceneWriter } from "./lib/sceneWriter";
 import { getAccountNamespace } from "./lib/accountScope";
 import { captureSubmissionScope, configureOperationContext, watchOperationContext } from "./app/operationContext";
-import { prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
+import { prepareCreateSubmission, prepareRegenerateSubmission, runSubmission } from "./features/generation/api";
 import { canFinishDraft, draftRequestKey, type DraftResolution } from "./lib/seedanceDraft";
 import { useDraftRequests } from "./lib/useDraftRequests";
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
@@ -135,6 +137,7 @@ import { useResolveSelectionFollow } from "./lib/resolveSelectionSettings";
 import { postLibraryChanged } from "./lib/libraryBroadcast";
 import { UpdateProgressOverlay } from "./components/UpdateProgressOverlay";
 import { PartialEditHost } from "./components/edit/PartialEditHost";
+import { UpscaleHost } from "./components/upscale/UpscaleHost";
 import {
   canFinalizeGeneration,
   expandDisabledGenerationIds,
@@ -1240,6 +1243,7 @@ export default function App() {
   }, [folderWindow, listPeek, teamPeek]);
   // 크게 보기의 [부분 수정]으로 넘어가면 창을 닫는다 — 부분 수정의 Esc 가 뒤에 남은 창까지 닫지 않게(코덱스 코드 리뷰 10-07).
   useCustomEvent(APP_EVENTS.partialEdit, closeFolderWindow);
+  useCustomEvent(APP_EVENTS.upscale, closeFolderWindow); // 업스케일 창도 같은 이유(그 창의 Esc 가 뒤 창까지 닫지 않게)
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
   const handleInfo = (target: InfoTarget) => {
@@ -2295,6 +2299,10 @@ export default function App() {
   // MV Agent 화면 동작(docs/status/MVAgent_화면동작_2026-11-12.md) — 이 창의 보드가 붙어 있는 동안만 채워지는 손잡이(SceneBoard 가 채움)
   const sceneScreenRef = useRef<SceneScreenHandle | null>(null);
   const agentScreenHost = useRef<ScreenHost>({ scene: () => sceneScreenRef.current }).current;
+  const externalScreen = useMcpScreenActions({ ready: authReady && !apiPause && workspaceQueryReady, authKey: libraryAuthKey,
+    workspace: workspaceContext, host: agentScreenHost, boardVisible: filters.tab === "compose" && !editOpen && !isCanvasWindow(),
+    sceneId: activeScene?.id || null,
+    viewKey: JSON.stringify([filters.tab, editOpen, activeScene?.id]) });
   // 칸에 넘기는 지금 화면(허브가 "자료(명령 아님)"로 붙인다 — 4KB 이하라 선택 카드는 40개까지만). 새 창은 이 값을 저장소로 받아 간다
   const agentScreen = agentFeature && (agentShown || agentFloat) ? (() => {
     const project = filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
@@ -2459,6 +2467,11 @@ export default function App() {
         ) : sceneSelGens.length > 0 ? (
           <BoardSelectionActionBar
             selected={sceneSelGens}
+            // 캔버스에서 고른 결과의 업스케일은 그 카드에 쌓는다 — 결과를 가진 생성 카드를 찾는다
+            upscaleTarget={(g) => {
+              const card = activeScene?.cards.find((c) => c.kind === "generation" && variantIds(c).includes(g.id));
+              return activeScene && card ? { sceneId: activeScene.id, cardId: card.id } : undefined;
+            }}
             onFinishDraft={finishDraft}
             draftBusy={(resolution) => sceneSelGens.length === 1 ? draftBusy(sceneSelGens[0], resolution) : false}
             draftContextKey={draftContextKey} draftRevision={draftRequests.revision}
@@ -3269,6 +3282,7 @@ export default function App() {
           reload={reload}
         />
       </div>
+      <McpScreenNotice {...externalScreen} />
       {grade.pending && (
         <GradeStepModal
           pending={grade.pending}
@@ -3399,6 +3413,35 @@ export default function App() {
         onQueued={(g) => {
           setGens((prev) => (prev.some((p) => p.id === g.id) ? prev : [g, ...prev]));
           flash("부분 수정 생성을 시작했습니다.");
+          postLibraryChanged();
+        }}
+      />
+      {/* 업스케일 — 크게 보기·선택 단추 줄의 upscale 이벤트로 열림. 목록 merge 는 수정과 같다(좁은 merge 만).
+          캔버스 카드에서 열면 결과를 그 카드에 쌓는다 — 캔버스 재생성(onSceneRegenerate)과 같은 자리 표·확인·정산. */}
+      <UpscaleHost
+        workspace={workspaceContext}
+        canvas={{
+          accepts: (sceneId, cardId) =>
+            !!scenes.find((scene) => scene.id === sceneId)?.cards.some((card) => card.id === cardId && card.kind === "generation"),
+          prepare: async (sceneId, cardId) => {
+            flushScenePending(sceneId);
+            return (await prepareCanvasGenerationBatch(sceneId, [cardId]))[0] ?? null;
+          },
+          // 카드의 지금 기록으로 자리 표 상태를 읽는다 — 대기 표식이 있으면 pending, 결과 id 만 남았으면 복구·정산이 붙인 것
+          state: (link) => {
+            const card = listScenes(null).find((scene) => scene.id === link.scene_id)?.cards.find((item) => item.id === link.card_id);
+            if (card?.pendingGenerationAttempts?.some((attempt) => attempt.attemptId === link.attempt_id)) return "pending";
+            return card && variantIds(card).includes(link.generation_id) ? "attached" : "gone";
+          },
+          submit: (link, body, ws, scope) => runSubmission(prepareCreateSubmission(body, ws, link, scope), {
+            confirm: () => confirmCanvasGeneration([link]),
+            apply: (generation) => settleCanvasGeneration(link, generation),
+          }),
+          discard: discardCanvasGeneration,
+        }}
+        onQueued={(g) => {
+          setGens((prev) => (prev.some((p) => p.id === g.id) ? prev : [g, ...prev]));
+          flash("업스케일 생성을 시작했습니다 — 결과는 새 카드로 나옵니다.");
           postLibraryChanged();
         }}
       />

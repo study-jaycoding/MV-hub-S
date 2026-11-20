@@ -29,3 +29,5 @@ export const AGENT_CHAT_FEATURE = "agent_chat_v1";
 export const AGENT_CHAT_CONNECT_FEATURE = "agent_chat_connect_v1";
 /** 이 탭의 계정 범위(`acct:<email>` | `local`) — 허브가 그사이 다른 계정으로 바뀌었으면 실행 전에 거절한다(backend deps.expected_account_differs). */
 export const EXPECT_ACCOUNT_HEADER = "X-MVHub-Expect-Account";
+
+export const EXTERNAL_SCREEN_FEATURE = "external_screen";
