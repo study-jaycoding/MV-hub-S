@@ -10,7 +10,7 @@ updated: 2026-11-21
 
 # MV Hub 현재 작업 현황
 
-- 11-21 CLI 취소: Windows CLI를 Job으로 묶어 취소·시간 초과 때 후손까지 종료하며, 편입 실패는 종료 확인 뒤에만 기존 방식으로 한 번 재실행한다(독립 리뷰·dev 반영 전).
+- 11-21 CLI 취소: Windows CLI를 Job으로 묶어 취소·시간 초과 때 후손까지 종료하며, 편입 실패는 종료 확인 뒤에만 기존 방식으로 한 번 재실행한다(독립 리뷰 Claude d93e2eab PASS·시험 기록 28·dev c5282489 반영).
 - 11-21 MV Agent import 순환: 실행기 설치 파일 계약과 허브 설치 service를 분리하고 Codex 표식 읽기를 process로 모았다(파일·잠금·버전 판독 유지, 독립 리뷰 Claude d9ac2111 PASS·시험 기록 15·dev 408d1e95 반영).
 
 - 11-21 생성 복구: 새 제출에서 "(no text)" 인자를 생략하면 빈 프롬프트 지문을 저장하며, 원격 prompt 누락은 빈 지문의 업스케일·MiniMax H3·Kling 4.0/Flash image-to-video만 허용한다(기존 지문·음성 대조 유지, 독립 리뷰 Claude d70ce793 PASS·시험 기록 7·dev 3010d30b 반영).
