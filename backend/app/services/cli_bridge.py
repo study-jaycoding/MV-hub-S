@@ -42,6 +42,7 @@ from typing import Any, Optional
 
 from ..config import DATA_DIR
 from ..workspace_context import normalize_workspace_context  # leaf 모듈(순환 없음 확인)
+from . import win_job
 from .atomic_io import atomic_write_text
 from .media_types import media_type_from_url
 from .operational_logging import log_event
@@ -133,8 +134,24 @@ async def _finish_slow_tree_kill(killer: asyncio.subprocess.Process, proc: async
     await _end_cli_parent(proc)
 
 
-async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
+def _terminate_cli_job(job: win_job.ProcessJob) -> None:
+    try:
+        job.terminate()
+    except OSError:
+        log_event(logging.getLogger(__name__), "cli_job_terminate_failed", level=logging.WARNING)
+
+
+async def _terminate_cli_process(proc: asyncio.subprocess.Process, job: win_job.ProcessJob | None = None) -> None:
     """취소·타임아웃된 CLI의 부모와 자식 프로세스를 끝내고 회수한다. 코어가 꽉 차 taskkill 이 늦으면 끝까지 맡기고 먼저 돌아온다."""
+    if job is not None:
+        try:
+            _terminate_cli_job(job)
+            await _end_cli_parent(proc)
+        except asyncio.CancelledError:
+            pass  # 정리 중 재취소도 원래 취소·타임아웃 결과를 덮지 않는다.
+        finally:
+            job.close()
+        return
     if proc.returncode is None and os.name == "nt" and proc.pid:
         killer = None
         tree_rc = None
@@ -241,24 +258,49 @@ def _require_model_id(value: Any) -> None:
 
 async def _run(*args: str, timeout: float = 60.0) -> str:
     """CLI 를 실행하고 stdout(텍스트)을 반환. 절대경로로 실행."""
-    proc = await asyncio.create_subprocess_exec(
-        *cli_argv(),
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    argv = [*cli_argv(), *args]
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError as e:
-        await _terminate_cli_process(proc)
-        raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
-    except asyncio.CancelledError:
-        await _terminate_cli_process(proc)
-        raise
-    if proc.returncode != 0:
-        msg = (err or b"").decode("utf-8", "replace").strip()
-        raise CLIError(f"higgsfield {' '.join(args)} 실패(rc={proc.returncode}): {msg}")
-    return (out or b"").decode("utf-8", "replace")
+        job = win_job.new_process_job()
+    except OSError:
+        job = None
+    if job is None:
+        log_event(logging.getLogger(__name__), "cli_job_unavailable", level=logging.WARNING)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            **({"creationflags": win_job.CREATE_SUSPENDED} if job is not None else {}),
+        )
+        if job is not None:
+            try:
+                job.adopt_suspended(proc.pid)
+            except BaseException as error:
+                _terminate_cli_job(job)
+                await _end_cli_parent(proc)
+                if not isinstance(error, OSError):
+                    raise
+                if proc.returncode is None:
+                    raise CLIError("CLI Job 편입 실패: 멈춘 프로세스의 종료를 확인하지 못했습니다") from error
+                job.close()
+                job = None
+                log_event(logging.getLogger(__name__), "cli_job_unavailable", level=logging.WARNING)
+                proc = await asyncio.create_subprocess_exec(
+                    *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError as e:
+            await _terminate_cli_process(proc, job)
+            raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
+        except asyncio.CancelledError:
+            await _terminate_cli_process(proc, job)
+            raise
+        if proc.returncode != 0:
+            msg = (err or b"").decode("utf-8", "replace").strip()
+            raise CLIError(f"higgsfield {' '.join(args)} 실패(rc={proc.returncode}): {msg}")
+        return (out or b"").decode("utf-8", "replace")
+    finally:
+        if job is not None:
+            job.close()
 
 
 # CLI 가 "그 잡은 없다"고 **말한** 형태만 삭제로 본다. 실측(CLI 1.1.24, 2026-09-12):

@@ -437,11 +437,13 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
             cli_bridge.asyncio,
             "create_subprocess_exec",
             new=AsyncMock(return_value=process),
-        ), patch.object(cli_bridge, "_terminate_cli_process", new=terminate):
+        ), patch.object(cli_bridge, "_terminate_cli_process", new=terminate), patch.object(
+            cli_bridge.win_job, "new_process_job", return_value=None
+        ):
             with self.assertRaisesRegex(cli_bridge.CLIError, "CLI 타임아웃"):
                 await cli_bridge._run("model", "list", timeout=0.01)
 
-        terminate.assert_awaited_once_with(process)
+        terminate.assert_awaited_once_with(process, None)
 
     @skipUnless(os.name == "nt", "Windows taskkill process-tree contract")
     async def test_cancelled_cli_call_kills_the_child_process_tree(self):
@@ -779,3 +781,129 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         for stopped in ("periodic_sync.stop", "_stop_history_imports)", "_cancel_background_task(thumbnail_repair_task)", "asset_watcher.stop"):
             self.assertLess(source.index(stopped), collect, stopped)
         self.assertLess(collect, source.index('"shutdown_complete"'))
+
+
+class CliJobLifecycleTests(IsolatedAsyncioTestCase):
+    def setUp(self):
+        from app.services import cli_bridge
+        self.bridge = cli_bridge
+        self.job = Mock()
+        self.proc = Mock(pid=123, returncode=None)
+
+        async def finish():
+            self.proc.returncode = 0
+            return "결과".encode(), b""
+
+        async def reap():
+            self.proc.returncode = -1
+            return -1
+
+        self.proc.communicate = AsyncMock(side_effect=finish)
+        self.proc.wait = AsyncMock(side_effect=reap)
+        self.spawn = AsyncMock(return_value=self.proc)
+        for target, name, replacement in (
+            (cli_bridge, "cli_argv", Mock(return_value=["fake-cli"])),
+            (cli_bridge.asyncio, "create_subprocess_exec", self.spawn),
+            (cli_bridge.win_job, "new_process_job", Mock(return_value=self.job)),
+        ):
+            patcher = patch.object(target, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def test_job_normal_output_and_spawn_failure_close_handle(self):
+        self.assertEqual(await self.bridge._run("model", "list"), "결과")
+        self.assertEqual(self.spawn.call_args.kwargs["creationflags"], self.bridge.win_job.CREATE_SUSPENDED)
+        self.job.adopt_suspended.assert_called_once_with(self.proc.pid)
+        self.job.terminate.assert_not_called()
+        self.job.close.assert_called_once()
+        self.job.reset_mock()
+        self.spawn.side_effect = OSError("spawn failed")
+        with self.assertRaisesRegex(OSError, "spawn failed"):
+            await self.bridge._run("model", "list")
+        self.job.close.assert_called_once()
+        self.job.adopt_suspended.assert_not_called()
+
+    async def test_job_creation_error_or_none_preserves_jobless_output(self):
+        for failure in (None, OSError("job unavailable")):
+            with self.subTest(failure=failure), patch.object(
+                self.bridge.win_job, "new_process_job", return_value=None, side_effect=failure
+            ):
+                self.assertEqual(await self.bridge._run("model", "list"), "결과")
+                self.assertNotIn("creationflags", self.spawn.call_args.kwargs)
+        self.job.adopt_suspended.assert_not_called()
+
+    async def test_adoption_failure_retries_only_after_reaping_even_if_terminate_fails(self):
+        self.job.adopt_suspended.side_effect = OSError("adopt failed")
+        self.job.terminate.side_effect = OSError("terminate failed")
+        calls = []
+        self.proc.kill.side_effect = lambda: calls.append("kill")
+
+        async def reap():
+            calls.append("reap")
+            self.proc.returncode = -1
+
+        async def spawn(*args, **kwargs):
+            calls.append("spawn")
+            return self.proc
+
+        self.proc.wait.side_effect = reap
+        self.spawn.side_effect = spawn
+        self.assertEqual(await self.bridge._run("model", "list"), "결과")
+        self.assertEqual(calls, ["spawn", "kill", "reap", "spawn"])
+        self.assertEqual(self.spawn.await_count, 2)
+        self.assertEqual(self.spawn.call_args_list[0].args, self.spawn.call_args_list[1].args)
+        self.assertNotIn("creationflags", self.spawn.call_args_list[1].kwargs)
+        self.job.close.assert_called_once()
+
+    async def test_unconfirmed_or_cancelled_reap_never_retries(self):
+        for failure in (asyncio.TimeoutError(), OSError("wait failed"), asyncio.CancelledError()):
+            with self.subTest(failure=type(failure).__name__):
+                self.proc.returncode = None
+                self.spawn.reset_mock()
+                self.job.reset_mock()
+                self.job.adopt_suspended.side_effect = OSError("adopt failed")
+                self.proc.wait.side_effect = failure
+                expected = asyncio.CancelledError if isinstance(failure, asyncio.CancelledError) else self.bridge.CLIError
+                with self.assertRaises(expected):
+                    await self.bridge._run("model", "list")
+                self.spawn.assert_awaited_once()
+                self.job.close.assert_called_once()
+
+    async def test_cancelled_adoption_does_not_restart(self):
+        self.job.adopt_suspended.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.bridge._run("model", "list")
+        self.spawn.assert_awaited_once()
+        self.proc.wait.assert_awaited_once()
+        self.job.close.assert_called_once()
+
+    async def test_terminate_error_and_recancellation_preserve_original_result(self):
+        for timeout in (False, True):
+            for recancel in (False, True):
+                with self.subTest(timeout=timeout, recancel=recancel):
+                    self.proc.returncode = None
+                    self.spawn.reset_mock()
+                    self.job.reset_mock()
+                    self.proc.wait.reset_mock()
+                    self.job.terminate.side_effect = OSError("terminate failed")
+                    self.proc.communicate.side_effect = asyncio.TimeoutError() if timeout else asyncio.CancelledError()
+                    self.proc.wait.side_effect = asyncio.CancelledError() if recancel else None
+                    expected = self.bridge.CLIError if timeout else asyncio.CancelledError
+                    with self.assertRaises(expected) as raised:
+                        await self.bridge._run("model", "list")
+                    if timeout:
+                        self.assertIn("CLI 타임아웃", str(raised.exception))
+                    self.proc.wait.assert_awaited_once()
+                    self.job.close.assert_called()
+                    self.spawn.assert_awaited_once()
+                    self.assertFalse(self.bridge._model_refresh_state().slow_kills)
+
+    async def test_jobless_cancellation_uses_existing_tree_termination(self):
+        with patch.object(self.bridge.win_job, "new_process_job", side_effect=OSError()), patch.object(
+            self.bridge, "_terminate_cli_process", new_callable=AsyncMock
+        ) as terminate:
+            self.proc.communicate.side_effect = asyncio.CancelledError()
+            with self.assertRaises(asyncio.CancelledError):
+                await self.bridge._run("model", "list")
+            terminate.assert_awaited_once_with(self.proc, None)
+            self.assertNotIn("creationflags", self.spawn.call_args.kwargs)
