@@ -157,12 +157,51 @@ class CliWindowsShimTests(IsolatedAsyncioTestCase):
         self.assertTrue(bridge.cli_available())
 
     @skipUnless(_SYSTEM_NODE, "이 PC 에 node.exe 가 없다")
+    async def test_failed_adoption_or_resume_reaps_suspended_node_before_retry(self):
+        bridge = self.bridge
+        bridge._CLI_PATH = str(_make_npm_dir(self.root / "npm"))
+        real_spawn = asyncio.create_subprocess_exec
+        for stage in ("adopt", "resume"):
+            with self.subTest(stage=stage):
+                job = bridge.win_job.new_process_job()
+                self.assertIsNotNone(job)
+                processes = []
+
+                async def spawn(*args, **kwargs):
+                    if processes:
+                        self.assertIsNotNone(processes[0].returncode, "재실행 전에 멈춘 node가 끝나야 한다")
+                        self.assertNotIn("creationflags", kwargs)
+                    proc = await real_spawn(*args, **kwargs)
+                    processes.append(proc)
+                    return proc
+
+                failure = (patch.object(job, "adopt_suspended", side_effect=OSError("assign failed"))
+                           if stage == "adopt" else patch.object(job._ntdll, "NtResumeProcess", return_value=-1))
+                try:
+                    with failure, patch.object(job, "terminate", side_effect=OSError("terminate failed")), patch.object(
+                        bridge.win_job, "new_process_job", return_value=job
+                    ), patch.object(bridge.asyncio, "create_subprocess_exec", side_effect=spawn):
+                        self.assertEqual(json.loads(await bridge._run("model", "list")), ["model", "list"])
+                    self.assertEqual(len(processes), 2)
+                    self.assertTrue(all(proc.returncode is not None for proc in processes))
+                finally:
+                    job.close()
+                    for proc in processes:
+                        if proc.returncode is None:
+                            proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+
+    @skipUnless(_SYSTEM_NODE, "이 PC 에 node.exe 가 없다")
     async def test_cancelled_node_cli_kills_the_child_process_tree(self):
         bridge = self.bridge
         bridge._CLI_PATH = str(_make_npm_dir(self.root / "npm"))
         work = Path(self._tmp.name)
         marker, pids_path = work / "grandchild-survived.txt", work / "pids.json"
         pids: dict[str, int] = {}
+        job = bridge.win_job.new_process_job()
+        self.assertIsNotNone(job, "실제 Windows Job 경로가 필요하다")
+        job_patch = patch.object(bridge.win_job, "new_process_job", return_value=job)
+        job_patch.start()
         task = asyncio.create_task(bridge._run("spawn-tree", str(marker), str(pids_path), timeout=30))
         try:
             for _ in range(250):
@@ -171,12 +210,15 @@ class CliWindowsShimTests(IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
             self.assertTrue(pids, "가짜 node CLI 가 시작되지 않음")
+            self.assertGreaterEqual(job.active(), 2, "node 부모와 자식이 같은 Job 안에 있어야 한다")
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
             await asyncio.sleep(2.3)
             self.assertFalse(marker.exists(), "취소된 CLI 의 node 자식이 살아남음")
         finally:
+            job_patch.stop()
+            job.close()
             if not task.done():
                 task.cancel()
             for pid in pids.values():
