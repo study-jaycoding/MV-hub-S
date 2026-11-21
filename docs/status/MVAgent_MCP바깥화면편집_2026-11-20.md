@@ -1,11 +1,11 @@
 ---
-status: draft
-updated: 2026-11-20
+status: active
+updated: 2026-11-21
 ---
 
 # 바깥 앱(Claude Code·Codex)에서 MV Hub 화면 편집 — MCP screen_action 을 일반 연결에도 (2026-11-20)
 
-owner: Codex(구현) · Claude(설계·총괄) · reviewer: Codex(설계 확정) · Claude 별도 세션(독립 리뷰) · status: 설계 중 · updated: 2026-11-20
+owner: Codex(구현) · Claude(설계·총괄) · reviewer: Codex(설계 확정) · Claude 별도 세션(독립 리뷰) · status: 완료(dev 513e49df 반영, 낮음은 [낮음 정리](MVAgent_MCP바깥화면편집_낮음정리_2026-11-20.md)) · updated: 2026-11-21
 선행 기록: [MV Agent·MCP 한 번에 연결](MVAgent_MCP한번에연결_2026-11-20.md)(dev 37181cbb — 바깥 연결·허용) · [MV Agent 화면 동작](MVAgent_화면동작_2026-11-12.md)(칸 전용 screen_action 의 원래 설계)
 
 ## 1. 요청

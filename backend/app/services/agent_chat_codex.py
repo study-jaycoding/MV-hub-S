@@ -13,8 +13,14 @@ from pathlib import Path
 
 from .. import config
 from .agent_chat_parse import CodexParser
+from .agent_chat_process import (
+    CODEX_POLICY,
+    codex_state_path as _path,
+    read_codex_state as _read,
+    codex_marker as marker,
+    codex_target_matches as target_matches,
+)
 
-CODEX_POLICY = "2026-11-14"
 PROBE_TIMEOUT = 120.0
 REAP_RETRY_SECONDS = 5.0
 PLAN_TIMEOUT = 15.0
@@ -30,29 +36,6 @@ class CodexError(RuntimeError):
 
 class Busy(CodexError):
     pass
-
-
-def _path(name: str) -> Path:
-    return config.AGENT_CHAT_DIR / name
-
-
-def _read(name: str) -> dict | None:
-    try:
-        value = json.loads(_path(name).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def marker() -> dict | None:
-    value = _read("codex_enabled.json")
-    if not value or any(not isinstance(value.get(key), str) or not value[key] for key in ("version", "policy", "at")):
-        return None
-    try:
-        datetime.fromisoformat(value["at"])
-    except ValueError:
-        return None
-    return value
 
 
 def _write(name: str, value: dict) -> None:
@@ -128,15 +111,6 @@ def state(prefix: list[str] | None) -> dict:
         else:
             result["reason"] = work_problem() or process.auth_problem(prefix)
     return result
-
-
-def target_matches(saved: dict, prefix: list[str]) -> bool:
-    from . import agent_chat_process as process
-
-    target = process.codex_target(prefix)
-    if "target" not in saved:
-        return target["kind"] == "npm" and saved.get("version") in process.CODEX_VERIFIED and saved.get("policy") == CODEX_POLICY
-    return saved["target"] == target
 
 
 def start_chain(chain_id: str) -> None:

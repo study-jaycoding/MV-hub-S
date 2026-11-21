@@ -1,11 +1,11 @@
 ---
-status: draft
-updated: 2026-11-20
+status: active
+updated: 2026-11-21
 ---
 
 # 바깥 화면 편집 낮음 정리 — 씬 불일치 코드·등록 중 이탈·토큰 바뀜 해제·고른 창 끔·상류 조회 잠금 밖 (2026-11-20)
 
-owner: Codex(구현) · Claude(설계·총괄) · reviewer: Codex(설계 확정) · Claude 별도 세션(독립 리뷰) · status: 설계 중 · updated: 2026-11-20
+owner: Codex(구현) · Claude(설계·총괄) · reviewer: Codex(설계 확정) · Claude 별도 세션(독립 리뷰) · status: 완료(dev b163eba8 반영 — 양측 합의 3차·독립 리뷰 PASS·시험 기록 23·실측 9/9) · updated: 2026-11-21
 선행 기록: [바깥 화면 편집](MVAgent_MCP바깥화면편집_2026-11-20.md)(dev 513e49df·기록 9bbda63c — 리뷰 PASS·실측 19/19, 낮음 L2·L3·N1~N4 남김)
 
 ## 1. 요청

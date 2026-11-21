@@ -1492,8 +1492,16 @@ def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
     params = job.get("params")
     if isinstance(params, dict):
         params = audio_stored_params(model, params)
-    if isinstance(params, dict) and model in UPSCALE_MODELS and "prompt" not in params:
-        params = {**params, "prompt": ""}  # 업스케일은 prompt 없이 제출한다 — 지문도 빈 prompt(_submit_one_attempt)
+    if (
+        isinstance(params, dict) and "prompt" not in params
+        and fingerprint.get("prompt_sha256") == hashlib.sha256(b"").hexdigest()
+        and (
+            model in UPSCALE_MODELS or model == "minimax_h3"
+            or (model in _KLING_IMAGE_MODELS
+                and (fingerprint.get("params") or {}).get("mode") == "image-to-video")
+        )
+    ):
+        params = {**params, "prompt": ""}  # prompt 생략 조합만 허용해 음성 대사의 의도적 제거를 보존한다.
     if not isinstance(params, dict) or not isinstance(params.get("prompt"), str):
         return False
     candidate_prompt = re.sub(r"\s+", " ", params["prompt"].lstrip(_ZWSP)).strip()
@@ -3590,6 +3598,7 @@ def _submit_one_attempt(
     if prompt == _NO_TEXT_PLACEHOLDER and "--prompt" in args and _placeholder_prompt_is_optional(model, params, refs):
         at = args.index("--prompt")
         del args[at:at + 2]
+        prompt = ""
     if model in {"elevenlabs_v4", "elevenlabs_v4_turbo"}:
         wire_params = audio_cli_params(model, r.get("prompt") or "", params)
         args += ["--dialogue", json.dumps(wire_params.pop("dialogue"), ensure_ascii=False)]

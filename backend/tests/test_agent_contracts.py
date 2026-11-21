@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import io
 import json
@@ -3131,7 +3132,7 @@ def test_submit_one_rejects_small_kling_images_before_the_cli(tmp_path, model, s
 
 
 def _frame_submit(agent, tmp_path, model, roles, params, enum=None, prompt=None):
-    """@Start·@End 역할 레퍼런스를 담은 제출 — (CLI 인자, _fail 호출 수)를 돌려준다."""
+    """@Start·@End 역할 제출의 CLI 인자·실패 수·실제 begin 지문을 돌려준다."""
     refs, cache = [], {}
     for index, role in enumerate(roles):
         path = tmp_path / f"{model}_{index}.png"
@@ -3145,22 +3146,22 @@ def _frame_submit(agent, tmp_path, model, roles, params, enum=None, prompt=None)
     with patch.object(agent, "_allowed_params", return_value={"mode", "duration"}), \
          patch.object(agent, "_param_enum", return_value=enum), \
          patch.object(agent, "_ensure_request_workspace", return_value=("ws", None)), \
-         patch.object(agent, "_begin_submission", return_value=True), \
+         patch.object(agent, "_begin_submission", return_value=True) as begin, \
          patch.object(agent, "_fail") as fail, \
          patch.object(agent, "_run_cli_json", return_value=(["12345678-1234-1234-1234-123456789abc"], None)) as run, \
          patch.object(agent, "_anchor_tracked_safe"):
         agent._submit_one("http://hub", "token", "hf", "artist@example.com", request, cache, {}, agent.Lock(), agent.Lock(), "agent")
-    return (list(run.call_args.args) if run.called else None), fail.call_count
+    return (list(run.call_args.args) if run.called else None), fail.call_count, (begin.call_args.args[4] if begin.called else None)
 
 
 def test_submit_one_sends_frames_with_image_to_video_and_mixed_with_reference_for_kling(tmp_path):
     """시작·끝 프레임만이면 image-to-video, 프레임+참조가 함께면 reference-to-video(Kling 만 — 2026-11-19 견적)."""
     agent = _load_agent()
-    args, failed = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@End"], {"mode": "text-to-video", "duration": 4})
+    args, failed, _ = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@End"], {"mode": "text-to-video", "duration": 4})
     assert failed == 0
     assert args[args.index("--mode") + 1] == "image-to-video"
     assert "--start-image" in args and "--end-image" in args and "--image" not in args
-    args, failed = _frame_submit(agent, tmp_path, "kling_4_0_flash", ["@Start", "@Image1"], {"mode": "text-to-video", "duration": 4})
+    args, failed, _ = _frame_submit(agent, tmp_path, "kling_4_0_flash", ["@Start", "@Image1"], {"mode": "text-to-video", "duration": 4})
     assert failed == 0
     assert args[args.index("--mode") + 1] == "reference-to-video"
     assert "--start-image" in args and "--image" in args and "--end-image" not in args
@@ -3173,17 +3174,79 @@ def test_submit_one_drops_the_no_text_placeholder_only_where_the_cli_makes_the_p
     enum = {"text-to-video", "image-to-video", "reference-to-video", "video-edit"}
     # 빼는 조합 — Kling·Flash 프레임만(image-to-video)·MiniMax H3 프레임
     for model, roles in (("kling4_0", ["@Start", "@End"]), ("kling_4_0_flash", ["@Start"]), ("minimax_h3", ["@Start", "@End"])):
-        args, failed = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum, placeholder)
+        args, failed, fingerprint = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum, placeholder)
         assert failed == 0 and "--prompt" not in args and placeholder not in args, model
+        assert fingerprint["prompt_sha256"] == hashlib.sha256(b"").hexdigest(), model
+        assert fingerprint["params"]["mode"] == "image-to-video", model
+        request = {"fingerprint": fingerprint, "submission_started_at": 1000}
+        job = {"id": "job", "job_type": model, "created_at": 1000, "params": fingerprint["params"]}
+        assert agent._matches_submission_fingerprint(request, job), model
+        for remote_prompt, matches in (("", True), (None, False), (0, False)):
+            assert agent._matches_submission_fingerprint(
+                request, {**job, "params": {**job["params"], "prompt": remote_prompt}}
+            ) is matches, (model, remote_prompt)
     # 진짜 프롬프트는 그대로 간다
-    args, _ = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@End"], {"mode": "text-to-video", "duration": 5}, enum, "the apple turns")
-    assert args[args.index("--prompt") + 1] == "the apple turns"
+    for model, roles in (("kling4_0", ["@Start", "@End"]), ("kling_4_0_flash", ["@Start"]), ("minimax_h3", ["@Start", "@End"])):
+        args, failed, fingerprint = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum, "the apple turns")
+        assert failed == 0 and args[args.index("--prompt") + 1] == "the apple turns", model
+        assert fingerprint["prompt_sha256"] == hashlib.sha256(b"the apple turns").hexdigest(), model
+        assert not agent._matches_submission_fingerprint(
+            {"fingerprint": fingerprint, "submission_started_at": 1000},
+            {"id": "job", "job_type": model, "created_at": 1000, "params": fingerprint["params"]},
+        ), model
     # 그대로 두는 조합 — Kling 프레임+참조(reference-to-video 는 프롬프트 필수)·Gemini·Wan·H3 Max 는 필수
-    args, _ = _frame_submit(agent, tmp_path, "kling4_0", ["@Start", "@Image1"], {"mode": "text-to-video", "duration": 5}, enum, placeholder)
-    assert args[args.index("--mode") + 1] == "reference-to-video" and args[args.index("--prompt") + 1] == placeholder
+    for model in ("kling4_0", "kling_4_0_flash"):
+        args, failed, fingerprint = _frame_submit(agent, tmp_path, model, ["@Start", "@Image1"], {"mode": "text-to-video", "duration": 5}, enum, placeholder)
+        assert failed == 0 and args[args.index("--mode") + 1] == "reference-to-video" and args[args.index("--prompt") + 1] == placeholder
+        assert fingerprint["prompt_sha256"] == hashlib.sha256(placeholder.encode()).hexdigest(), model
+        assert fingerprint["params"]["mode"] == "reference-to-video", model
+        assert not agent._matches_submission_fingerprint(
+            {"fingerprint": fingerprint, "submission_started_at": 1000},
+            {"id": "job", "job_type": model, "created_at": 1000, "params": fingerprint["params"]},
+        ), model
     for model in ("wan3_0", "minimax_h3_max", "gemini_omni_flash_1_2"):
-        args, _ = _frame_submit(agent, tmp_path, model, ["@Start", "@End"], {"mode": "text-to-video", "duration": 5}, enum, placeholder)
+        args, _, _ = _frame_submit(agent, tmp_path, model, ["@Start", "@End"], {"mode": "text-to-video", "duration": 5}, enum, placeholder)
         assert args[args.index("--prompt") + 1] == placeholder, model
+
+
+@pytest.mark.parametrize("model, params", [
+    ("wan3_0", {"mode": "image-to-video"}),
+    ("minimax_h3_max", {"mode": "image-to-video"}),
+    ("gemini_omni_flash_1_2", {"mode": "image-to-video"}),
+    ("kling4_0", {}),
+    ("kling_4_0_flash", {}),
+    ("kling4_0", {"mode": "reference-to-video"}),
+    ("kling_4_0_flash", {"mode": "reference-to-video"}),
+    ("voice_change", {}),
+    ("dubbing", {}),
+    ("seed_audio", {}),
+    ("qwen_audio_tts", {}),
+    ("elevenlabs_v4", {}),
+    ("elevenlabs_v4_turbo", {}),
+])
+def test_missing_prompt_recovery_stays_rejected_outside_omission_combinations(model, params):
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(model, "", params, set(params), [])
+    request = {"fingerprint": fingerprint, "submission_started_at": 1000}
+    job = {"id": "job", "job_type": model, "created_at": 1000, "params": params}
+    assert not agent._matches_submission_fingerprint(request, job)
+    # 빈 해시 자체나 다른 대조 조건 때문이 아니라, prompt 누락을 거절하는지 확인한다.
+    assert agent._matches_submission_fingerprint(request, {**job, "params": {**params, "prompt": ""}})
+
+
+@pytest.mark.parametrize("model", ["elevenlabs_v4", "elevenlabs_v4_turbo"])
+def test_missing_prompt_recovery_does_not_restore_rejected_multi_speaker_dialogue(model):
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(model, "\u200b", {}, set(), [])
+    assert fingerprint["prompt_sha256"] == hashlib.sha256(b"").hexdigest()
+    request = {"fingerprint": fingerprint, "submission_started_at": 1000}
+    line = {"text": "\u200b", "voice_id": "voice-test", "voice_type": "default"}
+    job = {"id": "job", "job_type": model, "created_at": 1000,
+           "params": {"prompt": "", "dialogue": [line]}}
+    assert agent._matches_submission_fingerprint(request, job)
+    job["params"]["dialogue"] = [line, {**line, "voice_id": "other-voice"}]
+    assert "prompt" not in agent.audio_stored_params(model, job["params"])
+    assert not agent._matches_submission_fingerprint(request, job)
 
 
 def test_submit_one_rejects_frame_combinations_the_cli_refuses_before_the_cli(tmp_path):
@@ -3191,15 +3254,15 @@ def test_submit_one_rejects_frame_combinations_the_cli_refuses_before_the_cli(tm
     enum = {"text-to-video", "image-to-video", "reference-to-video", "edit", "extend"}
     for model, roles in (("gemini_omni_flash_1_2", ["@Start", "@Image1"]), ("kling_4_0_flash", ["@Start", "@End"]),
                          ("kling4_0", ["@End"]), ("wan3_0", ["@Start", "@Image1"]), ("minimax_h3", ["@Start", "@Image1"])):
-        args, failed = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum)
+        args, failed, _ = _frame_submit(agent, tmp_path, model, roles, {"mode": "text-to-video", "duration": 5}, enum)
         assert failed == 1 and args is None, (model, roles)
     # 허용 조합은 그대로 나간다: Wan·MiniMax 시작+끝, Gemini 시작+끝(10초 이하)
     for model, duration in (("wan3_0", 4), ("minimax_h3_max", 5), ("gemini_omni_flash_1_2", 10)):
-        args, failed = _frame_submit(agent, tmp_path, model, ["@Start", "@End"], {"mode": "text-to-video", "duration": duration}, enum)
+        args, failed, _ = _frame_submit(agent, tmp_path, model, ["@Start", "@End"], {"mode": "text-to-video", "duration": duration}, enum)
         assert failed == 0 and "--start-image" in args and "--end-image" in args, model
     # Gemini 시작+끝 11초는 거절, 시작만 15초는 통과
     assert _frame_submit(agent, tmp_path, "gemini_omni_flash_1_2", ["@Start", "@End"], {"mode": "text-to-video", "duration": 11}, enum)[1] == 1
-    args, failed = _frame_submit(agent, tmp_path, "gemini_omni_flash_1_2", ["@Start"], {"mode": "text-to-video", "duration": 15}, enum)
+    args, failed, _ = _frame_submit(agent, tmp_path, "gemini_omni_flash_1_2", ["@Start"], {"mode": "text-to-video", "duration": 15}, enum)
     assert failed == 0 and args[args.index("--mode") + 1] == "image-to-video"
 
 

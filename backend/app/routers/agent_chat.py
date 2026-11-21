@@ -32,7 +32,7 @@ from ..services import agent_chat as chat
 from ..services import agent_chat_claude as claude
 from ..services import agent_chat_codex as codex
 from ..services import agent_chat_codex_login as codex_login
-from ..services import agent_chat_install as installer
+from ..services import agent_chat_install_service as installer
 from ..services.agent_chat import EFFORTS, MODELS, Identity, service
 from ..services.async_tools import to_thread_non_abandon
 from ..services.request_guards import require_loopback_browser_request
