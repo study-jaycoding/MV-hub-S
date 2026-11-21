@@ -445,7 +445,7 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
 
         terminate.assert_awaited_once_with(process, None)
 
-    @skipUnless(os.name == "nt", "Windows taskkill process-tree contract")
+    @skipUnless(os.name == "nt", "Windows Job process-tree contract")
     async def test_cancelled_cli_call_kills_the_child_process_tree(self):
         from app.services import cli_bridge
 
@@ -492,7 +492,7 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
                     with self.assertRaises(asyncio.CancelledError):
                         await task
                 for handle in handles:
-                    # 코어가 꽉 차면 taskkill 이 1분 가까이 걸린다(실측 52~57초) — 취소는 먼저 돌아와도 트리는 그 뒤에 끝난다
+                    # Job 종료 요청 뒤 실제 종료는 취소 전에 쥔 각 프로세스 핸들로 확인한다.
                     self.assertEqual(
                         kernel32.WaitForSingleObject(handle, 90_000),
                         0,
@@ -824,12 +824,18 @@ class CliJobLifecycleTests(IsolatedAsyncioTestCase):
         self.job.adopt_suspended.assert_not_called()
 
     async def test_job_creation_error_or_none_preserves_jobless_output(self):
-        for failure in (None, OSError("job unavailable")):
-            with self.subTest(failure=failure), patch.object(
+        for platform, failure in (("nt", None), ("nt", OSError("job unavailable")), ("posix", None)):
+            with self.subTest(platform=platform, failure=failure), patch.object(
                 self.bridge.win_job, "new_process_job", return_value=None, side_effect=failure
-            ):
+            ), patch.object(self.bridge, "os") as platform_os, patch.object(self.bridge, "log_event") as log:
+                platform_os.name = platform
                 self.assertEqual(await self.bridge._run("model", "list"), "결과")
                 self.assertNotIn("creationflags", self.spawn.call_args.kwargs)
+                if platform == "nt":
+                    log.assert_called_once()
+                    self.assertEqual(log.call_args.args[1], "cli_job_unavailable")
+                else:
+                    log.assert_not_called()
         self.job.adopt_suspended.assert_not_called()
 
     async def test_adoption_failure_retries_only_after_reaping_even_if_terminate_fails(self):
@@ -877,7 +883,7 @@ class CliJobLifecycleTests(IsolatedAsyncioTestCase):
         self.proc.wait.assert_awaited_once()
         self.job.close.assert_called_once()
 
-    async def test_terminate_error_and_recancellation_preserve_original_result(self):
+    async def test_terminate_error_preserves_result_but_recancellation_propagates(self):
         for timeout in (False, True):
             for recancel in (False, True):
                 with self.subTest(timeout=timeout, recancel=recancel):
@@ -888,10 +894,10 @@ class CliJobLifecycleTests(IsolatedAsyncioTestCase):
                     self.job.terminate.side_effect = OSError("terminate failed")
                     self.proc.communicate.side_effect = asyncio.TimeoutError() if timeout else asyncio.CancelledError()
                     self.proc.wait.side_effect = asyncio.CancelledError() if recancel else None
-                    expected = self.bridge.CLIError if timeout else asyncio.CancelledError
+                    expected = self.bridge.CLIError if timeout and not recancel else asyncio.CancelledError
                     with self.assertRaises(expected) as raised:
                         await self.bridge._run("model", "list")
-                    if timeout:
+                    if timeout and not recancel:
                         self.assertIn("CLI 타임아웃", str(raised.exception))
                     self.proc.wait.assert_awaited_once()
                     self.job.close.assert_called()

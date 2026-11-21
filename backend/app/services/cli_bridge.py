@@ -147,8 +147,6 @@ async def _terminate_cli_process(proc: asyncio.subprocess.Process, job: win_job.
         try:
             _terminate_cli_job(job)
             await _end_cli_parent(proc)
-        except asyncio.CancelledError:
-            pass  # 정리 중 재취소도 원래 취소·타임아웃 결과를 덮지 않는다.
         finally:
             job.close()
         return
@@ -263,7 +261,7 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
         job = win_job.new_process_job()
     except OSError:
         job = None
-    if job is None:
+    if job is None and os.name == "nt":
         log_event(logging.getLogger(__name__), "cli_job_unavailable", level=logging.WARNING)
     try:
         proc = await asyncio.create_subprocess_exec(
