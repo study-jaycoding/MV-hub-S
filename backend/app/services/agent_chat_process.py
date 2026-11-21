@@ -13,8 +13,10 @@ import subprocess
 import threading
 import time
 from ctypes import wintypes
+from datetime import datetime
 from pathlib import Path
 
+from .. import config
 from .agent_chat_parse import CLAUDE_ALLOWED, MAX_LINE, PANEL_SERVER, PANEL_TOOLS
 
 CREATE_SUSPENDED, CREATE_NO_WINDOW = 0x00000004, 0x08000000
@@ -22,6 +24,7 @@ _KILL_ON_JOB_CLOSE, _EXT_INFO, _PID_LIST = 0x00002000, 9, 3
 # 자식이 구독 로그인이 아닌 요금 경로로 새지 않게 — API 키·제공자 전환·중첩 실행 표식을 뺀다(0단계 6-1 '인증').
 _STRIP = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "ELECTRON_RUN_AS_NODE", "CLAUDECODE"}
 _STRIP_PREFIX = ("CLAUDE_CODE_", "ANTHROPIC_")  # ANTHROPIC_* 는 전부 — 키·제공자 전환 변수가 늘어도 막히게(첫 연결 설계 4절)
+CODEX_POLICY = "2026-11-14"
 # 0단계를 통과한 Codex 판 — 새 판은 기본으로 켜지는 기능(연결 앱 등)이 늘 수 있어 다시 점검하기 전엔 잠근다.
 CODEX_VERIFIED = frozenset({"0.162.0-alpha.17.2"})
 CODEX_FEATURES_OFF = ("apps", "multi_agent", "image_generation", "unified_exec", "shell_tool", "plugins", "remote_plugin",
@@ -158,17 +161,15 @@ def _codex_candidates() -> list[list[str]]:
 
 
 def find_codex() -> list[str] | None:
-    from . import agent_chat_codex as codex
-
     candidates = _codex_candidates()
-    saved = codex.marker()
+    saved = codex_marker()
     if not candidates:
         return None
     if saved is None:
         return candidates[0]  # 꺼져 있으면 파일 존재만 본다. 판 선택은 사람이 연결할 때 한다.
     if saved:
         for candidate in candidates:
-            if codex.target_matches(saved, candidate) and saved["policy"] == codex.CODEX_POLICY \
+            if codex_target_matches(saved, candidate) and saved["policy"] == CODEX_POLICY \
                     and saved["version"] in CODEX_VERIFIED and cli_version(candidate) == saved["version"]:
                 return candidate
     if len(candidates) == 1:
@@ -193,6 +194,36 @@ def verified_codex(prefix: list[str]) -> tuple[list[str], str]:
 def codex_target(prefix: list[str]) -> dict:
     return {"path": os.path.normcase(os.path.abspath(prefix[1] if len(prefix) > 1 else prefix[0])),
             "kind": "npm" if len(prefix) > 1 else "official"}
+
+
+def codex_state_path(name: str) -> Path:
+    return config.AGENT_CHAT_DIR / name
+
+
+def read_codex_state(name: str) -> dict | None:
+    try:
+        value = json.loads(codex_state_path(name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def codex_marker() -> dict | None:
+    value = read_codex_state("codex_enabled.json")
+    if not value or any(not isinstance(value.get(key), str) or not value[key] for key in ("version", "policy", "at")):
+        return None
+    try:
+        datetime.fromisoformat(value["at"])
+    except ValueError:
+        return None
+    return value
+
+
+def codex_target_matches(saved: dict, prefix: list[str]) -> bool:
+    target = codex_target(prefix)
+    if "target" not in saved:
+        return target["kind"] == "npm" and saved.get("version") in CODEX_VERIFIED and saved.get("policy") == CODEX_POLICY
+    return saved["target"] == target
 
 
 def engine_prefix(engine: str) -> list[str] | None:

@@ -28,7 +28,7 @@
 | `CONTENT_HUB_AGENT_CHAT_DIR` | — | `backend/app/config.py` | — |
 | `CONTENT_HUB_AGENT_CHAT_LOGIN_WINDOW` | `"1"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_AGENT_INSTALL_GENERATION` | `None` | `backend/app/services/agent_chat_install.py` `run_agent_session.py` | — |
-| `CONTENT_HUB_AGENT_INSTALL_ID` | `""` | `backend/app/services/agent_chat_install.py` | — |
+| `CONTENT_HUB_AGENT_INSTALL_ID` | `""` | `backend/app/services/agent_chat_install.py` `backend/app/services/agent_chat_install_service.py` | — |
 | `CONTENT_HUB_AGENT_INSTALL_PORT` | `""` | `backend/app/services/agent_chat_install.py` | — |
 | `CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF` | `"0"` | `backend/app/config.py` | — |
 | `CONTENT_HUB_ASSETS_DIR` | `str(DATA_DIR / "assets")` | `backend/app/config.py` | — |

@@ -314,14 +314,15 @@ class AgentChat:
         #  캐시를 버린다(설치 설계 2-v3-1b, 설치 독립 리뷰 P2)
         raw = process.read_install_marker()
         install = process.claude_install(data=raw)
-        from . import agent_chat_install as installer
+        from . import agent_chat_install as install_contract
+        from . import agent_chat_install_service as installer
         requests = {"claude": installer.verified_status("claude"),
                     "codex": installer.verified_status("codex", probe=codex.marker() is not None)}
         install = requests["claude"] or install
         if (install or {}).get("state") == "skipped" and installer.eligibility() is None:
             install = None
         stamp = (json.dumps(raw, sort_keys=True, default=str), install, json.dumps(codex.marker(), sort_keys=True),
-                 json.dumps(requests, sort_keys=True), installer.launcher())
+                 json.dumps(requests, sort_keys=True), install_contract.launcher())
         with self._lock:
             if not refresh and self._engines and time.monotonic() - self._engines[0] < _ENGINE_CACHE_SECONDS \
                     and self._engines[2] == stamp and (install or {}).get("state") != "running":
