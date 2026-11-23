@@ -10,8 +10,7 @@
 //  5px 임계 전에는 클릭이고, 드래그가 끝나면 그 뒤에 합성되는 click/dblclick 을 한 번 삼킨다 —
 //  안 그러면 순서만 바꾸려다 씬이 열리고 워크스페이스까지 바뀐다(코덱스 P1).
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { dataTransferHasFiles, filesFromDataTransfer } from "../../lib/media";
-import { partitionSceneDropFiles } from "../../lib/sceneInteractions";
+import { dataTransferHasFiles, filesFromDataTransfer, referenceMediaTypeFromFile } from "../../lib/media";
 import type { Scene } from "../../lib/scenes";
 import {
   dropIndexAt,
@@ -240,8 +239,9 @@ export function SceneBar({
       if (!dataTransferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       endFileOver();
-      const [file] = partitionSceneDropFiles(filesFromDataTransfer(event.dataTransfer)).mediaFiles;
-      if (file) onDropFile(file); // 여러 장이면 첫 장만 — 탭이 여러 개 열리지 않게
+      // 그림·영상·오디오 가운데 첫 장만 — 탭이 여러 개 열리지 않게. 판에 놓기와 같은 미디어 판별(글·PDF·씬 파일은 건너뛴다, Codex 리뷰 01a20662)
+      const file = filesFromDataTransfer(event.dataTransfer).find((item) => referenceMediaTypeFromFile(item));
+      if (file) onDropFile(file);
     },
   } : {};
   const [drag, setDrag] = useState<DragState | null>(null);
