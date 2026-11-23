@@ -1,4 +1,4 @@
-import type { SceneCard, SceneEdge, SceneRef } from "./scenes";
+import { settleComfyRunning, withoutVariants, type SceneCard, type SceneEdge, type SceneRef } from "./scenes";
 import { canConnect } from "./sceneEdges";
 
 export const SCENE_GRID = 22;
@@ -185,20 +185,6 @@ export function partitionSceneDropFiles<T extends { name: string }>(files: reado
 }
 
 /**
- * 떨어뜨린 파일에서 '각인 → 레시피 복원'을 시도할지 판단한다.
- *
- * 한 개만 놓았을 때만 시도한다 — 여러 개를 놓는 것은 "레퍼런스로 넣겠다"는 뜻이고, 그때 씬 탭이
- * 여러 개 열리면 곤란하다. Shift 를 누른 채 놓으면 각인이 있어도 레퍼런스로 간다(우리 결과물을
- * 다시 재료로 쓰는 경우).
- */
-export function shouldRestoreRecipeFromDrop(
-  files: readonly unknown[],
-  options: { shiftKey?: boolean; hasHandler: boolean },
-): boolean {
-  return files.length === 1 && options.hasHandler && !options.shiftKey;
-}
-
-/**
  * 끌기 전의 좌표로 되감은 스냅샷 — 카드는 origins 의 자리, 그룹은 rects 의 네모로. 달라진 것이 없으면 받은 객체를 그대로 돌려준다.
  * 되돌리기 묶음(useSceneHistory.beginGesture)의 시작점을 만들 때 쓴다: 끄는 중에 낀 저장이 좌표를 이미 옮겨 놓았어도
  * 그 밖의 값(생성 결과 등)은 두고 좌표만 끌기 전으로 돌린다.
@@ -347,24 +333,23 @@ export function buildSelectedConnections(
   return additions;
 }
 
-// 붙여넣은 카드는 '설정만 복제' — 쌓인 결과는 딸려오지 않는다(Jay 결정 2026-08-18).
-//  결과 목록만 지우면 안 된다: 대표·진행표식·상태까지 같이 비워야 결과가 0개인데 "완료"로
-//  보이는 유령 카드가 안 생긴다. comfy 는 워크플로·파라미터는 남기고 실행 결과만 비운다
-//  (설정을 복사해 다시 돌리는 게 붙여넣기의 목적).
-function clearPastedResults(card: SceneCard): SceneCard {
-  if (card.kind === "comfy") {
-    const cfg = card.comfyCfg;
-    return {
-      ...card,
-      genId: null,
-      genIds: [],
-      pendingGenerationAttempts: [],
-      status: "empty",
-      comfyCfg: cfg ? { ...cfg, runId: undefined, outputs: [], output: null, status: "idle", error: null } : cfg,
-    };
+// 붙여넣은 카드는 결과까지 그대로 온다(Jay A안 2026-11-23 — 전엔 '설정만 복제', 2026-08-18).
+//  같은 생성물을 여러 카드가 보여도 된다: 폴더 창 끌어 놓기도 그렇고, 생성 연결은 카드 id 로 잇는다.
+//  진행 중인 것만 원래 카드에 남긴다 — 응답 전 생성 표식(pendingGenerationAttempts)과 그 번호, comfy 실행 번호(runId)·실행 중 상태.
+//  복사본에 남기면 그 응답·실행을 받지 못해 '생성 중'에 갇힌다. 남은 결과가 없으면 빈 카드("완료"로 보이는 유령 카드 방지).
+function withoutInFlight(card: SceneCard): SceneCard {
+  if (card.kind !== "generation" && card.kind !== "comfy") return card;
+  let next = card;
+  const attempts = card.pendingGenerationAttempts || [];
+  if (attempts.length) {
+    const kept = withoutVariants(card, new Set(attempts.map((attempt) => attempt.generationId)));
+    next = { ...kept, pendingGenerationAttempts: [], status: kept.genIds?.length ? card.status : "empty" };
   }
-  if (card.kind !== "generation") return card;
-  return { ...card, genId: null, genIds: [], pendingGenerationAttempts: [], status: "empty" };
+  if (next.kind === "comfy") {
+    const [settled] = settleComfyRunning([next]);
+    next = settled.comfyCfg ? { ...settled, comfyCfg: { ...settled.comfyCfg, runId: undefined } } : settled;
+  }
+  return next;
 }
 
 export function copySceneSelection(
@@ -451,7 +436,7 @@ export function pasteSceneClipboard(
     // 안 바꾸면 빼놨던 체크가 전부 풀린다. 이번 복사에 없던 번호는 원래 카드를 가리키므로 그대로.
     if (card.kind === "render" && card.unchecked)
       next = { ...next, unchecked: card.unchecked.map((id) => idMap.get(id) || id) };
-    return clearPastedResults(next);
+    return withoutInFlight(next);
   });
   const internalEdges = clipboard.edges.map((edge) => ({
     ...edge,

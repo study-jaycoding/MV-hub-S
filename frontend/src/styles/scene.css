@@ -423,6 +423,22 @@
   pointer-events: auto; position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 6px;
   border: 1px solid #3a2b2d; background: #1a1215; color: #f0a0a4; font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
 }
+/* 파일을 끄는 동안 놓을 자리(Jay 2026-11-23 시안) — 레퍼런스 색 점선과 아래 알약. 화면 좌표·지금 배율의 카드 크기로 useSceneClipboardDrop 이
+   옮긴다. 끌기를 가로채지 않는다. hidden 으로 숨기는데 display 를 주므로 [hidden] 을 따로 막는다. 알약은 상자 밖이라 상자에 overflow 를 주지 않는다 */
+.scene-drop-hint {
+  position: absolute; z-index: 30; pointer-events: none; box-sizing: border-box;
+  display: flex; justify-content: center; padding-top: 8px;
+  border: 2px dashed #7fa9ff; border-radius: 12px; background: rgba(127, 169, 255, 0.08);
+  color: #7fa9ff; font-size: 12px;
+}
+.scene-drop-hint[hidden] { display: none; }
+.scene-drop-hint b { max-width: 100%; overflow: hidden; white-space: nowrap; }
+.scene-drop-hint.tiny b { display: none; }
+.scene-drop-hint-pill {
+  position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%); white-space: nowrap;
+  font-size: 12.5px; font-weight: 800; padding: 5px 12px; border-radius: 999px;
+  background: #16223a; color: #7fa9ff; border: 1.5px solid #7fa9ff; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
 /* 카드 내용만 둥근모서리로 클리핑 — 포트(연결 원)는 이 밖이라 잡기 영역이 안 잘린다 */
 .scene-card-inner {
   flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 10px;
@@ -1903,6 +1919,21 @@
 /* 삽입선 — 탭 바깥의 형제 요소(탭 wrap 은 overflow:hidden 이라 안에 그리면 잘린다) */
 .scene-drop-line {
   width: 2px; align-self: stretch; margin: 2px -2px; background: var(--accent); border-radius: 2px;
+}
+/* 파일을 탭 줄 위로 끄는 중(Jay 2026-11-23 시안) — 줄이 받는 자리로 빛나고 맨 뒤에 새 탭 자리와 안내 알약. 알약은 줄 아래 캔버스 위로
+   내려오므로 줄을 보드 위 층에 올린다(보드 안 카드·창 z-index 위) */
+.scene-bar.file-over {
+  position: relative; z-index: 40; outline: 2px dashed var(--accent); outline-offset: -3px;
+  border-radius: 10px; background: rgba(var(--accent-rgb), 0.08);
+}
+.scene-tab-dropghost {
+  position: relative; font-size: 12px; font-weight: 800; padding: 4px 11px; border-radius: 8px; white-space: nowrap;
+  border: 1.5px dashed var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), 0.10); pointer-events: none;
+}
+.scene-tab-dropghost-pill {
+  position: absolute; top: calc(100% + 12px); left: 50%; transform: translateX(-50%); white-space: nowrap;
+  font-size: 12.5px; font-weight: 800; padding: 5px 12px; border-radius: 999px;
+  background: #1b2208; color: var(--accent); border: 1.5px solid var(--accent); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 /* 탭 = [표식][이름] — 표식은 안 줄고 이름만 … 로 줄어든다. */
 .scene-tab { display: inline-flex; align-items: center; gap: 6px; }

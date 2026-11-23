@@ -10,7 +10,6 @@ import {
   copySceneSelection,
   partitionSceneDropFiles,
   scenePasteIntent,
-  shouldRestoreRecipeFromDrop,
   type SceneClipboard,
 } from "./sceneInteractions";
 import { isSceneTextEntryTarget, scenePasteShortcut } from "./sceneKeyboard";
@@ -45,9 +44,9 @@ interface UseSceneClipboardDropOptions {
   setSelected: Dispatch<SetStateAction<Set<string>>>;
   toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
   onLoadSceneFile?: (file: File) => void;
-  // 각인된 생성물 파일을 떨어뜨렸을 때 — 레시피를 노드로 여는 데 성공하면 true.
-  // false 면 평범한 미디어 파일로 보고 레퍼런스 카드가 된다.
-  onDroppedGenerationFile?: (file: File) => Promise<boolean>;
+  // 파일을 끄는 동안 놓을 자리(점선)와 안내 알약을 그릴 보드 안 상자 — 위치·크기·글을 여기서 직접 옮긴다(아래 showDropHint).
+  //  판에 놓은 파일은 각인이 있어도 늘 레퍼런스다 — '어떻게 만들었나'(히스토리)는 캔버스 위 탭 줄에 놓아 연다(Jay 2026-11-23).
+  dropHintRef?: MutableRefObject<HTMLDivElement | null>;
   // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스 카드를 만든 직후 — 새 참조 토큰을 넘긴다.
   //  이 PC 설치 폴더에만 있으므로 부르는 쪽이 서버에 없음을 표시하고 자동 복구를 부른다(2026-09-29).
   onLocalRefsAdded?: (tokens: string[]) => void;
@@ -263,8 +262,48 @@ export function useSceneClipboardDrop(
     [addReferenceCards],
   );
 
+  // 파일을 끄는 동안의 놓을 자리·알약(Jay 2026-11-23 시안) — dragover 마다 보드를 다시 그리지 않게 React 상태 없이 상자 DOM 을 직접 옮긴다.
+  //  화면 좌표로 그린다(캔버스 층 안이면 멀리서 볼 때 알약 글이 같이 작아진다). dragover 는 마우스가 멈춰 있어도 계속 오므로
+  //  끊기고 잠깐 지나면(보드를 떠남·끌기 취소) 숨긴다.
+  const hintTimerRef = useRef<number | null>(null);
+  const hideDropHint = useCallback(() => {
+    if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = null;
+    const hint = optionsRef.current.dropHintRef?.current;
+    if (hint) hint.hidden = true;
+  }, []);
+  useEffect(() => hideDropHint, [hideDropHint]);
+  const showDropHint = useCallback((event: ReactDragEvent) => {
+    const current = optionsRef.current;
+    const hint = current.dropHintRef?.current;
+    const board = event.currentTarget as HTMLElement | null;
+    if (!hint || !board?.getBoundingClientRect) return;
+    const files = Array.from(event.dataTransfer.items || []).filter((item) => item.kind === "file");
+    if (files.length && files.every((item) => item.type === "application/json")) return hideDropHint(); // 씬 파일 — 새 탭으로 열린다
+    const count = Math.max(1, files.length);
+    const kind = files[0]?.type.split("/")[0];
+    const label = count > 1 ? `레퍼런스 ${count}개로 넣기`
+      : `${kind === "image" ? "이미지 " : kind === "video" ? "영상 " : kind === "audio" ? "오디오 " : ""}레퍼런스로 넣기`;
+    // 놓으면 카드가 생길 크기 — 올리는 중 자리(SceneBoard pendingImports)와 같은 폭을 지금 배율로
+    const from = current.toCanvas(event.clientX, event.clientY), to = current.toCanvas(event.clientX + 100, event.clientY);
+    const zoom = to.x > from.x ? 100 / (to.x - from.x) : 1;
+    const width = (current.cardWidth + (count - 1) * (current.cardWidth + 20)) * zoom, height = current.cardHeight * zoom;
+    const rect = board.getBoundingClientRect();
+    // 보드가 몰래 스크롤돼 있을 수 있다(overflow:hidden 이어도) — 스크롤 양을 더해 자리를 맞춘다
+    hint.style.left = `${event.clientX - rect.left + board.scrollLeft - width / 2}px`;
+    hint.style.top = `${event.clientY - rect.top + board.scrollTop - height / 2}px`;
+    hint.style.width = `${width}px`;
+    hint.style.height = `${height}px`;
+    hint.classList.toggle("tiny", width < 110 || height < 60); // 멀리서 볼 때 — 상자 안 글이 잘리면 빼고 알약만
+    const pill = hint.querySelector(".scene-drop-hint-pill");
+    if (pill && pill.textContent !== label) pill.textContent = label;
+    hint.hidden = false;
+    if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = window.setTimeout(hideDropHint, 160);
+  }, [hideDropHint]);
+
   const onDragOver = useCallback((event: ReactDragEvent) => {
-    if (overSceneWindow(event)) return;
+    if (overSceneWindow(event)) return hideDropHint();
     event.preventDefault();
     event.stopPropagation();
     if (optionsRef.current.isViewMode?.()) {
@@ -275,10 +314,12 @@ export function useSceneClipboardDrop(
       || (hasGenerationDrag(event.dataTransfer) && !!optionsRef.current.onDropGenerations)) {
       event.dataTransfer.dropEffect = "copy";
     }
-  }, []);
+    if (dataTransferHasFiles(event.dataTransfer) && !hasAssetDrag(event.dataTransfer)) showDropHint(event);
+  }, [hideDropHint, showDropHint]);
 
   const onDrop = useCallback(
     (event: ReactDragEvent) => {
+      hideDropHint();
       if (overSceneWindow(event)) return;
       event.preventDefault();
       event.stopPropagation();
@@ -312,29 +353,12 @@ export function useSceneClipboardDrop(
         return;
       }
       if (mediaFiles.length) {
+        // 판에 놓은 파일은 늘 레퍼런스다 — 우리가 내보낸 파일(각인)도 그렇다. '어떻게 만들었나'는 탭 줄에 놓아 연다(SceneBar, Jay 2026-11-23).
         const point = current.toCanvas(event.clientX, event.clientY);
-        // 우리 프로그램에서 나간 파일(각인 있음)을 한 개만 떨어뜨리면 '어떻게 만들었나'를 노드로
-        // 펼친다(ComfyUI 에서 워크플로 PNG 를 여는 것과 같은 동작). 각인이 없거나 카탈로그에서
-        // 못 찾으면 아래 기존 동작(레퍼런스 카드로 추가)으로 그대로 흘러간다.
-        // Shift 를 누른 채 놓으면 각인을 보지 않고 무조건 레퍼런스로 넣는다.
-        const openRecipe = current.onDroppedGenerationFile;
-        if (
-          shouldRestoreRecipeFromDrop(mediaFiles, {
-            shiftKey: event.shiftKey,
-            hasHandler: !!openRecipe,
-          }) && openRecipe
-        ) {
-          // 놓은 순간의 씬을 잡아 둔다 — 각인 판독(서버 왕복)을 기다리는 사이 씬을 바꾸면 파일이 그 씬에 들어갔다.
-          const sceneAtDrop = current.sceneIdRef.current;
-          void openRecipe(mediaFiles[0]).then((handled) => {
-            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y, sceneAtDrop, current.document);
-          });
-          return;
-        }
         void importExternalFiles(mediaFiles, point.x, point.y);
       }
     },
-    [addReferenceCards, importExternalFiles],
+    [addReferenceCards, hideDropHint, importExternalFiles],
   );
 
   const copySelectedNodes = useCallback(() => {
