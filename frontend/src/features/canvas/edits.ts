@@ -31,7 +31,7 @@ export type CanvasEditCommand =
   | { type: "createNode"; id: string; kind: SceneCardKind; position: { x: number; y: number }; text?: string }
   | { type: "createConnectedGeneration"; id: string; position: { x: number; y: number }; sourceIds: string[] }
   // 이미 있는 생성물을 결과 그대로(genId·genIds·상태) 카드로 놓는다 — 폴더 창에서 끌어 놓기(Jay 2026-10-22). 붙여넣기(pasteNodes)는
-  //  결과를 지워 빈 카드로 만들므로 쓰지 않는다(Codex 설계 검토).
+  //  복사해 둔 카드와 연결을 옮기는 길이라 따로 둔다(Codex 설계 검토 — 그때는 붙여넣기가 결과를 지웠다. 2026-11-23 부터 결과도 그대로 온다).
   | { type: "addGenerationCards"; cards: SceneCard[] }
   | { type: "setInputChannel"; cardId: string; channel: string }
   | { type: "orderListItems"; listId: string; orderedIds: string[] }

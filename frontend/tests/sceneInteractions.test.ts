@@ -8,18 +8,17 @@ import {
   pasteSceneClipboard,
   resizeSceneCard,
   scenePasteIntent,
-  shouldRestoreRecipeFromDrop,
   shouldStartListReorder,
   updateSceneEjectedCards,
 } from "../src/lib/sceneInteractions";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
-it("붙여넣기는 새 카드 ID에 옛 Comfy 실행 소유를 넘기지 않는다", () => {
+it("붙여넣기는 새 카드 ID에 옛 Comfy 실행 소유를 넘기지 않는다 — 이미 나온 결과는 완료형으로 온다", () => {
   const source: SceneCard = { id: "source", kind: "comfy", x: 0, y: 0,
     comfyCfg: { content: "{}", runId: 10, status: "running", outputs: [{ kind: "text", text: "old" }] } };
   const clipboard = { ...copySceneSelection([source], [], [source.id]), comfyRuns: [{ attemptId: "old" }], comfyCardRuns: { source: { groupId: "g" } } };
   const result = pasteSceneClipboard([], [], clipboard, () => "new");
-  expect(result.cards[0]).toMatchObject({ id: "new", comfyCfg: { content: "{}", status: "idle", outputs: [] } });
+  expect(result.cards[0]).toMatchObject({ id: "new", comfyCfg: { content: "{}", status: "done", outputs: [{ kind: "text", text: "old" }] } });
   expect(result.cards[0].comfyCfg?.runId).toBeUndefined();
   expect(result.nextClipboard).not.toHaveProperty("comfyRuns");
   expect(result.nextClipboard).not.toHaveProperty("comfyCardRuns");
@@ -440,30 +439,48 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     ]);
   });
 
-  it("붙여넣은 생성카드는 설정만 오고 쌓인 결과는 딸려오지 않는다", () => {
+  it("붙여넣은 생성카드는 결과까지 그대로 오고, 응답 전 생성 표식과 그 번호만 빠진다(Jay A안 2026-11-23)", () => {
     const cards = [
       card("gen", "generation", 0, 0, {
         genId: "g2",
-        genIds: ["g1", "g2"],
+        genIds: ["g1", "g2", "g3"],
         status: "done",
         prompt: "고양이",
-        pendingGenerationAttempts: [{ attemptId: "a1", createdAt: 1 }],
+        pendingGenerationAttempts: [{ attemptId: "a1", generationId: "g3", createdAt: 1 }],
       }),
     ];
     const clipboard = copySceneSelection(cards, [], ["gen"]);
     const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-gen"));
 
     const copied = pasted.cards.find((item) => item.id === "new-gen");
-    expect(copied?.genIds).toEqual([]);
-    expect(copied?.genId).toBeNull();
+    expect(copied?.genIds).toEqual(["g1", "g2"]);
+    expect(copied?.genId).toBe("g2");
     expect(copied?.pendingGenerationAttempts).toEqual([]);
-    expect(copied?.status).toBe("empty"); // 결과 0개인데 "완료"로 보이는 유령 카드 방지
-    expect(copied?.prompt).toBe("고양이"); // 설정은 그대로 온다
+    expect(copied?.status).toBe("done");
+    expect(copied?.prompt).toBe("고양이");
     // 원본은 건드리지 않는다
-    expect(cards[0].genIds).toEqual(["g1", "g2"]);
+    expect(cards[0].genIds).toEqual(["g1", "g2", "g3"]);
+    expect(cards[0].pendingGenerationAttempts).toHaveLength(1);
   });
 
-  it("붙여넣은 comfy 카드는 워크플로는 남고 실행 결과만 비워진다", () => {
+  it("응답 전 생성 하나뿐인 카드를 붙이면 빈 카드다(결과 0개인데 '완료'로 보이는 유령 카드 방지)", () => {
+    const cards = [
+      card("gen", "generation", 0, 0, {
+        genId: "g9",
+        genIds: ["g9"],
+        status: "pending",
+        pendingGenerationAttempts: [{ attemptId: "a1", generationId: "g9", createdAt: 1 }],
+      }),
+    ];
+    const pasted = pasteSceneClipboard(cards, [], copySceneSelection(cards, [], ["gen"]), idSequence("new-gen"));
+
+    const copied = pasted.cards.find((item) => item.id === "new-gen");
+    expect(copied?.genIds).toEqual([]);
+    expect(copied?.genId).toBeNull();
+    expect(copied?.status).toBe("empty");
+  });
+
+  it("붙여넣은 comfy 카드는 워크플로와 결과가 그대로 온다", () => {
     const cards = [
       card("comfy", "comfy", 0, 0, {
         genIds: ["g1"],
@@ -483,10 +500,10 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     const cfg = pasted.cards.find((item) => item.id === "new-comfy")?.comfyCfg;
     expect(cfg?.name).toBe("wf.json");
     expect(cfg?.paramValues).toEqual({ "n|seed": 7 });
-    expect(cfg?.outputs).toEqual([]);
-    expect(cfg?.status).toBe("idle");
-    expect(cfg?.error).toBeNull();
-    expect(pasted.cards.find((item) => item.id === "new-comfy")?.genIds).toEqual([]);
+    expect(cfg?.outputs).toEqual([{ kind: "image", url: "u" }]);
+    expect(cfg?.status).toBe("done");
+    expect(cfg?.error).toBe("이전 오류");
+    expect(pasted.cards.find((item) => item.id === "new-comfy")?.genIds).toEqual(["g1"]);
   });
 
   it("다른 씬에서 외부 입력 소스가 없으면 유령 연결을 복원하지 않는다", () => {
@@ -499,26 +516,5 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     const pasted = pasteSceneClipboard([], [], clipboard, idSequence("new-card"));
 
     expect(pasted.edges).toEqual([]);
-  });
-});
-
-describe("각인 파일 드롭 — 레시피 복원 판단", () => {
-  const one = ["clip.mp4"];
-
-  it("한 개만 놓으면 레시피 복원을 시도한다", () => {
-    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: true })).toBe(true);
-  });
-
-  it("Shift 를 누르고 놓으면 각인을 보지 않고 레퍼런스로 넣는다", () => {
-    // 우리 결과물을 다시 재료(레퍼런스)로 쓰는 흐름이 막히면 안 된다.
-    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: true, shiftKey: true })).toBe(false);
-  });
-
-  it("여러 개를 놓으면 시도하지 않는다(씬 탭이 여러 개 열리는 것 방지)", () => {
-    expect(shouldRestoreRecipeFromDrop(["a.png", "b.png"], { hasHandler: true })).toBe(false);
-  });
-
-  it("복원 핸들러가 없는 화면에서는 종전 동작 그대로", () => {
-    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: false })).toBe(false);
   });
 });

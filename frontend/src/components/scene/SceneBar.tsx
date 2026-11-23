@@ -9,7 +9,8 @@
 // ★드래그는 포인터 이벤트로 한다(HTML5 DnD 는 자식 요소가 부모 드래그를 막고 투명 고스트가 생긴다).
 //  5px 임계 전에는 클릭이고, 드래그가 끝나면 그 뒤에 합성되는 click/dblclick 을 한 번 삼킨다 —
 //  안 그러면 순서만 바꾸려다 씬이 열리고 워크스페이스까지 바뀐다(코덱스 P1).
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { dataTransferHasFiles, filesFromDataTransfer, referenceMediaTypeFromFile } from "../../lib/media";
 import type { Scene } from "../../lib/scenes";
 import {
   dropIndexAt,
@@ -62,6 +63,8 @@ interface Props {
   saveFailing?: boolean; // 캔버스가 저장소에 확정되지 못하고 있다 — 그동안 '저장 안 됨'을 계속 띄운다
   onExportAll?: () => void; // 지금 상태 전체를 파일로 내려받는다
   backupSkippedIds?: ReadonlySet<string>; // DB 백업에서 빠진 씬(5MB 초과 — Jay 결정 7A)
+  // 탭 줄에 놓은 파일(미디어 첫 장) — '어떻게 만들었나'(히스토리)를 새 탭으로 연다(Jay 2026-11-23). 판에 놓으면 레퍼런스다.
+  onDropFile?: (file: File) => void;
 }
 
 type FolderItem = Extract<TabRowItem, { kind: "folder" }>;
@@ -211,7 +214,36 @@ export function SceneBar({
   saveFailing = false,
   onExportAll,
   backupSkippedIds,
+  onDropFile,
 }: Props) {
+  // 파일을 탭 줄 위로 끄는 중 — 줄이 받는 자리로 빛나고 끝에 새 탭 자리가 보인다(Jay 2026-11-23 시안). dragover 는 멈춰 있어도 계속 오므로
+  //  끊기고 잠깐 지나면 끈다(dragleave 는 탭 사이를 지날 때마다 와서 믿을 수 없다).
+  const [fileOver, setFileOver] = useState(false);
+  const fileOverTimer = useRef<number | null>(null);
+  const endFileOver = () => {
+    if (fileOverTimer.current !== null) window.clearTimeout(fileOverTimer.current);
+    fileOverTimer.current = null;
+    setFileOver(false);
+  };
+  useEffect(() => () => { if (fileOverTimer.current !== null) window.clearTimeout(fileOverTimer.current); }, []);
+  const fileDrop = onDropFile ? {
+    onDragOver: (event: DragEvent) => {
+      if (!dataTransferHasFiles(event.dataTransfer)) return; // 파일만 받는다 — 받지 않으면 전역 지킴이가 '놓을 수 없음'
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setFileOver(true);
+      if (fileOverTimer.current !== null) window.clearTimeout(fileOverTimer.current);
+      fileOverTimer.current = window.setTimeout(endFileOver, 160);
+    },
+    onDrop: (event: DragEvent) => {
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      endFileOver();
+      // 그림·영상·오디오 가운데 첫 장만 — 탭이 여러 개 열리지 않게. 판에 놓기와 같은 미디어 판별(글·PDF·씬 파일은 건너뛴다, Codex 리뷰 01a20662)
+      const file = filesFromDataTransfer(event.dataTransfer).find((item) => referenceMediaTypeFromFile(item));
+      if (file) onDropFile(file);
+    },
+  } : {};
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<SceneMenuTarget | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null); // 삭제 확인창의 씬
@@ -657,7 +689,7 @@ export function SceneBar({
   };
 
   return (
-    <div className="scene-bar" ref={barRef}>
+    <div className={"scene-bar" + (fileOver ? " file-over" : "")} ref={barRef} {...fileDrop}>
       <NodeTip
         rootRef={barRef}
         within=".scene-tab"
@@ -706,6 +738,16 @@ export function SceneBar({
       })}
       {/* 맨 뒤에 놓을 때의 삽입선 */}
       {dropLineKey === null ? <span className="scene-drop-line" /> : null}
+      {fileOver ? (
+        // 파일을 끄는 동안의 새 탭 자리 — 히스토리 탭은 맨 뒤에 생긴다
+        <>
+          <span className="scene-drop-line" />
+          <span className="scene-tab-dropghost" aria-hidden="true">
+            ＋ 히스토리
+            <span className="scene-tab-dropghost-pill">새 탭에 히스토리로 열기</span>
+          </span>
+        </>
+      ) : null}
       <button
         className="scene-add"
         onClick={onAdd}

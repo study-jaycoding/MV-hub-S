@@ -1707,28 +1707,26 @@ export default function App() {
     navTab("compose");
     flash(`"${g.model || "생성물"}" 을(를) 노드로 열었습니다.`);
   };
-  // 캔버스에 떨어뜨린 파일이 우리가 내보낸 생성물이면(각인) 그 레시피를 노드로 펼친다.
-  //  · 각인이 없거나 카탈로그에서 못 찾으면 false — 호출측이 평소대로 레퍼런스 카드로 넣는다.
-  //  · 새 씬 탭으로 열리므로 지금 작업 중인 씬은 그대로 남는다.
-  const openRecipeFromFile = async (file: File): Promise<boolean> => {
+  // 캔버스 위 탭 줄에 놓은 파일이 우리가 내보낸 생성물이면(각인) 그 레시피를 새 탭에 노드로 펼친다 = 히스토리(Jay 2026-11-23).
+  //  · 새 씬 탭으로 열리므로 지금 작업 중인 씬은 그대로 남는다. 판에 놓은 파일은 늘 레퍼런스다(useSceneClipboardDrop).
+  //  · 각인이 없거나(판독 실패·구버전 허브 포함) 카탈로그에서 못 찾으면(다른 PC·계정에서 만든 것일 수 있다) 알리기만 한다.
+  const openRecipeFromFile = async (file: File): Promise<void> => {
+    const notFound = () => { flash("이 파일의 생성 기록을 찾지 못했습니다 — 캔버스 빈 곳에 놓으면 레퍼런스로 들어갑니다."); };
     let genId: string | null = null;
     try {
       genId = (await api.readFileStamp(file)).gen_id;
     } catch {
-      return false; // 판독 실패(구버전 허브 등) — 평범한 파일로 처리
+      return notFound();
     }
-    if (!genId) return false;
+    if (!genId) return notFound();
     try {
       const [gen, history] = await Promise.all([
         api.getGeneration(genId),
         api.history(genId).catch(() => null),
       ]);
       openRecipe(gen, history);
-      return true;
     } catch {
-      // 각인은 있는데 카탈로그에 없다 — 다른 PC·계정에서 만든 것일 수 있다.
-      flash("이 파일의 생성 기록을 찾지 못했습니다 — 레퍼런스로 넣습니다.");
-      return false;
+      notFound();
     }
   };
   const {
@@ -2938,6 +2936,7 @@ export default function App() {
               saveFailing={sceneSaveFailing}
               backupSkippedIds={sceneBackupSkippedIds}
               onExportAll={exportAllScenes}
+              onDropFile={(file) => void openRecipeFromFile(file)}
             />
             {activeScene ? (
               <SceneBoardBoundary fallback={
@@ -2967,7 +2966,6 @@ export default function App() {
                     projectId: defaultSceneKeepProject(activeScene, projects, filters.project_id)?.id ?? "", workspace: activeScene.workspace ?? null, selectedProjectId: filters.project_id, camera });
                 } : undefined}
                 onOpenSceneKeeps={hubHasFeature("scene_keep_v1") ? () => setKeepWindow({ scope: getAccountNamespace(), authKey: libraryAuthKey }) : undefined}
-                onDroppedGenerationFile={openRecipeFromFile}
                 onLocalRefsAdded={relinkSceneRefsNow}
                 onFindRefs={findSceneRefs}
                 ioPanelScene={ioPanelScene}

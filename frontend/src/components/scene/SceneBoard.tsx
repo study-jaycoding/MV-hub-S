@@ -401,9 +401,6 @@ interface Props {
   onLoadSceneFile?: (file: File) => void;
   onKeepScene?: (getCamera: () => { z: number; x: number; y: number }) => void;
   onOpenSceneKeeps?: () => void;
-  // 각인된 생성물 파일을 캔버스에 떨어뜨렸을 때 — 레시피를 새 씬 탭으로 열었으면 true.
-  //  false 면 평범한 미디어로 보고 레퍼런스 카드가 된다(기존 동작).
-  onDroppedGenerationFile?: (file: File) => Promise<boolean>;
   // 로컬 파일(끌어다 놓기·붙여넣기)로 레퍼런스를 만든 직후 — 자동 복구를 한 번 불러 서버 판정을 받는다
   //  (같은 내용이 서버에 있으면 원본으로 잇고, 없으면 '이 PC에만' 표시가 남는다, Jay 2026-09-29).
   onLocalRefsAdded?: () => void;
@@ -556,7 +553,6 @@ export function SceneBoard({
   onLoadSceneFile,
   onKeepScene,
   onOpenSceneKeeps,
-  onDroppedGenerationFile,
   onLocalRefsAdded,
   onFindRefs,
   ioPanelScene,
@@ -1454,6 +1450,7 @@ export function SceneBoard({
     if (skipped) flashMsg(`${skipped}개는 미디어가 없거나 불러오지 못해 넣지 않았습니다.`);
   };
 
+  const dropHintRef = useRef<HTMLDivElement | null>(null);
   const { copySelectedNodes, onDragOver, onDrop, pendingImports, dismissPendingImport } = useSceneClipboardDrop({
     importTarget: { target_project_id: folderSel?.projectId, target_workspace_id: refWorkspaceId || undefined },
     document: canvasSession,
@@ -1467,7 +1464,7 @@ export function SceneBoard({
     setSelected,
     toCanvas,
     onLoadSceneFile,
-    onDroppedGenerationFile,
+    dropHintRef,
     // 이 PC 설치 폴더에만 있는 새 참조 — 저장된 판정과 무관하게 한 번 묻게 하고 자동 복구를 부른다(같은 파일을 다시
     //  넣으면 같은 사본 토큰이다). '이 PC에만' 표시는 서버 답으로만 켠다.
     onLocalRefsAdded: (tokens) => {
@@ -3479,6 +3476,11 @@ export function SceneBoard({
       }}
     >
       <div className="scene-grid" ref={gridRef} />
+      {/* 파일을 끄는 동안 놓을 자리(점선)와 '레퍼런스로 넣기' 알약(Jay 2026-11-23 시안) — 자리·크기·글은 useSceneClipboardDrop 이 직접 옮긴다 */}
+      <div ref={dropHintRef} className="scene-drop-hint" hidden aria-hidden="true">
+        <b>놓을 자리</b>
+        <span className="scene-drop-hint-pill" />
+      </div>
       {gpuModel && gpu.mode.phase !== "dom" && (
         // 본체는 처음 켤 때 불러온다(lazy) — 불러오는 동안은 준비 단계라 DOM 판이 그대로 보인다
         <Suspense fallback={null}>
